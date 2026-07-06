@@ -5,7 +5,7 @@ Drives BOTH the production `MotorGuard._interpolate_and_send` and the C++-target
 `TeensyLegInterp.tick` (teensy_interp.py) through identical inputs — a recorded
 MPC command stream plus synthetic cases covering all three ladder modes — and
 reports the maximum per-tick commanded-position divergence. Acceptance: < 1e-6 rev
-(Phase 7 "done when").
+(the interpolator port's acceptance criterion).
 
 Method (faithful-replay, mirrors the offline-replay discipline in
 logbook/2026-05-20): motor_guard's wall clock is monkeypatched to a controllable

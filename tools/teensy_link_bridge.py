@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimum-viable Jetson-side daemon for the can-bridge Teensy link.
 
-This is the Phase-10 MVP: a runnable single-process Jetson that gives the
+This is the MVP: a runnable single-process Jetson that gives the
 Teensy what it needs to clear its `LINK_LOST` fault and lock its wall-clock:
 
     * Sends J→T heartbeats at 10 Hz (so the Teensy's link watchdog clears).
@@ -11,7 +11,7 @@ Teensy what it needs to clear its `LINK_LOST` fault and lock its wall-clock:
     * Logs T→J telemetry / diagnostic / heartbeat / profile frames at a
       configurable cadence.
 
-No setpoint stream (that's Phase 10's heavier half — pulls from MPC), no
+No setpoint stream (that's the heavier half of this work — pulls from MPC), no
 ROS 2 plumbing (that's the bridge node rewrite). The point of this MVP is
 to verify the protocol layer works end-to-end on real hardware before
 investing in the rest.

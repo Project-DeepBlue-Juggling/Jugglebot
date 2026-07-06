@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Can-bridge reboot-latency + clear/reboot gate bench probe (Phase 6 gate validator).
+"""Can-bridge reboot-latency + clear/reboot gate bench probe (reboot-latch gate validator).
 
-Validates the two open Phase-6 bench decisions (plan
-canbridge-foundation-coldstart-parity "Decisions required"; logbook
+Validates the two open reboot-latch bench decisions (logbook
 2026-06-30-canbridge-phase6-reboot-latch):
 
   PROBE 2 (window) — measure REBOOT_ODRIVES -> first-fresh-leg-heartbeat latency.
@@ -19,9 +18,9 @@ canbridge-foundation-coldstart-parity "Decisions required"; logbook
     (the deadlock). We send CLEAR_ERRORS probes through the window and record the
     RPC status to demonstrate the gate behaviour directly.
 
-  Before/after design: run this against Phase-3 firmware (the "before" — CAN_BUS_DOWN
+  Before/after design: run this against the pre-reboot-latch firmware (the "before" — CAN_BUS_DOWN
   appears on reboot = the false loss; CLEAR_ERRORS during the WARN window =
-  ERR_BUS_DOWN = the deadlock) and again against Phase-6 firmware (the "after" —
+  ERR_BUS_DOWN = the deadlock) and again against the reboot-latch firmware (the "after" —
   the reboot latch suppresses CAN_BUS_DOWN within the window; the SYNCH gate lets
   CLEAR_ERRORS return OK during the same window).
 
@@ -88,11 +87,11 @@ def main():
     print(f"baseline: fault={_enum(FaultState, hb.fault_state)} "
           f"bus1(CAN3)={_enum(BusHealth, hb.bus1_health)} link={hb.link_state}")
 
-    # Fire the reboot. AXIS_ALL covers the legs; on Phase-3 firmware AXIS_ALL drops
+    # Fire the reboot. AXIS_ALL covers the legs; on the pre-reboot-latch firmware AXIS_ALL drops
     # the hand (i < NUM_LEGS), and the hand's heartbeats keep CAN3 RX fresh, masking
     # the staleness gate. To test the all-ODrives-silent deadlock premise we ALSO
-    # reboot the hand per-axis (axis 6 — Phase-1 allow-table permits REBOOT). On
-    # Phase-6 firmware AXIS_ALL already includes the hand, so the second call is a
+    # reboot the hand per-axis (axis 6 — the RPC allow-table permits REBOOT). On
+    # the reboot-latch firmware AXIS_ALL already includes the hand, so the second call is a
     # harmless no-op-equivalent (the hand is already rebooting).
     HAND_AXIS = 6
     print("\n=== sending REBOOT_ODRIVES(AXIS_ALL) + REBOOT_ODRIVES(hand axis 6) ===")
@@ -151,8 +150,8 @@ def main():
     print("\n=== ANALYSIS ===")
     if onset is None:
         print("  CAN_BUS_DOWN never observed within the window.")
-        print("  -> Phase-6 firmware: the reboot latch SUPPRESSED the false loss (expected 'after').")
-        print("  -> Phase-3 firmware: the legs may have rebooted faster than the 2 s watchdog, OR")
+        print("  -> reboot-latch firmware: the reboot latch SUPPRESSED the false loss (expected 'after').")
+        print("  -> pre-reboot-latch firmware: the legs may have rebooted faster than the 2 s watchdog, OR")
         print("     the reboot did not fire — cross-check the bus1/fault trace above.")
     else:
         print(f"  CAN_BUS_DOWN onset:  t={onset:.2f}s (legs went stale ~2 s after reboot)")

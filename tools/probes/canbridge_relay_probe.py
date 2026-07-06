@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""Can-bridge Platform-Teensy relay bench probe (Phase 1 gate validator).
+"""Can-bridge Platform-Teensy relay bench probe (platform-relay-seam gate validator).
 
 READ-ONLY: issues only STATE_READ / TILT_READ relay RPCs — it NEVER writes
 RobotState and NEVER commands a motor (honours the never-command-motors rule in
 tools/probes/README.md). Safe to run with the robot at rest.
 
-Validates the two bench gates that block Phase 2 from trusting the relay reply
-discriminator on hardware (plan: canbridge-foundation-coldstart-parity Testing
-plan probe table; result recorded in
+Validates the two bench gates that must pass before the relay reply
+discriminator can be trusted on hardware (result recorded in
 logbook/2026-06-29-canbridge-phase1-platform-relay-seam.md). First run
 2026-06-29: SRX_DIS PASS (0/24 self-echo), reply latency <=14 ms (the 0.5 s
 timeout placeholder confirmed). Re-run after any relay / FlexCAN3 firmware change.
@@ -134,7 +133,7 @@ def main():
     else:
         print(f"  PROBE 1 (SRX_DIS): FAIL — {total_echo} reads showed a self-echoed request frame;")
         print("    CAN3 self-reception is ENABLED -> set SRX_DIS in can_buses_init() (FlexCAN3)")
-        print("    before Phase 2 trusts the relay reads (a dlc-8 STATE_WRITE would also self-echo).")
+        print("    before the relay reads can be trusted (a dlc-8 STATE_WRITE would also self-echo).")
     if all_lat:
         worst = max(all_lat)
         print(f"  PROBE 2 (latency): genuine reply worst-case {worst:.2f} ms -> recommend")

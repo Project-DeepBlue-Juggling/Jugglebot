@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """teensy_guard_validation.py — MPC-free, ZERO-MOTION guard/pipeline validation for
-the can-hub Tier-2 checks 1-3 (E-STOP latch, monotonic-clock/seq-guard, NetLock flood).
+the can-hub hardening checks 1-3 (E-STOP latch, monotonic-clock/seq-guard, NetLock flood).
 
 It owns the Teensy UDP link directly (the ROS2 teensy_bridge_node MUST be stopped —
 it binds 5005/6) and drives the firmware guard state machine with a 40 Hz HOLD
@@ -20,14 +20,14 @@ Observation is the read-only serial monitor from
 ``tools/probes/canhub_tier2_hw_validation.py`` (serial + UDP are different transports,
 zero contention). Checks:
 
-  1  E-STOP latch [13]: arm+stream → STARVE the stream >250 ms (heartbeats KEPT alive
+  1  E-STOP latch: arm+stream → STARVE the stream >250 ms (heartbeats KEPT alive
      so it's MPC_STALE, not LINK_LOST) → guard latches ESTOP; RESUME the stream and
      confirm it STAYS latched (pre-fix it auto-recovered); CLEAR_ERRORS → clean recover.
-  2  Seq-guard restart [14]: tear down the client + rebuild the stream from a fresh seq
+  2  Seq-guard restart: tear down the client + rebuild the stream from a fresh seq
      (== a run_mpc restart) → confirm immediate re-accept (fault stays NONE, sp_age
      drops) — the review-caught regression that bricked control after ~half of restarts.
-     (The wall-anchor clock-step half of [14] is covered by the native clock-step tests.)
-  3  NetLock flood [15]: flood the UDP ports (sendto-only) while streaming → no
+     (The wall-anchor clock-step half of this check is covered by the native clock-step tests.)
+  3  NetLock flood: flood the UDP ports (sendto-only) while streaming → no
      hardfault ([diag] keeps updating), crc_err climbs, fault stays NONE.
 
 MOTION SAFETY: arming ``mpc_active=1`` enables the firmware output gate. With every leg
@@ -315,7 +315,7 @@ class Runner:
 
     # ── checks ──────────────────────────────────────────────────────────────────
     def check1(self):
-        self.head("CHECK 1 — E-STOP LATCH [13]  (zero-motion)")
+        self.head("CHECK 1 — E-STOP LATCH  (zero-motion)")
         print("arm+stream → STARVE (heartbeats kept) → MPC_STALE → guard latches ESTOP;")
         print("RESUME the stream → confirm it STAYS latched (pre-fix it auto-recovered);")
         print("CLEAR_ERRORS → clean recover.")
@@ -353,7 +353,7 @@ class Runner:
         return v
 
     def check2(self):
-        self.head("CHECK 2 — SEQ-GUARD RESTART [14]  (zero-motion)")
+        self.head("CHECK 2 — SEQ-GUARD RESTART  (zero-motion)")
         print("Tear down the link + rebuild the stream from a FRESH seq (== a run_mpc")
         print("restart) → confirm immediate re-accept: fault stays NONE, sp_age drops.")
         print("(Pre-fix: persisted seq vs host-reset stream → phantom MPC_STALE for minutes.)")
@@ -378,7 +378,7 @@ class Runner:
         return v
 
     def check3(self):
-        self.head("CHECK 3 — NetLock / UDP FLOOD [15]  (zero-motion)")
+        self.head("CHECK 3 — NetLock / UDP FLOOD  (zero-motion)")
         print("Flood the UDP ports (sendto-only) while streaming → no hardfault ([diag]")
         print("keeps updating), crc_err climbs (flood lands), fault stays NONE.")
         self.enter("Enter to begin")
@@ -410,7 +410,7 @@ class Runner:
 
     def _write(self):
         import datetime
-        lines = ["# Can-hub Tier-2 guard-validation report (checks 1-3, zero-motion)", "",
+        lines = ["# Can-hub hardening guard-validation report (checks 1-3, zero-motion)", "",
                  f"- Generated: {datetime.datetime.now():%Y-%m-%d %H:%M:%S}",
                  "- Tool: tests/hardware/teensy_guard_validation.py (MPC-free, legs IDLE)", "",
                  "| # | Check | Verdict |", "|---|-------|---------|"]
@@ -421,7 +421,7 @@ class Runner:
 
 
 CHECKS = {1: "check1", 2: "check2", 3: "check3"}
-TITLES = {1: "E-STOP latch [13]", 2: "Seq-guard restart [14]", 3: "NetLock flood [15]"}
+TITLES = {1: "E-STOP latch", 2: "Seq-guard restart", 3: "NetLock flood"}
 
 
 def main():
@@ -460,7 +460,7 @@ def main():
     streamer = HoldStreamer()
     runner = Runner(mon, streamer, report)
 
-    runner.head("Can-hub Tier-2 guard validation (MPC-free, ZERO-MOTION)")
+    runner.head("Can-hub hardening guard validation (MPC-free, ZERO-MOTION)")
     print(f"{C.bad}{C.bold}MOTION-AUTHORITY TOOL{C.rst} — it arms mpc_active=1 (enables the")
     print("firmware output gate). Legs are kept IDLE and it REFUSES to arm if any leg is")
     print("CLOSED_LOOP, so nothing should move — but treat it as arming the hardware:")

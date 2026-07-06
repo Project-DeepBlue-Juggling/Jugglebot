@@ -83,7 +83,7 @@ def run(bind_ip, port, duration, out_dir, do_plot):
                         pr.interp_max_jitter_us, pr.free_heap_bytes])
                 rows.append(row)
                 # can1_* wire slot = Jugglebot core / CAN3 (the busy, safety-relevant
-                # bus) after the three-bus remap (HANDOFF D4); show it live.
+                # bus) after the three-bus remap; show it live.
                 print(f"[profile] core_util(CAN3)={pr.can1_util_x100/100:.1f}%  "
                       f"rtt={pr.udp_rtt_us}us  miss={pr.interp_deadline_misses}  "
                       f"heap={pr.free_heap_bytes}")
@@ -134,9 +134,9 @@ def _plot(csv_path, cols, rows):
     ax[0].set_ylabel("CPU %"); ax[0].set_title("Per-task CPU (interp runs in ISR — see deadline misses)")
     ax[0].legend(loc="upper right", ncol=3, fontsize=7)
     # CAN utilisation.
-    # Wire slots were remapped by the three-bus refactor (firmware HANDOFF D4):
+    # Wire slots were remapped by the three-bus refactor:
     # PROFILE can1_* now sources Jugglebot core (CAN3), can2_* sources Ball Butler
-    # (CAN1). Cone (CAN2) util is not yet on the uplink (TODO phase-10b).
+    # (CAN1). Cone (CAN2) util is not yet on the uplink (TODO: cone health uplink).
     ax[1].plot(t, arr[:, col["can1_util_pct"]], label="Jugglebot core / CAN3 (slot can1)")
     ax[1].plot(t, arr[:, col["can2_util_pct"]], label="Ball Butler / CAN1 (slot can2)")
     ax[1].set_ylabel("bus util %"); ax[1].legend(loc="upper right"); ax[1].grid(True, alpha=0.3)

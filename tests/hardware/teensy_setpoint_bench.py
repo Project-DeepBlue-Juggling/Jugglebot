@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Bench driver: FIRST armed MPC-style setpoint stream on one can-bridge leg (Phase 11).
+"""Bench driver: FIRST armed MPC-style setpoint stream on one can-bridge leg.
 
 This is the highest-risk bench harness in the project so far — the **first
 continuous powered setpoint stream** to a leg over the can-bridge. Unlike encoder
-search (9a) and homing (9b), which are bounded self-terminating moves, this
-streams a 40 Hz β-knot trajectory that the leg tracks for as long as it runs. It
+search and homing, which are bounded self-terminating moves, this
+streams a 40 Hz knot trajectory that the leg tracks for as long as it runs. It
 arms the firmware output gate (``mpc_active=1`` via the J→T heartbeat) and drives
-the **synthetic** β-knot source (``controller/teensy_link/synthetic_setpoint.py``)
+the **synthetic** knot source (``controller/teensy_link/synthetic_setpoint.py``)
 — a KNOWN, bounded command that exercises the Teensy's 40 Hz-knot Hermite interp
 (``leg_interp.cpp`` Mode 1) directly, decoupled from motor_guard / the MPC /
-friction-FF. The deployed production bridge is untouched (still the α relay).
+friction-FF. The deployed production bridge is untouched (still the relay-based path).
 
 Lives in tests/hardware/ (not tools/probes/) because it COMMANDS THE MOTOR — per
 tools/probes/README.md, motor-commanding harnesses are tests/hardware/ territory.
@@ -31,7 +31,7 @@ smooth approach ramp. KEEP THE E-STOP IN HAND. Defence in depth, all active:
     MPC staleness E-STOP (0.25 s).
 
 PRECONDITIONS (the driver CHECKS these and refuses to arm otherwise):
-  • encoder search (9a) + homing (9b) done — valid encoder reference.
+  • encoder search + homing done — valid encoder reference.
   • axis in CLOSED_LOOP **position** mode with the operational gains. Pass
     --close-loop to have the driver do the full legacy-faithful bring-up (vel/curr
     limits -> POSITION/PASSTHROUGH mode -> pos+vel gains from hardware_config ->
@@ -102,7 +102,7 @@ def on_telem(mt, seq, payload, addr):
 
 
 def on_legcmd(mt, seq, payload, addr):
-    # The Teensy's COMMANDED float32 interp output (LegCmd, 0x88) — the U3-iv
+    # The Teensy's COMMANDED float32 interp output (LegCmd, 0x88) — the
     # residual datum: this vs the offline float64 reference is the float32 residual.
     with _lock:
         _cache["legcmd"] = LegCmd.unpack(payload)
@@ -201,7 +201,7 @@ def main():
     ap.add_argument("--arm", action="store_true",
                     help="skip the interactive ARM prompt (for scripted reruns)")
     ap.add_argument("--observe", action="store_true",
-                    help="U3-iii fault-replay observe mode: do NOT abort+disarm on a "
+                    help="fault-replay observe mode: do NOT abort+disarm on a "
                          "firmware fault. Log the transition and keep observing so the "
                          "full fault->recovery/stow sequence is recorded; cede authority "
                          "(disarm + stop streaming) on a fatal/CAN fault so the firmware "
@@ -210,19 +210,19 @@ def main():
     ap.add_argument("--csv", default=None,
                     help="per-tick telemetry CSV path (default: auto under temp/logs/)")
     ap.add_argument("--replay", default=None, metavar="MPC_CSV",
-                    help="U3-iv: replay a recorded throw (temp/logs/mpc_*.csv) on this "
+                    help="replay a recorded throw (temp/logs/mpc_*.csv) on this "
                          "axis instead of the synthetic trajectory — scaled to the bench "
                          "ceiling (3.30 rev), with the Teensy float32 interp output "
                          "captured via the LegCmd uplink for the residual. Ignores "
                          "--center/--amplitude/--freq.")
     ap.add_argument("--friction-ff", action="store_true",
-                    help="U3-iv D9 onset A/B: inject the motor_guard Stribeck "
+                    help="motion-onset A/B: inject the motor_guard Stribeck "
                          "friction-FF as per-frame torque_ff (requires --replay). The "
                          "torque is computed by friction_ff_params.friction_ff_torque_nm "
                          "(parity-tested against motor_guard._compute_friction_ff_Nm) and "
                          "the can-bridge applies leg_sign on the way to the ODrive, so the "
                          "bench torque is sign-identical to production. Omit for the "
-                         "friction-FF-free β path (the other A/B arm).")
+                         "friction-FF-free path (the other A/B arm).")
     ap.add_argument("--max-dev", type=float, default=DEVIATION_ABORT_REV, metavar="REV",
                     help=f"driver deviation-belt abort threshold (rev). Default "
                          f"{DEVIATION_ABORT_REV}; the firmware MAX_DEVIATION (0.5) is the "
@@ -261,7 +261,7 @@ def main():
     client.subscribe(int(MsgType.TELEMETRY), on_telem)
     client.subscribe(int(MsgType.DIAGNOSTIC), on_diag)
     client.subscribe(int(MsgType.HEARTBEAT_T2J), on_hb)
-    client.subscribe(int(MsgType.LEG_CMD), on_legcmd)   # Teensy float32 interp output (U3-iv)
+    client.subscribe(int(MsgType.LEG_CMD), on_legcmd)   # Teensy float32 interp output
     client.start_heartbeat(hz=float(p.HEARTBEAT_HZ), flags=0)   # mpc_active=0 — DISARMED
     client.set_heartbeat_flags(0)
 
@@ -283,7 +283,7 @@ def main():
 
         # ── Optional: full legacy-faithful leg bring-up to CLOSED_LOOP ───────
         # Ports can_node._switch_to_passthrough + _set_vel_curr_limits + _set_gains
-        # to the can-bridge RPC surface (can_node is defunct). 9b homing leaves the
+        # to the can-bridge RPC surface (can_node is defunct). Homing leaves the
         # leg in VELOCITY mode, so streaming POSITION setpoints first needs
         # position-passthrough control re-established with the operational gains +
         # limits. Gains/limits/mode are set BEFORE closing the loop, so the loop
@@ -354,7 +354,7 @@ def main():
                 print(f"  • {pb}")
             return 2
 
-        # ── Optional friction-FF injection (D9 onset A/B) ────────────────────
+        # ── Optional friction-FF injection (motion-onset A/B) ────────────────
         # Build a per-axis Stribeck torque_ff(velocity) from the canonical
         # motor_guard params (friction_ff_torque_nm is parity-tested against
         # MotorGuard._compute_friction_ff_Nm). The can-bridge applies leg_sign to
@@ -415,7 +415,7 @@ def main():
                       f"rev/s = {friction_ff_fn(0.1):+.4f}/{friction_ff_fn(1.0):+.4f}/"
                       f"{friction_ff_fn(sinfo.peak_vel_rps):+.4f} Nm (motor_guard convention)")
             else:
-                print(f"    friction-FF: OFF (plain β path)")
+                print(f"    friction-FF: OFF (plain path)")
         else:
             kind = "HOLD" if args.amplitude == 0.0 else f"SINUSOID ±{args.amplitude} @ {args.freq} Hz"
             print(f"  axis {axis}: extend {start:+.4f} → {args.center:+.4f} rev over "
@@ -441,10 +441,10 @@ def main():
         csv_f = open(csv_path, "w", newline="")
         csv_w = csv.writer(csv_f)
         # cmd_teensy_rev = the Teensy's float32 interp output (LegCmd uplink) — vs the
-        # offline float64 reference of `cmd_rev`'s knots, that is the U3-iv residual.
+        # offline float64 reference of `cmd_rev`'s knots, that is the float32 residual.
         # cmd_tau_ff_Nm = the friction-FF torque injected into the frame this tick
         # (motor_guard convention, the Teensy applies leg_sign downstream); blank
-        # when --friction-ff is off — the friction-FF-free β arm of the D9 A/B.
+        # when --friction-ff is off — the friction-FF-free arm of the motion-onset A/B.
         csv_w.writerow(["t_s", "cmd_rev", "enc_rev", "cmd_teensy_rev", "vel_rps",
                         "err_rev", "iq_A", "cmd_tau_ff_Nm", "fault_state", "fault_name",
                         "telem_age_ms", "hb_uptime_ms", "fw_mpc_active", "streaming"])
@@ -492,7 +492,7 @@ def main():
             cmd = gen.position(t)
             cmd_teensy = axis_cmd_teensy(axis)   # Teensy float32 interp output (LegCmd)
             # The friction-FF torque the frame carried this tick (matches the
-            # frame's tau = torque_ff_fn(velocity(t))); blank on the plain β arm.
+            # frame's tau = torque_ff_fn(velocity(t))); blank on the plain arm.
             tau_ff = friction_ff_fn(gen.velocity(t)) if friction_ff_fn is not None else None
             fw_mpc = firmware_mpc_active()
             tage = telem_age_ms()

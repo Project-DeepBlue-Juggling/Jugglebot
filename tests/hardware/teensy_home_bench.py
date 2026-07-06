@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Bench driver: firmware homing on a single can-bridge leg axis (Phase 9b).
+"""Bench driver: firmware homing on a single can-bridge leg axis.
 
 Hardware bench driver for the FIRST observable run of the firmware
-move-to-hardstop over the can-bridge. Unlike encoder search (Phase 9a, a
+move-to-hardstop over the can-bridge. Unlike encoder search (a
 Jetson-side orchestration over SET_AXIS_STATE), the homing *move* runs
 autonomously in the can-bridge HOME handler — there is no per-leg motion RPC, so
 the velocity-limited move-to-hardstop lives in firmware. This driver fires the
@@ -25,7 +25,7 @@ hardstop is detected by the Iq EMA crossing 5 A, and a 30 s hard timeout aborts
 to IDLE if no stop is found — but KEEP THE E-STOP WITHIN REACH and confirm the
 standalone leg (odrv0) is the target before running.
 
-PRECONDITION: encoder index search (Phase 9a) must have completed on the axis
+PRECONDITION: encoder index search must have completed on the axis
 (finite encoder estimate), and the leg ODrive must have usable velocity gains
 (flash defaults or a prior SET_VEL_GAINS) — this homing sets only state/mode/
 limits, like can_node._home_motor_steps.

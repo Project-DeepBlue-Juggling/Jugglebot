@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bench driver: encoder index search on a single can-bridge leg axis (Phase 9a).
+"""Bench driver: encoder index search on a single can-bridge leg axis.
 
 Hardware bench driver for the FIRST observable run of encoder index search over
 the can-bridge. It drives the TESTED

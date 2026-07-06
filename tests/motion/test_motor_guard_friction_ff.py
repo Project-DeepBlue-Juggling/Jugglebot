@@ -807,11 +807,11 @@ def test_friction_ff_smooth_gate_table(v_factor, gate_check):
 
 
 # ---------------------------------------------------------------------------
-# Parity — the U3-iv bench injection helper vs the production vectorised path
+# Parity — the bench injection helper vs the production vectorised path
 # ---------------------------------------------------------------------------
 # friction_ff_torque_nm (friction_ff_params.py) is the scalar, single-axis
 # friction-FF the bench replay driver dependency-injects into
-# RecordedThrowSource for the D9 motion-onset A/B (it must stay importable
+# RecordedThrowSource for the motion-onset A/B (it must stay importable
 # without the ROS2 / motor_guard stack so controller/ stays pure). These tests
 # pin it to MotorGuard._compute_friction_ff_Nm so the bench injects the EXACT
 # friction-FF motor_guard would — the precondition for an apples-to-apples
@@ -850,7 +850,7 @@ def test_scalar_helper_matches_motor_guard_per_axis():
 
 
 def test_scalar_helper_disabled_returns_zero():
-    """params.enabled=False → 0.0 (the plain β path), matching
+    """params.enabled=False → 0.0 (the plain path), matching
     _compute_friction_ff_Nm's zeros-on-disabled branch."""
     from jugglebot.motion.friction_ff_params import friction_ff_torque_nm
 

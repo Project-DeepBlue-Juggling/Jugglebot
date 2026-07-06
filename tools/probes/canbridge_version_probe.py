@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Can-bridge firmware Get_Version bench probe (Phase 3 gate validator).
+"""Can-bridge firmware Get_Version bench probe (version-validation gate validator).
 
 READ-ONLY: issues only the GET_AXIS_VERSIONS RPC (a bridge-LOCAL cache read — no
 CAN3 round-trip) and decodes the cached ODrive versions. It NEVER commands a motor
@@ -8,11 +8,10 @@ tools/probes/README.md). Safe with motor power OFF — the ODrives need only log
 power + CAN3 to heartbeat, which is all the firmware's Get_Version sweep requires
 to populate the cache.
 
-Validates the Phase-3 probe gate (plan canbridge-foundation-coldstart-parity
-Testing-plan probe table; logbook 2026-06-29-canbridge-phase3-version-validated):
+Validates the version-validation probe gate (logbook 2026-06-29-canbridge-phase3-version-validated):
 do the live legs+hand ODrives report the EXPECTED_HW_VERSIONS tuple? A mismatch
 means the expected-version config is stale (or a wrong-firmware ODrive), and the
-Phase-4 powered cold-start would force-FAULT — reconcile before Phase 4.
+powered cold-start would force-FAULT — reconcile before running it.
 
 Mirrors the Jetson production path: the bridge firmware sweeps Get_Version and
 caches the raw replies; this probe pulls them via GET_AXIS_VERSIONS and runs the
@@ -20,7 +19,7 @@ same hw-match + fw-consistency check as MotorStateTracker.validate_group (inline
 here so the probe has NO ROS2 dependency — it runs in the bare venv).
 
 Run:  python tools/probes/canbridge_version_probe.py
-(needs the can-bridge powered + Phase-3 firmware flashed + the Jetson teensy-link
+(needs the can-bridge powered + the Get_Version-capable firmware flashed + the Jetson teensy-link
 iface up; the ROS bridge node must NOT be running — it binds the same UDP ports.)
 """
 import sys
@@ -117,14 +116,14 @@ def main():
     if not set(JUGGLEBOT_AXES).issubset(per_axis.keys()):
         missing = [a for a in JUGGLEBOT_AXES if a not in per_axis]
         print(f"  INCONCLUSIVE — axes {missing} reported no version. Check ODrive "
-              "logic power + CAN3 (the sweep needs heartbeats), and that Phase-3 "
-              "firmware is flashed (old firmware answers ERR_NOT_IMPL).")
+              "logic power + CAN3 (the sweep needs heartbeats), and that the "
+              "Get_Version-capable firmware is flashed (old firmware answers ERR_NOT_IMPL).")
     else:
         err = _validate_group(versions)
         if err:
             print(f"  FAIL — {err}")
             print("  -> EXPECTED_HW_VERSIONS is stale OR a wrong-firmware ODrive; the")
-            print("     Phase-4 powered cold-start would force-FAULT. Reconcile before Phase 4.")
+            print("     the powered cold-start would force-FAULT. Reconcile before running it.")
         else:
             print("  PASS — all Jugglebot axes match EXPECTED_HW_VERSIONS; validate_group clean.")
             print("     firmware_validated would latch True on the production bridge.")

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Read the CAN3 ODrive telemetry the can-bridge decodes, over the UDP link.
 
-A reusable bench-bringup observer for the teensy-can-offload work
-(plans/active/teensy-can-offload.md). RX-ONLY by construction: it sends J->T
+A reusable bench-bringup observer for the work moving CAN comms off the
+Jetson onto the can-bridge Teensy. RX-ONLY by construction: it sends J->T
 heartbeats with flags=0 (mpc_active=0 -> the Teensy will NOT enable any leg
 output) and answers TIME_OF_DAY so the bridge clears LINK_LOST and time-syncs.
 There is NO setpoint stream here, so it can never command leg motion.
@@ -10,7 +10,7 @@ There is NO setpoint stream here, so it can never command leg motion.
 Prints all 7 Jugglebot axes (legs 0-5, hand=6) pos/vel + per-axis diagnostics
 (state, active_errors, bus_voltage, FET temp). DIAGNOSTIC axes 7/8 are the Ball
 Butler ODrives on CAN1. Used to confirm: link UP, time-sync anchoring, all CAN3
-ODrives decoding, and (during Phase 9a encoder search) leg pos going NaN->finite.
+ODrives decoding, and (during encoder index search) leg pos going NaN->finite.
 
 Cold-bench signature (CAN+main power, idle): legs at IDLE (axis_state=1),
 active_errors=0; with no main bus power, active_errors=0x201

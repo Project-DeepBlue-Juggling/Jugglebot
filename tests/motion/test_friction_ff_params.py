@@ -62,9 +62,9 @@ def test_load_params_bench_defaults_present():
     np.testing.assert_allclose(p.tau_s_A, 1.953, atol=1e-9)
     np.testing.assert_allclose(p.omega_s_rps, 0.251, atol=1e-9)
     np.testing.assert_allclose(p.b_A_per_rps, 0.0173, atol=1e-9)
-    # Platform default: load_offset = 0 (per integration plan §6.4 — let
-    # the per-leg gain integrator handle gravity until kinematics-derived
-    # per-leg gravity FF lands as a Phase-2 refinement).
+    # Platform default: load_offset = 0 (let the per-leg gain integrator
+    # handle gravity until kinematics-derived per-leg gravity FF lands as a
+    # future refinement).
     np.testing.assert_allclose(p.load_offset_A, 0.0, atol=1e-12)
     # Platform sign convention: +1 for all legs (can_node._send_position_target
     # negates torque_ff for leg axes; bench's -1 was correct without that
@@ -74,7 +74,7 @@ def test_load_params_bench_defaults_present():
     assert p.v_gate_rps == 0.05
 
 
-# ── Path resolution (Phase 11 install-tree fix, 2026-06-24) ────────────
+# ── Path resolution (install-tree fix, 2026-06-24) ────────────
 # The loader must resolve hardware_config.yaml from BOTH the source tree
 # (pytest, checkout) and the colcon install tree (production motor_guard).
 # See friction_ff_params._resolve_yaml_path.

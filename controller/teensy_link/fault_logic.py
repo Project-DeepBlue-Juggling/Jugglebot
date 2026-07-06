@@ -200,7 +200,7 @@ class DeferredStowLatch:
         # not-reboot-suppressed so a deliberate reboot's silence does not false-trip.
         if self.first_seen and stale and not self.fatal and not self.reboot_in_progress:
             self.fatal = True
-            self.stow_pending = True            # canonical arm point (§6)
+            self.stow_pending = True            # canonical arm point
             if self.stowing:                    # re-dropped mid-descent → re-arm
                 self.stowing = False
         # Confirmed reconnect → clear fatal, begin the stow.

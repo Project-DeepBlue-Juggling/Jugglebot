@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stub Jetson-side client for the can-bridge Teensy — bench exerciser.
 
-Stands in for the (Phase 10) can_node UDP bridge so the firmware data path can be
+Stands in for the (eventual) can_node UDP bridge so the firmware data path can be
 exercised end-to-end without the real MPC:
 
   * sends a synthetic SETPOINT stream at 40 Hz (a slow sinusoid in motor-rev
@@ -12,8 +12,8 @@ exercised end-to-end without the real MPC:
   * receives + tallies/prints the uplink (TELEMETRY / DIAGNOSTIC / HEARTBEAT_T2J /
     PROFILE) so you can confirm the round-trip.
 
-This is the Phase 4 "stub Python client: send a fake setpoint stream, log what
-comes back". Run ONE of {setpoint_stub.py, profile_monitor.py} at a time — both
+This is the "stub Python client: send a fake setpoint stream, log what
+comes back" bench step. Run ONE of {setpoint_stub.py, profile_monitor.py} at a time — both
 bind the STREAM port.
 
 Usage:

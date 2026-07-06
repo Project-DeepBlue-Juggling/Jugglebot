@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""canhub_tier2_hw_validation.py — interactive operator runner for the Fable-5
-Tier-2 can-bridge hardware-validation checklist.
+"""canhub_tier2_hw_validation.py — interactive operator runner for the
+can-bridge hardening hardware-validation checklist.
 
 Companion to ``logbook/2026-07-02-canhub-hardening-tier2.md`` ("Hardware
 validation checklist"). It walks an operator through the 7 powered checks one at
@@ -35,7 +35,7 @@ The observable behaviour CHANGES this firmware introduces (INTENDED, not faults)
   (c) a dead Jetson<->Teensy link reads fatal on robot_state;
   (d) a cross-axis disarm reads fatal.
 
-Firmware under test: canhub-hardening Tier-2 (plan items 13-17 + 18B + review
+Firmware under test: the can-bridge hardening firmware (checks 1-7 below + review
 fixes) — commits 0ad3d25 138aa11 b562825 c8ba247 83ac938 6fe1ec9 192e6af,
 flashed 2026-07-03.
 
@@ -383,7 +383,7 @@ class Runner:
 
     # ── the 7 checks ──────────────────────────────────────────────────────────
     def check1(self):
-        self.head("CHECK 1 — Guard E-STOP LATCH  [plan item 13]")
+        self.head("CHECK 1 — Guard E-STOP LATCH")
         print("Validates: once tripped, the guard E-STOP now STAYS latched (guard_mode=ESTOP,")
         print("output gated off) until an explicit CLEAR_ERRORS — it no longer auto-recovers")
         print("when the triggering transient clears. This mirrors motor_guard semantics.")
@@ -448,7 +448,7 @@ class Runner:
         return self.verdict(1, "Guard E-STOP latch", sug)
 
     def check2(self):
-        self.head("CHECK 2 — Monotonic clock / clock-step + run_mpc-restart seq-guard  [item 14]")
+        self.head("CHECK 2 — Monotonic clock / clock-step + run_mpc-restart seq-guard")
         print("Validates: (A) a wall-clock ANCHOR STEP must not perturb control (all interval")
         print("arithmetic is on micros64() now); (B) restarting run_mpc must be accepted")
         print("IMMEDIATELY — pre-fix, a persisted seq vs a host-reset stream bricked control")
@@ -495,7 +495,7 @@ class Runner:
         return self.verdict(2, "Monotonic clock + seq-guard restart", sug)
 
     def check3(self):
-        self.head("CHECK 3 — NetLock / UDP RX flood  [item 15]")
+        self.head("CHECK 3 — NetLock / UDP RX flood")
         print("Validates: a UDP flood on the STREAM/RPC ports must NOT hardfault the Teensy")
         print("(NetLock guards the shared lwIP pool under concurrent RX/TX); the bounded RX drain")
         print("keeps the 500 Hz interp undisturbed (deadline_misses/max_jitter stay 0); RTT bounded.")
@@ -568,7 +568,7 @@ class Runner:
         return self.verdict(3, "NetLock / RX flood", sug)
 
     def check4(self):
-        self.head("CHECK 4 — MPC ↔ cold-start mutual exclusion  [item 16]")
+        self.head("CHECK 4 — MPC ↔ cold-start mutual exclusion")
         print("Validates: while the MPC stream is driving (mpc_active=1), cold-start moves")
         print("(HOME/ACTIVATE/DEACTIVATE) are REJECTED; a DEACTIVATE during an in-progress")
         print("deferred stow is rejected (no gravity drop); and a cold-start move is not")
@@ -612,7 +612,7 @@ class Runner:
                             "observation (this check is mostly operator-judged).")
 
     def check5(self):
-        self.head("CHECK 5 — ISR priority / stow barrier  [item 17, items 2-3]")
+        self.head("CHECK 5 — ISR priority / stow barrier")
         print("Validates: over a CAN-loss→reconnect deferred stow, the platform makes a SMOOTH")
         print("profiled descent (no position jump from a torn stow base captured across the")
         print("PRIMASK barrier), and interp jitter is unchanged/improved vs before.")
@@ -636,7 +636,7 @@ class Runner:
                             "from /teensy/profile.")
 
     def check6(self):
-        self.head("CHECK 6 — Hand-axis fault-eval  [item 17, item 5]")
+        self.head("CHECK 6 — Hand-axis fault-eval")
         print("Validates the NEW behaviour: a HAND ODrive fault (active-error or disarm while")
         print("CLOSED_LOOP) now E-STOPs the LEGS (guard ESTOP, output gated) — fault-eval was")
         print("extended to NUM_AXES. But a stale hand HEARTBEAT alone must NOT arm the leg")
@@ -678,8 +678,8 @@ class Runner:
         return self.verdict(6, "Hand-axis fault-eval", sug)
 
     def check7(self):
-        self.head("CHECK 7 — Cold-start regression sweep  [Phase-4 parity]")
-        print("Validates: no Tier-2 change regressed the Phase-4 cold-start parity — a normal")
+        self.head("CHECK 7 — Cold-start regression sweep")
+        print("Validates: no hardening change regressed the earlier cold-start parity — a normal")
         print("BOOT→HOMING→IDLE, a levelling cycle, and an activate/deactivate all still work")
         print("cleanly, with no spurious E-STOP.")
         print()
@@ -703,10 +703,10 @@ class Runner:
     # ── report ────────────────────────────────────────────────────────────────
     def _write_report(self):
         lines = []
-        lines.append("# Can-hub Tier-2 hardware-validation report")
+        lines.append("# Can-hub hardening hardware-validation report")
         lines.append("")
         lines.append(f"- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append("- Firmware: canhub-hardening Tier-2 (items 13-17 + 18B + review fixes), "
+        lines.append("- Firmware: can-bridge hardening firmware (+ review fixes), "
                      "flashed 2026-07-03")
         lines.append("- Checklist: `logbook/2026-07-02-canhub-hardening-tier2.md`")
         lines.append("- Runner: `tools/probes/canhub_tier2_hw_validation.py` "
@@ -811,13 +811,13 @@ def _flood_udp(host, ports, duration, rate, runner):
 CHECKS = {1: "check1", 2: "check2", 3: "check3", 4: "check4",
           5: "check5", 6: "check6", 7: "check7"}
 TITLES = {
-    1: "Guard E-STOP latch [13]",
-    2: "Monotonic clock + seq-guard restart [14]",
-    3: "NetLock / RX flood [15]",
-    4: "MPC/cold-start mutual exclusion [16]",
-    5: "ISR priority / stow barrier [17 items 2-3]",
-    6: "Hand-axis fault-eval [17 item 5]",
-    7: "Cold-start regression sweep [Phase-4 parity]",
+    1: "Guard E-STOP latch",
+    2: "Monotonic clock + seq-guard restart",
+    3: "NetLock / RX flood",
+    4: "MPC/cold-start mutual exclusion",
+    5: "ISR priority / stow barrier",
+    6: "Hand-axis fault-eval",
+    7: "Cold-start regression sweep",
 }
 
 
@@ -850,7 +850,7 @@ def main():
         C.off()
 
     if args.list:
-        print("Can-hub Tier-2 hardware-validation checks:")
+        print("Can-hub hardening hardware-validation checks:")
         for i in range(1, 8):
             print(f"  {i}. {TITLES[i]}")
         return 0
@@ -881,8 +881,8 @@ def main():
     runner = Runner(mon, report_path, no_serial)
 
     # ── intro banner ──────────────────────────────────────────────────────────
-    runner.head("Can-hub Tier-2 hardware validation  (Fable-5 hardening)")
-    print("Firmware under test: canhub-hardening Tier-2 (items 13-17 + 18B + review fixes),")
+    runner.head("Can-hub hardening hardware validation")
+    print("Firmware under test: the can-bridge hardening firmware (+ review fixes),")
     print("flashed 2026-07-03. Checklist: logbook/2026-07-02-canhub-hardening-tier2.md")
     print()
     print(f"{C.bold}NEW behaviours to EXPECT (intended, not faults):{C.rst}")

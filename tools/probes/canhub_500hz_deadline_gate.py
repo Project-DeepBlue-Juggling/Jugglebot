@@ -2,7 +2,7 @@
 """canhub_500hz_deadline_gate.py — automated 500 Hz interp deadline/jitter
 PASS/ABORT soak gate for the can-bridge Teensy.
 
-Closes plan item 19 of ``plans/archived/2026-07-05 canhub-hardening.md`` (Fable-5 Tier-2): the
+The automated 500 Hz interp deadline/jitter regression gate the can-bridge hardening work still needed: the
 interactive checklist runners (``tools/probes/canhub_tier2_hw_validation.py`` +
 ``tests/hardware/teensy_guard_validation.py``) covered the powered checks by eye;
 this is the AUTOMATED gate the plan still asked for — a machine PASS/ABORT verdict
@@ -40,7 +40,7 @@ MAY run alongside a concurrent CAN3-diagnosis session.
 
 ISR / stow-re-arm soak: run a long ``--duration`` and, if you want the deferred-stow
 path exercised too, have the operator induce a CAN-loss -> reconnect deferred stow
-(the Tier-2 check-5 mechanic) mid-window — the cumulative deadline counter persists
+(the deferred-stow validation-check mechanic) mid-window — the cumulative deadline counter persists
 across the stow, so any miss it introduces is caught by the same delta gate.
 
 Usage:
