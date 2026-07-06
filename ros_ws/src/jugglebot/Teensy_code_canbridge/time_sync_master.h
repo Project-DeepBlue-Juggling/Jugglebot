@@ -2,8 +2,7 @@
 // =============================================================================
 //  time_sync_master.h — multi-bus 0x7DD time-sync master + time-of-day RPC client
 // =============================================================================
-//  The can-bridge replaces the Jetson as the system time-sync MASTER
-//  (teensy-can-offload.md §"Time-sync master"). It:
+//  The can-bridge replaces the Jetson as the system time-sync MASTER. It:
 //    * broadcasts (wall_offset + monotonic) at 100 Hz on ALL THREE subsystem
 //      buses (CAN1/CAN2/CAN3), ID 0x7DD, using the EXACT payload format the
 //      Jetson emitted — struct.pack('<II', sec, usec) (see bus.py

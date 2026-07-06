@@ -22,10 +22,10 @@ static const char* kTaskSlots[JbUdp::PROFILE_NUM_TASKS] = {
 };
 
 // Per-window baselines. The PROFILE wire payload has two CAN slots
-// (can1_*/can2_*); with three buses now (HANDOFF D4) we report the two
+// (can1_*/can2_*); with three buses now we report the two
 // safety-relevant ones — wire slot 1 = Jugglebot core (CAN3), wire slot 2 =
 // Ball Butler (CAN1). The wire field names are fixed by udp_protocol.h.
-// TODO(phase-10b): expose cone (CAN2) util on the uplink (a third slot).
+// TODO: expose cone (CAN2) util on the uplink (a third slot).
 static uint32_t s_prev_jugglebot_rx = 0, s_prev_jugglebot_tx = 0,
                 s_prev_bb_rx = 0, s_prev_bb_tx = 0;
 static uint64_t s_prev_us = 0;
@@ -91,7 +91,7 @@ void profiling_step() {
   const CanStats c = can_buses_stats();
 
   JbUdp::ProfilePayload p{};
-  p.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14); the window above is micros64
+  p.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract; the window above is micros64
 
   fill_cpu(p.cpu_pct_x100);
 

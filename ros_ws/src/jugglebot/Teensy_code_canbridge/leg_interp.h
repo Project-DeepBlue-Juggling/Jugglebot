@@ -9,11 +9,11 @@
 //  which the xref harness proves matches the real motor_guard to 0.0 rev in
 //  float64 across all three modes + clamps over recorded data. On the Teensy
 //  the math runs in float32 (single-precision FPU) — the only expected residual
-//  is float32-vs-float64 rounding, a bench-validation item (plan Phase 7 risk).
+//  is float32-vs-float64 rounding, a bench-validation item.
 //
 //  Runs in a 500 Hz IntervalTimer ISR at a hardware priority ABOVE the FreeRTOS
 //  syscall ceiling, so nothing the RTOS does can preempt it (the entire point of
-//  moving off Linux — see plan §"Task layout"). The ISR therefore makes NO
+//  moving off Linux). The ISR therefore makes NO
 //  FreeRTOS calls; the setpoint hand-off uses a plain volatile pending flag.
 // =============================================================================
 
@@ -40,8 +40,8 @@ uint64_t interp_last_setpoint_us();
 float interp_base_pos(uint8_t i);
 bool  interp_have_latched();
 
-// Enable/disable command output (the fault state machine / guard-mode gate;
-// Phase 8 owns this). When false the ISR computes but does not transmit to CAN3.
+// Enable/disable command output (the fault state machine / guard-mode gate).
+// When false the ISR computes but does not transmit to CAN3.
 void interp_set_output_enabled(bool en);
 bool interp_output_enabled();
 

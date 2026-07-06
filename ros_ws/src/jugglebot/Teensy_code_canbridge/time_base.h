@@ -2,8 +2,8 @@
 // =============================================================================
 //  time_base.h — monotonic + wall-clock time for the can-bridge (time master)
 // =============================================================================
-//  The can-bridge Teensy is the system time-sync MASTER (teensy-can-offload.md
-//  §"Time-sync master"). It owns the real-time *rate* via the on-chip crystal;
+//  The can-bridge Teensy is the system time-sync MASTER. It owns the real-time
+//  *rate* via the on-chip crystal;
 //  the Jetson is the wall-clock *anchor*, queried once at boot and every ~30 s
 //  over UDP (RpcMethod::TIME_OF_DAY_QUERY) to correct long-term drift.
 //
@@ -44,7 +44,7 @@ static inline void atomic_write_u64(volatile uint64_t* p, uint64_t v) {
 
 // 64-bit monotonic microseconds since boot (wrap-safe).
 //
-// CLOCK-DISCIPLINE INVARIANT (item 14): use micros64() for ALL interval /
+// CLOCK-DISCIPLINE INVARIANT: use micros64() for ALL interval /
 // staleness / age arithmetic (heartbeat freshness, link timeouts, watchdog
 // deadlines, the 500 Hz trajectory phase, cone/bus gates, diag ages). micros64()
 // is the pure crystal that set_wall_anchor() NEVER touches, so an NTP-style wall

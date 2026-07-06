@@ -1,21 +1,21 @@
 #pragma once
 // =============================================================================
-//  leg_deactivate.h — Phase 11 U5 firmware deactivate (TRAP_TRAJ move to STOW,
+//  leg_deactivate.h — firmware deactivate (TRAP_TRAJ move to STOW,
 //  then IDLE)
 // =============================================================================
 //  The controlled inverse of ACTIVATE: lowers the legs from the active pose
 //  (≈ 2.19 rev) back to the STOW pose (CanBridge::STOW_OFF_POSE_REV = 0.0 rev —
 //  the same off-pose can_node deactivated to) using the ODrive's onboard
 //  TRAP_TRAJ planner, then drops every leg to IDLE once it has arrived and
-//  settled. This is the β-path analogue of can_node `deactivate`
+//  settled. This is the Teensy-side analogue of can_node `deactivate`
 //  (`_gentle_move_steps(0.0, deactivating=True)` → IDLE), but it delegates the
 //  trajectory to the ODrive (POSITION/TRAP_TRAJ) instead of streaming a software
 //  trapezoid over PASSTHROUGH — ODrive-autonomous, no host streaming, exactly as
 //  ACTIVATE does (the offload philosophy).
 //
 //  Why a bounded firmware op (not a generic SET_INPUT_POS RPC): identical to
-//  ACTIVATE — the β architecture has no per-leg "move" RPC and only the gated
-//  40 Hz setpoint stream moves a leg under command (D10); a controlled lower is a
+//  ACTIVATE — the Teensy-side architecture has no per-leg "move" RPC and only the gated
+//  40 Hz setpoint stream moves a leg under command; a controlled lower is a
 //  bounded, single-purpose firmware op so we never re-introduce a second,
 //  unbounded leg-motion path. The target is the firmware constant STOW_OFF_POSE_REV,
 //  so the Jetson cannot command "deactivate to anywhere".

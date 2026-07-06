@@ -19,7 +19,7 @@ bool net_ethernet_begin() {
   const IPAddress mask (NETMASK[0],   NETMASK[1],   NETMASK[2],   NETMASK[3]);
   // No gateway on a /30 point-to-point link — pass the local IP as gateway so
   // QNEthernet does not install a default route (mirrors the Jetson-side
-  // "no ipv4.gateway" rule in teensy-can-offload.md).
+  // "no ipv4.gateway" rule).
   const IPAddress gw = ip;
 
   // Begin with the static address. Returns false if the MAC/PHY init fails.

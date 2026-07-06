@@ -1,18 +1,18 @@
 #pragma once
 // =============================================================================
-//  leg_activate.h — Phase 11 U5 firmware activate (TRAP_TRAJ move to active pose)
+//  leg_activate.h — firmware activate (TRAP_TRAJ move to active pose)
 // =============================================================================
 //  Moves the legs from the homed hardstop (≈ −0.10 rev, below the workspace) to
 //  the active pose (JBOp::ACTIVATE_POSITION_REVS ≈ 2.19 rev — the IK of
 //  [0,0,default_active_z,0,0,0]) using the ODrive's onboard TRAP_TRAJ planner.
-//  The β architecture has no per-leg "move" RPC and only the gated 40 Hz setpoint
-//  stream moves a leg under command (D10); like HOME, the activation move is a
+//  The Teensy-side architecture has no per-leg "move" RPC and only the gated 40 Hz setpoint
+//  stream moves a leg under command; like HOME, the activation move is a
 //  bounded, single-purpose firmware op rather than a general SET_INPUT_POS RPC
 //  (which would re-introduce a second, unbounded leg-motion path). The target is
 //  a firmware constant (codegen'd JBOp::ACTIVATE_POSITION_REVS), so the Jetson
 //  cannot command "activate to anywhere".
 //
-//  This is the β-path analogue of can_node `_gentle_move_steps`, but it delegates
+//  This is the Teensy-side analogue of can_node `_gentle_move_steps`, but it delegates
 //  the trajectory to the ODrive (POSITION/TRAP_TRAJ) instead of streaming a
 //  software trapezoid over PASSTHROUGH — ODrive-autonomous, no host streaming,
 //  consistent with the offload philosophy.

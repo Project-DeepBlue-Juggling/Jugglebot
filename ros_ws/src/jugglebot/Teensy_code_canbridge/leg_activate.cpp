@@ -1,5 +1,5 @@
 // =============================================================================
-//  leg_activate.cpp — Phase 11 U5 firmware activate (TRAP_TRAJ move to active pose)
+//  leg_activate.cpp — firmware activate (TRAP_TRAJ move to active pose)
 // =============================================================================
 //  See leg_activate.h for the design rationale. The ladder, per targeted leg:
 //    SETUP   : refuse if any target leg has active_errors (legacy _gentle_move
@@ -105,10 +105,10 @@ uint16_t activate_request(uint8_t axis) {
   if (!activate_allowed()) return RpcStatus::ERR_BUS_DOWN;
   if (homing_active() || deactivate_active()) return RpcStatus::ERR_REJECTED;  // no concurrent cold-start moves
   if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;   // not during a deferred stow (adversarial-review fix: else the stow's virtual-complete IDLEs the legs)
-  // MPC-stream interlock (Flash-A item 1b): reject while the MPC is actively driving
+  // MPC-stream interlock: reject while the MPC is actively driving
   // the legs (guard ENABLED on the Jetson) — a cold-start move must not co-drive the
   // same ODrives the 500 Hz stream commands (the interp ISR reciprocally suppresses
-  // its TX during this move, item 1a).
+  // its TX during this move).
   if (fault_mpc_active()) return RpcStatus::ERR_REJECTED;
   if (resolve_targets(axis) == 0) return RpcStatus::ERR_BAD_ARGS;  // no present target leg
   // Reject if an activate is active or a start is already pending (idempotent).

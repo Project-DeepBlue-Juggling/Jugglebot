@@ -11,7 +11,7 @@
 #include "axis_state.h"
 #include "can_buses.h"
 #include "time_base.h"
-#include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (Fable-5 [18A])
+#include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 
 namespace CanBridge {
 
@@ -38,7 +38,7 @@ void telemetry_init() {
 // ── 100 Hz motor-state frame ──────────────────────────────────────────────────
 static void send_telemetry() {
   JbUdp::TelemetryPayload t{};
-  t.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
+  t.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     float pos, vel; uint64_t ts;
     snapshot_pos_vel(axes[i], pos, vel, ts);
@@ -65,9 +65,9 @@ static bool diag_changed(const AxisState& a, const DiagBaseline& b) {
 
 static void send_diag(uint8_t axis) {
   AxisState& a = axes[axis];
-  const uint64_t now = micros64();   // interval clock (item 14): staleness + last_sent_us age
+  const uint64_t now = micros64();   // interval clock: staleness + last_sent_us age
   const bool stale = a.heartbeat_seen &&
-                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);  // atomic 64-bit (item 17)
+                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);  // atomic 64-bit
 
   JbUdp::DiagnosticPayload d{};
   d.axis_id       = axis;
@@ -82,7 +82,7 @@ static void send_diag(uint8_t axis) {
   d.temp_fet      = a.temp_fet;
   d.temp_motor    = a.temp_motor;
   d.bus_voltage   = a.bus_voltage;
-  d.homing_result = homing_result(axis);   // Fable-5 [18A]: real firmware outcome, per axis
+  d.homing_result = homing_result(axis);   // real firmware outcome, per axis
   udp_send_stream(JbUdp::MsgType::DIAGNOSTIC, (const uint8_t*)&d, sizeof(d));
 
   DiagBaseline& b = s_base[axis];
@@ -91,7 +91,7 @@ static void send_diag(uint8_t axis) {
   b.iq_setpoint = a.iq_setpoint; b.temp_fet = a.temp_fet;
   b.temp_motor = a.temp_motor; b.bus_voltage = a.bus_voltage;
   b.flags = d.flags;
-  b.homing_result = d.homing_result;   // [18A]: track for the change-detect below
+  b.homing_result = d.homing_result;   // track for the change-detect below
   b.last_sent_us = now;
   b.ever_sent = true;
 }
@@ -102,9 +102,9 @@ static void send_diag(uint8_t axis) {
 // ~1 Hz per axis (temps/currents drift slowly) — no on-change baseline needed.
 static void send_bb_diag(uint8_t idx) {
   const AxisState& a = bb_axes[idx];
-  const uint64_t now = micros64();   // interval clock (item 14): staleness + last_sent_us age
+  const uint64_t now = micros64();   // interval clock: staleness + last_sent_us age
   const bool stale = a.heartbeat_seen &&
-                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);  // atomic 64-bit (item 17)
+                     (now - atomic_read_u64(&a.last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);  // atomic 64-bit
   JbUdp::DiagnosticPayload d{};
   d.axis_id       = (uint8_t)(BB_FIRST_NODE + idx);   // 7 = bb_pitch, 8 = bb_hand
   d.axis_state    = a.axis_state;
@@ -138,7 +138,7 @@ static void send_bb_estimates() {
   e.pitch_pos_rev = pos; e.pitch_vel_rps = vel;
   snapshot_pos_vel(bb_axes[1], pos, vel, ts);   // node 8 = hand
   e.hand_pos_rev = pos;  e.hand_vel_rps = vel;
-  e.t_bridge_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
+  e.t_bridge_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   udp_send_stream(JbUdp::MsgType::BB_AXIS_ESTIMATES, (const uint8_t*)&e, sizeof(e));
 }
 
@@ -147,13 +147,13 @@ static void send_bb_estimates() {
 // cubic-Hermite ladder (after the lead + stroke clamps) commands to the leg
 // ODrives — at the telemetry rate. These are written every interp tick for ALL
 // legs regardless of the output gate (leg_interp.cpp), so this reflects the
-// float32 interpolator output even when CAN3 TX is suppressed. Used by the U3-iv
+// float32 interpolator output even when CAN3 TX is suppressed. Used by the
 // bench validation to measure the on-Teensy float32 interp residual vs the
-// float64 reference (Phase 7 "done when" / decision D9) directly rather than
+// float64 reference directly rather than
 // inferring it from the encoder. Same proven uplink context as send_telemetry().
 static void send_leg_cmd() {
   JbUdp::LegCmdPayload c{};
-  c.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
+  c.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     c.cmd_pos_rev[i] = axes[i].target_pos_rev;   // single-word atomic read
     c.cmd_vel_rps[i] = axes[i].target_vel_rps;
@@ -182,7 +182,7 @@ void cone_uplink_step() {
 }
 
 // ── BB command-result uplink: drain CAN1 CMD_RESULT frames into CMD_RESULT UDP ─
-// Phase-2 loud channel. CMD_RESULT is low-rate (one per operator command), so the
+// Loud command-outcome channel. CMD_RESULT is low-rate (one per operator command), so the
 // per-tick budget is small; a verdict never waits more than a tick to reach the
 // host. Mirrors cone_uplink_step (the [canhealth] line carries the drop counter).
 static constexpr uint8_t CMD_RESULT_FWD_BUDGET = 4;
@@ -200,7 +200,7 @@ void cmd_result_uplink_step() {
 }
 
 // ── Platform-Teensy relay uplink: drain CAN3 reply frames → PLATFORM_FRAME ────
-// Phase 1 relay seam. Relay replies are low-rate (one per operator relay read),
+// Relay seam. Relay replies are low-rate (one per operator relay read),
 // so the per-tick budget is small; a reply never waits more than a tick to reach
 // the host (which correlates it to its pending read). Mirrors cone_uplink_step.
 static constexpr uint8_t PLATFORM_FWD_BUDGET = 4;
@@ -217,7 +217,7 @@ void platform_uplink_step() {
   }
 }
 
-// ── Hand command-echo uplink (Phase 5) ────────────────────────────────────────
+// ── Hand command-echo uplink ──────────────────────────────────────────────────
 // Emit the latest sniffed hand Set_Input_Pos as a HAND_CMD_ECHO whenever a fresh
 // one is pending (event-driven — silent while the hand is idle). The single-slot
 // stash coalesces to the newest command, so at most one frame per telemetry tick;
@@ -236,19 +236,19 @@ void hand_cmd_echo_uplink_step() {
 void telemetry_step() {
   send_telemetry();
   send_bb_estimates();   // BB pitch/hand pos+vel @ TELEM_RATE_HZ (during-throw diagnostics)
-  send_leg_cmd();        // commanded leg interp output @ TELEM_RATE_HZ (U3-iv float32 residual)
+  send_leg_cmd();        // commanded leg interp output @ TELEM_RATE_HZ (float32 interp residual)
 
   // Stagger the 1 Hz forced refresh across axes so the forced frames never
   // burst together; changed axes are sent immediately regardless of slot.
   static uint32_t tick = 0;
   const uint32_t slot = tick % TELEM_RATE_HZ;              // 0..99, ticks within the second
   const uint32_t slots_per_axis = TELEM_RATE_HZ / NUM_AXES;  // ~14
-  const uint64_t now = micros64();   // interval clock (item 14): staleness + last_sent_us age
+  const uint64_t now = micros64();   // interval clock: staleness + last_sent_us age
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     const bool due_forced =
         (now - s_base[i].last_sent_us >= DIAG_FORCE_PERIOD_US) &&
         (slot == (uint32_t)i * slots_per_axis);
-    // [18A]: force a Diagnostic on a homing_result transition. Its real value is
+    // force a Diagnostic on a homing_result transition. Its real value is
     // delivering the RUNNING transition PROMPTLY — independent of the lagging ODrive
     // axis_state — so a normal multi-second home reliably lets the host observer set
     // its saw_running gate. (A same-tick early SETUP-fail goes RUNNING→FAILED inside

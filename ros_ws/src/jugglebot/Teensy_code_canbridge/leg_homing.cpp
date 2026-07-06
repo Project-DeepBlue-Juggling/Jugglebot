@@ -1,5 +1,5 @@
 // =============================================================================
-//  leg_homing.cpp — Phase 9b firmware homing (velocity-limited move to hardstop)
+//  leg_homing.cpp — firmware homing (velocity-limited move to hardstop)
 // =============================================================================
 //  Port of can_node.py `_home_motor_steps` (~:1387). The reference recipe:
 //    set CLOSED_LOOP → VELOCITY/VEL_RAMP → vel/curr limits (abs(speed)*2,
@@ -10,7 +10,7 @@
 //  plus the LEG_ABS_POS_REV offset is the recipe — there is no separate back-off
 //  move).
 //
-//  Phase 5 (hand homing): the hand (axis 6) homes with this SAME state machine,
+//  Hand homing: the hand (axis 6) homes with this SAME state machine,
 //  parameterised by Homing::HAND_* (see the per-axis accessors below) instead of
 //  Homing::LEG_*. Its PID gains are applied host-side by the bridge BEFORE HOME(6)
 //  (leg_homing.h), so the move here is gain-agnostic. All the per-axis arrays and
@@ -54,7 +54,7 @@ enum class Phase : uint8_t {
 // settings take effect") — a local firmware-impl timing with no named config
 // source. STOP settle (the delay after stopping before set_absolute_position) is
 // sourced from Homing::STOP_SETTLE_MS (jugglebot_homing.stop_settle_ms) so it tracks
-// the generated config and cannot drift (item 20 — was a hardcoded 5000ull magic;
+// the generated config and cannot drift (was a hardcoded 5000ull magic;
 // the old comment named a Homing:: constant that did not exist — the real 5 ms
 // stop-settle lived only in the BB-hand's config).
 static constexpr uint64_t SETTLE_DRIVE_US = 10000ull;   // 10 ms
@@ -63,7 +63,7 @@ static constexpr uint64_t SETTLE_STOP_US  = (uint64_t)Homing::STOP_SETTLE_MS * 1
 // NEVER drives the leg indefinitely; it aborts to IDLE.
 static const uint64_t TIMEOUT_US = (uint64_t)(Homing::MOTOR_TIMEOUT_S * 1.0e6f);
 
-// ── Per-axis homing parameters (Phase 5) ──────────────────────────────────────
+// ── Per-axis homing parameters ─────────────────────────────────────────────────
 // Legs use Homing::LEG_*, the hand (axis 6) uses Homing::HAND_* — exactly the
 // speed/limit/headroom/abs-pos split can_node applied in _home_robot_steps
 // (leg branch vs HAND branch, can_node.py:1366-1383). Values come from the SAME
@@ -85,7 +85,7 @@ static uint8_t  s_axis  = 0xFF;
 static float    s_iq_ema = 0.0f;
 static uint64_t s_t_start_us = 0;   // homing start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;   // current sub-phase entry (settle clock)
-static uint8_t  s_result[NUM_AXES] = { HOMING_NONE };   // legs + hand (Phase 5)
+static uint8_t  s_result[NUM_AXES] = { HOMING_NONE };   // legs + hand
 
 // ── Bus / fault gate (mirror rpc.cpp jugglebot_commands_allowed + the fatal
 //    conditions can_node checked: `fatal_error or fatal_can_error`). Never drive
@@ -125,17 +125,17 @@ uint16_t homing_request(uint8_t axis) {
   using namespace JbUdp;
   if (axis >= NUM_AXES) return RpcStatus::ERR_BAD_ARGS;   // legs 0..5 + hand 6 (rejects AXIS_ALL / out-of-range)
   if (!homing_allowed())  return RpcStatus::ERR_BUS_DOWN;
-  // Presence gate (Flash-A item 3): never home an axis that is not on the bus.
+  // Presence gate: never home an axis that is not on the bus.
   // leg_present() covers legs AND the hand axis 6 (heartbeat_seen). Homing an absent
   // axis streams ~30 s of velocity frames to a phantom node — those TX never ACK, so
   // the FlexCAN TEC climbs toward bus-off. Rejected here before any drive frame.
   if (!leg_present(axis)) return RpcStatus::ERR_REJECTED;
   if (activate_active() || deactivate_active()) return RpcStatus::ERR_REJECTED; // no concurrent cold-start moves (symmetric with activate_request)
   if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;   // not during a deferred stow (adversarial-review fix: else the stow's virtual-complete IDLEs the legs)
-  // MPC-stream interlock (Flash-A item 1b): reject while the MPC is actively driving
+  // MPC-stream interlock: reject while the MPC is actively driving
   // the legs (guard ENABLED on the Jetson). A homing move co-driving the same ODrives
   // the 500 Hz stream commands would fight it — mutual exclusion, both directions
-  // (the interp ISR also suppresses its TX during a cold-start move, item 1a).
+  // (the interp ISR also suppresses its TX during a cold-start move).
   if (fault_mpc_active()) return RpcStatus::ERR_REJECTED;
   // Reject if a homing is active or a start is already pending (idempotent).
   // IRQ-guarded so the (busy-check + latch) is atomic vs the homing task that
@@ -193,7 +193,7 @@ void homing_step() {
       // vel limit = |speed|*2 (headroom so travel isn't velocity-clamped),
       // curr limit = detect-limit + headroom (so the motor can push past the
       // detection threshold against the stop). Exactly can_node's args, per-axis
-      // (LEG_* for legs, HAND_* for the hand — Phase 5).
+      // (LEG_* for legs, HAND_* for the hand).
       ok = can_jugglebot_send(ODrive::encode_set_vel_curr_limits(
                a, fabsf(homing_speed_rps(a)) * 2.0f,
                homing_curr_limit_a(a) + homing_headroom_a(a))) && ok;
@@ -230,7 +230,7 @@ void homing_step() {
     }
     case Phase::SET_REF: {
       // Define the hardstop as the post-homing reference (LEG_ABS_POS_REV for legs,
-      // HAND_ABS_POS_REV for the hand — Phase 5).
+      // HAND_ABS_POS_REV for the hand).
       can_jugglebot_send(ODrive::encode_set_absolute_position(a, homing_abs_pos_rev(a)));
       s_result[a] = HOMING_OK;
       s_phase = Phase::IDLE;

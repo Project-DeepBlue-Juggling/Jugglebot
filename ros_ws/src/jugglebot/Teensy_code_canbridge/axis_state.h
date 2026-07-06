@@ -7,8 +7,8 @@
 //  decode (the Jugglebot core bus carries all leg + hand ODrives — ADR-0013),
 //  read by the interpolator, fault state machine, and telemetry uplink.
 //
-//  Concurrency: single-word volatile reads/writes are atomic on Cortex-M7
-//  (plan §"Per-axis state cache"). The hot pos/vel/timestamp triple is read as
+//  Concurrency: single-word volatile reads/writes are atomic on Cortex-M7.
+//  The hot pos/vel/timestamp triple is read as
 //  a consistent snapshot via a seqlock-style retry loop (snapshot_pos_vel),
 //  mirroring the platform Teensy's getHandPosVel() in Teensy_code.ino.
 //
@@ -26,7 +26,7 @@ struct AxisState {
   // ── Hot — updated by CAN3 RX decode ────────────────────────────────────────
   volatile float    pos_rev          = 0.0f;   // Jugglebot convention (pos = extension)
   volatile float    vel_rps          = 0.0f;
-  volatile uint64_t pos_timestamp_us = 0;      // monotonic micros64 at last encoder update (item 14)
+  volatile uint64_t pos_timestamp_us = 0;      // monotonic micros64 at last encoder update
   volatile float    iq_setpoint      = 0.0f;   // A
   volatile float    iq_measured      = 0.0f;   // A
   volatile float    temp_fet         = 0.0f;   // degC
@@ -44,7 +44,7 @@ struct AxisState {
   volatile bool     trajectory_done  = false;
   volatile bool     heartbeat_stale  = false;
   volatile bool     heartbeat_seen   = false;  // ever received a heartbeat
-  volatile uint64_t last_heartbeat_us = 0;     // monotonic micros64 at last heartbeat (item 14)
+  volatile uint64_t last_heartbeat_us = 0;     // monotonic micros64 at last heartbeat
 
   // ── Targets — updated by interp task ───────────────────────────────────────
   volatile float    target_pos_rev   = 0.0f;
@@ -69,7 +69,7 @@ extern AxisState axes[NUM_AXES];
 inline AxisState& leg(uint8_t i)  { return axes[i]; }
 inline AxisState& hand_axis()     { return axes[HAND_AXIS]; }
 
-// Present-axis predicate (Phase 11). A leg is "present" iff we have ever received
+// Present-axis predicate. A leg is "present" iff we have ever received
 // a CAN3 heartbeat from its ODrive (heartbeat_seen is latched-once by the RX
 // decode and never cleared, so this is monotonic and stable mid-run). It is the
 // single enforcement point for the present-axis contract: the firmware must never

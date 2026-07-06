@@ -1,6 +1,6 @@
 #pragma once
 // =============================================================================
-//  version_check.h — Phase 3 firmware Get_Version sweep + raw-version cache
+//  version_check.h — firmware Get_Version sweep + raw-version cache
 // =============================================================================
 //  Restores can_node's firmware-version handshake (can_node._handle_heartbeat
 //  :325-329 + _send_next_version_query :341-349 + _handle_get_version :474-495)

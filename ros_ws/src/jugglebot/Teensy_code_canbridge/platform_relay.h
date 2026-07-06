@@ -6,7 +6,7 @@
 //  can_node owned directly: the inclinometer tilt read (0x7DE), and the cold-start
 //  RobotState read/write (0x6E0 — is_homed / levelling_complete / pose offset).
 //
-//  Shape (canbridge-foundation-coldstart-parity Phase 1, "hybrid relay seam"):
+//  Shape ("hybrid relay seam", see logbook 2026-06-29-canbridge-phase1-platform-relay-seam):
 //   • WRITE direction is TYPED, validated, gated — one RPC per operation, NOT a
 //     generic forward-arbitrary-frame primitive (a generic forwarder's only guard
 //     is a runtime allow-list, and one careless edit re-opens leg-command

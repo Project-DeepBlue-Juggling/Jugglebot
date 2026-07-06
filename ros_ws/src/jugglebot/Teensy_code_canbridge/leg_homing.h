@@ -1,6 +1,6 @@
 #pragma once
 // =============================================================================
-//  leg_homing.h — Phase 9b firmware homing (velocity-limited move to hardstop)
+//  leg_homing.h — firmware homing (velocity-limited move to hardstop)
 // =============================================================================
 //  Line-for-line port of can_node.py `_home_motor_steps` (~:1387): drive a leg
 //  in VELOCITY/VEL_RAMP at a fixed speed until the current (Iq) EMA crosses the
@@ -9,12 +9,11 @@
 //  recipe detects the stop by CURRENT SPIKE — NOT a known position — so it does
 //  NOT (and cannot) reuse the interp's position-streamed `interp_begin_stow`
 //  descent (that targets a known pose and the stroke-clamp would block reaching a
-//  hardstop). See plans/active/teensy-can-offload.md "Phase 9b".
+//  hardstop).
 //
 //  Why this lives in firmware: there is no per-leg "move" RPC — the only path
-//  that moves a leg is the 40 Hz setpoint stream (D10). Homing-to-hardstop drives
-//  the leg, so the move belongs in the can-bridge HOME handler (Revised
-//  sequencing item 3).
+//  that moves a leg is the 40 Hz setpoint stream. Homing-to-hardstop drives
+//  the leg, so the move belongs in the can-bridge HOME handler.
 //
 //  Fire-and-monitor: the HOME RPC validates + latches a start and returns OK
 //  immediately (the net task must not block for the ~seconds a homing takes).
@@ -22,7 +21,7 @@
 //  HOMING_RATE_HZ (≈ the 100 Hz Iq update rate, so the Iq EMA matches can_node's
 //  per-reading cadence). The Jetson observes completion via the telemetry +
 //  diagnostic streams (axis_state → IDLE, pos → LEG_ABS_POS_REV), exactly as
-//  Phase 9a observed encoder search — no protocol change.
+//  the encoder search is observed — no protocol change.
 //
 //  Determinacy / safety: no unbounded loops, no blocking, no ISR work. Every
 //  active phase is bounded by a hard timeout (Homing::MOTOR_TIMEOUT_S); any
@@ -30,7 +29,7 @@
 //  is NEVER left driving. Re-running HOME while one is active is rejected
 //  (idempotent); single-axis scope (legs 0..5 + the hand axis 6; rejects AXIS_ALL).
 //
-//  Hand homing (Phase 5): the hand (axis 6) homes with the SAME move-to-hardstop
+//  Hand homing: the hand (axis 6) homes with the SAME move-to-hardstop
 //  state machine, parameterised by Homing::HAND_* (speed -3.0, curr limit 8.0,
 //  headroom 3.0, abs-pos -0.1) instead of Homing::LEG_*. The hand's absolute
 //  encoder needs no ENCODER_SEARCH. Its PID gains are applied HOST-side by the

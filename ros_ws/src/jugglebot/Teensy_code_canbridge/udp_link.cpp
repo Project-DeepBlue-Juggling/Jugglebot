@@ -102,7 +102,7 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
       continue;
     }
     s_stats.rx_frames++;
-    atomic_write_u64(&s_last_rx_us, micros64());   // 64-bit monotonic (item 14); read as an interval by the link-health watchdog
+    atomic_write_u64(&s_last_rx_us, micros64());   // 64-bit monotonic; read as an interval by the link-health watchdog
 
     if (!is_rpc) track_downlink_seq(hdr.seq);
 
@@ -120,7 +120,7 @@ static void drain_socket(EthernetUDP& sock, bool is_rpc) {
         if (s_h_rpc_resp) s_h_rpc_resp(hdr.seq, payload, hdr.length);
         break;
       default:
-        // Phase 3 echo path: any otherwise-unhandled valid frame is echoed back
+        // Echo path: any otherwise-unhandled valid frame is echoed back
         // to the sender verbatim, exercising the framing+CRC round-trip end to
         // end (the UDP-echo stress test). Recognised typed frames never reach here.
         {

@@ -10,7 +10,7 @@
 //      _actuators_intact_and_holding). The leg heartbeats arrive on CAN3 (the
 //      Jugglebot core bus, per ADR-0013).
 //    * MPC-staleness + motor-overspeed + max-deviation E-STOP — motor_guard.py:
-//      843-864. This E-STOP now LATCHES (Fable-5 [13]): once any of the three guard
+//      843-864. This E-STOP now LATCHES: once any of the three guard
 //      conditions trips, guard_mode stays ESTOP and interp output stays gated off
 //      until an EXPLICIT operator CLEAR_ERRORS (fault_notify_clear_errors) — mirroring
 //      motor_guard's sticky self.mode (only an operator disable/enable clears it).
@@ -50,12 +50,12 @@ void fault_set_mpc_active(bool active);
 
 // An explicit operator CLEAR_ERRORS (RPC) resets the soft-reset auto-retry
 // budget — mirrors can_node clear_error_flags (the one-shot auto-clear refills) —
-// AND is the SOLE release path for the guard E-STOP latch ([13]). The internal
+// AND is the SOLE release path for the guard E-STOP latch. The internal
 // soft-reset/UV auto-retry does NOT release the latch (only clear_error_flags,
 // not this hook), so an ODrive bounce can't silently clear a guard E-STOP.
 void fault_notify_clear_errors();
 
-// A REBOOT_ODRIVES RPC arms a BOUNDED watchdog-suppression latch (Phase 6): the
+// A REBOOT_ODRIVES RPC arms a BOUNDED watchdog-suppression latch: the
 // ~2–4 s heartbeat silence of a deliberate ODrive reboot must not be read as a CAN
 // loss (which would falsely arm the 2026-05-19 deferred stow on reconnect). Armed
 // ONLY here, so a SPONTANEOUS CAN loss (not preceded by a reboot) is completely

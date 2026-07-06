@@ -11,11 +11,10 @@
 //  CLIENT for exactly one method — TIME_OF_DAY_QUERY — the time-sync master's
 //  wall-clock bootstrap/drift query (handled in time_sync_master).
 //
-//  Method arg layouts (defined as packed structs below) are a per-method
-//  sub-contract. They are NOT yet in the single-source generator because the
-//  consumer (Jetson UDP bridge) is Phase 10 / out of scope; co-located here for
-//  now, to be hoisted into config/generate_udp_protocol.py at Phase 10.
-//  See handoff "Decisions made autonomously".
+//  Method arg layouts are a per-method sub-contract. They now live in the
+//  single-source generator (config/generate_udp_protocol.py -> JbUdp::RpcArgs),
+//  because the Jetson UDP bridge became the second consumer; this header pulls
+//  them in via the `using` declarations below so rpc.cpp's dispatch is unchanged.
 // =============================================================================
 
 #include <cstdint>
@@ -48,7 +47,7 @@ bool parse_response(const uint8_t* payload, uint16_t len,
                     const uint8_t** result, uint16_t* res_len);
 
 // ── Per-method arg layouts ────────────────────────────────────────────────────
-// HOISTED into the single-source generator at Phase 10b (firmware handoff D8):
+// HOISTED into the single-source generator (config/generate_udp_protocol.py):
 // the packed structs now live in JbUdp::RpcArgs (config/generate_udp_protocol.py
 // → udp_protocol.h), since the Jetson UDP bridge became the second consumer.
 // We consume them here so rpc.cpp's dispatch is unchanged. The generated
@@ -65,12 +64,12 @@ using JbUdp::RpcArgs::ArgSdoRead;
 using JbUdp::RpcArgs::ArgSdoWrite;
 using JbUdp::RpcArgs::ResultTimeOfDay;
 using JbUdp::RpcArgs::ArgBbThrow;
-using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay — Phase 1)
-using JbUdp::RpcArgs::ArgHandTraj;     // HAND_TRAJ_CMD (hand traj + smooth-move — Phase 5)
+using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay)
+using JbUdp::RpcArgs::ArgHandTraj;     // HAND_TRAJ_CMD (hand traj + smooth-move)
 
 using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all axes (CLEAR_ERRORS/REBOOT)
 
-// Phase 6 gate-basis policy: which operator RPCs gate on the bus-TRANSMITTABLE signal
+// Gate-basis policy: which operator RPCs gate on the bus-TRANSMITTABLE signal
 // (live ESR1.SYNCH, jugglebot_bus_transmittable()) instead of the default heartbeat-
 // staleness gate (jugglebot_commands_allowed()). CLEAR_ERRORS and REBOOT_ODRIVES are
 // non-motion recovery one-shots that MUST reach the ODrives on a just-repowered /

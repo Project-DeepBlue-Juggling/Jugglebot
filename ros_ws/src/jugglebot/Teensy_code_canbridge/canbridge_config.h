@@ -9,7 +9,7 @@
 //
 //  Single source of truth for any value that also lives in Python is the
 //  generated config; values mirrored here from Python source files are marked
-//  with their origin so a future codegen pass (Phase 10) can hoist them.
+//  with their origin so a future codegen pass can hoist them.
 // =============================================================================
 
 #include <cstdint>
@@ -30,7 +30,7 @@ constexpr uint8_t  TEENSY_IP[4] = { JbUdp::TEENSY_IP_0, JbUdp::TEENSY_IP_1,
 constexpr uint8_t  JETSON_IP[4] = { JbUdp::TEENSY_IP_0, JbUdp::TEENSY_IP_1,
                                     JbUdp::TEENSY_IP_2, JbUdp::JETSON_IP_3 };
 constexpr uint8_t  NETMASK[4]   = { 255, 255, 255, 252 };   // /30
-// No gateway, no DHCP, no mDNS — see teensy-can-offload.md "Jetson network setup".
+// No gateway, no DHCP, no mDNS (static point-to-point link).
 
 // ── CAN bus wiring (Teensy 4.1) — three subsystem-isolated buses (ADR-0013) ───
 //  One FlexCAN_T4 peripheral per robot subsystem (supersedes the old two-bus
@@ -47,8 +47,8 @@ constexpr uint8_t  NETMASK[4]   = { 255, 255, 255, 252 };   // /30
 //  CAN3 is the FD-capable peripheral, run classical 1 Mbps today to match the
 //  classical-only ODrive firmware; a future CAN-FD upgrade is a config change,
 //  not a rewire. All three buses carry the 100 Hz 0x7DD time-sync broadcast.
-//  NB: ADR-0013 / the parent plan list CAN2 and CAN3 TX/RX reversed — the
-//  FlexCAN_T4 silicon mux above is authoritative (see HANDOFF-firmware-three-bus D1).
+//  NB: ADR-0013 lists CAN2 and CAN3 TX/RX reversed — the
+//  FlexCAN_T4 silicon mux above is authoritative.
 constexpr uint32_t CAN_BITRATE  = CanBus::BAUD_RATE;   // 1 Mbps, all nodes agree
 constexpr uint8_t  CAN1_TX_PIN  = 22;   // Ball Butler
 constexpr uint8_t  CAN1_RX_PIN  = 23;
@@ -76,17 +76,17 @@ constexpr uint32_t HEARTBEAT_RATE_HZ   = JbUdp::HEARTBEAT_HZ;   // 10
 constexpr uint32_t DIAG_HEARTBEAT_HZ   = 1;       // 1 Hz forced diagnostic/profile refresh
 constexpr uint32_t FAULT_TASK_HZ       = 10;      // can_node fault cadence
 constexpr uint32_t WATCHDOG_HZ         = 1;       // can_node 1 Hz heartbeat watchdog
-// Phase 9b homing monitor. 100 Hz ≈ the Iq update rate so the current EMA tracks
+// Homing monitor. 100 Hz ≈ the Iq update rate so the current EMA tracks
 // can_node's per-reading cadence (a slower tick over-smooths → laggier, but still
 // safe: it detects the stall later, never harder than the ODrive current limit).
 constexpr uint32_t HOMING_RATE_HZ      = 100;
 
-// Time-of-day drift re-sync interval (teensy-can-offload.md: every 10-60 s).
+// Time-of-day drift re-sync interval (design range 10-60 s).
 constexpr uint32_t TIMEOFDAY_RESYNC_MS = 30000u;  // 30 s
 
 // ── FreeRTOS task table (priorities + stacks) ────────────────────────────────
 //  Priority 6 (interp) is the HIGHEST — nothing preempts the 500 Hz tick.
-//  Stacks are in StackType_t WORDS (4 bytes on Cortex-M7). The plan budgets
+//  Stacks are in StackType_t WORDS (4 bytes on Cortex-M7). Budgets are in
 //  bytes; *_STACK is the word count = bytes / 4.
 constexpr uint8_t PRIO_INTERP      = 6;   // leg_interp (hard deadline)
 constexpr uint8_t PRIO_CAN_TX      = 5;   // CAN TX mailbox drain
@@ -95,7 +95,7 @@ constexpr uint8_t PRIO_UDP_RX      = 4;   // usb_rx (UDP downlink)
 constexpr uint8_t PRIO_TIME_SYNC   = 4;   // time_sync_master
 constexpr uint8_t PRIO_UDP_TX      = 3;   // usb_tx (telemetry uplink)
 constexpr uint8_t PRIO_FAULT       = 3;   // fault_state
-constexpr uint8_t PRIO_HOMING      = 2;   // leg_homing monitor (Phase 9b; rare bench op)
+constexpr uint8_t PRIO_HOMING      = 2;   // leg_homing monitor (rare bench op)
 constexpr uint8_t PRIO_WATCHDOG    = 2;   // watchdog
 constexpr uint8_t PRIO_DIAG        = 1;   // diag / profiling
 
@@ -138,8 +138,7 @@ constexpr uint32_t BB_HEARTBEAT_TIMEOUT_US = BallButler::HEARTBEAT_TIMEOUT_MS * 
 // into a dead/unpowered bus retransmits forever, pins TEC at the error-passive
 // threshold (128), and during supply transitions can push through to bus-off — the
 // sticky BUSOFF/tec=254 pollution diagnosed in the 2026-07-05 marginal-CAN3
-// investigation. Originally shipped for CAN2 only (cone-absent tolerance, candidate 3
-// "gated broadcast", HANDOFF-firmware-three-bus D2); the failure class is identical on
+// investigation. Originally shipped for CAN2 only (cone-absent tolerance); the failure class is identical on
 // all three buses (CAN1 pinned tec=128/passive from a Ball-Butler-absent window, CAN3
 // reached BUSOFF across robot-supply cycles). A partner counts as "present" if any
 // frame arrived within this window; generous so a brief silence (e.g. the ~3.5 s
@@ -157,7 +156,7 @@ constexpr uint8_t  MAX_SOFT_RESET_ATTEMPTS = 1;
 //  odrive.py ERR_DC_BUS_UNDER_VOLTAGE = 512.
 constexpr uint32_t ERR_DC_BUS_UNDER_VOLTAGE = 512u;
 
-// Reboot-in-progress watchdog-suppression window (Phase 6). A REBOOT_ODRIVES RPC
+// Reboot-in-progress watchdog-suppression window (see logbook 2026-06-30-canbridge-phase6-reboot-latch). A REBOOT_ODRIVES RPC
 // arms fault_notify_reboot_started(), which suppresses the CAN3 CAN-loss detector
 // for this bounded window so the deliberate ODrive-reboot silence is NOT read as a
 // real CAN loss (which would falsely arm the 2026-05-19 deferred stow). Sized to the
@@ -185,7 +184,7 @@ constexpr float STOW_ACCEL_RPS2 = 10.0f;
 //  WorkspaceLimits.from_geometry(leg_hard_{min,max}_mm) * GEOM_MM_TO_REV (per-leg).
 //  Captured 2026-06-01 from the live MotorGuard; the xref harness asserts these
 //  equal the running guard's values so drift is caught.
-//  TODO(Phase 10): hoist into codegen (derive from workspace limits in YAML).
+//  TODO: hoist into codegen (derive from workspace limits in YAML).
 constexpr float STROKE_MIN_REV[NUM_LEGS] =
     { 0.070917f, 0.070954f, 0.070448f, 0.070934f, 0.071340f, 0.071248f };
 constexpr float STROKE_MAX_REV[NUM_LEGS] =

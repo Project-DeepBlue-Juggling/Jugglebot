@@ -5,7 +5,7 @@
 //  Brings the PJRC Ethernet kit (DP83825I PHY) up at the static point-to-point
 //  address 192.168.42.2 / 255.255.255.252, no DHCP, no mDNS. The PHY is held in
 //  reset until Ethernet.begin() runs here — until then the Jetson-side USB-Eth
-//  adapter shows <NO-CARRIER> (expected; see teensy-can-offload.md Phase 1).
+//  adapter shows <NO-CARRIER> (expected).
 // =============================================================================
 
 #include <cstdint>

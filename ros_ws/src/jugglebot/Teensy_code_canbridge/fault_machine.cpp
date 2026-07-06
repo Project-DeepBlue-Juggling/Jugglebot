@@ -12,14 +12,14 @@
 //
 //  Deferred-stow invariants (logbook 2026-05-19), preserved EXACTLY:
 //    * CAN3 down ⇒ never command the dead bus (output gated off; ODrives hold).
-//    * Arm the stow latch at CAN-loss DETECTION (the canonical §6 point).
+//    * Arm the stow latch at CAN-loss DETECTION (the canonical arm point).
 //    * Execute the stow only on CONFIRMED reconnect (fresh leg heartbeats).
 //    * Re-arm if the stow half-completes (bus re-drops mid-descent).
 //    * Soft-reset attempt cap (= 1) exists because of a real bounce-loop
 //      incident — do NOT simplify. One auto-clear, then fatal until an explicit
 //      CLEAR_ERRORS resets the budget (mirrors can_node clear_error_flags).
 //
-//  DELIBERATE per-path axis-scope split (item 17 §5) — NOT an oversight:
+//  DELIBERATE per-path axis-scope split — NOT an oversight:
 //    * ERROR-EVAL + CLEAR paths iterate NUM_AXES (legs 0-5 + HAND axis 6):
 //      evaluate_errors, clear_errors_can's CAN send, clear_disarm_reasons. This is
 //      can_node parity — _handle_error evaluates the hand too, so a hand active-error
@@ -66,7 +66,7 @@ static volatile bool s_mpc_active = false;
 static uint8_t s_guard_mode = JbUdp::GuardMode::DISABLED;
 static uint8_t s_fault_state = JbUdp::FaultState::NONE;
 
-// ── Guard E-STOP latch (Fable-5 [13]; motor_guard sticky-self.mode semantics) ──
+// ── Guard E-STOP latch (motor_guard sticky-self.mode semantics) ──
 // The three guard E-STOP conditions (MOTOR_OVERSPEED / MPC_STALE / MAX_DEVIATION)
 // LATCH once tripped: guard_mode stays ESTOP and 500 Hz output stays gated off until
 // an EXPLICIT operator CLEAR_ERRORS (fault_notify_clear_errors) — mirroring
@@ -80,7 +80,7 @@ static uint8_t s_fault_state = JbUdp::FaultState::NONE;
 static volatile bool s_estop_latched = false;
 static uint8_t       s_estop_state = JbUdp::FaultState::NONE;  // reason frozen at latch
 
-// ── Reboot-in-progress watchdog-suppression latch (Phase 6) ──────────────────
+// ── Reboot-in-progress watchdog-suppression latch ──────────────────
 // Armed ONLY by fault_notify_reboot_started() (the REBOOT_ODRIVES RPC), so a
 // spontaneous CAN loss never sets it and the deferred-stow inversion is preserved.
 static volatile bool s_reboot_in_progress = false;   // suppression latch armed
@@ -104,13 +104,13 @@ static bool legs_clean() {
 static bool actuators_intact_and_holding() { return legs_all_closed_loop() && legs_clean(); }
 
 static bool any_leg_heartbeat_stale() {
-  const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
+  const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
     if (axes[i].heartbeat_seen && (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US))
       return true;
   return false;
 }
-// Phase 11: scoped to PRESENT legs (leg_present == heartbeat_seen). A present leg
+// Scoped to PRESENT legs (leg_present == heartbeat_seen). A present leg
 // that has gone stale fails the predicate; absent legs (never seen) are skipped.
 // This is what lets the deferred-stow reconnect fire on a subset-populated bus
 // (the single-leg bench rig — odrv0 only): the prior all-six form dead-locks the
@@ -120,7 +120,7 @@ static bool any_leg_heartbeat_stale() {
 // which cannot co-occur with the fatal_can_error precondition of the sole caller
 // (that needs s_first_leg_hb_seen — at least one leg already seen).
 static bool all_present_legs_fresh() {
-  const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
+  const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_LEGS; ++i)
     if (leg_present(i) && (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US))
       return false;
@@ -133,46 +133,46 @@ static void clear_error_flags() {
   s_undervoltage_error = false;
   s_soft_reset_attempts = 0;
 }
-// Zero the per-axis disarm_reason cache (item 17 §4 — mirror can_node._clear_errors →
+// Zero the per-axis disarm_reason cache (mirror can_node._clear_errors →
 // motor_state.clear_disarm_reasons). The disarm_reason cache is written ONLY by the
 // Get_Error RX decode, so after a CLEAR a stale nonzero disarm would otherwise persist
 // until the next Get_Error frame; during that window evaluate_errors would read the
 // stale disarm (any_disarmed=true) and re-enter the soft-reset/fatal branch, re-faulting
 // the state the operator just cleared. Kept a SEPARATE function from clear_error_flags()
 // to preserve the 1:1 structural mirror of the Python (which calls clear_error_flags()
-// and clear_disarm_reasons() as distinct steps). Scoped to NUM_AXES (item 17 §5 — hand
+// and clear_disarm_reasons() as distinct steps). Scoped to NUM_AXES (hand
 // parity with can_node, which clears the hand too). Mirrors ONLY disarm_reason, NOT
 // active_errors: active_errors self-heals on the next Get_Error, and zeroing it could
 // mask a still-active error.
 static void clear_disarm_reasons() {
   for (uint8_t i = 0; i < NUM_AXES; ++i) axes[i].disarm_reason = 0;
 }
-// Send clear_errors to all axes incl. the hand (item 17 §5 — mirror can_node
+// Send clear_errors to all axes incl. the hand (mirror can_node
 // ._clear_errors), only if the bus is up — never command a dead bus. Returns true
 // iff it actually sent.
 static bool clear_errors_can() {
   if (s_fatal_can_error) return false;
-  for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));  // item 17 §5: NUM_AXES incl. hand (aligns rpc.cpp AXIS_ALL)
+  for (uint8_t i = 0; i < NUM_AXES; ++i) can_jugglebot_send(ODrive::encode_clear_errors(i));  // NUM_AXES incl. hand (aligns rpc.cpp AXIS_ALL)
   clear_error_flags();
-  clear_disarm_reasons();   // item 17 §4: mirror can_node._clear_errors → clear_disarm_reasons
+  clear_disarm_reasons();   // mirror can_node._clear_errors → clear_disarm_reasons
   return true;
 }
 
 // External CLEAR_ERRORS RPC resets the auto-retry budget (mirrors the operator path)
-// AND is the SOLE release path for the guard E-STOP latch (Fable-5 [13]). The latch
+// AND is the SOLE release path for the guard E-STOP latch. The latch
 // reset must live HERE, not in clear_error_flags() — clear_error_flags is also called
 // by the internal soft-reset / UV-recovery auto-retry (clear_errors_can), and letting
 // those internal paths release the guard E-STOP would defeat the latch (e.g. an ODrive
 // UV bounce auto-clearing a motor-overspeed E-STOP with no operator ack).
 void fault_notify_clear_errors() {
   clear_error_flags();
-  clear_disarm_reasons();   // item 17 §4: mirror can_node._clear_errors → clear_disarm_reasons (else the
+  clear_disarm_reasons();   // mirror can_node._clear_errors → clear_disarm_reasons (else the
                             // stale disarm cache re-faults until the next Get_Error frame)
   s_estop_latched = false;
   s_estop_state = JbUdp::FaultState::NONE;
 }
 
-// External REBOOT_ODRIVES RPC arms the bounded watchdog-suppression latch (Phase 6):
+// External REBOOT_ODRIVES RPC arms the bounded watchdog-suppression latch:
 // the deliberate reboot silence must not be read as a CAN loss. Bounded by
 // s_reboot_deadline_us (the blind-spot backstop). Called from the RPC/UDP-RX task; the
 // 64-bit deadline is written atomically (read by the fault task's watchdog_and_stow).
@@ -180,7 +180,7 @@ void fault_notify_clear_errors() {
 // a prior one (which could release the new latch early). s_reboot_in_progress is
 // published LAST so the fault task never observes an armed latch with a stale deadline.
 void fault_notify_reboot_started() {
-  atomic_write_u64(&s_reboot_deadline_us, micros64() + REBOOT_WATCHDOG_SUPPRESS_US);  // interval deadline (item 14)
+  atomic_write_u64(&s_reboot_deadline_us, micros64() + REBOOT_WATCHDOG_SUPPRESS_US);  // interval deadline
   s_reboot_saw_stale = false;
   s_reboot_in_progress = true;
 }
@@ -189,7 +189,7 @@ void fault_notify_reboot_started() {
 static void evaluate_errors() {
   bool no_active = true, no_disarm = true, any_disarmed = false, any_cl = false;
   bool all_uv_only = true;
-  // item 17 §5: iterate NUM_AXES (legs 0-5 + HAND axis 6), NOT NUM_LEGS. can_node
+  // iterate NUM_AXES (legs 0-5 + HAND axis 6), NOT NUM_LEGS. can_node
   // _handle_error evaluates over states[:len(JUGGLEBOT_AXES)] = 7 (incl. the hand),
   // so a HAND active-error or hand disarm-while-CLOSED_LOOP must set s_fatal_error /
   // ESTOP here too (else the firmware diverges from can_node — the standing hand-gap
@@ -245,7 +245,7 @@ static void watchdog_and_stow() {
     if (axes[i].heartbeat_seen) { s_first_leg_hb_seen = true; break; }
 
   // Mark per-axis staleness for telemetry.
-  const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
+  const uint64_t now = micros64();   // interval clock — never the steppable wall
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     axes[i].heartbeat_stale = axes[i].heartbeat_seen &&
                               (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US);
@@ -256,12 +256,12 @@ static void watchdog_and_stow() {
   // heartbeat_stale in sync for the [bb] diag print and upstream HeartbeatT2J.
   bb_state.heartbeat_stale = bb_state.heartbeat_seen &&
       (now - atomic_read_u64(&bb_state.last_heartbeat_us) > BB_HEARTBEAT_TIMEOUT_US);
-      // ^ atomic (review fix): the last bare last_heartbeat_us read the item-17 sweep
+      // ^ atomic (review fix): the last bare last_heartbeat_us read the torn-u64 hardening sweep
       //   missed — the CAN3-decode writer (task_can_rx, prio 5) can preempt this
       //   fault-task (prio 3) read between its two 32-bit loads → a torn u64. Info-only
       //   (BB silence drives no fault/stow), but keep it torn-free like its siblings.
 
-  // Reboot-in-progress latch (Phase 6). A REBOOT_ODRIVES RPC armed a bounded
+  // Reboot-in-progress latch. A REBOOT_ODRIVES RPC armed a bounded
   // suppression of the CAN-loss detector so the deliberate reboot silence is not read
   // as a real loss. Release on fresh-leg-heartbeats-AFTER-going-stale (the ODrives
   // came back — the common case, far tighter than the deadline) OR at the bounded
@@ -281,16 +281,16 @@ static void watchdog_and_stow() {
 
   // Detection: CAN3 leg heartbeats went stale → fatal_can_error + arm the stow.
   // ANDs !s_reboot_in_progress so a deliberate reboot's silence does not false-trip
-  // (Phase 6); a spontaneous loss never arms that latch, so it detects as before.
+  // a spontaneous loss never arms that latch, so it detects as before.
   if (s_first_leg_hb_seen && any_leg_heartbeat_stale() && !s_fatal_can_error
       && !s_reboot_in_progress) {
     s_fatal_can_error = true;
-    s_stow_pending = true;            // canonical arm point (§6) — independent of any host path
+    s_stow_pending = true;            // canonical arm point — independent of any host path
     if (s_stowing) { interp_end_stow(); s_stowing = false; }  // bus re-dropped mid-descent → re-arm
   }
 
   // Confirmed reconnect: leg heartbeats fresh again → clear fatal, run the stow.
-  // Mutual exclusion with Phase 9b homing: the homing task drives its own
+  // Mutual exclusion with homing: the homing task drives its own
   // velocity frames on CAN3 (and aborts to IDLE the instant fault_can_bus_down
   // latched, well before this reconnect branch can fire), so in practice homing
   // is already done by here. The !homing_active() guard makes that invariant
@@ -319,7 +319,7 @@ static void watchdog_and_stow() {
 static bool jetson_link_up() {
   const uint64_t last = udp_last_rx_us();
   if (last == 0) return false;
-  return (micros64() - last) <= JETSON_LINK_TIMEOUT_US;   // interval (item 14): udp_last_rx_us is mono
+  return (micros64() - last) <= JETSON_LINK_TIMEOUT_US;   // interval: udp_last_rx_us is mono
 }
 
 static void evaluate_guard() {
@@ -333,7 +333,7 @@ static void evaluate_guard() {
     if (v > MAX_MOTOR_VEL_RPS) { estop = true; state = JbUdp::FaultState::MOTOR_OVERSPEED; break; }
   }
   // MPC command staleness (the hard link-fault trigger).
-  const uint64_t age = micros64() - interp_last_setpoint_us();   // interval (item 14): setpoint stamped mono
+  const uint64_t age = micros64() - interp_last_setpoint_us();   // interval: setpoint stamped mono
   const bool ever_cmd = interp_last_setpoint_us() != 0;
   if (!estop && ever_cmd && s_mpc_active && age > MPC_CMD_STALENESS_US) {
     estop = true; state = JbUdp::FaultState::MPC_STALE;
@@ -343,7 +343,7 @@ static void evaluate_guard() {
   // sources (motor_guard.py:539-551, checked at command-arrival not per-tick).
   if (!estop && s_mpc_active && interp_have_latched()) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-      // Phase 11: only check present legs. An absent leg reads pos_rev=0; a
+      // Only check present legs. An absent leg reads pos_rev=0; a
       // nonzero u0 broadcast to it (the production MPC sends 6 leg targets) would
       // false-trip the E-STOP. No-op on the full robot.
       if (!leg_present(i)) continue;
@@ -362,10 +362,10 @@ static void evaluate_guard() {
   // mirroring motor_guard's command suppression. Present-scoped + mpc_active/latched
   // gated exactly like MAX_DEVIATION (so it never false-trips pre-arm, when
   // pos_timestamp_us is still 0). pos_timestamp_us is stamped micros64() on each
-  // encoder RX (can_buses.cpp), so this monotonic clock comparison is consistent (item 14).
+  // encoder RX (can_buses.cpp), so this monotonic clock comparison is consistent.
   bool fb_stale = false;
   if (s_mpc_active && interp_have_latched()) {
-    const uint64_t now = micros64();   // interval clock (item 14) — never the steppable wall
+    const uint64_t now = micros64();   // interval clock — never the steppable wall
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       if (leg_present(i) && (now - axes[i].pos_timestamp_us > MOTOR_FB_STALENESS_US)) {
         fb_stale = true; break;
@@ -373,7 +373,7 @@ static void evaluate_guard() {
     }
   }
 
-  // Latch the guard E-STOP (Fable-5 [13]): once any guard condition trips, hold it
+  // Latch the guard E-STOP: once any guard condition trips, hold it
   // (sticky guard_mode==ESTOP + output gated off) until fault_notify_clear_errors().
   // The `&& !s_estop_latched` freezes the reported reason at the FIRST trip (mirrors
   // motor_guard._check_safety's early-return pinning self._fault_state). fb_stale is
@@ -399,7 +399,7 @@ static void evaluate_guard() {
   // on so the descent reaches CAN3 (stow only runs post-reconnect, so the bus is
   // confirmed up). Otherwise output requires the guard ENABLED and no fatal.
   //
-  // Item 20 — stow vs fatal/E-STOP (DELIBERATE, not an oversight): an in-progress
+  // Stow vs fatal/E-STOP (DELIBERATE, not an oversight): an in-progress
   // stow is allowed to complete even if s_estop_latched / s_fatal_error trips
   // mid-descent. Aborting the stow (gating output off) would disarm the raised legs
   // → gravity drop — strictly worse than finishing the controlled, velocity-limited

@@ -1,5 +1,5 @@
 // =============================================================================
-//  hand_ops.h — Hand trajectory / smooth-move conduit (Phase 5)
+//  hand_ops.h — Hand trajectory / smooth-move conduit
 // =============================================================================
 //  The HAND_TRAJ_CMD RPC path. Keeps rpc.cpp thin (mirrors platform_relay.cpp):
 //  set_hand_traj_cmd AND smooth_move_hand both ride this one RPC, discriminated by

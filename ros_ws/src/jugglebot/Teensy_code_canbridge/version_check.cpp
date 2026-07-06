@@ -1,5 +1,5 @@
 // =============================================================================
-//  version_check.cpp — Phase 3 firmware Get_Version sweep + raw-version cache
+//  version_check.cpp — firmware Get_Version sweep + raw-version cache
 // =============================================================================
 //  See version_check.h for the design + the firmware/Jetson split. This TU owns
 //  the per-axis raw-version cache and the bus-paced sweep; it parses NO versions.
@@ -10,7 +10,7 @@
 #include "can_buses.h"         // can_jugglebot_send, jugglebot_commands_allowed
 #include "odrive_protocol.h"   // ODrive::encode_get_version
 #include "udp_protocol.h"      // JbUdp::RpcArgs::ResultAxisVersions
-#include "time_base.h"         // micros64 (re-query pacing, item 20)
+#include "time_base.h"         // micros64 (re-query pacing)
 
 #include <cstring>
 
@@ -28,7 +28,7 @@ namespace CanBridge {
 static volatile uint8_t s_version_raw[NUM_AXES][8] = {{0}};
 static volatile uint8_t s_received_mask   = 0;
 static volatile uint8_t s_query_sent_mask = 0;
-static uint64_t         s_last_query_us   = 0;   // last (re)query send — re-query pacing (item 20)
+static uint64_t         s_last_query_us   = 0;   // last (re)query send — re-query pacing
 
 void version_check_init() {
   // Re-arm: clear the masks + the raw cache (file-statics already boot zeroed; this
@@ -39,7 +39,7 @@ void version_check_init() {
   // leave stale raw bytes visible to a later case's fill_blob).
   s_received_mask   = 0;
   s_query_sent_mask = 0;
-  s_last_query_us   = 0;   // re-query pacing (item 20)
+  s_last_query_us   = 0;   // re-query pacing
   for (uint8_t i = 0; i < NUM_AXES; ++i)
     for (uint8_t j = 0; j < 8; ++j) s_version_raw[i][j] = 0;
 }
@@ -51,7 +51,7 @@ void version_record(uint8_t axis, const uint8_t* d8) {
   s_received_mask |= (uint8_t)(1u << axis);
 }
 
-// Re-query pacing (item 20). The first-pass sweep queries each present axis once
+// Re-query pacing. The first-pass sweep queries each present axis once
 // and sets s_query_sent_mask; if that reply is lost (a bus glitch or an ODrive too
 // busy to answer), the axis's received bit never sets and its version stays
 // permanently missing — the Jetson's validate_group then reports a spurious

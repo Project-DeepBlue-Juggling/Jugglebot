@@ -25,7 +25,7 @@ namespace Rpc {
 // only method that returns a result blob today is GET_AXIS_VERSIONS
 // (ResultAxisVersions = 57 B); keep this ≥ the largest result blob.
 static constexpr uint16_t RESULT_BUF_CAP = 64;
-// Item 20: fail the build if the largest RPC result blob outgrows the buffer, so a
+// Build-time guard: fail the build if the largest RPC result blob outgrows the buffer, so a
 // future growth of ResultAxisVersions (or a new result-bearing method) can never
 // silently truncate in version_fill_blob / dispatch instead of being caught here.
 static_assert(RESULT_BUF_CAP >= sizeof(JbUdp::RpcArgs::ResultAxisVersions),
@@ -87,7 +87,7 @@ bool parse_response(const uint8_t* payload, uint16_t len,
 // can_buses.cpp — it is shared with platform_relay.cpp (the relay reads/writes gate
 // on the same CAN3-health predicate). See can_buses.h.
 
-// The single CAN3 gate chokepoint (Phase 6). CLEAR_ERRORS / REBOOT_ODRIVES are
+// The single CAN3 gate chokepoint. CLEAR_ERRORS / REBOOT_ODRIVES are
 // non-motion recovery one-shots that gate on the LIVE bus-transmittable signal
 // (jugglebot_bus_transmittable() = ESR1.SYNCH) so a recovery clear reaches a
 // just-repowered bus that is electrically alive but not yet heartbeating (the
@@ -105,7 +105,7 @@ static bool gate_allows(uint16_t method) {
 // axis) check; the HAND ODrive (axis 6) is on CAN3 too and is forwarded ONLY for
 // the narrow allow-table (JbUdp::hand_axis6_permitted — set/mode/gains/limits/
 // clear/reboot/home/abs-pos), replacing the old blanket axis==HAND_AXIS reject so
-// hand homing + the hand command surface work (Phase 1). Every permitted op — leg
+// hand homing + the hand command surface work. Every permitted op — leg
 // or hand — is still gated via gate_allows(): the hand is GATED like a leg, never
 // ungated. Returns an RpcStatus.
 static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::CanFrame& f) {
@@ -121,7 +121,7 @@ static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::Can
 // Ball Butler presence gate. CAN1 carries no other partner; with BB unpowered
 // or unplugged, an un-ACKed TX would climb the FlexCAN TEC and eventually drop
 // the bus to bus-off (same failure mode the cone-absent gate prevents on CAN2 —
-// HANDOFF-firmware-three-bus D2, but for CAN1). bb_present() requires a fresh
+// but for CAN1). bb_present() requires a fresh
 // heartbeat; the bridge-level bb/calibrate handler translates ERR_BUS_DOWN to a
 // silent-success for the homing flow (matching can_node._svc_bb_calibrate).
 static bool bb_present() {
@@ -179,18 +179,18 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     case RpcMethod::CLEAR_ERRORS: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       if (a.axis == AXIS_ALL) {
-        // Gate on the bus-transmittable (SYNCH) signal, not staleness (Phase 6), so a
+        // Gate on the bus-transmittable (SYNCH) signal, not staleness, so a
         // recovery clear reaches a just-repowered bus. AXIS_ALL loops legs + hand
         // (i < NUM_AXES) — can_node JUGGLEBOT_AXES parity (the audit's dropped-hand row).
         if (!gate_allows(method)) return RpcStatus::ERR_BUS_DOWN;
-        // Send FIRST, notify only if at least one frame was actually enqueued (item 6:
+        // Send FIRST, notify only if at least one frame was actually enqueued (
         // a clear that cannot reach the bus must NOT refill the soft-reset auto-retry
         // budget or release the guard E-STOP latch). The SYNCH gate above passes on a
         // fully dead-but-idle-recessive bus, and the bus-partner presence gate
         // (2026-07-05) then refuses every send in the parked state — so notify-before-
         // send would fire the side-effects with nothing on the wire. any (not all-ok)
         // is the notify condition: a PARTIAL enqueue still reached the bus. Accumulate
-        // the per-axis result (item 7): partial failure surfaces as ERR_TIMEOUT; the
+        // the per-axis result: partial failure surfaces as ERR_TIMEOUT; the
         // send is the LEFT operand of &&/|=, so every axis is attempted regardless.
         bool ok = true, any = false;
         for (uint8_t i = 0; i < NUM_AXES; ++i) {
@@ -201,14 +201,14 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         return ok ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
       }
       // Per-axis: refill the budget only if the frame actually went out (gate passed +
-      // enqueue OK) — the same after-the-gate discipline as the AXIS_ALL path (item 6).
+      // enqueue OK) — the same after-the-gate discipline as the AXIS_ALL path.
       const uint16_t st = send_axis_frame(method, a.axis, ODrive::encode_clear_errors(a.axis));
       if (st == RpcStatus::OK) fault_notify_clear_errors();
       return st;
     }
     case RpcMethod::REBOOT_ODRIVES: {
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      // Item 20: never REBOOT during a deferred stow (pending OR in-progress). A
+      // Never REBOOT during a deferred stow (pending OR in-progress). A
       // reboot mid-descent disarms the raised legs → gravity drop; the same hazard
       // class as the DEACTIVATE-during-stow reject. Mirrors the cold-start requests'
       // fault_stow_pending() interlock (homing/activate/deactivate_request). Rejects
@@ -216,7 +216,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // stow completes in ~2-3 s, after which REBOOT is available again.
       if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;
       if (a.axis == AXIS_ALL) {
-        // Bus-transmittable gate (Phase 6); AXIS_ALL loops legs + hand (i < NUM_AXES —
+        // Bus-transmittable gate; AXIS_ALL loops legs + hand (i < NUM_AXES —
         // JUGGLEBOT_AXES parity). Arm the watchdog-suppression latch only ONCE the
         // reboot is actually going out (after the gate passes), so a refused reboot
         // does not blind the detector against a real, coincident loss.
@@ -226,7 +226,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
         // dead-but-idle bus; the presence gate then refuses every send) must not blind
         // the CAN-loss detector for 6 s with nothing on the wire. any (not all-ok):
         // a partial broadcast still reboots some ODrives, so the coming silence is
-        // deliberate and the latch must arm. Accumulate the per-axis result (item 7):
+        // deliberate and the latch must arm. Accumulate the per-axis result:
         // partial failure surfaces as ERR_TIMEOUT; every axis is still attempted.
         bool ok = true, any = false;
         for (uint8_t i = 0; i < NUM_AXES; ++i) {
@@ -248,7 +248,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::SDO_READ: {
       ArgSdoRead a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      // Response value returns async on TxSdo (Phase 9 encoder-search consumes it).
+      // Response value returns async on TxSdo (encoder-search consumes it).
       return send_axis_frame(method, a.axis, ODrive::encode_sdo_read(a.axis, a.endpoint));
     }
     case RpcMethod::SDO_WRITE: {
@@ -257,20 +257,20 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::ENCODER_SEARCH:
       // Encoder index search stays Jetson-orchestrated over SET_AXIS_STATE
-      // (Phase 9a) — an ODrive-autonomous state needs no firmware move. The RPC
+      // — an ODrive-autonomous state needs no firmware move. The RPC
       // remains stubbed; see teensy_bridge_node._run_encoder_search.
       return RpcStatus::ERR_NOT_IMPL;
     case RpcMethod::HOME: {
-      // Phase 9b: fire-and-monitor. Validate + latch a start, return immediately
+      // Fire-and-monitor. Validate + latch a start, return immediately
       // (the move takes ~seconds; the net task must not block). The homing task
       // runs the velocity-limited move-to-hardstop; the Jetson observes
       // completion via telemetry (axis_state → IDLE, pos → home ref).
       //
-      // Axis-6 policy (item 20): HOME does NOT route through send_axis_frame, so its
+      // Axis-6 policy: HOME does NOT route through send_axis_frame, so its
       // per-axis gate is NOT the hand_axis6_permitted allow-table — it is owned
       // wholly by homing_request(), the single enforcement point for the HOME path.
       // homing_request accepts legs 0..5 AND the hand (axis 6, homed with the
-      // Homing::HAND_* params, Phase 5), rejects AXIS_ALL / out-of-range, and
+      // Homing::HAND_* params), rejects AXIS_ALL / out-of-range, and
       // presence/bus/concurrency-gates. This is consistent with the allow-table,
       // which also permits HOME for the hand (hand_axis6_permitted(HOME) == true);
       // the two never diverge because homing_request is the only path HOME takes.
@@ -278,7 +278,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return homing_request(a.axis);
     }
     case RpcMethod::ACTIVATE: {
-      // Phase 11 U5: fire-and-monitor TRAP_TRAJ move to the active pose. Validate
+      // Fire-and-monitor TRAP_TRAJ move to the active pose. Validate
       // + latch a start, return immediately (the ODrive runs the trajectory; the
       // Jetson observes completion via telemetry). axis == AXIS_ALL activates
       // every present leg in parallel (even platform rise).
@@ -286,7 +286,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return activate_request(a.axis);
     }
     case RpcMethod::DEACTIVATE: {
-      // Phase 11 U5: fire-and-monitor TRAP_TRAJ controlled lower to the STOW pose,
+      // Fire-and-monitor TRAP_TRAJ controlled lower to the STOW pose,
       // then IDLE. Validate + latch a start, return immediately (the ODrive runs
       // the descent; the Jetson observes the CLOSED_LOOP → IDLE completion via
       // telemetry). axis == AXIS_ALL deactivates every present leg in parallel
@@ -295,7 +295,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return deactivate_request(a.axis);
     }
 
-    // ── Platform-Teensy relay (Phase 1) ──────────────────────────────────────
+    // ── Platform-Teensy relay ──────────────────────────────────────
     // Typed write RPCs that re-establish the Jetson↔Platform-Teensy conduit over
     // CAN3. TILT_READ/STATE_READ only TRIGGER a reply (the Platform answers on the
     // same id; on_jugglebot_rx forwards it verbatim as a PLATFORM_FRAME the host
@@ -311,7 +311,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return Relay::state_write(a);
     }
 
-    // ── Firmware version pull (Phase 3) ──────────────────────────────────────
+    // ── Firmware version pull ──────────────────────────────────────
     // Synchronous: returns the bridge-LOCAL Get_Version cache (filled by the
     // cold-start version sweep, version_check.cpp) in the RPC response — NO CAN3
     // round-trip and NO PLATFORM_FRAME (unlike the relay reads). The Jetson
@@ -321,12 +321,12 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       res_len = version_fill_blob(result, RESULT_BUF_CAP);
       return res_len ? RpcStatus::OK : RpcStatus::ERR_BAD_ARGS;
 
-    // ── Hand trajectory / smooth-move (Phase 5) ──────────────────────────────
+    // ── Hand trajectory / smooth-move ──────────────────────────────
     // set_hand_traj_cmd + smooth_move_hand both ride this one RPC. The host builds
     // the exact 8-byte 0x6D0 payload (byte-0 discriminator: 0/1/2 = catch-traj type,
     // 3 = smooth-move, byte-identical to can_node); hand_ops sends the CLOSED_LOOP +
     // POSITION/PASSTHROUGH preamble then forwards it on the firmware-owned 0x6D0 id,
-    // aborting if a preamble send fails. This is the last of the Phase-0 reserved
+    // aborting if a preamble send fails. This is the last of the reserved
     // ERR_NOT_IMPL stubs to land — no reserved methods remain (the dispatch lint's
     // reserved list is now empty; every id has a real case).
     case RpcMethod::HAND_TRAJ_CMD: {
@@ -342,7 +342,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     case RpcMethod::BB_THROW: {
       ArgBbThrow a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       // Range-check BEFORE building the frame — refuses a malformed throw
-      // before CAN1 sees a byte (HANDOFF-firmware-three-bus D2). Mirrors
+      // before CAN1 sees a byte. Mirrors
       // ball_butler.py:98-105 ValueError raises.
       if (!BallButler::throw_args_valid(a.yaw_rad, a.pitch_rad,
                                         a.speed_mps, a.delay_s))

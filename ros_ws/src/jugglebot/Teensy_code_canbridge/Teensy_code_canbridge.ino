@@ -2,7 +2,7 @@
  *  Teensy 4.1 — Jugglebot "can-bridge" microcontroller (NEW)
  *  ------------------------------------------------------------------
  *  Owns all leg CAN responsibility, offloaded from the Jetson. See
- *  plans/active/teensy-can-offload.md and the firmware-WIP handoff doc.
+ *  the can-hub bring-up logbook entry (2026-06-06-can-hub-bringup).
  *
  *  Stack: FreeRTOS (FreeRTOS_TEENSY4) + QNEthernet (lwIP) + FlexCAN_T4 (x3).
  *
@@ -20,7 +20,7 @@
  *
  *  This file is the FreeRTOS scaffold: it brings up Ethernet, creates the tasks,
  *  and starts the scheduler. Subsystem logic lives in the sibling modules.
- *  PHASE markers below show where each migration phase plugs in.
+ *  The include list below notes which subsystem each sibling module owns.
  *****************************************************************************************/
 
 #include <Arduino.h>
@@ -36,18 +36,18 @@ using namespace arduino;
 #include "time_base.h"
 #include "net_ethernet.h"
 #include "udp_link.h"
-#include "can_buses.h"           // Phase 5
-#include "time_sync_master.h"    // Phase 5
-#include "rpc.h"                 // Phase 5
-#include "axis_state.h"          // Phase 6 (cache populated by CAN RX)
-#include "ball_butler_state.h"   // Phase A (BB heartbeat cache, populated by CAN1 RX)
-#include "telemetry.h"           // Phase 6
-#include "leg_interp.h"          // Phase 7
-#include "fault_machine.h"       // Phase 8
-#include "leg_homing.h"          // Phase 9b
-#include "leg_activate.h"        // Phase 11 U5
-#include "leg_deactivate.h"      // Phase 11 U5
-#include "version_check.h"       // Phase 3 (Get_Version sweep + version cache)
+#include "can_buses.h"           // three subsystem CAN buses (CAN1/2/3)
+#include "time_sync_master.h"    // 0x7DD time-sync master
+#include "rpc.h"                 // Jetson->Teensy RPC server
+#include "axis_state.h"          // per-axis state cache (populated by CAN RX)
+#include "ball_butler_state.h"   // BB heartbeat cache (populated by CAN1 RX)
+#include "telemetry.h"           // motor-state + diagnostics uplink
+#include "leg_interp.h"          // 500 Hz leg setpoint interpolator
+#include "fault_machine.h"       // fault state machine + CAN3 watchdog
+#include "leg_homing.h"          // leg homing state machine
+#include "leg_activate.h"        // leg activate (move to active pose)
+#include "leg_deactivate.h"      // leg deactivate (controlled lower + IDLE)
+#include "version_check.h"       // Get_Version sweep + version cache
 #include "profiling.h"           // Profiling/instrumentation
 
 using namespace CanBridge;
@@ -59,7 +59,7 @@ static volatile uint64_t g_last_jetson_hb_us = 0;
 
 static void on_jetson_heartbeat(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) {
   if (len < sizeof(JbUdp::HeartbeatJ2TPayload)) return;
-  atomic_write_u64(&g_last_jetson_hb_us, micros64());   // 64-bit monotonic (item 14); read as an interval by link_state()
+  atomic_write_u64(&g_last_jetson_hb_us, micros64());   // 64-bit monotonic; read as an interval by link_state()
   JbUdp::HeartbeatJ2TPayload p;
   memcpy(&p, payload, sizeof(p));
   fault_set_mpc_active((p.flags & 0x1u) != 0);   // bit0 = MPC commanding (guard ENABLED)
@@ -67,7 +67,7 @@ static void on_jetson_heartbeat(uint16_t /*seq*/, const uint8_t* payload, uint16
 
 // True iff every axis has been seen and none is heartbeat-stale.
 static bool all_axis_heartbeats_ok() {
-  const uint64_t now = micros64();   // interval clock (item 14): heartbeat freshness
+  const uint64_t now = micros64();   // interval clock: heartbeat freshness
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     if (!axes[i].heartbeat_seen) return false;
     if (now - atomic_read_u64(&axes[i].last_heartbeat_us) > CAN_HEARTBEAT_TIMEOUT_US) return false;
@@ -79,7 +79,7 @@ static uint8_t link_state() {
   if (!net_link_up()) return JbUdp::LinkState::INIT;
   const uint64_t last = atomic_read_u64(&g_last_jetson_hb_us);
   if (last == 0) return JbUdp::LinkState::INIT;
-  const uint64_t age = micros64() - last;   // interval (item 14): g_last_jetson_hb_us is mono
+  const uint64_t age = micros64() - last;   // interval: g_last_jetson_hb_us is mono
   if (age > JETSON_LINK_TIMEOUT_US) return JbUdp::LinkState::LOST;
   return JbUdp::LinkState::UP;
 }
@@ -90,12 +90,12 @@ static uint8_t link_state() {
 static void send_heartbeat_t2j() {
   const CanStats cs = can_buses_stats();
   JbUdp::HeartbeatT2JPayload p{};
-  p.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
+  p.t_teensy_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   p.link_state  = link_state();
-  // Two on-wire health slots, three buses (HANDOFF D4): the safety-critical
+  // Two on-wire health slots, three buses: the safety-critical
   // Jugglebot core bus takes slot 1, Ball Butler slot 2. The wire field NAMES
   // (bus1_health/bus2_health) are fixed by udp_protocol.h and stay unchanged.
-  // TODO(phase-10b): expose cone (CAN2) health on the uplink in the next
+  // TODO(cone-health-uplink): expose cone (CAN2) health on the uplink in the next
   // protocol codegen update (a third health slot).
   p.bus1_health = cs.jugglebot_health;   // CAN3 (Jugglebot core)
   p.bus2_health = cs.bb_health;          // CAN1 (Ball Butler)
@@ -104,13 +104,13 @@ static void send_heartbeat_t2j() {
   p.flags       = (time_synced() ? HF::TIME_SYNCED : 0u)
                 | (fault_stow_pending() ? HF::STOW_PENDING_ON_RECONNECT : 0u)
                 | (all_axis_heartbeats_ok() ? HF::ALL_AXIS_HEARTBEATS_OK : 0u)
-                | (fault_mpc_active() ? HF::MPC_ACTIVE : 0u);  // bit3 (Phase 11):
+                | (fault_mpc_active() ? HF::MPC_ACTIVE : 0u);  // bit3:
                                                         // firmware-side mpc_active — a setpoint source
                                                         // can verify its arm actually took (catches
                                                         // a competing heartbeat authority).
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
 
-  // Ball Butler heartbeat snapshot (Phase A — replaces legacy can_node bb/
+  // Ball Butler heartbeat snapshot (replaces legacy can_node bb/
   // heartbeat publisher). snapshot_bb() takes a seqlock-consistent view so the
   // multi-field copy never reads a torn write from the CAN1 RX decode.
   BallButlerSnapshot bb{};
@@ -164,8 +164,8 @@ static void task_time_sync(void*) {
 }
 
 // Telemetry uplink (priority 3) at TELEM_RATE_HZ. 100 Hz motor state + on-change
-// diagnostics + the cone CAN2→CONE_FRAME relay (phase-10b cone uplink) + the BB
-// CAN1 CMD_RESULT→host relay (Phase-2 loud command-outcome channel).
+// diagnostics + the cone CAN2→CONE_FRAME relay (cone uplink) + the BB
+// CAN1 CMD_RESULT→host relay (loud command-outcome channel).
 static void task_telem(void*) {
   TickType_t last = xTaskGetTickCount();
   const TickType_t period = pdMS_TO_TICKS(1000 / TELEM_RATE_HZ);
@@ -173,8 +173,8 @@ static void task_telem(void*) {
     telemetry_step();
     cone_uplink_step();
     cmd_result_uplink_step();
-    platform_uplink_step();   // Phase 1: Platform-Teensy relay reply uplink
-    hand_cmd_echo_uplink_step(); // Phase 5: hand Set_Input_Pos command-echo
+    platform_uplink_step();   // Platform-Teensy relay reply uplink
+    hand_cmd_echo_uplink_step(); // hand Set_Input_Pos command-echo
     vTaskDelayUntil(&last, period);
   }
 }
@@ -191,8 +191,8 @@ static void task_fault(void*) {
 }
 
 // Cold-start leg-motion monitor (priority 2) at HOMING_RATE_HZ. Runs the
-// velocity-limited move-to-hardstop (Phase 9b HOME) and the TRAP_TRAJ move to the
-// active pose (Phase 11 U5 ACTIVATE) state machines when an RPC has latched a
+// velocity-limited move-to-hardstop (HOME) and the TRAP_TRAJ move to the
+// active pose (ACTIVATE) state machines when an RPC has latched a
 // start; both are cheap no-ops otherwise (idle the rest of the time — rare bench/
 // cold-start ops). HOME and ACTIVATE each reject a start while the OTHER is active
 // (symmetric), and each stays "active" for its whole physical move (homing polls
@@ -205,7 +205,7 @@ static void task_homing(void*) {
     homing_step();
     activate_step();
     deactivate_step();
-    version_check_step();   // Phase 3: bus-paced Get_Version sweep (no-op once swept)
+    version_check_step();   // bus-paced Get_Version sweep (no-op once swept)
     vTaskDelayUntil(&last, period);
   }
 }
@@ -299,7 +299,7 @@ static void task_diag(void*) {
       // stale, '*'=active error/disarm, ' '=ok). The fresh=N/7 headline is the one-glance
       // "all responding" check. ODrive state codes: IDLE=1, CLOSED_LOOP=8.
       {
-        const uint64_t now = micros64();   // interval clock (item 14): diag heartbeat ages
+        const uint64_t now = micros64();   // interval clock: diag heartbeat ages
         uint8_t fresh = 0;
         for (uint8_t i = 0; i < NUM_AXES; ++i)
           if (axes[i].heartbeat_seen && !axes[i].heartbeat_stale
@@ -323,7 +323,7 @@ static void task_diag(void*) {
         Serial.println();
       }
 
-      // Leg output-gate diagnostic (Phase 11 bench): is the firmware armed and
+      // Leg output-gate diagnostic (bench): is the firmware armed and
       // actually streaming setpoints to CAN3? mpc_active = J→T heartbeat bit0 seen;
       // guard_mode 0=DISABLED/1=ENABLED/2=ESTOP; output = interp gate (1 ⇒ sending);
       // sp_age_ms = age of the last setpoint from the Jetson (huge ⇒ not receiving);
@@ -331,7 +331,7 @@ static void task_diag(void*) {
       Serial.printf("[guard] mpc_active=%u guard_mode=%u output=%u sp_age_ms=%lu u0=%.4f\n",
                     (unsigned)fault_mpc_active(), (unsigned)fault_guard_mode(),
                     (unsigned)interp_output_enabled(),
-                    (unsigned long)((micros64() - interp_last_setpoint_us()) / 1000ULL),   // interval (item 14): setpoint stamped mono
+                    (unsigned long)((micros64() - interp_last_setpoint_us()) / 1000ULL),   // interval: setpoint stamped mono
                     (double)interp_base_pos(0));
 
       // Per-Ball-Butler state line. Format mirrors [axes]:
@@ -343,7 +343,7 @@ static void task_diag(void*) {
       {
         BallButlerSnapshot bb{};
         snapshot_bb(bb_state, bb);
-        const uint64_t now = micros64();   // interval clock (item 14): diag heartbeat ages
+        const uint64_t now = micros64();   // interval clock: diag heartbeat ages
         const char* state_names[] = {
             "BOOT", "IDLE", "TRACKING", "THROWING",
             "RELOADING", "CAL", "CHKBALL"};  // states 0..6
@@ -387,19 +387,19 @@ void setup() {
 
   // Register downlink handlers before the scheduler starts.
   udp_on_heartbeat_j2t(on_jetson_heartbeat);
-  Rpc::rpc_server_init();          // Phase 5: Jetson→Teensy ODrive RPCs
-  time_sync_master_init();         // Phase 5: time-of-day RPC client
-  udp_on_setpoint(interp_on_setpoint);   // Phase 7: 40 Hz setpoint downlink
+  Rpc::rpc_server_init();          // Jetson→Teensy ODrive RPCs
+  time_sync_master_init();         // time-of-day RPC client
+  udp_on_setpoint(interp_on_setpoint);   // 40 Hz setpoint downlink
 
   udp_link_init();
-  can_buses_init();                // Phase 5: CAN1 bb + CAN2 cone + CAN3 jugglebot
-  telemetry_init();                // Phase 6
-  fault_machine_init();            // Phase 8 (before interp so the output gate is off at boot)
-  leg_interp_init();               // Phase 7: starts the 500 Hz IntervalTimer ISR
-  homing_init();                   // Phase 9b (idle until a HOME RPC latches a start)
-  activate_init();                 // Phase 11 U5 (idle until an ACTIVATE RPC latches a start)
-  deactivate_init();               // Phase 11 U5 (idle until a DEACTIVATE RPC latches a start)
-  version_check_init();            // Phase 3 (clears the version sweep masks)
+  can_buses_init();                // CAN1 bb + CAN2 cone + CAN3 jugglebot
+  telemetry_init();                // motor-state + diagnostics uplink
+  fault_machine_init();            // before interp so the output gate is off at boot
+  leg_interp_init();               // starts the 500 Hz IntervalTimer ISR
+  homing_init();                   // idle until a HOME RPC latches a start
+  activate_init();                 // idle until an ACTIVATE RPC latches a start
+  deactivate_init();               // idle until a DEACTIVATE RPC latches a start
+  version_check_init();            // clears the version sweep masks
   profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)

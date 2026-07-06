@@ -9,7 +9,7 @@
 //                the 100 Hz 0x7DD time-sync broadcast + relayed BB commands.
 //    cone      = CAN2 (catching cone Teensy, often physically disconnected). RX
 //                is counted AND copied into a small SPSC ring for the cone
-//                uplink (phase-10b): task_telem drains the ring into CONE_FRAME
+//                uplink: task_telem drains the ring into CONE_FRAME
 //                UDP messages so the Jetson sees every cone frame verbatim
 //                (CATCH_EVENT 0x7E0 / CONE_HEARTBEAT 0x7E1). TX is the 0x7DD
 //                broadcast.
@@ -18,15 +18,15 @@
 //                frames decode into the per-axis cache from here; leg setpoints,
 //                RPC-driven ODrive commands, and fault-machine commands TX here.
 //
-//  TX presence gate (2026-07-05, generalised from the cone-absent tolerance /
-//  HANDOFF D2): EVERY can_*_send() is gated on bus_partner_present() — a frame
+//  TX presence gate (2026-07-05, generalised from the cone-absent tolerance
+//  ): EVERY can_*_send() is gated on bus_partner_present() — a frame
 //  seen on that bus within BUS_PARTNER_STALENESS_US — so the bridge never
 //  transmits into a partner-less (unpowered/disconnected) bus. See the predicate
 //  below and the 2026-07-05 marginal-CAN3 logbook entry for the failure class.
 //
 //  Peripheral identity (CAN1/CAN2/CAN3) appears ONLY as the FlexCAN_T4 template
 //  parameter in can_buses.cpp; everywhere else the bus is named by subsystem so
-//  a future re-pin only touches the wiring file (ADR-0013 / HANDOFF D3).
+//  a future re-pin only touches the wiring file (ADR-0013).
 //
 //  RX is dispatched from canX.events() (pumped by the CAN RX task) via onReceive
 //  callbacks — the proven platform-Teensy idiom (Teensy_code.ino canSniff) — and
@@ -35,10 +35,10 @@
 //
 //  NB on the data path: there IS a library-internal queue hop. The FlexCAN RX
 //  interrupt pushes each frame into the peripheral's RX_SIZE_256 rxBuffer; events()
-//  pops from it. (HANDOFF D7's "straight into the cache ... not by enqueuing" is
+//  pops from it. (So the shorthand "straight into the cache, not by enqueuing" is
 //  imprecise: events()-driven onReceive dispatch routes through that rxBuffer first.
-//  There is no *application-level* queue between the callback and the cache, which is
-//  what D7 meant.) Because events() pops only ONE frame per call, can_buses_service()
+//  There is no *application-level* queue between the callback and the cache -- that
+//  is the distinction that matters.) Because events() pops only ONE frame per call, can_buses_service()
 //  drains each bus in a bounded loop so the ~2,240 fps of CAN3 telemetry the can-bridge
 //  receives cannot overflow the rxBuffer — see CAN_RX_DRAIN_BUDGET in can_buses.cpp.
 // =============================================================================
@@ -73,7 +73,7 @@ bool jugglebot_commands_allowed();
 
 // "Is CAN3 electrically transmittable RIGHT NOW?" — the LIVE ESR1.SYNCH bus-lock bit
 // (s_jugglebot_rxh.synced), NOT heartbeat-staleness. Gates ONLY the operator recovery
-// one-shots CLEAR_ERRORS / REBOOT_ODRIVES (Phase 6): a just-repowered or motor-bus-
+// one-shots CLEAR_ERRORS / REBOOT_ODRIVES: a just-repowered or motor-bus-
 // cycled bus is SYNCH=1 the instant it is electrically alive — BEFORE any heartbeat is
 // decoded — so the recovery clear is allowed exactly when jugglebot_commands_allowed()
 // would still read WARN from the stale RX timestamp and refuse it (the 2026-06-27
@@ -92,7 +92,7 @@ struct CanStats {
 };
 CanStats can_buses_stats();
 
-// ── Cone uplink ring (phase-10b: CAN2 → CONE_FRAME UDP relay) ─────────────────
+// ── Cone uplink ring (CAN2 → CONE_FRAME UDP relay) ─────────────────
 //  Every frame received on the cone bus is copied into a small SPSC ring by the
 //  RX callback (producer: task_can_rx — briefly the FlexCAN ISR during the boot
 //  window, so the push is PRIMASK-guarded) and popped by the telemetry task
@@ -108,7 +108,7 @@ struct ConeFrameRec {
 bool can_cone_pop(ConeFrameRec& out);   // consumer side; false when ring empty
 uint32_t can_cone_fwd_drops();          // frames dropped on ring overflow (cumulative)
 
-// ── BB command-result uplink ring (Phase 2: CAN1 CMD_RESULT → UDP relay) ──────
+// ── BB command-result uplink ring (CAN1 CMD_RESULT → UDP relay) ──────
 //  BB firmware publishes one CMD_RESULT (0x7D5) per operator command at its
 //  terminal point (throw today; reload/calibrate/home later). on_bb_rx copies the
 //  frame verbatim into this SPSC ring; cmd_result_uplink_step (telemetry.cpp)
@@ -123,7 +123,7 @@ struct CmdResultFrameRec {
 bool can_cmd_result_pop(CmdResultFrameRec& out);  // consumer side; false when ring empty
 uint32_t can_cmd_result_fwd_drops();              // frames dropped on ring overflow (cumulative)
 
-// ── Platform-Teensy relay-reply uplink ring (Phase 1: CAN3 0x6E0/0x7DE → UDP) ─
+// ── Platform-Teensy relay-reply uplink ring (CAN3 0x6E0/0x7DE → UDP) ─
 //  The can-bridge relays the Platform Teensy's RobotState (0x6E0 STATE_UPDATE)
 //  and inclinometer tilt (0x7DE TILT_READING) replies VERBATIM to the host, so
 //  the host owns the byte-layout decode (decouples the bridge from Teensy_code's
@@ -141,7 +141,7 @@ struct PlatformFrameRec {
 bool can_platform_pop(PlatformFrameRec& out);  // consumer side; false when ring empty
 uint32_t can_platform_fwd_drops();             // frames dropped on ring overflow (cumulative)
 
-// ── Hand command-echo (Phase 5) ───────────────────────────────────────────────
+// ── Hand command-echo ───────────────────────────────────────────────
 // The can-bridge sniffs the Platform Teensy's Set_Input_Pos to the HAND ODrive
 // (axis 6) on CAN3 and forwards the raw 8-byte payload so the host echoes the
 // hand's commanded pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity — the

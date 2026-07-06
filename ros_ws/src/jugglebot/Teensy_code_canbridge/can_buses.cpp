@@ -10,11 +10,11 @@
 #include "ball_butler_state.h"
 #include "time_base.h"
 #include "odrive_protocol.h"
-#include "version_check.h"   // Phase 3: cache Get_Version replies (version_record)
+#include "version_check.h"   // cache Get_Version replies (version_record)
 
 namespace CanBridge {
 
-// Peripheral identity is confined to these three lines (ADR-0013 / HANDOFF D3):
+// Peripheral identity is confined to these three lines (ADR-0013):
 //   bb = CAN1 (pins 22/23), cone = CAN2 (pins 1/0), jugglebot = CAN3 (pins 31/30).
 // TX_SIZE_64 (was 16): the software TX ring the TX-complete ISR drains. A 16-deep
 // ring silently dropped frames on dense bursts — a multi-leg config burst lost most
@@ -43,7 +43,7 @@ static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot
 static volatile BusRxHealth s_bb_rxh{}, s_cone_rxh{}, s_jugglebot_rxh{};
 static volatile uint32_t s_decode_short = 0, s_decode_bad_axis = 0;
 
-// Hand command-echo recorder (Phase 5). Defined later in this TU (near the ring
+// Hand command-echo recorder. Defined later in this TU (near the ring
 // helpers); forward-declared here so decode_into_cache can stash a sniffed hand
 // Set_Input_Pos into the single-slot latest-value store.
 static inline void hand_cmd_echo_record(const uint8_t* d, uint64_t now);
@@ -65,7 +65,7 @@ static void decode_into_cache(const CAN_message_t& msg) {
       a.axis_state       = h.state;
       a.procedure_result = h.procedure_result;
       a.trajectory_done  = h.trajectory_done;
-      atomic_write_u64(&a.last_heartbeat_us, micros64());   // monotonic (item 14); atomic 64-bit (item 17):
+      atomic_write_u64(&a.last_heartbeat_us, micros64());   // monotonic; atomic 64-bit:
                                           // the u64 write is two 32-bit stores on Cortex-M7; a lower-prio
                                           // reader (fault watchdog) mid-load would tear the timestamp
       a.heartbeat_seen   = true;
@@ -84,7 +84,7 @@ static void decode_into_cache(const CAN_message_t& msg) {
       // mirroring can_node._handle_encoder's _leg_sign.
       const float pos = ODrive::leg_sign(axis, p.a);
       const float vel = ODrive::leg_sign(axis, p.b);
-      write_pos_vel(a, pos, vel, micros64());   // pos_timestamp_us monotonic (item 14): MOTOR_FB_STALE reads it as an interval
+      write_pos_vel(a, pos, vel, micros64());   // pos_timestamp_us monotonic: MOTOR_FB_STALE reads it as an interval
       break;
     }
     case ODriveCmd::get_iq: {
@@ -103,24 +103,24 @@ static void decode_into_cache(const CAN_message_t& msg) {
       break;
     }
     case ODriveCmd::get_version:
-      // Phase 3: cache the raw 8-byte Get_Version payload for the bridge's
+      // cache the raw 8-byte Get_Version payload for the bridge's
       // GET_AXIS_VERSIONS pull (version SEMANTICS stay on the Jetson). The reply
       // is DLC 8 (the empty-payload request we sent is len 0 and was already
       // dropped by the `< 8` guard above), so `d` is a full 8-byte version frame.
       version_record(axis, d);
       break;
     case ODriveCmd::set_input_pos:
-      // Phase 5: sniff the Platform Teensy's Set_Input_Pos to the HAND ODrive
+      // sniff the Platform Teensy's Set_Input_Pos to the HAND ODrive
       // (axis 6) and echo it to the host (HAND_CMD_ECHO → hand_telemetry
       // pos_cmd/vel_ff_cmd/tor_ff_cmd, can_node._handle_hand_input_pos parity).
       // CAN3 SRX_DIS means we never receive our own leg-setpoint TX, so only
       // genuine Platform→hand commands reach here; the axis==HAND_AXIS guard is
       // belt-and-suspenders (and skips any stray leg-addressed set_input_pos).
-      // wire-bound absolute timestamp — wall by contract (item 14): t_bridge_us is
+      // wire-bound absolute timestamp — wall by contract: t_bridge_us is
       // serialised into the HAND_CMD_ECHO uplink for host-side wall-clock correlation.
       if (axis == HAND_AXIS) hand_cmd_echo_record(d, now_wall_us());
       break;
-    // TxSdo handled elsewhere (encoder-search Phase 9). Ignore here.
+    // TxSdo handled elsewhere (encoder-search). Ignore here.
     default:
       break;
   }
@@ -149,7 +149,7 @@ static void decode_bb_heartbeat(const CAN_message_t& msg) {
       /*yaw_deg=*/      (float)yaw_enc   * HeartbeatEncoding::yaw_res_deg,
       /*pitch_deg=*/    (float)pitch_enc * HeartbeatEncoding::pitch_res_deg,
       /*hand_mm=*/      (float)hand_enc  * HeartbeatEncoding::hand_res_mm,
-      /*t_us=*/         micros64());   // bb_state.last_heartbeat_us monotonic (item 14): read as an interval by the watchdog + [bb] diag
+      /*t_us=*/         micros64());   // bb_state.last_heartbeat_us monotonic: read as an interval by the watchdog + [bb] diag
 }
 
 // Ball Butler ODrive telemetry on CAN1 (node ids 7=pitch, 8=hand). Decode the
@@ -167,7 +167,7 @@ static void decode_bb_odrive(const CAN_message_t& msg) {
       auto h = ODrive::decode_heartbeat(d);
       a.axis_state = h.state; a.procedure_result = h.procedure_result;
       a.trajectory_done = h.trajectory_done;
-      atomic_write_u64(&a.last_heartbeat_us, micros64()); a.heartbeat_seen = true; a.heartbeat_stale = false;  // monotonic (item 14); atomic 64-bit (item 17): torn-write guard, read as interval by send_bb_diag
+      atomic_write_u64(&a.last_heartbeat_us, micros64()); a.heartbeat_seen = true; a.heartbeat_stale = false;  // monotonic; atomic 64-bit: torn-write guard, read as interval by send_bb_diag
       break;
     }
     case ODriveCmd::get_error: {
@@ -177,7 +177,7 @@ static void decode_bb_odrive(const CAN_message_t& msg) {
     }
     case ODriveCmd::get_encoder_estimate: {
       auto p = ODrive::decode_encoder_estimate(d);
-      write_pos_vel(a, p.a, p.b, micros64());   // BB is not a leg → no sign flip; pos_timestamp_us monotonic (item 14)
+      write_pos_vel(a, p.a, p.b, micros64());   // BB is not a leg → no sign flip; pos_timestamp_us monotonic
       break;
     }
     case ODriveCmd::get_iq: {
@@ -199,19 +199,19 @@ static void decode_bb_odrive(const CAN_message_t& msg) {
   }
 }
 
-// ── BB command-result uplink ring (Phase 2: CAN1 CMD_RESULT → UDP relay) ──────
+// ── BB command-result uplink ring (CAN1 CMD_RESULT → UDP relay) ──────
 // SPSC mirror of the cone ring: producer is on_bb_rx (task_can_rx context),
 // consumer is cmd_result_uplink_step() on task_telem. Both sides mask IRQs for the
 // few hundred ns of the copy. CMD_RESULT is low-rate (one per operator command),
 // so a small ring is ample; sustained overflow would mean BB babble, counted in
-// s_cmd_result_fwd_drops (drop-OLDEST, item 20) and surfaced on [canhealth].
+// s_cmd_result_fwd_drops (drop-OLDEST) and surfaced on [canhealth].
 static constexpr uint8_t CMD_RESULT_RING_CAP = 8;
 static CmdResultFrameRec s_cmd_result_ring[CMD_RESULT_RING_CAP];
 static volatile uint8_t s_cmd_result_ring_head = 0, s_cmd_result_ring_tail = 0;
 static volatile uint32_t s_cmd_result_fwd_drops = 0;
 
 // Copy a CMD_RESULT frame verbatim into the uplink ring. Drop-OLDEST on overflow
-// (item 20): CMD_RESULT is the LOUD operator command-outcome channel, so under a
+// CMD_RESULT is the LOUD operator command-outcome channel, so under a
 // burst the operator wants the FRESHEST results — the prior drop-newest policy
 // discarded exactly the latest outcome they were waiting on. On a full ring, evict
 // the oldest record (advance the tail), then enqueue. Touching the tail from the
@@ -254,10 +254,10 @@ uint32_t can_cmd_result_fwd_drops() { return s_cmd_result_fwd_drops; }
 // s_bb_rx and dropped.
 static void on_bb_rx(const CAN_message_t& msg) {
   s_bb_rx++;
-  // DUAL-USE split (item 14): the health stamp is an INTERVAL (→ micros64), but the
+  // DUAL-USE split: the health stamp is an INTERVAL (→ micros64), but the
   // relay-ring t_bridge_us is a WIRE-BOUND absolute timestamp copied into the
   // CMD_RESULT uplink (→ wall). Keep them on separate clocks.
-  const uint64_t now      = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
+  const uint64_t now      = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   const uint64_t now_mono = micros64();      // interval clock for the health stamp
   atomic_write_u64(&s_bb_last_rx_us, now_mono);   // 64-bit monotonic; read as an interval by health_of
   if (msg.id == BallButlerCanId::HEARTBEAT)  { decode_bb_heartbeat(msg); return; }
@@ -265,7 +265,7 @@ static void on_bb_rx(const CAN_message_t& msg) {
   decode_bb_odrive(msg);   // BB pitch/hand ODrive telemetry (CAN1 nodes 7/8)
 }
 
-// ── Cone uplink ring (phase-10b: CAN2 → CONE_FRAME UDP relay) ─────────────────
+// ── Cone uplink ring (CAN2 → CONE_FRAME UDP relay) ─────────────────
 // SPSC: producer is on_cone_rx (task_can_rx context — briefly the FlexCAN ISR
 // during the boot window, see the RX-health comment above), consumer is
 // cone_uplink_step() on task_telem. Both sides run their critical section with
@@ -284,9 +284,9 @@ static volatile uint32_t s_cone_fwd_drops = 0;
 // the cone-uplink ring for the Jetson relay. The RX timestamp also drives the
 // cone-presence gate in can_cone_send() (cone-absent tolerance).
 static void on_cone_rx(const CAN_message_t& msg) {
-  // DUAL-USE split (item 14): s_cone_last_rx_us drives the cone-presence gate + health
+  // DUAL-USE split: s_cone_last_rx_us drives the cone-presence gate + health
   // (INTERVAL → micros64); the ring t_bridge_us is a wire-bound absolute timestamp (→ wall).
-  const uint64_t now      = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
+  const uint64_t now      = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   const uint64_t now_mono = micros64();      // interval clock for the gate + health stamp
   s_cone_rx++;
   atomic_write_u64(&s_cone_last_rx_us, now_mono);   // 64-bit monotonic; read as an interval by the cone gate + health_of
@@ -319,7 +319,7 @@ bool can_cone_pop(ConeFrameRec& out) {
 
 uint32_t can_cone_fwd_drops() { return s_cone_fwd_drops; }
 
-// ── Platform-Teensy relay-reply uplink ring (Phase 1) ─────────────────────────
+// ── Platform-Teensy relay-reply uplink ring ─────────────────────────
 // SPSC mirror of the cone ring: producer is on_jugglebot_rx (task_can_rx), consumer
 // is platform_uplink_step() on task_telem. The Platform Teensy answers a relay read
 // on the SAME arbitration id it was triggered on (0x6E0 RobotState, 0x7DE tilt), so
@@ -362,7 +362,7 @@ bool can_platform_pop(PlatformFrameRec& out) {
 
 uint32_t can_platform_fwd_drops() { return s_platform_fwd_drops; }
 
-// ── Hand command-echo latest-value slot (Phase 5) ─────────────────────────────
+// ── Hand command-echo latest-value slot ─────────────────────────────
 // Producer: decode_into_cache (task_can_rx) via hand_cmd_echo_record on a sniffed
 // hand Set_Input_Pos. Consumer: hand_cmd_echo_uplink_step (task_telem) via
 // can_hand_cmd_echo_pop. Single slot + dirty flag → coalesce to the newest command
@@ -399,10 +399,10 @@ bool can_hand_cmd_echo_pop(HandCmdEchoRec& out) {
 // filter the relay replies were silently counted as decode_bad_axis and dropped.)
 static void on_jugglebot_rx(const CAN_message_t& msg) {
   s_jugglebot_rx++;
-  // DUAL-USE split (item 14): s_jugglebot_last_rx_us drives bus health (INTERVAL →
+  // DUAL-USE split: s_jugglebot_last_rx_us drives bus health (INTERVAL →
   // micros64); the relay-ring t_bridge_us is a wire-bound absolute timestamp copied
   // into the PLATFORM_FRAME uplink (→ wall).
-  const uint64_t now      = now_wall_us();   // wire-bound absolute timestamp — wall by contract (item 14)
+  const uint64_t now      = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   const uint64_t now_mono = micros64();      // interval clock for the health stamp
   atomic_write_u64(&s_jugglebot_last_rx_us, now_mono);   // 64-bit monotonic; read as an interval by health_of
   if (is_platform_reply_id(msg.id)) { platform_ring_push(msg, now); return; }
@@ -417,7 +417,7 @@ void can_buses_init() {
   can_bb.enableFIFOInterrupt();
   can_bb.onReceive(on_bb_rx);
 
-  // Partner-absent tolerance (candidate 3, "gated broadcast" — HANDOFF D2;
+  // Partner-absent tolerance (candidate 3, "gated broadcast";
   // generalised to all three buses 2026-07-05). Every bus is brought up
   // identically; the tolerance lives in the can_*_send() presence gate below,
   // which withholds TX whenever no partner frame has arrived within
@@ -658,7 +658,7 @@ static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64>& bus,
 // TODO(bench): confirm interp_max_jitter_us / interp_deadline_misses stay within
 // budget with the broadcast fan-out active.
 // Bus-partner presence gate (2026-07-05, generalised from the cone-absent
-// tolerance / HANDOFF D2): transmit only when a partner frame has been seen on
+// tolerance): transmit only when a partner frame has been seen on
 // THIS bus within BUS_PARTNER_STALENESS_US. An un-ACKed TX on a partner-less bus
 // retransmits forever, pinning TEC at the error-passive threshold (128 — observed
 // verbatim on CAN1 after a Ball-Butler-absent window) and, across supply ramps,
@@ -678,7 +678,7 @@ static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64>& bus,
 // confirm CAN2 never enters bus-off while CAN1/CAN3 keep broadcasting 0x7DD.
 static inline bool partner_recent(const volatile uint64_t* last_rx_us,
                                   volatile BusRxHealth& h) {
-  // interval (item 14): *_last_rx_us are monotonic; atomic read (torn-load guard)
+  // interval: *_last_rx_us are monotonic; atomic read (torn-load guard)
   if (bus_partner_present(atomic_read_u64(last_rx_us), micros64())) return true;
   // tx_gated is written from BOTH the interp ISR and FreeRTOS tasks (unlike the
   // task_can_rx-only BusRxHealth fields), so the read-modify-write is masked —
@@ -725,7 +725,7 @@ bool jugglebot_commands_allowed() {
   return h != JbUdp::BusHealth::WARN && h != JbUdp::BusHealth::BUS_OFF;
 }
 
-// Phase 6: the bus-transmittable gate for the operator recovery one-shots
+// The bus-transmittable gate for the operator recovery one-shots
 // (CLEAR_ERRORS / REBOOT_ODRIVES). Reads the LIVE ESR1.SYNCH bit maintained every
 // service tick (s_jugglebot_rxh.synced, set in service_bus above). A single volatile
 // byte → atomic on Cortex-M7, so no snapshot/seqlock is needed. Distinct from
@@ -745,7 +745,7 @@ bool jugglebot_bus_transmittable() {
 // clock/register samples. Bus-off wiring landed 2026-07-05, closing the
 // TODO(bench) that shipped with the staleness-only classifier.
 static uint8_t health_of(uint64_t last_rx_us, uint8_t flt_live) {
-  return classify_bus_health(last_rx_us, micros64(), flt_live);   // interval (item 14): *_last_rx_us are mono
+  return classify_bus_health(last_rx_us, micros64(), flt_live);   // interval: *_last_rx_us are mono
 }
 
 CanStats can_buses_stats() {

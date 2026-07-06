@@ -10,7 +10,7 @@
 
 #include "platform_relay.h"
 
-#include <cmath>               // std::isfinite (STATE_WRITE pose-offset validation — Flash-A item 4)
+#include <cmath>               // std::isfinite (STATE_WRITE pose-offset validation)
 #include "udp_protocol.h"
 #include "protocol_config.h"   // PlatformCanId (STATE_UPDATE 0x6E0, TILT_READING 0x7DE)
 #include "odrive_protocol.h"   // ODrive::CanFrame
@@ -48,7 +48,7 @@ uint16_t state_read() {
 }
 
 uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s) {
-  // Trust-boundary float validation (Flash-A item 4): a NaN/Inf pose offset makes the
+  // Trust-boundary float validation: a NaN/Inf pose offset makes the
   // `* 1000.0f` → int16 casts below UNDEFINED, and the corrupt value is then PERSISTED
   // on the Platform Teensy across reboots (it owns the cold-start state). Reject a
   // non-finite pose before the cast — mirrors the BB_THROW throw_args_valid isfinite
