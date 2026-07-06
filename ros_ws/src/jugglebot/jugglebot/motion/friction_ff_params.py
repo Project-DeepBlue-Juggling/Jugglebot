@@ -21,7 +21,7 @@ existing wins:
      is the canonical production path.
   3. The source-tree YAML (for pytest / running from a checkout).
 
-CONTRACT CHANGE (Phase 11, 2026-06-24): the loader previously did a single
+CONTRACT CHANGE (2026-06-24): the loader previously did a single
 rigid five-level ``__file__`` walk that resolved correctly only from the
 source tree; under the install tree it pointed at the never-installed
 ``install/jugglebot/config/`` and raised ``FileNotFoundError`` (the
@@ -199,7 +199,7 @@ def friction_ff_torque_nm(params: FrictionFFParams, axis: int, v_rps: float) -> 
 
     Computes the SAME quantity as ``MotorGuard._compute_friction_ff_Nm()[axis]``
     for a commanded velocity ``v_rps`` on ``axis`` (all other axes at rest), but
-    as a plain scalar so it can be dependency-injected into the U3-iv bench replay
+    as a plain scalar so it can be dependency-injected into the bench replay
     source (``controller.teensy_link.replay_setpoint.RecordedThrowSource``'s
     ``torque_ff_fn``) WITHOUT pulling the full ``motor_guard`` / ROS 2 stack into
     ``controller/`` (which must stay pure). The bench driver builds a
@@ -220,10 +220,10 @@ def friction_ff_torque_nm(params: FrictionFFParams, axis: int, v_rps: float) -> 
     ``ff_sign``, +1 platform default). The can-bridge applies ``leg_sign`` to
     ``torque_ff`` on the way to the ODrive (``odrive_protocol.h``
     ``encode_set_pos_with_ff``, which mirrors ``can_node._leg_sign``), so feeding
-    this value straight into ``Setpoint.torque_ff`` makes the bench β path
+    this value straight into ``Setpoint.torque_ff`` makes the bench Teensy-side path
     sign-identical to the production ``motor_guard → can_node → ODrive`` chain.
 
-    Returns ``0.0`` when ``params.enabled`` is False (the plain β path). Parity
+    Returns ``0.0`` when ``params.enabled`` is False (the plain Teensy-side path). Parity
     with the production vectorised path is pinned by
     ``tests/motion/test_motor_guard_friction_ff.py``.
     """

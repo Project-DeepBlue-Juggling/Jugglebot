@@ -234,7 +234,7 @@ class BallButlerNode(Node):
         self.create_subscription(
             BallButlerHeartbeat, 'bb/heartbeat', self._on_heartbeat, 20)
 
-        # ── Action client (bb/throw — Phase 2, replaces bb/send_throw_command) ──
+        # ── Action client (bb/throw — replaces bb/send_throw_command) ──
         # Fire-and-forget from the throw pipeline's view (we don't block on the
         # result), but the firmware's terminal outcome is logged when it arrives,
         # via the goal-response → result callback chain.

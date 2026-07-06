@@ -45,8 +45,9 @@ setup(
             # ── Core nodes ────────────────────────────────────
             'orchestrator_node = jugglebot.orchestrator_node:main',
             'motion_bridge_node = jugglebot.motion_bridge_node:main',
-            # Phase 10b side-by-side can-bridge Teensy node (NOT in jugglebot_launch
-            # by default — run manually via launch/teensy_bridge_launch.py).
+            # The can-bridge Teensy node (owns the Jetson<->Teensy UDP link). Launched
+            # by jugglebot_launch.py in production; also runnable standalone via
+            # launch/teensy_bridge_launch.py.
             'teensy_bridge_node = jugglebot.teensy_bridge_node:main',
             'mpc_bridge_node = jugglebot.mpc_bridge_node:main',
             'mocap_node = jugglebot.mocap_node:main',

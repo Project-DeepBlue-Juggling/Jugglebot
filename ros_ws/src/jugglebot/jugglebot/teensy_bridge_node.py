@@ -4,12 +4,14 @@ This is the can-bridge successor to ``can_node.py``: it exposes the
 same observable surface (robot state, hand telemetry, link/fault health) but
 sources everything from the can-bridge Teensy over the dedicated UDP link
 (``controller/teensy_link``) instead of socketcan. ``can_node`` was DELETED in
-teensy-can-offload Phase 13 (2026-07-06) — the many ``can_node.py:NNN`` parity
+the SocketCAN decommission (2026-07-06; see
+logbook/2026-07-06-phase13-socketcan-decommission.md) — the many
+``can_node.py:NNN`` parity
 citations throughout this file refer to the last pre-deletion revision in git
 history (the capability mapping lives in
 ``ros_ws/docs/can-node-teensy-parity.md``). The bridge owns the
 **production topic/service names** directly (legs/hand promoted off the
-side-by-side ``/teensy/*`` namespace in Phase 11 / U4; BB + cone in Phase A).
+side-by-side ``/teensy/*`` namespace during the leg/hand cutover; BB + cone in a later cutover).
 
 Safety invariants this node upholds (non-negotiable):
 
@@ -138,7 +140,7 @@ _T2J_FLAG_TIME_SYNCED = 0x1
 _T2J_FLAG_STOW_PENDING = 0x2
 _T2J_FLAG_ALL_AXIS_HB_OK = 0x4
 
-# HeartbeatT2J.bb_flags bits (T→J, Phase A BB cutover).
+# HeartbeatT2J.bb_flags bits (T→J, Ball Butler cutover).
 _T2J_BB_FLAG_BALL_IN_HAND  = 0x1
 _T2J_BB_FLAG_HEARTBEAT_SEEN  = 0x2
 _T2J_BB_FLAG_HEARTBEAT_STALE = 0x4
@@ -160,7 +162,7 @@ _ERR_DC_BUS_UNDER_VOLTAGE = 512
 # ODrive CLOSED_LOOP axis state (matches odrive.AXIS_STATES['CLOSED_LOOP']).
 _AXIS_STATE_CLOSED_LOOP = 8
 
-# Decoded Platform-Teensy RobotState (Phase 1 relay read). Fields mirror
+# Decoded Platform-Teensy RobotState (relay read). Fields mirror
 # Teensy_code.ino RobotState (is_homed / levelling_complete / pose offset, rad).
 RelayRobotState = namedtuple(
     "RelayRobotState",
@@ -212,11 +214,11 @@ def _enum_name(enum_cls, value: int) -> str:
 class _MpcCommandSetpointSource:
     """SUB-only connection to the MPC command PUB (tcp://127.0.0.1:5557).
 
-    **Phase 11 / U4 — the α→β switch.** Previously this read motor_guard's
-    *already-interpolated* 500 Hz telemetry on :5556 (the α relay); it now reads
+    **The Jetson-relay→Teensy-side switch.** Previously this read motor_guard's
+    *already-interpolated* 500 Hz telemetry on :5556 (the Jetson-relay path); it now reads
     the **40 Hz MPC command stream** on :5557 (``ipc.MPC_COMMAND_ADDR``,
     ``ipc.TOPIC_MPC_CMD``) — the same ``make_mpc_command`` dicts motor_guard
-    consumes — so the Teensy does the 500 Hz interpolation (β path). motor_guard
+    consumes — so the Teensy does the 500 Hz interpolation (Teensy-side path). motor_guard
     leaves the leg path; its :5556 output simply goes unconsumed.
 
     Subscribes to the ``mpccmd`` topic specifically (not ``b''``): :5557 also
@@ -283,7 +285,7 @@ class TeensyBridgeNode(Node):
         super().__init__('teensy_bridge_node')
 
         # On a clean shutdown (Ctrl-C of the launch), profiled-stow the platform
-        # before transport teardown — the β analogue of can_node.on_shutdown's
+        # before transport teardown — the Teensy-side analogue of can_node.on_shutdown's
         # _gently_move_to_setpoint(0.0, deactivating=True). Default True in
         # production; unit tests (which call on_shutdown against a FakeTeensy that
         # never completes the descent) pass False via _build_paired_node.
@@ -294,19 +296,19 @@ class TeensyBridgeNode(Node):
         # SAFETY-CRITICAL: setpoint output is OFF by default. Wired in Commit 3.
         self.declare_parameter('enable_setpoint_output', False)
         self.declare_parameter('heartbeat_timeout_s', _HEARTBEAT_TIMEOUT_S)
-        # Phase 9a: which axes the encoder_search service runs index
+        # which axes the encoder_search service runs index
         # search on. Default = all legs; set to e.g. [0] for the standalone-leg
         # bench rig (node 0 = axis 0).
         self.declare_parameter('encoder_search_axes', list(range(p.NUM_LEGS)))
-        # Phase 9b / Phase 5: which axes the home service homes (sequentially — the
+        # which axes the home service homes (sequentially — the
         # firmware homes one axis at a time). Default = all legs + the HAND (axis 6),
         # matching can_node._home_robot (JUGGLEBOT_AXES = legs + hand). The hand homes
         # with Homing::HAND_* params after its gains are applied host-side; a leg-only
         # bench rig sets e.g. [0], which then excludes the hand automatically.
         self.declare_parameter('home_axes', list(range(p.NUM_LEGS)) + [_HAND_AXIS])
-        # Phase 11 U5 / Phase 5: which axes the configure + activate services act on.
+        # which axes the configure + activate services act on.
         # configure applies gains + vel/curr limits + POSITION/PASSTHROUGH (the
-        # β-path _setup_odrives, for the hand too — closes the "configure the hand"
+        # Teensy-side _setup_odrives, for the hand too — closes the "configure the hand"
         # parity gap). activate fires the TRAP_TRAJ move to the active pose (legs
         # only; ACTIVATE is rejected on the hand). Default = all legs + the hand;
         # set to e.g. [0] for the standalone-leg bench rig.
@@ -338,7 +340,7 @@ class TeensyBridgeNode(Node):
         # Outbound RPC client (used by the service surface in Commit 4).
         self._rpc = RpcClient(self._client)
 
-        # ── Hand config state (Phase 5; byte-identical to can_node) ────────────
+        # ── Hand config state (byte-identical to can_node) ────────────
         # The gains/limits the bridge applies to the HAND ODrive (axis 6). Seeded
         # from config defaults (odrive.DEFAULT_*), updated by set_hand_gains. Used by
         # the cold-start hand configure/home path (refuse-flash-defaults) + the
@@ -358,7 +360,7 @@ class TeensyBridgeNode(Node):
         # Per-axis latest Diagnostic (one axis per frame on the wire).
         self._latest_diag: dict[int, Diagnostic] = {}
 
-        # Catching cone state (phase-10b cone uplink). Catch events are
+        # Catching cone state (cone uplink). Catch events are
         # DISCRETE — every one is queued and published exactly once (the
         # stash-latest pattern above would drop impacts that arrive between
         # timer ticks); heartbeats are state — latest wins. The connected
@@ -374,7 +376,7 @@ class TeensyBridgeNode(Node):
         # owned by the Teensy firmware). See controller/teensy_link/fault_logic.py.
         self._link_latch = LinkLossLatch()
         self._last_link_lost = False  # edge detector for logging
-        # CAN3 (Jugglebot core) bus-health edge detector for the Phase-3 cold-start
+        # CAN3 (Jugglebot core) bus-health edge detector for the firmware-validation cold-start
         # reconnect re-trigger. None until the first heartbeat; only a recovery from
         # a DEGRADED state (WARN/BUS_OFF → OK) fires the conservative re-read — the
         # boot UNKNOWN→OK first-connection is excluded (the boot read already ran).
@@ -401,7 +403,7 @@ class TeensyBridgeNode(Node):
         # a later __init__ line would hit an unset attribute (startup race).
         self._bb_est_queue = []   # list of BbAxisEstimates, drained by timer
 
-        # ── BB loud command-outcome channel (Phase 2: CMD_RESULT relay) ──
+        # ── BB loud command-outcome channel (CMD_RESULT relay) ──
         # One outstanding throw at a time (firmware is serialized → no correlation
         # token). The bb/throw action's execute_callback waits on _bb_throw_event;
         # the RX-thread _on_cmd_result handler stores the firmware outcome and sets
@@ -412,7 +414,7 @@ class TeensyBridgeNode(Node):
         self._bb_throw_active = False
         self._bb_throw_result = None   # (outcome:int, detail0:int, detail1:int)
 
-        # ── Platform-Teensy relay replies (Phase 1: PLATFORM_FRAME) ──
+        # ── Platform-Teensy relay replies (PLATFORM_FRAME) ──
         # The relay READ RPCs (TILT_READ / STATE_READ) only TRIGGER a Platform
         # reply; the reply arrives async as a PLATFORM_FRAME on the RX thread. A
         # relay read clears the latched reply for its can_id, sends the RPC, then
@@ -421,7 +423,7 @@ class TeensyBridgeNode(Node):
         # 0x6E0 write echo (bench-probe gate; see _await_platform_reply).
         self._platform_reply_cv = threading.Condition()
         self._platform_replies = {}    # can_id -> (data: bytes, dlc: int)
-        # Fable-5 hardening [16]: serialize whole relay round-trips. Two concurrent
+        # Concurrency hardening: serialize whole relay round-trips. Two concurrent
         # relay ops (e.g. a boot/reconnect STATE_READ racing a home's STATE_WRITE)
         # would otherwise (a) clear + await the same can_id's latched reply and
         # cross-correlate, and (b) lose a read-modify-write update
@@ -434,10 +436,10 @@ class TeensyBridgeNode(Node):
         # lost-update, not just serializing the two wire writes.
         self._relay_lock = threading.RLock()
 
-        # ── Cold-start state cache (Phase 2: relay-sourced is_homed/level/pose) ──
+        # ── Cold-start state cache (relay-sourced is_homed/level/pose) ──
         # The Platform Teensy OWNS the persisted cold-start state; it shares the
-        # ODrive supply so it "forgets when they forget" (locked-decisions #2/#3 —
-        # no can-bridge store, no invalidation rule). The bridge READS that state
+        # ODrive supply so it "forgets when they forget" (there is no can-bridge
+        # store and no invalidation rule). The bridge READS that state
         # via the relay STATE_READ at boot + on each confirmed CAN3 (UDP-link)
         # reconnect, CACHES it here, and surfaces is_homed / levelling_complete /
         # pose_offset on robot_state FROM THE CACHE — the 100 Hz publish path NEVER
@@ -453,7 +455,7 @@ class TeensyBridgeNode(Node):
             is_homed=False, levelling_complete=False,
             pose_offset_tiltX=0.0, pose_offset_tiltY=0.0)
         # True once an authoritative relay read (or a bridge-issued write) has set
-        # the cache; surfaced on link_status for the operator (the Phase-4 sitting).
+        # the cache; surfaced on link_status for the operator (the powered bring-up sitting).
         self._cold_start_authoritative = False
         # encoder_search_complete is DERIVED (no wire field): is_homed OR a search
         # that completed THIS process. This in-session bit tracks the OR term; it is
@@ -468,7 +470,7 @@ class TeensyBridgeNode(Node):
         self._pose_quat_key = None
         self._pose_quat_xyzw = (0.0, 0.0, 0.0, 1.0)
 
-        # ── Firmware version validation (Phase 3) ──────────────
+        # ── Firmware version validation ──────────────
         # Restores can_node's Get_Version handshake (_handle_get_version:474-495).
         # The firmware sweeps Get_Version + caches the raw versions; the bridge
         # pulls them via GET_AXIS_VERSIONS (a cheap UDP RPC reading a bridge-LOCAL
@@ -497,12 +499,12 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
         self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
         self._client.subscribe(int(MsgType.PLATFORM_FRAME), self._on_platform_frame)
-        self._client.subscribe(int(MsgType.HAND_CMD_ECHO), self._on_hand_cmd_echo)  # Phase 5
+        self._client.subscribe(int(MsgType.HAND_CMD_ECHO), self._on_hand_cmd_echo)  # hand conduit
 
-        # ── Publishers (production names — Phase 11 / U4 leg-side cutover) ──
+        # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
         # can_node used: with USB-CAN gone (can_node out of the launch), the
-        # dual-publisher risk that drove the /teensy/* namespacing (handoff D1)
+        # dual-publisher risk that drove the /teensy/* namespacing
         # is moot, and the GUI / orchestrator / consumers subscribe to these
         # production names — so the rename RECONNECTS them to the bridge.
         self.robot_state_pub = self.create_publisher(
@@ -514,17 +516,17 @@ class TeensyBridgeNode(Node):
         self.profile_pub = self.create_publisher(
             DiagnosticStatus, 'profile', 10)
 
-        # ── Ball Butler (Phase A cutover, production names) ────
-        # Intentional naming deviation from D1's "all under /teensy/*"
-        # convention: with USB-CAN removed, the dual-publisher risk D1 was
+        # ── Ball Butler (cutover, production names) ────
+        # Intentional naming deviation from the earlier "all under /teensy/*"
+        # convention: with USB-CAN removed, the dual-publisher risk that namespacing was
         # preventing is moot (can_node is gone for BB). The bridge inherits
         # the production names so the GUI / orchestrator / mocap_node /
         # throw_director see no name change across the cutover. (The leg/hand
-        # topics + services followed onto production names in Phase 11 / U4.)
+        # topics + services followed onto production names in the leg/hand cutover.)
         self.bb_heartbeat_pub = self.create_publisher(
             BallButlerHeartbeat, 'bb/heartbeat', 10)
 
-        # ── Catching cone (phase-10b cone uplink, production names) ────
+        # ── Catching cone (cone uplink, production names) ────
         # Same naming rationale as bb/*: can_node's cone path is dead — the
         # cone lives on the can-bridge's CAN2, which USB-CAN never sees — so
         # the bridge inherits the production names and the existing consumers
@@ -557,19 +559,19 @@ class TeensyBridgeNode(Node):
         # (_bb_est_queue is initialized above, before the subscribe block, to
         # avoid a startup race with the already-live RX thread.)
 
-        # ── RPC service surface (production names — Phase 11 / U4) ──
+        # ── RPC service surface (production names — leg/hand cutover) ──
         # ODrive control issued over the can-bridge link via RpcClient. The
         # can-bridge owns CAN3 — legs 0-5 AND the hand ODrive (axis 6). Leg ops
-        # target legs/broadcast; the hand surface (Phase 5) is registered below.
+        # target legs/broadcast; the hand surface is registered below.
         # Promoted from /teensy/* to the production names can_node served
         # (encoder_search, odrive_command, set_motor_vel_curr_limits) so the
         # orchestrator's existing service clients reach the bridge; clear_errors,
         # reboot_odrives and home are new bridge ops, named bare for consistency.
         #
-        # ── Cold-start verb callback group (Phase 4) ────────────────────────
+        # ── Cold-start verb callback group ────────────────────────
         # Every BLOCKING cold-start verb — the manual encoder_search / home /
         # configure / activate / deactivate services (each a multi-second _run_*
-        # poll loop) AND the Phase-4 orchestrator-facing home_motors action /
+        # poll loop) AND the orchestrator-facing home_motors action /
         # activate_or_deactivate / get_platform_tilt / set_level_state below — runs
         # in ONE ReentrantCallbackGroup so a multi-second move never starves the
         # 100 Hz robot_state publish + heartbeat (those stay in the node's default
@@ -601,13 +603,13 @@ class TeensyBridgeNode(Node):
             SetMotorVelCurrLimitsMessage, 'set_motor_vel_curr_limits',
             self._sub_vel_curr_limits, 10)
 
-        # ── Orchestrator-facing cold-start conduit (Phase 4) ────────────────
+        # ── Orchestrator-facing cold-start conduit ────────────────
         # Makes the bridge a drop-in for the retired can_node from the LOCKED
         # orchestrator_node's view — ZERO edits to orchestrator_node / state_machine
-        # (locked-decision #1, behaviour parity not orchestrator churn). Each of the
+        # (behaviour parity, not orchestrator churn). Each of the
         # four wrappers registers the exact (name, type) interface the orchestrator
         # drives cold-start through and delegates to the bridge's existing verbs:
-        #   home_motors (HomeMotors action)      → _do_home (homes legs + hand, Phase 5)
+        #   home_motors (HomeMotors action)      → _do_home (homes legs + hand)
         #   activate_or_deactivate (srv)         → _run_activate + _run_configure /
         #                                          _run_deactivate
         #   get_platform_tilt (srv)              → relay_read_tilt (NaN-on-failure)
@@ -640,20 +642,20 @@ class TeensyBridgeNode(Node):
             Float64MultiArray, 'set_level_state', self._sub_set_level_state, 10,
             callback_group=self._coldstart_cbgroup)
 
-        # ── Hand command surface (Phase 5) ──────────────────────────────────
+        # ── Hand command surface ──────────────────────────────────
         # The can-bridge owns CAN3, which carries the hand ODrive (axis 6), so it
         # restores the hand conduit can_node held (silently no-op'd against the
         # bridge until now — catch_coordinator's hand services were GAPs). Same ROS
         # names + srv types can_node registered (can_node.py:198-201), so
         # catch_coordinator_node reaches the bridge UNCHANGED: set_hand_state/gains
-        # ride the Phase-1 axis-6 allow-table; set_hand_traj_cmd/smooth_move_hand
+        # ride the relay-seam axis-6 allow-table; set_hand_traj_cmd/smooth_move_hand
         # ride the HAND_TRAJ_CMD RPC (byte-identical 0x6D0 → Platform Teensy).
         self.create_service(SetString, 'set_hand_state', self._svc_set_hand_state)
         self.create_service(SetHandTrajCmd, 'set_hand_traj_cmd', self._svc_set_hand_traj)
         self.create_service(SetFloat, 'smooth_move_hand', self._svc_smooth_move_hand)
         self.create_service(SetHandGains, 'set_hand_gains', self._svc_set_hand_gains)
 
-        # ── Ball Butler services (production names, Phase A cutover) ────
+        # ── Ball Butler services (production names, cutover) ────
         # The bb/* services formerly served by can_node. The firmware
         # gates each TX on bb_present(); we translate the ERR_BUS_DOWN that
         # gate produces into a silent-success for bb/calibrate to preserve
@@ -664,7 +666,7 @@ class TeensyBridgeNode(Node):
         self.create_service(Trigger, 'bb/reset',     self._svc_bb_reset)
         self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate)
 
-        # ── Ball Butler throw ACTION (Phase 2 — replaces bb/send_throw_command) ──
+        # ── Ball Butler throw ACTION (replaces bb/send_throw_command) ──
         # The action awaits the firmware's terminal outcome (relayed back as a
         # CMD_RESULT CAN frame) instead of the bridge-side "frame queued" ack the
         # service returned. Its callbacks share a ReentrantCallbackGroup so a
@@ -710,7 +712,7 @@ class TeensyBridgeNode(Node):
         if enable_sp:
             self._start_setpoint_output(setpoint_source)
 
-        # ── Cold-start boot read (Phase 2) ─────────────────────
+        # ── Cold-start boot read ─────────────────────
         # Read the Platform Teensy's persisted RobotState BEFORE construction
         # returns — i.e. before the executor spins and the first robot_state is
         # published — so the orchestrator never acts on a wrong is_homed. Bounded
@@ -779,7 +781,7 @@ class TeensyBridgeNode(Node):
                 with self._lock:
                     q = self._cone_catch_queue
                     q.append((evt, arrival_us))
-                    # Fable-5 [16]: bound the queue if the 100 Hz drain stalls, same
+                    # Concurrency hardening: bound the queue if the 100 Hz drain stalls, same
                     # as the BB-estimates sibling (drop-oldest). Catches are discrete
                     # + rare, so 4000 (~unbounded in practice) only guards a stuck drain.
                     if len(q) > 4000:
@@ -809,7 +811,7 @@ class TeensyBridgeNode(Node):
             self._platform_reply_cv.notify_all()
 
     def _on_hand_cmd_echo(self, msg_type, seq, payload, addr):
-        # RX-thread callback (Phase 5): the bridge sniffed the Platform Teensy's
+        # RX-thread callback (hand conduit): the bridge sniffed the Platform Teensy's
         # Set_Input_Pos to the hand ODrive (axis 6) on CAN3. Decode the commanded
         # pos/vel_ff/tor_ff and stash them so _publish_hand_telemetry can echo them
         # (byte-identical to can_node._handle_hand_input_pos: <f h h> then vel/tor
@@ -840,7 +842,7 @@ class TeensyBridgeNode(Node):
                 del q[:len(q) - 4000]
 
     def _on_cmd_result(self, msg_type, seq, payload, addr):
-        # RX-thread callback (Phase-2 loud channel). Decode the relayed CMD_RESULT
+        # RX-thread callback (loud command-outcome channel). Decode the relayed CMD_RESULT
         # CAN frame; if it's a THROW outcome and a throw goal is outstanding, hand
         # the (outcome, detail0, detail1) to the waiting bb/throw execute_callback
         # and wake it. Never publish / never block here (RX-thread contract); any
@@ -956,14 +958,14 @@ class TeensyBridgeNode(Node):
             # the comparison faithful WITHOUT re-running the Teensy's stateful
             # soft-reset machine on the Jetson (which fault_state already reports).
             fault_state = int(hb.fault_state) if hb is not None else 0
-            # After the three-bus remap (ADR-0013 / firmware HANDOFF D4) the on-wire
+            # After the three-bus remap (ADR-0013) the on-wire
             # bus1_health slot carries the Jugglebot CORE bus (CAN3: 6 legs + hand) --
             # the bus whose BUS_OFF is fatal for the legs. (bus2_health is now Ball
-            # Butler; the cone bus health is not yet on the uplink -- TODO phase-10b.)
+            # Butler; the cone bus health is not yet on the uplink -- TODO (cone-uplink work).)
             core_bus_health = int(hb.bus1_health) if hb is not None else 0
             legs = states[:_NUM_LEGS]  # the can-bridge owns legs 0-5 (hand = platform Teensy)
             any_leg_active_err = any(s.active_errors != 0 for s in legs)
-            # CROSS-AXIS disarm-while-CLOSED_LOOP (Fable-5 hardening [11]; exact
+            # CROSS-AXIS disarm-while-CLOSED_LOOP (fault-parity hardening; exact
             # parity with fault_logic.py:117 `any_disarmed and any_cl` + can_node):
             # ANY leg disarmed while ANY leg still holds CLOSED_LOOP is fatal. The
             # previous per-leg conjunction (the SAME leg disarmed AND CLOSED_LOOP)
@@ -990,7 +992,7 @@ class TeensyBridgeNode(Node):
                 fault_state == int(FaultState.ODRIVE_FATAL)
                 or any_leg_active_err or disarm_while_cl
                 or fw_mismatch_present)
-            # Fable-5 hardening [5]: surface a dead Jetson↔Teensy UDP link as a fatal
+            # Safety hardening: surface a dead Jetson↔Teensy UDP link as a fatal
             # CAN error. The orchestrator's ONLY health input is robot_state; without
             # this, a lost link leaves it consuming FROZEN motor states stamped with
             # fresh clock times + healthy flags indefinitely (can_node coupled 2 s
@@ -1010,7 +1012,7 @@ class TeensyBridgeNode(Node):
             # bitwise & (not ==), active_errors only.
             msg.has_undervoltage = any(
                 s.active_errors & _ERR_DC_BUS_UNDER_VOLTAGE for s in legs)
-            # firmware_validated (Phase 3): latched by the GET_AXIS_VERSIONS
+            # firmware_validated (version handshake): latched by the GET_AXIS_VERSIONS
             # handshake (_version_check_poll → validate_group). False until the
             # bridge has pulled + validated the ODrive versions; un-gates the
             # orchestrator's is_homed skip (state_machine.py:228-235) when True.
@@ -1031,18 +1033,18 @@ class TeensyBridgeNode(Node):
                     f"Fatal ODrive issue (Teensy fault_state="
                     f"{_enum_name(FaultState, fault_state)}).")
             if msg.has_fatal_can_error:
-                # Distinguish the UDP-link-loss cause (Fable-5 [5]) from a CAN3
+                # Distinguish the UDP-link-loss cause (safety hardening) from a CAN3
                 # bus fault, so an operator sees WHY robot_state went fatal.
                 errors.append(
                     "Teensy link lost (UDP) — telemetry is stale."
                     if link_lost else "Fatal CAN bus issue.")
             msg.error = errors
 
-            # Teensy-persisted cold-start state (Phase 2) — sourced from the
+            # Teensy-persisted cold-start state — sourced from the
             # Platform Teensy's RobotState via the relay STATE_READ (cached at boot
             # + on CAN3 reconnect; the publish path is non-blocking — it reads only
             # the cache, never a CAN3 round-trip). Replaces the hardcoded
-            # conservative defaults of phase 10b.
+            # conservative defaults of the earlier side-by-side bring-up.
             is_homed = bool(cold.is_homed)
             msg.is_homed = is_homed
             msg.levelling_complete = bool(cold.levelling_complete)
@@ -1073,7 +1075,7 @@ class TeensyBridgeNode(Node):
         """Publish hand_telemetry from axis 6 of the Telemetry frame.
 
         Mirrors can_node._publish_hand_telemetry: the MEASURED side from the
-        Telemetry/Diagnostic cache, and (Phase 5) the COMMAND side (pos_cmd/
+        Telemetry/Diagnostic cache, and (hand conduit) the COMMAND side (pos_cmd/
         vel_ff_cmd/tor_ff_cmd) from the last sniffed HAND_CMD_ECHO — the hand's
         commanded-vs-measured tracking-error diagnostic (catch-tuning) that was
         dropped to 0 on the bridge until now.
@@ -1117,8 +1119,8 @@ class TeensyBridgeNode(Node):
         delivered anyway). On confirmed reconnect, the latch stays ``stow_pending``
         and the bridge SURFACES it on link_status for the operator /
         orchestrator. The bridge does NOT auto-execute a stow: there is no stow
-        RPC until firmware Phase 9, and the Teensy already owns the profiled
-        CAN-side stow (decision D12). This is the "always stow on confirmed
+        RPC until a future firmware release, and the Teensy already owns the profiled
+        CAN-side stow. This is the "always stow on confirmed
         reconnect, never command a dead link" invariant, minus the executor the
         bridge does not have.
         """
@@ -1136,12 +1138,12 @@ class TeensyBridgeNode(Node):
                 if self._link_latch.stow_pending:
                     self.get_logger().error(
                         "Teensy link RESTORED — a mid-run loss occurred. "
-                        "STOW PENDING: no stow RPC exists yet (firmware Phase 9); "
+                        "STOW PENDING: no stow RPC exists yet (future firmware); "
                         "operator/orchestrator must stow the platform. Surfaced "
                         "on link_status (bridge_stow_pending=1).")
                 else:
                     self.get_logger().info("Teensy link RESTORED.")
-                # Fable-5 hardening [7]: forget the pre-loss setpoint so the per-step
+                # Safety hardening: forget the pre-loss setpoint so the per-step
                 # gate can't wedge after a firmware stow. During the loss the firmware
                 # may have stowed the legs to ~0 rev, but the pump's _prev_pos still
                 # holds the pre-loss active pose (~2.2 rev) — so the first
@@ -1152,13 +1154,13 @@ class TeensyBridgeNode(Node):
                 # two-layer design). SAFE — it only forgets the prior frame, never
                 # relaxes a bound.
                 self._sp_pump.reset()
-                # Phase 2: on a confirmed UDP-link reconnect, re-read the Platform
+                # Cold-start refresh: on a confirmed UDP-link reconnect, re-read the Platform
                 # Teensy's cold-start state (it is the authoritative store; a
                 # reconnect only triggers a re-read, never INFERS reference state).
                 # Refresh off the publish path; KEEP the cached value if the read
                 # fails — a Jetson↔Teensy link blip leaves the Platform Teensy (and
                 # its references) powered, so a re-home would be wrong (can_node
-                # passive last-known parity). Dispatched to a daemon thread ([16c])
+                # passive last-known parity). Dispatched to a daemon thread
                 # so the relay round-trip can't stall the 100 Hz publish (shared
                 # callback group). Best-effort: if a conservative CAN3-recovery
                 # re-read already holds the shared guard, this keep-stale read is
@@ -1167,16 +1169,16 @@ class TeensyBridgeNode(Node):
                     self._refresh_cold_start_state, 'reconnect', 'cs-udp-reread')
             self._last_link_lost = self._link_latch.link_lost
 
-            # Phase 3 precondition (audit 2026-06-29): CAN3-bus-health reconnect
+            # Firmware-validation precondition (audit 2026-06-29): CAN3-bus-health reconnect
             # re-trigger. The UDP-watchdog edge above does NOT fire for a CAN3-only
             # drop — if Jugglebot is disconnected while the Jetson + can-bridge stay
-            # powered, the UDP link never drops, so the Phase-2 reconnect re-read
+            # powered, the UDP link never drops, so the UDP-reconnect re-read
             # never runs and the cache could hold a STALE is_homed=True against a
-            # de-referenced robot (the hole that goes LIVE once Phase 3 ungates the
+            # de-referenced robot (the hole that goes LIVE once firmware validation ungates the
             # orchestrator's is_homed skip). bus1_health (CAN3, the Jugglebot core
             # bus) recovering to OK from a DEGRADED state (WARN/BUS_OFF) signals the
             # Platform Teensy may have lost + regained power (it shares the ODrive
-            # supply — locked-decisions #2/#3), so re-read CONSERVATIVELY (retry,
+            # supply), so re-read CONSERVATIVELY (retry,
             # then is_homed=False on failure — NOT keep-stale). UNKNOWN→OK (the boot
             # first-connection) is excluded: it is not a loss, and the __init__ boot
             # read already covered it (re-reading there could needlessly clobber a
@@ -1201,7 +1203,7 @@ class TeensyBridgeNode(Node):
                 # shared guard (dispatched=False), leave _last_bus1_health DEGRADED
                 # so the edge re-fires next tick — the conservative read (is_homed=
                 # False on failure) must never be permanently preempted by the
-                # weaker keep-stale path ([16c]).
+                # weaker keep-stale path.
                 if dispatched:
                     self._last_bus1_health = cur_bus1
             elif cur_bus1 is not None:
@@ -1211,7 +1213,7 @@ class TeensyBridgeNode(Node):
                                     throttle_duration_sec=5.0)
 
     # ═══════════════════════════════════════════════════════════
-    # Firmware-version handshake (Phase 3) — Get_Version → validate_group
+    # Firmware-version handshake — Get_Version → validate_group
     # ═══════════════════════════════════════════════════════════
 
     def _version_check_poll(self):
@@ -1287,7 +1289,7 @@ class TeensyBridgeNode(Node):
         precondition). Pinned to 0 unless ~enable_setpoint_output is true.
         """
         if active and not self._mpc_active:
-            # Fable-5 hardening [7]: on the 0→1 re-enable edge, forget any stale
+            # Safety hardening: on the 0→1 re-enable edge, forget any stale
             # prior setpoint so the per-step gate starts fresh (the pump may hold a
             # _prev_pos from a prior session/pose). Same rationale as the reconnect
             # reset; the firmware MAX_DEVIATION gate is the complementary layer.
@@ -1320,7 +1322,7 @@ class TeensyBridgeNode(Node):
         self._sp_thread.start()
 
     def _setpoint_loop(self):
-        """Dedicated thread: drain the 40 Hz MPC command → pack β knots → gate → send."""
+        """Dedicated thread: drain the 40 Hz MPC command → pack Teensy-side knots → gate → send."""
         while not self._sp_stop.is_set():
             try:
                 cmd = self._sp_source.recv_latest()
@@ -1332,11 +1334,11 @@ class TeensyBridgeNode(Node):
                 self._process_setpoint(cmd)
             else:
                 # ~1 kHz idle poll (the MPC command stream arrives at 40 Hz; the
-                # Teensy interpolates to 500 Hz from the β knots).
+                # Teensy interpolates to 500 Hz from the knots).
                 self._sp_stop.wait(0.001)
 
     def _process_setpoint(self, cmd: dict):
-        """Pack one 40 Hz MPC command into a β-knot Setpoint frame, gate it, send.
+        """Pack one 40 Hz MPC command into a Teensy-side knot Setpoint frame, gate it, send.
 
         SAFETY gates, in order:
           1. mpc_active must be set (operator opt-in). Belt-and-suspenders — the
@@ -1346,7 +1348,7 @@ class TeensyBridgeNode(Node):
           3. The SetpointPump's per-step clamp + NaN/short-vector rejection.
         Only a clean, accepted frame is transmitted.
 
-        FULLY EXCEPTION-CONTAINED (Fable-5 hardening): this runs on the dedicated
+        FULLY EXCEPTION-CONTAINED (safety hardening): this runs on the dedicated
         'teensy_bridge_setpoint' daemon thread, so one malformed command or a
         transient send error (e.g. ENETUNREACH during the pre-latch window) must
         NOT kill the thread while mpc_active stays 1 — that would turn a one-frame
@@ -1443,7 +1445,7 @@ class TeensyBridgeNode(Node):
                          value=str(int(self._link_latch.link_lost))),
                 KeyValue(key='bridge_stow_pending',
                          value=str(int(self._link_latch.stow_pending))),
-                # Phase 2 cold-start cache visibility (the Phase-4 powered sitting
+                # cold-start cache visibility (the powered bring-up sitting
                 # confirms the boot read landed and the right is_homed surfaced).
                 KeyValue(key='cold_start_is_homed',
                          value=str(int(self._cold_start_state.is_homed))),
@@ -1559,7 +1561,7 @@ class TeensyBridgeNode(Node):
 
     # ── Tested node methods (one per RpcMethod) — the reusable surface ──
     # Arg encoding (rpc_args, codegen-hoisted) + RpcClient call. ROS service
-    # wrappers for the arg-bearing per-axis ops await new .srv types (D10); the
+    # wrappers for the arg-bearing per-axis ops await new .srv types; the
     # encodings are fully covered by tests/ros/test_teensy_bridge_node_rpc.py.
 
     def teensy_set_axis_state(self, axis, state):
@@ -1623,18 +1625,18 @@ class TeensyBridgeNode(Node):
         return self._call_rpc(RpcMethod.SDO_WRITE,
                               rpc_args.encode_sdo_write(axis, endpoint, value))
 
-    # ── Platform-Teensy relay (Phase 1) ──
+    # ── Platform-Teensy relay ──
     # The relay reads TRIGGER a Platform-Teensy reply over CAN3 (0x7DE tilt /
     # 0x6E0 RobotState); the firmware forwards the reply verbatim as a
     # PLATFORM_FRAME the bridge correlates by (can_id, dlc). These methods are the
-    # tested mechanism; Phase 2/4 source robot_state.is_homed/levelling/pose +
+    # tested mechanism; the cold-start cache + orchestrator conduit source robot_state.is_homed/levelling/pose +
     # get_platform_tilt from them. NOTE(bench): the (can_id, dlc) discriminator is
     # only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is
     # not looped back as a reply, and the await timeout must exceed the measured
     # Platform reply latency — both gated on a bench probe before hardware trust.
     _RELAY_READ_TIMEOUT_S = 0.5
 
-    # Cold-start boot read (Phase 2): a few bounded retries so a momentarily
+    # Cold-start boot read: a few bounded retries so a momentarily
     # not-yet-synced CAN3 / link gets a second chance before the conservative
     # is_homed=False fallback. Worst-case construction delay when the Platform is
     # unresponsive ≈ 3 × _RELAY_READ_TIMEOUT_S + 2 × _BOOT_STATE_READ_RETRY_S ≈
@@ -1645,7 +1647,7 @@ class TeensyBridgeNode(Node):
     # for a deliberate cold-start step (the legs are not yet moving).
     _BOOT_STATE_READ_ATTEMPTS = 3
     _BOOT_STATE_READ_RETRY_S = 0.2
-    # Reboot cold-start clear (Phase 2): the Platform Teensy stays powered through
+    # Reboot cold-start clear: the Platform Teensy stays powered through
     # an ODrive reboot, so a dropped clear would leave a STALE is_homed=True against
     # rebooted (de-referenced) ODrives — the dangerous direction. Retry the clear a
     # few times to harden that durability.
@@ -1673,7 +1675,7 @@ class TeensyBridgeNode(Node):
         (ok, message, (tiltX, tiltY)) in radians; tilt is None on failure."""
         timeout = self._RELAY_READ_TIMEOUT_S if timeout is None else timeout
         can_id = proto.CAN_ID_PLATFORM_TILT_READING
-        with self._relay_lock:   # serialize the whole relay round-trip (Fable-5 [16])
+        with self._relay_lock:   # serialize the whole relay round-trip
             with self._platform_reply_cv:
                 self._platform_replies.pop(int(can_id), None)
             ok, msg, _ = self._call_rpc(RpcMethod.TILT_READ)
@@ -1691,7 +1693,7 @@ class TeensyBridgeNode(Node):
         Teensy_code.ino decodeStateCANMessage packs it."""
         timeout = self._RELAY_READ_TIMEOUT_S if timeout is None else timeout
         can_id = proto.CAN_ID_PLATFORM_STATE_UPDATE
-        with self._relay_lock:   # serialize the whole relay round-trip (Fable-5 [16])
+        with self._relay_lock:   # serialize the whole relay round-trip
             with self._platform_reply_cv:
                 self._platform_replies.pop(int(can_id), None)
             ok, msg, _ = self._call_rpc(RpcMethod.STATE_READ)
@@ -1707,7 +1709,7 @@ class TeensyBridgeNode(Node):
         """STATE_WRITE: write the whole Platform-Teensy RobotState (the bridge is
         the sole writer; the firmware re-encodes the 0x6E0 frame). No reply —
         returns (ok, message) from the synchronous RPC ack. Serialized with the relay
-        reads via _relay_lock (Fable-5 [16]) so the STATE_WRITE read-modify-write
+        reads via _relay_lock so the STATE_WRITE read-modify-write
         cannot interleave with a concurrent STATE_READ (lost update / cache skew)."""
         with self._relay_lock:
             ok, msg, _ = self._call_rpc(
@@ -1717,8 +1719,8 @@ class TeensyBridgeNode(Node):
             return ok, msg
 
     # ── Cold-start state cache: read at boot + on reconnect, write on home/reboot ──
-    # The Platform Teensy owns the persisted cold-start state (locked-decisions
-    # #2/#3). These methods keep self._cold_start_state in sync with it: a relay
+    # The Platform Teensy owns the persisted cold-start state. These methods keep
+    # self._cold_start_state in sync with it: a relay
     # read REFRESHES the cache (off the publish path); a relay write does
     # read-modify-write THROUGH the cache so a homing write preserves levelling +
     # pose, and vice versa. The 100 Hz publish path only reads the cache.
@@ -1781,14 +1783,14 @@ class TeensyBridgeNode(Node):
         landed.
 
         Used by the boot read (reason='boot') AND the CAN3-bus-health reconnect
-        re-read (reason='can3_reconnect', Phase 3 precondition). NOTE the deliberate
+        re-read (reason='can3_reconnect', firmware-validation precondition). NOTE the deliberate
         asymmetry vs _refresh_cold_start_state (the UDP-watchdog reconnect path),
         which KEEPS the stale cache on a failed read: a Jetson↔Teensy link blip does
         NOT imply the Platform Teensy lost power (its references are intact), so a
         re-home there would be wrong — can_node passive last-known parity. A CAN3
         bus-health recovery (WARN/BUS_OFF→OK) DOES imply the Jugglebot supply may
-        have cycled (the Platform Teensy shares the ODrive supply — locked-decisions
-        #2/#3), so a failed re-read must NOT keep a possibly-stale is_homed=True."""
+        have cycled (the Platform Teensy shares the ODrive supply), so a failed
+        re-read must NOT keep a possibly-stale is_homed=True."""
         for attempt in range(self._BOOT_STATE_READ_ATTEMPTS):
             if self._refresh_cold_start_state(reason):
                 return True
@@ -1812,7 +1814,7 @@ class TeensyBridgeNode(Node):
         which shares the node's default MutuallyExclusiveCallbackGroup with the
         100 Hz _publish_robot_state — so a synchronous relay round-trip would stall
         the robot_state stream (the CAN3 conservative re-read up to ~1.9 s: audit
-        2026-06-29 MEDIUM; Fable-5 [16c] extends the same off-thread fix to the
+        2026-06-29 MEDIUM; the same off-thread fix extends to the
         UDP-watchdog reconnect re-read, ~0.5 s single round-trip). Dispatch to a
         short-lived daemon thread: it touches only self._cold_start_state /
         _cold_start_authoritative / _encoder_search_done_session under self._lock,
@@ -1853,8 +1855,8 @@ class TeensyBridgeNode(Node):
         writer — a homing write must not clobber a prior levelling result, and vice
         versa). Updates the cache on success. Returns (ok, message).
 
-        The whole read→wire-write→cache-update runs under _relay_lock (Fable-5
-        [16]) so a concurrent _write_level_state cannot read the same stale cache
+        The whole read→wire-write→cache-update runs under _relay_lock so a
+        concurrent _write_level_state cannot read the same stale cache
         and land its wire write last, clobbering is_homed on the Platform Teensy —
         the RMW is atomic across writers, not just the two wire writes serialized."""
         with self._relay_lock:
@@ -1878,12 +1880,12 @@ class TeensyBridgeNode(Node):
         """Persist the levelling result (levelling_complete + pose_offset) via
         STATE_WRITE, read-modify-write THROUGH the cache so is_homed is preserved (the
         bridge is the sole writer — a levelling write must not clobber a prior homing
-        result, and vice versa). The Phase-4 set_level_state subscriber's persist
+        result, and vice versa). The orchestrator set_level_state subscriber's persist
         path; byte-parity with can_node._sub_set_level_state → _update_teensy_state
         (which merged into last_known_state, so is_homed carried through). Updates the
         cache on success. Returns ``(ok, message)``.
 
-        Whole RMW under _relay_lock (Fable-5 [16]) — see _write_is_homed; the
+        Whole RMW under _relay_lock — see _write_is_homed; the
         symmetric case is a concurrent homing write being clobbered here."""
         with self._relay_lock:
             with self._lock:
@@ -1905,7 +1907,7 @@ class TeensyBridgeNode(Node):
         return ok, msg
 
     def _clear_cold_start_state_on_reboot(self):
-        """REBOOT_ODRIVES shared-hook step 2 (Phase 2): clear is_homed +
+        """REBOOT_ODRIVES shared-hook step 2 (cold-start clear): clear is_homed +
         levelling_complete + pose_offset on the Platform Teensy — the ODrives lose
         their references on reboot, so all three are cleared together (mirrors
         can_node.py:1559-1565). Retried (the Platform Teensy stays powered through
@@ -1913,8 +1915,8 @@ class TeensyBridgeNode(Node):
         The cache is set to the cleared value regardless (the safe local view).
         Returns (ok, message).
 
-        The retried wire clears + the cache reset run under _relay_lock (Fable-5
-        [16]) so a concurrent homing/levelling write cannot land between a
+        The retried wire clears + the cache reset run under _relay_lock so a
+        concurrent homing/levelling write cannot land between a
         successful clear and the cache reset and resurrect a stale is_homed=True."""
         ok, msg = False, 'no attempt'
         with self._relay_lock:
@@ -1939,7 +1941,7 @@ class TeensyBridgeNode(Node):
                 # must therefore go False after a reboot (is_homed is already cleared
                 # above). can_node.py:1552-1566 did NOT clear this — a LATENT BUG that only
                 # bit once the orchestrator drove homing AUTOMATICALLY after a reboot
-                # (Phase 4): HomingHandler skipped encoder-search on the stale True and
+                # (orchestrator-driven auto-home): HomingHandler skipped encoder-search on the stale True and
                 # homed on an un-indexed encoder → ODRIVE_FATAL → FAULT→BOOT→HOMING loop
                 # (hardware, 2026-07-02; see logbook 2026-07-02-canbridge-reboot-encoder-
                 # search-clear). Clearing it re-runs encoder-search on the next cold-start,
@@ -1949,12 +1951,12 @@ class TeensyBridgeNode(Node):
                 self._encoder_search_done_session = False
         return ok, msg
 
-    # ── Encoder index search (Phase 9a, Jetson-side orchestration) ──
+    # ── Encoder index search (Jetson-side orchestration) ──
     # The firmware ENCODER_SEARCH RPC is stubbed (ERR_NOT_IMPL); encoder index
     # search is an ODrive-autonomous axis state, so we orchestrate it from here
     # over the implemented SET_AXIS_STATE primitive + the telemetry/diagnostic
     # cache. The pure sequencing lives in controller/teensy_link/encoder_search.py
-    # (unit-tested); this method is the I/O loop around it. Homing (Phase 9b) is
+    # (unit-tested); this method is the I/O loop around it. Homing (the firmware move) is
     # the part that must live in firmware (no per-leg motion RPC).
 
     def _encoder_axis_status(self, axes):
@@ -2020,7 +2022,7 @@ class TeensyBridgeNode(Node):
         self.get_logger().error(msg)
         return False, msg
 
-    # ── Homing (Phase 9b — firmware move, Jetson-side observation) ──
+    # ── Homing (firmware move, Jetson-side observation) ──
     # Unlike encoder search, the homing *move* runs autonomously in the can-bridge
     # HOME handler (no per-leg motion RPC; the velocity-limited move-to-hardstop
     # must live in firmware). The Jetson fires HOME (fire-and-monitor) and watches
@@ -2041,7 +2043,7 @@ class TeensyBridgeNode(Node):
             axis_state=int(d.axis_state),
             pos_rev=float(telem.pos_rev[int(axis)]),
             active_errors=int(d.active_errors),
-            homing_result=int(d.homing_result))   # Fable-5 [18A]: authoritative outcome
+            homing_result=int(d.homing_result))   # authoritative outcome from the HomingResult uplink
 
     def _run_home(self, axes, *, poll_dt=0.05):
         """Home ``axes`` over the can-bridge link, one axis at a time.
@@ -2055,8 +2057,9 @@ class TeensyBridgeNode(Node):
         if not axes:
             return False, "no axes configured for homing"
         # Per-axis observer timeout BACKSTOP. MUST sit BELOW the firmware per-axis
-        # hard timeout (Homing::MOTOR_TIMEOUT_S = 30 s). Since Fable-5 [18A] the
-        # observer trusts the firmware's uplinked HomingResult, so a firmware abort —
+        # hard timeout (Homing::MOTOR_TIMEOUT_S = 30 s). Since the HomingResult uplink
+        # landed (see logbook/2026-07-05-canhub-hardening-18a-homing-result-uplink.md),
+        # the observer trusts the firmware's uplinked HomingResult, so a firmware abort —
         # including its own 30 s timeout — is reported as HOMING_FAILED directly; this
         # host timeout only catches a leg that never resolves at all (e.g. a lost
         # RUNNING→terminal transition). A real home completes in a few seconds, so 20 s
@@ -2151,8 +2154,8 @@ class TeensyBridgeNode(Node):
         return False, ("hand gain write failed on CAN: " + ", ".join(failed)
                        + " — hand may be on flash defaults")
 
-    # ── Configure + activate (Phase 11 U5 — β-path cold-start) ──
-    # The β path has only one leg-motion path (the gated 40 Hz setpoint stream),
+    # ── Configure + activate (Teensy-side cold-start) ──
+    # The Teensy-side path has only one leg-motion path (the gated 40 Hz setpoint stream),
     # so the can_node `_setup_odrives_steps` (gains/limits/mode) and
     # `_gentle_move_steps` (move to active pose) have no equivalent until here.
     # `_run_configure` is the pure-config _setup_odrives analogue; `_run_activate`
@@ -2160,7 +2163,7 @@ class TeensyBridgeNode(Node):
     # `_run_configure` at completion (the operator's "set after every homing").
 
     def _run_configure(self, axes):
-        """Apply the β-path cold-start config to ``axes`` (the _setup_odrives
+        """Apply the Teensy-side cold-start config to ``axes`` (the _setup_odrives
         analogue): per-leg position/velocity gains + vel/curr limits +
         POSITION/PASSTHROUGH controller mode. Idempotent and motion-free — it does
         NOT change axis_state or command a position (that is /activate's job), so it
@@ -2194,8 +2197,8 @@ class TeensyBridgeNode(Node):
                     failed.append(f"axis {axis} {name}: {m}")
         if do_hand:
             # Configure the HAND (axis 6) — the hand half of can_node's cold-start
-            # _setup_odrives (parity row 51): hand PID gains (refuse-flash-defaults,
-            # row 40) + hand vel/curr limits + POSITION/PASSTHROUGH. Gains + limits
+            # _setup_odrives (per the can_node<->Teensy parity audit): hand PID gains
+            # (refuse-flash-defaults) + hand vel/curr limits + POSITION/PASSTHROUGH. Gains + limits
             # come from self._hand_gains / self._hand_vel_limit / self._hand_curr_limit
             # (config defaults, updatable via set_hand_gains / set_motor_vel_curr_limits).
             gok, gmsg = self._apply_hand_gains()
@@ -2412,7 +2415,7 @@ class TeensyBridgeNode(Node):
         # SET_AXIS_STATE(IDLE), can_node.py:1541-1543). ACTIVATE/DEACTIVATE are
         # rejected on axis 6 (leg-specific cold-start moves), so the hand is idled
         # explicitly here. Best-effort — a failure is logged but does not fail the
-        # leg deactivate result (parity row 29).
+        # leg deactivate result (per the can_node<->Teensy parity audit).
         hok, hmsg, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES['IDLE'])
         if not hok:
             self.get_logger().warning(f"deactivate: hand IDLE failed — {hmsg}")
@@ -2437,8 +2440,9 @@ class TeensyBridgeNode(Node):
 
     def _reboot_odrives(self):
         """REBOOT_ODRIVES shared ordered hook (mirrors can_node._reboot_odrives_
-        steps). Step 1 — the bounded watchdog-suppression latch — is Phase 6 and
-        out of scope here. Step 2 (Phase 2): after firing the reboot, clear the
+        steps). Step 1 — the bounded watchdog-suppression latch — is owned elsewhere
+        (see logbook/2026-06-30-canbridge-phase6-reboot-latch.md) and out of scope
+        here. Step 2 (cold-start clear): after firing the reboot, clear the
         persisted cold-start state on the Platform Teensy (the ODrives lose their
         references on reboot). Returns (ok, message)."""
         ok, msg, _ = self.teensy_reboot()
@@ -2459,13 +2463,13 @@ class TeensyBridgeNode(Node):
         return res
 
     def _svc_encoder_search(self, req, res):
-        # Phase 9a: Jetson-side orchestration over SET_AXIS_STATE (the firmware
+        # Jetson-side orchestration over SET_AXIS_STATE (the firmware
         # ENCODER_SEARCH RPC remains stubbed). Scope via the encoder_search_axes
         # parameter (default all legs; [0] for the standalone-leg bench rig).
         axes = list(self.get_parameter('encoder_search_axes').value or [])
         ok, msg = self._run_encoder_search(axes)
         if ok:
-            # Phase 2: track the in-session search-done bit so the DERIVED
+            # Cold-start state: track the in-session search-done bit so the DERIVED
             # encoder_search_complete = is_homed OR within-session-search-done
             # (can_node parity — see _publish_robot_state). Sticky-True for the run.
             with self._lock:
@@ -2476,15 +2480,15 @@ class TeensyBridgeNode(Node):
 
     def _do_home(self):
         """Home the configured axes (legs + hand), persist the is_homed RESULT, and
-        (on success) apply the β-path cold-start config — the shared body behind BOTH
+        (on success) apply the Teensy-side cold-start config — the shared body behind BOTH
         the manual ``/home`` Trigger service AND the orchestrator-facing
-        ``home_motors`` action (Phase 4). One definition, so the two entry points can
+        ``home_motors`` action. One definition, so the two entry points can
         never drift. Returns ``(ok, message)``.
 
         Scope via the ``home_axes`` parameter (default all legs + the hand; ``[0]``
         for the standalone-leg bench rig). The firmware HOME handler runs the
         velocity-limited move-to-hardstop autonomously; ``_run_home`` drives +
-        observes it (applying the hand gains before HOME(6), Phase 5).
+        observes it (applying the hand gains before HOME(6)).
 
         Persisting is_homed = the home RESULT (read-modify-write through the cache so
         levelling/pose are preserved) is the safety crux, EXACT can_node.py:847 parity
@@ -2526,7 +2530,7 @@ class TeensyBridgeNode(Node):
                 self._home_in_progress = False
 
     def _svc_home(self, req, res):
-        # Phase 9b + Phase 4: the manual /home Trigger service shares _do_home() with
+        # the manual /home Trigger service shares _do_home() with
         # the orchestrator's home_motors action — one home+persist+configure body.
         ok, msg = self._do_home()
         res.success = ok
@@ -2534,7 +2538,7 @@ class TeensyBridgeNode(Node):
         return res
 
     def _svc_configure(self, req, res):
-        # Phase 11 U5: apply the β-path cold-start config (gains + vel/curr limits
+        # apply the Teensy-side cold-start config (gains + vel/curr limits
         # + POSITION/PASSTHROUGH) to the configure_axes. Run after homing (auto via
         # /home) and again before arming / after activate (TRAP_TRAJ → PASSTHROUGH).
         axes = list(self.get_parameter('configure_axes').value or [])
@@ -2544,7 +2548,7 @@ class TeensyBridgeNode(Node):
         return res
 
     def _svc_activate(self, req, res):
-        # Phase 11 U5: fire the firmware TRAP_TRAJ move to the active pose +
+        # fire the firmware TRAP_TRAJ move to the active pose +
         # observe completion. Scope via activate_axes (default all legs; [0] for
         # the standalone-leg bench rig). Precondition: a prior /configure.
         axes = list(self.get_parameter('activate_axes').value or [])
@@ -2554,8 +2558,8 @@ class TeensyBridgeNode(Node):
         return res
 
     def _svc_deactivate(self, req, res):
-        # Phase 11 U5: fire the firmware TRAP_TRAJ controlled lower to the STOW
-        # pose + IDLE on arrival (the β-path analogue of can_node deactivate),
+        # fire the firmware TRAP_TRAJ controlled lower to the STOW
+        # pose + IDLE on arrival (the Teensy-side analogue of can_node deactivate),
         # then observe completion. Scope via deactivate_axes (default all legs;
         # [0] for the standalone-leg bench rig). Precondition: legs at the active
         # pose (a prior /activate).
@@ -2565,10 +2569,10 @@ class TeensyBridgeNode(Node):
         res.message = msg
         return res
 
-    # ── Hand command surface (Phase 5) ──────────────────────────────────────
+    # ── Hand command surface ──────────────────────────────────────
     # Byte-identical ports of can_node's hand services (can_node.py:782-829,
     # 1626-1661). Jetson-side validation matches can_node exactly (reject invalid
-    # before a byte hits CAN3); the RPCs ride the Phase-1 axis-6 allow-table
+    # before a byte hits CAN3); the RPCs ride the relay-seam axis-6 allow-table
     # (state/gains) or the HAND_TRAJ_CMD 0x6D0 conduit (traj/smooth-move).
 
     def _svc_set_hand_state(self, req, res):
@@ -2576,7 +2580,7 @@ class TeensyBridgeNode(Node):
         # Reject an UNKNOWN state string Jetson-side: can_node passed the string to
         # encode_set_state (which KeyErrors on a bad key → caught as failure); we do
         # the same map + reject explicitly. SET_AXIS_STATE on axis 6 rides the
-        # Phase-1 allow-table.
+        # relay-seam allow-table.
         try:
             state = str(req.data)
             if state not in proto.ODRIVE_STATES:
@@ -2640,7 +2644,7 @@ class TeensyBridgeNode(Node):
         # Set hand PID gains (SetHandGains: pos_gain, vel_gain, vel_integrator_gain)
         # + remember them (the cold-start hand config/home path reapplies them).
         # Mirrors can_node._svc_set_hand_gains (SET_POS_GAIN then SET_VEL_GAINS on
-        # axis 6, both riding the Phase-1 allow-table), with ONE intentional
+        # axis 6, both riding the relay-seam allow-table), with ONE intentional
         # hardening: the remembered self._hand_gains is updated only on a successful
         # write (can_node cached unconditionally). This never caches gains that
         # failed to reach the ODrive — otherwise _apply_hand_gains would later
@@ -2671,7 +2675,7 @@ class TeensyBridgeNode(Node):
             ok, msg, _ = self.teensy_clear_errors()
         elif cmd == 'reboot_odrives':
             # Route through the shared hook so this path ALSO clears the cold-start
-            # state (Phase 2) — the orchestrator reboots via odrive_command.
+            # state (cold-start clear) — the orchestrator reboots via odrive_command.
             ok, msg = self._reboot_odrives()
         else:
             ok, msg = False, f'Unknown command: {cmd}'
@@ -2680,11 +2684,11 @@ class TeensyBridgeNode(Node):
         return res
 
     # ═══════════════════════════════════════════════════════════
-    # Orchestrator-facing cold-start conduit (Phase 4)
+    # Orchestrator-facing cold-start conduit
     # ═══════════════════════════════════════════════════════════
     # Thin wrappers exposing the exact (name, type) interfaces the LOCKED
     # orchestrator drives cold-start through, delegating to the bridge's existing
-    # verbs. Zero edits to orchestrator_node / state_machine (locked-decision #1).
+    # verbs. Zero edits to orchestrator_node / state_machine.
 
     def _home_action_goal(self, goal_request):
         """Fast-reject a concurrent home_motors goal for a clean action REJECT. The
@@ -2706,8 +2710,8 @@ class TeensyBridgeNode(Node):
         shared _do_home() (single-flight guarded; home legs + hand → persist is_homed →
         configure) and returns HomeMotors.Result(success) — byte-parity with
         can_node._action_home (can_node.py:843-861: home → persist → succeed/abort →
-        Result(success)). The firmware HOME-axis-6 support + hand gains landed in
-        Phase 5, so this homes the hand too (parity with _home_robot_steps). A
+        Result(success)). The firmware HOME-axis-6 support + hand gains landed with
+        the hand conduit, so this homes the hand too (parity with _home_robot_steps). A
         concurrent home (guard held) returns (False, …) → the goal aborts."""
         result = HomeMotors.Result()
         try:
@@ -2733,8 +2737,9 @@ class TeensyBridgeNode(Node):
         configured axes — the analogue of can_node._svc_activate_or_deactivate
         (can_node.py:765-780).
 
-        ACTIVATE folds a _run_configure AFTER the move (parity requirement, audit rows
-        27/28): _run_activate ends the legs in TRAP_TRAJ holding the active pose;
+        ACTIVATE folds a _run_configure AFTER the move (parity requirement per the
+        can_node<->Teensy parity audit): _run_activate ends the legs in TRAP_TRAJ
+        holding the active pose;
         _run_configure switches them to POSITION/PASSTHROUGH so run_mpc.py's 40 Hz
         interp is the sole setpoint source (can_node ended PASSTHROUGH; the bridge's
         _run_activate alone ends TRAP_TRAJ). Order is activate-then-configure —
@@ -2763,20 +2768,20 @@ class TeensyBridgeNode(Node):
             res.message = f"Invalid command: {cmd}"
         return res
 
-    # Tilt-read retry (Phase 4): bounded retries on a failed/out-of-range relay read,
+    # Tilt-read retry (orchestrator conduit): bounded retries on a failed/out-of-range relay read,
     # porting can_node's tilt robustness (can_node._tilt_reading_steps: resend on
-    # timeout, retry on out-of-range, NaN after exhaustion — parity row 60).
+    # timeout, retry on out-of-range, NaN after exhaustion — per the can_node<->Teensy parity audit).
     _TILT_READ_ATTEMPTS = 3
 
     def _svc_get_platform_tilt(self, req, res):
         """get_platform_tilt: the orchestrator's LevellingHandler drives this
         (GetTiltReadingService client, orchestrator_node.py:57-58; the level_get_tilt
-        phase). Reads the Platform-Teensy inclinometer via the relay TILT_READ (Phase 1
+        phase). Reads the Platform-Teensy inclinometer via the relay TILT_READ (relay-seam
         relay_read_tilt) with bounded retry + a validity bound, and returns the
         NaN-on-failure shape the orchestrator already consumes (orchestrator_node.py:
         194-206: NaN in tilt_xy → operation_result=False → LevellingHandler → FAULT).
         Byte-parity with can_node._svc_get_tilt (can_node.py:749-763) + the
-        _tilt_reading_steps validity bound (|tilt| ≤ JB_OP_MAX_VALID_TILT_RAD, row 60)."""
+        _tilt_reading_steps validity bound (|tilt| ≤ JB_OP_MAX_VALID_TILT_RAD; see the can_node<->Teensy parity audit)."""
         try:
             tx = ty = None
             for _ in range(self._TILT_READ_ATTEMPTS):
@@ -2832,7 +2837,7 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(f"set_level_state error: {e}")
 
     # ═══════════════════════════════════════════════════════════
-    # Ball Butler (Phase A cutover — replaces can_node bb/*)
+    # Ball Butler (cutover — replaces can_node bb/*)
     # ═══════════════════════════════════════════════════════════
 
     def _publish_bb_heartbeat(self):
@@ -2879,7 +2884,7 @@ class TeensyBridgeNode(Node):
                 and not bool(hb.bb_flags & _T2J_BB_FLAG_HEARTBEAT_STALE))
 
     # ═══════════════════════════════════════════════════════════
-    # Catching cone (phase-10b cone uplink — mirrors can_node's
+    # Catching cone (cone uplink — mirrors can_node's
     # _handle_catch_event / _publish_cone_heartbeat field-by-field)
     # ═══════════════════════════════════════════════════════════
 
@@ -3128,9 +3133,9 @@ class TeensyBridgeNode(Node):
         """Apply leg AND hand vel/current limits over the can-bridge link.
 
         Mirrors can_node._sub_vel_curr_limits. The can-bridge owns CAN3 — legs 0-5
-        AND the hand ODrive (axis 6) — so it applies the HAND limits too (Fable-5
-        hardening [12]): the earlier "hand limits ignored" note was a can_node parity
-        regression, false since the Phase-5 axis-6 allow-table (the node already sends
+        AND the hand ODrive (axis 6) — so it applies the HAND limits too (parity
+        hardening): the earlier "hand limits ignored" note was a can_node parity
+        regression, false since the relay-seam axis-6 allow-table (the node already sends
         SET_VEL_CURR_LIMITS to axis 6 in _run_configure). On a successful hand write we
         also update the cached self._hand_vel_limit/_hand_curr_limit so a later
         _run_configure re-applies the operator's update, not the config default
@@ -3147,7 +3152,7 @@ class TeensyBridgeNode(Node):
                         f"set_vel_curr_limits leg {axis} failed: {m}",
                         throttle_duration_sec=2.0)
                     break
-        # Hand (axis 6): the can-bridge owns it on CAN3 (Phase-1 allow-table).
+        # Hand (axis 6): the can-bridge owns it on CAN3 (relay-seam allow-table).
         if msg.hand_vel_limit > 0 and msg.hand_curr_limit > 0:
             ok, m, _ = self.teensy_set_vel_curr_limits(
                 _HAND_AXIS, msg.hand_vel_limit, msg.hand_curr_limit,
@@ -3165,7 +3170,7 @@ class TeensyBridgeNode(Node):
     # ═══════════════════════════════════════════════════════════
 
     def _shutdown_stow(self):
-        """Profiled controlled-lower to STOW + IDLE on a clean shutdown — the β
+        """Profiled controlled-lower to STOW + IDLE on a clean shutdown — the Teensy-side
         analogue of can_node.on_shutdown's ``_gently_move_to_setpoint(0.0,
         deactivating=True)`` (can_node.py:1693-1706). Best-effort and self-bounded:
         never raises and never hangs teardown. Guard *shape* follows can_node (skip

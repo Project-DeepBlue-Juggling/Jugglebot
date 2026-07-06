@@ -3,7 +3,7 @@
 This is a convenience launch for bench bring-up of the bridge in isolation.
 The bridge is now folded into ``jugglebot_launch.py`` (the cutover is complete),
 so do NOT run this *alongside* the main launch — the node owns the production
-leg/hand/BB/cone topic + service names (Phase 11 / U4 promoted the legs/hand off
+leg/hand/BB/cone topic + service names (the leg/hand cutover promoted them off
 the old side-by-side ``/teensy/*`` namespace), so a second instance would create
 duplicate publishers on those names. Use this only when the main launch is down.
 
