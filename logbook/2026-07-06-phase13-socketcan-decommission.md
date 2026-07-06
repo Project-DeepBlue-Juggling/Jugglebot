@@ -22,7 +22,8 @@ files_changed:
   - tests/ros/test_bus.py
   - ros_ws/docs/can-node-teensy-parity.md
   - plans/active/teensy-can-offload.md
-commits: []   # backfill after commit
+commits:
+  - 7c7f61b
 subsystem:
   - can
   - ros
