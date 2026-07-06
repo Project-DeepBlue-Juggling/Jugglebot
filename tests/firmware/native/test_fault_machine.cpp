@@ -9,7 +9,7 @@
 //    * the deferred-stow 5 invariants (logbook 2026-05-19) — including the
 //      terminal-IDLE completion handling, asserted via the recording
 //      can_jugglebot_send (never command a dead bus; IDLE-all on stow complete),
-//    * the Phase-11 present-axis freshness scoping (the single-leg-rig reconnect
+//    * the present-axis freshness scoping (the single-leg-rig reconnect
 //      dead-lock fix), and
 //    * the recoverable motor-feedback-staleness output suppression.
 //
@@ -84,9 +84,9 @@ static void reset_all() {
   fault_set_mpc_active(false);
 }
 
-// clear_errors_can() broadcasts one clear per axis over NUM_AXES (item 17 §5 — hand
+// clear_errors_can() broadcasts one clear per axis over NUM_AXES (hand
 // parity), so divide the raw clear-frame count by NUM_AXES to recover the number of
-// clear ROUNDS. (Byte-identical golden vs the pre-item-17 /NUM_LEGS: every scenario
+// clear ROUNDS. (Byte-identical golden vs the earlier legs-only /NUM_LEGS: every scenario
 // here does <= 2 rounds and 7N/6 floors to N for N<=5, but /NUM_AXES is the correct
 // divisor now that a round is NUM_AXES frames.)
 static size_t clear_broadcasts() { return fake_sent_count_cmd(CMD_CLEAR) / NUM_AXES; }
@@ -180,7 +180,7 @@ static std::vector<ErrScenario> error_scenarios() {
   // a preset fatal clears when all axes are clean
   v.push_back({"all_clean_clears_fatal", {
     {"preset fatal, clean", false, true, uni(0), uni(0), uni8(ST_IDLE), false, false, 0, 0}}});
-  // Dead-bus no-op clear PRESERVES the soft-reset budget (gap 5). A disarm while the
+  // Dead-bus no-op clear PRESERVES the soft-reset budget. A disarm while the
   // CAN3 bus is confirmed down: clear_errors_can() is a no-op (never command a dead
   // bus), so the soft-reset budget is NOT consumed. When the bus returns the one
   // auto-clear finally fires (budget→1, one broadcast); the very next disarm then hits
@@ -194,7 +194,7 @@ static std::vector<ErrScenario> error_scenarios() {
 }
 
 // ── Deferred-stow (DeferredStowLatch-modelable) scenarios ─────────────────────
-// Phase 6 adds two input columns: reboot_start (arm the reboot-suppression latch,
+// The reboot-suppression latch adds two input columns: reboot_start (arm the latch,
 // = the REBOOT_ODRIVES RPC) and deadline_pass (the reboot-suppression deadline has
 // elapsed). The abstract (stale, fresh, deadline_pass) triple stands in for the
 // firmware's clock-driven any_leg_heartbeat_stale / all_present_legs_fresh /
@@ -205,12 +205,12 @@ struct StowStep {
   bool stale;
   bool fresh;
   bool complete;       // drive interp_isr to set stow_complete before this fault_step
-  bool reboot_start;   // Phase 6: fault_notify_reboot_started() before this fault_step
-  bool deadline_pass;  // Phase 6: advance the clock past the reboot-suppression deadline
+  bool reboot_start;   // reboot-latch input: fault_notify_reboot_started() before this fault_step
+  bool deadline_pass;  // reboot-latch input: advance the clock past the reboot-suppression deadline
   bool exp_fatal;
   bool exp_pending;
   bool exp_stowing;
-  bool seen = true;    // gap 10: cold-start seeds a present leg heartbeat this step
+  bool seen = true;    // cold-start seeds a present leg heartbeat this step
 };
 struct StowScenario { std::string name; std::vector<StowStep> steps; bool cold_start = false; };
 struct StowOut { bool fatal; bool pending; bool stowing; };
@@ -231,7 +231,7 @@ static std::vector<StowOut> run_stow_scenario(const StowScenario& sc) {
   }
   std::vector<StowOut> out;
   for (const auto& st : sc.steps) {
-    // Cold-start first-seen gate (gap 10): a leg is "present" only once its
+    // Cold-start first-seen gate: a leg is "present" only once its
     // heartbeat has been seen. seen=true seeds all legs fresh at this step's start
     // (so a following stale-advance can make them go stale); seen=false leaves the
     // bus never-seen, so s_first_leg_hb_seen gates detection OFF.
@@ -268,7 +268,7 @@ static std::vector<StowScenario> stow_scenarios() {
       {"can3 loss",   true,  false, false, false, false, true,  true,  false},
       {"reconnect",   false, true,  false, false, false, false, true,  true},
       {"stow done",   false, true,  true,  false, false, false, false, false}}},
-    // ── Phase 6 reboot-suppression latch ─────────────────────────────────────
+    // ── reboot-suppression latch─────────────────────────────────────
     {"reboot_suppresses_then_fresh_release", {
       // arm (legs fresh) → reboot silence SUPPRESSED (no false loss) → legs return →
       // latch releases → a NEW spontaneous loss then arms the stow normally.
@@ -370,7 +370,7 @@ TEST_CASE("never command a dead bus + terminal IDLE on stow complete") {
 }
 
 TEST_CASE("present-axis freshness: single-leg rig reconnect is NOT dead-locked") {
-  // Only leg 0 present (the odrv0-only bench rig). The pre-Phase-11 all-six
+  // Only leg 0 present (the odrv0-only bench rig). The earlier all-six
   // freshness form would dead-lock the reconnect (legs 1-5 never report fresh);
   // the present-scoped form fires on leg 0 alone.
   reset_all();
@@ -471,7 +471,7 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
 }
 
 // =============================================================================
-//  Guard E-STOP latch (Fable-5 [13]) — motor_guard sticky-self.mode semantics
+//  Guard E-STOP latch — motor_guard sticky-self.mode semantics
 // =============================================================================
 TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
   // Arm the guard: mpc_active, leg0 present+fresh, link fresh, a latched setpoint
@@ -566,7 +566,7 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
 }
 
 // =============================================================================
-//  Phase 6 reboot-suppression latch — explicit readable safety contract
+//  Reboot-suppression latch— explicit readable safety contract
 // =============================================================================
 TEST_CASE("reboot latch: a SPONTANEOUS CAN loss is UNAFFECTED (deferred-stow inversion preserved)") {
   // THE safety-critical proof: a loss NOT preceded by a REBOOT_ODRIVES must detect and
@@ -627,7 +627,7 @@ TEST_CASE("reboot latch: a latch armed while legs are STILL fresh cannot release
 }
 
 // =============================================================================
-//  Item 14 — monotonic clock discipline (coverage gap 6)
+//  Monotonic clock discipline
 // =============================================================================
 //  THE proof the fix works: set_wall_anchor() STEPS now_wall_us() (NTP-style,
 //  forward OR backward, unbounded on re-acquisition after teensy_bridge_node was
@@ -636,7 +636,7 @@ TEST_CASE("reboot latch: a latch armed while legs are STILL fresh cannot release
 //  exposes independent wall/mono via fake_set_clock(wall_us, mono_us); production
 //  stamps + reads all intervals on the mono clock, so stepping wall alone changes
 //  nothing. The positive control proves staleness STILL fires on the mono clock.
-TEST_CASE("wall step does not perturb staleness/guard/stow (item 14)") {
+TEST_CASE("wall step does not perturb staleness/guard/stow (wall/mono clock separation)") {
   const uint64_t W0 = 2'000'000'000ULL;   // wall base (>> the 5 s step, no underflow)
   const uint64_t M0 =    10'000'000ULL;   // mono base (independent of wall)
 
@@ -695,7 +695,7 @@ TEST_CASE("wall step does not perturb staleness/guard/stow (item 14)") {
 }
 
 // =============================================================================
-//  Item 17 §4 — clear_disarm_reasons: a CLEAR zeroes the disarm cache
+//  clear_disarm_reasons: a CLEAR zeroes the disarm cache
 // =============================================================================
 //  The firmware disarm_reason cache is written ONLY by the Get_Error RX decode, so a
 //  CLEAR that did not also zero it would leave a stale nonzero disarm until the next
@@ -703,7 +703,7 @@ TEST_CASE("wall step does not perturb staleness/guard/stow (item 14)") {
 //  re-fault the state the operator just cleared. Both CLEAR paths (external RPC =
 //  fault_notify_clear_errors, internal soft-reset auto-retry = clear_errors_can) must
 //  mirror can_node._clear_errors → clear_disarm_reasons() over ALL axes incl. the hand.
-TEST_CASE("clear_disarm_reasons: a CLEAR zeroes the disarm cache over all axes incl. the hand (item 17 §4)") {
+TEST_CASE("clear_disarm_reasons: a CLEAR zeroes the disarm cache over all axes incl. the hand") {
   SUBCASE("external operator CLEAR (fault_notify_clear_errors) zeroes disarm immediately") {
     reset_all();
     fake_set_clock(10'000'000, 10'000'000);
@@ -727,13 +727,13 @@ TEST_CASE("clear_disarm_reasons: a CLEAR zeroes the disarm cache over all axes i
 }
 
 // =============================================================================
-//  Item 17 §5 — hand-axis (axis 6) fault-eval scope: a hand fault ESTOPs the legs
+//  hand-axis (axis 6) fault-eval scope: a hand fault ESTOPs the legs
 // =============================================================================
 //  evaluate_errors / clear now iterate NUM_AXES, so a hand active-error or hand
 //  disarm-while-CLOSED_LOOP sets s_fatal_error / guard ESTOP (can_node parity — the
 //  standing hand-gap-is-a-real-regression note). The CAN3 watchdog + deferred stow stay
 //  legs-only, so a STALE hand heartbeat must NOT arm the leg watchdog/stow.
-TEST_CASE("hand-axis fault eval: a hand fault ESTOPs (NUM_AXES scope, item 17 §5)") {
+TEST_CASE("hand-axis fault eval: a hand fault ESTOPs (NUM_AXES scope)") {
   SUBCASE("hand active-error → ODRIVE_FATAL + guard ESTOP (legs clean)") {
     reset_all();
     fake_set_clock(10'000'000, 10'000'000);

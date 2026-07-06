@@ -12,7 +12,7 @@
 //  adjust `depth()`; every fake QNEthernet call (Ethernet.loop + each socket
 //  method) calls `require_held()` at entry, which bumps a violation counter when
 //  the lock is NOT held. The test asserts `violations() == 0` after driving the
-//  service loop — so an unlocked pump/socket call (the pre-Tier-2-15 regression)
+//  service loop — so an unlocked pump/socket call (the regression this probe guards against)
 //  is caught as a violation, not a crash.
 //
 //  Host-only, single-threaded: this validates lock *coverage* (which calls run

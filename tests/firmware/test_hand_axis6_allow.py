@@ -1,4 +1,4 @@
-"""Hand axis-6 allow-table — single-source consistency (canbridge Phase 1).
+"""Hand axis-6 allow-table — single-source consistency.
 
 The can-bridge replaced its blanket `axis == HAND_AXIS` reject (rpc.cpp) with a
 NARROW (method, axis) allow-table: which RpcMethods it forwards to the hand ODrive

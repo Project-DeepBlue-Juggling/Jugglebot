@@ -2,7 +2,7 @@
 //  test_leg_deactivate.cpp — compiled test of the REAL firmware deactivate ladder
 // =============================================================================
 //  Drives the actual compiled leg_deactivate.cpp against the cold-start fake HAL,
-//  asserting the Phase-11 U5 DEACTIVATE behaviours (coverage gap 1). It mirrors the
+//  asserting the DEACTIVATE behaviours. It mirrors the
 //  activate driver (same request validation + SETUP preamble + abort-to-IDLE) and
 //  adds the two behaviours that DISTINGUISH deactivate:
 //
@@ -87,7 +87,7 @@ TEST_CASE("deactivate_request rejects a concurrent HOME or ACTIVATE") {
   CHECK(deactivate_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
 }
 
-TEST_CASE("deactivate_request rejects while the MPC stream is actively driving (interlock, item 1b)") {
+TEST_CASE("deactivate_request rejects while the MPC stream is actively driving (interlock)") {
   full_reset(0x01);
   cs_set_mpc_active(true);                               // guard ENABLED on the Jetson → MPC driving legs
   CHECK(deactivate_request(0) == JbUdp::RpcStatus::ERR_REJECTED);

@@ -1,11 +1,11 @@
-"""Runtime drift-guard for the Phase-4 orchestrator ↔ bridge conduit.
+"""Runtime drift-guard for the orchestrator ↔ bridge conduit.
 
 The bridge (``teensy_bridge_node``) is the drop-in successor to ``can_node`` from
-the LOCKED ``orchestrator_node``'s view. Phase 4 wires the four cold-start
+the LOCKED ``orchestrator_node``'s view. The bridge wires the four cold-start
 interfaces the orchestrator drives — the ``home_motors`` action, the
 ``activate_or_deactivate`` / ``get_platform_tilt`` services, and the
 ``set_level_state`` subscriber — onto the bridge, with ZERO edits to the
-orchestrator / state machine (locked-decision #1).
+orchestrator / state machine (a locked design decision).
 
 This test is the CONTRACT that keeps them aligned: it constructs BOTH nodes and
 asserts, by ``(name, type)``, that the bridge SERVES every service/action the
@@ -73,7 +73,7 @@ def test_bridge_serves_every_orchestrator_service_client():
     """Every service the orchestrator CLIENTS must be SERVED by the bridge with a
     matching (name, type). This is the whole cold-start conduit contract for
     services: encoder_search / odrive_command / bb/calibrate (pre-existing) +
-    activate_or_deactivate / get_platform_tilt (Phase 4)."""
+    activate_or_deactivate / get_platform_tilt (added by the conduit)."""
     orch, teensy, client, bridge = _build_both()
     try:
         missing = _orch_service_clients(orch) - _bridge_services(bridge)
@@ -142,7 +142,7 @@ def test_robot_state_topic_agrees():
 
 def test_set_level_state_topic_agrees():
     """The orchestrator publishes set_level_state (Float64MultiArray); the bridge
-    subscribes to it (Phase 4 — the gravity-offset persist was silently discarded
+    subscribes to it (the conduit adds this — the gravity-offset persist was silently discarded
     before)."""
     orch, teensy, client, bridge = _build_both()
     try:

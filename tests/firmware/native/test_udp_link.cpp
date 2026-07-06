@@ -1,6 +1,6 @@
 // =============================================================================
 //  test_udp_link.cpp — compiled test of udp_link.cpp's NetLock coverage + RX
-//  drain budget (Tier-2 hardening item 15)
+//  drain budget (NetLock-coverage hardening)
 // =============================================================================
 //  Two hazards the fix closes, witnessed here as COMPILED assertions:
 //
@@ -64,7 +64,7 @@ static uint16_t make_setpoint(uint8_t* out, uint16_t out_cap, uint16_t seq) {
                              payload, sizeof(payload), out, out_cap);
 }
 
-TEST_CASE("NetLock covers the lwIP pump AND every socket TX/RX (Tier-2 item 15)") {
+TEST_CASE("NetLock covers the lwIP pump AND every socket TX/RX") {
   netlockprobe::reset();
   CanBridge::udp_link_init();               // binds s_stream/s_rpc under NetLock
   const unsigned loops0 = qindesign::network::Ethernet.loops_;

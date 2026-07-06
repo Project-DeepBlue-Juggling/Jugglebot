@@ -1,9 +1,9 @@
-"""Cold-start state tests for teensy_bridge_node (Phase 2).
+"""Cold-start state tests for teensy_bridge_node.
 
-Phase 2 sources the orchestrator's cold-start fields (``is_homed`` /
+The bridge sources the orchestrator's cold-start fields (``is_homed`` /
 ``levelling_complete`` / ``pose_offset``) from the Platform Teensy's ``RobotState``
-through the Phase-1 relay, replacing the hardcoded conservative defaults of phase
-10b. The bridge:
+through the Platform-Teensy relay, replacing the hardcoded conservative defaults the read-only bridge shipped with.
+The bridge:
 
 * READS the state at boot (bounded retries; conservative ``is_homed=False`` on
   total failure — the SAFE direction) and on each confirmed link reconnect,
@@ -213,7 +213,7 @@ def test_reconnect_rereads_cold_start_state():
 
         node._health_check()
 
-        # The reconnect re-read now runs on a daemon thread ([16c] — non-blocking
+        # The reconnect re-read now runs on a daemon thread (non-blocking
         # on the 1 Hz timer / 100 Hz publish); wait for it to land.
         assert _wait_until(lambda: not node._cold_start_reread_inflight
                            and node._cold_start_state.is_homed)
@@ -224,10 +224,10 @@ def test_reconnect_rereads_cold_start_state():
         _teardown(teensy, client, node)
 
 
-# ── CAN3-bus-health conservative reconnect re-read (Phase 3 precondition) ──────
+# ── CAN3-bus-health conservative reconnect re-read ──────
 # The UDP-watchdog reconnect (above) does NOT fire for a CAN3-only drop (Jugglebot
 # disconnected while the Jetson + can-bridge stay powered → UDP link intact). The
-# Phase-3 precondition adds a bus1_health (CAN3) "→OK from a DEGRADED state" edge
+# bridge adds a bus1_health (CAN3) "→OK from a DEGRADED state" edge
 # that fires a CONSERVATIVE re-read (retry, then is_homed=False on failure — NOT
 # keep-stale), because a CAN3 recovery implies the Platform Teensy may have
 # power-cycled (it shares the ODrive supply). UNKNOWN→OK (the boot first-connection)
@@ -539,7 +539,7 @@ def test_reboot_clears_encoder_search_complete():
     FAULT→BOOT→HOMING loop (the hardware bug found 2026-07-02). This DELIBERATELY
     diverges from can_node (can_node.py:1552-1566 cleared is_homed/levelling/pose but
     left encoder_search_complete set — a latent bug that only bit once the orchestrator
-    drove homing automatically after a reboot in Phase 4). See logbook
+    drove homing automatically after a reboot). See logbook
     2026-07-02-canbridge-reboot-encoder-search-clear."""
     teensy, client, node = _node()
     try:

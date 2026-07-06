@@ -1,6 +1,6 @@
-"""Firmware-version handshake tests for teensy_bridge_node (Phase 3).
+"""Firmware-version handshake tests for teensy_bridge_node.
 
-Phase 3 restores can_node's Get_Version handshake on the can-bridge: the firmware
+The bridge restores can_node's Get_Version handshake on the can-bridge: the firmware
 sweeps Get_Version + caches the raw versions; the bridge pulls them via the
 GET_AXIS_VERSIONS RPC (a bridge-LOCAL cache read — no CAN3 round-trip) and runs
 the EXISTING tested ``MotorStateTracker.validate_group`` against

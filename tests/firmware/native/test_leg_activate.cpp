@@ -3,7 +3,7 @@
 // =============================================================================
 //  Drives the actual compiled leg_activate.cpp (#includes the .cpp) against the
 //  self-contained cold-start fake HAL, asserting the safety-relevant BEHAVIOURS of
-//  the Phase-11 U5 ACTIVATE op that no test compiled before (coverage gap 1):
+//  the ACTIVATE op that no test compiled before:
 //
 //    * activate_request VALIDATION: never latches on a dead/WARN CAN3, an E-STOP'd
 //      guard, or a fault_can_bus_down; rejects a concurrent HOME/DEACTIVATE; rejects
@@ -106,7 +106,7 @@ TEST_CASE("activate_request rejects a concurrent HOME or DEACTIVATE (mutual excl
   CHECK_FALSE(activate_active());
 }
 
-TEST_CASE("activate_request rejects while the MPC stream is actively driving (interlock, item 1b)") {
+TEST_CASE("activate_request rejects while the MPC stream is actively driving (interlock)") {
   full_reset(0x01);
   cs_set_mpc_active(true);                               // guard ENABLED on the Jetson → MPC driving legs
   CHECK(activate_request(0) == JbUdp::RpcStatus::ERR_REJECTED);

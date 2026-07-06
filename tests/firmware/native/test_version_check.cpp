@@ -1,5 +1,5 @@
 // =============================================================================
-//  test_version_check.cpp — compiled test of the REAL Phase-3 version handshake
+//  test_version_check.cpp — compiled test of the REAL version handshake
 // =============================================================================
 //  Drives the actual compiled version_check.cpp (it #includes the .cpp) against
 //  the recording fake HAL, asserting the safety/parity-relevant BEHAVIOURS of the
@@ -88,7 +88,7 @@ TEST_CASE("sweep sends one Get_Version per present axis, one per tick, bus-paced
   CHECK(fake_sent_count() == 2);
 }
 
-TEST_CASE("sweep re-queries a present axis whose Get_Version reply was lost (item 20)") {
+TEST_CASE("sweep re-queries a present axis whose Get_Version reply was lost") {
   fake_reset();          // clock → 0
   clear_all_present();
   version_check_init();

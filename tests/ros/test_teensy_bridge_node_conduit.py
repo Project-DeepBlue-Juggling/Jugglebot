@@ -1,11 +1,11 @@
-"""Behaviour tests for the Phase-4 orchestrator-facing cold-start conduit.
+"""Behaviour tests for the orchestrator-facing cold-start conduit.
 
 These exercise the four thin wrappers the orchestrator drives cold-start through,
 registered directly on ``teensy_bridge_node``:
 
 * ``home_motors`` action  → ``_do_home`` (home legs+hand → persist is_homed → configure)
 * ``activate_or_deactivate`` service → ``_run_activate`` + ``_run_configure`` (the
-  PASSTHROUGH fold, audit rows 27/28) / ``_run_deactivate``
+  PASSTHROUGH fold) / ``_run_deactivate``
 * ``get_platform_tilt`` service → ``relay_read_tilt`` (retry + validity bound +
   NaN-on-failure)
 * ``set_level_state`` subscriber → ``_write_level_state`` (STATE_WRITE preserving
@@ -38,7 +38,7 @@ from controller.teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic, PlatformFrame,
 )
 from controller.teensy_link import rpc_args
-from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # [18A] outcome
+from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 from rclpy.action import GoalResponse
 
 from jugglebot_interfaces.srv import ActivateOrDeactivate, GetTiltReadingService
@@ -336,7 +336,7 @@ def test_get_platform_tilt_failure_returns_nan():
 
 def test_get_platform_tilt_out_of_range_returns_nan():
     """A reading beyond JB_OP_MAX_VALID_TILT_RAD is rejected (retried, then NaN) —
-    the validity-bound robustness ported from can_node (row 60)."""
+    the validity-bound robustness ported from can_node (per the can_node<->Teensy parity audit)."""
     teensy, client, node = _build_paired_node()
     try:
         bad = hw.JB_OP_MAX_VALID_TILT_RAD + 0.5

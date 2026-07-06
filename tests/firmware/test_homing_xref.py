@@ -1,6 +1,6 @@
 """Config-sanity + sign/magnitude pins for the firmware HOME op.
 
-**Most of this file was retired in the Fable-5 hardening pass ([6]).** It used to
+**Most of this file was retired in the firmware test-hardening pass.** It used to
 transcribe leg_homing.cpp's Iq-EMA detection arithmetic into Python and assert it
 `==` an inline re-transcription of `can_node._home_motor_steps` — but BOTH sides
 were the same formula over the same `hw.*` constants (a self-comparison), and the
@@ -42,7 +42,7 @@ def test_home_reference_magnitude():
     assert math.isclose(abs(hw.HOMING_LEG_ABS_POS_REV), 0.1)
 
 
-# ── Hand (Phase 5): the distinct HAND_* params ────────────────────────────────
+# ── Hand: the distinct HAND_* params ─────────────────────────────────────────
 
 def test_hand_curr_limit_exceeds_detection_threshold():
     """As for the legs: the hand's homing current limit (limit + headroom) sits ABOVE

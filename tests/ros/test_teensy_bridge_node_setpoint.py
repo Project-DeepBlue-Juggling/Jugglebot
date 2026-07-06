@@ -1,7 +1,7 @@
 """Setpoint-downlink tests for teensy_bridge_node.
 
-Phase 11 / U4 — the α→β switch. The hot path now drains the 40 Hz MPC command
-stream (:5557 ``make_mpc_command`` dict) and packs β knots. The headline
+The setpoint downlink now drains the 40 Hz MPC command
+stream (:5557 ``make_mpc_command`` dict) and packs Teensy-side knots. The headline
 assertions are the SAFETY gates:
   * default-disabled (no setpoint thread, mpc_active=0, no SETPOINT frames);
   * mpc_active flips the J→T heartbeat flag only on explicit enable;
@@ -41,7 +41,7 @@ class _FakeSource:
 
 
 def _cmd(motor_rev, vel=None, cmd_next=None, cmd_next2=None):
-    """A :5557 mpc_cmd-style dict (β-knot source) — motor_rev is used as u0."""
+    """A :5557 mpc_cmd-style dict (Teensy-side knot source) — motor_rev is used as u0."""
     d = {
         'type': 'mpc_cmd',
         'motor_rev': list(motor_rev),
@@ -205,7 +205,7 @@ def test_link_down_blocks_setpoint():
 
 
 def test_mpc_active_reenable_edge_resets_pump():
-    """[7]: the 0→1 mpc_active re-enable EDGE forgets any stale prior setpoint
+    """The 0→1 mpc_active re-enable EDGE forgets any stale prior setpoint
     (_sp_pump.reset()), so the per-step gate can't wedge on a _prev_pos left from a
     prior session/pose. A redundant True→True does NOT reset; a fresh 0→1 does."""
     teensy, client, node = _node()
@@ -230,7 +230,7 @@ def test_mpc_active_reenable_edge_resets_pump():
 
 
 def test_process_setpoint_contains_build_exception():
-    """[4]: an unexpected error inside build() must NOT kill the setpoint thread or
+    """An unexpected error inside build() must NOT kill the setpoint thread or
     flip mpc_active — one bad frame is contained (logged), nothing is sent, and the
     production leg path stays live (a restart-only outage would be far worse)."""
     teensy, client, node = _node()
@@ -250,7 +250,7 @@ def test_process_setpoint_contains_build_exception():
 
 
 def test_process_setpoint_contains_send_oserror():
-    """[4]: a transient link send error (OSError, e.g. ENETUNREACH before the peer
+    """A transient link send error (OSError, e.g. ENETUNREACH before the peer
     is up, or a mid-run drop) drops the frame but keeps the thread alive + mpc_active
     set — the link watchdog owns the stow, not the per-frame path."""
     teensy, client, node = _node()

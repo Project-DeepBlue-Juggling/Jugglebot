@@ -1,6 +1,6 @@
 """Config-sanity + cross-file/protocol pins for the firmware DEACTIVATE op.
 
-**Most of this file was retired in the Fable-5 hardening pass ([6]).** The
+**Most of this file was retired in the firmware test-hardening pass.** The
 behavioural transcriptions of leg_deactivate.cpp's SETUP/COMMAND constants (checked
 `== hw.*`, and a STOW target that compared one Python literal `0.0` against
 another) were TAUTOLOGICAL/brittle. They are now SUPERSEDED by the compiled native

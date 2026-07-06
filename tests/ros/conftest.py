@@ -347,7 +347,7 @@ class HomeMotors:
     Feedback = _HomeMotorsFeedback
 
 
-# ── BallButlerThrowCmd action mock (Phase 2) ──────────────────
+# ── BallButlerThrowCmd action mock ──────────────────
 
 
 class _BallButlerThrowCmdGoal:
@@ -455,7 +455,7 @@ class MockNode:
         self._services = {}
         self._subscriptions = {}
         self._clients = {}
-        # Action server/client registries (Phase 4 drift-guard): real rclpy hides an
+        # Action server/client registries (for the orchestrator-conduit drift-guard): real rclpy hides an
         # action's sub-services from node.services/node.clients (they live in a
         # Waitable), and the mock ActionServer/ActionClient register nothing on the
         # node. Recording (name, type) here lets a contract test introspect the action
@@ -479,7 +479,7 @@ class MockNode:
 
     def create_service(self, *a, **kw):
         # Record the service (name, type) so tests can assert the production service
-        # surface AND its type — e.g. the Phase 11 / U4 rename + the Phase 4 conduit
+        # surface AND its type — e.g. the leg/hand /teensy/* rename + the orchestrator conduit
         # (name, type) contract the orchestrator's clients depend on. srv_type is the
         # 1st positional (or 'srv_type' kwarg); srv_name the 2nd (or 'srv_name').
         srv_type = a[0] if len(a) >= 1 else kw.get('srv_type')
@@ -552,7 +552,7 @@ class MockActionServer:
         self._goal_callback = goal_callback
         self._cancel_callback = cancel_callback
         self._callback_group = callback_group
-        # Phase 4 drift-guard: expose the action (name, type) and register on the node
+        # Conduit drift-guard: expose the action (name, type) and register on the node
         # so a contract test can introspect it (real rclpy hides these in a Waitable).
         self.action_name = name
         self.action_type = action_type
@@ -566,7 +566,7 @@ class MockActionClient:
         self._action_type = action_type
         self._name = name
         self._server_ready = True
-        # Phase 4 drift-guard: expose (name, type) + register on the node.
+        # Conduit drift-guard: expose (name, type) + register on the node.
         self.action_name = name
         self.action_type = action_type
         if node is not None and hasattr(node, '_action_clients'):

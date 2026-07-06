@@ -1,5 +1,5 @@
 """Cross-language byte-parity of the C++ BB encoders (ball_butler_protocol.h) vs
-the Python spec jugglebot.can.ball_butler (Fable-5 hardening, coverage gap 7).
+the Python spec jugglebot.can.ball_butler (closes a firmware-encoder compiled-coverage gap).
 
 ball_butler_protocol.h claims to be a "byte-for-byte port of
 ball_butler.encode_throw_command + encode_state_command", yet it was the one

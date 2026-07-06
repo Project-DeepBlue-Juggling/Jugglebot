@@ -1,4 +1,4 @@
-"""Firmware build-reproducibility guard (Fable-5 hardening [15]).
+"""Firmware build-reproducibility guard.
 
 The can-bridge firmware links two external libraries (freertos-teensy, QNEthernet)
 on top of the PlatformIO ``teensy`` platform. If any of those float — a bare git
@@ -8,7 +8,7 @@ and change the flashed binary with NO local edit, silently invalidating a powere
 re-validation. This test pins them: the platform + every ``lib_deps`` entry must
 carry an explicit version / commit ref.
 
-Coverage gap 16 (canhub-hardening.md): "pin firmware library versions". Pure
+The requirement being enforced: firmware library versions must be pinned. Pure
 text-parse of platformio.ini — no PlatformIO, no compiler, always runs.
 """
 

@@ -115,7 +115,7 @@ def test_float_fields_roundtrip_f32():
     assert a.vel_int_gain == pytest.approx(0.07, rel=1e-6)
 
 
-# ── Ball Butler (Phase A) ─────────────────────────────────────────────────────
+# ── Ball Butler ─────────────────────────────────────────────────────
 
 def test_bb_throw_exact_bytes():
     blob = ra.encode_bb_throw(yaw_rad=0.5, pitch_rad=0.3,
@@ -130,7 +130,7 @@ def test_bb_throw_exact_bytes():
 
 
 def test_state_write_exact_bytes():
-    # STATE_WRITE (Platform-Teensy relay, Phase 1): flags byte (is_homed/levelling
+    # STATE_WRITE (Platform-Teensy relay): flags byte (is_homed/levelling
     # are encoded into the 0x6E0 CAN frame by the FIRMWARE; the RPC arg carries
     # them as two u8 + the two pose floats). Layout '<BBff'.
     blob = ra.encode_state_write(is_homed=True, levelling_complete=False,
@@ -153,7 +153,7 @@ def test_bb_payloadless_commands_are_empty():
 
 
 def test_axis_versions_result_roundtrip_and_layout():
-    """GET_AXIS_VERSIONS result blob (Phase 3): mask byte + axis-major 8-byte raw
+    """GET_AXIS_VERSIONS result blob: mask byte + axis-major 8-byte raw
     payloads. encode/decode round-trip, the set bits match the supplied axes, and
     the byte layout is exactly mask(1) + NUM_AXES*8 (the firmware version_fill_blob
     mirror)."""
@@ -183,7 +183,7 @@ def test_axis_versions_result_roundtrip_and_layout():
 
 
 def test_method_arg_association_covers_all_commandable_methods():
-    """NON-tautological (Fable-5 [17]): partition the WHOLE RpcMethod enum into
+    """NON-tautological: partition the WHOLE RpcMethod enum into
     payloadless vs arg-carrying and freeze it, rather than hand-copying
     ``METHOD.keys()`` (which only caught "someone edited METHOD"). A NEW arg-carrying
     method added to the enum without a METHOD entry now lands in the computed
@@ -206,5 +206,5 @@ def test_method_arg_association_covers_all_commandable_methods():
     # Full-partition freeze: every enum member is classified exactly once.
     assert have | payloadless == set(RpcMethod)
     assert not (have & payloadless)
-    # DEACTIVATE (Fable-5 [17]) is axis-only, like ACTIVATE/HOME.
+    # DEACTIVATE is axis-only, like ACTIVATE/HOME.
     assert ra.METHOD[RpcMethod.DEACTIVATE] is ra.METHOD[RpcMethod.ACTIVATE]

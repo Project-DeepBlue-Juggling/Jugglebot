@@ -75,10 +75,10 @@ def test_no_orphan_dispatch_cases():
 
 
 def test_no_reserved_stub_block_remains():
-    """All Phase-0 reserved ids now have a REAL dispatch, so the shared
-    '// ── Reserved ... ERR_NOT_IMPL' stub block is gone. Phase 1 replaced the
-    TILT_READ/STATE_READ/STATE_WRITE stubs (Platform-Teensy relay); Phase 3 replaced
-    GET_AXIS_VERSIONS (version pull); Phase 5 replaced HAND_TRAJ_CMD (hand conduit) —
+    """All originally-reserved ids now have a REAL dispatch, so the shared
+    '// ── Reserved ... ERR_NOT_IMPL' stub block is gone. The Platform-Teensy relay replaced the
+    TILT_READ/STATE_READ/STATE_WRITE stubs; the version pull replaced
+    GET_AXIS_VERSIONS; the hand conduit replaced HAND_TRAJ_CMD —
     the LAST reserved stub. This guards against a regression that re-introduces a
     reserved-but-dead ERR_NOT_IMPL block (the exact anti-pattern the audit flagged).
     NOTE: ENCODER_SEARCH keeps its OWN intentional ERR_NOT_IMPL (Jetson-orchestrated
@@ -88,21 +88,21 @@ def test_no_reserved_stub_block_remains():
     block = re.search(r"// ── Reserved.*?return RpcStatus::ERR_NOT_IMPL;", text, re.DOTALL)
     assert block is None, (
         "a '// ── Reserved ... ERR_NOT_IMPL' stub block reappeared in rpc.cpp — every "
-        "Phase-0 reserved id is now implemented (HAND_TRAJ_CMD was the last, Phase 5). "
+        "originally-reserved id is now implemented (HAND_TRAJ_CMD was the last). "
         "A newly-reserved id must land its real dispatch in its owning phase, not a "
         "shared reserved stub.")
 
 
 def test_hand_traj_cmd_is_implemented():
-    """Phase 5: HAND_TRAJ_CMD is no longer a reserved ERR_NOT_IMPL stub — it dispatches
+    """HAND_TRAJ_CMD is no longer a reserved ERR_NOT_IMPL stub — it dispatches
     to the hand_ops conduit (CLOSED_LOOP + POSITION/PASSTHROUGH preamble → 0x6D0
     forward). Guards against a regression that re-stubs it (which would silently
     re-break the hand catch/smooth-move surface)."""
     body = _dispatch_case_body("HAND_TRAJ_CMD")
     assert "HandOps::hand_traj_cmd" in body, (
-        "HAND_TRAJ_CMD must dispatch to HandOps::hand_traj_cmd (Phase 5), not stub it")
+        "HAND_TRAJ_CMD must dispatch to HandOps::hand_traj_cmd, not stub it")
     assert "ERR_NOT_IMPL" not in body, (
-        "HAND_TRAJ_CMD must not route to ERR_NOT_IMPL (Phase 5 implemented it)")
+        "HAND_TRAJ_CMD must not route to ERR_NOT_IMPL (the hand conduit implemented it)")
 
 
 def _dispatch_case_body(name: str) -> str:
@@ -116,7 +116,7 @@ def _dispatch_case_body(name: str) -> str:
 
 
 def test_clear_reboot_gate_on_bus_transmittable_not_staleness():
-    """Phase 6: CLEAR_ERRORS and REBOOT_ODRIVES must gate on the bus-transmittable
+    """CLEAR_ERRORS and REBOOT_ODRIVES must gate on the bus-transmittable
     (SYNCH) signal via the shared gate_allows() chokepoint, NOT on the raw heartbeat-
     staleness predicate jugglebot_commands_allowed() — so a recovery clear reaches a
     just-repowered bus that is electrically alive but not yet heartbeating (the
@@ -125,25 +125,25 @@ def test_clear_reboot_gate_on_bus_transmittable_not_staleness():
     This is the wiring half of the dispatch-gate mirror guard (the policy half is the
     native harness test of method_gates_on_bus_transmittable): it fails if a future
     edit silently re-gates clear/reboot back onto heartbeat-staleness — the exact
-    regression Phase 6 fixed.
+    regression the bus-transmittable gate fixed.
     """
     text = _RPC_CPP.read_text()
     assert "method_gates_on_bus_transmittable" in text, (
-        "rpc.cpp lost the method→gate-basis policy predicate (Phase 6)")
+        "rpc.cpp lost the method→gate-basis policy predicate")
     assert "jugglebot_bus_transmittable" in text, (
-        "rpc.cpp lost the bus-transmittable (SYNCH) gate (Phase 6)")
+        "rpc.cpp lost the bus-transmittable (SYNCH) gate")
     for name in ("CLEAR_ERRORS", "REBOOT_ODRIVES"):
         body = _dispatch_case_body(name)
         assert "jugglebot_commands_allowed" not in body, (
             f"{name} must NOT gate on jugglebot_commands_allowed (heartbeat-staleness); "
             "route its AXIS_ALL branch through gate_allows() so a recovery clear reaches "
-            "a just-repowered bus (Phase 6 SYNCH gate)")
+            "a just-repowered bus (the SYNCH gate)")
         assert "gate_allows" in body, (
-            f"{name} AXIS_ALL branch must gate through gate_allows() (Phase 6)")
+            f"{name} AXIS_ALL branch must gate through gate_allows()")
 
 
 def test_clear_reboot_axis_all_include_the_hand():
-    """Phase 6 / audit rows 21+40: the CLEAR_ERRORS and REBOOT_ODRIVES AXIS_ALL loops
+    """The CLEAR_ERRORS and REBOOT_ODRIVES AXIS_ALL loops
     must iterate legs + hand (i < NUM_AXES), matching can_node's JUGGLEBOT_AXES — the
     old `i < NUM_LEGS` dropped the hand (axis 6). Guards against a regression back to
     a legs-only broadcast."""
@@ -151,31 +151,31 @@ def test_clear_reboot_axis_all_include_the_hand():
         body = _dispatch_case_body(name)
         assert "i < NUM_AXES" in body, (
             f"{name} AXIS_ALL loop must iterate `i < NUM_AXES` (legs + hand), not "
-            "`i < NUM_LEGS` — can_node JUGGLEBOT_AXES parity (Phase 6)")
+            "`i < NUM_LEGS` — can_node JUGGLEBOT_AXES parity")
         assert "i < NUM_LEGS" not in body, (
             f"{name} AXIS_ALL loop still uses `i < NUM_LEGS` — it drops the hand (axis 6)")
 
 
 def test_reboot_arms_the_watchdog_suppression_latch():
-    """Phase 6: the REBOOT_ODRIVES dispatch must arm the reboot-in-progress latch
+    """The REBOOT_ODRIVES dispatch must arm the reboot-in-progress latch
     (fault_notify_reboot_started) so the deliberate reboot silence does not false-trip
     the CAN-loss deferred stow. CLEAR_ERRORS must NOT arm it (a clear is not a reboot).
     The per-axis arm must be LEG-guarded (`a.axis < NUM_LEGS`): the CAN-loss detector
     watches leg heartbeats only, so a hand-only reboot would blind leg-loss detection
-    for the full window with no benefit (audit NOTE 1)."""
+    for the full window with no benefit."""
     reboot = _dispatch_case_body("REBOOT_ODRIVES")
     assert "fault_notify_reboot_started" in reboot, (
-        "REBOOT_ODRIVES must arm the watchdog-suppression latch (Phase 6)")
+        "REBOOT_ODRIVES must arm the watchdog-suppression latch")
     assert "a.axis < NUM_LEGS" in reboot, (
         "the per-axis REBOOT_ODRIVES latch-arm must be leg-guarded (a.axis < NUM_LEGS) "
-        "so a hand-only reboot does not blind leg-loss detection (audit NOTE 1)")
+        "so a hand-only reboot does not blind leg-loss detection")
     clear = _dispatch_case_body("CLEAR_ERRORS")
     assert "fault_notify_reboot_started" not in clear, (
         "CLEAR_ERRORS must not arm the reboot latch (only a reboot silences the bus)")
 
 
 def test_get_axis_versions_is_implemented():
-    """Phase 3: GET_AXIS_VERSIONS is no longer a reserved ERR_NOT_IMPL stub — it has
+    """GET_AXIS_VERSIONS is no longer a reserved ERR_NOT_IMPL stub — it has
     a real dispatch case that returns the cached version blob (version_fill_blob).
     Guards against a regression that re-stubs it (which would re-wedge the
     orchestrator BOOT on firmware_validated=False)."""
@@ -188,6 +188,6 @@ def test_get_axis_versions_is_implemented():
     assert m, "GET_AXIS_VERSIONS dispatch case not found in rpc.cpp"
     body = m.group(1)
     assert "version_fill_blob" in body, (
-        "GET_AXIS_VERSIONS must call version_fill_blob (Phase 3), not stub ERR_NOT_IMPL")
+        "GET_AXIS_VERSIONS must call version_fill_blob, not stub ERR_NOT_IMPL")
     assert "ERR_NOT_IMPL" not in body, (
-        "GET_AXIS_VERSIONS must not route to ERR_NOT_IMPL (Phase 3 implemented it)")
+        "GET_AXIS_VERSIONS must not route to ERR_NOT_IMPL (the version pull implemented it)")

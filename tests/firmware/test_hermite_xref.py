@@ -2,7 +2,7 @@
 
 Drives the validated Python port (teensy_interp.py — the C++ leg_interp.cpp
 translation target) and the real motor_guard through identical inputs and asserts
-< 1e-6 rev divergence (Phase 7 "done when"). Also asserts the firmware's embedded
+< 1e-6 rev divergence (the interpolator-parity acceptance bound). Also asserts the firmware's embedded
 per-leg stroke-clamp bounds (canbridge_config.h) match the live MotorGuard, so the
 constants the firmware actually ships can't silently drift from the Python the
 xref validates against.
@@ -46,11 +46,11 @@ def test_recorded_stream_matches_motor_guard():
 
 
 def test_beta_pump_knots_match_motor_guard():
-    """Phase 11 / U4 bumpless invariant: the production β SetpointPump reproduces
+    """Bumpless invariant: the production Teensy-side SetpointPump reproduces
     motor_guard's EXACT knot derivation (motor_guard.py:541-603) for a 40 Hz MPC
     command. Combined with the interp xref above (firmware Hermite == motor_guard
-    interp for the same knots), this closes the α→β bumpless chain: same knots →
-    same interpolated trajectory the α relay produced.
+    interp for the same knots), this closes the Jetson-relay→Teensy-side bumpless chain: same knots →
+    same interpolated trajectory the legacy Jetson 500 Hz relay produced.
 
     Covers BOTH the motor_rev-present path (with a synthetic non-zero stow offset
     to prove u0 uses motor_rev verbatim, not ext × mm_to_rev) and the ext-fallback
@@ -98,7 +98,7 @@ def test_beta_pump_knots_match_motor_guard():
     assert np.allclose(sp.u2, g._mpc_next2_pos_rev, atol=1e-12)
     assert np.allclose(sp.v0, g._mpc_base_vel_rps, atol=1e-12)
     assert sp.flags == FLAG_HAS_U1 | FLAG_HAS_U2
-    assert sp.torque_ff == (0.0,) * 6        # friction-FF drop (D9)
+    assert sp.torque_ff == (0.0,) * 6        # friction-FF dropped on the Teensy-side path
 
     # ── Path 2: ext-fallback (no motor_rev) ──
     pump.reset()

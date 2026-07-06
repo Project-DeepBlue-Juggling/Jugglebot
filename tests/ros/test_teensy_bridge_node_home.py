@@ -1,4 +1,4 @@
-"""Node-level tests for the Phase 9b homing wiring in teensy_bridge_node.
+"""Node-level tests for the homing wiring in teensy_bridge_node.
 
 The pure completion logic is covered in ``tests/teensy_link/test_homing.py`` and
 the firmware detection xref in ``tests/firmware/test_homing_xref.py``. Here we
@@ -23,7 +23,7 @@ import jugglebot.hardware_config as hw
 from controller.teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic,
 )
-from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # [18A] outcome
+from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 
 from tests.ros.test_teensy_bridge_node_read import _build_paired_node
 
@@ -147,7 +147,7 @@ def test_home_retries_transient_reject():
         t.start()
         assert _poll(lambda: calls['n'] >= 3)         # retried past the rejections
 
-        # Drive completion: RUNNING → OK (the observer trusts the firmware result — [18A]).
+        # Drive completion: RUNNING → OK (the observer trusts the firmware-reported result).
         teensy.send_telemetry(pos_rev=[2.5] + [0.0] * 6, vel_rps=[0.0] * 7)
         teensy.send_to_jetson(
             int(MsgType.DIAGNOSTIC),

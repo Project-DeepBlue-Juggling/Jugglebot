@@ -1,4 +1,4 @@
-"""Node-level tests for the Phase 11 U5 configure + activate wiring in
+"""Node-level tests for the configure + activate wiring in
 teensy_bridge_node.
 
 The pure completion logic is covered in ``tests/teensy_link/test_activate.py``.

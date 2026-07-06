@@ -1,12 +1,12 @@
 """Unit tests for controller/teensy_link/setpoint_pump.py.
 
-Phase 11 / U4 — the α→β switch. The pump now consumes the 40 Hz MPC command
-stream (:5557 ``make_mpc_command`` dict) and emits β knots (u0/u1/u2 + v0,
+The pump now consumes the 40 Hz MPC command
+stream (:5557 ``make_mpc_command`` dict) and emits Teensy-side knots (u0/u1/u2 + v0,
 flags carrying HAS_U1/HAS_U2, torque_ff=0). These are the safety-critical
 packing + per-step gate, tested in isolation (no ROS, no ZMQ, no UDP).
 
 The **bumplessness** invariant (pump knots reproduce motor_guard's exact knot
-derivation, so the α→β switch is bumpless) is regression-tested against the real
+derivation, so the switch to the Teensy-side path is bumpless) is regression-tested against the real
 ``MotorGuard`` in tests/firmware/test_hermite_xref.py. End-to-end transmission
 gating (mpc_active / enable_setpoint_output) is at the node level in
 tests/ros/test_teensy_bridge_node_setpoint.py.
@@ -46,7 +46,7 @@ def _cmd(ext=None, motor_rev=None, vel=None, cmd_next=None, cmd_next2=None):
     return d
 
 
-# ── Field mapping (the β-knot convention) ──────────────────────────
+# ── Field mapping (the Teensy-side knot convention) ──────────────────────────
 
 def test_motor_rev_present_maps_all_knots():
     pump = _pump()
@@ -85,7 +85,7 @@ def test_ext_fallback_when_no_motor_rev():
 
 def test_motor_rev_preferred_over_ext_no_stow_jump():
     """When BOTH motor_rev and ext are present, u0 = motor_rev verbatim — using
-    ext × mm_to_rev would jump the leg by the stow offset at the α→β switch."""
+    ext × mm_to_rev would jump the leg by the stow offset at the setpoint-path cutover."""
     pump = _pump()
     ext = [10.0] * 6
     motor_rev = [ext[i] * _MM[i] + 0.5 for i in range(6)]   # synthetic +0.5 offset
@@ -110,7 +110,7 @@ def test_no_cmd_next_clears_both_flags():
 
 
 def test_torque_ff_always_zero_d9():
-    """D9: the β path drops friction-FF — torque_ff is always zeros regardless
+    """The Teensy-side path drops friction-FF — torque_ff is always zeros regardless
     of any torque field in the command."""
     pump = _pump()
     cmd = _cmd(motor_rev=[0.1] * 6, cmd_next=[1.0] * 6)
@@ -196,7 +196,7 @@ def test_overlong_motor_rev_rejected():
 def test_overlong_cmd_next_clears_flag():
     """A >6-element lookahead clears HAS_U1 (Taylor fallback), mirroring
     motor_guard clearing _mpc_next_pos_rev for a non-(6,) shape — NOT silently
-    using the first 6 and emitting a divergent-but-accepted β frame."""
+    using the first 6 and emitting a divergent-but-accepted Teensy-side frame."""
     pump = _pump()
     sp, reason = pump.build(_cmd(motor_rev=[0.1] * 6, cmd_next=[1.0] * 7),
                             t_origin_us=1)
@@ -255,7 +255,7 @@ def test_reset_clears_prior():
     assert sp is not None and reason is None
 
 
-# ── [4] reject-not-raise: a malformed command must never crash the setpoint thread ──
+# ── reject-not-raise: a malformed command must never crash the setpoint thread ──
 
 def test_build_rejects_scalar_motor_rev_without_raising():
     pump = _pump()

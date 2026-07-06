@@ -3,7 +3,7 @@
 // =============================================================================
 //  Drives the actual compiled platform_relay.cpp (it #includes the .cpp) against
 //  the recording fake HAL, asserting the safety-relevant BEHAVIOURS of the
-//  Phase-1 relay write seam:
+//  Platform-Teensy relay write seam:
 //
 //    * tilt_read() / state_read() emit the right CAN3 TRIGGER frame on the right
 //      arbitration id (0x7DE / 0x6E0) and dlc — so a Platform-Teensy reply is
@@ -29,13 +29,13 @@
 
 #include <cstdint>
 #include <cstring>
-#include <cmath>                 // NAN / INFINITY (state_write float validation — Flash-A item 4)
+#include <cmath>                 // NAN / INFINITY (state_write float validation)
 
 #include "udp_protocol.h"
 #include "protocol_config.h"
 #include "odrive_protocol.h"
 #include "can_buses.h"
-#include "rpc.h"                 // Phase 6: method_gates_on_bus_transmittable (gate policy)
+#include "rpc.h"                 // method_gates_on_bus_transmittable (reboot-latch gate policy)
 #include "fake_hal.h"
 
 #include "platform_relay.cpp"   // the unit under test
@@ -95,7 +95,7 @@ TEST_CASE("state_write re-encodes the 0x6E0 RobotState frame (createStateCANMess
   CHECK(fake_sent_at(0).buf[0] == 0x03);   // bit0 | bit1
 }
 
-TEST_CASE("state_write rejects a non-finite pose offset (ERR_BAD_ARGS, nothing sent) — item 4") {
+TEST_CASE("state_write rejects a non-finite pose offset (ERR_BAD_ARGS, nothing sent)") {
   // A NaN/Inf pose offset makes the `* 1000.0f` → int16 cast UNDEFINED, and the corrupt
   // value would be PERSISTED on the Platform Teensy across reboots. Reject before the cast.
   fake_reset();
@@ -213,7 +213,7 @@ TEST_CASE("hand axis-6 allow-table permits exactly the locked hand ODrive ops") 
   CHECK_FALSE(hand_axis6_permitted(RpcMethod::NOP));
 }
 
-TEST_CASE("Phase 6 gate policy: only CLEAR_ERRORS/REBOOT gate on bus-transmittable (SYNCH)") {
+TEST_CASE("gate policy: only CLEAR_ERRORS/REBOOT gate on bus-transmittable (SYNCH)") {
   using namespace JbUdp;
   using CanBridge::Rpc::method_gates_on_bus_transmittable;
   // The two operator recovery one-shots gate on the LIVE bus-transmittable (SYNCH)

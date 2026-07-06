@@ -2,7 +2,7 @@
 //  test_hand_ops.cpp — compiled test of the REAL hand traj / smooth-move conduit
 // =============================================================================
 //  Drives the actual compiled hand_ops.cpp (it #includes the .cpp) against the
-//  recording fake HAL, asserting the safety-relevant BEHAVIOURS of the Phase-5
+//  recording fake HAL, asserting the safety-relevant BEHAVIOURS of the hand-conduit
 //  HAND_TRAJ_CMD dispatch:
 //
 //    * a valid traj cmd emits the CLOSED_LOOP + POSITION/PASSTHROUGH PREAMBLE to
@@ -90,7 +90,7 @@ TEST_CASE("the 0x6D0 payload is forwarded VERBATIM regardless of discriminator")
   CHECK(memcmp(fake_sent_at(2).buf, smooth, 8) == 0);
 }
 
-TEST_CASE("a hand traj is REJECTED while homing is active (interlock, item 2), nothing sent") {
+TEST_CASE("a hand traj is REJECTED while homing is active (interlock), nothing sent") {
   fake_reset();
   fake_set_commands_allowed(true);    // bus is fine — the rejection is the homing interlock, not the gate
   fake_set_homing(true);              // the shared state machine is mid-homing (e.g. axis 6)

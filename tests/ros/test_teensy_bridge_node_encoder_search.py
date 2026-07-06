@@ -1,4 +1,4 @@
-"""Node-level tests for the Phase 9a encoder-search wiring in teensy_bridge_node.
+"""Node-level tests for the encoder-search wiring in teensy_bridge_node.
 
 The pure sequencing is covered exhaustively in
 ``tests/teensy_link/test_encoder_search.py``. Here we test the bridge glue: the

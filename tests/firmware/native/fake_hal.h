@@ -11,8 +11,8 @@
 //  surface (clock setters, the recorded-frame accessor, the predicate setters,
 //  and the GROWABLE inbound-CAN3 injection hook).
 //
-//  GROWABLE: the inbound-CAN3-frame injection hook is present from Phase 0 even
-//  though nothing consumes it yet — Phases 1/3 compile the relay/version decode
+//  GROWABLE: the inbound-CAN3-frame injection hook is present from the harness's
+//  first version even though nothing consumes it yet — the relay/version decode
 //  path into the harness and use it for reply-correlation + the Get_Version
 //  handshake tests. Adding the seam now keeps those later phases additive.
 //
@@ -72,9 +72,9 @@ size_t            fake_sent_count_cmd(uint8_t cmd_id);
 //  frame is never sent.
 void              fake_set_send_fail_index(int attempt_index);
 
-// ── GROWABLE inbound-CAN3 injection hook (Phase 0: unused; Phases 1/3 use it) ─
+// ── GROWABLE inbound-CAN3 injection hook (initially unused; the relay/version tests use it) ─
 //  A test pushes a frame the bridge's CAN3 RX would have received; the future
-//  relay/version decode TU drains it via fake_can3_rx_pop(). Phase 0 only
+//  relay/version decode TU drains it via fake_can3_rx_pop(). The harness initially only
 //  exercises push/pending so the seam is proven to compile and round-trip.
 void   fake_inject_can3_rx(uint32_t id, const uint8_t* data, uint8_t len);
 bool   fake_can3_rx_pop(uint32_t& id, uint8_t* data, uint8_t& len);  // consumer side

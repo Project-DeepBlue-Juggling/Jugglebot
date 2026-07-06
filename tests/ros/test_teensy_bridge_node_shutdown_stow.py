@@ -1,7 +1,7 @@
 """Shutdown-stow tests for ``teensy_bridge_node.on_shutdown()``.
 
 Ctrl-C of ``jugglebot_launch`` must profiled-stow the platform before transport
-teardown — the β analogue of ``can_node.on_shutdown``'s
+teardown — the Teensy-side analogue of ``can_node.on_shutdown``'s
 ``_gently_move_to_setpoint(0.0, deactivating=True)`` (can_node.py:1693-1706). The
 can_node→teensy_bridge migration dropped this; a clean Ctrl-C left the legs
 holding (CAN3 healthy → firmware just enters LINK_LOST and gates output, and its

@@ -4,7 +4,7 @@
 //  The hand-written C++ framing (crc16_ccitt / encode_frame / decode_frame in the
 //  generated udp_protocol.h) is the NETWORK TRUST BOUNDARY — every byte the Teensy
 //  accepts off the wire passes through decode_frame. Yet no test ever EXECUTED it
-//  (coverage gap 4): the cross-language xref only compared struct sizes + the
+//  The cross-language xref only compared struct sizes + the
 //  committed-vs-generated text, never ran the C++ codec. This runs it.
 //
 //  The CRC is pinned to the canonical CRC-16/CCITT-FALSE check value (0x29B1 for
@@ -66,7 +66,7 @@ TEST_CASE("encode_frame refuses an oversized payload and a too-small out buffer"
                      out, HEADER_SIZE) == 0);
 }
 
-TEST_CASE("encode_frame refuses a null payload with a nonzero length (item 20)") {
+TEST_CASE("encode_frame refuses a null payload with a nonzero length") {
   uint8_t out[64];
   // len>0 with a null payload would else skip the memcpy but still CRC over the
   // uninitialized out[] and return a 'valid' garbage frame → guard returns 0.

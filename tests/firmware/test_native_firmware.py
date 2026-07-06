@@ -15,16 +15,16 @@ SKIPS, not fails — the Jetson run is authoritative):
   * `test_fault_machine` — soft-reset limiter, UV gating, the deferred-stow 5
     invariants, present-axis scoping, fb-stale suppression;
   * `test_leg_interp` — lead/stroke/present-axis clamps, modes, stow descent;
-  * `test_platform_relay` — Phase-1 Platform-Teensy relay: trigger frames, 0x6E0
+  * `test_platform_relay` — Platform-Teensy relay: trigger frames, 0x6E0
     RobotState re-encode parity, the never-command-a-dead-bus fail-fast,
     is_platform_reply_id, the generated hand axis-6 allow-table;
-  * `test_version_check` — Phase-3 Get_Version sweep + raw-version cache;
-  * `test_hand_ops` — Phase-5 hand traj/smooth-move conduit + preamble-abort;
-  * `test_leg_activate` / `test_leg_deactivate` / `test_leg_homing` — the Phase-11
+  * `test_version_check` — Get_Version sweep + raw-version cache;
+  * `test_hand_ops` — hand traj/smooth-move conduit + preamble-abort;
+  * `test_leg_activate` / `test_leg_deactivate` / `test_leg_homing` — the
     cold-start move ladders (request validation, SETUP preamble byte-parity, the
     active/STOW COMMAND, the homing float32 Iq-EMA trip + HAND-vs-LEG dispatch, and
-    abort-to-IDLE). These close coverage gap 1: before this, the code that drives
-    legs into hardstops was never compiled by any test (Fable-5 hardening [6]);
+    abort-to-IDLE). These close a real coverage hole: before this, the code that drives
+    legs into hardstops was never compiled by any test;
   * plus a golden-conformance check: a freshly-emitted golden must still equal the
     committed `native/fault_golden.json`, so a firmware behaviour change regenerates
     the golden deliberately (and `tests/firmware/test_fault_logic.py` then pins the
@@ -92,8 +92,8 @@ def test_native_leg_interp_binary_passes(binaries):
 
 
 def test_native_platform_relay_binary_passes(binaries):
-    """The compiled platform_relay.cpp passes every behaviour assertion (Phase 1
-    Platform-Teensy relay: trigger frames, 0x6E0 RobotState re-encode parity, the
+    """The compiled platform_relay.cpp passes every behaviour assertion
+    (Platform-Teensy relay: trigger frames, 0x6E0 RobotState re-encode parity, the
     never-command-a-dead-bus fail-fast, is_platform_reply_id, and the generated
     hand axis-6 allow-table)."""
     r = _run(binaries["test_platform_relay"])
@@ -103,8 +103,8 @@ def test_native_platform_relay_binary_passes(binaries):
 
 
 def test_native_version_check_binary_passes(binaries):
-    """The compiled version_check.cpp passes every behaviour assertion (Phase 3
-    Get_Version sweep + raw-version cache: one frame/tick bus-paced sweep of
+    """The compiled version_check.cpp passes every behaviour assertion
+    (Get_Version sweep + raw-version cache: one frame/tick bus-paced sweep of
     present axes, absent-axis skip, the never-command-a-dead-bus gate, and the
     ResultAxisVersions blob fill via the inbound-CAN3 injection hook)."""
     r = _run(binaries["test_version_check"])
@@ -114,7 +114,7 @@ def test_native_version_check_binary_passes(binaries):
 
 
 def test_native_hand_ops_binary_passes(binaries):
-    """The compiled hand_ops.cpp passes every behaviour assertion (Phase 5 hand
+    """The compiled hand_ops.cpp passes every behaviour assertion (hand
     conduit: the CLOSED_LOOP + POSITION/PASSTHROUGH preamble to axis 6, the 0x6D0
     payload forwarded verbatim on the firmware-owned id, the never-command-a-dead-
     bus gate, and — the safety crux — the traj TX ABORTS with no 0x6D0 frame if a
@@ -126,10 +126,10 @@ def test_native_hand_ops_binary_passes(binaries):
 
 
 def test_native_leg_activate_binary_passes(binaries):
-    """The compiled leg_activate.cpp passes every behaviour assertion (Phase-11 U5
-    ACTIVATE: request validation — dead-bus/E-STOP/concurrent-move/no-present-leg/
+    """The compiled leg_activate.cpp passes every behaviour assertion
+    (ACTIVATE: request validation — dead-bus/E-STOP/concurrent-move/no-present-leg/
     idempotent — the 5-frame SETUP preamble byte-parity, the active-pose COMMAND, and
-    the safety crux that ANY abort leaves the leg in IDLE). Coverage gap 1."""
+    the safety crux that ANY abort leaves the leg in IDLE). Previously uncompiled by any test."""
     r = _run(binaries["test_leg_activate"])
     assert r.returncode == 0, (
         "native test_leg_activate FAILED — leg_activate.cpp diverged from the "
@@ -137,10 +137,10 @@ def test_native_leg_activate_binary_passes(binaries):
 
 
 def test_native_leg_deactivate_binary_passes(binaries):
-    """The compiled leg_deactivate.cpp passes every behaviour assertion (Phase-11 U5
-    DEACTIVATE: shared request validation + SETUP preamble, plus the two behaviours
+    """The compiled leg_deactivate.cpp passes every behaviour assertion
+    (DEACTIVATE: shared request validation + SETUP preamble, plus the two behaviours
     that distinguish it — the STOW-pose COMMAND and the IDLE-on-arrival that safes
-    the robot de-energised — and abort-to-IDLE). Coverage gap 1."""
+    the robot de-energised — and abort-to-IDLE). Previously uncompiled by any test."""
     r = _run(binaries["test_leg_deactivate"])
     assert r.returncode == 0, (
         "native test_leg_deactivate FAILED — leg_deactivate.cpp diverged from the "
@@ -148,12 +148,12 @@ def test_native_leg_deactivate_binary_passes(binaries):
 
 
 def test_native_leg_homing_binary_passes(binaries):
-    """The compiled leg_homing.cpp passes every behaviour assertion (Phase-9b/Phase-5
-    HOME: axis-range validation incl. the hand axis, the CLOSED_LOOP+VEL_RAMP+limit
+    """The compiled leg_homing.cpp passes every behaviour assertion
+    (HOME: axis-range validation incl. the hand axis, the CLOSED_LOOP+VEL_RAMP+limit
     SETUP preamble, the HAND-vs-LEG per-axis param dispatch — the port-bug surface —
     the REAL float32 Iq-EMA trip → set_absolute_position, and abort-to-IDLE). This
     runs the real float32 EMA, strictly stronger than the retired float64 Python
-    transcription. Coverage gap 1."""
+    transcription. Previously uncompiled by any test."""
     r = _run(binaries["test_leg_homing"])
     assert r.returncode == 0, (
         "native test_leg_homing FAILED — leg_homing.cpp diverged from the expected "
@@ -165,7 +165,7 @@ def test_native_udp_framing_binary_passes(binaries):
     udp_protocol.h — the network trust boundary) passes every assertion: the
     canonical CRC-16/CCITT-FALSE check value, encode→decode round-trip, and every
     rejection the firmware relies on (runt, bad magic/version, length mismatch, CRC
-    corruption). Coverage gap 4 — before this the C++ codec was never executed."""
+    corruption). Before this the C++ codec was never executed."""
     r = _run(binaries["test_udp_framing"])
     assert r.returncode == 0, (
         "native test_udp_framing FAILED — the C++ UDP framing codec diverged from "
@@ -173,7 +173,7 @@ def test_native_udp_framing_binary_passes(binaries):
 
 
 def test_native_udp_link_binary_passes(binaries):
-    """The compiled udp_link.cpp passes every assertion for Tier-2 hardening [15]:
+    """The compiled udp_link.cpp passes every assertion for the udp_link concurrency hardening:
     (a) LOCK COVERAGE — the fake QNEthernet asserts Ethernet.loop() (the lwIP pump)
     AND every socket TX/RX runs under NetLock; driving udp_link_service()+send trips
     zero violations (removing the pump's NetLock wrap makes it > 0 — the regression
@@ -185,16 +185,16 @@ def test_native_udp_link_binary_passes(binaries):
     r = _run(binaries["test_udp_link"])
     assert r.returncode == 0, (
         "native test_udp_link FAILED — udp_link.cpp diverged from the NetLock-coverage "
-        f"/ RX drain-budget contract (Tier-2 [15]):\n{r.stdout}\n{r.stderr}")
+        f"/ RX drain-budget contract:\n{r.stdout}\n{r.stderr}")
 
 
 def test_native_rpc_dispatch_binary_passes(binaries):
     """The compiled rpc.cpp dispatch()/send_axis_frame() passes every assertion: the
     (method,axis) enforcement point (hand-axis-6 allow-table, leg-axis bounds), the
-    arg-decode bounds, the Phase-6 gate-basis split (CLEAR/REBOOT on bus-transmittable
+    arg-decode bounds, the gate-basis split (CLEAR/REBOOT on bus-transmittable
     vs everything else on staleness — the 2026-06-27 just-repowered-bus crux), the
     AXIS_ALL fan-out, the reboot-latch-arms-for-leg-not-hand branch, and BB presence +
-    range-check routing. Coverage gap 3 — the dispatch was never compiled before (only
+    range-check routing. The dispatch was never compiled before (only
     a text-regex lint). Handlers stubbed for routing isolation."""
     r = _run(binaries["test_rpc_dispatch"])
     assert r.returncode == 0, (
@@ -204,7 +204,7 @@ def test_native_rpc_dispatch_binary_passes(binaries):
 
 def test_native_odrive_protocol_binary_passes(binaries):
     """The compiled odrive_protocol.h encoders pass their self-checks (arb_id packing,
-    the <fhh set_input_pos round-trip, zero-length get_version). Coverage gap 8 — the
+    the <fhh set_input_pos round-trip, zero-length get_version). The
     real header is now EXECUTED; the cross-language byte parity is pinned by the
     committed-golden guard below + the odrive.py reproduction in
     tests/firmware/test_odrive_protocol_xref.py."""
@@ -216,7 +216,7 @@ def test_native_odrive_protocol_binary_passes(binaries):
 
 def test_odrive_committed_golden_matches_live_firmware(binaries, tmp_path):
     """A freshly-emitted odrive golden equals committed native/odrive_protocol_golden.json
-    — the C++-side drift guard (gap 8). If odrive_protocol.h's encoders change, the fresh
+    — the C++-side drift guard. If odrive_protocol.h's encoders change, the fresh
     emission diverges and this fails, forcing a deliberate regeneration:
         python tests/firmware/native/build.py --odrive-golden \
             tests/firmware/native/odrive_protocol_golden.json
@@ -238,7 +238,7 @@ def test_odrive_committed_golden_matches_live_firmware(binaries, tmp_path):
 def test_native_ball_butler_binary_passes(binaries):
     """The compiled ball_butler_protocol.h encoders pass their self-checks (encode_throw
     id/len/offsets/scaling, throw_args_valid accept + each out-of-range/NaN/Inf reject,
-    the payloadless state-command ids). Coverage gap 7 — the one canbridge firmware
+    the payloadless state-command ids). The one canbridge firmware
     encoder that was never compiled. Byte parity vs ball_butler.py:
     tests/firmware/test_ball_butler_xref.py."""
     r = _run(binaries["test_ball_butler_protocol"])
@@ -249,7 +249,7 @@ def test_native_ball_butler_binary_passes(binaries):
 
 def test_bb_committed_golden_matches_live_firmware(binaries, tmp_path):
     """A freshly-emitted BB golden equals committed native/ball_butler_golden.json —
-    the C++-side drift guard (gap 7). Regenerate on an intended change:
+    the C++-side drift guard. Regenerate on an intended change:
         python tests/firmware/native/build.py --bb-golden \
             tests/firmware/native/ball_butler_golden.json
     (and update ball_butler.py so the Python xref reproduction still matches)."""

@@ -12,7 +12,7 @@
 //      write/endPacket/remoteIP/remotePort.
 //
 //  Every method calls netlockprobe::require_held() at entry: this is the LOCK
-//  COVERAGE probe. A call made outside NetLock (the pre-Tier-2-15 unlocked pump)
+//  COVERAGE probe. A call made outside NetLock (the unlocked-pump regression)
 //  records a violation the driver asserts is zero — the regression witness.
 //
 //  The socket also carries a test-only staging queue (bind registers it by port

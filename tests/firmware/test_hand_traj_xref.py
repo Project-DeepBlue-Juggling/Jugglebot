@@ -1,6 +1,6 @@
 """Cross-reference the host HAND_TRAJ_CMD encoders against can_node's 0x6D0 wire.
 
-Phase 5 (canbridge-foundation-coldstart-parity) restores the hand catch-trajectory
+The can-bridge restores the hand catch-trajectory
 + smooth-move surface. can_node built two 8-byte PLATFORM_TRAJ_CMD (0x6D0) payloads
 on the Jetson and put them on CAN3 directly (_send_hand_traj_cmd, _smooth_move_hand,
 can_node.py:1626-1661). The can-bridge builds the SAME 8 bytes host-side

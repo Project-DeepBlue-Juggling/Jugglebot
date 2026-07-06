@@ -3,8 +3,7 @@
 // =============================================================================
 //  ball_butler_protocol.h claims to be a "byte-for-byte port of
 //  jugglebot.can.ball_butler.encode_throw_command + encode_state_command", but it
-//  was the ONE canbridge firmware encoder with ZERO compiled coverage (coverage
-//  gap 7) — a wrong scale, id, byte offset, or range bound passed silently. This
+//  was the ONE canbridge firmware encoder with ZERO compiled coverage — a wrong scale, id, byte offset, or range bound passed silently. This
 //  compiles + runs the real encoders and emits their exact bytes into a committed
 //  golden; tests/firmware/test_ball_butler_xref.py then reproduces every VALID row
 //  from the AUTHORITATIVE ball_butler.py (byte-for-byte) and independently checks

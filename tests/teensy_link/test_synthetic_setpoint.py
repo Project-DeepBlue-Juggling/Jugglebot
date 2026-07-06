@@ -1,6 +1,6 @@
-"""Tests for controller/teensy_link/synthetic_setpoint.py (Phase 11).
+"""Tests for controller/teensy_link/synthetic_setpoint.py.
 
-The synthetic β-knot source drives the FIRST armed exercise of the Teensy's
+The synthetic knot source drives the FIRST armed exercise of the Teensy's
 40 Hz-knot Hermite interp on hardware, so its trajectory math, knot lookahead,
 absent-leg packing, and safety bounds are validated here off-hardware. Hardware-
 free: pure generator, no Teensy.

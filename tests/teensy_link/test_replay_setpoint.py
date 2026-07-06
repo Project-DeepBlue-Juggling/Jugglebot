@@ -1,7 +1,7 @@
-"""Tests for controller/teensy_link/replay_setpoint.py (Phase 11, U3-iv).
+"""Tests for controller/teensy_link/replay_setpoint.py.
 
-The recorded-throw source replays an mpc_*.csv command stream as β-knots for the
-on-hardware float32-residual + D9 motion-onset measurements, scaled so the
+The recorded-throw source replays an mpc_*.csv command stream as Teensy-side knots for the
+on-hardware float32-residual and motion-onset measurements, scaled so the
 shorter bench leg is never driven past its physical ceiling. Its loader, safety
 scaler, approach/settle/replay trajectory, knot lookahead, and friction-FF
 injection hook are validated here off-hardware (pure generator, no Teensy).
@@ -116,7 +116,7 @@ def test_scale_velocity_guard_raises_when_too_fast():
 
 
 def test_scale_raises_when_floor_above_ceiling():
-    """[17]: an unusable floor>ceiling bench config fails LOUD rather than emitting a
+    """An unusable floor>ceiling bench config fails LOUD rather than emitting a
     flat/sign-inverted profile."""
     with pytest.raises(ValueError, match="ceiling"):
         scale_to_bench([0.1, 0.2, 0.3], stroke_min_rev=5.0, ceiling_rev=2.0)
@@ -211,7 +211,7 @@ def test_frame_knot_lookahead_and_absent_legs():
     # Non-target axes packed 0.0 (absent-ODrive safe).
     for i in range(1, 6):
         assert fr.u0[i] == 0.0 and fr.u1[i] == 0.0 and fr.v0[i] == 0.0
-    # Plain β path ⇒ zero torque FF on all axes.
+    # Teensy-side path (no friction-FF fn) ⇒ zero torque FF on all axes.
     assert all(x == 0.0 for x in fr.torque_ff)
 
 

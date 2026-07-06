@@ -1,4 +1,4 @@
-"""Platform-Teensy relay request/reply tests for teensy_bridge_node (Phase 1).
+"""Platform-Teensy relay request/reply tests for teensy_bridge_node.
 
 The can-bridge re-establishes the Jetson↔Platform-Teensy conduit over CAN3: the
 inclinometer tilt read (0x7DE) and the cold-start RobotState read/write (0x6E0).
@@ -7,10 +7,10 @@ the firmware forwards verbatim as a PLATFORM_FRAME the bridge correlates by
 (can_id, dlc). These tests drive the bridge's relay methods through the real
 RpcClient + a FakeTeensy that, on the trigger RPC, both ACKs and injects the
 matching PLATFORM_FRAME — exactly the on-hardware sequence (modulo the SRX_DIS
-self-echo question, which is the Phase-1 bench-probe gate).
+self-echo question, resolved by the platform-relay bench probe).
 
 ROS 2 is mocked by tests/ros/conftest.py; the relay methods are pure node methods
-(no ROS service surface yet — that is Phase 4), fully covered here.
+(no ROS service surface yet — that is added by the orchestrator conduit), fully covered here.
 """
 
 from __future__ import annotations
@@ -174,10 +174,10 @@ def test_relay_read_clears_stale_reply_before_trigger():
         _teardown(teensy, client, node)
 
 
-# ── Relay serialization ([16]) ─────────────────────────────────
+# ── Relay serialization ─────────────────────────────────
 
 def test_relay_lock_is_reentrant():
-    """[16]: _relay_lock is an RLock so the read-modify-write helpers can hold it
+    """_relay_lock is an RLock so the read-modify-write helpers can hold it
     across their whole cache-read → relay_write → cache-update sequence — which
     itself re-acquires the lock inside relay_write_robot_state — WITHOUT
     deadlocking. A plain Lock would deadlock on that nested same-thread acquire."""
@@ -193,7 +193,7 @@ def test_relay_lock_is_reentrant():
 
 
 def test_relay_lock_serializes_rmw_against_concurrent_relay():
-    """[16]: _write_is_homed holds _relay_lock across its ENTIRE read-modify-write,
+    """_write_is_homed holds _relay_lock across its ENTIRE read-modify-write,
     so a concurrent relay op cannot interleave and land a stale write last (the
     STATE_WRITE lost-update). We prove the whole RMW is under the lock by blocking
     inside the wire-write and confirming another thread cannot take the lock until

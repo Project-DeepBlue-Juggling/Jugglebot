@@ -1,4 +1,4 @@
-"""Catching-cone tests for teensy_bridge_node (phase-10b cone uplink).
+"""Catching-cone tests for teensy_bridge_node (cone uplink).
 
 The can-bridge relays every cone CAN2 frame to the Jetson as a CONE_FRAME
 (raw 8-byte CAN payload + arbitration id + bridge RX timestamp); the bridge

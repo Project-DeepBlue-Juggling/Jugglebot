@@ -1,10 +1,10 @@
-"""Unit tests for controller/teensy_link/encoder_search.py (Phase 9a).
+"""Unit tests for controller/teensy_link/encoder_search.py.
 
 The encoder-index-search orchestration state machine, tested in isolation (no
 ROS, no UDP, no hardware) by driving :meth:`EncoderSearch.step` with controlled
 monotonic times and per-axis status snapshots. End-to-end RPC issue + the
 telemetry/diagnostic → AxisStatus mapping are wired (and integration-tested) at
-the node level when 9a lands in teensy_bridge_node.
+the node level when Jetson-side encoder search lands in teensy_bridge_node.
 
 Empirical recipe these tests encode (ground truth from the 2026-06-19 bench
 bring-up + can_node._encoder_search_steps): a leg ODrive with CAN+main power, on

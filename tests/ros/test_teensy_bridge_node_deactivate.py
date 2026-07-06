@@ -1,4 +1,4 @@
-"""Node-level tests for the Phase 11 U5 deactivate wiring in teensy_bridge_node.
+"""Node-level tests for the deactivate wiring in teensy_bridge_node.
 
 The pure completion logic is covered in ``tests/teensy_link/test_deactivate.py``.
 Here we test the bridge glue:

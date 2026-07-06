@@ -1,4 +1,4 @@
-"""RPC service-surface tests for teensy_bridge_node (Phase 10b, Commit 4).
+"""RPC service-surface tests for teensy_bridge_node.
 
 Drives the bridge's RPC methods + ROS service handlers through the real
 RpcClient and a FakeTeensy that auto-responds. The headline assertion is
@@ -183,7 +183,7 @@ def test_vel_curr_limits_ignored_when_zero():
 
 
 def test_vel_curr_limits_topic_applies_hand_axis6():
-    """[12]: the can-bridge owns the hand ODrive (axis 6) on CAN3, so a legs+hand
+    """The can-bridge owns the hand ODrive (axis 6) on CAN3, so a legs+hand
     message applies the HAND limits too — reversing the earlier can_node-parity
     regression. Seven SET_VEL_CURR_LIMITS RPCs fire (6 legs + axis 6, in order) and
     the hand values are CACHED so a later _run_configure re-applies the operator's
@@ -216,7 +216,7 @@ def test_vel_curr_limits_topic_applies_hand_axis6():
 
 
 def test_vel_curr_limits_hand_cache_unchanged_on_failure():
-    """[12]: if the hand SET_VEL_CURR_LIMITS RPC is REJECTED, the cached hand limits
+    """If the hand SET_VEL_CURR_LIMITS RPC is REJECTED, the cached hand limits
     are left untouched — a later _run_configure must not push a value the hand ODrive
     refused. Legs still apply (the hand failure is isolated)."""
     from jugglebot.teensy_bridge_node import _HAND_AXIS
@@ -243,10 +243,10 @@ def test_vel_curr_limits_hand_cache_unchanged_on_failure():
         _teardown(teensy, client, node)
 
 
-# ── encoder_search: Jetson-side (Phase 9a); home: firmware move (Phase 9b) ─
+# ── encoder_search: Jetson-side; home: firmware move ─
 
 def test_encoder_search_is_jetson_side_not_firmware_stub():
-    """Phase 9a moved encoder index search to a Jetson-side orchestration over
+    """Encoder index search was moved to a Jetson-side orchestration over
     SET_AXIS_STATE; the service must NOT route to the (stubbed) firmware
     ENCODER_SEARCH RPC. Full behaviour: test_teensy_bridge_node_encoder_search.py."""
     teensy, client, node = _node()
@@ -267,7 +267,7 @@ def test_encoder_search_is_jetson_side_not_firmware_stub():
 
 
 def test_home_is_firmware_move_not_stub():
-    """Phase 9b: the HOME RPC now starts a firmware move-to-hardstop (no longer
+    """The HOME RPC now starts a firmware move-to-hardstop (no longer
     ERR_NOT_IMPL). The service reads home_axes and observes completion; with an
     empty scope it returns fast without touching the firmware. Full behaviour:
     test_teensy_bridge_node_home.py."""

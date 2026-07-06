@@ -1,6 +1,6 @@
 """Cross-language byte-parity of the C++ ODrive encoders (odrive_protocol.h) vs odrive.py.
 
-**Upgraded in the Fable-5 hardening pass (gap 8).** This used to TRANSCRIBE the C++
+**Upgraded in the firmware test-hardening pass.** This used to TRANSCRIBE the C++
 arithmetic into Python (`cpp_arb_id`/`cpp_set_input_pos`/`cpp_leg_setpoint`) and
 compare that to `odrive.py` — both sides Python, so a wrong memcpy offset / struct
 order / arb-id shift in the REAL header passed silently. It is now a GOLDEN

@@ -1,5 +1,5 @@
 """End-to-end cold-start integration: the LOCKED orchestrator state machine driven
-against the REAL Phase-4 bridge conduit handlers.
+against the REAL bridge conduit handlers.
 
 The drift-guard (``test_orchestrator_conduit_contract.py``) proves the (name, type)
 interfaces line up; the behaviour suite (``test_teensy_bridge_node_conduit.py``)
@@ -141,8 +141,8 @@ def test_full_cold_start_boot_home_level_to_idle_via_conduit():
 
 
 def test_cold_start_skips_homing_when_already_homed():
-    """If robot_state reports is_homed (persisted from a prior session via the Phase-2
-    relay), BOOT skips straight to IDLE — the skip-if-homed path the Phase-5 sitting
+    """If robot_state reports is_homed (persisted from a prior session via the Platform-Teensy cold-start
+    relay), BOOT skips straight to IDLE — the skip-if-homed path a powered bench sitting
     showed already works, now reachable without a transient FAULT."""
     from jugglebot.orchestrator_node import OrchestratorNode
     orch = OrchestratorNode()

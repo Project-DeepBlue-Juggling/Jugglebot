@@ -1,4 +1,4 @@
-"""Unit tests for controller/teensy_link/deactivate.py (Phase 11 U5).
+"""Unit tests for controller/teensy_link/deactivate.py.
 
 The deactivate completion-observer state machine, tested in isolation (no ROS, no
 UDP, no hardware) by driving :meth:`DeactivateMonitor.step` with controlled

@@ -1,8 +1,8 @@
-"""Node-level tests for the Phase 5 hand command surface in teensy_bridge_node.
+"""Node-level tests for the hand command surface in teensy_bridge_node.
 
 The byte-exact 0x6D0 wire parity is covered in tests/firmware/test_hand_traj_xref.py;
 the firmware conduit in tests/firmware/native/test_hand_ops.cpp. Here we test the
-BRIDGE glue (canbridge-foundation-coldstart-parity Phase 5):
+BRIDGE glue for the hand conduit (see logbook 2026-07-01-canbridge-phase5-hand-conduit):
 
   * the four hand services (set_hand_state / set_hand_gains / set_hand_traj_cmd /
     smooth_move_hand) — Jetson-side validation (reject before a byte hits CAN3) +
@@ -10,8 +10,8 @@ BRIDGE glue (canbridge-foundation-coldstart-parity Phase 5):
   * HAND_CMD_ECHO → hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd (the sniffed hand
     Set_Input_Pos echo, byte-identical decode to can_node._handle_hand_input_pos);
   * cold-start hand handling: _apply_hand_gains refuse-flash-defaults, _run_configure
-    configuring the hand (row 51), _run_home applying hand gains before HOME(6) (row
-    40/32), and _run_deactivate idling the hand (row 29).
+    configuring the hand, _run_home applying hand gains before HOME(6), and
+    _run_deactivate idling the hand.
 
 ROS 2 is mocked by tests/ros/conftest.py.
 """
@@ -28,7 +28,7 @@ from controller.teensy_link import (
 )
 from controller.teensy_link import rpc_args
 from controller.teensy_link import protocol as p
-from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # [18A] outcome
+from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 
 from tests.ros.test_teensy_bridge_node_read import _build_paired_node
 
@@ -246,7 +246,7 @@ def test_apply_hand_gains_refuse_flash_defaults_on_failure():
         _teardown(teensy, client, node)
 
 
-# ── _run_configure configures the hand (row 51) ───────────────────────────────
+# ── _run_configure configures the hand───────────────────────────────
 
 def test_run_configure_hand_applies_gains_limits_mode():
     teensy, client, node = _build_paired_node()
@@ -323,7 +323,7 @@ def test_run_home_hand_applies_gains_then_homes():
         _teardown(teensy, client, node)
 
 
-# ── _run_deactivate idles the hand (row 29) ───────────────────────────────────
+# ── _run_deactivate idles the hand───────────────────────────────────
 
 def test_run_deactivate_idles_the_hand():
     teensy, client, node = _build_paired_node()

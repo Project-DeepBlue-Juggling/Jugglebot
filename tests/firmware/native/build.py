@@ -54,7 +54,7 @@ _OBJECTS = {
     "axis_state":        FIRMWARE_DIR / "axis_state.cpp",
     "ball_butler_state": FIRMWARE_DIR / "ball_butler_state.cpp",
     "fake_hal":          NATIVE_DIR / "fake_hal.cpp",
-    # Phase-11 U5 cold-start moves: a SEPARATE self-contained fake HAL (never linked
+    # Cold-start move drivers (homing/activate/deactivate): a SEPARATE self-contained fake HAL (never linked
     # alongside fake_hal.o) for the leg_homing/activate/deactivate drivers — their
     # bus/fault gate + *_active() ODR needs differ from the fault/interp TUs.
     "coldstart_hal":     NATIVE_DIR / "coldstart_hal.cpp",
@@ -71,21 +71,21 @@ _BINARIES = {
         NATIVE_DIR / "test_leg_interp.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
-    # Phase 1: the Platform-Teensy relay seam. #includes platform_relay.cpp; the
+    # Platform-Teensy relay seam. #includes platform_relay.cpp; the
     # fake HAL supplies can_jugglebot_send + jugglebot_commands_allowed, and
     # is_platform_reply_id / hand_axis6_permitted are header-inline / generated.
     "test_platform_relay": (
         NATIVE_DIR / "test_platform_relay.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
-    # Phase 3: the Get_Version sweep + raw-version cache. #includes version_check.cpp;
+    # Get_Version sweep + raw-version cache. #includes version_check.cpp;
     # the fake HAL supplies can_jugglebot_send + jugglebot_commands_allowed + the
     # inbound-CAN3 injection hook, axes[] comes from axis_state.o.
     "test_version_check": (
         NATIVE_DIR / "test_version_check.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
-    # Phase 5: the hand traj / smooth-move conduit. #includes hand_ops.cpp; the fake
+    # Hand traj / smooth-move conduit. #includes hand_ops.cpp; the fake
     # HAL supplies can_jugglebot_send + jugglebot_commands_allowed (+ the send-fail
     # hook for the preamble-abort test). The ODrive encoders + 0x6D0 id are
     # header-inline / generated.
@@ -93,7 +93,7 @@ _BINARIES = {
         NATIVE_DIR / "test_hand_ops.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
-    # Phase 11 U5: the cold-start move ladders. Each driver #includes ONE real
+    # Cold-start move ladders. Each driver #includes ONE real
     # module .cpp (defining its own *_active) + supplies the two sibling predicates
     # inline, and links coldstart_hal (NOT fake_hal — that would ODR-clash on the
     # module's own *_active and lacks the can_buses_stats/fault gate these use).
@@ -109,13 +109,13 @@ _BINARIES = {
         NATIVE_DIR / "test_leg_homing.cpp",
         ["axis_state", "ball_butler_state", "coldstart_hal"],
     ),
-    # Fable-5 [14] / gap 4: EXECUTE the hand-written C++ UDP framing (the network
+    # UDP-framing coverage: EXECUTE the hand-written C++ UDP framing (the network
     # trust boundary). Pure header (udp_protocol.h) — no linked objects.
     "test_udp_framing": (
         NATIVE_DIR / "test_udp_framing.cpp",
         [],
     ),
-    # Tier-2 [15]: EXECUTE udp_link.cpp's NetLock coverage + RX drain budget. The
+    # NetLock-coverage hardening: EXECUTE udp_link.cpp's NetLock coverage + RX drain budget. The
     # fake QNEthernet + recursive-mutex shims (hal_shims/QNEthernet.h,
     # arduino_freertos.h, net_lock_probe.h) let it assert that Ethernet.loop() and
     # every socket call run under NetLock, and that drain_socket is bounded by
@@ -126,7 +126,7 @@ _BINARIES = {
         NATIVE_DIR / "test_udp_link.cpp",
         [],
     ),
-    # Fable-5 [14] / gap 3: EXECUTE rpc.cpp dispatch()/send_axis_frame() — the
+    # RPC-dispatch coverage: EXECUTE rpc.cpp dispatch()/send_axis_frame() — the
     # (method,axis) enforcement point + gate-basis routing. #includes rpc.cpp and
     # links the standard triple; the leg/hand/relay/version handlers are stubbed
     # inline in the driver (routing isolation), so no leg_*/relay/version .cpp link.
@@ -134,13 +134,13 @@ _BINARIES = {
         NATIVE_DIR / "test_rpc_dispatch.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
-    # Fable-5 [14] / gap 8: EXECUTE the real odrive_protocol.h encoders + emit a
+    # ODrive-encoder coverage: EXECUTE the real odrive_protocol.h encoders + emit a
     # cross-language golden (pinned by the Python xref to odrive.py). Pure header.
     "test_odrive_protocol": (
         NATIVE_DIR / "test_odrive_protocol.cpp",
         [],
     ),
-    # Fable-5 [14] / gap 7: EXECUTE the real ball_butler_protocol.h encoders + emit a
+    # Ball-butler-encoder coverage: EXECUTE the real ball_butler_protocol.h encoders + emit a
     # cross-language golden (pinned by the Python xref to ball_butler.py). Pure header
     # (the driver defines its own fixed clock for the deterministic throw_time).
     "test_ball_butler_protocol": (

@@ -1,6 +1,6 @@
-"""Flash-B (Tier-2 item 17) — concurrency/parity STRUCTURAL lint.
+"""Teensy concurrency/parity STRUCTURAL lint.
 
-Items 1-3 of Flash-B are pure concurrency/timing fixes on the Teensy that the native
+The three fixes below are pure concurrency/timing fixes on the Teensy that the native
 doctest harness CANNOT prove: the fake HAL's PRIMASK intrinsics are no-ops,
 `IntervalTimer::priority()` is a stub, and doctest runs single-threaded, so there is
 no preemption to tear a 64-bit read or reorder a publish. The real concurrency
@@ -81,7 +81,7 @@ def test_no_bare_platform_last_heartbeat_us():
     assert not offenders, (
         "bare platform .last_heartbeat_us access(es) found — route every platform "
         "(AxisState) read/write through atomic_read_u64/atomic_write_u64 "
-        "(Flash-B item 17 §1):\n  " + "\n  ".join(offenders))
+        "(fix 1):\n  " + "\n  ".join(offenders))
 
 
 def _extract_function(text: str, signature: str) -> str:
@@ -109,14 +109,14 @@ def test_interp_begin_stow_has_primask_barrier():
     body = _extract_function(_LEG_INTERP.read_text(), "void interp_begin_stow()")
     assert "__disable_irq()" in body, (
         "interp_begin_stow() lost its __disable_irq() — the s_stow_active publish is "
-        "no longer ordered after the s_stow_pos[] writes (Flash-B item 17 §2)")
+        "no longer ordered after the s_stow_pos[] writes (fix 2)")
     assert "__set_PRIMASK(" in body, (
         "interp_begin_stow() lost its __set_PRIMASK() restore — use the "
         "save-pm/disable/restore-pm idiom (nests safely), not a bare __enable_irq "
-        "(Flash-B item 17 §2)")
+        "(fix 2)")
     # The flag store must be INSIDE the barrier (before the restore).
     assert body.index("s_stow_active = true") < body.index("__set_PRIMASK("), (
-        "s_stow_active=true must be set INSIDE the PRIMASK barrier (Flash-B item 17 §2)")
+        "s_stow_active=true must be set INSIDE the PRIMASK barrier (fix 2)")
 
 
 def test_interp_isr_priority_is_above_the_syscall_ceiling():
@@ -126,7 +126,7 @@ def test_interp_isr_priority_is_above_the_syscall_ceiling():
     assert "s_timer.priority(16)" in text, (
         "leg_interp_init() must set s_timer.priority(16) — above the FreeRTOS syscall "
         "ceiling (0x20) so RTOS critical sections cannot delay the 500 Hz ISR "
-        "(Flash-B item 17 §3)")
+        "(fix 3)")
     assert "s_timer.priority(32)" not in text, (
         "leg_interp_init() still sets priority(32) — that is EXACTLY AT the FreeRTOS "
-        "syscall ceiling and is masked by every critical section (Flash-B item 17 §3)")
+        "syscall ceiling and is masked by every critical section (fix 3)")

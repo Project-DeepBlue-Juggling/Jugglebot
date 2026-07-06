@@ -1,6 +1,6 @@
 """Config-sanity + cross-file pins for the firmware ACTIVATE op.
 
-**Most of this file was retired in the Fable-5 hardening pass ([6]).** The
+**Most of this file was retired in the firmware test-hardening pass.** The
 behavioural assertions that used to transcribe leg_activate.cpp's SETUP/COMMAND
 constants and check them `== hw.*` were TAUTOLOGICAL: the mirror returned the same
 `hw.*` value it compared against. They are now SUPERSEDED by the compiled native

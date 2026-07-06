@@ -1,4 +1,4 @@
-"""Unit tests for controller/teensy_link/activate.py (Phase 11 U5).
+"""Unit tests for controller/teensy_link/activate.py.
 
 The activate completion-observer state machine, tested in isolation (no ROS, no
 UDP, no hardware) by driving :meth:`ActivateMonitor.step` with controlled
@@ -90,7 +90,7 @@ def test_already_at_target_immediately_done():
 
 
 def test_at_target_but_not_closed_loop_is_not_success():
-    """[17]: a leg AT the target pose + settled but IDLE (an abort-to-IDLE-at-target)
+    """A leg AT the target pose + settled but IDLE (an abort-to-IDLE-at-target)
     must NOT read as a successful activate — the leg is de-energised, not holding."""
     IDLE = 1
     m = mon([0])

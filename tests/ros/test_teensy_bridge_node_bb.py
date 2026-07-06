@@ -1,4 +1,4 @@
-"""Ball Butler bridge tests (Phase A cutover — bb/* moved from can_node).
+"""Ball Butler bridge tests (cutover — bb/* moved from can_node).
 
 Covers the BB surface that teensy_bridge_node inherits from can_node:
 
@@ -11,7 +11,7 @@ Covers the BB surface that teensy_bridge_node inherits from can_node:
   each TX on bb_present(); we translate the resulting ERR_BUS_DOWN into a
   silent-success for bb/calibrate ONLY (to preserve can_node._svc_bb_calibrate's
   HOMING semantics). The other two propagate the error.
-* ``bb/throw`` ACTION (Phase 2) — dispatches BB_THROW and awaits the firmware's
+* ``bb/throw`` ACTION — dispatches BB_THROW and awaits the firmware's
   terminal CMD_RESULT (relayed back as a CAN frame), succeeding/aborting the
   goal with the firmware outcome. Driven here by injecting a CMD_RESULT through
   the FakeTeensy loopback.
@@ -228,7 +228,7 @@ def test_bb_reset_propagates_failure_when_bb_absent():
         _teardown(teensy, client, node)
 
 
-# ── bb/throw ACTION (Phase 2 — dispatch + CMD_RESULT completion) ─────────────
+# ── bb/throw ACTION (dispatch + CMD_RESULT completion) ─────────────
 
 
 def _inject_cmd_result(teensy, *, cmd_type, outcome, detail0=0, detail1=0):

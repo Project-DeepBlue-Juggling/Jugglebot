@@ -1,4 +1,4 @@
-"""Unit tests for controller/teensy_link/homing.py (Phase 9b + Fable-5 [18A]).
+"""Unit tests for controller/teensy_link/homing.py (firmware-reported HomingResult; see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink).
 
 The homing completion-observer state machine, tested in isolation (no ROS, no UDP,
 no hardware) by driving :meth:`HomingMonitor.step` with controlled monotonic times
@@ -7,7 +7,7 @@ and per-axis status snapshots.
 Ground truth = the firmware HOME handler (a port of can_node._home_motor_steps):
 the can-bridge drives a leg into its hardstop, detects the current spike, IDLEs,
 and snaps the encoder to the home reference — tracking the outcome in a per-axis
-HomingResult (NONE/RUNNING/OK/FAILED). Since Fable-5 [18A] that result is uplinked
+HomingResult (NONE/RUNNING/OK/FAILED). That result is now uplinked
 in the Diagnostic and the observer TRUSTS it. It previously inferred success from a
 CLOSED_LOOP→IDLE state cycle, which a silent firmware abort — which also IDLEs the
 leg, but WITHOUT setting the reference — mimicked exactly (a false success that left
@@ -62,7 +62,7 @@ def test_single_axis_success():
 
 
 def test_success_ignores_telemetry_position():
-    """[18A] trusts the firmware result — the foam-relaxed post-IDLE position is
+    """The observer trusts the firmware result — the foam-relaxed post-IDLE position is
     irrelevant. Positions the OLD |pos|≈ref gate rejected still succeed."""
     for pos in (-0.10, -0.05, 0.0, -0.20, 2.49):
         m = HomingMonitor([0])
@@ -73,10 +73,10 @@ def test_success_ignores_telemetry_position():
         assert m.failed == {}
 
 
-# ── the false-success class [18A] closes ─────────────────────────────────────
+# ── the false-success class this observer closes ─────────────────────────────────────
 
 def test_silent_abort_is_not_success():
-    """THE [18A] regression: a firmware abort (bus-down / guard-E-STOP mid-move)
+    """THE false-success regression: a firmware abort (bus-down / guard-E-STOP mid-move)
     IDLEs the leg WITHOUT setting the reference → HOMING_FAILED. The state cycle
     (CLOSED_LOOP→IDLE) LOOKS identical to success; the result must override it."""
     m = HomingMonitor([0])
@@ -162,7 +162,7 @@ def test_multi_axis_independent_outcomes():
     assert sorted(r.set_home) == [0, 1]
     m.step(0.1, {0: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING),
                  1: st(CL, pos_rev=1.0, homing_result=HOMING_RUNNING)})
-    # axis 0 succeeds (OK); axis 1 silently aborts (FAILED — the [18A] case).
+    # axis 0 succeeds (OK); axis 1 silently aborts (FAILED — the silent-abort case).
     r = m.step(0.5, {0: st(IDLE, pos_rev=-REF, homing_result=HOMING_OK),
                      1: st(IDLE, pos_rev=-REF, homing_result=HOMING_FAILED)})
     assert r.done

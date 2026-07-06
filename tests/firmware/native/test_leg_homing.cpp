@@ -2,8 +2,8 @@
 //  test_leg_homing.cpp — compiled test of the REAL firmware homing ladder
 // =============================================================================
 //  Drives the actual compiled leg_homing.cpp against the cold-start fake HAL,
-//  asserting the Phase-9b/Phase-5 HOME behaviours that no test compiled before
-//  (coverage gap 1). Homing detects the hardstop by a CURRENT SPIKE (Iq EMA), not
+//  asserting the HOME behaviours that no test compiled before.
+//  Homing detects the hardstop by a CURRENT SPIKE (Iq EMA), not
 //  a known position, so the native driver runs the REAL float32 EMA — strictly
 //  stronger than the float64 Python transcription the xref used:
 //
@@ -56,7 +56,7 @@ static void full_reset() {
   g_sib_activate = false;
   g_sib_deactivate = false;
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
-    axes[i].heartbeat_seen = true;   // present by default — homing now gates on presence (Flash-A item 3)
+    axes[i].heartbeat_seen = true;   // present by default — homing now gates on presence
     axes[i].active_errors = 0;
     axes[i].iq_measured = 0.0f;
   }
@@ -105,7 +105,7 @@ TEST_CASE("homing_request is idempotent (re-request while active is rejected)") 
   CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
 }
 
-TEST_CASE("homing_request rejects an ABSENT axis — leg AND hand (presence gate, item 3)") {
+TEST_CASE("homing_request rejects an ABSENT axis — leg AND hand (presence gate)") {
   // Homing an absent axis would stream ~30 s of velocity frames to a phantom node,
   // climbing the FlexCAN TEC toward bus-off. leg_present() covers legs + the hand
   // (heartbeat_seen), so the same gate protects axis 6.
@@ -126,7 +126,7 @@ TEST_CASE("homing_request rejects an ABSENT axis — leg AND hand (presence gate
   CHECK(homing_request(HAND_AXIS) == JbUdp::RpcStatus::OK);
 }
 
-TEST_CASE("homing_request rejects while the MPC stream is actively driving (interlock, item 1b)") {
+TEST_CASE("homing_request rejects while the MPC stream is actively driving (interlock)") {
   full_reset();
   cs_set_mpc_active(true);                               // guard ENABLED on the Jetson → MPC driving legs
   CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);

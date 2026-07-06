@@ -11,7 +11,7 @@ from controller.teensy_link import protocol as p
 
 def test_constants_match_firmware_spec():
     # These are load-bearing — if they ever drift we've broken the protocol.
-    assert p.PROTOCOL_VERSION == 2   # bumped for the Diagnostic homing_result field ([18A])
+    assert p.PROTOCOL_VERSION == 2   # bumped for the Diagnostic homing_result field
     assert p.MAGIC == 0x4A42  # "JB" little-endian
     assert p.HEADER_SIZE == 8
     assert p.CRC_SIZE == 2
@@ -37,7 +37,7 @@ def test_heartbeat_j2t_roundtrip():
 
 
 def test_cmd_result_frame_roundtrip():
-    # Phase-2 loud command-outcome relay: a raw BB CAN1 frame (0x7D5) wrapped
+    # The loud command-outcome relay: a raw BB CAN1 frame (0x7D5) wrapped
     # verbatim. The decoded throw outcome lives inside `data` (cmd_type, outcome,
     # detail0/1 int16 LE) — the codec just preserves the 8 payload bytes.
     cr = p.CmdResultFrame(

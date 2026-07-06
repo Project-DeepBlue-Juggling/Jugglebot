@@ -1,4 +1,4 @@
-"""Read-side tests for teensy_bridge_node (Phase 10b, Commit 1).
+"""Read-side tests for teensy_bridge_node (the UDP→ROS read mirror).
 
 Exercises the UDP→ROS mirror end-to-end on loopback: a ``FakeTeensy`` (reused
 from ``tests/teensy_link/conftest.py``) injects T→J frames, the real
@@ -27,7 +27,7 @@ from controller.teensy_link import (
     HeartbeatJ2T, HeartbeatT2J, Telemetry, Diagnostic, Profile,
 )
 
-# Reuse the Phase-10a loopback peer.
+# Reuse the FakeTeensy loopback peer.
 from tests.teensy_link.conftest import FakeTeensy
 
 
@@ -49,7 +49,7 @@ def _build_paired_node(*, boot_state_read=False):
     Mirrors the pairing in tests/teensy_link/conftest.py::fake_teensy_and_client
     but injects the started client into a TeensyBridgeNode.
 
-    ``boot_state_read`` defaults False so the Phase-2 cold-start boot read does NOT
+    ``boot_state_read`` defaults False so the cold-start boot read does NOT
     fire during construction (these tests don't wire a Platform-Teensy STATE_READ
     responder before __init__, and exercise the cold-start path explicitly via
     tests/ros/test_teensy_bridge_node_coldstart.py). Pass True to exercise the boot
@@ -136,12 +136,12 @@ def test_enable_setpoint_output_defaults_false(bridge):
 
 # ── Topic namespace discipline ─────────────────────────────────
 
-# Phase 11 / U4 (leg/hand cutover): the side-by-side ``/teensy/*`` namespace
-# (handoff D1) is fully retired. ``can_node`` is out of the production launch,
-# so the dual-publisher risk D1 prevented is moot and the bridge owns the
+# The leg/hand cutover: the side-by-side ``/teensy/*`` namespace
+# (the interim dual-publisher handoff) is fully retired. ``can_node`` is out of the production launch,
+# so the dual-publisher risk it prevented is moot and the bridge owns the
 # PRODUCTION topic/service names directly — which is what reconnects the GUI /
 # orchestrator / consumers (they subscribe to the bare names). BB + cone were
-# promoted in Phase A; the legs/hand follow here.
+# promoted in the Ball Butler cutover; the legs/hand follow here.
 
 
 def test_no_publisher_under_teensy_namespace(bridge):
@@ -160,7 +160,7 @@ def test_no_publisher_under_teensy_namespace(bridge):
 
 
 def test_leg_hand_services_use_production_names(bridge):
-    """Phase 11 / U4: the leg/hand RPC services were promoted off /teensy/* to
+    """The leg/hand RPC services were promoted off /teensy/* to
     the production names the orchestrator's service clients depend on
     (encoder_search, odrive_command, set_motor_vel_curr_limits) plus the
     bridge-new ops (clear_errors, reboot_odrives, home). A typo here would
@@ -261,7 +261,7 @@ def test_has_fatal_can_error_from_fault_state(bridge):
 
 
 def test_has_fatal_can_error_from_link_loss(bridge):
-    """[5]: a dead Jetson↔Teensy UDP link raises has_fatal_can_error with a
+    """A dead Jetson↔Teensy UDP link raises has_fatal_can_error with a
     DISTINCT operator-facing string, even when the Teensy's own bus/fault flags
     look healthy. The orchestrator's ONLY health input is robot_state; without
     this OR-term a frozen link leaves it consuming stale-but-fresh-looking motor
@@ -328,7 +328,7 @@ def test_no_fatal_odrive_when_legs_clean(bridge):
 
 
 def test_cross_axis_disarm_while_other_leg_closed_loop_is_fatal(bridge):
-    """[11]: ANY leg disarmed while ANY (other) leg still holds CLOSED_LOOP is a
+    """ANY leg disarmed while ANY (other) leg still holds CLOSED_LOOP is a
     fatal ODrive condition (fault_logic.py `any_disarmed and any_cl` parity). The
     prior per-leg conjunction (the SAME leg disarmed AND CLOSED_LOOP) essentially
     never fired — a disarmed ODrive leaves CLOSED_LOOP almost immediately — so the
@@ -350,7 +350,7 @@ def test_cross_axis_disarm_while_other_leg_closed_loop_is_fatal(bridge):
 
 
 def test_disarm_with_no_leg_closed_loop_is_not_fatal(bridge):
-    """[11] contrast: a leg disarmed with NO leg in CLOSED_LOOP (a clean stow /
+    """Contrast: a leg disarmed with NO leg in CLOSED_LOOP (a clean stow /
     powered-down state) is NOT fatal — the `any_cl` term keeps a deliberate
     deactivate from reading as a fault."""
     teensy, node = bridge
@@ -397,7 +397,7 @@ def test_undervoltage_not_asserted_from_disarm_only(bridge):
 
 
 def test_firmware_validated_conservative_false(bridge):
-    """firmware_validated defaults to the CONSERVATIVE False until the Phase-3
+    """firmware_validated defaults to the CONSERVATIVE False until the
     GET_AXIS_VERSIONS handshake validates the ODrive versions (no version pull has
     happened here). It is no longer a hardcoded handoff gap — see the full
     handshake (match / mismatch / cannot-validate) in
@@ -428,7 +428,7 @@ def test_hand_telemetry_axis6(bridge):
     assert msg.pos_meas == pytest.approx(3.14)
     assert msg.vel_meas == pytest.approx(-0.5)
     assert msg.iq_meas == pytest.approx(2.2)
-    # No hand command path in 10b → command fields are zero.
+    # No hand command path here yet → command fields are zero.
     assert msg.pos_cmd == 0.0 and msg.vel_ff_cmd == 0.0 and msg.tor_ff_cmd == 0.0
 
 

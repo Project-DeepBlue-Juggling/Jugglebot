@@ -98,7 +98,7 @@ size_t fake_sent_count_cmd(uint8_t cmd_id) {
   return n;
 }
 
-// ── GROWABLE inbound-CAN3 injection hook (Phase 0: unused by any decode path) ─
+// ── GROWABLE inbound-CAN3 injection hook (not yet consumed by any decode path) ─
 void fake_inject_can3_rx(uint32_t id, const uint8_t* data, uint8_t len) {
   SentFrame r; r.id = id; r.len = len;
   for (int i = 0; i < 8; ++i) r.buf[i] = (i < len && data) ? data[i] : 0;

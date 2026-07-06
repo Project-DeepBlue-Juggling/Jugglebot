@@ -4,8 +4,8 @@
 //  odrive_protocol.h is a hand port of jugglebot.can.odrive. Until now the only
 //  cross-language check (test_odrive_protocol_xref.py) TRANSCRIBED the C++ arithmetic
 //  into Python and compared THAT to odrive.py — both sides Python, so a wrong memcpy
-//  offset / struct order / arb-id shift in the REAL header passed silently
-//  (coverage gap 8). This compiles + runs the real encoders and emits their exact
+//  offset / struct order / arb-id shift in the REAL header passed silently.
+//  This compiles + runs the real encoders and emits their exact
 //  bytes into a committed golden (odrive_protocol_golden.json). Two guards then pin
 //  it: test_native_firmware.py checks freshly-emitted == committed (C++ drift, on the
 //  Jetson), and test_odrive_protocol_xref.py reproduces every golden entry from the
