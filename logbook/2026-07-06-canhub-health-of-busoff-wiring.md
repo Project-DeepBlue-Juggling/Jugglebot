@@ -15,7 +15,8 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/Teensy_code_canbridge.ino
   - ros_ws/src/jugglebot/Teensy_code_canbridge/README.md
   - tests/firmware/native/test_platform_relay.cpp
-commits: []   # backfill after commit
+commits:
+  - 10beb10   # firmware(canbridge): health_of bus-off wiring - live FLTCONF joins the per-bus health classification
 subsystem:
   - canbridge
 tags:
