@@ -1,8 +1,8 @@
 ---
-title: Phase 13 — decommission the Jetson's legacy SocketCAN stack (can_node.py + bus.py deleted; can0 teardown handed to the operator)
+title: Phase 13 — decommission the Jetson's legacy SocketCAN stack (can_node.py + bus.py deleted; can0 teardown operator-run + verified)
 type: refactor
 date: 2026-07-06
-status: fix-landed-pending-hardware-confirm
+status: resolved
 phase: "teensy-can-offload Phase 13"
 related_plan: teensy-can-offload.md
 related_entries:
@@ -45,9 +45,10 @@ can_node — the bridge owns the cone/BB conduit; operator chose delete over
 rewire). Gated on the same-day decommission pre-check
 ([[2026-07-06-can-node-parity-reconcile-decommission-precheck]]: PARTIAL
 safety scan clean, GAP dispositions confirmed) and the operator's explicit
-four-part approval (2026-07-06). The `can0`/kernel-module teardown is
-operator-run and pending: one command block (disable `init-can.service`,
-down the link, unload the modules), with a one-command revert.
+four-part approval (2026-07-06). The `can0`/kernel-module teardown was
+operator-run the same day (11:38-11:39: disable `init-can.service`, down the
+link, unload the modules — one-command revert available) and **verified: no
+CAN modules loaded, `can0` gone**. Phase 13 is complete.
 
 ## What was deleted vs kept (grep-driven, verified zero live refs after)
 
@@ -98,10 +99,11 @@ that refactor if zero-CAN-deps is ever wanted.
 - Parity matrix: the "Phase 13 decommission is PARTIAL" cross-cutting caveat
   flipped to DONE with the kept/deleted split + the git-history note.
 - Plan `teensy-can-offload.md`: Phase-13 status block rewritten (code DONE,
-  can0 teardown approved + handed off); the "retained for legacy bench use"
-  line at the cutover summary updated.
+  can0 teardown approved + handed off — since flipped to DONE once the
+  teardown was run + verified, see Verification); the "retained for legacy
+  bench use" line at the cutover summary updated.
 
-## The can0 teardown (operator-run, approved 2026-07-06)
+## The can0 teardown (operator-run + verified 2026-07-06)
 
 Read-only verification first: `can0` is the Jetson's built-in Tegra
 controller (`mttcan`), UP but idle — **RX 0 / TX 0 bytes**, `can_raw` module
@@ -158,10 +160,18 @@ achievable without any new blacklist file.
   console-scripts), so `build/jugglebot` + `install/jugglebot` were wiped and
   clean-rebuilt (**SUCCESS, [3.19s]**) — the install tree now carries no
   `can_node` executable and only the kept `can/` protocol subpackage.
-- can0 teardown: PENDING operator run (commands + PASS/ABORT in the session
-  handoff + the plan's Phase-13 block). PASS = `lsmod | grep -E 'can|mttcan'`
-  empty + `ip link show can0` reports no device + a normal bridge cold-start
-  smoke. This entry stays `fix-landed-pending-hardware-confirm` until then.
+- can0 teardown: **PASS (operator-run 2026-07-06 11:38-11:39 AEST,
+  independently re-verified)** — `systemctl disable --now init-can.service`
+  ("Removed …multi-user.target.wants/init-can.service."), link down, both
+  `modprobe -r` steps clean; `lsmod | grep -E 'can|mttcan'` returns nothing
+  (the plan's done-when) and `ip link show can0` reports "Device can0 does
+  not exist"; `init-can.service` reads disabled + inactive. Revert remains
+  one command (`systemctl enable --now init-can.service`).
+- Robot-operates smoke: structurally unaffected by construction — the
+  production path has been UDP→can-bridge since phase-10b (every 2026-07-04/05
+  powered sitting ran with can_node already non-functional and can0 idle), and
+  no CAN consumer remains on the Jetson. The next normal powered sitting
+  doubles as the formal smoke; nothing is left that could regress it.
 
 ## Related
 
@@ -170,7 +180,7 @@ achievable without any new blacklist file.
 - The living matrix: `ros_ws/docs/can-node-teensy-parity.md` — now the
   authoritative map from the deleted `can_node` surface to its bridge/firmware
   equivalents.
-- Plan: `plans/active/teensy-can-offload.md` Phase 13. Remaining plan threads
-  after this: Phase 12 (armed dynamic moves — handled separately) and the
-  operator can0 run; the plan is then an `/archive-plan` candidate with
-  dynamic-moves as the carried-forward thread.
+- Plan: `plans/active/teensy-can-offload.md` Phase 13 — complete. The plan's
+  sole remaining thread is Phase 12 (armed dynamic moves — handled
+  separately), making it an `/archive-plan` candidate with dynamic-moves as
+  the carried-forward thread.

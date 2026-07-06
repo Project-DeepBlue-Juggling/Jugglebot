@@ -732,8 +732,8 @@ the authoritative state of each phase; this snapshot ties them together.
 - **Phase 13** (decommission socketcan) is **code-DONE (2026-07-06)**:
   `can_node.py` / `bus.py` / their tests are deleted (git history only);
   `python-can` stays pinned for the kept protocol layer (`cantools` a legacy
-  pin, no live importer); the `can0`/module teardown is operator-approved and
-  pending (see the Phase-13 block below).
+  pin, no live importer); the `can0`/module teardown was operator-run +
+  verified 2026-07-06 (see the Phase-13 block below). **Phase 13 complete.**
 
 Legend for the per-phase blockquotes: ✅ done & hardware-validated · 🟦 code
 complete + deployed, hardware-validated for the aux subsystems · ⚠️ code
@@ -1538,8 +1538,10 @@ carries the Ball Butler subsystem only; CAN2 carries the catching cone only.
 
 ### Phase 13 — Decommission Jetson CAN
 
-> **Status (2026-07-06): ✅ CODE DONE; can0 teardown approved + handed to the
-> operator.** Gated on the parity-matrix decommission pre-check
+> **Status (2026-07-06): ✅ DONE — code deleted (`7c7f61b`) AND the can0
+> teardown operator-run + verified the same day (11:39: `lsmod` shows no CAN
+> modules, `can0` device gone, `init-can.service` disabled+inactive).** Gated
+> on the parity-matrix decommission pre-check
 > (`logbook/2026-07-06-can-node-parity-reconcile-decommission-precheck.md`:
 > PARTIAL safety scan clean, GAP dispositions confirmed, counts 85/9/20/3) and
 > the operator's explicit go (2026-07-06). The "keep as a fallback until
@@ -1563,7 +1565,7 @@ carries the Ball Butler subsystem only; CAN2 carries the catching cone only.
 >   (only `archived/can_interface.py`) — droppable any time without refactor;
 >   a small dataclass refactor of the encoders would sever the python-can pin
 >   too, if ever wanted.
-> - **can0 teardown (operator-run, approved 2026-07-06):** the ONLY thing
+> - **can0 teardown (operator-run + verified 2026-07-06 11:39):** the ONLY thing
 >   loading the CAN modules and raising `can0` is the project's
 >   `init-can.service` → `System_Scripts/init_can.sh` (NVIDIA's stock
 >   `denylist-mttcan.conf` already blocks autoload). Teardown = `systemctl
@@ -1573,8 +1575,11 @@ carries the Ball Butler subsystem only; CAN2 carries the catching cone only.
 
 **Goal:** socketcan stack removed from Jetson, `can0` device gone.
 
-**Done when:** `lsmod | grep can` returns nothing, `pytest tests/` passes,
-robot still operates normally.
+**Done when:** `lsmod | grep can` returns nothing ✅, `pytest tests/` passes ✅,
+robot still operates normally *(structurally unaffected — the production path
+has been UDP→can-bridge since Phase 10b and no CAN consumer remains on the
+Jetson; the next normal powered sitting doubles as the formal smoke — see the
+logbook entry's Verification)*.
 
 ---
 
