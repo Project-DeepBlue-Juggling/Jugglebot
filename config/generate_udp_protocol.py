@@ -151,11 +151,11 @@ ENUMS = {
         ("CONE_FRAME",     0x85, "Catching-cone CAN2 frame relay (STREAM, T→J)"),
         ("BB_AXIS_ESTIMATES", 0x86, "Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)"),
         ("CMD_RESULT",     0x87, "Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)"),
-        ("LEG_CMD",        0x88, "Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual"),
-        # Reserved (canbridge-foundation-coldstart-parity Phase 0) — fill the 0x89–0x8F
-        # telemetry gap below RPC_RESPONSE 0x90. Owners noted; consumers land in their phase.
-        ("PLATFORM_FRAME", 0x89, "Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J) — Phase 1"),
-        ("HAND_CMD_ECHO",  0x8A, "Hand command-echo telemetry (STREAM, T→J) — Phase 5"),
+        ("LEG_CMD",        0x88, "Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check"),
+        # Reserved id block — fill the 0x89–0x8F
+        # telemetry gap below RPC_RESPONSE 0x90. Owners noted; consumers land as each is implemented.
+        ("PLATFORM_FRAME", 0x89, "Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J)"),
+        ("HAND_CMD_ECHO",  0x8A, "Hand command-echo telemetry (STREAM, T→J)"),
         ("RPC_RESPONSE",   0x90, "RPC response (RPC port, T→J)"),
     ],
     "RpcMethod": [
@@ -169,25 +169,25 @@ ENUMS = {
         ("CLEAR_ERRORS",       0x0015, "ODrive clear_errors"),
         ("REBOOT_ODRIVES",     0x0016, "ODrive reboot"),
         ("SET_ABSOLUTE_POSITION", 0x0017, "ODrive set_absolute_position (post-homing)"),
-        ("ENCODER_SEARCH",     0x0020, "Run encoder index search (Phase 9 — stubbed)"),
-        ("HOME",               0x0021, "Run homing (Phase 9 — stubbed)"),
-        ("ACTIVATE",           0x0022, "Run TRAP_TRAJ move to the active pose (Phase 11 U5)"),
-        ("DEACTIVATE",         0x0023, "Run TRAP_TRAJ move to the STOW pose, then IDLE (Phase 11 U5)"),
+        ("ENCODER_SEARCH",     0x0020, "Run encoder index search (firmware stub — returns ERR_NOT_IMPL)"),
+        ("HOME",               0x0021, "Run homing (firmware stub — returns ERR_NOT_IMPL)"),
+        ("ACTIVATE",           0x0022, "Run TRAP_TRAJ move to the active pose"),
+        ("DEACTIVATE",         0x0023, "Run TRAP_TRAJ move to the STOW pose, then IDLE"),
         ("SDO_READ",           0x0030, "Arbitrary parameter read"),
         ("SDO_WRITE",          0x0031, "Arbitrary parameter write"),
         ("BB_THROW",           0x0040, "Ball Butler: send THROW_CMD on CAN1 (typed, validated)"),
         ("BB_RELOAD",          0x0041, "Ball Butler: send RELOAD_CMD on CAN1 (no payload)"),
         ("BB_RESET",           0x0042, "Ball Butler: send RESET_CMD on CAN1 (no payload)"),
         ("BB_CALIBRATE_LOC",   0x0043, "Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)"),
-        # Reserved (canbridge-foundation-coldstart-parity Phase 0) — the relay /
-        # version / hand-traj seams the later phases own. Allocated in ONE pass so
+        # Reserved id block — the relay /
+        # version / hand-traj seams that later work owns. Allocated in ONE pass so
         # parallel sessions cannot mint colliding ids. rpc.cpp dispatches these to
-        # ERR_NOT_IMPL stubs until their owning phase replaces them.
-        ("GET_AXIS_VERSIONS",  0x0050, "Pull cached raw Get_Version bytes + received bitmask — Phase 3"),
-        ("TILT_READ",          0x0051, "Relay: read Platform-Teensy inclinometer tilt — Phase 1"),
-        ("STATE_READ",         0x0052, "Relay: read Platform-Teensy RobotState (is_homed/level/pose) — Phase 1"),
-        ("STATE_WRITE",        0x0053, "Relay: write Platform-Teensy RobotState (read-modify-write via cache) — Phase 1"),
-        ("HAND_TRAJ_CMD",      0x0054, "Hand traj + smooth-move (byte-0 discriminator → 0x6D0) — Phase 5"),
+        # ERR_NOT_IMPL stubs until each is implemented.
+        ("GET_AXIS_VERSIONS",  0x0050, "Pull cached raw Get_Version bytes + received bitmask"),
+        ("TILT_READ",          0x0051, "Relay: read Platform-Teensy inclinometer tilt"),
+        ("STATE_READ",         0x0052, "Relay: read Platform-Teensy RobotState (is_homed/level/pose)"),
+        ("STATE_WRITE",        0x0053, "Relay: write Platform-Teensy RobotState (read-modify-write via cache)"),
+        ("HAND_TRAJ_CMD",      0x0054, "Hand traj + smooth-move (byte-0 discriminator → 0x6D0)"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -231,7 +231,7 @@ ENUMS = {
     # the firmware producer (Teensy_code_canbridge.ino) sets and the Jetson bridge
     # reads, replacing the prose that previously lived only in the field comment.
     # No new cold-start bit is added: is_homed/levelling/pose ride the relay
-    # STATE_READ (canbridge-foundation-coldstart-parity locked-decision #3), not a
+    # STATE_READ (a deliberate design decision), not a
     # heartbeat flag.
     "HeartbeatT2JFlags": [
         ("TIME_SYNCED",               0x1, "bit0: Teensy clock synced to the Jetson anchor"),
@@ -297,7 +297,7 @@ MESSAGES = [
             Field("ctrl_mode",     "u8",  1, "ODrive controller mode"),
             Field("input_mode",    "u8",  1, "ODrive input mode"),
             Field("flags",         "u8",  1, "bit0: heartbeat_stale"),
-            Field("homing_result", "u8",  1, "HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes (Fable-5 [18A])"),
+            Field("homing_result", "u8",  1, "HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes"),
             Field("pad",           "u8",  2, "Alignment pad (zero)"),
             Field("active_errors", "u32", 1, "ODrive active_errors bitmask"),
             Field("disarm_reason", "u32", 1, "ODrive disarm_reason bitmask"),
@@ -319,7 +319,7 @@ MESSAGES = [
             Field("fault_state", "u8",  1, "FaultState enum"),
             Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset (bits 0-3): TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
-            # Ball Butler heartbeat snapshot (Phase A — CAN1 0x7D1 decoded by the
+            # Ball Butler heartbeat snapshot (CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).
             # Replaces the legacy can_node bb/heartbeat publisher; the bridge
             # node reassembles a BallButlerHeartbeat ROS msg from these fields.
@@ -356,7 +356,7 @@ MESSAGES = [
     Message(
         "ConeFrame", "CONE_FRAME", "T2J", "STREAM",
         summary=(
-            "Catching-cone CAN2 frame relay (phase-10b cone uplink). The "
+            "Catching-cone CAN2 frame relay. The "
             "can-bridge forwards every frame received on the cone bus "
             "verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today "
             "— so the Jetson reuses the tested jugglebot.can.catching_cone "
@@ -374,7 +374,7 @@ MESSAGES = [
     Message(
         "CmdResultFrame", "CMD_RESULT", "T2J", "STREAM",
         summary=(
-            "Ball Butler command-outcome relay (Phase-2 loud channel). The "
+            "Ball Butler command-outcome relay (the loud outcome channel). The "
             "can-bridge forwards the BB CMD_RESULT CAN1 frame (0x7D5) verbatim so "
             "the host learns the firmware's terminal outcome of an operator command "
             "(throw today; reload/calibrate/home later) instead of only the "
@@ -417,9 +417,9 @@ MESSAGES = [
             "writes to axes[i].target_pos_rev each 500 Hz tick and would send to "
             "the leg ODrives — snapshotted at the telemetry-task rate. Additive "
             "diagnostic (no existing frame changes, so NO PROTOCOL_VERSION bump): "
-            "it exposes the on-Teensy float32 interpolator output so the U3-iv "
-            "bench validation can measure the float32-vs-float64 interp residual "
-            "(Phase 7 'done when' / decision D9) DIRECTLY, rather than inferring it "
+            "it exposes the on-Teensy float32 interpolator output so a bench "
+            "validation can measure the float32-vs-float64 interp residual "
+            "DIRECTLY, rather than inferring it "
             "from the encoder. Written for all legs regardless of the output gate, "
             "so it reflects the interp even when CAN3 TX is suppressed. Jugglebot "
             "convention (positive = extension)."),
@@ -432,8 +432,8 @@ MESSAGES = [
     Message(
         "PlatformFrame", "PLATFORM_FRAME", "T2J", "STREAM",
         summary=(
-            "Verbatim Platform-Teensy relay-reply uplink (canbridge-foundation-"
-            "coldstart-parity Phase 1). The can-bridge forwards every CAN3 frame "
+            "Verbatim Platform-Teensy relay-reply uplink. The can-bridge "
+            "forwards every CAN3 frame "
             "it receives whose arbitration id is a Platform-Teensy reply "
             "(STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) "
             "verbatim, so the host owns the decode and the bridge stays decoupled "
@@ -455,8 +455,8 @@ MESSAGES = [
     Message(
         "HandCmdEcho", "HAND_CMD_ECHO", "T2J", "STREAM",
         summary=(
-            "Hand command-echo telemetry (canbridge-foundation-coldstart-parity "
-            "Phase 5). The can-bridge sniffs the Platform Teensy's Set_Input_Pos "
+            "Hand command-echo telemetry. The can-bridge sniffs the Platform "
+            "Teensy's Set_Input_Pos "
             "command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, "
             "cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host "
             "echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_"
@@ -509,9 +509,9 @@ VARIABLE_TAIL = {"RpcRequest", "RpcResponse"}
 # RPC METHOD ARGUMENT LAYOUTS
 #
 # The per-method argument blobs that ride inside an RpcRequest (and the one
-# result blob). Hoisted into this single-source generator at Phase 10b (the
-# Jetson UDP bridge became the second consumer) per firmware-handoff decision
-# D8. Emitted as packed, little-endian structs into the C++ header
+# result blob). Hoisted into this single-source generator when the
+# Jetson UDP bridge became the second consumer. Emitted as packed,
+# little-endian structs into the C++ header
 # (JbUdp::RpcArgs), the Python module (dataclasses), and the markdown spec; the
 # firmware's rpc.h consumes the generated C++ structs via `using` declarations,
 # and controller/teensy_link/rpc_args.py wraps the generated Python.
@@ -580,7 +580,7 @@ RPC_ARGS = [
     RpcArg("ResultTimeOfDay", "TIME_OF_DAY_QUERY (result)", [
         Field("jetson_wall_us", "u64", 1, "Jetson CLOCK_REALTIME microseconds"),
     ]),
-    # GET_AXIS_VERSIONS result (canbridge-foundation-coldstart-parity Phase 3).
+    # GET_AXIS_VERSIONS result.
     # GET_AXIS_VERSIONS takes NO args (like TILT_READ/STATE_READ) but, unlike the
     # relay reads, returns SYNCHRONOUSLY in the RPC response (the versions are a
     # bridge-LOCAL cache filled by the firmware's Get_Version sweep — no CAN3
@@ -595,7 +595,7 @@ RPC_ARGS = [
         Field("raw", "u8", 56, "raw 8-byte Get_Version payload per axis (NUM_AXES*8, axis-major)"),
     ]),
     # Ball Butler — typed firmware-side encoders own the wire format (the can-bridge
-    # refuses a malformed throw before it hits CAN1 — HANDOFF-firmware-three-bus D2).
+    # refuses a malformed throw before it hits CAN1).
     # The Python encoder in jugglebot.can.ball_butler stays as the test spec; a
     # byte-level cross-reference test pins parity. RELOAD/RESET/CALIBRATE_LOC are
     # payloadless — no Arg struct (caller sends b"" — matches the NOP pattern).
@@ -610,7 +610,7 @@ RPC_ARGS = [
     # write preserves the levelling fields and vice versa). The firmware encodes
     # the 0x6E0 frame itself (mirroring Teensy_code.ino createStateCANMessage) —
     # the can-bridge never forwards a Jetson-supplied raw frame (least-privilege).
-    # canbridge-foundation-coldstart-parity Phase 1. (TILT_READ / STATE_READ take
+    # (TILT_READ / STATE_READ take
     # no args — they only trigger a Platform-Teensy reply on 0x7DE / 0x6E0.)
     RpcArg("ArgRobotState", "STATE_WRITE", [
         Field("is_homed",          "u8",  1, "Legs+hand homing complete"),
@@ -627,15 +627,14 @@ RPC_ARGS = [
     # preamble. The absolute wall_time_ms deadline is baked into the payload by the
     # Jetson; the firmware forwards OPAQUE bytes and CANNOT re-stamp — an absolute
     # deadline is immune to Jetson→bridge→CAN3 transit jitter (the Platform Teensy
-    # fires when its synced clock reaches the deadline). canbridge-foundation-
-    # coldstart-parity Phase 5.
+    # fires when its synced clock reaches the deadline).
     RpcArg("ArgHandTraj", "HAND_TRAJ_CMD", [
         Field("payload", "u8", 8, "Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator)"),
     ]),
 ]
 
 # ───────────────────────────────────────────────────────────────────────────
-# HAND AXIS-6 ALLOW-TABLE  (canbridge-foundation-coldstart-parity Phase 1)
+# HAND AXIS-6 ALLOW-TABLE
 #
 # Which RpcMethods the can-bridge forwards to the HAND ODrive (axis 6) on CAN3,
 # replacing the blanket `axis == HAND_AXIS` reject (rpc.cpp). The hand reuses the
@@ -792,7 +791,7 @@ def generate_cpp() -> str:
     a("}  // namespace RpcArgs")
     a("")
 
-    a("// ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────")
+    a("// ── Hand axis-6 allow-table ──────────────────────────────────────────────")
     a("// True iff RpcMethod `method` may be forwarded to the HAND ODrive (axis 6)")
     a("// on CAN3, replacing the blanket axis==HAND_AXIS reject. Consumed by")
     a("// rpc.cpp's send_axis_frame; mirrored by tests/firmware/test_hand_axis6_allow.py.")
@@ -1051,7 +1050,7 @@ def generate_python() -> str:
         a(f"        return cls({ctor})")
         a("")
 
-    a("# ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────")
+    a("# ── Hand axis-6 allow-table ──────────────────────────────────────────────")
     a("# RpcMethod ids the can-bridge forwards to the hand ODrive (axis 6); the")
     a("# single source mirrored by the firmware JbUdp::hand_axis6_permitted predicate.")
     a("HAND_AXIS6_PERMITTED = frozenset({")
@@ -1089,7 +1088,7 @@ def generate_markdown() -> str:
     a("> Regenerate: `python config/generate_udp_protocol.py`")
     a("")
     a("This is the single source of truth for the wire protocol between the Jetson")
-    a("and the new can-bridge Teensy 4.1 (Phase 4 of `plans/active/teensy-can-offload.md`).")
+    a("and the new can-bridge Teensy 4.1.")
     a("")
     a("## Framing")
     a("")

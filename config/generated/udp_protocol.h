@@ -40,9 +40,9 @@ namespace MsgType {
   constexpr uint8_t CONE_FRAME = 133u;  // Catching-cone CAN2 frame relay (STREAM, T→J)
   constexpr uint8_t BB_AXIS_ESTIMATES = 134u;  // Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
   constexpr uint8_t CMD_RESULT = 135u;  // Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
-  constexpr uint8_t LEG_CMD = 136u;  // Teensy commanded leg interp output @100Hz (STREAM, T→J) — U3-iv float32 residual
-  constexpr uint8_t PLATFORM_FRAME = 137u;  // Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J) — Phase 1
-  constexpr uint8_t HAND_CMD_ECHO = 138u;  // Hand command-echo telemetry (STREAM, T→J) — Phase 5
+  constexpr uint8_t LEG_CMD = 136u;  // Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check
+  constexpr uint8_t PLATFORM_FRAME = 137u;  // Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J)
+  constexpr uint8_t HAND_CMD_ECHO = 138u;  // Hand command-echo telemetry (STREAM, T→J)
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
 }
 namespace RpcMethod {
@@ -56,21 +56,21 @@ namespace RpcMethod {
   constexpr uint16_t CLEAR_ERRORS = 0x0015u;  // ODrive clear_errors
   constexpr uint16_t REBOOT_ODRIVES = 0x0016u;  // ODrive reboot
   constexpr uint16_t SET_ABSOLUTE_POSITION = 0x0017u;  // ODrive set_absolute_position (post-homing)
-  constexpr uint16_t ENCODER_SEARCH = 0x0020u;  // Run encoder index search (Phase 9 — stubbed)
-  constexpr uint16_t HOME = 0x0021u;  // Run homing (Phase 9 — stubbed)
-  constexpr uint16_t ACTIVATE = 0x0022u;  // Run TRAP_TRAJ move to the active pose (Phase 11 U5)
-  constexpr uint16_t DEACTIVATE = 0x0023u;  // Run TRAP_TRAJ move to the STOW pose, then IDLE (Phase 11 U5)
+  constexpr uint16_t ENCODER_SEARCH = 0x0020u;  // Run encoder index search (firmware stub — returns ERR_NOT_IMPL)
+  constexpr uint16_t HOME = 0x0021u;  // Run homing (firmware stub — returns ERR_NOT_IMPL)
+  constexpr uint16_t ACTIVATE = 0x0022u;  // Run TRAP_TRAJ move to the active pose
+  constexpr uint16_t DEACTIVATE = 0x0023u;  // Run TRAP_TRAJ move to the STOW pose, then IDLE
   constexpr uint16_t SDO_READ = 0x0030u;  // Arbitrary parameter read
   constexpr uint16_t SDO_WRITE = 0x0031u;  // Arbitrary parameter write
   constexpr uint16_t BB_THROW = 0x0040u;  // Ball Butler: send THROW_CMD on CAN1 (typed, validated)
   constexpr uint16_t BB_RELOAD = 0x0041u;  // Ball Butler: send RELOAD_CMD on CAN1 (no payload)
   constexpr uint16_t BB_RESET = 0x0042u;  // Ball Butler: send RESET_CMD on CAN1 (no payload)
   constexpr uint16_t BB_CALIBRATE_LOC = 0x0043u;  // Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)
-  constexpr uint16_t GET_AXIS_VERSIONS = 0x0050u;  // Pull cached raw Get_Version bytes + received bitmask — Phase 3
-  constexpr uint16_t TILT_READ = 0x0051u;  // Relay: read Platform-Teensy inclinometer tilt — Phase 1
-  constexpr uint16_t STATE_READ = 0x0052u;  // Relay: read Platform-Teensy RobotState (is_homed/level/pose) — Phase 1
-  constexpr uint16_t STATE_WRITE = 0x0053u;  // Relay: write Platform-Teensy RobotState (read-modify-write via cache) — Phase 1
-  constexpr uint16_t HAND_TRAJ_CMD = 0x0054u;  // Hand traj + smooth-move (byte-0 discriminator → 0x6D0) — Phase 5
+  constexpr uint16_t GET_AXIS_VERSIONS = 0x0050u;  // Pull cached raw Get_Version bytes + received bitmask
+  constexpr uint16_t TILT_READ = 0x0051u;  // Relay: read Platform-Teensy inclinometer tilt
+  constexpr uint16_t STATE_READ = 0x0052u;  // Relay: read Platform-Teensy RobotState (is_homed/level/pose)
+  constexpr uint16_t STATE_WRITE = 0x0053u;  // Relay: write Platform-Teensy RobotState (read-modify-write via cache)
+  constexpr uint16_t HAND_TRAJ_CMD = 0x0054u;  // Hand traj + smooth-move (byte-0 discriminator → 0x6D0)
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -165,7 +165,7 @@ struct DiagnosticPayload {
   uint8_t ctrl_mode;  // ODrive controller mode
   uint8_t input_mode;  // ODrive input mode
   uint8_t flags;  // bit0: heartbeat_stale
-  uint8_t homing_result;  // HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes (Fable-5 [18A])
+  uint8_t homing_result;  // HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes
   uint8_t pad[2];  // Alignment pad (zero)
   uint32_t active_errors;  // ODrive active_errors bitmask
   uint32_t disarm_reason;  // ODrive disarm_reason bitmask
@@ -213,7 +213,7 @@ struct ProfilePayload {
 };
 static_assert(sizeof(ProfilePayload) == 66, "ProfilePayload size drift");
 
-// ConeFrame: Catching-cone CAN2 frame relay (phase-10b cone uplink). The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
+// ConeFrame: Catching-cone CAN2 frame relay. The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
 struct ConeFramePayload {
   uint64_t t_bridge_us;  // Bridge wall-clock at CAN2 RX (us)
   uint32_t can_id;  // CAN arbitration id (0x7E0 CATCH_EVENT / 0x7E1 CONE_HEARTBEAT)
@@ -222,7 +222,7 @@ struct ConeFramePayload {
 };
 static_assert(sizeof(ConeFramePayload) == 21, "ConeFramePayload size drift");
 
-// CmdResultFrame: Ball Butler command-outcome relay (Phase-2 loud channel). The can-bridge forwards the BB CMD_RESULT CAN1 frame (0x7D5) verbatim so the host learns the firmware's terminal outcome of an operator command (throw today; reload/calibrate/home later) instead of only the bridge-side RPC ack. The decoded payload lives INSIDE `data`: byte0=command_type, byte1=command_outcome (shared base 0x00-0x0F + per-command extension >=0x20), bytes2-3=detail0 (int16 LE), bytes4-5=detail1 (int16 LE). `t_bridge_us` only stamps bridge-side CAN1 RX for latency/diagnostic checks.
+// CmdResultFrame: Ball Butler command-outcome relay (the loud outcome channel). The can-bridge forwards the BB CMD_RESULT CAN1 frame (0x7D5) verbatim so the host learns the firmware's terminal outcome of an operator command (throw today; reload/calibrate/home later) instead of only the bridge-side RPC ack. The decoded payload lives INSIDE `data`: byte0=command_type, byte1=command_outcome (shared base 0x00-0x0F + per-command extension >=0x20), bytes2-3=detail0 (int16 LE), bytes4-5=detail1 (int16 LE). `t_bridge_us` only stamps bridge-side CAN1 RX for latency/diagnostic checks.
 struct CmdResultFramePayload {
   uint64_t t_bridge_us;  // Bridge wall-clock at CAN1 RX (us)
   uint32_t can_id;  // CAN arbitration id (0x7D5 CMD_RESULT)
@@ -241,7 +241,7 @@ struct BbAxisEstimatesPayload {
 };
 static_assert(sizeof(BbAxisEstimatesPayload) == 24, "BbAxisEstimatesPayload size drift");
 
-// LegCmd: The Teensy's COMMANDED leg interp output — the float32 cubic-Hermite ladder result (after the lead + stroke clamps) that leg_interp.cpp writes to axes[i].target_pos_rev each 500 Hz tick and would send to the leg ODrives — snapshotted at the telemetry-task rate. Additive diagnostic (no existing frame changes, so NO PROTOCOL_VERSION bump): it exposes the on-Teensy float32 interpolator output so the U3-iv bench validation can measure the float32-vs-float64 interp residual (Phase 7 'done when' / decision D9) DIRECTLY, rather than inferring it from the encoder. Written for all legs regardless of the output gate, so it reflects the interp even when CAN3 TX is suppressed. Jugglebot convention (positive = extension).
+// LegCmd: The Teensy's COMMANDED leg interp output — the float32 cubic-Hermite ladder result (after the lead + stroke clamps) that leg_interp.cpp writes to axes[i].target_pos_rev each 500 Hz tick and would send to the leg ODrives — snapshotted at the telemetry-task rate. Additive diagnostic (no existing frame changes, so NO PROTOCOL_VERSION bump): it exposes the on-Teensy float32 interpolator output so a bench validation can measure the float32-vs-float64 interp residual DIRECTLY, rather than inferring it from the encoder. Written for all legs regardless of the output gate, so it reflects the interp even when CAN3 TX is suppressed. Jugglebot convention (positive = extension).
 struct LegCmdPayload {
   uint64_t t_teensy_us;  // Teensy wall-clock at snapshot (us)
   float cmd_pos_rev[6];  // Per-leg commanded interp position (rev), post lead/stroke clamp
@@ -249,7 +249,7 @@ struct LegCmdPayload {
 };
 static_assert(sizeof(LegCmdPayload) == 56, "LegCmdPayload size drift");
 
-// PlatformFrame: Verbatim Platform-Teensy relay-reply uplink (canbridge-foundation-coldstart-parity Phase 1). The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
+// PlatformFrame: Verbatim Platform-Teensy relay-reply uplink. The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
 struct PlatformFramePayload {
   uint64_t t_bridge_us;  // Bridge wall-clock at CAN3 RX (us)
   uint32_t can_id;  // CAN arbitration id (0x6E0 STATE_UPDATE / 0x7DE TILT_READING)
@@ -258,7 +258,7 @@ struct PlatformFramePayload {
 };
 static_assert(sizeof(PlatformFramePayload) == 21, "PlatformFramePayload size drift");
 
-// HandCmdEcho: Hand command-echo telemetry (canbridge-foundation-coldstart-parity Phase 5). The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
+// HandCmdEcho: Hand command-echo telemetry. The can-bridge sniffs the Platform Teensy's Set_Input_Pos command to the HAND ODrive (axis 6) on CAN3 — arb_id(6, set_input_pos, cmd 0x0C) — and forwards the raw 8-byte payload verbatim so the host echoes the hand's COMMANDED pos/vel_ff/tor_ff (can_node._handle_hand_input_pos parity; the hand_telemetry pos_cmd/vel_ff_cmd/tor_ff_cmd fields were hardcoded 0 on the bridge until now). The host decodes `data` as `<f h h>` (float32 pos_rev + int16 vel_ff + int16 tor_ff) and divides vel/tor by INPUT_SCALE_HAND_VEL / INPUT_SCALE_HAND_TOR (100.0). Emitted at the telemetry-task rate only when a FRESH command was sniffed (event-driven; silent while the hand is idle). CAN3 SRX_DIS means the bridge never sniffs its own TX, so only genuine Platform→hand commands are echoed. `t_bridge_us` stamps CAN3 RX for latency/diagnostics.
 struct HandCmdEchoPayload {
   uint64_t t_bridge_us;  // Bridge wall-clock at CAN3 RX of the hand Set_Input_Pos (us)
   uint8_t data[8];  // Raw ODrive Set_Input_Pos payload: <f h h> = pos_rev, vel_ff, tor_ff
@@ -415,7 +415,7 @@ constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 constexpr uint16_t ARG_HAND_TRAJ_SIZE = 8u;
 }  // namespace RpcArgs
 
-// ── Hand axis-6 allow-table (Phase 1) ──────────────────────────────────
+// ── Hand axis-6 allow-table ──────────────────────────────────────────────
 // True iff RpcMethod `method` may be forwarded to the HAND ODrive (axis 6)
 // on CAN3, replacing the blanket axis==HAND_AXIS reject. Consumed by
 // rpc.cpp's send_axis_frame; mirrored by tests/firmware/test_hand_axis6_allow.py.
