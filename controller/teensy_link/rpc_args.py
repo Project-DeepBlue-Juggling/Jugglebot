@@ -1,7 +1,7 @@
 """RPC method argument encoders for the can-bridge link.
 
 Thin, typed wrappers over the codegen-emitted argument dataclasses (hoisted into
-``config/generate_udp_protocol.py`` at Phase 10b — firmware handoff D8). The
+``config/generate_udp_protocol.py``). The
 packed structs in the generated ``udp_protocol`` module are the single source of
 truth; this module gives the bridge (and any future Jetson-side client) a clean
 per-method encode API plus the ``AXIS_ALL`` broadcast sentinel, so the encoding
@@ -105,17 +105,17 @@ def encode_reboot(axis: int = AXIS_ALL) -> bytes:
 
 
 def encode_encoder_search(axis: int = AXIS_ALL) -> bytes:
-    """ENCODER_SEARCH (firmware Phase 9 — returns ERR_NOT_IMPL today)."""
+    """ENCODER_SEARCH (firmware stub — returns ERR_NOT_IMPL today)."""
     return ArgAxisOnly(axis=int(axis)).pack()
 
 
 def encode_home(axis: int = AXIS_ALL) -> bytes:
-    """HOME (firmware Phase 9 — returns ERR_NOT_IMPL today)."""
+    """HOME (firmware stub — returns ERR_NOT_IMPL today)."""
     return ArgAxisOnly(axis=int(axis)).pack()
 
 
 def encode_activate(axis: int = AXIS_ALL) -> bytes:
-    """ACTIVATE: TRAP_TRAJ move to the active pose (Phase 11 U5).
+    """ACTIVATE: TRAP_TRAJ move to the active pose.
 
     ``AXIS_ALL`` activates every present leg in parallel (even platform rise); a
     single leg index activates just that leg iff present.
@@ -124,7 +124,7 @@ def encode_activate(axis: int = AXIS_ALL) -> bytes:
 
 
 def encode_deactivate(axis: int = AXIS_ALL) -> bytes:
-    """DEACTIVATE: TRAP_TRAJ controlled lower to the STOW pose, then IDLE (Phase 11 U5).
+    """DEACTIVATE: TRAP_TRAJ controlled lower to the STOW pose, then IDLE.
 
     ``AXIS_ALL`` deactivates every present leg in parallel (even platform descent);
     a single leg index deactivates just that leg iff present.
@@ -148,7 +148,7 @@ def decode_time_of_day_result(blob: bytes) -> int:
     return int(ResultTimeOfDay.unpack(blob).jetson_wall_us)
 
 
-# ── Hand trajectory / smooth-move (canbridge-foundation-coldstart-parity Phase 5) ─
+# ── Hand trajectory / smooth-move ─────────────────────────────────────────────
 # set_hand_traj_cmd + smooth_move_hand both ride the ONE HAND_TRAJ_CMD RPC,
 # discriminated by byte 0 of an 8-byte payload that is BYTE-IDENTICAL to can_node's
 # 0x6D0 PLATFORM_TRAJ_CMD frame (can_node.py:1626-1661). The payload IS the
@@ -190,7 +190,7 @@ def decode_hand_cmd_echo(data: bytes, vel_scale: float, tor_scale: float):
     return float(pos), vel_ff / vel_scale, tor_ff / tor_scale
 
 
-# ── Firmware version pull (canbridge-foundation-coldstart-parity Phase 3) ─────
+# ── Firmware version pull ─────────────────────────────────────────────────────
 # GET_AXIS_VERSIONS takes NO args (the request is empty) and returns the
 # ResultAxisVersions blob SYNCHRONOUSLY in the RPC response (a bridge-local cache
 # read — no CAN3 round-trip). The firmware fills it with the raw 8-byte ODrive
@@ -238,7 +238,7 @@ def decode_axis_versions_result(blob: bytes) -> dict:
     return out
 
 
-# ── Platform-Teensy relay (canbridge-foundation-coldstart-parity Phase 1) ─────
+# ── Platform-Teensy relay ─────────────────────────────────────────────────────
 # TILT_READ / STATE_READ carry NO args — they only trigger a Platform-Teensy
 # reply on CAN3 (0x7DE / 0x6E0); the reply arrives async as a PLATFORM_FRAME the
 # bridge correlates by (can_id, dlc). STATE_WRITE carries the whole RobotState
@@ -261,7 +261,7 @@ def encode_state_write(is_homed: bool, levelling_complete: bool,
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
 # Firmware-owned encoding: the bridge passes typed args; the can-bridge Teensy
-# range-checks + frame-builds before TX on CAN1 (HANDOFF-firmware-three-bus D2).
+# range-checks + frame-builds before TX on CAN1.
 # RELOAD/RESET/CALIBRATE_LOC are payloadless on the BB wire; the RPC carries no
 # args either (caller sends b"" — matches the NOP shape).
 
@@ -302,12 +302,12 @@ METHOD = {
     RpcMethod.ENCODER_SEARCH: ArgAxisOnly,
     RpcMethod.HOME: ArgAxisOnly,
     RpcMethod.ACTIVATE: ArgAxisOnly,
-    RpcMethod.DEACTIVATE: ArgAxisOnly,   # Fable-5 [17]: was missing (axis-only, like ACTIVATE)
+    RpcMethod.DEACTIVATE: ArgAxisOnly,   # was missing (axis-only, like ACTIVATE)
     RpcMethod.SDO_READ: ArgSdoRead,
     RpcMethod.SDO_WRITE: ArgSdoWrite,
     RpcMethod.BB_THROW: ArgBbThrow,
     RpcMethod.STATE_WRITE: ArgRobotState,
-    RpcMethod.HAND_TRAJ_CMD: ArgHandTraj,   # Phase 5 (host builds the 8-byte 0x6D0 payload)
+    RpcMethod.HAND_TRAJ_CMD: ArgHandTraj,   # host builds the 8-byte 0x6D0 payload
     # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
 }

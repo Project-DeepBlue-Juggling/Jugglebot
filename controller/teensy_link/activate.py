@@ -1,8 +1,8 @@
-"""Phase 11 U5 — activate completion observer for the can-bridge legs.
+"""Activate completion observer for the can-bridge legs.
 
 The activate *move* runs autonomously in firmware (the can-bridge ACTIVATE
 handler — there is no per-leg motion RPC, so the TRAP_TRAJ move-to-active-pose
-belongs on the Teensy; see ``plans/active/teensy-can-offload.md`` "U5" and
+belongs on the Teensy; see
 ``leg_activate.h``). The Jetson fires ``ACTIVATE`` once (``AXIS_ALL`` → every
 present leg in parallel; fire-and-monitor: the RPC returns OK the instant the
 firmware *accepts* the move) and then **observes** completion from the telemetry
@@ -162,7 +162,7 @@ class ActivateMonitor:
                     pr.reason = f"active_errors 0x{st.active_errors:x} during activate"
                     continue
                 target = self.targets_rev[axis]
-                # Require CLOSED_LOOP for success (Fable-5 hardening [17]): an
+                # Require CLOSED_LOOP for success: an
                 # abort-to-IDLE that happens to leave the leg AT the target pose with
                 # low velocity must NOT read as a successful activate — the leg is
                 # de-energised, not holding. The docstring already stated this

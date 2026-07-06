@@ -1,13 +1,13 @@
-"""Phase 9b — homing completion observer for the can-bridge legs.
+"""Homing completion observer for the can-bridge legs.
 
 The homing *move* runs autonomously in firmware (the can-bridge HOME handler —
 there is no per-leg motion RPC, so the velocity-limited move-to-hardstop belongs
-on the Teensy; see ``plans/active/teensy-can-offload.md`` "Phase 9b"). The Jetson
+on the Teensy). The Jetson
 fires ``HOME`` (fire-and-monitor: the RPC returns OK the instant the firmware
 *accepts* the move) and then **observes** completion from the telemetry +
-diagnostic streams. Since Fable-5 [18A] the Diagnostic carries the firmware's real
+diagnostic streams. The Diagnostic carries the firmware's real
 per-axis ``HomingResult``, which the observer trusts (it previously inferred
-completion from ``axis_state`` + the state cycle, as Phase 9a did for encoder search).
+completion from ``axis_state`` + the state cycle, as encoder-search still does).
 
 This module is the pure observer state machine — no ROS, no UDP, no threads, no
 sleeps. The caller drives it by repeatedly calling :meth:`step` with the current
@@ -16,7 +16,7 @@ take this tick (``set_home`` → ``HOME(axis)``) and the overall progress. Keepi
 it pure makes the completion logic unit-testable in isolation (mirroring
 ``encoder_search.py`` / ``setpoint_pump.py``).
 
-Completion detection (Fable-5 [18A]). The firmware tracks the real per-axis
+Completion detection (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink). The firmware tracks the real per-axis
 ``HomingResult`` (NONE/RUNNING/OK/FAILED) and now uplinks it in the Diagnostic
 frame, so the observer trusts the FIRMWARE OUTCOME directly:
 
@@ -59,7 +59,7 @@ AXIS_STATE_IDLE = 1
 AXIS_STATE_CLOSED_LOOP = 8
 
 # Firmware HomingResult (leg_homing.h HomingResult enum), uplinked per-axis in the
-# Diagnostic frame (Fable-5 [18A]). This is the AUTHORITATIVE homing outcome: it
+# Diagnostic frame. This is the AUTHORITATIVE homing outcome: it
 # distinguishes a real success (hardstop found + set_absolute_position) from a silent
 # abort (bus-down / guard-E-STOP after CLOSED_LOOP), which the old CLOSED_LOOP→IDLE
 # state-cycle inference mistook for success — both IDLE the leg, but only success sets
@@ -71,7 +71,7 @@ HOMING_OK = 2
 HOMING_FAILED = 3
 
 # Default per-axis timeout BACKSTOP. MUST sit BELOW the firmware per-axis hard
-# timeout (Homing::MOTOR_TIMEOUT_S = 30 s). Since [18A] the observer trusts the
+# timeout (Homing::MOTOR_TIMEOUT_S = 30 s). The observer trusts the
 # firmware HomingResult, so a firmware abort — INCLUDING its own 30 s timeout — is
 # reported as HOMING_FAILED directly (never mistaken for a success). This host
 # timeout now only catches a leg that never resolves at all (e.g. a lost
@@ -94,7 +94,7 @@ class AxisStatus:
         pos_rev: ``TELEMETRY.pos_rev[axis]`` — Jugglebot convention (sign-flipped).
         active_errors: ODrive ``active_errors`` bitmask (``DIAGNOSTIC.active_errors``).
         homing_result: firmware ``HomingResult`` (``DIAGNOSTIC.homing_result``;
-            NONE/RUNNING/OK/FAILED — Fable-5 [18A]). The authoritative outcome the
+            NONE/RUNNING/OK/FAILED). The authoritative outcome the
             observer now trusts instead of inferring from the state cycle.
     """
     axis_state: int
@@ -144,7 +144,7 @@ class HomingMonitor:
             30 s; host default 20 s): the host is the operational bound (a homing
             completes in a few seconds, so 20 s is generous), while the firmware
             timeout is the last-resort on-target abort backstop. (The prior
-            "> firmware timeout" note was inverted — Fable-5 [18B].)
+            "> firmware timeout" note was inverted.)
     """
 
     def __init__(self, axes: Iterable[int], *,
@@ -201,7 +201,7 @@ class HomingMonitor:
             # ACTIVE — fold in this tick's status (if any), then evaluate.
             st = status.get(axis)
             if st is not None:
-                # Fable-5 [18A]: the firmware's HomingResult (uplinked per-axis in the
+                # The firmware's HomingResult (uplinked per-axis in the
                 # Diagnostic) is AUTHORITATIVE. The old logic inferred success from a
                 # CLOSED_LOOP→IDLE state cycle, but the firmware IDLEs the leg on a
                 # silent abort too (bus-down / guard-E-STOP after CLOSED_LOOP) WITHOUT

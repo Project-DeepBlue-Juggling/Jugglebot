@@ -1,9 +1,8 @@
-"""Phase 11 U5 — deactivate completion observer for the can-bridge legs.
+"""Deactivate completion observer for the can-bridge legs.
 
 The deactivate *move* runs autonomously in firmware (the can-bridge DEACTIVATE
 handler — the controlled inverse of ACTIVATE: a TRAP_TRAJ descent from the active
-pose to the STOW pose, then IDLE; see ``leg_deactivate.h`` and
-``plans/active/teensy-can-offload.md`` "U5"). The Jetson fires ``DEACTIVATE``
+pose to the STOW pose, then IDLE; see ``leg_deactivate.h``). The Jetson fires ``DEACTIVATE``
 once (``AXIS_ALL`` → every present leg in parallel; fire-and-monitor: the RPC
 returns OK the instant the firmware *accepts* the move) and then **observes**
 completion from the telemetry/diagnostic stream — no firmware status field,

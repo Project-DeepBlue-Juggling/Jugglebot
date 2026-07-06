@@ -1,13 +1,13 @@
-"""Synthetic β-knot setpoint source — bench validation of the Teensy interp.
+"""Synthetic Teensy-side knot setpoint source — bench validation of the Teensy interp.
 
-Phase 11. Generates ``flags=0x3`` :class:`Setpoint` frames (``u0``/``u1``/``u2``
+Generates ``flags=0x3`` :class:`Setpoint` frames (``u0``/``u1``/``u2``
 lookahead knots + ``v0`` velocity feedforward) for a **single** target leg axis,
 so the Teensy's 40 Hz-knot cubic-Hermite interpolator (``leg_interp.cpp`` Mode 1)
 can be exercised on hardware with a **known, bounded** command — fully decoupled
-from ``motor_guard`` / the MPC / the Stribeck friction-FF (decision D9). This is
-the *synthetic β* path used by ``tests/hardware/teensy_setpoint_bench.py``; the
+from ``motor_guard`` / the MPC / the Stribeck friction-FF. This is
+the *synthetic Teensy-side* path used by ``tests/hardware/teensy_setpoint_bench.py``; the
 deployed production bridge is untouched and still forwards ``motor_guard``'s
-500 Hz output with ``flags=0`` (the α relay, ``setpoint_pump.py``).
+500 Hz output with ``flags=0`` (the Jetson-relay path, ``setpoint_pump.py``).
 
 Pure — no I/O, no threads, no sleeps (the ``homing.py`` / ``setpoint_pump.py``
 pattern). The bench driver supplies wall-time, the live start position, and does
@@ -75,7 +75,7 @@ class TrajectoryParams:
 
 
 class SyntheticKnotSource:
-    """Pure generator of β-knot :class:`Setpoint` frames for one leg axis.
+    """Pure generator of Teensy-side knot :class:`Setpoint` frames for one leg axis.
 
     Args:
         params: the trajectory definition.
@@ -171,7 +171,7 @@ class SyntheticKnotSource:
 
     # ── Frame construction ─────────────────────────────────────────────────────
     def frame(self, t: float, t_origin_us: int) -> Setpoint:
-        """Build the β-knot Setpoint to transmit at ``t`` seconds since arm.
+        """Build the Teensy-side knot Setpoint to transmit at ``t`` seconds since arm.
 
         ``u0/u1/u2`` are this and the next two 40 Hz knots; ``v0`` the current
         velocity FF; non-target axes packed 0.0; ``flags = 0x3``.

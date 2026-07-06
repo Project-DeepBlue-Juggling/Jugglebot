@@ -322,7 +322,7 @@ class TeensyLinkClient:
             for s in ready:
                 self._drain_socket(s)
 
-    # Fable-5 hardening [17]: cap frames drained per socket per select-wakeup so a
+    # Cap frames drained per socket per select-wakeup so a
     # sustained flood on one socket can't starve the other within a single wakeup
     # (the stream socket could otherwise monopolise the RX loop and delay RPC
     # responses). 256 is ~16× the legitimate downlink rate; overflow is counted
@@ -340,7 +340,7 @@ class TeensyLinkClient:
                 return
             self.stats.rx_frames += 1
             self.stats.rx_bytes += len(data)
-            # Monotonic clock (item 14): last_rx_us is one endpoint of the
+            # Monotonic clock: last_rx_us is one endpoint of the
             # time_since_last_rx_us / _t2j interval reads below. time.time()
             # (CLOCK_REALTIME) is NTP-steppable — a backward step would underflow
             # the age to a huge positive (spurious link-lost) or a negative;
@@ -405,10 +405,10 @@ class TeensyLinkClient:
         """Microseconds since any frame was received from the peer, or None."""
         if self.stats.last_rx_us == 0:
             return None
-        return int(time.monotonic() * 1_000_000) - self.stats.last_rx_us   # item 14: monotonic both endpoints
+        return int(time.monotonic() * 1_000_000) - self.stats.last_rx_us   # monotonic both endpoints
 
     def time_since_last_t2j_heartbeat_us(self) -> Optional[int]:
         """Microseconds since the last T→J heartbeat frame, or None."""
         if self.stats.last_t2j_heartbeat_us == 0:
             return None
-        return int(time.monotonic() * 1_000_000) - self.stats.last_t2j_heartbeat_us   # item 14: monotonic both endpoints
+        return int(time.monotonic() * 1_000_000) - self.stats.last_t2j_heartbeat_us   # monotonic both endpoints

@@ -1,17 +1,17 @@
-"""Recorded-throw β-knot setpoint source — U3-iv bench validation.
+"""Recorded-throw Teensy-side knot setpoint source — bench validation of the Teensy interp.
 
-Phase 11, decision D9. Replays a recorded MPC command stream (a
+Replays a recorded MPC command stream (a
 ``temp/logs/mpc_*.csv`` ``cmd_ext`` trajectory, the same recordings the offline
 Hermite xref uses — ``tools/probes/.../hermite_xref/xref.py``) as ``flags=0x3``
 :class:`Setpoint` frames for a **single** target leg axis, so the Teensy's 40 Hz
 knot Hermite interp (``leg_interp.cpp`` Mode 1) can be exercised **on hardware**
 with a representative throw-shaped trajectory. This is what produces the two
-U3-iv measurements that gate U4:
+measurements that gate the production cutover:
 
   * the **float32 interp residual** — the real Teensy float32 ladder output vs a
     float64 reference (motor_guard / ``teensy_interp.py``) for the same knots; and
-  * the **D9 motion-onset penalty** — how much later the leg breaks away on the
-    friction-FF-free β path vs a with-friction-FF baseline. The optional
+  * the **motion-onset penalty** — how much later the leg breaks away on the
+    friction-FF-free Teensy-side path vs a with-friction-FF baseline. The optional
     ``torque_ff_fn`` injects a per-frame friction-FF torque (dependency-injected
     so this module stays free of any ``jugglebot.motion`` import — the bench
     driver supplies the Stribeck model) for the A/B onset comparison.
@@ -102,7 +102,7 @@ def time_stretch(samples: List[float], factor: float) -> List[float]:
     vs-float64 arithmetic on ~3 rev position values, identical however slowly the
     same positions are traversed), so stretching lets the leg track the trajectory
     within the lead clamp — yielding a valid residual — and gives a clean,
-    measurable from-rest onset for the D9 friction-FF A/B. ``factor == 1.0`` is a
+    measurable from-rest onset for the friction-FF A/B. ``factor == 1.0`` is a
     no-op (returns a copy).
     """
     if factor <= 0:
@@ -153,7 +153,7 @@ def scale_to_bench(samples: List[float], *, stroke_min_rev: float,
 
     Returns ``(scaled_samples, ScaleInfo)``.
     """
-    # Fable-5 hardening [17]: a floor-above-ceiling config is unusable — the affine
+    # A floor-above-ceiling config is unusable — the affine
     # map + hard clamp would silently emit a flat/sign-inverted profile. Fail loud
     # (the module's own "never a silent slow-down" stance), never execute it.
     if stroke_min_rev > ceiling_rev:
@@ -190,7 +190,7 @@ def scale_to_bench(samples: List[float], *, stroke_min_rev: float,
 
 
 class RecordedThrowSource:
-    """Pure generator of β-knot :class:`Setpoint` frames replaying a recording.
+    """Pure generator of Teensy-side knot :class:`Setpoint` frames replaying a recording.
 
     Args:
         samples: the scaled motor-rev trajectory (from :func:`scale_to_bench`).
@@ -207,8 +207,8 @@ class RecordedThrowSource:
         num_legs / max_step_rev / stroke_margin_rev: as in
             :class:`synthetic_setpoint.SyntheticKnotSource`.
         torque_ff_fn: optional ``velocity_rev_s -> torque_Nm`` for the target axis
-            (the Stribeck friction-FF, for the D9 A/B). ``None`` ⇒ ``torque_ff=0``
-            (the plain β path).
+            (the Stribeck friction-FF, for the friction-FF A/B). ``None`` ⇒ ``torque_ff=0``
+            (the plain Teensy-side path).
 
     Raises:
         ValueError: axis out of range, samples outside the stroke window, the

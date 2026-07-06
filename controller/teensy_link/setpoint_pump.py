@@ -1,30 +1,30 @@
-"""Pack 40 Hz MPC commands into β-knot Setpoint frames, with a per-step gate.
+"""Pack 40 Hz MPC commands into Teensy-side knot Setpoint frames, with a per-step gate.
 
 Pure logic — no ROS, no ZMQ, no UDP. The bridge node owns the transport (ZMQ
 ingress from the MPC on :5557, UDP egress to the Teensy, the dedicated ingest
 thread); :class:`SetpointPump` owns the **safety-critical** packing + per-step
 clamp so they can be unit-tested in isolation.
 
-**Phase 11 / U4 — the α→β switch.** Historically this pump consumed
+**The Jetson-relay→Teensy-side switch.** Historically this pump consumed
 ``motor_guard``'s *already-interpolated* 500 Hz telemetry (:5556, ``flags=0``,
-the **α relay**) and the Teensy ran in Mode-2 pass-through while motor_guard's
-500 Hz Hermite stayed on the Jetson. U4 re-points it at the **40 Hz MPC command
-stream** (:5557, ``TOPIC_MPC_CMD``, ``make_mpc_command``) and emits **β knots**
+the **Jetson-relay path**) and the Teensy ran in Mode-2 pass-through while motor_guard's
+500 Hz Hermite stayed on the Jetson. This pump re-points it at the **40 Hz MPC command
+stream** (:5557, ``TOPIC_MPC_CMD``, ``make_mpc_command``) and emits **Teensy-side knots**
 (``u0``/``u1``/``u2`` + ``v0``, ``flags`` carrying ``HAS_U1``/``HAS_U2``) so the
 Teensy's 500 Hz cubic-Hermite interpolator (``leg_interp.cpp`` Mode 1) does the
 interpolation — the migration's headline benefit, finally realised. motor_guard
 leaves the leg path entirely; leg safety becomes **MPC (coupled workspace) + the
 Teensy fault machine** (per-leg stroke / deviation / MPC-staleness E-STOP /
-deferred-stow — all U3-validated). See
+deferred-stow — all bench-validated). See
 ``logbook/2026-06-25-phase11-u4-production-cutover.md``.
 
-**Bumplessness — the load-bearing invariant.** The β knots are derived to
+**Bumplessness — the load-bearing invariant.** The Teensy-side knots are derived to
 reproduce ``MotorGuard._on_mpc_command``'s EXACT knot latch
 (``motor_guard.py:541–603``), so the Teensy Hermite — cross-checked bit-for-bit
 against motor_guard's interpolator in
 ``tools/probes/teensy_link_profiling/hermite_xref/xref.py`` (< 1e-6 rev) — emits
-the same trajectory the α path would have. The derivation MIXES conventions
-exactly as motor_guard does (verified empirically, U4 probe):
+the same trajectory the Jetson-relay path would have. The derivation MIXES conventions
+exactly as motor_guard does (verified empirically):
 
   * ``u0`` = ``cmd['motor_rev']`` (ODrive convention, 0 = STOW, **includes** any
     stow offset) if present, else ``cmd['ext_mm'] × mm_to_rev`` (the unit-test /
@@ -34,7 +34,7 @@ exactly as motor_guard does (verified empirically, U4 probe):
   * ``u1`` = ``cmd['cmd_next_mm'] × mm_to_rev``; ``u2`` =
     ``cmd['cmd_next2_mm'] × mm_to_rev`` (extension convention, no offset). Absent
     / non-finite / wrong-length ⇒ the corresponding ``HAS_U1`` / ``HAS_U2`` flag
-    is **cleared** — never a NaN sentinel (firmware handoff D4). ``u2`` is only
+    is **cleared** — never a NaN sentinel (a firmware wire-format decision). ``u2`` is only
     meaningful with ``u1`` (it sets the Hermite endpoint velocity
     ``v1 = (u2 − u1)/T``), so ``HAS_U2`` is gated on ``HAS_U1``.
   * ``v0`` = ``cmd['vel_mm_s'] × mm_to_rev`` (=
@@ -43,14 +43,14 @@ exactly as motor_guard does (verified empirically, U4 probe):
     ``jugglebot.motion`` import, preserving purity).
   * ``accel`` = 0 — the firmware Mode-1 Hermite does NOT consume ``accel`` (only
     Mode-2 Taylor does, when ``HAS_U1`` is clear; production always supplies
-    ``cmd_next_mm`` so Mode 1 always runs). Matches the bench β sources
+    ``cmd_next_mm`` so Mode 1 always runs). Matches the bench Teensy-side sources
     (``synthetic_setpoint`` / ``replay_setpoint``).
-  * ``torque_ff`` = 0 — the **friction-FF drop** (decision D9). The α source
-    carried motor_guard's Stribeck friction-FF in ``leg_torques``; the β MPC
-    stream carries ``torque_Nm = zeros``. U3-iv measured the on-hardware penalty
+  * ``torque_ff`` = 0 — the **friction-FF drop**. The Jetson-relay source
+    carried motor_guard's Stribeck friction-FF in ``leg_torques``; the Teensy-side MPC
+    stream carries ``torque_Nm = zeros``. The bench measured the on-hardware penalty
     as null (the smooth gate suppresses FF at v≈0, so its loss is free at
     breakaway) and the float32 interp residual as 5.5e-7 rev — both within the
-    pre-registered D9 criteria.
+    pre-registered acceptance criteria.
 
 Per-step safety gate — a port of ``can_node._sub_leg_lengths``'s
 ``JB_OP_MAX_POSITION_STEP_REV`` clamp (can_node.py:1046-1056). Reject any frame
@@ -75,8 +75,8 @@ from typing import Optional, Sequence, Tuple
 from . import protocol as p
 from .protocol import Setpoint
 
-# Setpoint flag bits — u1/u2 lookahead presence (firmware D4: bits, not NaN).
-# Mirrors synthetic_setpoint.py / replay_setpoint.py (the bench β sources).
+# Setpoint flag bits — u1/u2 lookahead presence (firmware convention: bits, not NaN).
+# Mirrors synthetic_setpoint.py / replay_setpoint.py (the bench Teensy-side sources).
 FLAG_HAS_U1 = 0x1
 FLAG_HAS_U2 = 0x2
 
@@ -87,7 +87,7 @@ DEFAULT_MAX_STEP_REV = 0.3
 
 
 class SetpointPump:
-    """Stateful β-knot packer + per-step gate for the 40/500 Hz setpoint downlink.
+    """Stateful Teensy-side knot packer + per-step gate for the 40/500 Hz setpoint downlink.
 
     Args:
         mm_to_rev: per-leg mm→motor-rev scale (``hardware_config.GEOM_MM_TO_REV``).
@@ -154,7 +154,7 @@ class SetpointPump:
         """Validate + pack one 40 Hz MPC command (:5557 ``mpc_cmd`` dict).
 
         Returns ``(setpoint, reject_reason)``:
-          * ``(Setpoint, None)`` — a safe β-knot frame to send.
+          * ``(Setpoint, None)`` — a safe Teensy-side knot frame to send.
           * ``(None, None)``     — nothing to send (no position command in the
             message); NOT a fault.
           * ``(None, reason)``   — a SAFETY reject (do not send, surface a fault).
@@ -218,11 +218,11 @@ class SetpointPump:
 
         # ── u1 / u2: cmd_next(_2)_mm × mm_to_rev; absent/bad ⇒ clear the flag ──
         # Mirrors motor_guard: a non-finite / wrong-length lookahead clears the
-        # waypoint rather than rejecting the frame (firmware D4: bits, not NaN).
+        # waypoint rather than rejecting the frame (firmware convention: bits, not NaN).
         # Exact-length (== n, not >= n) mirrors motor_guard's ``shape == (6,)``
         # gate (motor_guard.py:585, 597) so a malformed >6-element lookahead
         # clears the flag (Taylor fallback) instead of silently taking the
-        # first 6 and emitting a divergent-but-accepted β frame.
+        # first 6 and emitting a divergent-but-accepted Teensy-side frame.
         # Absent/malformed lookahead CLEARS the flag (never rejects the frame,
         # never raises) — routed through the hardened _finite_vec so a None/
         # non-numeric/wrong-length cmd_next just falls back to the Taylor path.
@@ -260,7 +260,7 @@ class SetpointPump:
             u2=tuple(u2),
             v0=tuple(v0),
             accel=(0.0,) * self.n,          # Mode-1 Hermite ignores accel
-            torque_ff=(0.0,) * self.n,      # friction-FF drop (D9)
+            torque_ff=(0.0,) * self.n,      # friction-FF drop
             flags=flags,
             t_origin_us=int(t_origin_us),
         )

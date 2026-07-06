@@ -91,7 +91,7 @@ from udp_protocol import (  # noqa: E402, F401
     HAND_CMD_ECHO_SIZE,
     RPC_REQUEST_SIZE,
     RPC_RESPONSE_SIZE,
-    # RPC method argument layouts (hoisted into the generator at Phase 10b)
+    # RPC method argument layouts (hoisted into the generator)
     AXIS_ALL,
     ArgAxisState,
     ArgControllerMode,
@@ -105,9 +105,9 @@ from udp_protocol import (  # noqa: E402, F401
     ResultTimeOfDay,
     ArgBbThrow,
     ArgRobotState,
-    ArgHandTraj,  # Phase 5 (HAND_TRAJ_CMD — 8-byte 0x6D0 payload)
-    ResultAxisVersions,  # Phase 3 (GET_AXIS_VERSIONS result blob)
-    # Hand axis-6 allow-table (Phase 1)
+    ArgHandTraj,  # HAND_TRAJ_CMD — 8-byte 0x6D0 payload
+    ResultAxisVersions,  # GET_AXIS_VERSIONS result blob
+    # Hand axis-6 allow-table
     HAND_AXIS6_PERMITTED,
     hand_axis6_permitted,
 )

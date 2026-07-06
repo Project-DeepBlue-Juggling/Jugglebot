@@ -15,7 +15,7 @@ mirrors exist so that
     confirmed reconnect" invariant the CAN-loss latch uses;
   * :class:`FaultEvaluator` / :class:`DeferredStowLatch` are a tested,
     byte-faithful port of the firmware decision tree — the canonical artifact
-    for the ``can_node.py`` deletion (Phase 13, DONE 2026-07-06 — can_node
+    for the ``can_node.py`` deletion (DONE 2026-07-06 — can_node
     references below point at the last pre-deletion revision in git history).
     Their fidelity to the
     firmware is pinned to a **firmware-anchored golden vector**
@@ -25,7 +25,7 @@ mirrors exist so that
     ``tests/firmware/test_fault_logic.py``. Agreement chain (enforced by tests,
     not hand transcription): ``fault_machine.cpp`` ==(golden)== this module.
 
-In Phase 10b the bridge is an OBSERVER: :class:`FaultEvaluator` /
+In the current design the bridge is an OBSERVER: :class:`FaultEvaluator` /
 :class:`DeferredStowLatch` are NOT run live to override the Teensy's
 authoritative ``fault_state`` (doing so would create a second, divergent fault
 authority — the exact "two nearly-identical fault sites" drift the
@@ -151,9 +151,9 @@ class DeferredStowLatch:
 
     This models the executor-bearing latch (the firmware, which owns CAN +
     ``interp_begin_stow``). The Jetson bridge's link-loss usage — which has no
-    stow executor in 10b — is :class:`LinkLossLatch`.
+    stow executor — is :class:`LinkLossLatch`.
 
-    Phase 6 reboot-suppression latch: :meth:`notify_reboot_started` (the
+    Reboot-suppression latch: :meth:`notify_reboot_started` (the
     ``REBOOT_ODRIVES`` RPC) arms a bounded suppression of the CAN-loss *detection*
     so a deliberate ODrive-reboot silence is not read as a real loss. The clock is
     abstracted the same way the rest of this latch abstracts it — ``step`` takes the
@@ -169,7 +169,7 @@ class DeferredStowLatch:
         self.stowing = False
         self.first_seen = False       # firmware s_first_leg_hb_seen: set once any leg hb is seen
         self.stow_complete = False
-        self.reboot_in_progress = False   # Phase 6 suppression latch armed
+        self.reboot_in_progress = False   # reboot-suppression latch flag
         self.reboot_saw_stale = False     # legs went stale since arming (release gate)
 
     def notify_reboot_started(self) -> None:
@@ -189,7 +189,7 @@ class DeferredStowLatch:
             self.first_seen = True
         if reboot_start:
             self.notify_reboot_started()
-        # Reboot-suppression latch release (Phase 6, mirror watchdog_and_stow):
+        # Reboot-suppression latch release (mirror watchdog_and_stow):
         # release on fresh-AFTER-stale (the ODrives came back) OR the bounded deadline.
         if self.reboot_in_progress:
             if stale:
@@ -235,7 +235,7 @@ class LinkLossLatch:
         SURFACES it (``link_status``) for the operator/orchestrator. The
         bridge does NOT auto-execute a stow: the Teensy firmware owns the
         profiled CAN-side stow (``interp_begin_stow``), and there is no stow RPC
-        on the Jetson side until firmware Phase 9. ``acknowledge_stow()`` clears
+        on the Jetson side until the firmware implements a per-leg motion RPC. ``acknowledge_stow()`` clears
         the latch once the operator/firmware has handled it.
 
     The execute-on-reconnect half (``DeferredStowLatch.stowing`` →

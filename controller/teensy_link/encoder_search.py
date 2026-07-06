@@ -1,4 +1,4 @@
-"""Phase 9a — encoder index search orchestration for the can-bridge legs.
+"""Encoder index search orchestration for the can-bridge legs.
 
 Pure state machine — no ROS, no UDP, no threads, no sleeps. The caller (the
 bridge node, or a bench script) drives it by repeatedly calling :meth:`step` with
@@ -15,9 +15,8 @@ Why a Jetson-side orchestration over ``SET_AXIS_STATE`` rather than a firmware
 — the motor spins itself to find the index, so the only command needed is
 ``SET_AXIS_STATE(ENCODER_INDEX_SEARCH)``, which the firmware already implements
 (``rpc.cpp``). The firmware ``ENCODER_SEARCH`` / ``HOME`` RPCs are stubbed
-(``ERR_NOT_IMPL``); only the homing *move* (Phase 9b) must live in firmware (no
-per-leg motion RPC exists). See ``plans/active/teensy-can-offload.md`` →
-"Revised sequencing".
+(``ERR_NOT_IMPL``); only the homing *move* must live in firmware (no
+per-leg motion RPC exists).
 
 Completion detection: the UDP path does not expose the ODrive ``procedure_result``
 that ``can_node._encoder_search_steps`` polled. Instead we use the signals
