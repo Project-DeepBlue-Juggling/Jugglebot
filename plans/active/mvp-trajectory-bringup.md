@@ -439,7 +439,7 @@ passes; results recorded in the logbook with seeds and configs):
 |---|---|---|---|---|
 | 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | CODE COMPLETE (hardware deferred) |
 | 2 | Waypoint moves at low limits | — | move battery + loud rejection | CODE COMPLETE (hardware deferred) |
-| 3 | SpaceMouse streaming | — | manual flight | NOT STARTED |
+| 3 | SpaceMouse streaming | — | manual flight | CODE COMPLETE (hardware deferred) |
 | 4 | Limit ramp-up + lean A/B | — | multiple short sessions | NOT STARTED |
 | 5 | Timed target states | — | timed moves ±25 ms | NOT STARTED |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | NOT STARTED |
@@ -617,6 +617,34 @@ hard-shove saturation test; a mid-flight spacemouse unplug (the existing handler
 publishes an ACTIVE-pose hold on disconnect — verify a smooth return). PASS:
 subjectively smooth throughout, no rejects, clean disconnect. ABORT: any jerk
 event, E-STOP, runaway.
+
+**Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase 3 software
+landed on branch `mvp-trajectory-bringup` (commits `5cac69b` motion layer +
+`4bdc688` ROS surface; the docs commit that follows). The two orchestration prerequisites from the
+Phase-2 audit are met. (1) **Fast follower gate** `feasibility.validate_follow` —
+profiling showed the analytic gate's ~377 ms is dominated by the per-sample analytic
+Jacobian chain (~90 %), NOT the condition SVD (~9 %), so the fast gate sidesteps the
+Jacobian entirely: vectorised pose→leg-extension sampling (`QuinticSegment.eval_pose_batch`
++ batched IK, verified equal to the scalar chain to 1e-9) with leg vel/acc/jerk by
+finite difference and a decimated condition SVD. **~1.5–4 ms**; vel/acc/step match the
+analytic gate to < 0.1 %, jerk is held **strictly conservative** (≤ 1.5 % under-measure
+at 300 samples, then ×1.05); the knot-step-bound is **bit-identical** so pump-acceptance
+is preserved. (2) **Always-valid graceful stop** `planner.build_graceful_stop` — a
+duration-stretched decel-in-place that always converges for a gate-limited seed;
+replaces the Phase-2 STANDBY-exit catch-and-complete fallback and backs the follower's
+input-loss handling. New pure `TargetFollower` (clamp → deadband → replan / keep-last-plan)
++ `planner.build_follow`; `trajectory_node` gains `platform_pose_topic` publisher-field
+mode gating + `gravity_offset` composition (verbatim ports from `mpc_bridge_node`), the
+follower replan run inside the 40 Hz emitter tick (drain-to-latest), input-loss stop,
+and a ray-clamp saturation policy (clamp to the nearest reachable pose along the
+current→target ray — uses the EXISTING stroke envelope, invents no new limit; throttled
+WARN). No new interfaces/config/launch → no colcon or codegen gate this phase.
+Verification: `pytest tests/ -q` (2026-07-08) = **2079 passed, 1 xfailed in 502.33 s**
+(baseline 2047/1 at `f38153f`; net +32 = the new tests only: 23 follower-motion + 9
+node, no regressions). **Deferred to the operator bench session**: the manual-flight
+battery (gentle fly / saturation shove / mid-flight unplug) at the default low limits,
+using the Phase-1 `tools/probes/traj_stream_probe.py` for read-only knot inspection.
+Full narrative in `logbook/2026-07-08-mvp-phase3-spacemouse-streaming.md`.
 
 ### Phase 4 — Limit ramp-up *(multiple short sessions)*
 
