@@ -74,3 +74,33 @@ class TrajectoryLimits:
             min_move_duration_s=float(hw.JB_TRAJ_MIN_MOVE_DURATION_S),
             min_timed_lead_s=float(hw.JB_TRAJ_MIN_TIMED_LEAD_S),
         )
+
+    def with_session_limits(self, *,
+                            leg_vel_mmps: float | None = None,
+                            leg_acc_mmps2: float | None = None,
+                            leg_jerk_mmps3: float | None = None
+                            ) -> 'TrajectoryLimits':
+        """Return a copy with new session vel/acc/jerk, each clamped to its ceiling.
+
+        This is the in-session ``trajectory/set_limits`` ramp: ``None`` keeps the
+        current session value; any supplied value is clamped to the corresponding
+        YAML hard ceiling so a runtime request can NEVER raise a limit above the
+        pinned maximum (the safety invariant — the ceilings are the physical
+        envelope the operator ramps *within*, never past). The ceilings and knot /
+        step / duration fields are preserved unchanged.
+        """
+        v = self.leg_vel_mmps if leg_vel_mmps is None else float(leg_vel_mmps)
+        a = self.leg_acc_mmps2 if leg_acc_mmps2 is None else float(leg_acc_mmps2)
+        j = self.leg_jerk_mmps3 if leg_jerk_mmps3 is None else float(leg_jerk_mmps3)
+        return TrajectoryLimits(
+            leg_vel_mmps=min(v, self.leg_vel_ceiling_mmps),
+            leg_acc_mmps2=min(a, self.leg_acc_ceiling_mmps2),
+            leg_jerk_mmps3=min(j, self.leg_jerk_ceiling_mmps3),
+            leg_vel_ceiling_mmps=self.leg_vel_ceiling_mmps,
+            leg_acc_ceiling_mmps2=self.leg_acc_ceiling_mmps2,
+            leg_jerk_ceiling_mmps3=self.leg_jerk_ceiling_mmps3,
+            knot_dt_s=self.knot_dt_s,
+            max_step_rev=self.max_step_rev,
+            min_move_duration_s=self.min_move_duration_s,
+            min_timed_lead_s=self.min_timed_lead_s,
+        )
