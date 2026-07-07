@@ -441,7 +441,7 @@ passes; results recorded in the logbook with seeds and configs):
 | 2 | Waypoint moves at low limits | — | move battery + loud rejection | CODE COMPLETE (hardware deferred) |
 | 3 | SpaceMouse streaming | — | manual flight | CODE COMPLETE (hardware deferred) |
 | 4 | Limit ramp-up + lean A/B | — | multiple short sessions | CODE COMPLETE (hardware deferred) |
-| 5 | Timed target states | — | timed moves ±25 ms | NOT STARTED |
+| 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | NOT STARTED |
 | 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | NOT STARTED |
 | 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | NOT STARTED |
@@ -758,6 +758,42 @@ arrival within ±25 ms, pose within 3 mm / 0.5°); a same-pose request at 60% of
 `min_duration_s` (PASS: rejected, response carries the achievable duration); a
 mid-plan superseding timed target (PASS: C2 replan; both deadlines honoured or
 the second loudly rejected).
+
+**Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase 5 software
+landed on branch `mvp-trajectory-bringup` (commits `62e9ea7` motion +
+interfaces + node + catch swap; `<pending-docs>` docs). New pure `planner.build_timed`:
+a **fixed-lead reach** to `(target_pose, target_twist)` — the arrival lead is a hard
+constraint, so a too-tight lead is loudly rejected `TOO_FAST` with the minimal feasible
+lead (never silently slowed), a spatial failure re-raised as-is; the plan is ALWAYS
+rest-terminating (a nonzero arrival velocity gets a decel-to-rest continuation — a
+final nonzero-velocity segment would be an unbounded-jerk terminal-hold snap);
+`hold_after` = hold-at-target vs return-to-neutral. Gated by the **fast**
+`validate_follow`, which is what enables the mid-plan **supersede** (a C2 replan
+installs within ~2 ms of its seed — the TOCTOU class the Phase-2 guard closed on the
+~377 ms path), so the Phase-2 `BUSY` restriction is **lifted for the timed path** (
+`go_to_pose` keeps `BUSY` — it uses the analytic gate for shaped plans; the asymmetry
+is deliberate + tested). New interfaces `TimedTarget.srv` (response `code` = the
+feasibility **string** enum, matching GoToPose) and `TargetFeedback.msg`;
+`trajectory/timed_target` (TRAJECTORY mode) + `catch/dynamic_target` (CATCH mode)
+BOTH route through `build_timed` (+ a reach-freeze window that holds the committed
+catch reach through the last `JB_TRAJ_CATCH_REACH_FREEZE_S`); `trajectory/target_feedback`
+carries accept/reject to `catch_coordinator_node`, which **swaps** its dormant ZMQ :5559
+`TargetFeedbackSub` for the topic (feasibility blacklist semantics preserved). One
+ROS-clock→perf_counter conversion point (`_ros_time_to_perf`); the catch path is already
+perf-domain (system-wide `CLOCK_MONOTONIC`). The catch z is lifted by the active-z (170)
+from the MPC-offset convention (0 = active) to the trajectory STOW-relative convention
+(170 = active) — flagged for Phase-7 hardware verification (the gate rejects an
+out-of-stroke z loudly meanwhile). Every emitted timed knot is pump-accepted (invariant
+re-asserted). Verification: `pytest tests/ -q` (2026-07-08) = **2164 passed,
+1 xfailed in 535.82 s** (baseline 2128/1 at `1c0f9c1`; net **+36** = new tests only: 12
+planner-timed + 17 node + 7 catch-coordinator); ci-deep (`pytest tests/ -q
+--hypothesis-profile=ci-deep`, 2026-07-08) = **<PENDING>**; `colcon build
+--packages-select jugglebot_interfaces jugglebot` (2026-07-08) = 2 packages finished,
+0 errors. No `hardware_config.yaml`/codegen change (the Phase-5 constants landed in
+Phase 1). **Deferred to the operator bench session**: the ±25 ms mocap timed-move
+battery + too-tight loud-rejection + mid-plan supersede demo
+(`tests/hardware/session_phase5_timed.md`). Full narrative in
+`logbook/2026-07-08-mvp-phase5-timed-targets.md`.
 
 ### Phase 6 — Sim port + catch trajectory + hand-model fidelity *(sim only)*
 
