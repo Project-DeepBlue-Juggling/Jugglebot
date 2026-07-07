@@ -246,6 +246,65 @@ window, so it degrades to a safe hold, never a stream gap.
   (with J̇ every tick along a real trajectory) tighten it, cache the Jacobian across
   the 3 knot samples (only the first needs the velocity/accel chain).
 
+## Audit fixes (2026-07-07)
+
+A post-merge audit of the Phase 1 diff surfaced two WARNINGs and seven NOTEs; all
+nine are fixed in one follow-up commit (SHA backfilled to `commits:` above).
+
+**Warnings**
+
+1. **Arming u0-vs-encoder precondition failed open on NaN `pos_rev`**
+   (`teensy_bridge_node._arm_setpoint_output`). `if d > tol` let a NaN encoder
+   through (`NaN > 0.25` is False), arming onto an unknown pose. Inverted to
+   `if not (d <= tol)` (fails CLOSED) with a "non-finite or mismatched encoder"
+   message. New test `test_arm_rejected_on_nan_pos_rev`.
+2. **`robot_state` staleness guard declared but never enforced**
+   (`trajectory_node`). The node recorded `_robot_state_mono` and declared
+   `robot_state_stale_s` but seeded a hold from `_latest_pos_rev` regardless of
+   age. Added `_robot_state_fresh()`; the mode-entry seed path and (defensively)
+   `_seed_hold_from` now require fresh telemetry, else log ERROR and defer to the
+   next (inherently fresh) `_on_robot_state` seed. New test
+   `test_stale_telemetry_defers_seed_until_fresh_robot_state`.
+
+**Notes**
+
+3. **Ungated HoldPlan install + `validate()` passed NaN.** The telemetry seed now
+   routes through `planner.build_hold((pose, 0, 0), …)` (gated) instead of a bare
+   `HoldPlan`; `feasibility.validate` rejects a non-finite pose up front (reusing
+   `UNREACHABLE`). The emitter's step-bound freeze stays a direct `HoldPlan`
+   install (commented exempt — that backstop must never raise). New test
+   `test_nonfinite_pose_hold_raises`.
+4. **Mode-transition state written outside `_plan_lock`.** `_on_control_mode`'s
+   `_streaming`/`_seeded`/`_last_motor_rev`/`_current_mode` writes are now under
+   `_plan_lock` (the lock `_emit_once` snapshots them under); `_seed_hold_from` is
+   still called unlocked to avoid a re-entrant double-acquire.
+5. **Armed-mode-exit ⇒ latched MPC_STALE sharp edge (doc-only).** Documented in
+   the `trajectory_node` module docstring and `session_phase1_hold.md`: leaving a
+   streaming mode while armed stops the stream and latches an `MPC_STALE` E-STOP
+   within 250 ms — always disarm before mode changes. **Deferred structural fix
+   (Phase 2)**: couple mode-exit to an auto-disarm in the orchestrator wiring.
+6. **`_EMIT_HZ` hardcoded.** Dropped the constant; the emitter period is derived
+   from `hw.JB_TRAJ_KNOT_DT_S` (25 ms), with a comment that the firmware pins its
+   segment time to match the knot spacing.
+7. **quintic.py "copied verbatim" header overclaimed.** Reworded the peak-bounds
+   header: copied from `controller/feasibility.py`, N-generalised (hardcoded 6 →
+   N via `np.outer`), output pinned bit-for-bit by `test_trajectory_quintic.py`.
+8. **Plan publications line lacked a deviation marker.** Annotated the
+   `TrajectoryStatus.msg` line: Phase 1 shipped it as
+   `diagnostic_msgs/DiagnosticStatus`; the typed msg + migration land in Phase 2.
+9. **Disarm closed a non-owned injected source.** `_stop_setpoint_output` skips
+   `close()` when `_sp_source is _injected_setpoint_source` (ownership stays with
+   the test fixture). Asserted in `test_arm_and_disarm_paths`.
+
+**Verification** (net +3 tests — the finding-9 change extends an existing test):
+
+- Scoped (`pytest tests/ros/test_teensy_bridge_node_setpoint.py
+  tests/ros/test_trajectory_node.py tests/motion/ -q`, run 2026-07-07) =
+  **161 passed, 51 warnings in 30.92 s** (warnings pre-existing — `test_motor_guard`
+  return-vs-assert).
+- Full suite (`pytest tests/ -q`, run 2026-07-07) = **1996 passed, 1 xfailed in
+  480.04 s** — 0 failed (baseline 1993/1; net +3 = the new tests only).
+
 ## Related
 
 - Plan: [`plans/active/mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md) — Phase 1 detail + the command-seam architecture.

@@ -1353,10 +1353,15 @@ class TeensyBridgeNode(Node):
         except Exception:  # noqa: BLE001
             self._mpc_active = False
         if self._sp_source is not None:
-            try:
-                self._sp_source.close()
-            except Exception:  # noqa: BLE001
-                pass
+            # Ownership: an injected setpoint source belongs to the test fixture
+            # (same convention as the injected client — see the __init__ docstring
+            # around client ownership), so disarm must NOT close it; only close a
+            # source the node itself opened.
+            if self._sp_source is not self._injected_setpoint_source:
+                try:
+                    self._sp_source.close()
+                except Exception:  # noqa: BLE001
+                    pass
             self._sp_source = None
 
     def _svc_set_setpoint_output(self, request, response):
@@ -1428,13 +1433,17 @@ class TeensyBridgeNode(Node):
             tol = 0.25
             for i in range(p.NUM_LEGS):
                 d = abs(float(u0[i]) - float(telem.pos_rev[i]))
-                if d > tol:
+                # Fail CLOSED on a non-finite encoder: `d > tol` would let a NaN
+                # pos_rev through (every comparison against NaN is False), arming
+                # onto an unknown pose. `not (d <= tol)` rejects NaN and mismatch.
+                if not (d <= tol):
                     if created_here:
                         source.close()
                     return False, (
                         f'leg {i} setpoint u0 {u0[i]:.3f} rev vs encoder '
-                        f'{telem.pos_rev[i]:.3f} rev = {d:.3f} rev > {tol} rev — '
-                        'refuse to arm (would risk MAX_DEVIATION E-STOP)')
+                        f'{telem.pos_rev[i]:.3f} rev = {d:.3f} rev — non-finite '
+                        f'or mismatched encoder (> {tol} rev) — refuse to arm '
+                        '(would risk MAX_DEVIATION E-STOP)')
         except Exception as e:  # noqa: BLE001 — arming must never crash the node
             if created_here:
                 try:

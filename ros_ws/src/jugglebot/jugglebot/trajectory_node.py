@@ -31,6 +31,13 @@ and does not touch the orchestrator state machine. ``trajectory/status`` is
 published as a ``diagnostic_msgs/DiagnosticStatus`` (key/values) so Phase 1 needs
 no ``jugglebot_interfaces`` rebuild; the typed ``TrajectoryStatus.msg`` lands with
 the Phase 2 service interfaces (one atomic interface build).
+
+**Armed-mode-exit is a sharp edge (Phase 1).** Leaving the streaming mode set
+while the bridge is ARMED stops the emitter publishing (``_streaming=False``), so
+the bridge stops receiving frames and latches an ``MPC_STALE`` E-STOP within
+250 ms. Always **disarm** (``set_setpoint_output false``) before changing the
+control mode away from a streaming mode. The structural fix — coupling mode-exit
+to an auto-disarm — is deferred to Phase 2 (orchestrator wiring).
 """
 
 from __future__ import annotations
@@ -68,7 +75,6 @@ from jugglebot.motion.trajectory import planner
 _DEFAULT_STREAM_MODES = ('STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'SHELL',
                          'CATCH')
 
-_EMIT_HZ = 40.0
 _NUM_LEGS = 6
 
 
@@ -147,7 +153,8 @@ class TrajectoryNode(Node):
             self._start_emitter()
 
         self.get_logger().info(
-            "trajectory_node up — 40 Hz hold emitter on :5557 (mpccmd); "
+            f"trajectory_node up — {1.0 / hw.JB_TRAJ_KNOT_DT_S:.0f} Hz hold "
+            "emitter on :5557 (mpccmd); "
             f"stream modes={sorted(self._stream_modes)}, "
             f"go_home={self._go_home_duration_s}s")
 
@@ -174,7 +181,10 @@ class TrajectoryNode(Node):
                 "stop the MPC process and relaunch.")
             return
 
-        period = 1.0 / _EMIT_HZ
+        # The emitter period IS the knot spacing: the can-hub firmware pins its
+        # segment time to 25 ms, so this MUST match hw.JB_TRAJ_KNOT_DT_S (the dt
+        # the KnotEmitter samples the plan at). Derive it — never hardcode 40 Hz.
+        period = hw.JB_TRAJ_KNOT_DT_S
         next_deadline = time.perf_counter()
         try:
             while not self._emit_stop.is_set():
@@ -230,6 +240,9 @@ class TrajectoryNode(Node):
                     "bound — froze to hold")
                 self.get_logger().error(
                     self._last_rejection, throttle_duration_sec=1.0)
+                # Exempt from the planner gate on purpose: this backstop must
+                # NEVER raise, so install the hold DIRECTLY. self._last_pose is a
+                # known-good, already-gated pose (the last frame we shipped).
                 with self._plan_lock:
                     self._active_plan = HoldPlan(self._last_pose)
                     self._plan_t0 = now
@@ -248,20 +261,34 @@ class TrajectoryNode(Node):
         mode = str(msg.data)
         if mode == self._current_mode:
             return
-        self._current_mode = mode
         if mode in self._stream_modes:
-            self._streaming = True
+            # Streaming-state writes go under _plan_lock: the emitter thread
+            # snapshots _streaming/_seeded under it in _emit_once, so an unlocked
+            # write could tear against that snapshot.
+            with self._plan_lock:
+                self._current_mode = mode
+                self._streaming = True
             # Seed a hold at the MEASURED pose on stream start (never nominal) —
-            # this is what keeps the first u0 inside the pump/firmware gates.
-            if not self._seeded and self._latest_pos_rev is not None:
-                self._seed_hold_from(self._latest_pos_rev)
+            # this is what keeps the first u0 inside the pump/firmware gates — but
+            # ONLY from FRESH telemetry. Stale/absent telemetry ⇒ defer: the next
+            # _on_robot_state callback (inherently fresh) performs the seed.
+            # NB: _seed_hold_from acquires _plan_lock itself — call it UNLOCKED.
+            if not self._seeded:
+                if self._robot_state_fresh():
+                    self._seed_hold_from(self._latest_pos_rev)
+                else:
+                    self.get_logger().error(
+                        "telemetry stale — waiting for fresh robot_state before "
+                        "seeding")
             self.get_logger().info(f"streaming ENABLED (mode {mode})")
         else:
             # Leaving the streaming set: stop publishing and require a fresh seed
             # on the next entry (the measured pose may have moved meanwhile).
-            self._streaming = False
-            self._seeded = False
-            self._last_motor_rev = None
+            with self._plan_lock:
+                self._current_mode = mode
+                self._streaming = False
+                self._seeded = False
+                self._last_motor_rev = None
             self.get_logger().info(f"streaming DISABLED (mode {mode})")
 
     def _on_robot_state(self, msg) -> None:
@@ -275,8 +302,22 @@ class TrajectoryNode(Node):
         if self._streaming and not self._seeded:
             self._seed_hold_from(pos_rev)
 
+    def _robot_state_fresh(self) -> bool:
+        """True iff a robot_state seed exists AND is within the staleness window."""
+        return (self._latest_pos_rev is not None
+                and (time.perf_counter() - self._robot_state_mono)
+                <= self._robot_state_stale_s)
+
     def _seed_hold_from(self, pos_rev) -> None:
-        """Seed a HoldPlan at the measured pose (pos_estimate rev → ext → FK)."""
+        """Seed a hold at the measured pose (pos_estimate rev → ext → FK → gate)."""
+        # Defensive freshness gate: never seed from stale/absent telemetry — a
+        # stale measured pose could place the first u0 outside the pump/firmware
+        # gates. The _on_robot_state seed path is inherently fresh (mono stamped
+        # immediately before the call), so this only guards a stray caller.
+        if not self._robot_state_fresh():
+            self.get_logger().error(
+                "telemetry stale — waiting for fresh robot_state before seeding")
+            return
         ext_mm = np.asarray(pos_rev, dtype=float) / self._mm_to_rev
         try:
             pos, rot, _J = leg_lengths_to_pose(ext_mm, self._geom)
@@ -285,9 +326,21 @@ class TrajectoryNode(Node):
                 f"seed FK failed ({e}) — not streaming until a valid state")
             return
         pose = np.concatenate([pos, rot_matrix_to_rotvec(rot)])
+        # Route the seed through the canonical gate: build_hold validates the pose
+        # (workspace + limits + finiteness) before install, so nothing — not even
+        # the telemetry seed — bypasses feasibility.validate.
+        try:
+            plan = planner.build_hold(
+                (pose, np.zeros(6), np.zeros(6)), self._limits, self._geom)
+        except TrajectoryInfeasible as e:
+            self._last_rejection = str(e)
+            self.get_logger().error(
+                f"seed hold rejected by gate ({e}) — not streaming until a valid "
+                "state")
+            return
         now = time.perf_counter()
         with self._plan_lock:
-            self._active_plan = HoldPlan(pose)
+            self._active_plan = plan
             self._plan_t0 = now
             self._seeded = True
             self._last_motor_rev = None

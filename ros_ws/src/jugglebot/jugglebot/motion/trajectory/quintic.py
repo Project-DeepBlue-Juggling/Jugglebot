@@ -206,7 +206,10 @@ def quintic_jerk_integral(
 
 
 # ---------------------------------------------------------------------------
-# Closed-form peak bounds (copied verbatim from controller/feasibility.py)
+# Closed-form peak bounds — copied from controller/feasibility.py, then
+# N-generalised (the source hardcodes 6 legs; here the axis count is a free
+# dimension N via np.outer). Output is pinned bit-for-bit to the controller
+# original by tests/motion/test_trajectory_quintic.py.
 # ---------------------------------------------------------------------------
 
 # Derivatives w.r.t. s — coefficients for dp/ds (a quartic in s):

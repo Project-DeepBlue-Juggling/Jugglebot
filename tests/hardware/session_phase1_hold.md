@@ -22,6 +22,12 @@ This session validates the **software already merged** on branch
   a push-through.
 - E-STOP is always available. Any ABORT criterion below ⇒ cut power / trigger the
   guard, then debrief before re-trying.
+- **Disarm before any control-mode change away from streaming.** Leaving the
+  stream-mode set while the bridge is ARMED stops the emitter publishing, so the
+  bridge stops receiving frames and latches an `MPC_STALE` E-STOP within 250 ms.
+  Always run the Step 4 disarm (`set_setpoint_output false`) before changing the
+  control mode out of a streaming mode. (A structural auto-disarm on mode-exit is
+  a deferred Phase 2 item.)
 
 ## Preconditions
 

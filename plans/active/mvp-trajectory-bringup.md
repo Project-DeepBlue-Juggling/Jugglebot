@@ -261,7 +261,9 @@ not a dependency.
     (0 ⇒ keep), clamped to the YAML hard ceilings → success/message. The
     in-session ramp-up knob.
 - Publications: `trajectory/status` (**TrajectoryStatus.msg**: streaming, mode,
-  plan_kind, plan_time_remaining_s, seq, last_rejection; 5 Hz),
+  plan_kind, plan_time_remaining_s, seq, last_rejection; 5 Hz — *Phase 1 shipped
+  this as `diagnostic_msgs/DiagnosticStatus`; the typed msg + migration land in
+  Phase 2, see the Phase 1 Outcome*),
   `trajectory/target_feedback` (accepted/code/reason/arrival_time/source),
   `trajectory/diagnostics` (active-plan leg peaks + measured emitter jitter).
   All three join the rosbag record list in `jugglebot_launch.py`.

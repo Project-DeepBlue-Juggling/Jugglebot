@@ -142,3 +142,12 @@ def test_out_of_workspace_hold_raises(geom, limits):
     with pytest.raises(TrajectoryInfeasible) as exc:
         planner.build_hold((bad, np.zeros(6), np.zeros(6)), limits, geom)
     assert exc.value.code == feas.WORKSPACE
+
+
+def test_nonfinite_pose_hold_raises(geom, limits):
+    # A non-finite pose (NaN) must be rejected up front, not sail through the
+    # numeric checks (every comparison against NaN is False). Reuses UNREACHABLE.
+    bad = np.array([0.0, 0.0, np.nan, 0.0, 0.0, 0.0])
+    with pytest.raises(TrajectoryInfeasible) as exc:
+        planner.build_hold((bad, np.zeros(6), np.zeros(6)), limits, geom)
+    assert exc.value.code == feas.UNREACHABLE

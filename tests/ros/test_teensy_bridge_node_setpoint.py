@@ -351,6 +351,31 @@ def test_arm_rejected_on_u0_encoder_mismatch():
         _teardown(teensy, client, node)
 
 
+def test_arm_rejected_on_nan_pos_rev():
+    """A leg reporting a non-finite (NaN) encoder ⇒ refuse to arm. The u0-vs-encoder
+    precondition must fail CLOSED: the old `d > tol` PASSED a NaN (NaN > tol is
+    False), arming onto an unknown pose; `not (d <= tol)` rejects it."""
+    from controller.teensy_link import Telemetry
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        # Overwrite the cached telemetry so leg 0 reads NaN (as it does before the
+        # encoder is ready / after an encoder-search). u0 == 0.1 rev per leg, so a
+        # finite mismatch is impossible here — only the NaN must trigger the reject.
+        with node._lock:
+            node._latest_telemetry = Telemetry(
+                t_teensy_us=123,
+                pos_rev=tuple([float('nan')] + [0.1] * 6),
+                vel_rps=tuple([0.0] * 7))
+        node._injected_setpoint_source = _FakeSource([_cmd([0.1] * 6)])
+        resp = _arm(node)
+        assert resp.success is False
+        assert 'non-finite' in resp.message.lower()
+        assert node._mpc_active is False
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_arm_and_disarm_paths():
     """All preconditions met ⇒ arm (mpc_active=1, thread up, heartbeat flag set);
     disarm ⇒ clean (mpc_active=0, thread down, heartbeat flag clear)."""
@@ -367,6 +392,9 @@ def test_arm_and_disarm_paths():
         resp2 = _arm(node, False)
         assert resp2.success is True
         assert node._mpc_active is False
+        # Disarm must NOT close the injected (test-owned) source — ownership stays
+        # with the fixture (same convention as the injected client).
+        assert node._injected_setpoint_source.closed is False
         assert _wait_until(lambda: _latest_hb_flags(teensy) == 0, timeout=2.0)
     finally:
         _teardown(teensy, client, node)

@@ -95,6 +95,24 @@ def test_leaving_stream_mode_stops_and_requires_reseed():
     assert node._seeded is False                      # forces re-seed on re-entry
 
 
+def test_stale_telemetry_defers_seed_until_fresh_robot_state():
+    """Mode entry with STALE telemetry must NOT seed/stream — a stale measured pose
+    could place the first u0 outside the pump/firmware gates. The seed is deferred
+    until the next (inherently fresh) robot_state arrives."""
+    node = _node()
+    # Cache a pose but stamp it older than robot_state_stale_s (stale).
+    node._latest_pos_rev = _ACTIVATE_REV
+    node._robot_state_mono = time.perf_counter() - (node._robot_state_stale_s + 5.0)
+    node._on_control_mode(String(data='STANDBY'))
+    assert node._streaming is True
+    assert node._seeded is False               # stale ⇒ deferred, not seeded
+    assert node._active_plan is None
+    # A fresh robot_state arrives → seeds now.
+    node._on_robot_state(_robot_state())
+    assert node._seeded is True
+    assert node._active_plan is not None and node._active_plan.kind == 'hold'
+
+
 # ── Emitted frames are pump-acceptable at the node boundary ───
 
 def test_emit_once_produces_pump_accepted_frames():

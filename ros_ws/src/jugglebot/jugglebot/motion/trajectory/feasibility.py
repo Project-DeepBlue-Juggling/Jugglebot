@@ -111,6 +111,15 @@ def validate(plan, limits, geom, *, samples_per_segment: int = 200
 
     for t in sample_times:
         pose, twist, accel = plan.state_at(t)
+        # Reject non-finite input up front: a NaN/Inf pose would sail through
+        # every numeric check below (all comparisons against NaN are False), so
+        # the gate must catch it explicitly. Reuse UNREACHABLE (the "cannot
+        # realise this pose" code) rather than reshape the declared enum.
+        if not np.all(np.isfinite(pose)):
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=[f"pose contains non-finite values (NaN/Inf) "
+                         f"at t={t:.3f}s"])
         pos, rot = _pose_to_pos_rot(pose)
 
         ext = pose_to_leg_lengths(pos, rot, geom)
