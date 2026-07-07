@@ -433,7 +433,7 @@ passes; results recorded in the logbook with seeds and configs):
 
 | Phase | Title | Sim gate | Hardware | Status |
 |---|---|---|---|---|
-| 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | NOT STARTED |
+| 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | CODE COMPLETE (hardware deferred) |
 | 2 | Waypoint moves at low limits | — | move battery + loud rejection | NOT STARTED |
 | 3 | SpaceMouse streaming | — | manual flight | NOT STARTED |
 | 4 | Limit ramp-up + lean A/B | — | multiple short sessions | NOT STARTED |
@@ -495,6 +495,25 @@ rate/u0/steps):
 
 **Exit**: platform holds via the new path; clean disarm/deactivate.
 **Logbook**: `mvp-phase1-streaming-foundation`.
+
+**Outcome (2026-07-07 — CODE COMPLETE, hardware deferred)**: All Phase 1 software
+landed on branch `mvp-trajectory-bringup` (commits `63031c3` config, `aab9811`
+package+ipc, `337eb41` node+launch, `33da615` bridge arming, `d09846e` probe+docs). New pure package
+`jugglebot.motion.trajectory` (`quintic`/`limits`/`segment`/`plan`/`feasibility`/
+`planner`/`emitter`), `motion/ipc.MpcCommandPub` (sole-binder :5557), the thin
+`trajectory_node` (40 Hz emitter thread, telemetry-seeded hold, `trajectory/hold`
++ `trajectory/go_home`, `trajectory/status` as a `DiagnosticStatus`), the bridge
+`set_setpoint_output` (`SetBool`) runtime-arming service (link + fresh-stream +
+0.25 rev u0-vs-encoder preconditions), `JB_TRAJ_*` config (+ `HW_SECTIONS` row),
+and the launch cutover (drop `mpc_bridge_node`, add `trajectory_node`). The
+load-bearing invariant is tested directly — every emitter frame is accepted by a
+real `SetpointPump`. Verification: `pytest tests/ -q` (2026-07-07) = **1993 passed,
+1 xfailed in 625.44 s** (baseline 1956/1; net +37 = the new tests only, no
+regressions). Codegen deterministic (regenerate → clean tree). **Deferred to the
+operator bench session**: `tests/hardware/session_phase1_hold.md` (arm at ACTIVE +
+120 s hold + clean disarm→deactivate) with the read-only probe
+`tools/probes/traj_stream_probe.py`. Full narrative in
+`logbook/2026-07-07-mvp-phase1-streaming-foundation.md`.
 
 ### Phase 2 — Waypoint moves at very low limits
 
