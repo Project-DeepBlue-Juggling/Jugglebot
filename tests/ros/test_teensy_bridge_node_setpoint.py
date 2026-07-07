@@ -17,6 +17,8 @@ import time
 
 import pytest
 
+from std_srvs.srv import SetBool
+
 from controller.teensy_link import MsgType, HeartbeatJ2T
 from controller.teensy_link.protocol import Setpoint
 
@@ -279,6 +281,93 @@ def test_no_position_command_sends_nothing():
         time.sleep(0.05)
         assert teensy.received(int(MsgType.SETPOINT)) == []
         assert node._sp_pump.frames_skipped == 1
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── Runtime arming service (set_setpoint_output) ──────────────
+# The production arming flow (fixes the arm-before-stream trap): true requires
+# (a) link up + fresh heartbeat, (b) a fresh mpccmd frame on :5557 within 0.5 s,
+# (c) that frame's u0 within 0.25 rev of every leg's live pos_estimate. Then
+# stream-then-arm. false disarms cleanly.
+
+
+def _arm(node, data=True):
+    req = SetBool.Request()
+    req.data = data
+    return node._svc_set_setpoint_output(req, SetBool.Response())
+
+
+def _bring_link_and_telem_up(teensy, node, leg_pos=0.1):
+    """Send a T→J heartbeat + telemetry (legs at ``leg_pos`` rev); wait until seen."""
+    teensy.send_heartbeat_t2j()
+    teensy.send_telemetry(pos_rev=tuple([leg_pos] * 7), vel_rps=tuple([0.0] * 7))
+    assert _wait_until(
+        lambda: node._latest_telemetry is not None
+        and node._link_age_us() is not None, timeout=2.0)
+
+
+def test_arm_rejected_when_link_down():
+    """No T→J heartbeat ⇒ link considered down ⇒ refuse to arm (never command a
+    dead link). mpc_active stays 0."""
+    teensy, client, node = _node()
+    try:
+        node._injected_setpoint_source = _FakeSource([_cmd([0.1] * 6)])
+        resp = _arm(node)                       # no heartbeat sent
+        assert resp.success is False
+        assert 'link' in resp.message.lower()
+        assert node._mpc_active is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_arm_rejected_when_no_stream():
+    """Link up + telemetry, but no mpccmd frame on :5557 ⇒ refuse to arm."""
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node)
+        node._injected_setpoint_source = _FakeSource([])    # no frames
+        resp = _arm(node)
+        assert resp.success is False
+        assert 'mpccmd' in resp.message.lower() or '0.5' in resp.message
+        assert node._mpc_active is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_arm_rejected_on_u0_encoder_mismatch():
+    """A fresh frame whose u0 is > 0.25 rev from the live encoder ⇒ refuse to arm
+    (would risk a MAX_DEVIATION E-STOP at the arm edge)."""
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        # motor_rev = 1.0 rev per leg, encoder = 0.1 rev → 0.9 rev mismatch.
+        node._injected_setpoint_source = _FakeSource([_cmd([1.0] * 6)])
+        resp = _arm(node)
+        assert resp.success is False
+        assert '0.25' in resp.message
+        assert node._mpc_active is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_arm_and_disarm_paths():
+    """All preconditions met ⇒ arm (mpc_active=1, thread up, heartbeat flag set);
+    disarm ⇒ clean (mpc_active=0, thread down, heartbeat flag clear)."""
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        node._injected_setpoint_source = _FakeSource([_cmd([0.1] * 6)])
+        resp = _arm(node, True)
+        assert resp.success is True, resp.message
+        assert node._mpc_active is True
+        assert node._sp_thread is not None
+        assert _wait_until(lambda: _latest_hb_flags(teensy) == 0x1, timeout=2.0)
+
+        resp2 = _arm(node, False)
+        assert resp2.success is True
+        assert node._mpc_active is False
+        assert _wait_until(lambda: _latest_hb_flags(teensy) == 0, timeout=2.0)
     finally:
         _teardown(teensy, client, node)
 

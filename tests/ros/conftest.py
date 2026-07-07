@@ -262,6 +262,22 @@ class Trigger:
     Response = _TriggerResponse
 
 
+class _SetBoolRequest:
+    def __init__(self):
+        self.data = False
+
+
+class _SetBoolResponse:
+    def __init__(self):
+        self.success = False
+        self.message = ''
+
+
+class SetBool:
+    Request = _SetBoolRequest
+    Response = _SetBoolResponse
+
+
 # ── Service / action type mocks ───────────────────────────────
 # Each service needs a Request and Response class with the right fields.
 
@@ -677,7 +693,7 @@ _create_mock_module('std_msgs.msg', {
 })
 
 _create_mock_module('std_srvs')
-_create_mock_module('std_srvs.srv', {'Trigger': Trigger})
+_create_mock_module('std_srvs.srv', {'Trigger': Trigger, 'SetBool': SetBool})
 
 # rclpy
 mock_rclpy = _create_mock_module('rclpy')

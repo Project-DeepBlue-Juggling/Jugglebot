@@ -78,7 +78,7 @@ from geometry_msgs.msg import Quaternion
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from std_msgs.msg import Float32MultiArray, Float64MultiArray
 from sensor_msgs.msg import JointState
-from std_srvs.srv import Trigger
+from std_srvs.srv import Trigger, SetBool
 
 from controller.teensy_link import (
     TeensyLinkClient,
@@ -711,6 +711,21 @@ class TeensyBridgeNode(Node):
         enable_sp = bool(self.get_parameter('enable_setpoint_output').value)
         if enable_sp:
             self._start_setpoint_output(setpoint_source)
+        # Injected source retained so runtime arming (set_setpoint_output) can reuse
+        # it in tests instead of opening a real ZMQ SUB on :5557.
+        self._injected_setpoint_source = setpoint_source
+
+        # ── Runtime arming service (fixes the arm-before-stream trap) ──
+        # The documented PRODUCTION arming flow (the launch parameter stays for
+        # bench use). On true: require (a) Teensy link up + fresh heartbeat, (b) a
+        # fresh mpccmd frame on :5557 within 0.5 s, (c) that frame's u0 within
+        # 0.25 rev (half the firmware 0.5 rev MAX_DEVIATION backstop) of every
+        # leg's live pos_estimate — THEN stream-then-arm (start the thread, set
+        # mpc_active=1). This is the pattern validated in
+        # tests/hardware/teensy_guard_validation.py: never arm before a matching
+        # stream is confirmed flowing, so the Teensy never E-STOPs at the arm edge.
+        self.create_service(
+            SetBool, 'set_setpoint_output', self._svc_set_setpoint_output)
 
         # ── Cold-start boot read ─────────────────────
         # Read the Platform Teensy's persisted RobotState BEFORE construction
@@ -1320,6 +1335,137 @@ class TeensyBridgeNode(Node):
         self._sp_thread = threading.Thread(
             target=self._setpoint_loop, name="teensy_bridge_setpoint", daemon=True)
         self._sp_thread.start()
+
+    def _stop_setpoint_output(self):
+        """Stop the setpoint thread, drop mpc_active on the wire, close the source.
+
+        The disarm half of the runtime arming service. Mirrors on_shutdown's
+        setpoint teardown (thread first, then flags=0 on the wire), but leaves the
+        node otherwise live (no stow, no transport teardown) so the operator can
+        re-arm later in the same session.
+        """
+        self._sp_stop.set()
+        if self._sp_thread is not None and self._sp_thread.is_alive():
+            self._sp_thread.join(timeout=1.0)
+        self._sp_thread = None
+        try:
+            self._set_mpc_active(False)
+        except Exception:  # noqa: BLE001
+            self._mpc_active = False
+        if self._sp_source is not None:
+            try:
+                self._sp_source.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._sp_source = None
+
+    def _svc_set_setpoint_output(self, request, response):
+        """SetBool: arm (true) / disarm (false) the 40 Hz setpoint downlink."""
+        if bool(request.data):
+            ok, msg = self._arm_setpoint_output()
+            response.success = ok
+            response.message = msg
+        else:
+            self._stop_setpoint_output()
+            response.success = True
+            response.message = 'setpoint output disabled (mpc_active=0)'
+        return response
+
+    def _arm_setpoint_output(self) -> tuple:
+        """Run the arming preconditions; on all-pass, stream-then-arm.
+
+        Returns ``(ok, message)``. The message carries the reject reason on
+        failure (surfaced in the service response AND logged) so an operator sees
+        exactly which precondition blocked the arm.
+        """
+        if self._mpc_active:
+            return True, 'setpoint output already enabled'
+
+        # (a) Teensy link up + a fresh heartbeat (never arm onto a dead/silent link).
+        age_us = self._link_age_us()
+        if age_us is None or age_us > self._heartbeat_timeout_s * 1e6:
+            return False, ('Teensy link down / no fresh heartbeat — refuse to arm '
+                           '(never command a dead link)')
+        if not self._link_latch.command_allowed():
+            return False, 'Teensy link latched lost — refuse to arm'
+
+        # (b) a fresh mpccmd frame on :5557 within 0.5 s (is trajectory_node up?).
+        source, created_here = self._acquire_setpoint_source()
+        if source is None:
+            return False, 'could not open the :5557 setpoint source'
+        try:
+            frame = None
+            deadline = time.time() + 0.5
+            while time.time() < deadline:
+                frame = source.recv_latest()
+                if frame is not None:
+                    break
+                time.sleep(0.02)
+            if frame is None:
+                if created_here:
+                    source.close()
+                return False, ('no mpccmd frame on :5557 within 0.5 s — is '
+                               'trajectory_node running and streaming?')
+
+            # Derive u0 exactly as the production pump would (rejects a malformed
+            # frame, and guarantees the frame we arm on is itself pump-acceptable).
+            probe = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV, num_legs=p.NUM_LEGS)
+            sp, reason = probe.build(frame, 0)
+            if sp is None:
+                if created_here:
+                    source.close()
+                return False, (f'mpccmd frame not pump-acceptable: '
+                               f'{reason or "no position command"}')
+            u0 = sp.u0
+
+            # (c) u0 within 0.25 rev of every leg's live pos_estimate.
+            with self._lock:
+                telem = self._latest_telemetry
+            if telem is None:
+                if created_here:
+                    source.close()
+                return False, 'no telemetry yet — cannot verify u0 vs encoder'
+            tol = 0.25
+            for i in range(p.NUM_LEGS):
+                d = abs(float(u0[i]) - float(telem.pos_rev[i]))
+                if d > tol:
+                    if created_here:
+                        source.close()
+                    return False, (
+                        f'leg {i} setpoint u0 {u0[i]:.3f} rev vs encoder '
+                        f'{telem.pos_rev[i]:.3f} rev = {d:.3f} rev > {tol} rev — '
+                        'refuse to arm (would risk MAX_DEVIATION E-STOP)')
+        except Exception as e:  # noqa: BLE001 — arming must never crash the node
+            if created_here:
+                try:
+                    source.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            return False, f'arming check error: {e}'
+
+        # All preconditions met — stream-then-arm using the SAME source the check
+        # observed (so the ingest thread continues from the confirmed stream).
+        self._start_setpoint_output(source)
+        return True, ('setpoint output ENABLED (armed): fresh stream confirmed, '
+                      'u0 within 0.25 rev of every encoder')
+
+    def _acquire_setpoint_source(self) -> tuple:
+        """Return ``(source, created_here)`` for the arming check.
+
+        Reuses an injected source (tests) or an already-open one; otherwise opens a
+        fresh ``_MpcCommandSetpointSource`` (SUB on :5557), flagged so a failed arm
+        closes it (no leak). A source opened here becomes the production ingest
+        source only on a successful arm (``_start_setpoint_output`` adopts it).
+        """
+        if self._sp_source is not None:
+            return self._sp_source, False
+        if self._injected_setpoint_source is not None:
+            return self._injected_setpoint_source, False
+        try:
+            return _MpcCommandSetpointSource(), True
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"could not open :5557 setpoint source: {e}")
+            return None, False
 
     def _setpoint_loop(self):
         """Dedicated thread: drain the 40 Hz MPC command → pack Teensy-side knots → gate → send."""
