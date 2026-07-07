@@ -110,9 +110,17 @@ def generate_launch_description():
         parameters=[{'apply_aim_correction': apply_aim_correction}],
     )
 
-    mpc_bridge_node = Node(
+    # mpc_bridge_node is DROPPED from the MVP bring-up: the MPC hot path is replaced
+    # by trajectory_node (a simple Jetson-side trajectory generator streaming 40 Hz
+    # knots on the same :5557 seam). The MPC return path stays dormant — source is
+    # retained (setup.py entry point + jugglebot/mpc_bridge_node.py) so run_mpc.py can
+    # be relaunched with trajectory_node stopped (the single-binder :5557 interlock
+    # makes a conflict loud). See plans/active/mvp-trajectory-bringup.md § Deferred.
+    trajectory_node = Node(
         package='jugglebot',
-        executable='mpc_bridge_node',
+        executable='trajectory_node',
+        name='trajectory_node',
+        output='screen',
     )
 
     # teensy_bridge_node imports controller.teensy_link from the repo root, which
@@ -175,6 +183,7 @@ def generate_launch_description():
             '/orchestrator_state',
             '/control_mode_topic',
             '/orchestrator_command',
+            '/trajectory/status',
             # /platform_target_reached removed (SocketCAN decommission): its only publisher
             # (can_node) is deleted; completion is reported via RPC returns
             # (disposition per the can_node<->Teensy parity audit, 2026-07-06).
@@ -216,7 +225,7 @@ def generate_launch_description():
         ball_tracker_node,
         catch_coordinator_node,
         ball_butler_node,
-        mpc_bridge_node,
+        trajectory_node,
         teensy_bridge_node,
         # Standalone processes
         motor_guard,

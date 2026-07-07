@@ -23,6 +23,7 @@ setup(
         package_name,
         f'{package_name}.can',
         f'{package_name}.motion',
+        f'{package_name}.motion.trajectory',
         f'{package_name}.tracking',
     ],
     data_files=[
@@ -49,6 +50,11 @@ setup(
             # by jugglebot_launch.py in production; also runnable standalone via
             # launch/teensy_bridge_launch.py.
             'teensy_bridge_node = jugglebot.teensy_bridge_node:main',
+            # MVP Jetson-side trajectory generator (replaces run_mpc.py's hot path;
+            # streams 40 Hz knots on :5557 → teensy_bridge_node → can-hub Teensy).
+            'trajectory_node = jugglebot.trajectory_node:main',
+            # mpc_bridge_node source retained (MPC return path is dormant, not
+            # deleted); dropped from jugglebot_launch.py in the MVP cutover.
             'mpc_bridge_node = jugglebot.mpc_bridge_node:main',
             'mocap_node = jugglebot.mocap_node:main',
             'spacemouse_handler = jugglebot.spacemouse_handler:main',

@@ -1,0 +1,420 @@
+"""trajectory_node — thin ROS 2 wrapper around the MVP trajectory generator.
+
+The Jetson-side replacement for ``run_mpc.py``'s hot path (Phase 1 of
+``plans/active/mvp-trajectory-bringup.md``). A dedicated 40 Hz emitter thread
+streams ``make_mpc_command`` knot frames on ZMQ :5557 — the exact seam
+``HardwarePlant`` used — which ``teensy_bridge_node``'s ``_MpcCommandSetpointSource``
+consumes unchanged, feeding ``SetpointPump`` → the can-hub Teensy's 500 Hz
+Hermite. Phase 1 streams only a **hold**: the platform holds the pose measured from
+``robot_state`` telemetry, so the first commanded ``u0`` lands inside both the
+pump's 0.3 rev step gate and the firmware's 0.5 rev MAX_DEVIATION backstop.
+
+Design (mirrors the validated 40 Hz MPC path's discipline):
+  * **Dedicated emitter thread** (not an rclpy timer): absolute-deadline 40 Hz
+    loop on ``perf_counter``; the ZMQ PUB is bound **inside** the thread. Being
+    the sole binder of :5557 is the MPC/trajectory mutual-exclusion interlock — a
+    bind failure means ``run_mpc.py`` is running, and the emitter refuses to start
+    (loud error), rather than fighting over the wire.
+  * **Always has a plan** — a ``HoldPlan`` once seeded — so stream gaps never
+    approach the 250 ms staleness E-STOP (10× margin at 25 ms knots).
+  * **Atomic plan install**: every new plan is built from the *current* sampled
+    state (``state_at(now)``) so pose/twist/accel are continuous (C2) across swaps.
+  * **All motion flows through ``planner`` → ``feasibility.validate``** — the
+    ``trajectory/hold`` and ``trajectory/go_home`` services construct plans only
+    through the planner, so nothing bypasses the gate.
+  * **Defence-in-depth step bound** in the emitter: if a per-knot ``|Δu0|`` ever
+    exceeds the motor step bound, the node freezes to a hold at the last good pose
+    and logs ERROR (the gate should already prevent this; it is a backstop).
+
+Phase 1 has **no move services** (``go_to_pose`` / ``timed_target`` land later)
+and does not touch the orchestrator state machine. ``trajectory/status`` is
+published as a ``diagnostic_msgs/DiagnosticStatus`` (key/values) so Phase 1 needs
+no ``jugglebot_interfaces`` rebuild; the typed ``TrajectoryStatus.msg`` lands with
+the Phase 2 service interfaces (one atomic interface build).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+
+import numpy as np
+
+import rclpy
+from rclpy.node import Node
+
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+from jugglebot_interfaces.msg import RobotState
+
+import jugglebot.hardware_config as hw
+from jugglebot.motion.geometry import StewartGeometry
+from jugglebot.motion.ik_solver import leg_lengths_to_pose, rot_matrix_to_rotvec
+from jugglebot.motion.ipc import MpcCommandPub
+from jugglebot.motion.trajectory import (
+    HoldPlan,
+    KnotEmitter,
+    TrajectoryInfeasible,
+    TrajectoryLimits,
+)
+from jugglebot.motion.trajectory import planner
+
+
+# Control modes in which the node streams a hold. STANDBY is the armed-hold state
+# the Phase 1 arming bring-up uses; the active sub-modes are included so streaming
+# stays on across the modes later phases drive (TRAJECTORY lands in Phase 2). A
+# mode outside this set stops streaming and forces a re-seed on the next entry.
+_DEFAULT_STREAM_MODES = ('STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'SHELL',
+                         'CATCH')
+
+_EMIT_HZ = 40.0
+_NUM_LEGS = 6
+
+
+class TrajectoryNode(Node):
+    """Thin ROS wrapper; the trajectory math lives in ``jugglebot.motion.trajectory``.
+
+    Args:
+        geom: injected :class:`StewartGeometry` (tests); built from config if None.
+        command_pub_factory: zero-arg callable returning a PUB with ``send(dict)`` /
+            ``close()`` (tests inject a capturing fake); ``MpcCommandPub`` if None.
+        start_emitter: start the 40 Hz emitter thread in ``__init__`` (production).
+            Tests pass ``False`` and drive ``_emit_once`` / the seeding + services
+            directly.
+    """
+
+    def __init__(self, *, geom: StewartGeometry | None = None,
+                 command_pub_factory=None, start_emitter: bool = True):
+        super().__init__('trajectory_node')
+
+        self._geom = geom if geom is not None else StewartGeometry()
+        self._mm_to_rev = np.asarray(self._geom.mm_to_rev, dtype=float)
+        self._limits = TrajectoryLimits.from_config(hw)
+        self._emitter = KnotEmitter(self._geom, knot_dt_s=hw.JB_TRAJ_KNOT_DT_S)
+        self._neutral_pose = np.array(
+            [0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0])
+        self._pub_factory = command_pub_factory
+
+        # ── Parameters ─────────────────────────────────────────
+        self.declare_parameter('control_mode_topic', 'control_mode_topic')
+        self.declare_parameter('go_home_duration_s', 2.0)
+        self.declare_parameter('robot_state_stale_s', 0.5)
+        self._go_home_duration_s = float(
+            self.get_parameter('go_home_duration_s').value)
+        self._robot_state_stale_s = float(
+            self.get_parameter('robot_state_stale_s').value)
+        self._stream_modes = frozenset(_DEFAULT_STREAM_MODES)
+
+        # ── Plan + streaming state (written on ROS + emitter threads) ──
+        self._plan_lock = threading.Lock()
+        self._active_plan = None          # current TrajectoryPlan (None until seeded)
+        self._plan_t0 = None              # perf_counter at install (plan-time origin)
+        self._seeded = False              # a real telemetry seed has been installed
+        self._streaming = False           # current mode is a streaming mode
+        self._current_mode = ''
+        self._seq = 0
+        self._last_motor_rev = None       # prior emitted u0 (step-bound defence)
+        self._last_pose = self._neutral_pose.copy()
+        self._last_rejection = ''
+        # Latest robot_state seed source (pos_estimate rev, Jugglebot ext convention).
+        self._latest_pos_rev = None
+        self._robot_state_mono = 0.0
+        # Emitter jitter diagnostic (max inter-tick gap over the last window).
+        self._max_emit_gap_s = 0.0
+        self._last_emit_mono = None
+
+        self._pub = None
+        self._emit_stop = threading.Event()
+        self._emit_thread = None
+
+        # ── Subscriptions ───────────────────────────────────────
+        mode_topic = str(self.get_parameter('control_mode_topic').value)
+        self.create_subscription(String, mode_topic, self._on_control_mode, 10)
+        self.create_subscription(RobotState, 'robot_state',
+                                 self._on_robot_state, 10)
+
+        # ── Services (Trigger; no move services in Phase 1) ─────
+        self.create_service(Trigger, 'trajectory/hold', self._svc_hold)
+        self.create_service(Trigger, 'trajectory/go_home', self._svc_go_home)
+
+        # ── Status publication (5 Hz) ───────────────────────────
+        self.status_pub = self.create_publisher(
+            DiagnosticStatus, 'trajectory/status', 10)
+        self.create_timer(0.2, self._publish_status)
+
+        if start_emitter:
+            self._start_emitter()
+
+        self.get_logger().info(
+            "trajectory_node up — 40 Hz hold emitter on :5557 (mpccmd); "
+            f"stream modes={sorted(self._stream_modes)}, "
+            f"go_home={self._go_home_duration_s}s")
+
+    # ═══════════════════════════════════════════════════════════
+    # Emitter thread (dedicated; absolute-deadline 40 Hz)
+    # ═══════════════════════════════════════════════════════════
+
+    def _start_emitter(self) -> None:
+        self._emit_stop.clear()
+        self._emit_thread = threading.Thread(
+            target=self._emitter_loop, name='trajectory_emitter', daemon=True)
+        self._emit_thread.start()
+
+    def _emitter_loop(self) -> None:
+        # Bind the PUB INSIDE the thread (sole-binder interlock). A bind failure
+        # ⇒ run_mpc.py is running; refuse to start rather than fight the wire.
+        try:
+            self._pub = (self._pub_factory() if self._pub_factory is not None
+                         else MpcCommandPub())
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(
+                "trajectory_node: could not bind the :5557 command PUB "
+                f"({e}). Is run_mpc.py running? The emitter will NOT start; "
+                "stop the MPC process and relaunch.")
+            return
+
+        period = 1.0 / _EMIT_HZ
+        next_deadline = time.perf_counter()
+        try:
+            while not self._emit_stop.is_set():
+                now = time.perf_counter()
+                try:
+                    self._emit_once(now)
+                except Exception as e:  # noqa: BLE001 — one frame must not kill the loop
+                    self.get_logger().error(
+                        f"emitter tick error (contained): {e}",
+                        throttle_duration_sec=1.0)
+                next_deadline += period
+                sleep_dt = next_deadline - time.perf_counter()
+                if sleep_dt > 0:
+                    self._emit_stop.wait(sleep_dt)
+                else:
+                    # Overrun: reset the schedule so we don't spin catching up.
+                    next_deadline = time.perf_counter()
+        finally:
+            try:
+                self._pub.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _emit_once(self, now: float) -> None:
+        """Emit one knot frame for wall time ``now`` (perf_counter). Public for tests."""
+        # Jitter diagnostic.
+        if self._last_emit_mono is not None:
+            self._max_emit_gap_s = max(self._max_emit_gap_s,
+                                       now - self._last_emit_mono)
+        self._last_emit_mono = now
+
+        with self._plan_lock:
+            plan = self._active_plan
+            t0 = self._plan_t0
+            streaming = self._streaming and self._seeded
+        if not streaming or plan is None or t0 is None:
+            return
+
+        tau = now - t0
+        frame = self._emitter.frame(plan, tau, self._seq)
+        motor_rev = np.asarray(frame['motor_rev'], dtype=float)
+
+        # Defence-in-depth per-knot step bound (the gate should already prevent
+        # this; this is the last line before the wire). On violation: freeze to a
+        # hold at the last good pose and skip this frame. The next tick emits the
+        # hold (u0 == last good ⇒ zero step) so streaming resumes within one 25 ms
+        # knot — far inside the 250 ms staleness window.
+        if self._last_motor_rev is not None:
+            step = float(np.max(np.abs(motor_rev - self._last_motor_rev)))
+            if step > self._limits.max_step_rev:
+                self._last_rejection = (
+                    f"emitter step {step:.3f} rev > {self._limits.max_step_rev} "
+                    "bound — froze to hold")
+                self.get_logger().error(
+                    self._last_rejection, throttle_duration_sec=1.0)
+                with self._plan_lock:
+                    self._active_plan = HoldPlan(self._last_pose)
+                    self._plan_t0 = now
+                return
+
+        self._pub.send(frame)
+        self._last_motor_rev = motor_rev
+        self._last_pose = np.asarray(frame['pose_6dof'], dtype=float)
+        self._seq += 1
+
+    # ═══════════════════════════════════════════════════════════
+    # Subscriptions
+    # ═══════════════════════════════════════════════════════════
+
+    def _on_control_mode(self, msg) -> None:
+        mode = str(msg.data)
+        if mode == self._current_mode:
+            return
+        self._current_mode = mode
+        if mode in self._stream_modes:
+            self._streaming = True
+            # Seed a hold at the MEASURED pose on stream start (never nominal) —
+            # this is what keeps the first u0 inside the pump/firmware gates.
+            if not self._seeded and self._latest_pos_rev is not None:
+                self._seed_hold_from(self._latest_pos_rev)
+            self.get_logger().info(f"streaming ENABLED (mode {mode})")
+        else:
+            # Leaving the streaming set: stop publishing and require a fresh seed
+            # on the next entry (the measured pose may have moved meanwhile).
+            self._streaming = False
+            self._seeded = False
+            self._last_motor_rev = None
+            self.get_logger().info(f"streaming DISABLED (mode {mode})")
+
+    def _on_robot_state(self, msg) -> None:
+        states = getattr(msg, 'motor_states', None)
+        if not states or len(states) < _NUM_LEGS:
+            return
+        pos_rev = [float(states[i].pos_estimate) for i in range(_NUM_LEGS)]
+        self._latest_pos_rev = pos_rev
+        self._robot_state_mono = time.perf_counter()
+        # Seed on the first telemetry after streaming is enabled.
+        if self._streaming and not self._seeded:
+            self._seed_hold_from(pos_rev)
+
+    def _seed_hold_from(self, pos_rev) -> None:
+        """Seed a HoldPlan at the measured pose (pos_estimate rev → ext → FK)."""
+        ext_mm = np.asarray(pos_rev, dtype=float) / self._mm_to_rev
+        try:
+            pos, rot, _J = leg_lengths_to_pose(ext_mm, self._geom)
+        except RuntimeError as e:
+            self.get_logger().error(
+                f"seed FK failed ({e}) — not streaming until a valid state")
+            return
+        pose = np.concatenate([pos, rot_matrix_to_rotvec(rot)])
+        now = time.perf_counter()
+        with self._plan_lock:
+            self._active_plan = HoldPlan(pose)
+            self._plan_t0 = now
+            self._seeded = True
+            self._last_motor_rev = None
+            self._last_pose = pose
+        self.get_logger().info(
+            f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
+            f"z={pose[2]:.1f} mm (from measured telemetry)")
+
+    # ═══════════════════════════════════════════════════════════
+    # Services (Trigger)
+    # ═══════════════════════════════════════════════════════════
+
+    def _current_state(self):
+        """Sample the active plan at ``now`` → ``(pose, twist, accel)`` seed."""
+        with self._plan_lock:
+            plan = self._active_plan
+            t0 = self._plan_t0
+        if plan is None or t0 is None:
+            return (self._neutral_pose.copy(), np.zeros(6), np.zeros(6))
+        return plan.state_at(time.perf_counter() - t0)
+
+    def _install(self, plan) -> None:
+        now = time.perf_counter()
+        with self._plan_lock:
+            self._active_plan = plan
+            self._plan_t0 = now
+
+    def _svc_hold(self, request, response):
+        """``trajectory/hold``: freeze at the current pose (profiled decel-to-rest)."""
+        if not self._seeded:
+            response.success = False
+            response.message = 'not streaming/seeded — cannot hold'
+            return response
+        try:
+            plan = planner.build_hold(
+                self._current_state(), self._limits, self._geom)
+        except TrajectoryInfeasible as e:
+            self._last_rejection = str(e)
+            self.get_logger().error(f"hold rejected: {e}")
+            response.success = False
+            response.message = str(e)
+            return response
+        self._install(plan)
+        response.success = True
+        response.message = 'holding at current pose'
+        return response
+
+    def _svc_go_home(self, request, response):
+        """``trajectory/go_home``: profiled return to the neutral active pose."""
+        if not self._seeded:
+            response.success = False
+            response.message = 'not streaming/seeded — cannot go home'
+            return response
+        try:
+            plan = planner.build_return_to_neutral(
+                self._current_state(), self._neutral_pose,
+                self._go_home_duration_s, self._limits, self._geom)
+        except TrajectoryInfeasible as e:
+            self._last_rejection = str(e)
+            self.get_logger().error(f"go_home rejected: {e}")
+            response.success = False
+            response.message = str(e)
+            return response
+        self._install(plan)
+        response.success = True
+        response.message = (f'returning to neutral (0,0,{self._neutral_pose[2]:.0f}) '
+                            f'over {self._go_home_duration_s:.2f}s')
+        return response
+
+    # ═══════════════════════════════════════════════════════════
+    # Status (5 Hz)
+    # ═══════════════════════════════════════════════════════════
+
+    def _publish_status(self):
+        with self._plan_lock:
+            plan = self._active_plan
+            t0 = self._plan_t0
+            streaming = self._streaming and self._seeded
+            seq = self._seq
+        remaining = 0.0
+        kind = 'none'
+        if plan is not None and t0 is not None:
+            tau = time.perf_counter() - t0
+            remaining = max(0.0, plan.total_duration - tau)
+            kind = plan.kind
+
+        msg = DiagnosticStatus()
+        msg.name = 'trajectory/status'
+        msg.hardware_id = 'trajectory_node'
+        msg.level = DiagnosticStatus.OK if streaming else DiagnosticStatus.WARN
+        msg.message = 'streaming' if streaming else 'idle'
+        msg.values = [
+            KeyValue(key='streaming', value=str(int(streaming))),
+            KeyValue(key='mode', value=self._current_mode),
+            KeyValue(key='plan_kind', value=kind),
+            KeyValue(key='plan_time_remaining_s', value=f'{remaining:.3f}'),
+            KeyValue(key='seq', value=str(seq)),
+            KeyValue(key='max_emit_gap_ms', value=f'{self._max_emit_gap_s * 1e3:.1f}'),
+            KeyValue(key='last_rejection', value=self._last_rejection),
+        ]
+        self.status_pub.publish(msg)
+        # Reset the jitter window each publish so the metric is per-200ms.
+        self._max_emit_gap_s = 0.0
+
+    # ═══════════════════════════════════════════════════════════
+    # Shutdown
+    # ═══════════════════════════════════════════════════════════
+
+    def on_shutdown(self):
+        self.get_logger().info("Shutting down trajectory_node...")
+        self._emit_stop.set()
+        if self._emit_thread is not None and self._emit_thread.is_alive():
+            self._emit_thread.join(timeout=1.0)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = TrajectoryNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.on_shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
