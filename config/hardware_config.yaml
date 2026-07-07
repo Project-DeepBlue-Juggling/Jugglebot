@@ -354,6 +354,30 @@ jugglebot_operational:
                                          # catastrophic jumps.
 
 # ============================================================
+# 6b. Jugglebot Trajectory Operational
+#    MVP Jetson-side trajectory generator (jugglebot.motion.trajectory).
+#    Leg-space limits are in mm-extension units. The session limit is the
+#    currently-commanded ceiling (ramped up across hardware sessions via
+#    trajectory/set_limits); the *_ceiling is the YAML-pinned absolute max a
+#    set_limits request is clamped to. Jerk is the binding actuator constraint.
+#    See plans/active/mvp-trajectory-bringup.md.
+# ============================================================
+trajectory_op:
+  leg_vel_limit_mmps: 100.0        # Session leg velocity ceiling {mm/s} (ramped; hard ceiling 280 = 4.0 rev/s)
+  leg_acc_limit_mmps2: 400.0       # Session leg acceleration ceiling {mm/s^2} (deliberately low for first sessions)
+  leg_jerk_limit_mmps3: 8000.0     # Session leg jerk ceiling {mm/s^3} — the binding constraint; ramped by feel
+  leg_vel_ceiling_mmps: 280.0      # Hard velocity ceiling {mm/s} (= 4.0 rev/s; bench-tested headroom above)
+  leg_acc_ceiling_mmps2: 4000.0    # Hard acceleration ceiling {mm/s^2}
+  leg_jerk_ceiling_mmps3: 200000.0 # Hard jerk ceiling {mm/s^3}
+  knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
+  min_move_duration_s: 0.20        # Minimum profiled move duration {s}
+  min_timed_lead_s: 0.25           # Minimum lead time for a timed target {s}
+  spacemouse_horizon_s: 0.35       # SpaceMouse follower replan horizon {s} (Phase 3)
+  lean_gain: 0.0                   # Lean-into-translation shaping gain [0,1] {dimensionless} (default OFF; Phase 4 A/B)
+  catch_reach_freeze_s: 0.30       # Reach-translation freeze window before arrival {s} (Phase 6)
+  catch_settle_hold_s: 0.50        # Quiescent hold after catch seat {s} (Phase 6)
+
+# ============================================================
 # 7. Jugglebot SpaceMouse
 #    SpaceMouse input scaling parameters.
 # ============================================================

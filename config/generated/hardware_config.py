@@ -137,6 +137,24 @@ JB_OP_LEVELLING_SETTLE_S = 0.5
 JB_OP_MAX_POSITION_STEP_REV = 0.3
 
 # ============================================================================
+# Jugglebot Trajectory Operational
+# ============================================================================
+
+JB_TRAJ_LEG_VEL_LIMIT_MMPS = 100.0
+JB_TRAJ_LEG_ACC_LIMIT_MMPS2 = 400.0
+JB_TRAJ_LEG_JERK_LIMIT_MMPS3 = 8000.0
+JB_TRAJ_LEG_VEL_CEILING_MMPS = 280.0
+JB_TRAJ_LEG_ACC_CEILING_MMPS2 = 4000.0
+JB_TRAJ_LEG_JERK_CEILING_MMPS3 = 200000.0
+JB_TRAJ_KNOT_DT_S = 0.025
+JB_TRAJ_MIN_MOVE_DURATION_S = 0.2
+JB_TRAJ_MIN_TIMED_LEAD_S = 0.25
+JB_TRAJ_SPACEMOUSE_HORIZON_S = 0.35
+JB_TRAJ_LEAN_GAIN = 0.0
+JB_TRAJ_CATCH_REACH_FREEZE_S = 0.3
+JB_TRAJ_CATCH_SETTLE_HOLD_S = 0.5
+
+# ============================================================================
 # Jugglebot SpaceMouse
 # ============================================================================
 

@@ -155,6 +155,26 @@ namespace JBOp {
 }
 
 // ==========================================================================
+// Jugglebot Trajectory Operational
+// ==========================================================================
+
+namespace TrajOp {
+  constexpr float LEG_VEL_LIMIT_MMPS = 100.0f;
+  constexpr float LEG_ACC_LIMIT_MMPS2 = 400.0f;
+  constexpr float LEG_JERK_LIMIT_MMPS3 = 8000.0f;
+  constexpr float LEG_VEL_CEILING_MMPS = 280.0f;
+  constexpr float LEG_ACC_CEILING_MMPS2 = 4000.0f;
+  constexpr float LEG_JERK_CEILING_MMPS3 = 200000.0f;
+  constexpr float KNOT_DT_S = 0.025f;
+  constexpr float MIN_MOVE_DURATION_S = 0.2f;
+  constexpr float MIN_TIMED_LEAD_S = 0.25f;
+  constexpr float SPACEMOUSE_HORIZON_S = 0.35f;
+  constexpr float LEAN_GAIN = 0.0f;
+  constexpr float CATCH_REACH_FREEZE_S = 0.3f;
+  constexpr float CATCH_SETTLE_HOLD_S = 0.5f;
+}
+
+// ==========================================================================
 // Jugglebot SpaceMouse
 // ==========================================================================
 

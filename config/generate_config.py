@@ -444,6 +444,10 @@ HW_SECTIONS = [
     # 5–7. Jugglebot (ODrive defaults, operational, SpaceMouse)
     ("jugglebot_odrive_defaults","ODRIVE_",    "ODriveDefaults", "Jugglebot ODrive Defaults"),
     ("jugglebot_operational",    "JB_OP_",     "JBOp",       "Jugglebot Operational"),
+    # MVP Jetson-side trajectory generator limits (JB_TRAJ_*). Without this row a
+    # regenerate silently emits no JB_TRAJ_* constants (jugglebot.motion.trajectory
+    # imports them). Python-only consumer; the C++ namespace is unused but harmless.
+    ("trajectory_op",            "JB_TRAJ_",   "TrajOp",     "Jugglebot Trajectory Operational"),
     ("jugglebot_spacemouse",     "SPACEMOUSE_","Spacemouse", "Jugglebot SpaceMouse"),
     ("jugglebot_gui",            "GUI_",       "GUI",        "Jugglebot GUI"),
     # 7–8. Teensy (platform microcontroller)
