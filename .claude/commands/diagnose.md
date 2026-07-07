@@ -78,6 +78,7 @@ Read the JSON output. Important blocks to inspect:
 - `hold_phase` — per-leg cmd/actual stdev during the longest ref-static tail (the Level-1 gain-tuning metric). When `detected: true`, reports `per_leg` (`cmd_std_um`, `act_std_um`, `act_range_um`, `vel_abs_max_mmps`), `worst_leg`/`quietest_leg`, `asymmetry_ratio`, and `aggregate_act_std_um`. Surface this prominently — it is usually the metric that drives tuning decisions. When `detected: false`, the `reason` field explains (e.g. `tail_too_short` — run longer holds to get a trustworthy measurement).
 - `overhead` — MPC loop overhead distribution (dt − solve_time). `p50/p95/p99/max` describe the non-solve latency; `isolated_spikes` are single-tick overhead pops (≥3× their neighbourhood) tagged with a `GC_PAUSE_CANDIDATE` signature. These are the signature for Failure A in the hold-fighting / overhead-spikes investigation arc — if present, point directly at the GC / interpreter-housekeeping mechanism rather than misattributing to the solver.
 - `cmd_spectral` — FFT of cmd_ext during hold, bucketed into three bands. `hf_pct_max` above 25 % means the MPC is putting HF numerical noise into the cmd stream at levels visible on ODrive's `pos_setpoint` scope. Typically benign (sub-µm RMS, below mechanical bandwidth) but worth calling out so it's not mistaken for a bug.
+- `rosbag.trajectory` — **Phase-4 per-move leg-peak summary** from the `/trajectory/diagnostics` stream (MVP trajectory generator; present only when that topic was recorded). When `available: true`, `moves` is a list — one entry per accepted `go_to_pose` (segmented by `move_seq`, the node's per-move install counter, since `plan_kind` stays `'move'` across back-to-back battery moves) with `predicted`/`realized` leg vel/acc/jerk peaks, the session `limits` in force, `used_pct` (% of each limit the realized peak used — headroom = 100 − this) plus `used_pct_predicted` (the same from the gate's fine-sampled peaks; prefer it for jerk), and `lean_gain` (the A/B arm, 0.0 = lean off). This is the signal the Phase-4 limit-ramp workflow reviews before persisting a limit bump to YAML — surface it as the **Trajectory Moves** section below. `available: false` means no trajectory diagnostics in the bag (an MPC or non-trajectory session).
 - `rosbag.estop` — pilot E-stop detection (see Pilot E-stop attribution rule above). Read this BEFORE writing the report.
 - `estop_alignment` — E-stop time in both rosbag and CSV frames for timeline construction.
 - `rosbag.state_transitions`, `rosbag.mode_transitions`, `rosbag.motor_errors` — pre-extracted by the deep rosbag scan; use these for the Event Timeline instead of re-reading the rosbag.
@@ -183,6 +184,19 @@ When `hold_phase.detected` is false, skip this section but mention the reason in
 - Margin to lower limit: <N> mm
 - Margin to upper limit: <N> mm
 <Display workspace plot here if generated>
+
+### Trajectory Moves (when `rosbag.trajectory.available` is true)
+Phase-4 limit-ramp / lean-A/B sessions (MVP trajectory generator). One row per
+accepted move:
+
+| Move | t (s) | lean | Realized vel/acc/jerk | Limit vel/acc/jerk | % used (v/a/j) |
+|-----:|------:|-----:|-----------------------|--------------------|----------------|
+| 1    | ...   | 0.0  | ... / ... / ...       | ... / ... / ...    | .. / .. / ..   |
+| ...                                                                              |
+
+- **Jerk is the binding constraint** — call out the move with the least jerk headroom; that is what the operator ramps against. Flag any move above ~90% used on any axis (little headroom left — the next 1.5× bump may not fit). **For jerk specifically, use `used_pct_predicted.jerk` (= `predicted.jerk / limit`) as the gate-authoritative headroom** — `used_pct.jerk` is computed from the *realized* peak, which is a coarse 40 Hz knot-rate finite difference of the emitted leg accel and systematically UNDER-measures the fine peak the gate enforces (the vel/acc realized peaks are exact wire values, so their `used_pct` is authoritative). If `used_pct_predicted.jerk` is near the limit while `used_pct.jerk` looks comfortable, trust the predicted one — the next bump will be duration-stretched by the gate.
+- If two batteries with different `lean_gain` are present (the A/B), compare their realized jerk at matched moves: lean is kept only if gain 0.3 measurably *drops* leg jerk vs 0.0.
+- Cross-reference the realized peaks against the `legs`/`tracking` plots and hold-phase quiescence — a low realized peak with high tracking error is a tuning problem, not a limit problem.
 
 ### Flagged Issues
 For each flag:

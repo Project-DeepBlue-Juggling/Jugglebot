@@ -1542,6 +1542,108 @@ def parse_ros2_log_dir(log_dir: str) -> Dict[str, Any]:
 # Rosbag (MCAP) analysis
 # ---------------------------------------------------------------------------
 
+def _f(kv: Dict[str, Any], key: str) -> Optional[float]:
+    """Parse a trajectory/diagnostics KeyValue string to float (None if absent)."""
+    try:
+        return float(kv[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def summarise_trajectory_moves(traj_diag: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Per-move leg-peak summary from the ``/trajectory/diagnostics`` stream.
+
+    Segments the diagnostics samples into contiguous ``plan_kind == 'move'``
+    windows (each an accepted go_to_pose during the ramp battery), and for each
+    reports the gate-PREDICTED and REALIZED leg peaks, the session limits in force,
+    the jerk/vel/acc **headroom** (% of the limit used — the binding-constraint
+    signal the ramp workflow raises limits by feel against), and the lean A/B arm
+    (``lean_gain``). The realized peaks are running maxima reset per install, so the
+    last sample of a move window carries that move's realized peak.
+
+    **Segmentation.** A completed move's plan stays ``plan_kind == 'move'`` for its
+    whole terminal-hold lifetime, so the ramp battery's back-to-back moves (no hold
+    between them) form one unbroken ``'move'`` run. A window therefore breaks on a
+    ``plan_kind`` change OR a change in ``move_seq`` (the node's per-move install
+    counter). Streams lacking ``move_seq`` (older bags) degrade to plan_kind-only
+    segmentation, merging any consecutive holdless moves — the pre-``move_seq``
+    behaviour.
+
+    ``used_pct`` is computed from the REALIZED peaks; a parallel ``used_pct_predicted``
+    from the gate's fine-sampled peaks. For **jerk** prefer ``used_pct_predicted`` —
+    realized jerk is a coarse 40 Hz knot-rate difference that under-measures the fine
+    peak the gate actually enforces. vel/acc realized are exact wire values, so their
+    ``used_pct`` is authoritative.
+
+    This is the Phase-4 ``/diagnose`` extension: it turns a ramp session's rosbag
+    into a ``move → peaks + headroom`` table the operator reviews before persisting
+    a limit bump to ``hardware_config.yaml``.
+    """
+    if not traj_diag:
+        return {'available': False, 'reason': 'no /trajectory/diagnostics samples'}
+
+    moves: List[Dict[str, Any]] = []
+    window: List[Dict[str, Any]] = []
+
+    def flush():
+        if not window:
+            return
+        last = window[-1]                      # accumulated realized peaks live here
+        first = window[0]
+        lv = _f(last, 'limit_leg_vel_mmps')
+        la = _f(last, 'limit_leg_acc_mmps2')
+        lj = _f(last, 'limit_leg_jerk_mmps3')
+        rv = _f(last, 'realized_peak_leg_vel_mmps')
+        ra = _f(last, 'realized_peak_leg_acc_mmps2')
+        rj = _f(last, 'realized_peak_leg_jerk_mmps3')
+        pv = _f(last, 'peak_leg_vel_mmps')
+        pa = _f(last, 'peak_leg_acc_mmps2')
+        pj = _f(last, 'peak_leg_jerk_mmps3')
+
+        def pct(peak, lim):
+            if peak is None or not lim:
+                return None
+            return round(100.0 * peak / lim, 1)
+
+        moves.append({
+            't_start_s': first['t_s'],
+            't_end_s': last['t_s'],
+            'move_seq': last.get('move_seq'),
+            'lean_gain': _f(last, 'lean_gain'),
+            'predicted': {'vel_mmps': pv, 'acc_mmps2': pa, 'jerk_mmps3': pj},
+            'realized': {'vel_mmps': rv, 'acc_mmps2': ra, 'jerk_mmps3': rj},
+            'limits': {'vel_mmps': lv, 'acc_mmps2': la, 'jerk_mmps3': lj},
+            # % of the session limit the REALIZED peak used (headroom = 100 − this).
+            'used_pct': {'vel': pct(rv, lv), 'acc': pct(ra, la),
+                         'jerk': pct(rj, lj)},
+            # Gate-authoritative % from the fine-sampled PREDICTED peaks — prefer this
+            # for jerk (realized jerk is a coarse knot-rate proxy that under-measures).
+            'used_pct_predicted': {'vel': pct(pv, lv), 'acc': pct(pa, la),
+                                   'jerk': pct(pj, lj)},
+        })
+
+    cur_seq = None
+    for s in traj_diag:
+        if s.get('plan_kind') != 'move':
+            flush()
+            window = []
+            cur_seq = None
+            continue
+        seq = s.get('move_seq')
+        if window and seq != cur_seq:      # a new install inside the 'move' run
+            flush()
+            window = []
+        window.append(s)
+        cur_seq = seq
+    flush()
+
+    return {
+        'available': True,
+        'num_moves': len(moves),
+        'moves': moves,
+    }
+
+
 def analyse_rosbag(rosbag_path: str) -> Dict[str, Any]:
     """Analyse a rosbag recording for diagnostic information.
 
@@ -1592,6 +1694,7 @@ def analyse_rosbag(rosbag_path: str) -> Dict[str, Any]:
             state_transitions: List[Dict[str, Any]] = []
             mode_transitions: List[Dict[str, Any]] = []
             motor_errors: List[Dict[str, Any]] = []   # [{t,motor,error,prev_error}]
+            traj_diag: List[Dict[str, Any]] = []       # trajectory/diagnostics samples
             prev_state = None
             prev_mode = None
             # Per-motor last active_errors value, for edge detection
@@ -1619,6 +1722,14 @@ def analyse_rosbag(rosbag_path: str) -> Dict[str, Any]:
                                                  'mode': data or ''})
                         prev_mode = data
 
+                elif conn.topic == '/trajectory/diagnostics':
+                    msg = reader.deserialize(raw, conn.msgtype)
+                    kv = {getattr(e, 'key', ''): getattr(e, 'value', '')
+                          for e in (getattr(msg, 'values', None) or [])}
+                    if kv:
+                        kv['t_s'] = round(rel, 3)
+                        traj_diag.append(kv)
+
                 elif conn.topic == '/robot_state':
                     msg = reader.deserialize(raw, conn.msgtype)
                     motor_states = getattr(msg, 'motor_states', None) or []
@@ -1640,6 +1751,7 @@ def analyse_rosbag(rosbag_path: str) -> Dict[str, Any]:
             results['state_transitions'] = state_transitions
             results['mode_transitions'] = mode_transitions
             results['motor_errors'] = motor_errors
+            results['trajectory'] = summarise_trajectory_moves(traj_diag)
             results['estop'] = detect_estop_event(
                 motor_errors=motor_errors,
                 state_transitions=state_transitions,
