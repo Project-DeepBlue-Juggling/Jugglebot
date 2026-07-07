@@ -20,6 +20,7 @@ files_changed:
   - tests/hardware/session_phase5_timed.md
 commits:
   - 62e9ea7
+  - d40da26
 subsystem: motion
 tags: [mvp-trajectory-bringup, trajectory, timed-target, catch, supersede, feasibility]
 ---

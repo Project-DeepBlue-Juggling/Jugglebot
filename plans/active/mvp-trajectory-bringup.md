@@ -761,7 +761,7 @@ the second loudly rejected).
 
 **Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase 5 software
 landed on branch `mvp-trajectory-bringup` (commits `62e9ea7` motion +
-interfaces + node + catch swap; `<pending-docs>` docs). New pure `planner.build_timed`:
+interfaces + node + catch swap; `d40da26` docs). New pure `planner.build_timed`:
 a **fixed-lead reach** to `(target_pose, target_twist)` — the arrival lead is a hard
 constraint, so a too-tight lead is loudly rejected `TOO_FAST` with the minimal feasible
 lead (never silently slowed), a spatial failure re-raised as-is; the plan is ALWAYS
