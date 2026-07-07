@@ -448,6 +448,38 @@ def validate_follow(plan, limits, geom, *,
         peak_jerk = max(peak_jerk,
                         float(np.max(np.abs(jerk))) * _FOLLOW_JERK_MARGIN)
 
+    # Degenerate (HoldPlan / zero-segment) branch: the per-segment loop above ran
+    # no geometry checks, so mirror validate()'s degenerate branch and gate the
+    # single held pose (finiteness + stroke + decimated condition). Without this a
+    # zero-segment plan — e.g. an out-of-stroke build_graceful_stop at-rest HoldPlan
+    # — would pass validate_follow with ZERO checks (the finding this closes).
+    if not plan.segments:
+        hold_pose = np.asarray(plan.state_at(0.0)[0], dtype=float)[None, :]  # (1,6)
+        if not np.all(np.isfinite(hold_pose)):
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=["pose contains non-finite values (NaN/Inf) on the held "
+                         "follower pose"])
+        leg_vecs, R = _batched_leg_vectors(hold_pose, geom)
+        ext = np.linalg.norm(leg_vecs, axis=2) - geom.init_leg_lengths_mm  # (1,6)
+        peak_ext = float(np.max(np.abs(ext)))
+        oob = (ext < wlimits.leg_hard_min_mm) | (ext > wlimits.leg_hard_max_mm)
+        if np.any(oob):
+            li = int(np.argwhere(oob)[0][1])
+            return FeasibilityReport(
+                ok=False, code=WORKSPACE,
+                reasons=[f"leg {li} out of stroke ({ext[0, li]:.1f} mm) on the "
+                         f"held follower pose"],
+                peak_leg_ext_mm=peak_ext)
+        worst = float(np.max(_batched_condition(leg_vecs, R, geom)))
+        if worst > wlimits.cond_hard:
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=[f"Jacobian condition {worst:.1f} > "
+                         f"{wlimits.cond_hard:.1f} (near singularity) on the held "
+                         f"follower pose"],
+                peak_leg_ext_mm=peak_ext)
+
     # Knot-step bound — sampled at the wire knot spacing, identical to validate().
     peak_step = 0.0
     if plan.total_duration > 0.0:

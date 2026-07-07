@@ -30,6 +30,8 @@ from jugglebot.trajectory_node import TrajectoryNode
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
 from jugglebot.motion.trajectory import HoldPlan
+from jugglebot.motion.trajectory.plan import TrajectoryPlan
+from jugglebot.motion.trajectory.segment import QuinticSegment
 from controller.teensy_link.setpoint_pump import SetpointPump
 
 _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
@@ -521,7 +523,17 @@ def test_follower_emits_pump_accepted_frames_over_a_stream():
         node._on_platform_pose(_platform_pose(
             x=10.0 * np.sin(k * 0.1), y=6.0 * np.cos(k * 0.1), z=176.0,
             publisher='SPACEMOUSE'))
+        # Restamp the just-stored target on the SYNTHETIC clock: _on_platform_pose
+        # stamps with real perf_counter, but this loop advances `t` synthetically, so
+        # without this the target reads as stale within ~16 ticks (t outruns the real
+        # stamp by > follower_input_loss_s) and the stream would exercise the
+        # input-loss STOP path instead of the follow path under test.
+        tgt, _ = node._follower_target
+        node._follower_target = (tgt, t)
         node._emit_once(t)
+        # Pin the fix: the stream stays on the FOLLOW path (a move), never a stop.
+        assert node._active_plan.kind == 'move', \
+            f"tick {k}: expected a follow move, got {node._active_plan.kind}"
         t += 0.025
     assert len(pub.frames) == 60
     for i, frame in enumerate(pub.frames):
@@ -547,6 +559,117 @@ def test_follower_mode_entry_resets_stale_target():
     node._on_control_mode(String(data='SPACEMOUSE'))
     assert node._follower_target is None
     assert node._follower_input_lost is False
+
+
+# ── SpaceMouse follower audit fixes (2026-07-08) ──────────────
+
+def test_no_input_loss_within_grace_after_follower_entry():
+    """Input loss must NOT be declared instantly on follower-mode entry: a None
+    target within the grace window (since entry) is the pre-first-frame period, not a
+    dead SpaceMouse node. Early ticks with no target yet → no stop, no latch."""
+    node = _follower_node()                    # enters SPACEMOUSE, records entry mono
+    assert node._follower_target is None
+    plan_before = node._active_plan
+    installed = node._follower_tick(time.perf_counter())   # immediately after entry
+    assert installed is False
+    assert node._follower_input_lost is False
+    assert node._pending_stop is False
+    assert node._active_plan is plan_before    # seeded hold untouched
+    # Past the grace window with STILL no target → input loss finally fires.
+    node._follower_entry_mono = (
+        time.perf_counter() - (node._follower_input_loss_s + 1.0))
+    assert node._follower_tick(time.perf_counter()) is True
+    assert node._follower_input_lost is True
+
+
+def test_follower_install_dropped_when_mode_left_follower_set():
+    """TOCTOU: a follow plan built during a tick's ~4-7 ms gate must NOT clobber a
+    stop a concurrent mode-exit installed. _install(require_follower_mode=True)
+    re-checks the mode under _plan_lock and drops the plan once the mode has left the
+    follower set."""
+    node = _follower_node()
+    follow_plan, _ = planner.build_follow(
+        node._current_state(), np.array([15.0, 0.0, 178.0, 0.0, 0.0, 0.0]),
+        node._limits, node._geom, hw.JB_TRAJ_SPACEMOUSE_HORIZON_S)
+    node._on_control_mode(String(data='STANDBY'))   # mode leaves the follower set
+    surviving = node._active_plan
+    assert node._install(follow_plan, require_follower_mode=True) is False
+    assert node._active_plan is surviving            # not clobbered by the stale plan
+    # Without the guard the same plan WOULD install (control).
+    assert node._install(follow_plan) is True
+    assert node._active_plan is follow_plan
+
+
+def test_install_with_explicit_t0_sets_plan_time_origin():
+    """Per-replan t0: the follower installs with t0 = its seed-sample time so the
+    plan's origin matches the state it was seeded from (no v·Δt rewind). _install with
+    an explicit t0 uses it verbatim; state_at(0) is exactly the seed pose (C2 origin)."""
+    node = _follower_node()
+    seed = node._current_state()
+    plan, _ = planner.build_follow(
+        seed, np.array([12.0, 0.0, 176.0, 0.0, 0.0, 0.0]),
+        node._limits, node._geom, hw.JB_TRAJ_SPACEMOUSE_HORIZON_S)
+    t0 = time.perf_counter() - 0.01
+    assert node._install(plan, t0=t0) is True
+    assert node._plan_t0 == t0
+    pose0, _, _ = plan.state_at(0.0)
+    assert np.allclose(pose0, seed[0], atol=1e-9)
+
+
+def _boundary_plan(x0):
+    """A plan whose t=0 state is at (x0, 0, 170) moving OUTWARD at 40 mm/s — the live
+    commanded state a graceful stop is seeded from. At x0≈245 (2 mm inside max +x ≈
+    247) build_graceful_stop raises WORKSPACE; well inside it converges."""
+    p0 = np.array([x0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    v0 = np.array([40.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    seg = QuinticSegment(p0=p0, v0=v0, a0=np.zeros(6),
+                         p1=p0, v1=np.zeros(6), a1=np.zeros(6), duration=1.0)
+    return TrajectoryPlan(segments=(seg,), final_pose=p0)
+
+
+def test_pending_stop_on_infeasible_stop_then_retry_converges():
+    """Near-boundary outward seed: the input-loss stop build RAISES, so the node sets
+    _pending_stop (move keeps running, no failure latch) rather than dropping the stop;
+    _emit_once retries from the decaying live state and converges once the state is
+    safely stoppable, installing the stop and clearing the flag."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    node._install(_boundary_plan(245.0))       # ~2 mm inside +x edge, moving outward
+    # Drive the input-loss path (stale target): the stop is wanted but build raises.
+    node._follower_target = (
+        node._neutral_pose.copy(),
+        time.perf_counter() - (node._follower_input_loss_s + 1.0))
+    assert node._follower_tick(time.perf_counter()) is False
+    assert node._pending_stop is True
+    assert node._active_plan.kind == 'move'    # move keeps running (gated), not dropped
+    assert node._follower_input_lost is False  # NOT latched on the failed build
+    # Velocity "decays" into the safe region → the _emit_once retry converges.
+    node._install(_boundary_plan(100.0))       # well inside; a stop is feasible here
+    node._emit_once(time.perf_counter())
+    assert node._pending_stop is False         # retry converged, flag cleared
+    stop = node._active_plan
+    _, v_end, a_end = stop.state_at(stop.total_duration)
+    assert np.allclose(v_end, 0.0, atol=1e-9)  # a real decel-to-rest
+    assert np.allclose(a_end, 0.0, atol=1e-9)
+
+
+def test_hold_rejected_in_follower_mode():
+    """A hold in a follower mode is a mode confusion (the input stream supersedes it
+    within one tick) — reject loudly and tell the operator to exit the mode."""
+    node = _follower_node()
+    resp = node._svc_hold(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'supersede' in resp.message.lower()
+
+
+def test_go_home_rejected_in_follower_mode():
+    node = _follower_node()
+    resp = node._svc_go_home(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'supersede' in resp.message.lower()
 
 
 # ── Emitter cadence (real thread, injected fake PUB) ──────────

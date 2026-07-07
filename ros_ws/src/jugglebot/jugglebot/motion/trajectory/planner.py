@@ -260,7 +260,7 @@ def _gate(plan, limits, geom) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Phase 3 — follower + always-valid graceful stop (the fast gate path)
+# Phase 3 — follower + graceful stop (the fast gate path)
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Bound on the follower's per-tick stretch. From a MOVING seed the exact 1/Tⁿ
@@ -309,28 +309,47 @@ def build_follow(state0, target_pose, limits, geom, horizon_s):
 
 
 def build_graceful_stop(state0, limits, geom, *, start_duration_s=None):
-    """An **always-valid** duration-stretched decel-to-rest at the current pose.
+    """A duration-stretched decel-to-rest at the current pose.
 
     Unlike :func:`build_hold` (which builds ONE min-duration decel and RAISES if
     that decel is too aggressive for the gate at a high velocity), this stretches
     the stop's horizon until the gate passes. Because it decelerates **in place**
-    (``p1 == p0``, the current reachable pose), the only possible failures are the
-    stretchable vel/acc/jerk/step ones — a longer stop is monotonically gentler —
-    so this **always converges** to a valid, C2, rest-terminating stop. It never
-    raises for a real (finite) seed state.
+    (``p1 == p0``, the current reachable pose), the only possible *timing* failures
+    are the stretchable vel/acc/jerk/step ones — a longer stop is monotonically
+    gentler — so it **converges for all gate-limited seeds** by lengthening the
+    horizon.
 
-    This is the primitive the plan/task require for the two "stop now, no matter
-    what" cases: leaving a streaming mode mid-move (STANDBY-exit) and follower
-    input-loss. Gated by the fast :func:`validate_follow` so it is cheap enough to
-    run on the emitter thread (input-loss) without threatening the 250 ms staleness
-    window. Returns the stop :class:`TrajectoryPlan` (a :class:`HoldPlan` when the
-    seed is already at rest).
+    It is **not** unconditionally always-valid, though: the decel overshoots the
+    seed pose by ~0.2·v·T (the excursion of a rest-terminating quintic), which
+    *grows* with the stretched horizon T. So a seed whose boundary margin is smaller
+    than that overshoot fails the gate's stroke check spatially — no stretch fixes it
+    (a longer stop overshoots more). This raises :class:`TrajectoryInfeasible`
+    (``WORKSPACE``); the caller keeps its current gated, rest-terminating plan and
+    retries from the (decaying-velocity) live state, which converges within a few
+    ticks as the boundary margin grows. A future structural fix is a *retargeted*
+    stop (``p1 = p0 + alpha·v0``, decelerating along the motion, stop-soonest) that
+    never overshoots outward — deferred.
+
+    This is the primitive the plan/task require for the two "stop now" cases:
+    leaving a streaming mode mid-move (STANDBY-exit) and follower input-loss. Gated
+    by the fast :func:`validate_follow` so it is cheap enough to run on the emitter
+    thread (input-loss) without threatening the 250 ms staleness window. Returns the
+    stop :class:`TrajectoryPlan` (a :class:`HoldPlan` when the seed is already at
+    rest).
     """
     pose, twist, accel = (_as6(state0[0], 'pose'),
                           _as6(state0[1], 'twist'),
                           _as6(state0[2], 'accel'))
     if _is_at_rest(twist, accel):
-        return HoldPlan(pose)
+        # At rest: the stop is a plain hold at the seed pose. Gate it exactly as
+        # build_hold gates the identical case — an out-of-stroke / non-finite seed
+        # must be rejected here, not returned as an ungated HoldPlan (which would
+        # otherwise reach the emitter unchecked — the finding this closes).
+        plan = HoldPlan(pose)
+        report = validate_follow(plan, limits, geom)
+        if not report.ok:
+            raise TrajectoryInfeasible(report.code, report.reasons)
+        return plan
 
     T = float(start_duration_s if start_duration_s is not None
               else limits.min_move_duration_s)

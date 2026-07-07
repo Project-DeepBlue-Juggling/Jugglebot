@@ -1,5 +1,5 @@
 ---
-title: MVP Phase 3 — SpaceMouse streaming (fast follower gate + always-valid graceful stop)
+title: MVP Phase 3 — SpaceMouse streaming (fast follower gate + graceful stop)
 type: feature
 date: 2026-07-08
 status: resolved
@@ -30,7 +30,7 @@ tags:
   - spacemouse
 ---
 
-# MVP Phase 3 — SpaceMouse streaming (fast follower gate + always-valid graceful stop)
+# MVP Phase 3 — SpaceMouse streaming (fast follower gate + graceful stop)
 
 ## Summary
 
@@ -48,12 +48,15 @@ orchestration prerequisites the Phase-2 audit flagged:
    module, same `FeasibilityReport`, same codes/limits/stroke logic, **bit-identical
    step-bound** (so the "every emitted frame is pump-accepted" invariant is preserved
    exactly), reached only through `planner`.
-2. **An always-valid graceful stop.** New `planner.build_graceful_stop` is a
-   duration-stretched decel-to-rest that lengthens its horizon until the gate passes,
-   so it **always** produces a valid C2 stop for any gate-limited seed. It replaces
-   the Phase-2 STANDBY-exit "catch-and-complete" fallback (a high-velocity mid-move
-   exit no longer falls through to letting the move run on to its target) and backs
-   the follower's input-loss handling.
+2. **A duration-stretched graceful stop.** New `planner.build_graceful_stop` is a
+   decel-to-rest that lengthens its horizon until the gate passes, so it **converges
+   for gate-limited seeds** — *except* a near-boundary seed whose boundary margin is
+   smaller than the decel overshoot (~0.2·v·T), which fails the stroke check
+   spatially (see the audit-fixes section below). It replaces the Phase-2
+   STANDBY-exit "catch-and-complete" fallback (a high-velocity mid-move exit no longer
+   falls through to letting the move run on to its target) and backs the follower's
+   input-loss handling; a seed the stop can't yet gate is retried from the decaying
+   live state (the node's pending-stop path), not dropped.
 
 `trajectory_node` gains the `platform_pose_topic` subscription (publisher-field mode
 gating, verbatim from `mpc_bridge_node`), the `gravity_offset` composition (verbatim
@@ -121,14 +124,18 @@ breaks the exact `1/Tⁿ` scaling, so a couple of extra passes may be needed; ea
 ~1.6 ms `validate_follow`). A spatial `WORKSPACE`/`UNREACHABLE` failure re-raises
 immediately (the follower's saturation clamp is what keeps the target reachable).
 
-### `planner.build_graceful_stop` — the always-valid stop
+### `planner.build_graceful_stop` — the duration-stretched stop
 
 A decel-to-rest **in place** (`p1 == p0`, the seed's own reachable pose), duration
 stretched until the fast gate passes. Because it decelerates in place, the only
-possible failures are the stretchable vel/acc/jerk/step ones (a longer stop is
-monotonically gentler), so it **always converges** for a gate-limited seed — unlike
-`build_hold`, which builds one fixed-duration decel and *raises* if that decel is too
-aggressive. This is the primitive both "stop now, no matter what" cases need.
+possible *timing* failures are the stretchable vel/acc/jerk/step ones (a longer stop
+is monotonically gentler), so it **converges for gate-limited seeds** by lengthening
+the horizon — unlike `build_hold`, which builds one fixed-duration decel and *raises*
+if that decel is too aggressive. The one spatial exception (audit-corrected): the
+rest-terminating decel overshoots the seed pose by ~0.2·v·T, which *grows* with T, so
+a seed within that overshoot of a stroke boundary fails the stroke check and no
+stretch fixes it — the caller keeps its gated plan and retries from the decaying live
+state. This is the primitive both "stop now" cases need.
 
 ### `TargetFollower` (pure) and its policy
 
@@ -148,7 +155,8 @@ plan** and report the rejection for a throttled WARN (never raises into the hot 
   emit cadence.
 - **Input loss** (no fresh target within `follower_input_loss_s = 0.4 s` — the backstop
   for the SpaceMouse node dying entirely; that node itself publishes an ACTIVE-pose
-  hold on unplug) installs an always-valid graceful stop **once**.
+  hold on unplug) installs a graceful stop **once** (a near-boundary seed the stop
+  can't yet gate defers to the pending-stop retry — see the audit-fixes section).
 - **STANDBY-exit mid-move** now installs `build_graceful_stop` instead of the Phase-2
   `build_hold`-or-let-the-move-complete fallback; generalised to any motion-mode →
   non-motion-mode transition with a move in flight.
@@ -270,15 +278,24 @@ the seed pose) for consistency, and stretches the horizon. A probe surfaced the 
 subtlety: a decel-in-place from a **super-limit** velocity overshoots the workspace
 (excursion ∝ v·T, so a longer stop overshoots *more* while a shorter one violates jerk —
 they conflict), so no smooth stop keeps it in stroke. This is physical reality, not a
-bug: the follower never produces a super-limit seed (all plans are gate-limited ≤ the
-session leg-vel limit, and a limited-velocity stop's excursion stays well in stroke —
-verified: vz = 100 mm/s stops in 0.96 s in-stroke; vz = 120 first hits WORKSPACE). So
-"always-valid" holds *for gate-limited seeds*, which is all that ever arises. The node
-still logs loudly on the (unreachable) super-limit rejection rather than silently
-looping. My first test used an unrealistic 250 mm/s and caught exactly this — the test
-now uses vz = 60 (fails `build_hold`, stretches to a valid 0.573 s stop).
+bug: for a seed *away* from a boundary the follower never produces a super-limit seed
+(all plans are gate-limited ≤ the session leg-vel limit, and a limited-velocity stop's
+excursion stays well in stroke — verified: vz = 100 mm/s stops in 0.96 s in-stroke; vz
+= 120 first hits WORKSPACE). My first test used an unrealistic 250 mm/s and caught
+exactly this — the test now uses vz = 60 (fails `build_hold`, stretches to a valid
+0.573 s stop).
 
-### Fork — STANDBY-exit replaces catch-and-complete with the always-valid stop
+**Audit correction (2026-07-08):** the original claim here — *"always-valid holds for
+gate-limited seeds, which is all that ever arises"* — was too strong. The same
+overshoot argument shows a **gate-limited** seed can *also* be unstoppable-in-place if
+it sits within the decel overshoot (~0.2·v·T) of a stroke boundary moving *outward*
+(probe: 2 mm inside the +x edge at 40 mm/s → `WORKSPACE`, and stretching T only
+overshoots *more*). So "always-valid" is wrong even for gate-limited seeds near a
+boundary. The audit-fixes section documents the pending-stop retry that resolves this
+(retry from the decaying live state until the margin grows), and the deferred
+structural fix (a *retargeted* stop that never overshoots outward).
+
+### Fork — STANDBY-exit replaces catch-and-complete with the graceful stop
 
 The Phase-2 code, on a high-velocity mid-move STANDBY exit, let the already-validated
 move *complete to its target* if a min-duration stop violated the gate. The task
@@ -317,6 +334,85 @@ granularity.
 - Phase 4 (limit ramp-up + lean A/B) and Phase 5 (timed targets) build on this; the
   follower's per-tick supersede is what lifts the Phase-2 `BUSY` restriction on
   interrupting an in-flight move.
+
+## Audit fixes (2026-07-08)
+
+A `/audit` of the Phase-3 range (`8728713..HEAD`) raised 4 WARNINGs + 6 NOTEs; all are
+applied in a follow-up commit. One line per finding → fix:
+
+1. **WARNING — TOCTOU: mode-exit stop clobbered by an in-flight follower install.**
+   The follower snapshotted the mode, then ran its ~4–7 ms gate and installed
+   *unconditionally*; a concurrent `STANDBY`-exit graceful-stop install could be
+   overwritten by the stale follow plan. Fix: `_install` gained
+   `require_follower_mode`, re-checking the current mode is still a follower mode
+   **under `_plan_lock`** before writing — the follow install now drops (stop
+   survives) if the mode left the set mid-tick.
+2. **WARNING — `validate_follow` no-ops on zero-segment plans; `build_graceful_stop`
+   returned an ungated `HoldPlan`.** `validate_follow`'s per-segment loop ran zero
+   checks for a `HoldPlan`, so an out-of-stroke / non-finite held pose passed. Fix:
+   (a) a degenerate branch mirrors `validate`'s — gate the single held pose
+   (finiteness + stroke + condition); (b) `build_graceful_stop`'s at-rest path now
+   gates the `HoldPlan` via `validate_follow` and raises `TrajectoryInfeasible`,
+   exactly as `build_hold` gates the identical case.
+3. **WARNING — graceful stop is NOT unconditionally always-valid near boundaries.**
+   A gate-limited seed within the decel overshoot (~0.2·v·T) of a stroke boundary,
+   moving outward, fails the stroke check spatially and a longer T only overshoots
+   more (probe: 2 mm inside +x at 40 mm/s → `WORKSPACE`). Fix: corrected the
+   always-valid phrasing (docstring, this entry, plan Outcome, INDEX); replaced both
+   failure fallbacks with a **`_pending_stop` retry** — on a stop-build failure the
+   node sets a pending flag (loud ERROR once) instead of latching failure, and
+   `_emit_once` retries `build_graceful_stop` from `_current_state()` every tick; the
+   platform's velocity decays under the still-running gated plan, so the retry
+   converges within a few ticks, then installs and clears the flag. The input-loss
+   latch now latches on *success* only (a fresh target un-latches).
+4. **WARNING — the streaming test's synthetic clock tripped input-loss.** The test
+   advanced the emitter clock synthetically but stamped targets with real
+   `perf_counter`, so ~⅔ of frames exercised the *stop* path, not the follow path.
+   Fix: restamp each target on the synthetic clock; assert the plan kind stays
+   `move` (follow) through the stream.
+5. **NOTE — input-loss declared instantly on follower-mode entry.** A `None` target
+   read as loss immediately on entry (before the first SpaceMouse frame). Fix: record
+   `_follower_entry_mono` on entry; a `None` target is *fresh* until `now − entry >
+   follower_input_loss_s`.
+6. **NOTE — tick-budget comment + sustained-reject re-plan spam.** (a) Updated the
+   worst-case-timing comment (typical 1–2 passes ~4–9 ms; worst ≤ ~26 ms build_follow
+   / ~100 ms stop, both ≪ the 250 ms staleness E-STOP; an overrun resets the
+   deadline). (b) `TargetFollower` now remembers a *rejected* target and skips the
+   (up-to-6-pass) gate while subsequent targets stay within its deadband — the gate
+   runs once, then is skipped until the target moves.
+7. **NOTE — per-replan t0 skew.** `_follower_tick` captures `seed_mono` immediately
+   before `_current_state()` and installs the follow plan with `t0=seed_mono`, so the
+   plan's time origin matches its seed sample (removes the v·Δt rewind each replan).
+8. **NOTE — jerk conservatism pinned only on rest seeds.** Added 3 moving-seed
+   parametrize cases (nonzero v0/a0) to the `validate_follow`-vs-analytic equivalence
+   test; vel/acc/step match < 0.1 %, jerk conservative (ratio ~1.035, within [1.0,
+   1.10]).
+9. **NOTE (doc-only) — ray-clamp condition check.** `follower.py`'s clamp docstring
+   now states the clamp enforces **stroke only**; a near-singular in-stroke target is
+   gate-rejected → keep-last-plan freeze with a throttled WARN (acceptable — stroke
+   provably binds before ill-conditioning in this geometry; adding the SVD to the
+   emitter-thread bisection is deliberately avoided).
+10. **NOTE — `hold`/`go_home` in follower modes.** Both services now reject in a
+    follower mode (*"the input stream would supersede this within one tick — exit the
+    mode (graceful stop) instead"*), mirroring `go_to_pose`'s mode-confusion rationale.
+
+**Deferred (structural, documented in `build_graceful_stop`'s docstring):** a
+*retargeted* graceful stop — `p1 = p0 + alpha·v0`, decelerating *along* the motion
+(stop-soonest) rather than in place — never overshoots outward, so it would gate near
+a boundary without needing the pending-stop retry. Left to a follow-up because it
+changes the stop's terminal pose (a behavioural change worth its own review); the
+pending-stop retry is the safe, minimal fix that keeps the in-place semantics.
+
+**Verification** (audit-fix round): scoped iteration
+(`pytest tests/motion/test_trajectory_follower.py tests/ros/test_trajectory_node.py -q`,
+run 2026-07-08) = **74 passed**; full suite (`pytest tests/ -q`, run 2026-07-08) =
+**2093 passed, 1 xfailed, 1 failed in 507.16 s** — the single failure is the
+load-flaky `test_hot_loop_allocation_contract` (allowance-listed; passes isolated:
+`pytest tests/sim/test_hot_loop_allocation_contract.py::test_hot_loop_allocation_contract -q`,
+run 2026-07-08 = **1 passed in 7.17 s**), so effectively **2094 passed / 1 xfailed, 0
+real failures** — net **+15** over the 2079/1 baseline (Phase-3 docs commit `9b146f3`),
+fully accounted for by the new audit-fix tests: +9 in `test_trajectory_follower.py`
+(23→32), +6 in `test_trajectory_node.py` (36→42).
 
 ## Related
 

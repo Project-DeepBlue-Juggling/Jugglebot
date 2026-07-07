@@ -103,14 +103,21 @@ def test_batched_condition_matches_scalar(geom):
 
 # ── validate_follow is the same gate as validate, measured cheaply ──
 
-@pytest.mark.parametrize('target,dur', [
-    ([10, 10, 175, 0, 0, 0.02], 0.35),
-    ([30, 20, 185, 0, 0, 0.05], 0.35),
-    ([40, 40, 190, 0.03, 0.03, 0.05], 0.5),
-    ([-25, 15, 165, -0.04, 0.02, -0.03], 0.4),
+@pytest.mark.parametrize('target,dur,v0,a0', [
+    # Rest seeds (v0/a0 zero).
+    ([10, 10, 175, 0, 0, 0.02], 0.35, None, None),
+    ([30, 20, 185, 0, 0, 0.05], 0.35, None, None),
+    ([40, 40, 190, 0.03, 0.03, 0.05], 0.5, None, None),
+    ([-25, 15, 165, -0.04, 0.02, -0.03], 0.4, None, None),
+    # Moving seeds (nonzero v0/a0): the finite-difference jerk conservatism is only
+    # pinned on rest seeds otherwise. A moving seed breaks the exact 1/Tⁿ scaling, so
+    # this checks the fast gate still matches the analytic peaks + stays conservative.
+    ([10, 10, 175, 0, 0, 0.02], 0.5, [30, 0, 15, 0, 0, 0.02], [50, 0, -20, 0, 0, 0]),
+    ([20, -10, 178, 0, 0, 0.03], 0.5, [20, 10, 0, 0, 0, 0.01], [0, -30, 10, 0, 0, 0]),
+    ([-15, 20, 182, 0.02, 0, 0.0], 0.6, [-25, 0, 20, 0.03, 0, 0], [0, 40, -15, 0, 0, 0]),
 ])
-def test_validate_follow_matches_analytic_peaks(geom, limits, target, dur):
-    plan = _rest_move(_NEUTRAL, target, dur)
+def test_validate_follow_matches_analytic_peaks(geom, limits, target, dur, v0, a0):
+    plan = _rest_move(_NEUTRAL, target, dur, v0=v0, a0=a0)
     ana = feas.validate(plan, limits, geom)
     fast = feas.validate_follow(plan, limits, geom)
     # vel / acc / step measured to < 0.1 % of the analytic gate.
@@ -134,6 +141,30 @@ def test_validate_follow_rejects_out_of_stroke(geom, limits):
 def test_validate_follow_rejects_non_finite(geom, limits):
     plan = _rest_move(_NEUTRAL, [0, 0, np.nan, 0, 0, 0], 1.0)
     rep = feas.validate_follow(plan, limits, geom)
+    assert rep.ok is False
+    assert rep.code == feas.UNREACHABLE
+
+
+# ── validate_follow gates the degenerate (HoldPlan) case (audit fix) ──
+
+def test_validate_follow_accepts_in_stroke_holdplan(geom, limits):
+    """A zero-segment HoldPlan is now gated (the per-segment loop runs no checks, so
+    the degenerate branch gates the held pose). An in-stroke pose passes."""
+    rep = feas.validate_follow(HoldPlan(_NEUTRAL), limits, geom)
+    assert rep.ok is True
+    assert rep.code == feas.OK
+
+
+def test_validate_follow_rejects_out_of_stroke_holdplan(geom, limits):
+    """Previously a zero-segment HoldPlan passed validate_follow with ZERO checks —
+    including an out-of-stroke pose. The degenerate branch now rejects it WORKSPACE."""
+    rep = feas.validate_follow(HoldPlan([0, 0, 500, 0, 0, 0]), limits, geom)
+    assert rep.ok is False
+    assert rep.code == feas.WORKSPACE
+
+
+def test_validate_follow_rejects_non_finite_holdplan(geom, limits):
+    rep = feas.validate_follow(HoldPlan([0, 0, np.nan, 0, 0, 0]), limits, geom)
     assert rep.ok is False
     assert rep.code == feas.UNREACHABLE
 
@@ -233,6 +264,36 @@ def test_graceful_stop_always_valid_when_build_hold_rejects(geom, limits):
     assert stop.total_duration > limits.min_move_duration_s
 
 
+def test_graceful_stop_at_rest_out_of_stroke_rejects(geom, limits):
+    """build_graceful_stop's at-rest path now GATES the HoldPlan (was: returned an
+    ungated HoldPlan straight to the emitter). An out-of-stroke at-rest seed →
+    TrajectoryInfeasible(WORKSPACE)."""
+    with pytest.raises(TrajectoryInfeasible) as ei:
+        planner.build_graceful_stop(
+            (np.array([0.0, 0.0, 500.0, 0.0, 0.0, 0.0]), np.zeros(6), np.zeros(6)),
+            limits, geom)
+    assert ei.value.code == feas.WORKSPACE
+
+
+def test_graceful_stop_raises_near_boundary_outward_seed(geom, limits):
+    """NOT unconditionally always-valid: a seed ~2 mm inside the +x stroke edge
+    (max +x ≈ 247 mm at z=170) moving OUTWARD overshoots — the decel excursion
+    (~0.2·v·T) exceeds the boundary margin and GROWS with the stretched horizon, so
+    no in-place stop is in-stroke → raises WORKSPACE. The node retries from the
+    decaying live state (a well-inside seed at the same velocity DOES converge)."""
+    p_edge = np.array([245.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    v_out = np.array([40.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    with pytest.raises(TrajectoryInfeasible) as ei:
+        planner.build_graceful_stop((p_edge, v_out, np.zeros(6)), limits, geom)
+    assert ei.value.code == feas.WORKSPACE
+    # Same velocity, well inside the envelope → converges to a valid decel-to-rest.
+    p_inside = np.array([100.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    stop = planner.build_graceful_stop((p_inside, v_out, np.zeros(6)), limits, geom)
+    _, ve, ae = stop.state_at(stop.total_duration)
+    assert np.allclose(ve, 0.0, atol=1e-9)
+    assert np.allclose(ae, 0.0, atol=1e-9)
+
+
 # ── TargetFollower policy ─────────────────────────────────────
 
 def test_follower_reachable_target_unchanged(geom, limits):
@@ -276,6 +337,32 @@ def test_follower_keeps_last_plan_on_rejection(geom, limits, monkeypatch):
                    [20, 0, 180, 0, 0, 0.03], limits)
     assert res.plan is None
     assert res.rejection
+
+
+def test_follower_skips_replan_on_sustained_reject(geom, limits, monkeypatch):
+    """Sustained-reject skip: when build_follow rejects a target, the follower
+    remembers it and SKIPS re-running the (up-to-6-pass) gate while subsequent targets
+    stay within deadband of the rejected one — the gate runs ONCE, not every 40 Hz
+    tick. The skip clears the moment the target moves beyond deadband."""
+    f = TargetFollower(geom, 0.35)
+    state0 = (_NEUTRAL, np.zeros(6), np.zeros(6))
+    calls = {'n': 0}
+
+    def counting_reject(*a, **kw):
+        calls['n'] += 1
+        raise TrajectoryInfeasible(feas.LIMIT_JERK, ['forced'])
+
+    monkeypatch.setattr(planner, 'build_follow', counting_reject)
+    target = [20, 0, 180, 0, 0, 0.03]
+    r1 = f.follow(state0, target, limits)             # gate runs, rejects
+    assert r1.plan is None and r1.rejection
+    assert calls['n'] == 1
+    for _ in range(5):                                # sustained identical target
+        r = f.follow(state0, target, limits)
+        assert r.plan is None
+    assert calls['n'] == 1, "gate re-ran on a sustained-reject target"
+    f.follow(state0, [20, 30, 180, 0, 0, 0.03], limits)   # moved beyond deadband
+    assert calls['n'] == 2, "gate did not re-run after the target moved"
 
 
 def test_follower_reset_reclears_deadband(geom, limits):

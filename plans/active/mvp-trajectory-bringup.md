@@ -629,10 +629,13 @@ Jacobian entirely: vectorised pose→leg-extension sampling (`QuinticSegment.eva
 finite difference and a decimated condition SVD. **~1.5–4 ms**; vel/acc/step match the
 analytic gate to < 0.1 %, jerk is held **strictly conservative** (≤ 1.5 % under-measure
 at 300 samples, then ×1.05); the knot-step-bound is **bit-identical** so pump-acceptance
-is preserved. (2) **Always-valid graceful stop** `planner.build_graceful_stop` — a
-duration-stretched decel-in-place that always converges for a gate-limited seed;
-replaces the Phase-2 STANDBY-exit catch-and-complete fallback and backs the follower's
-input-loss handling. New pure `TargetFollower` (clamp → deadband → replan / keep-last-plan)
+is preserved. (2) **Duration-stretched graceful stop** `planner.build_graceful_stop` —
+a decel-in-place that converges for gate-limited seeds by lengthening the horizon,
+*except* a near-boundary seed whose margin is under the decel overshoot (~0.2·v·T),
+which fails the stroke check spatially (audit-corrected — the node retries from the
+decaying live state via a pending-stop flag rather than latching failure); replaces the
+Phase-2 STANDBY-exit catch-and-complete fallback and backs the follower's input-loss
+handling. New pure `TargetFollower` (clamp → deadband → replan / keep-last-plan)
 + `planner.build_follow`; `trajectory_node` gains `platform_pose_topic` publisher-field
 mode gating + `gravity_offset` composition (verbatim ports from `mpc_bridge_node`), the
 follower replan run inside the 40 Hz emitter tick (drain-to-latest), input-loss stop,
@@ -645,6 +648,25 @@ node, no regressions). **Deferred to the operator bench session**: the manual-fl
 battery (gentle fly / saturation shove / mid-flight unplug) at the default low limits,
 using the Phase-1 `tools/probes/traj_stream_probe.py` for read-only knot inspection.
 Full narrative in `logbook/2026-07-08-mvp-phase3-spacemouse-streaming.md`.
+
+**Outcome addendum (2026-07-08 — audit-fix round)**: a `/audit` of the Phase-3 range
+raised 4 WARNINGs + 6 NOTEs, all applied in a follow-up commit. Highlights: (a)
+**TOCTOU** — the follower's plan install is now conditional under `_plan_lock` on the
+mode still being a follower mode, so a concurrent `STANDBY`-exit graceful stop is no
+longer clobbered by a stale follow plan; (b) **`validate_follow` now gates zero-segment
+`HoldPlan`s** (degenerate branch) and `build_graceful_stop`'s at-rest path gates its
+`HoldPlan` — an ungated out-of-stroke hold can no longer reach the emitter; (c) the
+graceful stop is **not** unconditionally always-valid (a near-boundary outward seed
+overshoots the stroke edge), so both failure fallbacks are replaced by a **pending-stop
+retry** that retries from the decaying live state instead of latching failure; (d)
+input-loss no longer fires instantly on follower-mode entry (grace window); (e)
+sustained-reject re-plan spam is skipped via a rejected-target deadband; (f) per-replan
+`t0` matches the seed sample. Full detail + the deferred *retargeted*-stop structural
+fix in the logbook entry's "Audit fixes (2026-07-08)" section. Verification: `pytest
+tests/ -q` (2026-07-08) = **2093 passed / 1 xfailed / 1 failed in 507.16 s**, where the
+sole failure is the load-flaky `test_hot_loop_allocation_contract` (passes isolated, 1
+passed in 7.17 s) → effectively **2094 passed / 1 xfailed, 0 real failures**; net +15 =
+the new audit-fix tests only.
 
 ### Phase 4 — Limit ramp-up *(multiple short sessions)*
 

@@ -20,6 +20,17 @@ target matters). :meth:`TargetFollower.follow` then:
      exists so a shove past the edge tracks *up to* the boundary instead of
      freezing (an unreachable target would fail the gate's stroke check and the
      platform would not move at all).
+
+     Scope of the guarantee: the clamp enforces **stroke only** — it does NOT
+     guarantee every other spatial check the full gate makes. In particular a
+     target that is in-stroke but *near-singular* (Jacobian condition over the
+     workspace hard bound) is not caught by the clamp; ``build_follow`` gate-rejects
+     it and the follower falls back to keep-last-plan (a freeze) with a throttled
+     WARN. That is acceptable here: in this platform's geometry stroke provably
+     binds before ill-conditioning (see the Phase-2 condition-check discussion), so
+     the clamp's stroke bound is reached first — adding the per-sample condition SVD
+     to this emitter-thread bisection is deliberately avoided (it is the ~9 % cost
+     the fast gate already decimates).
   2. **Deadband** — if the clamped target is within ``pos_deadband_mm`` /
      ``rot_deadband_rad`` of the last target we planned toward, do nothing (keep the
      current plan running to its terminal hold). This stops SpaceMouse jitter from
@@ -79,13 +90,17 @@ class TargetFollower:
         self._horizon_s = float(horizon_s)
         self._pos_db = float(pos_deadband_mm)
         self._rot_db = float(rot_deadband_rad)
-        self._last_target = None    # last clamped pose we planned toward
+        self._last_target = None          # last clamped pose we planned toward
+        self._last_rejected_target = None  # last clamped pose the gate REJECTED
+        self._last_rejection_msg = ''      # its rejection string (for status/WARN)
 
     def reset(self) -> None:
         """Forget the last target — call on follower-mode entry / re-seed so the
         first target after a (re)seed always replans (never spuriously deadbanded
         against a stale target from a previous session)."""
         self._last_target = None
+        self._last_rejected_target = None
+        self._last_rejection_msg = ''
 
     def follow(self, state0, target_pose, limits) -> FollowResult:
         """Track ``target_pose`` from the current commanded ``state0``.
@@ -102,6 +117,16 @@ class TargetFollower:
 
         clamped, saturated = self._clamp_to_workspace(current_pose, target)
 
+        # Sustained-reject skip: if the last replan REJECTED a target and this one
+        # is still within deadband of that rejected pose, skip re-running the
+        # (up-to-6-pass) build_follow — it would only reject again, spamming the
+        # gate every 40 Hz tick while the operator holds an infeasible target. The
+        # skip is cleared the moment the target moves beyond deadband (below).
+        if self._last_rejected_target is not None and self._within_deadband(
+                clamped, self._last_rejected_target):
+            return FollowResult(plan=None, saturated=saturated,
+                                rejection=self._last_rejection_msg)
+
         if self._last_target is not None and self._within_deadband(
                 clamped, self._last_target):
             return FollowResult(plan=None, saturated=saturated, deadbanded=True)
@@ -110,10 +135,14 @@ class TargetFollower:
             plan, report = planner.build_follow(
                 state0, clamped, limits, self._geom, self._horizon_s)
         except TrajectoryInfeasible as e:
-            # Keep the last valid plan; the node logs this throttled.
+            # Keep the last valid plan; the node logs this throttled. Remember the
+            # rejected target so a sustained hold on it skips the gate next tick.
+            self._last_rejected_target = clamped
+            self._last_rejection_msg = str(e)
             return FollowResult(plan=None, saturated=saturated, rejection=str(e))
 
         self._last_target = clamped
+        self._last_rejected_target = None   # accepted → clear the reject memory
         return FollowResult(plan=plan, report=report, saturated=saturated)
 
     # ── helpers ──────────────────────────────────────────────────

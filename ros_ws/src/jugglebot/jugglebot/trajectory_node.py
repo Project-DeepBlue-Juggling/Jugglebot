@@ -117,8 +117,9 @@ _FOLLOWER_MODES = frozenset({'SPACEMOUSE', 'SHELL', 'GUI'})
 
 # Modes that actively COMMAND platform motion (as opposed to STANDBY, which holds).
 # Leaving one of these for a non-motion streaming mode (STANDBY) while a move is in
-# flight installs an always-valid graceful stop — the move is silenced, not left to
-# run on to its target.
+# flight installs a graceful stop — the move is silenced, not left to run on to its
+# target (a near-boundary seed that the stop can't yet gate is retried via the
+# pending-stop path in _emit_once, not dropped).
 _MOTION_MODES = _FOLLOWER_MODES | {'TRAJECTORY'}
 
 _NUM_LEGS = 6
@@ -155,9 +156,9 @@ class TrajectoryNode(Node):
         # Follower input-loss timeout: if no fresh platform_pose target arrives
         # within this window (the SpaceMouse node itself publishes an ACTIVE-pose
         # hold on unplug, so this is the backstop for that node dying entirely), the
-        # emitter installs an always-valid graceful stop. Kept well under the 250 ms
-        # staleness E-STOP — the emitter keeps streaming hold frames throughout, so
-        # input loss never approaches a wire-staleness fault.
+        # emitter installs a graceful stop. Kept well under the 250 ms staleness
+        # E-STOP — the emitter keeps streaming hold frames throughout, so input loss
+        # never approaches a wire-staleness fault.
         self.declare_parameter('follower_input_loss_s', 0.4)
         self._go_home_duration_s = float(
             self.get_parameter('go_home_duration_s').value)
@@ -175,6 +176,14 @@ class TrajectoryNode(Node):
         # emitter thread (drain-to-latest: only the newest tuple is ever read).
         self._follower_target = None
         self._follower_input_lost = False
+        # perf_counter at follower-mode entry — a None target within the input-loss
+        # window SINCE ENTRY is the pre-first-frame grace period, NOT input loss.
+        self._follower_entry_mono = None
+        # A graceful stop is wanted but build_graceful_stop currently rejects the
+        # seed (near-boundary outward-moving: decel overshoot > boundary margin).
+        # _emit_once retries it every tick from the decaying live state until it
+        # converges — instead of latching failure. Set by mode-exit AND input-loss.
+        self._pending_stop = False
         # Gravity-levelling correction (identity = none), composed into follower
         # target orientations — ported from mpc_bridge_node.
         self._gravity_correction = np.eye(3)
@@ -307,10 +316,37 @@ class TrajectoryNode(Node):
         if not streaming or plan is None or t0 is None:
             return
 
+        # Pending graceful stop retry (any streaming mode). A stop was requested
+        # (mode-exit mid-move or follower input-loss) but build_graceful_stop
+        # rejected the seed then — a near-boundary outward-moving state whose decel
+        # overshoot (~0.2·v·T) exceeds its boundary margin. The platform's velocity
+        # is decaying under the still-running gated plan, so retry from the live
+        # state until it converges (a few ticks), then install and clear the flag.
+        if self._pending_stop:
+            try:
+                stop = planner.build_graceful_stop(
+                    self._current_state(), self._limits, self._geom)
+            except TrajectoryInfeasible:
+                pass    # still overshooting — keep the gated plan, retry next tick
+            else:
+                self._install(stop)
+                self._pending_stop = False
+                # Latch input-loss too so the follower branch below doesn't
+                # immediately re-stop (a fresh target un-latches both).
+                self._follower_input_lost = True
+                self.get_logger().info(
+                    "pending graceful stop converged — installed (move silenced)")
+                with self._plan_lock:
+                    plan = self._active_plan
+                    t0 = self._plan_t0
+
         # Follower replan (SpaceMouse/GUI/shell): drain the latest target and
         # possibly install a fresh plan BEFORE sampling this tick's frame. The fast
-        # validate_follow gate (~3-4 ms) keeps this well inside the 25 ms emit
-        # budget; a contained exception in here must never stop the stream.
+        # validate_follow gate keeps this well inside the 25 ms emit budget — typical
+        # replan is 1–2 gate passes (~4–9 ms); worst case is a 6-pass build_follow
+        # (≤ ~26 ms) or the 24-pass stop (~100 ms), both still ≪ the 250 ms staleness
+        # E-STOP, and an emit overrun just resets the absolute deadline (no catch-up
+        # spin). A contained exception in here must never stop the stream.
         if mode in _FOLLOWER_MODES:
             try:
                 if self._follower_tick(now):
@@ -384,13 +420,17 @@ class TrajectoryNode(Node):
                 self._follower.reset()
                 self._follower_target = None
                 self._follower_input_lost = False
+                # Start the input-loss grace clock: a None target is not "input
+                # loss" until this window elapses since entry (before the first
+                # SpaceMouse frame even arrives).
+                self._follower_entry_mono = time.perf_counter()
             if leaving_motion_move:
-                # Sample the live (moving) state and install an ALWAYS-VALID
-                # graceful stop: a duration-stretched decel-to-rest that lengthens
-                # its horizon until the gate passes, so a high-velocity mid-move
-                # exit can no longer fall through to "let the move complete". The
-                # stop decelerates in place (never runs on to the old target).
-                # _current_state/_install take the lock themselves.
+                # Sample the live (moving) state and install a graceful stop: a
+                # duration-stretched decel-to-rest that lengthens its horizon until
+                # the gate passes, so a high-velocity mid-move exit no longer falls
+                # through to "let the move complete". The stop decelerates in place
+                # (never runs on to the old target). _current_state/_install take
+                # the lock themselves.
                 try:
                     stop = planner.build_graceful_stop(
                         self._current_state(), self._limits, self._geom)
@@ -399,11 +439,12 @@ class TrajectoryNode(Node):
                         f"left {prev_mode} mid-move for {mode} — "
                         "installed a graceful stop (move silenced)")
                 except TrajectoryInfeasible as e:
-                    # build_graceful_stop is always-valid for a finite seed, so this
-                    # should be unreachable; log loudly if it ever fires.
-                    self._last_rejection = str(e)
-                    self.get_logger().error(
-                        f"graceful stop unexpectedly rejected on mode exit ({e})")
+                    # Near-boundary outward-moving seed: the decel overshoot exceeds
+                    # the seed's boundary margin, so no in-place stop is in-stroke
+                    # yet. Don't latch failure — flag a pending stop; _emit_once
+                    # retries from the decaying live state until it converges (the
+                    # move keeps running under its still-gated plan meanwhile).
+                    self._request_pending_stop(str(e))
             # Seed a hold at the MEASURED pose on stream start (never nominal) —
             # this is what keeps the first u0 inside the pump/firmware gates — but
             # ONLY from FRESH telemetry. Stale/absent telemetry ⇒ defer: the next
@@ -486,6 +527,7 @@ class TrajectoryNode(Node):
         self._follower.reset()
         self._follower_target = None
         self._follower_input_lost = False
+        self._pending_stop = False   # fresh at-rest seed supersedes any pending stop
         self.get_logger().info(
             f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
             f"z={pose[2]:.1f} mm (from measured telemetry)")
@@ -547,9 +589,11 @@ class TrajectoryNode(Node):
 
         Fresh target → track it (``follower.follow`` → install on accept, keep the
         last valid plan + throttled WARN on a gate rejection or a saturation clamp).
-        No fresh target within the input-loss window → install an always-valid
-        graceful stop ONCE (decel-to-rest in place), so a dead SpaceMouse node
-        leaves the platform stopped, not drifting on a stale plan.
+        No fresh target within the input-loss window → install a graceful stop ONCE
+        (decel-to-rest in place), so a dead SpaceMouse node leaves the platform
+        stopped, not drifting on a stale plan. A None target within the grace window
+        since follower-mode entry is NOT input loss — it is the pre-first-frame
+        window before any SpaceMouse frame arrives.
         """
         target_tuple = self._follower_target
         fresh = (target_tuple is not None
@@ -557,6 +601,12 @@ class TrajectoryNode(Node):
 
         if fresh:
             self._follower_input_lost = False
+            self._pending_stop = False    # a fresh target supersedes any pending stop
+            # Capture the seed-sample time BEFORE sampling, then install the follow
+            # plan with t0 = seed_mono so the plan's time origin matches the state it
+            # was seeded from (no v·Δt rewind at every replan — the per-replan-t0-skew
+            # finding).
+            seed_mono = time.perf_counter()
             result = self._follower.follow(
                 self._current_state(), target_tuple[0], self._limits)
             if result.saturated:
@@ -569,31 +619,59 @@ class TrajectoryNode(Node):
                     f"follower target rejected ({result.rejection}) — holding "
                     "last valid plan", throttle_duration_sec=1.0)
             if result.plan is not None:
-                self._install(result.plan)
-                if result.report is not None:
+                # Conditional install (TOCTOU guard): re-check under _plan_lock that
+                # the mode is still a follower mode. A concurrent mode-exit may have
+                # installed a graceful stop during this tick's ~4-7 ms gate — dropping
+                # this stale follow plan lets that stop survive.
+                installed = self._install(
+                    result.plan, t0=seed_mono, require_follower_mode=True)
+                if installed and result.report is not None:
                     self._last_peak_vel_mmps = result.report.peak_leg_vel_mmps
                     self._last_peak_acc_mmps2 = result.report.peak_leg_acc_mmps2
                     self._last_peak_jerk_mmps3 = result.report.peak_leg_jerk_mmps3
-                return True
+                return installed
             return False
 
-        # Input loss: stop once (a stretched, always-valid decel-to-rest).
-        if not self._follower_input_lost:
-            self._follower_input_lost = True
+        # Not fresh. A None target within the input-loss window SINCE FOLLOWER-MODE
+        # ENTRY is the pre-first-frame grace period (no SpaceMouse frame yet), NOT
+        # input loss — keep the seeded hold and wait. Only past that window (or with
+        # a genuinely stale target) do we declare loss.
+        if target_tuple is None:
+            entry = self._follower_entry_mono
+            if entry is None or (now - entry) <= self._follower_input_loss_s:
+                return False
+
+        # Input loss: stop once. A SUCCESSFUL stop latches _follower_input_lost so we
+        # don't re-stop every tick (a fresh target un-latches it above); a FAILED
+        # build defers to the pending-stop retry in _emit_once (does NOT latch
+        # failure — retry from the decaying live state until it converges).
+        if not self._follower_input_lost and not self._pending_stop:
             try:
                 stop = planner.build_graceful_stop(
                     self._current_state(), self._limits, self._geom)
             except TrajectoryInfeasible as e:
-                self._last_rejection = str(e)
-                self.get_logger().error(
-                    f"follower input-loss stop rejected ({e})")
+                self._request_pending_stop(str(e))
                 return False
+            self._follower_input_lost = True
             self._install(stop)
             self.get_logger().warning(
                 "follower input loss — installed a graceful stop",
                 throttle_duration_sec=1.0)
             return True
         return False
+
+    def _request_pending_stop(self, reason: str) -> None:
+        """Flag that a graceful stop is wanted but build_graceful_stop rejects the
+        current seed (near-boundary outward-moving: decel overshoot > boundary
+        margin). ``_emit_once`` retries it every tick from the decaying live state
+        until it converges — a few ticks — instead of latching failure. Loud ERROR
+        once (on the transition into the pending state), NOT per tick."""
+        self._last_rejection = reason
+        if not self._pending_stop:
+            self.get_logger().error(
+                f"graceful stop deferred — near-boundary outward seed ({reason}); "
+                "retrying from the decaying live state until it converges")
+        self._pending_stop = True
 
     # ═══════════════════════════════════════════════════════════
     # Services (Trigger)
@@ -608,11 +686,27 @@ class TrajectoryNode(Node):
             return (self._neutral_pose.copy(), np.zeros(6), np.zeros(6))
         return plan.state_at(time.perf_counter() - t0)
 
-    def _install(self, plan) -> None:
-        now = time.perf_counter()
+    def _install(self, plan, *, t0=None, require_follower_mode=False) -> bool:
+        """Install ``plan`` as the active plan. Returns True iff it was installed.
+
+        ``t0`` overrides the plan-time origin (default: ``perf_counter()`` at
+        install). The follower passes its seed-sample timestamp so the plan's origin
+        matches the state it was seeded from (removes the v·Δt rewind per replan);
+        all other callers keep the default.
+
+        ``require_follower_mode`` gates the install on the current mode still being a
+        follower mode, re-checked UNDER ``_plan_lock`` — this closes the TOCTOU where
+        a concurrent ``_on_control_mode`` installs a graceful stop while this (now
+        stale) follower plan was being built, and the stale plan would otherwise
+        clobber the stop. Dropped ⇒ returns False, active plan untouched.
+        """
+        now = t0 if t0 is not None else time.perf_counter()
         with self._plan_lock:
+            if require_follower_mode and self._current_mode not in _FOLLOWER_MODES:
+                return False
             self._active_plan = plan
             self._plan_t0 = now
+        return True
 
     def _pose_to_motor_rev(self, pose) -> np.ndarray:
         """pose_6dof → motor_rev, the EXACT chain the emitter ships (emitter.py):
@@ -634,7 +728,19 @@ class TrajectoryNode(Node):
         return (plan.total_duration - (time.perf_counter() - t0)) > 0.0
 
     def _svc_hold(self, request, response):
-        """``trajectory/hold``: freeze at the current pose (profiled decel-to-rest)."""
+        """``trajectory/hold``: freeze at the current pose (profiled decel-to-rest).
+
+        Rejected in a follower mode (SPACEMOUSE/GUI/SHELL): the streaming input would
+        supersede this hold within one 40 Hz tick, so a hold there is a mode
+        confusion — exit the follower mode (which installs a graceful stop) instead.
+        Mirrors ``go_to_pose``'s WRONG_MODE rationale.
+        """
+        if self._current_mode in _FOLLOWER_MODES:
+            response.success = False
+            response.message = (
+                'in a follower mode the input stream would supersede this within '
+                'one tick — exit the mode (graceful stop) instead')
+            return response
         if not self._seeded:
             response.success = False
             response.message = 'not streaming/seeded — cannot hold'
@@ -654,7 +760,19 @@ class TrajectoryNode(Node):
         return response
 
     def _svc_go_home(self, request, response):
-        """``trajectory/go_home``: profiled return to the neutral active pose."""
+        """``trajectory/go_home``: profiled return to the neutral active pose.
+
+        Rejected in a follower mode (SPACEMOUSE/GUI/SHELL): the streaming input would
+        supersede this move within one 40 Hz tick, so a go_home there is a mode
+        confusion — exit the follower mode (which installs a graceful stop) instead.
+        Mirrors ``go_to_pose``'s WRONG_MODE rationale.
+        """
+        if self._current_mode in _FOLLOWER_MODES:
+            response.success = False
+            response.message = (
+                'in a follower mode the input stream would supersede this within '
+                'one tick — exit the mode (graceful stop) instead')
+            return response
         if not self._seeded:
             response.success = False
             response.message = 'not streaming/seeded — cannot go home'
