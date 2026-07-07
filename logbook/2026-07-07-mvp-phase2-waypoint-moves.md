@@ -1,0 +1,259 @@
+---
+title: MVP Phase 2 — Waypoint moves at very low limits (full gate + build_move)
+type: feature
+date: 2026-07-07
+status: resolved
+phase: "2"
+related_plan: mvp-trajectory-bringup.md
+files_changed:
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/planner.py
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/limits.py
+  - ros_ws/src/jugglebot/jugglebot/trajectory_node.py
+  - ros_ws/src/jugglebot/jugglebot/state_machine.py
+  - ros_ws/src/jugglebot/launch/jugglebot_launch.py
+  - ros_ws/src/jugglebot_interfaces/srv/GoToPose.srv
+  - ros_ws/src/jugglebot_interfaces/srv/SetTrajectoryLimits.srv
+  - ros_ws/src/jugglebot_interfaces/msg/TrajectoryStatus.msg
+  - ros_ws/src/jugglebot_interfaces/CMakeLists.txt
+  - tests/motion/test_trajectory_feasibility.py
+  - tests/motion/test_trajectory_planner_move.py
+  - tests/ros/test_trajectory_node.py
+  - tests/ros/test_state_machine.py
+  - tests/ros/conftest.py
+commits:
+  - 614820c
+  - 1dc9571
+subsystem:
+  - motion
+  - ros
+tags:
+  - feature
+  - trajectory
+  - safety
+  - feasibility
+---
+
+# MVP Phase 2 — Waypoint moves at very low limits (full gate + build_move)
+
+## Summary
+
+Phase 2 of `mvp-trajectory-bringup.md`: the trajectory generator gains its
+**arbitrary-target profiled move surface** and its **full feasibility gate**.
+`trajectory/go_to_pose` (a new `GoToPose` service, TRAJECTORY mode only) drives
+`planner.build_move`, which runs the complete `feasibility.validate` gate
+(reachability / workspace / condition, leg vel/acc/jerk peaks, per-knot step bound)
+plus a duration-stretch loop that finds the minimal feasible duration or **loudly
+rejects** a too-tight requested one (`TOO_FAST`, with the achievable minimum in the
+response). `trajectory/set_limits` (`SetTrajectoryLimits`) is the in-session leg-limit
+ramp (each value clamped to its YAML hard ceiling). `trajectory/status` migrates off
+the Phase-1 `DiagnosticStatus` stand-in to the typed `TrajectoryStatus` msg, and
+`trajectory/diagnostics` publishes the active move's measured leg peaks + emitter
+jitter. The orchestrator gains `ActiveMode.TRAJECTORY` and a `'trajectory'` command.
+
+All motion still flows through the single `planner` → `feasibility.validate` gate —
+Phase 2 fills in the gate's checks without reshaping the contract or adding any
+side-channel motion path.
+
+Software is complete and the full suite is green (count triple in Verification).
+**Hardware validation is DEFERRED** to an operator bench session — the waypoint move
+battery + one loud-rejection demo at the default low limits (protocol in the plan's
+Phase 2 detail; the reusable `tools/probes/traj_stream_probe.py` from Phase 1 shows
+the streamed knots read-only).
+
+## Motivation
+
+Phase 1 proved the streaming substrate by holding the ACTIVE pose. Phase 2 is the
+first phase that *moves* the platform under command, so it is where the loud-rejection
+guarantee earns its keep: an operator asks for a pose + duration, and every request is
+either planned smoothly or rejected with a machine code and an achievable duration —
+never silently dropped, never mid-stream at the pump. The move envelope starts at the
+deliberately tiny default limits (100 mm/s, 400 mm/s², 8000 mm/s³) and is ramped up in
+Phase 4; the gate's always-on jerk/accel/vel enforcement is the primary smoothness
+mechanism.
+
+## Design
+
+### The full feasibility gate (`feasibility.validate`)
+
+Phase 1 shipped a minimal gate (stroke + workspace + vel/acc caps). Phase 2 completes
+it. The function is a **pure predicate over a fully-specified plan** — it never mutates
+durations (the stretch loop lives in the planner) — and it computes **all** peaks in
+one pass so the planner can read the worst limit ratio off a single report.
+
+Order (first failure wins the `code`):
+
+1. **Geometry**, per dense sample (200/segment): non-finite reject (`UNREACHABLE`);
+   leg extensions within the hard stroke margins (`WORKSPACE`); Jacobian condition
+   number under the workspace hard bound (`UNREACHABLE`). These early-return — a
+   non-finite / out-of-stroke / near-singular pose makes the Jacobian peaks
+   meaningless.
+2. **Leg kinematic peaks** via the `ik_solver` Jacobian chain: peak leg velocity
+   (`LIMIT_VEL`), acceleration (`LIMIT_ACC`), and jerk (`LIMIT_JERK`). Jerk is the
+   finite difference of the *analytic* leg acceleration — a second-order-accurate
+   stand-in for the third difference of leg position — taken **per segment** (the plan
+   is C2, not C3, so jerk is only C0 across joins; a cross-join difference would
+   fabricate a spurious spike at the seam).
+3. **Knot-step bound** (`STEP_BOUND`): the actual wire `u0` sequence is the plan
+   sampled at the 25 ms knot spacing mapped `ext × mm_to_rev`; the max per-knot `|Δu0|`
+   must stay under `max_step_rev` with a 20 % margin. This rejects a step-heavy move
+   **before motion**, rather than one tick after `mpc_active=1` at the pump.
+
+### `planner.build_move` + the duration-stretch loop
+
+`build_move(state0, target_pose, duration_s, limits, geom)` builds a rest-terminating
+quintic from the seed state to the target.
+
+- `duration_s` **None / ≤ 0** → the **minimal feasible** duration from the stretch loop.
+- `duration_s` **> 0** → honoured if `≥` the minimal feasible; otherwise
+  `TrajectoryInfeasible(TOO_FAST, …, min_duration_s=t_min)`. A too-tight duration is
+  *rejected*, never silently stretched — the operator asked for a specific timing.
+
+The stretch loop starts at the `min_move_duration_s` floor and multiplies `T` by
+`max(r_vel, √r_acc, ∛r_jerk, r_step) · 1.05`. From a rest start the leg peaks scale
+**exactly** as `1/Tⁿ` (the spatial path is fixed; only its timing rescales), so this
+factor lands the binding constraint at `limit / 1.05²` in a single stretch — convergence
+in ≤ 2 `validate` calls (measured: ≤ 3, asserted in a test). A `WORKSPACE` / `UNREACHABLE`
+failure is spatial (a longer `T` traces the same poses) and re-raises immediately.
+
+### `TrajectoryLimits.with_session_limits`
+
+The `set_limits` ramp: a clamped session-limit override that keeps the ceilings /
+knot / step / duration fields and can never raise a limit past its YAML ceiling.
+
+### `trajectory_node` (thin wrapper)
+
+`trajectory/go_to_pose` gates on TRAJECTORY mode (`WRONG_MODE` otherwise — a scripted
+move from STANDBY/SPACEMOUSE/CATCH is a mode confusion, not a motion command) and on
+being seeded (`STALE_STATE`), converts `geometry_msgs/Pose` → `pose_6dof` (quaternion
+→ rotvec), and installs the built plan; a reject leaves the held hold plan untouched.
+`trajectory/set_limits` swaps the frozen limits reference atomically. Status is the
+typed `TrajectoryStatus`; diagnostics publish the last accepted move's peaks + jitter.
+
+### Orchestrator
+
+`ActiveMode.TRAJECTORY` + a `'trajectory'` command in ACTIVE (the orchestrator node
+has no command whitelist — the state machine's ACTIVE handler is the single accept
+point). STANDBY's docstring now reads "hold at neutral via trajectory_node".
+
+## Implementation
+
+The pose→leg chain is reused verbatim from `motion/ik_solver.py` and
+`motion/workspace.py`; Phase 2 adds only the gate's jerk/step passes and the planner's
+stretch loop. Empirical head-start (throwaway probe on the pinned stack): at the default
+limits a z 170→190 move needs 0.544 s (binding: acc 362.8 ≈ 0.907·400, the exact 1.05²
+margin signature); an explicit 0.05 s request for a 20/20/15 mm move raises `TOO_FAST`
+with `min_duration_s = 0.629 s`; an out-of-stroke target raises `WORKSPACE` in the first
+iteration (not `TOO_FAST` after exhausting iters). The interface package rebuilt clean
+(`colcon build --packages-select jugglebot_interfaces jugglebot`, 2026-07-07, 1 min 41 s).
+
+## Verification
+
+(date, command, result triples — re-runnable from the artefact alone)
+
+- **New motion gate + planner tests** (`pytest tests/motion/test_trajectory_feasibility.py
+  tests/motion/test_trajectory_planner_move.py -q`, run 2026-07-07) = **33 passed** (23
+  feasibility incl. the 12-seed peak-bound property test + 10 planner-move).
+- **Node + state-machine tests** (`pytest tests/ros/test_trajectory_node.py
+  tests/ros/test_state_machine.py -q`, run 2026-07-07) = both green within the group run
+  below; `test_trajectory_node.py` alone = **22 passed in 7.24 s** (was 12; +10).
+- **colcon build gate** (`colcon build --packages-select jugglebot_interfaces jugglebot`,
+  run 2026-07-07, no venv, ROS Foxy) = **2 packages finished [1 min 41 s]**, 0 errors —
+  the three new interfaces (`GoToPose` / `SetTrajectoryLimits` / `TrajectoryStatus`)
+  generate cleanly.
+- **Full suite** (`pytest tests/ -q`, run 2026-07-07) = **2041 passed, 1 xfailed in
+  500.17 s** — 0 failed. Baseline before Phase 2 (`pytest tests/ -q`, 2026-07-07, post
+  Phase-1 + audit fixes, c0b31a9): 1996 passed, 1 xfailed. Net **+45 passed**, fully
+  accounted for by the new tests and nothing else: 23 (`test_trajectory_feasibility.py`)
+  + 10 (`test_trajectory_planner_move.py`) + 10 (`test_trajectory_node.py`) + 2
+  (`test_state_machine.py`). No pre-existing test changed count; the 1 xfailed is
+  unchanged.
+- **Codegen determinism** (2026-07-07): no `config/hardware_config.yaml` change this
+  phase (the `JB_TRAJ_*` constants landed in Phase 1); re-running
+  `python config/generate_config.py` produced **no** working-tree changes.
+
+## Discussion
+
+CLAUDE.md makes the Discussion non-negotiable: several reversible forks were decided
+under the autonomous decide+document policy.
+
+### Why `GoToPose.code` is a `string`, not the plan's `int32`
+
+Fork — the plan's Architecture wrote `int32 code` for the service response, but the
+feasibility layer's codes are already a **string** enum (`OK`, `LIMIT_ACC`, …) that is
+tested and consumed across `feasibility.py` / `planner.py`. Concrete failure modes a
+string field prevents: (a) an `int↔string` mapping table is a second source of truth
+that silently drifts from `feasibility.py` when a code is added — a `string` field is
+the enum verbatim, so there is nothing to drift; (b) an int on the wire is opaque —
+`ros2 service call` shows `code: 4` instead of `LIMIT_ACC`, forcing the operator to
+keep a decoder ring during a safety-sensitive bench session. The field is brand-new
+with no external consumers (this phase is its only producer/consumer; Phase 5's
+`TimedTarget.srv` mirrors whatever shape ships here), so the choice is cheap to make
+now and expensive to leave inconsistent. Chose `string`; noted here so Phase 5 follows
+suit.
+
+### Why the stretch loop starts at the duration floor, not the plan's pose-space pre-size
+
+Fork — the plan lists rest-to-rest pre-size formulas (`peak_vel = 1.875·|Δp|/T`, etc.)
+to seed the initial duration. Those are **pose-axis** peaks (mm/s, rad/s), but the gate's
+limits are **leg-space** (mm/s of extension), so the pre-size is only an approximation
+that still needs the iteration to correct. Starting at `min_move_duration_s` and relying
+on the *exact* `1/Tⁿ` leg-space scaling of the stretch factor is simpler and provably
+converges in one stretch from a rest start (the binding leg peak lands at `limit/1.05²`
+by construction — verified numerically and asserted by `test_stretch_converges_in_few_iters`).
+The pose-space pre-size would add a second, inexact duration estimate for no iteration
+saving. The closed-form pose-space peak functions are still copied + tested
+(`test_closed_form_peaks_match_dense_sampling`) as validated utility math later phases
+may use; the gate itself measures true leg-space peaks by dense sampling, which is
+strictly more accurate than any pose-space bound.
+
+### Why the condition-number check is defence-in-depth here
+
+Fork — include a Jacobian condition-number reachability check (mapped to `UNREACHABLE`)
+even though a sweep found **no** in-stroke pose in the current geometry that exceeds the
+workspace hard bound (`cond_hard ≈ 5.59`; poses go out-of-stroke before they go
+ill-conditioned, so `WORKSPACE` always fires first). Root cause it guards: the plan's
+gate spec names `check_workspace_limits` (which includes the condition bound), and a
+future geometry / larger envelope / a spacemouse target pushed to the edge *could* reach
+a near-singular but in-stroke pose where the Jacobian peaks are numerically unreliable.
+Rejecting there is correct; it costs one `np.linalg.cond` per sample (already computed
+for the peaks). Tested via monkeypatch (`test_reject_unreachable_singular`) since no real
+pose triggers it — the test documents that the branch is a live backstop, not dead code.
+
+### Why validate computes all peaks (no early return on a limit failure)
+
+Fork — Phase 1's gate early-returned on the first limit failure. Phase 2's does a full
+pass and returns all four peaks. Root cause: the duration-stretch loop needs the *worst*
+ratio across vel/acc/jerk/step to pick the correct stretch factor in one step; an
+early-return report would only carry the first-failing peak, forcing multiple
+gate calls (or a second full pass) to find the true binding constraint. Computing all
+peaks once is cheaper and makes the stretch exact. Geometry checks still early-return
+(a bad pose makes the Jacobian peaks meaningless).
+
+### Deviation carried from Phase 1: armed-mode-exit is still a sharp edge
+
+The Phase-1 note stands: leaving a streaming mode while the bridge is ARMED latches
+`MPC_STALE` within 250 ms. Phase 2 adds `ActiveMode.TRAJECTORY` but deliberately does
+**not** yet couple mode-exit to an auto-disarm — that structural fix (orchestrator-owned
+auto-disarm on ACTIVE sub-mode exit) is scoped with the broader orchestrator-automated
+arming, which is explicitly Deferred in the plan. The operator protocol (disarm before
+mode change) remains the guard.
+
+## Open questions / next steps
+
+- **Hardware session is the gate** (deferred): the plan's Phase-2 battery — z
+  170→190→170, x ±20, y ±20, tilt rx ±3°, then one `duration_s: 0.05` request that must
+  reject `TOO_FAST` with `min_duration_s` and zero motion. PASS per move: subjectively
+  smooth, `/diagnose --latest` shows leg jerk within limits, no pump rejects, no E-STOP.
+- **ci-deep** is nominally due at the end of Phase 2 (Testing Plan). This phase's new
+  math tests are deterministic `parametrize` (not hypothesis-driven), so ci-deep adds
+  little for the Phase-2 additions specifically; deferred to run alongside Phase 5's
+  property-heavy `build_timed` work, or on request.
+- Phase 3 (SpaceMouse) adds `follower.py` + the `platform_pose_topic` publisher-field
+  gating and gravity-offset composition (verbatim ports from `mpc_bridge_node`).
+
+## Related
+
+- Plan: [`plans/active/mvp-trajectory-bringup.md`](../plans/active/mvp-trajectory-bringup.md) — Phase 2 detail + the feasibility-gate architecture.
+- [2026-07-07-mvp-phase1-streaming-foundation.md](2026-07-07-mvp-phase1-streaming-foundation.md) — the streaming substrate this builds on; the minimal gate this completes.
+- [2026-06-29-canbridge-phase0-native-harness.md](2026-06-29-canbridge-phase0-native-harness.md) — format precedent.

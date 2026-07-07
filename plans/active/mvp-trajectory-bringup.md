@@ -436,7 +436,7 @@ passes; results recorded in the logbook with seeds and configs):
 | Phase | Title | Sim gate | Hardware | Status |
 |---|---|---|---|---|
 | 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | CODE COMPLETE (hardware deferred) |
-| 2 | Waypoint moves at low limits | — | move battery + loud rejection | NOT STARTED |
+| 2 | Waypoint moves at low limits | — | move battery + loud rejection | CODE COMPLETE (hardware deferred) |
 | 3 | SpaceMouse streaming | — | manual flight | NOT STARTED |
 | 4 | Limit ramp-up + lean A/B | — | multiple short sessions | NOT STARTED |
 | 5 | Timed target states | — | timed moves ±25 ms | NOT STARTED |
@@ -541,6 +541,29 @@ snap), `/diagnose --latest` shows leg jerk within limits, no pump rejects, no
 E-STOP. ABORT: oscillation, gate violation, tracking error > 0.1 rev.
 
 **Exit**: 10/10 scripted moves clean + one demonstrated loud rejection.
+
+**Outcome (2026-07-07 — CODE COMPLETE, hardware deferred)**: All Phase 2 software
+landed on branch `mvp-trajectory-bringup` (commits `614820c` motion gate +
+`build_move`; `1dc9571` interfaces + node + orchestrator). The full
+`feasibility.validate` gate (geometry/workspace/condition → leg vel/acc/jerk peaks →
+per-knot step bound, all peaks measured in one pass) + `planner.build_move` with the
+duration-stretch loop (minimal-feasible, or a loud `TOO_FAST` with `min_duration_s`
+for a too-tight request; spatial `WORKSPACE`/`UNREACHABLE` re-raised immediately).
+New interfaces `GoToPose.srv` (response `code` is the feasibility **string** enum, not
+the plan's `int32` — see the logbook Discussion), `SetTrajectoryLimits.srv` (clamped
+ramp), and the typed `TrajectoryStatus.msg` (migrated off the Phase-1
+`DiagnosticStatus` stand-in); `trajectory/go_to_pose` (TRAJECTORY-mode-only, else
+`WRONG_MODE`) + `trajectory/set_limits` + `trajectory/diagnostics`;
+`ActiveMode.TRAJECTORY` + the `'trajectory'` orchestrator command. Verification:
+`pytest tests/ -q` (2026-07-07) = **2041 passed, 1 xfailed in 500.17 s** (baseline
+1996/1; net +45 = the new tests only, no regressions); `colcon build
+--packages-select jugglebot_interfaces jugglebot` (2026-07-07) = 2 packages finished,
+0 errors; codegen unchanged (no YAML edit this phase). **Deferred to the operator
+bench session**: the waypoint move battery (z 170→190→170, x/y ±20, tilt rx ±3°) +
+one `duration_s: 0.05` loud-rejection demo at the default low limits (100 mm/s,
+400 mm/s², 8000 mm/s³), using the Phase-1 `tools/probes/traj_stream_probe.py` for
+read-only knot inspection. Full narrative in
+`logbook/2026-07-07-mvp-phase2-waypoint-moves.md`.
 
 ### Phase 3 — SpaceMouse streaming
 
