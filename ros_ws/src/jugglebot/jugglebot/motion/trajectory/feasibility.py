@@ -271,3 +271,223 @@ def validate(plan, limits, geom, *, samples_per_segment: int = 200
         peak_leg_vel_mmps=peak_vel, peak_leg_acc_mmps2=peak_acc,
         peak_leg_jerk_mmps3=peak_jerk, peak_leg_ext_mm=peak_ext,
         peak_step_rev=peak_step)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Fast follower gate (Phase 3) — the SAME checks as validate(), vectorised
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# WHY a second gate function (and why it is still "one gate"):
+# The SpaceMouse follower (follower.py) replans every 40 Hz emitter tick, so it
+# runs inside the 25 ms emit budget. The analytic validate() above costs ~377 ms
+# on this Jetson (measured 2026-07-07) — three orders of magnitude too slow — and
+# it is the analytic Jacobian chain (compute_jacobian + accel_to_leg_accels'
+# J̇ finite difference) that dominates, NOT the condition-number SVD (that is ~9 %).
+# validate_follow() measures the IDENTICAL leg-space quantities a different, cheaper
+# way: it vectorises the pose→leg-extension sampling over the whole segment in one
+# numpy expression (no Python per-sample loop, no analytic Jacobian) and derives
+# leg vel/acc/jerk by FINITE-DIFFERENCING the sampled extensions — the exact method
+# validate()'s step-bound pass already trusts. Result: ~1.5 ms.
+#
+# It is NOT a bypass of the loud-rejection contract:
+#   * it lives in this one feasibility module, returns the same FeasibilityReport,
+#     and uses the same codes / limits / stroke logic;
+#   * the follower reaches it only through planner.build_follow (same as every
+#     other motion path goes through planner);
+#   * its step-bound check is BIT-IDENTICAL to validate() (same knot sampling),
+#     so the "every emitted frame is pump-accepted" invariant is preserved exactly;
+#   * vel/acc finite differences match the analytic peaks to < 0.05 % (verified);
+#   * the jerk (third difference) under-measures the true peak by ≤ 1.5 % at 300
+#     samples — the SAME endpoint bias validate() itself already accepts (see the
+#     _MIN_SAMPLES note) — and validate_follow inflates it by _FOLLOW_JERK_MARGIN so
+#     the follower gate is *strictly conservative* on jerk (never anti-conservative
+#     vs the session limit).
+#
+# Decimation the task authorised: the per-sample condition-number SVD is checked at
+# only _FOLLOW_COND_SAMPLES points (defence-in-depth — the per-sample STROKE check
+# runs on ALL samples and, in this geometry, always fires before ill-conditioning;
+# see the validate() condition-check Discussion in the Phase-2 logbook).
+
+# Follower-gate resolution. 300 samples/segment lands the finite-difference jerk
+# bias at ≤ 1.5 % (== validate()'s accepted analytic endpoint bias) while keeping
+# the whole gate at ~1.6 ms. The condition SVD is decimated to 12 points.
+_FOLLOW_SAMPLES = 300
+_FOLLOW_COND_SAMPLES = 12
+# Extra jerk inflation on top of the ≤1.5 % finite-difference under-measurement, so
+# the follower gate is provably conservative on the binding constraint. Over-
+# conservatism only ever REJECTS a marginal plan (follower keeps its last valid
+# plan) — never accepts an over-jerk one.
+_FOLLOW_JERK_MARGIN = 1.05
+
+
+def _batched_rotvec_to_R(rv: np.ndarray) -> np.ndarray:
+    """(N,3) rotvecs → (N,3,3) rotation matrices — batched Rodrigues.
+
+    Bit-matches the scalar ``ik_solver.rotvec_to_rot_matrix`` (verified to 1e-9);
+    the small-angle rows fall back to identity to avoid the 0/0 in the axis
+    normalisation.
+    """
+    theta = np.linalg.norm(rv, axis=1)                       # (N,)
+    small = theta < 1e-12
+    theta_safe = np.where(small, 1.0, theta)
+    k = rv / theta_safe[:, None]                             # (N,3) unit axes
+    kx, ky, kz = k[:, 0], k[:, 1], k[:, 2]
+    n = rv.shape[0]
+    K = np.zeros((n, 3, 3))
+    K[:, 0, 1] = -kz; K[:, 0, 2] = ky
+    K[:, 1, 0] = kz;  K[:, 1, 2] = -kx
+    K[:, 2, 0] = -ky; K[:, 2, 1] = kx
+    s = np.sin(theta)[:, None, None]
+    c = (1.0 - np.cos(theta))[:, None, None]
+    R = np.eye(3)[None] + s * K + c * (K @ K)
+    R[small] = np.eye(3)
+    return R
+
+
+def _batched_leg_vectors(poses: np.ndarray, geom):
+    """(N,6) poses → ``(leg_vecs (N,6,3), R (N,3,3))``.
+
+    Vectorised twin of ``ik_solver.compute_leg_vectors``: matches it per-sample to
+    machine precision (verified). ``R`` is returned so the decimated condition
+    check can reuse it without a second Rodrigues.
+    """
+    pos = poses[:, :3]                                       # (N,3)
+    R = _batched_rotvec_to_R(poses[:, 3:6])                  # (N,3,3)
+    centre = pos + geom.init_height_vec                      # (N,3)
+    plat_world = centre[:, None, :] + np.einsum(
+        'nij,kj->nki', R, geom.plat_nodes)                   # (N,6,3)
+    return plat_world - geom.base_nodes[None], R
+
+
+def _batched_condition(leg_vecs: np.ndarray, R: np.ndarray, geom) -> np.ndarray:
+    """Normalised Jacobian condition number per sample (batched).
+
+    Replicates ``workspace.compute_condition_number`` EXACTLY (verified): the
+    rotational columns are divided by ``plat_radius_mm`` before the SVD, so the
+    result is the ~3–8 normalised condition (not the raw ~450) that
+    ``WorkspaceLimits.cond_hard`` is expressed against.
+    """
+    unit = leg_vecs / np.linalg.norm(leg_vecs, axis=2, keepdims=True)   # (N,6,3)
+    a_world = np.einsum('nij,kj->nki', R, geom.plat_nodes)              # (N,6,3)
+    n = leg_vecs.shape[0]
+    J = np.empty((n, 6, 6))
+    J[:, :, :3] = unit
+    J[:, :, 3:] = np.cross(a_world, unit)
+    J[:, :, 3:] /= geom.plat_radius_mm
+    return np.linalg.cond(J)                                             # (N,)
+
+
+def validate_follow(plan, limits, geom, *,
+                    samples_per_segment: int = _FOLLOW_SAMPLES,
+                    cond_samples: int = _FOLLOW_COND_SAMPLES
+                    ) -> FeasibilityReport:
+    """Vectorised finite-difference feasibility gate for the follower hot path.
+
+    Same contract as :func:`validate` (a pure predicate returning a
+    :class:`FeasibilityReport`, first-failure-wins ``code``, all peaks measured),
+    but ~250× faster — see the module block above for why this is the same gate,
+    not a bypass. Intended for per-tick replanning; the service path keeps using
+    the analytic :func:`validate`.
+    """
+    wlimits = _workspace_limits(geom)
+    mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
+
+    peak_vel = 0.0
+    peak_acc = 0.0
+    peak_jerk = 0.0
+    peak_ext = 0.0
+
+    for seg in (plan.segments or ()):
+        n = max(_MIN_SAMPLES, int(samples_per_segment))
+        T = seg.duration
+        dt = T / (n - 1)
+        ts = T * np.arange(n) / (n - 1)
+        poses = seg.eval_pose_batch(ts)                     # (n,6)
+
+        if not np.all(np.isfinite(poses)):
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=["pose contains non-finite values (NaN/Inf) on the "
+                         "sampled follower segment"])
+
+        leg_vecs, R = _batched_leg_vectors(poses, geom)
+        ext = np.linalg.norm(leg_vecs, axis=2) - geom.init_leg_lengths_mm  # (n,6)
+        peak_ext = max(peak_ext, float(np.max(np.abs(ext))))
+
+        # Stroke check on EVERY sample (batched, cheap) — the real per-sample
+        # backstop the decimated condition check leans on.
+        hard_min = wlimits.leg_hard_min_mm
+        hard_max = wlimits.leg_hard_max_mm
+        oob = (ext < hard_min) | (ext > hard_max)
+        if np.any(oob):
+            si, li = np.argwhere(oob)[0]
+            return FeasibilityReport(
+                ok=False, code=WORKSPACE,
+                reasons=[f"leg {li} out of stroke ({ext[si, li]:.1f} mm) on the "
+                         f"follower segment"],
+                peak_leg_ext_mm=peak_ext)
+
+        # Decimated condition-number SVD (defence-in-depth).
+        idx = np.linspace(0, n - 1, min(cond_samples, n)).astype(int)
+        conds = _batched_condition(leg_vecs[idx], R[idx], geom)
+        worst = float(np.max(conds))
+        if worst > wlimits.cond_hard:
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=[f"Jacobian condition {worst:.1f} > "
+                         f"{wlimits.cond_hard:.1f} (near singularity) on the "
+                         f"follower segment"],
+                peak_leg_ext_mm=peak_ext)
+
+        # Leg vel/acc/jerk by finite differences of the sampled extensions.
+        vel = np.diff(ext, axis=0) / dt
+        acc = np.diff(vel, axis=0) / dt
+        jerk = np.diff(acc, axis=0) / dt
+        peak_vel = max(peak_vel, float(np.max(np.abs(vel))))
+        peak_acc = max(peak_acc, float(np.max(np.abs(acc))))
+        peak_jerk = max(peak_jerk,
+                        float(np.max(np.abs(jerk))) * _FOLLOW_JERK_MARGIN)
+
+    # Knot-step bound — sampled at the wire knot spacing, identical to validate().
+    peak_step = 0.0
+    if plan.total_duration > 0.0:
+        kdt = float(limits.knot_dt_s)
+        n_knots = int(np.floor(plan.total_duration / kdt)) + 2
+        kts = np.minimum(np.arange(n_knots) * kdt, plan.total_duration)
+        rev = np.stack([_pose_to_rev(plan.state_at(float(tk))[0], geom, mm_to_rev)
+                        for tk in kts])
+        if n_knots > 1:
+            peak_step = float(np.max(np.abs(np.diff(rev, axis=0))))
+
+    step_bound = STEP_BOUND_MARGIN * float(limits.max_step_rev)
+    code = OK
+    reasons: list = []
+    if peak_vel > limits.leg_vel_mmps:
+        code = LIMIT_VEL
+        reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
+                   f"{limits.leg_vel_mmps:.1f}"]
+    elif peak_acc > limits.leg_acc_mmps2:
+        code = LIMIT_ACC
+        reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
+                   f"{limits.leg_acc_mmps2:.1f}"]
+    elif peak_jerk > limits.leg_jerk_mmps3:
+        code = LIMIT_JERK
+        reasons = [f"peak leg jerk {peak_jerk:.0f} mm/s³ > "
+                   f"{limits.leg_jerk_mmps3:.0f}"]
+    elif peak_step > step_bound:
+        code = STEP_BOUND
+        reasons = [f"peak per-knot step {peak_step:.3f} rev > "
+                   f"{step_bound:.3f} ({int(STEP_BOUND_MARGIN * 100)}% of "
+                   f"{limits.max_step_rev:.3f})"]
+
+    return FeasibilityReport(
+        ok=(code == OK), code=code, reasons=reasons,
+        peak_leg_vel_mmps=peak_vel, peak_leg_acc_mmps2=peak_acc,
+        peak_leg_jerk_mmps3=peak_jerk, peak_leg_ext_mm=peak_ext,
+        peak_step_rev=peak_step)
+
+
+def _pose_to_rev(pose, geom, mm_to_rev) -> np.ndarray:
+    """pose_6dof → motor_rev, the exact chain the emitter/pump use (scalar)."""
+    pos, rot = _pose_to_pos_rot(pose)
+    return pose_to_leg_lengths(pos, rot, geom) * mm_to_rev

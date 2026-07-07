@@ -37,6 +37,7 @@ from jugglebot.motion.trajectory.feasibility import (
     TOO_FAST,
     TrajectoryInfeasible,
     validate,
+    validate_follow,
 )
 from jugglebot.motion.trajectory.plan import HoldPlan, TrajectoryPlan
 from jugglebot.motion.trajectory.segment import POSE_DIM, QuinticSegment
@@ -256,3 +257,102 @@ def _gate(plan, limits, geom) -> None:
     if not report.ok:
         raise TrajectoryInfeasible(
             report.code, report.reasons, report.min_duration_s)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3 — follower + always-valid graceful stop (the fast gate path)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Bound on the follower's per-tick stretch. From a MOVING seed the exact 1/Tⁿ
+# scaling does not hold, so a couple of extra iterations may be needed; each is a
+# ~1.6 ms validate_follow call, so a small cap keeps the whole per-tick replan well
+# inside the 25 ms emit budget. On non-convergence the follower keeps its last
+# valid plan (build_follow raises TOO_FAST, which the follower swallows).
+_MAX_FOLLOW_ITERS = 6
+
+
+def build_follow(state0, target_pose, limits, geom, horizon_s):
+    """A streaming-follower move toward ``target_pose`` over ~``horizon_s``.
+
+    Used by the SpaceMouse/GUI follower (``follower.py``), which calls this every
+    40 Hz tick from the CURRENT commanded state (a MOVING seed — C2 by
+    construction). Gated by the **fast** :func:`validate_follow`, not the ~377 ms
+    analytic :func:`validate`, so the whole replan fits the emit budget.
+
+    Horizon semantics mirror the plan's ``max(min_feasible, horizon_s)``: build at
+    ``horizon_s`` (floored at ``min_move_duration_s``); if the fast gate rejects it
+    with a stretchable (vel/acc/jerk/step) failure, stretch the duration up toward
+    the minimal feasible one and re-gate (bounded iterations). A spatial
+    ``WORKSPACE`` / ``UNREACHABLE`` failure is re-raised immediately (a longer
+    horizon cannot reach an unreachable target — the follower's saturation clamp is
+    what keeps the target reachable). Returns ``(plan, report)``.
+    """
+    pose, twist, accel = (_as6(state0[0], 'pose'),
+                          _as6(state0[1], 'twist'),
+                          _as6(state0[2], 'accel'))
+    target = _as6(target_pose, 'target_pose')
+    T = max(float(horizon_s), float(limits.min_move_duration_s))
+    report = None
+    for _ in range(_MAX_FOLLOW_ITERS):
+        plan = _build_rest_move(pose, twist, accel, target, T)
+        report = validate_follow(plan, limits, geom)
+        if report.ok:
+            return plan, report
+        if report.code not in _STRETCHABLE:
+            raise TrajectoryInfeasible(report.code, report.reasons)
+        T *= _stretch_factor(report, limits)
+    raise TrajectoryInfeasible(
+        TOO_FAST,
+        [f"follower could not find a feasible horizon in {_MAX_FOLLOW_ITERS} "
+         f"iterations (last failure {report.code if report else 'n/a'})"],
+        min_duration_s=T)
+
+
+def build_graceful_stop(state0, limits, geom, *, start_duration_s=None):
+    """An **always-valid** duration-stretched decel-to-rest at the current pose.
+
+    Unlike :func:`build_hold` (which builds ONE min-duration decel and RAISES if
+    that decel is too aggressive for the gate at a high velocity), this stretches
+    the stop's horizon until the gate passes. Because it decelerates **in place**
+    (``p1 == p0``, the current reachable pose), the only possible failures are the
+    stretchable vel/acc/jerk/step ones — a longer stop is monotonically gentler —
+    so this **always converges** to a valid, C2, rest-terminating stop. It never
+    raises for a real (finite) seed state.
+
+    This is the primitive the plan/task require for the two "stop now, no matter
+    what" cases: leaving a streaming mode mid-move (STANDBY-exit) and follower
+    input-loss. Gated by the fast :func:`validate_follow` so it is cheap enough to
+    run on the emitter thread (input-loss) without threatening the 250 ms staleness
+    window. Returns the stop :class:`TrajectoryPlan` (a :class:`HoldPlan` when the
+    seed is already at rest).
+    """
+    pose, twist, accel = (_as6(state0[0], 'pose'),
+                          _as6(state0[1], 'twist'),
+                          _as6(state0[2], 'accel'))
+    if _is_at_rest(twist, accel):
+        return HoldPlan(pose)
+
+    T = float(start_duration_s if start_duration_s is not None
+              else limits.min_move_duration_s)
+    report = None
+    # Generous cap: the stop is a decel-in-place, so it converges monotonically;
+    # the cap only guards a pathological (e.g. absurd-velocity) seed.
+    for _ in range(24):
+        seg = QuinticSegment(
+            p0=pose, v0=twist, a0=accel,
+            p1=pose, v1=np.zeros(POSE_DIM), a1=np.zeros(POSE_DIM),
+            duration=T)
+        plan = TrajectoryPlan(segments=(seg,), final_pose=pose)
+        report = validate_follow(plan, limits, geom)
+        if report.ok:
+            return plan
+        if report.code not in _STRETCHABLE:
+            # A decel-in-place cannot fail spatially (p1 == p0 is the seed's own
+            # reachable pose); if it somehow does, surface it rather than loop.
+            raise TrajectoryInfeasible(report.code, report.reasons)
+        T *= _stretch_factor(report, limits)
+    raise TrajectoryInfeasible(
+        TOO_FAST,
+        [f"graceful stop did not converge in 24 iterations "
+         f"(last {report.code if report else 'n/a'})"],
+        min_duration_s=T)

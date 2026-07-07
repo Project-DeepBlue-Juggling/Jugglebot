@@ -25,7 +25,9 @@ from jugglebot.motion.trajectory.feasibility import (
     FeasibilityReport,
     TrajectoryInfeasible,
     validate,
+    validate_follow,
 )
+from jugglebot.motion.trajectory.follower import FollowResult, TargetFollower
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.trajectory.plan import HoldPlan, TrajectoryPlan
 from jugglebot.motion.trajectory.segment import QuinticSegment
@@ -35,6 +37,9 @@ __all__ = [
     'FeasibilityReport',
     'TrajectoryInfeasible',
     'validate',
+    'validate_follow',
+    'FollowResult',
+    'TargetFollower',
     'TrajectoryLimits',
     'HoldPlan',
     'TrajectoryPlan',

@@ -58,3 +58,38 @@ class QuinticSegment:
         return quintic_interp_with_accel(
             self.p0, self.v0, self.a0, self.p1, self.v1, self.a1,
             self.duration, t)
+
+    def eval_pose_batch(self, ts: np.ndarray) -> np.ndarray:
+        """Vectorised **pose-only** eval at many times ``ts`` → ``(M, 6)`` poses.
+
+        This is the hot path for the SpaceMouse follower gate
+        (``feasibility.validate_follow``): sampling one segment at ~300 points in a
+        single numpy expression instead of a Python loop of :meth:`eval` calls is
+        the whole reason that gate lands at ~1.5 ms instead of ~15 ms (the Python
+        per-call overhead dominates). Only the pose is returned — the follower gate
+        derives leg vel/acc/jerk by finite-differencing the sampled leg extensions,
+        so it never needs the analytic twist/accel here.
+
+        Each ``t`` is clamped to ``[0, duration]`` (matching :meth:`eval` via the
+        underlying ``quintic_interp`` clamp), so an out-of-range knot sample returns
+        the boundary pose.
+        """
+        T = self.duration
+        # h-basis in normalised time s = t/T, evaluated on the whole vector at once.
+        s = np.clip(np.asarray(ts, dtype=float) / T, 0.0, 1.0)      # (M,)
+        V0 = self.v0 * T
+        V1 = self.v1 * T
+        A0 = self.a0 * (T * T)
+        A1 = self.a1 * (T * T)
+        s2 = s * s
+        s3 = s2 * s
+        s4 = s3 * s
+        s5 = s4 * s
+        h0 = 1 - 10 * s3 + 15 * s4 - 6 * s5
+        h1 = s - 6 * s3 + 8 * s4 - 3 * s5
+        h2 = 0.5 * s2 - 1.5 * s3 + 1.5 * s4 - 0.5 * s5
+        h3 = 10 * s3 - 15 * s4 + 6 * s5
+        h4 = -4 * s3 + 7 * s4 - 3 * s5
+        h5 = 0.5 * s3 - s4 + 0.5 * s5
+        return (h0[:, None] * self.p0 + h1[:, None] * V0 + h2[:, None] * A0
+                + h3[:, None] * self.p1 + h4[:, None] * V1 + h5[:, None] * A1)
