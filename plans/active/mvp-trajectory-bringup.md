@@ -693,7 +693,7 @@ numbers — Phase 6 feeds back into this phase's target).
 **Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase 4 *software*
 landed on branch `mvp-trajectory-bringup` (commits `2d3afa0` shaping + planner
 wiring; `6eb2c74` `GoToPose.lean_gain` + node observability; `7588fe6`
-`/diagnose` extension + ramp harness; docs `TODO-docs`). New `motion/trajectory/
+`/diagnose` extension + ramp harness; docs `4b2c02e`). New `motion/trajectory/
 shaping.py`: the lean-into-translation heuristic (`rx += −k·a_y/g`, `ry += +k·a_x/g`,
 gain `JB_TRAJ_LEAN_GAIN` default **0.0**, 5° cap) + a cup-height-derived lever-arm
 xy compensation ported from `Jugglebot-bb/sim/juggle_tilt.py::realize_tilted`
