@@ -243,6 +243,21 @@ class Pose:
     orientation: Quaternion = field(default_factory=Quaternion)
 
 
+@dataclass
+class PoseStamped:
+    header: object = field(default_factory=lambda: MagicMock())
+    pose: Pose = field(default_factory=Pose)
+
+
+# ── jugglebot_interfaces PlatformPoseCommand (SpaceMouse/GUI target) ──
+
+
+@dataclass
+class PlatformPoseCommand:
+    pose_stamped: PoseStamped = field(default_factory=PoseStamped)
+    publisher: str = ''
+
+
 # ── std_msgs mocks ────────────────────────────────────────────
 
 
@@ -691,6 +706,7 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'SetTrapTrajLimitsMessage': SetTrapTrajLimitsMessage,
     'ThrowAnnouncement': ThrowAnnouncement,
     'TrajectoryStatus': TrajectoryStatus,
+    'PlatformPoseCommand': PlatformPoseCommand,
 })
 _create_mock_module('jugglebot_interfaces.srv', {
     'ActivateOrDeactivate': ActivateOrDeactivate,
@@ -716,6 +732,7 @@ _create_mock_module('geometry_msgs.msg', {
     'Quaternion': Quaternion,
     'Vector3': Vector3,
     'Pose': Pose,
+    'PoseStamped': PoseStamped,
 })
 
 _create_mock_module('std_msgs')

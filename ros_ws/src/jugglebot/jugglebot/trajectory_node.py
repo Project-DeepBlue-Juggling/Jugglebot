@@ -54,10 +54,14 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 
-from std_msgs.msg import String
+from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from jugglebot_interfaces.msg import RobotState, TrajectoryStatus
+from jugglebot_interfaces.msg import (
+    PlatformPoseCommand,
+    RobotState,
+    TrajectoryStatus,
+)
 from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits
 
 import jugglebot.hardware_config as hw
@@ -73,6 +77,7 @@ from jugglebot.motion.ipc import MpcCommandPub
 from jugglebot.motion.trajectory import (
     HoldPlan,
     KnotEmitter,
+    TargetFollower,
     TrajectoryInfeasible,
     TrajectoryLimits,
 )
@@ -102,6 +107,19 @@ _BUSY = 'BUSY'
 # mode outside this set stops streaming and forces a re-seed on the next entry.
 _DEFAULT_STREAM_MODES = ('STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'SHELL',
                          'CATCH')
+
+# Modes in which the SpaceMouse/GUI/shell streaming-target follower (Phase 3) is
+# active — the pose-command modes, mirroring mpc_bridge_node._POSE_MODES. In these
+# modes the emitter tick drains the latest platform_pose target and replans toward
+# it (fast validate_follow gate); other streaming modes hold (STANDBY) or use their
+# own command source (TRAJECTORY→go_to_pose, CATCH→dynamic_target, Phase 5).
+_FOLLOWER_MODES = frozenset({'SPACEMOUSE', 'SHELL', 'GUI'})
+
+# Modes that actively COMMAND platform motion (as opposed to STANDBY, which holds).
+# Leaving one of these for a non-motion streaming mode (STANDBY) while a move is in
+# flight installs an always-valid graceful stop — the move is silenced, not left to
+# run on to its target.
+_MOTION_MODES = _FOLLOWER_MODES | {'TRAJECTORY'}
 
 _NUM_LEGS = 6
 
@@ -134,11 +152,32 @@ class TrajectoryNode(Node):
         self.declare_parameter('control_mode_topic', 'control_mode_topic')
         self.declare_parameter('go_home_duration_s', 2.0)
         self.declare_parameter('robot_state_stale_s', 0.5)
+        # Follower input-loss timeout: if no fresh platform_pose target arrives
+        # within this window (the SpaceMouse node itself publishes an ACTIVE-pose
+        # hold on unplug, so this is the backstop for that node dying entirely), the
+        # emitter installs an always-valid graceful stop. Kept well under the 250 ms
+        # staleness E-STOP — the emitter keeps streaming hold frames throughout, so
+        # input loss never approaches a wire-staleness fault.
+        self.declare_parameter('follower_input_loss_s', 0.4)
         self._go_home_duration_s = float(
             self.get_parameter('go_home_duration_s').value)
         self._robot_state_stale_s = float(
             self.get_parameter('robot_state_stale_s').value)
+        self._follower_input_loss_s = float(
+            self.get_parameter('follower_input_loss_s').value)
         self._stream_modes = frozenset(_DEFAULT_STREAM_MODES)
+
+        # ── SpaceMouse/GUI follower (Phase 3) ───────────────────
+        self._follower = TargetFollower(
+            self._geom, horizon_s=float(hw.JB_TRAJ_SPACEMOUSE_HORIZON_S))
+        # Latest streaming target as an atomic (pose_6dof, perf_counter) tuple —
+        # written by the platform_pose callback (executor thread), drained by the
+        # emitter thread (drain-to-latest: only the newest tuple is ever read).
+        self._follower_target = None
+        self._follower_input_lost = False
+        # Gravity-levelling correction (identity = none), composed into follower
+        # target orientations — ported from mpc_bridge_node.
+        self._gravity_correction = np.eye(3)
 
         # ── Plan + streaming state (written on ROS + emitter threads) ──
         self._plan_lock = threading.Lock()
@@ -171,6 +210,12 @@ class TrajectoryNode(Node):
         self.create_subscription(String, mode_topic, self._on_control_mode, 10)
         self.create_subscription(RobotState, 'robot_state',
                                  self._on_robot_state, 10)
+        # SpaceMouse / GUI / shell streaming target (Phase 3).
+        self.create_subscription(PlatformPoseCommand, 'platform_pose_topic',
+                                 self._on_platform_pose, 10)
+        # Gravity-levelling correction (verbatim port from mpc_bridge_node).
+        self.create_subscription(Float64MultiArray, 'gravity_offset',
+                                 self._on_gravity_offset, 10)
 
         # ── Services ────────────────────────────────────────────
         self.create_service(Trigger, 'trajectory/hold', self._svc_hold)
@@ -258,8 +303,24 @@ class TrajectoryNode(Node):
             plan = self._active_plan
             t0 = self._plan_t0
             streaming = self._streaming and self._seeded
+            mode = self._current_mode
         if not streaming or plan is None or t0 is None:
             return
+
+        # Follower replan (SpaceMouse/GUI/shell): drain the latest target and
+        # possibly install a fresh plan BEFORE sampling this tick's frame. The fast
+        # validate_follow gate (~3-4 ms) keeps this well inside the 25 ms emit
+        # budget; a contained exception in here must never stop the stream.
+        if mode in _FOLLOWER_MODES:
+            try:
+                if self._follower_tick(now):
+                    with self._plan_lock:
+                        plan = self._active_plan
+                        t0 = self._plan_t0
+            except Exception as e:  # noqa: BLE001 — one replan must not kill streaming
+                self.get_logger().error(
+                    f"follower tick error (contained): {e}",
+                    throttle_duration_sec=1.0)
 
         tau = now - t0
         frame = self._emitter.frame(plan, tau, self._seq)
@@ -300,40 +361,49 @@ class TrajectoryNode(Node):
         if mode == self._current_mode:
             return
         if mode in self._stream_modes:
-            # Leaving TRAJECTORY for another streaming mode while a move is in
-            # flight: STANDBY (and the other streaming modes) SILENCE move commands
-            # but keep streaming, so the in-flight move must be stopped with a
-            # profiled C2 decel-to-rest rather than allowed to run on to its target.
-            # (build_hold handles the moving seed.) Snapshot this BEFORE mutating
-            # _current_mode below; _active_move_in_flight takes the lock itself.
-            leaving_trajectory_move = (
-                self._current_mode == _MOVE_MODE and mode != _MOVE_MODE
+            # Leaving a motion mode (TRAJECTORY / a follower) for a non-motion
+            # streaming mode (STANDBY) while a move is in flight: STANDBY silences
+            # commands but keeps streaming, so the in-flight move must be stopped
+            # with a C2 decel-to-rest rather than run on to its target. Snapshot
+            # this BEFORE mutating _current_mode; _active_move_in_flight locks
+            # itself.
+            prev_mode = self._current_mode
+            leaving_motion_move = (
+                prev_mode in _MOTION_MODES and mode not in _MOTION_MODES
                 and self._active_move_in_flight())
+            entering_follower = (mode in _FOLLOWER_MODES and mode != prev_mode)
             # Streaming-state writes go under _plan_lock: the emitter thread
             # snapshots _streaming/_seeded under it in _emit_once, so an unlocked
             # write could tear against that snapshot.
             with self._plan_lock:
                 self._current_mode = mode
                 self._streaming = True
-            if leaving_trajectory_move:
-                # Sample the live (moving) state and install a profiled stop. If the
-                # decel is too aggressive to satisfy the gate at the current limits
-                # (a high-velocity mid-move exit), log loudly and leave the move
-                # streaming — it is already gate-validated and ends at rest at its
-                # target, so completing it is safe; snapping a stop that violates
-                # jerk is not. _current_state/_install take the lock themselves.
+            if entering_follower:
+                # Drop any stale target/last-target so the first target of this
+                # session always replans (never deadbanded against a prior session).
+                self._follower.reset()
+                self._follower_target = None
+                self._follower_input_lost = False
+            if leaving_motion_move:
+                # Sample the live (moving) state and install an ALWAYS-VALID
+                # graceful stop: a duration-stretched decel-to-rest that lengthens
+                # its horizon until the gate passes, so a high-velocity mid-move
+                # exit can no longer fall through to "let the move complete". The
+                # stop decelerates in place (never runs on to the old target).
+                # _current_state/_install take the lock themselves.
                 try:
-                    hold = planner.build_hold(
+                    stop = planner.build_graceful_stop(
                         self._current_state(), self._limits, self._geom)
-                    self._install(hold)
+                    self._install(stop)
                     self.get_logger().info(
-                        f"left {_MOVE_MODE} mid-move for {mode} — installed a "
-                        "profiled stop (move silenced)")
+                        f"left {prev_mode} mid-move for {mode} — "
+                        "installed a graceful stop (move silenced)")
                 except TrajectoryInfeasible as e:
+                    # build_graceful_stop is always-valid for a finite seed, so this
+                    # should be unreachable; log loudly if it ever fires.
                     self._last_rejection = str(e)
                     self.get_logger().error(
-                        f"could not install a profiled stop on {_MOVE_MODE} exit "
-                        f"({e}) — the in-flight move will complete to its target")
+                        f"graceful stop unexpectedly rejected on mode exit ({e})")
             # Seed a hold at the MEASURED pose on stream start (never nominal) —
             # this is what keeps the first u0 inside the pump/firmware gates — but
             # ONLY from FRESH telemetry. Stale/absent telemetry ⇒ defer: the next
@@ -411,9 +481,119 @@ class TrajectoryNode(Node):
             self._seeded = True
             self._last_motor_rev = None
             self._last_pose = pose
+        # A fresh seed changes the commanded pose; the follower must not deadband
+        # the first target against a stale one from a previous session.
+        self._follower.reset()
+        self._follower_target = None
+        self._follower_input_lost = False
         self.get_logger().info(
             f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
             f"z={pose[2]:.1f} mm (from measured telemetry)")
+
+    # ═══════════════════════════════════════════════════════════
+    # SpaceMouse / GUI / shell follower (Phase 3)
+    # ═══════════════════════════════════════════════════════════
+
+    def _on_platform_pose(self, msg) -> None:
+        """Store the latest streaming target (SPACEMOUSE/GUI/SHELL).
+
+        Gated exactly like ``mpc_bridge_node._on_platform_pose``: only when the
+        current mode is a follower (pose-accepting) mode AND the message's
+        ``publisher`` field matches the active mode. The gravity-levelling
+        correction is composed into the target orientation here (verbatim port), so
+        the emitter thread reads a fully-corrected target. Only the newest target is
+        retained (drain-to-latest); the emitter drains it each tick.
+        """
+        if self._current_mode not in _FOLLOWER_MODES:
+            return
+        if str(msg.publisher).upper() != self._current_mode:
+            return
+        p = msg.pose_stamped.pose.position
+        q = msg.pose_stamped.pose.orientation
+        rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
+        rotvec = self._apply_gravity_correction(rot_matrix_to_rotvec(rot))
+        target = np.array([float(p.x), float(p.y), float(p.z),
+                           rotvec[0], rotvec[1], rotvec[2]])
+        # Atomic single-reference publish (pose, timestamp) — no lock needed; the
+        # emitter reads whichever tuple is current.
+        self._follower_target = (target, time.perf_counter())
+
+    def _on_gravity_offset(self, msg) -> None:
+        """Store the gravity-levelling correction (verbatim port from mpc_bridge).
+
+        The orchestrator publishes ``[tilt_x, tilt_y]`` (rad) — the measured tilt
+        error; the correction is the inverse rotation so commanding "zero tilt"
+        counter-tilts to true level.
+        """
+        if len(msg.data) < 2:
+            return
+        tilt_x, tilt_y = float(msg.data[0]), float(msg.data[1])
+        self._gravity_correction = rotvec_to_rot_matrix(
+            np.array([-tilt_x, -tilt_y, 0.0]))
+        self.get_logger().info(
+            f"gravity correction set: tilt=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
+
+    def _apply_gravity_correction(self, rotvec) -> np.ndarray:
+        """Compose the gravity correction into a target rotvec:
+        ``R_corrected = R_gravity @ R_target`` (verbatim port from mpc_bridge)."""
+        R_corrected = self._gravity_correction @ rotvec_to_rot_matrix(
+            np.asarray(rotvec, dtype=float))
+        return rot_matrix_to_rotvec(R_corrected)
+
+    def _follower_tick(self, now: float) -> bool:
+        """One follower replan for wall time ``now``. Returns True iff a new plan
+        was installed (so the caller re-reads the active plan). Runs on the emitter
+        thread; must never raise (caller contains exceptions defensively too).
+
+        Fresh target → track it (``follower.follow`` → install on accept, keep the
+        last valid plan + throttled WARN on a gate rejection or a saturation clamp).
+        No fresh target within the input-loss window → install an always-valid
+        graceful stop ONCE (decel-to-rest in place), so a dead SpaceMouse node
+        leaves the platform stopped, not drifting on a stale plan.
+        """
+        target_tuple = self._follower_target
+        fresh = (target_tuple is not None
+                 and (now - target_tuple[1]) <= self._follower_input_loss_s)
+
+        if fresh:
+            self._follower_input_lost = False
+            result = self._follower.follow(
+                self._current_state(), target_tuple[0], self._limits)
+            if result.saturated:
+                self.get_logger().warning(
+                    "follower target outside workspace — clamped to nearest "
+                    "reachable pose", throttle_duration_sec=1.0)
+            if result.rejection:
+                self._last_rejection = result.rejection
+                self.get_logger().warning(
+                    f"follower target rejected ({result.rejection}) — holding "
+                    "last valid plan", throttle_duration_sec=1.0)
+            if result.plan is not None:
+                self._install(result.plan)
+                if result.report is not None:
+                    self._last_peak_vel_mmps = result.report.peak_leg_vel_mmps
+                    self._last_peak_acc_mmps2 = result.report.peak_leg_acc_mmps2
+                    self._last_peak_jerk_mmps3 = result.report.peak_leg_jerk_mmps3
+                return True
+            return False
+
+        # Input loss: stop once (a stretched, always-valid decel-to-rest).
+        if not self._follower_input_lost:
+            self._follower_input_lost = True
+            try:
+                stop = planner.build_graceful_stop(
+                    self._current_state(), self._limits, self._geom)
+            except TrajectoryInfeasible as e:
+                self._last_rejection = str(e)
+                self.get_logger().error(
+                    f"follower input-loss stop rejected ({e})")
+                return False
+            self._install(stop)
+            self.get_logger().warning(
+                "follower input loss — installed a graceful stop",
+                throttle_duration_sec=1.0)
+            return True
+        return False
 
     # ═══════════════════════════════════════════════════════════
     # Services (Trigger)

@@ -15,10 +15,15 @@ import numpy as np
 import pytest
 
 import jugglebot.hardware_config as hw
-from std_msgs.msg import String
+from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
-from geometry_msgs.msg import Point, Pose, Quaternion
-from jugglebot_interfaces.msg import RobotState, MotorStateSingle, TrajectoryStatus
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
+from jugglebot_interfaces.msg import (
+    MotorStateSingle,
+    PlatformPoseCommand,
+    RobotState,
+    TrajectoryStatus,
+)
 from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits
 
 from jugglebot.trajectory_node import TrajectoryNode
@@ -416,6 +421,132 @@ def test_status_publishes_typed_trajectory_status():
     assert published.streaming is True
     assert published.mode == 'TRAJECTORY'
     assert published.plan_kind == 'hold'
+
+
+# ── SpaceMouse follower (Phase 3) ─────────────────────────────
+
+def _platform_pose(x=0.0, y=0.0, z=170.0, publisher='SPACEMOUSE'):
+    msg = PlatformPoseCommand()
+    msg.pose_stamped = PoseStamped()
+    msg.pose_stamped.pose = Pose(position=Point(x=x, y=y, z=z),
+                                 orientation=Quaternion())
+    msg.publisher = publisher
+    return msg
+
+
+def _follower_node():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    return node
+
+
+def test_platform_pose_ignored_outside_follower_mode():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='STANDBY'))    # not a follower mode
+    node._on_platform_pose(_platform_pose(x=10.0, publisher='SPACEMOUSE'))
+    assert node._follower_target is None             # target not stored
+
+
+def test_platform_pose_ignored_when_publisher_mismatches_mode():
+    node = _follower_node()                           # SPACEMOUSE mode
+    node._on_platform_pose(_platform_pose(x=10.0, publisher='GUI'))
+    assert node._follower_target is None              # publisher != active mode
+
+
+def test_platform_pose_stored_in_follower_mode():
+    node = _follower_node()
+    node._on_platform_pose(_platform_pose(x=12.0, y=5.0, z=178.0,
+                                          publisher='SPACEMOUSE'))
+    assert node._follower_target is not None
+    target, _mono = node._follower_target
+    assert np.allclose(target[:3], [12.0, 5.0, 178.0], atol=1e-6)
+
+
+def test_follower_tick_installs_move_toward_target():
+    node = _follower_node()
+    assert node._active_plan.kind == 'hold'
+    node._on_platform_pose(_platform_pose(x=15.0, y=0.0, z=178.0,
+                                          publisher='SPACEMOUSE'))
+    installed = node._follower_tick(time.perf_counter())
+    assert installed is True
+    assert node._active_plan.kind == 'move'
+
+
+def test_follower_tick_deadbands_repeat_target():
+    node = _follower_node()
+    node._on_platform_pose(_platform_pose(x=15.0, z=178.0, publisher='SPACEMOUSE'))
+    assert node._follower_tick(time.perf_counter()) is True
+    # Same target again (within deadband) → no reinstall.
+    node._on_platform_pose(_platform_pose(x=15.0, z=178.0, publisher='SPACEMOUSE'))
+    assert node._follower_tick(time.perf_counter()) is False
+
+
+def test_follower_input_loss_installs_graceful_stop():
+    node = _follower_node()
+    # A target arrives, we plan a move, then the stream goes silent.
+    node._on_platform_pose(_platform_pose(x=15.0, z=178.0, publisher='SPACEMOUSE'))
+    node._follower_tick(time.perf_counter())
+    # Age the target past the input-loss window and pin the move as in-flight.
+    target, _ = node._follower_target
+    node._follower_target = (target,
+                             time.perf_counter() - (node._follower_input_loss_s + 1.0))
+    node._plan_t0 = time.perf_counter() - 0.05     # mid-move (moving seed)
+    installed = node._follower_tick(time.perf_counter())
+    assert installed is True
+    assert node._follower_input_lost is True
+    # The installed stop ends at rest (a graceful decel).
+    stop = node._active_plan
+    _, v_end, a_end = stop.state_at(stop.total_duration)
+    assert np.allclose(v_end, 0.0, atol=1e-9)
+    assert np.allclose(a_end, 0.0, atol=1e-9)
+    # A second tick under continued loss does NOT reinstall (stop fires once).
+    assert node._follower_tick(time.perf_counter()) is False
+
+
+def test_follower_emits_pump_accepted_frames_over_a_stream():
+    """End-to-end at the node boundary: a moving SPACEMOUSE target stream produces
+    only pump-accepted frames (the production-in-the-loop invariant)."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    pump = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV,
+                        max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
+    t = time.perf_counter()
+    for k in range(60):
+        # Gentle moving target within the workspace.
+        node._on_platform_pose(_platform_pose(
+            x=10.0 * np.sin(k * 0.1), y=6.0 * np.cos(k * 0.1), z=176.0,
+            publisher='SPACEMOUSE'))
+        node._emit_once(t)
+        t += 0.025
+    assert len(pub.frames) == 60
+    for i, frame in enumerate(pub.frames):
+        sp, reason = pump.build(frame, t_origin_us=i * 25000)
+        assert reason is None, f"emitted frame {i} pump-rejected: {reason}"
+
+
+def test_gravity_offset_composed_into_follower_target():
+    node = _follower_node()
+    # Apply a levelling correction, then a zero-tilt target must come out tilted.
+    node._on_gravity_offset(Float64MultiArray(data=[0.05, -0.03]))
+    node._on_platform_pose(_platform_pose(x=0.0, z=170.0, publisher='SPACEMOUSE'))
+    target, _ = node._follower_target
+    # Correction is -[tilt_x, tilt_y] → target rotvec ≈ [-0.05, 0.03, 0].
+    assert np.allclose(target[3:6], [-0.05, 0.03, 0.0], atol=1e-3)
+
+
+def test_follower_mode_entry_resets_stale_target():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='STANDBY'))
+    # Enter SPACEMOUSE → follower target cleared (nothing stale carried in).
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    assert node._follower_target is None
+    assert node._follower_input_lost is False
 
 
 # ── Emitter cadence (real thread, injected fake PUB) ──────────
