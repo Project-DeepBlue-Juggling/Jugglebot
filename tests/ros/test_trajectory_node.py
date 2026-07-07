@@ -37,10 +37,11 @@ from controller.teensy_link.setpoint_pump import SetpointPump
 _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
 
 
-def _go_to_pose_req(x=0.0, y=0.0, z=170.0, duration_s=0.0):
+def _go_to_pose_req(x=0.0, y=0.0, z=170.0, duration_s=0.0, lean_gain=0.0):
     req = GoToPose.Request()
     req.pose = Pose(position=Point(x=x, y=y, z=z), orientation=Quaternion())
     req.duration_s = duration_s
+    req.lean_gain = lean_gain
     return req
 
 
@@ -322,8 +323,9 @@ def test_go_to_pose_rejected_when_commanded_state_moved_during_planning(monkeypa
     node = _traj_mode_node()
     real_build_move = planner.build_move
 
-    def latency_build_move(state0, target, dur, limits, geom):
-        plan, report = real_build_move(state0, target, dur, limits, geom)
+    def latency_build_move(state0, target, dur, limits, geom, *, shaper=None):
+        plan, report = real_build_move(state0, target, dur, limits, geom,
+                                       shaper=shaper)
         # Simulate ~1.5 s of streaming: the commanded pose drifts 10 mm in z
         # (≈0.13 rev/leg, well past the ~0.06 rev continuity bound).
         moved = np.asarray(node._current_state()[0], dtype=float).copy()
@@ -410,6 +412,117 @@ def test_set_limits_then_move_uses_new_limit():
     assert resp.accepted is True
     rep = feas.validate(node._active_plan, node._limits, node._geom)
     assert rep.peak_leg_jerk_mmps3 <= 2000.0
+
+
+# ── Lean shaping (Phase 4) ────────────────────────────────────
+
+def _diag_kv(node):
+    """Publish status and return the trajectory/diagnostics KeyValues as a dict."""
+    node._publish_status()
+    diag = node.diagnostics_pub.published[-1]
+    return {kv.key: kv.value for kv in diag.values}
+
+
+def test_go_to_pose_default_request_is_lean_off():
+    """A bare request (lean_gain=0.0) forces lean OFF — an unshaped move installs."""
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(_go_to_pose_req(x=25.0, z=185.0, duration_s=0.0),
+                                GoToPose.Response())
+    assert resp.accepted is True
+    assert node._lean_gain_active == 0.0
+    # Plain (unshaped) TrajectoryPlan, not a _ShapedPlan.
+    from jugglebot.motion.trajectory.shaping import _ShapedPlan
+    assert not isinstance(node._active_plan, _ShapedPlan)
+
+
+def test_go_to_pose_per_call_lean_override_installs_shaped_plan():
+    """lean_gain=0.3 overrides the config default and installs a shaped move."""
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(
+        _go_to_pose_req(x=25.0, y=-15.0, z=185.0, duration_s=0.0, lean_gain=0.3),
+        GoToPose.Response())
+    assert resp.accepted is True
+    assert node._lean_gain_active == pytest.approx(0.3)
+    from jugglebot.motion.trajectory.shaping import _ShapedPlan
+    assert isinstance(node._active_plan, _ShapedPlan)
+    assert 'lean_gain=0.30' in resp.message
+
+
+def test_go_to_pose_negative_lean_gain_uses_config_default():
+    """A negative override defers to JB_TRAJ_LEAN_GAIN (0.0 by default ⇒ OFF)."""
+    node = _traj_mode_node()
+    node._config_lean_gain = 0.25            # simulate a ramped config default
+    resp = node._svc_go_to_pose(
+        _go_to_pose_req(x=25.0, z=185.0, duration_s=0.0, lean_gain=-1.0),
+        GoToPose.Response())
+    assert resp.accepted is True
+    assert node._lean_gain_active == pytest.approx(0.25)
+
+
+def test_lean_gain_over_one_is_clamped():
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(
+        _go_to_pose_req(x=10.0, z=180.0, duration_s=0.0, lean_gain=5.0),
+        GoToPose.Response())
+    assert resp.accepted is True
+    assert node._lean_gain_active == pytest.approx(1.0)
+
+
+def test_diagnostics_publishes_realized_peaks_limits_and_lean_gain():
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    node._svc_go_to_pose(_go_to_pose_req(x=20.0, z=185.0, duration_s=1.0),
+                         GoToPose.Response())
+    # Emit a few frames so realized peaks accumulate off the active move.
+    t0 = node._plan_t0
+    for k in range(6):
+        node._emit_once(t0 + k * 0.025)
+    kv = _diag_kv(node)
+    for key in ('peak_leg_vel_mmps', 'realized_peak_leg_vel_mmps',
+                'realized_peak_leg_acc_mmps2', 'realized_peak_leg_jerk_mmps3',
+                'limit_leg_vel_mmps', 'limit_leg_acc_mmps2', 'limit_leg_jerk_mmps3',
+                'lean_gain', 'move_seq'):
+        assert key in kv, f"missing diagnostics key {key}"
+    # Limits reflect the node's current session limits.
+    assert float(kv['limit_leg_vel_mmps']) == pytest.approx(node._limits.leg_vel_mmps)
+    # Realized vel peak is nonzero mid-move (the platform is translating).
+    assert float(kv['realized_peak_leg_vel_mmps']) > 0.0
+
+
+def test_realized_peaks_reset_on_new_install():
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    node._svc_go_to_pose(_go_to_pose_req(x=20.0, z=185.0, duration_s=1.0),
+                         GoToPose.Response())
+    for k in range(6):
+        node._emit_once(node._plan_t0 + k * 0.025)
+    assert node._run_peak_vel_mmps > 0.0
+    # A fresh install (e.g. a hold) resets the realized window.
+    node._install(node._active_plan)     # re-install clears the peaks
+    assert node._run_peak_vel_mmps == 0.0
+    assert node._prev_frame_leg_acc is None
+
+
+def test_move_seq_increments_per_accepted_move_for_diagnose_segmentation():
+    """Each accepted go_to_pose bumps move_seq (published on diagnostics) so the
+    /diagnose summariser can split back-to-back moves — plan_kind stays 'move'
+    across a completed move's terminal hold, so move_seq is the only boundary."""
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    assert node._move_seq == 0
+    node._svc_go_to_pose(_go_to_pose_req(x=20.0, z=185.0, duration_s=1.0),
+                         GoToPose.Response())
+    assert node._move_seq == 1
+    assert _diag_kv(node)['move_seq'] == '1'
+    # Let the first move finish so the BUSY guard admits the next one (the battery
+    # fires moves back-to-back from the settled hold, never issuing trajectory/hold).
+    node._plan_t0 = time.perf_counter() - 5.0
+    # A second move (no intervening hold) increments again — the battery case.
+    resp2 = node._svc_go_to_pose(_go_to_pose_req(x=-20.0, z=185.0, duration_s=1.0),
+                                 GoToPose.Response())
+    assert resp2.accepted is True
+    assert node._move_seq == 2
+    assert _diag_kv(node)['move_seq'] == '2'
 
 
 # ── Status is the typed TrajectoryStatus ──────────────────────

@@ -77,6 +77,7 @@ from jugglebot.motion.ipc import MpcCommandPub
 from jugglebot.motion.trajectory import (
     HoldPlan,
     KnotEmitter,
+    LeanShaper,
     TargetFollower,
     TrajectoryInfeasible,
     TrajectoryLimits,
@@ -149,6 +150,13 @@ class TrajectoryNode(Node):
             [0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0])
         self._pub_factory = command_pub_factory
 
+        # ── Lean shaping (Phase 4; default-OFF via JB_TRAJ_LEAN_GAIN = 0.0) ──
+        # The lever arm + gravity are fixed; the gain is per-move (config default,
+        # overridable per go_to_pose call for the hardware A/B). _make_shaper builds
+        # a LeanShaper for a given effective gain.
+        self._config_lean_gain = float(hw.JB_TRAJ_LEAN_GAIN)
+        self._gravity_mm_s2 = float(hw.GRAVITY_MMPS2)
+
         # ── Parameters ─────────────────────────────────────────
         self.declare_parameter('control_mode_topic', 'control_mode_topic')
         self.declare_parameter('go_home_duration_s', 2.0)
@@ -206,9 +214,28 @@ class TrajectoryNode(Node):
         self._max_emit_gap_s = 0.0
         self._last_emit_mono = None
         # Measured leg peaks of the last accepted move (for trajectory/diagnostics).
+        # `_last_peak_*` are the gate's PREDICTED peaks (fine-sampled, from the report
+        # at plan time). `_run_peak_*` are the REALIZED peaks tracked from the actual
+        # emitted knots as the active plan executes (Phase 4 ramp observability),
+        # reset per install. `_lean_gain_active` is the gain baked into the active
+        # plan (0.0 for a hold / lean-off move) — published so /diagnose can label
+        # the A/B arm each move belongs to.
         self._last_peak_vel_mmps = 0.0
         self._last_peak_acc_mmps2 = 0.0
         self._last_peak_jerk_mmps3 = 0.0
+        self._run_peak_vel_mmps = 0.0
+        self._run_peak_acc_mmps2 = 0.0
+        self._run_peak_jerk_mmps3 = 0.0
+        self._prev_frame_leg_acc = None    # for the realized-jerk tick difference
+        self._lean_gain_active = 0.0
+        # Monotonic per-move install counter, published on trajectory/diagnostics so
+        # /diagnose can segment consecutive go_to_pose moves. `plan.kind` stays 'move'
+        # for a completed move's whole terminal-hold lifetime, so back-to-back moves
+        # (the ramp battery inserts NO hold between them) carry an unbroken
+        # plan_kind='move' run — move_seq is the only unambiguous per-move boundary.
+        # Bumped ONLY on a discrete accepted go_to_pose (NOT per follower replan), so
+        # a spacemouse stream stays one window rather than thousands.
+        self._move_seq = 0
 
         self._pub = None
         self._emit_stop = threading.Event()
@@ -387,6 +414,29 @@ class TrajectoryNode(Node):
         self._last_motor_rev = motor_rev
         self._last_pose = np.asarray(frame['pose_6dof'], dtype=float)
         self._seq += 1
+        self._track_realized_peaks(frame)
+
+    def _track_realized_peaks(self, frame: dict) -> None:
+        """Update the per-move realized leg peaks from an emitted knot frame.
+
+        The emitted ``vel_mm_s`` / ``acc_mm_s2`` are the exact leg vel/acc the wire
+        carries (analytic, via the emitter's Jacobian chain); realized jerk is the
+        40 Hz tick difference of the emitted leg accel — a coarse (knot-rate) proxy
+        for what the Teensy Hermite reproduces between knots, distinct from the gate's
+        fine-sampled PREDICTED jerk. Reset per install (see ``_install``). This is the
+        Phase-4 ramp-observability signal (`/diagnose` reads it back from the rosbag).
+        """
+        leg_vel = np.abs(np.asarray(frame['vel_mm_s'], dtype=float))
+        leg_acc = np.asarray(frame['acc_mm_s2'], dtype=float)
+        self._run_peak_vel_mmps = max(self._run_peak_vel_mmps,
+                                      float(np.max(leg_vel)))
+        self._run_peak_acc_mmps2 = max(self._run_peak_acc_mmps2,
+                                       float(np.max(np.abs(leg_acc))))
+        if self._prev_frame_leg_acc is not None and self._emitter._dt > 0.0:
+            jerk = np.abs(leg_acc - self._prev_frame_leg_acc) / self._emitter._dt
+            self._run_peak_jerk_mmps3 = max(self._run_peak_jerk_mmps3,
+                                            float(np.max(jerk)))
+        self._prev_frame_leg_acc = leg_acc
 
     # ═══════════════════════════════════════════════════════════
     # Subscriptions
@@ -706,7 +756,23 @@ class TrajectoryNode(Node):
                 return False
             self._active_plan = plan
             self._plan_t0 = now
+            # New plan ⇒ fresh realized-peak window (per-move tracking). Lean is
+            # off by default; go_to_pose sets _lean_gain_active for a shaped move
+            # immediately after this install returns.
+            self._run_peak_vel_mmps = 0.0
+            self._run_peak_acc_mmps2 = 0.0
+            self._run_peak_jerk_mmps3 = 0.0
+            self._prev_frame_leg_acc = None
+            self._lean_gain_active = 0.0
         return True
+
+    def _make_shaper(self, gain: float) -> LeanShaper:
+        """Build a lean shaper for ``gain`` (config gravity + ported cup lever arm).
+
+        A gain ≤ 0 yields an identity shaper (``shape`` returns the base plan
+        unchanged) — the default, lean OFF.
+        """
+        return LeanShaper(gain, g_mm_s2=self._gravity_mm_s2)
 
     def _pose_to_motor_rev(self, pose) -> np.ndarray:
         """pose_6dof → motor_rev, the EXACT chain the emitter ships (emitter.py):
@@ -877,11 +943,20 @@ class TrajectoryNode(Node):
             self._last_rejection = response.message
             self.get_logger().error(response.message)
             return response
+        # Effective lean gain (Phase 4 A/B). A negative request.lean_gain defers to
+        # the configured JB_TRAJ_LEAN_GAIN; a non-negative value overrides it,
+        # clamped to [0, 1]. Shaping runs BEFORE validate inside build_move, so the
+        # gate measures the shaped leg peaks (the canonical ordering invariant).
+        req_gain = float(request.lean_gain)
+        gain = (self._config_lean_gain if (not np.isfinite(req_gain)
+                                           or req_gain < 0.0)
+                else min(1.0, max(0.0, req_gain)))
+        shaper = self._make_shaper(gain)
         try:
             plan, report = planner.build_move(
                 self._current_state(), target,
                 duration if duration > 0.0 else None,
-                self._limits, self._geom)
+                self._limits, self._geom, shaper=shaper)
         except TrajectoryInfeasible as e:
             response.accepted = False
             response.code = e.code
@@ -920,12 +995,15 @@ class TrajectoryNode(Node):
         self._last_peak_jerk_mmps3 = report.peak_leg_jerk_mmps3
 
         self._install(plan)
+        self._lean_gain_active = gain    # label this move's A/B arm (install reset it)
+        self._move_seq += 1              # per-move boundary for the /diagnose summariser
         response.accepted = True
         response.code = feas.OK
         response.planned_duration_s = float(plan.total_duration)
         response.message = (
             f"move accepted: target (x={target[0]:.1f} y={target[1]:.1f} "
-            f"z={target[2]:.1f} mm) over {plan.total_duration:.3f}s")
+            f"z={target[2]:.1f} mm) over {plan.total_duration:.3f}s "
+            f"(lean_gain={gain:.2f})")
         return response
 
     def _svc_set_limits(self, request, response):
@@ -992,13 +1070,32 @@ class TrajectoryNode(Node):
         diag.hardware_id = 'trajectory_node'
         diag.level = DiagnosticStatus.OK if streaming else DiagnosticStatus.WARN
         diag.message = 'streaming' if streaming else 'idle'
+        lim = self._limits
         diag.values = [
+            # Gate-PREDICTED peaks of the last accepted plan (fine-sampled report).
             KeyValue(key='peak_leg_vel_mmps',
                      value=f'{self._last_peak_vel_mmps:.1f}'),
             KeyValue(key='peak_leg_acc_mmps2',
                      value=f'{self._last_peak_acc_mmps2:.1f}'),
             KeyValue(key='peak_leg_jerk_mmps3',
                      value=f'{self._last_peak_jerk_mmps3:.0f}'),
+            # REALIZED peaks tracked from the emitted knots of the active plan
+            # (Phase 4 ramp observability; reset per move).
+            KeyValue(key='realized_peak_leg_vel_mmps',
+                     value=f'{self._run_peak_vel_mmps:.1f}'),
+            KeyValue(key='realized_peak_leg_acc_mmps2',
+                     value=f'{self._run_peak_acc_mmps2:.1f}'),
+            KeyValue(key='realized_peak_leg_jerk_mmps3',
+                     value=f'{self._run_peak_jerk_mmps3:.0f}'),
+            # Current session limits, so /diagnose computes headroom without the YAML.
+            KeyValue(key='limit_leg_vel_mmps', value=f'{lim.leg_vel_mmps:.1f}'),
+            KeyValue(key='limit_leg_acc_mmps2', value=f'{lim.leg_acc_mmps2:.1f}'),
+            KeyValue(key='limit_leg_jerk_mmps3', value=f'{lim.leg_jerk_mmps3:.0f}'),
+            # A/B arm the active plan belongs to (0.0 = lean off / hold).
+            KeyValue(key='lean_gain', value=f'{self._lean_gain_active:.2f}'),
+            # Per-move install counter — the /diagnose summariser segments moves on a
+            # change here, since plan_kind stays 'move' across back-to-back moves.
+            KeyValue(key='move_seq', value=str(self._move_seq)),
             KeyValue(key='max_emit_gap_ms', value=f'{gap_ms:.1f}'),
             KeyValue(key='plan_kind', value=kind),
         ]
