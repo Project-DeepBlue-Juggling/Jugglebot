@@ -51,6 +51,12 @@ _REST_ACCEL_EPS = 1e-6      # mm/s² and rad/s²
 # 1/T, 1/T², 1/T³). A WORKSPACE / UNREACHABLE failure is spatial — the rest-to-rest
 # quintic traces the same set of poses regardless of duration — so stretching can
 # never fix it, and the planner re-raises immediately.
+#
+# The "spatial path is duration-invariant" argument holds only for a REST seed: a
+# rest-to-rest quintic's pose set is fixed and only its timing rescales. A MOVING
+# seed (nonzero twist/accel) bends the path with T, so the spatial checks are NOT
+# duration-invariant there — which is why the stretch loop re-validates the full
+# gate on every candidate T (it does) rather than trusting a single spatial pass.
 _STRETCHABLE = (LIMIT_VEL, LIMIT_ACC, LIMIT_JERK, STEP_BOUND)
 
 # Fixed-point cap for the stretch loop. From a rest start the leg peaks scale
@@ -126,22 +132,30 @@ def build_return_to_neutral(state0, neutral_pose, duration_s, limits, geom
     return plan
 
 
-def build_move(state0, target_pose, duration_s, limits, geom
-               ) -> TrajectoryPlan:
+def build_move(state0, target_pose, duration_s, limits, geom):
     """Profiled point-to-point move from ``state0`` to ``target_pose`` at rest.
 
     ``state0`` is ``(pose, twist, accel)`` (the seed continues the previous plan's
     sampled state — C2 by construction). The move ends at rest (zero twist/accel)
     at ``target_pose``.
 
+    Returns ``(plan, report)`` — the accepting :class:`FeasibilityReport` is handed
+    back alongside the plan so the caller records the measured leg peaks (for
+    ``trajectory/diagnostics``) WITHOUT re-running the ~350 ms gate a second time.
+
     ``duration_s`` semantics:
       * ``None`` or ``<= 0`` — use the **minimal feasible** duration (the
         duration-stretch loop finds the shortest T the gate accepts).
-      * ``> 0`` — honour the requested duration if it is ``>= min feasible``;
-        otherwise raise :class:`TrajectoryInfeasible` (``TOO_FAST``) carrying the
-        minimal feasible duration in ``min_duration_s`` so the caller can surface
-        an achievable time. A too-tight duration is **loudly rejected**, never
-        silently stretched — the operator asked for a specific timing.
+      * ``> 0`` — validate the REQUESTED duration first and honour it if the gate
+        accepts it. Only on a failure that a longer T could fix does the stretch
+        loop run, to populate ``min_duration_s`` for a **loud** ``TOO_FAST``
+        rejection. A too-tight duration is loudly rejected, never silently
+        stretched — the operator asked for a specific timing.
+
+    Validating the requested duration first (rather than comparing it to the
+    stretch loop's ``t_min``) is deliberate: ``t_min`` carries a 1.05 stretch
+    margin, so a requested duration BELOW ``t_min`` but which the gate still
+    accepts must not be false-rejected. The gate itself is the source of truth.
 
     Raises :class:`TrajectoryInfeasible` immediately (no stretch) on a spatial
     ``WORKSPACE`` / ``UNREACHABLE`` failure, which a longer duration cannot fix.
@@ -151,33 +165,32 @@ def build_move(state0, target_pose, duration_s, limits, geom
                           _as6(state0[2], 'accel'))
     target = _as6(target_pose, 'target_pose')
 
-    t_min, plan_min = _min_feasible_move(pose, twist, accel, target, limits, geom)
-
     if duration_s is None or float(duration_s) <= 0.0:
-        return plan_min
+        _t_min, plan_min, report_min = _min_feasible_move(
+            pose, twist, accel, target, limits, geom)
+        return plan_min, report_min
 
+    # Explicit requested duration: validate it directly. If the gate accepts it we
+    # are done — no stretch loop, no false-reject on the 1.05 margin.
     requested = float(duration_s)
-    if requested < t_min - 1e-9:
-        raise TrajectoryInfeasible(
-            TOO_FAST,
-            [f"requested duration {requested:.3f}s < minimal feasible "
-             f"{t_min:.3f}s for this move at the current limits"],
-            min_duration_s=t_min)
-
-    # Requested duration is at or above the minimal feasible one: the same spatial
-    # path at a longer time has strictly smaller leg peaks, so it re-validates.
-    seg = QuinticSegment(
-        p0=pose, v0=twist, a0=accel,
-        p1=target, v1=np.zeros(POSE_DIM), a1=np.zeros(POSE_DIM),
-        duration=requested)
-    plan = TrajectoryPlan(segments=(seg,), final_pose=target)
+    plan = _build_rest_move(pose, twist, accel, target, requested)
     report = validate(plan, limits, geom)
-    if not report.ok:
-        # Only reachable if the failure is spatial (a longer T cannot fix it) —
-        # _min_feasible_move already raised on a spatial failure, so this is a
-        # defensive backstop.
-        raise TrajectoryInfeasible(report.code, report.reasons, t_min)
-    return plan
+    if report.ok:
+        return plan, report
+
+    # The requested duration failed. A spatial failure (WORKSPACE / UNREACHABLE) is
+    # not fixable by a longer T — re-raise it immediately. A stretchable failure
+    # means the request was too tight: run the stretch loop only now, to find and
+    # advertise the minimal feasible duration in a loud TOO_FAST.
+    if report.code not in _STRETCHABLE:
+        raise TrajectoryInfeasible(report.code, report.reasons)
+    t_min, _plan_min, _report_min = _min_feasible_move(
+        pose, twist, accel, target, limits, geom)
+    raise TrajectoryInfeasible(
+        TOO_FAST,
+        [f"requested duration {requested:.3f}s < minimal feasible "
+         f"{t_min:.3f}s for this move at the current limits"],
+        min_duration_s=t_min)
 
 
 def _build_rest_move(pose, twist, accel, target, duration_s):
@@ -214,8 +227,9 @@ def _min_feasible_move(pose, twist, accel, target, limits, geom):
 
     Starts at the ``min_move_duration_s`` floor and stretches by the exact
     worst-ratio factor until feasible (≤2 iters from a rest start). Returns
-    ``(duration_s, plan)``. Raises :class:`TrajectoryInfeasible` on a spatial
-    failure (immediately) or if the loop fails to converge (``TOO_FAST``).
+    ``(duration_s, plan, report)`` — the accepting report rides along so callers
+    avoid a redundant ``validate``. Raises :class:`TrajectoryInfeasible` on a
+    spatial failure (immediately) or if the loop fails to converge (``TOO_FAST``).
     """
     T = float(limits.min_move_duration_s)
     report = None
@@ -223,7 +237,7 @@ def _min_feasible_move(pose, twist, accel, target, limits, geom):
         plan = _build_rest_move(pose, twist, accel, target, T)
         report = validate(plan, limits, geom)
         if report.ok:
-            return T, plan
+            return T, plan, report
         if report.code not in _STRETCHABLE:
             # Spatial failure — a longer duration cannot fix it.
             raise TrajectoryInfeasible(report.code, report.reasons)

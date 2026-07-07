@@ -37,7 +37,7 @@ def test_move_starts_at_seed_ends_at_rest_target(geom, limits):
     target = NEUTRAL + np.array([15., -10., 8., 0.02, 0., 0.])
     v0 = np.array([3., 0., -2., 0., 0., 0.])
     a0 = np.array([1., 0., 0., 0., 0., 0.])
-    plan = planner.build_move((NEUTRAL, v0, a0), target, 2.0, limits, geom)
+    plan, _ = planner.build_move((NEUTRAL, v0, a0), target, 2.0, limits, geom)
 
     p_s, v_s, a_s = plan.state_at(0.0)
     assert np.allclose(p_s, NEUTRAL) and np.allclose(v_s, v0) and np.allclose(a_s, a0)
@@ -50,7 +50,9 @@ def test_move_starts_at_seed_ends_at_rest_target(geom, limits):
 
 def test_minimal_feasible_when_duration_none(geom, limits):
     target = NEUTRAL + np.array([0., 0., 20., 0., 0., 0.])
-    plan = planner.build_move(_rest(), target, None, limits, geom)
+    plan, report = planner.build_move(_rest(), target, None, limits, geom)
+    # build_move hands back the accepting report — it agrees with a fresh validate.
+    assert report.ok
     report = feas.validate(plan, limits, geom)
     assert report.ok
     # The binding constraint sits just under its ceiling (minimal-modulo-margin).
@@ -63,14 +65,14 @@ def test_minimal_feasible_when_duration_none(geom, limits):
 
 def test_zero_duration_is_minimal_feasible(geom, limits):
     target = NEUTRAL + np.array([0., 0., 20., 0., 0., 0.])
-    a = planner.build_move(_rest(), target, 0.0, limits, geom)
-    b = planner.build_move(_rest(), target, None, limits, geom)
+    a, _ = planner.build_move(_rest(), target, 0.0, limits, geom)
+    b, _ = planner.build_move(_rest(), target, None, limits, geom)
     assert a.total_duration == pytest.approx(b.total_duration)
 
 
 def test_generous_explicit_duration_honoured(geom, limits):
     target = NEUTRAL + np.array([20., 0., 0., 0., 0., 0.])
-    plan = planner.build_move(_rest(), target, 3.0, limits, geom)
+    plan, _ = planner.build_move(_rest(), target, 3.0, limits, geom)
     assert plan.total_duration == pytest.approx(3.0)
     assert feas.validate(plan, limits, geom).ok
 
@@ -84,18 +86,41 @@ def test_too_fast_rejects_with_min_duration(geom, limits):
     assert exc.value.code == feas.TOO_FAST
     assert exc.value.min_duration_s > 0.05
     # The advertised min duration is itself feasible.
-    plan = planner.build_move(_rest(), target, exc.value.min_duration_s,
-                              limits, geom)
+    plan, _ = planner.build_move(_rest(), target, exc.value.min_duration_s,
+                                 limits, geom)
     assert feas.validate(plan, limits, geom).ok
 
 
 def test_min_duration_boundary_accepted(geom, limits):
     target = NEUTRAL + np.array([20., 20., 15., 0., 0., 0.])
-    t_min, _ = planner._min_feasible_move(
+    t_min, _, _ = planner._min_feasible_move(
         NEUTRAL, np.zeros(6), np.zeros(6), target, limits, geom)
     # Exactly at the minimum is accepted (>= min feasible).
-    plan = planner.build_move(_rest(), target, t_min, limits, geom)
+    plan, _ = planner.build_move(_rest(), target, t_min, limits, geom)
     assert plan.total_duration == pytest.approx(t_min)
+
+
+def test_requested_below_padded_tmin_but_gate_accepts_is_honoured(geom, limits):
+    """Regression (Phase-2 audit false-reject NOTE): a requested duration the gate
+    ACCEPTS must be honoured even when it is below the 1.05-margin-padded t_min from
+    the stretch loop. Empirically pinned on the default limits (2026-07-07): a
+    z 170->190 move has padded t_min = 0.5440 s, yet a 0.5386 s request validates
+    OK. The old build_move false-rejected it TOO_FAST (requested < t_min); the new
+    path validates the requested duration directly and honours it."""
+    target = NEUTRAL + np.array([0., 0., 20., 0., 0., 0.])
+    t_min, _, _ = planner._min_feasible_move(
+        NEUTRAL, np.zeros(6), np.zeros(6), target, limits, geom)
+    requested = 0.5386
+    # Preconditions that make this the false-reject case: below the padded t_min,
+    # yet the requested-duration plan validates directly.
+    assert requested < t_min - 1e-9
+    direct = planner._build_rest_move(NEUTRAL, np.zeros(6), np.zeros(6),
+                                      target, requested)
+    assert feas.validate(direct, limits, geom).ok
+    # New behaviour: honoured, not TOO_FAST-rejected.
+    plan, report = planner.build_move(_rest(), target, requested, limits, geom)
+    assert plan.total_duration == pytest.approx(requested)
+    assert report.ok
 
 
 # ── Spatial failures raise immediately, never TOO_FAST ────────
@@ -130,13 +155,13 @@ def test_stretch_converges_in_few_iters(geom, limits, monkeypatch):
 # ── C2 continuity across an install-time replan mid-move ──────
 
 def test_c2_replan_from_mid_move(geom, limits):
-    move = planner.build_move(
+    move, _ = planner.build_move(
         _rest(), NEUTRAL + np.array([20., 0., 10., 0., 0., 0.]), 2.0, limits, geom)
     t = 0.8
     seed = move.state_at(t)
     # A new move seeded from the mid-flight state continues C2.
-    new = planner.build_move(seed, NEUTRAL + np.array([0., 15., 0., 0., 0., 0.]),
-                             2.0, limits, geom)
+    new, _ = planner.build_move(seed, NEUTRAL + np.array([0., 15., 0., 0., 0., 0.]),
+                                2.0, limits, geom)
     p, v, a = new.state_at(0.0)
     assert np.allclose(p, seed[0], atol=1e-9)
     assert np.allclose(v, seed[1], atol=1e-9)
@@ -148,7 +173,7 @@ def test_c2_replan_from_mid_move(geom, limits):
 def test_moving_seed_move_is_feasible(geom, limits):
     v0 = np.array([20., 0., 0., 0., 0., 0.])
     a0 = np.array([50., 0., 0., 0., 0., 0.])
-    plan = planner.build_move((NEUTRAL, v0, a0),
-                              NEUTRAL + np.array([15., 0., 0., 0., 0., 0.]),
-                              None, limits, geom)
+    plan, _ = planner.build_move((NEUTRAL, v0, a0),
+                                 NEUTRAL + np.array([15., 0., 0., 0., 0., 0.]),
+                                 None, limits, geom)
     assert feas.validate(plan, limits, geom).ok

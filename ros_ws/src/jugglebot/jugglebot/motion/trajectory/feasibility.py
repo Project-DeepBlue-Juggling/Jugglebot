@@ -71,6 +71,10 @@ WRONG_MODE = 'WRONG_MODE'
 STEP_BOUND_MARGIN = 0.80
 
 # A jerk finite difference needs at least this many samples per segment.
+# NB (jerk endpoint bias): the forward-difference jerk is centred *between* samples,
+# so it under-measures the true jerk peak at a segment endpoint by ≤ 1.5 % at 200
+# samples/segment. Accepted deliberately: the jerk limit is session-ramped by feel
+# (Phase 4) with large ceiling headroom, so a sub-2 % endpoint bias never binds.
 _MIN_SAMPLES = 4
 
 
@@ -110,6 +114,26 @@ class TrajectoryInfeasible(Exception):
         super().__init__(f"{code}: {'; '.join(self.reasons)}")
 
 
+# Per-geometry cache of the workspace limits. ``WorkspaceLimits.from_geometry``
+# runs an SVD (compute_condition_number at the reference pose), which is pure
+# overhead to repeat on every validate() call — the geometry is fixed for a node's
+# lifetime. Keyed by id(geom) with a strong ref to geom held alongside so the id
+# cannot be reused while the entry is live (guards the id-recycling edge). This is
+# the perf hoist called out in the Phase-2 audit; the SpaceMouse follower (Phase 3)
+# will lean on validate() being cheap.
+_WLIMITS_CACHE: dict = {}
+
+
+def _workspace_limits(geom):
+    key = id(geom)
+    cached = _WLIMITS_CACHE.get(key)
+    if cached is None or cached[0] is not geom:
+        wl = WorkspaceLimits.from_geometry(geom)
+        _WLIMITS_CACHE[key] = (geom, wl)
+        return wl
+    return cached[1]
+
+
 def _pose_to_pos_rot(pose: np.ndarray):
     pos = np.asarray(pose[:3], dtype=float)
     rot = rotvec_to_rot_matrix(np.asarray(pose[3:6], dtype=float))
@@ -145,7 +169,7 @@ def validate(plan, limits, geom, *, samples_per_segment: int = 200
     it always carries every measured peak, and ``code`` is the first limit/step
     check to fail (priority: vel → acc → jerk → step) or ``OK``.
     """
-    wlimits = WorkspaceLimits.from_geometry(geom)
+    wlimits = _workspace_limits(geom)
     mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
 
     peak_vel = 0.0

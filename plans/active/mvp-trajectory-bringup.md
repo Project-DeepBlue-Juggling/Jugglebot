@@ -251,11 +251,13 @@ not a dependency.
 - Services (new files in `ros_ws/src/jugglebot_interfaces/srv/` + CMakeLists):
   - `trajectory/go_to_pose` — **GoToPose.srv**: `geometry_msgs/Pose pose`
     (mm, z STOW-relative), `float64 duration_s` (0 ⇒ minimal feasible) →
-    `bool accepted, int32 code, string message, float64 planned_duration_s,
-    float64 min_duration_s`. TRAJECTORY mode only (else `WRONG_MODE`, loud).
+    `bool accepted, string code, string message, float64 planned_duration_s,
+    float64 min_duration_s` (`code` is a **string**, the feasibility/service code
+    verbatim — changed from `int32`; see the Phase 2 Outcome). TRAJECTORY mode
+    only (else `WRONG_MODE`, loud).
   - `trajectory/timed_target` — **TimedTarget.srv**: pose +
     `geometry_msgs/Vector3 velocity_mm_s` + `builtin_interfaces/Time arrival_time`
-    + `bool hold_after` → same response shape.
+    + `bool hold_after` → same response shape (`string code` included).
   - `trajectory/hold`, `trajectory/go_home` — `std_srvs/Trigger`.
   - `trajectory/set_limits` — **SetTrajectoryLimits.srv**: leg vel/acc/jerk
     (0 ⇒ keep), clamped to the YAML hard ceilings → success/message. The
@@ -565,9 +567,39 @@ one `duration_s: 0.05` loud-rejection demo at the default low limits (100 mm/s,
 read-only knot inspection. Full narrative in
 `logbook/2026-07-07-mvp-phase2-waypoint-moves.md`.
 
+**Outcome addendum (2026-07-07 — audit-fix round)**: a `/audit` of the two Phase-2
+commits found one BLOCKING issue — the mid-move `go_to_pose` install step. Because
+the seed is sampled at service entry but the plan installs ~1.5 s later (4–5
+`validate` passes at ~377 ms each) while the emitter streams the OLD plan, an
+in-flight move meant the install jumped `u0` back to the stale seed (measured
+~575 mm/s transient that passed both step gates). Fixes: (a) a **permanent
+install-continuity guard** — re-sample the commanded state immediately before
+install and reject `STALE_STATE` if the plan's t=0 leg positions drifted past
+`0.25·STEP_BOUND_MARGIN·JB_OP_MAX_POSITION_STEP_REV` (≈0.06 rev); (b) a **temporary,
+documented Phase-2 `BUSY` restriction** — moves are accepted only from a hold
+(interrupting an in-flight move needs the follower's C2 supersede, which lands in
+**Phase 3/5**, at which point this restriction is lifted); (c) **validate-perf quick
+wins** — `build_move` returns its accepting report (node drops a redundant
+re-validate), validates an explicitly-requested duration FIRST (accept immediately
+if the gate passes — this also removes a TOO_FAST false-reject for durations below
+the 1.05-margin-padded `t_min`), and hoists the once-per-geometry `WorkspaceLimits`
+construction out of `validate()`. Also fixed: `go_to_pose` now rejects on stale
+telemetry and on a non-finite `duration_s`; leaving TRAJECTORY mid-move for another
+streaming mode installs a profiled decel-stop. Verification: `pytest tests/ -q`
+(2026-07-07) = **2047 passed, 1 xfailed** (net +6 audit-fix tests). Narrative +
+per-finding trace in the logbook entry's "Audit fixes (2026-07-07)" section.
+
 ### Phase 3 — SpaceMouse streaming
 
 **Goal**: continuous target following through the same layer.
+
+**Prerequisite (from the Phase-2 audit)**: the SpaceMouse follower replans every
+40 Hz tick, so `feasibility.validate()` must drop from ~377 ms (measured 2026-07-07
+on the Jetson at the 200-sample gate) to low-single-digit ms for the follower's
+scoped checks. Vectorise the per-sample IK/Jacobian sampling chain, decimate or skip
+the per-sample condition-number SVD, and/or run a follower-specific reduced gate —
+the exact design decision belongs to this phase. (The Phase-2 hoist of
+`WorkspaceLimits` out of `validate()` is a first step but nowhere near sufficient.)
 
 **Code**: `follower.py` (drain-to-latest per 40 Hz tick; replan from the current
 commanded state toward the newest target with horizon

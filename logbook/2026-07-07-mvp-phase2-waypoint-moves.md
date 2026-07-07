@@ -230,6 +230,33 @@ gate calls (or a second full pass) to find the true binding constraint. Computin
 peaks once is cheaper and makes the stretch exact. Geometry checks still early-return
 (a bad pose makes the Jacobian peaks meaningless).
 
+### Why `trajectory/diagnostics` stays `diagnostic_msgs/DiagnosticStatus`
+
+Fork — `trajectory/status` migrated to the typed `TrajectoryStatus.msg`, so the
+obvious symmetry would be to type `trajectory/diagnostics` too. Kept it as
+`diagnostic_msgs/DiagnosticStatus` deliberately. Root cause it addresses: the
+diagnostics payload is an open-ended, evolving bag of measured peaks — Phase 4 adds
+per-move peak tracking and a `/diagnose` rosbag summariser, so the field set is not
+yet stable. `DiagnosticStatus`'s `KeyValue` list absorbs new keys with **no interface
+rebuild** (no `.msg` edit, no `colcon build --packages-select jugglebot_interfaces`,
+no downstream regeneration), whereas a typed message would force an interface churn
+every time a peak is added. `status` is different — its fields (streaming/mode/
+plan_kind/time_remaining/seq) are a fixed contract worth typing. Chose flexibility
+for the still-moving diagnostics surface, typing for the settled status surface.
+
+### Why the code landed as two commits (motion layer, then ROS surface)
+
+Fork — the phase could have been one commit. Split into `614820c` (pure-motion:
+`feasibility.py` full gate + `planner.build_move` + `limits.with_session_limits`,
+all numpy, no ROS) and `1dc9571` (ROS surface: interfaces + node handlers +
+orchestrator). Root cause: rollback granularity. The pure-motion layer is
+independently testable (`tests/motion/`) and has no ROS/interface dependencies, so a
+regression found later in either the math or the ROS wiring can be reverted in
+isolation without dragging the other half with it — and `git blame` on a motion-math
+line lands on a commit that is *only* motion math, not buried in an interface churn.
+The two layers also have different review surfaces (control-system correctness vs
+ROS plumbing), which the split keeps legible.
+
 ### Deviation carried from Phase 1: armed-mode-exit is still a sharp edge
 
 The Phase-1 note stands: leaving a streaming mode while the bridge is ARMED latches
@@ -251,6 +278,86 @@ mode change) remains the guard.
   property-heavy `build_timed` work, or on request.
 - Phase 3 (SpaceMouse) adds `follower.py` + the `platform_pose_topic` publisher-field
   gating and gravity-offset composition (verbatim ports from `mpc_bridge_node`).
+
+## Audit fixes (2026-07-07)
+
+A `/audit` of the two Phase-2 commits (`614820c..1dc9571`) returned one BLOCKING,
+two WARNING, and six NOTE findings. All were applied in a single follow-up commit
+(one code commit + a SHA-backfill follow-up). Findings → fixes, one line each:
+
+**BLOCKING — mid-move `go_to_pose` install step.** The seed is sampled at service
+entry, but the full gate takes ~1.5 s (4–5 `validate` passes at ~377 ms each,
+measured on this Jetson) while the emitter streams the OLD plan; installing then
+jumps `u0` back to the stale seed (measured ~0.083 rev / 25 ms ≈ 575 mm/s transient
+that passes both step gates). Three-part fix:
+- *Install-continuity guard (permanent)* — `_svc_go_to_pose` re-samples the
+  commanded state immediately before install and compares the plan's t=0 leg
+  positions against the live ones in `motor_rev` (the pump's units, via the exact
+  emitter chain). Drift past `0.25·STEP_BOUND_MARGIN·JB_OP_MAX_POSITION_STEP_REV`
+  (≈0.06 rev) → `STALE_STATE` reject, no install.
+- *Phase-2 `BUSY` restriction (temporary, documented)* — a `go_to_pose` while a
+  move is in flight is rejected `BUSY` (a service-level code beside `_MOVE_MODE`,
+  NOT a feasibility-enum member). Moves are accepted only from a hold; interrupting
+  an in-flight move (supersede) needs the follower's C2 chaining and is lifted by
+  **Phase 3/5**.
+- *Validate-perf quick wins* — `build_move` returns its accepting `FeasibilityReport`
+  (node drops the redundant re-validate); an explicitly-requested duration is
+  validated FIRST and honoured if the gate accepts it (the stretch loop runs only on
+  failure, to populate `min_duration_s`); the once-per-geometry `WorkspaceLimits`
+  construction is hoisted out of `validate()` into a per-geom cache.
+
+**WARNING — `go_to_pose` skipped telemetry-staleness.** Added a `_robot_state_fresh`
+gate after the seeded check: stale telemetry → `STALE_STATE`, 'cannot plan a move'.
+
+**WARNING — STANDBY semantics.** Corrected the `state_machine` STANDBY docstring
+(STANDBY *silences* move commands; trajectory_node keeps streaming and holds at the
+seeded/last-reached pose, NOT neutral; return-to-neutral is `trajectory/go_home`).
+Behaviour: leaving TRAJECTORY mid-move for another streaming mode now installs a
+profiled C2 decel-stop (`build_hold` from the moving seed) — if the stop is too
+aggressive for the gate at the current limits, it logs loudly and lets the
+already-validated move complete (safe) rather than snapping a jerk-violating stop.
+
+**NOTE — jerk endpoint bias.** Documented next to `_MIN_SAMPLES`: the forward-diff
+jerk under-measures the endpoint peak by ≤ 1.5 % at 200 samples/segment; accepted
+because the jerk limit is session-ramped by feel with large ceiling headroom.
+
+**NOTE — non-finite `duration_s`.** `_svc_go_to_pose` rejects a NaN/Inf `duration_s`
+up front (`TOO_FAST`, 'non-finite duration_s') before the `> 0.0` branch.
+
+**NOTE — plan Architecture said `int32 code`.** Corrected the plan's GoToPose line to
+`string code` (verbatim feasibility/service code; the TimedTarget "same response
+shape" bullet now names `string code`).
+
+**NOTE — Discussion recorded 4+1 of 6 decisions.** Added the two missing bullets:
+`trajectory/diagnostics` staying `DiagnosticStatus` (KeyValue flexibility, no
+interface rebuild for Phase-4 peak tracking) and the two-code-commit split
+(pure-motion layer vs ROS surface, for rollback/blame clarity).
+
+**NOTE — `TOO_FAST` false-reject.** A requested duration the gate accepts but which
+sits below the 1.05-margin-padded `t_min` was being rejected. Fixed by the
+validate-requested-first restructure above; pinned by
+`test_requested_below_padded_tmin_but_gate_accepts_is_honoured` (empirically: a
+z 170→190 move, padded `t_min` = 0.5440 s, request 0.5386 s validates OK → now
+accepted).
+
+**NOTE — planner spatial-invariance comment.** Annotated `_STRETCHABLE` that the
+"spatial path is duration-invariant" argument holds only for a REST seed; a moving
+seed re-validates every candidate `T` (which the stretch loop already does).
+
+**Deferred to Phase 3 (not fixed here).** `validate()` at ~377 ms (200-sample gate,
+measured 2026-07-07 on the Jetson) is far too slow for the SpaceMouse follower's
+per-40 Hz-tick replan; it must drop to low-single-digit ms via a vectorised sampling
+chain, a decimated/skipped per-sample condition-number SVD, and/or a follower-scoped
+reduced gate. The `WorkspaceLimits` hoist is a first step, not sufficient. Recorded
+as an explicit Phase-3 prerequisite in the plan.
+
+**Verification.** Scoped: `pytest tests/motion/ tests/ros/test_trajectory_node.py
+tests/ros/test_state_machine.py -q` (run 2026-07-07) = **298 passed**. Full suite:
+`pytest tests/ -q` (run 2026-07-07) = **2047 passed, 1 xfailed in 501.12 s**, 0
+failed (baseline before these fixes: 2041 passed, 1 xfailed; net **+6** = the six
+audit-fix tests only — telemetry-stale reject, BUSY reject, non-finite duration
+reject, install-continuity reject, STANDBY-exit profiled stop, and the TOO_FAST
+false-reject regression).
 
 ## Related
 

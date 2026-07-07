@@ -23,6 +23,8 @@ from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits
 
 from jugglebot.trajectory_node import TrajectoryNode
 from jugglebot.motion.trajectory import feasibility as feas
+from jugglebot.motion.trajectory import planner
+from jugglebot.motion.trajectory import HoldPlan
 from controller.teensy_link.setpoint_pump import SetpointPump
 
 _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
@@ -258,6 +260,107 @@ def test_go_to_pose_out_of_workspace_rejected():
                                 GoToPose.Response())
     assert resp.accepted is False
     assert resp.code == feas.WORKSPACE
+
+
+# ── go_to_pose audit fixes (2026-07-07) ───────────────────────
+
+def test_go_to_pose_rejected_when_telemetry_stale():
+    """Move planning needs a fresh seed: if robot_state has gone stale after
+    seeding, reject STALE_STATE rather than plan on a possibly-mismatched pose."""
+    node = _traj_mode_node()
+    assert node._seeded and node._current_mode == 'TRAJECTORY'
+    # Age the telemetry past the staleness window (keeps _seeded True).
+    node._robot_state_mono = time.perf_counter() - (node._robot_state_stale_s + 5.0)
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.STALE_STATE
+    assert 'stale' in resp.message.lower()
+    assert node._active_plan.kind == 'hold'          # seeded hold untouched
+
+
+def test_go_to_pose_rejected_when_move_in_flight_busy():
+    """Phase-2 BUSY restriction: a go_to_pose during an in-flight move is rejected
+    (moves accepted only from a hold), and the active move is left untouched."""
+    node = _traj_mode_node()
+    first = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                 GoToPose.Response())
+    assert first.accepted and node._active_plan.kind == 'move'
+    # Pin the move as in-flight (well within its 2 s duration).
+    node._plan_t0 = time.perf_counter() - 0.5
+    in_flight_plan = node._active_plan
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=185.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == 'BUSY'
+    assert 'in flight' in resp.message.lower()
+    assert node._active_plan is in_flight_plan       # active move untouched
+
+
+def test_go_to_pose_rejected_non_finite_duration():
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=float('nan')),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.TOO_FAST
+    assert 'non-finite' in resp.message.lower()
+    assert node._active_plan.kind == 'hold'
+
+
+def test_go_to_pose_rejected_when_commanded_state_moved_during_planning(monkeypatch):
+    """Install-continuity guard: build_move seeds at service entry but the gate
+    takes ~1.5 s while the OLD plan streams. Simulate the commanded state drifting
+    during planning (monkeypatch build_move to install a moved hold before
+    returning) → STALE_STATE reject, and the drifted plan is NOT overwritten."""
+    node = _traj_mode_node()
+    real_build_move = planner.build_move
+
+    def latency_build_move(state0, target, dur, limits, geom):
+        plan, report = real_build_move(state0, target, dur, limits, geom)
+        # Simulate ~1.5 s of streaming: the commanded pose drifts 10 mm in z
+        # (≈0.13 rev/leg, well past the ~0.06 rev continuity bound).
+        moved = np.asarray(node._current_state()[0], dtype=float).copy()
+        moved[2] += 10.0
+        node._install(HoldPlan(moved))
+        return plan, report
+
+    monkeypatch.setattr(planner, 'build_move', latency_build_move)
+    seeded_hold = node._active_plan                  # hold at the ~170 mm seed
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.STALE_STATE
+    assert 'moved during planning' in resp.message.lower()
+    # The move (target z=190) was NOT installed — the drifted hold (seed z≈170 + 10)
+    # the latency stub set is what remains active.
+    assert node._active_plan is not seeded_hold
+    assert node._active_plan.kind == 'hold'
+    assert node._active_plan.final_pose[2] == pytest.approx(180.0, abs=1e-2)
+
+
+def test_standby_exit_mid_move_installs_profiled_stop():
+    """Leaving TRAJECTORY for STANDBY while a move is in flight installs a profiled
+    C2 decel-to-rest (the move is silenced), and streaming continues."""
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted and node._active_plan.kind == 'move'
+    move_target_z = float(node._active_plan.final_pose[2])
+    assert move_target_z == pytest.approx(190.0, abs=1e-2)
+    # Place us in the DECEL half of the move (nonzero leg velocity, but a stop from
+    # here satisfies the gate — verified empirically 2026-07-07).
+    node._plan_t0 = time.perf_counter() - 1.5
+    _, mid_twist, _ = node._current_state()
+    assert not np.allclose(mid_twist, 0.0)           # genuinely moving
+    node._on_control_mode(String(data='STANDBY'))
+    # Streaming continues, mode switched, and a profiled stop replaced the move.
+    assert node._streaming is True and node._seeded is True
+    assert node._current_mode == 'STANDBY'
+    stop = node._active_plan
+    p_end, v_end, a_end = stop.state_at(stop.total_duration)
+    assert np.allclose(v_end, 0.0, atol=1e-9)        # decel-to-REST
+    assert np.allclose(a_end, 0.0, atol=1e-9)
+    assert p_end[2] < move_target_z - 1.0            # stopped short of the target
 
 
 # ── set_limits (Phase 2) ──────────────────────────────────────

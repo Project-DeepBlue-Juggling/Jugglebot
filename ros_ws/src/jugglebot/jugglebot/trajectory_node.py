@@ -64,8 +64,10 @@ import jugglebot.hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     leg_lengths_to_pose,
+    pose_to_leg_lengths,
     quat_to_rot_matrix,
     rot_matrix_to_rotvec,
+    rotvec_to_rot_matrix,
 )
 from jugglebot.motion.ipc import MpcCommandPub
 from jugglebot.motion.trajectory import (
@@ -82,6 +84,16 @@ from jugglebot.motion.trajectory import planner
 # sources) a go_to_pose is rejected WRONG_MODE — loudly, never silently — so the
 # operator can never drive a scripted move from a mode that isn't expecting one.
 _MOVE_MODE = 'TRAJECTORY'
+
+# Service-level rejection codes (NOT feasibility-enum members — those describe a
+# *plan*; these describe the *node's acceptance state*). They live beside
+# _MOVE_MODE because, like WRONG_MODE, they are properties of the service surface,
+# not of any plan the gate reasons about.
+#   BUSY — a go_to_pose arrived while a move is already in flight. Phase 2 accepts
+#   moves only FROM a hold; interrupting an in-flight move (supersede) lands with
+#   Phase 3 (SpaceMouse follower) / Phase 5 (timed targets). This restriction is
+#   temporary and is lifted by those phases.
+_BUSY = 'BUSY'
 
 
 # Control modes in which the node streams a hold. STANDBY is the armed-hold state
@@ -288,12 +300,40 @@ class TrajectoryNode(Node):
         if mode == self._current_mode:
             return
         if mode in self._stream_modes:
+            # Leaving TRAJECTORY for another streaming mode while a move is in
+            # flight: STANDBY (and the other streaming modes) SILENCE move commands
+            # but keep streaming, so the in-flight move must be stopped with a
+            # profiled C2 decel-to-rest rather than allowed to run on to its target.
+            # (build_hold handles the moving seed.) Snapshot this BEFORE mutating
+            # _current_mode below; _active_move_in_flight takes the lock itself.
+            leaving_trajectory_move = (
+                self._current_mode == _MOVE_MODE and mode != _MOVE_MODE
+                and self._active_move_in_flight())
             # Streaming-state writes go under _plan_lock: the emitter thread
             # snapshots _streaming/_seeded under it in _emit_once, so an unlocked
             # write could tear against that snapshot.
             with self._plan_lock:
                 self._current_mode = mode
                 self._streaming = True
+            if leaving_trajectory_move:
+                # Sample the live (moving) state and install a profiled stop. If the
+                # decel is too aggressive to satisfy the gate at the current limits
+                # (a high-velocity mid-move exit), log loudly and leave the move
+                # streaming — it is already gate-validated and ends at rest at its
+                # target, so completing it is safe; snapping a stop that violates
+                # jerk is not. _current_state/_install take the lock themselves.
+                try:
+                    hold = planner.build_hold(
+                        self._current_state(), self._limits, self._geom)
+                    self._install(hold)
+                    self.get_logger().info(
+                        f"left {_MOVE_MODE} mid-move for {mode} — installed a "
+                        "profiled stop (move silenced)")
+                except TrajectoryInfeasible as e:
+                    self._last_rejection = str(e)
+                    self.get_logger().error(
+                        f"could not install a profiled stop on {_MOVE_MODE} exit "
+                        f"({e}) — the in-flight move will complete to its target")
             # Seed a hold at the MEASURED pose on stream start (never nominal) —
             # this is what keeps the first u0 inside the pump/firmware gates — but
             # ONLY from FRESH telemetry. Stale/absent telemetry ⇒ defer: the next
@@ -394,6 +434,25 @@ class TrajectoryNode(Node):
             self._active_plan = plan
             self._plan_t0 = now
 
+    def _pose_to_motor_rev(self, pose) -> np.ndarray:
+        """pose_6dof → motor_rev, the EXACT chain the emitter ships (emitter.py):
+        pose → (pos, rot) → leg extensions (mm) → × mm_to_rev. Used by the
+        install-continuity guard so the drift check is in the same units the pump
+        gates."""
+        pos = np.asarray(pose[:3], dtype=float)
+        rot = rotvec_to_rot_matrix(np.asarray(pose[3:6], dtype=float))
+        return pose_to_leg_lengths(pos, rot, self._geom) * self._mm_to_rev
+
+    def _active_move_in_flight(self) -> bool:
+        """True iff the active plan is a MOVE (not a hold) with time remaining —
+        inspected the way ``trajectory/status`` reports plan_kind/time_remaining."""
+        with self._plan_lock:
+            plan = self._active_plan
+            t0 = self._plan_t0
+        if plan is None or t0 is None or plan.kind != 'move':
+            return False
+        return (plan.total_duration - (time.perf_counter() - t0)) > 0.0
+
     def _svc_hold(self, request, response):
         """``trajectory/hold``: freeze at the current pose (profiled decel-to-rest)."""
         if not self._seeded:
@@ -453,8 +512,10 @@ class TrajectoryNode(Node):
         """``trajectory/go_to_pose``: a profiled point-to-point move (TRAJECTORY mode).
 
         Rejects loudly — never silently — when the node is not in TRAJECTORY mode
-        (``WRONG_MODE``), not yet seeded (``STALE_STATE``), or the move is
-        infeasible (the gate code, with ``min_duration_s`` on a ``TOO_FAST``).
+        (``WRONG_MODE``); not yet seeded or the telemetry is stale (``STALE_STATE``);
+        a move is already in flight (``BUSY`` — Phase 2 accepts moves only from a
+        hold); the commanded state drifted while the gate ran (``STALE_STATE``); or
+        the move is infeasible (the gate code, with ``min_duration_s`` on ``TOO_FAST``).
         """
         response.planned_duration_s = 0.0
         response.min_duration_s = 0.0
@@ -475,6 +536,28 @@ class TrajectoryNode(Node):
             self._last_rejection = response.message
             self.get_logger().error(response.message)
             return response
+        # Telemetry-staleness gate: the seed that drives the plan is only as fresh
+        # as robot_state. If telemetry has gone stale, the sampled seed pose may no
+        # longer match the platform — refuse to plan a move on it.
+        if not self._robot_state_fresh():
+            response.accepted = False
+            response.code = feas.STALE_STATE
+            response.message = 'robot_state telemetry stale — cannot plan a move'
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        # Phase-2 BUSY restriction (temporary; lifted by Phase 3/5 move-supersede):
+        # accept a move only from a hold. Superseding an in-flight move needs the
+        # follower's C2 chaining, which is not wired yet — reject loudly instead of
+        # jumping the commanded state.
+        if self._active_move_in_flight():
+            response.accepted = False
+            response.code = _BUSY
+            response.message = ('a move is in flight — Phase 2 accepts moves only '
+                                'from hold; supersede arrives with Phase 3/5')
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
 
         try:
             target = self._pose_from_msg(request.pose)
@@ -487,8 +570,17 @@ class TrajectoryNode(Node):
             return response
 
         duration = float(request.duration_s)
+        # Reject a non-finite requested duration up front (NaN/Inf sail through the
+        # `> 0.0` test and every downstream numeric comparison). Loud TOO_FAST.
+        if not np.isfinite(duration):
+            response.accepted = False
+            response.code = feas.TOO_FAST
+            response.message = 'non-finite duration_s'
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
         try:
-            plan = planner.build_move(
+            plan, report = planner.build_move(
                 self._current_state(), target,
                 duration if duration > 0.0 else None,
                 self._limits, self._geom)
@@ -501,8 +593,30 @@ class TrajectoryNode(Node):
             self.get_logger().error(f"go_to_pose rejected: {e}")
             return response
 
-        # Record the accepted plan's measured leg peaks for trajectory/diagnostics.
-        report = feas.validate(plan, self._limits, self._geom)
+        # Install-continuity guard. build_move seeds from _current_state() at entry,
+        # but the full gate takes ~1.5 s (4-5 validate passes) while the emitter
+        # keeps streaming the OLD plan. If the commanded state moved during planning,
+        # installing this plan would jump u0 from the drifted live position back to
+        # the stale seed — a transient both the pump/firmware step gates could still
+        # pass. Re-sample now and reject if the plan's t=0 commanded position has
+        # drifted from the live one (compared in motor_rev, the pump's units).
+        drift = float(np.max(np.abs(
+            self._pose_to_motor_rev(plan.state_at(0.0)[0])
+            - self._pose_to_motor_rev(self._current_state()[0]))))
+        continuity_bound = (0.25 * feas.STEP_BOUND_MARGIN
+                            * hw.JB_OP_MAX_POSITION_STEP_REV)
+        if drift > continuity_bound:
+            response.accepted = False
+            response.code = feas.STALE_STATE
+            response.message = 'commanded state moved during planning — retry'
+            self._last_rejection = response.message
+            self.get_logger().error(
+                f"{response.message} (drift {drift:.3f} rev > "
+                f"{continuity_bound:.3f})")
+            return response
+
+        # Record the accepted plan's measured leg peaks (from the report build_move
+        # returned — no second ~350 ms validate) for trajectory/diagnostics.
         self._last_peak_vel_mmps = report.peak_leg_vel_mmps
         self._last_peak_acc_mmps2 = report.peak_leg_acc_mmps2
         self._last_peak_jerk_mmps3 = report.peak_leg_jerk_mmps3

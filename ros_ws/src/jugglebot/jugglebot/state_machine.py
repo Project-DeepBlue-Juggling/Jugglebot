@@ -395,10 +395,11 @@ class ActiveHandler(StateHandler):
         self._activated = False
         # Always reset to STANDBY on entry so re-activation never inherits a
         # prior sub-mode.  The orchestrator's control_mode is a target-routing
-        # signal: STANDBY means the platform holds at its neutral pose via
-        # trajectory_node (which seeds a hold from measured telemetry and streams
-        # it); the operator then switches to TRAJECTORY / SPACEMOUSE / CATCH to
-        # accept the corresponding command source.
+        # signal: STANDBY SILENCES move commands — trajectory_node keeps streaming
+        # its current plan and holds at the pose it seeded or last reached (NOT a
+        # neutral pose; return-to-neutral is the explicit trajectory/go_home
+        # service). The operator then switches to TRAJECTORY / SPACEMOUSE / CATCH
+        # to accept the corresponding command source.
         ctx.active_mode = ActiveMode.STANDBY
         ctx.request = 'activate'
         ctx.operation_result = None
