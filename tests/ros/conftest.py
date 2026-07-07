@@ -189,6 +189,31 @@ class TrajectoryStatus:
     last_rejection: str = ''
 
 
+# ── jugglebot_interfaces DynamicTargetCommand / TargetFeedback (Phase 5) ──
+
+
+@dataclass
+class DynamicTargetCommand:
+    target_pos: 'Point' = field(default_factory=lambda: Point())
+    target_quat: 'Quaternion' = field(default_factory=lambda: Quaternion())
+    target_vel: 'Vector3' = field(default_factory=lambda: Vector3())
+    arrival_time: float = 0.0
+
+
+@dataclass
+class TargetFeedback:
+    accepted: bool = False
+    code: str = ''
+    reason: str = ''
+    arrival_time: float = 0.0
+    source: str = ''
+
+
+@dataclass
+class BallStateArray:
+    balls: list = field(default_factory=list)
+
+
 @dataclass
 class _MockPoseInner:
     """Just enough of geometry_msgs/Pose for the director's body.pose.pose.position access."""
@@ -389,6 +414,26 @@ SetTrajectoryLimits = _make_service(
                  'applied_vel_limit_mmps': 0.0, 'applied_acc_limit_mmps2': 0.0,
                  'applied_jerk_limit_mmps3': 0.0},
 )
+
+
+class _RosTimeMsg:
+    """Stand-in for builtin_interfaces/Time (sec / nanosec fields)."""
+    def __init__(self, sec=0, nanosec=0):
+        self.sec = sec
+        self.nanosec = nanosec
+
+
+class TimedTarget:
+    """Timed target service mock (Phase 5): fresh arrival_time per Request."""
+    class Request:
+        def __init__(self):
+            self.pose = None
+            self.velocity_mm_s = Vector3()
+            self.arrival_time = _RosTimeMsg()
+            self.hold_after = False
+    Response = _make_service(
+        resp_fields={'accepted': False, 'code': '', 'message': '',
+                     'planned_duration_s': 0.0, 'min_duration_s': 0.0}).Response
 
 
 # ── HomeMotors action mock ────────────────────────────────────
@@ -710,6 +755,9 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'ThrowAnnouncement': ThrowAnnouncement,
     'TrajectoryStatus': TrajectoryStatus,
     'PlatformPoseCommand': PlatformPoseCommand,
+    'DynamicTargetCommand': DynamicTargetCommand,
+    'TargetFeedback': TargetFeedback,
+    'BallStateArray': BallStateArray,
 })
 _create_mock_module('jugglebot_interfaces.srv', {
     'ActivateOrDeactivate': ActivateOrDeactivate,
@@ -723,6 +771,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'BallButlerThrow': BallButlerThrow,
     'GoToPose': GoToPose,
     'SetTrajectoryLimits': SetTrajectoryLimits,
+    'TimedTarget': TimedTarget,
 })
 _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,

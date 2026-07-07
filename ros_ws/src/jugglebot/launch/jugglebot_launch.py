@@ -185,6 +185,7 @@ def generate_launch_description():
             '/orchestrator_command',
             '/trajectory/status',
             '/trajectory/diagnostics',
+            '/trajectory/target_feedback',
             # /platform_target_reached removed (SocketCAN decommission): its only publisher
             # (can_node) is deleted; completion is reported via RPC returns
             # (disposition per the can_node<->Teensy parity audit, 2026-07-06).

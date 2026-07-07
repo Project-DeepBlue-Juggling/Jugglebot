@@ -15,16 +15,19 @@ import numpy as np
 import pytest
 
 import jugglebot.hardware_config as hw
+import types
+
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
-from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Vector3
 from jugglebot_interfaces.msg import (
+    DynamicTargetCommand,
     MotorStateSingle,
     PlatformPoseCommand,
     RobotState,
     TrajectoryStatus,
 )
-from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits
+from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits, TimedTarget
 
 from jugglebot.trajectory_node import TrajectoryNode
 from jugglebot.motion.trajectory import feasibility as feas
@@ -870,3 +873,258 @@ def test_emitter_cadence_40hz():
     if len(gaps):
         assert np.max(gaps) < 0.1, f"max emitter gap {np.max(gaps)*1e3:.1f} ms"
     assert pub.closed is True    # PUB closed on shutdown
+
+
+# ══════════════════════════════════════════════════════════════
+# Phase 5 — timed targets + catch path
+# ══════════════════════════════════════════════════════════════
+
+
+def _mk_ros_time(sec_float):
+    """builtin_interfaces/Time-like (sec/nanosec) for a float second value."""
+    s = int(sec_float)
+    return types.SimpleNamespace(sec=s, nanosec=int(round((sec_float - s) * 1e9)))
+
+
+def _timed_req(node, x=0.0, y=0.0, z=170.0, lead_s=3.0,
+               vx=0.0, vy=0.0, vz=0.0, hold_after=True):
+    """A TimedTarget request whose ROS arrival maps to ~lead_s ahead of now.
+
+    Pins the node's ROS↔perf offset to perf_counter() at build time so
+    arrival_perf = arrival_sec + offset ≈ now + lead_s (deterministic, independent
+    of the mock clock returning 0)."""
+    node._ros_to_perf_offset = time.perf_counter()
+    req = TimedTarget.Request()
+    req.pose = Pose(position=Point(x=x, y=y, z=z), orientation=Quaternion())
+    req.velocity_mm_s = Vector3(x=vx, y=vy, z=vz)
+    req.arrival_time = _mk_ros_time(lead_s)
+    req.hold_after = hold_after
+    return req
+
+
+def _dyn_target(node, x=0.0, y=0.0, z=20.0, lead_s=3.0, vx=0.0, vy=0.0, vz=0.0):
+    """A catch/dynamic_target with a perf-domain arrival ~lead_s ahead of now.
+    z is in the MPC offset convention (0 = active)."""
+    msg = DynamicTargetCommand()
+    msg.target_pos = Point(x=x, y=y, z=z)
+    msg.target_quat = Quaternion()          # identity
+    msg.target_vel = Vector3(x=vx, y=vy, z=vz)
+    msg.arrival_time = time.perf_counter() + lead_s
+    return msg
+
+
+def _catch_mode_node():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='CATCH'))
+    return node
+
+
+# ── timed_target service ──────────────────────────────────────
+
+def test_timed_target_accepts_generous_lead():
+    node = _traj_mode_node()
+    resp = node._svc_timed_target(_timed_req(node, z=185.0, lead_s=3.0),
+                                  TimedTarget.Response())
+    assert resp.accepted is True
+    assert resp.code == feas.OK
+    assert resp.planned_duration_s == pytest.approx(3.0, abs=0.05)
+    assert node._active_plan.kind == 'move'
+    # Arrival pose is hit at the reach end.
+    p_arr = node._active_plan.state_at(node._active_plan.total_duration)[0]
+    assert np.allclose(p_arr[:3], [0, 0, 185], atol=1e-2)
+
+
+def test_timed_target_wrong_mode_rejected():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='STANDBY'))    # streaming, not TRAJECTORY
+    resp = node._svc_timed_target(_timed_req(node, z=185.0), TimedTarget.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.WRONG_MODE
+    assert node._active_plan.kind == 'hold'
+
+
+def test_timed_target_not_seeded_rejected():
+    node = _node()
+    node._current_mode = 'TRAJECTORY'    # mode set, never seeded
+    resp = node._svc_timed_target(_timed_req(node, z=185.0), TimedTarget.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.STALE_STATE
+
+
+def test_timed_target_too_tight_lead_rejected_with_min_duration():
+    node = _traj_mode_node()
+    resp = node._svc_timed_target(
+        _timed_req(node, x=20.0, y=20.0, z=185.0, lead_s=0.05),
+        TimedTarget.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.TOO_FAST
+    assert resp.min_duration_s > 0.05
+    assert node._active_plan.kind == 'hold'      # unchanged
+
+
+def test_timed_target_nonzero_velocity_ends_at_rest():
+    node = _traj_mode_node()
+    resp = node._svc_timed_target(
+        _timed_req(node, x=12.0, z=178.0, lead_s=2.5, vx=15.0),
+        TimedTarget.Response())
+    assert resp.accepted is True
+    _, v_end, a_end = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(v_end, 0.0, atol=1e-9)
+    assert np.allclose(a_end, 0.0, atol=1e-9)
+
+
+def test_timed_target_hold_after_false_returns_to_neutral():
+    node = _traj_mode_node()
+    resp = node._svc_timed_target(
+        _timed_req(node, x=12.0, z=185.0, lead_s=3.0, hold_after=False),
+        TimedTarget.Response())
+    assert resp.accepted is True
+    p_end = node._active_plan.state_at(node._active_plan.total_duration)[0]
+    assert np.allclose(p_end, node._neutral_pose, atol=1e-2)
+
+
+# ── Mid-plan supersede (no BUSY for timed targets) ────────────
+
+def test_timed_target_supersedes_in_flight_plan_c2():
+    """A timed target is accepted while a move is in flight (NO BUSY restriction) and
+    the replan is C2 — the new plan's t=0 state equals the live commanded state."""
+    node = _traj_mode_node()
+    # First timed target — a move now in flight.
+    assert node._svc_timed_target(_timed_req(node, x=15.0, z=185.0, lead_s=3.0),
+                                  TimedTarget.Response()).accepted is True
+    assert node._active_move_in_flight() is True
+    first_plan = node._active_plan
+    live_before = node._current_state()
+    # Second timed target mid-flight — must be accepted (supersede), not BUSY.
+    resp = node._svc_timed_target(_timed_req(node, x=-10.0, z=178.0, lead_s=3.0),
+                                  TimedTarget.Response())
+    assert resp.accepted is True
+    assert node._active_plan is not first_plan
+    # C2: the new plan starts at (≈) the state the platform was commanded to.
+    p0 = node._active_plan.state_at(0.0)[0]
+    assert np.allclose(p0, live_before[0], atol=0.5)
+
+
+def test_go_to_pose_still_busy_mid_move():
+    """go_to_pose keeps its Phase-2 BUSY guard (it uses the ~377 ms analytic gate for
+    shaped plans); only the fast-gated timed path lifts BUSY. Documents the
+    deliberate asymmetry."""
+    node = _traj_mode_node()
+    node._svc_timed_target(_timed_req(node, x=15.0, z=185.0, lead_s=3.0),
+                           TimedTarget.Response())
+    assert node._active_move_in_flight() is True
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=180.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == 'BUSY'
+
+
+# ── target_feedback publication ───────────────────────────────
+
+def test_timed_target_publishes_accept_feedback():
+    node = _traj_mode_node()
+    node._svc_timed_target(_timed_req(node, z=185.0, lead_s=3.0),
+                           TimedTarget.Response())
+    fbs = node.target_feedback_pub.published
+    assert len(fbs) >= 1
+    assert fbs[-1].accepted is True
+    assert fbs[-1].source == 'timed'
+
+
+def test_timed_target_publishes_reject_feedback():
+    node = _traj_mode_node()
+    node._svc_timed_target(_timed_req(node, x=20.0, y=20.0, z=185.0, lead_s=0.05),
+                           TimedTarget.Response())
+    fbs = node.target_feedback_pub.published
+    assert fbs[-1].accepted is False
+    assert fbs[-1].code == feas.TOO_FAST
+
+
+# ── catch/dynamic_target consumption ──────────────────────────
+
+def test_dynamic_target_ignored_outside_catch_mode():
+    node = _traj_mode_node()          # TRAJECTORY, not CATCH
+    node._on_dynamic_target(_dyn_target(node, x=10.0))
+    # No catch plan installed; still the seeded hold.
+    assert node._active_plan.kind == 'hold'
+    assert node.target_feedback_pub.published == []
+
+
+def test_dynamic_target_installs_catch_plan_with_z_offset():
+    """A catch target's z is an offset from active (0 = active); the installed plan's
+    target z is lifted by the active-z (170) into the trajectory convention."""
+    node = _catch_mode_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    assert node._active_plan.kind == 'move'
+    p_arr = node._active_plan.state_at(node._active_plan.total_duration)[0]
+    assert np.allclose(p_arr[:3], [10.0, 0.0, 190.0], atol=1e-2)  # z = 20 + 170
+    assert node._catch_arrival_perf is not None
+    assert node.target_feedback_pub.published[-1].accepted is True
+    assert node.target_feedback_pub.published[-1].source == 'catch'
+
+
+def test_dynamic_target_reach_freeze_ignores_late_updates():
+    """Once within catch_reach_freeze_s of the committed arrival, later target
+    updates are ignored (the reach is frozen into the catch)."""
+    node = _catch_mode_node()
+    # Commit a reach arriving only a hair beyond the freeze window from now, so the
+    # next update lands inside the freeze window.
+    lead = node._catch_reach_freeze_s + 0.05
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=lead))
+    committed = node._active_plan
+    committed_arrival = node._catch_arrival_perf
+    # A jittered update inside the freeze window must be ignored.
+    node._on_dynamic_target(_dyn_target(node, x=40.0, z=20.0, lead_s=lead - 0.1))
+    assert node._active_plan is committed
+    assert node._catch_arrival_perf == committed_arrival
+
+
+def test_dynamic_target_supersedes_before_freeze():
+    """Outside the freeze window a new catch target supersedes the prior (C2)."""
+    node = _catch_mode_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    first = node._active_plan
+    node._on_dynamic_target(_dyn_target(node, x=25.0, z=20.0, lead_s=3.0))
+    assert node._active_plan is not first
+    p_arr = node._active_plan.state_at(node._active_plan.total_duration)[0]
+    assert np.allclose(p_arr[:3], [25.0, 0.0, 190.0], atol=1e-2)
+
+
+def test_leaving_catch_clears_freeze():
+    node = _catch_mode_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    assert node._catch_arrival_perf is not None
+    node._on_control_mode(String(data='STANDBY'))
+    assert node._catch_arrival_perf is None
+
+
+# ── clock conversion (single point) ───────────────────────────
+
+def test_ros_time_to_perf_uses_offset():
+    node = _node()
+    node._ros_to_perf_offset = 100.0
+    perf = node._ros_time_to_perf(_mk_ros_time(5.25))
+    assert perf == pytest.approx(105.25)
+
+
+# ── Production-in-the-loop at the node: timed frames pump-accepted ──
+
+def test_timed_target_emitted_frames_pump_accepted():
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='TRAJECTORY'))
+    node._svc_timed_target(_timed_req(node, x=12.0, z=182.0, lead_s=2.5, vx=15.0),
+                           TimedTarget.Response())
+    pump = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV,
+                        max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
+    t0 = node._plan_t0
+    plan = node._active_plan
+    n = int(plan.total_duration / 0.025) + 8
+    for i in range(n):
+        frame = node._emitter.frame(plan, i * 0.025, i)
+        sp, reason = pump.build(frame, t_origin_us=i * 25000)
+        assert reason is None, f"pump rejected timed node frame {i}: {reason}"
+    assert pump.frames_rejected == 0

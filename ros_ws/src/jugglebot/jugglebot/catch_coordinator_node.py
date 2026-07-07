@@ -4,16 +4,20 @@ Subscribes to:
   - balls (BallStateArray) — tracked balls from ball_tracker_node
 
 Publishes:
-  - catch/dynamic_target (DynamicTargetCommand) — forwarded by
-    motion_bridge_node to the control process via IPC
+  - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node
+    (CATCH mode), which turns it into a timed catch plan (Phase 5). arrival_time is
+    published in the perf_counter domain (system-wide CLOCK_MONOTONIC on Linux).
+
+Subscribes:
+  - trajectory/target_feedback (TargetFeedback) — accept/reject decision from
+    trajectory_node's feasibility gate. Replaces the dormant MPC process's ZMQ
+    :5559 feedback (TargetFeedbackSub); on a rejection it drives the feasibility
+    blacklist (blacklist semantics preserved unchanged).
 
 Services called (on can_node):
   - smooth_move_hand (SetFloat) — prime hand to top of stroke
   - set_hand_traj_cmd (SetHandTrajCmd) — arm catch trajectory on Teensy
   - set_hand_gains (SetHandGains) — adjust hand PID gains for catch
-
-Receives accept/reject feedback from the MPC process via IPC SUB
-on MPC_FEEDBACK_ADDR (:5559, TOPIC_TARGET_FB).
 
 Clock domain conversion: ROS2 landing_time → perf_counter arrival_time.
 """
@@ -25,7 +29,11 @@ import rclpy
 from rclpy.node import Node
 import numpy as np
 
-from jugglebot_interfaces.msg import BallStateArray, DynamicTargetCommand
+from jugglebot_interfaces.msg import (
+    BallStateArray,
+    DynamicTargetCommand,
+    TargetFeedback,
+)
 from jugglebot_interfaces.srv import SetFloat, SetHandGains, SetHandTrajCmd
 from geometry_msgs.msg import Point, Quaternion, Vector3
 
@@ -66,12 +74,12 @@ class CatchCoordinatorNode(Node):
         self._balls_sub = self.create_subscription(
             BallStateArray, 'balls', self._on_balls, 10)
 
-        # IPC SUB for target accept/reject feedback from MPC process
-        from jugglebot.motion.ipc import TargetFeedbackSub
-        self._feedback_ipc = TargetFeedbackSub()
-
-        # Poll for IPC feedback at 50 Hz
-        self._feedback_timer = self.create_timer(0.02, self._poll_feedback)
+        # Accept/reject feedback from trajectory_node's feasibility gate (Phase 5).
+        # Replaces the dormant MPC process's ZMQ :5559 TargetFeedbackSub; the
+        # blacklist logic below is unchanged.
+        self._feedback_sub = self.create_subscription(
+            TargetFeedback, 'trajectory/target_feedback',
+            self._on_target_feedback, 10)
 
         # Re-measure clock offset every 30s to track drift
         self._clock_timer = self.create_timer(30.0, self._refresh_clock_offset)
@@ -188,30 +196,30 @@ class CatchCoordinatorNode(Node):
     # Feedback
     # ==================================================================
 
-    def _poll_feedback(self):
-        """Check for accept/reject feedback from the motion planner."""
-        fb = self._feedback_ipc.recv()
-        if fb is None:
-            return
+    def _on_target_feedback(self, msg: TargetFeedback):
+        """Accept/reject feedback from trajectory_node (Phase 5 topic swap).
 
+        Same correlation + blacklist semantics as the old ZMQ :5559 poll: match the
+        feedback's ``arrival_time`` (perf domain — the exact value we published) to
+        the last submitted target, then feed acceptance/rejection to the coordinator
+        so the feasibility blacklist tracks unreachable catch targets.
+        """
         ball_id = self._last_submitted_ball_id
         if ball_id is None:
             return
 
-        # Correlate by arrival_time (approximate match)
-        fb_arrival = fb.get('arrival_time', 0.0)
-        if abs(fb_arrival - self._last_arrival_time) > 0.1:
-            return  # Stale feedback, ignore
+        # Correlate by arrival_time (approximate match, same 0.1 s window as before).
+        if abs(float(msg.arrival_time) - self._last_arrival_time) > 0.1:
+            return  # Stale / unrelated feedback, ignore
 
-        if fb.get('accepted', False):
+        if msg.accepted:
             self._coordinator.report_acceptance(ball_id)
             self.get_logger().debug(f"Ball {ball_id}: target accepted")
         else:
-            violations = fb.get('violations', [])
             self._coordinator.report_rejection_with_position(
                 ball_id, self._last_landing_position)
             self.get_logger().info(
-                f"Ball {ball_id}: target rejected — {', '.join(violations)}")
+                f"Ball {ball_id}: target rejected — {msg.code}: {msg.reason}")
 
     # ==================================================================
     # Hand control
@@ -371,7 +379,6 @@ class CatchCoordinatorNode(Node):
     def destroy_node(self):
         self.get_logger().info("Shutting down CatchCoordinatorNode.")
         self._restore_default_gains()
-        self._feedback_ipc.close()
         super().destroy_node()
 
 

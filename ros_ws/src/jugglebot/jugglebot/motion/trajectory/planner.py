@@ -373,6 +373,150 @@ def build_follow(state0, target_pose, limits, geom, horizon_s):
         min_duration_s=T)
 
 
+def build_timed(state0, target_pose, target_twist, duration_s, limits, geom, *,
+                hold_after=True, neutral_pose=None):
+    """A timed target: reach ``target_pose`` at ``target_twist`` after exactly
+    ``duration_s`` seconds (the arrival lead), then come to rest.
+
+    Unlike :func:`build_move`, the duration is **fixed** — the arrival lead is the
+    operator's (or the catch's) hard timing constraint, so the plan is NEVER
+    silently stretched to arrive late. A too-tight lead is loudly rejected
+    (``TOO_FAST``) with the minimal feasible lead in ``min_duration_s``, never
+    quietly slowed.
+
+    Boundary conditions: the reach segment starts at ``state0``
+    (``(pose, twist, accel)`` — the seed continues the previous plan's sampled
+    state, C2 by construction) and ends at ``(target_pose, target_twist,
+    zero-accel)`` at ``t = duration_s``. That segment end is the timing-accuracy
+    -critical knot; the arrival pose error is zero by construction and the emitted
+    knot nearest ``t_arrival`` is within one 25 ms knot of the target.
+
+    **Rest-termination is a safety invariant (non-negotiable).** The plan ALWAYS
+    ends at rest. An implicit terminal hold snaps twist to zero, so a final segment
+    with a nonzero end velocity would be a velocity discontinuity ⇒ unbounded leg
+    jerk ⇒ dangerous hardware jerk (the exact class ``CLAUDE.md`` warns about).
+    Therefore, when the arrival velocity is nonzero, a decel-to-rest continuation
+    (the audited :func:`build_graceful_stop` primitive) is appended after the
+    arrival knot.
+
+    ``hold_after``:
+      * ``True`` — hold at the target after arriving (for a moving arrival: decel to
+        rest first). The catch path uses this (arrive at rest, hold quiescent).
+      * ``False`` — after arriving (and coming to rest), profile back to
+        ``neutral_pose`` and hold there (a "reach out, then return" one-shot);
+        ``neutral_pose`` is REQUIRED when ``False``.
+
+    Gated by the **fast** :func:`validate_follow`, not the ~377 ms analytic
+    :func:`validate`. The timed-target service supersedes an in-flight plan, so the
+    gate must run in a few ms for the plan to install within ~2 ms of its seed
+    sample — the drift over that window is ≪ the pump/firmware step gates, so the
+    supersede is a clean C2 replan rather than a u0 jump (the TOCTOU class the
+    Phase-2 install-continuity guard closed on the ~377 ms path). Timed plans are
+    never lean-shaped, so ``validate_follow`` (shaping-blind) is exactly right.
+    Returns ``(plan, report)``.
+    """
+    pose, twist, accel = (_as6(state0[0], 'pose'),
+                          _as6(state0[1], 'twist'),
+                          _as6(state0[2], 'accel'))
+    target = _as6(target_pose, 'target_pose')
+    v1 = _as6(target_twist, 'target_twist')
+    if not hold_after and neutral_pose is None:
+        raise ValueError("build_timed(hold_after=False) requires neutral_pose")
+
+    D = float(duration_s)
+    lead_floor = float(limits.min_timed_lead_s)
+    _zero = np.zeros(POSE_DIM)
+
+    # Hard lead floor: below min_timed_lead there is not enough time for ANY move —
+    # reject before building anything, advertising the minimal achievable lead.
+    if D < lead_floor:
+        t_min = _min_feasible_timed(pose, twist, accel, target, v1, limits, geom)
+        raise TrajectoryInfeasible(
+            TOO_FAST,
+            [f"arrival lead {D:.3f}s < minimum timed lead {lead_floor:.3f}s"],
+            min_duration_s=max(t_min, lead_floor))
+
+    # Gate the timing-critical reach FIRST (as a single-segment plan), so a
+    # too-tight arrival is rejected TOO_FAST before any (free-duration) continuation
+    # is built. A spatial failure (WORKSPACE / UNREACHABLE) is not a timing problem —
+    # re-raise it as-is.
+    reach = QuinticSegment(p0=pose, v0=twist, a0=accel,
+                           p1=target, v1=v1, a1=_zero, duration=D)
+    reach_report = validate_follow(TrajectoryPlan((reach,), target), limits, geom)
+    if not reach_report.ok:
+        if reach_report.code not in _STRETCHABLE:
+            raise TrajectoryInfeasible(reach_report.code, reach_report.reasons)
+        t_min = _min_feasible_timed(pose, twist, accel, target, v1, limits, geom)
+        raise TrajectoryInfeasible(
+            TOO_FAST,
+            [f"arrival lead {D:.3f}s < minimal feasible {t_min:.3f}s to reach the "
+             f"target at this velocity under the current limits"],
+            min_duration_s=t_min)
+
+    # Reach feasible — assemble the rest-terminating continuation.
+    segments = [reach]
+    if not _is_at_rest(v1, _zero):
+        # Nonzero arrival velocity: append a decel-to-rest. build_graceful_stop
+        # decelerates in place at the target (its segments continue C2 off the
+        # reach: v0 = v1, a0 = 0 = reach's a1) and is itself validate_follow-gated
+        # and duration-stretched, so the whole plan stays rest-terminating & smooth.
+        stop = build_graceful_stop((target, v1, _zero), limits, geom)
+        segments.extend(stop.segments)   # HoldPlan (0 segments) impossible: moving
+        rest_pose = stop.final_pose
+    else:
+        rest_pose = target
+
+    final_pose = rest_pose
+    if not hold_after:
+        # Profiled return to neutral from the (now at-rest) pose. Reuse the
+        # validate_follow-based rest-to-rest builder so build_timed stays fast.
+        ret_plan, _ = build_follow(
+            (rest_pose, _zero, _zero), _as6(neutral_pose, 'neutral_pose'),
+            limits, geom, limits.min_move_duration_s)
+        segments.extend(ret_plan.segments)
+        final_pose = ret_plan.final_pose
+
+    plan = TrajectoryPlan(tuple(segments), final_pose)
+    # Single-gate contract: gate the ASSEMBLED plan (the exact object the emitter
+    # runs). Each piece was gated feasible individually and the joins are C2, so
+    # this confirms the whole; a residual stretchable failure can only be the
+    # fixed-duration reach interacting at a join — surface it TOO_FAST with the
+    # minimal feasible lead rather than accepting an over-limit plan.
+    report = validate_follow(plan, limits, geom)
+    if not report.ok:
+        if report.code in _STRETCHABLE:
+            t_min = _min_feasible_timed(pose, twist, accel, target, v1, limits, geom)
+            raise TrajectoryInfeasible(TOO_FAST, report.reasons, min_duration_s=t_min)
+        raise TrajectoryInfeasible(report.code, report.reasons)
+    return plan, report
+
+
+def _min_feasible_timed(pose, twist, accel, target, v1, limits, geom):
+    """Smallest arrival lead the fast gate accepts for the reach to ``(target, v1)``.
+
+    Stretches the reach duration (``v1`` FIXED — the arrival velocity is a hard BC;
+    a longer lead only lowers the leg peaks) from the ``min_timed_lead_s`` floor
+    until :func:`validate_follow` passes. Bounded iterations (a moving seed breaks
+    the exact 1/Tⁿ leg-peak scaling the stretch factor assumes, so a couple of extra
+    passes may be needed); returns the best duration found. Only the reach is gated
+    here — the decel/return continuations are free-duration and never constrain the
+    arrival lead.
+    """
+    T = float(limits.min_timed_lead_s)
+    _zero = np.zeros(POSE_DIM)
+    report = None
+    for _ in range(_MAX_FOLLOW_ITERS):
+        reach = QuinticSegment(p0=pose, v0=twist, a0=accel,
+                               p1=target, v1=v1, a1=_zero, duration=T)
+        report = validate_follow(TrajectoryPlan((reach,), target), limits, geom)
+        if report.ok:
+            return T
+        if report.code not in _STRETCHABLE:
+            raise TrajectoryInfeasible(report.code, report.reasons)
+        T *= _stretch_factor(report, limits)
+    return T
+
+
 def build_graceful_stop(state0, limits, geom, *, start_duration_s=None):
     """A duration-stretched decel-to-rest at the current pose.
 

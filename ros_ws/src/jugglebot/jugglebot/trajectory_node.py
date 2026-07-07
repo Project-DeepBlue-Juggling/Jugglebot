@@ -33,8 +33,21 @@ Phase 2 adds the profiled point-to-point move surface: ``trajectory/go_to_pose``
 ramp (each value clamped to its YAML hard ceiling). ``trajectory/status`` is now
 the typed ``jugglebot_interfaces/TrajectoryStatus`` (migrated off the Phase-1
 ``diagnostic_msgs/DiagnosticStatus`` stand-in), and ``trajectory/diagnostics``
-publishes the active plan's measured leg peaks + emitter jitter. ``timed_target``
-and the CATCH path land in Phase 5.
+publishes the active plan's measured leg peaks + emitter jitter.
+
+Phase 5 adds timed target states: ``trajectory/timed_target`` (``TimedTarget``,
+TRAJECTORY mode) reaches a pose at a nominal velocity at an ABSOLUTE arrival time
+via ``planner.build_timed`` (a fixed-lead reach — a too-tight lead is loudly
+rejected ``TOO_FAST`` with the achievable ``min_duration_s``, never silently
+slowed). CATCH mode consumes ``catch/dynamic_target`` through the SAME
+``build_timed`` (+ a reach-freeze window that ignores late target jitter), and
+``trajectory/target_feedback`` carries the accept/reject decision to
+``catch_coordinator_node`` (which drives its feasibility blacklist). Both timed
+paths supersede an in-flight plan with a C2 replan: ``build_timed`` is gated by the
+fast ``validate_follow``, so a supersede installs within ~2 ms of its seed sample
+(no ``BUSY`` restriction — that guard exists only on the ~377 ms ``go_to_pose``
+path). One ROS-clock→perf_counter conversion point (``_ros_time_to_perf``) serves
+the service; the emitter and catch path are already perf-domain.
 
 **Armed-mode-exit is a sharp edge (Phase 1).** Leaving the streaming mode set
 while the bridge is ARMED stops the emitter publishing (``_streaming=False``), so
@@ -58,11 +71,13 @@ from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from jugglebot_interfaces.msg import (
+    DynamicTargetCommand,
     PlatformPoseCommand,
     RobotState,
+    TargetFeedback,
     TrajectoryStatus,
 )
-from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits
+from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits, TimedTarget
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry
@@ -123,6 +138,11 @@ _FOLLOWER_MODES = frozenset({'SPACEMOUSE', 'SHELL', 'GUI'})
 # pending-stop path in _emit_once, not dropped).
 _MOTION_MODES = _FOLLOWER_MODES | {'TRAJECTORY'}
 
+# The mode in which catch/dynamic_target commands (from catch_coordinator_node) are
+# consumed and turned into timed catch plans (Phase 5). Mirrors
+# mpc_bridge_node._CATCH_MODES — a dynamic_target outside CATCH is ignored.
+_CATCH_MODE = 'CATCH'
+
 _NUM_LEGS = 6
 
 
@@ -156,6 +176,27 @@ class TrajectoryNode(Node):
         # a LeanShaper for a given effective gain.
         self._config_lean_gain = float(hw.JB_TRAJ_LEAN_GAIN)
         self._gravity_mm_s2 = float(hw.GRAVITY_MMPS2)
+
+        # ── Timed targets + catch (Phase 5) ──────────────────────
+        # THE single ROS-clock → perf_counter conversion point (plan Architecture).
+        # perf_counter is CLOCK_MONOTONIC on Linux (system-wide, comparable across
+        # processes and with catch_coordinator_node's perf-domain arrival_time), so
+        # the emitter thread and the catch path share one time base; only the
+        # timed_target SERVICE carries a ROS-clock arrival, converted here.
+        self._ros_to_perf_offset = self._measure_clock_offset()
+        self._clock_offset_history = [self._ros_to_perf_offset]
+        self._active_z_mm = float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
+        # catch/dynamic_target z is an offset from the ACTIVE pose (0 = active — the
+        # MPC target convention); the trajectory pose convention is STOW-relative
+        # (170 = active). So a catch target's z is lifted by _active_z_mm; x/y are
+        # 0-at-active in BOTH conventions and map directly. (Frame convention to be
+        # RE-VERIFIED on hardware in Phase 7 before any ball flies — see Open
+        # Questions; the feasibility gate loudly rejects an out-of-stroke z meanwhile.)
+        self._catch_reach_freeze_s = float(hw.JB_TRAJ_CATCH_REACH_FREEZE_S)
+        # Absolute (perf) arrival time of the committed catch reach, or None. Once
+        # within catch_reach_freeze_s of it, later target jitter is ignored (the reach
+        # is frozen into the catch). Reset on leaving CATCH / on a fresh seed.
+        self._catch_arrival_perf = None
 
         # ── Parameters ─────────────────────────────────────────
         self.declare_parameter('control_mode_topic', 'control_mode_topic')
@@ -252,6 +293,9 @@ class TrajectoryNode(Node):
         # Gravity-levelling correction (verbatim port from mpc_bridge_node).
         self.create_subscription(Float64MultiArray, 'gravity_offset',
                                  self._on_gravity_offset, 10)
+        # Catch coordinator's timed catch target (CATCH mode; Phase 5).
+        self.create_subscription(DynamicTargetCommand, 'catch/dynamic_target',
+                                 self._on_dynamic_target, 10)
 
         # ── Services ────────────────────────────────────────────
         self.create_service(Trigger, 'trajectory/hold', self._svc_hold)
@@ -260,13 +304,23 @@ class TrajectoryNode(Node):
                             self._svc_go_to_pose)
         self.create_service(SetTrajectoryLimits, 'trajectory/set_limits',
                             self._svc_set_limits)
+        self.create_service(TimedTarget, 'trajectory/timed_target',
+                            self._svc_timed_target)
 
         # ── Status + diagnostics publication (5 Hz) ─────────────
         self.status_pub = self.create_publisher(
             TrajectoryStatus, 'trajectory/status', 10)
         self.diagnostics_pub = self.create_publisher(
             DiagnosticStatus, 'trajectory/diagnostics', 10)
+        # Accept/reject feedback for timed/catch targets — catch_coordinator_node
+        # consumes this in place of the dormant MPC process's ZMQ :5559 feedback
+        # (blacklist semantics preserved).
+        self.target_feedback_pub = self.create_publisher(
+            TargetFeedback, 'trajectory/target_feedback', 10)
         self.create_timer(0.2, self._publish_status)
+        # Re-measure the ROS↔perf clock offset every 30 s to track drift (mirrors
+        # catch_coordinator_node); the timed_target service converts through it.
+        self.create_timer(30.0, self._refresh_clock_offset)
 
         if start_emitter:
             self._start_emitter()
@@ -459,6 +513,11 @@ class TrajectoryNode(Node):
         mode = str(msg.data)
         if mode == self._current_mode:
             return
+        # Leaving CATCH clears the committed catch reach: a later re-entry must not
+        # inherit a stale freeze window (and an operator abort = a switch away from
+        # CATCH, so the frozen reach must release).
+        if mode != _CATCH_MODE:
+            self._catch_arrival_perf = None
         if mode in self._stream_modes:
             # Leaving a motion mode (TRAJECTORY / a follower) for a non-motion
             # streaming mode (STANDBY) while a move is in flight: STANDBY silences
@@ -591,6 +650,7 @@ class TrajectoryNode(Node):
         self._follower_target = None
         self._follower_input_lost = False
         self._pending_stop = False   # fresh at-rest seed supersedes any pending stop
+        self._catch_arrival_perf = None   # a fresh seed releases any frozen catch reach
         self.get_logger().info(
             f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
             f"z={pose[2]:.1f} mm (from measured telemetry)")
@@ -1056,6 +1116,218 @@ class TrajectoryNode(Node):
             f"{new_limits.leg_acc_ceiling_mmps2:.0f}/"
             f"{new_limits.leg_jerk_ceiling_mmps3:.0f})")
         self.get_logger().info(response.message)
+        return response
+
+    # ═══════════════════════════════════════════════════════════
+    # Timed targets + catch (Phase 5)
+    # ═══════════════════════════════════════════════════════════
+
+    def _measure_clock_offset(self) -> float:
+        """Median (perf_counter − ROS-clock) offset (mirrors catch_coordinator_node).
+
+        perf_counter is CLOCK_MONOTONIC; the ROS clock is the node's wall clock.
+        A ROS-domain arrival time ``t_ros`` maps to the emitter's perf domain as
+        ``t_ros + offset``. Sampled a few times and median-filtered to shrug off a
+        scheduler hiccup between the two reads.
+        """
+        offsets = []
+        for _ in range(10):
+            t_perf = time.perf_counter()
+            t_ros = self.get_clock().now().nanoseconds / 1e9
+            offsets.append(t_perf - t_ros)
+        return float(np.median(offsets))
+
+    def _refresh_clock_offset(self) -> None:
+        """Periodically re-measure the offset to track drift (median of last 20)."""
+        self._clock_offset_history.append(self._measure_clock_offset())
+        if len(self._clock_offset_history) > 20:
+            self._clock_offset_history.pop(0)
+        self._ros_to_perf_offset = float(np.median(self._clock_offset_history))
+
+    def _ros_time_to_perf(self, ros_time) -> float:
+        """THE ROS-clock → perf_counter conversion point (plan Architecture).
+
+        ``ros_time`` is a ``builtin_interfaces/Time`` (``.sec`` / ``.nanosec``).
+        Every ROS-domain arrival time flows through here — the emitter and catch
+        path are already perf-domain, so this is the single crossing.
+        """
+        ros_sec = float(ros_time.sec) + float(ros_time.nanosec) * 1e-9
+        return ros_sec + self._ros_to_perf_offset
+
+    def _install_continuity_ok(self, plan) -> bool:
+        """True iff ``plan``'s t=0 commanded pose still matches the live commanded
+        state (in motor_rev, the pump's units).
+
+        The seed is sampled at service/callback entry but the plan installs a few ms
+        later while the emitter streams the OLD plan; if the commanded state drifted
+        past the guard bound during planning, installing would jump u0 from the live
+        position back to the stale seed. The fast ``validate_follow`` gate keeps that
+        window to ~2 ms (drift ≪ bound) so a normal supersede passes; a pathological
+        stall is caught and rejected rather than jumped. Same bound as ``go_to_pose``.
+        """
+        drift = float(np.max(np.abs(
+            self._pose_to_motor_rev(plan.state_at(0.0)[0])
+            - self._pose_to_motor_rev(self._current_state()[0]))))
+        bound = 0.25 * feas.STEP_BOUND_MARGIN * hw.JB_OP_MAX_POSITION_STEP_REV
+        return drift <= bound
+
+    def _publish_target_feedback(self, accepted: bool, code: str, reason: str,
+                                 arrival_perf: float, source: str) -> None:
+        """Publish accept/reject feedback for a timed/catch target.
+
+        ``arrival_perf`` is the correlation key catch_coordinator_node matches
+        against its last submission; on a reject it drives the feasibility blacklist.
+        """
+        fb = TargetFeedback()
+        fb.accepted = bool(accepted)
+        fb.code = str(code)
+        fb.reason = str(reason)
+        fb.arrival_time = float(arrival_perf)
+        fb.source = str(source)
+        self.target_feedback_pub.publish(fb)
+
+    def _plan_and_install_timed(self, target, twist, arrival_perf, *,
+                                hold_after, source, neutral=None):
+        """Build a timed plan to ``(target, twist)`` arriving at ``arrival_perf`` and
+        install it (supersede-safe). Returns ``(accepted, code, message, planned_s,
+        min_s)`` and always publishes ``trajectory/target_feedback``.
+
+        The plan is seeded from the current sampled state and installed with
+        ``t0 = seed_mono``, so the reach segment's end (the target) lands at wall
+        time ``seed_mono + lead = arrival_perf`` and the plan-time origin matches the
+        seed sample — a clean C2 replan even mid-move (no BUSY restriction: the fast
+        ``build_timed`` gate makes the install window negligible, unlike the ~377 ms
+        analytic gate that forced ``go_to_pose``'s BUSY guard).
+        """
+        seed_mono = time.perf_counter()
+        lead = arrival_perf - seed_mono
+        try:
+            plan, _report = planner.build_timed(
+                self._current_state(), target, twist, lead,
+                self._limits, self._geom,
+                hold_after=hold_after, neutral_pose=neutral)
+        except TrajectoryInfeasible as e:
+            self._last_rejection = str(e)
+            self.get_logger().error(f"{source} target rejected: {e}")
+            self._publish_target_feedback(False, e.code, str(e), arrival_perf, source)
+            return False, e.code, str(e), 0.0, float(e.min_duration_s)
+        if not self._install_continuity_ok(plan):
+            msg = 'commanded state moved during planning — retry'
+            self._last_rejection = msg
+            self.get_logger().error(msg)
+            self._publish_target_feedback(
+                False, feas.STALE_STATE, msg, arrival_perf, source)
+            return False, feas.STALE_STATE, msg, 0.0, 0.0
+        self._install(plan, t0=seed_mono)
+        self._publish_target_feedback(True, feas.OK, '', arrival_perf, source)
+        return True, feas.OK, 'timed target accepted', float(lead), 0.0
+
+    def _catch_target_from_msg(self, msg):
+        """DynamicTargetCommand → (target pose_6dof, arrival twist) in the trajectory
+        convention. The catch z is an offset from the active pose (0 = active); the
+        trajectory pose is STOW-relative (170 = active), so lift z by ``_active_z_mm``
+        (x/y are 0-at-active in both). The orientation carries the gravity-levelling
+        correction (verbatim port from ``mpc_bridge_node._on_catch_target``)."""
+        q = msg.target_quat
+        rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
+        rotvec = self._apply_gravity_correction(rot_matrix_to_rotvec(rot))
+        target = np.array([
+            float(msg.target_pos.x),
+            float(msg.target_pos.y),
+            float(msg.target_pos.z) + self._active_z_mm,
+            rotvec[0], rotvec[1], rotvec[2]])
+        # Linear arrival velocity only (angular arrival rate = 0). Velocity is
+        # frame-offset-invariant, so no z adjustment.
+        twist = np.array([float(msg.target_vel.x), float(msg.target_vel.y),
+                          float(msg.target_vel.z), 0.0, 0.0, 0.0])
+        return target, twist
+
+    def _on_dynamic_target(self, msg) -> None:
+        """``catch/dynamic_target`` (CATCH mode): a timed catch target.
+
+        ``arrival_time`` is ALREADY perf-domain (the coordinator converted
+        landing_time → perf), so no clock crossing here — the single crossing is the
+        ROS-time ``timed_target`` service. Each update supersedes the prior via a C2
+        replan through ``build_timed`` (fast gate) — EXCEPT inside the reach-freeze
+        window (within ``catch_reach_freeze_s`` of the committed arrival), where late
+        target jitter is ignored so the platform holds its committed reach into the
+        catch (a parked, non-jittering rim seats the ball; the reload design). An
+        operator abort is a mode switch away from CATCH (clears the freeze).
+        """
+        if self._current_mode != _CATCH_MODE:
+            return
+        arrival_perf = float(msg.arrival_time)
+        if not (self._seeded and self._robot_state_fresh()):
+            self._publish_target_feedback(
+                False, feas.STALE_STATE,
+                'not seeded / telemetry stale', arrival_perf, 'catch')
+            return
+        # Reach-freeze: once committed and within the freeze window, ignore updates.
+        if (self._catch_arrival_perf is not None
+                and time.perf_counter()
+                >= self._catch_arrival_perf - self._catch_reach_freeze_s):
+            return
+        target, twist = self._catch_target_from_msg(msg)
+        accepted, _code, _msg, _pl, _mn = self._plan_and_install_timed(
+            target, twist, arrival_perf, hold_after=True, source='catch')
+        if accepted:
+            self._catch_arrival_perf = arrival_perf
+
+    def _svc_timed_target(self, request, response):
+        """``trajectory/timed_target``: reach a pose at a velocity at an ABSOLUTE time.
+
+        TRAJECTORY mode only (else ``WRONG_MODE``). Rejects loudly on a stale/absent
+        seed (``STALE_STATE``), a too-tight lead (``TOO_FAST`` with the achievable
+        ``min_duration_s``), or an infeasible/out-of-workspace target. Supersedes an
+        in-flight plan by design — NO ``BUSY`` restriction, because the fast
+        ``build_timed`` gate installs within ~2 ms of the seed sample (a clean C2
+        replan), unlike the ~377 ms ``go_to_pose`` path that forced ``BUSY``.
+        """
+        response.planned_duration_s = 0.0
+        response.min_duration_s = 0.0
+        if self._current_mode != _MOVE_MODE:
+            response.accepted = False
+            response.code = feas.WRONG_MODE
+            response.message = (f"timed_target requires {_MOVE_MODE} mode "
+                                f"(current mode '{self._current_mode}')")
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        if not self._seeded:
+            response.accepted = False
+            response.code = feas.STALE_STATE
+            response.message = 'not streaming/seeded — cannot plan a timed target'
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        if not self._robot_state_fresh():
+            response.accepted = False
+            response.code = feas.STALE_STATE
+            response.message = 'robot_state telemetry stale — cannot plan a timed target'
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        try:
+            target = self._pose_from_msg(request.pose)
+        except Exception as e:  # noqa: BLE001 — malformed request
+            response.accepted = False
+            response.code = feas.UNREACHABLE
+            response.message = f'malformed target pose: {e}'
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        v = request.velocity_mm_s
+        twist = np.array([float(v.x), float(v.y), float(v.z), 0.0, 0.0, 0.0])
+        arrival_perf = self._ros_time_to_perf(request.arrival_time)
+        hold_after = bool(request.hold_after)
+        accepted, code, message, planned, min_s = self._plan_and_install_timed(
+            target, twist, arrival_perf, hold_after=hold_after, source='timed',
+            neutral=(None if hold_after else self._neutral_pose))
+        response.accepted = accepted
+        response.code = code
+        response.message = message
+        response.planned_duration_s = planned
+        response.min_duration_s = min_s
         return response
 
     # ═══════════════════════════════════════════════════════════

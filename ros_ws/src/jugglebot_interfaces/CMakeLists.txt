@@ -46,6 +46,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CatchingConeHeartbeat.msg"
   "msg/CatchTimingResult.msg"
   "msg/TrajectoryStatus.msg"
+  "msg/TargetFeedback.msg"
 
   "srv/GetRobotGeometry.srv"
   "srv/ActivateOrDeactivate.srv"
@@ -57,6 +58,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/BallButlerThrow.srv"
   "srv/GoToPose.srv"
   "srv/SetTrajectoryLimits.srv"
+  "srv/TimedTarget.srv"
 
   "msg/CanTrafficReportMessage.msg"
 
