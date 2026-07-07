@@ -416,6 +416,47 @@ def _unpack(frames: list[bytes]) -> tuple[bytes, dict]:
 
 
 # ---------------------------------------------------------------------------
+# MVP trajectory generator side — publishes MPC commands on :5557
+# ---------------------------------------------------------------------------
+
+class MpcCommandPub:
+    """PUB endpoint binding MPC_COMMAND_ADDR (:5557), topic ``mpccmd``.
+
+    Used by the MVP ``trajectory_node`` (in place of ``run_mpc.py``'s
+    ``HardwarePlant``) to stream ``make_mpc_command`` dicts on the exact seam the
+    bridge's ``_MpcCommandSetpointSource`` consumes. Frames are byte-compatible
+    with what ``HardwarePlant`` sends because both go through the shared
+    ``_pack`` (msgpack + ndarray default handler) on ``TOPIC_MPC_CMD``.
+
+    **Sole-binder interlock.** ``HardwarePlant`` *binds* this address today
+    (hardware_plant.py:272); ZMQ does not allow two PUB ``bind()``s on one
+    address, so constructing this while ``run_mpc.py`` is running raises
+    ``zmq.ZMQError`` — the intended, loud MPC/trajectory mutual-exclusion
+    interlock. The caller is expected to translate that into a fatal
+    "is run_mpc.py running?" startup error.
+    """
+
+    def __init__(self, addr: str = MPC_COMMAND_ADDR):
+        self._ctx = zmq.Context()
+        self._pub = self._ctx.socket(zmq.PUB)
+        # bind() raises zmq.ZMQError (EADDRINUSE) if another PUB already holds
+        # the address — the sole-binder interlock. Let it propagate.
+        self._pub.bind(addr)
+        self._addr = addr
+
+    def send(self, msg: dict) -> None:
+        """Publish an MPC command dict (byte-compatible with HardwarePlant)."""
+        self._pub.send_multipart(_pack(TOPIC_MPC_CMD, msg), flags=zmq.NOBLOCK)
+
+    def close(self) -> None:
+        try:
+            self._pub.close()
+            self._ctx.term()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Motor Guard (standalone process) side
 # ---------------------------------------------------------------------------
 
