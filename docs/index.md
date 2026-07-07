@@ -21,6 +21,17 @@ Complete technical documentation for the motion planning and control subsystem, 
 - **[Operations Guide](motion_planner/operations.md)** — Running tests, tuning gains, extending the system
 - **[Validation Results](motion_planner/results.md)** — Summary of hardware test outcomes
 
+### [CAN Bridge](can_bridge/index.md) — Teensy 4.1 Hardware Offload
+
+A dedicated Teensy 4.1 hosts CAN bus communication and the leg setpoint
+interpolator, moving both off the Jetson's non-real-time Linux scheduler.
+It talks to the Jetson over UDP/Ethernet and owns three isolated CAN buses
+(legs + hand, Ball Butler, catching cone).
+
+- **[Overview](can_bridge/index.md)** — topology, time-sync, current production status
+- **[Control Flow](can_bridge/control.md)** — the 40 Hz→500 Hz leg interpolation ladder and the hand's separate relay path
+- **[Safety Mechanisms](can_bridge/safety.md)** — staleness watchdogs, the E-STOP fault machine, and CAN bus health monitoring
+
 ### [Simulation MPC](sim_mpc/index.md) — CasADi Nonlinear MPC
 
 The MPC solver uses CasADi/IPOPT to solve a **receding-horizon nonlinear MPC** at 50 Hz. It is the sole motion planner for all modes (spacemouse, GUI, shell, catch). It models actuator dynamics, IK constraints, and variable-resolution horizons for ball catching. The solver lives in `controller/` and runs identically in MuJoCo simulation (`sim/`) and on hardware (Jetson).

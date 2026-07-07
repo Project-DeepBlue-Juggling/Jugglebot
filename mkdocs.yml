@@ -62,6 +62,10 @@ nav:
     - System Integration: motion_planner/integration.md
     - Operations Guide: motion_planner/operations.md
     - Validation Results: motion_planner/results.md
+  - CAN Bridge:
+    - Overview: can_bridge/index.md
+    - Control Flow: can_bridge/control.md
+    - Safety Mechanisms: can_bridge/safety.md
   - Simulation MPC:
     - Overview: sim_mpc/index.md
     - Usage: sim_mpc/usage.md
