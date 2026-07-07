@@ -55,10 +55,14 @@ class TestActiveModeEnum:
     def test_shell_value(self):
         assert ActiveMode.SHELL.value == 'SHELL'
 
+    def test_trajectory_value(self):
+        assert ActiveMode.TRAJECTORY.value == 'TRAJECTORY'
+
     def test_from_uppercase_string(self):
         assert ActiveMode('STANDBY') == ActiveMode.STANDBY
         assert ActiveMode('SPACEMOUSE') == ActiveMode.SPACEMOUSE
         assert ActiveMode('SHELL') == ActiveMode.SHELL
+        assert ActiveMode('TRAJECTORY') == ActiveMode.TRAJECTORY
 
 
 # ════════════════════════════════════════════════════════════════
@@ -616,6 +620,17 @@ class TestActiveHandler:
         assert handler.execute(ctx) is None
         assert ctx.active_mode == ActiveMode.SHELL
         assert ctx.control_mode == 'SHELL'
+
+    def test_trajectory_command_switches_mode(self):
+        handler = ActiveHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.operation_result = True
+        handler.execute(ctx)  # Complete activation (active_mode = STANDBY)
+        ctx.enqueue_command('trajectory')
+        assert handler.execute(ctx) is None
+        assert ctx.active_mode == ActiveMode.TRAJECTORY
+        assert ctx.control_mode == 'TRAJECTORY'
 
     def test_standby_command_returns_to_standby(self):
         """From any sub-mode, 'standby' returns to STANDBY (ROS2 inputs

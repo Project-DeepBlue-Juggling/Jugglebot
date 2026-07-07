@@ -179,6 +179,17 @@ class ThrowAnnouncement:
 
 
 @dataclass
+class TrajectoryStatus:
+    streaming: bool = False
+    mode: str = ''
+    plan_kind: str = ''
+    plan_time_remaining_s: float = 0.0
+    seq: int = 0
+    max_emit_gap_ms: float = 0.0
+    last_rejection: str = ''
+
+
+@dataclass
 class _MockPoseInner:
     """Just enough of geometry_msgs/Pose for the director's body.pose.pose.position access."""
     position: object = None
@@ -224,6 +235,12 @@ class Quaternion:
     y: float = 0.0
     z: float = 0.0
     w: float = 1.0
+
+
+@dataclass
+class Pose:
+    position: Point = field(default_factory=Point)
+    orientation: Quaternion = field(default_factory=Quaternion)
 
 
 # ── std_msgs mocks ────────────────────────────────────────────
@@ -341,6 +358,18 @@ SetHandTrajCmd = _make_service(
 SetString = _make_service(
     req_fields={'data': ''},
     resp_fields={'success': False, 'message': ''},
+)
+GoToPose = _make_service(
+    req_fields={'pose': None, 'duration_s': 0.0},
+    resp_fields={'accepted': False, 'code': '', 'message': '',
+                 'planned_duration_s': 0.0, 'min_duration_s': 0.0},
+)
+SetTrajectoryLimits = _make_service(
+    req_fields={'leg_vel_limit_mmps': 0.0, 'leg_acc_limit_mmps2': 0.0,
+                'leg_jerk_limit_mmps3': 0.0},
+    resp_fields={'success': False, 'message': '',
+                 'applied_vel_limit_mmps': 0.0, 'applied_acc_limit_mmps2': 0.0,
+                 'applied_jerk_limit_mmps3': 0.0},
 )
 
 
@@ -661,6 +690,7 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'SetMotorVelCurrLimitsMessage': SetMotorVelCurrLimitsMessage,
     'SetTrapTrajLimitsMessage': SetTrapTrajLimitsMessage,
     'ThrowAnnouncement': ThrowAnnouncement,
+    'TrajectoryStatus': TrajectoryStatus,
 })
 _create_mock_module('jugglebot_interfaces.srv', {
     'ActivateOrDeactivate': ActivateOrDeactivate,
@@ -672,6 +702,8 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'SetHandTrajCmd': SetHandTrajCmd,
     'SetString': SetString,
     'BallButlerThrow': BallButlerThrow,
+    'GoToPose': GoToPose,
+    'SetTrajectoryLimits': SetTrajectoryLimits,
 })
 _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,
@@ -683,6 +715,7 @@ _create_mock_module('geometry_msgs.msg', {
     'Point': Point,
     'Quaternion': Quaternion,
     'Vector3': Vector3,
+    'Pose': Pose,
 })
 
 _create_mock_module('std_msgs')

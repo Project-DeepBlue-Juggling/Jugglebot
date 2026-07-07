@@ -34,6 +34,7 @@ class ErrorSeverity(Enum):
 class ActiveMode(Enum):
     """Sub-modes within the ACTIVE state."""
     STANDBY = 'STANDBY'
+    TRAJECTORY = 'TRAJECTORY'
     SPACEMOUSE = 'SPACEMOUSE'
     SHELL = 'SHELL'
     GUI = 'GUI'
@@ -393,9 +394,11 @@ class ActiveHandler(StateHandler):
     def on_enter(self, ctx):
         self._activated = False
         # Always reset to STANDBY on entry so re-activation never inherits a
-        # prior sub-mode.  The orchestrator's control_mode becomes a target-
-        # routing signal only — STANDBY silences all ROS2 input sources so
-        # a manually-launched run_mpc.py is the sole command source.
+        # prior sub-mode.  The orchestrator's control_mode is a target-routing
+        # signal: STANDBY means the platform holds at its neutral pose via
+        # trajectory_node (which seeds a hold from measured telemetry and streams
+        # it); the operator then switches to TRAJECTORY / SPACEMOUSE / CATCH to
+        # accept the corresponding command source.
         ctx.active_mode = ActiveMode.STANDBY
         ctx.request = 'activate'
         ctx.operation_result = None
@@ -413,7 +416,8 @@ class ActiveHandler(StateHandler):
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
             return RobotState.IDLE
-        elif cmd in ('standby', 'spacemouse', 'shell', 'gui', 'catch'):
+        elif cmd in ('standby', 'trajectory', 'spacemouse', 'shell', 'gui',
+                     'catch'):
             ctx.active_mode = ActiveMode(cmd.upper())
             ctx.control_mode = ctx.active_mode.value
         # Other commands silently discarded (already logged on receipt)

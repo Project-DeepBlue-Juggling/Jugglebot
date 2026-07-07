@@ -17,12 +17,22 @@ import pytest
 import jugglebot.hardware_config as hw
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
-from jugglebot_interfaces.msg import RobotState, MotorStateSingle
+from geometry_msgs.msg import Point, Pose, Quaternion
+from jugglebot_interfaces.msg import RobotState, MotorStateSingle, TrajectoryStatus
+from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits
 
 from jugglebot.trajectory_node import TrajectoryNode
+from jugglebot.motion.trajectory import feasibility as feas
 from controller.teensy_link.setpoint_pump import SetpointPump
 
 _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
+
+
+def _go_to_pose_req(x=0.0, y=0.0, z=170.0, duration_s=0.0):
+    req = GoToPose.Request()
+    req.pose = Pose(position=Point(x=x, y=y, z=z), orientation=Quaternion())
+    req.duration_s = duration_s
+    return req
 
 
 class _CapturePub:
@@ -176,6 +186,133 @@ def test_hold_installs_holdplan_when_at_rest():
     resp = node._svc_hold(Trigger.Request(), Trigger.Response())
     assert resp.success is True
     assert node._active_plan.kind == 'hold'
+
+
+# ── go_to_pose (Phase 2) ──────────────────────────────────────
+
+def _traj_mode_node():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='TRAJECTORY'))
+    return node
+
+
+def test_go_to_pose_accepts_feasible_move_in_trajectory_mode():
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is True
+    assert resp.code == feas.OK
+    assert resp.planned_duration_s == pytest.approx(2.0)
+    # A move plan was installed (not a hold).
+    assert node._active_plan.kind == 'move'
+    pose, twist, _ = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(pose[:3], [0, 0, 190], atol=1e-2)
+    assert np.allclose(twist, 0.0, atol=1e-9)
+
+
+def test_go_to_pose_minimal_feasible_when_duration_zero():
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=0.0),
+                                GoToPose.Response())
+    assert resp.accepted is True
+    assert resp.planned_duration_s > 0.0
+
+
+def test_go_to_pose_rejected_wrong_mode():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='STANDBY'))   # streaming, but not TRAJECTORY
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.WRONG_MODE
+    assert 'TRAJECTORY' in resp.message
+    # No move installed — the seeded hold stays put.
+    assert node._active_plan.kind == 'hold'
+
+
+def test_go_to_pose_rejected_when_not_seeded():
+    node = _node()
+    node._current_mode = 'TRAJECTORY'   # mode set but never seeded
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.STALE_STATE
+
+
+def test_go_to_pose_too_fast_rejected_with_min_duration():
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(_go_to_pose_req(x=20.0, y=20.0, z=185.0,
+                                                duration_s=0.05),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.TOO_FAST
+    assert resp.min_duration_s > 0.05
+    assert node._active_plan.kind == 'hold'   # unchanged
+
+
+def test_go_to_pose_out_of_workspace_rejected():
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=500.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.WORKSPACE
+
+
+# ── set_limits (Phase 2) ──────────────────────────────────────
+
+def test_set_limits_updates_session_limits():
+    node = _node()
+    req = SetTrajectoryLimits.Request()
+    req.leg_vel_limit_mmps = 150.0
+    req.leg_acc_limit_mmps2 = 0.0        # keep current
+    req.leg_jerk_limit_mmps3 = 0.0
+    resp = node._svc_set_limits(req, SetTrajectoryLimits.Response())
+    assert resp.success is True
+    assert node._limits.leg_vel_mmps == pytest.approx(150.0)
+    assert resp.applied_vel_limit_mmps == pytest.approx(150.0)
+    # acc/jerk unchanged (0 => keep).
+    assert node._limits.leg_acc_mmps2 == pytest.approx(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
+
+
+def test_set_limits_clamps_to_ceiling():
+    node = _node()
+    req = SetTrajectoryLimits.Request()
+    req.leg_vel_limit_mmps = 10_000.0    # absurd — must clamp to the YAML ceiling
+    req.leg_acc_limit_mmps2 = 0.0
+    req.leg_jerk_limit_mmps3 = 0.0
+    resp = node._svc_set_limits(req, SetTrajectoryLimits.Response())
+    assert resp.applied_vel_limit_mmps == pytest.approx(hw.JB_TRAJ_LEG_VEL_CEILING_MMPS)
+    assert node._limits.leg_vel_mmps == pytest.approx(hw.JB_TRAJ_LEG_VEL_CEILING_MMPS)
+
+
+def test_set_limits_then_move_uses_new_limit():
+    node = _traj_mode_node()
+    # Tighten the jerk ceiling hard, then a move must stretch longer to comply.
+    req = SetTrajectoryLimits.Request()
+    req.leg_vel_limit_mmps = 0.0
+    req.leg_acc_limit_mmps2 = 0.0
+    req.leg_jerk_limit_mmps3 = 2000.0
+    node._svc_set_limits(req, SetTrajectoryLimits.Response())
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=0.0),
+                                GoToPose.Response())
+    assert resp.accepted is True
+    rep = feas.validate(node._active_plan, node._limits, node._geom)
+    assert rep.peak_leg_jerk_mmps3 <= 2000.0
+
+
+# ── Status is the typed TrajectoryStatus ──────────────────────
+
+def test_status_publishes_typed_trajectory_status():
+    node = _traj_mode_node()
+    # The publisher is a mock recording published messages.
+    node._publish_status()
+    published = node.status_pub.published[-1]
+    assert isinstance(published, TrajectoryStatus)
+    assert published.streaming is True
+    assert published.mode == 'TRAJECTORY'
+    assert published.plan_kind == 'hold'
 
 
 # ── Emitter cadence (real thread, injected fake PUB) ──────────

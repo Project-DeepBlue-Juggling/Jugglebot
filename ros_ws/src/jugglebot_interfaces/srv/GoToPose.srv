@@ -1,0 +1,16 @@
+# Profiled point-to-point platform move (trajectory_node, TRAJECTORY mode only).
+# Every request is validated through the single feasibility gate before any motion;
+# an infeasible request is rejected loudly (accepted=false) and never silently
+# dropped.
+
+geometry_msgs/Pose pose      # Target pose. Position in mm, z STOW-relative (170 = ACTIVE).
+                             # Orientation as a quaternion (converted to a rotvec internally).
+float64 duration_s           # Requested move duration (s). 0 => use the minimal feasible duration.
+---
+bool accepted                # True iff the move was planned and installed.
+string code                  # Feasibility code: OK / UNREACHABLE / WORKSPACE / LIMIT_VEL /
+                             # LIMIT_ACC / LIMIT_JERK / TOO_FAST / STEP_BOUND / WRONG_MODE / STALE_STATE.
+string message               # Human-readable detail (populated on both accept and reject).
+float64 planned_duration_s   # The duration actually used (>= duration_s; the stretched/minimal value).
+float64 min_duration_s       # Minimal feasible duration for this move at the current limits
+                             # (populated on a TOO_FAST rejection so the caller can retry achievably).

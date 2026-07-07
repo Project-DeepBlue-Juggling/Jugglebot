@@ -1,0 +1,13 @@
+# In-session leg-limit ramp for the trajectory generator (trajectory/set_limits).
+# Each requested limit is clamped to its YAML hard ceiling before it takes effect,
+# so a runtime request can never raise a limit above the pinned physical envelope.
+
+float64 leg_vel_limit_mmps    # New session leg velocity limit (mm/s).   0 => keep current.
+float64 leg_acc_limit_mmps2   # New session leg acceleration limit (mm/s^2). 0 => keep current.
+float64 leg_jerk_limit_mmps3  # New session leg jerk limit (mm/s^3).     0 => keep current.
+---
+bool success
+string message
+float64 applied_vel_limit_mmps    # The value now in effect (post-clamp).
+float64 applied_acc_limit_mmps2
+float64 applied_jerk_limit_mmps3

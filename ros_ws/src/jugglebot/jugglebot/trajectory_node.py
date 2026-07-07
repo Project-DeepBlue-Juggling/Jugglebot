@@ -26,11 +26,15 @@ Design (mirrors the validated 40 Hz MPC path's discipline):
     exceeds the motor step bound, the node freezes to a hold at the last good pose
     and logs ERROR (the gate should already prevent this; it is a backstop).
 
-Phase 1 has **no move services** (``go_to_pose`` / ``timed_target`` land later)
-and does not touch the orchestrator state machine. ``trajectory/status`` is
-published as a ``diagnostic_msgs/DiagnosticStatus`` (key/values) so Phase 1 needs
-no ``jugglebot_interfaces`` rebuild; the typed ``TrajectoryStatus.msg`` lands with
-the Phase 2 service interfaces (one atomic interface build).
+Phase 2 adds the profiled point-to-point move surface: ``trajectory/go_to_pose``
+(``GoToPose``, TRAJECTORY mode only — else a loud ``WRONG_MODE`` reject) drives
+``planner.build_move`` (full feasibility gate + duration-stretch loop);
+``trajectory/set_limits`` (``SetTrajectoryLimits``) is the in-session leg-limit
+ramp (each value clamped to its YAML hard ceiling). ``trajectory/status`` is now
+the typed ``jugglebot_interfaces/TrajectoryStatus`` (migrated off the Phase-1
+``diagnostic_msgs/DiagnosticStatus`` stand-in), and ``trajectory/diagnostics``
+publishes the active plan's measured leg peaks + emitter jitter. ``timed_target``
+and the CATCH path land in Phase 5.
 
 **Armed-mode-exit is a sharp edge (Phase 1).** Leaving the streaming mode set
 while the bridge is ARMED stops the emitter publishing (``_streaming=False``), so
@@ -53,11 +57,16 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from jugglebot_interfaces.msg import RobotState
+from jugglebot_interfaces.msg import RobotState, TrajectoryStatus
+from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry
-from jugglebot.motion.ik_solver import leg_lengths_to_pose, rot_matrix_to_rotvec
+from jugglebot.motion.ik_solver import (
+    leg_lengths_to_pose,
+    quat_to_rot_matrix,
+    rot_matrix_to_rotvec,
+)
 from jugglebot.motion.ipc import MpcCommandPub
 from jugglebot.motion.trajectory import (
     HoldPlan,
@@ -65,7 +74,14 @@ from jugglebot.motion.trajectory import (
     TrajectoryInfeasible,
     TrajectoryLimits,
 )
+from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
+
+# The control mode in which explicit move services (go_to_pose) are accepted. In
+# any other streaming mode (STANDBY holds; SPACEMOUSE/CATCH have their own command
+# sources) a go_to_pose is rejected WRONG_MODE — loudly, never silently — so the
+# operator can never drive a scripted move from a mode that isn't expecting one.
+_MOVE_MODE = 'TRAJECTORY'
 
 
 # Control modes in which the node streams a hold. STANDBY is the armed-hold state
@@ -129,6 +145,10 @@ class TrajectoryNode(Node):
         # Emitter jitter diagnostic (max inter-tick gap over the last window).
         self._max_emit_gap_s = 0.0
         self._last_emit_mono = None
+        # Measured leg peaks of the last accepted move (for trajectory/diagnostics).
+        self._last_peak_vel_mmps = 0.0
+        self._last_peak_acc_mmps2 = 0.0
+        self._last_peak_jerk_mmps3 = 0.0
 
         self._pub = None
         self._emit_stop = threading.Event()
@@ -140,13 +160,19 @@ class TrajectoryNode(Node):
         self.create_subscription(RobotState, 'robot_state',
                                  self._on_robot_state, 10)
 
-        # ── Services (Trigger; no move services in Phase 1) ─────
+        # ── Services ────────────────────────────────────────────
         self.create_service(Trigger, 'trajectory/hold', self._svc_hold)
         self.create_service(Trigger, 'trajectory/go_home', self._svc_go_home)
+        self.create_service(GoToPose, 'trajectory/go_to_pose',
+                            self._svc_go_to_pose)
+        self.create_service(SetTrajectoryLimits, 'trajectory/set_limits',
+                            self._svc_set_limits)
 
-        # ── Status publication (5 Hz) ───────────────────────────
+        # ── Status + diagnostics publication (5 Hz) ─────────────
         self.status_pub = self.create_publisher(
-            DiagnosticStatus, 'trajectory/status', 10)
+            TrajectoryStatus, 'trajectory/status', 10)
+        self.diagnostics_pub = self.create_publisher(
+            DiagnosticStatus, 'trajectory/diagnostics', 10)
         self.create_timer(0.2, self._publish_status)
 
         if start_emitter:
@@ -411,7 +437,117 @@ class TrajectoryNode(Node):
         return response
 
     # ═══════════════════════════════════════════════════════════
-    # Status (5 Hz)
+    # Move services (Phase 2)
+    # ═══════════════════════════════════════════════════════════
+
+    def _pose_from_msg(self, pose_msg) -> np.ndarray:
+        """geometry_msgs/Pose → pose_6dof ``[x, y, z, rx, ry, rz]`` (mm, rad rotvec)."""
+        p = pose_msg.position
+        q = pose_msg.orientation
+        rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
+        rotvec = rot_matrix_to_rotvec(rot)
+        return np.array([float(p.x), float(p.y), float(p.z),
+                         float(rotvec[0]), float(rotvec[1]), float(rotvec[2])])
+
+    def _svc_go_to_pose(self, request, response):
+        """``trajectory/go_to_pose``: a profiled point-to-point move (TRAJECTORY mode).
+
+        Rejects loudly — never silently — when the node is not in TRAJECTORY mode
+        (``WRONG_MODE``), not yet seeded (``STALE_STATE``), or the move is
+        infeasible (the gate code, with ``min_duration_s`` on a ``TOO_FAST``).
+        """
+        response.planned_duration_s = 0.0
+        response.min_duration_s = 0.0
+        # Gate: TRAJECTORY mode only. A move from STANDBY/SPACEMOUSE/CATCH is a
+        # mode confusion — reject rather than move unexpectedly.
+        if self._current_mode != _MOVE_MODE:
+            response.accepted = False
+            response.code = feas.WRONG_MODE
+            response.message = (f"go_to_pose requires {_MOVE_MODE} mode "
+                                f"(current mode '{self._current_mode}')")
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        if not self._seeded:
+            response.accepted = False
+            response.code = feas.STALE_STATE
+            response.message = 'not streaming/seeded — cannot plan a move'
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+
+        try:
+            target = self._pose_from_msg(request.pose)
+        except Exception as e:  # noqa: BLE001 — malformed request
+            response.accepted = False
+            response.code = feas.UNREACHABLE
+            response.message = f'malformed target pose: {e}'
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+
+        duration = float(request.duration_s)
+        try:
+            plan = planner.build_move(
+                self._current_state(), target,
+                duration if duration > 0.0 else None,
+                self._limits, self._geom)
+        except TrajectoryInfeasible as e:
+            response.accepted = False
+            response.code = e.code
+            response.message = str(e)
+            response.min_duration_s = float(e.min_duration_s)
+            self._last_rejection = str(e)
+            self.get_logger().error(f"go_to_pose rejected: {e}")
+            return response
+
+        # Record the accepted plan's measured leg peaks for trajectory/diagnostics.
+        report = feas.validate(plan, self._limits, self._geom)
+        self._last_peak_vel_mmps = report.peak_leg_vel_mmps
+        self._last_peak_acc_mmps2 = report.peak_leg_acc_mmps2
+        self._last_peak_jerk_mmps3 = report.peak_leg_jerk_mmps3
+
+        self._install(plan)
+        response.accepted = True
+        response.code = feas.OK
+        response.planned_duration_s = float(plan.total_duration)
+        response.message = (
+            f"move accepted: target (x={target[0]:.1f} y={target[1]:.1f} "
+            f"z={target[2]:.1f} mm) over {plan.total_duration:.3f}s")
+        return response
+
+    def _svc_set_limits(self, request, response):
+        """``trajectory/set_limits``: ramp the session leg limits (0 ⇒ keep).
+
+        Each requested limit is clamped to its YAML hard ceiling before it takes
+        effect — a runtime request can never raise a limit past the pinned
+        physical envelope. Swapping the (immutable, frozen) limits reference is
+        atomic; the emitter and service handlers read whichever value is current.
+        """
+        v = request.leg_vel_limit_mmps
+        a = request.leg_acc_limit_mmps2
+        j = request.leg_jerk_limit_mmps3
+        new_limits = self._limits.with_session_limits(
+            leg_vel_mmps=v if v > 0.0 else None,
+            leg_acc_mmps2=a if a > 0.0 else None,
+            leg_jerk_mmps3=j if j > 0.0 else None)
+        self._limits = new_limits
+        response.success = True
+        response.applied_vel_limit_mmps = new_limits.leg_vel_mmps
+        response.applied_acc_limit_mmps2 = new_limits.leg_acc_mmps2
+        response.applied_jerk_limit_mmps3 = new_limits.leg_jerk_mmps3
+        response.message = (
+            f"limits: vel={new_limits.leg_vel_mmps:.1f} mm/s "
+            f"acc={new_limits.leg_acc_mmps2:.1f} mm/s² "
+            f"jerk={new_limits.leg_jerk_mmps3:.0f} mm/s³ "
+            f"(ceilings {new_limits.leg_vel_ceiling_mmps:.0f}/"
+            f"{new_limits.leg_acc_ceiling_mmps2:.0f}/"
+            f"{new_limits.leg_jerk_ceiling_mmps3:.0f})")
+        self.get_logger().info(response.message)
+        return response
+
+    # ═══════════════════════════════════════════════════════════
+    # Status + diagnostics (5 Hz)
     # ═══════════════════════════════════════════════════════════
 
     def _publish_status(self):
@@ -427,21 +563,34 @@ class TrajectoryNode(Node):
             remaining = max(0.0, plan.total_duration - tau)
             kind = plan.kind
 
-        msg = DiagnosticStatus()
-        msg.name = 'trajectory/status'
-        msg.hardware_id = 'trajectory_node'
-        msg.level = DiagnosticStatus.OK if streaming else DiagnosticStatus.WARN
-        msg.message = 'streaming' if streaming else 'idle'
-        msg.values = [
-            KeyValue(key='streaming', value=str(int(streaming))),
-            KeyValue(key='mode', value=self._current_mode),
-            KeyValue(key='plan_kind', value=kind),
-            KeyValue(key='plan_time_remaining_s', value=f'{remaining:.3f}'),
-            KeyValue(key='seq', value=str(seq)),
-            KeyValue(key='max_emit_gap_ms', value=f'{self._max_emit_gap_s * 1e3:.1f}'),
-            KeyValue(key='last_rejection', value=self._last_rejection),
-        ]
+        gap_ms = self._max_emit_gap_s * 1e3
+        msg = TrajectoryStatus()
+        msg.streaming = bool(streaming)
+        msg.mode = self._current_mode
+        msg.plan_kind = kind
+        msg.plan_time_remaining_s = float(remaining)
+        msg.seq = int(seq)
+        msg.max_emit_gap_ms = float(gap_ms)
+        msg.last_rejection = self._last_rejection
         self.status_pub.publish(msg)
+
+        # Diagnostics: the last accepted move's measured leg peaks + emitter jitter.
+        diag = DiagnosticStatus()
+        diag.name = 'trajectory/diagnostics'
+        diag.hardware_id = 'trajectory_node'
+        diag.level = DiagnosticStatus.OK if streaming else DiagnosticStatus.WARN
+        diag.message = 'streaming' if streaming else 'idle'
+        diag.values = [
+            KeyValue(key='peak_leg_vel_mmps',
+                     value=f'{self._last_peak_vel_mmps:.1f}'),
+            KeyValue(key='peak_leg_acc_mmps2',
+                     value=f'{self._last_peak_acc_mmps2:.1f}'),
+            KeyValue(key='peak_leg_jerk_mmps3',
+                     value=f'{self._last_peak_jerk_mmps3:.0f}'),
+            KeyValue(key='max_emit_gap_ms', value=f'{gap_ms:.1f}'),
+            KeyValue(key='plan_kind', value=kind),
+        ]
+        self.diagnostics_pub.publish(diag)
         # Reset the jitter window each publish so the metric is per-200ms.
         self._max_emit_gap_s = 0.0
 
