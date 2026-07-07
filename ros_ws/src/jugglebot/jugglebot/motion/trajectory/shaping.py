@@ -89,6 +89,16 @@ G_MM_S2_DEFAULT = 9806.0
 # independent of the leg-limit gate (which separately bounds leg vel/acc/jerk).
 LEAN_TILT_CAP_DEG = 5.0
 
+# Float-noise tolerance on the segment→hold boundary in ``_locate``. The gate's dense
+# grid samples the final point at ``seg.duration·(n−1)/(n−1)``, which floating-point
+# rounding can land ~1 ULP ABOVE ``total_duration`` (e.g. a stretch-loop duration of
+# 0.7800000000000002 s). A strict ``t > total_duration`` hold test would then push
+# that endpoint into the terminal hold — the exact seam-spike this module fixes —
+# only for the durations that happen to round up. Absorbing ≤1 ULP (this ≫ ULP,
+# ≪ the 25 ms knot spacing) makes the boundary robust for ALL durations while keeping
+# the terminal hold (emitter sampling well past T) unaffected.
+_SEG_END_EPS_S = 1e-9
+
 
 def cup_lever_arm_mm(cup_z_mm: float = LEAN_CUP_Z_MM) -> float:
     """Signed lever arm (mm) of the cup opening above the tilt centre.
@@ -175,8 +185,23 @@ class _ShapedPlan(TrajectoryPlan):
         self._cap = float(tilt_cap_rad)
 
     def _locate(self, t: float):
-        """Active segment + local time for ``t``, or ``(None, 0.0)`` for the hold."""
-        if not self.segments or t >= self.total_duration:
+        """Active segment + local time for ``t``, or ``(None, 0.0)`` for the hold.
+
+        The hold branch is deferred to just past the segment end (``t > T + ε``, not
+        ``t >= T``): at ``t = T`` (± float noise) the shaped SEGMENT-END state must be
+        returned, not the terminal hold. The base quintic's boundary accel is zero, so
+        tilt(T) ∝ a(T) = 0 and the shaped pose at T equals ``final_pose`` exactly — but
+        the boundary JERK is nonzero, so the shaped twist/accel at T carry the genuine
+        tilt_d/tilt_dd content. Returning the hold (zero twist/accel) at the gate's
+        final grid sample made the jerk finite-difference fabricate a seam spike (the
+        plan C0-steps in accel at T−dt→T), which the stretch loop then "fixed" by
+        inflating shaped lateral moves ~5× past the honest minimum. The ``ε`` absorbs
+        the ≤1-ULP overshoot of the gate's ``seg.duration·(n−1)/(n−1)`` endpoint (see
+        :data:`_SEG_END_EPS_S`) so EVERY candidate duration — not just the ones that
+        round at/below T — sees the continuous boundary content and the gate bounds
+        the real tilt-rate transient honestly.
+        """
+        if not self.segments or t > self.total_duration + _SEG_END_EPS_S:
             return None, 0.0
         idx = 0
         for i, start in enumerate(self._starts):
@@ -252,6 +277,15 @@ class LeanShaper:
         """Return the shaped plan, or ``plan`` unchanged when the gain is ≤ 0.
 
         A zero-segment ``HoldPlan`` is returned unchanged too (nothing to lean).
+
+        A shaped plan is gated **only** by the analytic
+        :func:`~jugglebot.motion.trajectory.feasibility.validate` (the service /
+        ``build_move`` path). It must NEVER be handed to the fast
+        :func:`~jugglebot.motion.trajectory.feasibility.validate_follow`: that gate's
+        finite differences measure the base quintic's leg peaks, not the lean
+        superposition, so it would silently under-gate the added tilt (it raises
+        ``TypeError`` on a ``_ShapedPlan`` to enforce this). The follower path never
+        shapes.
         """
         if self.gain <= 0.0 or not getattr(plan, 'segments', ()):  # noqa: E501
             return plan

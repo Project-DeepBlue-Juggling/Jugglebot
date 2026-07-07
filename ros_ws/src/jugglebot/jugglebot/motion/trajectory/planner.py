@@ -68,6 +68,17 @@ _STRETCHABLE = (LIMIT_VEL, LIMIT_ACC, LIMIT_JERK, STEP_BOUND)
 _MAX_STRETCH_ITERS = 12
 _STRETCH_MARGIN = 1.05
 
+# Shaped-path refinement (Phase-4 audit). The worst-ratio stretch factor is derived
+# from the base plan's exact 1/Tⁿ leg-peak scaling, but the superposed lean terms
+# scale FASTER (tilt-rate ∝ base jerk ∝ 1/T³, tilt-curvature ∝ base snap ∝ 1/T⁵), so
+# from a tight failing T the factor OVER-corrects and the first passing T overshoots
+# the true minimum badly (measured x+20 @ gain 0.3: 0.2 s fails → 1.758 s passes, a
+# 3.1× overshoot of the 0.563 s true minimum). A few bisections between the last
+# failing T and the first passing T recover the honest minimum (~0.59 s here, <5 %
+# over) at the cost of a handful of extra validate() passes — shaper-path only; the
+# plain path's ~5 % overshoot needs no refinement.
+_SHAPED_REFINE_ITERS = 4
+
 
 def _as6(vec, name: str) -> np.ndarray:
     a = np.asarray(vec, dtype=float)
@@ -243,19 +254,34 @@ def _min_feasible_move(pose, twist, accel, target, limits, geom, *, shaper=None)
     spatial failure (immediately) or if the loop fails to converge (``TOO_FAST``).
 
     With ``shaper`` supplied, every candidate is the SHAPED plan (lean superposed
-    before validate); the lean tilt scales as ``1/T²`` like the base accel, so the
-    shaped move still shrinks monotonically with T and the loop still converges.
+    before validate); the shaped move still shrinks monotonically with T, so the loop
+    still converges. But the lean terms scale faster than the 1/Tⁿ the stretch factor
+    assumes, so from a tight failing T the first passing T OVERSHOOTS the true minimum
+    (~3× measured); when a stretch actually happened, a bisection refinement recovers
+    the honest minimum (see :data:`_SHAPED_REFINE_ITERS`). The plain path keeps its
+    exact one-step convergence — no refinement.
     """
     T = float(limits.min_move_duration_s)
     report = None
+    t_fail = None    # the largest T the gate rejected (a stretchable failure)
+    shaped = shaper is not None and getattr(shaper, 'gain', 0.0) > 0.0
     for _ in range(_MAX_STRETCH_ITERS):
         plan = _build_rest_move(pose, twist, accel, target, T, shaper=shaper)
         report = validate(plan, limits, geom)
         if report.ok:
+            # Shaped move that required at least one stretch: the passing T likely
+            # overshoots (lean terms scale faster than the stretch factor assumes).
+            # Bisect [t_fail, T] to recover the honest minimum. The plain path (and a
+            # shaped move that passed on the very first T) returns unrefined.
+            if shaped and t_fail is not None:
+                return _refine_shaped_min(
+                    pose, twist, accel, target, limits, geom, shaper,
+                    t_fail, T, plan, report)
             return T, plan, report
         if report.code not in _STRETCHABLE:
             # Spatial failure — a longer duration cannot fix it.
             raise TrajectoryInfeasible(report.code, report.reasons)
+        t_fail = T
         T *= _stretch_factor(report, limits)
 
     raise TrajectoryInfeasible(
@@ -263,6 +289,31 @@ def _min_feasible_move(pose, twist, accel, target, limits, geom, *, shaper=None)
         [f"could not find a feasible duration after {_MAX_STRETCH_ITERS} "
          f"iterations (last failure {report.code if report else 'n/a'})"],
         min_duration_s=T)
+
+
+def _refine_shaped_min(pose, twist, accel, target, limits, geom, shaper,
+                       t_fail, t_pass, pass_plan, pass_report):
+    """Bisect the shaped min-feasible duration in ``[t_fail, t_pass]``.
+
+    ``t_fail`` is the largest duration the gate REJECTED and ``t_pass`` the first it
+    ACCEPTED, so the monotone gate boundary (any T ≥ true-min passes) is bracketed.
+    Runs ``_SHAPED_REFINE_ITERS`` bisections, keeping the smallest PASSING candidate
+    (and its plan+report so the caller still skips a redundant ~350 ms validate).
+    Shaper-path only — see :data:`_SHAPED_REFINE_ITERS` for why the plain path never
+    needs this.
+    """
+    best_T, best_plan, best_report = t_pass, pass_plan, pass_report
+    lo, hi = float(t_fail), float(t_pass)
+    for _ in range(_SHAPED_REFINE_ITERS):
+        mid = 0.5 * (lo + hi)
+        plan = _build_rest_move(pose, twist, accel, target, mid, shaper=shaper)
+        report = validate(plan, limits, geom)
+        if report.ok:
+            best_T, best_plan, best_report = mid, plan, report
+            hi = mid
+        else:
+            lo = mid
+    return best_T, best_plan, best_report
 
 
 def _gate(plan, limits, geom) -> None:

@@ -242,5 +242,95 @@ def test_shaper_increases_measured_leg_peaks_vs_unshaped():
     assert r_shaped.peak_leg_acc_mmps2 > r_base.peak_leg_acc_mmps2
 
 
+# ── Audit fixes (2026-07-08): seam boundary + stretch-loop overshoot ───────────
+
+def test_state_at_T_returns_shaped_segment_end_not_terminal_hold():
+    """BLOCKING seam fix: ``state_at(T)`` must return the shaped SEGMENT-END, not the
+    terminal hold. The base boundary accel is zero (pose == final_pose), but the
+    boundary JERK is nonzero, so the shaped twist/accel at T are continuous with
+    ``T−ε`` — where returning the hold (zeros) fabricated a jerk seam spike.
+    """
+    plan = _move_plan([20.0, 0.0, 170.0, 0.0, 0.0, 0.0], dur=0.6)
+    shaped = LeanShaper(0.3, g_mm_s2=G).shape(plan)
+    T = shaped.total_duration
+    pose_end, twist_end, accel_end = shaped.state_at(T)
+    _, twist_in, accel_in = shaped.state_at(T - 1e-9)
+    # Position: tilt(T) ∝ a(T) = 0, so the shaped pose at T equals final_pose exactly.
+    assert np.allclose(pose_end, plan.final_pose, atol=1e-9)
+    # Twist/accel are the genuine boundary transient (nonzero), continuous with T−ε
+    # (NOT the hold's zeros — that was the seam bug).
+    assert not np.allclose(twist_end, 0.0)
+    assert np.allclose(twist_end, twist_in, atol=1e-6)
+    assert np.allclose(accel_end, accel_in, atol=1e-3)
+    # Genuinely past the segment (the terminal hold) is still at rest.
+    _, twist_hold, accel_hold = shaped.state_at(T + 0.05)
+    assert np.allclose(twist_hold, 0.0) and np.allclose(accel_hold, 0.0)
+
+
+def test_shaped_lateral_move_min_duration_is_honest_not_seam_inflated():
+    """BLOCKING: with the seam fixed (+ the overshoot refinement) a gain-0.3 lateral
+    move costs a HONEST ~1.45× the unshaped minimum — not the ~7-8× the fabricated
+    seam jerk used to inflate it to.
+    """
+    geom = _geom()
+    limits = TrajectoryLimits.from_config(hw)
+    seed = (NEUTRAL.copy(), np.zeros(6), np.zeros(6))
+    target = NEUTRAL + np.array([20.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    shaped, r_s = planner.build_move(seed, target, None, limits, geom,
+                                     shaper=LeanShaper(0.3, g_mm_s2=G))
+    unshaped, _ = planner.build_move(seed, target, None, limits, geom, shaper=None)
+    ratio = shaped.total_duration / unshaped.total_duration
+    assert r_s.ok
+    assert ratio < 2.5, f"shaped/unshaped ratio {ratio:.2f} — seam inflation regressed"
+    assert 1.3 <= ratio <= 1.7, f"ratio {ratio:.3f} outside the honest lean band"
+
+
+def test_shaped_min_feasible_refined_close_to_true_minimum():
+    """WARNING: the 1/Tⁿ stretch factor over-corrects for the lean terms, so the
+    first passing T overshoots the true minimum ~3×. The bisection refinement lands
+    the returned duration within ~15% of the true monotone-gate boundary.
+    """
+    geom = _geom()
+    limits = TrajectoryLimits.from_config(hw)
+    seed = (NEUTRAL.copy(), np.zeros(6), np.zeros(6))
+    target = NEUTRAL + np.array([20.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    sh = LeanShaper(0.3, g_mm_s2=G)
+    plan, _ = planner.build_move(seed, target, None, limits, geom, shaper=sh)
+
+    def passes(T):
+        return feas.validate(planner._build_rest_move(*seed, target, T, shaper=sh),
+                             limits, geom).ok
+
+    lo, hi = 0.30, float(plan.total_duration)
+    assert not passes(lo) and passes(hi)     # boundary is bracketed
+    for _ in range(8):                       # bisect the monotone gate boundary
+        mid = 0.5 * (lo + hi)
+        if passes(mid):
+            hi = mid
+        else:
+            lo = mid
+    true_min = hi
+    assert plan.total_duration <= 1.15 * true_min, (
+        f"returned {plan.total_duration:.4f}s overshoots true min {true_min:.4f}s")
+
+
+def test_validate_follow_rejects_shaped_plan_loudly():
+    """NOTE: a ``_ShapedPlan`` in the fast follower gate is a programming error — the
+    finite differences measure the base quintic, silently under-gating the lean. It
+    must raise (loud TypeError), never silently pass. The plain plan still gates.
+    """
+    geom = _geom()
+    limits = TrajectoryLimits.from_config(hw)
+    seed = (NEUTRAL.copy(), np.zeros(6), np.zeros(6))
+    target = NEUTRAL + np.array([20.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    shaped = LeanShaper(0.3, g_mm_s2=G).shape(
+        planner._build_rest_move(*seed, target, 0.6))
+    with pytest.raises(TypeError, match='_ShapedPlan'):
+        feas.validate_follow(shaped, limits, geom)
+    # The unshaped twin still validates normally through the follower gate.
+    plain = planner._build_rest_move(*seed, target, 0.6)
+    assert feas.validate_follow(plain, limits, geom).ok
+
+
 if __name__ == '__main__':          # pragma: no cover
     raise SystemExit(pytest.main([__file__, '-q']))

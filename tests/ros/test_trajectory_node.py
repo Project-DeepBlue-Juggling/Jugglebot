@@ -525,6 +525,72 @@ def test_move_seq_increments_per_accepted_move_for_diagnose_segmentation():
     assert _diag_kv(node)['move_seq'] == '2'
 
 
+# ── Audit fixes (2026-07-08): move_seq per non-follower install ────────────────
+
+def test_go_home_bumps_move_seq_into_its_own_diagnose_row():
+    """A go_home installs a kind=='move' plan that RESETS the realized peaks under
+    the same plan_kind — so without a move_seq bump the /diagnose summariser's
+    last-sample-wins would report go_home's near-zero peaks as the preceding move's.
+    The bump makes go_home its own row, preserving the move's true realized peaks."""
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    node._svc_go_to_pose(_go_to_pose_req(x=20.0, z=185.0, duration_s=1.0),
+                         GoToPose.Response())
+    move_seq = node._move_seq
+    for k in range(8):
+        node._emit_once(node._plan_t0 + k * 0.025)
+    move_realized_vel = node._run_peak_vel_mmps
+    assert move_realized_vel > 0.0
+    # Finish the move, then go_home (a non-follower install).
+    node._plan_t0 = time.perf_counter() - 5.0
+    assert node._svc_go_home(Trigger.Request(), Trigger.Response()).success is True
+    assert node._move_seq == move_seq + 1        # go_home is its OWN summariser row
+    assert node._run_peak_vel_mmps == 0.0        # its install reset the realized window
+
+
+def test_follower_installs_do_not_bump_move_seq():
+    """A SpaceMouse stream's per-tick follow installs must NOT bump move_seq — the
+    whole stream is ONE /diagnose window. Only non-follower installs start a new row.
+    """
+    node = _follower_node()
+    seq0 = node._move_seq                         # seed hold does not bump
+    t = time.perf_counter()
+    for k in range(5):
+        node._on_platform_pose(_platform_pose(x=5.0 + k, z=176.0,
+                                              publisher='SPACEMOUSE'))
+        tgt, _ = node._follower_target
+        node._follower_target = (tgt, t)          # fresh on the synthetic clock
+        assert node._follower_tick(t) is True
+        t += 0.025
+    assert node._move_seq == seq0                 # no bump across the follow stream
+
+
+def test_track_realized_peaks_skips_frame_from_superseded_plan():
+    """The emit thread can sample a frame from the OLD plan, then a service-thread
+    install resets the accumulators before _track_realized_peaks runs. The stale
+    frame must NOT contaminate the new move's realized window — the tracker skips
+    accumulation when its sampled plan is no longer the active plan."""
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    node._svc_go_to_pose(_go_to_pose_req(x=20.0, z=185.0, duration_s=1.0),
+                         GoToPose.Response())
+    old_plan = node._active_plan
+    node._emit_once(node._plan_t0 + 0.1)          # a real mid-move frame accumulates
+    frame_old = node._pub.frames[-1]
+    assert node._run_peak_vel_mmps > 0.0
+    # An install swaps the active plan and resets the realized window.
+    node._install(HoldPlan(old_plan.state_at(0.1)[0]))
+    assert node._run_peak_vel_mmps == 0.0
+    # The late OLD-plan frame is ignored (active_plan changed since it was sampled).
+    node._track_realized_peaks(frame_old, old_plan)
+    assert node._run_peak_vel_mmps == 0.0
+    assert node._prev_frame_leg_acc is None
+    # A frame tagged with the CURRENT active plan IS accumulated (the identity gate
+    # admits it).
+    node._track_realized_peaks(frame_old, node._active_plan)
+    assert node._run_peak_vel_mmps > 0.0
+
+
 # ── Status is the typed TrajectoryStatus ──────────────────────
 
 def test_status_publishes_typed_trajectory_status():

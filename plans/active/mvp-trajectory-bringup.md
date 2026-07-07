@@ -726,6 +726,16 @@ sessions**: the per-step limit ramp (raise ONE limit ~1.5× → battery → `/di
 review → persist to YAML between sessions) and the lean A/B (gain 0.0 vs 0.3 —
 kept only if measured leg jerk drops and motion looks calmer).
 
+**Outcome addendum (2026-07-08 — audit-fix round)**: a `/audit e039cc0..HEAD` raised
+1 BLOCKING + 4 WARNING + 2 NOTE, all applied surgically — the BLOCKING was a shaped
+`state_at(T)` seam bug (the terminal-hold branch fired at the gate's final grid
+sample) that fabricated a 721,215 mm/s³ jerk spike and inflated shaped lateral moves
+~5–8×; fixing the boundary (+ refining the stretch-loop overshoot by bisection) brings
+gain-0.3 lateral moves to an honest **1.45×** the unshaped minimum, plus the ramp
+battery's BUSY-cascade settle, a `move_seq` bump so go_home/stops are their own
+`/diagnose` rows, a realized-peaks install-straddle guard, and a loud `validate_follow`
+shaped-plan rejection (full detail in the logbook's "Audit fixes" section).
+
 ### Phase 5 — Timed target states (goal 3)
 
 **Goal**: ((position), (orientation), arrival_time) with loud rejection of

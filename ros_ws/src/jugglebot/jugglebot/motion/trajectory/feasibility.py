@@ -45,6 +45,7 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
+from jugglebot.motion.trajectory.shaping import _ShapedPlan
 from jugglebot.motion.workspace import (
     WorkspaceLimits,
     check_leg_extensions,
@@ -388,7 +389,22 @@ def validate_follow(plan, limits, geom, *,
     but ~250× faster — see the module block above for why this is the same gate,
     not a bypass. Intended for per-tick replanning; the service path keeps using
     the analytic :func:`validate`.
+
+    **Shaping-blind — shaped plans MUST NOT reach here.** The finite-difference
+    method reconstructs the *base* quintic's leg peaks, not the analytic lean
+    superposition a :class:`~jugglebot.motion.trajectory.shaping._ShapedPlan` carries
+    (``eval_pose_batch`` samples the base segment, bypassing ``_ShapedPlan.state_at``),
+    so a shaped plan would be gated on its UNSHAPED peaks — silently under-measuring
+    the lean's leg motion. Lean shipped only on the service (``build_move``) path,
+    which uses the analytic :func:`validate`; the follower (``build_follow``) never
+    shapes. A shaped plan arriving here is a programming error — reject it LOUDLY
+    (an explicit ``TypeError``, not a bare ``assert`` which ``python -O`` strips).
     """
+    if isinstance(plan, _ShapedPlan):
+        raise TypeError(
+            "validate_follow cannot gate a _ShapedPlan: its finite-difference peaks "
+            "measure the base quintic, not the lean superposition. Shaped plans are "
+            "gated exclusively by the analytic validate() on the service path.")
     wlimits = _workspace_limits(geom)
     mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
 

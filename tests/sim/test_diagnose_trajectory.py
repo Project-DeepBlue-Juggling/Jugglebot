@@ -103,6 +103,28 @@ def test_segments_consecutive_moves_without_hold_via_move_seq():
     assert out['moves'][1]['move_seq'] == '2'
 
 
+def test_go_home_after_move_is_its_own_row_move_keeps_true_peaks():
+    """Audit fix (2026-07-08): a go_home / graceful-stop installs a kind=='move' plan
+    that RESETS the realized peaks under plan_kind=='move'. The node now bumps
+    move_seq on that non-follower install, so the stop is its own summariser row and
+    the move's TRUE realized peaks survive (probe #6: true 80 was reported as 12).
+    """
+    stream = [
+        _sample(0.0, 'move', rv=40.0, ra=200.0, rj=4000.0, seq=1),
+        _sample(0.2, 'move', rv=80.0, ra=360.0, rj=6000.0, seq=1),   # move's true peak
+        # go_home installs — plan_kind STILL 'move', realized peaks reset to ~zero,
+        # but move_seq bumped (the fix) so this is a NEW window, not a merge.
+        _sample(0.4, 'move', rv=3.0,  ra=15.0,  rj=200.0,  seq=2),
+        _sample(0.6, 'move', rv=12.0, ra=60.0,  rj=900.0,  seq=2),   # go_home's own peaks
+    ]
+    out = summarise_trajectory_moves(stream)
+    assert out['num_moves'] == 2
+    assert out['moves'][0]['move_seq'] == '1'
+    assert out['moves'][0]['realized']['vel_mmps'] == 80.0    # move's true peak, NOT 12
+    assert out['moves'][1]['move_seq'] == '2'
+    assert out['moves'][1]['realized']['vel_mmps'] == 12.0    # go_home's own row
+
+
 def test_consecutive_holdless_moves_without_move_seq_merge_gracefully():
     """Older bags lacking move_seq degrade to plan_kind-only segmentation (merge)."""
     stream = [

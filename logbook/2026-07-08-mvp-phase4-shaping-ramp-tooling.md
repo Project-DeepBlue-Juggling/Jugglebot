@@ -8,6 +8,7 @@ related_plan: mvp-trajectory-bringup.md
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/shaping.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/planner.py
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/__init__.py
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py
   - ros_ws/src/jugglebot_interfaces/srv/GoToPose.srv
@@ -303,22 +304,55 @@ no dependence on the live commanded z. Adopted; flagged in Open Questions.
 The plan says "quintic boundary accelerations are zero, so the added tilt vanishes
 smoothly at segment ends — continuity is preserved by construction." That is true
 **in position** but not in velocity: a rest-to-rest quintic has **nonzero boundary
-jerk** (jerk ∝ 60 at s=1), so the tilt-*rate* (`∝ jerk`) is nonzero at the segment
-end and steps to zero across the segment→terminal-hold seam. The predecessor's
-docstring states this honestly ("a bounded tilt-rate transient remains at the
-ends"). The consequence: with lean ON, the orientation channel is C0 (position-
-continuous) but not C1 at that one internal seam — a bounded leg-velocity step the
-gate *measures* (dense sampling) and bounds, and which stays pump-accepted (the
-pump gate is on position steps, not velocity). This is inherent to "tilt ∝ accel"
-with a plain quintic; the only ways to kill it are a septic basis (rejected by the
-plan) or a lean *window* that tapers to zero-rate at the ends (deferred). The
-right call for a **default-OFF** refinement is to keep the simple form, bound the
-transient with the gate, and make it an explicit A/B watch-item — which the session
-protocol does ("if the A/B shows the transient as a visible/audible tick at move
-start/end, stop and reconsider a windowed lean"). Note this is a within-one-plan
-seam, **not** an install/replan discontinuity: `state_at` is continuous in `t`
-inside the segment, so C2-across-installs (seeding the next plan from the old one's
-sampled state) is unaffected.
+jerk** (jerk ∝ 60 at s=1), so the tilt-*rate* (`∝ jerk`) is nonzero at **both**
+segment ends and steps across the two seams of every shaped move:
+
+  * the **install seam** at `t = 0` — a shaped move installed on a settled hold
+    (twist 0) starts with `tilt_d(0) ∝ jerk(0) = 60·(p1−p0)/T³ ≠ 0`, so the
+    commanded velocity steps from 0 to the lean tilt-rate at the install instant;
+  * the **segment→terminal-hold seam** at `t = T` — `tilt_d(T) ≠ 0` steps back to
+    the hold's zero.
+
+At both, position is continuous (`tilt ∝ accel`, and boundary accel = 0), so the
+pump — which gates on position steps, not velocity — accepts every frame; the
+velocity/accel **step** is a bounded leg-velocity/accel transient the gate *measures*
+by dense sampling and *bounds* via `peak_leg_vel`/`peak_leg_acc` (the move is sized
+so these stay under the session limits). The Teensy Hermite realises the step as a
+fast-but-bounded ramp between the two straddling knots.
+
+**Corrected by the 2026-07-08 audit — the seam was NOT cleanly bounded as first
+written.** `_ShapedPlan._locate` used `t >= total_duration` for the terminal-hold
+branch, so `state_at(T)` returned the hold (zero twist/accel) at *exactly* the gate's
+final grid sample while `T−dt` still carried the shaped boundary accel. The jerk
+finite-difference across that one interval then **fabricated a seam jerk spike**
+(measured 721,215 mm/s³ vs the 8,000 limit), which the duration-stretch loop "fixed"
+by inflating shaped lateral moves ~5–8× (x+20 @ gain 0.3 stretched to 3.076 s where
+the honest minimum is 0.563 s). The audit made the hold branch defer to just past the
+segment end (`t > T + ε`, ε absorbing the ≤1-ULP float overshoot of the gate's
+`seg.duration·(n−1)/(n−1)` endpoint), so `state_at(T)` now returns the shaped
+segment-end and the gate sees the continuous boundary content — bounding the real
+velocity/accel transient honestly instead of a fabricated jerk. This is inherent to
+"tilt ∝ accel" with a plain quintic; the only ways to kill the transient itself are a
+septic basis (rejected by the plan) or a lean *window* tapering to zero-rate at the
+ends (deferred). The right call for a **default-OFF** refinement is to keep the simple
+form, bound the transient with the gate, and make it an explicit A/B watch-item —
+which the session protocol does ("if the A/B shows the transient as a visible/audible
+tick at move start/end, stop and reconsider a windowed lean").
+
+**The earlier "C2-across-installs is unaffected" claim was FALSE and is withdrawn.**
+Installing a shaped move on a hold *does* step the commanded velocity at `t = 0` (the
+install seam above) — the hold→shaped transition is C0 (position-continuous, pump-
+safe) but not C1/C2. What *is* C2 is the reverse direction: seeding the *next* plan
+from a shaped plan's sampled state is continuous, because `state_at` returns the
+shaped twist/accel and the seed carries them forward. So a replan chained *off* a
+shaped plan is smooth; the hold→shaped *install* is the seam, at both ends.
+
+**Honest post-fix duration cost.** With the seam fixed and the stretch-loop overshoot
+refined (see the Audit fixes section), gain 0.3 costs a lateral move ~**1.45×** the
+unshaped minimum (x+20: shaped 0.590 s vs unshaped 0.406 s; y+20 ~1.60×; z moves ~1×,
+lean adds almost no leg motion vertically). The A/B reviewer should therefore expect
+the gain-0.3 arm's moves to run **visibly longer** than the gain-0.0 arm's — that is
+the gate correctly sizing the added tilt, not a fault.
 
 ### Fork (adopted, low-stakes) — the tilt cap scales derivatives by the instantaneous factor
 
@@ -350,6 +384,66 @@ clean dicts rather than a hybrid `max(realized, predicted)` — the audit floate
 hybrid, but mixing realized-vel with predicted-jerk in one dict is a worse
 foot-gun than two explicitly-labelled ones. A test pins that `used_pct_predicted`
 tracks the fine peak (6100/8000 → 76.2 %) distinct from realized (75.0 %).
+
+## Audit fixes (2026-07-08)
+
+A `/audit e039cc0..HEAD` of the Phase-4 diff raised 1 BLOCKING + 4 WARNING + 2 NOTE.
+All applied in one surgical package (no interface/config change). Finding → fix →
+key measurement:
+
+- **BLOCKING — `state_at(T)` returned the terminal hold.** `_ShapedPlan._locate`
+  used `t >= total_duration`, so the gate's final grid sample (`t = T`) read the hold
+  (zero twist/accel) while `T−dt` carried the shaped boundary accel → the jerk
+  finite-difference **fabricated a 721,215 mm/s³ seam spike** (limit 8,000) that
+  inflated shaped lateral moves ~5–8× (x+20 @ gain 0.3: 3.076 s where 0.563 s is the
+  honest minimum). Fix: defer the hold branch to `t > total_duration + ε`, ε absorbing
+  the ≤1-ULP float overshoot of the gate's `seg.duration·(n−1)/(n−1)` endpoint (the
+  bare `>` the audit proposed still spiked on the ~half of candidate durations that
+  round up — the ε makes it robust for *all* durations). `state_at(T)` now returns the
+  shaped segment-end (pose == final_pose since tilt ∝ a(T) = 0; twist/accel carry the
+  genuine tilt-rate transient the gate bounds honestly).
+- **WARNING — stretch-loop overshoot.** The 1/Tⁿ stretch factor over-corrects for the
+  lean terms (which scale 1/T³..1/T⁵), so the first passing T overshot ~3× (x+20:
+  0.2 s fails → 1.758 s passes; true min 0.563 s). Fix: when a shaper is active and a
+  stretch occurred, bisect `[t_fail, t_pass]` 4× (shaper-path only; the plain path's
+  ~5 % overshoot is untouched). Result: x+20 → **0.590 s** (4.7 % over the true
+  minimum) → **1.45× the unshaped 0.406 s**.
+- **WARNING — ramp-battery BUSY cascade.** The fixed 2.5 s settle was shorter than
+  shaped planned durations → the next request rejected BUSY mid-battery. Fix: sleep
+  `max(settle_s, planned_duration_s + 0.5)`; the per-move print already shows
+  `planned_duration_s` (and now the effective settle) so the A/B operator sees the
+  unequal shaped/unshaped durations.
+- **WARNING — go_home/stop clobbered the move's realized peaks.** `_move_seq` bumped
+  only on accepted `go_to_pose`, but go_home / mode-exit / input-loss stops install
+  `kind=='move'` plans that RESET the realized peaks under the *same* `move_seq` → the
+  `/diagnose` last-sample-wins reported the stop's near-zero peaks as the move's
+  (probe #6: true 80.0 reported as 12.0). Fix: bump `_move_seq` inside `_install` for
+  every **non-follower** install (follower installs must NOT bump — a SpaceMouse
+  stream stays one window; pinned by a test), removing the now-redundant bump in
+  `_svc_go_to_pose`.
+- **WARNING — logbook mischaracterised the boundary transient.** Corrected the
+  tilt-rate fork paragraph (above): the transient exists at **both** ends (install
+  seam AND segment→hold seam), is position-continuous / velocity-accel-stepped, is
+  bounded by `peak_leg_vel`/`peak_leg_acc` (not a fabricated jerk — that was the
+  now-fixed seam bug), and the "C2-across-installs is unaffected" claim was FALSE and
+  is withdrawn. Documented the honest ~1.45× duration cost so the A/B reviewer expects
+  unequal durations.
+- **NOTE — realized-peaks tracker could straddle an install.** The emit thread can
+  sample a frame from the old plan while a service-thread `_install` has already reset
+  the accumulators. Fix: `_emit_once` passes the sampled plan to
+  `_track_realized_peaks`, which accumulates under `_plan_lock` and skips if the active
+  plan changed since (also closes the pre-existing unlocked read/write race on the
+  accumulators).
+- **NOTE — `validate_follow` was shaping-blind.** Its finite differences measure the
+  base quintic, so a `_ShapedPlan` would be silently under-gated. Fix: a loud
+  `TypeError` (not a `-O`-strippable assert) when a `_ShapedPlan` reaches
+  `validate_follow`, plus docstring warnings in `validate_follow` and
+  `LeanShaper.shape`. (The follower path never shapes; this guards a future mistake.)
+
+**Verification** (date, command, result):
+
+- Scoped set (`pytest tests/motion/test_trajectory_shaping.py tests/ros/test_trajectory_node.py tests/sim/test_diagnose_trajectory.py -q`, run 2026-07-08) = **76 passed** (+8 audit regression tests: seam-continuity at `T`, honest lateral ratio < 2.5, refined-min-within-15 %, `validate_follow` rejects a shaped plan, go_home is its own `move_seq` row, follower installs don't bump, realized-peaks skip a superseded-plan frame, and the `/diagnose` go_home-after-move two-row split).
+- Full suite (`pytest tests/ -q`, run 2026-07-08) = **2127 passed, 1 failed, 1 xfailed in 544.72 s** — the 1 failed is the load-flaky `test_t3b_h4_on_post_solve_allocates_within_budget` (on the known allowlist), which **passes isolated** (`pytest tests/sim/test_mpc_time_pathologies.py::TestT3bH4PostSolveAllocation::test_t3b_h4_on_post_solve_allocates_within_budget -q`, run 2026-07-08 = **1 passed in 7.14 s**). So **0 real failures**; the effective green total is **2128** = the 2120-passed Phase-4 baseline + the **8** new audit regression tests.
 
 ## Open questions / next steps
 

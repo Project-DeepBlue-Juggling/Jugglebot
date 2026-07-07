@@ -138,10 +138,19 @@ def main() -> int:
             tag = 'OK ' if resp.accepted == expect else 'XX '
             if resp.accepted != expect:
                 rc = 1
+            # Settle long enough for the move ITSELF to finish before the next
+            # request, or the next go_to_pose is rejected BUSY mid-battery. Lean-
+            # shaped moves plan LONGER than their unshaped twins (the gate sizes the
+            # added tilt), so a fixed settle shorter than a shaped duration cascades
+            # BUSY rejections — wait max(settle, planned + 0.5 s). planned_duration_s
+            # is printed per move so the A/B operator sees the unequal shaped/unshaped
+            # durations directly.
+            settle = max(args.settle_s, resp.planned_duration_s + 0.5)
             print(f"[{tag}] {label:28s} accepted={resp.accepted} "
                   f"code={resp.code} dur={resp.planned_duration_s:.3f}s "
-                  f"min={resp.min_duration_s:.3f}s :: {resp.message}")
-            time.sleep(args.settle_s)
+                  f"min={resp.min_duration_s:.3f}s settle={settle:.2f}s "
+                  f":: {resp.message}")
+            time.sleep(settle)
     finally:
         node.destroy_node()
         rclpy.shutdown()

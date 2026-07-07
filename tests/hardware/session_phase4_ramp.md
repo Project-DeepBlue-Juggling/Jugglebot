@@ -119,13 +119,24 @@ looks/sounds calmer at gain 0.3. If kept, set `trajectory_op: lean_gain: 0.3` in
 YAML (regenerate + commit); if not, leave it `0.0` (the default) and record the
 null result in the logbook.
 
+> **Expect the gain-0.3 arm's moves to run visibly LONGER than the gain-0.0 arm's.**
+> The gate sizes the added tilt, so a shaped lateral move costs ~**1.45×** the
+> unshaped minimum (x±20 @ gain 0.3: ~0.59 s vs ~0.41 s; y±20 ~1.6×; pure-z moves
+> ~1×). This is correct, not a fault — the battery now sleeps
+> `max(--settle-s, planned_duration_s + 0.5)` per move and prints each
+> `planned_duration_s`, so you will see the unequal durations directly. Do not read
+> the longer shaped durations as a regression.
+
 > Note on lean at the boundaries: the lean tilt vanishes in *position* at each
 > move's ends (quintic boundary accel is zero) but carries a small tilt-*rate*
-> transient there (the base quintic's boundary jerk is nonzero). The feasibility
-> gate measures that as leg velocity and bounds it, and every shaped frame is
-> pump-accepted — but if the A/B shows the transient as a visible/audible tick at
-> move start/end, that is the signal to stop and reconsider a windowed lean
-> (deferred). Report it rather than pushing through.
+> transient at **both** ends (the base quintic's boundary jerk is nonzero) — the
+> install seam (`t=0`, hold→shaped) and the segment→hold seam (`t=T`). It is
+> position-continuous but velocity/accel-**stepped**; the feasibility gate measures
+> the step as leg velocity/acceleration and bounds it, and every shaped frame is
+> pump-accepted (the pump gates position steps, not velocity). But if the A/B shows
+> the transient as a visible/audible tick at move start/end, that is the signal to
+> stop and reconsider a windowed lean (deferred). Report it rather than pushing
+> through.
 
 ---
 

@@ -414,9 +414,13 @@ class TrajectoryNode(Node):
         self._last_motor_rev = motor_rev
         self._last_pose = np.asarray(frame['pose_6dof'], dtype=float)
         self._seq += 1
-        self._track_realized_peaks(frame)
+        # Pass the plan this frame was sampled FROM: an install on the service thread
+        # can swap the active plan (and reset the accumulators) between the frame
+        # sample above and this call, and a stale frame must not contaminate the new
+        # move's realized window (the install-straddle finding).
+        self._track_realized_peaks(frame, plan)
 
-    def _track_realized_peaks(self, frame: dict) -> None:
+    def _track_realized_peaks(self, frame: dict, sampled_plan) -> None:
         """Update the per-move realized leg peaks from an emitted knot frame.
 
         The emitted ``vel_mm_s`` / ``acc_mm_s2`` are the exact leg vel/acc the wire
@@ -425,18 +429,27 @@ class TrajectoryNode(Node):
         for what the Teensy Hermite reproduces between knots, distinct from the gate's
         fine-sampled PREDICTED jerk. Reset per install (see ``_install``). This is the
         Phase-4 ramp-observability signal (`/diagnose` reads it back from the rosbag).
+
+        The accumulation runs under ``_plan_lock`` and is SKIPPED if ``sampled_plan``
+        is no longer the active plan: an install between the frame sample and here has
+        already reset the accumulators for the new move, so folding this old-plan
+        frame in would report a stale sample as the new move's peak (and would also
+        race the install's reset of ``_prev_frame_leg_acc``).
         """
-        leg_vel = np.abs(np.asarray(frame['vel_mm_s'], dtype=float))
         leg_acc = np.asarray(frame['acc_mm_s2'], dtype=float)
-        self._run_peak_vel_mmps = max(self._run_peak_vel_mmps,
-                                      float(np.max(leg_vel)))
-        self._run_peak_acc_mmps2 = max(self._run_peak_acc_mmps2,
-                                       float(np.max(np.abs(leg_acc))))
-        if self._prev_frame_leg_acc is not None and self._emitter._dt > 0.0:
-            jerk = np.abs(leg_acc - self._prev_frame_leg_acc) / self._emitter._dt
-            self._run_peak_jerk_mmps3 = max(self._run_peak_jerk_mmps3,
-                                            float(np.max(jerk)))
-        self._prev_frame_leg_acc = leg_acc
+        with self._plan_lock:
+            if self._active_plan is not sampled_plan:
+                return
+            leg_vel = np.abs(np.asarray(frame['vel_mm_s'], dtype=float))
+            self._run_peak_vel_mmps = max(self._run_peak_vel_mmps,
+                                          float(np.max(leg_vel)))
+            self._run_peak_acc_mmps2 = max(self._run_peak_acc_mmps2,
+                                           float(np.max(np.abs(leg_acc))))
+            if self._prev_frame_leg_acc is not None and self._emitter._dt > 0.0:
+                jerk = np.abs(leg_acc - self._prev_frame_leg_acc) / self._emitter._dt
+                self._run_peak_jerk_mmps3 = max(self._run_peak_jerk_mmps3,
+                                                float(np.max(jerk)))
+            self._prev_frame_leg_acc = leg_acc
 
     # ═══════════════════════════════════════════════════════════
     # Subscriptions
@@ -764,6 +777,16 @@ class TrajectoryNode(Node):
             self._run_peak_jerk_mmps3 = 0.0
             self._prev_frame_leg_acc = None
             self._lean_gain_active = 0.0
+            # Per-move boundary for the /diagnose summariser: bump on every
+            # NON-follower install (go_to_pose, go_home, mode-exit/input-loss
+            # graceful stops, pending-stop retries) so each becomes its own row —
+            # each such install RESETS the realized peaks above, and last-sample-wins
+            # would otherwise report the stop's near-zero peaks as the preceding
+            # move's. Follower installs (require_follower_mode) deliberately do NOT
+            # bump: a SpaceMouse stream is one continuous window across its many
+            # per-tick replans.
+            if not require_follower_mode:
+                self._move_seq += 1
         return True
 
     def _make_shaper(self, gain: float) -> LeanShaper:
@@ -994,9 +1017,8 @@ class TrajectoryNode(Node):
         self._last_peak_acc_mmps2 = report.peak_leg_acc_mmps2
         self._last_peak_jerk_mmps3 = report.peak_leg_jerk_mmps3
 
-        self._install(plan)
+        self._install(plan)              # bumps _move_seq (non-follower install)
         self._lean_gain_active = gain    # label this move's A/B arm (install reset it)
-        self._move_seq += 1              # per-move boundary for the /diagnose summariser
         response.accepted = True
         response.code = feas.OK
         response.planned_duration_s = float(plan.total_duration)
