@@ -440,7 +440,7 @@ passes; results recorded in the logbook with seeds and configs):
 | 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | CODE COMPLETE (hardware deferred) |
 | 2 | Waypoint moves at low limits | — | move battery + loud rejection | CODE COMPLETE (hardware deferred) |
 | 3 | SpaceMouse streaming | — | manual flight | CODE COMPLETE (hardware deferred) |
-| 4 | Limit ramp-up + lean A/B | — | multiple short sessions | NOT STARTED |
+| 4 | Limit ramp-up + lean A/B | — | multiple short sessions | CODE COMPLETE (hardware deferred) |
 | 5 | Timed target states | — | timed moves ±25 ms | NOT STARTED |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | NOT STARTED |
 | 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | NOT STARTED |
@@ -689,6 +689,42 @@ kept only if measured leg jerk drops and motion looks calmer.
 **Exit**: limits at or above the Phase-6-published catch requirements (expected
 order: vel ~150–250 mm/s, acc ~1500–3000 mm/s²; the sim provides the real
 numbers — Phase 6 feeds back into this phase's target).
+
+**Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase 4 *software*
+landed on branch `mvp-trajectory-bringup` (commits `2d3afa0` shaping + planner
+wiring; `6eb2c74` `GoToPose.lean_gain` + node observability; `7588fe6`
+`/diagnose` extension + ramp harness; docs `TODO-docs`). New `motion/trajectory/
+shaping.py`: the lean-into-translation heuristic (`rx += −k·a_y/g`, `ry += +k·a_x/g`,
+gain `JB_TRAJ_LEAN_GAIN` default **0.0**, 5° cap) + a cup-height-derived lever-arm
+xy compensation ported from `Jugglebot-bb/sim/juggle_tilt.py::realize_tilted`
+(`centroid = target − shift`, arm **+95.1 mm ⇒ 1.66 mm/deg**, sign pinned to the
+physics). Shaping runs **before** `validate` — `planner._build_rest_move` wraps the
+plan and the node passes the shaper *into* `build_move`, so the single-gate invariant
+holds and the duration-stretch loop sizes the shaped motion. `GoToPose.srv` gains a
+per-call `float64 lean_gain` (< 0 ⇒ config default, ≥ 0 ⇒ clamp [0,1], default 0.0 ⇒
+OFF) for the A/B. `trajectory_node` tracks **realized** leg peaks off the emitted
+knots (reset per move) alongside the gate's **predicted** peaks and publishes them +
+the session limits + active `lean_gain` on `trajectory/diagnostics`; `sim/analysis/
+diagnose.py::summarise_trajectory_moves` turns a ramp rosbag into a per-move
+`peaks + headroom` table (the `/diagnose` "Trajectory Moves" block), segmented by a
+new `move_seq` diagnostics key — the salvage corrected a bug where the summariser
+collapsed the whole holdless battery into one row (`plan.kind` stays `'move'`
+across a completed move's terminal hold) and used the coarse realized jerk for
+headroom (now also surfaces `used_pct_predicted`, gate-authoritative). Operator harness
+`tests/hardware/traj_ramp_battery.py` (service-calls-only) + protocol
+`session_phase4_ramp.md`. **No limit values landed** (Phase 4 lands none — the ramp
+is operator bench work), so **no `hardware_config.yaml` / codegen change**.
+Verification: `pytest tests/ -q` (2026-07-08) = **2120 passed, 1 xfailed in 518.69 s**
+(baseline 2094/1 at `e039cc0`; net +26 = the new tests only: 14 shaping + 5 diagnose
++ 7 node); `colcon build --packages-select jugglebot_interfaces jugglebot` (2026-07-08) =
+2 packages finished, 0 errors (`GoToPose.lean_gain`). Salvage: the phase was
+implemented by a prior agent that died mid-run leaving the diff uncommitted and
+unverified; this session independently verified every invariant against the
+reference geometry, ran the gates, and applied the audit — full narrative in
+`logbook/2026-07-08-mvp-phase4-shaping-ramp-tooling.md`. **Deferred to operator bench
+sessions**: the per-step limit ramp (raise ONE limit ~1.5× → battery → `/diagnose`
+review → persist to YAML between sessions) and the lean A/B (gain 0.0 vs 0.3 —
+kept only if measured leg jerk drops and motion looks calmer).
 
 ### Phase 5 — Timed target states (goal 3)
 
