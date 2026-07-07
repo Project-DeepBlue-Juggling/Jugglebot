@@ -31,6 +31,7 @@ from jugglebot.motion.trajectory.follower import FollowResult, TargetFollower
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.trajectory.plan import HoldPlan, TrajectoryPlan
 from jugglebot.motion.trajectory.segment import QuinticSegment
+from jugglebot.motion.trajectory.shaping import LeanShaper
 
 __all__ = [
     'KnotEmitter',
@@ -44,4 +45,5 @@ __all__ = [
     'HoldPlan',
     'TrajectoryPlan',
     'QuinticSegment',
+    'LeanShaper',
 ]

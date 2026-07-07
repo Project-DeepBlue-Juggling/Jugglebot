@@ -133,12 +133,18 @@ def build_return_to_neutral(state0, neutral_pose, duration_s, limits, geom
     return plan
 
 
-def build_move(state0, target_pose, duration_s, limits, geom):
+def build_move(state0, target_pose, duration_s, limits, geom, *, shaper=None):
     """Profiled point-to-point move from ``state0`` to ``target_pose`` at rest.
 
     ``state0`` is ``(pose, twist, accel)`` (the seed continues the previous plan's
     sampled state — C2 by construction). The move ends at rest (zero twist/accel)
     at ``target_pose``.
+
+    ``shaper`` (optional, Phase 4) is a ``shaping.LeanShaper``: when supplied with a
+    positive gain it superposes lean tilt + lever-arm compensation on every
+    candidate plan **before** :func:`validate` runs, so the gate always measures the
+    SHAPED leg peaks and the duration-stretch loop sizes the shaped motion. A None
+    shaper (or a zero-gain one) is the identity — the default, lean OFF.
 
     Returns ``(plan, report)`` — the accepting :class:`FeasibilityReport` is handed
     back alongside the plan so the caller records the measured leg peaks (for
@@ -168,13 +174,13 @@ def build_move(state0, target_pose, duration_s, limits, geom):
 
     if duration_s is None or float(duration_s) <= 0.0:
         _t_min, plan_min, report_min = _min_feasible_move(
-            pose, twist, accel, target, limits, geom)
+            pose, twist, accel, target, limits, geom, shaper=shaper)
         return plan_min, report_min
 
     # Explicit requested duration: validate it directly. If the gate accepts it we
     # are done — no stretch loop, no false-reject on the 1.05 margin.
     requested = float(duration_s)
-    plan = _build_rest_move(pose, twist, accel, target, requested)
+    plan = _build_rest_move(pose, twist, accel, target, requested, shaper=shaper)
     report = validate(plan, limits, geom)
     if report.ok:
         return plan, report
@@ -186,7 +192,7 @@ def build_move(state0, target_pose, duration_s, limits, geom):
     if report.code not in _STRETCHABLE:
         raise TrajectoryInfeasible(report.code, report.reasons)
     t_min, _plan_min, _report_min = _min_feasible_move(
-        pose, twist, accel, target, limits, geom)
+        pose, twist, accel, target, limits, geom, shaper=shaper)
     raise TrajectoryInfeasible(
         TOO_FAST,
         [f"requested duration {requested:.3f}s < minimal feasible "
@@ -194,12 +200,16 @@ def build_move(state0, target_pose, duration_s, limits, geom):
         min_duration_s=t_min)
 
 
-def _build_rest_move(pose, twist, accel, target, duration_s):
+def _build_rest_move(pose, twist, accel, target, duration_s, *, shaper=None):
     seg = QuinticSegment(
         p0=pose, v0=twist, a0=accel,
         p1=target, v1=np.zeros(POSE_DIM), a1=np.zeros(POSE_DIM),
         duration=float(duration_s))
-    return TrajectoryPlan(segments=(seg,), final_pose=target)
+    plan = TrajectoryPlan(segments=(seg,), final_pose=target)
+    # Shaping runs BEFORE validate (the canonical ordering invariant): the gate
+    # must always see the shaped plan, so wrap here — every candidate the stretch
+    # loop validates is shaped, and the loop sizes the shaped motion.
+    return shaper.shape(plan) if shaper is not None else plan
 
 
 def _stretch_factor(report, limits) -> float:
@@ -223,7 +233,7 @@ def _stretch_factor(report, limits) -> float:
     return max(float(factor) * _STRETCH_MARGIN, 1.0)
 
 
-def _min_feasible_move(pose, twist, accel, target, limits, geom):
+def _min_feasible_move(pose, twist, accel, target, limits, geom, *, shaper=None):
     """Shortest duration the gate accepts for a rest-terminating move.
 
     Starts at the ``min_move_duration_s`` floor and stretches by the exact
@@ -231,11 +241,15 @@ def _min_feasible_move(pose, twist, accel, target, limits, geom):
     ``(duration_s, plan, report)`` — the accepting report rides along so callers
     avoid a redundant ``validate``. Raises :class:`TrajectoryInfeasible` on a
     spatial failure (immediately) or if the loop fails to converge (``TOO_FAST``).
+
+    With ``shaper`` supplied, every candidate is the SHAPED plan (lean superposed
+    before validate); the lean tilt scales as ``1/T²`` like the base accel, so the
+    shaped move still shrinks monotonically with T and the loop still converges.
     """
     T = float(limits.min_move_duration_s)
     report = None
     for _ in range(_MAX_STRETCH_ITERS):
-        plan = _build_rest_move(pose, twist, accel, target, T)
+        plan = _build_rest_move(pose, twist, accel, target, T, shaper=shaper)
         report = validate(plan, limits, geom)
         if report.ok:
             return T, plan, report
