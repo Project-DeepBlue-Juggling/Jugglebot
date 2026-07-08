@@ -66,7 +66,8 @@ class CatchCoordinatorNode(Node):
             catch_angle_limit_deg=30.0,
         )
 
-        # Publisher: dynamic target → mpc_bridge_node → IPC → MPC process
+        # Publisher: dynamic target → consumed by trajectory_node (CATCH mode, Phase 5),
+        # which turns it into a timed catch plan via planner.build_timed.
         self._dyn_target_pub = self.create_publisher(
             DynamicTargetCommand, 'catch/dynamic_target', 10)
 
@@ -196,6 +197,13 @@ class CatchCoordinatorNode(Node):
     # Feedback
     # ==================================================================
 
+    # Service-level (non-feasibility) reject codes that must NOT count toward the
+    # position blacklist: the target's reachability was never actually evaluated
+    # (STALE_STATE) or a committed reach was being held (FROZEN). Only feasibility-class
+    # codes (WORKSPACE/UNREACHABLE/LIMIT_*/TOO_FAST/STEP_BOUND) mean the position itself
+    # is unreachable and should drive the blacklist.
+    _NON_BLACKLIST_CODES = frozenset({'STALE_STATE', 'FROZEN'})
+
     def _on_target_feedback(self, msg: TargetFeedback):
         """Accept/reject feedback from trajectory_node (Phase 5 topic swap).
 
@@ -204,6 +212,12 @@ class CatchCoordinatorNode(Node):
         the last submitted target, then feed acceptance/rejection to the coordinator
         so the feasibility blacklist tracks unreachable catch targets.
         """
+        # trajectory/target_feedback carries BOTH catch and timed-service decisions;
+        # only the catch source is ours. A timed-target reject must never touch the
+        # catch blacklist.
+        if msg.source != 'catch':
+            return
+
         ball_id = self._last_submitted_ball_id
         if ball_id is None:
             return
@@ -215,11 +229,21 @@ class CatchCoordinatorNode(Node):
         if msg.accepted:
             self._coordinator.report_acceptance(ball_id)
             self.get_logger().debug(f"Ball {ball_id}: target accepted")
-        else:
-            self._coordinator.report_rejection_with_position(
-                ball_id, self._last_landing_position)
-            self.get_logger().info(
-                f"Ball {ball_id}: target rejected — {msg.code}: {msg.reason}")
+            return
+
+        # A non-feasibility service code (STALE_STATE/FROZEN) is neither an acceptance
+        # nor a feasibility rejection — early-return so it never counts toward the
+        # blacklist (an unlucky burst of these would otherwise blacklist a perfectly
+        # reachable position).
+        if msg.code in self._NON_BLACKLIST_CODES:
+            self.get_logger().debug(
+                f"Ball {ball_id}: {msg.code} (not blacklist-counted)")
+            return
+
+        self._coordinator.report_rejection_with_position(
+            ball_id, self._last_landing_position)
+        self.get_logger().info(
+            f"Ball {ball_id}: target rejected — {msg.code}: {msg.reason}")
 
     # ==================================================================
     # Hand control

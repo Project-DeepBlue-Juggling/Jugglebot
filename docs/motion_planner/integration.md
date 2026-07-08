@@ -114,7 +114,7 @@ The MPC bridge forwards target poses from ROS2 input sources to the MPC process 
 
 ### Catch Target Feedback
 
-When the MPC receives a catch target (via `:5558`), it sends accept/reject feedback to the catch coordinator via a dedicated ZMQ channel on `:5559` (`TargetFeedbackPub` → `TargetFeedbackSub`). This tells the coordinator whether the solver was able to plan a trajectory to the requested catch position and timing.
+When the MPC receives a catch target (via `:5558`), it sends accept/reject feedback to the catch coordinator via a dedicated ZMQ channel on `:5559` (`TargetFeedbackPub` → `TargetFeedbackSub`). This tells the coordinator whether the solver was able to plan a trajectory to the requested catch position and timing. (Dormant MPC stack only: since Phase 5 the catch coordinator consumes the `trajectory/target_feedback` ROS topic from `trajectory_node`'s feasibility gate instead of this `:5559` channel.)
 
 ### Gravity Correction
 

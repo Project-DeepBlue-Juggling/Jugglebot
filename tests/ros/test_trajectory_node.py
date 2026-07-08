@@ -1066,19 +1066,53 @@ def test_dynamic_target_installs_catch_plan_with_z_offset():
 
 
 def test_dynamic_target_reach_freeze_ignores_late_updates():
-    """Once within catch_reach_freeze_s of the committed arrival, later target
-    updates are ignored (the reach is frozen into the catch)."""
+    """Inside the reach-freeze window a late target update is ignored (the committed
+    reach is held) AND reported FROZEN — a distinct service-level code that
+    distinguishes the freeze branch from a TOO_FAST feasibility reject."""
     node = _catch_mode_node()
-    # Commit a reach arriving only a hair beyond the freeze window from now, so the
-    # next update lands inside the freeze window.
-    lead = node._catch_reach_freeze_s + 0.05
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=lead))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
     committed = node._active_plan
-    committed_arrival = node._catch_arrival_perf
-    # A jittered update inside the freeze window must be ignored.
-    node._on_dynamic_target(_dyn_target(node, x=40.0, z=20.0, lead_s=lead - 0.1))
+    # Pin the committed arrival DETERMINISTICALLY inside the freeze window: now is past
+    # (arrival − reach_freeze) and before (arrival + settle_hold).
+    node._catch_arrival_perf = time.perf_counter() + 0.5 * node._catch_reach_freeze_s
+    n_fb = len(node.target_feedback_pub.published)
+    # A generous-lead update that WOULD supersede if not frozen — proves the freeze
+    # (not a feasibility reject) is what blocks it.
+    node._on_dynamic_target(_dyn_target(node, x=40.0, z=20.0, lead_s=3.0))
     assert node._active_plan is committed
-    assert node._catch_arrival_perf == committed_arrival
+    fb = node.target_feedback_pub.published[-1]
+    assert fb.accepted is False
+    assert fb.code == 'FROZEN'
+    assert len(node.target_feedback_pub.published) == n_fb + 1
+
+
+def test_dynamic_target_post_settle_supersedes_as_new_reach():
+    """Once the committed arrival + settle-hold has fully passed, the freeze releases
+    and a later target supersedes as a fresh reach (repeated catches — Phases 8/9),
+    rather than being silently dropped forever behind a latched freeze."""
+    node = _catch_mode_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    first = node._active_plan
+    # Pretend the committed arrival + settle-hold is now fully in the past.
+    node._catch_arrival_perf = (time.perf_counter()
+                                - node._catch_settle_hold_s - 0.1)
+    node._on_dynamic_target(_dyn_target(node, x=25.0, z=20.0, lead_s=3.0))
+    assert node._active_plan is not first
+    assert node.target_feedback_pub.published[-1].accepted is True
+    p_arr = node._active_plan.state_at(node._active_plan.total_duration)[0]
+    assert np.allclose(p_arr[:3], [25.0, 0.0, 190.0], atol=1e-2)
+
+
+def test_dynamic_target_past_arrival_rejected_too_fast():
+    """A catch target whose arrival is already in the PAST → negative lead → loud
+    TOO_FAST (never a crash), plan unchanged."""
+    node = _catch_mode_node()
+    committed = node._active_plan            # the seeded hold
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=-1.0))
+    assert node._active_plan is committed
+    fb = node.target_feedback_pub.published[-1]
+    assert fb.accepted is False
+    assert fb.code == feas.TOO_FAST
 
 
 def test_dynamic_target_supersedes_before_freeze():
@@ -1098,6 +1132,72 @@ def test_leaving_catch_clears_freeze():
     assert node._catch_arrival_perf is not None
     node._on_control_mode(String(data='STANDBY'))
     assert node._catch_arrival_perf is None
+
+
+@pytest.mark.parametrize('exit_mode', ['STANDBY', 'TRAJECTORY'])
+def test_leaving_catch_mid_reach_installs_stop(exit_mode):
+    """Leaving CATCH mid-reach (the documented abort = a switch away from CATCH)
+    installs a graceful stop — the catch reach is silenced, not run on to the catch
+    target — and clears the freeze. Both exit classes: CATCH→non-motion (STANDBY,
+    via CATCH ∈ _MOTION_MODES) and CATCH→motion (TRAJECTORY, via the unconditional
+    leaving-CATCH-mid-move branch — otherwise the reach would run on with go_to_pose
+    BUSY-blocked behind it)."""
+    node = _catch_mode_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    catch_plan = node._active_plan
+    assert catch_plan.kind == 'move'
+    node._plan_t0 -= 1.0                       # advance into the reach (real velocity)
+    assert node._active_move_in_flight() is True
+    node._on_control_mode(String(data=exit_mode))
+    assert node._active_plan is not catch_plan
+    assert node._catch_arrival_perf is None
+    end = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(end[1], 0.0, atol=1e-6)                       # ends at rest
+    assert not np.allclose(end[0][:3], [10.0, 0.0, 190.0], atol=1.0)  # not the target
+
+
+def test_entering_catch_mid_move_installs_stop():
+    """Entering CATCH while a TRAJECTORY move is in flight installs a graceful stop
+    (motion→motion doesn't trip leaving_motion_move) and resets the catch freeze, so
+    the catch begins from a clean, non-jittering state."""
+    node = _traj_mode_node()
+    node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=3.0), GoToPose.Response())
+    move_plan = node._active_plan
+    assert move_plan.kind == 'move'
+    node._plan_t0 -= 1.0
+    assert node._active_move_in_flight() is True
+    node._on_control_mode(String(data='CATCH'))
+    assert node._active_plan is not move_plan
+    assert node._catch_arrival_perf is None
+    end = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(end[1], 0.0, atol=1e-6)                       # ends at rest
+
+
+def test_timed_target_excessive_lead_rejected_no_crash():
+    """A clock-domain-confused lead (well over max_timed_lead_s) is loudly rejected via
+    the service — never a crash / MemoryError — and the plan is unchanged."""
+    node = _traj_mode_node()
+    committed = node._active_plan
+    resp = node._svc_timed_target(_timed_req(node, z=185.0, lead_s=61.0),
+                                  TimedTarget.Response())
+    assert resp.accepted is False
+    assert resp.code == feas.TOO_FAST
+    assert node._active_plan is committed
+
+
+def test_timed_target_records_predicted_peaks():
+    """An accepted timed install records the accepting report's PREDICTED leg peaks into
+    _last_peak_* (as go_to_pose does), so /diagnose per-move rows carry the right
+    predicted peaks — the report is no longer discarded."""
+    node = _traj_mode_node()
+    resp = node._svc_timed_target(_timed_req(node, x=12.0, z=185.0, lead_s=3.0),
+                                  TimedTarget.Response())
+    assert resp.accepted is True
+    rep = feas.validate_follow(node._active_plan, node._limits, node._geom)
+    assert node._last_peak_vel_mmps == pytest.approx(rep.peak_leg_vel_mmps)
+    assert node._last_peak_acc_mmps2 == pytest.approx(rep.peak_leg_acc_mmps2)
+    assert node._last_peak_jerk_mmps3 == pytest.approx(rep.peak_leg_jerk_mmps3)
+    assert node._last_peak_vel_mmps > 0.0
 
 
 # ── clock conversion (single point) ───────────────────────────

@@ -168,6 +168,7 @@ namespace TrajOp {
   constexpr float KNOT_DT_S = 0.025f;
   constexpr float MIN_MOVE_DURATION_S = 0.2f;
   constexpr float MIN_TIMED_LEAD_S = 0.25f;
+  constexpr float MAX_TIMED_LEAD_S = 60.0f;
   constexpr float SPACEMOUSE_HORIZON_S = 0.35f;
   constexpr float LEAN_GAIN = 0.0f;
   constexpr float CATCH_REACH_FREEZE_S = 0.3f;

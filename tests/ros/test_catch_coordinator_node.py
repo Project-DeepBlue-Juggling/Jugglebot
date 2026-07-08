@@ -87,3 +87,37 @@ def test_feedback_ignored_without_submitted_ball():
     node._last_submitted_ball_id = None
     node._on_target_feedback(_fb(False, 100.0))   # no active submission → no-op
     assert node._coordinator._rejection_counts == {}
+
+
+# ── Source filter + non-blacklist codes ───────────────────────
+
+def test_timed_source_feedback_ignored():
+    """trajectory/target_feedback carries timed-service decisions too; a timed-source
+    reject must NOT touch the catch blacklist."""
+    node = _armed_node()
+    node._on_target_feedback(_fb(False, 100.0, code='TOO_FAST', source='timed'))
+    assert node._coordinator._rejection_counts.get(7) is None
+
+
+def test_stale_state_reject_not_blacklist_counted():
+    """A STALE_STATE reject (the target's reachability was never evaluated) must not
+    count toward the blacklist."""
+    node = _armed_node()
+    node._on_target_feedback(_fb(False, 100.0, code='STALE_STATE'))
+    assert node._coordinator._rejection_counts.get(7) is None
+
+
+def test_frozen_reject_not_blacklist_counted():
+    """A FROZEN reject (a committed reach was held) must not count toward the
+    blacklist."""
+    node = _armed_node()
+    node._on_target_feedback(_fb(False, 100.0, code='FROZEN'))
+    assert node._coordinator._rejection_counts.get(7) is None
+
+
+def test_workspace_reject_still_blacklist_counted():
+    """A feasibility-class reject (WORKSPACE) DOES count — the position is genuinely
+    unreachable."""
+    node = _armed_node()
+    node._on_target_feedback(_fb(False, 100.0, code='WORKSPACE'))
+    assert node._coordinator._rejection_counts.get(7) == 1

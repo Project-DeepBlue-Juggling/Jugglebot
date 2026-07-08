@@ -769,8 +769,10 @@ rest-terminating (a nonzero arrival velocity gets a decel-to-rest continuation �
 final nonzero-velocity segment would be an unbounded-jerk terminal-hold snap);
 `hold_after` = hold-at-target vs return-to-neutral. Gated by the **fast**
 `validate_follow`, which is what enables the mid-plan **supersede** (a C2 replan
-installs within ~2 ms of its seed — the TOCTOU class the Phase-2 guard closed on the
-~377 ms path), so the Phase-2 `BUSY` restriction is **lifted for the timed path** (
+installs single-digit ms typical after its seed, guard-bounded — install-continuity
+rejects `STALE_STATE` on drift >0.06 rev; worst case tens of ms with the appended
+stop-stretch — the TOCTOU class the Phase-2 guard closed on the ~377 ms path), so
+the Phase-2 `BUSY` restriction is **lifted for the timed path** (
 `go_to_pose` keeps `BUSY` — it uses the analytic gate for shaped plans; the asymmetry
 is deliberate + tested). New interfaces `TimedTarget.srv` (response `code` = the
 feasibility **string** enum, matching GoToPose) and `TargetFeedback.msg`;
@@ -787,10 +789,21 @@ out-of-stroke z loudly meanwhile). Every emitted timed knot is pump-accepted (in
 re-asserted). Verification: `pytest tests/ -q` (2026-07-08) = **2164 passed,
 1 xfailed in 535.82 s** (baseline 2128/1 at `1c0f9c1`; net **+36** = new tests only: 12
 planner-timed + 17 node + 7 catch-coordinator); ci-deep (`pytest tests/ -q
---hypothesis-profile=ci-deep`, 2026-07-08) = **<PENDING>**; `colcon build
+--hypothesis-profile=ci-deep`, run 2026-07-08) = **2164 passed, 1 xfailed, 198
+warnings in 3001.75 s (0:50:01)**; `colcon build
 --packages-select jugglebot_interfaces jugglebot` (2026-07-08) = 2 packages finished,
-0 errors. No `hardware_config.yaml`/codegen change (the Phase-5 constants landed in
-Phase 1). **Deferred to the operator bench session**: the ±25 ms mocap timed-move
+0 errors. A post-landing audit round (2026-07-08) closed 3 WARNING + 6 NOTE findings —
+headline: a `max_timed_lead_s` (60 s) clock-domain guard in `build_timed` (an
+epoch-magnitude lead previously drove a ~7e10-element `np.arange` → MemoryError that
+killed the node), CATCH added to `_MOTION_MODES` (graceful stop on both
+leaving-CATCH-mid-reach and entering-CATCH-mid-move), and the reach-freeze now
+releases after `arrival + JB_TRAJ_CATCH_SETTLE_HOLD_S` (was: latched forever, silently
+dropping every later catch target) with a `FROZEN` service-level feedback code the
+coordinator excludes from blacklist counting (alongside a `source=='catch'` filter) —
+see the logbook entry's "Audit fixes (2026-07-08)" section. No
+`hardware_config.yaml`/codegen change in the original phase; the audit round added
+`trajectory_op.max_timed_lead_s` (regenerated). **Deferred to the operator bench
+session**: the ±25 ms mocap timed-move
 battery + too-tight loud-rejection + mid-plan supersede demo
 (`tests/hardware/session_phase5_timed.md`). Full narrative in
 `logbook/2026-07-08-mvp-phase5-timed-targets.md`.

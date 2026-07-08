@@ -408,12 +408,14 @@ def build_timed(state0, target_pose, target_twist, duration_s, limits, geom, *,
 
     Gated by the **fast** :func:`validate_follow`, not the ~377 ms analytic
     :func:`validate`. The timed-target service supersedes an in-flight plan, so the
-    gate must run in a few ms for the plan to install within ~2 ms of its seed
-    sample — the drift over that window is ≪ the pump/firmware step gates, so the
-    supersede is a clean C2 replan rather than a u0 jump (the TOCTOU class the
-    Phase-2 install-continuity guard closed on the ~377 ms path). Timed plans are
-    never lean-shaped, so ``validate_follow`` (shaping-blind) is exactly right.
-    Returns ``(plan, report)``.
+    gate must run in a few ms for the plan to install shortly after its seed sample —
+    single-digit ms typical, guard-bounded (the caller's install-continuity check
+    rejects ``STALE_STATE`` on a seed drift > 0.06 rev), worst case tens of ms with an
+    appended stop-stretch. The drift over that window is ≪ the pump/firmware step
+    gates, so the supersede is a clean C2 replan rather than a u0 jump (the TOCTOU
+    class the Phase-2 install-continuity guard closed on the ~377 ms path). Timed
+    plans are never lean-shaped, so ``validate_follow`` (shaping-blind) is exactly
+    right. Returns ``(plan, report)``.
     """
     pose, twist, accel = (_as6(state0[0], 'pose'),
                           _as6(state0[1], 'twist'),
@@ -425,7 +427,20 @@ def build_timed(state0, target_pose, target_twist, duration_s, limits, geom, *,
 
     D = float(duration_s)
     lead_floor = float(limits.min_timed_lead_s)
+    lead_ceiling = float(limits.max_timed_lead_s)
     _zero = np.zeros(POSE_DIM)
+
+    # Hard lead CEILING (clock-domain guard): a lead beyond max_timed_lead is almost
+    # always a clock-domain confusion — e.g. an absolute epoch timestamp (~1.75e9 s)
+    # reaching here as a "lead". Building the reach at that duration would size the
+    # knot-step sampling at ~D/knot_dt elements (np.arange(~7e10) → MemoryError; even a
+    # finite hour-scale lead stalls the executor ~30 s). Reject BEFORE building anything.
+    if D > lead_ceiling:
+        raise TrajectoryInfeasible(
+            TOO_FAST,
+            [f"arrival lead {D:.1f}s exceeds maximum timed lead {lead_ceiling:.1f}s "
+             f"— wrong clock domain?"],
+            min_duration_s=lead_ceiling)
 
     # Hard lead floor: below min_timed_lead there is not enough time for ANY move —
     # reject before building anything, advertising the minimal achievable lead.
@@ -514,6 +529,18 @@ def _min_feasible_timed(pose, twist, accel, target, v1, limits, geom):
         if report.code not in _STRETCHABLE:
             raise TrajectoryInfeasible(report.code, report.reasons)
         T *= _stretch_factor(report, limits)
+
+    # Loop exhausted without a clean pass (a moving seed breaks the exact 1/Tⁿ
+    # leg-peak scaling the stretch factor assumes). The final T from the last
+    # iteration was multiplied but NEVER re-validated, so validate it once more; if it
+    # still fails-stretchable, apply one more stretch so the advertised minimum is a
+    # genuine (best-effort) upper bound on the feasible lead rather than an unvalidated
+    # guess. Kept to a single extra pass — this is only ever an advertised retry lead.
+    reach = QuinticSegment(p0=pose, v0=twist, a0=accel,
+                           p1=target, v1=v1, a1=_zero, duration=T)
+    final = validate_follow(TrajectoryPlan((reach,), target), limits, geom)
+    if not final.ok and final.code in _STRETCHABLE:
+        T *= _stretch_factor(final, limits)
     return T
 
 

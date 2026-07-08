@@ -38,6 +38,7 @@ class TrajectoryLimits:
     max_step_rev: float          # per-knot |Δu0| motor bound (rev)
     min_move_duration_s: float
     min_timed_lead_s: float
+    max_timed_lead_s: float       # upper bound on a timed arrival lead (clock-domain guard)
 
     @staticmethod
     def from_config(hw, *,
@@ -73,6 +74,7 @@ class TrajectoryLimits:
             max_step_rev=float(hw.JB_OP_MAX_POSITION_STEP_REV),
             min_move_duration_s=float(hw.JB_TRAJ_MIN_MOVE_DURATION_S),
             min_timed_lead_s=float(hw.JB_TRAJ_MIN_TIMED_LEAD_S),
+            max_timed_lead_s=float(hw.JB_TRAJ_MAX_TIMED_LEAD_S),
         )
 
     def with_session_limits(self, *,
@@ -103,4 +105,5 @@ class TrajectoryLimits:
             max_step_rev=self.max_step_rev,
             min_move_duration_s=self.min_move_duration_s,
             min_timed_lead_s=self.min_timed_lead_s,
+            max_timed_lead_s=self.max_timed_lead_s,
         )

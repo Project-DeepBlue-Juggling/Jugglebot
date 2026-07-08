@@ -24,6 +24,8 @@ Architecture::
     ───────────                         ──────────────────────
     TargetFeedbackPub                   TargetFeedbackSub
       PUB  ─── tcp://localhost:5559 ──►  SUB   (target accept/reject)
+      # DORMANT (MPC stack): the catch coordinator now consumes
+      # trajectory/target_feedback (trajectory_node, Phase 5), not this :5559 SUB.
 
     MPC Process (sim/main.py)            ROS2 MPC Bridge
     ─────────────────────────           ───────────────
@@ -37,7 +39,8 @@ Message types:
   - MPCCommand:    pre-computed motor commands from external MPC controller
   - MPCTarget:     target pose for the MPC to track (from any input source)
   - MPCMode:       active input mode forwarded to the MPC process
-  - TargetFeedback: accept/reject decision for catch targets (MPC → coordinator)
+  - TargetFeedback: accept/reject decision for catch targets (dormant MPC stack only;
+                    the coordinator now consumes trajectory/target_feedback, Phase 5)
 
 Lifecycle authority:
   - The ROS2 motion bridge on :5555 is the primary authority for motor guard
@@ -782,8 +785,11 @@ class TargetFeedbackPub:
 class TargetFeedbackSub:
     """SUB endpoint for target accept/reject feedback.
 
-    Used by the catch coordinator node to receive accept/reject decisions
-    from the MPC process.  Connects to MPC_FEEDBACK_ADDR (:5559).
+    DORMANT (MPC stack only): historically the catch coordinator received
+    accept/reject decisions from the MPC process here (:5559). Since Phase 5 the
+    coordinator consumes the ``trajectory/target_feedback`` ROS topic
+    (trajectory_node's feasibility gate) instead; this SUB is retained only for the
+    dormant MPC path.  Connects to MPC_FEEDBACK_ADDR (:5559).
     """
 
     def __init__(self, feedback_addr: str = MPC_FEEDBACK_ADDR):

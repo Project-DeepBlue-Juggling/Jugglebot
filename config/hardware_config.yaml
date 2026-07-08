@@ -372,6 +372,7 @@ trajectory_op:
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
   min_move_duration_s: 0.20        # Minimum profiled move duration {s}
   min_timed_lead_s: 0.25           # Minimum lead time for a timed target {s}
+  max_timed_lead_s: 60.0           # Maximum lead time for a timed target {s} (a longer lead is a clock-domain confusion — loudly rejected before the reach is built)
   spacemouse_horizon_s: 0.35       # SpaceMouse follower replan horizon {s} (Phase 3)
   lean_gain: 0.0                   # Lean-into-translation shaping gain [0,1] {dimensionless} (default OFF; Phase 4 A/B)
   catch_reach_freeze_s: 0.30       # Reach-translation freeze window before arrival {s} (Phase 6)

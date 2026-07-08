@@ -154,6 +154,54 @@ def test_below_min_timed_lead_rejected(geom, limits):
     assert ei.value.min_duration_s >= limits.min_timed_lead_s
 
 
+def test_epoch_magnitude_lead_rejected_no_crash(geom, limits):
+    """A clock-domain-confused lead (an absolute epoch timestamp fed as a lead, ~1.75e9 s)
+    is loudly rejected BEFORE any segment is built — never a ~7e10-element np.arange /
+    MemoryError. Must return promptly (the guard short-circuits before the reach)."""
+    target = NEUTRAL + np.array([10., 0., 5., 0., 0., 0.])
+    with pytest.raises(TrajectoryInfeasible) as ei:
+        planner.build_timed(_rest(), target, np.zeros(6), 1.75e9, limits, geom)
+    assert ei.value.code == feas.TOO_FAST
+    assert 'maximum timed lead' in ' '.join(ei.value.reasons)
+
+
+def test_lead_just_over_max_rejected(geom, limits):
+    """A finite lead a hair over max_timed_lead_s (61 s vs the 60 s ceiling) is rejected —
+    an hour-scale finite lead would otherwise stall the executor ~30 s in the knot loop."""
+    target = NEUTRAL + np.array([10., 0., 5., 0., 0., 0.])
+    over = limits.max_timed_lead_s + 1.0
+    with pytest.raises(TrajectoryInfeasible) as ei:
+        planner.build_timed(_rest(), target, np.zeros(6), over, limits, geom)
+    assert ei.value.code == feas.TOO_FAST
+    assert ei.value.min_duration_s == pytest.approx(limits.max_timed_lead_s)
+
+
+def test_lead_just_under_max_accepted(geom, limits):
+    """The ceiling is not over-eager — a lead just under max_timed_lead_s still builds
+    (a small in-stroke target held at the arrival)."""
+    target = NEUTRAL + np.array([5., 0., 3., 0., 0., 0.])
+    under = limits.max_timed_lead_s - 1.0
+    plan, report = planner.build_timed(_rest(), target, np.zeros(6), under, limits, geom)
+    assert report.ok
+    assert np.allclose(plan.state_at(under)[0], target, atol=1e-6)
+
+
+def test_min_feasible_lead_advertised_from_moving_seed_is_feasible(geom, limits):
+    """A too-tight lead from a MOVING seed (the path _min_feasible_timed hardens against
+    non-convergence) still advertises a min_duration_s the fast gate accepts — the
+    fall-through validates + stretches the final candidate rather than returning an
+    unvalidated guess."""
+    moving = (NEUTRAL.copy(), np.array([8., 0., 0., 0., 0., 0.]), np.zeros(6))
+    target = NEUTRAL + np.array([25., 0., 0., 0., 0., 0.])
+    with pytest.raises(TrajectoryInfeasible) as ei:
+        planner.build_timed(moving, target, np.zeros(6), 0.05, limits, geom)
+    assert ei.value.code == feas.TOO_FAST
+    # The advertised minimum, rebuilt from the same moving seed, gates OK.
+    plan, report = planner.build_timed(
+        moving, target, np.zeros(6), ei.value.min_duration_s, limits, geom)
+    assert report.ok
+
+
 def test_unreachable_target_rejected_not_stretched(geom, limits):
     """A spatially unreachable target is rejected on its gate code (WORKSPACE/
     UNREACHABLE), never TOO_FAST — a longer lead cannot reach it."""

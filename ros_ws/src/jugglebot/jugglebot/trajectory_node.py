@@ -44,9 +44,10 @@ slowed). CATCH mode consumes ``catch/dynamic_target`` through the SAME
 ``trajectory/target_feedback`` carries the accept/reject decision to
 ``catch_coordinator_node`` (which drives its feasibility blacklist). Both timed
 paths supersede an in-flight plan with a C2 replan: ``build_timed`` is gated by the
-fast ``validate_follow``, so a supersede installs within ~2 ms of its seed sample
-(no ``BUSY`` restriction — that guard exists only on the ~377 ms ``go_to_pose``
-path). One ROS-clock→perf_counter conversion point (``_ros_time_to_perf``) serves
+fast ``validate_follow``, so a supersede installs shortly after its seed sample —
+single-digit ms typical, guard-bounded (install-continuity rejects ``STALE_STATE`` on
+a drift > 0.06 rev), worst case tens of ms with an appended stop-stretch (no ``BUSY``
+restriction — that guard exists only on the ~377 ms ``go_to_pose`` path). One ROS-clock→perf_counter conversion point (``_ros_time_to_perf``) serves
 the service; the emitter and catch path are already perf-domain.
 
 **Armed-mode-exit is a sharp edge (Phase 1).** Leaving the streaming mode set
@@ -114,7 +115,12 @@ _MOVE_MODE = 'TRAJECTORY'
 #   moves only FROM a hold; interrupting an in-flight move (supersede) lands with
 #   Phase 3 (SpaceMouse follower) / Phase 5 (timed targets). This restriction is
 #   temporary and is lifted by those phases.
+#   FROZEN — a catch/dynamic_target arrived inside the reach-freeze window, so the
+#   committed catch reach is held and the late target ignored. Reported to the
+#   coordinator so it neither treats the target as accepted nor counts it as a
+#   feasibility rejection (it is not a property of any plan the gate reasons about).
 _BUSY = 'BUSY'
+_FROZEN = 'FROZEN'
 
 
 # Control modes in which the node streams a hold. STANDBY is the armed-hold state
@@ -135,8 +141,11 @@ _FOLLOWER_MODES = frozenset({'SPACEMOUSE', 'SHELL', 'GUI'})
 # Leaving one of these for a non-motion streaming mode (STANDBY) while a move is in
 # flight installs a graceful stop — the move is silenced, not left to run on to its
 # target (a near-boundary seed that the stop can't yet gate is retried via the
-# pending-stop path in _emit_once, not dropped).
-_MOTION_MODES = _FOLLOWER_MODES | {'TRAJECTORY'}
+# pending-stop path in _emit_once, not dropped). CATCH is a motion mode too: a catch
+# reach is a build_timed 'move' plan, so leaving CATCH mid-reach (the documented
+# abort = switch away from CATCH) must likewise install the stop rather than run the
+# reach on to the catch target.
+_MOTION_MODES = _FOLLOWER_MODES | {'TRAJECTORY', 'CATCH'}
 
 # The mode in which catch/dynamic_target commands (from catch_coordinator_node) are
 # consumed and turned into timed catch plans (Phase 5). Mirrors
@@ -193,6 +202,11 @@ class TrajectoryNode(Node):
         # RE-VERIFIED on hardware in Phase 7 before any ball flies — see Open
         # Questions; the feasibility gate loudly rejects an out-of-stroke z meanwhile.)
         self._catch_reach_freeze_s = float(hw.JB_TRAJ_CATCH_REACH_FREEZE_S)
+        # Quiescent hold after the catch seat: once arrival + this window has fully
+        # passed, the freeze is released so a later catch/dynamic_target supersedes as a
+        # new reach (repeated catches — Phases 8/9), rather than being silently dropped
+        # forever behind a latched freeze.
+        self._catch_settle_hold_s = float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)
         # Absolute (perf) arrival time of the committed catch reach, or None. Once
         # within catch_reach_freeze_s of it, later target jitter is ignored (the reach
         # is frozen into the catch). Reset on leaving CATCH / on a fresh seed.
@@ -519,23 +533,41 @@ class TrajectoryNode(Node):
         if mode != _CATCH_MODE:
             self._catch_arrival_perf = None
         if mode in self._stream_modes:
-            # Leaving a motion mode (TRAJECTORY / a follower) for a non-motion
+            # Leaving a motion mode (TRAJECTORY / a follower / CATCH) for a non-motion
             # streaming mode (STANDBY) while a move is in flight: STANDBY silences
             # commands but keeps streaming, so the in-flight move must be stopped
             # with a C2 decel-to-rest rather than run on to its target. Snapshot
             # this BEFORE mutating _current_mode; _active_move_in_flight locks
             # itself.
             prev_mode = self._current_mode
+            move_in_flight = self._active_move_in_flight()
             leaving_motion_move = (
                 prev_mode in _MOTION_MODES and mode not in _MOTION_MODES
-                and self._active_move_in_flight())
+                and move_in_flight)
             entering_follower = (mode in _FOLLOWER_MODES and mode != prev_mode)
+            entering_catch = (mode == _CATCH_MODE and mode != prev_mode)
+            # CATCH transitions are motion→motion when the other side is TRAJECTORY /
+            # a follower, so leaving_motion_move alone misses them — yet BOTH
+            # directions must stop an in-flight move: entering CATCH mid-move (the
+            # catch must begin from a clean, non-jittering state; the first catch
+            # reach then supersedes the stop via a C2 replan) and leaving CATCH
+            # mid-reach (the documented abort — the committed reach must never run on
+            # to the catch pose; without this a CATCH→TRAJECTORY exit left the reach
+            # running with go_to_pose BUSY-blocked behind it).
+            entering_catch_mid_move = entering_catch and move_in_flight
+            leaving_catch_mid_move = (
+                prev_mode == _CATCH_MODE and mode != prev_mode and move_in_flight)
             # Streaming-state writes go under _plan_lock: the emitter thread
             # snapshots _streaming/_seeded under it in _emit_once, so an unlocked
             # write could tear against that snapshot.
             with self._plan_lock:
                 self._current_mode = mode
                 self._streaming = True
+            if entering_catch:
+                # Fresh catch session — release any stale committed reach so the first
+                # target replans freely (belt-and-suspenders: leaving CATCH already
+                # cleared it, but a direct re-entry must never inherit a stale freeze).
+                self._catch_arrival_perf = None
             if entering_follower:
                 # Drop any stale target/last-target so the first target of this
                 # session always replans (never deadbanded against a prior session).
@@ -546,19 +578,20 @@ class TrajectoryNode(Node):
                 # loss" until this window elapses since entry (before the first
                 # SpaceMouse frame even arrives).
                 self._follower_entry_mono = time.perf_counter()
-            if leaving_motion_move:
+            if leaving_motion_move or entering_catch_mid_move or leaving_catch_mid_move:
                 # Sample the live (moving) state and install a graceful stop: a
                 # duration-stretched decel-to-rest that lengthens its horizon until
-                # the gate passes, so a high-velocity mid-move exit no longer falls
-                # through to "let the move complete". The stop decelerates in place
-                # (never runs on to the old target). _current_state/_install take
-                # the lock themselves.
+                # the gate passes, so a mid-move mode change no longer falls through to
+                # "let the move complete". The stop decelerates in place (never runs on
+                # to the old target). Covers leaving a motion mode for a non-motion
+                # one AND both CATCH directions (see the snapshot block above).
+                # _current_state/_install lock themselves.
                 try:
                     stop = planner.build_graceful_stop(
                         self._current_state(), self._limits, self._geom)
                     self._install(stop)
                     self.get_logger().info(
-                        f"left {prev_mode} mid-move for {mode} — "
+                        f"changed mode {prev_mode}→{mode} mid-move — "
                         "installed a graceful stop (move silenced)")
                 except TrajectoryInfeasible as e:
                     # Near-boundary outward-moving seed: the decel overshoot exceeds
@@ -1162,8 +1195,10 @@ class TrajectoryNode(Node):
         later while the emitter streams the OLD plan; if the commanded state drifted
         past the guard bound during planning, installing would jump u0 from the live
         position back to the stale seed. The fast ``validate_follow`` gate keeps that
-        window to ~2 ms (drift ≪ bound) so a normal supersede passes; a pathological
-        stall is caught and rejected rather than jumped. Same bound as ``go_to_pose``.
+        window small — single-digit ms typical, worst case tens of ms with an appended
+        stop-stretch — so a normal supersede's drift stays ≪ bound and passes; this
+        guard is what makes the claim safe, rejecting ``STALE_STATE`` on a drift
+        > 0.06 rev rather than jumping u0. Same bound (0.06 rev) as ``go_to_pose``.
         """
         drift = float(np.max(np.abs(
             self._pose_to_motor_rev(plan.state_at(0.0)[0])
@@ -1196,13 +1231,14 @@ class TrajectoryNode(Node):
         ``t0 = seed_mono``, so the reach segment's end (the target) lands at wall
         time ``seed_mono + lead = arrival_perf`` and the plan-time origin matches the
         seed sample — a clean C2 replan even mid-move (no BUSY restriction: the fast
-        ``build_timed`` gate makes the install window negligible, unlike the ~377 ms
-        analytic gate that forced ``go_to_pose``'s BUSY guard).
+        ``build_timed`` gate keeps the install window to single-digit ms typical
+        [guard-bounded; worst case tens of ms with an appended stop-stretch], unlike
+        the ~377 ms analytic gate that forced ``go_to_pose``'s BUSY guard).
         """
         seed_mono = time.perf_counter()
         lead = arrival_perf - seed_mono
         try:
-            plan, _report = planner.build_timed(
+            plan, report = planner.build_timed(
                 self._current_state(), target, twist, lead,
                 self._limits, self._geom,
                 hold_after=hold_after, neutral_pose=neutral)
@@ -1219,6 +1255,17 @@ class TrajectoryNode(Node):
                 False, feas.STALE_STATE, msg, arrival_perf, source)
             return False, feas.STALE_STATE, msg, 0.0, 0.0
         self._install(plan, t0=seed_mono)
+        # Record the accepting plan's PREDICTED leg peaks (from the report build_timed
+        # returned — no second gate pass) for trajectory/diagnostics, exactly as
+        # _svc_go_to_pose does; the install above resets only the REALIZED peaks.
+        self._last_peak_vel_mmps = report.peak_leg_vel_mmps
+        self._last_peak_acc_mmps2 = report.peak_leg_acc_mmps2
+        self._last_peak_jerk_mmps3 = report.peak_leg_jerk_mmps3
+        # Install-latency (perf_counter − seed_mono) for the bench p95 — DEBUG only, so
+        # it never costs the hot path but is captured when a session runs at DEBUG.
+        self.get_logger().debug(
+            f"{source} timed install latency "
+            f"{(time.perf_counter() - seed_mono) * 1e3:.1f} ms")
         self._publish_target_feedback(True, feas.OK, '', arrival_perf, source)
         return True, feas.OK, 'timed target accepted', float(lead), 0.0
 
@@ -1262,11 +1309,27 @@ class TrajectoryNode(Node):
                 False, feas.STALE_STATE,
                 'not seeded / telemetry stale', arrival_perf, 'catch')
             return
-        # Reach-freeze: once committed and within the freeze window, ignore updates.
-        if (self._catch_arrival_perf is not None
-                and time.perf_counter()
-                >= self._catch_arrival_perf - self._catch_reach_freeze_s):
-            return
+        # Reach-freeze window management. `_catch_arrival_perf` is the committed
+        # arrival; the freeze runs from `arrival − reach_freeze` and holds through the
+        # quiescent settle (`arrival + settle_hold`).
+        if self._catch_arrival_perf is not None:
+            now = time.perf_counter()
+            if now > self._catch_arrival_perf + self._catch_settle_hold_s:
+                # Committed arrival + settle has fully passed — release the freeze so
+                # THIS (and every later) target supersedes as a new reach. Without this
+                # the freeze latched forever and every post-catch target was silently
+                # dropped (breaks repeated catches).
+                self._catch_arrival_perf = None
+            elif now >= self._catch_arrival_perf - self._catch_reach_freeze_s:
+                # Genuinely frozen: hold the committed reach and IGNORE this late
+                # target — but report FROZEN (a service-level code, NOT a feasibility
+                # reject) so the coordinator neither accepts nor blacklists it, rather
+                # than dropping it silently.
+                self._publish_target_feedback(
+                    False, _FROZEN,
+                    'within reach-freeze window — holding committed catch reach',
+                    arrival_perf, 'catch')
+                return
         target, twist = self._catch_target_from_msg(msg)
         accepted, _code, _msg, _pl, _mn = self._plan_and_install_timed(
             target, twist, arrival_perf, hold_after=True, source='catch')
@@ -1280,7 +1343,9 @@ class TrajectoryNode(Node):
         seed (``STALE_STATE``), a too-tight lead (``TOO_FAST`` with the achievable
         ``min_duration_s``), or an infeasible/out-of-workspace target. Supersedes an
         in-flight plan by design — NO ``BUSY`` restriction, because the fast
-        ``build_timed`` gate installs within ~2 ms of the seed sample (a clean C2
+        ``build_timed`` gate installs shortly after the seed sample (single-digit ms
+        typical, guard-bounded — install-continuity rejects ``STALE_STATE`` on a drift
+        > 0.06 rev; worst case tens of ms with an appended stop-stretch — a clean C2
         replan), unlike the ~377 ms ``go_to_pose`` path that forced ``BUSY``.
         """
         response.planned_duration_s = 0.0

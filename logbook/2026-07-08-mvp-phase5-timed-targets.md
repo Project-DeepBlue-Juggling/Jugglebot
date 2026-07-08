@@ -18,6 +18,14 @@ files_changed:
   - tests/ros/test_catch_coordinator_node.py
   - tests/ros/conftest.py
   - tests/hardware/session_phase5_timed.md
+  # Audit-fix round (2026-07-08 — see "Audit fixes" section):
+  - config/hardware_config.yaml
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/limits.py
+  - ros_ws/src/jugglebot/jugglebot/motion/ipc.py
+  - ros_ws/src/jugglebot_interfaces/msg/DynamicTargetCommand.msg
+  - docs/motion_planner/integration.md
+  - docs/motion_planner/architecture.md
+  - tests/motion/test_trajectory_feasibility.py
 commits:
   - 62e9ea7
   - d40da26
@@ -42,7 +50,9 @@ The load-bearing decision this phase owns: **the supersede design.** A mid-plan
 superseding timed target must install a C2 replan mid-move — the exact TOCTOU class
 the Phase-2 install-continuity guard closed on the ~377 ms analytic gate. `build_timed`
 is gated by the **fast** `validate_follow` (~1.6 ms/segment), so a supersede installs
-within ~2 ms of its seed sample (drift ≪ the pump/firmware step gates), enabling a
+shortly after its seed sample — single-digit ms typical, guard-bounded
+(install-continuity rejects `STALE_STATE` on drift >0.06 rev); worst case tens of ms
+with the appended stop-stretch — with drift ≪ the pump/firmware step gates, enabling a
 clean C2 replan without a `BUSY` restriction. Software complete; the ±25 ms mocap
 timed-move battery + supersede demo are **deferred to an operator bench session**.
 
@@ -111,8 +121,9 @@ hold_after=True, neutral_pose=None)`:
 - An **install-continuity guard** (same 0.06 rev bound as `go_to_pose`) backstops the
   service→emitter race: re-sample the live state before install, reject `STALE_STATE`
   if the plan's t=0 pose drifted past the bound. With the fast gate the window is
-  ~2 ms so a normal supersede passes; a pathological stall is rejected rather than
-  jumped.
+  single-digit ms typical (worst case tens of ms with the appended stop-stretch) so a
+  normal supersede passes; a pathological stall is rejected rather than jumped — the
+  guard, not the window estimate, is what carries the safety claim.
 
 ### The catch z-convention (flagged for Phase-7 verification)
 
@@ -148,7 +159,7 @@ New: `planner.build_timed` + `_min_feasible_timed`; `TimedTarget.srv`,
   (baseline 2128 passed / 1 xfailed at Phase-4 audit-fix `1c0f9c1`; net **+36** = the
   new tests only: 12 planner-timed + 17 node + 7 catch-coordinator; no regressions).
 - ci-deep (deferred from Phase 2): `pytest tests/ -q --hypothesis-profile=ci-deep`
-  (2026-07-08) = **<PENDING>**.
+  (run 2026-07-08) = **2164 passed, 1 xfailed, 198 warnings in 3001.75 s (0:50:01)**.
 - colcon: `colcon build --packages-select jugglebot_interfaces jugglebot`
   (2026-07-08) = **2 packages finished, 0 errors** (`TimedTarget.srv`,
   `TargetFeedback.msg`).
@@ -176,11 +187,15 @@ Concrete failure mode each alternative fails to prevent:
   after the gate runs. But the gate time varies (GC, scheduler), so a misprediction
   reintroduces the u0 jump — it trades a measurable drift for an unmeasurable one.
 - **fast `validate_follow` (~1.6 ms/segment)**: the seed sampled at entry is still
-  fresh at install (~2 ms later); the drift over 2 ms at the 280 mm/s ceiling is
-  ~0.6 mm ≪ the 0.06 rev guard bound, so the install-continuity guard passes and the
-  reach starts C2 off the live state. The plan installs with `t0 = seed_mono`, so the
-  arrival lands at `arrival_perf` and the replan is bumpless. This is the one option
-  that makes the supersede both *accepted* and *safe*.
+  fresh at install (single-digit ms typical; worst case tens of ms with the appended
+  stop-stretch); the drift over ~5 ms even at the 280 mm/s hard ceiling is ~1.4 mm
+  (~0.02 rev) ≪ the 0.06 rev (~4.2 mm) guard bound, so a normal supersede passes the
+  install-continuity guard and the reach starts C2 off the live state — and it is the
+  guard (reject `STALE_STATE` on drift >0.06 rev), not the window estimate, that
+  bounds the worst case: a pathologically long install window is rejected, never
+  jumped. The plan installs with `t0 = seed_mono`, so the arrival lands at
+  `arrival_perf` and the replan is bumpless. This is the one option that makes the
+  supersede both *accepted* and *safe*.
 
 Why `validate_follow` is not a bypass of the single-gate contract: it lives in the one
 `feasibility` module, returns the same `FeasibilityReport`, uses the same codes/limits/
@@ -260,3 +275,79 @@ Architecture requirement and prevents the mistimed-catch class of bugs.
   `string`-code service convention + the temporary `BUSY` restriction now lifted for
   timed targets).
 - Operator session: `tests/hardware/session_phase5_timed.md`.
+
+## Audit fixes (2026-07-08)
+
+A post-landing audit round (3 WARNING + 6 NOTE), applied in the same session as the
+ci-deep backfill above. One line per finding → fix:
+
+1. **WARNING — unbounded arrival lead** (crash: a clock-domain-confused ~1.75e9 s
+   "lead" passed the floor check and drove a ~7e10-element `np.arange` in the
+   knot-step pass → MemoryError escaping the `TrajectoryInfeasible` except →
+   trajectory_node dead mid-session, bridge latching `MPC_STALE`; hour-scale finite
+   leads stalled the executor ~30 s) → new `trajectory_op.max_timed_lead_s: 60.0`
+   (`JB_TRAJ_MAX_TIMED_LEAD_S`, wired through `TrajectoryLimits` like
+   `min_timed_lead_s`, NOT settable via `set_limits`); `build_timed` rejects
+   `TOO_FAST` ("wrong clock domain?") BEFORE building any segment. Tests:
+   epoch-magnitude lead, 61 s lead (both planner + service level), 59 s accepted.
+2. **WARNING — CATCH missing from `_MOTION_MODES`** (a mode switch away from CATCH
+   mid-reach did NOT install the graceful stop, contradicting the documented
+   abort story; entering CATCH mid-move was likewise unhandled) → `'CATCH'` added to
+   `_MOTION_MODES`, plus `entering_catch_mid_move` / `leaving_catch_mid_move`
+   branches so BOTH CATCH directions install the stop even when the other side is
+   itself a motion mode (motion→motion doesn't trip `leaving_motion_move`;
+   without the leaving branch a CATCH→TRAJECTORY abort left the reach running with
+   `go_to_pose` BUSY-blocked behind it), alongside a freeze reset on CATCH entry.
+   Tests: entering mid-move + leaving mid-reach to both exit classes
+   (STANDBY / TRAJECTORY).
+3. **WARNING — reach-freeze latched forever** (after the committed arrival passed,
+   every later catch/dynamic_target was silently dropped with no feedback — breaks
+   repeated catches for Phases 8/9) → the freeze now releases once
+   `now > arrival + JB_TRAJ_CATCH_SETTLE_HOLD_S` (post-catch targets supersede as
+   new C2 replans), and while genuinely frozen the node publishes `target_feedback`
+   with a distinct service-level code `FROZEN` (beside `BUSY`/`WRONG_MODE`, NOT in
+   the feasibility enum) instead of silence.
+4. **NOTE — freeze-test ambiguity + past-arrival untested** → the freeze test now
+   pins `_catch_arrival_perf` deterministically and asserts the `FROZEN` code
+   (distinguishing the freeze branch from a TOO_FAST reject); new past-arrival test
+   (lead −1.0 s → loud `TOO_FAST`, plan unchanged).
+5. **NOTE — "~2 ms install window" overclaim** → reworded at all sites (node module
+   + service + guard docstrings, `build_timed` docstring, plan Outcome, this entry,
+   INDEX row) to "single-digit ms typical, guard-bounded (install-continuity rejects
+   `STALE_STATE` on drift >0.06 rev); worst case tens of ms with the appended
+   stop-stretch"; install latency (`perf_counter() − seed_mono`) now logged at DEBUG
+   for the bench p95.
+6. **NOTE — `_min_feasible_timed` fall-through returned an unvalidated minimum** (the
+   final loop iteration multiplies T but never re-validates it) → on loop exhaustion
+   one final `validate_follow` at the returned T; if still failing-stretchable, one
+   more stretch factor — the advertised retry lead is now a genuine best-effort
+   upper bound. Test: a moving-seed TOO_FAST's advertised minimum re-gates OK.
+7. **NOTE — stale ZMQ-era comments/docs** → one-line updates: coordinator publisher
+   comment (→ consumed by trajectory_node, CATCH mode, Phase 5), `ipc.py` diagram/
+   message-type/`TargetFeedbackSub` lines (→ dormant MPC stack only; coordinator now
+   consumes `trajectory/target_feedback`), the same parenthetical in both
+   `docs/motion_planner/{integration,architecture}.md`, and the
+   `DynamicTargetCommand.msg` header (→ consumed by trajectory_node; historically
+   forwarded to the MPC via mpc_bridge).
+8. **NOTE — coordinator blacklist over-triggering + source unfiltered** →
+   `_on_target_feedback` now early-returns unless `msg.source == 'catch'`, and
+   treats `STALE_STATE`/`FROZEN` as neither-accept-nor-reject (no blacklist
+   counting) so only feasibility-class codes (WORKSPACE/UNREACHABLE/LIMIT_*/
+   TOO_FAST/STEP_BOUND) drive the position blacklist. Tests: timed-source ignored;
+   STALE_STATE/FROZEN not counted; WORKSPACE still counted.
+9. **NOTE — timed installs discarded the accepting report** → `_plan_and_install_timed`
+   now stores the accepting report's `peak_leg_*` into `_last_peak_*` exactly as
+   `_svc_go_to_pose` does, so `/diagnose` per-move rows carry the right predicted
+   peaks. Test: timed move's `_last_peak_*` match a re-gate of the installed plan.
+
+Codegen: `trajectory_op.max_timed_lead_s` added to `hardware_config.yaml` →
+`python config/generate_config.py` (the `trajectory_op` HW_SECTIONS row already
+existed); regenerated twice to confirm a clean tree (deterministic output).
+
+Verification of the audit round: scoped iteration
+`pytest tests/motion/test_trajectory_planner_timed.py tests/motion/test_trajectory_feasibility.py
+tests/ros/test_trajectory_node.py tests/ros/test_catch_coordinator_node.py -q`
+(run 2026-07-08) = **126 passed in 28.94 s** (+15 new collected tests: 4 planner +
+7 node + 4 coordinator; 1 freeze test rewritten deterministic in place); full suite
+`pytest tests/ -q` (run 2026-07-08) = **2179 passed, 1 xfailed in 559.20 s**
+(baseline 2164/1 above; net +15 = the new audit-fix tests only, no regressions).

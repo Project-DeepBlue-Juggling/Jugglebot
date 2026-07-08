@@ -158,6 +158,7 @@ MPC Bridge → MPC Process:
 MPC Process → Catch Coordinator:
   PUB ──tcp://localhost:5559──────► SUB   (target accept/reject feedback)
 ```
+(Dormant MPC stack only: since Phase 5 the catch coordinator consumes the `trajectory/target_feedback` ROS topic from `trajectory_node`'s feasibility gate instead of this `:5559` channel.)
 
 Messages are serialized with msgpack (compact binary, faster than JSON).
 
