@@ -314,7 +314,7 @@ class TestCatchTrajectoryTeensyMatch:
     def test_segment_durations(self):
         """Verify segment timing matches Teensy calcCatch() for v_throw=3.0."""
         # Manually compute:
-        vC = -CATCH_VEL_RATIO * 3.0  # -1.8 m/s
+        vC = -CATCH_VEL_RATIO * 3.0  # -1.08 m/s at catch_vel_ratio 0.6
         irC = 1.0 / INERTIA_RATIO     # 1/0.747 ≈ 1.3387
         totalStroke = _TOTAL_STROKE_M   # 0.315 m
         velH = CATCH_VEL_HOLD_PCT * totalStroke  # 0.0315 m

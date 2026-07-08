@@ -33,7 +33,14 @@ HAND_SPOOL_RADIUS_M = 0.00521
 LINEAR_GAIN_FACTOR = 1.035
 INERTIA_HAND_ONLY_KG = 0.281
 INERTIA_RATIO = 0.747
-CATCH_VEL_RATIO = 0.9
+# Catch velocity as a fraction of the incoming ball speed. Source of truth is
+# config/hardware_config.yaml teensy_trajectory.catch_vel_ratio (0.6) →
+# Teensy_code/hardware_config.h — the platform hand, hardware-validated as reliable.
+# (Was 0.9, a stale port value; corrected in Phase 7 — plan § Hand-catch smoothness,
+# logbook 2026-07-08-mvp-phase6 Open Question 2.) At 0.6 the catch is a *designed*
+# ~40% first-contact mismatch: the hand absorbs the ball over the stroke rather than
+# velocity-matching at contact.
+CATCH_VEL_RATIO = 0.6
 CATCH_VEL_HOLD_PCT = 0.10
 HAND_STROKE_M = 0.355
 STROKE_MARGIN_M = 0.02
