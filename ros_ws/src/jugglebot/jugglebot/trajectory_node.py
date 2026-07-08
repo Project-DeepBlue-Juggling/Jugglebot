@@ -40,8 +40,12 @@ TRAJECTORY mode) reaches a pose at a nominal velocity at an ABSOLUTE arrival tim
 via ``planner.build_timed`` (a fixed-lead reach — a too-tight lead is loudly
 rejected ``TOO_FAST`` with the achievable ``min_duration_s``, never silently
 slowed). CATCH mode consumes ``catch/dynamic_target`` through the SAME
-``build_timed`` (+ a reach-freeze window that ignores late target jitter), and
-``trajectory/target_feedback`` carries the accept/reject decision to
+``build_catch`` (Phase 7: the tilt-through-seat catch trajectory — a reach to the
+receive-tilted catch pose with translational arrival velocity forced to zero, a
+small residual tilt rate carried through the seat, then a literal quiescent hold;
+Phase 5 routed the catch through ``build_timed``, a reach-only plan that parked the
+tilted rim at contact) plus a reach-freeze window that ignores late target jitter,
+and ``trajectory/target_feedback`` carries the accept/reject decision to
 ``catch_coordinator_node`` (which drives its feasibility blacklist). Both timed
 paths supersede an in-flight plan with a C2 replan: ``build_timed`` is gated by the
 fast ``validate_follow``, so a supersede installs shortly after its seed sample —
@@ -1269,6 +1273,56 @@ class TrajectoryNode(Node):
         self._publish_target_feedback(True, feas.OK, '', arrival_perf, source)
         return True, feas.OK, 'timed target accepted', float(lead), 0.0
 
+    def _plan_and_install_catch(self, catch_pose, arrival_perf, *, source):
+        """Build the tilt-through-seat CATCH plan to ``catch_pose`` arriving at
+        ``arrival_perf`` and install it (supersede-safe). Returns the same
+        ``(accepted, code, message, planned_s, min_s)`` tuple as
+        ``_plan_and_install_timed`` and always publishes ``trajectory/target_feedback``.
+
+        The difference from ``_plan_and_install_timed`` is the planner: ``build_catch``
+        assembles reach → tilt-through-seat decay → literal quiescent hold (rather than
+        a bare reach-to-rest). The receive tilt is already baked into ``catch_pose``
+        (``rx, ry`` — the coordinator computed it collinear with the ball's arrival
+        velocity in ``compute_catch_orientation``); ``build_catch`` reads that tilt to
+        aim the small through-seat residual rate, and forces translational arrival
+        velocity to zero (velocity matching is the hand's job). Same fast
+        ``validate_follow`` gate and same install-continuity guard, so the C2-supersede
+        and pump-acceptance guarantees carry over unchanged. ``hold_after=True``: the
+        plan holds the settled catch pose (the mode-exit → STANDBY path owns the return
+        to neutral, exactly as the Phase-5 catch reach did).
+        """
+        seed_mono = time.perf_counter()
+        lead = arrival_perf - seed_mono
+        try:
+            plan, report = planner.build_catch(
+                self._current_state(), catch_pose, lead,
+                self._limits, self._geom,
+                settle_hold_s=self._catch_settle_hold_s,
+                hold_after=True)
+        except TrajectoryInfeasible as e:
+            self._last_rejection = str(e)
+            self.get_logger().error(f"{source} catch target rejected: {e}")
+            self._publish_target_feedback(False, e.code, str(e), arrival_perf, source)
+            return False, e.code, str(e), 0.0, float(e.min_duration_s)
+        if not self._install_continuity_ok(plan):
+            msg = 'commanded state moved during planning — retry'
+            self._last_rejection = msg
+            self.get_logger().error(msg)
+            self._publish_target_feedback(
+                False, feas.STALE_STATE, msg, arrival_perf, source)
+            return False, feas.STALE_STATE, msg, 0.0, 0.0
+        self._install(plan, t0=seed_mono)
+        # Predicted leg peaks for trajectory/diagnostics (same as _plan_and_install_timed;
+        # the install resets only the realized peaks).
+        self._last_peak_vel_mmps = report.peak_leg_vel_mmps
+        self._last_peak_acc_mmps2 = report.peak_leg_acc_mmps2
+        self._last_peak_jerk_mmps3 = report.peak_leg_jerk_mmps3
+        self.get_logger().debug(
+            f"{source} catch install latency "
+            f"{(time.perf_counter() - seed_mono) * 1e3:.1f} ms")
+        self._publish_target_feedback(True, feas.OK, '', arrival_perf, source)
+        return True, feas.OK, 'catch target accepted', float(lead), 0.0
+
     def _catch_target_from_msg(self, msg):
         """DynamicTargetCommand → (target pose_6dof, arrival twist) in the trajectory
         convention. The catch z is an offset from the active pose (0 = active); the
@@ -1295,7 +1349,7 @@ class TrajectoryNode(Node):
         ``arrival_time`` is ALREADY perf-domain (the coordinator converted
         landing_time → perf), so no clock crossing here — the single crossing is the
         ROS-time ``timed_target`` service. Each update supersedes the prior via a C2
-        replan through ``build_timed`` (fast gate) — EXCEPT inside the reach-freeze
+        replan through ``build_catch`` (fast gate) — EXCEPT inside the reach-freeze
         window (within ``catch_reach_freeze_s`` of the committed arrival), where late
         target jitter is ignored so the platform holds its committed reach into the
         catch (a parked, non-jittering rim seats the ball; the reload design). An
@@ -1330,9 +1384,16 @@ class TrajectoryNode(Node):
                     'within reach-freeze window — holding committed catch reach',
                     arrival_perf, 'catch')
                 return
-        target, twist = self._catch_target_from_msg(msg)
-        accepted, _code, _msg, _pl, _mn = self._plan_and_install_timed(
-            target, twist, arrival_perf, hold_after=True, source='catch')
+        target, _twist = self._catch_target_from_msg(msg)
+        # Phase 7: build the tilt-through-seat catch (reach → through-seat decay →
+        # quiescent hold) rather than the Phase-5 reach-only build_timed. The receive
+        # tilt is already in ``target[3:5]`` (coordinator's collinear compute_catch_
+        # orientation); ``build_catch`` carries a small residual rate through the seat
+        # so the rim is not parked at contact. ``_twist`` (the coordinator's
+        # target_vel — always zero for a stationary catch) is unused: build_catch forces
+        # translational arrival velocity to zero by design.
+        accepted, _code, _msg, _pl, _mn = self._plan_and_install_catch(
+            target, arrival_perf, source='catch')
         if accepted:
             self._catch_arrival_perf = arrival_perf
 

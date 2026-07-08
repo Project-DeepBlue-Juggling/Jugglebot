@@ -913,6 +913,19 @@ def _dyn_target(node, x=0.0, y=0.0, z=20.0, lead_s=3.0, vx=0.0, vy=0.0, vz=0.0):
     return msg
 
 
+def _dyn_target_tilted(node, x=0.0, y=0.0, z=20.0, lead_s=3.0, tilt_rad=0.15):
+    """A catch/dynamic_target with a receive tilt about +x (the coordinator supplies
+    the tilt in target_quat via compute_catch_orientation). q = rot(tilt_rad about x)."""
+    msg = DynamicTargetCommand()
+    msg.target_pos = Point(x=x, y=y, z=z)
+    half = 0.5 * tilt_rad
+    msg.target_quat = Quaternion(w=float(np.cos(half)), x=float(np.sin(half)),
+                                 y=0.0, z=0.0)
+    msg.target_vel = Vector3()              # stationary catch (coordinator sends zeros)
+    msg.arrival_time = time.perf_counter() + lead_s
+    return msg
+
+
 def _catch_mode_node():
     node = _node()
     node._on_robot_state(_robot_state())
@@ -1063,6 +1076,67 @@ def test_dynamic_target_installs_catch_plan_with_z_offset():
     assert node._catch_arrival_perf is not None
     assert node.target_feedback_pub.published[-1].accepted is True
     assert node.target_feedback_pub.published[-1].source == 'catch'
+
+
+def test_dynamic_target_tilted_installs_tilt_through_seat_plan():
+    """Phase 7: a tilted catch routes through ``build_catch`` (not the Phase-5 reach-only
+    ``build_timed``), so the installed plan carries the receive tilt through the seat —
+    the reach arrives at the tilted pose with a small residual tilt rate that decays to
+    rest, then a quiescent hold. Structural evidence: MORE than the level catch's
+    reach+hold (the tilt-through decay segment is present), and the plan ends at rest."""
+    node = _catch_mode_node()
+    node._on_dynamic_target(_dyn_target_tilted(node, x=10.0, z=20.0, lead_s=3.0,
+                                               tilt_rad=0.15))
+    plan = node._active_plan
+    assert plan.kind == 'move'
+    assert node.target_feedback_pub.published[-1].accepted is True
+    # Tilt-through: reach + decay + quiescent hold ≥ 3 segments (a level catch is 2).
+    assert len(plan.segments) >= 3
+    # The reach arrival (t = lead) carries the receive tilt with a residual tilt rate.
+    _, v_arr, _ = plan.state_at(3.0)
+    assert abs(v_arr[3]) > 1e-3          # nonzero rx-rate through the seat
+    # Rest-terminating: the settle/hold ends at zero twist and zero accel (a nonzero
+    # terminal velocity would be an unbounded-jerk snap at the terminal hold).
+    _, v_end, a_end = plan.state_at(plan.total_duration)
+    assert np.allclose(v_end, 0.0, atol=1e-6)
+    assert np.allclose(a_end, 0.0, atol=1e-6)
+
+
+def test_dynamic_target_level_catch_has_no_tilt_through():
+    """A LEVEL catch (identity orientation) has no tilt direction to carry through the
+    seat, so ``build_catch`` degenerates to reach + quiescent hold (2 segments) with no
+    residual tilt rate — the tilt-through path is opt-in on a real receive tilt."""
+    node = _catch_mode_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    plan = node._active_plan
+    assert len(plan.segments) == 2       # reach + quiescent hold, no decay segment
+    _, v_arr, _ = plan.state_at(3.0)
+    assert np.allclose(v_arr, 0.0, atol=1e-6)
+
+
+def test_dynamic_target_catch_knots_pump_accepted():
+    """Production-in-the-loop at the node boundary: every 40 Hz knot the emitter ships
+    for an installed (tilted) ``build_catch`` plan is accepted by a REAL SetpointPump —
+    the load-bearing emitter/pump invariant, re-asserted for the catch path."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='CATCH'))
+    node._on_dynamic_target(_dyn_target_tilted(node, x=15.0, y=8.0, z=20.0,
+                                               lead_s=2.5, tilt_rad=0.18))
+    assert node._active_plan.kind == 'move'
+    pump = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV,
+                        max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
+    t = time.perf_counter()
+    pub.frames.clear()
+    for _ in range(120):                 # 3 s of catch at 40 Hz — through the seat + hold
+        node._emit_once(t)
+        t += 0.025
+    assert len(pub.frames) == 120
+    for i, frame in enumerate(pub.frames):
+        _sp, reason = pump.build(frame, t_origin_us=i * 25000)
+        assert reason is None, f"catch frame {i} pump-rejected: {reason}"
 
 
 def test_dynamic_target_reach_freeze_ignores_late_updates():

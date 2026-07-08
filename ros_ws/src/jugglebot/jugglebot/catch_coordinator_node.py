@@ -66,8 +66,9 @@ class CatchCoordinatorNode(Node):
             catch_angle_limit_deg=30.0,
         )
 
-        # Publisher: dynamic target → consumed by trajectory_node (CATCH mode, Phase 5),
-        # which turns it into a timed catch plan via planner.build_timed.
+        # Publisher: dynamic target → consumed by trajectory_node (CATCH mode), which
+        # turns it into a tilt-through-seat catch plan via planner.build_catch (Phase 7;
+        # Phase 5 routed it through the reach-only build_timed).
         self._dyn_target_pub = self.create_publisher(
             DynamicTargetCommand, 'catch/dynamic_target', 10)
 
