@@ -377,6 +377,18 @@ The same list the runbook's "Open items" section carries; the bench answers thes
    sessions (the "~2 ms install window" was reworded to "single-digit ms typical,
    guard-bounded"); the guard, not the estimate, carries the safety claim.
 
+## Post-run addendum (2026-07-08): interactive viewer for the reload gate
+
+`sim/reload_gate.py` gained `--viewer` / `--viewer-speed` (operator request): a
+passive MuJoCo viewer paced to real time (or slow-mo), purely observational —
+pacing sleeps sit outside the physics, verified bit-identical to the committed
+gate evidence (seed-0 trials 0–1 field-for-field). Works with both the standalone
+gate and `--sequential N`; degrades to headless with a printed reason on
+display-less machines. Two stale `−0.9·v_ball` docstring remnants corrected to
+the 0.6 config truth in the same pass. Verification: scoped
+`pytest tests/sim/test_reload_gate.py -q` (2026-07-08) = 10 passed; full
+`pytest tests/ -q` (2026-07-08) = **2274 passed, 1 xfailed in 553.83 s**.
+
 ## Related
 
 - Operator runbook: [`tests/hardware/mvp_bench_runbook.md`](../tests/hardware/mvp_bench_runbook.md) — the single consolidated bench sequencing + checklists layer.

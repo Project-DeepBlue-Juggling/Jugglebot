@@ -11,7 +11,8 @@ accepted by a real SetpointPump* (re-asserted here, not assumed).
 
 Reframed per the Phase-6 "hand-catch smoothness is a sim-fidelity work item": the
 hardware arm-and-forget path already catches smoothly, so the sim must *reproduce*
-that — a Python mirror of the Teensy catch generator (accelerate to −0.9·v_ball, a
+that — a Python mirror of the Teensy catch generator (accelerate to
+−CATCH_VEL_RATIO·v_ball = −0.6·v_ball per the config source of truth, a
 short constant-velocity hold centred on arrival, constant decel) with a realistic
 arm latency — not the bb sims' continuous sub-tick velocity-matched hand commands
 (which never existed on hardware). The MuJoCo capture model is contact→kinematic-
@@ -116,7 +117,8 @@ class ReloadGateConfig:
     event_vel_err_frac: float = 0.0
     spawn_lead_s: float = 0.32             # ball spawned this long before arrival
     # Offset (s) placing the hand velocity-hold MIDPOINT (t=0, where the hand is at
-    # its −0.9·v_ball matched speed) relative to nominal arrival. This is the
+    # its −CATCH_VEL_RATIO·v_ball = −0.6·v_ball matched speed) relative to nominal
+    # arrival. This is the
     # empirically-swept COUPLED fixed point (2026-07-08): the −10 ms anchor holds the
     # ~14 ms velocity-hold so that the actual MuJoCo capture — which fires ~+16-20 ms
     # PAST nominal arrival under the co-moving-cup contact geometry (the ball descends
@@ -181,6 +183,48 @@ class TrialResult:
         return d
 
 
+class _ViewerHook:
+    """Optional interactive MuJoCo viewer for watching gate/sequential runs.
+
+    Purely observational: attaches a passive viewer to the plant's model/data
+    (which survive ``plant.reset`` — the plant resets MjData in place) and paces
+    the sim to ``speed``× real time with wall-clock sleeps OUTSIDE the physics,
+    so gate math, seeding, and PASS/FAIL are bit-identical to a headless run.
+    Closing the viewer window stops the run cleanly via ``ViewerClosed``.
+
+    Requires a display (``pip install mujoco`` ships the viewer). Lazy-imported
+    so headless machines never touch it.
+    """
+
+    def __init__(self, plant, speed: float = 1.0):
+        import mujoco.viewer  # lazy: needs a display only when actually used
+        self._viewer = mujoco.viewer.launch_passive(plant.model, plant.data)
+        self._speed = max(1e-3, float(speed))
+        self._plant = plant
+        self._wall0 = time.time()
+        self._sim0 = float(plant.data.time)
+
+    def sync(self):
+        if not self._viewer.is_running():
+            raise ViewerClosed()
+        self._viewer.sync()
+        # Pace sim time to speed× wall time (sleep the surplus, never rush).
+        target_wall = self._wall0 + (float(self._plant.data.time) - self._sim0) / self._speed
+        lag = target_wall - time.time()
+        if lag > 0:
+            time.sleep(lag)
+
+    def close(self):
+        try:
+            self._viewer.close()
+        except Exception:
+            pass
+
+
+class ViewerClosed(Exception):
+    """Raised by _ViewerHook.sync() when the operator closes the viewer window."""
+
+
 class ReloadGate:
     """Owns one MuJoCo plant + emitter + pump for the whole gate run."""
 
@@ -188,6 +232,7 @@ class ReloadGate:
         self.cfg = cfg
         self.geom = StewartGeometry()
         self.plant = MuJoCoPlant(geom=self.geom)
+        self.viewer = None  # optional _ViewerHook, attached by main() on --viewer
         self.emitter = KnotEmitter(self.geom)
         self.limits = TrajectoryLimits.from_config(hw).with_session_limits(
             leg_vel_mmps=cfg.leg_vel_mmps, leg_acc_mmps2=cfg.leg_acc_mmps2,
@@ -336,6 +381,8 @@ class ReloadGate:
         plant.command_hand(hand_prime)
         for _ in range(60):
             plant.step(KNOT_DT_S)
+            if self.viewer is not None:
+                self.viewer.sync()
 
         t_install = plant.data.time
         arrival_sim = t_install + cfg.lead_s
@@ -393,6 +440,8 @@ class ReloadGate:
                     plant.spawn_ball(spawn_pos_n, spawn_vel_n)
                     spawned = True
                 plant.step(model_dt)
+                if self.viewer is not None:
+                    self.viewer.sync()
 
                 if spawned and not caught and plant.check_and_capture():
                     caught = True
@@ -623,8 +672,34 @@ class ReloadGate:
         }
 
 
-def run_gate(cfg: ReloadGateConfig) -> dict:
-    report = ReloadGate(cfg).run()
+def _attach_viewer(gate: 'ReloadGate', viewer_speed) -> bool:
+    """Attach an interactive viewer to a constructed gate (``--viewer``).
+    Returns True on success; on failure (headless machine, no GLFW) prints the
+    reason and returns False so the caller proceeds headless."""
+    if viewer_speed is None:
+        return False
+    try:
+        gate.viewer = _ViewerHook(gate.plant, speed=viewer_speed)
+        print(f"[reload_gate] viewer attached ({viewer_speed:g}x real time) — "
+              "pacing sleeps sit outside the physics; results are bit-identical "
+              "to a headless run. Close the window to stop.")
+        return True
+    except Exception as e:  # no display / viewer backend unavailable
+        print(f"[reload_gate] viewer unavailable ({e}) — continuing headless.")
+        return False
+
+
+def run_gate(cfg: ReloadGateConfig, viewer_speed=None) -> dict:
+    gate = ReloadGate(cfg)
+    _attach_viewer(gate, viewer_speed)
+    try:
+        report = gate.run()
+    except ViewerClosed:
+        print("[reload_gate] viewer closed — run stopped by operator (no report).")
+        raise SystemExit(130)
+    finally:
+        if gate.viewer is not None:
+            gate.viewer.close()
     path = cfg.report_path
     if path is None:
         os.makedirs(os.path.join(_repo_root, 'temp', 'reports'), exist_ok=True)
@@ -636,11 +711,20 @@ def run_gate(cfg: ReloadGateConfig) -> dict:
     return report
 
 
-def _run_sequential_cli(cfg: ReloadGateConfig, n_catches: int) -> int:
+def _run_sequential_cli(cfg: ReloadGateConfig, n_catches: int, viewer_speed=None) -> int:
     """Run + report the sequential-catch mode; exit 0 iff every catch caught,
     held, and stayed hold-quiescent."""
     t0 = time.time()
-    rep = ReloadGate(cfg).run_sequential(n_catches, seed=cfg.seed)
+    gate = ReloadGate(cfg)
+    _attach_viewer(gate, viewer_speed)
+    try:
+        rep = gate.run_sequential(n_catches, seed=cfg.seed)
+    except ViewerClosed:
+        print("[reload_gate] viewer closed — run stopped by operator (no report).")
+        raise SystemExit(130)
+    finally:
+        if gate.viewer is not None:
+            gate.viewer.close()
     wall = time.time() - t0
     path = cfg.report_path
     if path is None:
@@ -673,16 +757,24 @@ def main(argv=None) -> int:
     p.add_argument('--sequential', type=int, default=0,
                    help="N: run N catches back-to-back on one plant (no reset "
                         "between catches) instead of the standalone gate.")
+    p.add_argument('--viewer', action='store_true',
+                   help="open an interactive MuJoCo viewer and pace to real time "
+                        "(observational only — results are bit-identical to "
+                        "headless; needs a display).")
+    p.add_argument('--viewer-speed', type=float, default=1.0,
+                   help="viewer pacing factor (0.25 = quarter-speed slow-mo; "
+                        "only with --viewer).")
     p.add_argument('--report', default=None)
     args = p.parse_args(argv)
+    viewer_speed = args.viewer_speed if args.viewer else None
     cfg = ReloadGateConfig(
         trials=args.trials, seed=args.seed, lead_s=args.lead_s,
         arm_time_err_s=args.arm_time_err_s,
         event_vel_err_frac=args.event_vel_err_frac, report_path=args.report)
     if args.sequential > 0:
-        return _run_sequential_cli(cfg, args.sequential)
+        return _run_sequential_cli(cfg, args.sequential, viewer_speed=viewer_speed)
     t0 = time.time()
-    rep = run_gate(cfg)
+    rep = run_gate(cfg, viewer_speed=viewer_speed)
     wall = time.time() - t0
     print(f"[reload_gate] FULL {'PASS' if rep['passed'] else 'FAIL'}  "
           f"CORE {'PASS' if rep['core_passed'] else 'FAIL'} "
