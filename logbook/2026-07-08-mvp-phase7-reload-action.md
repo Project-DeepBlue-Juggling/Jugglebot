@@ -34,6 +34,7 @@ commits:
   - e2c5afe   # reload sequencer FSM + coordinator node + integration test
   - f3cca4c   # CATCH_VEL_RATIO 0.9 -> 0.6 + refreshed gate evidence
   - 3a4fe69   # docs (logbook + plan + INDEX)
+  - 836856d   # audit-fix package (5 BLOCKING reload choreography bugs + WARNING/NOTE)
 subsystem: motion
 tags: [mvp-trajectory-bringup, reload, catch, ball-butler, action, fsm, tilt-through-seat]
 ---
