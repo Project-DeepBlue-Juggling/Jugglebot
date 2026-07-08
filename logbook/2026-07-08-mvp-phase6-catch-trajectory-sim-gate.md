@@ -36,7 +36,8 @@ juggle noise, and arms the arm-and-forget Teensy hand mirror
 The gate **CORE-PASSES**: across the nominal 20-run grid (5 landing offsets within
 ±60 mm × 4 arrival speeds 2.5–4.0 m/s) **and** all four robustness sweeps
 (arm-time ±30 ms, event_vel ±10 %) it catches every ball, holds it, keeps the
-hold-phase platform quiescent to **≤ 0.02 mm / ≤ 0.02°**, records **zero**
+hold-phase platform quiescent to **≤ 0.03 mm / ≤ 0.01°** (worst-case across all
+five reports — the arm +30 ms sweep at 0.0231 mm; nominal is ≤ 0.02 mm), records **zero**
 feasibility violations in accepted runs and **zero** pump rejects. The one
 Reload-gate criterion it does **not** meet — hand-contact velocity-match
 (|v_hand − v_ball| ≤ 15 % at first contact, floors ~0.26) — is a **light-scope
@@ -136,6 +137,24 @@ interface / config / launch change** (Phase-6 scope is the planner + sim harness
   **20/20**, event_vel −10 % **20/20** (seeds 100/200/300/400). The two nominal
   non-core-clean trials are still CAUGHT — they exceed the ≤80 mm reach envelope flag
   (offset 40 mm + lever shift + noise → 89/92 mm), not a catch failure.
+- **Per-sweep vel-match ranges (read from the committed JSONs, for the record):**
+  nominal **0.23–0.34**; event_vel +10 % **0.26–0.36**; event_vel −10 % **0.25–0.34**;
+  arm +30 ms **0.68–0.85** (peak **0.849**); arm −30 ms **0.65–0.83** (peak **0.829**).
+  The arm-time sweeps push vel-match far higher because a ±30 ms arm error slides the
+  ~14 ms velocity-hold window away from the capture instant, so the hand is well off
+  its −0.9·v hold speed at contact — precisely the coupled-timing floor characterised
+  in Discussion #4–5. (All these runs are still CORE PASS; vel-match is the
+  light-scope deferral.)
+- **No operative contact-quality criterion in the as-run core gate.** Under MuJoCo's
+  contact→instant-hold capture model a caught ball can never separate, so the
+  separation metric is **vacuously 0** and "caught" is a **geometric** event (the ball
+  geom touches a hand geom while the cup is under it). The core gate therefore
+  validates **platform-side** behaviour only — the platform reaches under the observed
+  ball with the receive tilt and holds quiescent while the ball seats — *not* the
+  quality of the ball-in-cup contact. The operative guard for contact quality is on
+  **hardware**: Phase 7b's **two-consecutive-bounce-out abort** (plan § Phase 7). This
+  is why the vel-match deferral does not weaken the gate: the gate never claimed to
+  validate contact quality in the first place.
 - **Required leg limits published to Phase 4** (max measured leg peak across accepted
   runs × 1.15 headroom): **vel ≈ 156 mm/s, acc ≈ 660 mm/s², jerk ≈ 10 331 mm/s³**
   (at `lead_s = 0.7`, ≤ 80 mm reach, ≤ 12° tilt). Modest — within the YAML ceilings
@@ -301,5 +320,76 @@ velocity is characterised (~0.26, root-caused).
 - Reference (archaeological): `~/Desktop/Jugglebot-bb` `demo/bb-led-two-ball-juggle`
   (`sim/juggle_tilt.py`, `sim/juggle_noise.py`, `sim/juggle_bb_catch.py`) — the
   sim-validated catch geometry ported here.
-- Gate reports: `temp/reports/reload_gate_nominal.json` + the four sweeps (regenerate
-  with `python sim/reload_gate.py --trials 20`).
+- Gate reports (committed evidence — `temp/reports/` is gitignored, so the five
+  scored JSONs are versioned under
+  `logbook/artifacts/2026-07-08-mvp-phase6/`): `reload_gate_nominal.json`,
+  `reload_gate_arm+30.json`, `reload_gate_arm-30.json`, `reload_gate_ev+10.json`,
+  `reload_gate_ev-10.json`. Regenerate recipe (deterministic on the pinned stack —
+  regenerated 2026-07-08 byte-identical to the committed nominal modulo
+  `report_path`):
+
+  ```
+  python sim/reload_gate.py --trials 20 --seed 0                          --report temp/reports/reload_gate_nominal.json
+  python sim/reload_gate.py --trials 20 --seed 100 --arm-time-err-s 0.03  --report temp/reports/reload_gate_arm+30.json
+  python sim/reload_gate.py --trials 20 --seed 200 --arm-time-err-s -0.03 --report temp/reports/reload_gate_arm-30.json
+  python sim/reload_gate.py --trials 20 --seed 300 --event-vel-err-frac 0.1  --report temp/reports/reload_gate_ev+10.json
+  python sim/reload_gate.py --trials 20 --seed 400 --event-vel-err-frac -0.1 --report temp/reports/reload_gate_ev-10.json
+  ```
+
+## Audit fixes (2026-07-08)
+
+A `/audit 078edfd..HEAD` of the Phase-6 landing raised 3 WARNING + 3 NOTE; all six
+are addressed here (code + docs, one package):
+
+1. **[WARNING] Gate evidence uncommitted (`temp/reports/` gitignored).** Committed the
+   five scored gate JSONs (nominal + the four sweeps) under
+   `logbook/artifacts/2026-07-08-mvp-phase6/`; the Related section above now lists the
+   committed paths and the **five exact seeded invocations** (the complete regenerate
+   recipe). `git check-ignore` confirms `logbook/` is tracked — no `.gitignore` change
+   needed.
+2. **[WARNING] ≥2-sequential-catches (inherited item d) was silently dropped.**
+   Implemented `sim/reload_gate.py --sequential N` (`ReloadGate.run_sequential` +
+   a `_prepare_catch` extraction shared with `run_trial`, verified byte-identical
+   nominal output, + `_simulate(reset=, run_full_plan=)`): N catches back-to-back on
+   **one plant with no reset between them** — each catch reaches, seats, holds, returns
+   toward neutral (`hold_after=False`), then the next thrown ball is spawned and a
+   second `build_catch` is planned **from the settled/returned plant pose read off the
+   plant**. New test `test_sequential_two_catches` (headless `--sequential 2`) asserts
+   both catches capture and hold-quiescence on each. Empirical result (2026-07-08):
+   **both catches CAUGHT + held**, hold travel 0.013 / 0.003 mm, tilt 0.006 / 0.004°,
+   capture +16 / +19 ms. **Scope (stated, not overclaimed):** the harness drives the
+   planner + plant directly and **bypasses `trajectory_node`**, so the node-level
+   settle-bounded reach-freeze / freeze-release across repeated catches is **NOT**
+   exercised here — that is covered by the Phase-5 node tests; this mode covers
+   **planner + plant repetition** only.
+3. **[WARNING] No operative contact criterion + sweep vel-match extremes unrecorded.**
+   The Verification section now records the per-sweep vel-match ranges (nominal
+   0.23–0.34; arm ±30 ms up to 0.849 / 0.829; event_vel ±10 % 0.25–0.36) and states
+   explicitly that under the contact→instant-hold capture model the as-run **core gate
+   has no contact-quality criterion** (separation vacuously 0; "caught" is geometric) —
+   it validates platform-side behaviour, and **Phase 7b's two-consecutive-bounce-out
+   abort is the operative hardware guard** for contact quality. One summary sentence
+   mirrored into the plan Phase 6 Outcome.
+4. **[NOTE] `capture_offset_s` comment contradicted its value** (`sim/reload_gate.py`).
+   Reworded: it is the **empirically-swept coupled fixed point** — the −10 ms anchor
+   holds the ~14 ms velocity-hold so the actual capture (~+16–20 ms past nominal
+   arrival, per the committed reports) lands nearest the hold window; the coupling
+   (raising the cup shifts capture earlier) is spelled out.
+5. **[NOTE] Cross-document number drift.** (a) plan Outcome + INDEX: the sweeps were
+   **20/20 each** (not "18–20/20"; only nominal core_clean is 18/20). (b) logbook
+   Summary quiescence corrected to **≤ 0.03 mm** (worst-case, the arm +30 ms sweep at
+   0.0231 mm). (c) plan § Hand-catch smoothness's stale "−0.9·v_ball" premise annotated
+   with the config/firmware truth `catch_vel_ratio` **0.6**
+   (`hardware_config.yaml:403` → `Teensy_code/hardware_config.h:199`).
+6. **[NOTE] `juggle_bb_catch.py` promised but not ported.** Plan Phase 6 Code line
+   amended: interactive visual verification is **superseded by the headless
+   `sim/reload_gate.py`**; the `juggle_bb_catch.py` port is **deferred to the Phase-8/9
+   bb-file port** (runnable in the `Jugglebot-bb` checkout meanwhile). Not ported.
+
+**Verification (audit-fix package):**
+- Scoped (2026-07-08): `pytest tests/sim/test_reload_gate.py tests/motion/ -q` =
+  **275 passed in 77.36 s** (was 274 + the new `test_sequential_two_catches`).
+- Full suite (2026-07-08): `pytest tests/ -q` = **2223 passed, 1 xfailed in 561.11 s**
+  (baseline 2222/1 at `c74dd59`; net **+1** = `test_sequential_two_catches` only).
+- Sequential mode (2026-07-08): `python sim/reload_gate.py --sequential 2 --seed 0` =
+  **SEQUENTIAL PASS** (both catches caught + held + hold-quiescent).

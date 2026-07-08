@@ -109,3 +109,27 @@ def test_write_json_report(tmp_path):
         loaded = json.load(f)
     assert loaded['trials'] == 2
     assert rep['report_path'] == path
+
+
+def test_sequential_two_catches():
+    """Two catches back-to-back on ONE plant WITHOUT a reset between them
+    (inherited Reload-gate item d): the planner + plant repeat a catch from the
+    settled/returned state and re-quiesce each time. Asserts BOTH catches capture
+    and hold quiescence on each.
+
+    Scope: this drives the planner + plant directly (not through
+    ``trajectory_node``), so the node-level settle-bounded reach-freeze / release
+    across repeated catches is out of scope here — the Phase-5 node tests cover
+    that. See the logbook."""
+    rep = ReloadGate(ReloadGateConfig(seed=0)).run_sequential(2, seed=0)
+    assert rep['gate'] == 'reload_sequential'
+    assert rep['n_catches'] == 2
+    assert len(rep['catches']) == 2
+    # Both catches physically capture and hold the ball.
+    for c in rep['catches']:
+        assert c['caught'], f"catch {c['idx']} did not capture"
+        assert c['held_at_end'], f"catch {c['idx']} captured but did not hold"
+    # Both catches keep the platform quiescent through the seat window.
+    assert rep['all_caught'] and rep['all_held'] and rep['all_quiescent']
+    assert rep['worst_hold_travel_mm'] < 5.0
+    assert rep['worst_hold_tilt_deg'] < 1.0

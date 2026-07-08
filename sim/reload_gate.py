@@ -116,11 +116,13 @@ class ReloadGateConfig:
     event_vel_err_frac: float = 0.0
     spawn_lead_s: float = 0.32             # ball spawned this long before arrival
     # Offset (s) placing the hand velocity-hold MIDPOINT (t=0, where the hand is at
-    # its −0.9·v_ball matched speed) at the actual MuJoCo capture instant. Capture
-    # fires ~45 ms AFTER the ball centre reaches the cup opening (the ball must
-    # descend into the co-moving cup before contacting the collision geom), so the
-    # hold is anchored that far past nominal arrival — the coupled fixed point
-    # calibrated 2026-07-08 (see the logbook Discussion).
+    # its −0.9·v_ball matched speed) relative to nominal arrival. This is the
+    # empirically-swept COUPLED fixed point (2026-07-08): the −10 ms anchor holds the
+    # ~14 ms velocity-hold so that the actual MuJoCo capture — which fires ~+16-20 ms
+    # PAST nominal arrival under the co-moving-cup contact geometry (the ball descends
+    # into the raised, moving cup before contacting the collision geom, and raising
+    # the cup shifts capture earlier — hence coupled, not a closed-form BALL_R/|v|
+    # lead) — lands nearest the hold window. See the logbook Discussion.
     capture_offset_s: float = -0.010
     report_path: str | None = None
 
@@ -132,6 +134,24 @@ HOLD_TILT_DEG = 1.0            # platform tilt change over the hold window
 SEPARATION_MS = 10.0           # max post-contact ball–cup separation
 GATE_PASS_FRACTION = 18.0 / 20.0
 REACH_ENVELOPE_MM = 80.0       # sim-established reliable reach
+
+
+@dataclasses.dataclass
+class _CatchSetup:
+    """The synthesised + observed catch inputs `build_catch` needs for one catch,
+    computed independently of the plant state (so the same synthesis feeds the
+    reset-from-neutral gate trial and the no-reset sequential catch)."""
+    v_ball: float
+    armed_v: float = 0.0
+    catch_pose: np.ndarray | None = None
+    rx: float = 0.0
+    ry: float = 0.0
+    reach_mm: float = 0.0
+    cup_world_z: float = 0.0
+    spawn_pos_n: np.ndarray | None = None
+    spawn_vel_n: np.ndarray | None = None
+    act_T: float = 0.0
+    reject_code: str | None = None
 
 
 @dataclasses.dataclass
@@ -189,9 +209,16 @@ class ReloadGate:
         cy = float(obs_landing_xy_mm[1]) - float(shift[1])
         return np.array([cx, cy, Z_ACTIVE_MM, rx, ry, 0.0]), (rx, ry)
 
-    # ---- one trial --------------------------------------------------------
-    def run_trial(self, idx: int, offset_mm, arrival_speed_mps: float,
-                  seed: int) -> TrialResult:
+    # ---- catch synthesis (shared by run_trial and run_sequential) ---------
+    def _prepare_catch(self, offset_mm, arrival_speed_mps: float,
+                       seed: int) -> _CatchSetup:
+        """Synthesise the thrown-ball spawn state (under §3 noise), observe it,
+        and build the ``build_catch`` target pose — everything up to (not
+        including) the planner call. Shared verbatim by both the standalone
+        20-run gate (``run_trial``) and the sequential-catch mode
+        (``run_sequential``); the only difference between the two is the planner
+        ``state0`` (neutral vs the settled/returned plant state) and whether the
+        plant is reset first."""
         cfg = self.cfg
         rng = np.random.default_rng(seed)
         noise = JuggleNoise(self.noise_cfg, seed=seed)
@@ -232,7 +259,7 @@ class ReloadGate:
             act_landing, act_v_arr, act_T = bal.arrival_state_at_z(
                 spawn_pos_n, spawn_vel_n, cup_world_z, descending=True)
         except ValueError:
-            return self._reject(idx, offset_mm, v_ball, 'BALLISTIC')
+            return _CatchSetup(v_ball=v_ball, reject_code='BALLISTIC')
 
         # OBSERVE: fit a known-gravity ballistic arc to noisy observations over the
         # descent (the tracking-noise-averaging BallisticEstimator, NOT a raw finite
@@ -248,7 +275,7 @@ class ReloadGate:
             obs_landing, obs_v_arr, _ = bal.arrival_state_at_z(
                 p_est, v_est, cup_world_z, descending=True)
         except ValueError:
-            return self._reject(idx, offset_mm, v_ball, 'BALLISTIC')
+            return _CatchSetup(v_ball=v_ball, reject_code='BALLISTIC')
 
         # event_vel error (robustness sweep) perturbs the speed the hand is armed with.
         armed_v = v_ball * (1.0 + cfg.event_vel_err_frac)
@@ -257,20 +284,39 @@ class ReloadGate:
             obs_landing[:2], obs_v_arr, cup_world_z)
         reach_mm = float(np.hypot(catch_pose[0], catch_pose[1]))
 
+        return _CatchSetup(
+            v_ball=v_ball, armed_v=armed_v, catch_pose=catch_pose, rx=rx, ry=ry,
+            reach_mm=reach_mm, cup_world_z=cup_world_z, spawn_pos_n=spawn_pos_n,
+            spawn_vel_n=spawn_vel_n, act_T=act_T)
+
+    # ---- one trial (standalone gate — always reset, plan from neutral) ----
+    def run_trial(self, idx: int, offset_mm, arrival_speed_mps: float,
+                  seed: int) -> TrialResult:
+        cfg = self.cfg
+        s = self._prepare_catch(offset_mm, arrival_speed_mps, seed)
+        if s.reject_code is not None:
+            return self._reject(idx, offset_mm, s.v_ball, s.reject_code,
+                                reach_mm=s.reach_mm)
         # PLAN via the production constructor (the single gate). A reject is loud.
         try:
             plan, report = planner.build_catch(
-                (NEUTRAL_POSE, np.zeros(6), np.zeros(6)), catch_pose,
+                (NEUTRAL_POSE, np.zeros(6), np.zeros(6)), s.catch_pose,
                 cfg.lead_s, self.limits, self.geom, settle_hold_s=cfg.settle_hold_s)
         except TrajectoryInfeasible as e:
-            return self._reject(idx, offset_mm, v_ball, e.code, reach_mm=reach_mm)
-
-        return self._simulate(idx, offset_mm, v_ball, plan, report, reach_mm,
-                              armed_v, spawn_pos_n, spawn_vel_n, act_T,
-                              cup_world_z, rx, ry)
+            return self._reject(idx, offset_mm, s.v_ball, e.code, reach_mm=s.reach_mm)
+        return self._simulate(idx, offset_mm, s.v_ball, plan, report, s.reach_mm,
+                              s.armed_v, s.spawn_pos_n, s.spawn_vel_n, s.act_T,
+                              s.cup_world_z, s.rx, s.ry)
 
     def _simulate(self, idx, offset_mm, v_ball, plan, report, reach_mm, armed_v,
-                  spawn_pos_n, spawn_vel_n, act_T, cup_world_z, rx, ry):
+                  spawn_pos_n, spawn_vel_n, act_T, cup_world_z, rx, ry,
+                  reset=True, run_full_plan=False):
+        """Drive one catch through the plant. ``reset`` (default) resets+settles the
+        plant at neutral first (the standalone gate); the sequential mode passes
+        ``reset=False`` so successive catches run on the *same* plant state (the
+        prior catch's settled/returned pose). ``run_full_plan`` extends the sim
+        window to cover a return-to-neutral tail (so the platform is back at neutral
+        for the next sequential catch), instead of stopping at the hold."""
         cfg = self.cfg
         plant, emitter = self.plant, self.emitter
         pump = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV,
@@ -278,8 +324,13 @@ class ReloadGate:
         model_dt = plant.timestep
         substeps = max(1, int(round(KNOT_DT_S / model_dt)))
 
-        # Settle the platform at neutral with the hand primed near the catch start.
-        plant.reset(NEUTRAL_POSE)
+        # Settle the platform at neutral with the hand (re-)primed near the catch
+        # start. ``reset=False`` (sequential) keeps the prior catch's plant state and
+        # held ball — the platform is already near neutral from the prior return, and
+        # re-priming the hand re-arms the arm-and-forget catch (the held ball rides up
+        # with the hand, then is re-spawned as the next thrown ball below).
+        if reset:
+            plant.reset(NEUTRAL_POSE)
         plant.command(plant.pose_to_extensions(NEUTRAL_POSE))
         hand_prime = HandCatchTrajectory(armed_v).start_pos_mm
         plant.command_hand(hand_prime)
@@ -303,6 +354,11 @@ class ReloadGate:
         spawn_at = arrival_sim - act_T
 
         run_until = max(seq.end_time, arrival_sim + cfg.settle_hold_s) + 0.05
+        if run_full_plan:
+            # Run through the whole assembled plan (including any return-to-neutral
+            # tail) so the platform is settled at neutral for the next catch.
+            plan_dur = sum(float(s.duration) for s in plan.segments)
+            run_until = max(run_until, t_install + plan_dur + 0.05)
         caught = False
         v_match = np.nan
         separation_ms = 0.0
@@ -422,6 +478,76 @@ class ReloadGate:
             results.append(self.run_trial(i, offset, speed, seed=cfg.seed + i))
         return self._summarise(results)
 
+    # ---- the sequential-catch mode (inherited item d) ---------------------
+    def run_sequential(self, n_catches: int, seed: int) -> dict:
+        """N catches back-to-back on ONE plant WITHOUT resetting between them.
+
+        Each catch: reach → tilt-through-seat → settle-hold → (for every catch but
+        the last) a ``hold_after=False`` return toward neutral; then the next thrown
+        ball is spawned and a SECOND ``build_catch`` is planned *from the settled /
+        returned plant state* (read off the plant, not reset to neutral). Proves the
+        planner + plant repeat a catch from a realistic non-home start and re-quiesce
+        each time.
+
+        Scope caveat (documented in the logbook): this harness drives the planner and
+        plant directly and does NOT go through ``trajectory_node``, so the node-level
+        settle-bounded reach-freeze / freeze-release across repeated catches is NOT
+        exercised here — that is covered by the Phase-5 node tests. This mode covers
+        the planner + plant repetition only."""
+        cfg = self.cfg
+        catches = []
+        for i in range(n_catches):
+            offset = _LANDING_OFFSETS_MM[i % len(_LANDING_OFFSETS_MM)]
+            speed = _ARRIVAL_SPEEDS_MPS[i % len(_ARRIVAL_SPEEDS_MPS)]
+            s = self._prepare_catch(offset, speed, seed + i)
+            if s.reject_code is not None:
+                catches.append(self._reject(i, offset, s.v_ball, s.reject_code,
+                                            reach_mm=s.reach_mm))
+                continue
+            last = (i == n_catches - 1)
+            if i == 0:
+                state0 = (NEUTRAL_POSE, np.zeros(6), np.zeros(6))
+            else:
+                # Plan the next catch from the ACTUAL settled/returned plant pose
+                # (twist/accel ~0 after the return hold) — not a reset to neutral.
+                st = self.plant.get_state()
+                pose0 = np.concatenate([st.platform_pos_mm, st.platform_rot])
+                state0 = (pose0, np.zeros(6), np.zeros(6))
+            try:
+                plan, report = planner.build_catch(
+                    state0, s.catch_pose, cfg.lead_s, self.limits, self.geom,
+                    settle_hold_s=cfg.settle_hold_s,
+                    hold_after=last, neutral_pose=None if last else NEUTRAL_POSE)
+            except TrajectoryInfeasible as e:
+                catches.append(self._reject(i, offset, s.v_ball, e.code,
+                                            reach_mm=s.reach_mm))
+                continue
+            catches.append(self._simulate(
+                i, offset, s.v_ball, plan, report, s.reach_mm, s.armed_v,
+                s.spawn_pos_n, s.spawn_vel_n, s.act_T, s.cup_world_z, s.rx, s.ry,
+                reset=(i == 0), run_full_plan=True))
+        return self._summarise_sequential(catches)
+
+    def _summarise_sequential(self, catches) -> dict:
+        quiescent = [c for c in catches
+                     if c.hold_travel_mm < HOLD_TRAVEL_MM
+                     and c.hold_tilt_deg < HOLD_TILT_DEG]
+        return {
+            'gate': 'reload_sequential',
+            'n_catches': len(catches),
+            'all_caught': all(c.caught for c in catches),
+            'all_held': all(c.held_at_end for c in catches),
+            'all_quiescent': len(quiescent) == len(catches),
+            'worst_hold_travel_mm': float(max((c.hold_travel_mm for c in catches),
+                                              default=0.0)),
+            'worst_hold_tilt_deg': float(max((c.hold_tilt_deg for c in catches),
+                                             default=0.0)),
+            'catches': [c.to_dict() for c in catches],
+            'config': dataclasses.asdict(self.cfg),
+            'thresholds': {'hold_travel_mm': HOLD_TRAVEL_MM,
+                           'hold_tilt_deg': HOLD_TILT_DEG},
+        }
+
     @staticmethod
     def _core_clean(r) -> bool:
         """A 'core' catch: every Reload-gate criterion EXCEPT the hand-contact
@@ -510,6 +636,33 @@ def run_gate(cfg: ReloadGateConfig) -> dict:
     return report
 
 
+def _run_sequential_cli(cfg: ReloadGateConfig, n_catches: int) -> int:
+    """Run + report the sequential-catch mode; exit 0 iff every catch caught,
+    held, and stayed hold-quiescent."""
+    t0 = time.time()
+    rep = ReloadGate(cfg).run_sequential(n_catches, seed=cfg.seed)
+    wall = time.time() - t0
+    path = cfg.report_path
+    if path is None:
+        os.makedirs(os.path.join(_repo_root, 'temp', 'reports'), exist_ok=True)
+        path = os.path.join(_repo_root, 'temp', 'reports',
+                            f"reload_gate_sequential_n{n_catches}_seed{cfg.seed}.json")
+    with open(path, 'w') as f:
+        json.dump(rep, f, indent=2)
+    ok = rep['all_caught'] and rep['all_held'] and rep['all_quiescent']
+    print(f"[reload_gate] SEQUENTIAL {'PASS' if ok else 'FAIL'}  "
+          f"n_catches {rep['n_catches']}  all_caught {rep['all_caught']}  "
+          f"all_held {rep['all_held']}  all_quiescent {rep['all_quiescent']}  "
+          f"worst hold travel {rep['worst_hold_travel_mm']:.3f} mm  "
+          f"tilt {rep['worst_hold_tilt_deg']:.3f}°")
+    for c in rep['catches']:
+        print(f"[reload_gate]   catch {c['idx']}: caught {c['caught']}  "
+              f"held {c['held_at_end']}  hold_travel {c['hold_travel_mm']:.3f} mm  "
+              f"tilt {c['hold_tilt_deg']:.3f}°  capture_rel {c['capture_rel_ms']:.1f} ms")
+    print(f"[reload_gate] (wall {wall:.1f}s) → {path}")
+    return 0 if ok else 1
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Headless seeded reload-catch sim gate.")
     p.add_argument('--trials', type=int, default=20)
@@ -517,12 +670,17 @@ def main(argv=None) -> int:
     p.add_argument('--lead-s', type=float, default=0.7)
     p.add_argument('--arm-time-err-s', type=float, default=0.0)
     p.add_argument('--event-vel-err-frac', type=float, default=0.0)
+    p.add_argument('--sequential', type=int, default=0,
+                   help="N: run N catches back-to-back on one plant (no reset "
+                        "between catches) instead of the standalone gate.")
     p.add_argument('--report', default=None)
     args = p.parse_args(argv)
     cfg = ReloadGateConfig(
         trials=args.trials, seed=args.seed, lead_s=args.lead_s,
         arm_time_err_s=args.arm_time_err_s,
         event_vel_err_frac=args.event_vel_err_frac, report_path=args.report)
+    if args.sequential > 0:
+        return _run_sequential_cli(cfg, args.sequential)
     t0 = time.time()
     rep = run_gate(cfg)
     wall = time.time() - t0

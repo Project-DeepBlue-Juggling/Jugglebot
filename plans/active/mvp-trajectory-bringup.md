@@ -377,6 +377,15 @@ Teensy generator and config have been smooth; the hardware arm-and-forget path i
 the proven reference. The Teensy catch profile is velocity-matched by design
 (accelerate to −0.9·v_ball, ~10%-stroke constant-velocity hold centred on
 arrival, constant deceleration — mirrored in `sim/hand/trajectory.py`).
+[**Correction (Phase-6 Outcome, 2026-07-08):** the −0.9 above is stale. The
+config/firmware ground truth is `catch_vel_ratio` **0.6**
+(`config/hardware_config.yaml:403` → `Teensy_code/hardware_config.h:199`); the
+`sim/hand/trajectory.py` mirror's hardcoded `CATCH_VEL_RATIO = 0.9` is the stale
+value (a HIGH-priority deferred fix — see the Phase 6 Outcome / logbook Open
+Question 2). The physical implication is material: at 0.6 the catch is a *designed*
+~40 % first-contact mismatch (the hand absorbs the ball over the stroke, not a
+velocity-match at contact), which is why the ≤15 %-at-first-contact acceptance
+criterion below is itself under review.]
 The Jugglebot-bb sims are the janky side: their hand model didn't meet the ball
 and wandered during hold, and their control technique (continuous sub-tick
 velocity-matched commands) doesn't exist on hardware.
@@ -827,10 +836,13 @@ planner/emitter and the arm-and-forget hand model.
 tilt-through-seat / quiescent hold); a new headless seeded harness
 `sim/reload_gate.py` (drives `motion.trajectory` planner + emitter → sim plant;
 arm-and-forget `HandCatchSequence` with realistic arm latency; noise from
-`juggle_noise.py`; JSON gate report); `sim/juggle_bb_catch.py` retained for
-interactive visual verification. Hand-model fidelity work per
+`juggle_noise.py`; JSON gate report). Hand-model fidelity work per
 § Hand-catch smoothness — the sim reproduces the hardware-proven catch;
 hardware-side changes are out of scope for this phase.
+*(Amended 2026-07-08 — Phase 6 Outcome: interactive visual verification is
+**superseded by the headless `sim/reload_gate.py`**; the `sim/juggle_bb_catch.py`
+port is **deferred to the Phase-8/9 bb-file port** and NOT done in Phase 6. It
+remains runnable in the `Jugglebot-bb` checkout meanwhile.)*
 
 **Tests**: `tests/sim/test_reload_gate.py` (small-N smoke in CI; the full
 20-run gate runs manually); tilt/lever-arm geometry regression vs the
@@ -863,13 +875,18 @@ Verification: `pytest tests/ -q` (2026-07-08) = **2222 passed, 1 xfailed in 526.
 = **CORE PASS**: caught **20/20**, held **20/20**, core_clean **18/20**, hold travel
 **≤ 0.01 mm**, tilt **≤ 0.01°**, separation **0 ms**, feasibility violations **0**,
 pump rejects **0**; all four robustness sweeps (arm ±30 ms, event_vel ±10 %) CORE PASS
-**18–20/20**. **Deferred (light-scope, operator-approved):** the hand-contact
-velocity-match criterion (|v_hand − v_ball| ≤ 15 % at first contact) floors at ~0.26 —
-root-caused as a sim contact→instant-hold artifact (the ~14 ms Teensy velocity-hold is
-narrower than the achievable ±20 ms capture-timing alignment; the cup axis IS correctly
-aligned) and inconsistent with the hardware-validated 0.6 catch ratio (a designed ~40 %
-first-contact mismatch — the hand absorbs over the stroke). See the logbook Open
-Questions. Full narrative in
+**20/20 each** (nominal core_clean 18/20 — the two off-core trials are still CAUGHT,
+just over the ≤80 mm reach flag). **Contact-quality scope:** under MuJoCo's
+contact→instant-hold model the core gate has **no operative contact criterion**
+(separation is vacuously 0; "caught" is geometric) — it validates platform-side
+behaviour (reach-under + quiescent hold), and **Phase 7b's two-consecutive-bounce-out
+abort is the operative hardware guard for contact quality**. **Deferred (light-scope,
+operator-approved):** the hand-contact velocity-match criterion (|v_hand − v_ball| ≤ 15 %
+at first contact) floors at ~0.26 — root-caused as a sim contact→instant-hold artifact
+(the ~14 ms Teensy velocity-hold is narrower than the achievable ±20 ms capture-timing
+alignment; the cup axis IS correctly aligned) and inconsistent with the
+hardware-validated 0.6 catch ratio (a designed ~40 % first-contact mismatch — the hand
+absorbs over the stroke). See the logbook Open Questions. Full narrative in
 `logbook/2026-07-08-mvp-phase6-catch-trajectory-sim-gate.md`.
 
 **Deferred operator handoff (Phase 7 entry gate)**: before any hardware reload, (a)
