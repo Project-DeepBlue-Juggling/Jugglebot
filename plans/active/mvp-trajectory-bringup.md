@@ -442,7 +442,7 @@ passes; results recorded in the logbook with seeds and configs):
 | 3 | SpaceMouse streaming | — | manual flight | CODE COMPLETE (hardware deferred) |
 | 4 | Limit ramp-up + lean A/B | — | multiple short sessions | CODE COMPLETE (hardware deferred) |
 | 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
-| 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | NOT STARTED |
+| 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | LANDED LIGHT — CORE PASS (vel-match deferred, open questions) |
 | 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | NOT STARTED |
 | 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | NOT STARTED |
 | 9 | *(extra stretch)* Two-ball juggling | Two-ball gate | staged | NOT STARTED |
@@ -690,6 +690,15 @@ kept only if measured leg jerk drops and motion looks calmer.
 order: vel ~150–250 mm/s, acc ~1500–3000 mm/s²; the sim provides the real
 numbers — Phase 6 feeds back into this phase's target).
 
+**Phase-6-published catch requirements (2026-07-08, from the reload gate — the
+ramp targets)**: at the sim gate's operating point (0.7 s arrival lead, ≤ 80 mm
+reach, ≤ 12° tilt, arrival speeds 2.5–4.0 m/s), the measured leg peaks over all
+accepted catches, with 1.15× headroom, are **leg vel ≈ 156 mm/s, acc ≈ 660 mm/s²,
+jerk ≈ 10 331 mm/s³**. These are modest — within the YAML hard ceilings
+(280 / 4000 / 200 000) and near the Phase-1 defaults; only the **jerk** target
+(~10 300 vs the 8 000 default) requires a ramp step. A faster/tighter catch (shorter
+lead) would raise these; the operator ramp should reach at least these before Phase 7.
+
 **Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase 4 *software*
 landed on branch `mvp-trajectory-bringup` (commits `2d3afa0` shaping + planner
 wiring; `6eb2c74` `GoToPose.lean_gain` + node observability; `7588fe6`
@@ -832,6 +841,42 @@ inside the harness.
 the required leg limits published back to Phase 4. **Logbook** entry includes
 the contact relative-velocity and hold-travel plots (the evidence that resolves
 the "prior sim smoothness was not real" caveat).
+
+**Outcome (2026-07-08 — LANDED LIGHT, CORE PASS, vel-match deferred)**: All Phase-6
+*software* landed on branch `mvp-trajectory-bringup` (commit `12c7ad1`). New pure
+`motion/trajectory/tilt_geometry.py` (`tilt_to_receive` collinear-catch tilt, ≤12°,
++ a re-export of the Phase-4 `shaping.py` cup lever arm — single source of truth) and
+`ballistics_bc.py` (touchdown quadratic + launch/arrival BCs, copied-not-imported from
+`controller/ballistics.py`, overlap regression-pinned); `planner.build_catch` (reach
+with zero translational arrival velocity → tilt-through-seat decay → literal quiescent
+hold → optional return; fixed-lead loud `TOO_FAST`; gated by the fast `validate_follow`
+— the fork owned + documented); a ported `sim/juggle_noise.py`; and a headless seeded
+**production-in-the-loop** harness `sim/reload_gate.py` (drives the real `build_catch`
++ `KnotEmitter` + a real `SetpointPump` into the MuJoCo plant, ballistic ball under §3
+noise, arm-and-forget `HandCatchSequence` sampled at the physics rate; JSON gate
+report). Six-file diff-audit: the bb divergences are two-ball features (Phases 8/9),
+NOT catch-critical — nothing ported but `juggle_noise` (one HIGH finding surfaced +
+deferred: `sim/hand/trajectory.py` `CATCH_VEL_RATIO = 0.9` is stale vs config `0.6`).
+Verification: `pytest tests/ -q` (2026-07-08) = **2222 passed, 1 xfailed in 526.04 s**
+(baseline 2179/1 at `22ed9cf`; net **+43** = new tests only: 15 tilt + 7 ballistics +
+12 catch + 9 harness). Reload gate (`python sim/reload_gate.py --trials 20`, 2026-07-08)
+= **CORE PASS**: caught **20/20**, held **20/20**, core_clean **18/20**, hold travel
+**≤ 0.01 mm**, tilt **≤ 0.01°**, separation **0 ms**, feasibility violations **0**,
+pump rejects **0**; all four robustness sweeps (arm ±30 ms, event_vel ±10 %) CORE PASS
+**18–20/20**. **Deferred (light-scope, operator-approved):** the hand-contact
+velocity-match criterion (|v_hand − v_ball| ≤ 15 % at first contact) floors at ~0.26 —
+root-caused as a sim contact→instant-hold artifact (the ~14 ms Teensy velocity-hold is
+narrower than the achievable ±20 ms capture-timing alignment; the cup axis IS correctly
+aligned) and inconsistent with the hardware-validated 0.6 catch ratio (a designed ~40 %
+first-contact mismatch — the hand absorbs over the stroke). See the logbook Open
+Questions. Full narrative in
+`logbook/2026-07-08-mvp-phase6-catch-trajectory-sim-gate.md`.
+
+**Deferred operator handoff (Phase 7 entry gate)**: before any hardware reload, (a)
+reconcile `sim/hand/trajectory.py` `CATCH_VEL_RATIO` 0.9→0.6 with the existing hand
+tests, and (b) revisit the vel-match criterion definition (measure over the seat
+stroke, or against the 0.6 design) — the current ≤15%-at-first-contact metric is
+inconsistent with the hardware-proven hand.
 
 ### Phase 7 — Reload on hardware (goal 4)
 
