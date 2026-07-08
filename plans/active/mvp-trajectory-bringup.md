@@ -925,7 +925,7 @@ goal 4 complete.
 landed on branch `mvp-trajectory-bringup` (commits `6107d06` integration gap;
 `3889444` `Reload.action` + `BallButlerThrow` point-target/aim-only; `e2c5afe` reload
 sequencer FSM + coordinator node + integration test; `f3cca4c` `CATCH_VEL_RATIO`
-0.9→0.6; docs `<pending>`). (1) **Integration gap closed**: `trajectory_node`'s
+0.9→0.6; docs `3a4fe69`). (1) **Integration gap closed**: `trajectory_node`'s
 `catch/dynamic_target` path now routes through `planner.build_catch` (reach with zero
 translational arrival velocity → tilt-through-seat decay → literal quiescent hold)
 instead of the Phase-5 reach-only `build_timed` that parked the tilted rim at contact —

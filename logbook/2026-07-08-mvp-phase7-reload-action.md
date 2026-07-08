@@ -30,7 +30,7 @@ commits:
   - 3889444   # Reload.action + BallButlerThrow point-target/aim-only
   - e2c5afe   # reload sequencer FSM + coordinator node + integration test
   - f3cca4c   # CATCH_VEL_RATIO 0.9 -> 0.6 + refreshed gate evidence
-  - <pending> # docs (logbook + plan + INDEX)
+  - 3a4fe69   # docs (logbook + plan + INDEX)
 subsystem: motion
 tags: [mvp-trajectory-bringup, reload, catch, ball-butler, action, fsm, tilt-through-seat]
 ---
