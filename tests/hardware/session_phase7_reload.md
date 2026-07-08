@@ -118,7 +118,8 @@ ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload \
   "{throw_delay_s: 3.0}" --feedback
 ```
 
-Watch the feedback phases: `CHECKING → (RELOADING if hand empty) → AIMING →
+Watch the feedback phases: `CHECKING (dwells up to 10 s while BB reloads if the
+hand is empty — RELOADING is BB's heartbeat state, not a feedback phase) → AIMING →
 THROW_PENDING → BALL_IN_FLIGHT → CATCHING → SETTLING`, then a result.
 
 - **PASS**: ≥ 3/5 reloads return `outcome: CAUGHT` with a logged `catch_error_mm`;

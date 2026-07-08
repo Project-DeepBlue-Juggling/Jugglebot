@@ -458,10 +458,29 @@ passes; results recorded in the logbook with seeds and configs):
 | 3 | SpaceMouse streaming | — | manual flight | CODE COMPLETE (hardware deferred) |
 | 4 | Limit ramp-up + lean A/B | — | multiple short sessions | CODE COMPLETE (hardware deferred) |
 | 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
-| 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | LANDED LIGHT — CORE PASS (vel-match deferred, open questions) |
+| 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | SIM GATE CORE PASS (vel-match criterion deferred — see Phase 6/7) |
 | 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | CODE COMPLETE (hardware deferred) |
-| 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | NOT STARTED |
-| 9 | *(extra stretch)* Two-ball juggling | Two-ball gate | staged | NOT STARTED |
+| 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | NOT STARTED (stretch) |
+| 9 | *(extra stretch)* Two-ball juggling | Two-ball gate | staged | NOT STARTED (stretch) |
+
+## Build-run status (2026-07-08)
+
+Phases 1–7 are **software-complete** on branch `mvp-trajectory-bringup` (range
+`63031c3^..94d6336`, commits `63031c3` through `94d6336` inclusive): seven
+autonomous phase agents (Opus 4.8) under Fable 5
+orchestration, each followed by an independent `/audit` fix-and-land round. Full suite
+`pytest tests/ -q` (2026-07-08) = **2274 passed, 1 xfailed in 553.60 s**; ci-deep
+(`pytest tests/ -q --hypothesis-profile=ci-deep`, 2026-07-08) = **2274 passed,
+1 xfailed, 198 warnings in 3024.70 s** — green. Suite grew **1956 → 2274 (+318 tests)**,
+all new tests only.
+
+**Every hardware session is deferred to the operator.** The single consolidated bench
+sequencing + checklists layer is `tests/hardware/mvp_bench_runbook.md` (sessions S1→S8
+in strict order, pointing at each phase's detailed `session_*.md` / plan section). The
+closing meta-entry — cross-phase decision digest, audit-arc retrospective, and the
+consolidated bench-must-answer list — is
+`logbook/2026-07-08-mvp-autonomous-build-run.md`. Phases 8–9 remain stretch scope, not
+started.
 
 Every phase ends with: full `pytest tests/ -q` green, a logbook entry
 (`/log feature mvp-phaseN-<slug>`), commit(s) with `Logbook-Entry:` trailers,
@@ -710,9 +729,10 @@ numbers — Phase 6 feeds back into this phase's target).
 ramp targets)**: at the sim gate's operating point (0.7 s arrival lead, ≤ 80 mm
 reach, ≤ 12° tilt, arrival speeds 2.5–4.0 m/s), the measured leg peaks over all
 accepted catches, with 1.15× headroom, are **leg vel ≈ 156 mm/s, acc ≈ 660 mm/s²,
-jerk ≈ 10 331 mm/s³**. These are modest — within the YAML hard ceilings
-(280 / 4000 / 200 000) and near the Phase-1 defaults; only the **jerk** target
-(~10 300 vs the 8 000 default) requires a ramp step. A faster/tighter catch (shorter
+jerk ≈ 10 331 mm/s³**. All three targets exceed the Phase-1 defaults
+(100 / 400 / 8000) and require ramp steps — **jerk** is the binding constraint and
+the largest relative step; all three stay well inside the YAML hard ceilings
+(280 / 4000 / 200 000). A faster/tighter catch (shorter
 lead) would raise these; the operator ramp should reach at least these before Phase 7.
 
 **Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase 4 *software*
