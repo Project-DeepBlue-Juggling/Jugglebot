@@ -32,6 +32,12 @@ from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.trajectory.plan import HoldPlan, TrajectoryPlan
 from jugglebot.motion.trajectory.segment import QuinticSegment
 from jugglebot.motion.trajectory.shaping import LeanShaper
+from jugglebot.motion.trajectory.tilt_geometry import (
+    MAX_TILT_DEG,
+    cup_axis,
+    tilt_to_receive,
+    tilt_to_receive_deg,
+)
 
 __all__ = [
     'KnotEmitter',
@@ -46,4 +52,8 @@ __all__ = [
     'TrajectoryPlan',
     'QuinticSegment',
     'LeanShaper',
+    'MAX_TILT_DEG',
+    'cup_axis',
+    'tilt_to_receive',
+    'tilt_to_receive_deg',
 ]

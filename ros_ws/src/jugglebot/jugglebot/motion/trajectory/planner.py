@@ -611,3 +611,196 @@ def build_graceful_stop(state0, limits, geom, *, start_duration_s=None):
         [f"graceful stop did not converge in 24 iterations "
          f"(last {report.code if report else 'n/a'})"],
         min_duration_s=T)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 6 — the catch trajectory (reach / tilt-through-seat / quiescent hold)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Residual tilt rate at the catch arrival (rad/s), in the tilt-increasing
+# direction, that "ramps the tilt through the seat" — a parked tilted rim deflects
+# the ball (the bb-sim geometry finding), so the tilt is still MOVING through the
+# seat angle at the instant of contact, then decayed to rest over `tilt_decay_s`.
+# Kept deliberately SMALL: at ~0.07 rad/s (~4°/s) the overshoot over a 0.15 s decay
+# is ~0.3°, well inside MAX_TILT (12°) and the hold-quiescence tilt budget (<1°),
+# and the leg velocities it induces (~plat_radius·rate ≈ 7 mm/s) are negligible
+# against the session ceilings. The magnitude is a physical-tuning parameter the
+# operator refines on hardware (Phase 7); this is the conservative sim default.
+_CATCH_TILT_THROUGH_RATE_RADPS = 0.07
+
+# Fraction of `rate·decay_s` the tilt overshoots past the seat during the decay
+# (the mean-velocity displacement of a rate→0 decel). Only sets the settle pose;
+# the exact value is not physically critical (the gate is the backstop).
+_CATCH_TILT_OVERSHOOT_FRAC = 0.5
+
+
+def build_catch(state0, catch_pose, duration_s, limits, geom, *,
+                settle_hold_s, tilt_decay_s=0.15,
+                tilt_through_rate_radps=_CATCH_TILT_THROUGH_RATE_RADPS,
+                hold_after=True, neutral_pose=None):
+    """The reload catch trajectory: reach the catch pose at ``t = duration_s``,
+    ramp the tilt through the seat, then hold quiescent (and optionally return).
+
+    ``catch_pose`` is the full ``[x, y, z, rx, ry, rz]`` catch pose the caller
+    computed from the observed ball: reach xy at the observed landing, ``z`` at the
+    catch height (STOW-relative), and the receive tilt ``(rx, ry)`` from
+    :func:`tilt_geometry.tilt_to_receive` (cup axis collinear with the arrival
+    velocity). ``rz`` is normally 0. The reach envelope (≤ 80 mm from the held
+    pose) is the caller's responsibility to respect; an out-of-stroke catch is
+    rejected ``WORKSPACE`` by the gate here regardless.
+
+    Segments (all C2-joined, gated as one assembled plan):
+
+      1. **Reach** — ``state0`` → ``catch_pose`` over the FIXED ``duration_s`` (the
+         arrival lead). Translational velocity at arrival is **always zero**
+         (a baked-in safety invariant: *velocity matching is the hand's job*, so
+         the platform is translationally still at contact — a moving platform at
+         seat would fight the hand's velocity-matched catch). The tilt arrives with
+         a small residual rate (see below).
+      2. **Tilt-through-seat decay** — the residual tilt rate decays to rest over
+         ``tilt_decay_s`` (default 0.15 s), the tilt drifting a small overshoot past
+         the seat. So at ``t = duration_s`` (contact) the rim is still *moving*
+         through the seat angle, not parked.
+      3. **Quiescent hold** — a literal zero-twist hold at the settled pose for
+         ``settle_hold_s`` (the ball seats undisturbed; the hold-quiescence gate
+         criterion is measured over this window).
+      4. **Return** (``hold_after=False`` only) — a slow profiled return to
+         ``neutral_pose`` after the hold.
+
+    **Fixed lead, loud rejection.** Like :func:`build_timed`, the arrival lead is a
+    hard constraint — a too-tight ``duration_s`` is rejected ``TOO_FAST`` with the
+    minimal feasible lead in ``min_duration_s`` (never silently slowed). A spatial
+    ``WORKSPACE`` / ``UNREACHABLE`` failure (out-of-stroke reach or tilt) is
+    re-raised as-is (a longer lead cannot reach an unreachable pose).
+
+    **Gate choice — ``validate_follow`` (the fast gate).** The catch is the
+    CATCH-mode reach, exactly as the Phase-5 ``catch/dynamic_target`` path
+    (``build_timed``) is; using the same fast gate keeps the catch supersede cheap
+    (a pre-freeze target update installs a C2 replan shortly after its seed) and the
+    catch is *never* lean-shaped, so ``validate_follow``'s shaping-blindness is a
+    guard, not a limitation. Its knot-step bound is bit-identical to the analytic
+    ``validate``, so every emitted catch knot stays pump-accepted. Returns
+    ``(plan, report)``.
+    """
+    pose, twist, accel = (_as6(state0[0], 'pose'),
+                          _as6(state0[1], 'twist'),
+                          _as6(state0[2], 'accel'))
+    target = _as6(catch_pose, 'catch_pose')
+    if not hold_after and neutral_pose is None:
+        raise ValueError("build_catch(hold_after=False) requires neutral_pose")
+
+    D = float(duration_s)
+    lead_floor = float(limits.min_timed_lead_s)
+    lead_ceiling = float(limits.max_timed_lead_s)
+    decay = max(float(tilt_decay_s), 0.0)
+    hold = max(float(settle_hold_s), 0.0)
+    _zero = np.zeros(POSE_DIM)
+
+    # Clock-domain guard (mirrors build_timed): a lead beyond the ceiling is almost
+    # always a clock-domain confusion (an absolute epoch reaching here as a "lead"),
+    # which would size the knot-step sampling at ~D/knot_dt elements → MemoryError.
+    if D > lead_ceiling:
+        raise TrajectoryInfeasible(
+            TOO_FAST,
+            [f"catch lead {D:.1f}s exceeds maximum timed lead {lead_ceiling:.1f}s "
+             f"— wrong clock domain?"],
+            min_duration_s=lead_ceiling)
+    if D < lead_floor:
+        raise TrajectoryInfeasible(
+            TOO_FAST,
+            [f"catch lead {D:.3f}s < minimum timed lead {lead_floor:.3f}s"],
+            min_duration_s=lead_floor)
+
+    # Residual tilt rate at arrival: SMALL, in the tilt-INCREASING direction (so the
+    # rim keeps moving through the seat, not parked). Zero for a level catch (no tilt
+    # direction to continue). Translational arrival velocity is always zero.
+    tilt = target[3:5]
+    tmag = float(np.hypot(tilt[0], tilt[1]))
+    rate = max(float(tilt_through_rate_radps), 0.0)
+    arrival_twist = _zero.copy()
+    settle_pose = target.copy()
+    if tmag > 1e-9 and rate > 0.0 and decay > 0.0:
+        tdir = tilt / tmag
+        arrival_twist[3] = rate * tdir[0]
+        arrival_twist[4] = rate * tdir[1]
+        # Overshoot the seat by the mean-velocity displacement of the rate→0 decay.
+        overshoot = _CATCH_TILT_OVERSHOOT_FRAC * rate * decay
+        settle_pose[3] = target[3] + overshoot * tdir[0]
+        settle_pose[4] = target[4] + overshoot * tdir[1]
+
+    # Gate the timing-critical reach FIRST (single-segment), so a too-tight lead is
+    # rejected TOO_FAST before the (free-duration) settle/hold continuation is built.
+    reach = QuinticSegment(p0=pose, v0=twist, a0=accel,
+                           p1=target, v1=arrival_twist, a1=_zero, duration=D)
+    reach_report = validate_follow(TrajectoryPlan((reach,), target), limits, geom)
+    if not reach_report.ok:
+        if reach_report.code not in _STRETCHABLE:
+            raise TrajectoryInfeasible(reach_report.code, reach_report.reasons)
+        t_min = _min_feasible_catch(pose, twist, accel, target, arrival_twist,
+                                    limits, geom)
+        raise TrajectoryInfeasible(
+            TOO_FAST,
+            [f"catch lead {D:.3f}s < minimal feasible {t_min:.3f}s to reach the "
+             f"catch pose under the current limits"],
+            min_duration_s=t_min)
+
+    segments = [reach]
+    # Tilt-through-seat decay (only when there is a residual rate to decay).
+    if not _is_at_rest(arrival_twist, _zero):
+        decay_dur = decay if decay > 0.0 else float(limits.min_move_duration_s)
+        segments.append(QuinticSegment(
+            p0=target, v0=arrival_twist, a0=_zero,
+            p1=settle_pose, v1=_zero, a1=_zero, duration=decay_dur))
+
+    # Literal quiescent hold segment (zero twist) — the window the hold-quiescence
+    # criterion is measured over. A degenerate no-motion quintic (p0 == p1).
+    if hold > 0.0:
+        segments.append(QuinticSegment(
+            p0=settle_pose, v0=_zero, a0=_zero,
+            p1=settle_pose, v1=_zero, a1=_zero, duration=hold))
+
+    final_pose = settle_pose
+    if not hold_after:
+        ret_plan, _ = build_follow(
+            (settle_pose, _zero, _zero), _as6(neutral_pose, 'neutral_pose'),
+            limits, geom, limits.min_move_duration_s)
+        segments.extend(ret_plan.segments)
+        final_pose = ret_plan.final_pose
+
+    plan = TrajectoryPlan(tuple(segments), final_pose)
+    # Single-gate contract: gate the ASSEMBLED plan (the object the emitter runs).
+    report = validate_follow(plan, limits, geom)
+    if not report.ok:
+        if report.code in _STRETCHABLE:
+            t_min = _min_feasible_catch(pose, twist, accel, target, arrival_twist,
+                                        limits, geom)
+            raise TrajectoryInfeasible(TOO_FAST, report.reasons, min_duration_s=t_min)
+        raise TrajectoryInfeasible(report.code, report.reasons)
+    return plan, report
+
+
+def _min_feasible_catch(pose, twist, accel, target, arrival_twist, limits, geom):
+    """Smallest catch lead the fast gate accepts for the reach to ``target``.
+
+    Stretches the reach duration (the residual ``arrival_twist`` FIXED — a longer
+    lead only lowers the leg peaks) from the ``min_timed_lead_s`` floor until
+    :func:`validate_follow` passes. Bounded iterations; returns the best duration
+    found (mirrors :func:`_min_feasible_timed`)."""
+    T = float(limits.min_timed_lead_s)
+    _zero = np.zeros(POSE_DIM)
+    report = None
+    for _ in range(_MAX_FOLLOW_ITERS):
+        reach = QuinticSegment(p0=pose, v0=twist, a0=accel,
+                               p1=target, v1=arrival_twist, a1=_zero, duration=T)
+        report = validate_follow(TrajectoryPlan((reach,), target), limits, geom)
+        if report.ok:
+            return T
+        if report.code not in _STRETCHABLE:
+            raise TrajectoryInfeasible(report.code, report.reasons)
+        T *= _stretch_factor(report, limits)
+    reach = QuinticSegment(p0=pose, v0=twist, a0=accel,
+                           p1=target, v1=arrival_twist, a1=_zero, duration=T)
+    final = validate_follow(TrajectoryPlan((reach,), target), limits, geom)
+    if not final.ok and final.code in _STRETCHABLE:
+        T *= _stretch_factor(final, limits)
+    return T
