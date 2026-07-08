@@ -63,6 +63,9 @@ setup(
             'catch_coordinator_node = jugglebot.catch_coordinator_node:main',
             'catch_correlation_node = jugglebot.catch_correlation_node:main',
             'ball_butler_node = jugglebot.ball_butler_node:main',
+            # BB→Jugglebot reload action (Phase 7): orchestrates only — trajectory_node
+            # plans the catch, catch_coordinator arms the hand, ball_butler throws.
+            'reload_coordinator_node = jugglebot.reload_coordinator_node:main',
             # ── Standalone processes (not ROS2 nodes) ─────────
             'motor_guard = jugglebot.motion.motor_guard:main',
         ],

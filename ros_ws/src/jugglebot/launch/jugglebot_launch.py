@@ -110,6 +110,14 @@ def generate_launch_description():
         parameters=[{'apply_aim_correction': apply_aim_correction}],
     )
 
+    # BB→Jugglebot reload action (Phase 7): thin orchestrator over the existing
+    # catch path (trajectory_node build_catch + catch_coordinator hand-arm) and BB
+    # throw. Exposes jugglebot/reload (Reload.action).
+    reload_coordinator_node = Node(
+        package='jugglebot',
+        executable='reload_coordinator_node',
+    )
+
     # mpc_bridge_node is DROPPED from the MVP bring-up: the MPC hot path is replaced
     # by trajectory_node (a simple Jetson-side trajectory generator streaming 40 Hz
     # knots on the same :5557 seam). The MPC return path stays dormant — source is
@@ -227,6 +235,7 @@ def generate_launch_description():
         ball_tracker_node,
         catch_coordinator_node,
         ball_butler_node,
+        reload_coordinator_node,
         trajectory_node,
         teensy_bridge_node,
         # Standalone processes
