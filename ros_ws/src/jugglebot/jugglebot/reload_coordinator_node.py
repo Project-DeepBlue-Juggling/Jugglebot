@@ -55,8 +55,16 @@ from jugglebot.reload_sequencer import (
     compute_catch_point_mm,
 )
 
-# BallStatus enum (BallState.msg): 2 = CAUGHT.
+# BallStatus enum (BallState.msg): 1 = IN_FLIGHT, 2 = CAUGHT.
+_BALL_STATUS_IN_FLIGHT = 1
 _BALL_STATUS_CAUGHT = 2
+
+# trajectory/target_feedback codes that are NOT catch infeasibility: FROZEN fires for
+# every late catch/dynamic_target inside the reach-freeze window, STALE_STATE on a
+# transient plant-state race — both expected on a real flight. Only a genuine gate reject
+# (e.g. WORKSPACE / TOO_FAST) that still stands at catch time should count toward
+# MISSED_INFEASIBLE.
+_TRANSIENT_FEEDBACK_CODES = frozenset({'FROZEN', 'STALE_STATE'})
 
 # Freshness windows (s).
 _MOCAP_STALE_S = 0.5
@@ -90,6 +98,9 @@ class ReloadCoordinatorNode(Node):
         # The active sequencer (announcements + catch feedback route to it while a
         # reload is running); None between runs.
         self._active_seq = None
+        # The tracker-assigned id of OUR announced ball, latched once it appears in flight
+        # this sequence; only that id's CAUGHT confirms (a stray caught ball never does).
+        self._announced_ball_id = None
 
         # ── Subscriptions ──
         self.create_subscription(
@@ -155,18 +166,49 @@ class ReloadCoordinatorNode(Node):
         # Only OUR ball's announcement (thrown by BB, aimed at us) advances the FSM.
         if msg.target_id and msg.target_id != self._robot_name:
             return
+        now = time.perf_counter()
+        landing_perf = self._announcement_landing_perf(msg, now)
         with self._lock:
             seq = self._active_seq
         if seq is not None:
-            seq.note_announcement(time.perf_counter())
+            seq.note_announcement(now, landing_perf)
+
+    def _announcement_landing_perf(self, msg, now_perf: float) -> float:
+        """Convert the announcement's ROS ``landing_time`` into the FSM's perf clock — the
+        same crossing ``catch_coordinator_node`` does for its arrival_time (perf − ros
+        offset, read at point of use). The landing stamp is release + ToF, so the settle
+        deadline it feeds includes the ball's time-of-flight. Falls back to
+        ``now + predicted_tof_sec`` when the stamp is absent/unusable (and to ``now`` if
+        neither is present)."""
+        lt = getattr(msg, 'landing_time', None)
+        ros_s = 0.0
+        if lt is not None:
+            try:
+                ros_s = float(lt.sec) + float(lt.nanosec) * 1e-9
+            except (AttributeError, TypeError, ValueError):
+                ros_s = 0.0
+        if ros_s > 0.0:
+            now_ros = self.get_clock().now().nanoseconds * 1e-9
+            return ros_s + (now_perf - now_ros)   # offset = perf − ros
+        try:
+            tof = float(getattr(msg, 'predicted_tof_sec', 0.0) or 0.0)
+        except (TypeError, ValueError):
+            tof = 0.0
+        return now_perf + tof
 
     def _on_target_feedback(self, msg):
         if msg.source != 'catch':
             return
+        code = str(msg.code)
+        # Drop the transient (non-infeasibility) codes so a late-target FROZEN or a
+        # plant-state-race STALE_STATE — both expected on a real flight — never latches
+        # MISSED_INFEASIBLE. Only genuine rejections (and every acceptance) reach the FSM.
+        if not bool(msg.accepted) and code in _TRANSIENT_FEEDBACK_CODES:
+            return
         with self._lock:
             seq = self._active_seq
         if seq is not None:
-            seq.note_catch_feasibility(bool(msg.accepted), str(msg.code))
+            seq.note_catch_feasibility(bool(msg.accepted), code)
 
     # ── Observation assembly (testable) ────────────────────────────────────────
 
@@ -179,15 +221,30 @@ class ReloadCoordinatorNode(Node):
             control_mode = self._control_mode
             balls = self._balls
             balls_fresh = (now - self._balls_mono) < _STATUS_STALE_S
+            announced_id = self._announced_ball_id
         ball_caught = False
         catch_error_mm = float('nan')
         if balls_fresh:
-            for b in balls:
-                if b.status == _BALL_STATUS_CAUGHT and (
-                        not b.destination or b.destination == self._robot_name):
-                    ball_caught = True
-                    catch_error_mm = self._catch_error_from_ball(b)
-                    break
+            # Correlate CAUGHT to the tracker-assigned id of OUR announced ball. The
+            # tracker puts our ball IN_FLIGHT (destination == us) after correlating the
+            # announcement; latch that id, then confirm ONLY that id's CAUGHT. This rejects
+            # a stray caught ball (a different id — e.g. a leftover from a prior throw)
+            # that would otherwise falsely confirm this reload's catch.
+            if announced_id is None:
+                for b in balls:
+                    if int(b.status) == _BALL_STATUS_IN_FLIGHT and (
+                            not b.destination or b.destination == self._robot_name):
+                        announced_id = int(b.id)
+                        break
+                if announced_id is not None:
+                    with self._lock:
+                        self._announced_ball_id = announced_id
+            if announced_id is not None:
+                for b in balls:
+                    if int(b.id) == announced_id and int(b.status) == _BALL_STATUS_CAUGHT:
+                        ball_caught = True
+                        catch_error_mm = self._catch_error_from_ball(b)
+                        break
         return ReloadObservations(
             now=now,
             control_mode=control_mode,
@@ -200,7 +257,11 @@ class ReloadCoordinatorNode(Node):
             catch_error_mm=catch_error_mm)
 
     def _catch_error_from_ball(self, ball) -> float:
-        """Horizontal miss distance of the caught ball from the world-frame catch point."""
+        """Horizontal miss distance of the caught ball from the world-frame catch point.
+
+        This is the tracker's last KF position estimate at CAUGHT (an in-flight-derived
+        estimate), NOT a settled rest position — the MVP evidence is the tracker-id
+        correlation + this KF miss, with a hand-telemetry rest cross-check deferred."""
         cx, cy = self._catch_point_mm[0], self._catch_point_mm[1]
         dx = float(ball.position.x) - cx
         dy = float(ball.position.y) - cy
@@ -209,6 +270,17 @@ class ReloadCoordinatorNode(Node):
     # ── Action callbacks ───────────────────────────────────────────────────────
 
     def _goal_callback(self, goal_request):
+        # One reload at a time. rclpy runs accepted goals concurrently, so a second goal
+        # accepted while the first is mid-flight would drive a SECOND bb/throw_at_target
+        # (double-throw) and scramble the shared async-event routing (announcements /
+        # target feedback all fan out to the single _active_seq). Reject it loudly.
+        with self._lock:
+            busy = self._active_seq is not None
+        if busy:
+            self.get_logger().warning(
+                'Reload goal REJECTED — a reload is already in progress '
+                '(one sequence at a time).')
+            return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
     def _cancel_callback(self, goal_handle):
@@ -221,6 +293,7 @@ class ReloadCoordinatorNode(Node):
         seq.start(time.perf_counter())
         with self._lock:
             self._active_seq = seq
+            self._announced_ball_id = None
 
         result = Reload.Result()
         try:
@@ -291,6 +364,11 @@ class ReloadCoordinatorNode(Node):
         req = BallButlerThrow.Request()
         req.use_target_point = True
         req.aim_only = False
+        # Name the target so BB's ThrowAnnouncement carries target_id == this robot (not
+        # the default 'point'): the tracker tags the ball destination from target_id, and
+        # CatchCoordinator / this node's own announcement filter only act on OUR ball. An
+        # unnamed 'point' announcement would be dropped by the whole catch pipeline.
+        req.target_name = self._robot_name
         req.target_point_global_mm = Point(
             x=float(self._catch_point_mm[0]),
             y=float(self._catch_point_mm[1]),

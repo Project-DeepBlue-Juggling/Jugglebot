@@ -55,9 +55,9 @@ class TestCatchOrientation:
         np.testing.assert_allclose(quat, [1.0, 0.0, 0.0, 0.0], atol=1e-6)
 
     def test_angled_approach(self):
-        """Ball at 15° from vertical → platform tilts 15°."""
+        """Ball at 10° from vertical (within the 12° ceiling) → platform tilts 10°."""
         coord = CatchCoordinator(initial_height_mm=INITIAL_HEIGHT)
-        angle = math.radians(15)
+        angle = math.radians(10)
         speed = 5000.0
         vel = np.array([speed * math.sin(angle), 0.0, -speed * math.cos(angle)])
 
@@ -67,13 +67,15 @@ class TestCatchOrientation:
         # Verify the quaternion magnitude is 1
         assert np.linalg.norm(quat) == pytest.approx(1.0, abs=1e-6)
 
-        # Verify the rotation angle is ~15°
+        # Verify the rotation angle is ~10° (sub-ceiling → not clamped)
         # For a quaternion [w, x, y, z], angle = 2 * acos(w)
         rot_angle = 2.0 * math.acos(min(abs(quat[0]), 1.0))
         assert rot_angle == pytest.approx(angle, abs=0.01)
 
-    def test_angle_limit_rejection(self):
-        """Ball approach angle > 30° → returns None."""
+    def test_steep_angle_clamped_not_rejected(self):
+        """Ball approach angle past the 12° receive-tilt ceiling → CLAMPED to 12°, not
+        rejected (Phase-7 audit fix 6: real BB arrivals are 18–40° off vertical)."""
+        from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
         coord = CatchCoordinator(
             initial_height_mm=INITIAL_HEIGHT,
             catch_angle_limit_deg=30.0,
@@ -83,7 +85,9 @@ class TestCatchOrientation:
         vel = np.array([speed * math.sin(angle), 0.0, -speed * math.cos(angle)])
 
         quat = coord.compute_catch_orientation(vel)
-        assert quat is None
+        assert quat is not None
+        rot_angle = 2.0 * math.acos(min(abs(quat[0]), 1.0))
+        assert rot_angle == pytest.approx(math.radians(MAX_TILT_DEG), abs=0.01)
 
     def test_zero_velocity(self):
         """Zero velocity → identity quaternion."""
@@ -127,8 +131,8 @@ class TestCatchPose:
             initial_height_mm=INITIAL_HEIGHT,
             hand_catch_offset_mm=HAND_CATCH_OFFSET,
         )
-        # 15° approach from +X direction
-        angle = math.radians(15)
+        # 10° approach from +X direction (within the 12° ceiling → not clamped)
+        angle = math.radians(10)
         speed = 5000.0
         vel = [speed * math.sin(angle), 0.0, -speed * math.cos(angle)]
         ball = _make_ball(
@@ -141,7 +145,7 @@ class TestCatchPose:
 
         # The platform tilts so its -Z aligns with the ball's velocity.
         # Platform local Z points opposite to the approach direction, so
-        # tilted platform_z ≈ [-sin(15°), 0, cos(15°)].
+        # tilted platform_z ≈ [-sin(10°), 0, cos(10°)].
         # Centroid = landing_pos - offset * platform_z, meaning:
         #   centroid X > landing X (offset pushes centroid in +X)
         dx = cmd.target_pos[0] - 100.0
@@ -163,8 +167,10 @@ class TestCatchPose:
         assert cmd is not None
         np.testing.assert_array_equal(cmd.target_vel, [0.0, 0.0, 0.0])
 
-    def test_uncatchable_angle_no_command(self):
-        """Steep approach → no command produced."""
+    def test_steep_approach_still_produces_command(self):
+        """Steep approach → clamped receive tilt, command STILL produced (Phase-7 audit
+        fix 6: the old None-reject silently dropped every real BB reload catch)."""
+        from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
         coord = CatchCoordinator(initial_height_mm=INITIAL_HEIGHT)
         angle = math.radians(40)
         speed = 5000.0
@@ -173,7 +179,9 @@ class TestCatchPose:
         )
 
         cmd = coord.update([ball], current_time=5.0)
-        assert cmd is None
+        assert cmd is not None
+        rot_angle = 2.0 * math.acos(min(abs(cmd.target_quat[0]), 1.0))
+        assert rot_angle == pytest.approx(math.radians(MAX_TILT_DEG), abs=0.01)
 
 
 class TestBlacklist:

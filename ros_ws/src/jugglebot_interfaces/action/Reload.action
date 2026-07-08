@@ -12,6 +12,12 @@ float64 throw_delay_s          # delay from now to release; 0 => default 3.0 s
 ---
 bool success                   # True iff the ball was CAUGHT
 string outcome                 # CAUGHT | REJECTED_<code> | ABORTED_<code> | MISSED | MISSED_<code>
-float64 catch_error_mm         # mocap miss distance at rest (NaN if unknown)
+                               # MVP CAUGHT evidence is tracker-id-correlated: only the
+                               # tracker-assigned id of OUR announced ball counts (a stray
+                               # caught ball is ignored). Hand-telemetry rest cross-check
+                               # is deferred (implement if 7c shows false CAUGHTs).
+float64 catch_error_mm         # tracker last-KF horizontal miss from the catch point — an
+                               # in-flight estimate, NOT a settled rest position (NaN if
+                               # unknown)
 ---
 string phase                   # CHECKING | AIMING | THROW_PENDING | BALL_IN_FLIGHT | CATCHING | SETTLING

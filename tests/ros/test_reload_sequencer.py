@@ -170,6 +170,61 @@ def test_post_release_infeasible_catch_missed_with_code():
     assert d.done and d.result.outcome == 'MISSED_INFEASIBLE_WORKSPACE'
 
 
+def test_catch_feasibility_reject_then_accept_clears():
+    """A genuine reject followed by a later ACCEPT clears MISSED_INFEASIBLE — only a
+    rejection that still stands at catch time counts (fix 5)."""
+    seq = _fresh()
+    _advance_to_throw_sent(seq)
+    seq.note_throw_result(True)
+    seq.step(0.1, _obs(0.1))
+    seq.note_announcement(0.5, landing_time_perf=3.7)
+    seq.step(0.5, _obs(0.5))                              # BALL_IN_FLIGHT
+    seq.note_catch_feasibility(False, 'WORKSPACE')       # a real reject …
+    seq.note_catch_feasibility(True)                     # … superseded by a later accept
+    d = seq.step(1.0, _obs(1.0, ball_caught=False))
+    assert not d.done                                    # cleared → no MISSED_INFEASIBLE
+
+
+# ── Announcement gating + ToF-aware settle deadline (fixes 2, 3) ────────────────
+
+def test_announcement_during_aiming_is_accepted():
+    """The announcement is published synchronously inside the throw service call — i.e.
+    while the FSM is still AIMING, BEFORE note_throw_result. It must still be honored
+    (gated on the throw having been commanded, not on the phase) — fix 2."""
+    seq = _fresh()
+    _advance_to_throw_sent(seq)                          # SEND_THROW issued; still AIMING
+    assert seq.phase == PHASE_AIMING
+    seq.note_announcement(0.05, landing_time_perf=3.7)   # arrives DURING AIMING
+    seq.note_throw_result(True)                          # service returns afterwards
+    seq.step(0.1, _obs(0.1))                             # AIMING → THROW_PENDING
+    d = seq.step(0.2, _obs(0.2))                         # earlier announcement honored
+    assert d.phase == PHASE_BALL_IN_FLIGHT
+
+
+def test_settle_deadline_includes_time_of_flight():
+    """The settle deadline is anchored on the announced landing (release + ToF), so a
+    nominal catch confirmed ~0.3 s after landing reads CAUGHT — not MISSED because the
+    deadline treated RELEASE as landing (fix 3)."""
+    seq = _fresh()                                       # throw_delay 3.0
+    _advance_to_throw_sent(seq)                          # SEND_THROW at throw_time 0.0
+    seq.note_throw_result(True)
+    seq.step(0.1, _obs(0.1))                             # → THROW_PENDING
+    # Realistic flight: release ≈ 3.0, ToF ≈ 0.7 → land at 3.7 (perf clock).
+    seq.note_announcement(0.5, landing_time_perf=3.7)
+    d = seq.step(0.5, _obs(0.5))                         # → BALL_IN_FLIGHT
+    assert d.phase == PHASE_BALL_IN_FLIGHT
+    # Settle deadline = landing + confirm window = 3.7 + 0.7 = 4.4.
+    assert seq._settle_deadline == pytest.approx(4.4)
+    # At the OLD (release-anchored) deadline of 3.7 the ball has not been declared CAUGHT
+    # yet — must NOT report MISSED.
+    d = seq.step(3.7, _obs(3.7, ball_caught=False))
+    assert not d.done
+    # Tracker declares CAUGHT at landing + 0.3 = 4.0, before the ToF-aware deadline.
+    d = seq.step(4.0, _obs(4.0, ball_caught=True, catch_error_mm=8.0))
+    assert d.done and d.result.outcome == 'CAUGHT'
+    assert d.result.catch_error_mm == pytest.approx(8.0)
+
+
 # ── Aborts ─────────────────────────────────────────────────────────────────────
 
 def test_mode_change_mid_sequence_aborts():
@@ -200,9 +255,12 @@ def test_finished_is_terminal():
     seq = _fresh()
     d = seq.step(0.0, _obs(0.0, streaming=False))
     assert d.done
-    # Any subsequent step is a no-op terminal.
+    first = d.result
+    assert first is not None
+    # Any subsequent step is a no-op terminal that REPLAYS the stored result (not None),
+    # so a stray extra step never hands the consumer a None to unpack (fix 12).
     d2 = seq.step(1.0, _obs(1.0))
-    assert d2.done and d2.result is None
+    assert d2.done and d2.result is first
 
 
 # ── Catch point helper ─────────────────────────────────────────────────────────

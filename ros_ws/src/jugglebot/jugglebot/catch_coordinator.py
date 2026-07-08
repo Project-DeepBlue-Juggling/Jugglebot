@@ -9,6 +9,7 @@ and reads CatchCommand objects out, then sends them via IPC.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -17,6 +18,12 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from jugglebot.tracking.ball import Ball, BallStatus
+# Single source of truth for the usable receive-tilt ceiling (12°) — shared with the
+# sim-validated tilt_geometry.tilt_to_receive so the ROS catch path and the sim clamp
+# agree. Pure Python (no ROS), so this keeps catch_coordinator ROS-free.
+from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +107,9 @@ class CatchCoordinator:
         self.initial_height_mm = initial_height_mm
         self.catch_z_offset_mm = landing_z_offset_mm
         self.hand_catch_offset_mm = hand_catch_offset_mm
+        # Retained for API/back-compat; the receive-tilt is now CLAMPED (not gated) at
+        # tilt_geometry.MAX_TILT_DEG in compute_catch_orientation, so this no longer
+        # rejects steep arrivals.
         self.catch_angle_limit_rad = math.radians(catch_angle_limit_deg)
         self.blacklist_rejection_threshold = blacklist_rejection_threshold
         self.blacklist_reeval_threshold_mm = blacklist_reeval_threshold_mm
@@ -238,9 +248,16 @@ class CatchCoordinator:
         self,
         landing_velocity: np.ndarray,
     ) -> Optional[np.ndarray]:
-        """Compute quaternion [w,x,y,z] to orient platform normal to ball velocity.
+        """Compute quaternion [w,x,y,z] to orient the platform normal to the ball's
+        arrival velocity (the collinear "receive" catch).
 
-        Returns None if the approach angle exceeds the catch angle limit.
+        The from-vertical tilt is CLAMPED to the usable receive-tilt ceiling
+        (``tilt_geometry.MAX_TILT_DEG`` = 12° — the single source of truth shared with the
+        sim-validated ``tilt_to_receive``), NOT rejected above it. Real BB arrivals are
+        18–40° off vertical; a clamped tilt seats the ball better than a level cup even
+        though the collinearity is only partial past the ceiling (the plan's design
+        explicitly accepts non-collinearity beyond the clamp). Never returns None for a
+        steep arrival — the axis direction is preserved; only the magnitude saturates.
         """
         v = landing_velocity
         norm = np.linalg.norm(v)
@@ -254,8 +271,13 @@ class CatchCoordinator:
         dot = np.clip(np.dot(reference, v_hat), -1.0, 1.0)
         angle = math.acos(dot)
 
-        if angle > self.catch_angle_limit_rad:
-            return None  # Uncatchable angle
+        max_tilt_rad = math.radians(MAX_TILT_DEG)
+        if angle > max_tilt_rad:
+            logger.info(
+                "Receive tilt %.1f° exceeds the %.1f° ceiling — clamping (partial "
+                "collinear seat, ball still seated better than level).",
+                math.degrees(angle), MAX_TILT_DEG)
+            angle = max_tilt_rad
 
         if angle < 1e-9:
             # Nearly aligned: identity

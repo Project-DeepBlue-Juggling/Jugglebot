@@ -344,9 +344,11 @@ hand (existing behaviour reused unchanged).
 2. **Aim + throw**: `bb/throw_at_target` extended with optional
    `geometry_msgs/Point target_point_global_mm` + `bool use_target_point`
    (skips the QTM rigid-body lookup; default-zero fields keep existing callers
-   working). Catch point = `(0, 0, GEOM_INITIAL_HEIGHT_MM + landing_z_offset)`
-   in the world frame. **Phase 7a verifies the QTM-world vs jugglebot-base frame
-   convention with an aim-only (speed = 0) command before any ball flies.**
+   working). Catch point = `(0, 0, GEOM_INITIAL_HEIGHT_MM + JB_OP_DEFAULT_ACTIVE_Z_MM)`
+   in the world frame — the STOW height plus the STOW→ACTIVE lift (= 574.3 + 170.0 =
+   744.3 mm, per `reload_sequencer.compute_catch_point_mm`). **Phase 7a verifies the
+   QTM-world vs jugglebot-base frame convention with an aim-only (speed = 0) command
+   before any ball flies.**
    `throw_delay_s ≥ 2.5`; BB rejections surface as `REJECTED_BB(<message>)`.
 3. **Announcement → catch**: BB publishes `ThrowAnnouncement`;
    `catch_correlation_node` tags the tracked ball; `catch_coordinator_node`
@@ -362,9 +364,14 @@ hand (existing behaviour reused unchanged).
    zero over the following 0.15 s; then a **literal quiescent hold segment**
    (zero twist, `catch_settle_hold_s`); then a slow return to neutral. Platform
    translation velocity at contact is zero — velocity matching is the hand's job.
-5. **Confirmation**: ball status `CAUGHT` from the tracker (tracking/ball.py)
-   within 0.7 s of predicted landing, cross-checked against hand telemetry;
-   `catch_error_mm` from the mocap rest position. Otherwise `MISSED`.
+5. **Confirmation** (MVP evidence): a **tracker-id-correlated** `CAUGHT` — the reload
+   coordinator latches the tracker-assigned id of our announced ball (the one it puts
+   IN_FLIGHT for this robot) and confirms only THAT id's `CAUGHT` status, within the
+   confirm window past the announced landing (release + ToF, not release). A stray caught
+   ball with a different id never confirms. `catch_error_mm` is the tracker's last-KF
+   horizontal miss from the catch point (an in-flight estimate, **not** a settled rest
+   position); the hand-telemetry cross-check is documented-deferred (implement if 7c shows
+   false `CAUGHT`s). Otherwise `MISSED`.
 6. **Aborts**: BB reject → clean reject; announcement timeout → hold;
    post-release infeasible catch target → platform holds last valid pose, hand
    fires per its armed schedule, outcome `MISSED_INFEASIBLE` (with the gate
@@ -957,6 +964,28 @@ jugglebot-base frame AND the 744.3 mm catch-z before any ball flies), **7b** thr
 static catch (two-consecutive-bounce-out abort is the operative contact guard), **7c**
 full `jugglebot/reload` action (≥ 3/5 catches + every abort path exercised). Full
 narrative in `logbook/2026-07-08-mvp-phase7-reload-action.md`.
+
+**Outcome addendum (2026-07-08 — audit-fix round, last before hardware)**: a pre-hardware
+`/audit` found **five BLOCKING choreography bugs** on the nominal reload path — all
+cross-process ordering the mocked-ROS per-node tests could not see: (1) `_send_throw`
+omitted `target_name` → BB announced `target_id='point'` → the whole catch pipeline dropped
+the ball; (2) the announcement is published *inside* the throw handler (during AIMING) so
+the phase-gated `note_announcement` discarded it — regated on the throw being *commanded*;
+(3) the settle deadline treated RELEASE as landing, omitting the 0.61–0.73 s ToF, so a
+nominal catch read MISSED — now anchored on the announced landing (ROS→perf converted);
+(4) `_goal_callback` accepted concurrent goals (double-throw) — now REJECTs while a reload is
+active; (5) `FROZEN`/`STALE_STATE` catch feedback latched `MISSED_INFEASIBLE` — now ignored,
+and a later `accepted=True` clears an earlier reject. Plus WARNINGs: the receive tilt is now
+**clamped at `MAX_TILT_DEG=12°`** (single source with `tilt_geometry`), not rejected above 30°
+(root cause: 12° is the sim-validated + lead-time-feasible envelope, and a clamped tilt seats
+better than level — clamp-don't-reject strictly improves seating and never blacklists); the
+non-finite-point guard; tracker-id-correlated CAUGHT evidence; and the 7b protocol rewritten
+to hold the pose in TRAJECTORY mode (the genuine static-catch config). Verification:
+`pytest tests/ -q` (2026-07-08) = **2274 passed, 1 xfailed in 553.60 s** (baseline 2261/1 at
+`23e5476`; net +13 = audit-fix tests only); ci-deep (`pytest tests/ -q
+--hypothesis-profile=ci-deep`, run 2026-07-08) = **2274 passed, 1 xfailed, 198 warnings in
+3024.70 s (0:50:24)**. Full narrative + finding-by-finding in the logbook's **Audit fixes
+(2026-07-08)** section.
 
 ### Phase 8 *(stretch)* — Single-ball self-toss loop
 

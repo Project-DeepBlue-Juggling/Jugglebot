@@ -512,6 +512,16 @@ class BallButlerNode(Node):
         if req.use_target_point:
             p = req.target_point_global_mm
             x_g, y_g, z_g = float(p.x), float(p.y), float(p.z)
+            # Guard the caller-supplied point: a NaN/inf here would flow through
+            # world→BB-local + IK into a NaN yaw/pitch/speed command to the firmware.
+            # Reject loudly instead — nothing leaves the hand.
+            if not all(math.isfinite(v) for v in (x_g, y_g, z_g)):
+                res.success = False
+                res.message = (
+                    f'Non-finite target_point_global_mm '
+                    f'({x_g}, {y_g}, {z_g}) — refusing to throw.')
+                self.get_logger().error(res.message)
+                return res
             target_id = req.target_name or 'point'
         else:
             target = self._target_positions_mm.get(req.target_name)

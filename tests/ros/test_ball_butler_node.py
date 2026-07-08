@@ -248,6 +248,45 @@ class TestPointTargetExtension:
         assert res.success is False
         assert 'not in latest rigid_body_poses' in res.message
 
+    def test_point_target_with_name_announces_that_target_id(self, calibrated_node):
+        """The reload coordinator sets target_name, so the ThrowAnnouncement carries
+        target_id == that name (not the default 'point'). The tracker tags the ball's
+        destination from target_id; a 'point' announcement would be dropped by the whole
+        catch pipeline (fix 1)."""
+        req = BallButlerThrow.Request()
+        req.use_target_point = True
+        req.target_name = 'jugglebot'
+        req.target_point_global_mm = Point(x=1200.0, y=50.0, z=0.0)
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+        assert res.success is True
+        anns = calibrated_node.throw_announcement_pub.published
+        assert len(anns) == 1
+        assert anns[0].target_id == 'jugglebot'
+
+    def test_point_target_without_name_defaults_to_point(self, calibrated_node):
+        """Without a name the announcement falls back to 'point' (the pre-fix behaviour,
+        still exercised by non-reload callers)."""
+        req = BallButlerThrow.Request()
+        req.use_target_point = True
+        req.target_point_global_mm = Point(x=1200.0, y=50.0, z=0.0)
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+        assert res.success is True
+        assert calibrated_node.throw_announcement_pub.published[0].target_id == 'point'
+
+    def test_non_finite_point_is_rejected(self, calibrated_node):
+        """A NaN/inf point would flow into a NaN yaw/pitch/speed firmware command — the
+        node must reject it loudly and throw nothing (fix 8)."""
+        for bad in (float('nan'), float('inf')):
+            req = BallButlerThrow.Request()
+            req.use_target_point = True
+            req.target_point_global_mm = Point(x=bad, y=0.0, z=744.3)
+            res = calibrated_node._svc_throw_at_target(
+                req, BallButlerThrow.Response())
+            assert res.success is False
+            assert 'finite' in res.message.lower()
+        # Nothing was thrown / announced across either bad request.
+        assert len(calibrated_node.throw_announcement_pub.published) == 0
+
 
 class TestInfeasible:
     def test_target_too_far_returns_failure_with_solver_message(self, calibrated_node):

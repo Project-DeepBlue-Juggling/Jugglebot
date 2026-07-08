@@ -11,6 +11,9 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/ball_butler_node.py
   - ros_ws/src/jugglebot/jugglebot/reload_sequencer.py
   - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
+  - ros_ws/src/jugglebot/jugglebot/catch_coordinator.py   # audit fix 6 (12° tilt clamp)
+  - ros_ws/src/jugglebot/jugglebot/tracking/tests/test_coordinator.py   # audit fix 6
+  - tests/ros/test_catch_coordinator.py                   # audit fix 6 (new)
   - ros_ws/src/jugglebot_interfaces/action/Reload.action
   - ros_ws/src/jugglebot_interfaces/srv/BallButlerThrow.srv
   - ros_ws/src/jugglebot_interfaces/CMakeLists.txt
@@ -157,7 +160,9 @@ in `DynamicTargetCommand.target_vel`". Ground truth diverges: `target_vel` is **
 zero** (`catch_coordinator.CatchCommand.target_vel = np.zeros(3)  # Stationary catch`),
 and the receive tilt is already computed by the hardware-validated
 `catch_coordinator.compute_catch_orientation` (the same collinear-catch geometry as
-`tilt_geometry.tilt_to_receive`) and shipped in `target_quat`. Two options:
+`tilt_geometry.tilt_to_receive` — and, after the 2026-07-08 audit fix below, the same 12°
+`MAX_TILT_DEG` clamp; only the rotvec-vs-quaternion representation differs, so the
+consolidation open question stands) and shipped in `target_quat`. Two options:
 
 - **(chosen) Use the tilt already in `target_quat`; swap `build_timed → build_catch`
   in `trajectory_node` only.** `build_catch` reads the tilt from the catch pose to aim
@@ -230,7 +235,14 @@ hand, not a trajectory defect.
 2. **Two copies of the collinear-catch geometry** (`catch_coordinator.
    compute_catch_orientation` quaternion-based, `tilt_geometry.tilt_to_receive`
    rotvec-based). Pre-existing (not introduced here); a future consolidation to a single
-   source of truth. Not a Phase-7 blocker (the ROS path uses only the coordinator's).
+   source of truth. Not a Phase-7 blocker (the ROS path uses only the coordinator's). The
+   2026-07-08 audit fix imported `tilt_geometry.MAX_TILT_DEG` into `compute_catch_
+   orientation` so at least the clamp is now a single source; the two representations
+   still want consolidating.
+5. **Hand-telemetry rest cross-check for CAUGHT (deferred).** MVP `CAUGHT` evidence is a
+   tracker-id-correlated `CAUGHT` + last-KF horizontal miss (not a settled rest position).
+   The plan's stronger "cross-checked against hand telemetry, error from the rest
+   position" evidence is deferred — implement it if 7c surfaces false `CAUGHT`s.
 3. **Vel-match / `CATCH_VEL_RATIO`** (carried from Phase 6): the ≤15%-first-contact
    metric remains inconsistent with the 0.6 hand design; revisit the *definition*
    (measure over the seat stroke, or against the 0.6 design) with 7b/7c hardware
@@ -239,6 +251,85 @@ hand, not a trajectory defect.
 4. **Reach envelope vs offsets under noise** (carried from Phase 6): two nominal gate
    trials still flag > 80 mm reach; caught, not fatal; tighten the offset or widen the
    envelope with hardware evidence in 7c.
+
+## Audit fixes (2026-07-08)
+
+A pre-hardware `/audit` of the merged Phase-7 software found **five BLOCKING choreography
+bugs** sitting on the nominal reload path, plus WARNING/NOTE items. **Meta-point**: the
+per-node tests run against a *mocked* ROS graph, so they could not see the **cross-process
+ordering** that actually breaks the sequence (the announcement is published *inside* the
+throw handler; there is real ToF between release and landing; `FROZEN` feedback fans out on
+every late tick). The new tests now encode that production ordering explicitly.
+
+**Blocking (each: fix + a test pinning the production ordering/values):**
+
+1. **`target_id='point'` killed the catch pipeline.** `_send_throw` set `use_target_point`
+   but not `target_name`, so BB announced `target_id='point'` → the tracker tagged the ball
+   `destination='point'` → CatchCoordinator (and the reload's own announcement filter)
+   dropped it. Fix: `req.target_name = self._robot_name`; the 7b command + a BB-node test
+   pin `ann.target_id == 'jugglebot'`.
+2. **Announcement dropped during AIMING.** BB publishes the `ThrowAnnouncement` synchronously
+   inside the `bb/throw_at_target` handler — before the service returns, i.e. while the FSM
+   is still AIMING — so `note_announcement`'s phase gate discarded it deterministically. Fix:
+   gate on `_throw_sent` (the throw having been *commanded*), not the phase. Test: an
+   announcement between the SEND_THROW decision and `note_throw_result` is honored.
+3. **Settle deadline omitted time-of-flight.** `deadline = throw_time + throw_delay + confirm`
+   treated RELEASE as landing, but real ToF is 0.61–0.73 s and the tracker declares CAUGHT
+   ≈ landing + 0.3 s → a nominal catch reported MISSED. Fix: `note_announcement` takes the
+   announced landing time (the node converts `ThrowAnnouncement.landing_time` ROS→perf the
+   same way `catch_coordinator_node` does, falling back to `now + predicted_tof_sec`); the
+   settle deadline AND the CATCHING transition anchor on `landing + confirm_window`. Also
+   stamp the announcement-timeout deadline from the CONFIRMED throw, not before the blocking
+   service call (which can burn up to `_SERVICE_WAIT_S` of the grace window).
+4. **Concurrent goals would double-throw.** `_goal_callback` unconditionally ACCEPTed and
+   rclpy runs accepted goals concurrently. Fix: REJECT (warn) a second goal while
+   `_active_seq` is not None. Test: the second goal is rejected while the first is active.
+5. **FROZEN/STALE_STATE latched MISSED_INFEASIBLE.** trajectory_node emits `FROZEN` for every
+   late catch target inside the reach-freeze window and `STALE_STATE` on transient races —
+   both expected on a real flight — and every `accepted=False` latched infeasible forever.
+   Fix: the node drops `{FROZEN, STALE_STATE}`; the FSM clears `_catch_infeasible` on a
+   subsequent `accepted=True`, so only a rejection still standing at catch time counts.
+
+**WARNING/NOTE:**
+
+6. **Receive tilt unclamped to 30°.** Production `compute_catch_orientation` shipped the full
+   angle up to 30° (returning None above), while everything sim-validated is ≤12°
+   (`tilt_geometry` clamps) and real BB arrivals are 18–40° off vertical — so catches were
+   silently absent (None) or gate-rejected (a >12° tilt from a ≤0.73 s lead reads TOO_FAST) →
+   blacklist. Fix: **clamp** the from-vertical tilt at `MAX_TILT_DEG = 12°` (imported from
+   `tilt_geometry` — single source), log INFO when clamping, remove the None-reject.
+   **Rationale (root cause, not appeal-to-plan):** 12° is both the sim-validated receive-tilt
+   envelope AND the lead-time-feasible tilt (a steeper tilt from a sub-0.73 s catch lead
+   exceeds the gate's rate limits); a clamped tilt always seats the ball better than a level
+   cup, and the plan's design explicitly accepts non-collinearity past the clamp — so
+   clamp-don't-reject strictly improves seating and never blacklists. Test: 25° arrival → 12°
+   clamped orientation, command emitted (not None).
+7. **7b protocol contradiction** — "static platform + coordinator-armed hand" is impossible in
+   CATCH mode (the same path that arms also moves the platform). Rewrote 7b to hold the pose
+   in TRAJECTORY mode (trajectory_node ignores `dynamic_target` outside CATCH; the hand still
+   arms — its `/balls` handler is not mode-gated), with `target_name` in the command.
+8. **Non-finite point → NaN throw to firmware.** Guard the `use_target_point` branch:
+   non-finite x/y/z → `success=false`, loud message, nothing leaves the hand. Tests: NaN, inf.
+9. **CAUGHT evidence** is now tracker-id-correlated (latch our announced ball's id — the one
+   the tracker puts IN_FLIGHT for us — and confirm only that id's CAUGHT; a stray caught ball
+   is ignored); documented in `Reload.action` + plan § Reload sequence 5. `catch_error_mm` is
+   documented as the last-KF horizontal miss (an in-flight estimate, not a rest position); the
+   hand-telemetry rest cross-check is documented-deferred (Open Question 5).
+10. 7c: cancel after AIMING does not recall the ball — a throw is committed regardless; stay
+    clear of the flight path.
+11. Plan § Reload sequence 2 catch-point formula now carries the `+ JB_OP_DEFAULT_ACTIVE_Z_MM`
+    term (code truth 744.3 mm).
+12. A finished sequencer's extra `step()` replays the stored terminal result instead of a
+    `None` the consumer would crash unpacking.
+
+**Verification:**
+- Full suite: `pytest tests/ -q` (run 2026-07-08) = **2274 passed, 1 xfailed in 553.60 s**
+  (baseline 2261 passed / 1 xfailed at `23e5476`; net **+13** = new tests only: 3 sequencer
+  + 3 coordinator-node + 3 BB-node + 4 catch-coordinator-clamp).
+- ci-deep: `pytest tests/ -q --hypothesis-profile=ci-deep` (run 2026-07-08) = **2274 passed,
+  1 xfailed, 198 warnings in 3024.70 s (0:50:24)**.
+- Comment-only `.action` edit (no field change) → no colcon gate; no config change → no
+  codegen gate.
 
 ## Related
 

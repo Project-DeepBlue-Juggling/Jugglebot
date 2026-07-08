@@ -69,26 +69,37 @@ ros2 service call /bb/throw_at_target jugglebot_interfaces/srv/BallButlerThrow \
 
 ---
 
-## Stage 7b — throw + STATIC catch (Jugglebot holds the neutral catch pose)
+## Stage 7b — throw + STATIC catch (Jugglebot holds the catch pose in TRAJECTORY mode)
 
 **Purpose**: prove the ball seats in the cup with the hand armed by the existing
-coordinator, WITHOUT platform tilt/translation. Set CATCH mode; the platform holds the
-neutral catch pose; BB throws dead-centre.
+coordinator, WITHOUT platform tilt/translation.
 
-1. Operator sets control mode **CATCH** (the reload action does NOT switch modes).
-2. Confirm the platform holds neutral and the hand is primed once `/balls` shows the
-   ball (coordinator arms the hand on the first catchable ball).
-3. Fire a single dead-centre throw:
+**Why TRAJECTORY, not CATCH, mode**: in CATCH mode the SAME `catch_coordinator_node` path
+that arms the hand also publishes `catch/dynamic_target`, which `trajectory_node` turns
+into a *moving* catch plan — so "static platform + coordinator-armed hand" is impossible
+in CATCH. In TRAJECTORY mode, `trajectory_node` IGNORES `catch/dynamic_target` (it is
+CATCH-gated), so the platform holds its commanded pose, while `catch_coordinator_node`'s
+`/balls` handler is NOT mode-gated and still primes + arms the hand on the first catchable
+ball. That is the genuine static-catch configuration.
+
+1. Operator holds the neutral ACTIVE catch pose in **TRAJECTORY** mode (streaming; the
+   platform does not move for the catch).
+2. Confirm the platform holds and the hand is primed once `/balls` shows the ball
+   (coordinator arms the hand on the first catchable ball, mode-independent).
+3. Fire a single dead-centre throw. `target_name` names the robot so the announcement's
+   `target_id` is `jugglebot` (not the default `point`) — otherwise the tracker tags the
+   ball destination `point` and the whole catch pipeline drops it:
 
 ```bash
 ros2 service call /bb/throw_at_target jugglebot_interfaces/srv/BallButlerThrow \
-  "{use_target_point: true, aim_only: false, \
+  "{use_target_point: true, aim_only: false, target_name: 'jugglebot', \
     target_point_global_mm: {x: 0.0, y: 0.0, z: 744.3}, throw_delay_s: 3.0}"
 ```
 
 - **PASS**: ball seated in the cup; hand telemetry matches the armed catch profile;
-  `/balls` reports the ball `CAUGHT`. (Hardware has caught smoothly before — priors are
-  good.)
+  `/balls` reports the ball `CAUGHT`. A dead-centre throw arrives near-vertical, so the
+  hand does the seating with little/no tilt. (Hardware has caught smoothly before —
+  priors are good.)
 - **ABORT**: two consecutive bounce-outs ⇒ stop, capture the hand traces + rosbag, and
   return to Phase 6. Also ABORT on any E-STOP or visible platform jerk.
 - After each throw: `/diagnose --latest` for the hand/tracking traces.
@@ -112,6 +123,14 @@ THROW_PENDING → BALL_IN_FLIGHT → CATCHING → SETTLING`, then a result.
 
 - **PASS**: ≥ 3/5 reloads return `outcome: CAUGHT` with a logged `catch_error_mm`;
   motion subjectively smooth (no snap); no pump rejects; no E-STOP.
+- **Receive-tilt expectation** (7b/7c): the receive tilt is clamped to the 12° usable
+  ceiling (`tilt_geometry.MAX_TILT_DEG`). Arrivals more off-vertical than ~12° are still
+  CAUGHT, but with only *partial* collinear seating (the cup axis is not fully aligned to
+  the arrival) — the residual is the hand's to absorb. A steep off-centre arrival that
+  bounces out is a seating-margin signal, not a gate reject.
+- **Cancel does not recall the ball**: cancelling the action after AIMING does NOT recall
+  the ball — BB has already committed the throw, so expect a throw regardless. Stay clear
+  of the flight path.
 - Exercise each abort path once, deliberately:
   - **no-ball reject**: run with the hand empty and `bb/reload` disabled / ball removed
     → expect `REJECTED_NO_BALL` after the 10 s reload wait, **zero platform motion**.

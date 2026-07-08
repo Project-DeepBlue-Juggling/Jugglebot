@@ -123,10 +123,12 @@ class ReloadSequencer:
     _throw_result: Optional[tuple] = field(default=None, init=False)   # (accepted, msg)
     _announced: bool = field(default=False, init=False)
     _announcement_deadline: float = field(default=0.0, init=False)
+    _landing_time_perf: Optional[float] = field(default=None, init=False)  # announced landing (perf clock)
     _catch_infeasible: Optional[str] = field(default=None, init=False)  # gate code
     _throw_time: float = field(default=0.0, init=False)
     _settle_deadline: float = field(default=0.0, init=False)
     _finished: bool = field(default=False, init=False)
+    _result: Optional[ReloadResult] = field(default=None, init=False)  # cached terminal result
 
     def __post_init__(self):
         if self.throw_delay_s <= 0.0:
@@ -138,15 +140,38 @@ class ReloadSequencer:
         """Report the ``bb/throw_at_target`` service outcome (accept/reject)."""
         self._throw_result = (bool(accepted), str(message))
 
-    def note_announcement(self, now: float) -> None:
-        """Report that a matching ``ThrowAnnouncement`` was observed."""
-        if self._phase in (PHASE_THROW_PENDING, PHASE_BALL_IN_FLIGHT):
+    def note_announcement(self, now: float,
+                          landing_time_perf: Optional[float] = None) -> None:
+        """Report that a matching ``ThrowAnnouncement`` was observed.
+
+        Gated on the throw having been COMMANDED (``_throw_sent``), NOT on the phase:
+        ``ball_butler_node`` publishes the announcement synchronously INSIDE the
+        ``bb/throw_at_target`` handler — before the service call returns, i.e. while the
+        FSM is still AIMING — so a phase gate (THROW_PENDING/BALL_IN_FLIGHT) would drop it
+        deterministically on every real reload. ``landing_time_perf`` is the announced
+        landing time already converted to the FSM's perf clock (the node does the ROS→perf
+        crossing); ``None`` falls back to the release-relative estimate for the settle
+        deadline (see :meth:`_landing_perf`)."""
+        if self._throw_sent and not self._finished:
             self._announced = True
+            if landing_time_perf is not None:
+                self._landing_time_perf = float(landing_time_perf)
 
     def note_catch_feasibility(self, accepted: bool, code: str = '') -> None:
-        """Report a ``trajectory/target_feedback`` decision for the catch target. A
-        post-release rejection means the platform can't reach the catch → MISSED_INFEASIBLE."""
-        if not accepted and self._phase in (PHASE_BALL_IN_FLIGHT, PHASE_CATCHING):
+        """Report a ``trajectory/target_feedback`` decision for the catch target.
+
+        A genuine post-release REJECTION (a WORKSPACE / TOO_FAST gate reject that still
+        stands at catch time) means the platform can't reach the catch →
+        MISSED_INFEASIBLE. A SUBSEQUENT acceptance
+        clears it: only a rejection that STILL stands at catch time counts. (The node
+        already drops the transient FROZEN / STALE_STATE codes — a target inside the
+        reach-freeze window / a plant-state race — which fire on every real flight and are
+        NOT catch infeasibility.)"""
+        if self._phase not in (PHASE_BALL_IN_FLIGHT, PHASE_CATCHING):
+            return
+        if accepted:
+            self._catch_infeasible = None
+        else:
             self._catch_infeasible = code or 'INFEASIBLE'
 
     # ── driver ─────────────────────────────────────────────────────────────────
@@ -157,7 +182,9 @@ class ReloadSequencer:
 
     def step(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if self._finished:
-            return ReloadDecision(self._phase, ACTION_NONE, True, None)
+            # Terminal: replay the stored result (never None once finished) so a stray
+            # extra step can't hand the consumer a None to unpack into the action result.
+            return ReloadDecision(self._phase, ACTION_NONE, True, self._result)
 
         # ── Universal aborts (checked every phase before the phase logic) ──────
         # A lead below BB's floor can never be made — reject up front (also caught by
@@ -225,8 +252,6 @@ class ReloadSequencer:
         if not self._throw_sent:
             self._throw_sent = True
             self._throw_time = now
-            self._announcement_deadline = (
-                now + self.throw_delay_s + self.announcement_grace_s)
             return ReloadDecision(PHASE_AIMING, ACTION_SEND_THROW, False, None)
         # Await the service result.
         if self._throw_result is None:
@@ -234,16 +259,24 @@ class ReloadSequencer:
         accepted, message = self._throw_result
         if not accepted:
             return self._reject('BB', message)
+        # Stamp the announcement deadline from the CONFIRMED throw, not from when
+        # SEND_THROW was issued: the blocking bb/throw_at_target call can eat up to
+        # _SERVICE_WAIT_S before the throw is even accepted, which would otherwise
+        # silently burn the announcement grace window before the ball is committed.
+        self._announcement_deadline = (
+            now + self.throw_delay_s + self.announcement_grace_s)
         self._phase = PHASE_THROW_PENDING
         return ReloadDecision(PHASE_THROW_PENDING, ACTION_NONE, False, None)
 
     def _step_throw_pending(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if self._announced:
             self._phase = PHASE_BALL_IN_FLIGHT
-            # Predicted landing ~throw_delay after release; confirm CAUGHT within the
-            # window past that. (A late correlation still leaves the catch path time.)
-            self._settle_deadline = (
-                self._throw_time + self.throw_delay_s + self.catch_confirm_window_s)
+            # Confirm CAUGHT within the window PAST the true landing. The deadline must
+            # include the ball's time-of-flight (~0.6–0.7 s): the announced
+            # landing_time_perf IS release + ToF, so anchoring on it (not on release =
+            # throw_time + throw_delay) is the difference between a nominal catch reading
+            # CAUGHT and it timing out MISSED before the ball has even landed.
+            self._settle_deadline = self._landing_perf() + self.catch_confirm_window_s
             return ReloadDecision(PHASE_BALL_IN_FLIGHT, ACTION_NONE, False, None)
         if now >= self._announcement_deadline:
             # No announcement → the catch path never armed the hand; platform holds.
@@ -262,11 +295,19 @@ class ReloadSequencer:
         if now >= self._settle_deadline:
             self._phase = PHASE_SETTLING
             return self._step_settling(now, obs)
-        # Transition the reported phase to CATCHING once we're near the arrival.
-        near = now >= (self._throw_time + self.throw_delay_s
-                       - self.catch_confirm_window_s)
+        # Transition the reported phase to CATCHING once we're near the (true) arrival.
+        near = now >= (self._landing_perf() - self.catch_confirm_window_s)
         self._phase = PHASE_CATCHING if near else PHASE_BALL_IN_FLIGHT
         return ReloadDecision(self._phase, ACTION_NONE, False, None)
+
+    def _landing_perf(self) -> float:
+        """Predicted landing time in the FSM's perf clock: the announced
+        ``landing_time_perf`` (release + ToF) when available, else the release-relative
+        fallback (``throw_time + throw_delay`` — treats release AS landing, so only used
+        when no announcement landing stamp reached the FSM)."""
+        if self._landing_time_perf is not None:
+            return self._landing_time_perf
+        return self._throw_time + self.throw_delay_s
 
     def _step_settling(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if obs.ball_caught:
@@ -286,6 +327,7 @@ class ReloadSequencer:
 
     def _finish(self, result: ReloadResult) -> ReloadDecision:
         self._finished = True
+        self._result = result
         return ReloadDecision(self._phase, ACTION_NONE, True, result)
 
     @property

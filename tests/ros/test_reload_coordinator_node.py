@@ -38,7 +38,8 @@ class _Pos:
 
 
 class _Ball:
-    def __init__(self, status, destination='jugglebot', x=0.0, y=0.0, z=744.3):
+    def __init__(self, status, destination='jugglebot', x=0.0, y=0.0, z=744.3, id=5):
+        self.id = id
         self.status = status
         self.destination = destination
         self.position = _Pos(x, y, z)
@@ -102,8 +103,14 @@ def test_build_observations_stale_mocap_and_heartbeat():
 def test_build_observations_detects_caught_ball_with_error():
     now = 100.0
     node = _node_fresh(now)
+    # The tracker first puts OUR ball in flight → the coordinator latches its id.
     with node._lock:
-        node._balls = [_Ball(status=2, x=15.0, y=20.0)]   # CAUGHT, 25 mm off centre
+        node._balls = [_Ball(status=1, id=5)]             # IN_FLIGHT
+        node._balls_mono = now
+    node._build_observations(now)                          # latches announced id = 5
+    # Then it's caught, 25 mm off centre.
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=15.0, y=20.0)]   # CAUGHT
         node._balls_mono = now
     obs = node._build_observations(now)
     assert obs.ball_caught is True
@@ -114,7 +121,25 @@ def test_build_observations_ignores_other_robots_ball():
     now = 100.0
     node = _node_fresh(now)
     with node._lock:
-        node._balls = [_Ball(status=2, destination='someone_else')]
+        node._balls = [_Ball(status=2, id=5, destination='someone_else')]
+        node._balls_mono = now
+    obs = node._build_observations(now)
+    assert obs.ball_caught is False
+
+
+def test_build_observations_stray_caught_ball_different_id_ignored():
+    """A caught ball whose id is NOT our announced ball's (e.g. a leftover from a prior
+    throw) does not confirm the reload's catch (fix 9)."""
+    now = 100.0
+    node = _node_fresh(now)
+    # Our ball (id 5) goes in flight → latched.
+    with node._lock:
+        node._balls = [_Ball(status=1, id=5)]
+        node._balls_mono = now
+    node._build_observations(now)
+    # A STRAY caught ball (id 99) appears while ours is still airborne.
+    with node._lock:
+        node._balls = [_Ball(status=2, id=99, x=0.0, y=0.0), _Ball(status=1, id=5)]
         node._balls_mono = now
     obs = node._build_observations(now)
     assert obs.ball_caught is False
@@ -203,6 +228,40 @@ def test_target_feedback_reject_forwards_infeasibility():
     node._on_target_feedback(fb)
     d = seq.step(1.0, _obs_stub())
     assert d.done and d.result.outcome == 'MISSED_INFEASIBLE_WORKSPACE'
+
+
+def test_target_feedback_frozen_and_stale_are_ignored():
+    """trajectory_node emits FROZEN for every late catch target in the reach-freeze
+    window and STALE_STATE on transient races — the node must drop them so the catch
+    proceeds (fix 5)."""
+    node = ReloadCoordinatorNode()
+    seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
+    seq.start(0.0)
+    seq.step(0.0, _obs_stub())
+    seq.note_throw_result(True)
+    seq.step(0.1, _obs_stub())
+    seq.note_announcement(0.5)
+    seq.step(0.5, _obs_stub())              # BALL_IN_FLIGHT
+    with node._lock:
+        node._active_seq = seq
+    for code in ('FROZEN', 'STALE_STATE'):
+        node._on_target_feedback(
+            types.SimpleNamespace(source='catch', accepted=False, code=code))
+    d = seq.step(1.0, _obs_stub())
+    assert not d.done                       # neither latched MISSED_INFEASIBLE
+
+
+# ── Concurrent-goal rejection (fix 4) ──────────────────────────
+
+def test_second_goal_rejected_while_one_active():
+    from rclpy.action import GoalResponse
+    node = ReloadCoordinatorNode()
+    # No active sequence → accept.
+    assert node._goal_callback(object()) == GoalResponse.ACCEPT
+    # A reload in progress → reject the concurrent goal (would double-throw).
+    with node._lock:
+        node._active_seq = ReloadSequencer(catch_point_mm=node._catch_point_mm)
+    assert node._goal_callback(object()) == GoalResponse.REJECT
 
 
 def _obs_stub():
