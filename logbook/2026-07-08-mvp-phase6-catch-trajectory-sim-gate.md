@@ -18,6 +18,7 @@ files_changed:
   - tests/sim/test_reload_gate.py
 commits:
   - 12c7ad1
+  - b490dfd   # docs (logbook + plan + INDEX)
 subsystem: motion
 tags: [mvp-trajectory-bringup, catch, reload, tilt, ballistics, sim-gate, mujoco, light-scope]
 ---
