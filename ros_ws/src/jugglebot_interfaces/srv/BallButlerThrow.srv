@@ -10,6 +10,16 @@
 
 string target_name           # rigid-body name from QTM (e.g. "Catching_Cone")
 float64 throw_delay_s        # delay from "now" to release (0 = use node default)
+
+# Point-target extension (Phase 7 reload). When use_target_point is true the node
+# SKIPS the QTM rigid-body lookup and aims at target_point_global_mm directly (the
+# reload coordinator computes the catch point in the world frame). Default-zero fields
+# (use_target_point=false, aim_only=false, target_point_global_mm=(0,0,0)) preserve
+# every existing target_name caller.
+geometry_msgs/Point target_point_global_mm   # world-frame aim point (used iff use_target_point)
+bool use_target_point        # true => aim at target_point_global_mm, skip the QTM lookup
+bool aim_only                # true => command speed 0 (track/aim only, no ball leaves) —
+                             # the Phase-7a frame-convention verification fast-path
 ---
 bool success
 string message               # human-readable success/failure detail

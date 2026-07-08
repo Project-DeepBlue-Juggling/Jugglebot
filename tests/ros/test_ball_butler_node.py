@@ -190,6 +190,65 @@ class TestSuccessPath:
         assert res.target_position_bb_local_mm.y == pytest.approx(0.0, abs=1e-6)
 
 
+class TestPointTargetExtension:
+    """Phase-7 BallButlerThrow point-target extension: use_target_point skips QTM and
+    aims at a caller-supplied world point; aim_only commands speed 0 (the 7a fast-path)."""
+
+    def test_use_target_point_skips_qtm_lookup(self, calibrated_node):
+        # No rigid bodies received at all — the QTM lookup would fail, but
+        # use_target_point bypasses it entirely.
+        action = calibrated_node._throw_action
+        sent_goals = []
+        orig_send = action.send_goal_async
+
+        def _spy(goal):
+            sent_goals.append(goal)
+            return orig_send(goal)
+        action.send_goal_async = _spy
+
+        req = BallButlerThrow.Request()
+        req.use_target_point = True
+        req.target_point_global_mm = Point(x=1200.0, y=50.0, z=0.0)
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+
+        assert res.success is True
+        assert res.target_position_global_mm.x == pytest.approx(1200.0)
+        assert res.target_position_global_mm.y == pytest.approx(50.0)
+        assert len(sent_goals) == 1
+        assert sent_goals[0].throw_speed > 0.0        # a real throw (not aim_only)
+
+    def test_aim_only_commands_zero_speed_and_no_announcement(self, calibrated_node):
+        action = calibrated_node._throw_action
+        sent_goals = []
+        orig_send = action.send_goal_async
+
+        def _spy(goal):
+            sent_goals.append(goal)
+            return orig_send(goal)
+        action.send_goal_async = _spy
+
+        req = BallButlerThrow.Request()
+        req.use_target_point = True
+        req.aim_only = True
+        req.target_point_global_mm = Point(x=1200.0, y=50.0, z=0.0)
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+
+        assert res.success is True
+        assert len(sent_goals) == 1
+        assert sent_goals[0].throw_speed == pytest.approx(0.0)   # aim-only: no ball flies
+        assert sent_goals[0].throw_time == pytest.approx(0.0)
+        # No ThrowAnnouncement for an aim-only command (nothing to catch).
+        assert len(calibrated_node.throw_announcement_pub.published) == 0
+
+    def test_unknown_name_still_fails_when_not_use_target_point(self, calibrated_node):
+        # The default path (use_target_point false) still requires a known QTM target.
+        req = BallButlerThrow.Request()
+        req.target_name = 'Nonexistent'
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+        assert res.success is False
+        assert 'not in latest rigid_body_poses' in res.message
+
+
 class TestInfeasible:
     def test_target_too_far_returns_failure_with_solver_message(self, calibrated_node):
         # 100 m in front: no pitch satisfies the 5 m/s speed cap

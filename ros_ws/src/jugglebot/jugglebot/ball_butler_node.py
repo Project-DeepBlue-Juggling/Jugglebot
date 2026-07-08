@@ -505,17 +505,26 @@ class BallButlerNode(Node):
                            'the GUI first.')
             return res
 
-        # Stage 2: target must be visible in QTM.
-        target = self._target_positions_mm.get(req.target_name)
-        if target is None:
-            known = sorted(self._target_positions_mm.keys()) or ['<none>']
-            res.success = False
-            res.message = (
-                f"Target '{req.target_name}' not in latest rigid_body_poses. "
-                f"Known: {', '.join(known)}.")
-            return res
+        # Stage 2: resolve the aim point. Either a caller-supplied world-frame point
+        # (use_target_point — the Phase-7 reload path, which computes the catch point
+        # itself and skips QTM) or a QTM rigid-body lookup by name. Default-zero fields
+        # keep every existing target_name caller on the lookup path.
+        if req.use_target_point:
+            p = req.target_point_global_mm
+            x_g, y_g, z_g = float(p.x), float(p.y), float(p.z)
+            target_id = req.target_name or 'point'
+        else:
+            target = self._target_positions_mm.get(req.target_name)
+            if target is None:
+                known = sorted(self._target_positions_mm.keys()) or ['<none>']
+                res.success = False
+                res.message = (
+                    f"Target '{req.target_name}' not in latest rigid_body_poses. "
+                    f"Known: {', '.join(known)}.")
+                return res
+            x_g, y_g, z_g = target
+            target_id = req.target_name
 
-        x_g, y_g, z_g = target
         res.target_position_global_mm = Point(x=x_g, y=y_g, z=z_g)
 
         # Reject if a calibration session is currently driving throws.
@@ -524,12 +533,15 @@ class BallButlerNode(Node):
             res.message = 'Accuracy calibration in progress — cancel it first'
             return res
 
-        # Stages 3-5: world → BB local, aim correction, IK, send command.
+        # Stages 3-5: world → BB local, aim correction, IK, send command. aim_only
+        # commands speed 0 (track/aim geometry only, no ball leaves) — the Phase-7a
+        # frame-convention verification fast-path; it also suppresses the throw
+        # announcement (no ball => nothing to catch).
         ok, msg, sol, delay_s = self._throw_at_global_point(
             x_g, y_g, z_g,
-            target_id=req.target_name,
+            target_id=target_id,
             throw_delay_s=req.throw_delay_s,
-            throw=True,
+            throw=not req.aim_only,
         )
 
         # Echo back the *commanded* (post-correction) BB-local position so

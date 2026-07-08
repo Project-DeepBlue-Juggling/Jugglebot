@@ -57,6 +57,7 @@ class MotorStateSingle:
 
 @dataclass
 class BallButlerHeartbeatMsg:
+    connected: bool = False
     ball_in_hand: bool = False
     state: int = 0
     state_data: int = 0
@@ -374,7 +375,10 @@ SendBallButlerCommand = _make_service(
     resp_fields={'success': False, 'message': ''},
 )
 BallButlerThrow = _make_service(
-    req_fields={'target_name': '', 'throw_delay_s': 0.0},
+    req_fields={'target_name': '', 'throw_delay_s': 0.0,
+                # Phase-7 point-target extension (default-zero preserves name callers).
+                'target_point_global_mm': None, 'use_target_point': False,
+                'aim_only': False},
     resp_fields={
         'success': False, 'message': '',
         'yaw_rad': 0.0, 'pitch_rad': 0.0, 'throw_speed_mps': 0.0,
@@ -484,6 +488,32 @@ class BallButlerThrowCmd:
     Goal = _BallButlerThrowCmdGoal
     Result = _BallButlerThrowCmdResult
     Feedback = _BallButlerThrowCmdFeedback
+
+
+# ── Reload action mock (Phase 7) ──────────────────
+
+
+class _ReloadGoal:
+    def __init__(self):
+        self.throw_delay_s = 0.0
+
+
+class _ReloadResult:
+    def __init__(self):
+        self.success = False
+        self.outcome = ''
+        self.catch_error_mm = float('nan')
+
+
+class _ReloadFeedback:
+    def __init__(self):
+        self.phase = ''
+
+
+class Reload:
+    Goal = _ReloadGoal
+    Result = _ReloadResult
+    Feedback = _ReloadFeedback
 
 
 # ── rclpy mock ────────────────────────────────────────────────
@@ -776,6 +806,7 @@ _create_mock_module('jugglebot_interfaces.srv', {
 _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,
     'BallButlerThrowCmd': BallButlerThrowCmd,
+    'Reload': Reload,
 })
 
 _create_mock_module('geometry_msgs')
