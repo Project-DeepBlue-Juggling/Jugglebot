@@ -19,6 +19,7 @@ files_changed:
 commits:
   - 12c7ad1
   - b490dfd   # docs (logbook + plan + INDEX)
+  - bf5b46e   # audit-fix package (3 WARNING + 3 NOTE) + sequential-catch mode
 subsystem: motion
 tags: [mvp-trajectory-bringup, catch, reload, tilt, ballistics, sim-gate, mujoco, light-scope]
 ---
