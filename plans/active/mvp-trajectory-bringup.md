@@ -452,7 +452,7 @@ passes; results recorded in the logbook with seeds and configs):
 | 4 | Limit ramp-up + lean A/B | — | multiple short sessions | CODE COMPLETE (hardware deferred) |
 | 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | LANDED LIGHT — CORE PASS (vel-match deferred, open questions) |
-| 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | NOT STARTED |
+| 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | CODE COMPLETE (hardware deferred) |
 | 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | NOT STARTED |
 | 9 | *(extra stretch)* Two-ball juggling | Two-ball gate | staged | NOT STARTED |
 
@@ -920,6 +920,43 @@ recorded bags.
 
 **Exit**: `ros2 action send_goal /jugglebot/reload …` reliably catches. MVP
 goal 4 complete.
+
+**Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase-7 *software*
+landed on branch `mvp-trajectory-bringup` (commits `6107d06` integration gap;
+`3889444` `Reload.action` + `BallButlerThrow` point-target/aim-only; `e2c5afe` reload
+sequencer FSM + coordinator node + integration test; `f3cca4c` `CATCH_VEL_RATIO`
+0.9→0.6; docs `<pending>`). (1) **Integration gap closed**: `trajectory_node`'s
+`catch/dynamic_target` path now routes through `planner.build_catch` (reach with zero
+translational arrival velocity → tilt-through-seat decay → literal quiescent hold)
+instead of the Phase-5 reach-only `build_timed` that parked the tilted rim at contact —
+without this a hardware reload would catch WITHOUT the tilt-through-seat. The receive
+tilt is already collinear with the arrival velocity (the hardware-validated
+`catch_coordinator.compute_catch_orientation` ships it in `target_quat`); `build_catch`
+reads it to aim the through-seat rate. The settle-bounded reach-freeze + `FROZEN`
+feedback semantics are preserved. (2) New **`Reload.action`** + thin
+**`reload_coordinator_node`** wrapping the pure-Python **`reload_sequencer`** FSM
+(CHECKING → AIMING → THROW_PENDING → BALL_IN_FLIGHT → CATCHING → SETTLING, every loud
+reject + abort); the coordinator **orchestrates only** — `trajectory_node` plans all
+motion, `catch_coordinator` arms the hand, `ball_butler` throws; it never bypasses the
+feasibility gate. (3) **`BallButlerThrow` point-target extension** (`use_target_point`
+skips the QTM lookup; `aim_only` commands speed 0 — the 7a fast-path; default-zero
+fields preserve existing callers). (4) The separable Phase-6 follow-up:
+`sim/hand/trajectory.py` `CATCH_VEL_RATIO` 0.9→0.6 (config source of truth) with the
+five reload-gate JSONs refreshed (all CORE PASS unchanged; the *deferred* vel-match rose
+as expected — nominal worst 0.343→0.440). The
+announcement→correlation→coordinator integration test drives the **real** BallTracker +
+CatchCoordinator engines with synthesized messages (the recorded bags predate this
+pipeline; no rosbag2 reader in the mocked CI — stated in the test). Verification:
+`pytest tests/ -q` (2026-07-08) = **2261 passed, 1 xfailed in 541.51 s** (baseline
+2223/1 at `bf5b46e`; net +38 = new tests only: 3 trajectory-node catch + 3 BB-node + 19
+sequencer + 10 coordinator + 3 integration); `colcon build --packages-select
+jugglebot_interfaces jugglebot` (2026-07-08) = 2 packages finished, 0 errors. **Deferred
+to the staged operator bench sessions** (`tests/hardware/session_phase7_reload.md`):
+**7a** aim-only frame + z-convention verification (verifies the QTM-world vs
+jugglebot-base frame AND the 744.3 mm catch-z before any ball flies), **7b** throw +
+static catch (two-consecutive-bounce-out abort is the operative contact guard), **7c**
+full `jugglebot/reload` action (≥ 3/5 catches + every abort path exercised). Full
+narrative in `logbook/2026-07-08-mvp-phase7-reload-action.md`.
 
 ### Phase 8 *(stretch)* — Single-ball self-toss loop
 
