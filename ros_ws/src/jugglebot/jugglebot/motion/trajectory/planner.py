@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from jugglebot.motion.ik_solver import compute_jacobian, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.feasibility import (
     LIMIT_ACC,
     LIMIT_JERK,
@@ -35,6 +36,7 @@ from jugglebot.motion.trajectory.feasibility import (
     STEP_BOUND,
     STEP_BOUND_MARGIN,
     TOO_FAST,
+    WORKSPACE,
     TrajectoryInfeasible,
     validate,
     validate_follow,
@@ -336,7 +338,8 @@ def _gate(plan, limits, geom) -> None:
 _MAX_FOLLOW_ITERS = 6
 
 
-def build_follow(state0, target_pose, limits, geom, horizon_s):
+def build_follow(state0, target_pose, limits, geom, horizon_s, *,
+                 max_iters: int = _MAX_FOLLOW_ITERS):
     """A streaming-follower move toward ``target_pose`` over ~``horizon_s``.
 
     Used by the SpaceMouse/GUI follower (``follower.py``), which calls this every
@@ -347,10 +350,17 @@ def build_follow(state0, target_pose, limits, geom, horizon_s):
     Horizon semantics mirror the plan's ``max(min_feasible, horizon_s)``: build at
     ``horizon_s`` (floored at ``min_move_duration_s``); if the fast gate rejects it
     with a stretchable (vel/acc/jerk/step) failure, stretch the duration up toward
-    the minimal feasible one and re-gate (bounded iterations). A spatial
+    the minimal feasible one and re-gate (up to ``max_iters`` iterations). A spatial
     ``WORKSPACE`` / ``UNREACHABLE`` failure is re-raised immediately (a longer
     horizon cannot reach an unreachable target — the follower's saturation clamp is
     what keeps the target reachable). Returns ``(plan, report)``.
+
+    ``max_iters`` caps the build-validate-stretch loop. The chase follower passes a
+    small value (3): the chase already sizes the horizon so the FIRST validate
+    nearly always passes, and a stretch factor derived from a decel-dominated
+    moving-seed candidate under-corrects, so the extra iters are belt-and-braces
+    (each is a ~1.6 ms ``validate_follow``, kept well inside the emit budget). Other
+    callers keep the default ``_MAX_FOLLOW_ITERS``.
     """
     pose, twist, accel = (_as6(state0[0], 'pose'),
                           _as6(state0[1], 'twist'),
@@ -358,7 +368,7 @@ def build_follow(state0, target_pose, limits, geom, horizon_s):
     target = _as6(target_pose, 'target_pose')
     T = max(float(horizon_s), float(limits.min_move_duration_s))
     report = None
-    for _ in range(_MAX_FOLLOW_ITERS):
+    for _ in range(int(max_iters)):
         plan = _build_rest_move(pose, twist, accel, target, T)
         report = validate_follow(plan, limits, geom)
         if report.ok:
@@ -368,7 +378,7 @@ def build_follow(state0, target_pose, limits, geom, horizon_s):
         T *= _stretch_factor(report, limits)
     raise TrajectoryInfeasible(
         TOO_FAST,
-        [f"follower could not find a feasible horizon in {_MAX_FOLLOW_ITERS} "
+        [f"follower could not find a feasible horizon in {int(max_iters)} "
          f"iterations (last failure {report.code if report else 'n/a'})"],
         min_duration_s=T)
 
@@ -544,7 +554,76 @@ def _min_feasible_timed(pose, twist, accel, target, v1, limits, geom):
     return T
 
 
-def build_graceful_stop(state0, limits, geom, *, start_duration_s=None):
+# Decel-in-place base peak coefficients (the rest-terminating quintic basis
+# extrema, numerically verified 2026-07-09; mirrors chase._B_ACC_V / _B_JERK_V —
+# duplicated here rather than imported so the gate layer stays independent of the
+# advisory chase layer). Used only to SEED the stop-stretch horizon (A4); the gate
+# is the source of truth for feasibility.
+_DECEL_ACC_V = 3.941     # peak base acc per (v_pk / T)
+_DECEL_JERK_V = 36.0     # peak base jerk per (v_pk / T²)
+# Bleed the energy-informed start below the true feasible T so the ladder still
+# stretches UP to it (never overshoots downward). An OVER-estimated start would
+# permanently inflate the decel's outward overshoot (~0.2·v·T grows with T) and can
+# flip a convergent near-boundary stop into a WORKSPACE deferral (A4).
+_DECEL_START_BLEED = 1.3
+
+# Default cap on the stop-stretch loop. Generous: the stop is a decel-in-place, so
+# it converges monotonically; the cap only guards a pathological (absurd-velocity)
+# seed. The node's per-tick retry passes a small value so the post-publish block
+# stays bounded (the retry resumes next tick from the decayed seed).
+_MAX_STOP_ITERS = 24
+
+
+def _decel_energy_start(pose, twist, accel, limits, geom) -> float:
+    """Energy-informed START horizon for :func:`build_graceful_stop` (A4).
+
+    Estimates the decel-in-place duration from the seed's frozen-J leg-space peak
+    velocity via the base-quintic acc/jerk extrema, then UNDER-estimates it
+    (``/ _DECEL_START_BLEED``) so the ladder stretches up to — never past — the true
+    feasible T (an over-estimate inflates the outward overshoot). Floored at
+    ``min_move_duration_s``. Uses the DECEL forms only (never the rest-to-rest
+    1.875 delta form): the stop has zero net motion, so its peaks are the base's.
+    """
+    J = compute_jacobian(pose[:3], rotvec_to_rot_matrix(pose[3:6]), geom)
+    v_pk = float(np.max(np.abs(J @ twist)))
+    a_lim = max(float(limits.leg_acc_mmps2), 1e-9)
+    j_lim = max(float(limits.leg_jerk_mmps3), 1e-9)
+    t_est = max(_DECEL_ACC_V * v_pk / a_lim,
+                float(np.sqrt(_DECEL_JERK_V * v_pk / j_lim)))
+    return max(float(limits.min_move_duration_s), t_est / _DECEL_START_BLEED)
+
+
+def _stretch_stop(pose, twist, accel, T, limits, geom, max_iters):
+    """Stretch a decel-in-place stop from start horizon ``T`` until the gate passes.
+
+    Raises :class:`TrajectoryInfeasible` on a spatial (``WORKSPACE``) failure — the
+    decel overshoot exceeds the seed's boundary margin and GROWS with T, so no
+    stretch fixes it — or ``TOO_FAST`` if the loop exhausts ``max_iters``.
+    """
+    report = None
+    for _ in range(int(max_iters)):
+        seg = QuinticSegment(
+            p0=pose, v0=twist, a0=accel,
+            p1=pose, v1=np.zeros(POSE_DIM), a1=np.zeros(POSE_DIM),
+            duration=T)
+        plan = TrajectoryPlan(segments=(seg,), final_pose=pose)
+        report = validate_follow(plan, limits, geom)
+        if report.ok:
+            return plan
+        if report.code not in _STRETCHABLE:
+            # A decel-in-place fails spatially only by overshooting the boundary
+            # (~0.2·v·T, growing with T) — surface it rather than loop.
+            raise TrajectoryInfeasible(report.code, report.reasons)
+        T *= _stretch_factor(report, limits)
+    raise TrajectoryInfeasible(
+        TOO_FAST,
+        [f"graceful stop did not converge in {int(max_iters)} iterations "
+         f"(last {report.code if report else 'n/a'})"],
+        min_duration_s=T)
+
+
+def build_graceful_stop(state0, limits, geom, *, start_duration_s=None,
+                        max_iters: int = _MAX_STOP_ITERS):
     """A duration-stretched decel-to-rest at the current pose.
 
     Unlike :func:`build_hold` (which builds ONE min-duration decel and RAISES if
@@ -566,12 +645,26 @@ def build_graceful_stop(state0, limits, geom, *, start_duration_s=None):
     stop (``p1 = p0 + alpha·v0``, decelerating along the motion, stop-soonest) that
     never overshoots outward — deferred.
 
-    This is the primitive the plan/task require for the two "stop now" cases:
-    leaving a streaming mode mid-move (STANDBY-exit) and follower input-loss. Gated
-    by the fast :func:`validate_follow` so it is cheap enough to run on the emitter
-    thread (input-loss) without threatening the 250 ms staleness window. Returns the
-    stop :class:`TrajectoryPlan` (a :class:`HoldPlan` when the seed is already at
-    rest).
+    Start horizon (A4): with no explicit ``start_duration_s`` the loop starts from
+    an *energy-informed* estimate (:func:`_decel_energy_start`) so an over-energetic
+    seed converges in ≤ ~3 validates instead of climbing the whole ladder from
+    ``min_move_duration_s`` (the ~100 ms in-loop stall that fed the S3 146 ms emit
+    gap). The estimate deliberately UNDER-shoots the true feasible T so it never
+    inflates the overshoot. Because a too-large start can push the overshoot past a
+    tight boundary margin (WORKSPACE) where a SMALLER start would have passed, a
+    WORKSPACE raise triggers a ONE-shot fallback: retry from the plain
+    ``min_move_duration_s`` ladder start (smallest overshoot) before re-raising.
+
+    ``max_iters`` caps the stretch loop (default ``_MAX_STOP_ITERS`` = 24). The
+    node's per-tick pending-stop retry passes a small value (~6) so the post-publish
+    block stays far under the ~117 ms firmware decay→sprint threshold; the retry
+    resumes next tick from the decayed seed.
+
+    This is the primitive the plan/task require for the "stop now" cases (leaving a
+    streaming mode mid-move, follower input-loss, and the chase follower's A2
+    over-energetic-seed routing). Gated by the fast :func:`validate_follow` so it is
+    cheap enough to run on the emitter thread. Returns the stop
+    :class:`TrajectoryPlan` (a :class:`HoldPlan` when the seed is already at rest).
     """
     pose, twist, accel = (_as6(state0[0], 'pose'),
                           _as6(state0[1], 'twist'),
@@ -587,30 +680,21 @@ def build_graceful_stop(state0, limits, geom, *, start_duration_s=None):
             raise TrajectoryInfeasible(report.code, report.reasons)
         return plan
 
-    T = float(start_duration_s if start_duration_s is not None
-              else limits.min_move_duration_s)
-    report = None
-    # Generous cap: the stop is a decel-in-place, so it converges monotonically;
-    # the cap only guards a pathological (e.g. absurd-velocity) seed.
-    for _ in range(24):
-        seg = QuinticSegment(
-            p0=pose, v0=twist, a0=accel,
-            p1=pose, v1=np.zeros(POSE_DIM), a1=np.zeros(POSE_DIM),
-            duration=T)
-        plan = TrajectoryPlan(segments=(seg,), final_pose=pose)
-        report = validate_follow(plan, limits, geom)
-        if report.ok:
-            return plan
-        if report.code not in _STRETCHABLE:
-            # A decel-in-place cannot fail spatially (p1 == p0 is the seed's own
-            # reachable pose); if it somehow does, surface it rather than loop.
-            raise TrajectoryInfeasible(report.code, report.reasons)
-        T *= _stretch_factor(report, limits)
-    raise TrajectoryInfeasible(
-        TOO_FAST,
-        [f"graceful stop did not converge in 24 iterations "
-         f"(last {report.code if report else 'n/a'})"],
-        min_duration_s=T)
+    min_start = float(limits.min_move_duration_s)
+    if start_duration_s is not None:
+        T0 = float(start_duration_s)
+    else:
+        T0 = _decel_energy_start(pose, twist, accel, limits, geom)
+    try:
+        return _stretch_stop(pose, twist, accel, T0, limits, geom, max_iters)
+    except TrajectoryInfeasible as e:
+        # One-shot fallback (A4): a start above min_move can overshoot a tight
+        # boundary margin (WORKSPACE) where the plain min_move ladder — smaller
+        # overshoot per candidate — still passes. Retry once before re-raising.
+        if e.code == WORKSPACE and T0 > min_start:
+            return _stretch_stop(pose, twist, accel, min_start, limits, geom,
+                                 max_iters)
+        raise
 
 
 # ═══════════════════════════════════════════════════════════════════════════

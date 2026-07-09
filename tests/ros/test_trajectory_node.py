@@ -838,6 +838,237 @@ def test_pending_stop_on_infeasible_stop_then_retry_converges():
     assert np.allclose(a_end, 0.0, atol=1e-9)
 
 
+# ── Publish-first emitter + chase-follower escalation (chase-clamp rewrite) ────
+
+def _corrupt_pose_beyond_bound(geom, delta_mm):
+    """A level +x pose whose MAX leg extension is ``delta_mm`` past the hard bound
+    (delta > 0 = corrupt/out-of-stroke; delta < 0 = in-band). Bisected on x."""
+    from jugglebot.motion.trajectory.feasibility import _workspace_limits
+    from jugglebot.motion.ik_solver import pose_to_leg_lengths
+    wl = _workspace_limits(geom)
+    target = wl.leg_hard_max_mm + delta_mm
+
+    def ext_max(x):
+        return float(np.max(pose_to_leg_lengths(
+            np.array([x, 0.0, 170.0]), np.eye(3), geom)))
+
+    lo, hi = 200.0, 300.0
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        if ext_max(mid) < target:
+            lo = mid
+        else:
+            hi = mid
+    return np.array([hi, 0.0, 170.0, 0.0, 0.0, 0.0])
+
+
+def test_publish_precedes_planning_within_a_tick():
+    """C3 publish-first: within one _emit_once the knot is PUBLISHED before the
+    follower replan runs. Proven by ordering the pub.send / follower.follow calls —
+    a slow or raising replan can never delay this tick's knot."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    node._on_platform_pose(_platform_pose(x=15.0, z=178.0, publisher='SPACEMOUSE'))
+    events = []
+    real_send, real_follow = pub.send, node._follower.follow
+    pub.send = lambda m: (events.append('publish'), real_send(m))[1]
+    node._follower.follow = lambda *a, **k: (events.append('follow'),
+                                             real_follow(*a, **k))[1]
+    t = time.perf_counter()
+    node._follower_target = (node._follower_target[0], t)
+    node._emit_once(t)
+    assert events == ['publish', 'follow'], events
+
+
+def test_publish_first_emits_frame_even_when_follower_raises():
+    """C3: a follower tick that RAISES must not block this tick's knot — publish
+    happens first, and the raise is contained (never kills the stream)."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    node._on_platform_pose(_platform_pose(x=15.0, z=178.0, publisher='SPACEMOUSE'))
+
+    def boom(*a, **kw):
+        raise RuntimeError('follower boom')
+
+    node._follower.follow = boom
+    t = time.perf_counter()
+    node._follower_target = (node._follower_target[0], t)
+    node._emit_once(t)                       # must not raise
+    assert len(pub.frames) == 1              # the knot went out despite the raise
+
+
+def test_frame_sampled_from_prior_tick_plan_install():
+    """C3: the follower install lands AFTER this tick's publish, so it is the NEXT
+    tick that samples it. Tick 0 publishes the pre-existing hold and installs the
+    move; the move is active only from tick 1 on."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    assert node._active_plan.kind == 'hold'
+    node._on_platform_pose(_platform_pose(x=20.0, z=185.0, publisher='SPACEMOUSE'))
+    t = time.perf_counter()
+    node._follower_target = (node._follower_target[0], t)
+    node._emit_once(t)                       # publishes the HOLD, then installs a move
+    assert node._active_plan.kind == 'move'  # install happened post-publish
+    assert len(pub.frames) == 1
+
+
+def test_pending_stop_retry_passes_bounded_max_iters():
+    """A4: the node's post-publish graceful-stop retry passes a bounded max_iters so
+    the follow block stays far under the ~117 ms decay→sprint threshold."""
+    from jugglebot.trajectory_node import _STOP_RETRY_ITERS
+    node = _follower_node()
+    node._pub = _CapturePub()
+    node._install(_boundary_plan(245.0))       # near-boundary outward: stop build raises
+    node._pending_stop = True
+    captured = {}
+    real = planner.build_graceful_stop
+
+    def spy(*a, **kw):
+        captured['max_iters'] = kw.get('max_iters')
+        return real(*a, **kw)
+
+    planner.build_graceful_stop = spy
+    try:
+        node._emit_once(time.perf_counter())   # post-publish retry runs
+    finally:
+        planner.build_graceful_stop = real
+    assert captured.get('max_iters') == _STOP_RETRY_ITERS
+
+
+def test_escalation_installs_graceful_stop_under_live_stream():
+    """A3: sustained follower rejects (escalate=True) under a LIVE 40 Hz fresh-target
+    stream latch a graceful stop that actually INSTALLS (not merely the flag firing).
+    A stoppable moving seed → the pending-stop retry installs a decel-to-rest."""
+    from jugglebot.motion.trajectory.follower import FollowResult
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    node._install(_boundary_plan(100.0))       # moving, well inside → stoppable
+    node._follower.follow = lambda *a, **kw: FollowResult(
+        plan=None, rejection='forced sustained reject', alpha=0.0, escalate=True)
+    real_install = node._install
+    recorded = []
+
+    def spy_install(plan, **kw):
+        ok = real_install(plan, **kw)
+        if ok:
+            recorded.append(plan)
+        return ok
+
+    node._install = spy_install
+    t = time.perf_counter()
+    for k in range(5):
+        node._follower_target = (node._neutral_pose.copy(), t + k * 0.025)
+        node._emit_once(t + k * 0.025)
+    assert node._escalation_stop is True            # latched under the stream
+    assert len(recorded) >= 1                        # a stop actually installed
+    stop = node._active_plan
+    _, v_end, a_end = stop.state_at(stop.total_duration)
+    assert np.allclose(v_end, 0.0, atol=1e-9)        # a real decel-to-rest
+    assert np.allclose(a_end, 0.0, atol=1e-9)
+
+
+def test_corrupt_seed_backstop_holds_under_live_stream():
+    """A3 backstop: a seed 0.3 mm BEYOND the hard bound can never be stopped in place
+    (build_graceful_stop raises WORKSPACE every tick). Under a live fresh-target
+    stream the follower escalates, the retry keeps failing, and after
+    _ESCALATE_HOLD_TICKS the node installs a HoldPlan at the last emitted pose
+    DIRECTLY — a loud terminal action, never a silent keep-last forever."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    corrupt = _corrupt_pose_beyond_bound(node._geom, 0.3)
+    node._install(HoldPlan(corrupt))
+    original = node._active_plan
+    t = time.perf_counter()
+    for k in range(40):                              # > escalate (12) + backstop (12)
+        node._follower_target = (node._neutral_pose.copy(), t + k * 0.025)
+        node._emit_once(t + k * 0.025)
+    assert node._escalation_stop is True             # latched
+    assert node._active_plan.kind == 'hold'          # the backstop hold
+    assert node._active_plan is not original         # a NEW plan installed (backstop)
+
+
+def test_escalation_recovery_clears_pending_stop():
+    """F1: on the escalation-RECOVERY tick, a fresh follow plan installs and clears
+    BOTH the escalation latch AND the pending stop. During an escalation episode the
+    fresh-target clear inside _follower_tick is gated off _escalation_stop, so it is
+    SKIPPED on the recovery tick; without also clearing _pending_stop when the fresh
+    plan installs, it leaks True and the NEXT tick's post-publish retry installs a
+    spurious graceful stop over the just-recovered tracking plan — a stop-stutter in
+    exactly the near-boundary accept-then-reject regime the rewrite targets."""
+    from jugglebot.motion.trajectory.follower import FollowResult
+    node = _follower_node()
+    node._install(_boundary_plan(100.0))             # a moving, stoppable/trackable seed
+    # A real, installable follow plan stands in for the recovered tracking move; the
+    # follow() returns it while the escalation latch is (still) set.
+    recovered, report = planner.build_follow(
+        node._current_state(), np.array([100.0, 0.0, 176.0, 0.0, 0.0, 0.0]),
+        node._limits, node._geom, hw.JB_TRAJ_SPACEMOUSE_HORIZON_S)
+    node._follower.follow = lambda *a, **kw: FollowResult(
+        plan=recovered, report=report, alpha=0.5)
+    # Simulate a latched escalation episode still pending (12 prior rejects, stop
+    # requested but not yet converged).
+    node._escalation_stop = True
+    node._pending_stop = True
+    t = time.perf_counter()
+    node._follower_target = (np.array([100.0, 0.0, 176.0, 0.0, 0.0, 0.0]), t)
+    assert node._follower_tick(t) is True
+    assert node._active_plan is recovered             # the fresh plan installed
+    assert node._escalation_stop is False             # recovery cleared the latch
+    assert node._pending_stop is False                # ... and the leaked pending stop
+
+
+def test_escalation_does_not_latch_after_mode_left_follower():
+    """F2: an in-flight follower escalation completing AFTER a concurrent mode-exit
+    must NOT re-latch _escalation_stop into the new (non-follower) mode. _on_control_
+    mode clears the latches atomically with its _current_mode write under _plan_lock;
+    _enter_escalation_stop re-checks the mode under the same lock and refuses once we
+    have left. Without it the stale follow plan is dropped by the TOCTOU install guard
+    (so _clear_escalation_stop never runs), and the leaked latch reads escalation_stop
+    =1 in STANDBY with no active escalation, driving a redundant stop + 'move silenced'."""
+    node = _follower_node()                           # SPACEMOUSE
+    node._on_control_mode(String(data='STANDBY'))     # leave the follower set
+    assert node._current_mode == 'STANDBY'
+    assert node._escalation_stop is False and node._pending_stop is False
+    # The stale in-flight escalation's follow() returns escalate=True and calls
+    # _enter_escalation_stop AFTER the mode exit — it must refuse to latch.
+    node._enter_escalation_stop('stale in-flight escalation after mode exit')
+    assert node._escalation_stop is False             # refused (mode re-check under lock)
+    assert node._pending_stop is False
+
+
+def test_diagnostics_publish_chase_and_escalation_fields():
+    """The chase-follower diagnostics ride the existing DiagnosticStatus KeyValue
+    pattern (no new .msg): last chase alpha, consecutive rejects, escalation latch,
+    and the post-publish follow-block cost."""
+    node = _follower_node()
+    node._pub = _CapturePub()
+    node._on_platform_pose(_platform_pose(x=15.0, z=178.0, publisher='SPACEMOUSE'))
+    tgt, _ = node._follower_target
+    node._follower_target = (tgt, time.perf_counter())
+    node._emit_once(time.perf_counter())
+    kv = _diag_kv(node)
+    for key in ('chase_alpha', 'consecutive_rejects', 'escalation_stop',
+                'follow_block_max_ms'):
+        assert key in kv, f"missing diagnostics key {key}"
+    assert kv['escalation_stop'] in ('0', '1')
+    assert 0.0 <= float(kv['chase_alpha']) <= 1.0
+
+
 def test_hold_rejected_in_follower_mode():
     """A hold in a follower mode is a mode confusion (the input stream supersedes it
     within one tick) — reject loudly and tell the operator to exit the mode."""

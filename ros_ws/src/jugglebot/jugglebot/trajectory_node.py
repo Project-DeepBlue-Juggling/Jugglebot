@@ -158,6 +158,20 @@ _CATCH_MODE = 'CATCH'
 
 _NUM_LEGS = 6
 
+# A3 — follower escalation backstop. Once the follower latches an escalation stop
+# (sustained chase rejects: a corrupt / boundary-wedged seed), the post-publish
+# retry keeps trying build_graceful_stop. After this many CONSECUTIVE failed stop
+# builds while latched, the node installs a HoldPlan at the last emitted pose
+# DIRECTLY (u0 step = 0, the emitter step-backstop precedent) so the corrupt-seed
+# class has a terminal, loud action — never a silent keep-last forever.
+_ESCALATE_HOLD_TICKS = 12
+
+# A4 — cap on the post-publish graceful-stop retry (mode-exit / input-loss /
+# escalation). The energy-informed start converges in ≤ ~3 validates; this bounds
+# the worst-case block far under the ~117 ms firmware decay→sprint threshold, and
+# the retry resumes next tick from the decayed seed if it doesn't converge here.
+_STOP_RETRY_ITERS = 6
+
 
 class TrajectoryNode(Node):
     """Thin ROS wrapper; the trajectory math lives in ``jugglebot.motion.trajectory``.
@@ -251,6 +265,14 @@ class TrajectoryNode(Node):
         # _emit_once retries it every tick from the decaying live state until it
         # converges — instead of latching failure. Set by mode-exit AND input-loss.
         self._pending_stop = False
+        # A3 escalation latch: set when the follower reports escalate=True (sustained
+        # chase rejects → a corrupt / boundary-wedged seed). While set, target
+        # freshness does NOT clear _pending_stop (so the stop machinery keeps running
+        # through a live 40 Hz stream); cleared ONLY by a follower plan accepted +
+        # installed, a reseed, or leaving the follower mode. _escalate_stop_fail_count
+        # counts consecutive failed stop builds while latched → the HoldPlan backstop.
+        self._escalation_stop = False
+        self._escalate_stop_fail_count = 0
         # Gravity-levelling correction (identity = none), composed into follower
         # target orientations — ported from mpc_bridge_node.
         self._gravity_correction = np.eye(3)
@@ -272,6 +294,13 @@ class TrajectoryNode(Node):
         # Emitter jitter diagnostic (max inter-tick gap over the last window).
         self._max_emit_gap_s = 0.0
         self._last_emit_mono = None
+        # Post-publish follow-block cost diagnostic (C3): max duration of the
+        # pending-stop retry + follower replan block over the last window. Exposed
+        # alongside _max_emit_gap_s so /diagnose can confirm the block stays far
+        # under the ~117 ms decay→sprint threshold. `_last_alpha` is the follower's
+        # last chase progress fraction (1.0 = reached, <1 = capped, 0 = stop).
+        self._max_follow_block_s = 0.0
+        self._last_alpha = 1.0
         # Measured leg peaks of the last accepted move (for trajectory/diagnostics).
         # `_last_peak_*` are the gate's PREDICTED peaks (fine-sampled, from the report
         # at plan time). `_run_peak_*` are the REALIZED peaks tracked from the actual
@@ -400,8 +429,20 @@ class TrajectoryNode(Node):
                 pass
 
     def _emit_once(self, now: float) -> None:
-        """Emit one knot frame for wall time ``now`` (perf_counter). Public for tests."""
-        # Jitter diagnostic.
+        """Emit one knot frame for wall time ``now`` (perf_counter). Public for tests.
+
+        Publish-first ordering (C3): sample + publish this tick's knot from the plan
+        installed on a PRIOR tick, THEN run the pending-stop retry and follower
+        replan (which install the plan the NEXT tick samples). The knot publish never
+        waits on any planning, so a slow (or raising) replan can never delay or gap
+        the wire stream — the fix for the S3 44-146 ms emit gaps that fed the
+        firmware decay→sprint bursts. Cost: one tick (25 ms) of stick→platform
+        latency, accepted. C2 is preserved — the follower still seeds from the active
+        plan sampled at its seed time (``_current_state``) and installs with
+        ``t0 = seed_mono``; the reorder changes only WHEN the install lands (after
+        this tick's publish), not the seeding rule.
+        """
+        # Jitter diagnostic (gap-diag).
         if self._last_emit_mono is not None:
             self._max_emit_gap_s = max(self._max_emit_gap_s,
                                        now - self._last_emit_mono)
@@ -415,48 +456,7 @@ class TrajectoryNode(Node):
         if not streaming or plan is None or t0 is None:
             return
 
-        # Pending graceful stop retry (any streaming mode). A stop was requested
-        # (mode-exit mid-move or follower input-loss) but build_graceful_stop
-        # rejected the seed then — a near-boundary outward-moving state whose decel
-        # overshoot (~0.2·v·T) exceeds its boundary margin. The platform's velocity
-        # is decaying under the still-running gated plan, so retry from the live
-        # state until it converges (a few ticks), then install and clear the flag.
-        if self._pending_stop:
-            try:
-                stop = planner.build_graceful_stop(
-                    self._current_state(), self._limits, self._geom)
-            except TrajectoryInfeasible:
-                pass    # still overshooting — keep the gated plan, retry next tick
-            else:
-                self._install(stop)
-                self._pending_stop = False
-                # Latch input-loss too so the follower branch below doesn't
-                # immediately re-stop (a fresh target un-latches both).
-                self._follower_input_lost = True
-                self.get_logger().info(
-                    "pending graceful stop converged — installed (move silenced)")
-                with self._plan_lock:
-                    plan = self._active_plan
-                    t0 = self._plan_t0
-
-        # Follower replan (SpaceMouse/GUI/shell): drain the latest target and
-        # possibly install a fresh plan BEFORE sampling this tick's frame. The fast
-        # validate_follow gate keeps this well inside the 25 ms emit budget — typical
-        # replan is 1–2 gate passes (~4–9 ms); worst case is a 6-pass build_follow
-        # (≤ ~26 ms) or the 24-pass stop (~100 ms), both still ≪ the 250 ms staleness
-        # E-STOP, and an emit overrun just resets the absolute deadline (no catch-up
-        # spin). A contained exception in here must never stop the stream.
-        if mode in _FOLLOWER_MODES:
-            try:
-                if self._follower_tick(now):
-                    with self._plan_lock:
-                        plan = self._active_plan
-                        t0 = self._plan_t0
-            except Exception as e:  # noqa: BLE001 — one replan must not kill streaming
-                self.get_logger().error(
-                    f"follower tick error (contained): {e}",
-                    throttle_duration_sec=1.0)
-
+        # ── Sample + publish FIRST (before any planning) ──
         tau = now - t0
         frame = self._emitter.frame(plan, tau, self._seq)
         motor_rev = np.asarray(frame['motor_rev'], dtype=float)
@@ -491,6 +491,79 @@ class TrajectoryNode(Node):
         # sample above and this call, and a stale frame must not contaminate the new
         # move's realized window (the install-straddle finding).
         self._track_realized_peaks(frame, plan)
+
+        # ── Post-publish planning: pending-stop retry then follower replan ──
+        # Bounded (A4 max_iters, contained exceptions) so the worst block stays far
+        # under the ~117 ms firmware decay→sprint threshold; whatever installs here
+        # is what the NEXT tick samples. Timed for the follow-block diagnostic.
+        block_t0 = time.perf_counter()
+        try:
+            self._post_publish_planning(now, mode)
+        except Exception as e:  # noqa: BLE001 — planning must never kill the stream
+            self.get_logger().error(
+                f"post-publish planning error (contained): {e}",
+                throttle_duration_sec=1.0)
+        self._max_follow_block_s = max(self._max_follow_block_s,
+                                       time.perf_counter() - block_t0)
+
+    def _post_publish_planning(self, now: float, mode: str) -> None:
+        """Run this tick's planning AFTER the knot is on the wire (C3).
+
+        Pending graceful-stop retry (any streaming mode) then the follower replan
+        (follower modes only). Each installs the plan the next tick samples.
+        """
+        if self._pending_stop:
+            self._retry_pending_stop(now)
+        if mode in _FOLLOWER_MODES:
+            try:
+                self._follower_tick(now)
+            except Exception as e:  # noqa: BLE001 — one replan must not kill streaming
+                self.get_logger().error(
+                    f"follower tick error (contained): {e}",
+                    throttle_duration_sec=1.0)
+
+    def _retry_pending_stop(self, now: float) -> None:
+        """Retry the deferred graceful stop from the live (decaying) state.
+
+        A stop was requested (mode-exit mid-move, follower input-loss, or an A3
+        escalation) but build_graceful_stop rejected the seed then — a near-boundary
+        outward-moving state whose decel overshoot (~0.2·v·T) exceeds its boundary
+        margin. The platform's velocity decays under the still-running gated plan, so
+        retry from the live state until it converges (a few ticks), then install and
+        clear the flag. Bounded by ``_STOP_RETRY_ITERS`` (A4).
+
+        Escalation backstop (A3): while the escalation latch is set, count the
+        consecutive failed builds; after ``_ESCALATE_HOLD_TICKS`` install a HoldPlan
+        at the last emitted (known-good) pose DIRECTLY — a corrupt seed that never
+        becomes stoppable still gets a terminal, loud action instead of a silent
+        never-ending keep-last.
+        """
+        try:
+            stop = planner.build_graceful_stop(
+                self._current_state(), self._limits, self._geom,
+                max_iters=_STOP_RETRY_ITERS)
+        except TrajectoryInfeasible:
+            # Still overshooting / spatially infeasible — keep the gated plan.
+            if self._escalation_stop:
+                self._escalate_stop_fail_count += 1
+                if self._escalate_stop_fail_count >= _ESCALATE_HOLD_TICKS:
+                    with self._plan_lock:
+                        self._active_plan = HoldPlan(self._last_pose)
+                        self._plan_t0 = now
+                    self._escalate_stop_fail_count = 0
+                    self.get_logger().error(
+                        "escalation stop did not converge — holding at the last "
+                        "emitted pose (corrupt-seed backstop)",
+                        throttle_duration_sec=1.0)
+            return
+        self._install(stop)
+        self._pending_stop = False
+        self._escalate_stop_fail_count = 0
+        # Latch input-loss too so the follower branch below doesn't immediately
+        # re-stop (a fresh target un-latches it — unless the escalation latch holds).
+        self._follower_input_lost = True
+        self.get_logger().info(
+            "pending graceful stop converged — installed (move silenced)")
 
     def _track_realized_peaks(self, frame: dict, sampled_plan) -> None:
         """Update the per-move realized leg peaks from an emitted knot frame.
@@ -536,6 +609,15 @@ class TrajectoryNode(Node):
         # CATCH, so the frozen reach must release).
         if mode != _CATCH_MODE:
             self._catch_arrival_perf = None
+        # A3: the escalation + pending-stop latches are cleared on ANY mode change,
+        # BEFORE the mid-move stop logic below (which independently re-requests a stop
+        # if this transition needs one). A mode change is a fresh context — a stale
+        # escalation/pending stop from the prior mode must not leak across it (this
+        # also fixes the pending-stop leak into CATCH). The clear is done ATOMICALLY
+        # with the _current_mode write under _plan_lock (in both branches below) so a
+        # follower escalation racing this exit on the emitter thread — its follow() in
+        # flight — cannot re-latch the flags into the new mode: _enter_escalation_stop
+        # re-checks the mode under the same lock and refuses once we have left.
         if mode in self._stream_modes:
             # Leaving a motion mode (TRAJECTORY / a follower / CATCH) for a non-motion
             # streaming mode (STANDBY) while a move is in flight: STANDBY silences
@@ -567,6 +649,9 @@ class TrajectoryNode(Node):
             with self._plan_lock:
                 self._current_mode = mode
                 self._streaming = True
+                self._escalation_stop = False
+                self._escalate_stop_fail_count = 0
+                self._pending_stop = False
             if entering_catch:
                 # Fresh catch session — release any stale committed reach so the first
                 # target replans freely (belt-and-suspenders: leaving CATCH already
@@ -592,7 +677,8 @@ class TrajectoryNode(Node):
                 # _current_state/_install lock themselves.
                 try:
                     stop = planner.build_graceful_stop(
-                        self._current_state(), self._limits, self._geom)
+                        self._current_state(), self._limits, self._geom,
+                        max_iters=_STOP_RETRY_ITERS)
                     self._install(stop)
                     self.get_logger().info(
                         f"changed mode {prev_mode}→{mode} mid-move — "
@@ -625,6 +711,9 @@ class TrajectoryNode(Node):
                 self._streaming = False
                 self._seeded = False
                 self._last_motor_rev = None
+                self._escalation_stop = False
+                self._escalate_stop_fail_count = 0
+                self._pending_stop = False
             self.get_logger().info(f"streaming DISABLED (mode {mode})")
 
     def _on_robot_state(self, msg) -> None:
@@ -687,6 +776,8 @@ class TrajectoryNode(Node):
         self._follower_target = None
         self._follower_input_lost = False
         self._pending_stop = False   # fresh at-rest seed supersedes any pending stop
+        self._escalation_stop = False       # A3: a reseed clears the escalation latch
+        self._escalate_stop_fail_count = 0
         self._catch_arrival_perf = None   # a fresh seed releases any frozen catch reach
         self.get_logger().info(
             f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
@@ -761,7 +852,13 @@ class TrajectoryNode(Node):
 
         if fresh:
             self._follower_input_lost = False
-            self._pending_stop = False    # a fresh target supersedes any pending stop
+            # A fresh target supersedes any pending stop — UNLESS the escalation latch
+            # is set (A3): during an escalation episode the seed is corrupt/wedged, so
+            # a fresh 100 Hz stick must NOT keep cancelling the stop. The latch clears
+            # only when a fresh plan actually installs (below) — i.e. the follower has
+            # recovered — or on a reseed / mode change.
+            if not self._escalation_stop:
+                self._pending_stop = False
             # Capture the seed-sample time BEFORE sampling, then install the follow
             # plan with t0 = seed_mono so the plan's time origin matches the state it
             # was seeded from (no v·Δt rewind at every replan — the per-replan-t0-skew
@@ -769,6 +866,7 @@ class TrajectoryNode(Node):
             seed_mono = time.perf_counter()
             result = self._follower.follow(
                 self._current_state(), target_tuple[0], self._limits)
+            self._last_alpha = float(result.alpha)
             if result.saturated:
                 self.get_logger().warning(
                     "follower target outside workspace — clamped to nearest "
@@ -778,6 +876,12 @@ class TrajectoryNode(Node):
                 self.get_logger().warning(
                     f"follower target rejected ({result.rejection}) — holding "
                     "last valid plan", throttle_duration_sec=1.0)
+            if result.escalate:
+                # Sustained chase rejects (A3): the seed is corrupt or wedged near a
+                # boundary. Latch a graceful stop off this flag; the pending-stop
+                # retry (post-publish) drives it, with the HoldPlan backstop if it
+                # never converges. Level-triggered — deduped by the latch.
+                self._enter_escalation_stop(result.rejection)
             if result.plan is not None:
                 # Conditional install (TOCTOU guard): re-check under _plan_lock that
                 # the mode is still a follower mode. A concurrent mode-exit may have
@@ -785,10 +889,23 @@ class TrajectoryNode(Node):
                 # this stale follow plan lets that stop survive.
                 installed = self._install(
                     result.plan, t0=seed_mono, require_follower_mode=True)
-                if installed and result.report is not None:
-                    self._last_peak_vel_mmps = result.report.peak_leg_vel_mmps
-                    self._last_peak_acc_mmps2 = result.report.peak_leg_acc_mmps2
-                    self._last_peak_jerk_mmps3 = result.report.peak_leg_jerk_mmps3
+                if installed:
+                    # A fresh plan accepted + installed: the follower has recovered
+                    # (a chase that tracks, or an A2 graceful stop) — the escalation
+                    # episode is over (A3: this is what clears the latch).
+                    self._clear_escalation_stop()
+                    # A fresh tracking plan supersedes any pending stop. During an
+                    # escalation episode the fresh-target clear above (line ~853) is
+                    # gated off _escalation_stop, so it is SKIPPED on the recovery
+                    # tick; without this, _pending_stop leaks True and the next tick's
+                    # retry installs a spurious stop over the just-recovered plan. The
+                    # install succeeded with require_follower_mode=True, so we are
+                    # provably still in follower mode (not a mode-exit stop to keep).
+                    self._pending_stop = False
+                    if result.report is not None:
+                        self._last_peak_vel_mmps = result.report.peak_leg_vel_mmps
+                        self._last_peak_acc_mmps2 = result.report.peak_leg_acc_mmps2
+                        self._last_peak_jerk_mmps3 = result.report.peak_leg_jerk_mmps3
                 return installed
             return False
 
@@ -808,7 +925,8 @@ class TrajectoryNode(Node):
         if not self._follower_input_lost and not self._pending_stop:
             try:
                 stop = planner.build_graceful_stop(
-                    self._current_state(), self._limits, self._geom)
+                    self._current_state(), self._limits, self._geom,
+                    max_iters=_STOP_RETRY_ITERS)
             except TrajectoryInfeasible as e:
                 self._request_pending_stop(str(e))
                 return False
@@ -832,6 +950,55 @@ class TrajectoryNode(Node):
                 f"graceful stop deferred — near-boundary outward seed ({reason}); "
                 "retrying from the decaying live state until it converges")
         self._pending_stop = True
+
+    def _enter_escalation_stop(self, reason: str) -> None:
+        """Latch a follower-escalation stop (A3).
+
+        The follower has reported ``escalate=True`` — ``CHASE_ESCALATE_TICKS``
+        consecutive chase rejects, meaning the seed is corrupt or wedged near a
+        boundary (a fresh target the chase can never make feasible). Drive the
+        pending-stop machinery so the post-publish retry installs a graceful stop
+        (with the HoldPlan backstop if it never converges). Log ERROR ONCE per
+        episode (deduped by the latch), with the seed's leg extensions so the
+        forensic trail names the wedged pose."""
+        # Latch under _plan_lock and re-check the mode: a concurrent _on_control_mode
+        # may have left the follower mode (clearing these latches atomically with its
+        # own _current_mode write) DURING this tick's in-flight follow(). Latching
+        # after that exit would leak _escalation_stop into the new mode — the TOCTOU
+        # install guard drops the stale follow plan, so _clear_escalation_stop never
+        # runs to undo it. If we have already left, refuse: the mode-exit's own stop
+        # logic owns the stop now.
+        with self._plan_lock:
+            if self._current_mode not in _FOLLOWER_MODES:
+                return
+            self._pending_stop = True
+            first_escalation = not self._escalation_stop
+            if first_escalation:
+                self._escalation_stop = True
+                self._escalate_stop_fail_count = 0
+        if not first_escalation:
+            return
+        # Log ERROR once per episode (deduped by the latch) OUTSIDE the lock —
+        # _current_state acquires _plan_lock itself.
+        try:
+            seed_pose = self._current_state()[0]
+            ext = pose_to_leg_lengths(
+                np.asarray(seed_pose[:3], dtype=float),
+                rotvec_to_rot_matrix(np.asarray(seed_pose[3:6], dtype=float)),
+                self._geom)
+            ext_s = np.array2string(ext, precision=1)
+        except Exception:  # noqa: BLE001 — the log must never raise
+            ext_s = 'n/a'
+        self.get_logger().error(
+            f"follower escalation — {self._follower.consecutive_rejects} "
+            f"consecutive chase rejects ({reason}); seed leg ext {ext_s} mm — "
+            "requesting a graceful stop (corrupt / boundary-wedged seed)")
+
+    def _clear_escalation_stop(self) -> None:
+        """Clear the escalation latch (A3): the follower recovered (a fresh plan
+        accepted + installed), or the seed was reseeded / the mode left."""
+        self._escalation_stop = False
+        self._escalate_stop_fail_count = 0
 
     # ═══════════════════════════════════════════════════════════
     # Services (Trigger)
@@ -1518,10 +1685,22 @@ class TrajectoryNode(Node):
             KeyValue(key='move_seq', value=str(self._move_seq)),
             KeyValue(key='max_emit_gap_ms', value=f'{gap_ms:.1f}'),
             KeyValue(key='plan_kind', value=kind),
+            # Chase-follower observability (chase-clamp rewrite): last chase progress
+            # fraction, the consecutive-reject streak, whether the escalation stop is
+            # latched, and the worst post-publish follow-block cost over this window
+            # (C3 — must stay far under the ~117 ms decay→sprint threshold).
+            KeyValue(key='chase_alpha', value=f'{self._last_alpha:.3f}'),
+            KeyValue(key='consecutive_rejects',
+                     value=str(self._follower.consecutive_rejects)),
+            KeyValue(key='escalation_stop',
+                     value='1' if self._escalation_stop else '0'),
+            KeyValue(key='follow_block_max_ms',
+                     value=f'{self._max_follow_block_s * 1e3:.1f}'),
         ]
         self.diagnostics_pub.publish(diag)
-        # Reset the jitter window each publish so the metric is per-200ms.
+        # Reset the per-200ms windows each publish.
         self._max_emit_gap_s = 0.0
+        self._max_follow_block_s = 0.0
 
     # ═══════════════════════════════════════════════════════════
     # Shutdown

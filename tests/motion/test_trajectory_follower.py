@@ -294,6 +294,57 @@ def test_graceful_stop_raises_near_boundary_outward_seed(geom, limits):
     assert np.allclose(ae, 0.0, atol=1e-9)
 
 
+def test_graceful_stop_energy_start_fallback_recovers_workspace(geom, limits):
+    """A4: an over-large stop start overshoots a tight boundary margin (WORKSPACE)
+    where the plain min_move ladder — a smaller per-candidate overshoot — still
+    passes. build_graceful_stop's one-shot fallback retries from min_move and installs
+    that tick. Empirically confirmed 2026-07-09: seed x=238 mm moving +40 mm/s, a 1.2 s
+    explicit start raises WORKSPACE but the fallback recovers.
+
+    Uses an EXPLICIT ``start_duration_s`` so the test is deterministic (the default
+    energy start is exercised throughout the follower fuzz/sweep); the point is the
+    fallback path, which the default energy start reaches the same way when its
+    UNDER-estimate still overshoots a very tight margin."""
+    p = np.array([238.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    v = np.array([40.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+    z = np.zeros(6)
+    # The raw stretch from the large start (no fallback) fails WORKSPACE...
+    with pytest.raises(TrajectoryInfeasible) as ei:
+        planner._stretch_stop(p, v, z, 1.2, limits, geom, 24)
+    assert ei.value.code == feas.WORKSPACE
+    # ...but build_graceful_stop with that same explicit start recovers via the
+    # one-shot min_move fallback and installs a valid decel-to-rest that tick.
+    stop = planner.build_graceful_stop((p, v, z), limits, geom, start_duration_s=1.2)
+    rep = feas.validate_follow(stop, limits, geom)
+    assert rep.ok
+    _, ve, ae = stop.state_at(stop.total_duration)
+    assert np.allclose(ve, 0.0, atol=1e-9)
+    assert np.allclose(ae, 0.0, atol=1e-9)
+
+
+def test_graceful_stop_energy_start_bounds_iterations(geom, limits):
+    """A4: the energy-informed start makes an over-energetic (but stoppable) seed
+    converge in a few validates — so the node's small per-tick retry budget (~6) is
+    enough. A 90 mm/s z seed converges from the energy start with ≤ 6 gate passes."""
+    seed = (_NEUTRAL, np.array([0.0, 0.0, -90.0, 0.0, 0.0, 0.0]), np.zeros(6))
+    calls = {'n': 0}
+    real_vf = feas.validate_follow
+
+    def counting(plan, lim, g, **kw):
+        calls['n'] += 1
+        return real_vf(plan, lim, g, **kw)
+
+    import jugglebot.motion.trajectory.planner as pl
+    orig = pl.validate_follow
+    pl.validate_follow = counting
+    try:
+        stop = planner.build_graceful_stop(seed, limits, geom, max_iters=6)
+    finally:
+        pl.validate_follow = orig
+    assert feas.validate_follow(stop, limits, geom).ok
+    assert calls['n'] <= 6
+
+
 # ── TargetFollower policy ─────────────────────────────────────
 
 def test_follower_reachable_target_unchanged(geom, limits):
@@ -339,11 +390,16 @@ def test_follower_keeps_last_plan_on_rejection(geom, limits, monkeypatch):
     assert res.rejection
 
 
-def test_follower_skips_replan_on_sustained_reject(geom, limits, monkeypatch):
-    """Sustained-reject skip: when build_follow rejects a target, the follower
-    remembers it and SKIPS re-running the (up-to-6-pass) gate while subsequent targets
-    stay within deadband of the rejected one — the gate runs ONCE, not every 40 Hz
-    tick. The skip clears the moment the target moves beyond deadband."""
+def test_follower_gate_reruns_each_tick_on_sustained_reject(geom, limits,
+                                                            monkeypatch):
+    """A7 inversion of the old ``test_follower_skips_replan_on_sustained_reject``.
+
+    The reject MEMO is GONE with the chase rewrite: the chase makes a candidate
+    cheap (2-3 validates, ~a few ms) and, crucially, the memo hid the accept/reject
+    cycling that killed the S3 session — so on a sustained-reject target the follower
+    now re-runs the gate EVERY tick (not once). This pins that the gate is canonical
+    and re-evaluated each tick, and that the reject streak accumulates toward the
+    escalation threshold."""
     f = TargetFollower(geom, 0.35)
     state0 = (_NEUTRAL, np.zeros(6), np.zeros(6))
     calls = {'n': 0}
@@ -354,15 +410,12 @@ def test_follower_skips_replan_on_sustained_reject(geom, limits, monkeypatch):
 
     monkeypatch.setattr(planner, 'build_follow', counting_reject)
     target = [20, 0, 180, 0, 0, 0.03]
-    r1 = f.follow(state0, target, limits)             # gate runs, rejects
-    assert r1.plan is None and r1.rejection
-    assert calls['n'] == 1
-    for _ in range(5):                                # sustained identical target
+    n_ticks = 8
+    for _ in range(n_ticks):                          # sustained identical target
         r = f.follow(state0, target, limits)
-        assert r.plan is None
-    assert calls['n'] == 1, "gate re-ran on a sustained-reject target"
-    f.follow(state0, [20, 30, 180, 0, 0, 0.03], limits)   # moved beyond deadband
-    assert calls['n'] == 2, "gate did not re-run after the target moved"
+        assert r.plan is None and r.rejection
+    assert calls['n'] == n_ticks, "gate did NOT re-run each tick (memo not removed)"
+    assert f.consecutive_rejects == n_ticks           # streak accumulates (A3)
 
 
 def test_follower_reset_reclears_deadband(geom, limits):
