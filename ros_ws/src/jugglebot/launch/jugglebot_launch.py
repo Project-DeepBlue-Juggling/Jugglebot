@@ -191,6 +191,12 @@ def generate_launch_description():
             '/orchestrator_state',
             '/control_mode_topic',
             '/orchestrator_command',
+            # The fault channel. Without it a latched guard E-STOP (MPC_STALE /
+            # MAX_DEVIATION) leaves NO trace in the bag — the 2026-07-09 S2 session's
+            # E-STOP was only visible on the live topic, making the bag unable to
+            # explain its own gap. Carries fault_state, mpc_active, setpoints_sent/
+            # _rejected, link + bus health.
+            '/link_status',
             '/trajectory/status',
             '/trajectory/diagnostics',
             '/trajectory/target_feedback',

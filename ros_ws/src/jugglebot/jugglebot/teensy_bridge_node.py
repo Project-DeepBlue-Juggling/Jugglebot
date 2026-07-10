@@ -356,6 +356,9 @@ class TeensyBridgeNode(Node):
         self._lock = threading.Lock()
         self._latest_telemetry: Telemetry | None = None
         self._latest_heartbeat: HeartbeatT2J | None = None
+        # Last fault_state seen on the T→J heartbeat, for edge-triggered logging in
+        # _publish_link_status. None = nothing seen yet (so the first NONE is silent).
+        self._last_fault_state: int | None = None
         self._latest_profile: Profile | None = None
         # Per-axis latest Diagnostic (one axis per frame on the wire).
         self._latest_diag: dict[int, Diagnostic] = {}
@@ -1394,6 +1397,23 @@ class TeensyBridgeNode(Node):
         if not self._link_latch.command_allowed():
             return False, 'Teensy link latched lost — refuse to arm'
 
+        # (a2) The Teensy guard must not already be faulted. A latched E-STOP
+        # silently DISCARDS leg output, so without this check the arm reports
+        # "setpoint output ENABLED (armed)" onto a robot that cannot move — the
+        # 40 Hz stream flows, setpoints_sent climbs, setpoints_rejected stays 0,
+        # and nothing happens. That exact false-success cost a bench session on
+        # 2026-07-09. The other preconditions cannot catch it: they check link
+        # freshness, stream freshness, and u0-vs-encoder, none of which depend on
+        # the guard latch.
+        with self._lock:
+            hb = self._latest_heartbeat
+        if hb is not None and int(hb.fault_state) != int(FaultState.NONE):
+            name = _enum_name(FaultState, int(hb.fault_state))
+            return False, (
+                f'Teensy guard fault latched (fault_state={name}) — refuse to arm; '
+                f'leg output is suppressed until it is cleared. Recover with: '
+                f'ros2 service call /clear_errors std_srvs/srv/Trigger')
+
         # (b) a fresh mpccmd frame on :5557 within 0.5 s (is trajectory_node up?).
         source, created_here = self._acquire_setpoint_source()
         if source is None:
@@ -1572,6 +1592,28 @@ class TeensyBridgeNode(Node):
 
             # Level: ERROR on lost link or any non-NONE Teensy fault; OK otherwise.
             fault_active = hb is not None and int(hb.fault_state) != int(FaultState.NONE)
+
+            # Announce guard fault-state EDGES on the node log. Until this landed the
+            # firmware could latch an E-STOP in total silence: /link_status carried
+            # fault_state but was not recorded in the rosbag, and nothing was logged,
+            # so an operator saw only "the robot stopped responding" and DEACTIVATE
+            # coming back ERR_BUS_DOWN. Edge-triggered (not per-tick) so a latched
+            # fault does not spam the 5 Hz timer.
+            if hb is not None:
+                fs = int(hb.fault_state)
+                if fs != self._last_fault_state:
+                    if fs != int(FaultState.NONE):
+                        self.get_logger().error(
+                            f'Teensy guard FAULT LATCHED: fault_state={teensy_fault} '
+                            f'— leg output is now SUPPRESSED and every leg command '
+                            f'(incl. DEACTIVATE, which returns ERR_BUS_DOWN) will be '
+                            f'refused. Recover with: ros2 service call /clear_errors '
+                            f'std_srvs/srv/Trigger')
+                    elif self._last_fault_state is not None:
+                        self.get_logger().info(
+                            'Teensy guard fault cleared (fault_state=NONE) — leg '
+                            'output re-enabled.')
+                    self._last_fault_state = fs
             if bridge_link in ('LOST', 'NO_HEARTBEAT') or fault_active:
                 msg.level = DiagnosticStatus.ERROR
                 msg.message = f'link={bridge_link} fault={teensy_fault}'
@@ -1712,7 +1754,34 @@ class TeensyBridgeNode(Node):
                                     timeout=timeout, retries=retries)
             return True, 'OK', result
         except RpcError as e:
-            return False, str(e), b""
+            return False, self._annotate_rpc_error(str(e)), b""
+
+    def _annotate_rpc_error(self, message: str) -> str:
+        """Disambiguate ERR_BUS_DOWN, which the firmware overloads three ways.
+
+        ``leg_deactivate.cpp:deactivate_allowed`` (and the activate/relay/hand
+        analogues) return ERR_BUS_DOWN for a WARN/BUS_OFF bus, for
+        ``fault_can_bus_down()``, AND for ``fault_guard_mode() == ESTOP`` — a
+        latched guard on a perfectly healthy bus. The bare status therefore sends
+        an operator hunting a CAN fault that does not exist (2026-07-09: a
+        MAX_DEVIATION E-STOP surfaced only as "DEACTIVATE rejected:
+        ERR_BUS_DOWN"). Append the live fault_state so the real cause is named at
+        the point of failure.
+        """
+        if 'ERR_BUS_DOWN' not in message:
+            return message
+        with self._lock:
+            hb = self._latest_heartbeat
+        if hb is None:
+            return message
+        fs = int(hb.fault_state)
+        if fs != int(FaultState.NONE):
+            return (f'{message} — NOTE: ERR_BUS_DOWN also covers a latched guard '
+                    f'E-STOP, and fault_state={_enum_name(FaultState, fs)} is '
+                    f'currently latched. The bus is likely fine. Clear it with: '
+                    f'ros2 service call /clear_errors std_srvs/srv/Trigger')
+        return (f'{message} — guard is not faulted (fault_state=NONE), so this is a '
+                f'genuine bus condition (CAN3 WARN/BUS_OFF or down)')
 
     # ── Tested node methods (one per RpcMethod) — the reusable surface ──
     # Arg encoding (rpc_args, codegen-hoisted) + RpcClient call. ROS service

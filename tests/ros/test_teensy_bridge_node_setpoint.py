@@ -376,6 +376,84 @@ def test_arm_rejected_on_nan_pos_rev():
         _teardown(teensy, client, node)
 
 
+def test_arm_rejected_when_guard_fault_latched():
+    """A latched Teensy guard fault ⇒ refuse to arm, and NAME the fault.
+
+    Regression for the 2026-07-09 SpaceMouse bench session: a MAX_DEVIATION E-STOP
+    stayed latched across a ROS2 relaunch (the latch lives on the Teensy, which does
+    not reboot with the Jetson). Arming reported `success: true, "setpoint output
+    ENABLED (armed)"` and the 40 Hz stream flowed with setpoints_rejected=0 — while
+    the guard silently discarded every leg command. The other preconditions cannot
+    catch this: link freshness, stream freshness and u0-vs-encoder are all satisfied
+    by a healthy stack in front of a latched guard.
+    """
+    from controller.teensy_link import protocol as p
+    teensy, client, node = _node()
+    try:
+        # Link + telemetry up, but the heartbeat carries a latched MAX_DEVIATION.
+        teensy.send_heartbeat_t2j(fault_state=int(p.FaultState.MAX_DEVIATION))
+        teensy.send_telemetry(pos_rev=tuple([0.1] * 7), vel_rps=tuple([0.0] * 7))
+        assert _wait_until(
+            lambda: node._latest_telemetry is not None
+            and node._latest_heartbeat is not None
+            and int(node._latest_heartbeat.fault_state)
+            == int(p.FaultState.MAX_DEVIATION),
+            timeout=2.0)
+        node._injected_setpoint_source = _FakeSource([_cmd([0.1] * 6)])
+
+        resp = _arm(node)
+        assert resp.success is False
+        assert 'MAX_DEVIATION' in resp.message
+        assert 'clear_errors' in resp.message
+        assert node._mpc_active is False
+        assert node._sp_thread is None
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_arm_allowed_when_guard_fault_none():
+    """Control for the test above: fault_state=NONE must not block arming."""
+    from controller.teensy_link import protocol as p
+    teensy, client, node = _node()
+    try:
+        teensy.send_heartbeat_t2j(fault_state=int(p.FaultState.NONE))
+        teensy.send_telemetry(pos_rev=tuple([0.1] * 7), vel_rps=tuple([0.0] * 7))
+        assert _wait_until(
+            lambda: node._latest_telemetry is not None
+            and node._link_age_us() is not None, timeout=2.0)
+        node._injected_setpoint_source = _FakeSource([_cmd([0.1] * 6)])
+        resp = _arm(node)
+        assert resp.success is True, resp.message
+        assert node._mpc_active is True
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_err_bus_down_message_names_latched_guard_fault():
+    """ERR_BUS_DOWN is overloaded (bus WARN/BUS_OFF, can-bus-down, AND guard E-STOP).
+    When a guard fault is latched, the annotated message must say so — otherwise the
+    operator hunts a CAN fault that does not exist (2026-07-09)."""
+    from controller.teensy_link import protocol as p
+    teensy, client, node = _node()
+    try:
+        teensy.send_heartbeat_t2j(fault_state=int(p.FaultState.MAX_DEVIATION))
+        assert _wait_until(lambda: node._latest_heartbeat is not None, timeout=2.0)
+        annotated = node._annotate_rpc_error('DEACTIVATE: ERR_BUS_DOWN')
+        assert 'MAX_DEVIATION' in annotated
+        assert 'clear_errors' in annotated
+
+        teensy.send_heartbeat_t2j(fault_state=int(p.FaultState.NONE))
+        assert _wait_until(
+            lambda: int(node._latest_heartbeat.fault_state) == int(p.FaultState.NONE),
+            timeout=2.0)
+        clean = node._annotate_rpc_error('DEACTIVATE: ERR_BUS_DOWN')
+        assert 'fault_state=NONE' in clean
+        # An unrelated status must pass through untouched.
+        assert node._annotate_rpc_error('ERR_TIMEOUT') == 'ERR_TIMEOUT'
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_arm_and_disarm_paths():
     """All preconditions met ⇒ arm (mpc_active=1, thread up, heartbeat flag set);
     disarm ⇒ clean (mpc_active=0, thread down, heartbeat flag clear)."""
