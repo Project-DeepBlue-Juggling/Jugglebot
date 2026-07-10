@@ -3,7 +3,7 @@ title: Leg ODrive PID Gain Tuning Methodology
 status: active
 owner: harrison
 created: 2026-04-18
-last_updated: 2026-04-20
+last_updated: 2026-07-10
 related_logbook:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
   - 2026-04-19-leg1-pose-dependent-hold-twitch.md
@@ -213,6 +213,69 @@ against a standardised input and a small set of well-known metrics.
   want to characterise the PID against an instantaneous step, use
   PASSTHROUGH and a jog command — but be ready for the clamp on leg stroke
   to fire if the response is unstable.
+
+## Fast-motion tier (Level-2f) — dynamic-tracking damping
+
+**Added 2026-07-10.** Levels 1–3 as written above all optimise **hold** behaviour
+(hold-phase stdev, single-pose quiescence). The 2026-07-10 ~6 Hz stutter proved a
+second, orthogonal regime that Level-1 does not cover: **fast-motion tracking under
+raised session limits**. The Level-1 tier (`40 / 0.20 / 0.32`) is quiet at hold but
+its velocity loop is too lightly damped to track an aggressive vertical stroke — the
+position loop rings at its own bandwidth (`pos_gain/(2π)` = 6.37 Hz), the ODrive
+current surges and brakes cycle-by-cycle, and on the biggest/fastest stroke the
+accumulated command-vs-encoder lead crosses the 0.5-rev `MAX_DEVIATION` guard and
+latches. See the 2026-07-10 stutter forensics (logbook entry TBD) and the bench
+protocol `tests/hardware/session_gain_retune.md`.
+
+Use when: a gain set that passed the Level-1 HOLD battery produces an audible/visible
+limit cycle, braking-current oscillation, lead-clamp engagement, or a spurious
+`MAX_DEVIATION` latch on a fast stroke at raised limits. Cost: one bench session (the
+gain-apply loop is edit-YAML → generate_config → colcon build → relaunch per point;
+`is_homed` persists so no mechanical re-home between points). Defensibility: medium —
+tuned against a standardised fast stroke with a damping-ratio target.
+
+### Target
+
+**Closed-loop damping ratio ζ ≥ 0.7 (≤ ~5 % overshoot) at the position-loop bandwidth**,
+verified on the fixed fast vertical stroke (z 170→250 at 156/660/10500). Operationally,
+the tier is met when, on that stroke:
+
+- there is **no braking-current oscillation** (no negative-iq surge/collapse cycling);
+- **position lag < 0.05 rev** with ≥2× margin below `MAX_LEAD_REV` (0.10), so the interp
+  lead clamp never engages (`lead_clamp_mask` stays 0 on `/link_status`);
+- the stroke is subjectively smooth (no ~6 Hz buzz) and the guard never latches.
+
+This is slightly tighter than Level-2's 5–10 % overshoot target — the dynamic regime
+must ring *less*, not just settle, because a sustained ring is what accumulates the
+lead that trips the guard.
+
+### Procedure (summary — full protocol in `session_gain_retune.md`)
+
+1. **Discriminate first.** Sweep `pos_gain {25, 40, 55}` at fixed `vel_gain 0.20`
+   (`vel_int` per the 125:1 ratio → 0.20 / 0.32 / 0.44) on the fixed stroke and read the
+   ring frequency offline. If it **tracks** `pos_gain/(2π)` (≈ 4.0 / 6.4 / 8.8 Hz) it is
+   the control loop → retune. If it stays **fixed at ~6 Hz** it is a structural resonance
+   → gains are not the lever; stop and hand off to the interpolant/lead-clamp/mechanical
+   path. **Do not retune a structural resonance.**
+2. **Damp.** If control-loop: A/B `vel_gain 0.20 → 0.35` (the proportional-damping knob)
+   at the `pos_gain` that best trades tracking lag vs. ring frequency; interpolate if
+   neither clears the target.
+3. **Cross-tier guard (non-negotiable).** Any fast-motion winner MUST still pass the
+   Level-1 extreme-pose HOLD battery (moves 6 & 7 at (0,−100,200) and (100,100,200)) —
+   a gain tuned for fast motion that reintroduces the pose-dependent hold twitch is not a
+   winner. The two tiers share one YAML gain vector, so they must be *jointly* satisfied;
+   if a single uniform vector cannot satisfy both, that is the trigger to escalate to
+   Level 3 (loop shaping) or to consider gain-scheduling (see Open questions).
+
+### Registered fast-motion gains
+
+| date | pos_gain | vel_gain | vel_int_gain | measured ζ / ring | notes |
+|---|---|---|---|---|---|
+| — | TBD | TBD | TBD | TBD | first run pending — `session_gain_retune.md` |
+
+Until this table has a validated row, the committed gains remain the Level-1 HOLD tier
+(`40 / 0.20 / 0.32`), which is known to stutter on fast strokes at raised limits — so
+**fast-motion S4 ramping is gated on this tier converging** (see runbook § S4b).
 
 ## Level 3 — System ID + loop shaping
 

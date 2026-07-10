@@ -371,6 +371,22 @@ fine if the first felt completely clean — but never skip the battery+review be
 - **Detailed protocol**: `tests/hardware/session_phase4_ramp.md` (per-step mechanics;
   this section's ladder supersedes its "~1.5×, jerk 12000" example values).
 
+### S4b — Leg-gain retune (root fix for the 2026-07-10 ~6 Hz stutter) — **gates further S4**
+
+The 2026-07-10 battery latched `MAX_DEVIATION` on a fast vertical stroke (z 170→250 at
+156/660/10500) with an audible ~6 Hz stutter. Forensics traced it to the leg velocity loop
+being tuned only for quiet HOLD (`40 / 0.20 / 0.32`, the methodology's Level-1 tier), not for
+fast-motion tracking: the under-damped position loop rings at its own bandwidth, the ODrive
+current surges/brakes, and the accumulated command-vs-encoder lead trips the 0.5-rev guard.
+The stutter is worst at the raised limits, so **the S4 ramp cannot proceed above the levels
+that provoke it until the leg-gain fast-motion tier converges** — running S4 harder first just
+re-triggers the latch. Do S4b now (a `pos_gain` sweep to separate control-loop from structural
+resonance, then a `vel_gain` damping A/B), persist the winning gains to YAML, then resume S4
+from the last clean step. Sessions **S5+ are unaffected** by this gate (they run at generous
+leads / gentle limits, below the stutter regime). Detailed protocol + exact commands:
+`tests/hardware/session_gain_retune.md`; methodology tier:
+`plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (Level-2f)".
+
 ### S5 — Phase-5 timed targets (±25 ms arrival + supersede)
 
 - **Purpose**: reach a pose at an absolute arrival time within ±25 ms; too-tight timing
