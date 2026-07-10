@@ -81,7 +81,7 @@ Every 500 Hz tick, after the Hermite/Taylor/decay math, two clamps run in
 sequence on the *result*:
 
 1. **Lead clamp** — the commanded position is never allowed to run more
-   than `MAX_LEAD_REV` (0.15 rev) ahead of the live encoder feedback.
+   than `MAX_LEAD_REV` (0.10 rev) ahead of the live encoder feedback.
 2. **Stroke clamp** — the commanded position is clamped to each leg's
    measured physical hard-stop range (`STROKE_MIN_REV`/`STROKE_MAX_REV`),
    with a NaN/Inf fallback to the last-good encoder position.

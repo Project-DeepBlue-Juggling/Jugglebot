@@ -10,3 +10,10 @@ python-can==4.2.2
 cantools==39.0.0
 numpy-quaternion==2022.4.4
 pyspacemouse==1.0.9
+# tornado is rosbridge_server's WebSocket runtime (the GUI on :8081 talks to ROS
+# through rosbridge on :9090). The ROS session runs under the PDJ_venv, which is
+# built with include-system-site-packages=false, so it does NOT see the system
+# python3-tornado deb — without this pin rosbridge_websocket dies at import
+# ("No module named 'tornado'") while every other node stays up. 6.4 is verified
+# working with Foxy rosbridge 1.3.1.
+tornado==6.4

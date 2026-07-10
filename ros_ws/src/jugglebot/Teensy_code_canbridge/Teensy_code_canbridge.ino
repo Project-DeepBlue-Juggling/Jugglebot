@@ -124,6 +124,20 @@ static void send_heartbeat_t2j() {
   p.bb_pitch_deg  = bb.pitch_deg;
   p.bb_hand_mm    = bb.hand_mm;
 
+  // Leg guard-deviation diagnostics (2026-07-10 forensics). Live per-leg
+  // deviation (u0 - encoder — the exact MAX_DEVIATION guard quantity) + the
+  // lead-clamp bitmask from the last 500 Hz interp tick, plus the frozen
+  // latch-event snapshot. Individual fields are single-word reads (float/uint8,
+  // atomic on the M7); a rare torn multi-field snapshot is acceptable for 10 Hz
+  // diagnostics and cannot affect any safety decision (these are report-only).
+  for (uint8_t i = 0; i < JbUdp::NUM_LEGS; ++i)
+    p.live_deviation[i] = interp_base_pos(i) - axes[i].pos_rev;
+  p.lead_clamp_mask = interp_lead_clamp_mask();
+  p.max_dev_leg     = fault_max_dev_leg();
+  p.max_dev_value   = fault_max_dev_value();
+  p.max_dev_u0      = fault_max_dev_u0();
+  p.max_dev_enc     = fault_max_dev_enc();
+
   udp_send_stream(JbUdp::MsgType::HEARTBEAT_T2J, (const uint8_t*)&p, sizeof(p));
 }
 

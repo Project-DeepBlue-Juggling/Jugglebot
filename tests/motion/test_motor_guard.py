@@ -14,6 +14,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -1792,6 +1793,154 @@ def test_c1_cleared_on_disable():
 
     print("  [PASS] test_c1_cleared_on_disable")
     return True
+
+
+# ---------------------------------------------------------------------------
+# Recurring-warning aggregation (logging-only; control path byte-identical)
+# ---------------------------------------------------------------------------
+# The module-level ``logger`` is patched with a MagicMock (per the
+# test_odrive.py pattern) rather than caplog — motor_guard's logger records go
+# to a stderr StreamHandler, and asserting on the mock's calls is deterministic.
+# These tests take the ``monkeypatch`` fixture, so they are collected by pytest
+# but intentionally omitted from the manual main() runner below.
+
+import jugglebot.motion.motor_guard as _mg_mod
+
+
+def _warn_messages(mock_logger):
+    """Rendered messages for every logger.warning(...) call (f-string OR
+    %-style), so assertions read the final text regardless of log style."""
+    out = []
+    for c in mock_logger.warning.call_args_list:
+        if not c.args:
+            continue
+        fmt = c.args[0]
+        if len(c.args) > 1:
+            try:
+                out.append(fmt % c.args[1:])
+            except Exception:  # noqa: BLE001
+                out.append(str(fmt))
+        else:
+            out.append(str(fmt))
+    return out
+
+
+def test_stale_feedback_warning_first_then_aggregated(monkeypatch):
+    """A sustained stale-feedback condition logs its FIRST occurrence once and
+    counts the rest — it does NOT spam a WARNING every 500 Hz cycle. The
+    control effect (suppress output) is unchanged: existing
+    test_stale_feedback_suppresses pins that."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+    _provide_matching_feedback(guard, ipc)
+    _inject_mpc_cmd(ipc)
+    guard._process_ipc()
+
+    monkeypatch.setattr(_mg_mod, 'logger', MagicMock())
+    for _ in range(5):
+        guard._motor_fb_timestamp = time.perf_counter() - 0.2  # stale
+        guard._interpolate_and_send(guard.dt_target)
+
+    stale = [m for m in _warn_messages(_mg_mod.logger)
+             if 'Motor feedback stale' in m]
+    assert len(stale) == 1, f"expected one immediate WARNING, got {len(stale)}"
+    rec = guard._warn_agg['motor_fb_stale']
+    assert rec[0] == 5      # all five occurrences counted
+    assert rec[2] is True   # episode still active
+    assert rec[1] >= 0.2    # worst age tracked
+
+
+def test_stale_episode_resets_on_fresh_feedback(monkeypatch):
+    """Once feedback goes fresh, the stale episode closes so a later onset logs
+    its first occurrence immediately again (not silently swallowed)."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+    _provide_matching_feedback(guard, ipc)
+    _inject_mpc_cmd(ipc)
+    guard._process_ipc()
+
+    monkeypatch.setattr(_mg_mod, 'logger', MagicMock())
+    guard._motor_fb_timestamp = time.perf_counter() - 0.2   # stale onset #1
+    guard._interpolate_and_send(guard.dt_target)
+    guard._motor_fb_timestamp = time.perf_counter()          # fresh → closes episode
+    guard._interpolate_and_send(guard.dt_target)
+    assert guard._warn_agg['motor_fb_stale'][2] is False
+    guard._motor_fb_timestamp = time.perf_counter() - 0.2   # stale onset #2
+    guard._interpolate_and_send(guard.dt_target)
+
+    stale = [m for m in _warn_messages(_mg_mod.logger)
+             if 'Motor feedback stale' in m]
+    assert len(stale) == 2, "each new stale episode must log its first occurrence"
+
+
+def test_stroke_clamp_warning_first_then_aggregated(monkeypatch):
+    """A sustained stroke-clamp condition logs once + aggregates. The clamp's
+    control writes (zeroed ff, HARD_LIMIT status) are byte-identical — pinned
+    by test_stroke_clamp."""
+    guard, ipc = _make_guard()
+    _enable(guard, ipc)
+    ext_mm = [140.0] * 6
+    _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
+    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    guard._process_ipc()
+
+    monkeypatch.setattr(_mg_mod, 'logger', MagicMock())
+    for _ in range(4):
+        # Park feedback at stroke max so lead-clamp lets the extrapolation
+        # reach the stroke limit and the stroke clamp actually fires (mirrors
+        # test_friction_ff_clamped_leg_zeros).
+        guard._motor_fb_pos_rev = guard._stroke_max_rev.copy()
+        guard._mpc_base_vel_rps = np.full(6, 100.0)
+        guard._mpc_base_timestamp = time.perf_counter() - MAX_EXTRAP_DT_S
+        guard._interpolate_and_send(guard.dt_target)
+
+    clamp = [m for m in _warn_messages(_mg_mod.logger)
+             if 'Stroke clamp active' in m]
+    assert len(clamp) == 1, f"expected one immediate WARNING, got {len(clamp)}"
+    rec = guard._warn_agg['stroke_clamp']
+    assert rec[0] == 4        # all four occurrences counted
+    assert rec[2] is True     # episode active
+    assert rec[1] > 0.0       # worst excursion tracked
+
+
+def test_warning_summary_flush_emits_and_resets(monkeypatch):
+    """_flush_warning_summary emits one aggregated line per fired kind (count +
+    worst) every _warn_summary_interval_s, resets counts, and preserves the
+    active-episode flag."""
+    guard, _ = _make_guard()
+    guard._warn_agg['motor_fb_stale'] = [1234, 0.321, True]
+    guard._warn_agg['stroke_clamp'] = [0, 0.0, False]  # nothing fired → no line
+    guard._last_warn_summary_t = 0.0
+
+    monkeypatch.setattr(_mg_mod, 'logger', MagicMock())
+    guard._flush_warning_summary(1000.0)   # >= 10 s since 0.0 → flush
+
+    summary = [m for m in _warn_messages(_mg_mod.logger)
+               if 'occurrences in last' in m]
+    assert len(summary) == 1, f"expected one summary line, got {summary}"
+    assert 'motor_fb_stale' in summary[0]
+    assert '1234 occurrences' in summary[0]
+    assert 'age_s=0.3210' in summary[0]
+    # Counts reset; the active flag survives so an ongoing fault won't re-log
+    # its "first occurrence".
+    assert guard._warn_agg['motor_fb_stale'][0] == 0
+    assert guard._warn_agg['motor_fb_stale'][1] == 0.0
+    assert guard._warn_agg['motor_fb_stale'][2] is True
+
+
+def test_warning_summary_throttled_to_interval(monkeypatch):
+    """The summary does real work only once per interval — a call before the
+    interval elapses logs nothing and leaves counts intact."""
+    guard, _ = _make_guard()
+    guard._warn_agg['motor_fb_stale'] = [7, 0.1, True]
+    guard._last_warn_summary_t = 100.0
+
+    monkeypatch.setattr(_mg_mod, 'logger', MagicMock())
+    guard._flush_warning_summary(105.0)    # only 5 s later → no flush
+
+    assert not [m for m in _warn_messages(_mg_mod.logger)
+                if 'occurrences in last' in m]
+    assert guard._warn_agg['motor_fb_stale'][0] == 7   # untouched
 
 
 # ---------------------------------------------------------------------------

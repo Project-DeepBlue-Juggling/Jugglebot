@@ -443,17 +443,23 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
     interp_isr();
   };
 
-  SUBCASE("present leg diverging trips MAX_DEVIATION") {
+  SUBCASE("present leg diverging trips MAX_DEVIATION + freezes the latch snapshot") {
     arm_leg0();
     latch_u0(0.9f, 3.0f);             // leg0 (present) diverges 0.9 > 0.5; leg1 (absent) far
     fault_step();
     CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+    // 2026-07-10 latch-event snapshot: which leg crossed + dev/u0/encoder at the trip.
+    CHECK(fault_max_dev_leg() == 0);
+    CHECK(fault_max_dev_value() == doctest::Approx(0.9f));
+    CHECK(fault_max_dev_u0() == doctest::Approx(0.9f));
+    CHECK(fault_max_dev_enc() == doctest::Approx(0.0f));
   }
   SUBCASE("absent leg's far command alone does NOT trip MAX_DEVIATION") {
     arm_leg0();
     latch_u0(0.0f, 3.0f);             // leg0 aligned; only the absent leg1 is far
     fault_step();
     CHECK(fault_state() != JbUdp::FaultState::MAX_DEVIATION);
+    CHECK(fault_max_dev_leg() == 0xFF);   // no MAX_DEVIATION latch → snapshot unset
   }
   SUBCASE("fb-stale does not false-trip pre-arm (mpc inactive)") {
     reset_all();

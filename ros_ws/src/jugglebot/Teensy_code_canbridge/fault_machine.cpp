@@ -80,6 +80,19 @@ static uint8_t s_fault_state = JbUdp::FaultState::NONE;
 static volatile bool s_estop_latched = false;
 static uint8_t       s_estop_state = JbUdp::FaultState::NONE;  // reason frozen at latch
 
+// ── MAX_DEVIATION latch-event snapshot (2026-07-10 forensics) ──
+// Frozen at the instant a MAX_DEVIATION guard E-STOP first LATCHES: which leg
+// crossed, its deviation (u0 - encoder), the raw commanded base u0, and the
+// encoder at the crossing. The 2026-07-10 runaway could not be pinned because
+// the 10 Hz link_status straddled the crossing and no per-leg deviation was
+// recorded; this snapshot surfaces the exact trip on HeartbeatT2J → /link_status.
+// Persists across a CLEAR_ERRORS (post-mortem value) — a genuine re-latch refreshes
+// it; only fault_machine_init() clears it. leg == 0xFF ⇒ no MAX_DEVIATION latch yet.
+static uint8_t s_max_dev_latch_leg = 0xFF;
+static float   s_max_dev_latch_dev = 0.0f;
+static float   s_max_dev_latch_u0  = 0.0f;
+static float   s_max_dev_latch_enc = 0.0f;
+
 // ── Reboot-in-progress watchdog-suppression latch ──────────────────
 // Armed ONLY by fault_notify_reboot_started() (the REBOOT_ODRIVES RPC), so a
 // spontaneous CAN loss never sets it and the deferred-stow inversion is preserved.
@@ -341,14 +354,23 @@ static void evaluate_guard() {
   // Max deviation: the incoming MPC command (interp base = u0) diverged too far
   // from the encoder — catches stale zeros / sign errors / runaway command
   // sources (motor_guard.py:539-551, checked at command-arrival not per-tick).
+  // Capture the crossing (leg/dev/u0/enc) locally; it is frozen into the latch
+  // snapshot below ONLY on the first trip (so a later tick can't overwrite it).
+  uint8_t md_leg = 0xFF;
+  float   md_dev = 0.0f, md_u0 = 0.0f, md_enc = 0.0f;
   if (!estop && s_mpc_active && interp_have_latched()) {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       // Only check present legs. An absent leg reads pos_rev=0; a
       // nonzero u0 broadcast to it (the production MPC sends 6 leg targets) would
       // false-trip the E-STOP. No-op on the full robot.
       if (!leg_present(i)) continue;
-      if (fabsf(interp_base_pos(i) - axes[i].pos_rev) > MAX_DEVIATION_REV) {
-        estop = true; state = JbUdp::FaultState::MAX_DEVIATION; break;
+      const float u0  = interp_base_pos(i);
+      const float enc = axes[i].pos_rev;
+      const float dev = u0 - enc;
+      if (fabsf(dev) > MAX_DEVIATION_REV) {
+        estop = true; state = JbUdp::FaultState::MAX_DEVIATION;
+        md_leg = i; md_dev = dev; md_u0 = u0; md_enc = enc;
+        break;
       }
     }
   }
@@ -378,7 +400,17 @@ static void evaluate_guard() {
   // The `&& !s_estop_latched` freezes the reported reason at the FIRST trip (mirrors
   // motor_guard._check_safety's early-return pinning self._fault_state). fb_stale is
   // NOT latched — it is deliberately recoverable.
-  if (estop && !s_estop_latched) { s_estop_latched = true; s_estop_state = state; }
+  if (estop && !s_estop_latched) {
+    s_estop_latched = true; s_estop_state = state;
+    // Freeze the MAX_DEVIATION snapshot at the crossing (only when that is the
+    // latching reason; md_leg==0xFF for the overspeed/stale paths).
+    if (state == JbUdp::FaultState::MAX_DEVIATION) {
+      s_max_dev_latch_leg = md_leg;
+      s_max_dev_latch_dev = md_dev;
+      s_max_dev_latch_u0  = md_u0;
+      s_max_dev_latch_enc = md_enc;
+    }
+  }
 
   // Fault-state reporting priority (highest-severity active condition wins).
   if (s_fatal_can_error)        s_fault_state = JbUdp::FaultState::CAN_BUS_DOWN;
@@ -424,6 +456,8 @@ void fault_machine_init() {
   s_stow_pending = s_stowing = s_first_leg_hb_seen = false;
   s_estop_latched = false;
   s_estop_state = JbUdp::FaultState::NONE;
+  s_max_dev_latch_leg = 0xFF;
+  s_max_dev_latch_dev = s_max_dev_latch_u0 = s_max_dev_latch_enc = 0.0f;
   s_reboot_in_progress = s_reboot_saw_stale = false;
   atomic_write_u64(&s_reboot_deadline_us, 0);
   s_guard_mode = JbUdp::GuardMode::DISABLED;
@@ -442,5 +476,11 @@ uint8_t fault_guard_mode()   { return s_guard_mode; }
 bool    fault_can_bus_down() { return s_fatal_can_error; }
 bool    fault_stow_pending() { return s_stow_pending; }
 bool    fault_mpc_active()   { return s_mpc_active; }
+
+// MAX_DEVIATION latch-event snapshot (frozen at the crossing; 0xFF leg ⇒ none).
+uint8_t fault_max_dev_leg()   { return s_max_dev_latch_leg; }
+float   fault_max_dev_value() { return s_max_dev_latch_dev; }
+float   fault_max_dev_u0()    { return s_max_dev_latch_u0; }
+float   fault_max_dev_enc()   { return s_max_dev_latch_enc; }
 
 }  // namespace CanBridge

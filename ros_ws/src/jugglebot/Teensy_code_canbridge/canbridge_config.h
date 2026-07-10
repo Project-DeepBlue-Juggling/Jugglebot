@@ -117,7 +117,33 @@ constexpr float    SEGMENT_T_S          = 0.025f;  // _mpc_segment_T (nominal MP
 constexpr float    MAX_EXTRAP_DT_S      = 0.05f;   // MAX_EXTRAP_DT_S
 constexpr float    EXTRAP_DECAY_DT_S    = 0.06f;   // EXTRAP_DECAY_DT_S
 constexpr float    JERK_EMA_ALPHA       = 0.3f;    // JERK_EMA_ALPHA
-constexpr float    MAX_LEAD_REV         = 0.15f;   // MAX_LEAD_REV lead-clamp
+// MAX_LEAD_REV lead-clamp: cap the commanded position at encoder ± this.
+// Lowered 0.15 → 0.10 (2026-07-10 MAX_DEVIATION-runaway forensics). The ODrive
+// legs run POSITION/PASSTHROUGH with LEG_POS_GAINS = 40 and LEG_VEL_LIMIT_RPS = 4.0.
+// While the clamp is engaged the position error is pinned at MAX_LEAD_REV, so the
+// position loop's velocity command is pos_gain × lead. At the old 0.15 that was
+// 40 × 0.15 = 6.0 rev/s — ABOVE the 4.0 vel_limit — so the loop saturated the limit,
+// sprinted, overshot, braked (measured negative iq), and re-lagged: a ~6 Hz bang-bang
+// limit cycle whose accumulated lead crossed MAX_DEVIATION_REV and latched the guard.
+// At 0.10, 40 × 0.10 = 4.0 bounds the position-loop P-term (pos_gain × lead) to
+// vel_limit — but that is the P-TERM ALONE. The ODrive's velocity setpoint is
+// vel_ff + pos_gain × lead, and vel_ff is now PASSED THROUGH when the clamp engages
+// (bounded to LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5, no longer zeroed — see below), so a
+// clamped-AND-advancing command can still push the setpoint to ~7.5 rev/s and
+// saturate the 4.0 vel_limit. This 0.10 therefore does NOT by itself eliminate the
+// vel_limit-saturating sprint — full elimination depends on the bench gain retune
+// (LEG_POS_GAINS / LEG_VEL_LIMIT_RPS). What the paired changes buy IMMEDIATELY is
+// BOUNDARY CONTINUITY: no vel_ff discontinuity at clamp engage (vel_ff pass-through)
+// and a P-term capped at vel_limit — together removing the discontinuous kick that
+// seeded the ~6 Hz limit cycle, even though the steady clamped sprint is gain-bound.
+constexpr float    MAX_LEAD_REV         = 0.10f;
+// Feed-forward velocity cap applied to the interpolated vel_ff before it reaches the
+// leg ODrive (2026-07-10 forensics). The lead clamp used to ZERO vel_ff whenever it
+// engaged; that discontinuity (and the pos-loop sprint above) seeded the stutter.
+// leg_interp now sends the TRUE interpolated vel_ff instead of zeroing it, bounded to
+// this magnitude — kept below LEG_VEL_LIMIT_RPS (4.0) so a runaway command can never
+// inject an over-vel_limit feedforward. Normal motion peaks ~2.1 rev/s, well under it.
+constexpr float    LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5f;
 constexpr float    MAX_DEVIATION_REV    = 0.5f;    // MAX_DEVIATION_REV (E-stop)
 // MAX_MOTOR_VEL_RPS = ODRIVE_TRAP_VEL_LIMIT_RPS * 1.1 (10% noise margin).
 constexpr float    MAX_MOTOR_VEL_RPS    = ODriveDefaults::TRAP_VEL_LIMIT_RPS * 1.1f;  // 16.5

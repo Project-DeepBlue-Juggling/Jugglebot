@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 2,      "u8",  "Bumped on any incompatible wire change"),
+    ("PROTOCOL_VERSION", 3,      "u8",  "Bumped on any incompatible wire change"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -329,6 +329,19 @@ MESSAGES = [
             Field("bb_yaw_deg",    "f32", 1, "BB yaw (deg), decoded with HeartbeatEncoding scale"),
             Field("bb_pitch_deg",  "f32", 1, "BB pitch (deg)"),
             Field("bb_hand_mm",    "f32", 1, "BB hand position (mm)"),
+            # ── Leg guard-deviation diagnostics (2026-07-10 MAX_DEVIATION-runaway
+            # forensics). Per-leg live deviation + lead-clamp state at 10 Hz, plus a
+            # latch-event snapshot frozen at the MAX_DEVIATION crossing. The 2026-07-10
+            # runaway could not be pinned because the 10 Hz link_status straddled the
+            # crossing and no per-leg deviation was recorded; these fields make every
+            # future stutter/latch bag self-diagnosing. Bridge publishes them as
+            # /link_status KeyValues (recorded in the rosbag).
+            Field("live_deviation",  "f32", 6, "Per-leg live deviation u0-encoder (rev) — the MAX_DEVIATION guard quantity"),
+            Field("lead_clamp_mask", "u8",  1, "bit i set = leg i's interp lead clamp engaged on the last 500 Hz tick"),
+            Field("max_dev_leg",     "u8",  1, "Leg that crossed MAX_DEVIATION at the last latch (0xFF = none since boot)"),
+            Field("max_dev_value",   "f32", 1, "Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing"),
+            Field("max_dev_u0",      "f32", 1, "Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing"),
+            Field("max_dev_enc",     "f32", 1, "Encoder position (rev) of max_dev_leg frozen at the latch crossing"),
         ],
     ),
     Message(

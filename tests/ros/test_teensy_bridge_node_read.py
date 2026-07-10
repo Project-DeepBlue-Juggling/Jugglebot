@@ -452,6 +452,45 @@ def test_link_status_reflects_heartbeat_and_mpc_active(bridge):
     assert kv['uptime_ms'] == '12345'
 
 
+def test_link_status_surfaces_guard_deviation_diagnostics(bridge):
+    """The 2026-07-10 leg guard-deviation diagnostics (per-leg live deviation,
+    lead-clamp bitmask, and the MAX_DEVIATION latch-event snapshot) surface as
+    /link_status KeyValues so a future stutter/latch rosbag is self-diagnosing."""
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.MAX_DEVIATION),
+                      flags=0, uptime_ms=1,
+                      live_deviation=(0.12, -0.03, 0.55, 0.0, 0.0, 0.0),
+                      lead_clamp_mask=0b000101,   # legs 0 and 2 clamped
+                      max_dev_leg=2, max_dev_value=0.55,
+                      max_dev_u0=2.80, max_dev_enc=2.25)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['lead_clamp_mask'] == '5'
+    assert kv['live_deviation'].startswith('0.1200,-0.0300,0.5500')
+    assert kv['max_dev_leg'] == '2'
+    assert kv['max_dev_value'] == '0.5500'
+    assert kv['max_dev_u0'] == '2.8000'
+    assert kv['max_dev_enc'] == '2.2500'
+
+
+def test_link_status_max_dev_leg_none_when_unset(bridge):
+    """max_dev_leg == 0xFF (no MAX_DEVIATION latch since boot) renders as 'none'."""
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=1,
+                      max_dev_leg=0xFF)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['max_dev_leg'] == 'none'
+
+
 def test_link_status_error_on_fault(bridge):
     teensy, node = bridge
     hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
@@ -463,6 +502,122 @@ def test_link_status_error_on_fault(bridge):
     node._publish_link_status()
     from diagnostic_msgs.msg import DiagnosticStatus
     assert node.link_status_pub.published[-1].level == DiagnosticStatus.ERROR
+
+
+# ── guard-latch LOUD logging (edge + persistent reminder + clear) ──
+
+
+def _messages(mock_method):
+    """All positional first-arg strings across a MagicMock log method's calls."""
+    return [c.args[0] for c in mock_method.call_args_list if c.args]
+
+
+def test_guard_fault_edge_names_reason_and_leg(bridge):
+    """The fault EDGE logs an unthrottled ERROR naming the guard REASON and,
+    when identifiable from the per-axis diagnostics, the offending LEG."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    # Leg 3 carries an active ODrive error → the leg hint should name it.
+    diag = Diagnostic(axis_id=3, active_errors=1)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 3 in node._latest_diag)
+
+    node._logger = MagicMock()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.ODRIVE_FATAL),
+                      flags=0, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.ODRIVE_FATAL))
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert len(edge) == 1, f"expected one edge ERROR, got {_messages(node._logger.error)}"
+    assert 'ODRIVE_FATAL' in edge[0]
+    assert 'leg 3' in edge[0]
+
+
+def test_guard_fault_leg_hint_absent_for_bus_fault(bridge):
+    """A bus-level fault with no leg-specific diagnostic names no leg (honest)."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    node._logger = MagicMock()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.CAN_BUS_DOWN),
+                      flags=0, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert len(edge) == 1
+    assert 'leg' not in edge[0].split('—')[0]  # no leg hint in the reason clause
+
+
+def test_guard_fault_repeats_every_5s_rate_exact(bridge):
+    """While latched, a persistent 'TEENSY GUARD LATCHED' ERROR repeats every
+    _GUARD_LATCH_REPEAT_S — rate-exact off the last-log timestamp, not throttle
+    magic. Between repeats the reminder is silent."""
+    from unittest.mock import MagicMock
+    from jugglebot.teensy_bridge_node import _GUARD_LATCH_REPEAT_S
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.MAX_DEVIATION),
+                      flags=0, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+
+    node._logger = MagicMock()
+    node._publish_link_status()            # edge fires + anchors the reminder
+    assert any('FAULT LATCHED' in m for m in _messages(node._logger.error))
+
+    # A second publish within the interval must NOT emit a reminder.
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert not any('TEENSY GUARD LATCHED' in m for m in _messages(node._logger.error))
+
+    # Backdate the anchor past the interval → the reminder must fire once.
+    node._logger = MagicMock()
+    node._last_guard_latch_log_t = time.monotonic() - (_GUARD_LATCH_REPEAT_S + 1.0)
+    node._publish_link_status()
+    reminders = [m for m in _messages(node._logger.error)
+                 if 'TEENSY GUARD LATCHED' in m]
+    assert len(reminders) == 1
+    assert 'MAX_DEVIATION' in reminders[0]
+    assert 'CLEAR_ERRORS required' in reminders[0]
+
+
+def test_guard_fault_clear_logs_info_and_resets_anchor(bridge):
+    """Clearing the fault (fault_state→NONE) logs an INFO and resets the
+    persistent-reminder anchor so a future latch starts fresh."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    faulted = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                           bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                           fault_state=int(FaultState.ODRIVE_FATAL),
+                           flags=0, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), faulted.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.ODRIVE_FATAL))
+    node._publish_link_status()            # latch
+    assert node._last_guard_latch_log_t is not None
+
+    cleared = HeartbeatT2J(t_teensy_us=2, link_state=int(LinkState.UP),
+                           bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                           fault_state=int(FaultState.NONE),
+                           flags=0, uptime_ms=2)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), cleared.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.NONE))
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert any('cleared' in m for m in _messages(node._logger.info))
+    assert node._last_guard_latch_log_t is None
 
 
 # ── profile ────────────────────────────────────────────────────

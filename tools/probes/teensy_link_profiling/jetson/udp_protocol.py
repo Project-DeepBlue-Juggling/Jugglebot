@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── Constants ──────────────────────────────────────────────────────────
-PROTOCOL_VERSION = 2  # Bumped on any incompatible wire change
+PROTOCOL_VERSION = 3  # Bumped on any incompatible wire change
 MAGIC = 19010  # "JB" little-endian preamble (bytes 0x42 0x4A)
 HEADER_SIZE = 8  # Bytes before payload
 CRC_SIZE = 2  # Trailing CRC-16 bytes
@@ -270,10 +270,10 @@ class Diagnostic:
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(2)), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
-HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfff'
-HEARTBEAT_T2J_SIZE = 35
+HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfffffffffBBfff'
+HEARTBEAT_T2J_SIZE = 73
 _HEARTBEAT_T2J_STRUCT = struct.Struct(HEARTBEAT_T2J_FMT)
-assert _HEARTBEAT_T2J_STRUCT.size == 35
+assert _HEARTBEAT_T2J_STRUCT.size == 73
 
 @dataclass
 class HeartbeatT2J:
@@ -290,15 +290,21 @@ class HeartbeatT2J:
     bb_yaw_deg: float = 0.0
     bb_pitch_deg: float = 0.0
     bb_hand_mm: float = 0.0
+    live_deviation: tuple = field(default_factory=lambda: (0.0,) * 6)
+    lead_clamp_mask: int = 0
+    max_dev_leg: int = 0
+    max_dev_value: float = 0.0
+    max_dev_u0: float = 0.0
+    max_dev_enc: float = 0.0
 
     def pack(self) -> bytes:
-        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm)
+        return _HEARTBEAT_T2J_STRUCT.pack(self.t_teensy_us, self.link_state, self.bus1_health, self.bus2_health, self.fault_state, self.flags, self.uptime_ms, self.bb_state, self.bb_state_data, self.bb_flags, self.bb_yaw_deg, self.bb_pitch_deg, self.bb_hand_mm, *self.live_deviation, self.lead_clamp_mask, self.max_dev_leg, self.max_dev_value, self.max_dev_u0, self.max_dev_enc)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'HeartbeatT2J':
-        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:35])
+        vals = _HEARTBEAT_T2J_STRUCT.unpack(data[:73])
         it = iter(vals)
-        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(6)), next(it), next(it), next(it), next(it), next(it))
 
 # Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 PROFILE_FMT = '<QHHHHHHHHHIIIIHHIIIII'

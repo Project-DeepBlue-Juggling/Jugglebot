@@ -72,17 +72,46 @@ static void stage(const float u0[6], const float* u1, const float v0[6], const f
   interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
 }
 
-TEST_CASE("lead clamp: command never runs more than MAX_LEAD_REV ahead of encoder") {
-  reset_interp_test();
-  axes[0].pos_rev = 1.0f;                       // encoder
-  float u0[6] = {2.0f, 0.07f, 0.07f, 0.07f, 0.07f, 0.07f};  // leg0 commanded far ahead
+TEST_CASE("lead clamp: bounds position, KEEPS vel_ff (capped), sets the clamp mask") {
+  // 2026-07-10 forensics: the lead clamp no longer ZEROES vel_ff when it engages —
+  // that manufactured the ~6 Hz bang-bang stutter. It now passes the true
+  // interpolated vel_ff through, bounded to ±LEAD_CLAMP_VELFF_LIMIT_RPS, and reports
+  // engagement via interp_lead_clamp_mask().
   float zeros[6] = {0, 0, 0, 0, 0, 0};
-  stage(u0, nullptr, zeros, zeros);
-  interp_isr();                                 // dt≈0 → cmd≈u0, then lead-clamped
-  // Clamped to encoder + MAX_LEAD_REV; vel zeroed because the clamp engaged.
-  CHECK(axes[0].target_pos_rev == doctest::Approx(1.0f + MAX_LEAD_REV).epsilon(0.01));
-  CHECK(std::fabs(axes[0].target_pos_rev - axes[0].pos_rev) <= MAX_LEAD_REV + 1e-4f);
-  CHECK(axes[0].target_vel_rps == doctest::Approx(0.0f));
+
+  SUBCASE("position bounded to encoder ± MAX_LEAD_REV; vel_ff preserved (under cap)") {
+    reset_interp_test();
+    axes[0].pos_rev = 1.0f;                       // encoder
+    float u0[6] = {2.0f, 0.07f, 0.07f, 0.07f, 0.07f, 0.07f};  // leg0 commanded far ahead
+    float v0[6] = {2.0f, 0, 0, 0, 0, 0};          // real +2 rev/s feedforward
+    stage(u0, nullptr, v0, zeros);
+    interp_isr();                                 // dt≈0 → cmd≈u0, then lead-clamped
+    CHECK(axes[0].target_pos_rev == doctest::Approx(1.0f + MAX_LEAD_REV).epsilon(0.01));
+    CHECK(std::fabs(axes[0].target_pos_rev - axes[0].pos_rev) <= MAX_LEAD_REV + 1e-4f);
+    // vel_ff NOT zeroed — the true 2.0 rev/s (< 3.5 cap) survives the clamp.
+    CHECK(axes[0].target_vel_rps == doctest::Approx(2.0f));
+    CHECK((interp_lead_clamp_mask() & 0x1u) != 0);   // leg0 clamped
+    CHECK((interp_lead_clamp_mask() & 0x2u) == 0);   // leg1 not clamped
+  }
+
+  SUBCASE("vel_ff magnitude is capped at LEAD_CLAMP_VELFF_LIMIT_RPS") {
+    reset_interp_test();
+    axes[0].pos_rev = 1.0f;
+    float u0[6] = {2.0f, 0.07f, 0.07f, 0.07f, 0.07f, 0.07f};
+    float v0[6] = {9.0f, 0, 0, 0, 0, 0};          // over-limit feedforward
+    stage(u0, nullptr, v0, zeros);
+    interp_isr();
+    CHECK(axes[0].target_vel_rps == doctest::Approx(LEAD_CLAMP_VELFF_LIMIT_RPS));
+  }
+
+  SUBCASE("clamp mask clears when the command tracks the encoder") {
+    reset_interp_test();
+    for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;   // all encoders aligned
+    float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};       // commanded == encoder → no clamp
+    stage(u0, nullptr, zeros, zeros);
+    interp_isr();
+    CHECK(interp_lead_clamp_mask() == 0);
+  }
 }
 
 TEST_CASE("stroke clamp: command pinned to [STROKE_MIN, STROKE_MAX], vel/torque zeroed") {

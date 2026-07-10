@@ -590,6 +590,33 @@ class TestActiveHandler:
         handler.on_enter(ctx)
         assert ctx.active_mode == ActiveMode.STANDBY
 
+    def test_guard_clear_resume_skips_reactivation(self):
+        """F1 — the guard-clear resume path (resume_active_no_rearm) must NOT request
+        the ACTIVATE move: the legs never disarmed. It enters ACTIVE already-armed in
+        the STANDBY hold, consumes the one-shot, and accepts commands immediately."""
+        handler = ActiveHandler()
+        ctx = Context()
+        ctx.resume_active_no_rearm = True
+        handler.on_enter(ctx)
+        assert ctx.request is None                 # NO 'activate' request
+        assert handler._activated is True           # already armed
+        assert ctx.active_mode == ActiveMode.STANDBY
+        assert ctx.control_mode == 'STANDBY'
+        assert ctx.resume_active_no_rearm is False  # one-shot consumed
+        # Commands work without waiting for an activation result.
+        ctx.enqueue_command('deactivate')
+        assert handler.execute(ctx) == RobotState.IDLE
+
+    def test_normal_activation_still_requests_activate(self):
+        """Regression: a NORMAL entry (resume flag not set) still requests the
+        ACTIVATE move — the resume path must not leak into ordinary activation."""
+        handler = ActiveHandler()
+        ctx = Context()
+        assert ctx.resume_active_no_rearm is False
+        handler.on_enter(ctx)
+        assert ctx.request == 'activate'
+        assert handler._activated is False
+
     def test_deactivate_command_returns_idle(self):
         handler = ActiveHandler()
         ctx = Context()
@@ -836,6 +863,119 @@ class TestFaultHandler:
         ctx.errors = ['some transient error']
         handler.on_enter(ctx)
         assert handler.execute(ctx) is None
+
+    # ── FIX 2: a latched Teensy guard holds FAULT until it clears ──
+
+    def test_stays_in_fault_while_guard_latched(self):
+        """A latched guard (no ODrive error) holds FAULT: the guard suppresses leg
+        output and only CLEAR_ERRORS releases it, so exiting FAULT here would return
+        to a silently-crippled robot."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.guard_latched = True
+        handler.on_enter(ctx)
+        assert handler.execute(ctx) is None
+
+    def test_exits_fault_when_guard_clears(self):
+        """F1 — a GUARD-ONLY fault, once the guard clears, exits STRAIGHT BACK TO
+        ACTIVE (not BOOT): the ODrives never disarmed, so re-running BOOT/HOMING would
+        be incoherent. The one-shot resume flag tells ActiveHandler to skip re-arming."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.guard_latched = True
+        handler.on_enter(ctx)
+        assert handler.execute(ctx) is None            # held while latched
+        ctx.guard_latched = False
+        assert handler.execute(ctx) == RobotState.ACTIVE
+        assert ctx.resume_active_no_rearm is True
+
+    def test_guard_latch_default_is_false(self):
+        assert Context().guard_latched is False
+
+    # ── F1: a GUARD-ONLY fault must NOT publish a mode outside the streaming set ──
+
+    # trajectory_node's streaming set (jugglebot.trajectory_node._DEFAULT_STREAM_MODES);
+    # a control_mode outside this silences the 40 Hz emitter and abandons the descent.
+    _STREAM_MODES = {'STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'SHELL', 'CATCH'}
+
+    def test_guard_only_fault_preserves_streaming_mode_not_error(self):
+        """(i) A guard-only fault PRESERVES the streaming mode — it must never publish
+        'ERROR' (which is outside trajectory_node's streaming set and would kill the
+        emitter mid-descent). Asserts the actual control_mode value the orchestrator
+        will publish."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.active_mode = ActiveMode.TRAJECTORY  # the sub-mode active when the guard hit
+        ctx.control_mode = ''                    # ActiveHandler.on_exit blanked it
+        ctx.guard_latched = True
+        handler.on_enter(ctx)
+        assert ctx.control_mode == 'TRAJECTORY'
+        assert ctx.control_mode != 'ERROR'
+        assert ctx.control_mode in self._STREAM_MODES
+
+    def test_guard_only_fault_preserves_standby_mode(self):
+        """The armed-hold STANDBY case (the actual Phase-1 bench scenario): a guard
+        latch in STANDBY keeps control_mode='STANDBY', never 'ERROR'."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.active_mode = ActiveMode.STANDBY
+        ctx.control_mode = ''
+        ctx.guard_latched = True
+        handler.on_enter(ctx)
+        assert ctx.control_mode == 'STANDBY'
+        assert ctx.control_mode in self._STREAM_MODES
+
+    def test_real_fault_alongside_guard_is_treated_as_real(self):
+        """(iii) A guard latch riding ALONGSIDE a real ODrive error is a REAL fault:
+        the ODrive error dominates → 'ERROR' publish, and on full clear it exits to
+        BOOT (unchanged), NOT to ACTIVE."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.active_mode = ActiveMode.TRAJECTORY
+        ctx.fatal_error = True
+        ctx.guard_latched = True
+        handler.on_enter(ctx)
+        assert ctx.control_mode == 'ERROR'
+        # Both clear → real-fault BOOT exit, resume flag NOT set.
+        ctx.fatal_error = False
+        ctx.guard_latched = False
+        assert handler.execute(ctx) == RobotState.BOOT
+        assert ctx.resume_active_no_rearm is False
+
+    def test_guard_only_fault_promoted_when_real_error_appears(self):
+        """A guard-only fault that GAINS a real ODrive error mid-fault is promoted to
+        the real-fault path: control_mode flips to 'ERROR' and, once everything clears,
+        it exits to BOOT — never masking a genuine fault behind the streaming mode."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.active_mode = ActiveMode.TRAJECTORY
+        ctx.control_mode = ''
+        ctx.guard_latched = True
+        handler.on_enter(ctx)
+        assert ctx.control_mode == 'TRAJECTORY'   # started guard-only
+        # A real error now appears while still in FAULT.
+        ctx.fatal_error = True
+        assert handler.execute(ctx) is None        # held (real error present)
+        assert ctx.control_mode == 'ERROR'         # promoted
+        # Even if the guard clears first, a real error present must NOT exit to ACTIVE.
+        ctx.guard_latched = False
+        assert handler.execute(ctx) is None
+        assert ctx.resume_active_no_rearm is False
+        # Now the real error clears → real-fault BOOT exit.
+        ctx.fatal_error = False
+        assert handler.execute(ctx) == RobotState.BOOT
+
+    def test_non_guard_fault_control_mode_and_exit_unchanged(self):
+        """(iii) With NO guard latch, on_enter publishes 'ERROR' and execute exits to
+        BOOT on clear — behaviourally identical to before F1."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.errors = ['SOME_ERROR']
+        handler.on_enter(ctx)
+        assert ctx.control_mode == 'ERROR'
+        ctx.errors = []
+        assert handler.execute(ctx) == RobotState.BOOT
+        assert ctx.resume_active_no_rearm is False
 
 
 # ════════════════════════════════════════════════════════════════

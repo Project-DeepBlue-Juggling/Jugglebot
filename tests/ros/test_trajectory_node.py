@@ -33,6 +33,7 @@ from jugglebot.trajectory_node import TrajectoryNode
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
 from jugglebot.motion.trajectory import HoldPlan
+from jugglebot.motion.trajectory import TrajectoryInfeasible
 from jugglebot.motion.trajectory.plan import TrajectoryPlan
 from jugglebot.motion.trajectory.segment import QuinticSegment
 from controller.teensy_link.setpoint_pump import SetpointPump
@@ -1533,3 +1534,291 @@ def test_timed_target_emitted_frames_pump_accepted():
         sp, reason = pump.build(frame, t_origin_us=i * 25000)
         assert reason is None, f"pump rejected timed node frame {i}: {reason}"
     assert pump.frames_rejected == 0
+
+
+# ══════════════════════════════════════════════════════════════════
+# FIX 1 — Teensy guard-latch freeze (subscribe /link_status; on a latched guard,
+# walk u0 down to measured via a gate-validated PROFILED DESCENT + freeze target
+# advancement; on clear, reseed + resume; a latch outside streaming is a no-op).
+# See the 2026-07-10 runaway: an INSTANT reseed to measured was a >0.3 rev u0 jump
+# the pump's step gate rejected, so the collapse never reached the Teensy.
+# ══════════════════════════════════════════════════════════════════
+
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+
+
+def _link_status(fault_state='NONE', mpc_active='1'):
+    """Build a /link_status DiagnosticStatus with the fields FIX 1 reads."""
+    msg = DiagnosticStatus()
+    msg.values = [KeyValue(key='fault_state', value=fault_state),
+                  KeyValue(key='mpc_active', value=mpc_active)]
+    return msg
+
+
+def _install_far_command(node, dz_mm=40.0):
+    """Simulate the runaway: install a commanded hold ``dz_mm`` above the measured
+    encoder (z+40 mm ≈ 0.53 rev/leg > the 0.3 rev pump step gate), so an instant
+    reseed to measured would be a jump the pump REJECTS but a profiled descent walks
+    down through the gate. Returns the far commanded pose."""
+    far = node._active_plan.state_at(0.0)[0].copy()
+    far[2] += dz_mm
+    node._install(planner.build_hold((far, np.zeros(6), np.zeros(6)),
+                                     node._limits, node._geom))
+    return far
+
+
+def test_guard_latch_installs_profiled_descent_to_measured():
+    node = _follower_node()                       # SPACEMOUSE, seeded at activate
+    # The measured pose moves, THEN the guard latches → the descent walks the command
+    # down to the NEW measured pose (not the stale pre-latch command). A profiled
+    # descent (a MOVE ending at rest), NOT the old instant hold.
+    moved = [r + 0.15 for r in _ACTIVATE_REV]
+    node._on_robot_state(_robot_state(moved))
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    assert node._active_plan.kind == 'move'       # a profiled descent, not an instant hold
+    fp, ftw, _ = node._active_plan.state_at(node._active_plan.total_duration)
+    fp_rev = node._pose_to_motor_rev(fp)
+    assert np.allclose(fp_rev, moved, atol=1e-2)  # descent ends AT measured
+    assert np.allclose(ftw, 0.0, atol=1e-9)       # at rest
+
+
+def test_guard_latch_descent_knots_all_pump_accepted_then_holds_at_measured():
+    """Production-in-the-loop: on a runaway-sized divergence the latch installs a
+    profiled descent whose EVERY emitted knot passes a REAL SetpointPump (primed with
+    the far command), it is never superseded while frozen, and it terminally holds AT
+    the measured encoder, at rest."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())              # measured = activate (z≈170)
+    node._on_control_mode(String(data='SPACEMOUSE'))   # follower, seeded hold
+    _install_far_command(node, dz_mm=40.0)             # command ran to z≈210
+    pump = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV,
+                        max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
+    # Prime the pump with the pre-latch (runaway) command so _prev_pos == far: an
+    # instant reseed to measured now would be a ≈0.53 rev jump the pump REJECTS.
+    t_far = node._plan_t0
+    node._emit_once(t_far)
+    _sp, reason = pump.build(pub.frames[-1], t_origin_us=0)
+    assert reason is None
+    far_prev = list(pump._prev_pos)
+    assert max(abs(far_prev[i] - _ACTIVATE_REV[i]) for i in range(6)) > 0.3
+
+    # Latch: the guard installs a PROFILED DESCENT, not an instant hold.
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    assert node._active_plan.kind == 'move'
+    descent_plan = node._active_plan
+    t0 = node._plan_t0
+    n = int(descent_plan.total_duration / 0.025) + 40
+    for k in range(1, n + 1):
+        # A live SpaceMouse target it must IGNORE while frozen (no supersede).
+        node._follower_target = (np.array([50.0, 0.0, 210.0, 0.0, 0.0, 0.0]),
+                                 time.perf_counter())
+        node._emit_once(t0 + k * 0.025)
+        _sp, reason = pump.build(pub.frames[-1], t_origin_us=k * 25000)
+        assert reason is None, f"descent knot {k} pump-rejected: {reason}"
+    assert node._active_plan is descent_plan          # never superseded while frozen
+    # Converged: the last accepted u0 sits on the measured encoder, at rest.
+    assert np.allclose(pump._prev_pos, _ACTIVATE_REV, atol=2e-2)
+    fp, ftw, _ = descent_plan.state_at(descent_plan.total_duration)
+    assert np.allclose(fp[:3], [0.0, 0.0, 170.0], atol=0.5)
+    assert np.allclose(ftw, 0.0, atol=1e-9)
+
+
+def test_guard_latch_descent_falls_back_to_stop_then_descent(monkeypatch):
+    """Edge (a): a near-boundary outward-moving commanded seed makes the DIRECT
+    descent overshoot the workspace, so build_follow raises. The handler decels in
+    place (build_graceful_stop) THEN descends from rest, concatenated into one C2
+    plan that still ends at measured, at rest."""
+    node = _follower_node()
+    far = _install_far_command(node, dz_mm=40.0)
+    # Put the command MID-MOVE (a moving seed) so the in-place decel yields real
+    # segments and the concatenation is non-trivial (stop segs + descent segs).
+    mv, _rep = planner.build_move((far, np.zeros(6), np.zeros(6)),
+                                  node._neutral_pose.copy(), 2.0,
+                                  node._limits, node._geom)
+    node._install(mv, t0=time.perf_counter() - 0.4)    # 0.4 s into a 2 s move → moving
+    real_build_follow = planner.build_follow
+    calls = {'n': 0}
+
+    def fake_build_follow(*args, **kw):
+        calls['n'] += 1
+        if calls['n'] == 1:                            # the direct (moving-seed) descent
+            raise TrajectoryInfeasible(feas.WORKSPACE, ['overshoot leaves workspace'])
+        return real_build_follow(*args, **kw)          # the from-rest descent
+
+    monkeypatch.setattr(planner, 'build_follow', fake_build_follow)
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    assert node._active_plan.kind == 'move'
+    assert len(node._active_plan.segments) >= 2         # stop segs + descent segs
+    assert calls['n'] == 2                              # direct rejected → rest-descent built
+    fp, ftw, _ = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(node._pose_to_motor_rev(fp), _ACTIVATE_REV, atol=1e-2)
+    assert np.allclose(ftw, 0.0, atol=1e-9)
+
+
+def test_guard_latch_freezes_in_place_when_descent_gate_rejected(monkeypatch):
+    """Edge (a) final fallback: the descent is gate-rejected even after an in-place
+    decel → freeze u0 in place (hold at the last emitted pose) so it stops running
+    away. u0 stays diverged, so /recover cannot converge (the manual dance is then
+    required) — the deliberately-safe non-recovery."""
+    node = _follower_node()
+    far = _install_far_command(node, dz_mm=40.0)
+    node._last_pose = far.copy()                        # the last emitted (known-good) pose
+
+    def _raise(*a, **k):
+        raise TrajectoryInfeasible(feas.WORKSPACE, ['rejected'])
+
+    monkeypatch.setattr(planner, 'build_follow', _raise)
+    monkeypatch.setattr(planner, 'build_graceful_stop', _raise)
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    assert node._active_plan.kind == 'hold'             # froze in place (never advanced)
+    assert np.allclose(node._active_plan.state_at(0.0)[0], far, atol=1e-9)
+
+
+def test_guard_latch_drops_fresh_spacemouse_target():
+    node = _follower_node()
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    node._on_platform_pose(_platform_pose(x=30.0, z=190.0, publisher='SPACEMOUSE'))
+    assert node._follower_target is None          # dropped (never stored) while frozen
+
+
+def test_guard_latch_emit_streams_descent_without_supersede():
+    """While frozen the emitter keeps PUBLISHING (no MPC_STALE) and plays out the
+    installed descent — u0 ADVANCES down toward measured — but a fresh follower target
+    must NOT supersede the descent (which would re-diverge u0 on the next clear)."""
+    pub = _CapturePub()
+    node = _node(command_pub_factory=lambda: pub)
+    node._pub = pub
+    node._on_robot_state(_robot_state())               # measured = activate
+    node._on_control_mode(String(data='SPACEMOUSE'))
+    _install_far_command(node, dz_mm=40.0)             # command ran to z≈210
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    descent_plan = node._active_plan
+    assert descent_plan.kind == 'move'                 # a descent, playing out
+    t0 = node._plan_t0
+    u0_first = None
+    for k in range(5):
+        # Inject a fresh follower target directly (bypassing the frozen intake): it
+        # must NOT be chased while frozen.
+        node._follower_target = (np.array([50.0, 0.0, 210.0, 0.0, 0.0, 0.0]),
+                                 time.perf_counter())
+        node._emit_once(t0 + k * 0.025)
+        if u0_first is None:
+            u0_first = np.asarray(pub.frames[-1]['motor_rev'], dtype=float)
+    assert node._active_plan is descent_plan           # follower never superseded it
+    assert len(pub.frames) == 5                         # stream never stopped
+    # u0 is DESCENDING (advancing along the plan), not frozen in place.
+    u0_last = np.asarray(pub.frames[-1]['motor_rev'], dtype=float)
+    assert not np.allclose(u0_last, u0_first, atol=1e-4)
+
+
+def test_guard_clear_reseeds_and_resumes_targets():
+    node = _follower_node()                            # command ≈ measured (converged)
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    # Guard clears (fault_state back to NONE) while still streaming. The descent has
+    # converged (command within the pump gate of measured) → clean instant hold reseed.
+    node._on_link_status(_link_status('NONE'))
+    assert node._guard_frozen is False
+    assert node._active_plan.kind == 'hold'            # zero-step reseed at measured
+    # Target acceptance resumes: a fresh target installs a follower move again.
+    node._on_platform_pose(_platform_pose(x=15.0, z=178.0, publisher='SPACEMOUSE'))
+    assert node._follower_target is not None
+    assert node._follower_tick(time.perf_counter()) is True
+    assert node._active_plan.kind == 'move'
+
+
+def test_guard_clear_mid_descent_does_not_jump_u0():
+    """A bare /clear_errors MID-descent (u0 still > the pump gate from measured) must
+    NOT instant-reseed — that would jump u0 across the gate. The profiled descent is
+    left in flight to finish (it terminally holds at measured)."""
+    node = _follower_node()
+    _install_far_command(node, dz_mm=40.0)             # command ≈0.53 rev from measured
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    descent_plan = node._active_plan
+    assert descent_plan.kind == 'move'
+    # Clear arrives immediately — the descent has NOT converged yet. No instant reseed.
+    node._on_link_status(_link_status('NONE'))
+    assert node._guard_frozen is False
+    assert node._active_plan is descent_plan           # NOT replaced by an instant hold
+    assert node._active_plan.kind == 'move'
+
+
+def test_guard_latch_outside_streaming_is_noop():
+    node = _node()
+    node._on_robot_state(_robot_state())           # telemetry cached, NOT streaming
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is False             # no-op: nothing to freeze
+    assert node._active_plan is None               # nothing seeded/installed
+
+
+def test_leaving_stream_mode_clears_guard_freeze():
+    node = _follower_node()
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    node._on_control_mode(String(data='DISABLED'))  # leave the streaming set
+    assert node._guard_frozen is False
+    assert node._streaming is False
+
+
+def test_go_to_pose_rejected_while_guard_latched():
+    node = _traj_mode_node()                        # TRAJECTORY, seeded
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    resp = node._svc_go_to_pose(_go_to_pose_req(x=10.0, z=180.0),
+                                GoToPose.Response())
+    assert resp.accepted is False
+    assert resp.code == 'GUARD_LATCHED'
+    assert 'guard' in resp.message.lower()
+
+
+def test_go_home_rejected_while_guard_latched():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='STANDBY'))
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    resp = node._svc_go_home(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'guard' in resp.message.lower()
+
+
+def test_reseed_from_measured_installs_profiled_descent():
+    """/recover step 1: reseed_from_measured installs the gate-validated PROFILED
+    descent onto measured (NOT an instant hold — that would jump u0 across the pump
+    gate mid-descent). The descent ends at the measured encoder, at rest."""
+    node = _follower_node()
+    _install_far_command(node, dz_mm=40.0)             # command far from the encoder
+    resp = node._svc_reseed_from_measured(Trigger.Request(), Trigger.Response())
+    assert resp.success is True
+    assert 'descent' in resp.message.lower()
+    assert node._active_plan.kind == 'move'            # a descent, not an instant hold
+    fp, ftw, _ = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(node._pose_to_motor_rev(fp), _ACTIVATE_REV, atol=1e-2)
+    assert np.allclose(ftw, 0.0, atol=1e-9)
+
+
+def test_reseed_from_measured_rejected_when_not_streaming():
+    node = _node()
+    node._on_robot_state(_robot_state())            # telemetry, but not streaming
+    resp = node._svc_reseed_from_measured(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert node._active_plan is None
+
+
+def test_guard_latch_freezes_at_last_pose_when_telemetry_stale():
+    """If measured telemetry is stale when the guard latches, the reseed-to-measured
+    can't run — but u0 must still STOP advancing: fall back to holding the last
+    emitted pose (never let a diverged move run on)."""
+    node = _follower_node()
+    node._robot_state_mono = time.perf_counter() - (node._robot_state_stale_s + 5.0)
+    node._on_link_status(_link_status('MAX_DEVIATION'))
+    assert node._guard_frozen is True
+    assert node._active_plan.kind == 'hold'      # froze at last pose (did not advance)

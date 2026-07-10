@@ -11,7 +11,9 @@ from controller.teensy_link import protocol as p
 
 def test_constants_match_firmware_spec():
     # These are load-bearing — if they ever drift we've broken the protocol.
-    assert p.PROTOCOL_VERSION == 2   # bumped for the Diagnostic homing_result field
+    assert p.PROTOCOL_VERSION == 3   # bumped for the HeartbeatT2J deviation-telemetry
+    #                                  fields (per-leg live deviation, lead_clamp_mask,
+    #                                  MAX_DEVIATION latch snapshot — 2026-07-10)
     assert p.MAGIC == 0x4A42  # "JB" little-endian
     assert p.HEADER_SIZE == 8
     assert p.CRC_SIZE == 2

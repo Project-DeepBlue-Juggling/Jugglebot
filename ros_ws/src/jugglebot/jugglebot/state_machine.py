@@ -65,6 +65,23 @@ class Context:
         self.fatal_error = False
         self.fatal_can_error = False
         self.undervoltage = False
+        # FIX 2 — Teensy guard-latch awareness. Set by the orchestrator from the
+        # bridge's /link_status (fault_state != NONE). The guard SUPPRESSES leg output
+        # without disarming the ODrives, so it never appears in ``errors`` (which is
+        # ODrive-level only) — the 2026-07-10 incident left the orchestrator BLIND to
+        # a latched MAX_DEVIATION. The orchestrator forces FAULT on this only from
+        # ACTIVE (see orchestrator_node._tick); FaultHandler then holds FAULT until it
+        # clears, routing the existing clear_errors recovery.
+        self.guard_latched = False
+        # FIX 2 (F1) — one-shot: set by FaultHandler when a GUARD-ONLY fault clears and
+        # exits back to ACTIVE. The ODrives never disarmed under a guard latch (it
+        # suppresses output only) and trajectory_node kept streaming a hold throughout,
+        # so ActiveHandler must RESUME already-armed — NOT re-run the ACTIVATE move (a
+        # TRAP_TRAJ to the active pose would fight the live 40 Hz PASSTHROUGH stream and
+        # lurch the legs up from the post-descent measured hold). Consumed (reset) by
+        # ActiveHandler.on_enter, and cleared on any FAULT entry so it can never leak
+        # into a real-fault→BOOT→re-activate path (which MUST re-arm).
+        self.resume_active_no_rearm = False
 
         # Async operation result (set by orchestrator when a requested op completes)
         self.operation_pending = False
@@ -392,7 +409,6 @@ class ActiveHandler(StateHandler):
         self._activated = False
 
     def on_enter(self, ctx):
-        self._activated = False
         # Always reset to STANDBY on entry so re-activation never inherits a
         # prior sub-mode.  The orchestrator's control_mode is a target-routing
         # signal: STANDBY SILENCES move commands — trajectory_node keeps streaming
@@ -401,6 +417,24 @@ class ActiveHandler(StateHandler):
         # service). The operator then switches to TRAJECTORY / SPACEMOUSE / CATCH
         # to accept the corresponding command source.
         ctx.active_mode = ActiveMode.STANDBY
+
+        # FIX 2 (F1) — guard-clear resume. A GUARD-ONLY fault (Teensy guard latched
+        # during ACTIVE with NO ODrive error) never disarmed the legs and never left
+        # the streaming set (FaultHandler preserved control_mode), and trajectory_node
+        # held a profiled descent throughout. So on the way back from that fault we
+        # must RESUME already-armed: re-running the ACTIVATE move here (a TRAP_TRAJ to
+        # the active pose) would fight the live 40 Hz PASSTHROUGH stream and lurch the
+        # legs up from the post-descent measured hold — potentially re-tripping the
+        # guard. Consume the one-shot and go straight to the armed STANDBY hold.
+        resume = ctx.resume_active_no_rearm
+        ctx.resume_active_no_rearm = False
+        if resume:
+            self._activated = True
+            ctx.control_mode = ctx.active_mode.value  # 'STANDBY'
+            ctx.operation_result = None
+            return
+
+        self._activated = False
         ctx.request = 'activate'
         ctx.operation_result = None
 
@@ -442,13 +476,50 @@ class FaultHandler(StateHandler):
         - Fatal: user sends 'clear_errors' via orchestrator_command,
           orchestrator calls odrive_command('clear_errors') on CAN node,
           errors clear, handler exits to BOOT.
+        - Guard-only (FIX 2/F1): the Teensy guard latched during ACTIVE with NO
+          ODrive error. This is observability + clear_errors routing ONLY —
+          control_mode is PRESERVED (streaming mode kept, never 'ERROR') so the
+          40 Hz emitter keeps playing out trajectory_node's profiled guard descent.
+          'clear_errors' clears the Teensy latch; once the guard drops, FAULT exits
+          straight back to ACTIVE (the legs never disarmed), and ActiveHandler
+          resumes WITHOUT re-arming.
 
-    BOOT then re-validates heartbeats and either skips to IDLE (if already
-    homed) or proceeds through HOMING (if ODrives rebooted).
+    BOOT (the real-fault exit) then re-validates heartbeats and either skips to
+    IDLE (if already homed) or proceeds through HOMING (if ODrives rebooted).
     """
 
+    def __init__(self):
+        # Sticky for the lifetime of this FAULT visit (recomputed on every on_enter).
+        # True iff FAULT was entered PURELY because of a Teensy guard latch (from
+        # ACTIVE) with NO ODrive-level error — see on_enter.
+        self._guard_only = False
+
     def on_enter(self, ctx):
-        ctx.control_mode = 'ERROR'
+        # A GUARD-ONLY fault is observability + clear_errors routing ONLY: the Teensy
+        # guard suppresses leg output WITHOUT disarming the ODrives, and trajectory_node
+        # already installed a gate-validated profiled descent + froze target
+        # advancement. So the streaming mode is ALREADY safe. Discriminate it from a
+        # real fault: guard latched, and NONE of the ODrive-level fault signals set.
+        # (A guard latch riding ALONGSIDE a real ODrive error is a real fault — the
+        # ODrive error dominates and gets the full 'ERROR'/BOOT treatment below.)
+        self._guard_only = (ctx.guard_latched and not ctx.errors
+                            and not ctx.has_fatal_error and not ctx.boot_timed_out)
+
+        # Entering FAULT is never a clean guard-clear resume — clear the one-shot so a
+        # stale value can't skip the re-arm on a later real-fault→BOOT→ACTIVE path.
+        ctx.resume_active_no_rearm = False
+
+        if self._guard_only:
+            # PRESERVE the streaming mode (ActiveHandler.on_exit blanked control_mode to
+            # '' during the forced transition — restore it). Publishing 'ERROR' here — a
+            # mode OUTSIDE trajectory_node's streaming set — would silence the 40 Hz
+            # emitter, abandon the in-flight profiled descent, and re-latch MPC_STALE on
+            # top of the guard: the self-sustaining 2026-07-10 deadlock this fix removes.
+            # active_mode is untouched across the forced ACTIVE→FAULT transition, and
+            # every ActiveMode value is inside trajectory_node's streaming set.
+            ctx.control_mode = ctx.active_mode.value
+        else:
+            ctx.control_mode = 'ERROR'
 
         # Classify error severity (useful for monitoring/logging).
         # Fatal takes precedence: undervoltage alongside a fatal error is still FATAL.
@@ -466,10 +537,34 @@ class FaultHandler(StateHandler):
         if ctx.boot_timed_out and ctx.all_heartbeats:
             ctx.boot_timed_out = False
 
-        # Exit FAULT when all error conditions clear.
-        # BOOT re-validates heartbeats, then skips to IDLE if already homed.
-        if not ctx.has_fatal_error and not ctx.errors and not ctx.boot_timed_out:
-            return RobotState.BOOT
+        # A guard-only fault that GAINS a real ODrive error mid-fault is no longer
+        # guard-only: promote to the real-fault path so a genuine fault can never be
+        # masked by the preserved streaming mode (publish 'ERROR', route to BOOT on
+        # clear — identical to a fault that started real).
+        if self._guard_only and (ctx.errors or ctx.has_fatal_error
+                                 or ctx.boot_timed_out):
+            self._guard_only = False
+            ctx.control_mode = 'ERROR'
+
+        if self._guard_only:
+            # Guard-only fault: the ODrives never disarmed and stayed homed, so exit
+            # STRAIGHT BACK TO ACTIVE the moment the guard clears (re-running
+            # BOOT/HOMING would be incoherent — the platform is still armed at pose).
+            # clear_errors (routed below) clears the Teensy latch; the next /link_status
+            # drops guard_latched and this fires. ActiveHandler resumes WITHOUT re-arming
+            # (see resume_active_no_rearm) so the live stream is never disturbed.
+            if not ctx.guard_latched:
+                ctx.resume_active_no_rearm = True
+                return RobotState.ACTIVE
+        else:
+            # Real fault: exit FAULT when all error conditions clear. BOOT re-validates
+            # heartbeats, then skips to IDLE if already homed. A latched Teensy guard
+            # riding on top holds FAULT too — leaving while it is still latched would
+            # return to a silently-crippled robot; clear_errors clears the Teensy latch
+            # and the next /link_status drops guard_latched so this exit fires.
+            if (not ctx.has_fatal_error and not ctx.errors
+                    and not ctx.boot_timed_out and not ctx.guard_latched):
+                return RobotState.BOOT
 
         cmd = ctx.consume_command()
         if cmd == 'clear_errors':

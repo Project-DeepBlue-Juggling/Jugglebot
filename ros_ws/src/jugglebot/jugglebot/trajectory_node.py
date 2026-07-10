@@ -101,6 +101,7 @@ from jugglebot.motion.trajectory import (
     TargetFollower,
     TrajectoryInfeasible,
     TrajectoryLimits,
+    TrajectoryPlan,
 )
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
@@ -125,6 +126,11 @@ _MOVE_MODE = 'TRAJECTORY'
 #   feasibility rejection (it is not a property of any plan the gate reasons about).
 _BUSY = 'BUSY'
 _FROZEN = 'FROZEN'
+#   GUARD_LATCHED — a move/target arrived while a Teensy guard E-STOP is latched
+#   (FIX 1). Command advancement is frozen at the measured hold until CLEAR_ERRORS,
+#   so any advancing service is refused loudly rather than jumping u0 back toward a
+#   target the suppressed legs cannot follow (which is what re-trips the guard).
+_GUARD_LATCHED = 'GUARD_LATCHED'
 
 
 # Control modes in which the node streams a hold. STANDBY is the armed-hold state
@@ -283,6 +289,14 @@ class TrajectoryNode(Node):
         self._plan_t0 = None              # perf_counter at install (plan-time origin)
         self._seeded = False              # a real telemetry seed has been installed
         self._streaming = False           # current mode is a streaming mode
+        # FIX 1 — Teensy guard-latch freeze. Set True on the RISING edge of a latched
+        # guard fault (read off the bridge's /link_status) WHILE streaming: the
+        # emitter keeps publishing (so the stream never trips MPC_STALE) but no
+        # planning advances u0 — hold-at-measured persists — until CLEAR_ERRORS
+        # releases the guard. Written on the executor thread (_on_link_status /
+        # _on_control_mode), read on the emitter thread (_post_publish_planning); a
+        # plain bool is GIL-atomic across the one-writer/one-reader split.
+        self._guard_frozen = False
         self._current_mode = ''
         self._seq = 0
         self._last_motor_rev = None       # prior emitted u0 (step-bound defence)
@@ -343,6 +357,12 @@ class TrajectoryNode(Node):
         # Catch coordinator's timed catch target (CATCH mode; Phase 5).
         self.create_subscription(DynamicTargetCommand, 'catch/dynamic_target',
                                  self._on_dynamic_target, 10)
+        # FIX 1 — Teensy guard state. The bridge publishes /link_status (a
+        # DiagnosticStatus) at 10 Hz carrying the guard 'fault_state' KeyValue; we
+        # watch it so a latched E-STOP freezes command advancement instead of letting
+        # u0 run away (the 2026-07-10 stuttering-stroke runaway).
+        self.create_subscription(DiagnosticStatus, 'link_status',
+                                 self._on_link_status, 10)
 
         # ── Services ────────────────────────────────────────────
         self.create_service(Trigger, 'trajectory/hold', self._svc_hold)
@@ -353,6 +373,11 @@ class TrajectoryNode(Node):
                             self._svc_set_limits)
         self.create_service(TimedTarget, 'trajectory/timed_target',
                             self._svc_timed_target)
+        # FIX 3 — one-call guard recovery support. The bridge's /recover calls this
+        # FIRST (before CLEAR_ERRORS) so the commanded u0 collapses onto the frozen
+        # encoder and the subsequent clear cannot re-latch MAX_DEVIATION.
+        self.create_service(Trigger, 'trajectory/reseed_from_measured',
+                            self._svc_reseed_from_measured)
 
         # ── Status + diagnostics publication (5 Hz) ─────────────
         self.status_pub = self.create_publisher(
@@ -512,6 +537,16 @@ class TrajectoryNode(Node):
         Pending graceful-stop retry (any streaming mode) then the follower replan
         (follower modes only). Each installs the plan the next tick samples.
         """
+        # FIX 1 — while a guard E-STOP is latched, run NO new re-planning: the emitter
+        # (caller) still publishes this tick's frame, and it plays out the PROFILED
+        # DESCENT the latch edge installed — walking u0 DOWN onto the frozen encoder,
+        # each knot inside the pump step gate — but no follower replan or pending-stop
+        # retry may SUPERSEDE that descent. Without this, the follower would keep
+        # chasing the latest SpaceMouse target and re-diverge u0 the instant a clear
+        # released the latch. The installed descent itself advances u0 (that IS the
+        # command-space collapse); it is the re-planning, not the emitter, that freezes.
+        if self._guard_frozen:
+            return
         if self._pending_stop:
             self._retry_pending_stop(now)
         if mode in _FOLLOWER_MODES:
@@ -714,6 +749,11 @@ class TrajectoryNode(Node):
                 self._escalation_stop = False
                 self._escalate_stop_fail_count = 0
                 self._pending_stop = False
+            # FIX 1 — leaving the streaming set is a fresh context: drop the guard
+            # freeze (nothing to hold now that the emitter is silent). If the guard
+            # is still latched, the next _on_link_status re-computes should_freeze as
+            # False (streaming is off) and re-arms cleanly on the next stream entry.
+            self._guard_frozen = False
             self.get_logger().info(f"streaming DISABLED (mode {mode})")
 
     def _on_robot_state(self, msg) -> None:
@@ -733,8 +773,13 @@ class TrajectoryNode(Node):
                 and (time.perf_counter() - self._robot_state_mono)
                 <= self._robot_state_stale_s)
 
-    def _seed_hold_from(self, pos_rev) -> None:
-        """Seed a hold at the measured pose (pos_estimate rev → ext → FK → gate)."""
+    def _seed_hold_from(self, pos_rev) -> bool:
+        """Seed a hold at the measured pose (pos_estimate rev → ext → FK → gate).
+
+        Returns True iff a hold was installed. The guard-recovery reseed (FIX 1/3)
+        needs a definitive install signal, so every early-out returns False and the
+        install path returns True; the other callers ignore the value (statement use).
+        """
         # Defensive freshness gate: never seed from stale/absent telemetry — a
         # stale measured pose could place the first u0 outside the pump/firmware
         # gates. The _on_robot_state seed path is inherently fresh (mono stamped
@@ -742,14 +787,14 @@ class TrajectoryNode(Node):
         if not self._robot_state_fresh():
             self.get_logger().error(
                 "telemetry stale — waiting for fresh robot_state before seeding")
-            return
+            return False
         ext_mm = np.asarray(pos_rev, dtype=float) / self._mm_to_rev
         try:
             pos, rot, _J = leg_lengths_to_pose(ext_mm, self._geom)
         except RuntimeError as e:
             self.get_logger().error(
                 f"seed FK failed ({e}) — not streaming until a valid state")
-            return
+            return False
         pose = np.concatenate([pos, rot_matrix_to_rotvec(rot)])
         # Route the seed through the canonical gate: build_hold validates the pose
         # (workspace + limits + finiteness) before install, so nothing — not even
@@ -762,7 +807,7 @@ class TrajectoryNode(Node):
             self.get_logger().error(
                 f"seed hold rejected by gate ({e}) — not streaming until a valid "
                 "state")
-            return
+            return False
         now = time.perf_counter()
         with self._plan_lock:
             self._active_plan = plan
@@ -782,6 +827,274 @@ class TrajectoryNode(Node):
         self.get_logger().info(
             f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
             f"z={pose[2]:.1f} mm (from measured telemetry)")
+        return True
+
+    # ═══════════════════════════════════════════════════════════
+    # Teensy guard-latch handling (FIX 1)
+    # ═══════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _kv_get(values, key: str, default: str = '') -> str:
+        """Read a DiagnosticStatus KeyValue by key (the /link_status decode)."""
+        for kv in values:
+            if kv.key == key:
+                return kv.value
+        return default
+
+    def _reseed_hold_at_measured(self) -> bool:
+        """Instantly reseed a hold at the measured encoder pose (a ZERO-step reseed).
+
+        Installs ``build_hold(measured)`` — an INSTANT collapse of the commanded u0
+        onto the live encoder. This is safe ONLY when the command is already within
+        the pump's per-frame step gate of measured: a >``max_step_rev`` u0 jump is
+        REJECTED by the pump (it gates against the prior ACCEPTED frame), which
+        deadlocks the stream — the 2026-07-10 flaw. So callers that cannot guarantee
+        the command is already close (the latch edge, /recover's reseed) use
+        ``_install_guard_descent`` instead, which walks u0 down THROUGH the gate. This
+        instant reseed survives only on the guard-CLEAR edge, guarded by
+        ``_command_within_step_of_measured``.
+
+        Permitted in ALL streaming modes (an explicit recovery reseed, not a
+        mode-entry seed). No-op (returns False) when not streaming or telemetry is
+        stale. Does NOT touch ``_guard_frozen`` (the freeze is owned by
+        ``_on_link_status``).
+        """
+        with self._plan_lock:
+            streaming = self._streaming
+        if not streaming:
+            return False
+        if self._latest_pos_rev is None or not self._robot_state_fresh():
+            self.get_logger().error(
+                "guard reseed skipped — no fresh robot_state to seed from")
+            return False
+        return self._seed_hold_from(self._latest_pos_rev)
+
+    def _measured_pose(self):
+        """FK of the live encoder → the 6-DOF pose the (frozen) legs are sitting at.
+
+        Returns ``None`` when telemetry is absent/stale or the FK fails — the caller
+        then freezes in place rather than descend toward an unknown target."""
+        if self._latest_pos_rev is None or not self._robot_state_fresh():
+            return None
+        ext_mm = np.asarray(self._latest_pos_rev, dtype=float) / self._mm_to_rev
+        try:
+            pos, rot, _J = leg_lengths_to_pose(ext_mm, self._geom)
+        except RuntimeError as e:
+            self.get_logger().error(f"guard descent FK failed ({e})")
+            return None
+        return np.concatenate([pos, rot_matrix_to_rotvec(rot)])
+
+    def _command_within_step_of_measured(self) -> bool:
+        """True iff the current commanded u0 is within the pump step gate of measured.
+
+        i.e. an instant ``build_hold(measured)`` reseed would NOT exceed the pump's
+        per-frame step gate. Gates the guard-CLEAR-edge instant reseed: a converged
+        descent (the /recover happy path, u0 within 0.25 rev of measured) reseeds a
+        clean hold; a still-in-flight descent (a mid-descent bare /clear_errors, u0
+        still up to the 0.5 rev guard band out) is left to finish rather than jump u0
+        across the gate. Any sampling/FK error ⇒ treat as unsafe (do not reseed)."""
+        if self._latest_pos_rev is None:
+            return False
+        try:
+            cmd_rev = self._pose_to_motor_rev(self._current_state()[0])
+        except Exception:  # noqa: BLE001 — a sampling/FK error ⇒ treat as unsafe
+            return False
+        meas = np.asarray(self._latest_pos_rev, dtype=float)
+        return bool(np.max(np.abs(cmd_rev - meas)) <= self._limits.max_step_rev)
+
+    def _freeze_in_place(self) -> None:
+        """Stop the runaway by holding u0 at the last emitted pose (zero step).
+
+        The last-ditch fallback when no collapsing descent can be built (stale
+        telemetry, or a descent the gate rejects even after an in-place decel). u0
+        stays diverged from the encoder, so /recover cannot converge and recovery
+        needs the manual dance — but at least the command STOPS running away
+        (``self._last_pose`` is the last already-gated frame we shipped)."""
+        with self._plan_lock:
+            self._active_plan = HoldPlan(self._last_pose)
+            self._plan_t0 = time.perf_counter()
+            self._last_motor_rev = None
+
+    def _build_descent_plan(self, seed, target):
+        """Gate-validated profiled trajectory ``seed → target`` ending at rest.
+
+        ``seed`` is the CURRENT COMMANDED ``(pose, twist, accel)`` (C2 continuation);
+        ``target`` is the measured pose. Built with ``build_follow`` (the fast
+        ``validate_follow`` gate), so EVERY emitted knot's u0 step stays under the
+        gate's own knot-step bound (0.8·``max_step_rev``) — and thus under the pump's
+        ``max_step_rev`` — unlike the >0.5 rev instant-reseed jump the pump rejected.
+
+        Fallback for a gate-rejected direct descent (a near-boundary, outward-moving
+        commanded seed whose rest-terminating overshoot leaves the workspace): decel
+        IN PLACE first (``build_graceful_stop`` — minimal outward excursion) then a
+        descent FROM REST → target, concatenated into one plan. The join is C2 (both
+        halves are at rest at the stop's pose, so it is a zero-step, zero-velocity
+        abut → every concatenated knot still passes the pump gate). Returns the plan,
+        or ``None`` if every attempt is gate-rejected."""
+        try:
+            plan, _report = planner.build_follow(
+                seed, target, self._limits, self._geom,
+                self._limits.min_move_duration_s)
+            return plan
+        except TrajectoryInfeasible:
+            pass
+        # Direct descent rejected — decel in place, then descend from rest.
+        try:
+            stop = planner.build_graceful_stop(seed, self._limits, self._geom)
+        except TrajectoryInfeasible:
+            return None
+        rest_pose = np.asarray(stop.final_pose, dtype=float)
+        try:
+            descent, _report = planner.build_follow(
+                (rest_pose, np.zeros(6), np.zeros(6)), target,
+                self._limits, self._geom, self._limits.min_move_duration_s)
+        except TrajectoryInfeasible:
+            return None
+        return TrajectoryPlan(
+            segments=tuple(stop.segments) + tuple(descent.segments),
+            final_pose=descent.final_pose)
+
+    def _install_guard_descent(self) -> bool:
+        """Walk the commanded stream DOWN to the measured pose through the pump gate.
+
+        Replaces the latch-edge instant reseed. The 2026-07-10 runaway left u0 ~0.5+
+        rev past the frozen encoder; an instant ``build_hold(measured)`` there is a
+        >``max_step_rev`` u0 jump the pump's 0.3 rev step gate REJECTS (it compares
+        against the prior ACCEPTED frame), so the collapse never reached the Teensy
+        and /recover could never converge. Instead we install a gate-validated
+        PROFILED descent from the CURRENT COMMANDED state to the MEASURED pose (FK of
+        the live encoder), ending at rest, at the CURRENT session limits — the emitter
+        plays it out and u0 converges onto the encoder over ~0.5-3 s, each knot inside
+        the pump gate, then it terminally holds at measured.
+
+        The plant CANNOT move while this runs: a latched guard SUPPRESSES leg output
+        on the Teensy, so this is a COMMAND-SPACE collapse only — it realigns u0 with
+        the (stationary) encoder so a later CLEAR_ERRORS resumes output with u0
+        already at the encoder (no MAX_DEVIATION re-trip).
+
+        Used on the latch RISING edge AND by ``trajectory/reseed_from_measured``
+        (/recover step 1) — idempotent: re-installing from the mid-descent commanded
+        state just re-plans a fresh (shorter) descent to the same target.
+
+        Returns True iff a collapsing descent was installed; False on the
+        freeze-in-place fallback (stale telemetry, or a gate-rejected descent) — after
+        which /recover cannot converge and the manual recovery dance is required.
+        """
+        with self._plan_lock:
+            streaming = self._streaming and self._seeded
+        if not streaming:
+            return False
+        target = self._measured_pose()
+        if target is None:
+            self.get_logger().error(
+                "guard descent skipped — no fresh robot_state to descend toward; "
+                "freezing u0 in place at the last emitted pose (recovery needs the "
+                "manual dance)")
+            self._freeze_in_place()
+            return False
+        plan = self._build_descent_plan(self._current_state(), target)
+        if plan is None:
+            self.get_logger().error(
+                "guard descent gate-rejected (commanded seed near the envelope edge, "
+                "even after an in-place decel) — freezing u0 in place at the last "
+                "emitted pose; /recover cannot converge until the command clears")
+            self._freeze_in_place()
+            return False
+        self._install(plan)
+        self.get_logger().info(
+            f"guard descent installed — walking u0 down to measured "
+            f"(x={target[0]:.1f} y={target[1]:.1f} z={target[2]:.1f} mm) through the "
+            f"pump step gate over {plan.total_duration:.2f}s; terminal hold at "
+            "measured")
+        return True
+
+    def _on_link_status(self, msg) -> None:
+        """Track the Teensy guard latch (FIX 1) off the bridge's /link_status.
+
+        /link_status is a DiagnosticStatus the bridge publishes at 10 Hz; its
+        ``fault_state`` KeyValue carries the guard reason (``NONE`` when healthy). A
+        latched guard SUPPRESSES leg output on the Teensy while trajectory_node,
+        blind, keeps advancing u0 — the 2026-07-10 runaway, where u0 ran 2.4-2.8 rev
+        past the frozen encoder and every /clear_errors re-latched within one fault
+        tick. On the RISING edge of a latch WHILE STREAMING we install a gate-validated
+        PROFILED DESCENT that walks the commanded u0 DOWN onto the frozen encoder
+        (each knot inside the pump step gate — an instant reseed there is a
+        >max_step_rev jump the pump rejects) and FREEZE target advancement, so a later
+        /clear_errors recovers with no re-trip; the emitter keeps streaming throughout
+        (stopping it would trip MPC_STALE at 250 ms), playing out the descent. On the
+        CLEAR edge (fault back to NONE while still streaming) we reseed a hold at
+        measured — but ONLY once the descent has collapsed u0 within the pump gate
+        (the /recover happy path); a still-in-flight descent is left to finish.
+
+        A latch OUTSIDE a streaming mode is a NO-OP for us: the emitter is not
+        publishing, so there is nothing to freeze or reseed. This is also what keeps
+        the benign prior-session MPC_STALE latch at BOOT (streaming not yet enabled)
+        from freezing anything — coherent with the arming pre-check, which is where
+        that latch is meant to be caught.
+        """
+        fault = self._kv_get(msg.values, 'fault_state', 'NONE')
+        latched = fault not in ('NONE', 'UNKNOWN', '')
+        with self._plan_lock:
+            streaming = self._streaming and self._seeded
+        should_freeze = latched and streaming
+        if should_freeze and not self._guard_frozen:
+            # RISING edge — log ERROR once, then walk u0 DOWN onto the frozen encoder
+            # via a gate-validated profiled descent (never an instant reseed: that was
+            # a >max_step_rev jump the pump rejected — the 2026-07-10 deadlock).
+            # _install_guard_descent freezes u0 in place (its own loud ERROR) if it
+            # cannot build the descent (stale telemetry / gate-rejected).
+            self._guard_frozen = True
+            self.get_logger().error(
+                f"Teensy guard LATCHED ({fault}) while streaming — collapsing the "
+                "command onto the measured encoder via a profiled descent; target "
+                "advancement suspended until CLEAR_ERRORS (recover with: ros2 "
+                "service call /recover std_srvs/srv/Trigger)")
+            self._install_guard_descent()
+        elif self._guard_frozen and not should_freeze:
+            # CLEAR edge — drop the freeze. If the descent has CONVERGED (commanded u0
+            # within the pump step gate of measured — the /recover happy path, which
+            # clears only AFTER verifying convergence), an instant hold-at-measured
+            # reseed is a clean zero-step refresh that also picks up any encoder drift.
+            # If a descent is still IN FLIGHT (a mid-descent bare /clear_errors, u0
+            # still up to the 0.5 rev guard band out), DON'T jump u0 across the pump
+            # gate — leave the descent to finish (it terminally holds at measured); the
+            # follower then resumes C2 from the current commanded state. If instead we
+            # left the streaming set while latched, _on_control_mode already dropped
+            # seed/freeze and there is nothing to reseed.
+            self._guard_frozen = False
+            if not latched and streaming:
+                if self._command_within_step_of_measured():
+                    self._reseed_hold_at_measured()
+                self.get_logger().info(
+                    "Teensy guard cleared — resuming target acceptance")
+
+    def _svc_reseed_from_measured(self, request, response):
+        """``trajectory/reseed_from_measured`` (Trigger, /recover step 1).
+
+        Install (or re-install) the gate-validated PROFILED descent that walks the
+        commanded u0 down onto the measured encoder — the same collapse the latch edge
+        installs. The bridge's ``/recover`` calls this FIRST, then WAITS for the
+        descent to converge before firing CLEAR_ERRORS, so the clear cannot re-trip
+        MAX_DEVIATION. Installing an instant hold-at-measured here (the old behaviour)
+        would JUMP u0 across the pump step gate mid-descent — the very deadlock this
+        fix removes. Permitted in ALL streaming modes; does not touch ``_guard_frozen``
+        (the guard is still latched here — the freeze releases only when /link_status
+        reports ``fault_state=NONE``).
+        """
+        ok = self._install_guard_descent()
+        response.success = bool(ok)
+        response.message = (
+            'installed a profiled descent onto measured'
+            if ok else
+            'descent unavailable — not streaming, telemetry stale, or gate-rejected '
+            '(froze in place; see node log)')
+        return response
+
+    def _guard_frozen_msg(self) -> str:
+        """Uniform reject text for an advancing command refused during a guard latch."""
+        return ("Teensy guard latched (E-STOP) — command advancement is frozen at "
+                "the measured hold; recover with /recover (or /clear_errors) before "
+                "commanding motion")
 
     # ═══════════════════════════════════════════════════════════
     # SpaceMouse / GUI / shell follower (Phase 3)
@@ -800,6 +1113,14 @@ class TrajectoryNode(Node):
         if self._current_mode not in _FOLLOWER_MODES:
             return
         if str(msg.publisher).upper() != self._current_mode:
+            return
+        # FIX 1 — a latched guard freezes command advancement; drop fresh SpaceMouse
+        # targets (WARN throttled) so u0 does not chase them onto suppressed legs.
+        if self._guard_frozen:
+            self.get_logger().warning(
+                "Teensy guard latched — ignoring SpaceMouse target (holding at "
+                "measured); recover with /recover or /clear_errors",
+                throttle_duration_sec=1.0)
             return
         p = msg.pose_stamped.pose.position
         q = msg.pose_stamped.pose.orientation
@@ -1120,6 +1441,10 @@ class TrajectoryNode(Node):
         confusion — exit the follower mode (which installs a graceful stop) instead.
         Mirrors ``go_to_pose``'s WRONG_MODE rationale.
         """
+        if self._guard_frozen:                       # FIX 1 — refuse while latched
+            response.success = False
+            response.message = self._guard_frozen_msg()
+            return response
         if self._current_mode in _FOLLOWER_MODES:
             response.success = False
             response.message = (
@@ -1170,6 +1495,14 @@ class TrajectoryNode(Node):
         """
         response.planned_duration_s = 0.0
         response.min_duration_s = 0.0
+        # FIX 1 — refuse any advancing move while a guard E-STOP is latched.
+        if self._guard_frozen:
+            response.accepted = False
+            response.code = _GUARD_LATCHED
+            response.message = self._guard_frozen_msg()
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
         # Gate: TRAJECTORY mode only. A move from STANDBY/SPACEMOUSE/CATCH is a
         # mode confusion — reject rather than move unexpectedly.
         if self._current_mode != _MOVE_MODE:
@@ -1525,6 +1858,11 @@ class TrajectoryNode(Node):
         if self._current_mode != _CATCH_MODE:
             return
         arrival_perf = float(msg.arrival_time)
+        if self._guard_frozen:                       # FIX 1 — refuse while latched
+            self._publish_target_feedback(
+                False, _GUARD_LATCHED, self._guard_frozen_msg(),
+                arrival_perf, 'catch')
+            return
         if not (self._seeded and self._robot_state_fresh()):
             self._publish_target_feedback(
                 False, feas.STALE_STATE,
@@ -1578,6 +1916,13 @@ class TrajectoryNode(Node):
         """
         response.planned_duration_s = 0.0
         response.min_duration_s = 0.0
+        if self._guard_frozen:                       # FIX 1 — refuse while latched
+            response.accepted = False
+            response.code = _GUARD_LATCHED
+            response.message = self._guard_frozen_msg()
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
         if self._current_mode != _MOVE_MODE:
             response.accepted = False
             response.code = feas.WRONG_MODE

@@ -50,6 +50,11 @@ uint32_t interp_deadline_misses();
 uint32_t interp_max_jitter_us();
 void     interp_reset_jitter();
 
+// Per-leg lead-clamp-engaged bitmask from the most recent computed 500 Hz tick
+// (bit i = leg i). Diagnostic telemetry (surfaced on HeartbeatT2J) for the
+// 2026-07-10 stutter/lead diagnosis.
+uint8_t  interp_lead_clamp_mask();
+
 // ── Deferred-stow profiled descent (driven by the fault machine) ──────────────
 // When stow is active the 500 Hz ISR ignores the MPC ladder and runs a
 // velocity-limited descent of every leg to the off pose (stroke min), emitting

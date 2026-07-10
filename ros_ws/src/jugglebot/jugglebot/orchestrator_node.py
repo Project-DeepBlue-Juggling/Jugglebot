@@ -24,6 +24,7 @@ from jugglebot_interfaces.srv import (
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
+from diagnostic_msgs.msg import DiagnosticStatus
 
 from jugglebot.state_machine import (
     RobotState, Context, build_default_machine, BOOT_TIMEOUT_S,
@@ -65,6 +66,13 @@ class OrchestratorNode(Node):
             RobotStateMsg, 'robot_state', self._on_robot_state, 10)
         self.create_subscription(
             String, 'orchestrator_command', self._on_command, 10)
+        # FIX 2 — Teensy guard awareness. The bridge publishes /link_status (a
+        # DiagnosticStatus) at 10 Hz with a 'fault_state' KeyValue. A latched guard
+        # suppresses leg output WITHOUT disarming the ODrives, so it never reaches
+        # /robot_state.error — the orchestrator was blind to the 2026-07-10
+        # MAX_DEVIATION latch and kept accepting mode commands on a frozen robot.
+        self.create_subscription(
+            DiagnosticStatus, 'link_status', self._on_link_status, 10)
 
         # ── Publishers ────────────────────────────────────────────
         self._control_mode_pub = self.create_publisher(
@@ -124,6 +132,28 @@ class OrchestratorNode(Node):
         self.ctx.enqueue_command(msg.data)
         self.get_logger().info(f'Command received: {msg.data}')
 
+    @staticmethod
+    def _kv_get(values, key, default=''):
+        """Read a DiagnosticStatus KeyValue by key (the /link_status decode)."""
+        for kv in values:
+            if kv.key == key:
+                return kv.value
+        return default
+
+    def _on_link_status(self, msg):
+        """Track the Teensy guard latch from /link_status (FIX 2).
+
+        Sets ``ctx.guard_latched`` from the bridge's ``fault_state`` KeyValue
+        (``NONE``/``UNKNOWN`` ⇒ not latched). The state machine uses it to FORCE and
+        HOLD FAULT — but only from ACTIVE (see ``_tick``): a benign prior-session
+        MPC_STALE latch at BOOT must not FAULT the machine before the robot even
+        homes (that latch is caught by the ACTIVATE arming pre-check, exactly as
+        before). ``guard_latched`` lives on its own ctx field rather than folded into
+        ``ctx.errors`` because ``errors`` is overwritten wholesale every /robot_state.
+        """
+        fault = self._kv_get(msg.values, 'fault_state', 'NONE')
+        self.ctx.guard_latched = fault not in ('NONE', 'UNKNOWN', '')
+
     # ═══════════════════════════════════════════════════════════════
     # Main tick
     # ═══════════════════════════════════════════════════════════════
@@ -133,8 +163,16 @@ class OrchestratorNode(Node):
         # 1. Check if a pending async operation completed
         self._check_pending_operations()
 
-        # 2. Force FAULT on errors (from any non-FAULT state)
-        if (self.ctx.errors
+        # 2. Force FAULT on errors (from any non-FAULT state).
+        #    A latched Teensy guard forces FAULT too (FIX 2), but ONLY from ACTIVE:
+        #    the guard's MAX_DEVIATION/MPC_STALE only latch while armed (an ACTIVE
+        #    concern), and gating on ACTIVE keeps the benign prior-session latch at
+        #    BOOT from wedging the machine — that one is handled at the ACTIVATE
+        #    arming pre-check, coherent with prior behaviour. FaultHandler then holds
+        #    FAULT until the guard clears, routing the existing clear_errors recovery.
+        guard_forces_fault = (self.ctx.guard_latched
+                              and self.sm.state == RobotState.ACTIVE)
+        if ((self.ctx.errors or guard_forces_fault)
                 and self.sm.state != RobotState.FAULT):
             self.sm.force_transition(RobotState.FAULT, self.ctx)
             self._cancel_pending_operations()
@@ -409,19 +447,25 @@ class OrchestratorNode(Node):
     # ═══════════════════════════════════════════════════════════════
 
     def on_shutdown(self):
-        """Graceful shutdown: publish ERROR mode to stow the platform.
+        """Graceful shutdown — deliberately does NOT command any mode change.
 
-        Uses fire-and-forget rather than spin_until_future_complete to avoid
-        the shutdown race condition where the node may be partially destroyed.
-        The CAN node handles ERROR mode by stowing the platform and idling
-        all axes, which is the same end result as explicit deactivation.
+        The Ctrl-C profiled stow is owned by ``teensy_bridge_node.on_shutdown``:
+        that is the one process that owns BOTH the disarm and the profiled
+        DEACTIVATE as in-process methods, and whose UDP link survives its own
+        teardown. So the orchestrator has nothing safe to do here.
+
+        Historically this published ``control_mode='ERROR'`` so the (now DELETED)
+        ``can_node`` would stow. In the can-bridge architecture that publish is not
+        just dead but ACTIVELY HARMFUL: ``ERROR`` is outside ``trajectory_node``'s
+        streaming set, so it stops the 40 Hz emitter — and if the bridge is still
+        armed (mpc_active=1), the resulting stream silence latches an MPC_STALE
+        E-STOP within 250 ms (trajectory_node Sharp Edge #1). That latched guard is
+        exactly what makes the bridge's own profiled DEACTIVATE impossible. So the
+        safest shutdown action for the orchestrator is to command NOTHING and let
+        the bridge disarm-then-stow in the correct order.
         """
-        if self.sm.state == RobotState.ACTIVE:
-            self.get_logger().info('Shutting down from ACTIVE — publishing ERROR mode')
-            try:
-                self._control_mode_pub.publish(String(data='ERROR'))
-            except Exception as e:
-                self.get_logger().error(f'Shutdown error: {e}')
+        self.get_logger().info(
+            'Orchestrator shutdown — profiled stow is owned by teensy_bridge_node')
 
 
 def main(args=None):

@@ -107,6 +107,14 @@ EXTRAP_DECAY_DT_S = 0.06
 # 0.3 = responsive but filters solver non-determinism noise.
 JERK_EMA_ALPHA = 0.3
 
+# Worst-value label per recurring-warning kind, for the aggregated summary
+# (see MotorGuard._warn_agg / _flush_warning_summary). Module constant so the
+# summary path allocates no dict; the hot loop never touches it.
+_WARN_WORST_LABEL = {
+    'motor_fb_stale': 'age_s',      # worst = oldest feedback age observed (s)
+    'stroke_clamp': 'excursion_rev',  # worst = largest clamp overshoot (rev)
+}
+
 
 # ---------------------------------------------------------------------------
 # Timing statistics (ported from control_loop.py)
@@ -357,6 +365,27 @@ class MotorGuard:
         # --- Logging ---
         self._last_log_time = 0.0
         self._log_interval_s = 5.0
+
+        # --- Recurring-warning aggregation (logging-only) ---
+        # The 500 Hz interpolate path can re-hit the same condition (stale
+        # feedback, stroke clamp) every cycle. Logging each occurrence spammed
+        # the console AND built a fresh f-string per cycle in the hot loop.
+        # Instead: log the FIRST occurrence of each new episode immediately
+        # (full detail), count the rest, and flush ONE aggregated summary
+        # (count + worst value per type) every _warn_summary_interval_s. This
+        # is strictly logging behaviour — the control path (suppress on stale,
+        # clamp + zero-ff on stroke limit) is byte-identical. Per-cycle updates
+        # touch only these pre-existing scalars/records (int increment + float
+        # compare), so the change REMOVES per-cycle allocation rather than
+        # adding it.
+        self._warn_summary_interval_s = 10.0
+        self._last_warn_summary_t = 0.0
+        # kind -> [count_since_flush, worst_value, episode_active]. Fixed keys,
+        # allocated once here; the hot loop never inserts a key (no dict resize).
+        self._warn_agg = {
+            'motor_fb_stale': [0, 0.0, False],
+            'stroke_clamp': [0, 0.0, False],
+        }
 
     # ------------------------------------------------------------------
     # Main loop
@@ -887,9 +916,24 @@ class MotorGuard:
 
         fb_age = time.perf_counter() - self._motor_fb_timestamp
         if fb_age > MOTOR_FB_STALENESS_S:
-            logger.warning(
-                f"Motor feedback stale ({fb_age:.3f}s) -- suppressing commands")
+            # Logging-only aggregation: log the first occurrence of a stale
+            # episode immediately, count the rest (summary every
+            # _warn_summary_interval_s). The control effect — suppress output
+            # by returning — is unchanged.
+            rec = self._warn_agg['motor_fb_stale']
+            if not rec[2]:
+                rec[2] = True
+                logger.warning(
+                    f"Motor feedback stale ({fb_age:.3f}s) -- suppressing "
+                    f"commands (further occurrences aggregated every "
+                    f"{self._warn_summary_interval_s:.0f}s)")
+            rec[0] += 1
+            if fb_age > rec[1]:
+                rec[1] = fb_age
             return
+        # Feedback is fresh — close any open stale episode so the next onset
+        # logs its first occurrence immediately again.
+        self._warn_agg['motor_fb_stale'][2] = False
 
         # Interpolate from last MPC command.  Three modes:
         #
@@ -1021,7 +1065,6 @@ class MotorGuard:
                 out=self._commanded_pos_rev)
         clamped_mask = pre_clamp != self._commanded_pos_rev
         if clamped_mask.any():
-            clamped_legs = np.where(clamped_mask)[0]
             # Zero feedforward for clamped legs — position is held at the
             # limit so vel_ff and torque_ff are physically meaningless and
             # would fight the position loop, causing current spikes.
@@ -1031,11 +1074,27 @@ class MotorGuard:
             # that the platform is being held at a physical boundary.
             self._workspace_status = WorkspaceStatus.HARD_LIMIT
             self._workspace_speed_scale = 0.0
-            logger.warning(
-                f"Stroke clamp active on legs {clamped_legs.tolist()}: "
-                f"pre-clamp={pre_clamp[clamped_legs].round(4)}, "
-                f"clamped="
-                f"{self._commanded_pos_rev[clamped_legs].round(4)}")
+            # Logging-only aggregation: first occurrence of a clamp episode
+            # logs immediately (with the per-leg detail — np.where/.round only
+            # run here, not every clamped cycle), the rest are counted for the
+            # summary. worst = largest clamp overshoot this window.
+            rec = self._warn_agg['stroke_clamp']
+            excursion = float(np.abs(pre_clamp - self._commanded_pos_rev).max())
+            if not rec[2]:
+                rec[2] = True
+                clamped_legs = np.where(clamped_mask)[0]
+                logger.warning(
+                    f"Stroke clamp active on legs {clamped_legs.tolist()}: "
+                    f"pre-clamp={pre_clamp[clamped_legs].round(4)}, "
+                    f"clamped={self._commanded_pos_rev[clamped_legs].round(4)} "
+                    f"(further occurrences aggregated every "
+                    f"{self._warn_summary_interval_s:.0f}s)")
+            rec[0] += 1
+            if excursion > rec[1]:
+                rec[1] = excursion
+        else:
+            # No clamp this cycle — close any open clamp episode.
+            self._warn_agg['stroke_clamp'][2] = False
 
         # Compute tracking error (informational)
         commanded_ext_mm = revs_to_extensions_mm(
@@ -1182,8 +1241,34 @@ class MotorGuard:
     # Periodic logging
     # ------------------------------------------------------------------
 
+    def _flush_warning_summary(self, t_now: float) -> None:
+        """Emit one aggregated WARNING per active recurring-warning kind.
+
+        Runs every cycle but does real work only once per
+        _warn_summary_interval_s (a float compare gates it — no allocation on
+        the common path). For each kind that fired since the last flush, logs a
+        single ``<kind>: N occurrences in last 10s (worst <label>=<value>)``
+        line and resets its count + worst. The ``episode_active`` flag is left
+        untouched: it is cleared only when the underlying condition clears, so a
+        fault spanning the flush boundary does not re-log its "first occurrence"
+        line.
+        """
+        if t_now - self._last_warn_summary_t < self._warn_summary_interval_s:
+            return
+        self._last_warn_summary_t = t_now
+        for kind, rec in self._warn_agg.items():
+            count, worst = rec[0], rec[1]
+            if count > 0:
+                logger.warning(
+                    "%s: %d occurrences in last %.0fs (worst %s=%.4f)",
+                    kind, count, self._warn_summary_interval_s,
+                    _WARN_WORST_LABEL[kind], worst)
+                rec[0] = 0
+                rec[1] = 0.0
+
     def _periodic_log(self, t_now: float) -> None:
         """Log timing statistics periodically."""
+        self._flush_warning_summary(t_now)
         if t_now - self._last_log_time >= self._log_interval_s:
             self._last_log_time = t_now
             if self.stats.count > 0:

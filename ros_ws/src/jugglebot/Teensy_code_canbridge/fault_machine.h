@@ -72,4 +72,14 @@ bool     fault_can_bus_down();           // fatal_can_error (CAN3)
 bool     fault_stow_pending();           // deferred-stow latch armed
 bool     fault_mpc_active();             // s_mpc_active (J→T heartbeat bit0 — bench diag)
 
+// MAX_DEVIATION latch-event snapshot, frozen at the crossing (2026-07-10 forensics),
+// surfaced on HeartbeatT2J → /link_status. fault_max_dev_leg() == 0xFF ⇒ no
+// MAX_DEVIATION latch has occurred since boot; otherwise it is the leg that crossed,
+// with fault_max_dev_value()/u0()/enc() the deviation, commanded u0, and encoder at
+// the trip. Persists across CLEAR_ERRORS; only fault_machine_init() resets it.
+uint8_t  fault_max_dev_leg();
+float    fault_max_dev_value();
+float    fault_max_dev_u0();
+float    fault_max_dev_enc();
+
 }  // namespace CanBridge

@@ -5,6 +5,15 @@
 //    tools/probes/teensy_link_profiling/hermite_xref/teensy_interp.py
 //  (which the xref proves matches motor_guard to 0.0 rev). Keep the two in sync:
 //  any change here must be mirrored there and re-validated by the xref.
+//
+//  DELIBERATE DIVERGENCE (2026-07-10 MAX_DEVIATION-runaway forensics): the LEAD
+//  CLAMP below no longer mirrors teensy_interp.py / motor_guard. Those still ZERO
+//  vel_ff on clamp (the bang-bang that caused the stutter+latch — see the lead-clamp
+//  comment). This firmware instead keeps the true interpolated vel_ff (capped) and
+//  uses the lower MAX_LEAD_REV. The Jetson-side interp (motor_guard) carries the same
+//  latent defect and needs the same fix under a separate, operator-gated change that
+//  re-validates the xref; until then the two intentionally differ ONLY in the lead
+//  clamp. Every other mode (Hermite/Taylor/decay + stroke clamp) stays a 1:1 port.
 // =============================================================================
 #include "leg_interp.h"
 
@@ -28,7 +37,8 @@ static constexpr float SEG_T   = SEGMENT_T_S;          // 0.025
 static constexpr float MAXEXT  = MAX_EXTRAP_DT_S;       // 0.05
 static constexpr float DECAY   = EXTRAP_DECAY_DT_S;     // 0.06
 static constexpr float ALPHA   = JERK_EMA_ALPHA;        // 0.3
-static constexpr float LEAD    = MAX_LEAD_REV;          // 0.15
+static constexpr float LEAD    = MAX_LEAD_REV;          // 0.10 (2026-07-10 forensics)
+static constexpr float VELFF_CAP = LEAD_CLAMP_VELFF_LIMIT_RPS;   // 3.5 rev/s vel_ff bound
 
 // ── Active latched base state (read by the ISR) ───────────────────────────────
 static float s_base_pos[NUM_LEGS];
@@ -74,6 +84,11 @@ static float s_stow_speed = 0.0f;        // accel-ramped descent speed (rev/s)
 static volatile uint32_t s_deadline_misses = 0;
 static volatile uint32_t s_max_jitter_us = 0;
 static uint64_t s_last_tick_us = 0;
+// Per-leg lead-clamp-engaged flag from the most recent computed tick (bit i = leg i).
+// Diagnostic only (surfaced on the 10 Hz HeartbeatT2J): a single naturally-aligned
+// byte, written once per tick by the ISR (atomic store on Cortex-M7), read by the
+// heartbeat task. 2026-07-10 forensics telemetry.
+static volatile uint8_t s_lead_clamp_mask = 0;
 
 static IntervalTimer s_timer;
 
@@ -330,14 +345,29 @@ static void interp_isr() {
   for (uint8_t i = 0; i < NUM_LEGS; ++i) cmd_tor[i] = s_base_torque[i];
 
   // Lead clamp (never run more than LEAD ahead of the encoder).
+  // 2026-07-10 MAX_DEVIATION-runaway forensics — two changes break the stutter:
+  //   * LEAD is now 0.10 (was 0.15) so pos_gain(40)*LEAD = 4.0 no longer exceeds the
+  //     leg vel_limit (4.0) — see canbridge_config.h MAX_LEAD_REV.
+  //   * Do NOT zero vel_ff when the clamp engages. Zeroing manufactured a
+  //     discontinuous feedforward (and, with the old 0.15, a vel_limit-saturating
+  //     P-term sprint) that seeded a ~6 Hz limit cycle. Instead pass the TRUE
+  //     interpolated vel_ff through, bounded to ±VELFF_CAP (3.5 rev/s, under the 4.0
+  //     vel_limit) so a runaway command cannot inject an over-limit feedforward.
+  // (This deliberately diverges from teensy_interp.py/motor_guard — see the file
+  //  header. The stroke clamp below still zeros vel_ff, correctly: a physical backstop
+  //  hit means "hold at the limit", where feedforward is meaningless.)
+  uint8_t clamp_mask = 0;
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     const float fb = axes[i].pos_rev;          // single-word atomic read
-    const float pre = cmd_pos[i];
     float dev = cmd_pos[i] - fb;
-    if (dev > LEAD) dev = LEAD; else if (dev < -LEAD) dev = -LEAD;
+    if (dev > LEAD)       { dev = LEAD;  clamp_mask |= (uint8_t)(1u << i); }
+    else if (dev < -LEAD) { dev = -LEAD; clamp_mask |= (uint8_t)(1u << i); }
     cmd_pos[i] = fb + dev;
-    if (cmd_pos[i] != pre) cmd_vel[i] = 0.0f;
+    // Bound the feedforward magnitude (applies whether or not the clamp engaged).
+    if (cmd_vel[i] > VELFF_CAP)       cmd_vel[i] = VELFF_CAP;
+    else if (cmd_vel[i] < -VELFF_CAP) cmd_vel[i] = -VELFF_CAP;
   }
+  s_lead_clamp_mask = clamp_mask;   // single-store publish for telemetry
   // Stroke clamp (physical backstop).
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     const float pre = cmd_pos[i];
@@ -407,6 +437,7 @@ void interp_reset() {
   s_deadline_misses = 0;
   s_max_jitter_us = 0;
   s_last_tick_us = 0;
+  s_lead_clamp_mask = 0;
 }
 
 void leg_interp_init() {
@@ -445,6 +476,7 @@ bool interp_output_enabled() { return s_output_enabled; }
 uint32_t interp_deadline_misses() { return s_deadline_misses; }
 uint32_t interp_max_jitter_us() { return s_max_jitter_us; }
 void interp_reset_jitter() { s_max_jitter_us = 0; }
+uint8_t interp_lead_clamp_mask() { return s_lead_clamp_mask; }
 
 void interp_begin_stow() {
   // PRIMASK-publish (mirror interp_on_setpoint's exemplar above). The 500 Hz

@@ -9,7 +9,7 @@
 namespace JbUdp {
 
 // ── Constants ──────────────────────────────────────────────────────────
-constexpr uint8_t PROTOCOL_VERSION = 2u;  // Bumped on any incompatible wire change
+constexpr uint8_t PROTOCOL_VERSION = 3u;  // Bumped on any incompatible wire change
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -192,8 +192,14 @@ struct HeartbeatT2JPayload {
   float bb_yaw_deg;  // BB yaw (deg), decoded with HeartbeatEncoding scale
   float bb_pitch_deg;  // BB pitch (deg)
   float bb_hand_mm;  // BB hand position (mm)
+  float live_deviation[6];  // Per-leg live deviation u0-encoder (rev) — the MAX_DEVIATION guard quantity
+  uint8_t lead_clamp_mask;  // bit i set = leg i's interp lead clamp engaged on the last 500 Hz tick
+  uint8_t max_dev_leg;  // Leg that crossed MAX_DEVIATION at the last latch (0xFF = none since boot)
+  float max_dev_value;  // Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing
+  float max_dev_u0;  // Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing
+  float max_dev_enc;  // Encoder position (rev) of max_dev_leg frozen at the latch crossing
 };
-static_assert(sizeof(HeartbeatT2JPayload) == 35, "HeartbeatT2JPayload size drift");
+static_assert(sizeof(HeartbeatT2JPayload) == 73, "HeartbeatT2JPayload size drift");
 
 // Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 struct ProfilePayload {
@@ -292,7 +298,7 @@ constexpr uint16_t SETPOINT_SIZE = 156u;
 constexpr uint16_t HEARTBEAT_J2T_SIZE = 12u;
 constexpr uint16_t TELEMETRY_SIZE = 64u;
 constexpr uint16_t DIAGNOSTIC_SIZE = 36u;
-constexpr uint16_t HEARTBEAT_T2J_SIZE = 35u;
+constexpr uint16_t HEARTBEAT_T2J_SIZE = 73u;
 constexpr uint16_t PROFILE_SIZE = 66u;
 constexpr uint16_t CONE_FRAME_SIZE = 21u;
 constexpr uint16_t CMD_RESULT_FRAME_SIZE = 21u;

@@ -514,14 +514,24 @@ class TestCancelPendingOperations:
 
 
 class TestShutdown:
-    def test_publishes_error_mode_when_active(self, orch):
-        """Shutting down from ACTIVE should publish ERROR mode."""
+    # Task 3.3: the orchestrator's on_shutdown must NOT command any mode change.
+    # Publishing control_mode='ERROR' on Ctrl-C is a dead can_node-era path that is
+    # now actively harmful — ERROR leaves trajectory_node's streaming set, stopping
+    # the 40 Hz emitter; if the bridge is still armed, the stream silence latches an
+    # MPC_STALE E-STOP within 250 ms, which is exactly what makes the bridge's own
+    # profiled DEACTIVATE impossible. The profiled stow is owned by
+    # teensy_bridge_node.on_shutdown, which disarms first.
+
+    def test_no_error_mode_when_active(self, orch):
+        """Shutting down from ACTIVE must NOT publish ERROR mode (would kill the
+        emitter and latch the guard that blocks the bridge's stow)."""
         orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
         orch._tick()  # Enter ACTIVE
+        before_count = len(orch._control_mode_pub.published)
         orch.on_shutdown()
-        # Should have published 'ERROR'
-        error_pubs = [m for m in orch._control_mode_pub.published if m.data == 'ERROR']
-        assert len(error_pubs) > 0
+        error_pubs = [m for m in orch._control_mode_pub.published[before_count:]
+                      if m.data == 'ERROR']
+        assert len(error_pubs) == 0
 
     def test_no_error_mode_when_idle(self, orch):
         """Shutting down from IDLE should NOT publish ERROR mode."""
@@ -541,12 +551,10 @@ class TestShutdown:
                       if m.data == 'ERROR']
         assert len(error_pubs) == 0
 
-    def test_shutdown_handles_publish_exception(self, orch):
-        """Shutdown should not crash even if publish fails."""
+    def test_shutdown_never_raises(self, orch):
+        """Shutdown must be a safe no-op that never raises, from any state."""
         orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
         orch._tick()
-        orch._control_mode_pub.publish = MagicMock(
-            side_effect=RuntimeError("publish failed"))
         orch.on_shutdown()  # Should not raise
 
 
@@ -607,3 +615,172 @@ class TestTickIntegration:
         orch._tick()
         assert orch.sm.state == RobotState.ACTIVE
         assert orch.ctx.consume_command() is None  # Command was consumed
+
+
+# ════════════════════════════════════════════════════════════════
+# FIX 2 — Teensy guard awareness: a latched guard forces FAULT from ACTIVE and
+# routes the existing clear_errors recovery, WITHOUT wedging the benign
+# prior-session MPC_STALE latch at BOOT. See the 2026-07-10 blind-orchestrator
+# incident (the guard suppresses leg output without disarming, so it never
+# reaches /robot_state.error).
+# ════════════════════════════════════════════════════════════════
+
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+
+
+def _link_status(fault_state='NONE'):
+    msg = DiagnosticStatus()
+    msg.values = [KeyValue(key='fault_state', value=fault_state),
+                  KeyValue(key='mpc_active', value='1')]
+    return msg
+
+
+class TestGuardLatch:
+    def test_on_link_status_sets_and_clears_guard_latched(self, orch):
+        orch._on_link_status(_link_status('MAX_DEVIATION'))
+        assert orch.ctx.guard_latched is True
+        orch._on_link_status(_link_status('NONE'))
+        assert orch.ctx.guard_latched is False
+
+    def test_unknown_fault_state_is_not_latched(self, orch):
+        # 'UNKNOWN' (no heartbeat yet) must not be read as a latch.
+        orch._on_link_status(_link_status('UNKNOWN'))
+        assert orch.ctx.guard_latched is False
+
+    def test_guard_latch_forces_fault_from_active(self, orch):
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch._tick()  # settle into ACTIVE
+        assert orch.sm.state == RobotState.ACTIVE
+        orch._on_link_status(_link_status('MAX_DEVIATION'))
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+
+    def test_guard_latch_does_not_fault_from_boot(self, orch):
+        """Benign case: a prior-session MPC_STALE latch at BOOT must NOT FAULT the
+        machine (that latch is caught by the ACTIVATE arming pre-check)."""
+        orch._tick()  # BOOT
+        orch._on_link_status(_link_status('MPC_STALE'))
+        orch._tick()
+        assert orch.sm.state == RobotState.BOOT
+
+    def test_guard_latch_at_boot_does_not_block_progression(self, orch):
+        """A latched guard at BOOT must not wedge the machine — BOOT still advances
+        to HOMING on heartbeats + firmware."""
+        orch._tick()  # BOOT
+        orch._on_link_status(_link_status('MPC_STALE'))
+        msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
+        orch._on_robot_state(msg)
+        orch._tick()
+        assert orch.sm.state == RobotState.HOMING
+
+    def test_guard_fault_recovery_routes_clear_errors_then_exits(self, orch):
+        """From an ACTIVE guard-forced FAULT, a clear_errors command routes
+        odrive_command(clear_errors); once the guard clears, FAULT exits."""
+        # Spy on the odrive_command client to assert the clear_errors routing.
+        spy = MagicMock()
+        spy.service_is_ready.return_value = True
+        spy.call_async.return_value = MockFuture()
+        orch._odrive_cmd_client = spy
+
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch._tick()
+        orch._on_link_status(_link_status('MAX_DEVIATION'))
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        # Persists while latched.
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+
+        # Operator (or GUI) sends clear_errors → routed to odrive_command.
+        orch._on_command(MockString(data='clear_errors'))
+        orch._tick()
+        spy.call_async.assert_called_once()
+        assert spy.call_async.call_args[0][0].command == 'clear_errors'
+
+        # Teensy latch released → /link_status back to NONE → FAULT exits.
+        orch._on_link_status(_link_status('NONE'))
+        orch._tick()
+        assert orch.sm.state != RobotState.FAULT
+        # F1 — a guard-only fault exits back to ACTIVE (the legs never disarmed), not
+        # to BOOT. The transition fires this tick; ActiveHandler.on_enter runs next.
+        assert orch.sm.state == RobotState.ACTIVE
+
+    def test_guard_fault_exit_resumes_active_without_rearming(self, orch):
+        """F1 — after a guard-only fault clears, re-entering ACTIVE must RESUME
+        already-armed (no 'activate' request): the legs never disarmed, and re-running
+        the ACTIVATE move would fight the live stream. Drive the full cycle and assert
+        the resume path (no activate service call on the ACTIVE re-entry)."""
+        spy_activate = MagicMock()
+        spy_activate.service_is_ready.return_value = True
+        spy_activate.call_async.return_value = MockFuture()
+        orch._activate_client = spy_activate
+
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch._tick()
+        orch._on_link_status(_link_status('MAX_DEVIATION'))
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+
+        orch._on_link_status(_link_status('NONE'))
+        orch._tick()                       # FAULT.execute → return ACTIVE (resume armed)
+        assert orch.sm.state == RobotState.ACTIVE
+        calls_before = spy_activate.call_async.call_count
+        orch._tick()                       # ActiveHandler.on_enter (resume) runs here
+        orch._tick()
+        assert orch.sm.state == RobotState.ACTIVE
+        # No ACTIVATE service call was issued on the resume — the legs stayed armed.
+        assert spy_activate.call_async.call_count == calls_before
+
+    def test_guard_forced_fault_keeps_trajectory_streaming_and_frozen(self, orch):
+        """(iv) Cross-node choreography, as close as the mocked-ROS harness allows:
+        instantiate BOTH the orchestrator and a trajectory_node, hand-deliver messages
+        between them, and assert that a guard-forced FAULT never publishes a mode that
+        would silence trajectory_node's emitter — _streaming AND _guard_frozen both stay
+        True THROUGH the fault. This is the exact 2026-07-10 deadlock the F1 fix closes:
+        the old 'ERROR' publish dropped trajectory_node out of the streaming set."""
+        import jugglebot.hardware_config as hw
+        from std_msgs.msg import String
+        from jugglebot.trajectory_node import TrajectoryNode
+
+        activate_rev = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
+
+        def _traj_robot_state():
+            msg = RobotStateMsg()
+            msg.motor_states = [MotorStateSingle(pos_estimate=float(activate_rev[i]))
+                                for i in range(6)] + [MotorStateSingle()]
+            return msg
+
+        traj = TrajectoryNode(start_emitter=False)
+        # Bring trajectory_node to streaming + seeded in a streaming mode (STANDBY).
+        traj._on_robot_state(_traj_robot_state())
+        traj._on_control_mode(String(data='STANDBY'))
+        assert traj._streaming is True and traj._seeded is True
+
+        # Orchestrator into ACTIVE (STANDBY armed hold — matches trajectory_node's mode).
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch._tick()
+        assert orch.sm.state == RobotState.ACTIVE
+
+        # The Teensy guard latches — deliver /link_status to BOTH nodes.
+        orch._on_link_status(_link_status('MAX_DEVIATION'))
+        traj._on_link_status(_link_status('MAX_DEVIATION'))
+        assert traj._guard_frozen is True
+
+        # Orchestrator tick forces the guard-only FAULT and publishes control_mode.
+        before = len(orch._control_mode_pub.published)
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        faulted_modes = [m.data for m in orch._control_mode_pub.published[before:]]
+        assert faulted_modes, 'orchestrator published no control_mode during the fault'
+
+        # Every mode published during the guard-forced FAULT must be a STREAMING mode
+        # (never 'ERROR'). Hand-deliver each to trajectory_node and confirm it stays
+        # streaming AND guard-frozen — the emitter never goes silent, the descent lives.
+        for mode in faulted_modes:
+            assert mode != 'ERROR'
+            assert mode in traj._stream_modes, (
+                f'orchestrator published {mode!r} — outside trajectory_node\'s '
+                f'streaming set, which would silence the emitter')
+            traj._on_control_mode(String(data=mode))
+            assert traj._streaming is True
+            assert traj._guard_frozen is True

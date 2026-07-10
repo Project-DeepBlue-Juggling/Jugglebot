@@ -130,6 +130,15 @@ import jugglebot.protocol_config as proto
 # two nodes agree on what "lost" means during the side-by-side window.
 _HEARTBEAT_TIMEOUT_S = 2.0
 
+# Cadence of the persistent "TEENSY GUARD LATCHED" reminder while a guard fault
+# stays latched. The fault EDGE logs once (loud, detailed); this repeats every
+# _GUARD_LATCH_REPEAT_S so a latched E-STOP stays unmissable in a long log
+# instead of scrolling out of sight after a single line. Enforced off a
+# monotonic last-log timestamp (rate-EXACT) rather than rclpy
+# throttle_duration_sec, whose first-call bookkeeping can silently drop the
+# initial repeat.
+_GUARD_LATCH_REPEAT_S = 5.0
+
 # HeartbeatJ2T.flags bit0 = mpc_active (guard ENABLED). Sending this set tells
 # the Teensy the Jetson is driving setpoints. It MUST stay 0 unless the operator
 # has explicitly enabled setpoint output (Commit 3).
@@ -161,6 +170,36 @@ _ERR_DC_BUS_UNDER_VOLTAGE = 512
 
 # ODrive CLOSED_LOOP axis state (matches odrive.AXIS_STATES['CLOSED_LOOP']).
 _AXIS_STATE_CLOSED_LOOP = 8
+
+# ── Safe-shutdown sequencing (Task 3.3: Ctrl-C must ALWAYS profiled-stow) ──
+# on_shutdown runs an ordered, bounded, best-effort sequence: DISARM (mpc_active→0)
+# → SETTLE → profiled DEACTIVATE. The settle exists because set_heartbeat_flags(0)
+# only takes effect on the heartbeat thread's NEXT tick (≤ 1/HEARTBEAT_HZ away): the
+# firmware REJECTS DEACTIVATE while mpc_active=1 (leg_deactivate.cpp guard), so
+# firing the DEACTIVATE RPC immediately would race ahead of the flags=0 J→T
+# heartbeat and get bounced with ERR_BUS_DOWN — leaving the legs standing. Waiting a
+# couple of heartbeat periods lets the disarm land first. Bounded — never hangs.
+_SHUTDOWN_DISARM_SETTLE_S = 2.0 / float(p.HEARTBEAT_HZ)   # ≈ 0.2 s at 10 Hz
+# Cap the shutdown DEACTIVATE so a stalled descent can't blow the ~8 s teardown
+# budget. A healthy profiled stow reaches STOW+IDLE in ~2-4 s; this only bounds the
+# stall case (DeactivateMonitor declares FAILED at timeout_s, the poll loop breaks).
+_SHUTDOWN_DEACTIVATE_TIMEOUT_S = 6.0
+
+# ── One-call guard recovery (/recover, FIX 3) ──
+# Same u0-vs-encoder margin the arming pre-check enforces (half the firmware 0.5 rev
+# MAX_DEVIATION backstop): after trajectory_node reseeds its hold at the measured
+# encoder, /recover clears the guard ONLY once the streamed u0 is within this of
+# every leg — so the clear cannot re-trip the latch.
+_RECOVER_U0_TOL_REV = 0.25
+# Bounded block on trajectory_node's reseed reply. The bridge runs a
+# MultiThreadedExecutor, so a bounded wait here (in a ReentrantCallbackGroup) is safe.
+_RECOVER_RESEED_TIMEOUT_S = 2.0
+# Window /recover WAITS for trajectory_node's PROFILED DESCENT to walk the streamed
+# u0 down onto the frozen encoder (u0 collapses over ~0.5-3 s at the session limits,
+# each 40 Hz knot inside the pump gate — NOT the old instant one-frame reseed). Bounds
+# the wait so a descent that never converges (froze in place) refuses rather than
+# blocking the executor thread indefinitely.
+_RECOVER_VERIFY_TIMEOUT_S = 4.0
 
 # Decoded Platform-Teensy RobotState (relay read). Fields mirror
 # Teensy_code.ino RobotState (is_homed / levelling_complete / pose offset, rad).
@@ -359,6 +398,10 @@ class TeensyBridgeNode(Node):
         # Last fault_state seen on the T→J heartbeat, for edge-triggered logging in
         # _publish_link_status. None = nothing seen yet (so the first NONE is silent).
         self._last_fault_state: int | None = None
+        # Monotonic timestamp of the last persistent "GUARD LATCHED" reminder (see
+        # _GUARD_LATCH_REPEAT_S). None while no fault is latched; anchored to the
+        # fault edge so the first repeat lands _GUARD_LATCH_REPEAT_S after it.
+        self._last_guard_latch_log_t: float | None = None
         self._latest_profile: Profile | None = None
         # Per-axis latest Diagnostic (one axis per frame on the wire).
         self._latest_diag: dict[int, Diagnostic] = {}
@@ -729,6 +772,30 @@ class TeensyBridgeNode(Node):
         # stream is confirmed flowing, so the Teensy never E-STOPs at the arm edge.
         self.create_service(
             SetBool, 'set_setpoint_output', self._svc_set_setpoint_output)
+
+        # ── One-call guard recovery (/recover, FIX 3) ──
+        # The 2026-07-10 runaway left the streamed u0 diverged ~0.5+ rev from the
+        # frozen encoder, so every bare /clear_errors re-latched MAX_DEVIATION within
+        # one 10 Hz fault tick. /recover does the recovery in the ONLY order that
+        # survives: reseed trajectory_node's hold at the measured encoder → VERIFY the
+        # streamed u0 has collapsed to within 0.25 rev of every encoder → THEN
+        # CLEAR_ERRORS. Hosted HERE (not trajectory_node) because the bridge runs a
+        # MultiThreadedExecutor and already blocks executor threads for multi-second
+        # cold-start verbs, so the bounded block on the reseed future is safe;
+        # trajectory_node runs a single-threaded rclpy.spin() executor where blocking
+        # a callback on a cross-process future would deadlock its sole thread. The
+        # service + the cross-process reseed client share a ReentrantCallbackGroup so
+        # the reseed reply is dispatched on another executor thread while /recover
+        # blocks on the future.
+        self._recover_cbgroup = ReentrantCallbackGroup()
+        self._reseed_client = self.create_client(
+            Trigger, 'trajectory/reseed_from_measured',
+            callback_group=self._recover_cbgroup)
+        self.create_service(Trigger, 'recover', self._svc_recover,
+                            callback_group=self._recover_cbgroup)
+        # Instance-level so tests can shorten the descent-convergence wait (a
+        # never-converging descent otherwise blocks the test for the full timeout).
+        self._recover_verify_timeout_s = _RECOVER_VERIFY_TIMEOUT_S
 
         # ── Cold-start boot read ─────────────────────
         # Read the Platform Teensy's persisted RobotState BEFORE construction
@@ -1450,20 +1517,13 @@ class TeensyBridgeNode(Node):
                 if created_here:
                     source.close()
                 return False, 'no telemetry yet — cannot verify u0 vs encoder'
-            tol = 0.25
-            for i in range(p.NUM_LEGS):
-                d = abs(float(u0[i]) - float(telem.pos_rev[i]))
-                # Fail CLOSED on a non-finite encoder: `d > tol` would let a NaN
-                # pos_rev through (every comparison against NaN is False), arming
-                # onto an unknown pose. `not (d <= tol)` rejects NaN and mismatch.
-                if not (d <= tol):
-                    if created_here:
-                        source.close()
-                    return False, (
-                        f'leg {i} setpoint u0 {u0[i]:.3f} rev vs encoder '
-                        f'{telem.pos_rev[i]:.3f} rev = {d:.3f} rev — non-finite '
-                        f'or mismatched encoder (> {tol} rev) — refuse to arm '
-                        '(would risk MAX_DEVIATION E-STOP)')
+            ok, why = self._u0_within_encoder_tol(u0, telem.pos_rev,
+                                                  _RECOVER_U0_TOL_REV)
+            if not ok:
+                if created_here:
+                    source.close()
+                return False, (f'{why} — non-finite or mismatched encoder — refuse '
+                               'to arm (would risk MAX_DEVIATION E-STOP)')
         except Exception as e:  # noqa: BLE001 — arming must never crash the node
             if created_here:
                 try:
@@ -1477,6 +1537,124 @@ class TeensyBridgeNode(Node):
         self._start_setpoint_output(source)
         return True, ('setpoint output ENABLED (armed): fresh stream confirmed, '
                       'u0 within 0.25 rev of every encoder')
+
+    def _u0_within_encoder_tol(self, u0, pos_rev, tol) -> tuple:
+        """Return ``(ok, reason)``: every leg's ``u0`` within ``tol`` rev of its
+        encoder ``pos_rev``. NaN-safe — ``not (d <= tol)`` rejects a non-finite
+        encoder (``d > tol`` would PASS a NaN, since every NaN comparison is False).
+        Shared by the arming pre-check and /recover's convergence verify (FIX 3)."""
+        for i in range(p.NUM_LEGS):
+            d = abs(float(u0[i]) - float(pos_rev[i]))
+            if not (d <= tol):
+                return False, (f'leg {i} u0 {float(u0[i]):.3f} rev vs encoder '
+                               f'{float(pos_rev[i]):.3f} rev = {d:.3f} rev '
+                               f'(> {tol} rev)')
+        return True, ''
+
+    def _verify_streamed_u0_converged(self, tol, timeout_s) -> tuple:
+        """Poll until the streamed u0 is within ``tol`` rev of every live encoder, or
+        ``timeout_s`` elapses. Returns ``(ok, reason)`` (FIX 3).
+
+        This WAITS for trajectory_node's profiled descent to converge — u0 walks down
+        onto the encoder over ~0.5-3 s (each 40 Hz knot inside the pump gate), so a
+        single sample would race the still-descending command; the poll re-reads until
+        it lands. Sources u0 from ``self._sp_pump._prev_pos`` — the exact LAST frame
+        the bridge sent to the Teensy, which is what the firmware MAX_DEVIATION guard
+        compares against — rather than re-reading the :5557 stream, so it never races
+        the live setpoint-ingest thread during armed recovery. Reuses the same NaN-safe
+        per-leg comparison as the arming pre-check (``_u0_within_encoder_tol``).
+        """
+        deadline = time.monotonic() + timeout_s
+        last = 'no setpoint frame built yet'
+        while True:
+            u0 = self._sp_pump._prev_pos      # last accepted u0 (None until first send)
+            with self._lock:
+                telem = self._latest_telemetry
+            if telem is None:
+                last = 'no telemetry — cannot verify u0 vs encoder'
+            elif u0 is None:
+                last = 'no setpoint frame built yet (is the stream armed + flowing?)'
+            else:
+                ok, why = self._u0_within_encoder_tol(u0, telem.pos_rev, tol)
+                if ok:
+                    return True, ''
+                last = why
+            if time.monotonic() >= deadline:
+                return False, last
+            time.sleep(0.02)
+
+    def _svc_recover(self, req, res):
+        """``/recover`` (Trigger, FIX 3): one-call recovery from a latched Teensy guard.
+
+        The 2026-07-10 stuttering-stroke runaway left the streamed u0 diverged
+        ~0.5+ rev from the frozen encoder, so every bare /clear_errors re-latched
+        MAX_DEVIATION within one 10 Hz fault tick. This does the recovery in the ONLY
+        order that survives, WITHOUT disarming (mpc_active stays 1 — stopping the
+        stream would trip MPC_STALE at 250 ms):
+          1. ask trajectory_node to install a PROFILED DESCENT that walks the
+             commanded u0 down onto the frozen encoder
+             (``trajectory/reseed_from_measured``);
+          2. WAIT (bounded) for that descent to converge — poll the pump's last-built
+             u0 until it is within 0.25 rev of every live encoder (the same margin the
+             arming pre-check enforces) — so the clear cannot re-trip;
+          3. only THEN fire CLEAR_ERRORS;
+          4. report precisely.
+        Refuses (leaving the guard latched) if the reseed is unavailable/failed or the
+        descent does not converge within the timeout — it NEVER clears onto a diverged
+        command.
+        """
+        # 1. Ask trajectory_node to reseed its hold at the measured encoder.
+        if not self._reseed_client.service_is_ready():
+            res.success = False
+            res.message = ('trajectory/reseed_from_measured unavailable — is '
+                           'trajectory_node running? Guard left latched.')
+            return res
+        try:
+            future = self._reseed_client.call_async(Trigger.Request())
+            deadline = time.monotonic() + _RECOVER_RESEED_TIMEOUT_S
+            while not future.done() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if not future.done():
+                res.success = False
+                res.message = ('trajectory_node reseed timed out '
+                               f'(> {_RECOVER_RESEED_TIMEOUT_S:.0f} s) — guard left '
+                               'latched')
+                return res
+            reseed = future.result()
+        except Exception as e:  # noqa: BLE001 — recovery must never crash the node
+            res.success = False
+            res.message = f'reseed call error: {e} — guard left latched'
+            return res
+        if not getattr(reseed, 'success', False):
+            res.success = False
+            res.message = (f'trajectory_node reseed refused: '
+                           f'{getattr(reseed, "message", "unknown")} — guard left '
+                           'latched')
+            return res
+
+        # 2. WAIT for the profiled descent to walk u0 onto every encoder BEFORE
+        #    clearing (it collapses over ~0.5-3 s, not in one frame).
+        ok, why = self._verify_streamed_u0_converged(
+            _RECOVER_U0_TOL_REV, self._recover_verify_timeout_s)
+        if not ok:
+            res.success = False
+            res.message = (
+                f'reseed done but the profiled descent did not converge u0 onto the '
+                f'encoder within {self._recover_verify_timeout_s:.1f}s ({why}) — '
+                'refusing to clear (a clear now would re-latch); guard left latched')
+            return res
+
+        # 3. Safe to clear now: u0 is within tol of every encoder.
+        cok, cmsg, _ = self.teensy_clear_errors()
+        if not cok:
+            res.success = False
+            res.message = f'reseed+converge OK but CLEAR_ERRORS failed: {cmsg}'
+            return res
+        res.success = True
+        res.message = ('recovered: reseeded hold at measured, streamed u0 within '
+                       f'{_RECOVER_U0_TOL_REV} rev of every encoder, CLEAR_ERRORS '
+                       'fired')
+        return res
 
     def _acquire_setpoint_source(self) -> tuple:
         """Return ``(source, created_here)`` for the arming check.
@@ -1560,6 +1738,31 @@ class TeensyBridgeNode(Node):
                 f"Setpoint processing error (contained): {e}",
                 throttle_duration_sec=1.0)
 
+    def _guard_fault_leg_hint(self) -> str:
+        """Best-effort ' (leg N)' / ' (legs N,M)' suffix naming the offending leg.
+
+        HeartbeatT2J.fault_state carries the guard REASON but no axis, so the
+        edge log names the leg from the latest per-axis Diagnostic cache: a leg
+        (0..5) with a non-zero active error or disarm reason is the likely
+        culprit for an ODRIVE_FATAL/MAX_DEVIATION/OVERSPEED latch. Returns ''
+        when no leg-specific cause is identifiable (e.g. a bus-level
+        CAN_BUS_DOWN or an MPC-staleness fault) so the message stays honest
+        rather than guessing a leg.
+        """
+        with self._lock:
+            diag = dict(self._latest_diag)
+        culprits = []
+        for axis in range(_NUM_LEGS):
+            d = diag.get(axis)
+            if d is not None and (int(d.active_errors) != 0
+                                  or int(d.disarm_reason) != 0):
+                culprits.append(axis)
+        if not culprits:
+            return ''
+        if len(culprits) == 1:
+            return f' (leg {culprits[0]})'
+        return f' (legs {",".join(str(a) for a in culprits)})'
+
     def _publish_link_status(self):
         """Publish link_status as a DiagnosticStatus.
 
@@ -1603,17 +1806,36 @@ class TeensyBridgeNode(Node):
                 fs = int(hb.fault_state)
                 if fs != self._last_fault_state:
                     if fs != int(FaultState.NONE):
+                        leg_hint = self._guard_fault_leg_hint()
                         self.get_logger().error(
-                            f'Teensy guard FAULT LATCHED: fault_state={teensy_fault} '
-                            f'— leg output is now SUPPRESSED and every leg command '
-                            f'(incl. DEACTIVATE, which returns ERR_BUS_DOWN) will be '
-                            f'refused. Recover with: ros2 service call /clear_errors '
-                            f'std_srvs/srv/Trigger')
+                            f'Teensy guard FAULT LATCHED: fault_state={teensy_fault}'
+                            f'{leg_hint} — leg output is now SUPPRESSED and every '
+                            f'leg command (incl. DEACTIVATE, which returns '
+                            f'ERR_BUS_DOWN) will be refused. Recover with: '
+                            f'ros2 service call /clear_errors std_srvs/srv/Trigger')
+                        # Anchor the persistent-reminder cadence to this edge so the
+                        # first repeat lands _GUARD_LATCH_REPEAT_S later, not on the
+                        # very next 10 Hz tick.
+                        self._last_guard_latch_log_t = time.monotonic()
                     elif self._last_fault_state is not None:
                         self.get_logger().info(
                             'Teensy guard fault cleared (fault_state=NONE) — leg '
                             'output re-enabled.')
+                        self._last_guard_latch_log_t = None
                     self._last_fault_state = fs
+
+            # Persistent reminder while the latch PERSISTS: the edge log above fires
+            # once, so without this a latched E-STOP goes silent after one line. Emit
+            # a short unmissable ERROR every _GUARD_LATCH_REPEAT_S until CLEAR_ERRORS.
+            # Rate-EXACT off a monotonic timestamp (never throttle_duration_sec).
+            if fault_active:
+                now = time.monotonic()
+                if (self._last_guard_latch_log_t is None
+                        or now - self._last_guard_latch_log_t >= _GUARD_LATCH_REPEAT_S):
+                    self._last_guard_latch_log_t = now
+                    self.get_logger().error(
+                        f'TEENSY GUARD LATCHED ({teensy_fault}) — leg output '
+                        f'suppressed; CLEAR_ERRORS required')
             if bridge_link in ('LOST', 'NO_HEARTBEAT') or fault_active:
                 msg.level = DiagnosticStatus.ERROR
                 msg.message = f'link={bridge_link} fault={teensy_fault}'
@@ -1670,6 +1892,21 @@ class TeensyBridgeNode(Node):
                              value=str(int(bool(hb.flags & _T2J_FLAG_TIME_SYNCED)))),
                     KeyValue(key='teensy_stow_pending',
                              value=str(int(bool(hb.flags & _T2J_FLAG_STOW_PENDING)))),
+                    # Leg guard-deviation diagnostics (2026-07-10 forensics). Per-leg
+                    # live deviation (u0-encoder, the MAX_DEVIATION guard quantity) +
+                    # the lead-clamp bitmask, plus the frozen latch-event snapshot
+                    # (which leg crossed + dev/u0/encoder at the trip). Recorded on
+                    # /link_status so a future stutter/latch bag is self-diagnosing.
+                    KeyValue(key='lead_clamp_mask',
+                             value=str(int(hb.lead_clamp_mask))),
+                    KeyValue(key='live_deviation',
+                             value=','.join(f'{d:.4f}' for d in hb.live_deviation)),
+                    KeyValue(key='max_dev_leg',
+                             value=('none' if int(hb.max_dev_leg) == 0xFF
+                                    else str(int(hb.max_dev_leg)))),
+                    KeyValue(key='max_dev_value', value=f'{hb.max_dev_value:.4f}'),
+                    KeyValue(key='max_dev_u0', value=f'{hb.max_dev_u0:.4f}'),
+                    KeyValue(key='max_dev_enc', value=f'{hb.max_dev_enc:.4f}'),
                 ]
             msg.values = values
             self.link_status_pub.publish(msg)
@@ -2571,7 +2808,7 @@ class TeensyBridgeNode(Node):
                 return False                                          # extended or unknown
         return True
 
-    def _run_deactivate(self, axes, *, poll_dt=0.05):
+    def _run_deactivate(self, axes, *, poll_dt=0.05, timeout_s=None):
         """Fire the firmware DEACTIVATE (TRAP_TRAJ controlled lower to STOW, then
         IDLE) and observe it to completion. A single configured axis fires that
         leg; any larger set fires ``AXIS_ALL`` (every PRESENT leg, parallel
@@ -2582,6 +2819,10 @@ class TeensyBridgeNode(Node):
         descent takes; the RX + heartbeat threads keep the link + telemetry cache
         alive and the heartbeat stays ``mpc_active=0`` (no setpoint output).
         Returns ``(ok, message)``.
+
+        ``timeout_s`` overrides the DeactivateMonitor per-run budget (default None →
+        the monitor's own default). The shutdown-stow path passes a tighter budget
+        so a stalled descent can't blow the ~8 s teardown window.
 
         Precondition: the legs are holding the active pose in CLOSED_LOOP (a prior
         /activate). Without it the move fails safe (an errored or absent leg is
@@ -2621,7 +2862,8 @@ class TeensyBridgeNode(Node):
         ok, msg, _ = self.teensy_deactivate(fire_axis)
         if not ok:
             return False, f"DEACTIVATE rejected: {msg}"
-        mon = DeactivateMonitor(axes)
+        mon = (DeactivateMonitor(axes, timeout_s=float(timeout_s))
+               if timeout_s is not None else DeactivateMonitor(axes))
         hard_deadline = time.monotonic() + mon.timeout_s + 5.0
         self.get_logger().info(
             f"deactivate: TRAP_TRAJ lower to STOW + IDLE on axes {axes}")
@@ -3427,40 +3669,98 @@ class TeensyBridgeNode(Node):
             axes = [int(a) for a in self.get_parameter('deactivate_axes').value]
             self.get_logger().info(
                 f"shutdown: profiled stow (DEACTIVATE) on legs {axes} before teardown")
-            ok, msg = self._run_deactivate(axes)
+            ok, msg = self._run_deactivate(
+                axes, timeout_s=_SHUTDOWN_DEACTIVATE_TIMEOUT_S)
             if ok:
                 self.get_logger().info(f"shutdown stow complete — {msg}")
             else:
-                self.get_logger().warning(f"shutdown stow did not complete — {msg}")
+                self.get_logger().error(f"shutdown stow did not complete — {msg}")
+                # If a guard E-STOP is latched, DEACTIVATE is IMPOSSIBLE (the firmware
+                # bounces it ERR_BUS_DOWN) — leave the operator a loud, unmissable
+                # final message rather than a quiet warning that scrolls away.
+                self._warn_disarmed_but_standing_if_latched()
         except Exception as e:  # noqa: BLE001 — teardown must never raise
             self.get_logger().error(f"shutdown stow error (continuing teardown): {e}")
 
+    def _warn_disarmed_but_standing_if_latched(self):
+        """Loud final message when a latched guard made the shutdown DEACTIVATE
+        impossible: the robot is DISARMED (mpc_active=0, no setpoint output — it will
+        not move) but STILL STANDING at the active pose because the profiled stow
+        could not run. A latched guard only clears with CLEAR_ERRORS, so tell the
+        operator exactly that. No-op when no guard is latched (fault_state=NONE) — a
+        non-guard stow failure (e.g. a stalled leg) gets the generic error above."""
+        hb = self._latest_heartbeat
+        fault = int(hb.fault_state) if hb is not None else int(FaultState.NONE)
+        if fault == int(FaultState.NONE):
+            return
+        name = _enum_name(FaultState, fault)
+        self.get_logger().error(
+            "SHUTDOWN: ROBOT DISARMED BUT STILL STANDING — a latched Teensy guard "
+            f"(fault_state={name}) made the profiled DEACTIVATE impossible. "
+            "mpc_active is 0 (no setpoint output) so the platform will NOT move, but "
+            "it is NOT stowed. CLEAR_ERRORS is required to release the guard: run "
+            "'ros2 service call /clear_errors std_srvs/srv/Trigger' then re-run "
+            "deactivate, OR lower the legs manually before removing power.")
+
     def on_shutdown(self):
-        """Tear down the transport. Only stops the client if we created it."""
+        """Ordered, bounded, best-effort safe-shutdown, THEN transport teardown.
+
+        Task 3.3: a ``ros2 launch`` Ctrl-C must ALWAYS profiled-stow the robot — no
+        matter what mode it was in (armed / streaming / already idle).
+
+        WHY THIS SEQUENCE LIVES HERE (not the orchestrator, not a launch
+        OnShutdown): on a launch Ctrl-C, launch broadcasts SIGINT to EVERY node
+        process at once and each runs its own ``main()`` finally. A cross-process
+        orchestration (orchestrator → bridge service call) would race THIS node's
+        executor teardown — an rclpy service call from a shutdown hook on a dying
+        executor is the classic deadlock — and a launch OnShutdown handler runs in
+        the launch process, which has no link to the robot at all. The bridge is the
+        ONE process that owns BOTH the disarm (``_stop_setpoint_output``) and the
+        profiled stow (``_run_deactivate``) as IN-PROCESS methods, and its RX +
+        heartbeat daemon threads keep the UDP link alive through this teardown — so
+        the sequence runs deterministically with NO dependency on any other
+        process's executor. Guarantee: it runs to completion (or its bounded
+        timeout) as long as this process reaches its ``finally``. Limit: if launch
+        SIGKILLs the process before the DEACTIVATE completes, the firmware's own
+        CAN3-loss deferred stow is the backstop (the descent is a firmware-side
+        TRAP_TRAJ move that continues autonomously even if the link dies mid-way).
+
+        Sequence — each step best-effort (loud on failure, continue), total ≲ 8 s:
+          1. DISARM — ``_stop_setpoint_output`` stops the 40 Hz setpoint thread THEN
+             drops mpc_active=0 on the WIRE (the in-process 'set_setpoint_output
+             false'). Done FIRST so mpc_active reaches 0 before the emitter-stop
+             stream silence can latch MPC_STALE (trajectory_node Sharp Edge #1).
+          2. SETTLE — a bounded couple of heartbeat periods so the flags=0 J→T
+             heartbeat is transmitted + registered before the DEACTIVATE RPC (the
+             firmware rejects DEACTIVATE while mpc_active=1).
+          3. STOW — profiled TRAP_TRAJ lower to STOW + IDLE (bounded), guarded for a
+             dead bus / already-pending deferred stow; a latched guard makes this
+             impossible → loud 'disarmed but standing, CLEAR_ERRORS required'.
+          4. Transport teardown (only stops the client if we created it).
+        """
         self.get_logger().info("Shutting down TeensyBridgeNode...")
-        # Stop the setpoint thread first (so no frame is sent mid-teardown), then
-        # drop mpc_active on the WIRE (not just the local flag) BEFORE stopping the
-        # client, so the final J→T heartbeat carries flags=0 — even for an injected
-        # client whose heartbeat thread keeps running after on_shutdown. Using
-        # _set_mpc_active (the sole flag writer) clears client._heartbeat_flags.
-        self._sp_stop.set()
-        if self._sp_thread is not None and self._sp_thread.is_alive():
-            self._sp_thread.join(timeout=1.0)
+        # 1. DISARM. _stop_setpoint_output stops the setpoint thread then drops
+        # mpc_active on the WIRE (not just the local flag) — even for an injected
+        # client whose heartbeat thread keeps running after on_shutdown. It is fully
+        # internally guarded; wrap it so teardown never raises, and fall back to the
+        # raw flag drop so mpc_active=0 is guaranteed on any path.
         try:
-            self._set_mpc_active(False)
-        except Exception:  # noqa: BLE001 — best-effort during teardown
-            self._mpc_active = False
-        if self._sp_source is not None:
+            self._stop_setpoint_output()
+        except Exception as e:  # noqa: BLE001 — best-effort during teardown
+            self.get_logger().error(
+                f"shutdown disarm error (continuing to stow): {e}")
             try:
-                self._sp_source.close()
+                self._set_mpc_active(False)
             except Exception:  # noqa: BLE001
-                pass
-        # Profiled stow BEFORE closing the RPC/link — the descent is driven over
-        # the still-live link (RX + heartbeat threads keep the telemetry cache and
-        # DEACTIVATE RPC alive). MPC is already quiesced above (mpc_active=0, sp
-        # thread stopped) so no setpoint fights the descent.
+                self._mpc_active = False
+        # 2. SETTLE + 3. STOW over the still-live link (RX + heartbeat threads keep
+        # the telemetry cache + DEACTIVATE RPC alive; MPC is quiesced above so no
+        # setpoint fights the descent). The settle is gated on actually stowing so a
+        # stow-disabled node (unit tests) tears down instantly.
         if self._stow_on_shutdown:
+            time.sleep(_SHUTDOWN_DISARM_SETTLE_S)
             self._shutdown_stow()
+        # 4. Transport teardown.
         try:
             self._tod.close()
             self._rpc_server.close()

@@ -40,7 +40,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 
 | Name | Value | Notes |
 |------|------:|-------|
-| `PROTOCOL_VERSION` | 2 | Bumped on any incompatible wire change |
+| `PROTOCOL_VERSION` | 3 | Bumped on any incompatible wire change |
 | `MAGIC` | 0x4A42 | "JB" little-endian preamble (bytes 0x42 0x4A) |
 | `HEADER_SIZE` | 8 | Bytes before payload |
 | `CRC_SIZE` | 2 | Trailing CRC-16 bytes |
@@ -239,7 +239,7 @@ Payload **36 bytes**. Python struct fmt: `<BBBBBBBBIIfffff`.
 
 Teensy → Jetson liveness + link/bus health, ~10 Hz.
 
-Payload **35 bytes**. Python struct fmt: `<QBBBBIIBBBfff`.
+Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 
 | Field | Type | Count | Notes |
 |-------|------|------:|-------|
@@ -256,6 +256,12 @@ Payload **35 bytes**. Python struct fmt: `<QBBBBIIBBBfff`.
 | `bb_yaw_deg` | f32 | 1 | BB yaw (deg), decoded with HeartbeatEncoding scale |
 | `bb_pitch_deg` | f32 | 1 | BB pitch (deg) |
 | `bb_hand_mm` | f32 | 1 | BB hand position (mm) |
+| `live_deviation` | f32 | 6 | Per-leg live deviation u0-encoder (rev) — the MAX_DEVIATION guard quantity |
+| `lead_clamp_mask` | u8 | 1 | bit i set = leg i's interp lead clamp engaged on the last 500 Hz tick |
+| `max_dev_leg` | u8 | 1 | Leg that crossed MAX_DEVIATION at the last latch (0xFF = none since boot) |
+| `max_dev_value` | f32 | 1 | Deviation u0-encoder (rev) of max_dev_leg frozen at the latch crossing |
+| `max_dev_u0` | f32 | 1 | Commanded base u0 (rev) of max_dev_leg frozen at the latch crossing |
+| `max_dev_enc` | f32 | 1 | Encoder position (rev) of max_dev_leg frozen at the latch crossing |
 
 ### Profile (`MsgType.PROFILE`, T2J, STREAM port)
 
