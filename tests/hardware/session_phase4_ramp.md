@@ -48,13 +48,14 @@ sessions; the code does not change between steps, only the YAML session limits d
 ### Step 1 — Raise ONE limit ~1.5× (in-session, not YAML yet)
 
 Ramp a single limit at runtime so a bad value is one service call to undo — do
-NOT edit the YAML until the step passes. Example (jerk is the binding constraint;
-raise it first):
+NOT edit the YAML until the step passes. **The step order and values come from the
+runbook's ladder** (`tests/hardware/mvp_bench_runbook.md` § S4: jerk 10 500 → acc 520
+→ acc 660 → vel 130 → vel 156). Example, step 1:
 
 ```bash
 # raise only jerk; 0 keeps the other two unchanged (each clamped to its YAML ceiling)
 ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits \
-  "{leg_vel_limit_mmps: 0.0, leg_acc_limit_mmps2: 0.0, leg_jerk_limit_mmps3: 12000.0}"
+  "{leg_vel_limit_mmps: 0.0, leg_acc_limit_mmps2: 0.0, leg_jerk_limit_mmps3: 10500.0}"
 ```
 
 The service echoes the applied (ceiling-clamped) limits. A request above the YAML

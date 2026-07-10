@@ -169,6 +169,71 @@ emitter cost measured ~2.5 ms (3 IK + J̇), ~10 % of the 25 ms budget.
   produced no NEW working-tree changes beyond the intended `JB_TRAJ_*` emission
   (byte-identical output on a second run).
 
+### Hardware bench session — 2026-07-09, S1: **PASS**
+
+Protocol `tests/hardware/session_phase1_hold.md`, run by the operator on the real
+robot. Read-only artefacts, all re-derivable:
+`temp/probes/traj_stream_probe_20260709_125835.csv` (30 s pre-arm),
+`temp/probes/traj_stream_probe_20260709_130008.csv` (120 s hold), rosbag
+`~/Desktop/rosbags/2026-07-09_12-51-08` (738.3 s, 259 788 msgs, mcap).
+
+- **Stream rate** — pre-arm 40.03 Hz mean (39.9–41.0) over 29.37 s; 120 s hold
+  40.02 Hz mean (39.9–41.7) over 119.73 s. PASS (34–46 acceptable).
+- **Hold pose** — `u0_mean` 2.19680 rev, **zero spread** across both probes;
+  `max_step` 0.00000 rev; `pump_rejects` 0. PASS.
+- **Zero motion at the arm edge** — the largest single-sample leg step anywhere in
+  the 293.2 s armed streaming window is **0.00172 rev** (10 ms sample period), so
+  no step motion occurred at the arm transition. PASS.
+- **120 s hold drift** — max per-leg spread (max−min) **0.0005 rev**, max endpoint
+  drift 0.0001 rev, and max |cross-leg mean − commanded `u0_mean`| = 0.00011 rev.
+  PASS (< 0.02 rev, 40× margin). Over the *whole* armed window (which includes
+  `go_home` and the disarm) the max per-leg spread is 0.0110 rev — still PASS.
+- **Faults / rejections** — `TrajectoryStatus.last_rejection` empty for every one
+  of the 3 690 status messages; no E-STOP; no pump rejects. PASS.
+- **Clean disarm → deactivate** — `orchestrator_command 'deactivate'` @ 13:03:25.270
+  was accepted and the legs stowed from 2.192 rev to ≈ 0.0 rev within ~3 s. Since
+  the firmware rejects DEACTIVATE while `mpc_active=1`, acceptance proves the flag
+  had cleared. PASS.
+- **Mode/streaming choreography** (single absolute clock, from the bag):
+  `'activate'` @ 12:58:29.614 → `ACTIVE:STANDBY` @ 12:58:29.73 → `control_mode
+  'STANDBY'` @ 12:58:31.22 → `streaming=True` @ 12:58:31.295. **Activate → streaming
+  latency 1.68 s**, consistent with `_run_activate`'s TRAP_TRAJ move plus the folded
+  `_run_configure`. Exactly two `/orchestrator_command` messages all session
+  (`activate`, `deactivate`) — empirical confirmation that STANDBY is automatic on
+  ACTIVE entry (`state_machine.py:403`) and needs no separate publish.
+- **Emitter cadence under load** — `seq` reached 11 763 over the 293.2 s armed
+  window (≈ 40.1 Hz sustained); session-max `max_emit_gap_ms` = **42.27 ms**, far
+  inside the 250 ms staleness window. This is the max, not the p95 — open question
+  #6 (emitter jitter p95) still wants the DEBUG install-latency logs across S2–S8.
+
+**A documentation defect surfaced (no production code changed).** The protocol's
+Step 1 said "home → activate" without naming the mechanism, so the operator used
+`ros2 service call /activate std_srvs/srv/Trigger`. `/activate` is a
+`teensy_bridge_node` service — `orchestrator_node` serves no such service; it only
+subscribes to `/orchestrator_command`. The consequences were exactly two, and both
+were observed: (1) the state machine never left `IDLE`, so `IdleHandler.on_enter`
+held `control_mode = ''`, which is absent from `trajectory_node._DEFAULT_STREAM_MODES`
+⇒ `_streaming` stayed `False` and the 40 Hz emitter never published, giving a
+30 s probe run of `rate_hz 0` / `u0_mean nan` while :5557 was bound and healthy;
+and (2) `_svc_activate` calls `_run_activate` only, whereas the orchestrator's
+`/activate_or_deactivate` path calls `_run_activate` *then* `_run_configure` — so
+the legs were left in TRAP_TRAJ rather than POSITION/PASSTHROUGH, i.e. not
+interp-ready even had the mode been right. Driving `activate` over
+`/orchestrator_command` fixed both at once and the session then passed end-to-end.
+Fixes landed in `tests/hardware/session_phase1_hold.md` (Step 1 now spells out the
+publishes and the trap) and `tests/hardware/mvp_bench_runbook.md` (new Sharp Edge
+#4). Worth noting the near-miss, flagged as **hypothesis, not observation**: had the
+operator forced `control_mode` to STANDBY without noticing the missing configure,
+the arming preconditions would still have passed — they check link freshness, a
+fresh `:5557` frame, and `u0` within 0.25 rev of `pos_estimate`, none of which
+depend on the ODrive input mode. The failure would then have presented not as an
+obvious no-stream but as whatever TRAP_TRAJ does to a 40 Hz setpoint chain that
+expects PASSTHROUGH. We did not exercise that path, so its signature is unmeasured;
+if a future session ever sees the legs armed and streaming yet tracking poorly,
+**check the input mode before anything else**. The `_svc_activate` /
+`_svc_activate_or_deactivate` asymmetry — one folds `_run_configure`, the other does
+not — is the latent hazard, and it is reachable from any operator terminal.
+
 ## Discussion
 
 CLAUDE.md makes the Discussion non-negotiable here: several reversible design forks

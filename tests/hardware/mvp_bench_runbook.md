@@ -27,9 +27,14 @@ been on hardware yet** — that is this runbook.
 ## Branch & suite state
 
 - Branch: **`mvp-trajectory-bringup`**, 7 phases code-complete + 7 audit rounds.
-- Full suite (`pytest tests/ -q`, 2026-07-08) = **2274 passed, 1 xfailed in 553.60 s**.
-- ci-deep (`pytest tests/ -q --hypothesis-profile=ci-deep`, 2026-07-08) = **2274
-  passed, 1 xfailed, 198 warnings in 3024.70 s** — green.
+- **2026-07-10 — SpaceMouse follower reworked** after the S3 incident (commit
+  `73dba2b`): chase-clamp tracking (cap-and-chase, never rejects in steady state),
+  publish-first emitter (a knot never waits on planning), boundary-margin clamp (the
+  S3 deadlock fix), escalation latch + hold backstop. Resolution + analysis corrections:
+  `plans/active/follower-cadence-and-divergence.md` § RESOLUTION.
+- Full suite (`pytest tests/ -q`, 2026-07-10, post-rework) = **2304 passed, 5 skipped,
+  1 xfailed in 582.32 s**. (Pre-rework 2026-07-08 baseline: 2274 passed, 1 xfailed;
+  ci-deep 2026-07-08 green.)
 - Before running: `colcon build --packages-select jugglebot jugglebot_interfaces`,
   `source install/setup.bash`. No code changes should be needed for any session below.
 
@@ -56,6 +61,10 @@ been on hardware yet** — that is this runbook.
 **Recovery basics:**
 
 - A **latched fault** clears with `CLEAR_ERRORS` (the guard latches E-STOP until then).
+  The latch **survives ROS relaunches** — the can-hub Teensy is powered from the
+  Jetson 5V rail, so only `CLEAR_ERRORS` or a Teensy power-cycle (= a Jetson reboot)
+  clears it. If a session ends with a latched guard, assume it is STILL latched at the
+  next session until cleared (this trapped the 2026-07-09 S3 recovery attempt).
 - **Disarm before deactivate** is **firmware-enforced** — the firmware rejects
   DEACTIVATE while `mpc_active=1`, so the clean order is always
   `set_setpoint_output false` (disarm) → orchestrator `deactivate`.
@@ -82,11 +91,52 @@ been on hardware yet** — that is this runbook.
    QTM-world vs jugglebot-base frame mapping are **unverified until S6 (7a) passes**.
    Do not throw a ball (7b/7c) before 7a confirms the aim geometry.
 
+4. **Drive the orchestrator over `/orchestrator_command`, never the same-named bridge
+   services.** `/home`, `/activate`, `/deactivate` are low-level `teensy_bridge_node`
+   services; `orchestrator_node` serves none of them (it only *subscribes* to
+   `/orchestrator_command`). Calling `/activate` directly (a) leaves the state machine
+   in `IDLE` with `control_mode = ''`, which is not a streaming mode — so
+   `trajectory_node`'s 40 Hz emitter **never publishes** and the probe reads `rate_hz 0`
+   with :5557 bound and healthy; and (b) skips the `_run_configure` that the
+   orchestrator's `/activate_or_deactivate` path folds in, leaving the legs in
+   **TRAP_TRAJ** rather than POSITION/PASSTHROUGH. Mode changes (`standby` /
+   `trajectory` / `spacemouse` / `catch`) use the same topic. STANDBY is automatic on
+   ACTIVE entry — no separate publish needed. (Cost the 2026-07-09 S1 session one
+   false-negative probe run.)
+
+5. **`ros2 topic pub --once` silently loses the message to the DDS discovery race.**
+   `--once` creates a publisher, publishes immediately, and exits; FastRTPS needs
+   ~100–500 ms to match the orchestrator's subscription, so the command frequently
+   never arrives. This Foxy build has **no** `-w/--wait-matching-subscriptions` flag.
+   **Always repeat-publish and always verify the mode took effect before arming:**
+   ```bash
+   ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'trajectory'"
+   ```
+   Confirm `Command received: trajectory` in the launch window (`orchestrator_node`
+   logs every accepted command) **and** that `/control_mode_topic` reads `TRAJECTORY`,
+   *before* `set_setpoint_output true`. Repeat publishes are safe: every mode command is
+   idempotent and the handlers discard commands they don't recognise. The GUI's mode
+   buttons (:8081) are immune — rosbridge holds a long-lived publisher. (On 2026-07-09
+   a lost `trajectory` publish left the platform in STANDBY; the operator armed anyway,
+   the whole battery came back `WRONG_MODE`, and the cleanup triggered Sharp Edge #6.)
+
+6. **`deactivate` while ARMED latches `MPC_STALE` *and* leaves the legs un-stowed.**
+   The state-machine transition ACTIVE→IDLE is pure software and happens instantly, so
+   `control_mode` becomes `''` and the emitter stops — the guard latches `MPC_STALE`
+   within 250 ms. But the firmware **rejects** the DEACTIVATE while `mpc_active=1`, so
+   the legs never profile-stow: you end with the orchestrator in IDLE, the platform
+   still at the ACTIVE pose, and a latched fault. Recover with
+   `ros2 service call /clear_errors std_srvs/srv/Trigger` (a bridge service — the
+   orchestrator only routes `'clear_errors'` from its FAULT state, `state_machine.py`
+   `FaultHandler`, so a topic publish from IDLE is silently discarded), then re-activate.
+   **Always `set_setpoint_output false` before `deactivate`.** (Observed 2026-07-09 at
+   13:29:47 during the S2 session.)
+
 ---
 
 ## Sessions (run in strict order)
 
-### S1 — Phase-1 hold (arm + 120 s hold + clean disarm)
+### S1 — Phase-1 hold (arm + 120 s hold + clean disarm) — ✅ **PASS 2026-07-09**
 
 - **Purpose**: prove the platform holds the ACTIVE pose through the new trajectory path;
   clean runtime arm and disarm→deactivate.
@@ -94,8 +144,11 @@ been on hardware yet** — that is this runbook.
   binder). Fresh `colcon build` + `source`.
 - **Commands** (summary — full protocol in the pointer):
   1. `ros2 launch jugglebot jugglebot_launch.py enable_setpoint_output:=false`
-  2. home → activate → control mode **STANDBY**; confirm the 40 Hz hold stream with the
-     read-only probe `python tools/probes/traj_stream_probe.py --duration 30`
+  2. `ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'activate'"`
+     (home first if `is_homed` is false). This lands in **STANDBY** automatically — see
+     Sharp Edge #4; do **not** use the `/activate` service, and repeat-publish per Sharp
+     Edge #5. Confirm the 40 Hz hold stream
+     with the read-only probe `python tools/probes/traj_stream_probe.py --duration 30`
      (`rate_hz ≈ 40`, `u0_mean ≈ 2.19 rev`, `max_step ≈ 0`, `pump_rej = 0`).
   3. `ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"` (arm).
   4. Hold 120 s.
@@ -106,75 +159,217 @@ been on hardware yet** — that is this runbook.
   cleared).
 - **ABORT**: any E-STOP, any visible motion at arm, pump-reject spam, drift > 0.02 rev.
 - **Exit**: platform holds via the new path; clean disarm→deactivate.
+- **Result (2026-07-09)**: **PASS on every criterion.** 40.03 Hz mean pre-arm / 40.02 Hz
+  over the 120 s hold; `u0_mean` 2.19680 rev with zero spread; 120 s leg drift **0.0005 rev**
+  (40× margin on the 0.02 limit); largest single-sample leg step 0.00172 rev across the
+  whole 293 s armed window (no snap at the arm edge); zero pump rejects and an empty
+  `last_rejection` all session; DEACTIVATE accepted and legs stowed cleanly. Emitter
+  session-max gap 42.27 ms (vs the 250 ms staleness window). Artefacts + full table in
+  `tests/hardware/session_phase1_hold.md` § Session result; rosbag
+  `~/Desktop/rosbags/2026-07-09_12-51-08`.
 - **Detailed protocol**: `tests/hardware/session_phase1_hold.md`.
 
-### S2 — Phase-2 waypoint battery + loud-rejection demo
+### S2 — Phase-2 waypoint battery + loud-rejection demo — ✅ **PASS 2026-07-09**
 
 - **Purpose**: profiled point-to-point moves execute smoothly; an infeasible request is
   loudly rejected with zero motion.
 - **Entry**: S1 passed; armed and holding in **TRAJECTORY** mode; limits at the Phase-1
   defaults (100 mm/s, 400 mm/s², 8000 mm/s³).
+- **Getting to the entry state** (mode change goes over the topic — Sharp Edges #4, #5):
+  1. `ros2 launch jugglebot jugglebot_launch.py enable_setpoint_output:=false`
+  2. `ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'activate'"`
+     → ACTIVE:STANDBY, emitter streaming.
+  3. `ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'trajectory'"`
+     → TRAJECTORY. STANDBY→TRAJECTORY is streaming→streaming, so it is safe armed or
+     unarmed; arming last keeps the irreversible step last.
+  4. **VERIFY `/control_mode_topic` reads `TRAJECTORY` before arming.** A lost mode
+     publish (Sharp Edge #5) is silent, and arming into STANDBY means every battery move
+     returns `WRONG_MODE` — harmless in itself, but the armed cleanup that follows is how
+     the 2026-07-09 session tripped an `MPC_STALE` E-STOP (Sharp Edge #6).
+  5. `ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"` (arm).
 - **Battery** (`trajectory/go_to_pose`): z 170→190→170; x ±20; y ±20; tilt rx ±3°; then
-  one deliberately-infeasible `duration_s: 0.05` request.
+  one deliberately-infeasible `duration_s: 0.05` request. **Do not hand-roll these** —
+  `go_to_pose` takes one pose per call and returns `BUSY` if a move is already in flight
+  (a deliberate Phase-2 restriction, lifted by the Phase 3/5 supersede work). The
+  scripted battery `tests/hardware/traj_ramp_battery.py` fires exactly this list and
+  sleeps `max(settle_s, planned_duration_s + 0.5)` between moves to avoid cascading
+  `BUSY` rejections. It is named for Phase 4 but with no `--set-*` flag it changes no
+  limits, and `--lean-gain` defaults to `0.0` (lean off) — precisely S2's conditions:
+  ```bash
+  python3 tests/hardware/traj_ramp_battery.py --dry-run     # print the plan, no ROS calls
+  python3 tests/hardware/traj_ramp_battery.py --lean-gain 0.0
+  ```
+- **Teardown**: `trajectory/go_home` → `set_setpoint_output false` (**disarm before
+  leaving TRAJECTORY** — Sharp Edge #1) → orchestrator `deactivate`.
 - **PASS**: each move subjectively smooth (no audible snap); `/diagnose --latest` shows
   leg jerk within limits; no pump rejects; no E-STOP. The infeasible request comes back
   `accepted=false code=TOO_FAST` with a populated `min_duration_s` and **moves nothing**.
-  Target: 10/10 scripted moves clean + one demonstrated loud rejection.
+  Target: **11/11** scripted moves clean (the `_BATTERY` list holds 11 feasible moves:
+  2 in z, 3 in x, 3 in y, 3 in rx) + one demonstrated loud rejection.
 - **ABORT**: oscillation, gate violation, tracking error > 0.1 rev.
+- **Result (2026-07-09)**: **PASS — 11/11 moves clean + the loud rejection.** Battery ran
+  13:34:07–13:34:43 at the Phase-1 default limits (100 mm/s, 400 mm/s², 8000 mm/s³),
+  `lean_gain = 0.0`. Per-move realized leg peaks tracked the gate prediction closely
+  (worst case across the 11: predicted vel 68.4 / acc 362.8 / jerk 6911 vs realized
+  68.3 / 362.8 / 5583 mm·s⁻¹˒⁻²˒⁻³). Headroom against the session limits: **vel 68 %,
+  acc 91 %, jerk 70 % (realized)** — acceleration is the tightest of the three at these
+  defaults. The infeasible request returned
+  `TOO_FAST: requested duration 0.050s < minimal feasible 0.629s` and **installed no
+  plan** (`move_seq` held at 11 across it) — zero motion, as designed. Session-max
+  emitter gap 56.60 ms (vs the 250 ms staleness window). Rosbag
+  `~/Desktop/rosbags/2026-07-09_13-17-56`.
+  - *Two NOTES from the bag, neither a PASS blocker.* (a) The teardown `go_home`
+    installed as `move_seq=12` with realized peaks 0.0 (a genuine no-op from neutral),
+    but its **predicted** peaks were reported identical to move 11's rather than zero —
+    i.e. `peak_leg_*` looks stale for a zero-distance plan. Worth a look before S4 leans
+    on `/diagnose`'s predicted-vs-realized headroom numbers. (b) **`/link_status` is not
+    in the launch's rosbag record list**, so the E-STOP that occurred at 13:29:47 is
+    absent from the bag — the fault channel is invisible to post-hoc analysis. Adding it
+    is a one-line launch change and would have made this session self-documenting.
 - **Detailed protocol**: `plans/active/mvp-trajectory-bringup.md` § Phase 2 "Hardware
   session" (Phase 2 has no separate session file — its protocol lives in the plan). Use
   `tools/probes/traj_stream_probe.py` for read-only knot inspection.
 
-### S3 — Phase-3 SpaceMouse flight (gentle / saturation / unplug)
+### S3 — Phase-3 SpaceMouse flight (gentle / saturation / [unplug]) — ✅ **PASS 2026-07-10**
 
 - **Purpose**: continuous target following is smooth; saturation and input-loss handled
   cleanly.
-- **Entry**: S2 passed; mode `spacemouse`; default low limits.
+- **Entry**: S2 passed; mode `spacemouse` (over `/orchestrator_command`, Sharp Edges
+  #4/#5); default low limits.
 - **Sub-tests**: (a) gentle flight; (b) a hard-shove **saturation** test (expect: tracks
-  to the workspace edge along the approach ray, then a throttled "clamped to nearest
-  reachable" WARN, no runaway); (c) a mid-flight **SpaceMouse unplug** (expect: a smooth
-  graceful stop / the SpaceMouse node's ACTIVE-pose hold on disconnect).
+  to the workspace edge along the approach ray — stopping 0.5 mm inside the stroke
+  bound by design — then a throttled "clamped to nearest reachable" WARN, no runaway);
+  (c) a mid-flight **SpaceMouse disconnect** (expect: a smooth graceful stop / the
+  SpaceMouse node's ACTIVE-pose hold on disconnect).
 - **PASS**: subjectively smooth throughout, no rejects, clean disconnect.
 - **ABORT**: any jerk event, E-STOP, runaway.
+- **History**: the **2026-07-09 first attempt FAILED** — z-stutter (accept/reject limit
+  cycling + firmware decay→sprint bursts to 2.5× the vel limit) ending in a latched
+  MAX_DEVIATION E-STOP and a permanent follower lockup (commanded state parked exactly
+  on the stroke bound). Root-caused and fixed by the chase-clamp rework (`73dba2b`);
+  full post-mortem + fix disposition in
+  `plans/active/follower-cadence-and-divergence.md` § RESOLUTION.
+- **Result (2026-07-10, post-rework)**: **PASS** — (a) and (b) smooth throughout
+  ("worked perfectly"), no rejections, no E-STOP, both ascent and descent flown.
+  Sub-test (c) **not performed**: the SpaceMouse connects over Bluetooth (the dongle
+  turned out to be unnecessary), so a clean physical unplug isn't easily produced.
+  Accepted without it: the input-loss path is unit-tested and exercised by the S3
+  replay harness's end-of-stream stop, and SpaceMouse control is a test/fun mode, not
+  a production dependency. (If a disconnect test is ever wanted: power the SpaceMouse
+  off mid-flight, or kill the `spacemouse_handler` node — both drive the same
+  input-loss → graceful-stop path.)
 - **Detailed protocol**: `plans/active/mvp-trajectory-bringup.md` § Phase 3 "Hardware
   session" (no separate session file — protocol lives in the plan).
 
 ### S4 — Phase-4 limit ramp (multiple short sessions + one lean A/B)
 
-- **Purpose**: raise the session leg vel/acc/jerk limits toward the Phase-6 catch
-  requirements, one small validated step per session; resolve the lean A/B.
-- **Entry**: S2/S3 passed; armed + holding in **TRAJECTORY** mode; rosbag recording on
-  (`/trajectory/diagnostics` + `/trajectory/status` are in the record list); **know the
-  last-good YAML session limits** so an ABORT reverts cleanly.
-- **Per-step protocol** (repeat once per limit bump):
-  1. Raise **ONE** limit ~1.5× at runtime via `trajectory/set_limits` (do NOT edit YAML
-     yet — a bad value is one service call to undo; jerk is the binding constraint, raise
-     it first).
-  2. Run the operator battery `python3 tests/hardware/traj_ramp_battery.py --lean-gain 0.0`.
-  3. `/diagnose --latest` review — read the **Trajectory Moves** block (realized peaks +
-     `used_pct_predicted` headroom; the raised limit's realized peak should climb toward
-     it, keep comfortable headroom on the other two).
-  4. **Operator PASS ⇒ persist** the bump: edit `config/hardware_config.yaml`
-     `trajectory_op:` → `python config/generate_config.py` → stage → `pytest tests/ -q`
-     → commit **between sessions** (one commit per validated bump, `/diagnose` numbers in
-     the message). **ABORT ⇒ revert** the in-session `set_limits` to last-good; leave YAML
-     unchanged.
-- **Lean A/B** (once, not every step): run the identical battery at `--lean-gain 0.0`
-  then `--lean-gain 0.3`, `/diagnose --compare`. **Keep lean only if** measured leg jerk
-  drops AND the motion looks/sounds calmer; else leave `lean_gain: 0.0` and log the null
-  result. **Expect the gain-0.3 arm's moves to run ~1.45× LONGER** — shaped lateral moves
-  are legitimately slower because the gate sizes the added tilt; the battery prints each
-  `planned_duration_s`, so the unequal durations are expected, not a regression. Watch for
-  a tilt-rate tick at move start/end (the boundary transient) — report it rather than
-  pushing through.
+- **Purpose**: raise the session leg vel/acc/jerk limits from the Phase-1 defaults
+  (100 mm/s, 400 mm/s², 8000 mm/s³) to the Phase-6 catch requirements, one small
+  validated step at a time; resolve the lean A/B.
 - **Ramp TARGETS** (from the Phase-6 reload gate, at 0.7 s lead / ≤80 mm reach / ≤12°
   tilt, 1.15× headroom): **leg vel ≈ 156 mm/s, acc ≈ 660 mm/s², jerk ≈ 10 331 mm/s³**.
-  **All three targets exceed the Phase-1 defaults (100 / 400 / 8000) and must be ramped
-  past them before S8**; jerk is the binding constraint and the largest relative step —
-  raise it first. All three stay well inside the YAML ceilings (280 / 4000 / 200 000).
+  All three stay far inside the YAML ceilings (280 / 4000 / 200 000).
+- **What S4 is actually testing (post-rework framing)**: the software stack has already
+  been validated through these limits and beyond — the chase-clamp sweep passed the
+  production regime at the defaults, the S4 targets, AND the YAML ceilings (0 reject
+  streaks, follow p99 6–11 ms), and every plan is still individually gated. **S4 is a
+  physical/mechanical validation**: vibration, resonance, audible harshness, ODrive
+  tracking error, and how the platform *feels* at each step. Your senses are the
+  instrument; the ABORT criteria are the guardrail.
+- **Entry**: S2/S3 passed; armed + holding in **TRAJECTORY** mode (same arm sequence as
+  S2 steps 1–5); rosbag recording on; **know the last-good YAML session limits** so an
+  ABORT reverts cleanly. Note: session limits are runtime state — **a relaunch always
+  reverts to the YAML values**, so a relaunch is also a valid "revert everything".
+
+#### The ladder (recommended order + step sizes)
+
+One limit per step, ≤ ~1.3× per step, battery + review between steps. Rationale for
+the order: **jerk first** (it is the binding *physical* constraint on this hardware —
+the legs are bench-proven to 3.4 m/s velocity, jerk is what shakes the structure — and
+its target is the smallest relative step, ×1.29, so it is also the gentlest opener);
+**acceleration second, in two steps** (it was the tightest limit at S2 — realized peaks
+used 91 % of the acc limit vs 68 %/70 % for vel/jerk — so acc steps produce the largest
+visible change in move aggressiveness: watch for overshoot/ringing here); **velocity
+last** (a vel raise alone changes little until acc/jerk allow faster transients; it
+mainly shortens the longer strokes).
+
+| step | limit | from → to | ratio | watch for |
+|---|---|---|---|---|
+| 1 | jerk | 8000 → **10 500** | ×1.31 | harshness / buzz at move start & end (jerk lives in the transitions). Durations barely shrink — moves are acc-bound at these limits; that is expected, not a null result. |
+| 2 | acc | 400 → **520** | ×1.30 | overshoot / ringing at direction changes; ODrive tracking error. Planned durations visibly shrink. |
+| 3 | acc | 520 → **660** | ×1.27 | same, harder. This is the step most likely to feel "snappy" — linger here. |
+| 4 | vel | 100 → **130** | ×1.30 | long-stroke moves (the z moves) get faster mid-stroke; listen for anything speed-proportional (bearing noise, frame hum). |
+| 5 | vel | 130 → **156** | ×1.20 | as step 4. After this step all three targets are met (10 500 ≥ 10 331). |
+
+One step per short session is the conservative default; two steps in one session is
+fine if the first felt completely clean — but never skip the battery+review between.
+
+#### Per-step protocol (exact commands)
+
+1. **Raise the one limit** — either let the battery do it (recommended; it calls
+   `trajectory/set_limits` first and prints the applied values), e.g. step 1:
+
+   ```bash
+   python3 tests/hardware/traj_ramp_battery.py --set-jerk 10500 --lean-gain 0.0
+   ```
+
+   or set it explicitly and verify the echo before any motion:
+
+   ```bash
+   ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits \
+     "{leg_vel_limit_mmps: 0.0, leg_acc_limit_mmps2: 0.0, leg_jerk_limit_mmps3: 10500.0}"
+   ```
+
+   `0` means "keep current"; every request is clamped to its YAML ceiling and the
+   response echoes the **applied** values (`applied_*`) — read them back, don't assume.
+   Subsequent steps: `--set-acc 520`, `--set-acc 660`, `--set-vel 130`, `--set-vel 156`.
+
+2. **Run the battery** (11 profiled moves: z 170→190→170, x ±20, y ±20, rx ±3°, plus one
+   deliberate `TOO_FAST` rejection; it sleeps between moves to avoid `BUSY`). Use
+   `--dry-run` first if you want to see the plan without ROS calls. **Expected output
+   per move**: `accepted=true`, a `planned_duration_s` that shrinks as the ramp
+   progresses, and no pump-reject lines in the bridge log. The infeasible request must
+   return `accepted=false code=TOO_FAST` with `min_duration_s > 0` and move nothing —
+   its `min_duration_s` should also shrink step by step (the same move is achievable
+   faster at higher limits).
+
+3. **SpaceMouse sortie (new, recommended since the chase-clamp rework)** — 60–90 s per
+   step: disarm-free mode change is NOT allowed (Sharp Edge #1 — disarm first if leaving
+   TRAJECTORY), so: `set_setpoint_output false` → mode `spacemouse` (Sharp Edge #5
+   repeat-publish + verify) → re-arm → fly gently, then a few full-deflection shoves.
+   This exercises the moving-seed regime the battery cannot. **Expected**:
+   `last_rejection` on `/trajectory/status` stays empty; no 1 Hz ERROR mentioning
+   "escalation" in the trajectory_node log; the shove saturates smoothly at the
+   workspace edge. Then disarm → back to `trajectory` → re-arm for the next step.
+
+4. **Review** — `/diagnose --latest`: in the **Trajectory Moves** block the raised
+   limit's realized peak should climb toward its new value while the other two keep
+   comfortable headroom; cross-check tracking error and hold quiescence. From the
+   rework's diagnostics, also glance at `follow_block_max_ms` (should stay ≲ 20 ms)
+   and `chase_alpha`/`consecutive_rejects` (rejects should read 0).
+
+5. **Operator PASS ⇒ persist** the bump: edit `config/hardware_config.yaml`
+   `trajectory_op:` → `python config/generate_config.py` → stage the regenerated
+   artifacts → `pytest tests/ -q` → commit **between sessions** (one commit per
+   validated bump, `/diagnose` numbers in the message). **ABORT ⇒ revert** in-session
+   (`set_limits` back to last-good, or relaunch to fall back to YAML); leave YAML
+   unchanged.
+
+- **Lean A/B** (once, not every step — do it at step 3's limits or later so lean has
+  authority): run the identical battery at `--lean-gain 0.0` then `--lean-gain 0.3`,
+  `/diagnose --compare`. **Keep lean only if** measured leg jerk drops AND the motion
+  looks/sounds calmer; else leave `lean_gain: 0.0` and log the null result. **Expect the
+  gain-0.3 arm's moves to run ~1.45× LONGER** — shaped lateral moves are legitimately
+  slower because the gate sizes the added tilt; the battery prints each
+  `planned_duration_s`, so the unequal durations are expected, not a regression. Watch
+  for a tilt-rate tick at move start/end (the boundary transient) — report it rather
+  than pushing through.
 - **PASS/ABORT** per move: as S2 (smooth, jerk within limits, TOO_FAST rejects nothing;
-  ABORT on oscillation / snap / tracking error > 0.1 rev / E-STOP).
-- **Detailed protocol**: `tests/hardware/session_phase4_ramp.md`.
+  ABORT on oscillation / snap / tracking error > 0.1 rev / E-STOP). On ABORT, revert
+  and debrief before re-attempting — the failing step's `/diagnose` block + rosbag are
+  the evidence.
+- **Detailed protocol**: `tests/hardware/session_phase4_ramp.md` (per-step mechanics;
+  this section's ladder supersedes its "~1.5×, jerk 12000" example values).
 
 ### S5 — Phase-5 timed targets (±25 ms arrival + supersede)
 
@@ -271,7 +466,10 @@ been on hardware yet** — that is this runbook.
 
 - **Rosbags auto-record** the trajectory topics — `/trajectory/status`,
   `/trajectory/diagnostics`, `/trajectory/target_feedback` are in the launch record list.
-  Launch with recording on for S2–S8.
+  Launch with recording on for S2–S8. Since the chase-clamp rework, the diagnostics also
+  carry `chase_alpha` (last per-tick feasible-progress fraction), `consecutive_rejects`
+  (should read 0), `escalation_stop` (should read false), and `follow_block_max_ms`
+  (post-publish planning cost — should stay ≲ 20 ms).
 - **`/diagnose --latest` after every motion session** — read the Trajectory Moves block
   (realized + `used_pct_predicted` peaks/headroom) and tracking/hold-quiescence plots.
   For S4, `/diagnose --compare` the two lean-A/B sessions.
@@ -301,4 +499,12 @@ Carried from the phase open-questions (identical to the closing logbook entry's 
    cross-check **only if 7c shows false CAUGHTs**.
 6. **Emitter jitter p95** — read it from the DEBUG install-latency logs across the motion
    sessions (S2–S8) to confirm the 40 Hz emitter stays well inside the 250 ms staleness
-   window under load.
+   window under load. Since the chase-clamp rework the binding budget is better observed
+   directly: `max_emit_gap_ms` (should stay near 25 ms — the S3 incident showed the true
+   contract is the 25 ms knot cadence, not the 250 ms staleness window) and
+   `follow_block_max_ms` on `/trajectory/diagnostics`.
+7. **Diagnostics leftovers from the S3 post-mortem** (`follower-cadence-and-divergence.md`
+   § 4.5): realized peaks in SPACEMOUSE/CATCH are still per-install (≈ per-tick) rather
+   than rolling-window, and `peak_leg_*` looks stale for zero-distance plans — both still
+   open; matters if S4's `/diagnose` review is ever run on a spacemouse sortie rather
+   than the battery.

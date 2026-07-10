@@ -173,6 +173,66 @@ iteration (not `TOO_FAST` after exhausting iters). The interface package rebuilt
   phase (the `JB_TRAJ_*` constants landed in Phase 1); re-running
   `python config/generate_config.py` produced **no** working-tree changes.
 
+### Hardware bench session — 2026-07-09, S2: **PASS**
+
+Operator-run battery `tests/hardware/traj_ramp_battery.py --lean-gain 0.0`, no
+`--set-*` flags, so limits stayed at the Phase-1 defaults (100 mm/s, 400 mm/s²,
+8000 mm/s³). Evidence extracted read-only from rosbag
+`~/Desktop/rosbags/2026-07-09_13-17-56` (`/trajectory/diagnostics`,
+`/trajectory/status`, `/control_mode_topic`, `/orchestrator_command`).
+
+- **11/11 feasible moves accepted and executed**, 13:34:07 → 13:34:43, one install per
+  move (`move_seq` 1…11), `lean_gain = 0.00` throughout, `plan_kind='move'`.
+- **Predicted vs realized leg peaks** (worst case across the 11 moves):
+
+  | | vel (mm/s) | acc (mm/s²) | jerk (mm/s³) |
+  |---|---|---|---|
+  | gate-predicted | 68.4 | 362.8 | 6 911 |
+  | realized | 68.3 | 362.8 | 5 583 |
+  | session limit | 100.0 | 400.0 | 8 000 |
+  | realized headroom used | 68 % | **91 %** | 70 % |
+
+  Vel and acc track the prediction to ~1 %; realized jerk runs ~20 % under, consistent
+  with the gate's deliberately conservative jerk bound. **Acceleration is the binding
+  constraint at the Phase-1 defaults** — not jerk. That does not contradict the Phase-4
+  ramp ordering (which raises jerk first): jerk binds at the *Phase-6 catch* operating
+  point, where the reach is faster and shorter, not at these gentle defaults.
+- **Loud rejection, zero motion** — the `duration_s: 0.05` request returned
+  `TOO_FAST: requested duration 0.050s < minimal feasible 0.629s for this move at the
+  current limits`. `move_seq` held at 11 across the rejection, i.e. **no plan was
+  installed**. This is the load-bearing Phase-2 invariant and it held on hardware.
+- **Emitter** — session-max `max_emit_gap_ms` 56.60 (vs the 250 ms staleness window);
+  higher than Phase 1's 42.27 ms, as expected with the follower/planner work on the tick.
+- No pump rejects; no oscillation or audible snap reported by the operator.
+
+**Two operator hazards surfaced (documented, not code defects).** (1) `ros2 topic pub
+--once` lost the `trajectory` mode change to the DDS discovery race — no error, no log
+line. The operator armed without re-verifying the mode, so all 11 moves came back
+`WRONG_MODE` and nothing moved (the mode gate behaving exactly as designed). (2) The
+cleanup then issued `deactivate` while still armed. That is a two-sided failure: the
+state machine's ACTIVE→IDLE transition is pure software and lands instantly, dropping
+`control_mode` to `''` — so the emitter stops and the guard latches `MPC_STALE` inside
+250 ms — while the *firmware* rejects the DEACTIVATE because `mpc_active=1`, so the legs
+never profile-stow. Observed end state: orchestrator IDLE, platform still at 2.196 rev
+(the ACTIVE pose), `fault_state=MPC_STALE`, `mpc_active=0`, `setpoints_rejected=0`,
+buses OK. Cleared with `/clear_errors` (a bridge service — the orchestrator only routes
+`'clear_errors'` from its FAULT state, so a topic publish from IDLE is discarded), then
+re-activated; the retry passed clean. Both are now runbook Sharp Edges #5 and #6, and
+the S2 protocol gained an explicit verify-the-mode-before-arming gate.
+
+**Two NOTES for follow-up.**
+
+1. `/link_status` is **not** in the launch's rosbag record list, so the MPC_STALE E-STOP
+   at 13:29:47 left no trace in the bag; it was only visible on the live topic. The
+   fault channel is invisible to post-hoc analysis — a one-line launch fix, worth doing
+   before S4 starts generating bags that matter.
+2. The teardown `go_home` installed as `move_seq=12` with realized peaks 0.0 (correct —
+   it is a genuine no-op from the neutral pose) but reported **predicted** peaks
+   identical to move 11's (44.3 / 303.6 / 6911) rather than zero. `peak_leg_*` therefore
+   looks **stale for a zero-distance plan**. Harmless here, but S4's per-step review
+   reads predicted-vs-realized headroom straight off these fields, so confirm or fix
+   before the ramp.
+
 ## Discussion
 
 CLAUDE.md makes the Discussion non-negotiable: several reversible forks were decided

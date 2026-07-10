@@ -453,9 +453,9 @@ passes; results recorded in the logbook with seeds and configs):
 
 | Phase | Title | Sim gate | Hardware | Status |
 |---|---|---|---|---|
-| 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | CODE COMPLETE (hardware deferred) |
-| 2 | Waypoint moves at low limits | — | move battery + loud rejection | CODE COMPLETE (hardware deferred) |
-| 3 | SpaceMouse streaming | — | manual flight | CODE COMPLETE (hardware deferred) |
+| 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | **HARDWARE PASS (S1, 2026-07-09)** |
+| 2 | Waypoint moves at low limits | — | move battery + loud rejection | **HARDWARE PASS (S2, 2026-07-09)** |
+| 3 | SpaceMouse streaming | — | manual flight | **HARDWARE PASS (S3, 2026-07-10 — after the chase-clamp rework; first attempt 2026-07-09 failed, see below)** |
 | 4 | Limit ramp-up + lean A/B | — | multiple short sessions | CODE COMPLETE (hardware deferred) |
 | 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | SIM GATE CORE PASS (vel-match criterion deferred — see Phase 6/7) |
@@ -481,6 +481,20 @@ closing meta-entry — cross-phase decision digest, audit-arc retrospective, and
 consolidated bench-must-answer list — is
 `logbook/2026-07-08-mvp-autonomous-build-run.md`. Phases 8–9 remain stretch scope, not
 started.
+
+**Bench progress addendum (2026-07-10)**: S1 and S2 PASSED 2026-07-09 (see the Phase
+1/2 Outcomes). The first S3 attempt (2026-07-09) FAILED — z-stutter ending in a latched
+MAX_DEVIATION E-STOP and a permanent follower lockup. The root causes (reject-and-keep
+follower design, replan cost blocking the knot cadence, workspace clamp parking
+commanded state exactly on the stroke bound) were fixed by the **chase-clamp follower
+rework** (commit `73dba2b`: `motion/trajectory/chase.py` + follower/planner/emitter
+changes; suite 2304 passed / 5 skipped / 1 xfailed, `pytest tests/ -q`, 2026-07-10),
+validated by replaying the recorded S3 stick stream (old code reproduces the incident;
+new code: 0 rejects, 0 boundary parking, p99 14.9 ms). **S3 re-flown 2026-07-10:
+PASS.** Full post-mortem + proposal dispositions:
+`plans/active/follower-cadence-and-divergence.md` § RESOLUTION. This supersedes Phase
+3's original keep-last-plan rejection policy and the plan-section text describing it;
+Phase 4 (S4) is next on the bench.
 
 Every phase ends with: full `pytest tests/ -q` green, a logbook entry
 (`/log feature mvp-phaseN-<slug>`), commit(s) with `Logbook-Entry:` trailers,
@@ -554,6 +568,28 @@ operator bench session**: `tests/hardware/session_phase1_hold.md` (arm at ACTIVE
 `tools/probes/traj_stream_probe.py`. Full narrative in
 `logbook/2026-07-07-mvp-phase1-streaming-foundation.md`.
 
+**Outcome (2026-07-09 — HARDWARE VALIDATED, S1 PASS)**: the deferred bench session
+ran and passed every criterion. 40.03 Hz mean stream pre-arm, 40.02 Hz across the
+120 s hold; `u0_mean` 2.19680 rev with zero spread; **120 s leg drift 0.0005 rev**
+(limit 0.02); largest single-sample leg step 0.00172 rev over the entire 293 s
+armed window ⇒ zero motion at the arm edge; zero pump rejects and an empty
+`last_rejection` for the whole session; DEACTIVATE accepted with a clean stow,
+proving `mpc_active` cleared. Emitter session-max gap 42.27 ms against the 250 ms
+staleness window. Artefacts: `temp/probes/traj_stream_probe_20260709_{125835,130008}.csv`,
+rosbag `~/Desktop/rosbags/2026-07-09_12-51-08`; full table in
+`tests/hardware/session_phase1_hold.md` § Session result.
+
+The session also surfaced a **documentation defect, not a code defect**: the
+protocol said "home → activate" without naming the mechanism, and the operator
+reasonably used the `/activate` **service**. That service belongs to
+`teensy_bridge_node`, not the orchestrator — it leaves the state machine in `IDLE`
+(so `control_mode = ''`, not a streaming mode ⇒ the emitter never publishes) and
+skips the `_run_configure` the orchestrator's `/activate_or_deactivate` path folds
+in (so the legs stay in TRAP_TRAJ rather than POSITION/PASSTHROUGH). Fixed by
+spelling out the `/orchestrator_command` publishes in
+`tests/hardware/session_phase1_hold.md` Step 1 and adding Sharp Edge #4 to
+`tests/hardware/mvp_bench_runbook.md`. No production code changed.
+
 ### Phase 2 — Waypoint moves at very low limits
 
 **Goal**: `trajectory/go_to_pose` executes profiled moves; infeasible requests
@@ -571,13 +607,55 @@ sampling (property test); duration-stretch convergence; a rejection matrix
 at ceiling limits.
 
 **Hardware session**: limits at defaults (100 mm/s, 400 mm/s², 8000 mm/s³).
+Entry state is armed + holding in TRAJECTORY: `activate` then `trajectory` over
+`/orchestrator_command` (**not** the `/activate` service — runbook Sharp Edge #4),
+then `set_setpoint_output true`.
 Battery: z 170→190→170; x ±20; y ±20; tilt rx ±3°; then one deliberately
 infeasible request (`duration_s: 0.05`) → PASS: rejected `TOO_FAST` with
-`min_duration_s`, zero motion. PASS per move: subjectively smooth (no audible
-snap), `/diagnose --latest` shows leg jerk within limits, no pump rejects, no
-E-STOP. ABORT: oscillation, gate violation, tracking error > 0.1 rev.
+`min_duration_s`, zero motion. Run it with the scripted
+`tests/hardware/traj_ramp_battery.py --lean-gain 0.0` (its `_BATTERY` list *is*
+this battery; with no `--set-*` it changes no limits, and it settles
+`max(settle_s, planned_duration_s + 0.5)` between moves so `go_to_pose`'s
+one-move-in-flight `BUSY` restriction never cascades). PASS per move: subjectively
+smooth (no audible snap), `/diagnose --latest` shows leg jerk within limits, no
+pump rejects, no E-STOP. ABORT: oscillation, gate violation, tracking error
+> 0.1 rev.
 
-**Exit**: 10/10 scripted moves clean + one demonstrated loud rejection.
+**Exit**: 11/11 scripted moves clean (the `_BATTERY` list holds 11 feasible moves —
+2 in z, 3 in x, 3 in y, 3 in rx) + one demonstrated loud rejection.
+
+**Outcome (2026-07-09 — HARDWARE VALIDATED, S2 PASS)**: the bench session ran the
+scripted battery 13:34:07–13:34:43 at the Phase-1 default limits (100 mm/s,
+400 mm/s², 8000 mm/s³) with `lean_gain = 0.0`: **11/11 feasible moves accepted and
+executed cleanly**, and the deliberately-infeasible request returned
+`TOO_FAST: requested duration 0.050s < minimal feasible 0.629s` while installing no
+plan (`move_seq` held at 11 across it) — a loud rejection with zero motion, exactly
+the designed behaviour. Realized leg peaks tracked the gate prediction to within
+~1 % on vel/acc across all 11 moves (worst-case predicted 68.4 / 362.8 / 6911 vs
+realized 68.3 / 362.8 / 5583 mm·s⁻¹˒⁻²˒⁻³); realized jerk ran ~20 % under prediction,
+consistent with the gate's conservative jerk bound. Headroom at the defaults: vel
+68 %, acc **91 %**, jerk 70 % — acceleration binds first here, which is worth
+remembering when Phase 4 ramps (the ramp targets jerk first because jerk binds at the
+*Phase-6* operating point, not at these defaults). Session-max emitter gap 56.60 ms.
+Rosbag `~/Desktop/rosbags/2026-07-09_13-17-56`.
+
+Two process findings, neither blocking. (1) A lost `ros2 topic pub --once` mode change
+left the platform in STANDBY; the operator armed without re-checking, so all 11 moves
+came back `WRONG_MODE` (no motion — the gate did its job). The cleanup then sent
+`deactivate` **while still armed**, which transitions the state machine to IDLE
+instantly (so `control_mode=''`, the emitter stops, and the guard latches `MPC_STALE`
+within 250 ms) while the firmware *rejects* the DEACTIVATE because `mpc_active=1` — so
+the legs never stowed. Recovered with `/clear_errors` + re-activate; the retry passed
+clean. Both hazards are now runbook Sharp Edges #5 and #6, and the protocol gained an
+explicit "verify the mode took effect before arming" gate. (2) `/link_status` is absent
+from the launch's rosbag record list, so the E-STOP itself never reached the bag —
+recommend adding it before S4.
+
+**Open NOTE for `/diagnose`**: the teardown `go_home` installed as `move_seq=12` with
+realized peaks 0.0 (correct — a no-op from neutral) but reported **predicted** peaks
+identical to move 11's rather than zero, i.e. `peak_leg_*` appears stale for a
+zero-distance plan. S4's per-step review reads predicted-vs-realized headroom directly,
+so this should be confirmed or fixed before the ramp begins.
 
 **Outcome (2026-07-07 — CODE COMPLETE, hardware deferred)**: All Phase 2 software
 landed on branch `mvp-trajectory-bringup` (commits `614820c` motion gate +
