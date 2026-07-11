@@ -640,8 +640,11 @@ function cssVar(name, fallback) {
  * no-ops, so nothing is drawn there.  Dashed strokes are unaffected: the
  * dash pattern applies at stroke time, after the clip.  Zero per-frame
  * allocation beyond the gap tuples themselves (none for all-finite data).
+ *
+ * Exported: also consumed by can-traffic.js (single source — do not copy;
+ * the probe above validates this one implementation for all consumers).
  */
-function nanGaps(u, sidx, i0, i1, nullGaps) {
+export function nanGaps(u, sidx, i0, i1, nullGaps) {
     const xs = u.data[0];
     const ys = u.data[sidx];
     const series = u.series[sidx];

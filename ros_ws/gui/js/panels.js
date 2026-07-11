@@ -6,7 +6,6 @@
  */
 
 import { ODRIVE_STATE, BB_STATE_NAMES, LEG_STROKE_MM, MM_TO_REV,
-         CAN_BAUD_RATE, CAN_BITS_PER_FRAME_APPROX,
          CC_DELTA_OK_MS, CC_DELTA_WARN_MS,
          CC_OFFSET_DISPLAY_LIMIT_MS, CC_OFFSET_HISTORY_LEN } from './geometry-config.js';
 import { callService } from './ros-bridge.js';
@@ -573,71 +572,6 @@ export function setMotionDisconnected() {
     if (trajLabel) trajLabel.textContent = '';
     const progressTrack = document.getElementById('motion-progress-track');
     if (progressTrack) progressTrack.style.display = 'none';
-}
-
-// ---- CAN traffic panel ----
-
-const CAN_HISTORY_LEN = 20; // 10 seconds at ~2Hz reporting
-const canHistory = [];
-let canSparklineCtx = null;
-
-export function initCANPanel() {
-    const canvas = document.getElementById('can-sparkline');
-    if (canvas) {
-        canSparklineCtx = canvas.getContext('2d');
-    }
-}
-
-/**
- * Update CAN traffic panel.
- * @param {object} msg - CanTrafficReportMessage
- */
-export function updateCANTraffic(msg) {
-    const rate = msg.report_interval > 0
-        ? (msg.received_count / (msg.report_interval / 1000))
-        : 0;
-
-    const rateEl = document.getElementById('can-rate-value');
-    if (rateEl) rateEl.textContent = Math.round(rate);
-
-    // Bits/s and bus utilization
-    const bitsPerSec = rate * CAN_BITS_PER_FRAME_APPROX;
-    const kbitsPerSec = bitsPerSec / 1000;
-    const utilPct = (bitsPerSec / CAN_BAUD_RATE) * 100;
-
-    const bitsEl = document.getElementById('can-bits-value');
-    if (bitsEl) bitsEl.textContent = kbitsPerSec.toFixed(1);
-
-    const utilEl = document.getElementById('can-util-value');
-    if (utilEl) utilEl.textContent = `(${utilPct.toFixed(1)}%)`;
-
-    canHistory.push(rate);
-    if (canHistory.length > CAN_HISTORY_LEN) canHistory.shift();
-
-    drawSparkline();
-}
-
-function drawSparkline() {
-    if (!canSparklineCtx) return;
-    const canvas = canSparklineCtx.canvas;
-    const w = canvas.width = canvas.clientWidth * window.devicePixelRatio;
-    const h = canvas.height = canvas.clientHeight * window.devicePixelRatio;
-    canSparklineCtx.clearRect(0, 0, w, h);
-
-    if (canHistory.length < 2) return;
-
-    const maxRate = Math.max(1, ...canHistory);
-    canSparklineCtx.beginPath();
-    canSparklineCtx.strokeStyle = '#3b82f6';
-    canSparklineCtx.lineWidth = 2 * window.devicePixelRatio;
-
-    for (let i = 0; i < canHistory.length; i++) {
-        const x = (i / (CAN_HISTORY_LEN - 1)) * w;
-        const y = h - (canHistory[i] / maxRate) * h * 0.9;
-        if (i === 0) canSparklineCtx.moveTo(x, y);
-        else canSparklineCtx.lineTo(x, y);
-    }
-    canSparklineCtx.stroke();
 }
 
 // ---- Tracking error panel ----
@@ -1358,7 +1292,6 @@ export function initAllPanels() {
     initBBPanel();
     initCatchingConePanel();
     initBBThrowPanel();
-    initCANPanel();
     initTrackingGrid();
     initTopicMonitor();
 }

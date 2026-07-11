@@ -20,11 +20,14 @@ import {
 import {
     initAllPanels, updateMotorGrid, updateOrchestratorState,
     updateFlags, updateLevellingPanel, updateBBPanel, updateBBCalibration,
-    updateCANTraffic, updateTrackingError, updateMotionPanel,
+    updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
     updateConeHeartbeat, updateConeTimingResult,
 } from './panels.js';
+import {
+    initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
+} from './can-traffic.js';
 import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
 import {
@@ -66,6 +69,10 @@ function init() {
 
     // 2. Init panels
     initAllPanels();
+
+    // 2a. Init CAN traffic panel (left sidebar — own module, chart-heavy,
+    //     same precedent as telemetry-charts).
+    initCanTrafficPanel();
 
     // 3. Init commands
     initCommands();
@@ -199,8 +206,11 @@ function subscribeAll() {
     // Orchestrator state (on change)
     ros.subscribe('orchestrator_state', 'std_msgs/msg/String', onOrchestratorState, 0);
 
-    // CAN traffic (~2Hz)
-    ros.subscribe('can_traffic', 'jugglebot_interfaces/msg/CanTrafficReportMessage', onCANTraffic, 0);
+    // can-hub bridge firmware instrumentation (1 Hz) — per-bus CAN traffic panel
+    ros.subscribe('profile', 'diagnostic_msgs/msg/DiagnosticStatus', onProfile, 0);
+
+    // can-hub link/bus health (10 Hz, cheap KeyValue parse) — CAN health dots
+    ros.subscribe('link_status', 'diagnostic_msgs/msg/DiagnosticStatus', onLinkStatus, 0);
 
     // Hand telemetry (500Hz -> throttle to 10Hz = 100ms)
     ros.subscribe('hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', onHandTelemetry, 100);
@@ -387,9 +397,16 @@ function onOrchestratorState(msg) {
     setSpeedLimitsPanelVisible(sub === 'GUI' || sub === 'SPACEMOUSE');
 }
 
-function onCANTraffic(msg) {
-    recordTopicMessage('can_traffic');
-    updateCANTraffic(msg);
+function onProfile(msg) {
+    recordTopicMessage('profile');
+    canTrafficOnProfile(msg);
+}
+
+function onLinkStatus(msg) {
+    recordTopicMessage('link_status');
+    // Thin router: fan out to consumers — the upcoming state-minimap feature
+    // will add its own consumer line here.
+    canTrafficOnLinkStatus(msg);
 }
 
 let latestHandTelemetry = null;
@@ -772,7 +789,7 @@ function applyFontSize(size) {
 /** Topics we subscribe to for data processing (not just monitoring) */
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
-    'can_traffic', 'hand_telemetry', 'mocap_data', 'rigid_body_poses',
+    'profile', 'link_status', 'hand_telemetry', 'mocap_data', 'rigid_body_poses',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'cone/heartbeat', 'cone/timing_result',
 ]);

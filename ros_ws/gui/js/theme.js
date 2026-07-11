@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import { scene } from './viewer.js';
 import { rebuildCharts } from './telemetry-charts.js';
+import { rebuildCanChart } from './can-traffic.js';
 
 const STORAGE_KEY = 'jugglebot-theme';
 const VALID_THEMES = new Set(['dark', 'light']);
@@ -43,6 +44,7 @@ function applyTheme(theme) {
     // already-drawn ticks. Rebuild charts when the theme actually changed.
     if (changed) {
         try { rebuildCharts(); } catch { /* charts may not be built yet */ }
+        try { rebuildCanChart(); } catch { /* chart may not be built yet */ }
     }
 
     // Update the toggle button's label to match the current state.

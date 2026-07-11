@@ -2,6 +2,9 @@
 
 Reads geometry-config.js and compares every constant against the YAML source of truth.
 This prevents drift between the GUI and the Python/C++ config.
+
+Also pins other JS↔Python string contracts (regex-level tripwires), e.g. the
+DiagnosticStatus KeyValue names shared by teensy_bridge_node and can-traffic.js.
 """
 
 import json
@@ -225,6 +228,7 @@ class TestGUIFileStructure:
         'js/ball-butler-model.js',
         'js/panels.js',
         'js/commands.js',
+        'js/can-traffic.js',
         'lib/roslib.min.js',
     ]
 
@@ -285,3 +289,105 @@ class TestLegacyFilesRemoved:
     def test_legacy_removed(self, filepath):
         full = self.GUI_DIR / filepath
         assert not full.exists(), f'Legacy file still present: {filepath}'
+
+
+# ---- CAN traffic panel ↔ teensy_bridge_node KeyValue contract ----
+
+
+BRIDGE_NODE_PY = (ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'jugglebot'
+                  / 'teensy_bridge_node.py')
+CAN_TRAFFIC_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'can-traffic.js'
+
+
+@pytest.fixture(scope='module')
+def bridge_py():
+    """Read teensy_bridge_node.py as text."""
+    return BRIDGE_NODE_PY.read_text()
+
+
+@pytest.fixture(scope='module')
+def can_traffic_js():
+    """Read can-traffic.js as text."""
+    return CAN_TRAFFIC_JS.read_text()
+
+
+def _extract_method_source(py_text, name):
+    """Slice one method body out of the node source (up to the next
+    top-of-class ``def`` at 4-space indent)."""
+    m = re.search(rf'\n    def {name}\(self\):(.*?)\n    def ', py_text, re.S)
+    assert m, f'Could not find method {name} in teensy_bridge_node.py'
+    return m.group(1)
+
+
+def _keyvalue_keys(method_src):
+    """All KeyValue(key='...') names published by a method body."""
+    return set(re.findall(r"KeyValue\(key='([^']+)'", method_src))
+
+
+def _strip_js_comments(js_text):
+    """Crudely drop /* */ and // comments so key extraction only sees code.
+
+    (can-traffic.js documents hypothetical future keys — e.g. the protocol-v4
+    'can3'/'bus3_health' slots — in comments; those must not count as
+    consumed.  Crude = no string-literal awareness, fine for this tripwire.)
+    """
+    js_text = re.sub(r'/\*.*?\*/', '', js_text, flags=re.S)
+    return re.sub(r'//[^\n]*', '', js_text)
+
+
+class TestCanTrafficKeyValueContract:
+    """Pin the KeyValue-name contract: teensy_bridge_node (producer) ↔
+    can-traffic.js (consumer).
+
+    HONESTY NOTE — this is a string-level tripwire in the file's regex style,
+    not a behavioural test: it regex-extracts the key names each side
+    mentions and asserts consumer ⊆ producer.  It cannot prove the messages
+    are published or parsed correctly; it catches silent renames on either
+    side — the failure mode that leaves the panel permanently '--'/UNKNOWN
+    with no error anywhere.  Each extraction is shape-asserted first so a JS
+    refactor that breaks a regex fails loudly instead of passing vacuously.
+    """
+
+    def _consumed_profile_keys(self, js):
+        # can-traffic.js builds profile keys as `${bus.slot}_<suffix>` from
+        # the BUSES registry (slot: null ⇒ bus not on the uplink).
+        js = _strip_js_comments(js)
+        slots = set(re.findall(r"slot: '(\w+)'", js))
+        assert slots == {'can1', 'can2'}, \
+            f'BUSES slot extraction went stale: {slots}'
+        suffixes = set(re.findall(r"kv\[`\$\{bus\.slot\}_(\w+)`\]", js))
+        assert suffixes == {'rx', 'tx', 'util_pct'}, \
+            f'profile-suffix extraction went stale: {suffixes}'
+        return {f'{slot}_{suffix}' for slot in slots for suffix in suffixes}
+
+    def _consumed_link_status_keys(self, js):
+        js = _strip_js_comments(js)
+        health_keys = set(re.findall(r"healthKey: '(\w+)'", js))
+        assert health_keys == {'bus1_health', 'bus2_health'}, \
+            f'healthKey extraction went stale: {health_keys}'
+        direct = set(re.findall(r'\bkv\.(\w+)\b', js))
+        assert 'bridge_link' in direct, \
+            f'direct kv.<key> extraction went stale: {direct}'
+        return health_keys | direct
+
+    def test_profile_consumer_subset_of_producer(self, bridge_py, can_traffic_js):
+        produced = _keyvalue_keys(
+            _extract_method_source(bridge_py, '_publish_profile'))
+        assert {'can1_rx', 'can1_tx', 'can2_rx', 'can2_tx',
+                'can1_util_pct', 'can2_util_pct'} <= produced, \
+            f'producer extraction went stale: {produced}'
+        consumed = self._consumed_profile_keys(can_traffic_js)
+        assert consumed <= produced, \
+            f'can-traffic.js consumes profile keys the bridge never ' \
+            f'publishes: {consumed - produced}'
+
+    def test_link_status_consumer_subset_of_producer(self, bridge_py,
+                                                     can_traffic_js):
+        produced = _keyvalue_keys(
+            _extract_method_source(bridge_py, '_publish_link_status'))
+        assert {'bus1_health', 'bus2_health', 'bridge_link'} <= produced, \
+            f'producer extraction went stale: {produced}'
+        consumed = self._consumed_link_status_keys(can_traffic_js)
+        assert consumed <= produced, \
+            f'can-traffic.js consumes link_status keys the bridge never ' \
+            f'publishes: {consumed - produced}'

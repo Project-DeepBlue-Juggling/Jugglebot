@@ -55,21 +55,18 @@
                 <div id="topic-table-container"></div>
             </div>
 
-            <!-- CAN Traffic (snapped to bottom of left sidebar) -->
+            <!-- CAN Traffic (snapped to bottom of left sidebar).
+                 Per-bus rows + msg/s chart built by js/can-traffic.js. -->
             <div class="panel" id="panel-can">
                 <div class="panel-header">
                     <span class="panel-title">CAN Traffic</span>
+                    <span class="badge can-stale-badge" id="can-stale-badge"
+                          style="display:none"
+                          title="CAN data stale — no data from the bridge for >3 s, or the bridge reports the can-hub Teensy uplink lost (bridge_link != UP); tooltip shows the live cause while lit">STALE</span>
                 </div>
-                <div class="can-rate">
-                    <span class="value" id="can-rate-value">--</span>
-                    <span class="unit">msg/s</span>
-                </div>
-                <div class="can-rate">
-                    <span class="value" id="can-bits-value">--</span>
-                    <span class="unit">kbit/s</span>
-                    <span class="can-util" id="can-util-value"></span>
-                </div>
-                <canvas id="can-sparkline"></canvas>
+                <div id="can-bus-rows"></div>
+                <div id="can-window-btns" role="group" aria-label="Chart time window"></div>
+                <div id="can-chart"></div>
             </div>
         </div>
 

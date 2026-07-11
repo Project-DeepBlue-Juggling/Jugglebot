@@ -502,34 +502,140 @@
     color: #fff;
 }
 
-/* ---- CAN traffic panel ---- */
-.can-rate {
+/* ---- CAN traffic panel (per-bus rows + uPlot msg/s chart) ---- */
+
+/* Filled amber + dark text (the .state-badge.idle pattern above): amber
+   text/border on --bg-primary read fine in dark mode but was ~2.2:1 against
+   the light theme's near-white background.  A filled chip keeps ~9.8:1
+   black-on-amber in BOTH themes, so the alarm reads as an alarm. */
+.can-stale-badge {
+    background: var(--accent-amber);
+    color: #000;
+}
+
+/* Shared column template so the header and every bus row stay aligned.
+   Label column flexes; numeric columns are rem-fixed (root-font relative,
+   so the A+/A- control scales them too). */
+.can-bus-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 3rem 3.4rem 3rem 10px;
+    gap: 2px 6px;
+    align-items: center;
+}
+
+.can-rows-head span {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    text-align: right;
+}
+
+.can-bus-row {
+    padding: 2px 0;
+}
+
+/* Not-on-uplink bus (cone): permanently greyed, values 'n/a'. */
+.can-bus-row.can-row-na {
+    opacity: 0.45;
+}
+
+/* Series hidden on the chart: dim the label only — the numeric readouts
+   keep updating (visibility is a chart concern, not a data concern). */
+.can-bus-row.series-off .can-bus-label {
+    opacity: 0.45;
+}
+
+.can-bus-label {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    color: var(--text-primary);
+    font: inherit;
     display: flex;
     align-items: baseline;
     gap: 4px;
+    min-width: 0;
 }
 
-.can-rate .value {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-xl);
+.can-bus-label:disabled {
+    cursor: default;
+}
+
+.can-bus-swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    align-self: center;
+}
+
+.can-bus-name {
+    font-size: var(--font-size-sm);
     font-weight: 600;
+}
+
+.can-bus-desc {
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.can-bus-val {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    text-align: right;
+}
+
+/* BusHealth dot: OK / WARN / BUS_OFF / UNKNOWN (grey = unknown or stale). */
+.can-health-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    justify-self: end;
+}
+
+.can-health-dot.ok      { background: var(--accent-green); }
+.can-health-dot.warn    { background: var(--accent-amber); }
+.can-health-dot.busoff  { background: var(--accent-red); }
+.can-health-dot.unknown { background: var(--text-muted); opacity: 0.5; }
+
+/* Window preset segmented buttons (30/60/120 s). */
+#can-window-btns {
+    display: flex;
+    justify-content: flex-end;
+    gap: 2px;
+    margin-top: var(--gap-xs);
+}
+
+.can-window-btn {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 1px 6px;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.can-window-btn:hover {
+    background: var(--bg-card-hover);
     color: var(--text-primary);
 }
 
-.can-rate .unit {
-    font-size: var(--font-size-sm);
-    color: var(--text-muted);
+.can-window-btn.active {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #fff;
 }
 
-.can-util {
-    font-size: var(--font-size-sm);
-    color: var(--text-muted);
-    margin-left: 4px;
-}
-
-#can-sparkline {
-    width: 100%;
-    height: 40px;
+#can-chart {
+    height: 130px;
     margin-top: var(--gap-xs);
 }
 
