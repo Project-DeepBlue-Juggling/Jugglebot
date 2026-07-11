@@ -29,6 +29,10 @@ import {
     initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
 } from './can-traffic.js';
 import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
+import {
+    initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
+    minimapOnRobotState, minimapOnLinkStatus, minimapOnLegSetpointEcho,
+} from './state-minimap.js';
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
 import {
     initTelemetryCharts, onTelemetryData, rebuildCharts, flashChart,
@@ -83,6 +87,10 @@ function init() {
             resetSpeedLimitsForMode(mode);
         }
     });
+
+    // 3a. Init the state-machine minimap (needs the DOM + commands' publisher
+    //     topic, nothing from the viewer).
+    initStateMinimap();
 
     // 4. Init scene menu
     initSceneMenu();
@@ -256,6 +264,7 @@ const lastFaultFlags = {
 function onRobotState(msg) {
     recordTopicMessage('robot_state');
     lastRobotStateMs = Date.now();
+    minimapOnRobotState(msg);  // cheap field copies only (20 Hz throttled)
     const motors = msg.motor_states || [];
 
     // Update panels
@@ -378,6 +387,7 @@ function onOrchestratorState(msg) {
     recordTopicMessage('orchestrator_state');
     updateOrchestratorState(msg.data);
     updateCommandStates();
+    minimapOnOrchestratorState(msg.data);
 
     if (msg.data !== lastOrchestratorState) {
         if (lastOrchestratorState !== null) {
@@ -404,9 +414,9 @@ function onProfile(msg) {
 
 function onLinkStatus(msg) {
     recordTopicMessage('link_status');
-    // Thin router: fan out to consumers — the upcoming state-minimap feature
-    // will add its own consumer line here.
+    // Thin router: fan out to consumers.
     canTrafficOnLinkStatus(msg);
+    minimapOnLinkStatus(msg);
 }
 
 let latestHandTelemetry = null;
@@ -460,6 +470,7 @@ const LEG_ECHO_TIMEOUT_MS = 1000;
 
 function onLegSetpointEcho(msg) {
     recordTopicMessage('leg_setpoint_echo');
+    minimapOnLegSetpointEcho(msg);  // feeds the teardown quiescence wait
     latestCommandedLegs = msg.data;
     if (legEchoTimeout) clearTimeout(legEchoTimeout);
     legEchoTimeout = setTimeout(() => {
@@ -469,6 +480,7 @@ function onLegSetpointEcho(msg) {
 
 function onControlMode(msg) {
     recordTopicMessage('control_mode_topic');
+    minimapOnControlMode(msg.data);
     const mode = msg.data;
     setJogPanelVisible(mode === 'GUI');
     setSpeedLimitsPanelVisible(mode === 'GUI' || mode === 'SPACEMOUSE');

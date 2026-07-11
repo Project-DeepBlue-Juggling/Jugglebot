@@ -25,6 +25,7 @@
     <link rel="stylesheet" href="css/viewer.css">
     <link rel="stylesheet" href="css/panels.css">
     <link rel="stylesheet" href="css/charts.css">
+    <link rel="stylesheet" href="css/state-minimap.css">
 
     <!-- uPlot charting library (vendored locally, not ES module) -->
     <link rel="stylesheet" href="lib/uPlot.min.css">
@@ -92,6 +93,9 @@
 
             <!-- Mocap marker counts (visible when markers are active) -->
             <div id="mocap-info" style="display:none"></div>
+
+            <!-- Orchestrator state-machine minimap (content built by js/state-minimap.js) -->
+            <div id="state-minimap" class="collapsed"></div>
 
             <!-- Command buttons -->
             <div id="command-overlay"></div>

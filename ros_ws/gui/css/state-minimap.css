@@ -1,0 +1,284 @@
+/* ===================================================================
+   state-minimap.css — Orchestrator state-machine minimap
+   (overlay sibling of #viewer-container; built by js/state-minimap.js)
+   =================================================================== */
+
+:root {
+    /* Fallback only: state-minimap.js's ResizeObserver on #viewer-pane
+       overrides this on the pane with min(280, paneWidth*0.55)px.  The clamp
+       must be PANE-relative, not viewport-relative — with both sidebars
+       dragged wide the pane can be narrower than 280px, and a vw-capped
+       width would drive #viewer-container to zero width (viewer.js's
+       ResizeObserver has no zero guard). */
+    --minimap-width: 280px;
+    /* Warn/reason text colour — overridden per-theme below (raw
+       --accent-amber is ~2.2:1 on the light theme's white --bg-card). */
+    --minimap-warn: var(--accent-amber);
+}
+
+:root[data-theme="light"] {
+    --minimap-warn: #b45309;  /* amber-700 — ≥4.5:1 on white */
+}
+
+#state-minimap {
+    position: absolute;
+    z-index: 11;                    /* above #command-overlay (z10) */
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    /* NEVER transition width/height/left/bottom — anything that changes
+       #viewer-container's layout box must snap (viewer.js re-fits camera
+       aspect via its ResizeObserver; a transition would thrash it). */
+    transition: opacity var(--transition-normal);
+}
+
+#state-minimap.collapsed {
+    left: var(--gap);
+    /* --command-strip-h is measured off #command-overlay by a
+       ResizeObserver in state-minimap.js (the 10-22 px font-size control
+       changes the strip height; a hardcoded offset would drift). */
+    bottom: calc(var(--command-strip-h, 56px) + var(--gap) * 2);
+    width: 210px;
+    background: var(--bg-overlay);          /* translucent, theme-correct */
+    backdrop-filter: blur(8px);             /* matches #command-overlay */
+}
+
+#state-minimap.expanded {
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: var(--minimap-width);            /* pane-clamped by JS (see :root) */
+    background: var(--bg-card);             /* opaque */
+    border-radius: 0;
+    border-top: none;
+    border-bottom: none;
+    border-left: none;
+    overflow-y: auto;
+}
+
+/* Push the 3D scene right and inset the command strip by the SAME width.
+   Both margin-left AND width are required on #viewer-container (width:100%
+   alone would overflow under #viewer-pane's overflow:hidden).  This is a
+   layout change, so viewer.js's ResizeObserver fires and re-fits the
+   camera aspect.  No transitions here (see above). */
+#viewer-pane.minimap-expanded #viewer-container {
+    margin-left: var(--minimap-width);
+    width: calc(100% - var(--minimap-width));
+}
+
+#viewer-pane.minimap-expanded #command-overlay {
+    left: var(--minimap-width);
+}
+
+/* The connection indicator lives top-left at z10 — inset it too so the
+   opaque expanded panel doesn't cover it. */
+#viewer-pane.minimap-expanded #connection-status {
+    left: calc(var(--minimap-width) + var(--gap));
+}
+
+/* ---- Header ---- */
+
+#minimap-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.minimap-title {
+    flex: 1;
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.minimap-badge {
+    flex-shrink: 0;
+}
+
+#minimap-armed-badge {
+    color: var(--accent-green);
+    border: 1px solid var(--accent-green);
+    background: rgba(34, 197, 94, 0.12);
+}
+
+/* Stale-link worst case: last-known mpc_active=1 with /link_status stale
+   renders 'ARMED?' in amber — never hidden (a stale link must not read as
+   disarmed). */
+#minimap-armed-badge.stale {
+    color: var(--minimap-warn);
+    border-color: var(--minimap-warn);
+    background: rgba(245, 158, 11, 0.12);
+}
+
+#minimap-guard-badge {
+    color: var(--accent-red);
+    border: 1px solid var(--accent-red);
+    background: rgba(239, 68, 68, 0.12);
+    animation: pulse-fault 1.2s ease-in-out infinite;
+}
+
+#minimap-chevron {
+    color: var(--text-muted);
+    font-size: var(--font-size-sm);
+}
+
+/* ---- SVG graph ---- */
+
+#minimap-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    padding: 6px 6px 0;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+/* Per-node accent colour (mapping mirrors panels.js STATE_CLASSES /
+   theme.css --state-*). */
+.minimap-node[data-node="BOOT"]      { --nc: var(--state-boot); }
+.minimap-node[data-node="HOMING"]    { --nc: var(--state-homing); }
+.minimap-node[data-node="LEVELLING"] { --nc: var(--state-homing); }
+.minimap-node[data-node="IDLE"]      { --nc: var(--state-idle); }
+.minimap-node[data-node="FAULT"]     { --nc: var(--state-fault); }
+.minimap-node[data-node="ACTIVE"],
+.minimap-node.submode-chip           { --nc: var(--state-active); }
+
+.minimap-node { cursor: pointer; }
+/* 0.55 (not lower) + a text-primary label keep the greyed label legible
+   (~4.3-4.6:1 effective) on both themes — the greyed REASON must be
+   readable at a glance, not just the fact of greying. */
+.minimap-node.unreachable { opacity: 0.55; cursor: not-allowed; }
+.minimap-node.unreachable .node-label { fill: var(--text-primary); }
+.minimap-node.current { cursor: default; }
+.minimap-node.busy { cursor: progress; }
+
+.minimap-node .node-rect {
+    fill: var(--bg-card);
+    stroke: var(--border-color);
+    stroke-width: 1.2;
+}
+
+.minimap-node.cluster .node-rect {
+    fill: transparent;
+}
+
+.minimap-node.current .node-rect {
+    fill: var(--nc);
+    fill-opacity: 0.16;
+    stroke: var(--nc);
+    stroke-width: 2;
+}
+
+/* FAULT-current pulses (reuses @keyframes pulse-fault from theme.css). */
+.minimap-node[data-node="FAULT"].current .node-rect {
+    animation: pulse-fault 1s ease-in-out infinite;
+}
+
+/* Guard-only FAULT: the preserved submode chip is the one resume target. */
+.minimap-node.resume .node-rect {
+    stroke: var(--accent-green);
+    stroke-dasharray: 4 2;
+}
+
+.minimap-node .node-label {
+    fill: var(--text-secondary);
+    font-family: var(--font-sans);
+}
+
+.minimap-node.current .node-label {
+    fill: var(--text-primary);
+    font-weight: 600;
+}
+
+.cluster-sub {
+    fill: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+/* Hold-to-confirm fill on SVG nodes: the overlay rect scales 0 -> 1 over
+   var(--hold-ms) (set on the <g> by holdToConfirm; CSS vars inherit into
+   the child rect). */
+.minimap-node .node-hold-fill {
+    fill: var(--accent-blue);
+    opacity: 0.25;
+    transform: scaleX(0);
+    transform-box: fill-box;
+    transform-origin: left center;
+    pointer-events: none;
+}
+
+.minimap-node.hold-active .node-hold-fill {
+    transform: scaleX(1);
+    transition: transform var(--hold-ms, 800ms) linear;
+}
+
+.minimap-node.hold-confirmed .node-hold-fill {
+    transform: scaleX(1);
+    fill: var(--accent-green);
+    opacity: 0.55;
+    transition: none;
+}
+
+/* Edges + captions */
+.minimap-edge {
+    stroke: var(--text-muted);
+    stroke-width: 1.2;
+    fill: none;
+}
+
+.minimap-edge.dashed {
+    stroke-dasharray: 4 3;
+    opacity: 0.8;
+}
+
+.minimap-arrow {
+    fill: var(--text-muted);
+}
+
+.fault-halo {
+    fill: none;
+    stroke: var(--state-fault);
+    stroke-dasharray: 3 3;
+    opacity: 0.5;
+}
+
+.minimap-caption {
+    fill: var(--text-muted);
+    font-family: var(--font-sans);
+}
+
+.fault-live {
+    fill: var(--state-fault);
+}
+
+/* Collapsed mode shows the current submode as text instead of the chips
+   (the chips stay in the DOM for probe/layout stability). */
+#state-minimap.collapsed .submode-chip { display: none; }
+#state-minimap.expanded .cluster-sub { display: none; }
+
+/* ---- Status line + contextual action button ---- */
+
+#minimap-status {
+    min-height: 2.2em;
+    padding: 4px 10px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+#minimap-status.status-err  { color: var(--accent-red); }
+#minimap-status.status-ok   { color: var(--accent-green); }
+#minimap-status.status-warn { color: var(--minimap-warn); }
+
+#minimap-action {
+    margin: 2px 10px 8px;
+    flex-shrink: 0;
+}

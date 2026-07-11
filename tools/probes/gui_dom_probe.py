@@ -24,12 +24,16 @@ What it does:
   4. Writes a PASS/FAIL report + per-stage DOM snapshots + console log to
      ``temp/probes/gui_dom/<timestamp>/``.  Exit 0 = all assertions passed.
 
-Interactive tier (for the upcoming orchestrator state-minimap): CDP
-``Input.dispatchMouseEvent`` dispatches TRUSTED pointer events, so
-``pointer_hold()`` below can drive hold-to-confirm buttons
-(``ros_ws/gui/js/hold-to-confirm.js`` listens for pointerdown/pointerup).
-The ``minimap`` scenario is a stub until that panel's DOM lands — see
-``scenario_minimap()``.
+Interactive tier: CDP ``Input.dispatchMouseEvent`` dispatches TRUSTED pointer
+events, so ``pointer_hold()``/``click_element()`` drive hold-to-confirm
+buttons and SVG minimap nodes (``ros_ws/gui/js/hold-to-confirm.js`` listens
+for pointerdown/pointerup).  ``--scenario minimap`` exercises the orchestrator
+state-minimap end-to-end with a REACTIVE fake orchestrator — the stack's
+'set' beats respond to the GUI's recorded commands — pinning the
+safety-critical teardown order (standby -> go_home -> disarm+VERIFY ->
+deactivate; deactivate hard-gated on mpc_active=0) plus its abort NEGATIVE,
+Arm gating, HOMING command-discarding, greyed reasons, and disconnect
+greying.  See ``scenario_minimap()``.
 
 Environment dependencies (verified 2026-07-11 on the Jetson):
   * /snap/bin/chromium supports ``--headless=new`` + CDP.
@@ -197,27 +201,46 @@ async def evaluate(cdp: CDPClient, expression: str):
     return res.get("result", {}).get("value")
 
 
-async def pointer_hold(cdp: CDPClient, element_id: str, hold_ms: int = 900) -> None:
+async def _element_center(cdp: CDPClient, selector: str):
+    rect = await evaluate(cdp, (
+        "(() => { const e = document.querySelector(%s); if (!e) return null;"
+        " if (e.scrollIntoView) e.scrollIntoView({block: 'center'});"
+        " const r = e.getBoundingClientRect();"
+        " return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()"
+        % json.dumps(selector)))
+    if not rect or (isinstance(rect, dict) and "__js_error__" in rect):
+        raise CDPError("element %r not found (%r)" % (selector, rect))
+    return rect
+
+
+async def pointer_hold(cdp: CDPClient, selector: str, hold_ms: int = 1000) -> None:
     """Trusted synthetic pointer hold on an element's centre (Tier B).
 
     CDP Input.dispatchMouseEvent goes through Chrome's real input pipeline,
     so the page receives trusted pointerdown -> (hold) -> pointerup — exactly
-    what hold-to-confirm.js needs (default hold 800 ms; pass hold_ms > that).
-    Ready for the orchestrator state-minimap scenario.
-    """
-    rect = await evaluate(cdp, (
-        "(() => { const e = document.getElementById(%s); if (!e) return null;"
-        " e.scrollIntoView({block: 'center'});"
-        " const r = e.getBoundingClientRect();"
-        " return {x: r.x + r.width / 2, y: r.y + r.height / 2}; })()"
-        % json.dumps(element_id)))
-    if not rect or "__js_error__" in (rect if isinstance(rect, dict) else {}):
-        raise CDPError("pointer_hold: element %r not found (%r)" % (element_id, rect))
-    base = {"x": rect["x"], "y": rect["y"], "button": "left",
+    what hold-to-confirm.js needs (fires at 800 ms; the 1000 ms default
+    comfortably exceeds it).  Works on HTML buttons and SVG <g> nodes alike.
+    Holds on elements with a truthy `disabled` (including the minimap's
+    expando property) are inert by hold-to-confirm's own gate — that
+    inertness is itself a behaviour under test (scenario 'minimap' M4)."""
+    c = await _element_center(cdp, selector)
+    base = {"x": c["x"], "y": c["y"], "button": "left",
             "clickCount": 1, "pointerType": "mouse"}
     await cdp.call("Input.dispatchMouseEvent",
                    dict(base, type="mousePressed", buttons=1))
     await asyncio.sleep(hold_ms / 1000.0)
+    await cdp.call("Input.dispatchMouseEvent",
+                   dict(base, type="mouseReleased", buttons=0))
+
+
+async def click_element(cdp: CDPClient, selector: str) -> None:
+    """Plain trusted click (press+release, no hold) — e.g. #minimap-header."""
+    c = await _element_center(cdp, selector)
+    base = {"x": c["x"], "y": c["y"], "button": "left",
+            "clickCount": 1, "pointerType": "mouse"}
+    await cdp.call("Input.dispatchMouseEvent",
+                   dict(base, type="mousePressed", buttons=1))
+    await asyncio.sleep(0.05)
     await cdp.call("Input.dispatchMouseEvent",
                    dict(base, type="mouseReleased", buttons=0))
 
@@ -304,8 +327,20 @@ class SyntheticStack:
         self._request({"cmd": "stage", "name": name})
         log("stack stage -> %s" % name)
 
+    def set(self, topic: str, config: dict) -> None:
+        """Reactive mid-sequence beat: merge a live config patch into one
+        topic (publishes immediately)."""
+        self._request({"cmd": "set", "topic": topic, "config": config})
+        log("stack set %s <- %s" % (topic, config))
+
     def records(self) -> dict:
         return self._request({"cmd": "records"})
+
+    def stop_rosbridge(self) -> None:
+        """Kill rosbridge only (GUI-disconnect scenario); the stack node and
+        rosapi stay up so records remain queryable."""
+        self._request({"cmd": "stop_rosbridge"})
+        log("stack stop_rosbridge requested")
 
     def quit_and_wait(self, timeout: float = 10.0) -> bool:
         """Graceful quit with a teardown-preserving escalation ladder.
@@ -684,17 +719,409 @@ SCENARIO1 = [
 ]
 
 
-def scenario_minimap(*_args, **_kw):
-    raise NotImplementedError(
-        "minimap scenario: the orchestrator state-minimap panel has not landed "
-        "yet, so there are no DOM ids to assert. The interactive machinery is "
-        "READY when it does: pointer_hold() dispatches TRUSTED "
-        "pointerdown/hold/pointerup via CDP Input.dispatchMouseEvent (matches "
-        "ros_ws/gui/js/hold-to-confirm.js's pointer listeners, default hold "
-        "800 ms), and the synthetic stack records orchestrator_command "
-        "messages + recorder-service calls ({'cmd': 'records'}) so assertions "
-        "can verify what the GUI emitted. Add a StageSpec list here mirroring "
-        "SCENARIO1 once the minimap DOM exists.")
+# ---------------------------------------------------------------------------
+# scenario 'minimap' — Tier B interactive verification of the orchestrator
+# state-minimap (ros_ws/gui/js/state-minimap.js): trusted pointer holds via
+# CDP, a REACTIVE fake orchestrator (the stack's 'set' beats respond to the
+# GUI's recorded commands so the sequencer sees states actually move), and
+# record-order assertions that pin the SAFETY-CRITICAL teardown ordering
+# (runbook Sharp Edges #1/#6: standby -> go_home -> disarm+VERIFY ->
+# deactivate, with deactivate hard-gated on a fresh mpc_active=0).
+# ---------------------------------------------------------------------------
+
+# Fixture single-source-of-truth: import the stack module (stdlib-only at
+# module level; rclpy imports are deferred inside its main()).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gui_synthetic_stack as stack_fixtures  # noqa: E402
+
+MM_NODE_IDS = ["BOOT", "HOMING", "IDLE", "LEVELLING", "ACTIVE", "FAULT",
+               "ACTIVE:STANDBY", "ACTIVE:TRAJECTORY", "ACTIVE:SPACEMOUSE",
+               "ACTIVE:SHELL", "ACTIVE:GUI", "ACTIVE:CATCH"]
+
+# SVG-safe DOM getters (className on SVG elements is SVGAnimatedString, so
+# getAttribute('class'); node `disabled` is the hold-gating expando).
+JS_MM_NODES = (
+    "(() => { const out = {}; "
+    "document.querySelectorAll('#minimap-svg [data-node]').forEach(g => { "
+    "const t = g.querySelector('title'); "
+    "out[g.getAttribute('data-node')] = { cls: g.getAttribute('class') || '', "
+    "title: t ? t.textContent : '', dis: !!g.disabled }; }); return out; })()")
+JS_MM_PANEL = js_probe(
+    "{ root: { cls: document.getElementById('state-minimap') ? "
+    "document.getElementById('state-minimap').getAttribute('class') || '' : null }, "
+    " pane: { cls: document.getElementById('viewer-pane') ? "
+    "document.getElementById('viewer-pane').getAttribute('class') || '' : null }, "
+    " status: g('minimap-status'), action: g('minimap-action'), "
+    " armed: g('minimap-armed-badge'), conn: g('conn-dot') }")
+
+
+def _mm_rec_norm(records: dict):
+    """Merge command + service records into one timestamp-ordered timeline."""
+    ev = []
+    for r in records.get("orchestrator_command", []):
+        ev.append({"t": r["t"], "kind": "cmd", "name": r["data"]})
+    for r in records.get("services", []):
+        ev.append({"t": r["t"], "kind": "svc", "name": r["service"],
+                   "data": r.get("data")})
+    ev.sort(key=lambda e: e["t"])
+    return ev
+
+
+class MinimapRunner:
+    """State + helpers for the reactive minimap scenario."""
+
+    def __init__(self, stack, cdp, run_dir):
+        self.stack = stack
+        self.cdp = cdp
+        self.run_dir = run_dir
+        self.results = []
+        self._snap_idx = 0
+
+    def add(self, stage, name, ok, evidence, elapsed=0.0):
+        self.results.append({"stage": stage, "assertion": name, "ok": ok,
+                             "elapsed_s": round(elapsed, 2),
+                             "evidence": evidence if isinstance(evidence, str)
+                             else _ev(evidence)})
+        log("    [%s] %s (%.1fs)" % ("PASS" if ok else "FAIL", name, elapsed))
+
+    async def snapshot(self, name):
+        html = await evaluate(self.cdp, "document.documentElement.outerHTML")
+        self._snap_idx += 1
+        if isinstance(html, str):
+            path = os.path.join(self.run_dir,
+                                "snapshot-mm%02d-%s.html" % (self._snap_idx, name))
+            with open(path, "w") as fh:
+                fh.write(html)
+
+    async def poll(self, js, check, timeout):
+        a = Assertion("_", js, _safe(check), timeout=timeout)
+        return await poll_dom(self.cdp, a)
+
+    def rec_after(self, t0):
+        recs = self.stack.records().get("records", {})
+        return [e for e in _mm_rec_norm(recs) if e["t"] > t0]
+
+    async def wait_record(self, t0, pred, timeout):
+        """Poll the stack's records until one after t0 matches pred."""
+        deadline = time.monotonic() + timeout
+        while True:
+            for e in self.rec_after(t0):
+                if pred(e):
+                    return e
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.2)
+
+
+async def scenario_minimap(stack, cdp, gui_url, run_dir):
+    R = MinimapRunner(stack, cdp, run_dir)
+    fx = stack_fixtures
+
+    # ---- M1: connect + healthy IDLE renders ------------------------------
+    stack.stage("mm-idle-healthy")
+    ok, ev, el = await R.poll(JS_CONN, check_connected, 30.0)
+    R.add("mm-connect", "gui-connected", ok, ev, el)
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: ("current" in v["IDLE"]["cls"].split()
+                   and len(v) == len(MM_NODE_IDS), _ev(
+                       {"IDLE": v.get("IDLE"), "node_count": len(v)})),
+        10.0)
+    R.add("mm-connect", "minimap-renders-idle-current", ok, ev, el)
+
+    # ---- M2: expansion toggle (plain clicks, no hold) ---------------------
+    await click_element(cdp, "#minimap-header")
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: ("expanded" in v["root"]["cls"].split()
+                   and "minimap-expanded" in v["pane"]["cls"].split(),
+                   _ev({"root": v["root"], "pane": v["pane"]})),
+        3.0)
+    R.add("expansion-toggle", "header-click-expands-pane", ok, ev, el)
+    await click_element(cdp, "#minimap-header")
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: ("collapsed" in v["root"]["cls"].split()
+                   and "minimap-expanded" not in v["pane"]["cls"].split(),
+                   _ev({"root": v["root"], "pane": v["pane"]})),
+        3.0)
+    R.add("expansion-toggle", "header-click-collapses-back", ok, ev, el)
+    await R.snapshot("expansion")
+
+    # ---- M5(a): greyed reasons — IDLE unhomed -----------------------------
+    stack.stage("mm-idle-unhomed")
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: ("unreachable" in v["LEVELLING"]["cls"].split()
+                   and re.search(r"hom", v["LEVELLING"]["title"], re.I) is not None
+                   and v["LEVELLING"]["dis"] is True,
+                   _ev({"LEVELLING": v["LEVELLING"]})),
+        8.0)
+    R.add("greyed-reasons", "levelling-unreachable-mentions-homing", ok, ev, el)
+    await R.snapshot("greyed-unhomed")
+
+    # ---- M5(b): uplink-lost greying — bridge_link=LOST while healthy IDLE.
+    # The bridge keeps publishing FRESH link_status (frozen fault_state), so
+    # only the G_BRIDGE guard catches this: all commandable nodes must grey
+    # with the uplink-lost reason despite fresh messages flowing.
+    stack.stage("mm-idle-healthy")
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: ("current" in v["IDLE"]["cls"].split()
+                   and v["ACTIVE"]["dis"] is False,
+                   _ev({"IDLE": v["IDLE"], "ACTIVE": v["ACTIVE"]})),
+        8.0)
+    R.add("greyed-reasons", "healthy-idle-baseline-before-uplink-loss", ok, ev, el)
+    stack.set("link_status", {"values": dict(
+        fx.LINK_MM_DISARMED, bridge_link="LOST", heartbeat_age_ms="4023")})
+    lost_marker = "Teensy uplink lost (bridge_link=LOST"
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: (all("unreachable" in v[n]["cls"].split()
+                       and lost_marker in v[n]["title"]
+                       for n in ("HOMING", "LEVELLING", "ACTIVE",
+                                 "ACTIVE:TRAJECTORY")),
+                   _ev({"HOMING": v["HOMING"], "ACTIVE": v["ACTIVE"]})),
+        8.0)
+    R.add("greyed-reasons", "uplink-lost-greys-commandable-nodes", ok, ev, el)
+    await R.snapshot("greyed-uplink-lost")
+
+    # ---- M4: HOMING discards — hold EVERY node, expect zero records -------
+    stack.stage("mm-homing")
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: ("discards" in v["IDLE"]["title"]
+                   and all(v[n]["dis"] for n in MM_NODE_IDS),
+                   _ev({"IDLE": v["IDLE"]})),
+        8.0)
+    R.add("homing-discard", "all-nodes-inert-in-homing", ok, ev, el)
+    t0 = time.time()
+    await click_element(cdp, "#minimap-header")   # expand: chips clickable
+    await asyncio.sleep(0.3)
+    for node in MM_NODE_IDS:
+        await pointer_hold(cdp, '[data-node="%s"]' % node, 1000)
+    await click_element(cdp, "#minimap-header")   # collapse back
+    await asyncio.sleep(1.0)                      # any stray publish lands here
+    recs = R.rec_after(t0)
+    R.add("homing-discard", "zero-commands-zero-services-recorded",
+          len(recs) == 0, {"records_in_window": recs})
+    await R.snapshot("homing-discard")
+
+    # ---- M3: Arm button gating -------------------------------------------
+    stack.stage("mm-active-standby")   # control_mode NOT published
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: (v["action"]["disp"] != "none"
+                   and v["action"]["txt"] == "Arm Setpoints"
+                   and v["action"]["dis"] is True,
+                   _ev({"action": v["action"]})),
+        8.0)
+    R.add("arm-gating", "arm-disabled-until-controlmode-echo", ok, ev, el)
+    stack.set("control_mode_topic", {"enabled": True, "data": "STANDBY"})
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: (v["action"]["txt"] == "Arm Setpoints"
+                   and v["action"]["dis"] is False,
+                   _ev({"action": v["action"]})),
+        5.0)
+    R.add("arm-gating", "arm-enabled-after-controlmode-echo", ok, ev, el)
+    t0 = time.time()
+    await pointer_hold(cdp, "#minimap-action", 1000)
+    e = await R.wait_record(
+        t0, lambda e: e["kind"] == "svc" and e["name"] == "set_setpoint_output"
+        and e.get("data") is True, 6.0)
+    R.add("arm-gating", "hold-records-set-setpoint-output-true",
+          e is not None, {"record": e})
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: ("OK" in v["status"]["txt"] and "Arm setpoints" in v["status"]["txt"],
+                   _ev({"status": v["status"]["txt"]})),
+        6.0)
+    R.add("arm-gating", "status-shows-arm-success", ok, ev, el)
+    await R.snapshot("arm-gating")
+
+    # ---- M3(b): worst-case armed staleness — mpc_active=1 then link_status
+    # STOPS entirely.  A stale link must never render as disarmed: the badge
+    # switches to the amber 'ARMED?' variant and the action stays an ENABLED
+    # Disarm (the escape hatch), never degrading to a disabled Arm.
+    stack.stage("mm-active-traj-armed")
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: (v["armed"]["disp"] != "none" and v["armed"]["txt"] == "ARMED"
+                   and "stale" not in v["armed"]["cls"].split(),
+                   _ev({"armed": v["armed"]})),
+        8.0)
+    R.add("armed-stale", "armed-badge-fresh-baseline", ok, ev, el)
+    stack.set("link_status", {"enabled": False})   # bridge node "dies"
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: (v["armed"]["disp"] != "none" and v["armed"]["txt"] == "ARMED?"
+                   and "stale" in v["armed"]["cls"].split(),
+                   _ev({"armed": v["armed"]})),
+        8.0)   # LINK_STALE_MS = 2 s
+    R.add("armed-stale", "stale-flips-badge-to-armed-question", ok, ev, el)
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: (v["action"]["disp"] != "none" and v["action"]["txt"] == "Disarm"
+                   and v["action"]["dis"] is False,
+                   _ev({"action": v["action"]})),
+        5.0)
+    R.add("armed-stale", "worst-case-keeps-enabled-disarm", ok, ev, el)
+    await R.snapshot("armed-stale")
+
+    # ---- M6: TEARDOWN — NEGATIVE variant first (mpc_active never flips) ---
+    # The verify-gate must ABORT and 'deactivate' must NEVER be published.
+    stack.stage("mm-active-traj-armed")
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: ("current" in v["ACTIVE:TRAJECTORY"]["cls"].split()
+                   and v["IDLE"]["dis"] is False,
+                   _ev({"traj": v["ACTIVE:TRAJECTORY"], "IDLE": v["IDLE"]})),
+        8.0)
+    R.add("teardown-negative", "armed-trajectory-renders-idle-holdable", ok, ev, el)
+    t0 = time.time()
+    await pointer_hold(cdp, '[data-node="IDLE"]', 1000)
+    e = await R.wait_record(
+        t0, lambda e: e["kind"] == "cmd" and e["name"] == "standby", 8.0)
+    R.add("teardown-negative", "standby-published-first", e is not None, {"record": e})
+    # React: the fake orchestrator moves to ACTIVE:STANDBY.
+    stack.set("orchestrator_state", {"data": "ACTIVE:STANDBY"})
+    stack.set("control_mode_topic", {"enabled": True, "data": "STANDBY"})
+    e = await R.wait_record(
+        t0, lambda e: e["kind"] == "svc" and e["name"] == "set_setpoint_output"
+        and e.get("data") is False, 15.0)
+    R.add("teardown-negative", "disarm-requested", e is not None, {"record": e})
+    # Deliberately DO NOT flip mpc_active: the 3 s verify window must abort.
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: ("ABORTED" in v["status"]["txt"]
+                   and "mpc_active" in v["status"]["txt"],
+                   _ev({"status": v["status"]["txt"]})),
+        8.0)
+    R.add("teardown-negative", "abort-within-verify-window-names-gate", ok, ev, el)
+    neg_timeline = R.rec_after(t0)
+    R.add("teardown-negative", "deactivate-NEVER-published-while-armed",
+          all(not (e["kind"] == "cmd" and e["name"] == "deactivate")
+              for e in neg_timeline),
+          {"timeline": neg_timeline})
+    await R.snapshot("teardown-negative")
+
+    # ---- M7: TEARDOWN — POSITIVE variant (keystone safety order) ----------
+    stack.stage("mm-active-traj-armed")
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: ("current" in v["ACTIVE:TRAJECTORY"]["cls"].split()
+                   and v["IDLE"]["dis"] is False,
+                   _ev({"traj": v["ACTIVE:TRAJECTORY"]})),
+        8.0)
+    R.add("teardown-order", "reset-to-armed-trajectory", ok, ev, el)
+    t0 = time.time()
+    await pointer_hold(cdp, '[data-node="IDLE"]', 1000)
+    e_standby = await R.wait_record(
+        t0, lambda e: e["kind"] == "cmd" and e["name"] == "standby", 8.0)
+    stack.set("orchestrator_state", {"data": "ACTIVE:STANDBY"})
+    stack.set("control_mode_topic", {"enabled": True, "data": "STANDBY"})
+    e_gohome = await R.wait_record(
+        t0, lambda e: e["kind"] == "svc" and e["name"] == "trajectory/go_home", 10.0)
+    e_disarm = await R.wait_record(
+        t0, lambda e: e["kind"] == "svc" and e["name"] == "set_setpoint_output"
+        and e.get("data") is False, 15.0)
+    # React: only NOW does the fake bridge report mpc_active=0.
+    t_flip = time.time()
+    stack.set("link_status", {"values": dict(fx.LINK_MM_DISARMED)})
+    e_deact = await R.wait_record(
+        t0, lambda e: e["kind"] == "cmd" and e["name"] == "deactivate", 8.0)
+    stack.set("orchestrator_state", {"data": "IDLE"})
+    stack.set("control_mode_topic", {"data": ""})
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: ("OK" in v["status"]["txt"]
+                   and "safe teardown" in v["status"]["txt"],
+                   _ev({"status": v["status"]["txt"]})),
+        8.0)
+    R.add("teardown-order", "completion-status-shown", ok, ev, el)
+    pos_timeline = R.rec_after(t0)
+    expected = [("cmd", "standby"), ("svc", "trajectory/go_home"),
+                ("svc", "set_setpoint_output"), ("cmd", "deactivate")]
+    got = [(e["kind"], e["name"]) for e in pos_timeline]
+    # Keystone evidence: NEVER truncate the safety-order timelines (they are
+    # the report's core artefact) — pass pre-serialized strings, which
+    # MinimapRunner.add stores verbatim.
+    R.add("teardown-order", "exact-safe-order-standby-gohome-disarm-deactivate",
+          got == expected,
+          json.dumps({"expected": expected, "timeline": pos_timeline}))
+    R.add("teardown-order", "deactivate-only-after-mpc0-flip",
+          e_deact is not None and e_deact["t"] > t_flip,
+          {"deactivate_t": e_deact and e_deact["t"], "mpc0_flip_t": t_flip,
+           "delta_s": e_deact and round(e_deact["t"] - t_flip, 3)})
+    await R.snapshot("teardown-positive")
+    # Stash both full timelines for the report (untruncated).
+    R.results.append({"stage": "teardown-order", "assertion": "TIMELINES (info)",
+                      "ok": True, "elapsed_s": 0.0,
+                      "evidence": json.dumps({"negative": neg_timeline,
+                                              "positive": pos_timeline,
+                                              "mpc0_flip_t": t_flip})})
+
+    # ---- M8: mid-sequence FAULT abort -------------------------------------
+    stack.stage("mm-idle-healthy")
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: ("current" in v["IDLE"]["cls"].split()
+                   and v["ACTIVE"]["dis"] is False,
+                   _ev({"IDLE": v["IDLE"], "ACTIVE": v["ACTIVE"]})),
+        8.0)
+    R.add("fault-abort", "healthy-idle-active-holdable", ok, ev, el)
+    t0 = time.time()
+    await pointer_hold(cdp, '[data-node="ACTIVE"]', 1000)
+    e_act = await R.wait_record(
+        t0, lambda e: e["kind"] == "cmd" and e["name"] == "activate", 8.0)
+    R.add("fault-abort", "activate-published", e_act is not None, {"record": e_act})
+    # React: FAULT mid-sequence, with a visible error string.  Deterministic
+    # two-beat: publish the error FIRST and wait until the GUI has provably
+    # ingested it (the HOMING node greys with the G_ERRORS reason) BEFORE
+    # flipping orchestrator_state to FAULT — otherwise FAULT can win the
+    # cross-topic race and the abort message honestly lacks the error string.
+    stack.set("robot_state", {"error": ["injected test fault"]})
+    ok, ev, el = await R.poll(
+        JS_MM_NODES,
+        lambda v: ("active errors: injected test fault" in v["HOMING"]["title"],
+                   _ev({"HOMING": v["HOMING"]})),
+        6.0)
+    R.add("fault-abort", "error-ingested-before-fault-flip", ok, ev, el)
+    stack.set("orchestrator_state", {"data": "FAULT"})
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: ("ABORTED" in v["status"]["txt"]
+                   and "injected test fault" in v["status"]["txt"],
+                   _ev({"status": v["status"]["txt"]})),
+        8.0)
+    R.add("fault-abort", "abort-names-the-fault", ok, ev, el)
+    await asyncio.sleep(2.0)   # any late step would land in this window
+    recs = R.rec_after(t0)
+    R.add("fault-abort", "no-commands-after-fault",
+          [(e["kind"], e["name"]) for e in recs] == [("cmd", "activate")],
+          {"timeline": recs})
+    await R.snapshot("fault-abort")
+
+    # ---- M9: disconnect (LAST — kills the GUI's websocket) ----------------
+    stack.stop_rosbridge()
+    def _disc_check(v):
+        non_auto = [n for n in MM_NODE_IDS if n not in ("BOOT", "FAULT")]
+        ok = (all("unreachable" in v[n]["cls"].split() for n in MM_NODE_IDS)
+              and all(v[n]["title"] == "rosbridge disconnected" for n in non_auto))
+        return ok, _ev({"IDLE": v["IDLE"], "ACTIVE:GUI": v["ACTIVE:GUI"],
+                        "BOOT": v["BOOT"]})
+    ok, ev, el = await R.poll(JS_MM_NODES, _disc_check, 15.0)
+    R.add("disconnect", "all-nodes-greyed-with-disconnected-reason", ok, ev, el)
+    ok, ev, el = await R.poll(
+        JS_MM_PANEL,
+        lambda v: ("connected" not in v["conn"]["cls"].split(),
+                   _ev({"conn": v["conn"]})),
+        10.0)
+    R.add("disconnect", "connection-dot-disconnected", ok, ev, el)
+    await R.snapshot("disconnected")
+
+    return R.results
 
 
 SCENARIOS = {"scenario1": SCENARIO1, "minimap": scenario_minimap}
@@ -746,6 +1173,11 @@ async def run_scenario(scenario_name, stages, stack, cdp, gui_url, run_dir):
     await cdp.call("Page.navigate", {"url": gui_url})
     await asyncio.wait_for(load_fut, timeout=60.0)
     log("GUI page loaded: %s" % gui_url)
+
+    # Custom (reactive/interactive) scenarios are async callables; declarative
+    # scenarios are StageSpec lists.
+    if callable(stages):
+        return await stages(stack, cdp, gui_url, run_dir)
 
     for idx, stage in enumerate(stages):
         log("--- stage %d/%d: %s" % (idx + 1, len(stages), stage.name))
@@ -857,8 +1289,6 @@ def main() -> int:
     args = parser.parse_args()
 
     stages = SCENARIOS[args.scenario]
-    if callable(stages):
-        stages()  # stubs raise NotImplementedError with guidance
 
     run_dir = os.path.join(args.out_root,
                            datetime.now().strftime("%Y%m%d-%H%M%S"))

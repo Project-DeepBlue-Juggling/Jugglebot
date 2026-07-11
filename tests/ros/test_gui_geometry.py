@@ -229,6 +229,8 @@ class TestGUIFileStructure:
         'js/panels.js',
         'js/commands.js',
         'js/can-traffic.js',
+        'js/state-minimap.js',
+        'css/state-minimap.css',
         'lib/roslib.min.js',
     ]
 
@@ -390,4 +392,75 @@ class TestCanTrafficKeyValueContract:
         consumed = self._consumed_link_status_keys(can_traffic_js)
         assert consumed <= produced, \
             f'can-traffic.js consumes link_status keys the bridge never ' \
+            f'publishes: {consumed - produced}'
+
+
+# ---- State-minimap tripwires ----
+
+
+STATE_MINIMAP_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'state-minimap.js'
+
+
+@pytest.fixture(scope='module')
+def minimap_js():
+    """Read state-minimap.js as text."""
+    return STATE_MINIMAP_JS.read_text()
+
+
+class TestStateMinimapTripwires:
+    """Crude, clearly-labelled string-level tripwires for the minimap.
+
+    HONESTY NOTE — these are regex/substring tripwires, not behavioural
+    tests (the behavioural gate is the synthetic-stack GUI probe harness).
+    They pin (a) the asset wiring, (b) the SAFETY-CRITICAL teardown order
+    (disarm strictly before deactivate — mvp_bench_runbook.md Sharp Edge
+    #6: DEACTIVATE while mpc_active=1 latches MPC_STALE and leaves the
+    legs un-stowed), and (c) the /link_status KeyValue names the minimap
+    consumes against the teensy_bridge_node producer.
+    """
+
+    def test_index_links_minimap_assets(self):
+        html = (ROOT / 'ros_ws' / 'gui' / 'index.html').read_text()
+        assert 'css/state-minimap.css' in html, \
+            'index.html no longer links css/state-minimap.css'
+        assert 'id="state-minimap"' in html, \
+            'index.html no longer contains the #state-minimap mount div'
+
+    def test_teardown_disarms_before_deactivate(self, minimap_js):
+        m = re.search(r'function teardownSteps\b(.*?)\n\}', minimap_js, re.S)
+        assert m, 'teardownSteps() not found in state-minimap.js'
+        body = m.group(1)
+        i_disarm = body.find('set_setpoint_output')
+        i_deact = body.find("'deactivate'")
+        assert i_disarm != -1, 'teardownSteps() lost its disarm step'
+        assert i_deact != -1, 'teardownSteps() lost its deactivate step'
+        assert i_disarm < i_deact, \
+            'teardown must disarm (set_setpoint_output false) BEFORE ' \
+            'deactivate — runbook Sharp Edge #6'
+
+    def test_teardown_go_home_before_disarm(self, minimap_js):
+        m = re.search(r'function teardownSteps\b(.*?)\n\}', minimap_js, re.S)
+        assert m, 'teardownSteps() not found in state-minimap.js'
+        body = m.group(1)
+        i_home = body.find('trajectory/go_home')
+        i_disarm = body.find('set_setpoint_output')
+        assert i_home != -1 and i_disarm != -1
+        assert i_home < i_disarm, \
+            'teardown order is go_home -> disarm -> deactivate (runbook:202-203)'
+
+    def test_minimap_link_status_keys_subset_of_producer(self, bridge_py,
+                                                         minimap_js):
+        produced = _keyvalue_keys(
+            _extract_method_source(bridge_py, '_publish_link_status'))
+        # Derive the consumed set from the JS source (mirrors
+        # TestCanTrafficKeyValueContract) so a future `kv.<new_key>` consumer
+        # cannot silently escape the consumer ⊆ producer check; the shape
+        # assertion makes a regex/refactor breakage fail loudly instead of
+        # passing vacuously.
+        consumed = set(re.findall(r'\bkv\.(\w+)\b',
+                                  _strip_js_comments(minimap_js)))
+        assert {'fault_state', 'mpc_active', 'bridge_link'} <= consumed, \
+            f'kv.<key> extraction went stale: {consumed}'
+        assert consumed <= produced, \
+            f'state-minimap.js consumes link_status keys the bridge never ' \
             f'publishes: {consumed - produced}'

@@ -46,7 +46,11 @@ inspection: ``--stage can-slot-mapping`` applies a stage at startup.
 
 stdin/stdout protocol (one JSON object per line; logs go to stderr):
   in : {"cmd": "stage", "name": "<stage>"}   -> out: {"ok": true, "stage": ...}
+  in : {"cmd": "set", "topic": T, "config": {...}}  -> merge into T's live
+       config (reactive mid-sequence beats) -> out: {"ok": true, "topic": T}
   in : {"cmd": "records"}                    -> out: {"ok": true, "records": ...}
+  in : {"cmd": "stop_rosbridge"}             -> kill rosbridge only (GUI
+       disconnect scenario; node + rosapi stay up) -> out: {"ok": true, ...}
   in : {"cmd": "ping"}                       -> out: {"ok": true}
   in : {"cmd": "quit"}                       -> teardown + exit
   out (unsolicited): {"event": "ready", ...} once rosbridge accepts on :9090.
@@ -110,6 +114,25 @@ LINK_UP_HEALTH = {"bridge_link": "UP", "heartbeat_age_ms": "55",
 LINK_LOST_FROZEN = {"bridge_link": "LOST", "heartbeat_age_ms": "4023",
                     "bus1_health": "WARN", "bus2_health": "OK"}
 
+# Minimap-scenario link fixtures: state-minimap.js additionally reads
+# fault_state / mpc_active / bridge_link (minimapOnLinkStatus); bridge_stow_pending
+# here is inert realism (produced by the real bridge, unread by the minimap), all
+# genuinely present in the real bridge's _publish_link_status KeyValues.
+LINK_MM_DISARMED = {"bridge_link": "UP", "heartbeat_age_ms": "55",
+                    "bus1_health": "OK", "bus2_health": "OK",
+                    "fault_state": "NONE", "mpc_active": "0",
+                    "bridge_stow_pending": "0"}
+LINK_MM_ARMED = dict(LINK_MM_DISARMED, mpc_active="1")
+
+# Healthy robot_state flag set: minimap guards G_ERRORS/G_HB/G_FW/G_HOMED all
+# pass (9 motors with current_state=8 satisfy the all-heartbeats replica).
+ROBOT_FLAGS_HEALTHY = {"is_homed": True, "firmware_validated": True,
+                       "encoder_search_complete": True,
+                       "levelling_complete": True, "has_undervoltage": False,
+                       "has_fatal_odrive_error": False,
+                       "has_fatal_can_error": False}
+ROBOT_FLAGS_UNHOMED = dict(ROBOT_FLAGS_HEALTHY, is_homed=False)
+
 LEG_POS_REV = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5]           # measured (robot_state)
 LEG_CMD_REV = [p + 0.02 for p in LEG_POS_REV]            # commanded (echo);
 # 0.02 rev / MM_TO_REV (~0.01418 rev/mm) ~= 1.4 mm tracking error per leg.
@@ -119,7 +142,8 @@ BASELINE_CFG = {
     "profile":            {"period": 1.0,  "enabled": False, "values": dict(PROFILE_DISTINCT)},
     "link_status":        {"period": 0.1,  "enabled": False, "values": dict(LINK_UP_UNKNOWN)},
     "robot_state":        {"period": 0.04, "enabled": False, "leg_pos": list(LEG_POS_REV),
-                           "hand_pos": 0.2, "bus_voltage": 25.1},
+                           "hand_pos": 0.2, "bus_voltage": 25.1,
+                           "flags": dict(ROBOT_FLAGS_HEALTHY), "error": []},
     "leg_setpoint_echo":  {"period": 0.04, "enabled": False, "data": list(LEG_CMD_REV)},
     "hand_telemetry":     {"period": 0.1,  "enabled": False, "pos_cmd": 0.25, "pos_meas": 0.2},
     "orchestrator_state": {"period": 0.5,  "enabled": False, "data": "IDLE"},
@@ -172,6 +196,42 @@ STAGES = {
     "orchestrator-state": {
         "robot_state": {"enabled": True},
         "orchestrator_state": {"enabled": True, "data": "IDLE"},
+    },
+
+    # ---- minimap scenario base stages (reactive beats mid-sequence use the
+    # 'set' stdin command, so the GUI sees the orchestrator "actually move").
+    # Healthy IDLE: all minimap guards pass, every IDLE-outgoing node armed.
+    "mm-idle-healthy": {
+        "robot_state": {"enabled": True},
+        "link_status": {"enabled": True, "values": dict(LINK_MM_DISARMED)},
+        "orchestrator_state": {"enabled": True, "data": "IDLE"},
+    },
+    # IDLE but not homed: LEVELLING/ACTIVE must grey with the homing reason.
+    "mm-idle-unhomed": {
+        "robot_state": {"enabled": True, "flags": dict(ROBOT_FLAGS_UNHOMED)},
+        "link_status": {"enabled": True, "values": dict(LINK_MM_DISARMED)},
+        "orchestrator_state": {"enabled": True, "data": "IDLE"},
+    },
+    # HOMING: the orchestrator discards ALL commands -> every node inert.
+    "mm-homing": {
+        "robot_state": {"enabled": True},
+        "link_status": {"enabled": True, "values": dict(LINK_MM_DISARMED)},
+        "orchestrator_state": {"enabled": True, "data": "HOMING"},
+    },
+    # ACTIVE:STANDBY, control_mode NOT yet echoed -> Arm button disabled.
+    "mm-active-standby": {
+        "robot_state": {"enabled": True},
+        "link_status": {"enabled": True, "values": dict(LINK_MM_DISARMED)},
+        "orchestrator_state": {"enabled": True, "data": "ACTIVE:STANDBY"},
+    },
+    # ACTIVE:TRAJECTORY, ARMED (mpc_active=1), echo flowing (quiescence
+    # source for the teardown's go_home wait) -> teardown keystone start.
+    "mm-active-traj-armed": {
+        "robot_state": {"enabled": True},
+        "leg_setpoint_echo": {"enabled": True},
+        "link_status": {"enabled": True, "values": dict(LINK_MM_ARMED)},
+        "orchestrator_state": {"enabled": True, "data": "ACTIVE:TRAJECTORY"},
+        "control_mode_topic": {"enabled": True, "data": "TRAJECTORY"},
     },
 }
 
@@ -429,6 +489,21 @@ def make_node(rclpy):
                 self._next_due = {}  # publish enabled topics immediately
             log("stage applied: %s" % name)
 
+        def set_config(self, topic: str, patch: dict) -> None:
+            """Merge a config patch into ONE topic's live config (reactive
+            mid-sequence beats — e.g. flip mpc_active after a recorded disarm
+            so the GUI's verify-gate sees the state 'actually move').  The
+            topic publishes immediately on the next 10 ms tick."""
+            if topic not in self.cfg:
+                raise KeyError("unknown topic %r" % topic)
+            with self._cfg_lock:
+                if self._breached:
+                    raise RuntimeError(
+                        "containment breached — refusing config changes")
+                self.cfg[topic].update(copy.deepcopy(patch))
+                self._next_due.pop(topic, None)  # publish now
+            log("set %s <- %s" % (topic, patch))
+
         def _containment_watchdog(self) -> None:
             """~1 Hz: any foreign node in the graph => publishers off, FATAL,
             teardown (via SIGTERM to ourselves -> signal handler -> atexit)."""
@@ -502,7 +577,7 @@ def make_node(rclpy):
                 m = self._MotorStateSingle()
                 m.active_errors = 0
                 m.disarm_reason = 0
-                m.current_state = 8       # CLOSED_LOOP_CONTROL
+                m.current_state = 8       # CLOSED_LOOP_CONTROL (heartbeats ok)
                 m.procedure_result = 0
                 m.trajectory_done = True
                 m.pos_estimate = float(pos)
@@ -514,14 +589,15 @@ def make_node(rclpy):
                 m.bus_voltage = float(c["bus_voltage"])
                 m.bus_current = 0.2
                 msg.motor_states.append(m)
-            msg.error = []
-            msg.has_fatal_odrive_error = False
-            msg.has_fatal_can_error = False
-            msg.has_undervoltage = False
-            msg.firmware_validated = True
-            msg.encoder_search_complete = True
-            msg.is_homed = True
-            msg.levelling_complete = True
+            flags = c.get("flags", ROBOT_FLAGS_HEALTHY)
+            msg.error = [str(e) for e in c.get("error", [])]
+            msg.has_fatal_odrive_error = bool(flags["has_fatal_odrive_error"])
+            msg.has_fatal_can_error = bool(flags["has_fatal_can_error"])
+            msg.has_undervoltage = bool(flags["has_undervoltage"])
+            msg.firmware_validated = bool(flags["firmware_validated"])
+            msg.encoder_search_complete = bool(flags["encoder_search_complete"])
+            msg.is_homed = bool(flags["is_homed"])
+            msg.levelling_complete = bool(flags["levelling_complete"])
             msg.pose_offset_rad = [0.0, 0.0]
             msg.pose_offset_quat.w = 1.0
             return msg
@@ -626,9 +702,23 @@ def main() -> int:
                 if cmd == "stage":
                     node.apply_stage(req["name"])
                     emit({"ok": True, "stage": req["name"]})
+                elif cmd == "set":
+                    node.set_config(req["topic"], req["config"])
+                    emit({"ok": True, "topic": req["topic"]})
                 elif cmd == "records":
                     emit({"ok": True, "records": node.records,
                           "fake_state": node.fake_state})
+                elif cmd == "stop_rosbridge":
+                    # Disconnect-scenario helper: kill rosbridge ONLY (the
+                    # GUI's websocket drops); rosapi + this node keep running
+                    # so records stay queryable.  Idempotent.
+                    for cname, proc in _children:
+                        if cname == "rosbridge_websocket" and proc.poll() is None:
+                            try:
+                                os.killpg(proc.pid, signal.SIGINT)
+                            except OSError:
+                                pass
+                    emit({"ok": True, "stopped": "rosbridge_websocket"})
                 elif cmd == "ping":
                     emit({"ok": True})
                 elif cmd == "quit":
