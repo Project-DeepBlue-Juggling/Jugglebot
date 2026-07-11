@@ -18,7 +18,8 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_setpoint.py
   - tools/probes/uplot_nan_gap_probe.js
   - tools/probes/README.md
-commits: []  # PENDING — backfill immediately after commit (feedback_logbook_sha_backfill)
+commits:
+  - c6075db
 subsystem:
   - gui
   - ros
