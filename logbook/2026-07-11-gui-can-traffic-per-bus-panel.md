@@ -21,7 +21,8 @@ files_changed:
   - tools/probes/gui_dom_probe.py
   - tools/probes/gui_synthetic_stack.py
   - tools/probes/README.md
-commits: []  # pending backfill — entry written from the uncommitted working tree
+commits:
+  - b91f0cc
 subsystem:
   - gui
   - can
