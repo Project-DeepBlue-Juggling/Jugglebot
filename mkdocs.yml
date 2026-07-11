@@ -66,6 +66,7 @@ nav:
     - Overview: can_bridge/index.md
     - Control Flow: can_bridge/control.md
     - Safety Mechanisms: can_bridge/safety.md
+    - Knot-Rate Analysis: knot-rate-analysis.md
   - Simulation MPC:
     - Overview: sim_mpc/index.md
     - Usage: sim_mpc/usage.md
