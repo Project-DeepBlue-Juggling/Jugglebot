@@ -1813,6 +1813,45 @@ def test_reseed_from_measured_rejected_when_not_streaming():
     assert node._active_plan is None
 
 
+def test_reseed_re_samples_live_encoder_each_install():
+    """Drift-resample (2026-07-11 clear-errors jolt): each reseed_from_measured targets
+    the CURRENT encoder, not a cached install-time snapshot. The leg drifts ~0.1 rev
+    during guard suppression (the ODrive closing its frozen lead offset — the Event-1
+    −0.102 rev plateau), so a re-install (the bridge's bounded re-descend) must chase
+    the new measured pose, or u0 lands off the live encoder and the clear still jolts."""
+    node = _follower_node()                            # seeded at _ACTIVATE_REV
+    _install_far_command(node, dz_mm=40.0)             # command far above the encoder
+    # First reseed → descent onto the current (activate) encoder.
+    node._svc_reseed_from_measured(Trigger.Request(), Trigger.Response())
+    fp, _tw, _ = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(node._pose_to_motor_rev(fp), _ACTIVATE_REV, atol=1e-2)
+    # The leg drifts +0.1 rev during suppression → fresh telemetry reports the new pose.
+    drifted = [r + 0.1 for r in _ACTIVATE_REV]
+    node._on_robot_state(_robot_state(drifted))
+    # Re-install → the descent now targets the DRIFTED encoder (re-sampled, not cached).
+    node._svc_reseed_from_measured(Trigger.Request(), Trigger.Response())
+    fp2, tw2, _ = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(node._pose_to_motor_rev(fp2), drifted, atol=1e-2)
+    assert np.allclose(tw2, 0.0, atol=1e-9)
+
+
+def test_guard_clear_edge_reseed_re_samples_drifted_encoder():
+    """The guard-CLEAR-edge instant reseed (the /recover happy path) must also snap the
+    hold to the LIVE (drifted) encoder, not the install-time pose. After the descent
+    converged onto the encoder, a small further drift within the pump step gate must be
+    picked up so the resumed hold sits exactly where the leg rests (zero re-enable step)."""
+    node = _follower_node()
+    node._on_link_status(_link_status('MAX_DEVIATION'))   # latch → descent installed
+    # The descent converged; the leg then settles a hair further, still within the gate.
+    settled = [r + 0.02 for r in _ACTIVATE_REV]
+    node._on_robot_state(_robot_state(settled))
+    node._on_link_status(_link_status('NONE'))            # clear edge → instant reseed
+    assert node._guard_frozen is False
+    assert node._active_plan.kind == 'hold'               # zero-step reseed at measured
+    fp, _tw, _ = node._active_plan.state_at(0.0)
+    assert np.allclose(node._pose_to_motor_rev(fp), settled, atol=1e-2)  # the DRIFTED pose
+
+
 def test_guard_latch_freezes_at_last_pose_when_telemetry_stale():
     """If measured telemetry is stale when the guard latches, the reseed-to-measured
     can't run — but u0 must still STOP advancing: fall back to holding the last

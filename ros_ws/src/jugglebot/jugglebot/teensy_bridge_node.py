@@ -186,11 +186,25 @@ _SHUTDOWN_DISARM_SETTLE_S = 2.0 / float(p.HEARTBEAT_HZ)   # ≈ 0.2 s at 10 Hz
 _SHUTDOWN_DEACTIVATE_TIMEOUT_S = 6.0
 
 # ── One-call guard recovery (/recover, FIX 3) ──
-# Same u0-vs-encoder margin the arming pre-check enforces (half the firmware 0.5 rev
-# MAX_DEVIATION backstop): after trajectory_node reseeds its hold at the measured
-# encoder, /recover clears the guard ONLY once the streamed u0 is within this of
-# every leg — so the clear cannot re-trip the latch.
-_RECOVER_U0_TOL_REV = 0.25
+# Recovery convergence gate: after trajectory_node reseeds its hold at the measured
+# encoder, /recover (and the rerouted armed /clear_errors) clears the guard ONLY once
+# the streamed u0 is within this of every leg — so the clear cannot re-trip the latch.
+# Tightened 0.25 → 0.03 rev (2026-07-11 clear-errors jolt forensics): the old 0.25 was
+# 2.5× the firmware 0.10 rev lead clamp, so a "converged" clear could still leave u0 up
+# to 0.25 rev off the drifted encoder → the lead clamp SATURATED at re-enable and
+# injected pos_gain × 0.10 = 40 × 0.10 = a 4 rev/s velocity step to the −10 A current
+# rail on every leg (measured on both clear events). 0.03 rev is well under the lead
+# clamp, so the firmware re-enable slew barely engages — the two fixes COMPOSE (Jetson
+# minimises the residual; firmware bounds the worst case at the single choke point).
+_RECOVER_U0_TOL_REV = 0.03
+# Arming pre-check margin — a SEPARATE, deliberately looser gate than the recovery
+# convergence one above. Kept at 0.25 rev: arming seeds trajectory_node's hold at the
+# measured pose so u0 already sits ≈ the encoder, AND the firmware re-enable slew now
+# bounds any residual at the arm edge too, so tightening this would only risk spurious
+# arm rejections without a safety gain. (Half the firmware 0.5 rev MAX_DEVIATION
+# backstop.) The recovery path does NOT reuse this — a diverged command cleared onto a
+# latched guard is exactly what the tight 0.03 gate above must catch.
+_ARM_U0_TOL_REV = 0.25
 # Bounded block on trajectory_node's reseed reply. The bridge runs a
 # MultiThreadedExecutor, so a bounded wait here (in a ReentrantCallbackGroup) is safe.
 _RECOVER_RESEED_TIMEOUT_S = 2.0
@@ -200,6 +214,22 @@ _RECOVER_RESEED_TIMEOUT_S = 2.0
 # the wait so a descent that never converges (froze in place) refuses rather than
 # blocking the executor thread indefinitely.
 _RECOVER_VERIFY_TIMEOUT_S = 4.0
+# Bounded re-descend retries: the profiled descent targets the encoder SAMPLED AT
+# INSTALL time, but during suppression the leg keeps drifting (~0.1 rev, closing the
+# frozen lead offset — the Event-1 −0.102 rev plateau). If the descent converges u0
+# onto that stale snapshot while the LIVE encoder has moved on, the convergence verify
+# (which compares u0 vs live telemetry) plateaus above tol. Each retry re-samples the
+# now-current encoder and re-installs the descent, chasing the settling leg; refuse
+# after this many so a genuinely stuck leg does not block the executor thread forever.
+_RECOVER_MAX_RESEED_ATTEMPTS = 3
+# Manual-recovery hint appended to every armed-recovery REFUSAL (F5, 2026-07-11). When
+# converge-first cannot complete (reseed timed out / refused / the descent never
+# converged onto a stuck leg), the guard is left latched — so the refusal must tell the
+# operator the always-available escape: DISARM (set_setpoint_output false → mpc_active=0,
+# which has no external dependency and cannot deadlock) and then the plain /clear_errors
+# clears straight through. Without this, an operator facing a stuck leg is left guessing.
+_MANUAL_RECOVERY_HINT = ("manual recovery: disarm with set_setpoint_output=false, then "
+                         "/clear_errors clears directly")
 
 # Decoded Platform-Teensy RobotState (relay read). Fields mirror
 # Teensy_code.ino RobotState (is_homed / levelling_complete / pose offset, rad).
@@ -626,12 +656,12 @@ class TeensyBridgeNode(Node):
         # — and stalls — the telemetry timers for the whole move. Reentrancy is safe
         # here: the firmware busy-rejects a second concurrent move and the orchestrator
         # drives strictly sequentially; the one remaining race (two home_motors goals)
-        # is closed by _home_action_goal's in-progress guard. clear_errors /
-        # reboot_odrives / odrive_command stay in the default group — they are quick
-        # single RPCs, not multi-second moves.
+        # is closed by _home_action_goal's in-progress guard. reboot_odrives /
+        # odrive_command stay in the default group — they are quick single RPCs, not
+        # multi-second moves. clear_errors is created LATER, in the /recover
+        # ReentrantCallbackGroup, because the armed reroute (F1) blocks multi-second.
         self._coldstart_cbgroup = ReentrantCallbackGroup()
 
-        self.create_service(Trigger, 'clear_errors', self._svc_clear_errors)
         self.create_service(Trigger, 'reboot_odrives', self._svc_reboot_odrives)
         self.create_service(Trigger, 'encoder_search', self._svc_encoder_search,
                             callback_group=self._coldstart_cbgroup)
@@ -765,8 +795,8 @@ class TeensyBridgeNode(Node):
         # The documented PRODUCTION arming flow (the launch parameter stays for
         # bench use). On true: require (a) Teensy link up + fresh heartbeat, (b) a
         # fresh mpccmd frame on :5557 within 0.5 s, (c) that frame's u0 within
-        # 0.25 rev (half the firmware 0.5 rev MAX_DEVIATION backstop) of every
-        # leg's live pos_estimate — THEN stream-then-arm (start the thread, set
+        # _ARM_U0_TOL_REV (0.25 rev, half the firmware 0.5 rev MAX_DEVIATION backstop) of
+        # every leg's live pos_estimate — THEN stream-then-arm (start the thread, set
         # mpc_active=1). This is the pattern validated in
         # tests/hardware/teensy_guard_validation.py: never arm before a matching
         # stream is confirmed flowing, so the Teensy never E-STOPs at the arm edge.
@@ -778,8 +808,8 @@ class TeensyBridgeNode(Node):
         # frozen encoder, so every bare /clear_errors re-latched MAX_DEVIATION within
         # one 10 Hz fault tick. /recover does the recovery in the ONLY order that
         # survives: reseed trajectory_node's hold at the measured encoder → VERIFY the
-        # streamed u0 has collapsed to within 0.25 rev of every encoder → THEN
-        # CLEAR_ERRORS. Hosted HERE (not trajectory_node) because the bridge runs a
+        # streamed u0 has collapsed to within _RECOVER_U0_TOL_REV (0.03 rev) of every
+        # encoder → THEN CLEAR_ERRORS. Hosted HERE (not trajectory_node) because the bridge runs a
         # MultiThreadedExecutor and already blocks executor threads for multi-second
         # cold-start verbs, so the bounded block on the reseed future is safe;
         # trajectory_node runs a single-threaded rclpy.spin() executor where blocking
@@ -792,6 +822,17 @@ class TeensyBridgeNode(Node):
             Trigger, 'trajectory/reseed_from_measured',
             callback_group=self._recover_cbgroup)
         self.create_service(Trigger, 'recover', self._svc_recover,
+                            callback_group=self._recover_cbgroup)
+        # clear_errors shares the /recover ReentrantCallbackGroup (F1, 2026-07-11).
+        # WHY not the node-default MutuallyExclusiveCallbackGroup: the armed bare
+        # /clear_errors reroutes INLINE through _svc_recover, which blocks up to
+        # _RECOVER_MAX_RESEED_ATTEMPTS × (reseed_timeout + verify_timeout) ≈ 18 s. In the
+        # default group that block would SERIALIZE with — and starve — the 100 Hz
+        # telemetry timers AND the set_setpoint_output disarm service, making the disarm
+        # escape hatch unreachable for the whole block. In the reentrant group the reseed
+        # reply dispatches on another executor thread and the disarm/telemetry callbacks
+        # keep running, so the operator can always disarm out.
+        self.create_service(Trigger, 'clear_errors', self._svc_clear_errors,
                             callback_group=self._recover_cbgroup)
         # Instance-level so tests can shorten the descent-convergence wait (a
         # never-converging descent otherwise blocks the test for the full timeout).
@@ -1510,7 +1551,7 @@ class TeensyBridgeNode(Node):
                                f'{reason or "no position command"}')
             u0 = sp.u0
 
-            # (c) u0 within 0.25 rev of every leg's live pos_estimate.
+            # (c) u0 within _ARM_U0_TOL_REV of every leg's live pos_estimate.
             with self._lock:
                 telem = self._latest_telemetry
             if telem is None:
@@ -1518,7 +1559,7 @@ class TeensyBridgeNode(Node):
                     source.close()
                 return False, 'no telemetry yet — cannot verify u0 vs encoder'
             ok, why = self._u0_within_encoder_tol(u0, telem.pos_rev,
-                                                  _RECOVER_U0_TOL_REV)
+                                                  _ARM_U0_TOL_REV)
             if not ok:
                 if created_here:
                     source.close()
@@ -1536,13 +1577,15 @@ class TeensyBridgeNode(Node):
         # observed (so the ingest thread continues from the confirmed stream).
         self._start_setpoint_output(source)
         return True, ('setpoint output ENABLED (armed): fresh stream confirmed, '
-                      'u0 within 0.25 rev of every encoder')
+                      f'u0 within {_ARM_U0_TOL_REV} rev of every encoder')
 
     def _u0_within_encoder_tol(self, u0, pos_rev, tol) -> tuple:
         """Return ``(ok, reason)``: every leg's ``u0`` within ``tol`` rev of its
         encoder ``pos_rev``. NaN-safe — ``not (d <= tol)`` rejects a non-finite
         encoder (``d > tol`` would PASS a NaN, since every NaN comparison is False).
-        Shared by the arming pre-check and /recover's convergence verify (FIX 3)."""
+        Tolerance-agnostic, so it is shared by the arming pre-check (``_ARM_U0_TOL_REV``,
+        0.25 rev) and /recover's convergence verify (``_RECOVER_U0_TOL_REV``, the tighter
+        0.03 rev) — each passes its own ``tol`` (FIX 3)."""
         for i in range(p.NUM_LEGS):
             d = abs(float(u0[i]) - float(pos_rev[i]))
             if not (d <= tol):
@@ -1595,56 +1638,93 @@ class TeensyBridgeNode(Node):
              commanded u0 down onto the frozen encoder
              (``trajectory/reseed_from_measured``);
           2. WAIT (bounded) for that descent to converge — poll the pump's last-built
-             u0 until it is within 0.25 rev of every live encoder (the same margin the
-             arming pre-check enforces) — so the clear cannot re-trip;
-          3. only THEN fire CLEAR_ERRORS;
-          4. report precisely.
-        Refuses (leaving the guard latched) if the reseed is unavailable/failed or the
-        descent does not converge within the timeout — it NEVER clears onto a diverged
-        command.
+             u0 until it is within ``_RECOVER_U0_TOL_REV`` (0.03 rev) of every live
+             encoder — so the clear cannot re-trip OR jolt at re-enable;
+          3. if it plateaus above tol (the descent converged onto a STALE encoder
+             snapshot while the leg drifted on during suppression — the Event-1
+             −0.102 rev plateau), RE-INSTALL onto the now-current encoder and re-wait,
+             up to ``_RECOVER_MAX_RESEED_ATTEMPTS`` times;
+          4. only THEN fire CLEAR_ERRORS, and report precisely.
+        If the reseed client is UNAVAILABLE (trajectory_node down), converge-first is
+        IMPOSSIBLE — there is no node to install the descent, and with the setpoint
+        source gone no fresh stream can jolt at re-enable — so it CLEARS DIRECTLY as an
+        explicit escape hatch (with a loud WARN) rather than stranding the operator with
+        a latched guard (F5). It still REFUSES (leaving the guard latched) when a live
+        trajectory_node refuses/times out or the descent never converges — it NEVER
+        clears onto a diverged command; those refusals state the manual disarm→clear
+        recovery. Also the shared converge-first sequence the armed bare ``/clear_errors``
+        reroutes through.
         """
-        # 1. Ask trajectory_node to reseed its hold at the measured encoder.
-        if not self._reseed_client.service_is_ready():
-            res.success = False
-            res.message = ('trajectory/reseed_from_measured unavailable — is '
-                           'trajectory_node running? Guard left latched.')
-            return res
-        try:
-            future = self._reseed_client.call_async(Trigger.Request())
-            deadline = time.monotonic() + _RECOVER_RESEED_TIMEOUT_S
-            while not future.done() and time.monotonic() < deadline:
-                time.sleep(0.02)
-            if not future.done():
-                res.success = False
-                res.message = ('trajectory_node reseed timed out '
-                               f'(> {_RECOVER_RESEED_TIMEOUT_S:.0f} s) — guard left '
-                               'latched')
+        last_why = 'descent not yet attempted'
+        for _attempt in range(_RECOVER_MAX_RESEED_ATTEMPTS):
+            # 1. Ask trajectory_node to (re-)install a profiled descent onto the CURRENT
+            #    measured encoder. Re-sampling each attempt is load-bearing: a descent
+            #    onto a stale snapshot leaves u0 off the live (drifted) encoder; a fresh
+            #    reseed chases the settling leg (see _RECOVER_MAX_RESEED_ATTEMPTS).
+            if not self._reseed_client.service_is_ready():
+                # trajectory_node (the setpoint source) is DOWN — converge-first cannot
+                # help (nothing to install the descent, and no live stream to jolt at
+                # re-enable). Refusing here would strand the operator with a latched guard
+                # and no reachable converge path, so CLEAR DIRECTLY as the escape hatch,
+                # with a loud WARN (F5). This is the raw-clear behaviour the pre-reroute
+                # bare /clear_errors always had, now scoped to exactly the case where
+                # converge-first is impossible.
+                self.get_logger().warning(
+                    'trajectory/reseed_from_measured UNAVAILABLE (trajectory_node down) '
+                    '— converge-first impossible; clearing errors DIRECTLY (escape hatch)')
+                cok, cmsg, _ = self.teensy_clear_errors()
+                res.success = cok
+                res.message = (
+                    ('reseed unavailable (trajectory_node down) — cleared DIRECTLY '
+                     f'(escape hatch): {cmsg}') if cok else
+                    ('reseed unavailable AND direct CLEAR_ERRORS failed: '
+                     f'{cmsg} — {_MANUAL_RECOVERY_HINT}'))
                 return res
-            reseed = future.result()
-        except Exception as e:  # noqa: BLE001 — recovery must never crash the node
-            res.success = False
-            res.message = f'reseed call error: {e} — guard left latched'
-            return res
-        if not getattr(reseed, 'success', False):
-            res.success = False
-            res.message = (f'trajectory_node reseed refused: '
-                           f'{getattr(reseed, "message", "unknown")} — guard left '
-                           'latched')
-            return res
+            try:
+                future = self._reseed_client.call_async(Trigger.Request())
+                deadline = time.monotonic() + _RECOVER_RESEED_TIMEOUT_S
+                while not future.done() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                if not future.done():
+                    res.success = False
+                    res.message = ('trajectory_node reseed timed out '
+                                   f'(> {_RECOVER_RESEED_TIMEOUT_S:.0f} s) — guard left '
+                                   f'latched; {_MANUAL_RECOVERY_HINT}')
+                    return res
+                reseed = future.result()
+            except Exception as e:  # noqa: BLE001 — recovery must never crash the node
+                res.success = False
+                res.message = (f'reseed call error: {e} — guard left latched; '
+                               f'{_MANUAL_RECOVERY_HINT}')
+                return res
+            if not getattr(reseed, 'success', False):
+                # A reseed refusal (stale telemetry / not streaming) will not be cured
+                # by retrying — refuse now rather than burning the attempt budget.
+                res.success = False
+                res.message = (f'trajectory_node reseed refused: '
+                               f'{getattr(reseed, "message", "unknown")} — guard left '
+                               f'latched; {_MANUAL_RECOVERY_HINT}')
+                return res
 
-        # 2. WAIT for the profiled descent to walk u0 onto every encoder BEFORE
-        #    clearing (it collapses over ~0.5-3 s, not in one frame).
-        ok, why = self._verify_streamed_u0_converged(
-            _RECOVER_U0_TOL_REV, self._recover_verify_timeout_s)
-        if not ok:
+            # 2. WAIT for the profiled descent to walk u0 onto every LIVE encoder BEFORE
+            #    clearing (it collapses over ~0.5-3 s, not in one frame).
+            ok, last_why = self._verify_streamed_u0_converged(
+                _RECOVER_U0_TOL_REV, self._recover_verify_timeout_s)
+            if ok:
+                break
+            # 3. Plateaued off the live encoder — the leg drifted during the descent.
+            #    Loop to re-descend onto the now-current encoder (bounded retries).
+        else:
             res.success = False
             res.message = (
                 f'reseed done but the profiled descent did not converge u0 onto the '
-                f'encoder within {self._recover_verify_timeout_s:.1f}s ({why}) — '
-                'refusing to clear (a clear now would re-latch); guard left latched')
+                f'encoder within {self._recover_verify_timeout_s:.1f}s × '
+                f'{_RECOVER_MAX_RESEED_ATTEMPTS} attempts ({last_why}) — refusing to '
+                f'clear (a clear now would re-latch); guard left latched; '
+                f'{_MANUAL_RECOVERY_HINT}')
             return res
 
-        # 3. Safe to clear now: u0 is within tol of every encoder.
+        # 4. Safe to clear now: u0 is within tol of every encoder.
         cok, cmsg, _ = self.teensy_clear_errors()
         if not cok:
             res.success = False
@@ -2899,6 +2979,18 @@ class TeensyBridgeNode(Node):
     # ── ROS service handlers (existing-type subset) ───────────
 
     def _svc_clear_errors(self, req, res):
+        # 2026-07-11 clear-errors jolt: WHILE ARMED (mpc_active=1) the guard is actively
+        # gating leg output, so a bare clear onto a diverged command re-enables output
+        # with u0 off the drifted encoder → the pos_gain × lead velocity kick to the
+        # current rail. Route the armed bare /clear_errors through the SAME converge-first
+        # sequence as /recover (reseed → verify u0 on the encoder → clear) so no clear can
+        # re-trip or jolt — there is no raw armed escape hatch (operator decision).
+        # WHEN NOT ARMED (mpc_active=0 — e.g. the benign boot-time MPC_STALE latch: output
+        # is not being evaluated, no setpoint is streaming), there is nothing to converge
+        # and no jolt is possible, so clear DIRECTLY as before (a reseed would refuse —
+        # not streaming — and needlessly block the clear).
+        if self._mpc_active:
+            return self._svc_recover(req, res)
         ok, msg, _ = self.teensy_clear_errors()
         res.success = ok
         res.message = msg

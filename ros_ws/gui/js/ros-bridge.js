@@ -151,7 +151,21 @@ function startStaleCheck() {
     staleCheckTimer = setInterval(() => {
         if (connectionState !== 'connected') return;
         if (Date.now() - lastMessageTime >= STALE_TIMEOUT_MS) {
+            // Silence on a socket the browser still believes is open is the
+            // half-open-transport signature: the TCP/NAT path died but no
+            // 'close' event ever fired, so the reconnect-on-close path can't
+            // recover us — we'd sit 'disconnected' until a manual refresh.
+            // Actively tear the dead socket down and reconnect. connect() (via
+            // scheduleReconnect) discards this ros instance and opens a fresh
+            // one, so recovery doesn't depend on the stale socket ever closing.
+            // scheduleReconnect() is single-flight (reconnectTimer), so the
+            // old socket's later 'close' scheduling a second reconnect is a
+            // harmless no-op — no reconnect storm.
             setConnectionState('disconnected');
+            if (ros) {
+                try { ros.close(); } catch { /* ignore */ }
+            }
+            scheduleReconnect(savedUrl);
         }
     }, 1000);
 }

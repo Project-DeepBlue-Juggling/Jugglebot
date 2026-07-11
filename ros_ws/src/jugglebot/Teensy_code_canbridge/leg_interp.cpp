@@ -14,6 +14,15 @@
 //  latent defect and needs the same fix under a separate, operator-gated change that
 //  re-validates the xref; until then the two intentionally differ ONLY in the lead
 //  clamp. Every other mode (Hermite/Taylor/decay + stroke clamp) stays a 1:1 port.
+//
+//  DELIBERATE DIVERGENCE (2026-07-11 clear-errors jolt forensics): the RE-ENABLE
+//  RECOVERY SLEW below has NO analog in teensy_interp.py / motor_guard, and cannot:
+//  the reference interpolator has no output-enable gate, so there is no false→true
+//  edge to re-baseline from. It fires ONLY on that edge (a guard clear / arm / stow
+//  resumption) to bound the transient when the streamed command has diverged from the
+//  drifted encoder during suppression; normal streaming runs the unmodified ladder.
+//  This is a Teensy-only safety layer around the guard gate, not a math change — the
+//  xref (which drives the ladder with output implicitly always on) is unaffected.
 // =============================================================================
 #include "leg_interp.h"
 
@@ -89,6 +98,18 @@ static uint64_t s_last_tick_us = 0;
 // byte, written once per tick by the ISR (atomic store on Cortex-M7), read by the
 // heartbeat task. 2026-07-10 forensics telemetry.
 static volatile uint8_t s_lead_clamp_mask = 0;
+
+// ── Re-enable recovery slew (2026-07-11 clear-errors jolt forensics) ──────────
+// State for the output-enable-edge slew (see the file header + canbridge_config.h
+// RECOVER_SLEW_*). All four are written AND read ONLY by the 500 Hz ISR, so no
+// volatile/IRQ guard is needed (unlike the stow statics, which the fault task fills):
+// s_output_enabled itself is the volatile the fault task owns, and the ISR only reads
+// it. s_recover_pos holds the per-leg slewed command; s_recover_speed is the shared
+// accel-ramped slew speed (same trapezoidal idiom as the stow descent).
+static bool  s_recover_slewing      = false;
+static bool  s_output_enabled_prev  = false;   // ISR-local edge tracker for s_output_enabled
+static float s_recover_pos[NUM_LEGS];
+static float s_recover_speed         = 0.0f;
 
 static IntervalTimer s_timer;
 
@@ -386,6 +407,80 @@ static void interp_isr() {
     if (cmd_pos[i] != pre) { cmd_vel[i] = 0.0f; cmd_tor[i] = 0.0f; }
   }
 
+  // ── Re-enable recovery slew (2026-07-11 clear-errors jolt forensics) ─────────
+  // Detect the s_output_enabled false→true edge (a guard clear / arm / fb-stale or
+  // stow resumption). On it, re-baseline the transmitted command to the LIVE ENCODER
+  // and, while the slew is active, override cmd with a bounded velocity+accel ramp
+  // toward the streamed (already lead+stroke-clamped) command in cmd_pos[]. Root
+  // cause: during suppression the ODrive holds enc_freeze+lead while the leg drifts
+  // onto the encoder, so at re-enable the streamed command can sit a full lead clamp
+  // (0.10 rev) below the encoder — commanding it directly is a pos_gain × lead ≈
+  // 4 rev/s kick to the current rail. The slew starts AT the encoder (dev 0, zero
+  // P-kick) with vel_ff 0, so the first re-enabled frame is a no-op step, then ramps.
+  // Because the streamed target is itself within ±lead of the encoder, the slewed
+  // command stays inside the lead-clamp band the whole time (never runs the clamp).
+  const bool out_en = s_output_enabled;   // volatile read (fault-task owned)
+  if (out_en && !s_output_enabled_prev) {
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) s_recover_pos[i] = axes[i].pos_rev;  // start at the live encoder
+    s_recover_speed = 0.0f;               // ramp the slew speed up from rest (no vel step at the edge)
+    s_recover_slewing = true;
+  }
+  s_output_enabled_prev = out_en;
+
+  if (coldstart) {
+    // Cold-start gate (2026-07-11 F2 fix). A firmware home/activate/deactivate move
+    // drives the legs FASTER than RECOVER_SLEW_VEL_RPS (1.0 rev/s) while the MPC leg TX
+    // is suppressed below. If the slew kept running here, s_recover_pos would slew
+    // toward the lead-clamped command at only 1 rev/s while the ENCODER raced past it —
+    // lagging by more than MAX_LEAD — and at move-end the un-re-clamped emit would kick
+    // the leg. Instead HOLD s_recover_pos pinned to the LIVE ENCODER every tick
+    // (mirroring the stow's mandatory output-off / clean-edge idiom) and skip the slew,
+    // so when the move ends the slew resumes from a zero-deviation baseline on the
+    // encoder. s_recover_slewing is intentionally left as-is: if it was armed, it
+    // resumes (a benign one-tick no-op) when coldstart falls; if not, it stays off.
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) s_recover_pos[i] = axes[i].pos_rev;
+    s_recover_speed = 0.0f;
+  } else if (s_recover_slewing) {
+    const float dt_tick = INTERP_PERIOD_US * 1e-6f;
+    s_recover_speed += RECOVER_SLEW_ACCEL_RPS2 * dt_tick;
+    if (s_recover_speed > RECOVER_SLEW_VEL_RPS) s_recover_speed = RECOVER_SLEW_VEL_RPS;
+    const float step = s_recover_speed * dt_tick;
+    bool all_done = true;
+    for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+      const float tgt = cmd_pos[i];       // the normal streamed command for this tick
+      float p = s_recover_pos[i];
+      const float d = tgt - p;
+      const float ad = (d < 0.0f) ? -d : d;
+      float v = 0.0f;
+      if (ad > RECOVER_SLEW_DONE_EPS_REV) {
+        // Only present legs gate hand-back — an absent leg never streams, so its slew
+        // state must not hold the whole robot in recovery (mirror the stow present-gate).
+        if (leg_present(i)) all_done = false;
+        if (ad <= step) { p = tgt; }      // final approach — snap onto the command, no overshoot
+        else            { p += (d > 0.0f ? step : -step); v = (d > 0.0f ? s_recover_speed : -s_recover_speed); }
+      } else {
+        p = tgt;                          // already converged (the /recover happy path is a one-tick no-op)
+      }
+      // Re-run the lead clamp on the slewed command (2026-07-11 F2 fix). Normally p
+      // stays within ±LEAD of the encoder (it starts on the encoder and tgt is itself
+      // lead-clamped), so this is a no-op on the happy path. But it GUARANTEES the
+      // EMITTED command can never exceed encoder±MAX_LEAD even if the slew state ever
+      // lagged a fast-moving encoder — a defense-in-depth backstop mirroring the primary
+      // lead clamp above. The clamped value is stored back into s_recover_pos so the
+      // slew state itself can never run away either.
+      const float fb = axes[i].pos_rev;   // single-word atomic read
+      float dev = p - fb;
+      if (dev > LEAD)       dev = LEAD;
+      else if (dev < -LEAD) dev = -LEAD;
+      p = fb + dev;
+      s_recover_pos[i] = p;
+      cmd_pos[i] = p;                     // transmit the slewed command in place of the streamed one
+      cmd_vel[i] = v;                     // vel_ff = the slew velocity (0 at the edge, ≤ RECOVER_SLEW_VEL_RPS)
+      cmd_tor[i] = 0.0f;                  // no torque feedforward during the recovery ramp
+    }
+    if (all_done) s_recover_slewing = false;   // converged onto the streamed command → resume normal streaming
+  }
+
   // Publish targets into the cache (for telemetry) and transmit to CAN3.
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
     axes[i].target_pos_rev   = cmd_pos[i];
@@ -419,6 +514,7 @@ void interp_reset() {
     s_jerk[i] = s_next_pos[i] = s_next2_pos[i] = 0.0f;
     s_prev_accel[i] = 0.0f;
     s_stow_pos[i] = 0.0f;
+    s_recover_pos[i] = 0.0f;
   }
   s_has_next = s_has_next2 = false;
   s_base_ts_us = 0;
@@ -434,6 +530,9 @@ void interp_reset() {
   s_stow_active = false;
   s_stow_complete = false;
   s_stow_speed = 0.0f;
+  s_recover_slewing = false;
+  s_output_enabled_prev = false;
+  s_recover_speed = 0.0f;
   s_deadline_misses = 0;
   s_max_jitter_us = 0;
   s_last_tick_us = 0;

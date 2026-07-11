@@ -625,6 +625,10 @@ class MockNode:
         svc = MagicMock()
         svc.srv_name = name
         svc.srv_type = srv_type
+        # Record the callback_group (default None) so a contract test can pin the
+        # group a service was registered in — e.g. that the armed /clear_errors reroute
+        # shares the /recover ReentrantCallbackGroup, not the node default (F1).
+        svc.callback_group = kw.get('callback_group')
         if name is not None:
             self._services[name] = svc
         return svc

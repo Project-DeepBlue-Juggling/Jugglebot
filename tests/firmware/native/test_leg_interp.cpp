@@ -420,3 +420,169 @@ TEST_CASE("seq guard RE-BASELINES after a stream gap (host restart), review fix"
   stage(a, nullptr, zeros, zeros, 4);
   CHECK_FALSE(s_pending);
 }
+
+// =============================================================================
+//  2026-07-11 clear-errors jolt — the re-enable recovery slew
+// =============================================================================
+//  On the s_output_enabled false→true edge (a guard clear / arm) the ISR must
+//  re-baseline the transmitted command to the LIVE ENCODER and SLEW toward the
+//  streamed (lead-clamped) command with a bounded velocity+accel — never command the
+//  diverged setpoint directly. Commanding it directly is what injected the
+//  pos_gain × lead ≈ 4 rev/s kick to the −10 A current rail measured on both clear
+//  events (forensics RESULT 3). These assert the transient is bounded, not a step,
+//  and that a converged command is untouched.
+
+TEST_CASE("re-enable recovery slew: a diverged command slews from the encoder (bounded, no step)") {
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;                 // present
+  axes[0].pos_rev = 1.0f;                        // live encoder = the leg's rest position
+  // Command 0.15 rev BELOW the encoder → the lead clamp saturates: the streamed
+  // target is encoder − MAX_LEAD_REV = 0.90. v0=accel=0 so cmd stays put across dt.
+  float u0[6] = {0.85f, 0.85f, 0.85f, 0.85f, 0.85f, 0.85f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+  const float target = 1.0f - MAX_LEAD_REV;      // 0.90 — the lead-clamped streamed command
+
+  interp_set_output_enabled(false);
+  stage(u0, nullptr, zeros, zeros);
+  interp_isr();                                  // latch while disabled (no edge yet)
+  CHECK_FALSE(s_recover_slewing);
+
+  // ── The false→true edge ──
+  interp_set_output_enabled(true);
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();
+  CHECK(s_recover_slewing);
+  // The first re-enabled frame is AT the encoder (dev≈0), NOT the −0.10 clamped
+  // command — this is the whole fix: no pos_gain × lead velocity step.
+  CHECK(axes[0].target_pos_rev == doctest::Approx(1.0f).epsilon(0.01));
+  CHECK(std::fabs(axes[0].target_pos_rev - target) > 0.05f);   // decisively NOT the command
+  CHECK(std::fabs(axes[0].target_vel_rps) < 0.1f);             // ~0 vel_ff at the edge
+
+  // ── Drive the slew to convergence; bound the per-tick step + the vel_ff ──
+  const float dt_tick = INTERP_PERIOD_US * 1e-6f;
+  float prev = axes[0].target_pos_rev;
+  float max_step = 0.0f, max_vel = 0.0f, min_pos = prev, max_pos = prev;
+  int ticks = 0;
+  while (s_recover_slewing && ticks < 2000) {
+    fake_advance(INTERP_PERIOD_US);
+    interp_isr();
+    const float step = std::fabs(axes[0].target_pos_rev - prev);
+    if (step > max_step) max_step = step;
+    prev = axes[0].target_pos_rev;
+    const float av = std::fabs(axes[0].target_vel_rps);
+    if (av > max_vel) max_vel = av;
+    if (axes[0].target_pos_rev < min_pos) min_pos = axes[0].target_pos_rev;
+    if (axes[0].target_pos_rev > max_pos) max_pos = axes[0].target_pos_rev;
+    ++ticks;
+  }
+  CHECK(max_vel <= RECOVER_SLEW_VEL_RPS + 1e-3f);              // velocity bounded (never the ~4 rev/s kick)
+  CHECK(max_step <= RECOVER_SLEW_VEL_RPS * dt_tick + 1e-5f);   // no position step — bounded per tick
+  CHECK(min_pos >= target - 1e-3f);              // never overshoots the command
+  CHECK(max_pos <= 1.0f + 1e-3f);                // stays within the encoder+lead band
+
+  // ── Handover: slew disarmed, normal streaming resumes on the clamped command ──
+  CHECK_FALSE(s_recover_slewing);
+  CHECK(axes[0].target_pos_rev == doctest::Approx(target).epsilon(0.01));
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();                                  // a normal (post-slew) tick
+  CHECK_FALSE(s_recover_slewing);                // did NOT re-arm (no edge; output stayed enabled)
+  CHECK(axes[0].target_pos_rev == doctest::Approx(target).epsilon(0.01));  // normal lead clamp holds
+  CHECK(axes[0].target_vel_rps == doctest::Approx(0.0f).epsilon(0.02));    // normal vel_ff (v0=0)
+}
+
+TEST_CASE("re-enable recovery slew: a converged command is a one-tick no-op") {
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;                 // present
+  axes[0].pos_rev = 0.5f;                        // encoder
+  float u0[6] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};   // command already AT the encoder (the /recover happy path)
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+
+  interp_set_output_enabled(false);
+  stage(u0, nullptr, zeros, zeros);
+  interp_isr();                                  // latch while disabled
+
+  interp_set_output_enabled(true);
+  fake_advance(INTERP_PERIOD_US);
+  fake_clear_sent();
+  interp_isr();                                  // the edge tick
+  // Converged: transmitted == command == encoder, and the slew disarms the SAME tick
+  // (all present legs already within RECOVER_SLEW_DONE_EPS_REV) — normal streaming
+  // is untouched except for this single benign edge tick.
+  CHECK(axes[0].target_pos_rev == doctest::Approx(0.5f).epsilon(0.01));
+  CHECK(std::fabs(axes[0].target_vel_rps) < 1e-3f);
+  CHECK_FALSE(s_recover_slewing);
+  CHECK(fake_sent_count_cmd(CMD_SETPOS) == 1);   // still streamed to the one present leg
+}
+
+// ── 2026-07-11 F2 fix: cold-start gate + lead re-clamp on the recovery slew ──────
+//  A firmware home/activate/deactivate move drives the legs FASTER than the 1 rev/s
+//  slew while the MPC leg TX is suppressed. Un-gated, the slew state would lag the
+//  fast-moving encoder by more than MAX_LEAD and, un-re-clamped, emit an over-lead kick
+//  at move-end. The fix (a) pins s_recover_pos to the LIVE encoder while any cold-start
+//  move is active (clean edge, no stale advance), and (b) re-runs the lead clamp on the
+//  slewed command so the EMITTED command can never exceed encoder±MAX_LEAD.
+
+TEST_CASE("re-enable recovery slew: a cold-start move re-baselines the slew (never lags the encoder), F2") {
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;                 // present
+  axes[0].pos_rev = 1.0f;                        // encoder at rest
+  // Command 0.15 rev below the encoder → lead-clamps to 0.90, so the slew has real work.
+  float u0[6] = {0.85f, 0.85f, 0.85f, 0.85f, 0.85f, 0.85f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+
+  interp_set_output_enabled(false);
+  stage(u0, nullptr, zeros, zeros);
+  interp_isr();                                  // latch while disabled
+  interp_set_output_enabled(true);
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();                                  // edge → slew armed, baselined at 1.0
+  REQUIRE(s_recover_slewing);
+
+  // A cold-start move begins and sweeps the leg FAST (homing races the encoder ~1 rev
+  // over 50 ticks = ~10 rev/s, an order of magnitude past the 1 rev/s slew).
+  fake_set_homing(true);
+  for (int k = 0; k < 50; ++k) {
+    axes[0].pos_rev -= 0.02f;                    // encoder races down
+    fake_advance(INTERP_PERIOD_US);
+    interp_isr();
+    // Fix (a): the slew state must track the LIVE encoder every tick, never lag it.
+    CHECK(std::fabs(s_recover_pos[0] - axes[0].pos_rev) < 1e-4f);
+  }
+  fake_set_homing(false);
+  // The move ended; a fresh command is latched near the new (low) encoder.
+  float u0b[6]; for (int i = 0; i < 6; ++i) u0b[i] = axes[0].pos_rev;
+  stage(u0b, nullptr, zeros, zeros, 1);
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();
+  // The emitted command can NEVER exceed encoder±MAX_LEAD — the bug was an over-lead
+  // kick here (s_recover_pos stranded ~1 rev above the drifted encoder).
+  CHECK(std::fabs(axes[0].target_pos_rev - axes[0].pos_rev) <= MAX_LEAD_REV + 1e-4f);
+}
+
+TEST_CASE("re-enable recovery slew: the emitted command is always re-clamped to encoder±MAX_LEAD, F2") {
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;                 // present
+  axes[0].pos_rev = 0.5f;                        // encoder
+  // Diverged command (0.15 rev below) → lead-clamps to 0.40, so the slew stays ACTIVE
+  // for several ticks (a converged command would disarm on the edge tick).
+  float u0[6] = {0.35f, 0.35f, 0.35f, 0.35f, 0.35f, 0.35f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+
+  interp_set_output_enabled(false);
+  stage(u0, nullptr, zeros, zeros);
+  interp_isr();                                  // latch while disabled
+  interp_set_output_enabled(true);
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();                                  // edge → slew armed at 0.5, still slewing
+  REQUIRE(s_recover_slewing);
+
+  // Force the slew state to lag the encoder by FAR more than the lead clamp (the
+  // pathological lag the cold-start gate prevents) and prove fix (b) bounds BOTH the
+  // emitted command AND the slew state on the very next tick.
+  s_recover_pos[0] = 0.5f + 5.0f;                // 5 rev past the encoder — absurd, on purpose
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();
+  CHECK(std::fabs(axes[0].target_pos_rev - axes[0].pos_rev) <= MAX_LEAD_REV + 1e-4f);
+  // And the slew STATE is pulled back inside the band too (never keeps running away).
+  CHECK(std::fabs(s_recover_pos[0] - axes[0].pos_rev) <= MAX_LEAD_REV + 1e-4f);
+}

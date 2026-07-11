@@ -205,6 +205,25 @@ constexpr float STOW_DONE_EPS_REV = 0.01f;   // legs within this of the off pose
 // step). Reaches the gentle-move velocity limit in ~0.25 s.
 constexpr float STOW_ACCEL_RPS2 = 10.0f;
 
+// ── Re-enable recovery slew (2026-07-11 clear-errors jolt forensics) ──────────
+// On the s_output_enabled false→true edge (every /clear_errors, /recover, arm, and
+// fb-stale/stow resumption) the ISR re-baselines the transmitted command to the LIVE
+// encoder and slews toward the streamed (lead-clamped) command at this bounded
+// velocity + accel. Root cause it defends: while output is suppressed the ODrive
+// holds its frozen setpoint (enc_freeze + lead) while the leg physically drifts onto
+// the live encoder, so at the re-enable instant the streamed command can sit up to a
+// full lead clamp (0.10 rev) BELOW the encoder. Transmitting it directly injects
+// pos_gain × lead = 40 × 0.10 = a 4 rev/s velocity step straight to the -10 A current
+// rail on every leg (measured on both clear events, 2026-07-11 forensics RESULT 3).
+// The bounded slew replaces that step with a visibly-gentle ramp. VEL is kept well
+// under the gentle-move limit (2.5) so the recovery reads as deliberate, not a lurch;
+// ACCEL smooths the onset so the very first re-enabled frame is at the encoder with
+// zero vel_ff (no velocity step either). At 5 rev/s² a worst-case full-clamp 0.10 rev
+// slew peaks at exactly √(2·5·0.10) = 1.0 rev/s and completes in ~0.2 s.
+constexpr float RECOVER_SLEW_VEL_RPS       = 1.0f;    // bounded recovery slew velocity (rev/s)
+constexpr float RECOVER_SLEW_ACCEL_RPS2    = 5.0f;    // onset accel so there is no vel step at the edge
+constexpr float RECOVER_SLEW_DONE_EPS_REV  = 0.002f;  // per-leg converged band → hand back to normal streaming
+
 // ── Per-leg stroke clamp bounds (rev) ────────────────────────────────────────
 //  Backstop matching motor_guard's _stroke_min_rev / _stroke_max_rev, which are
 //  WorkspaceLimits.from_geometry(leg_hard_{min,max}_mm) * GEOM_MM_TO_REV (per-leg).

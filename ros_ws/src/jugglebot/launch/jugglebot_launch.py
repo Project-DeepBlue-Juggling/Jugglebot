@@ -1,11 +1,9 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import (
-    IncludeLaunchDescription,
     DeclareLaunchArgument,
     ExecuteProcess,
 )
-from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from ament_index_python.packages import get_package_share_directory
@@ -165,13 +163,41 @@ def generate_launch_description():
     )
 
     # ── Rosbridge (WebSocket bridge for the GUI) ─────────────────
-    rosbridge_launch_file_path = os.path.join(
-        get_package_share_directory('rosbridge_server'),
-        'launch',
-        'rosbridge_websocket_launch.xml',
+    # Launched as direct Nodes rather than including the stock
+    # rosbridge_websocket_launch.xml, because that launch file does not expose
+    # the tornado websocket keepalive as an <arg>, so it always ran with
+    # websocket_ping_interval=0 — server-side pings OFF. Without pings, a
+    # half-open browser↔rosbridge socket (dead TCP/NAT path) is never detected
+    # server-side, no 'close' event ever reaches the browser, and the GUI's
+    # reconnect-on-close path can't fire — the GUI sits 'disconnected' until a
+    # manual refresh (2026-07-11 forensics). Pinging every 10 s keeps idle
+    # NAT/TCP state alive AND, on a genuinely dead path, closes the socket after
+    # the 30 s timeout so the browser finally gets 'close' and self-heals.
+    #
+    # This reproduces the XML's non-ssl node (ssl defaults false there, so its
+    # ssl variant never ran) plus the rosapi node it also launched — nothing is
+    # dropped. All other XML params equal the node's own defaults; only
+    # retry_startup_delay was a real override (2.0 → 5.0), preserved here.
+    # output='log' captures rosbridge's client connect/disconnect lines in the
+    # per-process launch log — they were absent before, which is why the
+    # transport drop could not be confirmed from logs.
+    rosbridge_websocket_node = Node(
+        package='rosbridge_server',
+        executable='rosbridge_websocket',
+        name='rosbridge_websocket',
+        output='log',
+        parameters=[{
+            'port': 9090,
+            'retry_startup_delay': 5.0,
+            'websocket_ping_interval': 10,
+            'websocket_ping_timeout': 30,
+        }],
     )
-    rosbridge_include = IncludeLaunchDescription(
-        AnyLaunchDescriptionSource(rosbridge_launch_file_path),
+    rosapi_node = Node(
+        package='rosapi',
+        executable='rosapi_node',
+        name='rosapi',
+        output='log',
     )
 
     # ── Rosbag recording (optional) ──────────────────────────────
@@ -232,7 +258,8 @@ def generate_launch_description():
         teensy_ip_arg,
         enable_setpoint_output_arg,
         # Infrastructure (gui_server.py runs independently in the background)
-        rosbridge_include,
+        rosbridge_websocket_node,
+        rosapi_node,
         # Core nodes
         orchestrator_node,
         motion_bridge_node,

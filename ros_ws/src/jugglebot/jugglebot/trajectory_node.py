@@ -872,6 +872,14 @@ class TrajectoryNode(Node):
     def _measured_pose(self):
         """FK of the live encoder → the 6-DOF pose the (frozen) legs are sitting at.
 
+        Reads ``self._latest_pos_rev`` FRESH every call (never a cached snapshot): this
+        is the descent's single re-sample point, and during a guard latch the leg keeps
+        drifting ~0.1 rev as the ODrive closes its frozen lead offset (the 2026-07-11
+        Event-1 −0.102 rev plateau). A descent onto a stale install-time pose would leave
+        u0 off the drifted encoder → the bridge's convergence verify plateaus above tol.
+        Re-sampling here is what lets each re-install (the bridge's bounded re-descend)
+        chase the settling leg.
+
         Returns ``None`` when telemetry is absent/stale or the FK fails — the caller
         then freezes in place rather than descend toward an unknown target."""
         if self._latest_pos_rev is None or not self._robot_state_fresh():
