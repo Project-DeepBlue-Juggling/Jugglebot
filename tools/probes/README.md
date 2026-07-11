@@ -49,6 +49,7 @@ adapt — go here so the references stay live.
 | Probe | Purpose | Motivating logbook entry |
 |-------|---------|--------------------------|
 | `replay_hardware_csv.py` | Production-faithful replay of a recorded `mpc_*.csv` through `MPCController` exactly as `controller/runner.py` does. Reproduces solver-failure scenarios (CTE singletons, cascades, walk-forward emission discontinuities) offline against the pinned dependency stack. | `logbook/2026-05-20-walk-forward-singleton-emission-jerk.md` (Task 2 of post-warm-start-fix arc; logbook landing alongside the fix) |
+| `uplot_nan_gap_probe.js` | Node-driven regression probe for the GUI telemetry charts' gap semantics: extracts the SHIPPED `nanGaps` hook verbatim from `ros_ws/gui/js/telemetry-charts.js` and drives the REAL vendored `ros_ws/gui/lib/uPlot.iife.min.js` linear path builder with it, asserting NaN runs render as pen-up gaps (never false bridging lines) — 21 assertions incl. edge runs, all-NaN, single-point NaN, null+NaN merge, dashed-stroke invariance. Pins uPlot-1.6.31-specific behaviour (gap scanner honours strict `null` only; the chart store's Float64Array columns can only carry NaN). Re-run on any uPlot upgrade or `nanGaps`/series-wiring change. `node tools/probes/uplot_nan_gap_probe.js`, exit 0 = pass. | `logbook/2026-07-11-gui-leg-setpoint-echo-poscmd.md` (review HIGH #1: false bridging ramp across stale windows) |
 
 ### Live observers
 

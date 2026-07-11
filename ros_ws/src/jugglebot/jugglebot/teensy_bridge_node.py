@@ -144,6 +144,12 @@ _GUARD_LATCH_REPEAT_S = 5.0
 # has explicitly enabled setpoint output (Commit 3).
 _FLAG_MPC_ACTIVE = 0x1
 
+# Staleness window for the leg_setpoint_echo GUI topic: if no setpoint frame has
+# been ACCEPTED by the pump within this window, the echo publishes NOTHING — so a
+# stopped stream reads as silence downstream (the GUI gaps the dashed Pos (cmd)
+# series out), never a stale flatline at the last commanded value.
+_SETPOINT_ECHO_STALE_S = 0.5
+
 # HeartbeatT2J.flags bits (T→J), per the protocol SPEC.
 _T2J_FLAG_TIME_SYNCED = 0x1
 _T2J_FLAG_STOW_PENDING = 0x2
@@ -591,6 +597,14 @@ class TeensyBridgeNode(Node):
             DiagnosticStatus, 'link_status', 10)
         self.profile_pub = self.create_publisher(
             DiagnosticStatus, 'profile', 10)
+        # GUI observability: the last ACCEPTED leg setpoint u0 (6 floats, motor
+        # revs), source-agnostic — trajectory_node and run_mpc.py both feed the
+        # :5557 funnel this echoes. No ROS topic otherwise carries commanded leg
+        # positions on the Teensy-side path (the GUI's old datasource,
+        # leg_lengths_topic, only publishes while the dormant run_mpc/motor_guard
+        # stack streams). See _publish_leg_setpoint_echo for the freshness gate.
+        self.leg_setpoint_echo_pub = self.create_publisher(
+            Float64MultiArray, 'leg_setpoint_echo', 10)
 
         # ── Ball Butler (cutover, production names) ────
         # Intentional naming deviation from the earlier "all under /teensy/*"
@@ -781,6 +795,20 @@ class TeensyBridgeNode(Node):
         self._sp_pump = SetpointPump(
             mm_to_rev=hw.GEOM_MM_TO_REV,
             num_legs=p.NUM_LEGS, max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
+        # ── leg_setpoint_echo stash (GUI observability) ────────
+        # Written by _process_setpoint on the SETPOINT THREAD (the production
+        # leg hot path) — the write is the absolute minimum under self._lock:
+        # one tuple ref + one float + one int. NO message construction and NO
+        # publishing happen on that thread; _publish_leg_setpoint_echo (100 Hz
+        # robot_state timer, executor thread) does both, gated on freshness
+        # (_SETPOINT_ECHO_STALE_S) and deduped by seq so each accepted 40 Hz
+        # frame is echoed at most once.
+        self._last_accepted_u0 = None        # tuple[float x6], motor revs
+        self._last_accepted_u0_mono = 0.0    # time.monotonic() at accept
+        self._last_accepted_u0_seq = 0       # bumps once per ACCEPTED frame
+        # Timer-thread-only (the timer's MutuallyExclusiveCallbackGroup
+        # serializes it — same argument as _pose_quat_key): no lock needed.
+        self._echo_last_pub_seq = 0
         self._sp_source = None
         self._sp_thread = None
         self._sp_stop = threading.Event()
@@ -1049,13 +1077,53 @@ class TeensyBridgeNode(Node):
             states.append(s)
         return states
 
+    def _publish_leg_setpoint_echo(self):
+        """Echo the last ACCEPTED leg setpoint u0 (6 floats, motor revs) for the GUI.
+
+        Rides the 100 Hz robot_state timer (executor thread) — the setpoint
+        thread only stashes (see _process_setpoint); it NEVER publishes. Two
+        gates keep the topic honest:
+          * freshness — no accepted frame within _SETPOINT_ECHO_STALE_S ⇒
+            publish nothing, so downstream sees silence (chart gap), not a
+            stale flatline;
+          * dedup — each accepted frame (seq) is published at most once, so
+            the topic carries the real ~40 Hz stream, not 100 Hz repeats.
+        """
+        try:
+            with self._lock:
+                u0 = self._last_accepted_u0
+                mono = self._last_accepted_u0_mono
+                seq = self._last_accepted_u0_seq
+            if u0 is None or seq == self._echo_last_pub_seq:
+                return  # nothing accepted yet / this frame already echoed
+            if (time.monotonic() - mono) > _SETPOINT_ECHO_STALE_S:
+                return  # stream stopped — silence, never a stale flatline
+            msg = Float64MultiArray()
+            msg.data = [float(v) for v in u0]
+            self.leg_setpoint_echo_pub.publish(msg)
+            self._echo_last_pub_seq = seq
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"Setpoint echo publish error: {e}",
+                                    throttle_duration_sec=5.0)
+
     def _publish_robot_state(self):
         """Publish robot_state, mirroring can_node._publish_robot_state.
 
         Suppressed until the first Telemetry frame arrives so the topic never
         carries a misleading all-zero / all-IDLE snapshot before the link is up.
+
+        Also drives the leg_setpoint_echo publish off this same 100 Hz timer
+        (see _publish_leg_setpoint_echo) — deliberately BEFORE the telemetry
+        suppression gate, since the echo has its own freshness gate.
         """
         try:
+            # Echo first (before the telemetry gate below): the echo has its
+            # own freshness gate and must publish even while robot_state is
+            # suppressed pre-telemetry.  Inside this try as containment —
+            # _publish_leg_setpoint_echo catches its own exceptions, but a
+            # pathological escape (e.g. the attribute itself broken) must not
+            # take robot_state publishing down with it.
+            self._publish_leg_setpoint_echo()
             with self._lock:
                 telem = self._latest_telemetry
                 hb = self._latest_heartbeat
@@ -1804,6 +1872,19 @@ class TeensyBridgeNode(Node):
                 return
             if sp is None:
                 return  # feedback-only telemetry — nothing to send
+            # Stash the ACCEPTED u0 for the leg_setpoint_echo GUI topic.
+            # "Accepted" = passed the pump's validation + per-step gate (the
+            # pump REJECTS, it never clamps — an accepted u0 is the exact
+            # motor-rev vector packed into the frame). Stashed before the send
+            # so a transient send error doesn't retract the echo (the link
+            # watchdog owns real outages). HOT-PATH MINIMUM: three plain
+            # assignments under the lock — message construction + publishing
+            # happen on the executor timer (_publish_leg_setpoint_echo), never
+            # on this thread.
+            with self._lock:
+                self._last_accepted_u0 = sp.u0
+                self._last_accepted_u0_mono = time.monotonic()
+                self._last_accepted_u0_seq += 1
             try:
                 self._client.send_stream(int(MsgType.SETPOINT), sp.pack())
             except OSError as e:

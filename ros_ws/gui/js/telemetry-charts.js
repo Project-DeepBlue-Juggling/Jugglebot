@@ -84,7 +84,7 @@ const CHART_TOOLTIPS = [
  */
 const SIGNAL_TOOLTIPS = {
     pos_measured:  'Encoder position (revolutions from home). Toggle to show/hide on every chart.',
-    pos_commanded: 'Commanded position target (dashed). Source: leg_lengths_topic for legs, hand_telemetry for the hand.',
+    pos_commanded: 'Commanded position target (dashed). Source: leg_setpoint_echo (accepted setpoints echoed by the Teensy bridge) for legs, hand_telemetry for the hand.',
     vel_measured:  'Motor velocity (rev/s). Signed — follows the motor\u2019s own direction convention.',
     iq_setpoint:   'Commanded quadrature current (A) \u2014 proportional to commanded torque.',
     iq_measured:   'Measured quadrature current (A, dashed) \u2014 proportional to actual torque.',
@@ -613,6 +613,81 @@ function cssVar(name, fallback) {
     return v || fallback;
 }
 
+/**
+ * Per-series uPlot `gaps` hook — makes NaN render as a GAP, never a bridge.
+ *
+ * ChartDataStore columns are Float64Array, which cannot hold `null` (uPlot's
+ * only gap sentinel) — missing samples are NaN (e.g. pos_commanded while the
+ * leg_setpoint_echo stream is stale, or on the BB charts where no commanded
+ * source exists).  The vendored uPlot 1.6.31 linear path builder only treats
+ * strict `null` as a gap: NaN vertices become canvas no-ops, so on stream
+ * resume the stroke would draw a false straight ramp from the last finite
+ * point across the whole un-commanded window to the next finite point.
+ *
+ * This hook scans the drawn index range for non-finite runs and appends the
+ * equivalent pixel-space gap tuples; uPlot then builds its clip Path2D from
+ * them, which removes the bridging segment at render time — the exact
+ * mechanism it uses for its own null gaps (a null run's stroke also contains
+ * the bridge lineTo; the clip is what hides it).  Semantics match uPlot's
+ * null gaps precisely: a gap spans from the x-pixel of the last finite
+ * sample before the run to the x-pixel of the first finite sample after it
+ * (verified tuple-for-tuple against the vendored lib by the committed
+ * regression probe, tools/probes/uplot_nan_gap_probe.js — assertion S1).
+ *
+ * Edge cases: runs touching the window edges — including the all-NaN case
+ * (BB charts' pos_commanded) — produce no tuple; there is no bridging
+ * segment to clip because canvas lineTo/moveTo with non-finite coords are
+ * no-ops, so nothing is drawn there.  Dashed strokes are unaffected: the
+ * dash pattern applies at stroke time, after the clip.  Zero per-frame
+ * allocation beyond the gap tuples themselves (none for all-finite data).
+ */
+function nanGaps(u, sidx, i0, i1, nullGaps) {
+    const xs = u.data[0];
+    const ys = u.data[sidx];
+    const series = u.series[sidx];
+    const pxRound = (series && series.pxRound) || Math.round;
+    const hadNullGaps = nullGaps.length > 0;
+    let added = false;
+    let lastFinite = -1;   // index of the last finite sample seen
+    let inRun = false;     // currently inside a non-finite run?
+    for (let i = i0; i <= i1; i++) {
+        if (Number.isFinite(ys[i])) {
+            if (inRun && lastFinite >= 0) {
+                // Interior run closed: clip from the last finite sample
+                // before the run to this first finite sample after it.
+                const x0 = pxRound(u.valToPos(xs[lastFinite], 'x', true));
+                const x1 = pxRound(u.valToPos(xs[i], 'x', true));
+                if (x1 > x0) {
+                    nullGaps.push([x0, x1]);
+                    added = true;
+                }
+            }
+            lastFinite = i;
+            inRun = false;
+        } else {
+            inRun = true;
+        }
+    }
+    // Typed-array columns can never contain null, so nullGaps is empty in
+    // production and the appended tuples are already sorted.  A plain-Array
+    // series mixing null and NaN would double-report null runs (null is
+    // non-finite too) — sort + merge so uPlot's clip builder, which assumes
+    // ordered non-overlapping gaps, stays correct even in that case.
+    if (added && hadNullGaps) {
+        nullGaps.sort((a, b) => a[0] - b[0]);
+        let w = 0;
+        for (let r = 1; r < nullGaps.length; r++) {
+            if (nullGaps[r][0] <= nullGaps[w][1]) {
+                nullGaps[w][1] = Math.max(nullGaps[w][1], nullGaps[r][1]);
+            } else {
+                nullGaps[++w] = nullGaps[r];
+            }
+        }
+        nullGaps.length = w + 1;
+    }
+    return nullGaps;
+}
+
 function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
     const signalList = getActiveSignalList();
 
@@ -711,6 +786,13 @@ function buildUPlotOpts(width, height, showXAxis = true, onCursor = null) {
             width: 1.5 * window.devicePixelRatio,
             dash: sig.dash,
             points: { show: false },
+            // NaN-as-gap (see nanGaps): applied to EVERY series because the
+            // Float64Array columns can only encode "missing" as NaN.  Today
+            // pos_commanded is the one signal that legitimately carries NaN
+            // (stale leg echo / absent hand telemetry / BB charts), but the
+            // hook is a no-op for all-finite data, so uniform wiring costs
+            // nothing and no future NaN-bearing signal can bridge falsely.
+            gaps: nanGaps,
         });
     }
 
@@ -897,7 +979,7 @@ function resizeAllCharts() {
 /**
  * Called from main.js onRobotState with the full motor state array.
  * @param {object[]} motorStates  – robot_state.motor_states (up to 9)
- * @param {number[]|null} commandedLegs – leg_lengths_topic data (revs, indices 0-5) or null
+ * @param {number[]|null} commandedLegs – leg_setpoint_echo data (6 legs, motor revs) or null
  * @param {object|null} handTelemetry – HandTelemetryMessage or null
  */
 export function onTelemetryData(motorStates, commandedLegs, handTelemetry) {
@@ -918,7 +1000,7 @@ export function onTelemetryData(motorStates, commandedLegs, handTelemetry) {
             bus_current:   m.bus_current,
         };
 
-        // Commanded position — legs from leg_lengths_topic, hand from hand_telemetry
+        // Commanded position — legs from leg_setpoint_echo, hand from hand_telemetry
         if (i < 6 && commandedLegs && commandedLegs.length > i) {
             values.pos_commanded = commandedLegs[i];
         } else if (i === 6 && handTelemetry) {

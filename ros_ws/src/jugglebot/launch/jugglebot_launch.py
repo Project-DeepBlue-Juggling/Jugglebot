@@ -210,6 +210,11 @@ def generate_launch_description():
             'ros2', 'bag', 'record',
             '/robot_state',
             '/leg_lengths_topic',
+            # Accepted leg setpoints (u0, motor revs) echoed by teensy_bridge_node
+            # from the :5557 funnel — the commanded side of the leg tracking
+            # story for bag analysis. leg_lengths_topic stays: the MPC
+            # (run_mpc/motor_guard) path may still publish it.
+            '/leg_setpoint_echo',
             '/hand_telemetry',
             '/mocap_data',
             '/platform_pose_topic',

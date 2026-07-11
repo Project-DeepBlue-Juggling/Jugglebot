@@ -730,11 +730,19 @@ function drawTrackingSparkline(i, err, threshold) {
     ctx.strokeStyle = stroke;
     ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1);
     ctx.beginPath();
+    // NaN samples (unknown ticks — commanded source stale/absent) lift the
+    // pen: the trace breaks over them instead of bridging, so a stale window
+    // reads as a visible hole in the history, mirroring the chart gaps.
+    let penDown = false;
     for (let k = 0; k < TRACKING_HIST_LEN; k++) {
+        if (!Number.isFinite(buf[k])) {
+            penDown = false;
+            continue;
+        }
         const x = (k / (TRACKING_HIST_LEN - 1)) * w;
         const v = Math.min(buf[k], maxErr);
         const y = h - (v / maxErr) * h * 0.92;
-        if (k === 0) ctx.moveTo(x, y);
+        if (!penDown) { ctx.moveTo(x, y); penDown = true; }
         else ctx.lineTo(x, y);
     }
     ctx.stroke();
@@ -742,7 +750,12 @@ function drawTrackingSparkline(i, err, threshold) {
 
 /**
  * Update tracking error display.
- * @param {number[]} errors - absolute error per axis (mm for legs, rev for hand)
+ * @param {(number|null)[]} errors - error per axis (mm for legs, rev for
+ *   hand; sign ignored).  null = UNKNOWN — the commanded-side source for
+ *   that axis is stale or absent (leg echo stopped, no hand telemetry).
+ *   Unknown renders as the panel's '--' placeholder with an empty bar and a
+ *   pen-up sparkline hole — never as 0/green, which would fake perfect
+ *   tracking for an axis nobody is commanding.
  */
 export function updateTrackingError(errors) {
     // Thresholds (mm for legs, rev for hand)
@@ -752,12 +765,25 @@ export function updateTrackingError(errors) {
     ];
 
     for (let i = 0; i < Math.min(errors.length, 7); i++) {
-        const err = Math.abs(errors[i]);
         const th = i < 6 ? thresholds[0] : thresholds[1];
-        const maxErr = th.warn * 2;
 
         const bar = document.getElementById(`track-bar-${i}`);
         const val = document.getElementById(`track-val-${i}`);
+
+        if (errors[i] == null || !Number.isFinite(errors[i])) {
+            // Unknown — same placeholder idiom as the panel's initial state.
+            // Bar collapses to 0% (colour irrelevant at zero height).
+            if (bar) bar.style.height = '0%';
+            if (val) {
+                val.textContent = '--';
+                val.className = 'motor-value';
+            }
+            drawTrackingSparkline(i, NaN, th);
+            continue;
+        }
+
+        const err = Math.abs(errors[i]);
+        const maxErr = th.warn * 2;
 
         if (bar) {
             const pct = Math.min(100, (err / maxErr) * 100);

@@ -39,7 +39,7 @@ import { initCommandHistory } from './command-history.js';
 import { initCameraPresets } from './camera-presets.js';
 
 // ---- Latest data stores ----
-let latestCommandedLegs = null;  // Float64MultiArray data (revs)
+let latestCommandedLegs = null;  // leg_setpoint_echo data (6 legs, motor revs)
 
 /** Human-readable labels for the fault flags we surface as event markers. */
 const FAULT_LABELS = {
@@ -211,8 +211,10 @@ function subscribeAll() {
     // Rigid body poses — for rendering coordinate axes (200Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('rigid_body_poses', 'jugglebot_interfaces/msg/RigidBodyPoses', onRigidBodyPoses, 50);
 
-    // Commanded leg lengths (500Hz -> throttle to 20Hz = 50ms)
-    ros.subscribe('leg_lengths_topic', 'std_msgs/msg/Float64MultiArray', onLegLengths, 50);
+    // Commanded leg setpoints — accepted u0 echoed by teensy_bridge_node from
+    // the :5557 funnel, so it covers BOTH trajectory_node and run_mpc.py
+    // (~40Hz -> throttle to 20Hz = 50ms)
+    ros.subscribe('leg_setpoint_echo', 'std_msgs/msg/Float64MultiArray', onLegSetpointEcho, 50);
 
     // Control mode (on change) — used to show/hide jog panel
     ros.subscribe('control_mode_topic', 'std_msgs/msg/String', onControlMode, 0);
@@ -304,22 +306,37 @@ function onRobotState(msg) {
         }
     }
 
-    // Update tracking error if we have both commanded and measured
-    if (latestCommandedLegs && motors.length >= 6) {
+    // Tracking-error panel — updated on EVERY robot_state so a stale or
+    // absent commanded source reads as an explicit unknown ('--'), never as
+    // a frozen last value or a fake-perfect 0/green.  Each slot is gated on
+    // ITS OWN source: legs need a fresh leg echo (latestCommandedLegs is
+    // nulled by the 1 s staleness watchdog below), the hand needs
+    // hand_telemetry — one source going away must not freeze or fabricate
+    // the other's readout.
+    if (motors.length >= 6) {
         const errors = [];
         for (let i = 0; i < 6; i++) {
-            const cmdRev = latestCommandedLegs[i] || 0;
-            const measRev = motors[i].pos_estimate;
-            const errorRev = cmdRev - measRev;
-            const errorMM = errorRev / MM_TO_REV[i];
-            errors.push(errorMM);
+            if (latestCommandedLegs) {
+                const cmdRev = latestCommandedLegs[i] || 0;
+                const measRev = motors[i].pos_estimate;
+                const errorRev = cmdRev - measRev;
+                const errorMM = errorRev / MM_TO_REV[i];
+                errors.push(errorMM);
+            } else {
+                errors.push(null);  // leg echo stale/absent — unknown
+            }
         }
 
-        // Hand error in revs
-        if (motors.length >= 7 && latestCommandedLegs.length >= 7) {
-            errors.push((latestCommandedLegs[6] || 0) - motors[6].pos_estimate);
+        // Hand error in revs — commanded side from hand_telemetry.pos_cmd
+        // (the sniffed HAND_CMD_ECHO Set_Input_Pos, revs), measured side from
+        // motor 6 pos_estimate (revs); updateTrackingError expects rev for the
+        // hand slot. (The old source, latestCommandedLegs[6], was leg-0 vel_ff
+        // in the 18-value leg_lengths_topic layout — garbage — and doesn't
+        // exist in the 6-value leg_setpoint_echo.)
+        if (motors.length >= 7 && latestHandTelemetry) {
+            errors.push((latestHandTelemetry.pos_cmd || 0) - motors[6].pos_estimate);
         } else {
-            errors.push(0);
+            errors.push(null);  // no hand telemetry — unknown, NOT 0/green
         }
         updateTrackingError(errors);
     }
@@ -417,9 +434,20 @@ function onRigidBodyPoses(msg) {
     }
 }
 
-function onLegLengths(msg) {
-    recordTopicMessage('leg_lengths_topic');
+// Commanded-leg staleness watchdog (mirrors the mocap-connection pattern):
+// without it a stopped setpoint stream would leave the last commanded value
+// cached forever, flatlining the dashed Pos (cmd) series at a stale value.
+// Clearing the cache makes the series gap out (NaN) instead.
+let legEchoTimeout = null;
+const LEG_ECHO_TIMEOUT_MS = 1000;
+
+function onLegSetpointEcho(msg) {
+    recordTopicMessage('leg_setpoint_echo');
     latestCommandedLegs = msg.data;
+    if (legEchoTimeout) clearTimeout(legEchoTimeout);
+    legEchoTimeout = setTimeout(() => {
+        latestCommandedLegs = null;
+    }, LEG_ECHO_TIMEOUT_MS);
 }
 
 function onControlMode(msg) {
@@ -745,7 +773,7 @@ function applyFontSize(size) {
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
     'can_traffic', 'hand_telemetry', 'mocap_data', 'rigid_body_poses',
-    'leg_lengths_topic', 'control_mode_topic', 'motion/diagnostics',
+    'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'cone/heartbeat', 'cone/timing_result',
 ]);
 

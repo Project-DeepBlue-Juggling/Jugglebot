@@ -285,6 +285,164 @@ def test_no_position_command_sends_nothing():
         _teardown(teensy, client, node)
 
 
+# ── leg_setpoint_echo (GUI observability of the accepted u0) ──
+# The setpoint thread only STASHES the accepted u0 (tuple assignment under
+# self._lock); the ROS publish happens exclusively on the executor timer via
+# _publish_leg_setpoint_echo (called from the 100 Hz _publish_robot_state
+# timer). "Accepted" = passed the pump's validation + per-step gate — the pump
+# rejects (never clamps), so the echo is the exact motor-rev u0 packed into the
+# transmitted SETPOINT frame.
+
+
+def test_echo_driven_by_robot_state_timer_before_telemetry_gate():
+    """Pins the PRODUCTION trigger and its ordering: the echo publish rides
+    _publish_robot_state (the 100 Hz timer callback), wired BEFORE the
+    telemetry-suppression gate. Driven with NO Telemetry frame cached (the
+    pre-link boot state): one timer tick publishes the echo exactly once —
+    carrying the accepted u0 (6 floats, motor revs) verbatim — while
+    robot_state itself stays suppressed. Also pins that the setpoint path
+    publishes nothing on its own (the thread only stashes)."""
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+        motor_rev = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        node._process_setpoint(_cmd(motor_rev))
+        # The funnel (the code the setpoint thread runs) publishes NOTHING.
+        assert node.leg_setpoint_echo_pub.published == []
+        # PRODUCTION call site: the robot_state timer callback, with no
+        # telemetry cached — the FakeTeensy never sends TELEMETRY unless told.
+        assert node._latest_telemetry is None
+        node._publish_robot_state()
+        # Echo published exactly once (before/independent of the telemetry
+        # gate) …
+        assert len(node.leg_setpoint_echo_pub.published) == 1
+        msg = node.leg_setpoint_echo_pub.published[-1]
+        assert len(msg.data) == 6
+        assert msg.data == pytest.approx(motor_rev, abs=1e-6)
+        # … while robot_state itself remains suppressed (gate still active).
+        assert node.robot_state_pub.published == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_echo_dedups_per_accepted_frame():
+    """A timer faster than the 40 Hz stream must not re-publish the same
+    accepted frame: one publish per accepted seq, next frame publishes again."""
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+        node._process_setpoint(_cmd([0.1] * 6))
+        node._publish_leg_setpoint_echo()
+        node._publish_leg_setpoint_echo()          # same seq → deduped
+        assert len(node.leg_setpoint_echo_pub.published) == 1
+        node._process_setpoint(_cmd([0.15] * 6))   # next accepted frame
+        node._publish_leg_setpoint_echo()
+        assert len(node.leg_setpoint_echo_pub.published) == 2
+        assert node.leg_setpoint_echo_pub.published[-1].data == pytest.approx(
+            [0.15] * 6, abs=1e-6)
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_echo_not_published_when_stale():
+    """(b) No accepted frame within _SETPOINT_ECHO_STALE_S (0.5 s) ⇒ the echo
+    publishes NOTHING — downstream sees silence, never a stale flatline."""
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+        node._process_setpoint(_cmd([0.1] * 6))
+        # Age the stash past the staleness window (avoids a real 0.5 s sleep).
+        # seq is deliberately NOT published yet, so only the freshness gate
+        # (not dedup) can be what suppresses the publish here.
+        with node._lock:
+            node._last_accepted_u0_mono = time.monotonic() - 1.0
+        node._publish_leg_setpoint_echo()
+        assert node.leg_setpoint_echo_pub.published == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_echo_silent_before_first_accept():
+    """No frame ever accepted (including a REJECTED first frame) ⇒ no echo."""
+    teensy, client, node = _node()
+    try:
+        node._publish_leg_setpoint_echo()           # nothing stashed
+        assert node.leg_setpoint_echo_pub.published == []
+        node._mpc_active = True
+        # A rejected frame (non-finite u0) must not stash anything either.
+        node._process_setpoint(_cmd([float('nan')] * 6))
+        node._publish_leg_setpoint_echo()
+        assert node.leg_setpoint_echo_pub.published == []
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_echo_is_accepted_u0_not_raw_request():
+    """(c) A REJECTED frame (per-step violation) neither refreshes nor replaces
+    the echo: the stash still holds the last ACCEPTED u0, and no new message is
+    published for the rejected request."""
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+        node._process_setpoint(_cmd([0.0] * 6))                       # accepted
+        node._publish_leg_setpoint_echo()
+        assert len(node.leg_setpoint_echo_pub.published) == 1
+        node._process_setpoint(_cmd([0.0, 0.0, 0.0, 0.9, 0.0, 0.0]))  # 0.9 > 0.3 → REJECT
+        assert node._sp_pump.frames_rejected == 1
+        node._publish_leg_setpoint_echo()
+        # No new publish (seq unchanged), and the stash is still the accepted u0.
+        assert len(node.leg_setpoint_echo_pub.published) == 1
+        assert node._last_accepted_u0 == pytest.approx((0.0,) * 6, abs=1e-9)
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_echo_carries_packed_u0_from_ext_mm():
+    """The echo is the PACKED u0 (motor revs), not any raw request field: with
+    no motor_rev in the command, u0 = ext_mm × mm_to_rev — the echo must carry
+    the derived motor-rev values the SETPOINT frame actually transmitted."""
+    import jugglebot.hardware_config as hw
+    mm = hw.GEOM_MM_TO_REV
+    teensy, client, node = _node()
+    try:
+        node._mpc_active = True
+        ext = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
+        node._process_setpoint({'type': 'mpc_cmd', 'ext_mm': list(ext),
+                                'vel_mm_s': [0.0] * 6})
+        node._publish_leg_setpoint_echo()
+        msg = node.leg_setpoint_echo_pub.published[-1]
+        assert msg.data == pytest.approx(
+            [ext[i] * mm[i] for i in range(6)], abs=1e-6)
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_echo_stash_survives_send_oserror():
+    """Pins the documented invariant 'stashed before the send': a frame the
+    pump ACCEPTS updates the echo even when the wire send raises OSError —
+    the echo reports what the bridge committed to command; the link watchdog
+    (not the per-frame path) owns real outages. Same fault-injection pattern
+    as test_process_setpoint_contains_send_oserror."""
+    teensy, client, node = _node()
+    orig_send = node._client.send_stream
+
+    def raise_oserror(*a, **k):
+        raise OSError("ENETUNREACH")
+
+    try:
+        node._mpc_active = True
+        node._client.send_stream = raise_oserror
+        node._process_setpoint(_cmd([0.2] * 6))   # accepted → stashed; send raises
+        assert teensy.received(int(MsgType.SETPOINT)) == []  # nothing hit the wire
+        node._publish_leg_setpoint_echo()
+        assert len(node.leg_setpoint_echo_pub.published) == 1
+        assert node.leg_setpoint_echo_pub.published[-1].data == pytest.approx(
+            [0.2] * 6, abs=1e-6)
+    finally:
+        node._client.send_stream = orig_send
+        _teardown(teensy, client, node)
+
+
 # ── Runtime arming service (set_setpoint_output) ──────────────
 # The production arming flow (fixes the arm-before-stream trap): true requires
 # (a) link up + fresh heartbeat, (b) a fresh mpccmd frame on :5557 within 0.5 s,
