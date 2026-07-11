@@ -1,8 +1,26 @@
-# Hardware Session — Leg-Gain Retune (fast-motion tier) — root fix for the 2026-07-10 ~6 Hz stutter
+# Hardware Session — Leg-Gain Retune (fast-motion tier), **on-robot Phase B** — root fix for the 2026-07-10 ~6 Hz stutter
 
 **Plan**: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (Level-2f)"
-(this session *is* the first run of that tier — read it before starting)
+(read it before starting — the tier is now a **two-stage** methodology)
 **Runbook**: `tests/hardware/mvp_bench_runbook.md` § S4b (this session gates further S4 ramping)
+
+> ## Two-stage structure — READ FIRST (2026-07-11 rewrite)
+>
+> The fast-motion tier is now **bench-first**. This document is the **on-robot Phase B**,
+> not the whole retune:
+>
+> - **Phase A — bench leg (aggressive)** — `plans/active/leg-gain-tuning-methodology.md`
+>   § "STAGE 1". System-ID + an escalate-until-unstable gain ladder + the loop-vs-structure
+>   discriminant, run on the acceptable-loss 7th (bench) leg. **Do Phase A first.** It
+>   produces the *winning bench triple* and a definitive loop-vs-structure verdict.
+> - **Phase B — Jugglebot transfer (this document)** — take the bench winner, apply the
+>   **one-notch derate** (methodology § "STAGE 2, Derating rule"), and run the **reduced
+>   verify pass** below (§ "Phase B0"). The full on-robot 3-point sweep (§ "Phase B1/B2")
+>   is now the **FALLBACK** — run it only if Phase A was skipped or came back inconclusive.
+>
+> If the bench Phase A returned **"structural, not the servo loop"**, gains are not the
+> lever: do **not** run the on-robot sweep — hand off to the interpolant/mechanical path
+> (methodology § "Stage 1c").
 **Forensics**: the 2026-07-10 four-agent stutter/latch synthesis (Agent 1 Rank-1 =
 retune the leg velocity loop for motion damping; Agent 3 Rank-1 = position lag < the new
 MAX_LEAD 0.10 rev with 2× margin, watch braking-current oscillation). *A committed logbook
@@ -132,7 +150,32 @@ the new gains apply at the next `_run_configure` (the `/orchestrator_command act
 
 ---
 
-## The sweep matrix
+## Phase B0 — reduced verify (DEFAULT, after the bench Phase A)
+
+If the bench Phase A converged (methodology § "STAGE 1"), you already have a winning bench
+triple and a confirmed loop-vs-structure verdict. On the real robot you **verify the derated
+winner**, you do not re-sweep. Apply the **one-notch derate** (methodology § "STAGE 2,
+Derating rule": reduce `pos_gain` ~10–15 % **or** raise `vel_gain` ~15–20 %, keeping the
+125:1 `vel_int` ratio), then run:
+
+1. **Ring-suppression stroke (×1)** — the fixed stroke below (z 170 → 250 → 170 at
+   156/660/10500) at the derated triple. PASS = the four PASS criteria (no braking-current
+   oscillation, max `live_deviation` < 0.05 rev, `lead_clamp_mask` 0, no ~6 Hz buzz, no
+   `MAX_DEVIATION` latch).
+2. **Extreme-pose HOLD battery** — Level-1 moves 6 & 7 at (0,−100,200) and (100,100,200);
+   per-leg hold stdev within 1.5× of the quietest leg (PASS criterion 4).
+3. **If either fails** — apply the *other* derate knob one notch and re-run (a single A/B),
+   **not** the full sweep. If neither can be jointly cleared, that is the Level-3 /
+   gain-scheduling trigger (methodology Open questions) — do **not** push the ring regime
+   harder on the real legs.
+
+Persist the winner (§ "Persist the winning gains to YAML") as the **robot (S2)** row.
+
+## Phase B1/B2 — the full on-robot sweep (FALLBACK — only if bench Phase A was skipped/inconclusive)
+
+Run the sweep matrix below **only** when the bench Phase A did not run or came back
+ambiguous. It is the original single-stage on-robot discriminate-then-damp protocol, kept
+as the fallback so the on-robot session is self-sufficient without the bench.
 
 Fixed test stroke every point: **z 170 → 250 → 170** (the up-stroke is the one that latched),
 at fixed session limits **vel 156 mm/s, acc 660 mm/s², jerk 10 500 mm/s³**, `duration_s: 0.0`
@@ -151,7 +194,7 @@ is pinned per `pos_gain` and is **not** an independent axis:
 
 `vel_gain` (the independent proportional-damping knob) is A/B'd **{0.20, 0.35}**.
 
-### Phase A — discriminate control-loop vs. structural (3 points, `vel_gain` fixed at 0.20)
+### Phase B1 — discriminate control-loop vs. structural (fallback; 3 points, `vel_gain` fixed at 0.20)
 
 Run the fixed stroke at `(pos_gain, vel_gain, vel_int_gain)` =
 **(25, 0.20, 0.20)**, **(40, 0.20, 0.32)** [current baseline — the 2026-07-10 bag already
@@ -161,18 +204,19 @@ Record the ring frequency (offline, per point — see observability). **Decision
 
 - **Ring frequency TRACKS `pos_gain`** (≈ 4.0 / 6.4 / 8.8 Hz as the table predicts) ⇒ it is
   the **control loop** (an under-damped position pole ringing at its own bandwidth). Proceed to
-  **Phase B** to add velocity-loop damping.
+  **Phase B2** to add velocity-loop damping.
 - **Ring frequency stays FIXED at ~6 Hz** regardless of `pos_gain` ⇒ it is a **structural /
   drivetrain resonance**. **Gains are not the lever — STOP the sweep.** Revert to the
-  last-good gains, log the finding, and hand off to the *different* path: interpolant / lead-clamp
-  rework (forensics Rank 3/4 — do not zero vel_ff on clamp; consider C2 quintic) and a
-  mechanical resonance investigation. Do **not** persist any gain change from this session.
+  last-good gains, log the finding, and hand off to the *different* path: the forensics'
+  interpolant / lead-clamp findings (the vel_ff-on-clamp fix — landed in the v3 firmware —
+  and the C2/quintic interpolant polish) and a mechanical resonance investigation. Do
+  **not** persist any gain change from this session.
 
-### Phase B — damp the loop (only if Phase A said "control loop")
+### Phase B2 — damp the loop (fallback; only if Phase B1 said "control loop")
 
 At the `pos_gain` that best trades **ring suppression vs. tracking lag** (higher `pos_gain` =
 less lag but higher-frequency ring; start from **40** and only move to 55 if 40's lag margin is
-tight), A/B `vel_gain` **0.20 → 0.35** (`vel_int` unchanged from Phase A's per-`pos_gain` value).
+tight), A/B `vel_gain` **0.20 → 0.35** (`vel_int` unchanged from Phase B1's per-`pos_gain` value).
 If neither `vel_gain` clears the criteria, interpolate (e.g. 0.28) or step `pos_gain` and repeat.
 
 **Winning cell** = lowest ring amplitude AND position lag < 0.05 rev with margin AND
@@ -313,18 +357,22 @@ Once a cell PASSes all four criteria (including the extreme-pose HOLD re-check):
 4. `pytest tests/ -q` (full suite is the pre-commit gate).
 5. Commit — cite the `/diagnose` ring-amplitude + lag numbers and the test triple
    `(date, exact pytest command, result)` in the message; add a `Logbook-Entry:` trailer.
-6. Register the tier in `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier"
-   (the row for the chosen gains + the measured damping ratio).
-7. If Phase A said **structural**, persist NOTHING — commit only the logbook finding and the
-   hand-off to the interpolant/mechanical path.
+6. Register the winner in `plans/active/leg-gain-tuning-methodology.md`
+   § "Fast-motion tier" → "Registered fast-motion gains" as the **robot (S2)** row (the
+   derated on-robot-verified triple + the measured damping ratio); the bench winner is the
+   **bench (S1)** row.
+7. If the **bench Phase A** discriminant said **structural**, persist NOTHING — commit only
+   the logbook finding and the hand-off to the interpolant/mechanical path.
 
 ---
 
 ## Link to the methodology
 
-This session is the first run of the **fast-motion tier (Level-2f)** registered in
-`plans/active/leg-gain-tuning-methodology.md`. That tier's damping-ratio target
+This session is the **on-robot Phase B** (Jugglebot transfer) of the two-stage
+**fast-motion tier (Level-2f)** in `plans/active/leg-gain-tuning-methodology.md`; the
+aggressive bench work (system-ID + escalate-until-unstable ladder + loop-vs-structure
+discriminant) is **Phase A** there (§ "STAGE 1"). That tier's damping-ratio target
 (closed-loop ζ ≥ 0.7, ≤ ~5 % overshoot at the pos-loop bandwidth) is the acceptance target
 behind PASS criteria 1–3 here; the Level-1 HOLD battery behind PASS criterion 4 is the
 cross-tier guard that keeps the two tiers mutually consistent. Read that section before
-starting and update its tier row when a winner lands.
+starting and update the **robot (S2)** tier row when a winner lands.

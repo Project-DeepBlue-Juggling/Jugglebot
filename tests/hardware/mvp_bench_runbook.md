@@ -380,12 +380,16 @@ fast-motion tracking: the under-damped position loop rings at its own bandwidth,
 current surges/brakes, and the accumulated command-vs-encoder lead trips the 0.5-rev guard.
 The stutter is worst at the raised limits, so **the S4 ramp cannot proceed above the levels
 that provoke it until the leg-gain fast-motion tier converges** — running S4 harder first just
-re-triggers the latch. Do S4b now (a `pos_gain` sweep to separate control-loop from structural
-resonance, then a `vel_gain` damping A/B), persist the winning gains to YAML, then resume S4
-from the last clean step. Sessions **S5+ are unaffected** by this gate (they run at generous
-leads / gentle limits, below the stutter regime). Detailed protocol + exact commands:
-`tests/hardware/session_gain_retune.md`; methodology tier:
-`plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (Level-2f)".
+re-triggers the latch. The retune is now **two-stage, bench-first**: **Phase A** does the
+aggressive work (system-ID + an escalate-until-unstable gain ladder + the loop-vs-structure
+discriminant) on the acceptable-loss **7th (bench) leg** connected on CAN3 in place of
+Jugglebot; **Phase B** transfers a **derated** winner to the real robot with a short verify
+pass (the old 3-point sweep shrinks to a verify — the full sweep is kept only as a fallback).
+Persist the winning gains to YAML, then resume S4 from the last clean step. Sessions **S5+ are
+unaffected** by this gate (they run at generous leads / gentle limits, below the stutter
+regime). Bench Phase A: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier
+(Level-2f)" → "STAGE 1"; on-robot Phase B + exact commands:
+`tests/hardware/session_gain_retune.md`.
 
 ### S5 — Phase-5 timed targets (±25 ms arrival + supersede)
 
