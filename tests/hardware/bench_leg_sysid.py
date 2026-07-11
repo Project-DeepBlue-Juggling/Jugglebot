@@ -1,57 +1,94 @@
 #!/usr/bin/env python3
 """Bench-leg system-ID harness — Stage 1 of the leg-gain tuning methodology.
 
-Direct-CAN (Path DIRECT) system-ID + gain-escalation on the acceptable-loss
-bench leg (ODrive node 0), the missing Stage-1 prerequisite of
-``plans/active/leg-gain-tuning-methodology.md`` (Fast-motion tier). It talks
-socketcan straight to the ODrive via ``SingleLegTestHarness`` — clean
-instantaneous steps/chirps to ``input_pos``/``input_vel`` and instant RAM-only
-gain-setting over CAN — the only path that can do faithful system-ID and a
-fast escalation ladder. The pure logic (onset detector, ladder state machine,
-stroke-cap-bounded stimulus generators, step/freq-response estimators) lives in
-``sysid_lib.py`` and is unit-tested in ``tests/motion/test_bench_sysid_logic.py``.
+System-ID + gain-escalation on the acceptable-loss bench leg (ODrive node 0),
+the Stage-1 prerequisite of ``plans/active/leg-gain-tuning-methodology.md``
+(Fast-motion tier). Two selectable backends (``--path``):
+
+**Path BRIDGE (default)** — the bench ODrive on CAN3 behind the can-bridge Teensy
+over the UDP ``teensy_link`` protocol. This is the ONLY path available on this
+Jetson: direct CAN was wound down entirely (operator-confirmed 2026-07-11 — the
+Jetson no longer sees CAN, there is no USB-CAN adapter). Gains apply via RPC
+(``SET_POS_GAIN``/``SET_VEL_GAINS``, session-only, re-applied per point); homing
+via the firmware ``HOME(0)`` RPC; arming = streaming 40 Hz position-knots with the
+J→T heartbeat ``mpc_active`` flag set (the ``teensy_setpoint_bench.py`` idiom).
+Stimuli are POSITION-DOMAIN knots through the firmware 500 Hz Hermite + lead
+clamp, so they degrade honestly vs the direct path (documented below).
+
+**Path DIRECT (--path direct)** — socketcan straight to ``input_pos``/``input_vel``
+via ``SingleLegTestHarness``: clean instantaneous steps/chirps + instant RAM-only
+gain-setting. Retained FOR THE RECORD only; **live runs are refused on this Jetson**
+(``--path direct`` errors unless ``--dry-run``, which prints the historical plan).
+
+The pure logic (onset/divergence detectors, ladder state machine, stroke-cap-
+bounded stimulus generators, step/freq-response estimators, and the Path-BRIDGE
+knot-ramp / telemetry-rate / guard-latch-backoff logic) lives in ``sysid_lib.py``,
+unit-tested in ``tests/motion/test_bench_sysid_logic.py`` +
+``tests/motion/test_bench_sysid_bridge.py``.
+
+Path-BRIDGE degradations vs Path DIRECT (all documented, all honest)
+--------------------------------------------------------------------
+* **Steps → 25 ms-quantised knot ramps.** No raw step exists on the bridge; a
+  "step" is a knot ramp sized UNDER the 0.10 rev lead clamp (``lead_clamp_frame_step``
+  at 2× margin ⇒ 0.05 rev/frame = 2.0 rev/s, Jugglebot's operating point). Rise/
+  overshoot are of the leg tracking that fast ramp, not an instantaneous step.
+* **Velocity-loop step response is INFERRED, not measured.** The bridge has no raw
+  ``input_vel`` step; ζ / velocity-loop damping is inferred from position-step
+  overshoot (there is no ``vel_steps`` stage on Path BRIDGE).
+* **Chirp top frequency is bounded by the telemetry rate AND the 40 Hz knot rate.**
+  Measured FIRST over a warmup window; the honest f1 = min(request, telemetry
+  bound, knot-stream bound). At 100 Hz telemetry / 40 Hz knots that is ~8 Hz — the
+  bridge honestly reaches the 6 Hz pos-loop question but NOT the 30 Hz direct covers.
+* **Telemetry is the UDP TELEMETRY/DIAGNOSTIC stream** (pos/vel @ ~100 Hz, iq from
+  DIAGNOSTIC), not a 100 Hz CAN poll.
 
 Stages (``--mode``)
 -------------------
-* ``vel_steps``  Stage 1a-2: velocity-loop step responses (rise/overshoot/settle).
-* ``pos_steps``  Stage 1a-3a: position-loop step responses (→ ζ, bandwidth).
-* ``chirp``      Stage 1a-3b: log-chirp sine sweep 1→30 Hz (the 6 Hz question),
-                 amplitude-bounded by stroke → closed-loop gain/phase estimate.
+* ``vel_steps``  Stage 1a-2: velocity-loop step responses (DIRECT only).
+* ``pos_steps``  Stage 1a-3a: position-loop step responses (→ ζ, bandwidth). On
+                 Path BRIDGE these are knot ramps and also SOURCE the inferred
+                 velocity-loop damping.
+* ``chirp``      Stage 1a-3b: log-chirp sine sweep (the 6 Hz question),
+                 amplitude-bounded by stroke + kinematics, f1 bounded by the
+                 telemetry/knot rate on Path BRIDGE.
 * ``ladder``     Stage 1b: escalate pos_gain until instability onset, searching
-                 vel_gain for ζ ≥ target at each rung, with AUTO-BACKOFF to the
-                 last stable triple the instant onset is detected.
-* ``all``        vel_steps → pos_steps → chirp (system-ID first; run ``ladder``
-                 as a separate deliberate invocation).
+                 vel_gain for ζ ≥ target at each rung, AUTO-BACKOFF to the last
+                 stable triple on onset. On Path BRIDGE the firmware MAX_DEVIATION
+                 (0.5 rev) + MPC-staleness E-STOPs are the BACKSTOP: the harness
+                 detects a guard latch from the heartbeat ``fault_state``, backs
+                 off, and recovers via CLEAR_ERRORS — never fighting the guard.
+* ``all``        DIRECT: vel_steps → pos_steps → chirp. BRIDGE: pos_steps → chirp
+                 (no vel_steps). Run ``ladder`` as a separate deliberate invocation.
 
 Safety profile
 --------------
-The bench leg is SHORTER than a platform leg and the firmware STROKE_MAX_REV
-does NOT protect it, so this DRIVER owns the stroke cap. Every stimulus is
-clamped to the stroke bounds before a setpoint reaches the motor; a runtime
-excursion check drops the axis to IDLE the instant displacement crosses the
-cap; and any fault (heartbeat loss, ODrive error, Ctrl-C, or a detected
-instability onset) idles the axis before the script proceeds. Hard caps below
-are cited from ``cogging_bench_test.py`` — the sibling harness that established
-them for this same bench rig with the borrowed brake resistor attached.
+The bench leg is SHORTER than a platform leg and the firmware ``STROKE_MAX_REV``
+(3.90 rev, production leg-0) does NOT protect the 3.0-rev bench cap — so THIS
+DRIVER owns the stroke cap on both paths. Every stimulus is clamped to the stroke
+bounds + the kinematic (vel/accel) caps before a setpoint leaves the harness. On
+Path BRIDGE the firmware guards (MAX_DEVIATION, MPC-staleness) are the backstop,
+not the primary protection. Hard caps below are cited from ``cogging_bench_test.py``.
 
 Usage
 -----
     source ~/Desktop/PDJ_venv/venv/bin/activate
 
-    # Dry-run: print the full plan (bounds, stimuli, ladder) — no CAN I/O.
-    python tests/hardware/bench_leg_sysid.py --mode all --dry-run
+    # Dry-run: print the full plan (bounds, stimuli, ladder) — no socket/CAN I/O.
+    python tests/hardware/bench_leg_sysid.py --mode all --dry-run           # BRIDGE
     python tests/hardware/bench_leg_sysid.py --mode ladder --dry-run
+    python tests/hardware/bench_leg_sysid.py --path direct --mode all --dry-run  # historical
 
-    # System-ID (home first if the encoder reference is fresh-boot):
+    # System-ID over the bridge (home first if the encoder reference is fresh):
     python tests/hardware/bench_leg_sysid.py --mode all --home
-    # Escalate-until-unstable gain ladder:
+    # Escalate-until-unstable gain ladder over the bridge:
     python tests/hardware/bench_leg_sysid.py --mode ladder --home
 
 Output
 ------
 A per-run directory ``temp/probes/bench_sysid_<ts>/`` containing one CSV per
 stimulus plus ``manifest.json`` (gains, caps, bounds, thresholds, timestamps,
-and per-stage results). CSVs are gitignored under the umbrella ``temp/`` rule.
+telemetry-rate measurement, and per-stage results). CSVs are gitignored under
+the umbrella ``temp/`` rule.
 
 Exit codes
 ----------
@@ -66,6 +103,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from dataclasses import asdict
 from typing import List, Optional
@@ -75,19 +113,32 @@ import numpy as np
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
 sys.path.insert(0, _SCRIPT_DIR)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 import sysid_lib as sid  # noqa: E402
-from single_leg_test import (  # type: ignore  # noqa: E402
-    SingleLegTestHarness,
-    encode_set_controller_mode,
-    encode_set_input_pos,
-    encode_set_input_vel,
-    encode_set_pos_gain,
-    encode_set_state,
-    encode_set_vel_curr_limits,
-    encode_set_vel_gains,
-    error_names,
-)
+
+# Path DIRECT backend (socketcan bench harness). Direct CAN was wound down on this
+# Jetson (2026-07-11): no USB-CAN adapter, the Jetson no longer sees CAN. The import
+# is GUARDED so Path BRIDGE (the default) works even where python-can / the adapter
+# is absent; the direct runner refuses live runs regardless (see main()) and is kept
+# only for the record + historical --dry-run planning.
+try:
+    from single_leg_test import (  # type: ignore  # noqa: E402
+        SingleLegTestHarness,
+        encode_set_controller_mode,
+        encode_set_input_pos,
+        encode_set_input_vel,
+        encode_set_pos_gain,
+        encode_set_state,
+        encode_set_vel_curr_limits,
+        encode_set_vel_gains,
+        error_names,
+    )
+    _DIRECT_IMPORT_ERR: Optional[Exception] = None
+except Exception as _exc:  # noqa: BLE001 — python-can/adapter absent is expected post-cutover
+    SingleLegTestHarness = None  # type: ignore
+    _DIRECT_IMPORT_ERR = _exc
 
 # Load baseline leg gains from generated config (the Level-1 HOLD tier).
 sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'config', 'generated'))
@@ -158,8 +209,27 @@ DEFAULT_OSC_SCORE_THRESHOLD = 0.5
 DEFAULT_IQ_RIPPLE_THRESHOLD = 0.5      # A — braking-current-cycling ripple gate
 OVERSHOOT_ONSET = 0.15                 # >15% overshoot (ζ<0.55) = onset
 
-DEFAULT_SEND_PERIOD_S = 0.005          # 200 Hz setpoint/sample cadence
+DEFAULT_SEND_PERIOD_S = 0.005          # 200 Hz setpoint/sample cadence (DIRECT)
 SETTLE_S = 1.0                         # post-step settle window for tail analysis
+
+# ---------------------------------------------------------------------------
+# Path BRIDGE constants — the can-bridge Teensy over UDP teensy_link. Firmware
+# values MUST match canbridge_config.h (cited) or the knot lookahead / lead clamp
+# / staleness assumptions drift from what the Teensy actually does.
+# ---------------------------------------------------------------------------
+BRIDGE_TEENSY_IP = "192.168.42.2"       # ADR-0007 point-to-point link (teensy_setpoint_bench.py:79)
+BRIDGE_SEG_T_S = 0.025                  # canbridge_config.h:116 SEGMENT_T_S (40 Hz knot step)
+BRIDGE_SETPOINT_HZ = 40.0               # 1 / SEG_T — the knot stream rate
+BRIDGE_MAX_LEAD_REV = 0.10              # canbridge_config.h:139 MAX_LEAD_REV (interp lead clamp)
+BRIDGE_MAX_DEVIATION_REV = 0.5          # canbridge_config.h:147 MAX_DEVIATION_REV (E-STOP backstop)
+BRIDGE_MPC_STALENESS_S = 0.25           # canbridge_config.h:154 MPC_CMD_STALENESS_US (E-STOP backstop)
+BRIDGE_LEAD_MARGIN_FRAC = 0.5           # size knot-ramp step at 0.5×lead clamp (2× margin ⇒ 2.0 rev/s)
+BRIDGE_TELEM_NOMINAL_HZ = 100.0         # TELEMETRY nominal rate (dry-run assumption; measured live)
+BRIDGE_WARMUP_S = 2.0                   # RX-only window to MEASURE telemetry rate before any stimulus
+BRIDGE_MAX_RECOVERIES = 2               # guard-latch CLEAR_ERRORS budget before the ladder aborts
+BRIDGE_T2J_FLAG_MPC_ACTIVE = 0x8        # HeartbeatT2J.flags bit3 — verify our arm took
+BRIDGE_ARM_VERIFY_GRACE_S = 0.7         # allow this long after arm for firmware mpc_active to report
+_BRIDGE_STROKE_CEIL_PROD_REV = 3.90     # firmware STROKE_MAX_REV[0] — production clamp, NOT a bench bound
 
 
 class BenchSysID:
@@ -836,12 +906,884 @@ class BenchSysID:
         return rc
 
 
+def _bridge_ports():
+    """(stream_port, rpc_port) from the generated protocol — imported lazily so
+    the module (and Path-DIRECT dry-run) never needs teensy_link."""
+    from controller.teensy_link import protocol as p  # noqa: E402
+    return int(p.PORT_STREAM), int(p.PORT_RPC)
+
+
+class BridgeSysID:
+    """Path BRIDGE Stage-1 runner: position-knot stimuli + gain ladder over the
+    can-bridge Teensy (UDP teensy_link).
+
+    Design (why a separate runner, not a shared backend behind ``BenchSysID``):
+    the two paths share *what to measure and how to judge it* — every onset /
+    divergence / ladder / step-metric / freq-response function lives in
+    ``sysid_lib`` and is used by BOTH. What they do NOT share is the DRIVE: Path
+    DIRECT issues instantaneous ``input_pos``/``input_vel`` setpoints and polls
+    100 Hz CAN; Path BRIDGE runs a CONTINUOUS armed 40 Hz knot stream through the
+    firmware Hermite + lead clamp, with a live guard machine underneath and RPC
+    gains. Forcing those two transports behind one stage-level ABC would be a
+    leaky abstraction (the stimulus shaping, telemetry source, homing, and guard
+    handling all differ), so the split is: share ``sysid_lib`` (the analysis),
+    separate the transport. This is the only runnable path on this Jetson.
+    """
+
+    def __init__(self, *, axis_id: int, stroke_cap_rev: float,
+                 center_rev: Optional[float], current_limit_a: float,
+                 vel_cap_rps: float, output_dir: str, dry_run: bool,
+                 chirp_f0: float, chirp_f1: float, chirp_dur: float,
+                 chirp_amp: float, pos_steps: List[float], ladder_step: float,
+                 zeta_target: float, bw_clear_hz: Optional[float], n_vel: int,
+                 ripple_threshold: float, osc_threshold: float,
+                 iq_ripple_threshold: float, do_home: bool,
+                 max_recoveries: int = BRIDGE_MAX_RECOVERIES):
+        self.axis_id = axis_id
+        self.stroke_cap_rev = stroke_cap_rev
+        self.current_limit_a = current_limit_a
+        self.vel_cap_rps = vel_cap_rps
+        self.dry_run = dry_run
+        self.do_home = do_home
+        self.bounds = sid.stroke_bounds(stroke_cap_rev, STROKE_MARGIN_REV)
+        self.center_rev = center_rev if center_rev is not None else stroke_cap_rev / 2.0
+        self.chirp_f0 = chirp_f0
+        self.chirp_f1 = chirp_f1
+        self.chirp_dur = chirp_dur
+        self.chirp_amp = chirp_amp
+        self.pos_steps = pos_steps
+        self.ladder_step = ladder_step
+        self.zeta_target = zeta_target
+        self.bw_clear_hz = bw_clear_hz
+        self.n_vel = n_vel
+        self.ripple_threshold = ripple_threshold
+        self.osc_threshold = osc_threshold
+        self.iq_ripple_threshold = iq_ripple_threshold
+        self.output_dir = output_dir
+
+        # Bridge stimulus sizing (all in the harness — the firmware STROKE_MAX_REV
+        # is the production 3.90-rev clamp and does NOT protect the 3.0-rev bench cap).
+        self.frame_step_rev = sid.lead_clamp_frame_step(
+            BRIDGE_MAX_LEAD_REV, BRIDGE_LEAD_MARGIN_FRAC)
+        self.hold_frames = int(round(SETTLE_S / BRIDGE_SEG_T_S))
+        self.guard = sid.GuardLatchBackoff(max_recoveries=max_recoveries)
+        self.telem_rate: Optional[sid.TelemetryRate] = None
+
+        # Transport handles — created in run() (dry-run opens no socket).
+        self._client = None
+        self._rpc = None
+        self._rpc_server = None
+        self._tod = None
+        self._nlegs = 6
+        self._lock = threading.Lock()
+        self._cache = {'telem': None, 'telem_ts': None, 'diag': {}, 'hb': None}
+        self._sigint = False
+        self._abort_reason = ''
+
+        self._manifest = {
+            'created': datetime.datetime.now().isoformat(timespec='seconds'),
+            'path': 'bridge',
+            'axis_id': axis_id,
+            'teensy_ip': BRIDGE_TEENSY_IP,
+            'caps': {
+                'stroke_cap_rev': stroke_cap_rev,
+                'vel_cap_rps': vel_cap_rps,
+                'accel_cap_rps2': HARD_ACCEL_CAP_RPS2,
+                'current_limit_a': current_limit_a,
+            },
+            'bridge': {
+                'seg_t_s': BRIDGE_SEG_T_S,
+                'setpoint_hz': BRIDGE_SETPOINT_HZ,
+                'max_lead_rev': BRIDGE_MAX_LEAD_REV,
+                'max_deviation_rev': BRIDGE_MAX_DEVIATION_REV,
+                'mpc_staleness_s': BRIDGE_MPC_STALENESS_S,
+                'knot_frame_step_rev': self.frame_step_rev,
+                'lead_margin_frac': BRIDGE_LEAD_MARGIN_FRAC,
+                'max_recoveries': max_recoveries,
+            },
+            'bounds_rev': [self.bounds.lo_rev, self.bounds.hi_rev],
+            'center_rev': self.center_rev,
+            'baseline_gains': asdict(BASELINE_GAINS),
+            'onset_thresholds': {
+                'ripple_rms': ripple_threshold,
+                'oscillation_score': osc_threshold,
+                'iq_ripple_a': iq_ripple_threshold,
+                'overshoot': OVERSHOOT_ONSET,
+            },
+            'zeta_target': zeta_target,
+            'stages': {},
+        }
+
+    # -- pre-flight ----------------------------------------------------------
+
+    def validate_args(self) -> Optional[str]:
+        if not (0.0 < self.stroke_cap_rev <= HARD_STROKE_CEIL_REV):
+            return (f"stroke cap {self.stroke_cap_rev} rev outside "
+                    f"(0, {HARD_STROKE_CEIL_REV}]")
+        if not self.bounds.contains(self.center_rev):
+            return (f"center {self.center_rev:.3f} rev outside usable bounds "
+                    f"[{self.bounds.lo_rev:.3f}, {self.bounds.hi_rev:.3f}]")
+        if not (0.0 < self.current_limit_a <= HARD_CURRENT_LIMIT_A):
+            return f"current limit {self.current_limit_a} A outside (0, {HARD_CURRENT_LIMIT_A}]"
+        if not (0.0 < self.vel_cap_rps <= HARD_VEL_CAP_RPS):
+            return f"velocity cap {self.vel_cap_rps} rev/s outside (0, {HARD_VEL_CAP_RPS}]"
+        # Every pos-step target must land inside bounds after the clamp (they do by
+        # construction — position_step_series clamps — but the ladder step must too).
+        if abs(self.ladder_step) > self.bounds.width:
+            return f"ladder step {self.ladder_step} rev wider than the usable stroke"
+        return None
+
+    # -- kinematic bounds (harness-owned) ------------------------------------
+
+    def _chirp_amplitude_request(self) -> float:
+        """Requested chirp amplitude reduced to fit the vel/accel caps AND the lead
+        clamp at the BRIDGE chirp f1 (itself bounded by the telemetry/knot rate).
+
+        The vel/accel caps alone leave the chirp riding the 0.10 rev lead clamp — at the
+        vel-bound amplitude the peak per-knot step is ~MAX_LEAD exactly (``vel_cap 4.0 ==
+        MAX_LEAD/seg_t``), which distorts the frequency response (the streamed u0 stops
+        matching the interp-clamped command) and can accumulate to a MAX_DEVIATION latch.
+        The lead-clamp bound gives the sweep the same 2× lead margin the position steps get
+        and keeps u0 a faithful lock-in reference (sysid_bridge finding #4)."""
+        f1 = self._chirp_f1_bridge()
+        kin = sid.chirp_amplitude_cap_for_kinematics(
+            f1, vel_cap_rps=self.vel_cap_rps, accel_cap_rps2=HARD_ACCEL_CAP_RPS2)
+        lead = sid.chirp_amplitude_cap_for_lead_clamp(
+            f1, frame_step_rev=self.frame_step_rev, seg_t_s=BRIDGE_SEG_T_S)
+        return min(self.chirp_amp, kin, lead)
+
+    def _telem_effective_hz(self) -> float:
+        if self.telem_rate is not None and self.telem_rate.effective_hz > 0:
+            return self.telem_rate.effective_hz
+        return BRIDGE_TELEM_NOMINAL_HZ
+
+    def _chirp_f1_bridge(self) -> float:
+        """The honest bridge chirp top frequency: min(request, telemetry bound,
+        knot-stream bound). Uses the measured rate when available, else nominal."""
+        return sid.bridge_chirp_top_freq(
+            self.chirp_f1, self._telem_effective_hz(), BRIDGE_SEG_T_S)
+
+    def _response_bins(self) -> List[float]:
+        f1 = self._chirp_f1_bridge()
+        return [f for f in DEFAULT_CHIRP_FREQS_HZ
+                if self.chirp_f0 - 1e-9 <= f <= f1 + 1e-9]
+
+    # -- transport (live only) -----------------------------------------------
+
+    def _setup_transport(self):
+        from controller.teensy_link import (  # noqa: E402
+            TeensyLinkClient, RpcClient, RpcServer, TimeOfDayServer, MsgType,
+            Telemetry, Diagnostic, HeartbeatT2J,
+        )
+        from controller.teensy_link import protocol as pr  # noqa: E402
+        self._MsgType = MsgType
+        self._Telemetry = Telemetry
+        self._Diagnostic = Diagnostic
+        self._HeartbeatT2J = HeartbeatT2J
+        self._Setpoint = pr.Setpoint
+        self._RpcMethod = pr.RpcMethod
+        self._nlegs = int(pr.NUM_LEGS)
+        from controller.teensy_link import rpc_args  # noqa: E402
+        self._rpc_args = rpc_args
+
+        self._client = TeensyLinkClient(
+            teensy_addr=(BRIDGE_TEENSY_IP, int(pr.PORT_STREAM)), bind_host="0.0.0.0")
+        self._client.start()
+        self._rpc_server = RpcServer(self._client)
+        self._tod = TimeOfDayServer(self._rpc_server)
+        self._rpc = RpcClient(self._client)
+        self._client.subscribe(int(MsgType.TELEMETRY), self._on_telem)
+        self._client.subscribe(int(MsgType.DIAGNOSTIC), self._on_diag)
+        self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_hb)
+        # DISARMED heartbeat (mpc_active=0) — RX/RPC only until we deliberately arm.
+        self._client.start_heartbeat(hz=float(pr.HEARTBEAT_HZ), flags=0)
+        self._client.set_heartbeat_flags(0)
+
+    def _teardown_transport(self):
+        try:
+            self._disarm()
+        except Exception:
+            pass
+        for closer in (getattr(self, '_tod', None), getattr(self, '_rpc_server', None)):
+            try:
+                if closer is not None:
+                    closer.close()
+            except Exception:
+                pass
+        try:
+            if self._client is not None:
+                self._client.stop()
+        except Exception:
+            pass
+
+    def _on_telem(self, mt, seq, payload, addr):
+        tm = self._Telemetry.unpack(payload)
+        with self._lock:
+            self._cache['telem'] = tm
+            self._cache['telem_ts'] = time.perf_counter()
+
+    def _on_diag(self, mt, seq, payload, addr):
+        d = self._Diagnostic.unpack(payload)
+        with self._lock:
+            self._cache['diag'][int(d.axis_id)] = d
+
+    def _on_hb(self, mt, seq, payload, addr):
+        with self._lock:
+            self._cache['hb'] = self._HeartbeatT2J.unpack(payload)
+
+    def _sample(self):
+        with self._lock:
+            tm = self._cache['telem']
+            ts = self._cache['telem_ts']
+            d = self._cache['diag'].get(self.axis_id)
+        pos = None if tm is None else float(tm.pos_rev[self.axis_id])
+        vel = None if tm is None else float(tm.vel_rps[self.axis_id])
+        iq = None if d is None else float(d.iq_measured)
+        return pos, vel, iq, ts
+
+    def _fault_state(self) -> Optional[int]:
+        with self._lock:
+            hb = self._cache['hb']
+        return None if hb is None else int(hb.fault_state)
+
+    def _fw_mpc_active(self) -> Optional[bool]:
+        with self._lock:
+            hb = self._cache['hb']
+        return None if hb is None else bool(hb.flags & BRIDGE_T2J_FLAG_MPC_ACTIVE)
+
+    def _vec(self, val: float):
+        ax = self.axis_id
+        return tuple(float(val) if i == ax else 0.0 for i in range(self._nlegs))
+
+    def _arm(self):
+        self._client.set_heartbeat_flags(1)   # mpc_active=1 — firmware output gate may ENABLE
+
+    def _disarm(self):
+        if self._client is not None:
+            self._client.set_heartbeat_flags(0)   # mpc_active=0 — firmware gates output off
+
+    def _apply_gains(self, g: sid.GainTriple):
+        """RAM-only, session-only gain apply over CAN3 via RPC (re-applied per point)."""
+        self._rpc.call(int(self._RpcMethod.SET_POS_GAIN),
+                       self._rpc_args.encode_set_pos_gain(self.axis_id, g.pos_gain))
+        self._rpc.call(int(self._RpcMethod.SET_VEL_GAINS),
+                       self._rpc_args.encode_set_vel_gains(
+                           self.axis_id, g.vel_gain, g.vel_int_gain))
+
+    def _clear_errors(self):
+        self._rpc.call(int(self._RpcMethod.CLEAR_ERRORS),
+                       self._rpc_args.encode_clear_errors(self.axis_id))
+
+    def _send_knot(self, u0, u1, u2, v0, t_origin_us):
+        sp = self._Setpoint(
+            u0=self._vec(u0), u1=self._vec(u1), u2=self._vec(u2), v0=self._vec(v0),
+            accel=(0.0,) * self._nlegs, torque_ff=(0.0,) * self._nlegs,
+            flags=0x3, t_origin_us=int(t_origin_us))
+        self._client.send_stream(int(self._MsgType.SETPOINT), sp.pack())
+
+    def _measure_telemetry_rate(self) -> sid.TelemetryRate:
+        """RX-ONLY warmup: collect TELEMETRY arrival stamps over BRIDGE_WARMUP_S and
+        estimate the rate + irregularity BEFORE any stimulus (it bounds the honest
+        chirp top frequency). Never streams a setpoint — cannot command motion."""
+        stamps: List[float] = []
+        unsub = self._client.subscribe(
+            int(self._MsgType.TELEMETRY),
+            lambda mt, seq, pl, addr: stamps.append(time.perf_counter()))
+        t_end = time.perf_counter() + BRIDGE_WARMUP_S
+        while time.perf_counter() < t_end and not self._sigint:
+            time.sleep(0.02)
+        unsub()
+        self.telem_rate = sid.estimate_telemetry_rate(stamps)
+        return self.telem_rate
+
+    # -- streaming + collection ----------------------------------------------
+
+    def _stream_and_sample(self, series, *, guard=True, writer=None,
+                           revert_gains: Optional[sid.GainTriple] = None) -> dict:
+        """Stream a 40 Hz knot ``u0`` series (already armed) and sample telemetry
+        each tick. On a guard latch the firmware E-STOP is the backstop: consult
+        ``self.guard`` — ``backoff_recover`` disarms + CLEAR_ERRORS (+ reverts
+        gains) and returns ``guard_latched=True``; ``abort`` returns
+        ``aborted=True`` (ceding authority on a fatal). Never fights the guard."""
+        n = len(series)
+        rec = {'t': [], 'cmd': [], 'pos': [], 'vel': [], 'iq': [], 'telem_ts': []}
+        aborted = False
+        guard_latched = False
+        guard_action = None
+        period = 1.0 / BRIDGE_SETPOINT_HZ
+        t0 = time.perf_counter()
+        for i in range(n):
+            if self._sigint:
+                aborted = True
+                self._abort_reason = 'SIGINT'
+                self._disarm()
+                break
+            t_rel = i * period
+            now_us = int(time.time() * 1_000_000)
+            u0 = float(series[i])
+            u1 = float(series[min(i + 1, n - 1)])
+            u2 = float(series[min(i + 2, n - 1)])
+            v0 = (u1 - u0) / BRIDGE_SEG_T_S
+            try:
+                self._send_knot(u0, u1, u2, v0, now_us)
+            except OSError as e:
+                aborted = True
+                self._abort_reason = f"setpoint send failed: {e}"
+                self._disarm()
+                break
+
+            pos, vel, iq, ts = self._sample()
+            fs = self._fault_state()
+            if guard and fs is not None:
+                act = self.guard.observe(fs)
+                if act.kind == 'backoff_recover':
+                    guard_latched = True
+                    guard_action = act
+                    print(f"    GUARD LATCH → {act.reason}")
+                    self._disarm()
+                    if revert_gains is not None:
+                        try:
+                            self._apply_gains(revert_gains)
+                        except Exception:
+                            pass
+                    if act.clear_errors:
+                        try:
+                            self._clear_errors()
+                        except Exception:
+                            pass
+                    break
+                if act.kind == 'abort':
+                    aborted = True
+                    guard_action = act
+                    self._abort_reason = act.reason
+                    self._disarm()   # fatal → ceded; firmware deferred stow runs
+                    break
+            if t_rel > BRIDGE_ARM_VERIFY_GRACE_S and self._fw_mpc_active() is False:
+                aborted = True
+                self._abort_reason = (
+                    "firmware mpc_active=0 after arming — another heartbeat "
+                    "authority is overriding it (is a ROS2 teensy_bridge_node "
+                    "running? this driver must be the sole wire authority)")
+                self._disarm()
+                break
+
+            rec['t'].append(t_rel)
+            rec['cmd'].append(u0)
+            rec['pos'].append(pos if pos is not None else float('nan'))
+            rec['vel'].append(vel if vel is not None else float('nan'))
+            rec['iq'].append(iq if iq is not None else float('nan'))
+            rec['telem_ts'].append(ts if ts is not None else float('nan'))
+            if writer is not None:
+                writer.writerow([f"{t_rel:.4f}", f"{u0:.6f}",
+                                 "" if pos is None else f"{pos:.6f}",
+                                 "" if vel is None else f"{vel:.6f}",
+                                 "" if iq is None else f"{iq:.4f}",
+                                 "" if fs is None else int(fs)])
+            target = t0 + (i + 1) * period
+            dt = target - time.perf_counter()
+            if dt > 0:
+                time.sleep(dt)
+        out = {k: np.asarray(v, float) for k, v in rec.items()}
+        out['aborted'] = aborted
+        out['guard_latched'] = guard_latched
+        out['guard_action'] = guard_action
+        return out
+
+    def _open_csv(self, name: str):
+        os.makedirs(self.output_dir, exist_ok=True)
+        path = os.path.join(self.output_dir, name)
+        f = open(path, 'w', newline='')
+        w = csv.writer(f)
+        w.writerow(['t_s', 'cmd_rev', 'pos_rev', 'vel_rps', 'iq_A', 'fault_state'])
+        return f, w, path
+
+    def _evaluate_onset(self, arrays: dict, tail_from: float) -> dict:
+        t = arrays['t']
+        mask = t >= tail_from
+        vel_tail = arrays['vel'][mask]
+        iq_tail = arrays['iq'][mask]
+        onset = sid.detect_instability_onset(
+            vel_tail, ripple_rms_threshold=self.ripple_threshold,
+            oscillation_score_threshold=self.osc_threshold)
+        iqc = sid.braking_current_cycling(
+            iq_tail, ripple_threshold=self.iq_ripple_threshold,
+            oscillation_threshold=self.osc_threshold)
+        return {'onset': onset, 'iq_cycle': iqc}
+
+    def _knot_ramp(self, start, target, hold_frames=None):
+        return sid.knot_step_ramp(
+            start, target, frame_step_rev=self.frame_step_rev,
+            hold_frames=self.hold_frames if hold_frames is None else hold_frames,
+            bounds=self.bounds)
+
+    def _enter_hold_at_center(self) -> dict:
+        """CLOSED_LOOP position bring-up (RPC) → arm → stream a knot ramp from the
+        live encoder pos to the operating centre (no jump at arm), then hold.
+        Returns the stream result so the caller can stop if the approach latched
+        the guard / aborted (it disarms itself on either)."""
+        self._bringup_closed_loop()
+        pos, _, _, _ = self._sample()
+        start = pos if pos is not None else self.center_rev
+        series = self._knot_ramp(start, self.center_rev, hold_frames=int(0.4 / BRIDGE_SEG_T_S))
+        self._arm()
+        return self._stream_and_sample(series, guard=True)
+
+    def _bringup_closed_loop(self):
+        """Legacy-faithful bring-up to CLOSED_LOOP position mode (like
+        teensy_setpoint_bench --close-loop): vel/curr limits → POSITION/PASSTHROUGH
+        → operational gains → CLOSED_LOOP (the ODrive auto-holds at the current pos,
+        no jolt). Gains from hardware_config (Level-1 HOLD tier baseline)."""
+        import jugglebot.protocol_config as pc  # noqa: E402
+        ax = self.axis_id
+        vel_lim = float(self.vel_cap_rps)
+        curr_lim = float(self.current_limit_a)
+        ctrl_pos = int(pc.ODRIVE_CONTROL_MODES['POSITION'])
+        in_pass = int(pc.ODRIVE_INPUT_MODES['PASSTHROUGH'])
+        CLOSED_LOOP = 8
+        ra = self._rpc_args
+        self._rpc.call(int(self._RpcMethod.SET_VEL_CURR_LIMITS),
+                       ra.encode_set_vel_curr_limits(ax, vel_lim, curr_lim))
+        self._rpc.call(int(self._RpcMethod.SET_CONTROLLER_MODE),
+                       ra.encode_set_controller_mode(ax, ctrl_pos, in_pass))
+        self._apply_gains(BASELINE_GAINS)
+        self._rpc.call(int(self._RpcMethod.SET_AXIS_STATE),
+                       ra.encode_set_axis_state(ax, CLOSED_LOOP))
+        time.sleep(0.3)
+
+    def _home(self):
+        """Fire the firmware HOME(axis) RPC (fire-and-monitor; the move runs
+        autonomously in the can-bridge HOME handler, velocity-limited + current-
+        capped + hardstop-detected) and wait for the axis to settle. Production
+        homing drives controller.teensy_link.homing.HomingMonitor from telemetry
+        (teensy_home_bench.py); here we fire + wait for a finite, stationary
+        encoder with a hard timeout."""
+        ra = self._rpc_args
+        try:
+            self._rpc.call(int(self._RpcMethod.HOME),
+                           ra.encode_home(self.axis_id), retries=0)
+        except Exception as e:  # noqa: BLE001
+            print(f"  HOME RPC returned: {e} (continuing to monitor telemetry)")
+        t_end = time.perf_counter() + 35.0
+        last = None
+        stable = 0
+        while time.perf_counter() < t_end and not self._sigint:
+            pos, vel, _, _ = self._sample()
+            if pos is not None and vel is not None and abs(vel) < 0.05:
+                if last is not None and abs(pos - last) < 1e-3:
+                    stable += 1
+                    if stable > 20:
+                        print(f"  HOME complete: pos={pos:+.4f} rev")
+                        return True
+                last = pos
+            else:
+                stable = 0
+            time.sleep(0.05)
+        print("  HOME: timed out waiting for a settled encoder")
+        return False
+
+    # -- Stage 1a-3a: position-loop step responses (bridge knot ramps) -------
+
+    def stage_pos_steps(self) -> bool:
+        print("\n=== Stage 1a-3a: position-loop step responses (bridge knot ramps) ===")
+        print("  NOTE velocity-loop damping is INFERRED from these position-step "
+              "overshoots (the bridge has no raw input_vel step).")
+        entry = self._enter_hold_at_center()
+        if entry['aborted'] or entry['guard_latched']:
+            self._disarm()
+            print(f"  ABORT during approach: {self._abort_reason or 'guard latch'}")
+            return False
+        plan = sid.bridge_step_plan(self.center_rev, self.pos_steps, self.bounds,
+                                    frame_step_rev=self.frame_step_rev,
+                                    seg_t_s=BRIDGE_SEG_T_S)
+        results = []
+        ok = True
+        for req, sp in zip(self.pos_steps, plan):
+            if sp.clamped:
+                print(f"  NOTE step {req:+.3f} rev clamped to bound {sp.target_rev:.3f} rev")
+            # Return to centre first, ramping from where the leg ACTUALLY sits — NOT a flat
+            # series at centre. A flat [center]*(1+hold) latches the interp base at centre in
+            # one 25 ms knot while the encoder is a full step (~0.14 rev) away, engaging the
+            # very lead clamp the steps avoid and walking the leg back at up to the ODrive
+            # vel_limit. Ramping from the measured pos keeps the return under the same 2.0
+            # rev/s lead-clamp-margined ramp as the outbound step (sysid_bridge finding #2).
+            cur, _, _, _ = self._sample()
+            self._stream_and_sample(
+                self._knot_ramp(cur if cur is not None else self.center_rev,
+                                self.center_rev, hold_frames=int(0.4 / BRIDGE_SEG_T_S)),
+                guard=True)
+            f, w, path = self._open_csv(f"pos_step_{req:+.3f}rev.csv")
+            y0, _, _, _ = self._sample()
+            y0 = y0 if y0 is not None else self.center_rev
+            print(f"  step {req:+.3f} rev → target {sp.target_rev:.3f} rev "
+                  f"(ramp {sp.ramp_frames} frames / {sp.ramp_duration_s * 1e3:.0f} ms, "
+                  f"peak {sp.peak_frame_step_rev:.4f} rev/frame)  {path}")
+            arrays = self._stream_and_sample(
+                self._knot_ramp(self.center_rev, sp.target_rev), guard=True, writer=w)
+            f.close()
+            if arrays['aborted'] or arrays['guard_latched']:
+                self._disarm()
+                print(f"  ABORT: {self._abort_reason or 'guard latch at baseline gains'}")
+                return False
+            m = sid.fit_step_response(arrays['t'], arrays['pos'], y0, sp.target_rev)
+            ev = self._evaluate_onset(arrays, tail_from=arrays['t'][-1] * 0.5
+                                      if arrays['t'].size else 0.0)
+            # f_bw from a bridge step is DOMINATED by the fixed 2.0 rev/s knot ramp, NOT the
+            # loop: a ~6 Hz pos loop's 10-90% rise (~58 ms) is comparable to or shorter than
+            # the 50-150 ms ramp for the smaller steps, so 0.35/rise measures the RAMP. Report
+            # it flagged as ramp-limited with its ceiling ~1/(0.8·ramp_dur); the true loop
+            # bandwidth comes from the chirp, not the step (sysid_bridge finding #3).
+            f_bw = (0.35 / m.rise_time_s) if (m.rise_time_s and m.rise_time_s > 0
+                                              and m.rise_time_s == m.rise_time_s) else float('nan')
+            f_bw_ceiling = (1.0 / (0.8 * sp.ramp_duration_s)
+                            if sp.ramp_duration_s > 0 else float('nan'))
+            print(f"    rise={m.rise_time_s * 1e3:.1f} ms  overshoot={m.overshoot * 100:.1f}%  "
+                  f"ζ≈{m.zeta:.2f}  f_bw≈{f_bw:.1f} Hz (ramp-limited ≤{f_bw_ceiling:.1f} Hz; "
+                  f"use chirp for loop BW)  unstable={ev['onset'].unstable}")
+            results.append({'requested_rev': req, 'target_rev': sp.target_rev,
+                            'clamped': sp.clamped, 'ramp_frames': sp.ramp_frames,
+                            'csv': os.path.basename(path), 'metrics': asdict(m),
+                            'f_bw_hz': f_bw, 'f_bw_ramp_limited': True,
+                            'f_bw_ramp_ceiling_hz': f_bw_ceiling,
+                            'unstable': ev['onset'].unstable})
+            ok = ok and not ev['onset'].unstable
+        self._disarm()
+        self._manifest['stages']['pos_steps'] = results
+        return ok
+
+    # -- Stage 1a-3b: log-chirp frequency response (bridge knot stream) ------
+
+    def stage_chirp(self) -> bool:
+        print("\n=== Stage 1a-3b: log-chirp frequency response (bridge knot stream) ===")
+        f1 = self._chirp_f1_bridge()
+        if f1 < self.chirp_f1 - 1e-9:
+            print(f"  NOTE chirp f1 bounded {self.chirp_f1:.1f} → {f1:.1f} Hz by the "
+                  f"telemetry rate ({self._telem_effective_hz():.0f} Hz) / 40 Hz knot "
+                  f"stream (the bridge cannot honestly probe higher).")
+        entry = self._enter_hold_at_center()
+        if entry['aborted'] or entry['guard_latched']:
+            self._disarm()
+            print(f"  ABORT during approach: {self._abort_reason or 'guard latch'}")
+            return False
+        # Knots on the 40 Hz grid; the firmware Hermite interpolates to 500 Hz.
+        t_grid = np.arange(0.0, self.chirp_dur, BRIDGE_SEG_T_S)
+        series, amp_used = sid.chirp_position_series(
+            t_grid, self.center_rev, self._chirp_amplitude_request(),
+            self.chirp_f0, f1, self.chirp_dur, self.bounds)
+        pv, pa = sid.chirp_peak_kinematics(amp_used, f1)
+        if amp_used < self.chirp_amp - 1e-9:
+            print(f"  NOTE chirp amp reduced {self.chirp_amp:.4f} → {amp_used:.4f} rev "
+                  f"to fit stroke + vel/accel caps")
+        print(f"  chirp {self.chirp_f0:.1f}→{f1:.1f} Hz, amp={amp_used:.4f} rev "
+              f"({amp_used * hw_mm_per_rev() * 2:.2f} mm p-p), peak {pv:.2f} rev/s / "
+              f"{pa:.0f} rev/s², {self.chirp_dur:.1f} s, {len(series)} knots")
+        f, w, path = self._open_csv("chirp.csv")
+        self._arm()
+        arrays = self._stream_and_sample(series, guard=True, writer=w)
+        f.close()
+        self._disarm()
+        if arrays['aborted'] or arrays['guard_latched']:
+            print(f"  ABORT: {self._abort_reason or 'guard latch during chirp'}")
+            return False
+        bins = self._response_bins()
+        gains, phases = sid.estimate_frequency_response(
+            arrays['t'], arrays['cmd'], arrays['pos'], bins)
+        print("    f[Hz]  gain   phase[deg]")
+        points = []
+        for fr, g, ph in zip(bins, gains, phases):
+            print(f"    {fr:5.1f}  {g:5.2f}  {ph:8.1f}")
+            points.append({'freq_hz': fr, 'gain': float(g), 'phase_deg': float(ph)})
+        self._manifest['stages']['chirp'] = {
+            'csv': os.path.basename(path), 'amplitude_rev': amp_used,
+            'f0_hz': self.chirp_f0, 'f1_hz': f1, 'f1_requested_hz': self.chirp_f1,
+            'telem_effective_hz': self._telem_effective_hz(), 'response': points}
+        return True
+
+    # -- Stage 1b: escalate-until-unstable gain ladder (bridge) --------------
+
+    def stage_ladder(self) -> bool:
+        print("\n=== Stage 1b: escalate-until-unstable gain ladder (bridge) ===")
+        print(f"  guard backstop ACTIVE: firmware MAX_DEVIATION {BRIDGE_MAX_DEVIATION_REV} "
+              f"rev + MPC-staleness {BRIDGE_MPC_STALENESS_S}s E-STOP; a latch → back off "
+              f"+ CLEAR_ERRORS (budget {self.guard.max_recoveries}).")
+        lad = sid.GainLadder(zeta_target=self.zeta_target, bw_clear_hz=self.bw_clear_hz)
+        entry = self._enter_hold_at_center()
+        if entry['aborted'] or entry['guard_latched']:
+            self._auto_backoff(None, self._abort_reason or 'guard latch during approach')
+            self._finish_ladder(lad, [], None)
+            return False
+        rungs_log = []
+        winner: Optional[sid.GainTriple] = None
+        while not lad.stopped:
+            rung = lad.current_rung()
+            print(f"\n  rung {lad.index}: pos_gain={rung.pos_gain} "
+                  f"vel_int={rung.vel_int_gain:.3f} "
+                  f"vel_gain∈[{rung.vel_gain_lo}, {rung.vel_gain_hi}]")
+            best = None
+            best_zeta = None
+            best_unstable = False
+            best_bw = None
+            stable_found = False
+            tgt = self.bounds.clamp(self.center_rev + self.ladder_step)
+            for vg in sid.vel_gain_candidates(rung, self.n_vel):
+                triple = sid.GainTriple(rung.pos_gain, float(vg), rung.vel_int_gain)
+                # Apply gains DISARMED: the two blocking SET_*_GAIN RPCs (up to ~1.5 s
+                # worst-case with retries) can straddle the firmware 250 ms MPC-staleness
+                # window while armed, latching a (now correctly-classified latching)
+                # MPC_STALE E-STOP — which would burn a guard recovery and gate the
+                # following step's output. Dropping mpc_active=0 across the RPC gap
+                # suppresses the staleness check (fault_machine.cpp:351 gates on
+                # s_mpc_active), then re-arm to stream (sysid_bridge finding #1).
+                self._disarm()
+                self._apply_gains(triple)
+                self._arm()
+                # Return to centre for a clean labelled step, ramping from where the leg
+                # ACTUALLY sits — a flat series at centre would latch the interp base a step
+                # away from the encoder and engage the lead clamp (sysid_bridge finding #2).
+                cur, _, _, _ = self._sample()
+                self._stream_and_sample(
+                    self._knot_ramp(cur if cur is not None else self.center_rev,
+                                    self.center_rev, hold_frames=int(0.4 / BRIDGE_SEG_T_S)),
+                    guard=True, revert_gains=lad.last_good or BASELINE_GAINS)
+                f, w, path = self._open_csv(f"ladder_p{rung.pos_gain:.0f}_v{vg:.2f}.csv")
+                y0, _, _, _ = self._sample()
+                y0 = y0 if y0 is not None else self.center_rev
+                arrays = self._stream_and_sample(
+                    self._knot_ramp(self.center_rev, tgt), guard=True, writer=w,
+                    revert_gains=lad.last_good or BASELINE_GAINS)
+                f.close()
+                if arrays['aborted']:
+                    self._auto_backoff(lad.last_good, self._abort_reason)
+                    self._finish_ladder(lad, rungs_log, lad.last_good)
+                    return False
+                m = sid.fit_step_response(arrays['t'], arrays['pos'], y0, tgt)
+                ev = self._evaluate_onset(arrays, tail_from=arrays['t'][-1] * 0.5
+                                          if arrays['t'].size else 0.0)
+                unstable = (arrays['guard_latched'] or ev['onset'].unstable
+                            or ev['iq_cycle'].cycling or m.overshoot > OVERSHOOT_ONSET)
+                bw = (0.35 / m.rise_time_s) if (m.rise_time_s and m.rise_time_s > 0) else None
+                tag = " GUARD-LATCH" if arrays['guard_latched'] else ""
+                print(f"    vel_gain={vg:.2f}: ζ≈{m.zeta:.2f} "
+                      f"overshoot={m.overshoot * 100:.1f}% unstable={unstable}{tag}")
+                best, best_zeta, best_unstable, best_bw = triple, m.zeta, unstable, bw
+                if arrays['guard_latched']:
+                    # Never keep searching a rung that latched the guard.
+                    break
+                if not unstable and m.zeta >= self.zeta_target:
+                    stable_found = True
+                    break
+
+            onset_for_record = sid.OnsetResult(
+                unstable=best_unstable, ripple_rms=0.0, oscillation_score=0.0, reasons=[])
+            dec = lad.record(best, onset_for_record, best_zeta, bandwidth_hz=best_bw,
+                             stable_vel_gain_found=stable_found)
+            rungs_log.append({'pos_gain': rung.pos_gain,
+                              'tested': asdict(best) if best else None,
+                              'zeta': best_zeta, 'stable_found': stable_found,
+                              'action': dec.action, 'reason': dec.reason})
+            print(f"    → {dec.action} ({dec.reason})")
+            if dec.action == 'backoff':
+                self._auto_backoff(dec.gains, dec.reason)
+                winner = dec.gains
+                break
+            if dec.action == 'stop_ok':
+                winner = dec.gains
+                self._disarm()          # disarm before the final apply (no armed RPC gap)
+                if winner:
+                    self._apply_gains(winner)
+                break
+        self._finish_ladder(lad, rungs_log, winner)
+        return True
+
+    def _auto_backoff(self, last_good, reason):
+        target = last_good if last_good is not None else BASELINE_GAINS
+        print(f"  AUTO-BACKOFF ({reason}) → reverting to pos={target.pos_gain} "
+              f"vel={target.vel_gain} vel_int={target.vel_int_gain}, disarm")
+        self._disarm()
+        try:
+            self._apply_gains(target)
+            self._clear_errors()   # leave the leg un-latched at the safe triple
+        except Exception:
+            pass
+
+    def _finish_ladder(self, lad, rungs_log, winner):
+        self._manifest['stages']['ladder'] = {
+            'stop_reason': lad.stop_reason,
+            'winner': asdict(winner) if winner else None,
+            'guard_recoveries_used': self.guard.recoveries_used,
+            'rungs': rungs_log,
+        }
+        if winner:
+            print(f"\n  Ladder winner: pos_gain={winner.pos_gain} "
+                  f"vel_gain={winner.vel_gain} vel_int={winner.vel_int_gain} "
+                  f"(stop: {lad.stop_reason})")
+        else:
+            print(f"\n  Ladder produced no winner (stop: {lad.stop_reason})")
+
+    # -- manifest ------------------------------------------------------------
+
+    def write_manifest(self):
+        os.makedirs(self.output_dir, exist_ok=True)
+        if self.telem_rate is not None:
+            self._manifest['telemetry_rate'] = asdict(self.telem_rate)
+        self._manifest['finished'] = datetime.datetime.now().isoformat(timespec='seconds')
+        path = os.path.join(self.output_dir, 'manifest.json')
+        with open(path, 'w') as f:
+            json.dump(self._manifest, f, indent=2)
+        print(f"\n  Manifest: {path}")
+
+    # -- dry-run plan --------------------------------------------------------
+
+    def print_plan(self, modes: List[str]):
+        stream_port, rpc_port = _bridge_ports()
+        print("\n" + "=" * 64)
+        print("DRY-RUN — bench-leg system-ID plan, Path BRIDGE (no socket, no motor)")
+        print("=" * 64)
+        print(f"  axis={self.axis_id}  peer={BRIDGE_TEENSY_IP}  "
+              f"stream={stream_port} rpc={rpc_port}")
+        print(f"  caps: stroke≤{self.stroke_cap_rev} rev, vel≤{self.vel_cap_rps} rev/s, "
+              f"accel≤{HARD_ACCEL_CAP_RPS2} rev/s², curr≤{self.current_limit_a} A")
+        print(f"  bounds=[{self.bounds.lo_rev:.3f}, {self.bounds.hi_rev:.3f}] rev  "
+              f"center={self.center_rev:.3f} rev")
+        print(f"  knot stream: {BRIDGE_SETPOINT_HZ:.0f} Hz, seg_t={BRIDGE_SEG_T_S * 1e3:.0f} ms; "
+              f"per-knot step ≤ {self.frame_step_rev:.4f} rev "
+              f"({BRIDGE_LEAD_MARGIN_FRAC:.0%} of the {BRIDGE_MAX_LEAD_REV} rev lead clamp "
+              f"⇒ {self.frame_step_rev / BRIDGE_SEG_T_S:.2f} rev/s ramp)")
+        print(f"  guard BACKSTOP: firmware MAX_DEVIATION {BRIDGE_MAX_DEVIATION_REV} rev + "
+              f"MPC-staleness {BRIDGE_MPC_STALENESS_S}s E-STOP; latch → back off + "
+              f"CLEAR_ERRORS (budget {self.guard.max_recoveries})")
+        print(f"  telemetry: measured live over {BRIDGE_WARMUP_S:.0f}s RX-only warmup FIRST; "
+              f"dry-run assumes nominal {BRIDGE_TELEM_NOMINAL_HZ:.0f} Hz")
+        eff = self._telem_effective_hz()
+        f1 = self._chirp_f1_bridge()
+        print(f"    honest chirp top f1 = min(req {self.chirp_f1:.0f}, telem "
+              f"{sid.honest_chirp_top_freq(eff):.1f}, knot "
+              f"{sid.knot_stream_top_freq(BRIDGE_SEG_T_S):.1f}) = {f1:.1f} Hz")
+        print(f"  onset: ripple>{self.ripple_threshold} rev/s AND osc>{self.osc_threshold}; "
+              f"iq-ripple>{self.iq_ripple_threshold} A; overshoot>{OVERSHOOT_ONSET * 100:.0f}%")
+
+        if self.do_home:
+            print("\n  [home] firmware HOME(0) RPC (fire-and-monitor) before stages")
+        if 'pos_steps' in modes:
+            print("\n  [pos_steps] position-loop knot-ramp step responses "
+                  "(SOURCE the inferred velocity-loop damping):")
+            for req, sp in zip(self.pos_steps,
+                               sid.bridge_step_plan(self.center_rev, self.pos_steps,
+                                                    self.bounds,
+                                                    frame_step_rev=self.frame_step_rev,
+                                                    seg_t_s=BRIDGE_SEG_T_S)):
+                flag = " (CLAMPED)" if sp.clamped else ""
+                print(f"    step {req:+.3f} → target {sp.target_rev:.3f} rev{flag}: "
+                      f"ramp {sp.ramp_frames} knots / {sp.ramp_duration_s * 1e3:.0f} ms, "
+                      f"peak {sp.peak_frame_step_rev:.4f} rev/frame "
+                      f"(≤ lead step {self.frame_step_rev:.4f})")
+        if 'chirp' in modes:
+            amp = self._chirp_amplitude_request()
+            amp_used = sid.clamp_amplitude(self.center_rev, amp, self.bounds)
+            pv, pa = sid.chirp_peak_kinematics(amp_used, f1)
+            n_knots = len(np.arange(0.0, self.chirp_dur, BRIDGE_SEG_T_S))
+            print("\n  [chirp] log sine sweep (40 Hz knots → 500 Hz Hermite):")
+            print(f"    {self.chirp_f0:.1f}→{f1:.1f} Hz, amp={amp_used:.4f} rev "
+                  f"(requested {self.chirp_amp:.4f}), dur={self.chirp_dur:.1f}s, "
+                  f"{n_knots} knots")
+            print(f"    implied peak: {pv:.2f} rev/s / {pa:.0f} rev/s²  "
+                  f"(caps {self.vel_cap_rps} rev/s, {HARD_ACCEL_CAP_RPS2:.0f} rev/s²)")
+            print(f"    response bins ≤ f1: {self._response_bins()} Hz "
+                  f"(the 6 Hz pos-loop question is inside this band)")
+        if 'ladder' in modes:
+            print(f"\n  [ladder] escalate-until-unstable, ζ_target={self.zeta_target}:")
+            for i, rung in enumerate(sid.default_ladder()):
+                cands = [f"{c:.2f}" for c in sid.vel_gain_candidates(rung, self.n_vel)]
+                print(f"    rung {i}: pos_gain={rung.pos_gain} "
+                      f"vel_int={rung.vel_int_gain:.3f}  vel_gain∈{{{', '.join(cands)}}}")
+            sp = sid.bridge_step_plan(self.center_rev, [self.ladder_step], self.bounds,
+                                      frame_step_rev=self.frame_step_rev,
+                                      seg_t_s=BRIDGE_SEG_T_S)[0]
+            print(f"    center step per rung: {self.ladder_step:+.3f} rev → knot ramp "
+                  f"{sp.ramp_frames} frames / {sp.ramp_duration_s * 1e3:.0f} ms; "
+                  f"guard latch → back off + CLEAR_ERRORS (never fight the guard)")
+        print("\n  DRY-RUN complete — validation passed, no socket opened, no motor commanded.")
+
+    # -- top-level run -------------------------------------------------------
+
+    def run(self, modes: List[str]) -> int:
+        err = self.validate_args()
+        if err:
+            print(f"REJECT: {err}", file=sys.stderr)
+            return 1
+        if self.dry_run:
+            self.print_plan(modes)
+            return 0
+
+        def sigint(signum, frame):
+            print("\n[SIGINT] requesting abort → disarm")
+            self._sigint = True
+            try:
+                self._disarm()
+            except Exception:
+                pass
+        signal.signal(signal.SIGINT, sigint)
+
+        stage_fns = {
+            'pos_steps': self.stage_pos_steps,
+            'chirp': self.stage_chirp,
+            'ladder': self.stage_ladder,
+        }
+        rc = 0
+        try:
+            self._setup_transport()
+            # Wait for the first telemetry frame.
+            t0 = time.time()
+            while self._sample()[0] is None and time.time() - t0 < 3.0:
+                time.sleep(0.05)
+            if self._sample()[0] is None:
+                print("ABORT: no telemetry from the Teensy.", file=sys.stderr)
+                return 2
+            pos, _, _, _ = self._sample()
+            fs = self._fault_state()
+            print(f"  Link up: pos={pos:+.4f} rev  fault_state={fs}")
+            # MEASURE the telemetry rate FIRST (it bounds the honest chirp top freq).
+            rate = self._measure_telemetry_rate()
+            print(f"  Telemetry: mean {rate.mean_hz:.1f} Hz (median {rate.median_hz:.1f}, "
+                  f"jitter {rate.jitter_rms_s * 1e3:.2f} ms, p95 gap "
+                  f"{rate.p95_interval_s * 1e3:.1f} ms) → effective {rate.effective_hz:.1f} Hz; "
+                  f"honest chirp f1 = {self._chirp_f1_bridge():.1f} Hz")
+            if self.do_home:
+                self._home()
+            for mode in modes:
+                ok = stage_fns[mode]()
+                self._manifest['stages'].setdefault(mode, {})
+                if not ok:
+                    rc = 2
+                    print(f"  Stage '{mode}' reported a fault/onset/latch — stopping.")
+                    break
+        except KeyboardInterrupt:
+            rc = 2
+        except Exception as exc:  # noqa: BLE001
+            print(f"\nFATAL: {exc}", file=sys.stderr)
+            rc = 1
+        finally:
+            try:
+                self.write_manifest()
+            except Exception as exc:  # noqa: BLE001
+                print(f"  (manifest write failed: {exc})", file=sys.stderr)
+            self._teardown_transport()
+
+        if rc == 0:
+            print("\nPASS: all requested stages completed.")
+        elif rc == 2:
+            print(f"\nABORT: {self._abort_reason or 'stage fault/onset'}", file=sys.stderr)
+        return rc
+
+
 def hw_mm_per_rev() -> float:
     """Bench-leg geometry (mm per motor rev) — for human-readable chirp p-p."""
     return 71.5708  # single_leg_test.py:106 (measured)
 
 
-MODE_GROUPS = {'all': ['vel_steps', 'pos_steps', 'chirp']}
+# Path-specific mode expansion: Path BRIDGE has NO vel_steps (the velocity-loop
+# response is inferred from position-step overshoot — no raw input_vel step exists).
+MODE_GROUPS_DIRECT = {'all': ['vel_steps', 'pos_steps', 'chirp']}
+MODE_GROUPS_BRIDGE = {'all': ['pos_steps', 'chirp']}
 
 
 def _default_output_dir() -> str:
@@ -856,9 +1798,18 @@ def main() -> int:
     p.add_argument('--mode', default='all',
                    choices=['vel_steps', 'pos_steps', 'chirp', 'ladder', 'all'],
                    help="stage(s) to run (default: all = vel_steps,pos_steps,chirp)")
-    p.add_argument('--axis', type=int, default=0, help='CAN node id (default 0)')
-    p.add_argument('--interface', default='socketcan')
-    p.add_argument('--channel', default='can0')
+    p.add_argument('--path', default='bridge', choices=['bridge', 'direct'],
+                   help="drive path (default: bridge). 'direct' (socketcan) is "
+                        "UNAVAILABLE for live runs on this Jetson — direct CAN was "
+                        "wound down 2026-07-11; --path direct is accepted only with "
+                        "--dry-run (historical plan view).")
+    p.add_argument('--axis', type=int, default=0,
+                   help='axis/CAN node id (default 0 — the bench ODrive on CAN3)')
+    p.add_argument('--interface', default='socketcan', help='(Path DIRECT only)')
+    p.add_argument('--channel', default='can0', help='(Path DIRECT only)')
+    p.add_argument('--max-recoveries', type=int, default=BRIDGE_MAX_RECOVERIES,
+                   help=f'(Path BRIDGE) guard-latch CLEAR_ERRORS budget before the '
+                        f'ladder aborts (default {BRIDGE_MAX_RECOVERIES})')
     p.add_argument('--stroke-cap', type=float, default=HARD_STROKE_CAP_REV,
                    help=f'software stroke cap in rev (default {HARD_STROKE_CAP_REV}; '
                         f'lowering is always allowed, raising above '
@@ -914,21 +1865,59 @@ def main() -> int:
         print(f"  WARNING: stroke cap raised to {args.stroke_cap} rev "
               f"(operator-confirmed)")
 
-    modes = MODE_GROUPS.get(args.mode, [args.mode])
     output_dir = args.output_dir or _default_output_dir()
 
-    runner = BenchSysID(
-        axis_id=args.axis, interface=args.interface, channel=args.channel,
-        stroke_cap_rev=args.stroke_cap, center_rev=args.center,
+    # ── Path dispatch ───────────────────────────────────────────────────────
+    if args.path == 'direct':
+        # Direct CAN was wound down on this Jetson (operator-confirmed 2026-07-11):
+        # no USB-CAN adapter, the Jetson no longer sees CAN. Live runs are refused;
+        # --dry-run is allowed as a historical/plan-only view of the retired path.
+        if not args.dry_run:
+            print("REJECT: --path direct is UNAVAILABLE for live runs on this Jetson "
+                  "— direct CAN was wound down 2026-07-11 (no USB-CAN adapter, the "
+                  "Jetson no longer sees CAN). Use --path bridge, or add --dry-run "
+                  "for the historical direct plan.", file=sys.stderr)
+            return 1
+        if _DIRECT_IMPORT_ERR is not None:
+            print(f"REJECT: Path DIRECT unavailable to plan — single_leg_test import "
+                  f"failed ({_DIRECT_IMPORT_ERR}). This is expected post-cutover; use "
+                  f"--path bridge.", file=sys.stderr)
+            return 1
+        print("  NOTE Path DIRECT is retired on this Jetson (direct CAN wound down "
+              "2026-07-11). This --dry-run is a historical/plan-only view.")
+        modes = MODE_GROUPS_DIRECT.get(args.mode, [args.mode])
+        runner = BenchSysID(
+            axis_id=args.axis, interface=args.interface, channel=args.channel,
+            stroke_cap_rev=args.stroke_cap, center_rev=args.center,
+            current_limit_a=args.current_limit, vel_cap_rps=args.vel_cap,
+            output_dir=output_dir, dry_run=args.dry_run,
+            chirp_f0=args.chirp_f0, chirp_f1=args.chirp_f1,
+            chirp_dur=args.chirp_duration, chirp_amp=args.chirp_amp,
+            pos_steps=DEFAULT_POS_STEPS_REV, vel_steps=DEFAULT_VEL_STEPS_RPS,
+            ladder_step=DEFAULT_LADDER_STEP_REV, zeta_target=args.zeta_target,
+            bw_clear_hz=args.bw_clear_hz, n_vel=args.n_vel,
+            ripple_threshold=args.ripple_threshold, osc_threshold=args.osc_threshold,
+            iq_ripple_threshold=args.iq_ripple_threshold, do_home=args.home)
+        return runner.run(modes)
+
+    # Path BRIDGE (default, the only runnable path on this Jetson).
+    if args.mode == 'vel_steps':
+        print("REJECT: --mode vel_steps is not available on Path BRIDGE — the bridge "
+              "has no raw input_vel step; velocity-loop damping is INFERRED from "
+              "position-step overshoot (run --mode pos_steps).", file=sys.stderr)
+        return 1
+    modes = MODE_GROUPS_BRIDGE.get(args.mode, [args.mode])
+    runner = BridgeSysID(
+        axis_id=args.axis, stroke_cap_rev=args.stroke_cap, center_rev=args.center,
         current_limit_a=args.current_limit, vel_cap_rps=args.vel_cap,
         output_dir=output_dir, dry_run=args.dry_run,
         chirp_f0=args.chirp_f0, chirp_f1=args.chirp_f1,
         chirp_dur=args.chirp_duration, chirp_amp=args.chirp_amp,
-        pos_steps=DEFAULT_POS_STEPS_REV, vel_steps=DEFAULT_VEL_STEPS_RPS,
-        ladder_step=DEFAULT_LADDER_STEP_REV, zeta_target=args.zeta_target,
-        bw_clear_hz=args.bw_clear_hz, n_vel=args.n_vel,
+        pos_steps=DEFAULT_POS_STEPS_REV, ladder_step=DEFAULT_LADDER_STEP_REV,
+        zeta_target=args.zeta_target, bw_clear_hz=args.bw_clear_hz, n_vel=args.n_vel,
         ripple_threshold=args.ripple_threshold, osc_threshold=args.osc_threshold,
-        iq_ripple_threshold=args.iq_ripple_threshold, do_home=args.home)
+        iq_ripple_threshold=args.iq_ripple_threshold, do_home=args.home,
+        max_recoveries=args.max_recoveries)
     return runner.run(modes)
 
 

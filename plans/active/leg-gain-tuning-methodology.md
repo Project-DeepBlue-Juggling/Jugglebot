@@ -305,36 +305,70 @@ MEASURED from the bench harnesses and config (cite when you set a cap):
   (`logbook/2026-06-24-phase11-bench-cutover.md`, U3-iv). For fast-stroke gain work at
   ~2 rev/s **use the 48 V PSU + brake resistor.**
 
-### Stage 1a — system-ID (do this first, on the direct-CAN path)
+### Stage 1a — system-ID (do this first, on Path BRIDGE)
+
+**Single-path reality (operator-confirmed 2026-07-11):** direct CAN on the Jetson has been
+wound down entirely — the Jetson no longer sees CAN, and there is no USB-CAN adapter. The
+bench leg is reachable **only** as CAN3 node 0 behind the can-bridge Teensy over the UDP
+`teensy_link` protocol (**Path BRIDGE**). So Stage 1a **and** Stage 1b both run on the
+bridge, with the honest degradations below. The former "Path DIRECT" (socketcan straight to
+`input_pos`/`input_vel`) is **retired** and kept only as a one-line historical note in the
+Topology section; the direct primitives are unrunnable here.
 
 Identify the plant before touching gains. Order matters: inner loop out.
 
-1. **Current-loop sanity.** In `TORQUE/PASSTHROUGH`, command a small torque step and
-   confirm `iq_measured` tracks `iq_setpoint` (the current loop is an ODrive-firmware kHz
-   loop, not a user gain — you are only confirming it is healthy, not tuning it). Reuse
-   the `single_leg_test.py` torque-step primitives (`enter_torque_mode`,
-   `encode_set_input_torque`).
-2. **Velocity-loop step responses.** In `VELOCITY/PASSTHROUGH`, command velocity steps
-   (`encode_set_input_vel`) at a few magnitudes within the stroke and fit rise time,
-   overshoot, settle. This characterises `vel_gain` / `vel_int_gain` in isolation from
-   the position loop.
-3. **Position-loop step + sine-sweep frequency response.** In `POSITION/PASSTHROUGH`,
-   (a) command 5–20 mm position steps (0.07–0.28 rev, well inside 3 rev) and fit rise /
-   overshoot / settle (→ closed-loop damping and bandwidth); (b) inject a log chirp into
-   `input_pos` (1–2 mm p-p, 0.5→80 Hz — 80 Hz comfortably exceeds the 40 Hz interp rate
-   and captures any structural resonance) and estimate the closed-loop frequency response
-   and the mechanical `ω_n`. This is Level-3's system-ID applied to the bench leg; it
-   gives the actual plant `G(s) = ω_n²/(s²+2ζω_n s+ω_n²)` the gains must shape.
+1. **Current-loop sanity.** The current loop is an ODrive-firmware kHz loop, not a user
+   gain — you only confirm it is healthy, not tune it. On Path BRIDGE there is no raw
+   `TORQUE/PASSTHROUGH` torque-step primitive from the harness; instead confirm health
+   indirectly from the DIAGNOSTIC `iq_measured` trace during the position-step ramps (a
+   clean, non-oscillating current that tracks the commanded acceleration). A dedicated
+   torque-step needs a bridge RPC that does not exist today — treat current-loop health as
+   a *precondition*, not a Stage-1a measurement.
+2. **Velocity-loop step responses — INFERRED, not measured.** The bridge has no raw
+   `input_vel` step, so `vel_gain` / `vel_int_gain` are **inferred from the position-step
+   overshoot** (step 3): a lightly-damped velocity loop shows up as position-step overshoot
+   and post-step velocity ripple. This is the largest Stage-1a degradation vs the retired
+   direct path (which could isolate the velocity loop) — document the inference in the
+   winner's logbook entry.
+3. **Position-loop step + sine-sweep frequency response (bridge knot stimuli).** Streaming
+   `POSITION/PASSTHROUGH` knots through the firmware 500 Hz Hermite:
+   (a) **"steps" become 25 ms-quantised knot ramps.** The bridge cannot issue an
+   instantaneous step; the harness ramps each 0.07–0.28 rev (5–20 mm) step at a per-knot
+   increment **under the 0.10 rev lead clamp** (`bench_leg_sysid.py` sizes it at 0.5× the
+   clamp = 0.05 rev/frame = 2.0 rev/s, Jugglebot's operating point — so the lead clamp never
+   engages and `lead_clamp_mask` stays 0). Fit rise / overshoot / settle of the leg tracking
+   that fast ramp (→ closed-loop damping); it approximates a step because the 500 Hz interp
+   is well above the plant. **The step's apparent bandwidth is ramp-duration-limited, not a
+   loop measurement:** `0.35/rise` on this fixed 2.0 rev/s ramp reads the *ramp*, not the
+   loop (a ~6 Hz pos loop's ~58 ms rise is comparable to the 50–150 ms ramp of the smaller
+   steps), so the manifest flags `f_bw_ramp_limited` with its ceiling `~1/(0.8·ramp_dur)`;
+   take the honest loop bandwidth from the chirp below, **not** the step.
+   (b) **chirp via knot streaming.** A log chirp is streamed as 40 Hz position knots,
+   amplitude-bounded by the stroke, the vel/accel kinematic caps, **and the lead clamp**
+   (so the sweep keeps the same 2× lead margin the steps have and the streamed knots stay a
+   faithful lock-in reference — the vel cap alone leaves it riding the 0.10 rev clamp) in
+   the harness. The
+   top frequency is **bounded first by the measured telemetry rate and the 40 Hz knot rate**
+   — the harness measures the TELEMETRY per-axis rate + irregularity over a warmup window
+   BEFORE any stimulus and sets `f1 = min(request, telemetry bound, knot-stream bound)`. At
+   ~100 Hz telemetry / 40 Hz knots that is **≈8 Hz** — enough to resolve the 6 Hz pos-loop
+   question (`pos_gain/(2π)`) but **not** the 30–80 Hz structural band the retired direct
+   path could reach. Estimate the closed-loop frequency response over the honest band; the
+   mechanical `ω_n` (20–80 Hz) is **out of the bridge's honest reach** — a Level-3 note, not
+   a Stage-1a deliverable on this path.
 
-**Why the direct-CAN path for 1a:** clean instantaneous steps and chirps must reach the
-ODrive's `input_pos`/`input_vel` **directly**. The can-bridge path only ever streams
-40 Hz position *knots* through the 500 Hz Hermite interp + lead clamp — it cannot issue a
-raw step, and it shapes every command. The bench harness (`single_leg_test.py`,
-`cogging_bench_test.py`) talks socketcan directly to the ODrive and can also **set gains
-directly over CAN** (`single_leg_test.py:173-185`, `encode_set_pos_gain` /
-`encode_set_vel_gains`) — instant, RAM-only, no rebuild. (See "Topology & drive paths"
-below; a dedicated step-response / chirp / gain-sweep harness does not exist yet and must
-be built following the `cogging_bench_test.py` pattern — it reuses `SingleLegTestHarness`.)
+**The harness:** `tests/hardware/bench_leg_sysid.py` (`--path bridge`, the default and only
+runnable path) implements all of the above; its CAN-free logic — onset/divergence detectors,
+the gain-escalation ladder, the stroke-cap-bounded + lead-clamp-sized knot stimulus
+generators, the telemetry-rate estimator, and the guard-latch backoff state machine — lives
+in `tests/hardware/sysid_lib.py` and is unit-tested in `tests/motion/test_bench_sysid_logic.py`
++ `tests/motion/test_bench_sysid_bridge.py`. Gains apply **session-only over CAN3 via the
+`SET_POS_GAIN`/`SET_VEL_GAINS` RPCs** (`controller/teensy_link/rpc_args.py`), re-applied per
+point — instant, RAM-only, no rebuild. The ladder **disarms (`mpc_active=0`) across the two
+RPC gain calls**, because the blocking RPCs (up to ~1.5 s worst-case with retries) can
+otherwise straddle the 250 ms MPC-staleness window while armed and latch the guard;
+disarming suppresses the firmware staleness check across the gap, then it re-arms to stream.
+Run `--dry-run` first to see the full bounded plan with no socket opened.
 
 ### Stage 1b — escalate-until-unstable gain ladder (aggressive, auto-backoff)
 
@@ -359,24 +393,38 @@ otherwise.
 - `vel_estimate` limit cycle at hold or after the step;
 - audible ~6 Hz+ buzz.
 
-**Auto-backoff:** the harness must drop the axis to `IDLE` on any onset criterion (the
-existing harnesses already `IDLE` on error / heartbeat-loss / Ctrl-C / position-cap —
-`single_leg_test.py:397`, `cogging_bench_test.py:_check_safety`), revert to the last
-stable triple, and log the rung. **Stroke-limited stimuli:** every step/chirp fits within
-the **3.0-rev** bench stroke; velocity steps are auto-sized so `|v|·duration + ramp ≤
-3 rev` (the harness auto-duration already enforces this); accel ≤ 250 rev/s², current
-≤ 10 A. **Stop the ladder** when either (i) no `vel_gain` at the next rung holds ζ ≥ 0.7
-(the pos_gain ceiling — record it), or (ii) the closed-loop bandwidth comfortably clears
-the 40 Hz interp / stutter regime with ζ ≥ 0.7 margin (you have enough; do not chase the
-ceiling for its own sake). The **winning bench triple** = highest `pos_gain` that clears
-the Stage-1c ring test with ζ ≥ 0.7 and the smallest tracking lag.
+**Auto-backoff (Path BRIDGE):** on any onset criterion the harness reverts to the last
+stable triple, **disarms** (`mpc_active=0` — the firmware output gate closes in ≈one fault
+step), and logs the rung. The **firmware safety machine is the backstop and must not be
+fought**: the per-leg `MAX_DEVIATION` E-STOP (0.5 rev) and the MPC-staleness E-STOP stay
+armed underneath the harness. When a stimulus is too hot the guard *latches*
+(`fault_state != NONE` on the T→J heartbeat); the harness **detects the latch, backs the
+ladder off to last-good, disarms, and recovers via a `CLEAR_ERRORS` RPC** (the firmware
+re-enable slew makes that gentle) — with a bounded recovery budget so it never keeps
+climbing into a guard it cannot satisfy (`sysid_lib.GuardLatchBackoff`). Only a **recoverable**
+fault (feedback-stale / link-lost — the two the firmware self-clears when feedback/link
+returns) is watched, not fought; the **latching** guard E-STOPs (MPC-staleness /
+`MAX_DEVIATION` / motor-overspeed all set the sticky `s_estop_latched`, released only by
+`CLEAR_ERRORS`) drive the back-off + `CLEAR_ERRORS` recovery above — MPC-staleness is not
+merely watched, because the firmware does not self-clear it; a fatal fault (ODRIVE_FATAL /
+CAN-bus-down) cedes authority so the firmware deferred-stow runs uncontested.
+**Stroke-limited stimuli (harness-owned):** the firmware `STROKE_MAX_REV[0]=3.90` is the
+*production* clamp and does **NOT** protect the 3.0-rev bench leg, so **the harness owns the
+3.0-rev cap** — every step/chirp fits the 3.0-rev stroke, accel ≤ 250 rev/s², current
+≤ 10 A, and the knot ramps stay under the 0.10 rev lead clamp. **Stop the ladder** when
+either (i) no `vel_gain` at the next rung holds ζ ≥ 0.7 (the pos_gain ceiling — record it),
+or (ii) the closed-loop bandwidth comfortably clears the 40 Hz interp / stutter regime with
+ζ ≥ 0.7 margin (you have enough; do not chase the ceiling for its own sake). The **winning
+bench triple** = highest `pos_gain` that clears the Stage-1c ring test with ζ ≥ 0.7 and the
+smallest tracking lag.
 
 ### Stage 1c — loop-vs-structure discriminant (the bench's unique payoff)
 
 Reproduce the 6 Hz ring on the bench leg under the **same 40 Hz position-interp drive**
-Jugglebot uses (the can-bridge path — Stage 1a's direct path cannot do this), at
-**Jugglebot-equivalent gains (`40 / 0.20 / 0.32`)**, on the fixed fast stroke sized to
-~2 rev/s peak:
+Jugglebot uses (the can-bridge path — the ring reproduction needs the exact production interp
+drive, so use the fixed-gain `teensy_setpoint_bench.py` β-knot source here rather than
+`bench_leg_sysid.py`'s sweep), at **Jugglebot-equivalent gains (`40 / 0.20 / 0.32`)**, on the
+fixed fast stroke sized to ~2 rev/s peak:
 
 - **Ring PRESENT on the isolated bench leg** ⇒ the ring is the **servo loop** — it
   reproduces with the same leg servo and **no platform structure at all**, so the
@@ -491,23 +539,20 @@ tier converging** (see runbook § S4b).
 
 ### Topology & drive paths (how the bench leg connects, and which path each stage uses)
 
-The bench ODrive **replaces Jugglebot entirely on CAN3**. Two distinct drive paths, used
-for different stages:
+The bench ODrive **replaces Jugglebot entirely on CAN3**. **One drive path — Path BRIDGE —
+now serves every stage** (operator-confirmed 2026-07-11):
 
-**Path DIRECT — bench harness over a USB-CAN adapter (socketcan), Stage 1a + 1b.** The
-`single_leg_test.py` / `cogging_bench_test.py` harnesses open socketcan directly
-(`single_leg_test.py:300`, `can.Bus(...)`) on their own isolated bus — the historical
-friction/cogging bench topology ("ODrive Pro on isolated CAN at node-id 0",
-`logbook/2026-04-27-...:55`). This gives **clean instantaneous steps/chirps direct to
-`input_pos`/`input_vel`** and **instant gain-setting over CAN** (no rebuild). It is the
-only path that can do faithful system-ID and a fast escalation ladder.
-*Requires a USB-CAN adapter on the Jetson* (post-cutover, "the Jetson no longer sees CAN
-directly" — `logbook/2026-06-24-...`). **Observability:** the harness CSV
-(pos/vel/iq at 100 Hz). It does **not** give the v3 firmware telemetry.
+> **Historical note (Path DIRECT, retired 2026-07-11):** the `single_leg_test.py` /
+> `cogging_bench_test.py` harnesses used to open socketcan directly over a USB-CAN adapter
+> for clean instantaneous steps/chirps + instant gain-setting. Direct CAN on the Jetson has
+> been **wound down entirely** — the Jetson no longer sees CAN and there is no USB-CAN
+> adapter — so that path is unrunnable here and is retained only for the record.
+> `bench_leg_sysid.py --path direct` refuses live runs (accepting only `--dry-run` for the
+> historical plan view). Everything below runs on Path BRIDGE.
 
-**Path BRIDGE — bench ODrive on CAN3 through the can-bridge Teensy, Stage 1c + 2.** This
-is the operator's stated setup and the only path that reproduces Jugglebot's exact 40 Hz
-interp + lead-clamp drive **and** exposes the v3 live-deviation telemetry. Topology facts:
+**Path BRIDGE — bench ODrive on CAN3 through the can-bridge Teensy, ALL stages (1a, 1b, 1c,
+2).** This reproduces Jugglebot's exact 40 Hz interp + lead-clamp drive **and** exposes the
+v3 live-deviation telemetry. Topology facts:
 
 - **Node-id:** the firmware treats CAN3 node ids **0..5 as legs** and 6 as the hand
   (`canbridge_config.h:64-65`). Present the bench ODrive as **node 0** — all historical
@@ -530,26 +575,31 @@ interp + lead-clamp drive **and** exposes the v3 live-deviation telemetry. Topol
   sets leg gains live** (only `set_hand_gains`, axis 6). So the production gain-apply loop
   is YAML → `generate_config` → `colcon build` → relaunch, applied at the next
   `_run_configure` (home/`/configure`/post-activate).
-  **Faster alternative for the bench:** the same RPCs are reachable Python-side without a
+  **This is the Stage-1 gain-apply path:** the same RPCs are reachable Python-side without a
   rebuild — `controller/teensy_link/rpc.py:RpcClient.call` + `rpc_args.encode_set_pos_gain
-  / encode_set_vel_gains` (mirrored by `teensy_bridge_node.teensy_set_pos_gain`,
-  `:2041`) — a small script can set the bench leg's gains over CAN3 instantly (gated on
-  `jugglebot_commands_allowed`, i.e. a fresh CAN3 partner heartbeat). Caveat: a subsequent
-  orchestrator `configure`/`activate` re-applies the *YAML* gains, so drive the bench-leg
-  stimuli with the synthetic β-knot source, not the orchestrator, when using this path.
+  / encode_set_vel_gains` (mirrored by `teensy_bridge_node.teensy_set_pos_gain`, `:2041`) —
+  and `bench_leg_sysid.py --path bridge` uses exactly these to set the bench leg's gains over
+  CAN3 instantly, **re-applied per ladder point** (gated on `jugglebot_commands_allowed`,
+  i.e. a fresh CAN3 partner heartbeat). Caveat: a subsequent orchestrator
+  `configure`/`activate` re-applies the *YAML* gains, so during a Stage-1 session drive the
+  bench-leg stimuli with `bench_leg_sysid.py` (or the synthetic β-knot source), **not** the
+  orchestrator.
 - **Stroke safety (CRITICAL):** the firmware `STROKE_MAX_REV[0]=3.90` is the *production*
   clamp and does **NOT** protect the shorter bench leg (`logbook/2026-06-24-...`, U3-iv).
-  On Path BRIDGE the ≤3.0-rev bench cap must live in the **driver**, not the firmware.
-  **Drive Stage-1c with the synthetic β-knot bench driver**
-  (`tests/hardware/teensy_setpoint_bench.py`, `--axis 0 --center … --close-loop`) —
-  **but beware: its OWN built-in stroke clamp is the production
-  `STROKE_MAX_REV[0]=3.900413` (`teensy_setpoint_bench.py:85`), hardcoded, no CLI
-  override — it provides NO 3.0-rev backstop.** Before the session, edit its
-  `STROKE_MAX_REV[0]`/`STROKE_MIN_REV[0]` constants to the bench values (max 3.0) or add
-  a `--stroke-max` override; until then the only protection is choosing
-  `--center`/`--amplitude` so center + amplitude ≤ 3.0 with margin. Even so, prefer it
-  over the full trajectory stack (whose platform-pose IK could extend leg 0 past the bench
-  end-stop). `--close-loop` applies the `hardware_config` gains before arming.
+  On Path BRIDGE the ≤3.0-rev bench cap **must live in the driver**, not the firmware.
+  - **Stage 1a/1b (system-ID + ladder): `tests/hardware/bench_leg_sysid.py --path bridge`
+    OWNS the 3.0-rev cap** (`--stroke-cap` default `3.0`, raising it needs `--confirm-stroke`
+    and never exceeds 3.30). Every knot is clamped to `[margin, 3.0−margin]` before it
+    leaves the harness, every step/chirp is stroke- **and** kinematic-capped, and each knot
+    ramp stays under the 0.10 rev lead clamp. Run `--dry-run` to see the full bounded plan.
+  - **Stage 1c (ring reproduction at fixed `40/0.20/0.32`): the synthetic β-knot driver
+    `tests/hardware/teensy_setpoint_bench.py`** (`--axis 0 --center … --close-loop`).
+    **Beware: its OWN built-in stroke clamp is the production `STROKE_MAX_REV[0]=3.900413`
+    (`teensy_setpoint_bench.py:85`), hardcoded, no CLI override — it provides NO 3.0-rev
+    backstop.** Until it grows one, keep it safe by choosing `--center`/`--amplitude` so
+    `center + amplitude ≤ 3.0` with margin (prefer it over the full trajectory stack, whose
+    platform-pose IK could extend leg 0 past the bench end-stop). `--close-loop` applies the
+    `hardware_config` gains before arming.
 - **Observability:** the v3 `/link_status` KeyValue fields at 10 Hz — `live_deviation`
   (per-leg u0−encoder, rev), `lead_clamp_mask`, and the frozen latch snapshot
   (`max_dev_leg`/`_value`/`_u0`/`_enc`) — plus `/diagnose` on the rosbag (braking-current
@@ -564,14 +614,19 @@ Power the bench ODrive from the **48 V PSU
 with the brake resistor attached**; the can-bridge Teensy is already powered from Jetson
 5 V. With the Platform Teensy gone there is **no `is_homed` cold-start persistence, no
 tilt/levelling, no `STATE_READ`** — none are needed for gain tuning; home the bench leg
-fresh each session via the firmware `HOME(0)` RPC (or the direct-CAN `home_axis()`).
+fresh each session via the firmware `HOME(0)` RPC (`bench_leg_sysid.py --home`, or the
+standalone `teensy_home_bench.py`).
 
-**Recommendation:** run **Stage 1a + 1b on Path DIRECT** (fast, clean, aggressive) if a
-USB-CAN adapter is available; run **Stage 1c + all of Stage 2 on Path BRIDGE** (faithful
-interp drive + v3 telemetry). If only Path BRIDGE is available, system-ID degrades to
-interp-shaped stimuli (workable, less clean — the 500 Hz interp is well above the plant so
-a fast interp move approximates a step) and the velocity-loop step response is inferred
-from position-step overshoot rather than measured directly.
+**Recommendation:** run **every stage (1a, 1b, 1c, 2) on Path BRIDGE** — it is the only path
+on this Jetson (direct CAN wound down 2026-07-11). System-ID therefore runs on interp-shaped
+stimuli (workable, less clean — the 500 Hz interp is well above the plant, so a fast knot
+ramp approximates a step): steps become 25 ms-quantised knot ramps under the lead clamp, the
+velocity-loop step response is **inferred from position-step overshoot** rather than measured
+directly, and the chirp top frequency is bounded to ≈8 Hz by the telemetry + 40 Hz knot rate
+(enough for the 6 Hz pos-loop question, not the 30–80 Hz structural band). Run
+`bench_leg_sysid.py --path bridge --dry-run` first to review the full bounded plan; the v3
+`/link_status` telemetry (`live_deviation`, `lead_clamp_mask`) is the measurable that makes
+Stage 1c and the Stage-2 verify honest.
 
 ## Level 3 — System ID + loop shaping
 

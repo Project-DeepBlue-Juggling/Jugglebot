@@ -608,6 +608,27 @@ def chirp_amplitude_cap_for_kinematics(f_end_hz: float, *, vel_cap_rps: float,
     return min(vel_cap_rps / w, accel_cap_rps2 / (w * w))
 
 
+def chirp_amplitude_cap_for_lead_clamp(f_end_hz: float, *, frame_step_rev: float,
+                                       seg_t_s: float) -> float:
+    """Largest chirp amplitude (rev) whose peak per-40 Hz-knot position increment stays
+    under the lead-clamp frame step — the Path-BRIDGE bound the vel/accel caps miss.
+
+    A sine of amplitude ``A`` at ``f`` peaks at velocity ``A·2πf``; over one knot interval
+    ``seg_t`` that implies a per-knot position step ``A·2πf·seg_t``. Bounding it by
+    ``frame_step_rev`` (the 0.5×``MAX_LEAD`` step the position steps ramp at) gives the
+    chirp the SAME 2× lead-clamp margin the steps have, so the firmware interp lead clamp
+    never engages during the sweep and the streamed ``u0`` stays a faithful lock-in
+    reference. WHY this is separate from the kinematic cap: ``MAX_LEAD/seg_t`` (0.10/0.025 =
+    4.0 rev/s) equals the default ``vel_cap``, so at the vel-bound amplitude the peak
+    per-knot step is ~``MAX_LEAD`` exactly — the chirp would ride the clamp with no margin,
+    distorting gain/phase, and ``canbridge_config.h`` warns a lead-clamp limit cycle can
+    accumulate past ``MAX_DEVIATION`` and latch the guard. Take ``min`` with the kinematic
+    cap; on Path DIRECT (no interp, no lead clamp) this bound does not apply.
+    """
+    denom = 2.0 * math.pi * max(1e-9, abs(f_end_hz)) * max(1e-9, abs(seg_t_s))
+    return abs(frame_step_rev) / denom
+
+
 # ===========================================================================
 # Stage 1b — gain-escalation ladder (escalate-until-unstable, auto-backoff)
 # ===========================================================================
@@ -746,3 +767,391 @@ class GainLadder:
         self.stopped = True
         self.stop_reason = 'ladder_top'
         return LadderDecision('stop_ok', tested, self.index, self.stop_reason)
+
+
+# ===========================================================================
+# Path BRIDGE — position-domain knot stimuli through the 500 Hz Hermite
+# ===========================================================================
+#
+# On Path BRIDGE (the can-bridge Teensy over UDP teensy_link) the harness cannot
+# issue a raw instantaneous step to ``input_pos``: every command is a 40 Hz knot
+# the firmware cubic-Hermite interpolates at 500 Hz (``leg_interp.cpp`` Mode 1),
+# and a per-500 Hz-tick commanded-minus-encoder LEAD over ``MAX_LEAD_REV`` is
+# clamped (``lead_clamp_mask`` sets). A bridge "step" is therefore a 25 ms-
+# quantised knot RAMP, sized so each knot increment stays under the lead clamp —
+# the leg tracks it as a fast ramp, the honest bridge analogue of a step. These
+# generators are pure (numeric only, no protocol/CAN import) so the Setpoint
+# packing + streaming stays in the driver and the sizing math is unit-testable.
+
+
+def lead_clamp_frame_step(max_lead_rev: float, margin_frac: float = 0.5) -> float:
+    """Largest per-40 Hz-knot position increment that keeps the firmware interp
+    lead clamp (``MAX_LEAD_REV``) from engaging, with a safety margin.
+
+    The Teensy clamps the commanded interp output to encoder ± ``MAX_LEAD_REV``
+    every 500 Hz tick; a knot ramp whose per-frame increment is ``margin_frac``·
+    ``MAX_LEAD`` keeps the accumulated lead under the clamp while the leg tracks.
+    ``margin_frac = 0.5`` (2× margin below the 0.10 rev clamp — the methodology's
+    Stage-1 lead target) gives 0.05 rev/frame = **2.0 rev/s** at the 40 Hz knot
+    rate, which is also Jugglebot's ~2 rev/s operating point (deliberate).
+    """
+    if not (0.0 < margin_frac <= 1.0):
+        raise ValueError("margin_frac must be in (0, 1]")
+    return margin_frac * abs(max_lead_rev)
+
+
+def knot_ramp_frames(start_rev: float, target_rev: float,
+                     frame_step_rev: float) -> int:
+    """Number of 40 Hz knots to ramp ``start → target`` at ≤ ``frame_step_rev``
+    each. ``0`` when already there.
+
+    The ceil is fp-robust: a step that is an EXACT integer multiple of
+    ``frame_step`` (e.g. 0.10 rev at a 0.05 rev step) must take exactly 2 frames,
+    not 3 — without the ``1e-9`` slack, ``0.10/0.05`` floating-point-rounds to
+    2.0000000000000004 and ceils to 3, silently adding a frame to every clean step.
+    """
+    if frame_step_rev <= 0.0:
+        raise ValueError("frame_step_rev must be > 0")
+    delta = abs(target_rev - start_rev)
+    if delta <= 0.0:
+        return 0
+    return int(math.ceil(delta / frame_step_rev - 1e-9))
+
+
+def knot_step_ramp(start_rev: float, target_rev: float, *,
+                   frame_step_rev: float, hold_frames: int,
+                   bounds: Optional[StrokeBounds] = None) -> np.ndarray:
+    """40 Hz knot ``u0`` series that ramps ``start → target`` at ≤ ``frame_step_rev``
+    per knot, then holds ``target`` for ``hold_frames``.
+
+    The ramp is evenly spaced over ``ceil(|Δ|/frame_step)`` frames, so every knot
+    step is ``|Δ|/n_ramp ≤ frame_step_rev`` — guaranteed under the lead clamp.
+    Index 0 is ``start`` (so the first streamed knot commands the current position:
+    no jump at arm). Every knot is clamped to ``bounds`` (defence-in-depth stroke
+    cap) when given; callers pass a ``target`` already inside bounds.
+
+    The defence-in-depth clip is widened to preserve an out-of-bounds ``start``:
+    post ``--home`` the leg sits AT the ~0.0 end-stop, which is BELOW the usable
+    ``lo`` (the margin backs off the end-stop). A blanket ``clip(lo, hi)`` would
+    flatten the sub-``lo`` approach knots up to ``lo`` — turning arm into a jump
+    from the true encoder pos to ``lo`` (e.g. 0.0 → 0.15 rev, 3× the 0.05 rev
+    lead-clamp budget the ramp is sized for), the very jump the "index 0 = start"
+    invariant exists to avoid. Clamping to ``[min(lo,start), max(hi,start)]``
+    instead keeps the first knot on the true start and lets the ramp climb into
+    the window one lead-clamp step at a time, while STILL capping the far
+    (target) side at the stroke bound — commanding where the leg physically sits
+    can never crash it, so the near-side relaxation costs no protection.
+    """
+    if hold_frames < 0:
+        raise ValueError("hold_frames must be >= 0")
+    n_ramp = knot_ramp_frames(start_rev, target_rev, frame_step_rev)
+    seq: List[float] = [float(start_rev)]
+    for i in range(1, n_ramp + 1):
+        seq.append(float(start_rev + (target_rev - start_rev) * (i / n_ramp)))
+    seq.extend([float(target_rev)] * int(hold_frames))
+    arr = np.asarray(seq, float)
+    if bounds is not None:
+        lo = min(bounds.lo_rev, float(start_rev))
+        hi = max(bounds.hi_rev, float(start_rev))
+        arr = np.clip(arr, lo, hi)
+    return arr
+
+
+def max_frame_step(series: Sequence[float]) -> float:
+    """Largest absolute knot-to-knot step in a series (for lead-clamp assertions)."""
+    arr = np.asarray(series, float)
+    if arr.size < 2:
+        return 0.0
+    return float(np.max(np.abs(np.diff(arr))))
+
+
+@dataclass
+class BridgeStepPlan:
+    requested_rev: float      # center + step, before clamping
+    target_rev: float         # actually commanded (clamped into bounds)
+    clamped: bool             # True if the requested target hit a stroke bound
+    ramp_frames: int          # 40 Hz knots in the ramp (excl. the start knot)
+    ramp_duration_s: float    # ramp_frames · seg_t_s
+    peak_frame_step_rev: float  # actual per-knot increment (≤ frame_step_rev)
+
+
+def bridge_step_plan(center_rev: float, step_sizes_rev: Sequence[float],
+                     bounds: StrokeBounds, *, frame_step_rev: float,
+                     seg_t_s: float) -> List[BridgeStepPlan]:
+    """Per-step bridge knot-ramp plan: stroke-clamped target + ramp length/duration.
+
+    Reuses :func:`position_step_series` for the stroke clamp, then sizes the knot
+    ramp for each step. A sub-``frame_step`` step is a single knot; a big step
+    ramps over several. The peak per-knot increment is reported so a caller/test
+    can confirm it never exceeds ``frame_step_rev`` (hence the lead clamp).
+    """
+    out: List[BridgeStepPlan] = []
+    for ps in position_step_series(center_rev, step_sizes_rev, bounds):
+        frames = knot_ramp_frames(center_rev, ps.target_rev, frame_step_rev)
+        delta = abs(ps.target_rev - center_rev)
+        peak = (delta / frames) if frames > 0 else 0.0
+        out.append(BridgeStepPlan(
+            requested_rev=ps.requested_rev, target_rev=ps.target_rev,
+            clamped=ps.clamped, ramp_frames=frames,
+            ramp_duration_s=frames * seg_t_s, peak_frame_step_rev=peak))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Telemetry-rate estimator (bounds the honest chirp top frequency)
+# ---------------------------------------------------------------------------
+#
+# On Path BRIDGE the ONLY observation of the leg is the UDP TELEMETRY stream
+# (nominal 100 Hz, all 7 axes per frame — so the per-axis rate == the frame rate).
+# Its measured rate and irregularity bound how high a chirp we can honestly
+# resolve: a lock-in gain/phase estimate needs several samples per period, so the
+# top usable chirp frequency is the (worst-case) sample rate / samples-per-period.
+# The driver MEASURES this over a warmup window BEFORE any stimulus and clamps the
+# chirp f1 to it — an irregular uplink honestly lowers the ceiling.
+
+
+@dataclass
+class TelemetryRate:
+    n_intervals: int
+    mean_hz: float
+    median_hz: float
+    jitter_rms_s: float       # RMS of (interval − mean interval)
+    p95_interval_s: float     # 95th-percentile gap (the irregularity tail)
+    max_interval_s: float
+    effective_hz: float       # 1 / p95_interval — the conservative worst-case rate
+
+
+def estimate_telemetry_rate(timestamps_s: Sequence[float]) -> TelemetryRate:
+    """Frame rate + jitter from a list of arrival timestamps (seconds, monotonic).
+
+    Non-monotone / duplicate stamps (Δt ≤ 0) are dropped rather than producing a
+    spurious infinite rate. ``effective_hz`` uses the 95th-percentile gap, so a
+    stream with occasional long stalls reports a rate that reflects the stalls —
+    the honest number to bound a chirp against, not the optimistic mean.
+    """
+    ts = np.asarray(timestamps_s, float)
+    if ts.size < 2:
+        return TelemetryRate(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    dt = np.diff(ts)
+    dt = dt[dt > 0.0]
+    if dt.size == 0:
+        return TelemetryRate(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    mean_dt = float(np.mean(dt))
+    median_dt = float(np.median(dt))
+    p95 = float(np.percentile(dt, 95))
+    mx = float(np.max(dt))
+    jitter = float(np.sqrt(np.mean((dt - mean_dt) ** 2)))
+    return TelemetryRate(
+        n_intervals=int(dt.size),
+        mean_hz=(1.0 / mean_dt) if mean_dt > 0 else 0.0,
+        median_hz=(1.0 / median_dt) if median_dt > 0 else 0.0,
+        jitter_rms_s=jitter,
+        p95_interval_s=p95,
+        max_interval_s=mx,
+        effective_hz=(1.0 / p95) if p95 > 0 else 0.0,
+    )
+
+
+def honest_chirp_top_freq(effective_hz: float, *,
+                          min_samples_per_period: float = 8.0) -> float:
+    """Highest chirp frequency the MEASURED telemetry can resolve for a single-bin
+    lock-in gain/phase estimate: ``effective_hz / min_samples_per_period``.
+
+    8 samples/period keeps lock-in leakage small; using the conservative
+    ``effective_hz`` (from the p95 gap) means an irregular uplink honestly lowers
+    the ceiling instead of overstating it.
+    """
+    if effective_hz <= 0.0 or min_samples_per_period <= 0.0:
+        return 0.0
+    return effective_hz / min_samples_per_period
+
+
+def knot_stream_top_freq(seg_t_s: float, *,
+                         min_samples_per_period: float = 5.0) -> float:
+    """Highest chirp frequency the 40 Hz knot STREAM can honestly COMMAND:
+    ``(1/seg_t) / min_samples_per_period``.
+
+    The Teensy Hermite-interpolates between 40 Hz knots, so a chirp above knot-
+    Nyquist (20 Hz at seg_t=0.025) aliases; keeping ≥5 knots/period bounds the
+    command distortion. At seg_t=0.025 this is 8 Hz — so the bridge honestly
+    reaches the 6 Hz pos-loop question but NOT the 30 Hz the direct path covers.
+    """
+    if seg_t_s <= 0.0 or min_samples_per_period <= 0.0:
+        return 0.0
+    return (1.0 / seg_t_s) / min_samples_per_period
+
+
+def bridge_chirp_top_freq(requested_f1_hz: float, telem_effective_hz: float,
+                          seg_t_s: float, *,
+                          telem_samples_per_period: float = 8.0,
+                          knot_samples_per_period: float = 5.0) -> float:
+    """The binding chirp f1 on Path BRIDGE: the min of the operator request, the
+    telemetry-resolution bound (response side), and the knot-stream bound (command
+    side). This is the honest top frequency the bridge chirp can claim.
+    """
+    return min(
+        float(requested_f1_hz),
+        honest_chirp_top_freq(telem_effective_hz,
+                              min_samples_per_period=telem_samples_per_period),
+        knot_stream_top_freq(seg_t_s, min_samples_per_period=knot_samples_per_period),
+    )
+
+
+# ===========================================================================
+# Guard-latch backoff state machine (Path BRIDGE — never fight the guard)
+# ===========================================================================
+#
+# On Path BRIDGE the firmware safety machine stays armed underneath the harness:
+# the per-leg MAX_DEVIATION E-STOP (0.5 rev) and the MPC_CMD staleness E-STOP are
+# the BACKSTOP the harness must respect, not defeat. When a stimulus is too hot
+# the guard latches (fault_state != NONE on the T→J heartbeat); the harness must
+# detect it, revert to the last-good gains, and recover via a CLEAR_ERRORS RPC
+# (the firmware re-enable slew makes that gentle) — NOT keep pushing. This is a
+# pure classifier + bounded-recovery state machine so the transport-free logic is
+# unit-testable; the driver supplies the observations and performs the RPCs.
+#
+# FaultState wire codes duplicated as plain ints so this module stays dependency-
+# free (numpy + stdlib only, per the module docstring); they are cross-checked
+# against the generated ``FaultState`` enum in
+# ``tests/motion/test_bench_sysid_bridge.py``.
+FAULT_NONE = 0
+FAULT_MPC_STALE = 1
+FAULT_LINK_LOST = 2
+FAULT_MOTOR_OVERSPEED = 3
+FAULT_MAX_DEVIATION = 4
+FAULT_ODRIVE_FATAL = 5
+FAULT_CAN_BUS_DOWN = 6
+FAULT_MOTOR_FB_STALE = 7
+
+FAULT_NAMES = {
+    FAULT_NONE: 'NONE', FAULT_MPC_STALE: 'MPC_STALE', FAULT_LINK_LOST: 'LINK_LOST',
+    FAULT_MOTOR_OVERSPEED: 'MOTOR_OVERSPEED', FAULT_MAX_DEVIATION: 'MAX_DEVIATION',
+    FAULT_ODRIVE_FATAL: 'ODRIVE_FATAL', FAULT_CAN_BUS_DOWN: 'CAN_BUS_DOWN',
+    FAULT_MOTOR_FB_STALE: 'MOTOR_FB_STALE',
+}
+
+# Recoverable: the firmware self-recovers once the stream/feedback returns — keep
+# streaming (they fire during a link/feedback blip, not a too-hot stimulus). ONLY
+# MOTOR_FB_STALE and LINK_LOST self-recover: fault_machine.cpp:388-421 sets
+# MOTOR_FB_STALE from the live ``fb_stale`` (output re-enables when feedback returns)
+# and LINK_LOST from the instantaneous ``jetson_link_up()`` — NEITHER latched.
+_FAULT_RECOVERABLE = frozenset({FAULT_LINK_LOST, FAULT_MOTOR_FB_STALE})
+# Latching: a guard E-STOP crossed — revert + CLEAR_ERRORS to recover. ALL THREE of
+# MOTOR_OVERSPEED / MPC_STALE / MAX_DEVIATION latch (sticky ``s_estop_latched``,
+# fault_machine.cpp:69-80,403-418): guard_mode holds ESTOP and the 500 Hz output stays
+# gated off until an EXPLICIT ``fault_notify_clear_errors()``. MPC_STALE is reachable in
+# normal operation — a blocking RPC gain-apply (two SET_*_GAIN calls, up to ~1.5 s with
+# retries) between streams can straddle the 250 ms MPC_CMD_STALENESS window while armed;
+# the driver disarms across gain application (``mpc_active=0`` suppresses the staleness
+# check) so it does not spuriously latch, and a genuine MPC_STALE latch then runs the
+# same back-off + CLEAR_ERRORS recovery as MAX_DEVIATION rather than a passive watch.
+_FAULT_LATCHING = frozenset({FAULT_MPC_STALE, FAULT_MAX_DEVIATION, FAULT_MOTOR_OVERSPEED})
+# Fatal: cede authority so the firmware deferred stow / fatal handling runs alone.
+_FAULT_FATAL = frozenset({FAULT_ODRIVE_FATAL, FAULT_CAN_BUS_DOWN})
+
+
+def fault_name(code: int) -> str:
+    return FAULT_NAMES.get(int(code), "FAULT_%d" % int(code))
+
+
+def classify_fault(fault_state: int) -> str:
+    """'none' | 'recoverable' | 'latching' | 'fatal'. Unknown codes → 'fatal'
+    (conservative: an unclassified fault is treated as un-recoverable)."""
+    fs = int(fault_state)
+    if fs == FAULT_NONE:
+        return 'none'
+    if fs in _FAULT_RECOVERABLE:
+        return 'recoverable'
+    if fs in _FAULT_LATCHING:
+        return 'latching'
+    return 'fatal'
+
+
+@dataclass
+class GuardAction:
+    kind: str              # 'continue' | 'watch' | 'backoff_recover' | 'abort'
+    revert: bool           # revert to last-good gains + disarm (mpc_active=0)
+    clear_errors: bool     # issue a CLEAR_ERRORS RPC to recover the latch
+    classification: str    # the classify_fault() bucket
+    reason: str
+
+
+class GuardLatchBackoff:
+    """Turn a stream of firmware ``fault_state`` observations into harness actions,
+    with a bounded recovery budget so the harness NEVER fights a guard forever.
+
+    Call :meth:`observe` once per control tick with the latest heartbeat
+    ``fault_state``. Semantics (edge-triggered on latches so one latch → one
+    recovery, not one-per-tick while it stays latched):
+
+    * ``none``        → ``continue``.
+    * ``recoverable`` (LINK_LOST / MOTOR_FB_STALE) → ``watch`` (the firmware
+      self-recovers when the stream/feedback returns); but if the SAME recoverable
+      fault persists past ``recoverable_grace`` consecutive ticks the link itself is
+      broken → ``abort``.
+    * ``latching``    (MPC_STALE / MAX_DEVIATION / MOTOR_OVERSPEED) → on the rising edge,
+      ``backoff_recover`` (revert to last-good, disarm, CLEAR_ERRORS). While it
+      stays latched awaiting our clear → ``watch`` (do not re-fire). The
+      ``(max_recoveries+1)``-th distinct latch → ``abort`` (stop climbing into a
+      guard we cannot satisfy).
+    * ``fatal``       (ODRIVE_FATAL / CAN_BUS_DOWN) → ``abort`` immediately, revert
+      but NO clear (cede authority — the firmware's deferred stow runs uncontested).
+    """
+
+    def __init__(self, max_recoveries: int = 2, recoverable_grace: int = 20):
+        self.max_recoveries = int(max_recoveries)
+        self.recoverable_grace = int(recoverable_grace)
+        self.recoveries_used = 0
+        self._recoverable_run = 0
+        self._prev_class = 'none'
+        self.history: List[dict] = []
+
+    def observe(self, fault_state: int) -> GuardAction:
+        cls = classify_fault(fault_state)
+        prev = self._prev_class
+        self._prev_class = cls
+
+        if cls == 'none':
+            self._recoverable_run = 0
+            act = GuardAction('continue', False, False, cls, 'nominal')
+        elif cls == 'recoverable':
+            self._recoverable_run += 1
+            if self._recoverable_run > self.recoverable_grace:
+                act = GuardAction(
+                    'abort', True, False, cls,
+                    "%s persisted > %d ticks (link broken, not stimulus)"
+                    % (fault_name(fault_state), self.recoverable_grace))
+            else:
+                act = GuardAction(
+                    'watch', False, False, cls,
+                    "%s (firmware self-recovers)" % fault_name(fault_state))
+        elif cls == 'latching':
+            self._recoverable_run = 0
+            if prev == 'latching':
+                # Still latched, awaiting our CLEAR_ERRORS — don't double-count.
+                act = GuardAction('watch', False, False, cls,
+                                  "%s latch pending recovery" % fault_name(fault_state))
+            else:
+                self.recoveries_used += 1
+                if self.recoveries_used > self.max_recoveries:
+                    act = GuardAction(
+                        'abort', True, False, cls,
+                        "%s latched %dx (> %d recovery budget) — stop"
+                        % (fault_name(fault_state), self.recoveries_used,
+                           self.max_recoveries))
+                else:
+                    act = GuardAction(
+                        'backoff_recover', True, True, cls,
+                        "%s latch → back off to last-good + CLEAR_ERRORS "
+                        "(recovery %d/%d)" % (fault_name(fault_state),
+                                              self.recoveries_used,
+                                              self.max_recoveries))
+        else:  # fatal / unknown
+            self._recoverable_run = 0
+            act = GuardAction(
+                'abort', True, False, cls,
+                "%s fatal → cede authority (no clear)" % fault_name(fault_state))
+
+        self.history.append({'fault_state': int(fault_state),
+                             'classification': cls, 'action': act.kind})
+        return act
