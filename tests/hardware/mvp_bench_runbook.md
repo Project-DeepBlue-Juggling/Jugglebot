@@ -528,3 +528,14 @@ Carried from the phase open-questions (identical to the closing logbook entry's 
    than rolling-window, and `peak_leg_*` looks stale for zero-distance plans — both still
    open; matters if S4's `/diagnose` review is ever run on a spacemouse sortie rather
    than the battery.
+8. **Jolt-fix regression check (deferred until bench-leg testing completes — operator is
+   currently rigged for the bench leg)**: on the next powered Jugglebot sitting,
+   deliberately latch the guard, then armed `/clear_errors` — the pre-fix ~2 rev/s /
+   9 A kick must now be a bounded ≤ 1 rev/s slew (firmware re-enable slew, flashed
+   2026-07-11, commit f218acf).
+9. **GUI websocket drop 2026-07-11 13:40 — recorded as an unexplained one-off.**
+   Operator context kills both leading hypotheses (browser foregrounded, wired-Ethernet
+   Win10 desktop); the second identical guard fault did not reproduce it. The landed
+   keepalive-ping + staleness-reconnect fixes (f218acf) make any recurrence self-heal in
+   ≤ ~40 s without a refresh; if one is observed, rosbridge client connect/disconnect
+   lines now land in the launch log for diagnosis. No further action planned.
