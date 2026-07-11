@@ -284,13 +284,13 @@ MEASURED from the bench harnesses and config (cite when you set a cap):
 - **Stroke (SHORTER than a platform leg):** the bench leg's full mechanical travel is
   **3.0 rev** (`cogging_bench_test.py:126`, `HARD_POSITION_CAP_REV`), i.e. ≈ 214.7 mm,
   vs a platform leg's ≈ 3.97 rev / 280 mm (`hardware_config.yaml:182` `leg_stroke_mm`,
-  firmware `STROKE_MAX_REV[0]=3.90`). **UNVERIFIED discrepancy:** the Phase-11 bench work
-  cited a ≈3.4 rev physical ceiling with a 3.30-rev software ceiling
-  (`logbook/2026-06-24-phase11-bench-cutover.md`, U3-iv), while `cogging_bench_test.py`
-  caps at 3.0 rev, and `teensy_setpoint_bench.py:85` carries a third figure — the
-  *production* 3.90-rev clamp, a leg-0 value, not a bench measurement (see the Stage-1c
-  stroke-safety bullet). **Use 3.0 rev as the hard cap** unless the operator re-confirms
-  the stroke; crashing the leg into an end-stop can damage the ballscrew/cable/motor.
+  firmware `STROKE_MAX_REV[0]=3.90`). **Operator-confirmed 2026-07-11:** the Phase-11
+  values are the true limits — ≈3.4 rev physical, 3.30 rev software ceiling
+  (`logbook/2026-06-24-phase11-bench-cutover.md`, U3-iv). **The 3.0 rev hard cap is
+  retained DELIBERATELY** (operator: "a little extra margin won't hurt given the testing
+  we're going to be doing"). `teensy_setpoint_bench.py:85`'s 3.90-rev figure is the
+  *production* leg-0 clamp, not a bench measurement (see the Stage-1c stroke-safety
+  bullet); crashing the leg into an end-stop can damage the ballscrew/cable/motor.
 - **Velocity ceiling:** **35 rev/s = 2.5 m/s** of leg-end velocity
   (`cogging_bench_test.py:105-110`), enabled by the borrowed brake resistor (2026-04-27).
   This is the bench *survival* cap — **do not use it as the tuning velocity.** Reproduce
@@ -513,7 +513,9 @@ interp + lead-clamp drive **and** exposes the v3 live-deviation telemetry. Topol
   (`canbridge_config.h:64-65`). Present the bench ODrive as **node 0** — all historical
   bench work used node 0, and the per-index config arrays (`LEG_POS_GAINS[i]`,
   `STROKE_MIN/MAX_REV[i]`, `mm_to_rev[i]`, `odrive_expected_versions.axis_i`) are keyed by
-  node index, so node 0 inherits leg-0's config.
+  node index, so node 0 inherits leg-0's config. **Operator-confirmed 2026-07-11: the
+  bench ODrive is at node 0, and its firmware (0.6.11 per the ODrive GUI) matches the
+  Jugglebot ODrive Pros — the cold-start version sweep should pass.**
 - **1-of-6 presence gating:** `leg_present(i) == axes[i].heartbeat_seen` (latched-once,
   `logbook/2026-06-24-...`, U1). Legs 1–5 absent ⇒ the interp setpoint TX, the stow
   descent, and the `MAX_DEVIATION` loop **skip them**; the deferred-stow reconnect
@@ -556,9 +558,9 @@ interp + lead-clamp drive **and** exposes the v3 live-deviation telemetry. Topol
 
 **Setup for the CAN3 swap (Path BRIDGE):** disconnect all six platform legs + hand + the
 Platform Teensy from CAN3; connect **only** the bench ODrive (node 0) to CAN3. Ensure
-**120 Ω termination at both physical ends** of the CAN3 stub (can-bridge end + bench-ODrive
-end; the ODrive Pro has a configurable terminator — **UNVERIFIED** whether the can-bridge
-board self-terminates: check before powering). Power the bench ODrive from the **48 V PSU
+**120 Ω termination at both physical ends** of the CAN3 stub (operator-handled and
+confirmed sorted, 2026-07-11 — cabling/termination is the operator's domain).
+Power the bench ODrive from the **48 V PSU
 with the brake resistor attached**; the can-bridge Teensy is already powered from Jetson
 5 V. With the Platform Teensy gone there is **no `is_homed` cold-start persistence, no
 tilt/levelling, no `STATE_READ`** — none are needed for gain tuning; home the bench leg
