@@ -239,11 +239,13 @@ this entry and the 2026-05-23 validated-working reference wiring.
   passed, 1 xfailed in 620.89 s** (count includes the parallel bench-sysid
   session's newly-landed tests plus this fix's 2 launch tripwires; post-suite
   edits were markdown-only, outside pytest collection).
-- **PLACEHOLDER — operator live confirmation** (piezo tap → panel feedback):
-  **remaining hardware validation.** Requires a **stack relaunch** to pick up
-  the restored `catch_correlation_node`; the heartbeat-line half can be
-  confirmed without a relaunch, but matched/unmatched timing readouts need the
-  node running. Not yet performed.
+- **Operator live confirmation** (2026-07-12, evidence: the session 18-37-27
+  rosbag — the first post-rebuild session with real taps): **5 piezo taps →
+  5 `/cone/catch_event` → 5 matched `/cone/timing_result` → the GUI cone panel
+  updated on every tap. CONFIRMED.** Note the pickup requirement was stronger
+  than this entry originally stated: a **colcon rebuild + relaunch** (`ros2
+  launch` runs the *installed* launch copy), not a relaunch alone — see the
+  Addendum for the same-day "unreliability" detour this caused.
 
 ## Outcome
 
@@ -251,8 +253,10 @@ The catching-cone catch pipeline is wired end-to-end again: `catch_correlation_n
 is back in the production launch (restoring `cone/timing_result` for the GUI and
 the rosbag), and the cone panel now gives per-tap heartbeat feedback that
 survives any future correlation-half outage. The launch tripwire pins the
-node against silent re-orphaning. Remaining: the operator live confirmation
-(relaunch required) — the one placeholder verification item above.
+node against silent re-orphaning. Live-confirmed the same day (session
+18-37-27: 5 taps → 5 matched timing_results → the GUI updated on every tap)
+after the operator's colcon rebuild — see the Addendum for the stale-install
+detour and the two flagged residuals.
 
 ## Open Questions
 
@@ -279,3 +283,63 @@ node against silent re-orphaning. Remaining: the operator live confirmation
   class fixed one day earlier (`leg_lengths_topic` producer orphaned by the same
   migration); the consumer⊆producer tripwire strategy this fix extends to the
   launch graph.
+
+## Addendum (2026-07-12, same day) — "unreliability" investigation: transport refuted, stale-install root cause
+
+Operator report, a few hours after the fix landed: catch events **displayed
+only once across several sessions**; the operator hypothesized
+`cone/catch_event` topic interference. A **read-only investigation** over
+`~/Desktop/rosbags/*` (mcap) plus the `~/.ros/log` node rosters, covering all
+10 of the day's sessions, **refuted the transport hypothesis** and found a
+stale-install root cause instead.
+
+**Transport refuted.** In every session with genuine taps, the bagged
+`/cone/catch_event` message count **equals** the genuine tap count (the
+heartbeat `last_catch_seq` delta): 10=10, 19=19, 6=6, 5=5 — **zero drops**
+anywhere. There is no interference on the topic.
+
+**Root cause: `ros2 launch` runs the INSTALLED launch copy.** The restored
+`catch_correlation_node` (committed in eedcbed at ~18:20) only entered the
+node roster after the operator's **colcon rebuild**, between the 18-30-05 and
+18-34-09 sessions. Every pre-rebuild session had `catch_event` flowing with
+**zero** `timing_result`s — the node simply wasn't running. 18-37-27, the
+first post-rebuild session with real taps, **worked perfectly** (5 taps → 5
+catch_events → 5 matched timing_results → the GUI green on every tap) — that
+session is the fix's live confirmation, now cited in Verification.
+
+| session | synced | taps | catch_event msgs | corr node running | timing_results | GUI |
+|---|---|---|---|---|---|---|
+| 10-37-19 | never | 0 | 0 | no | 0 | — |
+| 10-42-51 | never | 0 | 0 | no | 0 | — |
+| 15-57-59 | yes | 10 | 10 | **NO** | 0 | dead |
+| 16-06-23 | yes | 0 | 0 | no | 0 | — |
+| 16-08-47 | yes | 19 | 19 | **NO** | 0 | dead |
+| 18-30-05 | yes | 6 | 6 | **NO** | 0 | dead |
+| 18-34-09 | reboot | 0 | 0 | yes | 0 | — |
+| 18-37-27 | yes | 5 | 5 | **YES** | **5 (all matched)** | **WORKS** |
+| 18-42-22 | yes | 0 | 0 | yes | 0 | — |
+| 18-44-56 | reboot | 0 | 0 | yes | 0 | — |
+
+The operator's "only once did I observe catch_event publishing" observation
+was almost certainly `ros2 topic echo` **false-negatives** — the known Foxy
+flakiness on this box (memory `reference_ros2_topic_echo_flaky_foxy`); the
+bags are authoritative, and they show the topic publishing in every tap
+session.
+
+**Two residuals flagged for the operator:**
+
+1. **A stale top-level `install/` tree exists beside `ros_ws/install/`** —
+   its installed `jugglebot_launch.py` is dated 2026-07-09 and contains **no**
+   `catch_correlation_node` (verified: zero references, vs 3 in the current
+   `ros_ws/install/` copy). Sourcing the wrong tree silently resurrects this
+   exact regression. Recommend deleting it; operator's call.
+2. **Suspected cone MCU restarts mid-testing**: the 18-34-09 and 18-44-56
+   sessions show `last_catch_seq` resetting to 0 and `have_any_catch`
+   clearing (the "reboot" rows above). If the operator did NOT deliberately
+   power-cycle the cone at those times, that is a separate power/wiring
+   intermittency lead — independent of everything else in this entry.
+
+**Process lesson**: the fix's operator guidance said "relaunch required" when
+the actual requirement was "**colcon build + relaunch**" (`ros2 launch` reads
+the installed copy, not the source tree) — captured as memory
+`feedback_ros_ws_changes_need_colcon_guidance`.
