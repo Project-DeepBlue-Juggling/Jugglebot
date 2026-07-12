@@ -18,6 +18,7 @@ files_changed:
   - tools/probes/README.md
 commits:
   - eedcbed
+  - 4f774b0  # investigation addendum
 subsystem:
   - gui
   - ros
