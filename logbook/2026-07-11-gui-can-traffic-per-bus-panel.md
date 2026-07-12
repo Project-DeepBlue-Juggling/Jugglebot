@@ -23,6 +23,7 @@ files_changed:
   - tools/probes/README.md
 commits:
   - b91f0cc
+  - fd07602  # operator-feedback addendum
 subsystem:
   - gui
   - can

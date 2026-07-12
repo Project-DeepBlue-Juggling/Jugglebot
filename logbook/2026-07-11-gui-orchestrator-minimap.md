@@ -20,6 +20,7 @@ files_changed:
   - tools/probes/README.md
 commits:
   - 3244ca9
+  - fd07602  # operator-feedback addendum
 subsystem:
   - gui
   - ros
