@@ -1866,3 +1866,437 @@ def analyze_tracking_residual(t: Sequence[float], cmd: Sequence[float],
     return TrackResidual(fs_hz=fs, peaks=peaks, dominant_freq_hz=dominant,
                          reversals=reversals, iq_mean=iq_mean, iq_max=iq_max,
                          iq_min=iq_min, iq_rms=iq_rms, clamp_engaged_frac=clamp_frac)
+
+
+# ===========================================================================
+# Feature 1 — motion-excited HF onset detector (the instrument the ears exposed)
+# ===========================================================================
+#
+# The quiescent-hold buzz gate and the arrive-and-settle step metrics are
+# STRUCTURALLY BLIND to the vibration the operator can hear: it only appears
+# under SUSTAINED motion (2026-07-12 adversarial review, r3_review.json). At the
+# 4.4 rev/s track the p110 gains excite 2.2× the baseline resolvable velocity
+# energy and 3.7× the iq energy in a 20-45 Hz band that neither the quiescent
+# gate nor the settled step tail samples. This detector measures that band on any
+# moving stage and flags it ADVISORY (printed + manifest), never a hard abort.
+#
+# The analysis band is 20-45 Hz with the command staircase NOTCHED OUT at the knot
+# rate (the closed-loop HF excess must be separated from the knot-artifact, which
+# the review showed is nearly equal in the velocity staircase band across gains):
+#   * at 40 Hz knots the staircase sits INSIDE the band, so the notch clips the top
+#     to ~20-34 Hz;
+#   * at 100 Hz knots (the BENCH_SYSID_BUILD) the notch is above the band → full
+#     20-45 Hz;
+#   * and the band is always capped at 0.45·fs (below Nyquist) so a low telemetry
+#     rate cannot claim energy it can't resolve.
+# Any true tone above the telemetry Nyquist (125 Hz at 250 Hz iq) ALIASES into the
+# record and is indistinguishable from a genuine low-frequency resonance — the
+# resolvable band excess is real motion-excited energy but a kHz iq capture /
+# accelerometer / mic is needed to identify a tone above Nyquist (review Q3).
+
+MOTION_HF_BAND_LO_HZ = 20.0          # analysis band low edge
+MOTION_HF_BAND_HI_HZ = 45.0          # analysis band high edge
+MOTION_HF_NOTCH_HALF_HZ = 6.0        # ± half-width of the knot-staircase notch
+MOTION_HF_FS_CAP_FRAC = 0.45         # cap the band at 0.45·fs (below Nyquist)
+# ADVISORY warn thresholds, set BETWEEN tonight's measured baseline and the bad
+# point (r3_review.json Q3 TRACK HF EXCESS, run 190912, 4.4 rev/s track):
+#   baseline (p40):  velHF 0.07 rps, iqHF 0.33 A
+#   bad      (p110): velHF 0.16 rps, iqHF 1.21 A
+MOTION_HF_VEL_ONSET_RPS = 0.12       # velHF above this ⇒ onset (between 0.07 and 0.16)
+MOTION_HF_IQ_ONSET_A = 0.8           # iqHF above this ⇒ onset (between 0.33 and 1.21)
+MOTION_HF_RAIL_LO_A = 9.0            # |iq| above this = current-saturation duty (review Q4)
+MOTION_HF_RAIL_HI_A = 9.5            # tighter rail duty (|iq|>9.5 A was 0.56% at the bad point)
+
+
+def hf_band(fs_hz: float, knot_hz: float, *,
+            base_lo: float = MOTION_HF_BAND_LO_HZ,
+            base_hi: float = MOTION_HF_BAND_HI_HZ,
+            notch_half: float = MOTION_HF_NOTCH_HALF_HZ,
+            fs_cap_frac: float = MOTION_HF_FS_CAP_FRAC
+            ) -> Tuple[float, float, Optional[Tuple[float, float]]]:
+    """The motion-excited HF analysis band ``(lo, hi, notch)`` for a given sample rate
+    and knot rate. Pure.
+
+    Base band ``[base_lo, base_hi]`` capped at ``fs_cap_frac·fs`` (below Nyquist), minus a
+    ``[knot_hz±notch_half]`` notch wherever it intersects — so the command staircase at the
+    knot rate is excluded. When the notch clips the TOP of the band (knot 40: notch
+    [34,46] over [20,45] → band shrinks to [20,34]) or the BOTTOM, the band edge is moved
+    and ``notch`` is ``None`` (absorbed by the clip); a fully-interior notch is returned
+    explicitly so the band-RMS masks it out and the manifest records what was measured.
+    """
+    lo = float(base_lo)
+    hi = float(base_hi)
+    if fs_hz and fs_hz > 0.0:
+        hi = min(hi, fs_cap_frac * float(fs_hz))
+    notch: Optional[Tuple[float, float]] = None
+    if knot_hz and knot_hz > 0.0 and hi > lo:
+        n_lo = float(knot_hz) - notch_half
+        n_hi = float(knot_hz) + notch_half
+        if n_lo < hi and n_hi > lo:            # the notch overlaps the (capped) band
+            if n_hi >= hi:                     # staircase clips the top → shrink hi
+                hi = max(lo, n_lo)
+            elif n_lo <= lo:                   # staircase clips the bottom → raise lo
+                lo = min(hi, n_hi)
+            else:                              # interior notch → explicit exclusion
+                notch = (n_lo, n_hi)
+    return (lo, hi, notch)
+
+
+def _band_rms(x: Sequence[float], fs: float, lo: float, hi: float,
+              notch: Optional[Tuple[float, float]] = None) -> float:
+    """RMS of the energy of ``x`` inside ``[lo, hi]`` (minus ``notch``) at sample rate
+    ``fs``, via a one-sided amplitude spectrum. Pure.
+
+    A pure tone of amplitude ``A`` inside the band reads ``A/√2`` (its RMS); energy
+    outside the band (DC offset, knot staircase, sub-band drift) does not contribute.
+    """
+    x = np.asarray(x, float)
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n < 4 or fs <= 0.0 or hi <= lo:
+        return 0.0
+    x = x - x.mean()
+    freqs = np.fft.rfftfreq(n, d=1.0 / fs)
+    amp = (2.0 / n) * np.abs(np.fft.rfft(x))   # one-sided amplitude per bin
+    mask = (freqs >= lo) & (freqs <= hi)
+    if notch is not None:
+        mask &= ~((freqs >= notch[0]) & (freqs <= notch[1]))
+    if not np.any(mask):
+        return 0.0
+    # A sinusoid of amplitude a contributes a²/2 mean-square power; sum over the band.
+    return float(np.sqrt(np.sum((amp[mask] ** 2) / 2.0)))
+
+
+@dataclass
+class MotionHFMetrics:
+    fs_hz: float
+    band: Tuple[float, float, Optional[Tuple[float, float]]]
+    hf_vel_rms: float
+    hf_iq_rms: float
+    rail_duty_9: float
+    rail_duty_9_5: float
+    onset: bool
+
+
+def motion_hf_metrics(t: Sequence[float], vel: Sequence[float],
+                      iq: Optional[Sequence[float]], knot_hz: float
+                      ) -> MotionHFMetrics:
+    """Windowed HF metrics on a moving-stage window (pure). The instrument for the
+    motion-excited vibration the quiescent gate + settled step tail miss.
+
+    Computes the band-RMS of ``vel`` and ``iq`` inside :func:`hf_band` (the 20-45 Hz band
+    minus the knot-staircase notch, capped below Nyquist), the |iq| rail duties
+    (fractions above 9.0 / 9.5 A — current saturation, review Q4), and an ADVISORY onset
+    flag (``velHF > MOTION_HF_VEL_ONSET_RPS`` OR ``iqHF > MOTION_HF_IQ_ONSET_A``). ``iq``
+    may be ``None`` (then the iq metrics are 0 and onset keys off velHF only). Never a
+    hard abort — the caller prints it and records it to the manifest.
+    """
+    t = np.asarray(t, float)
+    fs = median_sample_rate(t)
+    band = hf_band(fs, knot_hz)
+    lo, hi, notch = band
+    v_rms = _band_rms(vel, fs, lo, hi, notch)
+    if iq is not None and len(iq):
+        iq_rms = _band_rms(iq, fs, lo, hi, notch)
+        ia = np.asarray(iq, float)
+        ia = ia[np.isfinite(ia)]
+        rail9 = float(np.mean(np.abs(ia) > MOTION_HF_RAIL_LO_A)) if ia.size else 0.0
+        rail95 = float(np.mean(np.abs(ia) > MOTION_HF_RAIL_HI_A)) if ia.size else 0.0
+    else:
+        iq_rms = 0.0
+        rail9 = 0.0
+        rail95 = 0.0
+    onset = (v_rms > MOTION_HF_VEL_ONSET_RPS) or (iq_rms > MOTION_HF_IQ_ONSET_A)
+    return MotionHFMetrics(fs_hz=fs, band=band, hf_vel_rms=v_rms, hf_iq_rms=iq_rms,
+                           rail_duty_9=rail9, rail_duty_9_5=rail95, onset=bool(onset))
+
+
+# ===========================================================================
+# Feature 2 — aggressive realistic-stroke battery (min-jerk point-to-point)
+# ===========================================================================
+#
+# The single 1.75 Hz / 4.4 rev/s sine is one corner of a surface (review Q5). A
+# realistic juggle stroke is a min-jerk (quintic) point-to-point move: zero velocity
+# and acceleration at both ends. All Jugglebot movements are profiled this way — never
+# a step. A min-jerk move of amplitude A over time T peaks at velocity 1.875·A/T and
+# acceleration (10/√3)·A/T² ≈ 5.77·A/T². The battery sweeps a (amplitude × peak_vel)
+# grid, plus asymmetric throw/catch profiles (fast-out, slow-return — the real stroke
+# shape), plus a sustained back-to-back sequence (the S4 excitation class).
+
+MINJERK_VEL_COEF = 1.875                  # peak velocity of a min-jerk move = coef·A/T
+MINJERK_ACCEL_COEF = 10.0 / math.sqrt(3.0)  # peak accel = coef·A/T² ≈ 5.7735
+STROKE_AMPS_DEFAULT = (0.2, 0.4, 0.7, 1.0)   # rev
+STROKE_VELS_DEFAULT = (1.0, 2.0, 3.0, 3.8)   # rev/s (all under the 4.0 config vel cap)
+STROKE_HOLD_S_DEFAULT = 0.4                  # dwell between out-stroke and return
+STROKE_SLOW_RETURN_RPS = 1.0                 # asymmetric catch (slow return) speed
+STROKE_SUSTAINED_N = 4                       # back-to-back strokes in the sustained entry
+
+
+def minjerk_stroke_series(start: float, end: float, T: float, seg_t: float) -> np.ndarray:
+    """Quintic (min-jerk) position knots ``start → end`` over ``T`` at ``seg_t`` spacing.
+
+    ``s(τ) = start + (end−start)·(10τ³ − 15τ⁴ + 6τ⁵)``, ``τ = t/T ∈ [0, 1]`` — the unique
+    quintic with zero velocity AND zero acceleration at both ends. Peaks at velocity
+    ``1.875·|end−start|/T`` (τ=0.5) and acceleration ``5.77·|end−start|/T²``. Index 0 is
+    ``start`` and the last knot is ``end`` (``n+1`` knots over ``n = round(T/seg_t)``
+    segments). Pure.
+    """
+    if T <= 0.0 or seg_t <= 0.0:
+        raise ValueError("T and seg_t must be positive")
+    n = max(1, int(round(T / seg_t)))
+    tau = np.linspace(0.0, 1.0, n + 1)
+    shape = 10.0 * tau ** 3 - 15.0 * tau ** 4 + 6.0 * tau ** 5
+    return float(start) + (float(end) - float(start)) * shape
+
+
+def _minjerk_timing(amplitude: float, peak_vel: float, accel_cap: float
+                    ) -> Tuple[float, float, float, bool]:
+    """``(T, realized_peak_vel, realized_peak_accel, accel_limited)`` for a min-jerk move.
+
+    ``T`` is the LONGER of the velocity-limited duration ``1.875·A/peak_vel`` and the
+    accel-limited duration ``√(5.77·A/accel_cap)`` — so a fast small move is stretched
+    until its peak accel fits the cap (then ``accel_limited`` is True and the realized
+    peak velocity drops below the requested ``peak_vel``). Pure.
+    """
+    A = abs(float(amplitude))
+    pv = max(1e-9, abs(float(peak_vel)))
+    T_vel = MINJERK_VEL_COEF * A / pv if A > 0 else 0.0
+    T_acc = math.sqrt(MINJERK_ACCEL_COEF * A / accel_cap) if (accel_cap and accel_cap > 0
+                                                              and A > 0) else 0.0
+    T = max(T_vel, T_acc, 1e-6)
+    realized_pv = MINJERK_VEL_COEF * A / T if A > 0 else 0.0
+    realized_acc = MINJERK_ACCEL_COEF * A / (T * T) if A > 0 else 0.0
+    return T, realized_pv, realized_acc, bool(T_acc > T_vel + 1e-12)
+
+
+@dataclass
+class StrokeSpec:
+    kind: str                       # 'symmetric' | 'asymmetric' | 'sustained'
+    amplitude_rev: float
+    out_peak_vel_rps: float         # realized (post accel-stretch) out-stroke peak vel
+    return_peak_vel_rps: float      # realized return-stroke peak vel
+    T_out_s: float
+    T_return_s: float
+    hold_s: float
+    peak_accel_out_rps2: float
+    peak_accel_return_rps2: float
+    accel_limited: bool             # True if the out-stroke duration was stretched by the accel cap
+    n_strokes: int                  # 1 for a sym/asym out-and-back; N for the sustained sequence
+    label: str
+
+
+def stroke_battery(amplitudes: Sequence[float], peak_vels: Sequence[float], *,
+                   vel_cap: float, accel_cap: float, bounds: StrokeBounds,
+                   center: float, hold_s: float = STROKE_HOLD_S_DEFAULT,
+                   slow_return_rps: float = STROKE_SLOW_RETURN_RPS,
+                   sustained_n: int = STROKE_SUSTAINED_N) -> List[StrokeSpec]:
+    """Build the aggressive-stroke battery (pure): the (amplitude × peak_vel) symmetric
+    grid, an asymmetric throw/catch per amplitude, and one sustained back-to-back entry.
+
+    Each requested ``peak_vel`` is first capped to ``vel_cap``; the min-jerk duration is
+    then stretched if the accel cap binds. Amplitudes that cannot fit SYMMETRIC about
+    ``center`` inside ``bounds`` (``A > symmetric_amplitude_limit``) are DROPPED — an
+    out-and-back stroke must have room both ways. The asymmetric entry drives fast-out at
+    the grid's max peak_vel and slow-return at ``slow_return_rps`` (the real juggle
+    shape). The sustained entry is ``sustained_n`` back-to-back full-amplitude strokes at
+    the largest feasible amplitude and fastest feasible speed (the S4 excitation class).
+    """
+    amax = symmetric_amplitude_limit(center, bounds)
+    feasible = [float(a) for a in amplitudes if a > 0 and abs(a) <= amax + 1e-9]
+    specs: List[StrokeSpec] = []
+    for A in feasible:
+        for v in peak_vels:
+            pv = min(abs(float(v)), vel_cap)
+            T, rpv, racc, alim = _minjerk_timing(A, pv, accel_cap)
+            specs.append(StrokeSpec(
+                'symmetric', A, rpv, rpv, T, T, hold_s, racc, racc, alim, 1,
+                "sym_A%.2f_v%.1f" % (A, pv)))
+    vmax = min(max(peak_vels), vel_cap) if len(peak_vels) else vel_cap
+    sret = min(abs(float(slow_return_rps)), vel_cap)
+    for A in feasible:
+        To, rpvo, racco, alimo = _minjerk_timing(A, vmax, accel_cap)
+        Tr, rpvr, raccr, _ = _minjerk_timing(A, sret, accel_cap)
+        specs.append(StrokeSpec(
+            'asymmetric', A, rpvo, rpvr, To, Tr, hold_s, racco, raccr, alimo, 1,
+            "asym_A%.2f" % A))
+    if feasible:
+        A = max(feasible)
+        pv = min(max(peak_vels), vel_cap) if len(peak_vels) else vel_cap
+        T, rpv, racc, alim = _minjerk_timing(A, pv, accel_cap)
+        specs.append(StrokeSpec(
+            'sustained', A, rpv, rpv, T, T, 0.0, racc, racc, alim, int(sustained_n),
+            "sustained_A%.2f_v%.1f_x%d" % (A, pv, int(sustained_n))))
+    return specs
+
+
+def stroke_moving_windows(spec: StrokeSpec, ring_pad_s: float = 0.15
+                          ) -> Optional[List[Tuple[float, float]]]:
+    """Time windows (s, from stroke-series start) covering the MOVING phases of a
+    hold-bearing stroke, each padded ``ring_pad_s`` for the ring-down — the honest
+    HF-metrics windows. The two stationary holds of a sym/asym stroke otherwise
+    dilute whole-window band-RMS (RMS deflates ~√(moving/total), ~0.7× at the
+    default 0.4 s holds) and mask the advisory onset flag. ``None`` = use the
+    whole window (the sustained spec has no holds)."""
+    if spec.kind == 'sustained' or spec.hold_s <= 0.0:
+        return None
+    ret_start = spec.T_out_s + spec.hold_s
+    return [(0.0, spec.T_out_s + ring_pad_s),
+            (ret_start, ret_start + spec.T_return_s + ring_pad_s)]
+
+
+def stroke_series(spec: StrokeSpec, center: float, seg_t: float,
+                  bounds: Optional[StrokeBounds] = None) -> np.ndarray:
+    """Concatenated 40/100 Hz knot ``u0`` series for one :class:`StrokeSpec` (pure).
+
+    * symmetric / asymmetric: out-stroke (center → center+A) + hold + return-stroke
+      (center+A → center) + hold.
+    * sustained: ``n_strokes`` back-to-back full-amplitude strokes alternating about
+      ``center`` (+A, −A, +A, …), then a min-jerk return to centre — no holds.
+    Index 0 is ``center`` (no jump at the stage entry) and every knot is clamped to
+    ``bounds`` defence-in-depth.
+    """
+    A = spec.amplitude_rev
+    hold = max(0, int(round(spec.hold_s / seg_t))) if spec.hold_s > 0 else 0
+    if spec.kind == 'sustained':
+        prev = float(center)
+        segs = [np.array([float(center)])]
+        sign = 1.0
+        for _ in range(max(1, spec.n_strokes)):
+            tgt = center + sign * A
+            segs.append(minjerk_stroke_series(prev, tgt, spec.T_out_s, seg_t)[1:])
+            prev = tgt
+            sign = -sign
+        segs.append(minjerk_stroke_series(prev, center, spec.T_out_s, seg_t)[1:])
+        arr = np.concatenate(segs)
+    else:
+        out = minjerk_stroke_series(center, center + A, spec.T_out_s, seg_t)
+        ret = minjerk_stroke_series(center + A, center, spec.T_return_s, seg_t)
+        parts: List[np.ndarray] = [out]
+        if hold > 0:
+            parts.append(np.full(hold, float(center + A)))
+        parts.append(ret[1:])
+        if hold > 0:
+            parts.append(np.full(hold, float(center)))
+        arr = np.concatenate(parts)
+    arr = np.asarray(arr, float)
+    if bounds is not None:
+        arr = np.clip(arr, bounds.lo_rev, bounds.hi_rev)
+    return arr
+
+
+# ===========================================================================
+# Feature 3 — spacemouse teleop mapping + slew planner + command grammar
+# ===========================================================================
+#
+# The operator's interactive tuning interface: the SpaceMouse z-axis drives the leg
+# position through a slew planner (never a step — production rule), with live gain
+# reconfiguration gated on a near-rest condition (swapping pos_gain mid-motion steps the
+# control effort into the current rail — review Q5 safety point iii). All the numeric
+# logic is pure here; the driver owns the device I/O, the streaming loop, and the RPC.
+
+TELEOP_RANGE_DEFAULT = 0.9           # rev; z=±1 → center ± this
+TELEOP_MAX_VEL_DEFAULT = 2.0         # rev/s slew cap (the operating stroke speed)
+TELEOP_MAX_VEL_CEILING = 4.0         # rev/s; above this the config vel limit is exceeded → reject
+TELEOP_DEADBAND = 0.05               # |z| below this → hold centre (stick-at-rest = mid-stroke)
+TELEOP_CLAMP_MARGIN_REV = 0.05       # extra margin inside the stroke bounds for the target
+TELEOP_GAIN_SWAP_VEL_TOL_RPS = 0.05  # gain swap allowed only when |vel| below this …
+TELEOP_GAIN_SWAP_DEV_TOL_REV = 0.02  # … AND |cmd − pos| below this (near-rest → no effort step)
+
+
+def teleop_target(z: float, center: float, half_range: float, bounds: StrokeBounds,
+                  margin: float = TELEOP_CLAMP_MARGIN_REV,
+                  deadband: float = TELEOP_DEADBAND) -> float:
+    """Map a SpaceMouse z-axis reading ``z ∈ [−1, 1]`` to a leg position target (pure).
+
+    ``target = center + z·half_range`` with a ``deadband`` about zero (so a resting stick
+    holds ``center`` = mid-stroke), clamped to ``[bounds.lo+margin, bounds.hi−margin]``.
+    The raw target NEVER goes to the wire — it feeds :func:`slew_toward`.
+    """
+    z = float(z)
+    if abs(z) < deadband:
+        z = 0.0
+    raw = float(center) + z * float(half_range)
+    lo = bounds.lo_rev + margin
+    hi = bounds.hi_rev - margin
+    return min(hi, max(lo, raw))
+
+
+def slew_toward(current_cmd: float, current_cmdvel: float, target: float,
+                vel_cap: float, accel_cap: float, seg_t: float
+                ) -> Tuple[float, float]:
+    """One knot of a vel+accel-limited approach ``current_cmd → target`` (pure).
+
+    Returns ``(next_cmd, next_cmdvel)``. Enforces ``|vel| ≤ vel_cap`` and
+    ``|Δvel|/seg_t ≤ accel_cap`` and decelerates in time so it CONVERGES on ``target``
+    without overshoot (``v_stop = √(2·accel_cap·|dist|)`` caps the approach speed near the
+    target). Never a step — this is the production "all movements profiled" rule applied
+    to a live stick target. A ``target`` inside the stroke bounds therefore keeps ``cmd``
+    inside them.
+    """
+    if seg_t <= 0.0:
+        raise ValueError("seg_t must be positive")
+    vel_cap = abs(float(vel_cap))
+    accel_cap = abs(float(accel_cap))
+    dist = float(target) - float(current_cmd)
+    if accel_cap > 0.0:
+        v_stop = math.sqrt(2.0 * accel_cap * abs(dist))
+    else:
+        v_stop = vel_cap
+    v_des = math.copysign(min(vel_cap, v_stop), dist) if dist != 0.0 else 0.0
+    dv_max = accel_cap * seg_t
+    v_next = current_cmdvel + max(-dv_max, min(dv_max, v_des - current_cmdvel))
+    v_next = max(-vel_cap, min(vel_cap, v_next))
+    cmd_next = current_cmd + v_next * seg_t
+    # Discrete-overshoot guard: never step past the target (which would breach bounds).
+    if (float(target) - cmd_next) * dist < 0.0:
+        cmd_next = float(target)
+        v_next = (cmd_next - current_cmd) / seg_t
+    return cmd_next, v_next
+
+
+def gains_swap_allowed(vel_rps: float, cmd_minus_pos_rev: float, *,
+                       vel_tol: float = TELEOP_GAIN_SWAP_VEL_TOL_RPS,
+                       dev_tol: float = TELEOP_GAIN_SWAP_DEV_TOL_REV) -> bool:
+    """True when a live gain swap is safe: the leg is at rest (``|vel| < vel_tol``) AND
+    tracking (``|cmd − pos| < dev_tol``). Pure.
+
+    Swapping pos_gain while moving or while the command leads the encoder steps the
+    control effort ``pos_gain·(cmd − pos)`` discontinuously and can spike torque into the
+    current rail or trip the MAX_DEVIATION guard (review Q5 safety point iii)."""
+    return (abs(float(vel_rps)) < vel_tol
+            and abs(float(cmd_minus_pos_rev)) < dev_tol)
+
+
+@dataclass
+class TeleopCommand:
+    kind: str                          # 'gains'|'baseline'|'rearm'|'quit'|'empty'|'invalid'
+    gains: Optional[GainTriple] = None
+    error: str = ''
+
+
+def parse_teleop_command(line: str) -> TeleopCommand:
+    """Parse one live teleop stdin command (pure).
+
+    Grammar: ``g PG VG VINT`` (apply gains), ``b`` (baseline), ``r`` (re-arm after a
+    latch), ``q`` (quit). Blank → ``empty``; anything else → ``invalid`` with an error
+    hint. Never raises."""
+    s = (line or '').strip()
+    if not s:
+        return TeleopCommand('empty')
+    parts = s.split()
+    c = parts[0].lower()
+    if c == 'q':
+        return TeleopCommand('quit')
+    if c == 'b':
+        return TeleopCommand('baseline')
+    if c == 'r':
+        return TeleopCommand('rearm')
+    if c == 'g':
+        if len(parts) != 4:
+            return TeleopCommand('invalid', error="usage: g PG VG VINT")
+        try:
+            pg, vg, vi = float(parts[1]), float(parts[2]), float(parts[3])
+        except ValueError:
+            return TeleopCommand('invalid', error="g arguments must be three numbers")
+        return TeleopCommand('gains', GainTriple(pg, vg, vi))
+    return TeleopCommand('invalid', error="unknown command %r (g/b/r/q)" % c)

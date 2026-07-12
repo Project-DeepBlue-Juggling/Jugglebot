@@ -57,8 +57,45 @@ Stages (``--mode``)
                  (0.5 rev) + MPC-staleness E-STOPs are the BACKSTOP: the harness
                  detects a guard latch from the heartbeat ``fault_state``, backs
                  off, and recovers via CLEAR_ERRORS — never fighting the guard.
+* ``track``      Sustained-tracking discriminant (BRIDGE): drive a continuously-
+                 moving sine/triangle reference (the S4 excitation class) and
+                 extract the dominant position-residual frequency vs the robot's
+                 ~6 Hz limit cycle. Per-run motion-excited HF metrics (Feature 1).
+* ``strokes``    Aggressive realistic-stroke battery (BRIDGE): a min-jerk (quintic)
+                 amplitude × peak_vel grid + asymmetric throw/catch + a sustained
+                 back-to-back sequence, run at each ``--track-gains`` point. The
+                 surface the single 1.75 Hz/4.4 rev/s sine was one corner of;
+                 per-stroke tracking err / overshoot / HF-onset / rail duty / clamp.
+* ``teleop``     Interactive SpaceMouse + live gains (BRIDGE): the z-axis drives the
+                 leg position through a slew planner (vel/accel-limited, never a
+                 step) with live gain reconfiguration (``g``/``b``/``r``/``q``,
+                 near-rest gate), guard-latch freeze-and-require-re-arm, and live
+                 ~1 Hz HF/rail/clamp metrics.
 * ``all``        DIRECT: vel_steps → pos_steps → chirp. BRIDGE: pos_steps → chirp
-                 (no vel_steps). Run ``ladder`` as a separate deliberate invocation.
+                 (no vel_steps). Run ``ladder``/``track``/``strokes``/``teleop`` as
+                 separate deliberate invocations.
+
+Motion-excited HF onset (Feature 1)
+-----------------------------------
+Every MOVING stage (pos_steps, chirp, track, strokes, teleop) reports an ADVISORY
+motion-excited HF metric — the band-RMS of velocity and iq in 20-45 Hz with the
+knot staircase notched out, plus |iq| rail duties — because the quiescent-hold
+buzz gate and arrive-and-settle step tails are structurally blind to the vibration
+that only appears under sustained motion (2026-07-12 review). It is printed + logged
+to the manifest, never a hard abort.
+
+Selected knobs
+--------------
+* ``--gains pg:vg:vint``   apply a tuned triple at bringup so pos_steps/chirp
+                           characterize THAT loop, not the production baseline.
+* ``--rungs pg:vg:vint,…`` (ladder) explicit off-diagonal gap-fill points through
+                           the same quiescent-buzz → step → onset pipeline (survey
+                           mode: an unstable point never aborts the others).
+* ``--quiescent-secs``     (ladder) flat-hold buzz-check window per rung; stretch
+                           to 120-180 s for a winner soak.
+* ``--track-gains``        (track/strokes) gain points to run the moving battery at.
+* ``--stroke-amps/-vels``  (strokes) override the amplitude / peak-vel grid.
+* ``--teleop-range/-max-vel`` (teleop) stick half-range (rev) and slew velocity cap.
 
 Safety profile
 --------------
@@ -965,7 +1002,11 @@ class BridgeSysID:
                  fast_iq_available: bool = False,
                  custom_rungs: Optional[List[sid.GainTriple]] = None,
                  quiescent_secs: float = QUIESCENT_HOLD_S,
-                 gains_override: Optional[sid.GainTriple] = None):
+                 gains_override: Optional[sid.GainTriple] = None,
+                 stroke_amps: Optional[List[float]] = None,
+                 stroke_vels: Optional[List[float]] = None,
+                 teleop_range: float = sid.TELEOP_RANGE_DEFAULT,
+                 teleop_max_vel: float = sid.TELEOP_MAX_VEL_DEFAULT):
         self.axis_id = axis_id
         self.stroke_cap_rev = stroke_cap_rev
         self.current_limit_a = current_limit_a
@@ -998,6 +1039,11 @@ class BridgeSysID:
         self.custom_rungs = list(custom_rungs) if custom_rungs else None
         self.quiescent_secs = float(quiescent_secs)
         self.gains_override = gains_override
+        # Feature 2 (strokes) + Feature 3 (teleop) knobs.
+        self.stroke_amps = list(stroke_amps) if stroke_amps else list(sid.STROKE_AMPS_DEFAULT)
+        self.stroke_vels = list(stroke_vels) if stroke_vels else list(sid.STROKE_VELS_DEFAULT)
+        self.teleop_range = float(teleop_range)
+        self.teleop_max_vel = float(teleop_max_vel)
 
         # Knot rate (Feature 6): default 40 Hz. A 100 Hz-knot BENCH_SYSID_BUILD firmware
         # lifts the honest chirp ceiling (knot_stream_top_freq = knot_hz / 5) from 8 → 20 Hz.
@@ -1874,12 +1920,16 @@ class BridgeSysID:
             print(f"    rise={m.rise_time_s * 1e3:.1f} ms  overshoot={m.overshoot * 100:.1f}%  "
                   f"ζ≈{m.zeta:.2f}  f_bw≈{f_bw:.1f} Hz (ramp-limited ≤{f_bw_ceiling:.1f} Hz; "
                   f"use chirp for loop BW)  unstable={ev['onset'].unstable}")
-            results.append({'requested_rev': req, 'target_rev': sp.target_rev,
-                            'clamped': sp.clamped, 'ramp_frames': sp.ramp_frames,
-                            'csv': os.path.basename(path), 'metrics': asdict(m),
-                            'f_bw_hz': f_bw, 'f_bw_ramp_limited': True,
-                            'f_bw_ramp_ceiling_hz': f_bw_ceiling,
-                            'unstable': ev['onset'].unstable})
+            hf = self._motion_hf(arrays)   # Feature 1: motion-excited HF (advisory)
+            self._print_hf(hf)
+            row = {'requested_rev': req, 'target_rev': sp.target_rev,
+                   'clamped': sp.clamped, 'ramp_frames': sp.ramp_frames,
+                   'csv': os.path.basename(path), 'metrics': asdict(m),
+                   'f_bw_hz': f_bw, 'f_bw_ramp_limited': True,
+                   'f_bw_ramp_ceiling_hz': f_bw_ceiling,
+                   'unstable': ev['onset'].unstable}
+            row.update(self._hf_fields(hf))
+            results.append(row)
             ok = ok and not ev['onset'].unstable
         self._disarm()
         self._manifest['stages']['pos_steps'] = results
@@ -1975,8 +2025,12 @@ class BridgeSysID:
             points.append({'freq_hz': fr, 'gain': float(g), 'phase_deg': float(ph),
                            'welch_gain': float(cg), 'coherence': float(c),
                            'low_coherence': bool(c < 0.9)})
-        return {'csv': os.path.basename(path), 'amplitude_rev': amp_used,
-                'welch_fs_hz': fs, 'response': points}
+        hf = self._motion_hf(arrays)       # Feature 1: motion-excited HF (advisory)
+        self._print_hf(hf)
+        out = {'csv': os.path.basename(path), 'amplitude_rev': amp_used,
+               'welch_fs_hz': fs, 'response': points}
+        out.update(self._hf_fields(hf))
+        return out
 
     # -- Stage 1b: escalate-until-unstable gain ladder (bridge) --------------
 
@@ -2264,13 +2318,17 @@ class BridgeSysID:
                   f"reversals={resid.reversals}; iq[min/mean/max]="
                   f"{resid.iq_min:.2f}/{resid.iq_mean:.2f}/{resid.iq_max:.2f} A; "
                   f"clamp_frac={cf}")
-            results.append({'gains': asdict(gp), 'csv': os.path.basename(path),
-                            'fs_hz': resid.fs_hz,
-                            'dominant_freq_hz': resid.dominant_freq_hz,
-                            'peaks': resid.peaks, 'reversals': resid.reversals,
-                            'iq_min': resid.iq_min, 'iq_mean': resid.iq_mean,
-                            'iq_max': resid.iq_max, 'iq_rms': resid.iq_rms,
-                            'clamp_engaged_frac': resid.clamp_engaged_frac})
+            hf = self._motion_hf(arrays, mask=steady)   # Feature 1: motion-excited HF (advisory)
+            self._print_hf(hf)
+            row = {'gains': asdict(gp), 'csv': os.path.basename(path),
+                   'fs_hz': resid.fs_hz,
+                   'dominant_freq_hz': resid.dominant_freq_hz,
+                   'peaks': resid.peaks, 'reversals': resid.reversals,
+                   'iq_min': resid.iq_min, 'iq_mean': resid.iq_mean,
+                   'iq_max': resid.iq_max, 'iq_rms': resid.iq_rms,
+                   'clamp_engaged_frac': resid.clamp_engaged_frac}
+            row.update(self._hf_fields(hf))
+            results.append(row)
         self._disarm()
         print("\n  Discriminant (gain point → dominant residual freq); compare to S4 "
               "5.9-6.1 Hz + ~12.3 Hz harmonic:")
@@ -2287,6 +2345,534 @@ class BridgeSysID:
                              '(logbook/2026-07-10-s4-stutter-guard-forensics-recovery-stack.md)'),
             'points': results}
         return True
+
+    # -- Feature 1: motion-excited HF onset (wired into every moving stage) ---
+
+    def _motion_hf(self, arrays: dict, mask=None) -> sid.MotionHFMetrics:
+        """Compute the motion-excited HF metrics on a moving-stage window. ``mask`` (a
+        boolean array over the telemetry samples) restricts to the steady window when a
+        stage excludes a ramp; else the whole window is used."""
+        t = arrays['t']
+        vel = arrays['vel']
+        iq = arrays['iq']
+        if mask is not None and t.size:
+            t, vel, iq = t[mask], vel[mask], iq[mask]
+        return sid.motion_hf_metrics(t, vel, iq, self.knot_hz)
+
+    def _stroke_hf(self, arrays: dict, spec) -> sid.MotionHFMetrics:
+        """HF metrics for one stroke: per moving window (out / return, ring-down
+        padded), worst-by-iqHF — the stationary holds are excluded so they cannot
+        dilute the band-RMS. Falls back to the whole window for holdless specs or
+        windows too short to measure."""
+        wins = sid.stroke_moving_windows(spec)
+        if wins is None or not arrays['t'].size:
+            return self._motion_hf(arrays)
+        t = arrays['t']
+        best = None
+        for lo, hi in wins:
+            m = (t >= lo) & (t <= hi)
+            if np.count_nonzero(m) < 16:
+                continue
+            hf = self._motion_hf(arrays, mask=m)
+            if best is None or hf.hf_iq_rms > best.hf_iq_rms:
+                best = hf
+        return best if best is not None else self._motion_hf(arrays)
+
+    def _print_hf(self, hf: sid.MotionHFMetrics, prefix: str = "    "):
+        lo, hi, notch = hf.band
+        nstr = "" if notch is None else " \\[%.0f-%.0f]" % (notch[0], notch[1])
+        flag = "  ** HF-ONSET **" if hf.onset else ""
+        print("%sHF[%.0f-%.0f Hz%s] velHF=%.3f rps iqHF=%.3f A  rail>9A=%.2f%% "
+              ">9.5A=%.2f%%%s"
+              % (prefix, lo, hi, nstr, hf.hf_vel_rms, hf.hf_iq_rms,
+                 hf.rail_duty_9 * 100.0, hf.rail_duty_9_5 * 100.0, flag))
+
+    @staticmethod
+    def _hf_fields(hf: sid.MotionHFMetrics) -> dict:
+        lo, hi, notch = hf.band
+        return {'hf_vel_rms': hf.hf_vel_rms, 'hf_iq_rms': hf.hf_iq_rms,
+                'hf_band': [lo, hi, (list(notch) if notch is not None else None)],
+                'rail_duty_9': hf.rail_duty_9, 'rail_duty_9_5': hf.rail_duty_9_5,
+                'hf_onset': hf.onset}
+
+    @staticmethod
+    def _clamp_frac(arrays: dict, mask=None) -> Optional[float]:
+        lc = arrays.get('lead_clamp')
+        if lc is None or not lc.size:
+            return None
+        if mask is not None:
+            lc = lc[mask]
+        lc = lc[np.isfinite(lc)]
+        return float(np.mean(lc > 0.5)) if lc.size else None
+
+    def _recent_telem(self, secs: float) -> Optional[dict]:
+        """Snapshot the last ``secs`` of the live telemetry log buffer (teleop rolling
+        metrics). Returns arrays keyed like a stream result, or None if no frames yet."""
+        with self._lock:
+            buf = list(self._log_buf)
+        if not buf:
+            return None
+        arr = np.asarray(buf, float)
+        t = arr[:, 0]
+        mask = t >= (t[-1] - secs)
+        cols = ('t', 'cmd', 'pos', 'vel', 'iq', 'fault', 'lead_clamp')
+        return {c: arr[mask, i] for i, c in enumerate(cols)}
+
+    def _teleop_park(self, cmd_now: float):
+        """Gentle slew-to-centre park (bounded 3 s) before disarm — the profiled way out
+        of teleop. Bails on SIGINT (a Ctrl-C wants an immediate disarm, like every other
+        stage)."""
+        period = self.seg_t_s
+        cmd = float(cmd_now)
+        v = 0.0
+        t_end = time.perf_counter() + 3.0
+        while time.perf_counter() < t_end and not self._sigint:
+            cmd, v = sid.slew_toward(cmd, v, self.center_rev, self.teleop_max_vel,
+                                     HARD_ACCEL_CAP_RPS2, period)
+            self._set_log_u0(cmd)
+            try:
+                self._send_knot(cmd, cmd, cmd, v, int(time.time() * 1_000_000))
+            except OSError:
+                break
+            if abs(cmd - self.center_rev) < 1e-3 and abs(v) < 1e-3:
+                break
+            time.sleep(period)
+
+    # -- Feature 2: aggressive realistic-stroke battery (--mode strokes) ------
+
+    def stage_strokes(self) -> bool:
+        print("\n=== Aggressive realistic-stroke battery (--mode strokes) ===")
+        print("  min-jerk (quintic) point-to-point strokes — the surface the single "
+              "1.75 Hz/4.4 rev/s sine was one corner of. Sweeps amplitude × peak_vel, "
+              "asymmetric throw/catch, and a sustained back-to-back sequence (the S4 class).")
+        battery = sid.stroke_battery(
+            self.stroke_amps, self.stroke_vels, vel_cap=self.vel_cap_rps,
+            accel_cap=HARD_ACCEL_CAP_RPS2, bounds=self.bounds, center=self.center_rev)
+        if not battery:
+            print("  REJECT: no stroke in the battery fits the stroke bounds symmetric "
+                  "about centre — lower --stroke-amps or move --center.", file=sys.stderr)
+            self._manifest['stages']['strokes'] = {'battery': [], 'points': [],
+                                                    'aborted': True}
+            return False
+        print(f"  battery: {len(battery)} strokes across gains {self.track_gains}")
+        entry = self._enter_hold_at_center()
+        if entry['aborted'] or entry['guard_latched']:
+            self._disarm()
+            print(f"  ABORT during approach: {self._abort_reason or 'guard latch'}")
+            return False
+        results = []
+        for gp in self.track_gains:
+            # Reuse the ladder/track disarmed-apply + warm/arm + revert plumbing exactly.
+            self._disarm()
+            self._apply_gains(gp)
+            cur, _, _, _ = self._sample()
+            cur = cur if cur is not None else self.center_rev
+            self._warm_and_arm(cur)
+            approach = self._stream_and_sample(
+                self._knot_ramp(cur, self.center_rev, hold_frames=int(0.4 / self.seg_t_s)),
+                guard=True, revert_gains=BASELINE_GAINS)
+            if approach['aborted']:
+                self._disarm()
+                print(f"  ABORT: {self._abort_diag(approach) or self._abort_reason}")
+                self._manifest['stages']['strokes'] = {
+                    'battery': [asdict(s) for s in battery], 'points': results,
+                    'aborted': True}
+                return False
+            if approach['guard_latched']:
+                # Recovered — skip this gain point's battery (budget checked below).
+                if self.guard.recoveries_used > self.guard.max_recoveries:
+                    self._auto_backoff(BASELINE_GAINS, 'guard budget exhausted at approach')
+                    break
+                continue
+            print(f"\n  --- gain pt pos={gp.pos_gain} vel={gp.vel_gain} "
+                  f"vel_int={gp.vel_int_gain} ---")
+            for spec in battery:
+                series = sid.stroke_series(spec, self.center_rev, self.seg_t_s, self.bounds)
+                f, w, path = self._open_csv(
+                    f"stroke_p{gp.pos_gain:.0f}_{spec.label}.csv")
+                arrays = self._stream_and_sample(series, guard=True, writer=w,
+                                                 revert_gains=BASELINE_GAINS)
+                f.close()
+                if arrays['aborted']:
+                    self._disarm()
+                    print(f"  ABORT: {self._abort_diag(arrays) or self._abort_reason}")
+                    self._manifest['stages']['strokes'] = {
+                        'battery': [asdict(s) for s in battery], 'points': results,
+                        'aborted': True}
+                    return False
+                if arrays['guard_latched']:
+                    print(f"  {spec.label}: GUARD LATCH → backed off to BASELINE "
+                          f"(recovery {self.guard.recoveries_used}/{self.guard.max_recoveries})")
+                    if self.guard.recoveries_used > self.guard.max_recoveries:
+                        self._auto_backoff(BASELINE_GAINS, 'guard budget exhausted')
+                        self._manifest['stages']['strokes'] = {
+                            'battery': [asdict(s) for s in battery], 'points': results,
+                            'aborted': True}
+                        return False
+                    # Budget remains → move on to the next GAIN point (re-approach at top).
+                    break
+                # Per-stroke metrics.
+                t = arrays['t']
+                cmd = arrays['cmd']
+                pos = arrays['pos']
+                fin = np.isfinite(pos) & np.isfinite(cmd)
+                err = np.abs(cmd[fin] - pos[fin]) if np.any(fin) else np.array([0.0])
+                err_rms = float(np.sqrt(np.mean(err ** 2)))
+                err_peak = float(np.max(err))
+                target = self.center_rev + spec.amplitude_rev
+                ov = sid.overshoot_fraction(pos[fin], self.center_rev, target) if np.any(fin) else 0.0
+                # HF over the MOVING phases only (review finding: the two 0.4 s holds
+                # dilute whole-window band-RMS ~0.7x and deflate the onset flag).
+                hf = self._stroke_hf(arrays, spec)
+                cf = self._clamp_frac(arrays)
+                cfs = '?' if cf is None else f"{cf:.3f}"
+                print(f"  {spec.label} (T_out={spec.T_out_s * 1e3:.0f}ms "
+                      f"pk_a={spec.peak_accel_out_rps2:.0f} rps²): "
+                      f"errRMS={err_rms * 1e3:.1f}mm peak={err_peak * 1e3:.1f}mm "
+                      f"overshoot={ov * 100:.1f}% clamp={cfs}")
+                self._print_hf(hf, prefix="      ")
+                row = {'gains': asdict(gp), 'stroke': asdict(spec),
+                       'csv': os.path.basename(path),
+                       'track_err_rms_rev': err_rms, 'track_err_peak_rev': err_peak,
+                       'overshoot': float(ov), 'clamp_engaged_frac': cf}
+                row.update(self._hf_fields(hf))
+                results.append(row)
+        self._disarm()
+        self._manifest['stages']['strokes'] = {
+            'battery': [asdict(s) for s in battery], 'points': results,
+            'hf_advisory': ('hf_onset is ADVISORY (motion-excited 20-45 Hz energy, '
+                            'knot-staircase notched) — never a hard abort')}
+        return True
+
+    # -- Feature 3: interactive SpaceMouse teleop + live gains (--mode teleop) -
+
+    def stage_teleop(self) -> bool:
+        import queue
+        print("\n=== Interactive teleop (--mode teleop): SpaceMouse + live gains ===")
+        print("  commands (type + Enter): 'g PG VG VINT' apply gains (near-rest only) | "
+              "'b' baseline | 'r' re-arm after latch | 'q' quit (ramp to centre + disarm)")
+        try:
+            import pyspacemouse
+        except Exception as e:  # noqa: BLE001 — device lib absent
+            print(f"REJECT: pyspacemouse import failed ({e})", file=sys.stderr)
+            return False
+        try:
+            opened = bool(pyspacemouse.open())
+        except Exception as e:  # noqa: BLE001
+            opened = False
+            print(f"  SpaceMouse open() raised: {e}")
+        if not opened:
+            print("REJECT: could not open the SpaceMouse (is it plugged in?).",
+                  file=sys.stderr)
+            return False
+        sm = pyspacemouse
+        sm_open = True
+        sm_last_open = 0.0
+
+        entry = self._enter_hold_at_center()
+        if entry['aborted'] or entry['guard_latched']:
+            self._disarm()
+            try:
+                sm.close()
+            except Exception:  # noqa: BLE001
+                pass
+            print(f"  ABORT during approach: {self._abort_reason or 'guard latch'}")
+            return False
+
+        active = self.gains_override or BASELINE_GAINS
+        f, w, path = self._open_csv("teleop.csv")
+        self._begin_telem_log(w, self.center_rev)
+        timeline: List[dict] = []
+        self._gain_inflight = False
+        gain_lock = threading.Lock()
+        apply_lock = threading.Lock()
+        # Latch epoch (mutated under gain_lock): a guard latch increments it and
+        # re-applies BASELINE, cancelling/superseding any in-flight gain apply —
+        # BASELINE must be the LAST gain write after a latch (review HIGHs: the
+        # worker's deferred RPCs would otherwise race the latch handler's revert).
+        epoch = [0]
+
+        def apply_worker(triple, my_epoch):
+            nonlocal active
+            status = 'applied'
+            try:
+                # apply_lock serializes whole gain-apply sequences against the latch
+                # handler, so two _apply_gains never interleave on the wire.
+                with apply_lock:
+                    with gain_lock:
+                        stale = my_epoch != epoch[0]
+                    if stale:
+                        status = 'cancelled_by_latch'
+                    else:
+                        # RUNS IN A WORKER THREAD: the two blocking SET_*_GAIN RPCs
+                        # (:5006, up to ~1.5 s with retries) must NOT stall the knot
+                        # stream (:5005) or the 250 ms MPC-staleness E-STOP fires.
+                        # The main loop keeps streaming throughout.
+                        self._apply_gains(triple)
+            except Exception as ex:  # noqa: BLE001
+                status = 'failed'
+                print(f"  gain apply FAILED: {ex}")
+            finally:
+                with gain_lock:
+                    self._gain_inflight = False
+            if status == 'applied':
+                with gain_lock:
+                    if my_epoch != epoch[0]:
+                        # A latch fired DURING our RPCs; its BASELINE lands after us
+                        # (it is blocked on apply_lock) — never claim our triple active.
+                        status = 'superseded_by_latch'
+                    else:
+                        active = triple
+            timeline.append({'t': time.time(), 'gains': asdict(triple),
+                             'status': status})
+            if status == 'applied':
+                print(f"  gains applied: pos={triple.pos_gain} vel={triple.vel_gain} "
+                      f"vel_int={triple.vel_int_gain} — stick live")
+            elif status != 'failed':
+                print(f"  gain apply {status} — BASELINE is restored by the latch handler")
+
+        cmd_q: 'queue.Queue' = queue.Queue()
+
+        def reader():
+            try:
+                for line in sys.stdin:
+                    cmd_q.put(line)
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=reader, daemon=True).start()
+
+        cmd = self.center_rev
+        cmdvel = 0.0
+        target = self.center_rev
+        z = 0.0
+        latched = False
+        quitting = False
+        parked = False
+        rc_ok = True
+        period = self.seg_t_s
+        t0 = time.perf_counter()
+        i = 0
+        last_metric = time.perf_counter()
+        pos = vel = None
+
+        print("  TELEOP LIVE — move the SpaceMouse (z axis). Ctrl-C to park + exit.")
+        while not self._sigint:
+            # 1. read stick (fast) / reconnect at 1 Hz
+            if sm_open and not latched:
+                try:
+                    st = sm.read()
+                    if st is not None:
+                        z = float(st.z)
+                except Exception:  # noqa: BLE001
+                    sm_open = False
+                    enc, _, _, _ = self._sample()
+                    target = enc if enc is not None else target
+                    sm_last_open = time.perf_counter()
+                    print("  SpaceMouse read failed — target FROZEN at encoder; "
+                          "retrying open at 1 Hz")
+            if not sm_open and time.perf_counter() - sm_last_open >= 1.0:
+                sm_last_open = time.perf_counter()
+                try:
+                    if bool(sm.open()):
+                        sm_open = True
+                        print("  SpaceMouse reconnected — stick live")
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # 2. target (frozen while latched, disconnected, or a gain apply is in
+            #    flight: the near-rest gate runs at ENQUEUE, but the worker's RPCs
+            #    land up to ~1.5 s later — freezing the stick until they land keeps
+            #    the leg at rest AT APPLY TIME, so a pos_gain step can never hit a
+            #    moving leg (review HIGH #1). Quit-parking also waits them out.)
+            with gain_lock:
+                inflight = self._gain_inflight
+            if not latched and sm_open and not inflight:
+                target = sid.teleop_target(z, self.center_rev, self.teleop_range,
+                                           self.bounds)
+            if quitting and not inflight:
+                target = self.center_rev
+
+            # 3. slew (never a step) + stream one knot
+            cmd, cmdvel = sid.slew_toward(cmd, cmdvel, target, self.teleop_max_vel,
+                                          HARD_ACCEL_CAP_RPS2, period)
+            now_us = int(time.time() * 1_000_000)
+            u1 = cmd + cmdvel * period
+            u2 = cmd + 2.0 * cmdvel * period
+            self._set_log_u0(cmd)
+            try:
+                self._send_knot(cmd, u1, u2, cmdvel, now_us)
+            except OSError as e:
+                print(f"  send failed: {e} — disarm + exit")
+                rc_ok = False
+                break
+
+            # 4. sample + guard
+            pos, vel, iq, ts = self._sample()
+            fstate = self._fault_state()
+            if fstate is not None and not latched:
+                act = self.guard.observe(fstate)
+                if act.kind == 'backoff_recover':
+                    latched = True
+                    enc, _, _, _ = self._sample()
+                    target = enc if enc is not None else cmd
+                    cmd = target
+                    cmdvel = 0.0
+                    self._disarm()
+                    with gain_lock:
+                        epoch[0] += 1   # cancel/supersede any in-flight gain apply
+                    # apply_lock waits out an in-flight worker's RPCs (≤ ~1.5 s) so
+                    # BASELINE is guaranteed the LAST gain write. Blocking the loop
+                    # here is safe: output is E-STOPped and we just disarmed, so the
+                    # stalled knot stream has nothing to actuate.
+                    with apply_lock:
+                        try:
+                            self._apply_gains(BASELINE_GAINS)
+                            active = BASELINE_GAINS
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if act.clear_errors:
+                        try:
+                            self._clear_errors()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    timeline.append({'t': time.time(), 'event': 'guard_latch',
+                                     'reason': act.reason})
+                    print(f"\n  ** GUARD LATCH: {act.reason} **\n"
+                          f"  target FROZEN at encoder, reverted to BASELINE, CLEAR_ERRORS.\n"
+                          f"  type 'r' + Enter to re-arm (never auto-resumes from the stick).")
+                elif act.kind == 'abort':
+                    print(f"\n  ABORT: {act.reason} — parking + disarm")
+                    rc_ok = False
+                    break
+
+            # 5. consume stdin commands
+            try:
+                while True:
+                    parsed = sid.parse_teleop_command(cmd_q.get_nowait())
+                    if parsed.kind == 'quit':
+                        quitting = True
+                        print("  quitting — ramping to centre, then disarm...")
+                    elif parsed.kind == 'empty':
+                        pass
+                    elif parsed.kind == 'invalid':
+                        print(f"  ? {parsed.error}")
+                    elif parsed.kind == 'rearm':
+                        if not latched:
+                            print("  not latched — 'r' only re-arms after a guard latch")
+                        else:
+                            enc, _, _, _ = self._sample()
+                            start = enc if enc is not None else self.center_rev
+                            settle = self._warm_and_arm(start)
+                            if settle['aborted'] or settle['guard_latched']:
+                                print(f"  re-arm FAILED: {self._abort_diag(settle)} "
+                                      f"— still latched; fix + 'r' again")
+                            else:
+                                curp, _, _, _ = self._sample()
+                                cmd = curp if curp is not None else start
+                                cmdvel = 0.0
+                                target = cmd
+                                latched = False
+                                # _warm_and_arm's internal stream ended the session
+                                # telemetry log — re-attach the same CSV writer so
+                                # logging + rolling HF metrics continue (fresh t/window).
+                                self._begin_telem_log(w, cmd)
+                                timeline.append({'t': time.time(), 'event': 're-armed'})
+                                print("  re-armed — stick live")
+                    else:  # 'gains' or 'baseline'
+                        triple = (BASELINE_GAINS if parsed.kind == 'baseline'
+                                  else parsed.gains)
+                        if latched:
+                            print("  latched — re-arm ('r') before swapping gains")
+                        else:
+                            with gain_lock:
+                                busy = self._gain_inflight
+                            if busy:
+                                print("  gain apply in flight — wait for it to finish")
+                            else:
+                                p2, v2, _, _ = self._sample()
+                                dev = cmd - (p2 if p2 is not None else cmd)
+                                if not sid.gains_swap_allowed(
+                                        v2 if v2 is not None else 0.0, dev):
+                                    print("  hold still to swap gains (|vel|<0.05 rps "
+                                          "AND |cmd-pos|<0.02 rev)")
+                                else:
+                                    with gain_lock:
+                                        self._gain_inflight = True
+                                        my_epoch = epoch[0]
+                                    timeline.append({'t': time.time(),
+                                                     'gains': asdict(triple),
+                                                     'status': 'requested'})
+                                    threading.Thread(target=apply_worker,
+                                                     args=(triple, my_epoch),
+                                                     daemon=True).start()
+                                    print("  gains applying — stick FROZEN until "
+                                          "they land")
+            except queue.Empty:
+                pass
+
+            # 6. live metrics ~1 Hz (Feature 1 on the last ~2 s)
+            if time.perf_counter() - last_metric >= 1.0:
+                last_metric = time.perf_counter()
+                rec = self._recent_telem(2.0)
+                hf = None
+                cf = None
+                if rec is not None:
+                    hf = sid.motion_hf_metrics(rec['t'], rec['vel'], rec['iq'], self.knot_hz)
+                    cf = self._clamp_frac(rec)
+                cfs = '?' if cf is None else f"{cf:.2f}"
+                stt = 'LATCHED' if latched else ('DISCONN' if not sm_open else 'live')
+                pv = pos if pos is not None else float('nan')
+                vv = vel if vel is not None else float('nan')
+                line = (f"  [{stt}] pos={pv:+.3f} vel={vv:+.2f} tgt={target:+.3f} "
+                        f"gains={active.pos_gain}/{active.vel_gain}/{active.vel_int_gain}")
+                if hf is not None:
+                    lo, hi, _ = hf.band
+                    line += (f" | HF[{lo:.0f}-{hi:.0f}] velHF={hf.hf_vel_rms:.3f} "
+                             f"iqHF={hf.hf_iq_rms:.3f} rail>9A={hf.rail_duty_9 * 100:.1f}% "
+                             f"clamp={cfs}")
+                print(line)
+                if hf is not None and hf.onset:
+                    print("  **** HF-ONSET: motion-excited 20-45 Hz vibration ADVISORY "
+                          "(velHF/iqHF over threshold) — consider backing off the gains ****")
+
+            # 7. quit convergence → break once home
+            if quitting and abs(cmd - self.center_rev) < 1e-3 and abs(cmdvel) < 1e-3:
+                parked = True
+                break
+
+            # 8. pace to the knot rate
+            i += 1
+            tt = t0 + i * period
+            dt = tt - time.perf_counter()
+            if dt > 0:
+                time.sleep(dt)
+
+        # -- teardown: gentle park (unless already home or interrupted), then disarm --
+        if not parked and rc_ok and not self._sigint:
+            try:
+                self._teleop_park(cmd)
+            except Exception:  # noqa: BLE001
+                pass
+        self._end_telem_log()
+        try:
+            f.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self._disarm()
+        try:
+            sm.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self._manifest['stages']['teleop'] = {
+            'teleop_range_rev': self.teleop_range,
+            'teleop_max_vel_rps': self.teleop_max_vel,
+            'accel_cap_rps2': HARD_ACCEL_CAP_RPS2,
+            'deadband': sid.TELEOP_DEADBAND,
+            'csv': os.path.basename(path),
+            'gain_timeline': timeline,
+            'final_gains': asdict(active)}
+        print(f"\n  teleop session ended ({len(timeline)} timeline events).")
+        return rc_ok
 
     # -- manifest ------------------------------------------------------------
 
@@ -2409,6 +2995,54 @@ class BridgeSysID:
                       f"vel_int={gp.vel_int_gain}")
             print("    residual periodogram at the TRUE sample rate → dominant freq vs "
                   "S4 5.9-6.1 Hz (+~12.3 Hz harmonic)")
+        if 'strokes' in modes:
+            print(f"\n  [strokes] aggressive min-jerk stroke battery across gains "
+                  f"{self.track_gains}:")
+            print(f"    amps {self.stroke_amps} rev × peak_vels {self.stroke_vels} rev/s "
+                  f"(vel≤{self.vel_cap_rps}, accel≤{HARD_ACCEL_CAP_RPS2:.0f} rps²); "
+                  f"holds {sid.STROKE_HOLD_S_DEFAULT}s; asymmetric slow-return "
+                  f"{sid.STROKE_SLOW_RETURN_RPS} rev/s; sustained ×{sid.STROKE_SUSTAINED_N}")
+            battery = sid.stroke_battery(
+                self.stroke_amps, self.stroke_vels, vel_cap=self.vel_cap_rps,
+                accel_cap=HARD_ACCEL_CAP_RPS2, bounds=self.bounds, center=self.center_rev)
+            if not battery:
+                print("    (NO feasible strokes — every amplitude exceeds the symmetric "
+                      f"stroke room {sid.symmetric_amplitude_limit(self.center_rev, self.bounds):.3f} "
+                      "rev about centre; lower --stroke-amps or move --center)")
+            for spec in battery:
+                alim = " ACCEL-LIMITED" if spec.accel_limited else ""
+                if spec.kind == 'asymmetric':
+                    dur = f"out {spec.T_out_s * 1e3:.0f}ms / return {spec.T_return_s * 1e3:.0f}ms"
+                    vinfo = (f"v_out {spec.out_peak_vel_rps:.2f} / v_ret "
+                             f"{spec.return_peak_vel_rps:.2f} rev/s")
+                elif spec.kind == 'sustained':
+                    dur = f"{spec.n_strokes}× {spec.T_out_s * 1e3:.0f}ms"
+                    vinfo = f"v {spec.out_peak_vel_rps:.2f} rev/s"
+                else:
+                    dur = f"{spec.T_out_s * 1e3:.0f}ms each way"
+                    vinfo = f"v {spec.out_peak_vel_rps:.2f} rev/s"
+                print(f"    {spec.label}: A={spec.amplitude_rev:.2f} rev  {vinfo}  "
+                      f"peak_accel {spec.peak_accel_out_rps2:.0f} rps²  {dur}{alim}")
+            print("    per-stroke: tracking err RMS/peak, overshoot, HF-onset (advisory), "
+                  "rail duty, clamp frac; guard latch → backoff, park BASELINE, next gain pt")
+        if 'teleop' in modes:
+            lo = self.bounds.lo_rev + sid.TELEOP_CLAMP_MARGIN_REV
+            hi = self.bounds.hi_rev - sid.TELEOP_CLAMP_MARGIN_REV
+            print("\n  [teleop] interactive SpaceMouse + live gains:")
+            print(f"    mapping: z∈[-1,1], deadband {sid.TELEOP_DEADBAND} → target = "
+                  f"{self.center_rev:.2f} + z·{self.teleop_range} rev, clamped to "
+                  f"[{lo:.3f}, {hi:.3f}] rev (z=0 → centre {self.center_rev:.2f})")
+            print(f"    slew planner (never a step): vel ≤ {self.teleop_max_vel} rev/s, "
+                  f"accel ≤ {HARD_ACCEL_CAP_RPS2:.0f} rps², streamed at {self.setpoint_hz:.0f} Hz")
+            print("    commands: 'g PG VG VINT' (gains, near-rest only: |vel|<%.2f AND "
+                  "|cmd-pos|<%.2f) | 'b' baseline | 'r' re-arm | 'q' quit"
+                  % (sid.TELEOP_GAIN_SWAP_VEL_TOL_RPS, sid.TELEOP_GAIN_SWAP_DEV_TOL_REV))
+            print("    safety: gains applied via a ONE-SHOT worker thread (RPC must not "
+                  "stall the knot stream); guard latch → freeze target, revert BASELINE, "
+                  "CLEAR_ERRORS, require 'r' (never auto-resume from the stick); "
+                  "Ctrl-C → park + disarm")
+            print("    live ~1 Hz metrics: pos/vel/gains + rolling HF vel/iq RMS, rail "
+                  "duty, clamp frac, LOUD HF-onset warning")
         print("\n  DRY-RUN complete — validation passed, no socket opened, no motor commanded.")
 
     # -- top-level run -------------------------------------------------------
@@ -2444,6 +3078,8 @@ class BridgeSysID:
             'chirp': self.stage_chirp,
             'ladder': self.stage_ladder,
             'track': self.stage_track,
+            'strokes': self.stage_strokes,
+            'teleop': self.stage_teleop,
         }
         rc = 0
         try:
@@ -2538,9 +3174,12 @@ def main() -> int:
         description=__doc__.splitlines()[0],
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--mode', default='all',
-                   choices=['vel_steps', 'pos_steps', 'chirp', 'ladder', 'track', 'all'],
+                   choices=['vel_steps', 'pos_steps', 'chirp', 'ladder', 'track',
+                            'strokes', 'teleop', 'all'],
                    help="stage(s) to run (default: all = pos_steps,chirp on BRIDGE). "
-                        "'track' = the sustained-tracking discriminant for the ~6 Hz question")
+                        "'track' = sustained-tracking discriminant (~6 Hz question); "
+                        "'strokes' = aggressive min-jerk stroke battery; "
+                        "'teleop' = interactive SpaceMouse + live gains")
     p.add_argument('--path', default='bridge', choices=['bridge', 'direct'],
                    help="drive path (default: bridge). 'direct' (socketcan) is "
                         "UNAVAILABLE for live runs on this Jetson — direct CAN was "
@@ -2622,8 +3261,22 @@ def main() -> int:
     p.add_argument('--track-secs', type=float, default=sid.TRACK_SECS_DEFAULT,
                    help="(track) duration in s (default %.1f)" % sid.TRACK_SECS_DEFAULT)
     p.add_argument('--track-gains', default=DEFAULT_TRACK_GAINS,
-                   help="(track) gain points 'pg:vg:vint,...' (default '%s' = the robot's "
-                        "production gains)" % DEFAULT_TRACK_GAINS)
+                   help="(track/strokes) gain points 'pg:vg:vint,...' (default '%s' = the "
+                        "robot's production gains)" % DEFAULT_TRACK_GAINS)
+    p.add_argument('--stroke-amps', default=None,
+                   help="(strokes) comma-separated amplitudes in rev (default %s)"
+                        % ','.join(str(a) for a in sid.STROKE_AMPS_DEFAULT))
+    p.add_argument('--stroke-vels', default=None,
+                   help="(strokes) comma-separated peak velocities in rev/s (default %s, "
+                        "all under the 4.0 config cap)"
+                        % ','.join(str(v) for v in sid.STROKE_VELS_DEFAULT))
+    p.add_argument('--teleop-range', type=float, default=sid.TELEOP_RANGE_DEFAULT,
+                   help="(teleop) half-range in rev; z=±1 → centre ± this (default %.1f)"
+                        % sid.TELEOP_RANGE_DEFAULT)
+    p.add_argument('--teleop-max-vel', type=float, default=sid.TELEOP_MAX_VEL_DEFAULT,
+                   help="(teleop) slew velocity cap in rev/s (default %.1f; up to %.1f "
+                        "with a warning)"
+                        % (sid.TELEOP_MAX_VEL_DEFAULT, sid.TELEOP_MAX_VEL_CEILING))
     p.add_argument('--zeta-target', type=float, default=0.7)
     p.add_argument('--bw-clear-hz', type=float, default=None,
                    help='if set, ladder stops once closed-loop bandwidth clears '
@@ -2682,6 +3335,18 @@ def main() -> int:
               f"{sid.TRACK_PEAK_VEL_MAX_RPS} rev/s (hard cap — the sine/triangle would "
               f"exceed the safe lead-clamp regime)", file=sys.stderr)
         return 1
+    stroke_amps = _parse_float_list(args.stroke_amps) if args.stroke_amps else None
+    stroke_vels = _parse_float_list(args.stroke_vels) if args.stroke_vels else None
+    # Teleop slew cap: default 2.0, up to 4.0 with a warning, never above (the config
+    # leg_vel_limit is 4.0 rev/s — a stick-driven slew must stay under it).
+    if args.teleop_max_vel > sid.TELEOP_MAX_VEL_CEILING:
+        print(f"REJECT: --teleop-max-vel {args.teleop_max_vel} > "
+              f"{sid.TELEOP_MAX_VEL_CEILING} rev/s (the config leg vel limit; a stick "
+              f"slew must stay under it)", file=sys.stderr)
+        return 1
+    if args.teleop_max_vel > sid.TELEOP_MAX_VEL_DEFAULT + 1e-9:
+        print(f"  WARNING: --teleop-max-vel {args.teleop_max_vel} rev/s is above the "
+              f"{sid.TELEOP_MAX_VEL_DEFAULT} rev/s default (aggressive stick response)")
 
     # ── Path dispatch ───────────────────────────────────────────────────────
     if args.path == 'direct':
@@ -2739,7 +3404,9 @@ def main() -> int:
         track_peak_vel=args.track_peak_vel, track_secs=args.track_secs,
         track_gains=track_gains, fast_iq_available=args.fast_iq,
         custom_rungs=custom_rungs, quiescent_secs=args.quiescent_secs,
-        gains_override=gains_override)
+        gains_override=gains_override,
+        stroke_amps=stroke_amps, stroke_vels=stroke_vels,
+        teleop_range=args.teleop_range, teleop_max_vel=args.teleop_max_vel)
     return runner.run(modes)
 
 

@@ -1088,3 +1088,314 @@ def test_non_survey_ladder_still_backs_off():
                      sid.OnsetResult(True, 0.2, 0.9, ['buzz']), None)
     assert dec.action == 'backoff'
     assert lad.stopped and lad.stop_reason == 'instability_onset'
+
+
+# ===========================================================================
+# Feature 1 — motion-excited HF onset detector
+# ===========================================================================
+
+def test_hf_band_knot40_notch_clips_top_of_band():
+    # At 40 Hz knots the staircase [34, 46] sits INSIDE the 20-45 band → the effective
+    # band shrinks to ~20-34 Hz and the notch is absorbed by the clip.
+    lo, hi, notch = sid.hf_band(250.0, 40.0)
+    assert lo == pytest.approx(20.0)
+    assert hi == pytest.approx(34.0)
+    assert notch is None
+
+
+def test_hf_band_knot100_notch_outside_full_band():
+    # At 100 Hz knots the notch [94, 106] is above the band → full 20-45 Hz.
+    lo, hi, notch = sid.hf_band(250.0, 100.0)
+    assert (lo, hi) == pytest.approx((20.0, 45.0))
+    assert notch is None
+
+
+def test_hf_band_caps_at_0p45_fs():
+    # A low telemetry rate caps the band below Nyquist: 0.45·60 = 27 Hz.
+    lo, hi, notch = sid.hf_band(60.0, 100.0)
+    assert lo == pytest.approx(20.0)
+    assert hi == pytest.approx(27.0)
+    assert notch is None
+
+
+def test_hf_band_interior_notch_kept_explicit():
+    # A knot rate whose notch sits fully inside the band is returned as an explicit
+    # exclusion (not a clip), so the band-RMS masks it out.
+    lo, hi, notch = sid.hf_band(250.0, 30.0)          # notch [24, 36] interior to [20, 45]
+    assert (lo, hi) == pytest.approx((20.0, 45.0))
+    assert notch == pytest.approx((24.0, 36.0))
+
+
+def test_motion_hf_metrics_30hz_tone_trips_onset():
+    # A 30 Hz tone (inside the 100-knot 20-45 band) with RMS above the 0.12 rps onset must
+    # trip. Amplitude 0.3 → RMS 0.212 rps.
+    fs = 250.0
+    t = np.arange(int(2.0 * fs)) / fs
+    vel = 0.3 * np.sin(2 * math.pi * 30.0 * t)
+    m = sid.motion_hf_metrics(t, vel, iq=None, knot_hz=100.0)
+    assert m.fs_hz == pytest.approx(250.0, rel=1e-3)
+    assert m.hf_vel_rms == pytest.approx(0.3 / math.sqrt(2.0), rel=0.05)
+    assert m.onset
+
+
+def test_motion_hf_metrics_staircase_at_knot_rate_does_not_trip():
+    # A big tone AT the knot rate (40 Hz) must NOT trip at 40-knot: the notch clips the
+    # band to 20-34 so the 40 Hz staircase energy is excluded.
+    fs = 250.0
+    t = np.arange(int(2.0 * fs)) / fs
+    vel = 0.5 * np.sin(2 * math.pi * 40.0 * t)        # pure staircase-rate tone
+    m = sid.motion_hf_metrics(t, vel, iq=None, knot_hz=40.0)
+    assert m.band[1] == pytest.approx(34.0)
+    assert m.hf_vel_rms < 0.02                        # 40 Hz is outside the clipped band
+    assert not m.onset
+
+
+def test_motion_hf_metrics_rail_duty_and_iq_onset():
+    # iq rail duties count |iq| over 9.0 / 9.5 A; a 30 Hz iq tone above the 0.8 A onset
+    # trips via the iq branch.
+    fs = 250.0
+    t = np.arange(int(2.0 * fs)) / fs
+    vel = np.zeros_like(t)
+    iq = 2.0 * np.sin(2 * math.pi * 30.0 * t)         # HF iq RMS ≈ 1.414 A > 0.8
+    iq[:20] = 9.7                                       # 20 samples railed past 9.5
+    m = sid.motion_hf_metrics(t, vel, iq, knot_hz=100.0)
+    assert m.hf_iq_rms > 0.8
+    assert m.onset
+    assert m.rail_duty_9 == pytest.approx(20 / t.size, rel=0.05)
+    assert m.rail_duty_9_5 == pytest.approx(20 / t.size, rel=0.05)
+
+
+def test_motion_hf_metrics_short_window_is_safe():
+    m = sid.motion_hf_metrics([0.0, 0.01], [0.1, 0.2], iq=[1.0, 1.0], knot_hz=100.0)
+    assert m.hf_vel_rms == 0.0 and m.hf_iq_rms == 0.0
+    assert not m.onset
+
+
+# ===========================================================================
+# Feature 2 — min-jerk strokes + battery builder
+# ===========================================================================
+
+def test_minjerk_peak_velocity_and_accel_match_formulas():
+    # Peak velocity = 1.875·A/T, peak accel = 5.77·A/T², measured off the series.
+    A, T, seg_t = 0.5, 0.4, 0.001
+    s = sid.minjerk_stroke_series(1.5, 1.5 + A, T, seg_t)
+    v = np.diff(s) / seg_t
+    a = np.diff(v) / seg_t
+    assert np.max(np.abs(v)) == pytest.approx(sid.MINJERK_VEL_COEF * A / T, rel=0.02)
+    assert np.max(np.abs(a)) == pytest.approx(sid.MINJERK_ACCEL_COEF * A / (T * T), rel=0.03)
+    assert sid.MINJERK_VEL_COEF == pytest.approx(1.875)
+    assert sid.MINJERK_ACCEL_COEF == pytest.approx(5.7735, abs=1e-3)
+
+
+def test_minjerk_boundary_conditions_zero_end_vel_and_accel():
+    # Zero velocity AND acceleration at both ends (the defining min-jerk property).
+    A, T, seg_t = 0.4, 0.5, 0.001
+    s = sid.minjerk_stroke_series(0.0, A, T, seg_t)
+    v = np.diff(s) / seg_t
+    a = np.diff(v) / seg_t
+    assert s[0] == pytest.approx(0.0) and s[-1] == pytest.approx(A)
+    assert abs(v[0]) < 1e-3 * sid.MINJERK_VEL_COEF * A / T      # ~0 start velocity
+    assert abs(v[-1]) < 1e-3 * sid.MINJERK_VEL_COEF * A / T     # ~0 end velocity
+    # accel is analytically 0 at both ends; the first/last discrete second-difference
+    # sits a couple % of peak off zero (it samples ~1.5·seg_t in), far below peak.
+    assert abs(a[0]) < 0.05 * sid.MINJERK_ACCEL_COEF * A / (T * T)   # ~0 start accel
+    assert abs(a[-1]) < 0.05 * sid.MINJERK_ACCEL_COEF * A / (T * T)  # ~0 end accel
+
+
+def test_minjerk_rejects_bad_inputs():
+    for T, seg in ((0.0, 0.01), (-1.0, 0.01), (0.5, 0.0), (0.5, -0.01)):
+        with pytest.raises(ValueError):
+            sid.minjerk_stroke_series(0.0, 1.0, T, seg)
+
+
+def test_stroke_battery_default_grid_shape_and_kinds():
+    b = sid.stroke_bounds(3.0, 0.15)                            # (0.15, 2.85), sym limit 1.35
+    specs = sid.stroke_battery(sid.STROKE_AMPS_DEFAULT, sid.STROKE_VELS_DEFAULT,
+                               vel_cap=4.0, accel_cap=250.0, bounds=b, center=1.5)
+    kinds = [s.kind for s in specs]
+    # 4 amps × 4 vels symmetric + 4 asymmetric + 1 sustained = 21.
+    assert kinds.count('symmetric') == 16
+    assert kinds.count('asymmetric') == 4
+    assert kinds.count('sustained') == 1
+    sustained = [s for s in specs if s.kind == 'sustained'][0]
+    assert sustained.n_strokes == sid.STROKE_SUSTAINED_N
+    assert sustained.amplitude_rev == pytest.approx(1.0)       # largest feasible amp
+
+
+def test_stroke_battery_accel_cap_stretches_duration():
+    # A fast large stroke is accel-limited: T stretched, realized peak vel drops, peak
+    # accel pinned at the cap.
+    b = sid.stroke_bounds(3.0, 0.15)
+    specs = sid.stroke_battery([1.0], [3.8], vel_cap=4.0, accel_cap=10.0,
+                               bounds=b, center=1.5)
+    sym = [s for s in specs if s.kind == 'symmetric'][0]
+    assert sym.accel_limited
+    assert sym.peak_accel_out_rps2 == pytest.approx(10.0, rel=1e-6)
+    assert sym.out_peak_vel_rps < 3.8                          # stretched below the request
+    # Duration = √(5.77·A/cap).
+    assert sym.T_out_s == pytest.approx(math.sqrt(sid.MINJERK_ACCEL_COEF * 1.0 / 10.0), rel=1e-6)
+
+
+def test_stroke_battery_drops_amplitudes_that_dont_fit_bounds():
+    # Centre near a bound: only small amplitudes fit symmetric.
+    b = sid.stroke_bounds(3.0, 0.15)                            # (0.15, 2.85)
+    specs = sid.stroke_battery([0.2, 0.4, 0.7, 1.0], [2.0], vel_cap=4.0, accel_cap=250.0,
+                               bounds=b, center=0.5)            # sym limit = 0.35
+    amps = sorted({round(s.amplitude_rev, 3) for s in specs})
+    assert amps == [0.2]                                       # 0.4/0.7/1.0 dropped
+    assert all(s.amplitude_rev <= 0.35 + 1e-9 for s in specs)
+
+
+def test_stroke_battery_asymmetric_is_fast_out_slow_return():
+    b = sid.stroke_bounds(3.0, 0.15)
+    specs = sid.stroke_battery([0.4], [1.0, 3.8], vel_cap=4.0, accel_cap=250.0,
+                               bounds=b, center=1.5)
+    asym = [s for s in specs if s.kind == 'asymmetric'][0]
+    # Fast out (max grid vel 3.8) → short T_out; slow return (1.0) → long T_return.
+    assert asym.out_peak_vel_rps > asym.return_peak_vel_rps
+    assert asym.T_out_s < asym.T_return_s
+
+
+def test_stroke_series_symmetric_shape_and_bounds():
+    b = sid.stroke_bounds(3.0, 0.15)
+    specs = sid.stroke_battery([0.4], [2.0], vel_cap=4.0, accel_cap=250.0,
+                               bounds=b, center=1.5)
+    sym = [s for s in specs if s.kind == 'symmetric'][0]
+    s = sid.stroke_series(sym, center=1.5, seg_t=0.01, bounds=b)
+    assert s[0] == pytest.approx(1.5)                          # starts at centre (no jump)
+    assert s[-1] == pytest.approx(1.5)                         # ends back at centre
+    assert s.max() == pytest.approx(1.9, abs=1e-6)             # reaches center+A
+    assert s.min() >= b.lo_rev - 1e-9 and s.max() <= b.hi_rev + 1e-9
+
+
+def test_stroke_series_asymmetric_out_steeper_than_return():
+    b = sid.stroke_bounds(3.0, 0.15)
+    specs = sid.stroke_battery([0.4], [1.0, 3.8], vel_cap=4.0, accel_cap=250.0,
+                               bounds=b, center=1.5)
+    asym = [s for s in specs if s.kind == 'asymmetric'][0]
+    s = sid.stroke_series(asym, center=1.5, seg_t=0.005, bounds=b)
+    d = np.diff(s)
+    # Fastest up-step (out throw) far exceeds the fastest down-step magnitude (slow catch).
+    assert d.max() > abs(d.min())
+
+
+def test_stroke_series_sustained_alternates_about_centre():
+    b = sid.stroke_bounds(3.0, 0.15)
+    specs = sid.stroke_battery([0.4], [2.0], vel_cap=4.0, accel_cap=250.0,
+                               bounds=b, center=1.5)
+    sus = sid.stroke_battery([0.4], [2.0], vel_cap=4.0, accel_cap=250.0,
+                             bounds=b, center=1.5)
+    sustained = [s for s in sus if s.kind == 'sustained'][0]
+    s = sid.stroke_series(sustained, center=1.5, seg_t=0.01, bounds=b)
+    assert s[0] == pytest.approx(1.5) and s[-1] == pytest.approx(1.5)
+    assert s.max() == pytest.approx(1.9, abs=1e-6)             # +A extreme
+    assert s.min() == pytest.approx(1.1, abs=1e-6)             # −A extreme (alternates)
+
+
+# ===========================================================================
+# Feature 3 — teleop mapping, slew planner, command grammar, gate
+# ===========================================================================
+
+def test_teleop_target_deadband_holds_centre():
+    b = sid.stroke_bounds(3.0, 0.15)
+    assert sid.teleop_target(0.0, 1.5, 0.9, b) == pytest.approx(1.5)
+    assert sid.teleop_target(0.03, 1.5, 0.9, b) == pytest.approx(1.5)      # inside deadband
+    assert sid.teleop_target(-0.04, 1.5, 0.9, b) == pytest.approx(1.5)
+
+
+def test_teleop_target_maps_and_clamps():
+    b = sid.stroke_bounds(3.0, 0.15)                            # (0.15, 2.85)
+    assert sid.teleop_target(1.0, 1.5, 0.9, b) == pytest.approx(2.4)       # center + range
+    assert sid.teleop_target(-1.0, 1.5, 0.9, b) == pytest.approx(0.6)
+    # A huge range is clamped to bounds minus margin.
+    hi = b.hi_rev - sid.TELEOP_CLAMP_MARGIN_REV
+    assert sid.teleop_target(1.0, 1.5, 5.0, b) == pytest.approx(hi)
+    lo = b.lo_rev + sid.TELEOP_CLAMP_MARGIN_REV
+    assert sid.teleop_target(-1.0, 1.5, 5.0, b) == pytest.approx(lo)
+
+
+def test_slew_toward_rate_limited_convergence_no_overshoot():
+    seg_t, vel_cap, accel_cap = 0.025, 2.0, 250.0
+    cmd, v = 1.5, 0.0
+    target = 2.3
+    prev = cmd
+    max_v = 0.0
+    max_a = 0.0
+    for _ in range(2000):
+        nxt, v2 = sid.slew_toward(cmd, v, target, vel_cap, accel_cap, seg_t)
+        step_v = abs(nxt - cmd) / seg_t
+        step_a = abs(v2 - v) / seg_t
+        max_v = max(max_v, step_v)
+        max_a = max(max_a, step_a)
+        assert nxt <= target + 1e-9                            # never overshoots the target
+        cmd, v = nxt, v2
+        if abs(cmd - target) < 1e-6 and abs(v) < 1e-6:
+            break
+    assert cmd == pytest.approx(target, abs=1e-4)              # converged
+    assert max_v <= vel_cap + 1e-6                             # velocity cap respected
+    assert max_a <= accel_cap + 1e-6                           # accel cap respected
+
+
+def test_slew_toward_stays_within_bounds_for_in_bounds_target():
+    b = sid.stroke_bounds(3.0, 0.15)
+    seg_t = 0.025
+    cmd, v = 1.5, 0.0
+    target = sid.teleop_target(1.0, 1.5, 0.9, b)               # 2.4, inside bounds
+    for _ in range(1000):
+        cmd, v = sid.slew_toward(cmd, v, target, 2.0, 250.0, seg_t)
+        assert b.lo_rev - 1e-9 <= cmd <= b.hi_rev + 1e-9
+        if abs(cmd - target) < 1e-6 and abs(v) < 1e-6:
+            break
+
+
+def test_slew_toward_rejects_bad_seg_t():
+    with pytest.raises(ValueError):
+        sid.slew_toward(1.5, 0.0, 2.0, 2.0, 250.0, 0.0)
+
+
+def test_gains_swap_allowed_gate():
+    assert sid.gains_swap_allowed(0.0, 0.0)
+    assert sid.gains_swap_allowed(0.04, 0.01)
+    assert not sid.gains_swap_allowed(0.10, 0.0)               # moving
+    assert not sid.gains_swap_allowed(0.0, 0.05)               # command leads the encoder
+    # Custom tolerances honoured.
+    assert sid.gains_swap_allowed(0.08, 0.03, vel_tol=0.1, dev_tol=0.05)
+
+
+def test_parse_teleop_command_grammar():
+    g = sid.parse_teleop_command('g 130 0.5 0.72')
+    assert g.kind == 'gains'
+    assert g.gains == sid.GainTriple(130.0, 0.5, 0.72)
+    assert sid.parse_teleop_command('b').kind == 'baseline'
+    assert sid.parse_teleop_command('r').kind == 'rearm'
+    assert sid.parse_teleop_command('q').kind == 'quit'
+    assert sid.parse_teleop_command('  Q  ').kind == 'quit'    # case + whitespace tolerant
+    assert sid.parse_teleop_command('').kind == 'empty'
+    assert sid.parse_teleop_command('g 1 2').kind == 'invalid'  # too few args
+    assert sid.parse_teleop_command('g a b c').kind == 'invalid'  # non-numeric
+    assert sid.parse_teleop_command('zzz').kind == 'invalid'
+
+
+# --- review fix: stroke HF metrics exclude the stationary holds --------------
+
+def test_stroke_moving_windows_cover_strokes_not_holds():
+    # REGRESSION (review LOW): whole-window band-RMS over a sym stroke includes two
+    # 0.4 s holds, deflating the RMS ~0.7x and masking the onset flag. The moving
+    # windows must span exactly out-stroke and return (+ ring-down pad), not holds.
+    spec = sid.StrokeSpec('symmetric', 0.4, 2.0, 2.0, 0.375, 0.375, 0.4,
+                          123.0, 123.0, False, 1, 'sym_A0.40_v2.0')
+    wins = sid.stroke_moving_windows(spec, ring_pad_s=0.15)
+    assert wins == [(0.0, pytest.approx(0.525)),
+                    (pytest.approx(0.775), pytest.approx(1.30))]
+    # Second window starts at T_out + hold (return-stroke start), ends after
+    # T_return + pad; the middle hold (0.525..0.775 s) is excluded.
+    assert wins[0][1] < wins[1][0]
+
+
+def test_stroke_moving_windows_none_for_holdless():
+    sus = sid.StrokeSpec('sustained', 1.0, 3.8, 3.8, 0.49, 0.49, 0.0,
+                         200.0, 200.0, False, 4, 'sustained_A1.00_v3.8_x4')
+    assert sid.stroke_moving_windows(sus) is None
+    nohold = sid.StrokeSpec('symmetric', 0.4, 2.0, 2.0, 0.375, 0.375, 0.0,
+                            123.0, 123.0, False, 1, 'sym')
+    assert sid.stroke_moving_windows(nohold) is None
