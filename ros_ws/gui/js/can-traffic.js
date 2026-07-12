@@ -496,13 +496,26 @@ function toggleBusSeries(bus) {
     seriesVisible[bus.id] = !seriesVisible[bus.id];
     localStorage.setItem(SERIES_STORAGE_KEY, JSON.stringify(seriesVisible));
 
-    if (chart) {
-        chart.setSeries(BUSES.indexOf(bus) + 1, { show: seriesVisible[bus.id] });
-    }
+    // Reflect the new state in the DOM FIRST: the row label greys via the
+    // .series-off CSS rule (readouts stay live — visibility is a chart
+    // concern), and this MUST land independently of the chart mutation below.
+    // (Previously the chart call threw and aborted the function before these
+    // lines ran, so the label never greyed — the operator-visible bug.)
     const row = el(`can-row-${bus.id}`);
     if (row) row.classList.toggle('series-off', !seriesVisible[bus.id]);
     const btn = el(`can-label-${bus.id}`);
     if (btn) btn.setAttribute('aria-pressed', String(seriesVisible[bus.id]));
+
+    // Toggle the chart series LAST.  Set series.show + redraw() rather than
+    // chart.setSeries({show}): with cursor.show=false there is no cursor-point
+    // element, and setSeries()'s hide branch unconditionally repositions it
+    // (yt[i].style) — an undefined deref that throws in uPlot 1.6.31.  redraw()
+    // re-renders paths + re-fits the y-scale to the visible series, never
+    // touching the cursor layer.
+    if (chart) {
+        chart.series[BUSES.indexOf(bus) + 1].show = seriesVisible[bus.id];
+        chart.redraw();
+    }
 }
 
 // ---- Window preset UI ----

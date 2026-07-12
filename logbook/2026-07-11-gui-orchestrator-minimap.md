@@ -294,3 +294,20 @@ contextual-button rule 6 then.
   — the deferred 'orchestrator-automated arming' item: the minimap ships
   manual Arm only (nothing to double-arm when that lands; adjust
   contextual-button rule 6 then).
+
+## Addendum (2026-07-12) — operator feedback round
+
+Operator asked for a ~1.5× wider expanded minimap with legible rotated
+captions. `--minimap-width` 280→420px — changed at **both** sites, kept
+consistent: the CSS var default (`state-minimap.css`) and the JS pane clamp,
+now `min(420, paneWidth*0.55)` (`state-minimap.js`). The SVG viewBox is
+unchanged, so the wider container lifts **all** graph text ~1.5× (420/280 =
+1.5×) via viewBox scaling; the two rotated edge captions ("auto if homed",
+"guard-only resume") additionally got `edgeLabelFont` 7.5→9 (≈15px rendered)
+and a nudge inward to clear the SVG clip edges.
+
+**Verification**: screenshot-verified at 1600×900 — expanded width = 420px,
+rotated captions legible, scene + command strip inset correctly, collapsed
+state unchanged. The zero-width-viewer invariant was re-verified empirically
+across 1600→640px viewports: viewer-container 468→130px, never 0 (the clamp's
+`pane*0.55` arm keeps the viewer alive on narrow panes).

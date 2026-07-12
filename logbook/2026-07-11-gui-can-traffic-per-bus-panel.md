@@ -262,3 +262,30 @@ final full-suite run pending (one placeholder in Verification).
   it simply counts toward CAN3 traffic.
 - Memory: `project_canhub_tier2_validated` — protocol v3 flash state and the
   lockstep-flash constraint behind the CAN2 tri-state decision.
+
+## Addendum (2026-07-12) — operator feedback round
+
+Operator reported: toggling a bus off hides its chart series but the row label
+**doesn't grey**. Root cause was **NOT CSS** — the `.series-off` rule was
+correct and never the problem. `toggleBusSeries`'s *first* action,
+`chart.setSeries(i, {show})`, **threw inside vendored uPlot 1.6.31**: this
+panel runs `cursor: {show: false}` (`can-traffic.js:636`), and `setSeries`'s
+hide branch unconditionally repositions the cursor-point element — undefined
+when there is no cursor — so the handler aborted before the class line was ever
+reached. The series still vanished because the 1 Hz repaint honors the
+already-mutated `series.show`, producing exactly the observed asymmetry:
+*hides from the plot, but the label doesn't grey*.
+
+**Fix** (`can-traffic.js`): the class + `aria-pressed` updates are applied
+**FIRST** — the visual toggle state can never again be desynced by a
+chart-mutation throw — and `setSeries` is replaced with direct
+`chart.series[i].show = …` + `chart.redraw()`, which re-renders paths and
+re-fits the y-scale to the visible series without ever touching the disabled
+cursor layer.
+
+**Verification**: CDP-verified in both themes — page exceptions 2→0, toggled
+label opacity 1→0.45, readouts stay live while the series is hidden.
+
+**Lesson**: the original implementation was smoke-tested rosbridge-down, where
+toggling was never exercised — interactive assertions (the DOM probe) are the
+gate that would have caught this.

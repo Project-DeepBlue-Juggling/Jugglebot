@@ -5,12 +5,12 @@
 
 :root {
     /* Fallback only: state-minimap.js's ResizeObserver on #viewer-pane
-       overrides this on the pane with min(280, paneWidth*0.55)px.  The clamp
+       overrides this on the pane with min(420, paneWidth*0.55)px.  The clamp
        must be PANE-relative, not viewport-relative — with both sidebars
-       dragged wide the pane can be narrower than 280px, and a vw-capped
+       dragged wide the pane can be narrower than 420px, and a vw-capped
        width would drive #viewer-container to zero width (viewer.js's
        ResizeObserver has no zero guard). */
-    --minimap-width: 280px;
+    --minimap-width: 420px;
     /* Warn/reason text colour — overridden per-theme below (raw
        --accent-amber is ~2.2:1 on the light theme's white --bg-card). */
     --minimap-warn: var(--accent-amber);

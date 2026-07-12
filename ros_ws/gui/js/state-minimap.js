@@ -121,7 +121,7 @@ const LAYOUTS = {
     },
     expanded: {
         viewBox: '0 0 266 432',
-        nodeFont: 11, chipFont: 9.5, captionFont: 8, edgeLabelFont: 7.5,
+        nodeFont: 11, chipFont: 9.5, captionFont: 8, edgeLabelFont: 9,
         nodes: {
             BOOT:      { x: 20,  y: 16,  w: 100, h: 28 },
             FAULT:     { x: 156, y: 16,  w: 84,  h: 28, halo: { x: 150, y: 10, w: 96, h: 60 } },
@@ -141,11 +141,11 @@ const LAYOUTS = {
             { x1: 120, y1: 174, x2: 150, y2: 174, arrow: true, arrowStart: true },    // IDLE⇄LEVELLING
             { x1: 70,  y1: 188, x2: 70,  y2: 232, arrow: true, arrowStart: true },    // IDLE→ACTIVE ⇄ ACTIVE→IDLE (teardown)
             { path: 'M 20,30 L 10,30 L 10,174 L 20,174', arrow: true, dashed: true,   // BOOT→IDLE (auto skip-if-homed, state_machine.py:257-258)
-              label: 'auto if homed', lx: 4, ly: 102, rotate: 90 },
+              label: 'auto if homed', lx: 5, ly: 102, rotate: 90 },
             { x1: 150, y1: 30,  x2: 124, y2: 30,  arrow: true, dashed: true,
               label: 'auto when clear', lx: 133, ly: 12 },
             { path: 'M 246,40 L 256,40 L 256,300 L 246,300', arrow: true, dashed: true,
-              label: 'guard-only resume', lx: 262, ly: 170, rotate: 90 },
+              label: 'guard-only resume', lx: 261, ly: 170, rotate: 90 },
         ],
     },
 };
@@ -1475,13 +1475,13 @@ export function initStateMinimap() {
     // viewport-relative cap (40vw) can exceed a pane narrowed by wide
     // sidebars, driving #viewer-container's width to zero (viewer.js's
     // ResizeObserver has no zero guard — the 3D scene and the command strip
-    // would vanish).  min(280, pane*0.55) never lets the container reach 0.
+    // would vanish).  min(420, pane*0.55) never lets the container reach 0.
     const pane = document.getElementById('viewer-pane');
     const strip = document.getElementById('command-overlay');
     if (pane && strip && typeof ResizeObserver !== 'undefined') {
         const update = () => {
             pane.style.setProperty('--command-strip-h', strip.offsetHeight + 'px');
-            const w = Math.min(280, Math.round(pane.clientWidth * 0.55));
+            const w = Math.min(420, Math.round(pane.clientWidth * 0.55));
             pane.style.setProperty('--minimap-width', w + 'px');
         };
         const ro = new ResizeObserver(update);
