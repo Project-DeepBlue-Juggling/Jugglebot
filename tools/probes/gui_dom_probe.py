@@ -333,6 +333,11 @@ class SyntheticStack:
         self._request({"cmd": "set", "topic": topic, "config": config})
         log("stack set %s <- %s" % (topic, config))
 
+    def pub_once(self, topic: str, values: dict) -> None:
+        """One-shot publish for event-shaped topics (cone/timing_result)."""
+        self._request({"cmd": "pub_once", "topic": topic, "values": values})
+        log("stack pub_once %s <- %s" % (topic, values))
+
     def records(self) -> dict:
         return self._request({"cmd": "records"})
 
@@ -1124,7 +1129,161 @@ async def scenario_minimap(stack, cdp, gui_url, run_dir):
     return R.results
 
 
-SCENARIOS = {"scenario1": SCENARIO1, "minimap": scenario_minimap}
+# ---------------------------------------------------------------------------
+# scenario 'cone' — Catching-cone panel: heartbeat catch feedback
+# (#cc-last-catch: baseline-silently / flash-on-new-catch / reconnect
+# re-baseline) + timing-result readouts (unmatched vs matched).
+# ---------------------------------------------------------------------------
+
+# #cc-last-catch flash = inline style.color set to the accent green for
+# 800 ms; g() doesn't expose style.color, so a dedicated getter.
+JS_CONE = js_probe(
+    "{ badge: g('cc-state-badge'), jit: g('cc-sync-jitter'),"
+    " last: (() => { const e = document.getElementById('cc-last-catch');"
+    "   return e ? { txt: e.textContent, color: e.style.color } : null; })(),"
+    " pred: g('cc-predicted'), act: g('cc-actual'), delta: g('cc-delta'),"
+    " cell: g('cc-delta-cell'), footL: g('cc-foot-left'), footR: g('cc-foot-right') }")
+
+CLOCK_RE = re.compile(r"^\d{2}:\d{2}:\d{2}\.\d{3}$")
+
+
+async def _sample_flash(cdp, duration_s, interval=0.1):
+    """Sample #cc-last-catch's inline color for duration_s; returns the list
+    of non-empty samples (empty list = no flash observed)."""
+    seen = []
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
+        v = await evaluate(cdp, (
+            "(() => { const e = document.getElementById('cc-last-catch');"
+            " return e ? e.style.color : null; })()"))
+        if v:
+            seen.append(v)
+        await asyncio.sleep(interval)
+    return seen
+
+
+async def scenario_cone(stack, cdp, gui_url, run_dir):
+    R = MinimapRunner(stack, cdp, run_dir)
+    fx = stack_fixtures
+
+    # C1: connected baseline — no catches yet, time-synced.
+    stack.stage("cone-baseline")
+    ok, ev, el = await R.poll(JS_CONN, check_connected, 30.0)
+    R.add("cone-baseline", "gui-connected", ok, ev, el)
+    ok, ev, el = await R.poll(
+        JS_CONE,
+        lambda v: (v["badge"]["txt"] == "Connected"
+                   and "cc-connected" in v["badge"]["cls"].split()
+                   and v["last"]["txt"] == "no catches yet"
+                   and v["jit"]["txt"] == "42 µs",
+                   _ev({"badge": v["badge"], "last": v["last"], "jit": v["jit"]})),
+        10.0)
+    R.add("cone-baseline", "connected-synced-no-catches-yet", ok, ev, el)
+    flashes = await _sample_flash(cdp, 1.2)
+    R.add("cone-baseline", "no-flash-on-catchless-heartbeats",
+          len(flashes) == 0, {"non_empty_color_samples": flashes})
+
+    # C2: cone link down -> panel re-baselines (em-dash placeholder).
+    stack.set("cone/heartbeat", {"values": dict(fx.CONE_HB_OFFLINE)})
+    ok, ev, el = await R.poll(
+        JS_CONE,
+        lambda v: (v["badge"]["txt"] == "Disconnected"
+                   and v["last"]["txt"] == "—",
+                   _ev({"badge": v["badge"], "last": v["last"]})),
+        6.0)
+    R.add("cone-rebaseline", "offline-resets-catch-line", ok, ev, el)
+
+    # C3: FIRST connected heartbeat already carries catch history (GUI
+    # connected mid-session) -> must baseline SILENTLY: text appears, no
+    # phantom flash.  Sampling starts before the first heartbeat can land.
+    stack.set("cone/heartbeat", {"values": dict(fx.CONE_HB_CATCH7)})
+    flashes = await _sample_flash(cdp, 1.2)
+    ok, ev, el = await R.poll(
+        JS_CONE,
+        lambda v: (v["last"]["txt"] == "last catch #7 · 12s ago",
+                   _ev({"last": v["last"]})),
+        4.0)
+    R.add("cone-first-heartbeat-catch", "baselines-to-catch-7-text", ok, ev, el)
+    R.add("cone-first-heartbeat-catch", "NO-phantom-flash-on-baseline",
+          len(flashes) == 0, {"non_empty_color_samples": flashes})
+
+    # C4: a genuinely NEW catch (seq 7 -> 8) -> text updates AND flashes.
+    stack.set("cone/heartbeat", {"values": dict(fx.CONE_HB_CATCH8)})
+    deadline = time.monotonic() + 2.0
+    flash_seen = None
+    while time.monotonic() < deadline and not flash_seen:
+        v = await evaluate(cdp, (
+            "(() => { const e = document.getElementById('cc-last-catch');"
+            " return e ? e.style.color : null; })()"))
+        if v:
+            flash_seen = v
+            break
+        await asyncio.sleep(0.08)
+    R.add("cone-new-catch", "seq-advance-flashes-green",
+          flash_seen is not None, {"flash_color": flash_seen})
+    ok, ev, el = await R.poll(
+        JS_CONE,
+        lambda v: ("#8" in v["last"]["txt"] and "3s ago" in v["last"]["txt"],
+                   _ev({"last": v["last"]})),
+        4.0)
+    R.add("cone-new-catch", "text-updates-to-seq-8", ok, ev, el)
+    await R.snapshot("cone-heartbeat")
+
+    # C5: unmatched timing result — Actual clock fills, predicted/delta stay
+    # em-dash, footer says unmatched.
+    stack.pub_once("cone/timing_result", {"matched": False})
+    ok, ev, el = await R.poll(
+        JS_CONE,
+        lambda v: (CLOCK_RE.match(v["act"]["txt"]) is not None
+                   and v["pred"]["txt"] == "—"
+                   and v["delta"]["txt"] == "—"
+                   and v["footL"]["txt"] == "unmatched catch",
+                   _ev({"act": v["act"], "pred": v["pred"],
+                        "delta": v["delta"], "footL": v["footL"]})),
+        6.0)
+    R.add("cone-timing-unmatched", "actual-clock-plus-unmatched-footer", ok, ev, el)
+
+    # C6: matched result — delta renders signed with the warn class
+    # (12.5 ms sits in the 5..15 ms amber band), footer names the thrower.
+    stack.pub_once("cone/timing_result", {
+        "matched": True, "thrower_name": "ball_butler", "timing_error_ms": 12.5})
+    ok, ev, el = await R.poll(
+        JS_CONE,
+        lambda v: (v["delta"]["txt"] == "+12.5 ms"
+                   and "cc-delta-warn" in v["cell"]["cls"].split()
+                   and CLOCK_RE.match(v["pred"]["txt"]) is not None
+                   and v["footL"]["txt"] == "last: ball_butler"
+                   and v["footR"]["txt"] == "1 recent",
+                   _ev({"delta": v["delta"], "cell": v["cell"],
+                        "pred": v["pred"], "footL": v["footL"],
+                        "footR": v["footR"]})),
+        6.0)
+    R.add("cone-timing-matched", "delta-warn-class-and-thrower-footer", ok, ev, el)
+    await R.snapshot("cone-timing")
+
+    # C7: GUI<->rosbridge disconnect resets the catch baseline (audit fix in
+    # main.js: the 'disconnected' connection branch now calls
+    # setCatchingConeDisconnected()) — a catch during a websocket outage must
+    # not phantom-flash on reconnect.  Strongest variant of the assertion:
+    # the line currently shows a REAL catch ('#8') and must wipe to the
+    # em-dash placeholder purely off the GUI-side disconnect (the cone
+    # heartbeat publisher is still running; only rosbridge dies).
+    stack.stop_rosbridge()
+    ok, ev, el = await R.poll(
+        JS_CONE,
+        lambda v: (v["last"]["txt"] == "—"
+                   and v["badge"]["txt"] == "Disconnected",
+                   _ev({"last": v["last"], "badge": v["badge"]})),
+        15.0)
+    R.add("cone-gui-disconnect", "ws-drop-resets-catch-baseline-to-emdash",
+          ok, ev, el)
+    await R.snapshot("cone-disconnected")
+
+    return R.results
+
+
+SCENARIOS = {"scenario1": SCENARIO1, "minimap": scenario_minimap,
+             "cone": scenario_cone}
 
 
 # ---------------------------------------------------------------------------

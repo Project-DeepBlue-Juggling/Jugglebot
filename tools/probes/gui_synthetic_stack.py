@@ -24,8 +24,9 @@ CONTAINMENT (safety rails, enforced in code):
     no orchestrator, no trajectory_node.
   * PUBLISHES only GUI-consumed telemetry topics: ``orchestrator_state``,
     ``control_mode_topic``, ``robot_state``, ``link_status``, ``profile``,
-    ``hand_telemetry``, ``leg_setpoint_echo``.  It NEVER publishes to a
-    command topic the robot acts on.
+    ``hand_telemetry``, ``leg_setpoint_echo``, ``cone/heartbeat``,
+    ``cone/timing_result`` (one-shot).  It NEVER publishes to a command
+    topic the robot acts on.
   * SERVES ``set_setpoint_output`` / ``clear_errors`` / ``home`` /
     ``trajectory/go_home`` / ``trajectory/hold`` as RECORDERS that only
     mutate fake in-process state and log the call — nothing reaches hardware
@@ -48,6 +49,8 @@ stdin/stdout protocol (one JSON object per line; logs go to stderr):
   in : {"cmd": "stage", "name": "<stage>"}   -> out: {"ok": true, "stage": ...}
   in : {"cmd": "set", "topic": T, "config": {...}}  -> merge into T's live
        config (reactive mid-sequence beats) -> out: {"ok": true, "topic": T}
+  in : {"cmd": "pub_once", "topic": T, "values": {...}}  -> single publish
+       (event-shaped topics, e.g. cone/timing_result) -> {"ok": true, ...}
   in : {"cmd": "records"}                    -> out: {"ok": true, "records": ...}
   in : {"cmd": "stop_rosbridge"}             -> kill rosbridge only (GUI
        disconnect scenario; node + rosapi stay up) -> out: {"ok": true, ...}
@@ -137,6 +140,20 @@ LEG_POS_REV = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5]           # measured (robot_state)
 LEG_CMD_REV = [p + 0.02 for p in LEG_POS_REV]            # commanded (echo);
 # 0.02 rev / MM_TO_REV (~0.01418 rev/mm) ~= 1.4 mm tracking error per leg.
 
+# Catching-cone heartbeat fixtures (CatchingConeHeartbeat @ 10 Hz, mirroring
+# the bridge's cone heartbeat relay).  state 2 = READY.
+CONE_HB_BASE = {"connected": True, "state": 2, "state_data": 0,
+                "sync_rms_us": 42, "last_catch_seq": 0,
+                "ms_since_last_catch": 0, "time_synced": True,
+                "have_any_catch": False}
+CONE_HB_OFFLINE = dict(CONE_HB_BASE, connected=False)
+# GUI-connected-mid-session case: the FIRST connected heartbeat already
+# carries catch history -> the panel must baseline silently (no flash).
+CONE_HB_CATCH7 = dict(CONE_HB_BASE, have_any_catch=True, last_catch_seq=7,
+                      ms_since_last_catch=12000)
+CONE_HB_CATCH8 = dict(CONE_HB_CATCH7, last_catch_seq=8,
+                      ms_since_last_catch=3000)
+
 # All-off baseline; every stage starts from a deep copy of this.
 BASELINE_CFG = {
     "profile":            {"period": 1.0,  "enabled": False, "values": dict(PROFILE_DISTINCT)},
@@ -148,6 +165,10 @@ BASELINE_CFG = {
     "hand_telemetry":     {"period": 0.1,  "enabled": False, "pos_cmd": 0.25, "pos_meas": 0.2},
     "orchestrator_state": {"period": 0.5,  "enabled": False, "data": "IDLE"},
     "control_mode_topic": {"period": 0.5,  "enabled": False, "data": ""},
+    "cone/heartbeat":     {"period": 0.1,  "enabled": False, "values": dict(CONE_HB_BASE)},
+    # cone/timing_result is EVENT-shaped (one message per catch in
+    # production) — driven exclusively via the 'pub_once' command, never a
+    # continuous timer, so it carries no 'enabled' flag here.
 }
 
 # Declarative stages: {topic: {field: value, ...}} overrides on the baseline.
@@ -232,6 +253,18 @@ STAGES = {
         "link_status": {"enabled": True, "values": dict(LINK_MM_ARMED)},
         "orchestrator_state": {"enabled": True, "data": "ACTIVE:TRAJECTORY"},
         "control_mode_topic": {"enabled": True, "data": "TRAJECTORY"},
+    },
+
+    # ---- cone scenario base stages (seq bumps / catch states use 'set';
+    # cone/timing_result events use 'pub_once').
+    # Connected + time-synced, no catches yet.
+    "cone-baseline": {
+        "cone/heartbeat": {"enabled": True},
+    },
+    # Cone link down: the panel must re-baseline (reconnect must not flash
+    # for catches that happened while disconnected).
+    "cone-offline": {
+        "cone/heartbeat": {"enabled": True, "values": dict(CONE_HB_OFFLINE)},
     },
 }
 
@@ -402,7 +435,9 @@ def teardown() -> None:
 def make_node(rclpy):
     from builtin_interfaces.msg import Time  # noqa: F401  (via clock .to_msg())
     from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-    from jugglebot_interfaces.msg import (HandTelemetryMessage,
+    from jugglebot_interfaces.msg import (CatchingConeHeartbeat,
+                                          CatchTimingResult,
+                                          HandTelemetryMessage,
                                           MotorStateSingle, RobotState)
     from std_msgs.msg import Float64MultiArray, String
     from std_srvs.srv import SetBool, Trigger
@@ -436,6 +471,8 @@ def make_node(rclpy):
                 "link_status": self.create_publisher(DiagnosticStatus, "link_status", 10),
                 "hand_telemetry": self.create_publisher(HandTelemetryMessage, "hand_telemetry", 10),
                 "leg_setpoint_echo": self.create_publisher(Float64MultiArray, "leg_setpoint_echo", 10),
+                "cone/heartbeat": self.create_publisher(CatchingConeHeartbeat, "cone/heartbeat", 10),
+                "cone/timing_result": self.create_publisher(CatchTimingResult, "cone/timing_result", 10),
             }
             self._msg = {
                 "robot_state": self._make_robot_state,
@@ -445,7 +482,11 @@ def make_node(rclpy):
                 "link_status": self._make_diag("link_status", "can_hub_link"),
                 "hand_telemetry": self._make_hand_telemetry,
                 "leg_setpoint_echo": self._make_leg_echo,
+                "cone/heartbeat": self._make_cone_heartbeat,
+                "cone/timing_result": self._make_cone_timing_result,
             }
+            self._ConeHeartbeat = CatchingConeHeartbeat
+            self._ConeTimingResult = CatchTimingResult
             self._DiagnosticStatus = DiagnosticStatus
             self._KeyValue = KeyValue
             self._RobotState = RobotState
@@ -568,6 +609,50 @@ def make_node(rclpy):
             msg.pos_cmd = float(c["pos_cmd"])
             msg.pos_meas = float(c["pos_meas"])
             return msg
+
+        def _make_cone_heartbeat(self, c):
+            v = c["values"]
+            msg = self._ConeHeartbeat()
+            msg.connected = bool(v["connected"])
+            msg.state = int(v["state"])
+            msg.state_data = int(v["state_data"])
+            msg.sync_rms_us = int(v["sync_rms_us"])
+            msg.last_catch_seq = int(v["last_catch_seq"])
+            msg.ms_since_last_catch = int(v["ms_since_last_catch"])
+            msg.time_synced = bool(v["time_synced"])
+            msg.have_any_catch = bool(v["have_any_catch"])
+            return msg
+
+        def _make_cone_timing_result(self, c):
+            """Event-shaped (pub_once): actual_catch_time = now;
+            predicted = actual - timing_error_ms (matched only)."""
+            v = c["values"]
+            msg = self._ConeTimingResult()
+            now = self.get_clock().now()
+            msg.header.stamp = now.to_msg()
+            msg.matched = bool(v.get("matched", False))
+            msg.thrower_name = str(v.get("thrower_name", ""))
+            msg.timing_error_ms = float(v.get("timing_error_ms", 0.0))
+            actual_ns = now.nanoseconds
+            msg.actual_catch_time.sec = actual_ns // 1_000_000_000
+            msg.actual_catch_time.nanosec = actual_ns % 1_000_000_000
+            pred_ns = actual_ns - int(msg.timing_error_ms * 1e6)
+            msg.predicted_landing_time.sec = pred_ns // 1_000_000_000
+            msg.predicted_landing_time.nanosec = pred_ns % 1_000_000_000
+            return msg
+
+        def pub_once(self, topic: str, values: dict) -> None:
+            """One-shot publish for event-shaped topics (cone/timing_result).
+            Same containment as the timers: telemetry publishers only,
+            refused after a containment breach."""
+            if topic not in self.pub:
+                raise KeyError("unknown topic %r" % topic)
+            with self._cfg_lock:
+                if self._breached:
+                    raise RuntimeError(
+                        "containment breached — refusing to publish")
+            self.pub[topic].publish(self._msg[topic]({"values": values}))
+            log("pub_once %s <- %s" % (topic, values))
 
         def _make_robot_state(self, c):
             msg = self._RobotState()
@@ -704,6 +789,9 @@ def main() -> int:
                     emit({"ok": True, "stage": req["name"]})
                 elif cmd == "set":
                     node.set_config(req["topic"], req["config"])
+                    emit({"ok": True, "topic": req["topic"]})
+                elif cmd == "pub_once":
+                    node.pub_once(req["topic"], req.get("values", {}))
                     emit({"ok": True, "topic": req["topic"]})
                 elif cmd == "records":
                     emit({"ok": True, "records": node.records,

@@ -1004,6 +1004,14 @@ export function clearTopicData() {
 // Recent matched timing offsets (ms), oldest first — drives the sound bar.
 let coneDeltaHistory = [];
 
+// Per-catch heartbeat feedback state (independent of the correlation pipeline).
+// coneLastCatchSeq stays null until the first connected heartbeat is processed,
+// so a pre-existing catch count (GUI connected mid-session) baselines silently
+// instead of flashing a phantom 'catch' on panel init / reconnect.
+let coneLastCatchSeq = null;
+let coneHadAnyCatch = false;
+let coneCatchFlashTimer = null;
+
 function coneDeltaClass(ms) {
     const a = Math.abs(ms);
     if (a < CC_DELTA_OK_MS) return 'cc-delta-ok';
@@ -1034,6 +1042,9 @@ export function initCatchingConePanel() {
             <span class="cc-sync-dot offline" id="cc-sync-dot"></span>
             <span id="cc-sync-text">No time-sync</span>
             <span class="cc-sync-jitter" id="cc-sync-jitter">-- µs</span>
+        </div>
+        <div class="cc-footer">
+            <span id="cc-last-catch">no catches yet</span>
         </div>
         <div class="cc-readouts">
             <div class="cc-readout">
@@ -1071,6 +1082,13 @@ export function setCatchingConeDisconnected() {
     if (jit) jit.textContent = '-- µs';
     const foot = document.getElementById('cc-foot-left');
     if (foot) foot.textContent = 'cone offline';
+    // Re-baseline the heartbeat catch counter so the first heartbeat after
+    // reconnect doesn't flash for catches that happened while disconnected.
+    coneLastCatchSeq = null;
+    coneHadAnyCatch = false;
+    const lastCatch = document.getElementById('cc-last-catch');
+    if (lastCatch) { lastCatch.textContent = '—'; lastCatch.style.color = ''; }
+    clearTimeout(coneCatchFlashTimer);
 }
 
 /** Update connection badge + time-sync line from a CatchingConeHeartbeat. */
@@ -1090,6 +1108,44 @@ export function updateConeHeartbeat(hb) {
         if (dot) dot.className = 'cc-sync-dot unsynced';
         if (text) text.textContent = 'Acquiring sync…';
         if (jit) jit.textContent = '-- µs';
+    }
+
+    // Per-catch feedback straight from the heartbeat — independent of the
+    // correlation pipeline (cone/timing_result). This surfaces a piezo hit even
+    // when catch_correlation_node has no matching throw, and is what the operator
+    // instinctively looks for on a tap.  Updates every heartbeat (10 Hz).
+    const lastCatchEl = document.getElementById('cc-last-catch');
+    if (lastCatchEl) {
+        if (hb.have_any_catch) {
+            const secs = Math.max(0, Math.round((hb.ms_since_last_catch || 0) / 1000));
+            lastCatchEl.textContent = `last catch #${hb.last_catch_seq} · ${secs}s ago`;
+        } else {
+            lastCatchEl.textContent = 'no catches yet';
+        }
+        // Flash green on a genuinely NEW catch: either the first catch this
+        // session (have_any_catch just went false→true) or the sequence number
+        // advanced.  coneLastCatchSeq === null means this is the first heartbeat
+        // after (re)connect — baseline only, never flash (guards against a
+        // phantom 'catch' on panel init / for catches seen while disconnected).
+        // The baseline is reset by setCatchingConeDisconnected(), which fires on
+        // BOTH axes of "disconnected": a cone-reported-offline heartbeat
+        // (updateConeHeartbeat above) AND a GUI↔rosbridge websocket drop
+        // (main.js's connection-state 'disconnected' branch). A reconnect on
+        // either axis therefore re-baselines silently — no flash for catches
+        // that landed while either link was down.
+        const baselined = coneLastCatchSeq !== null;
+        const firstEverCatch = baselined && hb.have_any_catch && !coneHadAnyCatch;
+        const seqAdvanced = baselined && hb.have_any_catch && coneHadAnyCatch
+            && hb.last_catch_seq !== coneLastCatchSeq;
+        if (firstEverCatch || seqAdvanced) {
+            const green = getComputedStyle(document.documentElement)
+                .getPropertyValue('--accent-green').trim();
+            lastCatchEl.style.color = green;
+            clearTimeout(coneCatchFlashTimer);
+            coneCatchFlashTimer = setTimeout(() => { lastCatchEl.style.color = ''; }, 800);
+        }
+        coneLastCatchSeq = hb.last_catch_seq;
+        coneHadAnyCatch = hb.have_any_catch;
     }
 }
 

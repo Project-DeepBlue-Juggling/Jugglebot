@@ -102,6 +102,20 @@ def generate_launch_description():
         executable='catch_coordinator_node',
     )
 
+    # Catch-timing correlation: matches each cone/catch_event against the nearest
+    # predicted landing in throw_announcements and publishes cone/timing_result
+    # (the per-catch predicted-vs-actual delta the GUI Catching Cone panel shows).
+    # This node's ONLY launcher was catching_cone_test.launch.py, deleted in the
+    # Phase 13 SocketCAN decommission (7c7f61b); its consumers stayed wired
+    # (rosbag /cone/timing_result, the GUI panel), so cone/timing_result had zero
+    # publishers and a piezo hit surfaced nothing even though teensy_bridge_node
+    # keeps publishing cone/catch_event + cone/heartbeat. Restored here.  Matches
+    # the deleted launch's declaration exactly (no params/remaps).
+    catch_correlation_node = Node(
+        package='jugglebot',
+        executable='catch_correlation_node',
+    )
+
     ball_butler_node = Node(
         package='jugglebot',
         executable='ball_butler_node',
@@ -272,6 +286,7 @@ def generate_launch_description():
         spacemouse_handler,
         ball_tracker_node,
         catch_coordinator_node,
+        catch_correlation_node,
         ball_butler_node,
         reload_coordinator_node,
         trajectory_node,

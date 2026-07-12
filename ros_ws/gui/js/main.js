@@ -23,7 +23,7 @@ import {
     updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
-    updateConeHeartbeat, updateConeTimingResult,
+    updateConeHeartbeat, updateConeTimingResult, setCatchingConeDisconnected,
 } from './panels.js';
 import {
     initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
@@ -191,6 +191,12 @@ function onConnectionStateChange(state) {
             // happened during disconnect shouldn't be emitted as a fake
             // event with the reconnect timestamp.
             lastOrchestratorState = null;
+            // Re-baseline the cone catch counter for the same stale-reconnect
+            // reason: a catch that lands during the websocket outage must not
+            // flash green on reconnect (the cone panel only re-baselined on a
+            // cone-reported-offline heartbeat, which never arrives while the
+            // bridge is down). Idempotent + safe if the cone was never connected.
+            setCatchingConeDisconnected();
             setJogPanelVisible(false);
             setSpeedLimitsPanelVisible(false);
             stopTopicDiscovery();
