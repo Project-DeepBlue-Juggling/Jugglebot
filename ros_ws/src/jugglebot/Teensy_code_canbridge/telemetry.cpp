@@ -254,8 +254,19 @@ void telemetry_step() {
     // its saw_running gate. (A same-tick early SETUP-fail goes RUNNING→FAILED inside
     // one homing_step() before the 100 Hz sampler can see RUNNING; the host's timeout
     // backstop catches that — a safe false-FAILURE, never a false-success.)
+    // Bench-only: force axis 0's DIAGNOSTIC every telemetry tick (250 Hz) so
+    // iq_measured — carried ONLY by the on-change-gated DIAGNOSTIC (>0.5 A / 1 Hz)
+    // — is observable at rate for the gain-ladder current-rail / vel-buzz ceilings.
+    // Axis 0 is the single bench leg; axes 1-6 keep the on-change/1 Hz cadence:
+    // they are absent on the rig (no live iq) and per-axis 250 Hz ×7 would ~2.5× the
+    // prio-3 telem-task send load. Folds to a constant-false term in the OFF build.
+#if BENCH_SYSID_BUILD
+    const bool due_bench = (i == 0);
+#else
+    constexpr bool due_bench = false;
+#endif
     if (diag_changed(axes[i], s_base[i]) ||
-        homing_result(i) != s_base[i].homing_result || due_forced) {
+        homing_result(i) != s_base[i].homing_result || due_forced || due_bench) {
       send_diag(i);
     }
   }

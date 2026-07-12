@@ -665,3 +665,336 @@ def test_engagement_shared_baseline_reads_the_operator_run_as_engaged():
         fault_state=sid.FAULT_NONE, fw_mpc_active=True)
     assert not buggy.engaged                            # the false 'not following' abort
     assert 'not following' in buggy.reason
+
+
+# ===========================================================================
+# Run-A upgrades (2026-07-12): estimator hardening, extended ladder, buzz check,
+# servo-limited step ramp, sustained-tracking discriminant, 100 Hz logging.
+# ===========================================================================
+
+# --- Feature 2: servo-limited measurement step frame-step (0.9 margin) ------
+
+def test_step_frame_step_0p9_margin_sizing():
+    # The measurement step ramps at 0.9× the lead clamp = 0.09 rev/frame = 3.6 rev/s
+    # (still < MAX_LEAD 0.10, < vel_limit 4.0), so rise time reflects the servo not the
+    # gentle 0.5-margin approach ramp. Contrast the approach ramp at 0.05 rev/frame.
+    step = sid.lead_clamp_frame_step(0.10, margin_frac=0.9)
+    assert step == pytest.approx(0.09)
+    assert step / 0.025 == pytest.approx(3.6)                 # rev/s at 40 Hz knots
+    approach = sid.lead_clamp_frame_step(0.10, margin_frac=0.5)
+    assert step > approach                                    # measurement ramp is faster
+    assert step < 0.10                                        # still under the lead clamp
+
+
+# --- Feature 3: Welch H1 + magnitude-squared coherence ----------------------
+
+def test_welch_h1_recovers_known_gain_high_coherence():
+    # A noiseless pure-gain plant y = k·u: H1 must recover the gain with coherence ~1
+    # (the output is fully explained by the input at every bin).
+    fs, n = 100.0, 4096
+    rng = np.random.default_rng(1)
+    u = rng.standard_normal(n)
+    y = 0.5 * u
+    g, ph, coh = sid.welch_h1_coherence(u, y, fs, [5.0, 10.0, 20.0])
+    assert np.allclose(g, 0.5, atol=1e-6)
+    assert np.allclose(coh, 1.0, atol=1e-6)
+    assert np.allclose(ph, 0.0, atol=1e-6)
+
+
+def test_welch_coherence_low_for_uncorrelated_output():
+    # Independent noise output → coherence near 0 (the aliased/low-SNR flag the harness
+    # uses to reject a bin's gain/phase).
+    fs, n = 100.0, 4096
+    rng = np.random.default_rng(2)
+    u = rng.standard_normal(n)
+    y = rng.standard_normal(n)              # unrelated to u
+    _, _, coh = sid.welch_h1_coherence(u, y, fs, [5.0, 10.0, 20.0])
+    assert np.all(coh < 0.5)
+
+
+def test_welch_h1_degenerate_short_input():
+    g, ph, coh = sid.welch_h1_coherence([1.0, 2.0], [1.0, 2.0], 100.0, [5.0])
+    assert np.isnan(g[0])
+    assert coh[0] == 0.0
+
+
+def test_single_freq_response_mean_removal_is_zero_effect_on_grid():
+    # The defensive mean-removal must be bit-identical on an integer-period grid (the
+    # verified zero-effect claim), even with a large DC offset added to both signals.
+    fs, freq, n = 1000.0, 5.0, 1000
+    t = np.arange(n) / fs
+    u = np.sin(2 * math.pi * freq * t)
+    y = 2.0 * np.sin(2 * math.pi * freq * t + math.radians(30.0))
+    g0, p0 = sid.single_freq_response(t, u, y, freq)
+    g1, p1 = sid.single_freq_response(t, u + 1.5, y + 1.5, freq)   # DC offset added
+    assert g1 == pytest.approx(g0, rel=1e-9)
+    assert p1 == pytest.approx(p0, abs=1e-9)
+    assert g1 == pytest.approx(2.0, rel=1e-3)
+
+
+# --- Feature 4: extended ladder (frozen vint + scaled vel_gain candidates) ---
+
+def test_high_rung_vel_gain_candidates_scale_and_shape():
+    # lo = round(0.45·√(pg/90)) to 0.05; candidates [lo, 1.25·lo, 1.6·lo]. At pg=90 the
+    # base lo (0.45) is recovered; lo climbs with √pg so damping rises with pos_gain.
+    c90 = sid.high_rung_vel_gain_candidates(90.0)
+    assert c90[0] == pytest.approx(0.45)
+    assert c90 == pytest.approx([0.45, 1.25 * 0.45, 1.6 * 0.45])
+    c210 = sid.high_rung_vel_gain_candidates(210.0)
+    assert c210[0] == pytest.approx(round(0.45 * math.sqrt(210.0 / 90.0) / 0.05) * 0.05)
+    assert c210[0] > c90[0]                                   # climbs with pos_gain
+    # Exactly three candidates, ascending (first-stable-wins searches low→high).
+    assert len(c210) == 3 and c210[0] < c210[1] < c210[2]
+
+
+def test_high_rung_table_freezes_vint_by_default():
+    rungs = sid.high_rung_table()
+    assert [r.pos_gain for r in rungs] == list(sid.HIGH_RUNG_POS_GAINS)
+    for r in rungs:
+        assert r.vel_int_gain == pytest.approx(sid.FROZEN_VEL_INT_GAIN)   # frozen, not ratio
+        # vel_gain_lo/hi bracket the explicit candidate set.
+        cands = sid.high_rung_vel_gain_candidates(r.pos_gain)
+        assert r.vel_gain_lo == pytest.approx(cands[0])
+        assert r.vel_gain_hi == pytest.approx(cands[-1])
+
+
+def test_high_rung_table_vint_ratio_variant_restores_scaling():
+    # --vint-ratio restores vel_int = pos_gain / ratio on the high rungs (the operator
+    # opt-out of the freeze).
+    rungs = sid.high_rung_table(vint_ratio=125.0)
+    for r in rungs:
+        assert r.vel_int_gain == pytest.approx(r.pos_gain / 125.0)
+    assert rungs[-1].vel_int_gain == pytest.approx(210.0 / 125.0)
+
+
+def test_extended_ladder_appends_high_rungs_and_from_pg_filters():
+    full = sid.extended_ladder()
+    pgs = [r.pos_gain for r in full]
+    assert pgs == [25.0, 40.0, 55.0, 70.0, 90.0, 110.0, 130.0, 155.0, 180.0, 210.0]
+    # --from-pg drops the low rungs (skip re-proving them).
+    hi = sid.extended_ladder(from_pos_gain=110.0)
+    assert [r.pos_gain for r in hi] == [110.0, 130.0, 155.0, 180.0, 210.0]
+    assert sid.is_high_rung(110.0) and not sid.is_high_rung(90.0)
+
+
+def test_ladder_revert_target_baseline_above_130_last_good_below():
+    baseline = sid.GainTriple(40.0, 0.20, 0.32)
+    last_good = sid.GainTriple(90.0, 0.45, 0.72)
+    # At/above pos_gain 130 the recovery slew must run against SOFT baseline gains.
+    assert sid.ladder_revert_target(130.0, last_good, baseline) is baseline
+    assert sid.ladder_revert_target(210.0, last_good, baseline) is baseline
+    # Below 130 the last-good triple is the fallback.
+    assert sid.ladder_revert_target(110.0, last_good, baseline) is last_good
+    # No last-good yet → baseline even below 130.
+    assert sid.ladder_revert_target(55.0, None, baseline) is baseline
+
+
+def test_extended_ladder_high_rungs_gracefully_stop_via_zeta_or_climb():
+    # Sanity that the extended table drops into GainLadder and escalates: a stable rung
+    # with zeta ≥ target escalates to the next high rung rather than stopping early.
+    lad = sid.GainLadder(rungs=sid.extended_ladder(from_pos_gain=110.0))
+    dec = lad.record(sid.GainTriple(110.0, 0.5, 0.72),
+                     sid.OnsetResult(False, 0.0, 0.0, []), zeta=0.8)
+    assert dec.action == 'escalate'
+    assert lad.current_rung().pos_gain == 130.0
+
+
+# --- Feature 4: quiescent-hold buzz classifier ------------------------------
+
+def test_classify_quiescent_buzz_vel_gate():
+    # vel-ripple above the onset is a buzz; below is clean. iq is reported but NOT gated
+    # by default (stock iq is on-change-aliased → an iq gate would false-safe).
+    assert sid.classify_quiescent_buzz(0.05).buzz            # 0.05 > 0.03 onset
+    assert not sid.classify_quiescent_buzz(0.01).buzz
+    # A big iq ripple does NOT trip the buzz unless fast-iq firmware is present.
+    q = sid.classify_quiescent_buzz(0.01, iq_rms=5.0, iq_onset=0.3)
+    assert not q.buzz
+    assert q.iq_rms == pytest.approx(5.0)                    # still reported
+
+
+def test_classify_quiescent_buzz_iq_gate_only_with_fast_iq():
+    q = sid.classify_quiescent_buzz(0.01, iq_rms=5.0, iq_onset=0.3,
+                                    fast_iq_available=True)
+    assert q.buzz                                            # now the iq gate applies
+    assert any('iq ripple' in r for r in q.reasons)
+    # Custom vel onset is honoured.
+    assert sid.classify_quiescent_buzz(0.02, vel_onset=0.015).buzz
+
+
+# --- Feature 5: sustained-tracking waveform generator -----------------------
+
+def test_track_sine_is_c1_at_ends_and_within_bounds():
+    b = sid.stroke_bounds(3.0, 0.15)                         # (0.15, 2.85)
+    seg_t, center, amp, pv, dur = 0.025, 1.5, 0.4, 2.0, 6.0
+    s = sid.track_reference_series(center_rev=center, amplitude_rev=amp,
+                                   peak_vel_rps=pv, duration_s=dur, seg_t_s=seg_t,
+                                   wave='sine', bounds=b)
+    assert len(s) == int(round(dur / seg_t))
+    assert s[0] == pytest.approx(center)                     # starts at centre
+    # C1: the raised-cosine amplitude ramp makes the sine start (and end) at rest — the
+    # first/last knot-to-knot step is far below the mid-sweep peak step.
+    peak_step = pv * seg_t
+    assert abs(s[1] - s[0]) < 0.1 * peak_step                # near-zero velocity at start
+    assert abs(s[-1] - center) < 0.05 * amp                  # ends back near centre
+    # Bounds respected and per-knot step ≤ peak_vel·seg_t (lead-clamp sizing).
+    assert s.min() >= b.lo_rev - 1e-9 and s.max() <= b.hi_rev + 1e-9
+    assert sid.max_frame_step(s) <= peak_step + 1e-9
+
+
+def test_track_sine_clips_to_bounds_when_amplitude_would_exceed():
+    b = sid.stroke_bounds(3.0, 0.15)
+    # An oversized amplitude near a bound is clipped defence-in-depth by the generator.
+    s = sid.track_reference_series(center_rev=0.30, amplitude_rev=0.5,
+                                   peak_vel_rps=2.0, duration_s=2.0, seg_t_s=0.025,
+                                   wave='sine', bounds=b)
+    assert s.min() >= b.lo_rev - 1e-9
+
+
+def test_track_triangle_reversal_count_and_step():
+    # Triangle: slope = peak_vel (sharp reversals), period T = 4A/peak_vel; reversals
+    # every T/2 → ~ duration·peak_vel/(2A) of them. Per-knot step == peak_vel·seg_t.
+    seg_t, center, amp, pv, dur = 0.025, 1.5, 0.3, 2.0, 6.0
+    s = sid.track_reference_series(center_rev=center, amplitude_rev=amp,
+                                   peak_vel_rps=pv, duration_s=dur, seg_t_s=seg_t,
+                                   wave='triangle')
+    assert sid.max_frame_step(s) <= pv * seg_t + 1e-9
+    expected = int(round(dur * pv / (2.0 * amp)))            # 6·2/(0.6) = 20
+    rev = sid.count_velocity_reversals(np.diff(s))
+    assert abs(rev - expected) <= 1
+
+
+def test_track_sine_frequency_matches_peak_velocity():
+    # f chosen so A·2πf == peak_vel (per-knot step at the peak hits the lead-clamp size).
+    f = sid.track_sine_frequency(2.0, 0.4)
+    assert 2.0 == pytest.approx(0.4 * 2 * math.pi * f)
+
+
+# --- Feature 5: residual periodogram peak extraction ------------------------
+
+def test_periodogram_peaks_recover_6hz_limit_cycle_and_harmonic():
+    # THE discriminant regression: a synthetic 6 Hz limit cycle + 12 Hz 2nd harmonic at
+    # the true 100 Hz telemetry rate must come out at 6.0 ± 0.2 Hz (dominant) with the
+    # 12 Hz harmonic present — directly comparable to the S4 forensics (5.9-6.1 Hz + 12.3).
+    fs = 100.0
+    t = np.arange(int(6.0 * fs)) / fs                        # 6 s window → df ≈ 0.17 Hz
+    x = 1.0 * np.sin(2 * math.pi * 6.0 * t) + 0.3 * np.sin(2 * math.pi * 12.0 * t)
+    peaks = sid.periodogram_peaks(x, fs, top_n=3)
+    assert peaks[0][0] == pytest.approx(6.0, abs=0.2)        # dominant fundamental
+    assert peaks[0][1] == pytest.approx(1.0, rel=0.1)        # amplitude ~1.0
+    harmonic = [f for f, _ in peaks if abs(f - 12.0) <= 0.2]
+    assert harmonic, f"12 Hz harmonic missing from {peaks}"
+
+
+def test_periodogram_peaks_degenerate():
+    assert sid.periodogram_peaks([], 100.0) == []
+    assert sid.periodogram_peaks([1.0, 2.0, 3.0], 0.0) == []
+
+
+def test_count_velocity_reversals_deadband():
+    # Clean alternating velocity → a reversal every sample. A deadband drops dither.
+    v = np.array([1.0, -1.0, 1.0, -1.0])
+    assert sid.count_velocity_reversals(v) == 3
+    dither = np.array([0.001, -0.001, 0.001, -0.001])
+    assert sid.count_velocity_reversals(dither, deadband_rps=0.01) == 0
+
+
+def test_analyze_tracking_residual_end_to_end():
+    # The pure discriminant assembler on a synthetic run: residual = cmd - pos carries a
+    # 6 Hz cycle; dominant freq recovered, iq stats + clamp fraction populated.
+    fs = 100.0
+    t = np.arange(int(6.0 * fs)) / fs
+    cmd = 1.5 + 0.4 * np.sin(2 * math.pi * 0.8 * t)          # the tracking reference
+    resid = 0.02 * np.sin(2 * math.pi * 6.0 * t)             # a 6 Hz limit cycle on top
+    pos = cmd - resid
+    vel = np.gradient(pos, t)
+    iq = 2.0 + 0.5 * np.sin(2 * math.pi * 6.0 * t)
+    lead_clamp = np.where(np.abs(vel) > np.max(np.abs(vel)) * 0.8, 1.0, 0.0)
+    r = sid.analyze_tracking_residual(t, cmd, pos, vel=vel, iq=iq, lead_clamp=lead_clamp)
+    assert r.fs_hz == pytest.approx(100.0, rel=1e-3)
+    assert r.dominant_freq_hz == pytest.approx(6.0, abs=0.2)
+    assert r.iq_max == pytest.approx(2.5, rel=0.05)
+    assert 0.0 <= r.clamp_engaged_frac <= 1.0
+    assert r.reversals > 0
+    # No lead_clamp column → clamp fraction is None (the "if the column exists" contract).
+    r2 = sid.analyze_tracking_residual(t, cmd, pos, vel=vel, iq=iq)
+    assert r2.clamp_engaged_frac is None
+
+
+def test_median_sample_rate_reads_100hz_not_knot_rate():
+    # Feature 1 relies on this: a 100 Hz telemetry log must read ~100 Hz, not the 40 Hz
+    # knot rate the old per-knot CSV decimated to.
+    t = np.arange(300) / 100.0
+    assert sid.median_sample_rate(t) == pytest.approx(100.0, rel=1e-6)
+    assert sid.median_sample_rate([0.0]) == 0.0
+    assert sid.median_sample_rate([1.0, 1.0, 1.0]) == 0.0    # no positive gaps
+
+
+# --- Feature 1: fit_step_response on 10 ms-spaced (100 Hz) data --------------
+
+def test_fit_step_response_on_10ms_spaced_data_uses_t_not_fixed_dt():
+    # REGRESSION for the 100 Hz CSV change: the step metrics must key off t_s, not a
+    # hardcoded 25 ms knot spacing. A monotone first-order step sampled at 100 Hz (dt=10
+    # ms) must give the analytic 10-90% rise (ln 9 · tau) and zero overshoot.
+    tau = 0.05
+    t = np.arange(0.0, 1.0, 0.01)                            # 100 Hz, dt = 10 ms
+    y = 1.0 - np.exp(-t / tau)
+    m = sid.fit_step_response(t, y, y0=0.0, y_final=1.0)
+    assert m.rise_time_s == pytest.approx(math.log(9.0) * tau, rel=0.05)
+    assert m.overshoot == pytest.approx(0.0, abs=1e-6)
+    assert m.zeta == pytest.approx(1.0)                      # no overshoot → critically damped
+    # The SAME curve at 25 ms spacing yields the same rise time (rate-invariant) — the
+    # guarantee the decoupled 100 Hz logging depends on.
+    t25 = np.arange(0.0, 1.0, 0.025)
+    m25 = sid.fit_step_response(t25, 1.0 - np.exp(-t25 / tau), 0.0, 1.0)
+    assert m25.rise_time_s == pytest.approx(m.rise_time_s, rel=0.05)
+
+
+# --- review fixes: velocity-anchored frame steps + chirp amplitude dedupe ----
+
+def test_velocity_anchored_frame_step_identity_at_40hz():
+    # At the 40 Hz design point the velocity cap equals the margin sizing exactly
+    # (2.0·0.025 = 0.05, 3.6·0.025 = 0.09) — behaviour unchanged vs lead_clamp_frame_step.
+    assert sid.velocity_anchored_frame_step(0.10, 0.5, 2.0, 0.025) == pytest.approx(0.05)
+    assert sid.velocity_anchored_frame_step(0.10, 0.9, 3.6, 0.025) == pytest.approx(0.09)
+
+
+def test_velocity_anchored_frame_step_velocity_binds_at_100hz():
+    # REGRESSION for the --knot-hz HIGH finding: a fixed 0.09 rev/frame at 100 Hz knots
+    # would command 9.0 rev/s (past vel_limit 4.0); the anchor must hold the design
+    # velocity instead (0.020 / 0.036 rev/frame ⇒ still 2.0 / 3.6 rev/s).
+    seg_100 = 0.010
+    gentle = sid.velocity_anchored_frame_step(0.10, 0.5, 2.0, seg_100)
+    step = sid.velocity_anchored_frame_step(0.10, 0.9, 3.6, seg_100)
+    assert gentle == pytest.approx(0.020)
+    assert step == pytest.approx(0.036)
+    assert gentle / seg_100 == pytest.approx(2.0)
+    assert step / seg_100 == pytest.approx(3.6)
+
+
+def test_velocity_anchored_frame_step_lead_clamp_binds_for_fast_targets():
+    # A hypothetical high v_target must still respect the lead-clamp margin.
+    assert sid.velocity_anchored_frame_step(0.10, 0.5, 100.0, 0.025) == pytest.approx(0.05)
+
+
+def test_velocity_anchored_frame_step_rejects_bad_inputs():
+    for v, seg in ((0.0, 0.025), (-1.0, 0.025), (2.0, 0.0), (2.0, -0.01)):
+        with pytest.raises(ValueError):
+            sid.velocity_anchored_frame_step(0.10, 0.5, v, seg)
+
+
+def test_dedupe_amplitudes_collapses_lead_clamp_collisions():
+    # The default sweep 0.02/0.06/0.12 at the knot-bounded f1≈8 Hz reduces 0.06 AND 0.12
+    # to the same ~0.0398 rev cap — the duplicate must be skipped (one CSV, one armed run).
+    cap = 0.05 / (2.0 * math.pi * 8.0 * 0.025)               # ≈ 0.03979
+    kept, skipped = sid.dedupe_amplitudes([0.02, 0.06, 0.12], lambda a: min(a, cap))
+    assert [round(r, 3) for r, _ in kept] == [0.02, 0.06]
+    assert kept[1][1] == pytest.approx(round(cap, 4))
+    assert len(skipped) == 1
+    assert skipped[0][0] == pytest.approx(0.12)
+    assert skipped[0][1] == pytest.approx(round(cap, 4))
+
+
+def test_dedupe_amplitudes_all_distinct_passthrough():
+    kept, skipped = sid.dedupe_amplitudes([0.01, 0.02, 0.03], lambda a: a)
+    assert [r for r, _ in kept] == [0.01, 0.02, 0.03]
+    assert skipped == []

@@ -17,6 +17,26 @@
 #include "hardware_config.h"   // Geometry, ODrive limits, operational constants
 #include "udp_protocol.h"      // JbUdp:: wire protocol (ports, IPs, framing)
 
+// ── BENCH_SYSID_BUILD — one-off bench-measurement variant (NEVER production) ──
+// DEFAULT OFF. A dedicated compile-time flag that lifts three measurement blind
+// spots for on-wire gain-ladder / system-ID runs on the single-leg bench rig:
+//   * 250 Hz telemetry (was 100), so a pos_gain-90 loop (~14 Hz closed-loop BW)
+//     is not telemetry-aliased;
+//   * 100 Hz knots (SEGMENT_T_S 0.010, was 0.025) — the honest chirp ceiling is
+//     otherwise KNOT-bound at 8 Hz (knot_stream_top_freq = knot_hz/5); the Jetson
+//     harness MUST then run --knot-hz 100 to match this segment duration;
+//   * a 250 Hz forced DIAGNOSTIC on axis 0, so iq_measured (only carried by the
+//     on-change-gated DIAGNOSTIC) is observable at rate for the current-rail and
+//     vel_gain-buzz ceilings the on-change gate hides.
+// It changes CADENCE and internal timing ONLY — ZERO wire-format changes (no
+// struct/field/protocol-version edit). With the flag OFF the binary is IDENTICAL
+// to production (every use sits behind #if BENCH_SYSID_BUILD). Build the variant
+// with `pio run -e teensy41_bench_sysid` (platformio.ini adds -DBENCH_SYSID_BUILD=1);
+// DO NOT flash it to the assembled robot.
+#ifndef BENCH_SYSID_BUILD
+#define BENCH_SYSID_BUILD 0
+#endif
+
 namespace CanBridge {
 
 // ── Identity ────────────────────────────────────────────────────────────────
@@ -70,7 +90,11 @@ constexpr uint32_t INTERP_RATE_HZ      = 500;     // motor_guard DEFAULT_RATE_HZ
 constexpr uint32_t INTERP_PERIOD_US    = 1000000u / INTERP_RATE_HZ;   // 2000 us
 constexpr uint32_t TIME_SYNC_RATE_HZ   = 100;     // 0x7DD broadcast (can_node ts_period 0.01)
 constexpr uint32_t TIME_SYNC_PERIOD_US = 1000000u / TIME_SYNC_RATE_HZ;
+#if BENCH_SYSID_BUILD
+constexpr uint32_t TELEM_RATE_HZ       = 250;     // bench-only: un-alias the ~14 Hz pos_gain-90 loop (4 ms task tick; configTICK_RATE_HZ=1000)
+#else
 constexpr uint32_t TELEM_RATE_HZ       = 100;     // motor-state uplink
+#endif
 constexpr uint32_t TELEM_PERIOD_US     = 1000000u / TELEM_RATE_HZ;
 constexpr uint32_t HEARTBEAT_RATE_HZ   = JbUdp::HEARTBEAT_HZ;   // 10
 constexpr uint32_t DIAG_HEARTBEAT_HZ   = 1;       // 1 Hz forced diagnostic/profile refresh
@@ -113,7 +137,22 @@ constexpr uint16_t STACK_DIAG      = 8192 / 4;   // bumped from 1024 (7-arg prin
 
 // ── Interpolator constants (PORTED 1:1 from motor_guard.py) ──────────────────
 //  Source: ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py constants block.
+#if BENCH_SYSID_BUILD
+// Bench-only: 100 Hz knots. SEG_T is the Hermite segment span and MUST equal the
+// actual inter-knot interval — the interpolated velocity uses invT = 1/SEG_T and
+// v1 = (u2-u1)/SEG_T, so a SEG_T that disagrees with the send cadence distorts the
+// velocity profile (each segment re-latches at s = dt/SEG_T before completing). The
+// Jetson harness must run --knot-hz 100 so knots actually arrive every 10 ms.
+constexpr float    SEGMENT_T_S          = 0.010f;  // 100 Hz knots (matches --knot-hz 100)
+#else
 constexpr float    SEGMENT_T_S          = 0.025f;  // _mpc_segment_T (nominal MPC fine step)
+#endif
+// MAX_EXTRAP / EXTRAP_DECAY / JERK_EMA are NOT knot-cadence-derived: they are the
+// missed-knot graceful-degradation windows (Taylor-extrapolate then decay velocity
+// to a safe stop) and the jerk-EMA memory, all consumed ONLY when has_next is false.
+// The bench harness streams Hermite (has_next true), where s is clamped to 1.0 and
+// these never fire; and they are wall-clock safety ramps (a leg coasting to rest),
+// not knot-count. Justify-KEEP at their absolute production values under both builds.
 constexpr float    MAX_EXTRAP_DT_S      = 0.05f;   // MAX_EXTRAP_DT_S
 constexpr float    EXTRAP_DECAY_DT_S    = 0.06f;   // EXTRAP_DECAY_DT_S
 constexpr float    JERK_EMA_ALPHA       = 0.3f;    // JERK_EMA_ALPHA

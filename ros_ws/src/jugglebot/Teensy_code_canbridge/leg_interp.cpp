@@ -42,7 +42,7 @@
 namespace CanBridge {
 
 // ── Ladder constants (mirror teensy_interp.py / motor_guard) ──────────────────
-static constexpr float SEG_T   = SEGMENT_T_S;          // 0.025
+static constexpr float SEG_T   = SEGMENT_T_S;          // 0.025 (0.010 under BENCH_SYSID_BUILD)
 static constexpr float MAXEXT  = MAX_EXTRAP_DT_S;       // 0.05
 static constexpr float DECAY   = EXTRAP_DECAY_DT_S;     // 0.06
 static constexpr float ALPHA   = JERK_EMA_ALPHA;        // 0.3

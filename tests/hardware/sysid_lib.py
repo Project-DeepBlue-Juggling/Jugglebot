@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -405,10 +405,21 @@ def single_freq_response(t: np.ndarray, u: np.ndarray, y: np.ndarray,
     complex ratio.  The 2/N normalisation cancels in the ratio, so this is
     exact for a pure tone over an integer number of periods and robust to the
     absolute amplitude of the drive.
+
+    Means are removed before projection (defensive): a position-domain drive
+    carries a large DC offset (the operating centre, ~1.5 rev) whose lock-in
+    leakage ``abs(mean(e^{−jωt}))`` is ~0 only on an exactly-integer-period grid;
+    off-grid (a real telemetry-sampled sweep) the offset leaks into the bin.
+    Subtracting the means makes the estimate offset-invariant at every grid — and
+    is provably bit-identical on the integer-period grid (verified zero-effect).
     """
     t = np.asarray(t, float)
     u = np.asarray(u, float)
     y = np.asarray(y, float)
+    if u.size:
+        u = u - np.mean(u)
+    if y.size:
+        y = y - np.mean(y)
     w = 2.0 * math.pi * freq
     ref = np.exp(-1j * w * t)
     x_u = np.mean(u * ref)
@@ -428,6 +439,48 @@ def estimate_frequency_response(t: np.ndarray, u: np.ndarray, y: np.ndarray,
     for i, f in enumerate(freqs):
         gains[i], phases[i] = single_freq_response(t, u, y, f)
     return gains, phases
+
+
+def welch_h1_coherence(u: Sequence[float], y: Sequence[float], fs: float,
+                       freqs: Sequence[float], *, nperseg: Optional[int] = None
+                       ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Welch H1 transfer estimate + magnitude-squared coherence at each ``freq``.
+
+    Returns ``(gain, phase_deg, coherence)`` arrays, one entry per requested
+    frequency (nearest Welch bin). ``H1 = Pxy / Pxx`` is the least-squares transfer
+    estimate (unbiased by output noise); the coherence ``|Pxy|² / (Pxx·Pyy)`` ∈ [0, 1]
+    reports how much of the output is linearly explained by the input at that bin — a
+    bin with coherence ≪ 1 is noise/aliasing (e.g. above the honest chirp ceiling) and
+    its gain/phase must not be trusted. ``scipy.signal`` is imported lazily so the
+    dependency-free half of the module (FaultState codes, ladder) still imports without
+    scipy. Means are removed inside ``welch``/``csd`` via ``detrend='constant'``.
+    """
+    from scipy import signal  # lazy: keeps the module scipy-free unless a Welch path runs
+    u = np.asarray(u, float)
+    y = np.asarray(y, float)
+    n = int(min(u.size, y.size))
+    if n < 8 or fs <= 0.0:
+        nan = np.full(len(freqs), float('nan'))
+        return nan.copy(), nan.copy(), np.zeros(len(freqs))
+    u = u[:n]
+    y = y[:n]
+    if nperseg is None:
+        nperseg = min(n, max(16, n // 4))
+    nperseg = min(int(nperseg), n)
+    f, pxx = signal.welch(u, fs=fs, nperseg=nperseg, detrend='constant')
+    _, pyy = signal.welch(y, fs=fs, nperseg=nperseg, detrend='constant')
+    _, pxy = signal.csd(u, y, fs=fs, nperseg=nperseg, detrend='constant')
+    h = pxy / np.where(pxx == 0.0, np.nan, pxx)
+    coh = (np.abs(pxy) ** 2) / np.where(pxx * pyy == 0.0, np.nan, pxx * pyy)
+    gains = np.empty(len(freqs))
+    phases = np.empty(len(freqs))
+    cohs = np.empty(len(freqs))
+    for i, fr in enumerate(freqs):
+        b = int(np.argmin(np.abs(f - fr)))
+        gains[i] = float(np.abs(h[b]))
+        phases[i] = float(np.degrees(np.angle(h[b])))
+        cohs[i] = float(min(1.0, coh[b])) if np.isfinite(coh[b]) else 0.0
+    return gains, phases, cohs
 
 
 # ===========================================================================
@@ -629,6 +682,51 @@ def chirp_amplitude_cap_for_lead_clamp(f_end_hz: float, *, frame_step_rev: float
     return abs(frame_step_rev) / denom
 
 
+def velocity_anchored_frame_step(max_lead_rev: float, margin_frac: float,
+                                 v_target_rps: float, seg_t_s: float) -> float:
+    """Per-knot increment honouring BOTH the lead-clamp margin AND a target ramp
+    velocity, across knot rates.
+
+    ``lead_clamp_frame_step`` alone is a fixed POSITION delta per knot, so its
+    implied velocity scales with the knot rate: 0.09 rev/frame is 3.6 rev/s at
+    40 Hz knots but 9.0 rev/s at ``--knot-hz 100`` — past the 4.0 rev/s ODrive
+    vel_limit the sizing was justified against. Capping by ``v_target·seg_t``
+    holds the ramp at its 40 Hz design velocity regardless of knot rate
+    (identity at 40 Hz: 2.0·0.025 = 0.05, 3.6·0.025 = 0.09; at 100 Hz the
+    velocity term binds: 0.020 / 0.036 rev/frame).
+    """
+    if v_target_rps <= 0.0 or seg_t_s <= 0.0:
+        raise ValueError("v_target_rps and seg_t_s must be positive")
+    return min(lead_clamp_frame_step(max_lead_rev, margin_frac),
+               v_target_rps * seg_t_s)
+
+
+def dedupe_amplitudes(requested: Sequence[float],
+                      reduce_fn: Callable[[float], float],
+                      ndigits: int = 4) -> Tuple[List[Tuple[float, float]],
+                                                 List[Tuple[float, float]]]:
+    """Split a requested amplitude sweep into ``(kept, skipped)`` lists of
+    ``(requested, reduced)`` pairs, dropping requests whose auto-reduced
+    amplitude duplicates one already kept (rounded to ``ndigits``).
+
+    At the knot-bounded chirp f1 the lead-clamp cap can collapse several
+    requested amplitudes to the same reduced value; running the duplicates
+    would overwrite each other's CSV and spend armed hardware time re-measuring
+    the identical stimulus.
+    """
+    kept: List[Tuple[float, float]] = []
+    skipped: List[Tuple[float, float]] = []
+    seen: set = set()
+    for req in requested:
+        used = round(reduce_fn(req), ndigits)
+        if used in seen:
+            skipped.append((req, used))
+        else:
+            seen.add(used)
+            kept.append((req, used))
+    return kept, skipped
+
+
 # ===========================================================================
 # Stage 1b — gain-escalation ladder (escalate-until-unstable, auto-backoff)
 # ===========================================================================
@@ -767,6 +865,136 @@ class GainLadder:
         self.stopped = True
         self.stop_reason = 'ladder_top'
         return LadderDecision('stop_ok', tested, self.index, self.stop_reason)
+
+
+# ===========================================================================
+# Extended (high-gain) ladder — the pos_gain ceiling hunt above the base table
+# ===========================================================================
+#
+# The base ``default_ladder`` stops at pos_gain 90 by table exhaustion, not
+# instability (the 2026-07-12 bench sweep: stop_reason='ladder_top', zero guard
+# recoveries). These rungs extend the hunt for the REAL ceiling. Two departures
+# from the base table's heuristics, both forced by what breaks above 90:
+#
+#  * vel_int is FROZEN (not scaled by the 125:1 ratio rule). Above 90 the position
+#    loop rails the current at the ramp corner; a ratio-scaled vel_int (1.6 at
+#    pos_gain 210) then winds up DURING that saturation and the accumulated command
+#    lead crosses MAX_DEVIATION — a latch that reads as instability but is really
+#    integrator windup, confounding the ceiling hunt. The 125:1 rule is a HOLD-tier
+#    heuristic; it is wrong for the fast-motion ceiling. ``--vint-ratio`` restores it.
+#  * vel_gain candidates CLIMB with pos_gain (0.45·√(pos_gain/90)). A frozen vel_gain
+#    stalls ζ below the 0.7 target near pos_gain ~125 (ζ ∝ vel_gain/√pos_gain), so
+#    the velocity-loop damping MUST rise with the position loop to hold the target.
+
+FROZEN_VEL_INT_GAIN = 0.72           # the pos_gain-90 winner; frozen for all high rungs
+HIGH_RUNG_POS_GAINS = (110.0, 130.0, 155.0, 180.0, 210.0)
+LADDER_BASELINE_REVERT_POS_GAIN = 130.0  # at/above this, revert to BASELINE not last-good
+
+
+def _round_to(x: float, quantum: float) -> float:
+    return round(x / quantum) * quantum
+
+
+def high_rung_vel_gain_candidates(pos_gain: float, *, base_pos_gain: float = 90.0,
+                                  base_lo: float = 0.45, quantum: float = 0.05
+                                  ) -> List[float]:
+    """vel_gain search points for a high (>90) rung: ``[lo, 1.25·lo, 1.6·lo]`` where
+    ``lo = round(base_lo·√(pos_gain/base_pos_gain))`` to the 0.05 quantum.
+
+    lo scales as √pos_gain so damping climbs with the position loop (ζ ∝
+    vel_gain/√pos_gain — a frozen vel_gain stalls ζ below 0.7 near pos_gain ~125).
+    Searched low→high with first-stable-wins (the least damping that holds ζ ≥ target,
+    minimising tracking lag), same policy as the base ladder."""
+    lo = _round_to(base_lo * math.sqrt(pos_gain / base_pos_gain), quantum)
+    return [lo, 1.25 * lo, 1.6 * lo]
+
+
+def high_rung_table(*, frozen_vint: float = FROZEN_VEL_INT_GAIN,
+                    vint_ratio: Optional[float] = None) -> Tuple[LadderRung, ...]:
+    """The high-gain rungs (pos_gain 110→210) above the base ladder. vel_int frozen at
+    ``frozen_vint`` unless ``vint_ratio`` is given (then ``pos_gain/vint_ratio``, the
+    ratio rule restored). vel_gain_lo/hi span the explicit high-rung candidate set."""
+    rungs: List[LadderRung] = []
+    for pg in HIGH_RUNG_POS_GAINS:
+        vint = (pg / vint_ratio) if vint_ratio else frozen_vint
+        cands = high_rung_vel_gain_candidates(pg)
+        rungs.append(LadderRung(pg, vint, cands[0], cands[-1]))
+    return tuple(rungs)
+
+
+def extended_ladder(*, frozen_vint: float = FROZEN_VEL_INT_GAIN,
+                    vint_ratio: Optional[float] = None,
+                    from_pos_gain: Optional[float] = None) -> Tuple[LadderRung, ...]:
+    """Base ladder (25→90) + high rungs (110→210). ``from_pos_gain`` drops every rung
+    below it (skip re-proving the low rungs — the ``--from-pg`` fast-start)."""
+    rungs = list(default_ladder()) + list(
+        high_rung_table(frozen_vint=frozen_vint, vint_ratio=vint_ratio))
+    if from_pos_gain is not None:
+        rungs = [r for r in rungs if r.pos_gain >= from_pos_gain - 1e-9]
+    return tuple(rungs)
+
+
+def is_high_rung(pos_gain: float, *, base_top: float = 90.0) -> bool:
+    """True for a ceiling-hunt rung (pos_gain above the base table's top)."""
+    return pos_gain > base_top + 1e-9
+
+
+def ladder_revert_target(pos_gain: float, last_good: Optional[GainTriple],
+                         baseline: GainTriple, *,
+                         baseline_above: float = LADDER_BASELINE_REVERT_POS_GAIN
+                         ) -> GainTriple:
+    """Gains to revert to after a rung latches. At/above ``baseline_above`` the firmware
+    re-enable recovery slew must run against SOFT baseline gains — a still-stiff last-good
+    rung re-latches and burns the recovery budget. Below it, the last-good triple is the
+    right conservative fallback (or baseline if nothing has banked yet)."""
+    if pos_gain >= baseline_above - 1e-9:
+        return baseline
+    return last_good if last_good is not None else baseline
+
+
+# --- Quiescent-hold buzz check ---------------------------------------------
+#
+# Before a rung's step, hold FLAT at centre and measure velocity-ripple RMS: a
+# vel_gain dragged too high amplifies encoder noise into a hold buzz that the
+# post-step tail can miss. Gate the climb on it. iq-ripple is REPORTED but NOT
+# gated by default — on the current firmware iq rides an on-change/1 Hz DIAGNOSTIC
+# gate (aliased), so an iq threshold is false-safe until a fast-iq bench build lands
+# (``fast_iq_available``). Floors are recorded to the manifest so a data-set threshold
+# can replace the conservative default later.
+
+QUIESCENT_VEL_RMS_ONSET_RPS = 0.03   # vel-ripple RMS above this at a flat hold ⇒ buzz
+
+
+@dataclass
+class QuiescentResult:
+    buzz: bool
+    vel_rms: float
+    iq_rms: float
+    reasons: List[str] = field(default_factory=list)
+
+
+def classify_quiescent_buzz(vel_rms: float, iq_rms: float = 0.0, *,
+                            vel_onset: float = QUIESCENT_VEL_RMS_ONSET_RPS,
+                            iq_onset: Optional[float] = None,
+                            fast_iq_available: bool = False) -> QuiescentResult:
+    """Flag a quiescent-hold buzz from the measured vel/iq ripple RMS.
+
+    The vel-ripple gate always applies. The iq gate applies ONLY when
+    ``fast_iq_available`` (a bench firmware that streams un-aliased iq) AND an
+    ``iq_onset`` is supplied — otherwise iq is reported but not gated, because the
+    stock on-change DIAGNOSTIC iq is aliased and would false-safe."""
+    reasons: List[str] = []
+    buzz = False
+    if vel_rms > vel_onset:
+        buzz = True
+        reasons.append("quiescent vel ripple RMS %.4f > %.4f rev/s (buzz)"
+                       % (vel_rms, vel_onset))
+    if fast_iq_available and iq_onset is not None and iq_rms > iq_onset:
+        buzz = True
+        reasons.append("quiescent iq ripple RMS %.4f > %.4f A (buzz)"
+                       % (iq_rms, iq_onset))
+    return QuiescentResult(buzz=buzz, vel_rms=float(vel_rms),
+                           iq_rms=float(iq_rms), reasons=reasons)
 
 
 # ===========================================================================
@@ -1405,3 +1633,183 @@ def approach_abort_diagnostic(*, fault_state: int, u0_rev: float, enc_rev: float
     if guard_reason:
         parts.append(str(guard_reason))
     return "; ".join(parts)
+
+
+# ===========================================================================
+# Sustained-tracking discriminant (--mode track) — the ~6 Hz question
+# ===========================================================================
+#
+# The bench never reproduced the robot's ~6 Hz limit cycle (S4,
+# logbook/2026-07-10-s4-stutter-guard-forensics-recovery-stack.md) because the
+# arrive-and-settle steps are the WRONG stimulus class: the robot fails during
+# SUSTAINED ~2 rev/s strokes, not settling steps. This is the instrument that drives
+# a continuously-moving reference (sine or triangle) long enough for a limit cycle to
+# develop, then extracts the dominant residual frequency the SAME way the S4 forensics
+# did (periodogram of the position residual), so bench and robot numbers are directly
+# comparable (S4: 5.9-6.1 Hz fundamental, ~12.3 Hz 2nd harmonic).
+
+TRACK_PEAK_VEL_DEFAULT_RPS = 2.0     # the robot's operating stroke speed
+TRACK_SECS_DEFAULT = 6.0             # long enough for df ≤ ~0.17 Hz on the residual
+TRACK_AMP_MAX_REV = 0.4              # cap the tracked amplitude (bounds-safe below this)
+TRACK_RAMP_S = 0.5                   # C1 amplitude ramp in/out for the sine
+TRACK_PEAK_VEL_MAX_RPS = 4.5         # hard cap; >4.0 deliberately rides the lead clamp
+TRACK_LEAD_CLAMP_WARN_RPS = 4.0      # above this the sine peak rides MAX_LEAD/seg_t (S4)
+
+
+def track_sine_frequency(peak_vel_rps: float, amplitude_rev: float) -> float:
+    """Sine frequency (Hz) whose peak velocity equals ``peak_vel`` at ``amplitude``:
+    ``v_peak = A·2πf ⇒ f = peak_vel/(2π·A)``."""
+    if amplitude_rev <= 0.0:
+        return 0.0
+    return abs(peak_vel_rps) / (2.0 * math.pi * abs(amplitude_rev))
+
+
+def _raised_cosine_envelope(t: np.ndarray, duration_s: float,
+                            ramp_s: float) -> np.ndarray:
+    """C1 amplitude envelope: raised-cosine ramp 0→1 over ``ramp_s`` at each end, 1 in
+    the middle. Zero derivative at both ends, so a sine ``A·env·sin(ωt)`` starts and
+    ends at rest (velocity 0) — C1 with the flat hold before/after the sweep."""
+    env = np.ones_like(t)
+    if ramp_s <= 0.0:
+        return env
+    up = t < ramp_s
+    env[up] = 0.5 * (1.0 - np.cos(math.pi * t[up] / ramp_s))
+    dn = t > (duration_s - ramp_s)
+    env[dn] = 0.5 * (1.0 - np.cos(math.pi * (duration_s - t[dn]) / ramp_s))
+    return np.clip(env, 0.0, 1.0)
+
+
+def track_reference_series(*, center_rev: float, amplitude_rev: float,
+                           peak_vel_rps: float, duration_s: float, seg_t_s: float,
+                           wave: str = 'sine', ramp_s: float = TRACK_RAMP_S,
+                           bounds: Optional[StrokeBounds] = None) -> np.ndarray:
+    """40 Hz knot ``u0`` series for a sustained-tracking reference about ``center``.
+
+    ``sine`` is C1 (raised-cosine amplitude ramp in/out over ``ramp_s`` so it starts and
+    ends at rest); ``triangle`` starts at centre going up with intentionally SHARP
+    reversals (that reversal transient is itself part of the S4 excitation). Both are
+    sized so the peak per-knot step ≈ ``peak_vel·seg_t`` (a sine peaks at ``A·2πf`` =
+    ``peak_vel`` by construction of ``track_sine_frequency``; a triangle's slope IS
+    ``peak_vel``). Clamped to ``bounds`` defence-in-depth."""
+    n = max(1, int(round(duration_s / seg_t_s)))
+    t = np.arange(n) * seg_t_s
+    if wave == 'triangle':
+        period = 4.0 * abs(amplitude_rev) / max(1e-9, abs(peak_vel_rps))
+        phase = (t / period) % 1.0
+        tri = np.where(phase < 0.25, 4.0 * phase,
+                       np.where(phase < 0.75, 2.0 - 4.0 * phase, 4.0 * phase - 4.0))
+        series = center_rev + amplitude_rev * tri
+    else:
+        f = track_sine_frequency(peak_vel_rps, amplitude_rev)
+        env = _raised_cosine_envelope(t, duration_s, ramp_s)
+        series = center_rev + amplitude_rev * env * np.sin(2.0 * math.pi * f * t)
+    if bounds is not None:
+        series = np.clip(series, bounds.lo_rev, bounds.hi_rev)
+    return np.asarray(series, float)
+
+
+def median_sample_rate(t: Sequence[float]) -> float:
+    """Sample rate (Hz) from a timestamp array = 1/median(positive Δt). 0 if < 2 stamps
+    or no positive gaps — so a 100 Hz telemetry log reads ~100 Hz, not the 40 Hz knot
+    rate the old per-knot CSV decimated to."""
+    t = np.asarray(t, float)
+    if t.size < 2:
+        return 0.0
+    dt = np.diff(t)
+    dt = dt[dt > 0.0]
+    if dt.size == 0:
+        return 0.0
+    return 1.0 / float(np.median(dt))
+
+
+def periodogram_peaks(x: Sequence[float], fs: float, *, top_n: int = 3,
+                      f_min: float = 1e-9) -> List[Tuple[float, float]]:
+    """Top-``n`` spectral peaks ``(freq_hz, amplitude)`` of ``x`` at sample rate ``fs``.
+
+    One-sided amplitude spectrum (2/N·|rfft|), DC removed, local maxima above ``f_min``
+    ranked by amplitude. Mirrors the S4 residual periodogram so a bench 6 Hz limit cycle
+    and its 12 Hz harmonic come out directly comparable to the robot-side numbers."""
+    x = np.asarray(x, float)
+    n = x.size
+    if n < 4 or fs <= 0.0:
+        return []
+    x = x - x.mean()
+    freqs = np.fft.rfftfreq(n, d=1.0 / fs)
+    amp = (2.0 / n) * np.abs(np.fft.rfft(x))
+    peaks: List[Tuple[float, float]] = []
+    for i in range(1, amp.size - 1):
+        if freqs[i] < f_min:
+            continue
+        if amp[i] > amp[i - 1] and amp[i] >= amp[i + 1]:
+            peaks.append((float(freqs[i]), float(amp[i])))
+    peaks.sort(key=lambda p: p[1], reverse=True)
+    return peaks[:top_n]
+
+
+def count_velocity_reversals(vel: Sequence[float], *,
+                             deadband_rps: float = 0.0) -> int:
+    """Number of sign changes in the velocity (direction reversals). Samples within
+    ``deadband_rps`` of zero are dropped first so encoder-quantisation dither at a
+    near-stationary hold doesn't inflate the count."""
+    v = np.asarray(vel, float)
+    if v.size < 2:
+        return 0
+    if deadband_rps > 0.0:
+        v = v[np.abs(v) > deadband_rps]
+    s = np.sign(v)
+    s = s[s != 0.0]
+    if s.size < 2:
+        return 0
+    return int(np.count_nonzero(np.diff(s) != 0.0))
+
+
+@dataclass
+class TrackResidual:
+    fs_hz: float
+    peaks: List[Tuple[float, float]]          # (freq_hz, amplitude_rev), top-N by amp
+    dominant_freq_hz: float
+    reversals: int
+    iq_mean: float
+    iq_max: float
+    iq_min: float
+    iq_rms: float
+    clamp_engaged_frac: Optional[float]       # None when no lead_clamp column exists
+
+
+def analyze_tracking_residual(t: Sequence[float], cmd: Sequence[float],
+                              pos: Sequence[float], *,
+                              vel: Optional[Sequence[float]] = None,
+                              iq: Optional[Sequence[float]] = None,
+                              lead_clamp: Optional[Sequence[float]] = None,
+                              top_n: int = 3) -> TrackResidual:
+    """Sustained-tracking discriminant on one gain point's steady window (pure).
+
+    Residual = ``cmd − pos`` (the S4 position-residual method); its periodogram at the
+    TRUE sample rate gives the dominant limit-cycle frequency + harmonics, plus a
+    velocity-reversal count, iq stats, and the clamp-engaged fraction (when a lead_clamp
+    column exists). Caller slices ``t/cmd/pos/...`` to the steady window (ex the ramp)."""
+    t = np.asarray(t, float)
+    cmd = np.asarray(cmd, float)
+    pos = np.asarray(pos, float)
+    fs = median_sample_rate(t)
+    resid = cmd - pos
+    peaks = periodogram_peaks(resid, fs, top_n=top_n)
+    dominant = peaks[0][0] if peaks else float('nan')
+    reversals = count_velocity_reversals(vel) if vel is not None else 0
+    if iq is not None and len(iq):
+        iqa = np.asarray(iq, float)
+        iqa = iqa[np.isfinite(iqa)]
+    else:
+        iqa = np.asarray([], float)
+    iq_mean = float(np.mean(iqa)) if iqa.size else float('nan')
+    iq_max = float(np.max(iqa)) if iqa.size else float('nan')
+    iq_min = float(np.min(iqa)) if iqa.size else float('nan')
+    iq_rms = float(np.sqrt(np.mean(iqa ** 2))) if iqa.size else float('nan')
+    clamp_frac: Optional[float] = None
+    if lead_clamp is not None and len(lead_clamp):
+        lc = np.asarray(lead_clamp, float)
+        lc = lc[np.isfinite(lc)]
+        clamp_frac = float(np.mean(lc > 0.5)) if lc.size else None
+    return TrackResidual(fs_hz=fs, peaks=peaks, dominant_freq_hz=dominant,
+                         reversals=reversals, iq_mean=iq_mean, iq_max=iq_max,
+                         iq_min=iq_min, iq_rms=iq_rms, clamp_engaged_frac=clamp_frac)

@@ -98,6 +98,32 @@ On the Jetson the upload calls a locally-built `teensy_loader_cli` directly
 (PlatformIO's bundled uploader is glibc-2.34, which Ubuntu 20.04 can't run) — see
 `platformio.ini` for the full flash/toolchain notes.
 
+### Bench system-ID variant (`teensy41_bench_sysid`) — never flash to the robot
+
+A one-off measurement build for on-wire gain-ladder / system-ID runs on the
+single-leg bench rig. It sets `BENCH_SYSID_BUILD=1` (default `0`, defined in
+`canbridge_config.h`), which lifts three measurement blind spots:
+
+* **250 Hz telemetry** (was 100) — un-aliases a pos_gain-90 loop (~14 Hz
+  closed-loop BW) that 100 Hz telemetry samples too coarsely;
+* **100 Hz knots** (`SEGMENT_T_S` 0.010, was 0.025) — the honest chirp ceiling is
+  otherwise knot-bound at 8 Hz (`knot_stream_top_freq = knot_hz/5`);
+* **250 Hz forced `DIAGNOSTIC` on axis 0** — `iq_measured` is carried only by the
+  on-change-gated `DIAGNOSTIC` (>0.5 A / 1 Hz), so the current-rail and vel_gain
+  quiescent-buzz ladder ceilings are invisible on the wire without it.
+
+It changes **cadence/timing only — zero wire-format change** (same structs,
+fields, protocol version), and with the flag off the binary is byte-identical to
+`env:teensy41` (every use sits behind `#if BENCH_SYSID_BUILD`).
+
+```bash
+pio run -e teensy41_bench_sysid     # compile the bench variant (do NOT -t upload to the assembled robot)
+```
+
+The Jetson harness **must** then run with `--knot-hz 100` so knots arrive every
+10 ms (matching `SEGMENT_T_S`); a 40 Hz stream against a 0.010 s segment re-latches
+each Hermite segment before it completes and distorts the velocity profile.
+
 ## Serial console reference
 
 The USB-serial debug console (`/dev/ttyACM0` @ 115200) prints one block per
