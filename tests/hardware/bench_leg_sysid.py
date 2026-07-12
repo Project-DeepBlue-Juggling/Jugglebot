@@ -230,6 +230,10 @@ BRIDGE_MAX_RECOVERIES = 2               # guard-latch CLEAR_ERRORS budget before
 BRIDGE_T2J_FLAG_MPC_ACTIVE = 0x8        # HeartbeatT2J.flags bit3 — verify our arm took
 BRIDGE_ARM_VERIFY_GRACE_S = 0.7         # allow this long after arm for firmware mpc_active to report
 _BRIDGE_STROKE_CEIL_PROD_REV = 3.90     # firmware STROKE_MAX_REV[0] — production clamp, NOT a bench bound
+# Stream-then-arm + startup guard-latch clearance (sysid_lib owns the pure defaults).
+BRIDGE_ARM_WARMUP_FRAMES = sid.BRIDGE_ARM_WARMUP_FRAMES   # DISARMED knots streamed before EVERY arm
+BRIDGE_CLEAR_DEV_TOL_REV = sid.BRIDGE_CLEAR_DEV_TOL_REV   # u0≈enc gate before a startup CLEAR_ERRORS
+BRIDGE_STARTUP_CLEAR_TIMEOUT_S = 2.0    # wait this long for fault_state→NONE after a startup CLEAR_ERRORS
 
 
 class BenchSysID:
@@ -1196,6 +1200,123 @@ class BridgeSysID:
         self.telem_rate = sid.estimate_telemetry_rate(stamps)
         return self.telem_rate
 
+    # -- stream-then-arm + startup guard-latch clearance ---------------------
+
+    def _live_deviation(self) -> Optional[float]:
+        """This axis's live interp-base-minus-encoder deviation from the T→J
+        heartbeat (``live_deviation`` is packed unconditionally, .ino:134), or None."""
+        with self._lock:
+            hb = self._cache['hb']
+        if hb is None:
+            return None
+        try:
+            return float(hb.live_deviation[self.axis_id])
+        except Exception:  # noqa: BLE001 — older/short heartbeat without the field
+            return None
+
+    def _stream_series_disarmed(self, series):
+        """Stream a flat knot series at 40 Hz with mpc_active=0 (no arm, no guard,
+        no record). Output is gated while disarmed so this commands NO motion; it
+        exists only to freshen the firmware staleness clock + re-baseline the interp
+        base to ``series`` before an arm (leg_interp.cpp:196 stamps on every frame)."""
+        period = 1.0 / BRIDGE_SETPOINT_HZ
+        t0 = time.perf_counter()
+        n = len(series)
+        for i in range(n):
+            if self._sigint:
+                break
+            now_us = int(time.time() * 1_000_000)
+            u0 = float(series[i])
+            try:
+                self._send_knot(u0, u0, u0, 0.0, now_us)
+            except OSError:
+                break
+            target = t0 + (i + 1) * period
+            dt = target - time.perf_counter()
+            if dt > 0:
+                time.sleep(dt)
+
+    def _warm_and_arm(self, pos: float):
+        """Stream-then-arm: DISARMED warmup knots at ``pos`` (freshen the staleness
+        clock + re-baseline the interp base to the encoder) THEN raise mpc_active.
+
+        This closes the arm-before-stream MPC_STALE race the known-good
+        ``teensy_setpoint_bench.py`` idiom avoids: because the Teensy stays powered on
+        Jetson 5V, ``interp_last_setpoint_us`` is stale from a prior run, so arming
+        FIRST and streaming SECOND lets the firmware 250 ms staleness E-STOP latch in
+        the window before the first fresh knot lands. Warming up first makes the base
+        fresh AND ≈ the encoder, so the following arm can neither go stale nor jump."""
+        self._stream_series_disarmed(sid.warmup_knot_series(pos, BRIDGE_ARM_WARMUP_FRAMES))
+        self._arm()
+
+    def _wait_fault_clear(self, timeout: float) -> bool:
+        """Poll the heartbeat until fault_state == NONE; abort loudly on timeout
+        (a fatal or an immediate re-latch)."""
+        t_end = time.perf_counter() + timeout
+        while time.perf_counter() < t_end and not self._sigint:
+            fs = self._fault_state()
+            if fs is not None and int(fs) == sid.FAULT_NONE:
+                return True
+            time.sleep(0.05)
+        fs = self._fault_state()
+        self._abort_reason = (
+            f"fault_state did not clear to NONE within {timeout:.1f}s "
+            f"(still {sid.fault_name(fs) if fs is not None else '?'}) — a fatal or an "
+            f"immediate re-latch; power + clear the bench ODrive and retry")
+        print(f"  ABORT: {self._abort_reason}")
+        return False
+
+    def _startup_clear_latch(self) -> bool:
+        """Verify-and-clear a pre-existing STICKY guard E-STOP latch, DISARMED, before
+        any stage. The guard latch persists across harness restarts (Teensy on Jetson
+        5V, cleared only by CLEAR_ERRORS); left un-cleared it makes every run abort
+        'during approach: guard latch' with the leg in CLOSED_LOOP but never moving.
+        Returns True to proceed, False to abort the run (sets self._abort_reason)."""
+        fs = self._fault_state()
+        plan = sid.plan_startup_latch(fs if fs is not None else sid.FAULT_NONE)
+        if plan.action == 'proceed':
+            return True
+        print(f"  STARTUP guard-latch check: {plan.reason}")
+        if plan.action == 'abort':
+            self._abort_reason = plan.reason
+            print(f"  ABORT: {self._abort_reason}", file=sys.stderr)
+            return False
+        if plan.action == 'wait_recover':
+            return self._wait_fault_clear(BRIDGE_STARTUP_CLEAR_TIMEOUT_S)
+        # plan.action == 'clear' — a latching guard E-STOP (MAX_DEVIATION / MPC_STALE /
+        # MOTOR_OVERSPEED). Clear it DISARMED after re-baselining the interp base to the
+        # live encoder, so the clear + any later re-arm cannot lurch the leg.
+        self._disarm()   # belt-and-braces: never touch the latch while armed
+        pos, _, _, _ = self._sample()
+        if pos is None:
+            self._abort_reason = "no telemetry — cannot verify the encoder before clearing the latch"
+            print(f"  ABORT: {self._abort_reason}", file=sys.stderr)
+            return False
+        # DISARMED re-baseline: stream warmup knots at the live encoder so the interp
+        # base u0 tracks it (a MAX_DEVIATION latch froze u0 ~0.5 rev away). Output is
+        # gated by the latch AND by mpc_active=0 — no motion.
+        self._stream_series_disarmed(sid.warmup_knot_series(pos, BRIDGE_ARM_WARMUP_FRAMES))
+        dev = self._live_deviation()
+        if dev is not None and not sid.deviation_within_clear_tol(dev, BRIDGE_CLEAR_DEV_TOL_REV):
+            self._abort_reason = (
+                f"interp base still {dev:+.3f} rev from the encoder after the warmup "
+                f"(> {BRIDGE_CLEAR_DEV_TOL_REV} rev) — refusing to CLEAR into an unknown "
+                f"base; is another setpoint authority streaming?")
+            print(f"  ABORT: {self._abort_reason}", file=sys.stderr)
+            return False
+        print(f"  re-baselined u0≈enc (live_deviation="
+              f"{'?' if dev is None else f'{dev:+.3f}'} rev); CLEAR_ERRORS (disarmed) ...")
+        try:
+            self._clear_errors()
+        except Exception as e:  # noqa: BLE001
+            self._abort_reason = f"CLEAR_ERRORS RPC failed: {e}"
+            print(f"  ABORT: {self._abort_reason}", file=sys.stderr)
+            return False
+        if not self._wait_fault_clear(BRIDGE_STARTUP_CLEAR_TIMEOUT_S):
+            return False
+        print("  guard latch cleared → fault_state=NONE")
+        return True
+
     # -- streaming + collection ----------------------------------------------
 
     def _stream_and_sample(self, series, *, guard=True, writer=None,
@@ -1324,8 +1445,13 @@ class BridgeSysID:
         self._bringup_closed_loop()
         pos, _, _, _ = self._sample()
         start = pos if pos is not None else self.center_rev
+        # Stream-then-arm (finding: the approach must get the same care the disarmed
+        # gain-apply windows got). Warm up DISARMED at the measured pos to freshen the
+        # firmware staleness clock + re-baseline the interp base, THEN arm — arming
+        # first and streaming second races the 250 ms MPC_STALE E-STOP (the Teensy's
+        # last-setpoint stamp is stale from a prior run) and jumps the base.
+        self._warm_and_arm(start)
         series = self._knot_ramp(start, self.center_rev, hold_frames=int(0.4 / BRIDGE_SEG_T_S))
-        self._arm()
         return self._stream_and_sample(series, guard=True)
 
     def _bringup_closed_loop(self):
@@ -1535,14 +1661,18 @@ class BridgeSysID:
                 # s_mpc_active), then re-arm to stream (sysid_bridge finding #1).
                 self._disarm()
                 self._apply_gains(triple)
-                self._arm()
                 # Return to centre for a clean labelled step, ramping from where the leg
                 # ACTUALLY sits — a flat series at centre would latch the interp base a step
                 # away from the encoder and engage the lead clamp (sysid_bridge finding #2).
                 cur, _, _, _ = self._sample()
+                cur = cur if cur is not None else self.center_rev
+                # Stream-then-arm: warm up DISARMED at the live pos to freshen the staleness
+                # clock + re-baseline the interp base before raising mpc_active, so the re-arm
+                # after the disarmed gain-apply gap cannot race the 250 ms MPC_STALE E-STOP.
+                self._warm_and_arm(cur)
                 self._stream_and_sample(
-                    self._knot_ramp(cur if cur is not None else self.center_rev,
-                                    self.center_rev, hold_frames=int(0.4 / BRIDGE_SEG_T_S)),
+                    self._knot_ramp(cur, self.center_rev,
+                                    hold_frames=int(0.4 / BRIDGE_SEG_T_S)),
                     guard=True, revert_gains=lad.last_good or BASELINE_GAINS)
                 f, w, path = self._open_csv(f"ladder_p{rung.pos_gain:.0f}_v{vg:.2f}.csv")
                 y0, _, _, _ = self._sample()
@@ -1740,13 +1870,18 @@ class BridgeSysID:
                 return 2
             pos, _, _, _ = self._sample()
             fs = self._fault_state()
-            print(f"  Link up: pos={pos:+.4f} rev  fault_state={fs}")
+            print(f"  Link up: pos={pos:+.4f} rev  fault_state={fs} "
+                  f"({sid.fault_name(fs) if fs is not None else '?'})")
             # MEASURE the telemetry rate FIRST (it bounds the honest chirp top freq).
             rate = self._measure_telemetry_rate()
             print(f"  Telemetry: mean {rate.mean_hz:.1f} Hz (median {rate.median_hz:.1f}, "
                   f"jitter {rate.jitter_rms_s * 1e3:.2f} ms, p95 gap "
                   f"{rate.p95_interval_s * 1e3:.1f} ms) → effective {rate.effective_hz:.1f} Hz; "
                   f"honest chirp f1 = {self._chirp_f1_bridge():.1f} Hz")
+            # Verify-and-clear a pre-existing STICKY guard latch BEFORE any stage — else
+            # every run aborts 'during approach: guard latch' with the leg never moving.
+            if not self._startup_clear_latch():
+                return 2
             if self.do_home:
                 self._home()
             for mode in modes:

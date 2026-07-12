@@ -1155,3 +1155,100 @@ class GuardLatchBackoff:
         self.history.append({'fault_state': int(fault_state),
                              'classification': cls, 'action': act.kind})
         return act
+
+
+# ===========================================================================
+# Startup guard-latch clearance + stream-then-arm warmup (Path BRIDGE)
+# ===========================================================================
+#
+# The firmware guard E-STOP latch (``s_estop_latched``) is STICKY: it survives a
+# harness restart because the can-bridge Teensy runs on Jetson 5V and is never
+# power-cycled between runs, and it is released ONLY by an explicit CLEAR_ERRORS
+# (fault_machine.cpp:180-186). So a MAX_DEVIATION / MPC_STALE / MOTOR_OVERSPEED
+# latch from ANY prior run makes every later run read fault_state != NONE from the
+# first heartbeat — the approach stream observes it on iteration 0, backs off, and
+# aborts "during approach: guard latch" with the leg in CLOSED_LOOP but never
+# moving (output stays gated by the sticky latch while the interp base runs away).
+# The harness must therefore verify-and-clear a pre-existing latch at startup,
+# DISARMED, before any stage. These helpers are pure so the decision + sizing are
+# unit-testable; the driver performs the socket I/O and the RPC.
+
+BRIDGE_ARM_WARMUP_FRAMES = 16    # 40 Hz knots (0.4 s) streamed DISARMED before EVERY
+                                 # arm: freshens the firmware MPC-staleness clock and
+                                 # re-baselines the interp base to the encoder.
+BRIDGE_CLEAR_DEV_TOL_REV = 0.10  # after the warmup re-baseline the interp base must be
+                                 # within this of the encoder before a startup
+                                 # CLEAR_ERRORS — the 0.10 rev lead clamp, a safe
+                                 # re-enable delta well under MAX_DEVIATION (0.5 rev).
+
+
+def warmup_knot_series(pos_rev: float, n_frames: int = BRIDGE_ARM_WARMUP_FRAMES
+                       ) -> np.ndarray:
+    """Flat 40 Hz knot series holding ``pos_rev`` for ``n_frames`` — the DISARMED
+    stream-then-arm warmup.
+
+    Streamed with mpc_active=0 it (a) freshens the firmware MPC-staleness clock
+    (``interp_on_setpoint`` stamps ``s_last_setpoint_us`` on EVERY accepted frame,
+    regardless of arm — leg_interp.cpp:196) so the FOLLOWING arm cannot race the
+    250 ms MPC_STALE E-STOP, and (b) re-baselines the interp base to the measured
+    encoder so arming causes no jump and no MAX_DEVIATION. Output is gated while
+    disarmed, so these knots command NO motion — this is why streaming FIRST then
+    arming (the ``teensy_setpoint_bench.py`` idiom) is safe, and arming FIRST then
+    streaming is the race the operator's abort came from.
+    """
+    if n_frames < 1:
+        raise ValueError("n_frames must be >= 1")
+    return np.full(int(n_frames), float(pos_rev), dtype=float)
+
+
+def deviation_within_clear_tol(live_deviation_rev: float,
+                               tol_rev: float = BRIDGE_CLEAR_DEV_TOL_REV) -> bool:
+    """True when the live interp-base-minus-encoder deviation is small enough that a
+    DISARMED CLEAR_ERRORS + later re-arm won't lurch the leg (u0 ≈ encoder).
+
+    A fresh MAX_DEVIATION latch has u0 far from the encoder (that IS why it
+    latched); the driver first streams a disarmed warmup at the encoder to
+    re-baseline u0, then calls this to CONFIRM the base tracked before clearing.
+    """
+    return abs(float(live_deviation_rev)) <= abs(float(tol_rev))
+
+
+@dataclass
+class StartupLatchPlan:
+    action: str          # 'proceed' | 'clear' | 'wait_recover' | 'abort'
+    classification: str  # the classify_fault() bucket
+    reason: str
+
+
+def plan_startup_latch(fault_state: int) -> StartupLatchPlan:
+    """Decide what a startup ``fault_state`` demands, BEFORE any stage arms.
+
+    * ``none``        → ``proceed`` (already clear to arm).
+    * ``latching``    (MAX_DEVIATION / MPC_STALE / MOTOR_OVERSPEED) → ``clear``: a
+      sticky guard E-STOP persists across restarts and blocks every run; the driver
+      re-baselines + verifies u0≈enc (disarmed) then issues CLEAR_ERRORS.
+    * ``recoverable`` (LINK_LOST / MOTOR_FB_STALE) → ``wait_recover``: the firmware
+      self-recovers when the stream/feedback returns; wait briefly for NONE.
+    * ``fatal``       (ODRIVE_FATAL / CAN_BUS_DOWN) → ``abort``: the ODrive is
+      unpowered / has active errors, or CAN3 is down — do NOT clear a fatal; the
+      operator must power + clear the ODrive first. (Unknown codes → fatal, so an
+      unclassified state is never auto-cleared.)
+    """
+    cls = classify_fault(fault_state)
+    name = fault_name(fault_state)
+    if cls == 'none':
+        return StartupLatchPlan('proceed', cls, 'fault_state NONE — clear to arm')
+    if cls == 'latching':
+        return StartupLatchPlan(
+            'clear', cls,
+            "%s latched at startup (sticky across restarts) — verify u0≈enc "
+            "disarmed, then CLEAR_ERRORS" % name)
+    if cls == 'recoverable':
+        return StartupLatchPlan(
+            'wait_recover', cls,
+            "%s at startup — waiting for firmware self-recovery" % name)
+    return StartupLatchPlan(
+        'abort', cls,
+        "%s at startup — the bench ODrive is unpowered / has active errors, or "
+        "CAN3 is down; power and clear the ODrive, then retry (the harness will "
+        "NOT clear a fatal)" % name)

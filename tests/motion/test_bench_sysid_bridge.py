@@ -390,3 +390,86 @@ def test_guard_history_records_every_observation():
     assert len(g.history) == 2
     assert g.history[1]['classification'] == 'latching'
     assert g.history[1]['action'] == 'backoff_recover'
+
+
+# ===========================================================================
+# Stream-then-arm warmup + startup guard-latch clearance
+# ===========================================================================
+
+def test_warmup_knot_series_is_flat_at_pos_and_right_length():
+    # The DISARMED stream-then-arm warmup is a flat hold at the measured position:
+    # every knot equals the position (so the interp base re-baselines to the encoder
+    # and no knot leads it), for exactly n_frames knots. Streamed with mpc_active=0 it
+    # freshens the staleness clock without commanding motion (output is gated).
+    s = sid.warmup_knot_series(0.2344, n_frames=16)
+    assert len(s) == 16
+    assert s[0] == pytest.approx(0.2344)
+    assert np.all(s == pytest.approx(0.2344))
+    assert sid.max_frame_step(s) == pytest.approx(0.0)   # flat: no knot-to-knot step at all
+    # Default frame count is the module constant (0.4 s at 40 Hz).
+    assert len(sid.warmup_knot_series(1.5)) == sid.BRIDGE_ARM_WARMUP_FRAMES
+
+
+def test_warmup_knot_series_rejects_zero_frames():
+    for bad in (0, -1):
+        with pytest.raises(ValueError):
+            sid.warmup_knot_series(1.5, n_frames=bad)
+
+
+def test_deviation_within_clear_tol_is_sign_agnostic():
+    # u0≈enc gate before a startup CLEAR_ERRORS: within tol either sign is safe,
+    # beyond tol either sign refuses. Default tol is the 0.10 rev lead clamp.
+    assert sid.deviation_within_clear_tol(0.0)
+    assert sid.deviation_within_clear_tol(0.09)
+    assert sid.deviation_within_clear_tol(-0.09)
+    assert not sid.deviation_within_clear_tol(0.5229)     # the measured MAX_DEVIATION latch dev
+    assert not sid.deviation_within_clear_tol(-0.5229)
+    # Custom tolerance is honoured.
+    assert sid.deviation_within_clear_tol(0.2, tol_rev=0.25)
+    assert not sid.deviation_within_clear_tol(0.2, tol_rev=0.1)
+
+
+def test_plan_startup_latch_none_proceeds():
+    plan = sid.plan_startup_latch(sid.FAULT_NONE)
+    assert plan.action == 'proceed'
+    assert plan.classification == 'none'
+
+
+def test_plan_startup_latch_latching_clears():
+    # A sticky guard E-STOP (MAX_DEVIATION / MPC_STALE / MOTOR_OVERSPEED) must drive
+    # the verify-u0≈enc + CLEAR_ERRORS path — NOT abort, NOT proceed. This is the
+    # operator's case: the persisted MAX_DEVIATION latch that blocked every run.
+    for f in (sid.FAULT_MAX_DEVIATION, sid.FAULT_MPC_STALE, sid.FAULT_MOTOR_OVERSPEED):
+        plan = sid.plan_startup_latch(f)
+        assert plan.action == 'clear', sid.fault_name(f)
+        assert plan.classification == 'latching'
+
+
+def test_plan_startup_latch_recoverable_waits():
+    for f in (sid.FAULT_LINK_LOST, sid.FAULT_MOTOR_FB_STALE):
+        plan = sid.plan_startup_latch(f)
+        assert plan.action == 'wait_recover'
+        assert plan.classification == 'recoverable'
+
+
+def test_plan_startup_latch_fatal_aborts_without_clearing():
+    # ODRIVE_FATAL (the measured live state while the bench ODrive is unpowered) and
+    # CAN_BUS_DOWN must ABORT with guidance — the harness never auto-clears a fatal.
+    # Unknown codes are conservatively fatal too.
+    for f in (sid.FAULT_ODRIVE_FATAL, sid.FAULT_CAN_BUS_DOWN, 99):
+        plan = sid.plan_startup_latch(f)
+        assert plan.action == 'abort'
+        assert plan.classification == 'fatal'
+
+
+def test_plan_startup_latch_action_matches_classification():
+    # The action partition must track classify_fault exactly — a future firmware
+    # re-bucket that breaks classify_fault must also break this, not silently
+    # mis-route a startup clear (e.g. auto-clearing a newly-fatal code).
+    expect = {'none': 'proceed', 'latching': 'clear',
+              'recoverable': 'wait_recover', 'fatal': 'abort'}
+    for f in (sid.FAULT_NONE, sid.FAULT_MPC_STALE, sid.FAULT_LINK_LOST,
+              sid.FAULT_MOTOR_OVERSPEED, sid.FAULT_MAX_DEVIATION,
+              sid.FAULT_ODRIVE_FATAL, sid.FAULT_CAN_BUS_DOWN, sid.FAULT_MOTOR_FB_STALE):
+        plan = sid.plan_startup_latch(f)
+        assert plan.action == expect[sid.classify_fault(f)]
