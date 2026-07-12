@@ -473,3 +473,134 @@ def test_plan_startup_latch_action_matches_classification():
               sid.FAULT_ODRIVE_FATAL, sid.FAULT_CAN_BUS_DOWN, sid.FAULT_MOTOR_FB_STALE):
         plan = sid.plan_startup_latch(f)
         assert plan.action == expect[sid.classify_fault(f)]
+
+
+# ===========================================================================
+# Arm-settle + output-engagement verify (2026-07-12 approach-latch fix)
+# ===========================================================================
+
+def test_arm_settle_series_is_flat_and_right_length():
+    # The FLAT ARMED settle held after the arm so the firmware re-enable recovery slew
+    # converges at the encoder before any climb: every knot equals the arm position (no
+    # knot leads the encoder → the 1.0 rev/s slew's target == the encoder → it converges
+    # in one tick), for exactly n_frames knots.
+    s = sid.arm_settle_series(1.5, n_frames=24)
+    assert len(s) == 24
+    assert np.all(s == pytest.approx(1.5))
+    assert sid.max_frame_step(s) == pytest.approx(0.0)   # flat: no knot-to-knot step
+    assert len(sid.arm_settle_series(0.3)) == sid.BRIDGE_ARM_SETTLE_FRAMES
+
+
+def test_arm_settle_series_rejects_zero_frames():
+    for bad in (0, -1):
+        with pytest.raises(ValueError):
+            sid.arm_settle_series(1.5, n_frames=bad)
+
+
+def test_arm_settle_covers_the_enable_latency_at_the_ramp_rate():
+    # The core guarantee: the flat settle must outlast the firmware output-enable latency
+    # (10 Hz J→T heartbeat + 10 Hz fault task ≈ 200 ms) so the slew converges with a
+    # STATIONARY command. At 40 Hz that latency is ~8 knots; the settle must exceed it
+    # with margin (else the same race that produced the operator's latch survives).
+    seg_t_s = 0.025
+    enable_latency_s = 0.2   # 100 ms heartbeat + 100 ms fault task (FAULT_TASK_HZ=10)
+    latency_frames = enable_latency_s / seg_t_s
+    assert sid.BRIDGE_ARM_SETTLE_FRAMES > latency_frames * 1.5
+
+
+def test_engage_test_increment_is_safe_under_both_clamps():
+    # The engagement probe must never itself latch the guard: its increment has to sit
+    # well under BOTH the lead clamp (0.10 rev) and MAX_DEVIATION (0.5 rev), and be
+    # reachable by the 1.0 rev/s recovery slew within a couple of 40 Hz knots.
+    assert sid.BRIDGE_ENGAGE_TEST_REV < 0.10          # under the lead clamp
+    assert sid.BRIDGE_ENGAGE_TEST_REV < 0.5           # under MAX_DEVIATION
+    reach_per_knot = 1.0 * 0.025                       # slew vel × seg_t
+    assert sid.BRIDGE_ENGAGE_TEST_REV <= 2 * reach_per_knot
+
+
+def test_classify_output_engagement_engaged_when_encoder_follows():
+    chk = sid.classify_output_engagement(
+        commanded_delta_rev=0.03, encoder_delta_rev=0.028,
+        fault_state=sid.FAULT_NONE, fw_mpc_active=True)
+    assert chk.engaged
+    assert 'engaged' in chk.reason
+
+
+def test_classify_output_engagement_mpc_active_false_is_most_specific():
+    # A competing heartbeat authority (arm never took) is diagnosed FIRST — even if the
+    # encoder happened to move and fault is NONE, mpc_active=0 is the load-bearing cause.
+    chk = sid.classify_output_engagement(
+        commanded_delta_rev=0.03, encoder_delta_rev=0.03,
+        fault_state=sid.FAULT_NONE, fw_mpc_active=False)
+    assert not chk.engaged
+    assert 'mpc_active=0' in chk.reason
+
+
+def test_classify_output_engagement_fault_gates_output():
+    # A non-NONE fault_state (e.g. MOTOR_FB_STALE frozen feedback, or ODRIVE_FATAL) is
+    # named as the gating condition even though the encoder did not move.
+    for f in (sid.FAULT_MOTOR_FB_STALE, sid.FAULT_ODRIVE_FATAL, sid.FAULT_MAX_DEVIATION):
+        chk = sid.classify_output_engagement(
+            commanded_delta_rev=0.03, encoder_delta_rev=0.0,
+            fault_state=f, fw_mpc_active=True)
+        assert not chk.engaged
+        assert sid.fault_name(f) in chk.reason
+
+
+def test_classify_output_engagement_armed_but_not_following():
+    # The subtle case the operator's original "never moves" report pointed at: armed,
+    # fault NONE, but the encoder does not follow the command → the leg is powered-down /
+    # not truly CLOSED_LOOP / mechanically bound. Not a fault code, still not engaged.
+    chk = sid.classify_output_engagement(
+        commanded_delta_rev=0.03, encoder_delta_rev=0.001,
+        fault_state=sid.FAULT_NONE, fw_mpc_active=True)
+    assert not chk.engaged
+    assert 'not following' in chk.reason
+
+
+def test_classify_output_engagement_tracks_at_the_frac_boundary():
+    # The track fraction is a loose "did it MOVE" gate, not a tracking-accuracy check.
+    # Exactly at the boundary counts as engaged; just under does not.
+    frac = sid.BRIDGE_ENGAGE_TRACK_FRAC
+    at = sid.classify_output_engagement(
+        commanded_delta_rev=0.03, encoder_delta_rev=frac * 0.03,
+        fault_state=sid.FAULT_NONE, fw_mpc_active=True)
+    assert at.engaged
+    under = sid.classify_output_engagement(
+        commanded_delta_rev=0.03, encoder_delta_rev=frac * 0.03 - 1e-4,
+        fault_state=sid.FAULT_NONE, fw_mpc_active=True)
+    assert not under.engaged
+
+
+def test_classify_output_engagement_mpc_active_none_is_not_a_false_negative():
+    # An older/short heartbeat with no MPC_ACTIVE readout (None) must NOT be read as
+    # "arm did not take" — only an explicit False does. With fault NONE + the encoder
+    # following, None still classifies engaged.
+    chk = sid.classify_output_engagement(
+        commanded_delta_rev=0.03, encoder_delta_rev=0.03,
+        fault_state=sid.FAULT_NONE, fw_mpc_active=None)
+    assert chk.engaged
+
+
+def test_approach_abort_diagnostic_names_fault_and_live_quantities():
+    # The self-diagnosing abort string must carry the fault name and the live
+    # u0/enc/deviation so the operator's next report is self-explanatory (the whole
+    # point of replacing the opaque 'guard latch' line).
+    s = sid.approach_abort_diagnostic(
+        fault_state=sid.FAULT_MAX_DEVIATION, u0_rev=1.20, enc_rev=0.68,
+        guard_reason="MAX_DEVIATION latch → back off", lead_clamp=True, mpc_active=True)
+    assert 'MAX_DEVIATION' in s
+    assert '+1.2000' in s and '+0.6800' in s
+    assert '+0.5200' in s                      # dev = u0 - enc = 0.52 (past the 0.5 latch)
+    assert 'lead_clamp=engaged' in s
+    assert 'fw_mpc_active=True' in s
+    assert 'back off' in s
+
+
+def test_approach_abort_diagnostic_omits_optional_fields_when_absent():
+    s = sid.approach_abort_diagnostic(
+        fault_state=sid.FAULT_MPC_STALE, u0_rev=0.5, enc_rev=0.5)
+    assert 'MPC_STALE' in s
+    assert 'dev(u0-enc)=+0.0000' in s
+    assert 'lead_clamp' not in s
+    assert 'fw_mpc_active' not in s

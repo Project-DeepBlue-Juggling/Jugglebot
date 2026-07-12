@@ -1004,6 +1004,8 @@ class BridgeSysID:
                 'knot_frame_step_rev': self.frame_step_rev,
                 'lead_margin_frac': BRIDGE_LEAD_MARGIN_FRAC,
                 'max_recoveries': max_recoveries,
+                'arm_settle_frames': sid.BRIDGE_ARM_SETTLE_FRAMES,
+                'engage_test_rev': sid.BRIDGE_ENGAGE_TEST_REV,
             },
             'bounds_rev': [self.bounds.lo_rev, self.bounds.hi_rev],
             'center_rev': self.center_rev,
@@ -1214,6 +1216,68 @@ class BridgeSysID:
         except Exception:  # noqa: BLE001 — older/short heartbeat without the field
             return None
 
+    def _lead_clamp_bit(self) -> Optional[bool]:
+        """This axis's lead-clamp-engaged bit from the last 500 Hz interp tick
+        (HeartbeatT2J.lead_clamp_mask, .ino:135), or None if no/short heartbeat."""
+        with self._lock:
+            hb = self._cache['hb']
+        if hb is None:
+            return None
+        try:
+            return bool((int(hb.lead_clamp_mask) >> self.axis_id) & 1)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _abort_diag(self, res: dict) -> str:
+        """Build a self-diagnosing abort string from a stream result: which guard
+        latched + the live u0(=streamed base)/enc/deviation at the latch, so the
+        operator's next report names the fault instead of an opaque 'guard latch'."""
+        cmd = res.get('cmd')
+        pos = res.get('pos')
+        u0 = float(cmd[-1]) if cmd is not None and len(cmd) else float('nan')
+        enc = float(pos[-1]) if pos is not None and len(pos) else float('nan')
+        fs = self._fault_state()
+        ga = res.get('guard_action')
+        reason = ga.reason if ga is not None else ''
+        return sid.approach_abort_diagnostic(
+            fault_state=fs if fs is not None else sid.FAULT_NONE,
+            u0_rev=u0, enc_rev=enc, guard_reason=reason,
+            lead_clamp=self._lead_clamp_bit(), mpc_active=self._fw_mpc_active())
+
+    def _verify_output_engaged(self, pos: float) -> dict:
+        """HARD-VERIFY the firmware output gate is driving the leg: command a tiny
+        bounded increment (BRIDGE_ENGAGE_TEST_REV, << lead clamp + MAX_DEVIATION so it
+        can NEVER itself latch the guard) and confirm the encoder follows it. On failure
+        returns a SPECIFIC unmet-condition reason with the live u0/enc/dev/fault so the
+        operator's next run is self-diagnosing. Returns {engaged, guard_latched, reason}."""
+        enc0, _, _, _ = self._sample()
+        enc0 = enc0 if enc0 is not None else pos
+        tgt = self.bounds.clamp(pos + sid.BRIDGE_ENGAGE_TEST_REV)
+        probe = self._stream_and_sample(
+            self._knot_ramp(pos, tgt, hold_frames=int(0.3 / BRIDGE_SEG_T_S)), guard=True)
+        enc1, _, _, _ = self._sample()
+        enc1 = enc1 if enc1 is not None else enc0
+        if probe['aborted'] or probe['guard_latched']:
+            # Even the tiny probe latched — surface exactly which guard + live quantities.
+            self._stream_and_sample(self._knot_ramp(tgt, pos, hold_frames=2), guard=True)
+            return {'engaged': False, 'guard_latched': probe['guard_latched'],
+                    'reason': self._abort_diag(probe)}
+        fs = self._fault_state()
+        chk = sid.classify_output_engagement(
+            commanded_delta_rev=tgt - pos, encoder_delta_rev=(enc1 - enc0),
+            fault_state=fs if fs is not None else sid.FAULT_NONE,
+            fw_mpc_active=self._fw_mpc_active())
+        reason = chk.reason
+        if not chk.engaged:
+            dev = self._live_deviation()
+            reason = (f"{chk.reason} [commanded +{tgt - pos:.4f} rev, encoder moved "
+                      f"{enc1 - enc0:+.4f} rev; live_deviation="
+                      f"{'?' if dev is None else f'{dev:+.4f}'} rev, "
+                      f"lead_clamp={self._lead_clamp_bit()}]")
+        # Return to pos before the caller's real ramp (tiny, inside the lead clamp).
+        self._stream_and_sample(self._knot_ramp(tgt, pos, hold_frames=2), guard=True)
+        return {'engaged': chk.engaged, 'guard_latched': False, 'reason': reason}
+
     def _stream_series_disarmed(self, series):
         """Stream a flat knot series at 40 Hz with mpc_active=0 (no arm, no guard,
         no record). Output is gated while disarmed so this commands NO motion; it
@@ -1236,18 +1300,30 @@ class BridgeSysID:
             if dt > 0:
                 time.sleep(dt)
 
-    def _warm_and_arm(self, pos: float):
-        """Stream-then-arm: DISARMED warmup knots at ``pos`` (freshen the staleness
-        clock + re-baseline the interp base to the encoder) THEN raise mpc_active.
+    def _warm_and_arm(self, pos: float) -> dict:
+        """Stream-then-arm-then-settle: DISARMED warmup knots at ``pos`` (freshen the
+        staleness clock + re-baseline the interp base to the encoder), raise mpc_active,
+        THEN hold FLAT armed at ``pos`` for the arm-settle window. Returns the settle
+        stream-result so a caller can detect a latch during the settle itself.
 
-        This closes the arm-before-stream MPC_STALE race the known-good
+        The DISARMED warmup closes the arm-before-stream MPC_STALE race the known-good
         ``teensy_setpoint_bench.py`` idiom avoids: because the Teensy stays powered on
         Jetson 5V, ``interp_last_setpoint_us`` is stale from a prior run, so arming
         FIRST and streaming SECOND lets the firmware 250 ms staleness E-STOP latch in
         the window before the first fresh knot lands. Warming up first makes the base
-        fresh AND ≈ the encoder, so the following arm can neither go stale nor jump."""
+        fresh AND ≈ the encoder, so the following arm can neither go stale nor jump.
+
+        The FLAT ARMED settle (2026-07-12 approach-latch fix) then lets the firmware
+        re-enable RECOVERY SLEW converge at the encoder BEFORE any climbing ramp: with
+        the streamed command stationary at ``pos`` when output enables (up to ~200 ms
+        after the arm — 10 Hz heartbeat + 10 Hz fault task), the 1.0 rev/s slew's target
+        equals the encoder, so it converges in one tick and hands back to normal
+        streaming. Without it, the old immediate 2.0 rev/s ramp outran the slew and
+        walked ``u0 - enc`` into the 0.5 rev MAX_DEVIATION latch — the operator's
+        "moved up slightly then guard latch" (see sysid_lib.arm_settle_series)."""
         self._stream_series_disarmed(sid.warmup_knot_series(pos, BRIDGE_ARM_WARMUP_FRAMES))
         self._arm()
+        return self._stream_and_sample(sid.arm_settle_series(pos), guard=True)
 
     def _wait_fault_clear(self, timeout: float) -> bool:
         """Poll the heartbeat until fault_state == NONE; abort loudly on timeout
@@ -1360,7 +1436,10 @@ class BridgeSysID:
                 if act.kind == 'backoff_recover':
                     guard_latched = True
                     guard_action = act
-                    print(f"    GUARD LATCH → {act.reason}")
+                    _enc = pos if pos is not None else float('nan')
+                    print(f"    GUARD LATCH → {act.reason} "
+                          f"[u0={u0:+.4f} enc={_enc:+.4f} dev(u0-enc)={u0 - _enc:+.4f} rev, "
+                          f"lead_clamp={self._lead_clamp_bit()}]")
                     self._disarm()
                     if revert_gains is not None:
                         try:
@@ -1445,14 +1524,33 @@ class BridgeSysID:
         self._bringup_closed_loop()
         pos, _, _, _ = self._sample()
         start = pos if pos is not None else self.center_rev
-        # Stream-then-arm (finding: the approach must get the same care the disarmed
-        # gain-apply windows got). Warm up DISARMED at the measured pos to freshen the
-        # firmware staleness clock + re-baseline the interp base, THEN arm — arming
-        # first and streaming second races the 250 ms MPC_STALE E-STOP (the Teensy's
-        # last-setpoint stamp is stale from a prior run) and jumps the base.
-        self._warm_and_arm(start)
+        # Stream-then-arm-then-settle (finding: the approach must get the same care the
+        # disarmed gain-apply windows got). Warm up DISARMED at the measured pos to
+        # freshen the firmware staleness clock + re-baseline the interp base, arm, THEN
+        # hold flat armed so the firmware re-enable recovery slew converges at the encoder
+        # before any climb — arming first and immediately ramping races BOTH the 250 ms
+        # MPC_STALE E-STOP and the 1.0 rev/s recovery slew (which the old 2.0 rev/s ramp
+        # outran into a MAX_DEVIATION latch — the operator's "moved up slightly, stopped").
+        settle = self._warm_and_arm(start)
+        if settle['aborted'] or settle['guard_latched']:
+            self._abort_reason = "arm-settle latched: " + (self._abort_diag(settle)
+                                                           or 'guard latch')
+            return settle
+        # HARD-VERIFY output engagement before trusting the big approach ramp: a tiny
+        # bounded increment the encoder must follow. Turns an opaque 'guard latch' into a
+        # specific unmet-condition report naming the firmware gate that is suppressing output.
+        eng = self._verify_output_engaged(start)
+        if not eng['engaged']:
+            self._abort_reason = "output not engaged after arm — " + eng['reason']
+            return {'aborted': True, 'guard_latched': eng['guard_latched'],
+                    't': np.array([]), 'cmd': np.array([]), 'pos': np.array([]),
+                    'vel': np.array([]), 'iq': np.array([]), 'telem_ts': np.array([]),
+                    'guard_action': None}
         series = self._knot_ramp(start, self.center_rev, hold_frames=int(0.4 / BRIDGE_SEG_T_S))
-        return self._stream_and_sample(series, guard=True)
+        res = self._stream_and_sample(series, guard=True)
+        if res['aborted'] or res['guard_latched']:
+            self._abort_reason = self._abort_diag(res) or self._abort_reason
+        return res
 
     def _bringup_closed_loop(self):
         """Legacy-faithful bring-up to CLOSED_LOOP position mode (like
@@ -1481,24 +1579,43 @@ class BridgeSysID:
         autonomously in the can-bridge HOME handler, velocity-limited + current-
         capped + hardstop-detected) and wait for the axis to settle. Production
         homing drives controller.teensy_link.homing.HomingMonitor from telemetry
-        (teensy_home_bench.py); here we fire + wait for a finite, stationary
-        encoder with a hard timeout."""
+        (teensy_home_bench.py); here we fire + wait for a finite, stationary encoder
+        with a hard timeout, and VERIFY the leg actually MOVED (encoder travel) so a
+        rejected / no-op HOME (e.g. ERR_REJECTED while mpc_active, ERR_BUS_DOWN) is not
+        mistaken for success — the old 'settled encoder' check false-succeeded on a leg
+        that never moved (it is already 'settled')."""
         ra = self._rpc_args
+        p0, _, _, _ = self._sample()
         try:
             self._rpc.call(int(self._RpcMethod.HOME),
                            ra.encode_home(self.axis_id), retries=0)
-        except Exception as e:  # noqa: BLE001
-            print(f"  HOME RPC returned: {e} (continuing to monitor telemetry)")
+            print(f"  HOME({self.axis_id}) accepted (OK)")
+        except Exception as e:  # noqa: BLE001 — REJECTED/BUS_DOWN raise here
+            print(f"  HOME RPC returned: {e} (monitoring telemetry for motion anyway)")
+        # HOMING_TRAVEL_MIN_REV: firmware homing drives the leg through its full travel
+        # to the hardstop (>> this), so <this seen ⇒ the move never ran (RPC rejected).
+        HOMING_TRAVEL_MIN_REV = 0.10
         t_end = time.perf_counter() + 35.0
         last = None
         stable = 0
+        pmin = pmax = p0 if p0 is not None else None
         while time.perf_counter() < t_end and not self._sigint:
             pos, vel, _, _ = self._sample()
+            if pos is not None:
+                pmin = pos if pmin is None else min(pmin, pos)
+                pmax = pos if pmax is None else max(pmax, pos)
             if pos is not None and vel is not None and abs(vel) < 0.05:
                 if last is not None and abs(pos - last) < 1e-3:
                     stable += 1
                     if stable > 20:
-                        print(f"  HOME complete: pos={pos:+.4f} rev")
+                        travel = (pmax - pmin) if (pmin is not None and pmax is not None) else 0.0
+                        if travel < HOMING_TRAVEL_MIN_REV:
+                            print(f"  HOME: encoder settled at {pos:+.4f} rev but only "
+                                  f"{travel:.4f} rev of travel seen (< {HOMING_TRAVEL_MIN_REV}) "
+                                  f"— the HOME move did NOT run (RPC rejected? mpc_active "
+                                  f"still set? bus down?). NOT treating this as homed.")
+                            return False
+                        print(f"  HOME complete: pos={pos:+.4f} rev (travel {travel:.3f} rev)")
                         return True
                 last = pos
             else:
@@ -1548,7 +1665,8 @@ class BridgeSysID:
             f.close()
             if arrays['aborted'] or arrays['guard_latched']:
                 self._disarm()
-                print(f"  ABORT: {self._abort_reason or 'guard latch at baseline gains'}")
+                diag = self._abort_diag(arrays)
+                print(f"  ABORT: {diag or self._abort_reason or 'guard latch at baseline gains'}")
                 return False
             m = sid.fit_step_response(arrays['t'], arrays['pos'], y0, sp.target_rev)
             ev = self._evaluate_onset(arrays, tail_from=arrays['t'][-1] * 0.5
@@ -1608,7 +1726,8 @@ class BridgeSysID:
         f.close()
         self._disarm()
         if arrays['aborted'] or arrays['guard_latched']:
-            print(f"  ABORT: {self._abort_reason or 'guard latch during chirp'}")
+            diag = self._abort_diag(arrays)
+            print(f"  ABORT: {diag or self._abort_reason or 'guard latch during chirp'}")
             return False
         bins = self._response_bins()
         gains, phases = sid.estimate_frequency_response(

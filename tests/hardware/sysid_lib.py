@@ -1252,3 +1252,129 @@ def plan_startup_latch(fault_state: int) -> StartupLatchPlan:
         "%s at startup — the bench ODrive is unpowered / has active errors, or "
         "CAN3 is down; power and clear the ODrive, then retry (the harness will "
         "NOT clear a fatal)" % name)
+
+
+# ===========================================================================
+# Arm-settle + output-engagement verify (Path BRIDGE)
+# ===========================================================================
+#
+# ROOT CAUSE (2026-07-12 approach-latch forensics). The can-bridge firmware runs a
+# RE-ENABLE RECOVERY SLEW (leg_interp.cpp, 2026-07-11 clear-errors jolt fix): on every
+# ``s_output_enabled`` false->true edge (a guard clear / an arm / a stow resume) it
+# re-baselines the emitted command to the LIVE ENCODER and ramps toward the streamed
+# command at ``RECOVER_SLEW_VEL_RPS`` = 1.0 rev/s (accel-limited). It exists to bound the
+# ~``pos_gain * lead-clamp`` current kick when the streamed command has drifted a lead
+# clamp (0.10 rev) off the encoder during suppression, and it ASSUMES the streamed
+# command is quasi-static at the edge (a normal MPC hold) so the slew converges within a
+# tick or two and hands back to normal streaming.
+#
+# The bench harness VIOLATED that assumption: it armed (``mpc_active`` 0->1) and
+# IMMEDIATELY streamed a climbing 2.0 rev/s knot ramp (``frame_step / seg_t`` =
+# 0.05 / 0.025). The firmware output-enable edge lags the arm by up to ~200 ms (the J->T
+# heartbeat is 10 Hz AND the fault task that owns the gate runs at ``FAULT_TASK_HZ`` =
+# 10 Hz), so by the time output enables the streamed base ``u0`` has already climbed
+# ~0.2-0.4 rev ahead of the still-gated (frozen) encoder. The slew then arms with u0
+# already a lead clamp ahead and climbing at 2.0 rev/s while it can only advance the leg
+# at 1.0 rev/s -- the streamed command stays a lead clamp AHEAD of the slew, so the slew
+# NEVER converges and rate-limits the encoder to ~1.0 rev/s. ``u0 - encoder`` then grows
+# at ~1.0 rev/s until it crosses ``MAX_DEVIATION`` (0.5 rev) and LATCHES the guard E-STOP;
+# the leg moves "slightly" (~0.3-0.5 rev at the slew rate) then STOPS. This is the
+# operator's "homed OK, moved up slightly, stopped, ABORT during approach: guard latch".
+#
+# FIX (harness side; the firmware slew is correct for its design). After arming, HOLD the
+# streamed command FLAT at the arm position for ``BRIDGE_ARM_SETTLE_FRAMES`` so that when
+# output enables the streamed command is stationary at the encoder: the slew converges
+# IMMEDIATELY (its target == the encoder) and hands back before any climb. Only THEN start
+# the climbing ramp -- with the slew off the leg tracks the 2.0 rev/s ramp under the
+# primary lead clamp (leg vel_limit 4.0 > 2.0, so it keeps up and ``u0 - enc`` stays
+# inside the lead clamp). Independently, HARD-VERIFY engagement with a tiny bounded test
+# increment so a *genuinely* gated output (fb-stale / unpowered / competing heartbeat
+# authority) is reported as a SPECIFIC unmet condition instead of an opaque "guard latch".
+
+BRIDGE_ARM_SETTLE_FRAMES = 24    # 40 Hz knots (0.6 s) held FLAT at the arm pos AFTER the
+                                 # arm and BEFORE any climbing ramp. Covers the <=100 ms
+                                 # J->T heartbeat latency + <=100 ms fault-task (10 Hz)
+                                 # gate latency + the recovery-slew convergence, with
+                                 # margin. Streamed ARMED with u0 == encoder, so it
+                                 # commands NO motion (the slew converges at the encoder)
+                                 # while keeping the firmware staleness clock fresh.
+
+BRIDGE_ENGAGE_TEST_REV = 0.03    # tiny extension increment for the output-engagement
+                                 # hard-verify. Far under MAX_LEAD (0.10) AND MAX_DEVIATION
+                                 # (0.5) and trackable by BOTH the recovery slew (1.0 rev/s)
+                                 # and the primary lead clamp, so it can never itself latch
+                                 # the guard -- it only proves the encoder follows a command.
+BRIDGE_ENGAGE_TRACK_FRAC = 0.5   # the encoder must move at least this fraction of the test
+                                 # increment to count as engaged (loose: proves the leg
+                                 # MOVED, not tracking accuracy).
+
+
+def arm_settle_series(pos_rev: float,
+                      n_frames: int = BRIDGE_ARM_SETTLE_FRAMES) -> np.ndarray:
+    """Flat ARMED knot hold at ``pos_rev`` for ``n_frames`` — the post-arm settle that
+    lets the firmware re-enable recovery slew converge at the encoder BEFORE any climbing
+    ramp (see the module note above). Same flat shape as ``warmup_knot_series`` but a
+    distinct name because its role is different: the warmup is DISARMED (re-baseline +
+    freshen staleness), this is ARMED (converge the slew at a stationary command)."""
+    if n_frames < 1:
+        raise ValueError("n_frames must be >= 1")
+    return np.full(int(n_frames), float(pos_rev), dtype=float)
+
+
+@dataclass
+class EngagementCheck:
+    engaged: bool
+    reason: str
+
+
+def classify_output_engagement(*, commanded_delta_rev: float,
+                               encoder_delta_rev: float, fault_state: int,
+                               fw_mpc_active: Optional[bool],
+                               track_frac: float = BRIDGE_ENGAGE_TRACK_FRAC
+                               ) -> EngagementCheck:
+    """Decide whether the firmware output gate is actually driving the leg, from a tiny
+    test increment — and if NOT, name the specific unmet firmware condition. Pure.
+
+    Priority of failure diagnosis (most-specific first):
+      1. ``fw_mpc_active`` is ``False``  → the arm never took (a competing heartbeat
+         authority is overriding it — e.g. a ROS2 ``teensy_bridge_node`` also streaming).
+      2. ``fault_state`` != NONE         → that fault is gating output (e.g. MOTOR_FB_STALE
+         = frozen encoder feedback, ODRIVE_FATAL = active errors/unpowered, MAX_DEVIATION).
+      3. encoder moved < ``track_frac`` of the command with fault NONE and arm live → the
+         leg is armed + output-enabled but not following (DC bus unpowered? ODrive not
+         truly CLOSED_LOOP? mechanical bind?).
+      else → engaged.
+    """
+    cmd = abs(float(commanded_delta_rev))
+    moved = abs(float(encoder_delta_rev))
+    if fw_mpc_active is False:
+        return EngagementCheck(False, (
+            "firmware mpc_active=0 — the arm did not take (a competing heartbeat "
+            "authority is overriding it; this driver must be the sole wire authority)"))
+    if int(fault_state) != FAULT_NONE:
+        return EngagementCheck(False, (
+            "%s is gating output" % fault_name(fault_state)))
+    if cmd > 0.0 and moved < track_frac * cmd:
+        return EngagementCheck(False, (
+            "armed + fault NONE but the encoder tracked only %.4f of the %.4f rev test "
+            "command — the leg is armed but not following (DC bus unpowered? ODrive not "
+            "truly CLOSED_LOOP? mechanical bind?)" % (moved, cmd)))
+    return EngagementCheck(True, "output engaged (encoder followed the test increment)")
+
+
+def approach_abort_diagnostic(*, fault_state: int, u0_rev: float, enc_rev: float,
+                              guard_reason: str = "",
+                              lead_clamp: Optional[bool] = None,
+                              mpc_active: Optional[bool] = None) -> str:
+    """Self-diagnosing one-line abort string: which guard + the live u0/enc/deviation at
+    the latch, so the operator's next report is self-explanatory. Pure."""
+    dev = float(u0_rev) - float(enc_rev)
+    parts = ["%s @ u0=%+.4f enc=%+.4f dev(u0-enc)=%+.4f rev"
+             % (fault_name(fault_state), u0_rev, enc_rev, dev)]
+    if lead_clamp is not None:
+        parts.append("lead_clamp=%s" % ("engaged" if lead_clamp else "clear"))
+    if mpc_active is not None:
+        parts.append("fw_mpc_active=%s" % mpc_active)
+    if guard_reason:
+        parts.append(str(guard_reason))
+    return "; ".join(parts)
