@@ -3,10 +3,12 @@ title: Leg ODrive PID Gain Tuning Methodology
 status: active
 owner: harrison
 created: 2026-04-18
-last_updated: 2026-07-10
+last_updated: 2026-07-12
 related_logbook:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
   - 2026-04-19-leg1-pose-dependent-hold-twitch.md
+  - 2026-07-10-s4-stutter-guard-forensics-recovery-stack.md
+  - 2026-07-12-bench-leg-gain-tuning-stage1.md
 related_config:
   - config/hardware_config.yaml → jugglebot_odrive_defaults.leg_pos_gains / leg_vel_gains / leg_vel_int_gains
 related_code:
@@ -251,7 +253,7 @@ On the fixed fast vertical stroke (z 170→250 at 156/660/10500) the tier is met
 
 - there is **no braking-current oscillation** (no negative-iq surge/collapse cycling);
 - **position lag < 0.05 rev** with ≥2× margin below `MAX_LEAD_REV` (0.10 rev,
-  `canbridge_config.h:139`), so the interp lead clamp never engages (`lead_clamp_mask`
+  `canbridge_config.h:178`), so the interp lead clamp never engages (`lead_clamp_mask`
   stays 0 on `/link_status`);
 - the stroke is subjectively smooth (no ~6 Hz buzz) and the guard never latches.
 
@@ -443,6 +445,125 @@ still unambiguously the `pos_gain/(2π)` loop signature, not a coincidence.
 
 ---
 
+## STAGE 1 — RESULTS (2026-07-12 bench session)
+
+**Added 2026-07-12.** The first full Stage-1 session ran on the bench leg over Path BRIDGE across
+four analysis rounds, each analysed by parallel Opus tracks with **every load-bearing claim
+adversarially verified against the raw CSVs and source**. Full narrative, the withdrawn hypotheses,
+and the commit list are in `logbook/2026-07-12-bench-leg-gain-tuning-stage1.md`. The load-bearing
+outcomes:
+
+### Envelope verdict (unloaded bench leg, v3 lineage)
+
+- **pos 40** — clean everywhere (production baseline).
+- **pos 70** — the accuracy knee (see the err-vs-HF table below).
+- **pos 90** — aggressive-but-bounded edge; the first **real** motion-excited vibration onsets
+  (iqHF to 5.6× baseline on fast long strokes) but still recoverable.
+- **pos 110+** — over the line. The ladder's 110/0.50/0.72 "winner" was **overturned** (below);
+  pos 130 is dead at all vel_int {0.72, 0.55, 0.40} — hair-trigger and intermittent, i.e. the
+  boundary itself, not a vel_int-rescuable point.
+
+### Discriminant outcome — the S4 ~6 Hz did NOT reproduce on the isolated leg
+
+The unloaded bench leg **did not reproduce the S4 5.9–6.1 Hz limit cycle in any regime** — not on
+the escalate-until-unstable ladder, not in `--mode track` sustained tracking, and not even
+riding the lead clamp to `clamp_frac = 0.456`. Arrive-and-settle stimuli are the wrong excitation
+class (tails settle dead-flat within ~4 frames); the robot fails only during *sustained* ~2 rev/s
+strokes with the clamp engaged. **v2/v3 context:** the S4 cycle ran on **v2** firmware (vel_ff
+zeroed at clamp engage, MAX_LEAD 0.15); the bench ran on the **v3** lineage (vel_ff kept, MAX_LEAD
+0.10), which suppressed the aggravator on the *unloaded* leg. So the S4 signature **may already be
+fixed on the robot by v3 alone** — but a single unloaded leg cannot certify a gravity-loaded,
+inter-leg-coupled 6-leg platform. **The loaded S4 replay on the robot is the deciding test**
+(Stage-2 acceptance gate).
+
+### Chirp friction finding + multi-amplitude protocol
+
+The chirp gain of ~0.5 at a 0.02 rev (2.86 mm p-p) amplitude is **real Coulomb-friction
+small-signal attenuation, not an estimator artifact** (coherence 0.96–1.0; large steps reach DC
+gain 1.01–1.03; four analysis tracks converged; the `2026-04-27` friction bench `tau_c = 1.094 A`
+is corroborated within 10–40 %). The measured magnitude *rises* into the ceiling (not a linear
+rolloff) as peak velocity crosses the stiction knee `omega_s = 0.251 rev/s` — a friction
+describing-function, **not a loop corner**. Amendment to the chirp protocol: sweep **≥2 amplitudes**
+(`--chirp-amps`, default 0.02/0.06/0.12 rev) as the definitive friction-vs-linear test — friction
+predicts gain rising toward 1 with amplitude, a linear plant predicts amplitude-independence.
+
+### Measurement-ceiling lessons (fold into any future bench session)
+
+- **The honest chirp ceiling is KNOT-bound at 8 Hz** on 40 Hz knots (`knot_stream_top_freq =
+  (1/0.025)/5`), not telemetry-bound; the 100 Hz-knot bench build lifts it to ~20 Hz.
+- **Stock iq is on-change-aliased** (the DIAGNOSTIC frame fires only on iq-setpoint change >0.5 A
+  or 1 Hz), so peak/hold iq is unmeasurable without the bench firmware's un-gated 250 Hz axis-0
+  iq. Distrust any single-run iq peak trend on stock firmware.
+- **Log at the telemetry rate, not the knot rate** — the stock CSV was decimated to 40 Hz
+  (Nyquist 20 Hz) while 100 Hz telemetry was already on the wire; the Run-A harness now writes one
+  row per received frame.
+- **Knot rate does not change loop dynamics** (pos-90 ζ = 0.826 at 40 Hz knots vs 0.816 at
+  100 Hz) — it changes the *instrument* (chirp ceiling, iq resolution) and the *actuation texture*
+  (less 500 Hz-Hermite staircase). Do not read a knot-rate ζ change as a control-gain change.
+
+### Err-vs-HF trade (RUN-A strokes battery, unloaded)
+
+| gain point | mean errRMS | iq HF churn (mean) | verdict |
+|---|---|---|---|
+| pos 40 (0.20 / 0.32) | 10.3 mm | 0.27 A (1.0×) | clean everywhere |
+| **pos 70 (0.35 / 0.56)** | **6.9 mm (−33 %)** | 0.51 A (1.81×) | **accuracy knee** |
+| pos 90 | 6.8 mm (−1 % vs 70) | 0.66 A (2.4×); peak 1.21 A (5.6×) on a long stroke | aggressive edge, real vibration |
+| pos 110 (0.50 / 0.72) | — | motion iq 3.7×; ζ≈0.5 @17.5 Hz; rail 1.26 % | over the line (overturned) |
+
+Accuracy saturates at pos 70; pos 90 buys ~1 % more for 2.4× churn and stronger real onsets. On
+all 60 completed sym/asym points the current rail (>9 A) and lead clamp never bound unloaded.
+
+### Protocol amendments adopted 2026-07-12
+
+**Two-firmware reality.** Two firmware images now exist for the can-bridge Teensy:
+
+- **stock production v3** — flashed on the assembled robot; 40 Hz knots, 100 Hz telemetry,
+  on-change-gated iq.
+- **`BENCH_SYSID_BUILD`** (pio env `teensy41_bench_sysid`) — bench-only; 100 Hz knots, 250 Hz
+  telemetry, axis-0 DIAGNOSTIC forced every telemetry tick (250 Hz un-gated iq). Zero wire-format
+  change; the flag-OFF production binary is **sha256-proven byte-identical**.
+  **NEVER flash the bench variant to the assembled robot** (its 100 Hz knots exceed the Jetson
+  50 Hz production compute ceiling for the full stack; README + `canbridge_config.h` +
+  `platformio.ini` all warn). **After any bench session, re-flash stock production v3 before the
+  robot is driven.**
+
+**Mode inventory now.** `bench_leg_sysid.py --mode` = `pos_steps | chirp | ladder | track |
+strokes | teleop` (`all` = pos_steps+chirp). Knobs: `--rungs 'pg:vg:vint,…'` (explicit
+single-candidate survey, never-abort), `--gains 'pg:vg:vint'` (bringup override so a run's gain
+state is unambiguous), `--quiescent-secs` (thermal-onset soak), `--knot-hz {40,100}`,
+`--fast-iq` (the 250 Hz iq buzz gate, requires the bench firmware), `--track-gains`,
+`--stroke-amps`/`--stroke-vels`, `--teleop-device` (substring/hidraw-path pre-selection).
+
+**Reading rules (how to read a bench run without being fooled).**
+
+1. **Judge real vibration off the pos-to-pos gain DELTA on identical stroke geometry** — the
+   commanded content cancels exactly. A velHF that *falls* with gain is the anti-vibration
+   signature (a stiffer loop tracking a fast move better); a velHF/iqHF that *grows* with gain at
+   cmdHF≈0 is real gain-induced vibration.
+2. **Distrust any HF onset on a stroke shorter than ~150 ms** — short strokes carry 10–56× more
+   in-band *commanded* energy than long ones and produce false positives; confirm with the gain
+   delta before trusting the onset.
+3. **Step-fit ζ overstates damping** — ramp-rate-limited steps never excite the 15–19 Hz
+   resonance. The **honest damping figure is the chirp peak/DC ratio** (ζ≈0.49–0.52 at the 110
+   crossover), not the step fit (0.63–0.78).
+
+### Remaining Stage-1 bench items
+
+- **By-ear spacemouse teleop session** (device selection is fixed — wiggle-probe when several
+  identical receivers enumerate).
+- **A real S4-class sustained datapoint** — the sustained-stroke entry self-latched at all gains
+  from a harness sizing bug until it was fixed + gated; re-run for the genuine back-to-back err/HF
+  surface.
+- **High-speed envelope up to the operator-authorized 2.5 m/s (~35 rev/s)** on the acceptable-loss
+  leg — the binding link is the firmware vel_ff pass-through cap `LEAD_CLAMP_VELFF_LIMIT_RPS =
+  3.5 rev/s`; a bench-flag bump of that cap under `BENCH_SYSID_BUILD` is the unlock, not the config
+  vel_limit alone.
+- **Thermal/positional intermittency probe** — the pos-130 boundary buzzed one sitting and was
+  clean the next (both at center 1.5 rev); a controlled repeat with a temperature log and a
+  center-position sweep would separate thermal from position effects.
+
+---
+
 ## STAGE 2 — Jugglebot transfer (conservative): derate, then confirm
 
 Stage 1 found the answer on hardware we could break. Stage 2 lands it on the real robot
@@ -508,6 +629,33 @@ Stage 1 already ran the discriminate-then-damp sweep on the bench. On the real r
 do **not** repeat it — you *verify* the derated winner. Three checks, in
 `session_gain_retune.md` (now its **Phase B**):
 
+> **Concrete Stage-2 spec (2026-07-12, from the Stage-1 results above).** The candidate start
+> is **pos_gain 70 / vel_gain 0.35 / vel_int 0.56** — the bench pt70 accuracy knee, taken as-is
+> because starting at the *unloaded* knee is itself the derate (the loaded platform reflects
+> ~1/6 of platform+payload inertia + gravity + inter-leg coupling, which erodes phase margin, so
+> the same gains ring *slightly more* on the robot). `vel_int` is the **ratio-rule 0.56
+> (`70/125`), NOT the bench-frozen 0.72** — the frozen value was a bench-only hedge against
+> current-saturation windup; on the robot the integrator is always partially wound up holding
+> gravity, so 0.72 (2.25× production) invites windup → overshoot/latch. **Re-pin
+> `MAX_LEAD_REV = 4.0/pos_gain = 0.057`** (`canbridge_config.h`) so max lead again commands
+> exactly vel_limit and the clamp stays meaningful at the stiffer loop.
+>
+> **Acceptance gate — the loaded S4 replay (the single deciding test).** Re-run the exact S4
+> excitation that produced the original limit cycle (large sustained ~2 rev/s vertical spacemouse
+> strokes), record a bag, and re-run the `2026-07-10` S4 analysis pipeline. Run it **first at
+> production `40/0.20/0.32` under v3** (does the 6 Hz reproduce on v3 at all, now that vel_ff is
+> kept? — the unloaded bench says it may already be gone), **then at the candidate**, escalating
+> the candidate in stages **40 → 55 → 70** with a per-step bag + analysis, starting at low stroke
+> amplitude.
+> - **PASS** = no 5.9–6.1 Hz / ~12.3 Hz spectral peak on any leg; reduced tracking lag vs
+>   production; no guard latches / E-STOPs; quiescent hold-current ripple bounded; the integrator
+>   not saturating on gravity transients; catch-move overshoot < 15 %.
+> - **ABORT** on any limit-cycle peak reappearing, any `MAX_DEVIATION` / MPC-staleness latch,
+>   audible buzz/whine, or overshoot > 15 %. On abort, apply the other derate knob one notch
+>   (`vel_gain` +15–20 %) and re-verify — **not** push the ring regime harder on the real legs.
+>
+> The three checks below are the per-candidate verify that rides on top of this gate.
+
 1. **Ring-suppression stroke (×1):** apply the derated triple (YAML → codegen → colcon →
    relaunch), arm via `/orchestrator_command activate`, run the single fast stroke
    z 170→250→170 at 156/660/10500. PASS = no braking-current oscillation, max
@@ -529,13 +677,15 @@ do **not** repeat it — you *verify* the derated winner. Three checks, in
 
 | date | stage | pos_gain | vel_gain | vel_int_gain | measured ζ / ring | notes |
 |---|---|---|---|---|---|---|
-| — | bench (S1) | TBD | TBD | TBD | TBD | Stage-1 bench winner — pending |
-| — | robot (S2) | TBD | TBD | TBD | TBD | derated + on-robot-verified — pending |
+| 2026-07-12 | bench (S1) | 70 | 0.35 | 0.56 | no 6 Hz ring on the unloaded bench in any regime; the 110 rung gave ζ≈0.5 @17.5 Hz and was overturned | accuracy knee (errRMS 10.3→6.9 mm, −33 %); pos 90 the aggressive edge; pos 110+ over the line. See `logbook/2026-07-12-bench-leg-gain-tuning-stage1.md` |
+| — | robot (S2) | 70 (start) | 0.35 (start) | 0.56 (start) | TBD | **candidate, not yet verified** — the bench pt70 triple, derated by starting at the unloaded knee; MAX_LEAD re-pinned 0.057; pending the loaded S4 replay gate |
 
-Until this table has a validated **robot (S2)** row, the committed gains remain the
-Level-1 HOLD tier (`40 / 0.20 / 0.32`, `hardware_config.yaml:319-321`), which is known to
-stutter on fast strokes at raised limits — so **fast-motion S4 ramping is gated on this
-tier converging** (see runbook § S4b).
+The **bench (S1)** row is the unloaded-leg result; the **robot (S2)** row is a *candidate start*,
+**not** a validated production gain — it is verified only when the loaded S4 replay (below) passes.
+Until the robot (S2) row is validated, the committed gains remain the Level-1 HOLD tier
+(`40 / 0.20 / 0.32`, `hardware_config.yaml:319-321`), which is known to stutter on fast strokes at
+raised limits — so **fast-motion S4 ramping stays gated on this tier converging** (see runbook
+§ S4b).
 
 ### Topology & drive paths (how the bench leg connects, and which path each stage uses)
 
@@ -555,7 +705,7 @@ now serves every stage** (operator-confirmed 2026-07-11):
 v3 live-deviation telemetry. Topology facts:
 
 - **Node-id:** the firmware treats CAN3 node ids **0..5 as legs** and 6 as the hand
-  (`canbridge_config.h:64-65`). Present the bench ODrive as **node 0** — all historical
+  (`canbridge_config.h:84-85`). Present the bench ODrive as **node 0** — all historical
   bench work used node 0, and the per-index config arrays (`LEG_POS_GAINS[i]`,
   `STROKE_MIN/MAX_REV[i]`, `mm_to_rev[i]`, `odrive_expected_versions.axis_i`) are keyed by
   node index, so node 0 inherits leg-0's config. **Operator-confirmed 2026-07-11: the
@@ -566,7 +716,7 @@ v3 live-deviation telemetry. Topology facts:
   descent, and the `MAX_DEVIATION` loop **skip them**; the deferred-stow reconnect
   predicate scopes to present legs (`all_present_legs_fresh`). So the bridge runs
   correctly on a subset-populated CAN3 (this was the Phase-11 U1 fix). The bus-partner
-  presence gate (`BUS_PARTNER_STALENESS_US = 5 s`, `canbridge_config.h:173`) is per-bus —
+  presence gate (`BUS_PARTNER_STALENESS_US = 5 s`, `canbridge_config.h:212`) is per-bus —
   the bench ODrive's heartbeats keep CAN3 "present" so RPCs/sends are not refused.
 - **Gains apply via `_run_configure`** (`teensy_bridge_node.py:2626`), which calls the
   `SET_POS_GAIN`/`SET_VEL_GAINS` RPCs from generated config (`teensy_bridge_node.py:2647-
