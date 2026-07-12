@@ -10,7 +10,7 @@ related_entries:
   - 2026-05-23-throw-director-and-cone-live-integration
 files_changed: []            # NO code change landed by this investigation
 commits:
-  - pending-backfill         # placeholder — backfill the SHA of the entry+probe commit
+  - f42538d         # placeholder — backfill the SHA of the entry+probe commit
 subsystem:
   - ros
   - can
