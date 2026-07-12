@@ -604,3 +604,64 @@ def test_approach_abort_diagnostic_omits_optional_fields_when_absent():
     assert 'dev(u0-enc)=+0.0000' in s
     assert 'lead_clamp' not in s
     assert 'fw_mpc_active' not in s
+
+
+# ---------------------------------------------------------------------------
+# Engagement-probe target: live-encoder baseline + high-side-only clamp
+# (2026-07-12 false 'not-following' abort — a leg homed below the firmware
+# STROKE_MIN clamp is driven up to STROKE_MIN by the settle; the engagement
+# check must reference where the leg ACTUALLY is, not the stale home pos).
+# ---------------------------------------------------------------------------
+
+def test_engagement_probe_target_tiny_increment_within_window():
+    # Leg comfortably inside the window: the target is just the small UP increment; the
+    # high-side clamp is inert. Commanded delta == the design increment.
+    tgt = sid.engagement_probe_target(1.50, sid.BRIDGE_ENGAGE_TEST_REV, hi_rev=2.85)
+    assert tgt == pytest.approx(1.50 + sid.BRIDGE_ENGAGE_TEST_REV)
+
+
+def test_engagement_probe_target_below_window_stays_tiny_not_clamped_up():
+    # THE REGRESSION: a leg sitting below the harness window (homed to STROKE_MIN ≈ 0.071,
+    # window low bound 0.15) must NOT have its nudge inflated up to the low bound. A
+    # bounds.clamp() would return 0.15 (a 0.079-rev climb); the high-side-only clamp keeps
+    # it a true 0.03-rev nudge from the live encoder.
+    enc0 = 0.0709
+    tgt = sid.engagement_probe_target(enc0, sid.BRIDGE_ENGAGE_TEST_REV, hi_rev=2.85)
+    assert tgt == pytest.approx(enc0 + sid.BRIDGE_ENGAGE_TEST_REV)
+    assert (tgt - enc0) == pytest.approx(sid.BRIDGE_ENGAGE_TEST_REV)
+    # Contrast with the OLD behaviour that produced the false abort.
+    bounds = sid.stroke_bounds(3.0, 0.15)              # window [0.15, 2.85]
+    assert bounds.clamp(enc0 + sid.BRIDGE_ENGAGE_TEST_REV) == pytest.approx(0.15)
+
+
+def test_engagement_probe_target_high_side_clamp_binds_near_ceiling():
+    # Near the top of stroke the increment is clamped to hi so it never over-commands.
+    tgt = sid.engagement_probe_target(2.84, sid.BRIDGE_ENGAGE_TEST_REV, hi_rev=2.85)
+    assert tgt == pytest.approx(2.85)
+    assert (tgt - 2.84) <= sid.BRIDGE_ENGAGE_TEST_REV + 1e-12
+
+
+def test_engagement_shared_baseline_reads_the_operator_run_as_engaged():
+    # End-to-end numeric regression on the operator's own 2026-07-12 numbers. The leg
+    # homed to -0.069 (below STROKE_MIN 0.0709); the flat settle drove it UP to STROKE_MIN,
+    # so at the probe start the encoder is ~0.0727. It then tracked the nudge to ~0.1477
+    # (base reached 0.15; live_deviation +0.0023). The engagement verdict MUST be computed
+    # on ONE baseline (the live post-settle encoder).
+    enc0 = 0.0727                       # post-settle encoder (driven to STROKE_MIN)
+    enc1 = 0.1477                       # tracked to ~the target (0.075 rev of motion)
+    hi = 2.85
+    tgt = sid.engagement_probe_target(enc0, sid.BRIDGE_ENGAGE_TEST_REV, hi_rev=hi)
+    # Shared-baseline (fixed) verdict: commanded and encoder deltas both from enc0.
+    fixed = sid.classify_output_engagement(
+        commanded_delta_rev=tgt - enc0, encoder_delta_rev=enc1 - enc0,
+        fault_state=sid.FAULT_NONE, fw_mpc_active=True)
+    assert fixed.engaged                                # the leg DID follow → engaged
+    # Mixed-baseline (the pre-fix bug): commanded measured from the stale home pos -0.069.
+    stale_home = -0.069
+    inflated_tgt = sid.stroke_bounds(3.0, 0.15).clamp(stale_home + sid.BRIDGE_ENGAGE_TEST_REV)
+    buggy = sid.classify_output_engagement(
+        commanded_delta_rev=inflated_tgt - stale_home,  # 0.219 rev (mismatched baseline)
+        encoder_delta_rev=enc1 - enc0,                  # 0.075 rev (live baseline)
+        fault_state=sid.FAULT_NONE, fw_mpc_active=True)
+    assert not buggy.engaged                            # the false 'not following' abort
+    assert 'not following' in buggy.reason

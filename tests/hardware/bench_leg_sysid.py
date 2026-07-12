@@ -1249,33 +1249,45 @@ class BridgeSysID:
         bounded increment (BRIDGE_ENGAGE_TEST_REV, << lead clamp + MAX_DEVIATION so it
         can NEVER itself latch the guard) and confirm the encoder follows it. On failure
         returns a SPECIFIC unmet-condition reason with the live u0/enc/dev/fault so the
-        operator's next run is self-diagnosing. Returns {engaged, guard_latched, reason}."""
+        operator's next run is self-diagnosing. Returns {engaged, guard_latched, reason}.
+
+        The nudge is referenced to the LIVE encoder ``enc0`` sampled HERE, NOT the caller's
+        ``pos`` argument. The preceding arm-settle can MOVE the leg: when the homed start
+        sits below the firmware STROKE_MIN clamp (canbridge_config.h STROKE_MIN_REV ≈ 0.071
+        rev), the firmware stroke clamp drives the leg UP to STROKE_MIN during the flat
+        settle. Measuring the commanded delta from the stale ``pos`` while the encoder delta
+        is measured from the moved-to ``enc0`` mixes two baselines and understates the
+        tracked fraction — the 2026-07-12 FALSE 'not following' abort (home −0.069 → settle
+        to +0.071; the 0.03 nudge inflated to 0.219 rev and 0.075 rev of honest tracking read
+        as 34 %). ``engagement_probe_target`` clamps only on the high side so the nudge stays
+        tiny even when the leg legitimately sits below the harness window."""
         enc0, _, _, _ = self._sample()
         enc0 = enc0 if enc0 is not None else pos
-        tgt = self.bounds.clamp(pos + sid.BRIDGE_ENGAGE_TEST_REV)
+        tgt = sid.engagement_probe_target(
+            enc0, sid.BRIDGE_ENGAGE_TEST_REV, self.bounds.hi_rev)
         probe = self._stream_and_sample(
-            self._knot_ramp(pos, tgt, hold_frames=int(0.3 / BRIDGE_SEG_T_S)), guard=True)
+            self._knot_ramp(enc0, tgt, hold_frames=int(0.3 / BRIDGE_SEG_T_S)), guard=True)
         enc1, _, _, _ = self._sample()
         enc1 = enc1 if enc1 is not None else enc0
         if probe['aborted'] or probe['guard_latched']:
             # Even the tiny probe latched — surface exactly which guard + live quantities.
-            self._stream_and_sample(self._knot_ramp(tgt, pos, hold_frames=2), guard=True)
+            self._stream_and_sample(self._knot_ramp(tgt, enc0, hold_frames=2), guard=True)
             return {'engaged': False, 'guard_latched': probe['guard_latched'],
                     'reason': self._abort_diag(probe)}
         fs = self._fault_state()
         chk = sid.classify_output_engagement(
-            commanded_delta_rev=tgt - pos, encoder_delta_rev=(enc1 - enc0),
+            commanded_delta_rev=tgt - enc0, encoder_delta_rev=(enc1 - enc0),
             fault_state=fs if fs is not None else sid.FAULT_NONE,
             fw_mpc_active=self._fw_mpc_active())
         reason = chk.reason
         if not chk.engaged:
             dev = self._live_deviation()
-            reason = (f"{chk.reason} [commanded +{tgt - pos:.4f} rev, encoder moved "
+            reason = (f"{chk.reason} [commanded +{tgt - enc0:.4f} rev, encoder moved "
                       f"{enc1 - enc0:+.4f} rev; live_deviation="
                       f"{'?' if dev is None else f'{dev:+.4f}'} rev, "
                       f"lead_clamp={self._lead_clamp_bit()}]")
-        # Return to pos before the caller's real ramp (tiny, inside the lead clamp).
-        self._stream_and_sample(self._knot_ramp(tgt, pos, hold_frames=2), guard=True)
+        # Return to enc0 before the caller's real ramp (tiny, inside the lead clamp).
+        self._stream_and_sample(self._knot_ramp(tgt, enc0, hold_frames=2), guard=True)
         return {'engaged': chk.engaged, 'guard_latched': False, 'reason': reason}
 
     def _stream_series_disarmed(self, series):
@@ -1536,6 +1548,14 @@ class BridgeSysID:
             self._abort_reason = "arm-settle latched: " + (self._abort_diag(settle)
                                                            or 'guard latch')
             return settle
+        # The arm-settle may have MOVED the leg: a start below the firmware STROKE_MIN
+        # clamp (canbridge_config.h STROKE_MIN_REV ≈ 0.071 rev — e.g. a leg homed to the
+        # retracted hardstop reference and then relaxed under it) is driven UP to STROKE_MIN
+        # during the flat settle. Re-sample so the engagement verify + the approach ramp
+        # start from where the leg ACTUALLY sits, not the stale pre-settle home position
+        # (2026-07-12 false 'not-following' abort — the stale baseline understated tracking).
+        moved, _, _, _ = self._sample()
+        start = moved if moved is not None else start
         # HARD-VERIFY output engagement before trusting the big approach ramp: a tiny
         # bounded increment the encoder must follow. Turns an opaque 'guard latch' into a
         # specific unmet-condition report naming the firmware gate that is suppressing output.
@@ -1546,7 +1566,11 @@ class BridgeSysID:
                     't': np.array([]), 'cmd': np.array([]), 'pos': np.array([]),
                     'vel': np.array([]), 'iq': np.array([]), 'telem_ts': np.array([]),
                     'guard_action': None}
-        series = self._knot_ramp(start, self.center_rev, hold_frames=int(0.4 / BRIDGE_SEG_T_S))
+        # Ramp to centre from where the leg LIVE sits (the verify nudged then returned it,
+        # and the settle may have moved it to STROKE_MIN) — never the stale home pos.
+        cur, _, _, _ = self._sample()
+        series = self._knot_ramp(cur if cur is not None else start,
+                                 self.center_rev, hold_frames=int(0.4 / BRIDGE_SEG_T_S))
         res = self._stream_and_sample(series, guard=True)
         if res['aborted'] or res['guard_latched']:
             self._abort_reason = self._abort_diag(res) or self._abort_reason

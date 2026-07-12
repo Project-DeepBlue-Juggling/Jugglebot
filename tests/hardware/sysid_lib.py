@@ -1321,6 +1321,33 @@ def arm_settle_series(pos_rev: float,
     return np.full(int(n_frames), float(pos_rev), dtype=float)
 
 
+def engagement_probe_target(enc0_rev: float, increment_rev: float,
+                            hi_rev: float) -> float:
+    """Target position for the output-engagement nudge: a small UP increment from the
+    LIVE encoder ``enc0_rev``, clamped ONLY on the high side (``hi_rev``). Pure.
+
+    Two properties, both load-bearing (2026-07-12 false-'not-following' abort):
+
+    * Referenced to the LIVE encoder, never a stale pre-settle position. The preceding
+      arm-settle can MOVE the leg — most importantly, a leg homed BELOW the firmware
+      STROKE_MIN clamp (canbridge_config.h ``STROKE_MIN_REV`` ≈ 0.071 rev) is driven UP
+      to STROKE_MIN by the firmware stroke clamp during the flat settle. The engagement
+      check must measure the commanded increment and the encoder response from the SAME
+      baseline; mixing a stale home pos into the commanded delta while the encoder delta
+      is measured from the moved-to position understates the tracked fraction (the run
+      that surfaced this: home −0.069 → settle to +0.071; a 0.219-rev inflated command vs
+      0.075 rev of honest tracking read as 34 % → a FALSE abort).
+
+    * Clamped only on the HIGH side. A ``bounds.clamp`` would force a target for a leg
+      sitting below the harness stimulus window UP to ``bounds.lo`` — inflating the tiny
+      nudge into a full climb into the window (0.03 rev → 0.219 rev in that run). A homed
+      leg legitimately sits below ``bounds.lo`` (its retracted reference is under the
+      off-the-end-stop margin), so a small UP nudge from there is physically valid (the
+      firmware STROKE_MIN/lead clamps are the real backstops) and must stay tiny.
+    """
+    return min(float(hi_rev), float(enc0_rev) + float(increment_rev))
+
+
 @dataclass
 class EngagementCheck:
     engaged: bool
