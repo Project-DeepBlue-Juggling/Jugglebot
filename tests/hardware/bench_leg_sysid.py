@@ -1006,7 +1006,8 @@ class BridgeSysID:
                  stroke_amps: Optional[List[float]] = None,
                  stroke_vels: Optional[List[float]] = None,
                  teleop_range: float = sid.TELEOP_RANGE_DEFAULT,
-                 teleop_max_vel: float = sid.TELEOP_MAX_VEL_DEFAULT):
+                 teleop_max_vel: float = sid.TELEOP_MAX_VEL_DEFAULT,
+                 teleop_device: Optional[str] = None):
         self.axis_id = axis_id
         self.stroke_cap_rev = stroke_cap_rev
         self.current_limit_a = current_limit_a
@@ -1044,6 +1045,7 @@ class BridgeSysID:
         self.stroke_vels = list(stroke_vels) if stroke_vels else list(sid.STROKE_VELS_DEFAULT)
         self.teleop_range = float(teleop_range)
         self.teleop_max_vel = float(teleop_max_vel)
+        self.teleop_device = teleop_device
 
         # Knot rate (Feature 6): default 40 Hz. A 100 Hz-knot BENCH_SYSID_BUILD firmware
         # lifts the honest chirp ceiling (knot_stream_top_freq = knot_hz / 5) from 8 → 20 Hz.
@@ -2488,6 +2490,17 @@ class BridgeSysID:
                   f"vel_int={gp.vel_int_gain} ---")
             for spec in battery:
                 series = sid.stroke_series(spec, self.center_rev, self.seg_t_s, self.bounds)
+                # Series-level feasibility gate (closes the sizing-bug class): an
+                # infeasible commanded series latches MAX_DEVIATION at ANY gains and
+                # burns the recovery budget — skip it loudly instead.
+                pk = sid.series_peak_velocity(series, self.seg_t_s)
+                if pk > self.vel_cap_rps * 1.05:
+                    print(f"  SKIP {spec.label}: commanded peak {pk:.2f} rev/s exceeds "
+                          f"the {self.vel_cap_rps} rev/s cap — generator sizing bug, "
+                          f"stroke not streamed")
+                    results.append({'gains': asdict(gp), 'stroke': asdict(spec),
+                                    'skipped_infeasible_peak_rps': pk})
+                    continue
                 f, w, path = self._open_csv(
                     f"stroke_p{gp.pos_gain:.0f}_{spec.label}.csv")
                 arrays = self._stream_and_sample(series, guard=True, writer=w,
@@ -2546,6 +2559,129 @@ class BridgeSysID:
 
     # -- Feature 3: interactive SpaceMouse teleop + live gains (--mode teleop) -
 
+    def _spacemouse_candidates(self, pyspacemouse):
+        """``(name, path)`` for each CONNECTED supported 3Dconnexion device, or None
+        when HID enumeration is unavailable. ``list_available_devices()`` is the
+        SUPPORTED-model catalog (13 entries regardless of what's plugged in), so it
+        must be intersected with the live HID enumeration. Two spacemice on this
+        bench made the bare ``open()`` grab whichever enumerated first — silently
+        reading the wrong stick (operator report, 2026-07-12)."""
+        try:
+            import easyhid
+            cat = {(v, p): n for n, v, p in pyspacemouse.list_available_devices()}
+            out = []
+            for dev in easyhid.Enumeration().find():
+                if (dev.vendor_id, dev.product_id) in cat:
+                    path = (dev.path.decode() if isinstance(dev.path, bytes)
+                            else str(dev.path))
+                    out.append((cat[(dev.vendor_id, dev.product_id)], path))
+            return out
+        except Exception:  # noqa: BLE001 — enumeration is best-effort
+            return None
+
+    def _open_spacemouse(self, pyspacemouse) -> bool:
+        """Open the RIGHT spacemouse: enumerate connected supported devices, apply
+        --teleop-device (case-insensitive substring), and REFUSE ambiguity instead
+        of silently reading the wrong stick. Stores the selection for reconnects."""
+        cands = self._spacemouse_candidates(pyspacemouse)
+        if cands is None:
+            if self.teleop_device:
+                print("REJECT: HID enumeration unavailable — cannot honour "
+                      "--teleop-device; unplug the other device instead.",
+                      file=sys.stderr)
+                return False
+            print("  NOTE HID enumeration unavailable — bare open() fallback")
+            try:
+                return bool(pyspacemouse.open())
+            except Exception as e:  # noqa: BLE001
+                print(f"  SpaceMouse open() raised: {e}")
+                return False
+        for n, p in cands:
+            print(f"  connected: {n} ({p})")
+        pick = cands
+        if self.teleop_device:
+            # Match against the NAME and the PATH: wireless mice behind identical
+            # 'Universal Receiver' dongles all share one name, so /dev/hidrawN is
+            # often the only usable selector.
+            want = self.teleop_device.lower()
+            pick = [(n, p) for n, p in cands
+                    if want in n.lower() or want in p.lower()]
+            if not pick:
+                print(f"REJECT: no connected spacemouse matches --teleop-device "
+                      f"'{self.teleop_device}'", file=sys.stderr)
+                return False
+        if not pick:
+            print("REJECT: no supported spacemouse connected.", file=sys.stderr)
+            return False
+        if len(pick) > 1:
+            sel = self._probe_spacemice(pyspacemouse, pick)
+            if sel is None:
+                print("REJECT: no interface responded to the wiggle probe — is the "
+                      "desired mouse awake? (wireless mice sleep; nudge it first). "
+                      "Or select explicitly: --teleop-device /dev/hidrawN. NOTE: if "
+                      "the ROS spacemouse_handler node is running it is reading one "
+                      "of them.", file=sys.stderr)
+                return False
+            self._sm_selected = sel
+            return True         # the probe leaves the winning device open
+        name, path = pick[0]
+        self._sm_selected = (name, path)
+        return self._reopen_spacemouse(pyspacemouse)
+
+    def _probe_spacemice(self, pyspacemouse, cands, wiggle_s: float = 3.0):
+        """Sequentially open each candidate interface and watch for stick motion —
+        the only reliable discriminator when every interface reports the same model
+        name. Returns the responding ``(name, path)`` (LEFT OPEN) or None."""
+        print(f"  PROBING {len(cands)} interfaces — WIGGLE the spacemouse you want "
+              f"to use (each watched {wiggle_s:.0f} s)...")
+        for name, path in cands:
+            try:
+                if not bool(pyspacemouse.open(device=name, path=path)):
+                    continue
+            except Exception:  # noqa: BLE001
+                continue
+            print(f"    watching {path} ...")
+            t_end = time.perf_counter() + wiggle_s
+            hit = False
+            while time.perf_counter() < t_end:
+                try:
+                    st = pyspacemouse.read()
+                except Exception:  # noqa: BLE001
+                    break
+                if st is not None and max(
+                        abs(getattr(st, a, 0.0) or 0.0)
+                        for a in ('x', 'y', 'z', 'roll', 'pitch', 'yaw')) > 0.15:
+                    hit = True
+                    break
+                time.sleep(0.01)
+            if hit:
+                print(f"    MOTION on {path} — selected")
+                return (name, path)
+            try:
+                pyspacemouse.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return None
+
+    def _reopen_spacemouse(self, pyspacemouse) -> bool:
+        """(Re)open the previously selected device — reconnects must not silently
+        drift to the other spacemouse."""
+        sel = getattr(self, '_sm_selected', None)
+        try:
+            if sel:
+                name, path = sel
+                try:
+                    ok = bool(pyspacemouse.open(device=name, path=path))
+                except TypeError:      # older pyspacemouse without path kwarg
+                    ok = bool(pyspacemouse.open(device=name))
+                if ok:
+                    print(f"  SpaceMouse OPEN: {name}")
+                return ok
+            return bool(pyspacemouse.open())
+        except Exception as e:  # noqa: BLE001
+            print(f"  SpaceMouse open raised: {e}")
+            return False
+
     def stage_teleop(self) -> bool:
         import queue
         print("\n=== Interactive teleop (--mode teleop): SpaceMouse + live gains ===")
@@ -2556,14 +2692,8 @@ class BridgeSysID:
         except Exception as e:  # noqa: BLE001 — device lib absent
             print(f"REJECT: pyspacemouse import failed ({e})", file=sys.stderr)
             return False
-        try:
-            opened = bool(pyspacemouse.open())
-        except Exception as e:  # noqa: BLE001
-            opened = False
-            print(f"  SpaceMouse open() raised: {e}")
-        if not opened:
-            print("REJECT: could not open the SpaceMouse (is it plugged in?).",
-                  file=sys.stderr)
+        if not self._open_spacemouse(pyspacemouse):
+            print("REJECT: could not open the intended SpaceMouse.", file=sys.stderr)
             return False
         sm = pyspacemouse
         sm_open = True
@@ -2673,7 +2803,7 @@ class BridgeSysID:
             if not sm_open and time.perf_counter() - sm_last_open >= 1.0:
                 sm_last_open = time.perf_counter()
                 try:
-                    if bool(sm.open()):
+                    if self._reopen_spacemouse(sm):
                         sm_open = True
                         print("  SpaceMouse reconnected — stick live")
                 except Exception:  # noqa: BLE001
@@ -3041,6 +3171,22 @@ class BridgeSysID:
                   "stall the knot stream); guard latch → freeze target, revert BASELINE, "
                   "CLEAR_ERRORS, require 'r' (never auto-resume from the stick); "
                   "Ctrl-C → park + disarm")
+            try:
+                import pyspacemouse as _sm
+                cands = self._spacemouse_candidates(_sm)
+            except Exception:  # noqa: BLE001
+                cands = None
+            if cands is not None:
+                for n, p in cands:
+                    print(f"    connected: {n} ({p})")
+                if len(cands) > 1 and not self.teleop_device:
+                    print("    ** 2+ interfaces connected — the live run will PROBE: "
+                          "wiggle the stick you want when prompted (or pre-select "
+                          "with --teleop-device /dev/hidrawN) **")
+                elif not cands:
+                    print("    (no supported spacemouse currently connected)")
+            if self.teleop_device:
+                print(f"    device filter: --teleop-device '{self.teleop_device}'")
             print("    live ~1 Hz metrics: pos/vel/gains + rolling HF vel/iq RMS, rail "
                   "duty, clamp frac, LOUD HF-onset warning")
         print("\n  DRY-RUN complete — validation passed, no socket opened, no motor commanded.")
@@ -3273,6 +3419,12 @@ def main() -> int:
     p.add_argument('--teleop-range', type=float, default=sid.TELEOP_RANGE_DEFAULT,
                    help="(teleop) half-range in rev; z=±1 → centre ± this (default %.1f)"
                         % sid.TELEOP_RANGE_DEFAULT)
+    p.add_argument('--teleop-device', default=None,
+                   help="(teleop) case-insensitive SUBSTRING of the spacemouse model "
+                        "name to open (e.g. 'Compact', 'Wireless'). REQUIRED when "
+                        "more than one spacemouse is connected — the bare open() "
+                        "grabs whichever enumerates first, silently reading the "
+                        "wrong stick")
     p.add_argument('--teleop-max-vel', type=float, default=sid.TELEOP_MAX_VEL_DEFAULT,
                    help="(teleop) slew velocity cap in rev/s (default %.1f; up to %.1f "
                         "with a warning)"
@@ -3406,7 +3558,8 @@ def main() -> int:
         custom_rungs=custom_rungs, quiescent_secs=args.quiescent_secs,
         gains_override=gains_override,
         stroke_amps=stroke_amps, stroke_vels=stroke_vels,
-        teleop_range=args.teleop_range, teleop_max_vel=args.teleop_max_vel)
+        teleop_range=args.teleop_range, teleop_max_vel=args.teleop_max_vel,
+        teleop_device=args.teleop_device)
     return runner.run(modes)
 
 

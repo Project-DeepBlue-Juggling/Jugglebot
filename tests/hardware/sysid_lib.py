@@ -2122,11 +2122,28 @@ def stroke_battery(amplitudes: Sequence[float], peak_vels: Sequence[float], *,
     if feasible:
         A = max(feasible)
         pv = min(max(peak_vels), vel_cap) if len(peak_vels) else vel_cap
-        T, rpv, racc, alim = _minjerk_timing(A, pv, accel_cap)
+        # Sized by the SWING distance 2A: sustained strokes alternate center+A →
+        # center−A, so each swing travels 2A. Timing them for A commands 2× the
+        # intended peak velocity (7.6 rev/s at A=1.0/v=3.8 — past vel_limit 4.0,
+        # infeasible by construction: the leg falls behind the streamed u0 until
+        # MAX_DEVIATION latches at ANY gains — the 2026-07-12 strokes-run bug).
+        T, rpv, racc, alim = _minjerk_timing(2.0 * A, pv, accel_cap)
         specs.append(StrokeSpec(
             'sustained', A, rpv, rpv, T, T, 0.0, racc, racc, alim, int(sustained_n),
             "sustained_A%.2f_v%.1f_x%d" % (A, pv, int(sustained_n))))
     return specs
+
+
+def series_peak_velocity(series: np.ndarray, seg_t: float) -> float:
+    """Peak commanded velocity (rev/s) implied by a knot series — max per-knot step
+    over ``seg_t``. The series-level feasibility check: any generator sizing bug
+    (the 2026-07-12 sustained 2A-in-T_A bug commanded 7.6 rev/s past vel_limit 4.0
+    and triple-latched MAX_DEVIATION) shows up here regardless of which formula
+    was wrong, so the driver gates on THIS, not on per-spec bookkeeping."""
+    arr = np.asarray(series, float)
+    if arr.size < 2 or seg_t <= 0.0:
+        return 0.0
+    return float(np.max(np.abs(np.diff(arr)))) / seg_t
 
 
 def stroke_moving_windows(spec: StrokeSpec, ring_pad_s: float = 0.15
@@ -2158,15 +2175,22 @@ def stroke_series(spec: StrokeSpec, center: float, seg_t: float,
     A = spec.amplitude_rev
     hold = max(0, int(round(spec.hold_s / seg_t))) if spec.hold_s > 0 else 0
     if spec.kind == 'sustained':
+        # spec.T_out_s is sized for the FULL 2A swing; shorter segments (the A-length
+        # entry from center and the A-length final return) scale T ∝ distance so the
+        # min-jerk peak velocity (1.875·d/T) is identical for every segment.
         prev = float(center)
         segs = [np.array([float(center)])]
         sign = 1.0
+
+        def seg_T(dist: float) -> float:
+            return max(spec.T_out_s * (abs(dist) / max(2.0 * A, 1e-9)), 1e-6)
+
         for _ in range(max(1, spec.n_strokes)):
             tgt = center + sign * A
-            segs.append(minjerk_stroke_series(prev, tgt, spec.T_out_s, seg_t)[1:])
+            segs.append(minjerk_stroke_series(prev, tgt, seg_T(tgt - prev), seg_t)[1:])
             prev = tgt
             sign = -sign
-        segs.append(minjerk_stroke_series(prev, center, spec.T_out_s, seg_t)[1:])
+        segs.append(minjerk_stroke_series(prev, center, seg_T(prev - center), seg_t)[1:])
         arr = np.concatenate(segs)
     else:
         out = minjerk_stroke_series(center, center + A, spec.T_out_s, seg_t)

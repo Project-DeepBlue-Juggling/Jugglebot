@@ -1399,3 +1399,39 @@ def test_stroke_moving_windows_none_for_holdless():
     nohold = sid.StrokeSpec('symmetric', 0.4, 2.0, 2.0, 0.375, 0.375, 0.0,
                             123.0, 123.0, False, 1, 'sym')
     assert sid.stroke_moving_windows(nohold) is None
+
+
+# --- fix: sustained strokes sized by the 2A swing + series-level velocity gate
+
+def test_sustained_stroke_series_respects_peak_velocity():
+    # REGRESSION for the 2026-07-12 triple-latch: sustained swings travel 2A
+    # (center+A -> center-A) but were timed for A, commanding 2x the intended
+    # peak velocity (7.6 rev/s at A=1.0/v=3.8 >> vel_limit 4.0) and latching
+    # MAX_DEVIATION at every gain point. Post-fix the commanded peak must stay
+    # at the requested velocity for EVERY segment.
+    bounds = sid.stroke_bounds(3.0, 0.15)
+    battery = sid.stroke_battery([1.0], [3.8], vel_cap=4.0, accel_cap=250.0,
+                                 bounds=bounds, center=1.5)
+    sus = [s for s in battery if s.kind == 'sustained'][0]
+    series = sid.stroke_series(sus, 1.5, 0.01, bounds)
+    pk = sid.series_peak_velocity(series, 0.01)
+    assert pk <= 3.8 * 1.05
+    assert pk > 3.0                       # still an aggressive stroke, not degenerate
+    # Swing duration is sized for distance 2A: T ~= 1.875*2A/v.
+    assert sus.T_out_s == pytest.approx(1.875 * 2.0 / 3.8, rel=1e-6)
+
+
+def test_series_peak_velocity_basic_and_degenerate():
+    assert sid.series_peak_velocity(np.array([0.0, 0.05, 0.10]), 0.025) == \
+        pytest.approx(2.0)
+    assert sid.series_peak_velocity(np.array([1.0]), 0.025) == 0.0
+    assert sid.series_peak_velocity(np.array([1.0, 1.1]), 0.0) == 0.0
+
+
+def test_sym_asym_strokes_unaffected_by_sustained_fix():
+    bounds = sid.stroke_bounds(3.0, 0.15)
+    battery = sid.stroke_battery([0.4], [2.0], vel_cap=4.0, accel_cap=250.0,
+                                 bounds=bounds, center=1.5)
+    for s in battery:
+        series = sid.stroke_series(s, 1.5, 0.01, bounds)
+        assert sid.series_peak_velocity(series, 0.01) <= 4.0 * 1.05, s.label
