@@ -2133,7 +2133,11 @@ class BridgeSysID:
                     best_unstable = True
                     best_bw = None
                     break
-                f, w, path = self._open_csv(f"ladder_p{rung.pos_gain:.0f}_v{vg:.2f}.csv")
+                # vint in the name: --rungs points sharing (pos, vel_gain) at
+                # different vel_int otherwise overwrite each other's CSV (the
+                # 2026-07-12 de-confound run lost 2 of its 3 step records).
+                f, w, path = self._open_csv(
+                    f"ladder_p{rung.pos_gain:.0f}_v{vg:.2f}_i{rung.vel_int_gain:.2f}.csv")
                 y0, _, _, _ = self._sample()
                 y0 = y0 if y0 is not None else self.center_rev
                 arrays = self._stream_and_sample(
