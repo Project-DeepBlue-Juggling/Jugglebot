@@ -962,7 +962,10 @@ class BridgeSysID:
                  track_peak_vel: float = sid.TRACK_PEAK_VEL_DEFAULT_RPS,
                  track_secs: float = sid.TRACK_SECS_DEFAULT,
                  track_gains: Optional[List[sid.GainTriple]] = None,
-                 fast_iq_available: bool = False):
+                 fast_iq_available: bool = False,
+                 custom_rungs: Optional[List[sid.GainTriple]] = None,
+                 quiescent_secs: float = QUIESCENT_HOLD_S,
+                 gains_override: Optional[sid.GainTriple] = None):
         self.axis_id = axis_id
         self.stroke_cap_rev = stroke_cap_rev
         self.current_limit_a = current_limit_a
@@ -992,6 +995,9 @@ class BridgeSysID:
         self.track_secs = track_secs
         self.track_gains = track_gains or [BASELINE_GAINS]
         self.fast_iq_available = fast_iq_available
+        self.custom_rungs = list(custom_rungs) if custom_rungs else None
+        self.quiescent_secs = float(quiescent_secs)
+        self.gains_override = gains_override
 
         # Knot rate (Feature 6): default 40 Hz. A 100 Hz-knot BENCH_SYSID_BUILD firmware
         # lifts the honest chirp ceiling (knot_stream_top_freq = knot_hz / 5) from 8 → 20 Hz.
@@ -1068,6 +1074,13 @@ class BridgeSysID:
             'bounds_rev': [self.bounds.lo_rev, self.bounds.hi_rev],
             'center_rev': self.center_rev,
             'baseline_gains': asdict(BASELINE_GAINS),
+            # The gains every bringup actually applies (pos_steps/chirp measure
+            # THESE, never RAM leftovers from a previous stage — the 2026-07-12
+            # 18:03 run was nearly misread over exactly this ambiguity).
+            'gains_applied_at_bringup': asdict(gains_override or BASELINE_GAINS),
+            'quiescent_hold_s': self.quiescent_secs,
+            'custom_rungs': ([asdict(t) for t in self.custom_rungs]
+                             if self.custom_rungs else None),
             'onset_thresholds': {
                 'ripple_rms': ripple_threshold,
                 'oscillation_score': osc_threshold,
@@ -1718,7 +1731,12 @@ class BridgeSysID:
         """Legacy-faithful bring-up to CLOSED_LOOP position mode (like
         teensy_setpoint_bench --close-loop): vel/curr limits → POSITION/PASSTHROUGH
         → operational gains → CLOSED_LOOP (the ODrive auto-holds at the current pos,
-        no jolt). Gains from hardware_config (Level-1 HOLD tier baseline)."""
+        no jolt).
+
+        Every bringup (RE-)APPLIES gains — BASELINE_GAINS from hardware_config, or
+        the --gains override. pos_steps/chirp therefore NEVER inherit RAM gains a
+        previous stage (e.g. a ladder backoff) left on the ODrive: without --gains
+        they always characterize the production baseline loop."""
         import jugglebot.protocol_config as pc  # noqa: E402
         ax = self.axis_id
         vel_lim = float(self.vel_cap_rps)
@@ -1731,7 +1749,12 @@ class BridgeSysID:
                        ra.encode_set_vel_curr_limits(ax, vel_lim, curr_lim))
         self._rpc.call(int(self._RpcMethod.SET_CONTROLLER_MODE),
                        ra.encode_set_controller_mode(ax, ctrl_pos, in_pass))
-        self._apply_gains(BASELINE_GAINS)
+        bring = self.gains_override or BASELINE_GAINS
+        if self.gains_override is not None:
+            print(f"  ** --gains OVERRIDE active: pos_steps/chirp characterize "
+                  f"pos={bring.pos_gain} vel={bring.vel_gain} "
+                  f"vel_int={bring.vel_int_gain}, NOT the production baseline **")
+        self._apply_gains(bring)
         self._rpc.call(int(self._RpcMethod.SET_AXIS_STATE),
                        ra.encode_set_axis_state(ax, CLOSED_LOOP))
         time.sleep(0.3)
@@ -1966,11 +1989,24 @@ class BridgeSysID:
         # High rungs FREEZE vel_int (windup during current saturation reads as a
         # MAX_DEVIATION latch; the 125:1 ratio rule is a HOLD-tier heuristic, wrong here)
         # unless --vint-ratio restores scaling; their vel_gain climbs with pos_gain.
-        rungs = sid.extended_ladder(vint_ratio=self.vint_ratio, from_pos_gain=self.from_pg)
+        # --rungs replaces the table with explicit single-candidate gap-fill points
+        # (off-diagonal buzz attribution — the table's first candidates all sit on
+        # the ζ-constant diagonal and cannot separate pos_gain from vel_gain).
+        if self.custom_rungs:
+            rungs = sid.custom_rung_table(self.custom_rungs)
+            print(f"  EXPLICIT rungs (--rungs): "
+                  f"{[(r.pos_gain, r.vel_gain_lo, r.vel_int_gain) for r in rungs]}")
+        else:
+            rungs = sid.extended_ladder(vint_ratio=self.vint_ratio,
+                                        from_pos_gain=self.from_pg)
+            print(f"  rungs: {[r.pos_gain for r in rungs]}  "
+                  f"(vel_int {'ratio pos/%.0f' % self.vint_ratio if self.vint_ratio else 'FROZEN %.2f above 90' % sid.FROZEN_VEL_INT_GAIN})")
+        survey = bool(self.custom_rungs)
         lad = sid.GainLadder(rungs=rungs, zeta_target=self.zeta_target,
-                             bw_clear_hz=self.bw_clear_hz)
-        print(f"  rungs: {[r.pos_gain for r in rungs]}  "
-              f"(vel_int {'ratio pos/%.0f' % self.vint_ratio if self.vint_ratio else 'FROZEN %.2f above 90' % sid.FROZEN_VEL_INT_GAIN})")
+                             bw_clear_hz=self.bw_clear_hz, survey=survey)
+        if abs(self.quiescent_secs - QUIESCENT_HOLD_S) > 1e-9:
+            print(f"  quiescent-hold window: {self.quiescent_secs:.1f} s "
+                  f"(--quiescent-secs; default {QUIESCENT_HOLD_S})")
         entry = self._enter_hold_at_center()
         if entry['aborted'] or entry['guard_latched']:
             self._auto_backoff(None, self._abort_reason or 'guard latch during approach')
@@ -1985,7 +2021,11 @@ class BridgeSysID:
             # Revert target after a latch: at/above pos_gain 130 the firmware re-enable
             # slew must run against SOFT baseline gains (a still-stiff last-good rung
             # re-latches and burns the recovery budget) — ladder_revert_target picks it.
-            revert = sid.ladder_revert_target(rung.pos_gain, lad.last_good, BASELINE_GAINS)
+            # Survey points always revert to BASELINE (another survey point's gains
+            # are not a validated safe state).
+            revert = (BASELINE_GAINS if survey else
+                      sid.ladder_revert_target(rung.pos_gain, lad.last_good,
+                                               BASELINE_GAINS))
             print(f"\n  rung {lad.index}: pos_gain={rung.pos_gain} "
                   f"vel_int={rung.vel_int_gain:.3f} "
                   f"vel_gain∈{{{', '.join('%.2f' % c for c in cands)}}} "
@@ -2068,6 +2108,12 @@ class BridgeSysID:
                     stable_found = True
                     break
 
+            if survey and best_unstable:
+                # Park safe between survey points: disarmed at BASELINE so buzzing
+                # gains never hold an armed leg through the bookkeeping gap (the
+                # stalled knot stream would otherwise latch MPC_STALE at 250 ms).
+                self._disarm()
+                self._apply_gains(BASELINE_GAINS)
             onset_for_record = sid.OnsetResult(
                 unstable=best_unstable, ripple_rms=0.0, oscillation_score=0.0, reasons=[])
             dec = lad.record(best, onset_for_record, best_zeta, bandwidth_hz=best_bw,
@@ -2086,6 +2132,8 @@ class BridgeSysID:
                 self._disarm()          # disarm before the final apply (no armed RPC gap)
                 if winner:
                     self._apply_gains(winner)
+                elif survey:
+                    self._apply_gains(BASELINE_GAINS)   # survey has no winner — park safe
                 break
         self._finish_ladder(lad, rungs_log, winner)
         self._manifest['stages'].setdefault('ladder', {})[
@@ -2093,19 +2141,18 @@ class BridgeSysID:
         return True
 
     def _rung_vel_candidates(self, rung) -> List[float]:
-        """vel_gain search points for a rung: the base ladder's linspace for pos_gain ≤ 90,
-        the explicit ``[lo, 1.25·lo, 1.6·lo]`` climbing set for the high ceiling-hunt rungs
-        (a frozen vel_gain stalls ζ below target near pos_gain ~125)."""
-        if sid.is_high_rung(rung.pos_gain):
-            return sid.high_rung_vel_gain_candidates(rung.pos_gain)
-        return sid.vel_gain_candidates(rung, self.n_vel)
+        """vel_gain search points for a rung: explicit --rungs points test exactly
+        their one value; high (>90) table rungs the ``[lo, 1.25·lo, 1.6·lo]`` climbing
+        set; base rungs the linspace search."""
+        return sid.rung_vel_gain_candidates(rung, self.n_vel)
 
     def _quiescent_hold_check(self, center: float,
                               revert: sid.GainTriple) -> dict:
-        """Hold FLAT armed at ``center`` for QUIESCENT_HOLD_S and measure vel-ripple RMS
+        """Hold FLAT armed at ``center`` for the quiescent window (default 0.75 s;
+        --quiescent-secs stretches it for soak checks) and measure vel-ripple RMS
         (buzz gate) + iq-ripple RMS (reported; gated only with fast-iq firmware). A guard
         latch during the hold counts as buzz (the hold itself went unstable)."""
-        frames = max(1, int(round(QUIESCENT_HOLD_S / self.seg_t_s)))
+        frames = max(1, int(round(self.quiescent_secs / self.seg_t_s)))
         res = self._stream_and_sample(sid.arm_settle_series(center, frames),
                                       guard=True, revert_gains=revert)
         if res['aborted'] or res['guard_latched']:
@@ -2274,6 +2321,11 @@ class BridgeSysID:
               f"{self.step_frame_step_rev:.4f} rev (≤{BRIDGE_STEP_LEAD_MARGIN_FRAC:.0%}, "
               f"anchored {BRIDGE_STEP_RAMP_VEL_TARGET_RPS:.1f} rev/s "
               f"⇒ {self.step_frame_step_rev / self.seg_t_s:.2f} rev/s)")
+        if self.gains_override is not None:
+            g = self.gains_override
+            print(f"  ** --gains OVERRIDE: pos_steps/chirp will characterize "
+                  f"pos={g.pos_gain} vel={g.vel_gain} vel_int={g.vel_int_gain} "
+                  f"(NOT the production baseline) **")
         if self.knot_hz > BRIDGE_SETPOINT_HZ + 1e-9:
             print(f"  ** knot-hz {self.knot_hz:.0f} REQUIRES the BENCH_SYSID_BUILD firmware "
                   f"(a parallel agent is adding it) — the stock 40 Hz-knot firmware will NOT "
@@ -2326,10 +2378,15 @@ class BridgeSysID:
             print(f"    response bins ≤ f1: {self._response_bins()} Hz "
                   f"(the 6 Hz pos-loop question is inside this band; Welch coherence per bin)")
         if 'ladder' in modes:
-            rungs = sid.extended_ladder(vint_ratio=self.vint_ratio,
-                                        from_pos_gain=self.from_pg)
-            print(f"\n  [ladder] escalate-until-unstable, ζ_target={self.zeta_target} "
-                  f"(vel_int {'ratio pos/%.0f' % self.vint_ratio if self.vint_ratio else 'FROZEN %.2f > 90' % sid.FROZEN_VEL_INT_GAIN}):")
+            if self.custom_rungs:
+                rungs = sid.custom_rung_table(self.custom_rungs)
+                print(f"\n  [ladder] EXPLICIT --rungs gap-fill points, "
+                      f"ζ_target={self.zeta_target}:")
+            else:
+                rungs = sid.extended_ladder(vint_ratio=self.vint_ratio,
+                                            from_pos_gain=self.from_pg)
+                print(f"\n  [ladder] escalate-until-unstable, ζ_target={self.zeta_target} "
+                      f"(vel_int {'ratio pos/%.0f' % self.vint_ratio if self.vint_ratio else 'FROZEN %.2f > 90' % sid.FROZEN_VEL_INT_GAIN}):")
             for i, rung in enumerate(rungs):
                 cands = [f"{c:.2f}" for c in self._rung_vel_candidates(rung)]
                 print(f"    rung {i}: pos_gain={rung.pos_gain} "
@@ -2339,7 +2396,7 @@ class BridgeSysID:
                                       seg_t_s=self.seg_t_s)[0]
             print(f"    center step per rung: {self.ladder_step:+.3f} rev → knot ramp "
                   f"{sp.ramp_frames} frames / {sp.ramp_duration_s * 1e3:.0f} ms; "
-                  f"quiescent-hold buzz check {QUIESCENT_HOLD_S}s before each step; "
+                  f"quiescent-hold buzz check {self.quiescent_secs:g}s before each step; "
                   f"latch → revert (BASELINE ≥ pg {sid.LADDER_BASELINE_REVERT_POS_GAIN:.0f})")
         if 'track' in modes:
             amp = min(sid.TRACK_AMP_MAX_REV,
@@ -2535,6 +2592,23 @@ def main() -> int:
     p.add_argument('--from-pg', type=float, default=None,
                    help="(ladder) start at the first rung with pos_gain ≥ this "
                         "(skip re-proving the low rungs)")
+    p.add_argument('--rungs', default=None,
+                   help="(ladder) EXPLICIT gain points 'pg:vg:vint,...' replacing the "
+                        "built-in table — single-candidate rungs through the same "
+                        "quiescent-buzz → step → onset pipeline. The off-diagonal "
+                        "gap-fill knob (e.g. '130:0.50:0.72,110:0.55:0.72' attributes "
+                        "a buzz onset to pos_gain vs vel_gain)")
+    p.add_argument('--quiescent-secs', type=float, default=QUIESCENT_HOLD_S,
+                   help="(ladder) quiescent-hold buzz window per rung in seconds "
+                        "(default %.2f; stretch to 120-180 for a winner soak check)"
+                        % QUIESCENT_HOLD_S)
+    p.add_argument('--gains', default=None,
+                   help="(pos_steps/chirp) 'pg:vg:vint' triple applied at bringup instead "
+                        "of the production baseline — REQUIRED to step/chirp-characterize "
+                        "a tuned candidate (without it those stages always measure "
+                        "baseline %s/%s/%s)" % (BASELINE_GAINS.pos_gain,
+                                                BASELINE_GAINS.vel_gain,
+                                                BASELINE_GAINS.vel_int_gain))
     p.add_argument('--fast-iq', action='store_true',
                    help="(ladder quiescent-buzz check) gate on iq-ripple too — ONLY valid "
                         "with a fast-iq bench firmware; stock iq is on-change-aliased")
@@ -2590,8 +2664,18 @@ def main() -> int:
                   else list(DEFAULT_CHIRP_AMPS_REV))
     try:
         track_gains = _parse_track_gains(args.track_gains)
+        custom_rungs = _parse_track_gains(args.rungs) if args.rungs else None
+        gains_override = None
+        if args.gains:
+            triples = _parse_track_gains(args.gains)
+            if len(triples) != 1:
+                raise ValueError("--gains takes exactly ONE pg:vg:vint triple")
+            gains_override = triples[0]
     except ValueError as e:
         print(f"REJECT: {e}", file=sys.stderr)
+        return 1
+    if args.quiescent_secs <= 0.0:
+        print(f"REJECT: --quiescent-secs must be positive", file=sys.stderr)
         return 1
     if args.track_peak_vel > sid.TRACK_PEAK_VEL_MAX_RPS:
         print(f"REJECT: --track-peak-vel {args.track_peak_vel} > "
@@ -2653,7 +2737,9 @@ def main() -> int:
         chirp_amps=chirp_amps, knot_hz=args.knot_hz, vint_ratio=args.vint_ratio,
         from_pg=args.from_pg, track_wave=args.track_wave,
         track_peak_vel=args.track_peak_vel, track_secs=args.track_secs,
-        track_gains=track_gains, fast_iq_available=args.fast_iq)
+        track_gains=track_gains, fast_iq_available=args.fast_iq,
+        custom_rungs=custom_rungs, quiescent_secs=args.quiescent_secs,
+        gains_override=gains_override)
     return runner.run(modes)
 
 

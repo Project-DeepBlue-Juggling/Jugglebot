@@ -757,6 +757,9 @@ class LadderRung:
     vel_int_gain: float
     vel_gain_lo: float
     vel_gain_hi: float
+    # Explicit rungs (--rungs gap-fill points) test exactly their one vel_gain;
+    # table rungs generate a search set from lo/hi.
+    explicit: bool = False
 
 
 def default_ladder() -> Tuple[LadderRung, ...]:
@@ -805,10 +808,15 @@ class GainLadder:
 
     def __init__(self, rungs: Optional[Sequence[LadderRung]] = None,
                  zeta_target: float = 0.7,
-                 bw_clear_hz: Optional[float] = None):
+                 bw_clear_hz: Optional[float] = None,
+                 survey: bool = False):
         self.rungs: Tuple[LadderRung, ...] = tuple(rungs) if rungs else default_ladder()
         self.zeta_target = zeta_target
         self.bw_clear_hz = bw_clear_hz
+        # Survey mode (--rungs gap-fill): every point runs and gets a verdict;
+        # an unstable point must NOT abort the remaining off-diagonal
+        # comparisons — the whole point is comparing outcomes ACROSS points.
+        self.survey = survey
         self.index = 0
         self.last_good: Optional[GainTriple] = None
         self.stopped = False
@@ -836,6 +844,23 @@ class GainLadder:
         })
 
         zeta_bad = zeta is not None and zeta < self.zeta_target
+        if self.survey:
+            bad = onset.unstable or not stable_vel_gain_found or zeta_bad
+            if not bad:
+                self.last_good = tested
+            verdict = ('unstable' if onset.unstable else
+                       'no_stable_vel_gain' if not stable_vel_gain_found else
+                       'zeta_below_target' if zeta_bad else 'stable')
+            if self.index + 1 < len(self.rungs):
+                self.index += 1
+                return LadderDecision('escalate', None, self.index,
+                                      'survey: %s, next point' % verdict)
+            self.stopped = True
+            self.stop_reason = 'survey_complete'
+            # No winner concept in a survey — the deliverable is the verdict
+            # table; the harness parks at BASELINE, not at any tested point.
+            return LadderDecision('stop_ok', None, self.index,
+                                  'survey: %s, all points done' % verdict)
         if onset.unstable or not stable_vel_gain_found or zeta_bad:
             self.stopped = True
             if onset.unstable:
@@ -932,6 +957,34 @@ def extended_ladder(*, frozen_vint: float = FROZEN_VEL_INT_GAIN,
     if from_pos_gain is not None:
         rungs = [r for r in rungs if r.pos_gain >= from_pos_gain - 1e-9]
     return tuple(rungs)
+
+
+def custom_rung_table(points: Sequence[GainTriple]) -> Tuple[LadderRung, ...]:
+    """Explicit single-candidate rungs from (pos_gain, vel_gain, vel_int) triples —
+    the ``--rungs`` gap-fill knob.
+
+    The fixed table + √-scaled candidates keep every first-tested point on the
+    ζ-constant diagonal (ζ ∝ vel_gain/√pos_gain), so a buzz onset there cannot
+    be attributed to pos_gain vs vel_gain. Explicit off-diagonal points — e.g.
+    (130, 0.50) vs (110, 0.55) — run through the identical quiescent-buzz →
+    step → onset pipeline and resolve the attribution.
+    """
+    if not points:
+        raise ValueError("custom rung table needs at least one gain point")
+    return tuple(LadderRung(p.pos_gain, p.vel_int_gain,
+                            p.vel_gain, p.vel_gain, explicit=True)
+                 for p in points)
+
+
+def rung_vel_gain_candidates(rung: LadderRung, n_base: int = 4) -> List[float]:
+    """vel_gain search points for any rung: explicit rungs test exactly their one
+    value; high (>90) table rungs use the √-scaled climbing set; base rungs the
+    linspace search."""
+    if rung.explicit:
+        return [rung.vel_gain_lo]
+    if is_high_rung(rung.pos_gain):
+        return high_rung_vel_gain_candidates(rung.pos_gain)
+    return vel_gain_candidates(rung, n_base)
 
 
 def is_high_rung(pos_gain: float, *, base_top: float = 90.0) -> bool:

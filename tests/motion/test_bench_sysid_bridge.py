@@ -998,3 +998,93 @@ def test_dedupe_amplitudes_all_distinct_passthrough():
     kept, skipped = sid.dedupe_amplitudes([0.01, 0.02, 0.03], lambda a: a)
     assert [r for r, _ in kept] == [0.01, 0.02, 0.03]
     assert skipped == []
+
+
+# --- gap-fill knobs: custom rungs + explicit candidate selection -------------
+
+def test_custom_rung_table_builds_explicit_single_candidate_rungs():
+    pts = [sid.GainTriple(130.0, 0.50, 0.72), sid.GainTriple(110.0, 0.55, 0.72)]
+    rungs = sid.custom_rung_table(pts)
+    assert len(rungs) == 2
+    for rung, pt in zip(rungs, pts):
+        assert rung.explicit is True
+        assert rung.pos_gain == pt.pos_gain
+        assert rung.vel_int_gain == pt.vel_int_gain
+        assert rung.vel_gain_lo == rung.vel_gain_hi == pt.vel_gain
+
+
+def test_custom_rung_table_rejects_empty():
+    with pytest.raises(ValueError):
+        sid.custom_rung_table([])
+
+
+def test_rung_vel_gain_candidates_explicit_overrides_high_rung_scaling():
+    # THE point of --rungs: an explicit (130, 0.50) must test exactly 0.50 — the
+    # high-rung sqrt scaling would force lo=0.55 there and the off-diagonal point
+    # would be untestable.
+    explicit = sid.custom_rung_table([sid.GainTriple(130.0, 0.50, 0.72)])[0]
+    assert sid.rung_vel_gain_candidates(explicit) == [0.50]
+    # Table rungs keep their existing behaviour.
+    table_high = sid.LadderRung(130.0, 0.72, 0.55, 0.88)
+    assert sid.rung_vel_gain_candidates(table_high) == \
+        sid.high_rung_vel_gain_candidates(130.0)
+    table_base = sid.LadderRung(40.0, 0.32, 0.20, 0.50)
+    assert sid.rung_vel_gain_candidates(table_base, 4) == \
+        sid.vel_gain_candidates(table_base, 4)
+
+
+def test_ladder_rung_default_not_explicit():
+    # Backward compatibility: all existing 4-arg constructions are table rungs.
+    assert sid.LadderRung(90.0, 0.72, 0.45, 0.90).explicit is False
+
+
+# --- survey-mode GainLadder: unstable points never abort the gap-fill --------
+
+def _survey_ladder(points):
+    return sid.GainLadder(rungs=sid.custom_rung_table(points), survey=True)
+
+
+def test_survey_unstable_point_advances_not_backoff():
+    # THE survey guarantee: (130, 0.50) buzzing must not abort (110, 0.55) —
+    # comparing outcomes ACROSS points is the whole attribution experiment.
+    lad = _survey_ladder([sid.GainTriple(130.0, 0.50, 0.72),
+                          sid.GainTriple(110.0, 0.55, 0.72)])
+    dec = lad.record(sid.GainTriple(130.0, 0.50, 0.72),
+                     sid.OnsetResult(True, 0.2, 0.9, ['buzz']), None)
+    assert dec.action == 'escalate'
+    assert not lad.stopped
+    assert lad.current_rung().pos_gain == 110.0
+
+
+def test_survey_completes_all_points_and_has_no_winner():
+    pts = [sid.GainTriple(130.0, 0.50, 0.72), sid.GainTriple(110.0, 0.55, 0.72),
+           sid.GainTriple(120.0, 0.50, 0.72)]
+    lad = _survey_ladder(pts)
+    ok = sid.OnsetResult(False, 0.0, 0.0, [])
+    bad = sid.OnsetResult(True, 0.2, 0.9, ['buzz'])
+    lad.record(pts[0], bad, None)                       # unstable → continue
+    lad.record(pts[1], ok, 0.80)                        # stable → continue
+    dec = lad.record(pts[2], ok, 0.75)                  # last point
+    assert dec.action == 'stop_ok'
+    assert dec.gains is None                            # survey has no winner
+    assert lad.stopped and lad.stop_reason == 'survey_complete'
+    assert lad.last_good == pts[2]                      # stable points still banked
+
+
+def test_survey_zeta_below_target_recorded_not_backoff():
+    lad = _survey_ladder([sid.GainTriple(130.0, 0.45, 0.72),
+                          sid.GainTriple(120.0, 0.50, 0.72)])
+    dec = lad.record(sid.GainTriple(130.0, 0.45, 0.72),
+                     sid.OnsetResult(False, 0.0, 0.0, []), 0.55)   # ζ < 0.7
+    assert dec.action == 'escalate'
+    assert 'zeta_below_target' in dec.reason
+
+
+def test_non_survey_ladder_still_backs_off():
+    # Regression: the escalation ladder's stop-on-onset semantics are unchanged.
+    lad = sid.GainLadder(rungs=sid.custom_rung_table(
+        [sid.GainTriple(130.0, 0.50, 0.72)]), survey=False)
+    dec = lad.record(sid.GainTriple(130.0, 0.50, 0.72),
+                     sid.OnsetResult(True, 0.2, 0.9, ['buzz']), None)
+    assert dec.action == 'backoff'
+    assert lad.stopped and lad.stop_reason == 'instability_onset'
