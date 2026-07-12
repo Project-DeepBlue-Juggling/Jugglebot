@@ -486,6 +486,27 @@ export function updateBBCalibration(msg) {
     }
 }
 
+/**
+ * Reset the Ball Butler calibration indicator to its safe "unknown" default
+ * ("Not Calibrated"). The Calibrated state is driven by a *latched event*
+ * (bb/calibration_result, published by mocap_node only when a calibration is
+ * performed) — nothing re-publishes it to reflect that a session ended. In a
+ * long-lived GUI tab that outlives ROS relaunches, the last session's
+ * "Calibrated" therefore persists into a fresh, uncalibrated session (the new
+ * mocap_node has no latched sample, so updateBBCalibration is never called).
+ * Calling this on the GUI↔rosbridge drop clears that stale latch: when the
+ * websocket drops the whole ROS graph — including the mocap_node that owns the
+ * calibration — is gone, so the calibration state is genuinely unknown. A
+ * same-session network blip self-heals: on reconnect resubscribeAll() re-reads
+ * the still-latched success=true and restores "Calibrated".
+ */
+export function resetBBCalibration() {
+    const dot = document.getElementById('bb-calib-dot');
+    const text = document.getElementById('bb-calib-text');
+    if (dot) dot.className = 'bb-calib-dot uncalibrated';
+    if (text) text.textContent = 'Not Calibrated';
+}
+
 // ---- Motion planner panel ----
 
 let motionTimeout = null;

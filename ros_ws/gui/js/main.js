@@ -24,6 +24,7 @@ import {
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
     updateConeHeartbeat, updateConeTimingResult, setCatchingConeDisconnected,
+    resetBBCalibration,
 } from './panels.js';
 import {
     initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
@@ -197,6 +198,16 @@ function onConnectionStateChange(state) {
             // cone-reported-offline heartbeat, which never arrives while the
             // bridge is down). Idempotent + safe if the cone was never connected.
             setCatchingConeDisconnected();
+            // Reset the BB calibration indicator for the same stale-latch
+            // reason. "Calibrated" is set by a latched event (bb/calibration_result
+            // from mocap_node) that is never re-published to say a session ended;
+            // a long-lived GUI tab that outlives ROS relaunches would otherwise
+            // show the previous session's "Calibrated" against a fresh,
+            // uncalibrated BB. A websocket drop means the whole graph (mocap_node
+            // included) is gone, so calibration state is unknown → show the safe
+            // default. A same-session blip self-heals via resubscribeAll() on
+            // reconnect (the still-latched success=true is re-delivered).
+            resetBBCalibration();
             setJogPanelVisible(false);
             setSpeedLimitsPanelVisible(false);
             stopTopicDiscovery();

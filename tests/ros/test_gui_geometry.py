@@ -464,3 +464,67 @@ class TestStateMinimapTripwires:
         assert consumed <= produced, \
             f'state-minimap.js consumes link_status keys the bridge never ' \
             f'publishes: {consumed - produced}'
+
+
+# ---- Ball Butler calibration stale-latch reset ----
+
+
+MAIN_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'main.js'
+PANELS_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'panels.js'
+
+
+@pytest.fixture(scope='module')
+def main_js():
+    """Read main.js as text."""
+    return MAIN_JS.read_text()
+
+
+@pytest.fixture(scope='module')
+def panels_js():
+    """Read panels.js as text."""
+    return PANELS_JS.read_text()
+
+
+class TestBBCalibrationStaleLatchReset:
+    """Regression tripwires for the BB "Calibrated" stale-latch bug.
+
+    The Calibrated indicator is set by a *latched event* (bb/calibration_result,
+    published by mocap_node only on a calibration attempt) — nothing re-publishes
+    it to signal that a ROS session ended. In a long-lived GUI tab that outlives
+    ROS relaunches the previous session's "Calibrated" therefore persists into a
+    fresh, uncalibrated session. The fix resets the indicator on the GUI↔rosbridge
+    drop (onConnectionStateChange 'disconnected'), the same axis used for the
+    cone catch-counter re-baseline. These are string-level tripwires, not
+    behavioural tests — they pin that the reset call survives future refactors.
+    """
+
+    def test_panels_exports_reset_bb_calibration(self, panels_js):
+        assert re.search(r'export\s+function\s+resetBBCalibration\b', panels_js), \
+            'panels.js no longer exports resetBBCalibration()'
+
+    def test_reset_bb_calibration_shows_not_calibrated(self, panels_js):
+        m = re.search(r'export\s+function\s+resetBBCalibration\b(.*?)\n\}',
+                      panels_js, re.S)
+        assert m, 'resetBBCalibration() body not found'
+        body = m.group(1)
+        assert 'Not Calibrated' in body, \
+            'resetBBCalibration() must reset the text to "Not Calibrated"'
+        assert 'uncalibrated' in body, \
+            'resetBBCalibration() must set the dot to the uncalibrated class'
+
+    def test_main_imports_reset_bb_calibration(self, main_js):
+        assert 'resetBBCalibration' in main_js, \
+            'main.js no longer imports/uses resetBBCalibration'
+
+    def test_disconnect_branch_resets_bb_calibration(self, main_js):
+        # Isolate the 'disconnected' case body inside onConnectionStateChange.
+        m = re.search(r"case 'disconnected':(.*?)break;", main_js, re.S)
+        assert m, "onConnectionStateChange 'disconnected' branch not found"
+        body = m.group(1)
+        assert 'resetBBCalibration()' in body, \
+            'the disconnect branch must call resetBBCalibration() so a fresh ' \
+            'session does not inherit the previous session\'s "Calibrated"'
+        # Pin that the cone reset (yesterday's parallel fix) is still colocated —
+        # both resets share the same stale-latch rationale and the same axis.
+        assert 'setCatchingConeDisconnected()' in body, \
+            'the disconnect branch lost the cone re-baseline'
