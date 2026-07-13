@@ -21,6 +21,12 @@ Field mapping (mirrors ``controller/hardware_plant.py::command``):
   * ``cmd_next_mm`` = IK(pose@tau+dt)                      — the u1 lookahead knot.
   * ``cmd_next2_mm``= IK(pose@tau+2·dt)                    — the u2 knot (sets the Hermite
     endpoint velocity v1 = (u2−u1)/T; C1 across segment joins).
+  * ``torque_Nm``   = gravity (+ optional platform-inertia) feedforward — **TRUE Nm**,
+    extension-positive, from :class:`~jugglebot.motion.torque_ff.LegTorqueFeedforward`.
+    **Exact zeros unless ``dynamics.torque_ff_enabled`` is set** (shipped: false), in
+    which case this field is byte-identical to the pre-feature ``np.zeros(6)``.
+    The clamp / Kt wire scale / ramp-in are NOT applied here — they live at the single
+    wire enforcement point, ``controller/teensy_link/setpoint_pump.py``.
 
 Pure Python + numpy (imports ``jugglebot.motion.ipc.make_mpc_command`` for the
 exact field set — a pure dict builder, no ZMQ/UDP transport). No repo-root imports.
@@ -38,17 +44,29 @@ from jugglebot.motion.ik_solver import (
     twist_to_leg_velocities,
 )
 from jugglebot.motion.ipc import make_mpc_command
+from jugglebot.motion.torque_ff import LegTorqueFeedforward
 
 KNOT_DT_S = 0.025    # fixed 40 Hz knot spacing (firmware SEGMENT_T_S)
 
 
 class KnotEmitter:
-    """Stateless (per-frame) sampler: plan + time → ``make_mpc_command`` dict."""
+    """Stateless (per-frame) sampler: plan + time → ``make_mpc_command`` dict.
 
-    def __init__(self, geom, knot_dt_s: float = KNOT_DT_S):
+    Args:
+        geom: :class:`StewartGeometry`.
+        knot_dt_s: knot spacing (fixed 40 Hz; matches firmware ``SEGMENT_T_S``).
+        torque_ff: injected :class:`LegTorqueFeedforward` (tests / ablation);
+            built from ``hardware_config`` when None — which, in the shipped
+            config, is the DISABLED feedforward that emits exact zeros.
+    """
+
+    def __init__(self, geom, knot_dt_s: float = KNOT_DT_S,
+                 torque_ff: LegTorqueFeedforward | None = None):
         self._geom = geom
         self._dt = float(knot_dt_s)
         self._mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
+        self._torque_ff = (torque_ff if torque_ff is not None
+                           else LegTorqueFeedforward(geom))
 
     def _ik(self, pose: np.ndarray):
         """pose → (ext_mm, pos, rot, J)."""
@@ -80,13 +98,20 @@ class KnotEmitter:
                                       J=J0)
         motor_rev = ext0 * self._mm_to_rev
 
+        # Feedforward torque (TRUE Nm, extension-positive). Exact zeros when the
+        # feature is off, so the OFF path is byte-identical to the pre-feature
+        # np.zeros(6). J0 and leg_acc are handed over so the FF re-uses the
+        # Jacobian and leg accelerations we already paid for.
+        torque_ff = self._torque_ff.compute(
+            pos0, rot0, twist0, accel0, J=J0, leg_acc_mm_s2=leg_acc)
+
         return make_mpc_command(
             ext_mm=ext0,
             pose_6dof=np.asarray(pose0, dtype=float),
             motor_rev=motor_rev,
             vel_mm_s=leg_vel,
             acc_mm_s2=leg_acc,
-            torque_Nm=np.zeros(6),
+            torque_Nm=torque_ff,
             seq=int(seq),
             cmd_next_mm=ext1,
             cmd_next2_mm=ext2,

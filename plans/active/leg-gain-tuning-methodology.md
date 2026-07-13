@@ -59,7 +59,7 @@ related_code:
 >    > delay. The lever is the knot-phase lead + feedforward.
 > 3. **The plant is measured** (`tools/probes/bench_leg_plant_id.py`): `J_eff` ≈ 0.7–1.2 ×
 >    `J_rotor` (**refuting the "~10× rotor" guess this document carried**), and the production
->    cascade is `ω_v` ≈ 20 Hz over `ω_p` = 6.4 Hz — **ratio ≈ 3.2, already healthy**.
+>    cascade is `ω_v` ≈ 23 Hz over `ω_p` = 6.4 Hz — **ratio ≈ 3.6, already healthy**.
 >
 > **The ordering principle that follows (normative):**
 >
@@ -663,14 +663,29 @@ independent fits across two runs and three gain points:
 
 | gains | velocity loop | position loop | ratio ω_v/ω_p |
 |---|---|---|---|
-| **40 / 0.20 (production)** | **20.2 Hz** | **6.4 Hz** | **3.17 — healthy** |
-| 70 / 0.35 | 35.3 Hz | 11.1 Hz | 3.17 |
-| 90 / 0.45 | 45.3 Hz | 14.3 Hz | 3.17 |
-| 110 / 0.50 | 50.4 Hz | 17.5 Hz | 2.88 |
+| **40 / 0.20 (production)** | **22.8 Hz** | **6.4 Hz** | **3.58 — healthy** |
+| 70 / 0.35 | 39.9 Hz | 11.1 Hz | 3.58 |
+| 90 / 0.45 | 51.3 Hz | 14.3 Hz | 3.58 |
+| 110 / 0.50 | 57.0 Hz | 17.5 Hz | 3.26 |
+
+> **⚠️ CORRECTED 2026-07-13 (same day).** The first version of this table read `ω_v` = 20.2 Hz /
+> ratio 3.17. That **omitted the ODrive's `torque_constant` division** and understated `ω_v` by
+> 13 %. On ODrive 0.6.x the velocity controller outputs **torque**, and the drive then computes
+> `Iq = torque / torque_constant` using **its own configured value** (0.055133 — ODrive's default
+> `8.27/Kv`), which is *not* the motor's true Kt (~0.0624). So the torque the motor actually
+> produces per unit velocity error is `vel_gain × (Kt_true / Kt_config)` — i.e. **the shipping
+> velocity loop runs ~13 % stiffer than its nominal `vel_gain` implies.** (Operator-confirmed:
+> `vel_gain` is in Nm/(rev/s).)
+>
+> **`ω_v` is INVARIANT to the true Kt** — `J_eff` scales linearly with the assumed Kt and the
+> measured regression slope scales as `1/Kt`, so it cancels; only the *configured* value enters.
+> **The cascade conclusion therefore holds regardless of how the open 0.0551-vs-0.0624 Kt question
+> lands.** (`tools/probes/bench_leg_plant_id.py` now carries the derivation and computes it.)
+
 
 *Computed from the pooled `J_eff` = 2.51e-4 kg·m². **Scatter — the honest uncertainty on every
 row:** the five fits span `J_eff` 1.99–3.24e-4, which moves the production `ω_v` over
-**15.6–25.5 Hz** and the ratio over **2.46–4.00**. Still healthy (≥2.5) at the pessimistic end.
+**17.7–28.8 Hz** and the ratio over **2.78–4.53**. Still healthy (≥2.8) at the pessimistic end.
 `bench_leg_plant_id.py --all` prints this — **cite the tool's output, never a hand-assembled
 range** (the first draft of this table had rows whose columns did not divide).*
 
@@ -760,7 +775,7 @@ state is unambiguous), `--quiescent-secs` (thermal-onset soak), `--knot-hz {40,1
 > **There is no gain to transfer.** The bench "winner" that Stage 2 existed to land was
 > selected on a **~14×-inflated error metric**; corrected, production `40 / 0.20 / 0.32`
 > already meets the **±1 mm at the catch/throw instant** spec by ~5×, and the measured cascade
-> (`ω_v/ω_p` ≈ 3.2) is healthy.
+> (`ω_v/ω_p` ≈ 3.6) is healthy.
 > **The candidate `70 / 0.35 / 0.56` and the `MAX_LEAD = 0.057` re-pin are RETRACTED.**
 > `MAX_LEAD` stays **0.10** (= `4.0/pos_gain` at pos 40 — the already-shipped value, so **no
 > firmware change is needed either**).
@@ -917,7 +932,7 @@ do **not** repeat it — you *verify* the derated winner. Three checks, in
 
 | date | stage | pos_gain | vel_gain | vel_int_gain | measured ζ / ring | status |
 |---|---|---|---|---|---|---|
-| **2026-07-13** | **PRODUCTION** | **40** | **0.20** | **0.32** | no 6 Hz ring on the unloaded bench under v3 in any regime; measured cascade `ω_v` 20.2 Hz / `ω_p` 6.4 Hz, **ratio 3.17 (healthy)** | ✅ **SHIPS.** Error at the catch instant **0.054 mm median / 0.192 mm worst** — ~5× inside the ±1 mm spec (whole-stroke errRMS 0.74 mm). `MAX_LEAD` 0.10. |
+| **2026-07-13** | **PRODUCTION** | **40** | **0.20** | **0.32** | no 6 Hz ring on the unloaded bench under v3 in any regime; measured cascade `ω_v` 22.8 Hz / `ω_p` 6.4 Hz, **ratio 3.58 (healthy)** | ✅ **SHIPS.** Error at the catch instant **0.054 mm median / 0.192 mm worst** — ~5× inside the ±1 mm spec (whole-stroke errRMS 0.74 mm). `MAX_LEAD` 0.10. |
 | ~~2026-07-12~~ | ~~bench (S1)~~ | ~~70~~ | ~~0.35~~ | ~~0.56~~ | — | ❌ **RETRACTED 2026-07-13** — "accuracy knee (errRMS 10.3→6.9 mm)" was **milli-revs, not mm** (~14×). Real: 0.74 → 0.49 mm, a **0.25 mm** gain against a ±1 mm spec. |
 | ~~—~~ | ~~robot (S2)~~ | ~~70~~ | ~~0.35~~ | ~~0.56~~ | — | ❌ **RETRACTED 2026-07-13** — no candidate; `MAX_LEAD` stays 0.10 (no firmware change). |
 

@@ -41,6 +41,26 @@ ended the leg gain hunt. Run against the Stage-1 stroke batteries in
 ``temp/probes/bench_sysid_20260712_222801/`` and
 ``temp/probes/bench_sysid_20260713_091748/``.
 
+THE iq SIGN-FRAME TRAP (do not "fix" this fit)
+----------------------------------------------
+A code-read says the firmware reports ``iq`` in a DIFFERENT frame from ``pos``/``vel``:
+``can_buses.cpp:85-86`` runs pos/vel through ``leg_sign()`` (which NEGATES for legs, giving
+Jugglebot's extension-positive convention), while ``:92`` stores ``iq_measured`` RAW in the
+ODrive frame. Taken at face value that implies an extending torque should read as NEGATIVE
+iq, which would make this regression's ``J_eff`` and ``tau_c`` come out negative.
+
+They do not. **The recorded data is unambiguous and it wins**: over the 2026-07-13 stroke
+battery, corr(iq, accel) = +0.39 and corr(iq, sign(vel)) = +0.81; during a +36 rev/s^2
+extension the leg draws +0.89 A, during -36 rev/s^2 it draws -0.82 A. So on this rig
+**positive iq = extending torque**, in the same frame as pos/vel — the ODrive's own motor/
+encoder direction calibration evidently inverts the raw sign back again. Both fitted
+quantities come out POSITIVE and ``tau_c`` independently reproduces the 2026-04-27 friction
+bench's 1.094 A, which a flipped frame could not do.
+
+Do not "correct" this from the code-read alone. If you port this probe to the assembled
+robot's legs, RE-VERIFY the sign empirically first (the correlations above are the check) —
+the per-axis direction calibration is a property of each ODrive, not of the firmware.
+
 CAVEATS (read before trusting a number)
 ---------------------------------------
 * ``a`` is a numerical derivative of a 100/250 Hz velocity signal, so the
@@ -80,8 +100,15 @@ _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__fil
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# Measured motor torque constant (hardware_config.yaml:60 -- bench fit R^2=0.994).
+# Motor torque constant, Nm per ODrive-reported Amp (hardware_config.yaml:60 -- bench fit
+# R^2=0.994). NOTE this figure is UNDER RE-MEASUREMENT (2026-07-13): the historical fit may be
+# biased HIGH by stiction, and the ODrive's own configured value disagrees (see below).
+# J_eff and tau_c[Nm] scale linearly with this; tau_c[A] and the cascade table do NOT.
 KT_NM_PER_A = 0.0624
+# What is ACTUALLY FLASHED on the ODrives (odrive_pro_leg_config.json:152). This is ODrive's
+# default 8.27/Kv formula, = 0.0551 for a 150 Kv motor. The drive divides every commanded torque
+# by THIS number to get Iq -- so it, not the true Kt, sets the effective velocity-loop gain.
+KT_ODRIVE_CONFIG = 0.055133331567049026
 # Datasheet/rotor inertia (hardware_config.yaml:55) -- the baseline J_eff is compared to.
 J_ROTOR_KGM2 = 2.75e-4
 # Bench-leg geometry (single_leg_test.py:106, measured).
@@ -193,12 +220,39 @@ def error_budget(files):
 
 
 def bandwidths(j_eff):
-    """Cascade crossovers implied by a measured J_eff. omega_p = pos_gain (1/s);
-    omega_v = vel_gain / (2*pi*J). The RATIO is what decides ringing."""
+    """Cascade crossovers implied by a measured J_eff. The RATIO is what decides ringing.
+
+    ``omega_p = pos_gain`` [rad/s] -- the position loop outputs a VELOCITY setpoint, so it
+    does not involve the torque constant at all.
+
+    ``omega_v`` is subtler, and getting it wrong is easy. On ODrive 0.6.x the velocity
+    controller output is TORQUE, and the drive then computes ``Iq = torque / torque_constant``
+    using ITS OWN CONFIGURED value (KT_ODRIVE_CONFIG), which is NOT the motor's true Kt.
+    (Operator-confirmed 2026-07-13: vel_gain is in Nm/(rev/s).) So the torque the motor
+    ACTUALLY produces per unit velocity error is
+
+        tau_per_e_v = vel_gain * (KT_TRUE / KT_ODRIVE_CONFIG)
+
+    i.e. with a config value 11.7% LOW, the shipping velocity loop runs ~13% STIFFER than its
+    nominal vel_gain implies. Hence:
+
+        omega_v = vel_gain * (KT_TRUE / KT_ODRIVE_CONFIG) / (2*pi*J_eff)
+                = vel_gain / (KT_ODRIVE_CONFIG * x0)          [x0 = d(iq)/d(accel), MEASURED]
+
+    **omega_v is INVARIANT to the true Kt.** J_eff scales linearly with the assumed KT_TRUE and
+    x0 scales as 1/KT_TRUE, so it cancels: the cascade conclusion holds no matter how the
+    0.0551-vs-0.0624 Kt question lands. Only KT_ODRIVE_CONFIG (what is actually flashed on the
+    drive) enters. This is why the cascade table is trustworthy while Kt is still open.
+
+    Using ``vel_gain/(2*pi*J)`` -- i.e. forgetting the torque_constant division -- understates
+    omega_v by 13% and is the error that produced the (now corrected) 20.2 Hz / ratio 3.17
+    figures first published on 2026-07-13.
+    """
     out = []
     for pg, vg in GAIN_POINTS:
-        w_v = vg / (2.0 * np.pi * j_eff)
-        w_p = float(pg)
+        tau_per_e_v = vg * (KT_NM_PER_A / KT_ODRIVE_CONFIG)      # real Nm per (rev/s) of error
+        w_v = tau_per_e_v / (2.0 * np.pi * j_eff)                # rad/s
+        w_p = float(pg)                                          # rad/s (pos_gain is 1/s)
         out.append({'pos_gain': pg, 'vel_gain': vg,
                     'vel_loop_hz': w_v / (2.0 * np.pi),
                     'pos_loop_hz': w_p / (2.0 * np.pi),
@@ -289,12 +343,16 @@ def main(argv=None):
     # not a hand-assembled range, whenever the cascade table is quoted in a document.
     j_lo, j_hi = float(np.min(js)), float(np.max(js))
     pg0, vg0 = GAIN_POINTS[0]
-    wv_lo = vg0 / (2.0 * np.pi * j_hi) / (2.0 * np.pi)   # big J -> low omega_v
-    wv_hi = vg0 / (2.0 * np.pi * j_lo) / (2.0 * np.pi)
+    # Same corrected formula as bandwidths(): the real torque per unit velocity error is
+    # vel_gain * (KT_TRUE / KT_ODRIVE_CONFIG), NOT vel_gain.
+    tau_per_e_v = vg0 * (KT_NM_PER_A / KT_ODRIVE_CONFIG)
+    wv_lo = tau_per_e_v / (2.0 * np.pi * j_hi)           # rad/s; big J -> low omega_v
+    wv_hi = tau_per_e_v / (2.0 * np.pi * j_lo)
     print(f"  scatter: J_eff {j_lo * 1e4:.2f}-{j_hi * 1e4:.2f}e-4 "
           f"({j_lo / J_ROTOR_KGM2:.2f}-{j_hi / J_ROTOR_KGM2:.2f} x J_rotor)"
-          f"  =>  at pos {pg0}/vel {vg0}: vel-loop {wv_lo:.1f}-{wv_hi:.1f} Hz,"
-          f" ratio {wv_lo * 2 * np.pi / pg0:.2f}-{wv_hi * 2 * np.pi / pg0:.2f}")
+          f"  =>  at pos {pg0}/vel {vg0}: vel-loop "
+          f"{wv_lo / (2 * np.pi):.1f}-{wv_hi / (2 * np.pi):.1f} Hz,"
+          f" ratio {wv_lo / pg0:.2f}-{wv_hi / pg0:.2f}")
 
     out_dir = os.path.join(_REPO_ROOT, 'temp', 'probes')
     os.makedirs(out_dir, exist_ok=True)

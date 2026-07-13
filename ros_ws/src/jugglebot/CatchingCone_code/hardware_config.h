@@ -38,6 +38,12 @@ namespace Dynamics {
   constexpr float MOTOR_KT_NM_PER_A = 0.0624f;
   constexpr uint32_t MOTOR_POLE_PAIRS = 7u;
   constexpr uint32_t MOTOR_STATOR_SLOTS = 12u;
+  constexpr float MOTOR_KT_ODRIVE_CONFIG_NM_PER_A = 0.055133331567049f;
+  constexpr bool TORQUE_FF_ENABLED = false;
+  constexpr bool TORQUE_FF_GRAVITY = true;
+  constexpr bool TORQUE_FF_PLATFORM_INERTIA = false;
+  constexpr float TORQUE_FF_MAX_NM = 0.15f;
+  constexpr float TORQUE_FF_RAMP_S = 2.0f;
 }
 
 // ==========================================================================

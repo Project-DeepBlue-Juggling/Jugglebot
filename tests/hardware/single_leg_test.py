@@ -838,9 +838,24 @@ def test_force_conversion(harness: SingleLegTestHarness):
     print("TEST 4: Force conversion validation (multi-weight)")
     print("=" * 60)
 
-    spool_radius_m = SPOOL_RADIUS_MM[harness.axis_id] / 1000.0
-    print(f"\n  Spool radius (axis {harness.axis_id}): "
-          f"{SPOOL_RADIUS_MM[harness.axis_id]:.2f} mm")
+    # BENCH-leg geometry, not the standard-leg table.  This harness drives the 7th
+    # (bench) leg, which is NOT a standard Jugglebot leg (71.5708 mm/rev ⇒ r = 11.391 mm,
+    # vs ~11.22 mm for a platform leg) — the same distinction every other bench test in
+    # this file already respects (:1011, :1100, :1220).
+    #
+    # BUG, FIXED 2026-07-14: this line used to read SPOOL_RADIUS_MM[harness.axis_id],
+    # i.e. the STANDARD-leg radius (11.221 mm on axis 0).  Because the lever arm was 1.51 %
+    # too short, the torque per kg was under-stated, the fitted slope (iq per Nm) was 1.51 %
+    # too steep, and Kt = 1/slope came out 1.51 % LOW.  That is the fit that produced the
+    # canonical `motor_kt_nm_per_a: 0.0624` (hardware_config.yaml:60) — the correct figure
+    # from that same data is **0.0633 Nm/A**, which moves it further from ODrive's
+    # uncalibrated 0.055133 (= 8.27/Kv) and closer to the SI datasheet 0.0637, not nearer.
+    # The number is being re-measured from scratch anyway (tests/hardware/kt_bench_test.py,
+    # which cancels stiction by averaging a constant-velocity up/down traverse — this
+    # position-hold fit could not); see logbook/2026-07-13-leg-plant-id-and-the-units-bug.md.
+    spool_radius_m = TEST_LEG_SPOOL_RADIUS_MM / 1000.0
+    print(f"\n  Spool radius (BENCH leg, axis {harness.axis_id}): "
+          f"{TEST_LEG_SPOOL_RADIUS_MM:.3f} mm")
     print(f"\n  This test measures motor current at multiple known loads.")
     print(f"  The leg should be oriented so the weight hangs vertically.")
     print(f"  You will be prompted to add/change weights between measurements.")

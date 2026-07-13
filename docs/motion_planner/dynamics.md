@@ -1,23 +1,44 @@
 # Dynamics
 
-This page covers how the motion planner computes motor torques from the physics of the system — gravity, platform inertia, and reflected motor inertia. These torques are sent as the `torque_ff` feedforward field to the ODrive controllers.
+This page covers how the motion planner computes motor torques from the physics of the system — gravity, platform inertia, and reflected motor inertia.
+
+## Are these torques actually sent to the motors?
+
+**Only if `dynamics.torque_ff_enabled` is true in `hardware_config.yaml`, and it ships `false`.**
+
+This qualification is load-bearing, and the page used to state the opposite. The path is:
+
+`LegTorqueFeedforward` → `torque_Nm` on the :5557 command → `SetpointPump` → UDP `Setpoint.torque_ff` → can-bridge → ODrive `Set_Input_Pos.Torque_FF`.
+
+Every link in it exists, but the feature is **default-OFF**: with the flag clear, the emitter publishes `torque_Nm = zeros` and the pump packs `torque_ff = zeros`. Turning it on is an operator bench action — see the runbook at `tests/hardware/session_torque_ff.md`.
+
+Two things the `SetpointPump` does that this page's physics does not, and that you must know before reading any number below as "the torque the motor gets":
+
+- **It clamps** each leg to `dynamics.torque_ff_max_nm` (0.15 Nm). Nothing downstream clamps at all.
+- **It rescales by `ODRIVE_LEG_TORQUE_WIRE_SCALE` = 0.8835.** The drives are flashed with ODrive's uncalibrated nameplate `torque_constant = 8.27/Kv = 0.0551` Nm/A, while the motor's measured Kt is 0.0624 Nm/A. The drive computes `iq = input_torque / torque_constant`, so the Nm we put on the wire are **ODrive-Nm, not true Nm**. The prescale is what makes the *delivered current* right. See the `motor_kt_odrive_config_nm_per_a` block in `config/hardware_config.yaml`.
 
 **Source files:**
 
 - [dynamics.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/dynamics.py) — gravity wrench, inertia wrench, feedforward torques
+- [torque_ff.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/torque_ff.py) — the config-gated producer (sign conventions documented here)
 - [conversions.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) — leg force to motor torque conversion
+- [setpoint_pump.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/teensy_link/setpoint_pump.py) — the single wire enforcement point (clamp, ramp, Kt scale)
 
 ## Why Feedforward Torques?
 
 Without feedforward, the ODrive's PID has to discover the gravity load by observing position error — the platform sags, error accumulates, and the PID reacts. With feedforward, the motion planner tells each motor "you need to apply this much torque to counteract gravity" before any error develops.
 
-At static holds on this platform, motor stiction (~0.075 Nm per leg) actually exceeds the gravity load per leg (~0.018 Nm), so gravity feedforward has minimal visible effect. But during fast dynamic motions (trajectory tracking, ball catching), the inertia forces become significant and feedforward substantially reduces tracking error.
+At static holds on this platform, motor **Coulomb friction (~1.09 A ≈ 0.068 Nm per leg)** exceeds the gravity load per leg (**0.013–0.041 Nm**, mean ~0.023 Nm at the active pose — i.e. 0.2–0.7 A), so gravity feedforward has minimal visible effect on a stationary platform: it is smaller than the friction it would have to break. During fast dynamic motions (trajectory tracking, ball catching) the inertia forces become significant and feedforward is where the remaining tracking margin lives — see `logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`.
 
-The feedforward has three components, added together:
+The feedforward has three components:
 
 ```
 torque_ff = gravity_torque + platform_inertia_torque + reflected_motor_inertia_torque
+              ^ dynamics.torque_ff_gravity          ^ dynamics.torque_ff_platform_inertia
+                (on when the master flag is on)       (OFF even then — see below)
 ```
+
+The two acceleration-proportional components are gated **off by default even when the master flag is on**. The can-bridge holds the last `torque_ff` *undecayed* through its stale-link extrapolation window (`leg_interp.cpp:366` sits after the velocity-decay block), so an acceleration-proportional feedforward would keep pushing at full magnitude while the commanded velocity decays to zero. Gravity is a static term, so holding it through a stale window is not merely harmless — it is correct.
 
 ## Dynamics Parameters
 
@@ -29,11 +50,13 @@ params = DynamicsParams.from_config()
 
 | Parameter | Value | Source |
 |---|---|---|
-| `mass_kg` | 0.96 | Platform + payload mass |
-| `com_offset_mm` | [-14.5, -67.0, 54.0] | Centre of mass offset from platform centre, in body frame |
+| `mass_kg` | 1.2 | Platform + payload mass (incl. throw axis) |
+| `com_offset_mm` | [-9.68, -68.64, 52.73] | Centre of mass offset from platform centre, in body frame |
 | `gravity_mps2` | 9.806 | Gravitational acceleration |
 | `inertia_tensor_kgmm2` | 3×3 matrix | Platform rotational inertia from Onshape CAD |
-| `motor_rotor_inertia_kgm2` | 2.75×10⁻⁴ | D6374 motor rotor inertia |
+| `motor_rotor_inertia_kgm2` | 2.75×10⁻⁴ | D6374 motor rotor inertia (estimated, never measured) |
+
+All values are read from `config/hardware_config.yaml` → `dynamics:`; the table above mirrors it. (It previously quoted a 0.96 kg mass and a different CoM, both stale.)
 
 ## Component 1: Gravity Wrench
 

@@ -593,6 +593,27 @@ def compute_derived(cfg: dict) -> dict:
     derived["BB_MAX_THROW_SAMPLES"] = max_throw_samples
     derived["BB_MAX_TRAJ_FRAMES"] = max_throw_samples + bt["max_smooth_samples"] + bt["max_pause_samples"]
 
+    # ── Leg torque-feedforward wire scale (Nm_true → Nm_odrive) ──────────────
+    # The leg ODrives are flashed with torque_constant = 8.27/Kv = 0.055133 (ODrive's
+    # uncalibrated nameplate default), while the motor's bench-MEASURED Kt is 0.0624
+    # Nm/A.  The drive computes  iq = input_torque / torque_constant.  So to make it
+    # deliver the current that actually produces a TRUE shaft torque T:
+    #     iq_wanted   = T / Kt_measured
+    #     input_torque = iq_wanted × torque_constant = T × (torque_constant / Kt_measured)
+    # Hence every leg torque feedforward is multiplied by this scale on its way to the
+    # wire.  Doing it here (software) instead of re-flashing torque_constant leaves the
+    # bench-validated velocity loop (vel_gain / torque_constant amps per rev/s) exactly
+    # as it was validated.  See the long WHY block in hardware_config.yaml:dynamics.
+    #
+    # Sole enforcement point: controller/teensy_link/setpoint_pump.py (the only
+    # production producer of the leg Setpoint frame).  The direct-CAN bench harnesses
+    # (single_leg_test, friction_ff_demo, free/supported_platform_test) build their own
+    # frames and BYPASS it — they must apply this scale themselves if they ever send a
+    # torque feedforward derived from a TRUE-Nm model.
+    dyn = cfg["dynamics"]
+    derived["ODRIVE_LEG_TORQUE_WIRE_SCALE"] = (
+        dyn["motor_kt_odrive_config_nm_per_a"] / dyn["motor_kt_nm_per_a"])
+
     return derived
 
 
@@ -646,6 +667,11 @@ def generate_hw_python(cfg: dict) -> str:
     lines.append(f"BB_LINEAR_GAIN = {derived['BB_LINEAR_GAIN']}")
     lines.append(f"BB_MAX_THROW_SAMPLES = {derived['BB_MAX_THROW_SAMPLES']}")
     lines.append(f"BB_MAX_TRAJ_FRAMES = {derived['BB_MAX_TRAJ_FRAMES']}")
+    lines.append("# Leg torque-FF wire scale: Nm_true → Nm_odrive")
+    lines.append("# = DYNAMICS_MOTOR_KT_ODRIVE_CONFIG_NM_PER_A / DYNAMICS_MOTOR_KT_NM_PER_A.")
+    lines.append("# Applied ONCE, in controller/teensy_link/setpoint_pump.py.")
+    lines.append(
+        f"ODRIVE_LEG_TORQUE_WIRE_SCALE = {derived['ODRIVE_LEG_TORQUE_WIRE_SCALE']!r}")
     lines.append("")
 
     return "\n".join(lines)

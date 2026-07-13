@@ -50,7 +50,7 @@ Three findings, all from data **already on disk** — no new hardware runs:
    median, 0.192 mm worst** across 21 strokes — **0/21 exceed 1 mm**, roughly 5× inside spec.
 3. **The plant, identified from the same CSVs: `J_eff` ≈ 0.72–1.18 × `J_rotor`** — refuting the
    unsourced "J_eff ~10× rotor" guess the methodology has carried since 2026-04-27 **by an order of
-   magnitude**. The implied production cascade is `ω_v` ≈ 20 Hz over `ω_p` = 6.4 Hz — **ratio ≈ 3.2,
+   magnitude**. The implied production cascade is `ω_v` ≈ 23 Hz over `ω_p` = 6.4 Hz — **ratio ≈ 3.6,
    textbook-healthy**. The ladder's `vel_gain ∝ √pos_gain` rule holds that ratio *constant*, so
    climbing it never improved damping; it only slid both loops toward the resonance. That is what
    the operator's ear heard at pos 110.
@@ -169,13 +169,28 @@ From the pooled `J_eff` = 2.51e-4:
 
 | gains | velocity loop | position loop | ratio ω_v/ω_p |
 |---|---|---|---|
-| **40 / 0.20 (production)** | **20.2 Hz** | **6.4 Hz** | **3.17** |
-| 70 / 0.35 | 35.3 Hz | 11.1 Hz | 3.17 |
-| 90 / 0.45 | 45.3 Hz | 14.3 Hz | 3.17 |
-| 110 / 0.50 | 50.4 Hz | 17.5 Hz | 2.88 |
+| **40 / 0.20 (production)** | **22.8 Hz** | **6.4 Hz** | **3.58** |
+| 70 / 0.35 | 39.9 Hz | 11.1 Hz | 3.58 |
+| 90 / 0.45 | 51.3 Hz | 14.3 Hz | 3.58 |
+| 110 / 0.50 | 57.0 Hz | 17.5 Hz | 3.26 |
+
+> **⚠️ CORRECTED 2026-07-13 (same day).** The first version of this table read `ω_v` = 20.2 Hz /
+> ratio 3.17. That **omitted the ODrive's `torque_constant` division** and understated `ω_v` by
+> 13 %. On ODrive 0.6.x the velocity controller outputs **torque**, and the drive then computes
+> `Iq = torque / torque_constant` using **its own configured value** (0.055133 — ODrive's default
+> `8.27/Kv`), which is *not* the motor's true Kt (~0.0624). So the torque the motor actually
+> produces per unit velocity error is `vel_gain × (Kt_true / Kt_config)` — i.e. **the shipping
+> velocity loop runs ~13 % stiffer than its nominal `vel_gain` implies.** (Operator-confirmed:
+> `vel_gain` is in Nm/(rev/s).)
+>
+> **`ω_v` is INVARIANT to the true Kt** — `J_eff` scales linearly with the assumed Kt and the
+> measured regression slope scales as `1/Kt`, so it cancels; only the *configured* value enters.
+> **The cascade conclusion therefore holds regardless of how the open 0.0551-vs-0.0624 Kt question
+> lands.** (`tools/probes/bench_leg_plant_id.py` now carries the derivation and computes it.)
+
 
 *Scatter (the honest uncertainty on every row): `J_eff` 1.99–3.24e-4 moves the production `ω_v` over
-**15.6–25.5 Hz** and the ratio over **2.46–4.00**. `bench_leg_plant_id.py --all` prints this.*
+**17.7–28.8 Hz** and the ratio over **2.78–4.53**. `bench_leg_plant_id.py --all` prints this.*
 
 Production is a **healthy cascade** — inner loop ~3× the outer, which is what a cascade wants, and
 it stays acceptable (≥2.5) even at the pessimistic end of the scatter. Two things follow:
@@ -402,7 +417,7 @@ passes, no socket opened, no motor commanded.
 
 Probe reproduction `python tools/probes/bench_leg_plant_id.py --all` (2026-07-13) — five independent
 plant fits across the two stroke batteries; `J_eff` 0.72–1.18 × `J_rotor`, `τ_c` 0.88–1.22 A, pooled
-cascade 20.2 / 6.4 Hz (ratio 3.17), as tabulated above.
+cascade 22.8 / 6.4 Hz (ratio 3.58), as tabulated above.
 
 **Regression tests proven genuine:** reverting `format_stroke_error` to a hard-coded `* 1e3` fails all
 three new tests.

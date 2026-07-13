@@ -57,10 +57,32 @@ dynamics:
                                                 #   Method 1: hollow cylinder model (50% mass at ~35mm radius) → 2.76e-4
                                                 #   Method 2: τ/α from datasheet (3.86 Nm, 42.7 ms to 603 rad/s) → 2.73e-4
                                                 # Rounded to 2.75e-4. May be refined via system ID in Phase 6.
-  motor_kt_nm_per_a: 0.0624                   # Motor torque constant (Nm/A) for ODrive D6374-150Kv.
-                                                # Measured value from the Phase 2 multi-weight bench fit (R²=0.994);
+  motor_kt_nm_per_a: 0.0624                   # Motor torque constant (Nm per ODrive-REPORTED amp), D6374-150Kv.
+                                                # Measured: Phase-2 multi-weight bench fit (R²=0.994);
                                                 # canonical historical reference: tests/hardware/single_leg_test.py:92.
                                                 # Datasheet theoretical value would be ~0.0637 (= 60/(2π·150 Kv)).
+                                                #
+                                                # ⚠️ 2026-07-14 — THIS VALUE IS UNDER RE-MEASUREMENT. DO NOT LEAN ON IT.
+                                                # Two independent problems were found in the fit that produced it:
+                                                #   (1) LEVER-ARM BUG (fixed 2026-07-14, single_leg_test.py:841): the fit
+                                                #       used the STANDARD leg's spool radius (11.221 mm) on the BENCH leg
+                                                #       (11.391 mm). The lever arm was 1.51% short ⇒ Kt came out 1.51% LOW.
+                                                #       Corrected, that same data gives **0.0633**.
+                                                #   (2) STICTION BIAS (unquantified): the fit held the leg in POSITION with
+                                                #       hanging masses. Coulomb friction (τ_c ≈ 1.1 A — NOT small next to the
+                                                #       few-amp signal) supports part of a static load, so less current is
+                                                #       needed than gravity demands ⇒ torque/iq inflated ⇒ Kt biased HIGH.
+                                                #       Direction is opposite to (1); the net is unknown.
+                                                # What IS solid: Kt is NOT 0.055133. That figure is ODrive's uncalibrated
+                                                # nameplate heuristic 8.27/Kv = 8.27/150 to 15 s.f., has zero empirical
+                                                # backing, and the ODrive datasheet cannot adjudicate it (3.86 Nm / 70 A =
+                                                # 0.05514 — the datasheet IS the formula, circularly).
+                                                # BEING SETTLED BY: tests/hardware/kt_bench_test.py --mode kt, which cancels
+                                                # friction EXACTLY by averaging a constant-velocity up/down traverse
+                                                # ((iq_up + iq_down)/2 = τ_g/Kt, since friction flips sign with direction
+                                                # and gravity does not) and fits with a free intercept. Until that lands,
+                                                # torque_ff_enabled stays FALSE.
+                                                # See logbook/2026-07-14-kt-reconciliation-and-gravity-ff.md.
                                                 # Used by the friction feedforward stack to convert iq (A) to
                                                 # torque (Nm), and by tests/hardware/friction_ff_demo.py.
                                                 # Promoted to config 2026-05-07 in preparation for friction-FF
@@ -74,6 +96,84 @@ dynamics:
                                                 # With motor_pole_pairs=7, cogging-torque fundamental period is
                                                 #   LCM(2·pole_pairs, slots) / mechanical_rev = LCM(14,12) / rev = 84 cycles/rev.
                                                 # Used by motion-onset cogging analysis (tools/motion_onset_cogging_study.py).
+  motor_kt_odrive_config_nm_per_a: 0.055133331567049
+                                                # The torque_constant FLASHED on every leg ODrive
+                                                # (`config/ODrive config Files/odrive_pro_leg_config.json`
+                                                # -> axis0.config.motor.torque_constant).  This is ODrive's
+                                                # nameplate default heuristic 8.27 / Kv = 8.27/150 EXACTLY —
+                                                # it was never calibrated.  It is NOT the same number as
+                                                # motor_kt_nm_per_a above (the bench-measured 0.0624), and the
+                                                # 13% gap between them is REAL, not drift.
+                                                #
+                                                # WHY WE DO NOT "FIX" THE DRIVE.  ODrive 0.6.x runs the velocity
+                                                # loop in Nm: the firmware computes iq = torque / torque_constant,
+                                                # so the amps delivered per unit velocity error are
+                                                # vel_gain / torque_constant.  Re-flashing torque_constant to
+                                                # 0.0624 WITHOUT also rescaling vel_gain / vel_integrator_gain by
+                                                # 0.0624/0.055133 = 1.1318 would silently DETUNE the shipping,
+                                                # bench-validated velocity loop (40/0.20/0.32) by -11.65%, with no
+                                                # error and no telemetry.  "Set torque_constant and nothing else"
+                                                # is the one action that must never happen.
+                                                #
+                                                # Instead the drive keeps its own constant and the Jetson
+                                                # PRE-SCALES every leg torque feedforward on the wire by
+                                                #   ODRIVE_LEG_TORQUE_WIRE_SCALE = kt_odrive_config / kt_measured
+                                                # (a derived constant; see generate_config.compute_derived), so the
+                                                # DELIVERED CURRENT is physically correct — which is the only thing
+                                                # a torque feedforward actually needs — at zero risk to the loop.
+                                                # Enforcement point: controller/teensy_link/setpoint_pump.py.
+                                                # Consequence to know: vel_gain's "0.20 Nm/(turn/s)" label is a
+                                                # nominal, not a true Nm; the physically meaningful quantity is
+                                                # vel_gain / torque_constant = 3.628 A/(rev/s).
+                                                #
+                                                # If this value is ever changed here it MUST be changed on all six
+                                                # flashed leg drives in the same operation (and vice versa).
+                                                # Pinned against the ODrive JSON by
+                                                # tests/sim/test_motor_kt_canonical_source.py.
+
+  # ── Leg torque feedforward (gravity + platform inertia) ──
+  # DEFAULT OFF.  When off, the trajectory emitter publishes torque_Nm = zeros and
+  # the SetpointPump packs torque_ff = zeros — byte-identical to the pre-feature
+  # behaviour.  Turning it on is an OPERATOR BENCH ACTION; see the validation
+  # procedure in tests/hardware/session_torque_ff.md.
+  torque_ff_enabled: false                    # Master switch for the leg torque feedforward.
+                                                # Read by BOTH producers (the trajectory emitter, which computes
+                                                # the torque, and the SetpointPump, which puts it on the wire).
+                                                # Either one off ⇒ zero feedforward: an AND gate, deliberately.
+  torque_ff_gravity: true                     # Include the gravity-wrench term (the term this feature exists for).
+                                                # Only has effect when torque_ff_enabled is true.
+                                                # Magnitude at the active pose: 0.013–0.041 Nm/leg (≈0.2–0.7 A).
+  torque_ff_platform_inertia: false           # Include the platform-inertia (Newton-Euler) + reflected-rotor term.
+                                                # DEFAULT OFF even when the master switch is on, for a specific
+                                                # reason: the can-bridge firmware HOLDS the last torque_ff
+                                                # UNDECAYED through the stale-link extrapolation window
+                                                # (leg_interp.cpp:366 sits AFTER the velocity-decay block), so an
+                                                # acceleration-proportional feedforward would keep pushing at full
+                                                # magnitude while the commanded velocity decays to zero.  Gravity
+                                                # is a STATIC term, so holding it during a stale window is not just
+                                                # harmless but correct — gravity is still there.  Enable the inertia
+                                                # term only after the stale-hold behaviour is understood/fixed.
+  torque_ff_max_nm: 0.15                      # Per-leg magnitude clamp on the feedforward {Nm, TRUE Nm at the
+                                                # motor shaft}, applied in the SetpointPump before the wire scale.
+                                                # 0.15 Nm ≈ 2.4 A of feedforward current (0.15 × 0.8835 / 0.055133),
+                                                # i.e. ~3× the largest gravity+inertia torque seen anywhere in the
+                                                # workspace and still leaving ~7.6 A of the 10 A current_soft_max
+                                                # for the velocity loop's disturbance rejection.
+                                                # WHY A CLAMP AT ALL: the ODrive ADDS input_torque to the velocity
+                                                # loop's output BEFORE the torque limit, so a feedforward above
+                                                # ~0.55 Nm (= 10 A × 0.055133) saturates the current clamp and the
+                                                # position loop loses ALL authority — the leg then runs open-loop
+                                                # at full current until MAX_DEVIATION E-STOPs it mid-motion.  There
+                                                # is no clamp in the firmware (only int16 saturation at ±3.2767 Nm
+                                                # = 59 A of demand), so this Jetson-side clamp is the only one.
+  torque_ff_ramp_s: 2.0                       # Ramp-in duration {s} for the feedforward at stream start (and after
+                                                # any SetpointPump.reset(), i.e. a link loss / re-arm).
+                                                # WHY: when streaming begins the leg is already being held at the
+                                                # activate pose and the ODrive's velocity INTEGRATOR has already
+                                                # wound up to carry the full gravity load.  Applying the gravity
+                                                # feedforward as a step would briefly command ~2× gravity until the
+                                                # integrator unwinds.  The ramp (0 → 1 over this many seconds of
+                                                # accepted 40 Hz knots) keeps the handover continuous.
 
 # ============================================================
 # 1c. Friction Feedforward (Stribeck model with smooth low-velocity gate)

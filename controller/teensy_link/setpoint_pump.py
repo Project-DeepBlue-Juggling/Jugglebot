@@ -45,12 +45,51 @@ exactly as motor_guard does (verified empirically):
     Mode-2 Taylor does, when ``HAS_U1`` is clear; production always supplies
     ``cmd_next_mm`` so Mode 1 always runs). Matches the bench Teensy-side sources
     (``synthetic_setpoint`` / ``replay_setpoint``).
-  * ``torque_ff`` = 0 — the **friction-FF drop**. The Jetson-relay source
-    carried motor_guard's Stribeck friction-FF in ``leg_torques``; the Teensy-side MPC
-    stream carries ``torque_Nm = zeros``. The bench measured the on-hardware penalty
-    as null (the smooth gate suppresses FF at v≈0, so its loss is free at
-    breakaway) and the float32 interp residual as 5.5e-7 rev — both within the
-    pre-registered acceptance criteria.
+  * ``torque_ff`` = the leg torque feedforward — **default 0**, see below.
+
+The leg torque feedforward — THE SINGLE WIRE ENFORCEMENT POINT
+--------------------------------------------------------------
+Historically this was hard-zeroed (the *friction-FF drop* at the 2026-06-25 Teensy
+cutover). It is now a plumbed, **default-OFF** path: the producer
+(``jugglebot.motion.torque_ff.LegTorqueFeedforward``, via the trajectory emitter or
+``HardwarePlant``) publishes ``torque_Nm`` in **TRUE Nm, extension-positive**, and this
+pump is the ONE place that turns a physical torque into an ODrive wire value. Three
+transformations happen here and nowhere else, because this is the sole production
+producer of the leg ``Setpoint`` frame:
+
+1. **Clamp** to ``±torque_ff_max_nm`` (TRUE Nm), per leg. There is NO clamp anywhere
+   downstream: the firmware only saturates at int16 (``±3.2767`` ODrive-Nm ≈ **59 A** of
+   demand at ``LEG_TOR_SCALE`` = 10000). And the ODrive **adds** ``input_torque`` to the
+   velocity loop's output *before* the torque limit, so a feedforward above ~0.55 Nm
+   (= ``current_soft_max`` 10 A × ``torque_constant`` 0.055133) saturates the current
+   clamp and the **position loop loses all authority** — the leg then runs open-loop at
+   full current until ``MAX_DEVIATION`` E-STOPs it mid-motion. This clamp is the only
+   thing standing between a mis-modelled FF and that failure mode.
+2. **Kt wire scale** (``× ODRIVE_LEG_TORQUE_WIRE_SCALE`` = ``Kt_odrive_config/Kt_measured``
+   = 0.055133/0.0624 = 0.8835). The drives are flashed with ODrive's uncalibrated
+   nameplate ``torque_constant = 8.27/Kv = 0.055133`` and compute
+   ``iq = input_torque / torque_constant``, while the motor's bench-measured Kt is
+   0.0624 Nm/A. Pre-scaling here makes the **delivered current** physically correct —
+   the only thing a torque FF actually needs — without touching the flashed
+   ``torque_constant``, which would silently detune the bench-validated velocity loop
+   (its authority is ``vel_gain / torque_constant`` amps per rev/s). See the WHY block
+   at ``config/hardware_config.yaml:dynamics.motor_kt_odrive_config_nm_per_a``.
+3. **Ramp-in** over ``torque_ff_ramp_frames`` accepted frames, restarted by
+   :meth:`reset`. When streaming begins, the leg is already held at the activate pose
+   and the ODrive's velocity **integrator has already wound up to carry gravity**;
+   applying the gravity FF as a step would briefly command ~2× gravity until that
+   integrator unwinds. Ramping on *accepted frames* (not wall time) makes it
+   deterministic and means a dropped frame lengthens the ramp — the safe direction.
+
+Sign: the wire value stays **extension-positive**. The firmware's ``encode_leg_setpoint``
+(``odrive_protocol.h:166-179``) applies ``leg_sign`` — a negation for leg axes — to
+position, vel_ff and torque_ff alike, so a positive wire torque becomes a negative ODrive
+torque, which drives ODrive position negative, which is leg extension, which is
+platform-up. **Do not pre-negate here.**
+
+With ``torque_ff_enabled=False`` (the shipped default) this whole path is inert:
+``torque_ff = (0.0,)*n`` and ``torque_Nm`` is not even read — byte-identical to the
+pre-feature frame, including when the field is absent or malformed.
 
 Per-step safety gate — a port of ``can_node._sub_leg_lengths``'s
 ``JB_OP_MAX_POSITION_STEP_REV`` clamp (can_node.py:1046-1056). Reject any frame
@@ -85,6 +124,18 @@ FLAG_HAS_U2 = 0x2
 # module is usable standalone in tests.
 DEFAULT_MAX_STEP_REV = 0.3
 
+# ── Leg torque-FF defaults (mirror the generated hardware_config constants so the
+# module stays pure + standalone-usable; pinned against them by
+# tests/motion/test_leg_torque_ff.py::test_pump_defaults_match_generated_config) ──
+
+# TRUE Nm → ODrive-Nm. = DYNAMICS_MOTOR_KT_ODRIVE_CONFIG_NM_PER_A / DYNAMICS_MOTOR_KT_NM_PER_A
+#                      = 0.055133331567049 / 0.0624.
+# hardware_config.ODRIVE_LEG_TORQUE_WIRE_SCALE is the authority; the bridge passes it in.
+DEFAULT_TORQUE_WIRE_SCALE = 0.8835469802411698
+
+# Per-leg |torque_ff| clamp in TRUE Nm (hardware_config.DYNAMICS_TORQUE_FF_MAX_NM).
+DEFAULT_TORQUE_FF_MAX_NM = 0.15
+
 
 class SetpointPump:
     """Stateful Teensy-side knot packer + per-step gate for the 40/500 Hz setpoint downlink.
@@ -97,26 +148,77 @@ class SetpointPump:
             ``jugglebot.motion`` import) so the module stays pure.
         num_legs: number of leg axes (Setpoint carries 6).
         max_step_rev: per-leg per-frame ``u0`` step clamp (rev).
+        torque_ff_enabled: master switch for the leg torque feedforward
+            (``hardware_config.DYNAMICS_TORQUE_FF_ENABLED``). **Default False** — the
+            pump then emits ``torque_ff = (0.0,)*n`` and never even reads
+            ``cmd['torque_Nm']``, so the frame is byte-identical to the pre-feature one.
+        torque_ff_max_nm: per-leg clamp on the feedforward in TRUE Nm, applied before
+            the wire scale. See the module docstring for why this clamp is
+            load-bearing (there is no other one, at any layer).
+        torque_wire_scale: TRUE Nm → ODrive-Nm (``ODRIVE_LEG_TORQUE_WIRE_SCALE``).
+        torque_ff_ramp_frames: number of ACCEPTED frames over which the feedforward
+            ramps 0 → 1 after construction / :meth:`reset`. 0 disables the ramp
+            (full FF on the first frame — only for tests). The bridge derives this
+            from ``DYNAMICS_TORQUE_FF_RAMP_S / JB_TRAJ_KNOT_DT_S``.
     """
 
     def __init__(self, mm_to_rev: Sequence[float],
                  num_legs: int = p.NUM_LEGS,
-                 max_step_rev: float = DEFAULT_MAX_STEP_REV):
+                 max_step_rev: float = DEFAULT_MAX_STEP_REV,
+                 torque_ff_enabled: bool = False,
+                 torque_ff_max_nm: float = DEFAULT_TORQUE_FF_MAX_NM,
+                 torque_wire_scale: float = DEFAULT_TORQUE_WIRE_SCALE,
+                 torque_ff_ramp_frames: int = 0):
         self.n = int(num_legs)
         self.mm_to_rev = tuple(float(x) for x in mm_to_rev)
         if len(self.mm_to_rev) < self.n:
             raise ValueError(
                 f"mm_to_rev needs >= {self.n} entries, got {len(self.mm_to_rev)}")
         self.max_step_rev = float(max_step_rev)
+
+        # ── Leg torque-FF configuration (see the module docstring) ──
+        self.torque_ff_enabled = bool(torque_ff_enabled)
+        self.torque_ff_max_nm = abs(float(torque_ff_max_nm))
+        self.torque_wire_scale = float(torque_wire_scale)
+        self.torque_ff_ramp_frames = max(0, int(torque_ff_ramp_frames))
+        if not math.isfinite(self.torque_ff_max_nm) or self.torque_ff_max_nm <= 0.0:
+            raise ValueError(
+                f"torque_ff_max_nm must be finite and > 0, got {torque_ff_max_nm}")
+        if not math.isfinite(self.torque_wire_scale) or self.torque_wire_scale <= 0.0:
+            raise ValueError(
+                f"torque_wire_scale must be finite and > 0, got {torque_wire_scale}")
+
         self._prev_pos: Optional[list] = None
+        self._ff_frames = 0          # accepted frames since reset — drives the FF ramp
         self.frames_built = 0
         self.frames_skipped = 0      # no-command ticks (not a fault)
         self.frames_rejected = 0     # SAFETY rejects (NaN, short, step violation)
+        self.frames_without_ff = 0   # FF on, but the producer sent no torque_Nm
         self.last_reject_reason = ''
 
     def reset(self) -> None:
-        """Forget the prior frame (e.g. after a link loss / re-enable)."""
+        """Forget the prior frame (e.g. after a link loss / re-enable).
+
+        Also RESTARTS the torque-FF ramp. That is the point: after a link loss the
+        ODrive's velocity integrator has re-absorbed the gravity load on its own, so
+        re-applying the full feedforward as a step would double-count it exactly as it
+        would at first arm.
+        """
         self._prev_pos = None
+        self._ff_frames = 0
+
+    def torque_ff_ramp_scale(self) -> float:
+        """Current FF ramp multiplier in [0, 1].
+
+        0 on the first feedforward-carrying frame after construction / :meth:`reset` /
+        any accepted frame that carried no ``torque_Nm``. See :meth:`_build` for why
+        each of those restarts the ramp.
+        """
+        if not self.torque_ff_enabled:
+            return 0.0
+        if self.torque_ff_ramp_frames <= 0:
+            return 1.0
+        return min(1.0, self._ff_frames / float(self.torque_ff_ramp_frames))
 
     def _finite_vec(self, seq, name: str):
         """Validate a 6-vector is present, the EXACT length, and finite.
@@ -216,6 +318,32 @@ class SetpointPump:
             return None, reason
         v0 = [vel_vals[i] * mr[i] for i in range(self.n)]
 
+        # ── torque_Nm (TRUE Nm, extension-positive) — only read when FF is ON ──
+        # When the feature is OFF we do not even look at the field, so a producer
+        # sending a malformed / absent / NaN torque_Nm behaves EXACTLY as it did
+        # before this feature existed (torque_ff = zeros, frame accepted).
+        #
+        # When it is ON, a malformed torque vector is a SAFETY REJECT, not a silent
+        # zero. Two reasons: (a) it signals an upstream bug we must surface, and
+        # (b) silently dropping a live feedforward to zero manufactures exactly the
+        # discontinuous-FF transient that bootstrapped the 2026-05-08 5 Hz platform
+        # limit cycle. Rejecting instead leaves the firmware holding the last good
+        # setpoint AND its torque (continuous), and if the condition persists the
+        # 250 ms MPC-staleness E-STOP fires — loud and safe.
+        tq_true = None
+        if self.torque_ff_enabled:
+            tq = cmd.get('torque_Nm')
+            if tq is None:
+                # A producer that simply doesn't do feedforward (e.g. a bench source).
+                # Not a fault — just no FF this frame.
+                self.frames_without_ff += 1
+            else:
+                tq_true, reason = self._finite_vec(tq, 'torque_Nm')
+                if reason is not None:
+                    self.frames_rejected += 1
+                    self.last_reject_reason = reason
+                    return None, reason
+
         # ── u1 / u2: cmd_next(_2)_mm × mm_to_rev; absent/bad ⇒ clear the flag ──
         # Mirrors motor_guard: a non-finite / wrong-length lookahead clears the
         # waypoint rather than rejecting the frame (firmware convention: bits, not NaN).
@@ -254,13 +382,48 @@ class SetpointPump:
                         f'limit (cmd={u0[i]:.4f}, prev={self._prev_pos[i]:.4f})')
                     return None, self.last_reject_reason
 
+        # ── torque_ff: clamp (TRUE Nm) → ramp → wire scale (ODrive-Nm) ──────────
+        # Order matters. The clamp is a bound on the PHYSICAL torque we are willing to
+        # inject, so it is applied in true Nm, where an operator can compare it against
+        # the 0.013–0.041 Nm/leg gravity load. The ramp then attenuates that bounded
+        # torque, and the Kt wire scale converts it into the units the drive divides by.
+        # (Clamp-then-scale also means the clamp bound is exactly the number in the YAML,
+        # not that number times 0.8835.)
+        #
+        # The ramp counts ACCEPTED FRAMES THAT ACTUALLY CARRIED A FEEDFORWARD
+        # (``_ff_frames``, 0 on the first such frame after a reset), so the first frame
+        # of any feedforward carries ZERO and the FF grows from nothing — never a step
+        # into a velocity integrator that is already holding gravity.
+        #
+        # Two things that counter deliberately does NOT count, each closing a hole:
+        #   * REJECTED frames — they command nothing, so they must not buy ramp credit;
+        #     otherwise a burst of rejects would let the FF snap to full on the next
+        #     good frame.
+        #   * Accepted frames with NO torque_Nm — and, more than that, such a frame
+        #     RESETS the counter. Consider a producer that streams position-only for a
+        #     few seconds and then starts sending feedforward (a restarted emitter, a
+        #     source swap). The integrator has spent that time winding up to carry
+        #     gravity by itself, so this is exactly the first-arm situation again and it
+        #     needs the ramp again. Without the reset, the FF would snap straight to
+        #     full — the very transient the ramp exists to prevent, reintroduced through
+        #     the back door.
+        if tq_true is None:
+            torque_ff = (0.0,) * self.n
+            self._ff_frames = 0
+        else:
+            lim = self.torque_ff_max_nm
+            gain = self.torque_wire_scale * self.torque_ff_ramp_scale()
+            torque_ff = tuple(
+                max(-lim, min(lim, tq_true[i])) * gain for i in range(self.n))
+            self._ff_frames += 1
+
         sp = Setpoint(
             u0=tuple(u0),
             u1=tuple(u1),
             u2=tuple(u2),
             v0=tuple(v0),
             accel=(0.0,) * self.n,          # Mode-1 Hermite ignores accel
-            torque_ff=(0.0,) * self.n,      # friction-FF drop
+            torque_ff=torque_ff,            # zeros unless torque_ff_enabled
             flags=flags,
             t_origin_us=int(t_origin_us),
         )

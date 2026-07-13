@@ -792,9 +792,31 @@ class TeensyBridgeNode(Node):
         # While disabled there is NO setpoint thread and the heartbeat keeps
         # mpc_active=0, so the Teensy will not enable leg output. The operator
         # flips the parameter (and restarts the node) only after bench validation.
+        #
+        # LEG TORQUE FEEDFORWARD — also default-disabled, independently
+        # (dynamics.torque_ff_enabled, shipped false). The pump is the SINGLE wire
+        # enforcement point for it: clamp (TRUE Nm) → ramp → Kt wire scale. With the
+        # flag off it packs torque_ff = zeros and never reads cmd['torque_Nm'], so
+        # the frame is byte-identical to the pre-feature one. The ramp is expressed
+        # in ACCEPTED FRAMES (deterministic, and a dropped frame lengthens it — the
+        # safe direction), derived here from the ramp seconds and the fixed 40 Hz
+        # knot spacing.
+        _ff_ramp_frames = int(math.ceil(
+            float(hw.DYNAMICS_TORQUE_FF_RAMP_S) / float(hw.JB_TRAJ_KNOT_DT_S)))
         self._sp_pump = SetpointPump(
             mm_to_rev=hw.GEOM_MM_TO_REV,
-            num_legs=p.NUM_LEGS, max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
+            num_legs=p.NUM_LEGS, max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV,
+            torque_ff_enabled=bool(hw.DYNAMICS_TORQUE_FF_ENABLED),
+            torque_ff_max_nm=float(hw.DYNAMICS_TORQUE_FF_MAX_NM),
+            torque_wire_scale=float(hw.ODRIVE_LEG_TORQUE_WIRE_SCALE),
+            torque_ff_ramp_frames=_ff_ramp_frames)
+        if hw.DYNAMICS_TORQUE_FF_ENABLED:
+            self.get_logger().warn(
+                'LEG TORQUE FEEDFORWARD IS ENABLED '
+                f'(clamp ±{hw.DYNAMICS_TORQUE_FF_MAX_NM} Nm true, wire scale '
+                f'{hw.ODRIVE_LEG_TORQUE_WIRE_SCALE:.6f}, ramp {_ff_ramp_frames} frames '
+                f'≈ {hw.DYNAMICS_TORQUE_FF_RAMP_S} s). '
+                'Set dynamics.torque_ff_enabled=false + regenerate + colcon build to disable.')
         # ── leg_setpoint_echo stash (GUI observability) ────────
         # Written by _process_setpoint on the SETPOINT THREAD (the production
         # leg hot path) — the write is the absolute minimum under self._lock:
@@ -1610,7 +1632,11 @@ class TeensyBridgeNode(Node):
 
             # Derive u0 exactly as the production pump would (rejects a malformed
             # frame, and guarantees the frame we arm on is itself pump-acceptable).
-            probe = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV, num_legs=p.NUM_LEGS)
+            # torque_ff_enabled is mirrored so the ACCEPTANCE decision matches the
+            # production pump's — with the FF on, a malformed torque_Nm is a reject,
+            # and we must not arm on a frame the production pump would refuse.
+            probe = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV, num_legs=p.NUM_LEGS,
+                                 torque_ff_enabled=bool(hw.DYNAMICS_TORQUE_FF_ENABLED))
             sp, reason = probe.build(frame, 0)
             if sp is None:
                 if created_here:
@@ -2035,6 +2061,17 @@ class TeensyBridgeNode(Node):
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',
                          value=str(self._sp_pump.frames_rejected)),
+                # Leg torque FF (default-off). torque_ff_ramp is the live 0→1 ramp
+                # multiplier — the operator watches this climb during the first arming
+                # (tests/hardware/session_torque_ff.md, step S3). It reads 0 whenever
+                # the feature is off, so a 0 here on an armed robot means "no FF", full
+                # stop, with no ambiguity.
+                KeyValue(key='torque_ff_enabled',
+                         value=str(int(self._sp_pump.torque_ff_enabled))),
+                KeyValue(key='torque_ff_ramp',
+                         value=f'{self._sp_pump.torque_ff_ramp_scale():.3f}'),
+                KeyValue(key='setpoints_without_ff',
+                         value=str(self._sp_pump.frames_without_ff)),
                 KeyValue(key='heartbeat_age_ms',
                          value=('n/a' if age_us is None else f'{age_us / 1000.0:.0f}')),
                 KeyValue(key='rx_frames', value=str(stats.rx_frames)),
