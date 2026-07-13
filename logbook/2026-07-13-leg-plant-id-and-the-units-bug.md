@@ -17,7 +17,7 @@ files_changed:
   - logbook/2026-07-12-bench-leg-gain-tuning-stage1.md
   - logbook/2026-04-27-friction-feedforward-bench-validation.md
 commits:
-  - TBD  # backfilled immediately after the commit lands
+  - c766aa8
 subsystem:
   - motion
   - can
@@ -368,7 +368,7 @@ torque-FF gain derived from it must be validated by A/B, not trusted open-loop.
 
 ## Fix
 
-One commit (SHA backfilled on landing), all bench/documentation-scoped. **No production config value
+One commit (`c766aa8`), all bench/documentation-scoped. **No production config value
 changed** — the committed leg gains remain `40 / 0.20 / 0.32` — and **no firmware was touched**.
 
 - **`tests/hardware/sysid_lib.py`** — new pure `format_stroke_error(err_rms_rev, err_peak_rev,
