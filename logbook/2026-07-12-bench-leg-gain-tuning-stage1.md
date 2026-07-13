@@ -2,8 +2,9 @@
 title: Bench-leg gain-tuning Stage 1 — bench system-ID, the overturned 110 winner, and the motion-excited-vibration instrument gap the operator's ears exposed
 type: investigation
 date: 2026-07-12
-status: in-progress
-phase: "S4 gain-retune (Stage 1, bench)"
+status: superseded  # 2026-07-13: accuracy knee + Stage-2 recommendation retracted (units bug)
+superseded_by: 2026-07-13-leg-plant-id-and-the-units-bug.md
+phase: "S4 gain-retune (Stage 1, bench) — CLOSED"
 related_plan: leg-gain-tuning-methodology.md
 files_changed:
   - tests/hardware/bench_leg_sysid.py
@@ -56,6 +57,23 @@ recommended Stage-2 robot start is **70 / 0.35 / 0.56** with `MAX_LEAD` re-pinne
 (first at production 40, then the candidate). Six commits landed: one harness-unblock fix, one
 big Run-A harness + Run-B bench-firmware upgrade, three feature/fix commits from the analysis
 rounds, and a same-day follow-up.
+
+> **⚠️ SUPERSEDED 2026-07-13 — read this before trusting any number below.** The **"accuracy
+> knee"** and the **Stage-2 recommendation** in this entry are **retracted**. The stroke-error
+> table was in **milli-revolutions, not millimetres** (`bench_leg_sysid.py:2548` scaled by `1e3`
+> instead of the bench leg's `mm_per_rev` = 71.5708) — a **~14× inflation**. The real tracking error at production
+> gains is **0.74 mm RMS**, and **0.054 mm at the catch instant** — the metric the spec is judged
+> on — so **no gain change is warranted** and production `40 / 0.20 / 0.32` stands (`MAX_LEAD` stays
+> 0.10). A plant-ID on this session's
+> own CSVs further shows `J_eff` ≈ `J_rotor` (refuting the "~10× rotor" guess) and a production
+> cascade of `ω_v/ω_p` ≈ 3 — already healthy. **The gain hunt is closed**; the effort moved to
+> feedforward.
+>
+> **What remains valid and load-bearing:** the **stability envelope**, the **servo-vs-structure
+> discriminant** (the 6 Hz did not reproduce on the isolated bench leg in any regime), the
+> **friction describing-function** finding, the **measurement-ceiling lessons**, the
+> **instrument-gap lesson** (§c — which this correction only reinforces), and every **harness and
+> firmware fix**. See `logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`.
 
 **Probe data (cite, do not reproduce):** `temp/probes/bench_sysid_20260712_*/` —
 round 1 (afternoon, stock v3, 40 Hz knots): `152819 / 153007 / 153054`;
@@ -239,6 +257,13 @@ built.
   commanded content cancels exactly — not a per-sample residual.
 - **The accuracy knee is pos 70.** Battery mean errRMS 10.3 → **6.9 mm (−33 %)** from pos 40 → 70,
   while pos 90 buys only **~1 % more** accuracy for 2.4× iq churn and stronger real vibration.
+  > **⚠️ 2026-07-13 — THE UNITS HERE ARE WRONG AND THIS CONCLUSION IS RETRACTED.** These values
+  > are **milli-revolutions**, not millimetres: `bench_leg_sysid.py:2548` printed `err_rms * 1e3`
+  > under an `mm` label, but `err_rms` is in **revolutions** (`cmd_rev` − `pos_rev`). The correct
+  > scale is the bench leg's `mm_per_rev` = **71.5708**, so the figures are **0.74 → 0.49 mm**, ~14× smaller. The −33 %
+  > ratio survives (scale-free); the *decision* does not — a 0.25 mm gain is irrelevant against the
+  > operator's ±1 mm spec, and production `40/0.20/0.32` already passes it. See
+  > `logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`.
 - **pos 130 is dead at all three vel_int {0.72, 0.55, 0.40}** — hair-trigger and intermittent
   (ζ 0.690/null/0.647; buzz non-monotone in vel_int, fired only on the middle rung at 1 % over the
   gate; a rung that logged "unstable" live sat at oscillation-score 0.494 offline, just under the
@@ -365,20 +390,36 @@ dry-run only — **operator bench validation of those paths remains the next ste
 
 ## Outcome
 
+> **⚠️ 2026-07-13 — THE STAGE-2 RECOMMENDATION BELOW IS RETRACTED.** The "accuracy knee" that
+> motivated it was a **rev→mm units bug** (~14× — see the Diagnosis §7 callout and *Withdrawn
+> claims*). The real tracking error at production gains is **0.74 mm RMS** — and **0.054 mm at the
+> catch instant**, the metric the spec is judged on — already inside the
+> operator's ±1 mm spec, so **no gain change is warranted**: production `40 / 0.20 / 0.32` stands
+> and `MAX_LEAD` stays at 0.10. A plant-ID run on this session's own CSVs further shows the
+> production cascade was already healthy (`J_eff` ≈ `J_rotor`, `ω_v/ω_p` ≈ 3), and that the
+> remaining error is dominated by transport delay and the two switched-off feedforward terms —
+> not by anything a feedback gain can reach. **The gain hunt is closed**; the effort moved to
+> feedforward. The bench *envelope* (below) remains valid as a stability-envelope result.
+> See `logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`.
+
 - **Bench envelope (unloaded leg, Path BRIDGE, v3 lineage):** **pos 40 clean / pos 70 accuracy
   knee / pos 90 aggressive-but-bounded edge / pos 110+ over the line.**
+  (2026-07-13: read "accuracy knee" as *"where the mis-scaled error metric flattened"* — the
+  envelope's *stability* boundaries stand; its *accuracy* framing does not.)
 - **Servo-vs-structure discriminant:** the ~6 Hz limit cycle did **not** reproduce on the isolated
   bench leg in *any* regime — ladder, sustained tracking, or deliberate clamp-riding at 46 %. Given
   the v2→v3 clamp-behaviour change (vel_ff kept, MAX_LEAD 0.10), **the S4 signature may already be
   fixed on the robot** by v3 alone; the unloaded bench cannot certify a loaded, coupled, 6-leg
   system, so **the robot replay decides.**
-- **Stage-2 robot recommendation:** start at **pos 70 / vel 0.35 / vel_int 0.56** (the RUN-A pt70
-  triple = the accuracy knee), with **`MAX_LEAD` re-pinned to `4.0/pos_gain = 0.057`** so the lead
-  clamp again commands exactly vel_limit; vel_int by the **ratio rule (0.56), not the bench-frozen
-  0.72** (a gravity-loaded integrator is always partially wound up). **Acceptance gate:** a loaded
-  S4 replay on the real robot under v3, run **first at production 40** (does the 6 Hz reproduce on
-  v3 at all?) **then at the candidate**, with staged escalation 40 → 55 → 70 and per-step bag
-  analysis.
+- ~~**Stage-2 robot recommendation:** start at **pos 70 / vel 0.35 / vel_int 0.56** (the RUN-A pt70
+  triple = the accuracy knee), with **`MAX_LEAD` re-pinned to `4.0/pos_gain = 0.057`**…~~
+  **RETRACTED 2026-07-13.** Its sole quantitative basis was the mis-scaled accuracy knee. **No gain
+  change is warranted:** production `40 / 0.20 / 0.32` meets the ±1 mm spec (0.054 mm at the catch
+  instant, ~5× inside), and
+  `MAX_LEAD` stays **0.10** (= `4.0/pos_gain` at pos 40 — the already-shipped value, so no firmware
+  change either). The **loaded S4 replay survives, reframed**: it is now a *regression test of the
+  v3 firmware fix at production gains* (does the 6 Hz reproduce on v3 at all?), **not** a
+  gain-selection experiment — there is no candidate to escalate to.
 - **Operator authorization:** bench speeds may go to **2.5 m/s (~35 rev/s)** on the acceptable-loss
   leg. The binding link is the firmware **vel_ff pass-through cap of 3.5 rev/s**
   (`LEAD_CLAMP_VELFF_LIMIT_RPS`) — a bench-flag bump of that cap under `BENCH_SYSID_BUILD` is the
@@ -407,6 +448,24 @@ dry-run only — **operator bench validation of those paths remains the next ste
 
 ## Withdrawn claims
 
+- **2026-07-13 — "The accuracy knee is pos 70 (battery mean errRMS 10.3 → 6.9 mm, −33 %)."**
+  Retracted as a *decision basis*. The values are **milli-revolutions**, not millimetres:
+  `bench_leg_sysid.py:2548` printed `err_rms * 1e3` under an `mm` label, but `err_rms` is in
+  **revolutions** (`cmd_rev` − `pos_rev`; the manifest field is correctly named
+  `track_err_rms_rev`). The correct scale is the bench leg's `mm_per_rev` = **71.5708**
+  (`single_leg_test.py:106`), giving **0.74 → 0.49 → 0.48 mm** for pos 40/70/90 — **~14× smaller**. The −33 % ratio survives (ratios are scale-free); the
+  magnitude does not. Against the operator's ±1 mm spec — judged **at the catch instant**, where
+  production measures **0.054 mm median / 0.192 mm worst** — a 0.25 mm improvement is irrelevant, and
+  production `40/0.20/0.32` already passes by ~5×. **Why the four rounds of adversarial verification
+  missed it:** every check was *internal to the number* (right arrays, right windows, right
+  exclusions, honest pos-to-pos delta — all true); nobody asked whether **10 mm RMS was physically
+  plausible on a leg with a 280 mm stroke**. It was internally consistent and externally absurd.
+  Fixed with a named, unit-tested enforcement point (`sysid_lib.format_stroke_error`).
+  See `logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`.
+- **2026-07-13 — "Stage-2 robot recommendation: pos 70 / vel 0.35 / vel_int 0.56, `MAX_LEAD` 0.057."**
+  Retracted. Its sole quantitative basis was the mis-scaled accuracy knee above. No gain change is
+  warranted; `MAX_LEAD` stays 0.10 (already shipped). The loaded S4 replay survives as a **v3
+  firmware regression test at production gains**, not a gain-selection experiment.
 - **2026-07-12 — "The 18:03 `--mode all` suite measured the ladder winner 110/0.50/0.72."**
   Retracted. It ran at BASELINE 40/0.2/0.32; `_bringup_closed_loop` re-applies BASELINE before every
   `pos_steps`/`chirp` stage (`bench_leg_sysid.py:1800`), independently corroborated by the 18:03

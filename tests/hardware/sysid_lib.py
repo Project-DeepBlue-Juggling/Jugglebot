@@ -2146,6 +2146,26 @@ def series_peak_velocity(series: np.ndarray, seg_t: float) -> float:
     return float(np.max(np.abs(np.diff(arr)))) / seg_t
 
 
+def format_stroke_error(err_rms_rev: float, err_peak_rev: float,
+                        mm_per_rev: float) -> str:
+    """Render a stroke tracking error in MILLIMETRES.
+
+    ``err_*_rev`` are motor REVOLUTIONS (the CSV columns are ``cmd_rev`` /
+    ``pos_rev``, and the manifest fields are ``track_err_*_rev``). The only
+    correct scale to mm is the leg's measured ``mm_per_rev`` (~71.57 on the
+    bench leg, ~70.5 on a platform leg).
+
+    This exists as a named, tested function because the conversion was inline
+    and got it wrong: the 2026-07-12 stroke battery printed ``err * 1e3`` under
+    an "mm" label — that is milli-REVOLUTIONS, **14.2x too large**. It turned a
+    0.72 mm tracking error into a reported "10.3 mm" and manufactured the
+    "pos 70 accuracy knee" that drove a whole gain-retune. Never scale rev to mm
+    by 1e3. See ``logbook/2026-07-13-leg-plant-id-and-the-units-bug.md``.
+    """
+    return (f"errRMS={float(err_rms_rev) * float(mm_per_rev):.2f} mm "
+            f"peak={float(err_peak_rev) * float(mm_per_rev):.2f} mm")
+
+
 def stroke_moving_windows(spec: StrokeSpec, ring_pad_s: float = 0.15
                           ) -> Optional[List[Tuple[float, float]]]:
     """Time windows (s, from stroke-series start) covering the MOVING phases of a

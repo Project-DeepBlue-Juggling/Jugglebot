@@ -1435,3 +1435,36 @@ def test_sym_asym_strokes_unaffected_by_sustained_fix():
     for s in battery:
         series = sid.stroke_series(s, 1.5, 0.01, bounds)
         assert sid.series_peak_velocity(series, 0.01) <= 4.0 * 1.05, s.label
+
+
+# --- Stroke tracking-error units (the 2026-07-12 14.2x mm/milli-rev bug) -----
+
+def test_format_stroke_error_scales_rev_to_mm_not_milli_rev():
+    """The 2026-07-12 regression: err (in REV) was printed as ``err * 1e3`` under
+    an "mm" label — milli-REVOLUTIONS, 14.2x too large. It reported a real
+    0.72 mm tracking error as "10.3 mm" and manufactured the retracted "pos 70
+    accuracy knee". The only correct scale is the leg's measured mm/rev."""
+    mm_per_rev = 71.5708                     # bench leg (single_leg_test.py:106)
+    err_rev = 0.01034                        # the real pos-40 battery mean (222801/091748)
+    s = sid.format_stroke_error(err_rev, 2.0 * err_rev, mm_per_rev)
+    # 0.01034 rev x 71.5708 mm/rev = 0.74 mm -- NOT the "10.3 mm" the 1e3 scale printed.
+    assert 'errRMS=0.74 mm' in s
+    assert 'peak=1.48 mm' in s
+    assert '10.3' not in s and '10.2' not in s
+
+
+def test_format_stroke_error_is_linear_in_mm_per_rev():
+    """Guards the specific failure mode: a hard-coded scale factor. The output
+    must track mm_per_rev, so substituting 1e3 (or any constant) fails here."""
+    a = sid.format_stroke_error(0.02, 0.02, 70.5)     # platform leg
+    b = sid.format_stroke_error(0.02, 0.02, 71.5708)  # bench leg
+    assert 'errRMS=1.41 mm' in a
+    assert 'errRMS=1.43 mm' in b
+    assert a != b
+
+
+def test_format_stroke_error_zero_and_sign_agnostic():
+    assert 'errRMS=0.00 mm' in sid.format_stroke_error(0.0, 0.0, 71.5708)
+    # err arrays are pre-abs'd by the caller, but the formatter must not lie if
+    # a signed value reaches it.
+    assert 'errRMS=-0.72 mm' in sid.format_stroke_error(-0.01, 0.01, 71.5708)

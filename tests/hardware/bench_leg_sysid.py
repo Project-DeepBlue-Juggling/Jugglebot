@@ -2545,7 +2545,7 @@ class BridgeSysID:
                 cfs = '?' if cf is None else f"{cf:.3f}"
                 print(f"  {spec.label} (T_out={spec.T_out_s * 1e3:.0f}ms "
                       f"pk_a={spec.peak_accel_out_rps2:.0f} rps²): "
-                      f"errRMS={err_rms * 1e3:.1f}mm peak={err_peak * 1e3:.1f}mm "
+                      f"{sid.format_stroke_error(err_rms, err_peak, hw_mm_per_rev())} "
                       f"overshoot={ov * 100:.1f}% clamp={cfs}")
                 self._print_hf(hf, prefix="      ")
                 row = {'gains': asdict(gp), 'stroke': asdict(spec),

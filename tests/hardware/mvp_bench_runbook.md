@@ -371,25 +371,41 @@ fine if the first felt completely clean — but never skip the battery+review be
 - **Detailed protocol**: `tests/hardware/session_phase4_ramp.md` (per-step mechanics;
   this section's ladder supersedes its "~1.5×, jerk 12000" example values).
 
-### S4b — Leg-gain retune (root fix for the 2026-07-10 ~6 Hz stutter) — **gates further S4**
+### S4b — v3-firmware regression replay (was: "leg-gain retune") — **one run, at production gains**
+
+> **⚠️ REWRITTEN 2026-07-13 — S4b is no longer a gain retune, and it no longer gates S4 on a
+> retune converging.** The "under-damped position loop" framing below was **wrong**: the leg
+> already tracks to **0.054 mm median / 0.192 mm worst at the catch instant** (operator spec:
+> ±1 mm), and the measured cascade at production gains is healthy (`ω_v` ≈ 20 Hz / `ω_p` = 6.4 Hz,
+> ratio ≈ 3.2). The "accuracy knee" that motivated a retune was a **~14× units bug**. **Production
+> `40 / 0.20 / 0.32` stands; there is no winner to transfer and nothing to persist to YAML.**
+> See `logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`.
 
 The 2026-07-10 battery latched `MAX_DEVIATION` on a fast vertical stroke (z 170→250 at
-156/660/10500) with an audible ~6 Hz stutter. Forensics traced it to the leg velocity loop
-being tuned only for quiet HOLD (`40 / 0.20 / 0.32`, the methodology's Level-1 tier), not for
-fast-motion tracking: the under-damped position loop rings at its own bandwidth, the ODrive
-current surges/brakes, and the accumulated command-vs-encoder lead trips the 0.5-rev guard.
-The stutter is worst at the raised limits, so **the S4 ramp cannot proceed above the levels
-that provoke it until the leg-gain fast-motion tier converges** — running S4 harder first just
-re-triggers the latch. The retune is now **two-stage, bench-first**: **Phase A** does the
-aggressive work (system-ID + an escalate-until-unstable gain ladder + the loop-vs-structure
-discriminant) on the acceptable-loss **7th (bench) leg** connected on CAN3 in place of
-Jugglebot; **Phase B** transfers a **derated** winner to the real robot with a short verify
-pass (the old 3-point sweep shrinks to a verify — the full sweep is kept only as a fallback).
-Persist the winning gains to YAML, then resume S4 from the last clean step. Sessions **S5+ are
-unaffected** by this gate (they run at generous leads / gentle limits, below the stutter
-regime). Bench Phase A: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier
-(Level-2f)" → "STAGE 1"; on-robot Phase B + exact commands:
-`tests/hardware/session_gain_retune.md`.
+156/660/10500) with an audible ~6 Hz stutter. **Forensics traced it to a STRUCTURAL defect in the
+interp path, not to the gains:** `MAX_LEAD = 0.15` gave `pos_gain × lead = 6.0 rev/s` — *above*
+the 4.0 rev/s `vel_limit` — and `vel_ff` was discontinuously **zeroed at clamp engage**, a
+bang-bang excitation whose frequency is set by the loop's own bandwidth (which is why it *looked*
+like a gain problem: `≈ pos_gain/2π` = 6.4 Hz). **Both were fixed in v3 firmware** (`MAX_LEAD` →
+0.10, `vel_ff` kept through the clamp), and the unloaded bench leg under v3 **cannot reproduce the
+ring in any regime**.
+
+**What S4b is now: one replay, at production gains, to confirm v3 fixed it on the LOADED robot.**
+Re-run the S4 excitation that produced the limit cycle, record a bag, and re-run the 2026-07-10 S4
+analysis pipeline. Start at low stroke amplitude.
+
+- **PASS** — no 5.9–6.1 Hz / ~12.3 Hz spectral peak on any leg, no guard latch, hold-current
+  ripple bounded ⇒ **the S4 chapter closes; resume the S4 ramp.** No gain work.
+- **FAIL** — the ring survives v3 on the loaded robot ⇒ this is a **structural / regulation**
+  finding, not a tracking one. Investigate the interp/clamp path and inter-leg coupling first. A
+  gain change is a *last* resort, and the honest knob is **`vel_gain` up** (raises the inner loop
+  and the cascade ratio), **not `pos_gain` up** (which *lowers* the ratio and marches the outer
+  loop into the 15–19 Hz resonance).
+
+Sessions **S5+ are unaffected** (they run at generous leads / gentle limits, below the stutter
+regime). Commands + safety mechanics: `tests/hardware/session_gain_retune.md` (**read its
+superseded banner first** — use its arming/abort/`/recover` procedure, ignore its gain sweep).
+Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (Level-2f)".
 
 ### S5 — Phase-5 timed targets (±25 ms arrival + supersede)
 

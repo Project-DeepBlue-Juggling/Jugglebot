@@ -254,8 +254,22 @@ Bench validation produced a complete, internally consistent friction characteris
 | Boost above ω_s causes overshoot | ✅ Confirmed | OS trend 1.9 → 2.5 → 2.9 % across the sweep |
 | Tracking lag is pos-loop bandwidth, not friction | ✅ Confirmed | vel_ff dropped lag 31 → 6 ms |
 | Encoder/motor cable noise was degrading control | ❌ Refuted | Run B (cables together) ≡ Run C (separated) |
-| Remaining latency floor is inertia, not friction | 🟡 Strongly suggested | vel_ff diminishing returns + estimated J_eff ~10× rotor |
+| Remaining latency floor is inertia, not friction | 🟡 Strongly suggested | vel_ff diminishing returns + ~~estimated J_eff ~10× rotor~~ **← REFUTED 2026-07-13, see below** |
 | Cogging is the primary motion-onset cause | ❌ Refuted | fwd-vs-rev R=0 at smooth velocities; cogging amplitude ~5 % of friction |
+
+> **⚠️ 2026-07-13 — the `J_eff ~10× rotor` estimate in the row above is REFUTED BY MEASUREMENT.**
+> It was a hypothesis-table cell with **no derivation**, and it propagated for months into the leg
+> gain-tuning methodology's transfer analysis. Five independent torque-balance fits
+> (`2π·J_eff·a = Kt·iq − τ_c·sgn(v) − b·v`, regressed on recorded bench stroke telemetry —
+> `tools/probes/bench_leg_plant_id.py`) give **`J_eff` = 0.72–1.18 × `J_rotor`** (pooled 0.91×;
+> the two highest-R² fits both 0.97×). 10× would require `J_eff ≈ 2.75e-3 kg·m²`; the data says
+> **2.0–3.2e-4**. **The rotor dominates the reflected inertia** — the leg mechanism and spool add
+> almost nothing.
+>
+> The *headline* of that row — "the remaining latency floor is inertia, not friction" — is
+> **unaffected and still stands**; only the magnitude estimate was wrong. (This entry's `τ_c` =
+> **1.094 A** was, by contrast, independently **reproduced** by the same fits at 0.88–1.22 A.)
+> See `logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`.
 
 ## Withdrawn claims
 

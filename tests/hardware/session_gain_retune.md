@@ -1,5 +1,35 @@
 # Hardware Session — Leg-Gain Retune (fast-motion tier), **on-robot Phase B** — root fix for the 2026-07-10 ~6 Hz stutter
 
+> # ⚠️ SUPERSEDED 2026-07-13 — DO NOT RUN THE GAIN SWEEP IN THIS DOCUMENT
+>
+> **There is no gain to retune, and no winner to transfer.** The bench "winner" this session
+> existed to land was selected on a **~14× inflated error metric** (`bench_leg_sysid.py:2548`
+> printed milli-**revolutions** under an `mm` label). Corrected, the leg already tracks to
+> **0.054 mm median / 0.192 mm worst at the catch/throw instant** — against an operator spec of
+> **±1 mm**, i.e. ~5× inside. The measured cascade at production gains is healthy
+> (`ω_v` ≈ 20 Hz / `ω_p` = 6.4 Hz, ratio ≈ 3.2).
+>
+> **Production `40 / 0.20 / 0.32` STANDS. `MAX_LEAD` stays 0.10** (already shipped — no firmware
+> change). **Do not** run the `pos_gain` {25, 40, 55} × `vel_gain` {0.20, 0.35} sweep below, and
+> **do not** persist any gains to YAML.
+>
+> **What to run instead — the ONE test still worth doing, ONCE:** the **loaded S4 replay as a v3
+> firmware regression test, at production gains**. The 2026-07-10 ~6 Hz ring was diagnosed
+> **structural, not a tuning deficit** — `MAX_LEAD = 0.15` gave `pos_gain × lead = 6.0 rev/s`
+> (*above* the 4.0 rev/s `vel_limit`) and `vel_ff` was discontinuously **zeroed at clamp engage**.
+> **Both were fixed in v3 firmware**, and the bench under v3 cannot reproduce the ring in any
+> regime. The only open question is whether v3 fixed it on the **loaded, coupled, 6-leg** robot.
+>
+> - **PASS** (no 5.9–6.1 Hz / ~12.3 Hz peak, no guard latch) ⇒ the S4 chapter closes. No gain work.
+> - **FAIL** ⇒ that is a **structural/regulation** finding. Investigate the interp/clamp path and
+>   inter-leg coupling. A gain change is a *last* resort, and the honest knob would be **`vel_gain`
+>   up** (raises the inner loop and the cascade ratio) — **not `pos_gain` up**, which *lowers* the
+>   ratio and marches the outer loop into the 15–19 Hz resonance.
+>
+> Use the safety mechanics below (arming, abort criteria, `/recover`) — they are still correct.
+> Ignore every instruction to select, derate, or persist a gain.
+> See `logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`.
+
 **Plan**: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (Level-2f)"
 (read it before starting — the tier is now a **two-stage** methodology)
 **Runbook**: `tests/hardware/mvp_bench_runbook.md` § S4b (this session gates further S4 ramping)

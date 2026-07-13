@@ -1,20 +1,101 @@
 ---
 title: Leg ODrive PID Gain Tuning Methodology
-status: active
+status: active  # gain hunt CLOSED 2026-07-13 (production 40/0.20/0.32 ships); effort moved to the Feedforward tier
 owner: harrison
 created: 2026-04-18
-last_updated: 2026-07-12
+last_updated: 2026-07-13
 related_logbook:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
   - 2026-04-19-leg1-pose-dependent-hold-twitch.md
+  - 2026-04-27-friction-feedforward-bench-validation.md
+  - 2026-05-08-friction-ff-platform-limit-cycle.md
   - 2026-07-10-s4-stutter-guard-forensics-recovery-stack.md
   - 2026-07-12-bench-leg-gain-tuning-stage1.md
+  - 2026-07-13-leg-plant-id-and-the-units-bug.md
+related_probe:
+  - tools/probes/bench_leg_plant_id.py
 related_config:
   - config/hardware_config.yaml → jugglebot_odrive_defaults.leg_pos_gains / leg_vel_gains / leg_vel_int_gains
 related_code:
   - ros_ws/src/jugglebot/jugglebot/can_node.py::_set_leg_gains
   - ros_ws/src/jugglebot/jugglebot/can/odrive.py::DEFAULT_LEG_GAINS
 ---
+
+> # ⚠️ 2026-07-13 — READ THIS BEFORE OPENING ANY TUNING ROUND
+>
+> **The leg gain hunt is CLOSED. Production `40 / 0.20 / 0.32` stands. Do not open a gain
+> round to improve tracking accuracy — that is not what gains are for on this robot.**
+>
+> Three things were established on 2026-07-13
+> (`logbook/2026-07-13-leg-plant-id-and-the-units-bug.md`), all from data already on disk:
+>
+> 1. **The "accuracy knee at pos 70" that motivated the whole fast-motion retune was a
+>    rev→mm units bug.** The 2026-07-12 stroke table was in **milli-revolutions**, not
+>    millimetres — a **~14× inflation** (`1000 / 71.5708` = **13.97**). The real numbers are **0.74 → 0.49 mm**, not
+>    10.3 → 6.9 mm.
+> 2. **THE STOPPING RULE (new, and the thing this document never had): ±1 mm of leg accuracy,
+>    judged AT THE CATCH/THROW INSTANT** (operator, 2026-07-13). The metric matters — see the
+>    box below. Production gains meet it by **~5×**. The absence of any acceptance number is
+>    *why* the ladder climbed until something broke — there was no other termination condition.
+>
+>    > **The metric, measured (production gains, 21 strokes, unloaded bench):**
+>    >
+>    > | | median | worst | strokes > 1 mm |
+>    > |---|---|---|---|
+>    > | **error at arrival** (settled, \|v\| < 0.05 rev/s) — **THE SPEC** | **0.054 mm** | **0.192 mm** | **0 / 21** ✅ |
+>    > | peak error mid-transit | 2.47 mm | 4.70 mm | 21 / 21 |
+>    >
+>    > The error is **velocity-proportional** — it appears during fast transit and collapses to
+>    > the encoder noise floor at rest. That is a **transport delay**, not a soft servo (a
+>    > stiffness deficit would leave a steady-state offset; there is none). Arrival is the right
+>    > metric because the planner **forces translational velocity to zero at a catch** —
+>    > *"velocity matching is the hand's job"* (`planner.py:739-745`) — so the catch lands where
+>    > the error is 0.05 mm, not where it is 2.5 mm.
+>    >
+>    > **Caveat:** mid-transit error *does* exceed 1 mm on every stroke. Nothing is scored
+>    > mid-flight in the MVP (the platform is static at both catch and release), but a future
+>    > **platform-assisted throw** would score it. **Even then gains are not the lever** — pos 70
+>    > moves the transit peak only 2.47 → 2.16 mm, because the dominant term is gain-independent
+>    > delay. The lever is the knot-phase lead + feedforward.
+> 3. **The plant is measured** (`tools/probes/bench_leg_plant_id.py`): `J_eff` ≈ 0.7–1.2 ×
+>    `J_rotor` (**refuting the "~10× rotor" guess this document carried**), and the production
+>    cascade is `ω_v` ≈ 20 Hz over `ω_p` = 6.4 Hz — **ratio ≈ 3.2, already healthy**.
+>
+> **The ordering principle that follows (normative):**
+>
+> > **Feedforward sets accuracy. Feedback sets robustness.**
+> >
+> > Jugglebot's reference is *known in advance with exact derivatives* (`plan.state_at(τ)` →
+> > pose/twist/accel; exact velocity IK `J·ẋ` and acceleration IK `J·ẍ + J̇·ẋ` are already
+> > computed in `ik_solver.py`). In that regime **feedforward follows the trajectory and
+> > feedback only cleans up model error.** Feedforward's ceiling is **model error**; feedback's
+> > ceiling is **resonance and sensor noise**. So **gains are sized for disturbance rejection
+> > and hold quiescence — never for tracking accuracy — and should be the SMALLEST that meet
+> > those.**
+> >
+> > **Feedforward is not free, and this project has the scar.** A FF is an open-loop injection
+> > into a closed loop: a **smooth, correctly-signed** one costs little or nothing in loop
+> > stability, but a **discontinuous or mis-modelled** one injects energy straight into the
+> > plant. On 2026-05-08 a friction FF with a hard boost band at v≈0 bootstrapped a
+> > self-sustaining **~5 Hz platform limit cycle** (hold `act_std` 21 → **862 µm**,
+> > `logbook/2026-05-08-friction-ff-platform-limit-cycle.md`). **Any FF we ship must reuse the
+> > existing smooth gate, not rebuild it.** "Costs nothing in stability" is true only of a FF
+> > that is smooth and right.
+> >
+> > The evidence is this project's own: the single largest tracking improvement ever measured
+> > here was `vel_ff` (lag 31 → 6 ms, 2026-04-27) — a *feedforward*. It is live today, and it
+> > is *why* the tracking error is already sub-millimetre.
+>
+> **Consequences for this document, applied below:**
+> - The **Fast-motion tier (Level-2f)** gain ladder is **demoted from "the method" to a
+>   stability-envelope probe**. It finds where the loop rings. It does *not* select gains.
+> - The **Stage-2 candidate `70 / 0.35 / 0.56` and the `MAX_LEAD = 0.057` re-pin are
+>   RETRACTED.** `MAX_LEAD` stays **0.10** (= `4.0/pos_gain` at pos 40 — already shipped).
+> - The **loaded S4 replay survives, reframed** as a *regression test of the v3 firmware fix
+>   at production gains*, not a gain-selection experiment.
+> - **Levels 1–3 below remain valid for what they actually are: regulation problems** (hold
+>   quiescence, pose-dependent twitch, disturbance rejection). That is exactly where classic
+>   PID intuition *does* apply.
 
 > **2026-04-20 status:** Level-1 converged with all six legs uniform at the
 > original flash baseline **40/0.20/0.32**. The per-leg reductions Iteration-3
@@ -63,11 +144,21 @@ without sacrificing any leg to the weakest member.
 
 Across all three levels:
 
-- `MAX_LEAD_REV = 0.15 rev` clamp in `motor_guard.py` remains in place as the
-  hard safety floor. No amount of gain mis-tuning can cause a runaway faster
-  than this clamp allows.
-- Workspace/position limits in `can_node._send_position_target` remain in
-  place. A leg cannot be driven outside its stroke.
+- **The lead clamp is `MAX_LEAD_REV = 0.10 rev`, and it lives in the can-bridge
+  Teensy firmware** (`canbridge_config.h:178`, enforced in `leg_interp.cpp:368-390`
+  at 500 Hz) — **not** in `motor_guard.py`. *(Corrected 2026-07-13: this bullet
+  used to cite `motor_guard.py`'s `MAX_LEAD_REV = 0.15`. `motor_guard` left the leg
+  path entirely at the 2026-06-25 Teensy cutover; its `:5556` output is unconsumed
+  for the legs, and it still carries the old 0.15 + the vel_ff-zeroing defect that
+  caused the 2026-07-10 ring — do not read gain-safety facts out of it.)* The clamp
+  rebases the command onto the live encoder every tick, so the ODrive's position
+  error is **structurally bounded at 0.10 rev**, and its P-term velocity
+  contribution at `pos_gain × 0.10 = 4.0 rev/s` — exactly `vel_limit`, by
+  construction, at `pos_gain = 40`. **This is why `MAX_LEAD` and `pos_gain` are
+  coupled: `MAX_LEAD = 4.0 / pos_gain`. Any change to one requires the other.**
+  Behind it, the firmware `MAX_DEVIATION = 0.5 rev` E-STOP is the hard backstop.
+- Workspace/position limits remain in place. A leg cannot be driven outside its
+  stroke (firmware `STROKE_MIN/MAX_REV`, `leg_interp.cpp:392-408`).
 - All gain edits go through `config/hardware_config.yaml`, then
   `python config/generate_config.py`, then a ROS2 rebuild. Never set gains
   live via ODriveGUI as a durable configuration — those values are lost on
@@ -78,6 +169,13 @@ Across all three levels:
 - Keep the ratio `pos_gain : vel_integrator_gain ≈ 125 : 1` unless you have a
   specific reason to break it (Level 2 or 3 tuning). This ratio preserves the
   outer-to-inner-loop bandwidth relationship that the ODrive firmware assumes.
+- **The cascade ratio is the thing that actually decides ringing** (added
+  2026-07-13, now measurable): `ω_v = vel_gain / (2π·J_eff)` and `ω_p = pos_gain`.
+  With the measured `J_eff` ≈ `J_rotor` = 2.75e-4 kg·m², production sits at
+  `ω_v/ω_p` ≈ **3** — healthy. **Raising `pos_gain` alone *lowers* this ratio** and
+  moves the outer loop toward the 15–19 Hz resonance. If a future round genuinely
+  needs a stiffer loop, **`vel_gain` is the honest knob** (it raises the inner loop
+  and the ratio); `pos_gain` is not.
 
 ## Level 1 — Empirical A/B on the outlier
 
@@ -455,8 +553,12 @@ outcomes:
 
 ### Envelope verdict (unloaded bench leg, v3 lineage)
 
-- **pos 40** — clean everywhere (production baseline).
-- **pos 70** — the accuracy knee (see the err-vs-HF table below).
+> **2026-07-13:** this is a **stability envelope** — where the loop rings. It is *not* a gain
+> selector. "pos 70 = the accuracy knee" is **retracted** (units bug); read it as *"where the
+> mis-scaled error metric flattened"*. Production **pos 40 already meets the ±1 mm spec**.
+
+- **pos 40** — clean everywhere (production baseline). **← ships; meets ±1 mm.**
+- **pos 70** — ~~the accuracy knee~~ (retracted — see the corrected err table below).
 - **pos 90** — aggressive-but-bounded edge; the first **real** motion-excited vibration onsets
   (iqHF to 5.6× baseline on fast long strokes) but still recoverable.
 - **pos 110+** — over the line. The ladder's 110/0.50/0.72 "winner" was **overturned** (below);
@@ -501,17 +603,88 @@ predicts gain rising toward 1 with amplitude, a linear plant predicts amplitude-
   100 Hz) — it changes the *instrument* (chirp ceiling, iq resolution) and the *actuation texture*
   (less 500 Hz-Hermite staircase). Do not read a knot-rate ζ change as a control-gain change.
 
-### Err-vs-HF trade (RUN-A strokes battery, unloaded)
+### Err-vs-HF trade (RUN-A strokes battery, unloaded) — **CORRECTED 2026-07-13**
 
-| gain point | mean errRMS | iq HF churn (mean) | verdict |
+The errRMS column originally read 10.3 / 6.9 / 6.8 **mm**. Those were **milli-revolutions**
+(`bench_leg_sysid.py:2548` scaled by `1e3` instead of the bench leg's `mm_per_rev` = **71.5708**,
+`single_leg_test.py:106`; factor `1000/71.5708` = **13.97**). Corrected:
+
+| gain point | mean errRMS (**corrected**) | ~~as published~~ | iq HF churn (mean) | verdict |
+|---|---|---|---|---|
+| **pos 40 (0.20 / 0.32)** | **0.74 mm** | ~~10.3 mm~~ | 0.27 A (1.0×) | **clean everywhere — and already inside the ±1 mm spec** |
+| pos 70 (0.35 / 0.56) | 0.49 mm (−33 %) | ~~6.9 mm~~ | 0.51 A (1.81×) | ~~accuracy knee~~ — a **0.25 mm** gain, irrelevant against ±1 mm |
+| pos 90 | 0.48 mm (−1 % vs 70) | ~~6.8 mm~~ | 0.66 A (2.4×); peak 1.21 A (5.6×) on a long stroke | aggressive edge, real vibration |
+| pos 110 (0.50 / 0.72) | — | — | motion iq 3.7×; ζ≈0.5 @17.5 Hz; rail 1.26 % | over the line (overturned) |
+
+**How to read this now.** The −33 % ratio is real (ratios are scale-free) but it buys **0.25 mm**
+against a **±1 mm** spec — i.e. nothing. **Production gains already pass** (and by ~5× at the
+instant that is actually scored — see the spec box at the top). The flattening from pos 70 → 90 is
+not "accuracy saturating"; it is the error hitting a floor that **no gain can reach**, because the
+floor is not feedback-shaped:
+
+| error term (pos 40, `091748` run) | RMS contribution | attackable by gain? |
+|---|---|---|
+| **total** (pooled over all samples) | **0.83 mm** | |
+| delay-shaped `τ_d·v` (τ_d = 6.2 ms) | 0.57 mm | **no** — gain-independent, and largely the METRIC's own sample-and-hold (`cmd_u0` is the knot at the *start* of the segment the firmware interpolates *through*) |
+| inertial `k_a·a` | 0.17 mm | weakly (∝1/Kp·Kv) — **or exactly, by a torque FF** |
+| friction `k_f·sgn(v)` | 0.15 mm | weakly — **or exactly, by a friction FF** |
+| residual (noise floor) | 0.44 mm | no |
+
+**Three caveats, all required to read that table honestly:**
+
+1. **It is NOT a partition.** These are RMS contributions of *correlated* regressors; they do not
+   sum to the total in any norm (`√(0.57² + 0.17² + 0.15² + 0.44²) = 0.76 ≠ 0.83`). Read each row
+   as "this term alone contributes X mm RMS".
+2. **It is the `091748` fit** (R² = 0.725). The same decomposition on `222801` fits far worse
+   (R² 0.42 / 0.18 / 0.17 at p40/p70/p90; pooled totals 1.22 / 1.74 / 1.95 mm) — that stroke set
+   carries more low-velocity and hold content, where the `sgn(v)` and delay regressors are
+   ill-conditioned. **The shape (delay dominant, gain-independent) is the same in both; the
+   magnitudes are not.**
+3. **`total` here pools every sample across all CSVs at a gain**, so it is *not* the same statistic
+   as the harness's per-stroke `track_err_rms_rev` mean (0.74 mm in the table above). Expect the
+   pooled figure to be higher. Three different "error at production gains" numbers legitimately
+   coexist — 0.74 mm (battery mean), 0.83 mm (pooled RMS), 0.054 mm (at arrival) — and they are
+   **different metrics, not a discrepancy**.
+
+On all 60 completed sym/asym points the current rail (>9 A) and lead clamp never bound unloaded.
+
+### Measured plant (2026-07-13) — `tools/probes/bench_leg_plant_id.py`
+
+Torque-balance regression `2π·J_eff·a = Kt·iq − τ_c·sgn(v) − b·v` on the same stroke CSVs, five
+independent fits across two runs and three gain points:
+
+- **`J_eff` = 0.7–1.2 × `J_rotor`** (2.0–3.2e-4 kg·m²; the two highest-R² fits, both at pos 40,
+  agree at **0.97×**). **This REFUTES the "J_eff ~10× rotor" figure** this document carried (see
+  the Stage-2 transfer section) — 10× would need `J_eff ≈ 2.75e-3`. The rotor dominates.
+- **`τ_c` = 0.88–1.22 A**, bracketing the 2026-04-27 friction bench's 1.094 A (reproduced from unrelated data).
+- Viscous `b` ≈ 0.
+
+**The cascade the ladder was climbing blind** (`ω_v = vel_gain/2πJ`, `ω_p = pos_gain`):
+
+| gains | velocity loop | position loop | ratio ω_v/ω_p |
 |---|---|---|---|
-| pos 40 (0.20 / 0.32) | 10.3 mm | 0.27 A (1.0×) | clean everywhere |
-| **pos 70 (0.35 / 0.56)** | **6.9 mm (−33 %)** | 0.51 A (1.81×) | **accuracy knee** |
-| pos 90 | 6.8 mm (−1 % vs 70) | 0.66 A (2.4×); peak 1.21 A (5.6×) on a long stroke | aggressive edge, real vibration |
-| pos 110 (0.50 / 0.72) | — | motion iq 3.7×; ζ≈0.5 @17.5 Hz; rail 1.26 % | over the line (overturned) |
+| **40 / 0.20 (production)** | **20.2 Hz** | **6.4 Hz** | **3.17 — healthy** |
+| 70 / 0.35 | 35.3 Hz | 11.1 Hz | 3.17 |
+| 90 / 0.45 | 45.3 Hz | 14.3 Hz | 3.17 |
+| 110 / 0.50 | 50.4 Hz | 17.5 Hz | 2.88 |
 
-Accuracy saturates at pos 70; pos 90 buys ~1 % more for 2.4× churn and stronger real onsets. On
-all 60 completed sym/asym points the current rail (>9 A) and lead clamp never bound unloaded.
+*Computed from the pooled `J_eff` = 2.51e-4 kg·m². **Scatter — the honest uncertainty on every
+row:** the five fits span `J_eff` 1.99–3.24e-4, which moves the production `ω_v` over
+**15.6–25.5 Hz** and the ratio over **2.46–4.00**. Still healthy (≥2.5) at the pessimistic end.
+`bench_leg_plant_id.py --all` prints this — **cite the tool's output, never a hand-assembled
+range** (the first draft of this table had rows whose columns did not divide).*
+
+**Two load-bearing consequences:**
+
+- **The ladder's `vel_gain = 0.45·√(pg/90)` rule holds `ω_v/ω_p` CONSTANT.** Climbing it therefore
+  never improved the loop's damping *structure* — it slid both crossovers upward together. **The
+  ladder was a resonance-proximity dial that looked like a performance dial.** That is what the
+  operator's ear heard at pos 110, and it is why every rung bought less and less.
+- **It is `ω_p` that walks into the resonance, not `ω_v`.** At production, `ω_p` = 6.4 Hz sits far
+  below the 15–19 Hz band where the chirp measured ζ ≈ 0.5; at pos 110 it lands **on it** (17.5 Hz),
+  while `ω_v` is already *above* that band even at production. **So the honest stiffening knob, if
+  one is ever needed, is `vel_gain` up — not `pos_gain` up**, which lowers the ratio and marches the
+  outer loop straight into the resonance.
 
 ### Protocol amendments adopted 2026-07-12
 
@@ -546,25 +719,72 @@ state is unambiguous), `--quiescent-secs` (thermal-onset soak), `--knot-hz {40,1
 3. **Step-fit ζ overstates damping** — ramp-rate-limited steps never excite the 15–19 Hz
    resonance. The **honest damping figure is the chirp peak/DC ratio** (ζ≈0.49–0.52 at the 110
    crossover), not the step fit (0.63–0.78).
+4. **SANITY-CHECK THE MAGNITUDE, NOT JUST THE PIPELINE (added 2026-07-13).** The ~14× units bug
+   survived four rounds of adversarial verification because **every check was internal to the
+   number** — right arrays, right windows, right exclusions, honest pos-to-pos delta, all true.
+   Nobody asked the external question: *is 10 mm RMS a plausible tracking error on a leg with a
+   280 mm stroke?* (It is 14 % of the stroke; it would be visible across the room and would have
+   latched `MAX_DEVIATION`.) **Before trusting any headline number, state what it would mean
+   physically and check that against what the robot actually does.** A number can be internally
+   consistent and externally absurd.
 
 ### Remaining Stage-1 bench items
 
-- **By-ear spacemouse teleop session** (device selection is fixed — wiggle-probe when several
-  identical receivers enumerate).
-- **A real S4-class sustained datapoint** — the sustained-stroke entry self-latched at all gains
-  from a harness sizing bug until it was fixed + gated; re-run for the genuine back-to-back err/HF
-  surface.
-- **High-speed envelope up to the operator-authorized 2.5 m/s (~35 rev/s)** on the acceptable-loss
-  leg — the binding link is the firmware vel_ff pass-through cap `LEAD_CLAMP_VELFF_LIMIT_RPS =
-  3.5 rev/s`; a bench-flag bump of that cap under `BENCH_SYSID_BUILD` is the unlock, not the config
-  vel_limit alone.
-- **Thermal/positional intermittency probe** — the pos-130 boundary buzzed one sitting and was
-  clean the next (both at center 1.5 rev); a controlled repeat with a temperature log and a
-  center-position sweep would separate thermal from position effects.
+> **2026-07-13: Stage 1 is CLOSED.** The gain question it existed to answer is answered
+> (production `40/0.20/0.32` meets the ±1 mm spec; the cascade is healthy). The items below are
+> **no longer gates** — keep them only as optional envelope/robustness work, and only if a
+> *specific* question needs them.
+
+- ~~**A real S4-class sustained datapoint**~~ — **DONE 2026-07-13** (the run that started this
+  correction). Result: errRMS 0.74 mm at pos 40, 0.50 mm at pos 70 — both inside ±1 mm.
+- **By-ear spacemouse teleop session** — **reclassified**: SpaceMouse is a **pass/fail robustness
+  screen** ("must not ring, latch, or saturate"), **never a gain selector**. It is architecturally
+  identical to a ball-tracked catch (same 40 Hz quintic-replan path, so *not* off-path), but the
+  chase clamp drives the legs to **85 % of limits indefinitely** — a worst-case soak, not the
+  operating point. And its harshness has a **non-gain cause**: a fresh quintic every 25 ms restarts
+  *jerk* at 40 Hz, and the firmware's Mode-1 **cubic** Hermite makes the *executed* acceleration
+  step at every knot — so the commanded accel carries 40 Hz content by construction, and raising
+  loop gain amplifies it straight into the current loop. **The fix is a quintic firmware
+  interpolator** (the wire already carries the `accel[6]` field Mode-1 ignores), **not a gain.**
+- **High-speed envelope up to the operator-authorized 2.5 m/s (~35 rev/s)** — optional. The binding
+  link is the firmware vel_ff pass-through cap `LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5 rev/s`.
+- **Thermal/positional intermittency probe** at the pos-130 boundary — optional; the boundary is
+  now well outside anything we intend to ship.
 
 ---
 
 ## STAGE 2 — Jugglebot transfer (conservative): derate, then confirm
+
+> # ⚠️ 2026-07-13 — STAGE 2 IS CANCELLED AS A GAIN TRANSFER
+>
+> **There is no gain to transfer.** The bench "winner" that Stage 2 existed to land was
+> selected on a **~14×-inflated error metric**; corrected, production `40 / 0.20 / 0.32`
+> already meets the **±1 mm at the catch/throw instant** spec by ~5×, and the measured cascade
+> (`ω_v/ω_p` ≈ 3.2) is healthy.
+> **The candidate `70 / 0.35 / 0.56` and the `MAX_LEAD = 0.057` re-pin are RETRACTED.**
+> `MAX_LEAD` stays **0.10** (= `4.0/pos_gain` at pos 40 — the already-shipped value, so **no
+> firmware change is needed either**).
+>
+> **What survives from this section, and is still worth doing:**
+>
+> - **The loaded S4 replay, REFRAMED** — it is now a **regression test of the v3 firmware fix at
+>   production gains**, not a gain-selection experiment. The 2026-07-10 6 Hz ring was diagnosed
+>   *structural*, not tuning: `MAX_LEAD = 0.15` gave `pos_gain × lead = 6.0 rev/s` (**above** the
+>   4.0 rev/s `vel_limit`) and `vel_ff` was discontinuously **zeroed at clamp engage** — a
+>   bang-bang excitation whose frequency is naturally set by the loop's own bandwidth, which is
+>   exactly why it *looked* like a gain problem (`≈ pos_gain/2π`). Both were fixed in v3, and the
+>   bench under v3 cannot reproduce the ring in any regime. **The only open question is whether v3
+>   fixed it on the loaded, coupled, 6-leg robot** — run it once, at production gains. There is
+>   nothing to escalate to.
+> - **The extreme-pose HOLD battery** (Level-1 moves 6 & 7) — still non-negotiable, but as a
+>   *regulation* check, which is what it always was.
+> - **The transfer analysis below** — still the right physics, and now with a **measured** `J_eff`
+>   instead of a guess (see the correction inline).
+>
+> **If a future gain round is ever opened, it must be justified by a REGULATION failure** —
+> disturbance rejection (the hand's throw/catch reaction forces, ball impact), hold quiescence, or
+> pose-dependent twitch — **never by tracking error.** See the ordering principle at the top of
+> this document.
 
 Stage 1 found the answer on hardware we could break. Stage 2 lands it on the real robot
 with the *minimum* on-robot exposure to the ring/latch regime. **Do not port the bench
@@ -580,19 +800,30 @@ preload vs platform gravity; see `hardware_config.yaml:160`).
 
 **Does NOT transfer — the *position-loop plant* sees a different load:**
 
-1. **Reflected load inertia.** A bench leg is unloaded; each platform leg additionally
-   reflects a share of the ~1.2 kg platform+throw-axis mass (`hardware_config.yaml:43`,
-   `platform_mass_kg`). INFERRED, crude vertical-in-phase estimate: reflected platform
-   inertia per leg ≈ `(M/6)·(lead/2π)²` ≈ `0.2 kg × (0.0114 m)²` ≈ **2.6e-5 kg·m² ≈
-   0.09× J_rotor**. So the *raw inertia bump* bench→Jugglebot is **modest (~≤10 % of
-   rotor inertia)** — the shared rotor (+ shared leg-carriage) dominates, and the
-   velocity/position-loop plant transfers *well*. (If the leg-mechanism reflected inertia
-   is as large as the friction-FF work suggested — "J_eff ~10× rotor",
-   `logbook/2026-04-27-friction-feedforward-bench-validation.md` — the platform share is
-   <1 % and the transfer is even better.) **Direction matters:** higher load inertia
-   *lowers* the velocity-loop bandwidth `ω_v = vel_gain/J`, which *erodes* the position
-   loop's phase margin — so the same gains ring **slightly more** on Jugglebot, not less.
-   The transfer must therefore *reclaim* that margin.
+1. **Reflected load inertia — now MEASURED, and the news is good.** A bench leg is unloaded;
+   each platform leg additionally reflects a share of the ~1.2 kg platform+throw-axis mass
+   (`hardware_config.yaml:43`, `platform_mass_kg`). INFERRED, crude vertical-in-phase estimate:
+   reflected platform inertia per leg ≈ `(M/6)·(lead/2π)²` ≈ `0.2 kg × (0.0114 m)²` ≈
+   **2.6e-5 kg·m² ≈ 0.09× J_rotor**.
+
+   > **2026-07-13 — the bench `J_eff` is measured, and the "~10× rotor" figure is REFUTED.**
+   > Torque-balance regression on the stroke CSVs (`tools/probes/bench_leg_plant_id.py`, five
+   > independent fits) gives **`J_eff` = 0.7–1.2 × `J_rotor`** (2.0–3.2e-4 kg·m²; the two
+   > highest-R² fits both at **0.97×**). The 2026-04-27 *"estimated J_eff ~10× rotor"*
+   > (`logbook/2026-04-27-...:257`) was a hypothesis-table cell with **no derivation**, and 10×
+   > would require `J_eff ≈ 2.75e-3` — an order of magnitude above measurement. **Delete it from
+   > your mental model.**
+   >
+   > Consequence for the transfer: the bench plant is **`J_rotor` plus almost nothing**, and the
+   > platform adds a further **~0.09× `J_rotor`**. So the total bench→robot inertia bump is
+   > **≲10 %**, which moves `ω_v` from ~20 Hz down to ~18 Hz — a *few percent* of phase
+   > margin, not a regime change. **The velocity/position-loop plant transfers well.**
+
+   **Direction still matters:** higher load inertia *lowers* the velocity-loop bandwidth
+   `ω_v = vel_gain/(2πJ)`, which *erodes* the position loop's phase margin — so the same gains
+   ring **slightly more** on Jugglebot, not less. With the measured numbers that erosion is
+   small, but the *sign* is what justifies keeping production gains rather than reaching for the
+   bench's aggressive rungs.
 2. **Inter-leg structural coupling.** A single bench leg has none; on the platform,
    moving one leg reacts through the shared platform back onto the other five. In
    differential (non-in-phase) modes this adds effective inertia/stiffness the bench never
@@ -629,32 +860,41 @@ Stage 1 already ran the discriminate-then-damp sweep on the bench. On the real r
 do **not** repeat it — you *verify* the derated winner. Three checks, in
 `session_gain_retune.md` (now its **Phase B**):
 
-> **Concrete Stage-2 spec (2026-07-12, from the Stage-1 results above).** The candidate start
-> is **pos_gain 70 / vel_gain 0.35 / vel_int 0.56** — the bench pt70 accuracy knee, taken as-is
-> because starting at the *unloaded* knee is itself the derate (the loaded platform reflects
-> ~1/6 of platform+payload inertia + gravity + inter-leg coupling, which erodes phase margin, so
-> the same gains ring *slightly more* on the robot). `vel_int` is the **ratio-rule 0.56
-> (`70/125`), NOT the bench-frozen 0.72** — the frozen value was a bench-only hedge against
-> current-saturation windup; on the robot the integrator is always partially wound up holding
-> gravity, so 0.72 (2.25× production) invites windup → overshoot/latch. **Re-pin
-> `MAX_LEAD_REV = 4.0/pos_gain = 0.057`** (`canbridge_config.h`) so max lead again commands
-> exactly vel_limit and the clamp stays meaningful at the stiffer loop.
+> ~~**Concrete Stage-2 spec (2026-07-12).** The candidate start is **pos_gain 70 / vel_gain 0.35 /
+> vel_int 0.56** … **Re-pin `MAX_LEAD_REV = 4.0/pos_gain = 0.057`**…~~
 >
-> **Acceptance gate — the loaded S4 replay (the single deciding test).** Re-run the exact S4
-> excitation that produced the original limit cycle (large sustained ~2 rev/s vertical spacemouse
-> strokes), record a bag, and re-run the `2026-07-10` S4 analysis pipeline. Run it **first at
-> production `40/0.20/0.32` under v3** (does the 6 Hz reproduce on v3 at all, now that vel_ff is
-> kept? — the unloaded bench says it may already be gone), **then at the candidate**, escalating
-> the candidate in stages **40 → 55 → 70** with a per-step bag + analysis, starting at low stroke
-> amplitude.
-> - **PASS** = no 5.9–6.1 Hz / ~12.3 Hz spectral peak on any leg; reduced tracking lag vs
->   production; no guard latches / E-STOPs; quiescent hold-current ripple bounded; the integrator
->   not saturating on gravity transients; catch-move overshoot < 15 %.
-> - **ABORT** on any limit-cycle peak reappearing, any `MAX_DEVIATION` / MPC-staleness latch,
->   audible buzz/whine, or overshoot > 15 %. On abort, apply the other derate knob one notch
->   (`vel_gain` +15–20 %) and re-verify — **not** push the ring regime harder on the real legs.
+> # ⚠️ RETRACTED 2026-07-13 — there is no candidate.
 >
-> The three checks below are the per-candidate verify that rides on top of this gate.
+> The candidate's **sole quantitative basis was the "pt70 accuracy knee", which was a ~14× units
+> error.** Corrected, production `40 / 0.20 / 0.32` meets the ±1 mm spec (0.054 mm median error at
+> arrival, ~5× inside) and the
+> measured cascade is healthy. **No gain change. `MAX_LEAD` stays 0.10** (= `4.0/pos_gain` at
+> pos 40 — already shipped, so **no firmware change**).
+>
+> **What replaces it — the loaded S4 replay as a REGRESSION TEST (the one test still worth
+> running).** Re-run the exact S4 excitation that produced the original limit cycle (large
+> sustained ~2 rev/s vertical spacemouse strokes), record a bag, and re-run the `2026-07-10` S4
+> analysis pipeline — **at production `40/0.20/0.32` under v3, once.** The question is no longer
+> "which gains?" but **"did v3 fix the ring on the loaded robot?"** (v3 kept `vel_ff` through the
+> clamp and re-pinned `MAX_LEAD` 0.15 → 0.10, killing the `pos_gain × lead = 6.0 rev/s` overshoot
+> of `vel_limit` that drove the bang-bang cycle; the unloaded bench says it is gone, but a single
+> unloaded leg cannot certify a gravity-loaded, inter-leg-coupled 6-leg platform).
+>
+> - **PASS** = no 5.9–6.1 Hz / ~12.3 Hz spectral peak on any leg; no guard latches / E-STOPs;
+>   quiescent hold-current ripple bounded; the integrator not saturating on gravity transients.
+>   ⇒ **The S4 chapter closes. No further gain work.**
+> - **FAIL** (the ring survives v3 on the loaded robot) ⇒ this is a **regulation/structural**
+>   finding, not a tracking one. Investigate the interp/clamp path and inter-leg coupling first.
+>   A gain change is a *last* resort and must be argued from the measured cascade
+>   (`ω_v/ω_p` ≈ 3 today — the honest knob would be **`vel_gain` up** to raise the inner loop,
+>   *not* `pos_gain` up, which lowers the ratio and moves the outer loop toward the resonance).
+>
+> Start at low stroke amplitude. Abort on any `MAX_DEVIATION` / MPC-staleness latch or audible
+> buzz — recover via `/recover`.
+>
+> The extreme-pose HOLD battery (check 2 below) remains **non-negotiable** as a regulation check.
+> Check 1 and check 3 are vestiges of the retracted candidate-verify loop — read them as the
+> per-run safety criteria for the replay above, not as a gain-selection procedure.
 
 1. **Ring-suppression stroke (×1):** apply the derated triple (YAML → codegen → colcon →
    relaunch), arm via `/orchestrator_command activate`, run the single fast stroke
@@ -675,17 +915,22 @@ do **not** repeat it — you *verify* the derated winner. Three checks, in
 
 ### Registered fast-motion gains
 
-| date | stage | pos_gain | vel_gain | vel_int_gain | measured ζ / ring | notes |
+| date | stage | pos_gain | vel_gain | vel_int_gain | measured ζ / ring | status |
 |---|---|---|---|---|---|---|
-| 2026-07-12 | bench (S1) | 70 | 0.35 | 0.56 | no 6 Hz ring on the unloaded bench in any regime; the 110 rung gave ζ≈0.5 @17.5 Hz and was overturned | accuracy knee (errRMS 10.3→6.9 mm, −33 %); pos 90 the aggressive edge; pos 110+ over the line. See `logbook/2026-07-12-bench-leg-gain-tuning-stage1.md` |
-| — | robot (S2) | 70 (start) | 0.35 (start) | 0.56 (start) | TBD | **candidate, not yet verified** — the bench pt70 triple, derated by starting at the unloaded knee; MAX_LEAD re-pinned 0.057; pending the loaded S4 replay gate |
+| **2026-07-13** | **PRODUCTION** | **40** | **0.20** | **0.32** | no 6 Hz ring on the unloaded bench under v3 in any regime; measured cascade `ω_v` 20.2 Hz / `ω_p` 6.4 Hz, **ratio 3.17 (healthy)** | ✅ **SHIPS.** Error at the catch instant **0.054 mm median / 0.192 mm worst** — ~5× inside the ±1 mm spec (whole-stroke errRMS 0.74 mm). `MAX_LEAD` 0.10. |
+| ~~2026-07-12~~ | ~~bench (S1)~~ | ~~70~~ | ~~0.35~~ | ~~0.56~~ | — | ❌ **RETRACTED 2026-07-13** — "accuracy knee (errRMS 10.3→6.9 mm)" was **milli-revs, not mm** (~14×). Real: 0.74 → 0.49 mm, a **0.25 mm** gain against a ±1 mm spec. |
+| ~~—~~ | ~~robot (S2)~~ | ~~70~~ | ~~0.35~~ | ~~0.56~~ | — | ❌ **RETRACTED 2026-07-13** — no candidate; `MAX_LEAD` stays 0.10 (no firmware change). |
 
-The **bench (S1)** row is the unloaded-leg result; the **robot (S2)** row is a *candidate start*,
-**not** a validated production gain — it is verified only when the loaded S4 replay (below) passes.
-Until the robot (S2) row is validated, the committed gains remain the Level-1 HOLD tier
-(`40 / 0.20 / 0.32`, `hardware_config.yaml:319-321`), which is known to stutter on fast strokes at
-raised limits — so **fast-motion S4 ramping stays gated on this tier converging** (see runbook
-§ S4b).
+**The committed gains are `40 / 0.20 / 0.32` (`hardware_config.yaml:319-321`), and they are now
+the *validated* tier, not a placeholder waiting on a retune.** The old claim that this tier "is
+known to stutter on fast strokes at raised limits" was about the **2026-07-10 S4 ring**, which was
+diagnosed **structural** (lead clamp + `vel_ff` zeroing) and **fixed in v3 firmware** — not a gain
+deficiency. Fast-motion S4 ramping is therefore **no longer gated on a gain retune**; it is gated
+on the one-shot **v3 regression replay** above.
+
+**If you are here to open a gain round: don't — unless you have a *regulation* failure**
+(disturbance rejection, hold quiescence, pose-dependent twitch). Tracking accuracy is a
+**feedforward** problem on this robot; see the ordering principle at the top of this document.
 
 ### Topology & drive paths (how the bench leg connects, and which path each stage uses)
 
@@ -778,7 +1023,112 @@ directly, and the chirp top frequency is bounded to ≈8 Hz by the telemetry + 4
 `/link_status` telemetry (`live_deviation`, `lead_clamp_mask`) is the measurable that makes
 Stage 1c and the Stage-2 verify honest.
 
+---
+
+## Feedforward tier — where tracking accuracy actually comes from (2026-07-13)
+
+**This is the tier the fast-motion work should have been in from the start.** It is listed after
+the gain levels only because that is the order we discovered it, not the order you should try it.
+
+### Why feedforward, and why it is not "Level 3+"
+
+Levels 1–3 all reach for the **same lever** — loop gain — which trades tracking error against
+stability margin along a single axis, and whose ceiling is set by a mechanical resonance you do
+not control. Feedforward is a **different lever entirely**: it cancels the *known* part of the
+plant's demand before the error is ever made, so its ceiling is *model error*, not resonance.
+
+**A smooth, correctly-signed feedforward costs little or nothing in loop stability — but a FF is
+not automatically safe.** It is an open-loop injection into a closed loop; a discontinuous or
+mis-modelled one puts energy straight into the plant. See the smooth-gate invariant below, which
+is not optional.
+
+The precondition is that you must **know the reference in advance, with derivatives.** On
+Jugglebot you do, exactly:
+
+- `plan.state_at(τ)` → `(pose, twist, accel)` (`motion/trajectory/plan.py`)
+- exact velocity IK `q̇ = J·ẋ` (`ik_solver.twist_to_leg_velocities`)
+- exact acceleration IK `q̈ = J·ẍ + J̇·ẋ` (`ik_solver.accel_to_leg_accels`)
+
+This is why Level 3 lists "add a feedforward path" as a *trigger for full loop shaping* — and why
+that framing is **wrong** and is hereby corrected. Feedforward is not the expensive last resort;
+it is the **cheap first move**.
+
+### Current state: one term on, three off
+
+| term | status | where |
+|---|---|---|
+| **velocity FF** (`vel_ff`) | ✅ **LIVE** — the analytic derivative of the very cubic the firmware executes | `leg_interp.cpp:334-337` → `encode_leg_setpoint` |
+| **inertial FF** (`τ = 2π·J_eff·q̈`) | ❌ never built | `J_eff` now measured (≈ `J_rotor`) |
+| **friction FF** (Stribeck) | ❌ dropped at the Teensy cutover | params measured + in `hardware_config.yaml:134-163`; scalar port `motion/friction_ff_params.py::friction_ff_torque_nm` |
+| **gravity + platform-inertia FF** | ❌ **dropped by ACCIDENT** | `hardware_plant.py:488` still *publishes* it (0.013–0.041 Nm/leg, non-zero 99.6 % of samples); the pump never reads it |
+
+**`vel_ff` is the proof of the principle**: it is a feedforward, it produced the single largest
+tracking improvement ever measured on this robot (lag **31 → 6 ms**, 2026-04-27), and it is *why*
+the tracking error is already sub-millimetre with a modest `pos_gain`.
+
+**The channel is already plumbed end-to-end.** The firmware forwards `torque_ff` to the ODrive
+every 500 Hz tick (`leg_interp.cpp:366` → `:488` → `:499`, packed into `set_input_pos`), and the
+leg acceleration is already computed and already on the ZMQ frame as `acc_mm_s2`. **One line
+zeroes it:** `controller/teensy_link/setpoint_pump.py:263`.
+
+### BLOCKING pre-req — reconcile Kt before ANY torque FF
+
+The ODrive's `motor.torque_constant = 0.0551` Nm/A (`config/ODrive config Files/odrive_pro_leg_config.json`)
+vs our **measured** `Kt = 0.0624` (`hardware_config.yaml:60`, bench fit R² = 0.994). The ODrive
+divides commanded torque by **its** number, so **every torque FF lands +13 % hot** until one is
+made authoritative. Close this first; nothing downstream is trustworthy until it is.
+
+### Safety invariant — the friction-FF smooth gate is NOT optional
+
+Any friction FF **must** reuse the existing smooth gate
+`gate(v) = 1 − exp(−(|v|/v_gate)²)`, `v_gate = 0.05` (`hardware_config.yaml:142`, implemented in
+`friction_ff_params.py`). The hard boost band it replaced **bootstrapped a self-sustaining ~5 Hz
+limit cycle on the platform** — hold `act_std` 21 → **862 µm (40×)**
+(`logbook/2026-05-08-friction-ff-platform-limit-cycle.md`). **Do not rebuild the gate. Do not
+remove it.** (Note the corollary, which is why the FF's loss looked free at the cutover: the gate
+is ≈0 at v≈0, so friction FF contributes ~nothing *at breakaway* — the only metric the cutover A/B
+scored. It says nothing about **sustained motion**, where the gate is 1 and the FF is at full
+0.068–0.122 Nm.)
+
+### Order of operations
+
+1. **Reconcile Kt.** (Blocking, above.)
+2. **Bench-validate on the acceptable-loss leg, at production gains only.** `bench_leg_sysid.py`
+   builds its own `Setpoint` frames, so it can inject `torque_ff` with **zero firmware change and
+   zero production change** — the ideal testbed. A/B on **identical stroke geometry** so the
+   commanded content cancels exactly (the discriminator discipline from Stage 1).
+3. **Expect a small bench result, and do not read that as a rejection.** The bench leg is
+   **unloaded**: its inertial + friction terms total only ~0.32 mm. Gravity, inter-leg coupling and
+   the hand's throw/catch reaction forces — the disturbances a FF would actually earn its keep
+   against — **exist only on the robot**.
+4. **Watch for the 40 Hz torque staircase.** The firmware holds `cmd_tor` **constant** across each
+   knot segment (`leg_interp.cpp:366`, ZOH). If HF rises, the fix is to compute `torque_ff` **in
+   the ISR** from the analytic 2nd derivative of the same cubic it already differentiates for
+   `vel_ff` — architecturally the correct home (the FF should be consistent with the command
+   *actually executed*, which is the invariant `vel_ff` already satisfies), and it needs no wire
+   change (`MOTOR_ROTOR_INERTIA_KGM2` is already in `Teensy_code_canbridge/hardware_config.h:37`).
+5. **Compensate the transport delay** — a pure lookahead, free and exact. `emitter.py` samples the
+   plan at `τ`; sampling at `τ + τ_d` cancels the velocity-proportional lag. Measure `τ_d` honestly
+   first: reconstruct the executed Hermite (not the `u0` sample-and-hold) and cross-correlate.
+
+### Instrument note — the harness still scores against `u0`
+
+`bench_leg_sysid.py` computes `err = cmd_u0 − encoder`, where `cmd_u0` is the knot at the **start**
+of the segment the firmware is interpolating **through**. That lags the *executed* command by up to
+one knot of travel (mean ≈ T/2 = **12.5 ms at the production 40 Hz**), which is **the largest single
+term in the measured error budget** and is **not a servo error at all**. Reconstructing the Mode-1
+cubic at telemetry timestamps would remove it and, by cross-correlation, hand you `τ_d` for free.
+**Until that lands, treat any errRMS from this harness as an upper bound.**
+
+---
+
 ## Level 3 — System ID + loop shaping
+
+> **2026-07-13:** Level 3's trigger list includes *"you want to add a feedforward path based on the
+> fitted plant inverse"* — **that is wrong and is superseded by the Feedforward tier above.**
+> Feedforward is the cheap *first* lever, not a consequence of exhausting the gain levels. Level 3
+> proper (loop shaping for margins) remains valid, but on current evidence we do not need it: the
+> measured cascade is already `ω_v/ω_p` ≈ 3.
 
 Use when: Level 2 hits a ceiling, or when you want explainable reproducible
 gain selection as part of a spec. Cost: ~1 day per leg. Defensibility:
