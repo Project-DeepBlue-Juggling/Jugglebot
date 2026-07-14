@@ -26,6 +26,7 @@ files_changed:
   - docs/motion_planner/dynamics.md
 commits:
   - 6113187
+  - be4252c
 subsystem:
   - motion
   - can
