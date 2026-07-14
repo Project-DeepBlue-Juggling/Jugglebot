@@ -3,9 +3,11 @@
 
 This is the hardware-free half of ``kt_bench_test.py``: force balance, the
 steady-velocity window selector, the constant-velocity knot generator, the
-weighted fits, the current budget, and the sign inference. No sockets, no CAN,
-no ``teensy_link`` import — so every decision the harness makes about a number
-is unit-tested off-hardware in ``tests/motion/test_kt_lib.py``.
+weighted fits, the Mode-2 EDGE-CAPTURE pipeline (settle gate, square-wave
+schedule, matched-filter edge location, decay-corrected jump statistics), the
+current budget, the mode/flag validator, and the sign inference. No sockets,
+no CAN, no ``teensy_link`` import — so every decision the harness makes about
+a number is unit-tested off-hardware in ``tests/motion/test_kt_lib.py``.
 
 Why this module exists
 ======================
@@ -210,6 +212,53 @@ TFF_GATE_MIN_R2 = 0.90
 TFF_GATE_MIN_T_STAT = 3.0         # |slope| / slope_sigma
 TFF_OUTLIER_RMS_MULT = 3.0        # |residual| > 3× the leave-one-out RMS ⇒ flagged
 
+# ---------------------------------------------------------------------------
+# Mode-2 EDGE-CAPTURE (2026-07-15 redesign — the rung ladder is dead)
+# ---------------------------------------------------------------------------
+# WHY: at a SETTLED static hold the velocity-loop integrator forces pos == cmd, and
+# torque balance pins the TOTAL iq at the load value — so the steady-state iq response
+# to a CONSTANT torque_ff is exactly ZERO. What the 2026-07-14 rung ladders measured
+# was the TRANSIENT sampled at ~1.3 s of a τ ≈ 2–10 s locked-state re-absorption decay:
+# structurally confounded (the 20:55 run's −21 A/Nm was drift-aliasing — at a fixed
+# rung cadence, wall-clock time and tff are collinear, so any slow drift maps straight
+# onto the fitted slope). The replacement measures the INSTANTANEOUS iq JUMP at each
+# edge of a ± square wave, before the integrator can re-absorb it; the alternating
+# polarity de-aliases drift (a drift contributes the SAME signed bias to consecutive
+# opposite-polarity edges, so it cancels in the slope and is separately detected by
+# the paired-edge drift statistic).
+DEFAULT_TFF_EDGE_AMPS_NM = (0.010, 0.020, 0.035)  # all inside the 0.045 Nm static band
+DEFAULT_TFF_HALF_PERIOD_S = 1.75   # square-wave half period (1.5–2 s sensible range)
+TFF_HALF_PERIOD_RANGE_S = (1.5, 2.0)
+DEFAULT_TFF_CYCLES = 10            # >= 10 full ± cycles per amplitude
+MIN_TFF_CYCLES = 2                 # below this there are too few edges to even try
+EDGE_SEARCH_S = 0.10               # matched filter hunts within ±this of the commanded toggle
+EDGE_KERNEL_S = 0.10               # step-kernel half-width for the matched filter
+EDGE_WINDOW_LO_S = 0.02            # jump windows: [t_e−0.20, t_e−0.02] vs [t_e+0.02, t_e+0.20]
+EDGE_WINDOW_HI_S = 0.20
+DEFAULT_HOLD_TAU_S = 8.0           # per-hold re-absorption τ when unfittable
+MIN_HOLD_TAU_S = 1.0               # clamp for the decay correction (τ below this ⇒ method invalid anyway)
+EDGE_TRIM_FRAC = 0.10              # symmetric trim fraction on the per-edge slopes
+TFF_EDGE_CV_MAX = 0.20             # trimmed edge-jump CV above this ⇒ no verdict
+EDGE_DRIFT_BIAS_MIN_A = 0.03       # paired-edge drift bias must exceed this AND 3σ to fire
+MIN_EDGES_FOR_VERDICT = 6          # fewer kept edges than this ⇒ no verdict
+
+# Settle gate before ANY edge-capture measurement (tonight's holds needed ~10 s
+# post-approach before d(iq)/dt fell to the noise floor).
+SETTLE_POS_TOL_REV = 3.0e-4        # pos within ±0.3 mrev of cmd
+SETTLE_DIQ_DT_MAX_A_PER_S = 0.05   # |d(iq)/dt| over the settle window
+SETTLE_WINDOW_S = 3.0
+SETTLE_MAX_WAIT_S = 30.0
+# Friction-band load-transfer transient at the start of any static hold: ~1.2–1.4 A
+# (≈ τ_c amplitude) with τ ≈ 3.2 s — dead in 15 s. Soak it out before measuring.
+DEFAULT_PRE_SOAK_S = 15.0
+
+# Rig orientation — REQUIRED operator input (no default). The 2026-07-14 manifests
+# recorded extension_iq_sign = −1 the wrong way round because the rig was INVERTED
+# (contraction raised the load) while the harness assumed holding == extending.
+#   normal   — leg EXTENSION raises the load (mass hangs from the extending end)
+#   inverted — leg CONTRACTION raises the load
+RIG_ORIENTATIONS = ('normal', 'inverted')
+
 # Motor rotor inertia (hardware_config.yaml:55, ODrive D6374-150Kv datasheet) — used to
 # budget the ACCELERATION-phase current of a shaped traverse, not by any fit.
 J_ROTOR_KGM2 = 2.75e-4
@@ -382,10 +431,13 @@ def current_budget(masses_kg: Sequence[float], *,
     default 1.5 rev/s² ⇒ ~0.11 A at 3 kg). Pass the actual ramp accel so a shortened
     ``--accel-time`` is caught here rather than by the over-current abort mid-run.
 
-    A mass fails on either (a) predicted ``iq_peak`` exceeding
+    A mass fails ONLY on (a) predicted ``iq_peak`` exceeding
     ``(1 − headroom_frac)·current_limit`` — 8 A at the 10 A limit and the default
-    20 % headroom — or (b) ``τ_g/τ_c`` below ``min_conditioning`` (see
-    :data:`CONDITIONING_HARD_FLOOR` for why that floor sits where it does).
+    20 % headroom.  ``τ_g/τ_c`` below ``min_conditioning`` is ADVISORY (a warning
+    in ``reasons``, never a refusal) — downgraded 2026-07-15 after the 0.50 kg
+    point of the 2026-07-14 session empirically refuted the hard floor (it sat
+    dead on the R² = 0.99909 fit; the up/down average cancels friction, so a
+    near-zero one-way traverse is expected physics, not fit ill-conditioning.
     """
     kt_worst = min(KT_CANDIDATES.values())
     usable = (1.0 - headroom_frac) * current_limit_A
@@ -412,9 +464,18 @@ def current_budget(masses_kg: Sequence[float], *,
                      f"(+{iq_accel:.2f} A at {accel_rps2:.1f} rev/s²) over the usable "
                      f"budget {usable:.2f} A — lengthen --accel-time or drop the mass")
         if cond < min_conditioning:
-            ok = False
+            # WARN, don't refuse (downgraded 2026-07-15): the 2026-07-14 four-mass
+            # session EMPIRICALLY refuted the hard floor — its 0.50 kg point
+            # (tau_g/tau_c = 0.93) had traverse SEMs of 0.08-0.11 A and sat dead on
+            # the R^2 = 0.99909 mass fit.  The near-zero traverse at light load is
+            # expected PHYSICS (gravity ~ friction), not ill-conditioning of the
+            # FIT, which consumes the up/down AVERAGE where friction has already
+            # cancelled.  A light point also anchors the intercept.  Over-current
+            # refusals above remain hard; conditioning is advisory.
             w.append(f"tau_g/tau_c = {cond:.2f} < {min_conditioning:.1f} — gravity does "
-                     f"not dominate friction; the fit is ill-conditioned here")
+                     f"not dominate friction at this mass (near-zero one-way traverse "
+                     f"expected; fine for the fit — the up/down average cancels "
+                     f"friction — but expect one |iq| near 0)")
         if iq_down < 0.0:
             w.append(f"iq_down {iq_down:.2f} A is NEGATIVE — the motor must push the "
                      f"mass DOWN against friction (physical, but a light load)")
@@ -756,10 +817,41 @@ def traverse_duration_s(start_rev: float, end_rev: float, vel_rps: float) -> flo
 # ===========================================================================
 #
 # The force balance τ_m = τ_g ± τ_f holds ONLY at constant velocity: any residual
-# acceleration adds a 2π·J·a inertia term that biases iq. So a sample is admitted only
-# when the leg is genuinely at the target speed AND not accelerating. Both conditions
-# are required — |v| alone passes the brief moment a decelerating leg crosses the target
-# speed on its way down.
+# acceleration adds a 2π·J·a inertia term that biases iq. The selector admits a sample
+# when the (lightly smoothed) velocity is at the target speed AND the position sits in
+# the middle of the stroke — the accel/decel ramps live at the stroke ENDS, so the
+# position margin is what actually excludes them.
+#
+# HISTORY (2026-07-14): the original selector also gated on |dv/dt| < 1 rev/s² from a
+# finite difference of the 250 Hz velocity telemetry. That telemetry is coarsely
+# quantized and noisy (σ ≈ 0.23 rev/s at a 0.6 rev/s cruise on the real rig), so the
+# differenced accel had σ ≈ 35 rev/s² — the gate starved every traverse down to 23–63
+# kept samples (3–7 % of the record) and failed all four of that night's masses. Once
+# the velocity is gated the accel gate is REDUNDANT (a sample can only pass |v−target|
+# < 10 % while genuinely cruising or in the one-sample knife-edge of a ramp, and the
+# position margin removes the ramps entirely), so it was DROPPED, not retuned.
+# The replacement gate on the same CSVs kept n = 47–159 with SEMs 0.05–0.11 A and a
+# mass-fit R² = 0.99909.
+
+
+def boxcar_smooth(x: Sequence[float], n: int = 5) -> np.ndarray:
+    """NaN-aware boxcar smoother (window ``n`` samples, centred).
+
+    Non-finite samples are excluded from each window's average rather than poisoning
+    it; a window with no finite samples yields NaN. Used to knock the coarse velocity
+    quantization noise down by ~√n before the at-speed gate.
+    """
+    x = np.asarray(x, float)
+    if n <= 1 or x.size == 0:
+        return x.copy()
+    finite = np.isfinite(x)
+    vals = np.where(finite, x, 0.0)
+    kern = np.ones(int(n), float)
+    num = np.convolve(vals, kern, mode='same')
+    den = np.convolve(finite.astype(float), kern, mode='same')
+    with np.errstate(divide='ignore', invalid='ignore'):
+        out = np.where(den > 0, num / den, np.nan)
+    return out
 
 
 @dataclass
@@ -777,77 +869,85 @@ class SteadyWindow:
         return not self.reasons
 
 
-def steady_state_mask(t_s: Sequence[float], vel_rps: Sequence[float], *,
+def steady_state_mask(t_s: Sequence[float], vel_rps: Sequence[float],
+                      pos_rev: Sequence[float], *,
                       v_target_rps: float,
+                      traverse_lo_rev: float,
+                      traverse_hi_rev: float,
                       vel_tol_frac: float = 0.10,
-                      accel_tol_rps2: float = 1.0,
-                      edge_discard_s: float = 0.4,
-                      min_samples: int = 50,
-                      min_kept_frac: float = 0.25) -> SteadyWindow:
+                      smooth_n: int = 5,
+                      pos_margin_frac: float = 0.15,
+                      edge_discard_s: float = 0.0,
+                      min_samples: int = 50) -> SteadyWindow:
     """Select the constant-velocity samples of one traverse.
 
     A sample survives when ALL of:
 
-    * it is at least ``edge_discard_s`` from BOTH ends of the record — the crude
-      guard that throws away the accel and decel ramps outright;
-    * ``|v|`` is within ``vel_tol_frac`` of ``|v_target|`` — we are actually at speed;
-    * ``|dv/dt|`` is under ``accel_tol_rps2`` — we are not merely PASSING THROUGH the
-      target speed while still accelerating. This is the condition that makes the
-      no-inertia-term assumption real rather than nominal.
+    * the **boxcar-smoothed** ``|v|`` (window ``smooth_n``, NaN-aware) is within
+      ``vel_tol_frac`` of ``|v_target|`` — we are actually at speed. Smoothing first
+      matters: the raw 250 Hz velocity estimate is coarsely quantized (σ ≈ 0.23 rev/s
+      on the real rig), and gating the raw signal throws away most of a genuine cruise;
+    * the **position** sits inside the middle of the stroke — the traverse span shrunk
+      by ``pos_margin_frac`` at EACH end. The accel/decel ramps live at the stroke
+      ends, so this is what excludes them (and any sample merely *passing through* the
+      target speed while decelerating near an endpoint);
+    * optionally, it is at least ``edge_discard_s`` from both time-ends of the record
+      (a redundant belt-and-braces once the position margin is in place; default 0).
 
-    The acceleration is a centred finite difference on the (irregularly-sampled) telemetry
-    timestamps, so a dropped UDP frame widens the local dt instead of manufacturing a
-    spurious spike.
+    There is deliberately NO acceleration gate — see the section comment above: on the
+    real telemetry the differenced-velocity accel estimate was pure noise (σ ≈ 35
+    rev/s² against a 1 rev/s² tolerance) and starved the selector to 3–7 % of the
+    record on every 2026-07-14 traverse.
 
-    ``reasons`` is non-empty (and ``ok`` False) when too few samples survive — either the
-    traverse never reached speed or it was too short to have a steady middle. The harness
-    treats that as a hard failure for that traverse rather than averaging garbage.
+    ``reasons`` is non-empty (and ``ok`` False) when fewer than ``min_samples`` survive
+    — either the traverse never reached speed or it was too short to have a steady
+    middle. The harness treats that as a hard failure for that traverse rather than
+    averaging garbage.
     """
     t = np.asarray(t_s, float)
     v = np.asarray(vel_rps, float)
-    n = int(min(t.size, v.size))
-    reasons: List[str] = []
+    p = np.asarray(pos_rev, float)
+    n = int(min(t.size, v.size, p.size))
     if n == 0:
-        return SteadyWindow(np.zeros(0, bool), 0, 0, 0.0, 0.0, 0.0,
+        return SteadyWindow(np.zeros(0, bool), 0, 0, 0.0, 0.0, 1.0,
                             ['no samples'])
     t = t[:n]
     v = v[:n]
-    finite = np.isfinite(t) & np.isfinite(v)
-
-    # Edge discard, referenced to the record's own span.
-    keep = finite.copy()
-    if t.size:
-        t0, t1 = float(np.nanmin(t)), float(np.nanmax(t))
-        keep &= (t >= t0 + edge_discard_s) & (t <= t1 - edge_discard_s)
-
-    # At-speed test (on the magnitude — direction is the traverse's business).
+    p = p[:n]
     vt = abs(float(v_target_rps))
     if vt <= 0.0:
         raise ValueError("v_target_rps must be non-zero")
-    keep &= np.abs(np.abs(v) - vt) <= vel_tol_frac * vt
+    lo = float(min(traverse_lo_rev, traverse_hi_rev))
+    hi = float(max(traverse_lo_rev, traverse_hi_rev))
+    span = hi - lo
+    if span <= 0.0:
+        raise ValueError("traverse bounds must span a non-zero stroke")
 
-    # Not-accelerating test: centred difference on the real timestamps.
-    accel = np.zeros(n, float)
-    if n >= 3:
-        dt = t[2:] - t[:-2]
-        with np.errstate(divide='ignore', invalid='ignore'):
-            accel[1:-1] = np.where(dt > 0.0, (v[2:] - v[:-2]) / dt, np.inf)
-        accel[0] = accel[1] if n > 2 else 0.0
-        accel[-1] = accel[-2] if n > 2 else 0.0
-    keep &= np.abs(accel) <= accel_tol_rps2
+    keep = np.isfinite(t) & np.isfinite(v) & np.isfinite(p)
+
+    # Optional time-edge discard, referenced to the record's own span.
+    if edge_discard_s > 0.0 and np.any(np.isfinite(t)):
+        t0, t1 = float(np.nanmin(t)), float(np.nanmax(t))
+        keep &= (t >= t0 + edge_discard_s) & (t <= t1 - edge_discard_s)
+
+    # Position margin: only the middle of the stroke counts as cruise.
+    margin = pos_margin_frac * span
+    keep &= (p >= lo + margin) & (p <= hi - margin)
+
+    # At-speed test on the SMOOTHED magnitude (direction is the traverse's business).
+    v_smooth = boxcar_smooth(v, smooth_n)
+    with np.errstate(invalid='ignore'):
+        keep &= np.abs(np.abs(v_smooth) - vt) <= vel_tol_frac * vt
 
     n_kept = int(np.count_nonzero(keep))
     kept_frac = n_kept / n if n else 0.0
     mean_v = float(np.mean(v[keep])) if n_kept else 0.0
     v_err = abs(abs(mean_v) - vt) / vt if n_kept else 1.0
 
+    reasons: List[str] = []
     if n_kept < min_samples:
         reasons.append(f"only {n_kept} steady samples (< {min_samples}) — the traverse "
                        f"never held a constant velocity long enough to measure")
-    if kept_frac < min_kept_frac:
-        reasons.append(f"only {kept_frac * 100:.0f}% of the record was steady "
-                       f"(< {min_kept_frac * 100:.0f}%) — check the velocity and the "
-                       f"edge-discard window")
     return SteadyWindow(mask=keep, n_total=n, n_kept=n_kept, kept_frac=kept_frac,
                         mean_vel_rps=mean_v, vel_error_frac=v_err, reasons=reasons)
 
@@ -901,15 +1001,21 @@ def effective_sample_size(x: Sequence[float]) -> float:
 
 
 def summarize_traverse(t_s: Sequence[float], vel_rps: Sequence[float],
-                       iq_A: Sequence[float], *, direction: str,
-                       v_target_rps: float, **window_kw) -> TraverseStats:
+                       pos_rev: Sequence[float], iq_A: Sequence[float], *,
+                       direction: str, v_target_rps: float,
+                       traverse_lo_rev: float, traverse_hi_rev: float,
+                       **window_kw) -> TraverseStats:
     """Steady-window mean iq for one traverse, with an honest standard error.
 
     ``iq_A`` is the RAW reported current (``Diagnostic.iq_measured``) — this function does
     NOT apply any sign convention. Frame resolution happens once, downstream, in
     :func:`infer_extension_iq_sign`, from the physics rather than from an assumption.
+    ``pos_rev`` + the traverse bounds feed the position-margin cruise gate (see
+    :func:`steady_state_mask`).
     """
-    win = steady_state_mask(t_s, vel_rps, v_target_rps=v_target_rps, **window_kw)
+    win = steady_state_mask(t_s, vel_rps, pos_rev, v_target_rps=v_target_rps,
+                            traverse_lo_rev=traverse_lo_rev,
+                            traverse_hi_rev=traverse_hi_rev, **window_kw)
     iq = np.asarray(iq_A, float)
     n = min(iq.size, win.mask.size)
     sel = iq[:n][win.mask[:n]]
@@ -1207,23 +1313,35 @@ def friction_consistency(points: Sequence[MassPoint], *,
                          ok=not reasons, reasons=reasons)
 
 
-def slope_friction_sign_agree(fit: KtFit, points: Sequence[MassPoint]) -> bool:
-    """Internal consistency: the fitted slope and the friction half-difference must carry
-    the SAME sign in the raw reported frame.
+def slope_friction_sign_agree(fit: KtFit, points: Sequence[MassPoint], *,
+                              rig_orientation: str = 'normal') -> bool:
+    """Internal consistency between the fitted slope and the friction half-difference,
+    with the expected relation set by the RIG ORIENTATION.
 
-    In an extension-positive torque frame BOTH are positive — gravity opposes extension
-    (so more mass ⇒ more extending current) and friction opposes motion (so the extending
-    traverse needs more extending current than the retracting one). Whatever sign the raw
-    telemetry frame applies, it applies to both equally. A disagreement means one of the
-    two traverses is mislabelled (up/down swapped) — which would silently invert the whole
-    result — so this is checked rather than assumed.
+    On a NORMAL rig (extension raises the load) both carry the SAME sign in the raw
+    reported frame: gravity opposes extension (more mass ⇒ more extending current) and
+    friction opposes motion (the extending traverse needs more extending current than
+    the retracting one), and whatever sign the raw telemetry frame applies, it applies
+    to both equally.
+
+    On an INVERTED rig (contraction raises the load) gravity *assists* extension while
+    friction still opposes motion, so the slope and the half-difference must carry
+    OPPOSITE signs — the constant-velocity balance is ``τ_m = ±τ_f − τ_g`` in the
+    extension-positive frame, giving ``iq_avg = −τ_g/Kt`` against ``halfdiff = +τ_f/Kt``.
+
+    A violation of the orientation-appropriate relation means either the up/down
+    traverses are mislabelled (which would silently invert the whole result) or the
+    ``--rig-orientation`` flag is wrong — so this is checked rather than assumed.
     """
+    if rig_orientation not in RIG_ORIENTATIONS:
+        raise ValueError(f"rig_orientation must be one of {RIG_ORIENTATIONS}")
     if not points or not math.isfinite(fit.slope_A_per_kg):
         return False
     mean_half = float(np.mean([p.iq_halfdiff_A for p in points]))
     if mean_half == 0.0 or fit.slope_A_per_kg == 0.0:
         return False
-    return (fit.slope_A_per_kg > 0) == (mean_half > 0)
+    same = (fit.slope_A_per_kg > 0) == (mean_half > 0)
+    return same if rig_orientation == 'normal' else not same
 
 
 # ===========================================================================
@@ -1239,14 +1357,22 @@ class SignInference:
     note: str
 
 
-def infer_extension_iq_sign(fit: KtFit) -> SignInference:
+def infer_extension_iq_sign(fit: KtFit, *,
+                            rig_orientation: str = 'normal') -> SignInference:
     """Which sign of the REPORTED ``iq_measured`` corresponds to an EXTENDING torque?
 
-    **The self-calibrating reference.** The leg is vertical and extends UPWARD against a
-    hanging mass, so to hold or lift that mass it MUST produce an extending torque — and
-    the more mass, the more extending torque. Therefore the sign of ``d(iq_avg)/dm`` — the
-    fitted slope — IS the sign of "extending torque" in whatever frame the telemetry
-    happens to report. No assumption about the wire is needed; gravity calibrates it.
+    **The self-calibrating reference.** Gravity loads the leg through the rig, so the
+    sign of ``d(iq_avg)/dm`` — the fitted slope — reports the frame, PROVIDED the rig
+    orientation is known:
+
+    * ``normal`` (extension raises the load): more mass ⇒ more EXTENDING torque, so the
+      slope sign IS the extension sign.
+    * ``inverted`` (contraction raises the load): more mass ⇒ more CONTRACTING torque,
+      so the extension sign is the NEGATED slope sign.
+
+    The 2026-07-14 manifests recorded ``extension_iq_sign = −1`` the wrong way round
+    precisely because the rig was inverted while this function assumed ``normal`` — the
+    orientation is now a REQUIRED operator declaration, not an assumption.
 
     The code-read PREDICTION is −1 (``IQ_EXTENSION_SIGN_PREDICTED``): ``can_buses.cpp:92``
     stores ``iq_measured`` raw in the ODrive frame while ``:85-86`` negate pos/vel into the
@@ -1255,10 +1381,14 @@ def infer_extension_iq_sign(fit: KtFit) -> SignInference:
     disagreement is a real finding either way — either the code read is wrong or the rig is
     wired differently than believed — and the harness must not paper over it.
     """
+    if rig_orientation not in RIG_ORIENTATIONS:
+        raise ValueError(f"rig_orientation must be one of {RIG_ORIENTATIONS}")
     if not math.isfinite(fit.slope_A_per_kg) or fit.slope_A_per_kg == 0.0:
         return SignInference(0, 'indeterminate', False,
                              "slope is zero/NaN — cannot infer the iq frame")
     s = 1 if fit.slope_A_per_kg > 0 else -1
+    if rig_orientation == 'inverted':
+        s = -s
     match = (s == IQ_EXTENSION_SIGN_PREDICTED)
     if match:
         note = ("measured iq sign for an extending torque MATCHES the code-read "
@@ -1271,52 +1401,90 @@ def infer_extension_iq_sign(fit: KtFit) -> SignInference:
                 "the code read is wrong or this rig is wired differently. RESOLVE THIS "
                 "BEFORE SHIPPING ANY TORQUE FEEDFORWARD — it is a sign error waiting to "
                 "happen.")
-    return SignInference(iq_extension_sign=s, source='gravity-loaded slope',
+    return SignInference(iq_extension_sign=s,
+                         source=f'gravity-loaded slope ({rig_orientation} rig)',
                          matches_code_read=match, note=note)
 
 
+def extension_sign_from_hold(hold_iq_A: float, rig_orientation: str, *,
+                             min_abs_A: float = 0.2) -> int:
+    """Extension-iq sign inferred from a single loaded static hold.
+
+    The settled hold current is the torque HOLDING the load up. On a ``normal`` rig
+    (extension raises the load) that torque is EXTENDING, so the hold-current sign IS
+    the extension sign; on an ``inverted`` rig (contraction raises the load) the
+    holding torque is CONTRACTING, so the extension sign is the NEGATED hold sign.
+    Returns 0 (indeterminate) when ``|hold_iq|`` is under ``min_abs_A`` — an unloaded
+    or barely-loaded hold cannot calibrate the frame.
+
+    This is the single-hold flavour of the gravity self-calibration; the 2026-07-14
+    manifests recorded the sign wrong-way-round because the then-current code assumed
+    holding == extending (i.e. a normal rig) while the rig was inverted.
+    """
+    if rig_orientation not in RIG_ORIENTATIONS:
+        raise ValueError(f"rig_orientation must be one of {RIG_ORIENTATIONS}")
+    v = float(hold_iq_A)
+    if not math.isfinite(v) or abs(v) < min_abs_A:
+        return 0
+    s = 1 if v > 0 else -1
+    return s if rig_orientation == 'normal' else -s
+
+
 # ===========================================================================
-# MODE 2 — the torque_ff channel, end-to-end
+# MODE 2 — the torque_ff channel, end-to-end (EDGE CAPTURE)
 # ===========================================================================
 #
-# Why a POSITION HOLD makes this measurement both safe and exact.
+# THE 2026-07-15 REDESIGN. The original design held the leg and stepped torque_ff
+# through a RUNG LADDER, measuring a "steady" window ~1.3 s after each step. That
+# design is structurally confounded and is dead, for a physics reason verified on the
+# 2026-07-14 data: at a genuinely SETTLED static hold the velocity-loop integrator
+# forces pos == cmd, where torque balance pins the TOTAL iq at the load value — the
+# steady-state iq response to a CONSTANT torque_ff is exactly ZERO. What the ladder
+# measured was the locked-state re-absorption TRANSIENT (τ ≈ 2–10 s) sampled at a
+# fixed ~1.3 s cadence — and because rung index and wall-clock were collinear at that
+# fixed cadence, any slow drift aliased directly into the fitted slope (the 20:55
+# run's −21 A/Nm "slope" was exactly that: time ⊥ tff collinearity, not physics).
 #
-# Hold the leg at mid-stroke under normal position control with a mass on it, then step
-# torque_ff. The position loop holds station, so the leg does not move: same position,
-# same load, therefore the SAME total mechanical torque is required, whatever it is
-# (gravity, plus a stiction contribution that is genuinely indeterminate at rest — which
-# is precisely why Mode 1 exists).
+# EDGE CAPTURE instead measures the INSTANTANEOUS iq jump at each edge of a ± square
+# wave, before the loop can re-absorb it:
+#
+#   1. SETTLE GATE — wait until pos is within ±0.3 mrev of cmd AND |d(iq)/dt| < 0.05
+#      A/s over a 3 s window (max wait ~30 s). Measuring an unsettled hold is what
+#      poisoned the ladder.
+#   2. SQUARE WAVE — torque_ff alternates ±X with half-period 1.5–2 s (default 1.75),
+#      X ∈ {0.010, 0.020, 0.035} Nm: all inside the 0.045 Nm static-friction band, so
+#      the lock keeps the position loop blind (±0.36 A excursion at X = 0.02 vs the
+#      >3.5 A abort headroom). ≥10 cycles per amplitude, telemetry recorded
+#      continuously at 250 Hz.
+#   3. MATCHED FILTER — each edge is located by cross-correlating a step kernel with
+#      the iq stream near the commanded toggle time (±0.1 s), never by wall-clock
+#      alone.
+#   4. JUMP — mean(iq[t_e+0.02 .. t_e+0.20]) − mean(iq[t_e−0.20 .. t_e−0.02]) per
+#      edge, with a per-edge exponential decay correction (creep costs 2.5–9.5 % at
+#      0.2 s for τ = 2–10 s; corrected with the fitted per-hold τ, default 8 s).
+#      slope = jump / (2X), signed by the edge polarity — so drift contributes with
+#      ALTERNATING sign and cancels in the slope, and is separately detected by the
+#      paired-edge drift statistic.
+#   5. VERDICT — |slope|/σ ≥ 3 AND trimmed edge-jump CV ≤ 20 % (the edge-capture
+#      analogue of the old R² gate), else NO CONCLUSION. Expected |slope| =
+#      1/torque_constant = 18.14 A/Nm, with the sign referred through the operator's
+#      --rig-orientation declaration.
 #
 # The ODrive sums its controller output and the feedforward before dividing by
-# torque_constant:
+# torque_constant, so at the instant of an edge (position loop blind inside the
+# static-friction band, integrator not yet moved):
 #
-#     iq_total = (tau_PI + tau_ff) / Kt_odrive
+#     d(iq) / d(torque_ff)  =  1 / Kt_odrive        (= 18.14 A/Nm at 0.055133)
 #
-# Since tau_PI + tau_ff must equal the same total, injecting tau_ff makes the position
-# loop's own contribution FALL BY EXACTLY THAT AMOUNT. So:
+# It is inherently SAFE — the position loop actively resists any runaway, every
+# commanded torque_ff is tiny against torque_soft_max (1.5 Nm), and nothing audibly
+# moves.
 #
-#     d(iq) / d(torque_ff)  =  1 / Kt_odrive
-#
-# The SHIFT is the measurement, and it is a DIFFERENTIAL one: the indeterminate stiction
-# offset is common to every rung of the ladder and cancels in the slope. It is also
-# inherently SAFE — the position loop actively resists any runaway, and every commanded
-# torque_ff is kept far below the point where it could overcome the loop.
-#
-# CRITICAL LADDER CONSTRAINT: every rung must stay INSIDE the static-friction band
-# (|tff| < τ_c·Kt ≈ 0.049 Nm worst-case — TFF_STATIC_BAND_MIN_NM). "The loop holds
-# station so the shift IS the measurement" is only true while static friction lets the
-# leg genuinely not move; an out-of-band rung moves the leg, the integrator re-absorbs
-# the feedforward at the new equilibrium, and that rung biases the slope LOW by
-# 33–52 % by the band model, 63–68 % observed (2026-07-14: the ±0.10 Nm rungs saturated/re-absorbed while the
-# in-band rungs showed a clean −20 to −22.5 A/Nm slope (right order vs the expected 18.14, ~17 % high)).
-#
-# Three things this pins down at once:
-#   SIGN   — does a POSITIVE wire torque_ff extend or retract? (via the sign of the iq
-#            shift, referred to the gravity-calibrated extension sign from Mode 1.)
-#   SCALE  — is the delivered current really torque_ff / 0.055133? This confirms or
-#            refutes the operator's fact #2 (torque_ff is interpreted exactly like
-#            input_torque) AND pins the int16 x10000 wire scaling in one shot.
-#   Kt     — combined with Mode 1's true Kt, the actual MECHANICAL torque delivered.
+# The LADDER-fit functions below (TorqueFfPoint / fit_torque_ff / assess_tff_fit_quality
+# / classify_torque_ff) are RETAINED: the differential-shift algebra is still correct
+# for transient data, classify_torque_ff doubles as the verdict container the edge
+# pipeline reuses, and the 2026-07-14 regression fixtures exercise them — but the
+# HARNESS measurement core is edge capture (see the EDGE CAPTURE section further down).
 
 
 @dataclass
@@ -1418,7 +1586,13 @@ def fit_torque_ff(points: Sequence[TorqueFfPoint]) -> TorqueFfFit:
 
 @dataclass
 class TorqueFfVerdict:
-    channel_live: bool
+    # TRI-STATE liveness: True = a measured response proves the channel live; False =
+    # a DEMONSTRATED PRECISE NULL (slope bounded well below the expected 18.14 A/Nm at
+    # 3σ) proves it dead; None = this run says NOTHING about liveness (quality gate
+    # failed / no conclusion). The 2026-07-14 manifests literally recorded
+    # channel_live=false from NO-CONCLUSION runs whose settled data proved the channel
+    # live — a no-conclusion must never masquerade as a dead channel again.
+    channel_live: Optional[bool]
     positive_tff_extends: Optional[bool]
     sign_matches_expectation: Optional[bool]
     scale_ok: bool
@@ -1544,7 +1718,9 @@ def classify_torque_ff(fit: TorqueFfFit, iq_extension_sign: int, *,
 
     * If ``quality`` is provided and the fit fails the gate (R² < 0.90 or the slope is
       under 3σ from zero), the verdict is **NO CONCLUSION**: no sign or scale claim is
-      made, and the lines say exactly which quality bars failed and which rungs look
+      made, ``channel_live`` is **None** (tri-state — not False: a no-conclusion says
+      nothing about liveness, and False is reserved for the demonstrated precise
+      null), and the lines say exactly which quality bars failed and which rungs look
       like external disturbances. (Exception: a PRECISE null — a slope bounded well
       below the expected 18.14 A/Nm — is still a conclusion: the channel is dead.)
     * A positive wire ``torque_ff`` **EXTENDS** iff ``sign(slope) == iq_extension_sign``
@@ -1579,8 +1755,12 @@ def classify_torque_ff(fit: TorqueFfFit, iq_extension_sign: int, *,
                          "DO NOT ship a torque feedforward until this is resolved.")
             return TorqueFfVerdict(False, None, None, False, float('nan'),
                                    float('inf'), lines)
+        # TRI-STATE (2026-07-14 lesson): a NO-CONCLUSION run says nothing about
+        # liveness. channel_live=None here — False is reserved for the demonstrated
+        # precise null above. That night's manifests recorded a "dead" channel from
+        # runs whose settled data proved it live, purely because this path said False.
         return TorqueFfVerdict(
-            channel_live=False, positive_tff_extends=None,
+            channel_live=None, positive_tff_extends=None,
             sign_matches_expectation=None, scale_ok=False,
             implied_kt_nm_per_a=fit.implied_kt_nm_per_a,
             sigma_to_odrive_config=float('inf'),
@@ -1733,6 +1913,12 @@ class OverCurrentLatch:
     (and, pre-fix, its abort path then failed to park the leg). Below-limit samples
     reset the streak; non-finite samples (dropped/NaN telemetry) neither count nor
     reset. Pure — the harness feeds it ``iq_measured`` from ``_log_frame``.
+
+    ``max_abs_A`` tracks the largest |iq| EVER observed (tripped or not), so an abort
+    report can state the measured breakaway peak against the per-mass current budget
+    even when the telemetry-snapshot fallback is all-NaN — the 2026-07-14 2.75 kg
+    approach aborts printed "NONE @ u0=+nan enc=+nan" because the REAL trigger (this
+    latch) was swallowed by that fallback.
     """
 
     def __init__(self, limit_A: float, n_consecutive: int = OVERCURRENT_TRIP_SAMPLES):
@@ -1744,12 +1930,15 @@ class OverCurrentLatch:
         self.n_consecutive = int(n_consecutive)
         self.count = 0
         self.tripped = False
+        self.max_abs_A = 0.0        # largest |iq| ever observed (finite samples only)
 
     def observe(self, iq_A: float) -> bool:
         """Feed one sample; returns True once tripped (and stays True)."""
+        v = float(iq_A)
+        if math.isfinite(v) and abs(v) > self.max_abs_A:
+            self.max_abs_A = abs(v)
         if self.tripped:
             return True
-        v = float(iq_A)
         if not math.isfinite(v):
             return False
         if abs(v) > self.limit_A:
@@ -1759,6 +1948,15 @@ class OverCurrentLatch:
         else:
             self.count = 0
         return self.tripped
+
+    def describe_trip(self) -> str:
+        """The actual-trigger sentence an abort report must carry: which detector
+        fired, with its values — never lost behind a NaN telemetry snapshot."""
+        if not self.tripped:
+            return (f"over-current latch NOT tripped (max |iq| seen "
+                    f"{self.max_abs_A:.2f} A vs limit {self.limit_A:.2f} A)")
+        return (f"over-current latch: {self.n_consecutive} consecutive samples ≥ "
+                f"{self.limit_A:.2f} A, max {self.max_abs_A:.2f} A")
 
 
 def wire_quantized_torque_Nm(torque_ff_Nm: float) -> float:
@@ -1773,3 +1971,788 @@ def wire_quantized_torque_Nm(torque_ff_Nm: float) -> float:
     counts = round(float(torque_ff_Nm) * LEG_TOR_WIRE_SCALE)
     counts = max(-32768, min(32767, int(counts)))
     return counts / LEG_TOR_WIRE_SCALE
+
+
+# ===========================================================================
+# Mode/flag validation (A1 — the silent --hold-mass-in-mode-kt trap)
+# ===========================================================================
+#
+# On 2026-07-14 the operator ran ``--mode kt --hold-mass 0.5/1.0/1.5/2.25`` four times.
+# ``--hold-mass`` is a Mode-2 flag; Mode 1 reads ``--masses`` and silently fell back to
+# its 1.0-first recommended ladder — so every run's data was labelled "1.00 kg" while
+# the real hanging mass differed. A silently-ignored flag on a hardware harness is a
+# data-corruption bug, not a usability nit: the fix is to REFUSE the run at parse time.
+
+# argparse dest → flag string, per mode. Keys are the argparse ``dest`` names.
+MODE1_ONLY_FLAGS: Dict[str, str] = {
+    'masses': '--masses',
+    'traverse_lo': '--traverse-lo',
+    'traverse_hi': '--traverse-hi',
+    'vel': '--vel',
+    'reps': '--reps',
+    'dwell': '--dwell',
+    'edge_discard': '--edge-discard',
+    'accel_time': '--accel-time',
+}
+MODE2_ONLY_FLAGS: Dict[str, str] = {
+    'hold_mass': '--hold-mass',
+    'tff_hold': '--tff-hold',
+    'tff_amps': '--tff-amps',
+    'tff_half_period': '--tff-half-period',
+    'tff_cycles': '--tff-cycles',
+    'pre_soak': '--pre-soak',
+}
+
+
+def validate_mode_flags(mode: str, provided: Sequence[str]) -> List[str]:
+    """Refuse mode-mismatched flags instead of silently ignoring them. Empty list = OK.
+
+    ``mode`` is the ``--mode`` choice ('kt' / 'torque_ff_check' / 'all'); ``provided``
+    is the collection of argparse *dest* names the user EXPLICITLY set (detected via
+    ``default=None`` sentinels). ``--mode all`` accepts every flag.
+
+    Also enforces the REQUIRED ``--rig-orientation`` declaration (no default): the
+    2026-07-14 manifests recorded ``extension_iq_sign`` wrong-way-round because the rig
+    was inverted and the harness assumed holding == extension. The sign inference
+    cannot be trusted without the operator stating which way the rig is rigged.
+    """
+    if mode not in ('kt', 'torque_ff_check', 'all'):
+        return [f"unknown mode '{mode}'"]
+    given = set(provided)
+    problems: List[str] = []
+    if mode == 'kt':
+        for dest in sorted(MODE2_ONLY_FLAGS):
+            if dest in given:
+                problems.append(
+                    f"{MODE2_ONLY_FLAGS[dest]} applies only to --mode torque_ff_check "
+                    f"and would be SILENTLY IGNORED by --mode kt — refusing (this exact "
+                    f"silent ignore mislabelled every 2026-07-14 kt run as 1.00 kg). "
+                    f"Declare the traverse masses with --masses.")
+    elif mode == 'torque_ff_check':
+        for dest in sorted(MODE1_ONLY_FLAGS):
+            if dest in given:
+                problems.append(
+                    f"{MODE1_ONLY_FLAGS[dest]} applies only to --mode kt and would be "
+                    f"SILENTLY IGNORED by --mode torque_ff_check — refusing. Declare "
+                    f"the held mass with --hold-mass.")
+    if 'rig_orientation' not in given:
+        problems.append(
+            "--rig-orientation {normal,inverted} is REQUIRED (no default): "
+            "'normal' = leg EXTENSION raises the load; 'inverted' = leg CONTRACTION "
+            "raises it. It feeds the extension_iq_sign inference — the 2026-07-14 "
+            "manifests recorded the sign wrong-way-round because the rig was inverted "
+            "and the harness assumed holding == extension.")
+    return problems
+
+
+# ===========================================================================
+# EDGE CAPTURE — the Mode-2 measurement pipeline (pure math)
+# ===========================================================================
+#
+# See the MODE 2 section comment above for the physics. Everything here is pure
+# array-in / dataclass-out so the whole pipeline is exercised end-to-end on synthetic
+# 250 Hz traces in tests/motion/test_kt_lib.py (known slope 18.14 + τ = 8 s decay +
+# noise σ = 0.08 A must come back 18.14 ± 1; a null channel must yield a PRECISE-NULL
+# verdict; a drifting hold must yield NO CONCLUSION with channel_live=None).
+
+
+def square_wave_tff_series(amplitude_Nm: float, *, seg_t_s: float,
+                           half_period_s: float = DEFAULT_TFF_HALF_PERIOD_S,
+                           n_cycles: int = DEFAULT_TFF_CYCLES
+                           ) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-knot torque_ff values for the ± square wave, plus the commanded toggle times.
+
+    The wave starts at ``+amplitude`` (the 0→+X onset is NOT a measured edge — it is
+    half-sized and rides the settle transient) and toggles every ``half_period_s``.
+    Returns ``(values, toggle_times_s)`` where ``values[i]`` is the torque_ff to stream
+    with knot ``i`` and ``toggle_times_s`` are the ``2·n_cycles − 1`` full ±2X edges,
+    measured from the first knot of the wave. Toggle k (1-based) has polarity
+    ``(−1)**k`` — see :func:`toggle_polarities`.
+    """
+    if amplitude_Nm <= 0.0:
+        raise ValueError("amplitude must be positive")
+    if seg_t_s <= 0.0 or half_period_s <= 0.0:
+        raise ValueError("seg_t_s and half_period_s must be > 0")
+    if n_cycles < 1:
+        raise ValueError("n_cycles must be >= 1")
+    k_half = max(1, int(round(half_period_s / seg_t_s)))
+    n_half = 2 * int(n_cycles)
+    vals = np.empty(k_half * n_half, float)
+    for h in range(n_half):
+        vals[h * k_half:(h + 1) * k_half] = (amplitude_Nm if h % 2 == 0
+                                             else -amplitude_Nm)
+    toggles = np.array([h * k_half * seg_t_s for h in range(1, n_half)], float)
+    return vals, toggles
+
+
+def toggle_polarities(n_toggles: int) -> np.ndarray:
+    """Δtorque_ff sign per toggle: the wave starts at +X, so toggle 1 is +X→−X
+    (Δ = −2X, polarity −1), toggle 2 is +1, alternating: polarity_k = (−1)^k."""
+    return np.array([(-1) ** k for k in range(1, int(n_toggles) + 1)], int)
+
+
+@dataclass
+class SettleCheck:
+    settled: bool
+    pos_err_rev: float           # |mean(pos) − cmd| over the window
+    diq_dt_A_per_s: float        # fitted linear iq drift over the window
+    window_s: float
+    n_samples: int
+    reasons: List[str] = field(default_factory=list)
+
+
+def hold_settled(t_s: Sequence[float], pos_rev: Sequence[float],
+                 iq_A: Sequence[float], *, cmd_rev: float,
+                 pos_tol_rev: float = SETTLE_POS_TOL_REV,
+                 diq_dt_max_A_per_s: float = SETTLE_DIQ_DT_MAX_A_PER_S,
+                 window_s: float = SETTLE_WINDOW_S,
+                 min_samples: int = 100) -> SettleCheck:
+    """The settle gate before any edge-capture measurement.
+
+    Settled iff, over the trailing ``window_s`` of the record: the mean position is
+    within ``pos_tol_rev`` of the commanded hold AND the fitted linear iq drift is
+    under ``diq_dt_max_A_per_s``. The 2026-07-14 holds needed ~10 s post-approach
+    before d(iq)/dt fell to the noise floor (the friction-band load-transfer transient:
+    ~1.2–1.4 A amplitude, τ ≈ 3.2 s) — measuring before that poisons every edge with a
+    drift bias.
+    """
+    t = np.asarray(t_s, float)
+    p = np.asarray(pos_rev, float)
+    iq = np.asarray(iq_A, float)
+    n = int(min(t.size, p.size, iq.size))
+    if n == 0:
+        return SettleCheck(False, float('nan'), float('nan'), window_s, 0,
+                           ['no samples'])
+    t, p, iq = t[:n], p[:n], iq[:n]
+    finite = np.isfinite(t) & np.isfinite(p) & np.isfinite(iq)
+    t, p, iq = t[finite], p[finite], iq[finite]
+    if t.size == 0:
+        return SettleCheck(False, float('nan'), float('nan'), window_s, 0,
+                           ['no finite samples'])
+    sel = t >= (float(np.max(t)) - float(window_s))
+    t, p, iq = t[sel], p[sel], iq[sel]
+    reasons: List[str] = []
+    if t.size < min_samples:
+        reasons.append(f"only {t.size} samples in the {window_s:.1f} s settle window "
+                       f"(< {min_samples})")
+        return SettleCheck(False, float('nan'), float('nan'), window_s, int(t.size),
+                           reasons)
+    pos_err = abs(float(np.mean(p)) - float(cmd_rev))
+    span = float(np.max(t) - np.min(t))
+    if span <= 0.0:
+        return SettleCheck(False, pos_err, float('nan'), window_s, int(t.size),
+                           ['zero time span in the settle window'])
+    diq_dt = float(np.polyfit(t, iq, 1)[0])
+    if pos_err > pos_tol_rev:
+        reasons.append(f"pos is {pos_err * 1e3:.2f} mrev from cmd "
+                       f"(> {pos_tol_rev * 1e3:.2f} mrev) — the hold has not converged")
+    if abs(diq_dt) > diq_dt_max_A_per_s:
+        reasons.append(f"|d(iq)/dt| = {abs(diq_dt):.3f} A/s "
+                       f"(> {diq_dt_max_A_per_s:.3f}) — the hold current is still "
+                       f"re-absorbing (load-transfer / integrator transient)")
+    return SettleCheck(settled=not reasons, pos_err_rev=pos_err,
+                       diq_dt_A_per_s=diq_dt, window_s=window_s,
+                       n_samples=int(t.size), reasons=reasons)
+
+
+def locate_edge_time(t_s: Sequence[float], iq_A: Sequence[float], t_cmd_s: float, *,
+                     polarity: Optional[int] = None,
+                     search_s: float = EDGE_SEARCH_S,
+                     kernel_s: float = EDGE_KERNEL_S) -> Optional[float]:
+    """Matched-filter edge localization: find the ACTUAL toggle instant near the
+    commanded one.
+
+    Slides a step kernel (−1 before the candidate instant, +1 after, ``kernel_s`` each
+    side) across candidates within ``±search_s`` of ``t_cmd_s``. With ``polarity``
+    given, returns the instant maximizing ``polarity · (mean_after − mean_before)``;
+    with ``polarity=None`` (what the pipeline uses) it maximizes the MAGNITUDE
+    ``|mean_after − mean_before|`` — the sign of the iq response is
+    ``sign(slope) · polarity`` and the slope sign is precisely what the run measures,
+    so the locator must not presume it. Wall-clock alone is not trusted: the commanded
+    toggle time is the send-loop's schedule, while the edge in the iq stream lands
+    after knot transport + ODrive application + telemetry latency (≲ tens of ms, but
+    the jump windows are only 20 ms wide at the near edge, so locating matters).
+
+    Returns None when there is not enough finite data around the command to score any
+    candidate (≥5 samples each side required).
+    """
+    t = np.asarray(t_s, float)
+    iq = np.asarray(iq_A, float)
+    n = int(min(t.size, iq.size))
+    if n == 0:
+        return None
+    t, iq = t[:n], iq[:n]
+    finite = np.isfinite(t) & np.isfinite(iq)
+    t, iq = t[finite], iq[finite]
+    if t.size < 10:
+        return None
+    order = np.argsort(t, kind='stable')
+    t, iq = t[order], iq[order]
+    csum = np.concatenate(([0.0], np.cumsum(iq)))
+
+    def win_mean(a: float, b: float) -> Optional[float]:
+        i0 = int(np.searchsorted(t, a, side='left'))
+        i1 = int(np.searchsorted(t, b, side='right'))
+        if i1 - i0 < 5:
+            return None
+        return (csum[i1] - csum[i0]) / (i1 - i0)
+
+    lo = int(np.searchsorted(t, t_cmd_s - search_s, side='left'))
+    hi = int(np.searchsorted(t, t_cmd_s + search_s, side='right'))
+    best_t: Optional[float] = None
+    best_score = -math.inf
+    for i in range(lo, hi):
+        tau = float(t[i])
+        pre = win_mean(tau - kernel_s, tau - 1e-9)
+        post = win_mean(tau + 1e-9, tau + kernel_s)
+        if pre is None or post is None:
+            continue
+        step = post - pre
+        score = float(polarity) * step if polarity is not None else abs(step)
+        if score > best_score:
+            best_score = score
+            best_t = tau
+    return best_t
+
+
+def estimate_response_lag(t_s: Sequence[float], iq_A: Sequence[float],
+                          toggle_times: Sequence[float], *,
+                          search_s: float = EDGE_SEARCH_S,
+                          kernel_s: float = EDGE_KERNEL_S) -> Optional[float]:
+    """The single response lag shared by every edge of one amplitude: the MEDIAN of
+    the per-edge matched-filter offsets ``t_located − t_commanded``.
+
+    The lag is SYSTEMIC — knot transport + ODrive application + telemetry latency —
+    so all edges of a hold share one value. Using the median of per-edge locations
+    (rather than letting each edge keep its own argmax) buys two things the per-edge
+    version cannot give:
+
+    * **robustness** — a knocked/disturbed edge mislocates ITS OWN argmax, but cannot
+      drag the median of ~19; and
+    * **an unbiased null** — on a DEAD channel each per-edge argmax would lock onto
+      the largest noise excursion in its ±0.1 s window, systematically inflating
+      |jump| and blocking the precise-null verdict; a fixed shared offset samples the
+      windows at a noise-independent instant, so null jumps stay centred on zero.
+
+    Returns None when no edge is locatable at all.
+    """
+    offsets: List[float] = []
+    for t_cmd in toggle_times:
+        t_e = locate_edge_time(t_s, iq_A, float(t_cmd), polarity=None,
+                               search_s=search_s, kernel_s=kernel_s)
+        if t_e is not None:
+            offsets.append(t_e - float(t_cmd))
+    if not offsets:
+        return None
+    return float(np.median(offsets))
+
+
+def edge_decay_correction(tau_s: float, *, half_period_s: float,
+                          win_lo_s: float = EDGE_WINDOW_LO_S,
+                          win_hi_s: float = EDGE_WINDOW_HI_S) -> float:
+    """The fraction of the true edge jump the windowed raw measurement captures, under
+    the periodic square-wave re-absorption model. Divide the raw jump by this.
+
+    Model: after each edge the loop re-absorbs the injected step exponentially with
+    time constant ``tau_s`` toward the load line (the steady-state response to a
+    constant torque_ff is ZERO), so in periodic steady state the response is
+    ``±A·e^{−u/τ}`` with ``A = ΔI / (1 + e^{−hp/τ})``. The post-edge window
+    ``[win_lo, win_hi]`` reads the decayed mean ``A·g``; the pre-edge window sits
+    ``hp − win_hi .. hp − win_lo`` after the PREVIOUS (opposite) edge and reads
+    ``−A·h``. The raw jump is therefore ``A·(g + h)`` against a true ``ΔI``:
+
+        correction = (g + h) / (1 + e^{−hp/τ})
+
+    where ``g``/``h`` are the window averages of ``e^{−u/τ}``. For τ = 8 s and the
+    default windows the pre-window creep almost exactly compensates the post-window
+    creep (correction ≈ 0.999); at τ = 2 s it is ≈ 0.979. Uncorrected single-sided
+    creep would cost 2.5–9.5 % at 0.2 s over the τ = 2–10 s range — hence the
+    correction. Returns 1.0 for a non-finite/absent τ; τ is clamped to
+    ``MIN_HOLD_TAU_S`` below (a hold re-absorbing faster than that invalidates the
+    method outright, and an unclamped tiny τ would explode the corrected jump).
+    """
+    if half_period_s <= 0.0:
+        raise ValueError("half_period_s must be > 0")
+    if not (win_hi_s > win_lo_s >= 0.0) or win_hi_s >= half_period_s:
+        raise ValueError("jump windows must satisfy 0 <= lo < hi < half_period")
+    if not math.isfinite(tau_s) or tau_s <= 0.0:
+        return 1.0
+    tau = max(float(tau_s), MIN_HOLD_TAU_S)
+
+    def wavg(a: float, b: float) -> float:
+        return tau / (b - a) * (math.exp(-a / tau) - math.exp(-b / tau))
+
+    g = wavg(win_lo_s, win_hi_s)
+    h = wavg(half_period_s - win_hi_s, half_period_s - win_lo_s)
+    corr = (g + h) / (1.0 + math.exp(-half_period_s / tau))
+    return float(min(1.0, max(1e-3, corr)))
+
+
+def average_edge_decay(t_s: Sequence[float], iq_A: Sequence[float],
+                       edge_times: Sequence[float], polarities: Sequence[int], *,
+                       dur_s: float, skip_s: float = EDGE_WINDOW_LO_S,
+                       grid_dt_s: float = 0.008
+                       ) -> Tuple[np.ndarray, np.ndarray]:
+    """Polarity-corrected, per-segment-mean-subtracted decay curve averaged across
+    edges — the input :func:`fit_hold_tau` wants.
+
+    For each edge, iq over ``[t_e + skip, t_e + dur]`` is interpolated onto a common
+    grid, multiplied by the edge polarity (so every segment decays the same way up),
+    and mean-subtracted (each segment rides a different baseline; the τ estimator is
+    offset-invariant so only the shape matters). Returns ``(u, ybar)``.
+    """
+    t = np.asarray(t_s, float)
+    iq = np.asarray(iq_A, float)
+    finite = np.isfinite(t) & np.isfinite(iq)
+    t, iq = t[finite], iq[finite]
+    u = np.arange(skip_s, dur_s, grid_dt_s)
+    if t.size < 10 or u.size < 6:
+        return u, np.full(u.size, np.nan)
+    order = np.argsort(t, kind='stable')
+    t, iq = t[order], iq[order]
+    segs = []
+    for t_e, pol in zip(edge_times, polarities):
+        if t_e is None or not math.isfinite(float(t_e)):
+            continue
+        tt = float(t_e) + u
+        if tt[0] < t[0] or tt[-1] > t[-1]:
+            continue
+        y = np.interp(tt, t, iq) * float(pol)
+        segs.append(y - float(np.mean(y)))
+    if not segs:
+        return u, np.full(u.size, np.nan)
+    return u, np.mean(np.vstack(segs), axis=0)
+
+
+def fit_hold_tau(u_s: Sequence[float], y: Sequence[float], *,
+                 default_tau_s: float = DEFAULT_HOLD_TAU_S
+                 ) -> Tuple[float, bool]:
+    """Estimate the re-absorption time constant τ of ``y ≈ A·e^{−u/τ} + c``.
+
+    Three-window ratio estimator: split the record into three equal contiguous
+    windows; for a (possibly offset) exponential the window means satisfy
+    ``(m1 − m2)/(m2 − m3) = e^{w/τ}`` exactly, independent of both A and c — robust,
+    closed-form, and immune to the baseline. Returns ``(tau, fitted)``;
+    ``(default_tau_s, False)`` whenever the decay is not resolvable (noise-dominated,
+    wrong-signed differences, absurd τ) — the decay correction is ≤2 % across the
+    plausible τ range, so a conservative default beats a wild fit.
+    """
+    u = np.asarray(u_s, float)
+    yy = np.asarray(y, float)
+    n = int(min(u.size, yy.size))
+    if n < 12:
+        return float(default_tau_s), False
+    u, yy = u[:n], yy[:n]
+    finite = np.isfinite(u) & np.isfinite(yy)
+    u, yy = u[finite], yy[finite]
+    if u.size < 12:
+        return float(default_tau_s), False
+    span = float(np.max(u) - np.min(u))
+    if span <= 0.0:
+        return float(default_tau_s), False
+    w = span / 3.0
+    u0 = float(np.min(u))
+    m = []
+    for k in range(3):
+        sel = (u >= u0 + k * w) & (u < u0 + (k + 1) * w + (1e-12 if k == 2 else 0.0))
+        if int(np.count_nonzero(sel)) < 3:
+            return float(default_tau_s), False
+        m.append(float(np.mean(yy[sel])))
+    d1 = m[0] - m[1]
+    d2 = m[1] - m[2]
+    if d1 <= 0.0 or d2 <= 0.0 or d1 <= d2:
+        return float(default_tau_s), False
+    tau = w / math.log(d1 / d2)
+    if not math.isfinite(tau) or not (0.05 <= tau <= 300.0):
+        return float(default_tau_s), False
+    return float(tau), True
+
+
+@dataclass
+class EdgeJump:
+    t_cmd_s: float               # commanded toggle time (stream clock)
+    t_edge_s: float              # matched-filter located edge (NaN if not locatable)
+    polarity: int                # sign of Δtorque_ff at this edge (±1)
+    jump_raw_A: float            # windowed post − pre mean, uncorrected
+    jump_A: float                # decay-corrected jump
+    slope_A_per_Nm: float        # jump / Δtorque_ff — signed, comparable across edges
+    ok: bool
+    reason: str = ''
+
+
+def measure_edge_jumps(t_s: Sequence[float], iq_A: Sequence[float],
+                       toggle_times: Sequence[float], amplitude_Nm: float, *,
+                       half_period_s: float, tau_s: float, lag_s: float = 0.0,
+                       win_lo_s: float = EDGE_WINDOW_LO_S,
+                       win_hi_s: float = EDGE_WINDOW_HI_S,
+                       min_win_samples: int = 10) -> List[EdgeJump]:
+    """Measure the decay-corrected jump at every commanded edge, with the windows
+    placed at ``t_cmd + lag_s`` (the SHARED matched-filter lag from
+    :func:`estimate_response_lag` — see there for why the lag is estimated once per
+    hold rather than per edge). Per edge: ``slope = jump / (polarity · 2X)``."""
+    if amplitude_Nm <= 0.0:
+        raise ValueError("amplitude must be positive")
+    t = np.asarray(t_s, float)
+    iq = np.asarray(iq_A, float)
+    n = int(min(t.size, iq.size))
+    t, iq = t[:n], iq[:n]
+    finite = np.isfinite(t) & np.isfinite(iq)
+    t, iq = t[finite], iq[finite]
+    order = np.argsort(t, kind='stable')
+    t, iq = t[order], iq[order]
+    csum = np.concatenate(([0.0], np.cumsum(iq)))
+
+    def win_mean(a: float, b: float) -> Tuple[Optional[float], int]:
+        i0 = int(np.searchsorted(t, a, side='left'))
+        i1 = int(np.searchsorted(t, b, side='right'))
+        cnt = i1 - i0
+        if cnt < min_win_samples:
+            return None, cnt
+        return (csum[i1] - csum[i0]) / cnt, cnt
+
+    corr = edge_decay_correction(tau_s, half_period_s=half_period_s,
+                                 win_lo_s=win_lo_s, win_hi_s=win_hi_s)
+    pols = toggle_polarities(len(list(toggle_times)))
+    out: List[EdgeJump] = []
+    for t_cmd, pol in zip(toggle_times, pols):
+        t_e = float(t_cmd) + float(lag_s)
+        pre, n_pre = win_mean(t_e - win_hi_s, t_e - win_lo_s)
+        post, n_post = win_mean(t_e + win_lo_s, t_e + win_hi_s)
+        if pre is None or post is None:
+            out.append(EdgeJump(float(t_cmd), float(t_e), int(pol), float('nan'),
+                                float('nan'), float('nan'), False,
+                                f'too few window samples (pre {n_pre}, post {n_post})'))
+            continue
+        raw = post - pre
+        jump = raw / corr
+        slope = jump / (float(pol) * 2.0 * float(amplitude_Nm))
+        out.append(EdgeJump(float(t_cmd), float(t_e), int(pol), float(raw),
+                            float(jump), float(slope), True))
+    return out
+
+
+@dataclass
+class EdgeCaptureAmplitude:
+    amplitude_Nm: float
+    half_period_s: float
+    n_toggles: int
+    n_measured: int              # edges the matched filter + windows could measure
+    n_kept: int                  # after the symmetric trim
+    tau_s: float
+    tau_fitted: bool
+    slope_A_per_Nm: float        # trimmed mean of the per-edge signed slopes
+    slope_sem_A_per_Nm: float
+    jump_cv: float               # trimmed std/|mean| of the per-edge slopes
+    drift_bias_A: float          # paired-edge mean of SIGNED raw jumps (signal cancels)
+    drift_bias_sem_A: float
+    drift_detected: bool
+    edges: List[EdgeJump] = field(default_factory=list)
+    reasons: List[str] = field(default_factory=list)
+
+
+def analyze_edge_capture(t_s: Sequence[float], iq_A: Sequence[float],
+                         toggle_times: Sequence[float], amplitude_Nm: float, *,
+                         half_period_s: float,
+                         default_tau_s: float = DEFAULT_HOLD_TAU_S,
+                         trim_frac: float = EDGE_TRIM_FRAC,
+                         drift_bias_min_A: float = EDGE_DRIFT_BIAS_MIN_A
+                         ) -> EdgeCaptureAmplitude:
+    """The per-amplitude edge-capture analysis: locate → fit τ → jumps → statistics.
+
+    * **Trim**: the per-edge slopes are sorted and a symmetric ``trim_frac`` is dropped
+      from EACH end (at least one from each end once n ≥ 5) — a single knocked/held
+      edge must not drag the mean.
+    * **Drift statistic**: consecutive opposite-polarity edges are paired; in each pair
+      the SIGNAL contributes equal-and-opposite raw jumps while a baseline drift
+      contributes the SAME signed bias — so ``mean((j_k + j_{k+1})/2)`` isolates drift.
+      This is what makes the square wave immune to the drift-aliasing that produced
+      the 2026-07-14 20:55 −21 A/Nm ladder artifact (there, time ⊥ tff were collinear
+      at the fixed rung cadence). Fires when the bias clears BOTH 3σ of its own SEM
+      and ``drift_bias_min_A``.
+    """
+    toggle_times = [float(x) for x in toggle_times]
+    tau = float(default_tau_s)
+    fitted = False
+    reasons: List[str] = []
+
+    # One SHARED response lag for the whole hold (median matched-filter offset —
+    # see estimate_response_lag for why per-edge argmaxes are not used), then τ from
+    # the lag-aligned edges (alignment does not need τ; the jump correction does).
+    pols = toggle_polarities(len(toggle_times))
+    lag = estimate_response_lag(t_s, iq_A, toggle_times)
+    if lag is not None:
+        aligned = [tc + lag for tc in toggle_times]
+        u, ybar = average_edge_decay(
+            t_s, iq_A, aligned, pols,
+            dur_s=max(0.3, half_period_s - 0.05))
+        # The polarity-corrected curve decays downward for a positive slope and
+        # upward for a negative one (the slope sign is what the run measures, so
+        # neither orientation may be presumed) — try both.
+        tau, fitted = fit_hold_tau(u, ybar, default_tau_s=default_tau_s)
+        if not fitted:
+            tau, fitted = fit_hold_tau(u, -np.asarray(ybar, float),
+                                       default_tau_s=default_tau_s)
+
+    edges = measure_edge_jumps(t_s, iq_A, toggle_times, amplitude_Nm,
+                               half_period_s=half_period_s, tau_s=tau,
+                               lag_s=lag if lag is not None else 0.0)
+    ok_edges = [e for e in edges if e.ok]
+    n_meas = len(ok_edges)
+    if n_meas == 0:
+        return EdgeCaptureAmplitude(
+            amplitude_Nm=float(amplitude_Nm), half_period_s=float(half_period_s),
+            n_toggles=len(toggle_times), n_measured=0, n_kept=0, tau_s=tau,
+            tau_fitted=fitted, slope_A_per_Nm=float('nan'),
+            slope_sem_A_per_Nm=float('inf'), jump_cv=float('inf'),
+            drift_bias_A=float('nan'), drift_bias_sem_A=float('inf'),
+            drift_detected=False, edges=edges,
+            reasons=['no measurable edges — no telemetry around any commanded toggle'])
+
+    slopes = np.array(sorted(e.slope_A_per_Nm for e in ok_edges), float)
+    k = int(trim_frac * n_meas)
+    if n_meas >= 5:
+        k = max(1, k)
+    trimmed = slopes[k:n_meas - k] if n_meas - 2 * k >= 2 else slopes
+    n_kept = int(trimmed.size)
+    slope = float(np.mean(trimmed))
+    std = float(np.std(trimmed, ddof=1)) if n_kept > 1 else float('inf')
+    sem = std / math.sqrt(n_kept) if n_kept > 0 else float('inf')
+    cv = (std / abs(slope)) if abs(slope) > 0 and math.isfinite(std) else float('inf')
+
+    # Paired-edge drift statistic on the SIGNED RAW jumps, in edge order.
+    raw = [e.jump_raw_A for e in edges if e.ok]
+    pairs = [(raw[i] + raw[i + 1]) / 2.0 for i in range(0, len(raw) - 1, 2)]
+    if len(pairs) >= 3:
+        bias = float(np.mean(pairs))
+        bias_sem = float(np.std(pairs, ddof=1) / math.sqrt(len(pairs)))
+        drift = (abs(bias) > 3.0 * bias_sem) and (abs(bias) > drift_bias_min_A)
+    else:
+        bias, bias_sem, drift = float('nan'), float('inf'), False
+    if drift:
+        reasons.append(
+            f"hold DRIFTING under the square wave: paired-edge bias "
+            f"{bias:+.3f} ± {bias_sem:.3f} A per edge (> {drift_bias_min_A:.3f} A and "
+            f"> 3σ) — the settle gate should have caught this; the jumps are "
+            f"contaminated and no verdict may be stated from this amplitude")
+    if n_meas < len(toggle_times):
+        reasons.append(f"only {n_meas}/{len(toggle_times)} commanded edges were "
+                       f"measurable")
+    return EdgeCaptureAmplitude(
+        amplitude_Nm=float(amplitude_Nm), half_period_s=float(half_period_s),
+        n_toggles=len(toggle_times), n_measured=n_meas, n_kept=n_kept, tau_s=tau,
+        tau_fitted=fitted, slope_A_per_Nm=slope, slope_sem_A_per_Nm=float(sem),
+        jump_cv=float(cv), drift_bias_A=bias, drift_bias_sem_A=bias_sem,
+        drift_detected=drift, edges=edges, reasons=reasons)
+
+
+@dataclass
+class EdgeCaptureResult:
+    per_amplitude: List[EdgeCaptureAmplitude]
+    slope_A_per_Nm: float        # pooled (inverse-variance weighted across amplitudes)
+    slope_sem_A_per_Nm: float
+    t_stat: float                # |slope| / sem
+    jump_cv: float               # CV over ALL trimmed per-edge slopes, pooled
+    n_edges_kept: int
+    drift_detected: bool
+    trustworthy: bool            # t ≥ 3 AND cv ≤ 0.20 AND no drift AND enough edges
+    failures: List[str] = field(default_factory=list)
+
+
+def pool_edge_capture(per_amplitude: Sequence[EdgeCaptureAmplitude], *,
+                      cv_max: float = TFF_EDGE_CV_MAX,
+                      min_t_stat: float = TFF_GATE_MIN_T_STAT,
+                      min_edges: int = MIN_EDGES_FOR_VERDICT) -> EdgeCaptureResult:
+    """Pool the per-amplitude slopes and apply the edge-capture trustworthiness gate:
+    ``|slope|/σ ≥ 3`` AND trimmed edge-jump CV ≤ 20 % (the R² analogue) AND no drift
+    AND ≥ ``min_edges`` kept edges. Any failure ⇒ no verdict may be stated."""
+    amps = [a for a in per_amplitude]
+    failures: List[str] = []
+    usable = [a for a in amps
+              if a.n_kept >= 2 and math.isfinite(a.slope_A_per_Nm)
+              and math.isfinite(a.slope_sem_A_per_Nm) and a.slope_sem_A_per_Nm >= 0]
+    n_edges = sum(a.n_kept for a in usable)
+    drift = any(a.drift_detected for a in amps)
+    if drift:
+        for a in amps:
+            if a.drift_detected:
+                failures.append(
+                    f"X = {a.amplitude_Nm:.3f} Nm: hold drifting (paired-edge bias "
+                    f"{a.drift_bias_A:+.3f} ± {a.drift_bias_sem_A:.3f} A) — the "
+                    f"square-wave de-aliasing detected exactly the failure mode that "
+                    f"faked the 2026-07-14 20:55 ladder slope")
+    if not usable or n_edges < min_edges:
+        failures.append(f"only {n_edges} kept edges across all amplitudes "
+                        f"(< {min_edges}) — not enough to state anything")
+        return EdgeCaptureResult(per_amplitude=list(amps),
+                                 slope_A_per_Nm=float('nan'),
+                                 slope_sem_A_per_Nm=float('inf'), t_stat=0.0,
+                                 jump_cv=float('inf'), n_edges_kept=n_edges,
+                                 drift_detected=drift, trustworthy=False,
+                                 failures=failures)
+    w = np.array([1.0 / max(a.slope_sem_A_per_Nm, 1e-9) ** 2 for a in usable], float)
+    s = np.array([a.slope_A_per_Nm for a in usable], float)
+    slope = float(np.sum(w * s) / np.sum(w))
+    sem = float(1.0 / math.sqrt(float(np.sum(w))))
+    t = abs(slope) / sem if sem > 0 else math.inf
+
+    all_slopes: List[float] = []
+    for a in usable:
+        ok_sorted = np.array(sorted(e.slope_A_per_Nm for e in a.edges if e.ok), float)
+        k = ok_sorted.size - a.n_kept
+        lo = k // 2
+        all_slopes.extend(ok_sorted[lo:lo + a.n_kept].tolist())
+    arr = np.array(all_slopes, float)
+    cv = (float(np.std(arr, ddof=1)) / abs(float(np.mean(arr)))
+          if arr.size > 1 and abs(float(np.mean(arr))) > 0 else float('inf'))
+
+    if t < min_t_stat:
+        failures.append(f"|slope|/σ = {t:.1f} (< {min_t_stat:.0f}) — the pooled slope "
+                        f"{slope:+.2f} ± {sem:.2f} A/Nm is statistically "
+                        f"indistinguishable from no response")
+    if not math.isfinite(cv) or cv > cv_max:
+        failures.append(f"trimmed edge-jump CV = "
+                        f"{cv * 100 if math.isfinite(cv) else float('inf'):.0f}% "
+                        f"(> {cv_max * 100:.0f}%) — the edges do not tell one "
+                        f"consistent story")
+    return EdgeCaptureResult(per_amplitude=list(amps), slope_A_per_Nm=slope,
+                             slope_sem_A_per_Nm=sem, t_stat=float(t),
+                             jump_cv=float(cv), n_edges_kept=n_edges,
+                             drift_detected=drift, trustworthy=not failures,
+                             failures=failures)
+
+
+def _edge_no_conclusion_lines(result: EdgeCaptureResult) -> List[str]:
+    lines = [
+        "*** NO CONCLUSION — edge-capture data quality insufficient to validate the "
+        "torque_ff channel ***",
+        f"    verdict gate: |slope|/σ ≥ {TFF_GATE_MIN_T_STAT:.0f} AND trimmed "
+        f"edge-jump CV ≤ {TFF_EDGE_CV_MAX * 100:.0f}% AND no drift required before "
+        f"any SIGN/SCALE claim.",
+    ]
+    lines.extend(f"    FAIL: {f}" for f in result.failures)
+    lines.append("    Refusing to state SIGN or SCALE — a verdict here would be noise "
+                 "dressed as a finding.")
+    lines.append("    channel_live is recorded as None (UNKNOWN), not False: this run "
+                 "proves neither liveness nor death.")
+    lines.append("    Required setup: mass hangs FREE and VERTICAL; NOBODY touches "
+                 "the rig during the toggles;")
+    lines.append("    let the settle gate pass (pos ±0.3 mrev of cmd, |d(iq)/dt| < "
+                 "0.05 A/s) before measuring.")
+    return lines
+
+
+def classify_edge_capture(result: EdgeCaptureResult, iq_extension_sign: int, *,
+                          scale_tol_frac: float = 0.10) -> TorqueFfVerdict:
+    """The edge-capture verdict, stated honestly (reuses :class:`TorqueFfVerdict`).
+
+    Gate order matters:
+
+    1. **Fatal data-quality failures first** (drift / too few edges / non-finite
+       slope) ⇒ NO CONCLUSION with ``channel_live=None`` — a drifting hold can fake a
+       precise null, so the null test must not run on poisoned data.
+    2. **Precise null**: ``|slope| + 3σ`` bounded under 5 % of the expected 18.14 A/Nm
+       ⇒ the channel is genuinely DEAD (``channel_live=False``) — the only path
+       allowed to say so.
+    3. **Trust gate** (t ≥ 3 AND CV ≤ 20 %) ⇒ full SIGN/SCALE verdict
+       (``channel_live=True``); otherwise NO CONCLUSION (None).
+
+    SIGN: the tff channel sign was SETTLED on 2026-07-14 — a positive wire torque_ff
+    EXTENDS through the production chain, no negation anywhere. A RETRACTS result here
+    therefore contradicts a settled finding: suspect the ``--rig-orientation``
+    declaration (which the extension sign is inferred through) before the wire.
+    """
+    expected = 1.0 / KT_ODRIVE_CONFIGURED
+    s = result.slope_A_per_Nm
+    sem = result.slope_sem_A_per_Nm
+
+    fatal = (result.drift_detected
+             or result.n_edges_kept < MIN_EDGES_FOR_VERDICT
+             or not math.isfinite(s))
+    if fatal:
+        return TorqueFfVerdict(
+            channel_live=None, positive_tff_extends=None,
+            sign_matches_expectation=None, scale_ok=False,
+            implied_kt_nm_per_a=float('nan'), sigma_to_odrive_config=float('inf'),
+            lines=_edge_no_conclusion_lines(result), no_conclusion=True)
+
+    precise_null = (math.isfinite(sem)
+                    and abs(s) + 3.0 * sem < 0.05 * expected)
+    if precise_null:
+        lines = [
+            "CHANNEL DEAD — the square-wave edges produced no current jump (the "
+            f"pooled slope is bounded below {0.05 * expected:.2f} A/Nm at 3σ, from "
+            f"{result.n_edges_kept} clean edges).",
+            "DO NOT ship a torque feedforward until this is resolved. Check: is the "
+            "leg mid-stroke? (leg_interp.cpp:407 stroke clamp ZEROES torque_ff; :479 "
+            "recovery slew too).",
+        ]
+        return TorqueFfVerdict(
+            channel_live=False, positive_tff_extends=None,
+            sign_matches_expectation=None, scale_ok=False,
+            implied_kt_nm_per_a=float('nan'), sigma_to_odrive_config=float('inf'),
+            lines=lines)
+
+    if not result.trustworthy:
+        return TorqueFfVerdict(
+            channel_live=None, positive_tff_extends=None,
+            sign_matches_expectation=None, scale_ok=False,
+            implied_kt_nm_per_a=(1.0 / abs(s)) if abs(s) > 0 else float('nan'),
+            sigma_to_odrive_config=float('inf'),
+            lines=_edge_no_conclusion_lines(result), no_conclusion=True)
+
+    lines: List[str] = []
+    extends: Optional[bool] = None
+    matches: Optional[bool] = None
+    if iq_extension_sign in (1, -1):
+        extends = (s > 0) == (iq_extension_sign > 0)
+        matches = extends is True
+        lines.append(
+            f"SIGN: a POSITIVE torque_ff on the wire "
+            f"{'EXTENDS' if extends else 'RETRACTS'} this leg "
+            f"[pooled slope {s:+.2f} ± {sem:.2f} A/Nm; extending torque reads as "
+            f"{iq_extension_sign:+d} iq].")
+        if extends:
+            lines.append(
+                "     CONFIRMS the settled 2026-07-14 finding: positive wire "
+                "torque_ff = extension through the production chain, no negation "
+                "needed anywhere.")
+        else:
+            lines.append(
+                "     *** CONTRADICTS the settled 2026-07-14 production-chain "
+                "finding (positive wire tff = extension). Before believing a wire "
+                "sign flip, re-check the --rig-orientation declaration — the "
+                "extension sign is inferred THROUGH it, and an inverted-vs-normal "
+                "mix-up produces exactly this contradiction. ***")
+    else:
+        lines.append("SIGN: indeterminate — no gravity-calibrated iq extension sign "
+                     "available (load the leg, or run --mode kt first).")
+
+    err = abs(abs(s) - expected) / expected
+    scale_ok = err <= scale_tol_frac
+    implied = 1.0 / abs(s)
+    implied_sig = implied * (sem / abs(s)) if sem < abs(s) else float('inf')
+    sig_to = (abs(implied - KT_ODRIVE_CONFIGURED) / implied_sig
+              if math.isfinite(implied_sig) and implied_sig > 0 else float('inf'))
+    lines.append(
+        f"SCALE: |slope| = {abs(s):.2f} A/Nm vs the {expected:.2f} A/Nm expected from "
+        f"the ODrive's configured torque_constant ({KT_ODRIVE_CONFIGURED:.6f}) — "
+        f"{err * 100:.1f}% error ⇒ {'OK' if scale_ok else 'MISMATCH'}")
+    lines.append(
+        f"     implied ODrive torque_constant = {implied:.5f} ± {implied_sig:.5f} "
+        f"Nm/A ({sig_to:.1f}σ from the configured {KT_ODRIVE_CONFIGURED:.5f})")
+    lines.append(
+        f"     edge stats: {result.n_edges_kept} kept edges, trimmed CV "
+        f"{result.jump_cv * 100:.1f}%, t = {result.t_stat:.1f}")
+    if scale_ok:
+        lines.append("     confirms torque_ff is interpreted exactly like "
+                     "input_torque (iq = torque / torque_constant) AND that the int16 "
+                     "x10000 wire scaling round-trips correctly.")
+    else:
+        lines.append("     *** the delivered current does NOT match torque_ff / "
+                     "torque_constant. Either the wire scaling is wrong, or torque_ff "
+                     "is NOT interpreted like input_torque. A gravity FF would land "
+                     f"{(abs(s) / expected - 1) * 100:+.0f}% off. ***")
+    return TorqueFfVerdict(
+        channel_live=True, positive_tff_extends=extends,
+        sign_matches_expectation=matches, scale_ok=scale_ok,
+        implied_kt_nm_per_a=implied, sigma_to_odrive_config=sig_to, lines=lines)

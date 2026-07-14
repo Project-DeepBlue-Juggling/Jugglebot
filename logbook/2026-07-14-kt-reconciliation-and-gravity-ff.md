@@ -383,21 +383,26 @@ live*: the default ladder (±0.10 Nm) exceeds the ±0.049–0.067 Nm static-fric
 
 **Read correctly, the run *agrees* with everything previously established:**
 
-- The two rungs **inside** the friction band (±0.02 Nm) show a clean slope of **−20 to −22.5 A/Nm**
-  (−21.3 for the ±0.02 pair). Right **sign class** and right **order of magnitude** vs the expected
-  `1/torque_constant = 18.14` — the channel is real and goes through the production path — but the
-  magnitude is **~17 % high (≈5σ by the per-rung SEMs)**, so this run does **NOT** precision-confirm
-  the scale. (An interesting residual in its own right: `1/21.3 = 0.047`, so the bench drive's
-  *configured* torque_constant may not be 0.055133 — per-drive configs are exactly what this arc
-  keeps finding. Re-measure on a clean run and read back the bench drive's actual config.)
+- ~~The two rungs **inside** the friction band (±0.02 Nm) show a clean slope of **−20 to
+  −22.5 A/Nm**… the magnitude is **~17 % high (≈5σ)**… `1/21.3 = 0.047`, so the bench drive's
+  *configured* torque_constant may not be 0.055133…~~
+  **⚠️ SUPERSEDED 2026-07-15.** That "clean pair" was **drift-aliased AND load-contaminated** —
+  both members carried the hand-support (hold 0.57 A vs 1.43–1.62 A expected free-hanging), and a
+  monotonic fixed-cadence ladder converts −0.13 A/s of drift into −21 A/Nm of fake slope. Three
+  clean inverted-rig runs settle the channel the other way: **positive wire tff = extension, gain
+  ≈ 18.2 A/Nm vs 18.14 expected** — the 0.047 torque_constant speculation is resolved (the drive
+  is consistent with 0.055133). See `logbook/2026-07-15-kt-first-measurement-and-tff-channel.md`.
 - The ±0.10 Nm rungs saturated at the band edge or were re-absorbed by the integrator after the leg
   moved — the review's predicted mechanism, observed.
 - The −0.05 rung read iq ≈ 0.05 A ≈ *unloaded* — the "hand was supporting the mass" outlier.
-- The **negative** slope (positive wire torque → retraction on the bench drive) is **consistent with
-  the 2026-04-27 finding that the bench rig needs `--ff-sign −1`** — while the 2026-05-08 **platform**
-  validation ran the standard un-negated chain and worked. Per-drive ODrive direction calibration
-  differs bench-vs-platform; **a bench sign result must never be copied to the platform.** The
-  production gravity-FF sign stands, anchored by the platform-validated result.
+- ~~The **negative** slope (positive wire torque → retraction on the bench drive) is **consistent
+  with the 2026-04-27 `--ff-sign −1` bench finding**…~~ **⚠️ SUPERSEDED 2026-07-15.** The negative
+  slope was the drift alias, not a torque response — three clean runs show positive wire tff =
+  **extension** on this same drive, ≥10σ, **matching the production chain**. (The 2026-04-27
+  `--ff-sign −1` finding concerned the *friction* FF path through can_node, a different sign
+  question; it does not transfer to this channel.) The production gravity-FF sign stands, now
+  anchored by **direct measurement** as well as the platform validation. See
+  `logbook/2026-07-15-kt-first-measurement-and-tff-channel.md` §2 / Withdrawn claims.
 
 **Harness fixes landed in response:** mode 2 now **refuses to emit SIGN/SCALE verdicts** unless
 R² ≥ 0.9 and |slope|/σ ≥ 3 (printing a NO-CONCLUSION block with the specific quality failures and

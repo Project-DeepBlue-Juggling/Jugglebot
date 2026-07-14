@@ -157,3 +157,59 @@ def test_seq_wraps_at_16_bits():
     frame = p.encode_frame(int(p.MsgType.HEARTBEAT_J2T), 70_000, p.HeartbeatJ2T().pack())
     _, seq, _ = p.decode_frame(frame)
     assert seq == 70_000 & 0xFFFF
+
+
+# ── HeartbeatT2J torque_clamp_mask (flags bits 8-13, 2026-07-14 ingest clamp) ──
+#
+# The per-leg torque_ff ingest-clamp mask rides FREE BITS of the existing u32
+# flags field — deliberately NO new payload field, NO size change, NO
+# PROTOCOL_VERSION bump (an old parser ignores the bits; a new parser reads 0
+# from a pre-clamp firmware). These pin the generated constants and the
+# extraction arithmetic the bridge node uses for /link_status.
+
+
+def test_torque_clamp_flag_constants():
+    # Shift + mask are generated single-source (config/generate_udp_protocol.py).
+    assert p.HEARTBEAT_TORQUE_CLAMP_SHIFT == 8
+    assert int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK) == 0x3F00
+    # Exactly 6 legs' worth of bits, starting at the shift.
+    assert int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK) == (
+        ((1 << p.NUM_LEGS) - 1) << p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
+    # The mask must not collide with the single-bit flags (bits 0-3).
+    single_bits = (int(p.HeartbeatT2JFlags.TIME_SYNCED)
+                   | int(p.HeartbeatT2JFlags.STOW_PENDING_ON_RECONNECT)
+                   | int(p.HeartbeatT2JFlags.ALL_AXIS_HEARTBEATS_OK)
+                   | int(p.HeartbeatT2JFlags.MPC_ACTIVE))
+    assert single_bits & int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK) == 0
+
+
+def test_heartbeat_t2j_torque_clamp_mask_roundtrip():
+    # Firmware packs: flags |= (mask << SHIFT) & TORQUE_CLAMP_MASK. Parse side
+    # extracts: (flags & TORQUE_CLAMP_MASK) >> SHIFT. Round-trip through the real
+    # payload codec with other flag bits set, so the extraction can't alias them.
+    leg_mask = 0b000101  # legs 0 and 2 clamped
+    flags = (int(p.HeartbeatT2JFlags.TIME_SYNCED)
+             | int(p.HeartbeatT2JFlags.MPC_ACTIVE)
+             | ((leg_mask << p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
+                & int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK)))
+    hb = p.HeartbeatT2J(t_teensy_us=1, flags=flags, uptime_ms=1)
+    blob = hb.pack()
+    assert len(blob) == p.HEARTBEAT_T2J_SIZE  # still 73 B — no wire-size change
+    decoded = p.HeartbeatT2J.unpack(blob)
+    extracted = ((int(decoded.flags) & int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK))
+                 >> p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
+    assert extracted == leg_mask
+    # The single-bit flags survive alongside the mask.
+    assert decoded.flags & int(p.HeartbeatT2JFlags.TIME_SYNCED)
+    assert decoded.flags & int(p.HeartbeatT2JFlags.MPC_ACTIVE)
+    assert not decoded.flags & int(p.HeartbeatT2JFlags.STOW_PENDING_ON_RECONNECT)
+
+
+def test_torque_clamp_mask_zero_on_legacy_flags():
+    # A pre-clamp firmware never sets bits 8-13, so extraction over any legacy
+    # flags word (bits 0-3 only) must read 0 — the "dormant until reflash" story.
+    for legacy in (0x0, 0x1, 0x3, 0xF):
+        hb = p.HeartbeatT2J(t_teensy_us=1, flags=legacy, uptime_ms=1)
+        decoded = p.HeartbeatT2J.unpack(hb.pack())
+        assert ((int(decoded.flags) & int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK))
+                >> p.HEARTBEAT_TORQUE_CLAMP_SHIFT) == 0

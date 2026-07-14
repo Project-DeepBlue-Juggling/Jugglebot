@@ -82,6 +82,12 @@ dynamics:
                                                 # ((iq_up + iq_down)/2 = τ_g/Kt, since friction flips sign with direction
                                                 # and gravity does not) and fits with a free intercept. Until that lands,
                                                 # torque_ff_enabled stays FALSE.
+                                                # FIRST MEASUREMENT (2026-07-14 session, four masses, R²=0.99909):
+                                                #   Kt = 0.0577 ± 0.0012 — NEITHER candidate (0.0551 excluded +2.1σ,
+                                                #   0.0624 excluded −3.8σ; the stiction-bias prediction confirmed).
+                                                #   PROVISIONAL: masses were operator-recalled, not weighed. This value
+                                                #   ships here only after the weighed-mass confirmation run (2 reps).
+                                                #   See logbook/2026-07-15-kt-first-measurement-and-tff-channel.md.
                                                 # See logbook/2026-07-14-kt-reconciliation-and-gravity-ff.md.
                                                 # Used by the friction feedforward stack to convert iq (A) to
                                                 # torque (Nm), and by tests/hardware/friction_ff_demo.py.
@@ -163,13 +169,40 @@ dynamics:
                                                 # loop's output BEFORE the torque limit, so a feedforward above
                                                 # ~0.55 Nm (= 10 A × 0.055133) saturates the current clamp and the
                                                 # position loop loses ALL authority — the leg then runs open-loop
-                                                # at full current until MAX_DEVIATION E-STOPs it mid-motion.  There
-                                                # is no clamp in the firmware (only int16 saturation at ±3.2767 Nm
-                                                # = 59 A of demand), so this Jetson-side clamp is the only one.
+                                                # at full current until MAX_DEVIATION E-STOPs it mid-motion.  This
+                                                # Jetson-side clamp binds FIRST (0.15 × 0.8835 = 0.1325 wire-Nm) and
+                                                # is the primary bound; the firmware ingest backstop
+                                                # (torque_ff_firmware_clamp_wire_nm below) is the second layer.
                                                 # HARD CEILING: values above 0.30 Nm (TRUE Nm) are REJECTED by
                                                 # SetpointPump at construction (position-loop-authority ceiling;
                                                 # saturation is ~0.62 true-Nm = 0.55 wire-Nm — note the ~0.55 figure
                                                 # above is WIRE-Nm while this clamp is TRUE-Nm).
+  torque_ff_firmware_clamp_wire_nm: 0.25      # Firmware ingest backstop clamp {Nm, WIRE/ODrive-Nm} on |torque_ff|,
+                                                # applied per leg in the can-bridge UDP ingest (leg_interp.cpp
+                                                # interp_on_setpoint, beside the isfinite gate) BEFORE the frame is
+                                                # staged.  CLAMPS, never rejects: an oversized torque with valid
+                                                # pos/vel is a torque-path bug — rejecting the whole frame would
+                                                # starve the interp into a staleness E-STOP, converting a torque bug
+                                                # into a position-control outage mid-motion.  (The NaN gate still
+                                                # drops the whole frame — NaN means garbage.)
+                                                # THE CLAMP CHAIN IS THREE LAYERS:
+                                                #   1. SetpointPump clamp (torque_ff_max_nm above): ±0.15 TRUE Nm
+                                                #      ⇒ ±0.1325 wire-Nm after the 0.8835 Kt wire scale — binds
+                                                #      FIRST on the production path.
+                                                #   2. THIS firmware backstop: ±0.25 wire-Nm (≈4.5 A) — catches a
+                                                #      Jetson-side bug or a pump bypass (the direct-frame bench
+                                                #      harnesses build their own Setpoint frames).  Well under the
+                                                #      ~0.55 wire-Nm (10 A × 0.055133) point where the FF would
+                                                #      consume the whole current budget and the position loop
+                                                #      loses all authority.
+                                                #   3. The ODrive current clamp (current_soft_max 10 A) — last
+                                                #      resort; by the time it binds, the position loop has no
+                                                #      authority left.
+                                                # NEEDS A CAN-BRIDGE REFLASH to take effect: until the firmware is
+                                                # reflashed this clamp is dormant and layer 1 is the only software
+                                                # clamp.  When it binds, the firmware sets the per-leg
+                                                # torque_clamp_mask (HeartbeatT2J.flags bits 8-13), surfaced on
+                                                # /link_status as torque_clamp_mask (mirrors lead_clamp_mask).
   torque_ff_ramp_s: 2.0                       # Ramp-in duration {s} for the feedforward at stream start (and after
                                                 # any SetpointPump.reset(), i.e. a link loss / re-arm).
                                                 # WHY: when streaming begins the leg is already being held at the

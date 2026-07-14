@@ -457,10 +457,13 @@ def test_link_status_surfaces_guard_deviation_diagnostics(bridge):
     lead-clamp bitmask, and the MAX_DEVIATION latch-event snapshot) surface as
     /link_status KeyValues so a future stutter/latch rosbag is self-diagnosing."""
     teensy, node = bridge
+    # torque_clamp_mask rides HeartbeatT2J.flags bits 8-13 (the 2026-07-14
+    # firmware ingest clamp — no new payload field). legs 1 and 3 clamped.
+    tq_flags = 0b001010 << p.HEARTBEAT_TORQUE_CLAMP_SHIFT
     hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
                       bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
                       fault_state=int(FaultState.MAX_DEVIATION),
-                      flags=0, uptime_ms=1,
+                      flags=tq_flags, uptime_ms=1,
                       live_deviation=(0.12, -0.03, 0.55, 0.0, 0.0, 0.0),
                       lead_clamp_mask=0b000101,   # legs 0 and 2 clamped
                       max_dev_leg=2, max_dev_value=0.55,
@@ -470,6 +473,7 @@ def test_link_status_surfaces_guard_deviation_diagnostics(bridge):
     node._publish_link_status()
     kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
     assert kv['lead_clamp_mask'] == '5'
+    assert kv['torque_clamp_mask'] == '10'   # 0b001010 — legs 1 and 3
     assert kv['live_deviation'].startswith('0.1200,-0.0300,0.5500')
     assert kv['max_dev_leg'] == '2'
     assert kv['max_dev_value'] == '0.5500'

@@ -154,6 +154,13 @@ _SETPOINT_ECHO_STALE_S = 0.5
 _T2J_FLAG_TIME_SYNCED = 0x1
 _T2J_FLAG_STOW_PENDING = 0x2
 _T2J_FLAG_ALL_AXIS_HB_OK = 0x4
+# Bits 8-13 carry the per-leg torque_ff ingest-clamp mask (bit 8+i = leg i clamped
+# at UDP ingest on the last ACCEPTED setpoint) — generated single source:
+# p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK / p.HEARTBEAT_TORQUE_CLAMP_SHIFT.
+# Reads 0 from a firmware older than the 2026-07-14 ingest clamp (bits unused
+# there), so surfacing it is backward-compatible with an unflashed bridge.
+_T2J_TORQUE_CLAMP_MASK = int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK)
+_T2J_TORQUE_CLAMP_SHIFT = int(p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
 
 # HeartbeatT2J.bb_flags bits (T→J, Ball Butler cutover).
 _T2J_BB_FLAG_BALL_IN_HAND  = 0x1
@@ -2112,6 +2119,17 @@ class TeensyBridgeNode(Node):
                     # /link_status so a future stutter/latch bag is self-diagnosing.
                     KeyValue(key='lead_clamp_mask',
                              value=str(int(hb.lead_clamp_mask))),
+                    # Per-leg torque_ff ingest-clamp mask (firmware backstop,
+                    # 2026-07-14): bit i = leg i's |torque_ff| was clamped to
+                    # TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last
+                    # accepted setpoint. Rides HeartbeatT2J.flags bits 8-13 (no
+                    # wire-size change); 0 from a pre-clamp firmware. Nonzero
+                    # means a producer exceeded the 0.25 wire-Nm backstop — the
+                    # pump clamp (0.1325 wire-Nm) should always bind first, so
+                    # any nonzero value here is a torque-path bug to chase.
+                    KeyValue(key='torque_clamp_mask',
+                             value=str((int(hb.flags) & _T2J_TORQUE_CLAMP_MASK)
+                                       >> _T2J_TORQUE_CLAMP_SHIFT)),
                     KeyValue(key='live_deviation',
                              value=','.join(f'{d:.4f}' for d in hb.live_deviation)),
                     KeyValue(key='max_dev_leg',

@@ -13,6 +13,15 @@ merely plausible — and it directly exercises the hypothesis the whole harness 
 test: that an at-rest measurement is biased high by stiction while the up/down average is
 not.
 
+Mode 2 gets the same treatment (2026-07-15 edge-capture redesign): a synthetic 250 Hz
+iq trace with a KNOWN channel slope (18.14 A/Nm), tau = 8 s locked-state re-absorption
+and sigma = 0.08 A noise must come back through the full pipeline (matched filter ->
+decay correction -> trimmed edge statistics -> verdict) at 18.14 +/- 1; a null channel
+must yield a PRECISE-NULL verdict (the only path to ``channel_live=False``); a drifting
+hold must yield NO CONCLUSION with ``channel_live=None`` — the tri-state that stops a
+bad run masquerading as a dead channel (the 2026-07-14 manifests recorded exactly that
+lie).
+
 ``kt_lib`` lives in ``tests/hardware/`` (excluded from collection via
 ``--ignore=tests/hardware``), so it goes on ``sys.path`` explicitly here, mirroring
 ``test_bench_sysid_bridge.py``.
@@ -163,15 +172,22 @@ def test_budget_rejects_a_mass_that_would_blow_the_current_limit():
     assert b.rows[-1].iq_up_A > 10.0
 
 
-def test_budget_rejects_an_ill_conditioned_light_mass():
-    # 0.3 kg: τ_g is BELOW τ_c, so iq_down is negative — the motor drives the mass down
-    # rather than resisting it. That is the one regime where the "τ_f flips sign, τ_g
-    # does not" story is genuinely fragile, and it is what the floor protects against.
+def test_budget_warns_but_accepts_a_light_mass():
+    # DOWNGRADED from a refusal 2026-07-15: the 2026-07-14 four-mass session
+    # empirically refuted the hard conditioning floor — its 0.50 kg point
+    # (tau_g/tau_c = 0.93, one near-zero traverse) sat dead on the R^2 = 0.99909
+    # mass fit with SEMs 0.08-0.11 A.  The near-zero one-way current at light load
+    # is expected physics; the FIT consumes the up/down average, where friction
+    # has already cancelled.  Conditioning is now ADVISORY; over-current stays hard.
     b = kt.current_budget([0.3, 1.0, 2.0])
-    assert not b.ok
-    assert any('ill-conditioned' in r for r in b.reasons)
+    assert b.ok                              # accepted — warn, don't refuse
+    assert any('does not dominate' in r for r in b.reasons)   # ...but say so
     assert b.rows[0].tau_g_over_tau_c < kt.CONDITIONING_HARD_FLOOR
-    assert b.rows[0].iq_down_A < 0.0        # the regime the floor exists to exclude
+    assert b.rows[0].iq_down_A < 0.0
+    # Over-current refusals remain hard.
+    heavy = kt.current_budget([1.0, 2.0, 6.0])
+    assert not heavy.ok
+    assert any('budget' in r for r in heavy.reasons)
 
 
 def test_conditioning_floor_sits_just_above_the_iq_down_zero_crossing():
@@ -299,57 +315,124 @@ def test_traverse_duration():
 # ===========================================================================
 # Steady-velocity window selection
 # ===========================================================================
+#
+# 2026-07-15 rework: the selector gates on a lightly SMOOTHED |v| within 10% of target
+# plus a POSITION margin (the traverse span shrunk 15% each end). The old accel gate
+# (|dv/dt| < 1 rev/s² from differenced 250 Hz velocity telemetry) is GONE: on the real
+# rig the velocity estimate is quantized with σ ≈ 0.23 rev/s, so the differenced accel
+# had σ ≈ 35 rev/s² — pure noise against a 1 rev/s² tolerance — and starved every
+# 2026-07-14 traverse to 23–63 kept samples (3–7% of the record), failing all four
+# masses. The position margin is what excludes the accel/decel ramps (they live at the
+# stroke ends), making the accel gate redundant as well as fatal.
 
-def _ramp_trace(v_target=0.6, dur=3.0, fs=250.0, accel_s=0.3):
-    """A traverse: accelerate to v_target, cruise, decelerate. The accel/decel ends are
-    exactly what the window selector must throw away."""
+_TRAVERSE_LO = 0.40
+_TRAVERSE_HI = 1.90
+
+
+def _ramp_trace(v_target=0.6, fs=250.0, accel_s=0.4, lo=_TRAVERSE_LO, hi=_TRAVERSE_HI):
+    """A traverse trace with a consistent position record: trapezoidal velocity
+    (ramp — cruise — ramp) integrated into position over the lo..hi stroke."""
+    v_pk = abs(v_target)
+    span = hi - lo
+    d_ramp = 0.5 * v_pk * accel_s
+    t_c = (span - 2 * d_ramp) / v_pk
+    dur = 2 * accel_s + t_c
     t = np.arange(0.0, dur, 1.0 / fs)
-    v = np.full_like(t, v_target)
+    v = np.full_like(t, v_pk)
     up = t < accel_s
-    v[up] = v_target * t[up] / accel_s
+    v[up] = v_pk * t[up] / accel_s
     dn = t > dur - accel_s
-    v[dn] = v_target * (dur - t[dn]) / accel_s
-    return t, v
+    v[dn] = np.maximum(0.0, v_pk * (dur - t[dn]) / accel_s)
+    p = lo + np.concatenate(([0.0], np.cumsum(0.5 * (v[1:] + v[:-1]) / fs)))
+    if v_target < 0:
+        v = -v
+        p = hi - (p - lo)                   # retracting traverse: hi -> lo
+    return t, v, p
+
+
+def _mask(t, v, p, **kw):
+    kw.setdefault('v_target_rps', 0.6)
+    kw.setdefault('traverse_lo_rev', _TRAVERSE_LO)
+    kw.setdefault('traverse_hi_rev', _TRAVERSE_HI)
+    return kt.steady_state_mask(t, v, p, **kw)
 
 
 def test_steady_window_discards_the_accel_and_decel_ends():
-    t, v = _ramp_trace()
-    w = kt.steady_state_mask(t, v, v_target_rps=0.6)
+    t, v, p = _ramp_trace()
+    w = _mask(t, v, p)
     assert w.ok, w.reasons
-    kept_t = t[w.mask]
-    # Nothing from the ramps survives.
-    assert kept_t.min() >= 0.3 - 1e-9
-    assert kept_t.max() <= 3.0 - 0.3 + 1e-9
+    kept_p = p[w.mask]
+    # Nothing from the ramps survives: the position margin keeps the middle only.
+    span = _TRAVERSE_HI - _TRAVERSE_LO
+    assert kept_p.min() >= _TRAVERSE_LO + 0.15 * span - 1e-9
+    assert kept_p.max() <= _TRAVERSE_HI - 0.15 * span + 1e-9
     assert w.mean_vel_rps == pytest.approx(0.6, rel=1e-3)
     assert w.vel_error_frac < 0.01
 
 
-def test_steady_window_rejects_a_sample_merely_passing_through_target_speed():
-    # THE reason the accel gate exists: a decelerating leg crosses the target speed on
-    # its way down. |v| alone would admit that sample; |dv/dt| must veto it.
+def test_steady_window_rejects_a_pass_through_of_target_speed_via_position():
+    # A decelerating leg crosses the target speed on its way down — but it does so at
+    # the stroke END, which the position margin excludes. (The old accel gate handled
+    # this and starved everything else; position handles it for free.)
     fs = 250.0
     t = np.arange(0.0, 2.0, 1.0 / fs)
-    v = np.linspace(1.2, 0.0, t.size)      # constantly decelerating, crosses 0.6 mid-way
-    w = kt.steady_state_mask(t, v, v_target_rps=0.6, edge_discard_s=0.0,
-                             accel_tol_rps2=0.1)
-    assert w.n_kept == 0                    # the accel gate vetoes every sample
+    v = np.linspace(1.2, 0.0, t.size)       # decelerating throughout, crosses 0.6 mid-way
+    p = _TRAVERSE_HI - 0.10 + np.concatenate(
+        ([0.0], np.cumsum(0.5 * (v[1:] + v[:-1]) / fs))) * 0.05   # hugging the top end
+    w = _mask(t, v, p, min_samples=1)
+    assert w.n_kept == 0
+
+
+def test_steady_window_keeps_a_noisy_velocity_cruise_the_old_gate_starved():
+    """THE A2 regression test. Real 250 Hz velocity telemetry is coarsely quantized
+    (σ ≈ 0.23 rev/s on the 2026-07-14 CSVs — the old gate kept 23–63 of ~878 samples
+    and failed every mass). With white velocity noise σ = 0.2 rev/s the new gate must
+    keep ≥ 40% of the genuine cruise samples; for the record, the old accel gate alone
+    would have vetoed the overwhelming majority of them."""
+    rng = np.random.default_rng(42)
+    t, v_true, p = _ramp_trace()
+    v = v_true + rng.normal(scale=0.20, size=v_true.size)
+    w = _mask(t, v, p)
+    span = _TRAVERSE_HI - _TRAVERSE_LO
+    cruise = ((v_true == 0.6)
+              & (p >= _TRAVERSE_LO + 0.15 * span)
+              & (p <= _TRAVERSE_HI - 0.15 * span))
+    assert w.ok, w.reasons
+    kept_of_cruise = np.count_nonzero(w.mask & cruise) / np.count_nonzero(cruise)
+    assert kept_of_cruise >= 0.40
+    # Document the starvation cause the rework removed: the differenced-velocity accel
+    # estimate is σ ≈ v_noise·√2·fs/2 ≈ 35 rev/s² — the old 1 rev/s² gate would have
+    # vetoed >80% of the same cruise samples on noise alone.
+    accel = np.zeros(t.size)
+    accel[1:-1] = (v[2:] - v[:-2]) / (t[2:] - t[:-2])
+    old_accel_pass = np.count_nonzero(
+        (np.abs(accel) <= 1.0) & cruise) / np.count_nonzero(cruise)
+    assert old_accel_pass < 0.20
+
+
+def test_steady_window_smoothing_is_what_saves_the_noisy_cruise():
+    # Control: with smoothing disabled (smooth_n=1) the same noisy trace keeps far
+    # fewer cruise samples — the boxcar is load-bearing, not decorative.
+    rng = np.random.default_rng(42)
+    t, v_true, p = _ramp_trace()
+    v = v_true + rng.normal(scale=0.20, size=v_true.size)
+    smoothed = _mask(t, v, p)
+    raw = _mask(t, v, p, smooth_n=1, min_samples=1)
+    assert smoothed.n_kept > 1.5 * raw.n_kept
+
+
+def test_steady_window_keeps_the_n50_refusal():
+    # The n >= 50 refusal survives the rework: a too-short traverse still fails loudly.
+    t, v, p = _ramp_trace()
+    short = slice(0, 60)                    # 0.24 s of record — mostly ramp
+    w = _mask(t[short], v[short], p[short])
     assert not w.ok
-
-
-def test_steady_window_admits_the_crossing_when_the_accel_gate_is_disabled():
-    # Control for the test above: with a permissive accel tolerance the |v| gate alone
-    # DOES admit the passing-through samples — proving the accel gate is what rejects them.
-    fs = 250.0
-    t = np.arange(0.0, 2.0, 1.0 / fs)
-    v = np.linspace(1.2, 0.0, t.size)
-    w = kt.steady_state_mask(t, v, v_target_rps=0.6, edge_discard_s=0.0,
-                             accel_tol_rps2=1e6, min_samples=1, min_kept_frac=0.0)
-    assert w.n_kept > 0
+    assert any('steady samples' in r for r in w.reasons)
 
 
 def test_steady_window_is_direction_agnostic():
-    t, v = _ramp_trace(v_target=-0.6)       # a retracting traverse
-    w = kt.steady_state_mask(t, v, v_target_rps=0.6)   # target given as a magnitude
+    t, v, p = _ramp_trace(v_target=-0.6)    # a retracting traverse
+    w = _mask(t, v, p)                      # target given as a magnitude
     assert w.ok, w.reasons
     assert w.mean_vel_rps == pytest.approx(-0.6, rel=1e-3)
 
@@ -357,25 +440,36 @@ def test_steady_window_is_direction_agnostic():
 def test_steady_window_fails_a_traverse_that_never_reaches_speed():
     t = np.arange(0.0, 3.0, 1.0 / 250.0)
     v = np.full_like(t, 0.2)                # only ever gets to a third of target
-    w = kt.steady_state_mask(t, v, v_target_rps=0.6)
+    p = np.linspace(0.9, 1.5, t.size)       # mid-stroke, so position does not veto
+    w = _mask(t, v, p)
     assert not w.ok
     assert w.n_kept == 0
 
 
-def test_steady_window_tolerates_dropped_frames():
-    # A dropped UDP frame widens the local dt; the centred difference must not manufacture
-    # a spurious accel spike out of it.
-    t, v = _ramp_trace()
+def test_steady_window_tolerates_dropped_frames_and_nan_velocity():
+    # A dropped UDP frame / NaN velocity sample must neither poison the NaN-aware
+    # boxcar nor be admitted itself.
+    t, v, p = _ramp_trace()
     keep = np.ones(t.size, bool)
     keep[500:520] = False                   # an 80 ms telemetry gap mid-cruise
-    w = kt.steady_state_mask(t[keep], v[keep], v_target_rps=0.6)
+    t2, v2, p2 = t[keep].copy(), v[keep].copy(), p[keep].copy()
+    v2[300] = np.nan                        # plus a NaN sample
+    w = _mask(t2, v2, p2)
     assert w.ok, w.reasons
+    assert not w.mask[300]
     assert w.mean_vel_rps == pytest.approx(0.6, rel=1e-3)
 
 
 def test_steady_window_handles_empty_input():
-    w = kt.steady_state_mask([], [], v_target_rps=0.6)
+    w = _mask([], [], [])
     assert not w.ok and w.n_kept == 0
+
+
+def test_boxcar_smooth_is_nan_aware():
+    x = np.array([1.0, 1.0, np.nan, 1.0, 1.0])
+    s = kt.boxcar_smooth(x, 3)
+    assert np.allclose(s[[0, 1, 3, 4]], 1.0)   # NaN excluded, not propagated
+    assert s[2] == pytest.approx(1.0)          # window average of the finite neighbours
 
 
 # ===========================================================================
@@ -406,21 +500,27 @@ def _traverse(iq_level, v, n=600, fs=250.0, noise=0.0, seed=0):
     rng = np.random.default_rng(seed)
     t = np.arange(n) / fs
     vel = np.full(n, v)
+    # Mid-stroke cruise positions consistent with the velocity (start mid-window so
+    # the position-margin gate keeps the record).
+    pos = 1.0 + v * t if v > 0 else 1.4 + v * t
     iq = np.full(n, iq_level) + (rng.normal(scale=noise, size=n) if noise else 0.0)
-    return t, vel, iq
+    return t, vel, pos, iq
 
 
 def test_summarize_traverse_recovers_the_mean_and_flags_a_dead_iq_channel():
-    t, vel, iq = _traverse(3.0, 0.6, noise=0.05, seed=7)
-    s = kt.summarize_traverse(t, vel, iq, direction='up', v_target_rps=0.6,
-                              edge_discard_s=0.1)
+    t, vel, pos, iq = _traverse(3.0, 0.6, noise=0.05, seed=7)
+    s = kt.summarize_traverse(t, vel, pos, iq, direction='up', v_target_rps=0.6,
+                              traverse_lo_rev=_TRAVERSE_LO,
+                              traverse_hi_rev=_TRAVERSE_HI)
     assert s.ok, s.reasons
     assert s.iq_mean_A == pytest.approx(3.0, abs=0.05)
     assert s.iq_sem_A > 0
 
     # All-NaN iq = the stock-v3 on-change gate starving us of samples. Must be loud.
-    dead = kt.summarize_traverse(t, vel, np.full_like(iq, np.nan), direction='up',
-                                 v_target_rps=0.6, edge_discard_s=0.1)
+    dead = kt.summarize_traverse(t, vel, pos, np.full_like(iq, np.nan),
+                                 direction='up', v_target_rps=0.6,
+                                 traverse_lo_rev=_TRAVERSE_LO,
+                                 traverse_hi_rev=_TRAVERSE_HI)
     assert not dead.ok
     assert any('BENCH_SYSID_BUILD' in r for r in dead.reasons)
 
@@ -680,6 +780,65 @@ def test_sign_inference_is_indeterminate_on_a_failed_fit():
     si = kt.infer_extension_iq_sign(kt.fit_kt([]))
     assert si.iq_extension_sign == 0
     assert not si.matches_code_read
+
+
+# ===========================================================================
+# Rig orientation — the 2026-07-14 wrong-way-round extension_iq_sign
+# ===========================================================================
+#
+# The rig was INVERTED (contraction raised the load) while the harness assumed
+# holding == extending, so every manifest recorded extension_iq_sign = −1 backwards.
+# Orientation is now a required operator declaration threaded through every sign
+# inference.
+
+def test_rig_orientation_flips_the_slope_based_sign_inference():
+    fit = kt.fit_kt(_synth_points(0.0624, [1.0, 2.0, 3.0], sign=-1))
+    normal = kt.infer_extension_iq_sign(fit, rig_orientation='normal')
+    inverted = kt.infer_extension_iq_sign(fit, rig_orientation='inverted')
+    assert normal.iq_extension_sign == -1
+    assert inverted.iq_extension_sign == +1     # same data, opposite rig, opposite sign
+    assert 'inverted' in inverted.source
+
+
+def test_rig_orientation_rejects_garbage():
+    fit = kt.fit_kt(_synth_points(0.0624, [1.0, 2.0, 3.0]))
+    with pytest.raises(ValueError):
+        kt.infer_extension_iq_sign(fit, rig_orientation='upside-down')
+    with pytest.raises(ValueError):
+        kt.extension_sign_from_hold(-3.0, 'sideways')
+
+
+def test_extension_sign_from_hold_respects_orientation():
+    # Holding current −3 A: on a normal rig the holding torque IS extension → −1;
+    # on an inverted rig holding is contraction → extension reads +1.
+    assert kt.extension_sign_from_hold(-3.0, 'normal') == -1
+    assert kt.extension_sign_from_hold(-3.0, 'inverted') == +1
+    assert kt.extension_sign_from_hold(+3.0, 'normal') == +1
+    assert kt.extension_sign_from_hold(+3.0, 'inverted') == -1
+
+
+def test_extension_sign_from_hold_refuses_an_unloaded_hold():
+    # A barely-loaded hold (the 2026-07-14 hand-supported rung read ~0.05 A) cannot
+    # calibrate the frame — indeterminate, not a guess.
+    assert kt.extension_sign_from_hold(0.05, 'normal') == 0
+    assert kt.extension_sign_from_hold(float('nan'), 'normal') == 0
+
+
+def test_slope_friction_agreement_expectation_flips_with_orientation():
+    # On an inverted rig gravity ASSISTS extension while friction still opposes motion,
+    # so the fitted slope and the friction half-difference legitimately carry OPPOSITE
+    # signs — the invariant must expect that, or a correct inverted-rig run would be
+    # branded untrustworthy (and a swapped-up/down run would sail through).
+    pts = _synth_points(0.0624, [1.0, 2.0, 3.0])           # normal-rig synthetic
+    fit = kt.fit_kt(pts)
+    assert kt.slope_friction_sign_agree(fit, pts, rig_orientation='normal')
+    assert not kt.slope_friction_sign_agree(fit, pts, rig_orientation='inverted')
+    # An inverted-rig run: gravity term flips sign, friction term does not.
+    inv = [kt.MassPoint(p.mass_kg, 0, 0, -p.iq_avg_A, p.iq_halfdiff_A,
+                        p.iq_avg_sem_A, p.iq_halfdiff_sem_A) for p in pts]
+    fit_inv = kt.fit_kt(inv)
+    assert kt.slope_friction_sign_agree(fit_inv, inv, rig_orientation='inverted')
+    assert not kt.slope_friction_sign_agree(fit_inv, inv, rig_orientation='normal')
 
 
 # ===========================================================================
@@ -943,6 +1102,10 @@ def test_no_conclusion_verdict_never_states_sign_or_scale():
     q = kt.assess_tff_fit_quality(fit, pts)
     v = kt.classify_torque_ff(fit, iq_extension_sign=+1, quality=q)
     assert v.no_conclusion
+    # TRI-STATE (B7): a no-conclusion run says NOTHING about liveness. The 2026-07-14
+    # manifests recorded channel_live=false from exactly this path while the settled
+    # data proved the channel live. None, never False, here.
+    assert v.channel_live is None
     assert v.positive_tff_extends is None
     assert v.sign_matches_expectation is None
     assert not v.scale_ok
@@ -993,7 +1156,7 @@ def test_verdict_gate_precise_null_is_still_a_dead_channel_conclusion():
     assert not q.trustworthy
     v = kt.classify_torque_ff(fit, iq_extension_sign=-1, quality=q)
     assert not v.no_conclusion
-    assert not v.channel_live
+    assert v.channel_live is False      # a DEMONSTRATED null — the only path to False
     assert any('DO NOT ship a torque feedforward' in ln for ln in v.lines)
 
 
@@ -1150,3 +1313,361 @@ def test_overcurrent_latch_rejects_bad_args():
         kt.OverCurrentLatch(0.0)
     with pytest.raises(ValueError):
         kt.OverCurrentLatch(9.5, n_consecutive=0)
+
+
+# ===========================================================================
+# Mode/flag validation (A1) — the silent --hold-mass-in-mode-kt trap
+# ===========================================================================
+#
+# The 2026-07-14 operator ran --mode kt --hold-mass 0.5/1.0/1.5/2.25 four times; mode
+# kt reads --masses and silently fell back to its 1.0-first recommended ladder, so
+# every run's data was labelled "1.00 kg" while the real mass differed. Mode-mismatched
+# flags are now a parse-time REFUSAL, never a silent ignore.
+
+def test_mode_kt_refuses_mode2_flags_and_points_at_masses():
+    problems = kt.validate_mode_flags('kt', ['hold_mass', 'rig_orientation'])
+    assert len(problems) == 1
+    assert '--hold-mass' in problems[0]
+    assert '--masses' in problems[0]              # tells the operator the right flag
+    assert 'SILENTLY IGNORED' in problems[0]
+
+
+def test_mode_kt_refuses_every_mode2_flag():
+    for dest, flag in kt.MODE2_ONLY_FLAGS.items():
+        problems = kt.validate_mode_flags('kt', [dest, 'rig_orientation'])
+        assert problems and flag in problems[0], (dest, problems)
+
+
+def test_mode_tff_refuses_mode1_flags_and_points_at_hold_mass():
+    problems = kt.validate_mode_flags('torque_ff_check',
+                                      ['masses', 'rig_orientation'])
+    assert len(problems) == 1
+    assert '--masses' in problems[0]
+    assert '--hold-mass' in problems[0]
+    for dest, flag in kt.MODE1_ONLY_FLAGS.items():
+        problems = kt.validate_mode_flags('torque_ff_check',
+                                          [dest, 'rig_orientation'])
+        assert problems and flag in problems[0], (dest, problems)
+
+
+def test_mode_all_accepts_flags_from_both_modes():
+    assert kt.validate_mode_flags(
+        'all', ['masses', 'hold_mass', 'tff_amps', 'reps', 'rig_orientation']) == []
+
+
+def test_matching_mode_flags_are_accepted():
+    assert kt.validate_mode_flags('kt', ['masses', 'reps', 'rig_orientation']) == []
+    assert kt.validate_mode_flags(
+        'torque_ff_check', ['hold_mass', 'tff_amps', 'rig_orientation']) == []
+
+
+def test_rig_orientation_is_required_by_the_validator():
+    # No default: the 2026-07-14 manifests recorded extension_iq_sign wrong-way-round
+    # because the rig was inverted and the harness assumed holding == extension.
+    problems = kt.validate_mode_flags('kt', ['masses'])
+    assert len(problems) == 1
+    assert '--rig-orientation' in problems[0]
+    assert 'normal' in problems[0] and 'inverted' in problems[0]  # meanings printed
+
+
+def test_unknown_mode_is_a_problem_not_a_crash():
+    assert kt.validate_mode_flags('warp', ['rig_orientation'])
+
+
+# ===========================================================================
+# Over-current latch — the abort must carry its ACTUAL trigger (A5)
+# ===========================================================================
+
+def test_overcurrent_latch_tracks_the_breakaway_peak():
+    # The 2026-07-14 2.75 kg approach aborts printed "NONE @ u0=+nan enc=+nan": the
+    # real trigger (this latch, during breakaway) was swallowed by an all-NaN telemetry
+    # snapshot. The latch itself now records the peak so the report can never lose it.
+    latch = kt.OverCurrentLatch(9.5)
+    for iq in (8.0, 9.87, 9.6, 9.55):
+        latch.observe(iq)
+    assert latch.tripped
+    assert latch.max_abs_A == pytest.approx(9.87)
+    msg = latch.describe_trip()
+    assert 'over-current latch' in msg
+    assert '9.50' in msg and '9.87' in msg        # limit and measured peak, verbatim
+
+
+def test_overcurrent_latch_peak_tracks_even_without_a_trip():
+    latch = kt.OverCurrentLatch(9.5)
+    latch.observe(4.2)
+    latch.observe(float('nan'))
+    latch.observe(-6.3)
+    assert not latch.tripped
+    assert latch.max_abs_A == pytest.approx(6.3)
+    assert 'NOT tripped' in latch.describe_trip()
+
+
+# ===========================================================================
+# EDGE CAPTURE — Mode 2's measurement pipeline (B1–B5)
+# ===========================================================================
+
+def test_square_wave_series_shape_and_toggles():
+    vals, toggles = kt.square_wave_tff_series(0.02, seg_t_s=0.01,
+                                              half_period_s=1.75, n_cycles=10)
+    assert vals.size == 175 * 20                      # 10 cycles = 20 half-periods
+    assert vals[0] == pytest.approx(+0.02)            # starts positive
+    assert vals[175] == pytest.approx(-0.02)          # first toggle
+    assert set(np.round(np.unique(vals), 6)) == {-0.02, 0.02}
+    assert toggles.size == 19                         # 2n−1 full ±2X edges
+    assert toggles[0] == pytest.approx(1.75)
+    assert np.allclose(np.diff(toggles), 1.75)
+    # Polarity: toggle 1 is +X→−X (Δ = −2X), alternating after that.
+    pol = kt.toggle_polarities(3)
+    assert list(pol) == [-1, 1, -1]
+
+
+def test_square_wave_series_rejects_bad_args():
+    with pytest.raises(ValueError):
+        kt.square_wave_tff_series(0.0, seg_t_s=0.01)
+    with pytest.raises(ValueError):
+        kt.square_wave_tff_series(0.02, seg_t_s=0.0)
+    with pytest.raises(ValueError):
+        kt.square_wave_tff_series(0.02, seg_t_s=0.01, n_cycles=0)
+
+
+def test_default_edge_amplitudes_sit_inside_the_static_band():
+    # All three amplitudes must stay inside the 0.045 Nm band (the lock keeps the
+    # position loop blind) and pass the safety validator both signs.
+    assert max(kt.DEFAULT_TFF_EDGE_AMPS_NM) < kt.TFF_BAND_WARN_NM
+    ladder = [s * a for a in kt.DEFAULT_TFF_EDGE_AMPS_NM for s in (+1, -1)]
+    assert kt.torque_ff_ladder_safe(ladder) == []
+    assert kt.torque_ff_ladder_band_warnings(ladder) == []
+    # ±0.36 A excursion at X = 0.02 — inaudible, tiny against the abort headroom.
+    assert 0.02 / kt.KT_ODRIVE_CONFIGURED == pytest.approx(0.36, abs=0.01)
+
+
+# -- settle gate (B1) -------------------------------------------------------
+
+def _hold_trace(dur=6.0, fs=250.0, cmd=1.2, pos_err=0.0, iq0=-3.0, diq_dt=0.0,
+                noise=0.02, seed=0):
+    rng = np.random.default_rng(seed)
+    t = np.arange(0.0, dur, 1.0 / fs)
+    pos = np.full_like(t, cmd + pos_err)
+    iq = iq0 + diq_dt * t + rng.normal(scale=noise, size=t.size)
+    return t, pos, iq
+
+
+def test_settle_gate_passes_a_settled_hold():
+    t, pos, iq = _hold_trace()
+    chk = kt.hold_settled(t, pos, iq, cmd_rev=1.2)
+    assert chk.settled, chk.reasons
+    assert chk.pos_err_rev < 1e-4
+    assert abs(chk.diq_dt_A_per_s) < 0.05
+
+
+def test_settle_gate_rejects_a_drifting_hold():
+    # The re-absorption transient: tonight's holds still drifted ~0.2 A/s at +1.3 s.
+    t, pos, iq = _hold_trace(diq_dt=0.2)
+    chk = kt.hold_settled(t, pos, iq, cmd_rev=1.2)
+    assert not chk.settled
+    assert chk.diq_dt_A_per_s == pytest.approx(0.2, abs=0.03)
+    assert any('re-absorbing' in r for r in chk.reasons)
+
+
+def test_settle_gate_rejects_an_unconverged_position():
+    t, pos, iq = _hold_trace(pos_err=0.001)           # 1 mrev off the command
+    chk = kt.hold_settled(t, pos, iq, cmd_rev=1.2)
+    assert not chk.settled
+    assert any('not converged' in r for r in chk.reasons)
+
+
+def test_settle_gate_needs_data():
+    chk = kt.hold_settled([], [], [], cmd_rev=1.2)
+    assert not chk.settled
+
+
+# -- matched filter (B3) ----------------------------------------------------
+
+def test_matched_filter_finds_the_real_edge_not_the_commanded_time():
+    # The edge lands 60 ms after the commanded toggle (transport + ODrive + telemetry
+    # latency). Wall-clock windows would straddle the step; the filter must find it.
+    fs = 250.0
+    t = np.arange(0.0, 4.0, 1.0 / fs)
+    rng = np.random.default_rng(3)
+    t_true = 2.06
+    iq = -3.0 + 0.7 * (t >= t_true) + rng.normal(scale=0.05, size=t.size)
+    t_e = kt.locate_edge_time(t, iq, 2.00, polarity=+1)
+    assert t_e is not None
+    assert t_e == pytest.approx(t_true, abs=0.02)
+
+
+def test_matched_filter_returns_none_without_data():
+    assert kt.locate_edge_time([], [], 1.0, polarity=+1) is None
+    t = np.arange(0.0, 0.5, 0.004)
+    iq = np.full_like(t, np.nan)
+    assert kt.locate_edge_time(t, iq, 0.25, polarity=+1) is None
+
+
+# -- decay correction + τ fit (B4) ------------------------------------------
+
+def test_edge_decay_correction_analytic_values():
+    # τ → very large: no creep, correction → 1. τ = 2 s at hp = 1.75: the closed-form
+    # periodic model gives ≈ 0.979 (single-sided creep alone would be ~5%; the
+    # pre-window rides the previous edge's decay, compensating most of it).
+    assert kt.edge_decay_correction(1e9, half_period_s=1.75) == pytest.approx(1.0, abs=1e-6)
+    c2 = kt.edge_decay_correction(2.0, half_period_s=1.75)
+    assert c2 == pytest.approx(0.979, abs=0.005)
+    c8 = kt.edge_decay_correction(8.0, half_period_s=1.75)
+    assert 0.995 < c8 <= 1.0
+    # Non-finite / absent τ ⇒ no correction rather than a wild one.
+    assert kt.edge_decay_correction(float('nan'), half_period_s=1.75) == 1.0
+    with pytest.raises(ValueError):
+        kt.edge_decay_correction(8.0, half_period_s=0.0)
+
+
+def test_fit_hold_tau_recovers_a_known_tau():
+    u = np.arange(0.02, 1.7, 0.008)
+    y = 0.4 * np.exp(-u / 0.9) + 0.1
+    tau, fitted = kt.fit_hold_tau(u, y)
+    assert fitted
+    assert tau == pytest.approx(0.9, rel=0.05)
+
+
+def test_fit_hold_tau_falls_back_on_garbage():
+    rng = np.random.default_rng(5)
+    u = np.arange(0.02, 1.7, 0.008)
+    tau, fitted = kt.fit_hold_tau(u, rng.normal(size=u.size))
+    assert not fitted
+    assert tau == kt.DEFAULT_HOLD_TAU_S
+    tau2, fitted2 = kt.fit_hold_tau([], [])
+    assert not fitted2 and tau2 == kt.DEFAULT_HOLD_TAU_S
+
+
+# -- the synthetic END-TO-END (the load-bearing test) ------------------------
+
+def _edge_capture_trace(slope_A_per_Nm, amplitude, *, tau=8.0, noise=0.08,
+                        drift=0.0, hp=1.75, cycles=10, fs=250.0, lag_s=0.04,
+                        hold_iq=-3.5, seed=0):
+    """A 250 Hz iq trace of one square-wave amplitude: each tff step injects an iq
+    step of slope·Δtff that the position loop re-absorbs with time constant τ (the
+    steady-state response to constant tff is ZERO — the physics that killed the
+    ladder). The response lags the command by ``lag_s`` to exercise the matched
+    filter. Returns (t, iq, commanded_toggle_times)."""
+    rng = np.random.default_rng(seed)
+    _, toggles = kt.square_wave_tff_series(amplitude, seg_t_s=1.0 / fs,
+                                           half_period_s=hp, n_cycles=cycles)
+    dur = 2 * cycles * hp
+    t = np.arange(0.0, dur, 1.0 / fs)
+    iq = np.full(t.size, hold_iq, float)
+    # The 0→+X onset at t=0 (half-sized, not a measured edge), then the ±2X toggles.
+    steps = [(0.0, amplitude)]
+    pols = kt.toggle_polarities(toggles.size)
+    steps.extend((tc, 2.0 * amplitude * p) for tc, p in zip(toggles, pols))
+    for t0, dtff in steps:
+        m = t >= t0 + lag_s
+        iq[m] += slope_A_per_Nm * dtff * np.exp(-(t[m] - (t0 + lag_s)) / tau)
+    iq += drift * t
+    iq += rng.normal(scale=noise, size=t.size)
+    return t, iq, toggles
+
+
+def test_edge_capture_end_to_end_recovers_the_known_slope():
+    """B: the pipeline must recover slope 18.14 A/Nm ± 1 from a 250 Hz trace with
+    τ = 8 s decay and noise σ = 0.08 A, across all three default amplitudes."""
+    expected = 1.0 / kt.KT_ODRIVE_CONFIGURED          # 18.14
+    per_amp = []
+    for i, amp in enumerate(kt.DEFAULT_TFF_EDGE_AMPS_NM):
+        t, iq, toggles = _edge_capture_trace(-expected, amp, seed=10 + i)
+        res = kt.analyze_edge_capture(t, iq, toggles, amp, half_period_s=1.75)
+        assert res.n_measured >= 17, res.reasons      # 19 commanded edges
+        assert not res.drift_detected
+        per_amp.append(res)
+    pooled = kt.pool_edge_capture(per_amp)
+    assert pooled.trustworthy, pooled.failures
+    assert abs(pooled.slope_A_per_Nm) == pytest.approx(expected, abs=1.0)
+    assert pooled.t_stat >= 3.0
+    assert pooled.jump_cv <= 0.20
+    v = kt.classify_edge_capture(pooled, iq_extension_sign=-1)
+    assert v.channel_live is True
+    assert v.positive_tff_extends is True             # settled production-chain sign
+    assert v.scale_ok
+    assert v.implied_kt_nm_per_a == pytest.approx(kt.KT_ODRIVE_CONFIGURED, rel=0.06)
+
+
+def test_edge_capture_end_to_end_null_channel_is_a_precise_null():
+    """B: a dead channel (slope 0) must produce the PRECISE-NULL verdict — the only
+    path allowed to set channel_live=False."""
+    per_amp = []
+    for i, amp in enumerate(kt.DEFAULT_TFF_EDGE_AMPS_NM):
+        t, iq, toggles = _edge_capture_trace(0.0, amp, seed=20 + i)
+        per_amp.append(kt.analyze_edge_capture(t, iq, toggles, amp,
+                                               half_period_s=1.75))
+    pooled = kt.pool_edge_capture(per_amp)
+    v = kt.classify_edge_capture(pooled, iq_extension_sign=-1)
+    assert v.channel_live is False
+    assert not v.no_conclusion                        # a null IS a conclusion
+    assert any('CHANNEL DEAD' in ln for ln in v.lines)
+    assert any('DO NOT ship' in ln for ln in v.lines)
+
+
+def test_edge_capture_end_to_end_drifting_hold_is_no_conclusion_not_dead():
+    """B: a drifting hold (0.3 A/s) with no real signal must yield NO CONCLUSION with
+    channel_live=None — NOT a dead-channel verdict (the drift fakes a null: the
+    alternating-polarity edges cancel it in the slope) and NOT a live one."""
+    per_amp = []
+    for i, amp in enumerate(kt.DEFAULT_TFF_EDGE_AMPS_NM):
+        t, iq, toggles = _edge_capture_trace(0.0, amp, drift=0.3, seed=30 + i)
+        res = kt.analyze_edge_capture(t, iq, toggles, amp, half_period_s=1.75)
+        per_amp.append(res)
+    assert any(r.drift_detected for r in per_amp)
+    pooled = kt.pool_edge_capture(per_amp)
+    assert not pooled.trustworthy
+    v = kt.classify_edge_capture(pooled, iq_extension_sign=-1)
+    assert v.no_conclusion
+    assert v.channel_live is None                     # tri-state: unknown, not dead
+    assert any('NO CONCLUSION' in ln for ln in v.lines)
+    assert any('None' in ln for ln in v.lines)        # says so explicitly
+
+
+def test_edge_capture_drift_statistic_isolates_drift_from_signal():
+    # With BOTH a real slope and a drift, the paired-edge statistic must still see the
+    # drift (the signal cancels within each opposite-polarity pair).
+    expected = 1.0 / kt.KT_ODRIVE_CONFIGURED
+    t, iq, toggles = _edge_capture_trace(-expected, 0.02, drift=0.3, seed=7)
+    res = kt.analyze_edge_capture(t, iq, toggles, 0.02, half_period_s=1.75)
+    assert res.drift_detected
+    assert res.drift_bias_A == pytest.approx(0.3 * 0.22, abs=0.03)   # drift × window gap
+
+
+def test_edge_capture_survives_a_couple_of_knocked_edges():
+    # Two edges corrupted by a knock (a big transient) — the symmetric trim must keep
+    # the slope honest.
+    expected = 1.0 / kt.KT_ODRIVE_CONFIGURED
+    t, iq, toggles = _edge_capture_trace(-expected, 0.035, seed=9)
+    for tc in (toggles[4], toggles[11]):
+        iq[(t >= tc + 0.02) & (t <= tc + 0.25)] += 2.5   # a hand-on-the-mass bump
+    res = kt.analyze_edge_capture(t, iq, toggles, 0.035, half_period_s=1.75)
+    assert abs(res.slope_A_per_Nm) == pytest.approx(expected, abs=1.5)
+
+
+def test_pool_edge_capture_refuses_too_few_edges():
+    t, iq, toggles = _edge_capture_trace(-18.14, 0.02, cycles=2, seed=11)
+    res = kt.analyze_edge_capture(t, iq, toggles, 0.02, half_period_s=1.75)
+    pooled = kt.pool_edge_capture([res], min_edges=50)
+    assert not pooled.trustworthy
+    assert any('kept edges' in f for f in pooled.failures)
+    v = kt.classify_edge_capture(pooled, iq_extension_sign=-1)
+    assert v.no_conclusion and v.channel_live is None
+
+
+def test_classify_edge_capture_reports_a_retract_as_contradicting_settled_sign():
+    # The tff sign is SETTLED (2026-07-14: positive wire tff = extension, production
+    # chain confirmed). A RETRACTS verdict must therefore point at the most likely
+    # culprit — a wrong --rig-orientation declaration — before anyone touches wiring.
+    expected = 1.0 / kt.KT_ODRIVE_CONFIGURED
+    per_amp = []
+    for i, amp in enumerate(kt.DEFAULT_TFF_EDGE_AMPS_NM):
+        t, iq, toggles = _edge_capture_trace(+expected, amp, seed=40 + i)
+        per_amp.append(kt.analyze_edge_capture(t, iq, toggles, amp,
+                                               half_period_s=1.75))
+    pooled = kt.pool_edge_capture(per_amp)
+    v = kt.classify_edge_capture(pooled, iq_extension_sign=-1)
+    assert v.positive_tff_extends is False
+    assert v.sign_matches_expectation is False
+    assert any('rig-orientation' in ln for ln in v.lines)
+    assert any('CONTRADICTS' in ln for ln in v.lines)

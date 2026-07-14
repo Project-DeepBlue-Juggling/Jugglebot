@@ -27,6 +27,7 @@ NUM_AXES = 7  # Legs + hand (cache + telemetry breadth)
 PROFILE_NUM_TASKS = 9  # Task slots reported in the profiling frame
 HEARTBEAT_HZ = 10  # Both-direction liveness rate
 LINK_LOST_MISSES = 5  # Missed heartbeats before declaring link lost
+HEARTBEAT_TORQUE_CLAMP_SHIFT = 8  # Bit offset of TORQUE_CLAMP_MASK inside HeartbeatT2J.flags (bits 8-13)
 
 # ── Enums ──────────────────────────────────────────────────────────────
 class MsgType(IntEnum):
@@ -113,6 +114,7 @@ class HeartbeatT2JFlags(IntEnum):
     STOW_PENDING_ON_RECONNECT = 2  # bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)
     ALL_AXIS_HEARTBEATS_OK = 4  # bit2: every present axis heartbeat is fresh
     MPC_ACTIVE = 8  # bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
+    TORQUE_CLAMP_MASK = 16128  # bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
 
 # ── Decode errors ──────────────────────────────────────────────────────
 class CrcError(ValueError):

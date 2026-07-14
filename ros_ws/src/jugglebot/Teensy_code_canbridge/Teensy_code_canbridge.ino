@@ -104,10 +104,16 @@ static void send_heartbeat_t2j() {
   p.flags       = (time_synced() ? HF::TIME_SYNCED : 0u)
                 | (fault_stow_pending() ? HF::STOW_PENDING_ON_RECONNECT : 0u)
                 | (all_axis_heartbeats_ok() ? HF::ALL_AXIS_HEARTBEATS_OK : 0u)
-                | (fault_mpc_active() ? HF::MPC_ACTIVE : 0u);  // bit3:
+                | (fault_mpc_active() ? HF::MPC_ACTIVE : 0u)   // bit3:
                                                         // firmware-side mpc_active — a setpoint source
                                                         // can verify its arm actually took (catches
                                                         // a competing heartbeat authority).
+                | (((uint32_t)interp_torque_clamp_mask()
+                    << JbUdp::HEARTBEAT_TORQUE_CLAMP_SHIFT)
+                   & HF::TORQUE_CLAMP_MASK);            // bits 8-13: per-leg torque_ff
+                                                        // ingest-clamp mask from the last ACCEPTED
+                                                        // setpoint (mirrors lead_clamp_mask below;
+                                                        // 2026-07-14 gravity-FF observability).
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
 
   // Ball Butler heartbeat snapshot (replaces legacy can_node bb/

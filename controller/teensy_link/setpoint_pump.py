@@ -57,14 +57,19 @@ pump is the ONE place that turns a physical torque into an ODrive wire value. Th
 transformations happen here and nowhere else, because this is the sole production
 producer of the leg ``Setpoint`` frame:
 
-1. **Clamp** to ``±torque_ff_max_nm`` (TRUE Nm), per leg. There is NO clamp anywhere
-   downstream: the firmware only saturates at int16 (``±3.2767`` ODrive-Nm ≈ **59 A** of
-   demand at ``LEG_TOR_SCALE`` = 10000). And the ODrive **adds** ``input_torque`` to the
-   velocity loop's output *before* the torque limit, so a feedforward above ~0.55 Nm
-   (= ``current_soft_max`` 10 A × ``torque_constant`` 0.055133) saturates the current
-   clamp and the **position loop loses all authority** — the leg then runs open-loop at
-   full current until ``MAX_DEVIATION`` E-STOPs it mid-motion. This clamp is the only
-   thing standing between a mis-modelled FF and that failure mode.
+1. **Clamp** to ``±torque_ff_max_nm`` (TRUE Nm), per leg. This is the FIRST-binding
+   layer of a three-layer chain (see ``hardware_config.yaml`` →
+   ``torque_ff_firmware_clamp_wire_nm``): (1) this pump clamp (0.15 true ⇒ 0.1325
+   wire-Nm); (2) the can-bridge firmware ingest backstop (±0.25 wire-Nm,
+   ``leg_interp.cpp`` — landed 2026-07-14, ACTIVE ONLY AFTER A REFLASH; on older
+   firmware the only downstream bound is int16 saturation at ``±3.2767`` ODrive-Nm
+   ≈ **59 A** of demand at ``LEG_TOR_SCALE`` = 10000); (3) the ODrive current clamp.
+   The ODrive **adds** ``input_torque`` to the velocity loop's output *before* the
+   torque limit, so a feedforward above ~0.55 wire-Nm (= ``current_soft_max`` 10 A ×
+   ``torque_constant`` 0.055133) saturates the current clamp and the **position loop
+   loses all authority** — the leg then runs open-loop at full current until
+   ``MAX_DEVIATION`` E-STOPs it mid-motion. This pump clamp is the primary guard
+   standing between a mis-modelled FF and that failure mode.
 2. **Kt wire scale** (``× ODRIVE_LEG_TORQUE_WIRE_SCALE`` = ``Kt_odrive_config/Kt_measured``
    = 0.055133/0.0624 = 0.8835). The drives are flashed with ODrive's uncalibrated
    nameplate ``torque_constant = 8.27/Kv = 0.055133`` and compute
@@ -154,7 +159,8 @@ class SetpointPump:
             ``cmd['torque_Nm']``, so the frame is byte-identical to the pre-feature one.
         torque_ff_max_nm: per-leg clamp on the feedforward in TRUE Nm, applied before
             the wire scale. See the module docstring for why this clamp is
-            load-bearing (there is no other one, at any layer).
+            load-bearing (it binds first; the firmware ingest backstop at 0.25
+            wire-Nm only exists after a can-bridge reflash).
         torque_wire_scale: TRUE Nm → ODrive-Nm (``ODRIVE_LEG_TORQUE_WIRE_SCALE``).
         torque_ff_ramp_frames: number of ACCEPTED frames over which the feedforward
             ramps 0 → 1 after construction / :meth:`reset`. 0 disables the ramp
@@ -184,8 +190,9 @@ class SetpointPump:
         if not math.isfinite(self.torque_ff_max_nm) or self.torque_ff_max_nm <= 0.0:
             raise ValueError(
                 f"torque_ff_max_nm must be finite and > 0, got {torque_ff_max_nm}")
-        # CEILING (adversarial review 2026-07-14): this clamp is the only one in
-        # the entire chain, so it must itself be bounded.  The ODrive adds
+        # CEILING (adversarial review 2026-07-14): this clamp is the FIRST-binding
+        # one in the chain (the firmware ingest backstop at 0.25 wire-Nm is wider
+        # and reflash-gated), so it must itself be bounded.  The ODrive adds
         # input_torque to the velocity loop's output BEFORE the torque limit;
         # a feedforward near ~0.55 wire-Nm (= current_soft_max 10 A x the
         # configured torque_constant 0.055133) consumes the whole current

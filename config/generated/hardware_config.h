@@ -43,6 +43,7 @@ namespace Dynamics {
   constexpr bool TORQUE_FF_GRAVITY = true;
   constexpr bool TORQUE_FF_PLATFORM_INERTIA = false;
   constexpr float TORQUE_FF_MAX_NM = 0.15f;
+  constexpr float TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM = 0.25f;
   constexpr float TORQUE_FF_RAMP_S = 2.0f;
 }
 

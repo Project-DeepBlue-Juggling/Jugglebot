@@ -124,6 +124,40 @@ The Jetson harness **must** then run with `--knot-hz 100` so knots arrive every
 10 ms (matching `SEGMENT_T_S`); a 40 Hz stream against a 0.010 s segment re-latches
 each Hermite segment before it completes and distorts the velocity profile.
 
+## torque_ff ingest clamp (firmware backstop — landed 2026-07-14, needs a reflash)
+
+`leg_interp.cpp`'s UDP setpoint ingest (`interp_on_setpoint`) bounds each leg's
+`|torque_ff|` to `Dynamics::TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM` (**0.25 wire-Nm**
+≈ 4.5 A, generated from `hardware_config.yaml` →
+`dynamics.torque_ff_firmware_clamp_wire_nm`) before the frame is staged.
+
+* **Clamps, never rejects.** An oversized torque with valid pos/vel is a
+  torque-path bug; rejecting the frame would starve the interp into the
+  `MPC_STALE` E-STOP — converting a torque bug into a position-control outage
+  mid-motion. (A NaN in any field still drops the whole frame — the isfinite
+  trust-boundary gate is unchanged.)
+* **Layer 2 of 3.** The Jetson `SetpointPump` clamp (0.15 true-Nm × 0.8835 Kt
+  wire scale = 0.1325 wire-Nm) binds first on the production path; this backstop
+  catches a Jetson-side bug or a pump bypass (the direct-frame bench harnesses);
+  the ODrive 10 A current clamp is the last resort. 0.25 wire-Nm sits well under
+  the ~0.55 wire-Nm point where the FF would consume the whole current budget and
+  the position loop loses all authority.
+* **Observability.** When the clamp binds, the firmware sets the per-leg
+  `torque_clamp_mask` (bit *i* = leg *i*, recomputed on every ACCEPTED setpoint),
+  uplinked on **`HeartbeatT2J.flags` bits 8-13** (`HeartbeatT2JFlags::
+  TORQUE_CLAMP_MASK` / `HEARTBEAT_TORQUE_CLAMP_SHIFT`) — free bits of the
+  existing u32, so **no payload-size change and no `PROTOCOL_VERSION` bump**
+  (an old parser ignores the bits; a new parser reads 0 from an old firmware).
+  The bridge node mirrors it to `/link_status` as `torque_clamp_mask`, exactly
+  like `lead_clamp_mask`.
+* ⚠️ **Dormant until flashed.** This clamp runs on the Teensy: until the
+  can-bridge is reflashed with a build containing it, the wire behaviour is
+  unchanged (pump clamp only, int16 saturation at ±3.2767 wire-Nm downstream)
+  and `torque_clamp_mask` always reads 0.
+
+Native tests: `tests/firmware/native/test_leg_interp.cpp` ("torque_ff ingest
+clamp"); parser tests: `tests/teensy_link/test_protocol_codec.py`.
+
 ## Serial console reference
 
 The USB-serial debug console (`/dev/ttyACM0` @ 115200) prints one block per

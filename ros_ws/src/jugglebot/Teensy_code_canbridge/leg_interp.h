@@ -55,6 +55,12 @@ void     interp_reset_jitter();
 // 2026-07-10 stutter/lead diagnosis.
 uint8_t  interp_lead_clamp_mask();
 
+// Per-leg torque_ff-ingest-clamp bitmask from the most recent ACCEPTED setpoint
+// frame (bit i = leg i; set when |torque_ff[i]| was clamped to
+// Dynamics::TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest). Diagnostic telemetry
+// (surfaced on HeartbeatT2J flags bits 8-13, mirroring interp_lead_clamp_mask).
+uint8_t  interp_torque_clamp_mask();
+
 // ── Deferred-stow profiled descent (driven by the fault machine) ──────────────
 // When stow is active the 500 Hz ISR ignores the MPC ladder and runs a
 // velocity-limited descent of every leg to the off pose (stroke min), emitting

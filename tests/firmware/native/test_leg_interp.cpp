@@ -58,15 +58,17 @@ static void reset_interp_test() {
 // decay extrapolation modes); else cubic Hermite between u0 and u1. `seq` drives the
 // wrap-safe monotonic-seq guard (Flash-A item 5); default 0 (fresh after a reset,
 // which clears the last-accepted-seq state, so the first frame always latches).
+// `torque` (optional) fills torque_ff — drives the ingest torque clamp tests.
 static void stage(const float u0[6], const float* u1, const float v0[6], const float accel[6],
-                  uint16_t seq = 0) {
+                  uint16_t seq = 0, const float* torque = nullptr) {
   JbUdp::SetpointPayload sp;
   memset(&sp, 0, sizeof(sp));
   for (int i = 0; i < 6; ++i) {
     sp.u0[i] = u0[i];
-    if (v0)    sp.v0[i] = v0[i];
-    if (accel) sp.accel[i] = accel[i];
-    if (u1)    sp.u1[i] = u1[i];
+    if (v0)     sp.v0[i] = v0[i];
+    if (accel)  sp.accel[i] = accel[i];
+    if (u1)     sp.u1[i] = u1[i];
+    if (torque) sp.torque_ff[i] = torque[i];
   }
   sp.flags = u1 ? 0x1u : 0x0u;
   interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
@@ -232,6 +234,100 @@ TEST_CASE("deferred-stow descent: converges to the off pose, completes, present-
   for (size_t i = 0; i < fake_sent_count(); ++i)
     if (ODrive::axis_of(fake_sent_at(i).id) != 0) absent_streamed = true;
   CHECK(absent_streamed == false);
+}
+
+// =============================================================================
+//  2026-07-14 gravity-FF firmware sitting — the torque_ff ingest clamp
+// =============================================================================
+//  interp_on_setpoint bounds |torque_ff[i]| to Dynamics::TORQUE_FF_FIRMWARE_
+//  CLAMP_WIRE_NM (wire-Nm) per leg BEFORE staging, and publishes a per-leg
+//  engagement mask (interp_torque_clamp_mask, mirrored onto HeartbeatT2J flags
+//  bits 8-13). CLAMP-not-reject: an oversized torque with valid pos/vel must
+//  degrade to a bounded torque, never starve the interp into an MPC_STALE
+//  E-STOP mid-motion. A NaN torque still drops the WHOLE frame (isfinite gate).
+
+TEST_CASE("torque_ff ingest clamp: binds at ±TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM, preserves sign, sets the mask") {
+  const float LIM = Dynamics::TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM;   // 0.25 wire-Nm
+  float u0[6]    = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
+  float zeros[6] = {0, 0, 0, 0, 0, 0};
+
+  SUBCASE("over-limit positive clamps to +LIM; in-bounds legs untouched; mask per leg") {
+    reset_interp_test();
+    for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;   // encoder == command:
+                                                              // no lead/stroke clamp
+                                                              // (stroke zeroes torque)
+    float tq[6] = {5.0f, 0.10f, 0.0f, 0.0f, 0.0f, 0.0f};      // leg0 absurd, leg1 normal
+    stage(u0, nullptr, zeros, zeros, 0, tq);
+    CHECK(s_pending);                                         // clamped, NOT rejected
+    interp_isr();
+    CHECK(axes[0].target_torque_Nm == doctest::Approx(LIM));  // bound, sign preserved
+    CHECK(axes[1].target_torque_Nm == doctest::Approx(0.10f)); // untouched below the limit
+    CHECK((interp_torque_clamp_mask() & 0x1u) != 0);          // leg0 flagged
+    CHECK((interp_torque_clamp_mask() & 0x2u) == 0);          // leg1 not flagged
+    CHECK(interp_torque_clamp_mask() == 0x1u);                // no other leg flagged
+  }
+
+  SUBCASE("over-limit negative clamps to -LIM (sign preserved)") {
+    reset_interp_test();
+    for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;
+    float tq[6] = {-1.0f, -0.10f, 0.0f, 0.0f, 0.0f, 0.0f};
+    stage(u0, nullptr, zeros, zeros, 0, tq);
+    CHECK(s_pending);
+    interp_isr();
+    CHECK(axes[0].target_torque_Nm == doctest::Approx(-LIM));
+    CHECK(axes[1].target_torque_Nm == doctest::Approx(-0.10f));
+    CHECK(interp_torque_clamp_mask() == 0x1u);
+  }
+
+  SUBCASE("at/below the threshold passes through untouched, mask stays clear") {
+    reset_interp_test();
+    for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;
+    float tq[6] = {LIM, -LIM, 0.1325f, -0.1325f, 0.0f, 0.0f};  // exactly at the bound +
+                                                               // the pump-clamp ceiling
+    stage(u0, nullptr, zeros, zeros, 0, tq);
+    interp_isr();
+    CHECK(axes[0].target_torque_Nm == doctest::Approx(LIM));
+    CHECK(axes[1].target_torque_Nm == doctest::Approx(-LIM));
+    CHECK(axes[2].target_torque_Nm == doctest::Approx(0.1325f));
+    CHECK(axes[3].target_torque_Nm == doctest::Approx(-0.1325f));
+    CHECK(interp_torque_clamp_mask() == 0);
+  }
+
+  SUBCASE("mask CLEARS on the next accepted in-bounds frame") {
+    reset_interp_test();
+    for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;
+    float hot[6]  = {5.0f, 0, 0, 0, 0, 0};
+    float cool[6] = {0.04f, 0, 0, 0, 0, 0};
+    stage(u0, nullptr, zeros, zeros, 1, hot);
+    interp_isr();
+    CHECK(interp_torque_clamp_mask() == 0x1u);
+    stage(u0, nullptr, zeros, zeros, 2, cool);
+    interp_isr();
+    CHECK(interp_torque_clamp_mask() == 0);                   // per-frame semantics
+  }
+
+  SUBCASE("a NaN torque_ff still drops the WHOLE frame (clamp does not sanitize NaN)") {
+    reset_interp_test();
+    for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;
+    float tq[6] = {std::nanf(""), 0, 0, 0, 0, 0};
+    stage(u0, nullptr, zeros, zeros, 0, tq);
+    CHECK_FALSE(s_pending);                                   // dropped before staging
+    CHECK(interp_last_setpoint_us() == 0);                    // staleness clock NOT bumped
+    CHECK(interp_torque_clamp_mask() == 0);                   // mask untouched by a drop
+  }
+
+  SUBCASE("a rejected (stale-seq) over-limit frame does NOT set the mask") {
+    reset_interp_test();
+    for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;
+    float cool[6] = {0.04f, 0, 0, 0, 0, 0};
+    float hot[6]  = {5.0f, 0, 0, 0, 0, 0};
+    stage(u0, nullptr, zeros, zeros, 10, cool);               // accepted, mask 0
+    interp_isr();
+    CHECK(interp_torque_clamp_mask() == 0);
+    stage(u0, nullptr, zeros, zeros, 9, hot);                 // stale seq → dropped
+    CHECK_FALSE(s_pending);
+    CHECK(interp_torque_clamp_mask() == 0);                   // only ACCEPTED frames publish
+  }
 }
 
 // =============================================================================

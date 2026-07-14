@@ -48,6 +48,7 @@ from udp_protocol import (  # noqa: E402, F401
     PROFILE_NUM_TASKS,
     HEARTBEAT_HZ,
     LINK_LOST_MISSES,
+    HEARTBEAT_TORQUE_CLAMP_SHIFT,  # HeartbeatT2J.flags bit offset of TORQUE_CLAMP_MASK (bits 8-13)
     # Enums
     MsgType,
     RpcMethod,
@@ -56,6 +57,7 @@ from udp_protocol import (  # noqa: E402, F401
     BusHealth,
     FaultState,
     GuardMode,
+    HeartbeatT2JFlags,  # T2J heartbeat flag bits (incl. the per-leg TORQUE_CLAMP_MASK)
     # Framing
     crc16_ccitt,
     encode_frame,

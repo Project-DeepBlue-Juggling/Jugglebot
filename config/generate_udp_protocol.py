@@ -123,6 +123,13 @@ CONSTANTS = [
     # Link/heartbeat health timing (mirrors motor_guard / can_node thresholds)
     ("HEARTBEAT_HZ",     10,     "u8",  "Both-direction liveness rate"),
     ("LINK_LOST_MISSES", 5,      "u8",  "Missed heartbeats before declaring link lost"),
+    # HeartbeatT2J.flags bit offset of the per-leg torque_ff ingest-clamp mask
+    # (HeartbeatT2JFlags::TORQUE_CLAMP_MASK, bits 8-13). Packed into the existing
+    # u32 flags field ON PURPOSE: no payload-size change, no PROTOCOL_VERSION bump —
+    # an old parser just ignores the new bits, a new parser reads 0 from an old
+    # firmware (the clamp is dormant until the can-bridge is reflashed).
+    ("HEARTBEAT_TORQUE_CLAMP_SHIFT", 8, "u8",
+     "Bit offset of TORQUE_CLAMP_MASK inside HeartbeatT2J.flags (bits 8-13)"),
 ]
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -227,8 +234,9 @@ ENUMS = {
         ("ENABLED",  1, ""),
         ("ESTOP",    2, ""),
     ],
-    # HeartbeatT2J.flags bitset (bits 0-3) — generated single source for the bits
-    # the firmware producer (Teensy_code_canbridge.ino) sets and the Jetson bridge
+    # HeartbeatT2J.flags bitset (bits 0-3 single-bit flags + bits 8-13 the per-leg
+    # torque-clamp mask) — generated single source for the bits the firmware
+    # producer (Teensy_code_canbridge.ino) sets and the Jetson bridge
     # reads, replacing the prose that previously lived only in the field comment.
     # No new cold-start bit is added: is_homed/levelling/pose ride the relay
     # STATE_READ (a deliberate design decision), not a
@@ -238,6 +246,12 @@ ENUMS = {
         ("STOW_PENDING_ON_RECONNECT", 0x2, "bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)"),
         ("ALL_AXIS_HEARTBEATS_OK",    0x4, "bit2: every present axis heartbeat is fresh"),
         ("MPC_ACTIVE",                0x8, "bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)"),
+        # Per-leg torque_ff ingest-clamp mask, packed into free bits of the same u32
+        # (bits 4-7 stay reserved for future single-bit flags; the mask starts at
+        # bit 8 = HEARTBEAT_TORQUE_CLAMP_SHIFT so it stays byte-aligned/readable).
+        ("TORQUE_CLAMP_MASK",      0x3F00, "bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to "
+                                           "TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED "
+                                           "setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)"),
     ],
 }
 
@@ -317,7 +331,7 @@ MESSAGES = [
             Field("bus1_health", "u8",  1, "wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum"),
             Field("bus2_health", "u8",  1, "wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)"),
             Field("fault_state", "u8",  1, "FaultState enum"),
-            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset (bits 0-3): TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE"),
+            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
             # Ball Butler heartbeat snapshot (CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).

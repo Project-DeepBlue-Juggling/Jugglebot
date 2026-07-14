@@ -28,7 +28,7 @@ If arming it makes the platform visibly jump, **that is a fault, not the feature
 | Failure | Consequence | Guard |
 |---|---|---|
 | **Sign inverted** | FF helps gravity pull the platform down; position loop fights 2× the load; sag, buzz, possible MAX_DEVIATION | `test_gravity_ff_sign_holds_platform_up` + the reconstruction test. **S3 below is the hardware confirmation.** |
-| **Magnitude 10× / units slip** | FF ≥ 0.55 Nm saturates the ODrive current clamp; the position loop loses *all* authority and the leg runs open-loop until MAX_DEVIATION E-STOPs it mid-motion | `SetpointPump` clamp at `torque_ff_max_nm` = **0.15 Nm** (≈2.4 A) — the **only** clamp in the entire chain; nothing downstream bounds it below ±3.2767 Nm (= 59 A) |
+| **Magnitude 10× / units slip** | FF ≥ 0.55 Nm saturates the ODrive current clamp; the position loop loses *all* authority and the leg runs open-loop until MAX_DEVIATION E-STOPs it mid-motion | **Two software layers** (since 2026-07-14): (1) `SetpointPump` clamp at `torque_ff_max_nm` = **0.15 Nm** (≈2.4 A; 0.1325 wire-Nm) — binds first on the production path; (2) the can-bridge **firmware ingest backstop** at `torque_ff_firmware_clamp_wire_nm` = **0.25 wire-Nm** (≈4.5 A; clamps, never rejects — surfaced per leg as `torque_clamp_mask` on `/link_status`). ⚠️ Layer 2 **requires a can-bridge reflash**; on a pre-2026-07-14 firmware it is dormant and the pump clamp is the only one (int16 saturation at ±3.2767 wire-Nm = 59 A is not a guard) |
 | **Integrator double-count at arm** | The velocity integrator already carries gravity from the activate hold; a step FF briefly commands ~2× gravity → upward kick on every leg | `SetpointPump` **ramp**: FF = 0 on the first accepted frame, linear to full over `torque_ff_ramp_s` = 2.0 s (80 accepted knots). Restarts on `reset()` (link loss / re-arm). |
 
 ---
@@ -108,9 +108,17 @@ trap cost a session on 2026-07-12).
   the tripwire proving the flag really moved), everything else green. Re-run with
   `--deselect tests/motion/test_leg_torque_ff.py::test_shipped_config_has_the_feature_off`
   to confirm nothing *else* broke.
-- **NO FIRMWARE REFLASH IS NEEDED.** The Teensy already forwards `torque_ff`; this change
-  is Jetson-side only. (The generated `hardware_config.h` copies gain six inert
-  `constexpr`s that no `.cpp` consumes.)
+- **NO FIRMWARE REFLASH IS NEEDED to arm the feature.** The Teensy already forwards
+  `torque_ff`; the flag flip is Jetson-side only.
+- **The firmware ingest backstop is a separate question.** Since 2026-07-14 the
+  firmware source carries a second clamp layer (`leg_interp.cpp` ingest clamp at
+  `torque_ff_firmware_clamp_wire_nm` = 0.25 wire-Nm + the per-leg `torque_clamp_mask`
+  heartbeat/`/link_status` telemetry). **That layer only exists on the wire after a
+  can-bridge reflash** — until the bridge is reflashed the pump clamp (0.1325 wire-Nm)
+  remains the only clamp, exactly as originally validated, and `torque_clamp_mask`
+  reads 0 on `/link_status` (the flags bits are simply never set). Flash-A of this
+  firmware is safe either before or after this session: the backstop is strictly
+  wider than the pump clamp, so it never binds on a healthy chain.
 
 **Confirm the arming banner.** On launch, `teensy_bridge_node` must log:
 ```

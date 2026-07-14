@@ -48,6 +48,12 @@ static constexpr float DECAY   = EXTRAP_DECAY_DT_S;     // 0.06
 static constexpr float ALPHA   = JERK_EMA_ALPHA;        // 0.3
 static constexpr float LEAD    = MAX_LEAD_REV;          // 0.10 (2026-07-10 forensics)
 static constexpr float VELFF_CAP = LEAD_CLAMP_VELFF_LIMIT_RPS;   // 3.5 rev/s vel_ff bound
+// torque_ff ingest backstop (2026-07-14 gravity-FF firmware sitting). WIRE-Nm
+// (ODrive-Nm, post Kt-prescale). Generated from hardware_config.yaml
+// dynamics.torque_ff_firmware_clamp_wire_nm — see the three-layer clamp-chain
+// comment there (SetpointPump ±0.1325 wire binds first; this backstop catches a
+// Jetson-side bug/bypass; the ODrive 10 A current clamp is the last resort).
+static constexpr float TORQUE_CLAMP = Dynamics::TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM;  // 0.25
 
 // ── Active latched base state (read by the ISR) ───────────────────────────────
 static float s_base_pos[NUM_LEGS];
@@ -98,6 +104,13 @@ static uint64_t s_last_tick_us = 0;
 // byte, written once per tick by the ISR (atomic store on Cortex-M7), read by the
 // heartbeat task. 2026-07-10 forensics telemetry.
 static volatile uint8_t s_lead_clamp_mask = 0;
+// Per-leg torque_ff-ingest-clamp flag from the most recent ACCEPTED setpoint frame
+// (bit i = leg i). Diagnostic only (surfaced on the 10 Hz HeartbeatT2J flags,
+// bits 8-13): a single naturally-aligned byte, written once per accepted frame by
+// the net task (atomic store on Cortex-M7), read by the heartbeat task. Set when
+// |torque_ff[i]| exceeded TORQUE_CLAMP at ingest; cleared by the next accepted
+// frame whose torque_ff[i] is in bounds. 2026-07-14 gravity-FF observability.
+static volatile uint8_t s_torque_clamp_mask = 0;
 
 // ── Re-enable recovery slew (2026-07-11 clear-errors jolt forensics) ──────────
 // State for the output-enable-edge slew (see the file header + canbridge_config.h
@@ -165,6 +178,28 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
       return;
   }
 
+  // ── torque_ff ingest clamp (2026-07-14 gravity-FF firmware backstop) ────────
+  // Bound |torque_ff[i]| to TORQUE_CLAMP (wire-Nm) BEFORE staging. CLAMP, DON'T
+  // REJECT: an oversized torque with valid pos/vel is a torque-path bug — dropping
+  // the whole frame would starve the interp into the MPC_STALE E-STOP, converting
+  // a torque bug into a position-control outage mid-motion. (A NaN torque still
+  // drops the whole frame above — NaN means the frame is garbage.) Without this,
+  // the only firmware bound is int16 saturation at ±3.2767 wire-Nm ≈ 59 A of
+  // demand; the ODrive ADDS input_torque to the velocity loop's output BEFORE its
+  // torque limit, so ≥ ~0.55 wire-Nm consumes the whole 10 A budget and the
+  // position loop loses all authority. The engagement mask is published per leg
+  // for the 10 Hz heartbeat (mirrors s_lead_clamp_mask).
+  uint8_t tq_mask = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    if (sp.torque_ff[i] > TORQUE_CLAMP) {
+      sp.torque_ff[i] = TORQUE_CLAMP;
+      tq_mask |= (uint8_t)(1u << i);
+    } else if (sp.torque_ff[i] < -TORQUE_CLAMP) {
+      sp.torque_ff[i] = -TORQUE_CLAMP;
+      tq_mask |= (uint8_t)(1u << i);
+    }
+  }
+
   const uint64_t recv = micros64();   // monotonic: feeds s_base_ts_us / s_last_setpoint_us / jerk dt,
                                       // all read against micros64() — a wall step must not corrupt the trajectory phase
 
@@ -190,7 +225,9 @@ void interp_on_setpoint(uint16_t seq, const uint8_t* payload, uint16_t len) {
   s_pending = true;
   __set_PRIMASK(pm);
 
-  // Only an ACCEPTED frame advances the seq high-water mark + the staleness clock.
+  // Only an ACCEPTED frame advances the seq high-water mark + the staleness clock
+  // (and, likewise, publishes the torque-clamp mask — a dropped frame leaves it).
+  s_torque_clamp_mask = tq_mask;   // single-store publish for telemetry
   s_last_sp_seq = seq;
   s_have_sp_seq = true;
   atomic_write_u64(&s_last_setpoint_us, recv);   // 64-bit; read by the fault task
@@ -537,6 +574,7 @@ void interp_reset() {
   s_max_jitter_us = 0;
   s_last_tick_us = 0;
   s_lead_clamp_mask = 0;
+  s_torque_clamp_mask = 0;
 }
 
 void leg_interp_init() {
@@ -576,6 +614,7 @@ uint32_t interp_deadline_misses() { return s_deadline_misses; }
 uint32_t interp_max_jitter_us() { return s_max_jitter_us; }
 void interp_reset_jitter() { s_max_jitter_us = 0; }
 uint8_t interp_lead_clamp_mask() { return s_lead_clamp_mask; }
+uint8_t interp_torque_clamp_mask() { return s_torque_clamp_mask; }
 
 void interp_begin_stow() {
   // PRIMASK-publish (mirror interp_on_setpoint's exemplar above). The 500 Hz
