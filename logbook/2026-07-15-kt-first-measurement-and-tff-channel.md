@@ -24,7 +24,7 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/README.md
   - docs/teensy-udp-protocol.md
 commits:
-  - TBD  # backfilled immediately after the commit lands
+  - 10de03c
 subsystem:
   - motion
   - can
@@ -248,7 +248,7 @@ fix but the posture: **persist everything immediately, label everything with gro
 - Both harness dry-runs exit 0 with the required `--rig-orientation`; all mode/flag refusals
   verified live; the mocked end-to-end recovers Kt 0.0577 and slope 18.09 A/Nm from synthetic
   hardware.
-- Full suite: run pre-commit (result recorded in the commit message and backfilled here).
+- Full suite `pytest tests/ -q`, run 2026-07-15 as the pre-commit gate: **2772 passed, 1 xfailed** in 604.87 s (the single pre-existing xfail).
 
 ## Outcome
 
