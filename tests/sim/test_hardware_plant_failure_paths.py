@@ -1158,8 +1158,15 @@ class TestSetPoseFfSingular:
         ``set_pose`` should detect the all-zero FF and warn.
         """
         import jugglebot.motion.motor_commands as _mc_mod
+        import controller.hardware_plant as _hp_mod
 
-        with build_hardware_plant_stub() as plant:
+        # 2026-07-14: HardwarePlant now ANDs the constructor flag with the
+        # config master/per-term flags (the "third producer" review fix), and
+        # the shipped config has torque_ff_enabled=false — so this test must
+        # OPT IN explicitly to reach the FF computation it exercises.
+        with patch.object(_hp_mod._hw_cfg, 'DYNAMICS_TORQUE_FF_ENABLED', True), \
+                patch.object(_hp_mod._hw_cfg, 'DYNAMICS_TORQUE_FF_GRAVITY', True), \
+                build_hardware_plant_stub() as plant:
             _prime_plant(plant)
             singular = np.eye(6)
             singular[0, 0] = 0.0  # rank 5
@@ -1204,6 +1211,47 @@ class TestSetPoseFfSingular:
                 "Post-bugfix: plant._singular_ff_warned must exist"
             )
             assert plant._singular_ff_warned is True
+
+    def test_config_master_flag_gates_the_mpc_producer(self):
+        """2026-07-14 review fix (the 'third producer'): with the shipped
+        config (torque_ff_enabled=false), HardwarePlant publishes ZERO torque
+        feedforward even when constructed with enable_torque_ff=True — the
+        constructor arg is ANDed with the config master switch, so enabling
+        the trajectory path's flag can never silently arm the MPC path."""
+        with build_hardware_plant_stub() as plant:
+            assert plant._enable_torque_ff is False, (
+                "shipped config has torque_ff_enabled=false; the constructor "
+                "default enable_torque_ff=True must NOT override it")
+            _prime_plant(plant)
+            plant.set_pose(
+                np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0]),
+                np.array([0.1, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            )
+            np.testing.assert_array_equal(plant._ff_torque_buf, np.zeros(6))
+
+    def test_config_platform_inertia_flag_gates_the_accel_term(self):
+        """2026-07-14 review fix: with master+gravity on but
+        torque_ff_platform_inertia=false (the shipped per-term state), the
+        MPC producer's FF must be acceleration-INDEPENDENT — the
+        acceleration-proportional term is the one the firmware's undecayed
+        stale-link torque hold makes unsafe."""
+        import controller.hardware_plant as _hp_mod
+        with patch.object(_hp_mod._hw_cfg, 'DYNAMICS_TORQUE_FF_ENABLED', True), \
+                patch.object(_hp_mod._hw_cfg, 'DYNAMICS_TORQUE_FF_GRAVITY', True), \
+                patch.object(_hp_mod._hw_cfg,
+                             'DYNAMICS_TORQUE_FF_PLATFORM_INERTIA', False), \
+                build_hardware_plant_stub() as plant:
+            _prime_plant(plant)
+            pose = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+            plant.set_pose(pose, np.zeros(6), np.zeros(6))
+            tau_static = plant._ff_torque_buf.copy()
+            plant.set_pose(pose, np.zeros(6),
+                           np.array([0.0, 0.0, 4000.0, 0.0, 0.0, 0.0]))
+            np.testing.assert_allclose(plant._ff_torque_buf, tau_static,
+                                       rtol=1e-12)
+            assert float(np.max(np.abs(tau_static))) > 1e-3, (
+                "gravity term must still be present")
 
 
 # =====================================================================

@@ -116,7 +116,28 @@ class HardwarePlant(PlantInterface):
         self._seq = 0
         self._start_time = time.perf_counter()
         self._control_dt = float(control_dt)
-        self._enable_torque_ff = enable_torque_ff
+        # The torque-FF flag is an AND across THREE gates: the constructor arg
+        # (run_mpc's --no-torque-ff manual override), the config MASTER switch
+        # (dynamics.torque_ff_enabled), and at least one per-term flag.
+        # Before 2026-07-14 this producer read NONE of the config flags —
+        # enabling the master switch for the trajectory path would silently
+        # have armed the MPC path's gravity + PLATFORM-INERTIA feedforward,
+        # including the acceleration-proportional term that
+        # dynamics.torque_ff_platform_inertia ships FALSE (the can-bridge
+        # firmware holds torque_ff UNDECAYED through a stale-link window, so
+        # an accel-proportional FF keeps pushing while commanded velocity
+        # decays).  The pump gates the WIRE on the master switch for every
+        # producer; the per-TERM flags are only enforceable where the terms
+        # are computed — here.  (Adversarial review 2026-07-14.)
+        self._ff_skip_gravity = not bool(
+            getattr(_hw_cfg, 'DYNAMICS_TORQUE_FF_GRAVITY', True))
+        self._ff_skip_platform_inertia = not bool(
+            getattr(_hw_cfg, 'DYNAMICS_TORQUE_FF_PLATFORM_INERTIA', False))
+        _cfg_master = bool(getattr(_hw_cfg, 'DYNAMICS_TORQUE_FF_ENABLED', False))
+        _any_term = ((not self._ff_skip_gravity)
+                     or (not self._ff_skip_platform_inertia))
+        self._enable_torque_ff = bool(enable_torque_ff and _cfg_master
+                                      and _any_term)
         self._enable_vel_ff = enable_vel_ff
         self._enable_acc_ff = enable_acc_ff
 
@@ -892,7 +913,9 @@ class HardwarePlant(PlantInterface):
             pose_6dof, twist_6dof, accel_6dof,
             self._geom, self._dynamics_params,
             feedforward_enabled=True,
-            skip_reflected_inertia=True)
+            skip_reflected_inertia=True,
+            skip_gravity=self._ff_skip_gravity,
+            skip_platform_inertia=self._ff_skip_platform_inertia)
 
         # np.abs into the scratch buffer first so .max()'s scalar reduction
         # is the only remaining (C-internal) allocation; then copy the
@@ -910,17 +933,22 @@ class HardwarePlant(PlantInterface):
         # and returns np.zeros(6) — leaving the operator with no signal
         # that the FF model has failed at this pose.  Mirror the
         # once-only Jacobian-singular warning in get_state()'s
-        # twist-solve path (:737–740): emit on the all-zero edge, reset
-        # when FF recovers.  The gravity wrench is non-zero in any pose
-        # with feedforward_enabled=True, so an all-zero torque_ff
-        # reliably indicates the singular fallback fired.
-        if self._last_ff_torque_max_Nm == 0.0:
+        # twist-solve path: emit on the all-zero edge, reset when FF
+        # recovers.  The heuristic "all-zero torque_ff => singular
+        # fallback fired" only holds when the GRAVITY term is on: gravity
+        # is non-zero at every pose, but an inertia-only config
+        # (gravity off + platform_inertia on — legal past the _any_term
+        # gate) legitimately produces all-zero FF at any static pose, so
+        # the warning must be suppressed there (audit 2026-07-14).
+        # The zeros-fallback lives in compute_full_feedforward_torques'
+        # solve except-branch (jugglebot/motion/dynamics.py).
+        if self._last_ff_torque_max_Nm == 0.0 and not self._ff_skip_gravity:
             if not self._singular_ff_warned:
                 logger.warning(
                     "set_pose: torque_ff is all-zero (gravity wrench "
                     "expected to be non-zero) — Jacobian likely singular "
-                    "at this pose; FF defaulted to zeros (see "
-                    "dynamics.py:341–344)"
+                    "at this pose; FF defaulted to zeros (the solve "
+                    "except-branch in compute_full_feedforward_torques)"
                 )
                 self._singular_ff_warned = True
         else:

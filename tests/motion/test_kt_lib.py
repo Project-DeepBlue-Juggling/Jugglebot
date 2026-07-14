@@ -728,14 +728,34 @@ def test_torque_ff_verdict_positive_tff_extends_the_expected_answer():
     assert any('EXTENDS (lifts)' in ln for ln in v.lines)
 
 
-def test_torque_ff_verdict_catches_an_inverted_sign():
-    # If the slope comes back with the OPPOSITE sign, a positive gravity FF would DROP
-    # the leg. This is the #1 hazard and the verdict must be unmissable.
+def test_torque_ff_verdict_frames_a_bench_retract_with_the_per_drive_context():
+    # A "positive torque_ff RETRACTS" result ON THE BENCH is EXPECTED: ODrive direction
+    # calibration is per-drive, and this bench drive's torque sign convention is OPPOSITE
+    # to the platform legs' (2026-04-27 bench friction-FF needed --ff-sign -1, while the
+    # 2026-05-08 PLATFORM validation ran un-negated and worked). The verdict must carry
+    # that context — NOT shout "MUST NEGATE / INVESTIGATE" — because the production
+    # gravity-FF sign is settled by the platform validation, not by this rig.
     fit = kt.fit_torque_ff(_tff_points(+1.0 / kt.KT_ODRIVE_CONFIGURED))
     v = kt.classify_torque_ff(fit, iq_extension_sign=-1)
     assert v.positive_tff_extends is False
     assert v.sign_matches_expectation is False
-    assert any('CONTRADICTS' in ln and 'MUST negate' in ln for ln in v.lines)
+    assert any('RETRACTS (drops)' in ln for ln in v.lines)
+    assert any('EXPECTED ON THIS BENCH RIG' in ln for ln in v.lines)
+    assert any('platform-validated production sign stands' in ln for ln in v.lines)
+    # The old alarmist framing is gone — a bench-frame result must not read as a
+    # production emergency.
+    assert not any('MUST negate' in ln for ln in v.lines)
+    assert not any('INVESTIGATE' in ln for ln in v.lines)
+
+
+def test_torque_ff_verdict_bench_extend_also_carries_the_transfer_warning():
+    # Even the "expected from the code read" answer must warn that a bench sign does not
+    # transfer to the platform (and that positive-extends contradicts the April bench
+    # friction finding on this same rig).
+    fit = kt.fit_torque_ff(_tff_points(-1.0 / kt.KT_ODRIVE_CONFIGURED))
+    v = kt.classify_torque_ff(fit, iq_extension_sign=-1)
+    assert v.positive_tff_extends is True
+    assert any('does NOT transfer to the platform' in ln for ln in v.lines)
 
 
 def test_torque_ff_verdict_catches_a_dead_channel():
@@ -770,8 +790,41 @@ def test_torque_ff_fit_survives_realistic_noise():
 
 def test_default_torque_ff_ladder_is_safe():
     assert kt.torque_ff_ladder_safe(kt.DEFAULT_TORQUE_FF_LADDER_NM) == []
-    # 0.10 Nm ≈ 1.8 A through the ODrive's configured torque_constant — small.
-    assert 0.10 / kt.KT_ODRIVE_CONFIGURED == pytest.approx(1.81, abs=0.02)
+    # 0.035 Nm ≈ 0.63 A through the ODrive's configured torque_constant — small.
+    assert 0.035 / kt.KT_ODRIVE_CONFIGURED == pytest.approx(0.63, abs=0.01)
+
+
+def test_default_ladder_stays_inside_the_static_friction_band():
+    # THE Mode-2 premise: "the position loop holds station so the iq shift IS the
+    # measurement" requires |tff| under the static friction torque τ_c·Kt. The
+    # 2026-07-14 run's ±0.10 Nm rungs left the band — the leg moved, the integrator
+    # re-absorbed the feedforward, and the full fit read 63-68% low (band model
+    # predicts 33-52% for a 0.10 Nm rung). The default ladder
+    # must sit well under the WORST-CASE (lowest) band edge, and keep 0.0 as reference.
+    assert kt.TFF_STATIC_BAND_MIN_NM == pytest.approx(
+        kt.TAU_C_REF_RANGE_A[0] * kt.KT_ODRIVE_CONFIGURED)
+    assert kt.TFF_STATIC_BAND_MIN_NM == pytest.approx(0.049, abs=0.001)
+    assert kt.TFF_STATIC_BAND_MAX_NM == pytest.approx(0.067, abs=0.001)
+    assert 0.0 in kt.DEFAULT_TORQUE_FF_LADDER_NM
+    biggest = max(abs(t) for t in kt.DEFAULT_TORQUE_FF_LADDER_NM)
+    assert biggest == pytest.approx(0.035)
+    assert biggest < kt.TFF_BAND_WARN_NM < kt.TFF_STATIC_BAND_MIN_NM
+    # In-band, warning-free by construction.
+    assert kt.torque_ff_ladder_band_warnings(kt.DEFAULT_TORQUE_FF_LADDER_NM) == []
+
+
+def test_ladder_band_validator_warns_but_does_not_refuse_out_of_band_rungs():
+    # Out-of-band rungs are SAFE (torque_ff_ladder_safe still accepts them) but BIASED —
+    # so the band validator WARNS with the physics, and the safety gate stays silent.
+    ladder = [0.0, 0.05, -0.10]
+    warns = kt.torque_ff_ladder_band_warnings(ladder)
+    assert len(warns) == 2                      # 0.05 and −0.10; 0.0 is fine
+    assert all('static-friction band' in w for w in warns)
+    assert all('re-absorbs' in w for w in warns)   # the one-sentence band physics
+    assert kt.torque_ff_ladder_safe(ladder) == []  # warn, don't refuse
+    # Threshold is 0.045: at it, no warning; above it, warning.
+    assert kt.torque_ff_ladder_band_warnings([0.045]) == []
+    assert len(kt.torque_ff_ladder_band_warnings([0.046])) == 1
 
 
 def test_torque_ff_ladder_rejects_an_over_cap_rung():
@@ -822,3 +875,278 @@ def test_velocity_notes_show_the_21v_psu_is_fine_at_the_recommended_speed():
     # And we are comfortably above the stiction knee — on the kinetic plateau.
     assert n['vel_over_omega_s'] > 2.0
     assert 0.6 > kt.MIN_SAFE_TRAVERSE_VEL_RPS
+
+
+# ===========================================================================
+# THE VERDICT QUALITY GATE — no sign/scale claims from garbage data
+# ===========================================================================
+#
+# Born of the 2026-07-14 run (temp/probes/kt_bench_20260714_205550): 0.8 kg at an odd
+# angle, operator partially supporting it. The fit came out R² = −0.099 with a slope of
+# −6.7 ± 3.8 A/Nm — not even 2σ from zero — yet the harness printed dramatic
+# "SIGN: MUST NEGATE ***" and "SCALE: MISMATCH −63%" conclusions from it. These are the
+# ACTUAL numbers from that manifest, kept as the regression fixture.
+
+_RUN_20260714_POINTS = [
+    # (torque_ff_Nm, iq_mean_A, iq_sem_A) — temp/probes/kt_bench_20260714_205550
+    (-0.10, 1.3843741908073426, 0.04434247452170468),
+    (-0.05, 0.04658913914393634, 0.04905153134855928),   # the human-touch rung
+    (-0.02, 1.0198714154958726, 0.01478400164450251),
+    (0.00, 0.5694187428951264, 0.09620235569891276),
+    (0.02, 0.16818675850331782, 0.019648931649790414),
+    (0.05, 0.513105018734932, 0.02416823346070622),
+    (0.10, 0.5246202086210251, 0.09898007732949346),
+]
+
+
+def _run_20260714_fit():
+    pts = [kt.TorqueFfPoint(t, iq, sem, 1.20, 500)
+           for t, iq, sem in _RUN_20260714_POINTS]
+    return kt.fit_torque_ff(pts), pts
+
+
+def test_verdict_gate_rejects_the_2026_07_14_garbage_run():
+    fit, pts = _run_20260714_fit()
+    # First confirm the fixture reproduces the manifest's fit exactly.
+    assert fit.slope_A_per_Nm == pytest.approx(-6.738, abs=0.01)
+    assert fit.slope_sigma == pytest.approx(3.800, abs=0.01)
+    assert fit.r_squared == pytest.approx(-0.099, abs=0.001)
+
+    q = kt.assess_tff_fit_quality(fit, pts)
+    assert not q.trustworthy
+    assert q.t_stat == pytest.approx(1.77, abs=0.01)     # < 3: slope ~= zero
+    # BOTH gates fail, and each failure is named specifically.
+    assert any('R²' in f for f in q.failures)
+    assert any('indistinguishable from' in f for f in q.failures)
+    assert len(q.failures) == 2
+
+
+def test_verdict_gate_flags_the_human_touch_rung_as_an_outlier():
+    # Post-hoc analysis of the run: the −0.05 Nm rung read iq ≈ 0.05 A — an essentially
+    # UNLOADED leg, because the operator was supporting the mass. Its residual is only
+    # 2.1× the plain fit RMS (the outlier inflates the RMS enough to hide itself) but
+    # 3.3× the leave-one-out RMS — which is why the flagging is leave-one-out.
+    fit, pts = _run_20260714_fit()
+    q = kt.assess_tff_fit_quality(fit, pts)
+    assert q.outlier_indices == [1]
+    assert len(q.outlier_notes) == 1
+    assert '-0.050' in q.outlier_notes[0]
+    assert 'disturbance' in q.outlier_notes[0]
+    # The plain-RMS version would NOT have caught it — document the design choice.
+    resid = np.asarray(fit.residuals_A)
+    plain_rms = float(np.sqrt(np.mean(resid ** 2)))
+    assert abs(resid[1]) < 3.0 * plain_rms
+
+
+def test_no_conclusion_verdict_never_states_sign_or_scale():
+    fit, pts = _run_20260714_fit()
+    q = kt.assess_tff_fit_quality(fit, pts)
+    v = kt.classify_torque_ff(fit, iq_extension_sign=+1, quality=q)
+    assert v.no_conclusion
+    assert v.positive_tff_extends is None
+    assert v.sign_matches_expectation is None
+    assert not v.scale_ok
+    assert any('NO CONCLUSION' in ln for ln in v.lines)
+    # The dramatic conclusions the 2026-07-14 run actually printed must be impossible.
+    joined = ' '.join(v.lines)
+    assert 'RETRACTS' not in joined
+    assert 'EXTENDS' not in joined
+    assert 'MISMATCH' not in joined
+    assert 'MUST' not in joined
+    # And it re-states the setup requirements + lists the specific failures.
+    assert any('FAIL:' in ln for ln in v.lines)
+    assert any('OUTLIER:' in ln for ln in v.lines)
+    assert any('FREE and VERTICAL' in ln for ln in v.lines)
+
+
+def test_verdict_gate_accepts_a_clean_fit_and_states_the_verdict():
+    fit = kt.fit_torque_ff(_tff_points(-18.14, noise=0.03, seed=9))
+    q = kt.assess_tff_fit_quality(fit)
+    assert q.trustworthy
+    assert q.r_squared > 0.99
+    assert q.t_stat > 10
+    assert q.failures == []
+    v = kt.classify_torque_ff(fit, iq_extension_sign=-1, quality=q)
+    assert not v.no_conclusion
+    assert v.positive_tff_extends is True
+    assert v.scale_ok
+
+
+def test_verdict_gate_requires_both_r2_and_t_stat():
+    # High R² with a fuzzy slope, or a sharp slope with bad R² — either alone fails.
+    good = kt.TorqueFfFit(-18.0, 1.0, -3.0, 0.1, 0.995, [0.01] * 7, 7, 5,
+                          1 / 18.0, 0.003)
+    fuzzy_slope = kt.TorqueFfFit(-18.0, 9.0, -3.0, 0.1, 0.995, [0.01] * 7, 7, 5,
+                                 1 / 18.0, 0.03)
+    bad_r2 = kt.TorqueFfFit(-18.0, 1.0, -3.0, 0.1, 0.50, [0.3] * 7, 7, 5,
+                            1 / 18.0, 0.003)
+    assert kt.assess_tff_fit_quality(good).trustworthy
+    assert not kt.assess_tff_fit_quality(fuzzy_slope).trustworthy   # t = 2 < 3
+    assert not kt.assess_tff_fit_quality(bad_r2).trustworthy        # R² = 0.5 < 0.9
+
+
+def test_verdict_gate_precise_null_is_still_a_dead_channel_conclusion():
+    # A flat line fails R²/t by construction, but a slope BOUNDED near zero is a real
+    # conclusion — the channel is dead — not a data-quality shrug.
+    fit = kt.fit_torque_ff(_tff_points(0.0))
+    q = kt.assess_tff_fit_quality(fit)
+    assert not q.trustworthy
+    v = kt.classify_torque_ff(fit, iq_extension_sign=-1, quality=q)
+    assert not v.no_conclusion
+    assert not v.channel_live
+    assert any('DO NOT ship a torque feedforward' in ln for ln in v.lines)
+
+
+# ===========================================================================
+# Traverse shaping — the accel phase must not brush the over-current abort
+# ===========================================================================
+
+def test_shaped_traverse_hits_the_endpoints_and_the_cruise_velocity():
+    s = kt.shaped_constant_velocity_knots(0.40, 1.90, vel_rps=0.6, seg_t_s=0.010)
+    assert s[0] == pytest.approx(0.40)
+    assert s[-1] == pytest.approx(1.90)
+    assert np.all(np.diff(s) >= -1e-12)                          # monotone up
+    assert kt.knots_achieved_velocity(s, 0.010) == pytest.approx(0.6, rel=0.01)
+
+
+def test_shaped_traverse_caps_the_accel_where_unshaped_steps_it():
+    # The finding: an unshaped series steps 0 → 0.6 rev/s in ONE knot off its lead-in
+    # flat — a 60 rev/s² accel demand (≈ +4.5 A at 3 kg). The shaped series must cap it
+    # at v/accel_time = 1.5 rev/s².
+    lead = 30
+    shaped = kt.shaped_constant_velocity_knots(
+        0.40, 1.90, vel_rps=0.6, seg_t_s=0.010, accel_time_s=0.4,
+        lead_in_frames=lead, lead_out_frames=lead)
+    unshaped = kt.constant_velocity_knots(
+        0.40, 1.90, vel_rps=0.6, seg_t_s=0.010,
+        lead_in_frames=lead, lead_out_frames=lead)
+    a_shaped = kt.series_peak_accel_rps2(shaped, 0.010)
+    a_unshaped = kt.series_peak_accel_rps2(unshaped, 0.010)
+    assert a_shaped == pytest.approx(0.6 / 0.4, rel=0.05)        # 1.5 rev/s²
+    assert a_unshaped == pytest.approx(0.6 / 0.010, rel=0.05)    # 60 rev/s²
+    assert a_shaped < a_unshaped / 30
+
+
+def test_shaped_traverse_accel_current_stays_far_under_the_abort_threshold():
+    # At the shaped default (1.5 rev/s²) the accel phase adds ~0.11 A at 3 kg — noise.
+    # At the unshaped step (~60 rev/s²) it adds ~4.5 A, which stacked on the ~5.9 A
+    # gravity+friction current lands ON the 9.5 A abort threshold. This is the number
+    # that justifies the whole fix.
+    a_ramp = kt.DEFAULT_TRAVERSE_VEL_RPS / kt.DEFAULT_TRAVERSE_ACCEL_TIME_S
+    shaped = kt.accel_current_A(3.0, a_ramp, kt_nm_per_a=kt.KT_ODRIVE_CONFIGURED)
+    unshaped = kt.accel_current_A(3.0, 60.0, kt_nm_per_a=kt.KT_ODRIVE_CONFIGURED)
+    assert shaped < 0.2
+    assert unshaped > 3.5
+    iq_up_3kg, _ = kt.predicted_iq_up_down(3.0, kt.KT_ODRIVE_CONFIGURED)
+    assert iq_up_3kg + unshaped > 0.95 * kt.BENCH_CURRENT_LIMIT_A   # brushes the abort
+    assert iq_up_3kg + shaped < 0.80 * kt.BENCH_CURRENT_LIMIT_A     # comfortable
+
+
+def test_budget_includes_the_accel_phase():
+    # The recommended ladder passes WITH the shaped accel phase included...
+    b = kt.current_budget(kt.recommended_masses_kg())
+    assert b.ok
+    for row in b.rows:
+        assert row.iq_peak_A == pytest.approx(row.iq_up_A + row.iq_accel_A)
+        assert row.headroom_A == pytest.approx(
+            kt.BENCH_CURRENT_LIMIT_A - row.iq_peak_A)
+    # ...and the same masses at the UNSHAPED accel demand are REJECTED, with the
+    # failure naming the accel phase.
+    b60 = kt.current_budget([1.0, 2.0, 3.0], accel_rps2=60.0)
+    assert not b60.ok
+    assert any('ACCEL phase' in r for r in b60.reasons)
+
+
+def test_shaped_traverse_short_move_degrades_to_triangular_without_overshoot():
+    # A move too short to reach cruise keeps the SAME ramp accel and peaks BELOW the
+    # requested velocity — it must never overshoot either bound.
+    s = kt.shaped_constant_velocity_knots(1.00, 1.05, vel_rps=0.6, seg_t_s=0.010,
+                                          accel_time_s=0.4)
+    assert s[0] == pytest.approx(1.00)
+    assert s[-1] == pytest.approx(1.05)
+    assert kt.knots_achieved_velocity(s, 0.010) < 0.6
+    assert kt.series_peak_accel_rps2(s, 0.010) <= (0.6 / 0.4) * 1.05
+
+
+def test_shaped_traverse_works_downward_and_holds_the_leads_flat():
+    s = kt.shaped_constant_velocity_knots(1.90, 0.40, vel_rps=0.6, seg_t_s=0.010,
+                                          lead_in_frames=5, lead_out_frames=7)
+    assert np.allclose(s[:6], 1.90)              # lead_in + the start knot
+    assert np.allclose(s[-7:], 0.40)
+    assert np.all(np.diff(s) <= 1e-12)           # monotone down
+    assert kt.knots_achieved_velocity(s, 0.010) == pytest.approx(0.6, rel=0.01)
+
+
+def test_shaped_traverse_up_and_down_run_at_the_same_speed():
+    # The friction cancellation requires the same |v| both directions — shaping must
+    # not break that symmetry.
+    up = kt.shaped_constant_velocity_knots(0.40, 1.90, vel_rps=0.6, seg_t_s=0.010)
+    dn = kt.shaped_constant_velocity_knots(1.90, 0.40, vel_rps=0.6, seg_t_s=0.010)
+    assert kt.knots_achieved_velocity(up, 0.010) == pytest.approx(
+        kt.knots_achieved_velocity(dn, 0.010), rel=1e-9)
+
+
+def test_shaped_traverse_rejects_bad_args():
+    with pytest.raises(ValueError):
+        kt.shaped_constant_velocity_knots(0.0, 1.0, vel_rps=0.0, seg_t_s=0.01)
+    with pytest.raises(ValueError):
+        kt.shaped_constant_velocity_knots(0.0, 1.0, vel_rps=0.6, seg_t_s=0.0)
+    with pytest.raises(ValueError):
+        kt.shaped_constant_velocity_knots(0.0, 1.0, vel_rps=0.6, seg_t_s=0.01,
+                                          accel_time_s=0.0)
+
+
+# ===========================================================================
+# Over-current abort debounce — one glitched sample must not kill a run
+# ===========================================================================
+
+def test_overcurrent_latch_needs_three_consecutive_samples():
+    latch = kt.OverCurrentLatch(9.5)
+    assert latch.observe(10.0) is False
+    assert latch.observe(10.0) is False
+    assert latch.observe(10.0) is True          # 3rd consecutive → trip
+    assert latch.tripped
+
+
+def test_overcurrent_latch_single_spikes_never_trip():
+    # The old single-sample trip could abort a healthy run on one telemetry glitch or
+    # one accel-transient sample. Isolated spikes — however many — must not trip.
+    latch = kt.OverCurrentLatch(9.5)
+    for _ in range(50):
+        assert latch.observe(12.0) is False     # spike...
+        assert latch.observe(3.0) is False      # ...reset
+    assert not latch.tripped
+
+
+def test_overcurrent_latch_below_limit_resets_the_streak():
+    latch = kt.OverCurrentLatch(9.5)
+    latch.observe(10.0)
+    latch.observe(10.0)
+    latch.observe(5.0)                          # streak broken
+    assert latch.observe(10.0) is False
+    assert latch.observe(10.0) is False
+    assert latch.observe(10.0) is True
+
+
+def test_overcurrent_latch_nan_neither_counts_nor_resets():
+    # A dropped/NaN telemetry sample is no evidence either way.
+    latch = kt.OverCurrentLatch(9.5)
+    latch.observe(10.0)
+    latch.observe(10.0)
+    assert latch.observe(float('nan')) is False
+    assert latch.observe(10.0) is True          # streak survived the gap
+
+
+def test_overcurrent_latch_is_signed_agnostic_and_stays_latched():
+    latch = kt.OverCurrentLatch(9.5)
+    for iq in (-10.0, -11.0, -12.0):
+        latch.observe(iq)
+    assert latch.tripped
+    assert latch.observe(0.0) is True           # latched — abort state is sticky
+
+
+def test_overcurrent_latch_rejects_bad_args():
+    with pytest.raises(ValueError):
+        kt.OverCurrentLatch(0.0)
+    with pytest.raises(ValueError):
+        kt.OverCurrentLatch(9.5, n_consecutive=0)

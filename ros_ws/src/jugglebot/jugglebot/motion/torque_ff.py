@@ -88,6 +88,20 @@ _NUM_LEGS = 6
 _TWO_PI = 2.0 * np.pi
 
 
+# Consecutive bad compute() calls over which a held feedforward decays to zero
+# (0.5 s at the 40 Hz knot rate).
+_DECAY_CALLS = 20
+
+# Physical sanity bound on any single leg's feedforward torque (TRUE Nm).
+# Gravity+inertia at every valid pose is <= ~0.041 Nm/leg; anything past 0.5 Nm
+# out of this module is a numerical artifact, not physics.  Needed because
+# np.linalg.solve does NOT raise on a merely ILL-CONDITIONED Jacobian — it
+# returns huge *finite* forces that would sail through the isfinite check and
+# sit on the downstream clamp (review 2026-07-14: a near-singular pose can
+# reach this path via seeds that bypass the feasibility gate's cond check).
+_SANE_MAX_NM = 0.5
+
+
 class LegTorqueFeedforward:
     """Planned platform state → six TRUE-Nm, extension-positive motor torques.
 
@@ -124,6 +138,16 @@ class LegTorqueFeedforward:
         self._mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
         # True when the config asks for *some* term; lets `compute` short-circuit.
         self._active = self.enabled and (self.gravity or self.platform_inertia)
+        # Degradation state (review 2026-07-14): on a singular Jacobian or a
+        # non-finite result, HOLD the last good torque and decay it linearly to
+        # zero over _DECAY_CALLS calls, instead of stepping a live feedforward
+        # to exact zeros in one tick.  Gravity is pose-continuous, so a bad
+        # pose is transient and the held value stays physically right; the
+        # decay bounds a *persistent* failure.  (A one-tick step to zero is the
+        # same discontinuity class as the 2026-05-08 friction-FF limit cycle's
+        # trigger, and the pump's reject path exists precisely to avoid it.)
+        self._last_tau = np.zeros(_NUM_LEGS)
+        self._bad_streak = 0
 
     # -- introspection (telemetry / tests) --------------------------------
     @property
@@ -187,8 +211,9 @@ class LegTorqueFeedforward:
         try:
             f_legs = np.linalg.solve(J.T, W_total)
         except np.linalg.LinAlgError:
-            logger.warning('LegTorqueFeedforward: singular Jacobian — zero FF this tick')
-            return np.zeros(_NUM_LEGS)
+            logger.warning('LegTorqueFeedforward: singular Jacobian — holding last '
+                           'FF (decaying)')
+            return self._degrade()
 
         # Force (N, extension-positive) → motor torque (Nm, extension-positive).
         # Pure positive scale by the spool radius ⇒ sign-preserving.
@@ -207,8 +232,27 @@ class LegTorqueFeedforward:
                              * self._mm_to_rev * _TWO_PI)
             tau = tau + self._rotor_inertia * q_ddot_rad_s2
 
-        if not np.all(np.isfinite(tau)):
-            logger.warning('LegTorqueFeedforward: non-finite torque — zero FF this tick')
-            return np.zeros(_NUM_LEGS)
+        if (not np.all(np.isfinite(tau))
+                or float(np.max(np.abs(tau))) > _SANE_MAX_NM):
+            logger.warning('LegTorqueFeedforward: non-finite or implausible torque '
+                           '(|tau|max > %.2f Nm — ill-conditioned Jacobian?) — '
+                           'holding last FF (decaying)', _SANE_MAX_NM)
+            return self._degrade()
 
+        # Good tick: remember it (copy — callers may mutate) and clear the streak.
+        self._last_tau = tau.copy()
+        self._bad_streak = 0
         return tau
+
+    def _degrade(self) -> np.ndarray:
+        """Held-and-decaying feedforward for a bad tick (singular J / non-finite).
+
+        Returns the last good torque scaled by a linear decay over
+        ``_DECAY_CALLS`` consecutive bad calls, reaching exact zeros at the end.
+        Never a one-tick step to zero mid-stream — see the constructor comment.
+        """
+        self._bad_streak += 1
+        if self._bad_streak >= _DECAY_CALLS:
+            return np.zeros(_NUM_LEGS)
+        scale = 1.0 - (self._bad_streak / float(_DECAY_CALLS))
+        return self._last_tau * scale

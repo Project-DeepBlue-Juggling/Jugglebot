@@ -829,3 +829,177 @@ def test_force_decomposition_uses_a_solve_not_a_transpose_product():
     mine = _ff().compute(ACTIVE_POSE[:3], rot, ZERO6, ZERO6)
     assert np.allclose(mine, correct, rtol=1e-12)
     assert not np.allclose(mine, wrong, rtol=1e-3)
+
+
+# ── Adversarial-review fixes, 2026-07-14 ───────────────────────────────────
+# (logbook/2026-07-14-kt-reconciliation-and-gravity-ff.md — review findings)
+
+def test_reflected_rotor_magnitude_pin_kills_2pi_and_mm_to_rev_mutations():
+    """Review finding: dropping the 2*pi from the reflected-rotor term (the
+    rev/s^2-vs-rad/s^2 confusion — this codebase's recurring unit-error class)
+    survived the ENTIRE motion suite. This pins the exact magnitude:
+    tau_reflected = J_rotor * (leg_acc_mm_s2 * mm_to_rev * 2*pi), per leg."""
+    import jugglebot.motion.torque_ff as tff_mod
+    geom = _geom()
+    params = DynamicsParams(mass_kg=0.0,           # zero mass: no wrench terms
+                            com_offset_mm=np.zeros(3),
+                            gravity_mps2=9.806,
+                            inertia_tensor_kgmm2=np.zeros((3, 3)),
+                            motor_rotor_inertia_kgm2=2.75e-4)
+    ff = LegTorqueFeedforward(geom, params, enabled=True, gravity=False,
+                              platform_inertia=True)
+    pose = np.array([0.0, 0.0, 170.0])
+    rot = np.eye(3)
+    accel = np.array([0.0, 0.0, 4000.0, 0.0, 0.0, 0.0])   # 4 m/s^2 up
+    leg_acc = np.full(6, 4000.0)                          # synthetic, mm/s^2
+    tau = ff.compute(pose, rot, np.zeros(6), accel, leg_acc_mm_s2=leg_acc)
+    expected = 2.75e-4 * (4000.0 * np.asarray(geom.mm_to_rev) * 2.0 * np.pi)
+    np.testing.assert_allclose(tau, expected, rtol=1e-12)
+    # And the magnitude is meaningful: dropping 2*pi would be a 6.28x error.
+    assert np.all(expected > 0.02), "pin must be large enough to catch a 6.28x drop"
+
+
+def test_inertia_wrench_transport_moment_virtual_work():
+    """Review finding: compute_inertia_wrench omitted the Newton-Euler
+    transport moment r_com x (m*a_com) about the platform geometric centre.
+    Independent check by rotational virtual work: for a pure linear
+    acceleration `a` and CoM offset r, the wrench's moment row must equal
+    r x (m*a) — the power delivered through a virtual rotation about the
+    centre must match the CoM's displacement rate against the inertial force."""
+    from jugglebot.motion.dynamics import compute_inertia_wrench
+    params = DynamicsParams(mass_kg=1.2,
+                            com_offset_mm=np.array([-9.68, -68.64, 52.73]),
+                            gravity_mps2=9.806,
+                            inertia_tensor_kgmm2=np.zeros((3, 3)))
+    rot = np.eye(3)
+    accel = np.array([0.0, 0.0, 4000.0, 0.0, 0.0, 0.0])   # pure linear, 4 m/s^2
+    W = compute_inertia_wrench(rot, np.zeros(6), accel, params)
+    F = W[:3]                                             # N
+    np.testing.assert_allclose(F, [0.0, 0.0, 1.2 * 4.0], rtol=1e-12)
+    # Transport moment, computed independently: r (mm) x F (N) = N*mm.
+    expected_moment = np.cross(params.com_offset_mm, F)
+    np.testing.assert_allclose(W[3:], expected_moment, rtol=1e-12)
+    # And it is NOT zero — the pre-fix code returned exactly zeros here.
+    assert np.linalg.norm(W[3:]) > 100.0                  # ~330 N*mm at this accel
+
+
+def test_singular_jacobian_holds_then_decays_never_steps_to_zero():
+    """Review finding: a singular/ill-conditioned Jacobian used to step a live
+    feedforward to exact zeros in one tick — the same discontinuity class as
+    the 2026-05-08 friction-FF limit cycle trigger. Now: hold the last good
+    torque, decay linearly to zero over _DECAY_CALLS, recover instantly on the
+    next good tick."""
+    import jugglebot.motion.torque_ff as tff_mod
+    ff = _ff()
+    pose = np.array([0.0, 0.0, 170.0])
+    rot = np.eye(3)
+    z6 = np.zeros(6)
+    good = ff.compute(pose, rot, z6, z6)
+    assert np.all(good > 0)
+    # Feed a singular Jacobian: exactly-singular J makes solve raise.
+    J_sing = np.zeros((6, 6))
+    t1 = ff.compute(pose, rot, z6, z6, J=J_sing)
+    # First bad tick: held value, slightly decayed — NOT zeros, NOT a step.
+    expected_1 = good * (1.0 - 1.0 / tff_mod._DECAY_CALLS)
+    np.testing.assert_allclose(t1, expected_1, rtol=1e-12)
+    # Decays monotonically to exact zeros by _DECAY_CALLS bad ticks.
+    last = t1
+    for _ in range(tff_mod._DECAY_CALLS):
+        t = ff.compute(pose, rot, z6, z6, J=J_sing)
+        assert np.all(np.abs(t) <= np.abs(last) + 1e-15)
+        last = t
+    np.testing.assert_array_equal(last, np.zeros(6))
+    # Recovery on the next good tick is immediate and exact.
+    np.testing.assert_allclose(ff.compute(pose, rot, z6, z6), good, rtol=1e-12)
+
+
+def test_ill_conditioned_jacobian_triggers_sanity_bound():
+    """np.linalg.solve does NOT raise on an ill-conditioned J — it returns huge
+    FINITE forces. The producer must catch those via the physical sanity bound
+    (no leg's gravity+inertia FF can exceed _SANE_MAX_NM at any valid pose)."""
+    import jugglebot.motion.torque_ff as tff_mod
+    ff = _ff()
+    pose = np.array([0.0, 0.0, 170.0])
+    rot = np.eye(3)
+    z6 = np.zeros(6)
+    good = ff.compute(pose, rot, z6, z6)
+    # Near-singular (not exactly singular) J: solve succeeds, forces explode.
+    J_ill = np.eye(6) * 1e-9
+    t = ff.compute(pose, rot, z6, z6, J=J_ill)
+    assert np.all(np.abs(t) <= tff_mod._SANE_MAX_NM), \
+        "implausible torques must never leave the producer"
+    # It took the degrade path (held+decayed), not the explode path.
+    np.testing.assert_allclose(
+        t, good * (1.0 - 1.0 / tff_mod._DECAY_CALLS), rtol=1e-12)
+
+
+def test_pump_restart_torque_ramp_restarts_ff_only_not_step_gate():
+    """Review finding: the guard-latch -> /recover path (mpc_active stays 1)
+    never fired reset(), so the FF returned as a full-magnitude step after the
+    firmware recovery slew. restart_torque_ramp() must restart the ramp WITHOUT
+    waiving the per-frame position-step gate (unlike reset())."""
+    pump = _pump(torque_ff_enabled=True, torque_ff_ramp_frames=10)
+    cmd = dict(motor_rev=[1.0] * 6, vel_mm_s=[10.0] * 6,
+               cmd_next_mm=[71.0] * 6, cmd_next2_mm=[72.0] * 6,
+               ext_mm=[70.0] * 6, torque_Nm=[0.04] * 6, seq=1)
+    for _ in range(10):
+        sp, _ = pump.build(cmd, t_origin_us=0)
+    assert pump.torque_ff_ramp_scale() == 1.0
+    full = sp.torque_ff[0]
+    assert full > 0.0
+    pump.restart_torque_ramp()
+    # Ramp is back at zero...
+    assert pump.torque_ff_ramp_scale() == 0.0
+    sp2, _ = pump.build(cmd, t_origin_us=0)
+    assert sp2.torque_ff[0] < full
+    # ...but the step gate baseline SURVIVED (unlike reset()): a step-violating
+    # frame is still rejected on the very next build.
+    bad = dict(cmd)
+    bad['motor_rev'] = [1.0 + 2.0 * pump.max_step_rev] * 6
+    sp3, reason = pump.build(bad, t_origin_us=0)
+    assert sp3 is None and reason
+
+
+def test_pump_torque_ff_max_nm_ceiling():
+    """Review finding: the only clamp in the chain had no ceiling — a config
+    typo could set it above the ~0.55 wire-Nm point where the FF consumes the
+    whole current budget and the position loop loses all authority."""
+    with pytest.raises(ValueError, match='ceiling'):
+        _pump(torque_ff_enabled=True, torque_ff_max_nm=0.6)
+    # The shipped value and the boundary are accepted.
+    _pump(torque_ff_enabled=True, torque_ff_max_nm=0.15)
+    _pump(torque_ff_enabled=True, torque_ff_max_nm=0.30)
+
+
+def test_hardware_plant_honours_config_term_flags(monkeypatch):
+    """Review finding (the third producer): HardwarePlant read NONE of the
+    config flags — enabling the master switch would have armed the MPC path's
+    acceleration-proportional platform-inertia FF that
+    torque_ff_platform_inertia=false exists to gate. The skip flags must flow
+    from the generated config into compute_full_feedforward_torques."""
+    from jugglebot.motion.motor_commands import cartesian_to_motor_commands
+    from jugglebot.motion.dynamics import DynamicsParams as DP
+    geom = _geom()
+    params = DP.from_config()
+    pose = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    accel = np.array([0.0, 0.0, 4000.0, 0.0, 0.0, 0.0])
+    z6 = np.zeros(6)
+    # gravity-only (the shipped per-term config): accel must NOT change tau.
+    _, _, tau_static, _ = cartesian_to_motor_commands(
+        pose, z6, z6, geom, params, feedforward_enabled=True,
+        skip_reflected_inertia=True, skip_platform_inertia=True)
+    _, _, tau_accel, _ = cartesian_to_motor_commands(
+        pose, z6, accel, geom, params, feedforward_enabled=True,
+        skip_reflected_inertia=True, skip_platform_inertia=True)
+    np.testing.assert_allclose(tau_accel, tau_static, rtol=1e-12)
+    # with the inertia term allowed, the same accel MUST change tau.
+    _, _, tau_inertial, _ = cartesian_to_motor_commands(
+        pose, z6, accel, geom, params, feedforward_enabled=True,
+        skip_reflected_inertia=True, skip_platform_inertia=False)
+    assert float(np.max(np.abs(tau_inertial - tau_static))) > 1e-3
+    # and skip_gravity kills the static term entirely.
+    _, _, tau_none, _ = cartesian_to_motor_commands(
+        pose, z6, z6, geom, params, feedforward_enabled=True,
+        skip_reflected_inertia=True, skip_gravity=True,
+        skip_platform_inertia=True)
+    np.testing.assert_array_equal(tau_none, np.zeros(6))

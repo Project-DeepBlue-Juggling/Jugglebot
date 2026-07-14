@@ -57,8 +57,24 @@ so injecting ``tau_ff`` makes the position loop's own contribution fall by EXACT
 amount. **That shift IS the measurement** — and it is a DIFFERENTIAL one, so the
 indeterminate at-rest stiction offset is common to every rung and cancels in the slope. It
 is also inherently safe: the position loop actively resists any runaway, and every
-commanded ``torque_ff`` is kept far below the point where it could overcome the loop
-(0.10 Nm ≈ 1.8 A, against a 1.5 Nm ``torque_soft_max``).
+commanded ``torque_ff`` is tiny against the 1.5 Nm ``torque_soft_max``.
+
+**The ladder must stay INSIDE the static-friction band** (worst-case edge ≈ 0.049 Nm =
+τ_c·Kt): "the loop holds station so the shift IS the measurement" is only true while
+static friction lets the leg genuinely not move. An out-of-band rung moves the leg, the
+position loop's integrator re-absorbs the feedforward at the new equilibrium, and that
+rung biases the slope LOW — band-saturation model: 33–52 % for a 0.10 Nm rung;
+observed 2026-07-14: full-fit 63–68 % low (the ±0.10 Nm rungs
+saturated/re-absorbed while the in-band rungs showed a clean −20 to −22.5 A/Nm slope (right order vs the expected 18.14, ~17 % high)). Hence
+the default ladder ±{0.010, 0.020, 0.035} Nm with 0.0 as the reference rung; rungs above
+0.045 Nm draw a warning.
+
+**Verdict quality gate**: Mode 2 refuses to state ANY sign/scale verdict unless the fit
+clears R² ≥ 0.90 AND |slope|/σ ≥ 3. Below that it prints a NO CONCLUSION block naming
+the specific failures and any probable-disturbance rung. (Born of the 2026-07-14 run:
+0.8 kg at an odd angle, partially hand-supported, gave R² = −0.099 and a 1.8σ slope —
+and the harness confidently shouted MUST-NEGATE/MISMATCH conclusions from it. The −0.05
+Nm rung read iq ≈ 0.05 A — essentially unloaded — because someone was holding the mass.)
 
 It pins down three things at once:
 
@@ -122,8 +138,31 @@ Usage
     python tests/hardware/kt_bench_test.py --mode torque_ff_check --dry-run
 
     # Live (requires the BENCH_SYSID_BUILD firmware flashed):
-    python tests/hardware/kt_bench_test.py --mode kt --home
+    python tests/hardware/kt_bench_test.py --mode kt --home --masses 1.0,2.0,3.0
     python tests/hardware/kt_bench_test.py --mode torque_ff_check --hold-mass 2.0
+
+RUN INSTRUCTIONS (operator checklist)
+=====================================
+* **Masses: 1.0 / 2.0 / 3.0 kg.** With only 2-3 bench weights available, three masses
+  spread maximally is the best fit (span is where the slope's leverage lives — 1/2/3 kg
+  beats any closer triple). Two masses would be exactly-determined (slope+intercept
+  through 2 points, zero residual dof — no way to tell signal from disturbance), so the
+  harness refuses fewer than 3.
+* **The mass must hang FREE and VERTICAL, and NOBODY touches it (or the leg) during the
+  rungs/traverses.** One supported rung poisons the whole fit: on the 2026-07-14 run the
+  −0.05 Nm rung read iq ≈ 0.05 A — essentially an UNLOADED leg — because the operator
+  was partially supporting the 0.8 kg mass, and that single rung helped wreck the fit
+  (R² = −0.099). Hang it, step back, then press ENTER.
+* **Declare the true mass** (``--masses`` / ``--hold-mass``): the current budget, the
+  over-current abort margins and the sign inference all use it.
+* **Bench-vs-platform SIGN context** (read before acting on any Mode-2 sign verdict):
+  ODrive direction calibration is PER-DRIVE, and this bench drive's torque sign
+  convention is OPPOSITE to the platform legs'. The 2026-04-27 friction bench work
+  empirically needed ``--ff-sign -1`` on this rig, while the 2026-05-08 PLATFORM
+  validation ran the standard un-negated chain and worked (a wrong sign would have
+  doubled friction — that A/B genuinely discriminates). So "positive wire torque_ff
+  RETRACTS" ON THIS BENCH is EXPECTED and does NOT mean the production gravity
+  feedforward must be negated — the platform-validated sign stands.
 
 Output: ``temp/probes/kt_bench_<ts>/`` — one CSV per traverse/rung + ``manifest.json``.
 
@@ -159,7 +198,7 @@ from bench_leg_sysid import (  # noqa: E402 — reuse the proven Path-BRIDGE tra
     BridgeSysID,
 )
 
-DEFAULT_TORQUE_FF_LADDER = ','.join(f"{t:+.2f}" for t in kt.DEFAULT_TORQUE_FF_LADDER_NM)
+DEFAULT_TORQUE_FF_LADDER = ','.join(f"{t:+.3f}" for t in kt.DEFAULT_TORQUE_FF_LADDER_NM)
 
 # ---------------------------------------------------------------------------
 # Bench-build coupling. canbridge_config.h:146 sets SEGMENT_T_S = 0.010 under
@@ -193,7 +232,14 @@ DEFAULT_TFF_HOLD_MASS_KG = 2.0
 
 # Live over-current abort. The ODrive's own current_soft_max (10 A) is the hardware
 # backstop; this is a software belt-and-braces that trips first and disarms cleanly.
+# Debounced: kt.OVERCURRENT_TRIP_SAMPLES (3) CONSECUTIVE 250 Hz samples must exceed the
+# limit — a single telemetry glitch or one-sample transient cannot abort a run.
 IQ_ABORT_FRAC = 0.95
+
+# Parking. PARK_DONE_TOL_REV: the leg counts as parked when at (or below) the bottom of
+# the usable window within this — don't re-arm an already-parked leg for < 1.5 mm.
+PARK_DONE_TOL_REV = 0.02
+PARK_DESCENT_VEL_RPS = 0.3
 
 
 class KtBench(BridgeSysID):
@@ -221,7 +267,8 @@ class KtBench(BridgeSysID):
                  dwell_s: float, edge_discard_s: float, tilt_deg: float,
                  tff_ladder_Nm: List[float], tff_hold_rev: float,
                  tff_hold_mass_kg: float, tff_settle_s: float, tff_measure_s: float,
-                 assume_yes: bool, **kw):
+                 assume_yes: bool,
+                 accel_time_s: float = kt.DEFAULT_TRAVERSE_ACCEL_TIME_S, **kw):
         # Mode-1 approaches the traverse LOW end; Mode-2 holds mid-stroke. The base class
         # ramps to `center_rev` on bringup, so point it at whichever this run needs.
         super().__init__(**kw)
@@ -239,10 +286,13 @@ class KtBench(BridgeSysID):
         self.tff_settle_s = float(tff_settle_s)
         self.tff_measure_s = float(tff_measure_s)
         self.assume_yes = bool(assume_yes)
+        self.accel_time_s = float(accel_time_s)
 
         self._torque_ff_Nm = 0.0        # what _send_knot puts on the wire, this instant
         self._iq_abort_reason: Optional[str] = None
         self._iq_abort_limit = IQ_ABORT_FRAC * self.current_limit_a
+        self._iq_trip = kt.OverCurrentLatch(self._iq_abort_limit)
+        self._needs_park = False        # True while the leg is armed away from the bottom
 
         self._manifest['kt'] = {
             'purpose': 'settle the 13% torque-constant discrepancy blocking feedforward',
@@ -258,6 +308,9 @@ class KtBench(BridgeSysID):
                 'lo_rev': self.traverse_lo_rev, 'hi_rev': self.traverse_hi_rev,
                 'vel_rps': self.traverse_vel_rps, 'reps': self.reps,
                 'edge_discard_s': self.edge_discard_s,
+                'accel_time_s': self.accel_time_s,
+                'accel_rps2': (self.traverse_vel_rps / self.accel_time_s
+                               if self.accel_time_s > 0 else float('inf')),
             },
             'tilt_deg': self.tilt_deg,
             'friction_reference': {
@@ -301,18 +354,23 @@ class KtBench(BridgeSysID):
         makes it the earliest place we can see a current excursion. Setting ``_sigint``
         routes into the base class's existing clean disarm path (checked every knot in
         ``_stream_and_sample``) rather than inventing a second abort mechanism.
+
+        Debounced via :class:`kt_lib.OverCurrentLatch`: the trip needs
+        ``kt.OVERCURRENT_TRIP_SAMPLES`` (3) CONSECUTIVE over-limit samples (~12 ms), so a
+        single telemetry glitch or a one-sample transient cannot kill a healthy run.
         """
         super()._log_frame(tm, now)
         d = self._cache['diag'].get(self.axis_id)
         if d is None:
             return
         iq = float(d.iq_measured)
-        if np.isfinite(iq) and abs(iq) > self._iq_abort_limit and not self._iq_abort_reason:
+        if self._iq_trip.observe(iq) and not self._iq_abort_reason:
             self._iq_abort_reason = (
-                f"OVER-CURRENT: |iq| {abs(iq):.2f} A exceeded "
-                f"{self._iq_abort_limit:.2f} A ({IQ_ABORT_FRAC:.0%} of the "
-                f"{self.current_limit_a:.1f} A limit) — disarming. Is the mass heavier "
-                f"than declared, or is the leg binding?")
+                f"OVER-CURRENT: |iq| exceeded {self._iq_abort_limit:.2f} A "
+                f"({IQ_ABORT_FRAC:.0%} of the {self.current_limit_a:.1f} A limit) on "
+                f"{self._iq_trip.n_consecutive} consecutive 250 Hz samples "
+                f"(last {abs(iq):.2f} A) — disarming. Is the mass heavier than "
+                f"declared, or is the leg binding?")
             self._sigint = True
 
     def _took_iq_abort(self) -> bool:
@@ -351,9 +409,15 @@ class KtBench(BridgeSysID):
                     f"(0.6 recommended).")
         if self.traverse_vel_rps > self.vel_cap_rps:
             return f"traverse velocity exceeds the session velocity cap {self.vel_cap_rps}"
+        if self.accel_time_s <= 0.0:
+            return "--accel-time must be > 0 (the traverse start/end accel ramp)"
         problems = kt.torque_ff_ladder_safe(self.tff_ladder_Nm)
         if problems:
             return "unsafe torque_ff ladder: " + "; ".join(problems)
+        # Out-of-band rungs are SAFE but biased — warn, don't refuse (a deliberate
+        # band-mapping run is a legitimate experiment).
+        for w in kt.torque_ff_ladder_band_warnings(self.tff_ladder_Nm):
+            print(f"  WARN: {w}")
         # The firmware stroke clamp ZEROES torque_ff (leg_interp.cpp:407), so a Mode-2 hold
         # anywhere near it would silently measure nothing.
         if not (0.30 <= self.tff_hold_rev <= 3.60):
@@ -363,9 +427,11 @@ class KtBench(BridgeSysID):
                     f"silently read zero")
         budget = kt.current_budget(
             self.masses_kg, current_limit_A=self.current_limit_a,
-            vel_rps=self.traverse_vel_rps, tilt_deg=self.tilt_deg)
+            vel_rps=self.traverse_vel_rps, tilt_deg=self.tilt_deg,
+            accel_rps2=self.traverse_vel_rps / self.accel_time_s)
         if not budget.ok:
-            return ("mass set rejected by the current/conditioning budget:\n    "
+            return ("mass set rejected by the current/conditioning budget "
+                    "(accel phase included):\n    "
                     + "\n    ".join(budget.reasons)
                     + f"\n  Recommended: --masses "
                       f"{','.join(str(m) for m in kt.recommended_masses_kg())}")
@@ -414,8 +480,14 @@ class KtBench(BridgeSysID):
 
     # -- operator interaction -------------------------------------------------
 
-    def _prompt_mass(self, mass_kg: float) -> bool:
-        """Confirm the operator has hung THIS mass before we drive the leg."""
+    def _prompt_mass(self, mass_kg: float) -> str:
+        """Confirm the operator has hung THIS mass before we drive the leg.
+
+        Returns ``'go'`` (run this mass), ``'skip'`` (skip this mass, continue with the
+        next), or ``'quit'`` (abort the whole run cleanly, parking first). ``'q'``, EOF
+        and Ctrl-C all mean QUIT — they used to be silently treated as skip-this-mass,
+        which left an operator who wanted OUT cycling through every remaining prompt.
+        """
         pred_up, pred_dn = kt.predicted_iq_up_down(
             mass_kg, kt.KT_ODRIVE_CONFIGURED, vel_rps=self.traverse_vel_rps,
             tilt_deg=self.tilt_deg)
@@ -427,52 +499,141 @@ class KtBench(BridgeSysID):
         print(f"  The leg will traverse {self.traverse_lo_rev:.2f} -> "
               f"{self.traverse_hi_rev:.2f} rev at {self.traverse_vel_rps:.2f} rev/s, "
               f"x{self.reps} up/down.")
-        print("  Check: mass SECURE · leg VERTICAL · padding under the mass "
-              "(it FALLS on any E-STOP).")
+        print("  Check: mass SECURE, hanging FREE and VERTICAL · nobody touches it "
+              "while the leg moves ·")
+        print("  padding under the mass (it FALLS on any E-STOP).")
         print("=" * 68)
         if self.assume_yes:
             print("  (--yes: proceeding without confirmation)")
-            return True
+            return 'go'
         try:
-            ans = input(f"  Hang {mass_kg:.2f} kg and press ENTER (or 's' to skip, "
-                        f"'q' to quit): ").strip().lower()
+            ans = input(f"  Hang {mass_kg:.2f} kg and press ENTER (or 's' to skip this "
+                        f"mass, 'q' to quit the run): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            return False
+            print()
+            return 'quit'
         if ans.startswith('q'):
-            return False
+            return 'quit'
         if ans.startswith('s'):
-            return False
-        return True
+            return 'skip'
+        return 'go'
 
     # -- MODE 1: Kt ------------------------------------------------------------
 
     def _park_low(self, from_rev: Optional[float] = None):
-        """Gracefully lower the leg to the bottom of the usable window, then disarm.
+        """Lower the leg to the bottom of the usable window, then disarm — on EVERY exit
+        path, including the abort ones.
 
-        Called between masses and at the end. The point is that the operator handles the
-        weights — and swaps them — with the leg at its LOWEST, so the fall distance if
-        anything lets go is ~0. A disarm at height would leave the mass supported only by
-        an energized motor.
+        Called between masses, at the end of a stage, and from ``run()``'s cleanup. The
+        point is that the operator handles the weights — and swaps them — with the leg at
+        its LOWEST, so the fall distance if anything lets go is ~0.
+
+        The abort paths need real work, not a fire-and-forget stream (the pre-fix
+        version's descent was a silent no-op on every one of them, while the console
+        printed "gentle descent"):
+
+        * **the SIGINT latch is bypassed for the descent** — an over-current trip and
+          Ctrl-C both latch ``self._sigint``, which makes ``_stream_and_sample`` break on
+          its first knot. It is cleared here and restored after; a FRESH Ctrl-C during
+          the descent re-latches it (the signal handler stays installed) and stops the
+          stream — the operator's escape hatch stays live;
+        * **re-arm if disarmed** — every abort path disarms, so the descent re-runs the
+          bring-up + stream-then-arm-then-settle dance first;
+        * **clear a guard latch (within budget)** — a latched E-STOP gates the output; a
+          disarmed CLEAR_ERRORS is attempted via the same verified path used at startup;
+        * **if parking is genuinely impossible** (latch will not clear, recovery budget
+          exhausted, fatal fault, link down), say so EXPLICITLY — never pretend;
+        * **the ORIGINAL abort diagnostic is preserved** — the descent itself sets
+          ``_abort_reason`` (e.g. 'SIGINT'), which used to clobber the real diagnostic.
         """
-        pos, _, _, _ = self._sample()
-        start = from_rev if from_rev is not None else (
-            pos if pos is not None else self.bounds.lo_rev)
+        original_abort = self._abort_reason
+        original_sigint = self._sigint
+        self._torque_ff_Nm = 0.0
+        self._needs_park = False
+        cannot: Optional[str] = None
         target = self.bounds.lo_rev
-        if abs(start - target) > 1e-3:
-            print(f"  parking: {start:.2f} -> {target:.2f} rev (gentle descent)")
-            series = kt.constant_velocity_knots(
-                start, target, vel_rps=min(0.4, self.traverse_vel_rps),
-                seg_t_s=self.seg_t_s, lead_out_frames=int(0.3 / self.seg_t_s))
-            self._stream_and_sample(series, guard=True)
-        self._disarm()
+        self._sigint = False
+        try:
+            pos, _, _, _ = self._sample()
+            live = pos if pos is not None else from_rev
+            if live is None:
+                cannot = "no telemetry — the leg's position is unknown (link down?)"
+            elif live <= target + PARK_DONE_TOL_REV:
+                pass    # already at (or below) the bottom; just make sure we disarm
+            else:
+                fs = self._fault_state()
+                cls = sid.classify_fault(int(fs)) if fs is not None else 'none'
+                if cls in ('fatal', 'unknown'):
+                    cannot = (f"fault {sid.fault_name(int(fs))} is fatal — ceding "
+                              f"authority, not fighting it for a descent")
+                elif cls == 'latching':
+                    if self.guard.recoveries_used > self.guard.max_recoveries:
+                        cannot = (f"guard latch {sid.fault_name(int(fs))} with the "
+                                  f"CLEAR_ERRORS recovery budget exhausted "
+                                  f"({self.guard.recoveries_used}"
+                                  f"/{self.guard.max_recoveries})")
+                    else:
+                        print(f"  park: {sid.fault_name(int(fs))} latched — disarmed "
+                              f"CLEAR_ERRORS before the descent")
+                        if not self._startup_clear_latch():
+                            cannot = (f"guard latch would not clear "
+                                      f"({self._abort_reason})")
+                if cannot is None:
+                    # Re-arm (every abort path disarms; a completed stage is also
+                    # descending from an armed hold — _warm_and_arm is safe either way).
+                    self._bringup_closed_loop()
+                    settle = self._warm_and_arm(live)
+                    if settle.get('aborted') or settle.get('guard_latched'):
+                        cannot = ("could not re-arm for the descent ("
+                                  + (self._abort_reason or 'arm-settle latched') + ")")
+                    else:
+                        cur, _, _, _ = self._sample()
+                        start = cur if cur is not None else live
+                        print(f"  parking: {start:.2f} -> {target:.2f} rev "
+                              f"(gentle descent)")
+                        series = kt.shaped_constant_velocity_knots(
+                            start, target,
+                            vel_rps=min(PARK_DESCENT_VEL_RPS, self.traverse_vel_rps),
+                            seg_t_s=self.seg_t_s,
+                            lead_out_frames=int(0.3 / self.seg_t_s))
+                        res = self._stream_and_sample(series, guard=True)
+                        if res.get('aborted') or res.get('guard_latched'):
+                            cannot = ("descent interrupted ("
+                                      + (self._abort_reason or 'guard latch') + ")")
+        except Exception as exc:  # noqa: BLE001 — parking must never mask the abort
+            cannot = f"unexpected error during the park attempt: {exc}"
+        finally:
+            try:
+                self._disarm()
+            except Exception:  # noqa: BLE001
+                pass
+            # Keep a FRESH Ctrl-C latched; otherwise restore the pre-park latch state.
+            self._sigint = self._sigint or original_sigint
+            if cannot:
+                pos, _, _, _ = self._sample()
+                at = f"{pos:.2f} rev" if pos is not None else "an UNKNOWN position"
+                print(f"\n  *** CANNOT PARK — {cannot} ***")
+                print(f"  *** The leg is DISARMED at {at} and will NOT hold the load "
+                      f"— SUPPORT THE MASS before touching anything. ***")
+            # Never let the park attempt clobber the diagnostic that got us here.
+            if original_abort:
+                self._abort_reason = original_abort
+                print(f"  (original abort diagnostic preserved: {original_abort})")
 
     def _run_traverse(self, mass_kg: float, rep: int, direction: str) -> Optional[dict]:
-        """One constant-velocity traverse; returns the sampled arrays (or None on abort)."""
+        """One constant-velocity traverse; returns the sampled arrays (or None on abort).
+
+        The start/end are SHAPED (trapezoidal velocity, ``--accel-time`` ramps): an
+        unshaped series steps 0 → 0.6 rev/s in one knot — a ~60 rev/s² accel demand
+        ≈ +4.5 A of inertia current at 3 kg, enough to brush the over-current abort.
+        The cruise portion (the only part the steady-window selector keeps) is identical.
+        """
         up = direction == 'up'
         start = self.traverse_lo_rev if up else self.traverse_hi_rev
         end = self.traverse_hi_rev if up else self.traverse_lo_rev
-        series = kt.constant_velocity_knots(
+        series = kt.shaped_constant_velocity_knots(
             start, end, vel_rps=self.traverse_vel_rps, seg_t_s=self.seg_t_s,
+            accel_time_s=self.accel_time_s,
             lead_in_frames=int(0.3 / self.seg_t_s),
             lead_out_frames=int(0.3 / self.seg_t_s))
         v_cmd = kt.knots_achieved_velocity(series, self.seg_t_s)
@@ -500,13 +661,22 @@ class KtBench(BridgeSysID):
         per_mass_log: List[dict] = []
 
         for mass in self.masses_kg:
-            if not self._prompt_mass(mass):
+            choice = self._prompt_mass(mass)
+            if choice == 'skip':
                 print("  skipped.")
                 continue
+            if choice == 'quit':
+                self._abort_reason = "operator quit ('q'/EOF) at the mass prompt"
+                print("  quitting.")
+                if self._needs_park:
+                    self._park_low()
+                return False
 
             approach = self._enter_hold_at_center()
+            self._needs_park = True     # armed and moving — park on every exit from here
             if approach.get('aborted') or approach.get('guard_latched'):
                 print(f"  ABORT during approach: {self._abort_reason}")
+                self._park_low()
                 return False
 
             up_stats: List[kt.TraverseStats] = []
@@ -713,18 +883,37 @@ class KtBench(BridgeSysID):
         print(f"  and it is differential, so the indeterminate at-rest stiction offset")
         print(f"  cancels in the slope. Expect |d(iq)/d(torque_ff)| = 1/0.055133 = "
               f"{1.0 / kt.KT_ODRIVE_CONFIGURED:.2f} A/Nm.")
+        print(f"  Every rung stays INSIDE the static-friction band (worst-case edge "
+              f"{kt.TFF_STATIC_BAND_MIN_NM:.3f} Nm):")
+        print(f"  that is what keeps the leg truly stationary — an out-of-band rung "
+              f"moves the leg and the")
+        print(f"  integrator re-absorbs the feedforward, biasing the slope LOW "
+              f"(band model: 33-52% for a 0.10 Nm rung; observed 2026-07-14: 63-68%) "
+              f"(the 2026-07-14 run).")
+        for w in kt.torque_ff_ladder_band_warnings(self.tff_ladder_Nm):
+            print(f"  WARN: {w}")
         if not self.assume_yes:
-            print(f"\n  Check: {self.tff_hold_mass_kg:.2f} kg SECURE on the leg · leg "
-                  f"VERTICAL · padding under the mass.")
+            print(f"\n  Check: {self.tff_hold_mass_kg:.2f} kg SECURE on the leg, hanging "
+                  f"FREE and VERTICAL · leg VERTICAL ·")
+            print(f"  padding under the mass · NOBODY touches the mass or the leg during "
+                  f"the rungs")
+            print(f"  (one supported rung poisons the fit — the 2026-07-14 run's "
+                  f"hand-held -0.05 Nm rung read iq ~ 0.05 A, an unloaded leg).")
             try:
-                if input("  Press ENTER to begin (or 'q' to quit): ").strip().lower().startswith('q'):
+                if input("  Press ENTER to begin (or 'q' to quit): "
+                         ).strip().lower().startswith('q'):
+                    self._abort_reason = "operator quit ('q') at the Mode-2 prompt"
                     return False
             except (EOFError, KeyboardInterrupt):
+                print()
+                self._abort_reason = "operator quit (EOF/Ctrl-C) at the Mode-2 prompt"
                 return False
 
         approach = self._enter_hold_at_center()
+        self._needs_park = True         # armed and moving — park on every exit from here
         if approach.get('aborted') or approach.get('guard_latched'):
             print(f"  ABORT during approach: {self._abort_reason}")
+            self._park_low()
             return False
 
         # The re-enable recovery slew ZEROES torque_ff while it runs (leg_interp.cpp:479).
@@ -805,6 +994,9 @@ class KtBench(BridgeSysID):
 
     def _report_torque_ff(self, points: List[kt.TorqueFfPoint]):
         fit = kt.fit_torque_ff(points)
+        # THE VERDICT GATE (2026-07-14 lesson): no sign/scale claim from an
+        # untrustworthy fit. R² >= 0.90 and a >= 3-sigma slope, or NO CONCLUSION.
+        quality = kt.assess_tff_fit_quality(fit, points)
 
         # The gravity-calibrated extension sign. Prefer Mode 1's (if this run did both);
         # otherwise derive it from the loaded hold itself: the leg must produce an
@@ -825,7 +1017,7 @@ class KtBench(BridgeSysID):
             ext_sign = 0
             sign_src = "unavailable (no mass on the leg? run --mode kt first)"
 
-        verdict = kt.classify_torque_ff(fit, ext_sign)
+        verdict = kt.classify_torque_ff(fit, ext_sign, quality=quality)
 
         print("\n" + "=" * 72)
         print("  RESULT — torque_ff channel")
@@ -836,6 +1028,10 @@ class KtBench(BridgeSysID):
               f"   <- the loaded-hold current (carries the at-rest stiction offset;")
         print(f"                                     fitted out, never used)")
         print(f"    R2 = {fit.r_squared:.5f}   (n={fit.n_points}, dof={fit.dof})")
+        print(f"    verdict gate (R2 >= {quality.min_r2:.2f} AND |s|/sigma >= "
+              f"{quality.min_t_stat:.0f}): "
+              f"{'PASS' if quality.trustworthy else '*** FAIL -> NO CONCLUSION ***'}"
+              f"   (t = {quality.t_stat:.1f})")
         print(f"\n  extension iq sign = {ext_sign:+d}, from {sign_src}")
         print()
         for line in verdict.lines:
@@ -851,6 +1047,7 @@ class KtBench(BridgeSysID):
         self._manifest['stages']['torque_ff_check'] = {
             'points': [asdict(p) for p in points],
             'fit': asdict(fit),
+            'fit_quality': asdict(quality),
             'verdict': asdict(verdict),
             'extension_iq_sign': ext_sign,
             'extension_iq_sign_source': sign_src,
@@ -859,6 +1056,16 @@ class KtBench(BridgeSysID):
 
     def _tff_implications(self, fit, verdict) -> List[str]:
         out: List[str] = []
+        if verdict.no_conclusion:
+            out.append("NO CONCLUSION: this run says NOTHING about the torque_ff sign "
+                       "or scale — do not act on it, in either direction.")
+            out.append("Fix the setup and re-run: hang the declared mass FREE and "
+                       "VERTICAL from the leg; NOBODY touches the mass or the leg "
+                       "during the rungs (one supported rung poisons the fit — the "
+                       "2026-07-14 hand-held -0.05 Nm rung read iq ~ 0.05 A, an "
+                       "unloaded leg); keep every rung inside the static-friction band "
+                       f"(|tff| <= {kt.TFF_BAND_WARN_NM:.3f} Nm — the default ladder).")
+            return out
         if not verdict.channel_live:
             out.append("The torque_ff channel is DEAD — commanded feedforward produced no "
                        "current. DO NOT ship a gravity FF.")
@@ -867,14 +1074,17 @@ class KtBench(BridgeSysID):
                        "output? (:479 also zeroes it).")
             return out
         if verdict.positive_tff_extends is True:
-            out.append("SIGN: a POSITIVE torque_ff EXTENDS (lifts) the leg. So a gravity "
-                       "feedforward that must HOLD THE PLATFORM UP is POSITIVE — sent as-is, "
-                       "no negation. This matches the firmware code read.")
+            out.append("SIGN (THIS BENCH): a POSITIVE torque_ff EXTENDS (lifts) this "
+                       "bench leg — matching the naive code read (odrive_protocol.h:171)"
+                       ", but the OPPOSITE of the 2026-04-27 bench friction-FF finding "
+                       "(--ff-sign -1 on this rig). Re-check the drive config before "
+                       "leaning on it.")
+            out.append("BENCH != PLATFORM: " + kt.BENCH_VS_PLATFORM_SIGN_NOTE)
         elif verdict.positive_tff_extends is False:
-            out.append("SIGN: a POSITIVE torque_ff RETRACTS (drops) the leg. The gravity "
-                       "feedforward MUST BE NEGATED before it goes on the wire. This "
-                       "CONTRADICTS the code read (odrive_protocol.h:171) — investigate "
-                       "before trusting anything else here.")
+            out.append("SIGN (THIS BENCH): a POSITIVE torque_ff RETRACTS (drops) this "
+                       "bench leg — EXPECTED on this rig, NOT a production sign error, "
+                       "and NOT a reason to negate the production gravity feedforward.")
+            out.append("BENCH != PLATFORM: " + kt.BENCH_VS_PLATFORM_SIGN_NOTE)
         else:
             out.append("SIGN: not determined — put a mass on the leg, or run --mode kt "
                        "first to calibrate the extension sign from gravity.")
@@ -939,9 +1149,11 @@ class KtBench(BridgeSysID):
         print(f"    speed, nowhere near a system-ID crawl.)")
 
         if 'kt' in modes:
+            accel_rps2 = self.traverse_vel_rps / self.accel_time_s
             budget = kt.current_budget(
                 self.masses_kg, current_limit_A=self.current_limit_a,
-                vel_rps=self.traverse_vel_rps, tilt_deg=self.tilt_deg)
+                vel_rps=self.traverse_vel_rps, tilt_deg=self.tilt_deg,
+                accel_rps2=accel_rps2)
             print(f"\n  [MODE 1: kt]  traverse {self.traverse_lo_rev:.2f} -> "
                   f"{self.traverse_hi_rev:.2f} rev, x{self.reps} up/down per mass")
             dur = kt.traverse_duration_s(self.traverse_lo_rev, self.traverse_hi_rev,
@@ -951,21 +1163,29 @@ class KtBench(BridgeSysID):
                   f"(after {self.edge_discard_s}s edge discard)")
             print(f"    -> ~{int(steady * BENCH_BUILD_TELEM_HZ)} iq samples per traverse "
                   f"at {BENCH_BUILD_TELEM_HZ:.0f} Hz")
+            print(f"    start/end SHAPED: {self.accel_time_s:.2f} s trapezoid ramp -> "
+                  f"{accel_rps2:.1f} rev/s² accel demand")
+            print(f"    (an UNSHAPED series steps to speed in one knot: ~"
+                  f"{self.traverse_vel_rps / self.seg_t_s:.0f} rev/s² ≈ "
+                  f"+{kt.accel_current_A(max(self.masses_kg) if self.masses_kg else 3.0, self.traverse_vel_rps / self.seg_t_s, kt_nm_per_a=budget.worst_case_kt):.1f} A "
+                  f"at the heaviest mass — that brushes the abort)")
             print(f"    fall height if the drive faults at the top: "
                   f"{self.traverse_hi_rev * kt.BENCH_LEG_MM_PER_REV:.0f} mm "
                   f"-- PAD UNDER THE MASS")
 
-            print(f"\n    CURRENT BUDGET (at the WORST-CASE smallest candidate Kt = "
-                  f"{budget.worst_case_kt:.5f},")
+            print(f"\n    CURRENT BUDGET incl. the accel phase (at the WORST-CASE "
+                  f"smallest candidate Kt = {budget.worst_case_kt:.5f},")
             print(f"    because a smaller Kt draws MORE current — we cannot be surprised "
                   f"by our own answer):")
             print(f"      {'mass':>6} {'tau_g':>8} {'iq_up':>7} {'iq_dn':>7} "
-                  f"{'headroom':>9} {'tg/tc':>6}   iq_avg: 0.0551 vs 0.0624")
+                  f"{'iq_acc':>7} {'iq_pk':>7} {'headroom':>9} {'tg/tc':>6}"
+                  f"   iq_avg: 0.0551 vs 0.0624")
             for r in budget.rows:
                 a1 = kt.gravity_torque_Nm(r.mass_kg, tilt_deg=self.tilt_deg) / kt.KT_ODRIVE_CONFIGURED
                 a2 = kt.gravity_torque_Nm(r.mass_kg, tilt_deg=self.tilt_deg) / kt.KT_HISTORICAL_MEASURED
                 print(f"      {r.mass_kg:6.2f} {r.tau_g_Nm:8.4f} {r.iq_up_A:7.2f} "
-                      f"{r.iq_down_A:7.2f} {r.headroom_A:9.2f} {r.tau_g_over_tau_c:6.2f}"
+                      f"{r.iq_down_A:7.2f} {r.iq_accel_A:7.2f} {r.iq_peak_A:7.2f} "
+                      f"{r.headroom_A:9.2f} {r.tau_g_over_tau_c:6.2f}"
                       f"   {a1:5.2f} A vs {a2:5.2f} A  (D={a1 - a2:.2f} A)")
             for w in budget.reasons:
                 print(f"      !! {w}")
@@ -1004,9 +1224,20 @@ class KtBench(BridgeSysID):
                       f"{shift:+13.2f} A     {frac:+18.1%}")
             print(f"    expected |slope| = 1/{kt.KT_ODRIVE_CONFIGURED:.6f} = "
                   f"{1.0 / kt.KT_ODRIVE_CONFIGURED:.2f} A/Nm")
-            print(f"    the biggest rung ({max(abs(t) for t in self.tff_ladder_Nm):.2f} Nm) "
+            print(f"    the biggest rung ({max(abs(t) for t in self.tff_ladder_Nm):.3f} Nm) "
                   f"is {max(abs(t) for t in self.tff_ladder_Nm) / kt.ODRIVE_TORQUE_SOFT_MAX_NM:.1%} "
                   f"of the ODrive's torque_soft_max ({kt.ODRIVE_TORQUE_SOFT_MAX_NM} Nm)")
+            print(f"    every rung INSIDE the static-friction band (worst-case edge "
+                  f"{kt.TFF_STATIC_BAND_MIN_NM:.3f} Nm) — that")
+            print(f"    is what keeps the leg truly stationary; out-of-band rungs get "
+                  f"re-absorbed by the")
+            print(f"    integrator and bias the slope low (model 33-52%; observed 63-68% on the 2026-07-14 "
+                  f"±0.10 Nm rungs).")
+            for w in kt.torque_ff_ladder_band_warnings(self.tff_ladder_Nm):
+                print(f"    WARN: {w}")
+            print(f"    verdict gate: R2 >= {kt.TFF_GATE_MIN_R2:.2f} AND |slope|/sigma "
+                  f">= {kt.TFF_GATE_MIN_T_STAT:.0f}, else NO CONCLUSION is printed")
+            print(f"    (never a sign/scale verdict from a garbage fit).")
             print(f"    the position loop holds station, so it is inherently safe: the loop")
             print(f"    resists any runaway, and the iq SHIFT is the measurement.")
             print(f"    hold is {self.tff_hold_rev:.2f} rev — clear of the firmware stroke")
@@ -1018,8 +1249,12 @@ class KtBench(BridgeSysID):
         print(f"    stores iq_measured RAW in the ODrive frame. So an EXTENDING torque is")
         print(f"    predicted to read as {kt.IQ_EXTENSION_SIGN_PREDICTED:+d} iq. The harness")
         print(f"    does not assume this — gravity calibrates it (the leg must push UP to")
-        print(f"    hold a mass, so the sign of the loaded current IS the extension sign) —")
-        print(f"    and it SHOUTS if the measurement disagrees with the code read.")
+        print(f"    hold a mass, so the sign of the loaded current IS the extension sign).")
+        print(f"\n  BENCH != PLATFORM (sign): ODrive direction calibration is PER-DRIVE;")
+        print(f"    this bench drive's torque sign convention is OPPOSITE to the platform")
+        print(f"    legs' (2026-04-27 bench friction-FF needed --ff-sign -1; the 2026-05-08")
+        print(f"    PLATFORM validation ran un-negated and worked). A bench sign result")
+        print(f"    does NOT transfer to the platform — the platform-validated sign stands.")
         print("\n  DRY-RUN complete — validation passed, nothing commanded.")
         print("=" * 72)
 
@@ -1063,6 +1298,8 @@ class KtBench(BridgeSysID):
                     break
         except KeyboardInterrupt:
             rc = 2
+            if not self._abort_reason:
+                self._abort_reason = "KeyboardInterrupt"
         except Exception as exc:  # noqa: BLE001
             print(f"\nFATAL: {exc}", file=sys.stderr)
             import traceback
@@ -1070,6 +1307,15 @@ class KtBench(BridgeSysID):
             rc = 1
         finally:
             self._torque_ff_Nm = 0.0
+            # Cover the exit paths the stages could not (SIGINT mid-stream, a FATAL
+            # exception, a stage that bailed before its own park): if the leg is still
+            # armed away from the bottom, park it — _park_low preserves the original
+            # abort diagnostic and says so explicitly if parking is impossible.
+            if self._needs_park:
+                try:
+                    self._park_low()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  (park attempt failed: {exc})", file=sys.stderr)
             try:
                 self._teardown_transport()
             except Exception:
@@ -1143,6 +1389,10 @@ def main() -> int:
     ap.add_argument('--dwell', type=float, default=DEFAULT_DWELL_S)
     ap.add_argument('--edge-discard', type=float, default=DEFAULT_EDGE_DISCARD_S,
                     help="seconds to discard from each end of a traverse (accel/decel)")
+    ap.add_argument('--accel-time', type=float,
+                    default=kt.DEFAULT_TRAVERSE_ACCEL_TIME_S,
+                    help="traverse start/end velocity-ramp duration, s (trapezoid "
+                         "shaping; unshaped starts demand ~60 rev/s² ≈ +4.5 A at 3 kg)")
     ap.add_argument('--tilt-deg', type=float, default=0.0,
                     help="leg's departure from vertical; gravity torque scales by cos(tilt). "
                          "KEEP THE LEG VERTICAL — this is a correction, not a licence.")
@@ -1187,6 +1437,7 @@ def main() -> int:
         tff_ladder_Nm=ladder, tff_hold_rev=args.tff_hold,
         tff_hold_mass_kg=args.hold_mass, tff_settle_s=args.tff_settle,
         tff_measure_s=args.tff_measure, assume_yes=args.yes,
+        accel_time_s=args.accel_time,
         # --- BridgeSysID kwargs ---
         axis_id=args.axis, stroke_cap_rev=args.stroke_cap,
         center_rev=args.traverse_lo, current_limit_a=args.current_limit,

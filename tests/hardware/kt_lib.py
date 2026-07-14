@@ -183,7 +183,62 @@ IQ_EXTENSION_SIGN_PREDICTED = -1
 # torque_constant — 10× below torque_soft_max (1.5 Nm) and far below the point where it
 # could overcome the position loop holding a loaded leg.
 TORQUE_FF_HARD_CAP_NM = 0.15
-DEFAULT_TORQUE_FF_LADDER_NM = (-0.10, -0.05, -0.02, 0.0, 0.02, 0.05, 0.10)
+
+# The STATIC-FRICTION BAND the Mode-2 premise lives inside. "The position loop holds
+# station, so the iq shift IS the measurement" is only true while the injected torque_ff
+# stays under the static friction torque: |tff| < τ_c·Kt. Outside the band the leg
+# actually MOVES, the position loop's integrator re-absorbs part of the feedforward at
+# the new equilibrium, and the fitted slope reads LOW — band-saturation model:
+# 33–52 % for a 0.10 Nm rung; observed 63–68 % low on the
+# 2026-07-14 run: the ±0.10 Nm rungs saturated at the band edge / were re-absorbed,
+# while the two in-band rungs showed a clean −20 to −22.5 A/Nm slope (right order vs the expected 18.14, ~17 % high)). The worst-case (lowest)
+# band edge is τ_c_lo × Kt_lo = 0.88 A × 0.055133 = 0.0485 Nm; the band spans
+# ≈ 0.049–0.067 Nm across the τ_c/Kt candidate ranges.
+TFF_STATIC_BAND_MIN_NM = TAU_C_REF_RANGE_A[0] * KT_ODRIVE_CONFIGURED   # ≈ 0.0485
+TFF_STATIC_BAND_MAX_NM = TAU_C_REF_RANGE_A[1] * KT_ODRIVE_CONFIGURED   # ≈ 0.0673
+TFF_BAND_WARN_NM = 0.045          # warn above this — within 8 % of the worst-case edge
+
+# Default ladder: max rung 0.035 Nm, well under the 0.049 Nm worst-case band edge, with
+# 0.0 kept as the reference rung. Smallest rung 0.010 Nm still shifts iq by
+# 0.010/0.055133 ≈ 0.18 A — comfortably measurable at 250 Hz.
+DEFAULT_TORQUE_FF_LADDER_NM = (-0.035, -0.020, -0.010, 0.0, 0.010, 0.020, 0.035)
+
+# Mode-2 verdict quality gate: below these the fit is noise and NO sign/scale verdict
+# may be printed (the 2026-07-14 run produced R² = −0.099 and a 1.8σ slope, yet the
+# then-current harness shouted *** MUST NEGATE *** / *** MISMATCH −63% *** from it).
+TFF_GATE_MIN_R2 = 0.90
+TFF_GATE_MIN_T_STAT = 3.0         # |slope| / slope_sigma
+TFF_OUTLIER_RMS_MULT = 3.0        # |residual| > 3× the leave-one-out RMS ⇒ flagged
+
+# Motor rotor inertia (hardware_config.yaml:55, ODrive D6374-150Kv datasheet) — used to
+# budget the ACCELERATION-phase current of a shaped traverse, not by any fit.
+J_ROTOR_KGM2 = 2.75e-4
+
+# Traverse start/end shaping: ramp 0 → v over this long (trapezoidal velocity profile).
+# An UNSHAPED constant-velocity series steps 0 → 0.6 rev/s in ONE knot (~60 rev/s² accel
+# demand through the firmware Hermite ≈ +4.5 A at 3 kg — enough to brush the over-current
+# abort). At 0.4 s the ramp accel is 0.6/0.4 = 1.5 rev/s² ⇒ ~0.11 A at 3 kg: negligible.
+DEFAULT_TRAVERSE_ACCEL_TIME_S = 0.4
+
+# Live over-current abort debounce: require this many CONSECUTIVE over-limit samples
+# (~12 ms at 250 Hz) so a single telemetry glitch / one-sample spike cannot abort a run.
+OVERCURRENT_TRIP_SAMPLES = 3
+
+# The bench-vs-platform sign context every Mode-2 sign verdict must carry.
+# ODrive direction calibration is PER-DRIVE, so the BENCH drive's torque sign convention
+# is OPPOSITE to the platform legs'. Empirical record: the 2026-04-27 friction-FF bench
+# work needed ``--ff-sign -1`` on this rig, while the 2026-05-08 PLATFORM validation ran
+# the standard un-negated chain and worked (a wrong sign would have DOUBLED friction, so
+# that A/B genuinely discriminates). A "positive wire torque_ff RETRACTS" result on THIS
+# BENCH is therefore EXPECTED and does NOT mean the production gravity feedforward must
+# be negated — the platform-validated sign stands.
+BENCH_VS_PLATFORM_SIGN_NOTE = (
+    "ODrive direction calibration is PER-DRIVE: the bench drive's torque sign "
+    "convention is OPPOSITE to the platform legs' (2026-04-27 friction bench needed "
+    "--ff-sign -1 on this rig; the 2026-05-08 PLATFORM validation ran the standard "
+    "un-negated chain and worked — a wrong sign would have doubled friction, so that "
+    "A/B discriminates). A bench sign result does NOT transfer to the platform; the "
+    "platform-validated production sign stands.")
 
 
 # ===========================================================================
@@ -289,10 +344,12 @@ class MassBudgetRow:
     tau_g_Nm: float
     iq_up_A: float          # worst case (smallest Kt candidate → most current)
     iq_down_A: float
-    headroom_A: float       # current_limit − iq_up
+    headroom_A: float       # current_limit − iq_peak (accel phase included)
     tau_g_over_tau_c: float  # conditioning: want ≫ 1
     ok: bool
     warnings: List[str] = field(default_factory=list)
+    iq_accel_A: float = 0.0  # extra current during the shaped accel ramp
+    iq_peak_A: float = 0.0   # iq_up + iq_accel — the number the abort actually sees
 
 
 @dataclass
@@ -310,7 +367,9 @@ def current_budget(masses_kg: Sequence[float], *,
                    vel_rps: float = DEFAULT_TRAVERSE_VEL_RPS,
                    tilt_deg: float = 0.0,
                    tau_c_A: float = TAU_C_REF_A,
-                   min_conditioning: float = CONDITIONING_HARD_FLOOR) -> MassBudget:
+                   min_conditioning: float = CONDITIONING_HARD_FLOOR,
+                   accel_rps2: float = DEFAULT_TRAVERSE_VEL_RPS
+                   / DEFAULT_TRAVERSE_ACCEL_TIME_S) -> MassBudget:
     """Current budget + conditioning check for a proposed mass set.
 
     Evaluated at the **smallest** candidate Kt (``KT_ODRIVE_CONFIGURED`` = 0.0551),
@@ -318,7 +377,12 @@ def current_budget(masses_kg: Sequence[float], *,
     worst case and the budget cannot be surprised by the answer we are about to
     measure.
 
-    A mass fails on either (a) predicted ``iq_up`` exceeding
+    The budget covers the WHOLE traverse, accel phase included: ``iq_peak = iq_up +``
+    :func:`accel_current_A` at ``accel_rps2`` (the shaped ramp's ``v/accel_time``;
+    default 1.5 rev/s² ⇒ ~0.11 A at 3 kg). Pass the actual ramp accel so a shortened
+    ``--accel-time`` is caught here rather than by the over-current abort mid-run.
+
+    A mass fails on either (a) predicted ``iq_peak`` exceeding
     ``(1 − headroom_frac)·current_limit`` — 8 A at the 10 A limit and the default
     20 % headroom — or (b) ``τ_g/τ_c`` below ``min_conditioning`` (see
     :data:`CONDITIONING_HARD_FLOOR` for why that floor sits where it does).
@@ -331,6 +395,8 @@ def current_budget(masses_kg: Sequence[float], *,
     for m in masses_kg:
         iq_up, iq_down = predicted_iq_up_down(
             m, kt_worst, vel_rps=vel_rps, tilt_deg=tilt_deg, tau_c_A=tau_c_A)
+        iq_accel = accel_current_A(m, accel_rps2, kt_nm_per_a=kt_worst)
+        iq_peak = iq_up + iq_accel
         tau_g = gravity_torque_Nm(m, tilt_deg=tilt_deg)
         cond = (tau_g / tau_c_Nm) if tau_c_Nm > 0 else math.inf
         w: List[str] = []
@@ -340,6 +406,11 @@ def current_budget(masses_kg: Sequence[float], *,
             w.append(f"iq_up {iq_up:.2f} A exceeds the usable budget {usable:.2f} A "
                      f"({headroom_frac * 100:.0f}% headroom under the "
                      f"{current_limit_A:.0f} A limit)")
+        elif iq_peak > usable:
+            ok = False
+            w.append(f"the ACCEL phase pushes the peak to {iq_peak:.2f} A "
+                     f"(+{iq_accel:.2f} A at {accel_rps2:.1f} rev/s²) over the usable "
+                     f"budget {usable:.2f} A — lengthen --accel-time or drop the mass")
         if cond < min_conditioning:
             ok = False
             w.append(f"tau_g/tau_c = {cond:.2f} < {min_conditioning:.1f} — gravity does "
@@ -349,8 +420,8 @@ def current_budget(masses_kg: Sequence[float], *,
                      f"mass DOWN against friction (physical, but a light load)")
         rows.append(MassBudgetRow(
             mass_kg=float(m), tau_g_Nm=tau_g, iq_up_A=iq_up, iq_down_A=iq_down,
-            headroom_A=current_limit_A - iq_up, tau_g_over_tau_c=cond,
-            ok=ok, warnings=w))
+            headroom_A=current_limit_A - iq_peak, tau_g_over_tau_c=cond,
+            ok=ok, warnings=w, iq_accel_A=iq_accel, iq_peak_A=iq_peak))
         reasons.extend(f"m={m:.2f} kg: {x}" for x in w)
 
     if len(list(masses_kg)) < 3:
@@ -560,6 +631,105 @@ def constant_velocity_knots(start_rev: float, end_rev: float, *,
         seq.append(float(start_rev) + delta * (i / n))
     seq.extend([float(end_rev)] * int(lead_out_frames))
     return np.asarray(seq, float)
+
+
+def shaped_constant_velocity_knots(start_rev: float, end_rev: float, *,
+                                   vel_rps: float, seg_t_s: float,
+                                   accel_time_s: float = DEFAULT_TRAVERSE_ACCEL_TIME_S,
+                                   lead_in_frames: int = 0,
+                                   lead_out_frames: int = 0) -> np.ndarray:
+    """Knot series ``start → end`` cruising at ``|vel_rps|`` with SHAPED ends.
+
+    Trapezoidal velocity profile: ramp 0 → v over ``accel_time_s``, cruise, ramp v → 0
+    over ``accel_time_s``. :func:`constant_velocity_knots` steps 0 → v in ONE knot — at
+    0.6 rev/s and 100 Hz knots that is a ~60 rev/s² acceleration demand through the
+    firmware's 500 Hz Hermite, ≈ +4.5 A of inertia current at 3 kg (see
+    :func:`accel_current_A`): enough to brush the harness over-current abort. The shaped
+    ramp caps the accel at ``v/accel_time_s`` (1.5 rev/s² at the defaults ⇒ ~0.11 A at
+    3 kg — negligible).
+
+    A move too short to reach cruise (``|Δ| < v·accel_time_s``) degrades to a triangular
+    profile at the SAME ramp accel, peaking below ``vel_rps`` — it never overshoots the
+    requested velocity. The steady-state window selector discards the ramps either way
+    (they fail both the at-speed and the not-accelerating gates), so the CRUISE portion
+    — the only part the fit uses — is identical to the unshaped series' interior.
+
+    Lead-in/out flats and endpoint conventions match :func:`constant_velocity_knots`.
+    """
+    if seg_t_s <= 0.0:
+        raise ValueError("seg_t_s must be > 0")
+    if vel_rps <= 0.0:
+        raise ValueError("vel_rps must be > 0 (direction comes from start vs end)")
+    if accel_time_s <= 0.0:
+        raise ValueError("accel_time_s must be > 0")
+    if lead_in_frames < 0 or lead_out_frames < 0:
+        raise ValueError("lead frames must be >= 0")
+    delta = float(end_rev) - float(start_rev)
+    d = abs(delta)
+    seq: List[float] = [float(start_rev)] * (int(lead_in_frames) + 1)
+    if d > 0.0:
+        a = float(vel_rps) / float(accel_time_s)
+        if d >= vel_rps * accel_time_s:
+            t_a = float(accel_time_s)
+            v_pk = float(vel_rps)
+            t_c = (d - v_pk * t_a) / v_pk
+        else:
+            v_pk = math.sqrt(d * a)          # triangular: same accel, lower peak vel
+            t_a = v_pk / a
+            t_c = 0.0
+        T = 2.0 * t_a + t_c
+        d_ramp = 0.5 * a * t_a * t_a
+
+        def _s(t: float) -> float:
+            if t <= 0.0:
+                return 0.0
+            if t < t_a:
+                return 0.5 * a * t * t
+            if t < t_a + t_c:
+                return d_ramp + v_pk * (t - t_a)
+            if t < T:
+                tr = T - t
+                return d - 0.5 * a * tr * tr
+            return d
+
+        sgn = 1.0 if delta > 0 else -1.0
+        n = max(1, int(math.ceil(T / seg_t_s - 1e-9)))
+        for i in range(1, n + 1):
+            seq.append(float(start_rev) + sgn * _s(i * seg_t_s))
+        seq[-1] = float(end_rev)             # land exactly on the endpoint
+    seq.extend([float(end_rev)] * int(lead_out_frames))
+    return np.asarray(seq, float)
+
+
+def series_peak_accel_rps2(series: Sequence[float], seg_t_s: float) -> float:
+    """Peak commanded acceleration (rev/s²) implied by a knot series — the max
+    second difference over ``seg_t²``. The series-level check that a traverse's
+    accel demand is what the shaping promised (mirrors
+    ``sysid_lib.series_peak_velocity``)."""
+    arr = np.asarray(series, float)
+    if arr.size < 3 or seg_t_s <= 0.0:
+        return 0.0
+    return float(np.max(np.abs(np.diff(arr, n=2)))) / (float(seg_t_s) ** 2)
+
+
+def accel_current_A(mass_kg: float, accel_rps2: float, *, kt_nm_per_a: float,
+                    rotor_j_kgm2: float = J_ROTOR_KGM2) -> float:
+    """Extra motor current the ACCELERATION phase of a traverse demands.
+
+    Two inertia terms: the hanging mass (``m · a_lin · r_spool``, with
+    ``a_lin = a·mm_per_rev``) and the rotor's own ``J·2π·a``
+    (``hardware_config.yaml:55``). At the shaped default (1.5 rev/s², 3 kg) this is
+    ~0.11 A — negligible; at the UNSHAPED single-knot step (~60 rev/s²) it is ~4.5 A,
+    which stacked on the ~6 A gravity+friction hold current brushes the over-current
+    abort. That contrast is why :func:`shaped_constant_velocity_knots` exists.
+    """
+    if kt_nm_per_a <= 0.0:
+        raise ValueError("kt must be positive")
+    a = abs(float(accel_rps2))
+    a_lin_m_s2 = a * BENCH_LEG_MM_PER_REV * 1e-3
+    tau_load = float(mass_kg) * a_lin_m_s2 * BENCH_SPOOL_RADIUS_M
+    tau_rotor = float(rotor_j_kgm2) * 2.0 * math.pi * a
+    return (tau_load + tau_rotor) / float(kt_nm_per_a)
 
 
 def knots_achieved_velocity(series: Sequence[float], seg_t_s: float) -> float:
@@ -1132,6 +1302,14 @@ def infer_extension_iq_sign(fit: KtFit) -> SignInference:
 # inherently SAFE — the position loop actively resists any runaway, and every commanded
 # torque_ff is kept far below the point where it could overcome the loop.
 #
+# CRITICAL LADDER CONSTRAINT: every rung must stay INSIDE the static-friction band
+# (|tff| < τ_c·Kt ≈ 0.049 Nm worst-case — TFF_STATIC_BAND_MIN_NM). "The loop holds
+# station so the shift IS the measurement" is only true while static friction lets the
+# leg genuinely not move; an out-of-band rung moves the leg, the integrator re-absorbs
+# the feedforward at the new equilibrium, and that rung biases the slope LOW by
+# 33–52 % by the band model, 63–68 % observed (2026-07-14: the ±0.10 Nm rungs saturated/re-absorbed while the
+# in-band rungs showed a clean −20 to −22.5 A/Nm slope (right order vs the expected 18.14, ~17 % high)).
+#
 # Three things this pins down at once:
 #   SIGN   — does a POSITIVE wire torque_ff extend or retract? (via the sign of the iq
 #            shift, referred to the gravity-calibrated extension sign from Mode 1.)
@@ -1247,23 +1425,135 @@ class TorqueFfVerdict:
     implied_kt_nm_per_a: float
     sigma_to_odrive_config: float
     lines: List[str] = field(default_factory=list)
+    no_conclusion: bool = False    # quality gate failed — sign/scale deliberately withheld
+
+
+@dataclass
+class TffFitQuality:
+    """Is the Mode-2 fit trustworthy enough to state ANY sign/scale verdict?
+
+    The gate exists because of the 2026-07-14 run: a messy setup (0.8 kg at an odd
+    angle, the operator partially supporting it) produced R² = −0.099 and a slope only
+    1.8σ from zero, yet the harness printed dramatic *** MUST NEGATE *** /
+    *** MISMATCH −63% *** conclusions from it. A confidently wrong verdict over garbage
+    data is strictly worse than refusing.
+    """
+    trustworthy: bool
+    r_squared: float
+    t_stat: float                  # |slope| / slope_sigma
+    min_r2: float
+    min_t_stat: float
+    failures: List[str] = field(default_factory=list)
+    outlier_indices: List[int] = field(default_factory=list)
+    outlier_notes: List[str] = field(default_factory=list)
+
+
+def assess_tff_fit_quality(fit: TorqueFfFit,
+                           points: Optional[Sequence[TorqueFfPoint]] = None, *,
+                           min_r2: float = TFF_GATE_MIN_R2,
+                           min_t_stat: float = TFF_GATE_MIN_T_STAT,
+                           outlier_rms_mult: float = TFF_OUTLIER_RMS_MULT
+                           ) -> TffFitQuality:
+    """Quality gate for the Mode-2 fit: trustworthy iff ``R² ≥ 0.90`` AND the slope is
+    at least ``3σ`` from zero. Below either bar, NO sign/scale verdict may be stated.
+
+    Rungs whose ``|residual|`` exceeds ``outlier_rms_mult ×`` the **leave-one-out** RMS
+    of the other residuals are flagged as probable external disturbances (a hand
+    touching the mass, a knock). Leave-one-out rather than the plain fit RMS because a
+    single large outlier inflates the plain RMS enough to hide itself: the 2026-07-14
+    human-touch rung (−0.05 Nm, iq ≈ 0.05 A ≈ unloaded) sits at only 2.1× the plain RMS
+    but 3.3× the leave-one-out RMS.
+    """
+    failures: List[str] = []
+    r2 = fit.r_squared
+    s = fit.slope_A_per_Nm
+    s_sig = fit.slope_sigma
+    if not math.isfinite(s):
+        t = 0.0
+        failures.append("the fit itself failed (slope is not finite): "
+                        + ("; ".join(fit.reasons) or "no reason recorded"))
+    elif not math.isfinite(s_sig):
+        t = 0.0
+        failures.append("slope uncertainty is not finite — the fit cannot support any "
+                        "statistical statement")
+    elif s_sig <= 0.0:
+        t = math.inf               # a perfectly determined slope passes the t gate
+    else:
+        t = abs(s) / s_sig
+    if not math.isfinite(r2) or r2 < min_r2:
+        failures.append(
+            f"R² = {r2:.3f} (< {min_r2:.2f}) — the ladder response is not a line; "
+            f"the data are dominated by something other than torque_ff")
+    if t < min_t_stat:
+        failures.append(
+            f"|slope|/σ = {t:.1f} (< {min_t_stat:.0f}) — the slope "
+            f"{s:+.2f} ± {s_sig:.2f} A/Nm is statistically indistinguishable from "
+            f"NO response at all")
+
+    out_idx: List[int] = []
+    out_notes: List[str] = []
+    resid = [float(r) for r in (fit.residuals_A or [])]
+    n = len(resid)
+    if n >= 4:
+        ss_all = sum(r * r for r in resid)
+        for i, r in enumerate(resid):
+            ss_others = ss_all - r * r
+            rms_others = math.sqrt(ss_others / (n - 1)) if ss_others > 0 else 0.0
+            if rms_others > 0 and abs(r) > outlier_rms_mult * rms_others:
+                out_idx.append(i)
+                label = (f"rung {points[i].torque_ff_Nm:+.3f} Nm"
+                         if points is not None and i < len(points) else f"rung #{i}")
+                out_notes.append(
+                    f"{label}: residual {r:+.2f} A is "
+                    f"{abs(r) / rms_others:.1f}× the RMS of the other rungs — probable "
+                    f"external disturbance (a hand supporting the mass, a knock); the "
+                    f"mass must hang FREE with nobody touching it")
+    return TffFitQuality(trustworthy=not failures, r_squared=float(r2),
+                         t_stat=float(t), min_r2=float(min_r2),
+                         min_t_stat=float(min_t_stat), failures=failures,
+                         outlier_indices=out_idx, outlier_notes=out_notes)
+
+
+def _no_conclusion_lines(fit: TorqueFfFit, quality: TffFitQuality) -> List[str]:
+    lines = [
+        "*** NO CONCLUSION — data quality insufficient to validate the torque_ff "
+        "channel ***",
+        f"    verdict gate: R² ≥ {quality.min_r2:.2f} AND |slope|/σ ≥ "
+        f"{quality.min_t_stat:.0f} required before any SIGN/SCALE claim.",
+    ]
+    lines.extend(f"    FAIL: {f}" for f in quality.failures)
+    lines.extend(f"    OUTLIER: {n}" for n in quality.outlier_notes)
+    lines.append("    Refusing to state SIGN or SCALE from this fit — a verdict here "
+                 "would be noise dressed as a finding.")
+    lines.append("    Required setup for a valid run: the mass hangs FREE and VERTICAL "
+                 "from the leg; NOBODY touches")
+    lines.append("    the mass or the leg during the rungs (one supported rung poisons "
+                 "the whole fit); the declared")
+    lines.append(f"    --hold-mass is actually on the hook; every rung stays inside the "
+                 f"static-friction band (|tff| ≤ {TFF_BAND_WARN_NM:.3f} Nm).")
+    return lines
 
 
 def classify_torque_ff(fit: TorqueFfFit, iq_extension_sign: int, *,
-                       scale_tol_frac: float = 0.10) -> TorqueFfVerdict:
-    """The hard facts the gravity-FF implementer needs, stated unambiguously.
+                       scale_tol_frac: float = 0.10,
+                       quality: Optional[TffFitQuality] = None) -> TorqueFfVerdict:
+    """The hard facts the gravity-FF implementer needs, stated honestly.
 
     ``iq_extension_sign`` comes from the gravity-calibrated reference (Mode 1's
     :func:`infer_extension_iq_sign`, or a loaded hold in Mode 2). Given it:
 
+    * If ``quality`` is provided and the fit fails the gate (R² < 0.90 or the slope is
+      under 3σ from zero), the verdict is **NO CONCLUSION**: no sign or scale claim is
+      made, and the lines say exactly which quality bars failed and which rungs look
+      like external disturbances. (Exception: a PRECISE null — a slope bounded well
+      below the expected 18.14 A/Nm — is still a conclusion: the channel is dead.)
     * A positive wire ``torque_ff`` **EXTENDS** iff ``sign(slope) == iq_extension_sign``
       — i.e. iff adding positive feedforward pushes the current in the same direction as
       hanging more mass does.
-    * The EXPECTED answer, from the firmware code read, is **YES, positive extends**:
-      ``encode_leg_setpoint`` negates torque_ff via ``leg_sign``
-      (``odrive_protocol.h:171``) into the ODrive frame, in which negative == extension —
-      the two negations compose to "positive wire torque_ff extends the leg". This is the
-      #1 hazard for the gravity FF being written right now, so it is measured, not assumed.
+    * SIGN verdicts are framed with the per-drive calibration context
+      (:data:`BENCH_VS_PLATFORM_SIGN_NOTE`): the bench drive's torque sign convention is
+      OPPOSITE to the platform legs', so a bench "positive retracts" is EXPECTED and
+      does NOT transfer to the platform — the platform-validated sign stands.
     * The SCALE is right iff ``implied_kt`` matches the ODrive's CONFIGURED
       ``torque_constant`` (0.055133) within ``scale_tol_frac``. A match confirms both that
       torque_ff is interpreted exactly like ``input_torque`` (operator fact #2) and that
@@ -1276,6 +1566,26 @@ def classify_torque_ff(fit: TorqueFfFit, iq_extension_sign: int, *,
         return TorqueFfVerdict(False, None, None, False, float('nan'), float('inf'),
                                lines)
 
+    expected = 1.0 / KT_ODRIVE_CONFIGURED
+    if quality is not None and not quality.trustworthy:
+        # A PRECISE null (slope + 3σ still ≪ the expected 18.14 A/Nm) is a real
+        # conclusion — the channel is dead — even though R²/t fail on a flat line.
+        precise_null = (math.isfinite(fit.slope_sigma)
+                        and abs(fit.slope_A_per_Nm) + 3.0 * fit.slope_sigma
+                        < 0.05 * expected)
+        if precise_null:
+            lines.append("CHANNEL DEAD — torque_ff produced no current shift (the "
+                         f"slope is bounded below {0.05 * expected:.1f} A/Nm at 3σ). "
+                         "DO NOT ship a torque feedforward until this is resolved.")
+            return TorqueFfVerdict(False, None, None, False, float('nan'),
+                                   float('inf'), lines)
+        return TorqueFfVerdict(
+            channel_live=False, positive_tff_extends=None,
+            sign_matches_expectation=None, scale_ok=False,
+            implied_kt_nm_per_a=fit.implied_kt_nm_per_a,
+            sigma_to_odrive_config=float('inf'),
+            lines=_no_conclusion_lines(fit, quality), no_conclusion=True)
+
     extends = None
     matches = None
     if iq_extension_sign in (1, -1):
@@ -1283,25 +1593,28 @@ def classify_torque_ff(fit: TorqueFfFit, iq_extension_sign: int, *,
         matches = extends is True   # code-read expectation: positive torque_ff EXTENDS
         lines.append(
             f"SIGN: a POSITIVE torque_ff on the wire "
-            f"{'EXTENDS (lifts)' if extends else 'RETRACTS (drops)'} the leg. "
+            f"{'EXTENDS (lifts)' if extends else 'RETRACTS (drops)'} THIS BENCH leg. "
             f"[slope {fit.slope_A_per_Nm:+.2f} A/Nm; extending torque reads as "
             f"{iq_extension_sign:+d} iq]")
         if extends:
             lines.append(
-                "     ✓ matches the firmware code read: encode_leg_setpoint negates "
-                "torque_ff via leg_sign (odrive_protocol.h:171) into the ODrive frame, "
-                "where negative == extension — the two negations compose to "
-                "'positive wire torque_ff extends'.")
+                "     matches the naive firmware code read (odrive_protocol.h:171 "
+                "leg_sign negation composing with the ODrive frame) — but NOTE it is "
+                "the OPPOSITE of the 2026-04-27 bench friction-FF finding (--ff-sign "
+                "-1 on this rig), so re-check the drive config before leaning on it.")
+            lines.append("     " + BENCH_VS_PLATFORM_SIGN_NOTE)
         else:
             lines.append(
-                "     *** CONTRADICTS the firmware code read (odrive_protocol.h:171 "
-                "leg_sign negation) — a POSITIVE gravity feedforward would DROP the "
-                "leg. The gravity-FF implementer MUST negate. INVESTIGATE. ***")
+                "     EXPECTED ON THIS BENCH RIG — not a production sign error, and "
+                "NOT a reason to negate the gravity feedforward. "
+                + BENCH_VS_PLATFORM_SIGN_NOTE)
+            lines.append(
+                "     (It does contradict the naive code read of odrive_protocol.h:171"
+                " — that read does not model per-drive direction calibration.)")
     else:
         lines.append("SIGN: indeterminate — no gravity-calibrated iq extension sign "
                      "available (run --mode kt first, or load the leg in Mode 2).")
 
-    expected = 1.0 / KT_ODRIVE_CONFIGURED
     err = abs(abs(fit.slope_A_per_Nm) - expected) / expected
     scale_ok = err <= scale_tol_frac
     sig_to = (abs(fit.implied_kt_nm_per_a - KT_ODRIVE_CONFIGURED) / fit.implied_kt_sigma
@@ -1386,12 +1699,74 @@ def torque_ff_ladder_safe(ladder_Nm: Sequence[float], *,
     return problems
 
 
+def torque_ff_ladder_band_warnings(ladder_Nm: Sequence[float], *,
+                                   warn_Nm: float = TFF_BAND_WARN_NM) -> List[str]:
+    """WARN (never refuse) about ladder rungs that leave the static-friction band.
+
+    The Mode-2 premise — the position loop holds station, so the iq shift IS the
+    measurement — only holds while ``|torque_ff|`` stays under the static friction
+    torque (worst-case edge ``τ_c·Kt`` ≈ :data:`TFF_STATIC_BAND_MIN_NM` = 0.049 Nm):
+    beyond it the leg actually moves and the position loop's integrator re-absorbs the
+    feedforward, biasing the fitted slope low (band model 33–52 %; observed 63–68 % on the 2026-07-14 ±0.10 Nm rungs).
+    A warning, not a rejection, because an out-of-band rung is safe — it is merely a
+    biased data point — and a deliberate band-mapping run is a legitimate experiment.
+    """
+    warns: List[str] = []
+    for tff in ladder_Nm:
+        if abs(float(tff)) > warn_Nm:
+            warns.append(
+                f"rung {float(tff):+.3f} Nm exceeds {warn_Nm:.3f} Nm and can leave the "
+                f"static-friction band (worst-case edge {TFF_STATIC_BAND_MIN_NM:.3f} "
+                f"Nm): the leg moves and the position loop's integrator re-absorbs the "
+                f"feedforward, so this rung will bias the slope LOW instead of "
+                f"measuring the channel")
+    return warns
+
+
+class OverCurrentLatch:
+    """Debounced over-current trip: fires only on ``n_consecutive`` FINITE samples over
+    ``limit_A`` (~12 ms at 250 Hz for the default 3), then latches.
+
+    A single 250 Hz telemetry sample over the threshold must not abort a run — the
+    accel transient of a traverse and ordinary current-loop ripple both produce
+    one-sample excursions, and the old single-sample trip could kill a healthy run
+    (and, pre-fix, its abort path then failed to park the leg). Below-limit samples
+    reset the streak; non-finite samples (dropped/NaN telemetry) neither count nor
+    reset. Pure — the harness feeds it ``iq_measured`` from ``_log_frame``.
+    """
+
+    def __init__(self, limit_A: float, n_consecutive: int = OVERCURRENT_TRIP_SAMPLES):
+        if limit_A <= 0.0:
+            raise ValueError("limit_A must be positive")
+        if n_consecutive < 1:
+            raise ValueError("n_consecutive must be >= 1")
+        self.limit_A = float(limit_A)
+        self.n_consecutive = int(n_consecutive)
+        self.count = 0
+        self.tripped = False
+
+    def observe(self, iq_A: float) -> bool:
+        """Feed one sample; returns True once tripped (and stays True)."""
+        if self.tripped:
+            return True
+        v = float(iq_A)
+        if not math.isfinite(v):
+            return False
+        if abs(v) > self.limit_A:
+            self.count += 1
+            if self.count >= self.n_consecutive:
+                self.tripped = True
+        else:
+            self.count = 0
+        return self.tripped
+
+
 def wire_quantized_torque_Nm(torque_ff_Nm: float) -> float:
     """The torque_ff value that actually reaches the ODrive after the int16 ×10000 wire
     quantization (``odrive_protocol.h:175-179``).
 
-    At 0.0001 Nm/LSB the quantization error is ≤ 0.00005 Nm — 0.05 % of the smallest
-    (0.02 Nm) ladder rung, hence negligible. Computed anyway so the fit regresses against
+    At 0.0001 Nm/LSB the quantization error is ≤ 0.00005 Nm — 0.5 % of the smallest
+    (0.010 Nm) ladder rung, hence negligible. Computed anyway so the fit regresses against
     what was DELIVERED rather than what was asked for, and so a future ladder that gets
     too fine to represent is caught rather than silently rounded.
     """

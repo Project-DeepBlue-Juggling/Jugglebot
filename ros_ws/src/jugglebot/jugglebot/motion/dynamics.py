@@ -218,6 +218,17 @@ def compute_inertia_wrench(rot: np.ndarray,
     I_omega = I_world @ omega
     tau_inertia = (I_alpha + np.cross(omega, I_omega)) / 1000.0  # N·mm
 
+    # Newton-Euler TRANSPORT moment (fixed 2026-07-14; missing since Mar 2026).
+    # This wrench is taken about the platform GEOMETRIC CENTRE, but the linear
+    # momentum changes at the CoM — so the moment row must carry the transport
+    # term r_com x (m*a_com). Without it, a pure linear acceleration with a
+    # nonzero CoM offset commands ZERO moment where physics requires one of the
+    # same order as the entire gravity moment (at a 4 m/s^2 vertical throw with
+    # the shipped CoM offset, ~0.33 N*m — verified by independent rotational
+    # virtual work; see test_inertia_wrench_transport_moment_virtual_work).
+    # Units: r_com_world [mm] x F_inertia [N] = N*mm, matching tau_inertia.
+    tau_inertia = tau_inertia + np.cross(r_com_world, F_inertia)
+
     W = np.empty(6)
     W[:3] = F_inertia
     W[3:] = tau_inertia
@@ -293,6 +304,8 @@ def compute_full_feedforward_torques(
     params: DynamicsParams,
     J: np.ndarray | None = None,
     skip_reflected_inertia: bool = False,
+    skip_gravity: bool = False,
+    skip_platform_inertia: bool = False,
 ) -> np.ndarray:
     """Compute the full feedforward motor torques (gravity + inertia + reflected motor).
 
@@ -321,6 +334,17 @@ def compute_full_feedforward_torques(
         inertia computation (component 3).  This avoids the expensive
         numerical J_dot (2 extra Jacobian evaluations) for a marginal
         contribution (~2% PID effort reduction at current speeds).
+    skip_gravity : bool — when True, omit the gravity-support wrench
+        (component 1).  Mirrors ``dynamics.torque_ff_gravity`` in the
+        config; used by producers that must honour the per-term flags.
+    skip_platform_inertia : bool — when True, omit the platform-inertia
+        wrench (component 2, the acceleration/velocity-proportional term).
+        Mirrors ``dynamics.torque_ff_platform_inertia``, which ships FALSE
+        because the can-bridge firmware holds the last torque_ff UNDECAYED
+        through a stale-link window (leg_interp.cpp:366) — an
+        acceleration-proportional feedforward would keep pushing at full
+        magnitude while the commanded velocity decays.  Gravity, being
+        static, is correct to hold; inertia is not.
 
     Returns
     -------
@@ -329,15 +353,17 @@ def compute_full_feedforward_torques(
     if J is None:
         J = compute_jacobian(pos, rot, geom)
 
+    W_total = np.zeros(6)
+
     # --- Component 1: Gravity wrench ---
-    W_gravity = compute_gravity_wrench(rot, params)
-    W_support = -W_gravity
+    if not skip_gravity:
+        W_total -= compute_gravity_wrench(rot, params)   # W_support = -W_gravity
 
     # --- Component 2: Platform inertia wrench ---
-    W_inertia = compute_inertia_wrench(rot, twist, accel, params)
+    if not skip_platform_inertia:
+        W_total += compute_inertia_wrench(rot, twist, accel, params)
 
     # --- Combined wrench → per-leg forces → motor torques ---
-    W_total = W_support + W_inertia
     try:
         f_legs = np.linalg.solve(J.T, W_total)
     except np.linalg.LinAlgError:

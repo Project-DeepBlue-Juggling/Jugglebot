@@ -298,8 +298,15 @@ def main():
             enable_acc_ff=args.enable_acc_ff,
         )
         print("HardwarePlant: connected to motor_guard via IPC")
+        # Report the plant's EFFECTIVE torque-FF state, not the CLI flag: since
+        # 2026-07-14 the plant ANDs the flag with the config master switch
+        # (dynamics.torque_ff_enabled, shipped false), so 'ON' from args alone
+        # would mislead an operator while the wire carries zeros.
+        _tff_effective = plant._enable_torque_ff
+        _veto = (' (config torque_ff_enabled=false vetoes the CLI flag)'
+                 if args.enable_torque_ff and not _tff_effective else '')
         print(
-            f"Feedforward: torque={'ON' if args.enable_torque_ff else 'OFF'} "
+            f"Feedforward: torque={'ON' if _tff_effective else 'OFF'}{_veto} "
             f"vel={'ON' if args.enable_vel_ff else 'OFF'} "
             f"acc={'ON' if args.enable_acc_ff else 'OFF'}"
         )

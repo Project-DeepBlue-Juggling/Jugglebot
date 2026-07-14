@@ -188,10 +188,12 @@ of the design.
   would keep pushing at full magnitude while the commanded velocity decays to zero. That
   needs a firmware change (zero `cmd_tor` in the extrapolation path, as the recovery ramp
   already does at `leg_interp.cpp:479`) before it is safe.
-- **Do NOT run `run_mpc.py` with the flag on** without a separate review. `HardwarePlant`
-  publishes its own `torque_Nm` (gravity + platform inertia + reflected rotor,
-  unconditionally), so enabling the flag also un-gates the MPC path's feedforward — which
-  includes the inertia terms this session is deliberately not arming. MPC is dormant on
-  this branch; keep it that way for this session.
+- **`run_mpc.py` with the flag on is now SAFE from the inertia hazard** (fixed 2026-07-14,
+  after the adversarial review): `HardwarePlant` reads the per-term config flags, so with
+  `torque_ff_platform_inertia: false` the MPC path publishes **gravity only** (reflected
+  rotor was already skipped — `skip_reflected_inertia=True` in `HardwarePlant.set_pose`; an
+  earlier revision of this doc wrongly said it was included). The acceleration-proportional
+  term cannot reach the wire from any producer while that flag is false. MPC remains
+  dormant on this branch regardless; this session validates the trajectory path only.
 - **Do NOT change `torque_constant` on the drives.** See the WHY block in
   `config/hardware_config.yaml`. It would silently detune the validated velocity loop.

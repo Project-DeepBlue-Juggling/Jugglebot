@@ -9,6 +9,9 @@ files_changed:
   - config/hardware_config.yaml
   - config/generate_config.py
   - ros_ws/src/jugglebot/jugglebot/motion/torque_ff.py
+  - ros_ws/src/jugglebot/jugglebot/motion/dynamics.py
+  - ros_ws/src/jugglebot/jugglebot/motion/motor_commands.py
+  - controller/hardware_plant.py
   - controller/teensy_link/setpoint_pump.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/emitter.py
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
@@ -16,6 +19,9 @@ files_changed:
   - tests/hardware/kt_lib.py
   - tests/hardware/single_leg_test.py
   - tests/hardware/session_torque_ff.md
+  - tests/motion/test_kt_lib.py
+  - tests/motion/test_leg_torque_ff.py
+  - tests/sim/test_hardware_plant_failure_paths.py
   - tools/probes/bench_leg_plant_id.py
   - docs/motion_planner/dynamics.md
 commits:
@@ -313,10 +319,92 @@ correctly signed, and both were verified rather than assumed.
   percent off.
 - **The platform-inertia FF term is gated off** pending a decision on the firmware's undecayed
   `torque_ff` hold through a stale-link window.
-- **Three adversarial FF reviewers could not run** (monthly spend limit), and the FF design agent died
-  mid-response. The implementation was therefore reviewed **by hand** — sign by independent energy
-  balance, flag-OFF inertness, clamp/scale by direct exercise, and mutation-testing of the test suite.
-  A fresh adversarial review before the flag is ever enabled would still be worth its cost.
+- ~~**Three adversarial FF reviewers could not run** (monthly spend limit) … A fresh adversarial
+  review before the flag is ever enabled would still be worth its cost.~~ **DONE, same day — and it
+  was worth its cost. See the next section.**
+
+## Adversarial review (post-commit, same day) — 4/4 lenses FIX_FIRST, 15 findings, all software fixes landed
+
+The deferred review ran after `6113187` landed: four independent lenses (sign-and-physics /
+safety-and-transients / wiring-and-contracts / the Kt harness itself) over the committed diff.
+**All four returned FIX_FIRST.** Fifteen findings — 6 HIGH, 4 MEDIUM, 5 LOW — clustering into four
+real problems, every one verified against source before fixing:
+
+1. **The recovery-step hole (HIGH ×2).** The FF ramp restarted only on link-restore and disarm→arm.
+   The most common integrator-rewind event — guard latch → `/recover`, which by design keeps
+   `mpc_active = 1` — fired **neither**, so after the firmware recovery slew (which zeroes `cmd_tor`)
+   the feedforward returned as a **full-magnitude single-tick step** into a re-wound integrator: the
+   exact transient the ramp exists to prevent, on the exact path the jolt-free-clear work engineered
+   to be step-free. **Fixed:** `SetpointPump.restart_torque_ramp()` — distinct from `reset()` on
+   purpose (it must NOT waive the position-step gate, which `reset()` does) — called from both
+   `/recover` clear paths. Residual step at slew hand-back ≈ `ramp(0.3 s/2 s) × 0.04 Nm ≈ 0.1 A` — noise.
+2. **A third producer nobody audited (HIGH ×2 + MEDIUM).** `HardwarePlant` (the `run_mpc` path)
+   computed gravity **+ platform-inertia** torque unconditionally and read **none** of the config
+   flags — so enabling the master switch for the trajectory path would silently have armed the
+   acceleration-proportional term on the MPC path, the exact term `torque_ff_platform_inertia: false`
+   exists to gate (the firmware holds `torque_ff` undecayed through a stale-link window). **Fixed:**
+   `skip_gravity` / `skip_platform_inertia` threaded through `compute_full_feedforward_torques` →
+   `cartesian_to_motor_commands` → `HardwarePlant.__init__`, which now ANDs the constructor flag with
+   the config master + per-term flags. Pinned by two new tests (master-off ⇒ zeros even with
+   `enable_torque_ff=True`; inertia-off ⇒ acceleration-independent FF).
+3. **The Kt harness would have hurt the operator (HIGH ×2 + MEDIUM + LOW)** — see the hardware-run
+   section below; fixed in the same pass (verdict gating, friction-band ladder, park-path honesty,
+   shaped traverse, quit).
+4. **Physics + pinning gaps (MEDIUM ×2 + LOW ×3).** (a) `compute_inertia_wrench` **omitted the
+   Newton-Euler transport moment** `r_com × (m·a_com)` — the wrench is taken about the geometric
+   centre but the momentum changes at the CoM, so a pure linear acceleration with the real CoM offset
+   commanded ZERO moment where physics requires ~0.33 N·m (same order as the entire gravity moment).
+   Pre-existing since March; newly consumed. **Fixed + pinned by an independent rotational
+   virtual-work test.** (b) Deleting the 2π from the reflected-rotor term survived all 592 motion
+   tests — **magnitude now pinned to rtol 1e-12.** (c) The only clamp in the chain had no ceiling —
+   `torque_ff_max_nm` now rejects > 0.30 true-Nm (the ODrive adds `input_torque` *before* its torque
+   limit; ~0.62 true-Nm would consume the entire 10 A budget and the position loop loses all
+   authority). (d) A singular/ill-conditioned Jacobian used to step a live FF to exact zeros in one
+   tick (the 2026-05-08 discontinuity class) — the **trajectory producer** now **holds-and-decays**
+   over 0.5 s, with a physical sanity bound (`|τ| > 0.5 Nm` ⇒ degrade) because `np.linalg.solve`
+   returns huge *finite* forces on an ill-conditioned J that would sail through any isfinite check.
+   (The MPC producer's `compute_full_feedforward_torques` still zero-steps on `LinAlgError` — a
+   known-open item, doubly gated off today by the master flag and MPC dormancy.) (e) One doc error (the session
+   doc claimed the MPC path includes reflected rotor; it is skipped).
+
+One LOW deferred with reason: the firmware stroke-clamp zeroes `cmd_tor` while engaged, so a leg
+oscillating at a stroke limit sees FF square pulses — a **firmware** change, folded into the proposed
+ingest-clamp firmware sitting rather than patched ad hoc.
+
+## The first hardware contact — a messy run that validated the review, not the feature
+
+The operator ran `--mode torque_ff_check` (0.8 kg, mass at an odd angle, operator's hand partially
+supporting it at times). The harness printed **confidently wrong verdicts over garbage data** —
+"SIGN: MUST NEGATE" and "SCALE: MISMATCH −63 %" from a fit with **R² = −0.099** (explains less than a
+horizontal line) and slope −6.7 ± 3.8 A/Nm (< 2σ from zero). That is review finding #1 *demonstrated
+live*: the default ladder (±0.10 Nm) exceeds the ±0.049–0.067 Nm static-friction band the
+"position loop holds station" premise requires.
+
+**Read correctly, the run *agrees* with everything previously established:**
+
+- The two rungs **inside** the friction band (±0.02 Nm) show a clean slope of **−20 to −22.5 A/Nm**
+  (−21.3 for the ±0.02 pair). Right **sign class** and right **order of magnitude** vs the expected
+  `1/torque_constant = 18.14` — the channel is real and goes through the production path — but the
+  magnitude is **~17 % high (≈5σ by the per-rung SEMs)**, so this run does **NOT** precision-confirm
+  the scale. (An interesting residual in its own right: `1/21.3 = 0.047`, so the bench drive's
+  *configured* torque_constant may not be 0.055133 — per-drive configs are exactly what this arc
+  keeps finding. Re-measure on a clean run and read back the bench drive's actual config.)
+- The ±0.10 Nm rungs saturated at the band edge or were re-absorbed by the integrator after the leg
+  moved — the review's predicted mechanism, observed.
+- The −0.05 rung read iq ≈ 0.05 A ≈ *unloaded* — the "hand was supporting the mass" outlier.
+- The **negative** slope (positive wire torque → retraction on the bench drive) is **consistent with
+  the 2026-04-27 finding that the bench rig needs `--ff-sign −1`** — while the 2026-05-08 **platform**
+  validation ran the standard un-negated chain and worked. Per-drive ODrive direction calibration
+  differs bench-vs-platform; **a bench sign result must never be copied to the platform.** The
+  production gravity-FF sign stands, anchored by the platform-validated result.
+
+**Harness fixes landed in response:** mode 2 now **refuses to emit SIGN/SCALE verdicts** unless
+R² ≥ 0.9 and |slope|/σ ≥ 3 (printing a NO-CONCLUSION block with the specific quality failures and
+probable-disturbance rungs instead); the default ladder stays inside the friction band
+(±0.010/0.020/0.035 Nm); park-at-bottom now actually executes on abort paths (it silently no-oped
+while printing "parking…", and clobbered the real abort diagnostic); the traverse start is
+accel-shaped and the over-current abort requires 3 consecutive samples; `q` quits; the run
+instructions demand a free-hanging untouched mass and carry the bench-vs-platform sign warning.
 
 ## Related
 

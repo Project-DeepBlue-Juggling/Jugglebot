@@ -184,6 +184,21 @@ class SetpointPump:
         if not math.isfinite(self.torque_ff_max_nm) or self.torque_ff_max_nm <= 0.0:
             raise ValueError(
                 f"torque_ff_max_nm must be finite and > 0, got {torque_ff_max_nm}")
+        # CEILING (adversarial review 2026-07-14): this clamp is the only one in
+        # the entire chain, so it must itself be bounded.  The ODrive adds
+        # input_torque to the velocity loop's output BEFORE the torque limit;
+        # a feedforward near ~0.55 wire-Nm (= current_soft_max 10 A x the
+        # configured torque_constant 0.055133) consumes the whole current
+        # budget and the position loop loses ALL authority.  0.30 TRUE Nm
+        # (~0.265 wire-Nm ~= 4.8 A) leaves >5 A of loop authority and is
+        # already 7x the largest gravity torque in the workspace — any config
+        # asking for more is a mistake, not a use case.
+        if self.torque_ff_max_nm > 0.30:
+            raise ValueError(
+                f"torque_ff_max_nm={torque_ff_max_nm} exceeds the 0.30 Nm "
+                f"ceiling (position-loop authority: the ODrive adds torque_ff "
+                f"before its torque limit, and ~0.62 true-Nm saturates the "
+                f"10 A current clamp entirely)")
         if not math.isfinite(self.torque_wire_scale) or self.torque_wire_scale <= 0.0:
             raise ValueError(
                 f"torque_wire_scale must be finite and > 0, got {torque_wire_scale}")
@@ -205,6 +220,27 @@ class SetpointPump:
         would at first arm.
         """
         self._prev_pos = None
+        self._ff_frames = 0
+
+    def restart_torque_ramp(self) -> None:
+        """Restart ONLY the torque-FF ramp, leaving the per-step position gate's
+        baseline intact.
+
+        For the guard-latch -> ``/recover`` path (adversarial review 2026-07-14):
+        ``/recover`` deliberately keeps ``mpc_active = 1``, so neither
+        link-restore nor the disarm->arm edge fires and :meth:`reset` is never
+        called — yet the firmware zeroes ``cmd_tor`` during its recovery slew
+        while the ODrive integrator re-winds gravity, and on hand-back the held
+        feedforward would return as a full-magnitude single-tick step (the exact
+        transient the ramp exists to prevent, on the exact path the jolt-free
+        clear work engineered to be step-free).  The bridge calls this from the
+        recover path so the FF re-ramps over the configured window instead.
+
+        Distinct from :meth:`reset` on purpose: clearing ``_prev_pos`` would
+        also waive the per-frame position-step gate for one frame, which the
+        recover path neither needs nor wants — position streaming continues
+        uninterrupted throughout a recovery.
+        """
         self._ff_frames = 0
 
     def torque_ff_ramp_scale(self) -> float:

@@ -1767,6 +1767,13 @@ class TeensyBridgeNode(Node):
                     'trajectory/reseed_from_measured UNAVAILABLE (trajectory_node down) '
                     '— converge-first impossible; clearing errors DIRECTLY (escape hatch)')
                 cok, cmsg, _ = self.teensy_clear_errors()
+                if cok:
+                    # The ODrive integrator re-wound gravity while the guard was
+                    # latched; restart the torque-FF ramp so the feedforward
+                    # re-enters over the configured window instead of stepping
+                    # (review 2026-07-14 — /recover keeps mpc_active=1, so
+                    # neither reset() trigger fires on this path).
+                    self._sp_pump.restart_torque_ramp()
                 res.success = cok
                 res.message = (
                     ('reseed unavailable (trajectory_node down) — cleared DIRECTLY '
@@ -1824,6 +1831,14 @@ class TeensyBridgeNode(Node):
             res.success = False
             res.message = f'reseed+converge OK but CLEAR_ERRORS failed: {cmsg}'
             return res
+        # Restart the torque-FF ramp: the velocity integrator re-wound gravity
+        # during the latch + firmware recovery slew (which zeroes cmd_tor), and
+        # /recover keeps mpc_active=1 so neither of reset()'s triggers fires on
+        # this path — without this the feedforward returns as a full-magnitude
+        # single-tick step at slew hand-back (review 2026-07-14). The ramp
+        # begins at the clear, so the residual step at hand-back is bounded by
+        # ramp_scale(t_slew) x FF ~= (0.3 s / 2 s) x 0.04 Nm ~= 0.1 A — noise.
+        self._sp_pump.restart_torque_ramp()
         res.success = True
         res.message = ('recovered: reseeded hold at measured, streamed u0 within '
                        f'{_RECOVER_U0_TOL_REV} rev of every encoder, CLEAR_ERRORS '
@@ -3348,6 +3363,15 @@ class TeensyBridgeNode(Node):
     def _svc_odrive_command(self, req, res):
         cmd = req.command
         if cmd == 'clear_errors':
+            # Mirror /clear_errors' armed reroute (audit 2026-07-14): an ARMED raw
+            # clear here bypassed both the converge-first sequence (the 2026-07-11
+            # jolt class — 'no raw armed escape hatch' was an operator decision)
+            # AND the torque-FF ramp restart, so the feedforward would return as a
+            # full-magnitude step at recovery-slew hand-back. Route through
+            # _svc_recover exactly as _svc_clear_errors does; res is duck-type
+            # compatible (success/message).
+            if self._mpc_active:
+                return self._svc_recover(req, res)
             ok, msg, _ = self.teensy_clear_errors()
         elif cmd == 'reboot_odrives':
             # Route through the shared hook so this path ALSO clears the cold-start

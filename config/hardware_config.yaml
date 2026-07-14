@@ -166,6 +166,10 @@ dynamics:
                                                 # at full current until MAX_DEVIATION E-STOPs it mid-motion.  There
                                                 # is no clamp in the firmware (only int16 saturation at ±3.2767 Nm
                                                 # = 59 A of demand), so this Jetson-side clamp is the only one.
+                                                # HARD CEILING: values above 0.30 Nm (TRUE Nm) are REJECTED by
+                                                # SetpointPump at construction (position-loop-authority ceiling;
+                                                # saturation is ~0.62 true-Nm = 0.55 wire-Nm — note the ~0.55 figure
+                                                # above is WIRE-Nm while this clamp is TRUE-Nm).
   torque_ff_ramp_s: 2.0                       # Ramp-in duration {s} for the feedforward at stream start (and after
                                                 # any SetpointPump.reset(), i.e. a link loss / re-arm).
                                                 # WHY: when streaming begins the leg is already being held at the

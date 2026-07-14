@@ -104,11 +104,11 @@ where $\mathbf{a}_{\text{com}}$ includes both the linear acceleration of the pla
 
 ### Rotational Inertia
 
-The torque required to angularly accelerate the platform:
+The moment required about the platform **geometric centre** (the point the wrench is taken about):
 
-$$\boldsymbol{\tau}_{\text{inertia}} = \mathbf{I}_{\text{world}} \cdot \boldsymbol{\alpha} + \boldsymbol{\omega} \times (\mathbf{I}_{\text{world}} \cdot \boldsymbol{\omega})$$
+$$\boldsymbol{\tau}_{\text{inertia}} = \mathbf{I}_{\text{world}} \cdot \boldsymbol{\alpha} + \boldsymbol{\omega} \times (\mathbf{I}_{\text{world}} \cdot \boldsymbol{\omega}) + \mathbf{r}_{\text{com}} \times (m \cdot \mathbf{a}_{\text{com}})$$
 
-where $\mathbf{I}_{\text{world}} = \mathbf{R} \cdot \mathbf{I}_{\text{body}} \cdot \mathbf{R}^T$ is the inertia tensor rotated into the world frame, and $\boldsymbol{\omega} \times (\mathbf{I} \cdot \boldsymbol{\omega})$ is the gyroscopic coupling term.
+where $\mathbf{I}_{\text{world}} = \mathbf{R} \cdot \mathbf{I}_{\text{body}} \cdot \mathbf{R}^T$ is the inertia tensor rotated into the world frame, $\boldsymbol{\omega} \times (\mathbf{I} \cdot \boldsymbol{\omega})$ is the gyroscopic coupling term, and $\mathbf{r}_{\text{com}} \times (m \cdot \mathbf{a}_{\text{com}})$ is the **Newton-Euler transport moment** — the wrench is taken about the geometric centre but the linear momentum changes at the CoM, so a purely linear acceleration with a CoM offset still demands a moment. *(The transport term was missing from March 2026 until the 2026-07-14 adversarial review caught it: a 4 m/s² vertical throw with the shipped CoM offset demands ~0.33 N·m — the same order as the entire gravity moment — where the old code commanded zero. Pinned by an independent rotational virtual-work test.)*
 
 ### Unit Scaling
 
