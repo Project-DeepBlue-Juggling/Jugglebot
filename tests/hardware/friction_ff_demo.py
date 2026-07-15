@@ -127,7 +127,10 @@ TAU_S = 1.953         # A — stiction peak (extrapolated v=0)
 OMEGA_S = 0.251       # rev/s — Stribeck breakaway speed scale
 B_VISC = 0.0173       # A/(rev/s) — viscous slope
 LOAD_OFFSET_A = 0.173 # A — direction-independent constant load (bench rig)
-KT_NM_PER_A = 0.0624  # motor torque constant (D6374-150Kv, measured); canonical source: tests/hardware/single_leg_test.py:92 (Phase 2 multi-weight bench, R²=0.994)
+KT_NM_PER_A = 0.0570  # motor torque constant (D6374-150Kv) — follows hardware_config.yaml
+                      # motor_kt_nm_per_a (measured 2026-07-15, friction-cancelling traverse,
+                      # 0.0570 ± 0.0008; supersedes the stiction-biased 0.0624 this demo
+                      # originally shipped with)
 
 # Stiction-boost band — see ``friction_ff_nm`` docstring.  When the commanded
 # velocity is below this threshold AND non-zero, the FF applies the full

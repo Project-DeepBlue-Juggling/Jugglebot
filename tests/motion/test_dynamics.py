@@ -233,7 +233,9 @@ def test_motor_torque_magnitude():
     mg = params.mass_kg * params.gravity_mps2
     expected_mean = mg / 6.0 * np.mean(geom.spool_radius_mm) / 1000.0
 
-    Kt = 0.0624  # measured from Phase 2 bench test
+    Kt = 0.0570  # measured 2026-07-15 (friction-cancelling traverse, pooled;
+                 # canonical source: hardware_config.yaml motor_kt_nm_per_a —
+                 # pinned by tests/sim/test_motor_kt_canonical_source.py)
     currents = torques / Kt
 
     print(f"  Motor torques (Nm): {np.array2string(torques, precision=5)}")

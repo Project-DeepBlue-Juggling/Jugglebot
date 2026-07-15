@@ -595,7 +595,7 @@ def compute_derived(cfg: dict) -> dict:
 
     # ── Leg torque-feedforward wire scale (Nm_true → Nm_odrive) ──────────────
     # The leg ODrives are flashed with torque_constant = 8.27/Kv = 0.055133 (ODrive's
-    # uncalibrated nameplate default), while the motor's bench-MEASURED Kt is 0.0624
+    # uncalibrated nameplate default), while the motor's measured Kt (see motor_kt_nm_per_a in the YAML — 0.0570 since 2026-07-15)
     # Nm/A.  The drive computes  iq = input_torque / torque_constant.  So to make it
     # deliver the current that actually produces a TRUE shaft torque T:
     #     iq_wanted   = T / Kt_measured

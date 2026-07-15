@@ -15,7 +15,15 @@ Every link in it exists, but the feature is **default-OFF**: with the flag clear
 Two things the `SetpointPump` does that this page's physics does not, and that you must know before reading any number below as "the torque the motor gets":
 
 - **It clamps** each leg to `dynamics.torque_ff_max_nm` (0.15 Nm). Nothing downstream clamps at all.
-- **It rescales by `ODRIVE_LEG_TORQUE_WIRE_SCALE` = 0.8835.** The drives are flashed with ODrive's uncalibrated nameplate `torque_constant = 8.27/Kv = 0.0551` Nm/A, while the motor's measured Kt is 0.0624 Nm/A. The drive computes `iq = input_torque / torque_constant`, so the Nm we put on the wire are **ODrive-Nm, not true Nm**. The prescale is what makes the *delivered current* right. See the `motor_kt_odrive_config_nm_per_a` block in `config/hardware_config.yaml`.
+- **It rescales by `ODRIVE_LEG_TORQUE_WIRE_SCALE` = 0.9673** (= 0.055133/0.0570; the value is
+  DERIVED by codegen from the two Kt constants in `hardware_config.yaml`, so it follows any
+  future re-measurement automatically). The drives are flashed with ODrive's uncalibrated
+  nameplate `torque_constant = 8.27/Kv = 0.0551` Nm/A and compute `iq = input_torque /
+  torque_constant`, while the motor's measured Kt is **0.0570 ± 0.0008** Nm/A (two pooled
+  friction-cancelling traverse sessions, weighed masses —
+  `logbook/2026-07-15-kt-first-measurement-and-tff-channel.md`). Pre-scaling on the Jetson
+  makes the *delivered current* physically correct without touching the flashed
+  `torque_constant` (which would silently rescale the velocity loop's authority).
 
 **Source files:**
 

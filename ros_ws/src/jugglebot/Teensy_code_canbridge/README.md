@@ -136,8 +136,9 @@ each Hermite segment before it completes and distorts the velocity profile.
   `MPC_STALE` E-STOP — converting a torque bug into a position-control outage
   mid-motion. (A NaN in any field still drops the whole frame — the isfinite
   trust-boundary gate is unchanged.)
-* **Layer 2 of 3.** The Jetson `SetpointPump` clamp (0.15 true-Nm × 0.8835 Kt
-  wire scale = 0.1325 wire-Nm) binds first on the production path; this backstop
+* **Layer 2 of 3.** The Jetson `SetpointPump` clamp (0.15 true-Nm × 0.9673 Kt
+  wire scale = 0.1451 wire-Nm since the 2026-07-15 Kt measurement) binds first
+  on the production path; this backstop
   catches a Jetson-side bug or a pump bypass (the direct-frame bench harnesses);
   the ODrive 10 A current clamp is the last resort. 0.25 wire-Nm sits well under
   the ~0.55 wire-Nm point where the FF would consume the whole current budget and

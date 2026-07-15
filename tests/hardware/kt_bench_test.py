@@ -58,7 +58,7 @@ before the loop can re-absorb it:
    ``--pre-soak`` hold (default 15 s) that kills the friction-band load-transfer
    transient (~1.2–1.4 A, τ ≈ 3.2 s).
 2. **Square wave** — ``torque_ff`` alternates ±X, half-period 1.75 s (1.5–2 s ok),
-   X ∈ {0.010, 0.020, 0.035} Nm — all inside the 0.045 Nm static-friction band so the
+   X ∈ {0.005, 0.010, 0.015} Nm — all inside the 0.045 Nm static-friction band so the
    lock keeps the loop blind (±0.36 A excursion at X = 0.02 vs >3.5 A headroom);
    ≥10 cycles per amplitude, 250 Hz telemetry recorded continuously.
 3. **Matched filter** — each edge located by cross-correlating a step kernel with the
@@ -588,6 +588,12 @@ class KtBench(BridgeSysID):
         # moves, the integrator wakes up, and the edge premise dies. Warn, don't refuse
         # (a deliberate band-mapping run is a legitimate experiment).
         for w in kt.torque_ff_ladder_band_warnings(signed):
+            print(f"  WARN: {w}")
+        # SWING pre-flight (2026-07-15): the square wave toggles through 2X — the
+        # level check above is NOT sufficient (the ±0.035 default of the first
+        # session passed it and then broke the leg loose at every toggle). Any
+        # amplitude warned here WILL be excluded from the pooled verdict.
+        for w in kt.torque_ff_swing_warnings(self.tff_amps_Nm):
             print(f"  WARN: {w}")
         if self.tff_cycles < kt.MIN_TFF_CYCLES:
             return (f"--tff-cycles {self.tff_cycles} is below the minimum "
@@ -1401,10 +1407,17 @@ class KtBench(BridgeSysID):
         print(f"  at each ±X toggle carries the channel gain. Expect "
               f"|d(iq)/d(tff)| = 1/{kt.KT_ODRIVE_CONFIGURED:.6f} = "
               f"{1.0 / kt.KT_ODRIVE_CONFIGURED:.2f} A/Nm per edge.")
-        print(f"  Amplitudes: "
-              f"{', '.join(f'{a:.3f}' for a in self.tff_amps_Nm)} Nm — all inside the "
-              f"static-friction band (worst-case edge {kt.TFF_STATIC_BAND_MIN_NM:.3f} "
-              f"Nm).")
+        swing_warns = kt.torque_ff_swing_warnings(self.tff_amps_Nm)
+        if not swing_warns:
+            print(f"  Amplitudes: "
+                  f"{', '.join(f'{a:.3f}' for a in self.tff_amps_Nm)} Nm — every "
+                  f"SWING (2X) inside the {kt.TFF_EDGE_SWING_MAX_NM:.3f} Nm in-pool "
+                  f"bound (static band edge {kt.TFF_STATIC_BAND_MIN_NM:.3f} Nm).")
+        else:
+            print(f"  Amplitudes: "
+                  f"{', '.join(f'{a:.3f}' for a in self.tff_amps_Nm)} Nm")
+            for w in swing_warns:
+                print(f"  WARNING: {w}")
         if not self.assume_yes:
             print(f"\n  Check: {self.tff_hold_mass_kg:.2f} kg SECURE, hanging FREE "
                   f"and VERTICAL · NOBODY touches the mass,")
@@ -1567,11 +1580,18 @@ class KtBench(BridgeSysID):
                   f"{a.slope_A_per_Nm:+9.2f} ± {a.slope_sem_A_per_Nm:<5.2f} "
                   f"{a.jump_cv * 100 if math.isfinite(a.jump_cv) else float('inf'):5.0f}% "
                   f"{a.tau_s:8.1f} {'YES' if a.drift_detected else 'no':>6}")
+        # Excluded amplitudes are part of the story on EVERY path (audit
+        # 2026-07-15): a trustworthy verdict printed beside a chaotic per-amp row
+        # with no explanation is the console-narrative blindness this harness
+        # keeps getting burned by. Not folded into failures — exclusion is
+        # data-quality bookkeeping, not a verdict veto.
+        for x in pooled.excluded_amplitudes:
+            print(f"  {x}")
         print(f"\n  pooled slope = {pooled.slope_A_per_Nm:+.2f} ± "
               f"{pooled.slope_sem_A_per_Nm:.2f} A/Nm   "
               f"(t = {pooled.t_stat:.1f}, CV = "
               f"{pooled.jump_cv * 100 if math.isfinite(pooled.jump_cv) else float('inf'):.0f}%, "
-              f"{pooled.n_edges_kept} edges)")
+              f"{pooled.n_edges_kept} edges over {sum(1 for a in per_amp if not any(f'{a.amplitude_Nm:.3f}' in x for x in pooled.excluded_amplitudes))} pooled amplitudes)")
         print(f"  verdict gate (t >= {kt.TFF_GATE_MIN_T_STAT:.0f} AND CV <= "
               f"{kt.TFF_EDGE_CV_MAX * 100:.0f}% AND no drift): "
               f"{'PASS' if pooled.trustworthy else '*** FAIL ***'}")
@@ -1779,8 +1799,14 @@ class KtBench(BridgeSysID):
             print(f"    expected |slope| = 1/{kt.KT_ODRIVE_CONFIGURED:.6f} = "
                   f"{1.0 / kt.KT_ODRIVE_CONFIGURED:.2f} A/Nm; sign referred through "
                   f"--rig-orientation {self.rig_orientation}")
-            print(f"    every amplitude INSIDE the static-friction band (worst-case "
-                  f"edge {kt.TFF_STATIC_BAND_MIN_NM:.3f} Nm) — the lock keeps the")
+            _sw = kt.torque_ff_swing_warnings(self.tff_amps_Nm)
+            if not _sw:
+                print(f"    every amplitude's SWING (2X) inside the "
+                      f"{kt.TFF_EDGE_SWING_MAX_NM:.3f} Nm in-pool bound — the lock keeps the "
+                      f"loop blind at every toggle")
+            else:
+                for w in _sw:
+                    print(f"    WARNING: {w}")
             print(f"    position loop blind, so the jump is the pure channel gain "
                   f"(and the leg audibly does nothing).")
             for w in kt.torque_ff_ladder_band_warnings(

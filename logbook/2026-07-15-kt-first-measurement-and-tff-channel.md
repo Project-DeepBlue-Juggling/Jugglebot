@@ -2,8 +2,8 @@
 title: First Kt measurement lands at 0.0577 — neither candidate; the torque_ff channel settled in sign and scale; the static-hold mode's signal was structurally zero
 type: investigation
 date: 2026-07-15
-status: in-progress
-phase: "Leg feedforward — Kt measured (confirmation run PENDING), tff channel settled, firmware ingest clamp built (flash PENDING)"
+status: resolved
+phase: "Leg feedforward — Kt CONFIRMED AND SHIPPED (0.0570); tff channel verified end-to-end; gravity-FF arming session is next"
 related_plan: leg-gain-tuning-methodology.md
 files_changed:
   - tests/hardware/kt_bench_test.py
@@ -110,8 +110,8 @@ of the known τ_c band (0.88–1.22 A) — the built-in cross-check passing.
 (→ Kt ≈ 0.063–0.070, central ~0.065), vs the traverse fit's 1.94 A/kg (→ 0.0577). The traverse method is
 structurally superior — friction cancels exactly, whereas static holds park anywhere inside a
 ±τ_c-wide band — but the discrepancy is why the YAML keeps 0.0624 until the **weighed-mass
-confirmation run**. (Updating `motor_kt_nm_per_a` will auto-correct the FF wire scale to
-`0.055133/0.0577 = 0.956` — the double-correction-proof design doing its job.)
+confirmation run**. (Updating `motor_kt_nm_per_a` auto-corrects the FF wire scale — done in the confirmation
+section below: pooled 0.0570 ⇒ scale 0.96725.)
 
 ### 2. The tff channel: three "failed" runs that settle everything
 
@@ -297,6 +297,64 @@ fix but the posture: **persist everything immediately, label everything with gro
 - **2026-07-15 (orchestrator) — the constant-tff traverse A/B redesign.** Refuted in review before
   implementation: during-motion re-absorption (τ = 0.625 s) retains only ~17 % of the signal.
   Replaced by edge-capture.
+
+## The same-day confirmation session — Kt CONFIRMED and SHIPPED; the edge-capture design met hardware
+
+The operator weighed every mass (**all correct within ±10 g** — retroactively validating the first
+session's mass values too), flashed the ingest-clamp + `BENCH_SYSID_BUILD` firmware, and re-ran
+both modes with the rebuilt harness.
+
+### Mode 1 confirmation (weighed masses, 2 reps): Kt = 0.0564 ± 0.0011
+
+The rebuilt harness produced its own fit this time (per-traverse persistence working — 12
+traverses, every one in the manifest): masses 1.0/1.5/2.25 kg × 2 reps, **R² = 0.99999**,
+`Kt = 0.05641 ± 0.00111` — *"consistent with odrive_configured (0.05513) at 1.2σ; EXCLUDES
+historical_measured (0.06240) at 5.4σ."* Independent recompute by the orchestrator: 0.05648 ✓.
+
+**Pooled across the two independent sessions** (consistent at 0.8σ):
+
+> **Kt = 0.0570 ± 0.0008 Nm/A — SHIPPED to `hardware_config.yaml` this commit.**
+> The historical 0.0624 is excluded at **6.6σ** (position-hold stiction bias + the lever-arm bug —
+> both now demonstrated, not just suspected). ODrive's nameplate 0.0551 sits at +2.2σ — nearly
+> right all along. The FF wire scale **auto-corrected 0.8835 → 0.96725** through codegen, exactly
+> as the double-correction-proof design intended; the pump default, its pinning tests, and every
+> doc quoting the scale updated in lockstep (pump clamp is now 0.1451 wire-Nm ≈ 2.6 A, still
+> binding first under the 0.25 firmware backstop).
+
+### Mode 2's first hardware contact: one more design bug, then a definitive verdict
+
+The edge-capture run returned NO CONCLUSION — **wrongly**, and the failure is the friction band
+one level deeper:
+
+| amplitude | slope (A/Nm) | edge CV | drift | reading |
+|---|---|---|---|---|
+| ±0.010 | **+18.351 ± 0.224** | 5.0 % | none | pristine — dead on 1/torque_constant = 18.14 |
+| ±0.020 | +16.01 ± 0.13 | 3.4 % | none | 12 % low — **swing** 0.040 ≈ 82 % of the band: partial escape |
+| ±0.035 | −13 ± 2 | 62 % | detected | chaos — **swing** 0.070 ≈ 1.5× the band: breakaway every toggle |
+
+Two defects: **(a)** the amplitude bound checked the *level* (0.035 < 0.045 ✓) but a square wave
+toggles through a **swing of 2X** — it is the swing that must stay inside the static-friction
+band; **(b)** `pool_edge_capture` pooled ALL amplitudes and gated globally, so the chaotic
+amplitude drove the pooled CV to 2.1 and the gate refused a **t = 147** measurement standing next
+to it. **Fixed**: swing-safe defaults (±0.005/0.010/0.015 — swings ≤ 0.030), per-amplitude
+exclusion from the pool on data-quality grounds only (drift / over-swing / too-few edges — the
+t-stat stays pooled, or a precise NULL would be excluded everywhere and mis-report NO CONCLUSION
+instead of DEAD), with excluded amplitudes reported with their physics. Today's manifest replayed
+through the fixed pool: **trustworthy, +18.351 ± 0.224 A/Nm, t = 82, CV 5 %** — the 0.020/0.035
+amplitudes excluded with the correct reasons. Four new regression tests pin the scenario,
+including the null-channel path.
+
+**Bonus: the bench drive's flashed `torque_constant` is verified live** — the measured channel
+gain implies a configured value of `1/18.351 = 0.0545 ± 0.0007`, within 1σ of the 0.055133 the
+JSON says is flashed. The S0 read-back question is closed for the bench drive by measurement.
+
+### Where this leaves the arc
+
+Every question this chapter opened is now answered by hardware: **Kt = 0.0570 (shipped)**, the
+**tff channel's sign and scale verified end-to-end** (positive wire = extension; gain =
+1/torque_constant within 1.2 %), the **wire scale corrected**, the **ingest clamp flashed and
+live**. The gravity-FF first-arming session (`tests/hardware/session_torque_ff.md`) is the next
+hardware step, with nothing left in front of it.
 
 ## Related
 

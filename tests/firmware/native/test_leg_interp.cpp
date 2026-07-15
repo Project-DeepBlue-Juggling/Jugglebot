@@ -283,7 +283,7 @@ TEST_CASE("torque_ff ingest clamp: binds at ±TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM, 
     reset_interp_test();
     for (uint8_t i = 0; i < 6; ++i) axes[i].pos_rev = 0.5f;
     float tq[6] = {LIM, -LIM, 0.1325f, -0.1325f, 0.0f, 0.0f};  // exactly at the bound +
-                                                               // the pump-clamp ceiling
+                                                               // an in-range production-representative value (the pump clamp is 0.1451 wire-Nm since 2026-07-15)
     stage(u0, nullptr, zeros, zeros, 0, tq);
     interp_isr();
     CHECK(axes[0].target_torque_Nm == doctest::Approx(LIM));

@@ -1646,10 +1646,15 @@ def test_edge_capture_survives_a_couple_of_knocked_edges():
 
 
 def test_pool_edge_capture_refuses_too_few_edges():
-    t, iq, toggles = _edge_capture_trace(-18.14, 0.02, cycles=2, seed=11)
-    res = kt.analyze_edge_capture(t, iq, toggles, 0.02, half_period_s=1.75)
+    # 0.010 amplitude: IN-swing (2X = 0.020 < 0.030), so the amplitude is USED and
+    # the min-edges gate itself is what refuses. (An earlier version used 0.02,
+    # which the 2026-07-15 swing bound now EXCLUDES before the edge count is even
+    # examined — the test passed via the wrong gate. Audit-caught.)
+    t, iq, toggles = _edge_capture_trace(-18.14, 0.010, cycles=2, seed=11)
+    res = kt.analyze_edge_capture(t, iq, toggles, 0.010, half_period_s=1.75)
     pooled = kt.pool_edge_capture([res], min_edges=50)
-    assert not pooled.trustworthy
+    assert pooled.excluded_amplitudes == []      # the amplitude was USED...
+    assert not pooled.trustworthy                # ...and the edge COUNT refused
     assert any('kept edges' in f for f in pooled.failures)
     v = kt.classify_edge_capture(pooled, iq_extension_sign=-1)
     assert v.no_conclusion and v.channel_live is None
@@ -1671,3 +1676,71 @@ def test_classify_edge_capture_reports_a_retract_as_contradicting_settled_sign()
     assert v.sign_matches_expectation is False
     assert any('rig-orientation' in ln for ln in v.lines)
     assert any('CONTRADICTS' in ln for ln in v.lines)
+
+
+# ── Per-amplitude pooling (the 2026-07-15 confirmation-session fix) ─────────
+
+def _amp(x_nm, slope, sem, cv, drift, n_kept=17, edges_slopes=None):
+    """Minimal EdgeCaptureAmplitude for pool tests (edges only carry ok+slope)."""
+    edges = []
+    for sl in (edges_slopes if edges_slopes is not None
+               else [slope] * (n_kept + 2)):
+        edges.append(kt.EdgeJump(t_cmd_s=0.0, t_edge_s=0.0, polarity=1,
+                                 jump_raw_A=0.0, jump_A=0.0,
+                                 slope_A_per_Nm=sl, ok=True, reason=''))
+    return kt.EdgeCaptureAmplitude(
+        amplitude_Nm=x_nm, half_period_s=1.75, n_toggles=19, n_measured=19,
+        n_kept=n_kept, tau_s=8.0, tau_fitted=False, slope_A_per_Nm=slope,
+        slope_sem_A_per_Nm=sem, jump_cv=cv, drift_bias_A=0.0,
+        drift_bias_sem_A=0.01, drift_detected=drift, edges=edges)
+
+
+def test_pool_replicates_the_20260715_confirmation_run():
+    """The 2026-07-15 session, as measured: ±0.010 pristine (18.35±0.22, CV 5%),
+    ±0.020 partially band-escaped (16.01, swing 0.040), ±0.035 chaotic (drift,
+    CV 62%). The OLD pool mixed all three and refused a 147σ measurement
+    (pooled CV 2.1). The fixed pool must exclude 0.020 (over-swing) and 0.035
+    (drift + over-swing) and deliver the 0.010 amplitude's verdict."""
+    a1 = _amp(0.010, 18.351, 0.224, 0.050, False)
+    a2 = _amp(0.020, 16.013, 0.130, 0.034, False)          # swing 0.040 > 0.030
+    a3 = _amp(0.035, -12.994, 1.967, 0.624, True,          # drift + swing 0.070
+              edges_slopes=[2.1, -7.0, -21.5, -4.8, -22.5, -5.7] * 3)
+    r = kt.pool_edge_capture([a1, a2, a3])
+    assert r.trustworthy, r.failures
+    assert r.slope_A_per_Nm == pytest.approx(18.351, abs=0.01)
+    assert r.t_stat > 50
+    assert len(r.excluded_amplitudes) == 2
+    assert any('0.020' in x and 'swing' in x for x in r.excluded_amplitudes)
+    assert any('0.035' in x and ('drift' in x or 'swing' in x)
+               for x in r.excluded_amplitudes)
+    # The pooled CV reflects ONLY the used amplitude — not the chaos.
+    assert r.jump_cv < 0.20
+
+
+def test_pool_excludes_over_swing_even_without_drift():
+    # Swing bound is data-quality, independent of whether the escape happened to
+    # trip the drift latch (at 0.020 today it did NOT — it just read 13% low).
+    a1 = _amp(0.010, 18.2, 0.3, 0.05, False)
+    a2 = _amp(0.020, 16.0, 0.2, 0.04, False)
+    r = kt.pool_edge_capture([a1, a2])
+    assert r.trustworthy
+    assert r.slope_A_per_Nm == pytest.approx(18.2, abs=0.01)
+    assert len(r.excluded_amplitudes) == 1
+
+
+def test_pool_null_channel_still_reports_dead_not_no_conclusion():
+    """The t-stat must stay a POOLED gate: a precise null (slope ≈ 0) passes the
+    per-amplitude data-quality gates (no drift, in-swing) and reaches the pooled
+    stats, where the precise-null logic can classify DEAD — per-amplitude
+    t-gating would have excluded everything and mis-reported NO CONCLUSION."""
+    a1 = _amp(0.010, 0.02, 0.05, 0.10, False, edges_slopes=[0.0, 0.05, -0.02] * 7)
+    r = kt.pool_edge_capture([a1])
+    assert not r.trustworthy               # t < 3 → no positive verdict...
+    assert len(r.excluded_amplitudes) == 0  # ...but the amplitude was USED
+    assert math.isfinite(r.slope_A_per_Nm)  # the null bound is computable
+
+
+def test_default_edge_amps_respect_the_swing_bound():
+    for x in kt.DEFAULT_TFF_EDGE_AMPS_NM:
+        assert 2.0 * x <= kt.TFF_EDGE_SWING_MAX_NM + 1e-12
+    assert kt.TFF_EDGE_SWING_MAX_NM < kt.TFF_STATIC_BAND_MIN_NM

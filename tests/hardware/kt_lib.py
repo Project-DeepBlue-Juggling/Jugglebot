@@ -226,7 +226,16 @@ TFF_OUTLIER_RMS_MULT = 3.0        # |residual| > 3× the leave-one-out RMS ⇒ f
 # polarity de-aliases drift (a drift contributes the SAME signed bias to consecutive
 # opposite-polarity edges, so it cancels in the slope and is separately detected by
 # the paired-edge drift statistic).
-DEFAULT_TFF_EDGE_AMPS_NM = (0.010, 0.020, 0.035)  # all inside the 0.045 Nm static band
+# THE SWING BOUND (learned on hardware, 2026-07-15 confirmation session): a square
+# wave toggles through a SWING of 2X, and it is the SWING that must stay inside the
+# static-friction band, not the level. The first session's defaults bounded the level
+# (0.035 < 0.045 band edge) but the ±0.035 swing = 0.070 Nm ≈ 1.5× the band — the leg
+# broke loose at every toggle (edge CV 62%, alternating ±1.5 A jumps, drift latch);
+# ±0.020 (swing 0.040 ≈ 82% of the worst-case 0.0485 band) already escaped partially,
+# reading 16.0 A/Nm vs the in-band 18.35. Only ±0.010 (swing 0.020) was pristine:
+# 18.35 ± 0.22 A/Nm, edge CV 5%, dead on the expected 1/torque_constant = 18.14.
+TFF_EDGE_SWING_MAX_NM = 0.030      # max 2X swing kept in the POOL (~60% of the band edge)
+DEFAULT_TFF_EDGE_AMPS_NM = (0.005, 0.010, 0.015)  # swings 0.010/0.020/0.030 — all in-pool
 DEFAULT_TFF_HALF_PERIOD_S = 1.75   # square-wave half period (1.5–2 s sensible range)
 TFF_HALF_PERIOD_RANGE_S = (1.5, 2.0)
 DEFAULT_TFF_CYCLES = 10            # >= 10 full ± cycles per amplitude
@@ -1452,7 +1461,9 @@ def extension_sign_from_hold(hold_iq_A: float, rig_orientation: str, *,
 #      A/s over a 3 s window (max wait ~30 s). Measuring an unsettled hold is what
 #      poisoned the ladder.
 #   2. SQUARE WAVE — torque_ff alternates ±X with half-period 1.5–2 s (default 1.75),
-#      X ∈ {0.010, 0.020, 0.035} Nm: all inside the 0.045 Nm static-friction band, so
+#      X chosen so the SWING 2X stays inside the static-friction band (defaults
+#      ±0.005/0.010/0.015 Nm since 2026-07-15 — the first defaults bounded the LEVEL
+#      and ±0.035's swing broke the leg loose at every toggle), so
 #      the lock keeps the position loop blind (±0.36 A excursion at X = 0.02 vs the
 #      >3.5 A abort headroom). ≥10 cycles per amplitude, telemetry recorded
 #      continuously at 250 Hz.
@@ -1877,6 +1888,27 @@ def torque_ff_ladder_safe(ladder_Nm: Sequence[float], *,
                 f"±{LEG_TOR_WIRE_MAX_NM:.4f} Nm — it would SILENTLY SATURATE "
                 f"(odrive_protocol.h:178)")
     return problems
+
+
+def torque_ff_swing_warnings(amps_Nm: Sequence[float], *,
+                             swing_max_Nm: float = TFF_EDGE_SWING_MAX_NM) -> List[str]:
+    """WARN (never refuse) about edge-capture amplitudes whose SWING leaves the pool.
+
+    A square wave toggles through a swing of 2X; it is the SWING, not the level,
+    that must stay inside the static-friction band (learned on hardware
+    2026-07-15: ±0.035 → chaos, ±0.020 → 13 % low, ±0.010 → pristine).  Any
+    amplitude flagged here WILL be excluded from the pooled verdict by
+    :func:`pool_edge_capture` — warn the operator BEFORE the bench time is spent."""
+    out: List[str] = []
+    for x in amps_Nm:
+        swing = 2.0 * abs(float(x))
+        if swing > swing_max_Nm:
+            out.append(
+                f"amplitude ±{abs(x):.3f} Nm: swing 2X = {swing:.3f} Nm exceeds the "
+                f"{swing_max_Nm:.3f} Nm in-pool bound — this amplitude WILL be "
+                f"excluded from the pooled verdict (measured 2026-07-15: swing "
+                f"0.040 read 13% low, swing 0.070 was chaos)")
+    return out
 
 
 def torque_ff_ladder_band_warnings(ladder_Nm: Sequence[float], *,
@@ -2556,6 +2588,7 @@ class EdgeCaptureResult:
     drift_detected: bool
     trustworthy: bool            # t ≥ 3 AND cv ≤ 0.20 AND no drift AND enough edges
     failures: List[str] = field(default_factory=list)
+    excluded_amplitudes: List[str] = field(default_factory=list)  # per-amp exclusions (reasons)
 
 
 def pool_edge_capture(per_amplitude: Sequence[EdgeCaptureAmplitude], *,
@@ -2567,28 +2600,47 @@ def pool_edge_capture(per_amplitude: Sequence[EdgeCaptureAmplitude], *,
     AND ≥ ``min_edges`` kept edges. Any failure ⇒ no verdict may be stated."""
     amps = [a for a in per_amplitude]
     failures: List[str] = []
-    usable = [a for a in amps
-              if a.n_kept >= 2 and math.isfinite(a.slope_A_per_Nm)
-              and math.isfinite(a.slope_sem_A_per_Nm) and a.slope_sem_A_per_Nm >= 0]
+    excluded: List[str] = []
+    # PER-AMPLITUDE gating (2026-07-15 fix): one confounded amplitude must not veto
+    # the others — the confirmation run's ±0.035 (over-swing, drifting) drove the
+    # POOLED CV to 2.1 and the gate refused a 147σ measurement sitting beside it.
+    # Exclusion reasons are DATA-QUALITY only (drift / over-swing / too few edges):
+    # the t-stat must stay a POOLED gate, or a precise NULL channel (slope ≈ 0)
+    # would exclude every amplitude and report NO CONCLUSION instead of DEAD.
+    usable = []
+    for a in amps:
+        why = None
+        if not (a.n_kept >= 2 and math.isfinite(a.slope_A_per_Nm)
+                and math.isfinite(a.slope_sem_A_per_Nm) and a.slope_sem_A_per_Nm >= 0):
+            why = f"only {a.n_kept} kept edges / non-finite fit"
+        elif a.drift_detected:
+            why = (f"hold drifting (paired-edge bias {a.drift_bias_A:+.3f} ± "
+                   f"{a.drift_bias_sem_A:.3f} A) — the square-wave de-aliasing "
+                   f"caught exactly the failure mode that faked the 2026-07-14 "
+                   f"20:55 ladder slope")
+        elif 2.0 * a.amplitude_Nm > TFF_EDGE_SWING_MAX_NM:
+            why = (f"swing 2X = {2.0 * a.amplitude_Nm:.3f} Nm exceeds the "
+                   f"{TFF_EDGE_SWING_MAX_NM:.3f} Nm in-pool bound — the toggle can "
+                   f"leave the static-friction band and the loop partially absorbs "
+                   f"the step (measured 2026-07-15: swing 0.040 read 13% low; "
+                   f"swing 0.070 was chaos)")
+        if why is None:
+            usable.append(a)
+        else:
+            excluded.append(f"X = {a.amplitude_Nm:.3f} Nm EXCLUDED from the pool: {why}")
     n_edges = sum(a.n_kept for a in usable)
-    drift = any(a.drift_detected for a in amps)
-    if drift:
-        for a in amps:
-            if a.drift_detected:
-                failures.append(
-                    f"X = {a.amplitude_Nm:.3f} Nm: hold drifting (paired-edge bias "
-                    f"{a.drift_bias_A:+.3f} ± {a.drift_bias_sem_A:.3f} A) — the "
-                    f"square-wave de-aliasing detected exactly the failure mode that "
-                    f"faked the 2026-07-14 20:55 ladder slope")
+    # Drift only fails the RUN if it afflicts the amplitudes we are actually using.
+    drift = any(a.drift_detected for a in usable)
     if not usable or n_edges < min_edges:
-        failures.append(f"only {n_edges} kept edges across all amplitudes "
+        failures.append(f"only {n_edges} kept edges across the POOLED amplitudes "
                         f"(< {min_edges}) — not enough to state anything")
+        failures.extend(excluded)
         return EdgeCaptureResult(per_amplitude=list(amps),
                                  slope_A_per_Nm=float('nan'),
                                  slope_sem_A_per_Nm=float('inf'), t_stat=0.0,
                                  jump_cv=float('inf'), n_edges_kept=n_edges,
                                  drift_detected=drift, trustworthy=False,
-                                 failures=failures)
+                                 failures=failures, excluded_amplitudes=excluded)
     w = np.array([1.0 / max(a.slope_sem_A_per_Nm, 1e-9) ** 2 for a in usable], float)
     s = np.array([a.slope_A_per_Nm for a in usable], float)
     slope = float(np.sum(w * s) / np.sum(w))
@@ -2618,7 +2670,7 @@ def pool_edge_capture(per_amplitude: Sequence[EdgeCaptureAmplitude], *,
                              slope_sem_A_per_Nm=sem, t_stat=float(t),
                              jump_cv=float(cv), n_edges_kept=n_edges,
                              drift_detected=drift, trustworthy=not failures,
-                             failures=failures)
+                             failures=failures, excluded_amplitudes=excluded)
 
 
 def _edge_no_conclusion_lines(result: EdgeCaptureResult) -> List[str]:

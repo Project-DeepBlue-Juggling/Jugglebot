@@ -2125,7 +2125,7 @@ class TeensyBridgeNode(Node):
                     # accepted setpoint. Rides HeartbeatT2J.flags bits 8-13 (no
                     # wire-size change); 0 from a pre-clamp firmware. Nonzero
                     # means a producer exceeded the 0.25 wire-Nm backstop — the
-                    # pump clamp (0.1325 wire-Nm) should always bind first, so
+                    # pump clamp (0.1451 wire-Nm at the 2026-07-15 scale) should always bind first, so
                     # any nonzero value here is a torque-path bug to chase.
                     KeyValue(key='torque_clamp_mask',
                              value=str((int(hb.flags) & _T2J_TORQUE_CLAMP_MASK)

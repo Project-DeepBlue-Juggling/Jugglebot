@@ -51,7 +51,7 @@ static constexpr float VELFF_CAP = LEAD_CLAMP_VELFF_LIMIT_RPS;   // 3.5 rev/s ve
 // torque_ff ingest backstop (2026-07-14 gravity-FF firmware sitting). WIRE-Nm
 // (ODrive-Nm, post Kt-prescale). Generated from hardware_config.yaml
 // dynamics.torque_ff_firmware_clamp_wire_nm — see the three-layer clamp-chain
-// comment there (SetpointPump ±0.1325 wire binds first; this backstop catches a
+// comment there (SetpointPump ±0.145 wire binds first; this backstop catches a
 // Jetson-side bug/bypass; the ODrive 10 A current clamp is the last resort).
 static constexpr float TORQUE_CLAMP = Dynamics::TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM;  // 0.25
 

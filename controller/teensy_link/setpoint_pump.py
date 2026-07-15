@@ -59,8 +59,8 @@ producer of the leg ``Setpoint`` frame:
 
 1. **Clamp** to ``±torque_ff_max_nm`` (TRUE Nm), per leg. This is the FIRST-binding
    layer of a three-layer chain (see ``hardware_config.yaml`` →
-   ``torque_ff_firmware_clamp_wire_nm``): (1) this pump clamp (0.15 true ⇒ 0.1325
-   wire-Nm); (2) the can-bridge firmware ingest backstop (±0.25 wire-Nm,
+   ``torque_ff_firmware_clamp_wire_nm``): (1) this pump clamp (0.15 true ⇒ 0.1451
+   wire-Nm at the 0.9673 scale); (2) the can-bridge firmware ingest backstop (±0.25 wire-Nm,
    ``leg_interp.cpp`` — landed 2026-07-14, ACTIVE ONLY AFTER A REFLASH; on older
    firmware the only downstream bound is int16 saturation at ``±3.2767`` ODrive-Nm
    ≈ **59 A** of demand at ``LEG_TOR_SCALE`` = 10000); (3) the ODrive current clamp.
@@ -71,10 +71,11 @@ producer of the leg ``Setpoint`` frame:
    ``MAX_DEVIATION`` E-STOPs it mid-motion. This pump clamp is the primary guard
    standing between a mis-modelled FF and that failure mode.
 2. **Kt wire scale** (``× ODRIVE_LEG_TORQUE_WIRE_SCALE`` = ``Kt_odrive_config/Kt_measured``
-   = 0.055133/0.0624 = 0.8835). The drives are flashed with ODrive's uncalibrated
-   nameplate ``torque_constant = 8.27/Kv = 0.055133`` and compute
-   ``iq = input_torque / torque_constant``, while the motor's bench-measured Kt is
-   0.0624 Nm/A. Pre-scaling here makes the **delivered current** physically correct —
+   = 0.055133/0.0570 = 0.9673 since the 2026-07-15 weighed-mass confirmation; the
+   pre-measurement value 0.8835 assumed the stiction-biased Kt = 0.0624). The drives
+   are flashed with ODrive's nameplate ``torque_constant = 8.27/Kv = 0.055133`` and
+   compute ``iq = input_torque / torque_constant``, while the motor's measured Kt is
+   0.0570 ± 0.0008 Nm/A (two pooled friction-cancelling traverse sessions). Pre-scaling here makes the **delivered current** physically correct —
    the only thing a torque FF actually needs — without touching the flashed
    ``torque_constant``, which would silently detune the bench-validated velocity loop
    (its authority is ``vel_gain / torque_constant`` amps per rev/s). See the WHY block
@@ -134,9 +135,9 @@ DEFAULT_MAX_STEP_REV = 0.3
 # tests/motion/test_leg_torque_ff.py::test_pump_defaults_match_generated_config) ──
 
 # TRUE Nm → ODrive-Nm. = DYNAMICS_MOTOR_KT_ODRIVE_CONFIG_NM_PER_A / DYNAMICS_MOTOR_KT_NM_PER_A
-#                      = 0.055133331567049 / 0.0624.
+#                      = 0.055133331567049 / 0.0570 (Kt measured 2026-07-14/15, pooled).
 # hardware_config.ODRIVE_LEG_TORQUE_WIRE_SCALE is the authority; the bridge passes it in.
-DEFAULT_TORQUE_WIRE_SCALE = 0.8835469802411698
+DEFAULT_TORQUE_WIRE_SCALE = 0.9672514310008596
 
 # Per-leg |torque_ff| clamp in TRUE Nm (hardware_config.DYNAMICS_TORQUE_FF_MAX_NM).
 DEFAULT_TORQUE_FF_MAX_NM = 0.15
@@ -431,7 +432,7 @@ class SetpointPump:
         # the 0.013–0.041 Nm/leg gravity load. The ramp then attenuates that bounded
         # torque, and the Kt wire scale converts it into the units the drive divides by.
         # (Clamp-then-scale also means the clamp bound is exactly the number in the YAML,
-        # not that number times 0.8835.)
+        # not that number times the wire scale.)
         #
         # The ramp counts ACCEPTED FRAMES THAT ACTUALLY CARRIED A FEEDFORWARD
         # (``_ff_frames``, 0 on the first such frame after a reset), so the first frame

@@ -89,7 +89,12 @@ ERROR_CODES = {
 SAFE_CURRENT_LIMIT_A = hw.ODRIVE_LEG_CURR_LIMIT_A * 0.5  # 10A
 
 # Motor torque constant from Phase 2 multi-weight bench test (R^2=0.994)
-KT_MEASURED = 0.0624  # Nm/A (measured), vs 0.0637 Nm/A datasheet
+KT_MEASURED = 0.0570  # Nm/A — measured 2026-07-15 (friction-cancelling traverse, weighed
+                      # masses, pooled 0.0570 ± 0.0008; canonical source: hardware_config.yaml
+                      # motor_kt_nm_per_a, pinned by tests/sim/test_motor_kt_canonical_source.py;
+                      # logbook/2026-07-15-kt-first-measurement-and-tff-channel.md). This file's
+                      # own Phase-2 position-hold fit historically read 0.0624 — stiction-inflated
+                      # plus a lever-arm bug, superseded. vs 0.0637 datasheet
 
 # ODrive leg feedforward int16 scaling — from protocol_config (source of truth).
 # Must match the ODrive firmware config: axis0.config.can.input_vel_scale / input_torque_scale.
@@ -847,7 +852,7 @@ def test_force_conversion(harness: SingleLegTestHarness):
     # i.e. the STANDARD-leg radius (11.221 mm on axis 0).  Because the lever arm was 1.51 %
     # too short, the torque per kg was under-stated, the fitted slope (iq per Nm) was 1.51 %
     # too steep, and Kt = 1/slope came out 1.51 % LOW.  That is the fit that produced the
-    # canonical `motor_kt_nm_per_a: 0.0624` (hardware_config.yaml:60) — the correct figure
+    # the superseded 0.0624 (config now carries the measured 0.0570 — see KT_MEASURED's note) — the correct figure
     # from that same data is **0.0633 Nm/A**, which moves it further from ODrive's
     # uncalibrated 0.055133 (= 8.27/Kv) and closer to the SI datasheet 0.0637, not nearer.
     # The number is being re-measured from scratch anyway (tests/hardware/kt_bench_test.py,
@@ -1226,7 +1231,7 @@ def test_torque_ff(harness: SingleLegTestHarness):
       7. Phase B: hold with torque_ff enabled, measure iq (3s)
       8. Verify position holding not degraded
 
-    Uses KT_MEASURED = 0.0624 Nm/A from Phase 2 bench test results.
+    Uses KT_MEASURED (canonical Kt from hardware_config.yaml; 0.0570 since 2026-07-15).
     """
     print("\n" + "=" * 60)
     print("STAGE A3: Gravity torque_ff validation")

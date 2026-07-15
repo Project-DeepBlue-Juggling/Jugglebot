@@ -67,11 +67,10 @@ CAVEATS (read before trusting a number)
   J_eff fit is noise-limited (R^2 ~0.7-0.9 is normal and healthy here). It is
   good to maybe +/-20%, which is plenty to settle a 10x hypothesis and to size
   a feedforward, but it is NOT a precision inertia measurement.
-* ``Kt`` matters directly (J_eff scales with it). The repo has TWO values:
-  ``hardware_config.yaml``'s measured 0.0624 Nm/A (bench fit, R^2=0.994) and
-  the ODrive's own ``motor.torque_constant = 0.0551``. This probe uses the
-  measured one and reports the sensitivity. Reconcile them before shipping any
-  torque feedforward.
+* ``Kt`` matters directly (J_eff scales with it). RESOLVED 2026-07-15: the
+  definitive friction-cancelling measurement is 0.0570 ± 0.0008 (now in
+  ``hardware_config.yaml``); this probe's constant stays FROZEN at the 0.0624
+  its recorded 2026-07-13 fits used — rescale J_eff by x0.913 to compare.
 * The bench leg is UNLOADED. Gravity, inter-leg coupling and hand reaction
   forces are all absent, so the friction/inertia terms here are a floor, not
   the loaded-robot budget.
@@ -100,11 +99,12 @@ _REPO_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__fil
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-# Motor torque constant, Nm per ODrive-reported Amp (hardware_config.yaml:60 -- bench fit
-# R^2=0.994). NOTE this figure is UNDER RE-MEASUREMENT (2026-07-13): the historical fit may be
-# biased HIGH by stiction, and the ODrive's own configured value disagrees (see below).
+# Motor torque constant, Nm per ODrive-reported Amp.
 # J_eff and tau_c[Nm] scale linearly with this; tau_c[A] and the cascade table do NOT.
-KT_NM_PER_A = 0.0624
+KT_NM_PER_A = 0.0624   # FROZEN: the value used for the RECORDED 2026-07-13 fits.
+                       # The definitive measurement (2026-07-15, friction-cancelling,
+                       # weighed masses) is 0.0570 ± 0.0008 — rescale J_eff by x0.913
+                       # to compare; the ~1x-J_rotor conclusion is unchanged.
 # What is ACTUALLY FLASHED on the ODrives (odrive_pro_leg_config.json:152). This is ODrive's
 # default 8.27/Kv formula, = 0.0551 for a 150 Kv motor. The drive divides every commanded torque
 # by THIS number to get Iq -- so it, not the true Kt, sets the effective velocity-loop gain.

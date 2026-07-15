@@ -35,7 +35,7 @@ namespace Dynamics {
   constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IYZ = 979.411f;
   constexpr float PLATFORM_INERTIA_TENSOR_KGMM2_IZZ = 9298.383f;
   constexpr float MOTOR_ROTOR_INERTIA_KGM2 = 0.000275f;
-  constexpr float MOTOR_KT_NM_PER_A = 0.0624f;
+  constexpr float MOTOR_KT_NM_PER_A = 0.057f;
   constexpr uint32_t MOTOR_POLE_PAIRS = 7u;
   constexpr uint32_t MOTOR_STATOR_SLOTS = 12u;
   constexpr float MOTOR_KT_ODRIVE_CONFIG_NM_PER_A = 0.055133331567049f;
