@@ -18,8 +18,8 @@ import {
     setBBPitchFault, setBBHandFault, getBallButlerPickables,
 } from './ball-butler-model.js';
 import {
-    initAllPanels, updateMotorGrid, updateOrchestratorState,
-    updateFlags, updateLevellingPanel, updateBBPanel, updateBBCalibration,
+    initAllPanels, initCollapsiblePanels, updateMotorGrid, updateOrchestratorState,
+    updateFlags, updateLevellingPanel, updateBBPanel, setBBDisconnected, updateBBCalibration,
     updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
@@ -29,7 +29,7 @@ import {
 import {
     initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
 } from './can-traffic.js';
-import { initCommands, updateCommandStates, onModeButtonClick } from './commands.js';
+import { initCommands, updateCommandStates } from './commands.js';
 import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
     minimapOnRobotState, minimapOnLinkStatus, minimapOnLegSetpointEcho,
@@ -37,6 +37,7 @@ import {
 import { INITIAL_HEIGHT_MM, MM_TO_REV } from './geometry-config.js';
 import {
     initTelemetryCharts, onTelemetryData, rebuildCharts, flashChart,
+    clearChartGridHidden,
 } from './telemetry-charts.js';
 import { initJogPanel, setJogPanelVisible,
          initSpeedLimitsPanel, setSpeedLimitsPanelVisible, resetSpeedLimitsForMode,
@@ -74,20 +75,20 @@ function init() {
 
     // 2. Init panels
     initAllPanels();
+    // Wire header-click collapse on the persistent sidebar status panels.
+    // BB + Catching Cone default collapsed and auto-expand/collapse on their
+    // device's connect/disconnect edges (driven from panels.js).
+    initCollapsiblePanels();
 
     // 2a. Init CAN traffic panel (left sidebar — own module, chart-heavy,
     //     same precedent as telemetry-charts).
     initCanTrafficPanel();
 
-    // 3. Init commands
+    // 3. Init commands.  The old mode command buttons (Standby/SpaceMouse/
+    //    Shell/GUI) are gone — jog + speed-limit panel visibility is driven
+    //    by onControlMode / onOrchestratorState, and the speed-limit slider
+    //    reset those buttons performed now lives in onControlMode.
     initCommands();
-    onModeButtonClick((mode) => {
-        setJogPanelVisible(mode === 'gui');
-        setSpeedLimitsPanelVisible(mode === 'gui' || mode === 'spacemouse');
-        if (mode === 'gui' || mode === 'spacemouse') {
-            resetSpeedLimitsForMode(mode);
-        }
-    });
 
     // 3a. Init the state-machine minimap (needs the DOM + commands' publisher
     //     topic, nothing from the viewer).
@@ -198,6 +199,16 @@ function onConnectionStateChange(state) {
             // cone-reported-offline heartbeat, which never arrives while the
             // bridge is down). Idempotent + safe if the cone was never connected.
             setCatchingConeDisconnected();
+            // A full websocket drop takes the whole ROS graph — including the
+            // Ball Butler heartbeat — down, so treat BB as disconnected too:
+            // blanks its readouts and auto-collapses the panel on the same
+            // disconnect edge that Catching Cone uses (consistency + no frozen
+            // stale readouts). Idempotent if BB was never connected.
+            setBBDisconnected();
+            // Drop the control-mode latch so a reconnect re-arms the speed-limit
+            // reset on the next mode-entry edge instead of treating the first
+            // post-reconnect message as "same mode".
+            lastControlMode = null;
             // Reset the BB calibration indicator for the same stale-latch
             // reason. "Calibrated" is set by a latched event (bb/calibration_result
             // from mocap_node) that is never re-published to say a session ended;
@@ -495,12 +506,28 @@ function onLegSetpointEcho(msg) {
     }, LEG_ECHO_TIMEOUT_MS);
 }
 
+/** Last control_mode payload — lets us reset the speed-limit sliders only on
+ *  a genuine mode-CHANGE edge (a re-published same-mode message must not
+ *  clobber sliders the user has since adjusted). */
+let lastControlMode = null;
+
 function onControlMode(msg) {
     recordTopicMessage('control_mode_topic');
     minimapOnControlMode(msg.data);
     const mode = msg.data;
     setJogPanelVisible(mode === 'GUI');
     setSpeedLimitsPanelVisible(mode === 'GUI' || mode === 'SPACEMOUSE');
+    // Reset the speed-limit sliders to defaults when ENTERING a slider-bearing
+    // mode.  This side effect used to fire from the (now-removed) mode command
+    // buttons; it moves here so a state-machine-driven mode change still resets
+    // the limits.  Edge-gated on lastControlMode so continuous re-publishes of
+    // the same mode don't fight the user's slider edits.
+    if (mode !== lastControlMode) {
+        if (mode === 'GUI' || mode === 'SPACEMOUSE') {
+            resetSpeedLimitsForMode(mode.toLowerCase());
+        }
+        lastControlMode = mode;
+    }
 }
 
 function onMotionDiagnostics(msg) {
@@ -758,6 +785,10 @@ function initChartResizeHandle() {
         app.style.setProperty('--chart-panel-height', newHeight + 'px');
         panel.classList.remove('collapsed');
         if (chevron) chevron.classList.remove('collapsed');
+        // Dragging the handle re-reveals the grid: clear the toolbar's
+        // "hide charts" state too (updates its button label + localStorage +
+        // rebuilds), so drag is a consistent way to bring the grid back.
+        clearChartGridHidden();
     });
 
     document.addEventListener('pointerup', () => {

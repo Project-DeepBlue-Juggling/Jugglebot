@@ -193,13 +193,16 @@
                 </div>
             </div>
 
-            <!-- Ball Butler -->
+            <!-- Ball Butler (throw sub-section merged in at the bottom) -->
             <div class="panel" id="panel-bb">
                 <div class="panel-header">
                     <span class="panel-title">Ball Butler</span>
                     <span class="badge" id="bb-state-badge">Disconnected</span>
                 </div>
                 <div id="bb-content"></div>
+                <!-- Ball Butler Throw (aim BB at a named target + throw) —
+                     a non-header child so it collapses with the BB panel. -->
+                <div id="bb-throw-content"></div>
             </div>
 
             <!-- Catching Cone -->
@@ -209,14 +212,6 @@
                     <span class="badge cc-state-badge cc-disconnected" id="cc-state-badge">Disconnected</span>
                 </div>
                 <div id="cc-content"></div>
-            </div>
-
-            <!-- Ball Butler Throw (aim BB at a named target + throw) -->
-            <div class="panel" id="panel-bb-throw">
-                <div class="panel-header">
-                    <span class="panel-title">Ball Butler Throw</span>
-                </div>
-                <div id="bb-throw-content"></div>
             </div>
 
             <!-- Tracking Error -->

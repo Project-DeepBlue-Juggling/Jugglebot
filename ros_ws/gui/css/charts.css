@@ -80,6 +80,28 @@
     gap: 4px;
 }
 
+/* Thin vertical rule between the hide/show-charts button and the visibility
+   pills — a light divider so the button reads as a separate control. */
+.chart-toolbar-divider {
+    display: inline-block;
+    width: 0;
+    height: 14px;
+    border-left: 1px solid var(--border-color);
+    align-self: center;
+    flex-shrink: 0;
+}
+
+/* Hide/show-charts button hides ONLY the chart grid — the toolbar banner
+   stays visible (and usable) so the button can toggle its label in place.
+   The panel shrinks to the toolbar's natural height while hidden. */
+#chart-panel.charts-hidden {
+    height: auto;
+}
+
+#chart-panel.charts-hidden #chart-grid {
+    display: none;
+}
+
 /* ---- Time window selector ---- */
 #chart-time-window {
     display: flex;

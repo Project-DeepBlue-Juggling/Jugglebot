@@ -6,7 +6,7 @@
  */
 
 import * as ros from './ros-bridge.js';
-import { currentOrchestratorState, currentSubMode } from './panels.js';
+import { currentOrchestratorState } from './panels.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
 import { holdToConfirm } from './hold-to-confirm.js';
 
@@ -18,26 +18,18 @@ const DESTRUCTIVE_COMMANDS = new Set(['clear_errors']);
 /** @type {{ publish: function } | null} */
 let cmdPublisher = null;
 
-/** Callback for mode-button clicks (GUI, SpaceMouse, Shell). Set by main.js. */
-let onModeChangeCallback = null;
-
-/**
- * Register a callback that fires when a mode button is clicked.
- * @param {function} cb - Called with the command string (e.g. 'gui', 'spacemouse')
- */
-export function onModeButtonClick(cb) {
-    onModeChangeCallback = cb;
-}
-
+// The Standby / SpaceMouse / Shell / GUI command buttons were removed — the
+// ACTIVE sub-mode is now changed from the state-machine minimap panel. Those
+// buttons were the ONLY firer of the old mode-change callback; jog / speed-
+// limit panel visibility is still driven by onControlMode (control_mode_topic)
+// and onOrchestratorState (sub-mode) in main.js, and the speed-limit slider
+// reset that the callback used to perform now lives in onControlMode, so
+// nothing here needs the callback any more.
 const COMMANDS = [
     { id: 'cmd-home',       label: 'Home',           command: 'home',         cssClass: 'btn-home' },
     { id: 'cmd-level',      label: 'Level',          command: 'level',        cssClass: 'btn-home' },
     { id: 'cmd-activate',   label: 'Activate',       command: 'activate',     cssClass: 'btn-activate' },
     { id: 'cmd-deactivate', label: 'Deactivate',     command: 'deactivate',   cssClass: 'btn-deactivate' },
-    { id: 'cmd-standby',    label: 'Standby',        command: 'standby',      cssClass: '' },
-    { id: 'cmd-spacemouse', label: 'SpaceMouse',     command: 'spacemouse',   cssClass: '' },
-    { id: 'cmd-shell',      label: 'Shell',          command: 'shell',        cssClass: '' },
-    { id: 'cmd-gui',        label: 'GUI',            command: 'gui',          cssClass: '' },
     { id: 'cmd-clear',      label: 'Clear Errors',   command: 'clear_errors', cssClass: 'btn-fault' },
 ];
 
@@ -66,10 +58,6 @@ export function initCommands() {
                 label: cmd.label,
                 detail: `orchestrator_command: ${cmd.command}`,
             });
-            // Notify mode change listener for immediate UI response
-            if (onModeChangeCallback && ['standby', 'gui', 'spacemouse', 'shell'].includes(cmd.command)) {
-                onModeChangeCallback(cmd.command);
-            }
         };
 
         if (DESTRUCTIVE_COMMANDS.has(cmd.command)) {
@@ -90,17 +78,12 @@ export function initCommands() {
  */
 export function updateCommandStates() {
     const state = currentOrchestratorState;
-    const sub = currentSubMode;
     const active = state === 'ACTIVE';
 
     setEnabled('cmd-home', state === 'IDLE' || state === 'BOOT');
     setEnabled('cmd-level', state === 'IDLE');
     setEnabled('cmd-activate', state === 'IDLE');
     setEnabled('cmd-deactivate', active);
-    setEnabled('cmd-standby', active && sub !== 'STANDBY');
-    setEnabled('cmd-spacemouse', active && sub !== 'SPACEMOUSE');
-    setEnabled('cmd-shell', active && sub !== 'SHELL');
-    setEnabled('cmd-gui', active && sub !== 'GUI');
     setEnabled('cmd-clear', true); // always available
 }
 

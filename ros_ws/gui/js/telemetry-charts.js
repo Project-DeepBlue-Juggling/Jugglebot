@@ -233,6 +233,7 @@ export function initTelemetryCharts() {
     createStores();
     initSignalToggles();
     initChartVisibilityToggles();
+    initChartGridToggle();
     initTimeWindowSelector();
     initPauseButton();
     initExportButton();
@@ -512,6 +513,85 @@ function initChartVisibilityToggles() {
     }
 
     syncVisibilityButtonStates();
+}
+
+// ---- Hide/show chart grid (toolbar stays visible) ----
+
+/**
+ * localStorage key for the grid-hidden toggle.  Distinct from the
+ * resize-handle's 'jugglebot-chart-collapsed' (which collapses the WHOLE
+ * panel, toolbar included) — this one hides only #chart-grid so the toolbar
+ * banner stays usable and the button can toggle its own label in place.
+ */
+const CHART_GRID_HIDDEN_KEY = 'jugglebot-chart-grid-hidden';
+
+/** Reflect the current grid-hidden state onto the toggle button's label. */
+function applyChartGridToggleUI(hidden) {
+    const btn = document.getElementById('chart-grid-toggle-btn');
+    if (!btn) return;
+    btn.textContent = hidden ? 'Show charts' : 'Hide charts';
+    btn.classList.toggle('active', hidden);
+}
+
+/**
+ * Set the grid-hidden state: toggles .charts-hidden on #chart-panel, updates
+ * the button label, and persists to localStorage.  When un-hiding, the charts
+ * may have been sized (window resize / layout change) while hidden, so mirror
+ * the resize-handle restore idiom and rebuild on the next frame.
+ */
+function setChartGridHidden(hidden, { rebuild = true } = {}) {
+    const panel = document.getElementById('chart-panel');
+    if (!panel) return;
+    panel.classList.toggle('charts-hidden', hidden);
+    applyChartGridToggleUI(hidden);
+    try { localStorage.setItem(CHART_GRID_HIDDEN_KEY, hidden ? 'true' : 'false'); } catch { /* ignore */ }
+    if (!hidden && rebuild) {
+        requestAnimationFrame(() => rebuildCharts());
+    }
+}
+
+/**
+ * Public helper — clear the grid-hidden state if set (idempotent + cheap when
+ * already shown).  Called from the resize-handle drag in main.js so dragging
+ * the handle re-reveals the grid consistently (and updates the button label +
+ * localStorage to match).
+ */
+export function clearChartGridHidden() {
+    const panel = document.getElementById('chart-panel');
+    if (!panel || !panel.classList.contains('charts-hidden')) return;
+    setChartGridHidden(false);
+}
+
+function initChartGridToggle() {
+    const rightGroup = document.getElementById('chart-right-group');
+    const visToggles = document.getElementById('chart-visibility-toggles');
+    if (!rightGroup || !visToggles) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'chart-grid-toggle-btn';
+    btn.className = 'signal-toggle';
+    btn.title = 'Hide/show the chart grid — the toolbar stays visible so you can bring it back';
+
+    const divider = document.createElement('span');
+    divider.className = 'chart-toolbar-divider';
+
+    // Insert [button][divider] immediately before the visibility pills so the
+    // button sits adjacent to them, separated by the small vertical rule.
+    rightGroup.insertBefore(btn, visToggles);
+    rightGroup.insertBefore(divider, visToggles);
+
+    btn.addEventListener('click', () => {
+        const panel = document.getElementById('chart-panel');
+        const isHidden = panel ? panel.classList.contains('charts-hidden') : false;
+        setChartGridHidden(!isHidden);
+    });
+
+    // Restore persisted state.  No rebuild on restore: the normal init flow
+    // (applyChartLayout) builds the charts regardless, and if restoring to
+    // hidden there's nothing to draw.
+    let hidden = false;
+    try { hidden = localStorage.getItem(CHART_GRID_HIDDEN_KEY) === 'true'; } catch { /* ignore */ }
+    setChartGridHidden(hidden, { rebuild: false });
 }
 
 // ---- Time window selector ----

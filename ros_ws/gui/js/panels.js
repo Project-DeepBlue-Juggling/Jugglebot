@@ -267,10 +267,79 @@ export function updateLevellingPanel(robotState) {
     }
 }
 
+// ---- Collapsible sidebar panels ----
+//
+// A general, minimal mechanism: clicking a collapsible .panel-header toggles
+// .collapsed on its .panel; CSS (`.panel.collapsed > *:not(.panel-header)`)
+// hides every non-header child, so it works for heterogeneous panel bodies
+// without per-panel wiring.  #panel-history is deliberately EXCLUDED here — it
+// owns its own collapse handler in command-history.js; the shared CSS rule is
+// compatible with it, we just must not bind a second click handler.
+//
+// Sidebar collapse state is intentionally NOT persisted to localStorage: the
+// connection contract (BB / Catching Cone auto expand-on-connect,
+// collapse-on-disconnect) plus fresh defaults should compute cleanly on every
+// load.  Persisting would let a stale "collapsed while connected" (or vice
+// versa) state fight the connection edges.
+const COLLAPSIBLE_PANEL_IDS = [
+    'panel-orchestrator', 'panel-flags', 'panel-levelling', 'panel-motion',
+    'panel-bb', 'panel-catching-cone', 'panel-tracking',
+];
+
+/** Panels that DEFAULT collapsed — the two device panels that start
+ *  disconnected and auto-expand on their connect edge. */
+const DEFAULT_COLLAPSED_PANEL_IDS = ['panel-bb', 'panel-catching-cone'];
+
+/** Collapse/expand a panel by id (helper for the connection-edge drivers). */
+function setPanelCollapsed(id, collapsed) {
+    const panel = document.getElementById(id);
+    if (panel) panel.classList.toggle('collapsed', collapsed);
+}
+
+export function initCollapsiblePanels() {
+    for (const id of COLLAPSIBLE_PANEL_IDS) {
+        const panel = document.getElementById(id);
+        if (!panel) continue;
+        const header = panel.querySelector('.panel-header');
+        if (!header) continue;
+
+        header.classList.add('panel-header-collapsible');
+
+        // Chevron affordance (rotates via CSS when the panel is collapsed).
+        const chevron = document.createElement('span');
+        chevron.className = 'panel-collapse-chevron';
+        chevron.innerHTML = '&#x25BC;';  // ▼
+        header.appendChild(chevron);
+
+        header.addEventListener('click', (e) => {
+            // Don't toggle when the click landed on an interactive control
+            // inside the header (button/select/input/link) — those have their
+            // own behaviour and must not double as a collapse gesture.
+            if (e.target.closest('button, select, input, textarea, a')) return;
+            panel.classList.toggle('collapsed');
+        });
+
+        if (DEFAULT_COLLAPSED_PANEL_IDS.includes(id)) {
+            panel.classList.add('collapsed');
+        }
+    }
+}
+
 // ---- Ball Butler panel ----
 
 /** Last known BB state code (from heartbeat). */
 let lastBBState = -1;
+
+/** Last-known BB connected bool — drives auto expand/collapse of #panel-bb on
+ *  the connect/disconnect EDGE only (manual header clicks between edges are
+ *  honoured).  null until the first heartbeat / disconnect is processed. */
+let lastBBConnected = null;
+
+function driveBBConnectionEdge(connected) {
+    if (lastBBConnected === connected) return;
+    setPanelCollapsed('panel-bb', !connected);  // connect → expand, disconnect → collapse
+    lastBBConnected = connected;
+}
 
 function onBBCalibrateClick() {
     const btn = document.getElementById('bb-calibrate-btn');
@@ -375,10 +444,14 @@ const BB_STATE_CLASSES = {
  */
 export function updateBBPanel(hb) {
     // Handle disconnected state — show placeholder values and bail early
+    // (setBBDisconnected drives the collapse edge).
     if (!hb.connected) {
         setBBDisconnected();
         return;
     }
+
+    // Connected — auto-expand the panel on the connect edge.
+    driveBBConnectionEdge(true);
 
     const badge = document.getElementById('bb-state-badge');
     if (badge) {
@@ -433,6 +506,11 @@ export function updateBBPanel(hb) {
 }
 
 export function setBBDisconnected() {
+    // Auto-collapse the panel on the disconnect edge (fires for both a
+    // BB-reported disconnected heartbeat and a full GUI↔rosbridge drop, which
+    // calls this from main.js — mirrors how Catching Cone is handled).
+    driveBBConnectionEdge(false);
+
     const badge = document.getElementById('bb-state-badge');
     if (badge) {
         badge.textContent = 'Disconnected';
@@ -1033,6 +1111,18 @@ let coneLastCatchSeq = null;
 let coneHadAnyCatch = false;
 let coneCatchFlashTimer = null;
 
+/** Last-known Catching-Cone connected bool — drives auto expand/collapse of
+ *  #panel-catching-cone on the connect/disconnect EDGE only (manual header
+ *  clicks between edges are honoured). null until the first heartbeat /
+ *  disconnect is processed. */
+let lastCCConnected = null;
+
+function driveCCConnectionEdge(connected) {
+    if (lastCCConnected === connected) return;
+    setPanelCollapsed('panel-catching-cone', !connected);  // connect → expand, disconnect → collapse
+    lastCCConnected = connected;
+}
+
 function coneDeltaClass(ms) {
     const a = Math.abs(ms);
     if (a < CC_DELTA_OK_MS) return 'cc-delta-ok';
@@ -1093,6 +1183,10 @@ export function initCatchingConePanel() {
 }
 
 export function setCatchingConeDisconnected() {
+    // Auto-collapse on the disconnect edge (fires for both a cone-reported
+    // offline heartbeat and a full GUI↔rosbridge drop via main.js).
+    driveCCConnectionEdge(false);
+
     const badge = document.getElementById('cc-state-badge');
     if (badge) { badge.textContent = 'Disconnected'; badge.className = 'badge cc-state-badge cc-disconnected'; }
     const dot = document.getElementById('cc-sync-dot');
@@ -1115,6 +1209,8 @@ export function setCatchingConeDisconnected() {
 /** Update connection badge + time-sync line from a CatchingConeHeartbeat. */
 export function updateConeHeartbeat(hb) {
     if (!hb.connected) { setCatchingConeDisconnected(); return; }
+    // Connected (synced or unsynced) — auto-expand on the connect edge.
+    driveCCConnectionEdge(true);
     const badge = document.getElementById('cc-state-badge');
     const dot = document.getElementById('cc-sync-dot');
     const text = document.getElementById('cc-sync-text');
@@ -1352,7 +1448,7 @@ export function initBBThrowPanel() {
         .map(t => `<option value="${t}">${t}</option>`).join('');
     content.innerHTML = `
         <div class="bb-throw-row">
-            <label class="bb-throw-label" for="bb-throw-target-select">Target</label>
+            <label class="bb-throw-label" for="bb-throw-target-select">Throw target</label>
             <select class="bb-throw-select" id="bb-throw-target-select">${options}</select>
             <button class="bb-calibrate-btn" id="bb-throw-btn">Throw</button>
         </div>

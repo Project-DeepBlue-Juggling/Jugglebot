@@ -3,9 +3,13 @@
    =================================================================== */
 
 /* ---- Orchestrator state badge ---- */
+/* 4th 'auto' track holds the collapse chevron appended by
+   initCollapsiblePanels(); without it the chevron (a 4th grid item) wraps to a
+   new implicit row instead of sitting hard-right. margin-left:auto is a flex
+   idiom that does nothing in this grid, so the trailing track pins it. */
 #panel-orchestrator .panel-header {
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto 1fr auto auto;
     align-items: center;
 }
 
@@ -1023,8 +1027,15 @@
 }
 
 /* ───────────────────────────────────────────
-   Ball Butler Throw panel
+   Ball Butler Throw — now a sub-section merged into the bottom of the Ball
+   Butler panel.  The border-top + spacing set it off as a distinct block.
    ─────────────────────────────────────────── */
+#bb-throw-content {
+    border-top: 1px solid var(--border-color);
+    margin-top: 8px;
+    padding-top: 8px;
+}
+
 .bb-throw-row {
     display: flex;
     align-items: center;

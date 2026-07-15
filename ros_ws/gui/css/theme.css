@@ -363,6 +363,41 @@ html, body {
     color: var(--text-secondary);
 }
 
+/* ---- Collapsible sidebar panels ----
+   Clicking a collapsible header toggles .collapsed on its .panel; every
+   non-header child is then hidden.  Works for heterogeneous panel bodies
+   with no per-panel CSS.  (The Event Log panel drives its own collapse via
+   .panel-history rules + command-history.js — this general rule coexists
+   with it and no second click handler is attached there.) */
+.panel-header-collapsible {
+    cursor: pointer;
+    user-select: none;
+    gap: var(--gap-sm);
+}
+
+/* #panel-history is excluded from this generic wiring — it owns its own
+   animated collapse in command-history.js/panels.css. Exclude it here so this
+   rule's display:none can't override that animation. */
+.panel.collapsed:not(#panel-history) > *:not(.panel-header) {
+    display: none;
+}
+
+/* Chevron affordance, pinned to the right of the header; rotates when the
+   panel is collapsed.  margin-left:auto keeps it hard-right regardless of how
+   many badges/readouts the header carries. */
+.panel-collapse-chevron {
+    margin-left: auto;
+    font-size: 9px;
+    line-height: 1;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    transition: transform var(--transition-fast);
+}
+
+.panel.collapsed .panel-collapse-chevron {
+    transform: rotate(-90deg);
+}
+
 /* Badge base */
 .badge {
     display: inline-flex;
