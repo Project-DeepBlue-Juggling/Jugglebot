@@ -34,7 +34,7 @@ files_changed:
   - plans/active/mvp-trajectory-bringup.md
   - docs/can_bridge/index.md
 commits:
-  - TBD
+  - 5cc8fc9
 subsystem:
   - ros
   - motion
