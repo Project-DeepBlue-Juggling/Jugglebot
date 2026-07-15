@@ -1,5 +1,12 @@
 # Hardware Session — MVP Phase 4: Limit Ramp-up + Lean A/B (multiple short sessions)
 
+> **⚡ Superseded in part, 2026-07-15 (ARMING CONTRACT)**: arming is now
+> **automatic on ACTIVE entry** (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`;
+> see the banner in `mvp_bench_runbook.md`). Manual `set_setpoint_output true`
+> steps below run only under `auto_arm:=false`; disarm-before-deactivate is now
+> enforced in-process by the bridge (A3).
+
+
 **Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 4
 **Logbook**: `logbook/2026-07-08-mvp-phase4-shaping-ramp-tooling.md`
 **Goal**: raise the session leg vel/acc/jerk limits toward the levels Phase 6

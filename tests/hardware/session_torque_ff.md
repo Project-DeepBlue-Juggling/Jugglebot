@@ -130,6 +130,13 @@ LEG TORQUE FEEDFORWARD IS ENABLED (clamp ±0.15 Nm true, wire scale 0.967251, ra
 
 ## S3 — THE SIGN CHECK (the one that matters). Platform on the bench, ready to E-STOP.
 
+> **2026-07-15 (ARMING CONTRACT)**: under the default `auto_arm:=true` the wire
+> arms **automatically on ACTIVE entry** — the FF ramp you are about to watch
+> starts at that automatic arm, i.e. right after `activate` completes. For a
+> deliberate, operator-timed arm edge (recommended for this first-arming
+> session), launch with `auto_arm:=false` and arm manually via
+> `ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"`.
+
 Arm and hold at the active pose. **Do not command any motion.** Watch the platform and the
 per-leg `iq_measured` through the 2 s ramp.
 

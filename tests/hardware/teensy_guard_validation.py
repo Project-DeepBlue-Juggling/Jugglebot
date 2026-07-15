@@ -5,9 +5,10 @@ the can-hub hardening checks 1-3 (E-STOP latch, monotonic-clock/seq-guard, NetLo
 It owns the Teensy UDP link directly (the ROS2 teensy_bridge_node MUST be stopped —
 it binds 5005/6) and drives the firmware guard state machine with a 40 Hz HOLD
 setpoint stream, arming ``mpc_active`` at RUNTIME — the correct
-cold-start-independent order (stream first, THEN arm), the inverse of launching the
-bridge with ``enable_setpoint_output:=true`` (which arms before any stream → the
-MPC_STALE self-E-STOP).
+cold-start-independent order (stream first, THEN arm). This is the pattern the
+2026-07-15 ARMING_CONTRACT made the ONLY arming path: the old
+``enable_setpoint_output:=true`` boot-arm (which armed before any stream → the
+MPC_STALE self-E-STOP) is now inert.
 
 ZERO MOTION BY CONSTRUCTION: the legs are left IDLE and the tool HARD-REFUSES to arm
 if any leg is CLOSED_LOOP. The firmware's MPC-staleness watchdog, seq-guard, and

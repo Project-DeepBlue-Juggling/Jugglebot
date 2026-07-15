@@ -38,6 +38,31 @@ been on hardware yet** — that is this runbook.
 - Before running: `colcon build --packages-select jugglebot jugglebot_interfaces`,
   `source install/setup.bash`. No code changes should be needed for any session below.
 
+## ⚡ 2026-07-15 — the ARMING CONTRACT landed (read before using S1/S2 commands)
+
+The first S1-style evening (2026-07-15) hit three arming-lifecycle failures in one
+night: a stale prior-session guard latch wedged HOMING twice; a battery ran
+"accepted" with **zero motion and zero warnings** because the manual arm step was
+skipped; and `enable_setpoint_output:=true` self-E-STOPd at boot (the
+arm-before-stream trap). All three were the same root cause — "armed" was a
+cross-process invariant with no owner — and are now closed structurally by
+`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md` (A1–A5). What changes for the
+operator:
+
+- **Arming is now AUTOMATIC on ACTIVE entry** (orchestrator auto-arm; the bridge's
+  stream-then-arm pre-check is unchanged and still the gate). The manual
+  `set_setpoint_output true` steps in S1/S2 below are **superseded** — kept for the
+  historical record. To get the old probe-first manual flow, launch with
+  `auto_arm:=false`.
+- **Disarm-before-deactivate is now enforced in-process by the bridge** (A3) — the
+  operator sequence in Sharp Edge #6 is no longer load-bearing.
+- **`enable_setpoint_output:=true` is INERT** (loud ERROR, no boot-arm). Never use it.
+- **A stale guard latch at BOOT is auto-cleared** (disarmed, one-shot, loud); a latch
+  that returns after the clear goes to FAULT as a live fault.
+- **A move accepted while the wire is disarmed is now loud**: the service response
+  carries `[wire DISARMED — setpoints not reaching the legs]` and trajectory_node
+  WARNs. If you see it under auto-arm, something real is wrong — stop.
+
 ## Standing rules (every session)
 
 - **You (Harrison) run every robot-actuating command.** Claude prepares the exact
@@ -65,9 +90,11 @@ been on hardware yet** — that is this runbook.
   Jetson 5V rail, so only `CLEAR_ERRORS` or a Teensy power-cycle (= a Jetson reboot)
   clears it. If a session ends with a latched guard, assume it is STILL latched at the
   next session until cleared (this trapped the 2026-07-09 S3 recovery attempt).
-- **Disarm before deactivate** is **firmware-enforced** — the firmware rejects
-  DEACTIVATE while `mpc_active=1`, so the clean order is always
-  `set_setpoint_output false` (disarm) → orchestrator `deactivate`.
+- **Disarm before deactivate** is now **bridge-enforced in-process** (ARMING_CONTRACT
+  A3, 2026-07-15): `_run_deactivate` disarms first, on every entry point (orchestrator
+  deactivate, direct `/deactivate`, shutdown stow). The firmware's
+  reject-DEACTIVATE-while-armed gate remains as the backstop. A manual
+  `set_setpoint_output false` before deactivate is harmless but no longer required.
 - On ABORT: cut power / trigger the guard, then debrief before re-trying. For a limit
   ramp (S4), **revert the in-session `set_limits` to the last-good values** before
   retrying.
@@ -78,9 +105,12 @@ been on hardware yet** — that is this runbook.
 
 1. **Leaving a streaming mode while armed latches MPC_STALE within 250 ms.** The
    emitter stops publishing when you leave a streaming mode, so the bridge stops
-   receiving frames and self-E-STOPs. **Always disarm (`set_setpoint_output false`)
-   before any control-mode change away from a streaming mode.** (A structural
-   auto-disarm on mode-exit is a Deferred item — the operator sequence is the guard.)
+   receiving frames and self-E-STOPs. **Structurally closed 2026-07-15**
+   (ARMING_CONTRACT A3/A4): in the production flow the mode now stays published
+   until the deactivate resolves, and the bridge disarms in-process before the
+   stow — the deferred auto-disarm landed. The edge remains live only for
+   `auto_arm:=false` manual sessions: there, always disarm before any control-mode
+   change away from a streaming mode.
 
 2. **Reload cancel after AIMING cannot recall the ball.** Once the reload action
    reaches AIMING, BB has committed the throw — cancelling the action does **not**
@@ -120,17 +150,16 @@ been on hardware yet** — that is this runbook.
    a lost `trajectory` publish left the platform in STANDBY; the operator armed anyway,
    the whole battery came back `WRONG_MODE`, and the cleanup triggered Sharp Edge #6.)
 
-6. **`deactivate` while ARMED latches `MPC_STALE` *and* leaves the legs un-stowed.**
-   The state-machine transition ACTIVE→IDLE is pure software and happens instantly, so
-   `control_mode` becomes `''` and the emitter stops — the guard latches `MPC_STALE`
-   within 250 ms. But the firmware **rejects** the DEACTIVATE while `mpc_active=1`, so
-   the legs never profile-stow: you end with the orchestrator in IDLE, the platform
-   still at the ACTIVE pose, and a latched fault. Recover with
-   `ros2 service call /clear_errors std_srvs/srv/Trigger` (a bridge service — the
-   orchestrator only routes `'clear_errors'` from its FAULT state, `state_machine.py`
-   `FaultHandler`, so a topic publish from IDLE is silently discarded), then re-activate.
-   **Always `set_setpoint_output false` before `deactivate`.** (Observed 2026-07-09 at
-   13:29:47 during the S2 session.)
+6. **`deactivate` while ARMED — CLOSED 2026-07-15** (ARMING_CONTRACT A3/A4; kept for
+   the historical record — observed 2026-07-09 at 13:29:47 during the S2 session).
+   The old failure: ACTIVE→IDLE blanked `control_mode` instantly, the emitter
+   stopped, MPC_STALE latched within 250 ms, and the firmware rejected the DEACTIVATE
+   while `mpc_active=1` — orchestrator in IDLE, platform still standing, latched
+   fault. Now: the bridge disarms in-process at the head of `_run_deactivate` (A3)
+   and the streaming mode stays published until the deactivate resolves (A4 —
+   IdleHandler blanks it afterwards), so neither half can happen in the production
+   flow. If you ever see the old signature again, that is a contract violation —
+   stop and investigate, don't work around it.
 
 ---
 
@@ -151,6 +180,8 @@ been on hardware yet** — that is this runbook.
      with the read-only probe `python tools/probes/traj_stream_probe.py --duration 30`
      (`rate_hz ≈ 40`, `u0_mean ≈ 2.19 rev`, `max_step ≈ 0`, `pump_rej = 0`).
   3. `ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"` (arm).
+     *(Superseded 2026-07-15: automatic on ACTIVE entry under auto-arm — see the
+     ARMING CONTRACT banner above. Needed only with `auto_arm:=false`.)*
   4. Hold 120 s.
   5. `trajectory/go_home` → `set_setpoint_output false` (disarm) → orchestrator
      `deactivate` → shutdown.
@@ -187,6 +218,8 @@ been on hardware yet** — that is this runbook.
      returns `WRONG_MODE` — harmless in itself, but the armed cleanup that follows is how
      the 2026-07-09 session tripped an `MPC_STALE` E-STOP (Sharp Edge #6).
   5. `ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"` (arm).
+     *(Superseded 2026-07-15: automatic on ACTIVE entry under auto-arm — see the
+     ARMING CONTRACT banner above. Needed only with `auto_arm:=false`.)*
 - **Battery** (`trajectory/go_to_pose`): z 170→190→170; x ±20; y ±20; tilt rx ±3°; then
   one deliberately-infeasible `duration_s: 0.05` request. **Do not hand-roll these** —
   `go_to_pose` takes one pose per call and returns `BUSY` if a move is already in flight

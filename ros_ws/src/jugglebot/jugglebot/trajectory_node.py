@@ -298,6 +298,20 @@ class TrajectoryNode(Node):
         # plain bool is GIL-atomic across the one-writer/one-reader split.
         self._guard_frozen = False
         self._current_mode = ''
+        # ── Arming contract (A5, see ARMING_CONTRACT.md) ──────────
+        # The wire's arming state, mirrored from /link_status 'mpc_active'.
+        # This node has no authority over arming — it only makes the disarmed
+        # wire LOUD: an accepted motion command while disarmed executes into a
+        # dropped stream (the 2026-07-15 silent no-op battery: two moves
+        # "accepted", realized peaks on /trajectory/diagnostics, zero motion,
+        # setpoints_sent frozen at 0). Plain bool across threads (GIL-atomic).
+        self._wire_armed = False
+        # is_homed from robot_state — gates SEEDING (A5): mid-homing the legs sit
+        # at arbitrary index-search positions below the workspace hard margin, so
+        # every seed attempt failed the gate at the 100 Hz telemetry rate (4091
+        # ERROR lines in 41 s on 2026-07-15, burying the real fault). Before
+        # homing completes there is nothing valid to hold anyway.
+        self._is_homed = False
         self._seq = 0
         self._last_motor_rev = None       # prior emitted u0 (step-bound defence)
         self._last_pose = self._neutral_pose.copy()
@@ -731,13 +745,24 @@ class TrajectoryNode(Node):
             # _on_robot_state callback (inherently fresh) performs the seed.
             # NB: _seed_hold_from acquires _plan_lock itself — call it UNLOCKED.
             if not self._seeded:
-                if self._robot_state_fresh():
+                if not self._is_homed:
+                    # A5 — no seeding before homing completes (the workspace gate
+                    # would reject every attempt; see _on_robot_state).
+                    self.get_logger().warning(
+                        "streaming mode entered before homing completed — "
+                        "seeding deferred until is_homed")
+                elif self._robot_state_fresh():
                     self._seed_hold_from(self._latest_pos_rev)
                 else:
                     self.get_logger().error(
                         "telemetry stale — waiting for fresh robot_state before "
                         "seeding")
-            self.get_logger().info(f"streaming ENABLED (mode {mode})")
+            # NB "ENABLED" means "will emit once seeded" — the emitter itself is
+            # gated on _streaming AND _seeded (a rejection above does not stop
+            # this log; the 40 Hz frames start only after a successful seed).
+            self.get_logger().info(
+                f"streaming ENABLED (mode {mode})"
+                + ("" if self._seeded else " — awaiting seed"))
         else:
             # Leaving the streaming set: stop publishing and require a fresh seed
             # on the next entry (the measured pose may have moved meanwhile).
@@ -763,8 +788,12 @@ class TrajectoryNode(Node):
         pos_rev = [float(states[i].pos_estimate) for i in range(_NUM_LEGS)]
         self._latest_pos_rev = pos_rev
         self._robot_state_mono = time.perf_counter()
-        # Seed on the first telemetry after streaming is enabled.
-        if self._streaming and not self._seeded:
+        self._is_homed = bool(getattr(msg, 'is_homed', False))
+        # Seed on the first telemetry after streaming is enabled — but never
+        # before homing completes (A5): mid-homing extensions sit below the
+        # workspace hard margin, so seeding can only fail (and at 100 Hz the
+        # rejection spam buried the real fault on 2026-07-15).
+        if self._streaming and not self._seeded and self._is_homed:
             self._seed_hold_from(pos_rev)
 
     def _robot_state_fresh(self) -> bool:
@@ -806,7 +835,7 @@ class TrajectoryNode(Node):
             self._last_rejection = str(e)
             self.get_logger().error(
                 f"seed hold rejected by gate ({e}) — not streaming until a valid "
-                "state")
+                "state", throttle_duration_sec=1.0)
             return False
         now = time.perf_counter()
         with self._plan_lock:
@@ -1042,6 +1071,11 @@ class TrajectoryNode(Node):
         """
         fault = self._kv_get(msg.values, 'fault_state', 'NONE')
         latched = fault not in ('NONE', 'UNKNOWN', '')
+        # A5 (ARMING_CONTRACT) — mirror the wire's arming state so accepted
+        # motion commands on a disarmed wire can be loud (this node otherwise
+        # has no way to know its frames are being dropped: a disarmed bridge
+        # holds no :5557 subscription, so the drop is invisible end-to-end).
+        self._wire_armed = self._kv_get(msg.values, 'mpc_active', '0') == '1'
         with self._plan_lock:
             streaming = self._streaming and self._seeded
         should_freeze = latched and streaming
@@ -1438,7 +1472,7 @@ class TrajectoryNode(Node):
             return response
         self._install(plan)
         response.success = True
-        response.message = 'holding at current pose'
+        response.message = 'holding at current pose' + self._wire_state_suffix()
         return response
 
     def _svc_go_home(self, request, response):
@@ -1476,7 +1510,8 @@ class TrajectoryNode(Node):
         self._install(plan)
         response.success = True
         response.message = (f'returning to neutral (0,0,{self._neutral_pose[2]:.0f}) '
-                            f'over {self._go_home_duration_s:.2f}s')
+                            f'over {self._go_home_duration_s:.2f}s'
+                            + self._wire_state_suffix())
         return response
 
     # ═══════════════════════════════════════════════════════════
@@ -1630,8 +1665,29 @@ class TrajectoryNode(Node):
         response.message = (
             f"move accepted: target (x={target[0]:.1f} y={target[1]:.1f} "
             f"z={target[2]:.1f} mm) over {plan.total_duration:.3f}s "
-            f"(lean_gain={gain:.2f})")
+            f"(lean_gain={gain:.2f})" + self._wire_state_suffix())
         return response
+
+    def _wire_state_suffix(self) -> str:
+        """A5 (ARMING_CONTRACT): '' when the wire is armed; a loud marker when
+        an accepted motion command is about to execute into a dropped stream.
+
+        Acceptance here is a PLANNING verdict — this node cannot refuse on a
+        disarmed wire (streaming-while-disarmed is the legal pre-arm phase of
+        the documented flow) — but it must never be SILENT about it: on
+        2026-07-15 a full battery was "accepted" and fully emitted with
+        mpc_active=0, zero motion, and zero warnings anywhere.
+        """
+        if self._wire_armed:
+            return ""
+        self.get_logger().warning(
+            "motion command accepted while the wire is DISARMED (mpc_active=0) "
+            "— the emitted setpoints are NOT reaching the legs. Arm via the "
+            "orchestrator (auto-arm on ACTIVE entry) or "
+            "ros2 service call /set_setpoint_output std_srvs/srv/SetBool "
+            "\"{data: true}\"",
+            throttle_duration_sec=5.0)
+        return " [wire DISARMED — setpoints not reaching the legs]"
 
     def _svc_set_limits(self, request, response):
         """``trajectory/set_limits``: ramp the session leg limits (0 ⇒ keep).
@@ -1971,7 +2027,8 @@ class TrajectoryNode(Node):
             neutral=(None if hold_after else self._neutral_pose))
         response.accepted = accepted
         response.code = code
-        response.message = message
+        response.message = (message + self._wire_state_suffix()
+                            if accepted else message)
         response.planned_duration_s = planned
         response.min_duration_s = min_s
         return response

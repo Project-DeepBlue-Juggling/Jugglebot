@@ -107,9 +107,11 @@ bad *first* command. Two independent layers: the bridge gates command-stream
 discontinuity (prior frame); the Teensy gates command-vs-encoder divergence.
 
 Whether the resulting frame is actually transmitted is gated separately by the
-node's ``mpc_active`` / ``enable_setpoint_output`` (default off) — this module
-only decides *what* a well-formed frame would be and *whether it is safe to
-send*.
+node's ``mpc_active`` — runtime-armed via ``/set_setpoint_output``'s
+stream-then-arm pre-check, automatic on ACTIVE entry since the 2026-07-15
+arming contract (``ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md``; the
+old ``enable_setpoint_output`` boot-arm is inert) — this module only decides
+*what* a well-formed frame would be and *whether it is safe to send*.
 """
 
 from __future__ import annotations

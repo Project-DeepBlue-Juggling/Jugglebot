@@ -16,11 +16,14 @@ side-by-side ``/teensy/*`` namespace during the leg/hand cutover; BB + cone in a
 Safety invariants this node upholds (non-negotiable):
 
 * **``mpc_active`` defaults to 0.** The J→T heartbeat carries ``flags=0``
-  (``mpc_active`` clear) on every startup path. Setpoint output is gated behind
-  the ``~enable_setpoint_output`` parameter (default ``false``) and is wired in
-  Commit 3. While disabled, no ``Setpoint`` frame is ever sent and the Teensy
-  will not enable leg output. There is no code path through ``__init__`` that
-  sets ``mpc_active`` without an explicit operator opt-in.
+  (``mpc_active`` clear) on every startup path. The ONLY 0→1 path is the
+  ``/set_setpoint_output`` service's stream-then-arm pre-check
+  (ARMING_CONTRACT A1; automatic on ACTIVE entry via the orchestrator, A2).
+  The old ``~enable_setpoint_output`` boot-arm is retained but INERT (loud
+  ERROR — it armed with zero preconditions, the arm-before-stream trap).
+  While disabled, no ``Setpoint`` frame is ever sent and the Teensy will not
+  enable leg output. There is no code path through ``__init__`` that sets
+  ``mpc_active`` at all.
 * **Never command a dead link.** The link health monitor (Commit 2) mirrors
   ``can_node._watchdog_check``'s deferred-stow latch
   (``logbook/2026-05-19-can-loss-fault-response-safety-inversion.md``): it does
@@ -154,6 +157,10 @@ _SETPOINT_ECHO_STALE_S = 0.5
 _T2J_FLAG_TIME_SYNCED = 0x1
 _T2J_FLAG_STOW_PENDING = 0x2
 _T2J_FLAG_ALL_AXIS_HB_OK = 0x4
+# bit3: firmware-side mpc_active (udp_protocol HeartbeatFlagsT2J.MPC_ACTIVE) —
+# the arm-took verification bit. Surfaced on /link_status as 'teensy_mpc_active'
+# (ARMING_CONTRACT A5) so a host-armed / firmware-not-armed split is visible.
+_T2J_FLAG_MPC_ACTIVE = 0x8
 # Bits 8-13 carry the per-leg torque_ff ingest-clamp mask (bit 8+i = leg i clamped
 # at UDP ingest on the last ACCEPTED setpoint) — generated single source:
 # p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK / p.HEARTBEAT_TORQUE_CLAMP_SHIFT.
@@ -792,13 +799,14 @@ class TeensyBridgeNode(Node):
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
         self.create_timer(1.0, self._version_check_poll)       # 1 Hz firmware-version handshake (no-op once resolved)
 
-        # ── Setpoint downlink (Commit 3) — DEFAULT DISABLED ────
+        # ── Setpoint downlink (Commit 3) — STARTS DISARMED ────
         # The 40/500 Hz hot path. The SetpointPump (pure packing + per-step
         # safety gate) is always constructed (cheap), but the ZMQ source and the
-        # ingest thread are created ONLY when ~enable_setpoint_output is true.
-        # While disabled there is NO setpoint thread and the heartbeat keeps
-        # mpc_active=0, so the Teensy will not enable leg output. The operator
-        # flips the parameter (and restarts the node) only after bench validation.
+        # ingest thread are created ONLY by _arm_setpoint_output's
+        # stream-then-arm pre-check (ARMING_CONTRACT A1 — automatic on ACTIVE
+        # entry via the orchestrator, or a manual /set_setpoint_output call).
+        # While disarmed there is NO setpoint thread and the heartbeat keeps
+        # mpc_active=0, so the Teensy will not enable leg output.
         #
         # LEG TORQUE FEEDFORWARD — also default-disabled, independently
         # (dynamics.torque_ff_enabled, shipped false). The pump is the SINGLE wire
@@ -841,9 +849,33 @@ class TeensyBridgeNode(Node):
         self._sp_source = None
         self._sp_thread = None
         self._sp_stop = threading.Event()
-        enable_sp = bool(self.get_parameter('enable_setpoint_output').value)
-        if enable_sp:
-            self._start_setpoint_output(setpoint_source)
+        # True while _run_deactivate is mid-descent (any entry point). The arm
+        # pre-check refuses while set: an arm landing mid-descent would hand the
+        # descending legs to the setpoint stream partway down (ARMING_CONTRACT
+        # A1, review 2026-07-15). Written/cleared on the deactivate's executor
+        # thread, read on the arm service's thread — plain bool, GIL-atomic.
+        self._deactivate_in_progress = False
+        # Serializes _arm_setpoint_output (audit 2026-07-15): the arm service
+        # lives in the Reentrant group, so without this two overlapping arms
+        # could both pass the mpc_active check and double-start the ingest.
+        self._arm_lock = threading.Lock()
+        # ARMING_CONTRACT A1 — the boot-arm path is REMOVED. Arming at __init__
+        # ran ZERO preconditions: nothing can legitimately stream at BOOT (the
+        # workspace gate refuses to seed at STOW), so `enable_setpoint_output:=true`
+        # armed onto a silent :5557 and the firmware MPC-staleness watchdog
+        # latched within one guard tick — every leg command then refused
+        # (reconfirmed live 2026-07-15 21:32). The ONLY arming path is the
+        # runtime service below, whose stream-then-arm pre-check is the
+        # contract's single safe-to-arm gate. The parameter is retained but
+        # inert so stale launch invocations fail loud, not weird.
+        if bool(self.get_parameter('enable_setpoint_output').value):
+            self.get_logger().error(
+                "enable_setpoint_output:=true is INERT since the arming contract "
+                "(2026-07-15): boot-arming had zero preconditions and self-E-STOPd "
+                "(MPC_STALE) before any producer could stream. The bridge starts "
+                "DISARMED; arming is runtime-only via /set_setpoint_output — "
+                "automatic on ACTIVE entry (orchestrator auto-arm) or manual. "
+                "Remove the launch arg.")
         # Injected source retained so runtime arming (set_setpoint_output) can reuse
         # it in tests instead of opening a real ZMQ SUB on :5557.
         self._injected_setpoint_source = setpoint_source
@@ -857,8 +889,19 @@ class TeensyBridgeNode(Node):
         # mpc_active=1). This is the pattern validated in
         # tests/hardware/teensy_guard_validation.py: never arm before a matching
         # stream is confirmed flowing, so the Teensy never E-STOPs at the arm edge.
+        # The recovery/arming callback group is created HERE (before the arm
+        # service) so both can share it — see the /recover comment below for the
+        # full rationale.
+        self._recover_cbgroup = ReentrantCallbackGroup()
+        # The arm handler blocks up to 0.5 s per attempt on the :5557 frame-wait;
+        # in the node-default MutuallyExclusiveCallbackGroup that block would
+        # SERIALIZE with (and starve) the 100 Hz robot_state / 10 Hz link_status
+        # timers on every refused auto-arm retry (review 2026-07-15) — freezing
+        # exactly the telemetry the producer needs to seed. Reentrant group keeps
+        # the timers running through the wait.
         self.create_service(
-            SetBool, 'set_setpoint_output', self._svc_set_setpoint_output)
+            SetBool, 'set_setpoint_output', self._svc_set_setpoint_output,
+            callback_group=self._recover_cbgroup)
 
         # ── One-call guard recovery (/recover, FIX 3) ──
         # The 2026-07-10 runaway left the streamed u0 diverged ~0.5+ rev from the
@@ -873,8 +916,8 @@ class TeensyBridgeNode(Node):
         # a callback on a cross-process future would deadlock its sole thread. The
         # service + the cross-process reseed client share a ReentrantCallbackGroup so
         # the reseed reply is dispatched on another executor thread while /recover
-        # blocks on the future.
-        self._recover_cbgroup = ReentrantCallbackGroup()
+        # blocks on the future. (The group itself is created above, next to the
+        # arm service that shares it.)
         self._reseed_client = self.create_client(
             Trigger, 'trajectory/reseed_from_measured',
             callback_group=self._recover_cbgroup)
@@ -908,11 +951,10 @@ class TeensyBridgeNode(Node):
 
         peer = (self.get_parameter('teensy_ip').value
                 if client is None else 'injected')
-        enable_sp = bool(self.get_parameter('enable_setpoint_output').value)
         self.get_logger().info(
             f"TeensyBridgeNode up — peer={peer} stream={p.PORT_STREAM} "
-            f"rpc={p.PORT_RPC}, enable_setpoint_output={enable_sp} "
-            f"(mpc_active pinned to 0)")
+            f"rpc={p.PORT_RPC}, DISARMED (mpc_active=0; arming is runtime-only "
+            f"via /set_setpoint_output — see ARMING_CONTRACT.md)")
 
     # ═══════════════════════════════════════════════════════════
     # RX-thread frame callbacks — keep these short (stash + return)
@@ -1509,7 +1551,8 @@ class TeensyBridgeNode(Node):
 
         This is the ONLY place mpc_active becomes 1. The heartbeat flag tells the
         Teensy the Jetson is driving setpoints (the firmware's guard-ENABLE
-        precondition). Pinned to 0 unless ~enable_setpoint_output is true.
+        precondition). Reached only through _arm_setpoint_output's stream-then-arm
+        pre-check (ARMING_CONTRACT A1 — the boot-arm path is removed).
         """
         if active and not self._mpc_active:
             # Safety hardening: on the 0→1 re-enable edge, forget any stale
@@ -1527,7 +1570,8 @@ class TeensyBridgeNode(Node):
     def _start_setpoint_output(self, setpoint_source=None):
         """Bring up the setpoint source + ingest thread and set mpc_active=1.
 
-        Called from __init__ only when ~enable_setpoint_output is true.
+        Called ONLY from _arm_setpoint_output after its preconditions pass
+        (ARMING_CONTRACT A1; the zero-precondition __init__ boot-arm is removed).
         ``setpoint_source`` may be injected (tests); otherwise a real ZMQ SUB on
         motor_guard's :5556 is created.
         """
@@ -1543,6 +1587,28 @@ class TeensyBridgeNode(Node):
         self._sp_thread = threading.Thread(
             target=self._setpoint_loop, name="teensy_bridge_setpoint", daemon=True)
         self._sp_thread.start()
+
+    def _wait_wire_disarmed(self, timeout_s: float = 1.0) -> bool:
+        """Wait until the FIRMWARE confirms disarmed (HeartbeatT2J bit3 drops).
+
+        ``_set_mpc_active(False)`` only STAGES flags=0 — the 10 Hz heartbeat
+        thread puts it on the wire on its NEXT tick (≤100 ms), and the firmware's
+        own state comes back one T2J heartbeat later. Any action that must land
+        disarmed (the A3 DEACTIVATE, the disarm-then-clear fallback) would race
+        ``s_mpc_active=1`` on the Teensy without this wait — the review-caught
+        staging race, same class as the bench harness's teardown-disarm race.
+        Returns True once the firmware reports disarmed (or no heartbeat exists
+        to consult); False on timeout.
+        """
+        deadline = time.monotonic() + timeout_s
+        while True:
+            with self._lock:
+                hb = self._latest_heartbeat
+            if hb is None or not (int(hb.flags) & _T2J_FLAG_MPC_ACTIVE):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
 
     def _stop_setpoint_output(self):
         """Stop the setpoint thread, drop mpc_active on the wire, close the source.
@@ -1590,7 +1656,21 @@ class TeensyBridgeNode(Node):
         Returns ``(ok, message)``. The message carries the reject reason on
         failure (surfaced in the service response AND logged) so an operator sees
         exactly which precondition blocked the arm.
+
+        Serialized by ``_arm_lock``: the service moved to the Reentrant group
+        (so its 0.5 s frame-wait can't starve the telemetry timers), which
+        removed the implicit mutual exclusion — two overlapping arms (a manual
+        operator call racing an orchestrator auto-arm retry) would both pass
+        the ``_mpc_active`` check and double-start the ingest thread.
         """
+        if not self._arm_lock.acquire(blocking=False):
+            return False, 'an arm attempt is already in progress — retry'
+        try:
+            return self._arm_setpoint_output_locked()
+        finally:
+            self._arm_lock.release()
+
+    def _arm_setpoint_output_locked(self) -> tuple:
         if self._mpc_active:
             return True, 'setpoint output already enabled'
 
@@ -1618,6 +1698,14 @@ class TeensyBridgeNode(Node):
                 f'Teensy guard fault latched (fault_state={name}) — refuse to arm; '
                 f'leg output is suppressed until it is cleared. Recover with: '
                 f'ros2 service call /clear_errors std_srvs/srv/Trigger')
+
+        # (a3) No deactivate mid-flight. An arm landing during the descent would
+        # hand the descending legs to the setpoint stream partway down (and the
+        # early-descent u0 can still be within the 0.25 rev tolerance, so
+        # precondition (c) alone does not cover it).
+        if self._deactivate_in_progress:
+            return False, ('deactivate in progress — refuse to arm mid-descent; '
+                           'retry once the stow completes')
 
         # (b) a fresh mpccmd frame on :5557 within 0.5 s (is trajectory_node up?).
         source, created_here = self._acquire_setpoint_source()
@@ -1673,6 +1761,20 @@ class TeensyBridgeNode(Node):
                 except Exception:  # noqa: BLE001
                     pass
             return False, f'arming check error: {e}'
+
+        # TOCTOU re-check: the frame-wait above is up to 0.5 s — a deactivate
+        # that STARTED during it would fire its TRAP_TRAJ believing the wire
+        # disarmed, and arming now would land the stream mid-descent (the exact
+        # hazard precondition (a3) exists to prevent).
+        if self._deactivate_in_progress:
+            if created_here:
+                try:
+                    source.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            return False, ('deactivate started during the arm pre-check — '
+                           'refuse to arm mid-descent; retry once the stow '
+                           'completes')
 
         # All preconditions met — stream-then-arm using the SAME source the check
         # observed (so the ingest thread continues from the confirmed stream).
@@ -2112,6 +2214,11 @@ class TeensyBridgeNode(Node):
                              value=str(int(bool(hb.flags & _T2J_FLAG_TIME_SYNCED)))),
                     KeyValue(key='teensy_stow_pending',
                              value=str(int(bool(hb.flags & _T2J_FLAG_STOW_PENDING)))),
+                    # A5 — the firmware's own arm state (bit3). Normally mirrors
+                    # the host 'mpc_active' KeyValue one heartbeat late; a
+                    # persistent split means the arm/disarm never took on the wire.
+                    KeyValue(key='teensy_mpc_active',
+                             value=str(int(bool(hb.flags & _T2J_FLAG_MPC_ACTIVE)))),
                     # Leg guard-deviation diagnostics (2026-07-10 forensics). Per-leg
                     # live deviation (u0-encoder, the MAX_DEVIATION guard quantity) +
                     # the lead-clamp bitmask, plus the frozen latch-event snapshot
@@ -3062,6 +3169,38 @@ class TeensyBridgeNode(Node):
         axes = [int(a) for a in axes]
         if not axes:
             return False, "no axes configured for deactivate"
+        self._deactivate_in_progress = True
+        try:
+            return self._run_deactivate_inner(axes, poll_dt=poll_dt,
+                                              timeout_s=timeout_s)
+        finally:
+            self._deactivate_in_progress = False
+
+    def _run_deactivate_inner(self, axes, *, poll_dt=0.05, timeout_s=None):
+        # ARMING_CONTRACT A3 — disarm-before-stow, in-process. This is the ONE
+        # place the ordering is airtight (same thread, synchronous), and it covers
+        # every deactivate entry point: the orchestrator's ACTIVE→IDLE, the direct
+        # /deactivate service, and the shutdown stow. The producer keeps streaming
+        # through the descent (A4 keeps the mode published) — once disarmed the
+        # Teensy ignores the stream and its staleness watchdog is inert
+        # (s_mpc_active gates it), so the still-flowing frames are harmless. The
+        # firmware's reject-DEACTIVATE-while-armed gate remains as the backstop,
+        # not the mechanism (its refusal used to strand the platform un-stowed —
+        # Sharp Edge #6, observed 2026-07-09).
+        if self._mpc_active:
+            self.get_logger().warning(
+                "deactivate requested while armed — disarming first "
+                "(ARMING_CONTRACT A3: disarm-before-stow)")
+            self._stop_setpoint_output()
+            # The disarm is only STAGED until the next 10 Hz heartbeat tick —
+            # firing DEACTIVATE immediately would race s_mpc_active=1 on the
+            # Teensy and be rejected. Wait for the firmware's arm-took bit
+            # (T2J bit3) to confirm the disarm landed.
+            if not self._wait_wire_disarmed():
+                self.get_logger().error(
+                    "disarm did not confirm on the wire (T2J bit3 still set "
+                    "after 1 s) — proceeding; the firmware rejects DEACTIVATE "
+                    "if truly armed (loud failure, no motion)")
         # Already-at-STOW no-op guard: if every target leg is already IDLE and within
         # _STOW_POS_MAX_REV of STOW, the platform is stowed — a DEACTIVATE would
         # needlessly re-arm CLOSED_LOOP (a jolt) only to lower nothing, then IDLE. Skip
@@ -3141,7 +3280,43 @@ class TeensyBridgeNode(Node):
         # and no jolt is possible, so clear DIRECTLY as before (a reseed would refuse —
         # not streaming — and needlessly block the clear).
         if self._mpc_active:
-            return self._svc_recover(req, res)
+            res = self._svc_recover(req, res)
+            if res.success:
+                return res
+            # ARMING_CONTRACT defense-in-depth: /recover's converge-first sequence
+            # needs a live seeded stream to reseed onto. Armed-with-no-healthy-
+            # stream is structurally unreachable under the contract (A1 refuses to
+            # arm without one; A3 disarms before the stream legitimately stops),
+            # but when reached anyway the old behaviour was a hard dead end:
+            # clear reroutes to recover → recover needs a reseed → reseed refused
+            # → still latched, forever ("trajectory_node reseed refused",
+            # 2026-07-15 21:32). Disarming makes the direct clear safe: at
+            # mpc_active=0 the firmware's guard terms are inert and the output
+            # gate is off, so the clear can neither re-latch nor jolt — the legs
+            # stay position-held by the ODrives. Re-arming afterwards must pass
+            # the full A1 pre-check again.
+            prior = res.message
+            self.get_logger().error(
+                f"armed /clear_errors: recover failed ({prior}) — falling back "
+                f"to disarm + direct clear (safe: guard terms inert at "
+                f"mpc_active=0; re-arm via /set_setpoint_output)")
+            self._stop_setpoint_output()
+            # The no-jolt property of this fallback depends on the clear landing
+            # AFTER the firmware sees the disarm — a clear racing s_mpc_active=1
+            # is exactly the 2026-07-11 jolt class. Refuse rather than race.
+            if not self._wait_wire_disarmed():
+                res.success = False
+                res.message = (f'recover failed ({prior}); disarm did not '
+                               f'confirm on the wire (T2J bit3 still set) — '
+                               f'REFUSING the direct clear (it could jolt). '
+                               f'Wire is disarming; retry /clear_errors.')
+                return res
+            ok, msg, _ = self.teensy_clear_errors()
+            res.success = ok
+            res.message = (f'recover failed ({prior}); disarmed and cleared '
+                           f'directly — {msg}. Wire is DISARMED; re-arm via '
+                           f'/set_setpoint_output when a stream is live.')
+            return res
         ok, msg, _ = self.teensy_clear_errors()
         res.success = ok
         res.message = msg
@@ -3381,16 +3556,15 @@ class TeensyBridgeNode(Node):
     def _svc_odrive_command(self, req, res):
         cmd = req.command
         if cmd == 'clear_errors':
-            # Mirror /clear_errors' armed reroute (audit 2026-07-14): an ARMED raw
-            # clear here bypassed both the converge-first sequence (the 2026-07-11
-            # jolt class — 'no raw armed escape hatch' was an operator decision)
-            # AND the torque-FF ramp restart, so the feedforward would return as a
-            # full-magnitude step at recovery-slew hand-back. Route through
-            # _svc_recover exactly as _svc_clear_errors does; res is duck-type
-            # compatible (success/message).
-            if self._mpc_active:
-                return self._svc_recover(req, res)
-            ok, msg, _ = self.teensy_clear_errors()
+            # ONE canonical clear path (review 2026-07-15): route through
+            # _svc_clear_errors unconditionally, so this conduit — the path the
+            # ORCHESTRATOR's 'clear_errors' actually takes — shares the armed
+            # converge-first reroute AND the recover-failed disarm+direct-clear
+            # fallback. Before this, the fallback existed only on the Trigger
+            # service, and the production command path could dead-end forever in
+            # the armed-no-stream state (reseed refused → still latched → repeat).
+            # res is duck-type compatible (success/message).
+            return self._svc_clear_errors(req, res)
         elif cmd == 'reboot_odrives':
             # Route through the shared hook so this path ALSO clears the cold-start
             # state (cold-start clear) — the orchestrator reboots via odrive_command.
@@ -4010,7 +4184,14 @@ class TeensyBridgeNode(Node):
         # setpoint fights the descent). The settle is gated on actually stowing so a
         # stow-disabled node (unit tests) tears down instantly.
         if self._stow_on_shutdown:
+            # Prefer the firmware's own arm-took confirmation (T2J bit3) over a
+            # fixed settle — the same staging race as A3: a delayed heartbeat
+            # tick means a fixed sleep can still race s_mpc_active=1 (audit
+            # 2026-07-15). Returns immediately when no heartbeat exists, so a
+            # dead-link teardown cannot hang; the fixed settle remains as the
+            # floor for the flags=0 heartbeat itself to go out.
             time.sleep(_SHUTDOWN_DISARM_SETTLE_S)
+            self._wait_wire_disarmed()
             self._shutdown_stow()
         # 4. Transport teardown.
         try:

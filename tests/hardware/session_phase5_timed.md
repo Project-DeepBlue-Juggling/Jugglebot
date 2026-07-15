@@ -11,6 +11,12 @@ This session validates the **software already merged** on branch
 
 ---
 
+> **⚡ Superseded in part, 2026-07-15 (ARMING CONTRACT)**: arming is now
+> **automatic on ACTIVE entry** (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`;
+> see the banner in `mvp_bench_runbook.md`). Where this protocol says to arm per
+> the Phase-1 sequence, the arm happens automatically on `activate` — the manual
+> `set_setpoint_output true` call runs only under `auto_arm:=false`.
+
 ## Roles & safety framing
 
 - **The operator (Harrison) runs every robot-actuating command below.** The

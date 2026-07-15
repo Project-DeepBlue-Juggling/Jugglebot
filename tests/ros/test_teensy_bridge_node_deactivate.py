@@ -241,3 +241,74 @@ def test_svc_deactivate_reads_param():
         assert out.success is False and 'no axes' in out.message
     finally:
         _teardown(teensy, client, node)
+
+
+# ── ARMING_CONTRACT A3: disarm-before-stow, in-process ─────────
+
+def test_run_deactivate_disarms_first_before_firing():
+    """A3 — when armed, _run_deactivate must drop mpc_active BEFORE the
+    DEACTIVATE RPC reaches the firmware. In-process ordering is the one
+    airtight enforcement point (same thread, synchronous); it covers the
+    orchestrator's deactivate, the direct /deactivate service, and the
+    shutdown stow. The firmware's reject-DEACTIVATE-while-armed gate is the
+    backstop, not the mechanism (its refusal used to strand the platform
+    un-stowed — Sharp Edge #6, observed 2026-07-09)."""
+    teensy, client, node = _build_paired_node()
+    try:
+        armed_at_rpc = []
+        teensy.on_rpc(
+            int(RpcMethod.DEACTIVATE),
+            lambda req_id, args: (armed_at_rpc.append(node._mpc_active)
+                                  or (int(RpcStatus.ERR_REJECTED), b"")))
+        node._mpc_active = True                    # armed (as after A2's arm)
+        node._run_deactivate([0], poll_dt=0.02)
+        assert node._mpc_active is False           # disarmed by the call
+        assert armed_at_rpc, "DEACTIVATE never reached the firmware"
+        assert armed_at_rpc[0] is False            # ...and only AFTER the disarm
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_run_deactivate_waits_for_wire_disarm_confirmation():
+    """A3 refinement (review 2026-07-15, BLOCKING): the disarm is only STAGED
+    for the next 10 Hz heartbeat tick — firing DEACTIVATE immediately races
+    s_mpc_active=1 on the Teensy (rejected ~every time). _run_deactivate must
+    hold the RPC until the firmware's arm-took bit (T2J bit3) drops."""
+    from controller.teensy_link import HeartbeatT2J, LinkState, BusHealth
+
+    def _hb(flags):
+        return HeartbeatT2J(
+            t_teensy_us=1, link_state=int(LinkState.UP),
+            bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+            fault_state=0, flags=flags, uptime_ms=0)
+
+    teensy, client, node = _build_paired_node()
+    try:
+        sent = []
+        teensy.on_rpc(int(RpcMethod.DEACTIVATE),
+                      lambda req_id, args: (sent.append(node._mpc_active)
+                                            or (int(RpcStatus.ERR_REJECTED), b"")))
+        # Firmware reports ARMED (bit3 set) — as it would right after the host
+        # staged the disarm but before the flags=0 heartbeat landed.
+        teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), _hb(0x8).pack())
+        assert _poll(lambda: node._latest_heartbeat is not None)
+        node._mpc_active = True
+
+        result = {}
+
+        def run():
+            ok, msg = node._run_deactivate([0], poll_dt=0.02)
+            result['ok'], result['msg'] = ok, msg
+
+        t = threading.Thread(target=run)
+        t.start()
+        time.sleep(0.15)
+        assert not sent, "DEACTIVATE fired while the firmware still reported armed"
+        # The firmware confirms the disarm (bit3 drops) → the RPC may now fire.
+        teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), _hb(0x0).pack())
+        assert _poll(lambda: len(sent) >= 1), "DEACTIVATE never fired after confirm"
+        t.join(timeout=8.0)
+        assert not t.is_alive()
+        assert sent[0] is False       # host disarmed before the RPC
+    finally:
+        _teardown(teensy, client, node)

@@ -311,9 +311,14 @@ def test_armed_bare_clear_errors_routes_through_converge_first():
         _teardown(teensy, client, node)
 
 
-def test_armed_bare_clear_errors_refuses_on_diverged_command():
-    """While armed, a bare /clear_errors onto a diverged u0 must REFUSE (route through
-    converge-first, which cannot converge) — never clear onto a jolt."""
+def test_armed_bare_clear_errors_on_diverged_command_disarms_then_clears():
+    """ARMING_CONTRACT: while armed, a bare /clear_errors onto a diverged u0 first
+    routes through converge-first; when that CANNOT converge, it falls back to
+    DISARM + direct clear instead of the pre-contract hard refusal (the dead end
+    behind the 2026-07-15 'reseed refused' wedge). The 2026-07-11 no-jolt root
+    cause is preserved: the clear lands only AFTER the disarm, when the firmware's
+    guard terms are inert and the output gate is off — a jolt is impossible. The
+    wire is left DISARMED; re-arming must pass the full A1 pre-check."""
     teensy, client, node = _node()
     try:
         box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
@@ -324,9 +329,11 @@ def test_armed_bare_clear_errors_refuses_on_diverged_command():
         node._reseed_client = _FakeReseedClient(success=True)
 
         res = node._svc_clear_errors(Trigger.Request(), Trigger.Response())
-        assert res.success is False
-        assert 'descent did not converge' in res.message
-        assert 'args' not in box                              # never cleared onto the diverged u0
+        assert res.success is True, res.message
+        assert node._mpc_active is False                      # disarmed FIRST
+        assert 'disarmed and cleared directly' in res.message
+        assert 'DISARMED' in res.message                      # loud about the state
+        assert 'args' in box                                  # clear DID land (disarmed)
     finally:
         _teardown(teensy, client, node)
 
@@ -389,5 +396,33 @@ def test_clear_errors_shares_recover_callback_group():
         # default MutuallyExclusiveCallbackGroup, recorded as callback_group=None here.
         assert svcs['clear_errors'].callback_group is not None
         assert svcs['reboot_odrives'].callback_group is None
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_odrive_command_clear_errors_shares_the_fallback_path():
+    """Review 2026-07-15 (HIGH): the orchestrator's 'clear_errors' rides the
+    odrive_command conduit, which previously kept the OLD hard-refusal armed
+    reroute — the production command path could dead-end forever in the
+    armed-no-stream state while the Trigger service had the fallback. Both
+    must share ONE canonical path (_svc_clear_errors), including the
+    recover-failed → disarm + direct-clear fallback."""
+    from tests.ros.conftest import ODriveCommandService
+    teensy, client, node = _node()
+    try:
+        box = _capture(teensy, RpcMethod.CLEAR_ERRORS)
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        node._mpc_active = True                               # ARMED
+        node._recover_verify_timeout_s = 0.1
+        node._sp_pump._prev_pos = [1.0] * 6                   # diverged forever
+        node._reseed_client = _FakeReseedClient(success=True)
+
+        req = ODriveCommandService.Request()
+        req.command = 'clear_errors'
+        res = node._svc_odrive_command(req, ODriveCommandService.Response())
+        assert res.success is True, res.message
+        assert node._mpc_active is False                      # disarmed first
+        assert 'disarmed and cleared directly' in res.message
+        assert 'args' in box                                  # clear DID land
     finally:
         _teardown(teensy, client, node)

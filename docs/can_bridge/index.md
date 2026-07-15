@@ -75,8 +75,13 @@ six-leg testing to date has validated the cold-start ladder (home/activate/
 configure via TRAP_TRAJ) but not yet the dynamic Hermite/MPC stream at
 six-leg scale — that closed-loop `run_mpc` hold was deferred and later
 de-prioritized (`logbook/2026-06-26-phase11-u5-six-leg-cutover.md`,
-`logbook/INDEX.md`). `enable_setpoint_output` is `false` and `mpc_active`
-is `0` at every launch. No leg is currently driven dynamically through this
+`logbook/INDEX.md`). The bridge starts DISARMED (`mpc_active=0`) at every
+launch; arming is runtime-only via `/set_setpoint_output`, whose
+stream-then-arm pre-check is the single safe-to-arm gate — automatic on
+ACTIVE entry since the 2026-07-15 arming contract
+(`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`; the old
+`enable_setpoint_output:=true` boot-arm is inert). No leg is currently
+driven dynamically through the MPC
 path — it is parked pending the parent plan's Phase 12 cutover, and
 possibly a redesign of the MPC itself (from a 40 Hz continuous trajectory
 generator to a lower-rate/event-triggered replanner, since the Jetson is

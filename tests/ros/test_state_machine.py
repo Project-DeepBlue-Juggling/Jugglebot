@@ -299,6 +299,7 @@ class TestBootHandler:
         handler.on_enter(ctx)
         ctx.all_heartbeats = True
         ctx.firmware_validated = True
+        ctx.link_status_seen = True
         assert handler.execute(ctx) == RobotState.HOMING
 
     def test_transitions_to_idle_if_already_homed(self):
@@ -307,8 +308,86 @@ class TestBootHandler:
         handler.on_enter(ctx)
         ctx.all_heartbeats = True
         ctx.firmware_validated = True
+        ctx.link_status_seen = True
         ctx.is_homed = True
         assert handler.execute(ctx) == RobotState.IDLE
+
+    # ── ARMING_CONTRACT A5: BOOT stale-latch pre-flight ─────────
+
+    def test_waits_for_first_link_status_before_exit(self):
+        """BOOT must not conclude "no latch" from the default guard_latched=False
+        before the bridge has reported at least once."""
+        handler = BootHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        assert handler.execute(ctx) is None          # link_status not seen yet
+        ctx.link_status_seen = True
+        assert handler.execute(ctx) == RobotState.HOMING
+
+    def test_stale_latch_cleared_then_proceeds(self):
+        """A prior-session guard latch (Jetson-5V Teensy survives relaunches) is
+        cleared ONCE, disarmed, at BOOT — instead of wedging HOMING at the first
+        guard-gated verb (the 2026-07-15 failure, twice)."""
+        handler = BootHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        ctx.guard_latched = True
+        assert handler.execute(ctx) is None
+        assert ctx.drain_requests() == ['clear_errors']
+        # Clear succeeds; latch still shows on /link_status for a tick or two.
+        ctx.operation_result = True
+        assert handler.execute(ctx) is None
+        # /link_status reflects the released latch → BOOT proceeds.
+        ctx.guard_latched = False
+        assert handler.execute(ctx) == RobotState.HOMING
+
+    def test_stale_latch_clear_only_requested_once(self):
+        handler = BootHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        ctx.guard_latched = True
+        handler.execute(ctx)
+        ctx.drain_requests()
+        handler.execute(ctx)
+        handler.execute(ctx)
+        assert ctx.drain_requests() == []            # no re-request
+
+    def test_stale_latch_clear_failure_goes_to_fault(self):
+        handler = BootHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        ctx.guard_latched = True
+        handler.execute(ctx)
+        ctx.operation_result = False
+        assert handler.execute(ctx) == RobotState.FAULT
+
+    @patch('jugglebot.state_machine.time')
+    def test_stale_latch_never_drops_times_out_to_fault(self, mock_time):
+        """A latch that survives a successful clear is a LIVE fault, not stale."""
+        handler = BootHandler()
+        ctx = Context()
+        mock_time.time.return_value = 100.0
+        handler.on_enter(ctx)
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        ctx.guard_latched = True
+        handler.execute(ctx)
+        ctx.operation_result = True                  # clear "succeeded"
+        mock_time.time.return_value = (
+            100.0 + BootHandler.LATCH_CLEAR_TIMEOUT_S + 1.0)
+        assert handler.execute(ctx) == RobotState.FAULT  # but latch never dropped
 
     def test_stays_while_firmware_not_validated(self):
         """Heartbeats arrived but firmware not yet validated — stay in BOOT."""
@@ -495,11 +574,19 @@ class TestHomingHandler:
 
 
 class TestIdleHandler:
-    def test_sets_empty_control_mode_on_enter(self):
+    def test_blanks_control_mode_only_after_pending_operation(self):
+        """A4 (ARMING_CONTRACT): the streaming mode must survive until the
+        deactivate RESOLVES — blanking it at IDLE entry stopped the emitter
+        while the bridge could still be armed (the 250 ms MPC_STALE race)."""
         handler = IdleHandler()
         ctx = Context()
-        handler.on_enter(ctx)
-        assert ctx.control_mode == ''
+        ctx.control_mode = 'STANDBY'          # left published by ActiveHandler
+        ctx.operation_pending = True          # deactivate in flight
+        assert handler.execute(ctx) is None
+        assert ctx.control_mode == 'STANDBY'  # NOT blanked yet
+        ctx.operation_pending = False
+        handler.execute(ctx)
+        assert ctx.control_mode == ''         # blanked after the op resolved
 
     def test_activate_command_transitions_to_active(self):
         handler = IdleHandler()
@@ -546,6 +633,15 @@ class TestIdleHandler:
 # ════════════════════════════════════════════════════════════════
 
 
+def _activate_and_arm(handler, ctx):
+    """Drive ActiveHandler through BOTH phases: activation, then the A2 arm."""
+    ctx.operation_result = True
+    handler.execute(ctx)                 # activation done → arm requested
+    assert ctx.drain_requests() == ['arm_setpoints']
+    ctx.operation_result = True
+    handler.execute(ctx)                 # armed
+
+
 class TestActiveHandler:
     def test_requests_activate_on_enter(self):
         handler = ActiveHandler()
@@ -554,6 +650,86 @@ class TestActiveHandler:
         assert ctx.request == 'activate'
         assert ctx.operation_result is None
         assert handler._activated is False
+
+    # ── ARMING_CONTRACT A2: the arm phase ───────────────────────
+
+    def test_arm_requested_after_activation(self):
+        handler = ActiveHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.drain_requests()             # 'activate'
+        ctx.operation_result = True
+        assert handler.execute(ctx) is None
+        assert ctx.control_mode == 'STANDBY'   # mode published BEFORE the arm
+        assert ctx.request == 'arm_setpoints'
+        assert ctx.operation_result is None
+
+    def test_commands_wait_for_arm_phase(self):
+        """Commands queued during the arm phase are consumed only once armed —
+        a mode switch must never race the arm's stream-then-arm pre-check."""
+        handler = ActiveHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.drain_requests()
+        ctx.operation_result = True
+        handler.execute(ctx)             # arm requested
+        ctx.enqueue_command('trajectory')
+        ctx.operation_result = None
+        assert handler.execute(ctx) is None
+        assert ctx.active_mode == ActiveMode.STANDBY   # not consumed yet
+        ctx.operation_result = True                    # arm succeeds
+        handler.execute(ctx)
+        handler.execute(ctx)                           # consumes 'trajectory'
+        assert ctx.active_mode == ActiveMode.TRAJECTORY
+
+    def test_arm_failure_retries(self):
+        """The producer needs ~100-300 ms to seed after the mode publish, so the
+        first arm attempt(s) may legitimately be refused — retry, don't FAULT."""
+        handler = ActiveHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.drain_requests()
+        ctx.operation_result = True
+        handler.execute(ctx)             # arm attempt 1 requested
+        ctx.drain_requests()
+        ctx.operation_result = False     # refused (e.g. no fresh frame yet)
+        assert handler.execute(ctx) is None
+        assert ctx.request == 'arm_setpoints'   # retried
+        ctx.drain_requests()
+        ctx.operation_result = True      # second attempt succeeds
+        assert handler.execute(ctx) is None
+        assert handler._armed is True
+
+    def test_persistent_arm_refusal_goes_to_fault(self):
+        handler = ActiveHandler()
+        ctx = Context()
+        handler.on_enter(ctx)
+        ctx.drain_requests()
+        ctx.operation_result = True
+        handler.execute(ctx)             # arm attempt 1 requested
+        result = None
+        for _ in range(ActiveHandler.ARM_MAX_ATTEMPTS):
+            ctx.drain_requests()
+            ctx.operation_result = False
+            result = handler.execute(ctx)
+            if result is not None:
+                break
+        assert result == RobotState.FAULT
+
+    def test_auto_arm_false_skips_arm_phase(self):
+        """Manual-arm sessions (auto_arm_setpoint_output:=false): the operator
+        arms via /set_setpoint_output; the handler must not request it."""
+        handler = ActiveHandler()
+        ctx = Context()
+        ctx.auto_arm = False
+        handler.on_enter(ctx)
+        ctx.drain_requests()             # 'activate'
+        ctx.operation_result = True
+        assert handler.execute(ctx) is None
+        assert ctx.drain_requests() == []          # NO arm request
+        ctx.enqueue_command('trajectory')
+        handler.execute(ctx)                       # commands work immediately
+        assert ctx.active_mode == ActiveMode.TRAJECTORY
 
     def test_waits_for_activation_result(self):
         handler = ActiveHandler()
@@ -592,18 +768,21 @@ class TestActiveHandler:
 
     def test_guard_clear_resume_skips_reactivation(self):
         """F1 — the guard-clear resume path (resume_active_no_rearm) must NOT request
-        the ACTIVATE move: the legs never disarmed. It enters ACTIVE already-armed in
-        the STANDBY hold, consumes the one-shot, and accepts commands immediately."""
+        the ACTIVATE move: the legs never disarmed. It enters ACTIVE in the STANDBY
+        hold, consumes the one-shot, and RE-VERIFIES the arm (A2 — idempotent: the
+        bridge answers 'already enabled' if the wire stayed armed, and re-runs the
+        full stream-then-arm pre-check if something disarmed it mid-fault)."""
         handler = ActiveHandler()
         ctx = Context()
         ctx.resume_active_no_rearm = True
         handler.on_enter(ctx)
-        assert ctx.request is None                 # NO 'activate' request
-        assert handler._activated is True           # already armed
+        assert handler._activated is True           # NO 'activate' request
         assert ctx.active_mode == ActiveMode.STANDBY
         assert ctx.control_mode == 'STANDBY'
         assert ctx.resume_active_no_rearm is False  # one-shot consumed
-        # Commands work without waiting for an activation result.
+        assert ctx.drain_requests() == ['arm_setpoints']  # arm re-verified
+        ctx.operation_result = True                 # (idempotent) arm confirms
+        handler.execute(ctx)
         ctx.enqueue_command('deactivate')
         assert handler.execute(ctx) == RobotState.IDLE
 
@@ -621,8 +800,8 @@ class TestActiveHandler:
         handler = ActiveHandler()
         ctx = Context()
         handler.on_enter(ctx)
-        ctx.operation_result = True
-        handler.execute(ctx)  # Complete activation
+        ctx.drain_requests()
+        _activate_and_arm(handler, ctx)
         ctx.enqueue_command('deactivate')
         assert handler.execute(ctx) == RobotState.IDLE
 
@@ -630,8 +809,8 @@ class TestActiveHandler:
         handler = ActiveHandler()
         ctx = Context()
         handler.on_enter(ctx)
-        ctx.operation_result = True
-        handler.execute(ctx)  # Complete activation (active_mode = STANDBY)
+        ctx.drain_requests()
+        _activate_and_arm(handler, ctx)
         ctx.enqueue_command('spacemouse')
         assert handler.execute(ctx) is None
         assert ctx.active_mode == ActiveMode.SPACEMOUSE
@@ -641,8 +820,8 @@ class TestActiveHandler:
         handler = ActiveHandler()
         ctx = Context()
         handler.on_enter(ctx)
-        ctx.operation_result = True
-        handler.execute(ctx)
+        ctx.drain_requests()
+        _activate_and_arm(handler, ctx)
         ctx.enqueue_command('shell')
         assert handler.execute(ctx) is None
         assert ctx.active_mode == ActiveMode.SHELL
@@ -652,8 +831,8 @@ class TestActiveHandler:
         handler = ActiveHandler()
         ctx = Context()
         handler.on_enter(ctx)
-        ctx.operation_result = True
-        handler.execute(ctx)  # Complete activation (active_mode = STANDBY)
+        ctx.drain_requests()
+        _activate_and_arm(handler, ctx)
         ctx.enqueue_command('trajectory')
         assert handler.execute(ctx) is None
         assert ctx.active_mode == ActiveMode.TRAJECTORY
@@ -665,8 +844,8 @@ class TestActiveHandler:
         handler = ActiveHandler()
         ctx = Context()
         handler.on_enter(ctx)
-        ctx.operation_result = True
-        handler.execute(ctx)
+        ctx.drain_requests()
+        _activate_and_arm(handler, ctx)
         ctx.enqueue_command('spacemouse')
         handler.execute(ctx)
         assert ctx.active_mode == ActiveMode.SPACEMOUSE
@@ -679,25 +858,29 @@ class TestActiveHandler:
         handler = ActiveHandler()
         ctx = Context()
         handler.on_enter(ctx)
-        ctx.operation_result = True
-        handler.execute(ctx)
+        ctx.drain_requests()
+        _activate_and_arm(handler, ctx)
         ctx.enqueue_command('unknown')
         assert handler.execute(ctx) is None
 
-    def test_on_exit_requests_deactivate_and_clears_mode(self):
+    def test_on_exit_requests_deactivate_and_preserves_mode(self):
+        """A3/A4: on_exit requests the deactivate but must NOT blank the mode —
+        the bridge disarms in-process inside _run_deactivate, and the stream
+        must keep flowing until that operation resolves (IdleHandler blanks)."""
         handler = ActiveHandler()
         ctx = Context()
+        ctx.control_mode = 'TRAJECTORY'
         handler.on_exit(ctx)
         assert ctx.request == 'deactivate'
-        assert ctx.control_mode == ''
+        assert ctx.control_mode == 'TRAJECTORY'   # NOT blanked (A4)
 
     def test_mode_switch_uses_uppercase(self):
         """'spacemouse' → ActiveMode.SPACEMOUSE (uppercase conversion)."""
         handler = ActiveHandler()
         ctx = Context()
         handler.on_enter(ctx)
-        ctx.operation_result = True
-        handler.execute(ctx)
+        ctx.drain_requests()
+        _activate_and_arm(handler, ctx)
         ctx.enqueue_command('spacemouse')
         handler.execute(ctx)
         assert ctx.active_mode == ActiveMode.SPACEMOUSE
@@ -797,6 +980,7 @@ class TestFaultHandler:
         ctx = Context()
         ctx.fatal_error = True
         handler.on_enter(ctx)
+        ctx.drain_requests()   # A2: real-fault entry requests 'disarm_setpoints'
         ctx.enqueue_command('clear_errors')
         handler.execute(ctx)
         assert ctx.request == 'clear_errors'
@@ -851,10 +1035,50 @@ class TestFaultHandler:
         ctx = Context()
         ctx.fatal_error = True
         handler.on_enter(ctx)
+        ctx.drain_requests()   # A2: real-fault entry requests 'disarm_setpoints'
         ctx.enqueue_command('activate')
         handler.execute(ctx)
         assert ctx.consume_command() is None  # Consumed by execute
         assert ctx.request is None  # Not set because 'activate' is not 'clear_errors'
+
+    # ── ARMING_CONTRACT A2: fault-entry disarm ──────────────────
+
+    def test_real_fault_requests_disarm(self):
+        """A REAL fault disarms the wire on entry: output is unusable and
+        control_mode goes 'ERROR' (stopping the producer), so staying armed
+        would only race the staleness watchdog."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.fatal_error = True
+        handler.on_enter(ctx)
+        assert 'disarm_setpoints' in ctx.drain_requests()
+
+    def test_guard_only_fault_does_not_disarm(self):
+        """A guard-only fault stays armed: the guard already suppresses output,
+        and the resume path depends on the stream (and the arm) surviving."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.guard_latched = True
+        ctx.prev_state = RobotState.ACTIVE
+        ctx.wire_armed = True
+        handler.on_enter(ctx)
+        assert 'disarm_setpoints' not in ctx.drain_requests()
+
+    def test_guard_latch_from_homing_is_not_guard_only(self):
+        """Origin gate: a guard latch surfacing in a fault entered from HOMING is
+        a stale prior-session latch, NOT a guard-only (ACTIVE) fault. Before the
+        origin check, clearing it exited "back" to ACTIVE on a robot that never
+        activated (the 2026-07-15 misroute — the comments said "from ACTIVE" but
+        the code never enforced it)."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.guard_latched = True
+        ctx.prev_state = RobotState.HOMING
+        handler.on_enter(ctx)
+        assert ctx.control_mode == 'ERROR'         # real-fault treatment
+        ctx.guard_latched = False                   # operator cleared it
+        assert handler.execute(ctx) == RobotState.BOOT   # NOT ACTIVE
+        assert ctx.resume_active_no_rearm is False
 
     def test_stays_with_only_error_strings(self):
         """Non-empty errors list but no fatal flags still stays in FAULT."""
@@ -883,6 +1107,8 @@ class TestFaultHandler:
         handler = FaultHandler()
         ctx = Context()
         ctx.guard_latched = True
+        ctx.prev_state = RobotState.ACTIVE   # guard-only requires ACTIVE origin
+        ctx.wire_armed = True                # ... AND an armed wire
         handler.on_enter(ctx)
         assert handler.execute(ctx) is None            # held while latched
         ctx.guard_latched = False
@@ -906,8 +1132,10 @@ class TestFaultHandler:
         handler = FaultHandler()
         ctx = Context()
         ctx.active_mode = ActiveMode.TRAJECTORY  # the sub-mode active when the guard hit
-        ctx.control_mode = ''                    # ActiveHandler.on_exit blanked it
+        ctx.control_mode = ''
         ctx.guard_latched = True
+        ctx.prev_state = RobotState.ACTIVE
+        ctx.wire_armed = True
         handler.on_enter(ctx)
         assert ctx.control_mode == 'TRAJECTORY'
         assert ctx.control_mode != 'ERROR'
@@ -921,6 +1149,8 @@ class TestFaultHandler:
         ctx.active_mode = ActiveMode.STANDBY
         ctx.control_mode = ''
         ctx.guard_latched = True
+        ctx.prev_state = RobotState.ACTIVE
+        ctx.wire_armed = True
         handler.on_enter(ctx)
         assert ctx.control_mode == 'STANDBY'
         assert ctx.control_mode in self._STREAM_MODES
@@ -951,6 +1181,8 @@ class TestFaultHandler:
         ctx.active_mode = ActiveMode.TRAJECTORY
         ctx.control_mode = ''
         ctx.guard_latched = True
+        ctx.prev_state = RobotState.ACTIVE
+        ctx.wire_armed = True
         handler.on_enter(ctx)
         assert ctx.control_mode == 'TRAJECTORY'   # started guard-only
         # A real error now appears while still in FAULT.
@@ -1040,9 +1272,10 @@ class TestStateFlowIntegration:
         sm.tick(ctx)
         assert sm.state == RobotState.BOOT
 
-        # Heartbeats + firmware validated → transitions to HOMING
+        # Heartbeats + firmware validated + first /link_status → HOMING
         ctx.all_heartbeats = True
         ctx.firmware_validated = True
+        ctx.link_status_seen = True
         sm.tick(ctx)
         assert sm.state == RobotState.HOMING
 
@@ -1081,15 +1314,23 @@ class TestStateFlowIntegration:
         sm.tick(ctx)
         assert sm.state == RobotState.ACTIVE
 
-        # Activation completes
+        # Activation completes, then the A2 arm phase completes
         sm.tick(ctx)  # Enter ACTIVE (requests activation)
         ctx.operation_result = True
-        sm.tick(ctx)  # Activation succeeds
+        sm.tick(ctx)  # Activation succeeds → arm requested
+        assert 'arm_setpoints' in ctx.drain_requests()
+        ctx.operation_result = True
+        sm.tick(ctx)  # Armed
 
-        # Deactivate
+        # Deactivate — the streaming mode survives until IDLE resolves it (A4)
         ctx.enqueue_command('deactivate')
         sm.tick(ctx)
         assert sm.state == RobotState.IDLE
+        assert ctx.control_mode == 'STANDBY'   # NOT blanked by on_exit (A4)
+        assert 'deactivate' in ctx.drain_requests()
+        ctx.operation_pending = False
+        sm.tick(ctx)                            # IDLE blanks after the op
+        assert ctx.control_mode == ''
 
     def test_error_during_active_goes_to_fault(self):
         """Force FAULT from ACTIVE when errors detected."""
@@ -1122,6 +1363,7 @@ class TestStateFlowIntegration:
         ctx = Context()
         ctx.all_heartbeats = True
         ctx.firmware_validated = True
+        ctx.link_status_seen = True
         sm.tick(ctx)  # BOOT
         sm.tick(ctx)  # → HOMING
         assert sm.state == RobotState.HOMING
@@ -1168,3 +1410,43 @@ class TestCustomHandler:
         sm.force_transition(RobotState.IDLE, ctx)
         sm.tick(ctx)
         assert custom.enter_count == 1
+
+
+# ════════════════════════════════════════════════════════════════
+# ARMING_CONTRACT review fixes (2026-07-15 adversarial review round)
+# ════════════════════════════════════════════════════════════════
+
+
+class TestArmingContractReviewFixes:
+    def test_guard_only_requires_wire_armed(self):
+        """Guard-only = 'latched WHILE ARMED'. prev_state==ACTIVE alone
+        misclassifies a latch-caused ACTIVATE refusal (FAULT raised BY
+        ActiveHandler on an unarmed robot) as guard-only — which would 'resume'
+        a robot that never activated. wire_armed=False routes to the
+        heavier-but-safe real-fault path."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.guard_latched = True
+        ctx.prev_state = RobotState.ACTIVE
+        ctx.wire_armed = False              # NOT armed → not guard-only
+        handler.on_enter(ctx)
+        assert ctx.control_mode == 'ERROR'  # real-fault treatment
+        ctx.guard_latched = False
+        assert handler.execute(ctx) == RobotState.BOOT   # NOT ACTIVE
+        assert ctx.resume_active_no_rearm is False
+
+    def test_promotion_to_real_fault_requests_disarm(self):
+        """The guard-only→real mid-FAULT promotion publishes 'ERROR' (stopping
+        the producer) — leaving the wire armed would only race the staleness
+        watchdog, and on_enter cannot re-run to issue the disarm."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.guard_latched = True
+        ctx.prev_state = RobotState.ACTIVE
+        ctx.wire_armed = True
+        handler.on_enter(ctx)
+        assert ctx.drain_requests() == []   # guard-only: no disarm on entry
+        ctx.fatal_error = True              # real error arrives mid-FAULT
+        handler.execute(ctx)
+        assert 'disarm_setpoints' in ctx.drain_requests()
+        assert ctx.control_mode == 'ERROR'

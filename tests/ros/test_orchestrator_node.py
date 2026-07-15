@@ -565,13 +565,15 @@ class TestShutdown:
 
 class TestTickIntegration:
     def test_boot_to_homing_via_tick(self, orch):
-        """Heartbeats + firmware validated → state machine advances to HOMING."""
+        """Heartbeats + firmware validated + first /link_status → HOMING."""
         orch._tick()  # Enter BOOT
         assert orch.sm.state == RobotState.BOOT
 
-        # Feed heartbeats + firmware validation
+        # Feed heartbeats + firmware validation + a clean /link_status
+        # (A5: BOOT waits for the bridge's first report before exiting).
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
+        orch._on_link_status(_link_status('NONE'))
         orch._tick()
         assert orch.sm.state == RobotState.HOMING
 
@@ -581,6 +583,7 @@ class TestTickIntegration:
         # Get to HOMING
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
+        orch._on_link_status(_link_status('NONE'))
         orch._tick()  # → HOMING
         orch._tick()  # Process encoder_search request
         assert orch.sm.state == RobotState.HOMING
@@ -601,6 +604,7 @@ class TestTickIntegration:
         orch._tick()  # Enter BOOT
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
+        orch._on_link_status(_link_status('NONE'))
         orch._tick()  # → HOMING
         orch._tick()  # Process encoder_search request → service not ready → result=False
         orch._tick()  # Homing sees failure → FAULT
@@ -663,13 +667,27 @@ class TestGuardLatch:
         orch._tick()
         assert orch.sm.state == RobotState.BOOT
 
-    def test_guard_latch_at_boot_does_not_block_progression(self, orch):
-        """A latched guard at BOOT must not wedge the machine — BOOT still advances
-        to HOMING on heartbeats + firmware."""
+    def test_guard_latch_at_boot_is_cleared_by_preflight_then_proceeds(self, orch):
+        """ARMING_CONTRACT A5 — a stale prior-session latch at BOOT is CLEARED
+        (disarmed, one shot) instead of being carried into HOMING, where the
+        firmware's guard-gated HOME verb would refuse it with ERR_BUS_DOWN (the
+        2026-07-15 wedge, twice). BOOT holds until the latch drops, then proceeds."""
+        spy = MagicMock()
+        spy.service_is_ready.return_value = True
+        spy.call_async.return_value = MockFuture()
+        orch._odrive_cmd_client = spy
+
         orch._tick()  # BOOT
         orch._on_link_status(_link_status('MPC_STALE'))
         msg = _make_robot_state_msg(all_heartbeats=True, firmware_validated=True)
         orch._on_robot_state(msg)
+        orch._tick()
+        # Still BOOT — the pre-flight dispatched clear_errors instead of exiting.
+        assert orch.sm.state == RobotState.BOOT
+        spy.call_async.assert_called_once()
+        assert spy.call_async.call_args[0][0].command == 'clear_errors'
+        # The bridge clears the latch; /link_status reflects it → BOOT proceeds.
+        orch._on_link_status(_link_status('NONE'))
         orch._tick()
         assert orch.sm.state == RobotState.HOMING
 
@@ -748,6 +766,7 @@ class TestGuardLatch:
             msg = RobotStateMsg()
             msg.motor_states = [MotorStateSingle(pos_estimate=float(activate_rev[i]))
                                 for i in range(6)] + [MotorStateSingle()]
+            msg.is_homed = True   # A5 seed gate: no seeding before homing
             return msg
 
         traj = TrajectoryNode(start_emitter=False)
@@ -784,3 +803,33 @@ class TestGuardLatch:
             traj._on_control_mode(String(data=mode))
             assert traj._streaming is True
             assert traj._guard_frozen is True
+
+
+class TestFireForgetDisarm:
+    def test_disarm_does_not_clobber_pending_operation(self, orch):
+        """Review 2026-07-15: the natural ACTIVE→FAULT path dispatches the
+        multi-second 'deactivate' one tick before FaultHandler requests the
+        disarm. The disarm must ride OUTSIDE the single-slot operation tracking
+        — overwriting _pending_future would open IdleHandler's
+        wait-for-deactivate gate while the platform is still descending, and a
+        failed descent's result would be silently dropped."""
+        deactivate_future = MockFuture()
+        spy_activate = MagicMock()
+        spy_activate.service_is_ready.return_value = True
+        spy_activate.call_async.return_value = deactivate_future
+        orch._activate_client = spy_activate
+
+        orch._dispatch_request('deactivate')
+        assert orch._pending_future is deactivate_future
+        assert orch.ctx.operation_pending is True
+
+        orch._dispatch_request('disarm_setpoints')
+        # The tracked slot still holds the deactivate; pending still gates IDLE.
+        assert orch._pending_future is deactivate_future
+        assert orch.ctx.operation_pending is True
+
+    def test_arm_uses_tracked_slot(self, orch):
+        """The ARM stays tracked — ActiveHandler consumes its result."""
+        orch._dispatch_request('arm_setpoints')
+        assert orch._pending_future is not None
+        assert orch.ctx.operation_pending is True

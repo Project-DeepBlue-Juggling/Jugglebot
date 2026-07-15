@@ -57,10 +57,11 @@ def generate_launch_description():
 
     # teensy_bridge_node — the can-bridge UDP link (owns the production leg/hand
     # topics + services, /bb/*, /cone/* incl. /bb/axis_estimates). Folded into
-    # the main bring-up now that the cutover is complete. SAFETY:
-    # enable_setpoint_output defaults FALSE
-    # (the bridge sends mpc_active=0 — no leg/setpoint downlink — until an
-    # operator flips it AFTER bench validation with motors powered).
+    # the main bring-up now that the cutover is complete. The bridge ALWAYS
+    # starts DISARMED (mpc_active=0); arming is runtime-only via
+    # /set_setpoint_output — automatic on ACTIVE entry (orchestrator auto-arm)
+    # or manual with auto_arm:=false. See
+    # ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md.
     teensy_ip = LaunchConfiguration('teensy_ip')
     teensy_ip_arg = DeclareLaunchArgument(
         'teensy_ip', default_value='192.168.42.2',
@@ -68,13 +69,26 @@ def generate_launch_description():
     enable_setpoint_output = LaunchConfiguration('enable_setpoint_output')
     enable_setpoint_output_arg = DeclareLaunchArgument(
         'enable_setpoint_output', default_value='false',
-        description='SAFETY: gate for the 40 Hz setpoint downlink + mpc_active '
-                    'heartbeat flag. Keep false until bench-validated.')
+        description='DEPRECATED + INERT since the arming contract (2026-07-15): '
+                    'boot-arming had zero preconditions and self-E-STOPd '
+                    '(MPC_STALE). The bridge logs an ERROR if true and stays '
+                    'disarmed. Arming is runtime-only via /set_setpoint_output.')
+    auto_arm = LaunchConfiguration('auto_arm')
+    auto_arm_arg = DeclareLaunchArgument(
+        'auto_arm', default_value='true',
+        description='ARMING_CONTRACT A2: true (default) — the orchestrator arms '
+                    'the setpoint wire on ACTIVE entry (after the bridge\'s '
+                    'stream-then-arm pre-check passes) and FAULTs on persistent '
+                    'refusal. false — the operator arms manually via '
+                    '/set_setpoint_output (probe-first bench flow).')
 
     # ── Core ROS2 nodes ──────────────────────────────────────────
     orchestrator_node = Node(
         package='jugglebot',
         executable='orchestrator_node',
+        parameters=[{
+            'auto_arm_setpoint_output': auto_arm,
+        }],
     )
 
     motion_bridge_node = Node(
@@ -276,6 +290,7 @@ def generate_launch_description():
         apply_aim_correction_arg,
         teensy_ip_arg,
         enable_setpoint_output_arg,
+        auto_arm_arg,
         # Infrastructure (gui_server.py runs independently in the background)
         rosbridge_websocket_node,
         rosapi_node,

@@ -286,8 +286,10 @@ the firmware backstop). Then `_start_setpoint_output()` →
 `_set_mpc_active(True)` — stream-then-arm, the pattern validated in
 `tests/hardware/teensy_guard_validation.py`. On `false`: stop the setpoint
 thread, `_set_mpc_active(False)`. The response message carries the reject
-reason. The `enable_setpoint_output` launch parameter remains for bench use;
-the documented production flow is the service.
+reason. *(Superseded 2026-07-15, ARMING_CONTRACT: the `enable_setpoint_output`
+launch parameter is now INERT — the service is the only arming path, invoked
+automatically on ACTIVE entry by the orchestrator under the default
+`auto_arm:=true`.)*
 
 Operator sequences (also documented in the ops doc when Phase 1 lands):
 
@@ -537,8 +539,10 @@ extends `tests/ros/test_teensy_bridge_node_setpoint.py`; emitter cadence
 **Hardware session** (protocol file `tests/hardware/session_phase1_hold.md` +
 read-only probe `tools/probes/traj_stream_probe.py` — SUB on :5557 printing
 rate/u0/steps):
-1. Launch with `enable_setpoint_output:=false`; home; activate; mode STANDBY.
-   Probe shows 40 Hz hold frames with u0 ≈ activate revs.
+1. Launch disarmed (`auto_arm:=false` for the probe-first variant); home;
+   activate; mode STANDBY. Probe shows 40 Hz hold frames with u0 ≈ activate
+   revs. *(Superseded 2026-07-15: under the default `auto_arm:=true` the arm
+   happens automatically on ACTIVE entry — see ARMING_CONTRACT.md.)*
 2. `set_setpoint_output true` → PASS: success response, `mpc_active=1`, **zero
    motion at arm**, steady tracking. ABORT: any E-STOP (MPC_STALE /
    MAX_DEVIATION), any visible motion, pump-reject spam in the bridge log.

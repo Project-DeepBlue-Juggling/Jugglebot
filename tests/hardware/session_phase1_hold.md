@@ -40,10 +40,19 @@ This session validates the **software already merged** on branch
 
 ---
 
-## Step 0 — Launch with setpoint output OFF (default)
+> **⚡ Superseded in part, 2026-07-15 (ARMING CONTRACT)**: arming is now
+> **automatic on ACTIVE entry** (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`;
+> see the banner in `mvp_bench_runbook.md`). The manual
+> `set_setpoint_output true` step below runs only under `auto_arm:=false` —
+> which is what you want if you intend the pre-arm probe verification this
+> protocol scripts, **so Step 0's launch now needs `auto_arm:=false`** (without
+> it, `activate` arms the wire before the probe step, defeating the probe-first
+> premise). PASS/ABORT criteria are unchanged.
+
+## Step 0 — Launch disarmed, with auto-arm off (probe-first protocol)
 
 ```bash
-ros2 launch jugglebot jugglebot_launch.py enable_setpoint_output:=false
+ros2 launch jugglebot jugglebot_launch.py auto_arm:=false
 ```
 
 - The bridge sends `mpc_active=0` (no setpoint downlink) until explicitly armed.
@@ -77,8 +86,9 @@ ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'activ
 > serves neither (it only *subscribes* to `/orchestrator_command`). Calling the
 > service directly fails twice over:
 >
-> 1. The state machine never leaves `IDLE`, so `IdleHandler.on_enter` keeps
->    `control_mode = ''`. That empty string is not in `trajectory_node`'s
+> 1. The state machine never leaves `IDLE`, so `control_mode` stays `''`
+>    (IdleHandler blanks it once any pending operation resolves — A4). That
+>    empty string is not in `trajectory_node`'s
 >    `_DEFAULT_STREAM_MODES`, so `_streaming` stays `False` and **the 40 Hz emitter
 >    never publishes** — the probe below reports `rate_hz 0`, `u0_mean nan`,
 >    `pump_rej 0` even though :5557 is bound and healthy.

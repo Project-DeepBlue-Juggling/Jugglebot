@@ -65,11 +65,15 @@ class _CapturePub:
         self.closed = True
 
 
-def _robot_state(pos_rev=None):
+def _robot_state(pos_rev=None, is_homed=True):
+    # is_homed=True by default: these tests model a homed, ACTIVE robot. The
+    # seed gate (ARMING_CONTRACT A5) refuses to seed while is_homed is False —
+    # covered explicitly by the seed-gate tests below.
     pos_rev = pos_rev if pos_rev is not None else _ACTIVATE_REV
     rs = RobotState()
     rs.motor_states = [MotorStateSingle(pos_estimate=float(pos_rev[i]))
                        for i in range(6)] + [MotorStateSingle()]
+    rs.is_homed = bool(is_homed)
     return rs
 
 
@@ -1861,3 +1865,43 @@ def test_guard_latch_freezes_at_last_pose_when_telemetry_stale():
     node._on_link_status(_link_status('MAX_DEVIATION'))
     assert node._guard_frozen is True
     assert node._active_plan.kind == 'hold'      # froze at last pose (did not advance)
+
+
+# ── ARMING_CONTRACT A5: seed gating + the loud disarmed wire ───
+
+def test_seed_deferred_until_homed():
+    """No seeding before homing completes: mid-homing the legs sit at arbitrary
+    index-search extensions below the workspace hard margin, so every attempt
+    failed the gate at the 100 Hz telemetry rate (4091 ERROR lines in 41 s on
+    2026-07-15, burying the real fault under spam)."""
+    node = _node()
+    node._on_robot_state(_robot_state(is_homed=False))
+    node._on_control_mode(String(data='STANDBY'))
+    assert node._streaming is True
+    assert node._seeded is False                 # gate held
+    node._on_robot_state(_robot_state(is_homed=False))
+    assert node._seeded is False                 # still held, no spam-y attempts
+    node._on_robot_state(_robot_state(is_homed=True))
+    assert node._seeded is True                  # seeds on the first homed frame
+
+
+def test_accept_while_disarmed_is_loud():
+    """An accepted move on a disarmed wire executes into a dropped stream (the
+    2026-07-15 silent no-op battery: two moves 'accepted', realized peaks on
+    /trajectory/diagnostics, zero motion, setpoints_sent frozen at 0). The
+    accept response must carry the wire state so a harness prints it."""
+    node = _traj_mode_node()
+    node._on_link_status(_link_status(mpc_active='0'))
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is True
+    assert 'wire DISARMED' in resp.message
+
+
+def test_accept_while_armed_has_no_disarmed_marker():
+    node = _traj_mode_node()
+    node._on_link_status(_link_status(mpc_active='1'))
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is True
+    assert 'DISARMED' not in resp.message

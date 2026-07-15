@@ -7,16 +7,21 @@ leg/hand/BB/cone topic + service names (the leg/hand cutover promoted them off
 the old side-by-side ``/teensy/*`` namespace), so a second instance would create
 duplicate publishers on those names. Use this only when the main launch is down.
 
-Safety: setpoint output is OFF by default (``enable_setpoint_output:=false``).
-The bridge sends ``mpc_active=0`` to the Teensy until an operator explicitly
-flips the parameter AFTER bench validation. Do not set it true here.
+Safety: the bridge ALWAYS starts DISARMED (``mpc_active=0``). Arming is
+runtime-only via ``/set_setpoint_output`` (SetBool), whose stream-then-arm
+pre-check refuses to arm without a live, seeded :5557 stream — see
+``ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`` (A1). The old
+``enable_setpoint_output:=true`` boot-arm is INERT since 2026-07-15: it armed
+with zero preconditions before anything could stream, so the firmware's
+MPC-staleness watchdog latched within one guard tick (the arm-before-stream
+trap). The bridge logs an ERROR if the arg is set.
 
 Usage::
 
     ros2 launch jugglebot teensy_bridge_launch.py
     ros2 launch jugglebot teensy_bridge_launch.py teensy_ip:=192.168.42.2
-    # Only after bench validation with motors powered:
-    ros2 launch jugglebot teensy_bridge_launch.py enable_setpoint_output:=true
+    # Arm at runtime, once a producer is streaming on :5557:
+    ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"
 """
 
 import os
@@ -54,9 +59,10 @@ def generate_launch_description():
             description='Static IP of the can-bridge Teensy (ADR-0007).'),
         DeclareLaunchArgument(
             'enable_setpoint_output', default_value='false',
-            description='SAFETY: gate for the 40 Hz setpoint downlink + '
-                        'mpc_active heartbeat flag. Keep false until '
-                        'bench-validated with motors powered.'),
+            description='DEPRECATED + INERT (arming contract, 2026-07-15): '
+                        'the bridge always starts disarmed and logs an ERROR '
+                        'if this is true. Arm at runtime via '
+                        '/set_setpoint_output.'),
         Node(
             package='jugglebot',
             executable='teensy_bridge_node',

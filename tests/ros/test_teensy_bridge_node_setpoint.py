@@ -676,3 +676,47 @@ def test_mpc_command_zmq_source_decodes_real_wire_format():
         src.close()
         pub.close()
         ctx.term()
+
+
+def test_arm_refused_while_deactivate_in_progress():
+    """A1 precondition (a3), review 2026-07-15: an arm landing mid-descent
+    would hand the descending legs to the setpoint stream partway down (early
+    in the descent u0-vs-encoder can still pass the 0.25 rev tolerance, so the
+    other preconditions don't cover it)."""
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        node._injected_setpoint_source = _FakeSource([_cmd([0.1] * 6)])
+        node._deactivate_in_progress = True
+        resp = _arm(node)
+        assert resp.success is False
+        assert 'deactivate in progress' in resp.message
+        assert node._mpc_active is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_concurrent_arm_attempts_serialized():
+    """Audit 2026-07-15: the arm service moved to the Reentrant group (so its
+    0.5 s frame-wait can't starve the telemetry timers), which removed the
+    implicit mutual exclusion — two overlapping arms could both pass the
+    mpc_active check and double-start the ingest thread. _arm_lock serializes;
+    the loser is refused loudly, not queued."""
+    teensy, client, node = _node()
+    try:
+        _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
+        node._injected_setpoint_source = _FakeSource([_cmd([0.1] * 6)])
+        assert node._arm_lock.acquire(blocking=False)   # another arm in flight
+        try:
+            resp = _arm(node)
+            assert resp.success is False
+            assert 'already in progress' in resp.message
+            assert node._mpc_active is False
+        finally:
+            node._arm_lock.release()
+        # With the lock free the same arm goes through.
+        resp = _arm(node)
+        assert resp.success is True, resp.message
+        assert node._mpc_active is True
+    finally:
+        _teardown(teensy, client, node)

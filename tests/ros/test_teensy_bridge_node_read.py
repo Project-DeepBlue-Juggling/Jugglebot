@@ -658,3 +658,54 @@ def test_time_of_day_responder(bridge):
     blob = got[0].payload[p.RPC_RESPONSE_SIZE:p.RPC_RESPONSE_SIZE + resp.res_len]
     (wall_us,) = struct.unpack('<Q', blob)
     assert wall_us > 0
+
+
+# ── ARMING_CONTRACT (A1 / A5) ──────────────────────────────────
+
+def test_enable_setpoint_output_true_is_inert_no_boot_arm():
+    """A1 — the boot-arm path is REMOVED: constructing the node with
+    enable_setpoint_output=true must NOT arm. Boot-arming ran ZERO
+    preconditions (nothing can legitimately stream at __init__), so it armed
+    onto a silent :5557 and the firmware's MPC-staleness watchdog latched
+    within one guard tick — reconfirmed live 2026-07-15 21:32. The parameter
+    survives only so stale launch invocations fail loud (an ERROR log), not
+    weird (an instant latch)."""
+    from unittest.mock import patch
+    from jugglebot.teensy_bridge_node import TeensyBridgeNode
+
+    orig = TeensyBridgeNode.declare_parameter
+
+    def declare(self, name, default_value):
+        if name == 'enable_setpoint_output':
+            default_value = True
+        return orig(self, name, default_value)
+
+    with patch.object(TeensyBridgeNode, 'declare_parameter', declare):
+        teensy, client, node = _build_paired_node()
+    try:
+        assert bool(node.get_parameter('enable_setpoint_output').value) is True
+        assert node._mpc_active is False          # NOT armed
+        assert node._sp_thread is None            # no ingest thread
+        assert node._sp_source is None            # no :5557 subscription
+    finally:
+        node.on_shutdown()
+        client.stop()
+        teensy.stop()
+
+
+def test_link_status_surfaces_firmware_arm_took_bit(bridge):
+    """A5 — HeartbeatT2J bit3 (the firmware's own mpc_active, put on the wire
+    precisely so 'a setpoint source can verify its arm actually took') surfaces
+    as 'teensy_mpc_active' on /link_status. A persistent split between it and
+    the host 'mpc_active' KeyValue means an arm/disarm never took on the wire."""
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE),
+                      flags=0x1 | 0x8, uptime_ms=1)  # bit0 time_synced, bit3 MPC_ACTIVE
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['teensy_mpc_active'] == '1'   # firmware says armed
+    assert kv['mpc_active'] == '0'          # host disarmed — the split is visible

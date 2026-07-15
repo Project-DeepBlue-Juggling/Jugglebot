@@ -88,12 +88,24 @@ def _wire_conduit(orch, bridge):
     orch._home_client.send_goal_async = _send_goal_async
     # set_level_state publisher → bridge subscriber (real STATE_WRITE path).
     orch._level_state_pub.publish = lambda msg: bridge._sub_set_level_state(msg)
+    # /link_status: bridge publisher → orchestrator subscriber (the A5 conduit —
+    # BOOT's stale-latch pre-flight waits for the bridge's first report, and the
+    # guard_latched / wire_armed decodes ride the REAL KeyValues the bridge builds).
+    bridge.link_status_pub.publish = lambda msg: orch._on_link_status(msg)
 
 
 def _run_until(orch, msg, target_state, max_ticks=60):
-    """Feed robot_state + tick until the SM reaches target_state (or max_ticks)."""
+    """Feed robot_state + link_status + tick until the SM reaches target_state.
+
+    ``orch._bridge_for_link_status`` (set by the tests after _wire_conduit) lets
+    the loop drive the bridge's REAL 10 Hz link-status publish each tick, exactly
+    as the production timer would.
+    """
+    bridge = getattr(orch, '_bridge_for_link_status', None)
     for _ in range(max_ticks):
         orch._on_robot_state(msg)
+        if bridge is not None:
+            bridge._publish_link_status()
         orch._tick()
         if orch.sm.state == target_state:
             return True
@@ -116,6 +128,7 @@ def test_full_cold_start_boot_home_level_to_idle_via_conduit():
         # Make the levelling settle instant (test-only tweak to the handler instance).
         orch.sm._handlers[RobotState.LEVELLING]._settle_s = 0.0
         _wire_conduit(orch, bridge)
+        orch._bridge_for_link_status = bridge
 
         msg = _cold_start_msg(is_homed=False, encoder_search_complete=False)
 
@@ -149,6 +162,7 @@ def test_cold_start_skips_homing_when_already_homed():
     teensy, client, bridge = _build_paired_node(boot_state_read=False)
     try:
         _wire_conduit(orch, bridge)
+        orch._bridge_for_link_status = bridge
         msg = _cold_start_msg(is_homed=True, encoder_search_complete=True)
         assert _run_until(orch, msg, RobotState.IDLE, max_ticks=10)
         assert orch.sm.state == RobotState.IDLE

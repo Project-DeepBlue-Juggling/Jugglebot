@@ -1,5 +1,12 @@
 # Hardware Session — Leg-Gain Retune (fast-motion tier), **on-robot Phase B** — root fix for the 2026-07-10 ~6 Hz stutter
 
+> **⚡ Superseded in part, 2026-07-15 (ARMING CONTRACT)**: arming is now
+> **automatic on ACTIVE entry** (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`;
+> see the banner in `mvp_bench_runbook.md`). Manual `set_setpoint_output true`
+> steps below run only under `auto_arm:=false`; disarm-before-deactivate is now
+> enforced in-process by the bridge (A3).
+
+
 > # ⚠️ SUPERSEDED 2026-07-13 — DO NOT RUN THE GAIN SWEEP IN THIS DOCUMENT
 >
 > **There is no gain to retune, and no winner to transfer.** The bench "winner" this session

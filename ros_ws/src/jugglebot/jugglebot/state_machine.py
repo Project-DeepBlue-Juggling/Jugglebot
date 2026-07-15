@@ -83,6 +83,33 @@ class Context:
         # into a real-fault→BOOT→re-activate path (which MUST re-arm).
         self.resume_active_no_rearm = False
 
+        # ── Arming contract (A1-A5, see ARMING_CONTRACT.md) ──────
+        # State the machine was in immediately before the current one. Written by
+        # StateMachine on EVERY transition (tick-driven and forced). FaultHandler
+        # uses it to classify guard-only faults: a guard latch can only be
+        # guard-only if the fault came FROM ACTIVE (an armed concern) — a latch
+        # carried into a HOMING/IDLE fault is a stale prior-session latch, and
+        # exiting it "back" to ACTIVE would resume a robot that never activated
+        # (the 2026-07-15 misroute).
+        self.prev_state = None
+        # A2 — orchestrator auto-arm. True (default): ActiveHandler arms the wire
+        # after activation via the 'arm_setpoints' request. False (launch arg
+        # auto_arm:=false → orchestrator param auto_arm_setpoint_output): the
+        # operator arms manually via /set_setpoint_output (the pre-contract
+        # probe-first bench flow); the disarmed wire stays loud via
+        # trajectory_node (A5).
+        self.auto_arm = True
+        # A5 — wire state mirrored from /link_status 'mpc_active' (orchestrator
+        # sets it). Used for observability AND to NARROW FaultHandler's guard-only
+        # classification (guard-only = latched WHILE ARMED); never to authorize an
+        # arm — the bridge's arm service is the single source of truth for arming,
+        # and a stale/absent mirror fails toward the heavier real-fault path.
+        self.wire_armed = False
+        # A5 — True once at least one /link_status has been decoded. BOOT's
+        # stale-latch pre-flight must not conclude "no latch" from the default
+        # guard_latched=False before the bridge has reported at all.
+        self.link_status_seen = False
+
         # Async operation result (set by orchestrator when a requested op completes)
         self.operation_pending = False
         self.operation_result = None         # None = not complete, True/False = result
@@ -196,6 +223,7 @@ class StateMachine:
         handler = self._handlers.get(self._state)
         if handler and self._entered:
             handler.on_exit(ctx)
+        ctx.prev_state = self._state
         self._state = new_state
         self._entered = False
 
@@ -215,6 +243,7 @@ class StateMachine:
         if next_state is not None and next_state != self._state:
             self._log(f'{self._state.name} -> {next_state.name}')
             handler.on_exit(ctx)
+            ctx.prev_state = self._state
             self._state = next_state
             self._entered = False
 
@@ -224,13 +253,21 @@ class StateMachine:
 # ══════════════════════════════════════════════════════════════════
 
 class BootHandler(StateHandler):
-    """Wait for heartbeats and firmware validation from all ODrive axes."""
+    """Wait for heartbeats and firmware validation from all ODrive axes,
+    then clear any stale prior-session guard latch (ARMING_CONTRACT A5)."""
+
+    # How long to wait, after a successful clear_errors, for /link_status (10 Hz)
+    # to reflect the released latch before declaring the clear ineffective.
+    LATCH_CLEAR_TIMEOUT_S = 5.0
 
     def __init__(self):
         self._entry_time = 0.0
+        self._latch_clear_requested = False
+        self._latch_clear_sent_t = 0.0
 
     def on_enter(self, ctx):
         self._entry_time = time.time()
+        self._latch_clear_requested = False
         ctx.boot_timed_out = False
         ctx.control_mode = ''
 
@@ -252,6 +289,43 @@ class BootHandler(StateHandler):
                 ctx.boot_timed_out = True
                 return RobotState.FAULT
             return None
+
+        # ── Stale-latch pre-flight (ARMING_CONTRACT A5) ──────────────
+        # The can-bridge Teensy is Jetson-5V-powered, so a guard latch from a
+        # prior session (e.g. a bench harness whose final disarm heartbeat was
+        # lost) SURVIVES ROS relaunches — and the firmware refuses the guard-gated
+        # verbs (HOME/ACTIVATE/DEACTIVATE) with ERR_BUS_DOWN while it is latched,
+        # which wedged HOMING twice on 2026-07-15. At BOOT the bridge is disarmed
+        # by construction (mpc_active pinned 0 on every startup path), no output
+        # path exists and nothing streams, so clearing here cannot jolt anything.
+        # Clear ONCE per BOOT visit; a latch that returns after a successful clear
+        # is a live fault, not a stale one → FAULT.
+        #
+        # Wait for the first /link_status before concluding anything: the default
+        # guard_latched=False must not be mistaken for "no latch" while the bridge
+        # is still coming up (its firmware-check gate above usually guarantees
+        # this, but the two signals ride different topics).
+        if not ctx.link_status_seen:
+            if time.time() - self._entry_time > BOOT_TIMEOUT_S:
+                ctx.boot_timed_out = True
+                return RobotState.FAULT
+            return None
+
+        if ctx.guard_latched:
+            if not self._latch_clear_requested:
+                self._latch_clear_requested = True
+                self._latch_clear_sent_t = time.time()
+                ctx.operation_result = None
+                ctx.request = 'clear_errors'
+                return None
+            if ctx.operation_result is False:
+                return RobotState.FAULT
+            if (time.time() - self._latch_clear_sent_t
+                    > self.LATCH_CLEAR_TIMEOUT_S):
+                # Cleared (or clear pending) but the latch never dropped on
+                # /link_status — treat as a live fault.
+                return RobotState.FAULT
+            return None  # clear in flight / waiting for /link_status to reflect
 
         # Skip ahead if already homed (e.g., recovery from transient FAULT)
         if ctx.is_homed:
@@ -302,13 +376,19 @@ class HomingHandler(StateHandler):
 class IdleHandler(StateHandler):
     """Robot ready — waiting for activation command."""
 
-    def on_enter(self, ctx):
-        ctx.control_mode = ''
-
     def execute(self, ctx):
         # Wait for any pending operation (e.g., deactivation from ACTIVE)
         if ctx.operation_pending:
             return None
+
+        # A4 (ARMING_CONTRACT) — blank the control mode only AFTER the pending
+        # deactivate has resolved. ActiveHandler.on_exit deliberately leaves the
+        # streaming mode published so the 40 Hz emitter keeps feeding the (by
+        # then disarmed, A3) wire through the descent; blanking it at IDLE entry
+        # would stop the emitter while the bridge could still be armed for up to
+        # a service round-trip — the 250 ms MPC_STALE race this ordering removes.
+        if ctx.control_mode != '':
+            ctx.control_mode = ''
 
         cmd = ctx.consume_command()
         if cmd == 'activate':
@@ -403,10 +483,40 @@ class LevellingHandler(StateHandler):
 
 
 class ActiveHandler(StateHandler):
-    """Robot activated — accepting pose commands via sub-mode."""
+    """Robot activated — accepting pose commands via sub-mode.
+
+    ARMING_CONTRACT A2: after the profiled ACTIVATE completes and the streaming
+    mode is published, this handler ARMS the setpoint wire ('arm_setpoints' →
+    the bridge's stream-then-arm pre-check) with bounded retries — the producer
+    needs ~100-300 ms to seed its hold after the mode publish, so the first
+    attempt(s) may legitimately be refused with "no mpccmd frame". Persistent
+    refusal is a real fault, loudly.
+    """
+
+    # Arm-phase retry budget. Each REFUSED attempt is one service round-trip
+    # that includes the bridge's bounded 0.5 s :5557 frame-wait, dispatched on
+    # the 10 Hz tick — so a refusal cycle is ~0.6-1.0 s wall-clock and the
+    # budget covers roughly 6-10 s before FAULT (not 10× less; the tick rate is
+    # not the bottleneck, the frame-wait is).
+    ARM_MAX_ATTEMPTS = 10
 
     def __init__(self):
         self._activated = False
+        self._armed = False
+        self._arm_attempts = 0
+
+    def _begin_arm_phase(self, ctx):
+        """Enter the arm phase (A2), or skip it under manual arming."""
+        self._arm_attempts = 0
+        ctx.operation_result = None
+        if not ctx.auto_arm:
+            # Manual-arm session (launch arg auto_arm:=false): the operator
+            # arms via /set_setpoint_output after their pre-arm verification.
+            # The disarmed wire stays loud via trajectory_node (A5).
+            self._armed = True
+            return
+        self._armed = False
+        ctx.request = 'arm_setpoints'
 
     def on_enter(self, ctx):
         # Always reset to STANDBY on entry so re-activation never inherits a
@@ -425,16 +535,21 @@ class ActiveHandler(StateHandler):
         # must RESUME already-armed: re-running the ACTIVATE move here (a TRAP_TRAJ to
         # the active pose) would fight the live 40 Hz PASSTHROUGH stream and lurch the
         # legs up from the post-descent measured hold — potentially re-tripping the
-        # guard. Consume the one-shot and go straight to the armed STANDBY hold.
+        # guard. Consume the one-shot and go straight to the armed STANDBY hold —
+        # re-VERIFYING the arm through the same phase (idempotent: the bridge
+        # returns 'already enabled' if the wire stayed armed, and re-runs the full
+        # stream-then-arm pre-check if something disarmed it mid-fault).
         resume = ctx.resume_active_no_rearm
         ctx.resume_active_no_rearm = False
         if resume:
             self._activated = True
             ctx.control_mode = ctx.active_mode.value  # 'STANDBY'
-            ctx.operation_result = None
+            self._begin_arm_phase(ctx)
             return
 
         self._activated = False
+        self._armed = False
+        self._arm_attempts = 0
         ctx.request = 'activate'
         ctx.operation_result = None
 
@@ -447,6 +562,26 @@ class ActiveHandler(StateHandler):
                 return RobotState.FAULT
             self._activated = True
             ctx.control_mode = ctx.active_mode.value
+            # A2 — the streaming mode is published this tick (the orchestrator
+            # publishes control_mode AFTER request dispatch, so the producer
+            # sees the mode before/with the first arm attempt's refusal window).
+            self._begin_arm_phase(ctx)
+            return None
+
+        # Arm phase (A2): retry until armed or the budget is spent.
+        if not self._armed:
+            if ctx.operation_result is None:
+                return None
+            if ctx.operation_result is False:
+                self._arm_attempts += 1
+                if self._arm_attempts >= self.ARM_MAX_ATTEMPTS:
+                    # Persistent arm refusal — a real fault (producer never
+                    # seeded, guard latched, or the link is sick). FAULT, loudly.
+                    return RobotState.FAULT
+                ctx.operation_result = None
+                ctx.request = 'arm_setpoints'
+                return None
+            self._armed = True
 
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
@@ -460,8 +595,12 @@ class ActiveHandler(StateHandler):
         return None
 
     def on_exit(self, ctx):
+        # A3/A4 (ARMING_CONTRACT): request the deactivate but DO NOT blank the
+        # control mode — the bridge disarms in-process at the head of
+        # _run_deactivate (A3), and the streaming mode must stay published until
+        # that operation resolves so the armed wire is never starved by a mode
+        # blank (A4). IdleHandler blanks the mode after the operation completes.
         ctx.request = 'deactivate'
-        ctx.control_mode = ''
 
 
 class FaultHandler(StateHandler):
@@ -499,19 +638,42 @@ class FaultHandler(StateHandler):
         # guard suppresses leg output WITHOUT disarming the ODrives, and trajectory_node
         # already installed a gate-validated profiled descent + froze target
         # advancement. So the streaming mode is ALREADY safe. Discriminate it from a
-        # real fault: guard latched, and NONE of the ODrive-level fault signals set.
+        # real fault: guard latched, NONE of the ODrive-level fault signals set, AND
+        # the fault came FROM ACTIVE (ARMING_CONTRACT: the guard's staleness/deviation
+        # terms only matter while armed, an ACTIVE concern). Without the origin check,
+        # a stale prior-session latch surfacing during HOMING/BOOT classified as
+        # guard-only and — on clear — exited "back" to ACTIVE on a robot that never
+        # activated (the 2026-07-15 misroute; the comments said "from ACTIVE" but the
+        # code never enforced it).
         # (A guard latch riding ALONGSIDE a real ODrive error is a real fault — the
         # ODrive error dominates and gets the full 'ERROR'/BOOT treatment below.)
+        # ctx.wire_armed narrows further: guard-only semantics are literally "the
+        # guard latched while the wire was armed" — prev_state alone misclassifies
+        # a latch-caused ACTIVATE refusal (FAULT raised BY ActiveHandler on an
+        # unarmed robot, e.g. an overspeed latch surfacing at IDLE) as guard-only
+        # and would "resume" a robot that never activated. Fail-safe direction: a
+        # stale/absent wire_armed routes to the heavier-but-safe real-fault path.
         self._guard_only = (ctx.guard_latched and not ctx.errors
-                            and not ctx.has_fatal_error and not ctx.boot_timed_out)
+                            and not ctx.has_fatal_error and not ctx.boot_timed_out
+                            and ctx.prev_state == RobotState.ACTIVE
+                            and ctx.wire_armed)
+
+        # A2 (ARMING_CONTRACT) — a REAL fault disarms the wire. The output is
+        # (or is about to be) unusable and control_mode goes 'ERROR' (stopping the
+        # producer), so an armed wire would only race the staleness watchdog.
+        # Guard-only faults deliberately stay armed: the resume path depends on
+        # the stream surviving, and the guard is already suppressing output.
+        if not self._guard_only:
+            ctx.request = 'disarm_setpoints'
 
         # Entering FAULT is never a clean guard-clear resume — clear the one-shot so a
         # stale value can't skip the re-arm on a later real-fault→BOOT→ACTIVE path.
         ctx.resume_active_no_rearm = False
 
         if self._guard_only:
-            # PRESERVE the streaming mode (ActiveHandler.on_exit blanked control_mode to
-            # '' during the forced transition — restore it). Publishing 'ERROR' here — a
+            # PRESERVE the streaming mode (control_mode still holds it — A4 removed
+            # ActiveHandler.on_exit's blank; re-assert from active_mode so a forced
+            # transition from any prior value is safe). Publishing 'ERROR' here — a
             # mode OUTSIDE trajectory_node's streaming set — would silence the 40 Hz
             # emitter, abandon the in-flight profiled descent, and re-latch MPC_STALE on
             # top of the guard: the self-sustaining 2026-07-10 deadlock this fix removes.
@@ -545,6 +707,11 @@ class FaultHandler(StateHandler):
                                  or ctx.boot_timed_out):
             self._guard_only = False
             ctx.control_mode = 'ERROR'
+            # A2 — promotion to a real fault is a real-fault entry in every way
+            # that matters: 'ERROR' stops the producer, so an armed wire would
+            # only race the staleness watchdog (on_enter cannot re-run to issue
+            # this — review 2026-07-15).
+            ctx.request = 'disarm_setpoints'
 
         if self._guard_only:
             # Guard-only fault: the ODrives never disarmed and stayed homed, so exit

@@ -23,7 +23,7 @@ from jugglebot_interfaces.srv import (
 )
 from jugglebot_interfaces.action import HomeMotors
 from std_msgs.msg import Float64MultiArray, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 from diagnostic_msgs.msg import DiagnosticStatus
 
 from jugglebot.state_machine import (
@@ -41,10 +41,23 @@ class OrchestratorNode(Node):
         self.sm = build_default_machine(
             log_fn=lambda msg: self.get_logger().info(f'[SM] {msg}'))
 
+        # ── Arming contract (A2, see ARMING_CONTRACT.md) ──────────
+        # auto_arm_setpoint_output=true (default): ActiveHandler arms the wire
+        # after activation via 'arm_setpoints' (the bridge's stream-then-arm
+        # pre-check remains the single safe-to-arm gate). false: the operator
+        # arms manually via /set_setpoint_output — the pre-contract probe-first
+        # bench flow; the disarmed wire stays loud (A5) instead of silent.
+        self.declare_parameter('auto_arm_setpoint_output', True)
+        self.ctx.auto_arm = bool(
+            self.get_parameter('auto_arm_setpoint_output').value)
+
         # ── Async operation tracking ──────────────────────────────
         self._pending_future = None          # For service calls
         self._pending_goal_future = None     # Phase 1: goal acceptance
         self._pending_result_future = None   # Phase 2: action result
+        # Fire-and-forget futures (A2 disarm) — retained until their
+        # done-callbacks fire; never tracked in the operation slots above.
+        self._untracked_futures = []
 
         # ── Service clients ───────────────────────────────────────
         self._encoder_search_client = self.create_client(
@@ -57,6 +70,12 @@ class OrchestratorNode(Node):
             Trigger, 'bb/calibrate')
         self._tilt_client = self.create_client(
             GetTiltReadingService, 'get_platform_tilt')
+        # A2 — the bridge's runtime arming service (SetBool: true=arm,
+        # false=disarm). The orchestrator is the production owner of WHEN;
+        # the bridge's _arm_setpoint_output owns SAFE-TO (the 5-precondition
+        # stream-then-arm check).
+        self._setpoint_output_client = self.create_client(
+            SetBool, 'set_setpoint_output')
 
         # ── Action client ─────────────────────────────────────────
         self._home_client = ActionClient(self, HomeMotors, 'home_motors')
@@ -145,14 +164,24 @@ class OrchestratorNode(Node):
 
         Sets ``ctx.guard_latched`` from the bridge's ``fault_state`` KeyValue
         (``NONE``/``UNKNOWN`` ⇒ not latched). The state machine uses it to FORCE and
-        HOLD FAULT — but only from ACTIVE (see ``_tick``): a benign prior-session
-        MPC_STALE latch at BOOT must not FAULT the machine before the robot even
-        homes (that latch is caught by the ACTIVATE arming pre-check, exactly as
-        before). ``guard_latched`` lives on its own ctx field rather than folded into
+        HOLD FAULT — but only from ACTIVE (see ``_tick``): a stale prior-session
+        latch at BOOT must not FAULT the machine before the robot even homes —
+        it is CLEARED by BootHandler's disarmed stale-latch pre-flight
+        (ARMING_CONTRACT A5; the pre-contract assumption that the ACTIVATE
+        arming pre-check would catch it was one half of the 2026-07-15 HOMING
+        wedge — the firmware's guard-gated HOME refuses first).
+        ``guard_latched`` lives on its own ctx field rather than folded into
         ``ctx.errors`` because ``errors`` is overwritten wholesale every /robot_state.
         """
         fault = self._kv_get(msg.values, 'fault_state', 'NONE')
         self.ctx.guard_latched = fault not in ('NONE', 'UNKNOWN', '')
+        # ARMING_CONTRACT A5 — mirror the wire's arming state (observability;
+        # handlers never gate transitions on it) and mark that the bridge has
+        # reported at least once (BOOT's stale-latch pre-flight waits for this
+        # so the default guard_latched=False is never mistaken for "no latch").
+        self.ctx.wire_armed = self._kv_get(
+            msg.values, 'mpc_active', '0') == '1'
+        self.ctx.link_status_seen = True
 
     # ═══════════════════════════════════════════════════════════════
     # Main tick
@@ -166,9 +195,9 @@ class OrchestratorNode(Node):
         # 2. Force FAULT on errors (from any non-FAULT state).
         #    A latched Teensy guard forces FAULT too (FIX 2), but ONLY from ACTIVE:
         #    the guard's MAX_DEVIATION/MPC_STALE only latch while armed (an ACTIVE
-        #    concern), and gating on ACTIVE keeps the benign prior-session latch at
-        #    BOOT from wedging the machine — that one is handled at the ACTIVATE
-        #    arming pre-check, coherent with prior behaviour. FaultHandler then holds
+        #    concern), and gating on ACTIVE lets BootHandler's stale-latch
+        #    pre-flight CLEAR a prior-session latch at BOOT (ARMING_CONTRACT A5)
+        #    instead of the machine wedging on it. FaultHandler then holds
         #    FAULT until the guard clears, routing the existing clear_errors recovery.
         guard_forces_fault = (self.ctx.guard_latched
                               and self.sm.state == RobotState.ACTIVE)
@@ -340,6 +369,25 @@ class OrchestratorNode(Node):
             cmd_req.command = 'clear_errors'
             self._start_service_call(self._odrive_cmd_client, cmd_req)
 
+        # ── Arming contract (A2) ──────────────────────────────────
+        elif req == 'arm_setpoints':
+            arm_req = SetBool.Request()
+            arm_req.data = True
+            self._start_service_call(self._setpoint_output_client, arm_req)
+
+        elif req == 'disarm_setpoints':
+            # Fire-and-forget, OUTSIDE the single-slot _pending_future tracking:
+            # the disarm is idempotent, safety-directional, and consumed by no
+            # handler — tracking it would ORPHAN an in-flight tracked op (the
+            # natural ACTIVE→FAULT path dispatches the multi-second 'deactivate'
+            # one tick before FaultHandler requests this disarm, and overwriting
+            # that future would open IdleHandler's wait-for-deactivate gate while
+            # the platform is still physically descending; review 2026-07-15).
+            disarm_req = SetBool.Request()
+            disarm_req.data = False
+            self._fire_forget_service_call(
+                self._setpoint_output_client, disarm_req, 'disarm_setpoints')
+
         # ── Levelling requests ────────────────────────────────────
 
         elif req == 'level_activate':
@@ -413,6 +461,38 @@ class OrchestratorNode(Node):
         self.ctx.operation_pending = True
         self.ctx.operation_result = None
         self._pending_future = client.call_async(request)
+
+    def _fire_forget_service_call(self, client, request, label):
+        """Dispatch a call outside the single-slot operation tracking.
+
+        For requests no handler consumes (the A2 disarm): does not touch
+        ``operation_pending``/``operation_result`` and never overwrites
+        ``_pending_future``. The future is retained until its done-callback
+        fires (rclpy futures must outlive the call); failures are logged, not
+        routed to the state machine.
+        """
+        if not client.service_is_ready():
+            self.get_logger().warning(
+                f'{label}: service not ready (fire-and-forget — not retried)')
+            return
+        fut = client.call_async(request)
+        self._untracked_futures.append(fut)
+
+        def _done(f, label=label):
+            try:
+                result = f.result()
+                if not getattr(result, 'success', True):
+                    self.get_logger().warning(
+                        f'{label} failed: {getattr(result, "message", "")}')
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().warning(f'{label} exception: {e}')
+            finally:
+                try:
+                    self._untracked_futures.remove(f)
+                except ValueError:
+                    pass
+
+        fut.add_done_callback(_done)
 
     def _start_home_action(self):
         """Start the home_motors action (two-phase: goal acceptance then result)."""
