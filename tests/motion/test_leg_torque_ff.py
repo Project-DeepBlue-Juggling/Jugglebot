@@ -328,11 +328,25 @@ def test_platform_inertia_term_adds_torque_when_accelerating_upward():
 # 3. FLAG OFF ⇒ EXACTLY ZEROS (byte-identical to the pre-feature behaviour)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_shipped_config_has_the_feature_off():
-    """The shipped default is OFF. If this fails, someone armed the robot via a commit."""
-    assert hw.DYNAMICS_TORQUE_FF_ENABLED is False, (
-        'dynamics.torque_ff_enabled must ship as false — turning the leg torque '
-        'feedforward on is an operator bench action, not a config commit.')
+def test_shipped_config_has_the_feature_on():
+    """The shipped default is ON since the 2026-07-16 hardware arming session.
+
+    History: this test shipped as `test_shipped_config_has_the_feature_off` —
+    the tripwire that made arming an operator bench action, not a config
+    commit. The bench action happened: the operator ran the A/B arming
+    sessions per tests/hardware/session_torque_ff.md on 2026-07-16 (sign
+    verified NO INVERSION on hardware — per-leg hold-iq delta leg-mean
+    -0.115 A, the ideal falls-or-flat signature; zero motion at the arm edge
+    through the 2 s ramp; every setpoint carried FF; the firmware clamp never
+    bound) and chose to ship the feature enabled. If this fails, someone
+    DISARMED the gravity FF via a commit — that reopens the
+    integrator-carries-gravity margin problem and must be a deliberate,
+    logged decision (see logbook/2026-07-16-gravity-ff-armed.md), not a
+    drive-by config edit."""
+    assert hw.DYNAMICS_TORQUE_FF_ENABLED is True, (
+        'dynamics.torque_ff_enabled shipped as true after the 2026-07-16 '
+        'hardware arming session — turning it OFF is a deliberate, logged '
+        'decision, not a drive-by config edit.')
 
 
 def test_ff_disabled_returns_exact_zeros():
@@ -344,10 +358,21 @@ def test_ff_disabled_returns_exact_zeros():
     assert np.array_equal(tau, np.zeros(6))
 
 
-def test_emitter_with_shipped_config_emits_exact_zero_torque():
-    """The default-constructed emitter (production path) publishes torque_Nm = zeros."""
+def test_emitter_with_shipped_config_emits_live_gravity_torque():
+    """The default-constructed emitter (production path) publishes the LIVE
+    gravity feedforward since the shipped flag went true (2026-07-16): at the
+    active pose, per-leg torques in the platform's known gravity range
+    (0.013-0.041 Nm, all extension-positive — the legs support the platform).
+    (Pre-arming this test pinned exact zeros; that behaviour is still covered
+    for the flag-off path by test_ff_disabled_returns_exact_zeros and the
+    byte-identical pump test below.)"""
     frame = KnotEmitter(_geom()).frame(HoldPlan(ACTIVE_POSE), 0.0, 0)
-    assert np.array_equal(np.asarray(frame['torque_Nm']), np.zeros(6))
+    tau = np.asarray(frame['torque_Nm'])
+    assert tau.shape == (6,)
+    assert np.all(tau > 0.0), f'gravity support must be extension-positive: {tau}'
+    assert np.all(tau > 0.010) and np.all(tau < 0.045), (
+        f'per-leg gravity FF at the active pose must sit in the known '
+        f'0.013-0.041 Nm band: {tau}')
 
 
 def test_pump_with_ff_off_is_byte_identical_to_the_pre_feature_frame():

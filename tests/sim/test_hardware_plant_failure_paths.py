@@ -1160,10 +1160,11 @@ class TestSetPoseFfSingular:
         import jugglebot.motion.motor_commands as _mc_mod
         import controller.hardware_plant as _hp_mod
 
-        # 2026-07-14: HardwarePlant now ANDs the constructor flag with the
-        # config master/per-term flags (the "third producer" review fix), and
-        # the shipped config has torque_ff_enabled=false — so this test must
-        # OPT IN explicitly to reach the FF computation it exercises.
+        # 2026-07-14: HardwarePlant ANDs the constructor flag with the config
+        # master/per-term flags (the "third producer" review fix). The explicit
+        # patches pin the flags this test needs INDEPENDENTLY of the shipped
+        # values (torque_ff_enabled ships true since the 2026-07-16 arming
+        # session; the patch keeps this test meaningful either way).
         with patch.object(_hp_mod._hw_cfg, 'DYNAMICS_TORQUE_FF_ENABLED', True), \
                 patch.object(_hp_mod._hw_cfg, 'DYNAMICS_TORQUE_FF_GRAVITY', True), \
                 build_hardware_plant_stub() as plant:
@@ -1213,15 +1214,21 @@ class TestSetPoseFfSingular:
             assert plant._singular_ff_warned is True
 
     def test_config_master_flag_gates_the_mpc_producer(self):
-        """2026-07-14 review fix (the 'third producer'): with the shipped
-        config (torque_ff_enabled=false), HardwarePlant publishes ZERO torque
-        feedforward even when constructed with enable_torque_ff=True — the
-        constructor arg is ANDed with the config master switch, so enabling
-        the trajectory path's flag can never silently arm the MPC path."""
-        with build_hardware_plant_stub() as plant:
+        """2026-07-14 review fix (the 'third producer'): with the config
+        MASTER switch off, HardwarePlant publishes ZERO torque feedforward
+        even when constructed with enable_torque_ff=True — the constructor
+        arg is ANDed with the config master switch, so no producer can arm
+        itself past a disabled master. (Patched explicitly rather than read
+        from the shipped value: torque_ff_enabled ships true since the
+        2026-07-16 arming session, and this regression must keep guarding
+        the AND-gate regardless of the shipped state.)"""
+        import controller.hardware_plant as _hp_mod
+        with patch.object(_hp_mod._hw_cfg, 'DYNAMICS_TORQUE_FF_ENABLED',
+                          False), \
+                build_hardware_plant_stub() as plant:
             assert plant._enable_torque_ff is False, (
-                "shipped config has torque_ff_enabled=false; the constructor "
-                "default enable_torque_ff=True must NOT override it")
+                "config master switch off must veto the constructor "
+                "default enable_torque_ff=True")
             _prime_plant(plant)
             plant.set_pose(
                 np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0]),

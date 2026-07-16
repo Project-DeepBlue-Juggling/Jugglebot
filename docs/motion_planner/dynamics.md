@@ -4,13 +4,13 @@ This page covers how the motion planner computes motor torques from the physics 
 
 ## Are these torques actually sent to the motors?
 
-**Only if `dynamics.torque_ff_enabled` is true in `hardware_config.yaml`, and it ships `false`.**
+**Only if `dynamics.torque_ff_enabled` is true in `hardware_config.yaml` — and it ships `true` since 2026-07-16** (hardware-armed, sign-verified; `logbook/2026-07-16-gravity-ff-armed.md`).
 
 This qualification is load-bearing, and the page used to state the opposite. The path is:
 
 `LegTorqueFeedforward` → `torque_Nm` on the :5557 command → `SetpointPump` → UDP `Setpoint.torque_ff` → can-bridge → ODrive `Set_Input_Pos.Torque_FF`.
 
-Every link in it exists, but the feature is **default-OFF**: with the flag clear, the emitter publishes `torque_Nm = zeros` and the pump packs `torque_ff = zeros`. Turning it on is an operator bench action — see the runbook at `tests/hardware/session_torque_ff.md`.
+Every link in it exists and is **live in the shipped config** (gravity term only; platform-inertia stays gated off). With the flag clear the emitter publishes `torque_Nm = zeros` and the pump packs `torque_ff = zeros` — the arming procedure of record is `tests/hardware/session_torque_ff.md` (completed 2026-07-16).
 
 Two things the `SetpointPump` does that this page's physics does not, and that you must know before reading any number below as "the torque the motor gets":
 

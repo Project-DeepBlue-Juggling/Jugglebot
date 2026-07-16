@@ -91,7 +91,7 @@ dynamics:
                                                 # ((iq_up + iq_down)/2 = τ_g/Kt, since friction flips sign with direction
                                                 # and gravity does not) and fits with a free intercept.
                                                 # CONFIRMED 2026-07-15 (weighed masses ±10 g, 2 reps) — the value above
-                                                # IS the measurement; torque_ff_enabled remains an operator bench gate.
+                                                # IS the measurement; torque_ff_enabled ships true since 2026-07-16.
                                                 # See logbook/2026-07-14-kt-reconciliation-and-gravity-ff.md.
                                                 # Used by the friction feedforward stack to convert iq (A) to
                                                 # torque (Nm), and by tests/hardware/friction_ff_demo.py.
@@ -143,11 +143,14 @@ dynamics:
                                                 # tests/sim/test_motor_kt_canonical_source.py.
 
   # ── Leg torque feedforward (gravity + platform inertia) ──
-  # DEFAULT OFF.  When off, the trajectory emitter publishes torque_Nm = zeros and
-  # the SetpointPump packs torque_ff = zeros — byte-identical to the pre-feature
-  # behaviour.  Turning it on is an OPERATOR BENCH ACTION; see the validation
-  # procedure in tests/hardware/session_torque_ff.md.
-  torque_ff_enabled: false                    # Master switch for the leg torque feedforward.
+  # SHIPS ENABLED since 2026-07-16 — hardware-armed per
+  # tests/hardware/session_torque_ff.md (sign verified NO INVERSION on the
+  # platform; logbook/2026-07-16-gravity-ff-armed.md).  When off, the
+  # trajectory emitter publishes torque_Nm = zeros and the SetpointPump packs
+  # torque_ff = zeros — byte-identical to the pre-feature behaviour.  Turning
+  # it OFF is a deliberate, logged decision (the tripwire test
+  # test_shipped_config_has_the_feature_on enforces this), not a drive-by edit.
+  torque_ff_enabled: true                     # Master switch for the leg torque feedforward.
                                                 # Read by BOTH producers (the trajectory emitter, which computes
                                                 # the torque, and the SetpointPump, which puts it on the wire).
                                                 # Either one off ⇒ zero feedforward: an AND gate, deliberately.

@@ -1,7 +1,26 @@
 # Session runbook — first arming of the leg torque feedforward (gravity)
 
-**Status:** NOT YET RUN. This is the procedure for turning `dynamics.torque_ff_enabled`
-on for the first time on real hardware.
+**Status: ✅ COMPLETED 2026-07-16 — PASSED on every criterion; the feature now
+SHIPS ENABLED.** The operator ran the A/B pair (FF off: rosbag
+`2026-07-16_10-12-33`; FF on: `2026-07-16_10-17-45`, launched via the
+post-contract auto-arm flow). Results (full analysis in
+`logbook/2026-07-16-gravity-ff-armed.md`): arming banner carried the expected
+wire scale 0.967251; ramp 0→1 in exactly 2.00 s from the arm instant; zero
+motion at the arm edge (max 0.0014 rev, encoder noise); **S3 sign check NO
+INVERSION** — per-leg hold-iq delta (on−off) = [−0.03, −0.30, −0.14, −0.16,
+−0.15, +0.08] A, leg-mean −0.115 A, the ideal falls-or-flat signature;
+every setpoint carried FF (`setpoints_without_ff = 0`), firmware clamp never
+bound, zero faults/rejections; matched-move battery A/B statistically
+identical (the doc's own honest expectation — the FF is below the friction
+floor on an unloaded platform). The S2 tripwire test is now inverted
+(`test_shipped_config_has_the_feature_on`). This document is retained as the
+procedure of record. **If re-running after a deliberate disarm**, mirror two
+steps: S0c's expected grep result is now `true`, and S2's tripwire logic
+inverts — with the flag OFF it is `test_shipped_config_has_the_feature_on`
+that must fail (the old `..._off` test no longer exists).
+
+**Original pre-session text follows.** This was the procedure for turning
+`dynamics.torque_ff_enabled` on for the first time on real hardware.
 
 **Operator runs every robot-actuating command.** Claude preps commands + PASS/ABORT
 criteria and verifies read-only telemetry.

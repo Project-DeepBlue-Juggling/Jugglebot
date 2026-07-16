@@ -23,7 +23,8 @@ Field mapping (mirrors ``controller/hardware_plant.py::command``):
     endpoint velocity v1 = (u2−u1)/T; C1 across segment joins).
   * ``torque_Nm``   = gravity (+ optional platform-inertia) feedforward — **TRUE Nm**,
     extension-positive, from :class:`~jugglebot.motion.torque_ff.LegTorqueFeedforward`.
-    **Exact zeros unless ``dynamics.torque_ff_enabled`` is set** (shipped: false), in
+    **Exact zeros unless ``dynamics.torque_ff_enabled`` is set** (shipped: true
+    since 2026-07-16), in
     which case this field is byte-identical to the pre-feature ``np.zeros(6)``.
     The clamp / Kt wire scale / ramp-in are NOT applied here — they live at the single
     wire enforcement point, ``controller/teensy_link/setpoint_pump.py``.

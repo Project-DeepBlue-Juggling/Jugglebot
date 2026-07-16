@@ -50,7 +50,8 @@ exactly as motor_guard does (verified empirically):
 The leg torque feedforward — THE SINGLE WIRE ENFORCEMENT POINT
 --------------------------------------------------------------
 Historically this was hard-zeroed (the *friction-FF drop* at the 2026-06-25 Teensy
-cutover). It is now a plumbed, **default-OFF** path: the producer
+cutover). It is now a plumbed, live path (shipped ON since the 2026-07-16
+arming session): the producer
 (``jugglebot.motion.torque_ff.LegTorqueFeedforward``, via the trajectory emitter or
 ``HardwarePlant``) publishes ``torque_Nm`` in **TRUE Nm, extension-positive**, and this
 pump is the ONE place that turns a physical torque into an ODrive wire value. Three
@@ -93,7 +94,8 @@ position, vel_ff and torque_ff alike, so a positive wire torque becomes a negati
 torque, which drives ODrive position negative, which is leg extension, which is
 platform-up. **Do not pre-negate here.**
 
-With ``torque_ff_enabled=False`` (the shipped default) this whole path is inert:
+With ``torque_ff_enabled=False`` (the constructor default; the shipped config
+sets it true since 2026-07-16) this whole path is inert:
 ``torque_ff = (0.0,)*n`` and ``torque_Nm`` is not even read — byte-identical to the
 pre-feature frame, including when the field is absent or malformed.
 

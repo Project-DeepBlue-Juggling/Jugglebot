@@ -808,7 +808,8 @@ class TeensyBridgeNode(Node):
         # While disarmed there is NO setpoint thread and the heartbeat keeps
         # mpc_active=0, so the Teensy will not enable leg output.
         #
-        # LEG TORQUE FEEDFORWARD — also default-disabled, independently
+        # LEG TORQUE FEEDFORWARD — independently gated (ships ENABLED since
+        # the 2026-07-16 arming session)
         # (dynamics.torque_ff_enabled, shipped false). The pump is the SINGLE wire
         # enforcement point for it: clamp (TRUE Nm) → ramp → Kt wire scale. With the
         # flag off it packs torque_ff = zeros and never reads cmd['torque_Nm'], so
@@ -2185,7 +2186,7 @@ class TeensyBridgeNode(Node):
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',
                          value=str(self._sp_pump.frames_rejected)),
-                # Leg torque FF (default-off). torque_ff_ramp is the live 0→1 ramp
+                # Leg torque FF (ships ON since 2026-07-16). torque_ff_ramp is the live 0→1 ramp
                 # multiplier — the operator watches this climb during the first arming
                 # (tests/hardware/session_torque_ff.md, step S3). It reads 0 whenever
                 # the feature is off, so a 0 here on an armed robot means "no FF", full

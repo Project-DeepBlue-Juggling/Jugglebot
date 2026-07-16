@@ -110,7 +110,8 @@ class LegTorqueFeedforward:
         params: :class:`DynamicsParams`; loaded from config when None.
         enabled: master switch.  When False, :meth:`compute` returns **exact
             zeros** — the pre-feature behaviour, byte for byte.  Defaults to
-            ``hw.DYNAMICS_TORQUE_FF_ENABLED`` (False in the shipped config).
+            ``hw.DYNAMICS_TORQUE_FF_ENABLED`` (true in the shipped config since
+            the 2026-07-16 arming session).
         gravity: include the gravity-wrench term.
         platform_inertia: include the Newton-Euler platform-inertia wrench and
             the reflected rotor-inertia term.
