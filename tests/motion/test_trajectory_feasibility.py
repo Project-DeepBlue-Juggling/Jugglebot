@@ -288,35 +288,45 @@ def test_validate_80_unshaped_jerk_within_margin_of_dense_400(geom):
         f"the 5% margin no longer covers the sampling bias")
 
 
-def test_shaped_plan_gated_at_status_quo_sample_floor(geom):
-    """A shaped plan's FD jerk peak under-converges with sample count. Pre-window the
-    cause was a near-impulsive boundary jerk (lean tilt_rate ∝ base jerk, stepping at
-    rest-to-rest quintic boundaries); the C2 lean plateau window (same day) removed
-    that impulse, but the window's edge ramps concentrate high w″ curvature that the
-    FD grid still under-resolves at 200 samples. Either way: lowering the analytic
-    gate's default to 80 must NOT change how shaped plans are gated, or shaped moves
-    would be measured as lower-jerk and stretched less — silently more aggressive on
-    the lean path. This pins the guarantee that validate() gates a shaped plan at the
-    _SHAPED_VALIDATE_SAMPLES (=200, the pre-speedup value) floor regardless of the
-    lowered default.
+def test_shaped_plan_gated_at_accuracy_mesh_floor(geom):
+    """A shaped plan's FD jerk peak under-converges with sample count, so validate()
+    floors shaped sampling at the dense ACCURACY mesh _SHAPED_VALIDATE_SAMPLES (=1600).
+
+    History of WHY the floor exists (unchanged): pre-window the cause was a near-
+    impulsive boundary jerk (lean tilt_rate ∝ base jerk, stepping at rest-to-rest
+    quintic boundaries); the C2 lean plateau window (2026-07-16) removed that impulse,
+    but the window's edge ramps concentrate high w″ curvature that the FD grid resolves
+    only as the mesh gets dense. What CHANGED (2026-07-17, Phase 1b): the floor moved
+    200 → 1600. The old 200 was a *speed-limited* floor (the per-sample Python loop cost
+    ~185 ms/pass, so 200 was as dense as was affordable) and it under-measured the
+    6400-sample reference jerk by ~23 %. Phase 1a vectorised the shaped branch, making
+    1600 affordable (~40 ms/pass); at 1600 the shaped FD jerk is within ~3 % of the
+    6400-reference — the "no silent under-stretch" fix.
+
+    This pins the NEW floor's three properties: the default IS 1600; a coarser request
+    is clamped UP to 1600 (never gated below the accuracy floor); a denser request is
+    honoured. The old test's "j_400 > j_200·1.05 non-convergence" assertion is now moot
+    as a *floor rationale* (the 1600 mesh resolves the curvature) — it is replaced by
+    the convergence PROOF: j_1600 is within ~5 % of a 6400-sample reference.
     """
     lims = _limits(vel=1e9, acc=1e9, jerk=1e9)
     plan = _shaped(_move(NEUTRAL + np.array([150.0, 0, 0, 0, 0, 0.]), 1.0), 0.3)
 
     j_default = feas.validate(plan, lims, geom).peak_leg_jerk_mmps3
-    j_200 = feas.validate(plan, lims, geom, samples_per_segment=200).peak_leg_jerk_mmps3
+    j_1600 = feas.validate(plan, lims, geom, samples_per_segment=1600).peak_leg_jerk_mmps3
     j_80req = feas.validate(plan, lims, geom, samples_per_segment=80).peak_leg_jerk_mmps3
-    j_400 = feas.validate(plan, lims, geom, samples_per_segment=400).peak_leg_jerk_mmps3
+    j_6400 = feas.validate(plan, lims, geom, samples_per_segment=6400).peak_leg_jerk_mmps3
 
-    # The default (lowered to 80) gates a shaped plan exactly as the 200 floor does.
-    assert j_default == pytest.approx(j_200, rel=1e-12)
-    # A coarser-than-floor request is clamped UP to the floor (never gates a shaped
-    # plan below status quo) — the load-bearing safety guarantee.
-    assert j_80req == pytest.approx(j_200, rel=1e-12)
-    # A denser request is still honoured, and reads a MATERIALLY higher peak: direct
-    # evidence the shaped FD jerk has not converged at 200 (the reason the floor
-    # exists and the reason lowering it would silently under-gate shaped moves).
-    # Post-window this residual comes from the window-edge w″ ramps; if a future
-    # smoothing change makes shaped jerk converge, relax this to >= and revisit
-    # the floor itself.
-    assert j_400 > j_200 * 1.05
+    # The default gates a shaped plan at the 1600 accuracy floor.
+    assert j_default == pytest.approx(j_1600, rel=1e-12)
+    # A coarser-than-floor request (80) is clamped UP to 1600 (never gates a shaped
+    # plan below the accuracy floor) — the load-bearing safety guarantee.
+    assert j_80req == pytest.approx(j_1600, rel=1e-12)
+    # A denser request (6400) is still honoured, and reads a slightly HIGHER peak: the
+    # shaped FD jerk is not FULLY converged at 1600, but it is close.
+    assert j_6400 > j_1600
+    # Convergence proof (replaces the old non-convergence assertion): at 1600 the FD
+    # jerk is within ~5 % of the 6400-sample reference (measured 3.21 % on this move,
+    # 2026-07-17) — the ~23 % under-measurement of the old 200 floor is gone, and the
+    # residual is comfortably inside _VALIDATE_JERK_MARGIN (1.05).
+    assert abs(j_1600 - j_6400) / j_6400 <= 0.05

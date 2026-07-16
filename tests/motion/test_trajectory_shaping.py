@@ -285,7 +285,7 @@ def test_shaped_lateral_move_min_duration_is_honest_not_seam_inflated():
     concentrates the lean ramp into the first/last 15% of the move, adding real
     leg-jerk load there that the gate must size. For a SHORT move like this x+20 (the
     unshaped minimum is ~0.41 s) that ramp cost is a large FRACTION of the move, so
-    the honest windowed ratio is ~2.8× — larger than the pre-window ~1.45×, but still
+    the honest windowed ratio is ~2.9× — larger than the pre-window ~1.45×, but still
     far below the ~7-8× seam-inflation regime this test guards against. (For long
     moves the ramp is a smaller fraction: x+150 is ~1.34×.) The window trades move
     time for a smoother boundary; see the C1 lean-window logbook Discussion.
@@ -293,6 +293,11 @@ def test_shaped_lateral_move_min_duration_is_honest_not_seam_inflated():
     Pinned to the pre-2026-07-17 gentle defaults this scenario's geometry was designed
     around (the shipped working point is now 1000/5000/30000; this test exercises the
     MECHANISM, not the shipped limits).
+
+    Mesh-bump note (Phase 1b, 2026-07-17): _SHAPED_VALIDATE_SAMPLES went 200 → 1600,
+    so the gate now sizes ~25 % more shaped jerk and this jerk-bound short move stretches
+    ~5.6 % longer — the ratio moved 2.76 → 2.92 (measured), still comfortably inside the
+    band below. The band is NOT loosened; only the cited ~2.9× reflects the denser mesh.
     """
     geom = _geom()
     limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=100.0, leg_acc_mmps2=400.0,

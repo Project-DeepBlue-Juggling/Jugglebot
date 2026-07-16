@@ -8,7 +8,7 @@ so **nothing that moves the platform bypasses this gate** — that single-enforc
 Phase 2 scope (this file): the **full** gate. In order (first failure wins the
 ``code``):
 
-1. **Geometry** per dense sample (80/segment default; shaped plans floored at 200 —
+1. **Geometry** per dense sample (80/segment default; shaped plans floored at 1600 —
    see ``_SHAPED_VALIDATE_SAMPLES``): non-finite reject (``UNREACHABLE``);
    leg extensions within the hard stroke margins (``WORKSPACE``); Jacobian
    condition number under the workspace hard bound (``UNREACHABLE`` — a
@@ -95,25 +95,43 @@ _MIN_SAMPLES = 4
 # ik_solver.compute_jacobian).
 _VALIDATE_SAMPLES = 80
 
-# Dense-sampling resolution for a SHAPED plan — deliberately KEPT at the pre-speedup
-# 200 (NOT lowered to _VALIDATE_SAMPLES). WHY shaped is different, in two eras:
-# (pre-window) a LeanShaper superposed tilt_rate ∝ base jerk, and the rest-to-rest
-# base jerk STEPS at segment boundaries (j(0),j(T)=60·d/T³ ≠ 0) — a near-impulsive
-# boundary jerk whose FD peak did NOT converge (measured 2026-07-16: still climbing
-# +17 % from 400→3200 samples; 80 read 24 % below 200). The C2 lean plateau window
-# (shaping.py LEAN_WINDOW_EDGE_FRAC, landed the same day) REMOVED that boundary
-# impulse — but the floor STAYS, because the window concentrates high w″ curvature
-# into the 15 % edge ramps and the shaped FD jerk peak still under-converges there
-# (measured post-window: 80-vs-400 shortfall ~9 %, 200-vs-1600 ~21 % on x+150).
-# Lowering shaped sampling would make validate() measure a SMALLER jerk ⇒ the
-# duration-stretch loop would stretch shaped moves LESS ⇒ silently emit more true
-# leg jerk on the exact (lean) path the operator already reported as "sharp". So the
-# shaped gate's fidelity is frozen at status quo; shaped build_move still speeds up
-# ~2.3× from the component-form cross alone (~2.6 s → ~1.2 s). The residual shaped
-# jerk mesh-dependence PRE-DATES both changes (the 200-sample gate always
-# under-measured shaped jerk ~22 %) — see logbook
-# 2026-07-16-lean-planning-latency-and-boundary-step.md.
-_SHAPED_VALIDATE_SAMPLES = 200
+# Dense-sampling resolution for a SHAPED plan — an ACCURACY mesh, not a speed floor.
+# WHY shaped is different (and why the number is now 1600, not the unshaped 80 or the
+# historical 200):
+#
+#   The binding shaped quantity is FD leg jerk, and it UNDER-CONVERGES with sample
+#   count. A LeanShaper superposes a windowed tilt; the C2 lean plateau window
+#   (shaping.py LEAN_WINDOW_EDGE_FRAC) concentrates high w″ curvature into the 15 %
+#   edge ramps, and the finite-difference jerk peak resolves that curvature only as
+#   the mesh gets dense. Coarse meshes measure a SMALLER jerk ⇒ the duration-stretch
+#   loop stretches shaped moves LESS ⇒ the plan silently emits more true leg jerk than
+#   the gate believes, on the exact (lean) path the operator reported as "sharp". The
+#   mesh is therefore chosen for FIDELITY, not cost.
+#
+#   Two eras of the floor:
+#   * 200 (pre-2026-07-17) was a *speed-limited* floor — the per-sample Python loop
+#     (compute_jacobian + accel_to_leg_accels + condition SVD ×N) cost ~185 ms/pass on
+#     the Jetson, so 200 was as dense as was affordable, and it still under-measured
+#     the 6400-sample reference jerk by ~21-23 % on x+150.
+#   * 1600 (2026-07-17, this constant) became affordable when Phase 1a vectorised the
+#     shaped branch (_validate_shaped_batched): the whole grid runs in numpy at
+#     ~40 ms/pass @1600 (vs ~7.5 ms @200 — the mesh, not the loop, is now the cost).
+#     At 1600 the shaped FD jerk peak is within ~3 % of the 6400-sample reference
+#     (measured -3.2 %; convergence: 400→-15 %, 800→-7 %, 1600→-3 %, 3200→-1 %), i.e.
+#     the old 23 % under-measurement is cut ~7×. The residual ~3 % is the un-resolved
+#     window-edge w″ curvature; _VALIDATE_JERK_MARGIN (1.05) covers it with room, so
+#     the gate stays strictly conservative on jerk.
+#
+#   Clamp semantics (see validate): an EXPLICIT denser request (e.g. a 6400-sample
+#   convergence reference in a test) is honoured; a COARSER request is clamped UP to
+#   this floor, so a shaped plan is never gated below the 1600-sample fidelity.
+#
+#   Intended behavioural consequence of the 200→1600 bump: jerk-bound shaped moves
+#   plan ~5-8 % LONGER (T ∝ jerk^(1/3) on the ~25 % more jerk the gate now sizes) —
+#   the FIX for the silent under-stretch, not a regression. See logbook
+#   2026-07-16-lean-planning-latency-and-boundary-step.md and the
+#   shaped-planning-efficiency plan (Phase 1b).
+_SHAPED_VALIDATE_SAMPLES = 1600
 
 # Jerk inflation applied to the finite-difference peak before the limit comparison,
 # mirroring _FOLLOW_JERK_MARGIN on the fast follower gate. At 80 samples/segment the
@@ -121,9 +139,10 @@ _SHAPED_VALIDATE_SAMPLES = 200
 # a 5 % inflation more than covers that, so the analytic gate is provably conservative
 # on unshaped jerk — over-conservatism only ever REJECTS a marginal plan (the planner
 # then stretches its duration), never accepts an over-jerk one. (On a shaped plan the
-# margin is applied too but is NOT what makes it safe — the ≥200-sample floor above,
-# matching the shipped behavior, is.) Vel/acc/step comparisons are analytic/exact and
-# get NO margin.
+# margin is applied too, on top of the dense ≥1600-sample accuracy floor above: the
+# floor pulls the measured FD jerk to within ~3 % of truth, and this 5 % margin then
+# covers that residual — the two compose to keep shaped jerk conservative.) Vel/acc/
+# step comparisons are analytic/exact and get NO margin.
 _VALIDATE_JERK_MARGIN = 1.05
 
 
@@ -222,15 +241,16 @@ def validate(plan, limits, geom, *, samples_per_segment: int = _VALIDATE_SAMPLES
     mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
 
     # Shaped plans' FD jerk peak under-converges with sample count (window-edge
-    # curvature since the C2 lean window; boundary impulse before it), so they are
-    # gated at the status-quo _SHAPED_VALIDATE_SAMPLES floor rather than the leaner
-    # unshaped default — see that constant's rationale. An explicit denser request
-    # (e.g. a 400-sample reference in a conservativeness test) is still honoured.
+    # curvature from the C2 lean window), so they are gated at the dense ACCURACY
+    # floor _SHAPED_VALIDATE_SAMPLES (=1600, within ~3 % of the 6400-sample reference
+    # jerk) rather than the leaner unshaped default — see that constant's rationale.
+    # An explicit denser request (e.g. a 6400-sample convergence reference in a test)
+    # is still honoured; a coarser request is clamped UP to the floor.
     if isinstance(plan, _ShapedPlan):
         samples_per_segment = max(int(samples_per_segment), _SHAPED_VALIDATE_SAMPLES)
         # Vectorised shaped gate (Phase 1a): the per-sample Python loop below
         # recomputes the analytic Jacobian chain + lean superposition at every one of
-        # the ≥200 shaped samples and dominated shaped build_move cost. The batched
+        # the ≥1600 shaped samples and dominated shaped build_move cost. The batched
         # twin measures the IDENTICAL leg-space quantities on the whole grid in numpy
         # (parity with this loop at equal mesh: ~1.4e-10 max rel err, from the shared
         # 1e-7 J-dot FD + batched Rodrigues — verified in tests/motion/
@@ -545,7 +565,7 @@ def _validate_shaped_batched(plan, limits, geom, samples_per_segment, *,
     Measures the IDENTICAL leg-space quantities the scalar loop does — geometry
     (finite / stroke / condition), analytic leg vel/acc (``J·twist`` /
     ``J·accel + J̇·twist``), FD jerk with :data:`_VALIDATE_JERK_MARGIN`, and the
-    plan-wide knot-step bound — but batched over the whole ≥200-sample grid in numpy.
+    plan-wide knot-step bound — but batched over the whole ≥1600-sample grid in numpy.
     Reproduces the scalar contract exactly: the same ``FeasibilityReport`` fields,
     the same first-failure-wins ordering (geometry rejects in time order, with
     finite→stroke→condition priority within a sample; then vel→acc→jerk→step), and

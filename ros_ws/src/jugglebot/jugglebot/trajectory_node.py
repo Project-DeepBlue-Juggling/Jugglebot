@@ -1676,8 +1676,9 @@ class TrajectoryNode(Node):
         # streaming the OLD plan: after the 2026-07-16 planning speedup (component-form
         # Jacobian cross + 80-sample gate) an unshaped move runs ~2 validate passes
         # (~0.1 s offline-measured) and a shaped (lean-gain>0) move runs ~6 passes
-        # (min-feasible stretch + shaped-refine bisections, ~1.2-1.3 s measured —
-        # the drift window this guard protects against). If the commanded
+        # (min-feasible stretch + shaped-refine bisections; ~0.23 s measured after
+        # the 2026-07-17 batched-gate work — the drift window this guard protects
+        # against). If the commanded
         # state moved during planning, installing this plan would jump u0 from the
         # drifted live position back to
         # the stale seed — a transient both the pump/firmware step gates could still
