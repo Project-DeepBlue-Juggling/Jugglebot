@@ -207,16 +207,18 @@ def cup_lateral_shift_mm(rx: float, ry: float,
     return cup_lever_arm_mm(cup_z_mm) * _cup_axis_xy(rx, ry)
 
 
-def _seg_xy_derivs(seg: QuinticSegment, tl: float):
-    """Analytic (accel, jerk, snap) of the base quintic's x/y axes at local time.
+def _seg_xy_coeffs(seg: QuinticSegment):
+    """Quintic Hermite x/y accel-poly coefficients ``(c2, c3, c4, c5, T)``.
 
-    Returns three ``(2,)`` arrays ``[x, y]``. The lean tilt is ``∝ accel``, its rate
-    ``∝ jerk``, its curvature ``∝ snap`` — all closed-form from the quintic Hermite
-    coefficients (the boundary conditions the segment already stores), so the shaped
-    plan is analytically self-consistent (no finite-difference noise).
+    The base quintic's x/y position is a degree-5 polynomial in normalised time
+    ``s = tl/T``; ``(c2..c5)`` are the coefficients of the *acceleration* polynomial's
+    Horner-form building blocks (each a ``(2,)`` array ``[x, y]``) that
+    :func:`_seg_xy_derivs` evaluates for accel/jerk/snap. Computed once per segment
+    (independent of ``s``), so the batched sampler can precompute them and evaluate
+    the whole time grid without re-deriving the coefficients per sample. Verified
+    against ``QuinticSegment.eval`` in ``tests/motion/test_trajectory_shaping.py``.
     """
     T = seg.duration
-    s = min(max(tl / T, 0.0), 1.0)
     idx = np.array([0, 1])
     p0 = seg.p0[idx]
     p1 = seg.p1[idx]
@@ -224,12 +226,26 @@ def _seg_xy_derivs(seg: QuinticSegment, tl: float):
     A0 = seg.a0[idx] * T * T
     V1 = seg.v1[idx] * T
     A1 = seg.a1[idx] * T * T
-    # Quintic Hermite polynomial coefficients in normalised time s (verified against
-    # QuinticSegment.eval in tests/motion/test_trajectory_shaping.py).
     c2 = 0.5 * A0
     c3 = -10 * p0 - 6 * V0 - 1.5 * A0 + 10 * p1 - 4 * V1 + 0.5 * A1
     c4 = 15 * p0 + 8 * V0 + 1.5 * A0 - 15 * p1 + 7 * V1 - 1.0 * A1
     c5 = -6 * p0 - 3 * V0 - 0.5 * A0 + 6 * p1 - 3 * V1 + 0.5 * A1
+    return c2, c3, c4, c5, T
+
+
+def _seg_xy_derivs(seg: QuinticSegment, tl: float):
+    """Analytic (accel, jerk, snap) of the base quintic's x/y axes at local time.
+
+    Returns three ``(2,)`` arrays ``[x, y]``. The lean tilt is ``∝ accel``, its rate
+    ``∝ jerk``, its curvature ``∝ snap`` — all closed-form from the quintic Hermite
+    coefficients (the boundary conditions the segment already stores), so the shaped
+    plan is analytically self-consistent (no finite-difference noise). The batched
+    twin :func:`batched_shaped_states` evaluates the SAME ``_seg_xy_coeffs`` on a whole
+    grid — the shared helper keeps the scalar and batched accel/jerk/snap formulas
+    bit-identical.
+    """
+    c2, c3, c4, c5, T = _seg_xy_coeffs(seg)
+    s = min(max(tl / T, 0.0), 1.0)
     accel = (2 * c2 + 6 * c3 * s + 12 * c4 * s ** 2 + 20 * c5 * s ** 3) / T ** 2
     jerk = (6 * c3 + 24 * c4 * s + 60 * c5 * s ** 2) / T ** 3
     snap = (24 * c4 + 120 * c5 * s) / T ** 4
@@ -346,6 +362,190 @@ class _ShapedPlan(TrajectoryPlan):
         twist[0:2] -= shift_d; twist[3:5] += tilt_d
         accel[0:2] -= shift_dd; accel[3:5] += tilt_dd
         return pose, twist, accel
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Batched shaped sampler — a vectorised twin of _ShapedPlan.state_at (Phase 1a)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# WHY a second sampler (and why it is still "one shaping law"):
+# The analytic feasibility gate (feasibility.validate) samples a shaped plan at
+# _SHAPED_VALIDATE_SAMPLES points and, at each, recomputes the quintic Hermite
+# coefficients (_seg_xy_coeffs), the plateau window, the tilt/shift superposition,
+# and the 5° cap — a Python per-sample loop that dominated shaped build_move cost
+# (~185 ms/pass on the Jetson). batched_shaped_states evaluates the IDENTICAL law
+# over a whole time grid in numpy: the coefficients are precomputed ONCE per
+# segment (vs per-sample in state_at), the smoothstep/window/superposition/cap all
+# run as clamped np.where / product-rule array ops. It matches _ShapedPlan.state_at
+# to machine precision (pose 7.1e-15, twist 5.7e-14, accel 4.5e-13 across a
+# 6-move × 3-gain × 3-duration grid, verified in tests/motion/test_shaped_batch.py),
+# so the batched gate reproduces the scalar gate at equal mesh (~1e-10 rel) — NOT a
+# new shaping behaviour, just the same one evaluated faster.
+#
+# Scalar state_at stays the frozen reference; a parity test pins the two together.
+
+
+def _smoothstep_batch(u: np.ndarray):
+    """Vectorised :func:`_smoothstep`: ``(S, dS, ddS)`` each ``(N,)``.
+
+    Clamped in the same sense as the scalar form — flat (all-zero derivatives)
+    outside ``[0, 1]`` — using ``np.where`` on the ``u<=0`` / ``u>=1`` masks so the
+    batched result is bit-identical to a per-element scalar call.
+    """
+    u = np.asarray(u, dtype=float)
+    s = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+    ds = 30.0 * u * u * (u * (u - 2.0) + 1.0)
+    dds = 60.0 * u * (u * (2.0 * u - 3.0) + 1.0)
+    lo = u <= 0.0
+    hi = u >= 1.0
+    s = np.where(lo, 0.0, np.where(hi, 1.0, s))
+    ds = np.where(lo | hi, 0.0, ds)
+    dds = np.where(lo | hi, 0.0, dds)
+    return s, ds, dds
+
+
+def _lean_window_batch(s: np.ndarray, edge: float = LEAN_WINDOW_EDGE_FRAC):
+    """Vectorised :func:`_lean_window`: plateau window ``(w, w', w'')`` each ``(N,)``.
+
+    Same product-rule construction and chain-rule signs as the scalar form, so a
+    per-element scalar comparison agrees to machine precision.
+    """
+    ie = 1.0 / edge
+    L, dL, ddL = _smoothstep_batch(s * ie)
+    R, dR, ddR = _smoothstep_batch((1.0 - s) * ie)
+    Ls, Lss = dL * ie, ddL * ie * ie
+    Rs, Rss = -dR * ie, ddR * ie * ie
+    w = L * R
+    ws = Ls * R + L * Rs
+    wss = Lss * R + 2.0 * Ls * Rs + L * Rss
+    return w, ws, wss
+
+
+def _base_states_batch(seg: QuinticSegment, ts: np.ndarray):
+    """Vectorised base quintic ``(pose, twist, accel)`` each ``(N, 6)`` over ``ts``.
+
+    The batched twin of ``quintic_interp_with_accel`` for one segment — the same
+    h-basis, its first, and its second time derivatives, evaluated on the whole time
+    grid at once. Each ``t`` is clamped to ``[0, T]`` (``s = clip(ts/T, 0, 1)``),
+    matching :meth:`QuinticSegment.eval`'s clamp, so a sample at/after the segment
+    end returns the end boundary state.
+    """
+    T = seg.duration
+    s = np.clip(np.asarray(ts, dtype=float) / T, 0.0, 1.0)
+    V0 = seg.v0 * T
+    V1 = seg.v1 * T
+    A0 = seg.a0 * (T * T)
+    A1 = seg.a1 * (T * T)
+    s2 = s * s
+    s3 = s2 * s
+    s4 = s3 * s
+    s5 = s4 * s
+    h0 = 1 - 10 * s3 + 15 * s4 - 6 * s5
+    h1 = s - 6 * s3 + 8 * s4 - 3 * s5
+    h2 = 0.5 * s2 - 1.5 * s3 + 1.5 * s4 - 0.5 * s5
+    h3 = 10 * s3 - 15 * s4 + 6 * s5
+    h4 = -4 * s3 + 7 * s4 - 3 * s5
+    h5 = 0.5 * s3 - s4 + 0.5 * s5
+    pose = (h0[:, None] * seg.p0 + h1[:, None] * V0 + h2[:, None] * A0
+            + h3[:, None] * seg.p1 + h4[:, None] * V1 + h5[:, None] * A1)
+    inv_T = 1.0 / T
+    dh0 = (-30 * s2 + 60 * s3 - 30 * s4) * inv_T
+    dh1 = (1 - 18 * s2 + 32 * s3 - 15 * s4) * inv_T
+    dh2 = (s - 4.5 * s2 + 6 * s3 - 2.5 * s4) * inv_T
+    dh3 = (30 * s2 - 60 * s3 + 30 * s4) * inv_T
+    dh4 = (-12 * s2 + 28 * s3 - 15 * s4) * inv_T
+    dh5 = (1.5 * s2 - 4 * s3 + 2.5 * s4) * inv_T
+    twist = (dh0[:, None] * seg.p0 + dh1[:, None] * V0 + dh2[:, None] * A0
+             + dh3[:, None] * seg.p1 + dh4[:, None] * V1 + dh5[:, None] * A1)
+    inv_T2 = inv_T * inv_T
+    ddh0 = (-60 * s + 180 * s2 - 120 * s3) * inv_T2
+    ddh1 = (-36 * s + 96 * s2 - 60 * s3) * inv_T2
+    ddh2 = (1 - 9 * s + 18 * s2 - 10 * s3) * inv_T2
+    ddh3 = (60 * s - 180 * s2 + 120 * s3) * inv_T2
+    ddh4 = (-24 * s + 84 * s2 - 60 * s3) * inv_T2
+    ddh5 = (3 * s - 12 * s2 + 10 * s3) * inv_T2
+    accel = (ddh0[:, None] * seg.p0 + ddh1[:, None] * V0 + ddh2[:, None] * A0
+             + ddh3[:, None] * seg.p1 + ddh4[:, None] * V1 + ddh5[:, None] * A1)
+    return pose, twist, accel
+
+
+def batched_shaped_states(plan: '_ShapedPlan', ts: np.ndarray):
+    """Vectorised :meth:`_ShapedPlan.state_at` over ``ts`` → ``(pose, twist, accel)``.
+
+    Each output is ``(N, 6)`` for ``N = len(ts)``. Evaluates the base quintic plus
+    the windowed, lever-arm-compensated, capped lean superposition on the whole time
+    grid, mirroring :meth:`_ShapedPlan.state_at` term-for-term (same window→cap→apply
+    order, same product-rule derivatives). The quintic coefficients (:func:`_seg_xy_coeffs`)
+    are precomputed once for the segment rather than per sample.
+
+    **Single-segment only.** Today every :class:`_ShapedPlan` is a single-segment
+    rest-to-rest ``build_move`` plan (the lean window is per-segment — see
+    :data:`LEAN_WINDOW_EDGE_FRAC`), so this samples ``plan.segments[0]`` and its
+    per-segment normalised time ``s = ts/T``. A future multi-segment shaped plan
+    needs a per-segment grid loop (mirroring ``feasibility._segment_grids``) and a
+    plan-scoped window; the feasibility gate only dispatches here when the plan has
+    exactly one segment.
+    """
+    seg = plan.segments[0]
+    ts = np.asarray(ts, dtype=float)
+    pose, twist, accel = _base_states_batch(seg, ts)
+    gain = plan._gain
+    if gain == 0.0:
+        return pose, twist, accel
+
+    g = plan._g
+    arm = plan._arm
+    cap = plan._cap
+    c2, c3, c4, c5, T = _seg_xy_coeffs(seg)
+    s = np.clip(ts / T, 0.0, 1.0)
+    sc = s[:, None]
+    # Base x/y accel, jerk, snap (N,2) — the SAME closed forms _seg_xy_derivs uses.
+    a = (2 * c2 + 6 * c3 * sc + 12 * c4 * sc ** 2 + 20 * c5 * sc ** 3) / T ** 2
+    j = (6 * c3 + 24 * c4 * sc + 60 * c5 * sc ** 2) / T ** 3
+    sn = (24 * c4 + 120 * c5 * sc) / T ** 4
+    kg = gain / g
+    # Added lean tilt [rx, ry] uses [-a_y, a_x]; its time derivatives use [-j_y, j_x],
+    # [-sn_y, sn_x] — exactly the scalar sign convention.
+    tilt = kg * np.stack([-a[:, 1], a[:, 0]], axis=1)
+    tilt_d = kg * np.stack([-j[:, 1], j[:, 0]], axis=1)
+    tilt_dd = kg * np.stack([-sn[:, 1], sn[:, 0]], axis=1)
+    ck = arm * kg
+    shift = ck * a
+    shift_d = ck * j
+    shift_dd = ck * sn
+    # Plateau window (product rule; d/dt = (1/T) d/ds). Order matches state_at:
+    # windowed second derivative uses the ORIGINAL tilt/tilt_d, then the first, then
+    # the value — so the batched twist/accel stay the exact analytic derivatives of
+    # the windowed pose (the self-consistency invariant the shaper guards).
+    w, ws, wss = _lean_window_batch(s)
+    w_d = (ws / T)[:, None]
+    w_dd = (wss / (T * T))[:, None]
+    w = w[:, None]
+    tilt_dd = w_dd * tilt + 2.0 * w_d * tilt_d + w * tilt_dd
+    tilt_d = w_d * tilt + w * tilt_d
+    tilt = w * tilt
+    shift_dd = w_dd * shift + 2.0 * w_d * shift_d + w * shift_dd
+    shift_d = w_d * shift + w * shift_d
+    shift = w * shift
+    # Per-sample hard cap on the windowed tilt magnitude (window first, then cap).
+    mag = np.hypot(tilt[:, 0], tilt[:, 1])
+    scale = np.where(mag > cap, cap / np.where(mag > 0.0, mag, 1.0), 1.0)[:, None]
+    tilt = tilt * scale
+    tilt_d = tilt_d * scale
+    tilt_dd = tilt_dd * scale
+    shift = shift * scale
+    shift_d = shift_d * scale
+    shift_dd = shift_dd * scale
+    pose = pose.copy()
+    twist = twist.copy()
+    accel = accel.copy()
+    pose[:, 0:2] -= shift
+    pose[:, 3:5] += tilt
+    twist[:, 0:2] -= shift_d
+    twist[:, 3:5] += tilt_d
+    accel[:, 0:2] -= shift_dd
+    accel[:, 3:5] += tilt_dd
+    return pose, twist, accel
 
 
 class LeanShaper:

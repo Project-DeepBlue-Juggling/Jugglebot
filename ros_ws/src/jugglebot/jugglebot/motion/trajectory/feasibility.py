@@ -46,7 +46,7 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
-from jugglebot.motion.trajectory.shaping import _ShapedPlan
+from jugglebot.motion.trajectory.shaping import _ShapedPlan, batched_shaped_states
 from jugglebot.motion.workspace import (
     WorkspaceLimits,
     check_leg_extensions,
@@ -228,6 +228,20 @@ def validate(plan, limits, geom, *, samples_per_segment: int = _VALIDATE_SAMPLES
     # (e.g. a 400-sample reference in a conservativeness test) is still honoured.
     if isinstance(plan, _ShapedPlan):
         samples_per_segment = max(int(samples_per_segment), _SHAPED_VALIDATE_SAMPLES)
+        # Vectorised shaped gate (Phase 1a): the per-sample Python loop below
+        # recomputes the analytic Jacobian chain + lean superposition at every one of
+        # the ≥200 shaped samples and dominated shaped build_move cost. The batched
+        # twin measures the IDENTICAL leg-space quantities on the whole grid in numpy
+        # (parity with this loop at equal mesh: ~1.4e-10 max rel err, from the shared
+        # 1e-7 J-dot FD + batched Rodrigues — verified in tests/motion/
+        # test_shaped_batch.py) — see _validate_shaped_batched. Only the
+        # single-segment rest-to-rest build_move plan (every shaped plan produced
+        # today) dispatches here; a multi-segment _ShapedPlan (not built today) falls
+        # through to the scalar loop, which handles per-segment grids correctly.
+        if len(plan.segments) == 1:
+            return _validate_shaped_batched(
+                plan, limits, geom, samples_per_segment, wlimits=wlimits,
+                mm_to_rev=mm_to_rev)
 
     peak_vel = 0.0
     peak_acc = 0.0
@@ -437,6 +451,215 @@ def _batched_condition(leg_vecs: np.ndarray, R: np.ndarray, geom) -> np.ndarray:
     J[:, :, 3:] = np.cross(a_world, unit)
     J[:, :, 3:] /= geom.plat_radius_mm
     return np.linalg.cond(J)                                             # (N,)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Batched analytic Jacobian chain — the shaped gate's vectorised J / J̇ (Phase 1a)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# These vectorise the SAME analytic Jacobian chain validate() drives per-sample via
+# ik_solver.compute_jacobian / compute_jacobian_dot — NOT the finite-difference
+# reconstruction validate_follow uses. The distinction is load-bearing: a shaped
+# plan carries the lean superposition in its twist/accel, so its leg vel/acc MUST be
+# formed as J·twist / (J·accel + J̇·twist) on the shaped state (validate_follow's FD
+# of the sampled *base* extensions would miss the lean entirely — the reason its
+# _ShapedPlan TypeError guard exists). J̇ uses the SAME central FD (dt=1e-7) as
+# ik_solver.compute_jacobian_dot, so the batched leg acc matches the scalar gate to
+# ~1e-10 (verified). J is built in the component-cross form ik_solver.compute_jacobian
+# ships (arithmetic-only, no np.cross dispatch), batched over samples.
+
+
+def _batched_jacobian_from_posR(pos: np.ndarray, R: np.ndarray, geom) -> np.ndarray:
+    """(N,3) positions + (N,3,3) rotations → analytic Jacobian ``J (N,6,6)``.
+
+    Batched twin of ``ik_solver.compute_jacobian`` that takes a rotation MATRIX
+    directly (not a rotvec), so ``_batched_jacobian_dot`` can build the fwd/bwd
+    Jacobians from the FD-advanced ``(pos ± v·dt, dR·R)`` states exactly as the
+    scalar ``compute_jacobian_dot`` does (which advances the rotation matrix, never
+    round-tripping through a rotvec).
+    """
+    centre = pos + geom.init_height_vec                                    # (N,3)
+    plat_world = centre[:, None, :] + np.einsum(
+        'nij,kj->nki', R, geom.plat_nodes)                                 # (N,6,3)
+    leg_vecs = plat_world - geom.base_nodes[None]
+    l = leg_vecs / np.linalg.norm(leg_vecs, axis=2, keepdims=True)         # (N,6,3)
+    a_world = np.einsum('nij,kj->nki', R, geom.plat_nodes)                 # (N,6,3)
+    n = pos.shape[0]
+    J = np.empty((n, 6, 6))
+    J[:, :, :3] = l
+    ax, ay, az = a_world[..., 0], a_world[..., 1], a_world[..., 2]
+    lx, ly, lz = l[..., 0], l[..., 1], l[..., 2]
+    J[:, :, 3] = ay * lz - az * ly
+    J[:, :, 4] = az * lx - ax * lz
+    J[:, :, 5] = ax * ly - ay * lx
+    return J
+
+
+def _batched_jacobian(poses: np.ndarray, geom):
+    """(N,6) poses → ``(J (N,6,6), leg_vecs (N,6,3), R (N,3,3))``.
+
+    Batched ``ik_solver.compute_jacobian`` reusing ``_batched_leg_vectors`` (so the
+    leg vectors and ``R`` are shared with the stroke/condition checks). The rotational
+    columns are the row-wise cross ``a_world × l`` in the same component form the
+    scalar Jacobian ships.
+    """
+    leg_vecs, R = _batched_leg_vectors(poses, geom)                        # (N,6,3),(N,3,3)
+    l = leg_vecs / np.linalg.norm(leg_vecs, axis=2, keepdims=True)
+    a_world = np.einsum('nij,kj->nki', R, geom.plat_nodes)                 # (N,6,3)
+    n = poses.shape[0]
+    J = np.empty((n, 6, 6))
+    J[:, :, :3] = l
+    ax, ay, az = a_world[..., 0], a_world[..., 1], a_world[..., 2]
+    lx, ly, lz = l[..., 0], l[..., 1], l[..., 2]
+    J[:, :, 3] = ay * lz - az * ly
+    J[:, :, 4] = az * lx - ax * lz
+    J[:, :, 5] = ax * ly - ay * lx
+    return J, leg_vecs, R
+
+
+def _batched_jacobian_dot(poses: np.ndarray, twists: np.ndarray, geom,
+                          dt: float = 1e-7) -> np.ndarray:
+    """Central-FD Jacobian time-derivative per sample → ``J̇ (N,6,6)``.
+
+    Identical construction to ``ik_solver.compute_jacobian_dot``: advance the pose by
+    ``±twist·dt`` (translation linearly, rotation by ``rotvec_to_rot_matrix(ω·dt)·R``)
+    and central-difference the analytic Jacobian, with the SAME ``dt=1e-7`` half-step,
+    so the batched leg acceleration ``J·accel + J̇·twist`` matches the scalar gate.
+    """
+    pos = poses[:, :3]
+    v = twists[:, :3]
+    omega = twists[:, 3:]
+    R = _batched_rotvec_to_R(poses[:, 3:6])                                # (N,3,3)
+    R_fwd = np.einsum('nij,njk->nik', _batched_rotvec_to_R(omega * dt), R)
+    R_bwd = np.einsum('nij,njk->nik', _batched_rotvec_to_R(-omega * dt), R)
+    J_fwd = _batched_jacobian_from_posR(pos + v * dt, R_fwd, geom)
+    J_bwd = _batched_jacobian_from_posR(pos - v * dt, R_bwd, geom)
+    return (J_fwd - J_bwd) / (2.0 * dt)
+
+
+def _validate_shaped_batched(plan, limits, geom, samples_per_segment, *,
+                             wlimits, mm_to_rev) -> FeasibilityReport:
+    """Vectorised twin of :func:`validate`'s per-sample loop for a single-segment
+    ``_ShapedPlan``.
+
+    Measures the IDENTICAL leg-space quantities the scalar loop does — geometry
+    (finite / stroke / condition), analytic leg vel/acc (``J·twist`` /
+    ``J·accel + J̇·twist``), FD jerk with :data:`_VALIDATE_JERK_MARGIN`, and the
+    plan-wide knot-step bound — but batched over the whole ≥200-sample grid in numpy.
+    Reproduces the scalar contract exactly: the same ``FeasibilityReport`` fields,
+    the same first-failure-wins ordering (geometry rejects in time order, with
+    finite→stroke→condition priority within a sample; then vel→acc→jerk→step), and
+    the same populated peaks on early geometry returns (only ``peak_leg_ext_mm``).
+
+    The full condition SVD runs on all N samples (not decimated) for strict parity
+    with the scalar gate. See the module block above :func:`_batched_jacobian_from_posR`
+    for why leg vel/acc use the analytic chain rather than the follower gate's FD.
+    """
+    seg = plan.segments[0]
+    n = max(_MIN_SAMPLES, int(samples_per_segment))
+    T = seg.duration
+    dt = T / (n - 1)
+    ts = T * np.arange(n) / (n - 1)                                        # (n,)
+
+    poses, twists, accels = batched_shaped_states(plan, ts)
+
+    # ── Passes 1: geometry (finite / stroke / condition), first-failure-wins ──
+    # A non-finite pose makes leg_vecs / condition NaN; substitute a benign pose on
+    # those rows so the batched geometry is numerically well-defined — the finite
+    # check has strictly higher priority, so those rows never read their stroke/cond.
+    finite_rows = np.all(np.isfinite(poses), axis=1)                       # (n,)
+    safe_poses = poses if finite_rows.all() else np.where(
+        finite_rows[:, None], poses, 0.0)
+
+    J, leg_vecs, R = _batched_jacobian(safe_poses, geom)
+    ext = np.linalg.norm(leg_vecs, axis=2) - geom.init_leg_lengths_mm      # (n,6)
+    stroke_bad = np.any((ext < wlimits.leg_hard_min_mm)
+                        | (ext > wlimits.leg_hard_max_mm), axis=1)         # (n,)
+    conds = _batched_condition(leg_vecs, R, geom)                          # (n,)
+    cond_bad = conds > wlimits.cond_hard
+
+    geom_fail = (~finite_rows) | stroke_bad | cond_bad
+    if geom_fail.any():
+        first = int(np.argmax(geom_fail))
+        t_fail = float(ts[first])
+        if not finite_rows[first]:
+            return FeasibilityReport(
+                ok=False, code=UNREACHABLE,
+                reasons=[f"pose contains non-finite values (NaN/Inf) "
+                         f"at t={t_fail:.3f}s"])
+        # peak_ext accumulates over samples 0..first (inclusive), matching the scalar
+        # loop's max at the point it early-returns.
+        peak_ext = float(np.max(np.abs(ext[:first + 1])))
+        if stroke_bad[first]:
+            bad = [i for i in range(6)
+                   if ext[first, i] < wlimits.leg_hard_min_mm
+                   or ext[first, i] > wlimits.leg_hard_max_mm]
+            return FeasibilityReport(
+                ok=False, code=WORKSPACE,
+                reasons=[f"leg {i} out of stroke ({ext[first, i]:.1f} mm) "
+                         f"at t={t_fail:.3f}s" for i in bad],
+                peak_leg_ext_mm=peak_ext)
+        return FeasibilityReport(
+            ok=False, code=UNREACHABLE,
+            reasons=[f"Jacobian condition {conds[first]:.1f} > "
+                     f"{wlimits.cond_hard:.1f} (near singularity) "
+                     f"at t={t_fail:.3f}s"],
+            peak_leg_ext_mm=peak_ext)
+
+    peak_ext = float(np.max(np.abs(ext)))
+
+    # ── Pass 2: analytic leg vel/acc + FD jerk (all peaks measured) ──
+    leg_vel = np.einsum('nij,nj->ni', J, twists)                          # (n,6)
+    J_dot = _batched_jacobian_dot(poses, twists, geom)
+    leg_acc = (np.einsum('nij,nj->ni', J, accels)
+               + np.einsum('nij,nj->ni', J_dot, twists))                  # (n,6)
+    peak_vel = float(np.max(np.abs(leg_vel)))
+    peak_acc = float(np.max(np.abs(leg_acc)))
+    peak_jerk = 0.0
+    if dt > 0.0 and n >= 2:
+        jerk = np.diff(leg_acc, axis=0) / dt
+        peak_jerk = float(np.max(np.abs(jerk))) * _VALIDATE_JERK_MARGIN
+
+    # ── Pass 3: knot-step bound (the actual wire u0 sequence) ──
+    peak_step = 0.0
+    if plan.total_duration > 0.0:
+        kdt = float(limits.knot_dt_s)
+        n_knots = int(np.floor(plan.total_duration / kdt)) + 2
+        kts = np.minimum(np.arange(n_knots) * kdt, plan.total_duration)
+        kposes, _, _ = batched_shaped_states(plan, kts)
+        kvecs, _ = _batched_leg_vectors(kposes, geom)
+        rev = (np.linalg.norm(kvecs, axis=2)
+               - geom.init_leg_lengths_mm) * mm_to_rev                    # (n_knots,6)
+        if n_knots > 1:
+            peak_step = float(np.max(np.abs(np.diff(rev, axis=0))))
+
+    # ── Decide the code (priority order; first failure wins) ──
+    step_bound = STEP_BOUND_MARGIN * float(limits.max_step_rev)
+    code = OK
+    reasons: list = []
+    if peak_vel > limits.leg_vel_mmps:
+        code = LIMIT_VEL
+        reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
+                   f"{limits.leg_vel_mmps:.1f}"]
+    elif peak_acc > limits.leg_acc_mmps2:
+        code = LIMIT_ACC
+        reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
+                   f"{limits.leg_acc_mmps2:.1f}"]
+    elif peak_jerk > limits.leg_jerk_mmps3:
+        code = LIMIT_JERK
+        reasons = [f"peak leg jerk {peak_jerk:.0f} mm/s³ > "
+                   f"{limits.leg_jerk_mmps3:.0f}"]
+    elif peak_step > step_bound:
+        code = STEP_BOUND
+        reasons = [f"peak per-knot step {peak_step:.3f} rev > "
+                   f"{step_bound:.3f} ({int(STEP_BOUND_MARGIN * 100)}% of "
+                   f"{limits.max_step_rev:.3f})"]
+
+    return FeasibilityReport(
+        ok=(code == OK), code=code, reasons=reasons,
+        peak_leg_vel_mmps=peak_vel, peak_leg_acc_mmps2=peak_acc,
+        peak_leg_jerk_mmps3=peak_jerk, peak_leg_ext_mm=peak_ext,
+        peak_step_rev=peak_step)
 
 
 def validate_follow(plan, limits, geom, *,
