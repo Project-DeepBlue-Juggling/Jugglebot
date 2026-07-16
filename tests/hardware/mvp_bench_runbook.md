@@ -63,6 +63,87 @@ operator:
   carries `[wire DISARMED — setpoints not reaching the legs]` and trajectory_node
   WARNs. If you see it under auto-arm, something real is wrong — stop.
 
+## ⚡ 2026-07-16 — MAX_DEVIATION guard raised to 1.0 rev + ODrive vel_limit raised to 6.0 rev/s (read before resuming S4)
+
+Today's S4 limit-ramp session hit three `MAX_DEVIATION` guard E-STOPs at session
+vel_limit=200 mm/s (always leg 1 first, 0.52–0.56 rev at trip). Forensics
+(`logbook/2026-07-16-max-deviation-guard-tracking-lag.md`) found this was
+**legitimate tracking lag, not a runaway**: the guard compares the raw streamed
+40 Hz knot against the encoder *before* the lead clamp, while reflected platform
+inertia (~5–20× the bare rotor J_eff) makes the velocity loop lag a fast
+coordinated ramp — the deficit integrates into position deviation
+superlinearly with commanded speed (0.17–0.22 rev @100 mm/s → ~0.52–0.56 rev
+@190–200 mm/s), crossing the old 0.5 rev threshold. Drives were never
+current-railed (peak iq 8.7 of 10 A) or velocity-railed (peak 2.2 of 4.0 rev/s).
+The operator has confirmed two independent changes as a result:
+
+1. **`MAX_DEVIATION_REV` 0.5 → 1.0 rev** (firmware guard,
+   `ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h`; `FW_VERSION`
+   bumped 1→2 as a human-facing identity marker only — it has no runtime/handshake
+   effect). Raising the guard adds **zero** physical excursion for command-side
+   faults — the lead clamp, stroke clamp, and ODrive clip independently bound the
+   *executed* command regardless of the guard threshold; the accepted cost is a
+   longer encoder-side-runaway detect distance (35 → 70 mm).
+2. **ODrive leg `vel_limit` 4.0 → 6.0 rev/s** (config,
+   `config/hardware_config.yaml` `leg_vel_limit_rps` → generated
+   `ODRIVE_LEG_VEL_LIMIT_RPS`), for lead-clamp catch-up headroom. Legs are
+   bench-proven to 3.4 m/s (48 rev/s) so 6.0 rev/s stays far inside the
+   envelope, and the firmware's independent overspeed guard
+   `MAX_MOTOR_VEL_RPS = 16.5 rev/s` still exceeds any 6.0 rev/s catch-up sprint.
+   **`MAX_LEAD` stays 0.10 rev — unchanged.** The v2-bug constraint
+   `Kp·MAX_LEAD ≤ vel_limit` is now `40×0.10 = 4.0 ≤ 6.0` (a healthy
+   inequality — 2.0 rev/s of headroom for `vel_ff` catch-up, vs the old
+   4.0 = 4.0 exact saturation that clipped `vel_ff` to zero added authority).
+
+**Deployment is two independent halves — both must land before resuming S4:**
+
+- **(A) The 1.0 rev guard lives in firmware** (compiled in) and takes effect
+  **only after the can-bridge Teensy is reflashed**. Until reflashed the guard
+  stays at 0.5 rev and will keep latching at ~190 mm/s.
+- **(B) The 6.0 rev/s vel_limit lives in config** and is **pushed to each leg
+  ODrive over CAN at runtime** — no reflash, no ODrive-NVM edit. It is pushed
+  from `teensy_bridge_node._run_configure()`, which fires after every
+  successful `/home`, on the `/configure` service, and after every
+  `/activate`. The earliest effective point is **the first homing of a
+  session that has rebuilt the ROS2 install** — a bare relaunch of a stale
+  install keeps pushing 4.0, because the launch runs the **installed** copy of
+  `hardware_config.py`, not the source tree (known project gotcha).
+
+**Session prerequisites for the next sitting (operator runs these):**
+
+1. **Flash firmware**: `cd ros_ws/src/jugglebot/Teensy_code_canbridge && pio run
+   -e teensy41 -t upload` (USB to the can-bridge Teensy). This also arms the
+   previously-dormant `torque_ff` ingest clamp from `10de03c` — reviewed and
+   intended, not a side effect to chase.
+2. **`colcon build --packages-select jugglebot`, then relaunch** — picks up the
+   vel_limit push (reaches the drives at the first homing) and the new
+   per-leg latch messaging (below).
+3. **GUI** needs only a browser refresh — `state-minimap.js`'s guard-latch
+   tooltip now shows `(MAX_DEVIATION, leg N)`.
+4. **Optional 10-s check**: confirm the drives' live `input_mode` is
+   passthrough while powered (read back via odrivetool or SDO read) —
+   flagged during today's analysis; the saved JSON says `input_mode=5` but the
+   live path requires passthrough semantics.
+
+**New guard-fault attribution** (firmware-ground-truth only — Python never
+re-thresholds `MAX_DEVIATION_REV`; it reads the firmware's frozen
+`max_dev_leg`/`max_dev_value` snapshot off `HeartbeatT2J`, so the attribution
+auto-tracks whatever threshold the firmware trips at):
+
+- Edge: `Teensy guard FAULT LATCHED: fault_state=MAX_DEVIATION (leg 1,
+  dev=-0.552 rev at trip) live_dev=[-0.55,-0.31,+0.34,+0.33,-0.12,+0.41] rev —
+  leg output is now SUPPRESSED and every leg command (incl. DEACTIVATE, which
+  returns ERR_BUS_DOWN) will be refused. Recover with: ros2 service call
+  /clear_errors std_srvs/srv/Trigger`
+- Persistent reminder (every 5.0 s): `TEENSY GUARD LATCHED (MAX_DEVIATION)
+  (leg 1, dev=-0.552 rev at trip) — leg output suppressed; CLEAR_ERRORS
+  required` (now carries the leg hint for **all** fault types, not just
+  MAX_DEVIATION).
+- New `/link_status` field `guard_fault_leg` — the culprit leg number as a
+  string while a MAX_DEVIATION latch is **active**, else `''`. Resets to `''`
+  after `/clear_errors` even though the raw `max_dev_leg` persists as "last
+  latch since boot".
+
 ## Standing rules (every session)
 
 - **You (Harrison) run every robot-actuating command.** Claude prepares the exact
@@ -79,9 +160,14 @@ operator:
 **ABORT any session immediately on:**
 
 - any **E-STOP** (MPC_STALE / MAX_DEVIATION latch in the bridge/firmware log);
-- any **oscillation**, audible snap, or tracking error > 0.1 rev **at a hold**
-  (for move-onset deviation, which rides the MAX_LEAD 0.10 rev ceiling by
-  design, see the S4 ABORT recalibration note — pending operator confirmation);
+- any **oscillation** or audible snap, at a hold or in transit;
+- tracking error > 0.1 rev **at a hold**. During a move the criterion is
+  different (operator-confirmed 2026-07-16 — see the S4 ABORT recalibration
+  note): peak `|live_deviation|` must stay under ~0.6 rev (60 % of the
+  1.0 rev guard) **and** must collapse back under 0.1 rev once the platform
+  settles at arrival. Any **MAX_DEVIATION latch** is itself an ABORT
+  regardless of the peak value — stop the battery and review with the new
+  per-leg fault log line (see the ⚡ 2026-07-16 banner above);
 - any **unexplained bus fault** (marginal CAN3 is a known tier-2 quirk, but an
   *unexplained* bus fault during a session is an ABORT).
 
@@ -241,8 +327,11 @@ operator:
   `accepted=false code=TOO_FAST` with a populated `min_duration_s` and **moves nothing**.
   Target: **11/11** scripted moves clean (the `_BATTERY` list holds 11 feasible moves:
   2 in z, 3 in x, 3 in y, 3 in rx) + one demonstrated loud rejection.
-- **ABORT**: oscillation, gate violation, tracking error > 0.1 rev (holds; see
-  the S4 ABORT recalibration note for move-onset deviation).
+- **ABORT**: oscillation, gate violation, tracking error > 0.1 rev at holds;
+  during a move the recalibrated criterion applies (peak `|live_deviation|`
+  under ~0.6 rev, collapsing back under 0.1 rev at arrival) and any
+  MAX_DEVIATION latch is an ABORT regardless of the peak value — see the S4
+  ABORT recalibration note.
 - **Result (2026-07-09)**: **PASS — 11/11 moves clean + the loud rejection.** Battery ran
   13:34:07–13:34:43 at the Phase-1 default limits (100 mm/s, 400 mm/s², 8000 mm/s³),
   `lean_gain = 0.0`. Per-move realized leg peaks tracked the gate prediction closely
@@ -325,13 +414,40 @@ operator:
   six legs (`lead_clamp_mask` 63 for ~0.2 s) and peaked 7.35 A on one leg
   (vs ~3.5 A for the same move in the baseline). Isolated and self-recovering,
   but at RAISED limits watch the first move of every battery: a leg peaking
-  above ~8 A or a full mask lasting >0.5 s ⇒ stop and keep the bag. A gentle
-  wake-up move after arming (before the battery) is a legitimate mitigation.
-  (2) Move-time `live_deviation` **rides the MAX_LEAD 0.10 rev ceiling by
-  design** at these speeds — both A/B sessions brushed 0.09–0.11 rev at move
-  onsets while looking and sounding completely clean, so a brief 0.1 rev
-  excursion at onset is NOT by itself the ABORT signal (see the ABORT note
-  below).
+  above ~8 A ⇒ stop and keep the bag — **scoped to vel steps ≤ 130 mm/s**. At
+  vel ≥ 160 mm/s lawful catch-up current alone reaches ~8.7 A (measured at
+  vel=200 on 2026-07-16), so this rule would false-trip there; at those steps
+  compare the first move's peak against the same move's peak in the previous
+  battery instead of an absolute bar. A gentle wake-up move after arming
+  (before the battery) is a legitimate mitigation. (2) Move-time
+  `live_deviation` **rides the MAX_LEAD 0.10 rev ceiling by design** at these
+  speeds — both A/B sessions brushed 0.09–0.11 rev at move onsets while
+  looking and sounding completely clean, so a brief 0.1 rev excursion at onset
+  is NOT by itself the ABORT signal (see the ABORT note below). The lead-clamp
+  mask itself is release-based, not duration-based — see the ABORT note.
+- **New since 2026-07-16 (later the same day) — the guard is now 1.0 rev and
+  the ODrive leg vel_limit is now 6.0 rev/s.** See the ⚡ 2026-07-16 banner
+  near the top of this file for the full two-halves deployment status
+  (firmware reflash for the guard, colcon rebuild + relaunch for the
+  vel_limit push) and the session prerequisites — both must land before
+  resuming the ladder below. Expected peak transit `live_deviation` per the
+  measured scaling law, for comparing against the live number:
+
+  | session vel limit | expected peak transit `live_deviation` |
+  |---|---|
+  | 100 mm/s | ~0.17–0.22 rev |
+  | 130 mm/s | ~0.3 rev |
+  | 160 mm/s | ~0.41 rev |
+  | 190–200 mm/s | ~0.52–0.56 rev |
+
+  With `vel_limit` raised to 6.0 rev/s the velocity loop has more catch-up
+  headroom (`vel_ff` is no longer clipped to zero added authority once the
+  clamp engages — see `canbridge_config.h`), which should mean *less* lag at
+  a given speed, not more — but `vel_integrator_limit=Infinity`, so also
+  watch the other direction: a harder catch-up sprint or arrival
+  overshoot/oscillation that wasn't there before. If that appears where it
+  didn't at the old vel_limit, note it and consider stepping back before the
+  next ladder step.
 
 #### The ladder (recommended order + step sizes)
 
@@ -423,20 +539,27 @@ fine if the first felt completely clean — but never skip the battery+review be
   for a tilt-rate tick at move start/end (the boundary transient) — report it rather
   than pushing through.
 - **PASS/ABORT** per move: as S2 (smooth, jerk within limits, TOO_FAST rejects nothing;
-  ABORT on oscillation / snap / E-STOP). **⚠ The old "tracking error > 0.1 rev" ABORT
-  line needs operator recalibration before S4**: the 2026-07-16 A/B bags show move-onset
-  `live_deviation` brushing 0.09–0.11 rev **by design** (it rides the MAX_LEAD 0.10 rev
-  clamp ceiling at 64 mm/s) in two sessions that were clean by every other measure — the
-  criterion as written would ABORT designed behaviour. Proposed restatement (operator to
-  confirm): ABORT on deviation that does NOT collapse after arrival, on sustained
-  full-mask lead-clamp engagement (> 1 s), or on any MAX_DEVIATION latch (the firmware
-  guard at 0.5 rev); keep 0.1 rev as the ABORT threshold **for holds**, where it retains
-  its original meaning. On ABORT, revert and debrief before re-attempting — the failing
-  step's `/diagnose` block + rosbag are the evidence. This criterion also appears
-  in the Global ABORT list and at S2/S5 — a confirmed recalibration should ripple to
-  all three. Threshold tiers, explicit: full-mask (`lead_clamp_mask` 63) engagement
-  **> 0.5 s ⇒ stop the battery and keep the bag** (watch item 1); **> 1 s sustained ⇒
-  ABORT the session**; the ~0.2 s onset blips observed 2026-07-16 are normal.
+  ABORT on oscillation / snap / E-STOP). **The "tracking error > 0.1 rev" ABORT line is
+  recalibrated for moves (operator-confirmed 2026-07-16 — see
+  `logbook/2026-07-16-max-deviation-guard-tracking-lag.md`)**: move-onset `live_deviation`
+  legitimately rides the MAX_LEAD 0.10 rev clamp ceiling by design, and clean vel=100
+  passes showed 0.17–0.22 rev transit deviation that the old rule would have flagged as
+  an ABORT — it was never a runaway. **The confirmed rule**: 0.1 rev remains the ABORT
+  threshold **at holds**, where it retains its original meaning; **during a move**, peak
+  `|live_deviation|` must stay under ~0.6 rev (60 % of the new 1.0 rev guard) **and** must
+  collapse back under 0.1 rev once the platform settles at arrival; any **MAX_DEVIATION**
+  latch is itself an ABORT regardless of the peak value — stop the battery, keep the bag,
+  and review with the firmware's per-leg fault log line (`fault_state=MAX_DEVIATION
+  (leg N, dev=... rev at trip) live_dev=[...]`). On ABORT, revert and debrief before
+  re-attempting — the failing step's `/diagnose` block + rosbag are the evidence. This
+  criterion also appears in the Global ABORT list and at S2/S5 — the recalibration
+  ripples to all three. **Lead-clamp mask**: mask stretches lengthen legitimately with
+  velocity (the clamp engages whenever deviation > 0.10 rev, i.e. most of every fast
+  move), so duration alone is not a signal — the confirmed rule is **release-based**: the
+  mask must release by arrival; a mask still engaged **at the following hold** is an
+  ABORT. The ~0.2 s onset engagements observed 2026-07-16 are normal. The
+  first-move-after-armed-hold iq watch item (leg peaking above ~8 A ⇒ stop and keep the
+  bag, above) is unchanged.
 - **Detailed protocol**: `tests/hardware/session_phase4_ramp.md` (per-step mechanics;
   this section's ladder supersedes its "~1.5×, jerk 12000" example values).
 
@@ -492,7 +615,10 @@ Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (
   continues cleanly. (`go_to_pose` still returns `BUSY` mid-move by design — use
   `timed_target` for the supersede demo.)
 - **ABORT**: any snap/jerk at supersede, motion on a rejected request, tracking error
-  > 0.1 rev.
+  > 0.1 rev at holds; during a move the recalibrated criterion applies (peak
+  `|live_deviation|` under ~0.6 rev, collapsing back under 0.1 rev at arrival)
+  and any MAX_DEVIATION latch is an ABORT regardless of the peak value — see
+  the S4 ABORT recalibration note.
 - **Detailed protocol**: `tests/hardware/session_phase5_timed.md`.
 
 ### S6 = 7a — aim-only (frame + z-convention verification, NO ball, NO JB motion)

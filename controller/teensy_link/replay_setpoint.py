@@ -22,8 +22,9 @@ production value (≈ 3.90), so the firmware stroke clamp will NOT protect the
 bench leg. :func:`scale_to_bench` therefore enforces a **position ceiling**
 (default 3.30 rev, 0.10 below the 3.4 physical limit) — affine-compressing a
 recording that exceeds it, no-op for one that fits — plus a **velocity guard**
-(default 3.5 rev/s, below the 4.0 rev/s ``ODRIVE_LEG_VEL_LIMIT_RPS`` the
-``--close-loop`` bring-up sets, so the leg can actually track the replay).
+(default 3.5 rev/s, below the 6.0 rev/s ``ODRIVE_LEG_VEL_LIMIT_RPS`` the
+``--close-loop`` bring-up sets — raised 4.0 → 6.0 on 2026-07-16 — so the leg can
+actually track the replay).
 
 Trajectory timeline (seconds since arm ``t ≥ 0``), three phases so the onset is
 clean to measure:
@@ -54,9 +55,9 @@ from . import protocol as p
 from .protocol import Setpoint
 
 DEFAULT_SEG_T_S = 0.025          # SEGMENT_T_S — recordings are sampled at this 40 Hz grid
-DEFAULT_MAX_STEP_REV = 0.15      # MAX_LEAD_REV — a knot may never step more than the lead clamp
+DEFAULT_MAX_STEP_REV = 0.15      # replay knot-step bound (historically = the pre-2026-07-10 MAX_LEAD 0.15; the live lead clamp is 0.10)
 DEFAULT_CEILING_REV = 3.30       # bench-leg position ceiling (0.10 below the 3.4 physical limit)
-DEFAULT_VEL_CEILING_RPS = 3.5    # below ODRIVE_LEG_VEL_LIMIT_RPS (4.0) so the leg can track it
+DEFAULT_VEL_CEILING_RPS = 3.5    # below ODRIVE_LEG_VEL_LIMIT_RPS (6.0 since 2026-07-16) so the leg can track it
 FLAG_HAS_U1 = 0x1
 FLAG_HAS_U2 = 0x2
 
@@ -148,8 +149,8 @@ def scale_to_bench(samples: List[float], *, stroke_min_rev: float,
     hard clamp to ``[stroke_min, ceiling]`` is the backstop.
 
     Velocity: the peak 40 Hz chord velocity after scaling MUST be ``≤
-    vel_ceiling`` (so the ODrive's 4.0 rev/s limit can track it) — raises
-    ``ValueError`` otherwise (loud, never a silent slow-down).
+    vel_ceiling`` (so the ODrive's velocity limit — 6.0 rev/s since 2026-07-16 —
+    can track it) — raises ``ValueError`` otherwise (loud, never a silent slow-down).
 
     Returns ``(scaled_samples, ScaleInfo)``.
     """
@@ -179,7 +180,7 @@ def scale_to_bench(samples: List[float], *, stroke_min_rev: float,
     if peak_vel > vel_ceiling_rps:
         raise ValueError(
             f"recorded peak chord velocity {peak_vel:.3f} rev/s > ceiling "
-            f"{vel_ceiling_rps} rev/s (the ODrive 4.0 rev/s limit could not track "
+            f"{vel_ceiling_rps} rev/s (the ODrive velocity limit could not track "
             f"it → tracking deviation). Pick a slower recording or lower the "
             f"velocity ceiling deliberately.")
 

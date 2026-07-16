@@ -479,6 +479,8 @@ def test_link_status_surfaces_guard_deviation_diagnostics(bridge):
     assert kv['max_dev_value'] == '0.5500'
     assert kv['max_dev_u0'] == '2.8000'
     assert kv['max_dev_enc'] == '2.2500'
+    # An ACTIVE MAX_DEVIATION latch → guard_fault_leg mirrors the frozen leg.
+    assert kv['guard_fault_leg'] == '2'
 
 
 def test_link_status_max_dev_leg_none_when_unset(bridge):
@@ -567,10 +569,13 @@ def test_guard_fault_repeats_every_5s_rate_exact(bridge):
     from unittest.mock import MagicMock
     from jugglebot.teensy_bridge_node import _GUARD_LATCH_REPEAT_S
     teensy, node = bridge
+    # max_dev_leg=1 (no ODrive diag sent → empty _latest_diag) so the reminder's
+    # leg hint comes from the frozen MAX_DEVIATION snapshot fallback.
     hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
                       bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
                       fault_state=int(FaultState.MAX_DEVIATION),
-                      flags=0, uptime_ms=1)
+                      flags=0, uptime_ms=1,
+                      max_dev_leg=1, max_dev_value=-0.552)
     teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
     assert _wait_until(lambda: node._latest_heartbeat is not None)
 
@@ -592,6 +597,71 @@ def test_guard_fault_repeats_every_5s_rate_exact(bridge):
     assert len(reminders) == 1
     assert 'MAX_DEVIATION' in reminders[0]
     assert 'CLEAR_ERRORS required' in reminders[0]
+    # The persistent reminder now carries the culprit-leg hint too (it had NONE
+    # before, even for ODRIVE_FATAL): reuse of _guard_fault_leg_hint() names the
+    # leg from the frozen snapshot when the ODrive-diag cache is empty.
+    assert 'leg 1' in reminders[0]
+
+
+def test_max_deviation_latch_attributed_from_frozen_snapshot(bridge):
+    """The EXACT 2026-07-16 S4 shape: a MAX_DEVIATION guard latch with ZERO
+    ODrive errors, so _latest_diag is empty and the primary per-axis diag scan
+    finds no culprit — the old _guard_fault_leg_hint() therefore printed nothing.
+
+    The edge log must now (a) name the offending leg + trip deviation from the
+    firmware's frozen max_dev_leg/max_dev_value snapshot, and (b) append the raw
+    live-deviation vector for multi-leg context; /link_status must carry
+    guard_fault_leg as a direct, already-gated field. Previously uncovered."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    node._logger = MagicMock()
+    # NO Diagnostic frames sent → _latest_diag stays empty (all three real
+    # 2026-07-16 latches had active_errors==0). Leg 1 crossed first (leg-1-first,
+    # matching the forensics) at dev=-0.552 rev.
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.MAX_DEVIATION),
+                      flags=0, uptime_ms=1,
+                      live_deviation=(-0.55, -0.31, 0.34, 0.33, -0.12, 0.41),
+                      max_dev_leg=1, max_dev_value=-0.552,
+                      max_dev_u0=0.52, max_dev_enc=1.07)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.MAX_DEVIATION))
+    assert not node._latest_diag, "precondition: diag cache empty (zero ODrive errors)"
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert len(edge) == 1, f"expected one edge ERROR, got {_messages(node._logger.error)}"
+    assert 'MAX_DEVIATION' in edge[0]
+    assert 'leg 1' in edge[0]                       # frozen-snapshot attribution
+    assert 'dev=-0.552 rev at trip' in edge[0]      # trip deviation
+    assert 'live_dev=[' in edge[0]                  # multi-leg context vector
+    assert '-0.55' in edge[0] and '+0.41' in edge[0]
+
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['guard_fault_leg'] == '1'             # direct gated field
+    assert kv['max_dev_leg'] == '1'                 # raw frozen snapshot present
+
+
+def test_guard_fault_leg_empty_when_cleared_but_snapshot_persists(bridge):
+    """max_dev_leg is 'last latch since boot' and PERSISTS after /clear_errors,
+    so a consumer asking 'is a leg AT FAULT right now?' must not read it raw.
+    guard_fault_leg gates on an ACTIVE MAX_DEVIATION latch: with fault_state==NONE
+    but max_dev_leg still 1 from a prior latch, guard_fault_leg is '' while the
+    raw max_dev_leg snapshot stays visible."""
+    teensy, node = bridge
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.NONE), flags=0, uptime_ms=1,
+                      max_dev_leg=1, max_dev_value=-0.552)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['guard_fault_leg'] == ''              # gated off — fault cleared
+    assert kv['max_dev_leg'] == '1'                 # raw snapshot still visible
 
 
 def test_guard_fault_clear_logs_info_and_resets_anchor(bridge):

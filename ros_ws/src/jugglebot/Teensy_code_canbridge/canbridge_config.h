@@ -41,7 +41,7 @@ namespace CanBridge {
 
 // ── Identity ────────────────────────────────────────────────────────────────
 constexpr char     FW_NAME[]    = "jugglebot-canbridge";
-constexpr uint16_t FW_VERSION   = 1;          // bump on behavioural change
+constexpr uint16_t FW_VERSION   = 2;          // bump on behavioural change (1→2: 2026-07-16 MAX_DEVIATION_REV 0.5→1.0 guard raise)
 
 // ── Network (static, point-to-point /30) ─────────────────────────────────────
 // IP octets and ports come from the generated udp_protocol.h (JbUdp::).
@@ -158,32 +158,61 @@ constexpr float    EXTRAP_DECAY_DT_S    = 0.06f;   // EXTRAP_DECAY_DT_S
 constexpr float    JERK_EMA_ALPHA       = 0.3f;    // JERK_EMA_ALPHA
 // MAX_LEAD_REV lead-clamp: cap the commanded position at encoder ± this.
 // Lowered 0.15 → 0.10 (2026-07-10 MAX_DEVIATION-runaway forensics). The ODrive
-// legs run POSITION/PASSTHROUGH with LEG_POS_GAINS = 40 and LEG_VEL_LIMIT_RPS = 4.0.
+// legs run POSITION/PASSTHROUGH with LEG_POS_GAINS = 40 and LEG_VEL_LIMIT_RPS = 6.0
+// (was 4.0 through 2026-07-15; raised to 6.0 on 2026-07-16 — see hardware_config
+// leg_vel_limit_rps and logbook 2026-07-16-max-deviation-guard-tracking-lag.md).
 // While the clamp is engaged the position error is pinned at MAX_LEAD_REV, so the
 // position loop's velocity command is pos_gain × lead. At the old 0.15 that was
-// 40 × 0.15 = 6.0 rev/s — ABOVE the 4.0 vel_limit — so the loop saturated the limit,
-// sprinted, overshot, braked (measured negative iq), and re-lagged: a ~6 Hz bang-bang
-// limit cycle whose accumulated lead crossed MAX_DEVIATION_REV and latched the guard.
+// 40 × 0.15 = 6.0 rev/s — ABOVE the THEN-4.0 vel_limit — so the loop saturated the
+// limit, sprinted, overshot, braked (measured negative iq), and re-lagged: a ~6 Hz
+// bang-bang limit cycle whose accumulated lead crossed MAX_DEVIATION_REV and latched
+// the guard.
 // At 0.10, 40 × 0.10 = 4.0 bounds the position-loop P-term (pos_gain × lead) to
-// vel_limit — but that is the P-TERM ALONE. The ODrive's velocity setpoint is
+// 4.0 rev/s — but that is the P-TERM ALONE. The ODrive's velocity setpoint is
 // vel_ff + pos_gain × lead, and vel_ff is now PASSED THROUGH when the clamp engages
-// (bounded to LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5, no longer zeroed — see below), so a
-// clamped-AND-advancing command can still push the setpoint to ~7.5 rev/s and
-// saturate the 4.0 vel_limit. This 0.10 therefore does NOT by itself eliminate the
-// vel_limit-saturating sprint — full elimination depends on the bench gain retune
-// (LEG_POS_GAINS / LEG_VEL_LIMIT_RPS). What the paired changes buy IMMEDIATELY is
-// BOUNDARY CONTINUITY: no vel_ff discontinuity at clamp engage (vel_ff pass-through)
-// and a P-term capped at vel_limit — together removing the discontinuous kick that
-// seeded the ~6 Hz limit cycle, even though the steady clamped sprint is gain-bound.
+// (bounded to LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5, no longer zeroed — see below).
+// Against the OLD 4.0 vel_limit the P-term (4.0) EXACTLY equalled the limit, so when
+// the clamp engaged the setpoint was already pinned at 4.0 by the P-term and vel_ff
+// had ZERO room to add — every rev/s of feedforward was clipped, and the steady
+// clamped sprint stayed vel_limit-bound. With the 2026-07-16 raise to vel_limit = 6.0
+// the constraint becomes an INEQUALITY: 40 × 0.10 = 4.0 ≤ 6.0, so the P-term sits
+// 2.0 rev/s BELOW the limit and vel_ff regains genuine catch-up authority — it can add
+// up to 2.0 rev/s of real velocity before the setpoint re-saturates (a full 3.5 vel_ff
+// still clips at 6.0, but now contributes 2.0 rev/s instead of 0). What the 0.10 +
+// vel_ff-pass-through pair bought at 2026-07-10 was BOUNDARY CONTINUITY (no vel_ff
+// discontinuity at clamp engage, a P-term no longer above the limit, killing the ~6 Hz
+// limit cycle); the 6.0 raise converts the remaining P-term-EQUALS-limit saturation
+// into usable catch-up headroom. MAX_LEAD stays 0.10 — do NOT change it; Kp·MAX_LEAD ≤
+// vel_limit (the v2-bug constraint) is exactly what un-saturates the velocity setpoint.
 constexpr float    MAX_LEAD_REV         = 0.10f;
 // Feed-forward velocity cap applied to the interpolated vel_ff before it reaches the
 // leg ODrive (2026-07-10 forensics). The lead clamp used to ZERO vel_ff whenever it
 // engaged; that discontinuity (and the pos-loop sprint above) seeded the stutter.
 // leg_interp now sends the TRUE interpolated vel_ff instead of zeroing it, bounded to
-// this magnitude — kept below LEG_VEL_LIMIT_RPS (4.0) so a runaway command can never
-// inject an over-vel_limit feedforward. Normal motion peaks ~2.1 rev/s, well under it.
+// this magnitude — kept below LEG_VEL_LIMIT_RPS (6.0 since 2026-07-16) so a runaway
+// command can never inject an over-vel_limit feedforward. Normal motion peaks ~2.1 rev/s.
 constexpr float    LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5f;
-constexpr float    MAX_DEVIATION_REV    = 0.5f;    // MAX_DEVIATION_REV (E-stop)
+// MAX_DEVIATION_REV (E-stop): raw streamed u0 vs encoder guard, checked at FAULT_TASK_HZ
+// (fault_machine.cpp). Raised 0.5 → 1.0 (2026-07-16 max-deviation-guard-tracking-lag
+// forensics). Three guard E-STOPs latched during the S4 limit-ramp bench session at
+// leg-vel 200 mm/s (trip deviations 0.52 / 0.55 / 0.56 rev, always leg 1 first, always
+// at move onset). Those deviations were LEGITIMATE velocity-loop lag under coordinated-
+// move load — the reflected platform inertia (~5-20× the bare rotor J_eff) makes the
+// velocity loop lag the commanded ramp, and the deficit integrates into position
+// deviation superlinearly with velocity (0.17-0.22 rev at 100 mm/s, ~0.41 at 160,
+// 0.52-0.56 at ~190) — NOT runaway (peak iq_setpoint 8.7 A of 10 A, peak vel 2.2 of
+// 4.0 rev/s: never current- nor velocity-railed). The guard watches the RAW streamed
+// u0 against the encoder PRE lead-clamp, so it counts exactly the command-space lag the
+// lead clamp deliberately tolerates. Raising it adds ZERO physical excursion for
+// command-side faults: the executed command is bounded independently by the lead clamp
+// (enc ± MAX_LEAD 0.10) + the stroke clamp + the ODrive position clip. The accepted cost
+// is the encoder-side-runaway detect distance: 0.5→1.0 rev ⇒ 35→70 mm before a true
+// encoder-side runaway latches (still caught; the firmware MAX_MOTOR_VEL_RPS = 16.5
+// overspeed guard is unchanged). NOTE: the legacy Jetson-side MPC-path guard
+// (motor_guard.py MAX_DEVIATION_REV) deliberately stays 0.5 — it has seen none of this
+// data and its path is dormant on the mvp branch; re-decide when the MPC path revives.
+// See logbook 2026-07-16-max-deviation-guard-tracking-lag.md.
+constexpr float    MAX_DEVIATION_REV    = 1.0f;
 // MAX_MOTOR_VEL_RPS = ODRIVE_TRAP_VEL_LIMIT_RPS * 1.1 (10% noise margin).
 constexpr float    MAX_MOTOR_VEL_RPS    = ODriveDefaults::TRAP_VEL_LIMIT_RPS * 1.1f;  // 16.5
 

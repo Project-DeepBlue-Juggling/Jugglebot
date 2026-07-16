@@ -221,8 +221,9 @@ _RECOVER_U0_TOL_REV = 0.03
 # convergence one above. Kept at 0.25 rev: arming seeds trajectory_node's hold at the
 # measured pose so u0 already sits ≈ the encoder, AND the firmware re-enable slew now
 # bounds any residual at the arm edge too, so tightening this would only risk spurious
-# arm rejections without a safety gain. (Half the firmware 0.5 rev MAX_DEVIATION
-# backstop.) The recovery path does NOT reuse this — a diverged command cleared onto a
+# arm rejections without a safety gain. (A quarter of the firmware 1.0 rev MAX_DEVIATION
+# backstop — was half of the pre-2026-07-16 0.5 rev; the arm gate deliberately stays
+# 0.25.) The recovery path does NOT reuse this — a diverged command cleared onto a
 # latched guard is exactly what the tight 0.03 gate above must catch.
 _ARM_U0_TOL_REV = 0.25
 # Bounded block on trajectory_node's reseed reply. The bridge runs a
@@ -885,7 +886,7 @@ class TeensyBridgeNode(Node):
         # The documented PRODUCTION arming flow (the launch parameter stays for
         # bench use). On true: require (a) Teensy link up + fresh heartbeat, (b) a
         # fresh mpccmd frame on :5557 within 0.5 s, (c) that frame's u0 within
-        # _ARM_U0_TOL_REV (0.25 rev, half the firmware 0.5 rev MAX_DEVIATION backstop) of
+        # _ARM_U0_TOL_REV (0.25 rev, a quarter of the firmware 1.0 rev MAX_DEVIATION backstop) of
         # every leg's live pos_estimate — THEN stream-then-arm (start the thread, set
         # mpc_active=1). This is the pattern validated in
         # tests/hardware/teensy_guard_validation.py: never arm before a matching
@@ -2056,24 +2057,41 @@ class TeensyBridgeNode(Node):
         HeartbeatT2J.fault_state carries the guard REASON but no axis, so the
         edge log names the leg from the latest per-axis Diagnostic cache: a leg
         (0..5) with a non-zero active error or disarm reason is the likely
-        culprit for an ODRIVE_FATAL/MAX_DEVIATION/OVERSPEED latch. Returns ''
-        when no leg-specific cause is identifiable (e.g. a bus-level
-        CAN_BUS_DOWN or an MPC-staleness fault) so the message stays honest
-        rather than guessing a leg.
+        culprit for an ODRIVE_FATAL/MAX_DEVIATION/OVERSPEED latch. That scan is
+        the primary path and is correct for ODRIVE_FATAL.
+
+        Fallback: a MAX_DEVIATION latch trips on command↔encoder divergence, not
+        an ODrive error, so active_errors/disarm_reason are frequently zero (all
+        three 2026-07-16 S4 latches had active_errors==0 → the diag scan found
+        nothing and the hint was silently empty). The firmware freezes the FIRST
+        leg to cross in HeartbeatT2J.max_dev_leg (0xFF = none since boot) with the
+        trip deviation in max_dev_value — that frozen snapshot is the ground-truth
+        attribution, so name the leg from it when the diag scan is empty and the
+        active fault is MAX_DEVIATION.
+
+        Returns '' when no leg-specific cause is identifiable (e.g. a bus-level
+        CAN_BUS_DOWN or an MPC-staleness fault) so the message stays honest rather
+        than guessing a leg.
         """
         with self._lock:
             diag = dict(self._latest_diag)
+            hb = self._latest_heartbeat
         culprits = []
         for axis in range(_NUM_LEGS):
             d = diag.get(axis)
             if d is not None and (int(d.active_errors) != 0
                                   or int(d.disarm_reason) != 0):
                 culprits.append(axis)
-        if not culprits:
-            return ''
         if len(culprits) == 1:
             return f' (leg {culprits[0]})'
-        return f' (legs {",".join(str(a) for a in culprits)})'
+        if len(culprits) > 1:
+            return f' (legs {",".join(str(a) for a in culprits)})'
+        if (hb is not None
+                and int(hb.fault_state) == int(FaultState.MAX_DEVIATION)
+                and int(hb.max_dev_leg) != 0xFF):
+            return (f' (leg {int(hb.max_dev_leg)}, '
+                    f'dev={hb.max_dev_value:+.3f} rev at trip)')
+        return ''
 
     def _publish_link_status(self):
         """Publish link_status as a DiagnosticStatus.
@@ -2119,11 +2137,24 @@ class TeensyBridgeNode(Node):
                 if fs != self._last_fault_state:
                     if fs != int(FaultState.NONE):
                         leg_hint = self._guard_fault_leg_hint()
+                        # For a MAX_DEVIATION latch the single culprit leg is not
+                        # the whole story — a fast coordinated move loads every
+                        # leg, so the raw per-leg deviation vector gives the
+                        # multi-leg context (which OTHER legs were near the limit)
+                        # that the frozen single-leg snapshot cannot. Never
+                        # re-threshold MAX_DEVIATION_REV here (hand-authored
+                        # firmware constant, no generated mirror, changing today).
+                        dev_ctx = ''
+                        if fs == int(FaultState.MAX_DEVIATION):
+                            dev_ctx = (' live_dev=['
+                                       + ','.join(f'{d:+.2f}'
+                                                  for d in hb.live_deviation)
+                                       + '] rev')
                         self.get_logger().error(
                             f'Teensy guard FAULT LATCHED: fault_state={teensy_fault}'
-                            f'{leg_hint} — leg output is now SUPPRESSED and every '
-                            f'leg command (incl. DEACTIVATE, which returns '
-                            f'ERR_BUS_DOWN) will be refused. Recover with: '
+                            f'{leg_hint}{dev_ctx} — leg output is now SUPPRESSED '
+                            f'and every leg command (incl. DEACTIVATE, which '
+                            f'returns ERR_BUS_DOWN) will be refused. Recover with: '
                             f'ros2 service call /clear_errors std_srvs/srv/Trigger')
                         # Anchor the persistent-reminder cadence to this edge so the
                         # first repeat lands _GUARD_LATCH_REPEAT_S later, not on the
@@ -2145,9 +2176,10 @@ class TeensyBridgeNode(Node):
                 if (self._last_guard_latch_log_t is None
                         or now - self._last_guard_latch_log_t >= _GUARD_LATCH_REPEAT_S):
                     self._last_guard_latch_log_t = now
+                    leg_hint = self._guard_fault_leg_hint()
                     self.get_logger().error(
-                        f'TEENSY GUARD LATCHED ({teensy_fault}) — leg output '
-                        f'suppressed; CLEAR_ERRORS required')
+                        f'TEENSY GUARD LATCHED ({teensy_fault}){leg_hint} — leg '
+                        f'output suppressed; CLEAR_ERRORS required')
             if bridge_link in ('LOST', 'NO_HEARTBEAT') or fault_active:
                 msg.level = DiagnosticStatus.ERROR
                 msg.message = f'link={bridge_link} fault={teensy_fault}'
@@ -2246,6 +2278,19 @@ class TeensyBridgeNode(Node):
                     KeyValue(key='max_dev_value', value=f'{hb.max_dev_value:.4f}'),
                     KeyValue(key='max_dev_u0', value=f'{hb.max_dev_u0:.4f}'),
                     KeyValue(key='max_dev_enc', value=f'{hb.max_dev_enc:.4f}'),
+                    # Direct culprit-leg field for rosbags/GUI: the frozen
+                    # max_dev_leg snapshot BUT gated on an ACTIVE MAX_DEVIATION
+                    # latch, so downstream consumers don't have to re-derive the
+                    # gating. max_dev_leg alone persists after /clear_errors (it
+                    # is 'last latch since boot'), which would read as a live
+                    # culprit forever; this key is '' unless a MAX_DEVIATION latch
+                    # is currently held.
+                    KeyValue(key='guard_fault_leg',
+                             value=(str(int(hb.max_dev_leg))
+                                    if (int(hb.fault_state)
+                                        == int(FaultState.MAX_DEVIATION)
+                                        and int(hb.max_dev_leg) != 0xFF)
+                                    else '')),
                 ]
             msg.values = values
             self.link_status_pub.publish(msg)

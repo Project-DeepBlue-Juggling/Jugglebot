@@ -153,10 +153,17 @@ Across all three levels:
   caused the 2026-07-10 ring — do not read gain-safety facts out of it.)* The clamp
   rebases the command onto the live encoder every tick, so the ODrive's position
   error is **structurally bounded at 0.10 rev**, and its P-term velocity
-  contribution at `pos_gain × 0.10 = 4.0 rev/s` — exactly `vel_limit`, by
-  construction, at `pos_gain = 40`. **This is why `MAX_LEAD` and `pos_gain` are
-  coupled: `MAX_LEAD = 4.0 / pos_gain`. Any change to one requires the other.**
-  Behind it, the firmware `MAX_DEVIATION = 0.5 rev` E-STOP is the hard backstop.
+  contribution at `pos_gain × 0.10 = 4.0 rev/s`. **The coupling rule is the
+  inequality `pos_gain × MAX_LEAD ≤ vel_limit`** — violating it recreates the
+  2026-07-10 limit cycle. Through 2026-07-15 the shipped values sat exactly AT
+  the bound (4.0 = 4.0, which clipped `vel_ff` to zero added catch-up authority
+  under the clamp); on 2026-07-16 `vel_limit` was raised 4.0 → 6.0 rev/s, so the
+  P-term now sits 2.0 rev/s below the limit and `vel_ff` regains catch-up
+  authority. Any `pos_gain` or `MAX_LEAD` change must re-verify the inequality.
+  Behind it, the firmware `MAX_DEVIATION = 1.0 rev` E-STOP is the hard backstop
+  (raised 0.5 → 1.0 on 2026-07-16 after legitimate coordinated-move tracking lag
+  latched it at vel = 200 mm/s — see
+  `logbook/2026-07-16-max-deviation-guard-tracking-lag.md`).
 - Workspace/position limits remain in place. A leg cannot be driven outside its
   stroke (firmware `STROKE_MIN/MAX_REV`, `leg_interp.cpp:392-408`).
 - All gain edits go through `config/hardware_config.yaml`, then

@@ -5,6 +5,15 @@
 > see the banner in `mvp_bench_runbook.md`). Manual `set_setpoint_output true`
 > steps below run only under `auto_arm:=false`; disarm-before-deactivate is now
 > enforced in-process by the bridge (A3).
+>
+> **⚡ MAX_DEVIATION guard + ODrive vel_limit raised, 2026-07-16**: the firmware
+> guard is now 1.0 rev (was 0.5 — needs a can-bridge **reflash** to take
+> effect) and the ODrive leg `vel_limit` is now 6.0 rev/s (was 4.0 — config,
+> pushed to the drives at the first homing of a session with a **rebuilt**
+> ROS2 install). Neither lands from a bare relaunch of a stale install. See
+> the ⚡ 2026-07-16 banner in `mvp_bench_runbook.md` for the full two-halves
+> deployment status and session prerequisites. Step 2's ABORT criterion below
+> is recalibrated accordingly.
 
 
 **Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 4
@@ -86,8 +95,20 @@ prints each move's `accepted / code / planned_duration_s / min_duration_s`.
 - No pump rejects in the `teensy_bridge_node` log, no firmware fault, no E-STOP.
 
 **ABORT** (immediately, then revert Step 1 via `set_limits` to last-good):
-- Any oscillation, audible snap, tracking error > 0.1 rev, gate violation, or
-  E-STOP.
+- Any oscillation, audible snap, gate violation, or E-STOP.
+- Tracking error > 0.1 rev **at a hold** — that criterion's original meaning.
+  **During the move itself** (operator-confirmed 2026-07-16, see the ABORT
+  recalibration note in `mvp_bench_runbook.md` § S4): peak `|live_deviation|`
+  must stay under ~0.6 rev (60 % of the 1.0 rev guard) and must collapse back
+  under 0.1 rev once the platform settles at arrival — a brief 0.09–0.11 rev
+  onset blip that rides the MAX_LEAD 0.10 rev clamp ceiling is expected, not
+  an ABORT. Any **MAX_DEVIATION latch** is itself an ABORT regardless of the
+  peak value — stop the battery, keep the bag, and review with the firmware's
+  per-leg fault log line (`fault_state=MAX_DEVIATION (leg N, dev=... rev at
+  trip) live_dev=[...]`).
+- A lead-clamp mask that has not released by arrival (still engaged at the
+  following hold) is also an ABORT — mask duration alone (e.g. ">0.5 s") is
+  not a signal, since mask stretches lengthen legitimately with velocity.
 
 ### Step 3 — `/diagnose` review
 

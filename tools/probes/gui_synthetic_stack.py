@@ -126,6 +126,15 @@ LINK_MM_DISARMED = {"bridge_link": "UP", "heartbeat_age_ms": "55",
                     "fault_state": "NONE", "mpc_active": "0",
                     "bridge_stow_pending": "0"}
 LINK_MM_ARMED = dict(LINK_MM_DISARMED, mpc_active="1")
+# Guard-latch scenario: a MAX_DEVIATION E-STOP latched (the 2026-07-16 S4 shape,
+# where leg 1 crossed first). The bridge is alive and keeps republishing; the
+# minimap's guardLatched() rule surfaces the Recover/Clear-Guard-Latch action,
+# whose tooltip now names the culprit leg from guard_fault_leg. That key is the
+# real bridge's already-gated field (teensy_bridge_node.py _publish_link_status:
+# str(max_dev_leg) only while fault_state==MAX_DEVIATION, else '').  Disarmed
+# here so the armed-escape-hatch rule doesn't pre-empt the guard-latch tooltip.
+LINK_MM_GUARD_LATCH = dict(LINK_MM_DISARMED, fault_state="MAX_DEVIATION",
+                           guard_fault_leg="1")
 
 # Healthy robot_state flag set: minimap guards G_ERRORS/G_HB/G_FW/G_HOMED all
 # pass (9 motors with current_state=8 satisfy the all-heartbeats replica).
@@ -253,6 +262,14 @@ STAGES = {
         "link_status": {"enabled": True, "values": dict(LINK_MM_ARMED)},
         "orchestrator_state": {"enabled": True, "data": "ACTIVE:TRAJECTORY"},
         "control_mode_topic": {"enabled": True, "data": "TRAJECTORY"},
+    },
+    # MAX_DEVIATION guard latch with the culprit leg attributed: the minimap
+    # guard-latch tooltip must read '(MAX_DEVIATION, leg 1)' (guard_fault_leg=1).
+    # FAULT orchestrator state -> the action labels 'Recover'.
+    "mm-guard-latch": {
+        "robot_state": {"enabled": True},
+        "link_status": {"enabled": True, "values": dict(LINK_MM_GUARD_LATCH)},
+        "orchestrator_state": {"enabled": True, "data": "FAULT"},
     },
 
     # ---- cone scenario base stages (seq bumps / catch states use 'set';

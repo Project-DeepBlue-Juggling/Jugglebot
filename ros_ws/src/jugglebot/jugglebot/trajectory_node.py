@@ -7,7 +7,7 @@ streams ``make_mpc_command`` knot frames on ZMQ :5557 — the exact seam
 consumes unchanged, feeding ``SetpointPump`` → the can-hub Teensy's 500 Hz
 Hermite. Phase 1 streams only a **hold**: the platform holds the pose measured from
 ``robot_state`` telemetry, so the first commanded ``u0`` lands inside both the
-pump's 0.3 rev step gate and the firmware's 0.5 rev MAX_DEVIATION backstop.
+pump's 0.3 rev step gate and the firmware's 1.0 rev MAX_DEVIATION backstop.
 
 Design (mirrors the validated 40 Hz MPC path's discipline):
   * **Dedicated emitter thread** (not an rclpy timer): absolute-deadline 40 Hz
@@ -957,7 +957,7 @@ class TrajectoryNode(Node):
         per-frame step gate. Gates the guard-CLEAR-edge instant reseed: a converged
         descent (the /recover happy path, u0 within 0.25 rev of measured) reseeds a
         clean hold; a still-in-flight descent (a mid-descent bare /clear_errors, u0
-        still up to the 0.5 rev guard band out) is left to finish rather than jump u0
+        still up to the 1.0 rev guard band out) is left to finish rather than jump u0
         across the gate. Any sampling/FK error ⇒ treat as unsafe (do not reseed)."""
         if self._latest_pos_rev is None:
             return False
@@ -1127,7 +1127,7 @@ class TrajectoryNode(Node):
             # clears only AFTER verifying convergence), an instant hold-at-measured
             # reseed is a clean zero-step refresh that also picks up any encoder drift.
             # If a descent is still IN FLIGHT (a mid-descent bare /clear_errors, u0
-            # still up to the 0.5 rev guard band out), DON'T jump u0 across the pump
+            # still up to the 1.0 rev guard band out), DON'T jump u0 across the pump
             # gate — leave the descent to finish (it terminally holds at measured); the
             # follower then resumes C2 from the current commanded state. If instead we
             # left the streaming set while latched, _on_control_mode already dropped

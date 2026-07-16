@@ -405,12 +405,15 @@ static void interp_isr() {
   // Lead clamp (never run more than LEAD ahead of the encoder).
   // 2026-07-10 MAX_DEVIATION-runaway forensics — two changes break the stutter:
   //   * LEAD is now 0.10 (was 0.15) so pos_gain(40)*LEAD = 4.0 no longer exceeds the
-  //     leg vel_limit (4.0) — see canbridge_config.h MAX_LEAD_REV.
+  //     leg vel_limit — see canbridge_config.h MAX_LEAD_REV. (2026-07-16: vel_limit
+  //     raised 4.0 → 6.0, so 4.0 now sits BELOW it with 2.0 rev/s headroom for vel_ff
+  //     catch-up, not exactly AT it as it was through 2026-07-15.)
   //   * Do NOT zero vel_ff when the clamp engages. Zeroing manufactured a
   //     discontinuous feedforward (and, with the old 0.15, a vel_limit-saturating
   //     P-term sprint) that seeded a ~6 Hz limit cycle. Instead pass the TRUE
-  //     interpolated vel_ff through, bounded to ±VELFF_CAP (3.5 rev/s, under the 4.0
-  //     vel_limit) so a runaway command cannot inject an over-limit feedforward.
+  //     interpolated vel_ff through, bounded to ±VELFF_CAP (3.5 rev/s, under the 6.0
+  //     vel_limit since 2026-07-16) so a runaway command cannot inject an over-limit
+  //     feedforward.
   // (This deliberately diverges from teensy_interp.py/motor_guard — see the file
   //  header. The stroke clamp below still zeros vel_ff, correctly: a physical backstop
   //  hit means "hold at the limit", where feedforward is meaningless.)

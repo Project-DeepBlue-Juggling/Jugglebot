@@ -99,7 +99,9 @@ The 2026-07-10 battery latched `MAX_DEVIATION` on a fast vertical up-stroke (z 1
   this session's observability is built on, and the lowered lead clamp:
   - `MAX_LEAD_REV = 0.10` (`canbridge_config.h:139`) — lowered from 0.15 on 2026-07-10 so
     `pos_gain × MAX_LEAD` stays under the leg vel_limit (was the "0.15 → 6 rev/s sprint" trap).
-  - `MAX_DEVIATION_REV = 0.5` (`canbridge_config.h:147`), `FAULT_TASK_HZ = 10` — unchanged.
+  - `MAX_DEVIATION_REV = 0.5` (`canbridge_config.h`), `FAULT_TASK_HZ = 10` — unchanged at the
+    time of this session. *(Superseded 2026-07-16: the guard is now 1.0 rev — see
+    `logbook/2026-07-16-max-deviation-guard-tracking-lag.md`.)*
   - New `/link_status` v3 KeyValue fields (10 Hz, `teensy_bridge_node.py:1900-1909` from
     `udp_protocol.h:195-196`): `live_deviation` (per-leg u0−encoder, comma-separated rev, the
     live MAX_DEVIATION quantity), `lead_clamp_mask` (bit *i* = leg *i*'s lead clamp engaged on

@@ -212,9 +212,12 @@ CHIRP_TRACK_MARGIN_REV = 0.10  # gross-tracking-error abort budget ABOVE the chi
                               # phase-lag error does not (F6 chirp guard).
 
 # Default per-run velocity cap — a TUNING-appropriate value, NOT the survival ceiling.
-# 4.0 rev/s is Jugglebot's configured ODrive ceiling (~0.28 m/s leg-end, conservative
-# test value per the leg-actuator-limits note); the 35 rev/s HARD_VEL_CAP_RPS survival
-# ceiling stays reachable by passing --vel-cap 35 explicitly (F4, 2026-07-11).
+# 4.0 rev/s (~0.28 m/s leg-end) was Jugglebot's configured ODrive ceiling through
+# 2026-07-15; the production ceiling was raised to 6.0 rev/s on 2026-07-16 (lead-clamp
+# catch-up headroom), but this bench default STAYS 4.0 as a deliberately conservative
+# measurement-step velocity (per the leg-actuator-limits note). The 35 rev/s
+# HARD_VEL_CAP_RPS survival ceiling stays reachable by passing --vel-cap 35 explicitly
+# (F4, 2026-07-11).
 DEFAULT_VEL_CAP_RPS = 4.0
 
 HEARTBEAT_STALE_S = 1.5       # matches cogging_bench_test.py
@@ -258,7 +261,7 @@ BRIDGE_TEENSY_IP = "192.168.42.2"       # ADR-0007 point-to-point link (teensy_s
 BRIDGE_SEG_T_S = 0.025                  # canbridge_config.h:116 SEGMENT_T_S (40 Hz knot step)
 BRIDGE_SETPOINT_HZ = 40.0               # 1 / SEG_T — the knot stream rate
 BRIDGE_MAX_LEAD_REV = 0.10              # canbridge_config.h:139 MAX_LEAD_REV (interp lead clamp)
-BRIDGE_MAX_DEVIATION_REV = 0.5          # canbridge_config.h:147 MAX_DEVIATION_REV (E-STOP backstop)
+BRIDGE_MAX_DEVIATION_REV = 1.0          # canbridge_config.h MAX_DEVIATION_REV (E-STOP backstop; raised 0.5→1.0 on 2026-07-16 for velocity-loop-lag headroom under coordinated moves)
 BRIDGE_MPC_STALENESS_S = 0.25           # canbridge_config.h:154 MPC_CMD_STALENESS_US (E-STOP backstop)
 BRIDGE_LEAD_MARGIN_FRAC = 0.5           # approach/return/settle knot-ramp step at 0.5×lead clamp (2× margin ⇒ 2.0 rev/s)
 BRIDGE_STEP_LEAD_MARGIN_FRAC = 0.9      # MEASUREMENT steps (pos_steps + ladder step) ramp at 0.9×lead clamp
@@ -3493,12 +3496,13 @@ def main() -> int:
         return 1
     stroke_amps = _parse_float_list(args.stroke_amps) if args.stroke_amps else None
     stroke_vels = _parse_float_list(args.stroke_vels) if args.stroke_vels else None
-    # Teleop slew cap: default 2.0, up to 4.0 with a warning, never above (the config
-    # leg_vel_limit is 4.0 rev/s — a stick-driven slew must stay under it).
+    # Teleop slew cap: default 2.0, up to 4.0 with a warning, never above (the drive
+    # leg_vel_limit is 6.0 rev/s since 2026-07-16; 4.0 is kept as a deliberately
+    # conservative stick-slew ceiling).
     if args.teleop_max_vel > sid.TELEOP_MAX_VEL_CEILING:
         print(f"REJECT: --teleop-max-vel {args.teleop_max_vel} > "
-              f"{sid.TELEOP_MAX_VEL_CEILING} rev/s (the config leg vel limit; a stick "
-              f"slew must stay under it)", file=sys.stderr)
+              f"{sid.TELEOP_MAX_VEL_CEILING} rev/s (the conservative teleop stick-slew "
+              f"ceiling, deliberately below the 6.0 rev/s drive limit)", file=sys.stderr)
         return 1
     if args.teleop_max_vel > sid.TELEOP_MAX_VEL_DEFAULT + 1e-9:
         print(f"  WARNING: --teleop-max-vel {args.teleop_max_vel} rev/s is above the "

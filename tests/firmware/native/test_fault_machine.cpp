@@ -445,13 +445,13 @@ TEST_CASE("guard E-STOP / fb-stale are present-scoped and pre-arm-safe") {
 
   SUBCASE("present leg diverging trips MAX_DEVIATION + freezes the latch snapshot") {
     arm_leg0();
-    latch_u0(0.9f, 3.0f);             // leg0 (present) diverges 0.9 > 0.5; leg1 (absent) far
+    latch_u0(1.2f, 3.0f);             // leg0 (present) diverges 1.2 > 1.0 (MAX_DEVIATION_REV, raised 0.5→1.0 on 2026-07-16); leg1 (absent) far
     fault_step();
     CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
     // 2026-07-10 latch-event snapshot: which leg crossed + dev/u0/encoder at the trip.
     CHECK(fault_max_dev_leg() == 0);
-    CHECK(fault_max_dev_value() == doctest::Approx(0.9f));
-    CHECK(fault_max_dev_u0() == doctest::Approx(0.9f));
+    CHECK(fault_max_dev_value() == doctest::Approx(1.2f));
+    CHECK(fault_max_dev_u0() == doctest::Approx(1.2f));
     CHECK(fault_max_dev_enc() == doctest::Approx(0.0f));
   }
   SUBCASE("absent leg's far command alone does NOT trip MAX_DEVIATION") {
@@ -535,7 +535,7 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
   SUBCASE("MAX_DEVIATION latches + persists after the divergence shrinks") {
     arm();
     JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
-    sp.u0[0] = 0.9f;                              // leg0 base diverges 0.9 > MAX_DEVIATION_REV
+    sp.u0[0] = 1.2f;                              // leg0 base diverges 1.2 > MAX_DEVIATION_REV (1.0, raised 0.5→1.0 on 2026-07-16)
     interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
     interp_isr();
     fake_set_udp_last_rx_us(fake_mono_us());
@@ -543,7 +543,7 @@ TEST_CASE("guard E-STOP LATCHES until an explicit operator clear") {
     REQUIRE(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
     REQUIRE(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
     // Shrink the divergence (encoder catches up). Latch must hold.
-    axes[0].pos_rev = 0.9f;
+    axes[0].pos_rev = 1.2f;
     for (int k = 0; k < 3; ++k) { fake_set_udp_last_rx_us(fake_mono_us()); fault_step(); }
     CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
     fault_notify_clear_errors();

@@ -9,17 +9,18 @@
  * "Sharp edges", esp. #1 disarm-before-leaving-a-streaming-mode and
  * #6 disarm-before-deactivate).
  *
- * Ground-truth anchors (checked against HEAD 16b2900, 2026-07-11):
+ * Ground-truth anchors (re-checked 2026-07-16, max-deviation attribution commit):
  *   - states / commands:  ros_ws/src/jugglebot/jugglebot/state_machine.py
  *     (commands consumed: IDLE :309-319, ACTIVE :451-457, FAULT :569-575;
  *      commands DISCARDED every tick in BOOT :238 / HOMING :277 / LEVELLING :356)
  *   - forced FAULT:       orchestrator_node.py:143-180 (any robot_state error;
  *     guard latch forces FAULT only from ACTIVE)
  *   - /link_status keys:  teensy_bridge_node.py _publish_link_status
- *     (consumed: fault_state, mpc_active, bridge_link)
- *   - arming preconditions: teensy_bridge_node.py:1558-1663
- *     (_arm_setpoint_output + _u0_within_encoder_tol; stream-then-arm)
- *   - armed /clear_errors reroutes converge-first: teensy_bridge_node.py:3062-3079
+ *     (consumed: fault_state, mpc_active, bridge_link, guard_fault_leg)
+ *   - arming preconditions: _arm_setpoint_output (teensy_bridge_node.py:1654)
+ *     + _u0_within_encoder_tol (:1786); stream-then-arm
+ *   - armed /clear_errors reroutes converge-first: _svc_clear_errors
+ *     (teensy_bridge_node.py:3316-3368)
  *   - streaming set:      trajectory_node.py:140-141 (all six submodes stream)
  *
  * Everything actuating goes through the table-driven sequencer in S4/S5 —
@@ -178,6 +179,10 @@ const snap = {
         faultState: 'UNKNOWN',
         mpcActive: null,      // 1 / 0 / null (never seen OR unparseable = UNVERIFIED)
         bridgeLink: 'UNKNOWN',
+        // Culprit leg for an ACTIVE MAX_DEVIATION latch ('' when no such latch).
+        // Bridge gates this on fault_state==MAX_DEVIATION (teensy_bridge_node.py
+        // guard_fault_leg KeyValue), so it is safe to read as a live attribution.
+        guardFaultLeg: '',
     },
 };
 
@@ -244,6 +249,7 @@ export function minimapOnLinkStatus(msg) {
     const n = parseInt(kv.mpc_active, 10);
     snap.link.mpcActive = n === 1 ? 1 : (n === 0 ? 0 : null);
     snap.link.bridgeLink = kv.bridge_link || 'UNKNOWN';
+    snap.link.guardFaultLeg = kv.guard_fault_leg || '';
     pump();
     scheduleRender();
 }
@@ -305,6 +311,7 @@ function onConnChange(state) {
         snap.controlMode = null;
         snap.link.lastMs = 0; snap.link.faultState = 'UNKNOWN';
         snap.link.mpcActive = null; snap.link.bridgeLink = 'UNKNOWN';
+        snap.link.guardFaultLeg = '';
         // Robot flags must not survive a disconnect as trusted values: a
         // reconnect can deliver orchestrator_state before the throttled
         // robot_state, and G_ERRORS/G_HB/G_FW/G_HOMED would otherwise
@@ -610,7 +617,7 @@ function resumePlan(mode) {
     // Recovery entry point decision (minimap plan §0, last row): ALWAYS the
     // bridge /clear_errors Trigger — while armed it self-routes through the
     // converge-first /recover sequence using its authoritative in-process
-    // _mpc_active (teensy_bridge_node.py:3062-3079), immune to a stale GUI
+    // _mpc_active (_svc_clear_errors, teensy_bridge_node.py:3316-3368), immune to a stale GUI
     // link_status read.  Never a GUI-side mpc_active branch to /recover.
     return mkPlan('FAULT → ACTIVE:' + mode + ' (recover + auto-resume)', [
         svcStep('clear_errors', TRIGGER, {}, T_SVC_CLEAR, 'abort',
@@ -985,8 +992,10 @@ function computeAction(s) {
         return {
             key: 'clear-guard', visible: true,
             label: inFault ? 'Recover' : 'Clear Guard Latch',
-            title: 'Teensy guard latched (' + s.link.faultState + ') — bridge /clear_errors ' +
-                '(self-routes converge-first while armed; teensy_bridge_node.py:3062-3079)',
+            title: 'Teensy guard latched (' + s.link.faultState +
+                (s.link.guardFaultLeg ? ', leg ' + s.link.guardFaultLeg : '') +
+                ') — bridge /clear_errors ' +
+                '(self-routes converge-first while armed; _svc_clear_errors, teensy_bridge_node.py:3316-3368)',
             plan: () => mkPlan(inFault ? 'Recover (guard latch)' : 'Clear guard latch', [
                 svcStep('clear_errors', TRIGGER, {}, T_SVC_CLEAR, 'abort',
                     'bridge /clear_errors Trigger', true),
@@ -1066,7 +1075,7 @@ function computeAction(s) {
             return {
                 key: 'arm', visible: true, label: 'Arm Setpoints',
                 title: 'set_setpoint_output true — stream-then-arm; the bridge verifies a ' +
-                    'fresh mpccmd frame + u0 within tolerance (teensy_bridge_node.py:1558-1663)',
+                    'fresh mpccmd frame + u0 within tolerance (_arm_setpoint_output, teensy_bridge_node.py:1654-1810)',
                 plan: () => mkPlan('Arm setpoints', [
                     svcStep('set_setpoint_output', SETBOOL, { data: true },
                         T_SVC_SETPOINT, 'abort', 'arm the 40 Hz setpoint downlink', true),

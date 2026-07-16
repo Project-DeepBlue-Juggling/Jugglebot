@@ -55,7 +55,7 @@ Priority when multiple conditions are true simultaneously (highest wins):
 |---|---|---|---|
 | MPC setpoint stale | 250 ms | **Yes** | Explicit `CLEAR_ERRORS` RPC only |
 | Motor overspeed (measured, not commanded) | 16.5 rev/s (`MAX_MOTOR_VEL_RPS` = 110% of the 15.0 rev/s trap-vel limit) | **Yes** | Explicit `CLEAR_ERRORS` RPC only |
-| Max deviation (commanded `u0` vs. encoder) | 0.5 rev (`MAX_DEVIATION_REV`) | **Yes** | Explicit `CLEAR_ERRORS` RPC only |
+| Max deviation (commanded `u0` vs. encoder) | 1.0 rev (`MAX_DEVIATION_REV`; raised 0.5 → 1.0 on 2026-07-16 after legitimate tracking lag latched it at vel = 200 mm/s — see the logbook entry of that date) | **Yes** | Explicit `CLEAR_ERRORS` RPC only |
 | Active ODrive error (any of 7 axes, legs **and** hand) | — | Self-clears if the axis reports clean; one auto soft-reset attempt (`MAX_SOFT_RESET_ATTEMPTS = 1`); once that budget is spent, requires `CLEAR_ERRORS` | |
 | Disarmed while closed-loop (any axis) | — | Unconditionally fatal, same clear path as above | |
 | CAN3 bus down (leg heartbeats stale) | 2.0 s | Auto-clears via the deferred-stow sequence once the bus is *confirmed* reconnected; ends in `IDLE`, not resumed motion | |
@@ -65,9 +65,11 @@ Priority when multiple conditions are true simultaneously (highest wins):
 The three conditions in the top three rows (stale MPC, overspeed,
 max-deviation) share a single sticky **guard E-STOP** latch. `MAX_DEVIATION`
 is the "impossible target" catch: if the commanded position diverges from
-where the leg actually is by more than 0.5 rev, that's treated as a stale
+where the leg actually is by more than 1.0 rev, that's treated as a stale
 zero, a sign error, or a runaway command source — not a real target — and
-the platform stops rather than chasing it.
+the platform stops rather than chasing it. (The guard watches the *raw* knot
+command, before the lead clamp — so it counts command-space lag the executed
+command never carries.)
 
 ### CAN-bus-down: the deferred-stow safety inversion
 
@@ -93,7 +95,7 @@ so the machine only acts on confirmed state.
 Validated continuously in the 500 Hz command path (see
 [Control Flow](control.md#joint-limits-are-enforced-on-the-interpolated-output-not-the-target)
 for the clamp details): a lead clamp bounding the commanded position to
-within 0.15 rev of the live encoder, and a stroke clamp to each leg's
+within 0.10 rev of the live encoder (0.15 → 0.10 on 2026-07-10), and a stroke clamp to each leg's
 measured physical hard-stop range. A non-finite (NaN/Inf) command is
 dropped at ingest rather than clamped. The final wire encode additionally
 clips position to the ODrive's own absolute range (4.2 rev for legs,

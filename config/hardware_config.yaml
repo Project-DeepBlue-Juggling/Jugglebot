@@ -428,7 +428,15 @@ jugglebot_odrive_defaults:
   trap_vel_limit_rps: 15.0               # Default trapezoidal trajectory velocity limit {rev/s}
   trap_acc_limit_rps2: 30.0              # Default trapezoidal trajectory acceleration {rev/s^2}
   trap_dec_limit_rps2: 30.0              # Default trapezoidal trajectory deceleration {rev/s^2}
-  leg_vel_limit_rps: 4.0                 # Leg velocity limit {rev/s}
+  leg_vel_limit_rps: 6.0                 # Leg velocity limit {rev/s}. Raised 4.0 → 6.0
+                                         # (2026-07-16) for lead-clamp catch-up headroom:
+                                         # Kp·MAX_LEAD = 40×0.10 = 4.0 ≤ 6.0 un-saturates
+                                         # the clamp's velocity setpoint so vel_ff regains
+                                         # catch-up authority (was 4.0 = vel_limit exactly).
+                                         # Bench envelope ~48 rev/s (legs proven to 3.4 m/s);
+                                         # 6.0 ≈ 423 mm/s stays far under it, and the firmware
+                                         # MAX_MOTOR_VEL_RPS = 16.5 overspeed guard is unchanged.
+                                         # See logbook 2026-07-16-max-deviation-guard-tracking-lag.md.
   leg_curr_limit_a: 10.0                 # Leg current limit {A}
   hand_vel_limit_rps: 1000.0             # Hand velocity limit {rev/s}
   hand_curr_limit_a: 50.0                # Hand current limit {A}
@@ -508,10 +516,10 @@ jugglebot_operational:
 #    See plans/active/mvp-trajectory-bringup.md.
 # ============================================================
 trajectory_op:
-  leg_vel_limit_mmps: 100.0        # Session leg velocity ceiling {mm/s} (ramped; hard ceiling 280 = 4.0 rev/s)
+  leg_vel_limit_mmps: 100.0        # Session leg velocity ceiling {mm/s} (ramped). The 280 mm/s session ceiling (≈ 4.0 rev/s) is a deliberately conservative trajectory cap; the ODrive drive limit is now 6.0 rev/s ≈ 423 mm/s (see leg_vel_limit_rps).
   leg_acc_limit_mmps2: 400.0       # Session leg acceleration ceiling {mm/s^2} (deliberately low for first sessions)
   leg_jerk_limit_mmps3: 8000.0     # Session leg jerk ceiling {mm/s^3} — the binding constraint; ramped by feel
-  leg_vel_ceiling_mmps: 280.0      # Hard velocity ceiling {mm/s} (= 4.0 rev/s; bench-tested headroom above)
+  leg_vel_ceiling_mmps: 280.0      # Hard velocity ceiling {mm/s} (≈ 4.0 rev/s) — a conservative trajectory cap, NOT the drive limit (now 6.0 rev/s ≈ 423 mm/s); bench-tested headroom far above
   leg_acc_ceiling_mmps2: 4000.0    # Hard acceleration ceiling {mm/s^2}
   leg_jerk_ceiling_mmps3: 200000.0 # Hard jerk ceiling {mm/s^3}
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
