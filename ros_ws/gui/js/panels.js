@@ -181,6 +181,16 @@ export function initFlagsGrid() {
             <span class="flag-icon wait" id="${flag.id}-icon">&#x25cf;</span>
             <span id="${flag.id}-label">${defaultLabel}</span>
         `;
+        if (flag.id === 'flag-levelled') {
+            // Measured-tilt pill, populated once levelling completes
+            // (replaces the old standalone Levelling panel).
+            const pill = document.createElement('span');
+            pill.className = 'flag-level-pill';
+            pill.id = 'flag-levelled-angles';
+            pill.style.display = 'none';
+            pill.title = 'Measured platform tilt at levelling — roll (X) / pitch (Y)';
+            item.appendChild(pill);
+        }
         grid.appendChild(item);
     }
 }
@@ -192,6 +202,7 @@ export function updateFlags(robotState) {
     setFlagProgress('flag-encoder', robotState.encoder_search_complete, 'Encoders Found', 'Encoder Search');
     setFlagProgress('flag-homed', robotState.is_homed, 'Homed', 'Not Homed');
     setFlagError('flag-levelled', !robotState.levelling_complete, 'Not Levelled', 'Levelled');
+    updateLevelledAngles(robotState);
     setFlagError('flag-fatal-odrive', robotState.has_fatal_odrive_error, 'ODrive Error', 'ODrives OK');
     setFlagError('flag-fatal-can', robotState.has_fatal_can_error, 'CAN Error', 'CAN OK');
     setFlagError('flag-undervoltage', robotState.has_undervoltage, 'Undervoltage', 'Voltage OK');
@@ -231,39 +242,23 @@ function setFlagError(id, hasError, labelFail, labelOk) {
     if (label) label.textContent = hasError ? labelFail : labelOk;
 }
 
-// ---- Levelling panel ----
-
-export function initLevellingPanel() {
-    // DOM is pre-built in index.html (inline layout)
-}
-
 /**
- * Update levelling panel from robot_state.
+ * Show/refresh the measured levelling angles next to the "Levelled" flag.
+ * Visible only while levelling_complete \u2014 an un-levelled (or re-levelling)
+ * platform shows just the flag, no stale numbers.
  * @param {object} robotState - RobotState message
  */
-export function updateLevellingPanel(robotState) {
-    const badge = document.getElementById('level-status-badge');
-    const rollEl = document.getElementById('level-roll');
-    const pitchEl = document.getElementById('level-pitch');
-
-    const complete = robotState.levelling_complete;
+function updateLevelledAngles(robotState) {
+    const pill = document.getElementById('flag-levelled-angles');
+    if (!pill) return;
     const offset = robotState.pose_offset_rad || [];
-
-    if (badge) {
-        if (complete) {
-            badge.textContent = 'Levelled';
-            badge.className = 'badge level-badge level-ok';
-        } else {
-            badge.textContent = 'Not Levelled';
-            badge.className = 'badge level-badge level-pending';
-        }
-    }
-
-    if (offset.length >= 2) {
+    if (robotState.levelling_complete && offset.length >= 2) {
         const rollDeg = (offset[0] * 180 / Math.PI).toFixed(2);
         const pitchDeg = (offset[1] * 180 / Math.PI).toFixed(2);
-        if (rollEl) rollEl.textContent = rollDeg + '\u00b0';
-        if (pitchEl) pitchEl.textContent = pitchDeg + '\u00b0';
+        pill.textContent = `X ${rollDeg}\u00b0 Y ${pitchDeg}\u00b0`;
+        pill.style.display = '';
+    } else {
+        pill.style.display = 'none';
     }
 }
 
@@ -282,7 +277,7 @@ export function updateLevellingPanel(robotState) {
 // load.  Persisting would let a stale "collapsed while connected" (or vice
 // versa) state fight the connection edges.
 const COLLAPSIBLE_PANEL_IDS = [
-    'panel-orchestrator', 'panel-flags', 'panel-levelling', 'panel-motion',
+    'panel-orchestrator', 'panel-flags', 'panel-motion',
     'panel-bb', 'panel-catching-cone', 'panel-tracking',
 ];
 
@@ -1461,7 +1456,6 @@ export function initBBThrowPanel() {
 
 export function initAllPanels() {
     initFlagsGrid();
-    initLevellingPanel();
     initBBPanel();
     initCatchingConePanel();
     initBBThrowPanel();

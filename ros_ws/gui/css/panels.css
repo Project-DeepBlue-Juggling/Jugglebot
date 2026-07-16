@@ -285,6 +285,7 @@
 .flag-item {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;  /* lets the levelled-angles pill drop to its own line at narrow widths */
     gap: 6px;
     font-size: var(--font-size-sm);
 }
@@ -297,38 +298,17 @@
 .flag-icon.fail { color: var(--accent-red); }
 .flag-icon.wait { color: var(--text-muted); }
 
-/* ---- Levelling panel ---- */
-.level-badge.level-ok {
+/* ---- Levelled-angles pill (System panel) ----
+   Shown next to the "Levelled" flag once levelling completes — the measured
+   roll (X) / pitch (Y) tilt, green so a good levelling result is easy to spot. */
+.flag-level-pill {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
     background: var(--accent-green);
     color: #000;
-}
-
-.level-badge.level-pending {
-    background: var(--text-muted);
-    color: #fff;
-}
-
-.level-inline {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-}
-
-.level-inline-item {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-}
-
-.level-inline-label {
-    font-size: var(--font-size-xs);
-    color: var(--text-muted);
-}
-
-.level-inline-value {
-    font-family: var(--font-mono);
-    font-size: var(--font-size-sm);
-    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 1px 7px;
+    white-space: nowrap;
 }
 
 /* ---- Motion planner panel ---- */

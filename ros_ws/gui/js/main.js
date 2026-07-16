@@ -19,7 +19,7 @@ import {
 } from './ball-butler-model.js';
 import {
     initAllPanels, initCollapsiblePanels, updateMotorGrid, updateOrchestratorState,
-    updateFlags, updateLevellingPanel, updateBBPanel, setBBDisconnected, updateBBCalibration,
+    updateFlags, updateBBPanel, setBBDisconnected, updateBBCalibration,
     updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
@@ -168,7 +168,26 @@ function updateConnectionQuality() {
     el.classList.add(klass);
 }
 
+/** Whether the rosbridge link was up at the last state-change callback.
+ *  Lets us log (dis)connect events only on genuine up/down edges: while ROS
+ *  is down the reconnect loop oscillates connecting↔disconnected every 2 s,
+ *  and none of those transitions cross "up" — so the Event Log doesn't
+ *  flood during an outage. */
+let rosLinkWasUp = false;
+
 function onConnectionStateChange(state) {
+    const isUp = (state === 'connected');
+    if (isUp !== rosLinkWasUp) {
+        rosLinkWasUp = isUp;
+        emitEvent({
+            type: EVENT_TYPES.CONNECTION,
+            label: isUp ? 'ROS2 connected' : 'ROS2 disconnected',
+            detail: isUp
+                ? 'rosbridge websocket established'
+                : 'rosbridge websocket lost — retrying every 2 s',
+        });
+    }
+
     const dot = document.getElementById('conn-dot');
     const text = document.getElementById('conn-text');
     if (!dot || !text) return;
@@ -298,7 +317,6 @@ function onRobotState(msg) {
     // Update panels
     updateMotorGrid(motors);
     updateFlags(msg);
-    updateLevellingPanel(msg);
 
     // Fault-transition events (false → true only; we don't log clears as
     // "events" to keep the marker forest readable, though we do reset the

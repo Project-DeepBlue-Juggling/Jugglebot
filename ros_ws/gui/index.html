@@ -162,18 +162,6 @@
                 <div class="flags-grid" id="flags-grid"></div>
             </div>
 
-            <!-- Levelling -->
-            <div class="panel panel-compact" id="panel-levelling">
-                <div class="panel-header">
-                    <span class="panel-title">Levelling</span>
-                    <div class="level-inline" id="level-content">
-                        <span class="level-inline-item" title="Roll (X)"><span class="level-inline-label">X:</span><span class="level-inline-value" id="level-roll">--</span></span>
-                        <span class="level-inline-item" title="Pitch (Y)"><span class="level-inline-label">Y:</span><span class="level-inline-value" id="level-pitch">--</span></span>
-                    </div>
-                    <span class="badge level-badge level-pending" id="level-status-badge">Not Levelled</span>
-                </div>
-            </div>
-
             <!-- Platform Control Loop -->
             <div class="panel panel-compact" id="panel-motion">
                 <div class="panel-header">
@@ -231,6 +219,7 @@
                         <span class="history-legend-item" data-type="state"       style="--dot:var(--accent-amber)">state</span>
                         <span class="history-legend-item" data-type="fault"       style="--dot:var(--accent-red)">fault</span>
                         <span class="history-legend-item" data-type="calibration" style="--dot:var(--accent-purple)">calib</span>
+                        <span class="history-legend-item" data-type="connection"  style="--dot:var(--accent-rose)">ros2</span>
                     </span>
                 </div>
                 <div class="history-body">

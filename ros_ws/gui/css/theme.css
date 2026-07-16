@@ -22,6 +22,7 @@
     --accent-red: #ef4444;
     --accent-purple: #a78bfa;
     --accent-cyan: #06b6d4;
+    --accent-rose: #f43f5e;  /* connection events — mirrors EVENT_COLORS.connection */
 
     /* State colours */
     --state-boot: #64748b;
