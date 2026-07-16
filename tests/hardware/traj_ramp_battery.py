@@ -42,16 +42,16 @@ NEUTRAL_Z = 170.0
 
 # (label, x, y, z, rx_deg, duration_s, expect_accept)
 _BATTERY = [
-    ('z 170→190',    0.0,   0.0, 190.0, 0.0, 0.0, True),
+    ('z 170→190',    0.0,   0.0, 220.0, 0.0, 0.0, True),
     ('z 190→170',    0.0,   0.0, 170.0, 0.0, 0.0, True),
-    ('x +20',       20.0,   0.0, 170.0, 0.0, 0.0, True),
-    ('x -20',      -20.0,   0.0, 170.0, 0.0, 0.0, True),
+    ('x +20',       150.0,   0.0, 170.0, 0.0, 0.0, True),
+    ('x -20',      -150.0,   0.0, 170.0, 0.0, 0.0, True),
     ('x 0',          0.0,   0.0, 170.0, 0.0, 0.0, True),
-    ('y +20',        0.0,  20.0, 170.0, 0.0, 0.0, True),
-    ('y -20',        0.0, -20.0, 170.0, 0.0, 0.0, True),
+    ('y +20',        0.0,  150.0, 170.0, 0.0, 0.0, True),
+    ('y -20',        0.0, -150.0, 170.0, 0.0, 0.0, True),
     ('y 0',          0.0,   0.0, 170.0, 0.0, 0.0, True),
-    ('tilt rx +3°',  0.0,   0.0, 170.0,  3.0, 0.0, True),
-    ('tilt rx -3°',  0.0,   0.0, 170.0, -3.0, 0.0, True),
+    ('tilt rx +3°',  0.0,   0.0, 170.0,  10.0, 0.0, True),
+    ('tilt rx -3°',  0.0,   0.0, 170.0, -10.0, 0.0, True),
     ('tilt rx 0',    0.0,   0.0, 170.0,  0.0, 0.0, True),
     # Deliberately infeasible — must be rejected TOO_FAST, zero motion.
     ('TOO_FAST demo (dur 0.05)', 20.0, 20.0, 185.0, 0.0, 0.05, False),
@@ -77,7 +77,7 @@ def main() -> int:
                     help='ramp the session leg acceleration limit (mm/s²); 0 = keep.')
     ap.add_argument('--set-jerk', type=float, default=0.0,
                     help='ramp the session leg jerk limit (mm/s³); 0 = keep.')
-    ap.add_argument('--settle-s', type=float, default=2.5,
+    ap.add_argument('--settle-s', type=float, default=1.0,
                     help='wall-clock pause between moves (let each move + hold '
                          'complete before the next is issued).')
     ap.add_argument('--timeout-s', type=float, default=5.0,
