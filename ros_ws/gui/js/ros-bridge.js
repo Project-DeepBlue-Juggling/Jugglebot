@@ -27,7 +27,15 @@ const subscriptions = [];
 /** Registered publishers. Re-created on reconnect. */
 const publishers = {};
 
-/** Set to true while intentionally closing to suppress reconnect */
+/** Set to true on page unload so the final close event doesn't trigger a
+ *  reconnect.  ONLY the unload path may set this.  Setting it around routine
+ *  socket-generation swaps used to latch it true whenever the discarded
+ *  socket was already closed — close() on a CLOSED WebSocket fires no event
+ *  (spec), so nothing consumed the flag — and the latched flag then swallowed
+ *  the next GENUINE disconnect: the GUI sat "Connected" for ~5 s after a
+ *  launch shutdown until the staleness watchdog noticed.  Events from
+ *  discarded instances are made inert by the per-generation guards in
+ *  connect() instead. */
 let intentionalClose = false;
 
 /** Timestamp of last message received on any subscription */
@@ -67,26 +75,36 @@ function connect(url) {
 
     // Close and discard any previous ROSLIB.Ros instance.
     // Reusing a closed instance can leave stale internal WebSocket state
-    // that prevents rosbridge from accepting the new connection.
+    // that prevents rosbridge from accepting the new connection.  Teardown
+    // must NOT depend on the old socket firing a close event — close() on
+    // an already-closed WebSocket fires nothing — so instead of flagging
+    // the close as intentional, every handler below is guarded by instance
+    // identity: once `ros` points at a newer generation, events from this
+    // one are inert.
     stopStaleCheck();
     if (ros) {
-        intentionalClose = true;
         try { ros.close(); } catch { /* ignore */ }
         ros = null;
     }
 
     setConnectionState('connecting');
 
-    ros = new ROSLIB.Ros();
+    const myRos = new ROSLIB.Ros();
+    ros = myRos;
 
-    ros.on('connection', () => {
+    myRos.on('connection', () => {
+        if (myRos !== ros) return;  // superseded generation — ignore
         setConnectionState('connected');
         resubscribeAll();
         recreatePublishers();
     });
 
-    ros.on('close', () => {
+    myRos.on('close', () => {
+        if (myRos !== ros) return;  // superseded generation — ignore
         if (intentionalClose) {
+            // Page unload in progress.  Reset so a canceled unload (e.g.
+            // a download link fires beforeunload but the page stays) does
+            // not eat a later genuine close.
             intentionalClose = false;
             return;
         }
@@ -94,11 +112,12 @@ function connect(url) {
         scheduleReconnect(url);
     });
 
-    ros.on('error', () => {
+    myRos.on('error', () => {
         // In some browsers / ROSLIB versions, a refused WebSocket fires
         // 'error' without a subsequent 'close', leaving us stuck in
         // 'connecting' forever. Schedule a reconnect as a safety net;
         // scheduleReconnect() is idempotent so a duplicate is harmless.
+        if (myRos !== ros) return;  // superseded generation — ignore
         if (connectionState === 'connecting') {
             setConnectionState('disconnected');
             scheduleReconnect(url);
@@ -106,7 +125,7 @@ function connect(url) {
     });
 
     try {
-        ros.connect(url);
+        myRos.connect(url);
     } catch {
         setConnectionState('disconnected');
         scheduleReconnect(url);
