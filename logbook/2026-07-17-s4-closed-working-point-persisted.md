@@ -25,6 +25,7 @@ files_changed:
   - tests/hardware/session_phase4_ramp.md
   - plans/active/mvp-trajectory-bringup.md
 commits:
+  - b6391c1
 subsystem:
   - config
   - ros
