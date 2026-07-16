@@ -25,6 +25,7 @@ files_changed:
   - tests/hardware/mvp_bench_runbook.md
   - tests/hardware/session_phase4_ramp.md
 commits:
+  - e2605c1
 subsystem:
   - can
   - config
