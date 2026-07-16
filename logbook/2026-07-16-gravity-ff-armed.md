@@ -16,7 +16,7 @@ files_changed:
   - tests/motion/test_leg_torque_ff.py
   - tests/hardware/session_torque_ff.md
 commits:
-  - TBD
+  - ff81a4d
 subsystem:
   - motion
   - can
