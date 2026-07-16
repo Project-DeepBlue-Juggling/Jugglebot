@@ -6,11 +6,13 @@
 geometry_msgs/Pose pose      # Target pose. Position in mm, z STOW-relative (170 = ACTIVE).
                              # Orientation as a quaternion (converted to a rotvec internally).
 float64 duration_s           # Requested move duration (s). 0 => use the minimal feasible duration.
-float64 lean_gain            # Lean-shaping gain override for THIS move (Phase 4 A/B).
-                             # < 0 => use the node's configured JB_TRAJ_LEAN_GAIN (the default; a
-                             #        default-constructed request has lean_gain = 0.0, which forces
-                             #        lean OFF — pass a negative value to defer to the config gain).
-                             # >= 0 => override, clamped to [0, 1]. 0 = OFF, ~0.3 = the A/B test point.
+float64 lean_gain -1.0       # Lean-shaping gain override for THIS move.
+                             # Field DEFAULT is -1.0 (since 2026-07-17): a default-constructed
+                             # request DEFERS to the node's configured JB_TRAJ_LEAN_GAIN (which
+                             # ships 0.6 — lean ON). Semantics:
+                             # < 0  => defer to the config gain (the default).
+                             # >= 0 => override, clamped to [0, 1]. An EXPLICIT 0.0 forces lean
+                             #         OFF for this move (the A/B baseline arm).
 ---
 bool accepted                # True iff the move was planned and installed.
 string code                  # Feasibility code: OK / UNREACHABLE / WORKSPACE / LIMIT_VEL /

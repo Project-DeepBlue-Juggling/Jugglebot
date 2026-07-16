@@ -1,5 +1,11 @@
 # Hardware Session — MVP Phase 4: Limit Ramp-up + Lean A/B (multiple short sessions)
 
+> **⚡ S4 CLOSED 2026-07-17** — the working point (1000, 5000, 30000) +
+> `lean_gain 0.6` is persisted to YAML (see the runbook S4 Result block and
+> `logbook/2026-07-17-s4-closed-working-point-persisted.md`). This protocol is
+> retained for future re-ramps — which now START from the hot working point on
+> a bare relaunch; `set_limits` down first for a faithful gentle re-run.
+
 > **⚡ Superseded in part, 2026-07-15 (ARMING CONTRACT)**: arming is now
 > **automatic on ACTIVE entry** (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`;
 > see the banner in `mvp_bench_runbook.md`). Manual `set_setpoint_output true`

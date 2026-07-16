@@ -311,7 +311,8 @@ auto-tracks whatever threshold the firmware trips at):
 - **Purpose**: profiled point-to-point moves execute smoothly; an infeasible request is
   loudly rejected with zero motion.
 - **Entry**: S1 passed; armed and holding in **TRAJECTORY** mode; limits at the Phase-1
-  defaults (100 mm/s, 400 mm/s², 8000 mm/s³).
+  defaults (100 mm/s, 400 mm/s², 8000 mm/s³ — pre-2026-07-17 defaults; a relaunch now
+  gives the S4 working point, so `set_limits` down first for a faithful re-run).
 - **Getting to the entry state** (mode change goes over the topic — Sharp Edges #4, #5):
   1. `ros2 launch jugglebot jugglebot_launch.py enable_setpoint_output:=false`
   2. `ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'activate'"`
@@ -406,6 +407,19 @@ auto-tracks whatever threshold the firmware trips at):
 
 ### S4 — Phase-4 limit ramp (multiple short sessions + one lean A/B)
 
+- **Result (2026-07-16/17): ✅ PASSED — CLOSED.** The ladder was run far beyond the
+  Phase-6 targets across the 2026-07-16 sessions: bag `18-45-29` ran the ladder to
+  (1500,5000,40000) with **zero latches post-guard-raise and 0.359 rev peak
+  deviation (36 % of the guard)** — see
+  `logbook/2026-07-16-lean-planning-latency-and-boundary-step.md` Diagnosis §3.
+  Caveat for the record: the limits A/B's **gain-0 arm** at (2000,5000,30000)
+  (bag `21-58-59`) peaked at **0.94 rev = 94 % of the guard**; the lean-ON
+  working point holds ~0.25 rev — lean is part of WHY the working point has
+  margin. The lean A/B resolved KEEP (`lean_gain 0.6` default; jerk criterion
+  met at 0.3–0.6). **Working point (1000, 5000, 30000) + lean 0.6 persisted to
+  YAML 2026-07-17** (step-5 closure; see
+  `logbook/2026-07-17-s4-closed-working-point-persisted.md`). The ladder
+  protocol below is retained for reference / future re-ramps.
 - **Purpose**: raise the session leg vel/acc/jerk limits from the Phase-1 defaults
   (100 mm/s, 400 mm/s², 8000 mm/s³) to the Phase-6 catch requirements, one small
   validated step at a time; resolve the lean A/B.
@@ -427,7 +441,10 @@ auto-tracks whatever threshold the firmware trips at):
   (arming is automatic on ACTIVE entry; verify the "setpoint output ENABLED"
   banner); rosbag recording on; **know the last-good YAML session limits** so an
   ABORT reverts cleanly. Note: session limits are runtime state — **a relaunch always
-  reverts to the YAML values**, so a relaunch is also a valid "revert everything".
+  reverts to the YAML values**. ⚠ Since 2026-07-17 the YAML values ARE the hot S4
+  working point (1000, 5000, 30000) with `lean_gain 0.6` — a relaunch is no longer a
+  "revert to gentle" escape hatch. For a cautious probe session, `set_limits` DOWN
+  explicitly (e.g. 100/400/8000) after launch.
 - **New since 2026-07-16 — the ramp runs with the gravity FF live** (ships
   enabled; `logbook/2026-07-16-gravity-ff-armed.md`). Two watch items from the
   arming A/B: (1) **the first commanded move after any armed hold is the
@@ -640,8 +657,9 @@ analysis pipeline. Start at low stroke amplitude.
   and the cascade ratio), **not `pos_gain` up** (which *lowers* the ratio and marches the outer
   loop into the 15–19 Hz resonance).
 
-Sessions **S5+ are unaffected** (they run at generous leads / gentle limits, below the stutter
-regime). Commands + safety mechanics: `tests/hardware/session_gain_retune.md` (**read its
+Sessions **S5+ are unaffected** (they run at generous leads — the feasibility stretch keeps
+realized motion slow — and, since 2026-07-17, at the validated S4 working point rather than
+gentle limits; `set_limits` down for a deliberately gentle session). Commands + safety mechanics: `tests/hardware/session_gain_retune.md` (**read its
 superseded banner first** — use its arming/abort/`/recover` procedure, ignore its gain sweep).
 Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (Level-2f)".
 

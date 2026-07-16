@@ -404,10 +404,10 @@ SetString = _make_service(
     resp_fields={'success': False, 'message': ''},
 )
 GoToPose = _make_service(
-    # lean_gain default 0.0 mirrors the generated msg (an unset float64 is 0.0);
-    # per the node's convention 0.0 forces lean OFF, a negative value defers to the
-    # config gain (see GoToPose.srv). Existing bare-request tests keep lean off.
-    req_fields={'pose': None, 'duration_s': 0.0, 'lean_gain': 0.0},
+    # lean_gain default -1.0 mirrors the srv FIELD DEFAULT (since 2026-07-17):
+    # a default-constructed request DEFERS to the config gain (JB_TRAJ_LEAN_GAIN,
+    # ships 0.6 = lean ON); an explicit 0.0 forces lean OFF (see GoToPose.srv).
+    req_fields={'pose': None, 'duration_s': 0.0, 'lean_gain': -1.0},
     resp_fields={'accepted': False, 'code': '', 'message': '',
                  'planned_duration_s': 0.0, 'min_duration_s': 0.0},
 )

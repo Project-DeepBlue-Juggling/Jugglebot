@@ -80,6 +80,11 @@ def test_alpha_in_unit_interval_and_reaches_near_target(geom, limits):
 
 
 def test_far_rest_target_capped_but_progresses(geom, limits):
+    # Pinned to the pre-2026-07-17 gentle defaults this scenario's geometry was designed
+    # around (the shipped working point is now 1000/5000/30000; this test exercises the
+    # MECHANISM, not the shipped limits).
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=100.0, leg_acc_mmps2=400.0,
+                                          leg_jerk_mmps3=8000.0)
     r = chase_alpha((_NEUTRAL, _Z, _Z), _NEUTRAL + [0, 0, -140, 0, 0, 0],
                     limits, geom, _HORIZON)
     assert 0.0 < r.alpha < 1.0          # capped progress (T hit CHASE_T_MAX)
@@ -112,6 +117,11 @@ def test_chased_plan_passes_gate_within_one_stretch(geom, limits):
 # ── Horizon scaling (A1) ──────────────────────────────────────
 
 def test_horizon_scales_with_energy_and_is_capped(geom, limits):
+    # Pinned to the pre-2026-07-17 gentle defaults this scenario's geometry was designed
+    # around (the shipped working point is now 1000/5000/30000; this test exercises the
+    # MECHANISM, not the shipped limits).
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=100.0, leg_acc_mmps2=400.0,
+                                          leg_jerk_mmps3=8000.0)
     # A rest seed at the default horizon uses ~horizon_s for a tiny move.
     small = chase_alpha((_NEUTRAL, _Z, _Z), _NEUTRAL + [5, 0, 0, 0, 0, 0],
                         limits, geom, _HORIZON)

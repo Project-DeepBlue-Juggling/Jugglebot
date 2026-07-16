@@ -193,6 +193,11 @@ def test_a1_acceptance_140mm_z_step_reaches_and_cruises(geom, limits):
     parked-target test uses a looser 3.0 s window and asserts only α>0 + terminal
     proximity, so a horizon-scaling regression that slows tracking back toward the
     prototype defect would stay green there. This test fails on that regression."""
+    # Pinned to the pre-2026-07-17 gentle defaults this scenario's geometry was designed
+    # around (the shipped working point is now 1000/5000/30000; this test exercises the
+    # MECHANISM, not the shipped limits).
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=100.0, leg_acc_mmps2=400.0,
+                                          leg_jerk_mmps3=8000.0)
     tgt = _NEUTRAL + np.array([0, 0, -140, 0, 0, 0.0])
     follower = TargetFollower(geom, _HORIZON)
     plan = HoldPlan(_NEUTRAL)
@@ -301,7 +306,13 @@ def test_corrupt_seed_beyond_bound_escalates(geom, limits):
 def test_over_energetic_seed_routes_to_graceful_stop(geom, limits):
     """A2: a seed whose leg velocity exceeds safety·L (chase-infeasible) but which is
     stoppable in place → the follower returns a graceful-stop plan (α = 0), not a
-    doomed keep-last. Leg vel 95 mm/s > 0.85·100; decel-in-place stays in stroke."""
+    doomed keep-last. Leg vel 95 mm/s > 0.85·100; decel-in-place stays in stroke.
+
+    Pinned to the pre-2026-07-17 gentle defaults this scenario's geometry was designed
+    around (the shipped working point is now 1000/5000/30000; this test exercises the
+    MECHANISM, not the shipped limits)."""
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=100.0, leg_acc_mmps2=400.0,
+                                          leg_jerk_mmps3=8000.0)
     seed = (_NEUTRAL, np.array([0, 0, -95.0, 0, 0, 0]), _Z)
     f = TargetFollower(geom, _HORIZON)
     res = f.follow(seed, _NEUTRAL + [0, 0, -40, 0, 0, 0], limits)

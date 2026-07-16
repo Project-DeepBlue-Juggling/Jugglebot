@@ -207,7 +207,7 @@ class TrajectoryNode(Node):
             [0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0])
         self._pub_factory = command_pub_factory
 
-        # ── Lean shaping (Phase 4; default-OFF via JB_TRAJ_LEAN_GAIN = 0.0) ──
+        # ── Lean shaping (Phase 4; config default 0.6 since 2026-07-17) ──
         # The lever arm + gravity are fixed; the gain is per-move (config default,
         # overridable per go_to_pose call for the hardware A/B). _make_shaper builds
         # a LeanShaper for a given effective gain.
@@ -1435,9 +1435,10 @@ class TrajectoryNode(Node):
                 return False
             self._active_plan = plan
             self._plan_t0 = now
-            # New plan ⇒ fresh realized-peak window (per-move tracking). Lean is
-            # off by default; go_to_pose sets _lean_gain_active for a shaped move
-            # immediately after this install returns.
+            # New plan ⇒ fresh realized-peak window (per-move tracking). Reset the
+            # lean label to 0.0 here because holds/stops/follower installs are
+            # unshaped; go_to_pose sets the real gain (config default 0.6, or the
+            # per-move override) immediately after this install returns.
             self._run_peak_vel_mmps = 0.0
             self._run_peak_acc_mmps2 = 0.0
             self._run_peak_jerk_mmps3 = 0.0
@@ -1459,7 +1460,9 @@ class TrajectoryNode(Node):
         """Build a lean shaper for ``gain`` (config gravity + ported cup lever arm).
 
         A gain ≤ 0 yields an identity shaper (``shape`` returns the base plan
-        unchanged) — the default, lean OFF.
+        unchanged) — an explicit lean-OFF request. (The srv field default −1.0
+        defers to the config gain BEFORE this is called, so the shipped default
+        reaches here as 0.6.)
         """
         return LeanShaper(gain, g_mm_s2=self._gravity_mm_s2)
 

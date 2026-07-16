@@ -523,9 +523,16 @@ jugglebot_operational:
 #    See plans/active/mvp-trajectory-bringup.md.
 # ============================================================
 trajectory_op:
-  leg_vel_limit_mmps: 100.0        # Session leg velocity limit {mm/s} at launch (ramped via trajectory/set_limits)
-  leg_acc_limit_mmps2: 400.0       # Session leg acceleration limit {mm/s^2} at launch (ramped)
-  leg_jerk_limit_mmps3: 8000.0     # Session leg jerk limit {mm/s^3} at launch — the binding constraint; ramped by feel
+  # S4 WORKING POINT persisted 2026-07-17 (operator decision, closes the S4 ladder):
+  # (1000, 5000, 30000) from the 2026-07-16 limits A/B (bags 21-58-59 / 22-06-30) —
+  # jerk is the binding constraint (75-88% utilized); velocity was 14-23% utilized at
+  # 1500-2000, so 1000 costs nothing and shortens a runaway command's runway; 30000
+  # jerk beat 40000 on guard margin (0.064 vs 0.027 rev to the 1.0 rev E-STOP) for a
+  # sub-4% speed cost. NOTE: a relaunch now reverts to THIS working point, not the old
+  # gentle (100,400,8000) — for a cautious probe session, set_limits DOWN explicitly.
+  leg_vel_limit_mmps: 1000.0       # Session leg velocity limit {mm/s} at launch (set_limits to change)
+  leg_acc_limit_mmps2: 5000.0      # Session leg acceleration limit {mm/s^2} at launch
+  leg_jerk_limit_mmps3: 30000.0    # Session leg jerk limit {mm/s^3} at launch — the binding constraint
   # Ceilings OPENED 280/4000/200000 → 5000/5000/200000 (2026-07-16, operator decision):
   # they are now ADMINISTRATIVE clamps, deliberately ABOVE both the drive-trackable
   # envelope (vel_limit 12 rev/s ≈ 846 mm/s; clamp-engaged catch-up tops out ~529 mm/s
@@ -542,7 +549,12 @@ trajectory_op:
   min_timed_lead_s: 0.25           # Minimum lead time for a timed target {s}
   max_timed_lead_s: 60.0           # Maximum lead time for a timed target {s} (a longer lead is a clock-domain confusion — loudly rejected before the reach is built)
   spacemouse_horizon_s: 0.35       # SpaceMouse follower replan horizon {s} (Phase 3)
-  lean_gain: 0.0                   # Lean-into-translation shaping gain [0,1] {dimensionless} (default OFF; Phase 4 A/B)
+  lean_gain: 0.6                   # Lean-into-translation shaping gain [0,1] {dimensionless}.
+                                   # DEFAULT ON at 0.6 since 2026-07-17 (the 2026-07-16 sweep: jerk
+                                   # criterion met at 0.3-0.6, best deviation margin at 0.6, 5x tilt-cap
+                                   # headroom; 1.0 is aesthetic but jerk-neutral). Reached by requests
+                                   # with lean_gain < 0 (the GoToPose.srv field default is -1.0 =
+                                   # defer-to-config); an EXPLICIT 0.0 in a request still forces OFF.
   catch_reach_freeze_s: 0.30       # Reach-translation freeze window before arrival {s} (Phase 6)
   catch_settle_hold_s: 0.50        # Quiescent hold after catch seat {s} (Phase 6)
 

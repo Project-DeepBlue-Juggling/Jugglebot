@@ -309,7 +309,9 @@ Operator sequences (also documented in the ops doc when Phase 1 lands):
 
 *(Initial 2026-07-08 values shown. The ceilings were opened to administrative
 5000/5000/200000 on 2026-07-16 — see
-`logbook/2026-07-16-max-deviation-guard-tracking-lag.md` Addendum.)*
+`logbook/2026-07-16-max-deviation-guard-tracking-lag.md` Addendum. On 2026-07-17
+the session DEFAULTS were persisted to the S4 working point (1000, 5000, 30000)
+with `lean_gain 0.6` — see `logbook/2026-07-17-s4-closed-working-point-persisted.md`.)*
 
 ```yaml
 trajectory_op:
@@ -797,6 +799,13 @@ passed in 7.17 s) → effectively **2094 passed / 1 xfailed, 0 real failures**; 
 the new audit-fix tests only.
 
 ### Phase 4 — Limit ramp-up *(multiple short sessions)*
+
+**Outcome (2026-07-17 — ✅ HARDWARE CLOSED)**: the ladder ran far past the
+Phase-6 targets (zero latches post-guard-raise; 0.359 rev peak deviation at
+(1500,5000,40000)); the lean A/B resolved KEEP; the working point
+(1000, 5000, 30000) + `lean_gain 0.6` is persisted to YAML — see
+`logbook/2026-07-17-s4-closed-working-point-persisted.md` and the runbook S4
+Result block.
 
 **Goal**: raise vel/acc/jerk toward the levels Phase 6 publishes as required for
 catching; one lean-shaping A/B.

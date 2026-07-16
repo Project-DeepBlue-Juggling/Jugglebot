@@ -431,8 +431,11 @@ def _diag_kv(node):
     return {kv.key: kv.value for kv in diag.values}
 
 
-def test_go_to_pose_default_request_is_lean_off():
-    """A bare request (lean_gain=0.0) forces lean OFF — an unshaped move installs."""
+def test_go_to_pose_explicit_zero_lean_gain_forces_lean_off():
+    """An EXPLICIT lean_gain=0.0 forces lean OFF — an unshaped move installs.
+    (Since 2026-07-17 the srv FIELD default is -1.0 = defer-to-config, so 0.0
+    is the deliberate A/B-baseline arm, no longer the default-constructed value —
+    the _go_to_pose_req helper passes 0.0 explicitly.)"""
     node = _traj_mode_node()
     resp = node._svc_go_to_pose(_go_to_pose_req(x=25.0, z=185.0, duration_s=0.0),
                                 GoToPose.Response())
@@ -441,6 +444,44 @@ def test_go_to_pose_default_request_is_lean_off():
     # Plain (unshaped) TrajectoryPlan, not a _ShapedPlan.
     from jugglebot.motion.trajectory.shaping import _ShapedPlan
     assert not isinstance(node._active_plan, _ShapedPlan)
+
+
+def test_default_constructed_request_defers_to_shipped_lean_gain():
+    """A default-constructed request (srv field default -1.0, mirrored by the
+    conftest mock) defers to the SHIPPED config gain — lean is ON by default
+    since 2026-07-17. This is the choreography-level tripwire: it fails if the
+    conftest mock's default drifts from -1.0 OR the shipped config gain is
+    turned off; the sibling shipped-defaults test regex-pins the srv file
+    itself, so the pair jointly closes the drift loop in both directions."""
+    node = _traj_mode_node()
+    req = GoToPose.Request()
+    req.pose = _go_to_pose_req(x=25.0, z=185.0).pose   # pose only; lean_gain untouched
+    assert req.lean_gain == pytest.approx(-1.0)        # the mock mirrors the srv default
+    resp = node._svc_go_to_pose(req, GoToPose.Response())
+    assert resp.accepted is True
+    assert node._lean_gain_active == pytest.approx(hw.JB_TRAJ_LEAN_GAIN)
+    from jugglebot.motion.trajectory.shaping import _ShapedPlan
+    assert isinstance(node._active_plan, _ShapedPlan)
+
+
+def test_shipped_trajectory_defaults_are_the_s4_working_point():
+    """Tripwire: the S4 working point persisted 2026-07-17 SHIPS — session limits
+    (1000, 5000, 30000) and lean_gain 0.6 (bags 2026-07-16_21-58-59 / _22-06-30;
+    see logbook 2026-07-17 S4-closure entry). Deliberately changing the working
+    point means updating this test — that is the logged act. Also pins the
+    GoToPose.srv FIELD default at -1.0 (defer-to-config): without it the YAML
+    gain is unreachable by default-constructed requests (the 2026-07-17 lesson)."""
+    assert hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS == pytest.approx(1000.0)
+    assert hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2 == pytest.approx(5000.0)
+    assert hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3 == pytest.approx(30000.0)
+    assert hw.JB_TRAJ_LEAN_GAIN == pytest.approx(0.6)
+    import re
+    from pathlib import Path
+    srv = (Path(__file__).resolve().parents[2]
+           / 'ros_ws/src/jugglebot_interfaces/srv/GoToPose.srv').read_text()
+    assert re.search(r'^float64\s+lean_gain\s+-1\.0\b', srv, re.M), (
+        'GoToPose.srv lean_gain field default must be -1.0 (defer-to-config) — '
+        'an undefaulted float64 reads 0.0 and silently forces lean OFF')
 
 
 def test_go_to_pose_per_call_lean_override_installs_shaped_plan():
@@ -457,7 +498,8 @@ def test_go_to_pose_per_call_lean_override_installs_shaped_plan():
 
 
 def test_go_to_pose_negative_lean_gain_uses_config_default():
-    """A negative override defers to JB_TRAJ_LEAN_GAIN (0.0 by default ⇒ OFF)."""
+    """A negative override defers to JB_TRAJ_LEAN_GAIN (ships 0.6 since 2026-07-17;
+    this test pins the defer MECHANISM with a simulated config value)."""
     node = _traj_mode_node()
     node._config_lean_gain = 0.25            # simulate a ramped config default
     resp = node._svc_go_to_pose(
@@ -923,6 +965,13 @@ def test_pending_stop_on_infeasible_stop_then_retry_converges():
     node._pub = pub
     node._on_robot_state(_robot_state())
     node._on_control_mode(String(data='SPACEMOUSE'))
+    # Pin the GENTLE limits this scenario's boundary geometry was designed around:
+    # at the 2026-07-17 shipped working point (1000/5000/30000) a stop from 2 mm
+    # inside the edge is FEASIBLE (the hotter jerk/acc halt within the margin), so
+    # the infeasible-raise path under test never engages. The test exercises the
+    # pending-stop RETRY mechanism, not the shipped limits.
+    node._limits = node._limits.with_session_limits(
+        leg_vel_mmps=100.0, leg_acc_mmps2=400.0, leg_jerk_mmps3=8000.0)
     node._install(_boundary_plan(245.0))       # ~2 mm inside +x edge, moving outward
     # Drive the input-loss path (stale target): the stop is wanted but build raises.
     node._follower_target = (

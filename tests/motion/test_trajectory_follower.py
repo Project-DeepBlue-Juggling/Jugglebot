@@ -280,7 +280,13 @@ def test_graceful_stop_raises_near_boundary_outward_seed(geom, limits):
     (max +x ≈ 247 mm at z=170) moving OUTWARD overshoots — the decel excursion
     (~0.2·v·T) exceeds the boundary margin and GROWS with the stretched horizon, so
     no in-place stop is in-stroke → raises WORKSPACE. The node retries from the
-    decaying live state (a well-inside seed at the same velocity DOES converge)."""
+    decaying live state (a well-inside seed at the same velocity DOES converge).
+
+    Pinned to the pre-2026-07-17 gentle defaults this scenario's geometry was designed
+    around (the shipped working point is now 1000/5000/30000; this test exercises the
+    MECHANISM, not the shipped limits)."""
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=100.0, leg_acc_mmps2=400.0,
+                                          leg_jerk_mmps3=8000.0)
     p_edge = np.array([245.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     v_out = np.array([40.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     with pytest.raises(TrajectoryInfeasible) as ei:

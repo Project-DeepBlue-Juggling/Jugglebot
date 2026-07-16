@@ -289,9 +289,14 @@ def test_shaped_lateral_move_min_duration_is_honest_not_seam_inflated():
     far below the ~7-8× seam-inflation regime this test guards against. (For long
     moves the ramp is a smaller fraction: x+150 is ~1.34×.) The window trades move
     time for a smoother boundary; see the C1 lean-window logbook Discussion.
+
+    Pinned to the pre-2026-07-17 gentle defaults this scenario's geometry was designed
+    around (the shipped working point is now 1000/5000/30000; this test exercises the
+    MECHANISM, not the shipped limits).
     """
     geom = _geom()
-    limits = TrajectoryLimits.from_config(hw)
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=100.0, leg_acc_mmps2=400.0,
+                                          leg_jerk_mmps3=8000.0)
     seed = (NEUTRAL.copy(), np.zeros(6), np.zeros(6))
     target = NEUTRAL + np.array([20.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     shaped, r_s = planner.build_move(seed, target, None, limits, geom,

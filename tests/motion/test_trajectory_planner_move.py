@@ -106,7 +106,13 @@ def test_requested_below_padded_tmin_but_gate_accepts_is_honoured(geom, limits):
     the stretch loop. Empirically pinned on the default limits (2026-07-07): a
     z 170->190 move has padded t_min = 0.5440 s, yet a 0.5386 s request validates
     OK. The old build_move false-rejected it TOO_FAST (requested < t_min); the new
-    path validates the requested duration directly and honours it."""
+    path validates the requested duration directly and honours it.
+
+    Pinned to the pre-2026-07-17 gentle defaults this scenario's geometry was designed
+    around (the shipped working point is now 1000/5000/30000; this test exercises the
+    MECHANISM, not the shipped limits)."""
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=100.0, leg_acc_mmps2=400.0,
+                                          leg_jerk_mmps3=8000.0)
     target = NEUTRAL + np.array([0., 0., 20., 0., 0., 0.])
     t_min, _, _ = planner._min_feasible_move(
         NEUTRAL, np.zeros(6), np.zeros(6), target, limits, geom)

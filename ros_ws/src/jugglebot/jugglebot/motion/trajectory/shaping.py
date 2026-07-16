@@ -1,4 +1,4 @@
-"""Kinetics-aware lean shaping (opt-in, default OFF) — Phase 4.
+"""Kinetics-aware lean shaping — Phase 4 (ships ON: JB_TRAJ_LEAN_GAIN = 0.6 since 2026-07-17).
 
 A translation move accelerates the platform; a ball resting in the cup feels an
 inertial pseudo-force opposing that acceleration. Leaning the cup *into* the
@@ -8,10 +8,13 @@ force is reduced. This module superposes that lean tilt on a base
 :class:`~jugglebot.motion.trajectory.plan.TrajectoryPlan`.
 
 The lean is a **refinement**, not a smoothness mechanism — the always-on
-smoothness guarantee is the feasibility gate's duration stretch. Lean ships
-default-OFF (``JB_TRAJ_LEAN_GAIN = 0.0``); Phase 4 runs a single hardware A/B
-(gain 0.0 vs 0.3) and keeps it only if measured leg jerk drops and the motion
-looks calmer. It is capped at ``LEAN_TILT_CAP_DEG`` (5°) and always re-gated
+smoothness guarantee is the feasibility gate's duration stretch. The Phase-4
+hardware A/B + gain sweep (2026-07-16) resolved **KEEP**: measured leg jerk
+dropped −30 %/−23 % at gains 0.3/0.6 and the operator confirmed the motion
+calmer, so lean ships ON at ``JB_TRAJ_LEAN_GAIN = 0.6`` since 2026-07-17 (see
+``logbook/2026-07-17-s4-closed-working-point-persisted.md``; an explicit
+``lean_gain: 0.0`` in a request still forces OFF). It is capped at
+``LEAN_TILT_CAP_DEG`` (5°) and always re-gated
 (``shaping runs BEFORE validate`` — the gate always sees the shaped plan).
 
 Sign convention (walked through physically, pinned by ``tests/motion/test_trajectory_shaping.py``)
