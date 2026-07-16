@@ -204,16 +204,30 @@ def compute_jacobian(pos: np.ndarray,
     -------
     J : (6, 6) ndarray
     """
-    leg_vecs = compute_leg_vectors(pos, rot, geom)
+    leg_vecs = compute_leg_vectors(pos, rot, geom)              # (6, 3)
+
+    # Unit leg directions and platform-node lever arms for all six legs at once.
+    # (rot @ plat_nodes.T).T[i] == rot @ plat_nodes[i], so this is row-for-row the
+    # per-leg `a_i_world` the loop form computed — just batched.
+    l = leg_vecs / norm(leg_vecs, axis=1, keepdims=True)        # (6, 3) unit
+    a_world = (rot @ geom.plat_nodes.T).T                       # (6, 3)
 
     J = np.empty((6, 6))
-    for i in range(6):
-        L_i = leg_vecs[i]
-        l_i = L_i / norm(L_i)  # unit leg direction
-        a_i_world = rot @ geom.plat_nodes[i]  # platform node in world frame
-
-        J[i, :3] = l_i
-        J[i, 3:] = np.cross(a_i_world, l_i)
+    J[:, :3] = l
+    # Rotational columns are the row-wise cross product a_world × l. This used to be
+    # `np.cross(a_i_world, l_i)` per leg, but np.cross routes through numpy's generic
+    # __array_function__ / moveaxis dispatch, which profiled as ~68 % of the analytic
+    # validate() wall time on the Jetson (three compute_jacobian calls per sample ×
+    # ~dense samples/segment). The explicit component form below is arithmetic-only
+    # (no dispatch) and numerically identical: bit-equal to np.cross on the same
+    # batched operands, and ≤2.84e-14 (~1 ulp, from the batched matmul above) vs the
+    # previous per-leg loop (measured 2026-07-16); it cut unshaped build_move
+    # 736→234 ms and shaped 2680→1183 ms.
+    ax, ay, az = a_world[:, 0], a_world[:, 1], a_world[:, 2]
+    lx, ly, lz = l[:, 0], l[:, 1], l[:, 2]
+    J[:, 3] = ay * lz - az * ly
+    J[:, 4] = az * lx - ax * lz
+    J[:, 5] = ax * ly - ay * lx
 
     return J
 

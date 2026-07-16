@@ -89,6 +89,73 @@ G_MM_S2_DEFAULT = 9806.0
 # independent of the leg-limit gate (which separately bounds leg vel/acc/jerk).
 LEAN_TILT_CAP_DEG = 5.0
 
+# ── Lean plateau window (kills the boundary vel_ff step) ───────────────────────
+# The lean tilt is ∝ the base quintic's accel and its RATE ∝ the base jerk; a
+# rest-to-rest quintic has NONZERO boundary jerk (j(0)=j(T)=60·d/T³), so the raw
+# lean tilt_d STEPS at every move boundary → an emitted leg vel_ff step of ~70-180
+# mm/s (confirmed in the ramp-battery bags: peak iq rose 5.93→8.48 A at gain 0.3;
+# this is the operator's "sharp change at the preparatory tilt"). Multiplying the
+# ENTIRE lean contribution (tilt + lever-arm shift + all their time derivatives) by
+# a plateau window w(s), s = tl/T within the shaped segment, that is C2-zero at the
+# boundaries removes the vel_ff step AND its accel-spike cousin while leaving the
+# lean UNTOUCHED across the plateau where the accel peak (s≈0.211) lives.
+#
+#   w(s) = S(s/EDGE)·S((1−s)/EDGE),  S = the C2 quintic smoothstep 6u⁵−15u⁴+10u³
+#          clamped to [0,1].
+#     • w(0)=w(1)=0, w'(0)=w'(1)=0, w''(0)=w''(1)=0  (C2 → no vel_ff/accel STEP)
+#     • w ≡ 1 for s∈[EDGE, 1−EDGE]                    (lean untouched at the peak)
+#
+# EDGE=0.15 keeps the base-plan accel peak (s≈0.211, fixed for a rest-to-rest
+# quintic) comfortably inside the [0.15, 0.85] plateau, while confining the ramp to
+# the near-rest first/last 15% of the move where the base lateral accel — and hence
+# the lean it drives — is small anyway. The window is applied in ``state_at`` only;
+# the shaping-before-validate ordering is untouched, so the gate still sizes the
+# windowed leg peaks.
+# NB: w is per-SEGMENT (s = tl/T_seg). Today shaped plans are single-segment
+# rest-to-rest moves only (build_move), so segment ends == plan ends. A future
+# MULTI-segment shaped plan (move chaining/supersede) needs a plan-scoped window,
+# or the lean will dip to zero at every interior join — C2-smooth and gate-sized,
+# but behaviorally wrong for chaining.
+LEAN_WINDOW_EDGE_FRAC = 0.15
+
+
+def _smoothstep(u: float):
+    """C2 quintic smoothstep ``S(u)=6u⁵−15u⁴+10u³`` clamped to [0,1].
+
+    Returns ``(S, dS/du, d²S/du²)`` in the clamped sense (flat, all-zero
+    derivatives outside [0,1]). ``S'(u)=30u²(u−1)²`` and ``S''(u)=60u(2u−1)(u−1)``
+    both vanish at ``u=0`` and ``u=1`` — the C2 property that kills the boundary
+    velocity step and its acceleration-spike cousin.
+    """
+    if u <= 0.0:
+        return 0.0, 0.0, 0.0
+    if u >= 1.0:
+        return 1.0, 0.0, 0.0
+    s = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+    ds = 30.0 * u * u * (u * (u - 2.0) + 1.0)        # 30u²(u−1)²
+    dds = 60.0 * u * (u * (2.0 * u - 3.0) + 1.0)     # 60u(2u−1)(u−1)
+    return s, ds, dds
+
+
+def _lean_window(s: float, edge: float = LEAN_WINDOW_EDGE_FRAC):
+    """Plateau window ``w(s)`` and its s-derivatives ``(w, w', w'')`` for s∈[0,1].
+
+    ``w(s) = S(s/edge)·S((1−s)/edge)``. Both smoothstep factors are chained to ``s``
+    (``d(s/edge)/ds = +1/edge``, ``d((1−s)/edge)/ds = −1/edge``) and combined with the
+    product rule so ``w''`` is the exact second s-derivative. Time derivatives are
+    obtained downstream via ``d/dt = (1/T) d/ds`` (see :meth:`_ShapedPlan.state_at`).
+    """
+    ie = 1.0 / edge
+    L, dL, ddL = _smoothstep(s * ie)             # derivatives w.r.t. s/edge
+    R, dR, ddR = _smoothstep((1.0 - s) * ie)     # derivatives w.r.t. (1−s)/edge
+    Ls, Lss = dL * ie, ddL * ie * ie             # chain to s (+1/edge)
+    Rs, Rss = -dR * ie, ddR * ie * ie            # chain to s (−1/edge; sign² = +)
+    w = L * R
+    ws = Ls * R + L * Rs
+    wss = Lss * R + 2.0 * Ls * Rs + L * Rss
+    return w, ws, wss
+
+
 # Float-noise tolerance on the segment→hold boundary in ``_locate``. The gate's dense
 # grid samples the final point at ``seg.duration·(n−1)/(n−1)``, which floating-point
 # rounding can land ~1 ULP ABOVE ``total_duration`` (e.g. a stretch-loop duration of
@@ -231,9 +298,31 @@ class _ShapedPlan(TrajectoryPlan):
         shift_d = ck * j[:2]
         shift_dd = ck * s[:2]
 
-        # Hard cap on the added-tilt magnitude. When it binds, scale the whole lean
-        # contribution (tilt + compensation + their derivatives) by the same
-        # instantaneous factor. NOTE: scaling the derivatives by the instantaneous
+        # Plateau window: multiply the ENTIRE lean contribution (tilt + shift + all
+        # their time derivatives) by w(s), s = tl/T, C2-zero at the segment ends so
+        # the emitted vel_ff/accel no longer STEP at a move boundary (the base
+        # quintic's boundary jerk is nonzero, so raw tilt_d/shift_d step). w is a
+        # pure function of s; its time derivatives are w'/T and w''/T² (d/dt =
+        # (1/T)d/ds). Apply the full product rule so the windowed twist/accel remain
+        # the EXACT analytic derivatives of the windowed pose (the self-consistency
+        # invariant this module guards — a mismatch reintroduces the FF-bug class).
+        T = seg.duration
+        sn = min(max(tl / T, 0.0), 1.0)
+        w, ws, wss = _lean_window(sn)
+        w_d = ws / T                                 # dw/dt
+        w_dd = wss / (T * T)                          # d²w/dt²
+        tilt_dd = w_dd * tilt + 2.0 * w_d * tilt_d + w * tilt_dd
+        tilt_d = w_d * tilt + w * tilt_d
+        tilt = w * tilt
+        shift_dd = w_dd * shift + 2.0 * w_d * shift_d + w * shift_dd
+        shift_d = w_d * shift + w * shift_d
+        shift = w * shift
+
+        # Hard cap on the added-tilt magnitude, applied to the WINDOWED tilt (window
+        # first, then cap). Because w ≤ 1 the windowing can only shrink the tilt, so
+        # the cap binds no more often than it would unwindowed. When it binds, scale
+        # the whole lean contribution (tilt + compensation + their derivatives) by the
+        # same instantaneous factor. NOTE: scaling the derivatives by the instantaneous
         # factor makes the capped twist/accel no longer the exact analytic derivative
         # of the capped pose (a small FF inconsistency), but this is a SAFETY CLAMP
         # that never binds at the A/B operating gain (0.3 needs base lateral accel

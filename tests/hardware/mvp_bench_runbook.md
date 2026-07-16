@@ -470,6 +470,27 @@ auto-tracks whatever threshold the firmware trips at):
   overshoot/oscillation that wasn't there before. If that appears where it
   didn't at the old vel_limit, note it and consider stepping back before the
   next ladder step.
+- **New since 2026-07-16 (evening) — the lean A/B pause growth is EXPLAINED and
+  two software fixes landed; re-run the lean A/B**
+  (`logbook/2026-07-16-lean-planning-latency-and-boundary-step.md`). The
+  operator's earlier lean run showed `--lean-gain 0.3` pausing much longer than
+  `0.0` with a sharp tilt at each move onset. Both were confirmed root causes,
+  not motion: **(1)** the pause is **planning COMPUTE** — a shaped plan runs 6
+  feasibility passes vs 2 unshaped, and the Jacobian dominated them. Fixed
+  (component-form Jacobian + 80-sample unshaped gate): offline per-move planning
+  drops **unshaped ~0.73 → ~0.10 s** and **shaped ~2.6 → ~1.2 s**, so the
+  matched-battery pause should fall from ~4.3 s toward **~2 s, now dominated by
+  the platform settle**, not compute. **(2)** the sharp tilt was a boundary
+  `vel_ff` STEP (~70–182 mm/s, 1.0–2.6 rev/s) emitted at every shaped-move
+  boundary — it caused the +43 % peak-iq rise (5.93→8.48 A) seen at matched
+  limits. Fixed with a C2 plateau window: the boundary step is now **0.00 mm/s**
+  at both ends for all tiers, so the onset `iq` spikes should be gone. **Re-run
+  the identical lean A/B after `colcon build --packages-select jugglebot` +
+  relaunch** (a stale install keeps the old planner). **The open question for
+  the re-run** is whether lean *improves* realized smoothness at matched limits:
+  pre-fix, at matched limits, lean 0.3 made peak `iq` **worse** (that was the
+  vel_ff step), so this is genuinely undecided — keep lean only if measured leg
+  jerk drops AND the motion looks/sounds calmer.
 
 #### The ladder (recommended order + step sizes)
 
@@ -558,8 +579,11 @@ fine if the first felt completely clean — but never skip the battery+review be
   gain-0.3 arm's moves to run ~1.45× LONGER** — shaped lateral moves are legitimately
   slower because the gate sizes the added tilt; the battery prints each
   `planned_duration_s`, so the unequal durations are expected, not a regression. Watch
-  for a tilt-rate tick at move start/end (the boundary transient) — report it rather
-  than pushing through.
+  for a tilt-rate tick at move start/end (the boundary transient) — **this should now be
+  GONE** after the 2026-07-16 C2 plateau-window fix (boundary `vel_ff` step driven to
+  0.00 mm/s; see the "New since 2026-07-16 (evening)" note above and
+  `logbook/2026-07-16-lean-planning-latency-and-boundary-step.md`); if a tick is still
+  present, report it rather than pushing through.
 - **PASS/ABORT** per move: as S2 (smooth, jerk within limits, TOO_FAST rejects nothing;
   ABORT on oscillation / snap / E-STOP). **The "tracking error > 0.1 rev" ABORT line is
   recalibrated for moves (operator-confirmed 2026-07-16 — see
@@ -623,13 +647,17 @@ Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (
 
 ### S5 — Phase-5 timed targets (±25 ms arrival + supersede)
 
-- **Purpose**: reach a pose at an absolute arrival time within ±25 ms; too-tight timing
-  loudly rejected; a mid-plan supersede replans C2 (no snap).
+- **Purpose**: reach a pose a relative `lead_time_s` seconds after service receipt,
+  within ±25 ms; too-tight timing loudly rejected; a mid-plan supersede replans C2
+  (no snap). *(Interface change 2026-07-16: `TimedTarget.srv` takes `lead_time_s`
+  — a typeable relative lead — not the old absolute `arrival_time`; rebuild
+  `jugglebot_interfaces` + `jugglebot` and relaunch before running.)*
 - **Entry**: armed + holding in **TRAJECTORY** mode; mocap recording the platform rigid
   body for arrival-time measurement.
-- **Steps**: (1) generous-lead timed moves (z 170→185; x +15; y −15; rx ~2°; lead
-  2.5–4 s), repeat 5×; (2) a too-tight lead (0.05 s ahead) → loud rejection; (3) a
-  mid-plan **superseding** timed target while the first is in flight.
+- **Steps**: (1) generous-lead timed moves (z 170→185; x +15; y −15; rx ~2°;
+  `lead_time_s` 2.5–4 s), repeat 5×; (2) a too-tight lead (`lead_time_s: 0.05`) →
+  loud rejection; (3) a mid-plan **superseding** timed target while the first is
+  in flight.
 - **PASS**: (1) mocap-measured arrival within **±25 ms**, pose within 3 mm / 0.5°, smooth,
   no rejects/E-STOP; (2) `accepted=false code=TOO_FAST` with `min_duration_s`, **zero
   motion**; (3) the platform smoothly bends onto the second target (no snap at the

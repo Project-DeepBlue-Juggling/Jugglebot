@@ -420,20 +420,15 @@ SetTrajectoryLimits = _make_service(
 )
 
 
-class _RosTimeMsg:
-    """Stand-in for builtin_interfaces/Time (sec / nanosec fields)."""
-    def __init__(self, sec=0, nanosec=0):
-        self.sec = sec
-        self.nanosec = nanosec
-
-
 class TimedTarget:
-    """Timed target service mock (Phase 5): fresh arrival_time per Request."""
+    """Timed target service mock (Phase 5): relative lead_time_s per Request
+    (seconds from service receipt — the node anchors the absolute arrival at
+    handler entry on perf_counter)."""
     class Request:
         def __init__(self):
             self.pose = None
             self.velocity_mm_s = Vector3()
-            self.arrival_time = _RosTimeMsg()
+            self.lead_time_s = 0.0
             self.hold_after = False
     Response = _make_service(
         resp_fields={'accepted': False, 'code': '', 'message': '',

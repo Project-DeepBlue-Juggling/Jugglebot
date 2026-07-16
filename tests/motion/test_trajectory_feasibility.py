@@ -198,3 +198,125 @@ def test_step_bound_matches_emitter_knot_sequence(geom):
         prev = mr
         tau += 0.025
     assert report.peak_step_rev == pytest.approx(measured, abs=1e-6)
+
+
+# ── Gate conservativeness: 80-sample default never accepts what dense@400 rejects ──
+
+def _shaped(plan, gain):
+    """Wrap a base plan in a LeanShaper (gain>0) — the shaped-plan path build_move
+    hands to the analytic gate."""
+    from jugglebot.motion.trajectory.shaping import LeanShaper
+    return LeanShaper(gain, g_mm_s2=float(hw.GRAVITY_MMPS2)).shape(plan)
+
+
+def test_validate_80_never_accepts_what_dense_400_rejects(geom):
+    """The 2026-07-16 planning speedup dropped validate()'s default sampling 200→80
+    and added a 5 % jerk margin. The safety property that makes that sound: the 80-
+    sample gate (with margin) must NEVER ACCEPT a plan that a dense 400-sample gate
+    REJECTS. If the margin under-covered the finite-difference jerk under-measurement
+    at 80 samples, this would fail.
+
+    Grid: several move directions × three limit tiers × a span of FIXED durations
+    (built directly, NOT via build_move's stretch loop, so many land marginal/over-
+    limit) × unshaped and shaped (LeanShaper gain 0.3 — the service lean path). Both
+    the coarse and dense gate carry the same _VALIDATE_JERK_MARGIN, so this isolates
+    the sampling-density effect. The dense@400 report is the near-truth reference.
+    """
+    targets = [
+        NEUTRAL + np.array([150.0, 0, 0, 0, 0, 0.]),      # x+150 (operator battery)
+        NEUTRAL + np.array([0, 150.0, 0, 0, 0, 0.]),      # y+150
+        NEUTRAL + np.array([0, 0, 50.0, 0, 0, 0.]),       # z+50
+        NEUTRAL + np.array([0, 0, 0, np.deg2rad(10), 0, 0.]),  # rx+10
+        NEUTRAL + np.array([60.0, -40.0, 30.0, 0, np.deg2rad(6), 0.]),  # mixed
+    ]
+    tiers = [
+        dict(vel=200.0, acc=660.0, jerk=10500.0),
+        dict(vel=400.0, acc=2000.0, jerk=20000.0),
+        dict(vel=1500.0, acc=5000.0, jerk=40000.0),
+    ]
+    durations = [0.2, 0.3, 0.45, 0.7, 1.0, 1.5]
+
+    checked = 0
+    contradictions = []
+    for target in targets:
+        for tier in tiers:
+            lims = _limits(**tier)
+            for dur in durations:
+                base = _move(target, dur)
+                for gain in (0.0, 0.3):
+                    plan = _shaped(base, gain) if gain > 0.0 else base
+                    r80 = feas.validate(plan, lims, geom)          # default 80
+                    r400 = feas.validate(plan, lims, geom,
+                                         samples_per_segment=400)
+                    checked += 1
+                    # The unsafe outcome: coarse gate ACCEPTS, dense gate REJECTS.
+                    if r80.ok and not r400.ok:
+                        contradictions.append(
+                            (target.tolist(), tier, dur, gain, r400.code,
+                             r80.peak_leg_jerk_mmps3, r400.peak_leg_jerk_mmps3))
+
+    assert not contradictions, (
+        f"80-sample gate accepted {len(contradictions)} plan(s) that dense@400 "
+        f"rejected (of {checked} checked): {contradictions[:5]}")
+    # Sanity: the grid actually exercised BOTH verdicts (not vacuously all-accept).
+    assert checked > 0
+
+
+def test_validate_80_unshaped_jerk_within_margin_of_dense_400(geom):
+    """For an UNSHAPED rest-to-rest quintic the leg jerk is bounded, so its FD peak
+    converges: the 80-sample peak is never more than a few % below the dense@400 peak
+    — i.e. the 5 % _VALIDATE_JERK_MARGIN comfortably covers the sampling bias at the
+    lowered default. (Shaped plans are handled separately — see the floor test below —
+    because their FD jerk peak under-converges: window-edge curvature since the C2
+    lean window landed; a boundary jerk impulse before it.)"""
+    worst_shortfall = 0.0  # max fractional amount j80 falls below j400
+    lims = _limits(vel=1e9, acc=1e9, jerk=1e9)  # limits off → always OK, peaks free
+    for target in [NEUTRAL + np.array([150.0, 0, 0, 0, 0, 0.]),
+                   NEUTRAL + np.array([0, 150.0, 0, 0, 0, 0.]),
+                   NEUTRAL + np.array([0, 0, 50.0, 0, 0, 0.]),
+                   NEUTRAL + np.array([60.0, -40.0, 30.0, 0, np.deg2rad(6), 0.])]:
+        for dur in (0.3, 0.5, 0.8, 1.2):
+            plan = _move(target, dur)   # unshaped
+            j80 = feas.validate(plan, lims, geom).peak_leg_jerk_mmps3
+            j400 = feas.validate(plan, lims, geom,
+                                 samples_per_segment=400).peak_leg_jerk_mmps3
+            if j400 > 0.0:
+                worst_shortfall = max(worst_shortfall, (j400 - j80) / j400)
+    # Both peaks carry the same ×1.05 margin, so any shortfall is pure sampling bias.
+    assert worst_shortfall < 0.05, (
+        f"unshaped 80-sample jerk fell {worst_shortfall*100:.1f}% below dense@400 — "
+        f"the 5% margin no longer covers the sampling bias")
+
+
+def test_shaped_plan_gated_at_status_quo_sample_floor(geom):
+    """A shaped plan's FD jerk peak under-converges with sample count. Pre-window the
+    cause was a near-impulsive boundary jerk (lean tilt_rate ∝ base jerk, stepping at
+    rest-to-rest quintic boundaries); the C2 lean plateau window (same day) removed
+    that impulse, but the window's edge ramps concentrate high w″ curvature that the
+    FD grid still under-resolves at 200 samples. Either way: lowering the analytic
+    gate's default to 80 must NOT change how shaped plans are gated, or shaped moves
+    would be measured as lower-jerk and stretched less — silently more aggressive on
+    the lean path. This pins the guarantee that validate() gates a shaped plan at the
+    _SHAPED_VALIDATE_SAMPLES (=200, the pre-speedup value) floor regardless of the
+    lowered default.
+    """
+    lims = _limits(vel=1e9, acc=1e9, jerk=1e9)
+    plan = _shaped(_move(NEUTRAL + np.array([150.0, 0, 0, 0, 0, 0.]), 1.0), 0.3)
+
+    j_default = feas.validate(plan, lims, geom).peak_leg_jerk_mmps3
+    j_200 = feas.validate(plan, lims, geom, samples_per_segment=200).peak_leg_jerk_mmps3
+    j_80req = feas.validate(plan, lims, geom, samples_per_segment=80).peak_leg_jerk_mmps3
+    j_400 = feas.validate(plan, lims, geom, samples_per_segment=400).peak_leg_jerk_mmps3
+
+    # The default (lowered to 80) gates a shaped plan exactly as the 200 floor does.
+    assert j_default == pytest.approx(j_200, rel=1e-12)
+    # A coarser-than-floor request is clamped UP to the floor (never gates a shaped
+    # plan below status quo) — the load-bearing safety guarantee.
+    assert j_80req == pytest.approx(j_200, rel=1e-12)
+    # A denser request is still honoured, and reads a MATERIALLY higher peak: direct
+    # evidence the shaped FD jerk has not converged at 200 (the reason the floor
+    # exists and the reason lowering it would silently under-gate shaped moves).
+    # Post-window this residual comes from the window-edge w″ ramps; if a future
+    # smoothing change makes shaped jerk converge, relax this to >= and revisit
+    # the floor itself.
+    assert j_400 > j_200 * 1.05

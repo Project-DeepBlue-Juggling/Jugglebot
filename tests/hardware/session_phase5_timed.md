@@ -2,14 +2,23 @@
 
 **Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 5
 **Logbook**: `logbook/2026-07-08-mvp-phase5-timed-targets.md`
-**Goal**: `trajectory/timed_target` reaches a pose at an ABSOLUTE arrival time within
-±25 ms (mocap-measured); a too-tight lead is loudly rejected with the achievable
-duration; a mid-plan superseding timed target replans C2 (no snap).
+**Goal**: `trajectory/timed_target` reaches a pose `lead_time_s` seconds after
+service receipt within ±25 ms (mocap-measured); a too-tight lead is loudly
+rejected with the achievable duration; a mid-plan superseding timed target
+replans C2 (no snap).
 
 This session validates the **software already merged** on branch
 `mvp-trajectory-bringup`. No code changes should be needed to run it.
 
 ---
+
+> **⚡ Interface change, 2026-07-16 (relative lead)**: `TimedTarget.srv` now takes
+> `float64 lead_time_s` (a RELATIVE arrival lead in seconds, measured from service
+> receipt) instead of the old absolute `builtin_interfaces/Time arrival_time` —
+> a human can now type `lead_time_s: 3.0` directly instead of computing an
+> absolute ROS timestamp. Because the **interface package changed**, this needs
+> `colcon build --packages-select jugglebot_interfaces jugglebot` + a full
+> relaunch before the session (a stale install cannot parse the new request).
 
 > **⚡ Superseded in part, 2026-07-15 (ARMING CONTRACT)**: arming is now
 > **automatic on ACTIVE entry** (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`;
@@ -45,21 +54,20 @@ This session validates the **software already merged** on branch
 
 ## Step 1 — Timed move, generous lead (repeat 5×)
 
-Compute an absolute arrival ~3 s ahead of `now` in the ROS clock, then:
-
 ```bash
-# Example: arrive at (x=15, z=185) 3 s from now (fill arrival_time.sec/nanosec).
+# Example: arrive at (x=15, z=185) 3 s from now (lead_time_s is RELATIVE to
+# service receipt — no timestamp arithmetic needed).
 ros2 service call /trajectory/timed_target jugglebot_interfaces/srv/TimedTarget \
   "{pose: {position: {x: 15.0, y: 0.0, z: 185.0}, orientation: {w: 1.0}}, \
     velocity_mm_s: {x: 0.0, y: 0.0, z: 0.0}, \
-    arrival_time: {sec: <NOW+3>, nanosec: 0}, hold_after: true}"
+    lead_time_s: 3.0, hold_after: true}"
 ```
 
 Battery (all rest-to-rest, `hold_after: true`): z 170→185; x +15; y −15; a small
 tilt rx ~2°. Vary the lead 2.5–4 s.
 
-- **PASS** per move: mocap-measured arrival within **±25 ms** of the commanded
-  `arrival_time`, pose within **3 mm / 0.5°**; subjectively smooth; no pump
+- **PASS** per move: mocap-measured arrival within **±25 ms** of service receipt
+  + `lead_time_s`, pose within **3 mm / 0.5°**; subjectively smooth; no pump
   rejects; no E-STOP. `/diagnose --latest` shows leg jerk within limits.
 - **ABORT**: audible snap, oscillation, gate violation, tracking error > 0.1 rev.
 
@@ -70,7 +78,7 @@ tilt rx ~2°. Vary the lead 2.5–4 s.
 ros2 service call /trajectory/timed_target jugglebot_interfaces/srv/TimedTarget \
   "{pose: {position: {x: 20.0, y: 20.0, z: 185.0}, orientation: {w: 1.0}}, \
     velocity_mm_s: {x: 0.0, y: 0.0, z: 0.0}, \
-    arrival_time: {sec: <NOW>, nanosec: 50000000}, hold_after: true}"
+    lead_time_s: 0.05, hold_after: true}"
 ```
 
 - **PASS**: `accepted: false`, `code: TOO_FAST`, `min_duration_s` populated with the

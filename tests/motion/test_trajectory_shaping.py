@@ -244,33 +244,51 @@ def test_shaper_increases_measured_leg_peaks_vs_unshaped():
 
 # ── Audit fixes (2026-07-08): seam boundary + stretch-loop overshoot ───────────
 
-def test_state_at_T_returns_shaped_segment_end_not_terminal_hold():
-    """BLOCKING seam fix: ``state_at(T)`` must return the shaped SEGMENT-END, not the
-    terminal hold. The base boundary accel is zero (pose == final_pose), but the
-    boundary JERK is nonzero, so the shaped twist/accel at T are continuous with
-    ``T−ε`` — where returning the hold (zeros) fabricated a jerk seam spike.
+def test_state_at_T_boundary_is_C2_continuous_with_the_terminal_hold():
+    """Boundary continuity (post lean-plateau window): ``state_at(T)`` returns the
+    shaped SEGMENT-END, which the C2 window now drives to zero twist/accel — so the
+    shaped boundary is continuous with the terminal hold's zeros.
+
+    This SUPERSEDES the earlier seam concern. Pre-window, the raw lean's boundary
+    JERK made tilt_d(T) nonzero, so the shaped twist at T STEPPED away from the hold
+    (the emitted leg vel_ff step). The plateau window w(s) has w(1)=w'(1)=0, so both
+    the windowed tilt AND its rate vanish at T: the shaped twist/accel at T are ~0,
+    continuous with ``T−ε`` and with the hold — the vel_ff step is gone at the source.
+    The ``_locate`` seam-eps still returns the segment-end (not the hold) at ``t=T``,
+    which is now harmless because the two agree to zero there.
     """
     plan = _move_plan([20.0, 0.0, 170.0, 0.0, 0.0, 0.0], dur=0.6)
     shaped = LeanShaper(0.3, g_mm_s2=G).shape(plan)
     T = shaped.total_duration
     pose_end, twist_end, accel_end = shaped.state_at(T)
     _, twist_in, accel_in = shaped.state_at(T - 1e-9)
-    # Position: tilt(T) ∝ a(T) = 0, so the shaped pose at T equals final_pose exactly.
+    # Position: tilt(T) ∝ a(T)·w(1) = 0, so the shaped pose at T equals final_pose.
     assert np.allclose(pose_end, plan.final_pose, atol=1e-9)
-    # Twist/accel are the genuine boundary transient (nonzero), continuous with T−ε
-    # (NOT the hold's zeros — that was the seam bug).
-    assert not np.allclose(twist_end, 0.0)
-    assert np.allclose(twist_end, twist_in, atol=1e-6)
-    assert np.allclose(accel_end, accel_in, atol=1e-3)
+    # Twist/accel at T are now the window's zero (NOT a boundary transient), and the
+    # approach from T−ε agrees — C2-continuous, no seam spike, no vel_ff step.
+    assert np.allclose(twist_end, 0.0, atol=1e-6)
+    assert np.allclose(accel_end, 0.0, atol=1e-6)
+    assert np.allclose(twist_end, twist_in, atol=1e-9)
+    # accel → 0 continuously as t→T; 1e-9 before T the residual is ~5e-6 (not a
+    # discontinuity — the limit is accel_end = 0).
+    assert np.allclose(accel_end, accel_in, atol=1e-4)
     # Genuinely past the segment (the terminal hold) is still at rest.
     _, twist_hold, accel_hold = shaped.state_at(T + 0.05)
     assert np.allclose(twist_hold, 0.0) and np.allclose(accel_hold, 0.0)
 
 
 def test_shaped_lateral_move_min_duration_is_honest_not_seam_inflated():
-    """BLOCKING: with the seam fixed (+ the overshoot refinement) a gain-0.3 lateral
-    move costs a HONEST ~1.45× the unshaped minimum — not the ~7-8× the fabricated
-    seam jerk used to inflate it to.
+    """BLOCKING: with the seam fixed the shaped duration is HONEST — not the ~7-8× the
+    fabricated seam jerk used to inflate it to.
+
+    The lean-plateau window (added 2026-07-16 to kill the boundary vel_ff step)
+    concentrates the lean ramp into the first/last 15% of the move, adding real
+    leg-jerk load there that the gate must size. For a SHORT move like this x+20 (the
+    unshaped minimum is ~0.41 s) that ramp cost is a large FRACTION of the move, so
+    the honest windowed ratio is ~2.8× — larger than the pre-window ~1.45×, but still
+    far below the ~7-8× seam-inflation regime this test guards against. (For long
+    moves the ramp is a smaller fraction: x+150 is ~1.34×.) The window trades move
+    time for a smoother boundary; see the C1 lean-window logbook Discussion.
     """
     geom = _geom()
     limits = TrajectoryLimits.from_config(hw)
@@ -281,14 +299,17 @@ def test_shaped_lateral_move_min_duration_is_honest_not_seam_inflated():
     unshaped, _ = planner.build_move(seed, target, None, limits, geom, shaper=None)
     ratio = shaped.total_duration / unshaped.total_duration
     assert r_s.ok
-    assert ratio < 2.5, f"shaped/unshaped ratio {ratio:.2f} — seam inflation regressed"
-    assert 1.3 <= ratio <= 1.7, f"ratio {ratio:.3f} outside the honest lean band"
+    assert ratio < 4.0, f"shaped/unshaped ratio {ratio:.2f} — seam inflation regressed"
+    assert 2.3 <= ratio <= 3.3, f"ratio {ratio:.3f} outside the windowed short-move band"
 
 
 def test_shaped_min_feasible_refined_close_to_true_minimum():
     """WARNING: the 1/Tⁿ stretch factor over-corrects for the lean terms, so the
     first passing T overshoots the true minimum ~3×. The bisection refinement lands
-    the returned duration within ~15% of the true monotone-gate boundary.
+    the returned duration within ~20% of the true monotone-gate boundary. (The lean-
+    plateau window steepens the gate's T-response near the boundary, so the fixed-
+    iteration refinement lands a touch further from true-min than the pre-window
+    ~15% — still well-refined, and the refinement algorithm itself is unchanged.)
     """
     geom = _geom()
     limits = TrajectoryLimits.from_config(hw)
@@ -310,7 +331,7 @@ def test_shaped_min_feasible_refined_close_to_true_minimum():
         else:
             lo = mid
     true_min = hi
-    assert plan.total_duration <= 1.15 * true_min, (
+    assert plan.total_duration <= 1.25 * true_min, (
         f"returned {plan.total_duration:.4f}s overshoots true min {true_min:.4f}s")
 
 
@@ -330,6 +351,135 @@ def test_validate_follow_rejects_shaped_plan_loudly():
     # The unshaped twin still validates normally through the follower gate.
     plain = planner._build_rest_move(*seed, target, 0.6)
     assert feas.validate_follow(plain, limits, geom).ok
+
+
+# ── Lean plateau window (2026-07-16): kills the boundary vel_ff step ────────────
+
+def test_lean_window_is_c2_zero_at_ends_and_unity_on_plateau():
+    """The plateau window w(s) = S(s/EDGE)·S((1−s)/EDGE): w=w'=w''=0 at s∈{0,1} (C2,
+    so neither the emitted vel_ff nor accel STEPS at a move boundary), and w≡1 (with
+    zero derivatives) across the plateau [EDGE, 1−EDGE] so the lean is untouched at
+    the base-plan accel peak (s≈0.211)."""
+    edge = shaping.LEAN_WINDOW_EDGE_FRAC
+    for s in (0.0, 1.0):
+        w, ws, wss = shaping._lean_window(s)
+        assert abs(w) < 1e-12 and abs(ws) < 1e-9 and abs(wss) < 1e-6
+    for s in (edge, 0.5, 1.0 - edge):
+        w, ws, wss = shaping._lean_window(s)
+        assert abs(w - 1.0) < 1e-12 and abs(ws) < 1e-9 and abs(wss) < 1e-9
+    # the accel peak of a rest-to-rest quintic sits at s≈0.2113 — inside the plateau.
+    s_peak = 0.5 - math.sqrt(3.0) / 6.0
+    assert edge < s_peak < 1.0 - edge
+    assert abs(shaping._lean_window(s_peak)[0] - 1.0) < 1e-12
+
+
+def test_lean_window_derivatives_match_finite_difference():
+    """w', w'' returned by ``_lean_window`` are the exact s-derivatives of w (the
+    chain-rule correctness the whole windowed FF rests on)."""
+    h = 1e-6
+    for s in (0.03, 0.07, 0.12, 0.5, 0.9, 0.96):
+        _w, ws, wss = shaping._lean_window(s)
+        wsfd = (shaping._lean_window(s + h)[0] - shaping._lean_window(s - h)[0]) / (2 * h)
+        wssfd = (shaping._lean_window(s + h)[1] - shaping._lean_window(s - h)[1]) / (2 * h)
+        assert np.isclose(ws, wsfd, atol=1e-4)
+        assert np.isclose(wss, wssfd, atol=1e-2)
+
+
+@pytest.mark.parametrize('vaj', [(1500.0, 5000.0, 20000.0),
+                                 (1500.0, 5000.0, 40000.0)])
+@pytest.mark.parametrize('axis', ['x', 'y'])
+def test_window_kills_boundary_vel_ff_step(axis, vaj):
+    """(a) BLOCKING: the shaped plan's twist at the move boundaries t=0⁺ and t=T⁻ is
+    ~0 — equal to the hold twist — so the emitted leg vel_ff STEP (pre-window ~70-180
+    mm/s, the operator's 'sharp change at the preparatory tilt') is GONE. Accel is
+    continuous at the boundaries too.
+    """
+    geom = _geom()
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=vaj[0],
+                                          leg_acc_mmps2=vaj[1], leg_jerk_mmps3=vaj[2])
+    seed = (NEUTRAL.copy(), np.zeros(6), np.zeros(6))
+    d = np.array([150.0, 0.0, 0.0, 0.0, 0.0, 0.0]) if axis == 'x' \
+        else np.array([0.0, 150.0, 0.0, 0.0, 0.0, 0.0])
+    target = NEUTRAL + d
+    plan, rep = planner.build_move(seed, target, None, limits, geom,
+                                   shaper=LeanShaper(0.3, g_mm_s2=G))
+    assert rep.ok
+    T = plan.total_duration
+    # Hold twist/accel are zero (rest-to-rest); the shaped boundaries must match.
+    _, tw0, ac0 = plan.state_at(0.0)
+    _, twT, acT = plan.state_at(T)
+    _, tw0p, ac0p = plan.state_at(1e-9)       # t=0⁺ inside the segment
+    _, twTm, acTm = plan.state_at(T - 1e-9)   # t=T⁻ inside the segment
+    for tw in (tw0, twT, tw0p, twTm):
+        assert np.max(np.abs(tw)) < 1e-6, f"boundary twist not ~0: {tw}"
+    for ac in (ac0, acT, ac0p, acTm):
+        assert np.max(np.abs(ac)) < 1e-3, f"boundary accel not ~0: {ac}"
+
+
+def test_window_preserves_lean_untouched_at_the_accel_peak():
+    """(b) interior preservation: at the base-plan accel peak (s≈0.211, inside the
+    plateau) the windowed tilt EQUALS the raw un-windowed tilt (w=1), so the window
+    costs nothing where the lean matters most.
+    """
+    plan = _move_plan([40.0, -25.0, 170.0, 0.0, 0.0, 0.0], dur=0.6)
+    seg = plan.segments[0]
+    shaped = LeanShaper(0.4, g_mm_s2=G).shape(plan)
+    s_peak = 0.5 - math.sqrt(3.0) / 6.0
+    t = s_peak * seg.duration
+    # raw (un-windowed) tilt from the analytic accel: rx=−k·a_y/g, ry=+k·a_x/g.
+    a, _j, _s = shaping._seg_xy_derivs(seg, t)
+    kg = 0.4 / G
+    raw_tilt = kg * np.array([-a[1], a[0]])
+    pose, _, _ = shaped.state_at(t)
+    base, _, _ = plan.state_at(t)
+    assert np.allclose([pose[3] - base[3], pose[4] - base[4]], raw_tilt, atol=1e-12)
+
+
+def test_window_attenuates_lean_inside_the_edge_but_stays_smooth():
+    """(b) short/edge behaviour, documented: inside the ramp edge (s < EDGE) the
+    windowed tilt is STRICTLY LESS than the raw tilt (0 < w < 1) — attenuated but
+    still smooth. This is the price of the C2 boundary; it only bites where the base
+    accel (and thus the lean) is already ramping up from zero.
+    """
+    plan = _move_plan([40.0, -25.0, 170.0, 0.0, 0.0, 0.0], dur=0.6)
+    seg = plan.segments[0]
+    shaped = LeanShaper(0.4, g_mm_s2=G).shape(plan)
+    s = 0.06                                   # inside the 0.15 edge
+    t = s * seg.duration
+    a, _j, _s = shaping._seg_xy_derivs(seg, t)
+    kg = 0.4 / G
+    raw = np.hypot(-a[1], a[0]) * kg
+    pose, _, _ = shaped.state_at(t)
+    base, _, _ = plan.state_at(t)
+    windowed = np.hypot(pose[3] - base[3], pose[4] - base[4])
+    w = shaping._lean_window(s)[0]
+    assert 0.0 < w < 1.0
+    assert windowed < raw
+    assert np.isclose(windowed, w * raw, atol=1e-12)
+
+
+def test_windowed_shaped_ff_is_self_consistent_including_the_edges():
+    """(c) FF self-consistency with the window ON: central-finite-difference the
+    shaped pose on a fine grid — including points INSIDE the ramp edge where w', w''
+    are large — and assert the analytic twist/accel match. This is the derivative-
+    chain correctness test (a mismatch would reintroduce the pose↔vel_ff FF bug the
+    module exists to avoid). Points are kept off the exact C2 knots s∈{0,EDGE,1−EDGE,
+    1}, where the jerk is discontinuous and a centred difference smears by O(h).
+    """
+    plan = _move_plan([30.0, -20.0, 175.0, 0.02, 0.0, 0.0], dur=0.6)
+    shaped = LeanShaper(0.6, g_mm_s2=G).shape(plan)
+    h = 1e-6
+    T = plan.segments[0].duration
+    # s = 0.05, 0.10 (edge, w'≠0); 0.25, 0.5, 0.75 (plateau); 0.90, 0.95 (far edge).
+    for s in (0.05, 0.10, 0.25, 0.5, 0.75, 0.90, 0.95):
+        t = s * T
+        _, twist, accel = shaped.state_at(t)
+        vfd = (np.asarray(shaped.state_at(t + h)[0])
+               - np.asarray(shaped.state_at(t - h)[0])) / (2 * h)
+        afd = (np.asarray(shaped.state_at(t + h)[1])
+               - np.asarray(shaped.state_at(t - h)[1])) / (2 * h)
+        assert np.allclose(vfd, twist, atol=1e-4), f"twist≠dpose/dt at s={s}"
+        assert np.allclose(afd, accel, atol=1e-3), f"accel≠dtwist/dt at s={s}"
 
 
 if __name__ == '__main__':          # pragma: no cover

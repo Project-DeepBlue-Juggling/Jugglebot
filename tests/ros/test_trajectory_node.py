@@ -1223,16 +1223,15 @@ def _mk_ros_time(sec_float):
 
 def _timed_req(node, x=0.0, y=0.0, z=170.0, lead_s=3.0,
                vx=0.0, vy=0.0, vz=0.0, hold_after=True):
-    """A TimedTarget request whose ROS arrival maps to ~lead_s ahead of now.
+    """A TimedTarget request arriving lead_s seconds after service receipt.
 
-    Pins the node's ROS↔perf offset to perf_counter() at build time so
-    arrival_perf = arrival_sec + offset ≈ now + lead_s (deterministic, independent
-    of the mock clock returning 0)."""
-    node._ros_to_perf_offset = time.perf_counter()
+    lead_time_s is RELATIVE (the node anchors the absolute arrival at handler
+    entry on perf_counter), so no ROS↔perf offset pinning is needed; ``node``
+    is kept in the signature for call-site uniformity with the other builders."""
     req = TimedTarget.Request()
     req.pose = Pose(position=Point(x=x, y=y, z=z), orientation=Quaternion())
     req.velocity_mm_s = Vector3(x=vx, y=vy, z=vz)
-    req.arrival_time = _mk_ros_time(lead_s)
+    req.lead_time_s = float(lead_s)
     req.hold_after = hold_after
     return req
 
@@ -1309,6 +1308,33 @@ def test_timed_target_too_tight_lead_rejected_with_min_duration():
     assert resp.accepted is False
     assert resp.code == feas.TOO_FAST
     assert resp.min_duration_s > 0.05
+    assert node._active_plan.kind == 'hold'      # unchanged
+
+
+def test_timed_target_non_finite_lead_rejected():
+    """NaN/±inf lead_time_s is the one value class the planner's lead floor/ceiling
+    comparisons cannot catch (NaN compares False against both bounds) — the handler
+    rejects it loudly UNREACHABLE before any arrival is computed."""
+    node = _traj_mode_node()
+    for bad in (float('nan'), float('inf'), float('-inf')):
+        resp = node._svc_timed_target(_timed_req(node, z=185.0, lead_s=bad),
+                                      TimedTarget.Response())
+        assert resp.accepted is False, f"lead {bad} must be rejected"
+        assert resp.code == feas.UNREACHABLE
+    assert node._active_plan.kind == 'hold'      # unchanged
+
+
+def test_timed_target_non_positive_lead_rejected_too_fast():
+    """A zero/negative relative lead flows into the single feasibility gate
+    (build_timed's lead floor) and is loudly rejected TOO_FAST with the achievable
+    min_duration_s — never planned, never silently late."""
+    node = _traj_mode_node()
+    for bad in (0.0, -1.0):
+        resp = node._svc_timed_target(_timed_req(node, z=185.0, lead_s=bad),
+                                      TimedTarget.Response())
+        assert resp.accepted is False, f"lead {bad} must be rejected"
+        assert resp.code == feas.TOO_FAST
+        assert resp.min_duration_s > 0.0
     assert node._active_plan.kind == 'hold'      # unchanged
 
 
@@ -1583,8 +1609,9 @@ def test_entering_catch_mid_move_installs_stop():
 
 
 def test_timed_target_excessive_lead_rejected_no_crash():
-    """A clock-domain-confused lead (well over max_timed_lead_s) is loudly rejected via
-    the service — never a crash / MemoryError — and the plan is unchanged."""
+    """A lead well over max_timed_lead_s (e.g. an absolute timestamp mistakenly
+    pasted into the relative lead_time_s) is loudly rejected via the service —
+    never a crash / MemoryError — and the plan is unchanged."""
     node = _traj_mode_node()
     committed = node._active_plan
     resp = node._svc_timed_target(_timed_req(node, z=185.0, lead_s=61.0),
@@ -1609,7 +1636,9 @@ def test_timed_target_records_predicted_peaks():
     assert node._last_peak_vel_mmps > 0.0
 
 
-# ── clock conversion (single point) ───────────────────────────
+# ── clock conversion (retained plumbing — no production consumer since the
+# timed_target service moved to a relative lead_time_s; kept as the single
+# crossing point for any future ROS-clock-timed surface) ──────
 
 def test_ros_time_to_perf_uses_offset():
     node = _node()

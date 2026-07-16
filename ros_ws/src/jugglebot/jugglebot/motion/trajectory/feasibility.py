@@ -8,7 +8,8 @@ so **nothing that moves the platform bypasses this gate** — that single-enforc
 Phase 2 scope (this file): the **full** gate. In order (first failure wins the
 ``code``):
 
-1. **Geometry** per dense sample (200/segment): non-finite reject (``UNREACHABLE``);
+1. **Geometry** per dense sample (80/segment default; shaped plans floored at 200 —
+   see ``_SHAPED_VALIDATE_SAMPLES``): non-finite reject (``UNREACHABLE``);
    leg extensions within the hard stroke margins (``WORKSPACE``); Jacobian
    condition number under the workspace hard bound (``UNREACHABLE`` — a
    near-singular pose is unrealisable no matter the timing).
@@ -73,10 +74,57 @@ STEP_BOUND_MARGIN = 0.80
 
 # A jerk finite difference needs at least this many samples per segment.
 # NB (jerk endpoint bias): the forward-difference jerk is centred *between* samples,
-# so it under-measures the true jerk peak at a segment endpoint by ≤ 1.5 % at 200
-# samples/segment. Accepted deliberately: the jerk limit is session-ramped by feel
-# (Phase 4) with large ceiling headroom, so a sub-2 % endpoint bias never binds.
+# so it under-measures the true jerk peak at a segment endpoint. At the default 80
+# samples/segment (below) this endpoint-bias COMPONENT is up to ~2.3 % (measured
+# 2026-07-16); the TOTAL under-measurement vs the ∞-sample truth is ≤3.7 % —
+# _VALIDATE_JERK_MARGIN (1.05) covers the total so the gate stays strictly
+# conservative on jerk (the binding constraint).
 _MIN_SAMPLES = 4
+
+# Default dense-sampling resolution for the analytic gate on an UNSHAPED plan.
+# Dropped 200 → 80 as the planning speedup (2026-07-16): the analytic vel/acc peaks
+# are closed-form-exact at any sample count (compute_jacobian evaluates the true
+# analytic leg vel/acc per sample), and the step-bound pass (pass 3) samples at the
+# fixed knot spacing — neither depends on this number. ONLY the jerk finite
+# difference does. For an unshaped rest-to-rest quintic the leg jerk is BOUNDED
+# (j(0)=j(T)=60·d/T³ is finite), so the FD jerk peak CONVERGES: at 80 samples it
+# under-measures the ∞-sample truth by ≤3.7 % (measured 2026-07-16), well inside the
+# _VALIDATE_JERK_MARGIN below. Fewer samples ⇒ proportionally fewer compute_jacobian
+# calls ⇒ the dominant validate() cost drops ~2.5× (unshaped build_move ~730→~100 ms
+# on the Jetson; the rest of the win is the component-form cross in
+# ik_solver.compute_jacobian).
+_VALIDATE_SAMPLES = 80
+
+# Dense-sampling resolution for a SHAPED plan — deliberately KEPT at the pre-speedup
+# 200 (NOT lowered to _VALIDATE_SAMPLES). WHY shaped is different, in two eras:
+# (pre-window) a LeanShaper superposed tilt_rate ∝ base jerk, and the rest-to-rest
+# base jerk STEPS at segment boundaries (j(0),j(T)=60·d/T³ ≠ 0) — a near-impulsive
+# boundary jerk whose FD peak did NOT converge (measured 2026-07-16: still climbing
+# +17 % from 400→3200 samples; 80 read 24 % below 200). The C2 lean plateau window
+# (shaping.py LEAN_WINDOW_EDGE_FRAC, landed the same day) REMOVED that boundary
+# impulse — but the floor STAYS, because the window concentrates high w″ curvature
+# into the 15 % edge ramps and the shaped FD jerk peak still under-converges there
+# (measured post-window: 80-vs-400 shortfall ~9 %, 200-vs-1600 ~21 % on x+150).
+# Lowering shaped sampling would make validate() measure a SMALLER jerk ⇒ the
+# duration-stretch loop would stretch shaped moves LESS ⇒ silently emit more true
+# leg jerk on the exact (lean) path the operator already reported as "sharp". So the
+# shaped gate's fidelity is frozen at status quo; shaped build_move still speeds up
+# ~2.3× from the component-form cross alone (~2.6 s → ~1.2 s). The residual shaped
+# jerk mesh-dependence PRE-DATES both changes (the 200-sample gate always
+# under-measured shaped jerk ~22 %) — see logbook
+# 2026-07-16-lean-planning-latency-and-boundary-step.md.
+_SHAPED_VALIDATE_SAMPLES = 200
+
+# Jerk inflation applied to the finite-difference peak before the limit comparison,
+# mirroring _FOLLOW_JERK_MARGIN on the fast follower gate. At 80 samples/segment the
+# UNSHAPED FD jerk peak under-measures the true peak by ≤3.7 % (measured 2026-07-16);
+# a 5 % inflation more than covers that, so the analytic gate is provably conservative
+# on unshaped jerk — over-conservatism only ever REJECTS a marginal plan (the planner
+# then stretches its duration), never accepts an over-jerk one. (On a shaped plan the
+# margin is applied too but is NOT what makes it safe — the ≥200-sample floor above,
+# matching the shipped behavior, is.) Vel/acc/step comparisons are analytic/exact and
+# get NO margin.
+_VALIDATE_JERK_MARGIN = 1.05
 
 
 @dataclass
@@ -161,7 +209,7 @@ def _segment_grids(plan, samples_per_segment: int):
     return grids
 
 
-def validate(plan, limits, geom, *, samples_per_segment: int = 200
+def validate(plan, limits, geom, *, samples_per_segment: int = _VALIDATE_SAMPLES
              ) -> FeasibilityReport:
     """Validate ``plan`` against ``limits`` by dense sampling of the leg chain.
 
@@ -172,6 +220,14 @@ def validate(plan, limits, geom, *, samples_per_segment: int = 200
     """
     wlimits = _workspace_limits(geom)
     mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
+
+    # Shaped plans' FD jerk peak under-converges with sample count (window-edge
+    # curvature since the C2 lean window; boundary impulse before it), so they are
+    # gated at the status-quo _SHAPED_VALIDATE_SAMPLES floor rather than the leaner
+    # unshaped default — see that constant's rationale. An explicit denser request
+    # (e.g. a 400-sample reference in a conservativeness test) is still honoured.
+    if isinstance(plan, _ShapedPlan):
+        samples_per_segment = max(int(samples_per_segment), _SHAPED_VALIDATE_SAMPLES)
 
     peak_vel = 0.0
     peak_acc = 0.0
@@ -221,11 +277,16 @@ def validate(plan, limits, geom, *, samples_per_segment: int = 200
             peak_acc = max(peak_acc, float(np.max(np.abs(leg_acc))))
             acc_samples.append(leg_acc)
 
-        # Jerk from the finite difference of the analytic leg acceleration.
+        # Jerk from the finite difference of the analytic leg acceleration. Inflate
+        # by _VALIDATE_JERK_MARGIN so the gate is strictly conservative on jerk (the
+        # FD peak under-measures by ≤3.7 % total at 80 samples) — same idiom as the
+        # fast gate's _FOLLOW_JERK_MARGIN. The stored peak carries the inflation, so
+        # the planner's duration-stretch loop also sizes off the conservative value.
         if dt > 0.0 and len(acc_samples) >= 2:
             arr = np.asarray(acc_samples)
             jerk = np.diff(arr, axis=0) / dt
-            peak_jerk = max(peak_jerk, float(np.max(np.abs(jerk))))
+            peak_jerk = max(peak_jerk,
+                            float(np.max(np.abs(jerk))) * _VALIDATE_JERK_MARGIN)
 
     # ── Pass 3: knot-step bound (the actual wire u0 sequence) ──
     peak_step = 0.0

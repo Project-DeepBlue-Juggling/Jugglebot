@@ -1,5 +1,7 @@
 # Timed target state (trajectory_node, TRAJECTORY mode only).
-# Reach a pose+orientation at a nominal linear velocity at an ABSOLUTE arrival time.
+# Reach a pose+orientation at a nominal linear velocity after a RELATIVE arrival
+# lead (lead_time_s, measured from service receipt); the node computes the
+# absolute arrival internally (arrival = perf_counter-at-handler-entry + lead_time_s).
 # The arrival lead is a HARD timing constraint: a too-tight request is rejected
 # loudly (accepted=false, TOO_FAST) with the minimal feasible lead — it is NEVER
 # silently slowed to arrive late. Validated through the single feasibility gate.
@@ -7,8 +9,10 @@
 geometry_msgs/Pose pose            # Target pose. Position mm, z STOW-relative (170 = ACTIVE).
                                    # Orientation quaternion (converted to a rotvec internally).
 geometry_msgs/Vector3 velocity_mm_s  # Linear velocity at arrival (mm/s). Zero => arrive at rest.
-builtin_interfaces/Time arrival_time  # Absolute arrival time (ROS clock; converted to the
-                                   # perf_counter emitter domain at the ONE conversion point).
+float64 lead_time_s                # Arrival lead in seconds, measured from service receipt
+                                   # (relative — NOT an absolute timestamp). Must be finite and
+                                   # > 0; the node anchors the absolute arrival at handler entry
+                                   # in its own perf_counter emitter domain (no clock crossing).
 bool hold_after                    # True  => decel to rest and HOLD at the target after arrival.
                                    # False => after arriving (and coming to rest), profile back
                                    #          to the neutral active pose (0,0,170,0,0,0) and hold.

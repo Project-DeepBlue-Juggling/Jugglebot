@@ -191,6 +191,47 @@ def test_numerical_jacobian():
 
 
 # ---------------------------------------------------------------------------
+# Test 2b: component-form cross is bit-identical to np.cross
+# ---------------------------------------------------------------------------
+
+def _compute_jacobian_npcross_reference(pos, rot, geom):
+    """Reference Jacobian identical to ``compute_jacobian`` except it builds the
+    rotational columns with ``np.cross`` instead of the component-form arithmetic.
+
+    Mirrors the production structure row-for-row (same batched ``l`` / ``a_world``)
+    so the ONLY difference under test is the cross-product method — the 2026-07-16
+    planning speedup that replaced ``np.cross`` (numpy generic dispatch) with explicit
+    ``ay*lz - az*ly`` component arithmetic in ``ik_solver.compute_jacobian``.
+    """
+    leg_vecs = compute_leg_vectors(pos, rot, geom)              # (6, 3)
+    l = leg_vecs / norm(leg_vecs, axis=1, keepdims=True)        # (6, 3)
+    a_world = (rot @ geom.plat_nodes.T).T                       # (6, 3)
+    J = np.empty((6, 6))
+    J[:, :3] = l
+    J[:, 3:] = np.cross(a_world, l)
+    return J
+
+
+def test_compute_jacobian_component_cross_bit_identical():
+    """The component-form cross in compute_jacobian matches an np.cross reference to
+    machine precision over a grid of random reachable poses (seeded)."""
+    geom = StewartGeometry()
+    rng = np.random.default_rng(20260716)
+
+    max_abs_delta = 0.0
+    for _ in range(200):
+        pos, rot = _random_reachable_pose(geom, rng)
+        J_new = compute_jacobian(pos, rot, geom)
+        J_ref = _compute_jacobian_npcross_reference(pos, rot, geom)
+        assert J_new.shape == (6, 6)
+        assert np.allclose(J_new, J_ref, atol=1e-12, rtol=0.0)
+        max_abs_delta = max(max_abs_delta, float(np.max(np.abs(J_new - J_ref))))
+
+    # Component arithmetic vs np.cross differ only by float rounding — far under 1e-12.
+    assert max_abs_delta < 1e-12
+
+
+# ---------------------------------------------------------------------------
 # Test 3: Round-trip (twist → integrate → verify)
 # ---------------------------------------------------------------------------
 

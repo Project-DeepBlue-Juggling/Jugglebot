@@ -36,10 +36,11 @@ the typed ``jugglebot_interfaces/TrajectoryStatus`` (migrated off the Phase-1
 publishes the active plan's measured leg peaks + emitter jitter.
 
 Phase 5 adds timed target states: ``trajectory/timed_target`` (``TimedTarget``,
-TRAJECTORY mode) reaches a pose at a nominal velocity at an ABSOLUTE arrival time
-via ``planner.build_timed`` (a fixed-lead reach — a too-tight lead is loudly
-rejected ``TOO_FAST`` with the achievable ``min_duration_s``, never silently
-slowed). CATCH mode consumes ``catch/dynamic_target`` through the SAME
+TRAJECTORY mode) reaches a pose at a nominal velocity a RELATIVE ``lead_time_s``
+seconds after service receipt (the node anchors the absolute arrival at handler
+entry on ``perf_counter``) via ``planner.build_timed`` (a fixed-lead reach — a
+too-tight lead is loudly rejected ``TOO_FAST`` with the achievable
+``min_duration_s``, never silently slowed). CATCH mode consumes ``catch/dynamic_target`` through the SAME
 ``build_catch`` (Phase 7: the tilt-through-seat catch trajectory — a reach to the
 receive-tilted catch pose with translational arrival velocity forced to zero, a
 small residual tilt rate carried through the seat, then a literal quiescent hold;
@@ -51,8 +52,11 @@ paths supersede an in-flight plan with a C2 replan: ``build_timed`` is gated by 
 fast ``validate_follow``, so a supersede installs shortly after its seed sample —
 single-digit ms typical, guard-bounded (install-continuity rejects ``STALE_STATE`` on
 a drift > 0.06 rev), worst case tens of ms with an appended stop-stretch (no ``BUSY``
-restriction — that guard exists only on the ~377 ms ``go_to_pose`` path). One ROS-clock→perf_counter conversion point (``_ros_time_to_perf``) serves
-the service; the emitter and catch path are already perf-domain.
+restriction — that guard exists only on the ~377 ms ``go_to_pose`` path). Every
+timed surface is perf-domain: the ``timed_target`` service carries a relative
+lead anchored at handler entry, and the catch path's arrival arrives already
+perf-domain from ``catch_coordinator_node`` — no ROS-clock crossing remains
+(the retained ``_ros_time_to_perf`` offset plumbing currently has no consumer).
 
 **Armed-mode-exit is a sharp edge (Phase 1).** Leaving the streaming mode set
 while the bridge is ARMED stops the emitter publishing (``_streaming=False``), so
@@ -211,11 +215,14 @@ class TrajectoryNode(Node):
         self._gravity_mm_s2 = float(hw.GRAVITY_MMPS2)
 
         # ── Timed targets + catch (Phase 5) ──────────────────────
-        # THE single ROS-clock → perf_counter conversion point (plan Architecture).
-        # perf_counter is CLOCK_MONOTONIC on Linux (system-wide, comparable across
-        # processes and with catch_coordinator_node's perf-domain arrival_time), so
-        # the emitter thread and the catch path share one time base; only the
-        # timed_target SERVICE carries a ROS-clock arrival, converted here.
+        # ROS-clock → perf_counter offset plumbing (plan Architecture's single
+        # conversion point). perf_counter is CLOCK_MONOTONIC on Linux (system-wide,
+        # comparable across processes and with catch_coordinator_node's perf-domain
+        # arrival_time), so the emitter thread and the catch path share one time
+        # base. Since the lead_time_s interface change the timed_target SERVICE
+        # carries a RELATIVE lead (anchored at handler entry on perf_counter), so
+        # this offset currently has NO consumer — retained (mirrors
+        # catch_coordinator_node) for any future ROS-clock-timed surface.
         self._ros_to_perf_offset = self._measure_clock_offset()
         self._clock_offset_history = [self._ros_to_perf_offset]
         self._active_z_mm = float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
@@ -422,7 +429,10 @@ class TrajectoryNode(Node):
             Float64MultiArray, 'leg_torques_diagnostic', 10)
         self.create_timer(0.2, self._publish_status)
         # Re-measure the ROS↔perf clock offset every 30 s to track drift (mirrors
-        # catch_coordinator_node); the timed_target service converts through it.
+        # catch_coordinator_node). NOTE: since the lead_time_s interface change the
+        # timed_target service no longer converts through it (relative lead, perf-
+        # anchored at handler entry) — the offset is retained, consumer-less, for
+        # any future ROS-clock-timed surface.
         self.create_timer(30.0, self._refresh_clock_offset)
 
         if start_emitter:
@@ -1659,9 +1669,14 @@ class TrajectoryNode(Node):
             return response
 
         # Install-continuity guard. build_move seeds from _current_state() at entry,
-        # but the full gate takes ~1.5 s (4-5 validate passes) while the emitter
-        # keeps streaming the OLD plan. If the commanded state moved during planning,
-        # installing this plan would jump u0 from the drifted live position back to
+        # but the full gate still takes real wall time while the emitter keeps
+        # streaming the OLD plan: after the 2026-07-16 planning speedup (component-form
+        # Jacobian cross + 80-sample gate) an unshaped move runs ~2 validate passes
+        # (~0.1 s offline-measured) and a shaped (lean-gain>0) move runs ~6 passes
+        # (min-feasible stretch + shaped-refine bisections, ~1.2-1.3 s measured —
+        # the drift window this guard protects against). If the commanded
+        # state moved during planning, installing this plan would jump u0 from the
+        # drifted live position back to
         # the stale seed — a transient both the pump/firmware step gates could still
         # pass. Re-sample now and reject if the plan's t=0 commanded position has
         # drifted from the live one (compared in motor_rev, the pump's units).
@@ -1778,8 +1793,10 @@ class TrajectoryNode(Node):
         """THE ROS-clock → perf_counter conversion point (plan Architecture).
 
         ``ros_time`` is a ``builtin_interfaces/Time`` (``.sec`` / ``.nanosec``).
-        Every ROS-domain arrival time flows through here — the emitter and catch
-        path are already perf-domain, so this is the single crossing.
+        NO production caller since the timed_target service moved to a relative
+        ``lead_time_s`` (perf-anchored at handler entry) — the emitter and catch
+        path were already perf-domain. Retained so any future ROS-clock-timed
+        surface still has exactly one crossing point.
         """
         ros_sec = float(ros_time.sec) + float(ros_time.nanosec) * 1e-9
         return ros_sec + self._ros_to_perf_offset
@@ -1996,11 +2013,14 @@ class TrajectoryNode(Node):
             self._catch_arrival_perf = arrival_perf
 
     def _svc_timed_target(self, request, response):
-        """``trajectory/timed_target``: reach a pose at a velocity at an ABSOLUTE time.
+        """``trajectory/timed_target``: reach a pose at a velocity ``lead_time_s``
+        seconds after service receipt (a RELATIVE lead — the absolute arrival is
+        computed here as ``perf_counter()`` at handler entry + ``lead_time_s``).
 
         TRAJECTORY mode only (else ``WRONG_MODE``). Rejects loudly on a stale/absent
-        seed (``STALE_STATE``), a too-tight lead (``TOO_FAST`` with the achievable
-        ``min_duration_s``), or an infeasible/out-of-workspace target. Supersedes an
+        seed (``STALE_STATE``), a non-finite/malformed ``lead_time_s``
+        (``UNREACHABLE``), a non-positive or too-tight lead (``TOO_FAST`` with the
+        achievable ``min_duration_s``), or an infeasible/out-of-workspace target. Supersedes an
         in-flight plan by design — NO ``BUSY`` restriction, because the fast
         ``build_timed`` gate installs shortly after the seed sample (single-digit ms
         typical, guard-bounded — install-continuity rejects ``STALE_STATE`` on a drift
@@ -2049,7 +2069,32 @@ class TrajectoryNode(Node):
             return response
         v = request.velocity_mm_s
         twist = np.array([float(v.x), float(v.y), float(v.z), 0.0, 0.0, 0.0])
-        arrival_perf = self._ros_time_to_perf(request.arrival_time)
+        try:
+            lead = float(request.lead_time_s)
+        except Exception as e:  # noqa: BLE001 — malformed request
+            response.accepted = False
+            response.code = feas.UNREACHABLE
+            response.message = f'malformed lead_time_s: {e}'
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        if not np.isfinite(lead):
+            response.accepted = False
+            response.code = feas.UNREACHABLE
+            response.message = (f'non-finite lead_time_s ({lead}) — the arrival '
+                                f'lead must be a finite positive number of seconds')
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        # Anchor the ABSOLUTE arrival at handler entry in the emitter's perf domain
+        # (the handler runs synchronously, and _plan_and_install_timed / the emitter
+        # both run on time.perf_counter() — same clock, no domain crossing). A
+        # non-positive or too-tight lead flows into the single feasibility gate:
+        # build_timed's lead floor rejects it loudly TOO_FAST with the genuinely
+        # achievable min_duration_s (never a silent late arrival). Only NaN would
+        # sail through the gate's floor/ceiling comparisons, hence the finite
+        # guard above.
+        arrival_perf = time.perf_counter() + lead
         hold_after = bool(request.hold_after)
         accepted, code, message, planned, min_s = self._plan_and_install_timed(
             target, twist, arrival_perf, hold_after=hold_after, source='timed',

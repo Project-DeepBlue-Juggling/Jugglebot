@@ -185,7 +185,10 @@ One canonical enforcement point; all entry points (go-to-pose, timed target,
 spacemouse, `catch/dynamic_target`, reload, juggle coordinators) construct plans
 exclusively through `planner.py`, so nothing bypasses it.
 
-1. **Reachability/workspace/stroke** along the sampled path (200 samples/segment):
+1. **Reachability/workspace/stroke** along the sampled path (200 samples/segment
+   as designed; *2026-07-16: default now 80 for unshaped plans with a ×1.05 jerk
+   margin, shaped plans floored at 200 — see
+   logbook 2026-07-16-lean-planning-latency-and-boundary-step*):
    `workspace.check_workspace_limits` / `check_reachability`, leg extensions within
    stroke margins.
 2. **Leg kinematic peaks**: leg pos/vel/acc via the `ik_solver` Jacobian chain,
@@ -258,6 +261,8 @@ not a dependency.
   - `trajectory/timed_target` — **TimedTarget.srv**: pose +
     `geometry_msgs/Vector3 velocity_mm_s` + `builtin_interfaces/Time arrival_time`
     + `bool hold_after` → same response shape (`string code` included).
+    *(2026-07-16: `arrival_time` replaced by `float64 lead_time_s`, relative to
+    service receipt — see logbook 2026-07-16-timed-target-lead-time.)*
   - `trajectory/hold`, `trajectory/go_home` — `std_srvs/Trigger`.
   - `trajectory/set_limits` — **SetTrajectoryLimits.srv**: leg vel/acc/jerk
     (0 ⇒ keep), clamped to the YAML hard ceilings → success/message. The
@@ -691,7 +696,9 @@ read-only knot inspection. Full narrative in
 **Outcome addendum (2026-07-07 — audit-fix round)**: a `/audit` of the two Phase-2
 commits found one BLOCKING issue — the mid-move `go_to_pose` install step. Because
 the seed is sampled at service entry but the plan installs ~1.5 s later (4–5
-`validate` passes at ~377 ms each) while the emitter streams the OLD plan, an
+`validate` passes at ~377 ms each, as measured at the time; *2026-07-16: now
+~0.1 s unshaped / ~1.2–1.3 s shaped after the planning speedup*) while the
+emitter streams the OLD plan, an
 in-flight move meant the install jumped `u0` back to the stale seed (measured
 ~575 mm/s transient that passed both step gates). Fixes: (a) a **permanent
 install-continuity guard** — re-sample the commanded state immediately before
