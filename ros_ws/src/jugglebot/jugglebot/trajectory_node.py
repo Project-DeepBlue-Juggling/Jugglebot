@@ -315,6 +315,13 @@ class TrajectoryNode(Node):
         self._seq = 0
         self._last_motor_rev = None       # prior emitted u0 (step-bound defence)
         self._last_pose = self._neutral_pose.copy()
+        # Latest emitted frame's gravity-FF torque vector (TRUE Nm, extension-
+        # positive) — stashed by the 40 Hz emitter, republished at 5 Hz on
+        # leg_torques_diagnostic by _publish_status. None until the first frame
+        # ships (so nothing publishes before frame 1). One writer (the emitter
+        # thread), one reader (_publish_status): a plain reference assignment is
+        # GIL-atomic — no lock, no copy (the reader treats it as immutable).
+        self._last_torque_Nm = None
         self._last_rejection = ''
         # Latest robot_state seed source (pos_estimate rev, Jugglebot ext convention).
         self._latest_pos_rev = None
@@ -403,6 +410,16 @@ class TrajectoryNode(Node):
         # (blacklist semantics preserved).
         self.target_feedback_pub = self.create_publisher(
             TargetFeedback, 'trajectory/target_feedback', 10)
+        # Feedforward leg torques on leg_torques_diagnostic — the SAME topic name,
+        # Float64MultiArray type and semantic (6 leg values, TRUE Nm, extension-
+        # positive) that motion_bridge_node publishes on the MPC path, so the
+        # rosbag record list / GUI / any consumer see identical data regardless of
+        # which producer is live (the two paths are mutually exclusive on :5557).
+        # Two publishers on one topic is fine in ROS2 as long as the types match.
+        # Published at 5 Hz by _publish_status; the wire truth is the 40 Hz emitter
+        # and this is a sample of it (a diagnostic — 5 Hz is plenty).
+        self.leg_torques_pub = self.create_publisher(
+            Float64MultiArray, 'leg_torques_diagnostic', 10)
         self.create_timer(0.2, self._publish_status)
         # Re-measure the ROS↔perf clock offset every 30 s to track drift (mirrors
         # catch_coordinator_node); the timed_target service converts through it.
@@ -524,6 +541,13 @@ class TrajectoryNode(Node):
         self._pub.send(frame)
         self._last_motor_rev = motor_rev
         self._last_pose = np.asarray(frame['pose_6dof'], dtype=float)
+        # Stash (only) the FF torque vector this frame shipped, for the 5 Hz
+        # leg_torques_diagnostic republish (_publish_status). This is the ONLY
+        # work the 40 Hz hot path does for that diagnostic: a plain reference
+        # assignment (GIL-atomic; no lock, no copy — the reader never mutates it).
+        # `frame['torque_Nm']` is a fresh (6,) array per emitter frame — exact
+        # zeros when the FF master flag is off, nonzero gravity FF when on.
+        self._last_torque_Nm = frame['torque_Nm']
         self._seq += 1
         # Pass the plan this frame was sampled FROM: an install on the service thread
         # can swap the active plan (and reset the accumulators) between the frame
@@ -771,6 +795,11 @@ class TrajectoryNode(Node):
                 self._streaming = False
                 self._seeded = False
                 self._last_motor_rev = None
+                # Drop the torque stash too (audit 2026-07-16): without this, a
+                # 5 Hz status tick landing in the re-entry window (reseeded but
+                # before the first new frame) would republish the PREVIOUS
+                # stream's last torque vector on leg_torques_diagnostic.
+                self._last_torque_Nm = None
                 self._escalation_stop = False
                 self._escalate_stop_fail_count = 0
                 self._pending_stop = False
@@ -2108,6 +2137,20 @@ class TrajectoryNode(Node):
                      value=f'{self._max_follow_block_s * 1e3:.1f}'),
         ]
         self.diagnostics_pub.publish(diag)
+
+        # Feedforward leg torques on leg_torques_diagnostic (TRUE Nm, extension-
+        # positive) — a 5 Hz sample of the 40 Hz wire truth stashed by the emitter.
+        # Gated on `streaming` (== _streaming AND _seeded, snapshotted above) AND a
+        # real emitted frame (_last_torque_Nm is not None): no stale torques leak
+        # after streaming stops, and nothing publishes before the first frame. When
+        # the FF master flag is off the emitter stashes exact zeros — publishing
+        # those is correct and desirable (it proves the producer→wire chain is live).
+        torque = self._last_torque_Nm     # GIL-atomic read of the emitter's stash
+        if streaming and torque is not None:
+            torque_msg = Float64MultiArray()
+            torque_msg.data = [float(v) for v in torque]
+            self.leg_torques_pub.publish(torque_msg)
+
         # Reset the per-200ms windows each publish.
         self._max_emit_gap_s = 0.0
         self._max_follow_block_s = 0.0

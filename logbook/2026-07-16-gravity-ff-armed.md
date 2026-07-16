@@ -94,6 +94,13 @@ armed state.
    publishes it. The Nm-level FF evidence therefore rests on the link-status
    flags + physics cross-checks (which suffice). Small observability gap —
    wire the emitter's computed torques to the topic in a future pass.
+   **→ CLOSED same day**: `trajectory_node` now stashes each emitted frame's
+   `torque_Nm` (one reference assignment on the 40 Hz hot path) and publishes
+   it at 5 Hz on `leg_torques_diagnostic` (same Float64MultiArray
+   type/semantic as `motion_bridge_node`'s MPC-path publisher), gated on
+   streaming+seeded. Bonus empirical fact from its test: the legs do NOT
+   share gravity equally at the active pose — per-leg FF spans
+   0.0125–0.0394 Nm (leg 3 lowest), genuine geometry.
 2. **Session B's first move drew the session's peak current** (leg 5: 7.35 A
    vs 3.51 A for the matched move in A) and engaged the lead clamp on all
    six legs (mask 63) for ~0.2 s. Isolated — not repeated across the other

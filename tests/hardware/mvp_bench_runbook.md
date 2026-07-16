@@ -79,7 +79,9 @@ operator:
 **ABORT any session immediately on:**
 
 - any **E-STOP** (MPC_STALE / MAX_DEVIATION latch in the bridge/firmware log);
-- any **oscillation**, audible snap, or tracking error > 0.1 rev;
+- any **oscillation**, audible snap, or tracking error > 0.1 rev **at a hold**
+  (for move-onset deviation, which rides the MAX_LEAD 0.10 rev ceiling by
+  design, see the S4 ABORT recalibration note — pending operator confirmation);
 - any **unexplained bus fault** (marginal CAN3 is a known tier-2 quirk, but an
   *unexplained* bus fault during a session is an ABORT).
 
@@ -239,7 +241,8 @@ operator:
   `accepted=false code=TOO_FAST` with a populated `min_duration_s` and **moves nothing**.
   Target: **11/11** scripted moves clean (the `_BATTERY` list holds 11 feasible moves:
   2 in z, 3 in x, 3 in y, 3 in rx) + one demonstrated loud rejection.
-- **ABORT**: oscillation, gate violation, tracking error > 0.1 rev.
+- **ABORT**: oscillation, gate violation, tracking error > 0.1 rev (holds; see
+  the S4 ABORT recalibration note for move-onset deviation).
 - **Result (2026-07-09)**: **PASS — 11/11 moves clean + the loud rejection.** Battery ran
   13:34:07–13:34:43 at the Phase-1 default limits (100 mm/s, 400 mm/s², 8000 mm/s³),
   `lean_gain = 0.0`. Per-move realized leg peaks tracked the gate prediction closely
@@ -309,10 +312,26 @@ operator:
   physical/mechanical validation**: vibration, resonance, audible harshness, ODrive
   tracking error, and how the platform *feels* at each step. Your senses are the
   instrument; the ABORT criteria are the guardrail.
-- **Entry**: S2/S3 passed; armed + holding in **TRAJECTORY** mode (same arm sequence as
-  S2 steps 1–5); rosbag recording on; **know the last-good YAML session limits** so an
+- **Entry**: S2/S3 passed; armed + holding in **TRAJECTORY** mode — since the
+  2026-07-15 arming contract that is just: launch → `activate` → `trajectory`
+  (arming is automatic on ACTIVE entry; verify the "setpoint output ENABLED"
+  banner); rosbag recording on; **know the last-good YAML session limits** so an
   ABORT reverts cleanly. Note: session limits are runtime state — **a relaunch always
   reverts to the YAML values**, so a relaunch is also a valid "revert everything".
+- **New since 2026-07-16 — the ramp runs with the gravity FF live** (ships
+  enabled; `logbook/2026-07-16-gravity-ff-armed.md`). Two watch items from the
+  arming A/B: (1) **the first commanded move after any armed hold is the
+  harshest** — in the FF-on session it briefly engaged the lead clamp on all
+  six legs (`lead_clamp_mask` 63 for ~0.2 s) and peaked 7.35 A on one leg
+  (vs ~3.5 A for the same move in the baseline). Isolated and self-recovering,
+  but at RAISED limits watch the first move of every battery: a leg peaking
+  above ~8 A or a full mask lasting >0.5 s ⇒ stop and keep the bag. A gentle
+  wake-up move after arming (before the battery) is a legitimate mitigation.
+  (2) Move-time `live_deviation` **rides the MAX_LEAD 0.10 rev ceiling by
+  design** at these speeds — both A/B sessions brushed 0.09–0.11 rev at move
+  onsets while looking and sounding completely clean, so a brief 0.1 rev
+  excursion at onset is NOT by itself the ABORT signal (see the ABORT note
+  below).
 
 #### The ladder (recommended order + step sizes)
 
@@ -366,14 +385,20 @@ fine if the first felt completely clean — but never skip the battery+review be
    its `min_duration_s` should also shrink step by step (the same move is achievable
    faster at higher limits).
 
-3. **SpaceMouse sortie (new, recommended since the chase-clamp rework)** — 60–90 s per
-   step: disarm-free mode change is NOT allowed (Sharp Edge #1 — disarm first if leaving
-   TRAJECTORY), so: `set_setpoint_output false` → mode `spacemouse` (Sharp Edge #5
-   repeat-publish + verify) → re-arm → fly gently, then a few full-deflection shoves.
-   This exercises the moving-seed regime the battery cannot. **Expected**:
-   `last_rejection` on `/trajectory/status` stays empty; no 1 Hz ERROR mentioning
-   "escalation" in the trajectory_node log; the shove saturates smoothly at the
-   workspace edge. Then disarm → back to `trajectory` → re-arm for the next step.
+3. **SpaceMouse sortie (OPTIONAL, recommended since the chase-clamp rework)** —
+   60–90 s per step: since the arming contract, TRAJECTORY↔SPACEMOUSE is a
+   streaming↔streaming mode change and is **safe while armed** — just publish
+   mode `spacemouse` (Sharp Edge #5 repeat-publish + verify), fly gently, then
+   a few full-deflection shoves, then back to `trajectory`. (The old
+   disarm→mode→re-arm dance is no longer needed; it was over-conservative even
+   then — Sharp Edge #1 concerned leaving the streaming SET, which SPACEMOUSE
+   is inside.) This exercises the moving-seed regime the battery cannot.
+   **Skipping the sorties is a legitimate trim** if SpaceMouse time is better
+   spent — S3 already validated the follower at default limits; what a skipped
+   sortie loses is only the moving-seed exercise at each RAISED limit step.
+   **Expected**: `last_rejection` on `/trajectory/status` stays empty; no 1 Hz
+   ERROR mentioning "escalation" in the trajectory_node log; the shove
+   saturates smoothly at the workspace edge.
 
 4. **Review** — `/diagnose --latest`: in the **Trajectory Moves** block the raised
    limit's realized peak should climb toward its new value while the other two keep
@@ -398,9 +423,20 @@ fine if the first felt completely clean — but never skip the battery+review be
   for a tilt-rate tick at move start/end (the boundary transient) — report it rather
   than pushing through.
 - **PASS/ABORT** per move: as S2 (smooth, jerk within limits, TOO_FAST rejects nothing;
-  ABORT on oscillation / snap / tracking error > 0.1 rev / E-STOP). On ABORT, revert
-  and debrief before re-attempting — the failing step's `/diagnose` block + rosbag are
-  the evidence.
+  ABORT on oscillation / snap / E-STOP). **⚠ The old "tracking error > 0.1 rev" ABORT
+  line needs operator recalibration before S4**: the 2026-07-16 A/B bags show move-onset
+  `live_deviation` brushing 0.09–0.11 rev **by design** (it rides the MAX_LEAD 0.10 rev
+  clamp ceiling at 64 mm/s) in two sessions that were clean by every other measure — the
+  criterion as written would ABORT designed behaviour. Proposed restatement (operator to
+  confirm): ABORT on deviation that does NOT collapse after arrival, on sustained
+  full-mask lead-clamp engagement (> 1 s), or on any MAX_DEVIATION latch (the firmware
+  guard at 0.5 rev); keep 0.1 rev as the ABORT threshold **for holds**, where it retains
+  its original meaning. On ABORT, revert and debrief before re-attempting — the failing
+  step's `/diagnose` block + rosbag are the evidence. This criterion also appears
+  in the Global ABORT list and at S2/S5 — a confirmed recalibration should ripple to
+  all three. Threshold tiers, explicit: full-mask (`lead_clamp_mask` 63) engagement
+  **> 0.5 s ⇒ stop the battery and keep the bag** (watch item 1); **> 1 s sustained ⇒
+  ABORT the session**; the ~0.2 s onset blips observed 2026-07-16 are normal.
 - **Detailed protocol**: `tests/hardware/session_phase4_ramp.md` (per-step mechanics;
   this section's ladder supersedes its "~1.5×, jerk 12000" example values).
 

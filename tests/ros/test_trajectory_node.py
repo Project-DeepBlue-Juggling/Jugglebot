@@ -612,6 +612,105 @@ def test_status_publishes_typed_trajectory_status():
     assert published.plan_kind == 'hold'
 
 
+# ── leg_torques_diagnostic (gravity FF observability) ─────────
+# trajectory_node republishes each emitted frame's torque_Nm on the SAME topic
+# (leg_torques_diagnostic, Float64MultiArray, 6 leg values, TRUE Nm, extension-
+# positive) that motion_bridge_node uses on the MPC path — so the rosbag record
+# list / GUI / consumers see identical data regardless of producer. The 40 Hz
+# emitter only STASHES the vector; _publish_status (5 Hz) does the ROS publish.
+
+def test_publish_status_publishes_leg_torques_diagnostic():
+    """After a seed + at least one emitted frame, _publish_status publishes the
+    latest frame's torque_Nm on leg_torques_diagnostic. With the shipped gravity
+    FF enabled the six values are nonzero and physically small at the active pose."""
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    node._emit_once(node._plan_t0)                    # stashes the frame's torque_Nm
+    assert node._last_torque_Nm is not None
+    node._publish_status()
+    pub = node.leg_torques_pub
+    assert len(pub.published) == 1
+    msg = pub.published[-1]
+    assert isinstance(msg, Float64MultiArray)
+    assert len(msg.data) == 6
+    # Same topic AND same data as the last emitted frame (produced-agnostic parity).
+    assert np.allclose(msg.data, node._last_torque_Nm)
+    assert np.allclose(msg.data, node._pub.frames[-1]['torque_Nm'])
+    # Shipped gravity FF: nonzero, physically small at the active pose. NOTE the
+    # empirically-measured band at [0,0,170] is 0.01253-0.03941 Nm (asymmetric —
+    # the six legs do NOT share the vertical gravity load equally at home); the
+    # bounds bracket that with margin. (Slightly wider low end than the MPC-path
+    # band documented in tests/motion/test_leg_torque_ff.py (0.013-0.041) — leg 3's
+    # analytic value at [0,0,170] is 0.01253, just under 0.013.)
+    assert all(v != 0.0 for v in msg.data)
+    assert np.all(np.abs(msg.data) >= 0.012)
+    assert np.all(np.abs(msg.data) <= 0.045)
+
+
+def test_publish_status_no_torques_when_not_streaming():
+    """Never seeded / not streaming ⇒ _publish_status publishes nothing on
+    leg_torques_diagnostic (there is no stream to sample)."""
+    node = _node()
+    assert node._streaming is False and node._seeded is False
+    node._publish_status()
+    assert node.leg_torques_pub.published == []
+
+
+def test_publish_status_no_torques_before_first_frame():
+    """Seeded + streaming but no emitter frame yet ⇒ nothing published: the stash
+    is None until frame 1, so no torque leaks before the wire carries one."""
+    node = _traj_mode_node()                          # seeded + streaming
+    assert node._last_torque_Nm is None               # no _emit_once yet
+    node._publish_status()
+    assert node.leg_torques_pub.published == []
+
+
+def test_publish_status_stops_torques_after_leaving_stream():
+    """Once streaming stops, nothing republishes: the streaming gate closes AND
+    the stash itself is dropped (audit 2026-07-16 — a surviving stash could leak
+    the previous stream's torque in the re-entry window, see the next test)."""
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    node._emit_once(node._plan_t0)
+    node._publish_status()
+    assert len(node.leg_torques_pub.published) == 1
+    node._on_control_mode(String(data='DISABLED'))    # leave the streaming set
+    assert node._last_torque_Nm is None               # stash dropped with the stream
+    node._publish_status()
+    assert len(node.leg_torques_pub.published) == 1    # no new torque message
+
+
+def test_no_stale_torque_republish_in_stream_reentry_window():
+    """Audit 2026-07-16: leave the stream, re-enter and RESEED, but no new frame
+    has shipped yet — a 5 Hz status tick in that window must NOT republish the
+    previous stream's last torque vector."""
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    node._emit_once(node._plan_t0)
+    node._publish_status()
+    assert len(node.leg_torques_pub.published) == 1
+    node._on_control_mode(String(data='DISABLED'))    # leave the streaming set
+    node._on_robot_state(_robot_state())              # fresh telemetry
+    node._on_control_mode(String(data='TRAJECTORY'))  # re-enter: reseeds
+    assert node._streaming is True and node._seeded is True
+    node._publish_status()                            # tick BEFORE the first new frame
+    assert len(node.leg_torques_pub.published) == 1    # nothing stale republished
+    node._emit_once(node._plan_t0)                    # first frame of the new stream
+    node._publish_status()
+    assert len(node.leg_torques_pub.published) == 2    # now it flows again
+
+
+def test_emitter_hot_path_only_stashes_does_not_publish_torques():
+    """The 40 Hz emitter must add no publisher call to the hot path — it only
+    STASHES the torque vector; the ROS publish is the 5 Hz _publish_status's job."""
+    node = _traj_mode_node()
+    node._pub = _CapturePub()
+    for k in range(5):
+        node._emit_once(node._plan_t0 + k * 0.025)
+    assert node._last_torque_Nm is not None            # stash updated by the emitter
+    assert node.leg_torques_pub.published == []         # but emitter published nothing
+
+
 # ── SpaceMouse follower (Phase 3) ─────────────────────────────
 
 def _platform_pose(x=0.0, y=0.0, z=170.0, publisher='SPACEMOUSE'):

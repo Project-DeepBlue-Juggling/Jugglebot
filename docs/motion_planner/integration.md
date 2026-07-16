@@ -81,7 +81,7 @@ The motion bridge translates between the ROS2 topic world and the motor guard's 
 | IPC Topic | ROS2 Topic | Message Type | Content |
 |---|---|---|---|
 | `telem` | `leg_lengths_topic` | `Float64MultiArray` | 18 values: [6 positions (rev), 6 velocities (rev/s), 6 torques (Nm)] |
-| `telem` | `leg_torques_diagnostic` | `Float64MultiArray` | 6 feedforward torques (monitoring only) |
+| `telem` | `leg_torques_diagnostic` | `Float64MultiArray` | 6 feedforward torques (monitoring only). Also published by `trajectory_node` on the trajectory path (same type/semantic — 6 leg values, TRUE Nm, extension-positive), sampled at 5 Hz from its 40 Hz emitter |
 | `telem` | `motion/tracking_error` | `Float64MultiArray` | 6 per-leg tracking errors (mm) |
 | `telem` | `motion/diagnostics` | `DiagnosticStatus` | Condition number, workspace status, faults |
 

@@ -42,6 +42,9 @@ topic consumed by the CAN node) when this flag is `True`.
 
 Diagnostic-only topics (`leg_torques_diagnostic`, `motion/tracking_error`,
 `motion/diagnostics`) are not gated — they cannot command motors.
+(`leg_torques_diagnostic` is also published by `trajectory_node` on the
+trajectory path — same type/semantic — so it carries the gravity feedforward
+regardless of which producer is live; still diagnostic-only, still not gated.)
 
 ### Control modes and the motor guard
 
