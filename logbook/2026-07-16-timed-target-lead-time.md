@@ -13,6 +13,7 @@ files_changed:
   - tests/hardware/session_phase5_timed.md
   - tests/hardware/mvp_bench_runbook.md
 commits:
+  - 274af6b
 subsystem:
   - ros
 tags:

@@ -14,7 +14,8 @@ files_changed:
   - tests/motion/test_trajectory_feasibility.py
   - tests/motion/test_trajectory_shaping.py
   - tests/hardware/mvp_bench_runbook.md
-commits: []
+commits:
+  - 274af6b
 subsystem:
   - motion
 tags:
