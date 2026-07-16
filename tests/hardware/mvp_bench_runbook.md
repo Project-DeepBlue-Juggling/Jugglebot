@@ -63,7 +63,7 @@ operator:
   carries `[wire DISARMED — setpoints not reaching the legs]` and trajectory_node
   WARNs. If you see it under auto-arm, something real is wrong — stop.
 
-## ⚡ 2026-07-16 — MAX_DEVIATION guard raised to 1.0 rev + ODrive vel_limit raised to 6.0 rev/s (read before resuming S4)
+## ⚡ 2026-07-16 — MAX_DEVIATION guard raised to 1.0 rev + ODrive vel_limit raised 6.0 → 12.0 rev/s + ceilings opened (read before resuming S4)
 
 Today's S4 limit-ramp session hit three `MAX_DEVIATION` guard E-STOPs at session
 vel_limit=200 mm/s (always leg 1 first, 0.52–0.56 rev at trip). Forensics
@@ -124,6 +124,24 @@ The operator has confirmed two independent changes as a result:
    passthrough while powered (read back via odrivetool or SDO read) —
    flagged during today's analysis; the saved JSON says `input_mode=5` but the
    live path requires passthrough semantics.
+
+**⚡ 2026-07-16 evening update (after the raised-limit run validated: bag
+`2026-07-16_17-38-15` ramped vel 100→200→280 mm/s, 22 moves, zero latches —
+inventoried in `plans/active/accel-ff-inertia.md`):**
+the ODrive leg `vel_limit` is now **12.0 rev/s ≈ 846 mm/s** and the
+`set_limits` ceilings are OPENED to **5000 / 5000 / 200000** (vel mm/s /
+acc mm/s² / jerk mm/s³) — the ceilings are now *administrative*, deliberately
+above the trackable envelope; the guard + deliberate session ramping are the
+backstops. Deployment: **colcon build + relaunch only** (the 12.0 push reaches
+the drives at the first homing; NO reflash — the guard/attribution flash from
+the morning covers everything firmware-side). Know the real envelope while
+ramping: **while the lead clamp is engaged** (which happens on every fast move
+onset) catch-up velocity is capped by the firmware `VELFF` cap at `4.0 + 3.5 =
+7.5 rev/s ≈ 529 mm/s`, so session vel limits much beyond **~450–500 mm/s**
+will latch the guard on any sustained clamp engagement until the VELFF-cap
+raise (a flash item) and/or the accel FF land. Between 200 and ~450 mm/s the
+deviation scaling is **unmeasured** — extend the ladder in modest steps and
+watch `live_deviation` against the 1.0 rev guard.
 
 **New guard-fault attribution** (firmware-ground-truth only — Python never
 re-thresholds `MAX_DEVIATION_REV`; it reads the firmware's frozen
@@ -393,11 +411,14 @@ auto-tracks whatever threshold the firmware trips at):
   validated step at a time; resolve the lean A/B.
 - **Ramp TARGETS** (from the Phase-6 reload gate, at 0.7 s lead / ≤80 mm reach / ≤12°
   tilt, 1.15× headroom): **leg vel ≈ 156 mm/s, acc ≈ 660 mm/s², jerk ≈ 10 331 mm/s³**.
-  All three stay far inside the YAML ceilings (280 / 4000 / 200 000).
+  All three stay far inside the pre-2026-07-16 ceilings (280 / 4000 / 200 000;
+  the ceilings are now administrative 5000/5000/200000 — see the ⚡ evening update).
 - **What S4 is actually testing (post-rework framing)**: the software stack has already
   been validated through these limits and beyond — the chase-clamp sweep passed the
-  production regime at the defaults, the S4 targets, AND the YAML ceilings (0 reject
-  streaks, follow p99 6–11 ms), and every plan is still individually gated. **S4 is a
+  production regime at the defaults, the S4 targets, AND the then-YAML-ceilings tier
+  (280/4000/200000; 0 reject streaks, follow p99 6–11 ms — the sweep does NOT cover
+  the opened administrative ceilings, so sessions above the old-ceilings tier are new
+  territory for the chase gate too), and every plan is still individually gated. **S4 is a
   physical/mechanical validation**: vibration, resonance, audible harshness, ODrive
   tracking error, and how the platform *feels* at each step. Your senses are the
   instrument; the ABORT criteria are the guardrail.
@@ -426,12 +447,13 @@ auto-tracks whatever threshold the firmware trips at):
   is NOT by itself the ABORT signal (see the ABORT note below). The lead-clamp
   mask itself is release-based, not duration-based — see the ABORT note.
 - **New since 2026-07-16 (later the same day) — the guard is now 1.0 rev and
-  the ODrive leg vel_limit is now 6.0 rev/s.** See the ⚡ 2026-07-16 banner
-  near the top of this file for the full two-halves deployment status
-  (firmware reflash for the guard, colcon rebuild + relaunch for the
-  vel_limit push) and the session prerequisites — both must land before
-  resuming the ladder below. Expected peak transit `live_deviation` per the
-  measured scaling law, for comparing against the live number:
+  the ODrive leg vel_limit is now 12.0 rev/s** (6.0 at midday, 12.0 in the
+  evening update; the `set_limits` ceilings are opened to 5000/5000/200000 —
+  see the ⚡ 2026-07-16 banner + evening update near the top of this file for
+  deployment status and the real trackable envelope, ~529 mm/s clamp-engaged
+  until the VELFF-cap flash item lands). Expected peak transit
+  `live_deviation` per the measured scaling law, for comparing against the
+  live number (unmeasured above 200 mm/s — extend by modest steps):
 
   | session vel limit | expected peak transit `live_deviation` |
   |---|---|
@@ -440,7 +462,7 @@ auto-tracks whatever threshold the firmware trips at):
   | 160 mm/s | ~0.41 rev |
   | 190–200 mm/s | ~0.52–0.56 rev |
 
-  With `vel_limit` raised to 6.0 rev/s the velocity loop has more catch-up
+  With `vel_limit` raised (6.0, then 12.0) the velocity loop has more catch-up
   headroom (`vel_ff` is no longer clipped to zero added authority once the
   clamp engages — see `canbridge_config.h`), which should mean *less* lag at
   a given speed, not more — but `vel_integrator_limit=Infinity`, so also

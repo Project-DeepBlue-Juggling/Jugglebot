@@ -302,6 +302,10 @@ Operator sequences (also documented in the ops doc when Phase 1 lands):
 
 ### Configuration (`config/hardware_config.yaml` → `generate_config.py` → `JB_TRAJ_*`)
 
+*(Initial 2026-07-08 values shown. The ceilings were opened to administrative
+5000/5000/200000 on 2026-07-16 — see
+`logbook/2026-07-16-max-deviation-guard-tracking-lag.md` Addendum.)*
+
 ```yaml
 trajectory_op:
   leg_vel_limit_mmps: 100.0        # session-ramped; hard ceiling 280 (= 4.0 rev/s)
@@ -813,8 +817,8 @@ reach, ≤ 12° tilt, arrival speeds 2.5–4.0 m/s), the measured leg peaks over
 accepted catches, with 1.15× headroom, are **leg vel ≈ 156 mm/s, acc ≈ 660 mm/s²,
 jerk ≈ 10 331 mm/s³**. All three targets exceed the Phase-1 defaults
 (100 / 400 / 8000) and require ramp steps — **jerk** is the binding constraint and
-the largest relative step; all three stay well inside the YAML hard ceilings
-(280 / 4000 / 200 000). A faster/tighter catch (shorter
+the largest relative step; all three stay well inside the original YAML hard ceilings
+(280 / 4000 / 200 000; administrative 5000/5000/200000 since 2026-07-16). A faster/tighter catch (shorter
 lead) would raise these; the operator ramp should reach at least these before Phase 7.
 
 **Outcome (2026-07-08 — CODE COMPLETE, hardware deferred)**: All Phase 4 *software*

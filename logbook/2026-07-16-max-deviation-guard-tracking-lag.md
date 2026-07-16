@@ -2,7 +2,7 @@
 title: The MAX_DEVIATION guard latched on legitimate velocity-loop lag, not runaway — guard raised 0.5→1.0 rev, leg vel_limit 4.0→6.0 rev/s, per-leg latch attribution wired
 type: investigation
 date: 2026-07-16
-status: in-progress
+status: resolved
 phase: "MVP trajectory bringup — S4 limit ramp (MAX_DEVIATION guard + vel_limit headroom)"
 related_plan: mvp-trajectory-bringup.md
 files_changed:
@@ -24,6 +24,11 @@ files_changed:
   - tools/probes/gui_synthetic_stack.py
   - tests/hardware/mvp_bench_runbook.md
   - tests/hardware/session_phase4_ramp.md
+  - tests/hardware/sysid_lib.py
+  - plans/active/leg-gain-tuning-methodology.md
+  - plans/active/mvp-trajectory-bringup.md
+  - plans/active/accel-ff-inertia.md
+  - docs/can_bridge/safety.md
 commits:
   - e2605c1
 subsystem:
@@ -333,6 +338,47 @@ still build to ~0.55 rev at onset (that is legitimate command-space lag) but now
 sits well inside the 1.0-rev guard and, with `vel_ff` catch-up authority
 restored, should collapse at arrival.
 
+## Addendum — 2026-07-16 evening: both halves on hardware; limits opened further
+
+The operator flashed the guard build, rebuilt + relaunched, and ran an
+expanded `traj_ramp_battery` at raised limits — **validated**: bag
+`~/Desktop/rosbags/2026-07-16_17-38-15` (inventoried in
+`plans/active/accel-ff-inertia.md`) ramped limits vel 100 → 200 → 280 mm/s
+(acc 400 → 660, jerk 8000), 22 move segments, **zero fault transitions, zero
+latches**, peak realized leg vel 3.34 rev/s. The battery that latched three
+times at vel = 200 in the afternoon now runs clean to a vel = 280 setting.
+Both deployment halves from this entry are live and hardware-confirmed; the
+entry status flips to **resolved**. On the strength of that run the operator
+opened the envelope further (all landed the same evening):
+
+- **ODrive leg `vel_limit` 6.0 → 12.0 rev/s** (≈ 846 mm/s; still 25 % of the
+  bench envelope). Runtime CAN push — colcon build + relaunch, no reflash.
+  Watch items at 12: the overspeed E-STOP (16.5 rev/s measured) now leaves a
+  37 % margin over commanded catch-up sprints (was 2.75×), and — the
+  load-bearing subtlety — **while the lead clamp is engaged, catch-up is
+  bounded by `Kp·MAX_LEAD + LEAD_CLAMP_VELFF_LIMIT_RPS` = 4.0 + 3.5 =
+  7.5 rev/s ≈ 529 mm/s**, NOT by `vel_limit`. Raising `vel_limit` past 7.5
+  widens only the un-clamped envelope; the firmware VELFF-cap raise is a
+  bundled flash item for the accel-FF chapter.
+- **`set_limits` ceilings opened 280/4000/200000 → 5000/5000/200000**
+  (vel mm/s / acc mm/s² / jerk mm/s³ — jerk unchanged). The ceilings are now
+  **administrative**: deliberately above both the drive-trackable envelope
+  and the bench-proven 3.4 m/s. The safety chain they used to shadow is
+  restated in the YAML: deliberate session ramping → kinematic feasibility
+  gate → lead/stroke clamps (physical) → MAX_DEVIATION guard (command-space)
+  → overspeed E-STOP. A session limit above the trackable envelope WILL latch
+  the guard mid-move — that is the intended backstop, now with per-leg
+  attribution.
+- The **accel-FF exploration ran and landed** the same evening:
+  `plans/active/accel-ff-inertia.md` — machinery map (the platform-inertia FF
+  is already fully wired, gated by `torque_ff_platform_inertia: false`, hard
+  prerequisite = the firmware stale-hold torque decay), coordinated-inertia
+  measurement (median J_eff 7.7e-4 = 2.8× rotor; **lateral/z = 1.68×**, the
+  operator's lateral-heaviness hypothesis CONFIRMED; this honestly *narrows*
+  this entry's "~5–20× rotor" — that was a velocity-loop-LAG figure, clean
+  torque-per-accel inertia is 2–5×), and the phased implementation +
+  pre-registered A/B protocol.
+
 ## Withdrawn claims
 
 - [2026-07-16] Initial framing: the trips are ODrive `vel_limit` **saturation**
@@ -356,9 +402,9 @@ restored, should collapse at arrival.
   **measured coordinated-move inertia** (data-implied 1–3e-3+ kg·m²), NOT the
   bench single-leg `J_eff ≈ 3e-4`. See the FF-before-feedback methodology in
   `plans/active/leg-gain-tuning-methodology.md`.
-- **Hardware validation pending** on both deployment halves (reflash for A;
-  colcon build + relaunch for B), then a re-run of the S4 vel = 200 step to
-  confirm the ramp clears and the deviation collapses at arrival.
+- ~~Hardware validation pending on both deployment halves~~ **CLOSED the same
+  evening**: bag `2026-07-16_17-38-15` ran the battery through vel = 200 and
+  280 mm/s settings with zero latches (see the Addendum).
 - The legacy Jetson-side 500 Hz guard (`motor_guard.py:87`) keeps its own
   `MAX_DEVIATION_REV = 0.5` — deliberately NOT raised here. It belongs to the
   MPC path (dormant on this branch) and has seen none of this data; the

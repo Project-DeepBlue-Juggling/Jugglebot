@@ -213,9 +213,9 @@ CHIRP_TRACK_MARGIN_REV = 0.10  # gross-tracking-error abort budget ABOVE the chi
 
 # Default per-run velocity cap — a TUNING-appropriate value, NOT the survival ceiling.
 # 4.0 rev/s (~0.28 m/s leg-end) was Jugglebot's configured ODrive ceiling through
-# 2026-07-15; the production ceiling was raised to 6.0 rev/s on 2026-07-16 (lead-clamp
-# catch-up headroom), but this bench default STAYS 4.0 as a deliberately conservative
-# measurement-step velocity (per the leg-actuator-limits note). The 35 rev/s
+# 2026-07-15; the production ceiling was raised twice on 2026-07-16 (final 12.0 rev/s
+# — see hardware_config.yaml leg_vel_limit_rps), but this bench default STAYS 4.0 as a
+# deliberately conservative measurement-step velocity (per the leg-actuator-limits note). The 35 rev/s
 # HARD_VEL_CAP_RPS survival ceiling stays reachable by passing --vel-cap 35 explicitly
 # (F4, 2026-07-11).
 DEFAULT_VEL_CAP_RPS = 4.0
@@ -3496,13 +3496,13 @@ def main() -> int:
         return 1
     stroke_amps = _parse_float_list(args.stroke_amps) if args.stroke_amps else None
     stroke_vels = _parse_float_list(args.stroke_vels) if args.stroke_vels else None
-    # Teleop slew cap: default 2.0, up to 4.0 with a warning, never above (the drive
-    # leg_vel_limit is 6.0 rev/s since 2026-07-16; 4.0 is kept as a deliberately
-    # conservative stick-slew ceiling).
+    # Teleop slew cap: default 2.0, up to 4.0 with a warning, never above (4.0 is a
+    # deliberately conservative stick-slew ceiling, kept well below the drive
+    # leg_vel_limit — see hardware_config.yaml leg_vel_limit_rps).
     if args.teleop_max_vel > sid.TELEOP_MAX_VEL_CEILING:
         print(f"REJECT: --teleop-max-vel {args.teleop_max_vel} > "
               f"{sid.TELEOP_MAX_VEL_CEILING} rev/s (the conservative teleop stick-slew "
-              f"ceiling, deliberately below the 6.0 rev/s drive limit)", file=sys.stderr)
+              f"ceiling, deliberately below the drive vel_limit)", file=sys.stderr)
         return 1
     if args.teleop_max_vel > sid.TELEOP_MAX_VEL_DEFAULT + 1e-9:
         print(f"  WARNING: --teleop-max-vel {args.teleop_max_vel} rev/s is above the "

@@ -2240,7 +2240,7 @@ def stroke_series(spec: StrokeSpec, center: float, seg_t: float,
 
 TELEOP_RANGE_DEFAULT = 0.9           # rev; z=±1 → center ± this
 TELEOP_MAX_VEL_DEFAULT = 2.0         # rev/s slew cap (the operating stroke speed)
-TELEOP_MAX_VEL_CEILING = 4.0         # rev/s; above this the config vel limit is exceeded → reject
+TELEOP_MAX_VEL_CEILING = 4.0         # rev/s; deliberately conservative stick-slew ceiling (below the drive vel_limit) → reject above
 TELEOP_DEADBAND = 0.05               # |z| below this → hold centre (stick-at-rest = mid-stroke)
 TELEOP_CLAMP_MARGIN_REV = 0.05       # extra margin inside the stroke bounds for the target
 TELEOP_GAIN_SWAP_VEL_TOL_RPS = 0.05  # gain swap allowed only when |vel| below this …

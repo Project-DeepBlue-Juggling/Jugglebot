@@ -428,14 +428,21 @@ jugglebot_odrive_defaults:
   trap_vel_limit_rps: 15.0               # Default trapezoidal trajectory velocity limit {rev/s}
   trap_acc_limit_rps2: 30.0              # Default trapezoidal trajectory acceleration {rev/s^2}
   trap_dec_limit_rps2: 30.0              # Default trapezoidal trajectory deceleration {rev/s^2}
-  leg_vel_limit_rps: 6.0                 # Leg velocity limit {rev/s}. Raised 4.0 → 6.0
-                                         # (2026-07-16) for lead-clamp catch-up headroom:
-                                         # Kp·MAX_LEAD = 40×0.10 = 4.0 ≤ 6.0 un-saturates
-                                         # the clamp's velocity setpoint so vel_ff regains
-                                         # catch-up authority (was 4.0 = vel_limit exactly).
-                                         # Bench envelope ~48 rev/s (legs proven to 3.4 m/s);
-                                         # 6.0 ≈ 423 mm/s stays far under it, and the firmware
-                                         # MAX_MOTOR_VEL_RPS = 16.5 overspeed guard is unchanged.
+  leg_vel_limit_rps: 12.0                # Leg velocity limit {rev/s}. Raised 4.0 → 6.0 →
+                                         # 12.0 (both 2026-07-16) for tracking + catch-up
+                                         # headroom. Constraint: Kp·MAX_LEAD = 40×0.10 =
+                                         # 4.0 ≤ vel_limit must hold (the 2026-07-10
+                                         # limit-cycle bug). 12.0 ≈ 846 mm/s of leg speed —
+                                         # still 25% of the bench envelope (~48 rev/s,
+                                         # legs proven to 3.4 m/s). Two watch items at 12:
+                                         # (a) the firmware overspeed E-STOP is 16.5 rev/s
+                                         # MEASURED, so catch-up sprints commanded at 12
+                                         # leave 37% overshoot margin (was 2.75×); (b) while
+                                         # the lead clamp is ENGAGED, catch-up is capped by
+                                         # Kp·MAX_LEAD + LEAD_CLAMP_VELFF_LIMIT_RPS (4.0 +
+                                         # 3.5 = 7.5 rev/s ≈ 529 mm/s) — raising vel_limit
+                                         # past 7.5 only widens the UN-clamped envelope;
+                                         # the VELFF cap raise is a firmware-flash item.
                                          # See logbook 2026-07-16-max-deviation-guard-tracking-lag.md.
   leg_curr_limit_a: 10.0                 # Leg current limit {A}
   hand_vel_limit_rps: 1000.0             # Hand velocity limit {rev/s}
@@ -516,12 +523,20 @@ jugglebot_operational:
 #    See plans/active/mvp-trajectory-bringup.md.
 # ============================================================
 trajectory_op:
-  leg_vel_limit_mmps: 100.0        # Session leg velocity ceiling {mm/s} (ramped). The 280 mm/s session ceiling (≈ 4.0 rev/s) is a deliberately conservative trajectory cap; the ODrive drive limit is now 6.0 rev/s ≈ 423 mm/s (see leg_vel_limit_rps).
-  leg_acc_limit_mmps2: 400.0       # Session leg acceleration ceiling {mm/s^2} (deliberately low for first sessions)
-  leg_jerk_limit_mmps3: 8000.0     # Session leg jerk ceiling {mm/s^3} — the binding constraint; ramped by feel
-  leg_vel_ceiling_mmps: 280.0      # Hard velocity ceiling {mm/s} (≈ 4.0 rev/s) — a conservative trajectory cap, NOT the drive limit (now 6.0 rev/s ≈ 423 mm/s); bench-tested headroom far above
-  leg_acc_ceiling_mmps2: 4000.0    # Hard acceleration ceiling {mm/s^2}
-  leg_jerk_ceiling_mmps3: 200000.0 # Hard jerk ceiling {mm/s^3}
+  leg_vel_limit_mmps: 100.0        # Session leg velocity limit {mm/s} at launch (ramped via trajectory/set_limits)
+  leg_acc_limit_mmps2: 400.0       # Session leg acceleration limit {mm/s^2} at launch (ramped)
+  leg_jerk_limit_mmps3: 8000.0     # Session leg jerk limit {mm/s^3} at launch — the binding constraint; ramped by feel
+  # Ceilings OPENED 280/4000/200000 → 5000/5000/200000 (2026-07-16, operator decision):
+  # they are now ADMINISTRATIVE clamps, deliberately ABOVE both the drive-trackable
+  # envelope (vel_limit 12 rev/s ≈ 846 mm/s; clamp-engaged catch-up tops out ~529 mm/s
+  # until the firmware VELFF cap is raised) and the bench-proven 3.4 m/s. Session limits
+  # above the trackable envelope WILL latch the MAX_DEVIATION guard mid-move — that is
+  # the intended backstop. The safety chain is: deliberate session ramping (operator) →
+  # per-move kinematic feasibility gate → lead/stroke clamps (physical) → MAX_DEVIATION
+  # guard (command-space) → overspeed E-STOP. The ceilings no longer encode trackability.
+  leg_vel_ceiling_mmps: 5000.0     # Hard set_limits clamp {mm/s} — administrative (see note above)
+  leg_acc_ceiling_mmps2: 5000.0    # Hard set_limits clamp {mm/s^2} — administrative
+  leg_jerk_ceiling_mmps3: 200000.0 # Hard set_limits clamp {mm/s^3} (unchanged 2026-07-16)
   knot_dt_s: 0.025                 # Fixed 40 Hz knot spacing {s} (matches firmware SEGMENT_T_S; not runtime-configurable)
   min_move_duration_s: 0.20        # Minimum profiled move duration {s}
   min_timed_lead_s: 0.25           # Minimum lead time for a timed target {s}

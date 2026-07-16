@@ -157,9 +157,12 @@ Across all three levels:
   inequality `pos_gain × MAX_LEAD ≤ vel_limit`** — violating it recreates the
   2026-07-10 limit cycle. Through 2026-07-15 the shipped values sat exactly AT
   the bound (4.0 = 4.0, which clipped `vel_ff` to zero added catch-up authority
-  under the clamp); on 2026-07-16 `vel_limit` was raised 4.0 → 6.0 rev/s, so the
-  P-term now sits 2.0 rev/s below the limit and `vel_ff` regains catch-up
-  authority. Any `pos_gain` or `MAX_LEAD` change must re-verify the inequality.
+  under the clamp); on 2026-07-16 `vel_limit` was raised 4.0 → 6.0 → 12.0 rev/s,
+  so the P-term sits well below the limit and `vel_ff` regains catch-up authority
+  (with the clamp engaged the binding bound becomes `Kp·MAX_LEAD +
+  LEAD_CLAMP_VELFF_LIMIT_RPS` = 4.0 + 3.5 = 7.5 rev/s — the firmware VELFF cap,
+  a flash item if more clamp-engaged catch-up is ever needed). Any `pos_gain` or
+  `MAX_LEAD` change must re-verify the inequality.
   Behind it, the firmware `MAX_DEVIATION = 1.0 rev` E-STOP is the hard backstop
   (raised 0.5 → 1.0 on 2026-07-16 after legitimate coordinated-move tracking lag
   latched it at vel = 200 mm/s — see

@@ -158,9 +158,9 @@ constexpr float    EXTRAP_DECAY_DT_S    = 0.06f;   // EXTRAP_DECAY_DT_S
 constexpr float    JERK_EMA_ALPHA       = 0.3f;    // JERK_EMA_ALPHA
 // MAX_LEAD_REV lead-clamp: cap the commanded position at encoder ± this.
 // Lowered 0.15 → 0.10 (2026-07-10 MAX_DEVIATION-runaway forensics). The ODrive
-// legs run POSITION/PASSTHROUGH with LEG_POS_GAINS = 40 and LEG_VEL_LIMIT_RPS = 6.0
-// (was 4.0 through 2026-07-15; raised to 6.0 on 2026-07-16 — see hardware_config
-// leg_vel_limit_rps and logbook 2026-07-16-max-deviation-guard-tracking-lag.md).
+// legs run POSITION/PASSTHROUGH with LEG_POS_GAINS = 40 and the LEG_VEL_LIMIT_RPS
+// pushed from hardware_config leg_vel_limit_rps (4.0 through 2026-07-15; 6.0 then
+// 12.0 on 2026-07-16 — see logbook 2026-07-16-max-deviation-guard-tracking-lag.md).
 // While the clamp is engaged the position error is pinned at MAX_LEAD_REV, so the
 // position loop's velocity command is pos_gain × lead. At the old 0.15 that was
 // 40 × 0.15 = 6.0 rev/s — ABOVE the THEN-4.0 vel_limit — so the loop saturated the
@@ -174,11 +174,11 @@ constexpr float    JERK_EMA_ALPHA       = 0.3f;    // JERK_EMA_ALPHA
 // Against the OLD 4.0 vel_limit the P-term (4.0) EXACTLY equalled the limit, so when
 // the clamp engaged the setpoint was already pinned at 4.0 by the P-term and vel_ff
 // had ZERO room to add — every rev/s of feedforward was clipped, and the steady
-// clamped sprint stayed vel_limit-bound. With the 2026-07-16 raise to vel_limit = 6.0
-// the constraint becomes an INEQUALITY: 40 × 0.10 = 4.0 ≤ 6.0, so the P-term sits
-// 2.0 rev/s BELOW the limit and vel_ff regains genuine catch-up authority — it can add
-// up to 2.0 rev/s of real velocity before the setpoint re-saturates (a full 3.5 vel_ff
-// still clips at 6.0, but now contributes 2.0 rev/s instead of 0). What the 0.10 +
+// clamped sprint stayed vel_limit-bound. With the 2026-07-16 raises (4.0 → 6.0 → 12.0)
+// the constraint becomes an INEQUALITY: 40 × 0.10 = 4.0 ≤ vel_limit, so the P-term sits
+// well BELOW the limit and vel_ff regains genuine catch-up authority — the full 3.5
+// VELFF cap now passes unclipped, making the clamp-engaged velocity setpoint top out at
+// 4.0 + 3.5 = 7.5 rev/s (the VELFF cap, not vel_limit, is the binding bound). What the 0.10 +
 // vel_ff-pass-through pair bought at 2026-07-10 was BOUNDARY CONTINUITY (no vel_ff
 // discontinuity at clamp engage, a P-term no longer above the limit, killing the ~6 Hz
 // limit cycle); the 6.0 raise converts the remaining P-term-EQUALS-limit saturation
@@ -189,8 +189,11 @@ constexpr float    MAX_LEAD_REV         = 0.10f;
 // leg ODrive (2026-07-10 forensics). The lead clamp used to ZERO vel_ff whenever it
 // engaged; that discontinuity (and the pos-loop sprint above) seeded the stutter.
 // leg_interp now sends the TRUE interpolated vel_ff instead of zeroing it, bounded to
-// this magnitude — kept below LEG_VEL_LIMIT_RPS (6.0 since 2026-07-16) so a runaway
-// command can never inject an over-vel_limit feedforward. Normal motion peaks ~2.1 rev/s.
+// this magnitude — kept below the drive vel_limit so a runaway command can never inject
+// an over-vel_limit feedforward. NOTE (2026-07-16, vel_limit now 12): this 3.5 cap is now
+// the BINDING clamp-engaged catch-up bound (Kp·MAX_LEAD + 3.5 = 7.5 rev/s ≈ 529 mm/s of
+// leg speed); raising it toward ~10 is a flash item for the accel-FF chapter — keep it
+// strictly below the drive vel_limit when raised.
 constexpr float    LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5f;
 // MAX_DEVIATION_REV (E-stop): raw streamed u0 vs encoder guard, checked at FAULT_TASK_HZ
 // (fault_machine.cpp). Raised 0.5 → 1.0 (2026-07-16 max-deviation-guard-tracking-lag

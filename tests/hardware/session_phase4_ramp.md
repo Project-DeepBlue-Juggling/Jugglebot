@@ -7,13 +7,15 @@
 > enforced in-process by the bridge (A3).
 >
 > **⚡ MAX_DEVIATION guard + ODrive vel_limit raised, 2026-07-16**: the firmware
-> guard is now 1.0 rev (was 0.5 — needs a can-bridge **reflash** to take
-> effect) and the ODrive leg `vel_limit` is now 6.0 rev/s (was 4.0 — config,
-> pushed to the drives at the first homing of a session with a **rebuilt**
-> ROS2 install). Neither lands from a bare relaunch of a stale install. See
-> the ⚡ 2026-07-16 banner in `mvp_bench_runbook.md` for the full two-halves
-> deployment status and session prerequisites. Step 2's ABORT criterion below
-> is recalibrated accordingly.
+> guard is now 1.0 rev (was 0.5 — flashed + validated the same day: bag
+> `2026-07-16_17-38-15` ramped vel 100→200→280 mm/s with zero latches) and the
+> ODrive leg `vel_limit` is now **12.0 rev/s** (4.0 → 6.0 midday → 12.0 in the
+> evening update — config, pushed to the drives at the first homing of a
+> session with a **rebuilt** ROS2 install; a bare relaunch of a stale install
+> keeps the old value). The `set_limits` ceilings are opened to
+> **5000/5000/200000** (administrative — see the ⚡ banner + evening update in
+> `mvp_bench_runbook.md` for the real trackable envelope, ~529 mm/s
+> clamp-engaged). Step 2's ABORT criterion below is recalibrated accordingly.
 
 
 **Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 4
