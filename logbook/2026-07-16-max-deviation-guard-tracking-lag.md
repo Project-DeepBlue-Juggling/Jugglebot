@@ -31,6 +31,7 @@ files_changed:
   - docs/can_bridge/safety.md
 commits:
   - e2605c1
+  - 3f665b2
 subsystem:
   - can
   - config
