@@ -2,7 +2,7 @@
 title: Lean-0.3 A/B pauses were planning compute (not motion) and the "sharp tilt" was a boundary vel_ff step — Jacobian sped up ~2.5–7×, lean windowed to C2 boundaries
 type: investigation
 date: 2026-07-16
-status: in-progress
+status: resolved
 phase: "MVP trajectory bringup — S4 lean A/B: planning latency + boundary vel_ff step"
 related_plan: mvp-trajectory-bringup.md
 files_changed:
@@ -47,9 +47,9 @@ hypotheses**:
 Two fixes landed this commit: the Jacobian is vectorized to a component-form
 cross product (numerically identical, ~2.5–7× faster planning), and the lean
 contribution is multiplied by a C2 plateau window that drives the boundary
-`vel_ff` step to exactly 0.00 mm/s. Status is **in-progress**: the software is
-verified offline and by scoped tests, but the operator must re-run the lean A/B
-on hardware (`colcon build` + relaunch) before this is resolved.
+`vel_ff` step to exactly 0.00 mm/s. Status was in-progress pending the
+hardware re-run; the same-night re-run confirmed the fixes and the entry is
+now **resolved** — see the Addendum.
 
 ## Symptoms
 
@@ -304,6 +304,46 @@ after `colcon build --packages-select jugglebot` + relaunch):
   `iq` **worse** (the step). Keep lean only if measured leg jerk drops **and**
   the motion looks/sounds calmer; else log the null and leave `lean_gain: 0.0`.
 
+## Addendum — same night: hardware re-run confirms the fixes and answers the A/B question; entry resolved
+
+The operator rebuilt (21:56 build, interfaces included) and ran two more
+sessions: a limits A/B (bag `2026-07-16_21-58-59`, incl. a same-session
+gain-0-vs-0.3 A/B at `(2000,5000,30000)`) and a lean-gain sweep (bag
+`2026-07-16_22-06-30`, gains 0.60 and 1.00 at the same limits). Verdicts
+against the pre-registration:
+
+- **Pauses**: 1.67–1.74 s per move (was ~4.3 s). One honest correction to the
+  pre-registered wording: the residual pause is **planning-dominated after
+  all** (~1.47 s shaped-plan block + ~0.25 s settle), not settle-dominated —
+  further cuts need the vectorized-shaped-gate / stretch-seed follow-ups.
+- **Onset iq spikes**: GONE and reversed — leaned onset iq (4.1–4.3 A max) now
+  sits BELOW gain-0's (6.9 A); pre-fix it was 8.48 A, +43 % over that
+  session's gain-0 (5.93 A).
+- **Does lean help? YES, decisively.** At matched `(2000,5000,30000)` limits:
+  gain 0 peaked **0.94 rev deviation (94 % of the 1.0 rev guard!)** and
+  7.94 A; lean 0.3 → 0.63 rev / 5.42 A; lean 0.6 and 1.0 → **0.25 rev /
+  ~4.4 A**, lead-clamp engagement 69 % → 29 %. The pre-registered metric —
+  **measured (realized peak) leg jerk** — also drops: 19,270 mm/s³ at gain 0
+  → **13,519 at 0.3 (−30 %)** and **14,863 at 0.6 (−23 %)**, but is nearly
+  back to baseline at 1.0 (18,698, −3 % — the larger 1.85° tilt injects its
+  own leg jerk). So the keep-criterion (jerk drops AND calmer) is MET at
+  0.3–0.6 and only marginal at 1.0. Honest mechanism: lean is not
+  free smoothness — the shaped gate stretches leaned moves ~1.5× (realized
+  peak vel 246 → ~100 mm/s), and slower-plus-tilted is what reads as calm.
+  The operator independently reports liking the aesthetics up to gain 1.0.
+- **The 5° tilt cap NEVER bound**, even at gain 1.0 (peak added tilt 1.85°;
+  this battery's lateral accel ~317 mm/s² vs the 856 mm/s² gain-1.0 binding
+  threshold) — the known cap-derivative caveat stayed dormant. Re-check if
+  future choreography commands lateral accel > ~856/gain mm/s².
+- **Recommended default: `lean_gain = 0.6`** (all of the benefit, lowest
+  deviation, 5× cap headroom); 1.0 endorsed for aesthetics on gentle
+  batteries. Not yet persisted to YAML (`lean_gain: 0.0` still ships) —
+  operator decision pending alongside the session-limit persistence.
+
+Status flips to **resolved**. Analysis details: the limits-A/B preference and
+per-gain tables live in the session scratchpad artifacts and the 2026-07-16
+wrap-up conversation; the durable numbers are above.
+
 ## Open Questions
 
 - **Shaped-floor test pinning.** The prose reconciliation between the window
@@ -330,7 +370,9 @@ after `colcon build --packages-select jugglebot` + relaunch):
 
 - Rosbags: `~/Desktop/rosbags/2026-07-16_18-45-29` (the 929 s A/B session);
   `18-26-32` / `18-26-51` / `19-08-17` / `19-12-51` are `ODRIVE_FATAL`
-  false-starts (no usable A/B moves).
+  false-starts (no usable A/B moves). Resolution re-run: `21-58-59` (limits
+  A/B + the gain-0/0.3 baselines at (2000,5000,30000)) and `22-06-30`
+  (gain 0.60/1.00 sweep).
 - `logbook/2026-07-16-max-deviation-guard-tracking-lag.md` — the 1.0 rev guard
   and vel_limit headroom this envelope runs inside (the safety framing in
   Diagnosis §3).
