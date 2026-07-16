@@ -16,6 +16,7 @@ files_changed:
   - tests/hardware/mvp_bench_runbook.md
 commits:
   - 274af6b
+  - 475e3e7
 subsystem:
   - motion
 tags:
