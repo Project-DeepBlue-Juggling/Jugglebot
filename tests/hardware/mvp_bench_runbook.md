@@ -526,20 +526,26 @@ auto-tracks whatever threshold the firmware trips at):
   pre-fix, at matched limits, lean 0.3 made peak `iq` **worse** (that was the
   vel_ff step), so this is genuinely undecided — keep lean only if measured leg
   jerk drops AND the motion looks/sounds calmer.
-- **⚡ 2026-07-17 update — shaped planning is now ~91 ms, not ~1.2 s.** The
+- **⚡ 2026-07-17 update — shaped planning is now ~0.23 s, not ~1.2 s.** The
   "~0.10 s unshaped / ~1.2 s shaped" figures above were the 2026-07-16 state
   (component-form Jacobian + 80-sample unshaped gate only). The shaped-planning
   efficiency arc has since landed (`logbook/2026-07-17-shaped-planning-efficiency-implemented.md`):
-  a batched 1600-sample shaped gate + a retiming-model duration search. **Shaped
-  `build_move` is now ~91 ms (~12× vs the ~1.1 s baseline), unshaped ~100 ms** —
+  a batched 1600-sample shaped gate + a retiming-model duration search. ⚡ The
+  retiming model shipped OFF the same evening after its first hardware A/B —
+  its honest durations on lean traverses exceed the tracking envelope
+  (dev 0.45 → 0.73 rev; `logbook/2026-07-17-retime-model-tracking-envelope.md`)
+  — so **shaped `build_move` is ~0.23 s on the legacy loop + batched gate
+  (~5× vs the ~1.1 s baseline; ~91 ms when the model is re-enabled), unshaped
+  ~100 ms** —
   so between-move pauses are **settle-dominated for real now**, not
   planning-dominated (the earlier re-run's "pauses are planning-dominated after
   all" caveat is superseded). The gate also now measures shaped leg jerk ~7× more
   honestly (jerk-bound lateral moves plan ~5 % longer — the intended fix for the
   "sharp" lean, gentler not snappier). Deployment for this: same as everything
-  else — `colcon build --packages-select jugglebot` + relaunch (Python-only; the
-  `JB_TRAJ_RETIME_MODEL` YAML flag ships ON, legacy 6-pass loop one branch away for
-  an A/B).
+  else — `colcon build --packages-select jugglebot` + relaunch (Python-only). The
+  `JB_TRAJ_RETIME_MODEL` YAML flag now ships **OFF**; to re-enable the model for
+  an A/B: flip `retime_model` in `config/hardware_config.yaml`, run
+  `python config/generate_config.py`, `colcon build`, relaunch.
 
 #### The ladder (recommended order + step sizes)
 

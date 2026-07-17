@@ -557,12 +557,24 @@ trajectory_op:
                                    # defer-to-config); an EXPLICIT 0.0 in a request still forces OFF.
   catch_reach_freeze_s: 0.30       # Reach-translation freeze window before arrival {s} (Phase 6)
   catch_settle_hold_s: 0.50        # Quiescent hold after catch seat {s} (Phase 6)
-  retime_model: true               # Shaped-move duration search: the retiming MODEL proposes T,
+  retime_model: false              # Shaped-move duration search: the retiming MODEL proposes T,
                                    # the UNCHANGED gate (feasibility.validate) verifies it — fallback
                                    # is the legacy 6-pass stretch+bisection loop (shaped-planning-
                                    # efficiency Phase 2). Measured +2% planned duration vs the true
                                    # optimum, -6pp vs the legacy bisection overshoot, and shaped
                                    # build_move ~233 ms -> ~90-110 ms. false = force the legacy loop.
+                                   # SHIPPED FALSE 2026-07-17 evening (first hardware A/B, bag
+                                   # 19-32-03): the model's HONEST durations on lean traverses
+                                   # (legacy padded them ~2x in jerk terms — peak jerk 12000 vs the
+                                   # model's 27400 on the +/-150 x-traverse) exceed the velocity
+                                   # loop's TRACKING envelope: deviation 0.45 -> 0.73 rev, above the
+                                   # ~0.6 in-move ABORT line. The kinematic limits are not the
+                                   # binding constraint at these speeds — tracking is, and only the
+                                   # legacy overshoot kept lean traverses inside it. Re-enable when
+                                   # accel FF lands (plans/active/accel-ff-inertia.md) or with a
+                                   # tracking-aware duration floor. Legacy loop on the batched gate
+                                   # still plans shaped moves in ~0.23 s (5x the pre-SPE ~1.2 s).
+                                   # See logbook/2026-07-17-retime-model-tracking-envelope.md.
 
 # ============================================================
 # 7. Jugglebot SpaceMouse

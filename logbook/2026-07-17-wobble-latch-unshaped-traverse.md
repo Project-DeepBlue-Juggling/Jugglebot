@@ -209,6 +209,22 @@ script's default is part of the convention's blast radius.
   `--lean-gain 0.0` run *stopping before the x-traverse* if an unshaped
   baseline is still wanted.
 
+## Addendum — same evening: the ≤ ~0.45 rev lean-margin figure assumed the legacy timing path
+
+The operator's follow-up A/B session (bag `19-32-03`) found the shipped
+lean-0.6 configuration riding **0.727 rev** on the x-traverse — not the
+≤ ~0.45 this entry promised. This entry's margin figure was measured from the
+2026-07-16 sweep, which was timed by the **legacy** stretch+bisection loop;
+the same day's SPE deployment had switched shaped timing to the retiming
+model, which removes the legacy overshoot that was largest on exactly the
+lean traverses (peak jerk 12000 → 27406). No ringing, no compute stall — the
+model's honest durations exceed the tracking envelope. `retime_model` now
+ships **false** (legacy timing restored; ≤ ~0.45 is accurate again); full
+analysis in `logbook/2026-07-17-retime-model-tracking-envelope.md`. Lesson
+for this entry's method: "the shipped config has margin" was asserted from a
+bag recorded on a *different timing path* than the shipped one — margin
+claims must name the code path they were measured on.
+
 ## Withdrawn claims
 
 - *"The encoder overshoots the command — a command-side discontinuity from the

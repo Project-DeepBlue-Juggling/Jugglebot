@@ -485,6 +485,19 @@ def test_shipped_trajectory_defaults_are_the_s4_working_point():
         'an undefaulted float64 reads 0.0 and silently forces lean OFF')
 
 
+def test_shipped_retime_model_is_off_until_tracking_envelope_closed():
+    """Tripwire: JB_TRAJ_RETIME_MODEL SHIPS FALSE (2026-07-17 evening, bag
+    2026-07-17_19-32-03). The model's honest durations on lean traverses exceed
+    the velocity loop's TRACKING envelope (x-traverse deviation 0.45 -> 0.73 rev,
+    above the ~0.6 in-move ABORT line) — the legacy loop's overshoot was
+    accidentally load-bearing there. Re-enable ONLY with accel FF landed (see
+    plans/active/accel-ff-inertia.md Verification) or a tracking-aware duration
+    floor, and re-run the 19-32-03 A/B as the acceptance test — see
+    logbook/2026-07-17-retime-model-tracking-envelope.md. Deliberately flipping
+    the default means updating this test; that is the logged act."""
+    assert hw.JB_TRAJ_RETIME_MODEL is False
+
+
 def test_go_to_pose_per_call_lean_override_installs_shaped_plan():
     """lean_gain=0.3 overrides the config default and installs a shaped move."""
     node = _traj_mode_node()

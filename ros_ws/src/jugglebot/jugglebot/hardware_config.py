@@ -161,7 +161,7 @@ JB_TRAJ_SPACEMOUSE_HORIZON_S = 0.35
 JB_TRAJ_LEAN_GAIN = 0.6
 JB_TRAJ_CATCH_REACH_FREEZE_S = 0.3
 JB_TRAJ_CATCH_SETTLE_HOLD_S = 0.5
-JB_TRAJ_RETIME_MODEL = True
+JB_TRAJ_RETIME_MODEL = False
 
 # ============================================================================
 # Jugglebot SpaceMouse

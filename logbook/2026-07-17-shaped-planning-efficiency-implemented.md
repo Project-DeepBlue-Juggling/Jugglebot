@@ -78,7 +78,10 @@ truth. Status **resolved** (everything is software-verified; hardware behaviour
 is unchanged bit-for-bit from Phase-1b's gate — only the planned duration is
 shorter and planning is faster). Deployment for the operator:
 `colcon build --packages-select jugglebot` + relaunch (Python-only; the YAML flag
-regenerates).
+regenerates). *(Superseded the same evening: "only the planned duration is
+shorter" turned out to be exactly the problem — the model shipped OFF after its
+first hardware A/B; see the Addendum below and
+`logbook/2026-07-17-retime-model-tracking-envelope.md`.)*
 
 ## Motivation
 
@@ -294,10 +297,29 @@ land **~2 % over optimum** instead of the legacy loop's +1–15 %. No hardware
 behaviour changes bit-for-bit from the Phase-1b gate — the retiming model only
 picks a (shorter) duration that the unchanged gate accepts, and plans it faster.
 
-`JB_TRAJ_RETIME_MODEL` ships **ON** (`config/hardware_config.yaml`
-`trajectory_op.retime_model`); the legacy 6-pass loop is one branch away for a
-hardware A/B or a fallback with no redeploy. Deployment:
+`JB_TRAJ_RETIME_MODEL` ships **ON** *(superseded the same evening — see the
+Addendum below)* (`config/hardware_config.yaml` `trajectory_op.retime_model`);
+the legacy 6-pass loop engages as a runtime fallback on any verify-reject (no
+redeploy); flipping the flag for an A/B is config-gated (regen + `colcon
+build` + relaunch). Deployment:
 `colcon build --packages-select jugglebot` + relaunch.
+
+## Addendum — 2026-07-17 evening: first hardware A/B — model shipped OFF
+
+The first hardware session with the model ON (bag `19-32-03`) flipped the
+default back to **false** the same day. The model's correctness claims stand
+(every plan gate-verified, zero rejects, no ringing, no compute stall on
+hardware — emit gaps ≤ 28.8 ms), but its *honest* durations on the ±150 lean
+traverses — where the legacy loop's overshoot reaches ~2× in jerk terms
+(peak jerk 12000 → 27406), far beyond the corpus's +1.2–14.7 % tail —
+exceed the velocity loop's **tracking** envelope: deviation 0.45 → 0.73 rev,
+above the ~0.6 in-move ABORT line. The gate's invariant class is kinematic
+feasibility, not trackability, and the legacy overshoot had been accidentally
+covering the gap on exactly those moves. Duration slop was load-bearing.
+Re-enable when accel FF lands or a tracking-aware duration floor exists; the
+legacy loop on the batched gate still plans shaped moves in ~0.23 s (5× the
+pre-SPE baseline). Full analysis:
+`logbook/2026-07-17-retime-model-tracking-envelope.md`.
 
 ## Open Questions
 
@@ -326,7 +348,7 @@ hardware A/B or a fallback with no redeploy. Deployment:
 - `logbook/2026-07-17-s4-closed-working-point-persisted.md` — the `lean_gain 0.6`
   default flip that made shaped planning apply to nearly every service move.
 - `tests/hardware/mvp_bench_runbook.md` — S4 lean A/B section, updated with the
-  dated ~91 ms shaped / ~100 ms unshaped planning note.
+  dated planning note (now ~0.23 s model-OFF; ~91 ms was the model-ON figure).
 - Offline harnesses lived in the session scratchpad (volatile `/tmp` — the durable
   numbers are in this entry and the plan's prototype-evidence digest).
 </content>

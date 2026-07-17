@@ -119,6 +119,7 @@ Mechanism (b), the "contract one level up." Today `feasibility.py` gates only ki
 - Firmware: PlatformIO build/compile for the can-bridge Teensy; the T1.1/T1.2 bench behaviours are the functional gate.
 - The Phase-2 A/B is the load-bearing hardware verification; its criteria and abort signatures are pre-registered (see validation protocol) before the run, gravity-FF-arc style.
 - `/investigate` or `/diagnose` on the A/B bags; logbook entry with a real Discussion section (hypothesis: accel FF cuts heavy-leg deviation; what a null means; the rigid-vs-measured sizing tradeoff).
+- **After FF lands: re-run the `19-32-03` retime A/B and decide the `retime_model` re-enable** — the retiming model shipped OFF 2026-07-17 because its honest lean-traverse durations exceed the *tracking* envelope (dev 0.45→0.73 rev); acceptance = model-timed traverse deviation ≤ legacy-timed + day noise. See `logbook/2026-07-17-retime-model-tracking-envelope.md` (Open Questions).
 
 ## Out of scope
 
