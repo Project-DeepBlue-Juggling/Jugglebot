@@ -10,7 +10,7 @@ files_changed:
   - tests/hardware/mvp_bench_runbook.md
   - logbook/2026-07-17-s4-closed-working-point-persisted.md
 commits:
-  - TBD
+  - 2ac20ae
 subsystem:
   - motion
   - ros
