@@ -17,7 +17,7 @@ files_changed:
   - logbook/2026-07-17-wobble-latch-unshaped-traverse.md
   - logbook/2026-07-17-shaped-planning-efficiency-implemented.md
 commits:
-  - TBD
+  - 4e4545e
 subsystem:
   - motion
   - config
