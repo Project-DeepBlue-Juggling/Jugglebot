@@ -107,10 +107,36 @@ can never be silently orphaned again).
   `colcon build --packages-select jugglebot_interfaces jugglebot` is the final
   confirmation.
 
+## Addendum — 2026-07-17 evening: the 0.064 rev margin was thinner than daily variance
+
+The first hardware session on this working point latched MAX_DEVIATION twice
+(bag `17-35-14`) — on the **gain-0 arm's** ±150 x-traverse, at 1.02–1.08 rev
+vs the A/B's 0.936, with plans identical to the decimal. Two corrections to
+this entry's framing:
+
+1. The jerk decision cited "guard margin (0.064 vs 0.027 rev)" as a point in
+   30000's favour. Both margins are smaller than ordinary day-to-day plant
+   variation (measured +10–30 % at matched commands the very next session).
+   **A margin on a safety latch must be compared against run-to-run variance,
+   not against zero** — by that test the unshaped hot lateral was never in
+   envelope, and the working point is validated *for the shipped lean-0.6
+   configuration only* (traverse ≤ ~0.45 rev there).
+2. Both latching runs were unshaped because `traj_ramp_battery.py`'s
+   `--lean-gain` default (0.0 = the explicit-OFF arm under this entry's own
+   convention) silently overrode the shipped lean — the "battery keeps its
+   baselines unshaped" note treated as a feature what was actually a
+   client-side reachability gap of the same kind this entry fixed node-side.
+   The battery default is now `-1.0` (defer-to-config).
+
+Full forensics: `logbook/2026-07-17-wobble-latch-unshaped-traverse.md`. The
+working point itself stands (operator to re-confirm on a shaped bare run).
+
 ## Related
 
 - `logbook/2026-07-16-lean-planning-latency-and-boundary-step.md` — the sweep
   + A/B data this decision rests on (Addendum).
+- `logbook/2026-07-17-wobble-latch-unshaped-traverse.md` — the next-session
+  latches that corrected this entry's margin framing (Addendum above).
 - `logbook/2026-07-16-max-deviation-guard-tracking-lag.md` — the guard/envelope
   arc S4 ran inside.
 - `tests/hardware/mvp_bench_runbook.md` — S4 marked PASSED; relaunch-semantics

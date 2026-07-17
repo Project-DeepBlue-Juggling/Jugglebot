@@ -323,7 +323,12 @@ against the pre-registration:
 - **Does lean help? YES, decisively.** At matched `(2000,5000,30000)` limits:
   gain 0 peaked **0.94 rev deviation (94 % of the 1.0 rev guard!)** and
   7.94 A; lean 0.3 → 0.63 rev / 5.42 A; lean 0.6 and 1.0 → **0.25 rev /
-  ~4.4 A**, lead-clamp engagement 69 % → 29 %. The pre-registered metric —
+  ~4.4 A**, lead-clamp engagement 69 % → 29 %. *(Correction 2026-07-17: the
+  per-arm deviation figures here are not all the same move — the gain-0
+  0.94 is the ±150 x-traverse; the same traverse re-extracts to **0.45 rev
+  at lean 0.6** (0.46 at 1.0) from bag `22-06-30`. Like-for-like the lean
+  benefit on the worst move is 0.94 → 0.45, not 0.94 → 0.25 — see
+  `logbook/2026-07-17-wobble-latch-unshaped-traverse.md`.)* The pre-registered metric —
   **measured (realized peak) leg jerk** — also drops: 19,270 mm/s³ at gain 0
   → **13,519 at 0.3 (−30 %)** and **14,863 at 0.6 (−23 %)**, but is nearly
   back to baseline at 1.0 (18,698, −3 % — the larger 1.85° tilt injects its

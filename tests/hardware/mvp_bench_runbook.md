@@ -327,14 +327,18 @@ auto-tracks whatever threshold the firmware trips at):
   5. `ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"` (arm).
      *(Superseded 2026-07-15: automatic on ACTIVE entry under auto-arm — see the
      ARMING CONTRACT banner above. Needed only with `auto_arm:=false`.)*
-- **Battery** (`trajectory/go_to_pose`): z 170→190→170; x ±20; y ±20; tilt rx ±3°; then
+- **Battery** (`trajectory/go_to_pose`): z 170→220→170; x ±150; y ±150; tilt rx ±10°
+  (widened 2026-07-16); then
   one deliberately-infeasible `duration_s: 0.05` request. **Do not hand-roll these** —
   `go_to_pose` takes one pose per call and returns `BUSY` if a move is already in flight
   (a deliberate Phase-2 restriction, lifted by the Phase 3/5 supersede work). The
   scripted battery `tests/hardware/traj_ramp_battery.py` fires exactly this list and
   sleeps `max(settle_s, planned_duration_s + 0.5)` between moves to avoid cascading
   `BUSY` rejections. It is named for Phase 4 but with no `--set-*` flag it changes no
-  limits, and `--lean-gain` defaults to `0.0` (lean off) — precisely S2's conditions:
+  limits. ⚡ Since 2026-07-17 `--lean-gain` defaults to `-1.0` = defer to the shipped
+  config (lean 0.6) — for S2's original lean-off conditions pass an EXPLICIT
+  `--lean-gain 0.0` (the ±150 traverses are the guard-latch canary when unshaped —
+  see `logbook/2026-07-17-wobble-latch-unshaped-traverse.md`):
   ```bash
   python3 tests/hardware/traj_ramp_battery.py --dry-run     # print the plan, no ROS calls
   python3 tests/hardware/traj_ramp_battery.py --lean-gain 0.0
@@ -414,10 +418,24 @@ auto-tracks whatever threshold the firmware trips at):
   `logbook/2026-07-16-lean-planning-latency-and-boundary-step.md` Diagnosis §3.
   Caveat for the record: the limits A/B's **gain-0 arm** at (2000,5000,30000)
   (bag `21-58-59`) peaked at **0.94 rev = 94 % of the guard**; the lean-ON
-  working point holds ~0.25 rev — lean is part of WHY the working point has
-  margin. The lean A/B resolved KEEP (`lean_gain 0.6` default; jerk criterion
-  met at 0.3–0.6). **Working point (1000, 5000, 30000) + lean 0.6 persisted to
-  YAML 2026-07-17** (step-5 closure; see
+  working point holds **≤ ~0.45 rev on the same traverse** (re-extraction of
+  bag `22-06-30`; the earlier "~0.25 rev" figure was a narrower slice, not
+  the traverse — see the wobble entry's reconciliation) — lean is part of WHY
+  the working point has margin. ⚡ **2026-07-17 confirmed the caveat is a real
+  cliff**: two bare battery runs (bag `17-35-14`) latched MAX_DEVIATION on the
+  ±150 x-traverse at **1.02–1.08 rev** — same plans as the 0.94 run to the
+  decimal (planner output unchanged); the +9–16 % on this move was ordinary
+  day-to-day plant variation (matched moves elsewhere in the session ran
+  +10–30 %; first-moves-cold, leg 1 deepest both trips). Both runs were unshaped
+  because the battery script's old `--lean-gain` default (0.0 = explicit OFF)
+  overrode the shipped lean — the default is now `-1.0` (defer to config).
+  **Unshaped ±150 traverses at jerk 30000 are OUT of the trackable envelope,
+  not marginal** — treat any unshaped hot-lateral latch as expected until the
+  accel-FF chapter lands (`plans/active/accel-ff-inertia.md`); see
+  `logbook/2026-07-17-wobble-latch-unshaped-traverse.md`. The lean A/B
+  resolved KEEP (`lean_gain 0.6` default; jerk criterion met at 0.3–0.6).
+  **Working point (1000, 5000, 30000) + lean 0.6 persisted to YAML
+  2026-07-17** (step-5 closure; see
   `logbook/2026-07-17-s4-closed-working-point-persisted.md`). The ladder
   protocol below is retained for reference / future re-ramps.
 - **Purpose**: raise the session leg vel/acc/jerk limits from the Phase-1 defaults
@@ -566,7 +584,8 @@ fine if the first felt completely clean — but never skip the battery+review be
    response echoes the **applied** values (`applied_*`) — read them back, don't assume.
    Subsequent steps: `--set-acc 520`, `--set-acc 660`, `--set-vel 130`, `--set-vel 156`.
 
-2. **Run the battery** (11 profiled moves: z 170→190→170, x ±20, y ±20, rx ±3°, plus one
+2. **Run the battery** (11 profiled moves: z 170→220→170, x ±150, y ±150, rx ±10°
+   since the 2026-07-16 widening, plus one
    deliberate `TOO_FAST` rejection; it sleeps between moves to avoid `BUSY`). Use
    `--dry-run` first if you want to see the plan without ROS calls. **Expected output
    per move**: `accepted=true`, a `planned_duration_s` that shrinks as the ramp

@@ -851,8 +851,9 @@ xy compensation ported from `Jugglebot-bb/sim/juggle_tilt.py::realize_tilted`
 physics). Shaping runs **before** `validate` — `planner._build_rest_move` wraps the
 plan and the node passes the shaper *into* `build_move`, so the single-gate invariant
 holds and the duration-stretch loop sizes the shaped motion. `GoToPose.srv` gains a
-per-call `float64 lean_gain` (< 0 ⇒ config default, ≥ 0 ⇒ clamp [0,1], default 0.0 ⇒
-OFF) for the A/B. `trajectory_node` tracks **realized** leg peaks off the emitted
+per-call `float64 lean_gain` (< 0 ⇒ config default, ≥ 0 ⇒ clamp [0,1]; the srv field
+default was 0.0 ⇒ OFF as delivered here, changed to −1.0 ⇒ defer-to-config in
+b6391c1) for the A/B. `trajectory_node` tracks **realized** leg peaks off the emitted
 knots (reset per move) alongside the gate's **predicted** peaks and publishes them +
 the session limits + active `lean_gain` on `trajectory/diagnostics`; `sim/analysis/
 diagnose.py::summarise_trajectory_moves` turns a ramp rosbag into a per-move

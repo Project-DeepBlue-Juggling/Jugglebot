@@ -5,6 +5,12 @@
 > `logbook/2026-07-17-s4-closed-working-point-persisted.md`). This protocol is
 > retained for future re-ramps — which now START from the hot working point on
 > a bare relaunch; `set_limits` down first for a faithful gentle re-run.
+> Stale numbers below, superseded: battery geometry is z 170→220→170, x/y ±150,
+> tilt rx ±10° since 2026-07-16; the shipped YAML `lean_gain` is **0.6** (not
+> 0.0) and the battery's `--lean-gain` defaults to **−1.0 = defer-to-config**
+> since 2026-07-17 — pass an explicit `0.0` for the unshaped arm, and note the
+> unshaped ±150 traverse latches the guard at the hot working point
+> (`logbook/2026-07-17-wobble-latch-unshaped-traverse.md`).
 
 > **⚡ Superseded in part, 2026-07-15 (ARMING CONTRACT)**: arming is now
 > **automatic on ACTIVE entry** (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`;

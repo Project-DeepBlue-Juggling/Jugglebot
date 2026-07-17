@@ -15,20 +15,28 @@ to review realized leg peaks + jerk headroom, and only persist the bump to
 ``hardware_config.yaml`` on an operator PASS.
 
 Battery (all rest-to-rest, at the current session limits):
-  z 170→190→170 ; x ±20 ; y ±20 ; tilt rx ±3° ; then one deliberately-infeasible
+  z 170→220→170 ; x ±150 ; y ±150 ; tilt rx ±10° ; then one deliberately-infeasible
   ``duration_s = 0.05`` request that MUST come back ``TOO_FAST`` with a
   ``min_duration_s`` (the loud-rejection proof) and move nothing.
 
-Lean A/B (``--lean-gain``): pass ``0.0`` and then ``0.3`` on two runs of the same
-battery to compare measured leg jerk / calmness (kept only if jerk drops).
+Lean (``--lean-gain``): the default ``-1.0`` DEFERS to the node's shipped config
+(``trajectory_op.lean_gain``, 0.6 since 2026-07-17) — a bare run exercises the
+production configuration. Pass an explicit ``0.0`` for the unshaped A/B baseline.
+⚠ Unshaped hot laterals are the guard-latch canary: at jerk 30000 the ±150 x/y
+traverse plans ~312 mm/s leg peaks and has measured 0.94–1.08 rev deviation
+(guard E-STOPs at 1.0) — see logbook/2026-07-17-wobble-latch-unshaped-traverse.md.
+The same traverse under lean 0.6 rides ≤ ~0.45 rev.
 
 Usage (operator, with the stack up + platform armed in TRAJECTORY mode):
-    python3 tests/hardware/traj_ramp_battery.py --lean-gain 0.0
-    python3 tests/hardware/traj_ramp_battery.py --set-jerk 12000 --lean-gain 0.0
+    python3 tests/hardware/traj_ramp_battery.py                    # shipped config
+    python3 tests/hardware/traj_ramp_battery.py --lean-gain 0.0    # unshaped baseline
     python3 tests/hardware/traj_ramp_battery.py --dry-run          # print, no calls
 
-ABORT (operator) at any oscillation / audible snap / E-STOP / tracking > 0.1 rev —
-then revert the YAML session limits to the last-good values.
+ABORT (operator) — recalibrated 2026-07-16: > 0.1 rev tracking at HOLDS only;
+during moves peak |live_deviation| must stay under ~0.6 rev AND collapse under
+0.1 rev at arrival (the guard latches at 1.0; any MAX_DEVIATION latch is an
+ABORT regardless of peak). Oscillation or an audible snap is an ABORT. Then
+revert the YAML session limits to the last-good values.
 """
 
 from __future__ import annotations
@@ -42,16 +50,16 @@ NEUTRAL_Z = 170.0
 
 # (label, x, y, z, rx_deg, duration_s, expect_accept)
 _BATTERY = [
-    ('z 170→190',    0.0,   0.0, 220.0, 0.0, 0.0, True),
-    ('z 190→170',    0.0,   0.0, 170.0, 0.0, 0.0, True),
-    ('x +20',       150.0,   0.0, 170.0, 0.0, 0.0, True),
-    ('x -20',      -150.0,   0.0, 170.0, 0.0, 0.0, True),
+    ('z 170→220',    0.0,   0.0, 220.0, 0.0, 0.0, True),
+    ('z 220→170',    0.0,   0.0, 170.0, 0.0, 0.0, True),
+    ('x +150',      150.0,   0.0, 170.0, 0.0, 0.0, True),
+    ('x -150',     -150.0,   0.0, 170.0, 0.0, 0.0, True),
     ('x 0',          0.0,   0.0, 170.0, 0.0, 0.0, True),
-    ('y +20',        0.0,  150.0, 170.0, 0.0, 0.0, True),
-    ('y -20',        0.0, -150.0, 170.0, 0.0, 0.0, True),
+    ('y +150',       0.0,  150.0, 170.0, 0.0, 0.0, True),
+    ('y -150',       0.0, -150.0, 170.0, 0.0, 0.0, True),
     ('y 0',          0.0,   0.0, 170.0, 0.0, 0.0, True),
-    ('tilt rx +3°',  0.0,   0.0, 170.0,  10.0, 0.0, True),
-    ('tilt rx -3°',  0.0,   0.0, 170.0, -10.0, 0.0, True),
+    ('tilt rx +10°', 0.0,   0.0, 170.0,  10.0, 0.0, True),
+    ('tilt rx -10°', 0.0,   0.0, 170.0, -10.0, 0.0, True),
     ('tilt rx 0',    0.0,   0.0, 170.0,  0.0, 0.0, True),
     # Deliberately infeasible — must be rejected TOO_FAST, zero motion.
     ('TOO_FAST demo (dur 0.05)', 20.0, 20.0, 185.0, 0.0, 0.05, False),
@@ -67,9 +75,11 @@ def _quat_rx(rx_deg: float):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--lean-gain', type=float, default=0.0,
-                    help='per-call lean gain for every move (A/B: 0.0 vs 0.3). '
-                         'Negative defers to the node config JB_TRAJ_LEAN_GAIN.')
+    ap.add_argument('--lean-gain', type=float, default=-1.0,
+                    help='per-call lean gain for every move. Default -1.0 defers '
+                         'to the node config (trajectory_op.lean_gain — the '
+                         'shipped 0.6); an explicit 0.0 is the unshaped A/B '
+                         'baseline (the guard-latch-prone arm on hot laterals).')
     ap.add_argument('--set-vel', type=float, default=0.0,
                     help='ramp the session leg velocity limit (mm/s) before the '
                          'battery; 0 = leave unchanged (clamped to the YAML ceiling).')
