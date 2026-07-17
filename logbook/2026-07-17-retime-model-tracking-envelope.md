@@ -204,6 +204,23 @@ is cheap and would have predicted today's numbers offline.)
   `/home/jetson/Desktop/rosbags/2026-07-17_19-32-03` (extraction: scratchpad
   `ring_extract.py`, same pattern as the morning's `wobble_extract.py`).
 
+## Addendum — 2026-07-18: the tracking envelope this entry cites is uptime-dependent
+
+The ~0.6 ABORT-line breach that motivated shipping the model OFF was measured
+at ~26 h of can-bridge Teensy uptime; tracking lag is now shown to grow
+monotonically with Teensy uptime (fresh boot ≈10 ms). If the reboot
+experiment confirms, the model's honest durations are likely trackable on a
+healthy plant and the OFF decision should be revisited (it remains correct
+*for a degraded plant*, and the honest-timing mechanism this entry documents
+stands regardless). Also corrected by the 07-18 bisect: "restores the
+hardware-validated behaviour byte-for-byte" holds for the timing *algorithm*,
+not the lattice — the Phase-1b mesh commit shifted the legacy loop's
+bisection lattice, so the post-OFF traverse plans at jpk ~20928 (not the
+validated 07-16 sweep's 12000), the ~11 % real code term; this entry's
+Verification expectation ("peaks back to ~122 mm/s / jerk ~12k, deviation
+≤ ~0.45 rev") is therefore NOT exactly recovered by the flag alone. See
+`logbook/2026-07-18-teensy-uptime-tracking-degradation.md`.
+
 ## Withdrawn claims
 
 - *Operator hypothesis 1 — compute limit/bottleneck*: killed; emit gaps

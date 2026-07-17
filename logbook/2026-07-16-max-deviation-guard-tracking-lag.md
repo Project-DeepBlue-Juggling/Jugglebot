@@ -47,6 +47,15 @@ tags:
 
 ## Summary
 
+> **⚠ Root cause CHALLENGED 2026-07-18 (pending reboot confirmation):** these
+> latches occurred at ~6 days of can-bridge Teensy uptime, and tracking lag is
+> now shown to grow monotonically with Teensy uptime (10 ms fresh-boot →
+> ~240 ms at 30 h; the post-flash validation session's clean vel=280 run was
+> likely the REBOOT, not the guard raise). The "legitimate velocity-loop lag
+> under coordinated load" framing — and the chase-ceiling / envelope numbers
+> derived from it — were measured on a degraded plant. See
+> `logbook/2026-07-18-teensy-uptime-tracking-degradation.md`.
+
 The operator ran the S4 limit ramp on 2026-07-16 afternoon. It **PASSed** at the
 100 / 660 / 10500 (vel / acc / jerk, mm-units) step, then **latched the Teensy
 MAX_DEVIATION guard three times** at the vel = 200 mm/s step — bags

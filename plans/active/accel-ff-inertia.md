@@ -8,6 +8,17 @@ accel-FF exploration: machinery map + coordinated-inertia measurement + design)
 SHIPPED; MAX_DEVIATION guard 1.0 rev + ODrive vel_limit 12 rev/s + ceilings opened
 (2026-07-16, see logbook/2026-07-16-max-deviation-guard-tracking-lag.md).
 
+> **⚠ PREMISE PARTIALLY CONTINGENT — 2026-07-18 (pending reboot experiment):**
+> tracking lag is now shown to grow with can-bridge Teensy uptime (10 ms fresh
+> boot → ~240 ms at 30 h), and the velocity-loop-lag framing this plan targets
+> was measured on a degraded plant. The J_eff bag pool spans BOTH regimes
+> (fresh-boot `17-38-15` + four ~6-day-uptime morning bags), so the inertia
+> numbers are partially contaminated. Before starting Phase 0: run the
+> reboot isolation experiment in
+> `logbook/2026-07-18-teensy-uptime-tracking-degradation.md`, then re-derive
+> the FF's motivating deficit on a healthy plant (it may shrink substantially
+> — or vanish for the current move envelope).
+
 ---
 
 ## Recommendation (headline)

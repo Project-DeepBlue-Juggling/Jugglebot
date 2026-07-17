@@ -209,6 +209,25 @@ script's default is part of the convention's blast radius.
   `--lean-gain 0.0` run *stopping before the x-traverse* if an unshaped
   baseline is still wanted.
 
+## Addendum 2 — 2026-07-18: the envelope numbers themselves are now suspect
+
+*(Placed first as the operative caveat; the same-evening addendum below
+predates it.)* The "out of the trackable envelope" framing (and the ±10–30 %
+"sticky-day" attribution) was measured at 24–30 h of can-bridge Teensy
+uptime; tracking lag is now shown to grow monotonically with Teensy uptime
+and the fresh-boot plant tracked 3.5 rev/s commands at 0.01–0.06 rev
+deviation. If the reboot experiment confirms, the unshaped traverse is likely
+trackable on a healthy plant and the latches in this entry were the uptime
+bug crossing the guard. The 07-18 sweep also disproves this entry's "bus
+voltage is not in the bag" claim (Diagnosis §5 / Open Questions): it is, at
+`motor_states[].bus_voltage`, and it was flat 45.0–45.3 V across all seven
+sessions — the SOC candidate is dead. And a correction to the addendum below:
+its "≤ ~0.45 is accurate again" assumed the flag flip restored the 07-16
+lattice — the 07-18 bisect shows the mesh commit shifted the legacy traverse
+to jpk ~20928 (was 12000), so the post-OFF traverse is hotter than the
+validated sweep. See
+`logbook/2026-07-18-teensy-uptime-tracking-degradation.md`.
+
 ## Addendum — same evening: the ≤ ~0.45 rev lean-margin figure assumed the legacy timing path
 
 The operator's follow-up A/B session (bag `19-32-03`) found the shipped
