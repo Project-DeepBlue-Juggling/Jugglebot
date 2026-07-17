@@ -213,6 +213,11 @@ class TrajectoryNode(Node):
         # a LeanShaper for a given effective gain.
         self._config_lean_gain = float(hw.JB_TRAJ_LEAN_GAIN)
         self._gravity_mm_s2 = float(hw.GRAVITY_MMPS2)
+        # Shaped-move duration search (shaped-planning-efficiency Phase 2): the
+        # retiming model proposes T and the unchanged gate verifies it; a rejection
+        # falls back to the legacy stretch+bisection loop inside build_move. Config-
+        # gated so a hardware A/B can force the legacy loop without a redeploy.
+        self._retime_model = bool(hw.JB_TRAJ_RETIME_MODEL)
 
         # ── Timed targets + catch (Phase 5) ──────────────────────
         # ROS-clock → perf_counter offset plumbing (plan Architecture's single
@@ -1661,7 +1666,8 @@ class TrajectoryNode(Node):
             plan, report = planner.build_move(
                 self._current_state(), target,
                 duration if duration > 0.0 else None,
-                self._limits, self._geom, shaper=shaper)
+                self._limits, self._geom, shaper=shaper,
+                retime_model=self._retime_model)
         except TrajectoryInfeasible as e:
             response.accepted = False
             response.code = e.code
@@ -1673,11 +1679,12 @@ class TrajectoryNode(Node):
 
         # Install-continuity guard. build_move seeds from _current_state() at entry,
         # but the full gate still takes real wall time while the emitter keeps
-        # streaming the OLD plan: after the 2026-07-16 planning speedup (component-form
-        # Jacobian cross + 80-sample gate) an unshaped move runs ~2 validate passes
-        # (~0.1 s offline-measured) and a shaped (lean-gain>0) move runs ~6 passes
-        # (min-feasible stretch + shaped-refine bisections; ~0.23 s measured after
-        # the 2026-07-17 batched-gate work — the drift window this guard protects
+        # streaming the OLD plan: after the 2026-07-16/17 planning speedups
+        # (component-form Jacobian cross + 80-sample unshaped gate + batched shaped
+        # gate + retiming-model search) an unshaped move runs ~2 validate passes
+        # (~0.1 s offline-measured) and a shaped (lean-gain>0) move runs the
+        # retiming model + ONE verify pass (~90 ms measured; the legacy 6-pass
+        # fallback is ~0.23 s — the drift window this guard protects
         # against). If the commanded
         # state moved during planning, installing this plan would jump u0 from the
         # drifted live position back to

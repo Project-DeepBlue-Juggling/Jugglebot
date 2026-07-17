@@ -180,6 +180,7 @@ namespace TrajOp {
   constexpr float LEAN_GAIN = 0.6f;
   constexpr float CATCH_REACH_FREEZE_S = 0.3f;
   constexpr float CATCH_SETTLE_HOLD_S = 0.5f;
+  constexpr bool RETIME_MODEL = true;
 }
 
 // ==========================================================================

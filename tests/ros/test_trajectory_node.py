@@ -331,9 +331,10 @@ def test_go_to_pose_rejected_when_commanded_state_moved_during_planning(monkeypa
     node = _traj_mode_node()
     real_build_move = planner.build_move
 
-    def latency_build_move(state0, target, dur, limits, geom, *, shaper=None):
+    def latency_build_move(state0, target, dur, limits, geom, *, shaper=None,
+                           **kwargs):
         plan, report = real_build_move(state0, target, dur, limits, geom,
-                                       shaper=shaper)
+                                       shaper=shaper, **kwargs)
         # Simulate ~1.5 s of streaming: the commanded pose drifts 10 mm in z
         # (≈0.13 rev/leg, well past the ~0.06 rev continuity bound).
         moved = np.asarray(node._current_state()[0], dtype=float).copy()

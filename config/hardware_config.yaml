@@ -557,6 +557,12 @@ trajectory_op:
                                    # defer-to-config); an EXPLICIT 0.0 in a request still forces OFF.
   catch_reach_freeze_s: 0.30       # Reach-translation freeze window before arrival {s} (Phase 6)
   catch_settle_hold_s: 0.50        # Quiescent hold after catch seat {s} (Phase 6)
+  retime_model: true               # Shaped-move duration search: the retiming MODEL proposes T,
+                                   # the UNCHANGED gate (feasibility.validate) verifies it — fallback
+                                   # is the legacy 6-pass stretch+bisection loop (shaped-planning-
+                                   # efficiency Phase 2). Measured +2% planned duration vs the true
+                                   # optimum, -6pp vs the legacy bisection overshoot, and shaped
+                                   # build_move ~233 ms -> ~90-110 ms. false = force the legacy loop.
 
 # ============================================================
 # 7. Jugglebot SpaceMouse

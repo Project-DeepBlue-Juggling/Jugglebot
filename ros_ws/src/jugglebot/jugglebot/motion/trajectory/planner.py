@@ -41,6 +41,7 @@ from jugglebot.motion.trajectory.feasibility import (
     validate,
     validate_follow,
 )
+from jugglebot.motion.trajectory import retime
 from jugglebot.motion.trajectory.plan import HoldPlan, TrajectoryPlan
 from jugglebot.motion.trajectory.segment import POSE_DIM, QuinticSegment
 
@@ -80,6 +81,14 @@ _STRETCH_MARGIN = 1.05
 # over) at the cost of a handful of extra validate() passes — shaper-path only; the
 # plain path's ~5 % overshoot needs no refinement.
 _SHAPED_REFINE_ITERS = 4
+
+# Retiming-model diagnostics (Phase 2, shaped-planning-efficiency). The model path
+# proposes a duration and the ONE verify pass through the unchanged validate() is the
+# source of truth; on the ~never verify rejection (or a model that cannot bracket a
+# feasible T) the planner falls back to the proven legacy stretch+bisection loop.
+# These counters make that fallback observable (a persistent nonzero count on the
+# hardware A/B would flag a model pathology) without changing behaviour.
+_RETIME_STATS = {'model_used': 0, 'verify_rejected': 0, 'model_no_solution': 0}
 
 
 def _as6(vec, name: str) -> np.ndarray:
@@ -146,7 +155,8 @@ def build_return_to_neutral(state0, neutral_pose, duration_s, limits, geom
     return plan
 
 
-def build_move(state0, target_pose, duration_s, limits, geom, *, shaper=None):
+def build_move(state0, target_pose, duration_s, limits, geom, *, shaper=None,
+               retime_model=True):
     """Profiled point-to-point move from ``state0`` to ``target_pose`` at rest.
 
     ``state0`` is ``(pose, twist, accel)`` (the seed continues the previous plan's
@@ -187,7 +197,8 @@ def build_move(state0, target_pose, duration_s, limits, geom, *, shaper=None):
 
     if duration_s is None or float(duration_s) <= 0.0:
         _t_min, plan_min, report_min = _min_feasible_move(
-            pose, twist, accel, target, limits, geom, shaper=shaper)
+            pose, twist, accel, target, limits, geom, shaper=shaper,
+            retime_model=retime_model)
         return plan_min, report_min
 
     # Explicit requested duration: validate it directly. If the gate accepts it we
@@ -205,7 +216,8 @@ def build_move(state0, target_pose, duration_s, limits, geom, *, shaper=None):
     if report.code not in _STRETCHABLE:
         raise TrajectoryInfeasible(report.code, report.reasons)
     t_min, _plan_min, _report_min = _min_feasible_move(
-        pose, twist, accel, target, limits, geom, shaper=shaper)
+        pose, twist, accel, target, limits, geom, shaper=shaper,
+        retime_model=retime_model)
     raise TrajectoryInfeasible(
         TOO_FAST,
         [f"requested duration {requested:.3f}s < minimal feasible "
@@ -246,7 +258,8 @@ def _stretch_factor(report, limits) -> float:
     return max(float(factor) * _STRETCH_MARGIN, 1.0)
 
 
-def _min_feasible_move(pose, twist, accel, target, limits, geom, *, shaper=None):
+def _min_feasible_move(pose, twist, accel, target, limits, geom, *, shaper=None,
+                       retime_model=True):
     """Shortest duration the gate accepts for a rest-terminating move.
 
     Starts at the ``min_move_duration_s`` floor and stretches by the exact
@@ -262,11 +275,28 @@ def _min_feasible_move(pose, twist, accel, target, limits, geom, *, shaper=None)
     (~3× measured); when a stretch actually happened, a bisection refinement recovers
     the honest minimum (see :data:`_SHAPED_REFINE_ITERS`). The plain path keeps its
     exact one-step convergence — no refinement.
+
+    Retiming-model fast path (Phase 2): for a SHAPED move from a REST seed with
+    ``retime_model`` on, the minimal feasible duration is proposed by a per-sample
+    u-polynomial model (:mod:`retime`) and confirmed by ONE ``validate`` pass instead
+    of the 6-pass stretch+bisection search. The model only proposes T — the unchanged
+    ``validate`` remains the source of truth — so a verify rejection (or a move the
+    model cannot bracket) falls back to the legacy loop below, never returning an
+    unvalidated plan. Moving seeds and the plain (unshaped) path always use the legacy
+    loop: the exact 1/Tⁿ leg-peak scaling the model exploits holds only for a rest
+    seed, and the plain path already converges in ≤2 passes.
     """
+    shaped = shaper is not None and getattr(shaper, 'gain', 0.0) > 0.0
+    if retime_model and shaped and _is_at_rest(twist, accel):
+        result = _try_retime_model(pose, twist, accel, target, limits, geom, shaper)
+        if result is not None:
+            return result
+        # else: model could not propose or the verify rejected — fall through to the
+        # proven legacy stretch+bisection loop (the fallback is already counted).
+
     T = float(limits.min_move_duration_s)
     report = None
     t_fail = None    # the largest T the gate rejected (a stretchable failure)
-    shaped = shaper is not None and getattr(shaper, 'gain', 0.0) > 0.0
     for _ in range(_MAX_STRETCH_ITERS):
         plan = _build_rest_move(pose, twist, accel, target, T, shaper=shaper)
         report = validate(plan, limits, geom)
@@ -291,6 +321,37 @@ def _min_feasible_move(pose, twist, accel, target, limits, geom, *, shaper=None)
         [f"could not find a feasible duration after {_MAX_STRETCH_ITERS} "
          f"iterations (last failure {report.code if report else 'n/a'})"],
         min_duration_s=T)
+
+
+def _try_retime_model(pose, twist, accel, target, limits, geom, shaper):
+    """Propose a shaped-move duration via the retiming model, then VERIFY it once.
+
+    Returns ``(T_final, plan, report)`` when the model's proposed duration passes the
+    unchanged :func:`validate` (the common case — the model matches the gate boundary
+    to ~1 ms and the 1.02 inflation covers the residual). Returns ``None`` — signalling
+    the caller to fall back to the legacy loop — when the model cannot propose a
+    duration OR the mandatory verify pass rejects the proposed plan (both counted in
+    :data:`_RETIME_STATS`). Never returns an unvalidated plan: the single returned
+    plan is exactly the object ``validate`` accepted, so the K-contract holds.
+    """
+    T_model = retime.propose_move_duration(pose, target, limits, geom, shaper)
+    if T_model is None:
+        _RETIME_STATS['model_no_solution'] += 1
+        return None
+    plan = _build_rest_move(pose, twist, accel, target, T_model, shaper=shaper)
+    report = validate(plan, limits, geom)
+    if report.ok:
+        _RETIME_STATS['model_used'] += 1
+        return T_model, plan, report
+    # The model proposed a duration the unchanged gate rejects — fall back to the
+    # legacy loop (the caller re-runs the stretch+bisection search, which is the
+    # proven source of truth, and re-raises any spatial failure). Only a STRETCHABLE
+    # rejection is a genuine model mis-size (should be ~never on the corpus); a spatial
+    # WORKSPACE/UNREACHABLE reject is a legitimately-infeasible target, not a model
+    # pathology, so it is not counted against the model.
+    if report.code in _STRETCHABLE:
+        _RETIME_STATS['verify_rejected'] += 1
+    return None
 
 
 def _refine_shaped_min(pose, twist, accel, target, limits, geom, shaper,
