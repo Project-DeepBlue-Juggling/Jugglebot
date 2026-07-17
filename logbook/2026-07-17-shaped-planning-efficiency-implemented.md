@@ -28,6 +28,7 @@ commits:
   - 4acaefe
   - 54c1e75
   - 806e8fb
+  - e40a04d
 subsystem:
   - motion
   - config
