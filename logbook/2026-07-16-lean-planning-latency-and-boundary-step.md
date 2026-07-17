@@ -361,6 +361,11 @@ wrap-up conversation; the durable numbers are above.
 - **An analytic shaped stretch seed** (the current `_stretch_factor` assumes
   `1/Tⁿ`; the lean scales `1/T³`) would cut shaped refine iterations honestly,
   without under-gating.
+- *(both landed 2026-07-17 — see
+  `logbook/2026-07-17-shaped-planning-efficiency-implemented.md`: a
+  numpy-vectorised shaped gate (Phase 1a) and a `1/T`-polynomial retiming-model
+  duration search that replaces the stretch/refine loop (Phase 2); shaped
+  `build_move` ~1.1 s → ~91 ms.)*
 - **The true fluidity fix is carrying tilt across moves** (move chaining /
   supersede), so the platform does not return to upright at every stop — the
   self-cancelling-pulse structure is *why* lean still feels "disconnected" even

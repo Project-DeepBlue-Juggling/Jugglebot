@@ -1,6 +1,15 @@
 # Plan: Shaped-planning efficiency — batched dense gate + retiming-invariant duration search
 
-**Status:** PROPOSED — Phase 1a ready to start (created 2026-07-17, from the
+> **✅ COMPLETE — ALL THREE PHASES LANDED 2026-07-17.** Phase 1a `4acaefe`,
+> Phase 1b `54c1e75`, Phase 2 `806e8fb` (all on `mvp-trajectory-bringup`).
+> Cumulative result vs the ~1.1 s baseline: shaped `build_move` **90.9 ms
+> (~12×)**, unshaped ~100 ms, binding shaped leg-jerk measured **7× more
+> honestly** (23 % → 3 % under-measured). Every returned plan is still
+> gate-verified by the unchanged `validate`. Closure record + real Discussion:
+> `logbook/2026-07-17-shaped-planning-efficiency-implemented.md`. Ready to
+> `/archive-plan`. Per-phase LANDED notes are inline at each phase heading below.
+
+**Status:** COMPLETE — all phases landed 2026-07-17 (created 2026-07-17, from the
 two-prototype efficiency exploration; both prototypes measured on this Jetson)
 **Branch:** mvp-trajectory-bringup
 **Operator constraint (binding):** more efficiency WITHOUT compromising numerical
@@ -29,8 +38,8 @@ The two prototypes **multiply**: the batched gate makes each validate pass ~5x c
 
 # Plan: Shaped-planning latency — batched gate + retiming-invariant duration search
 
-**Branch:** `mvp-trajectory-bringup` (or a dedicated `traj-shaped-planning-speedup`)
-**Status:** ACTIVE (draft)
+**Branch:** `mvp-trajectory-bringup`
+**Status:** COMPLETE — 1a `4acaefe`, 1b `54c1e75`, 2 `806e8fb` (all 2026-07-17)
 **Subsystem:** `ros_ws/.../motion/trajectory/` (pure Python, ROS-free)
 
 ## Context (measured, this Jetson, 2026-07-16/17)
@@ -50,6 +59,14 @@ More efficiency **without compromising numerical accuracy**. Every phase must **
 
 ## Phase 1a — Vectorize the shaped gate at bit-parity (n=200)
 
+> **✅ LANDED `4acaefe` (2026-07-17).** `batched_shaped_states`
+> (`shaping.py`) + `_validate_shaped_batched` (`feasibility.py`) shipped as a
+> parity refactor. Measured: sampler parity pose **7.1e-15** / twist **5.7e-14** /
+> accel **4.5e-13**; batched gate == scalar `validate` at equal mesh to
+> **1.41e-10**; per-pass **185.6 → 7.5 ms** at n=200. 33 tests in
+> `tests/motion/test_shaped_batch.py`. Full suite **2860 passed / 1 xfailed in
+> 584.45 s**.
+
 **Goal:** replace the Python per-sample shaped loop with the batched machinery, at the *current* mesh, so this commit changes NO emitted number.
 
 **Files/tasks:**
@@ -66,6 +83,19 @@ More efficiency **without compromising numerical accuracy**. Every phase must **
 
 ## Phase 1b — Bump the shaped mesh 200 → 1600 (the accuracy fix)
 
+> **✅ LANDED `54c1e75` (2026-07-17).** `_SHAPED_VALIDATE_SAMPLES` **200 → 1600**;
+> rationale block rewritten to record the two-era floor + the ~3 %-vs-6400
+> headroom. Measured: shaped FD-jerk under-measurement **23 % → 3 %**;
+> conservativeness corpus **0 violations** (`@1600`-accept ⟹ `@200`-accept);
+> jerk-bound lateral moves plan **+4.9 % longer** (the intended under-stretch fix);
+> per-pass ~39 ms at n=1600. **Two plan hedges corrected as empirically false**
+> (both already noted in the 2026-07-17 implementation corrections below): @6400
+> is a *convergence* reference, not an acceptance oracle (false ~1/90 near the
+> jerk boundary); only FD jerk is mesh-monotone, not vel/acc point-samples — so
+> the committed corpus asserts `@1600⟹@200`-accept + FD-jerk monotonicity only,
+> and it landed in `test_shaped_batch.py`. Full suite **2862 passed / 1 xfailed in
+> 608.38 s**.
+
 **Goal:** flip `_SHAPED_VALIDATE_SAMPLES` 200→1600 (feasibility.py:116) — now affordable (39.7 ms vs 185 ms/pass) — cutting shaped-jerk under-measurement 23%→3%. Update the constant's long rationale block to record the new ~3%-vs-6400 headroom.
 
 **Behavioral change (intended, surfaced in the logbook):** the gate now measures ~25% MORE shaped jerk, so jerk-bound shaped moves stretch **~8% longer** (T∝jerk^(1/3)). This is the **fix** for the operator's "sharp" lean, not a regression — today's gate silently under-stretches and emits more true leg jerk than it believes on the exact lean path.
@@ -80,6 +110,22 @@ More efficiency **without compromising numerical accuracy**. Every phase must **
 **No flag:** `_SHAPED_VALIDATE_SAMPLES` is itself the single revertible knob; the vectorization it rides on is parity-locked by 1a.
 
 ## Phase 2 — Retiming-invariant duration search (2 passes, not 6)
+
+> **✅ LANDED `806e8fb` (2026-07-17), behind `JB_TRAJ_RETIME_MODEL` (default ON,
+> YAML `trajectory_op.retime_model`).** Measured: shaped `build_move` **228.7 →
+> 90.9 ms (2.52×)**; durations uniformly **+2.0 %** over optimum (legacy bisection
+> +1.2–14.7 %); **0 verify rejections** over 54 optimality + 120 fuzz cases; model
+> peaks <0.3 % vs the gate; audit proved the every-returned-plan-is-gate-verified
+> invariant from code. Fallbacks wired: verify-reject / no-solution / moving-seed /
+> unshaped / flag-off → legacy stretch+bisection loop, counted in `_RETIME_STATS`.
+> **Module/API naming drift from this plan (accepted):** landed as `retime.py`
+> (not `retime_model.py`) with `build_model` / `RetimeModel.peaks` /
+> `RetimeModel.min_feasible_T` / `_cap_free_reference_T` / `propose_move_duration`
+> (not `build_leg_peak_model` / `predict_peaks` / `cap_free_reference_T`) —
+> structurally identical, folded behind a `RetimeModel` class + one
+> `propose_move_duration` entry. New suite `tests/motion/test_retime.py`. Full
+> suite **2872 passed / 1 xfailed in 937.31 s** (the final pre-commit gate over the
+> whole arc).
 
 **Goal:** replace the shaped branch of the duration search (2 stretch + 4 bisection) with a per-sample u-polynomial model + one verify. `validate`/`validate_follow` untouched — the gate stays the gate.
 

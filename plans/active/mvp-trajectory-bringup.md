@@ -187,8 +187,9 @@ exclusively through `planner.py`, so nothing bypasses it.
 
 1. **Reachability/workspace/stroke** along the sampled path (200 samples/segment
    as designed; *2026-07-16: default now 80 for unshaped plans with a ×1.05 jerk
-   margin, shaped plans floored at 200 — see
-   logbook 2026-07-16-lean-planning-latency-and-boundary-step*):
+   margin; 2026-07-17: shaped plans floored at 1600 on a numpy-vectorised gate —
+   the accuracy fix, see logbook 2026-07-17-shaped-planning-efficiency-implemented
+   (Phase 1a/1b) and 2026-07-16-lean-planning-latency-and-boundary-step*):
    `workspace.check_workspace_limits` / `check_reachability`, leg extensions within
    stroke margins.
 2. **Leg kinematic peaks**: leg pos/vel/acc via the `ik_solver` Jacobian chain,
@@ -699,7 +700,9 @@ read-only knot inspection. Full narrative in
 commits found one BLOCKING issue — the mid-move `go_to_pose` install step. Because
 the seed is sampled at service entry but the plan installs ~1.5 s later (4–5
 `validate` passes at ~377 ms each, as measured at the time; *2026-07-16: now
-~0.1 s unshaped / ~1.2–1.3 s shaped after the planning speedup*) while the
+~0.1 s unshaped / ~1.2–1.3 s shaped after the planning speedup; 2026-07-17: shaped
+now ~0.09 s after the batched 1600-sample gate + retiming-model search — see
+logbook 2026-07-17-shaped-planning-efficiency-implemented*) while the
 emitter streams the OLD plan, an
 in-flight move meant the install jumped `u0` back to the stale seed (measured
 ~575 mm/s transient that passed both step gates). Fixes: (a) a **permanent
