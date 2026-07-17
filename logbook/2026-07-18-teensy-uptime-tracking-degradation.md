@@ -7,7 +7,7 @@ phase: "MVP trajectory bringup — S4/S5 wobble regression root cause"
 related_plan: mvp-trajectory-bringup.md
 files_changed: []
 commits:
-  - TBD
+  - 773180c
 subsystem:
   - can
   - motion
