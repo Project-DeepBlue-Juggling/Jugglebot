@@ -210,8 +210,34 @@ constants are unchanged.
 - Phase 4 (docs only) scoped gate (`pytest tests/ros tests/motion -q`, run 2026-07-21):
   **1641 passed, 51 warnings in 348.74 s** — no code change, confirming no accidental
   regression.
-- The orchestrator runs the full `pytest tests/ -q` as the final gate after all phases
-  land.
+- Final full-suite gate (`pytest tests/ -q`, run 2026-07-21): **2888 passed, 1 xfailed,
+  0 failed in 763.07 s** — the complete build (5 phases + the post-review fix below).
+
+## Addendum (2026-07-21) — post-review safety fix + doc cleanup (`61f53ae`)
+
+The workflow's per-phase + final Opus reviews surfaced one **confirmed major** issue the
+auto-fix step (blocking-only) did not land: the catch-armed latch was never cleared on a
+control-mode change. The retired CATCH mode disarmed the catch for free on mode exit (its
+gate was `_current_mode != CATCH`); the latch had no equivalent, so a stuck-armed latch —
+an interrupted reload or an E-STOP to STANDBY before the action lowers it — could let a
+stray `catch/dynamic_target` install a `build_catch` with no reload in progress ("catch
+fires when it shouldn't"). Fixed by force-disarming the latch at the top of
+`_on_control_mode` (mirrors the `_svc_arm_catch` disarm edge; an in-flight catch reach is
+silenced by the existing mid-move graceful-stop / emitter-silence branch). Regression test
+`test_arm_catch_force_disarmed_on_mode_change` added. Also purged two stale interface-header
+comments (`Reload.action`, `DynamicTargetCommand.msg`) still describing the retired
+CATCH-mode design, and dropped `'shell'` from `controller/{zmq_target,target}.py` docstrings.
+
+**Discussion — why the gap existed.** Replacing a *mode* (auto-cleared on exit by the
+orchestrator's mode-partition machinery) with a *latch* (owned by one node's service) moved
+the disarm responsibility from the framework to the caller. The lesson generalises: when a
+persistent-mode gate becomes an explicit latch, the mode's implicit lifecycle guarantees —
+here, "leaving the mode disarms" — must be re-created explicitly, or the latch outlives its
+owner. The force-disarm-on-mode-change restores that guarantee as a defense-in-depth backstop
+independent of the action's own SAFE_ABORT/cancel cleanup. It also validates the review
+discipline: the gap was a *major* (not *blocking*) finding, so the autonomous fix step skipped
+it by design — evidence that a human-reviewed synthesis pass after the workflow is
+load-bearing, not ceremonial.
 
 ## Open / deferred
 
@@ -219,4 +245,3 @@ constants are unchanged.
   frame+z check (809.08), static catch, full reload action (prime → throw → reactive catch
   → recenter), and each abort path (no-ball, no-announcement, cancel). See
   `tests/hardware/session_phase7_reload.md`.
-</content>
