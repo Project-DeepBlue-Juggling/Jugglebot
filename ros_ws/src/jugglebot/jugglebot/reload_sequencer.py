@@ -342,10 +342,17 @@ class ReloadSequencer:
 def compute_catch_point_mm(initial_height_mm: float, active_z_mm: float,
                            landing_z_offset_mm: float = 0.0) -> tuple:
     """The world-frame catch point BB aims at: directly above Jugglebot's base at the
-    ACTIVE catch height. ``(0, 0, initial_height + active_z + landing_z_offset)``.
+    hand-CUP catch height. ``(0, 0, initial_height + active_z + landing_z_offset)``.
 
-    NOTE (Phase-7a verification task): the z-convention (initial_height + the STOW→ACTIVE
-    lift) is hardware-UNVERIFIED — 7a's aim-only (speed 0) command verifies the QTM-world
-    vs jugglebot-base frame AND this z before any ball flies (plan § Reload sequence 2)."""
+    The caller (``reload_coordinator_node``) passes ``landing_z_offset_mm =
+    HAND_CATCH_OFFSET_MM`` (64.78 mm) so the aim lands on the CUP plane — where the hand
+    actually intercepts the ball — not the platform centroid. That matches the catch
+    plane the rest of the stack uses (``throw_ballistics._DEFAULT_CATCH_HEIGHT_MM``,
+    ``ball_tracker`` landing_z, ``catch_coordinator`` landing_z_offset).
+
+    NOTE (Phase-7a verification task): the z-convention (initial_height + STOW→ACTIVE lift
+    + hand-cup offset) is hardware-UNVERIFIED — 7a's aim-only (speed 0) command verifies
+    the QTM-world vs jugglebot-base frame AND this z before any ball flies (plan § Reload
+    sequence 2)."""
     return (0.0, 0.0,
             float(initial_height_mm) + float(active_z_mm) + float(landing_z_offset_mm))

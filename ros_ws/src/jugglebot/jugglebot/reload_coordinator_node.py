@@ -83,8 +83,18 @@ class ReloadCoordinatorNode(Node):
     def __init__(self, robot_name: str = 'jugglebot'):
         super().__init__('reload_coordinator_node')
         self._robot_name = robot_name
+        # The ball is caught by the hand CUP, which sits HAND_CATCH_OFFSET_MM (64.78 mm)
+        # above the platform centroid at the catch position within the hand stroke — not
+        # at the centroid itself. Aim BB at the cup plane so the ball is delivered where
+        # the hand actually intercepts it. This matches the catch plane the rest of the
+        # stack already uses (throw_ballistics._DEFAULT_CATCH_HEIGHT_MM, ball_tracker's
+        # landing_z, catch_coordinator's landing_z_offset) — all GEOM_INITIAL_HEIGHT +
+        # ACTIVE_Z + HAND_CATCH_OFFSET. Omitting the offset aimed 64.78 mm low, pushing
+        # the ball's true-plane crossing off-centre (toward BB) and eating tilt/reach
+        # margin on every catch.
         self._catch_point_mm = compute_catch_point_mm(
-            hw.GEOM_INITIAL_HEIGHT_MM, hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
+            hw.GEOM_INITIAL_HEIGHT_MM, hw.JB_OP_DEFAULT_ACTIVE_Z_MM,
+            landing_z_offset_mm=hw.HAND_CATCH_OFFSET_MM)
 
         # ── Cached observations (updated by subscription callbacks) ──
         self._lock = threading.Lock()

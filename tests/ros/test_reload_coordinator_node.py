@@ -75,6 +75,21 @@ def test_wiring_surface():
     assert 'jugglebot/reload' in node._action_servers
 
 
+def test_catch_point_includes_hand_cup_offset():
+    """The reload aim must be the CUP plane (platform centroid + HAND_CATCH_OFFSET_MM),
+    matching throw_ballistics/_landing_z/catch_coordinator — NOT the bare centroid.
+    Regression for the 2026-07-20 fix: aiming at the centroid (744.3) delivered the ball
+    64.78 mm below where the hand intercepts it (809.08)."""
+    import jugglebot.hardware_config as hw
+    node = ReloadCoordinatorNode()
+    expected_z = (hw.GEOM_INITIAL_HEIGHT_MM + hw.JB_OP_DEFAULT_ACTIVE_Z_MM
+                  + hw.HAND_CATCH_OFFSET_MM)
+    assert node._catch_point_mm[0] == pytest.approx(0.0)
+    assert node._catch_point_mm[1] == pytest.approx(0.0)
+    assert node._catch_point_mm[2] == pytest.approx(expected_z)
+    assert node._catch_point_mm[2] == pytest.approx(809.08)
+
+
 # ── Observation assembly ───────────────────────────────────────
 
 def test_build_observations_fresh():
