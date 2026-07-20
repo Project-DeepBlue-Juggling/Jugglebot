@@ -1107,7 +1107,7 @@ class TestFaultHandler:
 
     # trajectory_node's streaming set (jugglebot.trajectory_node._DEFAULT_STREAM_MODES);
     # a control_mode outside this silences the 40 Hz emitter and abandons the descent.
-    _STREAM_MODES = {'STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'CATCH'}
+    _STREAM_MODES = {'STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI'}
 
     def test_guard_only_fault_preserves_streaming_mode_not_error(self):
         """(i) A guard-only fault PRESERVES the streaming mode — it must never publish

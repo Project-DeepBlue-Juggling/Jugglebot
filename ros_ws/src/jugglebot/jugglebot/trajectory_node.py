@@ -40,7 +40,7 @@ TRAJECTORY mode) reaches a pose at a nominal velocity a RELATIVE ``lead_time_s``
 seconds after service receipt (the node anchors the absolute arrival at handler
 entry on ``perf_counter``) via ``planner.build_timed`` (a fixed-lead reach — a
 too-tight lead is loudly rejected ``TOO_FAST`` with the achievable
-``min_duration_s``, never silently slowed). CATCH mode consumes ``catch/dynamic_target`` through the SAME
+``min_duration_s``, never silently slowed). The catch-armed latch gates ``catch/dynamic_target`` through the SAME
 ``build_catch`` (Phase 7: the tilt-through-seat catch trajectory — a reach to the
 receive-tilted catch pose with translational arrival velocity forced to zero, a
 small residual tilt rate carried through the seat, then a literal quiescent hold;
@@ -111,8 +111,8 @@ from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
 
 # The control mode in which explicit move services (go_to_pose) are accepted. In
-# any other streaming mode (STANDBY holds; SPACEMOUSE/CATCH have their own command
-# sources) a go_to_pose is rejected WRONG_MODE — loudly, never silently — so the
+# any other streaming mode (STANDBY holds; SPACEMOUSE has its own command
+# source) a go_to_pose is rejected WRONG_MODE — loudly, never silently — so the
 # operator can never drive a scripted move from a mode that isn't expecting one.
 _MOVE_MODE = 'TRAJECTORY'
 
@@ -141,30 +141,24 @@ _GUARD_LATCHED = 'GUARD_LATCHED'
 # the Phase 1 arming bring-up uses; the active sub-modes are included so streaming
 # stays on across the modes later phases drive (TRAJECTORY lands in Phase 2). A
 # mode outside this set stops streaming and forces a re-seed on the next entry.
-_DEFAULT_STREAM_MODES = ('STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI',
-                         'CATCH')
+_DEFAULT_STREAM_MODES = ('STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI')
 
 # Modes in which the SpaceMouse/GUI streaming-target follower (Phase 3) is
 # active — the pose-command modes, mirroring mpc_bridge_node._POSE_MODES. In these
 # modes the emitter tick drains the latest platform_pose target and replans toward
 # it (fast validate_follow gate); other streaming modes hold (STANDBY) or use their
-# own command source (TRAJECTORY→go_to_pose, CATCH→dynamic_target, Phase 5).
+# own command source (TRAJECTORY→go_to_pose; the catch path is gated by the
+# catch-armed latch, not a mode — see _svc_arm_catch).
 _FOLLOWER_MODES = frozenset({'SPACEMOUSE', 'GUI'})
 
 # Modes that actively COMMAND platform motion (as opposed to STANDBY, which holds).
 # Leaving one of these for a non-motion streaming mode (STANDBY) while a move is in
 # flight installs a graceful stop — the move is silenced, not left to run on to its
 # target (a near-boundary seed that the stop can't yet gate is retried via the
-# pending-stop path in _emit_once, not dropped). CATCH is a motion mode too: a catch
-# reach is a build_timed 'move' plan, so leaving CATCH mid-reach (the documented
-# abort = switch away from CATCH) must likewise install the stop rather than run the
-# reach on to the catch target.
-_MOTION_MODES = _FOLLOWER_MODES | {'TRAJECTORY', 'CATCH'}
-
-# The mode in which catch/dynamic_target commands (from catch_coordinator_node) are
-# consumed and turned into timed catch plans (Phase 5). Mirrors
-# mpc_bridge_node._CATCH_MODES — a dynamic_target outside CATCH is ignored.
-_CATCH_MODE = 'CATCH'
+# pending-stop path in _emit_once, not dropped). The catch reach (a build_catch
+# 'move' plan) runs in TRAJECTORY under the catch-armed latch; its in-flight
+# graceful stops are keyed off the latch EDGES (_svc_arm_catch), not a mode.
+_MOTION_MODES = _FOLLOWER_MODES | {'TRAJECTORY'}
 
 _NUM_LEGS = 6
 
@@ -245,16 +239,16 @@ class TrajectoryNode(Node):
         self._catch_settle_hold_s = float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)
         # Absolute (perf) arrival time of the committed catch reach, or None. Once
         # within catch_reach_freeze_s of it, later target jitter is ignored (the reach
-        # is frozen into the catch). Reset on leaving CATCH / on a fresh seed.
+        # is frozen into the catch). Reset on the catch-armed latch edges / a fresh seed.
         self._catch_arrival_perf = None
-        # Catch-armed latch (reload-action-catch-latch plan, Phase 1). While True,
-        # ``catch/dynamic_target`` installs a ``build_catch`` reach exactly as CATCH
-        # mode does — the latch is the catch TRIGGER the RELOAD action raises for the
-        # flight window, replacing the persistent CATCH mode (which still coexists this
-        # phase). The node stays in TRAJECTORY (already streaming + motion-capable), so
-        # the latch is NOT a member of any mode set; the freeze-reset + graceful-stop
-        # bookkeeping is keyed off the latch EDGES (see _svc_arm_catch). Read only on
-        # the executor thread (_on_dynamic_target), so a plain bool needs no lock.
+        # Catch-armed latch (reload-action-catch-latch plan). While True,
+        # ``catch/dynamic_target`` installs a ``build_catch`` reach — the latch is the
+        # catch TRIGGER the RELOAD action raises for the flight window (it is the sole
+        # catch trigger). The node stays in TRAJECTORY (already streaming +
+        # motion-capable), so the latch is NOT a member of any mode set; the
+        # freeze-reset + graceful-stop bookkeeping is keyed off the latch EDGES (see
+        # _svc_arm_catch). Read only on the executor thread (_on_dynamic_target), so a
+        # plain bool needs no lock.
         self._catch_armed = False
 
         # ── Parameters ─────────────────────────────────────────
@@ -396,7 +390,7 @@ class TrajectoryNode(Node):
         # Gravity-levelling correction (verbatim port from mpc_bridge_node).
         self.create_subscription(Float64MultiArray, 'gravity_offset',
                                  self._on_gravity_offset, 10)
-        # Catch coordinator's timed catch target (CATCH mode; Phase 5).
+        # Catch coordinator's timed catch target (latch-gated; Phase 5).
         self.create_subscription(DynamicTargetCommand, 'catch/dynamic_target',
                                  self._on_dynamic_target, 10)
         # FIX 1 — Teensy guard state. The bridge publishes /link_status (a
@@ -417,7 +411,7 @@ class TrajectoryNode(Node):
                             self._svc_timed_target)
         # Catch-armed latch (reload-action-catch-latch plan, Phase 1). SetBool:
         # data=True arms, data=False disarms. The RELOAD action drives it for the
-        # catch flight window instead of holding a persistent CATCH mode.
+        # catch flight window instead of a persistent control mode.
         self.create_service(SetBool, 'trajectory/arm_catch', self._svc_arm_catch)
         # FIX 3 — one-call guard recovery support. The bridge's /recover calls this
         # FIRST (before CLEAR_ERRORS) so the commanded u0 collapses onto the frozen
@@ -704,8 +698,8 @@ class TrajectoryNode(Node):
     def _reset_catch_reach_freeze(self) -> None:
         """Release any committed catch-reach freeze window (``_catch_arrival_perf``
         → None). The single named enforcement point for "a fresh catch session (or an
-        abort) must not inherit a stale freeze", called from CATCH mode entry/exit,
-        the catch-armed latch edges, and a fresh telemetry seed."""
+        abort) must not inherit a stale freeze", called from the catch-armed latch
+        edges and a fresh telemetry seed."""
         self._catch_arrival_perf = None
 
     def _install_graceful_stop(self, context: str) -> None:
@@ -732,22 +726,17 @@ class TrajectoryNode(Node):
         mode = str(msg.data)
         if mode == self._current_mode:
             return
-        # Leaving CATCH clears the committed catch reach: a later re-entry must not
-        # inherit a stale freeze window (and an operator abort = a switch away from
-        # CATCH, so the frozen reach must release).
-        if mode != _CATCH_MODE:
-            self._reset_catch_reach_freeze()
         # A3: the escalation + pending-stop latches are cleared on ANY mode change,
         # BEFORE the mid-move stop logic below (which independently re-requests a stop
         # if this transition needs one). A mode change is a fresh context — a stale
-        # escalation/pending stop from the prior mode must not leak across it (this
-        # also fixes the pending-stop leak into CATCH). The clear is done ATOMICALLY
+        # escalation/pending stop from the prior mode must not leak across it. The
+        # clear is done ATOMICALLY
         # with the _current_mode write under _plan_lock (in both branches below) so a
         # follower escalation racing this exit on the emitter thread — its follow() in
         # flight — cannot re-latch the flags into the new mode: _enter_escalation_stop
         # re-checks the mode under the same lock and refuses once we have left.
         if mode in self._stream_modes:
-            # Leaving a motion mode (TRAJECTORY / a follower / CATCH) for a non-motion
+            # Leaving a motion mode (TRAJECTORY / a follower) for a non-motion
             # streaming mode (STANDBY) while a move is in flight: STANDBY silences
             # commands but keeps streaming, so the in-flight move must be stopped
             # with a C2 decel-to-rest rather than run on to its target. Snapshot
@@ -759,18 +748,6 @@ class TrajectoryNode(Node):
                 prev_mode in _MOTION_MODES and mode not in _MOTION_MODES
                 and move_in_flight)
             entering_follower = (mode in _FOLLOWER_MODES and mode != prev_mode)
-            entering_catch = (mode == _CATCH_MODE and mode != prev_mode)
-            # CATCH transitions are motion→motion when the other side is TRAJECTORY /
-            # a follower, so leaving_motion_move alone misses them — yet BOTH
-            # directions must stop an in-flight move: entering CATCH mid-move (the
-            # catch must begin from a clean, non-jittering state; the first catch
-            # reach then supersedes the stop via a C2 replan) and leaving CATCH
-            # mid-reach (the documented abort — the committed reach must never run on
-            # to the catch pose; without this a CATCH→TRAJECTORY exit left the reach
-            # running with go_to_pose BUSY-blocked behind it).
-            entering_catch_mid_move = entering_catch and move_in_flight
-            leaving_catch_mid_move = (
-                prev_mode == _CATCH_MODE and mode != prev_mode and move_in_flight)
             # Streaming-state writes go under _plan_lock: the emitter thread
             # snapshots _streaming/_seeded under it in _emit_once, so an unlocked
             # write could tear against that snapshot.
@@ -780,11 +757,6 @@ class TrajectoryNode(Node):
                 self._escalation_stop = False
                 self._escalate_stop_fail_count = 0
                 self._pending_stop = False
-            if entering_catch:
-                # Fresh catch session — release any stale committed reach so the first
-                # target replans freely (belt-and-suspenders: leaving CATCH already
-                # cleared it, but a direct re-entry must never inherit a stale freeze).
-                self._reset_catch_reach_freeze()
             if entering_follower:
                 # Drop any stale target/last-target so the first target of this
                 # session always replans (never deadbanded against a prior session).
@@ -795,14 +767,12 @@ class TrajectoryNode(Node):
                 # loss" until this window elapses since entry (before the first
                 # SpaceMouse frame even arrives).
                 self._follower_entry_mono = time.perf_counter()
-            if leaving_motion_move or entering_catch_mid_move or leaving_catch_mid_move:
+            if leaving_motion_move:
                 # Sample the live (moving) state and install a graceful stop: a
                 # duration-stretched decel-to-rest that lengthens its horizon until
                 # the gate passes, so a mid-move mode change no longer falls through to
                 # "let the move complete". The stop decelerates in place (never runs on
-                # to the old target). Covers leaving a motion mode for a non-motion
-                # one AND both CATCH directions (see the snapshot block above).
-                # _current_state/_install lock themselves.
+                # to the old target). _current_state/_install lock themselves.
                 self._install_graceful_stop(f"changed mode {prev_mode}→{mode}")
             # Seed a hold at the MEASURED pose on stream start (never nominal) —
             # this is what keeps the first u0 inside the pump/firmware gates — but
@@ -1619,7 +1589,7 @@ class TrajectoryNode(Node):
             self._last_rejection = response.message
             self.get_logger().error(response.message)
             return response
-        # Gate: TRAJECTORY mode only. A move from STANDBY/SPACEMOUSE/CATCH is a
+        # Gate: TRAJECTORY mode only. A move from STANDBY/SPACEMOUSE is a
         # mode confusion — reject rather than move unexpectedly.
         if self._current_mode != _MOVE_MODE:
             response.accepted = False
@@ -1921,7 +1891,7 @@ class TrajectoryNode(Node):
         return True, feas.OK, 'timed target accepted', float(lead), 0.0
 
     def _plan_and_install_catch(self, catch_pose, arrival_perf, *, source):
-        """Build the tilt-through-seat CATCH plan to ``catch_pose`` arriving at
+        """Build the tilt-through-seat catch plan to ``catch_pose`` arriving at
         ``arrival_perf`` and install it (supersede-safe). Returns the same
         ``(accepted, code, message, planned_s, min_s)`` tuple as
         ``_plan_and_install_timed`` and always publishes ``trajectory/target_feedback``.
@@ -1975,7 +1945,7 @@ class TrajectoryNode(Node):
         convention. The catch z is an offset from the active pose (0 = active); the
         trajectory pose is STOW-relative (170 = active), so lift z by ``_active_z_mm``
         (x/y are 0-at-active in both). The orientation carries the gravity-levelling
-        correction (verbatim port from ``mpc_bridge_node._on_catch_target``)."""
+        correction."""
         q = msg.target_quat
         rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
         rotvec = self._apply_gravity_correction(rot_matrix_to_rotvec(rot))
@@ -1993,10 +1963,9 @@ class TrajectoryNode(Node):
     def _on_dynamic_target(self, msg) -> None:
         """``catch/dynamic_target``: a timed catch target.
 
-        Fires when EITHER the catch-armed latch is raised (the reload-action trigger,
-        Phase 1 — the node stays in TRAJECTORY) OR the legacy persistent CATCH mode is
-        active (transitional coexistence until Phase 3 deletes CATCH). Outside both,
-        a dynamic_target is ignored.
+        Fires only when the catch-armed latch is raised (the reload-action trigger —
+        the node stays in TRAJECTORY throughout). Outside the latch, a dynamic_target
+        is ignored.
 
         ``arrival_time`` is ALREADY perf-domain (the coordinator converted
         landing_time → perf), so no clock crossing here — the single crossing is the
@@ -2005,10 +1974,10 @@ class TrajectoryNode(Node):
         window (within ``catch_reach_freeze_s`` of the committed arrival), where late
         target jitter is ignored so the platform holds its committed reach into the
         catch (a parked, non-jittering rim seats the ball; the reload design). An
-        operator abort lowers the latch (or switches away from CATCH) — either clears
-        the freeze via _reset_catch_reach_freeze.
+        operator abort lowers the latch, which clears the freeze via
+        _reset_catch_reach_freeze.
         """
-        if not (self._catch_armed or self._current_mode == _CATCH_MODE):
+        if not self._catch_armed:
             return
         arrival_perf = float(msg.arrival_time)
         if self._guard_frozen:                       # FIX 1 — refuse while latched
@@ -2058,16 +2027,15 @@ class TrajectoryNode(Node):
     def _svc_arm_catch(self, request, response):
         """``trajectory/arm_catch`` (SetBool): raise/lower the catch-armed latch.
 
-        The latch is the reactive-catch TRIGGER (reload-action-catch-latch plan,
-        Phase 1). While armed, ``catch/dynamic_target`` installs a ``build_catch``
-        reach exactly as CATCH mode does — the RELOAD action raises it for the flight
-        window instead of the operator holding a persistent CATCH mode. The node stays
-        in TRAJECTORY throughout (already streaming + motion-capable), so the latch is
-        NOT added to any mode set; only the freeze-reset + graceful-stop bookkeeping is
-        keyed off the arm/disarm EDGES here.
+        The latch is the reactive-catch TRIGGER (reload-action-catch-latch plan).
+        While armed, ``catch/dynamic_target`` installs a ``build_catch`` reach — the
+        RELOAD action raises it for the flight window (it is the sole catch trigger).
+        The node stays in TRAJECTORY throughout (already streaming +
+        motion-capable), so the latch is NOT added to any mode set; only the
+        freeze-reset + graceful-stop bookkeeping is keyed off the arm/disarm EDGES here.
 
-        On BOTH edges the SAME bookkeeping CATCH mode entry/exit performs runs, so the
-        arm/disarm seams reproduce exactly the smoothing the mode transition does today:
+        On BOTH edges the same freeze-reset + mid-move graceful-stop bookkeeping runs,
+        so the arm/disarm seams produce no command discontinuity:
           - the committed catch-reach freeze window is released (``_reset_catch_reach_
             freeze`` — a fresh catch session, or an abort, must not inherit a stale
             freeze); and
@@ -2077,7 +2045,7 @@ class TrajectoryNode(Node):
             catch reach then supersedes via a C2 replan); the documented abort =
             disarming mid-reach → the reach is silenced, never run on to the catch
             target. The stop is C2 off the live state, so no command discontinuity at
-            the seam — identical to the mode-transition stop.
+            the seam.
 
         Idempotent: a set-to-current-value call is a no-op (no edge, no bookkeeping),
         mirroring ``_on_control_mode``'s same-mode early return.

@@ -100,7 +100,7 @@ class MotionBridgeNode(Node):
     # STANDBY is included because run_mpc.py may be running and driving the
     # platform; the motor guard's own enable state is owned by HardwarePlant.
     _ACTIVE_MODES = frozenset(
-        {'STANDBY', 'SPACEMOUSE', 'GUI', 'CATCH'})
+        {'STANDBY', 'SPACEMOUSE', 'GUI'})
 
     def _on_control_mode(self, msg: String) -> None:
         """Translate control mode changes to IPC mode commands.

@@ -1,7 +1,7 @@
 """ROS2 bridge node for MPC target setting.
 
-Subscribes to all ROS2 input sources (spacemouse, GUI, catch
-coordinator) and forwards target commands to the MPC process via ZeroMQ.
+Subscribes to the ROS2 pose input sources (spacemouse, GUI) and forwards
+target commands to the MPC process via ZeroMQ.
 
 The MPC process receives targets on :5558 and uses them as the tracking
 reference for its optimisation.  This node is the single gateway between
@@ -12,7 +12,6 @@ quaternion → rotation-vector conversion.
 ROS2 → ZMQ (:5558):
   - control_mode_topic  (String)               → MPC mode
   - platform_pose_topic (PlatformPoseCommand)   → MPC target (SPACEMOUSE/GUI)
-  - catch/dynamic_target (DynamicTargetCommand) → MPC target (CATCH)
   - gravity_offset (Float64MultiArray)         → stored correction applied to all targets
 
 No motion planning is done here — this node is a pure translator.  The
@@ -27,7 +26,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, String
-from jugglebot_interfaces.msg import PlatformPoseCommand, DynamicTargetCommand
+from jugglebot_interfaces.msg import PlatformPoseCommand
 
 from jugglebot.motion.ipc import (
     MpcBridgeIPC,
@@ -48,17 +47,14 @@ class MpcBridgeNode(Node):
     Mode-gating logic:
       - SPACEMOUSE/GUI modes forward ``platform_pose_topic`` messages
         whose ``publisher`` field matches the active mode.
-      - CATCH mode forwards ``catch/dynamic_target`` messages.
       - All other modes (LEVELLING, ERROR, empty) send a ``disabled`` mode
         message and suppress all target forwarding.
     """
 
     # Modes that accept PlatformPoseCommand targets
     _POSE_MODES = frozenset({'SPACEMOUSE', 'GUI'})
-    # Modes that accept DynamicTargetCommand targets
-    _CATCH_MODES = frozenset({'CATCH'})
-    # Union of all modes where the MPC should be active
-    _ACTIVE_MODES = _POSE_MODES | _CATCH_MODES
+    # Modes where the MPC should be active
+    _ACTIVE_MODES = _POSE_MODES
 
     def __init__(self):
         super().__init__('mpc_bridge')
@@ -94,11 +90,6 @@ class MpcBridgeNode(Node):
         self.create_subscription(
             PlatformPoseCommand, 'platform_pose_topic',
             self._on_platform_pose, 10)
-
-        # Dynamic target from catch coordinator
-        self.create_subscription(
-            DynamicTargetCommand, 'catch/dynamic_target',
-            self._on_catch_target, 10)
 
         # Poll for session metadata from MPC process (1 Hz is plenty)
         self.create_timer(1.0, self._poll_session_metadata)
@@ -197,37 +188,6 @@ class MpcBridgeNode(Node):
         self._ipc.send_target(make_mpc_target(
             target_pose=target_pose,
             source=source.lower(),
-        ))
-
-    def _on_catch_target(self, msg: DynamicTargetCommand) -> None:
-        """Convert DynamicTargetCommand to MPC target (catch coordinator).
-
-        Only forwards when the current mode is CATCH.
-        """
-        if self._current_mode not in self._CATCH_MODES:
-            return
-
-        # Position (mm, relative to active pose)
-        catch_rotvec = _quat_msg_to_rotvec(
-            msg.target_quat.w, msg.target_quat.x,
-            msg.target_quat.y, msg.target_quat.z)
-        catch_rotvec = self._apply_gravity_correction(catch_rotvec)
-        target_pose = [
-            msg.target_pos.x, msg.target_pos.y, msg.target_pos.z,
-            catch_rotvec[0], catch_rotvec[1], catch_rotvec[2],
-        ]
-
-        # Velocity at arrival (linear only; angular = 0)
-        target_twist = [
-            msg.target_vel.x, msg.target_vel.y, msg.target_vel.z,
-            0.0, 0.0, 0.0,
-        ]
-
-        self._ipc.send_target(make_mpc_target(
-            target_pose=target_pose,
-            arrival_time=msg.arrival_time,
-            target_twist=target_twist,
-            source='catch',
         ))
 
     # ------------------------------------------------------------------

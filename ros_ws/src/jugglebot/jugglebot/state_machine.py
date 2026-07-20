@@ -37,7 +37,6 @@ class ActiveMode(Enum):
     TRAJECTORY = 'TRAJECTORY'
     SPACEMOUSE = 'SPACEMOUSE'
     GUI = 'GUI'
-    CATCH = 'CATCH'
 
 
 # ── Timeouts ─────────────────────────────────────────────────────
@@ -523,7 +522,7 @@ class ActiveHandler(StateHandler):
         # signal: STANDBY SILENCES move commands — trajectory_node keeps streaming
         # its current plan and holds at the pose it seeded or last reached (NOT a
         # neutral pose; return-to-neutral is the explicit trajectory/go_home
-        # service). The operator then switches to TRAJECTORY / SPACEMOUSE / CATCH
+        # service). The operator then switches to TRAJECTORY / SPACEMOUSE / GUI
         # to accept the corresponding command source.
         ctx.active_mode = ActiveMode.STANDBY
 
@@ -585,8 +584,7 @@ class ActiveHandler(StateHandler):
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
             return RobotState.IDLE
-        elif cmd in ('standby', 'trajectory', 'spacemouse', 'gui',
-                     'catch'):
+        elif cmd in ('standby', 'trajectory', 'spacemouse', 'gui'):
             ctx.active_mode = ActiveMode(cmd.upper())
             ctx.control_mode = ctx.active_mode.value
         # Other commands silently discarded (already logged on receipt)
