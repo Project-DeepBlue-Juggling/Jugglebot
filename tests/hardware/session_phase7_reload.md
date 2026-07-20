@@ -13,6 +13,13 @@ This validates **software already merged** on branch `mvp-trajectory-bringup`. N
 changes should be needed to run it. The stages are gated: **do not run 7b before 7a
 passes, or 7c before 7b passes.**
 
+**Stage arc at a glance:**
+| Stage | What it proves | Ball? | Platform moves? |
+|-------|----------------|-------|-----------------|
+| **7a** aim-only | the 809.08 cup-plane frame/z convention (BB aims where the hand catches) | no | no |
+| **7b** static catch | the hand seats a dead-centre ball with the platform held still | yes | no |
+| **7c** full reload | the `jugglebot/reload` action: prime → throw → reactive tilt-catch → recenter, + each abort path | yes | yes |
+
 ---
 
 > **⚡ Action-driven reload, 2026-07-20 (no CATCH mode)**: the catch is no longer
@@ -66,6 +73,26 @@ passes, or 7c before 7b passes.**
   **ACTIVE + streaming a hold in TRAJECTORY** (armed) — it rejects `WRONG_MODE` if the
   control mode is anything but a streaming TRAJECTORY hold, and `NOT_STREAMING` if the
   emitter is not running.
+
+### Pre-flight — confirm the freshly-built code is live
+
+These are **src-only** commits, so the running graph must be the one you just rebuilt
+(`colcon build --packages-select jugglebot jugglebot_interfaces` + `source install/setup.bash`
+— done). Launch runs the *installed* copy, so confirm the new interfaces are actually up
+**before any ball flies**:
+
+```bash
+ros2 action list  | grep jugglebot/reload       # the reload action is served
+ros2 service list | grep trajectory/arm_catch    # the catch-armed latch service exists
+ros2 topic info   /catch/armed                    # the hand-gate topic exists
+```
+
+- **Expected**: all three present. If `trajectory/arm_catch` or `/catch/armed` is missing, the
+  launch is still running a **stale install** — rebuild + relaunch before proceeding (this is the
+  #1 way the session silently tests the old code).
+- The retired **CATCH** / **SHELL** modes are gone: the GUI state-minimap no longer offers them and
+  an `orchestrator_command` of `catch`/`shell` is silently ignored. There is nothing to "set" — the
+  reload action owns the catch from TRAJECTORY.
 
 ---
 
@@ -216,5 +243,3 @@ complete.
 - **Vel-match / CATCH_VEL_RATIO** (Phase-6 open question): if 7b/7c show poor seating,
   the `catch_vel_ratio` 0.6 hand design (not the sim's ≤15%-first-contact metric) is the
   reference; hardware evidence — not sim — gates any hand-config change.
-</content>
-</invoke>
