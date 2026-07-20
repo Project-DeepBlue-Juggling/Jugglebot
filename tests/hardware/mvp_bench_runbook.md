@@ -223,9 +223,11 @@ auto-tracks whatever threshold the firmware trips at):
    recall the ball; a throw happens regardless. **Stay clear of the flight path.**
 
 3. **The catch z-convention and QTM-frame mapping are hardware-UNVERIFIED.** The catch
-   point `(0, 0, 744.3)` mm world (= STOW height 574.3 + STOW→ACTIVE lift 170.0) and the
-   QTM-world vs jugglebot-base frame mapping are **unverified until S6 (7a) passes**.
-   Do not throw a ball (7b/7c) before 7a confirms the aim geometry.
+   point `(0, 0, 809.08)` mm world (= STOW height 574.3 + STOW→ACTIVE lift 170.0 +
+   centroid→cup-plane offset 64.78; the 809.08 cup plane, Q1 fix `bdbd186` — not the
+   744.3 mm centroid) and the QTM-world vs jugglebot-base frame mapping are **unverified
+   until S6 (7a) passes**. Do not throw a ball (7b/7c) before 7a confirms the aim
+   geometry.
 
 4. **Drive the orchestrator over `/orchestrator_command`, never the same-named bridge
    services.** `/home`, `/activate`, `/deactivate` are low-level `teensy_bridge_node`
@@ -236,7 +238,7 @@ auto-tracks whatever threshold the firmware trips at):
    with :5557 bound and healthy; and (b) skips the `_run_configure` that the
    orchestrator's `/activate_or_deactivate` path folds in, leaving the legs in
    **TRAP_TRAJ** rather than POSITION/PASSTHROUGH. Mode changes (`standby` /
-   `trajectory` / `spacemouse` / `catch`) use the same topic. STANDBY is automatic on
+   `trajectory` / `spacemouse`) use the same topic. STANDBY is automatic on
    ACTIVE entry — no separate publish needed. (Cost the 2026-07-09 S1 session one
    false-negative probe run.)
 
@@ -730,39 +732,40 @@ Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (
 
 ### S6 = 7a — aim-only (frame + z-convention verification, NO ball, NO JB motion)
 
-- **Purpose**: verify the QTM-world vs jugglebot-base frame convention AND the 744.3 mm
-  catch-z **before any ball flies**. This session answers Sharp Edge #3.
+- **Purpose**: verify the QTM-world vs jugglebot-base frame convention AND the 809.08 mm
+  cup-plane catch-z **before any ball flies**. This session answers Sharp Edge #3.
 - **Entry**: S1–S5 clean; BB powered + calibrated (`bb/calibration_result` seen),
   heartbeat IDLE; mocap up on the platform rigid body AND the ball.
 - **Command**: `bb/throw_at_target` with `use_target_point: true, aim_only: true,
-  target_point_global_mm: {x: 0, y: 0, z: 744.3}, throw_delay_s: 0.0`.
+  target_point_global_mm: {x: 0, y: 0, z: 809.08}, throw_delay_s: 0.0`.
 - **PASS**: `success: true`; the returned yaw/pitch aim ray passes within BB's spatial
-  calibration tolerance of (0, 0, 744.3) directly above the base; **zero balls, zero JB
-  motion** (speed 0 ⇒ no announcement ⇒ hand never armed).
+  calibration tolerance of (0, 0, 809.08) directly above the base; **zero balls, zero JB
+  motion** (speed 0 ⇒ no reload action ⇒ latch never raised ⇒ hand never armed).
 - **ABORT**: the aim points anywhere other than above the base → the frame or
   z-convention is wrong; **do not proceed to 7b**, debrief the frame math. Record any
   fixed offset — the catch-point computation (`reload_sequencer.compute_catch_point_mm`)
   or a frame transform needs correction before any ball flies.
 - **Detailed protocol**: `tests/hardware/session_phase7_reload.md` § Stage 7a.
 
-### S7 = 7b — static catch in TRAJECTORY-hold mode
+### S7 = 7b — static catch in TRAJECTORY-hold (hand armed via the catch/armed latch)
 
 - **Purpose**: prove a ball seats in the cup with the hand armed by the existing
   coordinator, WITHOUT platform tilt/translation.
-- **Why TRAJECTORY, not CATCH**: in CATCH mode the same coordinator path that arms the
-  hand also publishes `catch/dynamic_target`, which `trajectory_node` turns into a
-  *moving* catch — so a static platform + coordinator-armed hand is impossible in CATCH.
-  In TRAJECTORY mode `trajectory_node` ignores `catch/dynamic_target` (CATCH-gated) so
-  the platform holds, while the coordinator's `/balls` handler (not mode-gated) still
-  primes + arms the hand on the first catchable ball. That is the genuine static-catch
-  config.
+- **How static catch works without CATCH mode**: the hand's prime/arm is gated on the
+  `catch/armed` latch and the platform tilt is gated on `trajectory/arm_catch` — **two
+  separate gates**. For a static catch, publish `catch/armed = true` (arms + primes the
+  hand via `catch_coordinator_node`) while leaving `trajectory/arm_catch` **down**, so
+  `trajectory_node` ignores `catch/dynamic_target` and the platform holds. This is the
+  exact isolation the old TRAJECTORY-mode 7b relied on, expressed through the new latch
+  (bench-only manual override — see `session_phase7_reload.md` § 7b).
 - **Entry**: 7a passed; hold the neutral ACTIVE catch pose in **TRAJECTORY** mode
-  (streaming); confirm the hand primes once `/balls` shows a ball.
+  (streaming); publish `/catch/armed` true; confirm the hand primes once `/balls` shows a
+  ball and the platform stays still.
 - **Command**: a single dead-centre throw — `bb/throw_at_target` with
   `use_target_point: true, aim_only: false, target_name: 'jugglebot',
-  target_point_global_mm: {x: 0, y: 0, z: 744.3}, throw_delay_s: 3.0`. (`target_name:
+  target_point_global_mm: {x: 0, y: 0, z: 809.08}, throw_delay_s: 3.0`. (`target_name:
   'jugglebot'` is required — without it the announcement's `target_id` defaults to
-  `point` and the whole catch pipeline drops the ball.)
+  `point` and the whole catch pipeline drops the ball.) Lower `/catch/armed` after.
 - **PASS**: ball seated; hand telemetry matches the armed catch profile; `/balls` reports
   `CAUGHT`. `/diagnose --latest` after each throw.
 - **ABORT**: **two consecutive bounce-outs ⇒ ABORT the stage, capture the hand traces +
@@ -774,10 +777,12 @@ Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (
 
 ### S8 = 7c — full reload action (translate + tilt catch)
 
-- **Purpose**: the whole sequence through `jugglebot/reload` — preconditions, aim+throw,
-  announcement→tilt-through-seat catch, confirmation; all abort paths exercised.
-- **Entry**: 7b passed; control mode **CATCH**; session limits ramped to the S4 targets
-  (≥ 156 / 660 / 10 331).
+- **Purpose**: the whole sequence through `jugglebot/reload` — preconditions, proactive
+  prime + latch raise, aim+throw at the 809.08 cup plane, announcement→tilt-through-seat
+  catch, confirmation, recenter; all abort paths exercised.
+- **Entry**: 7b passed; **TRAJECTORY** mode, armed and streaming a hold (the action owns
+  the latch — no CATCH mode); session limits ramped to the S4 targets (≥ 156 / 660 /
+  10 331).
 - **Command**: `ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload
   "{throw_delay_s: 3.0}" --feedback`; watch `CHECKING (dwells up to 10 s while BB
   reloads if the hand is empty — RELOADING is BB's heartbeat state, not a feedback
@@ -787,9 +792,12 @@ Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (
   — arrivals more off-vertical than ~12° are still CAUGHT with only partial collinear
   seating (the hand absorbs the residual).
 - **Abort paths — exercise each once, deliberately**: no-ball reject
-  (`REJECTED_NO_BALL`, zero motion); announcement-timeout abort with BB disabled
-  mid-sequence (`ABORTED_NO_ANNOUNCEMENT` within `throw_delay + 0.5 s`, platform holds,
-  hand never armed); wrong-mode reject (`REJECTED_WRONG_MODE`, zero motion). **Remember
+  (`REJECTED_NO_BALL`, zero motion, nothing armed — lands before PREPARE);
+  announcement-timeout abort with BB disabled mid-sequence
+  (`ABORTED_NO_ANNOUNCEMENT` within `throw_delay + 0.5 s`; PREPARE has run, so SAFE_ABORT
+  retracts the hand + re-centers); wrong-mode reject — send the goal while NOT in a
+  streaming TRAJECTORY hold (e.g. STANDBY) → (`REJECTED_WRONG_MODE`, zero motion).
+  **Remember
   Sharp Edge #2: cancel after AIMING does not recall the ball — stay clear of the flight
   path.**
 - **ABORT**: two consecutive bounce-outs (back to Phase 6); any E-STOP; a gate-rejected
@@ -819,8 +827,9 @@ Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (
 
 Carried from the phase open-questions (identical to the closing logbook entry's list):
 
-1. **Catch z-convention (744.3 mm) + QTM frame** — verified at **S6 (7a)**; if 7a needs a
-   correction, fix `reload_sequencer.compute_catch_point_mm` and re-run the software gate.
+1. **Catch z-convention (809.08 mm cup plane) + QTM frame** — verified at **S6 (7a)**; if
+   7a needs a correction, fix `reload_sequencer.compute_catch_point_mm` (or the
+   `HAND_CATCH_OFFSET_MM` term) and re-run the software gate.
 2. **Vel-match criterion redefinition** — the ≤15 %-at-first-contact metric is
    inconsistent with the 0.6 hand design (a designed ~40 % first-contact mismatch that
    absorbs over the stroke); redefine it with 7b/7c evidence, not sim. On poor seating
@@ -842,8 +851,9 @@ Carried from the phase open-questions (identical to the closing logbook entry's 
    contract is the 25 ms knot cadence, not the 250 ms staleness window) and
    `follow_block_max_ms` on `/trajectory/diagnostics`.
 7. **Diagnostics leftovers from the S3 post-mortem** (`follower-cadence-and-divergence.md`
-   § 4.5): realized peaks in SPACEMOUSE/CATCH are still per-install (≈ per-tick) rather
-   than rolling-window, and `peak_leg_*` looks stale for zero-distance plans — both still
+   § 4.5): realized peaks on the SPACEMOUSE / reactive-catch path are still per-install
+   (≈ per-tick) rather than rolling-window, and `peak_leg_*` looks stale for zero-distance
+   plans — both still
    open; matters if S4's `/diagnose` review is ever run on a spacemouse sortie rather
    than the battery.
 8. **Jolt-fix regression check (deferred until bench-leg testing completes — operator is

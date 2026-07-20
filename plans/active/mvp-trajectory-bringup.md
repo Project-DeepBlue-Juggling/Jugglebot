@@ -248,8 +248,9 @@ not a dependency.
     `STALE_STATE` if telemetry older than 0.5 s).
   - `platform_pose_topic` — SPACEMOUSE/GUI/SHELL gating by `msg.publisher`
     (ported from mpc_bridge_node.py:171–200).
-  - `catch/dynamic_target` — CATCH mode; the perf_counter time-domain contract is
-    kept, with one conversion point in this node.
+  - `catch/dynamic_target` — gated on the catch-armed latch (`trajectory/arm_catch`,
+    raised by the `jugglebot/reload` action — no CATCH mode since 2026-07-20); the
+    perf_counter time-domain contract is kept, with one conversion point in this node.
   - `gravity_offset` — levelling correction composed into outgoing orientations
     (ported verbatim from mpc_bridge_node.py:143–165).
 - Services (new files in `ros_ws/src/jugglebot_interfaces/srv/` + CMakeLists):
@@ -332,6 +333,21 @@ trajectory_op:
 
 ### Reload sequence (goal 4)
 
+> **⚡ Action-driven reframe, 2026-07-20 (no CATCH mode; 809.08 cup-plane aim)**: the
+> reload no longer relies on a persistent **CATCH** control mode the operator holds — that
+> mode was retired (`plans/active/reload-action-catch-latch.md`;
+> `logbook/2026-07-20-reload-action-catch-latch.md`). The `jugglebot/reload` action now
+> **owns the platform + hand for its duration**, running from **ACTIVE + streaming a hold
+> in TRAJECTORY** (armed). It raises a **catch-armed latch** on `trajectory_node`
+> (`trajectory/arm_catch`, mirrored on the `catch/armed` topic that gates the hand) only
+> for the ball's flight window — that latch is what lets `catch/dynamic_target` reach
+> `planner.build_catch` and actuate the platform. On throw-accept it proactively **primes
+> the hand to top**; on CAUGHT it lowers the latch and **re-centers** (`go_home`); on any
+> abort it **retracts the hand + re-centers**. The catch *mechanics* below are unchanged;
+> only the *trigger* moved from a mode to the action-owned latch. The aim point is now the
+> **809.08 mm cup plane** (the Q1 fix, `bdbd186`), not the 744.3 mm centroid. The numbered
+> steps below are updated in place to the action-driven model.
+
 New **`action/Reload.action`** in `jugglebot_interfaces`:
 
 ```
@@ -349,26 +365,33 @@ Served by a new thin `reload_coordinator_node.py` wrapping a pure-Python
 `trajectory_node` plans all platform motion; `catch_coordinator_node` arms the
 hand (existing behaviour reused unchanged).
 
-1. **Preconditions (loud rejects)**: orchestrator ACTIVE with control mode CATCH
-   (set by the operator; the action does not switch modes); `bb/heartbeat`
-   connected ∧ IDLE; if `ball_in_hand == false`, call `bb/reload` and await the
-   heartbeat `RELOADING → IDLE` + `ball_in_hand == true` (10 s timeout →
+1. **Preconditions (loud rejects)**: orchestrator ACTIVE + **streaming a hold in
+   TRAJECTORY** (armed) — the action never switches control mode; a non-streaming or
+   non-TRAJECTORY mode → `REJECTED_WRONG_MODE`, a stopped emitter → `NOT_STREAMING`.
+   `bb/heartbeat` connected ∧ IDLE; if `ball_in_hand == false`, call `bb/reload` and await
+   the heartbeat `RELOADING → IDLE` + `ball_in_hand == true` (10 s timeout →
    `REJECTED_NO_BALL`); mocap fresh (`/rigid_body_poses` < 0.5 s); trajectory
    streaming on (from `trajectory/status`).
 2. **Aim + throw**: `bb/throw_at_target` extended with optional
    `geometry_msgs/Point target_point_global_mm` + `bool use_target_point`
    (skips the QTM rigid-body lookup; default-zero fields keep existing callers
-   working). Catch point = `(0, 0, GEOM_INITIAL_HEIGHT_MM + JB_OP_DEFAULT_ACTIVE_Z_MM)`
-   in the world frame — the STOW height plus the STOW→ACTIVE lift (= 574.3 + 170.0 =
-   744.3 mm, per `reload_sequencer.compute_catch_point_mm`). **Phase 7a verifies the
+   working). Catch point = `(0, 0, GEOM_INITIAL_HEIGHT_MM + JB_OP_DEFAULT_ACTIVE_Z_MM +
+   HAND_CATCH_OFFSET_MM)` in the world frame — the STOW height plus the STOW→ACTIVE lift
+   plus the centroid→cup-plane offset (= 574.3 + 170.0 + 64.78 = **809.08 mm**, the cup
+   plane where the hand intercepts the ball, per
+   `reload_sequencer.compute_catch_point_mm`; the Q1 fix `bdbd186` — aiming at the 744.3 mm
+   centroid ate tilt/reach margin on every catch). **On throw-accept the action proactively
+   primes the hand to top and raises the catch-armed latch.** **Phase 7a verifies the
    QTM-world vs jugglebot-base frame convention with an aim-only (speed = 0) command
    before any ball flies.**
    `throw_delay_s ≥ 2.5`; BB rejections surface as `REJECTED_BB(<message>)`.
 3. **Announcement → catch**: BB publishes `ThrowAnnouncement`;
-   `catch_correlation_node` tags the tracked ball; `catch_coordinator_node`
-   (CATCH mode) emits `catch/dynamic_target` and arms the hand — the existing
-   path, unchanged. No announcement within `throw_delay + 0.5 s` ⇒
-   `ABORTED_NO_ANNOUNCEMENT` (platform holds; hand never armed).
+   `catch_correlation_node` tags the tracked ball; with the **catch-armed latch raised**,
+   `catch_coordinator_node` primes/arms the hand (gated on `catch/armed`) and the reactive
+   tilt drives `catch/dynamic_target` → `planner.build_catch` — the existing catch path,
+   now latch-triggered instead of mode-gated. No announcement within `throw_delay + 0.5 s`
+   ⇒ `ABORTED_NO_ANNOUNCEMENT` (SAFE_ABORT: retract hand + re-center, since the hand was
+   already primed on throw-accept).
 4. **Platform catch trajectory** (`planner.build_catch`, sim-gated in Phase 6):
    reach translation (target ≤ 80 mm — the sim-established reliable envelope)
    starts immediately and **freezes** at `t_arrival − catch_reach_freeze_s`
@@ -386,10 +409,13 @@ hand (existing behaviour reused unchanged).
    horizontal miss from the catch point (an in-flight estimate, **not** a settled rest
    position); the hand-telemetry cross-check is documented-deferred (implement if 7c shows
    false `CAUGHT`s). Otherwise `MISSED`.
-6. **Aborts**: BB reject → clean reject; announcement timeout → hold;
+6. **Aborts**: BB reject → clean reject (nothing armed if it lands before PREPARE);
+   announcement timeout → SAFE_ABORT (retract hand + lower latch + re-center);
    post-release infeasible catch target → platform holds last valid pose, hand
-   fires per its armed schedule, outcome `MISSED_INFEASIBLE` (with the gate
-   code); operator abort = mode switch away from CATCH (C2 hold replan, no snap).
+   fires per its armed schedule, outcome `MISSED_INFEASIBLE` (with the gate code);
+   operator abort = **cancel the action** (or an early node exit) → SAFE_ABORT once
+   PREPARE has run: retract the hand, lower the latch, and re-center via `go_home` — the
+   Phase-1 disarm-edge graceful stop makes the latch-lower seam a C2 replan (no snap).
 
 ### Hand-catch smoothness: a sim-fidelity work item (Phase 6)
 
@@ -1032,6 +1058,15 @@ inconsistent with the hardware-proven hand.
 
 **Goal**: BB throws; Jugglebot catches; exposed as `Reload.action`.
 
+> **⚡ Action-driven reload, 2026-07-20 (no CATCH mode; 809.08 cup-plane aim)**: the
+> reactive catch is driven by the `jugglebot/reload` action via a **catch-armed latch**,
+> not a persistent CATCH mode — see the banner in § *Reload sequence (goal 4)* above and
+> `logbook/2026-07-20-reload-action-catch-latch.md`. The hardware sessions and the
+> 2026-07-08 Outcome below are kept for the record; where they say "CATCH mode" read
+> "TRAJECTORY, armed, with the action owning the latch", and where they say the 744.3 mm
+> catch-z read the **809.08 mm cup plane** (the Q1 fix `bdbd186`). Live protocol:
+> `tests/hardware/session_phase7_reload.md`.
+
 **Code**: `Reload.action`; `reload_sequencer.py` + `reload_coordinator_node.py`
 (launch + setup.py); the `BallButlerThrow.srv` point-target extension +
 `ball_butler_node` handler branch; the frame-convention verification task;
@@ -1042,10 +1077,12 @@ recorded bags.
 - **7a — aim-only**: `bb/throw_at_target` speed-0 fast-path at the computed
   catch point; verify yaw/pitch geometry against mocap. No Jugglebot motion, no
   ball. PASS: aim converges on the catch point within BB's spatial calibration.
-- **7b — throw + static catch**: Jugglebot in CATCH mode holding the neutral
-  catch pose; hand armed by the existing coordinator; BB throws dead-centre.
-  PASS: ball seated; hand telemetry matches the profile. ABORT: two consecutive
-  bounce-outs → back to Phase 6 with the hardware traces. (Hardware has caught
+- **7b — throw + static catch**: Jugglebot holding the neutral catch pose in
+  **TRAJECTORY** (streaming); the hand armed via the `catch/armed` latch while the reach
+  latch stays down so the platform holds (bench manual split — see
+  `session_phase7_reload.md` § 7b); BB throws dead-centre at the 809.08 cup plane.
+  PASS: ball seated; hand telemetry matches the profile; zero platform motion. ABORT: two
+  consecutive bounce-outs → back to Phase 6 with the hardware traces. (Hardware has caught
   smoothly before — priors are good.)
 - **7c — full reload action**: translate + tilt catch; ≥ 3/5 catches with
   `catch_error_mm` logged; every abort path exercised once deliberately
@@ -1086,7 +1123,7 @@ sequencer + 10 coordinator + 3 integration); `colcon build --packages-select
 jugglebot_interfaces jugglebot` (2026-07-08) = 2 packages finished, 0 errors. **Deferred
 to the staged operator bench sessions** (`tests/hardware/session_phase7_reload.md`):
 **7a** aim-only frame + z-convention verification (verifies the QTM-world vs
-jugglebot-base frame AND the 744.3 mm catch-z before any ball flies), **7b** throw +
+jugglebot-base frame AND the 809.08 mm cup-plane catch-z before any ball flies), **7b** throw +
 static catch (two-consecutive-bounce-out abort is the operative contact guard), **7c**
 full `jugglebot/reload` action (≥ 3/5 catches + every abort path exercised). Full
 narrative in `logbook/2026-07-08-mvp-phase7-reload-action.md`.

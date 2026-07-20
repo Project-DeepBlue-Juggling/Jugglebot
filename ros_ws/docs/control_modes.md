@@ -13,9 +13,18 @@ MPC (50 Hz)  →  HardwarePlant  →  motor_guard.py  →  IPC (ZeroMQ)  →  mo
                     :5557            500 Hz interp        :5556            500 Hz poll              ROS2 topic          CAN bus
 ```
 
-Used in: `STANDBY`, `SPACEMOUSE`, `GUI`, `CATCH` modes.
+Used in: `STANDBY`, `SPACEMOUSE`, `GUI` modes.
 `STANDBY` accepts commands from a manually-launched `run_mpc.py` only —
 the MPC bridge forwards no ROS2 input-source targets in this mode.
+
+> **Catching is not a control mode.** There is no `CATCH` mode — it was retired
+> 2026-07-20 (`logbook/2026-07-20-reload-action-catch-latch.md`). The reactive catch
+> is driven by the **`jugglebot/reload` action** for its duration via a **catch-armed
+> latch** on `trajectory_node` (`trajectory/arm_catch`, mirrored on the `catch/armed`
+> topic that gates the hand). A reload runs from **ACTIVE + streaming a hold in
+> TRAJECTORY**, armed — it raises the latch only for the ball's flight window, which lets
+> `catch/dynamic_target` reach `planner.build_catch` and actuate the platform, then
+> lowers it and re-centers.
 
 All input modes route through the MPC, which is the sole motion planner. The
 MPC receives targets via the MPC bridge node (:5558), solves at 50 Hz, and
@@ -83,14 +92,14 @@ python run_mpc.py --pose 0,0,220,0,0,0 --duration 10
 
 `HardwarePlant.enable()` sends `disable+enable` to the motor guard on startup
 (the leading `disable` clears any lingering ESTOP), and `disable` on shutdown.
-No ROS2 input source (spacemouse, GUI, catch) can influence the
+No ROS2 input source (spacemouse, GUI) can influence the
 platform while in STANDBY — this eliminates ambiguity about command origin
 during hardware testing.
 
-### SPACEMOUSE / GUI / CATCH (input-routing sub-modes)
+### SPACEMOUSE / GUI (input-routing sub-modes)
 
 ```
-ACTIVE:STANDBY → ACTIVE:SPACEMOUSE (or GUI/CATCH):
+ACTIVE:STANDBY → ACTIVE:SPACEMOUSE (or GUI):
   1. User clicks sub-mode button in GUI → orchestrator_command published
   2. State machine sets ctx.control_mode = 'SPACEMOUSE' (or other)
   3. Orchestrator publishes control_mode_topic

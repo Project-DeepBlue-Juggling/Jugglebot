@@ -52,8 +52,14 @@ regardless of which producer is live; still diagnostic-only, still not gated.)
 |------|------------|-------|
 | `SPACEMOUSE` | enabled | MPC plans path from spacemouse targets |
 | `GUI` | enabled | MPC plans path from GUI targets |
-| `CATCH` | enabled | MPC plans path from catch coordinator targets |
 | `LEVELLING` | **stays disabled** | Uses CAN node's profiled gentle-move; no MPC needed |
+
+There is **no `CATCH` mode** (retired 2026-07-20 —
+`logbook/2026-07-20-reload-action-catch-latch.md`). Catching is driven by the
+**`jugglebot/reload` action** for its duration via a **catch-armed latch** on
+`trajectory_node` (`trajectory/arm_catch`, mirrored on the `catch/armed` topic that
+gates the hand); a reload runs within the already-enabled **TRAJECTORY** motor-guard
+context, so it needs no dedicated mode row.
 | `ERROR` | e-stopped | Immediate e-stop command sent |
 | `''` (empty) | disabled | Idle / deactivated |
 

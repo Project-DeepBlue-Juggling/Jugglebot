@@ -1,6 +1,10 @@
 # Plan — RELOAD as a self-contained action; retire CATCH & SHELL modes
 
-**Status:** active (design approved 2026-07-20; implementation not started)
+**Status:** implemented (design approved 2026-07-20; software landed 2026-07-21 —
+Phase 0 SHELL delete `4572925`, Phase 1 catch-armed latch `caea3ec`, Phase 2 action
+owns latch+hand `790e943`, Phase 3 CATCH delete `5d5f4ae`, Phase 4 docs+logbook this
+commit; Q1 cup-plane fix `bdbd186` landed as groundwork. Phase 5 hardware validation
+is operator-run and deferred. Logbook: `logbook/2026-07-20-reload-action-catch-latch.md`.)
 **Branch:** `mvp-trajectory-bringup`
 **Supersedes the CATCH-mode framing in:** `plans/active/mvp-trajectory-bringup.md` § Phase 7,
 `tests/hardware/session_phase7_reload.md`, `ros_ws/docs/control_modes.md`.
