@@ -18,7 +18,7 @@ import jugglebot.hardware_config as hw
 import types
 
 from std_msgs.msg import Float64MultiArray, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Vector3
 from jugglebot_interfaces.msg import (
     DynamicTargetCommand,
@@ -1330,6 +1330,21 @@ def _catch_mode_node():
     return node
 
 
+def _arm_catch(node, data):
+    """Call the trajectory/arm_catch SetBool handler directly."""
+    req = SetBool.Request()
+    req.data = bool(data)
+    return node._svc_arm_catch(req, SetBool.Response())
+
+
+def _traj_armed_node():
+    """TRAJECTORY mode + the catch-armed latch raised (the reload-action trigger):
+    the catch runs in the live stream without the persistent CATCH mode."""
+    node = _traj_mode_node()
+    _arm_catch(node, True)
+    return node
+
+
 # ── timed_target service ──────────────────────────────────────
 
 def test_timed_target_accepts_generous_lead():
@@ -1669,6 +1684,115 @@ def test_entering_catch_mid_move_installs_stop():
     assert node._catch_arrival_perf is None
     end = node._active_plan.state_at(node._active_plan.total_duration)
     assert np.allclose(end[1], 0.0, atol=1e-6)                       # ends at rest
+
+
+# ── catch-armed latch (reload-action-catch-latch Phase 1) ─────
+
+def test_arm_catch_starts_disarmed():
+    node = _node()
+    assert node._catch_armed is False
+
+
+def test_dynamic_target_ignored_when_disarmed_in_trajectory():
+    """Neither latch nor CATCH → a dynamic_target is ignored (the gate holds when the
+    latch is down and the mode is not CATCH)."""
+    node = _traj_mode_node()
+    assert node._catch_armed is False
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    assert node._active_plan.kind == 'hold'
+    assert node.target_feedback_pub.published == []
+
+
+def test_arm_catch_latch_lets_dynamic_target_install_catch():
+    """Arming the latch while in TRAJECTORY (no CATCH mode) lets a catch/dynamic_target
+    install a build_catch reach — the reload-action trigger, in the live stream."""
+    node = _traj_armed_node()
+    assert node._current_mode == 'TRAJECTORY'      # NOT CATCH — the latch is the trigger
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    assert node._active_plan.kind == 'move'
+    p_arr = node._active_plan.state_at(node._active_plan.total_duration)[0]
+    assert np.allclose(p_arr[:3], [10.0, 0.0, 190.0], atol=1e-2)     # z = 20 + 170
+    assert node._catch_arrival_perf is not None
+    assert node.target_feedback_pub.published[-1].accepted is True
+    assert node.target_feedback_pub.published[-1].source == 'catch'
+
+
+def test_arm_catch_idempotent_arm_is_noop():
+    """Arming when already armed (or disarming when already disarmed) is a no-op — no
+    edge, so no freeze reset / stop (mirrors _on_control_mode's same-mode return)."""
+    node = _traj_armed_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    committed = node._active_plan
+    node._catch_arrival_perf = time.perf_counter() + 3.0
+    resp = _arm_catch(node, True)                  # already armed
+    assert resp.success is True
+    assert node._catch_arrival_perf is not None    # NOT reset (no edge)
+    assert node._active_plan is committed
+
+
+def test_disarm_catch_resets_freeze_no_discontinuity():
+    """Disarming mid-reach (the documented abort) installs a graceful stop — the catch
+    reach is silenced, not run on to the target — and clears the freeze, with the stop
+    seeded C2 off the live state (ends at rest: no command discontinuity at the seam)."""
+    node = _traj_armed_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    catch_plan = node._active_plan
+    assert catch_plan.kind == 'move'
+    assert node._catch_arrival_perf is not None
+    node._plan_t0 -= 1.0                            # advance into the reach (real velocity)
+    assert node._active_move_in_flight() is True
+    _arm_catch(node, False)                         # disarm mid-reach = abort
+    assert node._catch_armed is False
+    assert node._active_plan is not catch_plan      # a graceful stop was installed
+    assert node._catch_arrival_perf is None         # freeze released
+    end = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(end[1], 0.0, atol=1e-6)                        # ends at rest
+    assert not np.allclose(end[0][:3], [10.0, 0.0, 190.0], atol=1.0)  # not the target
+    # The catch path is gated off again after disarm.
+    n_fb = len(node.target_feedback_pub.published)
+    node._on_dynamic_target(_dyn_target(node, x=25.0, z=20.0, lead_s=3.0))
+    assert len(node.target_feedback_pub.published) == n_fb            # ignored
+
+
+def test_arm_catch_mid_move_installs_stop():
+    """Arming while a TRAJECTORY move is in flight installs a graceful stop (so the
+    catch begins from a clean, non-jittering state) and resets the freeze — mirroring
+    entering CATCH mid-move."""
+    node = _traj_mode_node()
+    node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=3.0), GoToPose.Response())
+    move_plan = node._active_plan
+    assert move_plan.kind == 'move'
+    node._plan_t0 -= 1.0
+    assert node._active_move_in_flight() is True
+    node._catch_arrival_perf = time.perf_counter() + 3.0
+    _arm_catch(node, True)
+    assert node._catch_armed is True
+    assert node._active_plan is not move_plan
+    assert node._catch_arrival_perf is None
+    end = node._active_plan.state_at(node._active_plan.total_duration)
+    assert np.allclose(end[1], 0.0, atol=1e-6)                       # ends at rest
+
+
+def test_arm_catch_from_hold_no_stop():
+    """Arming from a settled hold (no move in flight) does not install a stop — it just
+    raises the latch and clears the freeze (the common reload pre-position case)."""
+    node = _traj_mode_node()
+    hold = node._active_plan
+    assert hold.kind == 'hold'
+    _arm_catch(node, True)
+    assert node._catch_armed is True
+    assert node._active_plan is hold                # untouched — no graceful stop
+    assert node._catch_arrival_perf is None
+
+
+def test_arm_catch_latch_and_catch_mode_coexist():
+    """Transitional coexistence: the CATCH mode route still installs a catch even with
+    the latch down (Phase 3 deletes CATCH; Phase 1 must not break it)."""
+    node = _catch_mode_node()
+    assert node._catch_armed is False
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    assert node._active_plan.kind == 'move'
+    assert node.target_feedback_pub.published[-1].accepted is True
 
 
 def test_timed_target_excessive_lead_rejected_no_crash():

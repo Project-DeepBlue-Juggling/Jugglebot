@@ -77,7 +77,7 @@ import rclpy
 from rclpy.node import Node
 
 from std_msgs.msg import Float64MultiArray, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from jugglebot_interfaces.msg import (
     DynamicTargetCommand,
@@ -247,6 +247,15 @@ class TrajectoryNode(Node):
         # within catch_reach_freeze_s of it, later target jitter is ignored (the reach
         # is frozen into the catch). Reset on leaving CATCH / on a fresh seed.
         self._catch_arrival_perf = None
+        # Catch-armed latch (reload-action-catch-latch plan, Phase 1). While True,
+        # ``catch/dynamic_target`` installs a ``build_catch`` reach exactly as CATCH
+        # mode does — the latch is the catch TRIGGER the RELOAD action raises for the
+        # flight window, replacing the persistent CATCH mode (which still coexists this
+        # phase). The node stays in TRAJECTORY (already streaming + motion-capable), so
+        # the latch is NOT a member of any mode set; the freeze-reset + graceful-stop
+        # bookkeeping is keyed off the latch EDGES (see _svc_arm_catch). Read only on
+        # the executor thread (_on_dynamic_target), so a plain bool needs no lock.
+        self._catch_armed = False
 
         # ── Parameters ─────────────────────────────────────────
         self.declare_parameter('control_mode_topic', 'control_mode_topic')
@@ -406,6 +415,10 @@ class TrajectoryNode(Node):
                             self._svc_set_limits)
         self.create_service(TimedTarget, 'trajectory/timed_target',
                             self._svc_timed_target)
+        # Catch-armed latch (reload-action-catch-latch plan, Phase 1). SetBool:
+        # data=True arms, data=False disarms. The RELOAD action drives it for the
+        # catch flight window instead of holding a persistent CATCH mode.
+        self.create_service(SetBool, 'trajectory/arm_catch', self._svc_arm_catch)
         # FIX 3 — one-call guard recovery support. The bridge's /recover calls this
         # FIRST (before CLEAR_ERRORS) so the commanded u0 collapses onto the frozen
         # encoder and the subsequent clear cannot re-latch MAX_DEVIATION.
@@ -688,6 +701,33 @@ class TrajectoryNode(Node):
     # Subscriptions
     # ═══════════════════════════════════════════════════════════
 
+    def _reset_catch_reach_freeze(self) -> None:
+        """Release any committed catch-reach freeze window (``_catch_arrival_perf``
+        → None). The single named enforcement point for "a fresh catch session (or an
+        abort) must not inherit a stale freeze", called from CATCH mode entry/exit,
+        the catch-armed latch edges, and a fresh telemetry seed."""
+        self._catch_arrival_perf = None
+
+    def _install_graceful_stop(self, context: str) -> None:
+        """Install a graceful decel-to-rest from the LIVE commanded state — a C2
+        duration-stretched stop that decelerates IN PLACE (never runs on to the old
+        target). Shared by the mode-transition mid-move path (``_on_control_mode``)
+        and the catch-armed latch edges (``_svc_arm_catch``): both must silence an
+        in-flight move at the transition without a command discontinuity, and both do
+        it identically. On a near-boundary outward-moving seed the in-place stop may
+        not yet be in-stroke; flag a pending stop so ``_emit_once`` retries from the
+        decaying live state rather than latching failure (the move keeps running under
+        its still-gated plan meanwhile)."""
+        try:
+            stop = planner.build_graceful_stop(
+                self._current_state(), self._limits, self._geom,
+                max_iters=_STOP_RETRY_ITERS)
+            self._install(stop)
+            self.get_logger().info(
+                f"{context} mid-move — installed a graceful stop (move silenced)")
+        except TrajectoryInfeasible as e:
+            self._request_pending_stop(str(e))
+
     def _on_control_mode(self, msg) -> None:
         mode = str(msg.data)
         if mode == self._current_mode:
@@ -696,7 +736,7 @@ class TrajectoryNode(Node):
         # inherit a stale freeze window (and an operator abort = a switch away from
         # CATCH, so the frozen reach must release).
         if mode != _CATCH_MODE:
-            self._catch_arrival_perf = None
+            self._reset_catch_reach_freeze()
         # A3: the escalation + pending-stop latches are cleared on ANY mode change,
         # BEFORE the mid-move stop logic below (which independently re-requests a stop
         # if this transition needs one). A mode change is a fresh context — a stale
@@ -744,7 +784,7 @@ class TrajectoryNode(Node):
                 # Fresh catch session — release any stale committed reach so the first
                 # target replans freely (belt-and-suspenders: leaving CATCH already
                 # cleared it, but a direct re-entry must never inherit a stale freeze).
-                self._catch_arrival_perf = None
+                self._reset_catch_reach_freeze()
             if entering_follower:
                 # Drop any stale target/last-target so the first target of this
                 # session always replans (never deadbanded against a prior session).
@@ -763,21 +803,7 @@ class TrajectoryNode(Node):
                 # to the old target). Covers leaving a motion mode for a non-motion
                 # one AND both CATCH directions (see the snapshot block above).
                 # _current_state/_install lock themselves.
-                try:
-                    stop = planner.build_graceful_stop(
-                        self._current_state(), self._limits, self._geom,
-                        max_iters=_STOP_RETRY_ITERS)
-                    self._install(stop)
-                    self.get_logger().info(
-                        f"changed mode {prev_mode}→{mode} mid-move — "
-                        "installed a graceful stop (move silenced)")
-                except TrajectoryInfeasible as e:
-                    # Near-boundary outward-moving seed: the decel overshoot exceeds
-                    # the seed's boundary margin, so no in-place stop is in-stroke
-                    # yet. Don't latch failure — flag a pending stop; _emit_once
-                    # retries from the decaying live state until it converges (the
-                    # move keeps running under its still-gated plan meanwhile).
-                    self._request_pending_stop(str(e))
+                self._install_graceful_stop(f"changed mode {prev_mode}→{mode}")
             # Seed a hold at the MEASURED pose on stream start (never nominal) —
             # this is what keeps the first u0 inside the pump/firmware gates — but
             # ONLY from FRESH telemetry. Stale/absent telemetry ⇒ defer: the next
@@ -896,7 +922,7 @@ class TrajectoryNode(Node):
         self._pending_stop = False   # fresh at-rest seed supersedes any pending stop
         self._escalation_stop = False       # A3: a reseed clears the escalation latch
         self._escalate_stop_fail_count = 0
-        self._catch_arrival_perf = None   # a fresh seed releases any frozen catch reach
+        self._reset_catch_reach_freeze()  # a fresh seed releases any frozen catch reach
         self.get_logger().info(
             f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
             f"z={pose[2]:.1f} mm (from measured telemetry)")
@@ -1965,7 +1991,12 @@ class TrajectoryNode(Node):
         return target, twist
 
     def _on_dynamic_target(self, msg) -> None:
-        """``catch/dynamic_target`` (CATCH mode): a timed catch target.
+        """``catch/dynamic_target``: a timed catch target.
+
+        Fires when EITHER the catch-armed latch is raised (the reload-action trigger,
+        Phase 1 — the node stays in TRAJECTORY) OR the legacy persistent CATCH mode is
+        active (transitional coexistence until Phase 3 deletes CATCH). Outside both,
+        a dynamic_target is ignored.
 
         ``arrival_time`` is ALREADY perf-domain (the coordinator converted
         landing_time → perf), so no clock crossing here — the single crossing is the
@@ -1974,9 +2005,10 @@ class TrajectoryNode(Node):
         window (within ``catch_reach_freeze_s`` of the committed arrival), where late
         target jitter is ignored so the platform holds its committed reach into the
         catch (a parked, non-jittering rim seats the ball; the reload design). An
-        operator abort is a mode switch away from CATCH (clears the freeze).
+        operator abort lowers the latch (or switches away from CATCH) — either clears
+        the freeze via _reset_catch_reach_freeze.
         """
-        if self._current_mode != _CATCH_MODE:
+        if not (self._catch_armed or self._current_mode == _CATCH_MODE):
             return
         arrival_perf = float(msg.arrival_time)
         if self._guard_frozen:                       # FIX 1 — refuse while latched
@@ -2022,6 +2054,54 @@ class TrajectoryNode(Node):
             target, arrival_perf, source='catch')
         if accepted:
             self._catch_arrival_perf = arrival_perf
+
+    def _svc_arm_catch(self, request, response):
+        """``trajectory/arm_catch`` (SetBool): raise/lower the catch-armed latch.
+
+        The latch is the reactive-catch TRIGGER (reload-action-catch-latch plan,
+        Phase 1). While armed, ``catch/dynamic_target`` installs a ``build_catch``
+        reach exactly as CATCH mode does — the RELOAD action raises it for the flight
+        window instead of the operator holding a persistent CATCH mode. The node stays
+        in TRAJECTORY throughout (already streaming + motion-capable), so the latch is
+        NOT added to any mode set; only the freeze-reset + graceful-stop bookkeeping is
+        keyed off the arm/disarm EDGES here.
+
+        On BOTH edges the SAME bookkeeping CATCH mode entry/exit performs runs, so the
+        arm/disarm seams reproduce exactly the smoothing the mode transition does today:
+          - the committed catch-reach freeze window is released (``_reset_catch_reach_
+            freeze`` — a fresh catch session, or an abort, must not inherit a stale
+            freeze); and
+          - if a move is in flight ACROSS the edge, a graceful decel-to-rest is
+            installed from the LIVE commanded state (``_install_graceful_stop``): arming
+            mid-move → the catch begins from a clean, non-jittering state (the first
+            catch reach then supersedes via a C2 replan); the documented abort =
+            disarming mid-reach → the reach is silenced, never run on to the catch
+            target. The stop is C2 off the live state, so no command discontinuity at
+            the seam — identical to the mode-transition stop.
+
+        Idempotent: a set-to-current-value call is a no-op (no edge, no bookkeeping),
+        mirroring ``_on_control_mode``'s same-mode early return.
+        """
+        want = bool(request.data)
+        if want == self._catch_armed:
+            response.success = True
+            response.message = (
+                f"catch latch already {'armed' if want else 'disarmed'}")
+            return response
+        # Snapshot the in-flight state BEFORE flipping the latch (mirrors
+        # _on_control_mode snapshotting move_in_flight before the _current_mode write):
+        # a graceful stop must sample the state at the transition. _active_move_in_flight
+        # locks itself; _install_graceful_stop's _current_state/_install lock themselves.
+        move_in_flight = self._active_move_in_flight()
+        self._catch_armed = want
+        self._reset_catch_reach_freeze()
+        if move_in_flight:
+            self._install_graceful_stop(
+                f"catch latch {'armed' if want else 'disarmed'}")
+        response.success = True
+        response.message = f"catch latch {'armed' if want else 'disarmed'}"
+        self.get_logger().info(response.message)
+        return response
 
     def _svc_timed_target(self, request, response):
         """``trajectory/timed_target``: reach a pose at a velocity ``lead_time_s``
