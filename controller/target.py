@@ -1,7 +1,7 @@
 """Target-setting interface for the MPC controller.
 
 Defines the ``TargetCommand`` data structure and the ``TargetSource`` protocol
-that all input modes (spacemouse, GUI, shell, catch coordinator) must satisfy.
+that all input modes (spacemouse, GUI, catch coordinator) must satisfy.
 
 The MPC solver consumes ``TargetCommand`` each control step:
     target_pose   → reference pose for the optimization

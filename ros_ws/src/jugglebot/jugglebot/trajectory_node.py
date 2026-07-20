@@ -726,6 +726,23 @@ class TrajectoryNode(Node):
         mode = str(msg.data)
         if mode == self._current_mode:
             return
+        # SAFETY (reload-action-catch-latch): the catch-armed latch is owned by the RELOAD
+        # action, which runs ENTIRELY within TRAJECTORY. Any mode transition therefore means
+        # the reload is no longer active — an E-STOP to STANDBY, an operator abort/deactivate,
+        # or the action dying without lowering the latch. Force-disarm here, restoring the
+        # safety the retired CATCH mode gave for free (the old gate was `_current_mode !=
+        # CATCH`, so leaving CATCH inherently disarmed the catch). Without this a stuck-armed
+        # latch would let a stray `catch/dynamic_target` install a `build_catch` reach with no
+        # reload in progress ("catch fires when it shouldn't"). Clear the flag + release the
+        # freeze window here (mirrors the disarm edge in `_svc_arm_catch`); an in-flight catch
+        # reach is silenced by the mid-move graceful-stop (leaving a motion mode) or the
+        # emitter-silence (leaving the stream set) logic in the branches below.
+        if self._catch_armed:
+            self._catch_armed = False
+            self._reset_catch_reach_freeze()
+            self.get_logger().info(
+                f"catch latch force-disarmed on mode change "
+                f"{self._current_mode}→{mode}")
         # A3: the escalation + pending-stop latches are cleared on ANY mode change,
         # BEFORE the mid-move stop logic below (which independently re-requests a stop
         # if this transition needs one). A mode change is a fresh context — a stale

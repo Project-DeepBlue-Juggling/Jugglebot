@@ -1710,6 +1710,29 @@ def test_arm_catch_from_hold_no_stop():
     assert node._catch_arrival_perf is None
 
 
+def test_arm_catch_force_disarmed_on_mode_change():
+    """SAFETY: the catch-armed latch is force-disarmed on ANY control-mode change. The
+    reload runs only in TRAJECTORY; leaving it (an E-STOP → STANDBY, an operator
+    abort/deactivate, or the action dying without lowering the latch) must clear the
+    latch so a stray catch/dynamic_target can't install a build_catch with no reload in
+    progress. Restores the safety the retired CATCH mode gave for free (its gate was
+    `_current_mode != CATCH`, so leaving CATCH inherently disarmed the catch)."""
+    node = _traj_armed_node()
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    assert node._catch_armed is True
+    assert node._catch_arrival_perf is not None
+    # A mode change away from TRAJECTORY (e.g. an E-STOP → STANDBY) force-disarms.
+    node._on_control_mode(String(data='STANDBY'))
+    assert node._catch_armed is False
+    assert node._catch_arrival_perf is None          # freeze released
+    # Re-entering TRAJECTORY does NOT re-arm — the reload must explicitly re-arm.
+    node._on_control_mode(String(data='TRAJECTORY'))
+    assert node._catch_armed is False
+    n_fb = len(node.target_feedback_pub.published)
+    node._on_dynamic_target(_dyn_target(node, x=25.0, z=20.0, lead_s=3.0))
+    assert len(node.target_feedback_pub.published) == n_fb   # ignored (latch down)
+
+
 def test_timed_target_excessive_lead_rejected_no_crash():
     """A lead well over max_timed_lead_s (e.g. an absolute timestamp mistakenly
     pasted into the relative lead_time_s) is loudly rejected via the service —

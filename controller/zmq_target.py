@@ -4,7 +4,7 @@ Receives MPC target commands from the MPC bridge node via ZeroMQ and
 presents them as a ``TargetSource`` for the MPC control loop.
 
 The bridge node (``mpc_bridge_node.py``) converts ROS2 topics (spacemouse,
-GUI, shell, catch coordinator) into ``TargetCommand`` messages and publishes
+GUI, catch coordinator) into ``TargetCommand`` messages and publishes
 them on :5558.  This source reads them and returns the latest each MPC step.
 
 Usage::
@@ -172,7 +172,7 @@ class ZmqTargetSource:
 
     @property
     def mode(self) -> str:
-        """Current mode: 'spacemouse', 'gui', 'shell', 'catch', or 'disabled'."""
+        """Current mode: 'spacemouse', 'gui', 'catch', or 'disabled'."""
         return self._mode
 
     @property

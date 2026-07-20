@@ -1,10 +1,14 @@
-# BB→Jugglebot reload: Ball Butler aims at Jugglebot's ACTIVE catch point and throws;
-# Jugglebot (CATCH mode, hand armed by the existing catch_coordinator) tilts to align
-# with the incoming ball and catches it. Orchestrated by reload_coordinator_node, which
-# drives ONLY the sequence — trajectory_node plans all platform motion (build_catch),
-# catch_coordinator_node arms the hand. Preconditions are checked before any ball flies
-# (see reload_sequencer.py); the operator sets CATCH mode (the action does not switch
-# modes). See plans/active/mvp-trajectory-bringup.md § Reload sequence.
+# BB→Jugglebot reload: Ball Butler aims at Jugglebot's ACTIVE catch point (the hand-cup
+# plane) and throws; Jugglebot catches it. Orchestrated by the RELOAD action
+# (reload_coordinator_node), which OWNS the platform + hand for its duration: on
+# throw-accept it primes the hand to top and RAISES the trajectory/arm_catch latch (the
+# reactive-catch trigger), lets the existing catch path (catch_coordinator →
+# catch/dynamic_target → trajectory_node build_catch) tilt-align + seat the ball, then
+# re-centers; on abort it retracts the hand and re-centers. It runs within the operator's
+# ACTIVE streaming mode (TRAJECTORY) and does NOT switch modes — leaving that mode
+# mid-sequence is the documented abort (there is no persistent CATCH mode). Preconditions
+# are checked before any ball flies (see reload_sequencer.py).
+# See plans/active/reload-action-catch-latch.md.
 
 float64 throw_delay_s          # delay from now to release; 0 => default 3.0 s
                                # (>= BB's ~2.5 s lead floor — a shorter lead comes back
