@@ -302,6 +302,11 @@ class MockString:
     data: str = ''
 
 
+@dataclass
+class MockBool:
+    data: bool = False
+
+
 # ── std_srvs mock ─────────────────────────────────────────────
 
 
@@ -822,6 +827,7 @@ _create_mock_module('std_msgs.msg', {
     'Float64MultiArray': Float64MultiArray,
     'Float32MultiArray': Float32MultiArray,
     'String': MockString,
+    'Bool': MockBool,
 })
 
 _create_mock_module('std_srvs')

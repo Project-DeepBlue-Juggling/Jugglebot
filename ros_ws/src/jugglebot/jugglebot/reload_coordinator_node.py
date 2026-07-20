@@ -1,20 +1,26 @@
 """ROS2 node: the BB→Jugglebot reload action (MVP goal 4).
 
 A thin wrapper around the pure-Python :class:`reload_sequencer.ReloadSequencer` FSM.
-The coordinator **orchestrates only** — it never actuates the robot directly:
+The RELOAD action OWNS the platform + hand for its duration (reload-action-catch-latch
+plan) — but it never plans motion itself; it drives the existing services:
 
-  - platform motion is planned by ``trajectory_node`` (CATCH mode consumes
-    ``catch/dynamic_target`` → ``planner.build_catch``, the existing path);
-  - the hand is armed by ``catch_coordinator_node`` (existing behaviour, unchanged);
+  - platform motion is planned by ``trajectory_node``: the reactive catch path
+    (``catch/dynamic_target`` → ``planner.build_catch``) actuates the platform while the
+    ``trajectory/arm_catch`` catch-armed latch is RAISED, and ``trajectory/go_home``
+    re-centers on terminal — both run in TRAJECTORY, the mode RELOAD runs within;
+  - the hand is primed to top proactively by this node (``smooth_move_hand`` on
+    PREPARE) and retracted on abort; ``catch_coordinator_node`` still fires the reactive
+    catch stroke, gated on the catch-armed latch;
   - the throw goes through ``ball_butler_node`` (``bb/throw_at_target`` with the
     point-target extension), which enforces BB's own limits + loud rejections.
 
 So this node subscribes to the state the FSM reasons about (BB heartbeat, mocap
 freshness, trajectory streaming, control mode, tracked-ball status, target feedback),
-calls two BB services on the FSM's behalf (``bb/reload``, ``bb/throw_at_target``), and
-publishes phase feedback / the outcome on the ``Reload`` action. The operator sets
-CATCH mode; the action does NOT switch modes (leaving CATCH mid-sequence is the
-documented abort).
+and executes the actions the FSM asks for: ``bb/reload``, ``bb/throw_at_target``,
+PREPARE (prime hand + raise the latch), RECENTER (lower latch + go_home), SAFE_ABORT
+(retract hand + lower latch + go_home). It runs within the operator's active mode
+(TRAJECTORY) and does NOT switch modes; leaving that mode mid-sequence is the
+documented abort.
 
 Exposed as ``jugglebot/reload`` (Reload.action): phase feedback, a structured outcome
 result, and cancellation.
@@ -32,8 +38,8 @@ from rclpy.node import Node
 
 import numpy as np
 
-from std_msgs.msg import String
-from std_srvs.srv import Trigger
+from std_msgs.msg import Bool, String
+from std_srvs.srv import SetBool, Trigger
 from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
     BallStateArray,
@@ -42,13 +48,16 @@ from jugglebot_interfaces.msg import (
     ThrowAnnouncement,
     TrajectoryStatus,
 )
-from jugglebot_interfaces.srv import BallButlerThrow
+from jugglebot_interfaces.srv import BallButlerThrow, SetFloat
 from jugglebot_interfaces.action import Reload
 from geometry_msgs.msg import Point
 
 import jugglebot.hardware_config as hw
 from jugglebot.reload_sequencer import (
     ACTION_CALL_RELOAD,
+    ACTION_PREPARE_CATCH,
+    ACTION_RECENTER,
+    ACTION_SAFE_ABORT,
     ACTION_SEND_THROW,
     ReloadObservations,
     ReloadSequencer,
@@ -131,6 +140,22 @@ class ReloadCoordinatorNode(Node):
         # ── Service clients ──
         self._reload_cli = self.create_client(Trigger, 'bb/reload')
         self._throw_cli = self.create_client(BallButlerThrow, 'bb/throw_at_target')
+        # Platform + hand ownership for the reload's duration:
+        #   trajectory/arm_catch — raise/lower the catch-armed latch (the reactive-catch
+        #     TRIGGER: while raised, catch/dynamic_target actuates the platform);
+        #   smooth_move_hand     — proactive prime to top (PREPARE) / retract to bottom
+        #     (SAFE_ABORT);
+        #   trajectory/go_home   — re-center to level neutral on terminal.
+        self._arm_catch_cli = self.create_client(SetBool, 'trajectory/arm_catch')
+        self._smooth_move_hand_cli = self.create_client(SetFloat, 'smooth_move_hand')
+        self._go_home_cli = self.create_client(Trigger, 'trajectory/go_home')
+
+        # ── Publisher: catch-armed state ──
+        # catch_coordinator_node gates its hand prime/arm on this so it only actuates the
+        # hand DURING a reload (latch raised), never on a stray tracked ball. Published
+        # True on PREPARE, False on RECENTER/SAFE_ABORT — the same edges that drive the
+        # trajectory/arm_catch service, so the two stay in lockstep.
+        self._catch_armed_pub = self.create_publisher(Bool, 'catch/armed', 10)
 
         # ── Reload action server ──
         # ReentrantCallbackGroup so the multi-second execute_callback (which blocks on
@@ -310,6 +335,7 @@ class ReloadCoordinatorNode(Node):
             t_start = time.perf_counter()
             while rclpy.ok():
                 if goal_handle.is_cancel_requested:
+                    self._safe_on_early_exit(seq)
                     goal_handle.canceled()
                     result.success = False
                     result.outcome = 'ABORTED_CANCELLED'
@@ -325,6 +351,7 @@ class ReloadCoordinatorNode(Node):
                     (goal_handle.succeed if r.success else goal_handle.abort)()
                     return result
                 if now - t_start > _MAX_SEQUENCE_S:
+                    self._safe_on_early_exit(seq)
                     result.success = False
                     result.outcome = 'ABORTED_TIMEOUT'
                     result.catch_error_mm = float('nan')
@@ -332,6 +359,7 @@ class ReloadCoordinatorNode(Node):
                     return result
                 time.sleep(_TICK_S)
             # rclpy shutting down.
+            self._safe_on_early_exit(seq)
             result.success = False
             result.outcome = 'ABORTED_SHUTDOWN'
             result.catch_error_mm = float('nan')
@@ -350,6 +378,12 @@ class ReloadCoordinatorNode(Node):
         elif decision.action == ACTION_SEND_THROW:
             accepted, message = self._send_throw(seq)
             seq.note_throw_result(accepted, message)
+        elif decision.action == ACTION_PREPARE_CATCH:
+            self._prepare_catch()
+        elif decision.action == ACTION_RECENTER:
+            self._recenter()
+        elif decision.action == ACTION_SAFE_ABORT:
+            self._safe_abort()
         if goal_handle is not None and not decision.done:
             fb = Reload.Feedback()
             fb.phase = decision.phase
@@ -389,6 +423,74 @@ class ReloadCoordinatorNode(Node):
         if resp is None:
             return False, 'bb/throw_at_target call failed'
         return bool(resp.success), str(resp.message)
+
+    # ── Platform + hand ownership (executed on the FSM's behalf) ───────────────
+
+    def _prepare_catch(self):
+        """PREPARE (throw accepted): proactively prime the hand to the top of its stroke
+        and raise the catch-armed latch. Priming ~throw_delay before the ball flies keeps
+        the catch stroke from racing the ball with a high-jerk late prime; raising the
+        latch lets the reactive catch path actuate the platform for the flight window."""
+        self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV)
+        self._arm_catch(True)
+        self._publish_catch_armed(True)
+
+    def _recenter(self):
+        """RECENTER (successful catch): lower the catch-armed latch and re-center to
+        level neutral via go_home. The hand keeps the caught ball — no retract."""
+        self._arm_catch(False)
+        self._publish_catch_armed(False)
+        self._go_home()
+
+    def _safe_abort(self):
+        """SAFE_ABORT (abort once prepared): retract the hand to the bottom of its stroke,
+        lower the catch-armed latch, and re-center via go_home."""
+        self._smooth_move_hand(hw.HOMING_HAND_ABS_POS_REV)
+        self._arm_catch(False)
+        self._publish_catch_armed(False)
+        self._go_home()
+
+    def _safe_on_early_exit(self, seq):
+        """Safe the robot when the action exits at the NODE level (cancel / timeout /
+        shutdown) — bypassing the FSM's own terminal SAFE_ABORT. If PREPARE already ran
+        (latch raised / hand primed), run the same retract + lower-latch + recenter so a
+        cancelled reload never leaves the latch armed or the hand parked at top."""
+        if seq.prepared:
+            self.get_logger().warning(
+                'Reload early exit while prepared — retracting hand + lowering catch latch.')
+            self._safe_abort()
+
+    def _arm_catch(self, armed: bool) -> bool:
+        """Raise (True) / lower (False) trajectory_node's catch-armed latch."""
+        if not self._arm_catch_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            self.get_logger().error('trajectory/arm_catch service unavailable')
+            return False
+        req = SetBool.Request()
+        req.data = bool(armed)
+        resp = self._wait_future(self._arm_catch_cli.call_async(req))
+        return bool(resp.success) if resp is not None else False
+
+    def _smooth_move_hand(self, position_rev: float) -> bool:
+        """Smooth-move the hand to ``position_rev`` (top = prime, bottom = retract)."""
+        if not self._smooth_move_hand_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            self.get_logger().error('smooth_move_hand service unavailable')
+            return False
+        req = SetFloat.Request()
+        req.data = float(position_rev)
+        resp = self._wait_future(self._smooth_move_hand_cli.call_async(req))
+        return bool(resp.success) if resp is not None else False
+
+    def _go_home(self) -> bool:
+        """Re-center the platform to level neutral (trajectory/go_home)."""
+        if not self._go_home_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            self.get_logger().error('trajectory/go_home service unavailable')
+            return False
+        resp = self._wait_future(self._go_home_cli.call_async(Trigger.Request()))
+        return bool(resp.success) if resp is not None else False
+
+    def _publish_catch_armed(self, armed: bool):
+        """Publish the catch-armed state that gates catch_coordinator_node's hand-arm."""
+        self._catch_armed_pub.publish(Bool(data=bool(armed)))
 
     def _wait_future(self, future, timeout_s: float = _SERVICE_WAIT_S):
         """Wait for a service future to complete (the MultiThreadedExecutor services

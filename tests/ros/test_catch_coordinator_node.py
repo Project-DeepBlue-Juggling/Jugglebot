@@ -10,8 +10,12 @@ ROS 2 is mocked by ``tests/ros/conftest.py``.
 
 from __future__ import annotations
 
-import numpy as np
+import types
 
+import numpy as np
+import pytest
+
+from std_msgs.msg import Bool
 from jugglebot_interfaces.msg import TargetFeedback
 
 from jugglebot.catch_coordinator_node import CatchCoordinatorNode
@@ -121,3 +125,84 @@ def test_workspace_reject_still_blacklist_counted():
     node = _armed_node()
     node._on_target_feedback(_fb(False, 100.0, code='WORKSPACE'))
     assert node._coordinator._rejection_counts.get(7) == 1
+
+
+# ── Catch-armed latch gates hand actuation (Phase 2) ──────────
+# Without CATCH mode as the implicit "operator intends to catch" signal, the hand
+# prime/arm is gated on the reload action's catch-armed latch (catch/armed) so it
+# actuates ONLY during a reload — never on a stray tracked ball.
+
+
+def _catchable_cmd(ball_id=5):
+    """A coordinator command that would drive a hand prime + arm."""
+    return types.SimpleNamespace(
+        ball_id=ball_id,
+        target_pos=np.array([0.0, 0.0, 809.08]),
+        target_quat=np.array([1.0, 0.0, 0.0, 0.0]),
+        target_vel=np.array([0.0, 0.0, 0.0]),
+        landing_time=5.0,          # current_time is 0.0 (MockClock) → event_delay 5.0 s
+        arm_hand=True,
+        event_vel_mps=1.2,
+    )
+
+
+def _balls_msg():
+    return types.SimpleNamespace(balls=[])
+
+
+def test_subscribes_to_catch_armed():
+    node = CatchCoordinatorNode()
+    assert 'catch/armed' in node._subscriptions
+    assert node._catch_armed is False        # disarmed at construction
+
+
+def test_hand_not_actuated_when_disarmed(monkeypatch):
+    """A catchable ball with the latch DOWN (no reload) must not prime or arm the hand."""
+    node = CatchCoordinatorNode()
+    assert node._catch_armed is False
+    primed, armed = [], []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: armed.append((d, v)))
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time: _catchable_cmd())
+    node._on_balls(_balls_msg())
+    assert primed == [] and armed == []      # latch down → hand untouched
+
+
+def test_hand_actuated_when_armed(monkeypatch):
+    """With the catch-armed latch UP (a reload in progress) the same catchable ball
+    primes + arms the hand — the reactive-fire timing stays in the coordinator."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    assert node._catch_armed is True
+    primed, armed = [], []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: armed.append((d, v)))
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time: _catchable_cmd())
+    node._on_balls(_balls_msg())
+    assert primed == [1]
+    assert len(armed) == 1
+    assert armed[0][1] == pytest.approx(1.2)   # event_vel carried through
+
+
+def test_disarm_resets_hand_one_shots():
+    """Disarming (reload ended / aborted) resets the prime/arm one-shots so the NEXT
+    reload re-primes + re-arms from a clean state."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._hand_primed = True
+    node._hand_traj_armed_for_ball = 5
+    node._on_catch_armed(Bool(data=False))
+    assert node._catch_armed is False
+    assert node._hand_primed is False
+    assert node._hand_traj_armed_for_ball is None
+
+
+def test_catch_armed_same_state_is_noop():
+    """A repeat arm (no edge) does not reset the one-shots — only a true disarm edge does."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._hand_primed = True
+    node._on_catch_armed(Bool(data=True))    # same state → no reset
+    assert node._hand_primed is True

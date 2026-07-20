@@ -3,33 +3,50 @@
 `reload_coordinator_node` is a thin ROS wrapper around this FSM: it feeds
 observations in (BB heartbeat, mocap freshness, streaming, control mode, ball-caught
 status) and executes the actions the FSM asks for (call ``bb/reload``, send
-``bb/throw_at_target``). The FSM itself imports NO ROS — every transition is a pure
-function of ``(now, observations, discrete events)`` so the whole sequence is
-unit-testable without a running graph.
+``bb/throw_at_target``, PREPARE the catch, RECENTER, SAFE_ABORT). The FSM itself
+imports NO ROS — every transition is a pure function of ``(now, observations, discrete
+events)`` so the whole sequence is unit-testable without a running graph.
+
+The RELOAD action OWNS the platform + hand for its duration (reload-action-catch-latch
+plan). It runs from the active streaming mode (``TRAJECTORY``, armed + streaming a
+hold) and raises the catch-armed latch for the flight window — replacing the retired
+persistent CATCH mode the operator used to hold.
 
 Design (plan § Reload sequence):
 
-1. **CHECKING** — loud precondition rejects: orchestrator in CATCH control mode (the
-   operator sets it; the action does NOT switch modes), ``bb/heartbeat`` connected ∧
-   IDLE, mocap fresh, trajectory streaming. If the hand is empty, call ``bb/reload``
-   and wait for the heartbeat ``RELOADING → IDLE`` with ``ball_in_hand`` (10 s timeout
-   → ``REJECTED_NO_BALL``).
+1. **CHECKING** — loud precondition rejects: the robot in the active reload control
+   mode (``TRAJECTORY``), ``bb/heartbeat`` connected ∧ IDLE, mocap fresh, trajectory
+   streaming. If the hand is empty, call ``bb/reload`` and wait for the heartbeat
+   ``RELOADING → IDLE`` with ``ball_in_hand`` (10 s timeout → ``REJECTED_NO_BALL``).
 2. **AIMING** — send ``bb/throw_at_target`` at the world-frame catch point
    (``use_target_point``); a lead below BB's floor is a ``REJECTED_CANT_MAKE_LEAD``,
    a BB solver/limit reject is ``REJECTED_BB(<message>)``.
-3. **THROW_PENDING** — wait for the ``ThrowAnnouncement``. No announcement within
-   ``throw_delay + 0.5 s`` ⇒ ``ABORTED_NO_ANNOUNCEMENT`` (platform holds; the hand was
-   never armed — the catch path only arms on a tracked, announced ball).
-4. **BALL_IN_FLIGHT / CATCHING** — the EXISTING catch path (correlation →
+3. **On throw-accept (AIMING → THROW_PENDING)** — emit ``ACTION_PREPARE_CATCH``: the
+   node proactively primes the hand to the top of its stroke AND raises the catch-armed
+   latch, so the reactive catch path can actuate the platform for the flight window and
+   the catch stroke never races the ball with a high-jerk late prime. Sets ``_prepared``.
+4. **THROW_PENDING** — wait for the ``ThrowAnnouncement``. No announcement within
+   ``throw_delay + 0.5 s`` ⇒ ``ABORTED_NO_ANNOUNCEMENT`` (routes through SAFE_ABORT,
+   since PREPARE already primed the hand + raised the latch).
+5. **BALL_IN_FLIGHT / CATCHING** — the EXISTING catch path (correlation →
    catch_coordinator → ``catch/dynamic_target`` → trajectory ``build_catch`` + hand
-   arm) runs on its own; the sequencer only watches. A post-release infeasible catch
+   fire) runs on its own; the sequencer only watches. A post-release infeasible catch
    target (surfaced via ``trajectory/target_feedback``) ⇒ ``MISSED_INFEASIBLE`` (the
    platform holds its last valid pose; the hand fires per its armed schedule).
-5. **SETTLING** — ball status ``CAUGHT`` from the tracker within the confirm window ⇒
-   ``CAUGHT``; otherwise ``MISSED``.
+6. **SETTLING → CAUGHT** — ball status ``CAUGHT`` from the tracker within the confirm
+   window ⇒ ``CAUGHT`` (FSM emits ``ACTION_RECENTER``); otherwise ``MISSED``.
 
-Aborts at any phase: the operator switching the control mode away from CATCH ⇒
-``ABORTED_MODE_CHANGED``; a BB fault (heartbeat ERROR) ⇒ ``ABORTED_BB_ERROR``.
+Terminal actions (executed by the node):
+  - ``ACTION_RECENTER`` — on a successful terminal (CAUGHT): lower the latch + go_home
+    (re-center to level neutral; the hand keeps the caught ball, no retract).
+  - ``ACTION_SAFE_ABORT`` — on ANY not-caught terminal once ``_prepared`` (the latch
+    was raised / hand primed): retract the hand to bottom, lower the latch, go_home.
+  - A reject BEFORE ``_prepared`` (a precondition reject that never armed anything)
+    emits ``ACTION_NONE`` — there is nothing to safe.
+
+Aborts at any phase: the operator switching the control mode away from the active
+reload mode ⇒ ``ABORTED_MODE_CHANGED``; a BB fault (heartbeat ERROR) ⇒
+``ABORTED_BB_ERROR``. Both route through SAFE_ABORT once ``_prepared``.
 
 The FSM never actuates the robot itself and never bypasses the feasibility gate — the
 throw goes through ``ball_butler_node`` and every platform motion goes through
@@ -61,6 +78,15 @@ PHASE_SETTLING = 'SETTLING'
 ACTION_NONE = 'none'
 ACTION_CALL_RELOAD = 'call_reload'          # invoke bb/reload once
 ACTION_SEND_THROW = 'send_throw'            # invoke bb/throw_at_target once
+ACTION_PREPARE_CATCH = 'prepare_catch'      # prime hand to top + raise the catch-armed latch
+ACTION_RECENTER = 'recenter'                # lower latch + go_home (successful catch)
+ACTION_SAFE_ABORT = 'safe_abort'            # retract hand + lower latch + go_home (abort once prepared)
+
+# The control mode RELOAD runs within: ACTIVE + streaming a hold, in TRAJECTORY — the
+# mode whose go_home/go_to_pose surface the action's recenter/pre-position use and where
+# the catch-armed latch actuates the platform. Leaving it mid-sequence is the documented
+# abort (ABORTED_MODE_CHANGED). Replaces the retired persistent CATCH mode.
+RELOAD_CONTROL_MODE = 'TRAJECTORY'
 
 # ── Defaults / floors (plan § Reload sequence) ─────────────────────────────────
 DEFAULT_THROW_DELAY_S = 3.0                 # >= BB's ~2.5 s lead floor
@@ -75,7 +101,7 @@ class ReloadObservations:
     """A snapshot of everything the FSM reasons about — pure observations, no
     node/issuance state (that lives inside the FSM)."""
     now: float
-    control_mode: str = ''            # must be 'CATCH' throughout
+    control_mode: str = ''            # must be the active reload mode (TRAJECTORY) throughout
     bb_connected: bool = False
     bb_state: int = BB_STATE_BOOT
     ball_in_hand: bool = False
@@ -127,6 +153,7 @@ class ReloadSequencer:
     _catch_infeasible: Optional[str] = field(default=None, init=False)  # gate code
     _throw_time: float = field(default=0.0, init=False)
     _settle_deadline: float = field(default=0.0, init=False)
+    _prepared: bool = field(default=False, init=False)  # PREPARE ran (hand primed + latch raised)
     _finished: bool = field(default=False, init=False)
     _result: Optional[ReloadResult] = field(default=None, init=False)  # cached terminal result
 
@@ -191,8 +218,10 @@ class ReloadSequencer:
         # BB's own CANT_MAKE_LEAD, surfaced as REJECTED_BB, but this is loud + early).
         if self._phase == PHASE_CHECKING and self.throw_delay_s < self.min_lead_s:
             return self._reject('CANT_MAKE_LEAD')
-        # The operator owns CATCH mode; leaving it mid-sequence is the documented abort.
-        if obs.control_mode != 'CATCH':
+        # RELOAD runs within the active streaming mode (TRAJECTORY); leaving it
+        # mid-sequence is the documented abort. Once _prepared (latch raised / hand
+        # primed) the terminal routes through SAFE_ABORT; a pre-prepare leave rejects.
+        if obs.control_mode != RELOAD_CONTROL_MODE:
             if self._phase == PHASE_CHECKING and not self._reload_requested:
                 return self._reject('WRONG_MODE')
             return self._abort('MODE_CHANGED')
@@ -266,7 +295,13 @@ class ReloadSequencer:
         self._announcement_deadline = (
             now + self.throw_delay_s + self.announcement_grace_s)
         self._phase = PHASE_THROW_PENDING
-        return ReloadDecision(PHASE_THROW_PENDING, ACTION_NONE, False, None)
+        # The throw is committed: proactively PREPARE the catch (node primes the hand to
+        # top + raises the catch-armed latch). Priming here — ~throw_delay before the ball
+        # flies — keeps the catch stroke from racing the ball with a high-jerk late prime,
+        # and raising the latch lets the reactive catch path actuate the platform. From
+        # here on, any not-caught terminal must SAFE_ABORT (retract + lower latch).
+        self._prepared = True
+        return ReloadDecision(PHASE_THROW_PENDING, ACTION_PREPARE_CATCH, False, None)
 
     def _step_throw_pending(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if self._announced:
@@ -328,11 +363,33 @@ class ReloadSequencer:
     def _finish(self, result: ReloadResult) -> ReloadDecision:
         self._finished = True
         self._result = result
-        return ReloadDecision(self._phase, ACTION_NONE, True, result)
+        return ReloadDecision(self._phase, self._terminal_action(result), True, result)
+
+    def _terminal_action(self, result: ReloadResult) -> str:
+        """The cleanup action the node runs on a terminal decision:
+          - a successful catch RE-CENTERs (lower the latch + go_home; the hand keeps the
+            caught ball, so no retract);
+          - ANY not-caught terminal that got past PREPARE SAFE_ABORTs (the latch was
+            raised / hand primed, so it must be safed — retract + lower latch + go_home);
+          - a reject BEFORE PREPARE raised nothing → no cleanup (ACTION_NONE).
+        The action fires exactly once (the finished-replay path in :meth:`step` returns
+        ACTION_NONE), so the node never re-runs a terminal action."""
+        if result.success:
+            return ACTION_RECENTER
+        if self._prepared:
+            return ACTION_SAFE_ABORT
+        return ACTION_NONE
 
     @property
     def phase(self) -> str:
         return self._phase
+
+    @property
+    def prepared(self) -> bool:
+        """True once PREPARE ran (hand primed + catch-armed latch raised). The node
+        uses this to safe the robot on a node-level early exit (cancel/timeout/shutdown)
+        that bypasses the FSM's own terminal SAFE_ABORT."""
+        return self._prepared
 
     @property
     def finished(self) -> bool:

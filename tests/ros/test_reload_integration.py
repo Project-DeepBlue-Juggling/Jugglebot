@@ -7,7 +7,9 @@ throw into a platform catch target:
                           announced destination + confirm it against mocap markers)
                        →  CatchCoordinator (policy: pick the catchable ball, compute the
                           receive-tilt catch pose)  →  catch/dynamic_target (which
-                          trajectory_node turns into a build_catch plan — Phase 7).
+                          trajectory_node turns into a build_catch plan while the RELOAD
+                          action's catch-armed latch is raised — no persistent CATCH
+                          mode; the action owns the latch for the flight window).
 
 This test drives the REAL correlation engine (``BallTracker``) and the REAL coordinator
 policy (``CatchCoordinator``) — the pure-Python logic the thin ``ball_tracker_node`` /

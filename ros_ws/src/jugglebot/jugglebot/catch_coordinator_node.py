@@ -2,11 +2,16 @@
 
 Subscribes to:
   - balls (BallStateArray) — tracked balls from ball_tracker_node
+  - catch/armed (Bool) — the reload action's catch-armed latch state. The hand
+    prime/arm is GATED on this: the hand is actuated ONLY during a reload (latch
+    raised), never on a stray tracked ball. The reactive-fire TIMING itself
+    (set_hand_traj_cmd) stays here; only its enablement is gated.
 
 Publishes:
-  - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node
-    (CATCH mode), which turns it into a timed catch plan (Phase 5). arrival_time is
-    published in the perf_counter domain (system-wide CLOCK_MONOTONIC on Linux).
+  - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node, which
+    turns it into a build_catch plan while the catch-armed latch is raised. Published
+    unconditionally (trajectory_node's own latch gate drops it when disarmed);
+    arrival_time is in the perf_counter domain (system-wide CLOCK_MONOTONIC on Linux).
 
 Subscribes:
   - trajectory/target_feedback (TargetFeedback) — accept/reject decision from
@@ -29,6 +34,7 @@ import rclpy
 from rclpy.node import Node
 import numpy as np
 
+from std_msgs.msg import Bool
 from jugglebot_interfaces.msg import (
     BallStateArray,
     DynamicTargetCommand,
@@ -82,6 +88,15 @@ class CatchCoordinatorNode(Node):
         self._feedback_sub = self.create_subscription(
             TargetFeedback, 'trajectory/target_feedback',
             self._on_target_feedback, 10)
+
+        # Catch-armed latch (published by reload_coordinator_node on PREPARE / RECENTER /
+        # SAFE_ABORT). The hand prime/arm is gated on this so the hand is actuated ONLY
+        # during a reload — never on a stray tracked ball outside one. Without CATCH mode
+        # as the implicit "operator intends to catch" signal, this latch is what scopes
+        # the hand actuation to a real reload.
+        self._catch_armed = False
+        self._catch_armed_sub = self.create_subscription(
+            Bool, 'catch/armed', self._on_catch_armed, 10)
 
         # Re-measure clock offset every 30s to track drift
         self._clock_timer = self.create_timer(30.0, self._refresh_clock_offset)
@@ -143,6 +158,21 @@ class CatchCoordinatorNode(Node):
     # Ball processing
     # ==================================================================
 
+    def _on_catch_armed(self, msg: Bool):
+        """Track the reload action's catch-armed latch — the gate for hand actuation.
+
+        On DISARM (reload ended / aborted) reset the one-shot flags so the NEXT reload
+        re-primes + re-arms the hand from a clean state; a stale ``_hand_primed`` /
+        ``_hand_traj_armed_for_ball`` would otherwise suppress the next reload's prime
+        and arm."""
+        armed = bool(msg.data)
+        if armed == self._catch_armed:
+            return
+        self._catch_armed = armed
+        if not armed:
+            self._hand_primed = False
+            self._hand_traj_armed_for_ball = None
+
     def _on_balls(self, msg: BallStateArray):
         """Process ball state updates: select best ball and send dynamic target."""
         current_time = self.get_clock().now().nanoseconds / 1e9
@@ -155,8 +185,12 @@ class CatchCoordinatorNode(Node):
         if cmd is None:
             return
 
-        # Prime hand on first catchable ball (one-shot)
-        if not self._hand_primed:
+        # Prime hand on first catchable ball (one-shot) — ONLY during a reload (catch
+        # armed). Without this gate a stray tracked ball would prime the hand (and set
+        # catch gains) outside any reload. The reload action also primes proactively on
+        # PREPARE; this gated prime is idempotent (same top-of-stroke position) and is
+        # what installs the softer catch gains.
+        if self._catch_armed and not self._hand_primed:
             self._prime_hand()
 
         # Convert landing_time from ROS2 clock → perf_counter clock
@@ -187,8 +221,12 @@ class CatchCoordinatorNode(Node):
         self._last_arrival_time = arrival_time_perf
         self._last_landing_position = cmd.target_pos.copy()
 
-        # Arm hand catch trajectory (once per ball, after first target submit)
-        if cmd.arm_hand and self._hand_traj_armed_for_ball != cmd.ball_id:
+        # Arm hand catch trajectory (once per ball, after first target submit) — ONLY
+        # during a reload (catch armed), so a stray tracked ball never arms the reactive
+        # catch stroke on the Teensy. The reactive-fire TIMING (event_delay / event_vel)
+        # is computed here as before; only its enablement is gated.
+        if (self._catch_armed and cmd.arm_hand
+                and self._hand_traj_armed_for_ball != cmd.ball_id):
             event_delay = cmd.landing_time - current_time
             if event_delay >= _MIN_EVENT_DELAY_S:
                 self._arm_hand_catch(event_delay, cmd.event_vel_mps)
