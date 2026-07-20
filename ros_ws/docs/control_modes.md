@@ -13,7 +13,7 @@ MPC (50 Hz)  →  HardwarePlant  →  motor_guard.py  →  IPC (ZeroMQ)  →  mo
                     :5557            500 Hz interp        :5556            500 Hz poll              ROS2 topic          CAN bus
 ```
 
-Used in: `STANDBY`, `SPACEMOUSE`, `SHELL`, `GUI`, `CATCH` modes.
+Used in: `STANDBY`, `SPACEMOUSE`, `GUI`, `CATCH` modes.
 `STANDBY` accepts commands from a manually-launched `run_mpc.py` only —
 the MPC bridge forwards no ROS2 input-source targets in this mode.
 
@@ -83,14 +83,14 @@ python run_mpc.py --pose 0,0,220,0,0,0 --duration 10
 
 `HardwarePlant.enable()` sends `disable+enable` to the motor guard on startup
 (the leading `disable` clears any lingering ESTOP), and `disable` on shutdown.
-No ROS2 input source (spacemouse, GUI, shell, catch) can influence the
+No ROS2 input source (spacemouse, GUI, catch) can influence the
 platform while in STANDBY — this eliminates ambiguity about command origin
 during hardware testing.
 
-### SPACEMOUSE / SHELL / GUI / CATCH (input-routing sub-modes)
+### SPACEMOUSE / GUI / CATCH (input-routing sub-modes)
 
 ```
-ACTIVE:STANDBY → ACTIVE:SPACEMOUSE (or SHELL/GUI/CATCH):
+ACTIVE:STANDBY → ACTIVE:SPACEMOUSE (or GUI/CATCH):
   1. User clicks sub-mode button in GUI → orchestrator_command published
   2. State machine sets ctx.control_mode = 'SPACEMOUSE' (or other)
   3. Orchestrator publishes control_mode_topic

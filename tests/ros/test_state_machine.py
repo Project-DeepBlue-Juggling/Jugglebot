@@ -52,16 +52,12 @@ class TestActiveModeEnum:
     def test_spacemouse_value(self):
         assert ActiveMode.SPACEMOUSE.value == 'SPACEMOUSE'
 
-    def test_shell_value(self):
-        assert ActiveMode.SHELL.value == 'SHELL'
-
     def test_trajectory_value(self):
         assert ActiveMode.TRAJECTORY.value == 'TRAJECTORY'
 
     def test_from_uppercase_string(self):
         assert ActiveMode('STANDBY') == ActiveMode.STANDBY
         assert ActiveMode('SPACEMOUSE') == ActiveMode.SPACEMOUSE
-        assert ActiveMode('SHELL') == ActiveMode.SHELL
         assert ActiveMode('TRAJECTORY') == ActiveMode.TRAJECTORY
 
 
@@ -816,17 +812,6 @@ class TestActiveHandler:
         assert ctx.active_mode == ActiveMode.SPACEMOUSE
         assert ctx.control_mode == 'SPACEMOUSE'
 
-    def test_shell_command_switches_mode(self):
-        handler = ActiveHandler()
-        ctx = Context()
-        handler.on_enter(ctx)
-        ctx.drain_requests()
-        _activate_and_arm(handler, ctx)
-        ctx.enqueue_command('shell')
-        assert handler.execute(ctx) is None
-        assert ctx.active_mode == ActiveMode.SHELL
-        assert ctx.control_mode == 'SHELL'
-
     def test_trajectory_command_switches_mode(self):
         handler = ActiveHandler()
         ctx = Context()
@@ -1122,7 +1107,7 @@ class TestFaultHandler:
 
     # trajectory_node's streaming set (jugglebot.trajectory_node._DEFAULT_STREAM_MODES);
     # a control_mode outside this silences the 40 Hz emitter and abandons the descent.
-    _STREAM_MODES = {'STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'SHELL', 'CATCH'}
+    _STREAM_MODES = {'STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'CATCH'}
 
     def test_guard_only_fault_preserves_streaming_mode_not_error(self):
         """(i) A guard-only fault PRESERVES the streaming mode — it must never publish

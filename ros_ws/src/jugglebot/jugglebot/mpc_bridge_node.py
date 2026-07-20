@@ -1,6 +1,6 @@
 """ROS2 bridge node for MPC target setting.
 
-Subscribes to all ROS2 input sources (spacemouse, GUI, shell, catch
+Subscribes to all ROS2 input sources (spacemouse, GUI, catch
 coordinator) and forwards target commands to the MPC process via ZeroMQ.
 
 The MPC process receives targets on :5558 and uses them as the tracking
@@ -11,7 +11,7 @@ quaternion → rotation-vector conversion.
 
 ROS2 → ZMQ (:5558):
   - control_mode_topic  (String)               → MPC mode
-  - platform_pose_topic (PlatformPoseCommand)   → MPC target (SPACEMOUSE/GUI/SHELL)
+  - platform_pose_topic (PlatformPoseCommand)   → MPC target (SPACEMOUSE/GUI)
   - catch/dynamic_target (DynamicTargetCommand) → MPC target (CATCH)
   - gravity_offset (Float64MultiArray)         → stored correction applied to all targets
 
@@ -46,7 +46,7 @@ class MpcBridgeNode(Node):
     """Bridges ROS2 input topics to MPC target commands via ZeroMQ.
 
     Mode-gating logic:
-      - SPACEMOUSE/GUI/SHELL modes forward ``platform_pose_topic`` messages
+      - SPACEMOUSE/GUI modes forward ``platform_pose_topic`` messages
         whose ``publisher`` field matches the active mode.
       - CATCH mode forwards ``catch/dynamic_target`` messages.
       - All other modes (LEVELLING, ERROR, empty) send a ``disabled`` mode
@@ -54,7 +54,7 @@ class MpcBridgeNode(Node):
     """
 
     # Modes that accept PlatformPoseCommand targets
-    _POSE_MODES = frozenset({'SPACEMOUSE', 'SHELL', 'GUI'})
+    _POSE_MODES = frozenset({'SPACEMOUSE', 'GUI'})
     # Modes that accept DynamicTargetCommand targets
     _CATCH_MODES = frozenset({'CATCH'})
     # Union of all modes where the MPC should be active
@@ -90,7 +90,7 @@ class MpcBridgeNode(Node):
             Float64MultiArray, 'gravity_offset',
             self._on_gravity_offset, 10)
 
-        # Platform pose from spacemouse / GUI / shell
+        # Platform pose from spacemouse / GUI
         self.create_subscription(
             PlatformPoseCommand, 'platform_pose_topic',
             self._on_platform_pose, 10)
@@ -169,10 +169,10 @@ class MpcBridgeNode(Node):
     # ------------------------------------------------------------------
 
     def _on_platform_pose(self, msg: PlatformPoseCommand) -> None:
-        """Convert PlatformPoseCommand to MPC target (spacemouse/GUI/shell).
+        """Convert PlatformPoseCommand to MPC target (spacemouse/GUI).
 
         Only forwards when:
-          1. The current mode is a pose-accepting mode (SPACEMOUSE/GUI/SHELL)
+          1. The current mode is a pose-accepting mode (SPACEMOUSE/GUI)
           2. The message's publisher field matches the active mode
         """
         if self._current_mode not in self._POSE_MODES:
@@ -193,7 +193,7 @@ class MpcBridgeNode(Node):
         target_pose = [pos.x, pos.y, pos.z,
                        rotvec[0], rotvec[1], rotvec[2]]
 
-        # Spacemouse/GUI/shell targets: arrive ASAP, hold at target
+        # Spacemouse/GUI targets: arrive ASAP, hold at target
         self._ipc.send_target(make_mpc_target(
             target_pose=target_pose,
             source=source.lower(),

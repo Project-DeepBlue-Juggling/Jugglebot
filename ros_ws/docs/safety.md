@@ -51,7 +51,6 @@ regardless of which producer is live; still diagnostic-only, still not gated.)
 | Mode | Motor guard | Notes |
 |------|------------|-------|
 | `SPACEMOUSE` | enabled | MPC plans path from spacemouse targets |
-| `SHELL` | enabled | MPC plans path from CLI commands |
 | `GUI` | enabled | MPC plans path from GUI targets |
 | `CATCH` | enabled | MPC plans path from catch coordinator targets |
 | `LEVELLING` | **stays disabled** | Uses CAN node's profiled gentle-move; no MPC needed |

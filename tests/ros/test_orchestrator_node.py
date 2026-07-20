@@ -172,7 +172,7 @@ class TestOnCommand:
         assert orch.ctx.consume_command() == 'new'
 
     def test_various_commands(self, orch):
-        for cmd in ['activate', 'deactivate', 'spacemouse', 'shell', 'home', 'clear_errors']:
+        for cmd in ['activate', 'deactivate', 'spacemouse', 'home', 'clear_errors']:
             msg = MockString(data=cmd)
             orch._on_command(msg)
             assert orch.ctx.consume_command() == cmd

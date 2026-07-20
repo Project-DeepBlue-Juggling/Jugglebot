@@ -95,10 +95,10 @@ class TestRefEventsEmission:
 
     def test_events_anchored_at_plant_pose_on_first_target(self, source_with_ipc):
         src, ipc = source_with_ipc
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 220.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         state = _state(5.0, (12.3, -4.1, 169.0), (30.0, 0.0, 80.0, 0, 0, 0))
         tc = src.update(sim_time=5.0, state=state)
@@ -114,10 +114,10 @@ class TestRefEventsEmission:
 
     def test_same_target_reuses_cache(self, source_with_ipc):
         src, ipc = source_with_ipc
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 200.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         state1 = _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0))
         tc1 = src.update(0.0, state1)
@@ -125,7 +125,7 @@ class TestRefEventsEmission:
         # Subsequent poll delivers the *same* target; plant has drifted
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 200.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         state2 = _state(0.1, (0, 0, 175), (0, 0, 40, 0, 0, 0))
         tc2 = src.update(0.1, state2)
@@ -135,10 +135,10 @@ class TestRefEventsEmission:
 
     def test_distinct_target_rebuilds_with_fresh_state(self, source_with_ipc):
         src, ipc = source_with_ipc
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 200.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         state1 = _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0))
         tc1 = src.update(0.0, state1)
@@ -150,7 +150,7 @@ class TestRefEventsEmission:
         # Distinct target arrives while plant has drifted and is moving
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 220.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         state2 = _state(0.5, (0, 0, 185), (0, 0, 60, 0, 0, 0))
         tc2 = src.update(0.5, state2)
@@ -164,10 +164,10 @@ class TestRefEventsEmission:
 
     def test_disable_clears_events(self, source_with_ipc):
         src, ipc = source_with_ipc
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 200.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         src.update(0.0, _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0)))
         assert src._cached_events is not None
@@ -185,10 +185,10 @@ class TestRefEventsEmission:
 class TestTwistClamp:
     def test_spiked_fk_twist_is_clipped(self, source_with_ipc):
         src, ipc = source_with_ipc  # v_max_mmps=140
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 220.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         # Simulate an FK twist spike (e.g. encoder glitch) of 500 mm/s
         state = _state(0.0, (0, 0, 170), (500, -500, 500, 0, 0, 0))
@@ -208,10 +208,10 @@ class TestTwistClamp:
                 clamp_start_twist_mmps=None,
             )
             ipc = src._ipc
-            ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+            ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
             ipc.enqueue(TOPIC_MPC_TARGET, {
                 'target_pose': [0.0, 0.0, 220.0, 0.0, 0.0, 0.0],
-                'source': 'shell',
+                'source': 'gui',
             })
             state = _state(0.0, (0, 0, 170), (500, 0, 0, 0, 0, 0))
             tc = src.update(0.0, state)
@@ -236,10 +236,10 @@ class TestTwistClamp:
                 clamp_start_twist_mmps=60.0,   # tighter clamp
             )
             ipc = src._ipc
-            ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+            ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
             ipc.enqueue(TOPIC_MPC_TARGET, {
                 'target_pose': [0.0, 0.0, 220.0, 0.0, 0.0, 0.0],
-                'source': 'shell',
+                'source': 'gui',
             })
             # Simulate a fallback-driven runaway at 130 mm/s (< v_max, so a
             # v_max-valued clamp would be a no-op — but the 60 mm/s clamp
@@ -514,13 +514,13 @@ class TestW11StretchWarning:
 
     def test_non_catch_stretch_publishes_warning(self):
         src, ipc, fb = self._make_src_with_fb()
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         ipc.enqueue(TOPIC_MPC_TARGET, {
-            # Infeasible without stretch, but shell-source = no_stretch=False
+            # Infeasible without stretch, but gui-source = no_stretch=False
             'target_pose': [0.0, 0.0, 170.0, 0.0, 0.0, 0.0],
             'target_twist': [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             'arrival_time': 0.3,  # reach 170 from 210 in 0.3s with vz=+60
-            'source': 'shell',
+            'source': 'gui',
         })
         state = _state(0.0, (0, 0, 210), (0, 0, 60, 0, 0, 0))
         tc = src.update(0.0, state)
@@ -535,11 +535,11 @@ class TestW11StretchWarning:
 
     def test_no_warning_when_no_stretch_needed(self):
         src, ipc, fb = self._make_src_with_fb()
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 175.0, 0.0, 0.0, 0.0],
             'arrival_time': 1.5,
-            'source': 'shell',
+            'source': 'gui',
         })
         src.update(0.0, _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0)))
         assert not any(m.get('feedback_type') == 'stretch_warning'
@@ -556,11 +556,11 @@ class TestW5WarmStartInvalidation:
 
     def test_small_shift_keeps_warm_start_valid(self, source_with_ipc):
         src, ipc = source_with_ipc
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         # Target 1
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 195.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         tc1 = src.update(0.0, _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0)))
         # First target → no prev ref → warm_start_valid defaults True
@@ -569,25 +569,25 @@ class TestW5WarmStartInvalidation:
         # Target 2 — only 5 mm shift (below 20 mm threshold)
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 200.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         tc2 = src.update(0.1, _state(0.1, (0, 0, 175), (0, 0, 40, 0, 0, 0)))
         assert tc2.warm_start_valid is True
 
     def test_large_shift_invalidates_warm_start(self, source_with_ipc):
         src, ipc = source_with_ipc
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         # Target 1 at z=200
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 200.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         src.update(0.0, _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0)))
 
         # Target 2 at z=250 — 50 mm shift, above 20 mm threshold
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 250.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         tc2 = src.update(0.1, _state(0.1, (0, 0, 175), (0, 0, 40, 0, 0, 0)))
         assert tc2.warm_start_valid is False
@@ -595,16 +595,16 @@ class TestW5WarmStartInvalidation:
     def test_invalidation_is_one_tick_latch(self, source_with_ipc):
         """After one invalidation, subsequent ticks (same target) are valid."""
         src, ipc = source_with_ipc
-        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+        ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 200.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         src.update(0.0, _state(0.0, (0, 0, 170), (0, 0, 0, 0, 0, 0)))
 
         ipc.enqueue(TOPIC_MPC_TARGET, {
             'target_pose': [0.0, 0.0, 250.0, 0.0, 0.0, 0.0],
-            'source': 'shell',
+            'source': 'gui',
         })
         tc_a = src.update(0.1, _state(0.1, (0, 0, 175), (0, 0, 0, 0, 0, 0)))
         assert tc_a.warm_start_valid is False
@@ -686,10 +686,10 @@ class TestOvershootSaturationRegression:
         with patch('controller.zmq_target.MpcTargetIPC', FakeIPC):
             from controller.zmq_target import ZmqTargetSource
             src = ZmqTargetSource(default_z_mm=170.0, v_max_mmps=140.0)
-            src._ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+            src._ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
             src._ipc.enqueue(TOPIC_MPC_TARGET, {
                 'target_pose': [0.0, 0.0, 50.0, 0.0, 0.0, 0.0],
-                'source': 'shell',
+                'source': 'gui',
             })
             tc = src.update(sim_time=state.time, state=state)
 

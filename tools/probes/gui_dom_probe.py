@@ -741,7 +741,7 @@ import gui_synthetic_stack as stack_fixtures  # noqa: E402
 
 MM_NODE_IDS = ["BOOT", "HOMING", "IDLE", "LEVELLING", "ACTIVE", "FAULT",
                "ACTIVE:STANDBY", "ACTIVE:TRAJECTORY", "ACTIVE:SPACEMOUSE",
-               "ACTIVE:SHELL", "ACTIVE:GUI", "ACTIVE:CATCH"]
+               "ACTIVE:GUI", "ACTIVE:CATCH"]
 
 # SVG-safe DOM getters (className on SVG elements is SVGAnimatedString, so
 # getAttribute('class'); node `disabled` is the hold-gating expando).

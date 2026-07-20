@@ -932,10 +932,10 @@ class TestT3bR4ZmqTargetSourceReset:
             try:
                 # Drive a target so the source caches events (this is
                 # the "mid-APPROACHING" condition the plan calls out).
-                src._ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'shell'})
+                src._ipc.enqueue(TOPIC_MPC_MODE, {'mode': 'gui'})
                 src._ipc.enqueue(TOPIC_MPC_TARGET, {
                     'target_pose': [0.0, 0.0, 220.0, 0.0, 0.0, 0.0],
-                    'source': 'shell',
+                    'source': 'gui',
                 })
                 state = plant.get_state()
                 src.poll()

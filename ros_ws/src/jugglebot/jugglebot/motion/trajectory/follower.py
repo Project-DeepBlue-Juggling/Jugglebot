@@ -1,7 +1,7 @@
 """Streaming-target follower for SpaceMouse / GUI flight (Phase 3).
 
 A ``TargetFollower`` turns a continuously-updated *target pose* (from the
-SpaceMouse, GUI, or shell) into a stream of C2-continuous plans that the emitter
+SpaceMouse or GUI) into a stream of C2-continuous plans that the emitter
 samples — the "continuous target following through the same layer" MVP goal. It
 is a pure, testable object: the ROS wiring (subscriptions, mode gating, gravity
 composition, install) lives in ``trajectory_node``; the tracking policy lives

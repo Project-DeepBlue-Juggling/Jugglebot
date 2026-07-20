@@ -141,15 +141,15 @@ _GUARD_LATCHED = 'GUARD_LATCHED'
 # the Phase 1 arming bring-up uses; the active sub-modes are included so streaming
 # stays on across the modes later phases drive (TRAJECTORY lands in Phase 2). A
 # mode outside this set stops streaming and forces a re-seed on the next entry.
-_DEFAULT_STREAM_MODES = ('STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'SHELL',
+_DEFAULT_STREAM_MODES = ('STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI',
                          'CATCH')
 
-# Modes in which the SpaceMouse/GUI/shell streaming-target follower (Phase 3) is
+# Modes in which the SpaceMouse/GUI streaming-target follower (Phase 3) is
 # active — the pose-command modes, mirroring mpc_bridge_node._POSE_MODES. In these
 # modes the emitter tick drains the latest platform_pose target and replans toward
 # it (fast validate_follow gate); other streaming modes hold (STANDBY) or use their
 # own command source (TRAJECTORY→go_to_pose, CATCH→dynamic_target, Phase 5).
-_FOLLOWER_MODES = frozenset({'SPACEMOUSE', 'SHELL', 'GUI'})
+_FOLLOWER_MODES = frozenset({'SPACEMOUSE', 'GUI'})
 
 # Modes that actively COMMAND platform motion (as opposed to STANDBY, which holds).
 # Leaving one of these for a non-motion streaming mode (STANDBY) while a move is in
@@ -381,7 +381,7 @@ class TrajectoryNode(Node):
         self.create_subscription(String, mode_topic, self._on_control_mode, 10)
         self.create_subscription(RobotState, 'robot_state',
                                  self._on_robot_state, 10)
-        # SpaceMouse / GUI / shell streaming target (Phase 3).
+        # SpaceMouse / GUI streaming target (Phase 3).
         self.create_subscription(PlatformPoseCommand, 'platform_pose_topic',
                                  self._on_platform_pose, 10)
         # Gravity-levelling correction (verbatim port from mpc_bridge_node).
@@ -1183,11 +1183,11 @@ class TrajectoryNode(Node):
                 "commanding motion")
 
     # ═══════════════════════════════════════════════════════════
-    # SpaceMouse / GUI / shell follower (Phase 3)
+    # SpaceMouse / GUI follower (Phase 3)
     # ═══════════════════════════════════════════════════════════
 
     def _on_platform_pose(self, msg) -> None:
-        """Store the latest streaming target (SPACEMOUSE/GUI/SHELL).
+        """Store the latest streaming target (SPACEMOUSE/GUI).
 
         Gated exactly like ``mpc_bridge_node._on_platform_pose``: only when the
         current mode is a follower (pose-accepting) mode AND the message's
@@ -1493,7 +1493,7 @@ class TrajectoryNode(Node):
     def _svc_hold(self, request, response):
         """``trajectory/hold``: freeze at the current pose (profiled decel-to-rest).
 
-        Rejected in a follower mode (SPACEMOUSE/GUI/SHELL): the streaming input would
+        Rejected in a follower mode (SPACEMOUSE/GUI): the streaming input would
         supersede this hold within one 40 Hz tick, so a hold there is a mode
         confusion — exit the follower mode (which installs a graceful stop) instead.
         Mirrors ``go_to_pose``'s WRONG_MODE rationale.
@@ -1525,7 +1525,7 @@ class TrajectoryNode(Node):
     def _svc_go_home(self, request, response):
         """``trajectory/go_home``: profiled return to the neutral active pose.
 
-        Rejected in a follower mode (SPACEMOUSE/GUI/SHELL): the streaming input would
+        Rejected in a follower mode (SPACEMOUSE/GUI): the streaming input would
         supersede this move within one 40 Hz tick, so a go_home there is a mode
         confusion — exit the follower mode (which installs a graceful stop) instead.
         Mirrors ``go_to_pose``'s WRONG_MODE rationale.

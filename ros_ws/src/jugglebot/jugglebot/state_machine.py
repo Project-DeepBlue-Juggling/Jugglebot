@@ -36,7 +36,6 @@ class ActiveMode(Enum):
     STANDBY = 'STANDBY'
     TRAJECTORY = 'TRAJECTORY'
     SPACEMOUSE = 'SPACEMOUSE'
-    SHELL = 'SHELL'
     GUI = 'GUI'
     CATCH = 'CATCH'
 
@@ -586,7 +585,7 @@ class ActiveHandler(StateHandler):
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
             return RobotState.IDLE
-        elif cmd in ('standby', 'trajectory', 'spacemouse', 'shell', 'gui',
+        elif cmd in ('standby', 'trajectory', 'spacemouse', 'gui',
                      'catch'):
             ctx.active_mode = ActiveMode(cmd.upper())
             ctx.control_mode = ctx.active_mode.value

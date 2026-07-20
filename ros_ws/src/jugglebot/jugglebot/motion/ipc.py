@@ -269,7 +269,7 @@ def make_mpc_target(target_pose: list | tuple,
     target_pose : [x, y, z, rx, ry, rz] in mm / rad (rotation vector)
     arrival_time : absolute time (perf_counter) to arrive, or None = ASAP
     target_twist : [vx, vy, vz, wx, wy, wz] in mm/s / rad/s, or None = hold
-    source : input source identifier ('spacemouse', 'gui', 'shell', 'catch')
+    source : input source identifier ('spacemouse', 'gui', 'catch')
     """
     msg = {
         'type': 'mpc_target',
@@ -305,7 +305,7 @@ def make_mpc_mode(mode: str) -> dict:
 
     Parameters
     ----------
-    mode : 'spacemouse', 'gui', 'shell', 'catch', or 'disabled'
+    mode : 'spacemouse', 'gui', 'catch', or 'disabled'
     """
     return {'type': 'mpc_mode', 'mode': mode}
 

@@ -2,7 +2,7 @@
  * state-minimap.js — Orchestrator state-machine minimap.
  *
  * A clickable map of the orchestrator state machine (BOOT / HOMING / IDLE /
- * LEVELLING / ACTIVE:{STANDBY,TRAJECTORY,SPACEMOUSE,SHELL,GUI,CATCH} / FAULT)
+ * LEVELLING / ACTIVE:{STANDBY,TRAJECTORY,SPACEMOUSE,GUI,CATCH} / FAULT)
  * that greys out unreachable states with a reason, and — on a hold-to-confirm
  * — runs the SAFE multi-step sequence to reach the target state, honouring
  * the bench-validated ordering rules (tests/hardware/mvp_bench_runbook.md
@@ -84,7 +84,7 @@ const ECHO_KEEP_MS = 1500;
 const TRIGGER = 'std_srvs/srv/Trigger';
 const SETBOOL = 'std_srvs/srv/SetBool';
 
-const SUBMODES = ['STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'SHELL', 'GUI', 'CATCH'];
+const SUBMODES = ['STANDBY', 'TRAJECTORY', 'SPACEMOUSE', 'GUI', 'CATCH'];
 const MAIN_STATES = ['BOOT', 'HOMING', 'IDLE', 'LEVELLING', 'ACTIVE', 'FAULT'];
 const ALL_NODE_IDS = MAIN_STATES.concat(SUBMODES.map((m) => 'ACTIVE:' + m));
 
