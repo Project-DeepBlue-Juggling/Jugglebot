@@ -132,7 +132,7 @@ let repaintTimer = null;
 
 // ---- Staleness state ----
 //
-// Three INDEPENDENT stale causes, composed in one place (applyStaleUI) so
+// Four INDEPENDENT stale causes, composed in one place (applyStaleUI) so
 // they never stomp each other:
 //
 //   profileStale  no 'profile' message for >3 s — the bridge node, rosbridge,
@@ -146,17 +146,22 @@ let repaintTimer = null;
 //                 _latest_profile at 1 Hz and _latest_heartbeat healths at
 //                 10 Hz unconditionally) — live-looking lies the panel must
 //                 not render as fresh.
+//   rosDown       the rosbridge websocket itself is down (setCanTrafficRosLink,
+//                 driven from main.js's connection-state router).  Unlike the
+//                 three above, this one ALSO freezes the chart's x-window —
+//                 see getViewAnchor.
 //
 // UI derivation (applyStaleUI is the single writer for stale visuals):
 //   badge     shown when ANY cause is active; tooltip names the live causes
-//   readouts  '--' when profileStale OR linkDown
-//   dots      UNKNOWN when linkDown OR healthStale; otherwise the last
-//             received BusHealth.  profileStale alone leaves dots to the
+//   readouts  '--' when profileStale OR linkDown OR rosDown
+//   dots      UNKNOWN when linkDown OR healthStale OR rosDown; otherwise the
+//             last received BusHealth.  profileStale alone leaves dots to the
 //             health source — they have their own topic + watchdog.
 const staleState = {
     profileStale: false,
     healthStale: false,
     linkDown: false,
+    rosDown: false,
 };
 /** Human-readable linkDown cause for the badge tooltip (refreshed at 10 Hz
  *  while down, so the heartbeat age reads live). */
@@ -275,7 +280,8 @@ export function initCanTrafficPanel() {
     }
 
     // 1 Hz live-slide: keeps the x-window moving (and outage gaps visibly
-    // growing) even when no messages arrive.
+    // growing) even when no messages arrive.  Frozen while ROS2 is down —
+    // paint() takes its right edge from getViewAnchor, not wall-clock.
     repaintTimer = setInterval(paint, 1000);
 
     // Arm the staleness watchdogs immediately so a never-connected page shows
@@ -380,6 +386,27 @@ export function canTrafficOnLinkStatus(msg) {
     applyStaleUI();
 }
 
+/**
+ * ROS2 connection edge — called from main.js's connection-state router for
+ * every state, not just the down edge.
+ *
+ * A websocket drop takes the whole ROS graph with it, so the panel has no
+ * source of truth at all: readouts blank, dots go UNKNOWN, and the chart's
+ * x-window freezes at the last column instead of scrolling the history away
+ * (see getViewAnchor).  The three CAN-side outage causes are deliberately NOT
+ * treated this way — ROS2 is still up for those, so their gaps keep growing.
+ *
+ * @param {boolean} isUp - true ONLY for the 'connected' state.  The reconnect
+ *   loop oscillates connecting↔disconnected every 2 s while ROS is down; both
+ *   of those count as down, so the freeze holds across the whole outage.
+ */
+export function setCanTrafficRosLink(isUp) {
+    if (staleState.rosDown === !isUp) return;   // no edge — idempotent
+    staleState.rosDown = !isUp;
+    applyStaleUI();
+    paint();
+}
+
 // ---- Readouts ----
 
 function updateBusReadouts(bus, msgsPerSec, utilStr) {
@@ -456,6 +483,7 @@ function injectGapColumn() {
  *  link_status message (10 Hz — trivial DOM writes). */
 function applyStaleUI() {
     const causes = [];
+    if (staleState.rosDown) causes.push('ROS2 disconnected — chart frozen at last sample');
     if (staleState.linkDown) causes.push(linkDownReason);
     if (staleState.profileStale) causes.push("no 'profile' from bridge >3 s");
     if (staleState.healthStale) causes.push("no 'link_status' from bridge >3 s");
@@ -467,14 +495,15 @@ function applyStaleUI() {
     }
 
     // Readouts: profile values are trustworthy only when fresh AND the
-    // uplink is up (linkDown ⇒ cached/frozen numbers).
-    if (staleState.profileStale || staleState.linkDown) {
+    // uplink is up (linkDown ⇒ cached/frozen numbers) AND ROS2 is connected
+    // (rosDown ⇒ the last values are however old the outage is).
+    if (staleState.profileStale || staleState.linkDown || staleState.rosDown) {
         for (const bus of BUSES) updateBusReadouts(bus, NaN, null);
     }
 
-    // Dots: linkDown / healthStale ⇒ UNKNOWN (the cached green values are
-    // frozen lies); otherwise show the last received BusHealth.
-    const dotsUnknown = staleState.linkDown || staleState.healthStale;
+    // Dots: linkDown / healthStale / rosDown ⇒ UNKNOWN (the cached green
+    // values are frozen lies); otherwise show the last received BusHealth.
+    const dotsUnknown = staleState.linkDown || staleState.healthStale || staleState.rosDown;
     for (const bus of BUSES) {
         if (bus.healthKey === null) continue;
         setHealthDot(bus, dotsUnknown ? 'UNKNOWN' : lastHealth[bus.id]);
@@ -645,12 +674,34 @@ function alignedData() {
     return [times, ...BUSES.map(bus => rates[bus.id])];
 }
 
-/** Redraw with the live window [now - windowSec, now]. */
+/**
+ * Pick the right-hand edge of the x-window.
+ *   - ROS2 connected: wall-clock now, so the window slides live and an
+ *     in-progress outage's NaN gap visibly GROWS (the whole point of the 1 Hz
+ *     repaint timer — a bridge_link drop or a dead bridge node is an outage we
+ *     are still actively observing, and its duration is information).
+ *   - ROS2 disconnected: the newest column in the ring.  Nothing about the CAN
+ *     buses is observable while the websocket is down, so wall-clock progress
+ *     is not an observation — rendering it as one would scroll the entire
+ *     pre-disconnect history off the left edge within `windowSec`, destroying
+ *     the data an operator opens this panel to look at after a dropout.
+ *     Same contract as telemetry-charts' getViewAnchor (anchor to the last
+ *     sample once the stream stops).
+ *
+ * Empty ring ⇒ fall back to wall-clock: there is no history to preserve, and a
+ * live axis beats a frozen one on a never-connected page.
+ */
+function getViewAnchor() {
+    if (staleState.rosDown && times.length) return times[times.length - 1];
+    return Date.now() / 1000;
+}
+
+/** Redraw with the window [anchor - windowSec, anchor] (see getViewAnchor). */
 function paint() {
     if (!chart) return;
     chart.setData(alignedData(), false);
-    const now = Date.now() / 1000;
-    chart.setScale('x', { min: now - windowSec, max: now });
+    const anchor = getViewAnchor();
+    chart.setScale('x', { min: anchor - windowSec, max: anchor });
 }
 
 /**

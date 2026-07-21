@@ -28,6 +28,7 @@ import {
 } from './panels.js';
 import {
     initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
+    setCanTrafficRosLink,
 } from './can-traffic.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import {
@@ -187,6 +188,13 @@ function onConnectionStateChange(state) {
                 : 'rosbridge websocket lost — retrying every 2 s',
         });
     }
+
+    // CAN traffic panel: blank its readouts/dots and FREEZE its chart x-window
+    // while the websocket is down, so the pre-disconnect traffic history stays
+    // on screen instead of scrolling off the left edge. Driven for every state
+    // (not just the down edge) and placed above the DOM early-return below so
+    // a missing status-dot element can't silently skip it.
+    setCanTrafficRosLink(isUp);
 
     const dot = document.getElementById('conn-dot');
     const text = document.getElementById('conn-text');
