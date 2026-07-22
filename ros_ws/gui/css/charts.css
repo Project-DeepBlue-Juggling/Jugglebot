@@ -326,6 +326,36 @@
     flex-shrink: 0;
 }
 
+/* CAN traffic panel (can-traffic.js) reuses the callout overlay above, with
+   two differences: its pills are read-only, so they must not advertise a
+   click-to-copy affordance or intercept the cursor in a 130px-tall plot; and
+   it adds a time pill, since reading the hovered instant off the axis ticks
+   is too coarse over a 120 s window at sidebar width. */
+.chart-callout.can-callout {
+    pointer-events: none;
+    cursor: default;
+}
+
+.can-callout-time {
+    position: absolute;
+    bottom: 0;
+    padding: 0 4px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-primary);
+    background: var(--chart-callout-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+    transform: translateX(4px);
+}
+
+.can-callout-time.flip-left {
+    transform: translateX(calc(-100% - 4px));
+}
+
 /* ---- Delta-cursor per-chart readout -----------------------------------
    Pinned to the top-right of each chart's plot area while both A/B
    bookmarks are placed.  Shows one "label: ±Δ unit" pill per active

@@ -544,11 +544,15 @@ function toggleBusSeries(bus) {
     if (btn) btn.setAttribute('aria-pressed', String(seriesVisible[bus.id]));
 
     // Toggle the chart series LAST.  Set series.show + redraw() rather than
-    // chart.setSeries({show}): with cursor.show=false there is no cursor-point
-    // element, and setSeries()'s hide branch unconditionally repositions it
-    // (yt[i].style) — an undefined deref that throws in uPlot 1.6.31.  redraw()
-    // re-renders paths + re-fits the y-scale to the visible series, never
-    // touching the cursor layer.
+    // chart.setSeries({show}): with cursor POINTS disabled uPlot never fills
+    // its cursor-point array, and setSeries()'s hide branch unconditionally
+    // repositions the entry (yt[i].style) — an undefined deref that throws in
+    // uPlot 1.6.31.  redraw() re-renders paths + re-fits the y-scale to the
+    // visible series, never touching the cursor layer.
+    //
+    // Enabling cursor.show for the hover callouts did NOT retire this: the
+    // array is populated by cursor.points.show, which stays false (the pills
+    // are the readout).  Hidden series are skipped in updateCallouts instead.
     if (chart) {
         chart.series[BUSES.indexOf(bus) + 1].show = seriesVisible[bus.id];
         chart.redraw();
@@ -670,16 +674,141 @@ function buildCanChart() {
         // The bus rows are the legend (colour swatch + text label + live
         // values), matching the house legend:{show:false} idiom.
         legend: { show: false },
-        cursor: { show: false },
+        cursor: {
+            show: true,
+            // No cursor points: the per-curve callout pills ARE the readout,
+            // and uPlot's dots would just double up on them.  NB this leaves
+            // uPlot's internal cursor-point array empty — see toggleBusSeries.
+            points: { show: false },
+            // No drag-zoom: paint() re-asserts the x scale every second, so a
+            // dragged range would be overwritten within 1 s.  The 30/60/120 s
+            // presets are this chart's zoom control.
+            drag: { x: false, y: false, setScale: false },
+        },
+        hooks: {
+            setCursor: [(u) => updateCallouts(u)],
+        },
         padding: [8, 8, 0, 0],
     };
 
     chart = new uPlot(opts, alignedData(), chartContainer);
+    buildCallouts();
     paint();
 }
 
 function alignedData() {
     return [times, ...BUSES.map(bus => rates[bus.id])];
+}
+
+// ---- Hover callouts ----
+//
+// Per-curve value pills anchored at the crosshair, plus a time pill on the
+// x-axis — the same overlay-inside-u.over pattern telemetry-charts uses for
+// the actuator charts, reusing its .chart-callouts/.chart-callout classes so
+// the two charts read identically.  Unlike those, these pills are read-only
+// (no click-to-copy), hence the .can-callout modifier that turns the clickable
+// affordance back off.
+//
+// Rebuilt with the chart (buildCanChart), so a theme toggle re-reads the
+// series colours and a resize re-anchors the overlay for free.
+
+let calloutOverlay = null;
+let calloutPills = [];
+let calloutTimeEl = null;
+
+/** Build the callout overlay: one pill per uplinked bus + one time pill. */
+function buildCallouts() {
+    if (!chart) return;
+    calloutOverlay = document.createElement('div');
+    calloutOverlay.className = 'chart-callouts';
+    calloutPills = [];
+
+    for (const bus of BUSES) {
+        // The cone is all-NaN by construction — a pill that could never
+        // resolve to a value would just be dead weight in a 130 px plot.
+        if (bus.slot === null) continue;
+        const el = document.createElement('div');
+        el.className = 'chart-callout can-callout';
+        el.style.setProperty('--signal-color', cssVar(bus.colorVar, bus.colorFallback));
+        el.innerHTML = '<span class="chart-callout-dot"></span><span class="chart-callout-text"></span>';
+        el.style.display = 'none';
+        calloutOverlay.appendChild(el);
+        calloutPills.push({ el, textNode: el.querySelector('.chart-callout-text'), bus });
+    }
+
+    calloutTimeEl = document.createElement('div');
+    calloutTimeEl.className = 'can-callout-time';
+    calloutTimeEl.style.display = 'none';
+    calloutOverlay.appendChild(calloutTimeEl);
+
+    chart.over.appendChild(calloutOverlay);
+}
+
+/** Wall-clock seconds → HH:MM:SS, matching the x-axis tick format. */
+function formatClock(sec) {
+    const d = new Date(sec * 1000);
+    return `${String(d.getHours()).padStart(2, '0')}:`
+        + `${String(d.getMinutes()).padStart(2, '0')}:`
+        + `${String(d.getSeconds()).padStart(2, '0')}`;
+}
+
+/**
+ * Position the callouts at the current crosshair sample.  uPlot fires
+ * setCursor on every mouse move, so this runs at ~60 Hz while hovering.
+ *
+ * Deliberately works while the chart is frozen (ROS2 down): inspecting the
+ * traffic history after a dropout is the main reason to hover at all.
+ *
+ * A NaN sample means an outage column, not a rate of zero — those pills are
+ * hidden rather than shown as a number, for the same reason the readouts blank
+ * instead of holding their last value.
+ */
+function updateCallouts(u) {
+    if (!calloutOverlay) return;
+    const idx = u.cursor.idx;
+    const xs = u.data[0];
+    if (idx == null || idx < 0 || !xs || idx >= xs.length) {
+        calloutOverlay.style.opacity = '0';
+        return;
+    }
+    calloutOverlay.style.opacity = '1';
+
+    const t = xs[idx];
+    const xPx = u.valToPos(t, 'x');
+    const plotW = u.bbox ? (u.bbox.width / window.devicePixelRatio) : u.over.clientWidth;
+    // Flip to the left of the crosshair near the right edge so pills stay
+    // inside the plot instead of overflowing the sidebar.
+    const flipLeft = xPx > plotW * 0.75;
+
+    for (const { el, textNode, bus } of calloutPills) {
+        const val = u.data[BUSES.indexOf(bus) + 1]?.[idx];
+        // Hidden series draw no curve, so they get no callout either.
+        if (!seriesVisible[bus.id] || !Number.isFinite(val)) {
+            el.style.display = 'none';
+            continue;
+        }
+        const yPx = u.valToPos(val, 'y');
+        if (!Number.isFinite(yPx)) {
+            el.style.display = 'none';
+            continue;
+        }
+        el.style.display = '';
+        el.style.left = `${xPx}px`;
+        el.style.top = `${yPx}px`;
+        el.classList.toggle('flip-left', flipLeft);
+        // Bus label included: two curves can cross, and colour alone shouldn't
+        // be the only way to tell which pill is which (same non-colour-alone
+        // rule the bus rows follow).  Unit is the y-axis label, msg/s.
+        textNode.textContent = `${bus.label} ${Math.round(val)}`;
+    }
+
+    // Time pill: pinned to the x-axis end of the crosshair.  Without it the
+    // hovered instant can only be eyeballed off the axis ticks, which is too
+    // coarse to be useful over a 120 s window in a sidebar-width plot.
+    calloutTimeEl.style.display = '';
+    calloutTimeEl.style.left = `${xPx}px`;
+    calloutTimeEl.classList.toggle('flip-left', flipLeft);
+    calloutTimeEl.textContent = formatClock(t);
 }
 
 /**
