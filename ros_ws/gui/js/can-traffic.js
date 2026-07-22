@@ -662,12 +662,24 @@ function buildCanChart() {
             {
                 scale: 'y',
                 label: 'msg/s',
-                // Band reserved for the rotated label.  10 px font in a 12 px
-                // band left it all but touching the tick digits; 20 px centres
-                // it with a visible gap on both sides.  Costs 8 px of plot
-                // width, which a 30-120 s window absorbs without notice.
-                labelSize: 20,
-                size: 40,
+                // Label placement — the knob that matters here is labelGap,
+                // NOT labelSize.  uPlot lays a left axis out as
+                //     _pos  = plot edge                 (tick values)
+                //     _lpos = plot edge - size          (label)
+                // and draws the label CENTRE-aligned at (_lpos - labelGap).
+                // labelGap defaults to 0, so by default the rotated glyphs
+                // straddle the tick/label boundary and eat ~half their height
+                // into the tick column — that is what put the 'g' of msg/s
+                // through the '1,000' tick.  labelSize only sizes the band
+                // beyond _lpos; growing it shifts the ticks and the label by
+                // the same amount and changes the overlap not at all.
+                labelGap: 8,
+                labelSize: 16,
+                // Tick column: wide enough for a grouped 5-digit rate
+                // ("10,000" ≈ 36 px at 10 px mono, + tick mark + gap).  At the
+                // old 40 px a 4-digit tick already filled the column, leaving
+                // the label nothing to clear.
+                size: 48,
                 stroke: axisStroke,
                 grid: { stroke: gridStroke, width: 1 },
                 ticks: { stroke: ticksStroke, width: 1 },
