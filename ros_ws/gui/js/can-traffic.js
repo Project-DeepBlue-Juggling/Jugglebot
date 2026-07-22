@@ -173,6 +173,11 @@ for (const bus of BUSES) lastHealth[bus.id] = 'UNKNOWN';
 /** One NaN gap column per link-down episode (idempotent latch, re-armed
  *  when bridge_link returns to 'UP'). */
 let linkGapInjected = false;
+/** Wall-clock instant the current rosDown freeze began — the x-window's right
+ *  edge while frozen with an EMPTY ring (a page that has never connected).
+ *  Once the ring has columns the newest one is a better edge; see
+ *  getViewAnchor.  Re-stamped on every down edge. */
+let freezeAnchor = Date.now() / 1000;
 
 // ---- DOM helpers ----
 
@@ -403,6 +408,9 @@ export function canTrafficOnLinkStatus(msg) {
 export function setCanTrafficRosLink(isUp) {
     if (staleState.rosDown === !isUp) return;   // no edge — idempotent
     staleState.rosDown = !isUp;
+    // Stamp the freeze instant on the DOWN edge only: it is the x-window's
+    // right edge until the ring has a column to anchor to (getViewAnchor).
+    if (!isUp) freezeAnchor = Date.now() / 1000;
     applyStaleUI();
     paint();
 }
@@ -680,20 +688,24 @@ function alignedData() {
  *     in-progress outage's NaN gap visibly GROWS (the whole point of the 1 Hz
  *     repaint timer — a bridge_link drop or a dead bridge node is an outage we
  *     are still actively observing, and its duration is information).
- *   - ROS2 disconnected: the newest column in the ring.  Nothing about the CAN
+ *   - ROS2 disconnected: the newest column in the ring, or — with nothing in
+ *     the ring at all — the instant the freeze began.  Nothing about the CAN
  *     buses is observable while the websocket is down, so wall-clock progress
- *     is not an observation — rendering it as one would scroll the entire
+ *     is not an observation: rendering it as one would scroll the entire
  *     pre-disconnect history off the left edge within `windowSec`, destroying
  *     the data an operator opens this panel to look at after a dropout.
- *     Same contract as telemetry-charts' getViewAnchor (anchor to the last
- *     sample once the stream stops).
  *
- * Empty ring ⇒ fall back to wall-clock: there is no history to preserve, and a
- * live axis beats a frozen one on a never-connected page.
+ * The empty-ring case is the never-connected page (the connection router fires
+ * on registration, so freezeAnchor is stamped at load).  It matters because
+ * this panel drives repaints from an unconditional 1 Hz timer, unlike
+ * telemetry-charts, which repaints only when a sample arrives and therefore
+ * sits still on its own when no data ever comes.  Falling back to wall-clock
+ * here would make a never-connected CAN chart scroll while the actuator charts
+ * below it stayed put — same situation, two different behaviours.
  */
 function getViewAnchor() {
-    if (staleState.rosDown && times.length) return times[times.length - 1];
-    return Date.now() / 1000;
+    if (!staleState.rosDown) return Date.now() / 1000;
+    return times.length ? times[times.length - 1] : freezeAnchor;
 }
 
 /** Redraw with the window [anchor - windowSec, anchor] (see getViewAnchor). */
