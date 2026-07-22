@@ -662,7 +662,11 @@ function buildCanChart() {
             {
                 scale: 'y',
                 label: 'msg/s',
-                labelSize: 12,
+                // Band reserved for the rotated label.  10 px font in a 12 px
+                // band left it all but touching the tick digits; 20 px centres
+                // it with a visible gap on both sides.  Costs 8 px of plot
+                // width, which a 30-120 s window absorbs without notice.
+                labelSize: 20,
                 size: 40,
                 stroke: axisStroke,
                 grid: { stroke: gridStroke, width: 1 },
@@ -676,6 +680,12 @@ function buildCanChart() {
         legend: { show: false },
         cursor: {
             show: true,
+            // Vertical crosshair only.  The horizontal one tracks the pointer's
+            // y, not any curve, so on a multi-series rate chart it marks a value
+            // nothing is at — noise.  The pills carry the values instead.
+            // (Safe to disable: uPlot guards every deref of that element, unlike
+            // the cursor-point array below.)
+            y: false,
             // No cursor points: the per-curve callout pills ARE the readout,
             // and uPlot's dots would just double up on them.  NB this leaves
             // uPlot's internal cursor-point array empty — see toggleBusSeries.
@@ -702,21 +712,19 @@ function alignedData() {
 
 // ---- Hover callouts ----
 //
-// Per-curve value pills anchored at the crosshair, plus a time pill on the
-// x-axis — the same overlay-inside-u.over pattern telemetry-charts uses for
-// the actuator charts, reusing its .chart-callouts/.chart-callout classes so
-// the two charts read identically.  Unlike those, these pills are read-only
-// (no click-to-copy), hence the .can-callout modifier that turns the clickable
-// affordance back off.
+// Per-curve value pills anchored at the crosshair — the same
+// overlay-inside-u.over pattern telemetry-charts uses for the actuator charts,
+// reusing its .chart-callouts/.chart-callout classes so the two charts read
+// identically.  Unlike those, these pills are read-only (no click-to-copy),
+// hence the .can-callout modifier that turns the clickable affordance back off.
 //
 // Rebuilt with the chart (buildCanChart), so a theme toggle re-reads the
 // series colours and a resize re-anchors the overlay for free.
 
 let calloutOverlay = null;
 let calloutPills = [];
-let calloutTimeEl = null;
 
-/** Build the callout overlay: one pill per uplinked bus + one time pill. */
+/** Build the callout overlay: one pill per uplinked bus. */
 function buildCallouts() {
     if (!chart) return;
     calloutOverlay = document.createElement('div');
@@ -736,20 +744,7 @@ function buildCallouts() {
         calloutPills.push({ el, textNode: el.querySelector('.chart-callout-text'), bus });
     }
 
-    calloutTimeEl = document.createElement('div');
-    calloutTimeEl.className = 'can-callout-time';
-    calloutTimeEl.style.display = 'none';
-    calloutOverlay.appendChild(calloutTimeEl);
-
     chart.over.appendChild(calloutOverlay);
-}
-
-/** Wall-clock seconds → HH:MM:SS, matching the x-axis tick format. */
-function formatClock(sec) {
-    const d = new Date(sec * 1000);
-    return `${String(d.getHours()).padStart(2, '0')}:`
-        + `${String(d.getMinutes()).padStart(2, '0')}:`
-        + `${String(d.getSeconds()).padStart(2, '0')}`;
 }
 
 /**
@@ -801,14 +796,6 @@ function updateCallouts(u) {
         // rule the bus rows follow).  Unit is the y-axis label, msg/s.
         textNode.textContent = `${bus.label} ${Math.round(val)}`;
     }
-
-    // Time pill: pinned to the x-axis end of the crosshair.  Without it the
-    // hovered instant can only be eyeballed off the axis ticks, which is too
-    // coarse to be useful over a 120 s window in a sidebar-width plot.
-    calloutTimeEl.style.display = '';
-    calloutTimeEl.style.left = `${xPx}px`;
-    calloutTimeEl.classList.toggle('flip-left', flipLeft);
-    calloutTimeEl.textContent = formatClock(t);
 }
 
 /**
