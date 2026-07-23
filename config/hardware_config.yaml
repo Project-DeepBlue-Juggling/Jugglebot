@@ -500,6 +500,14 @@ jugglebot_operational:
                                          # the homing reference (-0.1 rev) is BELOW it, and using that as
                                          # the retract target made every abort retract a silently-rejected
                                          # no-op (found 2026-07-23 — the hand stayed parked at top).
+  catch_vel_scale_default: 0.8           # Default catch-speed scale used when a Reload goal's
+                                         # catch_vel_scale is 0/unset (and as the catch coordinator's
+                                         # reset value on disarm). Multiplies the armed stroke's event
+                                         # velocity, i.e. the firmware CATCH_VEL_RATIO (0.6) hand/ball
+                                         # ratio becomes 0.6 * this. Locked in from the 2026-07-23 third
+                                         # sitting: all throws at 0.8 seated (only 2/N missed), while the
+                                         # prior sitting at 1.0 bounced every ball out. Per-goal override
+                                         # via the action's catch_vel_scale field still applies.
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}

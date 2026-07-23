@@ -19,6 +19,7 @@ import pytest
 from std_msgs.msg import Bool, Float64
 from jugglebot_interfaces.msg import TargetFeedback
 
+import jugglebot.hardware_config as hw
 from jugglebot.catch_coordinator_node import CatchCoordinatorNode
 
 
@@ -188,7 +189,8 @@ def test_hand_actuated_when_armed(monkeypatch):
     node._on_balls(_balls_msg())
     assert primed == []                        # NO prime from the balls path
     assert len(armed) == 1
-    assert armed[0][1] == pytest.approx(1.2)   # event_vel carried (scale 1.0)
+    # event_vel carried, scaled by the config default (0.8 locked in 2026-07-23)
+    assert armed[0][1] == pytest.approx(1.2 * hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
     assert node._hand_traj_armed_for_ball == 5
     # The balls tick stamped the quiet window that suppresses the retry timer.
     assert time.perf_counter() - node._last_cmd_mono < 1.0
@@ -260,13 +262,14 @@ def test_vel_scale_clamped_to_safe_range():
 
 
 def test_vel_scale_resets_on_disarm():
-    """One reload's tuning value must never leak into the next attempt."""
+    """One reload's tuning value must never leak into the next attempt — the
+    disarm edge restores the config default (0.8, locked in 2026-07-23)."""
     node = CatchCoordinatorNode()
     node._on_catch_armed(Bool(data=True))
     node._on_vel_scale(Float64(data=0.7))
     assert node._catch_vel_scale == pytest.approx(0.7)
     node._on_catch_armed(Bool(data=False))
-    assert node._catch_vel_scale == pytest.approx(1.0)
+    assert node._catch_vel_scale == pytest.approx(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
 
 
 def test_scaled_event_vel_reclamped_to_teensy_bounds(monkeypatch):
@@ -406,3 +409,90 @@ def test_announcement_untagged_target_does_not_pretilt():
     n0 = len(node._dyn_target_pub.published)
     node._on_throw_announcement(_announcement(target_id=''))
     assert len(node._dyn_target_pub.published) == n0
+
+
+def test_pretilt_arrival_scheduled_early():
+    """The pre-tilt target must schedule its arrival _PRETILT_EARLY_S (1.5 s)
+    BEFORE the predicted landing. The old arrival == landing made trajectory_node
+    span the whole announce→land window with one min-jerk reach completing AT
+    contact — third sitting (2026-07-23): tilt still >1° off until 0.24–0.49 s
+    before landing on all 12 attempts."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_announcement())          # landing at ros t=100
+    msg = node._dyn_target_pub.published[-1]
+    landing_perf = 100.0 + node._ros_to_perf_offset
+    assert msg.arrival_time == pytest.approx(landing_perf - 1.5, abs=0.05)
+
+
+def test_pretilt_arrival_clamped_to_min_lead():
+    """A short-countdown announcement must still get a feasible profiled traverse:
+    arrival is clamped to now + _PRETILT_MIN_LEAD_S (1.0 s), never demanding a
+    violent reach — and never scheduled after the landing itself."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    before = time.perf_counter()
+    node._on_throw_announcement(_announcement(sec=2))     # landing only ~2 s out
+    msg = node._dyn_target_pub.published[-1]
+    landing_perf = 2.0 + node._ros_to_perf_offset
+    assert msg.arrival_time == pytest.approx(before + 1.0, abs=0.1)
+    assert msg.arrival_time < landing_perf
+
+
+# ── anti-stutter prime in-flight window ───────────────────────────────────────
+
+def test_prime_retry_suppressed_during_prime_ascent(monkeypatch):
+    """The third sitting's stutter: the 0.5 s retry tick re-dispatched 0.5 s into
+    a ~0.8 s ascent whose ack had failed, rebuilding the Teensy profile mid-move
+    (velocity reversal to −4 rev/s) on 5/12 attempts. No re-prime may be
+    dispatched inside _PRIME_INFLIGHT_S of the last dispatch; after the window a
+    re-dispatch at top is a Teensy no-op, so a lost dispatch still recovers."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._catch_armed = True
+    node._hand_primed = False
+    node._last_cmd_mono = 0.0                       # quiet window clear
+    node._prime_dispatch_mono = time.perf_counter()  # a prime JUST dispatched
+    node._prime_retry_tick()
+    assert primed == []                             # ascent protected
+    node._prime_dispatch_mono = time.perf_counter() - 1.5  # ascent over
+    node._prime_retry_tick()
+    assert primed == [1]                            # recovery retry allowed
+
+
+def test_edge_prime_skipped_while_prime_ascent_inflight(monkeypatch):
+    """The reload coordinator primes at CHECKING ~0.1 s before the catch/armed
+    edge reaches this node — the pair restarted a just-started ascent on 3/12
+    third-sitting attempts. The edge prime defers to a fresh dispatch window;
+    the retry tick re-primes after the window if the ascent never happened."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._prime_dispatch_mono = time.perf_counter()  # reload's prime just went out
+    node._on_catch_armed(Bool(data=True))
+    assert primed == []                              # live ascent not restarted
+    node._on_catch_armed(Bool(data=False))
+    node._prime_dispatch_mono = 0.0                  # no recent dispatch
+    node._on_catch_armed(Bool(data=True))
+    assert primed == [1]                             # normal edge prime intact
+
+
+def test_prime_dispatched_topic_stamps_window():
+    """catch/prime_dispatched (published by the reload coordinator on every
+    ACTION_PRIME_HAND dispatch) stamps the same window — the two prime owners
+    cannot see each other's service calls."""
+    node = CatchCoordinatorNode()
+    assert 'catch/prime_dispatched' in node._subscriptions
+    assert node._prime_dispatch_mono == 0.0
+    node._on_prime_dispatched(Bool(data=True))
+    assert (time.perf_counter() - node._prime_dispatch_mono) < 0.5
+
+
+def test_prime_hand_stamps_dispatch_window():
+    """This node's own prime dispatch stamps the window too (on DISPATCH, not on
+    the ack — failed acks have been observed with the frame still transmitted)."""
+    node = CatchCoordinatorNode()
+    assert node._prime_dispatch_mono == 0.0
+    node._prime_hand()
+    assert (time.perf_counter() - node._prime_dispatch_mono) < 0.5

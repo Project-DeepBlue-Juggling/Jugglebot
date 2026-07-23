@@ -343,6 +343,54 @@ def test_catch_feasibility_reject_then_accept_clears():
     assert d.done and d.result.outcome == 'MISSED'
 
 
+def test_accept_then_reject_stream_resolves_missed_not_infeasible():
+    """THE 2026-07-23 third-sitting verdict bug: once ANY target is accepted (the
+    pre-tilt), the platform is holding a valid catch pose — a later stream of
+    WORKSPACE rejects (the corrupt split-track's drifting landing estimate walking
+    out of the 80 mm envelope, 27–46 per flight) says nothing about reachability
+    and must NOT flip the verdict to MISSED_INFEASIBLE. All 12 goals of that
+    sitting read MISSED_INFEASIBLE_WORKSPACE while 8 balls were caught."""
+    seq = _fresh()
+    _to_throw_pending(seq)
+    seq.note_announcement(0.5)
+    seq.step(0.5, _obs(0.5))                              # BALL_IN_FLIGHT
+    seq.note_catch_feasibility(True)                      # pre-tilt accepted
+    for _ in range(30):                                   # corrupt-track reject stream
+        seq.note_catch_feasibility(False, 'WORKSPACE')
+    d = seq.step(3.8, _obs(3.8, ball_caught=False))
+    assert d.done and d.result.outcome == 'MISSED'        # honest: reachable, not seated
+
+
+def test_pretilt_accept_during_aiming_counts():
+    """The pre-tilt target's acceptance lands while the FSM is still AIMING (the
+    announcement — and therefore the target and its feedback — is published inside
+    the throw service call). The feasibility gate keys off _throw_sent, not the
+    phase; a phase gate would drop this accept deterministically on every real
+    reload and re-open the false-INFEASIBLE hole."""
+    seq = _fresh()
+    _to_throw_sent(seq)                                   # AIMING, throw commanded
+    seq.note_catch_feasibility(True)                      # pre-tilt accept, pre-announce
+    seq.note_throw_result(True, 'thrown')
+    seq.step(0.1, _obs(0.1))                              # THROW_PENDING
+    seq.note_announcement(0.5)
+    seq.step(0.5, _obs(0.5))                              # BALL_IN_FLIGHT
+    seq.note_catch_feasibility(False, 'WORKSPACE')        # in-flight garbage reject
+    d = seq.step(3.8, _obs(3.8, ball_caught=False))
+    assert d.done and d.result.outcome == 'MISSED'
+
+
+def test_feasibility_before_throw_sent_is_ignored():
+    """Target feedback arriving before any throw was commanded (stray targets from
+    a previous flight's still-alive tracks) must not seed this goal's verdict."""
+    seq = _fresh()
+    seq.note_catch_feasibility(False, 'WORKSPACE')        # pre-throw: ignored
+    _to_throw_pending(seq)
+    seq.note_announcement(0.5)
+    seq.step(0.5, _obs(0.5))                              # BALL_IN_FLIGHT
+    d = seq.step(3.8, _obs(3.8, ball_caught=False))
+    assert d.done and d.result.outcome == 'MISSED'        # not MISSED_INFEASIBLE
+
+
 # ── Announcement gating + ToF-aware settle deadline ────────────────────────────
 
 def test_announcement_during_aiming_is_accepted():

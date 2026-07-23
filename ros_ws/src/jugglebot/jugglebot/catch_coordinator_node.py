@@ -15,7 +15,7 @@ Subscribes to:
     the receive tilt during the countdown; the reactive path refines it mid-flight.
   - catch/vel_scale (Float64) — the operator's per-attempt catch-speed knob
     (reload goal field, or published manually); scales the armed event velocity;
-    reset to 1.0 on disarm.
+    reset to the config default (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.8) on disarm.
 
 Publishes:
   - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node, which
@@ -82,6 +82,29 @@ _VEL_SCALE_MAX = 1.5
 # this way (a same-tick re-prime racing the arm).
 _PRIME_RETRY_QUIET_S = 1.5
 
+# No re-prime may be dispatched while a prime ascent could still be RUNNING: a
+# kind-3 re-dispatch mid-ascent rebuilds the Teensy profile from the live hand
+# position at v(0)=0, yanking the moving hand backwards — the 2026-07-23 third
+# sitting's "stutter" (5/12 ascents stalled ~60-70 ms with velocity reversals to
+# −4 rev/s, every stall phase-locked to the 0.5 s retry tick after a failed
+# dispatch ack). Ascents measure 0.68–1.05 s; this window covers them with
+# margin. The window is anchored to DISPATCH, not ack — failed acks have been
+# observed with the frame still transmitted and the hand moving. A re-dispatch
+# AFTER the window with the hand already at top is a silent Teensy no-op
+# (delta ≈ 0), so a genuinely lost dispatch still recovers on the next tick.
+_PRIME_INFLIGHT_S = 1.2
+
+# Pre-tilt early arrival: the announcement-derived target used to schedule its
+# arrival AT the predicted landing, so the whole ~10.5° receive tilt was one
+# min-jerk crawl completing exactly at contact (third sitting: tilt error still
+# >1° until 0.24–0.49 s before landing on all 12 attempts). The platform must be
+# seated well before the ball arrives: aim for landing − _PRETILT_EARLY_S, but
+# never demand arrival sooner than _PRETILT_MIN_LEAD_S from now (the min-jerk
+# reach needs ~0.65 s; 1.0 s keeps a profiled, non-violent traverse even on a
+# late or short-countdown announcement).
+_PRETILT_EARLY_S = 1.5
+_PRETILT_MIN_LEAD_S = 1.0
+
 
 class CatchCoordinatorNode(Node):
     def __init__(self):
@@ -138,9 +161,11 @@ class CatchCoordinatorNode(Node):
 
         # Operator catch-speed knob (catch/vel_scale, published by the reload action
         # from its goal — or manually for bench throws). Scales the event velocity
-        # the hand catch is armed with; reset to 1.0 on the disarm edge so one
-        # reload's tuning value never leaks into the next.
-        self._catch_vel_scale = 1.0
+        # the hand catch is armed with; reset to the config default
+        # (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.8 locked in from the 2026-07-23 third
+        # sitting) on the disarm edge so one reload's tuning value never leaks
+        # into the next.
+        self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
         self._vel_scale_sub = self.create_subscription(
             Float64, 'catch/vel_scale', self._on_vel_scale, 10)
 
@@ -149,6 +174,15 @@ class CatchCoordinatorNode(Node):
         # constant's comment for the Teensy last-writer-wins hazard).
         self._last_cmd_mono = 0.0
         self._prime_retry_timer = self.create_timer(0.5, self._prime_retry_tick)
+        # Anti-stutter in-flight window: monotonic time of the last hand-prime
+        # DISPATCH from either owner — this node's own _prime_hand, or the reload
+        # coordinator's ACTION_PRIME_HAND announced on catch/prime_dispatched
+        # (two nodes own priming and cannot see each other's service calls; the
+        # Teensy queue is last-writer-wins, so a cross-node re-prime mid-ascent
+        # stutters the hand).
+        self._prime_dispatch_mono = 0.0
+        self._prime_dispatched_sub = self.create_subscription(
+            Bool, 'catch/prime_dispatched', self._on_prime_dispatched, 10)
 
         # Re-measure clock offset every 30s to track drift
         self._clock_timer = self.create_timer(30.0, self._refresh_clock_offset)
@@ -233,12 +267,27 @@ class CatchCoordinatorNode(Node):
             return
         self._catch_armed = armed
         if armed:
-            self._prime_hand()
+            # Skip the edge prime while a prime ascent may already be running
+            # (the reload coordinator primes at CHECKING, ~0.1 s before this
+            # edge — the third sitting showed the pair restarting a just-started
+            # ascent on 3/12 attempts). The retry tick re-primes after the
+            # window if the ascent never actually happened.
+            if (time.perf_counter() - self._prime_dispatch_mono) >= _PRIME_INFLIGHT_S:
+                self._prime_hand()
         else:
             self._hand_primed = False
             self._hand_traj_armed_for_ball = None
             # One reload's catch-speed tuning value must never leak into the next.
-            self._catch_vel_scale = 1.0
+            self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
+
+    def _on_prime_dispatched(self, msg: Bool):
+        """catch/prime_dispatched: the reload coordinator dispatched its own hand
+        prime (ACTION_PRIME_HAND). Stamp the anti-stutter window so this node's
+        edge prime / retry tick never restart that ascent — the two nodes cannot
+        see each other's service calls, and the Teensy trajectory queue is
+        last-writer-wins."""
+        if bool(msg.data):
+            self._prime_dispatch_mono = time.perf_counter()
 
     def _on_vel_scale(self, msg: Float64):
         """catch/vel_scale: the operator's per-attempt catch-speed knob (reload goal
@@ -282,11 +331,23 @@ class CatchCoordinatorNode(Node):
             landing_pos, landing_vel, landing_time)
         if cmd is None:
             return
-        arrival_perf = cmd.landing_time + self._ros_to_perf_offset
+        # Arrive EARLY, not just-in-time: an arrival equal to the landing time
+        # makes trajectory_node span the whole announce→land window with a single
+        # min-jerk reach that completes AT contact (third sitting: tilt still >1°
+        # off until 0.24–0.49 s before landing). Aim for landing −
+        # _PRETILT_EARLY_S so the platform is seated well before the ball
+        # arrives; the max() keeps a feasible profiled traverse on a late/short
+        # announcement, and the min() guarantees arrival is never scheduled
+        # after landing.
+        landing_perf = cmd.landing_time + self._ros_to_perf_offset
+        arrival_perf = min(landing_perf,
+                           max(landing_perf - _PRETILT_EARLY_S,
+                               time.perf_counter() + _PRETILT_MIN_LEAD_S))
         self._publish_dynamic_target(cmd, arrival_perf)
         self.get_logger().info(
-            f"pre-tilt target published from announcement "
-            f"(landing in {landing_time - self.get_clock().now().nanoseconds * 1e-9:.2f} s)")
+            f"pre-tilt target published from announcement (landing in "
+            f"{landing_time - self.get_clock().now().nanoseconds * 1e-9:.2f} s, "
+            f"arrival {landing_perf - arrival_perf:.2f} s early)")
 
     def _prime_retry_tick(self):
         """Retry the hand prime while armed and not yet confirmed primed — but NEVER
@@ -307,6 +368,12 @@ class CatchCoordinatorNode(Node):
         if self._hand_traj_armed_for_ball is not None:
             return
         if (time.perf_counter() - self._last_cmd_mono) < _PRIME_RETRY_QUIET_S:
+            return
+        # A prime ascent may still be running (dispatched by either owner):
+        # re-dispatching now would rebuild the profile mid-ascent and stutter the
+        # hand — the third sitting's 5/12 stalled ascents were exactly this tick
+        # firing 0.5 s into a ~0.8 s ascent whose dispatch ack had failed.
+        if (time.perf_counter() - self._prime_dispatch_mono) < _PRIME_INFLIGHT_S:
             return
         self._prime_hand()
 
@@ -452,9 +519,12 @@ class CatchCoordinatorNode(Node):
         if not self._catch_gains_active:
             self._set_catch_gains()
 
-        # Smooth-move to prime position
+        # Smooth-move to prime position. Stamp the anti-stutter window on
+        # DISPATCH (not ack — see _PRIME_INFLIGHT_S): from here an ascent may be
+        # running regardless of what the ack later says.
         req = SetFloat.Request()
         req.data = hw.JB_OP_HAND_CATCH_PRIME_REV
+        self._prime_dispatch_mono = time.perf_counter()
         future = self._smooth_move_client.call_async(req)
         future.add_done_callback(self._on_prime_done)
 

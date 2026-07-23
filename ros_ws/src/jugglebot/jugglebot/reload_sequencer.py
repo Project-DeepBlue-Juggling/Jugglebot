@@ -43,7 +43,8 @@ hardware session — see the ORDERING PRINCIPLE below):
    the air. The outcome resolves at settle.
 6. **SETTLING** — ball status ``CAUGHT`` from the tracker within the confirm window ⇒
    ``CAUGHT`` (FSM emits ``ACTION_RECENTER``); otherwise ``MISSED_INFEASIBLE_<code>``
-   (if an infeasibility stood at catch time) or ``MISSED``.
+   (only when NO catch target was ever accepted for the flight — see
+   :meth:`note_catch_feasibility`) or ``MISSED``.
 
 ORDERING PRINCIPLE (the Q2 fix): every Jugglebot-side arming action (hand prime,
 catch latch) happens BEFORE ``bb/throw_at_target`` is sent. BB's throw countdown
@@ -177,6 +178,7 @@ class ReloadSequencer:
     _announcement_deadline: float = field(default=0.0, init=False)
     _landing_time_perf: Optional[float] = field(default=None, init=False)  # announced landing (perf clock)
     _catch_infeasible: Optional[str] = field(default=None, init=False)  # gate code
+    _catch_accepted: bool = field(default=False, init=False)  # any target accepted this flight
     _throw_time: float = field(default=0.0, init=False)
     _settle_deadline: float = field(default=0.0, init=False)
     _primed: bool = field(default=False, init=False)    # PRIME_HAND dispatched (hand moving to top)
@@ -229,18 +231,28 @@ class ReloadSequencer:
     def note_catch_feasibility(self, accepted: bool, code: str = '') -> None:
         """Report a ``trajectory/target_feedback`` decision for the catch target.
 
-        A genuine post-release REJECTION (a WORKSPACE / TOO_FAST gate reject that still
-        stands at catch time) means the platform can't reach the catch →
-        MISSED_INFEASIBLE. A SUBSEQUENT acceptance
-        clears it: only a rejection that STILL stands at catch time counts. (The node
-        already drops the transient FROZEN / STALE_STATE codes — a target inside the
-        reach-freeze window / a plant-state race — which fire on every real flight and are
-        NOT catch infeasibility.)"""
-        if self._phase not in (PHASE_BALL_IN_FLIGHT, PHASE_CATCHING):
+        ``MISSED_INFEASIBLE_<code>`` means *the platform never had a reachable catch
+        pose*: it is reported only when NO target was accepted for this flight and a
+        rejection stands. Once ANY target is accepted (the pre-tilt or a mid-flight
+        refinement), the platform is holding a valid catch pose — later rejections
+        say nothing about reachability and are NOT latched. The 2026-07-23 third
+        sitting is why: the corrupt split-track drove 27–46 envelope WORKSPACE
+        rejects per flight *after* an accepted pre-tilt, and last-writer-wins
+        latching resolved all 12 goals MISSED_INFEASIBLE_WORKSPACE while 8 balls
+        were physically caught. (The node already drops the transient FROZEN /
+        STALE_STATE codes — a target inside the reach-freeze window / a plant-state
+        race — which fire on every real flight and are NOT catch infeasibility.)
+
+        Gated on the throw having been COMMANDED, not on the phase (same reasoning
+        as :meth:`note_announcement`): the pre-tilt target's acceptance lands while
+        the FSM is still AIMING — a BALL_IN_FLIGHT/CATCHING phase gate would drop
+        it deterministically and re-open the false-INFEASIBLE hole."""
+        if not self._throw_sent or self._finished:
             return
         if accepted:
+            self._catch_accepted = True
             self._catch_infeasible = None
-        else:
+        elif not self._catch_accepted:
             self._catch_infeasible = code or 'INFEASIBLE'
 
     # ── driver ─────────────────────────────────────────────────────────────────
@@ -425,8 +437,9 @@ class ReloadSequencer:
         if obs.ball_caught:
             return self._finish(ReloadResult(True, 'CAUGHT', obs.catch_error_mm))
         if self._catch_infeasible is not None:
-            # The platform never reached the catch pose (a rejection stood at catch
-            # time) and the ball did not land in the cup anyway.
+            # No catch target was EVER accepted for this flight — the platform
+            # never had a reachable catch pose — and the ball did not land in the
+            # cup anyway.
             return self._finish(ReloadResult(
                 False, f'MISSED_INFEASIBLE_{self._catch_infeasible}',
                 obs.catch_error_mm))

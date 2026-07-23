@@ -15,13 +15,16 @@
 float64 throw_delay_s          # delay from now to release; 0 => default 3.0 s
                                # (>= BB's ~2.5 s lead floor — a shorter lead comes back
                                #  REJECTED_BB / CANT_MAKE_LEAD)
-float64 catch_vel_scale        # operator catch-speed knob; 0 => default 1.0. Scales the
-                               # event velocity the hand catch is armed with (effective
+float64 catch_vel_scale        # operator catch-speed knob; 0 => config default
+                               # JB_OP_CATCH_VEL_SCALE_DEFAULT (0.8, locked in from the
+                               # 2026-07-23 third sitting — 1.0 bounced balls out). Scales
+                               # the event velocity the hand catch is armed with (effective
                                # hand/ball speed ratio = firmware CATCH_VEL_RATIO 0.6 ×
                                # this). Clamped to [0.3, 1.5] — below, the Teensy windup
                                # budget silently drops the stroke; above, the 7 m/s
                                # event-velocity ceiling binds. Published on
-                               # catch/vel_scale at PREPARE; resets to 1.0 on disarm.
+                               # catch/vel_scale at PREPARE; resets to the config default
+                               # on disarm.
 ---
 bool success                   # True iff the ball was CAUGHT
 string outcome                 # CAUGHT | REJECTED_<code> | ABORTED_<code> | MISSED | MISSED_<code>

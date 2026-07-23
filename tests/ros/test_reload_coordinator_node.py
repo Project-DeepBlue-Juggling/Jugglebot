@@ -114,6 +114,8 @@ def test_wiring_surface():
     assert 'trajectory/go_home' in node._clients
     # Catch-armed state publisher (gates catch_coordinator's hand-arm).
     assert 'catch/armed' in node._publishers
+    # Prime-dispatch announcements (catch_coordinator's anti-stutter window).
+    assert 'catch/prime_dispatched' in node._publishers
     assert 'jugglebot/reload' in node._action_servers
 
 
@@ -548,8 +550,9 @@ def test_prepare_publishes_vel_scale_before_armed(monkeypatch):
     assert node._publishers['catch/armed'].published[-1].data is True
 
 
-def test_goal_vel_scale_zero_defaults_to_one(monkeypatch):
-    """Field default 0 (unset) means 1.0 — plumbed per-goal, never sticky."""
+def test_goal_vel_scale_zero_defaults_to_config(monkeypatch):
+    """Field default 0 (unset) means the config default (0.8, locked in from the
+    2026-07-23 third sitting) — plumbed per-goal, never sticky."""
     node = ReloadCoordinatorNode()
     calls = []
     monkeypatch.setattr(node, '_step_sequence',
@@ -562,15 +565,16 @@ def test_goal_vel_scale_zero_defaults_to_one(monkeypatch):
     except SystemExit:
         pass
     with node._lock:
-        assert node._catch_vel_scale == pytest.approx(1.0)
+        assert node._catch_vel_scale == pytest.approx(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
 
 
-def test_prime_retries_once_on_transient_failure(monkeypatch):
-    """Attempt 0 of the re-test died to a TRANSIENT smooth_move_hand dispatch
-    failure (the same service worked seconds later). One immediate retry is free —
-    the prime is pre-throw; a second failure still aborts."""
+def test_prime_retry_ladder_on_transient_failures(monkeypatch):
+    """The HAND_TRAJ_CMD dispatch path failed ~40-60% PER CALL across the third
+    sitting (firmware CAN-enqueue errors); goal 1 died to two back-to-back
+    failures. The ladder (_HAND_DISPATCH_ATTEMPTS = 4) rides out a streak: here
+    three failures then a success still primes."""
     node = _node_fresh(100.0)
-    results = iter([False, True])
+    results = iter([False, False, False, True])
     attempts = []
     monkeypatch.setattr(node, '_smooth_move_hand',
                         lambda p: attempts.append(p) or next(results))
@@ -578,20 +582,47 @@ def test_prime_retries_once_on_transient_failure(monkeypatch):
     seq.start(100.0)
     d = node._step_sequence(seq, 100.0)
     assert d.action == ACTION_PRIME_HAND
-    assert len(attempts) == 2                  # failed once, retried, succeeded
+    assert len(attempts) == 4                  # failed 3×, 4th succeeded
+    # Every dispatch was announced on catch/prime_dispatched BEFORE it went out,
+    # so catch_coordinator's anti-stutter window covers the whole ladder.
+    assert len(node._publishers['catch/prime_dispatched'].published) == 4
     d = node._step_sequence(seq, 100.1)
     assert not d.done                          # sequence continues (prime ok)
 
 
-def test_prime_double_failure_still_aborts(monkeypatch):
+def test_prime_ladder_exhaustion_still_aborts(monkeypatch):
     node = _node_fresh(100.0)
-    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: False)
+    attempts = []
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: attempts.append(p) or False)
     monkeypatch.setattr(node, '_safe_abort', lambda: None)
     seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
     seq.start(100.0)
-    node._step_sequence(seq, 100.0)            # PRIME dispatch fails twice
+    node._step_sequence(seq, 100.0)            # PRIME: all 4 dispatches fail
+    assert len(attempts) == 4
     d = node._step_sequence(seq, 100.1)
     assert d.done and d.result.outcome == 'ABORTED_PRIME_FAILED'
+
+
+def test_safe_abort_retract_retries(monkeypatch):
+    """The third sitting's SAFE_ABORT retract failed outright on 7/12 aborts
+    (same dispatch epidemic) and the hand silently stayed at top. The safing
+    path gets the same retry ladder as the prime — and the catch/armed disarm
+    goes out FIRST (audit): with the node still armed and _hand_primed
+    unlatched, catch_coordinator's 0.5 s retry tick could re-prime mid-ladder
+    and erase the in-flight retract on the Teensy's last-writer-wins queue."""
+    node = _node_fresh(100.0)
+    results = iter([False, True])
+    order = []
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: order.append(('retract', p)) or next(results))
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda armed: order.append(('disarm', armed)))
+    monkeypatch.setattr(node, '_arm_catch', lambda armed: True)
+    monkeypatch.setattr(node, '_go_home', lambda: True)
+    node._safe_abort()
+    assert order[0] == ('disarm', False)                 # tick stands down first
+    assert order[1:] == [('retract', hw.JB_OP_HAND_RETRACT_REV)] * 2  # retried, ok
 
 
 def test_untagged_latch_displaced_by_destination_match():
@@ -635,4 +666,4 @@ def test_negative_vel_scale_warns_and_defaults(monkeypatch):
     except SystemExit:
         pass
     with node._lock:
-        assert node._catch_vel_scale == pytest.approx(1.0)
+        assert node._catch_vel_scale == pytest.approx(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)

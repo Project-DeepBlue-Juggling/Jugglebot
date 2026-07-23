@@ -94,6 +94,17 @@ _CAUGHT_MAX_Z_ERROR_MM = 150.0
 
 # Reject-fast service-call bounds.
 _SERVICE_WAIT_S = 2.0
+# Hand dispatch retry ladder (prime + SAFE_ABORT retract). The HAND_TRAJ_CMD path
+# failed ~40-60% PER CALL across the 2026-07-23 third sitting (firmware-replied
+# 'ERR_TIMEOUT' CAN-enqueue failures on the bridge Teensy; root cause under
+# investigation — suspected CAN3 TX contention with the 500 Hz leg stream). The
+# failures are fast error replies and an immediate retry succeeded 9/10 times, so
+# a short ladder drops the goal-abort probability from ~16% (2 attempts) to ~3%
+# (4 attempts) at the ~40% end of the observed failure band. Pre-throw, so the
+# extra ~0.45 s worst case is free; the gap gives the bridge's CAN TX queue a
+# beat to drain.
+_HAND_DISPATCH_ATTEMPTS = 4
+_HAND_DISPATCH_RETRY_GAP_S = 0.15
 # Sequence loop tick (the FSM is time-driven; this bounds latency, not correctness).
 _TICK_S = 0.05
 # A hard ceiling on a single reload attempt so a wedged sequence always terminates.
@@ -156,9 +167,10 @@ class ReloadCoordinatorNode(Node):
         # a phantom untagged track that predated the throw and rode it to a wrong
         # MISSED verdict.
         self._preexisting_flight_ids = set()
-        # This goal's catch-speed knob (goal.catch_vel_scale; 0 => 1.0), published on
-        # catch/vel_scale at PREPARE so catch_coordinator has it before any arm.
-        self._catch_vel_scale = 1.0
+        # This goal's catch-speed knob (goal.catch_vel_scale; 0 => the config
+        # default JB_OP_CATCH_VEL_SCALE_DEFAULT), published on catch/vel_scale at
+        # PREPARE so catch_coordinator has it before any arm.
+        self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
         # Once-per-ball log guard for implausible CAUGHT rejections.
         self._implausible_logged_ids = set()
 
@@ -200,6 +212,14 @@ class ReloadCoordinatorNode(Node):
         # Catch-speed knob relay: the goal's catch_vel_scale, published at PREPARE
         # (before catch/armed goes True) so catch_coordinator holds it before any arm.
         self._vel_scale_pub = self.create_publisher(Float64, 'catch/vel_scale', 10)
+        # Prime-dispatch announcement: published on every ACTION_PRIME_HAND
+        # smooth-move dispatch so catch_coordinator (which owns its OWN edge prime
+        # + retry tick and cannot otherwise see this node's dispatches) can hold
+        # its anti-stutter in-flight window instead of restarting a live ascent
+        # (the Teensy trajectory queue is last-writer-wins; a cross-node re-prime
+        # mid-ascent was the third sitting's hand stutter).
+        self._prime_dispatched_pub = self.create_publisher(
+            Bool, 'catch/prime_dispatched', 10)
 
         # ── Reload action server ──
         # ReentrantCallbackGroup so the multi-second execute_callback (which blocks on
@@ -424,16 +444,18 @@ class ReloadCoordinatorNode(Node):
             # A sign typo must not silently become full speed (audit): warn and use
             # the default; the coordinator's clamp never sees the raw negative.
             self.get_logger().warning(
-                f'catch_vel_scale {vel_scale:.2f} is negative — using 1.0 '
-                f'(valid range 0.3-1.5)')
+                f'catch_vel_scale {vel_scale:.2f} is negative — using the default '
+                f'{hw.JB_OP_CATCH_VEL_SCALE_DEFAULT} (valid range 0.3-1.5)')
             vel_scale = 0.0
         with self._lock:
             self._active_seq = seq
             self._announced_ball_id = None
             self._announced_id_untagged = False
             self._preexisting_flight_ids = set()
-            # 0 (field default) => 1.0; catch_coordinator clamps to its safe range.
-            self._catch_vel_scale = vel_scale if vel_scale > 0.0 else 1.0
+            # 0 (field default) => JB_OP_CATCH_VEL_SCALE_DEFAULT (0.8, locked in
+            # from the 2026-07-23 third sitting); coordinator clamps to its range.
+            self._catch_vel_scale = (vel_scale if vel_scale > 0.0
+                                     else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
         self._implausible_logged_ids = set()
 
         result = Reload.Result()
@@ -481,15 +503,11 @@ class ReloadCoordinatorNode(Node):
         obs = self._build_observations(now)
         decision = seq.step(now, obs)
         if decision.action == ACTION_PRIME_HAND:
-            # One immediate retry: the 2026-07-23 re-test's first attempt died to a
-            # TRANSIENT smooth_move_hand dispatch failure (the same service executed
-            # the retract seconds later). The prime is pre-throw, so a retry is free;
-            # a second failure is a real fault and aborts as before.
-            ok = self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV)
-            if not ok:
-                self.get_logger().warning(
-                    'hand prime dispatch failed — retrying once')
-                ok = self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV)
+            # Retry ladder (see _HAND_DISPATCH_ATTEMPTS): the third sitting's goal 1
+            # died to two back-to-back dispatch failures on a path failing ~40-60%
+            # per call all session. Pre-throw, so the retries are free; exhausting
+            # the ladder is a real fault and aborts as before.
+            ok = self._prime_hand_with_retries()
             seq.note_prime_result(ok)
         elif decision.action == ACTION_CALL_RELOAD:
             self._call_reload()
@@ -590,16 +608,26 @@ class ReloadCoordinatorNode(Node):
         reference ``HOMING_HAND_ABS_POS_REV`` (−0.1), which is below the bridge's
         smooth_move_hand range [0, max] and made every abort retract a silently
         rejected no-op (2026-07-23: the hand stayed parked at top through aborts).
-        Every step's failure is LOUD here: this is the safing path."""
-        if not self._smooth_move_hand(hw.JB_OP_HAND_RETRACT_REV):
+        Every step's failure is LOUD here: this is the safing path.
+
+        Ordering (audit, 2026-07-23): the catch/armed disarm is published FIRST
+        so catch_coordinator's prime-retry tick stands down before the retract
+        ladder starts — while still armed with ``_hand_primed`` unlatched
+        (common at the observed ack-failure rate), a 0.5 s tick re-prime would
+        erase the in-flight retract on the Teensy's last-writer-wins queue and
+        the hand would silently return to top behind a 'successful' retract log.
+        Topic delivery is ~ms vs the 0.5 s tick cadence, so ordering alone
+        closes the race."""
+        self._publish_catch_armed(False)
+        if not self._retract_hand_with_retries():
             self.get_logger().error(
-                'SAFE_ABORT: hand retract dispatch FAILED — the hand may remain at '
+                'SAFE_ABORT: hand retract dispatch FAILED (all '
+                f'{_HAND_DISPATCH_ATTEMPTS} attempts) — the hand may remain at '
                 'the top of its stroke')
         if not self._arm_catch(False):
             self.get_logger().error(
                 'SAFE_ABORT: trajectory/arm_catch lower FAILED — trajectory_node '
                 'force-disarms on any mode change as the backstop')
-        self._publish_catch_armed(False)
         if not self._go_home():
             self.get_logger().error('SAFE_ABORT: go_home dispatch FAILED')
 
@@ -632,6 +660,40 @@ class ReloadCoordinatorNode(Node):
         req.data = float(position_rev)
         resp = self._wait_future(self._smooth_move_hand_cli.call_async(req))
         return bool(resp.success) if resp is not None else False
+
+    def _prime_hand_with_retries(self) -> bool:
+        """Dispatch the hand prime, retrying up to ``_HAND_DISPATCH_ATTEMPTS`` times.
+
+        Announces every dispatch on ``catch/prime_dispatched`` BEFORE issuing it:
+        the ack channel is unreliable in both directions (2026-07-23: failed acks
+        were observed with the kind-3 frame still transmitted and the hand moving),
+        so catch_coordinator's anti-stutter window must key off dispatch, not ack.
+        """
+        for attempt in range(_HAND_DISPATCH_ATTEMPTS):
+            self._prime_dispatched_pub.publish(Bool(data=True))
+            if self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV):
+                return True
+            self.get_logger().warning(
+                f'hand prime dispatch failed (attempt {attempt + 1}/'
+                f'{_HAND_DISPATCH_ATTEMPTS})')
+            time.sleep(_HAND_DISPATCH_RETRY_GAP_S)
+        return False
+
+    def _retract_hand_with_retries(self) -> bool:
+        """Dispatch the SAFE_ABORT hand retract, retrying like the prime.
+
+        The third sitting's retract failed outright on 7 of 12 aborts (same
+        ~40-60% per-call HAND_TRAJ_CMD failure epidemic) and the hand silently
+        stayed at top — benign only because the next goal re-primes. This is the
+        safing path, so it gets the same ladder the prime does."""
+        for attempt in range(_HAND_DISPATCH_ATTEMPTS):
+            if self._smooth_move_hand(hw.JB_OP_HAND_RETRACT_REV):
+                return True
+            self.get_logger().warning(
+                f'SAFE_ABORT: hand retract dispatch failed (attempt {attempt + 1}/'
+                f'{_HAND_DISPATCH_ATTEMPTS})')
+            time.sleep(_HAND_DISPATCH_RETRY_GAP_S)
+        return False
 
     def _go_home(self) -> bool:
         """Re-center the platform to level neutral (trajectory/go_home)."""
