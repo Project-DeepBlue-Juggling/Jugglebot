@@ -20,7 +20,10 @@ files_changed:
   - tests/ros/test_orchestrator_node.py
   - tests/ros/test_orchestrator_conduit_contract.py
   - tests/hardware/session_phase7_reload.md
-commits: []
+commits:
+  - 4b308aa
+  - 89be8aa
+  - 12c835d
 subsystem:
   - ros
   - gui
