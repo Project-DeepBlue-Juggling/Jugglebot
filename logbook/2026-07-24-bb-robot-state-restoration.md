@@ -22,7 +22,9 @@ files_changed:
   - tests/teensy_link/test_protocol_codec.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
 commits:
-  - <pending>
+  - b3c82f7   # feat(telemetry): 9-axis robot_state + v4 Diagnostic bus V/I
+  - 563e28c   # fix(gui): clear BB fault dots on the 9->7 shrink
+  - d9effff   # docs(logbook): this entry + INDEX row
 subsystem:
   - ros
   - can
