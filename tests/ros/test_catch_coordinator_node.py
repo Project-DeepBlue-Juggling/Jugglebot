@@ -10,12 +10,13 @@ ROS 2 is mocked by ``tests/ros/conftest.py``.
 
 from __future__ import annotations
 
+import time
 import types
 
 import numpy as np
 import pytest
 
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Float64
 from jugglebot_interfaces.msg import TargetFeedback
 
 from jugglebot.catch_coordinator_node import CatchCoordinatorNode
@@ -170,20 +171,27 @@ def test_hand_not_actuated_when_disarmed(monkeypatch):
 
 
 def test_hand_actuated_when_armed(monkeypatch):
-    """With the catch-armed latch UP (a reload in progress) the same catchable ball
-    primes + arms the hand — the reactive-fire timing stays in the coordinator."""
+    """With the catch-armed latch UP (a reload in progress) a catchable ball ARMS the
+    hand catch — but NEVER dispatches a prime from the balls path: a kind-3
+    smooth-move sent while a catch sequence is live clears the Platform Teensy's
+    armed catch stroke (last-writer-wins; 3/6 strokes lost to that race,
+    2026-07-23). Priming belongs to the armed edge + the off-path retry timer."""
     node = CatchCoordinatorNode()
     node._on_catch_armed(Bool(data=True))
     assert node._catch_armed is True
     primed, armed = [], []
     monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
-    monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: armed.append((d, v)))
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append((d, v)) or True)
     monkeypatch.setattr(node._coordinator, 'update',
                         lambda balls, current_time: _catchable_cmd())
     node._on_balls(_balls_msg())
-    assert primed == [1]
+    assert primed == []                        # NO prime from the balls path
     assert len(armed) == 1
-    assert armed[0][1] == pytest.approx(1.2)   # event_vel carried through
+    assert armed[0][1] == pytest.approx(1.2)   # event_vel carried (scale 1.0)
+    assert node._hand_traj_armed_for_ball == 5
+    # The balls tick stamped the quiet window that suppresses the retry timer.
+    assert time.perf_counter() - node._last_cmd_mono < 1.0
 
 
 def test_disarm_resets_hand_one_shots():
@@ -224,3 +232,177 @@ def test_arm_rising_edge_primes_hand_immediately(monkeypatch):
     # A repeat arm (no edge) does not re-prime.
     node._on_catch_armed(Bool(data=True))
     assert primed == [1]
+
+
+# ── catch/vel_scale — the operator's per-attempt catch-speed knob ─────────────
+
+def test_vel_scale_scales_armed_event_velocity(monkeypatch):
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._on_vel_scale(Float64(data=0.5))
+    armed = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append(v) or True)
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time: _catchable_cmd())
+    node._on_balls(_balls_msg())
+    assert armed == [pytest.approx(0.6)]       # 1.2 × 0.5
+
+
+def test_vel_scale_clamped_to_safe_range():
+    """Below ~0.3 the Teensy's windup budget silently drops the stroke; above 1.5
+    the event-velocity ceiling binds — out-of-range values are clamped, loudly."""
+    node = CatchCoordinatorNode()
+    node._on_vel_scale(Float64(data=0.05))
+    assert node._catch_vel_scale == pytest.approx(0.3)
+    node._on_vel_scale(Float64(data=9.0))
+    assert node._catch_vel_scale == pytest.approx(1.5)
+
+
+def test_vel_scale_resets_on_disarm():
+    """One reload's tuning value must never leak into the next attempt."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._on_vel_scale(Float64(data=0.7))
+    assert node._catch_vel_scale == pytest.approx(0.7)
+    node._on_catch_armed(Bool(data=False))
+    assert node._catch_vel_scale == pytest.approx(1.0)
+
+
+def test_scaled_event_vel_reclamped_to_teensy_bounds(monkeypatch):
+    """scale × raw must stay inside the Teensy's [0.3, 7.0] validation range."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._on_vel_scale(Float64(data=1.5))
+    armed = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append(v) or True)
+    cmd = _catchable_cmd()
+    cmd.event_vel_mps = 6.0                    # 6.0 × 1.5 = 9.0 → clamp 7.0
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time: cmd)
+    node._on_balls(_balls_msg())
+    assert armed == [pytest.approx(7.0)]
+
+
+# ── prime-retry timer (off the balls path) ────────────────────────────────────
+
+def test_prime_retry_fires_when_armed_unprimed_and_quiet(monkeypatch):
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._catch_armed = True
+    node._hand_primed = False
+    node._last_cmd_mono = 0.0                  # far in the past → quiet
+    node._prime_retry_tick()
+    assert primed == [1]
+
+
+def test_prime_retry_suppressed_while_catch_sequence_live(monkeypatch):
+    """A retry prime during a live catch sequence is the exact race that erased
+    3/6 catch strokes on 2026-07-23 (kind-3 clears the Teensy's armed catch)."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._catch_armed = True
+    node._hand_primed = False
+    node._last_cmd_mono = time.perf_counter()  # a catch cmd JUST went out
+    node._prime_retry_tick()
+    assert primed == []
+
+
+def test_prime_retry_noop_when_primed_or_disarmed(monkeypatch):
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._catch_armed = False
+    node._prime_retry_tick()
+    node._catch_armed = True
+    node._hand_primed = True
+    node._prime_retry_tick()
+    assert primed == []
+
+
+# ── announcement pre-tilt ─────────────────────────────────────────────────────
+
+def _announcement(target_id='jugglebot', landing_z=809.08, sec=100, nanosec=0):
+    return types.SimpleNamespace(
+        target_id=target_id,
+        landing_position=types.SimpleNamespace(x=0.0, y=0.0, z=landing_z),
+        landing_velocity=types.SimpleNamespace(x=-1000.0, y=0.0, z=-4800.0),
+        landing_time=types.SimpleNamespace(sec=sec, nanosec=nanosec),
+    )
+
+
+def test_announcement_pretilt_published_while_armed():
+    """OUR announcement, while armed, drives a one-shot predicted catch target —
+    the platform settles into the receive tilt during the ~3 s countdown instead
+    of reaching mid-flight (2026-07-23: the reactive reach was only ~95% settled
+    at contact). The pose math is single-sourced with the reactive path."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    n0 = len(node._dyn_target_pub.published)
+    node._on_throw_announcement(_announcement())
+    assert len(node._dyn_target_pub.published) == n0 + 1
+    msg = node._dyn_target_pub.published[-1]
+    # Stow-relative pose near the active hold, receive tilt present (non-identity).
+    assert 150.0 < msg.target_pos.z < 200.0
+    tilt = float(np.hypot(msg.target_quat.x, msg.target_quat.y))
+    assert tilt > 1e-3
+    # Correlation state untouched: the synthetic target has no tracker ball and
+    # must never feed the blacklist or suppress the real ball's hand-arm.
+    assert node._last_submitted_ball_id is None
+
+
+def test_announcement_pretilt_gated_on_armed_and_target():
+    node = CatchCoordinatorNode()
+    n0 = len(node._dyn_target_pub.published)
+    node._on_throw_announcement(_announcement())               # disarmed → skip
+    assert len(node._dyn_target_pub.published) == n0
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_announcement(target_id='someone_else'))
+    assert len(node._dyn_target_pub.published) == n0           # not our ball
+
+
+def test_arm_one_shot_latched_only_on_dispatch(monkeypatch):
+    """A service-not-ready arm attempt must be RETRIED next tick — the old code
+    latched the one-shot unconditionally, permanently suppressing the retry."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: False)  # not dispatched
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time: _catchable_cmd())
+    node._on_balls(_balls_msg())
+    assert node._hand_traj_armed_for_ball is None              # NOT latched
+    monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: True)   # dispatched
+    node._on_balls(_balls_msg())
+    assert node._hand_traj_armed_for_ball == 5                 # latched now
+
+
+def test_prime_retry_blocked_while_stroke_armed(monkeypatch):
+    """AUDIT (2026-07-23): the quiet window anchors to the last EMITTED command,
+    which stops ~0.3 s before landing — a slow disarm round-trip could unblock the
+    retry while the armed stroke (or its settle) is still live. An armed one-shot
+    blocks the retry outright; it clears on disarm and on arm failure."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._catch_armed = True
+    node._hand_primed = False
+    node._last_cmd_mono = 0.0                  # quiet window long expired
+    node._hand_traj_armed_for_ball = 5         # but a stroke is ARMED
+    node._prime_retry_tick()
+    assert primed == []
+    node._hand_traj_armed_for_ball = None      # disarm edge / arm failure cleared it
+    node._prime_retry_tick()
+    assert primed == [1]
+
+
+def test_announcement_untagged_target_does_not_pretilt():
+    """AUDIT: the reload path always names the target, so an announcement with an
+    EMPTY target_id is not ours — it must not move the platform."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    n0 = len(node._dyn_target_pub.published)
+    node._on_throw_announcement(_announcement(target_id=''))
+    assert len(node._dyn_target_pub.published) == n0

@@ -203,6 +203,45 @@ class CatchCoordinator:
     # Catch pose computation
     # ------------------------------------------------------------------
 
+    def predicted_catch_command(
+        self,
+        landing_position: np.ndarray,
+        landing_velocity: np.ndarray,
+        landing_time: float,
+    ) -> Optional[CatchCommand]:
+        """The PRE-TILT catch command from an announced (not yet flying) throw.
+
+        Same pose math as the reactive per-ball path (single-sourced through
+        :meth:`_compute_catch_command` on a synthetic ball), driven from the
+        announcement's solver-consistent landing prediction ~3.9 s before the ball
+        lands — so the platform settles into the receive tilt during the throw
+        countdown instead of reaching mid-flight (2026-07-23 session: the reactive
+        reach was only ~95 % settled at contact). The receive-tilt DIRECTION is the
+        BB→target azimuth, which is flight-invariant, and the magnitude saturates at
+        the 12° clamp for real BB arrivals — which is why pre-tilting to the
+        predicted arrival is safe; mid-flight refinements supersede via C2 replans.
+
+        ``arm_hand`` is forced False: the hand arm must stay flight-gated (the
+        Teensy fire is one-shot on the FIRST event time it receives — arming at
+        announcement would bake ~3.9 s of countdown jitter into it; the release-time
+        arm from the same announced landing_time is strictly tighter)."""
+        ball = Ball(
+            id=-1,
+            status=BallStatus.IN_FLIGHT,
+            tracking=None,
+            source='announcement',
+            destination=self.robot_name,
+            position=np.asarray(landing_position, dtype=float),
+            velocity=np.asarray(landing_velocity, dtype=float),
+            landing_position=np.asarray(landing_position, dtype=float),
+            landing_velocity=np.asarray(landing_velocity, dtype=float),
+            landing_time=float(landing_time),
+        )
+        cmd = self._compute_catch_command(ball)
+        if cmd is not None:
+            cmd.arm_hand = False
+        return cmd
+
     def _compute_catch_command(self, ball: Ball) -> Optional[CatchCommand]:
         """Compute the catch pose and hand parameters from a ball's landing state."""
         quat = self.compute_catch_orientation(ball.landing_velocity)

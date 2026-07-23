@@ -42,7 +42,7 @@ from rclpy.node import Node
 
 import numpy as np
 
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float64, String
 from std_srvs.srv import SetBool, Trigger
 from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
@@ -84,6 +84,13 @@ _TRANSIENT_FEEDBACK_CODES = frozenset({'FROZEN', 'STALE_STATE'})
 _MOCAP_STALE_S = 0.5
 _HEARTBEAT_STALE_S = 0.5
 _STATUS_STALE_S = 0.5
+
+# CAUGHT plausibility gate. The tracker's split-track corruption (2026-07-23 re-test)
+# flips CAUGHT on tracks coasting BELOW THE FLOOR near BB — 5 of 6 reloads reported
+# spurious CAUGHT while the real ball bounced out. A caught ball confirms OUR catch
+# only if its final KF estimate is physically near the catch point.
+_CAUGHT_MAX_XY_ERROR_MM = 200.0
+_CAUGHT_MAX_Z_ERROR_MM = 150.0
 
 # Reject-fast service-call bounds.
 _SERVICE_WAIT_S = 2.0
@@ -140,7 +147,20 @@ class ReloadCoordinatorNode(Node):
         self._active_seq = None
         # The tracker-assigned id of OUR announced ball, latched once it appears in flight
         # this sequence; only that id's CAUGHT confirms (a stray caught ball never does).
+        # An UNTAGGED (empty-destination fallback) latch is provisional — a
+        # destination-tagged candidate displaces it (see _build_observations).
         self._announced_ball_id = None
+        self._announced_id_untagged = False
+        # Ball ids already IN_FLIGHT when THIS goal's throw was accepted — excluded
+        # from the announced-ball latch. Attempt 5 of the 2026-07-23 re-test latched
+        # a phantom untagged track that predated the throw and rode it to a wrong
+        # MISSED verdict.
+        self._preexisting_flight_ids = set()
+        # This goal's catch-speed knob (goal.catch_vel_scale; 0 => 1.0), published on
+        # catch/vel_scale at PREPARE so catch_coordinator has it before any arm.
+        self._catch_vel_scale = 1.0
+        # Once-per-ball log guard for implausible CAUGHT rejections.
+        self._implausible_logged_ids = set()
 
         # ── Subscriptions ──
         self.create_subscription(
@@ -177,6 +197,9 @@ class ReloadCoordinatorNode(Node):
         # True on PREPARE, False on RECENTER/SAFE_ABORT — the same edges that drive the
         # trajectory/arm_catch service, so the two stay in lockstep.
         self._catch_armed_pub = self.create_publisher(Bool, 'catch/armed', 10)
+        # Catch-speed knob relay: the goal's catch_vel_scale, published at PREPARE
+        # (before catch/armed goes True) so catch_coordinator holds it before any arm.
+        self._vel_scale_pub = self.create_publisher(Float64, 'catch/vel_scale', 10)
 
         # ── Reload action server ──
         # ReentrantCallbackGroup so the multi-second execute_callback (which blocks on
@@ -286,20 +309,47 @@ class ReloadCoordinatorNode(Node):
             # announcement; latch that id, then confirm ONLY that id's CAUGHT. This rejects
             # a stray caught ball (a different id — e.g. a leftover from a prior throw)
             # that would otherwise falsely confirm this reload's catch.
+            # Two hardening passes (2026-07-23 re-test): (1) ids already IN_FLIGHT
+            # when the throw was accepted are excluded (a phantom untagged track that
+            # predated the throw was latched as "our" ball); (2) a destination match
+            # is preferred over the empty-destination fallback.
+            with self._lock:
+                preexisting = set(self._preexisting_flight_ids)
+                untagged_latch = self._announced_id_untagged
+            candidates = [
+                b for b in balls
+                if int(b.status) == _BALL_STATUS_IN_FLIGHT
+                and int(b.id) not in preexisting]
+            dest_match = next(
+                (int(b.id) for b in candidates
+                 if b.destination == self._robot_name), None)
             if announced_id is None:
-                for b in balls:
-                    if int(b.status) == _BALL_STATUS_IN_FLIGHT and (
-                            not b.destination or b.destination == self._robot_name):
-                        announced_id = int(b.id)
-                        break
-                if announced_id is not None:
-                    with self._lock:
-                        self._announced_ball_id = announced_id
+                if dest_match is not None:
+                    announced_id = dest_match
+                    untagged_latch = False
+                else:
+                    for b in candidates:
+                        if not b.destination:
+                            announced_id = int(b.id)
+                            untagged_latch = True
+                            break
+            elif untagged_latch and dest_match is not None:
+                # An UNTAGGED latch is provisional (audit, 2026-07-23): a phantom
+                # spawning during the countdown could grab it first. The moment a
+                # destination-tagged candidate appears, re-latch to it — the
+                # tagged track is the tracker's own claim about OUR ball.
+                announced_id = dest_match
+                untagged_latch = False
+            if announced_id is not None:
+                with self._lock:
+                    self._announced_ball_id = announced_id
+                    self._announced_id_untagged = untagged_latch
             if announced_id is not None:
                 for b in balls:
                     if int(b.id) == announced_id and int(b.status) == _BALL_STATUS_CAUGHT:
-                        ball_caught = True
-                        catch_error_mm = self._catch_error_from_ball(b)
+                        if self._caught_is_plausible(b):
+                            ball_caught = True
+                            catch_error_mm = self._catch_error_from_ball(b)
                         break
         return ReloadObservations(
             now=now,
@@ -311,6 +361,28 @@ class ReloadCoordinatorNode(Node):
             streaming=streaming,
             ball_caught=ball_caught,
             catch_error_mm=catch_error_mm)
+
+    def _caught_is_plausible(self, ball) -> bool:
+        """A tracker CAUGHT confirms OUR catch only if the ball's final KF estimate is
+        physically near the catch point. The tracker's split-track corruption flips
+        CAUGHT on tracks coasting below the floor near BB (e.g. (−539, −323, −532) mm)
+        — 5 of 6 reloads on 2026-07-23 spuriously reported SUCCESS through that.
+        Rejecting the implausible CAUGHT makes the outcome honest (MISSED) until the
+        tracker investigation lands."""
+        xy_err = self._catch_error_from_ball(ball)
+        z_err = abs(float(ball.position.z) - float(self._catch_point_mm[2]))
+        ok = (xy_err <= _CAUGHT_MAX_XY_ERROR_MM
+              and z_err <= _CAUGHT_MAX_Z_ERROR_MM)
+        if not ok and int(ball.id) not in self._implausible_logged_ids:
+            self._implausible_logged_ids.add(int(ball.id))
+            self.get_logger().warning(
+                f"Ball {int(ball.id)}: tracker CAUGHT at "
+                f"({float(ball.position.x):.0f}, {float(ball.position.y):.0f}, "
+                f"{float(ball.position.z):.0f}) mm is IMPLAUSIBLE for the catch point "
+                f"(xy err {xy_err:.0f} > {_CAUGHT_MAX_XY_ERROR_MM:.0f} or z err "
+                f"{z_err:.0f} > {_CAUGHT_MAX_Z_ERROR_MM:.0f}) — not counted "
+                f"(split-track corruption; see the 2026-07-23 tracker finding)")
+        return ok
 
     def _catch_error_from_ball(self, ball) -> float:
         """Horizontal miss distance of the caught ball from the world-frame catch point.
@@ -344,12 +416,25 @@ class ReloadCoordinatorNode(Node):
 
     def _execute_reload(self, goal_handle):
         throw_delay = float(getattr(goal_handle.request, 'throw_delay_s', 0.0) or 0.0)
+        vel_scale = float(getattr(goal_handle.request, 'catch_vel_scale', 0.0) or 0.0)
         seq = ReloadSequencer(
             catch_point_mm=self._catch_point_mm, throw_delay_s=throw_delay)
         seq.start(time.perf_counter())
+        if vel_scale < 0.0:
+            # A sign typo must not silently become full speed (audit): warn and use
+            # the default; the coordinator's clamp never sees the raw negative.
+            self.get_logger().warning(
+                f'catch_vel_scale {vel_scale:.2f} is negative — using 1.0 '
+                f'(valid range 0.3-1.5)')
+            vel_scale = 0.0
         with self._lock:
             self._active_seq = seq
             self._announced_ball_id = None
+            self._announced_id_untagged = False
+            self._preexisting_flight_ids = set()
+            # 0 (field default) => 1.0; catch_coordinator clamps to its safe range.
+            self._catch_vel_scale = vel_scale if vel_scale > 0.0 else 1.0
+        self._implausible_logged_ids = set()
 
         result = Reload.Result()
         max_sequence_s = _sequence_deadline_s(seq)
@@ -396,8 +481,16 @@ class ReloadCoordinatorNode(Node):
         obs = self._build_observations(now)
         decision = seq.step(now, obs)
         if decision.action == ACTION_PRIME_HAND:
-            seq.note_prime_result(
-                self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV))
+            # One immediate retry: the 2026-07-23 re-test's first attempt died to a
+            # TRANSIENT smooth_move_hand dispatch failure (the same service executed
+            # the retract seconds later). The prime is pre-throw, so a retry is free;
+            # a second failure is a real fault and aborts as before.
+            ok = self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV)
+            if not ok:
+                self.get_logger().warning(
+                    'hand prime dispatch failed — retrying once')
+                ok = self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV)
+            seq.note_prime_result(ok)
         elif decision.action == ACTION_CALL_RELOAD:
             self._call_reload()
         elif decision.action == ACTION_SEND_THROW:
@@ -447,6 +540,15 @@ class ReloadCoordinatorNode(Node):
         resp = self._wait_future(future)
         if resp is None:
             return False, 'bb/throw_at_target call failed'
+        if bool(resp.success):
+            # Snapshot the ids already IN_FLIGHT at throw-accept: they are NOT our
+            # ball and must never be latched as it (attempt 5 of the 2026-07-23
+            # re-test latched a pre-existing phantom track and rode it to a wrong
+            # MISSED verdict).
+            with self._lock:
+                self._preexisting_flight_ids = {
+                    int(b.id) for b in self._balls
+                    if int(b.status) == _BALL_STATUS_IN_FLIGHT}
         return bool(resp.success), str(resp.message)
 
     # ── Platform + hand ownership (executed on the FSM's behalf) ───────────────
@@ -461,6 +563,11 @@ class ReloadCoordinatorNode(Node):
         firmware countdown has no abort opcode, so arming must precede the throw)."""
         ok = self._arm_catch(True)
         if ok:
+            # Publish the goal's catch-speed knob BEFORE the armed edge so
+            # catch_coordinator holds it before any hand-arm can fire.
+            with self._lock:
+                scale = self._catch_vel_scale
+            self._vel_scale_pub.publish(Float64(data=float(scale)))
             self._publish_catch_armed(True)
         else:
             self.get_logger().error(

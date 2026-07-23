@@ -293,6 +293,11 @@ class Float64MultiArray:
 
 
 @dataclass
+class MockFloat64:
+    data: float = 0.0
+
+
+@dataclass
 class Float32MultiArray:
     data: list = field(default_factory=list)
 
@@ -826,6 +831,7 @@ _create_mock_module('std_msgs')
 _create_mock_module('std_msgs.msg', {
     'Float64MultiArray': Float64MultiArray,
     'Float32MultiArray': Float32MultiArray,
+    'Float64': MockFloat64,
     'String': MockString,
     'Bool': MockBool,
 })

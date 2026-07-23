@@ -5,7 +5,17 @@ Subscribes to:
   - catch/armed (Bool) — the reload action's catch-armed latch state. The hand
     prime/arm is GATED on this: the hand is actuated ONLY during a reload (latch
     raised), never on a stray tracked ball. The reactive-fire TIMING itself
-    (set_hand_traj_cmd) stays here; only its enablement is gated.
+    (set_hand_traj_cmd) stays here; only its enablement is gated. The hand primes
+    on the ARM edge (+ an off-ball-path retry timer) — NEVER from the balls path,
+    where a smooth-move would race the armed catch stroke on the Teensy's single
+    packed queue (3/6 strokes lost that way, 2026-07-23).
+  - throw_announcements (ThrowAnnouncement) — while armed, OUR announcement (strict
+    target_id match) drives a PRE-TILT: one predicted catch target per announcement
+    from the announced landing state, ~3.9 s early, so the platform settles into
+    the receive tilt during the countdown; the reactive path refines it mid-flight.
+  - catch/vel_scale (Float64) — the operator's per-attempt catch-speed knob
+    (reload goal field, or published manually); scales the armed event velocity;
+    reset to 1.0 on disarm.
 
 Publishes:
   - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node, which
@@ -34,11 +44,12 @@ import rclpy
 from rclpy.node import Node
 import numpy as np
 
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, Float64
 from jugglebot_interfaces.msg import (
     BallStateArray,
     DynamicTargetCommand,
     TargetFeedback,
+    ThrowAnnouncement,
 )
 from jugglebot_interfaces.srv import SetFloat, SetHandGains, SetHandTrajCmd
 from geometry_msgs.msg import Point, Quaternion, Vector3
@@ -53,6 +64,23 @@ _TRAJ_TYPE_CATCH = 1
 # Minimum event_delay (seconds) — below this the Teensy may not have time
 # to smooth-move to the starting position before the catch window.
 _MIN_EVENT_DELAY_S = 0.3
+
+# catch/vel_scale bounds. The scale multiplies the event velocity the hand catch is
+# armed with (effective hand-vs-ball speed ratio = firmware CATCH_VEL_RATIO 0.6 ×
+# scale — mathematically identical to re-tuning the flash-gated firmware ratio, but
+# per-attempt from the Jetson). Lower bound: below ~0.3 the scaled event velocity can
+# fall under the Teensy windup budget (t_acc = 0.404/v) and the whole stroke is
+# SILENTLY dropped by the prelude time-budget check; upper bound 1.5 keeps the
+# clamped event velocity within the 7.0 m/s Teensy ceiling with sane decel.
+_VEL_SCALE_MIN = 0.3
+_VEL_SCALE_MAX = 1.5
+
+# Suppress the primed-retry while a catch command has been emitted within this
+# window: a kind-3 smooth-move (the prime) sent while a catch sequence is live
+# CLEARS the Platform Teensy's armed catch trajectory (last-writer-wins on its
+# single packed queue) — the 2026-07-23 re-test lost 3 of 6 catch strokes exactly
+# this way (a same-tick re-prime racing the arm).
+_PRIME_RETRY_QUIET_S = 1.5
 
 
 class CatchCoordinatorNode(Node):
@@ -98,6 +126,30 @@ class CatchCoordinatorNode(Node):
         self._catch_armed_sub = self.create_subscription(
             Bool, 'catch/armed', self._on_catch_armed, 10)
 
+        # Pre-tilt: the throw announcement carries a solver-consistent landing
+        # prediction (position on the cup plane, velocity with vz decayed, landing
+        # time) ~3.9 s before the ball lands. While armed, synthesize ONE predicted
+        # catch target from it so the platform settles into the receive tilt during
+        # the countdown; the reactive per-ball path refines it mid-flight via C2
+        # supersede (each accepted refinement re-anchors the reach freeze).
+        self._announcement_sub = self.create_subscription(
+            ThrowAnnouncement, 'throw_announcements',
+            self._on_throw_announcement, 10)
+
+        # Operator catch-speed knob (catch/vel_scale, published by the reload action
+        # from its goal — or manually for bench throws). Scales the event velocity
+        # the hand catch is armed with; reset to 1.0 on the disarm edge so one
+        # reload's tuning value never leaks into the next.
+        self._catch_vel_scale = 1.0
+        self._vel_scale_sub = self.create_subscription(
+            Float64, 'catch/vel_scale', self._on_vel_scale, 10)
+
+        # Prime-retry plumbing: monotonic time of the last emitted catch command
+        # (any catch cmd within _PRIME_RETRY_QUIET_S suppresses re-priming — see the
+        # constant's comment for the Teensy last-writer-wins hazard).
+        self._last_cmd_mono = 0.0
+        self._prime_retry_timer = self.create_timer(0.5, self._prime_retry_tick)
+
         # Re-measure clock offset every 30s to track drift
         self._clock_timer = self.create_timer(30.0, self._refresh_clock_offset)
 
@@ -109,6 +161,7 @@ class CatchCoordinatorNode(Node):
         # ── Hand control state ────────────────────────────────────
         self._hand_primed = False
         self._hand_traj_armed_for_ball: int | None = None  # ball_id of last armed traj
+        self._min_delay_logged_for_ball: int | None = None  # once-per-ball floor log
         self._catch_gains_active = False
 
         # Catch-mode hand gains (softer than defaults for compliant catch).
@@ -184,6 +237,78 @@ class CatchCoordinatorNode(Node):
         else:
             self._hand_primed = False
             self._hand_traj_armed_for_ball = None
+            # One reload's catch-speed tuning value must never leak into the next.
+            self._catch_vel_scale = 1.0
+
+    def _on_vel_scale(self, msg: Float64):
+        """catch/vel_scale: the operator's per-attempt catch-speed knob (reload goal
+        field, or published manually for bench throws). Clamped to the safe range —
+        below it the Teensy's windup budget silently drops the stroke, above it the
+        event-velocity ceiling binds."""
+        raw = float(msg.data)
+        scale = max(_VEL_SCALE_MIN, min(_VEL_SCALE_MAX, raw))
+        if scale != raw:
+            self.get_logger().warning(
+                f"catch/vel_scale {raw:.2f} outside [{_VEL_SCALE_MIN}, "
+                f"{_VEL_SCALE_MAX}] — clamped to {scale:.2f}")
+        self._catch_vel_scale = scale
+        self.get_logger().info(f"catch vel scale = {scale:.2f}")
+
+    def _on_throw_announcement(self, msg: ThrowAnnouncement):
+        """Pre-tilt on OUR announcement (while armed): publish one predicted catch
+        target from the announced landing state so the platform settles into the
+        receive tilt during the ~3 s countdown. The reactive path supersedes it
+        mid-flight. Deliberately does NOT touch the per-ball correlation state
+        (_last_submitted_ball_id etc.) — the synthetic target has no tracker ball,
+        must never feed the feasibility blacklist, and must not suppress the real
+        ball's hand-arm."""
+        if not self._catch_armed:
+            return
+        # STRICT target match (audit): the reload path always names the target
+        # (bb/throw_at_target's target_name), so an untagged announcement is NOT
+        # ours and must not move the platform.
+        target_id = str(getattr(msg, 'target_id', '') or '')
+        if target_id != self._coordinator.robot_name:
+            return
+        landing_pos = np.array([
+            msg.landing_position.x, msg.landing_position.y, msg.landing_position.z])
+        landing_vel = np.array([
+            msg.landing_velocity.x, msg.landing_velocity.y, msg.landing_velocity.z])
+        lt = msg.landing_time
+        landing_time = float(lt.sec) + float(lt.nanosec) * 1e-9
+        if landing_time <= 0.0:
+            return
+        cmd = self._coordinator.predicted_catch_command(
+            landing_pos, landing_vel, landing_time)
+        if cmd is None:
+            return
+        arrival_perf = cmd.landing_time + self._ros_to_perf_offset
+        self._publish_dynamic_target(cmd, arrival_perf)
+        self.get_logger().info(
+            f"pre-tilt target published from announcement "
+            f"(landing in {landing_time - self.get_clock().now().nanoseconds * 1e-9:.2f} s)")
+
+    def _prime_retry_tick(self):
+        """Retry the hand prime while armed and not yet confirmed primed — but NEVER
+        while a catch sequence is live (any catch command within the quiet window):
+        a kind-3 smooth-move clears the Platform Teensy's single packed trajectory
+        queue, erasing an armed catch stroke (the 2026-07-23 re-test lost 3/6
+        strokes to exactly this race). Off the ball path, on a slow timer, the
+        retry is safe: pre-flight it is idempotent re-priming; in-flight it is
+        suppressed."""
+        if not self._catch_armed or self._hand_primed:
+            return
+        # An ARMED catch stroke on the Teensy blocks the retry outright (audit,
+        # 2026-07-23): the quiet window is anchored to the last EMITTED command,
+        # which stops ~0.3 s before landing — a slow disarm round-trip after the
+        # catch could otherwise unblock the retry while the stroke (or its settle)
+        # is still live, and a kind-3 would clobber it. The flag clears on the
+        # disarm edge and on arm failure, so pre-flight retries stay allowed.
+        if self._hand_traj_armed_for_ball is not None:
+            return
+        if (time.perf_counter() - self._last_cmd_mono) < _PRIME_RETRY_QUIET_S:
+            return
+        self._prime_hand()
 
     def _on_balls(self, msg: BallStateArray):
         """Process ball state updates: select best ball and send dynamic target."""
@@ -197,18 +322,49 @@ class CatchCoordinatorNode(Node):
         if cmd is None:
             return
 
-        # Prime hand on first catchable ball (one-shot) — ONLY during a reload (catch
-        # armed). Without this gate a stray tracked ball would prime the hand (and set
-        # catch gains) outside any reload. The reload action also primes proactively on
-        # PREPARE; this gated prime is idempotent (same top-of-stroke position) and is
-        # what installs the softer catch gains.
-        if self._catch_armed and not self._hand_primed:
-            self._prime_hand()
+        # A catch sequence is live: stamp the quiet window that suppresses the
+        # prime-retry timer. NO PRIME is ever dispatched from this path — a kind-3
+        # smooth-move here clears the Platform Teensy's armed catch stroke
+        # (last-writer-wins; 3/6 strokes lost to that race, 2026-07-23). Priming
+        # belongs to the catch/armed rising edge + the off-path retry timer.
+        self._last_cmd_mono = time.perf_counter()
 
         # Convert landing_time from ROS2 clock → perf_counter clock
         arrival_time_perf = cmd.landing_time + self._ros_to_perf_offset
+        self._publish_dynamic_target(cmd, arrival_time_perf)
 
-        # Publish typed message for bridge to forward via IPC
+        self._last_submitted_ball_id = cmd.ball_id
+        self._last_arrival_time = arrival_time_perf
+        self._last_landing_position = cmd.target_pos.copy()
+
+        # Arm hand catch trajectory (once per ball, after first target submit) — ONLY
+        # during a reload (catch armed), so a stray tracked ball never arms the reactive
+        # catch stroke on the Teensy. The reactive-fire TIMING (event_delay / event_vel)
+        # is computed here as before; only its enablement is gated. The event velocity
+        # carries the operator's catch/vel_scale knob (re-clamped to Teensy bounds).
+        # The one-shot latch is set ONLY when the arm was actually dispatched —
+        # a service-not-ready early return must be retried next tick, not silently
+        # latched as armed (audit of the 2026-07-23 re-test).
+        if (self._catch_armed and cmd.arm_hand
+                and self._hand_traj_armed_for_ball != cmd.ball_id):
+            event_delay = cmd.landing_time - current_time
+            if event_delay >= _MIN_EVENT_DELAY_S:
+                event_vel = max(0.3, min(7.0,
+                                         cmd.event_vel_mps * self._catch_vel_scale))
+                if self._arm_hand_catch(event_delay, event_vel):
+                    self._hand_traj_armed_for_ball = cmd.ball_id
+            elif self._min_delay_logged_for_ball != cmd.ball_id:
+                # Previously a SILENT drop: the delay only shrinks in flight, so a
+                # ball first seen < 0.3 s out never arms — say so, once per ball.
+                self._min_delay_logged_for_ball = cmd.ball_id
+                self.get_logger().warning(
+                    f"Ball {cmd.ball_id}: event_delay {event_delay:.2f} s below the "
+                    f"{_MIN_EVENT_DELAY_S} s floor — hand catch NOT armed")
+
+    def _publish_dynamic_target(self, cmd, arrival_time_perf: float):
+        """Pack a CatchCommand into the DynamicTargetCommand wire message (verbatim
+        pose — the wire is STOW-relative, consumed with no conversion). Shared by the
+        reactive per-ball path and the announcement pre-tilt."""
         out = DynamicTargetCommand()
         out.target_pos = Point(
             x=float(cmd.target_pos[0]),
@@ -228,21 +384,6 @@ class CatchCoordinatorNode(Node):
         )
         out.arrival_time = arrival_time_perf
         self._dyn_target_pub.publish(out)
-
-        self._last_submitted_ball_id = cmd.ball_id
-        self._last_arrival_time = arrival_time_perf
-        self._last_landing_position = cmd.target_pos.copy()
-
-        # Arm hand catch trajectory (once per ball, after first target submit) — ONLY
-        # during a reload (catch armed), so a stray tracked ball never arms the reactive
-        # catch stroke on the Teensy. The reactive-fire TIMING (event_delay / event_vel)
-        # is computed here as before; only its enablement is gated.
-        if (self._catch_armed and cmd.arm_hand
-                and self._hand_traj_armed_for_ball != cmd.ball_id):
-            event_delay = cmd.landing_time - current_time
-            if event_delay >= _MIN_EVENT_DELAY_S:
-                self._arm_hand_catch(event_delay, cmd.event_vel_mps)
-                self._hand_traj_armed_for_ball = cmd.ball_id
 
     # ==================================================================
     # Feedback
@@ -334,12 +475,15 @@ class CatchCoordinatorNode(Node):
         except Exception as e:
             self.get_logger().warning(f"Hand priming service error: {e}")
 
-    def _arm_hand_catch(self, event_delay: float, event_vel_mps: float):
-        """Arm the hand catch trajectory on the Teensy."""
+    def _arm_hand_catch(self, event_delay: float, event_vel_mps: float) -> bool:
+        """Arm the hand catch trajectory on the Teensy. Returns True iff the arm was
+        actually DISPATCHED — the caller's one-shot latch keys off this, so a
+        service-not-ready early return is retried on the next balls tick instead of
+        being silently latched as armed."""
         if not self._hand_traj_client.service_is_ready():
             self.get_logger().warning(
                 "set_hand_traj_cmd service not ready — hand catch not armed")
-            return
+            return False
 
         req = SetHandTrajCmd.Request()
         req.event_delay = float(event_delay)
@@ -351,7 +495,8 @@ class CatchCoordinatorNode(Node):
 
         self.get_logger().info(
             f"Arming hand catch: delay={event_delay:.2f}s, "
-            f"vel={event_vel_mps:.2f} m/s")
+            f"vel={event_vel_mps:.2f} m/s (scale {self._catch_vel_scale:.2f})")
+        return True
 
     def _on_hand_traj_done(self, future):
         """Callback when hand trajectory arm completes."""

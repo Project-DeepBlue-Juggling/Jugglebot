@@ -470,3 +470,169 @@ def test_sequence_deadline_never_lands_inside_the_flight_window():
     # Must clear reload wait (10) + delay (20) + grace (0.5) + confirm (0.7).
     assert ceiling > 10.0 + 20.0 + 0.5 + 0.7
     assert ceiling >= _MAX_SEQUENCE_S
+
+
+# ── CAUGHT plausibility + phantom exclusion (2026-07-23 re-test hardening) ─────
+
+def test_implausible_caught_not_counted():
+    """The tracker's split-track corruption flips CAUGHT on tracks coasting below
+    the floor near BB — 5 of 6 reloads on 2026-07-23 spuriously reported SUCCESS.
+    A caught ball only confirms if its final estimate is physically near the catch
+    point."""
+    now = 100.0
+    node = _node_fresh(now)
+    with node._lock:
+        node._balls = [_Ball(status=1, id=5)]
+        node._balls_mono = now
+    node._build_observations(now)                          # latch id 5
+    # The corrupt track flips CAUGHT below the floor near BB.
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=-539.0, y=-323.0, z=-532.0)]
+        node._balls_mono = now
+    obs = node._build_observations(now)
+    assert obs.ball_caught is False                        # implausible → not counted
+
+
+def test_plausible_caught_still_counts():
+    now = 100.0
+    node = _node_fresh(now)
+    with node._lock:
+        node._balls = [_Ball(status=1, id=5)]
+        node._balls_mono = now
+    node._build_observations(now)
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=30.0, y=15.0, z=805.0)]
+        node._balls_mono = now
+    obs = node._build_observations(now)
+    assert obs.ball_caught is True
+    assert obs.catch_error_mm == pytest.approx((30.0**2 + 15.0**2) ** 0.5)
+
+
+def test_preexisting_flight_ball_never_latched():
+    """A ball already IN_FLIGHT when the throw was accepted is NOT our ball —
+    attempt 5 of the re-test latched a phantom untagged track that predated the
+    throw and rode it to a wrong MISSED verdict."""
+    now = 100.0
+    node = _node_fresh(now)
+    with node._lock:
+        node._preexisting_flight_ids = {14}
+        node._balls = [_Ball(status=1, id=14, destination=''),   # the phantom
+                       _Ball(status=1, id=13, destination='')]   # the real ball
+        node._balls_mono = now
+    node._build_observations(now)
+    assert node._announced_ball_id == 13
+
+
+def test_destination_match_preferred_over_untagged():
+    now = 100.0
+    node = _node_fresh(now)
+    with node._lock:
+        node._balls = [_Ball(status=1, id=8, destination=''),
+                       _Ball(status=1, id=9, destination='jugglebot')]
+        node._balls_mono = now
+    node._build_observations(now)
+    assert node._announced_ball_id == 9
+
+
+# ── catch_vel_scale relay + prime retry ────────────────────────────────────────
+
+def test_prepare_publishes_vel_scale_before_armed(monkeypatch):
+    """The goal's catch-speed knob is published BEFORE the armed edge so
+    catch_coordinator holds it before any hand-arm can fire."""
+    node = ReloadCoordinatorNode()
+    with node._lock:
+        node._catch_vel_scale = 0.75
+    monkeypatch.setattr(node, '_arm_catch', lambda a: True)
+    assert node._prepare_catch() is True
+    assert node._publishers['catch/vel_scale'].published[-1].data == pytest.approx(0.75)
+    assert node._publishers['catch/armed'].published[-1].data is True
+
+
+def test_goal_vel_scale_zero_defaults_to_one(monkeypatch):
+    """Field default 0 (unset) means 1.0 — plumbed per-goal, never sticky."""
+    node = ReloadCoordinatorNode()
+    calls = []
+    monkeypatch.setattr(node, '_step_sequence',
+                        lambda seq, now, gh=None: (_ for _ in ()).throw(SystemExit))
+    goal = types.SimpleNamespace(
+        request=types.SimpleNamespace(throw_delay_s=3.0, catch_vel_scale=0.0),
+        is_cancel_requested=False)
+    try:
+        node._execute_reload(goal)
+    except SystemExit:
+        pass
+    with node._lock:
+        assert node._catch_vel_scale == pytest.approx(1.0)
+
+
+def test_prime_retries_once_on_transient_failure(monkeypatch):
+    """Attempt 0 of the re-test died to a TRANSIENT smooth_move_hand dispatch
+    failure (the same service worked seconds later). One immediate retry is free —
+    the prime is pre-throw; a second failure still aborts."""
+    node = _node_fresh(100.0)
+    results = iter([False, True])
+    attempts = []
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: attempts.append(p) or next(results))
+    seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
+    seq.start(100.0)
+    d = node._step_sequence(seq, 100.0)
+    assert d.action == ACTION_PRIME_HAND
+    assert len(attempts) == 2                  # failed once, retried, succeeded
+    d = node._step_sequence(seq, 100.1)
+    assert not d.done                          # sequence continues (prime ok)
+
+
+def test_prime_double_failure_still_aborts(monkeypatch):
+    node = _node_fresh(100.0)
+    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: False)
+    monkeypatch.setattr(node, '_safe_abort', lambda: None)
+    seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
+    seq.start(100.0)
+    node._step_sequence(seq, 100.0)            # PRIME dispatch fails twice
+    d = node._step_sequence(seq, 100.1)
+    assert d.done and d.result.outcome == 'ABORTED_PRIME_FAILED'
+
+
+def test_untagged_latch_displaced_by_destination_match():
+    """AUDIT (2026-07-23): an untagged latch is PROVISIONAL — a phantom spawning
+    during the ~3 s countdown grabs the empty-destination fallback first; when the
+    real destination-tagged track appears at release it must displace the phantom
+    (attempt 5's wrong-verdict shape, one spawn-time shift away)."""
+    now = 100.0
+    node = _node_fresh(now)
+    with node._lock:
+        node._balls = [_Ball(status=1, id=14, destination='')]   # countdown phantom
+        node._balls_mono = now
+    node._build_observations(now)
+    assert node._announced_ball_id == 14                          # provisional
+    with node._lock:
+        node._balls = [_Ball(status=1, id=14, destination=''),
+                       _Ball(status=1, id=13, destination='jugglebot')]  # real ball
+        node._balls_mono = now
+    node._build_observations(now)
+    assert node._announced_ball_id == 13                          # displaced
+    # A tagged latch is NOT provisional — another tagged ball never displaces it.
+    with node._lock:
+        node._balls = [_Ball(status=1, id=99, destination='jugglebot'),
+                       _Ball(status=1, id=13, destination='jugglebot')]
+        node._balls_mono = now
+    node._build_observations(now)
+    assert node._announced_ball_id == 13
+
+
+def test_negative_vel_scale_warns_and_defaults(monkeypatch):
+    """AUDIT: a sign typo (-0.8 intending slow) must not silently become full
+    speed; it warns and uses the default."""
+    node = ReloadCoordinatorNode()
+    monkeypatch.setattr(node, '_step_sequence',
+                        lambda seq, now, gh=None: (_ for _ in ()).throw(SystemExit))
+    goal = types.SimpleNamespace(
+        request=types.SimpleNamespace(throw_delay_s=3.0, catch_vel_scale=-0.8),
+        is_cancel_requested=False)
+    try:
+        node._execute_reload(goal)
+    except SystemExit:
+        pass
+    with node._lock:
+        assert node._catch_vel_scale == pytest.approx(1.0)

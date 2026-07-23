@@ -73,3 +73,38 @@ def test_steep_arrival_produces_catch_command():
     cmd = coord.update([ball], current_time=5.0)
     assert cmd is not None
     assert _tilt_magnitude_deg(cmd.target_quat) == pytest.approx(MAX_TILT_DEG, abs=0.05)
+
+
+def test_predicted_catch_command_matches_reactive_pose_math():
+    """The announcement pre-tilt reuses the SAME pose math as the reactive per-ball
+    path (single-sourced through _compute_catch_command): same stow-relative z, same
+    receive tilt from the landing velocity, arm_hand forced False (the hand arm
+    stays flight-gated — the Teensy fire is one-shot on the first event time)."""
+    import numpy as np
+    coord = CatchCoordinator(
+        robot_name="jugglebot",
+        initial_height_mm=574.3,
+        landing_z_offset_mm=170.0 + 64.78,
+        hand_catch_offset_mm=64.78,
+    )
+    landing_pos = np.array([0.0, 0.0, 809.08])
+    landing_vel = np.array([-1000.0, 0.0, -4800.0])   # ~11.8 deg off vertical
+    cmd = coord.predicted_catch_command(landing_pos, landing_vel, landing_time=42.0)
+    assert cmd is not None
+    assert cmd.arm_hand is False                      # flight-gated arm untouched
+    assert cmd.landing_time == pytest.approx(42.0)
+    # Stow-relative z near the active pose (the hand offset subtracted along the
+    # tilted platform z), receive tilt non-identity.
+    assert 150.0 < cmd.target_pos[2] < 200.0
+    assert float(np.linalg.norm(cmd.target_quat[1:4])) > 1e-3
+    assert np.allclose(cmd.target_vel, 0.0)
+    # Identical to the reactive path fed the same landing state.
+    from jugglebot.tracking.ball import Ball, BallStatus
+    ball = Ball(id=9, status=BallStatus.IN_FLIGHT, tracking=None,
+                source='x', destination='jugglebot',
+                position=landing_pos, velocity=landing_vel,
+                landing_position=landing_pos, landing_velocity=landing_vel,
+                landing_time=42.0)
+    reactive = coord._compute_catch_command(ball)
+    assert np.allclose(cmd.target_pos, reactive.target_pos)
+    assert np.allclose(cmd.target_quat, reactive.target_quat)
