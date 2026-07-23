@@ -15,7 +15,9 @@ files_changed:
   - tests/ros/test_catch_coordinator_node.py
   - tests/ros/test_reload_coordinator_node.py
   - tests/hardware/session_phase7_reload.md
-commits: []
+commits:
+  - 682ddc5
+  - ed5d435
 subsystem:
   - ros
 tags:
