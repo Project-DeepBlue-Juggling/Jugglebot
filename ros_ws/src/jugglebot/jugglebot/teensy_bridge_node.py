@@ -179,6 +179,23 @@ _NUM_LEGS = p.NUM_LEGS
 _HAND_AXIS = p.NUM_LEGS         # 6
 _NUM_AXES = p.NUM_AXES          # 7
 
+# Ball Butler ODrive axes (CAN1 node ids). NOT part of the 7-axis Telemetry
+# frame — their pos/vel ride BB_AXIS_ESTIMATES and their diagnostics ride
+# DIAGNOSTIC frames with these axis_ids. When live, they are appended to
+# robot_state.motor_states as trailing entries [7]=pitch, [8]=hand (the
+# can_node-era 9-axis layout the GUI charts/fault-viz index positionally).
+_BB_PITCH_AXIS = proto.NODE_ID_BB_PITCH   # 7
+_BB_HAND_AXIS = proto.NODE_ID_BB_HAND     # 8
+
+# DIAGNOSTIC.flags bits (generated udp_protocol, PROTOCOL_VERSION 4).
+_DIAG_FLAG_HB_STALE = 0x1   # ODrive CAN heartbeat older than CAN_HEARTBEAT_TIMEOUT
+_DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware boot
+# BB-axis liveness windows for the robot_state append. BB diag is a fixed 1 Hz
+# per axis (send_bb_diag), so 3 s = three missed frames; BB estimates ride the
+# 100 Hz telemetry tick, so 0.5 s of silence means the stream (not the bus) died.
+_BB_DIAG_FRESH_S = 3.0
+_BB_EST_FRESH_S = 0.5
+
 # "Already at STOW" band for the deactivate no-op guard: a leg is considered stowed
 # when it is IDLE and within this of the STOW pose (DeactivateMonitor stow_rev = 0.0,
 # so |pos| <= this). 0.2 rev sits just above the monitor's 0.15 arrival tolerance to
@@ -454,8 +471,14 @@ class TeensyBridgeNode(Node):
         # fault edge so the first repeat lands _GUARD_LATCH_REPEAT_S after it.
         self._last_guard_latch_log_t: float | None = None
         self._latest_profile: Profile | None = None
-        # Per-axis latest Diagnostic (one axis per frame on the wire).
+        # Per-axis latest Diagnostic (one axis per frame on the wire), plus its
+        # host-arrival time (monotonic). The arrival times gate the BB axes'
+        # robot_state append (_build_bb_motor_states): BB diag is a fixed 1 Hz,
+        # so "no BB diag for 3 s" means the uplink slot died and a frozen stash
+        # must not keep the BB entries alive. Platform axes (0..6) don't read
+        # their arrival times today (the Telemetry-gate covers them).
         self._latest_diag: dict[int, Diagnostic] = {}
+        self._latest_diag_mono: dict[int, float] = {}
 
         # Catching cone state (cone uplink). Catch events are
         # DISCRETE — every one is queued and published exactly once (the
@@ -499,6 +522,12 @@ class TeensyBridgeNode(Node):
         # RX thread is already live, so a frame arriving between subscribe() and
         # a later __init__ line would hit an unset attribute (startup race).
         self._bb_est_queue = []   # list of BbAxisEstimates, drained by timer
+        # Latest BB estimate sample + host-arrival time, for the robot_state BB
+        # append (pos/vel source). Kept separate from the queue: the queue is
+        # drained (emptied) by _publish_bb_axis_estimates, so "latest" must not
+        # depend on drain timing.
+        self._latest_bb_est: BbAxisEstimates | None = None
+        self._latest_bb_est_mono = 0.0
 
         # ── BB loud command-outcome channel (CMD_RESULT relay) ──
         # One outstanding throw at a time (firmware is serialized → no correlation
@@ -985,6 +1014,7 @@ class TeensyBridgeNode(Node):
             return
         with self._lock:
             self._latest_diag[int(dg.axis_id)] = dg
+            self._latest_diag_mono[int(dg.axis_id)] = time.monotonic()
 
     def _on_profile(self, msg_type, seq, payload, addr):
         try:
@@ -1067,6 +1097,11 @@ class TeensyBridgeNode(Node):
             q.append(e)
             if len(q) > 4000:        # ~40 s at 100 Hz — bound if the drain stalls
                 del q[:len(q) - 4000]
+            # Latest-wins stash for the robot_state BB append (the queue above is
+            # drained/emptied by the bb/axis_estimates publisher, so it can't
+            # serve as "latest").
+            self._latest_bb_est = e
+            self._latest_bb_est_mono = time.monotonic()
 
     def _on_cmd_result(self, msg_type, seq, payload, addr):
         # RX-thread callback (loud command-outcome channel). Decode the relayed CMD_RESULT
@@ -1124,9 +1159,9 @@ class TeensyBridgeNode(Node):
         """Build a NUM_AXES list of MotorStateSingle from telemetry + diagnostics.
 
         pos/vel come from the 100 Hz Telemetry frame; per-axis state, errors,
-        currents, temps, and bus voltage come from the on-change Diagnostic
-        frame for that axis. Fields the can-bridge link does not carry
-        (procedure_result, trajectory_done, bus_current) are left at their
+        currents, temps, and bus voltage/current come from the on-change
+        Diagnostic frame for that axis. Fields the can-bridge link does not
+        carry (procedure_result, trajectory_done) are left at their
         MotorStateSingle defaults — documented in the handoff. Mirrors the
         construction can_node feeds into RobotState.motor_states.
         """
@@ -1147,6 +1182,65 @@ class TeensyBridgeNode(Node):
                 s.fet_temp = float(d.temp_fet)
                 s.motor_temp = float(d.temp_motor)
                 s.bus_voltage = float(d.bus_voltage)
+                s.bus_current = float(d.bus_current)
+            states.append(s)
+        return states
+
+    def _build_bb_motor_states(self, diag: dict[int, Diagnostic],
+                               diag_mono: dict[int, float],
+                               bb_est: BbAxisEstimates | None,
+                               bb_est_mono: float,
+                               now_mono: float) -> list:
+        """Build the trailing BB entries for robot_state ([7]=pitch, [8]=hand), or [].
+
+        Restores the can_node-era 9-axis motor_states layout the GUI indexes
+        positionally (charts stores 7/8, BB fault dots). pos/vel come from the
+        latest BB_AXIS_ESTIMATES sample (100 Hz, same cadence as this publish);
+        everything else — state, errors, Iq, temps, bus V/I — from the 1 Hz BB
+        DIAGNOSTIC stash (axis_ids 7/8).
+
+        All-or-nothing, honest-silence gating (the leg_setpoint_echo
+        philosophy: silence, never a stale flatline or a phantom zero):
+          * BOTH axes must pass, else neither is appended — a lone surviving
+            hand entry would land at index 7 and be read as the pitch motor
+            (positional integrity beats partial data).
+          * heartbeat_seen (flags bit1) must be set — a dark/absent BB axis
+            still produces zero-filled diag frames; without this gate they
+            would surface as a live all-zero motor.
+          * heartbeat_stale (flags bit0) must be clear — a mid-session BB
+            death freezes the last values; stale entries must vanish, not
+            flatline. An ODrive with an ACTIVE error still heartbeats, so
+            real faults remain visible (GUI dots) rather than gated away.
+          * both the diag stash and the estimate sample must be recent
+            (_BB_DIAG_FRESH_S / _BB_EST_FRESH_S) — a frozen stash from a dead
+            uplink slot or a previous link session must not keep BB alive.
+        """
+        if bb_est is None or (now_mono - bb_est_mono) > _BB_EST_FRESH_S:
+            return []
+        states = []
+        for axis in (_BB_PITCH_AXIS, _BB_HAND_AXIS):
+            d = diag.get(axis)
+            if d is None or (now_mono - diag_mono.get(axis, 0.0)) > _BB_DIAG_FRESH_S:
+                return []
+            flags = int(d.flags)
+            if not (flags & _DIAG_FLAG_HB_SEEN) or (flags & _DIAG_FLAG_HB_STALE):
+                return []
+            s = MotorStateSingle()
+            if axis == _BB_PITCH_AXIS:
+                s.pos_estimate = float(bb_est.pitch_pos_rev)
+                s.vel_estimate = float(bb_est.pitch_vel_rps)
+            else:
+                s.pos_estimate = float(bb_est.hand_pos_rev)
+                s.vel_estimate = float(bb_est.hand_vel_rps)
+            s.current_state = int(d.axis_state)
+            s.active_errors = int(d.active_errors)
+            s.disarm_reason = int(d.disarm_reason)
+            s.iq_setpoint = float(d.iq_setpoint)
+            s.iq_measured = float(d.iq_measured)
+            s.fet_temp = float(d.temp_fet)
+            s.motor_temp = float(d.temp_motor)
+            s.bus_voltage = float(d.bus_voltage)
+            s.bus_current = float(d.bus_current)
             states.append(s)
         return states
 
@@ -1201,6 +1295,9 @@ class TeensyBridgeNode(Node):
                 telem = self._latest_telemetry
                 hb = self._latest_heartbeat
                 diag = dict(self._latest_diag)
+                diag_mono = dict(self._latest_diag_mono)
+                bb_est = self._latest_bb_est
+                bb_est_mono = self._latest_bb_est_mono
                 cold = self._cold_start_state            # immutable namedtuple
                 search_session = self._encoder_search_done_session
                 fw_validated = self._firmware_validated
@@ -1209,6 +1306,14 @@ class TeensyBridgeNode(Node):
                 return  # No real data yet — don't publish a phantom snapshot.
 
             states = self._build_motor_states(telem, diag)
+            # Append the BB axes ([7]=pitch, [8]=hand) when live — the GUI's
+            # charts/fault-viz consume them positionally from robot_state
+            # (can_node 9-axis parity). Gated to honest-silence when BB is
+            # dark/stale (see _build_bb_motor_states); every leg/hand
+            # computation below slices states[:_NUM_LEGS] or indexes 0..6,
+            # so the trailing entries never feed the fatal-fault logic.
+            states += self._build_bb_motor_states(
+                diag, diag_mono, bb_est, bb_est_mono, time.monotonic())
 
             msg = RobotState()
             msg.timestamp = self.get_clock().now().to_msg()

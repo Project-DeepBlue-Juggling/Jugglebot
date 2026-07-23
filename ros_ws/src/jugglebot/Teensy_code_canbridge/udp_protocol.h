@@ -9,7 +9,7 @@
 namespace JbUdp {
 
 // ── Constants ──────────────────────────────────────────────────────────
-constexpr uint8_t PROTOCOL_VERSION = 3u;  // Bumped on any incompatible wire change
+constexpr uint8_t PROTOCOL_VERSION = 4u;  // Bumped on any incompatible wire change
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -162,11 +162,11 @@ static_assert(sizeof(TelemetryPayload) == 64, "TelemetryPayload size drift");
 
 // Diagnostic: Per-axis diagnostics, published on-change (delta over threshold) OR on a 1 Hz heartbeat. One axis per frame.
 struct DiagnosticPayload {
-  uint8_t axis_id;  // 0..6
+  uint8_t axis_id;  // 0..8 (0..5 legs, 6 hand — CAN3; 7 bb_pitch, 8 bb_hand — CAN1)
   uint8_t axis_state;  // ODrive current_state
   uint8_t ctrl_mode;  // ODrive controller mode
   uint8_t input_mode;  // ODrive input mode
-  uint8_t flags;  // bit0: heartbeat_stale
+  uint8_t flags;  // bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot)
   uint8_t homing_result;  // HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes
   uint8_t pad[2];  // Alignment pad (zero)
   uint32_t active_errors;  // ODrive active_errors bitmask
@@ -176,8 +176,9 @@ struct DiagnosticPayload {
   float temp_fet;  // degC
   float temp_motor;  // degC
   float bus_voltage;  // V
+  float bus_current;  // A (DC bus, from ODrive Get_Bus_Voltage_Current)
 };
-static_assert(sizeof(DiagnosticPayload) == 36, "DiagnosticPayload size drift");
+static_assert(sizeof(DiagnosticPayload) == 40, "DiagnosticPayload size drift");
 
 // HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
 struct HeartbeatT2JPayload {
@@ -299,7 +300,7 @@ static_assert(sizeof(RpcResponsePayload) == 8, "RpcResponsePayload size drift");
 constexpr uint16_t SETPOINT_SIZE = 156u;
 constexpr uint16_t HEARTBEAT_J2T_SIZE = 12u;
 constexpr uint16_t TELEMETRY_SIZE = 64u;
-constexpr uint16_t DIAGNOSTIC_SIZE = 36u;
+constexpr uint16_t DIAGNOSTIC_SIZE = 40u;
 constexpr uint16_t HEARTBEAT_T2J_SIZE = 73u;
 constexpr uint16_t PROFILE_SIZE = 66u;
 constexpr uint16_t CONE_FRAME_SIZE = 21u;

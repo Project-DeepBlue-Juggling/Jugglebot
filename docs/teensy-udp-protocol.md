@@ -40,7 +40,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 
 | Name | Value | Notes |
 |------|------:|-------|
-| `PROTOCOL_VERSION` | 3 | Bumped on any incompatible wire change |
+| `PROTOCOL_VERSION` | 4 | Bumped on any incompatible wire change |
 | `MAGIC` | 0x4A42 | "JB" little-endian preamble (bytes 0x42 0x4A) |
 | `HEADER_SIZE` | 8 | Bytes before payload |
 | `CRC_SIZE` | 2 | Trailing CRC-16 bytes |
@@ -218,15 +218,15 @@ Payload **64 bytes**. Python struct fmt: `<Qffffffffffffff`.
 
 Per-axis diagnostics, published on-change (delta over threshold) OR on a 1 Hz heartbeat. One axis per frame.
 
-Payload **36 bytes**. Python struct fmt: `<BBBBBBBBIIfffff`.
+Payload **40 bytes**. Python struct fmt: `<BBBBBBBBIIffffff`.
 
 | Field | Type | Count | Notes |
 |-------|------|------:|-------|
-| `axis_id` | u8 | 1 | 0..6 |
+| `axis_id` | u8 | 1 | 0..8 (0..5 legs, 6 hand — CAN3; 7 bb_pitch, 8 bb_hand — CAN1) |
 | `axis_state` | u8 | 1 | ODrive current_state |
 | `ctrl_mode` | u8 | 1 | ODrive controller mode |
 | `input_mode` | u8 | 1 | ODrive input mode |
-| `flags` | u8 | 1 | bit0: heartbeat_stale |
+| `flags` | u8 | 1 | bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot) |
 | `homing_result` | u8 | 1 | HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes |
 | `pad` | u8 | 2 | Alignment pad (zero) |
 | `active_errors` | u32 | 1 | ODrive active_errors bitmask |
@@ -236,6 +236,7 @@ Payload **36 bytes**. Python struct fmt: `<BBBBBBBBIIfffff`.
 | `temp_fet` | f32 | 1 | degC |
 | `temp_motor` | f32 | 1 | degC |
 | `bus_voltage` | f32 | 1 | V |
+| `bus_current` | f32 | 1 | A (DC bus, from ODrive Get_Bus_Voltage_Current) |
 
 ### HeartbeatT2J (`MsgType.HEARTBEAT_T2J`, T2J, STREAM port)
 

@@ -27,7 +27,7 @@ import pytest
 
 from controller.teensy_link import (
     HeartbeatT2J, LinkState, BusHealth, FaultState, MsgType,
-    RpcMethod, RpcStatus,
+    RpcMethod, RpcStatus, Diagnostic, BbAxisEstimates,
 )
 from controller.teensy_link import rpc_args
 from controller.teensy_link import protocol as p
@@ -412,5 +412,173 @@ def test_bb_throw_action_times_out_when_firmware_silent():
         assert result.success is False
         assert result.outcome == int(BallButlerCommandOutcome.TIMEOUT)
         assert handle.aborted is True
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── robot_state BB append (9-axis can_node parity) ───────────────────────────
+#
+# The GUI's BB Pitch / BB Hand chart stores and BB fault dots index
+# robot_state.motor_states[7]/[8] positionally (can_node-era layout). The
+# bridge appends those entries from the BB DIAGNOSTIC stash (axis_ids 7/8) +
+# the latest BB_AXIS_ESTIMATES sample, gated to honest silence (7 axes) when
+# BB is dark, stale, or half-alive. See _build_bb_motor_states.
+
+_BB_PITCH = 7
+_BB_HAND = 8
+
+
+def _send_bb_diag(teensy, axis_id, *, flags=0x2, axis_state=8,
+                  active_errors=0, disarm_reason=0, iq_setpoint=0.5,
+                  iq_measured=1.0, temp_fet=35.0, temp_motor=30.0,
+                  bus_voltage=24.0, bus_current=1.5):
+    """Inject a BB DIAGNOSTIC frame (defaults: live, CLOSED_LOOP, clean)."""
+    d = Diagnostic(axis_id=axis_id, axis_state=axis_state, flags=flags,
+                   active_errors=active_errors, disarm_reason=disarm_reason,
+                   iq_setpoint=iq_setpoint, iq_measured=iq_measured,
+                   temp_fet=temp_fet, temp_motor=temp_motor,
+                   bus_voltage=bus_voltage, bus_current=bus_current)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), d.pack())
+
+
+def _send_bb_estimates(teensy, *, pitch_pos=0.25, pitch_vel=-0.1,
+                       hand_pos=3.5, hand_vel=12.0):
+    e = BbAxisEstimates(pitch_pos_rev=pitch_pos, pitch_vel_rps=pitch_vel,
+                        hand_pos_rev=hand_pos, hand_vel_rps=hand_vel,
+                        t_bridge_us=1)
+    teensy.send_to_jetson(int(MsgType.BB_AXIS_ESTIMATES), e.pack())
+
+
+def _bb_live(teensy, node, **diag_kwargs):
+    """Drive the node to a BB-live state: telemetry + both BB diags + estimates."""
+    teensy.send_telemetry()
+    _send_bb_diag(teensy, _BB_PITCH, **diag_kwargs)
+    _send_bb_diag(teensy, _BB_HAND, **diag_kwargs)
+    _send_bb_estimates(teensy)
+    assert _wait_until(lambda: node._latest_telemetry is not None
+                       and _BB_PITCH in node._latest_diag
+                       and _BB_HAND in node._latest_diag
+                       and node._latest_bb_est is not None)
+
+
+def test_robot_state_appends_bb_axes_when_live():
+    """BB live (both diags heartbeat_seen + fresh estimates) → 9 motor_states,
+    [7]=pitch / [8]=hand positionally, pos/vel from BB_AXIS_ESTIMATES and
+    diag-sourced fields (incl. bus V/I — the BB charts' feedback) intact."""
+    teensy, client, node = _node()
+    try:
+        _bb_live(teensy, node)
+        node._publish_robot_state()
+        msg = node.robot_state_pub.published[-1]
+        assert len(msg.motor_states) == p.NUM_AXES + 2
+        pitch, hand = msg.motor_states[_BB_PITCH], msg.motor_states[_BB_HAND]
+        # Positional integrity: [7] carries the pitch estimates, [8] the hand's.
+        assert pitch.pos_estimate == pytest.approx(0.25)
+        assert pitch.vel_estimate == pytest.approx(-0.1)
+        assert hand.pos_estimate == pytest.approx(3.5)
+        assert hand.vel_estimate == pytest.approx(12.0)
+        for s in (pitch, hand):
+            assert s.current_state == 8
+            assert s.iq_setpoint == pytest.approx(0.5)
+            assert s.iq_measured == pytest.approx(1.0)
+            assert s.fet_temp == pytest.approx(35.0)
+            assert s.motor_temp == pytest.approx(30.0)
+            assert s.bus_voltage == pytest.approx(24.0)
+            assert s.bus_current == pytest.approx(1.5)
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_robot_state_seven_axes_when_bb_never_seen():
+    """Phantom-axis guard: a dark/absent BB still produces zero-filled diag
+    frames (flags bit1 clear = its ODrive never heartbeated) — those must NOT
+    surface as live all-zero motors."""
+    teensy, client, node = _node()
+    try:
+        _bb_live(teensy, node, flags=0x0, axis_state=0)
+        node._publish_robot_state()
+        msg = node.robot_state_pub.published[-1]
+        assert len(msg.motor_states) == p.NUM_AXES
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_robot_state_drops_bb_axes_on_stale_heartbeat():
+    """Mid-session BB death (heartbeat_stale set) → entries vanish (honest
+    silence), never a frozen flatline."""
+    teensy, client, node = _node()
+    try:
+        _bb_live(teensy, node, flags=0x2 | 0x1)   # seen, but stale
+        node._publish_robot_state()
+        msg = node.robot_state_pub.published[-1]
+        assert len(msg.motor_states) == p.NUM_AXES
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_robot_state_drops_bb_axes_when_estimates_stale():
+    """No BB_AXIS_ESTIMATES within _BB_EST_FRESH_S → the pos/vel source is
+    dead, so the BB entries are dropped even with fresh-looking diags."""
+    teensy, client, node = _node()
+    try:
+        _bb_live(teensy, node)
+        with node._lock:
+            node._latest_bb_est_mono -= 10.0   # backdate past _BB_EST_FRESH_S
+        node._publish_robot_state()
+        msg = node.robot_state_pub.published[-1]
+        assert len(msg.motor_states) == p.NUM_AXES
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_robot_state_drops_bb_axes_when_diag_stash_stale():
+    """A frozen diag stash (uplink slot dead > _BB_DIAG_FRESH_S) must not keep
+    the BB entries alive on old data."""
+    teensy, client, node = _node()
+    try:
+        _bb_live(teensy, node)
+        with node._lock:
+            node._latest_diag_mono[_BB_PITCH] -= 10.0
+        node._publish_robot_state()
+        msg = node.robot_state_pub.published[-1]
+        assert len(msg.motor_states) == p.NUM_AXES
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_robot_state_bb_axes_all_or_nothing():
+    """Half-alive BB (pitch diag only) → NEITHER entry appended. A lone hand
+    entry would land at index 7 and be read as the pitch motor by every
+    positional consumer — positional integrity beats partial data."""
+    teensy, client, node = _node()
+    try:
+        teensy.send_telemetry()
+        _send_bb_diag(teensy, _BB_PITCH)
+        _send_bb_estimates(teensy)
+        assert _wait_until(lambda: node._latest_telemetry is not None
+                           and _BB_PITCH in node._latest_diag
+                           and node._latest_bb_est is not None)
+        node._publish_robot_state()
+        msg = node.robot_state_pub.published[-1]
+        assert len(msg.motor_states) == p.NUM_AXES
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_robot_state_bb_fault_visible_but_not_leg_fatal():
+    """A faulted-but-heartbeating BB ODrive stays IN robot_state (the GUI fault
+    dots read motor_states[7]/[8].active_errors) — and its errors must NOT
+    leak into the leg-scoped fatal/undervoltage flags (BB isolation,
+    ADR-0013). 512 = ERR_DC_BUS_UNDER_VOLTAGE, the exact bit has_undervoltage
+    tests on LEGS — proof the slice excludes the trailing BB entries."""
+    teensy, client, node = _node()
+    try:
+        _bb_live(teensy, node, active_errors=512, disarm_reason=0x40)
+        node._publish_robot_state()
+        msg = node.robot_state_pub.published[-1]
+        assert len(msg.motor_states) == p.NUM_AXES + 2
+        assert msg.motor_states[_BB_PITCH].active_errors == 512
+        assert msg.has_fatal_odrive_error is False
+        assert msg.has_undervoltage is False
     finally:
         _teardown(teensy, client, node)

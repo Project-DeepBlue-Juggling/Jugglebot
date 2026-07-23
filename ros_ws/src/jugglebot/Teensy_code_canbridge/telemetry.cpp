@@ -74,7 +74,7 @@ static void send_diag(uint8_t axis) {
   d.axis_state    = a.axis_state;
   d.ctrl_mode     = a.controller_mode;
   d.input_mode    = a.input_mode;
-  d.flags         = stale ? 0x1u : 0x0u;
+  d.flags         = (stale ? 0x1u : 0x0u) | (a.heartbeat_seen ? 0x2u : 0x0u);
   d.active_errors = a.active_errors;
   d.disarm_reason = a.disarm_reason;
   d.iq_setpoint   = a.iq_setpoint;
@@ -82,6 +82,9 @@ static void send_diag(uint8_t axis) {
   d.temp_fet      = a.temp_fet;
   d.temp_motor    = a.temp_motor;
   d.bus_voltage   = a.bus_voltage;
+  // bus_current rides along like iq_measured: no change-detect term of its own —
+  // iq_setpoint (>0.5 A) is its load proxy, the 1 Hz forced refresh covers drift.
+  d.bus_current   = a.bus_current;
   d.homing_result = homing_result(axis);   // real firmware outcome, per axis
   udp_send_stream(JbUdp::MsgType::DIAGNOSTIC, (const uint8_t*)&d, sizeof(d));
 
@@ -110,7 +113,10 @@ static void send_bb_diag(uint8_t idx) {
   d.axis_state    = a.axis_state;
   d.ctrl_mode     = a.controller_mode;
   d.input_mode    = a.input_mode;
-  d.flags         = stale ? 0x1u : 0x0u;
+  // heartbeat_seen (bit1) is the host's phantom-axis gate: robot_state appends
+  // BB entries only for axes whose ODrive has actually heartbeated this boot,
+  // so a dark/absent BB never surfaces as an all-zero "live" motor.
+  d.flags         = (stale ? 0x1u : 0x0u) | (a.heartbeat_seen ? 0x2u : 0x0u);
   d.active_errors = a.active_errors;
   d.disarm_reason = a.disarm_reason;
   d.iq_setpoint   = a.iq_setpoint;
@@ -118,6 +124,7 @@ static void send_bb_diag(uint8_t idx) {
   d.temp_fet      = a.temp_fet;
   d.temp_motor    = a.temp_motor;
   d.bus_voltage   = a.bus_voltage;
+  d.bus_current   = a.bus_current;
   udp_send_stream(JbUdp::MsgType::DIAGNOSTIC, (const uint8_t*)&d, sizeof(d));
 }
 

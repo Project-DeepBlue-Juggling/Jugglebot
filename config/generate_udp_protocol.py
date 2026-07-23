@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 3,      "u8",  "Bumped on any incompatible wire change"),
+    ("PROTOCOL_VERSION", 4,      "u8",  "Bumped on any incompatible wire change"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -306,11 +306,11 @@ MESSAGES = [
             "Per-axis diagnostics, published on-change (delta over threshold) OR "
             "on a 1 Hz heartbeat. One axis per frame."),
         fields=[
-            Field("axis_id",       "u8",  1, "0..6"),
+            Field("axis_id",       "u8",  1, "0..8 (0..5 legs, 6 hand — CAN3; 7 bb_pitch, 8 bb_hand — CAN1)"),
             Field("axis_state",    "u8",  1, "ODrive current_state"),
             Field("ctrl_mode",     "u8",  1, "ODrive controller mode"),
             Field("input_mode",    "u8",  1, "ODrive input mode"),
-            Field("flags",         "u8",  1, "bit0: heartbeat_stale"),
+            Field("flags",         "u8",  1, "bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot)"),
             Field("homing_result", "u8",  1, "HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes"),
             Field("pad",           "u8",  2, "Alignment pad (zero)"),
             Field("active_errors", "u32", 1, "ODrive active_errors bitmask"),
@@ -320,6 +320,7 @@ MESSAGES = [
             Field("temp_fet",      "f32", 1, "degC"),
             Field("temp_motor",    "f32", 1, "degC"),
             Field("bus_voltage",   "f32", 1, "V"),
+            Field("bus_current",   "f32", 1, "A (DC bus, from ODrive Get_Bus_Voltage_Current)"),
         ],
     ),
     Message(

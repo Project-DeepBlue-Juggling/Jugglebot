@@ -245,8 +245,10 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 3, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
-                              # leg guard-deviation diagnostics (2026-07-10 forensics)
+    assert spec_ver == 4, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
+                              # leg guard-deviation diagnostics (2026-07-10 forensics);
+                              # 3→4: Diagnostic bus_current + heartbeat_seen flag
+                              # (2026-07-24 BB robot_state restoration — payload 36→40 B)
         f"PROTOCOL_VERSION changed to {spec_ver}. If this is an intentional "
         "incompatible-wire bump: update this pin, re-pin test_wire_layout_frozen, and "
         "reflash the whole fleet (Jetson + Teensy ship the same version).")
@@ -279,11 +281,12 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
-    # Re-pinned for the HeartbeatT2J leg guard-deviation diagnostics (2026-07-10
-    # MAX_DEVIATION-runaway forensics: +live_deviation[6], lead_clamp_mask,
-    # max_dev_leg, max_dev_value/u0/enc), paired with the PROTOCOL_VERSION 2→3 bump
-    # above (an incompatible-wire change — the heartbeat payload grew 35→73 B).
-    _EXPECTED = "f1ed6ab4716bac5a929aaf58a1c2f6676b7853e00fb5c167460ced839401d011"
+    # Re-pinned for the Diagnostic bus_current field + heartbeat_seen flag
+    # (2026-07-24 BB robot_state restoration: the GUI's BB charts need bus V/I,
+    # and the append gate needs an explicit phantom-axis discriminator), paired
+    # with the PROTOCOL_VERSION 3→4 bump above (an incompatible-wire change —
+    # the Diagnostic payload grew 36→40 B).
+    _EXPECTED = "5ad4fa88cf2b1ba137139e42304586d1922a6c7053ab6915ce400ef7aa2a95f3"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

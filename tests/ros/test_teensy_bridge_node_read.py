@@ -192,7 +192,8 @@ def test_robot_state_from_telemetry_and_diagnostic(bridge):
     # Diagnostic for leg axis 2: CLOSED_LOOP, an active error, temps.
     diag = Diagnostic(axis_id=2, axis_state=8, active_errors=0x40,
                       disarm_reason=0, iq_measured=1.5,
-                      temp_fet=30.0, temp_motor=25.0, bus_voltage=48.0)
+                      temp_fet=30.0, temp_motor=25.0, bus_voltage=48.0,
+                      bus_current=2.5)
     teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
 
     assert _wait_until(lambda: node._latest_telemetry is not None
@@ -209,6 +210,7 @@ def test_robot_state_from_telemetry_and_diagnostic(bridge):
     assert msg.motor_states[2].active_errors == 0x40
     assert msg.motor_states[2].iq_measured == pytest.approx(1.5)
     assert msg.motor_states[2].bus_voltage == pytest.approx(48.0)
+    assert msg.motor_states[2].bus_current == pytest.approx(2.5)
 
 
 def test_has_fatal_can_error_from_bus_off(bridge):
