@@ -22,7 +22,9 @@ files_changed:
   - tests/hardware/session_phase7_reload.md
   - plans/active/mvp-trajectory-bringup.md
   - logbook/INDEX.md
-commits: []
+commits:
+  - 8dbd3a0
+  - bc6f78d
 subsystem:
   - ros
   - motion
