@@ -341,9 +341,11 @@ trajectory_op:
 > in TRAJECTORY** (armed). It raises a **catch-armed latch** on `trajectory_node`
 > (`trajectory/arm_catch`, mirrored on the `catch/armed` topic that gates the hand) only
 > for the ball's flight window — that latch is what lets `catch/dynamic_target` reach
-> `planner.build_catch` and actuate the platform. On throw-accept it proactively **primes
-> the hand to top**; on CAUGHT it lowers the latch and **re-centers** (`go_home`); on any
-> abort it **retracts the hand + re-centers**. The catch *mechanics* below are unchanged;
+> `planner.build_catch` and actuate the platform. It **primes the hand to top the moment
+> the goal's preconditions pass** and **raises the latch BEFORE the throw is committed**
+> (2026-07-23 reorder — BB's firmware countdown has no abort opcode, so every
+> Jugglebot-side arming step precedes `bb/throw_at_target`); on CAUGHT it lowers the
+> latch and **re-centers** (`go_home`); on any abort it **retracts the hand + re-centers**. The catch *mechanics* below are unchanged;
 > only the *trigger* moved from a mode to the action-owned latch. The aim point is now the
 > **809.08 mm cup plane** (the Q1 fix, `bdbd186`), not the 744.3 mm centroid. The numbered
 > steps below are updated in place to the action-driven model.
@@ -357,7 +359,7 @@ bool success
 string outcome                 # CAUGHT | REJECTED_<code> | ABORTED_<code> | MISSED | MISSED_<code>
 float64 catch_error_mm         # mocap miss distance (NaN if unknown)
 ---
-string phase                   # CHECKING | AIMING | THROW_PENDING | BALL_IN_FLIGHT | CATCHING | SETTLING
+string phase                   # CHECKING | PREPARING | AIMING | THROW_PENDING | BALL_IN_FLIGHT | CATCHING | SETTLING
 ```
 
 Served by a new thin `reload_coordinator_node.py` wrapping a pure-Python
@@ -380,8 +382,10 @@ hand (existing behaviour reused unchanged).
    plus the centroid→cup-plane offset (= 574.3 + 170.0 + 64.78 = **809.08 mm**, the cup
    plane where the hand intercepts the ball, per
    `reload_sequencer.compute_catch_point_mm`; the Q1 fix `bdbd186` — aiming at the 744.3 mm
-   centroid ate tilt/reach margin on every catch). **On throw-accept the action proactively
-   primes the hand to top and raises the catch-armed latch.** **Phase 7a verifies the
+   centroid ate tilt/reach margin on every catch). **The hand prime already ran at
+   CHECKING (the moment preconditions passed) and the catch-armed latch was raised +
+   node-confirmed in PREPARING — both BEFORE this throw call (2026-07-23 ordering: the
+   throw is the LAST commitment, because it cannot be aborted).** **Phase 7a verifies the
    QTM-world vs jugglebot-base frame convention with an aim-only (speed = 0) command
    before any ball flies.**
    `throw_delay_s ≥ 2.5`; BB rejections surface as `REJECTED_BB(<message>)`.
@@ -391,7 +395,7 @@ hand (existing behaviour reused unchanged).
    tilt drives `catch/dynamic_target` → `planner.build_catch` — the existing catch path,
    now latch-triggered instead of mode-gated. No announcement within `throw_delay + 0.5 s`
    ⇒ `ABORTED_NO_ANNOUNCEMENT` (SAFE_ABORT: retract hand + re-center, since the hand was
-   already primed on throw-accept).
+   primed and the latch raised before the throw).
 4. **Platform catch trajectory** (`planner.build_catch`, sim-gated in Phase 6):
    reach translation (target ≤ 80 mm — the sim-established reliable envelope)
    starts immediately and **freezes** at `t_arrival − catch_reach_freeze_s`
@@ -409,10 +413,15 @@ hand (existing behaviour reused unchanged).
    horizontal miss from the catch point (an in-flight estimate, **not** a settled rest
    position); the hand-telemetry cross-check is documented-deferred (implement if 7c shows
    false `CAUGHT`s). Otherwise `MISSED`.
-6. **Aborts**: BB reject → clean reject (nothing armed if it lands before PREPARE);
+6. **Aborts**: BB reject → `REJECTED_BB(<message>)` via SAFE_ABORT (arming precedes
+   the throw, so the reject always lands armed — nothing is in the air, but the robot
+   must be un-armed; a prime/latch FAILURE aborts earlier still, with the throw unsent:
+   `ABORTED_PRIME_FAILED` / `ABORTED_PREPARE_FAILED`);
    announcement timeout → SAFE_ABORT (retract hand + lower latch + re-center);
    post-release infeasible catch target → platform holds last valid pose, hand
-   fires per its armed schedule, outcome `MISSED_INFEASIBLE` (with the gate code);
+   fires per its armed schedule, and the outcome resolves AT SETTLE (a
+   tracker-confirmed CAUGHT wins; else `MISSED_INFEASIBLE` with the gate code —
+   never a mid-flight teardown);
    operator abort = **cancel the action** (or an early node exit) → SAFE_ABORT once
    PREPARE has run: retract the hand, lower the latch, and re-center via `go_home` — the
    Phase-1 disarm-edge graceful stop makes the latch-lower seam a C2 replan (no snap).
@@ -959,10 +968,13 @@ catch reach through the last `JB_TRAJ_CATCH_REACH_FREEZE_S`); `trajectory/target
 carries accept/reject to `catch_coordinator_node`, which **swaps** its dormant ZMQ :5559
 `TargetFeedbackSub` for the topic (feasibility blacklist semantics preserved). One
 ROS-clock→perf_counter conversion point (`_ros_time_to_perf`); the catch path is already
-perf-domain (system-wide `CLOCK_MONOTONIC`). The catch z is lifted by the active-z (170)
-from the MPC-offset convention (0 = active) to the trajectory STOW-relative convention
-(170 = active) — flagged for Phase-7 hardware verification (the gate rejects an
-out-of-stroke z loudly meanwhile). Every emitted timed knot is pump-accepted (invariant
+perf-domain (system-wide `CLOCK_MONOTONIC`). The catch z was lifted by the active-z (170)
+on a false premise that the wire was MPC-offset (0 = active) — the wire is in fact
+STOW-relative (the coordinator subtracts GEOM_INITIAL_HEIGHT; the MPC frame is itself
+stow-relative, run_mpc.py:80-82), so the lift double-counted the active height. The
+Phase-7 hardware verification this was flagged for (2026-07-23 session) caught exactly
+that: every catch reach commanded z≈341 mm and was gate-rejected out-of-stroke; the
+lift was removed and the wire declared STOW-relative in DynamicTargetCommand.msg. Every emitted timed knot is pump-accepted (invariant
 re-asserted). Verification: `pytest tests/ -q` (2026-07-08) = **2164 passed,
 1 xfailed in 535.82 s** (baseline 2128/1 at `1c0f9c1`; net **+36** = new tests only: 12
 planner-timed + 17 node + 7 catch-coordinator); ci-deep (`pytest tests/ -q

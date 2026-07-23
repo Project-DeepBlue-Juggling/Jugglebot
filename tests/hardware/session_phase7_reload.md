@@ -2,7 +2,8 @@
 
 **Plan**: `plans/active/mvp-trajectory-bringup.md` § Phase 7
 **Logbook**: `logbook/2026-07-08-mvp-phase7-reload-action.md`,
-`logbook/2026-07-20-reload-action-catch-latch.md` (the action-driven reframe)
+`logbook/2026-07-20-reload-action-catch-latch.md` (the action-driven reframe),
+`logbook/2026-07-23-phase7-reload-first-hardware-session.md` (first session's findings + fixes)
 **Goal**: Ball Butler aims at Jugglebot's ACTIVE **cup-plane** catch point and throws;
 the **`jugglebot/reload` action** drives the whole catch from ACTIVE — it proactively
 primes the hand, raises the **catch-armed latch** for the flight window (which lets the
@@ -21,6 +22,29 @@ passes, or 7c before 7b passes.**
 | **7c** full reload | the `jugglebot/reload` action: prime → throw → reactive tilt-catch → recenter, + each abort path | yes | yes |
 
 ---
+
+> **⚡ RE-TEST after the 2026-07-23 fixes** (`logbook/2026-07-23-phase7-reload-first-hardware-session.md`).
+> The first session's failures are all fixed; what changed for THIS run:
+> 1. **The platform should now tilt in 7c.** Every first-session catch reach was
+>    gate-rejected by a z frame double-add (commanded z ≈ 341 mm, out of stroke);
+>    the wire is now consumed verbatim (z ≈ 171 at the cup plane).
+> 2. **The hand primes at COMMAND time** — the moment the reload goal's
+>    preconditions pass (7c) or `catch/armed` goes true (7b). If the hand does
+>    NOT start rising within ~a second of either, you are running a stale build.
+> 3. **Arming precedes the throw**: feedback now shows `PREPARING` between
+>    `CHECKING` and `AIMING`; a prime/latch failure aborts with NO throw committed.
+> 4. **Abort retract actually retracts now** (old target −0.1 rev was silently
+>    rejected by the bridge; it is 0.0 now). After any abort the hand should end
+>    at the BOTTOM of its stroke.
+> 5. **New reach envelope (80 mm)**: catch targets > 80 mm from the armed hold pose
+>    are rejected `WORKSPACE` with an "exceeds the … reach envelope" reason. If you
+>    see these repeatedly on near-centre throws, that is the OPEN tracker-drift
+>    finding (BB-ball landing estimates drift 435–605 mm/s toward BB) — capture the
+>    bag and stop; that investigation is its own session.
+> **Before this session**: rebuild BOTH packages (`colcon build --packages-select
+> jugglebot_interfaces jugglebot` — the msg doc changed too) + `source
+> install/setup.bash` + relaunch; and **power-cycle the can-bridge Teensy** (the
+> OPEN uptime-lag issue — start the session on a fresh bridge).
 
 > **⚡ Action-driven reload, 2026-07-20 (no CATCH mode)**: the catch is no longer
 > gated by a persistent **CATCH** control mode the operator holds. That mode was
@@ -153,9 +177,12 @@ gate deliberately for a single throw.
 ros2 topic pub -t 3 -r 2 /catch/armed std_msgs/msg/Bool "{data: true}"
 ```
 
-   Confirm the hand primes to top once `/balls` shows the ball (`catch_coordinator_node`
-   primes + arms on the first catchable ball while `catch/armed` is true, and the
-   platform holds because the reach latch is down).
+   **The hand primes to top IMMEDIATELY on this publish** (the 2026-07-23 fix:
+   `catch_coordinator_node` primes on the `catch/armed` rising edge — it no longer
+   waits for a ball on `/balls`, which made the first session's primes a coin flip
+   against the 0.878 s flight). If the hand does not start rising within ~1 s, the
+   build is stale — stop and rebuild. The platform holds because the reach latch is
+   down.
 3. Fire a single dead-centre throw. `target_name` names the robot so the announcement's
    `target_id` is `jugglebot` (not the default `point`) — otherwise the tracker tags the
    ball destination `point` and the whole catch pipeline drops it:
@@ -194,15 +221,21 @@ ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload \
   "{throw_delay_s: 3.0}" --feedback
 ```
 
-Watch the feedback phases: `CHECKING (dwells up to 10 s while BB reloads if the
-hand is empty — RELOADING is BB's heartbeat state, not a feedback phase) → AIMING →
-THROW_PENDING → BALL_IN_FLIGHT → CATCHING → SETTLING`, then a result. Under the hood:
-on **throw-accept** the action proactively primes the hand to top
-(`JB_OP_HAND_CATCH_PRIME_REV = 9.858`) and **raises the catch-armed latch** (so the
-reactive tilt can actuate the platform for the flight window); on **CAUGHT** it lowers
-the latch and **re-centers** (`go_home`, hand keeps the ball); on **any abort** it
-**retracts the hand to bottom** (`HOMING_HAND_ABS_POS_REV ≈ 0`), lowers the latch, and
-re-centers.
+Watch the feedback phases: `CHECKING (primes the hand immediately; dwells up to 10 s
+while BB reloads if the hand is empty — RELOADING is BB's heartbeat state, not a
+feedback phase) → PREPARING (raises the catch-armed latch, BEFORE any throw) →
+AIMING → THROW_PENDING → BALL_IN_FLIGHT → CATCHING → SETTLING`, then a result.
+Under the hood (2026-07-23 ordering: **every arming step precedes the throw**,
+because BB's firmware countdown has no abort opcode): CHECKING dispatches the hand
+prime to top (`JB_OP_HAND_CATCH_PRIME_REV = 9.858`) the moment preconditions pass;
+PREPARING raises the latch and confirms it; only then does AIMING send
+`bb/throw_at_target`. On **CAUGHT** it lowers the latch and **re-centers**
+(`go_home`, hand keeps the ball); on **any abort** it **retracts the hand to
+bottom** (`JB_OP_HAND_RETRACT_REV = 0.0`), lowers the latch, and re-centers. A
+standing catch-target rejection no longer ends the action mid-flight — the platform
+holds, the primed cup gets its chance (it caught twice that way in the first
+session), and the outcome resolves at settle (`CAUGHT` beats
+`MISSED_INFEASIBLE_<code>`).
 
 - **PASS**: ≥ 3/5 reloads return `outcome: CAUGHT` with a logged `catch_error_mm`;
   motion subjectively smooth (no snap at the prime, the latch-raise seam, or the
@@ -218,14 +251,17 @@ re-centers.
   hand, lowers the latch, and re-centers on early exit.)
 - Exercise each abort path once, deliberately:
   - **no-ball reject**: run with the hand empty and `bb/reload` disabled / ball removed
-    → expect `REJECTED_NO_BALL` after the 10 s reload wait, **zero platform motion**,
-    nothing armed (the reject lands before PREPARE).
+    → expect `REJECTED_NO_BALL` after the 10 s reload wait. The hand was already primed
+    at command, so the reject now **retracts it** (SAFE_ABORT) — the hand ends at the
+    bottom; the platform never moved.
   - **announcement-timeout abort**: disable BB (or block the throw) after the goal is
-    accepted → expect `ABORTED_NO_ANNOUNCEMENT` within `throw_delay + 0.5 s`; because
-    PREPARE has run, the action **retracts the hand + re-centers** (SAFE_ABORT), platform
-    ends level.
+    accepted → expect `ABORTED_NO_ANNOUNCEMENT` within `throw_delay + 0.5 s`; the action
+    **retracts the hand + re-centers** (SAFE_ABORT), platform ends level, hand at bottom
+    (the first session's aborts left the hand parked at TOP — that was the −0.1 rev
+    silent-reject bug, now fixed; verify the retract actually happens).
   - **wrong-mode reject**: send the goal while NOT in a streaming TRAJECTORY hold (e.g.
-    in STANDBY) → expect `REJECTED_WRONG_MODE` immediately, zero motion.
+    in STANDBY) → expect `REJECTED_WRONG_MODE` immediately, zero motion, no prime (the
+    reject lands before any arming).
 - **ABORT**: two consecutive bounce-outs (back to Phase 6); any E-STOP; a catch target
   the gate rejects mid-sequence surfacing as `MISSED_INFEASIBLE_<code>` on more than one
   in five (revisit the reach envelope / limits).
