@@ -30,6 +30,7 @@ from tests.ros.conftest import (
     MockServiceClient,
     MockActionClient,
 )
+from std_srvs.srv import Trigger
 
 
 @pytest.fixture
@@ -803,6 +804,100 @@ class TestGuardLatch:
             traj._on_control_mode(String(data=mode))
             assert traj._streaming is True
             assert traj._guard_frozen is True
+
+
+class TestReloadRelay:
+    """The GUI reaches the jugglebot/reload ACTION only through this Trigger
+    relay (rosbridge on Foxy has no action transport). The relay dispatches ONE
+    Reload goal fire-and-forget with fixed values; the reload coordinator owns
+    preconditions + the outcome. See orchestrator_node._svc_reload_request."""
+
+    def test_reload_request_service_registered_as_trigger(self, orch):
+        assert 'jugglebot/reload_request' in orch._services
+        assert orch._services['jugglebot/reload_request'].srv_type is Trigger
+
+    def test_reload_action_client_created(self, orch):
+        # Relays to the ACTION named jugglebot/reload (NOT the request service).
+        assert 'jugglebot/reload' in orch._action_clients
+
+    def test_dispatch_acks_when_server_ready(self, orch):
+        orch._reload_client._server_ready = True
+        res = orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        assert res.success is True
+        assert 'dispatch' in res.message.lower()
+
+    def test_dispatch_fails_when_server_not_ready(self, orch):
+        orch._reload_client._server_ready = False
+        res = orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        assert res.success is False
+        assert 'unavailable' in res.message.lower()
+
+    def test_goal_carries_fixed_params(self, orch):
+        """throw_delay_s 3.0, catch_vel_scale 0.0 (0 => coordinator default; the
+        numeric default is NEVER encoded here or in the GUI)."""
+        captured = {}
+
+        def _spy_send(goal):
+            captured['goal'] = goal
+            return MockFuture()
+
+        orch._reload_client._server_ready = True
+        orch._reload_client.send_goal_async = _spy_send
+        orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        goal = captured['goal']
+        assert goal.throw_delay_s == 3.0
+        assert goal.catch_vel_scale == 0.0
+
+    def test_not_ready_dispatches_nothing(self, orch):
+        """A not-ready server must not send a goal (no half-fired reload)."""
+        sent = []
+        orch._reload_client._server_ready = False
+        orch._reload_client.send_goal_async = lambda goal: sent.append(goal)
+        orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        assert sent == []
+
+    def test_goal_response_rejected_is_safe(self, orch):
+        goal_future = MockFuture()
+        goal_handle = MagicMock()
+        goal_handle.accepted = False
+        goal_future.set_result(goal_handle)
+        orch._on_reload_goal_response(goal_future)   # must not raise
+        goal_handle.get_result_async.assert_not_called()
+
+    def test_goal_response_accepted_chains_result(self, orch):
+        goal_future = MockFuture()
+        goal_handle = MagicMock()
+        goal_handle.accepted = True
+        goal_handle.get_result_async.return_value = MockFuture()
+        goal_future.set_result(goal_handle)
+        orch._on_reload_goal_response(goal_future)
+        goal_handle.get_result_async.assert_called_once()
+
+    def test_goal_response_exception_is_safe(self, orch):
+        goal_future = MockFuture()
+        goal_future.set_exception(RuntimeError('goal send blew up'))
+        orch._on_reload_goal_response(goal_future)    # must not raise
+
+    def test_result_callback_logs_outcome_safely(self, orch):
+        result_future = MockFuture()
+        wrapper = MagicMock()
+        wrapper.result.success = True
+        wrapper.result.outcome = 'CAUGHT'
+        wrapper.result.catch_error_mm = 12.0
+        result_future.set_result(wrapper)
+        orch._on_reload_result(result_future)         # must not raise
+
+    def test_result_callback_exception_is_safe(self, orch):
+        result_future = MockFuture()
+        result_future.set_exception(RuntimeError('result blew up'))
+        orch._on_reload_result(result_future)         # must not raise
+
+    def test_reload_request_never_touches_state_machine(self, orch):
+        """The relay is a side-channel: it must NOT enqueue a command into the SM
+        queue (that path is for lifecycle transitions, not the reload)."""
+        orch._reload_client._server_ready = True
+        orch._svc_reload_request(Trigger.Request(), Trigger.Response())
+        assert orch.ctx.consume_command() is None
 
 
 class TestFireForgetDisarm:

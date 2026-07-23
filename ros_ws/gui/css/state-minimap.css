@@ -282,3 +282,28 @@
     margin: 2px 10px 8px;
     flex-shrink: 0;
 }
+
+/* ---- Reload button + its status line ---- */
+
+#minimap-reload {
+    margin: 0 10px 6px;
+    flex-shrink: 0;
+}
+
+/* Purple accent — distinct from home/activate/deactivate/fault (viewer.css). */
+.cmd-btn.btn-reload {
+    border-color: var(--accent-purple);
+    color: var(--accent-purple);
+}
+
+#minimap-reload-status {
+    min-height: 1.4em;
+    padding: 0 10px 6px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+#minimap-reload-status.status-err { color: var(--accent-red); }
+#minimap-reload-status.status-ok  { color: var(--accent-green); }

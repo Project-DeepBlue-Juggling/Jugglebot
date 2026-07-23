@@ -24,9 +24,20 @@ SAME mock interface classes, so ``srv_type`` / ``action_type`` compare by identi
 from __future__ import annotations
 
 from jugglebot_interfaces.msg import RobotState
+from jugglebot_interfaces.action import Reload
 from std_msgs.msg import Float64MultiArray
 
 from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+
+
+# Orchestrator action clients that are DELIBERATELY not bridge-served — they
+# target a different node, so the bridge-drift contract below correctly excludes
+# them. jugglebot/reload is served by reload_coordinator_node (the GUI reaches it
+# through orchestrator_node's jugglebot/reload_request relay; rosbridge on Foxy has
+# no action transport). This is a scoping of the contract to its actual root cause
+# (orchestrator↔bridge drift), NOT a weakening: every bridge-conduit action client
+# is still fully guarded.
+_NON_BRIDGE_ORCH_ACTIONS = {('jugglebot/reload', Reload)}
 
 
 def _teardown(teensy, client, node):
@@ -84,13 +95,31 @@ def test_bridge_serves_every_orchestrator_service_client():
 
 
 def test_bridge_serves_every_orchestrator_action_client():
-    """The orchestrator's home_motors action client must have a matching bridge
-    ActionServer (name, type)."""
+    """Every BRIDGE-CONDUIT action client the orchestrator declares must have a
+    matching bridge ActionServer (name, type) — currently home_motors. Action
+    clients targeting other nodes (jugglebot/reload → reload_coordinator_node) are
+    excluded via _NON_BRIDGE_ORCH_ACTIONS: they are outside this contract's root
+    cause (orchestrator↔bridge drift)."""
     orch, teensy, client, bridge = _build_both()
     try:
-        missing = _orch_action_clients(orch) - _bridge_actions(bridge)
+        missing = (_orch_action_clients(orch)
+                   - _bridge_actions(bridge)
+                   - _NON_BRIDGE_ORCH_ACTIONS)
         assert not missing, (
             f"bridge does not serve orchestrator action clients (name,type): {missing}")
+    finally:
+        _teardown(teensy, client, bridge)
+
+
+def test_reload_action_client_is_not_bridge_served():
+    """jugglebot/reload is the orchestrator's one NON-bridge action client: the GUI
+    reload relay (jugglebot/reload_request Trigger → this client) targets
+    reload_coordinator_node, NOT the bridge. Guards against someone wiring the reload
+    onto the bridge by mistake, and documents that the exemption above is real."""
+    orch, teensy, client, bridge = _build_both()
+    try:
+        assert ('jugglebot/reload', Reload) in _orch_action_clients(orch)
+        assert ('jugglebot/reload', Reload) not in _bridge_actions(bridge)
     finally:
         _teardown(teensy, client, bridge)
 

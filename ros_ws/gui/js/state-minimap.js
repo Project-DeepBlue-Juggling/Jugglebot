@@ -1143,6 +1143,84 @@ function renderStatusLine() {
     dom.status.className = s.cls ? 'status-' + s.cls : '';
 }
 
+// ---- Reload button (GUI → jugglebot/reload_request → jugglebot/reload) ----
+//
+// Fire-and-forget with a status hint: the callService below returns the relay's
+// DISPATCH ack (accepted/unavailable), not the reload's CAUGHT/MISSED outcome —
+// rosbridge on Foxy has no ROS2-action transport, so the outcome can't come back
+// here; it is logged by orchestrator_node and shows in the Ball Butler / tracking
+// panels.  reloadBusy latches the button disabled for a brief re-dispatch cooldown
+// after a successful dispatch (a genuine concurrent reload is rejected by the
+// coordinator anyway — the cooldown only stops accidental double-clicks).
+const RELOAD_COOLDOWN_MS = 4000;
+let reloadBusy = false;
+let reloadStatusMsg = null;    // { text, cls } | null
+let reloadCooldownTimer = null;
+let reloadStatusClearTimer = null;
+
+function setReloadStatus(text, cls) {
+    reloadStatusMsg = text ? { text, cls: cls || '' } : null;
+    renderReloadButton();
+}
+
+function renderReloadButton() {
+    if (!dom || !dom.reload) return;
+    const connected = snap.conn === 'connected';
+    const active = snap.orch.main === 'ACTIVE';
+    dom.reload.disabled = reloadBusy || !connected || !active;
+    dom.reload.title = reloadBusy
+        ? 'Reload dispatched — waiting for the sequence…'
+        : !connected
+            ? 'rosbridge disconnected'
+            : !active
+                ? 'Reload is available only in ACTIVE'
+                : 'BB throws a ball; Jugglebot catches it (throw in ~3 s)';
+    const s = reloadStatusMsg || { text: '', cls: '' };
+    dom.reloadStatus.textContent = s.text;
+    dom.reloadStatus.className = s.cls ? 'status-' + s.cls : '';
+}
+
+function onReloadClick() {
+    // The applySnapshot gate already disables the button off-ACTIVE / disconnected /
+    // busy; re-check here so a stale click that slips through is a no-op.
+    if (reloadBusy || snap.conn !== 'connected' || snap.orch.main !== 'ACTIVE') return;
+    reloadBusy = true;
+    setReloadStatus('Dispatching reload…', '');
+    emitEvent({
+        type: EVENT_TYPES.COMMAND,
+        label: 'Reload',
+        detail: 'jugglebot/reload_request (throw_delay 3.0 s, catch_vel_scale default)',
+    });
+    ros.callService('jugglebot/reload_request', 'std_srvs/srv/Trigger', {})
+        .then((res) => {
+            if (res && res.success) {
+                setReloadStatus(res.message || 'Reload dispatched.', 'ok');
+            } else {
+                setReloadStatus((res && res.message) || 'Reload rejected.', 'err');
+            }
+        })
+        .catch((err) => {
+            setReloadStatus('Reload failed: ' + (err && err.message ? err.message : err), 'err');
+        })
+        .finally(() => {
+            // Hold the button disabled for a short re-dispatch cooldown, then let
+            // the ACTIVE/connection gate govern again (renderReloadButton runs every
+            // applySnapshot frame).
+            clearTimeout(reloadCooldownTimer);
+            reloadCooldownTimer = setTimeout(() => {
+                reloadBusy = false;
+                renderReloadButton();
+            }, RELOAD_COOLDOWN_MS);
+            renderReloadButton();
+            // Auto-clear the sticky status after a while so it doesn't linger stale.
+            clearTimeout(reloadStatusClearTimer);
+            reloadStatusClearTimer = setTimeout(() => {
+                reloadStatusMsg = null;
+                renderReloadButton();
+            }, 8000);
+        });
+}
+
 function svgEl(tag, attrs, cls) {
     const e = document.createElementNS(SVG_NS, tag);
     if (attrs) for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]);
@@ -1361,6 +1439,7 @@ function applySnapshot() {
         dom.action.title = (a.title || '') + (a.disabled || busy ? '' : ' — hold to confirm');
     }
     renderStatusLine();
+    renderReloadButton();
 }
 
 function scheduleRender() {
@@ -1442,16 +1521,35 @@ function buildDom() {
     action.addEventListener('pointerleave', clearHeldAction);
     action.addEventListener('pointercancel', clearHeldAction);
 
+    // Reload button + its own status line.  A plain click (not hold-to-confirm):
+    // it triggers no motion by itself — the reload coordinator gates every arming
+    // step on its preconditions and aborts safely — so it matches the Ball Butler
+    // "Throw" button's single-click callService idiom, not the arm/disarm holds.
+    // Kept OUT of the contextual-action render path (computeAction/plans) so the
+    // fire-and-forget reload can never be confused with a state-machine plan.
+    const reload = document.createElement('button');
+    reload.id = 'minimap-reload';
+    reload.type = 'button';
+    reload.className = 'cmd-btn btn-reload';
+    reload.textContent = 'Reload';
+    reload.disabled = true;
+    reload.addEventListener('click', onReloadClick);
+    const reloadStatus = document.createElement('div');
+    reloadStatus.id = 'minimap-reload-status';
+
     root.appendChild(header);
     root.appendChild(svg);
     root.appendChild(status);
     root.appendChild(action);
+    root.appendChild(reload);
+    root.appendChild(reloadStatus);
 
     dom = {
-        root, header, svg, status, action,
+        root, header, svg, status, action, reload, reloadStatus,
         armedBadge: armed, guardBadge: guard, chevron: chev,
         faultLive: null, clusterSub: null,
     };
+    renderReloadButton();
     return true;
 }
 

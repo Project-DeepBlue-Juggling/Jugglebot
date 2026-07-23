@@ -21,7 +21,7 @@ from jugglebot_interfaces.msg import RobotState as RobotStateMsg
 from jugglebot_interfaces.srv import (
     ActivateOrDeactivate, GetTiltReadingService, ODriveCommandService,
 )
-from jugglebot_interfaces.action import HomeMotors
+from jugglebot_interfaces.action import HomeMotors, Reload
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import SetBool, Trigger
 from diagnostic_msgs.msg import DiagnosticStatus
@@ -30,6 +30,16 @@ from jugglebot.state_machine import (
     RobotState, Context, build_default_machine, BOOT_TIMEOUT_S,
 )
 from jugglebot.can import odrive
+
+
+# ── GUI RELOAD button → jugglebot/reload action goal ─────────────────────────
+# Fixed values for the one-button MVP reload dispatch (jugglebot/reload_request):
+#   throw_delay_s   3.0  — the requested lead; >= BB's ~2.5 s countdown floor.
+#   catch_vel_scale 0.0  — the sentinel for "use the reload coordinator's system
+#                          default"; the numeric default lives ONLY in the
+#                          coordinator, never here or in the GUI.
+RELOAD_THROW_DELAY_S = 3.0
+RELOAD_CATCH_VEL_SCALE = 0.0
 
 
 class OrchestratorNode(Node):
@@ -77,8 +87,18 @@ class OrchestratorNode(Node):
         self._setpoint_output_client = self.create_client(
             SetBool, 'set_setpoint_output')
 
-        # ── Action client ─────────────────────────────────────────
+        # ── Action clients ────────────────────────────────────────
         self._home_client = ActionClient(self, HomeMotors, 'home_motors')
+        # Reload relay: the browser GUI cannot call the jugglebot/reload ACTION
+        # directly — rosbridge on Foxy exposes no action op, and roslib ships only
+        # the ROS1 actionlib client (topic protocol a ROS2 action server never
+        # advertises). So the GUI hits the jugglebot/reload_request Trigger service
+        # below, which relays ONE Reload goal fire-and-forget through this client.
+        self._reload_client = ActionClient(self, Reload, 'jugglebot/reload')
+
+        # ── Service servers ───────────────────────────────────────
+        self.create_service(
+            Trigger, 'jugglebot/reload_request', self._svc_reload_request)
 
         # ── Subscribers ───────────────────────────────────────────
         self.create_subscription(
@@ -150,6 +170,73 @@ class OrchestratorNode(Node):
         """Queue a user command for the state machine."""
         self.ctx.enqueue_command(msg.data)
         self.get_logger().info(f'Command received: {msg.data}')
+
+    # ═══════════════════════════════════════════════════════════════
+    # Reload relay (GUI → jugglebot/reload action)
+    # ═══════════════════════════════════════════════════════════════
+    #
+    # The browser can only reach ROS via topics + services (rosbridge 1.3.1 on
+    # Foxy has no action capability). The jugglebot/reload_request Trigger service
+    # is the bridge to the jugglebot/reload ACTION: it dispatches ONE goal
+    # fire-and-forget and returns a dispatch ACK. It is NOT a re-implementation of
+    # the reload — the reload coordinator (reload_coordinator_node) stays the sole
+    # authority on preconditions, ordering, and the structured CAUGHT/MISSED
+    # outcome (surfaced here only via the logger). Firing an ill-timed reload is
+    # therefore safe: the coordinator rejects/aborts it with an honest code.
+    #
+    # The relay is deliberately fire-and-forget. This node spins single-threaded,
+    # so BLOCKING the service handler on the goal-acceptance or result future would
+    # deadlock (the same thread must service that future). Mirrors ball_butler_node
+    # bb/throw: send_goal_async + a goal-response → result callback chain that only
+    # logs the terminal outcome.
+
+    def _svc_reload_request(self, req, res):
+        """Relay a GUI reload request to jugglebot/reload (fire-and-forget ACK)."""
+        if not self._reload_client.server_is_ready():
+            res.success = False
+            res.message = 'reload action server unavailable (jugglebot/reload)'
+            self.get_logger().warning(
+                'Reload request received but jugglebot/reload server is not ready.')
+            return res
+        goal = Reload.Goal()
+        goal.throw_delay_s = RELOAD_THROW_DELAY_S
+        goal.catch_vel_scale = RELOAD_CATCH_VEL_SCALE
+        send_future = self._reload_client.send_goal_async(goal)
+        send_future.add_done_callback(self._on_reload_goal_response)
+        res.success = True
+        res.message = (
+            f'Reload dispatched (throw_delay {RELOAD_THROW_DELAY_S:.1f} s, '
+            f'catch_vel_scale default).')
+        self.get_logger().info(
+            'Reload requested via jugglebot/reload_request — goal dispatched.')
+        return res
+
+    def _on_reload_goal_response(self, future):
+        """jugglebot/reload goal accepted/rejected — chain to the result (log only)."""
+        try:
+            goal_handle = future.result()
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning(f'reload goal send failed: {e}')
+            return
+        if not goal_handle.accepted:
+            self.get_logger().warning(
+                'reload goal REJECTED (a reload is already in progress?).')
+            return
+        goal_handle.get_result_async().add_done_callback(self._on_reload_result)
+
+    def _on_reload_result(self, future):
+        """jugglebot/reload terminal outcome — log CAUGHT / MISSED / ABORTED_*."""
+        try:
+            result = future.result().result
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().warning(f'reload result error: {e}')
+            return
+        if result.success:
+            self.get_logger().info(
+                f'Reload OK: {result.outcome} '
+                f'(miss {result.catch_error_mm:.0f} mm).')
+        else:
+            self.get_logger().warning(f'Reload not caught: {result.outcome}.')
 
     @staticmethod
     def _kv_get(values, key, default=''):
