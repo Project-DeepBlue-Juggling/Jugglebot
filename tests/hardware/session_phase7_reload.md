@@ -23,6 +23,46 @@ passes, or 7c before 7b passes.**
 
 ---
 
+> **⚡ FOURTH SITTING — after the 2026-07-23 evening fixes**
+> (`logbook/2026-07-23-phase7-third-sitting-verdicts-stutter-pretilt.md`. The third
+> sitting WORKED: 10 real throws at scale 0.8, **8 caught**; 2 "throws" were aborted
+> by BB itself — yaw `THROW_ABORTED_NOT_SETTLED` in the bridge log — and never flew.)
+> What changed for THIS run:
+> 1. **`catch_vel_scale` defaults to 0.8 now** (config `JB_OP_CATCH_VEL_SCALE_DEFAULT`).
+>    `ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload
+>    "{throw_delay_s: 3.0}" --feedback` gets 0.8; pass the field only to override.
+> 2. **GUI RELOAD button** (STATE MACHINE panel, purple; **hard-refresh the browser**
+>    Ctrl-Shift-R to pick it up). Enabled when connected + ACTIVE; one click = one
+>    reload goal at the defaults. Outcome appears in the orchestrator log; the button
+>    cools down ~4 s.
+> 3. **The platform now arrives at the receive tilt ~1.5 s BEFORE landing** (the third
+>    sitting's pre-tilt was scheduled to arrive exactly AT landing — tilt was still
+>    >1° off until ~0.3 s before contact). Visible check: the platform should be
+>    seated and STILL while the ball is in the air. Tilt-only-settling-at-contact =
+>    stale build.
+> 4. **The prime ascent should be one smooth continuous move** — the third sitting's
+>    stutter (5/12 ascents) was our own 0.5 s retry tick restarting the ascent after
+>    a failed dispatch ack. If you still see a mid-ascent stall, say so — that would
+>    be NEW evidence, not the known mechanism.
+> 5. **Verdicts**: `MISSED_INFEASIBLE_*` now genuinely means "the platform never had
+>    a reachable catch pose" (all 12 third-sitting goals falsely read
+>    MISSED_INFEASIBLE_WORKSPACE off corrupt-track rejects). Expect caught balls to
+>    read `MISSED` while the tracker corruption stands — **keep judging seating by
+>    eye/hand telemetry**, and keep counting "IMPLAUSIBLE" warnings for the tracker
+>    investigation.
+> 6. **Watch for `hand prime dispatch failed (attempt N/4)` warnings**: the hand
+>    dispatch path failed ~40–60 % per call last session even on a fresh reboot (a
+>    bridge-Teensy CAN TX issue, investigation queued — NOT the uptime-lag regime).
+>    The new 4-attempt ladders (prime + safe-abort retract) should ride it out; note
+>    the warning frequency — it is the epidemic's cheapest gauge. An
+>    `ABORTED_PRIME_FAILED` despite the ladder escalates that investigation.
+> 7. BB aborting a throw (`THROW_ABORTED_NOT_SETTLED`, bridge log) currently rides to
+>    a `MISSED` verdict — known cosmetic; the yaw-settle issue itself is BB-side.
+> **Before this session**: `colcon build --packages-select jugglebot_interfaces
+> jugglebot` + `source install/setup.bash` + relaunch (four nodes + the orchestrator
+> changed), hard-refresh the GUI, and power-cycle the can-bridge Teensy as usual (the
+> uptime-lag reboot isolation experiment is still outstanding).
+
 > **⚡ THIRD SITTING — after the 2026-07-23 afternoon fixes**
 > (`logbook/2026-07-23-phase7-retest-stroke-race-tracker-corruption.md`; the morning
 > fixes are in `…-phase7-reload-first-hardware-session.md` and validated — the
