@@ -206,3 +206,21 @@ def test_catch_armed_same_state_is_noop():
     node._hand_primed = True
     node._on_catch_armed(Bool(data=True))    # same state → no reset
     assert node._hand_primed is True
+
+
+def test_arm_rising_edge_primes_hand_immediately(monkeypatch):
+    """The ARM edge primes the hand THEN AND THERE — it must not wait for a
+    catchable ball to appear on ``balls``. Hardware 2026-07-23: the bottom→top
+    smooth-move is ~0.7 s against a 0.878 s flight, so a ball-triggered prime is
+    a coin flip, and a hand still mid-prime at fire time makes the Teensy
+    silently drop the whole catch stroke (its prelude time-budget check). This
+    edge-prime serves both the reload action's catch/armed publish and the
+    manual static-catch recipe (publish catch/armed true, throw by hand)."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._on_catch_armed(Bool(data=True))
+    assert primed == [1]                      # primed on the edge, no ball involved
+    # A repeat arm (no edge) does not re-prime.
+    node._on_catch_armed(Bool(data=True))
+    assert primed == [1]

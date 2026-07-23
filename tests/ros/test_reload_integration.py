@@ -160,3 +160,76 @@ def test_vertical_throw_gives_near_level_catch():
     assert cmd is not None
     tilt_component = float(np.linalg.norm(cmd.target_quat[1:4]))
     assert tilt_component < 5e-2, "a vertical arrival should be a near-level catch"
+
+
+def test_catch_command_crosses_wire_into_accepted_build_catch():
+    """THE CROSS-PROCESS FRAME TEST (closes the gap that hid the 2026-07-23 z bug).
+
+    The pre-existing integration tests stop at the CatchCommand; the per-node
+    trajectory tests synthesize their own wire messages. NOTHING checked that the
+    coordinator's actual output, packed into DynamicTargetCommand exactly as
+    catch_coordinator_node packs it, is interpreted in the SAME FRAME by
+    trajectory_node — so a stow-relative producer met an
+    assumed-active-relative consumer, every hardware catch reach commanded
+    z ≈ 341 mm (out of stroke), and no mocked-ROS test could see it.
+
+    This test drives the REAL tracker → REAL coordinator → the REAL wire packing →
+    a REAL TrajectoryNode (seeded at the active hold, TRAJECTORY, latch armed) and
+    asserts the catch is ACCEPTED with the reach arriving AT the wire pose."""
+    from std_msgs.msg import String
+    from std_srvs.srv import SetBool
+    from geometry_msgs.msg import Point, Quaternion, Vector3
+    from jugglebot_interfaces.msg import (
+        DynamicTargetCommand, MotorStateSingle, RobotState)
+    from jugglebot.trajectory_node import TrajectoryNode
+    import time
+
+    # A near-centre BB-like throw: lands ~33 mm off-centre on the cup plane with a
+    # small receive tilt — the nominal reload geometry.
+    tracker = _make_tracker()
+    pos0 = [60.0, 0.0, 2000.0]
+    vel0 = [-60.0, 0.0, -400.0]
+    ball, t_now = _confirm_ball(tracker, pos0, vel0, destination="jugglebot")
+    assert ball is not None
+    cmd = _make_coordinator().update([ball], current_time=t_now)
+    assert cmd is not None
+
+    # Pack the wire message EXACTLY as catch_coordinator_node._on_balls does
+    # (verbatim target_pos; w-first quaternion into named fields), with a perf-domain
+    # arrival a realistic flight-lead ahead.
+    msg = DynamicTargetCommand()
+    msg.target_pos = Point(x=float(cmd.target_pos[0]), y=float(cmd.target_pos[1]),
+                           z=float(cmd.target_pos[2]))
+    msg.target_quat = Quaternion(w=float(cmd.target_quat[0]),
+                                 x=float(cmd.target_quat[1]),
+                                 y=float(cmd.target_quat[2]),
+                                 z=float(cmd.target_quat[3]))
+    msg.target_vel = Vector3(x=0.0, y=0.0, z=0.0)
+    lead_s = 1.5
+    msg.arrival_time = time.perf_counter() + lead_s
+
+    # A real TrajectoryNode at the active hold, TRAJECTORY, catch latch armed.
+    node = TrajectoryNode(start_emitter=False)
+    rs = RobotState()
+    rs.motor_states = [
+        MotorStateSingle(pos_estimate=float(r))
+        for r in hw.JB_OP_ACTIVATE_POSITION_REVS] + [MotorStateSingle()]
+    rs.is_homed = True
+    node._on_robot_state(rs)
+    node._on_control_mode(String(data='TRAJECTORY'))
+    arm = SetBool.Request()
+    arm.data = True
+    node._svc_arm_catch(arm, SetBool.Response())
+
+    node._on_dynamic_target(msg)
+    fb = node.target_feedback_pub.published[-1]
+    assert fb.accepted is True, (
+        f"coordinator wire output REJECTED by trajectory_node: {fb.code} {fb.reason}")
+    plan = node._active_plan
+    assert plan.kind == 'move'
+    # The reach arrives AT the wire pose — no frame conversion anywhere between the
+    # coordinator's output and the commanded catch (z ≈ active + a few mm, in-stroke).
+    p_arr = plan.state_at(lead_s)[0]
+    assert abs(p_arr[2] - float(cmd.target_pos[2])) < 1e-6
+    assert 150.0 < p_arr[2] < 200.0
+    assert np.allclose(p_arr[:2], cmd.target_pos[:2], atol=1e-6)

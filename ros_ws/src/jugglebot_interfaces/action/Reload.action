@@ -1,10 +1,12 @@
 # BB→Jugglebot reload: Ball Butler aims at Jugglebot's ACTIVE catch point (the hand-cup
 # plane) and throws; Jugglebot catches it. Orchestrated by the RELOAD action
-# (reload_coordinator_node), which OWNS the platform + hand for its duration: on
-# throw-accept it primes the hand to top and RAISES the trajectory/arm_catch latch (the
-# reactive-catch trigger), lets the existing catch path (catch_coordinator →
-# catch/dynamic_target → trajectory_node build_catch) tilt-align + seat the ball, then
-# re-centers; on abort it retracts the hand and re-centers. It runs within the operator's
+# (reload_coordinator_node), which OWNS the platform + hand for its duration. Every
+# Jugglebot-side arming step precedes the throw (2026-07-23 ordering — BB's firmware
+# countdown has no abort opcode): it primes the hand to top the moment preconditions
+# pass (CHECKING), RAISES the trajectory/arm_catch latch and confirms it (PREPARING),
+# and only then sends the throw (AIMING); the existing catch path (catch_coordinator →
+# catch/dynamic_target → trajectory_node build_catch) tilt-aligns + seats the ball, then
+# it re-centers; on abort it retracts the hand and re-centers. It runs within the operator's
 # ACTIVE streaming mode (TRAJECTORY) and does NOT switch modes — leaving that mode
 # mid-sequence is the documented abort (there is no persistent CATCH mode). Preconditions
 # are checked before any ball flies (see reload_sequencer.py).
@@ -24,4 +26,4 @@ float64 catch_error_mm         # tracker last-KF horizontal miss from the catch 
                                # in-flight estimate, NOT a settled rest position (NaN if
                                # unknown)
 ---
-string phase                   # CHECKING | AIMING | THROW_PENDING | BALL_IN_FLIGHT | CATCHING | SETTLING
+string phase                   # CHECKING | PREPARING | AIMING | THROW_PENDING | BALL_IN_FLIGHT | CATCHING | SETTLING

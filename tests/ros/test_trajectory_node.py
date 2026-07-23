@@ -1299,9 +1299,12 @@ def _timed_req(node, x=0.0, y=0.0, z=170.0, lead_s=3.0,
     return req
 
 
-def _dyn_target(node, x=0.0, y=0.0, z=20.0, lead_s=3.0, vx=0.0, vy=0.0, vz=0.0):
+def _dyn_target(node, x=0.0, y=0.0, z=190.0, lead_s=3.0, vx=0.0, vy=0.0, vz=0.0):
     """A catch/dynamic_target with a perf-domain arrival ~lead_s ahead of now.
-    z is in the MPC offset convention (0 = active)."""
+    The pose is STOW-relative (the wire frame, hardware-verified 2026-07-23:
+    0 = stow, ~170 = active) and maps through to the commanded pose VERBATIM —
+    the former active-relative reading was the double-add that drove every
+    hardware catch reach out of stroke."""
     msg = DynamicTargetCommand()
     msg.target_pos = Point(x=x, y=y, z=z)
     msg.target_quat = Quaternion()          # identity
@@ -1310,7 +1313,7 @@ def _dyn_target(node, x=0.0, y=0.0, z=20.0, lead_s=3.0, vx=0.0, vy=0.0, vz=0.0):
     return msg
 
 
-def _dyn_target_tilted(node, x=0.0, y=0.0, z=20.0, lead_s=3.0, tilt_rad=0.15):
+def _dyn_target_tilted(node, x=0.0, y=0.0, z=190.0, lead_s=3.0, tilt_rad=0.15):
     """A catch/dynamic_target with a receive tilt about +x (the coordinator supplies
     the tilt in target_quat via compute_catch_orientation). q = rot(tilt_rad about x)."""
     msg = DynamicTargetCommand()
@@ -1496,7 +1499,7 @@ def test_dynamic_target_tilted_installs_tilt_through_seat_plan():
     rest, then a quiescent hold. Structural evidence: MORE than the level catch's
     reach+hold (the tilt-through decay segment is present), and the plan ends at rest."""
     node = _traj_armed_node()
-    node._on_dynamic_target(_dyn_target_tilted(node, x=10.0, z=20.0, lead_s=3.0,
+    node._on_dynamic_target(_dyn_target_tilted(node, x=10.0, z=190.0, lead_s=3.0,
                                                tilt_rad=0.15))
     plan = node._active_plan
     assert plan.kind == 'move'
@@ -1518,7 +1521,7 @@ def test_dynamic_target_level_catch_has_no_tilt_through():
     seat, so ``build_catch`` degenerates to reach + quiescent hold (2 segments) with no
     residual tilt rate — the tilt-through path is opt-in on a real receive tilt."""
     node = _traj_armed_node()
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     plan = node._active_plan
     assert len(plan.segments) == 2       # reach + quiescent hold, no decay segment
     _, v_arr, _ = plan.state_at(3.0)
@@ -1535,7 +1538,7 @@ def test_dynamic_target_catch_knots_pump_accepted():
     node._on_robot_state(_robot_state())
     node._on_control_mode(String(data='TRAJECTORY'))
     _arm_catch(node, True)
-    node._on_dynamic_target(_dyn_target_tilted(node, x=15.0, y=8.0, z=20.0,
+    node._on_dynamic_target(_dyn_target_tilted(node, x=15.0, y=8.0, z=190.0,
                                                lead_s=2.5, tilt_rad=0.18))
     assert node._active_plan.kind == 'move'
     pump = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV,
@@ -1556,7 +1559,7 @@ def test_dynamic_target_reach_freeze_ignores_late_updates():
     reach is held) AND reported FROZEN — a distinct service-level code that
     distinguishes the freeze branch from a TOO_FAST feasibility reject."""
     node = _traj_armed_node()
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     committed = node._active_plan
     # Pin the committed arrival DETERMINISTICALLY inside the freeze window: now is past
     # (arrival − reach_freeze) and before (arrival + settle_hold).
@@ -1564,7 +1567,7 @@ def test_dynamic_target_reach_freeze_ignores_late_updates():
     n_fb = len(node.target_feedback_pub.published)
     # A generous-lead update that WOULD supersede if not frozen — proves the freeze
     # (not a feasibility reject) is what blocks it.
-    node._on_dynamic_target(_dyn_target(node, x=40.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=40.0, z=190.0, lead_s=3.0))
     assert node._active_plan is committed
     fb = node.target_feedback_pub.published[-1]
     assert fb.accepted is False
@@ -1577,12 +1580,12 @@ def test_dynamic_target_post_settle_supersedes_as_new_reach():
     and a later target supersedes as a fresh reach (repeated catches — Phases 8/9),
     rather than being silently dropped forever behind a latched freeze."""
     node = _traj_armed_node()
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     first = node._active_plan
     # Pretend the committed arrival + settle-hold is now fully in the past.
     node._catch_arrival_perf = (time.perf_counter()
                                 - node._catch_settle_hold_s - 0.1)
-    node._on_dynamic_target(_dyn_target(node, x=25.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=25.0, z=190.0, lead_s=3.0))
     assert node._active_plan is not first
     assert node.target_feedback_pub.published[-1].accepted is True
     p_arr = node._active_plan.state_at(node._active_plan.total_duration)[0]
@@ -1594,7 +1597,7 @@ def test_dynamic_target_past_arrival_rejected_too_fast():
     TOO_FAST (never a crash), plan unchanged."""
     node = _traj_armed_node()
     committed = node._active_plan            # the seeded hold
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=-1.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=-1.0))
     assert node._active_plan is committed
     fb = node.target_feedback_pub.published[-1]
     assert fb.accepted is False
@@ -1604,12 +1607,68 @@ def test_dynamic_target_past_arrival_rejected_too_fast():
 def test_dynamic_target_supersedes_before_freeze():
     """Outside the freeze window a new catch target supersedes the prior (C2)."""
     node = _traj_armed_node()
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     first = node._active_plan
-    node._on_dynamic_target(_dyn_target(node, x=25.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=25.0, z=190.0, lead_s=3.0))
     assert node._active_plan is not first
     p_arr = node._active_plan.state_at(node._active_plan.total_duration)[0]
     assert np.allclose(p_arr[:3], [25.0, 0.0, 190.0], atol=1e-2)
+
+
+def test_dynamic_target_z_wire_is_stow_relative_no_lift():
+    """REGRESSION (2026-07-23 Phase-7 hardware session): the wire z is STOW-relative
+    and must map to the commanded pose VERBATIM. The node previously added the active
+    z (170) on the false premise that the wire was active-relative, commanding
+    z ≈ 341 mm — past the 275 mm leg-stroke hard max — so EVERY hardware catch reach
+    was gate-rejected WORKSPACE and the platform never tilted. A wire z of ~171 (the
+    coordinator's output for a cup-plane ball at the 12° tilt clamp) must land the
+    commanded catch a few mm above the ACTIVE pose, in-stroke, accepted."""
+    node = _traj_armed_node()
+    node._on_dynamic_target(_dyn_target_tilted(node, x=-13.5, z=171.4, lead_s=3.0,
+                                               tilt_rad=0.209))
+    assert node.target_feedback_pub.published[-1].accepted is True
+    plan = node._active_plan
+    assert plan.kind == 'move'
+    # The reach arrival (t = lead) is at the WIRE z — no lift applied.
+    p_arr = plan.state_at(3.0)[0]
+    assert p_arr[2] == pytest.approx(171.4, abs=1e-2)
+
+
+def test_catch_reach_envelope_rejects_far_target():
+    """A catch target farther than JB_TRAJ_CATCH_REACH_ENVELOPE_MM (3D) from the pose
+    held at arm-latch raise is rejected WORKSPACE before planning — the enforcement
+    point for the envelope ``build_catch`` documents as the caller's responsibility.
+    WORKSPACE (not a transient code) is deliberate: the coordinator's feasibility
+    blacklist counts it, so a drifting ball-tracker landing estimate (measured
+    435-605 mm/s on BB throws, 2026-07-23) blacklists out instead of dragging the
+    platform sideways through the flight window."""
+    node = _traj_armed_node()
+    committed = node._active_plan            # the seeded hold
+    node._on_dynamic_target(_dyn_target(node, x=100.0, z=190.0, lead_s=3.0))
+    assert node._active_plan is committed
+    fb = node.target_feedback_pub.published[-1]
+    assert fb.accepted is False
+    assert fb.code == feas.WORKSPACE
+    assert 'envelope' in fb.reason
+    # A z-frame regression (e.g. the double-add reappearing) is caught HERE, loudly:
+    # a level target at z=360 (= 190 + a stray active-z lift) is ~190 mm out.
+    node._on_dynamic_target(_dyn_target(node, x=0.0, z=360.0, lead_s=3.0))
+    fb = node.target_feedback_pub.published[-1]
+    assert fb.accepted is False and 'envelope' in fb.reason
+
+
+def test_catch_reach_envelope_center_lifecycle():
+    """The envelope center is captured at the arm-latch RAISE (the held pose the catch
+    session starts from) and cleared at the lower edge — a stale center must never
+    bound the NEXT session's targets from an old pose."""
+    node = _traj_mode_node()
+    assert node._catch_envelope_center is None
+    _arm_catch(node, True)
+    assert node._catch_envelope_center is not None
+    assert np.allclose(node._catch_envelope_center,
+                       node._current_state()[0][:3], atol=1e-9)
+    _arm_catch(node, False)
+    assert node._catch_envelope_center is None
 
 
 # ── catch-armed latch (reload-action-catch-latch Phase 1) ─────
@@ -1624,7 +1683,7 @@ def test_dynamic_target_ignored_when_disarmed_in_trajectory():
     latch is not raised)."""
     node = _traj_mode_node()
     assert node._catch_armed is False
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     assert node._active_plan.kind == 'hold'
     assert node.target_feedback_pub.published == []
 
@@ -1634,10 +1693,10 @@ def test_arm_catch_latch_lets_dynamic_target_install_catch():
     build_catch reach — the reload-action trigger, in the live stream."""
     node = _traj_armed_node()
     assert node._current_mode == 'TRAJECTORY'      # the latch is the trigger, not a mode
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     assert node._active_plan.kind == 'move'
     p_arr = node._active_plan.state_at(node._active_plan.total_duration)[0]
-    assert np.allclose(p_arr[:3], [10.0, 0.0, 190.0], atol=1e-2)     # z = 20 + 170
+    assert np.allclose(p_arr[:3], [10.0, 0.0, 190.0], atol=1e-2)     # wire z verbatim (stow-relative)
     assert node._catch_arrival_perf is not None
     assert node.target_feedback_pub.published[-1].accepted is True
     assert node.target_feedback_pub.published[-1].source == 'catch'
@@ -1647,7 +1706,7 @@ def test_arm_catch_idempotent_arm_is_noop():
     """Arming when already armed (or disarming when already disarmed) is a no-op — no
     edge, so no freeze reset / stop (mirrors _on_control_mode's same-mode return)."""
     node = _traj_armed_node()
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     committed = node._active_plan
     node._catch_arrival_perf = time.perf_counter() + 3.0
     resp = _arm_catch(node, True)                  # already armed
@@ -1661,7 +1720,7 @@ def test_disarm_catch_resets_freeze_no_discontinuity():
     reach is silenced, not run on to the target — and clears the freeze, with the stop
     seeded C2 off the live state (ends at rest: no command discontinuity at the seam)."""
     node = _traj_armed_node()
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     catch_plan = node._active_plan
     assert catch_plan.kind == 'move'
     assert node._catch_arrival_perf is not None
@@ -1676,7 +1735,7 @@ def test_disarm_catch_resets_freeze_no_discontinuity():
     assert not np.allclose(end[0][:3], [10.0, 0.0, 190.0], atol=1.0)  # not the target
     # The catch path is gated off again after disarm.
     n_fb = len(node.target_feedback_pub.published)
-    node._on_dynamic_target(_dyn_target(node, x=25.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=25.0, z=190.0, lead_s=3.0))
     assert len(node.target_feedback_pub.published) == n_fb            # ignored
 
 
@@ -1718,18 +1777,20 @@ def test_arm_catch_force_disarmed_on_mode_change():
     progress. Restores the safety the retired CATCH mode gave for free (its gate was
     `_current_mode != CATCH`, so leaving CATCH inherently disarmed the catch)."""
     node = _traj_armed_node()
-    node._on_dynamic_target(_dyn_target(node, x=10.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     assert node._catch_armed is True
+    assert node._catch_envelope_center is not None
     assert node._catch_arrival_perf is not None
     # A mode change away from TRAJECTORY (e.g. an E-STOP → STANDBY) force-disarms.
     node._on_control_mode(String(data='STANDBY'))
     assert node._catch_armed is False
     assert node._catch_arrival_perf is None          # freeze released
+    assert node._catch_envelope_center is None       # envelope center cleared
     # Re-entering TRAJECTORY does NOT re-arm — the reload must explicitly re-arm.
     node._on_control_mode(String(data='TRAJECTORY'))
     assert node._catch_armed is False
     n_fb = len(node.target_feedback_pub.published)
-    node._on_dynamic_target(_dyn_target(node, x=25.0, z=20.0, lead_s=3.0))
+    node._on_dynamic_target(_dyn_target(node, x=25.0, z=190.0, lead_s=3.0))
     assert len(node.target_feedback_pub.published) == n_fb   # ignored (latch down)
 
 

@@ -222,8 +222,11 @@ class CatchCoordinator:
         # Platform centroid = hand position - offset * platform_z
         centroid_base = ball.landing_position - self.hand_catch_offset_mm * platform_z
 
-        # Convert from base frame to platform-active-relative coordinates.
-        # Platform active pose is at (0, 0, initial_height) in base frame.
+        # Convert from base frame to STOW-relative coordinates (the trajectory pose
+        # convention: 0 = the STOW plane at initial_height in base frame, ~170 =
+        # active). NOTE the earlier comment here called (0, 0, initial_height) "the
+        # active pose" — that mislabel seeded a consumer-side double-add of the active
+        # height (fixed 2026-07-23; see CatchCommand's docstring: "offset from stow").
         target_pos = np.array([
             centroid_base[0],
             centroid_base[1],

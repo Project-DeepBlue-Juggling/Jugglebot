@@ -8,19 +8,23 @@ plan) — but it never plans motion itself; it drives the existing services:
     (``catch/dynamic_target`` → ``planner.build_catch``) actuates the platform while the
     ``trajectory/arm_catch`` catch-armed latch is RAISED, and ``trajectory/go_home``
     re-centers on terminal — both run in TRAJECTORY, the mode RELOAD runs within;
-  - the hand is primed to top proactively by this node (``smooth_move_hand`` on
-    PREPARE) and retracted on abort; ``catch_coordinator_node`` still fires the reactive
-    catch stroke, gated on the catch-armed latch;
+  - the hand is primed to top by this node the moment the sequence's preconditions
+    pass (``smooth_move_hand`` on PRIME_HAND — at COMMAND time, never waiting for a
+    tracked ball) and retracted on abort; ``catch_coordinator_node`` still fires the
+    reactive catch stroke, gated on the catch-armed latch;
   - the throw goes through ``ball_butler_node`` (``bb/throw_at_target`` with the
-    point-target extension), which enforces BB's own limits + loud rejections.
+    point-target extension), which enforces BB's own limits + loud rejections. The
+    throw is sent LAST — after every Jugglebot-side arming step — because BB's
+    firmware countdown has no abort opcode: an arming failure must never leave an
+    unabortable throw heading at an unarmed robot.
 
 So this node subscribes to the state the FSM reasons about (BB heartbeat, mocap
 freshness, trajectory streaming, control mode, tracked-ball status, target feedback),
-and executes the actions the FSM asks for: ``bb/reload``, ``bb/throw_at_target``,
-PREPARE (prime hand + raise the latch), RECENTER (lower latch + go_home), SAFE_ABORT
-(retract hand + lower latch + go_home). It runs within the operator's active mode
-(TRAJECTORY) and does NOT switch modes; leaving that mode mid-sequence is the
-documented abort.
+and executes the actions the FSM asks for: PRIME_HAND (smooth-move hand to top),
+``bb/reload``, PREPARE (raise the latch, pre-throw), ``bb/throw_at_target``,
+RECENTER (lower latch + go_home), SAFE_ABORT (retract hand + lower latch + go_home).
+It runs within the operator's active mode (TRAJECTORY) and does NOT switch modes;
+leaving that mode mid-sequence is the documented abort.
 
 Exposed as ``jugglebot/reload`` (Reload.action): phase feedback, a structured outcome
 result, and cancellation.
@@ -56,6 +60,7 @@ import jugglebot.hardware_config as hw
 from jugglebot.reload_sequencer import (
     ACTION_CALL_RELOAD,
     ACTION_PREPARE_CATCH,
+    ACTION_PRIME_HAND,
     ACTION_RECENTER,
     ACTION_SAFE_ABORT,
     ACTION_SEND_THROW,
@@ -86,6 +91,22 @@ _SERVICE_WAIT_S = 2.0
 _TICK_S = 0.05
 # A hard ceiling on a single reload attempt so a wedged sequence always terminates.
 _MAX_SEQUENCE_S = 30.0
+# Slack added on top of the FSM's own budgets when deriving the per-goal ceiling.
+_SEQUENCE_CEILING_MARGIN_S = 5.0
+
+
+def _sequence_deadline_s(seq) -> float:
+    """The node-level hard ceiling for THIS goal. Never below _MAX_SEQUENCE_S, and
+    never inside a legitimate sequence window: the FSM's own budgets (empty-hand
+    reload wait + throw countdown + announcement grace + catch confirm) plus margin.
+    Without this, an operator-supplied throw_delay_s ≳ 16 s put the fixed 30 s
+    timeout INSIDE the flight window — and the timeout path SAFE_ABORTs, retracting
+    the hand under the airborne ball (the exact hazard class the settle-resolution
+    fix closed)."""
+    budget = (float(seq.reload_timeout_s) + float(seq.throw_delay_s)
+              + float(seq.announcement_grace_s) + float(seq.catch_confirm_window_s)
+              + _SEQUENCE_CEILING_MARGIN_S)
+    return max(_MAX_SEQUENCE_S, budget)
 
 
 class ReloadCoordinatorNode(Node):
@@ -143,8 +164,8 @@ class ReloadCoordinatorNode(Node):
         # Platform + hand ownership for the reload's duration:
         #   trajectory/arm_catch — raise/lower the catch-armed latch (the reactive-catch
         #     TRIGGER: while raised, catch/dynamic_target actuates the platform);
-        #   smooth_move_hand     — proactive prime to top (PREPARE) / retract to bottom
-        #     (SAFE_ABORT);
+        #   smooth_move_hand     — prime to top (PRIME_HAND, at command time) / retract
+        #     to bottom (SAFE_ABORT);
         #   trajectory/go_home   — re-center to level neutral on terminal.
         self._arm_catch_cli = self.create_client(SetBool, 'trajectory/arm_catch')
         self._smooth_move_hand_cli = self.create_client(SetFloat, 'smooth_move_hand')
@@ -331,6 +352,7 @@ class ReloadCoordinatorNode(Node):
             self._announced_ball_id = None
 
         result = Reload.Result()
+        max_sequence_s = _sequence_deadline_s(seq)
         try:
             t_start = time.perf_counter()
             while rclpy.ok():
@@ -350,7 +372,7 @@ class ReloadCoordinatorNode(Node):
                     result.catch_error_mm = float(r.catch_error_mm)
                     (goal_handle.succeed if r.success else goal_handle.abort)()
                     return result
-                if now - t_start > _MAX_SEQUENCE_S:
+                if now - t_start > max_sequence_s:
                     self._safe_on_early_exit(seq)
                     result.success = False
                     result.outcome = 'ABORTED_TIMEOUT'
@@ -373,13 +395,16 @@ class ReloadCoordinatorNode(Node):
         phase feedback. Returns the decision (testable in isolation)."""
         obs = self._build_observations(now)
         decision = seq.step(now, obs)
-        if decision.action == ACTION_CALL_RELOAD:
+        if decision.action == ACTION_PRIME_HAND:
+            seq.note_prime_result(
+                self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV))
+        elif decision.action == ACTION_CALL_RELOAD:
             self._call_reload()
         elif decision.action == ACTION_SEND_THROW:
             accepted, message = self._send_throw(seq)
             seq.note_throw_result(accepted, message)
         elif decision.action == ACTION_PREPARE_CATCH:
-            self._prepare_catch()
+            seq.note_prepare_result(self._prepare_catch())
         elif decision.action == ACTION_RECENTER:
             self._recenter()
         elif decision.action == ACTION_SAFE_ABORT:
@@ -426,14 +451,22 @@ class ReloadCoordinatorNode(Node):
 
     # ── Platform + hand ownership (executed on the FSM's behalf) ───────────────
 
-    def _prepare_catch(self):
-        """PREPARE (throw accepted): proactively prime the hand to the top of its stroke
-        and raise the catch-armed latch. Priming ~throw_delay before the ball flies keeps
-        the catch stroke from racing the ball with a high-jerk late prime; raising the
-        latch lets the reactive catch path actuate the platform for the flight window."""
-        self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV)
-        self._arm_catch(True)
-        self._publish_catch_armed(True)
+    def _prepare_catch(self) -> bool:
+        """PREPARE (ball in hand, BEFORE the throw is committed): raise the catch-armed
+        latch and publish ``catch/armed`` so the reactive catch path (platform reach +
+        hand fire) is enabled for the flight window. The hand prime already ran at
+        sequence start (ACTION_PRIME_HAND); ``catch_coordinator_node`` also re-primes
+        idempotently on the ``catch/armed`` rising edge. Returns the latch outcome —
+        a failure aborts the sequence while there is still NO pending BB throw (BB's
+        firmware countdown has no abort opcode, so arming must precede the throw)."""
+        ok = self._arm_catch(True)
+        if ok:
+            self._publish_catch_armed(True)
+        else:
+            self.get_logger().error(
+                'PREPARE failed: trajectory/arm_catch raise did not succeed — '
+                'aborting before the throw is committed')
+        return ok
 
     def _recenter(self):
         """RECENTER (successful catch): lower the catch-armed latch and re-center to
@@ -443,12 +476,25 @@ class ReloadCoordinatorNode(Node):
         self._go_home()
 
     def _safe_abort(self):
-        """SAFE_ABORT (abort once prepared): retract the hand to the bottom of its stroke,
-        lower the catch-armed latch, and re-center via go_home."""
-        self._smooth_move_hand(hw.HOMING_HAND_ABS_POS_REV)
-        self._arm_catch(False)
+        """SAFE_ABORT (abort once anything was armed): retract the hand to the bottom
+        of its stroke, lower the catch-armed latch, and re-center via go_home.
+
+        The retract target is ``JB_OP_HAND_RETRACT_REV`` (0.0) — NOT the homing
+        reference ``HOMING_HAND_ABS_POS_REV`` (−0.1), which is below the bridge's
+        smooth_move_hand range [0, max] and made every abort retract a silently
+        rejected no-op (2026-07-23: the hand stayed parked at top through aborts).
+        Every step's failure is LOUD here: this is the safing path."""
+        if not self._smooth_move_hand(hw.JB_OP_HAND_RETRACT_REV):
+            self.get_logger().error(
+                'SAFE_ABORT: hand retract dispatch FAILED — the hand may remain at '
+                'the top of its stroke')
+        if not self._arm_catch(False):
+            self.get_logger().error(
+                'SAFE_ABORT: trajectory/arm_catch lower FAILED — trajectory_node '
+                'force-disarms on any mode change as the backstop')
         self._publish_catch_armed(False)
-        self._go_home()
+        if not self._go_home():
+            self.get_logger().error('SAFE_ABORT: go_home dispatch FAILED')
 
     def _safe_on_early_exit(self, seq):
         """Safe the robot when the action exits at the NODE level (cancel / timeout /

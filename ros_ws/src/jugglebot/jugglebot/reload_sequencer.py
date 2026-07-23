@@ -12,37 +12,54 @@ plan). It runs from the active streaming mode (``TRAJECTORY``, armed + streaming
 hold) and raises the catch-armed latch for the flight window — replacing the retired
 persistent CATCH mode the operator used to hold.
 
-Design (plan § Reload sequence):
+Design (plan § Reload sequence; ordering reworked 2026-07-23 after the first
+hardware session — see the ORDERING PRINCIPLE below):
 
 1. **CHECKING** — loud precondition rejects: the robot in the active reload control
    mode (``TRAJECTORY``), ``bb/heartbeat`` connected ∧ IDLE, mocap fresh, trajectory
-   streaming. If the hand is empty, call ``bb/reload`` and wait for the heartbeat
-   ``RELOADING → IDLE`` with ``ball_in_hand`` (10 s timeout → ``REJECTED_NO_BALL``).
-2. **AIMING** — send ``bb/throw_at_target`` at the world-frame catch point
+   streaming. The moment preconditions pass, emit ``ACTION_PRIME_HAND``: the hand
+   starts its ~0.75 s smooth-move to the top of its stroke IMMEDIATELY on command —
+   never waiting for a tracked ball (the hardware session showed a prime racing the
+   0.878 s flight loses by design). If the hand is empty, call ``bb/reload`` and wait
+   for the heartbeat ``ball_in_hand`` (10 s timeout → ``REJECTED_NO_BALL``).
+2. **PREPARING** — emit ``ACTION_PREPARE_CATCH``: raise the catch-armed latch (+
+   publish ``catch/armed``) BEFORE any throw is committed. The node reports the
+   arming outcome via :meth:`note_prepare_result`; a failure aborts here —
+   ``ABORTED_PREPARE_FAILED`` — with NO ball in the air and NO pending BB throw.
+3. **AIMING** — send ``bb/throw_at_target`` at the world-frame catch point
    (``use_target_point``); a lead below BB's floor is a ``REJECTED_CANT_MAKE_LEAD``,
-   a BB solver/limit reject is ``REJECTED_BB(<message>)``.
-3. **On throw-accept (AIMING → THROW_PENDING)** — emit ``ACTION_PREPARE_CATCH``: the
-   node proactively primes the hand to the top of its stroke AND raises the catch-armed
-   latch, so the reactive catch path can actuate the platform for the flight window and
-   the catch stroke never races the ball with a high-jerk late prime. Sets ``_prepared``.
+   a BB solver/limit reject is ``REJECTED_BB(<message>)`` (routes through SAFE_ABORT
+   — the latch is already up and the hand primed).
 4. **THROW_PENDING** — wait for the ``ThrowAnnouncement``. No announcement within
-   ``throw_delay + 0.5 s`` ⇒ ``ABORTED_NO_ANNOUNCEMENT`` (routes through SAFE_ABORT,
-   since PREPARE already primed the hand + raised the latch).
+   ``throw_delay + 0.5 s`` ⇒ ``ABORTED_NO_ANNOUNCEMENT`` (routes through SAFE_ABORT).
 5. **BALL_IN_FLIGHT / CATCHING** — the EXISTING catch path (correlation →
    catch_coordinator → ``catch/dynamic_target`` → trajectory ``build_catch`` + hand
-   fire) runs on its own; the sequencer only watches. A post-release infeasible catch
-   target (surfaced via ``trajectory/target_feedback``) ⇒ ``MISSED_INFEASIBLE`` (the
-   platform holds its last valid pose; the hand fires per its armed schedule).
-6. **SETTLING → CAUGHT** — ball status ``CAUGHT`` from the tracker within the confirm
-   window ⇒ ``CAUGHT`` (FSM emits ``ACTION_RECENTER``); otherwise ``MISSED``.
+   fire) runs on its own; the sequencer only watches. A standing post-release
+   infeasible catch target (surfaced via ``trajectory/target_feedback``) is LATCHED
+   but does NOT terminate mid-flight: the platform holds, the hand keeps its armed
+   schedule, and the ball is given its chance to land in the (primed, parked) cup —
+   the 2026-07-23 session caught two balls exactly that way, while the previous
+   finish-immediately behaviour tore the arming down while the ball was still in
+   the air. The outcome resolves at settle.
+6. **SETTLING** — ball status ``CAUGHT`` from the tracker within the confirm window ⇒
+   ``CAUGHT`` (FSM emits ``ACTION_RECENTER``); otherwise ``MISSED_INFEASIBLE_<code>``
+   (if an infeasibility stood at catch time) or ``MISSED``.
+
+ORDERING PRINCIPLE (the Q2 fix): every Jugglebot-side arming action (hand prime,
+catch latch) happens BEFORE ``bb/throw_at_target`` is sent. BB's throw countdown
+lives in the BB Teensy firmware and has NO abort opcode (verified 2026-07-23) — once
+the throw is accepted, nothing can stop it. Arming first means an arming failure
+simply never commits the throw; the unabortable residue shrinks to faults that occur
+DURING the ~3 s countdown (mode change / BB error), which SAFE_ABORT safes on the
+Jugglebot side while the ball flies at a primed-but-holding robot.
 
 Terminal actions (executed by the node):
   - ``ACTION_RECENTER`` — on a successful terminal (CAUGHT): lower the latch + go_home
     (re-center to level neutral; the hand keeps the caught ball, no retract).
-  - ``ACTION_SAFE_ABORT`` — on ANY not-caught terminal once ``_prepared`` (the latch
-    was raised / hand primed): retract the hand to bottom, lower the latch, go_home.
-  - A reject BEFORE ``_prepared`` (a precondition reject that never armed anything)
-    emits ``ACTION_NONE`` — there is nothing to safe.
+  - ``ACTION_SAFE_ABORT`` — on ANY not-caught terminal once the hand was primed or
+    the latch raised (``_primed`` / ``_prepared``): retract the hand to bottom, lower
+    the latch, go_home.
+  - A reject BEFORE anything was armed emits ``ACTION_NONE`` — nothing to safe.
 
 Aborts at any phase: the operator switching the control mode away from the active
 reload mode ⇒ ``ABORTED_MODE_CHANGED``; a BB fault (heartbeat ERROR) ⇒
@@ -59,15 +76,23 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
-# ── BB heartbeat state enum (BallButlerHeartbeat.msg) ──────────────────────────
+# ── BB heartbeat state enum ────────────────────────────────────────────────────
+# MUST mirror protocol_config.BallButlerStates (the heartbeat's `state` field is the
+# firmware enum verbatim). The FSM's logic consults only IDLE and ERROR, but the
+# values were previously WRONG here (RELOADING=2 collided with TRACKING) — pinned by
+# a test against protocol_config now. Kept as module constants (not an import) so
+# this module stays importable without the generated protocol module on path; the
+# test is the drift guard.
 BB_STATE_BOOT = 0
 BB_STATE_IDLE = 1
-BB_STATE_RELOADING = 2
+BB_STATE_TRACKING = 2
 BB_STATE_THROWING = 3
+BB_STATE_RELOADING = 4
 BB_STATE_ERROR = 127
 
 # ── Feedback phases (Reload.action feedback.phase) ─────────────────────────────
 PHASE_CHECKING = 'CHECKING'
+PHASE_PREPARING = 'PREPARING'
 PHASE_AIMING = 'AIMING'
 PHASE_THROW_PENDING = 'THROW_PENDING'
 PHASE_BALL_IN_FLIGHT = 'BALL_IN_FLIGHT'
@@ -76,11 +101,12 @@ PHASE_SETTLING = 'SETTLING'
 
 # ── Actions the node executes on the FSM's behalf ──────────────────────────────
 ACTION_NONE = 'none'
+ACTION_PRIME_HAND = 'prime_hand'            # smooth-move hand to top of stroke (at command)
 ACTION_CALL_RELOAD = 'call_reload'          # invoke bb/reload once
 ACTION_SEND_THROW = 'send_throw'            # invoke bb/throw_at_target once
-ACTION_PREPARE_CATCH = 'prepare_catch'      # prime hand to top + raise the catch-armed latch
+ACTION_PREPARE_CATCH = 'prepare_catch'      # raise the catch-armed latch (pre-throw)
 ACTION_RECENTER = 'recenter'                # lower latch + go_home (successful catch)
-ACTION_SAFE_ABORT = 'safe_abort'            # retract hand + lower latch + go_home (abort once prepared)
+ACTION_SAFE_ABORT = 'safe_abort'            # retract hand + lower latch + go_home (abort once armed)
 
 # The control mode RELOAD runs within: ACTIVE + streaming a hold, in TRAJECTORY — the
 # mode whose go_home/go_to_pose surface the action's recenter/pre-position use and where
@@ -153,7 +179,10 @@ class ReloadSequencer:
     _catch_infeasible: Optional[str] = field(default=None, init=False)  # gate code
     _throw_time: float = field(default=0.0, init=False)
     _settle_deadline: float = field(default=0.0, init=False)
-    _prepared: bool = field(default=False, init=False)  # PREPARE ran (hand primed + latch raised)
+    _primed: bool = field(default=False, init=False)    # PRIME_HAND dispatched (hand moving to top)
+    _prime_result: Optional[bool] = field(default=None, init=False)     # node-reported prime outcome
+    _prepared: bool = field(default=False, init=False)  # PREPARE dispatched (latch raise requested)
+    _prepare_result: Optional[bool] = field(default=None, init=False)   # node-reported latch outcome
     _finished: bool = field(default=False, init=False)
     _result: Optional[ReloadResult] = field(default=None, init=False)  # cached terminal result
 
@@ -166,6 +195,19 @@ class ReloadSequencer:
     def note_throw_result(self, accepted: bool, message: str = '') -> None:
         """Report the ``bb/throw_at_target`` service outcome (accept/reject)."""
         self._throw_result = (bool(accepted), str(message))
+
+    def note_prime_result(self, ok: bool) -> None:
+        """Report the ``ACTION_PRIME_HAND`` dispatch outcome (smooth_move_hand service
+        accepted the command — dispatch-only; there is no completion feedback in the
+        hand chain). A failure aborts the sequence BEFORE any throw is committed."""
+        self._prime_result = bool(ok)
+
+    def note_prepare_result(self, ok: bool) -> None:
+        """Report the ``ACTION_PREPARE_CATCH`` outcome (the trajectory/arm_catch latch
+        raise). A failure aborts the sequence BEFORE any throw is committed — the
+        arming-before-throw ordering that makes a BB-side abort unnecessary for this
+        failure class (BB's firmware countdown has no abort opcode)."""
+        self._prepare_result = bool(ok)
 
     def note_announcement(self, now: float,
                           landing_time_perf: Optional[float] = None) -> None:
@@ -233,6 +275,8 @@ class ReloadSequencer:
 
         if self._phase == PHASE_CHECKING:
             return self._step_checking(now, obs)
+        if self._phase == PHASE_PREPARING:
+            return self._step_preparing(now, obs)
         if self._phase == PHASE_AIMING:
             return self._step_aiming(now, obs)
         if self._phase == PHASE_THROW_PENDING:
@@ -246,10 +290,15 @@ class ReloadSequencer:
     # ── phase handlers ─────────────────────────────────────────────────────────
 
     def _step_checking(self, now: float, obs: ReloadObservations) -> ReloadDecision:
-        # If we already asked BB to reload, wait for RELOADING → IDLE + ball_in_hand.
+        # A failed hand-prime dispatch aborts before any throw is committed (checked
+        # in both the first-pass and the awaiting-reload branch).
+        if self._prime_result is False:
+            return self._abort('PRIME_FAILED')
+
+        # If we already asked BB to reload, wait for the heartbeat's ball_in_hand.
         if self._reload_requested:
             if obs.ball_in_hand and obs.bb_state == BB_STATE_IDLE:
-                return self._enter_aiming(now)
+                return self._enter_preparing(now)
             if now >= self._reload_deadline:
                 return self._reject('NO_BALL')
             return ReloadDecision(PHASE_CHECKING, ACTION_NONE, False, None)
@@ -264,12 +313,38 @@ class ReloadSequencer:
         if not obs.streaming:
             return self._reject('NOT_STREAMING')
 
+        # Preconditions pass → prime the hand IMMEDIATELY (one-shot), before the
+        # (up to 10 s) BB reload wait and the aiming call. The ~0.75 s smooth-move
+        # to top runs while the rest of the sequence proceeds; a prime that instead
+        # waits for a tracked ball races the 0.878 s flight and loses (hardware
+        # session 2026-07-23: lost by 0.06 s / won by 0.09 s — a coin flip).
+        if not self._primed:
+            self._primed = True
+            return ReloadDecision(PHASE_CHECKING, ACTION_PRIME_HAND, False, None)
+
         if not obs.ball_in_hand:
             # Hand empty → ask BB to reload, then wait (still PHASE_CHECKING).
             self._reload_requested = True
             self._reload_deadline = now + self.reload_timeout_s
             return ReloadDecision(PHASE_CHECKING, ACTION_CALL_RELOAD, False, None)
 
+        return self._enter_preparing(now)
+
+    def _enter_preparing(self, now: float) -> ReloadDecision:
+        """Ball in hand → arm the catch trigger BEFORE committing the throw. The
+        latch raise is the last Jugglebot-side arming step; only after the node
+        confirms it does the throw get sent (BB's countdown cannot be aborted)."""
+        self._phase = PHASE_PREPARING
+        self._prepared = True
+        return ReloadDecision(PHASE_PREPARING, ACTION_PREPARE_CATCH, False, None)
+
+    def _step_preparing(self, now: float, obs: ReloadObservations) -> ReloadDecision:
+        if self._prime_result is False:
+            return self._abort('PRIME_FAILED')
+        if self._prepare_result is None:
+            return ReloadDecision(PHASE_PREPARING, ACTION_NONE, False, None)
+        if not self._prepare_result:
+            return self._abort('PREPARE_FAILED')
         return self._enter_aiming(now)
 
     def _enter_aiming(self, now: float) -> ReloadDecision:
@@ -287,21 +362,20 @@ class ReloadSequencer:
             return ReloadDecision(PHASE_AIMING, ACTION_NONE, False, None)
         accepted, message = self._throw_result
         if not accepted:
+            # The hand is primed and the latch raised (arming-before-throw), so a BB
+            # reject routes through SAFE_ABORT via _terminal_action — nothing is in
+            # the air, but the robot must be un-armed.
             return self._reject('BB', message)
         # Stamp the announcement deadline from the CONFIRMED throw, not from when
         # SEND_THROW was issued: the blocking bb/throw_at_target call can eat up to
         # _SERVICE_WAIT_S before the throw is even accepted, which would otherwise
         # silently burn the announcement grace window before the ball is committed.
+        # (All Jugglebot-side arming already happened in CHECKING/PREPARING — the
+        # throw is the LAST commitment of the sequence.)
         self._announcement_deadline = (
             now + self.throw_delay_s + self.announcement_grace_s)
         self._phase = PHASE_THROW_PENDING
-        # The throw is committed: proactively PREPARE the catch (node primes the hand to
-        # top + raises the catch-armed latch). Priming here — ~throw_delay before the ball
-        # flies — keeps the catch stroke from racing the ball with a high-jerk late prime,
-        # and raising the latch lets the reactive catch path actuate the platform. From
-        # here on, any not-caught terminal must SAFE_ABORT (retract + lower latch).
-        self._prepared = True
-        return ReloadDecision(PHASE_THROW_PENDING, ACTION_PREPARE_CATCH, False, None)
+        return ReloadDecision(PHASE_THROW_PENDING, ACTION_NONE, False, None)
 
     def _step_throw_pending(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if self._announced:
@@ -319,11 +393,14 @@ class ReloadSequencer:
         return ReloadDecision(PHASE_THROW_PENDING, ACTION_NONE, False, None)
 
     def _step_in_flight(self, now: float, obs: ReloadObservations) -> ReloadDecision:
-        if self._catch_infeasible is not None:
-            # Platform couldn't reach the catch; the hand fires per its armed schedule.
-            return self._finish(ReloadResult(
-                False, f'MISSED_INFEASIBLE_{self._catch_infeasible}',
-                obs.catch_error_mm))
+        # A standing catch-target infeasibility does NOT terminate mid-flight: the
+        # platform holds its last valid pose, the hand keeps its armed schedule, and
+        # the ball gets its chance to land in the primed cup (a dead-centre BB throw
+        # lands there without any platform reach — 2026-07-23 hardware evidence, twice).
+        # Finishing early here was worse than useless: the terminal SAFE_ABORT tore
+        # down the hand arming (and tried to retract the hand INTO the incoming ball)
+        # while the ball was still in the air. `_catch_infeasible` stays latched and
+        # resolves the OUTCOME at settle instead.
         if obs.ball_caught:
             self._phase = PHASE_SETTLING
             return self._finish(ReloadResult(True, 'CAUGHT', obs.catch_error_mm))
@@ -347,6 +424,12 @@ class ReloadSequencer:
     def _step_settling(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if obs.ball_caught:
             return self._finish(ReloadResult(True, 'CAUGHT', obs.catch_error_mm))
+        if self._catch_infeasible is not None:
+            # The platform never reached the catch pose (a rejection stood at catch
+            # time) and the ball did not land in the cup anyway.
+            return self._finish(ReloadResult(
+                False, f'MISSED_INFEASIBLE_{self._catch_infeasible}',
+                obs.catch_error_mm))
         return self._finish(ReloadResult(False, 'MISSED', obs.catch_error_mm))
 
     # ── terminal helpers ───────────────────────────────────────────────────────
@@ -369,14 +452,15 @@ class ReloadSequencer:
         """The cleanup action the node runs on a terminal decision:
           - a successful catch RE-CENTERs (lower the latch + go_home; the hand keeps the
             caught ball, so no retract);
-          - ANY not-caught terminal that got past PREPARE SAFE_ABORTs (the latch was
-            raised / hand primed, so it must be safed — retract + lower latch + go_home);
-          - a reject BEFORE PREPARE raised nothing → no cleanup (ACTION_NONE).
+          - ANY not-caught terminal once something was ARMED — the hand primed
+            (``_primed``) or the latch raise dispatched (``_prepared``) — SAFE_ABORTs
+            (retract + lower latch + go_home);
+          - a reject BEFORE anything was armed → no cleanup (ACTION_NONE).
         The action fires exactly once (the finished-replay path in :meth:`step` returns
         ACTION_NONE), so the node never re-runs a terminal action."""
         if result.success:
             return ACTION_RECENTER
-        if self._prepared:
+        if self._prepared or self._primed:
             return ACTION_SAFE_ABORT
         return ACTION_NONE
 
@@ -386,10 +470,11 @@ class ReloadSequencer:
 
     @property
     def prepared(self) -> bool:
-        """True once PREPARE ran (hand primed + catch-armed latch raised). The node
-        uses this to safe the robot on a node-level early exit (cancel/timeout/shutdown)
-        that bypasses the FSM's own terminal SAFE_ABORT."""
-        return self._prepared
+        """True once ANY arming ran — the hand prime was dispatched (``_primed``) or
+        the latch raise was requested (``_prepared``). The node uses this to safe the
+        robot on a node-level early exit (cancel/timeout/shutdown) that bypasses the
+        FSM's own terminal SAFE_ABORT."""
+        return self._prepared or self._primed
 
     @property
     def finished(self) -> bool:

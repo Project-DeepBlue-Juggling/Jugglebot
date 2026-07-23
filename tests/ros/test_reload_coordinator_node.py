@@ -3,14 +3,16 @@
 The FSM itself is exhaustively covered by test_reload_sequencer.py; here we test the
 node's seams: the wiring surface (action / clients / publishers / subscriptions),
 observation assembly from cached messages (fresh vs stale), and that _step_sequence
-executes the FSM's requested action (call_reload / send_throw / PREPARE / RECENTER /
-SAFE_ABORT) and publishes phase feedback.
+executes the FSM's requested action (PRIME_HAND / call_reload / PREPARE / send_throw /
+RECENTER / SAFE_ABORT) and publishes phase feedback.
 
 The RELOAD action OWNS the platform + hand for its duration (reload-action-catch-latch
-plan): it runs within the active streaming mode (``TRAJECTORY``), raises the
-catch-armed latch on PREPARE (trajectory/arm_catch), primes/retracts the hand
-(smooth_move_hand), and re-centers on terminal (trajectory/go_home). It publishes the
-catch-armed state on ``catch/armed`` to gate catch_coordinator's hand-arm.
+plan): it runs within the active streaming mode (``TRAJECTORY``), primes the hand at
+COMMAND time (PRIME_HAND → smooth_move_hand), raises the catch-armed latch BEFORE the
+throw is committed (PREPARE → trajectory/arm_catch; BB's firmware countdown has no
+abort opcode), retracts on abort, and re-centers on terminal (trajectory/go_home). It
+publishes the catch-armed state on ``catch/armed`` to gate catch_coordinator's
+hand-arm.
 
 ROS 2 is mocked by tests/ros/conftest.py.
 """
@@ -27,6 +29,7 @@ from jugglebot.reload_coordinator_node import ReloadCoordinatorNode
 from jugglebot.reload_sequencer import (
     ACTION_CALL_RELOAD,
     ACTION_PREPARE_CATCH,
+    ACTION_PRIME_HAND,
     ACTION_RECENTER,
     ACTION_SAFE_ABORT,
     ACTION_SEND_THROW,
@@ -37,6 +40,25 @@ from jugglebot.reload_sequencer import (
     ReloadResult,
     ReloadSequencer,
 )
+
+
+def _seq_in_flight(node):
+    """Drive a sequencer through the armed-before-throw walk to BALL_IN_FLIGHT:
+    PRIME (0.0) → PREPARE ok (0.1) → SEND_THROW (0.2) → accept → THROW_PENDING
+    (0.3) → announcement → BALL_IN_FLIGHT. Release-fallback landing = 0.2 + 3.0."""
+    seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
+    seq.start(0.0)
+    seq.step(0.0, _obs_stub())
+    seq.note_prime_result(True)
+    seq.step(0.1, _obs_stub())
+    seq.note_prepare_result(True)
+    seq.step(0.2, _obs_stub())            # SEND_THROW
+    seq.note_throw_result(True)
+    seq.step(0.3, _obs_stub())            # THROW_PENDING
+    seq.note_announcement(0.5)
+    seq.step(0.5, _obs_stub())            # BALL_IN_FLIGHT
+    assert seq.phase == 'BALL_IN_FLIGHT'
+    return seq
 
 
 class _Hb:
@@ -190,40 +212,50 @@ class _GoalHandle:
         self.feedbacks.append(fb.phase)
 
 
-def test_step_sequence_calls_reload_and_publishes_feedback(monkeypatch):
+def test_step_sequence_primes_then_calls_reload_and_publishes_feedback(monkeypatch):
     now = 100.0
     node = _node_fresh(now)
-    with node._lock:              # empty hand → FSM asks for a reload
+    with node._lock:              # empty hand → FSM asks for a reload (after the prime)
         node._hb = _Hb(ball_in_hand=False)
         node._hb_mono = now
     calls = []
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: calls.append(('prime', p)) or True)
     monkeypatch.setattr(node, '_call_reload', lambda: calls.append('reload') or True)
     seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
     seq.start(now)
     gh = _GoalHandle()
     decision = node._step_sequence(seq, now, gh)
+    assert decision.action == ACTION_PRIME_HAND      # hand prime FIRST, at command
+    decision = node._step_sequence(seq, now + 0.1, gh)
     assert decision.action == ACTION_CALL_RELOAD
-    assert calls == ['reload']
-    assert gh.feedbacks == ['CHECKING']
+    assert calls == [('prime', hw.JB_OP_HAND_CATCH_PRIME_REV), 'reload']
+    assert gh.feedbacks == ['CHECKING', 'CHECKING']
 
 
-def test_step_sequence_sends_throw_and_feeds_result(monkeypatch):
+def test_step_sequence_arms_then_sends_throw_and_feeds_result(monkeypatch):
     now = 100.0
-    node = _node_fresh(now)            # ball in hand → FSM sends the throw
+    node = _node_fresh(now)            # ball in hand → prime → prepare → throw
     sent = []
+    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: True)
+    monkeypatch.setattr(node, '_prepare_catch', lambda: True)
     monkeypatch.setattr(node, '_send_throw',
                         lambda s: (sent.append(s.throw_delay_s) or (True, 'ok')))
-    monkeypatch.setattr(node, '_prepare_catch', lambda: None)
     seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
     seq.start(now)
     gh = _GoalHandle()
-    decision = node._step_sequence(seq, now, gh)
-    assert decision.action == ACTION_SEND_THROW
+    d = node._step_sequence(seq, now, gh)
+    assert d.action == ACTION_PRIME_HAND
+    d = node._step_sequence(seq, now + 0.1, gh)
+    assert d.action == ACTION_PREPARE_CATCH          # latch BEFORE the throw
+    d = node._step_sequence(seq, now + 0.2, gh)
+    assert d.action == ACTION_SEND_THROW
     assert sent == [3.0]
-    # The BB accept was fed back into the FSM → next step is THROW_PENDING (PREPARE).
-    d2 = node._step_sequence(seq, now + 0.1, gh)
+    # The BB accept was fed back into the FSM → next step reaches THROW_PENDING
+    # with no further action (all arming already ran).
+    d2 = node._step_sequence(seq, now + 0.3, gh)
     assert d2.phase == 'THROW_PENDING'
-    assert d2.action == ACTION_PREPARE_CATCH
+    assert d2.action == 'none'
 
 
 def test_step_sequence_dispatches_prepare_recenter_safe_abort(monkeypatch):
@@ -233,10 +265,14 @@ def test_step_sequence_dispatches_prepare_recenter_safe_abort(monkeypatch):
     now = 100.0
     node = _node_fresh(now)
     called = []
-    monkeypatch.setattr(node, '_prepare_catch', lambda: called.append('prepare'))
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: called.append('prime') or True)
+    monkeypatch.setattr(node, '_prepare_catch',
+                        lambda: called.append('prepare') or True)
     monkeypatch.setattr(node, '_recenter', lambda: called.append('recenter'))
     monkeypatch.setattr(node, '_safe_abort', lambda: called.append('safe_abort'))
     cases = [
+        (ACTION_PRIME_HAND, False, 'prime'),
         (ACTION_PREPARE_CATCH, False, 'prepare'),
         (ACTION_RECENTER, True, 'recenter'),
         (ACTION_SAFE_ABORT, True, 'safe_abort'),
@@ -246,22 +282,36 @@ def test_step_sequence_dispatches_prepare_recenter_safe_abort(monkeypatch):
         seq.step = lambda now, obs, _a=action, _d=done: ReloadDecision(
             'X', _a, _d, ReloadResult(False, 'x'))
         node._step_sequence(seq, now)
-    assert called == ['prepare', 'recenter', 'safe_abort']
+    assert called == ['prime', 'prepare', 'recenter', 'safe_abort']
 
 
 # ── Terminal-action executors ──────────────────────────────────
 
-def test_prepare_catch_primes_hand_and_raises_latch(monkeypatch):
+def test_prepare_catch_raises_latch_and_publishes_armed(monkeypatch):
+    """PREPARE is now latch-raise + publish ONLY — the hand prime moved to
+    PRIME_HAND at sequence start (the 2026-07-23 hardware session showed a prime
+    racing the flight is a coin flip)."""
     node = ReloadCoordinatorNode()
     calls = []
     monkeypatch.setattr(node, '_smooth_move_hand',
                         lambda p: calls.append(('hand', p)) or True)
     monkeypatch.setattr(node, '_arm_catch', lambda a: calls.append(('arm', a)) or True)
-    node._prepare_catch()
-    assert ('hand', hw.JB_OP_HAND_CATCH_PRIME_REV) in calls   # prime to TOP
+    assert node._prepare_catch() is True
     assert ('arm', True) in calls                              # raise the latch
+    assert not any(c[0] == 'hand' for c in calls)              # no prime here anymore
     # catch/armed published True so catch_coordinator can actuate the hand.
     assert node._publishers['catch/armed'].published[-1].data is True
+
+
+def test_prepare_catch_failure_reports_false_and_never_publishes_armed(monkeypatch):
+    """A failed latch raise returns False (→ the FSM aborts BEFORE the throw is
+    committed) and must NOT publish catch/armed=True — catch_coordinator would
+    otherwise arm the hand stroke for a sequence that is being aborted."""
+    node = ReloadCoordinatorNode()
+    monkeypatch.setattr(node, '_arm_catch', lambda a: False)
+    n_pub = len(node._publishers['catch/armed'].published)
+    assert node._prepare_catch() is False
+    assert len(node._publishers['catch/armed'].published) == n_pub
 
 
 def test_recenter_lowers_latch_and_go_home_no_retract(monkeypatch):
@@ -287,28 +337,41 @@ def test_safe_abort_retracts_hand_lowers_latch_recenters(monkeypatch):
     monkeypatch.setattr(node, '_arm_catch', lambda a: calls.append(('arm', a)) or True)
     monkeypatch.setattr(node, '_go_home', lambda: calls.append(('home',)) or True)
     node._safe_abort()
-    assert ('hand', hw.HOMING_HAND_ABS_POS_REV) in calls   # retract to BOTTOM
+    assert ('hand', hw.JB_OP_HAND_RETRACT_REV) in calls    # retract to BOTTOM
     assert ('arm', False) in calls                          # lower the latch
     assert ('home',) in calls                               # re-center
     assert node._publishers['catch/armed'].published[-1].data is False
 
 
-def test_safe_on_early_exit_safes_only_when_prepared(monkeypatch):
+def test_hand_targets_are_within_bridge_service_range():
+    """CLASS GUARD (2026-07-23): every hand target this node dispatches must be
+    inside the bridge's smooth_move_hand validation range [0, hand max position].
+    The abort retract used to target HOMING_HAND_ABS_POS_REV = -0.1 rev — BELOW the
+    range — so the bridge rejected it and every abort left the hand parked at top,
+    silently (the return value was ignored too). Pin both dispatch targets."""
+    assert 0.0 <= hw.JB_OP_HAND_RETRACT_REV <= hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+    assert 0.0 <= hw.JB_OP_HAND_CATCH_PRIME_REV <= hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+    # The homing reference is intentionally NOT a valid smooth-move target.
+    assert hw.HOMING_HAND_ABS_POS_REV < 0.0
+
+
+def test_safe_on_early_exit_safes_only_when_armed(monkeypatch):
     """A node-level early exit (cancel / timeout / shutdown) bypasses the FSM's own
-    terminal SAFE_ABORT — the node must safe the robot itself, but ONLY if PREPARE
-    already ran (latch raised / hand primed). A pre-prepare exit safes nothing."""
+    terminal SAFE_ABORT — the node must safe the robot itself, but ONLY once
+    something was armed (the hand prime dispatched or the latch raise requested).
+    A pre-arming exit safes nothing. Note the prime is the FIRST action of the
+    sequence, so 'armed' begins one step in."""
     node = ReloadCoordinatorNode()
     called = []
     monkeypatch.setattr(node, '_safe_abort', lambda: called.append('safe'))
     seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
     seq.start(0.0)
-    # Not prepared yet → early exit safes nothing.
+    # Nothing armed yet (no step ran) → early exit safes nothing.
     node._safe_on_early_exit(seq)
     assert called == []
-    # Drive to prepared (throw sent + accepted → PREPARE).
-    seq.step(0.0, _obs_stub())
-    seq.note_throw_result(True)
-    seq.step(0.1, _obs_stub())
+    # One step: the PRIME_HAND dispatch — the hand may be mid-move → must safe.
+    d = seq.step(0.0, _obs_stub())
+    assert d.action == ACTION_PRIME_HAND
     assert seq.prepared is True
     node._safe_on_early_exit(seq)
     assert called == ['safe']
@@ -320,14 +383,18 @@ def test_announcement_forwards_to_active_sequencer():
     node = ReloadCoordinatorNode()
     seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
     seq.start(0.0)
-    seq.step(0.0, _obs_stub())        # sends throw
+    seq.step(0.0, _obs_stub())        # PRIME
+    seq.note_prime_result(True)
+    seq.step(0.1, _obs_stub())        # PREPARE
+    seq.note_prepare_result(True)
+    seq.step(0.2, _obs_stub())        # SEND_THROW
     seq.note_throw_result(True)
-    seq.step(0.1, _obs_stub())        # → THROW_PENDING (PREPARE)
+    seq.step(0.3, _obs_stub())        # → THROW_PENDING
     with node._lock:
         node._active_seq = seq
     ann = types.SimpleNamespace(target_id='jugglebot')
     node._on_announcement(ann)
-    d = seq.step(0.2, _obs_stub())
+    d = seq.step(0.4, _obs_stub())
     assert d.phase == 'BALL_IN_FLIGHT'
 
 
@@ -339,18 +406,16 @@ def test_announcement_ignored_when_no_active_sequence():
 
 def test_target_feedback_reject_forwards_infeasibility():
     node = ReloadCoordinatorNode()
-    seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
-    seq.start(0.0)
-    seq.step(0.0, _obs_stub())
-    seq.note_throw_result(True)
-    seq.step(0.1, _obs_stub())
-    seq.note_announcement(0.5)
-    seq.step(0.5, _obs_stub())              # BALL_IN_FLIGHT
+    seq = _seq_in_flight(node)
     with node._lock:
         node._active_seq = seq
     fb = types.SimpleNamespace(source='catch', accepted=False, code='WORKSPACE')
     node._on_target_feedback(fb)
+    # The standing infeasibility does NOT terminate mid-flight (the primed cup may
+    # still catch); it resolves the outcome at settle.
     d = seq.step(1.0, _obs_stub())
+    assert not d.done
+    d = seq.step(4.5, _obs_stub())          # settle (fallback landing 3.2 + 0.7)
     assert d.done and d.result.outcome == 'MISSED_INFEASIBLE_WORKSPACE'
 
 
@@ -359,20 +424,16 @@ def test_target_feedback_frozen_and_stale_are_ignored():
     window and STALE_STATE on transient races — the node must drop them so the catch
     proceeds (fix 5)."""
     node = ReloadCoordinatorNode()
-    seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
-    seq.start(0.0)
-    seq.step(0.0, _obs_stub())
-    seq.note_throw_result(True)
-    seq.step(0.1, _obs_stub())
-    seq.note_announcement(0.5)
-    seq.step(0.5, _obs_stub())              # BALL_IN_FLIGHT
+    seq = _seq_in_flight(node)
     with node._lock:
         node._active_seq = seq
     for code in ('FROZEN', 'STALE_STATE'):
         node._on_target_feedback(
             types.SimpleNamespace(source='catch', accepted=False, code=code))
     d = seq.step(1.0, _obs_stub())
-    assert not d.done                       # neither latched MISSED_INFEASIBLE
+    assert not d.done                       # neither latched an infeasibility
+    d = seq.step(4.5, _obs_stub())          # settle: plain MISSED, not INFEASIBLE
+    assert d.done and d.result.outcome == 'MISSED'
 
 
 # ── Concurrent-goal rejection (fix 4) ──────────────────────────
@@ -393,3 +454,19 @@ def _obs_stub():
     return ReloadObservations(
         now=0.0, control_mode=RELOAD_CONTROL_MODE, bb_connected=True,
         bb_state=BB_STATE_IDLE, ball_in_hand=True, mocap_fresh=True, streaming=True)
+
+
+def test_sequence_deadline_never_lands_inside_the_flight_window():
+    """The node-level hard ceiling is derived per-goal from the FSM's own budgets.
+    A fixed 30 s ceiling with an operator-supplied throw_delay_s ~ 16+ s would fire
+    MID-FLIGHT and SAFE_ABORT under the airborne ball (the hazard class the
+    settle-resolution fix closed). Audit finding, 2026-07-23."""
+    from jugglebot.reload_coordinator_node import (
+        _MAX_SEQUENCE_S, _sequence_deadline_s)
+    short = ReloadSequencer(catch_point_mm=(0, 0, 809.08), throw_delay_s=3.0)
+    assert _sequence_deadline_s(short) == _MAX_SEQUENCE_S      # floor holds
+    long = ReloadSequencer(catch_point_mm=(0, 0, 809.08), throw_delay_s=20.0)
+    ceiling = _sequence_deadline_s(long)
+    # Must clear reload wait (10) + delay (20) + grace (0.5) + confirm (0.7).
+    assert ceiling > 10.0 + 20.0 + 0.5 + 0.7
+    assert ceiling >= _MAX_SEQUENCE_S

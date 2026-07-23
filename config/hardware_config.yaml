@@ -495,6 +495,11 @@ jugglebot_operational:
   # This ensures the gentle-move target matches the control loop's active pose exactly.
   default_active_z_mm: 170.0             # Default platform Z during active catching {mm}
   hand_catch_prime_rev: 9.858            # Hand position for catch priming (top of stroke) {rev}
+  hand_retract_rev: 0.0                  # Hand retract target for reload SAFE_ABORT {rev}. MUST stay
+                                         # within the bridge's smooth_move_hand range [0, hand max pos]:
+                                         # the homing reference (-0.1 rev) is BELOW it, and using that as
+                                         # the retract target made every abort retract a silently-rejected
+                                         # no-op (found 2026-07-23 — the hand stayed parked at top).
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}
@@ -557,6 +562,14 @@ trajectory_op:
                                    # defer-to-config); an EXPLICIT 0.0 in a request still forces OFF.
   catch_reach_freeze_s: 0.30       # Reach-translation freeze window before arrival {s} (Phase 6)
   catch_settle_hold_s: 0.50        # Quiescent hold after catch seat {s} (Phase 6)
+  catch_reach_envelope_mm: 80.0    # Max 3D catch-reach excursion from the pose held at arm-latch
+                                   # raise {mm}. Enforces the envelope build_catch documents as the
+                                   # caller's responsibility. Bounds two observed failure classes
+                                   # (2026-07-23 Phase-7 session): a frame-convention regression on
+                                   # the catch z (rejected LOUDLY here at ~170 mm instead of as a
+                                   # cryptic leg-stroke graze) and the platform chasing a drifting
+                                   # ball-tracker landing estimate (drift measured 435-605 mm/s on
+                                   # BB throws) hundreds of mm sideways during the flight window.
   retime_model: false              # Shaped-move duration search: the retiming MODEL proposes T,
                                    # the UNCHANGED gate (feasibility.validate) verifies it — fallback
                                    # is the legacy 6-pass stretch+bisection loop (shaped-planning-

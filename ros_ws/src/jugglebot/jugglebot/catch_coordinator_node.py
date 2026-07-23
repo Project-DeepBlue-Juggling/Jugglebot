@@ -161,6 +161,16 @@ class CatchCoordinatorNode(Node):
     def _on_catch_armed(self, msg: Bool):
         """Track the reload action's catch-armed latch — the gate for hand actuation.
 
+        On the ARM (rising) edge, prime the hand IMMEDIATELY — do not wait for a
+        tracked ball. The 2026-07-23 hardware session measured the bottom→top
+        smooth-move at ~0.7 s against a 0.878 s BB flight: a prime that waits for
+        the ball to appear on ``balls`` is a coin flip (lost by 0.06 s, won by
+        0.09 s), and a hand still mid-prime at fire time makes the Teensy silently
+        drop the whole catch stroke (its smooth-move prelude time-budget check).
+        Priming at the edge covers both the reload action (which also primes at
+        sequence start — this re-prime is idempotent) and the manual static-catch
+        flow (publish ``catch/armed`` true, throw by hand).
+
         On DISARM (reload ended / aborted) reset the one-shot flags so the NEXT reload
         re-primes + re-arms the hand from a clean state; a stale ``_hand_primed`` /
         ``_hand_traj_armed_for_ball`` would otherwise suppress the next reload's prime
@@ -169,7 +179,9 @@ class CatchCoordinatorNode(Node):
         if armed == self._catch_armed:
             return
         self._catch_armed = armed
-        if not armed:
+        if armed:
+            self._prime_hand()
+        else:
             self._hand_primed = False
             self._hand_traj_armed_for_ball = None
 

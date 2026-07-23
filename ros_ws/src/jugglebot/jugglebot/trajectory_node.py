@@ -224,13 +224,15 @@ class TrajectoryNode(Node):
         # catch_coordinator_node) for any future ROS-clock-timed surface.
         self._ros_to_perf_offset = self._measure_clock_offset()
         self._clock_offset_history = [self._ros_to_perf_offset]
-        self._active_z_mm = float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
-        # catch/dynamic_target z is an offset from the ACTIVE pose (0 = active — the
-        # MPC target convention); the trajectory pose convention is STOW-relative
-        # (170 = active). So a catch target's z is lifted by _active_z_mm; x/y are
-        # 0-at-active in BOTH conventions and map directly. (Frame convention to be
-        # RE-VERIFIED on hardware in Phase 7 before any ball flies — see Open
-        # Questions; the feasibility gate loudly rejects an out-of-stroke z meanwhile.)
+        # catch/dynamic_target pose is STOW-relative — the SAME frame as the trajectory
+        # pose convention (0 = the stow plane at GEOM_INITIAL_HEIGHT, ~170 = active):
+        # the coordinator subtracts GEOM_INITIAL_HEIGHT from the world-frame intercept,
+        # and the wire historically forwarded VERBATIM into the (stow-relative) MPC
+        # frame. Hardware-verified 2026-07-23: this node's previous "+ active_z lift"
+        # (which assumed an active-relative wire per a false premise about the MPC
+        # convention) double-counted the active height, commanding z ≈ 341 mm and
+        # driving every catch reach out of stroke (leg hard max 275 mm) — the Phase-7
+        # pre-registered open question, answered. No z conversion happens here anymore.
         self._catch_reach_freeze_s = float(hw.JB_TRAJ_CATCH_REACH_FREEZE_S)
         # Quiescent hold after the catch seat: once arrival + this window has fully
         # passed, the freeze is released so a later catch/dynamic_target supersedes as a
@@ -250,6 +252,16 @@ class TrajectoryNode(Node):
         # _svc_arm_catch). Read only on the executor thread (_on_dynamic_target), so a
         # plain bool needs no lock.
         self._catch_armed = False
+        # Reach-envelope enforcement (build_catch documents the ≤ envelope excursion as
+        # the CALLER's responsibility — this is the enforcement point). The commanded
+        # position captured at the arm-latch RAISE is the center; any catch target
+        # farther than the envelope (3D) is rejected WORKSPACE before planning. Bounds
+        # two observed failure classes (2026-07-23): a frame-convention regression on
+        # the wire (rejected loudly at ~170 mm instead of as a cryptic leg-stroke
+        # graze) and the platform chasing a drifting ball-tracker landing estimate
+        # hundreds of mm sideways during the flight window. None while disarmed.
+        self._catch_reach_envelope_mm = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+        self._catch_envelope_center = None
 
         # ── Parameters ─────────────────────────────────────────
         self.declare_parameter('control_mode_topic', 'control_mode_topic')
@@ -740,6 +752,7 @@ class TrajectoryNode(Node):
         if self._catch_armed:
             self._catch_armed = False
             self._reset_catch_reach_freeze()
+            self._catch_envelope_center = None
             self.get_logger().info(
                 f"catch latch force-disarmed on mode change "
                 f"{self._current_mode}→{mode}")
@@ -1959,17 +1972,19 @@ class TrajectoryNode(Node):
 
     def _catch_target_from_msg(self, msg):
         """DynamicTargetCommand → (target pose_6dof, arrival twist) in the trajectory
-        convention. The catch z is an offset from the active pose (0 = active); the
-        trajectory pose is STOW-relative (170 = active), so lift z by ``_active_z_mm``
-        (x/y are 0-at-active in both). The orientation carries the gravity-levelling
-        correction."""
+        convention. The wire pose is ALREADY STOW-relative (0 = stow, ~170 = active —
+        the coordinator subtracts GEOM_INITIAL_HEIGHT from the world intercept), i.e.
+        the same frame as the trajectory pose, so it maps through VERBATIM. Hardware-
+        verified 2026-07-23; the former "+ active_z" lift here was a double-count that
+        drove every catch reach out of stroke. The orientation carries the
+        gravity-levelling correction."""
         q = msg.target_quat
         rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
         rotvec = self._apply_gravity_correction(rot_matrix_to_rotvec(rot))
         target = np.array([
             float(msg.target_pos.x),
             float(msg.target_pos.y),
-            float(msg.target_pos.z) + self._active_z_mm,
+            float(msg.target_pos.z),
             rotvec[0], rotvec[1], rotvec[2]])
         # Linear arrival velocity only (angular arrival rate = 0). Velocity is
         # frame-offset-invariant, so no z adjustment.
@@ -2029,6 +2044,25 @@ class TrajectoryNode(Node):
                     arrival_perf, 'catch')
                 return
         target, _twist = self._catch_target_from_msg(msg)
+        # Reach-envelope gate (the envelope build_catch documents as the caller's
+        # responsibility): reject any target farther than the envelope (3D) from the
+        # pose held at arm-latch raise. WORKSPACE is deliberate — it is a
+        # position-unreachable-by-policy reject, so the coordinator's feasibility
+        # blacklist counts it (a drifting landing estimate blacklists out instead of
+        # dragging the platform sideways all flight).
+        if self._catch_envelope_center is not None:
+            excursion = float(np.linalg.norm(
+                target[:3] - self._catch_envelope_center))
+            if excursion > self._catch_reach_envelope_mm:
+                reason = (
+                    f"catch target {excursion:.0f} mm from the armed hold pose "
+                    f"exceeds the {self._catch_reach_envelope_mm:.0f} mm reach "
+                    f"envelope")
+                self._last_rejection = reason
+                self.get_logger().error(f"catch target rejected: {reason}")
+                self._publish_target_feedback(
+                    False, feas.WORKSPACE, reason, arrival_perf, 'catch')
+                return
         # Phase 7: build the tilt-through-seat catch (reach → through-seat decay →
         # quiescent hold) rather than the Phase-5 reach-only build_timed. The receive
         # tilt is already in ``target[3:5]`` (coordinator's collinear compute_catch_
@@ -2078,6 +2112,18 @@ class TrajectoryNode(Node):
         # a graceful stop must sample the state at the transition. _active_move_in_flight
         # locks itself; _install_graceful_stop's _current_state/_install lock themselves.
         move_in_flight = self._active_move_in_flight()
+        # Reach-envelope center: captured at the RAISE edge (the commanded position the
+        # catch session starts from — normally the active hold), cleared at the lower
+        # edge. Every catch target this session is bounded to the envelope around it.
+        # Captured BEFORE the latch flips so no ordering ever exposes an
+        # armed-with-no-center window (in which _on_dynamic_target would skip the
+        # envelope gate); under the current single-threaded spin the callbacks
+        # serialize anyway — this is defence-in-depth, not a live race.
+        if want:
+            self._catch_envelope_center = np.asarray(
+                self._current_state()[0][:3], dtype=float).copy()
+        else:
+            self._catch_envelope_center = None
         self._catch_armed = want
         self._reset_catch_reach_freeze()
         if move_in_flight:
