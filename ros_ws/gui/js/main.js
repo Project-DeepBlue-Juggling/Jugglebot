@@ -353,6 +353,13 @@ function onRobotState(msg) {
         else if (i === 7) setBBPitchFault(faulted);
         else if (i === 8) setBBHandFault(faulted);
     }
+    // The bridge appends the BB entries ([7]/[8]) only while BB is live and
+    // drops back to 7 axes when it goes dark/stale (honest-silence gate). On
+    // that shrink the loop above never revisits 7/8, so a lit fault dot would
+    // freeze red forever — clear explicitly: no data is "unknown", never a
+    // frozen last value (same discipline as the tracking-error panel).
+    if (motors.length < 8) setBBPitchFault(false);
+    if (motors.length < 9) setBBHandFault(false);
 
     // Feed telemetry charts
     onTelemetryData(motors, latestCommandedLegs, latestHandTelemetry);
