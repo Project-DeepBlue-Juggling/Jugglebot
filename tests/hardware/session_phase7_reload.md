@@ -23,28 +23,40 @@ passes, or 7c before 7b passes.**
 
 ---
 
-> **⚡ RE-TEST after the 2026-07-23 fixes** (`logbook/2026-07-23-phase7-reload-first-hardware-session.md`).
-> The first session's failures are all fixed; what changed for THIS run:
-> 1. **The platform should now tilt in 7c.** Every first-session catch reach was
->    gate-rejected by a z frame double-add (commanded z ≈ 341 mm, out of stroke);
->    the wire is now consumed verbatim (z ≈ 171 at the cup plane).
-> 2. **The hand primes at COMMAND time** — the moment the reload goal's
->    preconditions pass (7c) or `catch/armed` goes true (7b). If the hand does
->    NOT start rising within ~a second of either, you are running a stale build.
-> 3. **Arming precedes the throw**: feedback now shows `PREPARING` between
->    `CHECKING` and `AIMING`; a prime/latch failure aborts with NO throw committed.
-> 4. **Abort retract actually retracts now** (old target −0.1 rev was silently
->    rejected by the bridge; it is 0.0 now). After any abort the hand should end
->    at the BOTTOM of its stroke.
-> 5. **New reach envelope (80 mm)**: catch targets > 80 mm from the armed hold pose
->    are rejected `WORKSPACE` with an "exceeds the … reach envelope" reason. If you
->    see these repeatedly on near-centre throws, that is the OPEN tracker-drift
->    finding (BB-ball landing estimates drift 435–605 mm/s toward BB) — capture the
->    bag and stop; that investigation is its own session.
-> **Before this session**: rebuild BOTH packages (`colcon build --packages-select
-> jugglebot_interfaces jugglebot` — the msg doc changed too) + `source
-> install/setup.bash` + relaunch; and **power-cycle the can-bridge Teensy** (the
-> OPEN uptime-lag issue — start the session on a fresh bridge).
+> **⚡ THIRD SITTING — after the 2026-07-23 afternoon fixes**
+> (`logbook/2026-07-23-phase7-retest-stroke-race-tracker-corruption.md`; the morning
+> fixes are in `…-phase7-reload-first-hardware-session.md` and validated — the
+> platform reached + tilted on every throw of the re-test). What changed for THIS run:
+> 1. **The catch stroke should now fire on EVERY attempt.** The re-test lost 3/6
+>    strokes to a same-tick re-prime racing the catch arm on the Teensy's single
+>    trajectory queue; no smooth-move is ever sent while a catch sequence is live
+>    now.
+> 2. **The platform pre-tilts during the countdown** (new): right after the throw is
+>    accepted you should see the platform settle into the receive tilt ~3 s BEFORE
+>    the ball flies (predicted from the announcement), then refine slightly
+>    mid-flight. A platform that only starts tilting at release = stale build.
+> 3. **`catch_vel_scale` knob** (new, your tuning request):
+>    `ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload
+>    "{throw_delay_s: 3.0, catch_vel_scale: 0.8}" --feedback` — scales the hand's
+>    catch speed (effective hand/ball ratio = 0.6 × scale; clamped [0.3, 1.5];
+>    resets to 1.0 each attempt). For manual 7b throws publish `catch/vel_scale`
+>    (std_msgs/Float64) after arming. Suggested sweep: 1.0 → 0.8 → 0.6 → 1.2,
+>    one throw each, judge seating.
+> 4. **CAUGHT verdicts are honest now**: the re-test's 5 spurious `CAUGHT` results
+>    came from corrupt tracker tracks coasting below the floor; those are rejected
+>    (watch for "tracker CAUGHT … is IMPLAUSIBLE" warnings — each one is more
+>    evidence for the OPEN tracker investigation). Expect `MISSED` on a bounce-out —
+>    **and note that while the corruption stands, a REAL catch may ALSO read
+>    `MISSED`** (the latched announced track is the corrupt one, so its CAUGHT is
+>    rightly rejected). During the vel-scale sweep, judge seating **by eye and hand
+>    telemetry, not by the action verdict**.
+> 5. A transient first-attempt prime failure now retries once instead of aborting.
+> **Before this session**: `colcon build --packages-select jugglebot_interfaces
+> jugglebot` (the action gained a goal field) + `source install/setup.bash` +
+> relaunch; and **POWER-CYCLE THE CAN-BRIDGE TEENSY** — it was at 67.6 h uptime
+> during the re-test, deep in the known lag regime; the reboot isolation experiment
+> is STILL outstanding and any catch-timing tuning on a degraded bridge may not
+> transfer.
 
 > **⚡ Action-driven reload, 2026-07-20 (no CATCH mode)**: the catch is no longer
 > gated by a persistent **CATCH** control mode the operator holds. That mode was
