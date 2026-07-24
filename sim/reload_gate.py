@@ -74,15 +74,17 @@ from plant.mujoco_plant import MuJoCoPlant
 from hand.trajectory import HandCatchTrajectory, HandCatchSequence
 from juggle_noise import JuggleNoise, NoiseConfig, BallisticEstimator
 
-# ── Sim/cup geometry constants (measured against sim/model/jugglebot.xml) ──────
-# cup_opening_world_z = CUP_Z_BASE_MM + hand_pos_mm + (platform_z_stow − Z_ACTIVE).
-# Probed 2026-07-08: neutral (z=170) + hand=0 → 659.6 mm; +1 mm hand → +1 mm cup;
-# +1 mm platform z → +1 mm cup (see the logbook Design section).
-CUP_Z_BASE_MM = 659.6
-Z_ACTIVE_MM = 170.0                       # STOW-relative neutral platform z
+# Mechanically-shared gate machinery (constants, thresholds, hold metrics,
+# viewer) lives in gate_common since the toss-gate extraction (2026-07-25);
+# re-imported by name so this module's surface stays byte-identical.
+from gate_common import (
+    BALL_R_MM, CUP_Z_BASE_MM, HOLD_TILT_DEG, HOLD_TRAVEL_MM, KNOT_DT_S,
+    NEUTRAL_POSE, REACH_ENVELOPE_MM, SEPARATION_MS, VEL_MATCH_FRAC,
+    Z_ACTIVE_MM, ViewerClosed, ViewerHook, attach_viewer, tilt_change_deg,
+    travel_mm,
+)
+
 GRAVITY_MMS2 = bal.GRAVITY_MMS2
-KNOT_DT_S = 0.025
-NEUTRAL_POSE = np.array([0.0, 0.0, Z_ACTIVE_MM, 0.0, 0.0, 0.0])
 
 # The 5 landing offsets (mm xy) within ±60 mm, and 4 arrival speeds (m/s) in
 # 2.5–4.0 — the 20-run gate is the 5×4 grid (one seed per cell).
@@ -90,12 +92,6 @@ _LANDING_OFFSETS_MM = (
     (0.0, 0.0), (45.0, 0.0), (-30.0, 25.0), (20.0, -35.0), (-35.0, -20.0),
 )
 _ARRIVAL_SPEEDS_MPS = (2.5, 3.0, 3.5, 4.0)
-
-# Ball radius (mm) — from sim/model/jugglebot.xml ball_geom size (0.035 m).
-# Informational: the ball-cup capture instant (contact→hold) is a coupled function
-# of this radius + the co-moving cup, empirically ~+45 ms past centre-arrival; the
-# hand hold is anchored via `capture_offset_s`, not a closed-form BALL_R/|v| lead.
-BALL_R_MM = 35.0
 
 
 @dataclasses.dataclass
@@ -129,13 +125,8 @@ class ReloadGateConfig:
     report_path: str | None = None
 
 
-# ── Acceptance thresholds (plan § Hand-catch smoothness) ──
-VEL_MATCH_FRAC = 0.15          # |v_hand − v_ball| ≤ 15 % of |v_ball| at contact
-HOLD_TRAVEL_MM = 5.0           # platform centroid travel over the hold window
-HOLD_TILT_DEG = 1.0            # platform tilt change over the hold window
-SEPARATION_MS = 10.0           # max post-contact ball–cup separation
+# ── Acceptance thresholds — shared values imported from gate_common above ──
 GATE_PASS_FRACTION = 18.0 / 20.0
-REACH_ENVELOPE_MM = 80.0       # sim-established reliable reach
 
 
 @dataclasses.dataclass
@@ -183,46 +174,9 @@ class TrialResult:
         return d
 
 
-class _ViewerHook:
-    """Optional interactive MuJoCo viewer for watching gate/sequential runs.
-
-    Purely observational: attaches a passive viewer to the plant's model/data
-    (which survive ``plant.reset`` — the plant resets MjData in place) and paces
-    the sim to ``speed``× real time with wall-clock sleeps OUTSIDE the physics,
-    so gate math, seeding, and PASS/FAIL are bit-identical to a headless run.
-    Closing the viewer window stops the run cleanly via ``ViewerClosed``.
-
-    Requires a display (``pip install mujoco`` ships the viewer). Lazy-imported
-    so headless machines never touch it.
-    """
-
-    def __init__(self, plant, speed: float = 1.0):
-        import mujoco.viewer  # lazy: needs a display only when actually used
-        self._viewer = mujoco.viewer.launch_passive(plant.model, plant.data)
-        self._speed = max(1e-3, float(speed))
-        self._plant = plant
-        self._wall0 = time.time()
-        self._sim0 = float(plant.data.time)
-
-    def sync(self):
-        if not self._viewer.is_running():
-            raise ViewerClosed()
-        self._viewer.sync()
-        # Pace sim time to speed× wall time (sleep the surplus, never rush).
-        target_wall = self._wall0 + (float(self._plant.data.time) - self._sim0) / self._speed
-        lag = target_wall - time.time()
-        if lag > 0:
-            time.sleep(lag)
-
-    def close(self):
-        try:
-            self._viewer.close()
-        except Exception:
-            pass
-
-
-class ViewerClosed(Exception):
-    """Raised by _ViewerHook.sync() when the operator closes the viewer window."""
+# Viewer machinery moved to gate_common (ViewerHook / ViewerClosed /
+# attach_viewer); aliased here so existing references stay valid.
+_ViewerHook = ViewerHook
 
 
 class ReloadGate:
@@ -505,17 +459,11 @@ class ReloadGate:
 
     @staticmethod
     def _travel(samples) -> float:
-        if len(samples) < 2:
-            return 0.0
-        arr = np.asarray(samples)
-        return float(np.max(np.linalg.norm(arr - arr[0], axis=1)))
+        return travel_mm(samples)
 
     @staticmethod
     def _tilt_change_deg(rot_samples) -> float:
-        if len(rot_samples) < 2:
-            return 0.0
-        arr = np.asarray(rot_samples)
-        return float(np.degrees(np.max(np.linalg.norm(arr - arr[0], axis=1))))
+        return tilt_change_deg(rot_samples)
 
     # ---- the full gate ----------------------------------------------------
     def run(self) -> dict:
@@ -676,17 +624,7 @@ def _attach_viewer(gate: 'ReloadGate', viewer_speed) -> bool:
     """Attach an interactive viewer to a constructed gate (``--viewer``).
     Returns True on success; on failure (headless machine, no GLFW) prints the
     reason and returns False so the caller proceeds headless."""
-    if viewer_speed is None:
-        return False
-    try:
-        gate.viewer = _ViewerHook(gate.plant, speed=viewer_speed)
-        print(f"[reload_gate] viewer attached ({viewer_speed:g}x real time) — "
-              "pacing sleeps sit outside the physics; results are bit-identical "
-              "to a headless run. Close the window to stop.")
-        return True
-    except Exception as e:  # no display / viewer backend unavailable
-        print(f"[reload_gate] viewer unavailable ({e}) — continuing headless.")
-        return False
+    return attach_viewer(gate, viewer_speed, tag='reload_gate')
 
 
 def run_gate(cfg: ReloadGateConfig, viewer_speed=None) -> dict:

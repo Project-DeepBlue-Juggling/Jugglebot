@@ -154,7 +154,10 @@ A sibling of `sim/reload_gate.py`, sharing its helpers (extraction into a
 common module only where reuse is mechanical): real `build_catch` +
 `KnotEmitter` + `SetpointPump` in the loop, MuJoCo plant, seeded §3-style noise.
 The throw is realised as a **kinematic release** at the computed release state
-(`Ball.ballistic_release`, merged from the ladder) with seeded release-velocity
+(`Ball.ballistic_release`, merged from the ladder; the gate implements
+the release via `Ball.release` — the kinematic-hold-mode ejector, since
+`ballistic_release`’s contract requires contact-carry mode — see the
+Phase-2 logbook entry’s Discussion) with seeded release-velocity
 noise — the contact-detach path mis-models the real cup (sensitivity ≈2.7 in
 sim vs. visibly smooth hardware catches; the sim contact model, not the robot,
 is the low-fidelity element). A contact-physics variant runs as a non-gating
@@ -174,7 +177,7 @@ zero feasibility violations, all knots pump-accepted.
 |---|---|---|---|
 | 0 | Post-merge reconciliation (suite green, doc pointers) | full pytest | COMPLETE (2026-07-25) |
 | 1 | `Toss.action` + `toss_sequencer` FSM + coordinator wiring (Tier 8a, REJECTED_TIER for 8b) | full pytest | COMPLETE (2026-07-25; tier is config-only — the locked goal has no tier field, see the phase logbook entry) |
-| 2 | `sim/toss_gate.py` + Tier-8a sweep | Self-toss gate ≥9/10 | NOT STARTED |
+| 2 | `sim/toss_gate.py` + Tier-8a sweep | Self-toss gate ≥9/10 | COMPLETE (2026-07-25 — PASS both binding bands, 262/290 core_clean overall; long-flight advisory tail fails under the placeholder noise, re-run after T0) |
 | 3 | Real-ordering trace (multi-node choreography) | trace review | NOT STARTED |
 | 4 | Tier 8b — tilt-aimed displaced throw on the production stack | gate sweep extension | NOT STARTED |
 | 5 | Hardware bring-up T0–T4 (operator-run) | staged PASS criteria | NOT STARTED |
