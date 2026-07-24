@@ -240,10 +240,14 @@ _BRIDGE_HAND_TRAJ_REJECT_PREFIXES = (
     'Invalid event delay', 'Invalid event velocity', 'Invalid trajectory type')
 # Trace-only ball-evidence waiver (single-ball-toss plan, Phase-3 dry trace): a node
 # PARAMETER, never a goal field. Waives ONLY the possession-latch precondition
-# (REJECTED_NO_BALL) so an unpowered bench — which can show no hand-telemetry ball
-# evidence — can emit the full post-CHECKING choreography for trace review. The
-# hand-parked and hand-fresh preconditions stay hard even under it. Every
-# powered-session runbook leaves it unset.
+# (REJECTED_NO_BALL) so a POWERED no-ball bench can emit the full post-CHECKING
+# choreography for trace review: with power up, every CHECKING precondition passes
+# naturally except possession. (An UNPOWERED bench never reaches this gate at all —
+# activation faults leave control_mode non-TRAJECTORY and hand telemetry silent, so
+# CHECKING dies REJECTED_WRONG_MODE / REJECTED_HAND_STALE first; see
+# logbook/2026-07-25-toss-phase3-prep-trace-harness.md.) The hand-parked and
+# hand-fresh preconditions stay hard even under it. The Phase-3 trace runbook is
+# the ONE sanctioned setter; every ball-flying runbook leaves it unset.
 _TOSS_WAIVER_PARAM = 'toss_ball_evidence_waiver_trace_only'
 # QTM rigid-body name for the POSITIONING mocap arrival cross-check — a node
 # PARAMETER, DEFAULT '' = cross-check DISABLED. No QTM body for the platform has

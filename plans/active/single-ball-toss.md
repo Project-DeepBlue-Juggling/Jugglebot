@@ -178,7 +178,7 @@ zero feasibility violations, all knots pump-accepted.
 | 0 | Post-merge reconciliation (suite green, doc pointers) | full pytest | COMPLETE (2026-07-25) |
 | 1 | `Toss.action` + `toss_sequencer` FSM + coordinator wiring (Tier 8a, REJECTED_TIER for 8b) | full pytest | COMPLETE (2026-07-25; tier is config-only — the locked goal has no tier field, see the phase logbook entry) |
 | 2 | `sim/toss_gate.py` + Tier-8a sweep | Self-toss gate ≥9/10 | COMPLETE (2026-07-25 — PASS both binding bands, 262/290 core_clean overall; long-flight advisory tail fails under the placeholder noise, re-run after T0) |
-| 3 | Real-ordering trace (multi-node choreography) | trace review | NOT STARTED |
+| 3 | Real-ordering trace (multi-node choreography) | trace review | PREPARED (2026-07-25 — harness + runbook landed, powered-bench amendment; operator captures pending) |
 | 4 | Tier 8b — tilt-aimed displaced throw on the production stack | gate sweep extension | NOT STARTED |
 | 5 | Hardware bring-up T0–T4 (operator-run) | staged PASS criteria | NOT STARTED |
 
@@ -219,14 +219,22 @@ sweep report to `temp/reports/`. Gate pass recorded with the
 ### Phase 3 — Real-ordering trace
 Mocked-ROS unit tests are blind to cross-process choreography (the Phase-7
 audit found five BLOCKING ordering bugs exactly there). Before hardware: a
-recorded real-ordering trace of Reload → Toss on the live launch (bench, no
-ball — a dry trace: the harness raises a trace-only waiver for the
+recorded real-ordering trace of Reload → Toss on the live launch (**powered**
+no-ball bench — a dry trace: the harness raises a trace-only waiver for the
 ball-evidence precondition so the full post-CHECKING choreography emits and
-is observed without physical outcomes; an unpowered bench cannot show
-hand-telemetry ball evidence, which is why a seated real ball is not the
-mechanism, and every powered-session runbook leaves the waiver unset; the
-un-waived `REJECTED_NO_BALL` refusal path is captured as its own short
-trace), reviewed against the sequencer's assumed ordering.
+is observed without physical outcomes; every powered-session runbook leaves
+the waiver unset; the un-waived `REJECTED_NO_BALL` refusal path is captured
+as its own short trace), reviewed against the sequencer's assumed ordering.
+*(Amended 2026-07-25: the original "unpowered bench" wording is
+unreachable — ACTIVE activation faults against unpowered ODrives and the
+10 Hz mode republish reject the goal `REJECTED_WRONG_MODE` before the
+waiver ever matters; with power, every precondition passes naturally except
+possession, which is exactly what the waiver covers. Note the dry capture
+therefore fires a real empty-cup throw stroke — the runbook frames it as a
+real actuation and recommends folding it into the T0 sitting. See the
+Phase-3 prep logbook entry.)* Tooling: `tests/hardware/toss_trace_recorder.py`
+(recorder + offline invariant checker, DT-1..14 / RJ-1..4) +
+`tests/hardware/session_phase8_toss_trace.md` (runbook).
 
 ### Phase 4 — Tier 8b (tilt-aimed displaced throw)
 - Port `tilt_to_throw` into `motion/trajectory/tilt_geometry.py` (pure Python;
