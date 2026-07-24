@@ -1,5 +1,5 @@
 """Ball physics and capture management for the simulation."""
 
-from .manager import BallManager, BallState
+from .manager import Ball, BallManager, BallState
 
-__all__ = ['BallManager', 'BallState']
+__all__ = ['Ball', 'BallManager', 'BallState']

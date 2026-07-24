@@ -22,12 +22,20 @@ import datetime
 
 import numpy as np
 
+# Make sim/, controller/, the jugglebot ROS2 package, and generated config
+# importable when run directly on a fresh clone — without requiring the
+# jugglebot package to be pip-installed (as it is on the Jetson venv).
+# Mirrors the path entries in tests/conftest.py.
 _sim_dir = os.path.dirname(os.path.abspath(__file__))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
 _repo_root = os.path.dirname(_sim_dir)
-if _repo_root not in sys.path:
-    sys.path.insert(0, _repo_root)
+for _p in (
+    _sim_dir,                                                # bare plant/, hand/, ball_butler/ imports
+    _repo_root,                                              # controller.*
+    os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),  # jugglebot.motion.* (pure-Python ROS2 pkg)
+    os.path.join(_repo_root, 'config', 'generated'),         # generated hardware/protocol config
+):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController

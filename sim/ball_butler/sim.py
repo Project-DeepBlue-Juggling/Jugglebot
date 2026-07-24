@@ -389,6 +389,7 @@ class BallButlerSim:
         landing_xy_mm: np.ndarray | None = None,
         scatter_mm: float = 0.0,
         catch_z_mm: float = 783.5,
+        rng: np.random.Generator | None = None,
     ) -> BallSpawn:
         """Throw at Jugglebot's catch height (convenience).
 
@@ -399,12 +400,17 @@ class BallButlerSim:
         scatter_mm : gaussian scatter sigma applied to landing XY (mm)
         catch_z_mm : world-frame Z of catch height.  Default is
             574.3 (platform_height) + 80.0 (active_z) + 129.2 (hand_catch_offset).
+        rng : optional seeded ``np.random.Generator`` for reproducible
+            scatter. When ``None`` a fresh unseeded generator is used (so
+            ``scatter_mm > 0`` runs are non-deterministic) — pass a seeded
+            generator (e.g. from the demo runner) for reproducibility.
         """
         xy = np.zeros(2)
         if landing_xy_mm is not None:
             xy = np.asarray(landing_xy_mm, dtype=float)
         if scatter_mm > 0:
-            xy = xy + np.random.default_rng().normal(0.0, scatter_mm, size=2)
+            gen = rng if rng is not None else np.random.default_rng()
+            xy = xy + gen.normal(0.0, scatter_mm, size=2)
 
         target = np.array([xy[0], xy[1], catch_z_mm])
         return self.throw_at(target, spawn_time)

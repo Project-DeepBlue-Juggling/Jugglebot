@@ -36,6 +36,8 @@ def _record_to_payload(record) -> dict:
                     d["actual_ext_3"], d["actual_ext_4"], d["actual_ext_5"]],
         "leg_vel": [d["leg_vel_0"], d["leg_vel_1"], d["leg_vel_2"],
                     d["leg_vel_3"], d["leg_vel_4"], d["leg_vel_5"]],
+        "leg_acc": [d["leg_acc_0"], d["leg_acc_1"], d["leg_acc_2"],
+                    d["leg_acc_3"], d["leg_acc_4"], d["leg_acc_5"]],
         "mpc": {
             "solve_ms": d["solve_time_ms"],
             "status": d["solve_status"],
@@ -46,6 +48,22 @@ def _record_to_payload(record) -> dict:
             "cmd": d["hand_cmd_mm"],
             "pos": d["hand_pos_mm"],
             "vel": d["hand_vel_mmps"],
+        },
+        "balls": [
+            {
+                "pos": [d["ball0_x"], d["ball0_y"], d["ball0_z"]],
+                "vel": [d["ball0_vx"], d["ball0_vy"], d["ball0_vz"]],
+                "held": d["ball0_held"],
+            },
+            {
+                "pos": [d["ball1_x"], d["ball1_y"], d["ball1_z"]],
+                "vel": [d["ball1_vx"], d["ball1_vy"], d["ball1_vz"]],
+                "held": d["ball1_held"],
+            },
+        ],
+        "throw": {
+            "phase": d["throw_phase"],
+            "catches": d["catches_total"],
         },
         "err": {"mm": d["tracking_error_mm"], "deg": d["tracking_error_deg"]},
     }

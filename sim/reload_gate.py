@@ -450,7 +450,7 @@ class ReloadGate:
                     # the tilted cup axis, so this is the axial velocity mismatch).
                     bs = plant.get_ball_state()
                     v_ball_vec = bs.velocity_mms
-                    v_hand_vec = plant.ball_manager._hand_site_velocity() * 1000.0
+                    v_hand_vec = plant.ball_manager.ball(0)._hand_site_velocity() * 1000.0
                     v_match = float(np.linalg.norm(v_ball_vec - v_hand_vec)
                                     / max(np.linalg.norm(v_ball_vec), 1e-6))
                 if caught:

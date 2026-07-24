@@ -199,3 +199,69 @@ class TestBallMiss:
             plant.step(0.02)
             captured = plant.check_and_capture()
             assert not captured, "Ball should not be captured when offset from hand"
+
+
+class TestBallisticRelease:
+    """Ball.ballistic_release — the contact-carry KINEMATIC release (Rung 2b).
+
+    The clean-separation hand-off: cut a contact-carried held ball free at a SET
+    velocity, breaking hand contact so no residual push corrupts the launch, then
+    re-arm the contact-carry seat capture. See
+    ``ball.manager.Ball.ballistic_release``.
+    """
+
+    def _carry_plant(self):
+        p = MuJoCoPlant(contact_carry=True)
+        p.reset()
+        return p
+
+    def test_imposes_velocity_and_breaks_contact(self):
+        """The contract's core: after ballistic_release the ball is free, its
+        linear velocity is EXACTLY the imposed value, and hand contact is broken
+        (ball geom contype -> 1, ground-only) so no residual push re-corrupts it."""
+        plant = self._carry_plant()
+        # settle the platform, then seat a ball in the cup (kinematic spawn_in_hand)
+        for _ in range(30):
+            plant.step(0.02)
+        plant.ball_manager.ball(0).spawn_in_hand()
+        assert plant.get_ball_state(0).held
+
+        ball = plant.ball_manager.ball(0)
+        v_mms = np.array([300.0, -150.0, 2200.0])       # arbitrary take-off (mm/s)
+        plant.ballistic_release(v_mms, ball=0)
+
+        assert not ball.held                            # ball is free
+        assert plant.model.geom_contype[ball._ball_geom_id] == 1   # contact broken
+        # the imposed velocity landed exactly on the ball's dof (mm/s -> m/s)
+        vadr = ball._ball_qvel_adr
+        np.testing.assert_allclose(plant.data.qvel[vadr:vadr + 3], v_mms / 1000.0,
+                                   rtol=0, atol=1e-9)
+        # ...and the reported state velocity matches (a clean, contact-free launch).
+        # get_ball_state reads MuJoCo sensordata, refreshed only by mj_step/mj_forward;
+        # ballistic_release writes qvel directly, so forward once before reading (in the
+        # real loop a plant.step always follows the release, so this never bites there).
+        mujoco.mj_forward(plant.model, plant.data)
+        st = plant.get_ball_state(0)
+        np.testing.assert_allclose(np.asarray(st.velocity_mms), v_mms, rtol=0, atol=1e-6)
+
+    def test_no_residual_push_flies_ballistic(self):
+        """With contact broken the ball flies at the imposed velocity (no residual
+        contact push): a pure-upward release rises and its horizontal velocity is
+        preserved, unlike the emergent contact throw whose take-off depends on the
+        contact geometry (the knife-edge the release defeats)."""
+        plant = self._carry_plant()
+        for _ in range(30):
+            plant.step(0.02)
+        plant.ball_manager.ball(0).spawn_in_hand()
+        vx0 = 250.0
+        plant.ballistic_release(np.array([vx0, 0.0, 2500.0]), ball=0)
+        # forward once so sensordata reflects the seated qpos + imposed qvel before the
+        # baseline z read (ballistic_release writes qpos/qvel directly, no step yet).
+        mujoco.mj_forward(plant.model, plant.data)
+        z0 = plant.get_ball_state(0).position_mm[2]
+        for _ in range(4):
+            plant.step(0.02)
+        st = plant.get_ball_state(0)
+        assert st.position_mm[2] > z0                   # rose (went up)
+        # horizontal velocity preserved within a hair (gravity is vertical only)
+        assert abs(st.velocity_mms[0] - vx0) < 5.0
