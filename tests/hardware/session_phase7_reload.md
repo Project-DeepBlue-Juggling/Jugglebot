@@ -31,9 +31,9 @@ passes, or 7c before 7b passes.**
 >    `reload_platform_open_loop: true`): once the throw is announced, the platform
 >    takes the pre-tilt pose and HOLDS it — live ball tracking can no longer move it
 >    (the Ball-30 "platform moved at the last second" miss is dead). The hand-stroke
->    TIMING stays tracker-driven (announced landing runs ~0.05–0.15 s early, one
->    +0.31 s outlier — timing the stroke from it would bounce balls). Manual 7b
->    bench arming is unaffected.
+>    TIMING stays tracker-driven (announced landing runs ~0.05–0.16 s early, plus a
+>    ~+0.31 s outlier mode ≈ once per sitting — timing the stroke from it would
+>    bounce balls). Manual 7b bench arming is unaffected.
 > 2. **No more up-down prime jerk / false PRIME aborts**: the hand ladders now read
 >    hand telemetry after a failed ack — a "failed" dispatch that is actually moving
 >    the hand is accepted instead of re-dispatched (the ack channel lies ~59 % of

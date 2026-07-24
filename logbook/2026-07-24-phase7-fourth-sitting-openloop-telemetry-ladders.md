@@ -112,7 +112,8 @@ prior-attempt exclusion is landed anyway as cheap defense-in-depth.
    pose; per-ball reactive platform targets are suppressed (the cached pre-tilt is
    re-asserted each balls tick as a dropped-message safety net — byte-identical
    pose, zero net motion, no blacklist churn). **Only the platform is frozen: the
-   hand-arm stays tracker-timed** (announced landing runs 0.05–0.14 s early vs
+   hand-arm stays tracker-timed** (announced landing runs ~0.05–0.16 s early —
+   plus a ~+0.31 s outlier mode, see Addendum — vs
    actual on a fresh bridge — announcement-timed strokes would bounce). Manual
    bench arming (no announcement) keeps the fully reactive path.
 2. **Telemetry-verified hand ladders** (prime + SAFE_ABORT retract): the reload
@@ -163,8 +164,9 @@ Jugglebot-side "fix" was invented for it; BB's PV/settled checks are flagged for
 a BB-side review instead.
 
 **Why open-loop platform + closed-loop hand, not open-loop everything.** The
-announcement's landing time runs 0.05–0.14 s early across two sittings (one
-+0.31 s outlier, Ball 84); the
+announcement's landing time runs ~0.05–0.16 s early across two sittings, plus a
+~+0.31 s outlier mode (one instance per sitting; Ball 84 here — see Addendum
+for the full measured distribution); the
 stroke fires at land+0.12 in practice because the tracked arrival estimate — even
 on the corrupt track, whose early-life timing is exact (probe: 0.000 s skew) —
 is what times it. Announcement-timed strokes would systematically fire early =
@@ -212,6 +214,53 @@ misses (ball-held-sensor era); FSM consumption of BB's throw-completion result.
   comment; disarm-state completeness; early-exit outcome lines).
 - Forensics artifacts: workflow run `wf_eb0e5dcc-2e0` (bag + dispatch + open-loop
   investigators, adversarial verifier, implementer, auditor).
+
+## Addendum (2026-07-24, post-session): announced-landing timing error, measured
+
+Operator question: should BB's firmware release-timing constant (currently a
+44 ms offset) be re-tuned so the announced landing matches actual arrival?
+Probed the question across BOTH sittings' bags (one-off `/tmp` probe, recipe
+inline so it stays reproducible): for every ThrowAnnouncement, find the REAL
+ball's descending crossing of the catch plane (z = 809 mm world, interpolated
+between samples) within 300 mm xy of the platform centre and ±0.8 s of the
+announced landing — the xy gate excludes the corrupt track, which crosses the
+plane ~(−700, −360) — and report `err = t_cross − t_announced_landing`:
+
+| sitting | n | mean | σ | median | range |
+|---|---|---|---|---|---|
+| third (`17-51-09`) | 6 | +0.148 s | 0.091 | +0.129 | +0.065 … +0.320 |
+| fourth (`09-07-53`) | 14 | +0.100 s | 0.070 | +0.074 | +0.049 … +0.314 |
+| **pooled** | **20** | **+0.115 s** | **0.078** | **+0.089** | +0.049 … +0.320 |
+
+Bias uncertainty (std of the mean): ±0.017 s. The distribution has three
+distinct components wanting three different fixes:
+
+1. **Stable bias ≈ +0.09–0.12 s** — the firmware-constant-fixable part (2–3×
+   the core spread, consistent across sittings).
+2. **Core spread σ ≈ 0.035 s** (18/20 points in +0.049…+0.157) — per-throw
+   physics variance; no constant fixes it; the tracker-timed stroke absorbs it.
+3. **A discrete outlier mode ≈ +0.31 s, ONE PER SITTING** (+0.314, +0.320 —
+   within 6 ms of each other). Two random tails this close is implausible;
+   this looks like a distinct BB release mode (re-grip / slip?), one instance
+   of which cost Ball 84. An offset cannot fix it; it joins the BB-side review
+   alongside the yaw NOT_SETTLED and PV_STALE refusals.
+
+**Decision: the 44 ms constant stays untouched for now.** Rationale: (a) the
+measurement runs through the tracker's own pipeline (mocap → UDP → KF →
+publish), so an unknown slice of the bias is tracker latency, not BB — the
+temporal-accuracy chapter is the canonical warning about that confound; (b)
+one throw class only — release-latency error (constant) vs flight-model error
+(scales with ToF) cannot be separated at a single ToF; (c) nothing currently
+consumes the announced TIME critically (stroke is tracker-timed, pre-tilt
+arrives 1.5 s early, arm window has 0.75 s margin), so the update buys nothing
+operationally today and matters mainly for the multi-ball era.
+
+**Pre-registered sensor-era experiment** (the ball-held sensor timestamps
+contact at the source, bypassing the tracker confound entirely): expect
+announced-to-contact bias ≈ +90–120 ms (if the tracker-latency slice is small)
+with core σ ≈ 35 ms; measure at ≥2 throw speeds/ToFs to attribute
+release-latency vs flight-model; identify and explain the ~+0.31 s discrete
+mode BEFORE averaging over it. Only then re-tune the firmware constant.
 
 ## Related
 
