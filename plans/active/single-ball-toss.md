@@ -172,7 +172,7 @@ zero feasibility violations, all knots pump-accepted.
 
 | Phase | Scope | Gate | Status |
 |---|---|---|---|
-| 0 | Post-merge reconciliation (suite green, doc pointers) | full pytest | IN PROGRESS (2026-07-24 merge) |
+| 0 | Post-merge reconciliation (suite green, doc pointers) | full pytest | COMPLETE (2026-07-25) |
 | 1 | `Toss.action` + `toss_sequencer` FSM + coordinator wiring (Tier 8a, REJECTED_TIER for 8b) | full pytest | NOT STARTED |
 | 2 | `sim/toss_gate.py` + Tier-8a sweep | Self-toss gate ≥9/10 | NOT STARTED |
 | 3 | Real-ordering trace (multi-node choreography) | trace review | NOT STARTED |

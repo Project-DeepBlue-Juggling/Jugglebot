@@ -6,6 +6,15 @@ status: active
 
 # Ball-Butler-initiated two-ball oval juggling demo
 
+> **Merged-location note (2026-07-24).** The working branch
+> `demo/bb-led-two-ball-juggle` was merged into `mvp-trajectory-bringup` on
+> 2026-07-24 (merge commit `20fcc9e`); the branch and its worktree are retired.
+> The single-ball frontier continues on the production trajectory stack in
+> `plans/active/single-ball-toss.md`; the two-ball frontier authority remains
+> `plans/active/bb-online-juggle-tilt-rearchitecture.md`. Branch references
+> throughout this plan are historical — everything now lives on
+> `mvp-trajectory-bringup`.
+
 ## 1. Context
 
 ### Problem / motivation

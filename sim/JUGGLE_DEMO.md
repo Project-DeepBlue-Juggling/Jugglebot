@@ -1,5 +1,18 @@
 # Jugglebot juggle-demo sim — quickstart
 
+> **Status (2026-07-24) — this README describes the PAUSED offline demo.**
+> The offline demo documented below (`sim/juggle_demo.py`, driven by the CasADi
+> offline optimiser) is **paused, not deleted** — it still runs as described,
+> but it is no longer the frontier. The follow-on ONLINE tilt-ladder work
+> (per-throw planner, tilt-aimed throws, single-ball self-catch — Rungs 0–2b)
+> was merged into `mvp-trajectory-bringup` on 2026-07-24 and now continues on
+> the **production trajectory stack** under
+> [`plans/active/single-ball-toss.md`](../plans/active/single-ball-toss.md);
+> the authority for the two-ball frontier remains
+> [`plans/active/bb-online-juggle-tilt-rearchitecture.md`](../plans/active/bb-online-juggle-tilt-rearchitecture.md).
+> The `demo/bb-led-two-ball-juggle` branch referenced in §2 is merged and
+> retired — everything here now lives on `mvp-trajectory-bringup`.
+
 A standalone MuJoCo simulation of Jugglebot performing a Ball-Butler-led
 two-ball oval juggle. The platform plays an offline-optimised periodic
 trajectory; the Ball Butler primes the pattern with one throw; Jugglebot
@@ -33,6 +46,9 @@ sudo apt-get install -y python3-venv python3-pip libosmesa6-dev \
 ---
 
 ## 2. Clone
+
+> *(Historical — the branch below is merged and retired; see the status
+> banner. On a fresh clone: `git checkout mvp-trajectory-bringup`.)*
 
 The demo lives on the `demo/bb-led-two-ball-juggle` branch (it merges
 back to `refactor` → `main` once the optimiser follow-up cuts land):
