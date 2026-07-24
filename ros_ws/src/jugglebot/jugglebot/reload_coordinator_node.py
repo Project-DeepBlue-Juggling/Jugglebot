@@ -47,6 +47,7 @@ from std_srvs.srv import SetBool, Trigger
 from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
     BallStateArray,
+    HandTelemetryMessage,
     RigidBodyPoses,
     TargetFeedback,
     ThrowAnnouncement,
@@ -101,10 +102,28 @@ _SERVICE_WAIT_S = 2.0
 # failures are fast error replies and an immediate retry succeeded 9/10 times, so
 # a short ladder drops the goal-abort probability from ~16% (2 attempts) to ~3%
 # (4 attempts) at the ~40% end of the observed failure band. Pre-throw, so the
-# extra ~0.45 s worst case is free; the gap gives the bridge's CAN TX queue a
-# beat to drain.
+# extra worst case is free.
 _HAND_DISPATCH_ATTEMPTS = 4
-_HAND_DISPATCH_RETRY_GAP_S = 0.15
+# Telemetry-verified re-dispatch: the ack LIES (frames were observed transmitted with
+# the hand moving after a failed 'ERR_TIMEOUT' ack). A blind re-dispatch on a lied ack
+# rebuilds the min-jerk profile from the live mid-move position at v=0, yanking the
+# moving hand backwards — the fourth sitting's "hand jump up-down then abort"
+# (2026-07-24: a full 4/4 lying-ack ladder restarting a live ascent -> false
+# ABORTED_PRIME_FAILED while the hand physically primed). So after a failed
+# ack, settle briefly then consult hand_telemetry: only re-dispatch if the hand is
+# positively stationary away from the target (frame genuinely lost) or telemetry is
+# absent (fall back to today's blind ladder — a strict superset, never worse).
+# Thresholds probed against the recorded 2026-07-24_09-07-53 /hand_telemetry (44041
+# msgs @ 100 Hz; /tmp probe, results in the fourth-sitting logbook entry): the abort
+# ladder's four lied-ack dispatches all read +9.2..+22.5 rev/s at dispatch+0.25 s
+# (monitor stops the ladder at attempt 1); parked-hand |vel| noise p99 = 1.82 rev/s
+# (bottom) / 5.39 rev/s (top — hence the park-band position qualifiers in
+# _hand_dispatch_confirmed); parked-top pos spread [9.675, 10.044] sits inside the
+# ±0.5 near-band around 9.858; telemetry gaps median 10 ms / max 39.6 ms << 0.3 s.
+_HAND_ACK_SETTLE_S = 0.25          # let a lied-ack move begin before reading telemetry
+_HAND_NEAR_TARGET_REV = 0.5        # |pos - target| within this ⇒ already at the target
+_HAND_MOVING_VEL_RPS = 2.0         # |vel| toward the target at/above this ⇒ move underway
+_HAND_TELEMETRY_STALE_S = 0.3      # telemetry older than this ⇒ cannot verify ⇒ blind ladder
 # Sequence loop tick (the FSM is time-driven; this bounds latency, not correctness).
 _TICK_S = 0.05
 # A hard ceiling on a single reload attempt so a wedged sequence always terminates.
@@ -153,6 +172,17 @@ class ReloadCoordinatorNode(Node):
         self._mocap_mono = 0.0
         self._balls = []
         self._balls_mono = 0.0
+        # Latest hand telemetry (measured pos/vel) — feeds the telemetry-verified
+        # prime/retract ladders, which must not re-dispatch a smooth-move that is already
+        # (lied-ack) moving the hand. 100 Hz, mono-stamped for staleness. CONSTRAINT:
+        # the hand_telemetry subscription must stay OUT of the action's reentrant
+        # callback group and the executor must stay multi-threaded — the ladders block
+        # in time.sleep(_HAND_ACK_SETTLE_S) on the action thread and need this stamp to
+        # keep advancing underneath them (a starved subscription reads as stale
+        # telemetry, silently degrading the ladder to blind re-dispatch).
+        self._hand_pos_meas = 0.0
+        self._hand_vel_meas = 0.0
+        self._hand_telemetry_mono = 0.0
         # The active sequencer (announcements + catch feedback route to it while a
         # reload is running); None between runs.
         self._active_seq = None
@@ -185,6 +215,8 @@ class ReloadCoordinatorNode(Node):
             RigidBodyPoses, 'rigid_body_poses', self._on_mocap, 10)
         self.create_subscription(
             BallStateArray, 'balls', self._on_balls, 10)
+        self.create_subscription(
+            HandTelemetryMessage, 'hand_telemetry', self._on_hand_telemetry, 10)
         self.create_subscription(
             ThrowAnnouncement, 'throw_announcements', self._on_announcement, 10)
         self.create_subscription(
@@ -260,6 +292,12 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             self._balls = list(msg.balls)
             self._balls_mono = time.perf_counter()
+
+    def _on_hand_telemetry(self, msg):
+        with self._lock:
+            self._hand_pos_meas = float(msg.pos_meas)
+            self._hand_vel_meas = float(msg.vel_meas)
+            self._hand_telemetry_mono = time.perf_counter()
 
     def _on_announcement(self, msg):
         # Only OUR ball's announcement (thrown by BB, aimed at us) advances the FSM.
@@ -395,7 +433,11 @@ class ReloadCoordinatorNode(Node):
               and z_err <= _CAUGHT_MAX_Z_ERROR_MM)
         if not ok and int(ball.id) not in self._implausible_logged_ids:
             self._implausible_logged_ids.add(int(ball.id))
-            self.get_logger().warning(
+            # INFO, not WARN: split-track corruption flips CAUGHT below the floor on
+            # essentially every flight — this is expected tracker noise, once-per-ball
+            # guarded, and subsumed by the imminent ball-held hand sensor. It must not
+            # read as an error in a working reload.
+            self.get_logger().info(
                 f"Ball {int(ball.id)}: tracker CAUGHT at "
                 f"({float(ball.position.x):.0f}, {float(ball.position.y):.0f}, "
                 f"{float(ball.position.z):.0f}) mm is IMPLAUSIBLE for the catch point "
@@ -469,6 +511,7 @@ class ReloadCoordinatorNode(Node):
                     result.success = False
                     result.outcome = 'ABORTED_CANCELLED'
                     result.catch_error_mm = float('nan')
+                    self._log_reload_outcome(result)
                     return result
                 now = time.perf_counter()
                 decision = self._step_sequence(seq, now, goal_handle)
@@ -477,6 +520,7 @@ class ReloadCoordinatorNode(Node):
                     result.success = bool(r.success)
                     result.outcome = str(r.outcome)
                     result.catch_error_mm = float(r.catch_error_mm)
+                    self._log_reload_outcome(r)
                     (goal_handle.succeed if r.success else goal_handle.abort)()
                     return result
                 if now - t_start > max_sequence_s:
@@ -484,6 +528,7 @@ class ReloadCoordinatorNode(Node):
                     result.success = False
                     result.outcome = 'ABORTED_TIMEOUT'
                     result.catch_error_mm = float('nan')
+                    self._log_reload_outcome(result)
                     goal_handle.abort()
                     return result
                 time.sleep(_TICK_S)
@@ -492,10 +537,26 @@ class ReloadCoordinatorNode(Node):
             result.success = False
             result.outcome = 'ABORTED_SHUTDOWN'
             result.catch_error_mm = float('nan')
+            self._log_reload_outcome(result)
             return result
         finally:
             with self._lock:
                 self._active_seq = None
+
+    def _log_reload_outcome(self, result) -> None:
+        """The single authoritative per-attempt outcome line, emitted on EVERY terminal
+        (FSM-terminal and the node-level cancel/timeout/shutdown exits). Without it the
+        node logged NO outcome at all (verified 0 lines, 2026-07-24) and a WORKING reload
+        read as pure prime/retract-ladder failure spam — the operator could only infer
+        success from the absence of errors. INFO on success, WARN otherwise. Accepts
+        either the FSM's ReloadResult or the action's Reload.Result (same fields)."""
+        err = float(result.catch_error_mm)
+        suffix = f' (catch_err={err:.0f} mm)' if np.isfinite(err) else ''
+        line = f'Reload {result.outcome}{suffix}'
+        if result.success:
+            self.get_logger().info(line)
+        else:
+            self.get_logger().warning(line)
 
     def _step_sequence(self, seq, now, goal_handle=None):
         """One FSM tick: build observations, step, execute the requested action, publish
@@ -661,6 +722,43 @@ class ReloadCoordinatorNode(Node):
         resp = self._wait_future(self._smooth_move_hand_cli.call_async(req))
         return bool(resp.success) if resp is not None else False
 
+    def _hand_dispatch_confirmed(self, target_rev: float, ascending: bool):
+        """After a failed smooth-move ack, consult hand_telemetry to decide whether the
+        frame actually moved the hand (the ack lies — frames transmit anyway). Returns:
+
+          - ``True``  — the hand is at/near the target OR visibly moving toward it (ack
+            lied, move underway) → do NOT re-dispatch (a re-dispatch rebuilds the
+            min-jerk profile from the live mid-move position at v=0 and yanks the hand —
+            the 2026-07-23 stutter);
+          - ``False`` — the hand is positively stationary away from the target (the frame
+            was genuinely lost) → re-dispatch;
+          - ``None``  — telemetry absent/stale → cannot verify → the caller falls back to
+            a blind re-dispatch (a strict superset of the pre-telemetry ladder).
+
+        ``ascending`` picks the toward-target velocity sign (prime moves +, retract −)."""
+        with self._lock:
+            pos = self._hand_pos_meas
+            vel = self._hand_vel_meas
+            tel_mono = self._hand_telemetry_mono
+        if tel_mono <= 0.0 or (time.perf_counter() - tel_mono) > _HAND_TELEMETRY_STALE_S:
+            return None
+        if abs(pos - target_rev) <= _HAND_NEAR_TARGET_REV:
+            return True
+        # Moving checks require the hand to have LEFT its starting park band: parked-hand
+        # vel_meas noise reaches 1.82 rev/s p99 at bottom and 5.39 rev/s p99 at TOP
+        # (gravity-hold dither; probed against the 2026-07-24_09-07-53 bag), so velocity
+        # alone can fake "moving" for a genuinely-lost frame parked at top.
+        if ascending:
+            # Prime: rising off the bottom toward the top.
+            if vel >= _HAND_MOVING_VEL_RPS and pos > 0.3:
+                return True
+        else:
+            # Retract: descending, and clear of the top park band (see noise note).
+            if (vel <= -_HAND_MOVING_VEL_RPS
+                    and pos < hw.JB_OP_HAND_CATCH_PRIME_REV - _HAND_NEAR_TARGET_REV):
+                return True
+        return False
+
     def _prime_hand_with_retries(self) -> bool:
         """Dispatch the hand prime, retrying up to ``_HAND_DISPATCH_ATTEMPTS`` times.
 
@@ -668,15 +766,25 @@ class ReloadCoordinatorNode(Node):
         the ack channel is unreliable in both directions (2026-07-23: failed acks
         were observed with the kind-3 frame still transmitted and the hand moving),
         so catch_coordinator's anti-stutter window must key off dispatch, not ack.
-        """
+
+        On a failed ack, settle then telemetry-verify before re-dispatching: a lied-ack
+        move that is already ascending must NOT be restarted (that yanks the moving hand
+        and, over a full 4/4 ladder, produced the false ABORTED_PRIME_FAILED with the
+        hand physically moving). Runs pre-throw / pre-reload-wait, so the bounded settle
+        waits never eat BB's countdown."""
         for attempt in range(_HAND_DISPATCH_ATTEMPTS):
             self._prime_dispatched_pub.publish(Bool(data=True))
             if self._smooth_move_hand(hw.JB_OP_HAND_CATCH_PRIME_REV):
                 return True
+            time.sleep(_HAND_ACK_SETTLE_S)
+            confirmed = self._hand_dispatch_confirmed(
+                hw.JB_OP_HAND_CATCH_PRIME_REV, ascending=True)
+            if confirmed:
+                return True   # ack lied — the hand is at/nearing the top; do not restart it
             self.get_logger().warning(
                 f'hand prime dispatch failed (attempt {attempt + 1}/'
-                f'{_HAND_DISPATCH_ATTEMPTS})')
-            time.sleep(_HAND_DISPATCH_RETRY_GAP_S)
+                f'{_HAND_DISPATCH_ATTEMPTS}; telemetry '
+                f'{"stationary" if confirmed is False else "unavailable"})')
         return False
 
     def _retract_hand_with_retries(self) -> bool:
@@ -685,14 +793,21 @@ class ReloadCoordinatorNode(Node):
         The third sitting's retract failed outright on 7 of 12 aborts (same
         ~40-60% per-call HAND_TRAJ_CMD failure epidemic) and the hand silently
         stayed at top — benign only because the next goal re-primes. This is the
-        safing path, so it gets the same ladder the prime does."""
+        safing path, so it gets the same telemetry-verified ladder the prime does: a
+        lied-ack descent already underway is accepted (no spurious exhausted-ladder
+        ERROR); only a positively-stationary hand (or absent telemetry) re-dispatches."""
         for attempt in range(_HAND_DISPATCH_ATTEMPTS):
             if self._smooth_move_hand(hw.JB_OP_HAND_RETRACT_REV):
                 return True
+            time.sleep(_HAND_ACK_SETTLE_S)
+            confirmed = self._hand_dispatch_confirmed(
+                hw.JB_OP_HAND_RETRACT_REV, ascending=False)
+            if confirmed:
+                return True   # ack lied — the hand is at/nearing the bottom (retracted)
             self.get_logger().warning(
                 f'SAFE_ABORT: hand retract dispatch failed (attempt {attempt + 1}/'
-                f'{_HAND_DISPATCH_ATTEMPTS})')
-            time.sleep(_HAND_DISPATCH_RETRY_GAP_S)
+                f'{_HAND_DISPATCH_ATTEMPTS}; telemetry '
+                f'{"stationary" if confirmed is False else "unavailable"})')
         return False
 
     def _go_home(self) -> bool:

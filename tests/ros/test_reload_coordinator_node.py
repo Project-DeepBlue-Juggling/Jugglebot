@@ -574,6 +574,7 @@ def test_prime_retry_ladder_on_transient_failures(monkeypatch):
     failures. The ladder (_HAND_DISPATCH_ATTEMPTS = 4) rides out a streak: here
     three failures then a success still primes."""
     node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)   # skip the ack-settle wait
     results = iter([False, False, False, True])
     attempts = []
     monkeypatch.setattr(node, '_smooth_move_hand',
@@ -592,6 +593,7 @@ def test_prime_retry_ladder_on_transient_failures(monkeypatch):
 
 def test_prime_ladder_exhaustion_still_aborts(monkeypatch):
     node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)   # skip the ack-settle wait
     attempts = []
     monkeypatch.setattr(node, '_smooth_move_hand',
                         lambda p: attempts.append(p) or False)
@@ -612,6 +614,7 @@ def test_safe_abort_retract_retries(monkeypatch):
     unlatched, catch_coordinator's 0.5 s retry tick could re-prime mid-ladder
     and erase the in-flight retract on the Teensy's last-writer-wins queue."""
     node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)   # skip the ack-settle wait
     results = iter([False, True])
     order = []
     monkeypatch.setattr(node, '_smooth_move_hand',
@@ -667,3 +670,155 @@ def test_negative_vel_scale_warns_and_defaults(monkeypatch):
         pass
     with node._lock:
         assert node._catch_vel_scale == pytest.approx(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
+
+
+# ── telemetry-verified prime / retract ladders (fixes 3 + 4) ───────────────────
+# The HAND_TRAJ_CMD ack LIES — failed 'ERR_TIMEOUT' acks were observed with the frame
+# still transmitted and the hand moving. A blind re-dispatch on a lied ack rebuilds the
+# min-jerk profile from the live mid-move position at v=0, yanking the moving hand — the
+# fourth sitting's (2026-07-24) "hand jump up-down then abort" (a full 4/4 ladder
+# restarting a live ascent -> false ABORTED_PRIME_FAILED). After a failed ack the ladder
+# consults hand_telemetry: only re-dispatch if the hand is positively stationary away
+# from the target, or telemetry is absent (fall back to today's blind ladder).
+
+class _RecLogger:
+    def __init__(self):
+        self.records = []
+
+    def info(self, msg, **kw): self.records.append(('info', msg))
+    def warning(self, msg, **kw): self.records.append(('warning', msg))
+    def warn(self, msg, **kw): self.records.append(('warning', msg))
+    def error(self, msg, **kw): self.records.append(('error', msg))
+    def debug(self, msg, **kw): self.records.append(('debug', msg))
+    def fatal(self, msg, **kw): self.records.append(('fatal', msg))
+
+
+def _set_hand_telemetry(node, pos, vel):
+    with node._lock:
+        node._hand_pos_meas = pos
+        node._hand_vel_meas = vel
+        node._hand_telemetry_mono = time.perf_counter()
+
+
+def test_hand_telemetry_wiring():
+    node = ReloadCoordinatorNode()
+    assert 'hand_telemetry' in node._subscriptions
+
+
+def test_prime_lying_ack_ascending_telemetry_succeeds(monkeypatch):
+    """The ack lies (fails while the frame transmits and the hand ascends). Telemetry
+    shows the hand rising off the bottom → the prime SUCCEEDS without a re-dispatch, so a
+    lying-ack ladder no longer produces a false ABORTED_PRIME_FAILED."""
+    node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    attempts = []
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: attempts.append(p) or False)   # every ack lies
+    _set_hand_telemetry(node, pos=3.0, vel=4.0)                  # rising toward the top
+    assert node._prime_hand_with_retries() is True
+    assert len(attempts) == 1                                    # no restart of the live ascent
+
+
+def test_prime_no_motion_telemetry_redispatches_then_aborts(monkeypatch):
+    """Telemetry positively shows the hand stationary at the bottom (frame genuinely
+    lost) → the ladder re-dispatches every attempt and aborts on genuine failure."""
+    from jugglebot.reload_coordinator_node import _HAND_DISPATCH_ATTEMPTS
+    node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    attempts = []
+    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: attempts.append(p) or False)
+    _set_hand_telemetry(node, pos=0.0, vel=0.0)                  # stationary at the bottom
+    assert node._prime_hand_with_retries() is False
+    assert len(attempts) == _HAND_DISPATCH_ATTEMPTS
+
+
+def test_prime_stale_telemetry_preserves_blind_ladder(monkeypatch):
+    """Absent/stale telemetry → cannot verify → fall back to today's blind ladder (a
+    strict superset): 3 fails then a success still primes."""
+    node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    results = iter([False, False, False, True])
+    attempts = []
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: attempts.append(p) or next(results))
+    # telemetry_mono left at 0.0 → unavailable → blind ladder
+    assert node._prime_hand_with_retries() is True
+    assert len(attempts) == 4
+
+
+def test_retract_accepts_on_descending_telemetry(monkeypatch):
+    """A lied retract ack with the hand already descending is accepted — no spurious
+    exhausted-ladder ERROR / re-dispatch churn on the safing path."""
+    node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    attempts = []
+    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: attempts.append(p) or False)
+    _set_hand_telemetry(node, pos=6.0, vel=-3.0)                 # still high, but descending
+    assert node._retract_hand_with_retries() is True
+    assert len(attempts) == 1                                    # accepted after the first lied ack
+
+
+def test_retract_rejects_top_park_velocity_noise(monkeypatch):
+    """PROBE-DRIVEN (2026-07-24 bag): a hand parked at TOP shows |vel| noise up to
+    5.39 rev/s p99 (gravity-hold dither) — above the 2.0 rev/s moving threshold. A
+    lost retract frame must NOT false-accept as 'descending' off that noise: the
+    moving check requires the hand to have LEFT the top park band."""
+    from jugglebot.reload_coordinator_node import _HAND_DISPATCH_ATTEMPTS
+    node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    attempts = []
+    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: attempts.append(p) or False)
+    # Parked at top, a −3 rev/s noise spike at the sample instant.
+    _set_hand_telemetry(node, pos=hw.JB_OP_HAND_CATCH_PRIME_REV - 0.05, vel=-3.0)
+    assert node._retract_hand_with_retries() is False            # NOT accepted
+    assert len(attempts) == _HAND_DISPATCH_ATTEMPTS              # kept re-dispatching
+
+
+def test_retract_redispatches_on_stationary_telemetry(monkeypatch):
+    """A retract with the hand positively stationary at the top re-dispatches the whole
+    ladder and returns False (genuine failure → the exhausted-ladder ERROR stands)."""
+    from jugglebot.reload_coordinator_node import _HAND_DISPATCH_ATTEMPTS
+    node = _node_fresh(100.0)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    attempts = []
+    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: attempts.append(p) or False)
+    _set_hand_telemetry(node, pos=hw.JB_OP_HAND_CATCH_PRIME_REV, vel=0.0)   # parked at top
+    assert node._retract_hand_with_retries() is False
+    assert len(attempts) == _HAND_DISPATCH_ATTEMPTS
+
+
+# ── per-attempt outcome log (fix 6) ────────────────────────────────────────────
+
+class _TerminalGoalHandle:
+    is_cancel_requested = False
+    request = types.SimpleNamespace(throw_delay_s=3.0, catch_vel_scale=0.0)
+
+    def succeed(self): pass
+    def abort(self): pass
+    def publish_feedback(self, fb): pass
+
+
+def test_reload_outcome_logged_on_terminal(monkeypatch):
+    """The node logs ONE authoritative outcome line on a terminal decision — a working
+    reload previously logged NO outcome (0 lines) and read as pure ladder spam."""
+    node = _node_fresh(100.0)
+    rec = _RecLogger()
+    node._logger = rec
+    done = ReloadDecision('SETTLING', 'none', True,
+                          ReloadResult(False, 'MISSED', float('nan')))
+    monkeypatch.setattr(node, '_step_sequence', lambda seq, now, gh=None: done)
+    node._execute_reload(_TerminalGoalHandle())
+    outcome = [(lvl, m) for lvl, m in rec.records if 'Reload MISSED' in m]
+    assert len(outcome) == 1                                     # exactly one outcome line
+    assert outcome[0][0] == 'warning'                           # not-CAUGHT → WARN
+
+
+def test_reload_outcome_log_reports_catch_error():
+    """A CAUGHT outcome logs at INFO with the catch error."""
+    node = ReloadCoordinatorNode()
+    rec = _RecLogger()
+    node._logger = rec
+    node._log_reload_outcome(ReloadResult(True, 'CAUGHT', 12.0))
+    hits = [(lvl, m) for lvl, m in rec.records if 'Reload CAUGHT' in m]
+    assert len(hits) == 1 and hits[0][0] == 'info'
+    assert '12' in hits[0][1]
