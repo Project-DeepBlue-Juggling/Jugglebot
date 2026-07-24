@@ -1,0 +1,1319 @@
+"""Toss-side tests for the ball-ops coordinator (reload_coordinator_node).
+
+The toss FSM itself is exhaustively covered by test_toss_sequencer.py; here we test
+the node's seams: the wiring surface (second action server, new clients/publishers),
+toss observation assembly (hand-evidence chain, possession latch, the config-keyed
+mocap arrival cross-check — DISABLED by default, release-evidence latching gated on
+OUR dispatch), the goal-numerics gate (REJECTED_BAD_GOAL before anything runs), the
+cross-action busy gate (goal claim under _lock at ACCEPT — both directions), the
+PREPARE choreography's load-bearing order (prime_hold raised ALONE one tick before
+the bundle; in-bundle gains → arm → vel_scale → prime_dispatched stamp → armed →
+snapshot, with the announcement on a LATER tick still), the single-shot tri-state
+throw dispatch (classification pinned against the REAL teensy_bridge validation
+path — no copied strings), the terminal orderings (prime_hold released LAST), the
+trace-only ball-evidence waiver, the per-phase cancel deferral, and the node-level
+early exits (cancel/timeout/shutdown/exception all safe before terminalising).
+
+Service calls are monkeypatch-seamed (MockServiceClient futures never resolve) and
+time.sleep is monkeypatched where a ladder would otherwise wait — the
+test_reload_coordinator_node.py pattern throughout.
+
+ROS 2 is mocked by tests/ros/conftest.py.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+import types
+
+import pytest
+
+import jugglebot.hardware_config as hw
+from jugglebot.reload_coordinator_node import (
+    ReloadCoordinatorNode,
+    _TOSS_SOFT_CATCH_GAINS,
+    _TOSS_WAIVER_PARAM,
+    _toss_deadline_s,
+)
+from jugglebot.reload_sequencer import ReloadSequencer
+from jugglebot.toss_sequencer import (
+    ACTION_ANNOUNCE,
+    ACTION_DISPATCH_THROW,
+    ACTION_NONE,
+    ACTION_POSITION_PLATFORM,
+    ACTION_PREPARE_CATCH,
+    PHASE_BALL_IN_FLIGHT,
+    PHASE_CATCHING,
+    PHASE_CHECKING,
+    PHASE_POSITIONING,
+    PHASE_PREPARING,
+    PHASE_SETTLING,
+    PHASE_THROWING,
+    THROW_DISPATCH_AMBIGUOUS,
+    THROW_DISPATCH_OK,
+    THROW_DISPATCH_REJECTED,
+    TOSS_CONTROL_MODE,
+    TossDecision,
+    TossResult,
+    TossSequencer,
+)
+from jugglebot.motion.trajectory.toss_release import compute_release_state
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+class _Pos:
+    def __init__(self, x=0.0, y=0.0, z=0.0):
+        self.x, self.y, self.z = x, y, z
+
+
+class _Ball:
+    def __init__(self, status, destination='jugglebot', x=0.0, y=0.0, z=809.08,
+                 id=5, tracking=0, time_at_land=None):
+        self.id = id
+        self.status = status
+        self.tracking = tracking
+        self.destination = destination
+        self.position = _Pos(x, y, z)
+        self.time_at_land = time_at_land
+
+
+class _TossGoalHandle:
+    def __init__(self, x=0.0, y=0.0, z=170.0, flight=0.0, delay=0.0,
+                 vel_scale=0.0):
+        self.request = types.SimpleNamespace(
+            catch_position=types.SimpleNamespace(x=x, y=y, z=z),
+            flight_time_s=flight, throw_delay_s=delay,
+            catch_vel_scale=vel_scale)
+        self.is_cancel_requested = False
+        self.feedbacks = []
+        self.terminal = None
+
+    def publish_feedback(self, fb):
+        self.feedbacks.append(fb.phase)
+
+    def succeed(self):
+        self.terminal = 'succeed'
+
+    def abort(self):
+        self.terminal = 'abort'
+
+    def canceled(self):
+        self.terminal = 'canceled'
+
+
+def _toss_ready_node(now):
+    """A node with every toss precondition satisfied and caches FRESH at `now`:
+    TRAJECTORY streaming, mocap fresh, hand telemetry fresh AT the bottom park
+    band, ball possession latched, no live tracks."""
+    node = ReloadCoordinatorNode()
+    with node._lock:
+        node._control_mode = TOSS_CONTROL_MODE
+        node._streaming = True
+        node._mocap_mono = now
+        node._balls = []
+        node._balls_mono = now
+        node._hand_pos_meas = 0.0
+        node._hand_vel_meas = 0.0
+        node._hand_telemetry_mono = now
+        node._ball_possession = True
+    return node
+
+
+def _stamp_fresh(node, t):
+    """Re-stamp the freshness clocks at synthetic time `t` (the observation
+    builder compares them against the step's `now`)."""
+    with node._lock:
+        node._mocap_mono = t
+        node._balls_mono = t
+        node._hand_telemetry_mono = t
+
+
+def _install_toss_goal(node, pose=(0.0, 0.0, 170.0), flight=0.8, vel_scale=0.0):
+    """Install the per-goal toss state exactly as _execute_toss does (for tests
+    that drive _step_toss_sequence / executors directly): goal-start phantom
+    snapshot from the current balls cache, platform target kept STOW-relative
+    UNCONVERTED (the platform_start-frame comparison)."""
+    release = compute_release_state(pose, flight)
+    with node._lock:
+        node._announced_ball_id = None
+        node._announced_id_untagged = False
+        node._preexisting_flight_ids = {
+            int(b.id) for b in node._balls if int(b.status) == 1}
+        node._catch_vel_scale = (vel_scale if vel_scale > 0.0
+                                 else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
+        node._toss_release_state = release
+        node._toss_landing_global_mm = tuple(
+            float(v) for v in release.catch_point_global_mm)
+        node._toss_platform_target_mm = tuple(float(v) for v in pose)
+        node._toss_waiver = False
+        node._toss_prepare_pending = False
+        node._toss_throw_dispatched = False
+        node._toss_stroke_seen = False
+        node._toss_track_confirmed = False
+    return release
+
+
+def _fresh_seq(node, pose=(0.0, 0.0, 170.0), flight=0.8, delay=5.0, start=100.0):
+    release = _install_toss_goal(node, pose=pose, flight=flight)
+    seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=flight,
+                        throw_delay_s=delay,
+                        event_vel_mps=float(release.event_vel_mps))
+    seq.start(start)
+    return seq
+
+
+# ── Wiring surface ─────────────────────────────────────────────────────────────
+
+def test_toss_wiring_surface():
+    """The merged ball-ops node: BOTH action servers, the toss's new clients
+    (go_to_pose / set_hand_traj_cmd / set_hand_gains) and publishers
+    (throw_announcements / catch/prime_hold) on the same node as the reload
+    surface — the one-process mutual-exclusion premise."""
+    node = ReloadCoordinatorNode()
+    assert 'jugglebot/reload' in node._action_servers
+    assert 'jugglebot/toss' in node._action_servers
+    assert 'trajectory/go_to_pose' in node._clients
+    assert 'set_hand_traj_cmd' in node._clients
+    assert 'set_hand_gains' in node._clients
+    assert 'throw_announcements' in node._publishers
+    assert 'catch/prime_hold' in node._publishers
+    # Both servers share the reentrant group (blocking execute + live caches).
+    assert (node._action_servers['jugglebot/toss']._callback_group
+            is node._action_servers['jugglebot/reload']._callback_group)
+
+
+def test_toss_soft_gains_mirror_catch_coordinator():
+    """DRIFT GUARD (D3): prime_hold suppresses catch_coordinator's auto-prime —
+    the only place soft catch gains are normally set — so the toss sets the SAME
+    values itself at PREPARE. A silent divergence would change catch compliance
+    only on tosses, invisibly."""
+    from jugglebot.catch_coordinator_node import CatchCoordinatorNode
+    ccn = CatchCoordinatorNode()
+    assert _TOSS_SOFT_CATCH_GAINS['pos_gain'] == pytest.approx(
+        ccn._catch_hand_gains['pos_gain'])
+    assert _TOSS_SOFT_CATCH_GAINS['vel_gain'] == pytest.approx(
+        ccn._catch_hand_gains['vel_gain'])
+    assert _TOSS_SOFT_CATCH_GAINS['vel_integrator_gain'] == pytest.approx(
+        ccn._catch_hand_gains['vel_int_gain'])
+
+
+def test_toss_deadline_never_lands_inside_the_flight_window():
+    """The per-goal ceiling mirrors reload's doctrine: never below the fixed
+    floor and never inside a legitimate sequence window (the timeout path
+    SAFE_ABORTs — retract under an airborne ball)."""
+    from jugglebot.reload_coordinator_node import _MAX_SEQUENCE_S
+    short = TossSequencer(catch_pose_stow_mm=(0, 0, 170.0), flight_time_s=0.8,
+                          throw_delay_s=5.0)
+    assert _toss_deadline_s(short) == _MAX_SEQUENCE_S
+    long = TossSequencer(catch_pose_stow_mm=(0, 0, 170.0), flight_time_s=1.1,
+                         throw_delay_s=25.0)
+    ceiling = _toss_deadline_s(long)
+    assert ceiling > 6.0 + 25.0 + 1.1 + 0.5 + 0.7
+    assert ceiling >= _MAX_SEQUENCE_S
+
+
+# ── Goal accept/reject enumeration (through the real execute path) ─────────────
+
+@pytest.mark.parametrize('breakage,expected', [
+    ('tier', 'REJECTED_TIER'),
+    ('mode', 'REJECTED_WRONG_MODE'),
+    ('mocap', 'REJECTED_MOCAP_STALE'),
+    ('streaming', 'REJECTED_NOT_STREAMING'),
+    ('hand_stale', 'REJECTED_HAND_STALE'),
+    ('hand_not_parked', 'REJECTED_HAND_NOT_PARKED'),
+    ('no_ball', 'REJECTED_NO_BALL'),
+    ('track_active', 'REJECTED_TRACK_ACTIVE'),
+    ('delay_floor', 'REJECTED_CANT_MAKE_LEAD'),
+    ('flight_band', 'REJECTED_FLIGHT_TIME'),
+    ('workspace', 'REJECTED_WORKSPACE'),
+])
+def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
+    """Every CHECKING reject surfaces through _execute_toss as a loud outcome +
+    goal abort. TIER is driven through the GENERATED config gate (the node reads
+    hw.JB_OP_TOSS_TIER at goal time — Phase 4 flips the yaml, not the code);
+    HAND_STALE / HAND_NOT_PARKED / TRACK_ACTIVE are the three preconditions the
+    toss adds over reload (blind release verification / kind-0 absolute-position
+    stroke hazard / F7 phantom-track correlation hole)."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    gh = _TossGoalHandle()
+    if breakage == 'tier':
+        monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
+    elif breakage == 'mode':
+        node._control_mode = 'STANDBY'
+    elif breakage == 'mocap':
+        node._mocap_mono = now - 1.0
+    elif breakage == 'streaming':
+        node._streaming = False
+    elif breakage == 'hand_stale':
+        node._hand_telemetry_mono = 0.0
+    elif breakage == 'hand_not_parked':
+        node._hand_pos_meas = 5.0            # mid-stroke, outside the bottom band
+    elif breakage == 'no_ball':
+        node._ball_possession = False
+    elif breakage == 'track_active':
+        node._balls = [_Ball(status=1, destination='jugglebot', id=9)]
+    elif breakage == 'delay_floor':
+        gh = _TossGoalHandle(delay=2.0)
+    elif breakage == 'flight_band':
+        gh = _TossGoalHandle(flight=0.4)
+    elif breakage == 'workspace':
+        gh = _TossGoalHandle(x=200.0)
+    result = node._execute_toss(gh)
+    assert result.success is False
+    assert result.outcome == expected
+    assert gh.terminal == 'abort'
+    assert math.isnan(result.catch_error_mm)
+    assert math.isnan(result.achieved_flight_s)
+
+
+@pytest.mark.parametrize('kwargs,field', [
+    (dict(flight=float('nan')), 'flight_time_s'),
+    (dict(delay=float('nan')), 'throw_delay_s'),
+    (dict(vel_scale=float('nan')), 'catch_vel_scale'),
+    (dict(x=float('nan')), 'catch_position.x'),
+    (dict(z=float('inf')), 'catch_position.z'),
+    (dict(flight=-0.8), 'flight_time_s'),
+    (dict(delay=-5.0), 'throw_delay_s'),
+    (dict(vel_scale=-0.8), 'catch_vel_scale'),
+])
+def test_bad_goal_numerics_rejected_before_anything_runs(kwargs, field,
+                                                         monkeypatch):
+    """The goal-numerics gate (ball_butler_node's non-finite guard pattern): a
+    NaN/inf anywhere in the six goal numerics — which would flow through the
+    release-state ballistics into a NaN announcement / event_vel — and any
+    NEGATIVE tunable (a sign typo; 0.0 is the only "use the default" sentinel;
+    coercing would silently run a physically different toss) reject as
+    REJECTED_BAD_GOAL(<field>) BEFORE anything runs: no FSM tick, no per-goal
+    install, claim released."""
+    node = _toss_ready_node(time.perf_counter())
+    monkeypatch.setattr(
+        node, '_step_toss_sequence',
+        lambda seq, now, gh=None: pytest.fail('FSM ran on a bad goal'))
+    gh = _TossGoalHandle(**kwargs)
+    result = node._execute_toss(gh)
+    assert result.success is False
+    assert result.outcome == 'REJECTED_BAD_GOAL({})'.format(field)
+    assert gh.terminal == 'abort'
+    assert math.isnan(result.catch_error_mm)
+    with node._lock:
+        assert node._active_seq is None          # nothing was ever installed
+        assert node._goal_claimed is False       # claim released on the reject
+
+
+def test_toss_execute_exception_safes_logs_and_reraises(monkeypatch):
+    """An unexpected exception inside the execute loop must not strand a
+    half-armed robot or a silent goal: safing runs FIRST (the early-exit path —
+    a no-op only when nothing was armed), the one-line-per-goal outcome log
+    fires with ABORTED_EXCEPTION, the goal handle is aborted, and the exception
+    RE-RAISES so the executor's own error path still sees the fault."""
+    node = _toss_ready_node(time.perf_counter())
+    order = []
+    monkeypatch.setattr(node, '_safe_toss_on_early_exit',
+                        lambda seq: order.append('safed'))
+    logged = []
+    monkeypatch.setattr(node, '_log_toss_outcome',
+                        lambda r: logged.append(str(r.outcome)))
+    monkeypatch.setattr(
+        node, '_step_toss_sequence',
+        lambda seq, now, gh=None: (_ for _ in ()).throw(RuntimeError('boom')))
+    gh = _TossGoalHandle()
+    orig_abort = gh.abort
+    gh.abort = lambda: (order.append('aborted'), orig_abort())
+    with pytest.raises(RuntimeError, match='boom'):
+        node._execute_toss(gh)
+    assert order == ['safed', 'aborted']         # safing strictly before abort
+    assert logged == ['ABORTED_EXCEPTION']       # the outcome line fired
+    assert gh.terminal == 'abort'
+    with node._lock:
+        assert node._goal_claimed is False       # finally still released it
+
+
+# ── Cross-action busy gate (goal claim under _lock at ACCEPT) ──────────────────
+
+def test_goal_claim_taken_at_accept_closes_install_race():
+    """The claim is taken IN the goal callback, under _lock — not at execute
+    entry — so a second goal racing the accept→install window is REJECTED even
+    though _active_seq is still None (the RCN:462-474-class window, now a real
+    cross-action race with two servers)."""
+    from rclpy.action import GoalResponse
+    node = ReloadCoordinatorNode()
+    assert node._goal_callback(object()) == GoalResponse.ACCEPT
+    assert node._goal_claimed is True            # claimed synchronously at ACCEPT
+    with node._lock:
+        assert node._active_seq is None          # install has NOT happened yet
+    assert node._goal_callback(object()) == GoalResponse.REJECT
+
+
+@pytest.mark.parametrize('active', ['reload', 'toss'])
+def test_busy_cross_action_both_directions(active):
+    """A Toss goal while a Reload runs (and vice versa) is REJECTED_BUSY: both
+    servers share the one _lock-guarded gate, so two live sequences can never
+    double-own the hand on the last-writer-wins queue or fight over the
+    catch/armed latch."""
+    from rclpy.action import GoalResponse
+    node = ReloadCoordinatorNode()
+    with node._lock:
+        if active == 'reload':
+            node._active_seq = ReloadSequencer(catch_point_mm=(0, 0, 809.08))
+        else:
+            node._active_seq = TossSequencer(catch_pose_stow_mm=(0, 0, 170.0))
+    assert node._goal_callback(object()) == GoalResponse.REJECT
+
+
+def test_goal_claim_released_after_toss_execute():
+    """The claim is released in _execute_toss's finally (with _active_seq), so a
+    finished toss immediately frees the gate for the next ball-op."""
+    from rclpy.action import GoalResponse
+    node = _toss_ready_node(time.perf_counter())
+    node._control_mode = 'STANDBY'               # fast first-tick reject
+    assert node._goal_callback(object()) == GoalResponse.ACCEPT
+    node._execute_toss(_TossGoalHandle())
+    assert node._goal_claimed is False
+    node._control_mode = TOSS_CONTROL_MODE
+    assert node._goal_callback(object()) == GoalResponse.ACCEPT
+
+
+def test_goal_claim_released_after_reload_execute(monkeypatch):
+    """Same release discipline on the reload side (its finally also clears the
+    claim) — otherwise one reload would wedge the toss server forever."""
+    from rclpy.action import GoalResponse
+    from jugglebot.reload_sequencer import ReloadDecision, ReloadResult
+    node = ReloadCoordinatorNode()
+    assert node._goal_callback(object()) == GoalResponse.ACCEPT
+    done = ReloadDecision('SETTLING', 'none', True,
+                          ReloadResult(False, 'MISSED', float('nan')))
+    monkeypatch.setattr(node, '_step_sequence', lambda seq, now, gh=None: done)
+    gh = types.SimpleNamespace(
+        request=types.SimpleNamespace(throw_delay_s=3.0, catch_vel_scale=0.0),
+        is_cancel_requested=False,
+        publish_feedback=lambda fb: None,
+        succeed=lambda: None, abort=lambda: None)
+    node._execute_reload(gh)
+    assert node._goal_claimed is False
+
+
+# ── Trace-only ball-evidence waiver (D4d) ──────────────────────────────────────
+
+def test_waiver_waives_possession_only(monkeypatch):
+    """The waiver parameter waives ONLY the possession latch (REJECTED_NO_BALL):
+    with it set and no possession the goal proceeds past CHECKING (to the
+    positioning reject we script) — but hand freshness and the parked band stay
+    HARD, because they gate a physical dispatch hazard the bench can still
+    exhibit."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    node._params[_TOSS_WAIVER_PARAM] = True
+    node._ball_possession = False
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda seq: seq.note_position_result(
+            time.perf_counter(), False, 0.0, 'WORKSPACE'))
+    result = node._execute_toss(_TossGoalHandle())
+    assert result.outcome == 'REJECTED_POSITION(WORKSPACE)'   # past NO_BALL
+
+    # hand_fresh stays hard under the waiver…
+    node2 = _toss_ready_node(time.perf_counter())
+    node2._params[_TOSS_WAIVER_PARAM] = True
+    node2._ball_possession = False
+    node2._hand_telemetry_mono = 0.0
+    assert node2._execute_toss(_TossGoalHandle()).outcome == 'REJECTED_HAND_STALE'
+
+    # …and so does the parked band.
+    node3 = _toss_ready_node(time.perf_counter())
+    node3._params[_TOSS_WAIVER_PARAM] = True
+    node3._ball_possession = False
+    node3._hand_pos_meas = 5.0
+    assert (node3._execute_toss(_TossGoalHandle()).outcome
+            == 'REJECTED_HAND_NOT_PARKED')
+
+
+# ── Possession latch (D4a — no ball-in-cup sensor exists) ──────────────────────
+
+def test_possession_latched_from_plausible_caught_on_balls():
+    node = ReloadCoordinatorNode()
+    assert node._ball_possession is False
+    node._on_balls(types.SimpleNamespace(
+        balls=[_Ball(status=2, x=10.0, y=-5.0, z=805.0)]))
+    assert node._ball_possession is True
+
+
+def test_possession_not_latched_from_implausible_caught():
+    """The split-track corruption class: a CAUGHT coasting below the floor near
+    BB must not fake possession (the same plausibility gates as the reload
+    verdict)."""
+    node = ReloadCoordinatorNode()
+    node._on_balls(types.SimpleNamespace(
+        balls=[_Ball(status=2, x=-539.0, y=-323.0, z=-532.0)]))
+    assert node._ball_possession is False
+
+
+def test_possession_not_latched_from_other_destination():
+    node = ReloadCoordinatorNode()
+    node._on_balls(types.SimpleNamespace(
+        balls=[_Ball(status=2, destination='someone_else')]))
+    assert node._ball_possession is False
+
+
+def test_possession_plausibility_uses_nominated_point_during_toss():
+    """While a toss goal is live the CAUGHT plausibility reference is the
+    NOMINATED landing point, not the fixed ACTIVE catch point — a corner-pose
+    toss's own catch must latch possession, and a far-away corrupt CAUGHT that
+    happens to sit near the DEFAULT point must not."""
+    node = ReloadCoordinatorNode()
+    _install_toss_goal(node, pose=(140.0, 140.0, 170.0), flight=0.8)
+    # Near the nominated cup point → latches.
+    node._on_balls(types.SimpleNamespace(
+        balls=[_Ball(status=2, x=140.0, y=140.0, z=805.0)]))
+    assert node._ball_possession is True
+    # Far from the nominated point (339 mm off) but near the DEFAULT catch
+    # point — with the nominated reference this is implausible → no latch.
+    node._ball_possession = False
+    node._on_balls(types.SimpleNamespace(
+        balls=[_Ball(status=2, x=-100.0, y=-100.0, z=805.0, id=6)]))
+    assert node._ball_possession is False
+
+
+def test_possession_survives_safe_abort(monkeypatch):
+    """A pre-release SAFE_ABORT retracts the cup WITH the ball (3.16 m/s² ≪ g) —
+    possession must survive so the aborted toss is retryable without a Reload."""
+    node = ReloadCoordinatorNode()
+    node._ball_possession = True
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: True)
+    monkeypatch.setattr(node, '_arm_catch', lambda a: True)
+    monkeypatch.setattr(node, '_go_home', lambda: True)
+    node._toss_safe_abort()
+    assert node._ball_possession is True
+
+
+def test_possession_cleared_on_release_evidence():
+    """OUR release evidence (the throw-stroke telemetry signature after the
+    dispatch) clears possession — the ball left the cup. A missed toss stays
+    cleared (next toss is honestly REJECTED_NO_BALL); a caught one re-latches
+    via the CAUGHT path (chainable Toss → Toss)."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    with node._lock:
+        node._toss_throw_dispatched = True
+        node._hand_vel_meas = 50.0           # ≫ the 40 rev/s stroke threshold
+        node._hand_pos_meas = 3.0            # clear of the bottom park band
+    obs = node._build_toss_observations(now)
+    assert obs.throw_stroke_seen is True
+    assert node._ball_possession is False
+    assert obs.ball_seated is False
+
+
+# ── Phantom-track poisoning (FIX-2: goal-start snapshot + dispatch gating) ─────
+
+def test_preexisting_confirmed_track_does_not_poison_goal(monkeypatch):
+    """An untagged IN_FLIGHT + CONFIRMED track present from tick 1 (split-track
+    debris, a stale flight) must not poison the goal: the GOAL-START snapshot
+    excludes it from the announced-ball latch, its CONFIRMED tracking is not
+    release evidence before OUR dispatch, possession survives, and CHECKING
+    passes — REJECTED_NO_BALL must NOT fire. (Terminates via a scripted
+    positioning reject; the point is that the goal got PAST CHECKING with its
+    possession intact.)"""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    with node._lock:
+        node._balls = [_Ball(status=1, destination='', id=42, tracking=1)]
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda seq: seq.note_position_result(
+            time.perf_counter(), False, 0.0, 'WORKSPACE'))
+    result = node._execute_toss(_TossGoalHandle())
+    assert result.outcome == 'REJECTED_POSITION(WORKSPACE)'   # past CHECKING
+    with node._lock:
+        assert node._ball_possession is True          # possession survived
+        assert node._toss_track_confirmed is False    # no false release evidence
+
+
+def test_track_confirmed_not_latched_before_dispatch():
+    """FIX-2b: the tracker-CONFIRMED release-evidence latch is gated on OUR
+    dispatch (mirroring the stroke watch) — before it, a CONFIRMED track can
+    only be a phantom, and latching it would clear possession and fake the
+    release."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    with node._lock:
+        node._balls = [_Ball(status=1, id=5, tracking=1)]   # post-install: latched
+    obs = node._build_toss_observations(now)
+    assert obs.ball_track_confirmed is False          # pre-dispatch: not evidence
+    assert obs.ball_seated is True                    # possession untouched
+    with node._lock:
+        node._toss_throw_dispatched = True
+    obs = node._build_toss_observations(now)
+    assert obs.ball_track_confirmed is True           # post-dispatch: latches
+
+
+def test_prepare_snapshot_adds_and_resets_latch(monkeypatch):
+    """FIX-2a/c: the PREPARE-tick snapshot only ADDS ids that went IN_FLIGHT
+    since the goal-start snapshot (never clears the baseline), and resets the
+    announced-ball latch so nothing latched against a pre-snapshot phantom
+    survives into the flight."""
+    node = _toss_ready_node(100.0)
+    _install_toss_goal(node)
+    with node._lock:
+        node._preexisting_flight_ids = {7}            # goal-start baseline
+        node._announced_ball_id = 42                  # phantom latched pre-PREPARE
+        node._announced_id_untagged = True
+        node._balls = [_Ball(status=1, destination='', id=42)]
+    monkeypatch.setattr(node, '_set_soft_catch_gains', lambda: True)
+    monkeypatch.setattr(node, '_arm_catch', lambda a: True)
+    assert node._prepare_toss_catch() is True
+    with node._lock:
+        assert node._preexisting_flight_ids == {7, 42}    # union, baseline kept
+        assert node._announced_ball_id is None            # latch reset
+        assert node._announced_id_untagged is False
+
+
+# ── Toss observation assembly ──────────────────────────────────────────────────
+
+def test_hand_parked_band_and_freshness():
+    """The hand-evidence chain: parked requires BOTH freshness and the bottom
+    park band (|pos − retract| ≤ the ladder's near-band) — a kind-0 stroke
+    commands absolute positions from 0 rev."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    assert node._build_toss_observations(now).hand_parked is True
+    with node._lock:
+        node._hand_pos_meas = 0.6            # just outside the 0.5 near-band
+    assert node._build_toss_observations(now).hand_parked is False
+    with node._lock:
+        node._hand_pos_meas = 0.0
+        node._hand_telemetry_mono = now - 1.0
+    obs = node._build_toss_observations(now)
+    assert obs.hand_fresh is False
+    assert obs.hand_parked is False
+
+
+def test_track_active_counts_live_destined_tracks_only():
+    """TRACK_ACTIVE (F7): live TO_BE_THROWN / IN_FLIGHT tracks destined for us
+    refuse the goal; the seated ball's own CAUGHT track (and other robots'
+    tracks) do not."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    with node._lock:
+        node._balls = [_Ball(status=2, id=4),                        # our CAUGHT
+                       _Ball(status=1, destination='someone_else', id=5)]
+    assert node._build_toss_observations(now).track_active is False
+    with node._lock:
+        node._balls = [_Ball(status=0, destination='jugglebot', id=6)]
+    assert node._build_toss_observations(now).track_active is True
+    with node._lock:
+        node._balls = [_Ball(status=1, destination='jugglebot', id=7)]
+    assert node._build_toss_observations(now).track_active is True
+
+
+def test_mocap_cross_check_disabled_by_default():
+    """D7-REVISED: no QTM body for the platform has ever been validated live
+    (known bodies: Base, Ball_Butler, Catching_Cone), so the arrival
+    cross-check ships DISABLED (toss_mocap_body defaults to ''): the node
+    feeds platform_at_target True unconditionally — arrival rests on the
+    go_to_pose accept + planned-duration wait — and _on_mocap caches nothing.
+    Enabling requires naming a bench-resolved body (Phase-3 dry trace / T0)."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    assert node._toss_mocap_body == ''
+    with node._lock:
+        node._platform_pos_mm = None          # no platform body ever seen
+    assert node._build_toss_observations(now).platform_at_target is True
+    body = types.SimpleNamespace(
+        name='Base', pose=types.SimpleNamespace(pose=types.SimpleNamespace(
+            position=_Pos(1.0, 2.0, 3.0))))
+    node._on_mocap(types.SimpleNamespace(bodies=[body]))
+    assert node._platform_pos_mm is None      # nothing cached while disabled
+
+
+def test_platform_at_target_cross_check_configured_body():
+    """The mocap arrival cross-check WHEN a body is configured: measured
+    position within the reach-envelope radius of the nominated PLATFORM pose,
+    compared in the STOW/platform_start frame (non-base bodies publish z
+    shifted by the base→platform transform, so ACTIVE reads z ≈ 170 — never
+    converted to global, which was the review-caught double-add). The silent
+    no-op class (disarmed wire, guard latch) fails it."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    node._toss_mocap_body = 'Platform'
+    _install_toss_goal(node, pose=(60.0, -60.0, 170.0))
+    with node._lock:
+        node._platform_pos_mm = (60.0, -60.0, 170.0)     # at the nominated pose
+    assert node._build_toss_observations(now).platform_at_target is True
+    with node._lock:
+        node._platform_pos_mm = (0.0, 0.0, 170.0)        # stayed home: 84.9 mm off
+    assert node._build_toss_observations(now).platform_at_target is False
+    with node._lock:
+        node._platform_pos_mm = None                     # body never seen
+    assert node._build_toss_observations(now).platform_at_target is False
+    with node._lock:
+        node._platform_pos_mm = (60.0, -60.0, 170.0)
+        node._mocap_mono = now - 1.0                     # stale mocap can't verify
+    assert node._build_toss_observations(now).platform_at_target is False
+
+
+def test_platform_position_cached_for_configured_body_only():
+    """_on_mocap caches the CONFIG-NAMED body's position AS PUBLISHED (the
+    platform_start frame for non-base bodies) — and only that body's."""
+    node = ReloadCoordinatorNode()
+    node._toss_mocap_body = 'Platform'
+    body = types.SimpleNamespace(
+        name='Platform',
+        pose=types.SimpleNamespace(pose=types.SimpleNamespace(
+            position=_Pos(30.0, -40.0, 170.0))))
+    other = types.SimpleNamespace(
+        name='Base', pose=types.SimpleNamespace(pose=types.SimpleNamespace(
+            position=_Pos(1.0, 2.0, 3.0))))
+    node._on_mocap(types.SimpleNamespace(bodies=[other, body]))
+    assert node._platform_pos_mm == (30.0, -40.0, 170.0)
+
+
+def test_stroke_watch_threshold_clears_smooth_move_prelude():
+    """FIX-5a: the release-stroke threshold sits ABOVE the kind-1 smooth-move
+    prelude's peak ascent (√(100 rev/s² · 9.858 rev) ≈ 31.4 rev/s — a
+    concurrent prime/retract ascent must never fake release evidence) and well
+    BELOW the ≈85 rev/s minimum release-band stroke speed (2.7 m/s sweep
+    floor). Behavioural pin: a prelude-speed ascent does NOT latch, a
+    release-band ascent does. T0 re-tunes against measured stroke telemetry."""
+    from jugglebot.reload_coordinator_node import _THROW_STROKE_VEL_RPS
+    prelude_peak = math.sqrt(100.0 * float(hw.JB_OP_HAND_CATCH_PRIME_REV))
+    assert prelude_peak == pytest.approx(31.4, abs=0.1)
+    assert _THROW_STROKE_VEL_RPS > prelude_peak
+    assert _THROW_STROKE_VEL_RPS < 85.0
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    with node._lock:
+        node._toss_throw_dispatched = True
+        node._hand_pos_meas = 3.0            # clear of the bottom park band
+        node._hand_vel_meas = 35.0           # prelude-speed ascent: NOT a throw
+    assert node._build_toss_observations(now).throw_stroke_seen is False
+    with node._lock:
+        node._hand_vel_meas = 45.0           # above threshold: throw underway
+    assert node._build_toss_observations(now).throw_stroke_seen is True
+
+
+def test_ball_time_at_land_crossed_to_perf():
+    """The tracker's landing-plane crossing is ROS→perf crossed exactly like the
+    announcement landing (perf = ros + (now_perf − now_ros); MockClock's ros now
+    is 0). The dispatch flag is set — the CONFIRMED latch is dispatch-gated
+    (FIX-2b)."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    ball = _Ball(status=1, id=5, tracking=1,
+                 time_at_land=types.SimpleNamespace(sec=12, nanosec=500000000))
+    with node._lock:
+        node._balls = [ball]
+        node._toss_throw_dispatched = True
+    obs = node._build_toss_observations(now)
+    assert obs.ball_track_confirmed is True
+    assert obs.ball_time_at_land_perf == pytest.approx(12.5 + 100.0)
+
+
+def test_caught_correlates_to_latched_id_vs_nominated_point():
+    """CAUGHT confirms only for the latched announced-ball id, plausibility- and
+    error-judged against the NOMINATED landing point (not reload's fixed catch
+    point)."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node, pose=(30.0, -40.0, 170.0))
+    with node._lock:
+        node._balls = [_Ball(status=1, id=5)]            # latch id 5
+    node._build_toss_observations(now)
+    with node._lock:
+        node._balls = [_Ball(status=2, id=99, x=30.0, y=-40.0),   # stray id
+                       _Ball(status=1, id=5)]
+    assert node._build_toss_observations(now).ball_caught is False
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=45.0, y=-40.0, z=805.0)]
+    obs = node._build_toss_observations(now)
+    assert obs.ball_caught is True
+    assert obs.catch_error_mm == pytest.approx(15.0)     # vs (30, −40), not (0, 0)
+
+
+# ── PREPARE bundle order + the announce gap ────────────────────────────────────
+
+def _wire_prepare_recorder(node, order, monkeypatch, arm_ok=True):
+    monkeypatch.setattr(node, '_set_soft_catch_gains',
+                        lambda: order.append('gains') or True)
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda hold: order.append(('prime_hold', hold)))
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: order.append(('arm', a)) or arm_ok)
+    vel_pub = node._publishers['catch/vel_scale']
+    monkeypatch.setattr(
+        vel_pub, 'publish',
+        lambda msg: order.append(('vel_scale', float(msg.data))))
+    monkeypatch.setattr(
+        node._prime_dispatched_pub, 'publish',
+        lambda msg: order.append(('prime_dispatched', bool(msg.data))))
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda a: order.append(('armed', a)))
+
+
+def test_prepare_bundle_order_pinned(monkeypatch):
+    """THE in-bundle PREPARE ordering (each step's position is load-bearing):
+    gains first (the standing prime_hold suppresses the auto-prime that
+    normally sets them) → latch raise+confirm → vel_scale BEFORE armed (the
+    coordinator must hold this goal's scale before any hand-arm) → the ONE
+    prime_dispatched stamp immediately before armed (the belt: it holds CCN's
+    1.2 s prime-inflight window across the armed edge if the hold was
+    lost/reordered) → armed → phantom-flight snapshot. prime_hold is NOT in
+    the bundle — the node raised it one FSM tick earlier (pinned by
+    test_prime_hold_raised_tick_before_prepare_bundle) — and the announcement
+    is NOT in the bundle either (separate later tick)."""
+    node = _toss_ready_node(100.0)
+    _install_toss_goal(node, vel_scale=0.75)
+    with node._lock:
+        node._balls = [_Ball(status=1, id=77, destination='')]   # phantom flight
+    order = []
+    monkeypatch.setattr(
+        node._publishers['throw_announcements'], 'publish',
+        lambda msg: order.append('announce'))
+    _wire_prepare_recorder(node, order, monkeypatch)
+    assert node._prepare_toss_catch() is True
+    assert order == ['gains', ('arm', True), ('vel_scale', 0.75),
+                     ('prime_dispatched', True), ('armed', True)]
+    with node._lock:
+        assert node._preexisting_flight_ids == {77}      # snapshot refreshed at PREPARE
+
+
+def test_prepare_arm_failure_stops_bundle(monkeypatch):
+    """A failed latch raise returns False (→ ABORTED_PREPARE_FAILED upstream)
+    and must publish NEITHER vel_scale NOR prime_dispatched NOR catch/armed —
+    arming a sequence that is being aborted is the exact hazard the ordering
+    exists to prevent. The prime_hold raised on the previous tick stays True
+    here; the SAFE_ABORT terminal releases it."""
+    node = _toss_ready_node(100.0)
+    _install_toss_goal(node)
+    order = []
+    _wire_prepare_recorder(node, order, monkeypatch, arm_ok=False)
+    assert node._prepare_toss_catch() is False
+    assert order == ['gains', ('arm', True)]
+
+
+def test_prime_hold_raised_tick_before_prepare_bundle(monkeypatch):
+    """FIX-4: the hold is published ALONE on the verified-arrival
+    (ACTION_PREPARE_CATCH) tick and the bundle runs on the NEXT tick — the
+    hold and catch/armed have no cross-topic ordering guarantee, and callbacks
+    landing in the SAME CCN wait-set cycle have no intra-cycle ordering
+    either, so a same-tick hold could lose to the armed edge and auto-prime
+    the ball-laden hand. Pins: hold tick STRICTLY before armed tick;
+    prime_dispatched immediately before armed within the bundle tick."""
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, start=100.0)
+    events = []                                  # (tick_index, event)
+    tick = {'i': 0}
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s: s.note_position_result(100.0, True, 0.3))   # arrival 100.5
+    monkeypatch.setattr(node, '_set_soft_catch_gains', lambda: True)
+    monkeypatch.setattr(node, '_arm_catch', lambda a: True)
+    monkeypatch.setattr(
+        node, '_publish_prime_hold',
+        lambda h: events.append((tick['i'], ('prime_hold', h))))
+    monkeypatch.setattr(
+        node._prime_dispatched_pub, 'publish',
+        lambda msg: events.append(
+            (tick['i'], ('prime_dispatched', bool(msg.data)))))
+    monkeypatch.setattr(
+        node, '_publish_catch_armed',
+        lambda a: events.append((tick['i'], ('armed', a))))
+    for t in (100.0, 100.6, 100.7):
+        tick['i'] += 1
+        _stamp_fresh(node, t)
+        node._step_toss_sequence(seq, t)
+    hold_tick = next(i for i, e in events if e == ('prime_hold', True))
+    armed_tick = next(i for i, e in events if e == ('armed', True))
+    assert hold_tick == 2 and armed_tick == 3    # strictly earlier FSM tick
+    flat = [e for _, e in events]
+    assert flat[flat.index(('prime_dispatched', True)) + 1] == ('armed', True)
+
+
+def test_announcement_content_and_frames():
+    """The self-announcement: target_id AND thrower_name are this robot
+    (target_id is the load-bearing one — the tracker tags destination from it),
+    all physics fields from the single tested release-state module (landing =
+    the nominated catch state in GLOBAL mm — the one conversion point), and
+    landing_time − throw_time = the flight time (the one ROS↔perf crossing)."""
+    node = _toss_ready_node(100.0)
+    _install_toss_goal(node, pose=(30.0, -40.0, 170.0), flight=0.8)
+    seq = TossSequencer(catch_pose_stow_mm=(30.0, -40.0, 170.0),
+                        flight_time_s=0.8, throw_delay_s=5.0)
+    seq.start(time.perf_counter())
+    # note_announcement is gated on the PREPARE dispatch (pinned in
+    # test_toss_sequencer); satisfy the gate — this test's subject is the
+    # announcement packing, not the FSM walk.
+    seq._prepare_dispatched = True
+    node._announce_toss(seq)
+    ann = node._publishers['throw_announcements'].published[-1]
+    assert ann.thrower_name == 'jugglebot'
+    assert ann.target_id == 'jugglebot'
+    assert (ann.landing_position.x, ann.landing_position.y) == (30.0, -40.0)
+    assert ann.landing_position.z == pytest.approx(809.08)
+    assert ann.initial_position.z == pytest.approx(802.344)
+    assert ann.initial_velocity.x == pytest.approx(0.0)
+    assert ann.initial_velocity.z == pytest.approx(3930.82, abs=0.01)
+    assert ann.landing_velocity.z == pytest.approx(-3913.98, abs=0.01)
+    assert ann.predicted_tof_sec == pytest.approx(0.8)
+    # Mock clock: ros now = 0 → the stamps are the perf deltas in ns; the
+    # landing stamp is release + ToF on the same clock.
+    assert (ann.landing_time - ann.throw_time) * 1e-9 == pytest.approx(
+        0.8, abs=1e-6)
+    assert ann.throw_time * 1e-9 == pytest.approx(5.0, abs=0.2)
+    assert seq._announced is True                        # note_announcement fed
+
+
+def test_own_announcement_echo_not_double_fed():
+    """The node subscribes to throw_announcements AND publishes on it: the echo
+    of our own toss announcement must be dropped for a TossSequencer (its FSM
+    was already notified synchronously; ReloadSequencer's note_announcement
+    signature would not even fit)."""
+    node = ReloadCoordinatorNode()
+    seq = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0))
+    seq.start(0.0)
+    with node._lock:
+        node._active_seq = seq
+    ann = types.SimpleNamespace(target_id='jugglebot', landing_time=None,
+                                predicted_tof_sec=0.8)
+    node._on_announcement(ann)                           # must not raise
+    assert seq._announced is False                       # and must not feed
+
+
+# ── Full choreography walk (position → prepare → gap → announce → dispatch) ────
+
+def test_toss_choreography_full_walk(monkeypatch):
+    """The whole goal in order, at the node level: positioning dispatched once →
+    timed arrival (cross-check disabled — the shipped default, so no mocap body
+    is fed) → prime_hold ALONE on the arrival tick → the PREPARE bundle one
+    tick later → ≥1-tick gap → announcement (target_id ours) → the single throw
+    dispatch → telemetry release evidence → flight → correlated plausible
+    CAUGHT → RECENTER. Pins that the hold precedes the bundle tick, the
+    announce happens on a LATER tick than the armed publish, and the dispatch
+    after the announce confirm."""
+    t0 = 100.0
+    node = _toss_ready_node(t0)
+    pose = (30.0, -40.0, 170.0)
+    seq = _fresh_seq(node, pose=pose, delay=5.0, start=t0)   # t_release 105.0
+    order = []
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s: order.append('position') or s.note_position_result(
+            t0, True, 0.3))                              # arrival t0 + 0.5
+    _wire_prepare_recorder(node, order, monkeypatch)
+    ann_pub = node._publishers['throw_announcements']
+    orig_ann_publish = ann_pub.publish
+
+    def _rec_announce(msg):
+        order.append('announce')
+        orig_ann_publish(msg)
+    monkeypatch.setattr(ann_pub, 'publish', _rec_announce)
+
+    def _fake_dispatch(s):
+        order.append('dispatch')
+        with node._lock:
+            node._toss_throw_dispatched = True
+        return THROW_DISPATCH_OK, ''
+    monkeypatch.setattr(node, '_dispatch_toss_throw', _fake_dispatch)
+    monkeypatch.setattr(node, '_toss_recenter', lambda: order.append('recenter'))
+
+    gh = _TossGoalHandle()
+    d = node._step_toss_sequence(seq, t0, gh)
+    assert d.action == ACTION_POSITION_PLATFORM
+    _stamp_fresh(node, t0 + 0.5)
+    d = node._step_toss_sequence(seq, t0 + 0.5, gh)      # verified arrival: hold
+    assert d.action == ACTION_PREPARE_CATCH
+    _stamp_fresh(node, t0 + 0.55)
+    d = node._step_toss_sequence(seq, t0 + 0.55, gh)     # the deferred bundle
+    assert d.action == ACTION_NONE and d.phase == PHASE_PREPARING
+    _stamp_fresh(node, t0 + 0.6)
+    d = node._step_toss_sequence(seq, t0 + 0.6, gh)      # the ≥1-tick gap
+    assert d.action == ACTION_ANNOUNCE
+    _stamp_fresh(node, t0 + 0.65)
+    d = node._step_toss_sequence(seq, t0 + 0.65, gh)
+    assert d.action == ACTION_DISPATCH_THROW
+    # Release evidence: the ascending-stroke telemetry signature.
+    with node._lock:
+        node._hand_vel_meas = 50.0
+        node._hand_pos_meas = 3.0
+    _stamp_fresh(node, t0 + 0.7)
+    d = node._step_toss_sequence(seq, t0 + 0.7, gh)
+    assert d.phase == PHASE_BALL_IN_FLIGHT
+    # Our ball appears in flight (latch), then a plausible CAUGHT near the
+    # NOMINATED point confirms.
+    with node._lock:
+        node._balls = [_Ball(status=1, id=5)]
+    _stamp_fresh(node, t0 + 5.0)
+    node._step_toss_sequence(seq, t0 + 5.0, gh)
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=30.0, y=-40.0, z=805.0)]
+    _stamp_fresh(node, t0 + 5.9)
+    d = node._step_toss_sequence(seq, t0 + 5.9, gh)
+    assert d.done and d.result.outcome == 'CAUGHT'
+    assert d.result.catch_error_mm == pytest.approx(0.0)
+    assert order == ['position', ('prime_hold', True), 'gains', ('arm', True),
+                     ('vel_scale', 0.8), ('prime_dispatched', True),
+                     ('armed', True), 'announce', 'dispatch', 'recenter']
+    ann = ann_pub.published[-1]
+    assert ann.target_id == 'jugglebot'
+    assert gh.feedbacks[0] == PHASE_POSITIONING
+    assert PHASE_PREPARING in gh.feedbacks and PHASE_THROWING in gh.feedbacks
+
+
+def test_position_unverified_arrival_aborts(monkeypatch):
+    """Mocap-verify FAIL branch (cross-check ENABLED via the body parameter):
+    an accepted move whose arrival mocap never corroborates (the silent no-op
+    class — disarmed wire, guard latch) aborts ABORTED_POSITION_FAILED at the
+    positioning deadline instead of arming the catch envelope at the wrong
+    pose. The accepted move means SAFE_ABORT (the go_home leg)."""
+    t0 = 100.0
+    node = _toss_ready_node(t0)
+    node._toss_mocap_body = 'Platform'
+    seq = _fresh_seq(node, pose=(60.0, -60.0, 170.0), start=t0)
+    with node._lock:
+        node._platform_pos_mm = (0.0, 0.0, 170.0)        # never moved (84.9 mm off)
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s: s.note_position_result(t0, True, 0.3))
+    safed = []
+    monkeypatch.setattr(node, '_toss_safe_abort', lambda: safed.append(1))
+    node._step_toss_sequence(seq, t0)
+    _stamp_fresh(node, t0 + 0.6)
+    d = node._step_toss_sequence(seq, t0 + 0.6)
+    assert not d.done                                    # verify window open
+    _stamp_fresh(node, t0 + 6.0)
+    d = node._step_toss_sequence(seq, t0 + 6.0)
+    assert d.done and d.result.outcome == 'ABORTED_POSITION_FAILED'
+    assert safed == [1]
+
+
+def test_go_to_pose_wire_disarmed_marker_maps_to_reject(monkeypatch):
+    """The '[wire DISARMED' marker on a go_to_pose response maps to
+    REJECTED_POSITION(WIRE_DISARMED) — the plan-installed-but-not-actuating case
+    (string-fragile by design; this test is the drift alarm)."""
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, start=100.0)
+    resp = types.SimpleNamespace(
+        accepted=True, code='OK', planned_duration_s=1.0,
+        message='planned [wire DISARMED — setpoints not reaching the legs]')
+    monkeypatch.setattr(node, '_wait_future',
+                        lambda fut, timeout_s=2.0: resp)
+    node._step_toss_sequence(seq, 100.0)                 # dispatches the move
+    _stamp_fresh(node, 100.1)
+    d = node._step_toss_sequence(seq, 100.1)
+    assert d.done
+    assert d.result.outcome == 'REJECTED_POSITION(WIRE_DISARMED)'
+
+
+def test_position_no_response_dispatches_best_effort_go_home(monkeypatch):
+    """FIX-5c: NO_RESPONSE leaves the platform's motion state UNKNOWN — the
+    go_to_pose service returns at plan-INSTALL, so an ack that timed out may
+    still be executing the move. The FSM's terminal action is ACTION_NONE
+    (nothing verifiably accepted), so the node dispatches a best-effort
+    go_home to supersede any zombie plan (go_home replaces the installed
+    trajectory by design)."""
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, start=100.0)
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s: s.note_position_result(100.0, False, 0.0, 'NO_RESPONSE'))
+    homed = []
+    monkeypatch.setattr(node, '_go_home', lambda: homed.append(1) or True)
+    node._step_toss_sequence(seq, 100.0)
+    _stamp_fresh(node, 100.1)
+    d = node._step_toss_sequence(seq, 100.1)
+    assert d.done and d.result.outcome == 'REJECTED_POSITION(NO_RESPONSE)'
+    assert homed == [1]
+
+
+def test_position_timeout_dispatches_best_effort_go_home(monkeypatch):
+    """FIX-5c, the never-noted sibling: a positioning that times out without
+    ANY response is the same unknown-motion state — best-effort go_home on
+    ABORTED_POSITION_TIMEOUT too."""
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, start=100.0)
+    monkeypatch.setattr(node, '_position_platform_for_toss', lambda s: None)
+    homed = []
+    monkeypatch.setattr(node, '_go_home', lambda: homed.append(1) or True)
+    node._step_toss_sequence(seq, 100.0)
+    _stamp_fresh(node, 106.1)
+    d = node._step_toss_sequence(seq, 106.1)
+    assert d.done and d.result.outcome == 'ABORTED_POSITION_TIMEOUT'
+    assert homed == [1]
+
+
+# ── Throw dispatch: single-shot tri-state (D8) ─────────────────────────────────
+
+def _real_bridge_reject_message(event_delay=2.0, event_vel=9.0, traj_type=0):
+    """Drive the REAL teensy_bridge validation path (no copied strings): the
+    handler raises its ValueError before touching self for invalid inputs, so an
+    attribute-less stub self suffices."""
+    from jugglebot.teensy_bridge_node import TeensyBridgeNode
+    from jugglebot_interfaces.srv import SetHandTrajCmd
+    req = SetHandTrajCmd.Request()
+    req.event_delay = event_delay
+    req.event_vel = event_vel
+    req.traj_type = traj_type
+    res = TeensyBridgeNode._svc_set_hand_traj(
+        types.SimpleNamespace(), req, SetHandTrajCmd.Response())
+    assert res.success is False
+    return res.message
+
+
+@pytest.mark.parametrize('kwargs', [
+    dict(event_vel=9.0),                  # above the 7.0 ceiling
+    dict(event_vel=0.1),                  # below the 0.3 floor
+    dict(event_delay=-1.0, event_vel=3.0),
+    dict(event_vel=3.0, traj_type=5),
+])
+def test_definitive_reject_classification_vs_real_bridge_validation(kwargs):
+    """D8: the definitive-reject classifier is pinned against the messages the
+    bridge's REAL validation path emits (raised BEFORE any CAN frame — a
+    guaranteed no-arm). If the bridge's literals ever drift, this test breaks
+    loudly instead of the classifier silently downgrading rejects to ambiguous
+    (which would stall every invalid dispatch to ABORTED_NO_RELEASE)."""
+    message = _real_bridge_reject_message(**kwargs)
+    assert (ReloadCoordinatorNode._classify_hand_traj_reject(message)
+            == THROW_DISPATCH_REJECTED)
+
+
+def test_transport_failure_classifies_ambiguous_via_real_handler():
+    """An ERR_TIMEOUT-class failure REACHES the CAN path (the frame may have
+    transmitted) — through the real handler with a stubbed transport it must
+    classify ambiguous, never rejected: an ambiguous ack forbids both retry and
+    retract-free abort."""
+    from jugglebot.teensy_bridge_node import TeensyBridgeNode
+    from jugglebot_interfaces.srv import SetHandTrajCmd
+    req = SetHandTrajCmd.Request()
+    req.event_delay = 2.0
+    req.event_vel = 3.0
+    req.traj_type = 0
+    stub = types.SimpleNamespace(
+        teensy_hand_traj_cmd=lambda args: (False, 'ERR_TIMEOUT: no reply', None))
+    res = TeensyBridgeNode._svc_set_hand_traj(
+        stub, req, SetHandTrajCmd.Response())
+    assert res.success is False
+    assert (ReloadCoordinatorNode._classify_hand_traj_reject(res.message)
+            == THROW_DISPATCH_AMBIGUOUS)
+
+
+def test_dispatch_request_fields_and_ok(monkeypatch):
+    """The dispatch: traj_type=0, event_vel from the release state, event_delay
+    recomputed from the ABSOLUTE scheduled release at dispatch time (minus the
+    reserved release-latency slot, which ships 0.0) — and the telemetry watch is
+    armed BEFORE the ack wait (the frame may fire while we wait)."""
+    node = _toss_ready_node(100.0)
+    t0 = time.perf_counter()
+    seq = _fresh_seq(node, delay=5.0, start=t0)
+    captured = []
+    monkeypatch.setattr(node._hand_traj_cli, 'call_async',
+                        lambda req: captured.append(req) or object())
+
+    def _resp(fut, timeout_s=2.0):
+        assert node._toss_throw_dispatched is True       # armed pre-ack
+        return types.SimpleNamespace(success=True, message='Hand trajectory set.')
+    monkeypatch.setattr(node, '_wait_future', _resp)
+    outcome, _ = node._dispatch_toss_throw(seq)
+    assert outcome == THROW_DISPATCH_OK
+    req = captured[0]
+    assert req.traj_type == 0
+    assert req.event_vel == pytest.approx(seq.event_vel_mps)
+    assert req.event_delay == pytest.approx(seq.t_release - t0, abs=0.2)
+    # The latency slot is RESERVED at 0.0 until Phase-5 T0 measures it — a
+    # non-zero value landing without a T0 session should fail here first.
+    assert hw.JB_OP_TOSS_RELEASE_LATENCY_MS == 0.0
+
+
+def test_dispatch_service_unavailable_is_rejected(monkeypatch):
+    """No service ⇒ no CAN frame can exist ⇒ definitive reject (safe to abort
+    with the retract clearing any half-state)."""
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, start=time.perf_counter())
+    node._hand_traj_cli._ready = False
+    outcome, message = node._dispatch_toss_throw(seq)
+    assert outcome == THROW_DISPATCH_REJECTED
+    assert 'unavailable' in message
+
+
+def test_dispatch_ack_timeout_is_ambiguous(monkeypatch):
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, start=time.perf_counter())
+    monkeypatch.setattr(node, '_wait_future', lambda fut, timeout_s=2.0: None)
+    outcome, _ = node._dispatch_toss_throw(seq)
+    assert outcome == THROW_DISPATCH_AMBIGUOUS
+
+
+# ── Terminal orderings (prime_hold released LAST) ──────────────────────────────
+
+def test_toss_recenter_releases_prime_hold_last(monkeypatch):
+    """RECENTER: the reload teardown (latch lower, armed False, go_home; hand
+    keeps the ball) with prime_hold False LAST — the hold and catch/armed travel
+    on different topics with no ordering guarantee, and a released hold meeting
+    a still-armed catch_coordinator would auto-prime with the caught ball in the
+    cup (the ascent launches it). A stale hold costs nothing."""
+    node = ReloadCoordinatorNode()
+    order = []
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: order.append(('arm', a)) or True)
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda a: order.append(('armed', a)))
+    monkeypatch.setattr(node, '_go_home', lambda: order.append('home') or True)
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: order.append(('prime_hold', h)))
+    node._toss_recenter()
+    assert order == [('arm', False), ('armed', False), 'home',
+                     ('prime_hold', False)]
+
+
+def test_toss_safe_abort_ordering_with_prime_hold_last(monkeypatch):
+    """SAFE_ABORT: the reload safing ladder verbatim — catch/armed False FIRST
+    (retry-tick stand-down), telemetry-verified retract (which deliberately also
+    clears an armed throw stroke on the last-writer-wins queue), latch lower,
+    go_home — and prime_hold False LAST, outliving the whole teardown for the
+    same cross-topic-ordering reason as RECENTER (the ball is still seated on a
+    pre-release abort)."""
+    node = ReloadCoordinatorNode()
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    order = []
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda a: order.append(('armed', a)))
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: order.append(('retract', p)) or True)
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: order.append(('arm', a)) or True)
+    monkeypatch.setattr(node, '_go_home', lambda: order.append('home') or True)
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: order.append(('prime_hold', h)))
+    node._toss_safe_abort()
+    assert order == [('armed', False), ('retract', hw.JB_OP_HAND_RETRACT_REV),
+                     ('arm', False), 'home', ('prime_hold', False)]
+
+
+# ── Cancellation (per-phase deferral — plan § Choreography 7) ──────────────────
+
+def test_cancel_deferral_phase_table():
+    """The per-phase table: honoured through PREPARING and early THROWING (the
+    retract clears the armed stroke; nothing airborne), DEFERRED from the
+    cutoff before release onward — aborting a catch mid-flight drops a ball on
+    the robot (the reload hazard this deliberately deviates from)."""
+    node = ReloadCoordinatorNode()
+    mk = lambda phase: types.SimpleNamespace(phase=phase, t_release=105.0)
+    for phase in (PHASE_CHECKING, PHASE_POSITIONING, PHASE_PREPARING):
+        assert node._toss_cancel_deferred(mk(phase), 104.9) is False
+    assert node._toss_cancel_deferred(mk(PHASE_THROWING), 104.7) is False
+    assert node._toss_cancel_deferred(mk(PHASE_THROWING), 104.8) is True
+    for phase in (PHASE_BALL_IN_FLIGHT, PHASE_CATCHING, PHASE_SETTLING):
+        assert node._toss_cancel_deferred(mk(phase), 104.0) is True
+
+
+def test_cancel_honoured_early_returns_cancelled():
+    """A cancel in CHECKING is honoured immediately: ABORTED_CANCELLED,
+    canceled() (not abort), and no safing (nothing armed yet)."""
+    node = _toss_ready_node(time.perf_counter())
+    gh = _TossGoalHandle()
+    gh.is_cancel_requested = True
+    result = node._execute_toss(gh)
+    assert result.outcome == 'ABORTED_CANCELLED'
+    assert gh.terminal == 'canceled'
+
+
+def test_cancel_deferred_resolves_with_fsm_outcome(monkeypatch):
+    """A DEFERRED cancel keeps ticking the FSM to its own terminal, then
+    resolves canceled() with the FSM's REAL outcome — the catch attempt ran."""
+    node = _toss_ready_node(time.perf_counter())
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(node, '_toss_cancel_deferred',
+                        lambda seq, now: True)
+    decisions = iter([
+        TossDecision(PHASE_BALL_IN_FLIGHT, 'none', False, None),
+        TossDecision(PHASE_SETTLING, 'none', True,
+                     TossResult(False, 'MISSED')),
+    ])
+    monkeypatch.setattr(node, '_step_toss_sequence',
+                        lambda seq, now, gh=None: next(decisions))
+    gh = _TossGoalHandle()
+    gh.is_cancel_requested = True
+    result = node._execute_toss(gh)
+    assert result.outcome == 'MISSED'                    # the FSM's real verdict
+    assert gh.terminal == 'canceled'
+
+
+# ── Node-level early exits safe the robot first (FIX-6) ────────────────────────
+
+def _script_position_accept(node, monkeypatch, side_effect=None):
+    """Script positioning to ACCEPT (seq becomes prepared — the go_home leg of
+    SAFE_ABORT is owed from that point), optionally firing a side effect."""
+    def _accept(seq):
+        seq.note_position_result(time.perf_counter(), True, 0.3)
+        if side_effect is not None:
+            side_effect()
+    monkeypatch.setattr(node, '_position_platform_for_toss', _accept)
+
+
+def test_cancel_prepared_safes_before_canceled(monkeypatch):
+    """A cancel honoured pre-cutoff with prepared=True (the positioning move
+    was ACCEPTED — the platform may have moved) runs the full toss safing
+    STRICTLY BEFORE canceled(): terminalising the goal first would let a new
+    goal race the teardown for the hand/latch."""
+    node = _toss_ready_node(time.perf_counter())
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    gh = _TossGoalHandle()
+    order = []
+    _script_position_accept(
+        node, monkeypatch,
+        side_effect=lambda: setattr(gh, 'is_cancel_requested', True))
+    monkeypatch.setattr(node, '_toss_safe_abort', lambda: order.append('safed'))
+    orig_canceled = gh.canceled
+    gh.canceled = lambda: (order.append('canceled'), orig_canceled())
+    result = node._execute_toss(gh)
+    assert result.outcome == 'ABORTED_CANCELLED'
+    assert gh.terminal == 'canceled'
+    assert order == ['safed', 'canceled']        # safing strictly first
+
+
+def test_sequence_ceiling_timeout_aborts_and_safes(monkeypatch):
+    """The per-goal ceiling: a wedged sequence terminates ABORTED_TIMEOUT and
+    the early-exit safing runs (prepared — the move was accepted)."""
+    node = _toss_ready_node(time.perf_counter())
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(
+        'jugglebot.reload_coordinator_node._toss_deadline_s', lambda seq: 0.0)
+    _script_position_accept(node, monkeypatch)
+    safed = []
+    monkeypatch.setattr(node, '_toss_safe_abort', lambda: safed.append(1))
+    gh = _TossGoalHandle()
+    result = node._execute_toss(gh)
+    assert result.outcome == 'ABORTED_TIMEOUT'
+    assert gh.terminal == 'abort'
+    assert safed == [1]
+
+
+def test_rclpy_shutdown_aborts_and_safes(monkeypatch):
+    """rclpy going down mid-sequence exits ABORTED_SHUTDOWN with the same
+    early-exit safing — a shutdown must not strand the latch raised or the
+    hand parted from its park band."""
+    import rclpy
+    node = _toss_ready_node(time.perf_counter())
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    _script_position_accept(node, monkeypatch)
+    safed = []
+    monkeypatch.setattr(node, '_toss_safe_abort', lambda: safed.append(1))
+    calls = {'n': 0}
+
+    def _ok():
+        calls['n'] += 1
+        return calls['n'] < 2                    # one loop pass, then shutdown
+    monkeypatch.setattr(rclpy, 'ok', _ok)
+    gh = _TossGoalHandle()
+    result = node._execute_toss(gh)
+    assert result.outcome == 'ABORTED_SHUTDOWN'
+    assert safed == [1]

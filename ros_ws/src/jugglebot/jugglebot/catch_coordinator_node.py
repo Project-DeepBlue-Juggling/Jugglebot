@@ -19,6 +19,12 @@ Subscribes to:
   - catch/vel_scale (Float64) — the operator's per-attempt catch-speed knob
     (reload goal field, or published manually); scales the armed event velocity;
     reset to the config default (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.8) on disarm.
+  - catch/prime_hold (Bool) — the toss coordinator's prime-suppression gate
+    (True at PREPARE entry, before catch/armed rises; False at terminal). While
+    True, EVERY auto-prime dispatch path here (armed-edge prime, retry-tick
+    re-prime) is suppressed; the catch arm and all other behaviour are
+    untouched. Absent topic = False = the reload path unchanged; stale True
+    fails safe (no auto-prime — the reload action primes proactively itself).
 
 Publishes:
   - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node, which
@@ -207,6 +213,20 @@ class CatchCoordinatorNode(Node):
         self._prime_dispatch_mono = 0.0
         self._prime_dispatched_sub = self.create_subscription(
             Bool, 'catch/prime_dispatched', self._on_prime_dispatched, 10)
+        # Prime-suppression gate (catch/prime_hold, published by the toss
+        # coordinator: True at PREPARE entry — BEFORE catch/armed rises — and
+        # False at terminal). While True, no auto-prime is dispatched from this
+        # node (neither the armed-edge prime nor the retry-tick re-prime): a
+        # toss holds the ball at the stroke bottom through the throw, and a
+        # kind-3 prime ascent would carry the ball-laden hand up mid-toss and
+        # clear an armed throw stroke on the Teensy's last-writer-wins queue.
+        # The catch ARM (kind-1) is NOT gated. Absent topic → False → the
+        # reload path bit-identical to today. Stale True fails SAFE (no
+        # auto-prime; the reload action primes proactively itself), so the
+        # flag is never reset locally — the publisher owns it.
+        self._prime_hold = False
+        self._prime_hold_sub = self.create_subscription(
+            Bool, 'catch/prime_hold', self._on_prime_hold, 10)
 
         # Re-measure clock offset every 30s to track drift
         self._clock_timer = self.create_timer(30.0, self._refresh_clock_offset)
@@ -320,8 +340,13 @@ class CatchCoordinatorNode(Node):
             # (the reload coordinator primes at CHECKING, ~0.1 s before this
             # edge — the third sitting showed the pair restarting a just-started
             # ascent on 3/12 attempts). The retry tick re-primes after the
-            # window if the ascent never actually happened.
-            if (time.perf_counter() - self._prime_dispatch_mono) >= _PRIME_INFLIGHT_S:
+            # window if the ascent never actually happened. catch/prime_hold
+            # suppresses the edge prime outright: during a toss the ball rides
+            # the hand at the stroke bottom, and an auto-prime ascent here
+            # would launch it (see _on_prime_hold).
+            if (not self._prime_hold
+                    and (time.perf_counter() - self._prime_dispatch_mono)
+                    >= _PRIME_INFLIGHT_S):
                 self._prime_hand()
         else:
             self._hand_primed = False
@@ -351,6 +376,24 @@ class CatchCoordinatorNode(Node):
         last-writer-wins."""
         if bool(msg.data):
             self._prime_dispatch_mono = time.perf_counter()
+
+    def _on_prime_hold(self, msg: Bool):
+        """catch/prime_hold: the toss coordinator's prime-suppression gate,
+        published True at PREPARE entry (BEFORE catch/armed rises) and False at
+        terminal. While True, this node dispatches NO hand prime — neither the
+        armed-edge prime nor the retry-tick re-prime: a toss holds the ball at
+        the stroke bottom through the throw, so an auto-prime ascent would carry
+        the ball-laden hand up mid-toss AND clear an armed throw stroke on the
+        Teensy's last-writer-wins queue. The catch ARM (kind-1) and every other
+        behaviour are untouched — hand-stroke catch timing stays tracker-driven.
+        Stale True fails SAFE (no auto-prime; the reload action primes
+        proactively itself), so the flag is never reset locally."""
+        hold = bool(msg.data)
+        if hold != self._prime_hold:
+            self.get_logger().info(
+                "catch/prime_hold raised — auto-prime suppressed" if hold
+                else "catch/prime_hold released — auto-prime re-enabled")
+        self._prime_hold = hold
 
     def _on_vel_scale(self, msg: Float64):
         """catch/vel_scale: the operator's per-attempt catch-speed knob (reload goal
@@ -450,6 +493,11 @@ class CatchCoordinatorNode(Node):
         retry is safe: pre-flight it is idempotent re-priming; in-flight it is
         suppressed."""
         if not self._catch_armed or self._hand_primed:
+            return
+        # The toss coordinator owns the hand from PREPARE to terminal
+        # (catch/prime_hold True): no auto-prime may be dispatched while the
+        # ball rides the stroke bottom awaiting the throw (see _on_prime_hold).
+        if self._prime_hold:
             return
         # An ARMED catch stroke on the Teensy blocks the retry outright (audit,
         # 2026-07-23): the quiet window is anchored to the last EMITTED command,

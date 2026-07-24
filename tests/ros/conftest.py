@@ -501,6 +501,7 @@ class BallButlerThrowCmd:
 class _ReloadGoal:
     def __init__(self):
         self.throw_delay_s = 0.0
+        self.catch_vel_scale = 0.0
 
 
 class _ReloadResult:
@@ -519,6 +520,36 @@ class Reload:
     Goal = _ReloadGoal
     Result = _ReloadResult
     Feedback = _ReloadFeedback
+
+
+# ── Toss action mock (Phase 8) ──────────────────
+
+
+class _TossGoal:
+    def __init__(self):
+        self.catch_position = Point()
+        self.flight_time_s = 0.0
+        self.throw_delay_s = 0.0
+        self.catch_vel_scale = 0.0
+
+
+class _TossResult:
+    def __init__(self):
+        self.success = False
+        self.outcome = ''
+        self.catch_error_mm = float('nan')
+        self.achieved_flight_s = float('nan')
+
+
+class _TossFeedback:
+    def __init__(self):
+        self.phase = ''
+
+
+class Toss:
+    Goal = _TossGoal
+    Result = _TossResult
+    Feedback = _TossFeedback
 
 
 # ── rclpy mock ────────────────────────────────────────────────
@@ -816,6 +847,7 @@ _create_mock_module('jugglebot_interfaces.action', {
     'HomeMotors': HomeMotors,
     'BallButlerThrowCmd': BallButlerThrowCmd,
     'Reload': Reload,
+    'Toss': Toss,
 })
 
 _create_mock_module('geometry_msgs')

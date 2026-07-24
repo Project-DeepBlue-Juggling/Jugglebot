@@ -518,6 +518,25 @@ jugglebot_operational:
                                          # TIMING stays tracking-driven; only
                                          # the platform reach is frozen to the pre-tilt. False = pre-open-loop
                                          # reactive-platform behaviour.
+  toss_tier: "8a"                        # Serviceable Toss.action capability tier (single-ball-toss plan).
+                                         # '8a' = toss-at-position: platform pre-positions LEVEL at the
+                                         # nominated catch (x, y), throw site = catch site. Tier 8b
+                                         # (tilt-aimed displaced throw→catch) is REJECTED_TIER until the
+                                         # plan's Phase 4 lands behind this same key. Config-only gate: the
+                                         # locked Toss.action goal carries no tier field, so the plan's
+                                         # "per-goal override" is deferred to Phase 4.
+  toss_release_latency_ms: 0.0           # JB hand command→release latency {ms} for the toss throw stroke:
+                                         # the dispatch is shifted EARLY by this while the announced landing
+                                         # stays un-shifted (the BB pattern). RESERVED at 0.0 — the BB-side
+                                         # 44 ms is a BB-hand calibration and does NOT transfer; the
+                                         # single-ball-toss plan's Phase-5 T0 bench session measures the JB
+                                         # value before any non-zero entry lands here.
+  toss_flight_time_default_s: 0.8        # Default toss flight time {s} when a Toss goal's flight_time_s is
+                                         # 0/unset — mid-sweep of the plan's 0.55–1.10 s band, the worked
+                                         # example (launch ≈ 3.93 m/s). The coordinator resolves this and
+                                         # passes the resolved value into the TossSequencer ctor;
+                                         # toss_sequencer's local DEFAULT_TOSS_FLIGHT_TIME_S is the
+                                         # no-config fallback only, pinned equal by the drift-guard test.
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}

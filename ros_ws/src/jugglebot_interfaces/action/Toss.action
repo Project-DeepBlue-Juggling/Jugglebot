@@ -1,0 +1,42 @@
+# Jugglebot self-toss: throw the seated ball to a nominated catch state and
+# catch it. Runs within ACTIVE:TRAJECTORY (no mode switch — leaving the mode
+# mid-sequence is the documented abort), mirrors Reload.action choreography.
+# Reload is the loader (operator sequence: Reload → Toss → Toss …): a toss with an
+# empty cup comes back REJECTED_NO_BALL, and the coordinator (reload_coordinator_node,
+# the merged ball-ops node) runs ONE ball-op at a time — a goal while the other action
+# runs is REJECTED_BUSY. It pre-positions the platform at the nominated catch (x, y)
+# with a profiled move and a timed arrival — plus a config-keyed mocap cross-check
+# (toss_mocap_body parameter), disabled by default until the platform's QTM body is
+# bench-validated (POSITIONING); computes the release
+# state, RAISES the trajectory/arm_catch latch and confirms it, then publishes a
+# self-ThrowAnnouncement (thrower_name='jugglebot', predicted landing = the nominated
+# catch) so the existing correlation → catch path closes the loop unchanged
+# (PREPARING); then dispatches the hand stroke (SetHandTrajCmd traj_type=0) through
+# the telemetry-verified ladder — the hand ack lies ~59% both ways, so a dispatch is
+# never blind-re-sent (THROWING). In flight the platform holds open-loop at the
+# pre-positioned pose (live tracking never moves it); hand-stroke catch timing stays
+# tracker-driven through catch_coordinator's latch-gated arm, exactly the reload path.
+# In-flight cancellation is honoured at the next phase boundary — aborting a catch
+# mid-flight drops a ball on the robot; a pre-release abort retracts the hand to park
+# and re-centers. Tier 8a (platform level, toss-at-position) only until Tier 8b
+# (tilt-aimed displaced throw→catch) lands — config-selected; otherwise REJECTED_TIER.
+# See plans/active/single-ball-toss.md.
+
+geometry_msgs/Point catch_position   # nominated catch point, mm, STOW-relative
+                                     # platform frame (same convention as
+                                     # TimedTarget.pose; z 170 = ACTIVE plane)
+float64 flight_time_s                # ballistic flight time; sets throw height
+                                     # (apex = g·T²/8 above release for the
+                                     # vertical toss); 0 => config default
+float64 throw_delay_s                # delay from goal-accept to release; 0 => default
+float64 catch_vel_scale              # 0 => config default; same semantics and
+                                     # clamp [0.3, 1.5] as Reload.action
+---
+bool success                         # True iff OUR announced ball was CAUGHT
+                                     # (tracker-id-correlated, as Reload)
+string outcome                       # CAUGHT | REJECTED_<code> | ABORTED_<code> | MISSED | MISSED_<code>
+float64 catch_error_mm               # tracker last-KF horizontal miss (NaN unknown)
+float64 achieved_flight_s            # measured release→catch-plane time (NaN unknown)
+---
+string phase                         # CHECKING | POSITIONING | PREPARING | THROWING |
+                                     # BALL_IN_FLIGHT | CATCHING | SETTLING

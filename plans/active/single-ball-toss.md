@@ -173,7 +173,7 @@ zero feasibility violations, all knots pump-accepted.
 | Phase | Scope | Gate | Status |
 |---|---|---|---|
 | 0 | Post-merge reconciliation (suite green, doc pointers) | full pytest | COMPLETE (2026-07-25) |
-| 1 | `Toss.action` + `toss_sequencer` FSM + coordinator wiring (Tier 8a, REJECTED_TIER for 8b) | full pytest | NOT STARTED |
+| 1 | `Toss.action` + `toss_sequencer` FSM + coordinator wiring (Tier 8a, REJECTED_TIER for 8b) | full pytest | COMPLETE (2026-07-25; tier is config-only — the locked goal has no tier field, see the phase logbook entry) |
 | 2 | `sim/toss_gate.py` + Tier-8a sweep | Self-toss gate ≥9/10 | NOT STARTED |
 | 3 | Real-ordering trace (multi-node choreography) | trace review | NOT STARTED |
 | 4 | Tier 8b — tilt-aimed displaced throw on the production stack | gate sweep extension | NOT STARTED |
@@ -244,8 +244,9 @@ trace), reviewed against the sequencer's assumed ordering.
   `event_vel` vs. achieved release speed (mocap), release scatter (feeds the
   gate noise model), release-position repeatability. This is the
   empirical-probe-before-thresholds discipline applied to the throw.
-- **T1 — single vertical toss-and-catch**, low height (flight ≈0.6 s), centre
-  workspace. PASS: ≥3/5 caught.
+- **T1 — single vertical toss-and-catch**, low height (flight ≈0.7 s — see
+  the risk register's kind-1 time-budget entry; 0.6 s is firmware-marginal),
+  centre workspace. PASS: ≥3/5 caught.
 - **T2 — height ladder** at centre: flight 0.6 → 0.9 → 1.1 s. PASS per step: ≥3/5.
 - **T3 — toss-at-position**: workspace corners at ±60 mm, one height. PASS: ≥3/5 each.
 - **T4 — Tier 8b displaced throw→catch** (only after Phase 4's gate): A→B at
@@ -276,6 +277,14 @@ trace), reviewed against the sequencer's assumed ordering.
 - **Teensy-uptime tracking lag (open)** — all timing-sensitive measurements
   (achieved flight time, catch error) are only meaningful with a fresh
   can-bridge boot; `uptime_ms` is logged alongside every session artefact.
+- **Firmware kind-1 time-budget race at short flights (found in Phase 1's
+  control analysis, 2026-07-25).** The tracker-driven catch arm arrives
+  mid-throw-decel; the Teensy windup budget silently drops it (Serial-only,
+  lying success ack) for flight ≲0.6 s at realistic pipeline latencies.
+  Hardware T1/T2 should treat **0.7 s as the flight floor** (the plan's
+  0.6 s start is marginal — clean only for pipeline delay ≤20 ms). The sim
+  gate does not model the firmware budget; Phase 2's report annotates the
+  hardware-marginal band. See the Phase 1 logbook entry.
 
 ## Notes for Collaborators
 - Rung evidence and design bases live in the merged ladder logbook entries

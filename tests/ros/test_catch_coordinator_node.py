@@ -498,6 +498,100 @@ def test_prime_hand_stamps_dispatch_window():
     assert (time.perf_counter() - node._prime_dispatch_mono) < 0.5
 
 
+# ── catch/prime_hold — the toss coordinator's prime-suppression gate ──────────
+# From toss PREPARE to terminal the ball rides the hand at the stroke bottom;
+# an auto-prime (kind-3 ascent) mid-toss would carry the ball-laden hand up and
+# clear an armed throw stroke on the Teensy's last-writer-wins queue. The hold
+# gates ONLY this node's prime dispatch paths (armed-edge + retry tick); the
+# catch arm and all other behaviour are untouched, and the absent-topic default
+# is bit-identical to the hardware-proven reload path.
+
+
+def test_prime_hold_absent_topic_defaults_false(monkeypatch):
+    """No catch/prime_hold ever published (every reload today): the flag is
+    False and the armed-edge prime fires exactly as the reload-path tests pin —
+    the gate is invisible when the topic is absent."""
+    node = CatchCoordinatorNode()
+    assert 'catch/prime_hold' in node._subscriptions
+    assert node._prime_hold is False
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._on_catch_armed(Bool(data=True))
+    assert primed == [1]
+
+
+def test_prime_hold_true_before_armed_suppresses_edge_and_retry(monkeypatch):
+    """The toss choreography: prime_hold True at PREPARE entry, BEFORE
+    catch/armed rises. The armed-edge prime is suppressed AND the 0.5 s retry
+    tick never re-primes while the hold is up."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._on_prime_hold(Bool(data=True))       # PREPARE: hold raised before armed
+    node._on_catch_armed(Bool(data=True))
+    assert primed == []                        # edge prime suppressed
+    # Retry-tick preconditions all clear (armed, unprimed, quiet window expired,
+    # no ascent in flight) — the hold alone must keep suppressing.
+    assert node._hand_primed is False
+    node._last_cmd_mono = 0.0
+    node._prime_dispatch_mono = 0.0
+    node._prime_retry_tick()
+    node._prime_retry_tick()
+    assert primed == []
+
+
+def test_prime_hold_does_not_gate_catch_arm(monkeypatch):
+    """prime_hold gates ONLY the prime dispatch paths: with the hold raised the
+    kind-1 catch ARM still dispatches normally — the toss catch depends on it
+    (hand-stroke catch timing stays tracker-driven through this node)."""
+    node = CatchCoordinatorNode()
+    node._on_prime_hold(Bool(data=True))
+    node._on_catch_armed(Bool(data=True))
+    armed = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append((d, v)) or True)
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
+    node._on_balls(_balls_msg())
+    assert len(armed) == 1
+    assert node._hand_traj_armed_for_ball == 5   # one-shot latched as normal
+
+
+def test_prime_hold_release_reenables_priming(monkeypatch):
+    """prime_hold False again (toss terminal): priming is re-enabled — a
+    still-armed unprimed node's retry tick recovers, and the next armed edge
+    primes normally."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._on_prime_hold(Bool(data=True))
+    node._on_catch_armed(Bool(data=True))
+    assert primed == []                        # suppressed during the toss
+    # Release while still armed: the 0.5 s retry tick recovers the prime.
+    node._on_prime_hold(Bool(data=False))
+    node._prime_retry_tick()
+    assert primed == [1]
+    # And a fresh armed edge primes normally again.
+    node._on_catch_armed(Bool(data=False))
+    node._on_catch_armed(Bool(data=True))
+    assert primed == [1, 1]
+
+
+def test_prime_hold_survives_disarm_stale_true_fails_safe(monkeypatch):
+    """The flag is owned by its publisher and never reset locally: a stale True
+    (a toss that died before terminal) keeps failing SAFE — no auto-prime on the
+    next armed edge; the reload action primes proactively itself."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._on_prime_hold(Bool(data=True))
+    node._on_catch_armed(Bool(data=True))
+    node._on_catch_armed(Bool(data=False))     # disarm does NOT reset the flag
+    assert node._prime_hold is True
+    node._on_catch_armed(Bool(data=True))
+    assert primed == []                        # suppressed until False is published
+
+
 # ── open-loop reload platform (JB_OP_RELOAD_PLATFORM_OPEN_LOOP) ────────────────
 # Once OUR throw is announced during an armed reload, the platform holds the
 # announcement pre-tilt pose and IGNORES live per-ball reactive refinements — a bad
