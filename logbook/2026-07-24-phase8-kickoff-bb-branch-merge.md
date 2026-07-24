@@ -9,6 +9,7 @@ subsystem: sim
 tags: [docs, testing]
 commits:
   - 20fcc9e
+  - d91a40e
 files_changed:
   - "(merge) controller/demo/*, sim/juggle_*.py, sim/juggle_tilt.py, tools/probes/juggle_*, tests/sim/test_juggle_*, tests/sim/test_demo_*, 17 logbook entries, 3 plans"
   - plans/active/single-ball-toss.md
