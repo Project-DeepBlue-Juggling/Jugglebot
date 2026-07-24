@@ -23,6 +23,39 @@ passes, or 7c before 7b passes.**
 
 ---
 
+> **⚡ FIFTH SITTING — after the 2026-07-24 open-loop pivot**
+> (`logbook/2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md`. The
+> fourth sitting: 19 real throws, ~15 caught; 2 BB-side refusals — PV_STALE + another
+> yaw NOT_SETTLED — and one FALSE prime abort.) What changed for THIS run:
+> 1. **The reload platform is OPEN-LOOP now** (your call; config
+>    `reload_platform_open_loop: true`): once the throw is announced, the platform
+>    takes the pre-tilt pose and HOLDS it — live ball tracking can no longer move it
+>    (the Ball-30 "platform moved at the last second" miss is dead). The hand-stroke
+>    TIMING stays tracker-driven (announced landing runs ~0.05–0.15 s early, one
+>    +0.31 s outlier — timing the stroke from it would bounce balls). Manual 7b
+>    bench arming is unaffected.
+> 2. **No more up-down prime jerk / false PRIME aborts**: the hand ladders now read
+>    hand telemetry after a failed ack — a "failed" dispatch that is actually moving
+>    the hand is accepted instead of re-dispatched (the ack channel lies ~59 % of
+>    calls). If you still see a mid-ascent yank, that is NEW evidence.
+> 3. **The launch shell now tells the truth**: ONE outcome line per reload
+>    ("Reload CAUGHT/MISSED/..."); the arm-failed and IMPLAUSIBLE spam is demoted
+>    (DEBUG/INFO). WARNs you still see are meaningful — note them.
+> 4. **Expectations for the miss rate**: this round removes only the self-inflicted
+>    platform-move class. Late arrivals (one ball arrived 0.31 s late — 0.18 s after
+>    the hand had already retracted) and BB scatter (one landed 105 mm off-centre)
+>    remain — those are the ball-held-sensor era's work (arrival-triggered stroke)
+>    and/or BB aim tightening.
+> 5. **Verdicts still read MISSED for real catches** (tracker corruption stands;
+>    0/21 CAUGHT verdicts last sitting despite ~15 catches). Judge by eye; the
+>    ball-held sensor is the fix.
+> 6. **BB-side watch items**: two throws refused in one sitting (PV_STALE, yaw
+>    NOT_SETTLED — the second yaw abort in two sittings). If a goal ends with no
+>    ball flying, check the bridge log for these before suspecting Jugglebot.
+> **Before this session**: `colcon build --packages-select jugglebot` +
+> `source install/setup.bash` + relaunch (no interface changes this round), and
+> power-cycle the can-bridge Teensy as usual.
+
 > **⚡ FOURTH SITTING — after the 2026-07-23 evening fixes**
 > (`logbook/2026-07-23-phase7-third-sitting-verdicts-stutter-pretilt.md`. The third
 > sitting WORKED: 10 real throws at scale 0.8, **8 caught**; 2 "throws" were aborted
