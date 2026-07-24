@@ -5,6 +5,7 @@ owner: harrison
 created: 2026-06-17
 related_logbook:
   - 2026-06-12-temporal-warmup-drift.md   # (BallButler repo) the artifact that motivated this
+  - 2026-07-18-teensy-uptime-tracking-degradation.md   # the LATENCY half — see the scope boundary note
 related_config:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/time_base.h → TIME_OFFSET_IIR_SHIFT / TIME_STEP_THRESHOLD_US / TIME_ANCHOR_STALE_US
   - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h → TIMEOFDAY_RESYNC_MS
@@ -22,6 +23,14 @@ related_code:
 > warm-up. The remaining gap is **precision**: the loop is offset-only (type-1), so
 > it holds ~few-ms over a session rather than µs. That is already inside the ±10–20 ms
 > throw budget, so this work is "do it once, never think about it again," not urgent.
+
+> **Scope boundary (2026-07-24):** this plan disciplines the **timebase**
+> (clock-sync precision and holdover). It does NOT cover end-to-end
+> **command-path latency** — the 2026-07-18 uptime-lag investigation
+> (`logbook/2026-07-18-teensy-uptime-tracking-degradation.md`) showed command
+> latency can drift 10 ms → ~240 ms while clock correctness is untouched.
+> Latency monitoring is owned by that investigation's closure (its 2026-07-24
+> Addendum); the two are complementary halves of temporal trustworthiness.
 
 # Bridge Clock — Frequency/Rate Discipline
 

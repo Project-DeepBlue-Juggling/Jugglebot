@@ -1,3 +1,19 @@
+---
+title: Inertia-aware acceleration feedforward for lateral platform moves
+created: 2026-07-16
+status: active
+related_logbook:
+  - 2026-07-16-max-deviation-guard-tracking-lag.md
+  - 2026-07-18-teensy-uptime-tracking-degradation.md
+  - 2026-05-08-friction-ff-platform-limit-cycle.md
+related_config:
+  - config/hardware_config.yaml → dynamics.torque_ff_platform_inertia
+related_code:
+  - ros_ws/src/jugglebot/jugglebot/motion/torque_ff.py::LegTorqueFeedforward.compute
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/emitter.py::KnotEmitter.frame
+  - controller/teensy_link/setpoint_pump.py::SetpointPump
+---
+
 # Plan: Inertia-aware acceleration feedforward for lateral platform moves
 
 **Status:** PROPOSED — Phase 0 ready to start (created 2026-07-16, from the
@@ -146,6 +162,7 @@ Mechanism (b), the "contract one level up." Today `feasibility.py` gates only ki
 - `tests/hardware/traj_ramp_battery.py` is the A/B battery vehicle — referenced read-only, operator-run, NEVER edited by this work.
 - Absolute J_eff is filter-sensitive (5.2e-4@70 ms → 15.7e-4@210 ms); trust STRUCTURE (lat/z 1.68×, per-leg ordering), treat magnitudes as ±40%. This is why sizing keys off the rigid-body model, not the raw measured number.
 - Reflected rotor rides under the same flag as the wrench (`torque_ff.py:229`); per the 2026-07-13 plant ID J_eff ≈ 1× J_rotor, so rotor is the dominant term — omitting it would be the wrong half.
+- The Phase-2-validated torque predictor is also the **frozen model baseline** over which `plans/active/learned-ff-residuals.md` (batch ILC) learns torque-trim profiles. Conclude this plan (shipped enabled OR dormant — either freezes the baseline) before ILC learning starts (its gate G-B); learned profiles key on the model-config hash, so any sizing/flag change here auto-invalidates them rather than silently mis-applying.
 
 ---
 
@@ -173,7 +190,7 @@ Mechanism (b), the "contract one level up." Today `feasibility.py` gates only ki
 
 ## Pre-registered A/B validation protocol
 
-**Harness:** extend `tools/probes/gravity_ff_ab_extract.py` (pos-delta move matching; identical-approach-history holds only — the ±1.5 A/leg hysteresis dwarfs small FF signatures, so only matched-approach moves are comparable) to window on the **accel phase** of each move and emit per-leg peak deviation, lead-clamp engagement count, and act_std.
+**Harness:** extend `tools/probes/gravity_ff_ab_extract.py` (pos-delta move matching; identical-approach-history holds only — the ±1.5 A/leg hysteresis dwarfs small FF signatures, so only matched-approach moves are comparable) to window on the **accel phase** of each move and emit per-leg peak deviation, lead-clamp engagement count, and act_std. Also persist the full per-move residual profiles (u0−enc on the 25 ms knot grid) per the shared extraction spec in `plans/active/learned-ff-residuals.md` Phase 0, so the same bags later serve as the ILC baseline without re-extraction.
 
 **Battery:** the 22-move lateral battery (2z / 3x / 3y / 3rx) that the evening post-fix bag (`2026-07-16_17-38-15`) already ran clean. Vehicle = `tests/hardware/traj_ramp_battery.py` (referenced read-only, operator-run, NEVER edited). Run FF-off then FF-on back-to-back at a FIXED limit step, matched approach history. First step: vel 200 / acc ~660 mm/s² (the level the afternoon latched at, now clean). Second step: open toward acc ~3000 mm/s² as the operator ramps session limits, where the effect is largest.
 

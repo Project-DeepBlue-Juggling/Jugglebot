@@ -206,6 +206,26 @@ would let a single degraded bag split transport vs interp vs ODrive without
 any hardware experiment. Telemetry gap worth closing regardless: neither
 recover-slew state nor extrapolation-mode occupancy is uplinked.
 
+## Addendum (2026-07-24) — closure requires a latency contract, not just a fix
+
+Whatever arm localizes the root cause, closing this entry requires **two**
+deliverables, not one: (1) the fix itself, and (2) a **continuously-measured,
+alarmed end-to-end command-latency monitor** (logged with `uptime_ms`). The
+class this investigation exposed is "command-latency drift is invisible until
+a session is already degraded" — a one-off fix without the monitor leaves the
+class open, and this entry's own telemetry-gap findings (LEG_CMD not
+published, PROFILE not bagged, recover-slew/extrapolation occupancy not
+uplinked) are the concrete inputs the monitor should close. Note the scope
+split with `plans/active/bridge-clock-frequency-discipline.md`: that plan
+disciplines the *timebase* (clock-sync precision); this entry owns *path
+latency* — clock sync can be perfect while command latency drifts 10→240 ms.
+
+Three queued arcs gate on this closure: the accel-FF premise re-derivation
+(`plans/active/accel-ff-inertia.md`), the retime-ON revisit, and the ILC
+repeatability premise (`plans/active/learned-ff-residuals.md`, gate G-A).
+The offline measurement vehicle is that plan's Phase-0 residual extractor,
+whose Gate 0 is validation against this entry's seven-bag lag table.
+
 ## Verification
 
 - All forensics offline/read-only; scripts + per-commit JSON in the session
@@ -213,7 +233,8 @@ recover-slew state nor extrapolation-mode occupancy is uplinked.
   four agent reports are summarized above; no repo code changed by this
   entry.
 - The reboot experiment above is the confirmation gate; this entry stays
-  `status: open` until it runs.
+  `status: open` until it runs — and until the latency monitor of the
+  2026-07-24 Addendum lands with the fix.
 
 ## Related
 

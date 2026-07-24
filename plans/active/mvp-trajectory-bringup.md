@@ -1238,6 +1238,17 @@ phase is reached, informed by Phases 6–8 evidence.
 - **Orchestrator-automated arming** (auto `set_setpoint_output` on ACTIVE entry).
 - **Lean shaping beyond the single gain**; `juggle_optimizer.py` port; GUI
   integration for TRAJECTORY mode.
+- **Choreography-layer event vocabulary** (added 2026-07-24). Phases 8–9's
+  throw/catch surfaces should stay shaped as *named, timed events*: a goal of
+  the nominated catch state ⟨position, flight time⟩ (as
+  `plans/active/single-ball-toss.md`'s `Toss.action` already is) plus
+  perf-domain **absolute** deadlines — which `Toss.action`'s relative
+  `throw_delay_s` does not yet provide; the precedent is
+  `catch/dynamic_target`'s perf-domain `arrival_time`. A future
+  siteswap-level choreography scheduler (the anticipated consumers named in
+  `controller/SCHEDULER_CONTRACT.md`; the external airtime design work) will
+  drive exactly this seam. Ad-hoc per-behaviour service shapes would force a
+  retrofit; keeping the event shape costs nothing now.
 
 ## Notes for Collaborators
 
