@@ -8,7 +8,7 @@ related_plan: single-ball-toss.md
 subsystem: sim
 tags: [feature, testing, sim]
 commits:
-  - PENDING
+  - 4987b6a
 files_changed:
   - sim/toss_gate.py
   - sim/gate_common.py
