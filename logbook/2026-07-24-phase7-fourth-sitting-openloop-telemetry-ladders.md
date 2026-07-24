@@ -14,7 +14,10 @@ files_changed:
   - tests/ros/test_catch_coordinator_node.py
   - tests/ros/test_reload_coordinator_node.py
   - tests/hardware/session_phase7_reload.md
-commits: []
+commits:
+  - 20d01e9
+  - 4e33b53
+  - 692bea1
 subsystem:
   - ros
 tags:
