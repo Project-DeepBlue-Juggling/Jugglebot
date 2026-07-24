@@ -8,7 +8,7 @@ related_plan: single-ball-toss.md
 subsystem: hardware-test
 tags: [testing, hardware, docs]
 commits:
-  - PENDING
+  - 2338b0b
 files_changed:
   - tests/hardware/toss_trace_recorder.py
   - tests/hardware/session_phase8_toss_trace.md
