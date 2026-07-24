@@ -12,15 +12,20 @@ Subscribes to:
   - throw_announcements (ThrowAnnouncement) — while armed, OUR announcement (strict
     target_id match) drives a PRE-TILT: one predicted catch target per announcement
     from the announced landing state, ~3.9 s early, so the platform settles into
-    the receive tilt during the countdown; the reactive path refines it mid-flight.
+    the receive tilt during the countdown. Under JB_OP_RELOAD_PLATFORM_OPEN_LOOP
+    (the default) the platform then HOLDS that pose for the whole flight — only the
+    hand-arm stays reactive; with the flag off, the reactive path refines the
+    platform mid-flight as before.
   - catch/vel_scale (Float64) — the operator's per-attempt catch-speed knob
     (reload goal field, or published manually); scales the armed event velocity;
     reset to the config default (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.8) on disarm.
 
 Publishes:
   - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node, which
-    turns it into a build_catch plan while the catch-armed latch is raised. Published
-    unconditionally (trajectory_node's own latch gate drops it when disarmed);
+    turns it into a build_catch plan while the catch-armed latch is raised. Outside a
+    reload it is published unconditionally (trajectory_node's own latch gate drops it
+    when disarmed); during an announced open-loop reload the per-ball reactive target
+    is suppressed and the cached pre-tilt is re-asserted instead;
     arrival_time is in the perf_counter domain (system-wide CLOCK_MONOTONIC on Linux).
 
 Subscribes:
@@ -105,6 +110,24 @@ _PRIME_INFLIGHT_S = 1.2
 _PRETILT_EARLY_S = 1.5
 _PRETILT_MIN_LEAD_S = 1.0
 
+# Arrival-window arm guard: once OUR throw is announced, only arm the hand for a ball
+# whose predicted landing is within this window of the announced landing. A corrupt
+# split-track whose landing prediction is far off (the current ball's own hijacked
+# track) is rejected — it must not arm the one-shot stroke off garbage timing and block
+# the real ball's arm. Probed against the 2026-07-24_09-07-53 bag: destination-track
+# |time_at_land − announced landing| is 0.000 s at the arm moment (early life, n=6105)
+# and drifts to at most 0.644 s late-life — so 0.75 s always admits the real arm and
+# only fires on timing garbage beyond anything yet observed (a latent-class guard).
+_ARM_LANDING_WINDOW_S = 0.75
+
+# Per-ball hand-arm re-dispatch cap. The HAND_TRAJ_CMD ack is unreliable (~40-60%
+# ERR_TIMEOUT per call, 2026-07-23 epidemic) AND lies — frames were observed
+# transmitted after a failed ack. The kind-1 stroke's catch instant is an ABSOLUTE
+# wall_time invariant across retries, so a lying-ack arm still physically armed; after
+# this many dispatches for one ball we KEEP the latch (assume armed) rather than
+# churning the Teensy's last-writer-wins queue with near-identical repacks forever.
+_MAX_ARM_DISPATCHES = 2
+
 
 class CatchCoordinatorNode(Node):
     def __init__(self):
@@ -153,8 +176,9 @@ class CatchCoordinatorNode(Node):
         # prediction (position on the cup plane, velocity with vz decayed, landing
         # time) ~3.9 s before the ball lands. While armed, synthesize ONE predicted
         # catch target from it so the platform settles into the receive tilt during
-        # the countdown; the reactive per-ball path refines it mid-flight via C2
-        # supersede (each accepted refinement re-anchors the reach freeze).
+        # the countdown. Under JB_OP_RELOAD_PLATFORM_OPEN_LOOP (default) the platform
+        # HOLDS that pose all flight; otherwise the reactive per-ball path refines it
+        # mid-flight via C2 supersede (each accepted refinement re-anchors the freeze).
         self._announcement_sub = self.create_subscription(
             ThrowAnnouncement, 'throw_announcements',
             self._on_throw_announcement, 10)
@@ -191,6 +215,27 @@ class CatchCoordinatorNode(Node):
         self._last_submitted_ball_id: int | None = None
         self._last_arrival_time: float = 0.0
         self._last_landing_position: np.ndarray = np.zeros(3)
+
+        # Open-loop platform state (JB_OP_RELOAD_PLATFORM_OPEN_LOOP). Once OUR throw is
+        # announced during an armed reload, the platform holds the announcement-derived
+        # pre-tilt pose and ignores live per-ball reactive refinements (BB throws are
+        # repeatable; a bad ball prediction must never move the platform mid-reload).
+        # The hand-arm below stays reactive — only the platform reach is frozen.
+        self._announcement_seen = False
+        self._announced_landing_time: float | None = None   # ROS seconds, for the arm-window guard
+        self._pretilt_cmd = None                             # cached CatchCommand for the refresh
+
+        # Stale-track exclusion (defense-in-depth): ids IN_FLIGHT at the catch-armed
+        # rising edge — excluded from the catch candidate set so a leftover track from a
+        # PRIOR attempt never drives this reload. (Cannot catch the current ball's own
+        # corrupt track — that spawns after the snapshot; the arm-window guard covers it.)
+        self._latest_in_flight_ids: set = set()
+        self._preexisting_flight_ids: set = set()
+
+        # Per-ball hand-arm re-dispatch counter (bounds the re-arm churn on the lying
+        # ERR_TIMEOUT epidemic — see _MAX_ARM_DISPATCHES).
+        self._arm_dispatch_ball_id: int | None = None
+        self._arm_dispatch_count: int = 0
 
         # ── Hand control state ────────────────────────────────────
         self._hand_primed = False
@@ -267,6 +312,10 @@ class CatchCoordinatorNode(Node):
             return
         self._catch_armed = armed
         if armed:
+            # Snapshot the ids already IN_FLIGHT at the arm edge: a leftover track from a
+            # PRIOR attempt is excluded from this reload's catch candidates (defense-in-
+            # depth for the stale-track hazard; see update(exclude_ids=...)).
+            self._preexisting_flight_ids = set(self._latest_in_flight_ids)
             # Skip the edge prime while a prime ascent may already be running
             # (the reload coordinator primes at CHECKING, ~0.1 s before this
             # edge — the third sitting showed the pair restarting a just-started
@@ -279,6 +328,20 @@ class CatchCoordinatorNode(Node):
             self._hand_traj_armed_for_ball = None
             # One reload's catch-speed tuning value must never leak into the next.
             self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
+            # Clear the open-loop / exclusion / arm-count state so the NEXT reload starts
+            # from a clean slate (a stale announcement latch would freeze the platform
+            # open-loop before the next throw is even announced).
+            self._announcement_seen = False
+            self._announced_landing_time = None
+            self._pretilt_cmd = None
+            self._preexisting_flight_ids = set()
+            self._arm_dispatch_ball_id = None
+            self._arm_dispatch_count = 0
+            # Per-ball feedback-correlation state too (audit): a post-disarm straggler
+            # from a still-alive track must not correlate against the finished reload.
+            self._last_submitted_ball_id = None
+            self._last_arrival_time = 0.0
+            self._last_landing_position = np.zeros(3)
 
     def _on_prime_dispatched(self, msg: Bool):
         """catch/prime_dispatched: the reload coordinator dispatched its own hand
@@ -306,8 +369,10 @@ class CatchCoordinatorNode(Node):
     def _on_throw_announcement(self, msg: ThrowAnnouncement):
         """Pre-tilt on OUR announcement (while armed): publish one predicted catch
         target from the announced landing state so the platform settles into the
-        receive tilt during the ~3 s countdown. The reactive path supersedes it
-        mid-flight. Deliberately does NOT touch the per-ball correlation state
+        receive tilt during the ~3 s countdown. Under JB_OP_RELOAD_PLATFORM_OPEN_LOOP
+        (default) the platform then HOLDS this pose; with the flag off, the reactive
+        path supersedes it mid-flight. Deliberately does NOT touch the per-ball
+        correlation state
         (_last_submitted_ball_id etc.) — the synthetic target has no tracker ball,
         must never feed the feasibility blacklist, and must not suppress the real
         ball's hand-arm."""
@@ -331,23 +396,50 @@ class CatchCoordinatorNode(Node):
             landing_pos, landing_vel, landing_time)
         if cmd is None:
             return
-        # Arrive EARLY, not just-in-time: an arrival equal to the landing time
-        # makes trajectory_node span the whole announce→land window with a single
-        # min-jerk reach that completes AT contact (third sitting: tilt still >1°
-        # off until 0.24–0.49 s before landing). Aim for landing −
-        # _PRETILT_EARLY_S so the platform is seated well before the ball
-        # arrives; the max() keeps a feasible profiled traverse on a late/short
-        # announcement, and the min() guarantees arrival is never scheduled
-        # after landing.
+        # Latch the open-loop platform state: from here (this armed reload's throw is
+        # announced) the platform holds this pre-tilt pose and IGNORES the per-ball
+        # reactive refinements in _on_balls when JB_OP_RELOAD_PLATFORM_OPEN_LOOP is set.
+        # The announced landing gates the hand-arm window; the cached cmd feeds the
+        # open-loop pre-tilt refresh.
+        self._announcement_seen = True
+        self._announced_landing_time = landing_time
+        self._pretilt_cmd = cmd
         landing_perf = cmd.landing_time + self._ros_to_perf_offset
-        arrival_perf = min(landing_perf,
-                           max(landing_perf - _PRETILT_EARLY_S,
-                               time.perf_counter() + _PRETILT_MIN_LEAD_S))
+        arrival_perf = self._pretilt_arrival_perf(cmd)
         self._publish_dynamic_target(cmd, arrival_perf)
         self.get_logger().info(
             f"pre-tilt target published from announcement (landing in "
             f"{landing_time - self.get_clock().now().nanoseconds * 1e-9:.2f} s, "
             f"arrival {landing_perf - arrival_perf:.2f} s early)")
+
+    def _pretilt_arrival_perf(self, cmd) -> float:
+        """The pre-tilt target's perf-clock arrival. Arrive EARLY, not just-in-time: an
+        arrival equal to the landing time makes trajectory_node span the whole
+        announce→land window with a single min-jerk reach completing AT contact (third
+        sitting: tilt still >1° off until 0.24–0.49 s before landing). Aim for landing −
+        _PRETILT_EARLY_S so the platform is seated well before the ball arrives; the
+        max() keeps a feasible profiled traverse on a late/short announcement, and the
+        min() guarantees arrival is never scheduled after landing."""
+        landing_perf = cmd.landing_time + self._ros_to_perf_offset
+        return min(landing_perf,
+                   max(landing_perf - _PRETILT_EARLY_S,
+                       time.perf_counter() + _PRETILT_MIN_LEAD_S))
+
+    def _republish_pretilt(self):
+        """Open-loop safety net: re-assert the cached announcement pre-tilt pose (same
+        pose, recomputed arrival) each balls tick until the ball has landed, so a single
+        dropped pre-tilt still seats the cup. The pose is byte-identical each republish →
+        zero net platform motion: pre-freeze, trajectory_node replans a reach to the SAME
+        pose from the (already on-pose) live state; inside the reach-freeze window the
+        republishes are FROZENed. The pre-tilt never stamps _last_submitted_ball_id, so
+        there is no blacklist / feedback-correlation churn."""
+        cmd = self._pretilt_cmd
+        if cmd is None:
+            return
+        landing_perf = cmd.landing_time + self._ros_to_perf_offset
+        if landing_perf <= time.perf_counter():
+            return  # ball has landed — the pre-tilt is moot
+        self._publish_dynamic_target(cmd, self._pretilt_arrival_perf(cmd))
 
     def _prime_retry_tick(self):
         """Retry the hand prime while armed and not yet confirmed primed — but NEVER
@@ -383,43 +475,76 @@ class CatchCoordinatorNode(Node):
 
         # Convert ROS2 messages to Ball objects for the coordinator
         balls = [self._msg_to_ball(b) for b in msg.balls]
+        # Track the ids in flight this tick so the catch-armed rising edge can snapshot
+        # them — a leftover track from a PRIOR attempt is then excluded from this
+        # reload's candidates (see _on_catch_armed / update(exclude_ids=...)).
+        self._latest_in_flight_ids = {
+            b.id for b in balls if b.status == BallStatus.IN_FLIGHT}
 
-        # Run coordinator policy
-        cmd = self._coordinator.update(balls, current_time)
+        # Run coordinator policy (a prior-attempt leftover track is excluded)
+        cmd = self._coordinator.update(
+            balls, current_time, exclude_ids=self._preexisting_flight_ids)
         if cmd is None:
             return
 
         # A catch sequence is live: stamp the quiet window that suppresses the
-        # prime-retry timer. NO PRIME is ever dispatched from this path — a kind-3
-        # smooth-move here clears the Platform Teensy's armed catch stroke
-        # (last-writer-wins; 3/6 strokes lost to that race, 2026-07-23). Priming
-        # belongs to the catch/armed rising edge + the off-path retry timer.
+        # prime-retry timer. STAMPED UNCONDITIONALLY (even open-loop) — it guards the
+        # live kind-1 catch stroke against the 0.5 s prime-retry kind-3 on the Teensy's
+        # last-writer-wins queue. NO PRIME is ever dispatched from this path — a kind-3
+        # smooth-move here clears the Platform Teensy's armed catch stroke (3/6 strokes
+        # lost to that race, 2026-07-23). Priming belongs to the catch/armed rising
+        # edge + the off-path retry timer.
         self._last_cmd_mono = time.perf_counter()
 
-        # Convert landing_time from ROS2 clock → perf_counter clock
-        arrival_time_perf = cmd.landing_time + self._ros_to_perf_offset
-        self._publish_dynamic_target(cmd, arrival_time_perf)
+        # Open-loop platform (JB_OP_RELOAD_PLATFORM_OPEN_LOOP): once OUR throw is
+        # announced (armed reload), hold the pre-tilt pose and IGNORE this reactive
+        # per-ball refinement — a bad ball prediction must never move the platform
+        # mid-reload (2026-07-24: a corrupt track's sweep got ONE 78 mm target
+        # accepted at land−0.67 s, dragging the platform 83.7 mm in the last 0.8 s
+        # and costing the catch). Only the PLATFORM reach is frozen; the hand-arm
+        # below stays reactive (its timing is tracker-driven).
+        open_loop = (hw.JB_OP_RELOAD_PLATFORM_OPEN_LOOP
+                     and self._catch_armed and self._announcement_seen)
+        if open_loop:
+            # Re-assert the pre-tilt pose (same pose, recomputed arrival) so a dropped
+            # pre-tilt still seats the cup; the reactive re-anchor + feasibility
+            # blacklist stay dormant (never stamp _last_submitted_ball_id, so
+            # _on_target_feedback early-returns and nothing is rejected).
+            self._republish_pretilt()
+        else:
+            # Convert landing_time from ROS2 clock → perf_counter clock
+            arrival_time_perf = cmd.landing_time + self._ros_to_perf_offset
+            self._publish_dynamic_target(cmd, arrival_time_perf)
+            self._last_submitted_ball_id = cmd.ball_id
+            self._last_arrival_time = arrival_time_perf
+            self._last_landing_position = cmd.target_pos.copy()
 
-        self._last_submitted_ball_id = cmd.ball_id
-        self._last_arrival_time = arrival_time_perf
-        self._last_landing_position = cmd.target_pos.copy()
-
-        # Arm hand catch trajectory (once per ball, after first target submit) — ONLY
-        # during a reload (catch armed), so a stray tracked ball never arms the reactive
-        # catch stroke on the Teensy. The reactive-fire TIMING (event_delay / event_vel)
-        # is computed here as before; only its enablement is gated. The event velocity
-        # carries the operator's catch/vel_scale knob (re-clamped to Teensy bounds).
-        # The one-shot latch is set ONLY when the arm was actually dispatched —
-        # a service-not-ready early return must be retried next tick, not silently
-        # latched as armed (audit of the 2026-07-23 re-test).
+        # Arm hand catch trajectory (once per ball) — ONLY during a reload (catch armed),
+        # so a stray tracked ball never arms the reactive catch stroke on the Teensy. The
+        # reactive-fire TIMING (event_delay / event_vel) is computed here as before and
+        # STAYS live under open-loop (only the platform reach is frozen). An arrival-
+        # window guard rejects a corrupt track whose landing prediction is far off the
+        # announced landing (it must not arm the one-shot stroke off garbage timing and
+        # block the real ball's arm). The event velocity carries the operator's
+        # catch/vel_scale knob (re-clamped to Teensy bounds). The one-shot latch is set
+        # ONLY when the arm was actually dispatched — a service-not-ready early return
+        # must be retried next tick, not silently latched as armed (audit of the
+        # 2026-07-23 re-test).
         if (self._catch_armed and cmd.arm_hand
-                and self._hand_traj_armed_for_ball != cmd.ball_id):
+                and self._hand_traj_armed_for_ball != cmd.ball_id
+                and self._arm_landing_window_ok(cmd)):
+            # New ball → reset the per-ball re-dispatch counter (bounds the re-arm
+            # churn on the lying ERR_TIMEOUT epidemic; see _MAX_ARM_DISPATCHES).
+            if self._arm_dispatch_ball_id != cmd.ball_id:
+                self._arm_dispatch_ball_id = cmd.ball_id
+                self._arm_dispatch_count = 0
             event_delay = cmd.landing_time - current_time
             if event_delay >= _MIN_EVENT_DELAY_S:
                 event_vel = max(0.3, min(7.0,
                                          cmd.event_vel_mps * self._catch_vel_scale))
                 if self._arm_hand_catch(event_delay, event_vel):
                     self._hand_traj_armed_for_ball = cmd.ball_id
+                    self._arm_dispatch_count += 1
             elif self._min_delay_logged_for_ball != cmd.ball_id:
                 # Previously a SILENT drop: the delay only shrinks in flight, so a
                 # ball first seen < 0.3 s out never arms — say so, once per ball.
@@ -427,6 +552,15 @@ class CatchCoordinatorNode(Node):
                 self.get_logger().warning(
                     f"Ball {cmd.ball_id}: event_delay {event_delay:.2f} s below the "
                     f"{_MIN_EVENT_DELAY_S} s floor — hand catch NOT armed")
+
+    def _arm_landing_window_ok(self, cmd) -> bool:
+        """Gate the hand-arm on the ball's predicted landing being near the announced
+        landing. Before any announcement (manual/bench throw) the guard is inert. A
+        corrupt split-track whose landing prediction is far off is rejected so it cannot
+        arm the one-shot stroke off garbage timing and block the real ball's arm."""
+        if self._announced_landing_time is None:
+            return True
+        return abs(cmd.landing_time - self._announced_landing_time) <= _ARM_LANDING_WINDOW_S
 
     def _publish_dynamic_target(self, cmd, arrival_time_perf: float):
         """Pack a CatchCommand into the DynamicTargetCommand wire message (verbatim
@@ -569,18 +703,32 @@ class CatchCoordinatorNode(Node):
         return True
 
     def _on_hand_traj_done(self, future):
-        """Callback when hand trajectory arm completes."""
+        """Callback when hand trajectory arm completes.
+
+        The HAND_TRAJ_CMD ack is unreliable (~40-60% ERR_TIMEOUT per call, 2026-07-23
+        epidemic) AND lies — frames were observed transmitted after a failed ack. A
+        failed ack re-opens the one-shot latch so the next balls tick re-arms, but ONLY
+        up to _MAX_ARM_DISPATCHES per ball: the kind-1 stroke's catch instant is an
+        ABSOLUTE wall_time invariant across retries, so a lying-ack arm still physically
+        armed and further repacks just churn the Teensy's last-writer-wins queue. After
+        the cap we KEEP the latch (assume armed). The expected-epidemic failure is logged
+        at DEBUG, not WARN — a working reload was reading as 30/51 failure spam."""
         try:
             result = future.result()
             if result.success:
                 self.get_logger().info("Hand catch trajectory armed on Teensy")
             else:
-                # Clear armed flag so next update cycle retries
-                self._hand_traj_armed_for_ball = None
-                self.get_logger().warning(
-                    f"Hand catch arm failed: {result.message}")
+                # Re-open the latch for a retry only within the per-ball cap.
+                if self._arm_dispatch_count < _MAX_ARM_DISPATCHES:
+                    self._hand_traj_armed_for_ball = None
+                self.get_logger().debug(
+                    f"Hand catch arm ack failed "
+                    f"({self._arm_dispatch_count}/{_MAX_ARM_DISPATCHES}): "
+                    f"{result.message} — ack unreliable, proceeding")
         except Exception as e:
-            self._hand_traj_armed_for_ball = None
+            # A genuine service error (not the ack epidemic) — retry within the cap.
+            if self._arm_dispatch_count < _MAX_ARM_DISPATCHES:
+                self._hand_traj_armed_for_ball = None
             self.get_logger().warning(f"Hand catch arm service error: {e}")
 
     def _set_catch_gains(self):

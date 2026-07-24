@@ -166,7 +166,7 @@ def test_hand_not_actuated_when_disarmed(monkeypatch):
     monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
     monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: armed.append((d, v)))
     monkeypatch.setattr(node._coordinator, 'update',
-                        lambda balls, current_time: _catchable_cmd())
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
     node._on_balls(_balls_msg())
     assert primed == [] and armed == []      # latch down → hand untouched
 
@@ -185,7 +185,7 @@ def test_hand_actuated_when_armed(monkeypatch):
     monkeypatch.setattr(node, '_arm_hand_catch',
                         lambda d, v: armed.append((d, v)) or True)
     monkeypatch.setattr(node._coordinator, 'update',
-                        lambda balls, current_time: _catchable_cmd())
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
     node._on_balls(_balls_msg())
     assert primed == []                        # NO prime from the balls path
     assert len(armed) == 1
@@ -246,7 +246,7 @@ def test_vel_scale_scales_armed_event_velocity(monkeypatch):
     monkeypatch.setattr(node, '_arm_hand_catch',
                         lambda d, v: armed.append(v) or True)
     monkeypatch.setattr(node._coordinator, 'update',
-                        lambda balls, current_time: _catchable_cmd())
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
     node._on_balls(_balls_msg())
     assert armed == [pytest.approx(0.6)]       # 1.2 × 0.5
 
@@ -283,7 +283,7 @@ def test_scaled_event_vel_reclamped_to_teensy_bounds(monkeypatch):
     cmd = _catchable_cmd()
     cmd.event_vel_mps = 6.0                    # 6.0 × 1.5 = 9.0 → clamp 7.0
     monkeypatch.setattr(node._coordinator, 'update',
-                        lambda balls, current_time: cmd)
+                        lambda balls, current_time, exclude_ids=None: cmd)
     node._on_balls(_balls_msg())
     assert armed == [pytest.approx(7.0)]
 
@@ -374,7 +374,7 @@ def test_arm_one_shot_latched_only_on_dispatch(monkeypatch):
     node._on_catch_armed(Bool(data=True))
     monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: False)  # not dispatched
     monkeypatch.setattr(node._coordinator, 'update',
-                        lambda balls, current_time: _catchable_cmd())
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
     node._on_balls(_balls_msg())
     assert node._hand_traj_armed_for_ball is None              # NOT latched
     monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: True)   # dispatched
@@ -496,3 +496,200 @@ def test_prime_hand_stamps_dispatch_window():
     assert node._prime_dispatch_mono == 0.0
     node._prime_hand()
     assert (time.perf_counter() - node._prime_dispatch_mono) < 0.5
+
+
+# ── open-loop reload platform (JB_OP_RELOAD_PLATFORM_OPEN_LOOP) ────────────────
+# Once OUR throw is announced during an armed reload, the platform holds the
+# announcement pre-tilt pose and IGNORES live per-ball reactive refinements — a bad
+# ball prediction must never move the platform mid-reload (2026-07-24: a corrupt
+# track's sweep got ONE 78 mm target accepted at land−0.67 s, dragging the platform
+# 83.7 mm in the last 0.8 s and costing the catch). Only the PLATFORM reach is
+# frozen; the hand-arm stays reactive.
+
+
+class _RecLogger:
+    """A logger that records (level, message) so a test can assert log level/count."""
+    def __init__(self):
+        self.records = []
+
+    def info(self, msg, **kw): self.records.append(('info', msg))
+    def warning(self, msg, **kw): self.records.append(('warning', msg))
+    def warn(self, msg, **kw): self.records.append(('warning', msg))
+    def error(self, msg, **kw): self.records.append(('error', msg))
+    def debug(self, msg, **kw): self.records.append(('debug', msg))
+    def fatal(self, msg, **kw): self.records.append(('fatal', msg))
+
+
+def test_open_loop_holds_pretilt_ignores_reactive_platform(monkeypatch):
+    """Armed + OUR announcement seen + open-loop: a reactive per-ball cmd must NOT move
+    the platform. The hand-arm still fires (reactive timing preserved), _last_cmd_mono is
+    stamped (guards the kind-1 stroke on the Teensy queue), the per-ball correlation
+    stays dormant (nothing feeds the blacklist), and the only platform target published
+    is the PRE-TILT pose (stow-relative z ~170), NOT the reactive cmd's pose (z 809)."""
+    assert hw.JB_OP_RELOAD_PLATFORM_OPEN_LOOP is True
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_announcement())          # sets announcement_seen + pre-tilt
+    assert node._announcement_seen is True
+    n0 = len(node._dyn_target_pub.published)
+    armed = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append((d, v)) or True)
+    cmd = _catchable_cmd()
+    cmd.landing_time = 100.0                               # within the arm window (announced t=100)
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: cmd)
+    node._on_balls(_balls_msg())
+    assert len(armed) == 1                                 # hand-arm reactive timing preserved
+    assert time.perf_counter() - node._last_cmd_mono < 1.0  # quiet window stamped
+    assert node._last_submitted_ball_id is None            # reactive correlation dormant
+    # The only platform target on this tick is the pre-tilt refresh, not the reactive pose.
+    assert len(node._dyn_target_pub.published) == n0 + 1
+    assert 150.0 < node._dyn_target_pub.published[-1].target_pos.z < 200.0
+
+
+def test_reactive_platform_published_without_announcement(monkeypatch):
+    """Armed but NO announcement yet (or a manual/bench throw): the reactive platform
+    path stays live — open-loop only engages after OUR throw is announced."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    assert node._announcement_seen is False
+    n0 = len(node._dyn_target_pub.published)
+    monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: True)
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
+    node._on_balls(_balls_msg())
+    assert len(node._dyn_target_pub.published) == n0 + 1
+    assert node._dyn_target_pub.published[-1].target_pos.z == pytest.approx(809.08)
+    assert node._last_submitted_ball_id == 5               # reactive correlation stamped
+
+
+def test_disarm_resets_open_loop_state():
+    """Disarm clears the open-loop latch so a stale announcement never freezes the
+    platform before the NEXT reload's throw is announced."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_announcement())
+    assert node._announcement_seen is True
+    assert node._announced_landing_time is not None
+    assert node._pretilt_cmd is not None
+    node._on_catch_armed(Bool(data=False))
+    assert node._announcement_seen is False
+    assert node._announced_landing_time is None
+    assert node._pretilt_cmd is None
+
+
+# ── stale-track hand-arm guard (fix 2) ────────────────────────────────────────
+
+def test_arm_window_rejects_ball_far_off_announced_landing(monkeypatch):
+    """Once OUR throw is announced, a corrupt track whose predicted landing is far off
+    the announced landing must NOT arm the one-shot hand stroke (arming off garbage
+    timing would block the real ball's arm). A ball within the window still arms."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_announcement())          # announced landing ros t=100
+    armed = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append((d, v)) or True)
+    far = _catchable_cmd()
+    far.landing_time = 100.0 + 5.0                         # 5 s off the announced landing
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: far)
+    node._on_balls(_balls_msg())
+    assert armed == []                                     # far-off landing → not armed
+    near = _catchable_cmd()
+    near.landing_time = 100.0 + 0.3                        # within 0.75 s
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: near)
+    node._on_balls(_balls_msg())
+    assert len(armed) == 1
+
+
+def test_arm_window_inert_before_announcement(monkeypatch):
+    """With no announcement seen (manual/bench throw), the arm-window guard is inert —
+    a catchable ball arms as before."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    assert node._announced_landing_time is None
+    armed = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append((d, v)) or True)
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
+    node._on_balls(_balls_msg())
+    assert len(armed) == 1
+
+
+def test_arm_edge_snapshots_preexisting_flight_ids():
+    """The catch-armed rising edge snapshots the ids currently in flight (excluded from
+    this reload's catch candidates); disarm clears the snapshot."""
+    node = CatchCoordinatorNode()
+    node._latest_in_flight_ids = {14, 15}                  # leftovers from a prior attempt
+    node._on_catch_armed(Bool(data=True))
+    assert node._preexisting_flight_ids == {14, 15}
+    node._on_catch_armed(Bool(data=False))
+    assert node._preexisting_flight_ids == set()
+
+
+def test_preexisting_ids_passed_to_update(monkeypatch):
+    """_on_balls passes the arm-edge snapshot to update(exclude_ids=...) so a
+    prior-attempt leftover track can never be selected as the catch candidate."""
+    node = CatchCoordinatorNode()
+    node._latest_in_flight_ids = {14}
+    node._on_catch_armed(Bool(data=True))                  # snapshot {14}
+    captured = {}
+
+    def _cap(balls, current_time, exclude_ids=None):
+        captured['exclude'] = set(exclude_ids) if exclude_ids else set()
+        return None
+
+    monkeypatch.setattr(node._coordinator, 'update', _cap)
+    node._on_balls(_balls_msg())
+    assert captured['exclude'] == {14}
+
+
+# ── hand-arm re-dispatch cap + WARN hygiene (fix 5) ───────────────────────────
+
+class _FailAck:
+    """A completed hand-traj future whose ack failed (the ERR_TIMEOUT epidemic)."""
+    def result(self):
+        return types.SimpleNamespace(success=False, message='ERR_TIMEOUT')
+
+
+def test_arm_redispatch_capped(monkeypatch):
+    """A failed (lying) ack re-opens the one-shot latch for a retry — but only up to
+    _MAX_ARM_DISPATCHES per ball; after the cap the latch STAYS set (assume the lying
+    ack armed) rather than churning the Teensy's last-writer-wins queue with
+    near-identical repacks forever."""
+    from jugglebot.catch_coordinator_node import _MAX_ARM_DISPATCHES
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    dispatched = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: dispatched.append(1) or True)
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
+    fail = _FailAck()
+    node._on_balls(_balls_msg())                           # dispatch 1
+    assert node._hand_traj_armed_for_ball == 5 and node._arm_dispatch_count == 1
+    node._on_hand_traj_done(fail)
+    assert node._hand_traj_armed_for_ball is None          # re-opened (1 < cap)
+    node._on_balls(_balls_msg())                           # dispatch 2
+    assert node._hand_traj_armed_for_ball == 5 and node._arm_dispatch_count == 2
+    node._on_hand_traj_done(fail)
+    assert node._hand_traj_armed_for_ball == 5             # KEPT — capped, assume armed
+    node._on_balls(_balls_msg())                           # no dispatch 3
+    assert len(dispatched) == _MAX_ARM_DISPATCHES
+
+
+def test_arm_failed_ack_logged_at_debug():
+    """The expected-epidemic failed ack is DEBUG, not WARN — a working reload was reading
+    as 30/51 arm-failure spam."""
+    node = CatchCoordinatorNode()
+    node._on_catch_armed(Bool(data=True))
+    node._arm_dispatch_count = 1                            # within the cap
+    rec = _RecLogger()
+    node._logger = rec
+    node._on_hand_traj_done(_FailAck())
+    assert any(lvl == 'debug' for lvl, _ in rec.records)
+    assert not any(lvl == 'warning' for lvl, _ in rec.records)

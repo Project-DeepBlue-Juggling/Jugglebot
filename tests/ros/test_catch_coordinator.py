@@ -75,6 +75,37 @@ def test_steep_arrival_produces_catch_command():
     assert _tilt_magnitude_deg(cmd.target_quat) == pytest.approx(MAX_TILT_DEG, abs=0.05)
 
 
+def _in_flight_ball(ball_id, landing_x=0.0):
+    from jugglebot.tracking.ball import Ball, BallStatus, TrackingConfidence
+    return Ball(
+        id=ball_id, status=BallStatus.IN_FLIGHT, tracking=TrackingConfidence.CONFIRMED,
+        source="ball_butler", destination="jugglebot",
+        position=np.array([landing_x, 0.0, 900.0]), velocity=np.array([0.0, 0.0, -2000.0]),
+        landing_position=np.array([landing_x, 0.0, 734.3]),
+        landing_velocity=_arrival_velocity(8.0), landing_time=10.0)
+
+
+def test_update_excludes_ids():
+    """exclude_ids drops a leftover prior-attempt track from the candidate set (the
+    node passes the ids in flight at the catch-armed edge) — the non-excluded ball is
+    selected."""
+    coord = CatchCoordinator(initial_height_mm=574.3)
+    stale = _in_flight_ball(14, landing_x=10.0)
+    real = _in_flight_ball(13, landing_x=20.0)
+    cmd = coord.update([stale, real], current_time=5.0, exclude_ids={14})
+    assert cmd is not None
+    assert cmd.ball_id == 13
+
+
+def test_update_excluding_all_returns_none():
+    """Excluding every in-flight ball yields no catch command."""
+    coord = CatchCoordinator(initial_height_mm=574.3)
+    ball = _in_flight_ball(14)
+    assert coord.update([ball], current_time=5.0, exclude_ids={14}) is None
+    # Sanity: without the exclusion the same ball IS a candidate.
+    assert coord.update([ball], current_time=5.0) is not None
+
+
 def test_predicted_catch_command_matches_reactive_pose_math():
     """The announcement pre-tilt reuses the SAME pose math as the reactive per-ball
     path (single-sourced through _compute_catch_command): same stow-relative z, same

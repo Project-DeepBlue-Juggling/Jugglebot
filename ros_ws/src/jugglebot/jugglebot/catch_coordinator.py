@@ -129,12 +129,21 @@ class CatchCoordinator:
         self,
         balls: List[Ball],
         current_time: float,
+        exclude_ids: Optional[set] = None,
     ) -> Optional[CatchCommand]:
         """Process current ball states and return a catch command (or None).
 
         Args:
             balls: All active balls from the tracker.
             current_time: Current ROS2 time in seconds.
+            exclude_ids: Ball ids never eligible as a catch candidate — the node
+                passes the ids already IN_FLIGHT at the catch-armed rising edge so a
+                leftover track from a PRIOR attempt cannot drive this reload. Note:
+                this snapshots at the arm edge and so CANNOT exclude the current
+                ball's OWN corrupt split-track (it spawns during the countdown, after
+                the snapshot) — the node's arrival-window arm-guard is the real
+                protection for that class; this is defense-in-depth for prior-attempt
+                leftovers.
 
         Returns:
             CatchCommand for the best catchable ball, or None if nothing to catch.
@@ -152,6 +161,8 @@ class CatchCoordinator:
             if ball.status != BallStatus.IN_FLIGHT:
                 continue
             if ball.destination != self.robot_name:
+                continue
+            if exclude_ids and ball.id in exclude_ids:
                 continue
             if self._is_blacklisted(ball):
                 continue
@@ -219,7 +230,9 @@ class CatchCoordinator:
         reach was only ~95 % settled at contact). The receive-tilt DIRECTION is the
         BB→target azimuth, which is flight-invariant, and the magnitude saturates at
         the 12° clamp for real BB arrivals — which is why pre-tilting to the
-        predicted arrival is safe; mid-flight refinements supersede via C2 replans.
+        predicted arrival is safe. With JB_OP_RELOAD_PLATFORM_OPEN_LOOP off,
+        mid-flight refinements supersede via C2 replans; under the default
+        open-loop the node holds this pose for the whole flight.
 
         ``arm_hand`` is forced False: the hand arm must stay flight-gated (the
         Teensy fire is one-shot on the FIRST event time it receives — arming at
