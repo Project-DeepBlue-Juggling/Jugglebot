@@ -509,7 +509,7 @@ passes; results recorded in the logbook with seeds and configs):
 | 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | SIM GATE CORE PASS (vel-match criterion deferred — see Phase 6/7) |
 | 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | CODE COMPLETE (hardware deferred) |
-| 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | NOT STARTED (stretch) |
+| 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | PLANNED — expanded in `plans/active/single-ball-toss.md` (2026-07-24) |
 | 9 | *(extra stretch)* Two-ball juggling | Two-ball gate | staged | NOT STARTED (stretch) |
 
 ## Build-run status (2026-07-08)
@@ -1171,6 +1171,15 @@ platform stays level and static for the MVP); a self-`ThrowAnnouncement`
 (`thrower_name='jugglebot'`) so the existing correlation → catch path closes the
 loop. Hardware: single toss-and-catch, then N-loop. Starts only after Phase 7
 exits.
+
+**Expanded (2026-07-24):** this sketch is superseded in detail by
+`plans/active/single-ball-toss.md` — the level-platform throw above is retained
+as Tier 8a (toss-at-position: the platform translates to the nominated catch
+(x, y) before a vertical throw), and a Tier 8b (tilt-aimed displaced
+throw→catch, re-hosting the merged `demo/bb-led-two-ball-juggle` Rung-2a/2b
+primitives on the production trajectory stack) is added behind a `Toss.action`
+whose goal is the nominated catch state ⟨position, flight time⟩. Sim-gate and
+hardware staging live in that plan.
 
 ### Phase 9 *(extra stretch)* — Two-ball juggling
 
