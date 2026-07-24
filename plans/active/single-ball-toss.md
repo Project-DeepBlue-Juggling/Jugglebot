@@ -217,7 +217,13 @@ sweep report to `temp/reports/`. Gate pass recorded with the
 Mocked-ROS unit tests are blind to cross-process choreography (the Phase-7
 audit found five BLOCKING ordering bugs exactly there). Before hardware: a
 recorded real-ordering trace of Reload → Toss on the live launch (bench, no
-ball or foam ball), reviewed against the sequencer's assumed ordering.
+ball — a dry trace: the harness raises a trace-only waiver for the
+ball-evidence precondition so the full post-CHECKING choreography emits and
+is observed without physical outcomes; an unpowered bench cannot show
+hand-telemetry ball evidence, which is why a seated real ball is not the
+mechanism, and every powered-session runbook leaves the waiver unset; the
+un-waived `REJECTED_NO_BALL` refusal path is captured as its own short
+trace), reviewed against the sequencer's assumed ordering.
 
 ### Phase 4 — Tier 8b (tilt-aimed displaced throw)
 - Port `tilt_to_throw` into `motion/trajectory/tilt_geometry.py` (pure Python;
@@ -231,10 +237,13 @@ ball or foam ball), reviewed against the sequencer's assumed ordering.
   asymmetry map. Commit; logbook entry.
 
 ### Phase 5 — Hardware bring-up (operator-run, staged)
-- **T0 — bench hand-throw characterisation (no catch).** Foam/net landing zone.
-  Measures: commanded `event_vel` vs. achieved release speed (mocap), release
-  scatter (feeds the gate noise model), release-position repeatability. This is
-  the empirical-probe-before-thresholds discipline applied to the throw.
+- **T0 — bench hand-throw characterisation (no catch).** Standard session
+  balls; `event_vel` ladder starting at the minimum useful throw speed; no
+  catch is attempted, so every ball ends on the floor — the routine
+  missed-reload outcome, cleared between throws. Measures: commanded
+  `event_vel` vs. achieved release speed (mocap), release scatter (feeds the
+  gate noise model), release-position repeatability. This is the
+  empirical-probe-before-thresholds discipline applied to the throw.
 - **T1 — single vertical toss-and-catch**, low height (flight ≈0.6 s), centre
   workspace. PASS: ≥3/5 caught.
 - **T2 — height ladder** at centre: flight 0.6 → 0.9 → 1.1 s. PASS per step: ≥3/5.
