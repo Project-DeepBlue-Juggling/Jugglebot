@@ -8,7 +8,7 @@ related_plan: single-ball-toss.md
 subsystem: ros
 tags: [feature, control, testing]
 commits:
-  - PENDING
+  - 5447f03
 files_changed:
   - ros_ws/src/jugglebot_interfaces/action/Toss.action
   - ros_ws/src/jugglebot_interfaces/CMakeLists.txt
