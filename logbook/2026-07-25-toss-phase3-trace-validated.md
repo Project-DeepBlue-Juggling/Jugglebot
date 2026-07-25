@@ -8,7 +8,7 @@ related_plan: single-ball-toss.md
 subsystem: tools
 tags: [testing, tracking]
 commits:
-  - PENDING
+  - b927ef1
 files_changed:
   - tests/hardware/toss_trace_recorder.py
   - tests/hardware/session_phase8_toss_trace.md
