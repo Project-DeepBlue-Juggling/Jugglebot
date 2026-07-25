@@ -8,7 +8,7 @@ related_plan: single-ball-toss.md
 subsystem: ros
 tags: [kinematics, testing]
 commits:
-  - PENDING
+  - c3beaa2
 files_changed:
   - ros_ws/src/jugglebot_interfaces/action/Toss.action
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/toss_release.py
