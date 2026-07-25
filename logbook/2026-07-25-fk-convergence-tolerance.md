@@ -16,7 +16,7 @@ files_changed:
   - plans/active/fk-convergence-tolerance.md
   - tests/hardware/session_anomaly_fixes.md
 commits:
-  - PENDING_SHA
+  - 3415617
 subsystem:
   - motion
   - controller

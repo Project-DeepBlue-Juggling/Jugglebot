@@ -95,7 +95,7 @@ to `tools/probes/` with a README entry.
 **Gate:** the distribution is written down and the recommended criterion is
 justified by it, not asserted.
 
-**Outcome (2026-07-25, commit `PENDING_SHA`).** Gate met. The distribution is written
+**Outcome (2026-07-25, commit `3415617`).** Gate met. The distribution is written
 down in three places a reader would actually consult — the *FK CONVERGENCE
 CRITERION* block in `motion/ik_solver.py`, the `### Convergence criterion`
 section of `docs/motion_planner/kinematics.md`, and the module docstring of
@@ -167,7 +167,7 @@ observed-failure fixtures.
 **Deployment:** `ros_ws` change ⇒ `colcon build --packages-select jugglebot` +
 relaunch.
 
-**Outcome (2026-07-25, commit `PENDING_SHA`).** Gate met. `pytest tests/ -q`, run 2026-07-25 on the Jetson (project venv): **3429 passed, 3 xfailed in 1340.73 s (0:22:20)**, exit 0. Baseline at HEAD `2d0b7b9` with a clean tree: 3399 passed, 3 xfailed in 1371.04 s. Net **+30 passed**, fully accounted for: 29 new cases in `tests/motion/test_fk_convergence.py` plus 1 in `tests/sim/test_hardware_plant_failure_paths.py`. The **xfail count is unchanged at 3** — no test was weakened, skipped or xfailed to reach green, and `git diff --stat -- tests/` shows one modified test file (an addition only) and one new file. Neither known-flaky allocation-budget test failed in this run, so no isolated re-run was needed.
+**Outcome (2026-07-25, commit `3415617`).** Gate met. `pytest tests/ -q`, run 2026-07-25 on the Jetson (project venv): **3429 passed, 3 xfailed in 1340.73 s (0:22:20)**, exit 0. Baseline at HEAD `2d0b7b9` with a clean tree: 3399 passed, 3 xfailed in 1371.04 s. Net **+30 passed**, fully accounted for: 29 new cases in `tests/motion/test_fk_convergence.py` plus 1 in `tests/sim/test_hardware_plant_failure_paths.py`. The **xfail count is unchanged at 3** — no test was weakened, skipped or xfailed to reach green, and `git diff --stat -- tests/` shows one modified test file (an addition only) and one new file. Neither known-flaky allocation-budget test failed in this run, so no isolated re-run was needed.
 
 The bare absolute tolerance was replaced with a three-part criterion enforced in
 exactly one predicate (`_fk_accepted`): the mixed absolute/relative test
