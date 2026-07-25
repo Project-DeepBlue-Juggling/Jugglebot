@@ -8,7 +8,7 @@ related_plan: "levelling-frame-contract.md"
 files_changed:
   - plans/active/levelling-frame-contract.md
 commits:
-  - PENDING
+  - d67c3cd
 subsystem:
   - motion
   - ros

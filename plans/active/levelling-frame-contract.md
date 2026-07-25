@@ -237,7 +237,7 @@ turns up a sixth external path nobody expected, that is the phase working.
 
 ### Phase 0 — Outcome
 
-**Status: LANDED 2026-07-25 — commits `PENDING_SHA`; logbook
+**Status: LANDED 2026-07-25 — commit `d67c3cd`; logbook
 `logbook/2026-07-25-levelling-frame-enumeration.md`. AWAITING OPERATOR REVIEW,
 which hard-gates Phase 1.** No production code and no tests changed — this phase's
 deliverable is the enumeration below, plus the edits it forced in § Context,
