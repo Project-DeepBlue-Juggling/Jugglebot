@@ -124,13 +124,20 @@ precondition wire is healthy before the waiver ever goes up —
 code proves mode/streaming/mocap/hand-fresh/hand-parked all PASSED (checker
 RJ-1). Zero motion.
 
+> **⚠️ Superseded default (2026-07-25, single-ball-toss Phase 5 change B):** the
+> ball-evidence gate now defaults OFF (`toss_require_ball_evidence: false` — the
+> operator guarantees the ball; there is no ball-in-cup sensor), so an un-waived
+> toss no longer `REJECTED_NO_BALL` by default. This historical Capture R needs
+> the gate ENABLED: set `toss_require_ball_evidence: true` (config → colcon build
+> → relaunch) for this capture only. Phase 3 is CLOSED; this note is for re-runs.
+
 ```bash
 ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
-  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, flight_time_s: 0.8}" --feedback
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
 ```
 
-(`flight_time_s` 0.8 = the production default, mid-band — the trace is about
-ordering, not ballistics, and 0.8 stays away from the hardware-marginal
+(`throw_height_m` 0.78 ≈ the 0.8 s production default, mid-band — the trace is
+about ordering, not ballistics, and 0.78 m stays away from the hardware-marginal
 < 0.7 s flight band flagged for T0. `throw_delay_s` omitted ⇒ default 5.0 s;
 `catch_vel_scale` omitted ⇒ default 0.8 — both trace the production values.)
 
@@ -164,7 +171,7 @@ file keeps the review clean. Restart it for capture D.
 
    ```bash
    ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
-     "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, flight_time_s: 0.8}" --feedback
+     "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
    ```
 
 3. Watch: feedback `POSITIONING → PREPARING → THROWING` (~5 s countdown from

@@ -546,6 +546,21 @@ jugglebot_operational:
                                          # reach-envelope headroom on both sides of the A→B segment, and
                                          # makes displacement = |B_xy|. Tier 8a ignores it (throw site ==
                                          # catch site by definition).
+  toss_require_ball_evidence: false      # Whether Toss CHECKING enforces a ball-in-cup precondition
+                                         # (REJECTED_NO_BALL). DEFAULT false: there is NO ball-in-cup
+                                         # sensor — "possession" is only a tracker-derived belief (a
+                                         # plausible CAUGHT), and tracker verdicts are unreliable (the
+                                         # false-MISSED corruption of the Phase-7 reload arc), so a
+                                         # physically-loaded ball can fail to register and spuriously
+                                         # block a legitimate throw. The operator guarantees a ball is in
+                                         # the hand before commanding a toss (single-ball-toss Phase 5), so
+                                         # the software belief must not be able to reject; the hand-parked
+                                         # CHECKING gate (reliably known from hand telemetry) still stands,
+                                         # and a forgotten ball just fires an empty stroke (benign — a
+                                         # missed-reload no-op). Set true only if a real ball-held sensor is
+                                         # ever wired into possession. NOTE: with false, the Phase-3
+                                         # dry-trace Capture R (un-waived REJECTED_NO_BALL) no longer
+                                         # rejects — enable this for that historical capture only.
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}

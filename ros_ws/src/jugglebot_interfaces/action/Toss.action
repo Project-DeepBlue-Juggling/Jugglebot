@@ -25,9 +25,11 @@
 geometry_msgs/Point catch_position   # nominated catch point, mm, STOW-relative
                                      # platform frame (same convention as
                                      # TimedTarget.pose; z 170 = ACTIVE plane)
-float64 flight_time_s                # ballistic flight time; sets throw height
-                                     # (apex = g·T²/8 above release for the
-                                     # vertical toss); 0 => config default
+float64 throw_height_m               # apex height of the ball above the release
+                                     # plane (m) — the juggling-relevant variable.
+                                     # Converted internally to flight time
+                                     # T = sqrt(8·h/g) (h ∝ T², NOT linear);
+                                     # 0 => config default (~0.78 m apex).
 float64 throw_delay_s                # delay from goal-accept to release; 0 => default
 float64 catch_vel_scale              # 0 => config default; same semantics and
                                      # clamp [0.3, 1.5] as Reload.action

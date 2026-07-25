@@ -156,6 +156,7 @@ namespace JBOp {
   constexpr float TOSS_RELEASE_LATENCY_MS = 0.0f;
   constexpr float TOSS_FLIGHT_TIME_DEFAULT_S = 0.8f;
   constexpr float TOSS_THROW_SITE_MM[2] = {0.0f, 0.0f};
+  constexpr bool TOSS_REQUIRE_BALL_EVIDENCE = false;
   constexpr float TARGET_REACHED_POS_TOL_REV = 0.01f;
   constexpr float TARGET_REACHED_VEL_TOL_RPS = 0.1f;
   constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = 2.5f;

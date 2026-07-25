@@ -87,9 +87,10 @@ per-goal override) selects capability. Tier 8b is rejected loudly
 geometry_msgs/Point catch_position   # nominated catch point, mm, STOW-relative
                                      # platform frame (same convention as
                                      # TimedTarget.pose; z 170 = ACTIVE plane)
-float64 flight_time_s                # ballistic flight time; sets throw height
-                                     # (apex = g·T²/8 above release for the
-                                     # vertical toss); 0 => config default
+float64 throw_height_m               # apex height above release (m) — the
+                                     # juggling-relevant variable; converted to
+                                     # flight T = sqrt(8·h/g) (h ∝ T²); 0 =>
+                                     # config default (~0.78 m)
 float64 throw_delay_s                # delay from goal-accept to release; 0 => default
 float64 catch_vel_scale              # 0 => config default; same semantics and
                                      # clamp [0.3, 1.5] as Reload.action
@@ -116,8 +117,11 @@ worked example.
 ### Choreography (mirrors Reload; throw side is new)
 
 1. **CHECKING** — preconditions: ACTIVE + TRAJECTORY streaming a hold, mocap
-   fresh, **ball seated** (hand at catch-rest with ball evidence; a toss with an
-   empty cup is `REJECTED_NO_BALL`), no reload/toss already active.
+   fresh, hand at catch-rest (**hand-parked** — a physical-hazard gate, reliably
+   from hand telemetry), no reload/toss already active. Ball possession is **NOT
+   gated by default** (`toss_require_ball_evidence: false` — no ball-in-cup
+   sensor; the operator guarantees the ball); `REJECTED_NO_BALL` fires only when
+   that config gate is enabled.
 2. **POSITIONING** — profiled `go_to_pose` to the nominated catch (x, y) at the
    toss-ready z (Tier 8a: throw site = catch site; Tier 8b: throw site A).
 3. **PREPARING** — compute the release state (release position from
@@ -180,7 +184,7 @@ zero feasibility violations, all knots pump-accepted.
 | 2 | `sim/toss_gate.py` + Tier-8a sweep | Self-toss gate ≥9/10 | COMPLETE (2026-07-25 — PASS both binding bands, 262/290 core_clean overall; long-flight advisory tail fails under the placeholder noise, re-run after T0) |
 | 3 | Real-ordering trace (multi-node choreography) | trace review | **VALIDATED (2026-07-25)** — reject + dry captures run; ordering all-green; 3 pollution/pre-position invariants corrected as a contract fix; `check --dry` on `toss_trace_2026-07-25_15-24-25` = 12 PASS / 0 FAIL |
 | 4 | Tier 8b — tilt-aimed displaced throw on the production stack | gate sweep extension | COMPLETE (2026-07-25 — 8b binding ring PASS 9/9; asymmetry map landed; ships behind `JB_OP_TOSS_TIER='8a'`) |
-| 5 | Hardware bring-up T0–T4 (operator-run) | staged PASS criteria | NOT STARTED |
+| 5 | Hardware bring-up T0–T4 (operator-run) | staged PASS criteria | RUNBOOK READY (`tests/hardware/session_phase8_toss_hardware.md`, 2026-07-25); operator captures pending |
 
 ## Implementation Phases
 
@@ -295,6 +299,16 @@ center to B is a safety-critical `trajectory_node` change not taken this run;
 reaches `catch_coordinator` before the announcement, before T4.
 
 ### Phase 5 — Hardware bring-up (operator-run, staged)
+
+Operator runbook: `tests/hardware/session_phase8_toss_hardware.md` (exact
+commands, per-rung PASS/ABORT, preflight). The `Toss.action` goal now nominates
+a **throw height** (`throw_height_m`) not a flight time, and the ball-evidence
+gate is OFF by default (the operator guarantees a loaded ball — no waiver) —
+see `logbook/2026-07-25-toss-action-height-and-operator-guaranteed-ball.md`. The
+runbook operationalises T0 via the Toss action (measure the outgoing release from
+QTM; the catch is not scored) rather than a separate throw-only command. The
+rungs below are the specification; the runbook is the authority.
+
 - **T0 — bench hand-throw characterisation (no catch).** Standard session
   balls; `event_vel` ladder starting at the minimum useful throw speed; no
   catch is attempted, so every ball ends on the floor — the routine

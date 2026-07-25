@@ -88,11 +88,11 @@ class _Ball:
 
 
 class _TossGoalHandle:
-    def __init__(self, x=0.0, y=0.0, z=170.0, flight=0.0, delay=0.0,
+    def __init__(self, x=0.0, y=0.0, z=170.0, throw_height=0.0, delay=0.0,
                  vel_scale=0.0):
         self.request = types.SimpleNamespace(
             catch_position=types.SimpleNamespace(x=x, y=y, z=z),
-            flight_time_s=flight, throw_delay_s=delay,
+            throw_height_m=throw_height, throw_delay_s=delay,
             catch_vel_scale=vel_scale)
         self.is_cancel_requested = False
         self.feedbacks = []
@@ -261,13 +261,14 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     elif breakage == 'hand_not_parked':
         node._hand_pos_meas = 5.0            # mid-stroke, outside the bottom band
     elif breakage == 'no_ball':
+        monkeypatch.setattr(hw, 'JB_OP_TOSS_REQUIRE_BALL_EVIDENCE', True)
         node._ball_possession = False
     elif breakage == 'track_active':
         node._balls = [_Ball(status=1, destination='jugglebot', id=9)]
     elif breakage == 'delay_floor':
         gh = _TossGoalHandle(delay=2.0)
     elif breakage == 'flight_band':
-        gh = _TossGoalHandle(flight=0.4)
+        gh = _TossGoalHandle(throw_height=0.2)   # →0.404 s, below the flight band
     elif breakage == 'workspace':
         gh = _TossGoalHandle(x=200.0)
     result = node._execute_toss(gh)
@@ -279,12 +280,12 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
 
 
 @pytest.mark.parametrize('kwargs,field', [
-    (dict(flight=float('nan')), 'flight_time_s'),
+    (dict(throw_height=float('nan')), 'throw_height_m'),
     (dict(delay=float('nan')), 'throw_delay_s'),
     (dict(vel_scale=float('nan')), 'catch_vel_scale'),
     (dict(x=float('nan')), 'catch_position.x'),
     (dict(z=float('inf')), 'catch_position.z'),
-    (dict(flight=-0.8), 'flight_time_s'),
+    (dict(throw_height=-0.8), 'throw_height_m'),
     (dict(delay=-5.0), 'throw_delay_s'),
     (dict(vel_scale=-0.8), 'catch_vel_scale'),
 ])
@@ -412,6 +413,7 @@ def test_waiver_waives_possession_only(monkeypatch):
     positioning reject we script) — but hand freshness and the parked band stay
     HARD, because they gate a physical dispatch hazard the bench can still
     exhibit."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_REQUIRE_BALL_EVIDENCE', True)
     now = time.perf_counter()
     node = _toss_ready_node(now)
     node._params[_TOSS_WAIVER_PARAM] = True
@@ -437,6 +439,26 @@ def test_waiver_waives_possession_only(monkeypatch):
     node3._hand_pos_meas = 5.0
     assert (node3._execute_toss(_TossGoalHandle()).outcome
             == 'REJECTED_HAND_NOT_PARKED')
+
+
+def test_no_ball_does_not_reject_by_default(monkeypatch):
+    """Change B (single-ball-toss Phase 5): with the SHIPPED default
+    toss_require_ball_evidence=false, an empty-cup toss does NOT
+    REJECTED_NO_BALL — there is no ball-in-cup sensor, "possession" is only an
+    unreliable tracker belief, and the operator guarantees the ball, so the
+    software belief must not block a legitimate throw. The goal proceeds past
+    CHECKING to a scripted positioning reject (hand-parked stays hard — the
+    waiver test covers that the physical-hazard gates are untouched)."""
+    assert bool(hw.JB_OP_TOSS_REQUIRE_BALL_EVIDENCE) is False   # shipped default
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    node._ball_possession = False                # empty cup, no waiver
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda seq: seq.note_position_result(
+            time.perf_counter(), False, 0.0, 'WORKSPACE'))
+    result = node._execute_toss(_TossGoalHandle())
+    assert result.outcome == 'REJECTED_POSITION(WORKSPACE)'     # got PAST NO_BALL
 
 
 # ── Possession latch (D4a — no ball-in-cup sensor exists) ──────────────────────
@@ -498,11 +520,12 @@ def test_possession_survives_safe_abort(monkeypatch):
     assert node._ball_possession is True
 
 
-def test_possession_cleared_on_release_evidence():
+def test_possession_cleared_on_release_evidence(monkeypatch):
     """OUR release evidence (the throw-stroke telemetry signature after the
     dispatch) clears possession — the ball left the cup. A missed toss stays
     cleared (next toss is honestly REJECTED_NO_BALL); a caught one re-latches
     via the CAUGHT path (chainable Toss → Toss)."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_REQUIRE_BALL_EVIDENCE', True)
     now = 100.0
     node = _toss_ready_node(now)
     _install_toss_goal(node)
@@ -542,11 +565,12 @@ def test_preexisting_confirmed_track_does_not_poison_goal(monkeypatch):
         assert node._toss_track_confirmed is False    # no false release evidence
 
 
-def test_track_confirmed_not_latched_before_dispatch():
+def test_track_confirmed_not_latched_before_dispatch(monkeypatch):
     """FIX-2b: the tracker-CONFIRMED release-evidence latch is gated on OUR
     dispatch (mirroring the stroke watch) — before it, a CONFIRMED track can
     only be a phantom, and latching it would clear possession and fake the
     release."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_REQUIRE_BALL_EVIDENCE', True)
     now = 100.0
     node = _toss_ready_node(now)
     _install_toss_goal(node)
@@ -1652,7 +1676,7 @@ def test_8b_uses_tilted_release_with_config_throw_site(monkeypatch):
     monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
     node = _toss_ready_node(time.perf_counter())
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
-    gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, flight=0.8, delay=5.0)
+    gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, throw_height=0.8, delay=5.0)
     node._execute_toss(gh)               # runs to REJECTED_POSITION (go_to_pose n/a)
     assert calls['pose'] == (50.0, 0.0, 170.0)
     assert calls['site'] == tuple(float(v) for v in hw.JB_OP_TOSS_THROW_SITE_MM)
@@ -1669,7 +1693,7 @@ def test_8b_tilt_clamp_maps_to_rejected_tilt_clamp(monkeypatch):
     monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
     node = _toss_ready_node(time.perf_counter())
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
-    gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, flight=0.8, delay=5.0)
+    gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, throw_height=0.8, delay=5.0)
     result = node._execute_toss(gh)
     assert result.success is False
     assert result.outcome == 'REJECTED_TILT_CLAMP'

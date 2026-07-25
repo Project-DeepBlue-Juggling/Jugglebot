@@ -94,6 +94,21 @@ def test_full_vs_idealised_launch_identity():
     assert vz * vz / (2.0 * G) == pytest.approx(787.85, abs=0.01)
 
 
+def test_flight_time_from_height_roundtrip():
+    """The operator-height → internal-flight-time conversion for Toss.action
+    (change C): T = sqrt(8·h/g), inverse h = g·T²/8. Pinned: the shipped default
+    flight (0.8 s) ⇔ 0.78448 m apex; closed form; exact round-trip; and h ∝ T²
+    (NOT linear — 4× the height is 2× the flight time)."""
+    assert tr.apex_height_from_flight_time(0.8) == pytest.approx(0.78448, abs=1e-4)
+    assert tr.flight_time_from_height(0.8) == pytest.approx(
+        np.sqrt(8.0 * 800.0 / G))
+    for h in (0.2, 0.5, 0.8, 1.2):
+        assert tr.apex_height_from_flight_time(
+            tr.flight_time_from_height(h)) == pytest.approx(h)
+    assert tr.flight_time_from_height(4.0 * 0.2) == pytest.approx(
+        2.0 * tr.flight_time_from_height(0.2))
+
+
 def test_release_state_offcenter_colocated():
     """Off-center (60, −60, 170) at T = 0.6 s: x/y ride through to both planes,
     launch is purely vertical (co-located throw/catch ⇒ zero horizontal)."""

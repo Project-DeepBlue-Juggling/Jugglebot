@@ -84,6 +84,28 @@ def stow_to_global_mm(pos_stow_mm, *,
     return p + np.array([0.0, 0.0, float(initial_height_mm)])
 
 
+def flight_time_from_height(throw_height_m: float) -> float:
+    """Convert a THROW HEIGHT (m, apex above the release plane) to the internal
+    flight time (s, release→catch). THE operator-height → flight-time conversion
+    for ``Toss.action`` (the goal nominates a height — the juggling-relevant
+    variable; everything downstream stays flight-time-native).
+
+    Idealised co-located relation ``T = sqrt(8·h/g)`` (apex ``h = g·T²/8``). The
+    ``Δz = 6.736 mm`` release↔cup offset is negligible at juggling heights
+    (~0.8 % at 0.8 m) and is still carried EXACTLY downstream by
+    :func:`compute_release_state`'s ``vz = Δz/T + g·T/2`` from this T. Note
+    ``h ∝ T²`` — NOT linear (4× height is 2× flight time)."""
+    h_mm = float(throw_height_m) * 1000.0
+    return float(np.sqrt(8.0 * h_mm / ballistics_bc.GRAVITY_MMS2))
+
+
+def apex_height_from_flight_time(flight_time_s: float) -> float:
+    """Inverse of :func:`flight_time_from_height` (m): ``h = g·T²/8``. The exact
+    inverse identity (pinned by test), used for reporting/round-trip checks."""
+    return float(
+        ballistics_bc.GRAVITY_MMS2 * float(flight_time_s) ** 2 / 8.0 / 1000.0)
+
+
 def compute_release_state(catch_position_stow_mm, flight_time_s: float, *,
                           initial_height_mm: float = hw.GEOM_INITIAL_HEIGHT_MM,
                           hand_catch_offset_mm: float = hw.HAND_CATCH_OFFSET_MM,

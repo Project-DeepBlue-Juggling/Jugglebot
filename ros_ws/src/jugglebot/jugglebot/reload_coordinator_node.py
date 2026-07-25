@@ -147,6 +147,7 @@ from jugglebot.motion.trajectory.toss_release import (
     build_announcement_fields,
     compute_release_state,
     compute_release_state_tilted,
+    flight_time_from_height,
 )
 
 # BallStatus enum (BallState.msg): 0 = TO_BE_THROWN, 1 = IN_FLIGHT, 2 = CAUGHT.
@@ -815,9 +816,12 @@ class ReloadCoordinatorNode(Node):
             ABSOLUTE positions from 0 rev, so dispatch off the bottom park band
             (|pos| ≤ _HAND_NEAR_TARGET_REV of the retract target — the reload
             ladder's near-band) is a physical hazard;
-          - ``ball_seated`` — the sticky possession latch OR the trace-only waiver;
-            possession is CLEARED here on OUR release evidence (the ball left the
-            cup) and re-set by the next plausible CAUGHT (chainable Toss → Toss);
+          - ``ball_seated`` — TRUE unless the ball-evidence gate is required
+            (config ``toss_require_ball_evidence``, default false — the operator
+            guarantees the ball; there is no ball-in-cup sensor). When required,
+            it is the sticky possession latch OR the trace-only waiver; possession
+            is CLEARED here on OUR release evidence (the ball left the cup) and
+            re-set by the next plausible CAUGHT (chainable Toss → Toss);
           - ``track_active`` — a LIVE track (TO_BE_THROWN / IN_FLIGHT) already
             destined for us would correlate against OUR announcement (the F7
             phantom-track hole); consulted only at CHECKING, before our own
@@ -933,7 +937,8 @@ class ReloadCoordinatorNode(Node):
             mocap_fresh=mocap_fresh,
             hand_fresh=hand_fresh,
             hand_parked=hand_parked,
-            ball_seated=bool(waiver or possession),
+            ball_seated=bool(waiver or possession
+                             or not hw.JB_OP_TOSS_REQUIRE_BALL_EVIDENCE),
             track_active=track_active,
             platform_at_target=platform_at_target,
             throw_stroke_seen=stroke_seen,
@@ -1103,7 +1108,7 @@ class ReloadCoordinatorNode(Node):
         req = goal_handle.request
         catch_pose = (float(req.catch_position.x), float(req.catch_position.y),
                       float(req.catch_position.z))
-        flight = float(getattr(req, 'flight_time_s', 0.0) or 0.0)
+        height = float(getattr(req, 'throw_height_m', 0.0) or 0.0)
         throw_delay = float(getattr(req, 'throw_delay_s', 0.0) or 0.0)
         vel_scale = float(getattr(req, 'catch_vel_scale', 0.0) or 0.0)
         # Loud goal-numerics gate BEFORE anything runs (mirrors ball_butler_node's
@@ -1113,11 +1118,11 @@ class ReloadCoordinatorNode(Node):
         # (0.0 is the only "use the default" sentinel). Rejected here nothing has
         # run: no FSM, no release state, no per-goal state install.
         bad_field = self._invalid_toss_goal_field(
-            catch_pose, flight, throw_delay, vel_scale)
+            catch_pose, height, throw_delay, vel_scale)
         if bad_field is not None:
             self.get_logger().error(
                 f'Toss goal REJECTED_BAD_GOAL({bad_field}): '
-                f'catch_position={catch_pose}, flight_time_s={flight}, '
+                f'catch_position={catch_pose}, throw_height_m={height}, '
                 f'throw_delay_s={throw_delay}, catch_vel_scale={vel_scale} '
                 f'— refusing before anything runs.')
             result = Toss.Result()
@@ -1130,11 +1135,16 @@ class ReloadCoordinatorNode(Node):
             with self._lock:
                 self._goal_claimed = False
             return result
-        if flight == 0.0:
-            # 0 ⇒ the generated config default, resolved HERE so the FSM receives
-            # the config-resolved value (the FSM's DEFAULT_TOSS_FLIGHT_TIME_S
-            # literal is the no-config fallback only; drift-guard-pinned equal).
+        if height == 0.0:
+            # 0 ⇒ the generated config default FLIGHT TIME, resolved HERE so the
+            # FSM receives the config-resolved value (kept internally as a flight
+            # time — the FSM's DEFAULT_TOSS_FLIGHT_TIME_S literal is the no-config
+            # fallback only, drift-guard-pinned equal; ~0.784 m apex at 0.8 s).
             flight = float(hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S)
+        else:
+            # Operator nominates a HEIGHT (m, apex above release); convert ONCE to
+            # the internal flight time via the single tested toss_release module.
+            flight = flight_time_from_height(height)
         # The release state (frames + ballistics) comes from the single tested
         # conversion module; the FSM gets its event_vel from here, never a second
         # derivation. An OUT-OF-BAND flight time still computes a release state
@@ -1305,12 +1315,12 @@ class ReloadCoordinatorNode(Node):
                 self._toss_throw_dispatched = False
 
     @staticmethod
-    def _invalid_toss_goal_field(catch_pose, flight, throw_delay, vel_scale):
+    def _invalid_toss_goal_field(catch_pose, throw_height, throw_delay, vel_scale):
         """Return the name of the first invalid Toss goal numeric, or None.
 
         Non-finite ANY of the six numerics ⇒ invalid (the ball_butler_node
         guard pattern: NaN/inf flows through ballistics into NaN commands).
-        NEGATIVE flight_time_s / throw_delay_s / catch_vel_scale ⇒ invalid: 0.0
+        NEGATIVE throw_height_m / throw_delay_s / catch_vel_scale ⇒ invalid: 0.0
         is the only "use the default" sentinel, and coercing a sign typo to a
         default would silently run a physically different toss (the
         catch_position components are legitimately signed — the workspace
@@ -1319,14 +1329,14 @@ class ReloadCoordinatorNode(Node):
             ('catch_position.x', catch_pose[0]),
             ('catch_position.y', catch_pose[1]),
             ('catch_position.z', catch_pose[2]),
-            ('flight_time_s', flight),
+            ('throw_height_m', throw_height),
             ('throw_delay_s', throw_delay),
             ('catch_vel_scale', vel_scale),
         )
         for name, value in finite_checks:
             if not math.isfinite(value):
                 return name
-        for name, value in (('flight_time_s', flight),
+        for name, value in (('throw_height_m', throw_height),
                             ('throw_delay_s', throw_delay),
                             ('catch_vel_scale', vel_scale)):
             if value < 0.0:
