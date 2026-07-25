@@ -271,8 +271,8 @@ annotations`.
 | Phase | Scope | Gate | Status |
 |---|---|---|---|
 | 0 | Ingest-surface enumeration + frame audit (no code) | written enumeration reviewed by the operator | **DONE 2026-07-25 — see § Phase 0 — Outcome. Operator gate CLEARED 2026-07-25 (`3365ac8`). Three results that change later phases: a SIXTH external path (E6, `timed_target(hold_after=False)`'s neutral return target); the correction's own delivery is volatile + unobservable (Table C ⇒ Phase 3 cannot gate on `levelling_complete`); and the bypass-test manifest key must widen or it is blind to the E6 class it was specified to catch.** |
-| 1 | Contract doc + `motion` helper + unit tests | full pytest | **DONE 2026-07-26 — `SHA_PLACEHOLDER`. Operator gate cleared in `3365ac8`. Extraction verified bit-identical (max &#124;Δ&#124; = 0.000e+00 over 36 offset×orientation pairs), contract C-LEVEL-1 at `ros_ws/docs/levelling_frame.md`. See § Phase 1 — Outcome.** |
-| 2 | Migrate every ingest path (**six**, not five); delete the ad-hoc call sites; bypass test | full pytest | **DONE 2026-07-26 — `SHA_PLACEHOLDER`. All six E surfaces + `mpc_bridge_node`'s B1 route through the shared helper; the verbatim second copy is deleted. Two AST manifests with discovered file sets, mutation-verified against six seeded regressions. Surfaced and escalated (NOT fixed): `build_catch`'s through-seat aims off the plan-frame tilt. See § Phase 2 — Outcome.** |
+| 1 | Contract doc + `motion` helper + unit tests | full pytest | **DONE 2026-07-26 — `aea7b49`. Operator gate cleared in `3365ac8`. Extraction verified bit-identical (max &#124;Δ&#124; = 0.000e+00 over 36 offset×orientation pairs), contract C-LEVEL-1 at `ros_ws/docs/levelling_frame.md`. See § Phase 1 — Outcome.** |
+| 2 | Migrate every ingest path (**six**, not five); delete the ad-hoc call sites; bypass test | full pytest | **DONE 2026-07-26 — `aea7b49`. All six E surfaces + `mpc_bridge_node`'s B1 route through the shared helper; the verbatim second copy is deleted. Two AST manifests with discovered file sets, mutation-verified against six seeded regressions. Surfaced and escalated (NOT fixed): `build_catch`'s through-seat aims off the plan-frame tilt. See § Phase 2 — Outcome.** |
 | 3 | `REJECTED_NOT_LEVELLED` gate in toss CHECKING | full pytest | TODO |
 | 4 | Hardware validation (operator-run) | park plateau within ±0.05° of `(−tilt_x, −tilt_y)` via `tools/probes/levelling_tilt_bag_check.py`; first `go_home` worst leg 2.77 ± 0.30 mm; mocap parked tilt within ±0.10° of level. Catch error and pre-throw swing are REPORT-only (≈16 mm and ≈+2.92° expected, both unchanged) | TODO — criteria REVISED, see § Phase 4 |
 
@@ -891,7 +891,7 @@ one normative `*.md`.
 
 #### Phase 1 — Outcome (2026-07-26)
 
-**DONE, landed with Phase 2 in commit `SHA_PLACEHOLDER`.** Logbook:
+**DONE, landed with Phase 2 in commit `aea7b49`.** Logbook:
 `logbook/2026-07-26-levelling-frame-contract.md`.
 
 `ros_ws/src/jugglebot/jugglebot/motion/levelling.py` is the single
@@ -1003,7 +1003,7 @@ on it.
 
 #### Phase 2 — Outcome (2026-07-26)
 
-**DONE, commit `SHA_PLACEHOLDER`**. Logbook:
+**DONE, commit `aea7b49`**. Logbook:
 `logbook/2026-07-26-levelling-frame-contract.md`.
 
 All six external ingest surfaces plus `mpc_bridge_node`'s B1 now route through

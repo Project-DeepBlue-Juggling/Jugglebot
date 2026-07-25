@@ -21,7 +21,7 @@ files_changed:
   - tests/hardware/mvp_bench_runbook.md
   - plans/active/levelling-frame-contract.md
 commits:
-  - SHA_PLACEHOLDER
+  - aea7b49
 subsystem:
   - ros
   - motion
