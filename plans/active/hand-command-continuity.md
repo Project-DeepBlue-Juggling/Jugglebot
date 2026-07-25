@@ -796,8 +796,8 @@ the deviating file.
 
 #### Phase 0 close-out
 
-**Landed as** `TBD-code` (probe + docs) and `TBD-backfill` (SHA backfill), on
-`mvp-trajectory-bringup`. **Logbook:**
+**Landed as** `cabf3c6` (probe + docs) on `mvp-trajectory-bringup`, with the SHA
+backfilled by the immediate follow-up commit. **Logbook:**
 `logbook/2026-07-26-hand-stroke-timeline-probe.md`.
 
 **Test gate.** `pytest tests/ -q` (run 2026-07-26, on the Jetson): **3429 passed,
