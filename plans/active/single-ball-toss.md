@@ -179,7 +179,7 @@ zero feasibility violations, all knots pump-accepted.
 | 1 | `Toss.action` + `toss_sequencer` FSM + coordinator wiring (Tier 8a, REJECTED_TIER for 8b) | full pytest | COMPLETE (2026-07-25; tier is config-only — the locked goal has no tier field, see the phase logbook entry) |
 | 2 | `sim/toss_gate.py` + Tier-8a sweep | Self-toss gate ≥9/10 | COMPLETE (2026-07-25 — PASS both binding bands, 262/290 core_clean overall; long-flight advisory tail fails under the placeholder noise, re-run after T0) |
 | 3 | Real-ordering trace (multi-node choreography) | trace review | PREPARED (2026-07-25 — harness + runbook landed, powered-bench amendment; operator captures pending) |
-| 4 | Tier 8b — tilt-aimed displaced throw on the production stack | gate sweep extension | NOT STARTED |
+| 4 | Tier 8b — tilt-aimed displaced throw on the production stack | gate sweep extension | COMPLETE (2026-07-25 — 8b binding ring PASS 9/9; asymmetry map landed; ships behind `JB_OP_TOSS_TIER='8a'`) |
 | 5 | Hardware bring-up T0–T4 (operator-run) | staged PASS criteria | NOT STARTED |
 
 ## Implementation Phases
@@ -247,6 +247,25 @@ Phase-3 prep logbook entry.)* Tooling: `tests/hardware/toss_trace_recorder.py`
 - Gate sweep extension: displaced targets on the Rung-2a reliable box, then the
   asymmetry map. Commit; logbook entry.
 
+**LANDED 2026-07-25** (see the Phase-4 logbook entry). `tilt_to_throw` ported
+(sim re-exports); `compute_release_state_tilted` (swing-compensated pre-tilt
+at A + tilt-aimed launch, loud `ThrowTiltInfeasible` clamp gate); the
+coordinator pre-positions **tilted at A**, raises `catch/pretilt_hold` (a new
+gate suppressing the stock announcement pre-tilt — otherwise the platform
+translates A→B and un-tilts *before* release), and publishes the ONE deferred
+A→B reach at `t_release`. The 8b binding ring (50 mm, T=0.80) passed 9/9; the
+asymmetry map (detach column, at the T=0.80 s flight) shows a
+**+y-hemisphere weakness** (−y hemisphere + −x seat to 100 mm; +y/NW fail at
+70 mm; the T=0.60 s sub-map is worse everywhere and is not a T4 basis). **Decisions for T4:** (a)
+the throw-site A is config (`JB_OP_TOSS_THROW_SITE_MM`) — the locked goal has
+no A/tier field, so the plan's "per-goal override" stays a goal-schema
+question; (b) 8b ships behind `JB_OP_TOSS_TIER='8a'`; (c) the **T4-at-100 mm**
+fork is open — aim into the −y hemisphere/−x if attempting 100 mm, or re-stage
+T4 to ≤70 mm (the shipped cap); raising the 80 mm reach envelope or moving its
+center to B is a safety-critical `trajectory_node` change not taken this run;
+(d) the Phase-3 dry-trace needs an **8b addendum** confirming `pretilt_hold`
+reaches `catch_coordinator` before the announcement, before T4.
+
 ### Phase 5 — Hardware bring-up (operator-run, staged)
 - **T0 — bench hand-throw characterisation (no catch).** Standard session
   balls; `event_vel` ladder starting at the minimum useful throw speed; no
@@ -260,8 +279,14 @@ Phase-3 prep logbook entry.)* Tooling: `tests/hardware/toss_trace_recorder.py`
   centre workspace. PASS: ≥3/5 caught.
 - **T2 — height ladder** at centre: flight 0.6 → 0.9 → 1.1 s. PASS per step: ≥3/5.
 - **T3 — toss-at-position**: workspace corners at ±60 mm, one height. PASS: ≥3/5 each.
-- **T4 — Tier 8b displaced throw→catch** (only after Phase 4's gate): A→B at
-  100 mm separation. PASS: ≥3/5.
+- **T4 — Tier 8b displaced throw→catch** (only after Phase 4's gate AND the
+  8b dry-trace addendum): A→B separation. The shipped gate caps displacement
+  at **70 mm** (the clean box ∩ the 80 mm reach envelope). The plan's 100 mm
+  target is direction-dependent per the Phase-4 asymmetry map — if attempted,
+  aim into the **−y hemisphere or −x** at the **T≥0.80 s** flight (sim-robust
+  to 100 mm there), never +y/NW (fails at 70 mm); otherwise stage T4 at ≤70 mm. Set
+  `JB_OP_TOSS_TIER='8b'` and `JB_OP_TOSS_THROW_SITE_MM` for the session.
+  PASS: ≥3/5.
 - Session disciplines: can-bridge Teensy reboot pre-session; `uptime_ms` logged;
   `/diagnose --latest` after every session; one truthful outcome line per toss.
 

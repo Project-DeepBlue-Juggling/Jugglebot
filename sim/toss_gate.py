@@ -30,7 +30,7 @@ re-capture guard). **Plan-wording delta, flagged**: the plan names
 contact-physics diagnostic column (``--diag-release kinematic``), which is
 contact-carried per its contract. See the Phase-2 logbook Discussion.
 
-**Gate criterion (two binding bands, reported separately):**
+**Gate criterion (binding bands, reported separately):**
   * the plan's band — every swept point with arrival speed 2-3 m/s
     (flights {0.55, 0.60} s ⇒ 12 points in the factored grid) needs
     ``core_clean >= 9/10``;
@@ -38,8 +38,17 @@ contact-carried per its contract. See the Phase-2 logbook Discussion.
     z = 170 (all five xy positions) are ADDITIONALLY binding >= 9/10: the
     2-3 m/s band is hardware-marginal (< 0.7 s firmware kind-1 windup race,
     Phase-1 logbook Known limitations), so the hardware-relevant band must
-    gate too.
-``passed`` requires both bands, zero feasibility violations in accepted runs,
+    gate too;
+  * the Tier-8b displaced band (single-ball-toss Phase 4) — in a ``--tier 8b``
+    run the displaced grid's centre + 50 mm-ring points at T = 0.80 s /
+    z = 170 (the bb Rung-2a reliable box: separated 10/10, landing error
+    4.9-32.4 mm, re-hosted on the production stack) need
+    ``core_clean >= ceil(0.9 n)``, reported as ``passed_8b_ring``. In a
+    tier-8b run DISPLACED points leave the T = 0.80 band (superseded by this
+    one), so the 70 mm ring (clean-box edge) and the T = 0.95 spot checks
+    stay ADVISORY; tier-8a runs are byte-identical (the band is empty there
+    and the old membership logic is untouched).
+``passed`` requires every binding band, zero feasibility violations in accepted runs,
 and zero pump rejects with every emitted frame ACCEPTED (the accepted==emitted
 counter is the non-vacuous form of the invariant). Explicit-points/debug runs
 whose grid intersects NEITHER band gate on the full band instead of vacuously
@@ -48,6 +57,24 @@ requires the arm-and-forget catch to have actually ARMED from tracking
 (``catch_armed``; a ball falling into a statically-parked cup must not pass)
 — the hand-contact velocity-match stays the reload gate's documented
 light-scope deferral.
+
+**Tier 8b (``--tier 8b``, single-ball-toss Phase 4)** — the tilt-aimed
+displaced throw→catch. ``toss_release.compute_release_state_tilted`` aims the
+cup axis ALONG the ballistic A→B take-off (all lateral velocity comes from the
+slider stroke projected through the throw tilt — never platform translation);
+the pre-position ``build_move`` targets the swing-compensated PRE-TILT pose at
+the throw site A; pump B streams a validated ``build_hold`` at A through the
+prep gap and swaps to the ``build_catch`` reach A→B (lead = the flight time,
+arrival = the announced landing) INSIDE THE SAME PUMP at the scheduled release
+— the sim analogue of the production deferred-reach choreography (the stock
+announcement pre-tilt would complete the A→B translate BEFORE release for
+every toss flight, firing the throw from B with the receive tilt), with the
+pump's own per-step gate checking the hold→reach crossing (no waived first
+frame). The catch at B runs the unchanged 8a path. The non-gating detach diag
+column additionally runs the ±{70, 100} mm directional-asymmetry MAP
+(``contact_diagnostic.asymmetry_map``): the Rung-2a glue/overshoot physics
+lives in contact detach, which the gating column's imposed-velocity release
+cannot reproduce — a kinematic-column map would be symmetric and meaningless.
 
 **Documented fidelity deltas** (see the Phase-2 logbook):
   * release-velocity noise (``release_vel_noise_frac`` = 1 %) is a PLACEHOLDER
@@ -191,6 +218,42 @@ def default_grid(grid: str = 'factored'):
     return pts
 
 
+# The 8-direction ring (unit vectors): the Rung-2a reliable-box characterisation
+# directions (axes + diagonals), used by both the Tier-8b binding grid and the
+# ±{70, 100} mm asymmetry map.
+_R2 = math.sqrt(0.5)
+_RING_8DIR = ((1.0, 0.0), (_R2, _R2), (0.0, 1.0), (-_R2, _R2),
+              (-1.0, 0.0), (-_R2, -_R2), (0.0, -1.0), (_R2, -_R2))
+# Tier-8b binding displaced ring (Rung-2a reliable box: the column + the 50 mm
+# ring, separated 10/10, landing error 4.9-32.4 mm — logbook 2026-06-30).
+_TOSS_8B_RING_MM = 50.0
+_TOSS_8B_ADVISORY_RING_MM = 70.0            # clean-box edge (advisory only)
+_TOSS_8B_FLIGHT_S = 0.80                    # the hardware band (§ 2.6 rules out <=0.61)
+# ±{70, 100} mm directional-asymmetry MAP radii + flights (§ 3.2; non-gating).
+_ASYMMETRY_RADII_MM = (70.0, 100.0)
+_ASYMMETRY_FLIGHTS_S = (0.60, 0.80)         # 0.60 = Rung-2a characterisation; 0.80 = hw band
+
+
+def default_grid_8b(throw_site_xy=(0.0, 0.0)):
+    """The Tier-8b displaced grid as ``[(x, y, z, T), ...]`` — B positions
+    relative to the throw site A (``throw_site_xy``): the centre (A) + the
+    BINDING 50 mm ring (8 directions) + the ADVISORY 70 mm ring + two advisory
+    T = 0.95 column-displaced spot checks, all at z = 170 / T = 0.80 (the
+    hardware band; short flights are infeasible at these displacements, § 2.6)."""
+    ax, ay = float(throw_site_xy[0]), float(throw_site_xy[1])
+    z = Z_ACTIVE_MM
+    pts = [(ax, ay, z, _TOSS_8B_FLIGHT_S)]                      # centre = A (displacement 0)
+    for ux, uy in _RING_8DIR:                                    # binding 50 mm ring
+        pts.append((ax + _TOSS_8B_RING_MM * ux, ay + _TOSS_8B_RING_MM * uy,
+                    z, _TOSS_8B_FLIGHT_S))
+    for ux, uy in _RING_8DIR:                                    # advisory 70 mm ring
+        pts.append((ax + _TOSS_8B_ADVISORY_RING_MM * ux,
+                    ay + _TOSS_8B_ADVISORY_RING_MM * uy, z, _TOSS_8B_FLIGHT_S))
+    pts.append((ax + _TOSS_8B_RING_MM, ay, z, 0.95))            # advisory T=0.95 spots
+    pts.append((ax, ay + _TOSS_8B_RING_MM, z, 0.95))
+    return pts
+
+
 def _point_id(point) -> str:
     x, y, z, T = point
     return f"x{x:g}_y{y:g}_z{z:g}_T{T:.2f}"
@@ -222,6 +285,8 @@ class TossGateConfig:
     trials_per_point: int = 10
     seed: int = 0
     grid: str = 'factored'            # 'factored' | 'full'
+    tier: str = '8a'                  # '8a' co-located | '8b' tilt-aimed displaced
+    throw_site_xy: tuple = (0.0, 0.0)  # Tier-8b throw site A (STOW xy); B = the grid point
     points: list | None = None        # explicit [(x, y, z, T), ...] override
     prep_gap_s: float = 0.8           # catch-plan install → scheduled release
     settle_hold_s: float = float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)   # 0.5
@@ -266,6 +331,15 @@ class _TossSetup:
     cup_world_z_sim: float = 0.0
     ann_landing_vel_mms: np.ndarray | None = None
     reject_code: str | None = None
+    # Tier-8b: the pre-position target is the swing-compensated PRE-TILT pose at
+    # the throw site A (6-dof); the trial holds there through the prep gap and
+    # swaps to the A->B reach at t_release. For 8a it is the level nominated pose
+    # and hold_reach_swap is False (single pre-tilt catch installed at t_install).
+    preposition_pose: np.ndarray | None = None
+    hold_reach_swap: bool = False
+    displacement_mm: float = 0.0
+    pretilt_rx: float = 0.0
+    pretilt_ry: float = 0.0
 
 
 @dataclasses.dataclass
@@ -303,6 +377,11 @@ class TossTrialResult:
     hardware_marginal: bool        # flight < 0.7 s (firmware windup band)
     clean: bool
     core_clean: bool
+    # Tier-8b metrics (0.0 / NaN for 8a).
+    tier: str = '8a'
+    displacement_mm: float = 0.0   # |B_xy − A_xy| (the O1-cap headroom witness)
+    pretilt_err_deg: float = float('nan')  # commanded vs achieved pre-tilt at A
+    reach_lead_s: float = float('nan')     # A→B reach installed → arrival
 
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
@@ -334,9 +413,12 @@ class TossGate:
     def _prepare_toss(self, point) -> _TossSetup:
         """Production release state + announcement-derived catch inputs for one
         ``(x, y, z_nom, T)`` cell — everything up to (not including) the planner
-        calls. All ``toss_release`` calls run on DEFAULTS (hardware-frame; R1)."""
+        calls. All ``toss_release`` calls run on DEFAULTS (hardware-frame; R1).
+        Tier 8b dispatches to :meth:`_prepare_toss_8b` (tilted release at A)."""
         cfg = self.cfg
         x, y, z, T = point
+        if cfg.tier == '8b':
+            return self._prepare_toss_8b(point)
         try:
             rs = toss_release.compute_release_state((x, y, z), T)
         except ValueError:
@@ -361,7 +443,49 @@ class TossGate:
             event_vel_mps=rs.event_vel_mps, rs=rs, armed_v=armed_v,
             catch_pose=catch_pose, rx=rx, ry=ry,
             cup_world_z_sim=cup_world_z_sim,
-            ann_landing_vel_mms=ann_landing_vel)
+            ann_landing_vel_mms=ann_landing_vel,
+            preposition_pose=np.array([x, y, z, 0.0, 0.0, 0.0]),
+            hold_reach_swap=False)
+
+    def _prepare_toss_8b(self, point) -> _TossSetup:
+        """Tier-8b synthesis: the TILTED release at the throw site A
+        (``compute_release_state_tilted``, aim ALONG the A->B take-off — all
+        lateral velocity comes from the slider stroke through the tilt), the
+        swing-compensated PRE-TILT POSITIONING pose at A, and the catch pose at
+        the displaced B from the announced (lateral) arrival. The loud
+        ``ThrowTiltInfeasible`` clamp maps to a TILT_CLAMP reject (never a
+        silently mis-aimed throw)."""
+        cfg = self.cfg
+        x, y, z, T = point
+        try:
+            rs = toss_release.compute_release_state_tilted(
+                (x, y, z), T, throw_site_xy_mm=cfg.throw_site_xy)
+        except toss_release.ThrowTiltInfeasible:
+            return _TossSetup(reject_code='TILT_CLAMP')
+        except ValueError:
+            return _TossSetup(reject_code='RELEASE_STATE')
+        if not toss_release.validate_event_vel(rs.event_vel_mps):
+            return _TossSetup(event_vel_mps=rs.event_vel_mps,
+                              reject_code='EVENT_VEL_BAND')
+        ann_landing_vel = bal.arrival_velocity(rs.launch_vel_mms, T)
+        armed_v = (float(np.linalg.norm(ann_landing_vel)) / 1000.0) \
+            * (1.0 + cfg.event_vel_err_frac)
+        cup_world_z_sim = (CUP_Z_BASE_MM
+                           + HandCatchTrajectory(armed_v).sample(0.0)
+                           + (z - Z_ACTIVE_MM))
+        # Catch pose at the displaced B (the announced landing IS B's cup point);
+        # the lateral arrival now yields a real receive tilt + swing shift.
+        catch_pose, (rx, ry) = _toss_catch_pose(
+            rs.catch_point_global_mm[:2], ann_landing_vel, cup_world_z_sim, z)
+        return _TossSetup(
+            event_vel_mps=rs.event_vel_mps, rs=rs, armed_v=armed_v,
+            catch_pose=catch_pose, rx=rx, ry=ry,
+            cup_world_z_sim=cup_world_z_sim,
+            ann_landing_vel_mms=ann_landing_vel,
+            preposition_pose=np.asarray(rs.pretilt_pose_stow, dtype=float),
+            hold_reach_swap=True,
+            displacement_mm=float(rs.displacement_mm),
+            pretilt_rx=float(rs.tilt_rx), pretilt_ry=float(rs.tilt_ry))
 
     # ---- one gating trial -------------------------------------------------
     def run_trial(self, idx: int, point, seed: int) -> TossTrialResult:
@@ -370,37 +494,53 @@ class TossGate:
         s = self._prepare_toss(point)
         if s.reject_code is not None:
             return self._reject(idx, point, s.event_vel_mps, seed, s.reject_code)
-        pose_nom = np.array([x, y, z, 0.0, 0.0, 0.0])
+        pose_pre = np.asarray(s.preposition_pose, dtype=float)
         # PLAN via the production constructors (the single gate). Rejects are loud.
+        # Pre-position to the pre-position pose (level nominated for 8a, the
+        # swing-compensated pre-tilt pose at A for 8b).
         try:
             plan_move, report_move = planner.build_move(
-                (NEUTRAL_POSE, np.zeros(6), np.zeros(6)), pose_nom,
+                (NEUTRAL_POSE, np.zeros(6), np.zeros(6)), pose_pre,
                 cfg.preposition_duration_s, self.limits, self.geom)
         except TrajectoryInfeasible as e:
             return self._reject(idx, point, s.event_vel_mps, seed, e.code)
-        # The pre-tilt catch plan: state0 = the nominated (commanded) pose —
-        # production plans from commanded state. Lead = prep_gap + T so the
-        # plan's arrival instant equals the ANNOUNCED landing time.
         try:
-            plan_catch, report_catch = planner.build_catch(
-                (pose_nom, np.zeros(6), np.zeros(6)), s.catch_pose,
-                cfg.prep_gap_s + T, self.limits, self.geom,
-                settle_hold_s=cfg.settle_hold_s)
+            if s.hold_reach_swap:
+                # Tier 8b: hold at A through the prep gap, then reach A->B over
+                # the flight (lead = T; arrival = the announced landing). The
+                # deferred-reach choreography — the stock announce pre-tilt would
+                # complete the A->B translate BEFORE release for every flight.
+                plan_hold = planner.build_hold(
+                    (pose_pre, np.zeros(6), np.zeros(6)), self.limits, self.geom)
+                plan_catch, report_catch = planner.build_catch(
+                    (pose_pre, np.zeros(6), np.zeros(6)), s.catch_pose,
+                    T, self.limits, self.geom, settle_hold_s=cfg.settle_hold_s)
+            else:
+                # Tier 8a: state0 = the nominated (commanded) pose — production
+                # plans from commanded state. Lead = prep_gap + T so the plan's
+                # arrival instant equals the ANNOUNCED landing time.
+                plan_hold = None
+                plan_catch, report_catch = planner.build_catch(
+                    (pose_pre, np.zeros(6), np.zeros(6)), s.catch_pose,
+                    cfg.prep_gap_s + T, self.limits, self.geom,
+                    settle_hold_s=cfg.settle_hold_s)
         except TrajectoryInfeasible as e:
             return self._reject(idx, point, s.event_vel_mps, seed, e.code)
         noise = JuggleNoise(self.noise_cfg, seed=seed)
         return self._simulate_toss(idx, point, s, plan_move, report_move,
-                                   plan_catch, report_catch, noise, seed)
+                                   plan_catch, report_catch, plan_hold,
+                                   noise, seed)
 
     def _simulate_toss(self, idx, point, s, plan_move, report_move,
-                       plan_catch, report_catch, noise, seed) -> TossTrialResult:
+                       plan_catch, report_catch, plan_hold, noise, seed
+                       ) -> TossTrialResult:
         """One trial start-to-verdict on the gating (kinematic-hold) plant."""
         cfg = self.cfg
         x, y, z, T = point
         plant, emitter = self.plant, self.emitter
         model_dt = plant.timestep
         substeps = max(1, int(round(KNOT_DT_S / model_dt)))
-        pose_nom_xyz = np.array([x, y, z])
+        preposition_xyz = np.asarray(s.preposition_pose[:3], dtype=float)
 
         # 1. Neutral settle; hand at the throw-stroke start / catch-rest bottom
         # (20 mm — firmware ground truth: a completed catch leaves the hand at
@@ -446,8 +586,13 @@ class TossGate:
                 if self.viewer is not None:
                     self.viewer.sync()
         st = plant.get_state()
+        # Pre-position error vs the commanded pre-position xyz (A's swing-
+        # compensated pre-tilt pose for 8b, the level nominated pose for 8a).
         preposition_err_mm = float(np.linalg.norm(
-            st.platform_pos_mm - pose_nom_xyz))
+            st.platform_pos_mm - preposition_xyz))
+        # Commanded vs achieved pre-tilt at A (8b diagnostic; ~0 for level 8a).
+        pretilt_err_deg = float(np.degrees(np.linalg.norm(
+            st.platform_rot - np.array([s.pretilt_rx, s.pretilt_ry, 0.0]))))
 
         # 5. Pre-tilt catch install + announcement (production ordering:
         # announce/arm BEFORE the throw). The announcement is stamped with the
@@ -498,10 +643,24 @@ class TossGate:
         hold_rot = []
         run_until = t_land_ann + cfg.settle_hold_s + 0.05
         n_frames = 0
+        reach_installed_t = None       # 8b: sim time the A->B reach became active
 
         while plant.data.time < run_until:
-            tau = plant.data.time - t_install
-            frame = emitter.frame(plan_catch, tau, n_frames)
+            # Tier 8b: stream the hold at A through the prep gap, then swap to
+            # the A->B reach at t_release INSIDE THE SAME PUMP — so the pump's
+            # own per-step gate checks the hold->reach crossing (production runs
+            # one continuous pump; no waived first frame at the swap). Tier 8a
+            # streams the single pre-tilt catch from t_install throughout.
+            if plan_hold is not None and plant.data.time < t_release:
+                active_plan = plan_hold
+                tau = plant.data.time - t_install
+            else:
+                active_plan = plan_catch
+                tau = plant.data.time - (t_release if plan_hold is not None
+                                         else t_install)
+                if plan_hold is not None and reach_installed_t is None:
+                    reach_installed_t = plant.data.time
+            frame = emitter.frame(active_plan, tau, n_frames)
             sp_b, _ = pump_b.build(frame, t_origin_us=int(n_frames * 25000))
             pump_frames_emitted += 1
             if sp_b is not None:
@@ -676,10 +835,13 @@ class TossGate:
             peak_leg_jerk_mmps3=float(max(report_move.peak_leg_jerk_mmps3,
                                           report_catch.peak_leg_jerk_mmps3)),
             hardware_marginal=bool(T < _HW_MARGINAL_FLIGHT_S),
-            clean=clean, core_clean=core_clean)
+            clean=clean, core_clean=core_clean,
+            tier=cfg.tier, displacement_mm=float(s.displacement_mm),
+            pretilt_err_deg=float(pretilt_err_deg),
+            reach_lead_s=(float(t_land_ann - reach_installed_t)
+                          if reach_installed_t is not None else float('nan')))
 
-    @staticmethod
-    def _reject(idx, point, event_vel_mps, seed, code) -> TossTrialResult:
+    def _reject(self, idx, point, event_vel_mps, seed, code) -> TossTrialResult:
         x, y, z, T = point
         return TossTrialResult(
             idx=idx, point_id=_point_id(point), pose_mm=(x, y, z),
@@ -699,13 +861,17 @@ class TossGate:
             peak_leg_vel_mmps=0.0, peak_leg_acc_mmps2=0.0,
             peak_leg_jerk_mmps3=0.0,
             hardware_marginal=bool(T < _HW_MARGINAL_FLIGHT_S),
-            clean=False, core_clean=False)
+            clean=False, core_clean=False, tier=self.cfg.tier)
 
     # ---- the full gate ----------------------------------------------------
     def run(self) -> dict:
         cfg = self.cfg
-        points = list(cfg.points) if cfg.points is not None \
-            else default_grid(cfg.grid)
+        if cfg.points is not None:
+            points = list(cfg.points)
+        elif cfg.tier == '8b':
+            points = default_grid_8b(cfg.throw_site_xy)
+        else:
+            points = default_grid(cfg.grid)
         results = []
         gi = 0
         for pt in points:
@@ -736,7 +902,7 @@ class TossGate:
                 i += 1
         errs = [r['landing_err_mm'] for r in rows
                 if r['caught'] and not math.isnan(r['landing_err_mm'])]
-        return {
+        out = {
             'mode': cfg.diag_release,
             'trials': len(rows),
             'caught': sum(1 for r in rows if r['caught']),
@@ -746,6 +912,86 @@ class TossGate:
                 'mean': float(np.mean(errs)) if errs else None,
             },
             'rows': rows,
+        }
+        # Tier-8b only: the ±{70, 100} mm directional-asymmetry MAP — the
+        # Rung-2a glue/overshoot physics lives in contact DETACH (the gating
+        # column's imposed-velocity release cannot reproduce it). ADVISORY /
+        # NON-GATING by construction (§ 3.2).
+        if cfg.tier == '8b':
+            out['asymmetry_map'] = self._run_asymmetry_map()
+        return out
+
+    def _run_asymmetry_map(self, dirs=None, radii=None, flights=None) -> dict:
+        """The ±{70, 100} mm directional-asymmetry MAP (Tier-8b, § 3.2) — 8
+        directions × radii {70, 100} mm × flights {0.60, 0.80} on the
+        contact_carry DETACH plant, ``diag_trials`` per cell. Per-cell metric:
+        ``seated_n`` (post-catch seat: caught AND not a >SEPARATION_MS bounce-OUT)
+        + landing error (mm) vs the commanded B. NOTE ``seated_n`` is honest to
+        what it counts — it is NOT the Rung-2a THROW-detach 'glue' (ball never
+        left the cup during the stroke); the imposed-velocity/detach release here
+        exposes no per-trial throw-glue signal, so the map characterizes post-catch
+        seat + landing-error-vs-B, not the throw asymmetry the Rung-2a table names.
+        **Non-gating** — a characterisation for picking T4's displacement
+        direction, NEVER a pass/fail (the contact model is the documented
+        low-fidelity element; its hardware truth is T0/T4's measurand). Rung-2a
+        reference: (0, ±100) glued 0/2; (−100, 0) err 134 mm; (+100, 0) 21.5 mm
+        good; (−71, +71) 18.6 mm good. The dirs/radii/flights overrides exist for
+        the CI smoke (a 1-cell slice)."""
+        cfg = self.cfg
+        if self._diag_plant is None:
+            self._diag_plant = MuJoCoPlant(geom=self.geom, contact_carry=True)
+        dirs = _RING_8DIR if dirs is None else dirs
+        radii = _ASYMMETRY_RADII_MM if radii is None else radii
+        flights = _ASYMMETRY_FLIGHTS_S if flights is None else flights
+        ax, ay = float(cfg.throw_site_xy[0]), float(cfg.throw_site_xy[1])
+        cells = []
+        i = 0
+        for ux, uy in dirs:
+            for radius in radii:
+                for T in flights:
+                    bx, by = ax + radius * ux, ay + radius * uy
+                    trials = [self._diag_trial((bx, by, Z_ACTIVE_MM, T),
+                                               cfg.seed + 20000 + i)
+                              for _ in range(cfg.diag_trials)]
+                    i += cfg.diag_trials
+                    caught = [r for r in trials if r['caught']]
+                    seated = sum(1 for r in trials
+                                 if r['caught'] and not r['separated'])
+                    errs = [r['landing_err_mm'] for r in caught
+                            if not math.isnan(r['landing_err_mm'])]
+                    cells.append({
+                        'direction': [round(ux, 3), round(uy, 3)],
+                        'radius_mm': float(radius),
+                        'flight_time_s': float(T),
+                        'target_xy_mm': [round(bx, 2), round(by, 2)],
+                        'n': len(trials),
+                        'caught': len(caught),
+                        # Post-catch SEAT count: caught AND not a >SEPARATION_MS
+                        # contact-loss bounce-OUT (r['separated']). This is NOT the
+                        # Rung-2a THROW-detach 'glue' (ball never left the cup during
+                        # the stroke): the imposed-velocity/detach release here has no
+                        # per-trial throw-glue signal to derive it from, so the cell
+                        # honestly reports post-catch seat + landing-error-vs-B only.
+                        'seated_n': int(seated),             # caught AND seated (post-catch)
+                        'landing_err_mm_mean': (
+                            float(np.mean(errs)) if errs else None),
+                        'landing_err_mm_worst': (
+                            float(max(errs)) if errs else None),
+                    })
+        return {
+            'gating': False,
+            'note': ('ADVISORY contact-detach characterisation (Rung-2a '
+                     'glue/overshoot); NEVER feeds passed. Metric per cell: '
+                     'seated_n (POST-CATCH seat: caught AND not a >SEPARATION_MS '
+                     'bounce-OUT) + landing error vs the commanded B. seated_n is '
+                     'NOT throw-detach glue (no per-trial throw-glue signal is '
+                     'derivable from the detach release). Diag motion differs from '
+                     'Rung-2a (hold-pretilt + production HandThrowSequence stroke '
+                     'here, not plan_cup_cycle) — deltas vs the logbook table are '
+                     'findings, not a replication study.'),
+            'radii_mm': list(radii),
+            'flights_s': list(flights),
+            'cells': cells,
         }
 
     def _diag_trial(self, point, seed: int) -> dict:
@@ -772,15 +1018,26 @@ class TossGate:
                'pump_rejects': 0}          # BOTH diag pumps (move + catch)
         if s.reject_code is not None:
             return row
-        pose_nom = np.array([x, y, z, 0.0, 0.0, 0.0])
+        pose_pre = np.asarray(s.preposition_pose, dtype=float)
         try:
             plan_move, _ = planner.build_move(
-                (NEUTRAL_POSE, np.zeros(6), np.zeros(6)), pose_nom,
+                (NEUTRAL_POSE, np.zeros(6), np.zeros(6)), pose_pre,
                 cfg.preposition_duration_s, self.limits, self.geom)
-            plan_catch, _ = planner.build_catch(
-                (pose_nom, np.zeros(6), np.zeros(6)), s.catch_pose,
-                cfg.prep_gap_s + T, self.limits, self.geom,
-                settle_hold_s=cfg.settle_hold_s)
+            if s.hold_reach_swap:
+                # Tier 8b: hold the pre-tilt at A through the prep gap, then
+                # reach A->B over the flight (lead = T) — same deferred-reach
+                # choreography as the gating column.
+                plan_hold = planner.build_hold(
+                    (pose_pre, np.zeros(6), np.zeros(6)), self.limits, self.geom)
+                plan_catch, _ = planner.build_catch(
+                    (pose_pre, np.zeros(6), np.zeros(6)), s.catch_pose,
+                    T, self.limits, self.geom, settle_hold_s=cfg.settle_hold_s)
+            else:
+                plan_hold = None
+                plan_catch, _ = planner.build_catch(
+                    (pose_pre, np.zeros(6), np.zeros(6)), s.catch_pose,
+                    cfg.prep_gap_s + T, self.limits, self.geom,
+                    settle_hold_s=cfg.settle_hold_s)
         except TrajectoryInfeasible as e:
             row['reject_code'] = e.code
             return row
@@ -847,9 +1104,18 @@ class TossGate:
         pump2 = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV,
                              max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
         n = 0
+
+        def _active(t):
+            # Tier 8b: hold the pre-tilt at A until t_release, then the A->B
+            # reach; Tier 8a: the single pre-tilt catch from t_install.
+            if plan_hold is not None and t < t_release:
+                return plan_hold, t_install
+            return plan_catch, (t_release if plan_hold is not None else t_install)
+
         while plant.data.time < run_until:
-            tau = plant.data.time - t_install
-            frame = emitter.frame(plan_catch, tau, n)
+            active_plan, plan_t0 = _active(plant.data.time)
+            tau = plant.data.time - plan_t0
+            frame = emitter.frame(active_plan, tau, n)
             pump2.build(frame, t_origin_us=int(n * 25000))
             n += 1
             plant.command(np.asarray(frame['ext_mm']))
@@ -857,7 +1123,8 @@ class TossGate:
                 if plant.data.time >= run_until:
                     break
                 t_now = plant.data.time
-                pose_sub, _, _ = plan_catch.state_at(t_now - t_install)
+                sub_plan, sub_t0 = _active(t_now)
+                pose_sub, _, _ = sub_plan.state_at(t_now - sub_t0)
                 plant.command(plant.pose_to_extensions(pose_sub))
                 hp = throw_seq.sample(t_now)
                 if hp is None and catch_seq is not None:
@@ -963,23 +1230,37 @@ class TossGate:
                     break
             thr = _pass_threshold(npt)
             n_core = sum(1 for r in rs_pt if r.core_clean)
+            is_8b = (cfg.tier == '8b')
+            displacement = float(np.hypot(x - float(cfg.throw_site_xy[0]),
+                                          y - float(cfg.throw_site_xy[1])))
             point_rows.append({
                 'point_id': pid,
                 'pose_mm': [x, y, z],
                 'flight_time_s': T,
                 'event_vel_mps': float(ev),
-                # The plan's binding band: arrival speed 2-3 m/s.
+                'displacement_mm': displacement,
+                # The plan's binding band: arrival speed 2-3 m/s (Tier-8a only —
+                # the 8b binding band is the displaced 50 mm ring below).
                 'binding_2_3_mps': bool(
-                    math.isfinite(ev)
+                    not is_8b and math.isfinite(ev)
                     and _BINDING_SPEED_MIN_MPS <= ev <= _BINDING_SPEED_MPS),
-                # The orchestrator-amendment binding band: T=0.80 s at z=170.
-                # Membership is purely geometric (grid coordinates) — an
-                # isfinite(ev) term here would let a fully-rejected point
-                # silently leave the band and pass it vacuously; a rejected
-                # binding point must instead FAIL pass_9_of_10 (core_clean 0).
+                # The orchestrator-amendment binding band: T=0.80 s at z=170
+                # (Tier-8a only). Membership is purely geometric (grid
+                # coordinates) — an isfinite(ev) term here would let a
+                # fully-rejected point silently leave the band and pass it
+                # vacuously; a rejected binding point must instead FAIL
+                # pass_9_of_10 (core_clean 0).
                 'binding_T080_z170': bool(
-                    abs(T - _BINDING_T080_S) < 1e-9
+                    not is_8b and abs(T - _BINDING_T080_S) < 1e-9
                     and abs(z - Z_ACTIVE_MM) < 1e-9),
+                # Tier-8b binding displaced band: the centre (A) + the 50 mm ring
+                # at T=0.80 / z=170 (the Rung-2a reliable box). Purely geometric,
+                # same no-vacuous-pass rationale. The 70 mm ring (displacement
+                # ~70) and the T=0.95 spots stay ADVISORY (excluded here).
+                'binding_8b_ring': bool(
+                    is_8b and abs(T - _TOSS_8B_FLIGHT_S) < 1e-9
+                    and abs(z - Z_ACTIVE_MM) < 1e-9
+                    and displacement <= _TOSS_8B_RING_MM + 1e-6),
                 'hardware_marginal_flight': bool(T < _HW_MARGINAL_FLIGHT_S),
                 'n': npt,
                 'caught': sum(1 for r in rs_pt if r.caught),
@@ -991,20 +1272,26 @@ class TossGate:
 
         band_23 = [p for p in point_rows if p['binding_2_3_mps']]
         band_t080 = [p for p in point_rows if p['binding_T080_z170']]
+        band_8b = [p for p in point_rows if p['binding_8b_ring']]
         passed_23 = all(p['pass_9_of_10'] for p in band_23)
         passed_t080 = all(p['pass_9_of_10'] for p in band_t080)
+        passed_8b_ring = all(p['pass_9_of_10'] for p in band_8b)
         passed_full_band = bool(all(p['pass_9_of_10'] for p in point_rows))
         pump_frames_emitted = sum(r.pump_frames_emitted for r in results)
         pump_frames_accepted = sum(r.pump_frames_accepted for r in results)
         invariants_ok = (feas_violations == 0 and pump_rejects == 0
                          and pump_frames_accepted == pump_frames_emitted)
-        no_binding_points = (not band_23) and (not band_t080)
+        no_binding_points = (not band_23) and (not band_t080) and (not band_8b)
         if no_binding_points:
-            # Explicit-points/debug run intersecting NEITHER binding band:
-            # two empty all()'s would vacuously PASS, so gate on the full
-            # band instead. main() prints the loud NO BINDING POINTS banner.
-            # A zero-trial run (empty cfg.points) can never PASS.
+            # Explicit-points/debug run intersecting NO binding band: empty
+            # all()'s would vacuously PASS, so gate on the full band instead.
+            # main() prints the loud NO BINDING POINTS banner. A zero-trial run
+            # (empty cfg.points) can never PASS.
             passed = bool(results and passed_full_band and invariants_ok)
+        elif cfg.tier == '8b':
+            # Tier 8b: the binding band is the displaced 50 mm ring (+ centre);
+            # the 2-3 m/s / T080 8a bands do not apply.
+            passed = bool(passed_8b_ring and invariants_ok)
         else:
             passed = bool(passed_23 and passed_t080 and invariants_ok)
 
@@ -1022,23 +1309,27 @@ class TossGate:
 
         return {
             'gate': 'toss',
+            'tier': cfg.tier,
             'passed': passed,
-            # The two binding bands, reported separately (per-band criterion
-            # only; `passed` conjoins them with the invariants below).
+            # The binding bands, reported separately (per-band criterion only;
+            # `passed` conjoins the tier's binding band(s) with the invariants).
             'passed_2_3_mps_band': bool(passed_23),
             'passed_T080_z170_band': bool(passed_t080),
+            'passed_8b_ring_band': bool(passed_8b_ring),   # Tier-8b binding band
             'passed_full_band': passed_full_band,      # advisory, all points
             'no_binding_points': bool(no_binding_points),
             'binding_note': (
-                "passed = (every 2-3 m/s-band point core_clean >= ceil(0.9 n)) "
-                "AND (every T=0.80 s @ z=170 point core_clean >= ceil(0.9 n)) "
-                "AND zero feasibility violations AND zero pump rejects with "
-                "every emitted pump frame accepted. The T=0.80 band is the "
-                "2026-07-25 orchestrator amendment: the 2-3 m/s band is "
-                "hardware-marginal, so the hardware-relevant band gates too. "
-                "When the run's grid intersects NEITHER band "
-                "(no_binding_points), passed falls back to passed_full_band "
-                "AND the invariants — never a vacuous empty-band PASS."),
+                "Tier 8a: passed = (every 2-3 m/s-band point core_clean >= "
+                "ceil(0.9 n)) AND (every T=0.80 s @ z=170 point core_clean >= "
+                "ceil(0.9 n)) AND the invariants (zero feasibility violations, "
+                "zero pump rejects, every emitted pump frame accepted). The "
+                "T=0.80 band is the 2026-07-25 orchestrator amendment (the "
+                "2-3 m/s band is hardware-marginal). Tier 8b: passed = (every "
+                "centre + 50 mm-ring point at T=0.80/z=170 core_clean >= "
+                "ceil(0.9 n)) AND the invariants; the 70 mm ring + T=0.95 spots "
+                "stay ADVISORY. When the grid intersects NO binding band "
+                "(no_binding_points), passed falls back to passed_full_band AND "
+                "the invariants — never a vacuous empty-band PASS."),
             'core_passed_note': ('criterion evaluated on core_clean; vel_match '
                                  'deferred'),
             'deferred_criteria': ['vel_match_frac'],
@@ -1111,6 +1402,13 @@ def main(argv=None) -> int:
     p.add_argument('--trials-per-point', type=int, default=10)
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--grid', choices=('factored', 'full'), default='factored')
+    p.add_argument('--tier', choices=('8a', '8b'), default='8a',
+                   help="'8b' runs the tilt-aimed displaced throw→catch: the "
+                        "displaced binding grid (centre + 50 mm ring @ T=0.80) "
+                        "plus the non-gating ±{70,100} mm asymmetry map.")
+    p.add_argument('--throw-site', default=None,
+                   help="Tier-8b throw site A as 'X,Y' STOW mm (default 0,0 = "
+                        "the workspace centre); B is the swept grid point.")
     p.add_argument('--pose', default=None,
                    help="X,Y,Z single-point debug run (with --flight).")
     p.add_argument('--flight', type=float, default=None,
@@ -1138,9 +1436,12 @@ def main(argv=None) -> int:
             p.error("--pose and --flight must be given together")
         x, y, z = (float(v) for v in args.pose.split(','))
         points = [(x, y, z, float(args.flight))]
+    throw_site = (0.0, 0.0)
+    if args.throw_site is not None:
+        throw_site = tuple(float(v) for v in args.throw_site.split(','))
     cfg = TossGateConfig(
         trials_per_point=args.trials_per_point, seed=args.seed,
-        grid=args.grid, points=points,
+        grid=args.grid, tier=args.tier, throw_site_xy=throw_site, points=points,
         release_vel_noise_frac=args.release_noise_frac,
         arm_time_err_s=args.arm_time_err_s,
         event_vel_err_frac=args.event_vel_err_frac,
@@ -1150,8 +1451,10 @@ def main(argv=None) -> int:
     rep = run_gate(cfg, viewer_speed=viewer_speed)
     wall = time.time() - t0
     for row in rep['points']:
-        if row['binding_2_3_mps'] or row['binding_T080_z170']:
-            band = '2-3m/s' if row['binding_2_3_mps'] else 'T0.80@z170'
+        if (row['binding_2_3_mps'] or row['binding_T080_z170']
+                or row.get('binding_8b_ring')):
+            band = ('8b-ring' if row.get('binding_8b_ring')
+                    else '2-3m/s' if row['binding_2_3_mps'] else 'T0.80@z170')
             print(f"[toss_gate]   {row['point_id']}: core_clean "
                   f"{row['core_clean']}/{row['n']} "
                   f"{'PASS' if row['pass_9_of_10'] else 'FAIL'}  "
@@ -1159,11 +1462,17 @@ def main(argv=None) -> int:
                   f"{', hw-marginal' if row['hardware_marginal_flight'] else ''})")
     if rep['no_binding_points']:
         print("[toss_gate] *** NO BINDING POINTS — gating on full band *** "
-              "(this run's grid intersects neither the 2-3 m/s band nor "
-              "T=0.80 @ z=170; explicit-points/debug run)")
+              "(this run's grid intersects no binding band; "
+              "explicit-points/debug run)")
         print(f"[toss_gate] {'PASS' if rep['passed'] else 'FAIL'}  "
               f"full-band {'PASS' if rep['passed_full_band'] else 'FAIL'}  "
               f"(vel-match deferred)")
+    elif rep['tier'] == '8b':
+        print(f"[toss_gate] {'PASS' if rep['passed'] else 'FAIL'}  "
+              f"8b-ring band "
+              f"{'PASS' if rep['passed_8b_ring_band'] else 'FAIL'}  "
+              f"full-band {'PASS' if rep['passed_full_band'] else 'FAIL'} "
+              f"(advisory)  (vel-match deferred)")
     else:
         print(f"[toss_gate] {'PASS' if rep['passed'] else 'FAIL'}  "
               f"2-3m/s band {'PASS' if rep['passed_2_3_mps_band'] else 'FAIL'}  "

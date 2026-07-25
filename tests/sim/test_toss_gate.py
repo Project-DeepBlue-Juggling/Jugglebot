@@ -267,3 +267,134 @@ def test_contact_diag_column_present():
     for key in ('caught', 'held', 'landing_err_mm', 'separated',
                 'seat_offset_mm', 'pump_rejects'):
         assert key in row
+
+
+# ── Tier 8b (Phase 4): displaced tilt-aimed throw→catch ────────────────────────
+
+@pytest.fixture(scope='module')
+def smoke_8b_report():
+    """ONE small-N Tier-8b run shared by the 8b assertions: the centre (A,
+    displacement 0) + one 50 mm-ring point (binding) at T = 0.80, 2 trials
+    each, no contact diag (the gating column)."""
+    from sim.toss_gate import TossGateConfig, TossGate
+    cfg = TossGateConfig(
+        tier='8b', throw_site_xy=(0.0, 0.0),
+        points=[(0.0, 0.0, 170.0, 0.80), (50.0, 0.0, 170.0, 0.80)],
+        trials_per_point=2, seed=0, contact_diag=False)
+    return TossGate(cfg).run()
+
+
+def test_8b_trial_smoke(smoke_8b_report):
+    """An 8b trial drives the tilted-release + hold→reach production choreography
+    end to end: the displaced point commands a real pre-tilt (rx/ry != 0), the
+    A→B reach installs at t_release (reach_lead_s finite, ~= the flight), the
+    hold→reach crossing is pump-accepted (zero pump rejects), and a caught trial
+    actually ARMED from the tracked flight."""
+    r = smoke_8b_report
+    assert r['tier'] == '8b'
+    assert r['total_pump_rejects'] == 0             # incl. the hold→reach crossing
+    assert r['total_pump_frames_accepted'] == r['total_pump_frames_emitted']
+    ring = [t for t in r['results']
+            if t['accepted'] and t['displacement_mm'] > 1.0]
+    assert ring, "no accepted displaced 8b trial in the smoke"
+    for t in ring:
+        # A displaced throw is aimed via a real pre-tilt at A (rx or ry != 0) —
+        # the swing-compensated pre-position pose the trial reaches.
+        assert abs(t['pretilt_err_deg']) < 5.0      # commanded pre-tilt reached
+        assert math.isfinite(t['reach_lead_s'])     # the A→B reach installed
+        assert 0.6 <= t['reach_lead_s'] <= 0.85     # lead ~= T (minus one tick)
+        assert math.isfinite(t['displacement_mm'])
+    for t in r['results']:
+        if t['caught']:
+            assert t['catch_armed'], f"trial {t['idx']} caught without arming"
+
+
+def test_8b_binding_band_geometric_and_honest(smoke_8b_report):
+    """Third-band honesty pins (mirroring the Phase-2 lessons): binding_8b_ring
+    is PURELY geometric (centre + 50 mm ring at T=0.80/z=170; a rejected binding
+    point can never leave the band vacuously), the 70 mm ring / T=0.95 spots are
+    ADVISORY, and passed_8b_ring gates on core_clean >= ceil(0.9 n) — which
+    itself requires catch_armed (no ball-into-a-parked-cup pass)."""
+    r = smoke_8b_report
+    assert isinstance(r['passed_8b_ring_band'], bool)
+    rows = {p['point_id']: p for p in r['points']}
+    centre = rows['x0_y0_z170_T0.80']
+    ring = rows['x50_y0_z170_T0.80']
+    assert centre['binding_8b_ring'] is True         # displacement 0 = A, binding
+    assert ring['binding_8b_ring'] is True           # 50 mm ring, binding
+    assert centre['displacement_mm'] == pytest.approx(0.0)
+    assert ring['displacement_mm'] == pytest.approx(50.0)
+    # The 8a bands do not apply to an 8b run.
+    assert centre['binding_2_3_mps'] is False
+    assert centre['binding_T080_z170'] is False
+    # pass_9_of_10 is core_clean vs the exact integer threshold (n=2 ⇒ 2).
+    from sim.toss_gate import _pass_threshold
+    for p in r['points']:
+        assert p['pass_threshold'] == _pass_threshold(p['n'])
+        assert p['pass_9_of_10'] == (p['core_clean'] >= p['pass_threshold'])
+    # passed conjoins ONLY the 8b ring band with the invariants (not the 8a bands).
+    assert r['passed'] == bool(r['passed_8b_ring_band']
+                               and r['feasibility_violations_in_accepted'] == 0
+                               and r['total_pump_rejects'] == 0
+                               and r['total_pump_frames_accepted']
+                               == r['total_pump_frames_emitted'])
+
+
+def test_8b_advisory_70mm_ring_not_binding():
+    """The 70 mm ring (clean-box edge) and the T=0.95 spots are ADVISORY — never
+    in the binding band (a dirty edge point must not fail the gate)."""
+    from sim.toss_gate import default_grid_8b, _TOSS_8B_RING_MM
+    pts = default_grid_8b((0.0, 0.0))
+    # 1 centre + 8 binding ring + 8 advisory ring + 2 T=0.95 spots = 19.
+    assert len(pts) == 19
+    disps = sorted({round(math.hypot(x, y), 1) for (x, y, z, T) in pts})
+    assert 0.0 in disps and 50.0 in disps and 70.0 in disps
+    # No binding-band membership is claimed for a 70 mm point (displacement > 50).
+    for (x, y, z, T) in pts:
+        d = math.hypot(x, y)
+        if abs(d - 70.0) < 1e-6:
+            assert d > _TOSS_8B_RING_MM      # excluded from the binding ring
+
+
+def test_8b_prepare_commands_nonzero_pretilt():
+    """A displaced 8b throw is aimed via a NON-ZERO pre-tilt at A (rx/ry != 0 —
+    all lateral take-off comes from the slider through the tilt, never platform
+    translation); the co-located centre (displacement 0) is a level throw. Pure
+    synthesis (no plant stepping)."""
+    from sim.toss_gate import TossGate, TossGateConfig
+    gate = TossGate(TossGateConfig(tier='8b', throw_site_xy=(0.0, 0.0),
+                                   contact_diag=False))
+    s_disp = gate._prepare_toss((50.0, 0.0, 170.0, 0.80))
+    assert s_disp.reject_code is None
+    assert s_disp.hold_reach_swap is True                # deferred hold→reach path
+    assert abs(s_disp.pretilt_rx) + abs(s_disp.pretilt_ry) > 1e-3   # a real aim
+    assert s_disp.displacement_mm == pytest.approx(50.0)
+    s_ctr = gate._prepare_toss((0.0, 0.0, 170.0, 0.80))
+    assert abs(s_ctr.pretilt_rx) < 1e-9 and abs(s_ctr.pretilt_ry) < 1e-9
+    assert s_ctr.displacement_mm == pytest.approx(0.0)
+
+
+def test_8b_asymmetry_map_present_and_non_gating():
+    """The ±{70,100} mm directional-asymmetry MAP lives in the DETACH diag column
+    (contact_diagnostic.asymmetry_map), is NON-GATING (gating flag False, never
+    feeds passed), and reports the per-direction seated_n (post-catch seat) +
+    landing-error-vs-B metric. A 1-cell slice keeps CI fast (the full map is
+    8×2×2×diag_trials)."""
+    from sim.toss_gate import TossGateConfig, TossGate
+    cfg = TossGateConfig(tier='8b', throw_site_xy=(0.0, 0.0),
+                         points=[(0.0, 0.0, 170.0, 0.80)], trials_per_point=1,
+                         seed=0, contact_diag=True, diag_trials=1)
+    gate = TossGate(cfg)
+    amap = gate._run_asymmetry_map(dirs=[(1.0, 0.0)], radii=[100.0],
+                                   flights=[0.80])
+    assert amap['gating'] is False                   # advisory by construction
+    assert amap['radii_mm'] == [100.0]
+    assert len(amap['cells']) == 1
+    cell = amap['cells'][0]
+    for key in ('direction', 'radius_mm', 'flight_time_s', 'target_xy_mm',
+                'n', 'caught', 'seated_n', 'landing_err_mm_mean',
+                'landing_err_mm_worst'):
+        assert key in cell
+    assert cell['radius_mm'] == 100.0
+    assert cell['target_xy_mm'] == [100.0, 0.0]      # +x at 100 mm (Rung-2a good cell)
+    assert cell['n'] == 1

@@ -56,6 +56,21 @@ last-writer-wins queue. The existing catch pipeline (tracker correlation →
 catch_coordinator → ``catch/dynamic_target``) closes the loop unchanged; the
 ``catch/prime_hold`` topic suppresses catch_coordinator's auto-prime paths from
 PREPARE to terminal so the ball-laden hand is never carried up mid-toss.
+
+TIER 8B (Phase 4, config ``toss_tier='8b'``) displaces the catch: pre-tilt at the
+config throw site A (``compute_release_state_tilted``'s swing-compensated pose is
+the POSITIONING target, so the arm-edge reach envelope is captured at A), launch
+tilt-aimed at the goal's B, and the platform's A→B reach is DEFERRED to the
+scheduled release: the stock catch_coordinator announcement pre-tilt would
+complete the A→B translate BEFORE the ball is released (its arrival clamps to
+~now + 1 s while the toss announces ≥1 s pre-release) — aim destroyed, a moving
+platform under a seated ball mid-windup — so this node raises the new
+``catch/pretilt_hold`` gate for the goal's duration (catch_coordinator then
+latches the announcement for its hand-arm window but publishes no platform
+target) and itself publishes the ONE ``catch/dynamic_target`` at t_release,
+built from the same ``CatchCoordinator.predicted_catch_command`` math with
+arrival = the announced landing (lead = the flight time by construction). Tier
+8a never touches the new topic — its publish sequence is byte-identical.
 """
 
 from __future__ import annotations
@@ -76,6 +91,7 @@ from std_srvs.srv import SetBool, Trigger
 from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
     BallStateArray,
+    DynamicTargetCommand,
     HandTelemetryMessage,
     RigidBodyPoses,
     TargetFeedback,
@@ -109,6 +125,7 @@ from jugglebot.toss_sequencer import (
     ACTION_DISPATCH_THROW as TOSS_ACTION_DISPATCH_THROW,
     ACTION_POSITION_PLATFORM as TOSS_ACTION_POSITION_PLATFORM,
     ACTION_PREPARE_CATCH as TOSS_ACTION_PREPARE_CATCH,
+    ACTION_REACH_CATCH as TOSS_ACTION_REACH_CATCH,
     ACTION_RECENTER as TOSS_ACTION_RECENTER,
     ACTION_SAFE_ABORT as TOSS_ACTION_SAFE_ABORT,
     PHASE_CHECKING as TOSS_PHASE_CHECKING,
@@ -118,13 +135,18 @@ from jugglebot.toss_sequencer import (
     THROW_DISPATCH_AMBIGUOUS,
     THROW_DISPATCH_OK,
     THROW_DISPATCH_REJECTED,
+    TIER_8B,
     TOSS_CANCEL_CUTOFF_S,
     TossObservations,
     TossSequencer,
 )
+from jugglebot.catch_coordinator import CatchCoordinator
+from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.toss_release import (
+    ThrowTiltInfeasible,
     build_announcement_fields,
     compute_release_state,
+    compute_release_state_tilted,
 )
 
 # BallStatus enum (BallState.msg): 0 = TO_BE_THROWN, 1 = IN_FLIGHT, 2 = CAUGHT.
@@ -396,6 +418,27 @@ class ReloadCoordinatorNode(Node):
         # guarantee — the armed edge could beat the hold and auto-prime the
         # ball-laden hand).
         self._toss_prepare_pending = False
+        # Tier 8b only: catch/pretilt_hold was raised this goal — the terminal
+        # teardowns release it iff raised, so an 8a goal's publish sequence
+        # stays byte-identical (it never touches the topic).
+        self._toss_pretilt_hold_raised = False
+        # Tier 8b only: the announced landing state stashed at ANNOUNCE for the
+        # deferred A->B reach to reuse — (landing_pos_global_mm, landing_vel_mms,
+        # landing_time_ros_seconds). None between goals / for 8a.
+        self._toss_announced_reach = None
+        # Tier 8b: the pure catch-pose policy for the deferred A→B reach —
+        # the SAME class + construction catch_coordinator_node uses (pinned
+        # equal by a drift-guard test), so the reach target's receive-tilt/
+        # swing math is single-sourced through predicted_catch_command and can
+        # never drift from what the announcement path would have commanded.
+        self._toss_catch_policy = CatchCoordinator(
+            robot_name=robot_name,
+            initial_height_mm=hw.GEOM_INITIAL_HEIGHT_MM,
+            landing_z_offset_mm=(hw.JB_OP_DEFAULT_ACTIVE_Z_MM
+                                 + hw.HAND_CATCH_OFFSET_MM),
+            hand_catch_offset_mm=hw.HAND_CATCH_OFFSET_MM,
+            catch_angle_limit_deg=30.0,
+        )
         # Trace-only waiver parameter (D4d): declared here, read at each toss
         # goal-accept — see _TOSS_WAIVER_PARAM.
         self.declare_parameter(_TOSS_WAIVER_PARAM, False)
@@ -472,6 +515,26 @@ class ReloadCoordinatorNode(Node):
         # last-writer-wins queue. Stale True fails SAFE (no auto-prime; the reload
         # action primes proactively itself).
         self._prime_hold_pub = self.create_publisher(Bool, 'catch/prime_hold', 10)
+        # Pre-tilt suppression gate for TIER 8B (catch/pretilt_hold): True on the
+        # ACTION_PREPARE_CATCH tick (alongside prime_hold — ≥2 FSM ticks before
+        # our announcement can reach catch_coordinator), False at terminal
+        # (released LAST, with prime_hold). While True, catch_coordinator still
+        # LATCHES our announcement (open-loop freeze + hand-arm window keep
+        # working) but publishes NO platform pre-tilt: the stock pre-tilt's
+        # arrival clamps to ~now + 1 s while the toss announces ≥1 s before
+        # release, so the A→B translate would COMPLETE before the ball leaves —
+        # aim destroyed, a moving platform under a seated ball mid-windup. This
+        # node instead publishes the ONE deferred reach at t_release (see
+        # _publish_toss_reach). Stale True fails DEGRADED-BUT-SAFE: reload
+        # announcements lose their platform pre-tilt (the platform simply holds;
+        # the hand-arm stays tracker-driven) — zero hazard, WARN-logged in CCN.
+        self._pretilt_hold_pub = self.create_publisher(
+            Bool, 'catch/pretilt_hold', 10)
+        # Tier 8b's deferred A→B reach target (the same wire catch_coordinator
+        # publishes; trajectory_node consumes either publisher identically while
+        # the catch-armed latch is raised).
+        self._dyn_target_pub = self.create_publisher(
+            DynamicTargetCommand, 'catch/dynamic_target', 10)
         # The toss's self-ThrowAnnouncement: thrower_name = target_id = this robot,
         # published in PREPARING (armed confirmed → ≥1-tick gap → announce) so the
         # existing correlation → catch path closes the loop unchanged.
@@ -1076,11 +1139,32 @@ class ReloadCoordinatorNode(Node):
         # conversion module; the FSM gets its event_vel from here, never a second
         # derivation. An OUT-OF-BAND flight time still computes a release state
         # and is then loudly REJECTED_FLIGHT_TIME by the FSM's CHECKING pass.
-        release = compute_release_state(catch_pose, flight)
+        tier = str(hw.JB_OP_TOSS_TIER)
+        throw_site = tuple(float(v) for v in hw.JB_OP_TOSS_THROW_SITE_MM)
+        tilt_clamp_exceeded = False
+        if tier == TIER_8B:
+            # Tier 8b: throw from the config site A, tilt-aimed at the displaced
+            # B. The module's clamp gate is the authoritative aim check — a
+            # raise maps onto the FSM's tilt_clamp_exceeded flag so CHECKING
+            # mints REJECTED_TILT_CLAMP in gate order (no drift-prone second
+            # copy of the aim math; unreachable inside the ±150 mm workspace —
+            # the aim needs ~315 mm of displacement to hit the 12° ceiling).
+            try:
+                release = compute_release_state_tilted(
+                    catch_pose, flight, throw_site_xy_mm=throw_site)
+            except ThrowTiltInfeasible as exc:
+                self.get_logger().error(f'Toss displaced aim infeasible: {exc}')
+                release = None
+                tilt_clamp_exceeded = True
+        else:
+            release = compute_release_state(catch_pose, flight)
         seq = TossSequencer(
             catch_pose_stow_mm=catch_pose, flight_time_s=flight,
-            throw_delay_s=throw_delay, tier=str(hw.JB_OP_TOSS_TIER),
-            event_vel_mps=float(release.event_vel_mps))
+            throw_delay_s=throw_delay, tier=tier,
+            event_vel_mps=(float(release.event_vel_mps)
+                           if release is not None else 0.0),
+            throw_site_xy_mm=throw_site,
+            tilt_clamp_exceeded=tilt_clamp_exceeded)
         seq.start(time.perf_counter())
         waiver = bool(self.get_parameter(_TOSS_WAIVER_PARAM).value)
         if waiver:
@@ -1104,13 +1188,26 @@ class ReloadCoordinatorNode(Node):
             self._catch_vel_scale = (vel_scale if vel_scale > 0.0
                                      else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
             self._toss_release_state = release
-            self._toss_landing_global_mm = tuple(
-                float(v) for v in release.catch_point_global_mm)
-            # The nominated PLATFORM pose kept STOW-relative, UNCONVERTED: the
-            # mocap cross-check compares in the platform_start frame, which is
-            # the frame non-base bodies publish in (see _TOSS_MOCAP_BODY_PARAM)
-            # — converting to global here double-adds GEOM_INITIAL_HEIGHT_MM.
-            self._toss_platform_target_mm = tuple(float(v) for v in catch_pose)
+            # release is None on a Tier-8b tilt-clamp raise (the FSM rejects
+            # REJECTED_TILT_CLAMP on the first step, so the nominated landing is
+            # never consulted); guard the deref. None ⇒ the possession
+            # plausibility falls back to the ACTIVE catch point (the reload
+            # default), which is moot for an immediately-rejected goal.
+            self._toss_landing_global_mm = (
+                tuple(float(v) for v in release.catch_point_global_mm)
+                if release is not None else None)
+            # The POSITIONING mocap arrival cross-check target, kept STOW-relative
+            # and UNCONVERTED (the cross-check compares in the platform_start
+            # frame — the frame non-base bodies publish in, see
+            # _TOSS_MOCAP_BODY_PARAM; converting to global here double-adds
+            # GEOM_INITIAL_HEIGHT_MM). It is the SAME _toss_positioning_xyz the
+            # go_to_pose command uses (single source, so command and verification
+            # can never diverge): Tier 8a = the nominated catch pose B, Tier 8b =
+            # the swing-compensated pre-tilt pose at the throw site A (else an
+            # operator who configures a platform body for an 8b sitting gets
+            # measured-A vs target-B → a spurious ABORTED_POSITION_FAILED).
+            self._toss_platform_target_mm = self._toss_positioning_xyz(
+                tier, catch_pose, release)
             self._toss_waiver = waiver
             self._toss_mocap_body = str(
                 self.get_parameter(_TOSS_MOCAP_BODY_PARAM).value or '')
@@ -1119,6 +1216,9 @@ class ReloadCoordinatorNode(Node):
             self._toss_throw_dispatched = False
             self._toss_stroke_seen = False
             self._toss_track_confirmed = False
+            # Tier-8b per-goal state (8a never touches catch/pretilt_hold).
+            self._toss_pretilt_hold_raised = False
+            self._toss_announced_reach = None
         self._implausible_logged_ids = set()
 
         result = Toss.Result()
@@ -1276,14 +1376,27 @@ class ReloadCoordinatorNode(Node):
         elif decision.action == TOSS_ACTION_PREPARE_CATCH:
             # Verified-arrival tick: raise the hold, defer the bundle (see the
             # docstring). The FSM idles in PREPARING until the bundle's
-            # note_prepare_result arrives next tick.
+            # note_prepare_result arrives next tick. Tier 8b ALSO raises
+            # catch/pretilt_hold here (alongside prime_hold, >=2 FSM ticks
+            # before our announcement can reach catch_coordinator) so the stock
+            # announcement pre-tilt never fires — this node owns the deferred
+            # A->B reach at t_release. For 8a the topic is NEVER touched (the
+            # publish sequence stays byte-identical).
             self._publish_prime_hold(True)
+            if seq.tier == TIER_8B:
+                self._publish_pretilt_hold(True)
+                self._toss_pretilt_hold_raised = True
             self._toss_prepare_pending = True
         elif decision.action == TOSS_ACTION_ANNOUNCE:
             self._announce_toss(seq)
         elif decision.action == TOSS_ACTION_DISPATCH_THROW:
             outcome, message = self._dispatch_toss_throw(seq)
             seq.note_throw_dispatch(outcome, message)
+        elif decision.action == TOSS_ACTION_REACH_CATCH:
+            # Tier 8b's deferred A->B reach (time-triggered at t_release): the
+            # ONE announcement-derived catch/dynamic_target for B (lead = the
+            # flight time by construction). 8a never emits this action.
+            self._publish_toss_reach()
         elif decision.action == TOSS_ACTION_RECENTER:
             self._toss_recenter()
         elif decision.action == TOSS_ACTION_SAFE_ABORT:
@@ -1309,14 +1422,29 @@ class ReloadCoordinatorNode(Node):
         return decision
 
     def _position_platform_for_toss(self, seq) -> None:
-        """POSITIONING: the profiled go_to_pose to the nominated catch pose (level
-        orientation — Tier 8a throws from a level platform). The response is fed
-        straight into the FSM: the service returns at plan-INSTALL, so
-        planned_duration_s anchors the timed arrival; the config-keyed mocap
-        cross-check (disabled by default — see _TOSS_MOCAP_BODY_PARAM) can then
-        corroborate before any arming. The '[wire DISARMED' marker on an
-        otherwise-accepted response is mapped to a WIRE_DISARMED reject — the
-        plan-installed-but-not-actuating case (string-fragile, pinned by test).
+        """POSITIONING: the profiled go_to_pose to the pre-positioning pose.
+
+        Tier 8a throws from a LEVEL platform at the nominated catch pose B
+        (identity orientation). Tier 8b throws from the swing-compensated PRE-TILT
+        pose at the throw site A: the POSITION is release.pretilt_pose_stow[:3]
+        (A, swing-compensated so the tilted release xy sits at nominal A) and the
+        ORIENTATION is the throw tilt (tilt_rx, tilt_ry, rz=0). Sourcing the level
+        B pose for 8b (as the shared path once did) would pre-position LEVEL at B
+        and throw straight up — orphaning the computed pre-tilt aim and firing from
+        the wrong site. The trajectory/arm_catch reach-envelope is captured at the
+        COMMANDED pose (A for 8b, in _prepare_toss_catch), so the deferred A->B
+        reach published at t_release stays inside the 80 mm envelope (B is <= 70 mm
+        from A across the Phase-4 grid). The 8b tilt is encoded through the SAME
+        quaternion round-trip go_to_pose decodes with (rotvec -> matrix -> quat),
+        single-sourcing the ik_solver helpers rather than hand-rolling a quaternion.
+
+        The response is fed straight into the FSM: the service returns at
+        plan-INSTALL, so planned_duration_s anchors the timed arrival; the
+        config-keyed mocap cross-check (disabled by default — see
+        _TOSS_MOCAP_BODY_PARAM) can then corroborate before any arming. The
+        '[wire DISARMED' marker on an otherwise-accepted response is mapped to a
+        WIRE_DISARMED reject — the plan-installed-but-not-actuating case
+        (string-fragile, pinned by test).
 
         NO_RESPONSE (service unavailable, or the ack future timing out) leaves
         the platform's true motion state UNKNOWN: the plan may have installed
@@ -1325,14 +1453,30 @@ class ReloadCoordinatorNode(Node):
         ABORTED_POSITION_TIMEOUT) therefore gets a best-effort go_home from
         _step_toss_sequence — go_home supersedes any zombie move by design
         (see _TOSS_POSITION_UNKNOWN_TERMINALS)."""
-        x, y, z = seq.catch_pose_stow_mm
+        with self._lock:
+            release = self._toss_release_state
+        # The STOW-frame POSITION is the SINGLE source shared with the POSITIONING
+        # mocap arrival cross-check target (_toss_platform_target_mm, set in
+        # _execute_toss from the SAME _toss_positioning_xyz), so what we command
+        # and what we verify against can never diverge: Tier 8a = level B, Tier 8b
+        # = the swing-compensated pre-tilt pose at the throw site A.
+        x, y, z = self._toss_positioning_xyz(
+            seq.tier, seq.catch_pose_stow_mm, release)
+        if seq.tier == TIER_8B:
+            # Tier 8b: tilt-aimed at A. release is a TiltedReleaseState
+            # post-CHECKING (a tilt-clamp raise is rejected on the first FSM step,
+            # before POSITIONING is ever reached) — the unguarded read mirrors
+            # _announce_toss's read of the same stash.
+            orientation = self._tilt_quaternion(release.tilt_rx, release.tilt_ry)
+        else:
+            orientation = Quaternion()              # identity = level platform (8a)
         if not self._go_to_pose_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/go_to_pose service unavailable')
             seq.note_position_result(time.perf_counter(), False, 0.0, 'NO_RESPONSE')
             return
         req = GoToPose.Request()
         req.pose = Pose(position=Point(x=float(x), y=float(y), z=float(z)),
-                        orientation=Quaternion())   # identity = level platform
+                        orientation=orientation)
         req.duration_s = 0.0                        # minimal feasible duration
         # lean_gain stays the srv field default (-1.0): defer to the config gain.
         resp = self._wait_future(self._go_to_pose_cli.call_async(req))
@@ -1345,6 +1489,36 @@ class ReloadCoordinatorNode(Node):
             return
         seq.note_position_result(now, bool(resp.accepted),
                                  float(resp.planned_duration_s), str(resp.code))
+
+    @staticmethod
+    def _toss_positioning_xyz(tier, catch_pose_stow_mm, release):
+        """The STOW-frame platform POSITION the toss pre-positions to — the SINGLE
+        source for BOTH the go_to_pose command (:meth:`_position_platform_for_toss`)
+        and the POSITIONING mocap arrival cross-check target
+        (``_toss_platform_target_mm``, set in :meth:`_execute_toss`), so the
+        commanded pose and the verification target can never diverge. Tier 8a = the
+        nominated catch pose B (level); Tier 8b = the swing-compensated pre-tilt
+        pose at the throw site A (``release.pretilt_pose_stow[:3]``). ``release`` is
+        None only on an 8b tilt-clamp raise (the goal is rejected before
+        POSITIONING), so the B fallback there is moot. Returns a float (x, y, z)."""
+        if tier == TIER_8B and release is not None:
+            pre = np.asarray(release.pretilt_pose_stow, dtype=float)
+            return (float(pre[0]), float(pre[1]), float(pre[2]))
+        x, y, z = catch_pose_stow_mm
+        return (float(x), float(y), float(z))
+
+    @staticmethod
+    def _tilt_quaternion(rx: float, ry: float) -> Quaternion:
+        """Encode a platform tilt rotvec (rx, ry, rz=0) as the go_to_pose
+        orientation quaternion. trajectory_node decodes the request orientation
+        back to a rotvec via quat_to_rot_matrix -> rot_matrix_to_rotvec, so the
+        tilt is encoded through the EXACT inverse round-trip
+        (rotvec -> rotvec_to_rot_matrix -> rot_matrix_to_quat), single-sourcing
+        the ik_solver helpers rather than hand-rolling a quaternion. Returns a
+        geometry_msgs/Quaternion (w, x, y, z)."""
+        w, qx, qy, qz = rot_matrix_to_quat(
+            rotvec_to_rot_matrix(np.array([float(rx), float(ry), 0.0])))
+        return Quaternion(w=float(w), x=float(qx), y=float(qy), z=float(qz))
 
     def _prepare_toss_catch(self) -> bool:
         """The PREPARE bundle (verified at the nominated pose, ball seated,
@@ -1429,12 +1603,16 @@ class ReloadCoordinatorNode(Node):
         ROS↔perf clock crossing of the sequence: the FSM's perf-domain t_release
         becomes the absolute ROS throw_time."""
         if seq.announce_lead_short:
-            # WARN-only for level Tier 8a: the pre-tilt target equals the
-            # already-held pose, so the degenerate pre-tilt is motion-free.
-            # Tier 8b MUST harden this to an abort.
+            # WARN-only for BOTH tiers (the Phase-1 "8b hardens this to an abort"
+            # promise was SUPERSEDED in Phase 4 — see the sequencer's
+            # TOSS_MIN_ANNOUNCE_LEAD_S comment): level 8a's pre-tilt target
+            # equals the already-held pose (motion-free), and 8b's platform reach
+            # is DEFERRED to t_release with lead = the flight time by
+            # construction, so this announce lead sizes no 8b platform motion.
             self.get_logger().warning(
                 'toss announce→landing lead is short (< 2.5 s) — pre-tilt '
-                'degenerates toward arrive-at-contact (motion-free for level 8a)')
+                'degenerates toward arrive-at-contact (motion-free for level 8a; '
+                '8b platform reach is deferred to release regardless)')
         with self._lock:
             release = self._toss_release_state
         now_perf = time.perf_counter()
@@ -1459,6 +1637,16 @@ class ReloadCoordinatorNode(Node):
         ann.throw_time = (now_ros + rclpy.time.Duration(seconds=delta_s)).to_msg()
         ann.landing_time = (now_ros + rclpy.time.Duration(
             seconds=delta_s + float(seq.flight_time_s))).to_msg()
+        # Stash the announced landing state for Tier 8b's deferred A->B reach to
+        # reuse (landing_pos = B's cup point global mm, landing_vel, and the ROS
+        # landing time = the same value ann.landing_time encodes). 8a never reads
+        # it — _publish_toss_reach is only reached on ACTION_REACH_CATCH.
+        landing_time_ros_s = (now_ros.nanoseconds * 1e-9 + delta_s
+                              + float(seq.flight_time_s))
+        with self._lock:
+            self._toss_announced_reach = (
+                np.array(lp, dtype=float), np.array(lv, dtype=float),
+                landing_time_ros_s)
         self._announce_pub.publish(ann)
         seq.note_announcement()
 
@@ -1517,6 +1705,66 @@ class ReloadCoordinatorNode(Node):
         comment in __init__ for the invariant it enforces)."""
         self._prime_hold_pub.publish(Bool(data=bool(hold)))
 
+    def _publish_pretilt_hold(self, hold: bool):
+        """Publish the catch/pretilt_hold suppression gate (Tier 8b only; see the
+        publisher's comment in __init__ for the invariant it enforces)."""
+        self._pretilt_hold_pub.publish(Bool(data=bool(hold)))
+
+    def _publish_toss_reach(self):
+        """Tier 8b's deferred A->B reach (ACTION_REACH_CATCH, time-triggered at
+        t_release): build the ONE catch/dynamic_target for B from the stashed
+        announced landing via the SAME policy catch_coordinator_node uses
+        (predicted_catch_command — the receive-tilt/swing math is single-sourced
+        through _toss_catch_policy, never a drift-prone copy) and publish it with
+        arrival = the announced landing (lead = the flight time by construction).
+        Mirrors CCN's _publish_dynamic_target field-mapping + ROS->perf crossing
+        exactly. A missing stash, or a policy reject (should not happen
+        post-CHECKING, but guarded), logs a warning and publishes nothing — the
+        FSM's ABORTED_NO_RELEASE / MISSED path still cleans up."""
+        with self._lock:
+            stash = self._toss_announced_reach
+        if stash is None:
+            self.get_logger().warning(
+                'toss deferred reach requested but no announced landing was '
+                'stashed — publishing no platform target')
+            return
+        landing_pos, landing_vel, landing_time_ros_s = stash
+        cmd = self._toss_catch_policy.predicted_catch_command(
+            landing_pos, landing_vel, landing_time_ros_s)
+        if cmd is None:
+            self.get_logger().warning(
+                'toss deferred reach: predicted_catch_command rejected the '
+                'announced landing — publishing no platform target')
+            return
+        # ROS->perf crossing — the coordinator's own convention (offset =
+        # now_perf − now_ros, the SAME crossing _ball_time_at_land_perf uses);
+        # arrival_perf mirrors CCN's cmd.landing_time + _ros_to_perf_offset.
+        now_perf = time.perf_counter()
+        now_ros = self.get_clock().now().nanoseconds * 1e-9
+        arrival_perf = cmd.landing_time + (now_perf - now_ros)
+        out = DynamicTargetCommand()
+        out.target_pos = Point(
+            x=float(cmd.target_pos[0]),
+            y=float(cmd.target_pos[1]),
+            z=float(cmd.target_pos[2]),
+        )
+        out.target_quat = Quaternion(
+            w=float(cmd.target_quat[0]),
+            x=float(cmd.target_quat[1]),
+            y=float(cmd.target_quat[2]),
+            z=float(cmd.target_quat[3]),
+        )
+        out.target_vel = Vector3(
+            x=float(cmd.target_vel[0]),
+            y=float(cmd.target_vel[1]),
+            z=float(cmd.target_vel[2]),
+        )
+        out.arrival_time = arrival_perf
+        self._dyn_target_pub.publish(out)
+        self.get_logger().info(
+            'toss deferred A->B reach published (arrival %.3f perf, ROS lead '
+            '%.3f s)' % (arrival_perf, cmd.landing_time - now_ros))
+
     def _toss_recenter(self):
         """Toss RECENTER (CAUGHT): the reload teardown verbatim (lower latch,
         catch/armed False, go_home — the hand keeps the caught ball, no retract,
@@ -1526,9 +1774,14 @@ class ReloadCoordinatorNode(Node):
         still-armed catch_coordinator re-opens the auto-prime exactly while the
         caught ball rests in the cup (the ascent would launch it). Releasing late
         costs nothing: a standing hold only suppresses auto-primes, and both
-        ball-ops prime proactively themselves."""
+        ball-ops prime proactively themselves. Tier 8b's catch/pretilt_hold is
+        released LAST of all (iff it was raised this goal), same
+        cross-topic-ordering rationale: a stale pretilt_hold only DEGRADES
+        (a reload announcement loses its platform pre-tilt) — never a hazard."""
         self._recenter()
         self._publish_prime_hold(False)
+        if self._toss_pretilt_hold_raised:
+            self._publish_pretilt_hold(False)
 
     def _toss_safe_abort(self):
         """Toss SAFE_ABORT: the reload safing ladder verbatim (catch/armed False
@@ -1537,9 +1790,14 @@ class ReloadCoordinatorNode(Node):
         queue, the Teensy's only un-arm mechanism — then latch lower, go_home),
         THEN prime_hold False LAST: the hold must outlive the whole teardown for
         the same cross-topic-ordering reason as _toss_recenter — a pre-release
-        abort has the ball still seated in the cup."""
+        abort has the ball still seated in the cup. Tier 8b's catch/pretilt_hold
+        is released LAST of all (iff it was raised this goal), same rationale;
+        _safe_toss_on_early_exit routes through here so cancel/timeout/shutdown
+        are covered."""
         self._safe_abort()
         self._publish_prime_hold(False)
+        if self._toss_pretilt_hold_raised:
+            self._publish_pretilt_hold(False)
 
     def _safe_toss_on_early_exit(self, seq):
         """Safe the robot on a NODE-level toss exit (cancel honoured / timeout /

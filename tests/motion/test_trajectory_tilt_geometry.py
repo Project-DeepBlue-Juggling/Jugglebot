@@ -1,9 +1,11 @@
-"""Catch tilt geometry tests (Phase 6) — the bb-reference geometry regression.
+"""Cup tilt geometry tests — the bb-reference geometry regression.
 
-Pins the ported ``juggle_tilt`` catch math against the Jugglebot-bb reference
-values (1.66 mm/deg lever arm at the Rung-0 operating cup height, ≤12° tilt clamp)
-and the collinear-catch invariant (cup axis anti-parallel to the arrival velocity),
-so a future edit to ``tilt_geometry`` / ``shaping`` that drifts the shared cup
+Pins the ported ``juggle_tilt`` catch math (Phase 6) against the Jugglebot-bb
+reference values (1.66 mm/deg lever arm at the Rung-0 operating cup height, ≤12°
+tilt clamp) and the collinear-catch invariant (cup axis anti-parallel to the
+arrival velocity), plus the Phase-4 throw mirror (``tilt_to_throw``, single-ball-
+toss Tier 8b: cup axis PARALLEL to the take-off, exact mirror identity), so a
+future edit to ``tilt_geometry`` / ``shaping`` that drifts the shared cup
 geometry fails loudly.
 """
 
@@ -64,6 +66,68 @@ def test_tilt_clamped_to_max():
 def test_custom_max_tilt_respected():
     v = np.array([3000.0, 0.0, -300.0])
     assert tg.tilt_to_receive_deg(v, max_tilt_deg=5.0) == pytest.approx(5.0, abs=1e-6)
+
+
+# ── Throw mirror (Phase 4 port): cup axis parallel to the take-off ──
+
+def test_throw_straight_up_takeoff_is_level():
+    """A straight-up take-off needs no tilt (level cup) — mirrors the
+    straight-down receive case exactly."""
+    rx, ry = tg.tilt_to_throw(np.array([0.0, 0.0, 3000.0]))
+    assert (rx, ry) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize('seed', range(8))
+def test_throw_cup_axis_parallel_to_takeoff_velocity(seed):
+    """For an ascending take-off within the tilt clamp, cup_axis(tilt_to_throw(v))
+    is PARALLEL to v (the ball detaches up the tilted cup axis) — the mirror of
+    the receive test's anti-parallel invariant."""
+    rng = np.random.default_rng(seed)
+    # An ascending take-off with a modest lateral component (under the 12° clamp).
+    lateral = rng.uniform(-400.0, 400.0, 2)
+    v = np.array([lateral[0], lateral[1], rng.uniform(2500.0, 4000.0)])
+    rx, ry = tg.tilt_to_throw(v)
+    axis = tg.cup_axis(rx, ry)
+    assert np.dot(axis, v / np.linalg.norm(v)) > 0.999
+
+
+@pytest.mark.parametrize('v', [
+    (300.0, -150.0, 2600.0),
+    (0.0, 250.0, 3900.0),
+    (-120.0, -80.0, 3000.0),
+    (3000.0, 0.0, 300.0),      # would-saturate case: mirror holds through the clamp
+])
+def test_throw_is_exact_mirror_of_receive(v):
+    """tilt_to_throw(v) == tilt_to_receive(-v), exact ``==`` same-module — the
+    port-faithfulness pin (the sim body was exactly this one-line mirror)."""
+    v = np.array(v)
+    assert tg.tilt_to_throw(v) == tg.tilt_to_receive(-v)
+
+
+def test_throw_direction_signs():
+    """Rung-0 sign convention: +vx take-off ⇒ cup leans toward +x ⇒ ry > 0,
+    rx == 0; +vy take-off ⇒ rx < 0, ry == 0."""
+    rx, ry = tg.tilt_to_throw(np.array([300.0, 0.0, 2500.0]))
+    assert ry > 0.0 and rx == 0.0
+    rx2, ry2 = tg.tilt_to_throw(np.array([0.0, 300.0, 2500.0]))
+    assert rx2 < 0.0 and ry2 == 0.0
+
+
+def test_throw_tilt_clamps_and_honours_custom_max_positionally():
+    """A 45° take-off saturates at MAX_TILT_DEG; a custom ceiling is honoured
+    POSITIONALLY (sim/juggle_throw.py:252 and sim/juggle_selfcatch.py:466 pass
+    it positionally through the re-export — the signature must not change)."""
+    v = np.array([2500.0, 0.0, 2500.0])
+    rx, ry = tg.tilt_to_throw(v)
+    assert np.degrees(np.hypot(rx, ry)) == pytest.approx(tg.MAX_TILT_DEG, abs=1e-6)
+    rx5, ry5 = tg.tilt_to_throw(v, 5.0)
+    assert np.degrees(np.hypot(rx5, ry5)) == pytest.approx(5.0, abs=1e-6)
+
+
+def test_throw_velocity_unit_agnostic():
+    """tilt_to_throw is direction-only — mm/s and m/s give the same tilt."""
+    v = np.array([300.0, -200.0, 3200.0])
+    assert np.allclose(tg.tilt_to_throw(v), tg.tilt_to_throw(v / 1000.0))
 
 
 # ── bb-reference lever-arm regression (the shared cup geometry, single source) ──

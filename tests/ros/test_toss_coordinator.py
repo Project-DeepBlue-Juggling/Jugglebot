@@ -27,9 +27,11 @@ import math
 import time
 import types
 
+import numpy as np
 import pytest
 
 import jugglebot.hardware_config as hw
+import jugglebot.reload_coordinator_node as rcn
 from jugglebot.reload_coordinator_node import (
     ReloadCoordinatorNode,
     _TOSS_SOFT_CATCH_GAINS,
@@ -43,6 +45,7 @@ from jugglebot.toss_sequencer import (
     ACTION_NONE,
     ACTION_POSITION_PLATFORM,
     ACTION_PREPARE_CATCH,
+    ACTION_REACH_CATCH,
     PHASE_BALL_IN_FLIGHT,
     PHASE_CATCHING,
     PHASE_CHECKING,
@@ -53,12 +56,17 @@ from jugglebot.toss_sequencer import (
     THROW_DISPATCH_AMBIGUOUS,
     THROW_DISPATCH_OK,
     THROW_DISPATCH_REJECTED,
+    TIER_8B,
     TOSS_CONTROL_MODE,
     TossDecision,
     TossResult,
     TossSequencer,
 )
-from jugglebot.motion.trajectory.toss_release import compute_release_state
+from jugglebot.motion.trajectory.toss_release import (
+    ThrowTiltInfeasible,
+    compute_release_state,
+    compute_release_state_tilted,
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -232,15 +240,16 @@ def test_toss_deadline_never_lands_inside_the_flight_window():
 def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     """Every CHECKING reject surfaces through _execute_toss as a loud outcome +
     goal abort. TIER is driven through the GENERATED config gate (the node reads
-    hw.JB_OP_TOSS_TIER at goal time — Phase 4 flips the yaml, not the code);
-    HAND_STALE / HAND_NOT_PARKED / TRACK_ACTIVE are the three preconditions the
-    toss adds over reload (blind release verification / kind-0 absolute-position
-    stroke hazard / F7 phantom-track correlation hole)."""
+    hw.JB_OP_TOSS_TIER at goal time — the serviceable set is {8a, 8b}, so an
+    UNIMPLEMENTED tier like '9z' is REJECTED_TIER); HAND_STALE / HAND_NOT_PARKED
+    / TRACK_ACTIVE are the three preconditions the toss adds over reload (blind
+    release verification / kind-0 absolute-position stroke hazard / F7
+    phantom-track correlation hole)."""
     now = time.perf_counter()
     node = _toss_ready_node(now)
     gh = _TossGoalHandle()
     if breakage == 'tier':
-        monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
+        monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '9z')
     elif breakage == 'mode':
         node._control_mode = 'STANDBY'
     elif breakage == 'mocap':
@@ -1317,3 +1326,351 @@ def test_rclpy_shutdown_aborts_and_safes(monkeypatch):
     result = node._execute_toss(gh)
     assert result.outcome == 'ABORTED_SHUTDOWN'
     assert safed == [1]
+
+
+# ── Tier 8b (Phase 4): pretilt_hold choreography + deferred A→B reach ──────────
+
+def _fresh_seq_8b(node, pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                  flight=0.8, delay=5.0, start=100.0):
+    """Install per-goal 8b state (via compute_release_state_tilted, the tilted
+    branch _execute_toss runs) + a Tier-8b sequencer, for node-level FSM-tick
+    tests that bypass the go_to_pose service."""
+    release = compute_release_state_tilted(pose, flight,
+                                           throw_site_xy_mm=throw_site)
+    with node._lock:
+        node._announced_ball_id = None
+        node._announced_id_untagged = False
+        node._preexisting_flight_ids = {
+            int(b.id) for b in node._balls if int(b.status) == 1}
+        node._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
+        node._toss_release_state = release
+        node._toss_landing_global_mm = tuple(
+            float(v) for v in release.catch_point_global_mm)
+        # Mirror _execute_toss: the 8b cross-check target is the commanded A pose
+        # (single source _toss_positioning_xyz), NOT the nominated catch B.
+        node._toss_platform_target_mm = ReloadCoordinatorNode._toss_positioning_xyz(
+            TIER_8B, pose, release)
+        node._toss_waiver = False
+        node._toss_prepare_pending = False
+        node._toss_throw_dispatched = False
+        node._toss_stroke_seen = False
+        node._toss_track_confirmed = False
+        node._toss_pretilt_hold_raised = False
+        node._toss_announced_reach = None
+    seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=flight,
+                        throw_delay_s=delay, tier=TIER_8B,
+                        throw_site_xy_mm=throw_site,
+                        event_vel_mps=float(release.event_vel_mps))
+    seq.start(start)
+    return seq, release
+
+
+def test_pretilt_hold_raised_at_prepare_for_8b(monkeypatch):
+    """Tier 8b raises catch/pretilt_hold on the ACTION_PREPARE_CATCH tick
+    (alongside prime_hold, >=2 FSM ticks before our announcement can reach
+    catch_coordinator) and records _toss_pretilt_hold_raised."""
+    t0 = 100.0
+    node = _toss_ready_node(t0)
+    seq, _ = _fresh_seq_8b(node, start=t0)
+    calls = []
+    monkeypatch.setattr(node, '_position_platform_for_toss',
+                        lambda s: s.note_position_result(t0, True, 0.3))
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: calls.append(('prime_hold', h)))
+    monkeypatch.setattr(node, '_publish_pretilt_hold',
+                        lambda h: calls.append(('pretilt_hold', h)))
+    node._step_toss_sequence(seq, t0)                    # POSITION
+    _stamp_fresh(node, t0 + 0.5)
+    d = node._step_toss_sequence(seq, t0 + 0.5)          # verified arrival: PREPARE
+    assert d.action == ACTION_PREPARE_CATCH
+    assert ('prime_hold', True) in calls
+    assert ('pretilt_hold', True) in calls
+    assert node._toss_pretilt_hold_raised is True
+
+
+def test_pretilt_hold_never_published_for_8a(monkeypatch):
+    """THE 8a byte-identity pin: an 8a goal NEVER touches catch/pretilt_hold —
+    the PREPARE tick raises prime_hold alone and _toss_pretilt_hold_raised stays
+    False, so the publish sequence is bit-identical to Phase 1."""
+    t0 = 100.0
+    node = _toss_ready_node(t0)
+    seq = _fresh_seq(node, start=t0)                     # tier 8a (default)
+    calls = []
+    monkeypatch.setattr(node, '_position_platform_for_toss',
+                        lambda s: s.note_position_result(t0, True, 0.3))
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: calls.append(('prime_hold', h)))
+    monkeypatch.setattr(node, '_publish_pretilt_hold',
+                        lambda h: calls.append(('pretilt_hold', h)))
+    node._step_toss_sequence(seq, t0)
+    _stamp_fresh(node, t0 + 0.5)
+    d = node._step_toss_sequence(seq, t0 + 0.5)
+    assert d.action == ACTION_PREPARE_CATCH
+    assert ('prime_hold', True) in calls
+    assert all(c[0] != 'pretilt_hold' for c in calls)    # topic NEVER touched
+    assert node._toss_pretilt_hold_raised is False
+
+
+def _capture_go_to_pose(node, monkeypatch, accepted=True):
+    """Seam the go_to_pose client so a test can drive the REAL
+    _position_platform_for_toss and read the request it builds: call_async
+    captures the request, _wait_future returns a canned accept (bypassing the
+    never-resolving MockFuture). Returns the captured-request dict."""
+    captured = {}
+    monkeypatch.setattr(node._go_to_pose_cli, 'call_async',
+                        lambda req: captured.__setitem__('req', req))
+    resp = types.SimpleNamespace(accepted=bool(accepted), code='OK',
+                                 planned_duration_s=0.3, message='planned OK')
+    monkeypatch.setattr(node, '_wait_future', lambda fut, timeout_s=2.0: resp)
+    return captured
+
+
+def test_8b_positioning_commands_tilted_pretilt_pose_at_A(monkeypatch):
+    """FIX-1: an 8b toss pre-positions at the swing-compensated PRE-TILT pose at
+    the throw site A with a NON-identity tilted orientation — NOT level at B. This
+    drives the REAL _position_platform_for_toss (no monkeypatch of it — the 8b
+    pretilt-hold tests all stub it, so none cover the pose it actually sends) and
+    captures the go_to_pose request. Without this the platform would pre-position
+    level at B and throw straight up, orphaning the computed pre-tilt aim."""
+    node = _toss_ready_node(100.0)
+    seq, release = _fresh_seq_8b(node, pose=(50.0, 0.0, 170.0),
+                                 throw_site=(0.0, 0.0), start=100.0)
+    captured = _capture_go_to_pose(node, monkeypatch)
+    node._position_platform_for_toss(seq)
+    req = captured['req']
+    # POSITION = A (swing-compensated pretilt pose), NOT the level catch pose B.
+    pre = np.asarray(release.pretilt_pose_stow, dtype=float)
+    assert req.pose.position.x == pytest.approx(float(pre[0]))
+    assert req.pose.position.y == pytest.approx(float(pre[1]))
+    assert req.pose.position.z == pytest.approx(float(pre[2]))
+    assert req.pose.position.x != pytest.approx(50.0)         # NOT B's x
+    # ORIENTATION is the throw tilt — NON-identity — and round-trips (through the
+    # SAME decode go_to_pose runs) back to the (tilt_rx, tilt_ry, 0) rotvec.
+    q = req.pose.orientation
+    assert not (q.w == pytest.approx(1.0) and q.x == pytest.approx(0.0)
+                and q.y == pytest.approx(0.0) and q.z == pytest.approx(0.0))
+    from jugglebot.motion.ik_solver import (
+        quat_to_rot_matrix, rot_matrix_to_rotvec)
+    rotvec = rot_matrix_to_rotvec(
+        quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z)))
+    assert rotvec[0] == pytest.approx(release.tilt_rx, abs=1e-9)
+    assert rotvec[1] == pytest.approx(release.tilt_ry, abs=1e-9)
+    assert rotvec[2] == pytest.approx(0.0, abs=1e-9)
+    assert abs(release.tilt_rx) + abs(release.tilt_ry) > 1e-6  # genuinely tilted
+
+
+def test_8a_positioning_commands_level_pose_at_B(monkeypatch):
+    """The 8a byte-identity pin: an 8a toss pre-positions LEVEL (identity
+    orientation) at the nominated catch pose B — the tilted 8b branch must not
+    perturb it. Drives the REAL _position_platform_for_toss and reads the pose."""
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, pose=(30.0, -40.0, 170.0), start=100.0)
+    captured = _capture_go_to_pose(node, monkeypatch)
+    node._position_platform_for_toss(seq)
+    req = captured['req']
+    assert (req.pose.position.x, req.pose.position.y, req.pose.position.z) == \
+        pytest.approx((30.0, -40.0, 170.0))                  # level pose at B
+    q = req.pose.orientation
+    assert (q.w, q.x, q.y, q.z) == pytest.approx((1.0, 0.0, 0.0, 0.0))  # identity
+    # 8a cross-check target stays B, equal to what go_to_pose is commanded.
+    assert node._toss_platform_target_mm == pytest.approx((30.0, -40.0, 170.0))
+
+
+def test_8b_cross_check_target_equals_commanded_A_pose(monkeypatch):
+    """FIX-1 follow-up: the POSITIONING mocap arrival cross-check target
+    (_toss_platform_target_mm) must equal the pose go_to_pose is actually
+    COMMANDED — A (the swing-compensated pre-tilt pose) for 8b, NOT the nominated
+    catch B. Single source (_toss_positioning_xyz) so command and verification can
+    never diverge; else an operator who configures a platform body for an 8b
+    sitting gets measured-A vs target-B → a spurious ABORTED_POSITION_FAILED. The
+    cross-check itself stays disabled by default; this pins target == commanded."""
+    node = _toss_ready_node(100.0)
+    seq, release = _fresh_seq_8b(node, pose=(50.0, 0.0, 170.0),
+                                 throw_site=(0.0, 0.0), start=100.0)
+    captured = _capture_go_to_pose(node, monkeypatch)
+    node._position_platform_for_toss(seq)          # the REAL command path
+    req = captured['req']
+    commanded = (req.pose.position.x, req.pose.position.y, req.pose.position.z)
+    pre = np.asarray(release.pretilt_pose_stow, dtype=float)
+    # Verification target == the commanded A pose == the pre-tilt pose, NOT B.
+    assert node._toss_platform_target_mm == pytest.approx(commanded)
+    assert node._toss_platform_target_mm == pytest.approx(
+        (float(pre[0]), float(pre[1]), float(pre[2])))
+    assert node._toss_platform_target_mm[0] != pytest.approx(50.0)   # NOT B's x
+
+
+def test_step_dispatches_reach_catch_to_publish_toss_reach(monkeypatch):
+    """The ACTION_REACH_CATCH decision routes to _publish_toss_reach — the
+    node's ONLY platform publish for an 8b flight."""
+    node = ReloadCoordinatorNode()
+    called = []
+    monkeypatch.setattr(node, '_publish_toss_reach', lambda: called.append(1))
+    monkeypatch.setattr(node, '_build_toss_observations', lambda now: None)
+    stub = types.SimpleNamespace(
+        tier=TIER_8B,
+        step=lambda now, obs: TossDecision(
+            PHASE_BALL_IN_FLIGHT, ACTION_REACH_CATCH, False, None))
+    node._step_toss_sequence(stub, 105.0)
+    assert called == [1]
+
+
+def test_publish_toss_reach_publishes_one_target_for_B():
+    """The deferred A→B reach: _publish_toss_reach publishes ONE
+    catch/dynamic_target from the stashed announced landing via
+    predicted_catch_command (the SAME policy CCN uses — single-sourced pose),
+    arrival = the announced landing crossed to the perf clock (MockClock ros
+    now = 0 ⇒ arrival = landing_time_ros + now_perf; lead = the flight by
+    construction)."""
+    node = ReloadCoordinatorNode()
+    landing_pos = np.array([50.0, 0.0, 809.08])          # B's cup point (global mm)
+    landing_vel = np.array([100.0, 0.0, -3900.0])
+    landing_time_ros = 105.8
+    with node._lock:
+        node._toss_announced_reach = (landing_pos, landing_vel, landing_time_ros)
+    n0 = len(node._dyn_target_pub.published)
+    before = time.perf_counter()
+    node._publish_toss_reach()
+    after = time.perf_counter()
+    assert len(node._dyn_target_pub.published) == n0 + 1
+    out = node._dyn_target_pub.published[-1]
+    # arrival = landing_time_ros + (now_perf − 0) ∈ [before, after] + landing.
+    assert before + landing_time_ros <= out.arrival_time <= after + landing_time_ros
+    # Pose == predicted_catch_command's (no drift-prone second copy of the math).
+    cmd = node._toss_catch_policy.predicted_catch_command(
+        landing_pos, landing_vel, landing_time_ros)
+    assert out.target_pos.x == pytest.approx(cmd.target_pos[0])
+    assert out.target_pos.y == pytest.approx(cmd.target_pos[1])
+    assert out.target_pos.z == pytest.approx(cmd.target_pos[2])
+    assert out.target_quat.w == pytest.approx(cmd.target_quat[0])
+    assert out.target_quat.x == pytest.approx(cmd.target_quat[1])
+
+
+def test_publish_toss_reach_no_stash_publishes_nothing():
+    """A missing announced-landing stash (reach requested before announce, or a
+    crashed goal) publishes NO platform target — the FSM's ABORTED_NO_RELEASE /
+    MISSED path still cleans up."""
+    node = ReloadCoordinatorNode()
+    with node._lock:
+        node._toss_announced_reach = None
+    n0 = len(node._dyn_target_pub.published)
+    node._publish_toss_reach()
+    assert len(node._dyn_target_pub.published) == n0
+
+
+def test_publish_toss_reach_policy_reject_publishes_nothing(monkeypatch):
+    """A predicted_catch_command reject (should not happen post-CHECKING, but
+    guarded) publishes nothing."""
+    node = ReloadCoordinatorNode()
+    with node._lock:
+        node._toss_announced_reach = (np.zeros(3), np.zeros(3), 105.8)
+    monkeypatch.setattr(node._toss_catch_policy, 'predicted_catch_command',
+                        lambda p, v, t: None)
+    n0 = len(node._dyn_target_pub.published)
+    node._publish_toss_reach()
+    assert len(node._dyn_target_pub.published) == n0
+
+
+def test_toss_recenter_releases_pretilt_hold_last_when_raised(monkeypatch):
+    """Tier 8b RECENTER: catch/pretilt_hold released LAST of all (after
+    prime_hold), iff it was raised this goal — same cross-topic-ordering
+    rationale; a stale pretilt_hold only DEGRADES a later reload, never a
+    hazard."""
+    node = ReloadCoordinatorNode()
+    node._toss_pretilt_hold_raised = True
+    order = []
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: order.append(('arm', a)) or True)
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda a: order.append(('armed', a)))
+    monkeypatch.setattr(node, '_go_home', lambda: order.append('home') or True)
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: order.append(('prime_hold', h)))
+    monkeypatch.setattr(node, '_publish_pretilt_hold',
+                        lambda h: order.append(('pretilt_hold', h)))
+    node._toss_recenter()
+    assert order == [('arm', False), ('armed', False), 'home',
+                     ('prime_hold', False), ('pretilt_hold', False)]
+
+
+def test_toss_safe_abort_releases_pretilt_hold_last_when_raised(monkeypatch):
+    """Tier 8b SAFE_ABORT: catch/pretilt_hold released LAST of all, iff raised —
+    it outlives the whole teardown (same reason as prime_hold)."""
+    node = ReloadCoordinatorNode()
+    node._toss_pretilt_hold_raised = True
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    order = []
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda a: order.append(('armed', a)))
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: order.append(('retract', p)) or True)
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: order.append(('arm', a)) or True)
+    monkeypatch.setattr(node, '_go_home', lambda: order.append('home') or True)
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: order.append(('prime_hold', h)))
+    monkeypatch.setattr(node, '_publish_pretilt_hold',
+                        lambda h: order.append(('pretilt_hold', h)))
+    node._toss_safe_abort()
+    assert order == [('armed', False), ('retract', hw.JB_OP_HAND_RETRACT_REV),
+                     ('arm', False), 'home', ('prime_hold', False),
+                     ('pretilt_hold', False)]
+
+
+def test_toss_terminals_skip_pretilt_release_when_not_raised(monkeypatch):
+    """8a (or an 8b goal that never reached PREPARE): _toss_pretilt_hold_raised
+    stays False, so the terminals NEVER publish on catch/pretilt_hold — the 8a
+    terminal publish sequence is byte-identical to Phase 1."""
+    node = ReloadCoordinatorNode()
+    assert node._toss_pretilt_hold_raised is False
+    pretilt = []
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    monkeypatch.setattr(node, '_arm_catch', lambda a: True)
+    monkeypatch.setattr(node, '_publish_catch_armed', lambda a: None)
+    monkeypatch.setattr(node, '_go_home', lambda: True)
+    monkeypatch.setattr(node, '_smooth_move_hand', lambda p: True)
+    monkeypatch.setattr(node, '_publish_prime_hold', lambda h: None)
+    monkeypatch.setattr(node, '_publish_pretilt_hold', lambda h: pretilt.append(h))
+    node._toss_recenter()
+    node._toss_safe_abort()
+    assert pretilt == []
+
+
+def test_8b_uses_tilted_release_with_config_throw_site(monkeypatch):
+    """Tier 8b routes _execute_toss through compute_release_state_tilted at the
+    config throw site A (hw.JB_OP_TOSS_THROW_SITE_MM), tilt-aimed at B — NOT the
+    8a compute_release_state."""
+    calls = {}
+    real = rcn.compute_release_state_tilted
+
+    def _spy(catch_pose, flight, *, throw_site_xy_mm):
+        calls['pose'] = tuple(catch_pose)
+        calls['site'] = tuple(float(v) for v in throw_site_xy_mm)
+        return real(catch_pose, flight, throw_site_xy_mm=throw_site_xy_mm)
+    monkeypatch.setattr(rcn, 'compute_release_state_tilted', _spy)
+    monkeypatch.setattr(rcn, 'compute_release_state',
+                        lambda *a, **k: pytest.fail('8a path used for an 8b goal'))
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    node = _toss_ready_node(time.perf_counter())
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
+    gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, flight=0.8, delay=5.0)
+    node._execute_toss(gh)               # runs to REJECTED_POSITION (go_to_pose n/a)
+    assert calls['pose'] == (50.0, 0.0, 170.0)
+    assert calls['site'] == tuple(float(v) for v in hw.JB_OP_TOSS_THROW_SITE_MM)
+
+
+def test_8b_tilt_clamp_maps_to_rejected_tilt_clamp(monkeypatch):
+    """Tier 8b: compute_release_state_tilted's ThrowTiltInfeasible raise maps
+    onto the FSM's tilt_clamp_exceeded flag → REJECTED_TILT_CLAMP (in gate
+    order, before EVENT_VEL) — no drift-prone second copy of the aim math in
+    the node."""
+    def _raise(*a, **k):
+        raise ThrowTiltInfeasible(20.0, 12.0)
+    monkeypatch.setattr(rcn, 'compute_release_state_tilted', _raise)
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    node = _toss_ready_node(time.perf_counter())
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
+    gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, flight=0.8, delay=5.0)
+    result = node._execute_toss(gh)
+    assert result.success is False
+    assert result.outcome == 'REJECTED_TILT_CLAMP'
+    assert gh.terminal == 'abort'

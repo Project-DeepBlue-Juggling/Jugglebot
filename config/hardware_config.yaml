@@ -537,6 +537,15 @@ jugglebot_operational:
                                          # passes the resolved value into the TossSequencer ctor;
                                          # toss_sequencer's local DEFAULT_TOSS_FLIGHT_TIME_S is the
                                          # no-config fallback only, pinned equal by the drift-guard test.
+  toss_throw_site_mm: [0.0, 0.0]         # Tier-8b throw site A = platform (x, y) {mm, STOW frame} the
+                                         # displaced toss launches FROM (single-ball-toss Phase 4). The
+                                         # LOCKED Toss goal nominates only the catch B, so A is config-only
+                                         # (the same pattern as toss_tier: goal untouched). Default =
+                                         # workspace centre — matches the Rung-2a evidence base (all
+                                         # clean-box/asymmetry data is centre-column throws), maximises
+                                         # reach-envelope headroom on both sides of the A→B segment, and
+                                         # makes displacement = |B_xy|. Tier 8a ignores it (throw site ==
+                                         # catch site by definition).
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}

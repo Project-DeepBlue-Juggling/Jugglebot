@@ -37,6 +37,7 @@ from jugglebot.motion.trajectory.tilt_geometry import (
     cup_axis,
     tilt_to_receive,
     tilt_to_receive_deg,
+    tilt_to_throw,
 )
 
 __all__ = [
@@ -56,4 +57,5 @@ __all__ = [
     'cup_axis',
     'tilt_to_receive',
     'tilt_to_receive_deg',
+    'tilt_to_throw',
 ]

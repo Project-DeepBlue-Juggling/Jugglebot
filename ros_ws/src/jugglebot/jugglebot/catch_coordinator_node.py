@@ -25,6 +25,15 @@ Subscribes to:
     re-prime) is suppressed; the catch arm and all other behaviour are
     untouched. Absent topic = False = the reload path unchanged; stale True
     fails safe (no auto-prime — the reload action primes proactively itself).
+  - catch/pretilt_hold (Bool) — the Tier-8b toss coordinator's platform
+    pre-tilt-suppression gate (True at PREPARE entry, alongside prime_hold;
+    False at terminal). While True, OUR announcement STILL latches the
+    open-loop freeze + hand-arm window but publishes NO platform pre-tilt (and
+    caches none) — the toss coordinator owns the platform reach, publishing the
+    ONE deferred A->B target at release. The catch arm and all other behaviour
+    are untouched. Absent topic = False = the reload path unchanged; stale True
+    fails DEGRADED-BUT-SAFE (a reload announcement loses its platform pre-tilt —
+    the platform simply holds, the hand-arm stays tracker-driven; zero hazard).
 
 Publishes:
   - catch/dynamic_target (DynamicTargetCommand) — consumed by trajectory_node, which
@@ -227,6 +236,26 @@ class CatchCoordinatorNode(Node):
         self._prime_hold = False
         self._prime_hold_sub = self.create_subscription(
             Bool, 'catch/prime_hold', self._on_prime_hold, 10)
+        # Pre-tilt suppression gate (catch/pretilt_hold, published by the Tier-8b
+        # toss coordinator: True at PREPARE entry — with prime_hold, BEFORE
+        # catch/armed rises — and False at terminal). While True, OUR
+        # announcement still LATCHES _announcement_seen + _announced_landing_time
+        # (so the open-loop freeze and the hand-arm window keep working) but
+        # publishes NO platform pre-tilt and caches _pretilt_cmd = None: the
+        # stock pre-tilt's arrival clamps to ~now + 1 s while the toss announces
+        # >= 1 s before release, so an un-suppressed pre-tilt would COMPLETE the
+        # A->B translate (and the un-tilt to the receive tilt) BEFORE the ball is
+        # released — aim destroyed, a moving platform under a seated ball
+        # mid-windup. The toss coordinator owns the platform reach (the ONE
+        # deferred A->B target at release). The catch ARM (kind-1) and every
+        # other behaviour are untouched. Absent topic → False → the reload path
+        # bit-identical to today. Stale True fails DEGRADED-BUT-SAFE (a reload
+        # announcement loses its platform pre-tilt; the platform simply holds,
+        # the hand-arm stays tracker-driven — zero hazard), so the flag is never
+        # reset locally — the publisher owns it.
+        self._pretilt_hold = False
+        self._pretilt_hold_sub = self.create_subscription(
+            Bool, 'catch/pretilt_hold', self._on_pretilt_hold, 10)
 
         # Re-measure clock offset every 30s to track drift
         self._clock_timer = self.create_timer(30.0, self._refresh_clock_offset)
@@ -395,6 +424,26 @@ class CatchCoordinatorNode(Node):
                 else "catch/prime_hold released — auto-prime re-enabled")
         self._prime_hold = hold
 
+    def _on_pretilt_hold(self, msg: Bool):
+        """catch/pretilt_hold: the Tier-8b toss coordinator's platform
+        pre-tilt-suppression gate, published True at PREPARE entry (with
+        prime_hold, BEFORE catch/armed rises) and False at terminal. While True,
+        _on_throw_announcement still LATCHES the announcement (open-loop freeze +
+        hand-arm window keep working) but publishes NO platform pre-tilt and
+        caches _pretilt_cmd = None — the toss coordinator owns the platform reach
+        (the ONE deferred A->B target at release). The catch ARM (kind-1) and
+        every other behaviour are untouched. Stale True fails DEGRADED-BUT-SAFE:
+        a reload announcement loses its platform pre-tilt (the platform simply
+        holds; the hand-arm stays tracker-driven) — zero hazard, so the flag is
+        never reset locally (the publisher owns it)."""
+        hold = bool(msg.data)
+        if hold != self._pretilt_hold:
+            self.get_logger().info(
+                "catch/pretilt_hold raised — platform pre-tilt suppressed "
+                "(toss owns the deferred reach)" if hold
+                else "catch/pretilt_hold released — platform pre-tilt re-enabled")
+        self._pretilt_hold = hold
+
     def _on_vel_scale(self, msg: Float64):
         """catch/vel_scale: the operator's per-attempt catch-speed knob (reload goal
         field, or published manually for bench throws). Clamped to the safe range —
@@ -434,6 +483,24 @@ class CatchCoordinatorNode(Node):
         lt = msg.landing_time
         landing_time = float(lt.sec) + float(lt.nanosec) * 1e-9
         if landing_time <= 0.0:
+            return
+        if self._pretilt_hold:
+            # Tier-8b toss: LATCH the announcement for the hand-arm window +
+            # open-loop freeze, but publish NO platform target and cache NONE —
+            # the toss coordinator owns the platform reach (it publishes the ONE
+            # deferred A->B target at release). Caching _pretilt_cmd would let
+            # _republish_pretilt re-assert a pre-release B-reach; the stock
+            # pre-tilt's arrival clamps to ~now+1s while the toss announces >=1s
+            # before release, so an un-suppressed pre-tilt COMPLETES the A->B
+            # translate (and the un-tilt to the receive tilt) BEFORE the ball is
+            # released — aim destroyed, moving platform under a seated ball
+            # mid-windup. hand-arm timing stays tracker-driven (unaffected).
+            self._announcement_seen = True
+            self._announced_landing_time = landing_time
+            self._pretilt_cmd = None
+            self.get_logger().info(
+                "catch/pretilt_hold raised — announcement latched for hand-arm; "
+                "platform pre-tilt suppressed (toss owns the deferred reach)")
             return
         cmd = self._coordinator.predicted_catch_command(
             landing_pos, landing_vel, landing_time)
@@ -544,14 +611,23 @@ class CatchCoordinatorNode(Node):
         # edge + the off-path retry timer.
         self._last_cmd_mono = time.perf_counter()
 
-        # Open-loop platform (JB_OP_RELOAD_PLATFORM_OPEN_LOOP): once OUR throw is
-        # announced (armed reload), hold the pre-tilt pose and IGNORE this reactive
-        # per-ball refinement — a bad ball prediction must never move the platform
-        # mid-reload (2026-07-24: a corrupt track's sweep got ONE 78 mm target
-        # accepted at land−0.67 s, dragging the platform 83.7 mm in the last 0.8 s
-        # and costing the catch). Only the PLATFORM reach is frozen; the hand-arm
-        # below stays reactive (its timing is tracker-driven).
-        open_loop = (hw.JB_OP_RELOAD_PLATFORM_OPEN_LOOP
+        # Open-loop platform: once OUR throw is announced (armed reload/toss), hold
+        # the pre-tilt pose and IGNORE this reactive per-ball refinement — a bad
+        # ball prediction must never move the platform mid-reload (2026-07-24: a
+        # corrupt track's sweep got ONE 78 mm target accepted at land−0.67 s,
+        # dragging the platform 83.7 mm in the last 0.8 s and costing the catch).
+        # Only the PLATFORM reach is frozen; the hand-arm below stays reactive (its
+        # timing is tracker-driven). TWO triggers force this branch:
+        #   - JB_OP_RELOAD_PLATFORM_OPEN_LOOP — the reload open-loop config default;
+        #   - _pretilt_hold — a held Tier-8b toss. This forces the open-loop branch
+        #     INDEPENDENT of the reload flag (self-contained, NOT co-dependent on
+        #     it): with the flag off, a held toss's reactive per-ball path would
+        #     otherwise publish tracker-derived catch/dynamic_target during flight,
+        #     competing with the toss coordinator's deferred A->B reach. Under
+        #     pretilt_hold _pretilt_cmd is None (see _on_throw_announcement), so
+        #     _republish_pretilt no-ops (cmd None) — the platform simply holds while
+        #     the toss coordinator owns the one deferred reach.
+        open_loop = ((self._pretilt_hold or hw.JB_OP_RELOAD_PLATFORM_OPEN_LOOP)
                      and self._catch_armed and self._announcement_seen)
         if open_loop:
             # Re-assert the pre-tilt pose (same pose, recomputed arrival) so a dropped

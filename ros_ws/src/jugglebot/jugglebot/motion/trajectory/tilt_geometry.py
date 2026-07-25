@@ -1,7 +1,7 @@
-"""Catch tilt geometry — the cup-axis-collinear receive tilt + shared lever arm.
+"""Cup tilt geometry — the cup-axis-collinear receive/throw tilts + shared lever arm.
 
-Port of ``Jugglebot-bb/sim/juggle_tilt.py`` catch-facing core math (the geometry
-that was **sim-validated** on the bb branch; see the plan's "Prior art" note). Two
+Port of ``Jugglebot-bb/sim/juggle_tilt.py`` core tilt math (the geometry that
+was **sim-validated** on the bb branch; see the plan's "Prior art" note). Three
 concerns live here:
 
   * :func:`tilt_to_receive` — the catch tilt ``(rx, ry)`` that aligns the cup's
@@ -10,6 +10,11 @@ concerns live here:
     lateral velocity in the cup frame (a parked non-collinear rim skids/deflects
     the ball — the failure this prevents). Bounded to :data:`MAX_TILT_DEG` (12°),
     the usable ceiling from the bb Rung-0 tilt-tracking characterisation.
+  * :func:`tilt_to_throw` — the throw tilt (single-ball-toss Phase 4, bb
+    Rung 2a): the exact mirror (``tilt_to_throw(v) == tilt_to_receive(-v)``),
+    aligning the cup axis **along** the ballistic take-off velocity so the fast
+    slider stroke ejects the ball at the aim. ``sim/juggle_tilt.py`` re-exports
+    it from here (single source of truth since the 2026-07-24 branch merge).
   * :func:`cup_axis` — the world-frame cup up-axis for a given tilt, the inverse
     of :func:`tilt_to_receive` (used by the geometry-regression test to confirm
     the axis lands anti-parallel to the arrival velocity).
@@ -92,6 +97,24 @@ def tilt_to_receive(v_arrival, max_tilt_deg: float = MAX_TILT_DEG):
     rx = float(angle * axis[0])
     ry = float(angle * axis[1])
     return rx, ry
+
+
+def tilt_to_throw(v_takeoff, max_tilt_deg: float = MAX_TILT_DEG):
+    """Throw tilt ``(rx, ry)`` rad aligning the cup axis ALONG ``v_takeoff``.
+
+    The tilt-aimed throw (bb Rung 2a): the ball detaches up the cup's symmetry
+    axis, so the cup axis must point PARALLEL to the ballistic take-off velocity
+    (ascending, vz > 0); the lateral take-off is delivered by the fast slider
+    projected through the tilt — lateral = |v_takeoff|·sin θ — never by
+    band-limited platform translation. Exact mirror of :func:`tilt_to_receive`:
+    ``tilt_to_throw(v) == tilt_to_receive(-v)``. Direction-only (unit-agnostic).
+    Past the clamp the aim SATURATES (landing bias, Rung 2a) — production
+    Tier-8b callers must gate the from-vertical angle and reject loudly
+    instead of relying on the clamp (see ``toss_release``; the silent clamp is
+    the correct semantics only for the catch).
+    """
+    v = np.asarray(v_takeoff, dtype=float).reshape(3)
+    return tilt_to_receive(-v, max_tilt_deg=max_tilt_deg)
 
 
 def cup_axis(rx: float, ry: float) -> np.ndarray:

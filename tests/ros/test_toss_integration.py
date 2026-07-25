@@ -29,8 +29,13 @@ ROS 2 is mocked by tests/ros/conftest.py.
 
 from __future__ import annotations
 
+import time as _time
+import types
+
 import numpy as np
 import pytest
+
+from std_msgs.msg import Bool
 
 import jugglebot.hardware_config as hw
 from jugglebot.tracking.matcher import BallTracker
@@ -38,7 +43,8 @@ from jugglebot.tracking.ball import BallStatus, TrackingConfidence
 from jugglebot.catch_coordinator import CatchCoordinator
 from jugglebot.catch_coordinator_node import CatchCoordinatorNode
 from jugglebot.reload_coordinator_node import ReloadCoordinatorNode
-from jugglebot.toss_sequencer import TossSequencer
+from jugglebot.toss_sequencer import TIER_8B, TossSequencer
+from jugglebot.motion.trajectory.toss_release import compute_release_state_tilted
 from tests.ros.test_toss_coordinator import _install_toss_goal
 from tests.ros.test_catch_coordinator_node import _balls_msg, _catchable_cmd
 
@@ -338,3 +344,101 @@ def test_prime_dispatched_belt_covers_lost_hold(monkeypatch):
     assert ccn._catch_armed is True
     assert ccn._prime_hold is False              # the hold never arrived
     assert primed == []                          # the stamp's window covered the edge
+
+
+def _toss_node_8b_announce(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                           flight=0.8):
+    """A real toss node with Tier-8b goal state installed (tilted release) and
+    its ACTUAL announce executor run — populating BOTH the deferred-reach stash
+    (_toss_announced_reach) and the wire ThrowAnnouncement."""
+    node = ReloadCoordinatorNode()
+    release = compute_release_state_tilted(pose, flight, throw_site_xy_mm=throw_site)
+    with node._lock:
+        node._toss_release_state = release
+        node._toss_landing_global_mm = tuple(
+            float(v) for v in release.catch_point_global_mm)
+        node._toss_platform_target_mm = tuple(float(v) for v in pose)
+        node._toss_prepare_pending = False
+        node._toss_throw_dispatched = False
+        node._toss_pretilt_hold_raised = False
+        node._toss_announced_reach = None
+    seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=flight,
+                        throw_delay_s=5.0, tier=TIER_8B, throw_site_xy_mm=throw_site,
+                        event_vel_mps=float(release.event_vel_mps))
+    seq.start(_time.perf_counter())
+    seq._prepare_dispatched = True             # satisfy note_announcement's gate
+    node._announce_toss(seq)
+    ann = node._publishers['throw_announcements'].published[-1]
+    return node, ann
+
+
+def test_8b_pretilt_hold_suppresses_ccn_and_deferred_reach_is_sole_target(monkeypatch):
+    """END-TO-END Tier 8b (the central Phase-4 choreography): a REAL 8b toss
+    raises catch/pretilt_hold True (with catch/armed) into a REAL
+    CatchCoordinatorNode, then its real announcement arrives. CCN publishes NO
+    platform target from the announcement (it latches the open-loop freeze +
+    hand-arm window instead), and a balls tick under open-loop publishes no
+    platform target either while the hand-arm still fires tracker-driven. The
+    toss node's OWN deferred A→B reach is then the SOLE platform target for the
+    flight — the stock CCN pre-tilt (which would complete the A→B translate
+    before release) is fully suppressed."""
+    toss_node, ann = _toss_node_8b_announce()
+    ccn = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(ccn, '_prime_hand', lambda: primed.append(1))
+
+    # PREPARE (8b): the toss raises catch/prime_hold AND catch/pretilt_hold
+    # together (prime_hold suppresses the ball-laden auto-prime; pretilt_hold
+    # suppresses the platform pre-tilt), then catch/armed one FSM tick later —
+    # replay them into CCN in that real emission order.
+    ccn._on_prime_hold(Bool(data=True))
+    ccn._on_pretilt_hold(Bool(data=True))
+    ccn._on_catch_armed(Bool(data=True))
+    assert ccn._prime_hold is True and ccn._pretilt_hold is True
+    assert ccn._catch_armed is True
+    assert primed == []                                    # ball-laden auto-prime suppressed
+
+    # The real 8b announcement (landing = the displaced B, lateral arrival). The
+    # mock packs builtin_interfaces/Time as an int-ns via to_msg(); reshape it
+    # into the .sec/.nanosec form CCN reads (the physics fields stay the real
+    # wire Point/Vector3).
+    n0 = len(ccn._dyn_target_pub.published)
+    lt_ns = int(ann.landing_time)
+    ccn_ann = types.SimpleNamespace(
+        target_id=ann.target_id,
+        landing_position=ann.landing_position,
+        landing_velocity=ann.landing_velocity,
+        landing_time=types.SimpleNamespace(sec=lt_ns // 1_000_000_000,
+                                           nanosec=lt_ns % 1_000_000_000))
+    ccn._on_throw_announcement(ccn_ann)
+    assert len(ccn._dyn_target_pub.published) == n0        # NO platform target from CCN
+    assert ccn._announcement_seen is True                  # latched for hand-arm window
+    assert ccn._announced_landing_time is not None
+    assert ccn._pretilt_cmd is None                        # no cached pre-tilt to republish
+
+    # A balls tick under open-loop: STILL no platform target from CCN, hand arms.
+    armed = []
+    monkeypatch.setattr(ccn, '_arm_hand_catch',
+                        lambda d, v: armed.append((d, v)) or True)
+    cmd = _catchable_cmd()
+    cmd.landing_time = ccn._announced_landing_time         # within the arm window
+    monkeypatch.setattr(ccn._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: cmd)
+    ccn._on_balls(_balls_msg())
+    assert len(ccn._dyn_target_pub.published) == n0        # STILL no platform target
+    assert len(armed) == 1                                 # hand-arm engaged (reactive)
+    assert primed == []                                    # no auto-prime meanwhile
+
+    # The toss node's OWN deferred A→B reach is the SOLE platform target: it
+    # publishes ONE catch/dynamic_target from the stashed announced landing via
+    # the same predicted_catch_command policy CCN would have used.
+    m0 = len(toss_node._dyn_target_pub.published)
+    toss_node._publish_toss_reach()
+    assert len(toss_node._dyn_target_pub.published) == m0 + 1
+    out = toss_node._dyn_target_pub.published[-1]
+    cmd_reach = toss_node._toss_catch_policy.predicted_catch_command(
+        *toss_node._toss_announced_reach)
+    assert cmd_reach is not None
+    assert out.target_pos.x == pytest.approx(cmd_reach.target_pos[0])
+    assert out.target_pos.y == pytest.approx(cmd_reach.target_pos[1])
+    assert out.target_pos.z == pytest.approx(cmd_reach.target_pos[2])

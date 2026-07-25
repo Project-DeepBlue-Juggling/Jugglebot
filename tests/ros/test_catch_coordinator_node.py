@@ -592,6 +592,155 @@ def test_prime_hold_survives_disarm_stale_true_fails_safe(monkeypatch):
     assert primed == []                        # suppressed until False is published
 
 
+# ── catch/pretilt_hold — the Tier-8b toss's platform pre-tilt-suppression gate ─
+# The stock announcement pre-tilt (arrival clamped to ~now + 1 s) would complete
+# the A→B translate + un-tilt BEFORE a toss releases (announced >= 1 s pre-release)
+# — aim destroyed, moving platform under a seated ball mid-windup. pretilt_hold
+# suppresses ONLY the platform pre-tilt PUBLISH while still latching the
+# announcement for the hand-arm window + open-loop freeze; the toss coordinator
+# publishes the ONE deferred A→B reach at release. Absent topic = the reload path
+# bit-identical; the flag is publisher-owned (never reset locally) and stale-True
+# fails DEGRADED-BUT-SAFE (a reload loses only its pre-tilt; the platform holds).
+
+
+def test_pretilt_hold_absent_topic_defaults_false():
+    """No catch/pretilt_hold ever published (every reload today): the flag is
+    False, the subscription exists, and OUR announcement drives the platform
+    pre-tilt exactly as the reload-path tests pin — the gate is invisible when
+    the topic is absent."""
+    node = CatchCoordinatorNode()
+    assert 'catch/pretilt_hold' in node._subscriptions
+    assert node._pretilt_hold is False
+    node._on_catch_armed(Bool(data=True))
+    n0 = len(node._dyn_target_pub.published)
+    node._on_throw_announcement(_announcement())
+    assert len(node._dyn_target_pub.published) == n0 + 1        # pre-tilt published
+    assert node._pretilt_cmd is not None
+
+
+def test_pretilt_hold_true_suppresses_platform_but_latches_and_arms(monkeypatch):
+    """The Tier-8b toss: pretilt_hold True at PREPARE, BEFORE the announcement.
+    The announcement publishes NO platform target and caches _pretilt_cmd = None
+    (so a balls tick's _republish_pretilt no-ops), BUT still latches
+    _announcement_seen + _announced_landing_time (the open-loop freeze + the
+    hand-arm window keep working) — and the hand-arm still fires tracker-driven."""
+    node = CatchCoordinatorNode()
+    node._on_pretilt_hold(Bool(data=True))       # PREPARE: raised before armed
+    node._on_catch_armed(Bool(data=True))
+    n0 = len(node._dyn_target_pub.published)
+    node._on_throw_announcement(_announcement())               # landing ros t=100
+    # NO platform target from the announcement; latched for hand-arm + open-loop.
+    assert len(node._dyn_target_pub.published) == n0
+    assert node._announcement_seen is True
+    assert node._announced_landing_time == pytest.approx(100.0)
+    assert node._pretilt_cmd is None
+    # A balls tick under open-loop: _republish_pretilt no-ops (_pretilt_cmd None)
+    # — the toss coordinator owns the platform reach — but the hand-arm fires.
+    armed = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append((d, v)) or True)
+    cmd = _catchable_cmd()
+    cmd.landing_time = 100.0                                    # within the arm window
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: cmd)
+    node._on_balls(_balls_msg())
+    assert len(node._dyn_target_pub.published) == n0           # still no platform target
+    assert len(armed) == 1                                     # hand-arm reactive fire intact
+    assert node._last_submitted_ball_id is None                # reactive correlation dormant
+
+
+def test_pretilt_hold_does_not_gate_edge_prime(monkeypatch):
+    """pretilt_hold gates ONLY the platform pre-tilt publish — NOT the armed-edge
+    hand prime (that is prime_hold's job) nor the catch arm. With ONLY pretilt_hold
+    up, the armed edge still primes; in production the toss raises BOTH gates."""
+    node = CatchCoordinatorNode()
+    primed = []
+    monkeypatch.setattr(node, '_prime_hand', lambda: primed.append(1))
+    node._on_pretilt_hold(Bool(data=True))
+    node._on_catch_armed(Bool(data=True))
+    assert primed == [1]                          # pretilt_hold does not gate priming
+
+
+def test_pretilt_hold_release_reenables_pretilt():
+    """pretilt_hold False again (toss terminal, or a reload after a toss): OUR
+    announcement drives the platform pre-tilt normally again."""
+    node = CatchCoordinatorNode()
+    node._on_pretilt_hold(Bool(data=True))
+    node._on_pretilt_hold(Bool(data=False))
+    node._on_catch_armed(Bool(data=True))
+    n0 = len(node._dyn_target_pub.published)
+    node._on_throw_announcement(_announcement())
+    assert len(node._dyn_target_pub.published) == n0 + 1
+    assert node._pretilt_cmd is not None
+
+
+def test_pretilt_hold_survives_disarm_stale_true_degrades_safe():
+    """The flag is publisher-owned and never reset locally: a stale True (a toss
+    that died before terminal) keeps suppressing the platform pre-tilt — a reload
+    announcement then loses only its pre-tilt (the platform holds; the hand-arm
+    stays tracker-driven), DEGRADED-BUT-SAFE, never a hazard."""
+    node = CatchCoordinatorNode()
+    node._on_pretilt_hold(Bool(data=True))
+    node._on_catch_armed(Bool(data=True))
+    node._on_catch_armed(Bool(data=False))        # disarm does NOT reset pretilt_hold
+    assert node._pretilt_hold is True
+    node._on_catch_armed(Bool(data=True))
+    n0 = len(node._dyn_target_pub.published)
+    node._on_throw_announcement(_announcement())
+    assert len(node._dyn_target_pub.published) == n0    # still suppressed
+    assert node._announcement_seen is True              # but still latched (open-loop)
+    assert node._pretilt_cmd is None
+
+
+def test_pretilt_hold_forces_open_loop_independent_of_reload_flag(monkeypatch):
+    """FIX-2: the toss's reactive-platform suppression is SELF-CONTAINED, NOT
+    co-dependent on JB_OP_RELOAD_PLATFORM_OPEN_LOOP. With the reload flag forced
+    FALSE, a held 8b toss (pretilt_hold True) must STILL suppress the reactive
+    per-ball catch/dynamic_target — otherwise the tracker-derived target would
+    compete with the toss coordinator's deferred A->B reach mid-flight. The
+    hand-arm still engages (its timing stays tracker-driven)."""
+    monkeypatch.setattr(hw, 'JB_OP_RELOAD_PLATFORM_OPEN_LOOP', False)
+    node = CatchCoordinatorNode()
+    node._on_pretilt_hold(Bool(data=True))       # PREPARE: raised before armed
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_announcement())               # latched, no platform target
+    assert node._announcement_seen is True
+    assert node._pretilt_cmd is None
+    n0 = len(node._dyn_target_pub.published)
+    armed = []
+    monkeypatch.setattr(node, '_arm_hand_catch',
+                        lambda d, v: armed.append((d, v)) or True)
+    cmd = _catchable_cmd()
+    cmd.landing_time = 100.0                                    # within the arm window
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: cmd)
+    node._on_balls(_balls_msg())
+    assert len(node._dyn_target_pub.published) == n0           # NO reactive platform target
+    assert len(armed) == 1                                     # hand-arm engaged
+    assert node._last_submitted_ball_id is None                # reactive correlation dormant
+
+
+def test_reactive_reload_path_unchanged_when_pretilt_hold_false(monkeypatch):
+    """FIX-2 regression: with pretilt_hold False the open-loop condition reduces
+    EXACTLY to the pre-existing `flag and armed and announcement_seen`. With the
+    reload flag forced FALSE (the pre-existing NON-open-loop reactive reload) the
+    per-ball platform target IS still published — the toss suppression must not
+    leak into an ordinary reactive reload."""
+    monkeypatch.setattr(hw, 'JB_OP_RELOAD_PLATFORM_OPEN_LOOP', False)
+    node = CatchCoordinatorNode()
+    assert node._pretilt_hold is False
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_announcement())               # flag off ⇒ reactive refines
+    n0 = len(node._dyn_target_pub.published)
+    monkeypatch.setattr(node, '_arm_hand_catch', lambda d, v: True)
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: _catchable_cmd())
+    node._on_balls(_balls_msg())
+    assert len(node._dyn_target_pub.published) == n0 + 1       # reactive platform target published
+    assert node._dyn_target_pub.published[-1].target_pos.z == pytest.approx(809.08)
+    assert node._last_submitted_ball_id == 5                   # reactive correlation stamped
+
+
 # ── open-loop reload platform (JB_OP_RELOAD_PLATFORM_OPEN_LOOP) ────────────────
 # Once OUR throw is announced during an armed reload, the platform holds the
 # announcement pre-tilt pose and IGNORES live per-ball reactive refinements — a bad

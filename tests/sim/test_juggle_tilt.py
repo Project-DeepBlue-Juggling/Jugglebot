@@ -88,6 +88,33 @@ def test_throw_tilt_clamped_to_max():
     assert np.degrees(np.hypot(rx, ry)) == pytest.approx(MAX_TILT_DEG, abs=1e-6)
 
 
+def test_throw_is_production_reexport_single_source():
+    """sim.juggle_tilt.tilt_to_throw IS the production function (single-ball-
+    toss Phase 4 port: the def moved to motion/trajectory/tilt_geometry and a
+    re-export replaced it here — one source of truth since the 2026-07-24
+    merge). test_throw_is_mirror_of_receive above therefore cross-checks the
+    PRODUCTION throw against the SIM receive: the cross-copy drift guard."""
+    from jugglebot.motion.trajectory import tilt_geometry as tg
+    from sim import juggle_tilt
+    assert juggle_tilt.tilt_to_throw is tg.tilt_to_throw
+
+
+def test_lever_arm_units_trap_sim_metres_vs_production_mm():
+    """The lever helpers are deliberately NOT unified across the boundary
+    (Phase-4 scope limit): the sim copies take cup_z in METRES, the production
+    shaping/tilt_geometry ones take MILLIMETRES. A blind re-export would
+    silently rescale every sim caller ×1000 — pin the cross-boundary parity at
+    the correct units AND that a same-number mix-up is loudly wrong."""
+    from jugglebot.motion.trajectory import tilt_geometry as tg
+    rx, ry = 0.03, -0.02
+    np.testing.assert_allclose(cup_lateral_shift_mm(rx, ry, 0.84),
+                               tg.cup_lateral_shift_mm(rx, ry, cup_z_mm=840.0),
+                               atol=1e-12)
+    assert cup_lever_arm_mm(0.84) == pytest.approx(tg.cup_lever_arm_mm(840.0))
+    # The trap: feeding the same NUMBER to both is a ×1000 error, not a drift.
+    assert abs(cup_lever_arm_mm(840.0) - tg.cup_lever_arm_mm(840.0)) > 1e5
+
+
 # ---- cup-axis / lever-arm helpers ---------------------------------------
 def test_cup_axis_is_unit_and_level_is_z():
     np.testing.assert_allclose(cup_axis(0.0, 0.0), [0.0, 0.0, 1.0])

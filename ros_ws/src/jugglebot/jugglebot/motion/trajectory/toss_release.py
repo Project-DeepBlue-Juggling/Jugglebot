@@ -1,12 +1,15 @@
-"""Toss release state — STOW→global conversion + vertical-toss ballistics (Tier 8a).
+"""Toss release state — STOW→global conversion + toss ballistics (Tiers 8a/8b).
 
 Pure numpy release-state math for the self-toss (``Toss.action``,
 ``plans/active/single-ball-toss.md`` Phase 1): where the ball leaves the hand,
 the launch velocity that lands it back in the cup after ``flight_time_s``, and
 the physics fields of the self-``ThrowAnnouncement`` that closes the existing
-correlation → catch loop unchanged. Consumed by ``toss_sequencer`` /
-``reload_coordinator_node``; siblings ``ballistics_bc`` (catch-side boundary
-conditions) and ``tilt_geometry`` (receive tilt; Phase 4 adds the throw tilt).
+correlation → catch loop unchanged. Phase 4 adds the Tier-8b displaced case
+(:func:`compute_release_state_tilted`): throw from site A, tilt-aimed at the
+displaced catch B, with the loud :class:`ThrowTiltInfeasible` clamp gate.
+Consumed by ``toss_sequencer`` / ``reload_coordinator_node``; siblings
+``ballistics_bc`` (catch-side boundary conditions) and ``tilt_geometry``
+(receive tilt + the Phase-4 throw mirror).
 
 **One conversion point per direction.** :func:`stow_to_global_mm` is THE single
 tested STOW-relative → global conversion for the toss (plan § Frame convention);
@@ -34,6 +37,7 @@ import numpy as np
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory import tilt_geometry
 
 # Release-plane height of the ball above the platform centroid at the
 # traj_type=0 release event — the THROW sibling of hw.HAND_CATCH_OFFSET_MM
@@ -120,6 +124,183 @@ def compute_release_state(catch_position_stow_mm, flight_time_s: float, *,
     )
 
 
+@dataclass(frozen=True)
+class TiltedReleaseState(ReleaseState):
+    """Tier-8b release state: :class:`ReleaseState` + the throw tilt and the
+    swing-compensated pre-tilt POSITIONING pose at the throw site A.
+
+    ``release_pos_global_mm`` / ``launch_vel_mms`` describe the TILTED release:
+    the ball leaves at nominal A xy (the centroid swing-compensation puts it
+    there) with the lateral launch component that carries it to the displaced
+    B; ``catch_point_global_mm`` is B's cup point — the announced landing IS B,
+    which is what closes the correlation → catch loop at the displaced site.
+    """
+    tilt_rx: float                    # throw tilt about world x {rad}, rz = 0
+    tilt_ry: float                    # throw tilt about world y {rad}
+    pretilt_pose_stow: np.ndarray     # (6,) [x, y, z, rx, ry, 0] STOW-frame
+    #                                   go_to_pose POSITIONING target at A
+    #                                   (centroid swing-compensated)
+    displacement_mm: float            # |B_xy − A_xy| — the displacement-cap
+    #                                   gate's measurand (JB_OP_TOSS_MAX_…)
+
+
+class ThrowTiltInfeasible(ValueError):
+    """The nominated displaced toss needs a throw aim past ``max_tilt_deg``.
+
+    Raised by :func:`compute_release_state_tilted` INSTEAD of letting
+    ``tilt_to_throw``'s clamp silently saturate: a saturated throw tilt
+    launches the ball along the clamped — not the required — direction, so it
+    lands with a systematic bias short of B (the bb Rung-2a "landing bias").
+    The silent clamp is correct only for the CATCH (a partially-nulled arrival
+    still seats); a throw must reject loudly (``REJECTED_TILT_CLAMP``) rather
+    than fly mis-aimed. Never binds inside the Phase-4 envelope — v_lat/v_z
+    reaches tan 12° only at ~315 mm displacement for T = 0.55 s, far outside
+    the ±150 mm workspace — so this is a contract, not a live constraint.
+    Carries ``required_deg`` / ``max_tilt_deg`` for the reject diagnostics.
+    """
+
+    def __init__(self, required_deg: float, max_tilt_deg: float):
+        self.required_deg = float(required_deg)
+        self.max_tilt_deg = float(max_tilt_deg)
+        super().__init__(
+            "displaced toss needs a {:.2f} deg from-vertical aim > the "
+            "{:.2f} deg tilt ceiling — rejected (a silently clamped aim "
+            "lands the ball short of B, the Rung-2a landing bias)".format(
+                self.required_deg, self.max_tilt_deg))
+
+
+def _from_vertical_deg(v_mms) -> float:
+    """From-vertical angle (deg) of a launch vector — the aim the throw tilt
+    must deliver. ``atan2(|v_xy|, v_z)`` (exact on both axes, no normalisation;
+    same angle ``tilt_to_receive`` derives via arccos of the unit z)."""
+    v = np.asarray(v_mms, dtype=float).reshape(3)
+    return float(np.degrees(np.arctan2(np.hypot(v[0], v[1]), v[2])))
+
+
+def _tilted_release_pos(a_xy, cup_z_world_mm: float, rx: float, ry: float
+                        ) -> np.ndarray:
+    """Global release point under throw tilt ``(rx, ry)``, swing-compensated.
+
+    The commanded centroid pulls back by the lever-arm swing (see
+    :func:`compute_release_state_tilted`), so the tilted release xy sits
+    exactly AT nominal A; what remains is the vertical cross-coupling — the
+    release point rides ``arm·(1 − cos θ)`` BELOW the level release plane
+    (``arm = cup_z − 744.3``, the fixed world tilt centre — the same
+    convention as the catch side's ``_toss_catch_pose`` / CCN swing math).
+    """
+    axis = tilt_geometry.cup_axis(rx, ry)
+    arm = tilt_geometry.cup_lever_arm_mm(cup_z_world_mm)
+    drop = arm * (1.0 - float(axis[2]))
+    return np.array([float(a_xy[0]), float(a_xy[1]),
+                     float(cup_z_world_mm) - drop])
+
+
+def compute_release_state_tilted(catch_position_stow_mm, flight_time_s: float,
+                                 *,
+                                 throw_site_xy_mm=None,
+                                 initial_height_mm: float = hw.GEOM_INITIAL_HEIGHT_MM,
+                                 hand_catch_offset_mm: float = hw.HAND_CATCH_OFFSET_MM,
+                                 hand_throw_offset_mm: float = HAND_THROW_OFFSET_MM,
+                                 max_tilt_deg: float = tilt_geometry.MAX_TILT_DEG
+                                 ) -> TiltedReleaseState:
+    """Tier-8b release state for a tilt-aimed displaced throw → catch.
+
+    The throw launches from site A (``throw_site_xy_mm``, STOW xy; ``None`` →
+    ``hw.JB_OP_TOSS_THROW_SITE_MM``, default the workspace centre) at the
+    displaced catch B (``catch_position_stow_mm``, the Toss.action goal —
+    same convention as :func:`compute_release_state`). Both sites share the
+    goal's nominated platform z. All lateral take-off comes from the slider
+    stroke projected through the throw tilt — never platform translation.
+
+    Chain (single-ball-toss plan Phase 4, all-mm unit discipline —
+    ``tilt_geometry``'s lever helpers here are the mm-based production
+    ``shaping`` re-exports, NOT the sim copies, which take metres):
+
+    1. Level-plane ballistic inverse A → B's cup point over ``flight_time_s``.
+    2. **Loud clamp gate**: required from-vertical aim > ``max_tilt_deg`` ⇒
+       :class:`ThrowTiltInfeasible` (never a silently clamped, mis-aimed
+       throw; the sequencer maps it to ``REJECTED_TILT_CLAMP``).
+    3. ``tilt_to_throw`` aim + ONE fixed-point pass: the tilted release point
+       sits ``arm·(1 − cos θ)`` lower (≈0.03 mm at 1.8°), so the inverse is
+       recomputed from the true release point and the tilt re-derived once —
+       the correction is ~0.1 %, converging immediately (<0.1 mm / <1 mm/s
+       after one pass, pinned in ``tests/motion/test_toss_release.py``). The
+       returned state is exactly self-consistent: ``launch_vel_mms`` is the
+       inverse from the returned ``release_pos_global_mm``.
+    4. Swing-compensated pre-tilt pose at A: the tilt swings the release
+       point sideways by ``cup_lateral_shift_mm(rx, ry, cup_z)``, so the
+       commanded centroid pulls back by exactly that and the release xy sits
+       AT nominal A — the throw-side analogue of the catch's
+       ``_toss_catch_pose`` centroid offset, same fixed-world-tilt-centre
+       lever convention.
+
+    Degenerate identity: ``throw_site == B_xy`` reproduces
+    :func:`compute_release_state` BITWISE (tilt exactly level, zero shift and
+    drop) — the Tier-8a regression net.
+
+    ``event_vel_mps`` is ``|launch|/1000`` — inside the clamp gate the cup
+    axis is parallel to the launch, so the slider speed ALONG the tilted axis
+    IS the full launch magnitude; same UNCLAMPED semantics and
+    :func:`validate_event_vel` gating as Tier 8a. Raises ``ValueError`` for
+    ``flight_time_s <= 0`` (propagated from ``ballistics_bc``).
+    """
+    b = np.asarray(catch_position_stow_mm, dtype=float).reshape(3)
+    if throw_site_xy_mm is None:
+        throw_site_xy_mm = hw.JB_OP_TOSS_THROW_SITE_MM
+    a_xy = np.asarray(throw_site_xy_mm, dtype=float).reshape(2)
+    z_nom = float(b[2])
+
+    # B's cup point (global) — the announced landing IS B.
+    catch_platform_global = stow_to_global_mm(
+        b, initial_height_mm=initial_height_mm)
+    catch_point = catch_platform_global + np.array(
+        [0.0, 0.0, float(hand_catch_offset_mm)])
+
+    # Level release plane at A (platform holds the nominated z at both sites).
+    throw_platform_global = stow_to_global_mm(
+        (a_xy[0], a_xy[1], z_nom), initial_height_mm=initial_height_mm)
+    release_level = throw_platform_global + np.array(
+        [0.0, 0.0, float(hand_throw_offset_mm)])
+    # World z of the release-plane cup at level — the lever-arm height the
+    # swing compensation and vertical-drop terms use.
+    cup_z_world = float(release_level[2])
+
+    # Pass 0 (level aim): ballistic inverse from the level plane, gated LOUDLY
+    # before any tilt is derived (step 2 of the chain).
+    v0 = ballistics_bc.launch_velocity(release_level, catch_point,
+                                       flight_time_s)
+    required_deg = _from_vertical_deg(v0)
+    if required_deg > float(max_tilt_deg):
+        raise ThrowTiltInfeasible(required_deg, float(max_tilt_deg))
+    rx, ry = tilt_geometry.tilt_to_throw(v0, float(max_tilt_deg))
+
+    # Pass 1 (tilted): recompute the inverse from the true (tilted) release
+    # point and re-derive the tilt once (step 3 of the chain).
+    release_pos = _tilted_release_pos(a_xy, cup_z_world, rx, ry)
+    v1 = ballistics_bc.launch_velocity(release_pos, catch_point, flight_time_s)
+    rx, ry = tilt_geometry.tilt_to_throw(v1, float(max_tilt_deg))
+    release_pos = _tilted_release_pos(a_xy, cup_z_world, rx, ry)
+    launch_vel = ballistics_bc.launch_velocity(release_pos, catch_point,
+                                               flight_time_s)
+
+    # Swing-compensated pre-tilt POSITIONING pose at A (step 4 of the chain).
+    shift = tilt_geometry.cup_lateral_shift_mm(rx, ry, cup_z_mm=cup_z_world)
+    pretilt_pose_stow = np.array([a_xy[0] - shift[0], a_xy[1] - shift[1],
+                                  z_nom, rx, ry, 0.0])
+
+    return TiltedReleaseState(
+        release_pos_global_mm=release_pos,
+        launch_vel_mms=launch_vel,
+        event_vel_mps=float(np.linalg.norm(launch_vel)) / 1000.0,
+        catch_point_global_mm=catch_point,
+        flight_time_s=float(flight_time_s),
+        tilt_rx=rx,
+        tilt_ry=ry,
+        pretilt_pose_stow=pretilt_pose_stow,
+        displacement_mm=float(np.hypot(b[0] - a_xy[0], b[1] - a_xy[1])),
+    )
+
+
 def validate_event_vel(event_vel_mps: float, *,
                        vmin: float = hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
                        vmax: float = hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS) -> bool:
@@ -133,6 +314,12 @@ def build_announcement_fields(release: ReleaseState, throw_time_s: float
                               ) -> dict:
     """The physics fields of the self-``ThrowAnnouncement`` (all positions mm
     GLOBAL, per ``ThrowAnnouncement.msg`` — ``landing_position`` is global).
+
+    Tier 8b rides through unchanged: pass a :class:`TiltedReleaseState` and
+    ``initial_position``/``initial_velocity`` carry the tilted release (with
+    its lateral components) while ``landing_position`` is B's cup point — the
+    announced landing IS the displaced B, which is exactly what the
+    correlation → catch loop needs.
 
     ``throw_time_s`` is the ABSOLUTE ROS time (float s) of the release event
     = dispatch_time + event_delay (the bridge schedules the stroke event at

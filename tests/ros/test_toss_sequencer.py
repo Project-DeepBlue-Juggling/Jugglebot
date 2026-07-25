@@ -33,6 +33,7 @@ from jugglebot.toss_sequencer import (
     ACTION_NONE,
     ACTION_POSITION_PLATFORM,
     ACTION_PREPARE_CATCH,
+    ACTION_REACH_CATCH,
     ACTION_RECENTER,
     ACTION_SAFE_ABORT,
     DEFAULT_TOSS_FLIGHT_TIME_S,
@@ -47,10 +48,13 @@ from jugglebot.toss_sequencer import (
     THROW_DISPATCH_OK,
     THROW_DISPATCH_REJECTED,
     TIER_8A,
+    TIER_8B,
     TOSS_CONTROL_MODE,
+    TOSS_MAX_DISPLACEMENT_MM,
     HAND_THROW_RELEASE_OFFSET_MM,
     TossObservations,
     TossSequencer,
+    reach_displacement_limit_mm,
 )
 
 CATCH_POSE = (0.0, 0.0, 170.0)
@@ -163,28 +167,29 @@ def test_toss_mode_is_trajectory():
     assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
 
 
-def test_tier_8b_rejected():
-    """The Phase-1 tier gate: config != '8a' is a loud forward-compatibility
-    refusal (Tier 8b lands in Phase 4 behind the same key). No cleanup —
-    nothing ran."""
+def test_tier_8b_accepted_when_config_selects_it():
+    """Phase 4: the tier gate now ADMITS '8b' (the config JB_OP_TOSS_TIER key
+    selects it, the goal cannot). A serviceable co-located 8b goal (throw site
+    == B ⇒ displacement 0) starts the positioning move, not REJECTED_TIER."""
     seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
-                        throw_delay_s=5.0, tier='8b')
+                        throw_delay_s=5.0, tier=TIER_8B,
+                        throw_site_xy_mm=(0.0, 0.0))
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_TIER'
-    assert d.action == ACTION_NONE
-    assert seq.prepared is False
+    assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
 
 
-def test_tier_gate_precedes_other_rejects():
+def test_tier_gate_rejects_unknown_tier():
     """Gate order pinned: the tier gate is the FIRST check of the sequence —
-    an unserviceable tier reads REJECTED_TIER even when other preconditions
-    also fail."""
+    anything outside {8a, 8b} reads REJECTED_TIER even when other preconditions
+    also fail. No cleanup — nothing ran."""
     seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
-                        throw_delay_s=5.0, tier='8b')
+                        throw_delay_s=5.0, tier='9z')
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0, control_mode='STANDBY'))
     assert d.done and d.result.outcome == 'REJECTED_TIER'
+    assert d.action == ACTION_NONE
+    assert seq.prepared is False
 
 
 def test_throw_delay_floor_rejected():
@@ -416,8 +421,9 @@ def test_announce_lead_short_warns_but_proceeds():
     """announce→landing lead < 2.5 s degrades the pre-tilt toward
     arrive-at-contact — but for a LEVEL Tier-8a toss the pre-tilt target equals
     the already-held pose, so the degeneracy is motion-free: WARN-only (the
-    node logs the flag), the sequence proceeds. Tier 8b MUST harden this to an
-    abort."""
+    node logs the flag), the sequence proceeds. The Phase-1 "8b hardens this to
+    an abort" promise is SUPERSEDED (see test_announce_lead_short_warns_for_8b_too
+    and the TOSS_MIN_ANNOUNCE_LEAD_S supersession comment)."""
     seq = _fresh()                                    # t_release 5.0, landing 5.8
     _to_positioning(seq)
     seq.note_position_result(0.05, True, 3.55)        # arrival = 3.8
@@ -843,3 +849,190 @@ def test_local_constants_match_generated_config():
         hw.GEOM_HAND_AXIS_BOTTOM_OFFSET_MM + hw.HAND_THROW_POS_M * 1000.0)
     assert hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S == pytest.approx(
         DEFAULT_TOSS_FLIGHT_TIME_S)
+
+
+# ── Tier 8b (Phase 4): displaced-throw CHECKING gates + deferred A→B reach ─────
+
+def _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+              flight_time_s=0.8, **kw):
+    """A fresh Tier-8b sequencer: a displaced catch B (pose) thrown from site A
+    (throw_site). event_vel defaults to the 8a vertical closed form — the FSM
+    gate under test is the displacement/clamp CHECKING logic, not the aim math
+    (the node feeds the real tilted event_vel + tilt_clamp_exceeded flag)."""
+    params = dict(catch_pose_stow_mm=pose, flight_time_s=flight_time_s,
+                  throw_delay_s=5.0, tier=TIER_8B, throw_site_xy_mm=throw_site)
+    params.update(kw)
+    seq = TossSequencer(**params)
+    seq.start(0.0)
+    return seq
+
+
+@pytest.mark.parametrize('pose,site,flight', [
+    ((80.0, 0.0, 170.0), (0.0, 0.0), 0.8),     # 80 mm > 70 cap (within 256 bound)
+    ((0.0, -80.0, 170.0), (0.0, 0.0), 0.8),    # −y direction, cap alone
+    ((100.0, 0.0, 170.0), (0.0, 0.0), 0.55),   # 100 mm > cap AND > 83.2 mm @0.55
+    ((60.0, 0.0, 170.0), (-40.0, 0.0), 0.8),   # non-origin A: |B−A| = 100 > cap
+])
+def test_displacement_rejected(pose, site, flight):
+    """REJECTED_DISPLACEMENT: |B_xy − A_xy| past the 70 mm cap (inside both the
+    reach envelope captured at A and the Rung-2a clean box) OR past the flight's
+    closed-form quintic reach bound — a loud PRE-THROW verdict for a reach whose
+    trajectory_node verdict would otherwise arrive only after the ball flies.
+    Checked BEFORE workspace, so a displaced-but-in-workspace B still rejects."""
+    seq = _fresh_8b(pose=pose, throw_site=site, flight_time_s=flight)
+    d = seq.step(0.0, _obs(0.0))
+    assert d.done and d.result.outcome == 'REJECTED_DISPLACEMENT'
+    assert d.action == ACTION_NONE and seq.prepared is False
+
+
+def test_displacement_within_cap_accepted():
+    """|B−A| within the 70 mm cap (and the flight's quintic reach bound) starts
+    the positioning move — the deferred A→B reach is feasible."""
+    seq = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0))
+    d = seq.step(0.0, _obs(0.0))
+    assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
+
+
+def test_reach_displacement_limit_closed_form():
+    """The closed-form quintic reach bound (module session limits): d_max =
+    min(vel·T/1.875, acc·T²/5.7735, jerk·T³/60). Spot values pinned; within the
+    shipped flight band the jerk term (≥ 83.2 mm at T = 0.55 s) always exceeds
+    the 70 mm displacement cap, so the cap is the binding gate and the reach
+    bound is the loud+early belt against a runtime set_limits drift."""
+    assert reach_displacement_limit_mm(0.55) == pytest.approx(83.19, abs=0.1)
+    assert reach_displacement_limit_mm(0.80) == pytest.approx(256.0, abs=0.5)
+    assert reach_displacement_limit_mm(0.55) > TOSS_MAX_DISPLACEMENT_MM
+
+
+def test_tilt_clamp_rejected():
+    """REJECTED_TILT_CLAMP: the node maps compute_release_state_tilted's
+    ThrowTiltInfeasible raise onto tilt_clamp_exceeded; CHECKING mints the
+    reject (a silently clamped aim lands short of B — the Rung-2a landing bias —
+    so the toss refuses loudly rather than fly mis-aimed). Displacement within
+    the cap, so the clamp gate is what fires."""
+    seq = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                    tilt_clamp_exceeded=True)
+    d = seq.step(0.0, _obs(0.0))
+    assert d.done and d.result.outcome == 'REJECTED_TILT_CLAMP'
+    assert d.action == ACTION_NONE and seq.prepared is False
+
+
+def test_displacement_precedes_tilt_clamp():
+    """Gate order: the displacement cap is checked BEFORE the tilt clamp — a
+    goal that trips both reads REJECTED_DISPLACEMENT (the primary contract)."""
+    seq = _fresh_8b(pose=(100.0, 0.0, 170.0), throw_site=(0.0, 0.0),
+                    flight_time_s=0.55, tilt_clamp_exceeded=True)
+    d = seq.step(0.0, _obs(0.0))
+    assert d.done and d.result.outcome == 'REJECTED_DISPLACEMENT'
+
+
+def test_reach_catch_emitted_once_time_triggered_at_release():
+    """Tier 8b's deferred A→B reach: ACTION_REACH_CATCH fires exactly once, on
+    the FIRST tick with now >= t_release (TIME-triggered, NOT evidence-triggered
+    — release evidence can lag the 0.5 s grace and eat the reach lead).
+    t_release = 5.0 (delay 5.0 from start(0.0))."""
+    seq = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0))
+    _to_in_flight(seq)                        # in flight well before t_release
+    d = seq.step(4.9, _obs(4.9))
+    assert d.action == ACTION_NONE            # not yet due
+    d = seq.step(5.0, _obs(5.0))
+    assert d.action == ACTION_REACH_CATCH     # first tick at/after t_release
+    d = seq.step(5.1, _obs(5.1))
+    assert d.action == ACTION_NONE            # never re-emitted (commitment flag)
+
+
+def test_reach_catch_emitted_even_without_release_evidence():
+    """TIME-triggered: the reach goes out at t_release even with NO release
+    evidence (the stroke may have silently never fired). The platform translates
+    A→B carrying the seated ball — the benign-accel class — and
+    ABORTED_NO_RELEASE still cleans up at t_release + grace."""
+    seq = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0))
+    _to_throw_dispatched(seq)
+    seq.note_throw_dispatch(THROW_DISPATCH_OK)
+    d = seq.step(5.0, _obs(5.0))              # t_release, no stroke/track evidence
+    assert d.phase == PHASE_THROWING and d.action == ACTION_REACH_CATCH
+    d = seq.step(5.5, _obs(5.5))              # t_release + grace: abort
+    assert d.done and d.result.outcome == 'ABORTED_NO_RELEASE'
+    assert d.action == ACTION_SAFE_ABORT
+
+
+def test_8a_never_emits_reach_catch():
+    """Tier 8a's decision stream is byte-identical to Phase 1 — the Phase-4
+    ACTION_REACH_CATCH never appears, on the same tick schedule an 8b goal would
+    emit it on. The dispatch is still exactly-once."""
+    seq = _fresh()                            # tier 8a (default)
+    actions = [seq.step(0.0, _obs(0.0)).action]
+    seq.note_position_result(0.05, True, 0.5)
+    actions.append(seq.step(0.8, _obs(0.8)).action)
+    seq.note_prepare_result(True)
+    actions.append(seq.step(0.9, _obs(0.9)).action)
+    seq.note_announcement()
+    actions.append(seq.step(1.0, _obs(1.0)).action)
+    seq.note_throw_dispatch(THROW_DISPATCH_OK)
+    actions.append(seq.step(1.1, _obs(1.1, throw_stroke_seen=True)).action)
+    for t in (4.9, 5.0, 5.9):                 # across + past t_release
+        actions.append(seq.step(t, _obs(t, ball_caught=(t == 5.9),
+                                        catch_error_mm=10.0)).action)
+    assert ACTION_REACH_CATCH not in actions
+    assert actions.count(ACTION_DISPATCH_THROW) == 1
+
+
+def test_8b_stream_equals_8a_plus_reach_catch():
+    """Byte-identity pin: an 8b goal with throw site == B (displacement 0,
+    otherwise identical to 8a) produces the 8a decision stream with EXACTLY one
+    ACTION_REACH_CATCH inserted at the first tick past t_release — nothing else
+    about the sequence changes."""
+    schedule = [(0.0, {}), (0.8, {}), (0.9, {}), (1.0, {}),
+                (1.1, {'throw_stroke_seen': True}), (4.9, {}), (5.0, {}),
+                (5.9, {'ball_caught': True, 'catch_error_mm': 8.0})]
+
+    def _run(tier):
+        seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.8,
+                            throw_delay_s=5.0, tier=tier,
+                            throw_site_xy_mm=(0.0, 0.0))
+        seq.start(0.0)
+        acts = []
+        for i, (t, kw) in enumerate(schedule):
+            acts.append(seq.step(t, _obs(t, **kw)).action)
+            if i == 0:
+                seq.note_position_result(0.05, True, 0.5)
+            elif i == 1:
+                seq.note_prepare_result(True)
+            elif i == 2:
+                seq.note_announcement()
+            elif i == 3:
+                seq.note_throw_dispatch(THROW_DISPATCH_OK)
+        return acts
+
+    acts_8a = _run(TIER_8A)
+    acts_8b = _run(TIER_8B)
+    assert ACTION_REACH_CATCH not in acts_8a
+    assert acts_8b.count(ACTION_REACH_CATCH) == 1
+    # Tick-for-tick identical EXCEPT the single tick where 8b emits REACH_CATCH
+    # (there 8a idles ACTION_NONE) — the reach REPLACES a quiet tick, it never
+    # adds or reorders one.
+    assert len(acts_8a) == len(acts_8b)
+    diffs = [(i, a, b) for i, (a, b) in enumerate(zip(acts_8a, acts_8b))
+             if a != b]
+    assert len(diffs) == 1
+    _i, a8a, a8b = diffs[0]
+    assert a8a == ACTION_NONE and a8b == ACTION_REACH_CATCH
+
+
+def test_announce_lead_short_warns_for_8b_too():
+    """The announce-lead hardening was SUPERSEDED for 8b: the 8b platform reach
+    is deferred to t_release with lead = the flight time BY CONSTRUCTION, so the
+    2.5 s announce lead sizes no 8b motion. 8b WARNs and proceeds exactly like
+    8a — a literal hardening would brick every floor-delay 8b toss."""
+    seq = _fresh_8b(pose=(0.0, 0.0, 170.0), throw_site=(0.0, 0.0))  # displacement 0
+    _to_positioning(seq)
+    seq.note_position_result(0.05, True, 3.55)    # arrival 3.8
+    d = seq.step(3.8, _obs(3.8))
+    assert d.phase == PHASE_PREPARING and d.action == ACTION_PREPARE_CATCH
+    seq.note_prepare_result(True)
+    d = seq.step(3.85, _obs(3.85))                # lead 5.8 − 3.85 = 1.95 < 2.5
+    assert d.action == ACTION_ANNOUNCE
+    assert seq.announce_lead_short is True         # WARN flag, never an abort
+    seq.note_announcement()
+    d = seq.step(3.9, _obs(3.9))
+    assert d.phase == PHASE_THROWING and d.action == ACTION_DISPATCH_THROW

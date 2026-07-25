@@ -46,6 +46,10 @@ for _p in (os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot'),
         sys.path.insert(0, _p)
 
 from jugglebot.motion.ik_solver import rotvec_to_rot_matrix
+# Single source of truth (single-ball-toss Phase 4): the throw mirror now lives
+# in the production trajectory package; re-exported here so every sim
+# caller/probe/test keeps importing from sim.juggle_tilt unchanged.
+from jugglebot.motion.trajectory.tilt_geometry import tilt_to_throw  # noqa: F401
 
 # ---- Realisation constants (mirror sim.juggle_online; see module docstring) --
 Z_ACTIVE_MM = 170.0          # platform centroid height for the juggle pattern
@@ -117,37 +121,6 @@ def tilt_to_receive(v_arrival, max_tilt_deg: float = MAX_TILT_DEG):
     rx = float(angle * axis[0])
     ry = float(angle * axis[1])
     return rx, ry
-
-
-def tilt_to_throw(v_takeoff, max_tilt_deg: float = MAX_TILT_DEG):
-    """Throw tilt (rx, ry) radians aligning the cup axis ALONG ``v_takeoff``.
-
-    The tilt-aimed throw (Rung 2a). The ball detaches up the cup's symmetry
-    axis, so to launch it at the ballistic take-off velocity ``v_takeoff`` the
-    cup axis must point **parallel** to ``v_takeoff`` (up-and-out, since the
-    take-off is ascending: vz > 0). The lateral take-off is then delivered by
-    the fast slider PROJECTED through the tilt — ``lateral = |v_takeoff|·sin θ``
-    — instead of by band-limited platform translation.
-
-    This is the exact mirror of :func:`tilt_to_receive` (which aligns the axis
-    *anti*-parallel to a descending arrival): ``tilt_to_throw(v)`` ==
-    ``tilt_to_receive(-v)``. The from-vertical tilt is clamped to
-    ``max_tilt_deg``; past the clamp the aim saturates and the launch direction
-    no longer fully matches ``v_takeoff`` (characterised as landing bias in
-    Rung 2a). A straight-up take-off returns level.
-
-    Parameters
-    ----------
-    v_takeoff : (3,) array-like
-        Ballistic take-off velocity (m/s, world). Normally ascending (vz > 0).
-
-    Returns
-    -------
-    (rx, ry) : tuple of float
-        Platform tilt about world x and y (rad), rz implicitly 0.
-    """
-    v = np.asarray(v_takeoff, dtype=float).reshape(3)
-    return tilt_to_receive(-v, max_tilt_deg=max_tilt_deg)
 
 
 def cup_axis(rx: float, ry: float) -> np.ndarray:

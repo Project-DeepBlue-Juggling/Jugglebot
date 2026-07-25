@@ -1,4 +1,4 @@
-"""Pure-Python FSM for the Jugglebot self-toss sequence (Toss.action, Tier 8a).
+"""Pure-Python FSM for the Jugglebot self-toss sequence (Toss.action, Tiers 8a/8b).
 
 The coordinator node (``reload_coordinator_node``, the merged ball-ops node) is a
 thin ROS wrapper around this FSM: it feeds observations in (control mode, streaming,
@@ -19,9 +19,13 @@ Design (plan § Choreography; deliberate deviations from ``reload_sequencer``
 are called out inline — each exists because the toss THROWS from its own hand
 where the reload receives from BB):
 
-1. **CHECKING** — loud precondition rejects, strictest first: the Phase-1 tier
-   gate (config ``'8a'`` only — ``REJECTED_TIER``), the static goal parameters
-   (delay floor, flight-time band, event-vel band, workspace pre-check), the
+1. **CHECKING** — loud precondition rejects, strictest first: the tier gate
+   (config ``'8a'``/``'8b'`` — anything else ``REJECTED_TIER``), the static goal
+   parameters (delay floor, flight-time band, the Tier-8b displaced-throw gates —
+   ``REJECTED_DISPLACEMENT`` for |B−A| past the cap or past the closed-form
+   quintic reach bound over the flight, ``REJECTED_TILT_CLAMP`` for an aim past
+   the tilt ceiling — event-vel band, workspace pre-check on B and, for 8b, on
+   the throw site A), the
    control mode, then the live observations: mocap fresh, trajectory streaming,
    hand telemetry fresh (``REJECTED_HAND_STALE`` — a dead hand link blinds
    release verification), hand at the bottom park band
@@ -75,10 +79,29 @@ where the reload receives from BB):
    accepted for Phase 1, same class as reload's NO_ANNOUNCEMENT path).
 5. **BALL_IN_FLIGHT / CATCHING** — the EXISTING catch path (correlation →
    catch_coordinator → ``catch/dynamic_target`` → ``build_catch`` + hand fire)
-   runs on its own; the platform holds open-loop at the pre-positioned pose. A
+   runs on its own; the platform holds open-loop at the pre-positioned pose
+   (Tier 8a: for the whole flight; Tier 8b: at the pre-tilt pose at A until the
+   scheduled release, then the ONE deferred A→B reach below spans the flight). A
    standing post-release infeasible catch target is LATCHED but does NOT
    terminate mid-flight (retract-into-incoming-ball hazard — hardware evidence
    2026-07-23, twice); the outcome resolves at settle.
+
+   **Tier 8b's deferred reach (``ACTION_REACH_CATCH``, Phase 4):** the FSM emits
+   it exactly once on the first tick with ``now >= t_release`` — TIME-triggered,
+   NOT evidence-triggered: release evidence can lag up to ``TOSS_RELEASE_GRACE_S``
+   (0.5 s), which would eat most of a 0.8 s flight and push the reach lead toward
+   trajectory_node's 0.25 s min_timed_lead floor. The node then publishes the ONE
+   announcement-derived ``catch/dynamic_target`` (B, arrival = the announced
+   landing ⇒ lead = the flight time by construction). If the stroke silently
+   never fired, the platform translates A→B carrying the seated ball — the same
+   benign-accel class as the SAFE_ABORT retract — and ``ABORTED_NO_RELEASE``
+   still cleans up at t_release + grace. The stock catch_coordinator
+   announcement pre-tilt CANNOT serve 8b: it arrives ≥1 s before release with an
+   arrival clamped to ~now + 1 s, so the A→B translate (and the un-tilt to the
+   receive tilt) would COMPLETE before the ball is released — aim destroyed, a
+   moving platform under a seated ball mid-windup. The node suppresses it via
+   ``catch/pretilt_hold`` for the goal's duration (8a is motion-free under the
+   stock path and keeps it unchanged).
 6. **SETTLING** — tracker ``CAUGHT`` for OUR announced ball within the confirm
    window past the scheduled landing ⇒ ``CAUGHT`` (``ACTION_RECENTER``);
    otherwise ``MISSED_INFEASIBLE_<code>`` (only when NO catch target was ever
@@ -152,6 +175,13 @@ ACTION_PREPARE_CATCH = 'prepare_catch'          # node: prime-hold raise on THIS
 ACTION_ANNOUNCE = 'announce'                    # publish the self-ThrowAnnouncement
                                                 #   (≥1 tick AFTER the armed confirm)
 ACTION_DISPATCH_THROW = 'dispatch_throw'        # SetHandTrajCmd traj_type=0 (ONCE, ever)
+ACTION_REACH_CATCH = 'reach_catch'              # Tier 8b only: publish the ONE deferred
+                                                #   A→B catch/dynamic_target (arrival =
+                                                #   the announced landing). Emitted
+                                                #   exactly once on the first tick with
+                                                #   now >= t_release — TIME-triggered,
+                                                #   never evidence-triggered (evidence
+                                                #   can lag 0.5 s and eat the reach lead)
 ACTION_RECENTER = 'recenter'                    # lower latch + go_home (hand keeps ball)
 ACTION_SAFE_ABORT = 'safe_abort'                # armed-off → retract → latch-off → go_home
 
@@ -167,10 +197,15 @@ THROW_DISPATCH_REJECTED = 'rejected'
 # doctrine as RELOAD_CONTROL_MODE. Leaving it mid-sequence is the documented abort.
 TOSS_CONTROL_MODE = 'TRAJECTORY'
 
-TIER_8A = '8a'                       # the only serviceable tier in Phase 1; the config
+TIER_8A = '8a'                       # co-located vertical toss (Phase 1). The config
                                      # key (jugglebot_operational.toss_tier →
-                                     # JB_OP_TOSS_TIER) selects, the goal cannot —
-                                     # tier != '8a' is REJECTED_TIER until Phase 4.
+                                     # JB_OP_TOSS_TIER) selects the tier, the goal
+                                     # cannot.
+TIER_8B = '8b'                       # tilt-aimed displaced throw→catch (Phase 4):
+                                     # pre-tilt at the config throw site A, launch
+                                     # aimed at the displaced B, deferred A→B reach
+                                     # at t_release. Any tier outside {8a, 8b} is
+                                     # REJECTED_TIER.
 
 # ── Defaults / floors ──────────────────────────────────────────────────────────
 DEFAULT_TOSS_THROW_DELAY_S = 5.0     # 0 => this. Budget: CHECK ~0.1 + POSITION ≤~2 +
@@ -199,11 +234,23 @@ DEFAULT_TOSS_FLIGHT_TIME_S = 0.8     # 0 => this — the NO-CONFIG fallback only
 FLIGHT_TIME_MIN_S = 0.55             # plan sweep floor (throw speed ≈ 2.7 m/s)
 FLIGHT_TIME_MAX_S = 1.10             # plan sweep ceiling (≈ 5.4 m/s < 7.0 Teensy ceiling)
 
-TOSS_MIN_ANNOUNCE_LEAD_S = 2.5       # announce→landing lead below which the pre-tilt
-                                     # degenerates toward arrive-at-contact. WARN-only
-                                     # for level 8a (the pre-tilt target equals the
-                                     # already-held pose, so the degeneracy is
-                                     # motion-free); MUST harden to an abort for 8b.
+TOSS_MIN_ANNOUNCE_LEAD_S = 2.5       # announce→landing lead below which the stock CCN
+                                     # announcement pre-tilt degenerates toward
+                                     # arrive-at-contact. WARN-only for BOTH tiers.
+                                     # SUPERSESSION (Phase 4): this comment used to
+                                     # promise "MUST harden to an abort for 8b" —
+                                     # that promise was sized for CCN's announce-
+                                     # driven pre-tilt traverse and is WITHDRAWN:
+                                     # under the deferred-reach choreography the 8b
+                                     # platform reach is published at t_release with
+                                     # lead = flight time BY CONSTRUCTION, so this
+                                     # constant no longer sizes any 8b platform
+                                     # motion — and a literal hardening would brick
+                                     # every floor-delay 8b toss (announce→landing
+                                     # lead ≈ 1.8–2.3 s at the 3.5 s delay floor)
+                                     # while protecting nothing. The load-bearing 8b
+                                     # guards are the CHECKING displacement/clamp
+                                     # gates below.
 
 TOSS_POSITIONING_TIMEOUT_S = 6.0     # no go_to_pose response / arrival within this of
                                      # entering POSITIONING ⇒ abort. Sized: service
@@ -243,6 +290,49 @@ TOSS_Z_BAND_MM = 50.0                # |z − ACTIVE| bound (the sweep is ±30)
 # copy, pinned by the config drift-guard test).
 TEENSY_MIN_EVENT_VEL_MPS = 0.3
 TEENSY_MAX_EVENT_VEL_MPS = 7.0
+
+# ── Tier-8b displaced-throw CHECKING gates (Phase 4) ───────────────────────────
+# |B_xy − A_xy| cap. 70 mm = the intersection of two hard boundaries, minus
+# margin: (a) trajectory_node's catch reach envelope (the arm-edge captures the
+# envelope center at A, so a B-reach target beyond hw.JB_TRAJ_CATCH_REACH_
+# ENVELOPE_MM = 80 mm of A is structurally rejected WORKSPACE mid-flight — after
+# the ball is airborne); (b) the bb Rung-2a "clean box" (~±70 mm: beyond it the
+# contact-detach asymmetry glues/overshoots throws — sim evidence, logbook
+# 2026-06-30). Rejecting here is a loud PRE-THROW verdict for a reach whose
+# gate-level verdict would otherwise arrive only after release. Drift-guard test
+# pins cap < envelope. (T4-at-100 mm needs an operator decision — envelope raise
+# vs an arm-at-B trajectory_node change — deferred past the asymmetry map.)
+TOSS_MAX_DISPLACEMENT_MM = 70.0
+# Closed-form peak factors of build_catch's quintic (min-jerk, zero boundary
+# velocities) over displacement d and lead T: peak vel = 1.875·d/T, peak acc =
+# 5.7735·d/T², peak |jerk| = 60·d/T³ (platform space; leg-space peaks are the
+# planner's validate truth — direction cosines ≲ 1 for xy translation).
+REACH_PEAK_VEL_FACTOR = 1.875
+REACH_PEAK_ACC_FACTOR = 5.7735
+REACH_PEAK_JERK_FACTOR = 60.0
+# Session limits the closed-form gate checks against — the generated config
+# working point (hw.JB_TRAJ_LEG_VEL/ACC/JERK_LIMIT, pinned by the drift-guard
+# test; local copies keep this module importable standalone). Stated caveat:
+# runtime set_limits drift is possible — trajectory_node's own gate remains the
+# truth; this is the loud+early copy so an infeasible A→B reach rejects BEFORE
+# the throw instead of WORKSPACE/TOO_FAST-ing mid-flight. Within the shipped
+# flight band and the 70 mm cap the bound never binds (d_max ≥ 83 mm at
+# T = 0.55 s) — a contract, not a live constraint.
+REACH_VEL_LIMIT_MMPS = 1000.0
+REACH_ACC_LIMIT_MMPS2 = 5000.0
+REACH_JERK_LIMIT_MMPS3 = 30000.0
+
+
+def reach_displacement_limit_mm(flight_time_s: float) -> float:
+    """Max A→B displacement (mm) the deferred catch reach can span in
+    ``flight_time_s`` under the module's session limits — the closed-form
+    inversion of the quintic peak factors (d_max = min(vel·T/1.875,
+    acc·T²/5.7735, jerk·T³/60)). Reads the module limits at call time (spot
+    values: T = 0.55 → 83.2 mm jerk-bound; T = 0.80 → 256 mm jerk-bound)."""
+    t = float(flight_time_s)
+    return min(REACH_VEL_LIMIT_MMPS * t / REACH_PEAK_VEL_FACTOR,
+               REACH_ACC_LIMIT_MMPS2 * t * t / REACH_PEAK_ACC_FACTOR,
+               REACH_JERK_LIMIT_MMPS3 * t ** 3 / REACH_PEAK_JERK_FACTOR)
 
 # ── Tier-8a vertical-toss ballistics (default event_vel) ───────────────────────
 # Kept as module constants (not a generated-config / motion import) so this module
@@ -353,6 +443,20 @@ class TossSequencer:
     catch_confirm_window_s: float = CATCH_CONFIRM_WINDOW_S
     min_throw_delay_s: float = MIN_TOSS_THROW_DELAY_S
     min_event_delay_s: float = MIN_THROW_EVENT_DELAY_S
+    throw_site_xy_mm: tuple = (0.0, 0.0)        # Tier 8b: throw site A (STOW xy),
+                                                # config-resolved by the node
+                                                # (hw.JB_OP_TOSS_THROW_SITE_MM);
+                                                # ignored for 8a (throw site ==
+                                                # catch site by definition)
+    tilt_clamp_exceeded: bool = False           # Tier 8b: node-fed flag — the
+                                                # authoritative clamp gate lives in
+                                                # motion/toss_release (compute_
+                                                # release_state_tilted raises
+                                                # ThrowTiltInfeasible); the node
+                                                # maps the raise onto this flag so
+                                                # CHECKING mints REJECTED_TILT_CLAMP
+                                                # without a drift-prone second copy
+                                                # of the aim math here
 
     # ── internal state ──
     _phase: str = field(default=PHASE_CHECKING, init=False)
@@ -370,6 +474,9 @@ class TossSequencer:
     _announce_lead_short: bool = field(default=False, init=False)  # WARN flag (Tier 8a)
     _throw_dispatched: bool = field(default=False, init=False)
     _throw_dispatch_result: Optional[tuple] = field(default=None, init=False)  # (outcome, msg)
+    _reach_dispatched: bool = field(default=False, init=False)  # Tier 8b: the ONE
+                                                #   deferred A→B reach went out
+                                                #   (commitment flag, never reset)
     _release_deadline: float = field(default=0.0, init=False)
     _settle_deadline: float = field(default=0.0, init=False)
     _catch_infeasible: Optional[str] = field(default=None, init=False)  # gate code
@@ -502,19 +609,46 @@ class TossSequencer:
         # Static goal invalids first, tier strictest of all (Phase-1 gate): these
         # can only fire on the first pass — CHECKING either terminates or advances.
         if self._phase == PHASE_CHECKING:
-            if self.tier != TIER_8A:
+            if self.tier not in (TIER_8A, TIER_8B):
                 return self._reject('TIER')
             if self.throw_delay_s < self.min_throw_delay_s:
                 return self._reject('CANT_MAKE_LEAD')
             if not (FLIGHT_TIME_MIN_S <= self.flight_time_s <= FLIGHT_TIME_MAX_S):
                 return self._reject('FLIGHT_TIME')
+            x, y, z = self.catch_pose_stow_mm
+            if self.tier == TIER_8B:
+                # Displaced-throw gates (Phase 4), after the flight-time band
+                # (the reach bound is meaningless for an out-of-band T) and
+                # before EVENT_VEL (a clamp-rejected goal has no valid release
+                # state, so its event_vel is the meaningless 8a fallback):
+                # the cap first (the primary contract — inside both the reach
+                # envelope captured at A and the Rung-2a clean box), then the
+                # closed-form quintic reach bound over lead = T — both are
+                # loud PRE-THROW verdicts for a reach whose trajectory_node
+                # verdict would otherwise arrive only after release.
+                ax, ay = self.throw_site_xy_mm
+                displacement = math.hypot(x - float(ax), y - float(ay))
+                if (displacement > TOSS_MAX_DISPLACEMENT_MM
+                        or displacement > reach_displacement_limit_mm(
+                            self.flight_time_s)):
+                    return self._reject('DISPLACEMENT')
+                if self.tilt_clamp_exceeded:
+                    # The motion-module clamp gate fired: the required aim
+                    # exceeds the tilt ceiling, and a silently clamped aim
+                    # lands the ball short of B (the Rung-2a landing bias).
+                    return self._reject('TILT_CLAMP')
             if not (TEENSY_MIN_EVENT_VEL_MPS <= self.event_vel_mps
                     <= TEENSY_MAX_EVENT_VEL_MPS):
                 return self._reject('EVENT_VEL')
-            x, y, z = self.catch_pose_stow_mm
             if (abs(x) > TOSS_XY_LIMIT_MM or abs(y) > TOSS_XY_LIMIT_MM
                     or abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM):
                 return self._reject('WORKSPACE')
+            if self.tier == TIER_8B:
+                # The throw site A shares B's z (one nominated plane); its xy
+                # gets the same planning-envelope bounds as B.
+                ax, ay = self.throw_site_xy_mm
+                if abs(float(ax)) > TOSS_XY_LIMIT_MM or abs(float(ay)) > TOSS_XY_LIMIT_MM:
+                    return self._reject('WORKSPACE')
         # TOSS runs within the active streaming mode; leaving it mid-sequence is
         # the documented abort. A mode-exit mid-flight still terminates immediately
         # (as reload): trajectory_node has force-disarmed the latch on the mode
@@ -623,9 +757,12 @@ class TossSequencer:
             # pre-tilts that arrive unarmed. The announce action is emitted on a
             # LATER tick than the PREPARE bundle by construction.
             if (self._t_release + self.flight_time_s) - now < TOSS_MIN_ANNOUNCE_LEAD_S:
-                # WARN-only for level 8a: the pre-tilt target equals the
-                # already-held pose, so the degenerate pre-tilt is motion-free.
-                # Tier 8b MUST harden this to an abort.
+                # WARN-only for BOTH tiers: 8a's pre-tilt target equals the
+                # already-held pose (motion-free degeneracy), and 8b's platform
+                # reach is deferred to t_release with lead = flight time by
+                # construction — the announce lead sizes no 8b motion (the
+                # Phase-1 "harden to an abort for 8b" promise is superseded;
+                # see TOSS_MIN_ANNOUNCE_LEAD_S).
                 self._announce_lead_short = True
             self._announce_dispatched = True
             return TossDecision(PHASE_PREPARING, ACTION_ANNOUNCE, False, None)
@@ -649,17 +786,36 @@ class TossSequencer:
         self._release_deadline = self._t_release + self.release_grace_s
         return TossDecision(PHASE_THROWING, ACTION_DISPATCH_THROW, False, None)
 
+    def _reach_action_if_due(self, now: float) -> str:
+        """Tier 8b's ``ACTION_REACH_CATCH``, exactly once, on the first tick with
+        ``now >= t_release`` — TIME-triggered, never evidence-triggered (release
+        evidence can lag up to the 0.5 s grace, which would eat most of the
+        flight and push the reach lead toward trajectory_node's 0.25 s
+        min_timed_lead floor; tick-rate jitter only shrinks the lead by one
+        coordinator tick). Emitted even with NO release evidence: if the stroke
+        silently never fired, the platform translates A→B carrying the seated
+        ball (the benign-accel class) and ABORTED_NO_RELEASE still cleans up at
+        t_release + grace. Tier 8a NEVER emits it (byte-identical decisions)."""
+        if (self.tier == TIER_8B and not self._reach_dispatched
+                and now >= self._t_release):
+            self._reach_dispatched = True
+            return ACTION_REACH_CATCH
+        return ACTION_NONE
+
     def _step_throwing(self, now: float, obs: TossObservations) -> TossDecision:
         # The node's dispatch runs synchronously inside the tick; a still-missing
         # classification means the call is in flight — wait (the node-level
-        # sequence ceiling backstops a pathological never-noted state).
+        # sequence ceiling backstops a pathological never-noted state). The
+        # throw is already dispatched, so a due 8b reach still goes out here.
         if self._throw_dispatch_result is None:
-            return TossDecision(PHASE_THROWING, ACTION_NONE, False, None)
+            return TossDecision(PHASE_THROWING, self._reach_action_if_due(now),
+                                False, None)
         outcome, _message = self._throw_dispatch_result
         if outcome == THROW_DISPATCH_REJECTED:
             # Definitive no-arm: no CAN frame exists, the ball is still seated.
             # The SAFE_ABORT retract deliberately also clears any half-state on
-            # the last-writer-wins queue.
+            # the last-writer-wins queue. Checked BEFORE the reach-due check:
+            # nothing will fly, so no reach is wanted.
             return self._abort('THROW_DISPATCH_FAILED')
         # OK or AMBIGUOUS: await release evidence — NEVER a second dispatch. An
         # ambiguous ack (ERR_TIMEOUT class) may have armed the stroke; a
@@ -672,7 +828,8 @@ class TossSequencer:
             # deadline must include the flight, not treat release as landing.
             self._settle_deadline = (self._t_release + self.flight_time_s
                                      + self.catch_confirm_window_s)
-            return TossDecision(PHASE_BALL_IN_FLIGHT, ACTION_NONE, False, None)
+            return TossDecision(PHASE_BALL_IN_FLIGHT,
+                                self._reach_action_if_due(now), False, None)
         if now >= self._release_deadline:
             # No evidence on either channel by t_release + grace: the stroke is
             # presumed never to have fired; the ball is presumed seated (the
@@ -680,7 +837,8 @@ class TossSequencer:
             # telemetry ∧ mocap miss ⇒ retract under a genuinely airborne ball)
             # is accepted for Phase 1 — same class as reload's NO_ANNOUNCEMENT.
             return self._abort('NO_RELEASE')
-        return TossDecision(PHASE_THROWING, ACTION_NONE, False, None)
+        return TossDecision(PHASE_THROWING, self._reach_action_if_due(now),
+                            False, None)
 
     def _step_in_flight(self, now: float, obs: TossObservations) -> TossDecision:
         # A standing catch-target infeasibility does NOT terminate mid-flight:
@@ -697,9 +855,12 @@ class TossSequencer:
             self._phase = PHASE_SETTLING
             return self._step_settling(now, obs)
         # Transition the reported phase to CATCHING once near the scheduled landing.
+        # Release evidence can beat t_release (the stroke telemetry rises during
+        # the windup), so a due 8b reach may first fire from here.
         near = now >= (self._landing_perf() - self.catch_confirm_window_s)
         self._phase = PHASE_CATCHING if near else PHASE_BALL_IN_FLIGHT
-        return TossDecision(self._phase, ACTION_NONE, False, None)
+        return TossDecision(self._phase, self._reach_action_if_due(now),
+                            False, None)
 
     def _landing_perf(self) -> float:
         """Scheduled landing on the FSM's perf clock. The FSM is the announcer —
@@ -791,8 +952,11 @@ class TossSequencer:
     @property
     def announce_lead_short(self) -> bool:
         """True once the announce→landing lead fell below
-        ``TOSS_MIN_ANNOUNCE_LEAD_S`` at announce time — WARN-only for level Tier
-        8a (the node logs it); Tier 8b must harden this to an abort."""
+        ``TOSS_MIN_ANNOUNCE_LEAD_S`` at announce time — WARN-only for BOTH
+        tiers (the node logs it). The Phase-1 promise to harden this to an
+        abort for Tier 8b is SUPERSEDED — under the deferred reach the 8b
+        platform lead is the flight time by construction; see the
+        ``TOSS_MIN_ANNOUNCE_LEAD_S`` comment for the full reasoning."""
         return self._announce_lead_short
 
     @property
