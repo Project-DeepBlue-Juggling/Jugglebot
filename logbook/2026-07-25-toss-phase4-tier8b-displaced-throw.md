@@ -8,7 +8,7 @@ related_plan: single-ball-toss.md
 subsystem: ros
 tags: [feature, control, sim, testing]
 commits:
-  - PENDING
+  - 1ca90f8
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/tilt_geometry.py
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/__init__.py
