@@ -238,8 +238,9 @@ turns up a sixth external path nobody expected, that is the phase working.
 ### Phase 0 — Outcome
 
 **Status: LANDED 2026-07-25 — commit `d67c3cd`; logbook
-`logbook/2026-07-25-levelling-frame-enumeration.md`. AWAITING OPERATOR REVIEW,
-which hard-gates Phase 1.** No production code and no tests changed — this phase's
+`logbook/2026-07-25-levelling-frame-enumeration.md`. OPERATOR-REVIEWED 2026-07-25 —
+the hard gate on Phase 1 is CLEARED and both deferred decisions are resolved below.**
+No production code and no tests changed — this phase's
 deliverable is the enumeration below, plus the edits it forced in § Context,
 § C-LEVEL-1, Phase 2, Phase 3 and the risk register. Full suite
 (`pytest tests/ -q`, run 2026-07-25): **3429 passed, 3 xfailed, 198 warnings in
@@ -247,17 +248,39 @@ deliverable is the enumeration below, plus the edits it forced in § Context,
 `e513036` (3429 passed, 3 xfailed in 1340.73 s), as it must be, since no imported
 file changed.
 
-**Deferred to the operator (nothing here is actionable by an implementer):**
+**Resolved by the operator, 2026-07-25 (both were deferred here; neither is open):**
 
-1. **The E6 decision** — confirm Phase 2 corrects `timed_target(hold_after=False)`'s
-   neutral return target now. It has no production client, so it is a latent-path
-   fix; the argument for now is that a latent uncorrected path is exactly how the
-   present bug got in.
-2. **Throw-aim semantics** — after Phase 2 the Tier-8b throw aims relative to
-   **gravity** rather than to the plan frame, and `MAX_TILT_DEG = 12.0` changes
-   units of meaning (see § Phase-2 regression surface). Is the 12° ceiling a
-   *tracking-degradation* limit (⇒ gravity-frame is right) or a *mechanical* one
-   (⇒ plan-frame matters)? `tilt_geometry.py:58-62` says tracking degradation.
+1. **The E6 decision — RESOLVED: correct all six paths in Phase 2.**
+   `timed_target(hold_after=False)`'s neutral return target is corrected alongside
+   `go_home`. It has no production client (zero `create_client` hits for
+   `TimedTarget`), so this is a latent-path fix with no live behavioural
+   consequence — which is the reason to do it now rather than when a client
+   appears: a latent uncorrected path is exactly how the present bug got in, and
+   the original five-row diagnosis missed this one. Phase 2 step 2 is binding on
+   E5 **and** E6.
+2. **Throw-aim semantics — RESOLVED: the ~12° ceiling is SOFT; a commanded
+   12.78° is accepted.** The clamp stays where it is, on the ballistic aim
+   (`toss_release.py:295-296`, gravity-referenced via `_from_vertical_deg`), and
+   `MAX_TILT_DEG` is **not** reduced.
+   The framing this supersedes: an earlier draft of this section read
+   `tilt_geometry.py:58-62` as citing tracking degradation *alone*, and concluded
+   "⇒ gravity-frame is right". The comment in fact names **two** grounds — *"tilt
+   tracking **and** the small-angle aim model both degrade past ~12°"* — and
+   Phase 2 makes those two quantities diverge by the correction magnitude. The
+   aim-model ground is gravity-referenced and stays correctly capped at 12°; the
+   *tracking* ground is about what the legs must physically produce, and that can
+   now reach **12.78°**. So the single constant does double duty on two
+   quantities that no longer coincide, and only the first of them is still
+   clamped.
+   Accepted deliberately, on these grounds: ~12° is a `bb` Rung-0
+   *characterisation* rather than a mechanical limit ("leg headroom is fine well
+   past this"), 12.78° is 6.5% past it, the excess is only reachable at maximum
+   Tier-8b displacement (config-gated, currently capped at 70 mm), and leg
+   feasibility is still measured on the **corrected** commanded pose by
+   `feasibility.validate` regardless. Phase 2 records this in its logbook; if a
+   tilt-tracking measurement at 11–13° later shows the ceiling is harder than the
+   characterisation implies, the fix is to lower `MAX_TILT_DEG`, not to move the
+   clamp.
 3. **No bench check for this phase.** Phase 0 has no robot-actuating step, so
    `tests/hardware/session_anomaly_fixes.md` was deliberately **not** appended to —
    a section reading "nothing to run here" trains the operator to skim a runbook
