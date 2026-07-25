@@ -936,3 +936,442 @@ def test_arm_failed_ack_logged_at_debug():
     node._on_hand_traj_done(_FailAck())
     assert any(lvl == 'debug' for lvl, _ in rec.records)
     assert not any(lvl == 'warning' for lvl, _ in rec.records)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  C-HAND-1 — the hand-catch arm is gated until OUR throw stroke completes
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# The defect (2026-07-25, seven self-tosses across three sessions): the kind-1
+# catch arm landed 8-18 ms after release, INSIDE the throw's 65 ms deceleration
+# ramp. Teensy_code.ino:539 clears the whole packed queue on any kind-0/1/2
+# command and Trajectory.h:242-301 seeds the replacement prelude from
+# current_hand_position with v = 0, a = 0 (current_hand_velocity is declared
+# extern at :47 and never read) — so the queue was replaced by a rest-to-rest
+# quintic computed from a position the hand was travelling through at ~120 rev/s.
+# The hand overshot to 10.17-10.33 rev against an 11.1 rev guard, was yanked
+# 0.34-1.75 rev (10.7-55.3 mm) BELOW the stroke end, and recovered over ~300 ms.
+# It also discarded the THROW's own decel ramp: 0.887 s and 1.091 s of achieved
+# flight against a commanded 0.800 s.
+#
+# The fix is timing only — no commanded magnitude changes. Arming after the
+# stroke costs nothing because x3 (the throw's end) IS the catch trajectory's
+# first sample, algebraically and for every commanded velocity.
+
+_V_THROW_080 = 3.930820          # m/s — nominal 0.80 s flight (compute_release_state)
+_V_LAND_080 = 3.913980           # m/s — |arrival velocity| of the same toss
+_T_ANNOUNCE = 100.0              # ROS s
+_T_RELEASE = 101.0               # ROS s (announced throw_time)
+_T_LANDING = _T_RELEASE + 0.80   # ROS s
+# throw_decel_s(3.930820) = 65.104 ms; + the 40 ms margin
+_T_CLEAR = _T_RELEASE + 0.105104
+
+
+class _FakeClock:
+    """A settable ROS clock (the conftest MockClock is frozen at 0)."""
+    def __init__(self, t=0.0):
+        self.t = float(t)
+
+    def now(self):
+        return types.SimpleNamespace(nanoseconds=int(round(self.t * 1e9)))
+
+
+def _self_toss_announcement(v_throw_mps=_V_THROW_080, throw_time=_T_RELEASE,
+                            landing_time=_T_LANDING, thrower='jugglebot',
+                            target_id='jugglebot'):
+    """The real self-toss wire shape: thrower_name AND target_id are this robot,
+    throw_time is the absolute ROS release instant, initial_velocity is the ball's
+    launch vector in mm/s whose magnitude IS the commanded event_vel."""
+    return types.SimpleNamespace(
+        thrower_name=thrower,
+        target_id=target_id,
+        initial_position=types.SimpleNamespace(x=0.0, y=0.0, z=800.0),
+        initial_velocity=types.SimpleNamespace(x=0.0, y=0.0,
+                                               z=v_throw_mps * 1000.0),
+        throw_time=types.SimpleNamespace(
+            sec=int(throw_time), nanosec=int(round((throw_time % 1) * 1e9))),
+        landing_position=types.SimpleNamespace(x=0.0, y=0.0, z=809.08),
+        landing_velocity=types.SimpleNamespace(x=0.0, y=0.0,
+                                               z=-_V_LAND_080 * 1000.0),
+        landing_time=types.SimpleNamespace(
+            sec=int(landing_time), nanosec=int(round((landing_time % 1) * 1e9))),
+    )
+
+
+def _toss_node(t=_T_ANNOUNCE, announce=True, **ann_kw):
+    """A CCN in the Tier-8b toss configuration at ROS time ``t``: prime_hold and
+    pretilt_hold raised, armed, and (optionally) our own announcement delivered."""
+    node = CatchCoordinatorNode()
+    node._clock = _FakeClock(t)
+    node._on_prime_hold(Bool(data=True))
+    node._on_pretilt_hold(Bool(data=True))
+    node._on_catch_armed(Bool(data=True))
+    if announce:
+        node._on_throw_announcement(_self_toss_announcement(**ann_kw))
+    return node
+
+
+def _toss_cmd(ball_id=5, event_vel_mps=_V_LAND_080, landing_time=_T_LANDING):
+    cmd = _catchable_cmd(ball_id=ball_id)
+    cmd.landing_time = landing_time
+    cmd.event_vel_mps = event_vel_mps
+    return cmd
+
+
+def _drive_balls(node, cmd, monkeypatch):
+    monkeypatch.setattr(node._coordinator, 'update',
+                        lambda balls, current_time, exclude_ids=None: cmd)
+    node._on_balls(_balls_msg())
+
+
+def _capture_arm_dispatch(node, monkeypatch):
+    """Record every SetHandTrajCmd request the REAL _arm_hand_catch emits."""
+    sent = []
+    monkeypatch.setattr(node._hand_traj_client, 'call_async',
+                        lambda req: sent.append(req) or _NeverFuture())
+    return sent
+
+
+class _NeverFuture:
+    def add_done_callback(self, cb):
+        pass
+
+
+# ── latching the window off the announcement ────────────────────────────────
+
+def test_self_toss_announcement_latches_the_stroke_window():
+    """Both inputs come off the wire the toss already publishes — no new field,
+    no new topic. throw_time is the kind-0 event instant, which IS ball release
+    (makeThrow's shiftTime(-t2) puts t = 0 at the end of the velocity hold), and
+    |initial_velocity| is exactly the event_vel the sequencer commands."""
+    node = _toss_node()
+    assert node._throw_stroke_v_throw == pytest.approx(_V_THROW_080, rel=1e-6)
+    assert node._throw_stroke_clear_ros == pytest.approx(_T_CLEAR, abs=1e-5)
+    # Derived, not fixed: the same arithmetic at the other end of the shipped
+    # flight band gives a materially different window (2x the decel ramp), which
+    # is why a fixed conservative delay was rejected.
+    slow = _toss_node(v_throw_mps=2.708897)
+    assert (slow._throw_stroke_clear_ros - _T_RELEASE) == pytest.approx(
+        0.094471 + 0.040, abs=1e-5)
+
+
+def test_reload_announcement_leaves_the_stroke_window_inert():
+    """A BB reload has NO Jugglebot throw stroke: the hand is parked at the top at
+    rest, a repack there is genuinely harmless, and delaying the arm would eat
+    lead the catch needs. target_id alone cannot discriminate — a BB throw aimed
+    at us carries target_id == robot_name too — so the gate keys on thrower_name.
+    """
+    node = CatchCoordinatorNode()
+    node._clock = _FakeClock(_T_ANNOUNCE)
+    node._on_pretilt_hold(Bool(data=True))
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_self_toss_announcement(thrower='ball_butler'))
+    assert node._announcement_seen is True          # hand-arm window still latched
+    assert node._throw_stroke_clear_ros is None     # but the stroke gate is inert
+
+
+def test_stroke_window_latches_on_the_non_pretilt_hold_branch_too():
+    """Tier 8a / pretilt_hold off still runs a real throw stroke, so the latch
+    sits ahead of the branch rather than inside one of them."""
+    node = CatchCoordinatorNode()
+    node._clock = _FakeClock(_T_ANNOUNCE)
+    node._on_catch_armed(Bool(data=True))
+    node._on_throw_announcement(_self_toss_announcement())
+    assert node._throw_stroke_clear_ros == pytest.approx(_T_CLEAR, abs=1e-5)
+
+
+def test_malformed_self_announcement_leaves_the_window_inert():
+    """A window synthesized from garbage would suppress the catch arm for an
+    arbitrary time. Refuse to latch and say so; the behaviour degrades to
+    exactly today's."""
+    node = CatchCoordinatorNode()
+    node._clock = _FakeClock(_T_ANNOUNCE)
+    node._on_pretilt_hold(Bool(data=True))
+    node._on_catch_armed(Bool(data=True))
+    rec = _RecLogger()
+    node._logger = rec
+    node._on_throw_announcement(_self_toss_announcement(v_throw_mps=0.0))
+    assert node._throw_stroke_clear_ros is None
+    assert any(lvl == 'warning' for lvl, _ in rec.records)
+
+
+def test_stroke_window_cleared_on_both_latch_edges():
+    """A stale window must never suppress the NEXT ball-op's catch arm. It would
+    also self-expire, but the reload path must not depend on that.
+
+    BOTH edges are driven independently. Driving only the disarm edge and then
+    re-arming would leave the arm-edge clear unpinned: nothing is latched by that
+    point, so the closing assertion passes on the disarm clear alone and a
+    mutation that deletes the arm-edge block goes undetected (verified — that
+    mutation left the file's suite fully green before this test was extended).
+    The arm edge is therefore exercised from a hand-seeded stale window, which is
+    the only state that can reach it.
+    """
+    node = _toss_node()
+    assert node._throw_stroke_clear_ros is not None
+    # ── disarm edge ──
+    node._on_catch_armed(Bool(data=False))
+    assert node._throw_stroke_clear_ros is None
+    node._on_throw_announcement(_self_toss_announcement())   # disarmed → ignored
+    assert node._throw_stroke_clear_ros is None
+
+    # ── arm edge, driven on its own ──
+    # Seed the residue an arm edge must scrub. Unreachable today (a latch
+    # requires _catch_armed, and _on_catch_armed early-returns unless the flag
+    # actually transitions), which is exactly why it needs pinning: the clear is
+    # defence-in-depth, and defence-in-depth that no test drives is deleted by
+    # the next refactor that notices it is redundant.
+    node._throw_stroke_clear_ros = _T_CLEAR + 999.0
+    node._throw_stroke_v_throw = _V_THROW_080
+    node._stroke_gate_logged_for_ball = 7
+    node._stroke_gate_forced_for_ball = 7
+    node._on_catch_armed(Bool(data=True))            # disarmed → armed
+    assert node._throw_stroke_clear_ros is None
+    assert node._throw_stroke_v_throw is None
+    assert node._stroke_gate_logged_for_ball is None
+    assert node._stroke_gate_forced_for_ball is None
+
+
+# ── the gate itself ─────────────────────────────────────────────────────────
+
+def test_arm_withheld_while_our_throw_stroke_is_still_decelerating(monkeypatch):
+    """release + 10 ms — where every observed arm landed — is now WITHHELD.
+
+    Nothing reaches the service, so nothing clears the Teensy's packed queue and
+    the throw plays its own deceleration ramp to x3."""
+    node = _toss_node()
+    node._clock.t = _T_RELEASE + 0.010
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert sent == []
+    assert node._hand_traj_armed_for_ball is None      # latch left open → retried
+    assert node._arm_dispatch_count == 0               # no dispatch burned
+
+
+def test_arm_withheld_before_release_too(monkeypatch):
+    """The window opens at the ANNOUNCEMENT, not at release: a kind-1 landing
+    between the kind-0 dispatch and release would silently un-arm the throw on
+    the last-writer-wins queue (ABORTED_NO_RELEASE), and one landing before the
+    kind-0 would itself be clobbered by it."""
+    node = _toss_node()
+    node._clock.t = _T_RELEASE - 0.050
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert sent == []
+
+
+def test_arm_dispatched_on_the_first_tick_after_the_stroke_ends(monkeypatch):
+    """Withholding is a DEFERRAL, not a drop. One tick before the clear instant:
+    nothing. One tick after: the arm goes out, with the hand standing at rest on
+    x3 = the catch trajectory's own first sample."""
+    node = _toss_node()
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    node._clock.t = _T_CLEAR - 0.005
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert sent == []
+    node._clock.t = _T_CLEAR + 0.005
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert len(sent) == 1
+    assert sent[0].traj_type == 1                       # kind-1 catch
+    assert sent[0].event_vel == pytest.approx(
+        _V_LAND_080 * hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
+    assert node._hand_traj_armed_for_ball == 5
+    assert node._arm_dispatch_count == 1
+
+
+def test_gate_inert_when_no_self_throw_is_live(monkeypatch):
+    """No latched window (a reload, a bench throw) ⇒ the arm dispatches exactly as
+    before. This is the reload path's regression net."""
+    node = CatchCoordinatorNode()
+    node._clock = _FakeClock(_T_ANNOUNCE)
+    node._on_catch_armed(Bool(data=True))
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    _drive_balls(node, _toss_cmd(landing_time=_T_ANNOUNCE + 0.8), monkeypatch)
+    assert len(sent) == 1
+
+
+def test_suppression_logs_once_per_ball(monkeypatch):
+    """The balls tick runs at mocap rate; an un-keyed log would emit ~20 lines
+    per suppression and bury the rest of the sequence."""
+    node = _toss_node()
+    node._clock.t = _T_RELEASE + 0.010
+    _capture_arm_dispatch(node, monkeypatch)
+    rec = _RecLogger()
+    node._logger = rec
+    for _ in range(8):
+        _drive_balls(node, _toss_cmd(), monkeypatch)
+    withheld = [m for lvl, m in rec.records
+                if lvl == 'info' and 'withheld' in str(m)]
+    assert len(withheld) == 1
+
+
+# ── step 3: the window must still FIT ───────────────────────────────────────
+
+def test_min_event_delay_floor_pinned():
+    """tests/motion/test_hand_stroke.py restates this value (importing the node
+    there would drag rclpy into a pure-motion test); pin them together."""
+    from jugglebot.catch_coordinator_node import _MIN_EVENT_DELAY_S
+    assert _MIN_EVENT_DELAY_S == 0.3
+
+
+def test_window_closed_dispatches_immediately_and_loudly(monkeypatch):
+    """When waiting would push the arm past the Teensy's build deadline, ARM
+    ANYWAY and shout.
+
+    Teensy_code.ino:533 refuses the WHOLE command when
+    now + smoothDur + SAFETY_GAP > firstMainAbs and prints the refusal to serial
+    only (:534) — so an arm deferred past that point does not arrive late, the
+    catch silently never fires and the ball hits the floor with no ROS-visible
+    signal. The dip is ugly and recoverable; a silently-refused catch is neither.
+
+    Driven the way it can actually happen: a LOW tracker landing-speed estimate.
+    t_acc_catch = 0.404 / v_armed, so a slow estimate lengthens the required lead
+    and moves the deadline earlier.
+    """
+    node = _toss_node()
+    node._clock.t = _T_RELEASE + 0.010
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    rec = _RecLogger()
+    node._logger = rec
+    _drive_balls(node, _toss_cmd(event_vel_mps=0.5), monkeypatch)
+    assert len(sent) == 1                       # dispatched despite the live stroke
+    warns = [m for lvl, m in rec.records if lvl == 'warning']
+    assert any('CLOSED' in str(m) for m in warns)
+    # ...and only once per ball.
+    _drive_balls(node, _toss_cmd(event_vel_mps=0.5), monkeypatch)
+    assert len([m for m in rec.records
+                if m[0] == 'warning' and 'CLOSED' in str(m[1])]) == 1
+
+
+def test_window_still_fits_at_the_shortest_shipped_flight(monkeypatch):
+    """FLIGHT_TIME_MIN_S = 0.55 is the binding case (slower throw ⇒ longer decel
+    ramp, shorter flight ⇒ less room). The arm is withheld at release + 10 ms and
+    dispatches by release + 135 ms, ~115 ms inside the deadline."""
+    from jugglebot.toss_sequencer import FLIGHT_TIME_MIN_S
+    v_throw, v_land = 2.708897, 2.684366
+    landing = _T_RELEASE + FLIGHT_TIME_MIN_S
+    node = _toss_node(v_throw_mps=v_throw, landing_time=landing)
+    clear = _T_RELEASE + 0.094471 + 0.040
+    assert node._throw_stroke_clear_ros == pytest.approx(clear, abs=1e-5)
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    node._clock.t = _T_RELEASE + 0.010
+    _drive_balls(node, _toss_cmd(event_vel_mps=v_land, landing_time=landing),
+                 monkeypatch)
+    assert sent == []                                   # withheld, window OPEN
+    rec = _RecLogger()
+    node._logger = rec
+    node._clock.t = clear + 0.001
+    _drive_balls(node, _toss_cmd(event_vel_mps=v_land, landing_time=landing),
+                 monkeypatch)
+    assert len(sent) == 1
+    assert not [m for lvl, m in rec.records
+                if lvl == 'warning' and 'CLOSED' in str(m)]
+    # And the arm still lands well inside the caller's own 0.3 s floor.
+    assert landing - node._clock.t > 0.3
+
+
+# ── Phase 2: the repack guard ───────────────────────────────────────────────
+
+def test_failed_ack_retry_is_deferred_until_the_stroke_ends(monkeypatch):
+    """_on_hand_traj_done re-opens the one-shot latch on a failed ack (the ack is
+    unreliable AND lies), so the retry is a genuine re-dispatch. Before this gate
+    it landed wherever the retry tick fell — during a toss, inside the stroke.
+
+    Now the retry is refused while the stroke is live and DEFERRED to the first
+    tick after it, which is what makes _on_hand_traj_done's "further repacks just
+    churn" premise true again: the repack happens with the hand at rest at x3.
+    """
+    node = _toss_node()
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    # First arm goes out cleanly after the stroke...
+    node._clock.t = _T_CLEAR + 0.005
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert len(sent) == 1 and node._arm_dispatch_count == 1
+    # ...its ack fails, re-opening the latch.
+    node._on_hand_traj_done(_FailAck())
+    assert node._hand_traj_armed_for_ball is None
+    # A retry BEFORE the stroke would have cleared: rewind into the ramp and the
+    # re-dispatch is withheld, not lost.
+    node._clock.t = _T_RELEASE + 0.020
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert len(sent) == 1
+    assert node._arm_dispatch_count == 1                # deferral burns nothing
+    # First tick clear of the stroke: the deferred retry goes out.
+    node._clock.t = _T_CLEAR + 0.010
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert len(sent) == 2
+    assert node._arm_dispatch_count == 2
+
+
+def test_dispatch_cap_and_keep_the_latch_behaviour_preserved(monkeypatch):
+    """_MAX_ARM_DISPATCHES and the keep-the-latch-after-the-cap posture are
+    correct and hard-won — a withheld arm must not erode either. Withholding
+    never increments the counter, so the two allowed dispatches remain two REAL
+    dispatches however many ticks were suppressed."""
+    from jugglebot.catch_coordinator_node import _MAX_ARM_DISPATCHES
+    node = _toss_node()
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    node._clock.t = _T_RELEASE + 0.010
+    for _ in range(10):                                  # ten suppressed ticks
+        _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert sent == [] and node._arm_dispatch_count == 0
+    node._clock.t = _T_CLEAR + 0.010
+    for _ in range(4):
+        _drive_balls(node, _toss_cmd(), monkeypatch)
+        node._on_hand_traj_done(_FailAck())
+    assert len(sent) == _MAX_ARM_DISPATCHES
+    assert node._hand_traj_armed_for_ball == 5           # latch KEPT after the cap
+
+
+# ── the abort path stays exempt ─────────────────────────────────────────────
+
+def test_kind3_smooth_move_is_not_gated_by_the_stroke_window(monkeypatch):
+    """A kind-3 replacing whatever is queued is the ONLY un-arm mechanism the
+    Teensy offers, and a pre-release SAFE_ABORT's retract depends on it clobbering
+    an armed kind-0 throw stroke (toss_sequencer's ORDERING PRINCIPLE). Anything
+    that made a kind-3 refuse to clobber would be a safety regression, so the gate
+    is confined to _arm_hand_catch — the node's only kind-0/1/2 dispatch.
+
+    (The retract itself is dispatched by reload_coordinator_node through its own
+    smooth_move_hand client and never passes through this node at all. The toss's
+    own prime-during-stroke hazard is owned by catch/prime_hold, a separate gate
+    raised for the entire PREPARE→terminal span.)
+    """
+    node = _toss_node()
+    node._clock.t = _T_RELEASE + 0.010                   # mid decel ramp
+    assert node._throw_stroke_clear_ros > node._clock.t  # gate is live
+    moved = []
+    monkeypatch.setattr(node._smooth_move_client, 'call_async',
+                        lambda req: moved.append(req) or _NeverFuture())
+    node._prime_hold = False                             # isolate: only this gate
+    node._prime_hand()
+    assert len(moved) == 1                               # kind-3 NOT refused
+
+
+def test_arm_dispatch_is_always_kind1(monkeypatch):
+    """The gate only ever sees kind-1 traffic — pinned so a future kind-0/2
+    dispatch added here is a deliberate decision, not an accident."""
+    node = _toss_node()
+    node._clock.t = _T_CLEAR + 0.010
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert [r.traj_type for r in sent] == [1]
+
+
+def test_absurd_throw_time_cannot_hang_the_catch(monkeypatch):
+    """A window is an absolute instant computed from wire data, so a wildly wrong
+    ``throw_time`` would otherwise suppress the arm for as long as it is wrong.
+
+    The fit check is what bounds that: once waiting would push the arm past the
+    Teensy's build deadline the gate dispatches anyway and warns, so the worst a
+    garbage announcement can do is restore today's behaviour with a loud log —
+    never a silently withheld catch.
+    """
+    node = _toss_node(throw_time=_T_RELEASE + 3600.0)
+    node._clock.t = _T_RELEASE + 0.010
+    sent = _capture_arm_dispatch(node, monkeypatch)
+    rec = _RecLogger()
+    node._logger = rec
+    _drive_balls(node, _toss_cmd(), monkeypatch)
+    assert len(sent) == 1
+    assert any('CLOSED' in str(m) for lvl, m in rec.records if lvl == 'warning')

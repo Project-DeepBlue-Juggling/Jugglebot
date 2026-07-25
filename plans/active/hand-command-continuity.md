@@ -209,8 +209,8 @@ converting the `[0, 11.1]` rev end-stop bound into sim mm.
 | Phase | Scope | Gate | Status |
 |---|---|---|---|
 | 0 | Reusable stroke-timeline probe; confirm the timing window and the sim mirror | probe reproduces the measured dip from the recorded trace | **DONE** (25/25 rows ≤0.4 ms, plus a four-case synthetic post-fix branch that pins the verdict half; see Phase 0 — Outcome) |
-| 1 | Gate the hand-catch arm until the throw stroke completes (item 3) | full pytest | TODO |
-| 2 | Repack safety guard while a stroke is in flight (item 5) | full pytest | TODO |
+| 1 | Gate the hand-catch arm until the throw stroke completes (item 3) | full pytest | **DONE** (shared `motion/trajectory/hand_stroke.py`; one enforcement point in `_arm_hand_catch`; window 395 ms at 0.80 s / 115 ms at 0.55 s; contract written down at `ros_ws/docs/hand_command_continuity.md` — see Phases 1-2 — Outcome) |
+| 2 | Repack safety guard while a stroke is in flight (item 5) | full pytest | **DONE** (same enforcement point — the retry defers rather than repacks; cap and keep-the-latch preserved) |
 | 3 | Prime rev derived from stroke geometry (item 6) | full pytest + codegen | TODO |
 | 4 | Velocity-continuous prelude — sim mirror then firmware (item 4) | sim tests + xref; flash | TODO |
 | 5 | Hardware validation (operator-run) | `trunc=-`, `seeds=0`, `peak <= 10.060` rev, `dip_below_x3 <= 0.10` rev; throw scatter recorded | TODO |
@@ -351,13 +351,29 @@ the slack budget intact:
 `SAFETY_GAP` 20 ms.) The window narrows with flight time exactly as the plan
 predicts but stays positive at the shortest shipped flight.
 
+*The `t_dec` column rounds `v`: at the production `v` = 2.7089 (not the 2.70 shown)
+`t_dec` is **94.5 ms**, which is the figure § Phases 1-2 — Outcome and the shipped
+docstrings carry. Not a contradiction — a rounding artefact of this table's `v`
+column.*
+
+*Both `latest usable arm` figures are optimistic and were revised during Phase 1.*
+`prelude empty` is unreachable — `makeSmoothMove`'s dead-band is 1e-6 rev =
+3.16e-5 mm and every non-empty duration is floored at 0.05 s
+(`Trajectory.h:260`), so the real prelude is 50–76 ms — and the caller drops the
+arm outright below `_MIN_EVENT_DELAY_S = 0.3` s, which binds ahead of the Teensy
+budget at every nominal velocity. Carrying both: **release + 500 ms / 395 ms** at
+0.80 s and **release + 250 ms / 115 ms** at 0.55 s. Still positive at both ends;
+see § Phases 1-2 — Outcome.
+
 **Both rows are at the NOMINAL armed velocity** (`catch_coordinator_node.py:667`
 scales the event velocity by `JB_OP_CATCH_VEL_SCALE_DEFAULT = 0.8`, clamped to
 `[0.3, 7.0]`; the 2026-07-25 launch log confirms `vel=3.13 m/s (scale 0.80)`
 against a 3.9224 m/s throw). Since `t_acc_catch = 0.404073 / v_armed`, a *low*
 tracker landing-speed estimate lengthens the lead and moves the right-hand edge
 earlier: at the 0.55 s flight the window closes once `v_armed < 1.02` m/s (a
-tracker landing speed under ~1.28 m/s for a 2.70 m/s throw). Phase 1 step 3
+tracker landing speed under ~1.28 m/s for a 2.70 m/s throw) — *revised to 1.26 /
+~1.58 m/s once the prelude FLOOR and the caller's `_MIN_EVENT_DELAY_S` drop are
+carried; see § Phases 1-2 — Outcome*. Phase 1 step 3
 therefore has to check the fit against the runtime `event_vel`, not against this
 table.
 
@@ -860,7 +876,12 @@ throw-truncation jitter, and it makes Phase 2's premise true again.
    ~600 ms of slack at an 0.8 s flight, but it **shrinks with flight time** — check
    it at `FLIGHT_TIME_MIN_S = 0.55` and log loudly if the window would close.
    Phase 0 measured both ends: 546 ms of window at 0.80 s and 208 ms at 0.55 s,
-   with a 40 ms margin sized from the measured dispatch latency. The margin is
+   with a 40 ms margin sized from the measured dispatch latency —
+   *superseded by Phase 1's implementation: those figures omit the smooth-move
+   duration FLOOR (`fmaxf(T, 0.05f)`, so the prelude is 50–76 ms, never zero) and
+   the caller's own `_MIN_EVENT_DELAY_S = 0.3` drop. The real windows are 395 ms
+   and 115 ms, and the 0.55 s closure velocity is 1.26 m/s rather than 1.02. All
+   three still pass this step. See § Phases 1-2 — Outcome.* The margin is
    **not** optional slack — the announcement's `throw_time` is up to **23.4 ms**
    earlier than the physical release, so `t_release + t_dec` alone expires
    mid-ramp. See § Phase 0 — Outcome.
@@ -870,7 +891,8 @@ throw-truncation jitter, and it makes Phase 2's premise true again.
    own `event_vel` comes from the tracker and `t_acc_catch = 0.404073 / v_armed`,
    so a low landing-speed estimate *lengthens* the required lead and moves the
    window's right-hand edge earlier. At the 0.55 s flight the window closes once
-   `v_armed < 1.02` m/s. Log loudly and dispatch immediately when it would close —
+   `v_armed < 1.02` m/s (*revised to 1.26 m/s — § Phases 1-2 — Outcome*). Log
+   loudly and dispatch immediately when it would close —
    an arm that lands after `event − t_acc_catch − SAFETY_GAP` is refused wholesale
    by `Teensy_code.ino:533-535` with `Not enough time for smooth-move` printed to
    **serial only** (`:534`), so the catch silently never fires with no ROS-visible
@@ -912,6 +934,281 @@ pretending the ack problem is solved.
 **Files:** `catch_coordinator_node.py`, tests as above.
 **Gate:** `pytest tests/ -q` green; a test that a failed ack during the stroke
 defers rather than repacks, and that the abort path is unaffected.
+
+### Phases 1-2 — Outcome (2026-07-26)
+
+**Both landed together.** They share one enforcement point, so splitting them
+into two commits would have meant landing a predicate with no consumer or a
+consumer with no predicate.
+
+**Commits:** `COMMIT_SHA_CODE` (code + tests + contract + runbook + this plan),
+`COMMIT_SHA_LOG` (logbook SHA backfill).
+**Suite:** `pytest tests/ -q`, run 2026-07-26 on the Jetson under
+`~/Desktop/PDJ_venv/venv`: **3517 passed, 3 xfailed in 1351.82 s (22:31)**.
+Baseline at HEAD `2395244` was 3484 passed, 3 xfailed in 1371.51 s — **+33
+passed**, exactly the 33 cases this phase adds (15 + 18); the xfail count is
+unchanged at 3.
+**Logbook:** `logbook/2026-07-26-hand-command-continuity-arm-gating.md`.
+
+**DEFERRED TO THE OPERATOR — this phase is NOT validated until it runs.** Both
+halves are host-side, so deployment is `colcon build --packages-select jugglebot`
+**+ relaunch** (the launch runs the *installed* copy — a relaunch alone keeps the
+old code). **No codegen run** (no YAML changed) and **no firmware flash**: the
+firmware half of C-HAND-1 is Phase 4. The bench checks are
+`tests/hardware/session_anomaly_fixes.md` § Section HAND, rows **H1.1-H1.7**
+(+ optional HAND-1b) and **H2.1-H2.4**, both scored off a single capture. Note
+what the bench is actually for: mocked-ROS tests prove the arm is not
+*dispatched* during the stroke, but they cannot see the Teensy's queue semantics,
+which is where the failure lives — H1.1's `trunc`/`seeds` rows are the only
+evidence that no queue was cleared.
+
+#### What shipped
+
+* **`ros_ws/src/jugglebot/jugglebot/motion/trajectory/hand_stroke.py`** (new) —
+  THE host-side model of `Trajectory.h`. `HandStrokeModel` (calcThrow +
+  calcCatch), `throw_decel_s`, `catch_lead_s`, `smooth_move_duration_s`,
+  `stroke_clear_time`, `required_arm_lead_s`, and the two policy constants
+  `ARM_SUPPRESS_MARGIN_S = 0.040` / `HAND_SETTLE_BAND_REV = 0.10`. The module
+  itself imports only `math` + `jugglebot.hardware_config` and no ROS; note that
+  importing it *through* the `jugglebot.motion.trajectory` package still pulls
+  numpy, via that package's own `__init__`.
+* **`catch_coordinator_node`** — `_latch_throw_stroke_window` (off the
+  announcement) and `_throw_stroke_gate_ok` (the single enforcement point,
+  consulted from `_arm_hand_catch`).
+* **`tools/probes/hand_stroke_timeline.py`** — its local `StrokeModel` and
+  `smooth_move_duration_s` were **deleted** and are now imported from the shared
+  helper.
+
+#### Fork — where the stroke-end instant comes from → derive from the announcement
+
+Both inputs already exist on the wire: `throw_time` is the kind-0 event instant,
+which IS ball release (`makeThrow`'s `shiftTime(-t2)` puts t = 0 at the end of
+the velocity hold, and `_dispatch_toss_throw` schedules the event at the same
+`t_release` the announcement stamps), and `|initial_velocity|/1000` IS the
+commanded `event_vel` (`compute_release_state` returns
+`event_vel_mps = |launch_vel|/1000` and the sequencer sends exactly that). So no
+new field and no new topic — a wire change would have been a stop, not a fork.
+
+The fixed-conservative-delay option was rejected on its failure modes, not on the
+plan's say-so: `t_dec` spans **94.5 ms at the 0.55 s flight to 47.4 ms at
+1.10 s**, a 2x range. A delay sized for the short end wastes half the window at
+the long end; one sized for the long end lands the repack back inside the decel
+ramp at the short end — and at the top of the band the momentum is ~1.9x with the
+smallest measured end-stop headroom (0.775 rev), which is where a mis-sized
+window costs the most.
+
+#### Fork — shared helper vs a pinned duplicate → shared, and the probe moved into it
+
+Phase 0 noted the probe had already made a **third** host-side copy of the stroke
+algebra. A pin between the probe and a fourth copy in the node was rejected: the
+probe is the **Phase-5 verdict instrument**, so a `t_dec` divergence would make
+the bench score the fix against a different model than the one that shipped, and
+a pin only catches the quantities it happens to assert. There is now nothing to
+pin. `tools/probes/hand_stroke_timeline.py --gate` still returns **GATE PASS —
+25/25 rows** plus **GATE PASS — fixed-shape branch**, exit 0, and
+`--emit-gate-fixture` still regenerates the committed fixture **byte-identically**
+(285 of 5764 rows).
+
+#### Fork — where the stroke-busy predicate lives → the node, at the dispatch
+
+The pure time arithmetic is in the helper; the *state* (is a throw of ours live,
+when does it clear) is node state, and the refusal sits inside `_arm_hand_catch`
+rather than at its call site. Concrete failure mode that placement prevents: a
+second caller added later — a re-arm timer, a recovery path — would bypass a
+call-site check silently, and the defect it re-introduces is invisible in ROS
+(the Teensy prints nothing about a queue clear). It also makes Phase 2 free:
+`_on_hand_traj_done`'s retry re-opens the latch, the next balls tick re-enters
+`_arm_hand_catch`, and the same gate defers it. **Two predicates would have been
+two things to keep in sync; there is one.**
+
+#### The dispatch latency, and why 40 ms
+
+Phase 0's measurement is the reason the margin exists at all: the announcement's
+`throw_time` is the *intended* release, and the physical release lands **+12.8 to
++23.4 ms** later because nothing compensates the ROS-service transit between the
+caller's clock read and `teensy_bridge_node`'s re-stamp from its own clock
+(`JB_OP_TOSS_RELEASE_LATENCY_MS` ships 0.0). A window of
+`throw_time + t_dec` with zero margin expires mid-ramp and reproduces the defect
+exactly. **40 ms = 1.71x the worst measured shift**, and it costs 40 ms out of a
+window that is 395 ms wide at 0.80 s and still 115 ms wide at the band floor.
+
+#### Two Phase-0 statements that did not survive re-derivation
+
+1. **"Arming inside the window makes the prelude EXACTLY empty" is an
+   idealisation.** `makeSmoothMove`'s dead-band is `|Δ| < 1e-6` rev =
+   **3.16e-5 mm**, unreachable against a live float encoder reading, and every
+   non-empty duration is floored at **0.05 s** (`fmaxf(T, 0.05f)`,
+   `Trajectory.h:260`). So a catch armed with the hand "at rest at x3" still
+   costs **50-76 ms** of prelude. That is harmless *motion* — 0.63 mm at 24 mm/s
+   for a 0.02 rev residual — but it is not free *time*, and the fit check now
+   budgets `smooth_move_duration_s(0.10 rev) = 76.0 ms` for it. The allowance is
+   deliberately the same 0.10 rev band the runbook gates the post-fix settle on,
+   so any capture that PASSES the bench is inside the excursion the arithmetic
+   assumed.
+2. **The window's right-hand edge is set by `_MIN_EVENT_DELAY_S`, not by the
+   Teensy budget, at every nominal velocity.** The caller drops the arm outright
+   below a 0.3 s `event_delay`, while the Teensy needs only
+   `t_acc_catch + prelude + SAFETY_GAP` = 225 ms at the nominal armed 3.13 m/s.
+   The deadline therefore takes the **max** of the two — deferring past the
+   caller's own floor would lose the catch just as surely as the Teensy refusing
+   it. Consequences for Phase 0's table, which had neither term: the real windows
+   are **395 ms at 0.80 s** (not 546) and **115 ms at 0.55 s** (not 208), and the
+   window closes at 0.55 s once `v_armed < 1.26` m/s (not 1.02) — a tracker
+   landing speed under ~1.58 m/s for a 2.71 m/s throw. All three still pass Phase
+   1 step 3 comfortably; the numbers are simply honest now.
+
+#### What happens when the window would close
+
+Log **loudly** and dispatch immediately, accepting today's degraded behaviour.
+Root cause: `Teensy_code.ino:533` refuses the WHOLE command when
+`now + smoothDur + SAFETY_GAP > firstMainAbs` and prints the refusal to serial
+only (`:534`). An arm deferred past that point does not arrive late — the catch
+silently never fires, with no ROS-visible signal and the ball on the floor. A dip
+is ugly and recoverable; a silently-refused catch is neither. The branch is
+evaluated against the RUNTIME `event_vel`, not a nominal, because
+`t_acc_catch = 0.404 / v_armed` and a low tracker landing-speed estimate is
+exactly what lengthens the lead.
+
+#### The abort path is untouched, and that is deliberate
+
+The gate sits inside `_arm_hand_catch`, which only ever emits `traj_type = 1`.
+The kind-3 smooth-move path (`_prime_hand`) is not gated, and the SAFE_ABORT
+retract is dispatched by `reload_coordinator_node` through its own
+`smooth_move_hand` client and never passes through this node at all. A kind-3
+replacing whatever is queued is the ONLY un-arm mechanism the Teensy offers and a
+pre-release SAFE_ABORT depends on it clobbering an armed kind-0
+(`toss_sequencer`'s ORDERING PRINCIPLE). The toss's own prime-during-stroke
+hazard is owned by `catch/prime_hold`, raised for the whole PREPARE→terminal
+span — a separate, already-enforced gate. Pinned by
+`test_kind3_smooth_move_is_not_gated_by_the_stroke_window`.
+
+#### The reload path is inert, by construction
+
+The window is latched only when `thrower_name == robot_name`. `target_id` alone
+cannot discriminate — a BB throw aimed at us carries `target_id == robot_name`
+too. During a reload there is no Jugglebot throw stroke, the hand is parked at the
+top at rest, and delaying the arm would eat lead the catch needs. Pinned by
+`test_reload_announcement_leaves_the_stroke_window_inert`.
+
+#### Limitation, recorded rather than papered over
+
+An **armed** stroke produces no observable until its event time, so the arm cannot
+be telemetry-verified the way the hand ladders were (`4e33b53`) — which is why
+the retry path exists at all, against a 40-60 % `ERR_TIMEOUT` ack failure rate. A
+Teensy-side "armed stroke" field in `hand_telemetry` or `link_status` would make
+it verifiable; that is a **protocol change and is out of scope here**. Follow-up,
+not solved. What a capture CAN verify is the harm the guard prevents: a repack
+that clobbers a **live** stroke re-seeds the queue from the live encoder, which
+the Phase-0 probe counts as a from-rest quintic `seed` — that is CHECK HAND-2's
+criterion.
+
+Mocked-ROS tests cannot see the Teensy's queue semantics, which is where the
+actual failure lives: they prove the arm is not *dispatched* during the stroke,
+not that no queue was cleared. The bench closes that gap —
+`tests/hardware/session_anomaly_fixes.md` § CHECK HAND-1 (rows H1.1-H1.7, with
+H1.2/H1.3 reading the mechanism out of `/rosout` so a PASS by luck is
+distinguishable from a PASS by design) and § CHECK HAND-2 (H2.1-H2.4).
+
+#### Review adjudication — five claims that changed the artefact
+
+The three-lens review produced twelve findings; nine were verified and fixed,
+three were verified-but-deferred. Five changed what ships, and each is a limit on
+the fix that a bench session would otherwise have mis-scored:
+
+1. **The closed-window branch promises an attempt, not a catch** (converged, two
+   lenses). Its fit check budgets the *at-rest* prelude, but on that branch the
+   hand is mid-stroke, so the firmware's live-encoder prelude is 0.37-0.76 s and
+   `Teensy_code.ino:533` may refuse the dispatch outright. Not a regression — it
+   is the pre-fix arithmetic exactly — and settled by reading the firmware:
+   `:533`'s `return` sits **before** `packedMsgs.clear()` at `:539`, so a refusal
+   leaves the live throw stroke **intact**. The cost is a lost catch, never a
+   clobbered stroke. The suggested code fix (drop the arm when the worst-case
+   prelude will not fit) was **rejected**: a drop guarantees no catch, whereas a
+   dispatch is refused only if the Teensy's own clock agrees it will not fit. The
+   docstrings, the warning text and runbook H1.4/H1.6 now say so.
+2. **`required_arm_lead_s` excludes the downstream transit.** Only the *upstream*
+   caller→bridge leg cancels (the bridge re-stamps the event from its own clock);
+   `:533`'s `now_us` is read at the Platform Teensy after the bridge→can-bridge→
+   CAN3 hop, and that leg is pure budget loss, bounded by the ~23 ms measured
+   shift. Sized rather than fixed: `max(_MIN_EVENT_DELAY_S, budget)` means the
+   0.3 s floor binds at every nominal armed velocity (the budget only overtakes
+   it below `v_armed` 1.98 m/s), and the tightest case — the 0.55 s flight at the
+   default knob — leaves 15.9 ms of floor headroom against the ~23 ms bound. A
+   7 ms shortfall, against the **115 ms** of slack the gate actually dispatches
+   with, because it fires at the FIRST tick after the window opens, not the last.
+   Runbook H1.5 is the bench guard.
+3. **`catch/vel_scale` can close the window on its own** — the docstrings blamed
+   only a 40 % tracker under-read. Swept against the production velocities: at the
+   0.55-0.56 s flight, scale **0.45 closes it (−15 ms)** and 0.50 barely opens it
+   (+18 ms), inside the shipped `[0.3, 1.5]` range, with a healthy tracker. That
+   is exactly the corner HAND-1b runs in, so H1.4 now tells the operator to read
+   the knob before routing a CLOSED warning to a tracker fault, and HAND-1b is
+   pinned to the default scale.
+4. **The flight-time error is probably not this phase's to fix.** The pre-fix
+   0.887/1.091 s against a commanded 0.800 s was attributed to the truncated
+   decel ramp "setting the release conditions". But the ball separates at the
+   decel ONSET (`x2`), and all seven measured truncations sit past the commanded
+   `x2` crossing (6.1965-7.7825 rev against `x2` = 5.9138 rev) — so the ball had
+   most likely already left the cup. A null result on flight time is expected and
+   is **not** a Phase-1 failure; the release model is `single-ball-toss.md` Phase
+   5 T0's measurand. Softened in the node header and the runbook so the next
+   session does not re-open the queue-clobber question.
+5. **The deferral is tick-dependent** (converged, two lenses, both NOT-PROVEN on
+   reachability). The gate is reached only from `_on_balls` and nothing re-enters
+   it on a timer, so a track dropout spanning the whole remaining window — or a
+   landing revision pushing `event_delay` under the 0.3 s floor — bypasses the
+   gate entirely, and even the closure branch cannot fire. Argued-against by the
+   node's own probed note (announced-vs-tracked landing agreeing to 0.000 s at
+   the arm moment, n = 6105, in early life = exactly the suppression window), so
+   **instrumented rather than fixed**: new runbook row **H1.7** counts withheld
+   lines with no matching dispatch. A non-zero count is the signal to make the
+   deferral self-driving with a one-shot timer.
+
+Deferred with reason: instrumenting the measured hand velocity at the window's
+opening (the probe's gate fixture is byte-compared, and this phase's evidence
+that moving the model did not perturb the instrument rests on that byte-identity
+— H1.1's `dip_below_x3` already measures the harm the premise protects against);
+and the two liveness fixes above, which are behaviour changes on the strength of
+an unproven trigger.
+
+#### Tests
+
+`tests/motion/test_hand_stroke.py` (15 cases) pins the model against the
+**shipped firmware header**, parsed rather than copied — so a firmware algebra
+change codegen cannot see still fails — plus the velocity-independence of `x3`,
+the smooth-move dead-band and floor, and the window at both flight-band ends.
+`tests/ros/test_catch_coordinator_node.py` adds 18 cases for the latch, the gate,
+the deferral, the cap, the inert reload path, the closure branch and the kind-3
+exemption.
+
+`test_margin_covers_the_measured_dispatch_latency` asserts the **residual**
+property (`margin >= worst_shift − compensated_latency`) rather than pinning
+`JB_OP_TOSS_RELEASE_LATENCY_MS == 0.0`. When `single-ball-toss.md` Phase 5 T0
+fills that slot the kind-0 event moves earlier while `throw_time` does not, so
+the shift this margin covers *shrinks* — pinning the equality here would turn
+that improvement into a red suite in a module with nothing to say about it. The
+deliberate tripwire on the slot already lives in `tests/ros/test_toss_coordinator.py`.
+
+`test_stroke_window_cleared_on_both_latch_edges` drives both edges
+independently. As first written it exercised only the disarm edge — nothing is
+latched by the time it re-arms, so the closing assertion passed on the disarm
+clear alone and deleting the arm-edge block left the file green. Verified: the
+same mutation now fails it.
+
+Mutation-verified rather than assumed: deleting the one-line gate call in
+`_arm_hand_catch` fails **8** of the new node tests; setting
+`ARM_SUPPRESS_MARGIN_S = 0` fails **9** across both files; removing the
+`thrower_name` discriminator fails **14** (including
+`test_reload_announcement_leaves_the_stroke_window_inert`, the one that carries
+the semantics).
+
+#### Deployment
+
+`colcon build --packages-select jugglebot` **+ relaunch** — the launch runs the
+installed copy. `setup.py` already lists `jugglebot.motion.trajectory` as a
+package, so the new module installs with no packaging change. No codegen run (no
+YAML changed) and **no firmware flash**: Phases 1-2 are host-side only. Phase 4
+is the flash.
 
 ### Phase 3 — Prime rev derived from stroke geometry
 
@@ -1050,6 +1347,9 @@ instrument that makes it readable.
 | Risk | Mitigation |
 |---|---|
 | Delaying the arm eats the catch's own lead | Phase 1 step 3 checks the window at the shortest shipped flight and logs loudly if it closes |
+| The deferral needs a later balls tick that never arrives (track dropout, or a landing revision pushing `event_delay` under the 0.3 s floor) — both bypass the gate, so even the closure branch cannot fire and the arm is silently never dispatched | Argued-against by the node's n = 6105 probed note (announced-vs-tracked landing agreeing to 0.000 s at the arm moment in early life), so instrumented rather than fixed: runbook row **H1.7** counts withheld lines with no matching dispatch. A non-zero count ⇒ replace the tick-driven retry with a one-shot timer |
+| The forced (window-closed) dispatch is itself refused by `Teensy_code.ino:533`, because the fit check budgets the at-rest prelude and the hand is mid-stroke | Bounded, not eliminated: it is the pre-fix arithmetic exactly, and `:533` returns *before* `packedMsgs.clear()` so the live stroke survives — the cost is a lost catch, never a clobbered stroke. Runbook H1.6 reads the serial refusal; H1.4 warns that a clean dip row is not evidence the catch fired |
+| `catch/vel_scale` closes the window on its own at the short-flight end (0.45 ⇒ −15 ms at T 0.557 s, inside the shipped `[0.3, 1.5]` range) | H1.4 tells the operator to read the knob before routing a CLOSED warning to a tracker fault; HAND-1b is pinned to the default 0.8 |
 | A kind-3 abort retract stops clobbering an armed stroke | explicit exemption + a test; called out in both Phase 2 and the contract |
 | Velocity-continuous prelude overshoots into the stroke end-stop | bound the excursion against 11.1 rev; decide the cannot-fit behaviour deliberately |
 | Sim mirror is not faithful, so Phase 4's gate is illusory | Phase 0 verifies the mirror *before* it is trusted |

@@ -354,6 +354,158 @@ The eighth `jugglebot` toss in `15-17-48` (ball 14, `ABORTED_NO_RELEASE`) report
 `no-throw-stroke(!)` with **no** `catch_desc` at all; that is the dispatch-eaten
 case, not a regression.
 
+### CHECK HAND-1 — the catch arm no longer lands inside the throw stroke
+
+Validates: `hand-command-continuity` **Phase 1** (arm gating). This is the check
+that the operator-visible dip is gone **and** that it is gone by design rather
+than by luck.
+
+**Build needs**: **colcon + relaunch** (`catch_coordinator_node.py` and the new
+`motion/trajectory/hand_stroke.py` changed). **No firmware flash** — Phase 1 is
+host-side only. Phase 4 is the flash, and it has not landed.
+
+**Motion to expect.** The hand should stroke up, **stop at the top and stay
+there** until the catch descent. Two things that are NOT regressions:
+
+- a **tiny** settle move of up to ~3 mm at ~25-80 mm/s some 100-500 ms after the
+  throw, when the catch arm finally lands. `makeSmoothMove`'s "already there"
+  dead-band is 1e-6 rev = **0.03 microns**, unreachable against a live encoder,
+  and every non-empty prelude is floored at 50 ms — so the prelude is a short
+  micro-correction, never exactly nothing. It is 20x smaller than the smallest
+  pre-fix dip (10.7 mm) and does not register on the gated rows;
+- the catch descent starting **later** than you remember relative to the throw.
+  It is unchanged in absolute terms (the kind-1 event is an absolute wall-time
+  invariant); only the moment the command is *sent* moved.
+
+#### Pre-flight HAND-0 — confirm the freshly-built code is live
+
+```bash
+INST=~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot
+grep -q "_throw_stroke_gate_ok" $INST/catch_coordinator_node.py \
+  && test -f $INST/motion/trajectory/hand_stroke.py \
+  && echo INSTALLED_OK || echo INSTALLED_STALE
+```
+
+- **PASS**: prints `INSTALLED_OK`.
+- **ABORT**: prints `INSTALLED_STALE` — the *installed* copy predates the gate,
+  so every HAND row below would re-measure the pre-fix baseline. Rebuild and
+  relaunch.
+
+#### Run
+
+Capture per § Capture requirement (trace recorder mandatory), then throw **>= 5**
+tosses at one height:
+
+```bash
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.6}" --feedback
+```
+
+(0.6 m = T 0.70 s. The default 0.78 m / T 0.80 s is the flight every pre-fix
+baseline row was measured at, so run at least two at `throw_height_m: 0.78` for a
+like-for-like comparison against the § Pre-fix baseline table.)
+
+#### Verdict
+
+Score every toss on rows 1-7 of § PASS / ABORT per throw. Rows 1, 2 and 4 are the
+Phase-1 gate; then read the mechanism out of the launch log:
+
+```bash
+LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log
+grep -c "hand stroke-busy window latched" "$LOG"
+grep -c "hand catch arm withheld" "$LOG"
+grep -c "stroke-busy window CLOSED" "$LOG"
+grep    "hand catch arm withheld" "$LOG"
+# Ordering matters for H1.7 — every withheld line must be followed by a dispatch:
+grep -nE "hand catch arm withheld|Arming hand catch" "$LOG"
+# The operator's catch-speed knob, echoed on every arm and in the CLOSED warning
+# (there is no ROS param for it — it arrives on the catch/vel_scale topic):
+grep -oE "scale [0-9.]+\)" "$LOG" | sort -u
+```
+
+| # | measurement | PASS | ABORT |
+|---|---|---|---|
+| H1.1 | `trunc`, `seeds`, `dip_below_x3`, `peak`, `pullback` per toss | rows 1-5 of § PASS / ABORT per throw, on **every** toss | any row ABORTs |
+| H1.2 | `window latched` count | **== number of jugglebot tosses** | `0` ⇒ the announcement never reached the gate (wrong `thrower_name`, or the announcement arrived before `catch/armed`); the dip may be absent for an unrelated reason and the PASS is luck |
+| H1.3 | `arm withheld` count | **>= 1 per toss** | `0` while H1.2 passed ⇒ the arm was already late on its own; record it, and treat any H1.1 PASS as unvalidated for the gate |
+| H1.4 | `stroke-busy window CLOSED` warnings | **0** | `>= 1`: the fit check refused to defer. Not a *new* hazard — the branch reproduces the pre-fix arithmetic exactly — but it does **not** mean the catch fired: the forced dispatch may itself be refused by the Teensy (see H1.6), because its fit check budgets the at-rest prelude while the hand is mid-stroke. Record `event_delay`, `event_vel` and `vel_scale` from the warning, then **check `catch/vel_scale` FIRST** (see the note below) before routing to `hand-command-continuity` Phase 1 step 3 |
+| H1.5 | the withheld line's reported slack | **> 0.050 s** on every line | `<= 0.050 s` ⇒ the window is tighter in practice than the 115 ms modelled floor; capture and route to Phase 1 step 3 before running more tosses. This row is also the guard on the ~23 ms bridge→Teensy transit that `required_arm_lead_s` deliberately does not model |
+| H1.6 | `Not enough time for smooth-move` on the Teensy serial | absent | present ⇒ the arm was refused wholesale and that toss's catch never fired. **Hard ABORT of the section.** Note the refusal leaves the throw stroke INTACT (`:533` returns before `packedMsgs.clear()`), so this can co-occur with a clean H1.1 dip row — a clean dip is NOT evidence the catch happened |
+| H1.7 | every toss that logged a `hand catch arm withheld` line also shows a later `Arming hand catch` (equivalently, probe `arms >= 1` on that toss) | **every withheld toss redeemed** | any withheld toss with no later dispatch ⇒ the deferral was never redeemed: the balls tick that should have dispatched it never arrived (track dropout, or a landing revision pushing `event_delay` under the 0.3 s floor — both bypass the gate, so no CLOSED warning appears either). Not a safety abort, but it is the one way withholding can turn into dropping — record it and route to `hand-command-continuity` Phase 1, which would then need a one-shot timer rather than a tick-driven retry |
+
+**Before routing any H1.4 CLOSED warning to a tracker fault, read
+`catch/vel_scale`.** The knob multiplies the armed event velocity, and the
+window's right edge is `0.404 / v_armed`, so a LOW scale lengthens the required
+lead and closes the window on its own with a perfectly healthy tracker. Swept
+against the production velocities: at the 0.55-0.56 s flight, scale **0.45
+closes it (−15 ms)**, 0.50 barely opens it (+18 ms), the 0.8 default gives
++116 ms; at 0.80 s and above the window stays open across the whole shipped
+`[0.3, 1.5]` range. That corner is exactly HAND-1b below, so a CLOSED warning
+there with a reduced scale is the knob, not the fix.
+
+Also record, without gating: the achieved flight per toss, and the `shift`
+column. **Do not treat the flight time as a Phase-1 measurand.** The pre-fix
+0.887-1.091 s against a commanded 0.800 s is real, but by design the ball
+separates at the decel ONSET (`x2`), and all seven measured truncations sit past
+the commanded `x2` crossing (6.1965-7.7825 rev against `x2` = 5.9138 rev) — so
+the ball had most likely already left the cup before the queue was cleared, and a
+**null result here is expected and is NOT a Phase-1 failure**. The release model
+is unmeasured; it is `plans/active/single-ball-toss.md` Phase 5 T0's measurand.
+
+#### Optional HAND-1b — the short-flight corner (do this last, if HAND-1 passed)
+
+The suppression window narrows with flight time: **395 ms** at 0.80 s but only
+**115 ms** at the band floor `FLIGHT_TIME_MIN_S = 0.55 s`. Two tosses at
+
+```bash
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.38}" --feedback
+```
+
+(0.38 m = T 0.557 s, just inside the band; `> 1.48 m` and `< 0.371 m` are
+`REJECTED_FLIGHT_TIME`). Same verdict rows. **This is the corner where H1.4 is
+most likely to fire**, which is the point of running it — and § Height reference
+already flags `T < 0.7 s` as stroke-marginal for reasons unrelated to this plan,
+so a MISSED catch here is not by itself a Phase-1 failure. Score H1.1-H1.7 only.
+
+**Run this at the default `catch/vel_scale` (0.8).** A reduced scale closes the
+window at this flight length by itself (H1.4's note), which would make the check
+measure the knob rather than the gate.
+
+### CHECK HAND-2 — a repack under a failed ack no longer clobbers a live stroke
+
+Validates: `hand-command-continuity` **Phase 2** (repack guard). Same capture and
+same tosses as HAND-1 — **no extra robot motion is required**; this is a second
+reading of the HAND-1 capture.
+
+The `HAND_TRAJ_CMD` ack fails 40-60 % of the time (the 2026-07-23 `ERR_TIMEOUT`
+epidemic) and lies in both directions, so a failed ack re-opens the one-shot latch
+and the arm is dispatched a second time — by design, capped at 2 per ball. Before
+Phase 1 that second dispatch landed wherever the balls tick fell; during a toss
+that was inside the stroke. It is now refused while the stroke is live and
+deferred to the first tick after it.
+
+**This is the half of C-HAND-1 that a capture CAN verify.** An *armed* stroke
+produces no observable until its event time, so the arm itself cannot be
+telemetry-confirmed the way the hand ladders were (`4e33b53`) — a Teensy-side
+"armed stroke" field in `hand_telemetry` or `link_status` would fix that and is a
+protocol change, out of scope here, recorded as a follow-up. But a repack that
+clobbers a **live** stroke is directly visible: it re-seeds the queue from the
+live encoder position, which the probe counts as a from-rest quintic `seed`.
+
+| # | measurement | PASS | ABORT |
+|---|---|---|---|
+| H2.1 | probe `arms` column per toss | `1` or `2`, never `3` (`?` ⇒ the source has no `/rosout`; use the launch log) | `>= 3` ⇒ `_MAX_ARM_DISPATCHES` is not being honoured — a separate defect, route to `catch_coordinator_node` |
+| H2.2 | probe `seeds` on any toss with `arms == 2` | `0` (printed `-`) — **the Phase-2 criterion**: both dispatches landed clear of the stroke | `>= 1` ⇒ a repack still clobbered a live stroke. Pre-fix, every `arms=2` toss showed exactly 2 seeds, `0.0000 rev` from the live `pos_meas` |
+| H2.3 | `dip_below_x3` on `arms == 2` tosses vs `arms == 1` tosses | both `<= 0.100` rev | a systematic difference between the two groups ⇒ the guard is only partly effective |
+| H2.4 | a SAFE_ABORT during a toss, **if one occurs naturally** | the retract ladder still runs and the hand reaches `0.0` rev | the retract is refused or skipped. **Hard ABORT** — a kind-3 retract clobbering an armed kind-0 is the ONLY un-arm mechanism the Teensy offers. Do not provoke one deliberately this sitting |
+
+Note for H2.2: at least one toss in the set must read `arms == 2`, or the criterion
+was never exercised. With a 40-60 % ack-failure rate, 5 tosses give that with
+> 99 % probability — but if all 5 read `arms == 1`, say so in the debrief rather
+than recording H2.2 as a PASS.
+
+
 ---
 
 ## Section LVL — `levelling-frame-contract` Phases 1–2 (one levelling frame)

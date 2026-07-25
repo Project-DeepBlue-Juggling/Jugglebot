@@ -84,9 +84,21 @@ here before any test encodes it.  Phase 5 re-runs this probe on the post-fix
 capture to turn it into a verdict.
 
 Consuming tests (written in Phases 1-2, referenced here so the link stays live):
-``tests/motion/test_hand_stroke_model.py`` (the closed-form model pinned
-against the shipped header constants) and
-``tests/ros/test_catch_coordinator_node.py`` (the stroke-busy window).
+``tests/motion/test_hand_stroke.py`` (the closed-form model pinned against the
+shipped header constants) and ``tests/ros/test_catch_coordinator_node.py`` (the
+stroke-busy window).
+
+SHARED MODEL, NOT A COPY
+------------------------
+Phase 1 moved this probe's ``StrokeModel`` and ``smooth_move_duration_s`` into
+``jugglebot/motion/trajectory/hand_stroke.py`` and imports them back (see the
+import block below).  Before that, ``Trajectory.h``'s algebra existed three
+times host-side: here, in ``sim/hand/trajectory.py``, and about to be a fourth
+in ``catch_coordinator_node``.  A pinned duplicate was rejected: this probe is
+the Phase-5 VERDICT instrument, so if it and the shipped suppression window
+disagreed about ``t_dec``, the bench would score the fix against a different
+model than the one that shipped — and a pin only catches the quantities it
+happens to assert.  Now there is nothing to pin.
 
 HOW THE INSTANTS ARE FOUND (all detectors are stated so a reviewer can refute)
 -----------------------------------------------------------------------------
@@ -222,11 +234,31 @@ from typing import Optional
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, '..', '..'))
-for _p in (os.path.join(_REPO_ROOT, 'config', 'generated'), _REPO_ROOT):
+for _p in (os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot'),
+           os.path.join(_REPO_ROOT, 'config', 'generated'), _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import hardware_config as hw  # noqa: E402  (generated; single source of truth)
+# Generated constants — the single source of truth. Read through the jugglebot
+# package copy (byte-identical to config/generated/hardware_config.py; codegen
+# writes both from one string) so this file and the shared stroke model imported
+# below cannot read two different modules.
+from jugglebot import hardware_config as hw  # noqa: E402
+# THE stroke model, shared with catch_coordinator_node's C-HAND-1 suppression
+# window. Previously a local copy here, which made three host-side copies of
+# Trajectory.h's algebra; plan Phase 1 step 2 collapsed them into one. Import,
+# not a pinned duplicate: this probe is the Phase-5 VERDICT instrument, so if it
+# and the shipped window disagreed about t_dec the bench would score the fix
+# against a different model than the one that shipped — and a pin only catches
+# the quantities it happens to assert.
+from jugglebot.motion.trajectory.hand_stroke import (  # noqa: E402
+    LINEAR_GAIN_REV_PER_M,
+    TOTAL_STROKE_M,
+    TOTAL_STROKE_REV,
+    HandStrokeModel as StrokeModel,
+    rev_to_mm,
+    smooth_move_duration_s,
+)
 
 _DEFAULT_TRACE_GLOB = os.path.join(_REPO_ROOT, 'temp', 'logs', 'toss_trace_*.jsonl')
 _DEFAULT_BAG_ROOT = os.path.expanduser('~/Desktop/rosbags')
@@ -249,124 +281,19 @@ _GATE_TRACE = (_GATE_FULL_TRACE if os.path.exists(_GATE_FULL_TRACE)
 
 
 # ══════════════════════════════════════════════════════════════════════════
-#  Closed-form stroke model — port of Teensy_code/Trajectory.h
+#  Closed-form stroke model
 # ══════════════════════════════════════════════════════════════════════════
-
-LINEAR_GAIN_REV_PER_M = (hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR
-                         / (math.pi * hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M * 2.0))
-TOTAL_STROKE_M = (hw.TEENSY_TRAJ_HAND_STROKE_M
-                  - 2.0 * hw.TEENSY_TRAJ_STROKE_MARGIN_M)
-TOTAL_STROKE_REV = TOTAL_STROKE_M * LINEAR_GAIN_REV_PER_M
-
-
-def rev_to_mm(rev: float) -> float:
-    return rev / LINEAR_GAIN_REV_PER_M * 1000.0
-
-
-class StrokeModel:
-    """Closed-form throw+catch stroke, ported from ``Trajectory.h``.
-
-    ``calcThrow`` (Trajectory.h:95-115) and ``calcCatch`` (:117-139) with the
-    shipped ``TeensyTraj::`` constants.  Positions are motor revs measured from
-    the encoder zero at the bottom of the EFFECTIVE stroke, exactly as the
-    firmware's ``x`` samples are (``buildSegment`` multiplies metres by
-    ``LINEAR_GAIN``).  Times are relative to BALL RELEASE for the throw (the
-    ``makeThrow`` convention: ``shiftTime(-t2)``) and to the firmware's kind-1
-    anchor for the catch (the ``makeCatch`` convention: ``shiftTime(-(t5-t4))``,
-    which puts t=0 at the START of the catch velocity hold, not its centre).
-    """
-
-    def __init__(self, v_throw_mps: float):
-        v = max(hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
-                min(hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS, float(v_throw_mps)))
-        self.v = v
-        ir = hw.TEENSY_TRAJ_INERTIA_RATIO
-        total = TOTAL_STROKE_M
-
-        vel_hold = hw.TEENSY_TRAJ_THROW_VEL_HOLD_PCT * total
-        accel_st = total - vel_hold
-        self.t_acc = 2.0 / (ir + 1.0) * accel_st / v
-        self.t_vel = vel_hold / v
-        self.t_dec = self.t_acc * ir
-        self.throwA = v / self.t_acc
-        self.throwD = -self.throwA / ir
-        self.x1_m = 0.5 * self.throwA * self.t_acc ** 2
-        self.x2_m = self.x1_m + v * self.t_vel
-        self.x3_m = (self.x2_m + v * self.t_dec
-                     + 0.5 * self.throwD * self.t_dec ** 2)
-
-        vC = -hw.TEENSY_TRAJ_CATCH_VEL_RATIO * v
-        irC = 1.0 / ir
-        velH = hw.TEENSY_TRAJ_CATCH_VEL_HOLD_PCT * total
-        accS = total - velH
-        self.t_acc_catch = -(2.0 / (irC + 1.0)) * accS / vC
-        self.t_vel_catch = -velH / vC
-        self.t_dec_catch = self.t_acc_catch * irC
-        self.catchA = vC / self.t_acc_catch
-        self.x5_m = self.x3_m + 0.5 * self.catchA * self.t_acc_catch ** 2
-        self.x6_m = self.x5_m + vC * self.t_vel_catch
-        self.vC = vC
-
-    # ── revs ──────────────────────────────────────────────────────────────
-    @property
-    def x1_rev(self) -> float: return self.x1_m * LINEAR_GAIN_REV_PER_M
-
-    @property
-    def x2_rev(self) -> float: return self.x2_m * LINEAR_GAIN_REV_PER_M
-
-    @property
-    def x3_rev(self) -> float: return self.x3_m * LINEAR_GAIN_REV_PER_M
-
-    @property
-    def x5_rev(self) -> float: return self.x5_m * LINEAR_GAIN_REV_PER_M
-
-    @property
-    def x6_rev(self) -> float: return self.x6_m * LINEAR_GAIN_REV_PER_M
-
-    @property
-    def stroke_start_rel(self) -> float:
-        """Throw-stroke first sample, relative to release (negative)."""
-        return -(self.t_acc + self.t_vel)
-
-    @property
-    def stroke_end_rel(self) -> float:
-        """Throw-stroke last sample (hand at rest at x3), relative to release."""
-        return self.t_dec
-
-    def pos_rev(self, t_rel_release: float) -> float:
-        """Commanded throw-stroke position (rev) at ``t`` relative to release."""
-        t = t_rel_release - self.stroke_start_rel          # local, 0 = accel start
-        if t <= 0.0:
-            return 0.0
-        if t <= self.t_acc:
-            return 0.5 * self.throwA * t * t * LINEAR_GAIN_REV_PER_M
-        if t <= self.t_acc + self.t_vel:
-            tau = t - self.t_acc
-            return (self.x1_m + self.v * tau) * LINEAR_GAIN_REV_PER_M
-        if t <= self.t_acc + self.t_vel + self.t_dec:
-            tau = t - (self.t_acc + self.t_vel)
-            return ((self.x2_m + self.v * tau + 0.5 * self.throwD * tau * tau)
-                    * LINEAR_GAIN_REV_PER_M)
-        return self.x3_m * LINEAR_GAIN_REV_PER_M
-
-
-def smooth_move_duration_s(delta_rev: float) -> float:
-    """``makeSmoothMove``'s duration (Trajectory.h:257-260) for a rest-to-rest move.
-
-    **This is the PRE-Phase-4 rest-to-rest form and must move with it.**  Plan
-    Phase 4 step 2 retires exactly this ``T = sqrt(|Δ|·s2max/A_max)`` because it
-    assumes ``v0 = 0``.  The constants come from codegen so constant drift is
-    covered, but formula drift is not, and ``--gate``'s ``quintic_T_model_s`` row
-    replays a frozen PRE-fix fixture, so the gate structurally cannot notice.
-    When Phase 1 creates the shared ``motion/`` stroke-model helper (its step 2
-    mandates one, so the model is not copied a third time), move this function
-    and ``StrokeModel`` into it and import them here.
-    """
-    if abs(delta_rev) < 1e-6:
-        return 0.0
-    T = math.sqrt(abs(delta_rev) * hw.TEENSY_TRAJ_QUINTIC_S2_MAX
-                  / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2)
-    return max(T, 0.05)
+#  Lives in jugglebot/motion/trajectory/hand_stroke.py and is imported at the
+#  top of this file — LINEAR_GAIN_REV_PER_M, TOTAL_STROKE_M, TOTAL_STROKE_REV,
+#  StrokeModel (= HandStrokeModel), rev_to_mm and smooth_move_duration_s.  The
+#  positions it produces are motor revs from the firmware's encoder zero, the
+#  throw timeline is relative to BALL RELEASE (makeThrow's shiftTime(-t2)) and
+#  the catch timeline to the firmware's kind-1 anchor at the START of the catch
+#  velocity hold (shiftTime(-(t5-t4))) — unchanged from when the model was local
+#  to this file, and now covered by tests/motion/test_hand_stroke.py.
+#
+#  smooth_move_duration_s is still the PRE-Phase-4 rest-to-rest form; plan
+#  Phase 4 replaces it there and this probe picks the change up automatically.
 
 
 # ══════════════════════════════════════════════════════════════════════════
