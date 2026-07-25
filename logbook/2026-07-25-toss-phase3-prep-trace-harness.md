@@ -27,7 +27,9 @@ files_changed:
 
 ## Summary
 
-The real-ordering trace tooling for Reload → Toss on the live launch lands:
+The real-ordering trace tooling lands (Phase 3 records a **toss-only** dry
+trace — no Reload leg, no BB; the recorder also subscribes the Reload wires
+so the same harness captures the Phase-5 real-ball Reload → Toss chain):
 `tests/hardware/toss_trace_recorder.py` (an observe-only rclpy recorder +
 pure-stdlib offline checker evaluating 14 dry-trace and 4 reject-trace
 ordering invariants) and `tests/hardware/session_phase8_toss_trace.md` (the

@@ -219,12 +219,15 @@ sweep report to `temp/reports/`. Gate pass recorded with the
 ### Phase 3 — Real-ordering trace
 Mocked-ROS unit tests are blind to cross-process choreography (the Phase-7
 audit found five BLOCKING ordering bugs exactly there). Before hardware: a
-recorded real-ordering trace of Reload → Toss on the live launch (**powered**
-no-ball bench — a dry trace: the harness raises a trace-only waiver for the
-ball-evidence precondition so the full post-CHECKING choreography emits and
-is observed without physical outcomes; every powered-session runbook leaves
-the waiver unset; the un-waived `REJECTED_NO_BALL` refusal path is captured
-as its own short trace), reviewed against the sequencer's assumed ordering.
+recorded real-ordering trace of a **standalone Toss** — no Reload leg and no
+BB (BB cannot throw with an empty magazine and would auto-reload; the throw
+side is the new, unproven choreography, and it emits regardless of whether a
+ball is present) — on the live launch (**powered** no-ball bench — a dry
+trace: the harness raises a trace-only waiver for the ball-evidence
+precondition so the full post-CHECKING choreography emits and is observed
+without physical outcomes; every ball-flying session runbook leaves the waiver
+unset; the un-waived `REJECTED_NO_BALL` refusal path is captured as its own
+short trace), reviewed against the sequencer's assumed ordering.
 *(Amended 2026-07-25: the original "unpowered bench" wording is
 unreachable — ACTIVE activation faults against unpowered ODrives and the
 10 Hz mode republish reject the goal `REJECTED_WRONG_MODE` before the
@@ -235,6 +238,11 @@ real actuation and recommends folding it into the T0 sitting. See the
 Phase-3 prep logbook entry.)* Tooling: `tests/hardware/toss_trace_recorder.py`
 (recorder + offline invariant checker, DT-1..14 / RJ-1..4) +
 `tests/hardware/session_phase8_toss_trace.md` (runbook).
+
+The full real-ball **Reload → Toss** chain trace (the powered operator
+sequence with a caught, seated ball) is deferred to the first Phase-5
+sitting; the recorder already subscribes to the Reload action wires so the
+same harness captures it there without change.
 
 ### Phase 4 — Tier 8b (tilt-aimed displaced throw)
 - Port `tilt_to_throw` into `motion/trajectory/tilt_geometry.py` (pure Python;
