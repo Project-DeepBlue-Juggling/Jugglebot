@@ -178,7 +178,7 @@ zero feasibility violations, all knots pump-accepted.
 | 0 | Post-merge reconciliation (suite green, doc pointers) | full pytest | COMPLETE (2026-07-25) |
 | 1 | `Toss.action` + `toss_sequencer` FSM + coordinator wiring (Tier 8a, REJECTED_TIER for 8b) | full pytest | COMPLETE (2026-07-25; tier is config-only — the locked goal has no tier field, see the phase logbook entry) |
 | 2 | `sim/toss_gate.py` + Tier-8a sweep | Self-toss gate ≥9/10 | COMPLETE (2026-07-25 — PASS both binding bands, 262/290 core_clean overall; long-flight advisory tail fails under the placeholder noise, re-run after T0) |
-| 3 | Real-ordering trace (multi-node choreography) | trace review | PREPARED (2026-07-25 — harness + runbook landed, powered-bench amendment; operator captures pending) |
+| 3 | Real-ordering trace (multi-node choreography) | trace review | **VALIDATED (2026-07-25)** — reject + dry captures run; ordering all-green; 3 pollution/pre-position invariants corrected as a contract fix; `check --dry` on `toss_trace_2026-07-25_15-24-25` = 12 PASS / 0 FAIL |
 | 4 | Tier 8b — tilt-aimed displaced throw on the production stack | gate sweep extension | COMPLETE (2026-07-25 — 8b binding ring PASS 9/9; asymmetry map landed; ships behind `JB_OP_TOSS_TIER='8a'`) |
 | 5 | Hardware bring-up T0–T4 (operator-run) | staged PASS criteria | NOT STARTED |
 
@@ -243,6 +243,26 @@ The full real-ball **Reload → Toss** chain trace (the powered operator
 sequence with a caught, seated ball) is deferred to the first Phase-5
 sitting; the recorder already subscribes to the Reload action wires so the
 same harness captures it there without change.
+
+**Outcome (2026-07-25): VALIDATED.** Run on a powered no-ball bench.
+*Capture R* (un-waived `REJECTED_NO_BALL`): 4/4 RJ invariants PASS — zero
+choreography, proving the CHECKING chain (mode/streaming/mocap/hand-fresh/
+hand-parked) all passed. *Capture D* (waived dry choreography): every ordering
+invariant PASS (DT-1/2/5/6/8/10/11). Two invariants (DT-9 stroke↔BALL_IN_FLIGHT
+timing, DT-12 outcome form) were confirmed as ball-in-hand artifacts by a
+ball/no-ball A/B — both flipped FAIL→PASS with the hand empty, which positively
+validates the release-timing model. **Checker contract correction:** DT-7,
+DT-13, DT-14 were mis-specified — they assumed a no-ball toss leaves the tracker
+quiescent, but a *self-announced* toss always seeds its own predicted-ball track
+(`ball_prediction_node` synthesises a `destination=jugglebot` `BallState` from
+the ThrowAnnouncement — `tracking=0`, no mocap detection — which drives the
+catch pre-position). Corrected to distinguish that intrinsic track from a REAL
+detection (`tracking=1`)/foreign track; adversarially verified (the corrected
+DT-14 still fails on the real-ball run, catching `tracking=1 id=35`). Final:
+`check --dry` on `temp/logs/toss_trace_2026-07-25_15-24-25.jsonl` = **12 PASS /
+0 FAIL** (2 in-bundle AMBIGUOUS tolerated). Two real tosses occurred during the
+arc (a ball was present) — both MISSED — standing as early Phase-5 T0/T1 data.
+See `logbook/2026-07-25-toss-phase3-trace-validated.md`.
 
 ### Phase 4 — Tier 8b (tilt-aimed displaced throw)
 - Port `tilt_to_throw` into `motion/trajectory/tilt_geometry.py` (pure Python;

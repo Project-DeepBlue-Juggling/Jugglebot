@@ -55,8 +55,10 @@ valid, just costlier.
   any production topic and never calls any service. The goal trigger is your
   `ros2 action send_goal`.
 - **No ball anywhere in the workspace, ever, this session** — a stray tracked
-  marker latches possession or pollutes the trace (checker DT-14 hard-fails on
-  any `balls` row in the goal window). Clear the volume before starting.
+  marker/ball produces a REAL (tracking=1) detection that fails DT-14. (The
+  self-announced toss's OWN predicted track — tracking=0, destination=jugglebot,
+  synthesised by `ball_prediction_node` from the announcement — is intrinsic and
+  expected; DT-14 allows it.) Clear the volume before starting.
 
 ## Preconditions
 
@@ -218,13 +220,13 @@ Invariants the checker evaluates (IDs cross-reference the Phase-3 design spec):
 | DT-3 / DT-4 | PREPARE bundle order: vel_scale, then ONE prime_dispatched belt stamp, before armed (same-tick AMBIGUOUS tolerated) |
 | DT-5 | announcement precedes the THROWING transition (dispatch-time proxy, ~1 tick — the true `set_hand_traj_cmd` instant is unobservable); no stroke-command evidence before the announcement |
 | DT-6 | no auto-prime while prime_hold is raised (no CCN prime logs, no ascent before the stroke) |
-| DT-7 / DT-8 | exactly ONE pre-tilt dynamic_target at (0,0,170), accepted, and none before arming |
+| DT-7 / DT-8 | DT-7: pre-tilt log + the announcement's predicted-track dynamic_target STREAM, all within 30 mm of (0,0,170), catch-accepted (a target that wanders off = a real ball pulled the reach). DT-8: none before arming |
 | DT-9 | exactly one stroke, at the announced release time, before BALL_IN_FLIGHT; no re-dispatch |
 | DT-10 | feedback phase order, no regressions, no CHECKING |
 | DT-11 | teardown order: armed False → latch-disarmed → … → prime_hold False LAST; hand retracted |
 | DT-12 | one truthful `Toss MISSED` WARN + one waiver WARN |
-| DT-13 | streaming TRAJECTORY throughout; positioning move-then-hold |
-| DT-14 | zero `balls` rows (trace pollution guard) |
+| DT-13 | streaming=True + mode=TRAJECTORY throughout; positioning 'move' present (the catch pre-position keeps the platform in an active plan — the 'hold' recenter falls after the trace window) |
+| DT-14 | pollution guard: no REAL-detection (tracking=1) or foreign-destination balls entries; the toss's own announcement-seeded predicted track (tracking=0, destination=jugglebot) is intrinsic and expected |
 | RJ-1..4 | reject: right code (ABORTED status), total choreography silence, waiver provably unset, zero feedback |
 
 - **PASS**: all RJ-* and DT-* invariants PASS (AMBIGUOUS is acceptable ONLY on
