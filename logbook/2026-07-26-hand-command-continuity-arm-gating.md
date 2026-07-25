@@ -16,7 +16,7 @@ files_changed:
   - tests/hardware/session_anomaly_fixes.md
   - plans/active/hand-command-continuity.md
 commits:
-  - PLACEHOLDER_SHA
+  - 6179a88
 subsystem:
   - ros
   - motion

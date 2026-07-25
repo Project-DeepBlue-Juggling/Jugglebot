@@ -941,8 +941,8 @@ defers rather than repacks, and that the abort path is unaffected.
 into two commits would have meant landing a predicate with no consumer or a
 consumer with no predicate.
 
-**Commits:** `COMMIT_SHA_CODE` (code + tests + contract + runbook + this plan),
-`COMMIT_SHA_LOG` (logbook SHA backfill).
+**Commit:** `6179a88` (code + tests + contract + runbook + logbook + this plan),
+followed by a small SHA-backfill commit.
 **Suite:** `pytest tests/ -q`, run 2026-07-26 on the Jetson under
 `~/Desktop/PDJ_venv/venv`: **3517 passed, 3 xfailed in 1351.82 s (22:31)**.
 Baseline at HEAD `2395244` was 3484 passed, 3 xfailed in 1371.51 s — **+33
