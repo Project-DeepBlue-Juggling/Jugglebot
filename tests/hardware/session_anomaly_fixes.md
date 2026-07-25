@@ -197,3 +197,159 @@ tick no longer counts toward the 5-consecutive-failure e-stop. An
 `fk_iterations = 10` with **no** accompanying warning is exactly that path
 firing — it used to appear as a warning plus a stale-pose substitution. Report
 the tick count and the pose continuity around it; do not abort.
+
+---
+
+## Section HAND — `hand-command-continuity` (post-throw dip + throw truncation)
+
+**Plan**: `plans/active/hand-command-continuity.md`
+
+Phases 1, 2 and 4 append their own `CHECK HAND-n` bodies under this header as
+they land. This first part is the **shared instrument and its pre-fix
+baseline** — the numbers a post-fix capture is scored against. It exists here
+because the baseline was measured offline from three 2026-07-25 sessions and
+lives nowhere else; without it the Phase-5 criterion (`dip_below_x3 <= 0.10` rev,
+row 4 below) has nothing to compare to.
+
+**Nothing in this part actuates the robot.** It is read-only analysis run
+*after* a capture that a later `CHECK HAND-n` produces.
+
+### Capture requirement for every HAND check
+
+The dip lives in `hand_telemetry`, which the § Recording bag list above does
+**not** include. Run the toss-trace recorder alongside the bag, in its own
+terminal, with **system `python3` and the ROS env sourced — NOT the venv**
+(`tests/hardware/toss_trace_recorder.py`'s own docstring states this, and
+`tests/hardware/session_phase8_toss_trace.md:100` gives the same instruction; the
+*probe* below is the opposite — it needs the venv):
+
+```bash
+cd ~/Desktop/Jugglebot
+python3 tests/hardware/toss_trace_recorder.py record
+```
+
+(writes `temp/logs/toss_trace_<stamp>.jsonl`; note the filename. Confirm its 1 Hz
+live line shows `hand ~100 Hz` before any goal is sent — `hand 0 Hz` means the
+Teensy telemetry stream is down and no HAND verdict is possible.)
+
+**The trace recorder is not optional for a HAND check.** The § Recording bag
+command above records `/robot_state /leg_setpoint_echo /platform_target
+/rigid_body_poses /link_status /rosout` — **neither** `/hand_telemetry` **nor**
+`/throw_announcements`, which are the two topics this probe reads for the stroke
+timeline. Run the probe's `--bag` path only against a bag recorded with both
+topics added:
+
+```bash
+# optional: a bag that ALSO feeds the HAND probe (append to the § Recording list)
+  /hand_telemetry /throw_announcements
+```
+
+Such a bag **does** carry `/rosout` (the § Recording command records it), and the
+probe reads the arm-dispatch count from it — it detects the channel rather than
+assuming the format. `arms` reads `?` only when the source genuinely has no
+`/rosout`, which is true of the three 2026-07-25 evidence bags (recorded before
+that list) but not of a bag recorded with the command above. `?` never means zero;
+the launch log `~/.ros/log/<stamp>/launch.log` is the fallback source.
+
+### The analysis command — this is what turns a capture into a verdict
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+python tools/probes/hand_stroke_timeline.py --trace temp/logs/toss_trace_<stamp>.jsonl --json
+# or, from a bag:
+python tools/probes/hand_stroke_timeline.py --bag ~/Desktop/rosbags/<stamp> --json
+```
+
+Self-check that the instrument itself is intact (offline, no capture needed):
+
+```bash
+python tools/probes/hand_stroke_timeline.py --gate
+```
+
+- **PASS**: **exit 0**, and **two** `GATE PASS` lines — one for the Context-table
+  branch (`25/25 rows within tolerance` as of 2026-07-26) and one for
+  `fixed-shape branch` (four cases: `clean`, `overshoot`, `short-flight`,
+  `braking-prelude`). Judge on the exit code and on both lines being `GATE
+  PASS`, **not** on the row count: the count grows whenever a row is added to
+  the reference table, and treating it as the criterion has already produced one
+  stale runbook.
+- **ABORT the analysis** (not the sitting): a `GATE FAIL` line, a missing second
+  branch, or a non-zero exit. Any of those means the probe or the reference
+  changed and no HAND verdict below can be trusted. `GATE UNAVAILABLE` is
+  different: it means neither the recorded trace nor the committed fixture at
+  `tools/probes/data/hand_stroke_timeline_gate_ref.jsonl` is present — restore
+  the fixture (or regenerate it with `--emit-gate-fixture`) and re-run.
+
+### PASS / ABORT per throw, read off the probe's rows
+
+**Score the rows in the order below** — `peak` gates the end stop and bounds what
+`pullback` can legitimately read, so a `peak` ABORT is decided before `pullback`
+is looked at.
+
+| # | row | PASS | ABORT |
+|---|---|---|---|
+| 1 | `trunc` | `-` (the command followed the decel ramp to `x3`) | any instant printed ⇒ the queue was still cleared mid-stroke |
+| 2 | `seeds` | `0` (printed as `-`) | `>= 1` from-rest quintic seed inside the stroke |
+| 3 | `peak` | `<= 10.060` rev (`x3` 9.9594 + 0.10) | `> 10.060` rev; **hard abort at `> 10.5` rev** |
+| 4 | `dip_below_x3` | `<= 0.100` rev (`<= 3.2` mm) — the row prints `OK` | `> 0.100` rev — the row prints `OVER`. Pre-fix range was **0.339–1.748 rev = 10.7–55.3 mm** |
+| 5 | `pullback` | `>= -5.0` rev/s, **given row 3 passed** | `< -5.0` rev/s. Pre-fix range was **−17.9 to −42.4 rev/s** |
+| 6 | `catch_desc` | present, within ~20 ms of `event − t_acc_catch` | absent ⇒ the catch never fired; check the Teensy serial for `Not enough time for smooth-move` |
+| 7 | `first_neg_cmd` | equal to `catch_desc` (no annotation printed) | annotated `<-- NOT the catch descent (a brake?)`: **REPORT, do not abort.** Expected after Phase 4 lands (step 3 charters a braking prelude); before Phase 4 it means an unexplained downward command |
+
+**Why row 4 and not `dip_bottom` / `dip`.** `dip` is peak-minus-bottom, so it is
+non-zero on *any* capture that overshoots and settles — including a perfectly
+fixed one (0.6 mm on the probe's own clean synthetic) and including the bounded
+overshoot plan Phase 4 step 2 makes the *expected* behaviour (20.2 mm at
+10.60 rev, i.e. the size of the smallest pre-fix defect). Gating on it would score
+a working fix as FAILED. What separates the defect from a healthy stroke is the
+*sign* of the excursion about the stroke end: pre-fix the position loop yanks the
+hand **below** `x3`; a healthy stroke settles **onto** `x3` from above and never
+goes under (the four synthetic post-fix shapes read 0.000–0.001 rev). Same reason
+`pullback` is bounded rather than required non-negative: a healthy settle from the
+coasting peak is genuinely negative — −0.31 rev/s at 0.02 rev of overshoot, −1.58
+at the 10.060 rev ceiling of row 3, −10.03 at 10.60 rev.
+
+Margins to be aware of when scoring: row 4's band has ~100× headroom on the
+healthy side but only **3.4×** on the tightest pre-fix defect (ball 34, 0.339 rev).
+A post-fix reading anywhere near 0.2–0.3 rev is not a clean PASS — capture it and
+debrief rather than waving it through.
+
+Also capture, without gating on it this round (the release model is still
+unmeasured — `plans/active/single-ball-toss.md` Phase 5 T0): the achieved flight
+per toss over **>= 5** tosses at one commanded height, and the `shift` column.
+
+### Pre-fix baseline — 7 self-tosses, 2026-07-25 (what must go away)
+
+The `dip_below_x3` and `pullback` columns are the **gated** ones (rows 4 and 5
+above); `dip` is shown only because the plan's Context table quotes it.
+
+| session | ball | arms | `trunc` (rev) | `peak` (rev / mm) | headroom to 11.1 | `dip` (mm / % stroke) | **`dip_below_x3` (rev / mm)** | **`pullback` (rev/s)** | `shift` (ms, **bag clock**) |
+|---|---|---|---|---|---|---|---|---|---|
+| 15-04-35 | 34 | 2 | 7.1245 | 10.2611 / 324.5 | 0.839 rev | 20.3 / 6.4 | **0.339 / 10.7** | −17.9 | +12.8 |
+| 15-17-48 | 10 | 1 | 6.7562 | 10.2513 / 324.2 | 0.849 rev | **64.5 / 20.5** | **1.748 / 55.3** | −42.4 | +19.0 |
+| 15-17-48 | 11 | 2 | 6.1965 | 10.2684 / 324.8 | 0.832 rev | 52.4 / 16.6 | **1.347 / 42.6** | −36.6 | +20.7 |
+| 15-17-48 | 13 | 1 | 7.1897 | 10.2813 / 325.2 | 0.819 rev | 56.6 / 18.0 | **1.468 / 46.4** | −38.2 | +15.4 |
+| 15-17-48 | 17 | 2 | 6.8525 | **10.3248 / 326.6** | **0.775 rev** | 23.0 / 7.3 | **0.361 / 11.4** | −20.0 | +20.2 |
+| 15-22-50 | 2 | 1 | 7.7825 | 10.1653 / 321.5 | 0.935 rev | 40.2 / 12.8 | **1.065 / 33.7** | −29.7 | +17.2 |
+| 15-22-50 | 3 | 1 | 7.7004 | 10.1743 / 321.8 | 0.926 rev | 43.0 / 13.7 | **1.146 / 36.2** | −31.3 | +21.9 |
+
+Worst pre-fix case: **55.3 mm below the stroke end** (ball 10) and **0.775 rev =
+24.5 mm** of headroom to the 11.1 rev end-stop (ball 17), both at a mid-band
+3.93 m/s throw. Every one of these seven rows must read `trunc=-`, `seeds=-` and
+`dip_below_x3 <= 0.100 rev` after the fix.
+
+**The `shift` column is the BAG-clock reading.** The same physical toss reads
+**1.5–1.7 ms higher** through the jsonl trace path the verdict command above
+leads with (ball 34 +14.5 vs +12.8; ball 3 +23.4 vs +21.9), because the two
+sources timestamp differently. Compare like with like: a post-fix *trace* reading
+of +14.3 against this table's +12.8 is a clock-path artefact, not a regression.
+The honest worst case over both paths is **+23.4 ms** — that is what Phase 1's
+40 ms margin is 1.7× of.
+
+Two reload tosses in the same sessions (ball 4, ball 5, thrower `ball_butler`)
+report `no-throw-stroke` with a clean `catch_desc` and every dip row `-` — that is
+the expected inert shape for a reload and it must stay that way (Phase 1 step 4).
+The eighth `jugglebot` toss in `15-17-48` (ball 14, `ABORTED_NO_RELEASE`) reports
+`no-throw-stroke(!)` with **no** `catch_desc` at all; that is the dispatch-eaten
+case, not a regression.

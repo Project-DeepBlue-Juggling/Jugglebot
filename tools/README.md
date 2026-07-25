@@ -4,6 +4,14 @@ Scripts in this directory bypass ROS2 and talk directly to hardware via python-c
 
 ## Preview Convention (`--preview`)
 
+**Scope**: these rules bind the *operator-facing hardware harnesses* — the
+scripts in this directory and in `tests/hardware/` that command the robot and
+whose `--preview` previews a motion sequence before it is run. They do **not**
+bind the offline analysis probes under `tools/probes/`, which run headless on the
+Jetson where a matplotlib window is unusable; there `--preview` conventionally
+prints the raw per-sample window instead (see
+`tools/probes/hand_stroke_timeline.py`).
+
 **All test harnesses that accept `--preview` must follow these rules:**
 
 1. **Single window** — `--preview` produces exactly one matplotlib figure containing the full test sequence. Never open a separate window per test.
