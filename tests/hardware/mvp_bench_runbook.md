@@ -369,7 +369,11 @@ auto-tracks whatever threshold the firmware trips at):
   emitter gap 56.60 ms (vs the 250 ms staleness window). Rosbag
   `~/Desktop/rosbags/2026-07-09_13-17-56`.
   - *Two NOTES from the bag, neither a PASS blocker.* (a) The teardown `go_home`
-    installed as `move_seq=12` with realized peaks 0.0 (a genuine no-op from neutral),
+    installed as `move_seq=12` with realized peaks 0.0 (a genuine no-op from neutral —
+    **that session ran with no levelling correction loaded; since
+    `levelling-frame-contract` Phases 1–2 landed on 2026-07-26, `go_home` targets the
+    *corrected* neutral, so with a correction loaded it is a real ~2.77 mm worst-leg
+    move and realized peaks are NOT 0.0**. See `ros_ws/docs/levelling_frame.md`),
     but its **predicted** peaks were reported identical to move 11's rather than zero —
     i.e. `peak_leg_*` looks stale for a zero-distance plan. Worth a look before S4 leans
     on `/diagnose`'s predicted-vs-realized headroom numbers. (b) **`/link_status` is not

@@ -3,15 +3,19 @@ title: Levelling-frame contract — one gravity correction, applied to every pos
 created: 2026-07-25
 status: active
 related_logbook:
+  - 2026-07-26-levelling-frame-contract.md
+  - 2026-07-25-levelling-frame-enumeration.md
   - 2026-07-25-toss-phase3-trace-validated.md
   - 2026-07-25-toss-phase4-tier8b-displaced-throw.md
   - 2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md
 related_code:
-  - ros_ws/src/jugglebot/jugglebot/trajectory_node.py::_apply_gravity_correction
+  - ros_ws/src/jugglebot/jugglebot/motion/levelling.py
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py::_pose_from_msg
-  - ros_ws/src/jugglebot/jugglebot/trajectory_node.py::_on_dynamic_target
+  - ros_ws/src/jugglebot/jugglebot/trajectory_node.py::_corrected_neutral_pose
+  - ros_ws/src/jugglebot/jugglebot/trajectory_node.py::_catch_target_from_msg
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py::_on_platform_pose
-  - ros_ws/src/jugglebot/jugglebot/mpc_bridge_node.py::_apply_gravity_correction
+  - ros_ws/src/jugglebot/jugglebot/mpc_bridge_node.py::_on_platform_pose
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/planner.py::build_catch
   - ros_ws/src/jugglebot/jugglebot/toss_sequencer.py::_step_checking
   - ros_ws/src/jugglebot/jugglebot/orchestrator_node.py
 ---
@@ -113,13 +117,88 @@ The correction exists so that commanding "level" produces a platform that is lev
 |---|---|---|---|
 | un-levelled | 0° | 0.78° | **43 mm** |
 | levelled, today | −1.08° | ~0.30° | **16 mm** |
-| levelled, after this plan | −0.78° | ~0° | **~0 mm** |
+| levelled, after this plan | −1.08° | ~0.30° | **~16 mm** — see the correction below |
 
 The cup radius is ~35 mm (`GEOM_HAND_RADIUS_MM`), so un-levelled the catch is
 *geometrically impossible* and levelled-today it barely fits. Ball 11's
 tracker-measured catch error was **16 mm** — the predicted value for a 0.30°
-residual. So the ugly tilt is the correction doing approximately the right thing
-through the wrong plumbing; it is also, right now, the dominant catch-error term.
+residual.
+
+> **CORRECTED 2026-07-25 by Phase 2's implementation.** The third row originally
+> read *"−0.78° / ~0° / ~0 mm"*, i.e. this plan claimed to close the 16 mm catch
+> error. **It does not**, and the reasoning that produced that row conflated two
+> different contributions to the observed −1.0784°.
+>
+> Only the **park frame** is this plan's. The **−1.0784° settle** is
+> `planner.build_catch`'s tilt-through-seat ramp: it reads `catch_pose[3:5]` as
+> "the receive tilt" and ramps a residual rate along it, a premise that holds
+> only while the commanded frame **is** the gravity frame. With a correction
+> loaded, a gravity-level catch arrives as a non-zero plan-frame tilt — the
+> correction itself — so the through-seat engages and overshoots by
+> `_CATCH_TILT_OVERSHOOT_FRAC · rate · decay = 0.5 × 0.07 × 0.15 = 0.005250 rad
+> = 0.3008°` in the correction's own direction. Closed form for the session
+> offset: **−1.078408° `rx` / −0.095775° `ry`**, against the bag's recorded
+> **−1.0784 / −0.0958**; measured through `tools/probes/levelling_tilt_bag_check.py`
+> on bag `2026-07-25_15-17-48` (window `--t0 165 --t1 200`, run 2026-07-25) the
+> settle plateau reads **−1.0775°**, i.e. **0.0009°** from the closed form.
+>
+> Two corollaries the plan previously left open:
+> - the un-levelled 15:04:35 baseline is flat **because** `tmag == 0` disables
+>   the through-seat entirely, not merely because "the frames agree". So Phase 4's
+>   *"match the un-levelled baseline"* is unreachable once a correction is loaded;
+> - the *"settled at 1.385× the single correction"* residual-amplification question
+>   in § Notes for collaborators is **answered**: `(tmag + overshoot)/tmag =
+>   1.38473` exactly.
+>
+> Closing the remaining 0.30° needs `build_catch` to aim the through-seat along
+> the **gravity-referenced** receive tilt rather than the commanded plan-frame
+> tilt. That changes commanded motion at ball contact on every catch including
+> the shipping reload path, so it is an operator decision and was deliberately
+> **not** taken by the Phase-2 session. It is pinned as a characterisation test
+> (`tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt`)
+> so it cannot drift silently.
+
+> **CORRECTED AGAIN 2026-07-26 by the Phase-1/2 finalize pass — the +2.32° swing
+> is NOT this plan's either.** The note above still claimed the mid-plan
+> excursion as this plan's deliverable. Measured through the production planner
+> at the reference session's own catch lead, it is not.
+>
+> `build_catch` specifies a non-zero **arrival twist** on its reach (`rate ·
+> tdir`, `_CATCH_TILT_THROUGH_RATE_RADPS = 0.07`), so a reach whose start and end
+> tilts are *identical* must still swing out and come back. With `p0 == p1` the
+> quintic collapses exactly to `v1·T·φ(s)`, `φ = −4s³ + 7s⁴ − 3s⁵`, `|φ|` maximal
+> `16/81` at `s = 2/3`. Hence
+>
+> > `peak_above_park = (16/81) · rate · |tdir_x| · lead` = **0.789132° per second
+> > of catch lead** for this offset direction — exactly linear, and **independent
+> > of the correction's magnitude**.
+>
+> Verified against `planner.build_catch` at leads 0.8 / 1.2 / 2.0 / 3.0 / 3.7 /
+> 5.0 s to 4 dp (2026-07-26). The reference bag's `+2.3204°` plan-frame peak
+> corresponds to a **3.70 s** catch lead; at that same lead the post-fix reach
+> peaks at `+2.1410°` plan-frame, i.e. **+2.9198° against gravity**, against the
+> pre-fix **+3.0992°**. The swing shrinks by **0.18° out of 2.9°**, and the
+> quantity `peak_above_park` — measured from where the platform rests — actually
+> **rises**, because pre-fix the park itself sat 0.7788° high and hid part of it.
+>
+> What this plan does close is the **park**: the platform rested 0.78° off
+> gravity and `go_to_pose` and `catch/dynamic_target` disagreed about where level
+> was. That is real and worth having, and it is what CHECK LVL-3 gates on.
+> Removing the swing is `plans/active/catch-reach-degenerate-overshoot.md` —
+> which the finalize pass also re-scoped (§ Notes for collaborators).
+>
+> Two downstream corrections this forced: Phase 4's `peak_above_park` ABORT at
+> `+3.099°` is **retired** (it fires on a healthy system at any lead ≥ 3.93 s and
+> sat 0.18° from firing at the lead the reference session ran), and the operator
+> pre-brief now says in as many words that the visible tilt REMAINS. Pinned as
+> `tests/ros/test_levelling_frame.py::test_the_reach_excursion_across_the_plan_is_the_arrival_twist_alone`
+> and, on the instrument side, by
+> `tools/probes/levelling_tilt_bag_check.py --self-check` +
+> `tests/motion/test_levelling_probe.py`.
+
+So the ugly tilt is the correction doing approximately the right thing through
+the wrong plumbing; the *plumbing* — and specifically the resting frame — is what
+this plan fixes. The swing you can see is `build_catch`'s.
 
 ## Architecture
 
@@ -191,11 +270,11 @@ annotations`.
 
 | Phase | Scope | Gate | Status |
 |---|---|---|---|
-| 0 | Ingest-surface enumeration + frame audit (no code) | written enumeration reviewed by the operator | **DONE 2026-07-25 — see § Phase 0 — Outcome; AWAITING OPERATOR REVIEW (hard gate on Phase 1). Three results that change later phases: a SIXTH external path (E6, `timed_target(hold_after=False)`'s neutral return target); the correction's own delivery is volatile + unobservable (Table C ⇒ Phase 3 cannot gate on `levelling_complete`); and the bypass-test manifest key must widen or it is blind to the E6 class it was specified to catch.** |
-| 1 | Contract doc + `motion` helper + unit tests | full pytest | TODO — blocked on the Phase 0 gate |
-| 2 | Migrate every ingest path (**six**, not five); delete the ad-hoc call sites; bypass test | full pytest | TODO |
+| 0 | Ingest-surface enumeration + frame audit (no code) | written enumeration reviewed by the operator | **DONE 2026-07-25 — see § Phase 0 — Outcome. Operator gate CLEARED 2026-07-25 (`3365ac8`). Three results that change later phases: a SIXTH external path (E6, `timed_target(hold_after=False)`'s neutral return target); the correction's own delivery is volatile + unobservable (Table C ⇒ Phase 3 cannot gate on `levelling_complete`); and the bypass-test manifest key must widen or it is blind to the E6 class it was specified to catch.** |
+| 1 | Contract doc + `motion` helper + unit tests | full pytest | **DONE 2026-07-26 — `SHA_PLACEHOLDER`. Operator gate cleared in `3365ac8`. Extraction verified bit-identical (max &#124;Δ&#124; = 0.000e+00 over 36 offset×orientation pairs), contract C-LEVEL-1 at `ros_ws/docs/levelling_frame.md`. See § Phase 1 — Outcome.** |
+| 2 | Migrate every ingest path (**six**, not five); delete the ad-hoc call sites; bypass test | full pytest | **DONE 2026-07-26 — `SHA_PLACEHOLDER`. All six E surfaces + `mpc_bridge_node`'s B1 route through the shared helper; the verbatim second copy is deleted. Two AST manifests with discovered file sets, mutation-verified against six seeded regressions. Surfaced and escalated (NOT fixed): `build_catch`'s through-seat aims off the plan-frame tilt. See § Phase 2 — Outcome.** |
 | 3 | `REJECTED_NOT_LEVELLED` gate in toss CHECKING | full pytest | TODO |
-| 4 | Hardware validation (operator-run) | commanded `rx` flat to ±0.05°; catch error < 10 mm | TODO |
+| 4 | Hardware validation (operator-run) | park plateau within ±0.05° of `(−tilt_x, −tilt_y)` via `tools/probes/levelling_tilt_bag_check.py`; first `go_home` worst leg 2.77 ± 0.30 mm; mocap parked tilt within ±0.10° of level. Catch error and pre-throw swing are REPORT-only (≈16 mm and ≈+2.92° expected, both unchanged) | TODO — criteria REVISED, see § Phase 4 |
 
 ## Implementation Phases
 
@@ -310,7 +389,7 @@ would double every count).
 | `_apply_gravity_correction` — **applications** | **3** | `trajectory_node.py:1240`, `trajectory_node.py:1983`, `mpc_bridge_node.py:182` | **0** |
 | `_apply_gravity_correction` — method definitions | 2 | `trajectory_node.py:1262`, `mpc_bridge_node.py:148` | 0 |
 | `rotvec_to_rot_matrix([-tilt_x, -tilt_y, 0])` — the sign convention | 2 | `trajectory_node.py:1257-1258`, `mpc_bridge_node.py:143-144` | 0 |
-| `_gravity_correction` attribute | 6 | `trajectory_node.py:311,1257,1265`; `mpc_bridge_node.py:75,144,154` | 2 (one stored `R` per node) |
+| `_gravity_correction` attribute | 6 | `trajectory_node.py:311,1257,1265`; `mpc_bridge_node.py:75,144,154` | 2 **assignment sites** — one stored `R` per node. NOT a reference count: see the gate note in Phase 2 |
 | **Sum of the rows above** (categories **overlap** — not a site count) | 13 | 2 files | — |
 | **Distinct statements** carrying either symbol | **11** | `trajectory_node.py:311, 1240, 1257, 1262, 1265, 1983`; `mpc_bridge_node.py:75, 144, 148, 154, 182` | — |
 
@@ -487,7 +566,34 @@ against a 35 mm cup radius (`GEOM_HAND_RADIUS_MM`) and an 80 mm envelope. So aft
 Phase 2, Tier 8b's swing-compensated pre-tilt position (`release.pretilt_pose_stow`,
 computed for the *requested* tilt) is off by ~1.3 mm from the swing the *commanded*
 tilt actually produces. That is 1.6 % of the envelope and 3.7 % of the cup radius —
-below the current 16 mm catch error the plan is closing. **Relevant to
+below the current 16 mm catch error the plan is closing.
+
+> **The frame this rests on, stated explicitly (2026-07-26).** A finalize-pass
+> review argued the opposite — that the compensation is *world*-referenced and so
+> becomes exact after Phase 2. It does not, and the reason is worth writing down
+> before someone "fixes" this in the wrong direction. `cup_lateral_shift_mm` is
+> the cup opening's **xy offset from the platform centroid**, and
+> `pretilt_pose_stow` commands that centroid in STOW coordinates.
+> `stow_to_global_mm` is a pure z translation (`toss_release.py:83-84`) — there is
+> **no rotation** between STOW, "global" and the base frame. So both the shift and
+> the position it corrects live in the *base* frame, and the shift must be
+> computed from the tilt the platform physically holds **in that frame**, i.e. the
+> post-correction commanded tilt. `_cup_axis_xy`'s docstring word "world" means
+> *the fixed, non-rotating frame* (as against the platform body frame), not
+> *gravity-aligned*.
+>
+> Net effect of Phase 2 on the throw, both terms: the release **direction**
+> becomes gravity-correct (worth ~0.78°, i.e. ~42 mm over a 0.8 s flight at
+> 3.93 m/s) at the cost of ~1.3 mm of base-frame release-**position** error. A
+> large win with a small newly-introduced second-order cost. Do **not** subtract
+> the correction's contribution from `pretilt_pose_stow` to "restore consistency":
+> that would re-introduce the 0.78° aim error this plan removed.
+>
+> The conclusion depends on the offset being the *base*-vs-gravity rotation and on
+> the cup being rigid on the platform. If either is false it flips — say so rather
+> than assuming.
+
+**Relevant to
 `plans/active/catch-reach-degenerate-overshoot.md` Phase 0** only as a note: that
 plan's near-degenerate reach is the same `build_catch` path, and after this plan the
 commanded rotvec excursion on the toss reach goes to ~0, which is exactly the
@@ -783,6 +889,35 @@ one normative `*.md`.
 **Gate:** `pytest tests/ -q` green. Numbers unchanged anywhere.
 **Note:** `*.md` changes mean this commit needs `/audit --unstaged` first.
 
+#### Phase 1 — Outcome (2026-07-26)
+
+**DONE, landed with Phase 2 in commit `SHA_PLACEHOLDER`.** Logbook:
+`logbook/2026-07-26-levelling-frame-contract.md`.
+
+`ros_ws/src/jugglebot/jugglebot/motion/levelling.py` is the single
+implementation: `correction_from_offset` owns the `[-tilt_x, -tilt_y, 0]` sign
+convention, `apply_gravity_correction`/`correct_pose` own the `R_gravity @
+R_target` composition, `identity_correction` returns a *fresh* `np.eye(3)` (a
+shared module constant would be one in-place write from corrupting every node's
+frame in the process). Contract **C-LEVEL-1** lives at
+`ros_ws/docs/levelling_frame.md` — deliberately in `ros_ws/docs/` rather than
+`controller/REFERENCE_LAYER_CONTRACT.md`, because no `controller/` code applies
+this correction and a normative invariant with zero enforcement in its own
+subtree invites a reader to "apply" it there, i.e. to introduce the
+double-application mirror bug in a second subsystem.
+
+The extraction is bit-identical, verified **numerically** against the verbatim
+pre-change inline code from `git HEAD` rather than by reading the diff: 6 offsets
+× 6 rotvecs including rotvec ≈ π and 1e-9 offsets, `max |R_old − R_new| =
+0.000e+00`, `max |rv_old − rv_new| = 0.000e+00`. Two reviewers reproduced it
+independently.
+
+**Test triple:** `pytest tests/ -q`, run 2026-07-26 on this Jetson:
+**3484 passed, 3 xfailed in 1371.51s (0:22:51)** — +55 against the 3429/3
+baseline at `9f35a66`, and the xfail count is unchanged (no test weakened).
+
+**Deferred to the operator:** nothing from Phase 1 alone; see Phase 2.
+
 ### Phase 2 — Migrate every ingest path
 
 1. Route `_pose_from_msg` through the helper, so `go_to_pose` and `timed_target`
@@ -847,10 +982,88 @@ possibly a new `tests/ros/test_levelling_frame.py`; plus, for step 6,
 **Gate:** `pytest tests/ -q` green; grep confirms **zero** remaining ad-hoc
 applications, method definitions and sign-convention constructions (the first three
 rows of the Phase-0 grep table, target 0/0/0), and the `_gravity_correction`
-attribute row reaches its target of **2** — one stored `R` per node. The headline
-sum of 13 is a category sum and never reaches zero; do not gate on it.
+attribute row reaches its target of **2 assignment sites** — one stored `R` per
+node. The headline sum of 13 is a category sum and never reaches zero; do not gate
+on it.
+
+> **Gate wording corrected 2026-07-26 (the target was never a reference count).**
+> The row is met exactly as *intent*: `trajectory_node.py:315`/`:1273` and
+> `mpc_bridge_node.py:81`/`:149` are the only assignments, so there is one stored
+> `R` per node. The literal `self._gravity_correction` **reference** count is
+> **9** — the four assignments plus five explicit pass-throughs, one per
+> enumerated ingest (trajectory_node `:1251` E1, `:1295` E5/E6, `:1652` E3/E4,
+> `:2041` E2; mpc_bridge_node `:184` B1). A literal 2 is unreachable under *any*
+> design that keeps the shared implementation a free function in a ROS-free
+> module: the caller has to hand it the stored `R`. The only way to hit a literal
+> 2 is a per-node bound method that owns the matrix — which is precisely the
+> duplicate this phase deletes and which C-LEVEL-1 forbids. Gate on the assignment
+> count; a reader who gates on the reference count will "fix" it backwards.
 **Deployment:** `ros_ws` change ⇒ `colcon build --packages-select jugglebot` +
 **relaunch** (the launch runs the installed copy).
+
+#### Phase 2 — Outcome (2026-07-26)
+
+**DONE, commit `SHA_PLACEHOLDER`**. Logbook:
+`logbook/2026-07-26-levelling-frame-contract.md`.
+
+All six external ingest surfaces plus `mpc_bridge_node`'s B1 now route through
+`motion/levelling.py`; the verbatim second copy of the transform is deleted. The
+grep gate is met per row: applications **0**, method definitions **0**,
+sign-convention constructions outside `motion/levelling.py` **0**, stored `R`
+**2 assignment sites per the corrected wording above**. E5/E6 go through a new
+`_corrected_neutral_pose()` that corrects the stored neutral **at use** —
+correcting it at construction would double-apply the moment a new
+`/gravity_offset` arrives, and the operator levels *after* launch.
+
+The real deliverable is the structural bypass guard: two AST manifests (planner
+entries keyed on **pose-bearing arguments**, plural; `levelling` call sites) with
+**discovered** file sets, plus an attribute-access-only import guard and a frozen
+writer set for `self._follower_target`. Mutation-verified against six seeded
+regressions, each reverted, including the three no behavioural test can reach —
+`hold_after=False, neutral_pose=…` added to an existing `_plan_and_install_catch`
+call (the "seventh ingest inside an existing call"), a new ingest that writes
+`self._follower_target` without any tracked call, and a `from
+jugglebot.motion.levelling import correct_pose` that silently un-instruments both
+the AST manifests and the behavioural counting fixture.
+
+**Test triple:** `pytest tests/ -q`, run 2026-07-26 on this Jetson:
+**3484 passed, 3 xfailed in 1371.51s (0:22:51)**. Baseline at `9f35a66` was
+3429 passed, 3 xfailed; the +55 is exactly the cases this phase adds (37 in
+`tests/ros/test_levelling_frame.py`, 12 in `tests/motion/test_levelling.py`, 6 in
+`tests/motion/test_levelling_probe.py`). xfail count unchanged — no test was
+weakened, skipped or deleted, and `git status --porcelain` shows zero modified
+pre-existing `tests/**/*.py`.
+
+**Deferred to the operator — two items, both escalated with numbers, neither
+fixed:**
+
+1. **`planner.build_catch` aims its tilt-through-seat residual off the plan-frame
+   tilt.** With a correction loaded a gravity-level catch settles **0.3008° off
+   gravity-level at ball contact** (closed form −1.078408° rx / −0.095775° ry;
+   the reference bag recorded −1.0784 / −0.0958; the committed probe measures the
+   settle plateau at −1.0775°, err 0.0009°). That is the 16 mm catch error. It is
+   **pre-existing** — `catch/dynamic_target` was already corrected before
+   2026-07-25 — and the fix is a genuine design fork with different ball-seating
+   consequences per branch: (a) pass the gravity-referenced receive tilt to
+   `build_catch` separately, (b) pre-subtract the overshoot, (c) suppress the
+   through-seat when the gravity-referenced tilt is ~0, (d) accept it. Not taken,
+   because it changes commanded motion at ball contact on every catch including
+   the shipping reload path. Pinned as
+   `test_catch_through_seat_still_aims_off_the_plan_frame_tilt`.
+2. **The same reach shaping keeps the visible pre-throw swing** — see the second
+   CORRECTED note in § Context. `≈+2.92°` at a 3.70 s lead, post-fix, and that is
+   *correct behaviour*. The operator pre-brief in
+   `tests/hardware/session_anomaly_fixes.md` § Section LVL says so explicitly, in
+   item 3, because a sitting scored against "the tilt should be gone" would fail a
+   working fix.
+
+**Deployment for the operator:** `cd ~/Desktop/Jugglebot/ros_ws && colcon build
+--packages-select jugglebot && source install/setup.bash`, then **relaunch**
+`jugglebot_launch.py`. No firmware flash, no interface build, no config
+regeneration. `/gravity_offset` is VOLATILE with one latched publish per
+orchestrator boot, so the relaunch itself reverts the correction to identity while
+`RobotState.levelling_complete` still reads True — a manual `level` after the
+relaunch is **mandatory** (Phase 3 owns the structural closure).
 
 ### Phase 3 — `REJECTED_NOT_LEVELLED` gate in toss CHECKING
 
@@ -913,15 +1126,41 @@ Sequence: launch → `level` → activate → trajectory → load a ball → one
 `tests/hardware/toss_trace_recorder.py record` running and the launch rosbag
 enabled.
 
+**The criteria below were REVISED by Phase 2's implementation** — two of the
+original four were unreachable for a reason orthogonal to this plan (§ Context,
+the CORRECTED note). The executable version, with commands, lives in
+`tests/hardware/session_anomaly_fixes.md` § Section LVL; this is the summary.
+
 **PASS:**
-- Commanded `rx` (FK of `/leg_setpoint_echo`) flat to **±0.05°** across the whole
-  goal — i.e. matching the un-levelled 15:04 baseline, which is the frames-agree
-  case.
-- Mocap `Platform` total tilt stays within ±0.1° of its pre-goal value.
-- Tracker catch error **< 10 mm** (predicted ~0; today's measured 16 mm is the
-  number to beat). Judge the catch by eye as well — tracker verdicts still read
-  MISSED on real catches (see the Phase-7 reload arc).
-- A toss commanded before `level` returns `REJECTED_NOT_LEVELLED`.
+- The **park plateau** — commanded `rx`/`ry` (FK of `/leg_setpoint_echo`) where
+  the platform rests between goals — within **±0.05°** of `(−tilt_x, −tilt_y)`
+  on both axes. Verdict command: `tools/probes/levelling_tilt_bag_check.py
+  --offset <TILT_X> <TILT_Y>`. This replaces *"flat to ±0.05° across the whole
+  goal"*, which cannot be met while `build_catch` aims its through-seat residual
+  off the plan-frame tilt. A park at ≈0° is the pre-fix frame; a park at
+  ≈**−1.5576°** is double application (the mirror bug).
+- The first `go_home` after `level` moves the worst leg **2.77 ± 0.30 mm**
+  (`0.0391 ± 0.0042` rev), smoothly, with no pump reject and no guard latch.
+- Mocap `Platform` total tilt while parked is within **±0.10° of LEVEL** — it must
+  *not* track the commanded −0.78°, because that is the whole point. A physical
+  0.78° tilt while parked means the correction's sign is inverted ⇒ stop.
+- A toss commanded before `level` returns `REJECTED_NOT_LEVELLED` — **Phase 3
+  only; do not score it against Phases 1–2.**
+
+**REPORT, do not gate:**
+- Tracker catch error. **Expect ≈16 mm, unchanged** — the original `< 10 mm`
+  target assumed this plan closed the 0.30° through-seat residual, which it does
+  not. Judge the catch by eye as well; tracker verdicts still read MISSED on real
+  catches (see the Phase-7 reload arc).
+- Peak commanded `rx` above the park. **Never a gate — the earlier "at or above
+  +3.099° ⇒ ABORT" line is retired.** Post-fix this equals the platform's
+  physical peak tilt against gravity and equals `0.789132° × (catch lead in s)`
+  exactly, so any fixed threshold on it is really a threshold on the catch lead:
+  the +3.099° line fires on a healthy system at any lead ≥ 3.93 s and sat only
+  0.18° from firing at the 3.70 s lead the reference session ran. Like-for-like
+  in the gravity frame: pre-fix **+3.0992°**, healthy post-fix **+2.9198°** at
+  that lead. Cross-check the probe's `implied lead` against the toss's actual
+  catch lead (±10 %) instead; the pre-fix bag reads 2.94 s against a true 3.70 s.
 
 **ABORT:** any platform motion beyond the null pre-position other than the
 expected none; any tilt exceeding 1°; E-STOP.
@@ -937,7 +1176,9 @@ them in one sitting but score them separately.
 | unit | `tests/motion/test_levelling.py` — sign, order, round-trip, pinned worked example |
 | unit | negative half: derived-pose surfaces are not re-corrected |
 | structural | bypass test — external-ingest set == helper call-site set |
-| integration (mocked ROS) | non-identity correction ⇒ `go_to_pose(identity)` then `catch/dynamic_target(identity)` at the same xyz ⇒ degenerate catch plan |
+| integration (mocked ROS) | non-identity correction ⇒ `go_to_pose(identity)` then `catch/dynamic_target(identity)` at the same xyz ⇒ the catch reach's **net tilt displacement is zero**. NOT "a degenerate catch plan": `build_catch`'s specified arrival twist keeps the reach non-degenerate whatever the frame, so a degeneracy assertion would have had to be weakened later |
+| integration (mocked ROS) | the same reach **sampled across the plan**, not only at its endpoints — the excursion is the arrival twist alone, `0.789132°` per second of lead, peaking at `s = 2/3` |
+| instrument | the verdict probe reads BOTH shapes: post-fix PASS, pre-fix FAIL, ACTIVATE-contaminated FAIL-with-note (`tests/motion/test_levelling_probe.py`, `--self-check`) |
 | integration (mocked ROS) | `REJECTED_NOT_LEVELLED` fires; and does **not** fire when only the persisted push has run |
 | hardware | Phase 4 |
 
@@ -971,13 +1212,32 @@ so its wiring wants a real-ordering check (the existing
   `[-1.42, +2.74, +2.77, -0.98, -1.35, -1.75] mm` (worst leg **2.7736 mm =
   0.03908 rev**). The first `go_home` after `level` therefore produces a small real
   motion where today it is a genuine no-op — expect movement, not a fault.
+- The **other** thing to tell the operator, and the one that would otherwise read
+  as "the fix did nothing": the pre-throw tilt swing they reported is **still
+  there** after this plan, at roughly its original size. See the second CORRECTED
+  note in § Context and pre-brief item 3 in
+  `tests/hardware/session_anomaly_fixes.md` § Section LVL.
 - The residual amplification question — why the excursion overshot to +2.32° and
   settled at 1.385× the single correction rather than ramping cleanly to
-  −0.7788° — is **not** in scope here and this plan's correctness does not depend
-  on it. The reload's real 11.08° BB pre-tilt was verified clean (monotonic, no
-  overshoot) in the same session, so the amplification is specific to the
-  near-degenerate case, which this plan removes. It is tracked in
-  `plans/active/catch-reach-degenerate-overshoot.md`.
+  −0.7788° — was **not** in scope here, and this plan's correctness does not
+  depend on it. **Phase 2's implementation answered the settle half of it
+  anyway** (§ Context, the CORRECTED note): the 1.385× is exactly
+  `(tmag + 0.5·rate·decay)/tmag = 1.38473`, i.e. `build_catch`'s tilt-through-seat
+  overshoot, and the settle is `−1.078408°` in closed form against the bag's
+  `−1.0784°`. The **swing** half (+2.32°) is the quintic reach acquiring that
+  arrival rate, and the finalize pass established that it is **not** this plan's
+  either (§ Context, the second CORRECTED note): it is `(16/81)·rate·|tdir_x|·lead`
+  = `0.789132°` per second of catch lead, present with or without a frame
+  mismatch, and independent of the correction's magnitude. This plan takes it from
+  `+3.0992°` to `+2.9198°` against gravity at the reference session's 3.70 s lead
+  — 0.18° of 2.9°. The reload's real 11.08° BB pre-tilt was verified clean
+  (monotonic, no overshoot) in the same session.
+  **`plans/active/catch-reach-degenerate-overshoot.md` now owns the swing**, and
+  should re-read its reproduction against two facts: the arrival twist
+  `build_catch` injects is a *specified* part of the reach's boundary conditions,
+  not an artefact; and its own "degenerate reach" case is what a post-Phase-2 toss
+  reach actually is (zero net tilt displacement, non-zero arrival twist), so the
+  excursion it studies survives this plan intact rather than disappearing with it.
 - Every number quoted in § Phase 0 — Outcome is re-derivable from the text without
   the probe: apply the session offset `[0.013592347421588673,
   0.001207157476773584]` rad through `motion.ik_solver.rotvec_to_rot_matrix` /

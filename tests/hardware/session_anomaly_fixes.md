@@ -353,3 +353,306 @@ the expected inert shape for a reload and it must stay that way (Phase 1 step 4)
 The eighth `jugglebot` toss in `15-17-48` (ball 14, `ABORTED_NO_RELEASE`) reports
 `no-throw-stroke(!)` with **no** `catch_desc` at all; that is the dispatch-eaten
 case, not a regression.
+
+---
+
+## Section LVL — `levelling-frame-contract` Phases 1–2 (one levelling frame)
+
+**Plan**: `plans/active/levelling-frame-contract.md` § Phases 1–2
+**Contract**: `ros_ws/docs/levelling_frame.md` (**C-LEVEL-1**)
+**What landed**: `trajectory_node` applied the gravity-levelling correction on
+two of its six external pose-ingest surfaces and not the other four, so *"level"
+meant two different things inside one node*. The toss's positioning
+`go_to_pose` parked the platform at plan-frame `rx = 0` while the pre-tilt
+`catch/dynamic_target` asked for plan-frame `rx = −0.7788°`, and `build_catch`
+planned a min-jerk reach between the two frames. So on 2026-07-25 15:17:48 the
+platform **rested 0.78° off gravity** and the two surfaces disagreed about where
+level was. All six surfaces now pass through one shared `motion/levelling.py`, and
+`mpc_bridge_node`'s verbatim second copy of the transform is deleted.
+
+**What did NOT land**: the *visible* pre-throw tilt swing. That is `build_catch`'s
+arrival twist, it survives this fix at roughly its original size, and pre-brief
+item 3 below is the one thing to read before scoring anything here.
+
+**Build needs**: **colcon + relaunch** (`trajectory_node.py`,
+`mpc_bridge_node.py`, `motion/levelling.py`, `motion/trajectory/planner.py`
+changed). **No firmware flash. No interface change** — `colcon build
+--packages-select jugglebot` is enough.
+
+> ### ⚠ OPERATOR PRE-BRIEF — read before the first post-fix launch
+>
+> Three things are **correct** and will look like faults if you are not
+> expecting them. **Read #3 first — it is the one that would otherwise read as
+> "the fix did nothing".**
+>
+> 1. **After `level`, the resting platform sits ~0.78° off its own frame.** It is
+>    now level with respect to **gravity** at all times — at rest, at `go_home`,
+>    between goals. Total tilt for the 2026-07-25 offset: **0.78185°**
+>    (`rx −0.77878°`, `ry −0.06917°`). This is the fix working. Do not report it
+>    as a new tilt fault.
+> 2. **The first `go_home` after a `level` is a real move, not a no-op.**
+>    ACTIVATE parks the legs at the IK of the *uncorrected* neutral, so `go_home`
+>    to the corrected neutral walks the legs by
+>    `[-1.42, +2.74, +2.77, -0.98, -1.35, -1.75] mm` — worst leg **2.7736 mm =
+>    0.03908 rev** over the 2.0 s profile. That is 13 % of the pump's 0.3 rev
+>    step gate as a whole-move excursion, 3.9 % of the firmware's 1.0 rev
+>    MAX_DEVIATION band, and 322× the 8.6 µm leg encoder dead-band — so it IS
+>    visible in `/leg_setpoint_echo`, which is exactly what makes CHECK LVL-2
+>    measurable. Peak leg velocity **2.60 mm/s**; per-knot |Δu0| **9.2e-4 rev**.
+>    Two hardware runbooks still describe this teardown `go_home` as "a genuine
+>    no-op" (`session_phase1_hold.md`, `mvp_bench_runbook.md`) — they are
+>    annotated, but if you are working from memory, expect the small move.
+> 3. **THE PRE-THROW TILT SWING IS STILL THERE. This fix does not remove it.**
+>    You will still see the platform "slowly tilt back, then forward" before every
+>    toss, and it will be roughly the same size as on 2026-07-25 — about
+>    **+2.9°** at the ~3.7 s catch lead that session ran. That is **not** a
+>    failure of this fix and **not** a reason to abort.
+>
+>    Why: `build_catch` specifies a non-zero *arrival twist* on its reach, so even
+>    a reach that starts and ends at the same tilt has to swing out and come back.
+>    The excursion is `(16/81) × 0.07 rad/s × |tdir_x| × lead` — for this offset
+>    direction **0.789132° per second of catch lead**, exactly linear, and
+>    **independent of how well the machine is levelled**.
+>
+>    What this fix actually changes is where the swing starts *from*. Pre-fix the
+>    platform rested 0.7788° off gravity and peaked at **+3.0992°** against
+>    gravity; post-fix it rests at **0°** and peaks at **+2.9198°**. A 0.18°
+>    improvement in a 2.9° swing — plus the thing that actually mattered, a park
+>    that is finally gravity-level and two ingest surfaces that finally agree.
+>
+>    Removing the swing is `plans/active/catch-reach-degenerate-overshoot.md`.
+>
+> ### ⚠ AND ONE THING THIS FIX DOES **NOT** CLOSE — the criteria below are revised
+>
+> The plan's Phase 4 predicted commanded `rx` **flat to ±0.05° across the whole
+> goal** and a catch error **< 10 mm**. **Neither is reachable by this fix**, and
+> the implementing session established why in closed form and confirmed it
+> against the 2026-07-25 bag to **0.0009°**:
+>
+> `planner.build_catch` reads `catch_pose[3:5]` as "the receive tilt" and ramps a
+> tilt-through-seat residual along it. That premise holds only while the
+> commanded frame **is** the gravity frame. With a correction loaded, a
+> *gravity-level* catch arrives as a non-zero plan-frame tilt — the correction
+> itself — so the through-seat always engages and settles the platform
+> `0.5 × 0.07 rad/s × 0.15 s = 0.005250 rad = ` **0.3008° off gravity-level, at
+> ball contact**, in the correction's own direction. Closed form for the
+> 2026-07-25 offset: **−1.078408° rx / −0.095775° ry**, against that bag's
+> recorded **−1.0784 / −0.0958**. The un-levelled 15:04:35 baseline reads flat
+> for the mirror reason: with no correction the level catch target has
+> `tmag == 0`, which disables the through-seat entirely — so "match the
+> un-levelled baseline" was never an achievable target once a correction is
+> loaded.
+>
+> **Consequence**: the 0.3008° residual ⇒ **~16.5 mm** of lateral drift at
+> 3.93 m/s over 0.8 s, which is the 16 mm catch error already measured. Expect
+> the catch error to stay ≈16 mm after this fix. Closing it needs a change to
+> `build_catch`'s through-seat aim, which alters commanded motion at ball
+> contact on every catch including the shipping reload path — **an operator
+> decision, deliberately not taken by the implementing session.**
+>
+> The *same* `build_catch` reach shaping also keeps the **visible pre-throw
+> swing** — pre-brief item 3 above. Two consequences of one planner premise; both
+> outside C-LEVEL-1.
+
+### Pre-flight LVL-0 — confirm the freshly-built code is live
+
+```bash
+grep -q "levelling.correct_pose" \
+  ~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/trajectory_node.py \
+  && echo INSTALLED_OK || echo INSTALLED_STALE
+grep -c "_apply_gravity_correction" \
+  ~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/mpc_bridge_node.py
+```
+
+- **PASS**: prints `INSTALLED_OK`, then `0`.
+- **ABORT**: `INSTALLED_STALE`, or a non-zero count on the second command — the
+  *installed* copy predates the migration and every check below would score the
+  old code. Rebuild and relaunch.
+
+Then prove the **verdict instrument** itself still reads both shapes (read-only,
+no robot, ~3 s):
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+python tools/probes/levelling_tilt_bag_check.py --self-check
+```
+
+- **PASS**: `SELF-CHECK: PASS` — it scores a synthetic post-fix session PASS, a
+  synthetic pre-fix session FAIL, and an ACTIVATE-contaminated session FAIL with
+  the ambiguity note. Exit 0.
+- **ABORT**: anything else. An instrument validated only against the *broken*
+  shape will score a working fix as a failure and burn the sitting.
+
+### CHECK LVL-1 — the `level` itself, and what got stored
+
+Validates: that a correction actually reached `trajectory_node`. **Do this
+first — every check below is vacuous without it**, and `/gravity_offset` is
+published VOLATILE with one latched auto-push per orchestrator boot, so a
+`trajectory_node` that restarted after the `level` holds an identity correction
+while `RobotState.levelling_complete` still reads True (contract § Known hazard;
+`levelling-frame-contract` Phase 3 owns the closure).
+
+Run the normal `level` routine, then:
+
+```bash
+ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "Gravity offset published"
+ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "gravity correction set"
+```
+
+- **PASS**: both lines present, **after** the most recent launch, and the two
+  `[tilt_x, tilt_y]` values are identical. Record them — CHECK LVL-3 needs them.
+- **ABORT**: the orchestrator line appears but `trajectory_node`'s does not. The
+  correction never landed in the node that applies it; nothing below is
+  meaningful. Re-`level` after confirming `trajectory_node` is up.
+- **ABORT**: no `gravity correction set` line at all **after the last relaunch**
+  (a stale one from a previous launch does not count) — this is precisely the
+  Phase-3 hazard, and it silently reverts the platform to the pre-fix frame.
+
+### CHECK LVL-2 — the first `go_home` after `level` is a real, smooth, small move
+
+Validates: Phases 1–2 ingest E5 (`go_home` targets the *corrected* neutral) and
+the operator pre-brief above. Do this **before** loading a ball.
+
+`level` → activate → TRAJECTORY → `trajectory/go_home`, with the § Recording bag
+running.
+
+```bash
+ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "returning to neutral"
+ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "peak_leg_vel_mmps\|move_seq"
+```
+
+- **PASS**: the platform makes a small, smooth, single move; `/leg_setpoint_echo`
+  shows a worst-leg excursion of **2.77 ± 0.30 mm** (`0.0391 ± 0.0042 rev`) and
+  the realized peak leg velocity on `/trajectory/diagnostics` is
+  **2.60 ± 0.50 mm/s**. No pump rejection, no guard latch.
+- **PASS (equivalent)**: if `level` reported a **zero** offset, this move is a
+  genuine no-op — a legitimately level machine has nothing to correct. Record
+  which case applied.
+- **ABORT**: any leg moves **> 5 mm**, any step rejection in the bridge log, any
+  `MAX_DEVIATION` or guard E-STOP. The correction magnitude is bounded by the
+  offset; a large move means the correction is being applied more than once.
+- **REPORT, do not abort**: the move is *visible but smaller than 2.4 mm*. The
+  numbers above are for the 2026-07-25 offset (`0.013592, 0.001207 rad`); a
+  different offset scales them roughly linearly. Scale before scoring.
+
+### CHECK LVL-3 — the frames agree across a toss goal (**the headline check**)
+
+Validates: Phases 1–2, the whole contract. **This is the analysis command that
+turns the capture into a verdict.**
+
+Run **one** toss with the § Recording bag enabled and
+`tests/hardware/toss_trace_recorder.py record` running (see § Section HAND for
+the recorder invocation — one capture scores both sections).
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+python tools/probes/levelling_tilt_bag_check.py \
+  --offset <TILT_X> <TILT_Y> --t0 <AFTER_THE_LVL-2_GO_HOME> --json
+```
+
+(`<TILT_X> <TILT_Y>` are the **radians** from CHECK LVL-1's log line. Defaults to
+the newest bag under `~/Desktop/rosbags`; add `--bag <dir>` to pick one. ~5 s for
+a 35 s window, ~2 min for a whole session.)
+
+**`--t0` is not optional here.** Between ACTIVATE and the first `go_home` the node
+holds at the FK of the *uncorrected* activate pose — commanded `rx ≈ 0`, which is
+**correct** (a seed is never corrected: C-LEVEL-1's second half). If that idle
+out-lasts the time actually parked at the corrected neutral — trivially easy while
+you read this and fetch a ball — it wins the "longest plateau" vote and a perfectly
+healthy session reads `park_rx ≈ 0`, i.e. exactly like the pre-fix frame. Set
+`--t0` to a few seconds after the LVL-2 `go_home` and the ambiguity is gone. (The
+probe prints a `NOTE:` when it detects this shape, but do not rely on it.)
+
+- **PASS**: banner reads `VERDICT: PASS` — the **park** plateau (the longest one,
+  where the platform rests between goals) is within **±0.05°** of
+  `(−tilt_x, −tilt_y)` in degrees, on **both** axes. Exit code 0. **This is the
+  only gated quantity in this check.**
+- **ABORT**: `VERDICT: FAIL` with `park_rx ≈ 0.0000°` **and no `NOTE:` line**.
+  That is the pre-fix frame — the installed code is not the migrated code (re-run
+  LVL-0) or the correction never loaded (re-run LVL-1). If a `NOTE:` line IS
+  printed, re-run with a later `--t0` before concluding anything.
+- **ABORT**: `park_rx` outside ±0.05° in any *other* way — e.g. ≈ **−1.5576°**,
+  which is exactly **twice** the correction and means the correction is being
+  applied twice (the mirror bug: a derived/FK-seeded pose routed through the
+  correction).
+- **REPORT, never gate**: `peak_above_park`. Post-fix this equals the platform's
+  **physical peak tilt against gravity**, and it is *larger* than the pre-fix
+  reading of the same name — pre-fix the park itself sat 0.7788° high, so
+  subtracting it hid part of the swing. Like-for-like, in the gravity frame: the
+  reference session peaked at **+3.0992°**, and a healthy post-fix session at the
+  same 3.70 s catch lead reads **+2.9198°**.
+
+  There is **no threshold** on this number, and the earlier "at or above +3.099°
+  ⇒ ABORT" line is **retired**: `peak_above_park = 0.789132° × (catch lead in s)`
+  exactly, so any fixed threshold is really a threshold on the lead. That one
+  would have fired on a perfectly healthy system at any lead ≥ 3.93 s and sat only
+  0.18° away at the lead the reference session ran.
+
+  What to read instead: the probe prints `implied lead`, the catch lead the
+  arrival-twist model infers from the peak. On a healthy post-fix session the model
+  is exact, so this recovers the toss's real catch lead — expect **≈3.7 s** for the
+  same toss geometry the reference session ran, and cross-check it against the
+  reach lead you can read off the probe's own plateau table (the gap between the
+  park plateau ending and the settle plateau starting, which under-reads the true
+  lead by ~0.2–0.4 s because plateau edges are detected with a 0.02° band). A
+  *materially short* implied lead is the pre-fix signature: that bag reads **2.94 s
+  against a true 3.70 s**, because a frames-disagree reach carries an extra
+  `−0.7788·h(s)` term the model does not know about. This is corroboration, not a
+  gate — the park plateau is the gate.
+- **REPORT, do not gate**: `settle_rx`, expected at
+  `park_rx × (1 + 0.005250/|offset|)` = **−1.0784°** for the 2026-07-25 offset.
+  This is the through-seat overshoot described in the pre-brief. It is **not**
+  closed by this fix, and a `settle_err` near zero confirms the model rather
+  than indicating a fault.
+
+**Do NOT score this section against "commanded `rx` flat to ±0.05° across the
+whole goal".** That criterion, as written in the plan's Phase 4, cannot be met
+while `build_catch` aims its through-seat residual off the plan-frame tilt — see
+the pre-brief. The park-plateau criterion above replaces it and measures the same
+thing (do the positioning and catch surfaces agree on what "level" means)
+without depending on a defect this plan does not own.
+
+### CHECK LVL-4 — mocap cross-check: the platform is physically level
+
+Validates: Phases 1–2 against an instrument that does **not** share the FK path.
+
+From the same bag, read `/rigid_body_poses` for the `Platform` body.
+
+- **PASS**: between goals (during the park plateau LVL-3 identified), the
+  Platform's total tilt against the `Base` frame is within **±0.10°** of level —
+  i.e. it does **not** track the commanded `−0.78°`, because the correction's
+  whole purpose is that a commanded `−0.78°` *is* physically level.
+- **ABORT**: the platform is physically tilted by ~0.78° while parked. That
+  inverts the sign of the correction: `correction_from_offset` negates the
+  measured error, and a physical tilt of the same magnitude means it is being
+  **added** instead. Stop the sitting.
+- **REPORT**: the Platform tilt during the catch settle, expected **0.30°** off
+  level (the through-seat overshoot).
+- **REPORT**: the Platform's peak tilt during the catch reach, expected
+  **≈2.92°** off level at a 3.70 s catch lead (`0.789132° × lead`). This is the
+  mocap-side confirmation of pre-brief item 3 — the swing is still there, and it
+  is *smaller* than the pre-fix `+3.0992°` by exactly the correction's
+  contribution at the peak. Not a gate.
+
+### CHECK LVL-5 — catch error (expectation-setting, not a gate this round)
+
+Validates: nothing this plan closes — recorded so the number is on file for the
+`build_catch` through-seat decision.
+
+- **REPORT**: the tracker-measured catch error. **Expect ≈16 mm, unchanged.**
+  The plan's `< 10 mm` target is not reachable by this fix (see the pre-brief);
+  the 16 mm is the 0.3008° through-seat residual, not the frame plumbing.
+- **REPORT**: judge the catch **by eye** as well — tracker verdicts still read
+  MISSED on real catches (the Phase-7 reload arc).
+- **A catch error materially *below* 16 mm would be a surprise** and is worth
+  capturing carefully: it would mean the through-seat model is not the dominant
+  term after all.
+
+### Not in this section
+
+- **`REJECTED_NOT_LEVELLED`** is `levelling-frame-contract` **Phase 3** and has
+  not landed. A toss commanded before `level` is still accepted today; do not
+  score it.
+- The **hand dip** is `hand-command-continuity` (§ Section HAND). If both have
+  landed, validate them in one sitting but score them separately.

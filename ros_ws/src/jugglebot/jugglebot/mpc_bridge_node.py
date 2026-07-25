@@ -16,8 +16,13 @@ ROS2 → ZMQ (:5558):
 
 No motion planning is done here — this node is a pure translator.  The
 gravity offset (from levelling) is composed into every outgoing target's
-orientation via rotation-matrix multiplication so the MPC sees corrected
-references transparently.
+orientation so the MPC sees corrected references transparently.  That
+transform is **not** implemented here: it lives in
+``jugglebot.motion.levelling`` and is shared with ``trajectory_node`` under
+contract C-LEVEL-1 (``ros_ws/docs/levelling_frame.md``).  Until 2026-07-25
+this node carried a verbatim second copy of it; two implementations of a
+normative transform is how a contract drifts, and the composition is not
+commutative, so a re-derived copy is a silent frame error.
 """
 
 from __future__ import annotations
@@ -34,10 +39,10 @@ from jugglebot.motion.ipc import (
     make_mpc_target,
     make_mpc_mode,
 )
+from jugglebot.motion import levelling
 from jugglebot.motion.ik_solver import (
     quat_to_rot_matrix,
     rot_matrix_to_rotvec,
-    rotvec_to_rot_matrix,
 )
 
 
@@ -71,8 +76,9 @@ class MpcBridgeNode(Node):
 
         # Gravity correction rotation matrix (identity = no correction).
         # Set by the orchestrator after levelling.  Applied to every
-        # outgoing target orientation via rotation-matrix composition.
-        self._gravity_correction: np.ndarray = np.eye(3)
+        # outgoing target orientation (C-LEVEL-1 ingest B1) — this node has
+        # exactly one pose surface, so B1 is the whole enumeration here.
+        self._gravity_correction: np.ndarray = levelling.identity_correction()
 
         # ── ROS2 subscriptions ────────────────────────────────────
 
@@ -135,25 +141,15 @@ class MpcBridgeNode(Node):
         """Store the gravity correction from levelling.
 
         The orchestrator publishes [tilt_x, tilt_y] in radians — the
-        measured tilt error.  The correction is the inverse rotation
-        (negate the angles) so that commanding "zero tilt" actually
-        counter-tilts the platform to true level.
+        measured tilt error.  The sign convention that turns it into the
+        counter-tilting correction lives in ``motion/levelling.py``
+        (C-LEVEL-1's single shared implementation).
         """
         tilt_x, tilt_y = msg.data[0], msg.data[1]
-        correction_rotvec = np.array([-tilt_x, -tilt_y, 0.0])
-        self._gravity_correction = rotvec_to_rot_matrix(correction_rotvec)
+        self._gravity_correction = levelling.correction_from_offset(
+            tilt_x, tilt_y)
         self.get_logger().info(
             f"Gravity correction set: tilt=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
-
-    def _apply_gravity_correction(self, rotvec: list) -> list:
-        """Compose gravity correction into a target rotation vector.
-
-        Returns the corrected rotation vector: R_corrected = R_gravity @ R_target.
-        """
-        R_target = rotvec_to_rot_matrix(np.array(rotvec))
-        R_corrected = self._gravity_correction @ R_target
-        rv = rot_matrix_to_rotvec(R_corrected)
-        return [float(rv[0]), float(rv[1]), float(rv[2])]
 
     # ------------------------------------------------------------------
     # Target forwarding
@@ -179,10 +175,14 @@ class MpcBridgeNode(Node):
 
         # Quaternion (w, x, y, z) → rotation vector [rx, ry, rz]
         rotvec = _quat_msg_to_rotvec(ori.w, ori.x, ori.y, ori.z)
-        rotvec = self._apply_gravity_correction(rotvec)
 
-        target_pose = [pos.x, pos.y, pos.z,
-                       rotvec[0], rotvec[1], rotvec[2]]
+        # C-LEVEL-1 ingest B1: a wire target is EXTERNAL ⇒ corrected exactly once,
+        # rotation only.  Rebuilt as plain floats because the ZMQ payload is
+        # msgpack-serialised (a numpy scalar would not encode).
+        corrected = levelling.correct_pose(
+            [pos.x, pos.y, pos.z, rotvec[0], rotvec[1], rotvec[2]],
+            self._gravity_correction)
+        target_pose = [float(v) for v in corrected]
 
         # Spacemouse/GUI targets: arrive ASAP, hold at target
         self._ipc.send_target(make_mpc_target(

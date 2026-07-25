@@ -136,10 +136,19 @@ def build_return_to_neutral(state0, neutral_pose, duration_s, limits, geom
                             ) -> TrajectoryPlan:
     """A single profiled quintic from the seed state back to ``neutral_pose``.
 
-    ``neutral_pose`` is the active pose ``(0, 0, 170, 0, 0, 0)``. If the seed is
-    already at ``neutral_pose`` and at rest the segment is degenerate (no motion),
-    so ``trajectory/go_home`` from the held active pose is a genuine no-op.
-    Raises :class:`TrajectoryInfeasible` if the move violates the gate.
+    ``neutral_pose`` is the neutral pose the caller supplies. With a levelling
+    correction loaded that is the **corrected** active pose, not the bare
+    ``(0, 0, 170, 0, 0, 0)`` — ``trajectory_node`` corrects it at use (contract
+    C-LEVEL-1, ``ros_ws/docs/levelling_frame.md``). So ``trajectory/go_home`` from
+    the held active pose is a genuine no-op **only when the correction is
+    identity**; with the 2026-07-25 session offset loaded it is a real ~2.77 mm
+    worst-leg move. Do not reason from "go_home is a no-op" when diagnosing
+    unexplained motion — that inference is what sent the 2026-07-25 self-toss
+    investigation looking in the wrong place.
+
+    If the seed is already at ``neutral_pose`` and at rest the segment is
+    degenerate (no motion). Raises :class:`TrajectoryInfeasible` if the move
+    violates the gate.
     """
     pose, twist, accel = (_as6(state0[0], 'pose'),
                           _as6(state0[1], 'twist'),

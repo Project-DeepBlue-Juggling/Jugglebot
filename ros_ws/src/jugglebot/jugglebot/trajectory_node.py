@@ -98,6 +98,7 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
 )
 from jugglebot.motion.ipc import MpcCommandPub
+from jugglebot.motion import levelling
 from jugglebot.motion.trajectory import (
     HoldPlan,
     KnotEmitter,
@@ -306,9 +307,12 @@ class TrajectoryNode(Node):
         # counts consecutive failed stop builds while latched → the HoldPlan backstop.
         self._escalation_stop = False
         self._escalate_stop_fail_count = 0
-        # Gravity-levelling correction (identity = none), composed into follower
-        # target orientations — ported from mpc_bridge_node.
-        self._gravity_correction = np.eye(3)
+        # Gravity-levelling correction (identity = none). Composed into the
+        # rotation of every EXTERNAL pose at ingest and into no derived pose —
+        # contract C-LEVEL-1, ros_ws/docs/levelling_frame.md. The transform itself
+        # lives in motion/levelling.py (one implementation, two consumers); this
+        # is only the stored value, rewritten by _on_gravity_offset.
+        self._gravity_correction = levelling.identity_correction()
 
         # ── Plan + streaming state (written on ROS + emitter threads) ──
         self._plan_lock = threading.Lock()
@@ -1237,34 +1241,58 @@ class TrajectoryNode(Node):
         p = msg.pose_stamped.pose.position
         q = msg.pose_stamped.pose.orientation
         rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
-        rotvec = self._apply_gravity_correction(rot_matrix_to_rotvec(rot))
-        target = np.array([float(p.x), float(p.y), float(p.z),
-                           rotvec[0], rotvec[1], rotvec[2]])
+        rotvec = rot_matrix_to_rotvec(rot)
+        # C-LEVEL-1 ingest E1: a wire target is EXTERNAL, so the levelling
+        # correction is applied here, exactly once, before the pose reaches the
+        # follower. The emitter thread therefore reads a fully-corrected target.
+        target = levelling.correct_pose(
+            np.array([float(p.x), float(p.y), float(p.z),
+                      rotvec[0], rotvec[1], rotvec[2]]),
+            self._gravity_correction)
         # Atomic single-reference publish (pose, timestamp) — no lock needed; the
         # emitter reads whichever tuple is current.
         self._follower_target = (target, time.perf_counter())
 
     def _on_gravity_offset(self, msg) -> None:
-        """Store the gravity-levelling correction (verbatim port from mpc_bridge).
+        """Store the gravity-levelling correction (C-LEVEL-1's stored ``R``).
 
         The orchestrator publishes ``[tilt_x, tilt_y]`` (rad) — the measured tilt
-        error; the correction is the inverse rotation so commanding "zero tilt"
-        counter-tilts to true level.
+        error; the sign convention that turns it into the counter-tilting
+        correction lives in ``motion/levelling.py``, shared with mpc_bridge_node.
+
+        The correction can change mid-session (the operator levels *after*
+        launch). By C-LEVEL-1's in-flight rule an already-installed plan keeps the
+        frame it was built in — nothing re-reads this value for a live plan — and
+        the next plan install picks the new one up. Re-framing a live plan would
+        step the commanded pose on the wire (2.77 mm on one 25 ms knot for the
+        2026-07-25 offset, which the pump's 0.3 rev gate would not catch).
         """
         if len(msg.data) < 2:
             return
         tilt_x, tilt_y = float(msg.data[0]), float(msg.data[1])
-        self._gravity_correction = rotvec_to_rot_matrix(
-            np.array([-tilt_x, -tilt_y, 0.0]))
+        self._gravity_correction = levelling.correction_from_offset(
+            tilt_x, tilt_y)
         self.get_logger().info(
             f"gravity correction set: tilt=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
 
-    def _apply_gravity_correction(self, rotvec) -> np.ndarray:
-        """Compose the gravity correction into a target rotvec:
-        ``R_corrected = R_gravity @ R_target`` (verbatim port from mpc_bridge)."""
-        R_corrected = self._gravity_correction @ rotvec_to_rot_matrix(
-            np.asarray(rotvec, dtype=float))
-        return rot_matrix_to_rotvec(R_corrected)
+    def _corrected_neutral_pose(self) -> np.ndarray:
+        """The neutral active pose as a TARGET, in the levelled frame (C-LEVEL-1).
+
+        The neutral constant is external (it is built into the node), so it is
+        corrected — but **at use, never at construction**. ``_neutral_pose`` is a
+        stored array read from five places; correcting the stored value would
+        double-apply the moment a new ``/gravity_offset`` arrived, and the offset
+        *does* arrive mid-session.
+
+        Only the two reads that are genuine planner TARGETS come through here
+        (``go_home`` = E5, and ``timed_target(hold_after=False)``'s return target
+        = E6). The other three reads are a pre-seed ``_current_state()`` fallback,
+        the ``_last_pose`` initialiser — both **seeds**, which C-LEVEL-1 forbids
+        correcting — and a response-string format that reads the *position*
+        component. None of them may use this.
+        """
+        return levelling.correct_pose(self._neutral_pose,
+                                      self._gravity_correction)
 
     def _follower_tick(self, now: float) -> bool:
         """One follower replan for wall time ``now``. Returns True iff a new plan
@@ -1555,6 +1583,13 @@ class TrajectoryNode(Node):
         supersede this move within one 40 Hz tick, so a go_home there is a mode
         confusion — exit the follower mode (which installs a graceful stop) instead.
         Mirrors ``go_to_pose``'s WRONG_MODE rationale.
+
+        The target is the neutral pose in the **levelled** frame (C-LEVEL-1 ingest
+        E5, ``_corrected_neutral_pose``). With a correction loaded this is a real
+        move, not a no-op: ACTIVATE parks the legs at the IK of the *uncorrected*
+        neutral, so the first ``go_home`` after a ``level`` walks the worst leg
+        ~2.77 mm (0.039 rev) over the go_home profile. Expected, and visible in
+        ``/leg_setpoint_echo``.
         """
         if self._guard_frozen:                       # FIX 1 — refuse while latched
             response.success = False
@@ -1572,7 +1607,7 @@ class TrajectoryNode(Node):
             return response
         try:
             plan = planner.build_return_to_neutral(
-                self._current_state(), self._neutral_pose,
+                self._current_state(), self._corrected_neutral_pose(),
                 self._go_home_duration_s, self._limits, self._geom)
         except TrajectoryInfeasible as e:
             self._last_rejection = str(e)
@@ -1592,13 +1627,29 @@ class TrajectoryNode(Node):
     # ═══════════════════════════════════════════════════════════
 
     def _pose_from_msg(self, pose_msg) -> np.ndarray:
-        """geometry_msgs/Pose → pose_6dof ``[x, y, z, rx, ry, rz]`` (mm, rad rotvec)."""
+        """geometry_msgs/Pose → pose_6dof ``[x, y, z, rx, ry, rz]`` (mm, rad rotvec).
+
+        **This is the ingest converter for EXTERNAL request poses only** — the
+        ``go_to_pose`` (E3) and ``timed_target`` (E4) service targets — so it
+        applies the C-LEVEL-1 levelling correction to the rotation here, once,
+        before the pose can reach a planner entry. Position passes through
+        untouched.
+
+        Never call this on a *derived* pose (an FK seed, a sampled plan state).
+        Every ROS ``Pose`` reaching this node comes from outside it, which is what
+        makes correcting inside the converter the fail-safe placement: a future
+        external service that reuses it is corrected by construction, and the
+        omission — not double-application — is the failure this contract closes
+        (four of the six ingest surfaces were uncorrected before 2026-07-25).
+        """
         p = pose_msg.position
         q = pose_msg.orientation
         rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
         rotvec = rot_matrix_to_rotvec(rot)
-        return np.array([float(p.x), float(p.y), float(p.z),
-                         float(rotvec[0]), float(rotvec[1]), float(rotvec[2])])
+        return levelling.correct_pose(
+            np.array([float(p.x), float(p.y), float(p.z),
+                      float(rotvec[0]), float(rotvec[1]), float(rotvec[2])]),
+            self._gravity_correction)
 
     def _svc_go_to_pose(self, request, response):
         """``trajectory/go_to_pose``: a profiled point-to-point move (TRAJECTORY mode).
@@ -1977,17 +2028,21 @@ class TrajectoryNode(Node):
         the same frame as the trajectory pose, so it maps through VERBATIM. Hardware-
         verified 2026-07-23; the former "+ active_z" lift here was a double-count that
         drove every catch reach out of stroke. The orientation carries the
-        gravity-levelling correction."""
+        gravity-levelling correction (C-LEVEL-1 ingest E2)."""
         q = msg.target_quat
         rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
-        rotvec = self._apply_gravity_correction(rot_matrix_to_rotvec(rot))
-        target = np.array([
-            float(msg.target_pos.x),
-            float(msg.target_pos.y),
-            float(msg.target_pos.z),
-            rotvec[0], rotvec[1], rotvec[2]])
+        rotvec = rot_matrix_to_rotvec(rot)
+        target = levelling.correct_pose(
+            np.array([
+                float(msg.target_pos.x),
+                float(msg.target_pos.y),
+                float(msg.target_pos.z),
+                rotvec[0], rotvec[1], rotvec[2]]),
+            self._gravity_correction)
         # Linear arrival velocity only (angular arrival rate = 0). Velocity is
-        # frame-offset-invariant, so no z adjustment.
+        # frame-offset-invariant, so no z adjustment — and C-LEVEL-1's last clause
+        # forbids rotating it: the correction is a bias on the commanded ROTATION,
+        # not a re-expression of the platform frame.
         twist = np.array([float(msg.target_vel.x), float(msg.target_vel.y),
                           float(msg.target_vel.z), 0.0, 0.0, 0.0])
         return target, twist
@@ -2218,9 +2273,15 @@ class TrajectoryNode(Node):
         # guard above.
         arrival_perf = time.perf_counter() + lead
         hold_after = bool(request.hold_after)
+        # hold_after=False makes the stored neutral constant a second, independent
+        # EXTERNAL target inside the same planner call (C-LEVEL-1 ingest E6), so it
+        # is corrected at use exactly as go_home's is. Correcting only go_home
+        # would park the reach-out-and-return one-shot at plan-frame rx = 0 while
+        # every other surface parks at gravity-level — the original defect, in a
+        # latent path.
         accepted, code, message, planned, min_s = self._plan_and_install_timed(
             target, twist, arrival_perf, hold_after=hold_after, source='timed',
-            neutral=(None if hold_after else self._neutral_pose))
+            neutral=(None if hold_after else self._corrected_neutral_pose()))
         response.accepted = accepted
         response.code = code
         response.message = (message + self._wire_state_suffix()

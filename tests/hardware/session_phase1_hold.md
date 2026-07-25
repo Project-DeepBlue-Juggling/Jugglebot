@@ -165,13 +165,21 @@ Leave it armed and holding. Watch the probe and `link_status`.
 ## Step 4 — Clean disarm + deactivate + shutdown
 
 ```bash
-ros2 service call /trajectory/go_home std_srvs/srv/Trigger        # no-op from the held active pose
+ros2 service call /trajectory/go_home std_srvs/srv/Trigger        # see the go_home note below
 ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: false}"   # disarm (mpc_active=0)
 # operator: orchestrator deactivate
 ```
 
 **PASS**:
-- `go_home` returns `success: true` (a genuine no-op: hold pose ≈ neutral).
+- `go_home` returns `success: true`. **Whether it moves depends on whether a
+  levelling correction is loaded** (`levelling-frame-contract` Phases 1–2,
+  2026-07-26; contract `ros_ws/docs/levelling_frame.md`): with **no** correction
+  it is a genuine no-op (hold pose ≈ neutral, realized peaks 0.0), and with one
+  loaded `go_home` targets the *corrected* neutral, so the worst leg walks up to
+  **2.7736 mm = 0.03908 rev** over the 2.0 s profile (peak leg velocity
+  ~2.60 mm/s, per-knot |Δu0| 9.2e-4 rev, for the 2026-07-25 offset). Both are a
+  PASS. Every sitting begins with a manual `level`, so **expect the small move**
+  — it is not a fault.
 - Disarm returns `success: true`; `link_status` shows `mpc_active=0`.
 - **The firmware ACCEPTS DEACTIVATE** (it rejects DEACTIVATE while `mpc_active=1`,
   so acceptance proves the flag cleared) — legs profile-stow cleanly.
