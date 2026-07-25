@@ -102,6 +102,15 @@ class HardwarePlant(PlantInterface):
     # controller/PLANT_INTERFACE_CONTRACT.md P2.
     can_reset: bool = False
 
+    #: Absolute FK residual tolerance (mm) for the 40 Hz ``get_state`` solve.
+    #: Named rather than inlined because two invariants are asserted against it
+    #: from outside this module (see the rationale at the call site in
+    #: ``get_state``): it must stay LOOSER than
+    #: ``ik_solver.FK_STALL_CEILING_MM``, which is what makes FK's stagnation
+    #: exit unreachable from the hot loop, and it must stay far below the leg
+    #: encoder dead-band (8.6e-3 mm) to be physically negligible.
+    _FK_TOL_MM: float = 1e-4
+
     def __init__(
         self,
         geom: StewartGeometry | None = None,
@@ -619,19 +628,49 @@ class HardwarePlant(PlantInterface):
         fk_jacobian = None  # Reuse Jacobian from FK for twist solve
         if ik_ext_mm is not None:
             try:
-                # Bound FK to a real-time-friendly iteration budget.  Default
-                # max_iter=50 and tol=1e-10 mm let Newton chase floating-point
-                # noise for ~30 ms before throwing on hard starting guesses
-                # (the 30 ms get_state spikes observed on motion onset).
-                # tol=1e-4 mm is 700× below encoder LSB and still converges
-                # in 3 iters on the common path; max_iter=10 caps the
-                # divergence case at ~6 ms before falling back to the last
-                # measured pose (same fallback semantics as before).
+                # Bound FK to a real-time-friendly iteration budget.  A full
+                # max_iter=50 run costs ~7.4 ms today (147 µs/iteration,
+                # measured 2026-07-25; it was ~30 ms when this cap landed on
+                # 2026-04-19, before the batched-Jacobian work) — the
+                # get_state spikes observed on motion onset.  tol=1e-4 mm is
+                # ~86× tighter than the leg encoder dead-band (8.6e-3 mm
+                # = 1/(enc_cpr · mm_to_rev)) and still converges in ~3 iters
+                # on the common warm-started path; max_iter=10 caps the
+                # divergence case before falling back to the last measured
+                # pose (same fallback semantics as before).
+                #
+                # This explicit tol is ALSO why the 2026-07-25 FK
+                # convergence-criterion change (see ik_solver.py's FK
+                # CONVERGENCE CRITERION block) leaves every converging tick
+                # here bit-for-bit unchanged: 1e-4 mm is 100× looser than the
+                # new stagnation ceiling and ~1e5× looser than the added
+                # relative term, so neither can alter a comparison outcome
+                # (verified over 299 in-envelope poses × 7 warm-guess offsets).
+                # What DID change is the EXHAUSTION path: if the 10th Newton
+                # step is the first to land under 1e-4 mm, FK now returns that
+                # pose where it previously raised.  Such a tick therefore no
+                # longer increments _fk_fail_count toward the
+                # _FK_FAIL_ESTOP_THRESHOLD cascade below, and no longer falls
+                # back to _last_measured_pose — it gets a fresh pose that
+                # satisfies the tolerance this call site asked for.  That is
+                # deliberate (a solve that converged on its last allowed step
+                # is not a failure) but it does make the cascade marginally
+                # less sensitive; a REAL divergence still raises, because its
+                # residual stays orders of magnitude above 1e-4 mm.
+                #
+                # Do NOT drop the explicit tol expecting the new default to be
+                # equivalent — the default acceptance threshold is ~9e-10 mm
+                # and costs more iterations per tick.  Do NOT tighten
+                # _FK_TOL_MM below ik_solver.FK_STALL_CEILING_MM (1e-6 mm)
+                # either: the stagnation exit is only unreachable from here
+                # because this tol is looser than that ceiling.  Both
+                # constraints are pinned by
+                # tests/sim/test_hardware_plant_failure_paths.py.
                 pos_offset, rot_matrix, fk_jacobian = leg_lengths_to_pose(
                     ik_ext_mm, self._geom,
                     initial_guess=self._fk_last_guess,
                     max_iter=10,
-                    tol=1e-4)
+                    tol=self._FK_TOL_MM)
                 rot_vec = rot_matrix_to_rotvec(rot_matrix)
                 # Cache for warm-starting next FK call.
                 # FK returns fresh arrays, so we can store references directly.

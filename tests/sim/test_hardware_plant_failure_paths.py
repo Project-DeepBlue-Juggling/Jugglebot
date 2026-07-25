@@ -270,6 +270,40 @@ class TestFkDivergenceCascade:
     e-stop with ``reason='fk_convergence_failure'``.
     """
 
+    def test_fk_tol_stays_looser_than_the_stagnation_ceiling(self):
+        """The hot-loop FK tolerance must stay LOOSER than
+        ``ik_solver.FK_STALL_CEILING_MM``.
+
+        Not a style check — it is the whole reason FK's stagnation exit is
+        unreachable from this call site.  ``_fk_accepted`` tries the mixed
+        absolute/relative test first and the stagnation exit only below the
+        ceiling, so while ``_FK_TOL_MM`` (1e-4 mm) is looser than the ceiling
+        (1e-6 mm) the mixed test has always already accepted.  Tighten
+        ``_FK_TOL_MM`` past the ceiling — e.g. to 1e-7 mm for finer pose
+        feedback — and the 40 Hz loop could start exiting through a branch
+        sized for round-off convergence, accepting up to 1e-6 mm on a stalled
+        solve when it asked for 1e-7 mm, with nothing in the FK test suite
+        noticing (those tests assert against their own copy of 1e-4).
+
+        Second invariant: the tolerance must stay far below the leg encoder
+        dead-band, so accepting at it can never be a physically meaningful
+        pose error.
+        """
+        from jugglebot.motion.ik_solver import FK_STALL_CEILING_MM
+
+        tol = _hp_mod.HardwarePlant._FK_TOL_MM
+        assert tol > FK_STALL_CEILING_MM, (
+            f"hot-loop FK tol {tol:.1e} mm is no longer looser than the FK "
+            f"stagnation ceiling {FK_STALL_CEILING_MM:.1e} mm — the "
+            f"unreachability argument in ik_solver._fk_accepted is void"
+        )
+        # 8.607e-3 mm = 1 / (enc_cpr * mm_to_rev); 10x margin.
+        assert tol < 8.607e-3 / 10.0, (
+            f"hot-loop FK tol {tol:.1e} mm is within 10x of the leg encoder "
+            f"dead-band — a residual accepted at it is no longer physically "
+            f"negligible"
+        )
+
     def test_t2a_1_single_failure_returns_last_good_pose(self):
         """T-U-T2a-1 — one non-converged FK call.
 

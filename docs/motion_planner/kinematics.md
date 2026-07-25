@@ -138,9 +138,36 @@ Given 6 leg extensions, find the platform pose. This is an iterative solution us
 2. Compute leg lengths at current guess via position IK
 3. Compute the error between target and current leg lengths
 4. Update the guess using the Jacobian: $\Delta\mathbf{x} = \mathbf{J}^{-1} \cdot \Delta\mathbf{q}$
-5. Repeat until error < $10^{-10}$ mm or 50 iterations
+5. Repeat until the residual is accepted, or 50 iterations have been spent
 
 FK is used for validation (IK → FK round-trip tests) and by `HardwarePlant.get_state()` to convert encoder positions to a Cartesian platform pose for MPC feedback.
+
+### Convergence criterion
+
+The residual is $|\mathbf{L}_i| - L_{i,\text{init}}$ — a difference of two
+650–870 mm quantities — so it is a catastrophic-cancellation quantity whose
+achievable floor scales with the **absolute** leg length and with the
+conditioning of the Jacobian solve. A fixed absolute tolerance is therefore not
+reachable everywhere in the workspace. Measured over 765 in-envelope poses
+(2026-07-25): floor $p_{50} = 1.14 \times 10^{-13}$ mm, $\max = 1.53 \times
+10^{-10}$ mm, bounded by $2.01 \, \varepsilon \, L \, \kappa(\mathbf{J})$. A
+wider 13001-pose sweep the same day found a worse tail, $\max = 2.18 \times
+10^{-10}$ mm — size anything against that figure, since no grid bounds the
+tail.
+
+The criterion has three parts, all normative — see the *FK CONVERGENCE
+CRITERION* block in `motion/ik_solver.py` for the full statement:
+
+| Part | Test | Default |
+|---|---|---|
+| Mixed absolute/relative | $\max\lvert r\rvert \le \text{tol} + \text{rtol} \cdot \text{scale}$, with `scale` the largest absolute leg length implied by the target | `tol` = $10^{-10}$ mm, `rtol` = $10^{-12}$ |
+| Stagnation exit | $\max\lvert r\rvert \le$ `stall_ceiling_mm` **and** the residual failed to shrink below `stall_factor` × its previous value ⇒ converged to round-off, return | $10^{-6}$ mm, 0.5 |
+| Genuine divergence | still above both gates after `max_iter`, a singular Jacobian, or a non-finite target ⇒ `RuntimeError` | — |
+
+The third part is not optional: dropping it would trade a loud spurious failure
+for a silent wrong answer. `tests/motion/test_fk_convergence.py` covers all
+three, with the two recorded hardware vectors that the pre-2026-07-25
+absolute-only criterion rejected as fixtures.
 
 ## Rotation Utilities
 
