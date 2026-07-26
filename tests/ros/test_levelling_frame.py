@@ -87,6 +87,23 @@ _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
 # frozen at the rate the bag was recorded under.
 _PRE_FIX_SEAT_RATE_RADPS = 0.07
 
+
+def _set_seat_rate(monkeypatch, rate=_PRE_FIX_SEAT_RATE_RADPS):
+    """Restore a non-zero MANUFACTURED through-seat rate for one test.
+
+    Patches the MODULE CONSTANT, never `tilt_through_rate_radps=`: the kwarg takes
+    C-CATCH-1's deliberately-unbounded requested branch, and `_plan_and_install_catch`
+    (correctly) never passes it — so the constant is the only route by which the
+    node's own catch path can produce a seat at all. Needed wherever a test's claim
+    is about the seat's EXISTENCE or AIM, because at the shipped 0.0 rate
+    `build_catch` gates the whole seat block on `rate > 0.0` and every such claim
+    degenerates into a true-of-any-catch statement.
+    """
+    from jugglebot.motion.trajectory import planner as _planner
+    monkeypatch.setattr(_planner, '_CATCH_TILT_THROUGH_RATE_RADPS', float(rate))
+    return float(rate)
+
+
 _PKG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     'ros_ws', 'src', 'jugglebot', 'jugglebot')
@@ -887,7 +904,7 @@ def test_the_frame_regression_would_fire_without_the_fix():
         "displacement, or the regression test above proves nothing")
 
 
-def test_the_reach_excursion_across_the_plan_is_gone_after_c_catch_1():
+def test_the_reach_excursion_across_the_plan_is_gone_after_c_catch_1(monkeypatch):
     """Sample ACROSS the reach, not only at its endpoints.
 
     The plan requires an across-plan sample twice over ("the 2026-07-25 signature
@@ -909,6 +926,20 @@ def test_the_reach_excursion_across_the_plan_is_gone_after_c_catch_1():
     The pre-fix closed form is kept below and asserted against the pre-fix
     geometry, because a test that only says "flat now" cannot tell a fixed
     amplifier from a deleted feature.
+
+    **Three blocks, and the middle one is why the segment count still discriminates
+    the FRAME.** The manufactured seat rate shipped to 0.0 on 2026-07-26, and
+    `build_catch` gates its whole seat block on `rate > 0.0` — so at the shipped
+    default a third segment cannot appear for ANY frame, correct or reverted, and a
+    `len(segments) == 2` assertion carrying the diagnosis "the through-seat
+    re-engaged off a frame that is not the gravity frame" points at an unreachable
+    state. Block 1 keeps the shipped-default pin with its message narrowed to what
+    is provable there; block 2 re-runs the identical fixture with the rate restored,
+    where a reverted frame WOULD hand `build_catch` a non-zero receive tilt and
+    produce exactly that third segment. Both blocks assert flatness, because the
+    across-plan flatness is what the frame fix buys and it holds at either rate
+    (a gravity-level catch's wire receive tilt is the zero vector, so `smag == 0`
+    and the seat never engages however fast it is allowed to turn).
     """
     from jugglebot.motion.trajectory import planner as _planner
     node = _node()
@@ -929,8 +960,32 @@ def test_the_reach_excursion_across_the_plan_is_gone_after_c_catch_1():
     assert float(np.max(np.abs(rx - held_rx))) == pytest.approx(0.0, abs=1e-12)
     assert float(np.max(np.abs(ry - held_ry))) == pytest.approx(0.0, abs=1e-12)
     assert len(plan.segments) == 2, (
-        'a level catch must be reach + quiescent hold; a third segment means the '
-        'through-seat re-engaged off a frame that is not the gravity frame')
+        'a level catch must be reach + quiescent hold; a third segment at the '
+        'SHIPPED 0.0 rate means a seat was manufactured or requested where the '
+        'builder is supposed to manufacture nothing')
+
+    # ── block 2: the same fixture where the FRAME is observable ────────────────
+    # With a manufactured rate restored, a `receive_tilt` that carried the levelling
+    # correction (the pre-C-CATCH-1 aim) would be non-zero and the seat WOULD engage.
+    # It is the zero vector because the wire orientation is gravity-referenced, so the
+    # reach stays flat and two-segment — and now that says something about the frame.
+    _set_seat_rate(monkeypatch)
+    seated_node = _node()
+    seated_held, seated_plan = _positioned_then_catch(seated_node)
+    seated_reach = seated_plan.segments[0]
+    seated_ts = np.linspace(0.0, seated_reach.duration, 24001)
+    seated_rx = np.degrees(np.array(
+        [np.asarray(seated_plan.state_at(float(t))[0])[3] for t in seated_ts]))
+    seated_ry = np.degrees(np.array(
+        [np.asarray(seated_plan.state_at(float(t))[0])[4] for t in seated_ts]))
+    assert float(np.ptp(seated_rx)) == pytest.approx(0.0, abs=1e-12)
+    assert float(np.ptp(seated_ry)) == pytest.approx(0.0, abs=1e-12)
+    assert float(np.max(np.abs(seated_rx - float(np.degrees(seated_held[0]))))) \
+        == pytest.approx(0.0, abs=1e-12)
+    assert len(seated_plan.segments) == 2, (
+        'a third segment means the through-seat re-engaged off a frame that is not '
+        'the gravity frame — the receive tilt reaching build_catch is carrying the '
+        'levelling correction instead of the wire orientation')
 
     # The pre-fix geometry, at the identical lead, through the identical planner —
     # aim the seat at the PLAN-FRAME tilt (what `build_catch` used to read) and
@@ -1033,8 +1088,7 @@ def test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt(
     # tilt and not along the wire tilt composed with the correction — with the
     # manufactured rate restored (see the docstring; at the shipped 0.0 there is no
     # seat on any catch and the aim is unobservable).
-    monkeypatch.setattr(_planner, '_CATCH_TILT_THROUGH_RATE_RADPS',
-                        _PRE_FIX_SEAT_RATE_RADPS)
+    _set_seat_rate(monkeypatch)
     wire_tilt = np.array([0.03, -0.12])          # 1.72° / −6.88°, gravity frame
     node2 = _node()
     assert node2._svc_go_to_pose(_go_to_pose_req(z=170.0, duration_s=1.0),

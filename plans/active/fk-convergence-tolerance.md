@@ -67,7 +67,7 @@ on a fully converged solve.
 | Phase | Scope | Gate | Status |
 |---|---|---|---|
 | 0 | Characterise the achievable residual across the workspace | written distribution; no code | DONE (2026-07-25) |
-| 1 | Convergence criterion + stagnation exit + caller review | full pytest | DONE (2026-07-25) — software complete; bench CHECK FK-1…FK-4 deferred to the operator |
+| 1 | Convergence criterion + stagnation exit + caller review | full pytest | DONE (2026-07-25) — software complete; bench CHECK FK-1…FK-4 deferred to the operator. **They are folded into `tests/hardware/session_anomaly_fixes.md` § THE RUN SHEET stage 6 (FK-1/FK-2/FK-3) and cost no extra robot motion** — this fix removes a refusal, it changes no command. FK-4 needs `run_mpc.py` and is off the run sheet by default (standing rule 4); record it as skipped unless the MPC is exercised |
 
 ## Implementation Phases
 

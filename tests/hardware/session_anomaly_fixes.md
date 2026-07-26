@@ -1,13 +1,27 @@
 # Hardware Session — 2026-07-25 self-toss anomaly fixes: bench validation
 
-**Run**: the 2026-07-25 self-toss anomaly-fix run (five sibling plans, one phase
-runner). Each plan appends its own checks to this file **in the order the
-operator will execute them** — append a new section, never rewrite or reorder
-someone else's.
+**Run**: the 2026-07-25 self-toss anomaly-fix run (four sibling plans, eleven
+landed phases, one phase runner). Each phase appended its own section as it
+landed, under a strict never-reorder rule so parallel phases could not clobber
+each other.
 
 **Goal**: confirm on hardware that each landed anomaly fix does what its plan
 claims, with numeric PASS/ABORT criteria and a named analysis command per check
 so a failure routes straight back to the plan + phase that owns it.
+
+> ## HOW TO USE THIS FILE — read this paragraph before anything else
+>
+> **§ THE RUN SHEET below is the executable document. Work down it.** The
+> `## Section …` chapters after it are the *reference*: every PASS/ABORT number,
+> every "why this threshold", every trap. You dive into a section when a run-sheet
+> row fails or when you need the number behind a row — not while executing.
+>
+> The run sheet was written **2026-07-27**, after all eleven phases had landed, and
+> it is the only part of this file written with the whole run in view. Where it and
+> a section disagree, **the run sheet wins and the section is annotated in place**;
+> nothing has been deleted. Two sections carry `⚠ SUPERSEDED` banners for exactly
+> this reason (§ Section LVL and § CHECK CCATCH-3) — read the banner before the
+> table under it.
 
 ## Roles & safety framing
 
@@ -19,22 +33,501 @@ so a failure routes straight back to the plan + phase that owns it.
 - E-STOP always in reach. Any ABORT criterion ⇒ stop, capture the bag and the
   node logs, and debrief before retrying.
 
+## STANDING RULES — stated once, apply to every check in this file
+
+Every section below used to restate these. They are here, once, so a run-sheet
+row can just say "standing rules apply".
+
+1. **POWER-CYCLE THE CAN-BRIDGE TEENSY before the sitting**, and log `uptime_ms`
+   alongside **every** timing measurement (achieved flight, catch error, `shift`,
+   any inter-arrival gap). Tracking lag grows with that board's uptime — 10 ms at a
+   fresh boot to ~240 ms at 30 h — so a timing number without an `uptime_ms` beside
+   it is not interpretable.
+2. **`level` is per-boot AND per-process.** The Teensy-persisted
+   `RobotState.levelling_complete` survives a relaunch; the correction inside
+   `trajectory_node` does not. **Run a manual `level` after every launch and every
+   relaunch** — with **ONE deliberate exception**: the stage-5 CAP-RELAUNCH
+   relaunch, where CHECK LG-3 *needs* the un-levelled process state and levelling
+   first would make a healthy machine score as the ABORT. Level again immediately
+   **after** LG-3 is scored, and confirm the refusal clears. `level` is accepted
+   only from **IDLE** and returns to IDLE, so it goes *before* `activate`.
+3. **The tracker still reports `MISSED` on real catches.** Judge every catch **by
+   eye** as well as by `outcome`, everywhere in this file. Record one truthful
+   outcome line per attempt.
+4. **`run_mpc.py` must NOT be running** (sole-binder on :5557) unless a check says
+   so. Only CHECK FK-4 wants it, and FK-4 is optional.
+5. **Two Python environments, and mixing them up costs you the capture.** The trace
+   recorder's `record` subcommand (`tests/hardware/toss_trace_recorder.py`) runs
+   under **system `python3` 3.8** with `/opt/ros/foxy/setup.bash` **and**
+   `ros_ws/install/setup.bash` sourced — it is an `rclpy` subscriber, which the venv
+   cannot provide. Everything under `tools/probes/` runs under the **venv**
+   (`source ~/Desktop/PDJ_venv/venv/bin/activate`) — numpy/mcap/casadi, which system
+   python3 does not have. They are opposites; each run-sheet row names which.
+   (Exception worth knowing: the recorder's `check` subcommand is pure stdlib and
+   runs anywhere, including the venv. Only `record` needs ROS.)
+6. **The operator runs every robot-actuating command.** E-STOP in reach. Any ABORT
+   ⇒ stop, keep the bag and `~/.ros/log`, debrief before retrying.
+
+## ⚠ DEPLOYMENT MATRIX — the single biggest foot-gun in this run
+
+Eleven phases landed across three *different* kinds of deployment. Getting this
+wrong is the most likely way to waste a sitting, and **one of the three fails
+silently**.
+
+| | what changed | what you must do | **how you find out you skipped it** |
+|---|---|---|---|
+| **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT (commits `aea7b49`, `e58ed89`, and the hand phases) | `colcon build --packages-select jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py` | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
+| **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s |
+| **C** | `ros_ws/src/jugglebot/Teensy_code/Trajectory.h` + the regenerated `Teensy_code/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`) | **FLASH `Teensy_code/Teensy_code.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **NOTHING. THIS ONE IS SILENT — read the box below.** |
+
+> ### ⚠⚠ THE HEADLINE: an un-flashed Platform Teensy is UNDETECTABLE from the Jetson
+>
+> **The Platform Teensy carries no `FW_VERSION` constant.** The can-hub has had one
+> since 2026-07-16; this board has never had one, and Phase 4 correctly declined to
+> add one because that is a protocol change it was not chartered to make. The
+> consequence is exact and it is the most dangerous operational fact this run
+> produced:
+>
+> **An un-flashed board behaves EXACTLY like the pre-fix one. No log line, no
+> `link_status` field, no refusal, no warning, nothing.** Every other deployment in
+> this run fails loudly — row A throws at a grep, row B kills the node — and this
+> one does not. Worse, § CHECK HAND-4 states plainly that the fix is a *no-op on the
+> clean path by design*, so "HAND-4 looked identical to HAND-1" is the **expected
+> PASS** and is also **exactly what a skipped flash looks like**. The two are
+> indistinguishable from the capture.
+>
+> #### The strongest positive confirmation actually available (do all four, in order)
+>
+> There is **no** behavioural probe that distinguishes new firmware from old on a
+> stationary hand, and this is by construction, not an oversight:
+> `smoothMoveDuration`'s `v0 == 0` branch is "the HISTORICAL expression, kept
+> verbatim so a rest-to-rest duration (and hence the sample count and
+> `smoothDur_us`) is bit-identical to before". So the `Smooth-move armed: target=…
+> pts=… dur=…` serial line **cannot** confirm the flash — do not read it as
+> confirmation. Provoking the branch that *is* different means dispatching a hand
+> command while the hand moves above 6.0 rev/s, which is either the defect Phases
+> 1–2 removed or a deliberate abuse of the un-arm path. **Do not provoke it.**
+>
+> What you *can* establish, and it is a genuine chain:
+>
+> 1. **The tree carries the change** — `grep -c 'start_vel = current_hand_velocity'
+>    ros_ws/src/jugglebot/Teensy_code/Trajectory.h` prints `1`, and `git log
+>    --oneline -1 -- ros_ws/src/jugglebot/Teensy_code/Trajectory.h` shows `5369fc2`
+>    or later. (Run sheet PF-6 / § H4.0a.)
+> 2. **The shipped header compiles and behaves** — `pytest
+>    tests/firmware/test_hand_smooth_move_xref.py -q` passes with **ZERO skips**.
+>    That test is the only thing in the repository that reads the C++; a SKIP means
+>    `g++` was missing and it read nothing. (§ H4.0b.)
+> 3. **The sketch cannot even compile against a stale config.** `Trajectory.h`
+>    references `TeensyTraj::SMOOTH_MOVE_V0_DEADBAND_RPS`, which only exists in the
+>    regenerated `Teensy_code/hardware_config.h`. So a **successful compile of the
+>    current tree proves both halves of change C are in the source you are
+>    flashing.** `git pull` before opening the sketch.
+> 4. **The board rebooted at the moment you flashed it.** A flash resets the MCU, so
+>    the Platform Teensy re-prints its boot banner `Teensy platform MCU ready.` on
+>    the serial monitor. Watch for that line at flash time — it is the only board-side
+>    evidence available, and combined with (1)–(3) it is the whole chain: right
+>    source → compiles → uploaded → board restarted.
+>
+> **If any link is in doubt, RE-FLASH.** It costs about a minute, it is idempotent,
+> and there is no version handshake that will ever tell you otherwise. Record in the
+> session log: the commit you flashed from, the flash time, and the boot banner.
+
+**Recommended: do change B's build, which strictly covers A.** `colcon build
+--packages-select jugglebot_interfaces jugglebot` is correct for every section in
+this file and removes any chance of getting the A/B distinction wrong. There is no
+downside beyond ~30 s of build time.
+
+```bash
+cd ~/Desktop/Jugglebot/ros_ws
+colcon build --packages-select jugglebot_interfaces jugglebot
+source install/setup.bash
+# then RELAUNCH jugglebot_launch.py — the launch runs the INSTALLED copy.
+```
+
+**No section in this file needs `python config/generate_config.py`.** The generated
+artefacts are committed; `git pull` is enough.
+
+## CAPTURES — what shares one recording
+
+Several checks are different *readings of the same capture*. Running them twice
+costs a sitting and gains nothing, so this is the map. Each capture needs the
+**bag AND the trace recorder** running together from the start (see § Recording).
+
+| capture | what happens in it | checks scored from it |
+|---|---|---|
+| **CAP-GATE** | empty cup: `LG-1` refusal → `level` → `LG-2` accepted goal. **Stop the trace recorder at the end of this** — LG-5 requires exactly two `loaded-flips` in one trace file | LG-1, LG-2, **LG-5**, LVL-1 |
+| **CAP-RELAUNCH** | relaunch → re-arm → `LG-3` refusal → `level` again | LG-3 |
+| **CAP-WORK** | the working capture: `go_home` (LVL-2) → ≥ 12 Reload attempts and ≥ 7 Tosses, interleaved (you must reload to load a ball anyway) → a closing `go_to_pose` + `go_home` | FK-1, FK-2, FK-3, HAND-1, HAND-2, HAND-3, HAND-4, LVL-2, LVL-3, LVL-4, CATCH-2, CCATCH-2, CCATCH-3, CCATCH-2t, CCATCH-4, CCATCH-5, ZSEAT-2, ZSEAT-3, ZSEAT-4, LG-4 |
+| **CAP-SHORT** | optional, LAST: two tosses at `throw_height_m: 0.38` | HAND-1b |
+
+Score the reload and toss halves of CAP-WORK with **separate probe invocations**:
+`--thrower ball_butler` for the reloads, `--thrower jugglebot` for the tosses.
+
+## THE RUN SHEET
+
+Read-only pre-flights first; nothing actuates the robot until stage 4.
+"Routes to" is where a failure goes — the plan and phase that owns it.
+
+### Stage 1 — instrument health (at the desk, no robot, no bag, ~2 min)
+
+An instrument validated only against the broken shape scores a working fix as a
+failure and burns the sitting. All four run under the **venv**.
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+python tools/probes/catch_reach_replay.py   --self-check     # INST-1
+python tools/probes/levelling_tilt_bag_check.py --self-check # INST-2
+python tools/probes/hand_stroke_timeline.py --gate           # INST-3
+python -m pytest tests/firmware/test_hand_smooth_move_xref.py -q   # INST-4
+```
+
+| # | PASS | ABORT | routes to | detail |
+|---|---|---|---|---|
+| INST-1 | `SELF-CHECK: PASS`, **10/10 `OK`**, exit 0. Case 7 must show `planner._CATCH_TILT_THROUGH_RATE_RADPS=0.0` **and** `recorded-session rate (capture record, NOT a live mirror)=0.07` | any `BAD` | `catch-reach-degenerate-overshoot` P0/P2/P3 | § CCATCH-1, § ZSEAT-1 |
+| INST-2 | `SELF-CHECK: PASS`, exit 0 (scores a synthetic post-fix session PASS, a pre-fix session FAIL, an ACTIVATE-contaminated session FAIL-with-note) | anything else | `levelling-frame-contract` P1–P2 | § LVL-0 |
+| INST-3 | exit 0 and **TWO** `GATE PASS` lines: `25/25 rows within tolerance` **and** `fixed-shape branch`. **Judge on the exit code and both lines, not the row count** — the count grows whenever a reference row is added and has already produced one stale runbook | `GATE FAIL`, a missing second line, or non-zero exit. `GATE UNAVAILABLE` is different — the fixture is missing; restore or regenerate it | `hand-command-continuity` P0 | § The analysis command |
+| INST-4 | `passed`, with **ZERO skips** | any failure, or `passed, N skipped` — a SKIP means `g++` was absent and the only thing that reads the C++ read nothing. **Do not flash on a skip** | `hand-command-continuity` P4 | § H4.0b |
+
+### Stage 2 — build and flash (deployment matrix above)
+
+```bash
+cd ~/Desktop/Jugglebot && git pull
+cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot
+source install/setup.bash
+```
+then **flash the Platform Teensy** (matrix row C — read that box; the flash is
+silent if skipped), then **launch** `jugglebot_launch.py`.
+
+### Stage 3 — pre-flights against the INSTALLED copy (read-only, ~1 min)
+
+PF-1…PF-5 grep the **installed** tree, not the source — a source-tree grep proves
+nothing about what the launch is running. **PF-6 is the exception and greps the
+SOURCE**, because `Trajectory.h` is firmware: `colcon` never copies it and the
+Jetson never runs it, so the source tree is exactly what you flash from and there
+is no installed copy to check. The five `grep -c` lines print, in order, `0`
+(`_apply_gravity_correction` — the deleted second copy), then `1`, `3`, `2`, `1`
+at the commits this run landed. **Only ZERO vs NON-ZERO is load-bearing** on the
+last four — a later comment edit moves the exact counts — but the first one must be
+exactly `0`.
+
+```bash
+INST=~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot
+grep -q FK_STALL_CEILING_MM $INST/motion/ik_solver.py && echo PF1_OK || echo PF1_STALE
+grep -q _throw_stroke_gate_ok $INST/catch_coordinator_node.py \
+  && test -f $INST/motion/trajectory/hand_stroke.py && echo PF2_OK || echo PF2_STALE
+grep -E '^JB_OP_HAND_CATCH_PRIME_REV|^HAND_STROKE_TOP_REV' $INST/hardware_config.py
+grep -q levelling.correct_pose $INST/trajectory_node.py && echo PF4_OK || echo PF4_STALE
+grep -c _apply_gravity_correction $INST/mpc_bridge_node.py
+grep -c gravity_correction_loaded \
+  ~/Desktop/Jugglebot/ros_ws/install/jugglebot_interfaces/share/jugglebot_interfaces/msg/TrajectoryStatus.msg
+grep -c gravity_correction_loaded $INST/trajectory_node.py
+grep -c NOT_LEVELLED $INST/toss_sequencer.py
+grep -c 'start_vel = current_hand_velocity' \
+  ~/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code/Trajectory.h
+```
+
+| # | PASS | ABORT | routes to |
+|---|---|---|---|
+| PF-1 | `PF1_OK` | `PF1_STALE` | `fk-convergence-tolerance` P1 (§ Section FK pre-flight) |
+| PF-2 | `PF2_OK` | `PF2_STALE` | `hand-command-continuity` P1 (§ HAND-0) |
+| PF-3 | `JB_OP_HAND_CATCH_PRIME_REV = 9.9594` **and** `HAND_STROKE_TOP_REV = 9.95940313273228` | `9.858`, or `HAND_STROKE_TOP_REV` absent | `hand-command-continuity` P3 (§ HAND-3a) |
+| PF-4 | `PF4_OK` then `0` for `_apply_gravity_correction` | `PF4_STALE`, or a non-zero count (the deleted second copy is back) | `levelling-frame-contract` P1–P2 (§ LVL-0) |
+| PF-5 | all three `gravity_correction_loaded` / `NOT_LEVELLED` counts **non-zero** (at the Phase-3 commit: `1`, `3`, `2` — treat the exact numbers as informational, **zero** is the failure) | any count `0` | `levelling-frame-contract` P3 (§ LG-0) |
+| PF-6 | `1` hit for `start_vel = current_hand_velocity` | `0` — you are on a pre-Phase-4 tree; **do not flash it**, `git pull` first | `hand-command-continuity` P4 (§ H4.0a) |
+
+Then, **with the graph up** (still read-only):
+
+```bash
+ros2 node list | grep trajectory_node
+ros2 topic echo /trajectory/status --once | grep -E "streaming|gravity_correction_loaded"
+```
+- **PASS**: node listed, both keys print, `gravity_correction_loaded: false` before any `level`.
+- **ABORT**: `trajectory_node` **absent** ⇒ that is the half-rebuild signature of
+  deployment-matrix row B. Rebuild **both** packages and relaunch.
+- **ABORT**: node present but the key missing, or the echo hangs ⇒ a different
+  publisher build. Fix before continuing.
+
+### Stage 4 — CAP-GATE: the levelling gate (**EMPTY CUP**, first actuating stage)
+
+Start the bag **and** the trace recorder (see § Recording) before the first
+command. **Do not load a ball** — if the gate fails to fire, the sequence proceeds
+to a dry empty-hand toss, which is safe but is not something to discover with a
+ball seated.
+
+| # | do | PASS | ABORT | routes to |
+|---|---|---|---|---|
+| LG-1 | launch → home → activate → TRAJECTORY, **no `level`**, send the toss goal | `outcome: REJECTED_NOT_LEVELLED`, goal terminates **< 1.0 s** after accept, **no platform and no hand motion** | the toss proceeds with `levelling_complete: false`; or any motion during a `REJECTED_*` | `levelling-frame-contract` P3, § LG-1 |
+| LVL-1 | `deactivate` → `level` | both `Gravity offset published` and `gravity correction set` appear **after the last launch**, with identical `[tilt_x, tilt_y]`. **Record them — LVL-3 needs them** | the orchestrator line appears but `trajectory_node`'s does not; or no `gravity correction set` after the last relaunch | `levelling-frame-contract` P1–P3, § LVL-1 |
+| LG-2 | `activate` → `trajectory` → re-issue the **same** goal | `gravity_correction_loaded: true` and the feedback advances past `CHECKING` to `POSITIONING` | `gravity_correction_loaded: false` after a clean `level`; or `REJECTED_NOT_LEVELLED` after a clean `level` | `levelling-frame-contract` P3, § LG-2 |
+| LG-5 | **stop the trace recorder now** and run § LG-5's inline reader on that jsonl | exactly **two** `loaded-flips`, first `False`; first outcome `REJECTED_NOT_LEVELLED`; `1st outcome -> flip` **positive**; `flip -> 2nd outcome` **> +0.005 s**; second outcome not `NOT_LEVELLED` | `INCOMPLETE`, a never-happening flip, or `True` before the `level` | `levelling-frame-contract` P3, § LG-5 |
+
+`REJECTED_WRONG_MODE` anywhere here is **not a verdict** — you are not in
+ACTIVE:TRAJECTORY. Re-arm and re-issue; nothing has been tested yet.
+
+### Stage 5 — CAP-RELAUNCH: the Teensy flag lies, the gate does not (**EMPTY CUP**)
+
+Relaunch `jugglebot_launch.py` **without re-levelling**, then `activate` →
+`trajectory` → read both flags → send the same goal.
+
+| # | PASS | ABORT | routes to |
+|---|---|---|---|
+| LG-3 | `levelling_complete: true` **and** `gravity_correction_loaded: false` **and** `outcome: REJECTED_NOT_LEVELLED` — all three together are the whole point | `levelling_complete: true` and the toss **proceeds**: the gate is wired to the Teensy flag, the exact false assurance this phase removes. Stop and report | `levelling-frame-contract` P3, § LG-3 |
+
+Then `level` again (standing rule 2) and confirm the refusal clears.
+
+### Stage 6 — CAP-WORK: the working capture (the bulk of the sitting)
+
+Fresh bag **and** fresh trace recorder. Sequence: `activate` → `trajectory` →
+`go_home` (**LVL-2**) → then alternate Reload (loads a ball) and Toss until you
+have **≥ 12 reload attempts** and **≥ 7 tosses** (≥ 5 at `throw_height_m: 0.6`,
+≥ 2 at `0.78` for like-for-like against the § Pre-fix baseline table) → close with a
+`go_to_pose` and a `go_home` (**CCATCH-4**, **CCATCH-5**).
+
+```bash
+# LVL-2 / CCATCH-5 opener
+ros2 service call /trajectory/go_home std_srvs/srv/Trigger
+ros2 topic echo /trajectory/diagnostics --once      # note peak_leg_* and move_seq
+
+# load a ball (this IS a reload attempt — score it for ZSEAT-2)
+ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload \
+  "{throw_delay_s: 0.0, catch_vel_scale: 0.0}" --feedback
+
+# toss (≥ 5 at 0.6, ≥ 2 at 0.78)
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.6}" --feedback
+```
+
+**Leave `catch/vel_scale` at its 0.8 default all sitting.** It multiplies the armed
+event velocity and the arm window's right edge is `0.404 / v_armed`, so a *low*
+scale lengthens the required lead and closes the window on a perfectly healthy
+tracker. Swept against the production velocities: at a 0.55–0.56 s flight, **0.45
+closes it (−15 ms)** and 0.50 barely opens it (+18 ms), while 0.8 gives +116 ms; at
+0.80 s and above the window stays open across the whole shipped `[0.3, 1.5]` range.
+Read `catch/vel_scale` **first** before routing any H1.4 `window CLOSED` warning to
+a tracker fault.
+
+**This run sheet flashes before any capture, so there is NO pre-flash control.**
+That is deliberate — the flash is silent if skipped (deployment matrix row C), so
+running the whole sitting in one build state removes the biggest way to waste it.
+The cost is that § CHECK HAND-4's row **H4.2** ("`peak` within ±0.05 rev of the
+pre-flash reading") has nothing to compare against. Use the absolute bounds instead:
+row 3 of § PASS / ABORT per throw (`peak <= 10.060` rev) and H4.4's
+`10.060 < peak <= 10.60` ABORT band. If you would rather have the control, capture
+HAND-1 *before* stage 2's flash and take a second capture after — it costs one extra
+set of tosses and the pair is more informative than either alone.
+
+Everything below is scored **off this one capture**. Order of *scoring*, not of
+running:
+
+| # | what it scores | PASS | ABORT | routes to |
+|---|---|---|---|---|
+| LVL-2 | the first `go_home` after `level` is a real, small, smooth move | worst-leg excursion **2.77 ± 0.30 mm** (`0.0391 ± 0.0042 rev`), realized peak leg vel **2.60 ± 0.50 mm/s**, no pump rejection, no guard latch. A **zero** measured offset makes this a genuine no-op — record which case applied | any leg **> 5 mm**, any step rejection, any `MAX_DEVIATION` or guard E-STOP | `levelling-frame-contract` P1–P2, § LVL-2 |
+| CCATCH-5 | `peak_leg_*` clears on a report-less install | after `go_to_pose`: `peak_leg_vel_mmps > 0`. After `hold`/`go_home`: `move_seq` advanced **and** `peak_leg_*` all `0.0` | the previous move's non-zero peaks under the new `move_seq` | `catch-reach-degenerate-overshoot` P2, § CCATCH-5 |
+| FK-1 | no spurious FK refusals | `0` × `seed FK failed`, `0` × `guard descent FK failed` across every node log | `>= 1` of either. (`non-finite target extensions` ⇒ **REPORT**, route to the can-bridge, not here) | `fk-convergence-tolerance` P1, § FK-1 |
+| FK-2 | the offline FK verdict | `VERDICT: PASS`, exit 0 — `def_rai` **0** on both topics **and** `hist_rai > 0` on at least one | `def_rai > 0`. `VERDICT: VACUOUS` is **not a pass** — re-run on a richer session | `fk-convergence-tolerance` P1, § FK-2 |
+| FK-3 | the FK fix is invisible in the commanded stream | every seeded hold pose matches the pre-change print **to the last digit**; `x`, `y` within **±2.0 mm** of 0.0; `max_it <= 10` | any printed digit differs (`>= 0.1 mm`), or `max_it > 10` (worst measured is 5) | `fk-convergence-tolerance` P1, § FK-3 |
+| HAND-1 | the catch arm no longer lands inside the throw stroke | rows 1–5 of § PASS / ABORT per throw on **every** toss, plus H1.2–H1.7 | any row ABORTs — **EXCEPT row 4 (`dip_below_x3`) on a toss where row 7 (`first_neg_cmd`) is annotated**: a braking prelude fired, the two rows score the same event in opposite directions, and row 4 becomes **REPORT** (score it against the brake's own turning point — see HAND-4). `Not enough time for smooth-move` on the Teensy serial is a **hard section abort** | `hand-command-continuity` P1, § HAND-1 |
+| HAND-2 | a repack under a failed ack does not clobber a live stroke | `arms` is 1 or 2 (never ≥ 3); `seeds = 0` on every `arms == 2` toss | `seeds >= 1` on an `arms == 2` toss. If **no** toss reads `arms == 2`, say so — the criterion was never exercised | `hand-command-continuity` P2, § HAND-2 |
+| HAND-3 | the hand parks at the derived stroke top and nothing misjudges it | H3.1–H3.7 as tabulated; prime `pos_meas` inside **[9.4594, 10.4594]**, `Hand primed to 9.959 rev`, peak prime `vel_meas` **≤ 30 rev/s** against a commanded quintic peak of **24.63 rev/s** | outside the near-band; `9.858 rev` in the log (stale install); `>= 40.0 rev/s` | `hand-command-continuity` P3, § HAND-3 |
+| HAND-4 | the flash did not break the clean path | identical to HAND-1 (**that is the designed PASS**), `peak <= 10.060` rev (no pre-flash control on this run sheet — see above), no commanded `pos < 0.0` rev, no commanded move longer than **0.8005 s**. `first_neg_cmd` annotated `<-- NOT the catch descent (a brake?)` is **REPORT, not abort** — and on such a toss score `dip_below_x3` against the brake's own turning point, not against `x3` | H4.4 / H4.5 / H4.7 / H4.8 / H4.9 / H4.10 as tabulated. **`peak > 10.60` rev is a HARD ABORT + E-STOP** | `hand-command-continuity` P4, § HAND-4 |
+| LVL-3 | **the levelling headline** — the frames agree across a goal | `VERDICT: PASS`: the **park** plateau within **±0.05°** of `(−tilt_x, −tilt_y)` on both axes. **`--t0` is not optional, and its unit is SECONDS FROM BAG START** (a float, not wall-clock, not ROS epoch). Run once *without* `--t0`, read the plateau table's `t_start` column, then re-run with `--t0` a few seconds past the LVL-2 `go_home` plateau | `park_rx ≈ 0.0000°` with no `NOTE:` (pre-fix frame); or ≈ **−1.5576°** (twice the correction — applied twice) | `levelling-frame-contract` P1–P2, § LVL-3 |
+| LVL-4 | mocap cross-check (does not share the FK path) | **REPORT-ONLY since 2026-07-27 — it is no longer a gate, and the old `±0.10°` PASS is the PRE-fix reading.** Run § LVL-4's inline reader and record the parked Platform-vs-`Base` tilt; expect it to have moved BY the correction, to **≈ 0.78°** (pre-fix baseline **0.087°**) | nothing here aborts on its own. `≈ 1.56°` (twice the correction) is worth stopping for — **confirm on LVL-3 first**, which is the instrumented, gated version of the same question | `levelling-frame-contract` P1–P2, § LVL-4 |
+| CCATCH-2 | **the catch-reach headline** — a level catch commands NO swing | commanded `rx` across the pre-tilt reach **monotone** toward the target, peak above park ≤ `1.05 ×` the requested displacement; toss settle `rx`/`ry` = the target to **±0.05°**; residual vs gravity at contact **≤ 0.05°**; plan segments **2**; `peak_leg_acc/jerk` **≈ 1.2 / ≈ 3** (was `142.4 / 3950`) | any excursion **away** from the target > `0.05°`; settle at `−1.0784 / −0.0958°` (the old aim is live); 3 segments; still `≈142 / ≈3950` | `catch-reach-degenerate-overshoot` P2, § CCATCH-2 |
+| CCATCH-2t | tracker catch error on a **self-toss** | **< 10 mm** | ≥ 16 mm — the improvement did not land. **Judge by eye too** (standing rule 3) | `catch-reach-degenerate-overshoot` P2, § CCATCH-2 |
+| ZSEAT-2 | **the one genuinely open experiment** — did removing the seat from an 11.08° tilted rim cost catches? | catch **RATE ≥ 0.63** (≥ 8/12, ≥ 12/19 — score the rate, the sitting only mandates `n ≥ 12`); **bounce-outs ≤ 1** across the sitting; commanded tilt over the last 0.8 s before landing **flat, < 0.05°** | rate **≤ 0.58** (≤ 6/12, ≤ 11/19); **≥ 3 bounce-outs or ≥ 2 consecutive**; `≈ 0.9°` of round trip in the last 0.8 s (stale install). **A rate strictly between 0.58 and 0.63 is INCONCLUSIVE, not a failure** — report the raw count and extend toward `n = 19` before deciding | this section — § ZSEAT-2. **Not** C-CATCH-1, **not** the levelling contract |
+| ZSEAT-3 | the capture agrees with the offline counterfactual | arrival tilt rate at contact **`0.000000`**; reload settle `+1.774062 / −10.636334°` (= the target) to **±0.02°**; segments **2**; predicted `29.0 / 37.9 / 170` | non-zero arrival rate; \|settle − target\| > 0.02°; 3 segments; still `142.0 / 3935` | `catch-reach-degenerate-overshoot` P3, § ZSEAT-3 |
+| ZSEAT-4 | the throw is stationary at release | commanded pose over `release ± 0.10 s` **flat**: `< 0.02°` and `< 0.2 mm` | any commanded motion — a plan is running through the release | `catch-reach-degenerate-overshoot` P3, § ZSEAT-4 |
+| CCATCH-3 | the reload path changed **on purpose**, and nothing larger | seat aim rotation `4.0997°` (ABORT > 6°); the `N further catch install(s)` census line present with `N` between 6 and 25 | aim rotation > 6°. **READ THE SUPERSEDED BANNER at the head of § CCATCH-3 first — five of its rows now ABORT on correct behaviour** | `catch-reach-degenerate-overshoot` P2/P3, § CCATCH-3 |
+| CCATCH-4 | blast radius really is the catch path | the closing `go_home` and `go_to_pose` behave exactly as LVL-2; no new `last_rejection` | any new rejection code, or a duration change > 5 % | `catch-reach-degenerate-overshoot` P2, § CCATCH-4 |
+| CATCH-2 | the replay reproduces what the machine actually ran | `VERDICT: REPRODUCED`, exit 0; rx **and** ry max residual under the printed tolerance; fitted echo lag `0 < lag <= 25.0` ms; `SINGLE INSTALL: True`; `fk_failures 0` | `NOT-REPRODUCED` (a **publishable result**, not a probe bug — but run INST-1 first) | `catch-reach-degenerate-overshoot` P0, § CATCH-2 |
+| LG-4 | no spurious levelling refusals across the sitting | `0` `Toss REJECTED_NOT_LEVELLED` on any goal issued **after** a `level` (the LG-1/LG-3 ones are the deliberate successes — subtract them) | any refusal after a `level` with `gravity_correction_loaded: true` at the time ⇒ a staleness false positive; measure the `/trajectory/status` gap **before** changing the constant | `levelling-frame-contract` P3, § LG-4 |
+
+#### The analysis commands for stage 6, in one place
+
+```bash
+# --- under the VENV (standing rule 5) ---
+source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+BAG=~/Desktop/rosbags/<CAP-WORK stamp>
+TRACE=temp/logs/toss_trace_<CAP-WORK stamp>.jsonl
+
+python tools/probes/fk_convergence_bag_check.py --bag $BAG --json     # FK-2  (~92 s)
+python tools/probes/hand_stroke_timeline.py --trace $TRACE --json     # HAND-1..4, H3.1/3.5/3.7
+python tools/probes/levelling_tilt_bag_check.py --offset <TILT_X> <TILT_Y> \
+       --t0 <SECONDS FROM BAG START, a few s after the LVL-2 go_home> \
+       --bag $BAG --json                                              # LVL-3
+python tools/probes/catch_reach_replay.py --bag $BAG --list           # index the tosses
+python tools/probes/catch_reach_replay.py --bag $BAG --toss N --json --csv          # CCATCH-2, CATCH-2
+python tools/probes/catch_reach_replay.py --bag $BAG --thrower ball_butler \
+       --toss N --json                                               # CCATCH-3, ZSEAT-3
+
+# --- plain greps of the node logs (no venv needed) ---
+ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -c "seed FK failed"          # FK-1
+ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "seeded hold at pose"     # FK-3
+LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log
+grep -c "hand stroke-busy window latched" "$LOG"                                    # H1.2
+grep -nE "hand catch arm withheld|Arming hand catch" "$LOG"                         # H1.3 / H1.7
+grep "Hand primed to" "$LOG"                                                        # H3.2
+ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "Toss REJECTED_NOT_LEVELLED" | wc -l  # LG-4
+```
+
+`<TILT_X> <TILT_Y>` are the **radians** from LVL-1's log line.
+
+**The three rows the block above does NOT produce, and what does** (corrected
+2026-07-27 — each previously said "by eye" for a numeric criterion):
+
+| row | quantity | the command that produces it |
+|---|---|---|
+| LVL-4 | parked Platform-vs-`Base` mocap tilt | § CHECK LVL-4's **inline `/rigid_body_poses` reader** — no `tools/probes/` script reads that topic. **REPORT-only** |
+| ZSEAT-4 | commanded pose flat over `release ± 0.10 s` | `levelling_tilt_bag_check.py --t0 <release−0.10> --t1 <release+0.10>` (seconds from bag start) and read the plateau table's **`span_deg`**, plus `samples` > 0 and `FK failures 0`. **Ignore its `VERDICT:` line** — that gate compares the *park* plateau to the offset and is meaningless on a 0.2 s window |
+| ZSEAT-2 (flatness) | commanded tilt flat over the last 0.8 s before landing | same command, `--t0 <landing−0.8> --t1 <landing>`; read **`span_deg`** |
+
+`catch_reach_replay --csv` cannot serve those last two: its series is trimmed to
+the span where the *model* is defined (the plan), so it stops at the plan end —
+verified 2026-07-27, `--thrower ball_butler --toss 2 --post 1.5` still ends at
+`t_rel_release +0.026 s`. Raising `--post` does not extend it.
+
+### Stage 7 — CAP-SHORT (optional, LAST, only if HAND-1 passed)
+
+Two tosses at `throw_height_m: 0.38` (T ≈ 0.557 s, just inside the band). The
+suppression window narrows to **115 ms** there, against 395 ms at 0.80 s — this is
+the corner where H1.4 is most likely to fire, which is the point of running it.
+Score H1.1–H1.7 only. **Run it at the default `catch/vel_scale` (0.8)**: a reduced
+scale closes the window at this flight length by itself and you would be measuring
+the knob, not the gate. A MISSED catch here is not by itself a Phase-1 failure.
+
+### Not on the run sheet, deliberately
+
+- **CHECK FK-4** (MPC hot loop) — needs `run_mpc.py`, which standing rule 4 keeps
+  off. Run it only if you exercise the MPC this sitting; otherwise record it as
+  skipped.
+- **CHECK CATCH-1 / CATCH-3** — superseded by INST-1 and by § CCATCH-3's banner
+  respectively; CATCH-3's table is a **pre-fix reference**, not a pass criterion.
+  Kept in place for the numbers.
+- **CHECK LVL-5** (catch error) — **superseded by CCATCH-2t**, which is on the run
+  sheet and is *gated* where LVL-5 was REPORT-only. LVL-5's `≈16 mm` was the
+  through-seat residual C-CATCH-1 removed; its section carries a banner saying so.
+  Nothing is dropped — the measurement still happens, under a different id and a
+  tighter criterion.
+- **§ Section CATCH's "When Phase 2's sitting happens"** — that sitting is this
+  one; its five bullets are the standing rules plus stage 6.
+- **H2.4 / H3.6 / H4.8** (SAFE_ABORT behaviour) — scored **only if a SAFE_ABORT
+  occurs naturally**. Do not provoke one: a kind-3 retract clobbering an armed
+  kind-0 is the only un-arm mechanism the Teensy offers.
+
+## RESIDUAL RISK — what this run did NOT close
+
+Read this before the sitting. None of it blocks the sitting; all of it changes how
+you interpret a surprise.
+
+1. **The reload-seat deflection risk is OPEN and this sitting is the experiment.**
+   `_CATCH_TILT_THROUGH_RATE_RADPS` went to `0.0` on an operator decision, so the
+   reload's 11.08°-tilted rim is now **stationary at ball contact** — exactly the
+   geometry the bb-sim finding says deflects a ball. Two facts bound it without
+   removing it: the `0.07` it replaced was **never hardware-validated** (its own
+   leg-velocity sizing note was 2× wrong until measured), and until commit
+   `407154f` the seat was aimed off the **plan-frame** tilt, so no bench impression
+   was ever formed on a correctly-aimed one. **ZSEAT-2 exists to score this**, and
+   its ABORT path is a one-line default change, not a redesign.
+2. **An armed hand stroke produces NO observable until its event time.** The arm
+   itself cannot be telemetry-confirmed the way the hand ladders were (`4e33b53`).
+   HAND-2's H2.2 verifies the half a capture *can* see — a repack that clobbers a
+   **live** stroke shows up as a from-rest `seed`. The other half is unobservable
+   from the Jetson. A Teensy-side "armed stroke" field in `hand_telemetry` or
+   `link_status` would fix it and is a protocol change, out of scope here.
+3. **The Platform Teensy has no `FW_VERSION`, so host/firmware skew on the hand
+   path is undetectable.** See the deployment-matrix box. The residual is not just
+   this sitting: *every* future Platform-Teensy change inherits it. Adding one is a
+   protocol change and wants its own decision.
+4. **The `ERR_TIMEOUT` hand-ack epidemic is unfixed** (`HAND_TRAJ_CMD` acks fail
+   40–60 % of the time and lie in *both* directions). It is the reason the arm can
+   be dispatched twice per ball, which is what HAND-2 exists to bound. More hand
+   dispatches = more exposure; log dispatch-failure WARNs and any
+   `ABORTED_NO_RELEASE` as epidemic gauge data. It has its own investigation.
+5. **The kind-3 clobber gap is deliberately UNTOUCHED — operator's call.** Phase 4
+   *narrowed* it (the empty-trajectory branch now requires the hand to be at rest
+   **as well as** at the target, which strictly shrinks the condition
+   `Teensy_code.ino:472-475` checks before `packedMsgs.clear()`), but the gap itself
+   remains, and a pre-release SAFE_ABORT still depends on a kind-3 retract being
+   able to clobber an armed stroke. H2.4 / H3.6 / H4.8 watch it; none of them
+   provokes it.
+6. **A velocity-continuous prelude is LONGER than the rest-to-rest one** — 0.24 s at
+   the 6.0 rev/s dead-band edge, 0.32 s at 8 rev/s, against the 76 ms
+   `PRELUDE_ALLOWANCE_S` budget. So at `FLIGHT_TIME_MIN_S` the firmware's own `:533`
+   fit check could refuse the arm — a lost catch with the live stroke intact. It is
+   reachable only if the hand is drifting 6–9 rev/s when a kind-1 arm lands, against
+   a measured settle tail of ≤ 0.25 rev/s, so it has never been observed. Row
+   **H4.7** watches for it; contract limit **F.1** records it.
+7. **An operator decision this run deliberately did NOT take, with its numbers.**
+   Phase 4 found the plan's premise physically unshippable: arresting `v0` costs
+   `0.0077832·v0²` rev of travel, so velocity continuity is affordable only to
+   **~9.1 rev/s** at the stroke top and **~20.9 rev/s** mid-stroke (**~20.3 rev/s**
+   once the 0.8005 s duration cap binds), while the hand passes release at
+   **~120 rev/s** — needing **111 rev** of arrest travel against **11.1 rev** of
+   stroke. Both plan options were rejected with numbers: refusing the command breaks
+   the kind-3 clobber (the only un-arm mechanism), and braking hard enough would
+   need **28 000 rev/s²** on a mid-descent retract, **280×** the declared limit. It
+   shipped a third: fall back to the rest-to-rest profile — *today's exact
+   behaviour*, adding no commanded magnitude the firmware could not already produce.
+   **The open question**: `MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100 rev/s²` is a
+   **comfort** limit, and the shipped throw profile itself commands **1908 rev/s²**
+   at a 0.80 s flight and **6055 rev/s²** at the band top — so the hand has 19–60×
+   more authority than the smooth move is allowed to use. Whether `makeSmoothMove`
+   should get a second, higher arrest limit is an **envelope decision** (it changes
+   what the machine can physically do), not an implementation one. **Nothing in this
+   sitting needs the answer** — the fallback *is* today's behaviour, so declining to
+   decide costs nothing. It is here so you meet the question with the numbers
+   attached rather than discovering it mid-debrief.
+8. **Two headline criteria from the original plans are NOT reachable and have been
+   replaced** (both corrected mid-run, both re-verified 2026-07-27):
+   `levelling-frame-contract` Phase 4's *"commanded `rx` flat to ±0.05° across the
+   whole goal"* is replaced by LVL-3's **park-plateau** criterion, and its
+   *"catch error < 10 mm"* was unreachable under C-LEVEL-1 alone. C-CATCH-1 then
+   removed the 0.3008° through-seat residual that caused the 16 mm, so **< 10 mm is
+   now the criterion (CCATCH-2t) but it is a PREDICTION, not a measurement** —
+   nothing has measured a post-C-CATCH-1 catch error yet. Treat a reading between
+   10 and 16 mm as new information, not as a failure of either contract.
+9. **The pre-throw tilt swing is GONE, and § Section LVL still says it remains.**
+   That section was written against the C-LEVEL-1-only machine, where the swing was
+   `+2.92°` at a 3.70 s lead. C-CATCH-1 removed it. § Section LVL carries a
+   superseded banner; do not score `peak_above_park` against anything.
+10. **The mocap `Base` body is not a plumb line, and LVL-4 has been demoted to
+    REPORT because of it.** Measured 2026-07-27 on the reference bag: the parked,
+    *uncorrected* Platform sits **0.087°** off `Base` while the inclinometer read
+    **0.782°** off gravity at the same instant — so `Base` is itself ~0.78° off
+    gravity and its local frame is a QTM body-definition artefact. Consequence: a
+    correctly-levelled platform is *expected* to read ≈ 0.78° against `Base`, which
+    was LVL-4's old "stop the sitting" ABORT. The gated levelling verdict is LVL-3.
+    Establishing a true gravity reference for the mocap frame is unclosed and would
+    need its own bench procedure.
+11. **The MuJoCo plant still primes the hand at the pre-Phase-3 `9.858` rev, and a
+    test pins it there.** `sim/plant/mujoco_plant.py:130` hardcodes
+    `9.858 * 2π * 5.21` and `tests/sim/test_hand.py:69` asserts against the same
+    literal, while the source of truth moved to **`9.9594`** in `94fe817`
+    (`config/hardware_config.yaml:497`, `HAND_STROKE_TOP_REV = 9.95940313273228`).
+    Nothing on this run sheet touches the sim, so it cannot affect the sitting —
+    but any future session that uses the sim as the mirror for the hand path will
+    reproduce the ~76.5 ms prelude Phase 3 removed on hardware and conclude the fix
+    did not land. Deferred out of the 2026-07-27 close-out deliberately: it is a
+    `sim/` production change plus a test change, i.e. its own logical unit.
+
+---
+
 ## Shared preconditions (do these once per sitting)
 
 - Jugglebot powered, ODrives up, CAN3 healthy; QTM streaming **Base +
   Platform**; `/rigid_body_poses` flowing.
-- **POWER-CYCLE THE CAN-BRIDGE TEENSY** before the sitting. Tracking lag grows
-  with Teensy uptime, so log `uptime_ms` alongside every timing measurement.
-- `levelling_complete` is per-boot: run a manual `level` after every relaunch.
-- `run_mpc.py` is **NOT** running unless a check says so (sole-binder :5557).
+- Standing rules 1–6 above apply to every check in this file.
 
 ### Build gate
 
-Every section below states its own build needs. Where a section says *colcon +
-relaunch*, run:
+**See § DEPLOYMENT MATRIX above** — it is the authority. Where a section below
+says *colcon + relaunch* it means matrix row A, and running row B's two-package
+build instead is always correct:
 
 ```bash
-cd ~/Desktop/Jugglebot/ros_ws && colcon build --packages-select jugglebot
+cd ~/Desktop/Jugglebot/ros_ws
+colcon build --packages-select jugglebot_interfaces jugglebot
 source install/setup.bash
 ```
 
@@ -49,26 +542,63 @@ so a relaunch without a rebuild keeps the old code.
 > executes it, so **HAND-4 requires flashing `Teensy_code/Teensy_code.ino` to the
 > Platform Teensy** (not the can-bridge, not the CatchingCone). There is **no
 > version handshake on that board**, so nothing will tell you if you skipped it —
-> § CHECK HAND-4 row **H4.0** is the only guard. Every other section in this
-> runbook is colcon + relaunch; `levelling-frame-contract` Phase 3 additionally
-> needs `jugglebot_interfaces` rebuilt (see § Section LVLGATE).
+> § CHECK HAND-4 row **H4.0** and the deployment matrix's four-link chain are the
+> only guards. Every other section in this runbook is colcon + relaunch;
+> `levelling-frame-contract` Phase 3 additionally needs `jugglebot_interfaces`
+> rebuilt (see § Section LVLGATE).
 
-### Recording (do this for every check that produces a verdict)
+### Recording — ONE list, for every capture
+
+Individual sections below each say "append these topics". **Do not run two
+different lists.** Extra topics are harmless to every analysis command in this
+file, and a missing topic is unrecoverable after the fact — several of these
+measurements *cannot* be reconstructed from a bag that lacked them. Use this
+consolidated command for **every** capture (CAP-GATE, CAP-RELAUNCH, CAP-WORK,
+CAP-SHORT):
 
 ```bash
 mkdir -p ~/Desktop/rosbags && cd ~/Desktop/rosbags
 ros2 bag record -o "$(date +%Y-%m-%d_%H-%M-%S)" \
   /robot_state /leg_setpoint_echo /platform_target /rigid_body_poses \
-  /link_status /rosout /trajectory/status
+  /link_status /rosout /trajectory/status \
+  /trajectory/diagnostics /trajectory/target_feedback \
+  /catch/dynamic_target /gravity_offset /throw_announcements \
+  /hand_telemetry
 ```
 
-Note the bag directory name — the analysis commands below take it as `--bag`.
+Note the bag directory name — the analysis commands take it as `--bag`.
 
-`/trajectory/status` was added to this list on 2026-07-26 (extra topics are
-harmless to every existing analysis command). § Section LVLGATE's CHECK LG-4
-diagnoses a suspected staleness false-positive from its inter-arrival gaps, and
-that measurement is only obtainable *after the fact* if the topic was in the bag
-from the start — it is 5 Hz, so the cost is negligible.
+Why each of the later additions is in the shared list rather than per-section:
+
+- `/trajectory/status` (added 2026-07-26) — CHECK LG-4's staleness diagnostic
+  measures its inter-arrival gaps, and that is only obtainable if the topic was in
+  the bag **from the start**. 5 Hz; the cost is negligible.
+- `/trajectory/diagnostics /trajectory/target_feedback /catch/dynamic_target
+  /gravity_offset /throw_announcements` — the install census and the replay seed
+  that `tools/probes/catch_reach_replay.py` needs (CATCH-2, CCATCH-2, CCATCH-3,
+  ZSEAT-3), and `/trajectory/diagnostics` is also where CCATCH-5 and LVL-2 read
+  `peak_leg_*`.
+- `/hand_telemetry` — lets `tools/probes/hand_stroke_timeline.py --bag` work as a
+  fallback. **It is not a substitute for the trace recorder** (below), which
+  remains mandatory for every HAND check.
+
+**AND, in its own terminal, the trace recorder** — mandatory for every capture,
+because the dip lives in `hand_telemetry` at a resolution the bag path does not
+reproduce, and LG-5 reads only the jsonl. **System `python3`, ROS sourced, NOT the
+venv** (standing rule 5):
+
+```bash
+cd ~/Desktop/Jugglebot
+python3 tests/hardware/toss_trace_recorder.py record
+```
+
+Writes `temp/logs/toss_trace_<stamp>.jsonl`; note the filename. **Confirm its 1 Hz
+live line shows `hand ~100 Hz` before any goal is sent** — `hand 0 Hz` means the
+Teensy telemetry stream is down and no HAND verdict is possible.
+
+Stop and restart the recorder at the end of CAP-GATE (see § CAPTURES): LG-5
+requires exactly two `loaded-flips` in one trace file, and CAP-RELAUNCH's second
+`level` would add a third.
 
 ---
 
@@ -287,8 +817,10 @@ python tools/probes/hand_stroke_timeline.py --gate
 
 - **PASS**: **exit 0**, and **two** `GATE PASS` lines — one for the Context-table
   branch (`25/25 rows within tolerance` as of 2026-07-26) and one for
-  `fixed-shape branch` (four cases: `clean`, `overshoot`, `short-flight`,
-  `braking-prelude`). Judge on the exit code and on both lines being `GATE
+  `fixed-shape branch` (**five** cases: `clean`, `overshoot`, `short-flight`,
+  `braking-prelude`, `deep-brake` — the fifth was added by this run's Phase 4 as
+  the separator at the excursion clamp's reach, so a probe printing only four is
+  a pre-`5369fc2` tree). Judge on the exit code and on both lines being `GATE
   PASS`, **not** on the row count: the count grows whenever a row is added to
   the reference table, and treating it as the criterion has already produced one
   stale runbook.
@@ -309,7 +841,7 @@ is looked at.
 |---|---|---|---|
 | 1 | `trunc` | `-` (the command followed the decel ramp to `x3`) | any instant printed ⇒ the queue was still cleared mid-stroke |
 | 2 | `seeds` | `0` (printed as `-`) | `>= 1` from-rest quintic seed inside the stroke |
-| 3 | `peak` | `<= 10.060` rev (`x3` 9.9594 + 0.10) | `> 10.060` rev; **hard abort at `> 10.5` rev** |
+| 3 | `peak` | `<= 10.060` rev (`x3` 9.9594 + 0.10) | `> 10.060` rev. **Corrected 2026-07-27: the hard abort is `> 10.60` rev, not `> 10.5`** — 10.60 rev is the excursion clamp's own ceiling (`11.1 − 0.5`), and `10.060 < peak <= 10.60` is a **section** abort with a specific suspect (H4.4), *not* an E-STOP. `> 10.60` rev is the HARD ABORT + E-STOP (H4.5). One number, one response |
 | 4 | `dip_below_x3` | `<= 0.100` rev (`<= 3.2` mm) — the row prints `OK` | `> 0.100` rev — the row prints `OVER`. Pre-fix range was **0.339–1.748 rev = 10.7–55.3 mm**. **Qualified by row 7 after Phase 4** — see below |
 | 5 | `pullback` | `>= -5.0` rev/s, **given row 3 passed** | `< -5.0` rev/s. Pre-fix range was **−17.9 to −42.4 rev/s** |
 | 6 | `catch_desc` | present, within ~20 ms of `event − t_acc_catch` | absent ⇒ the catch never fired; check the Teensy serial for `Not enough time for smooth-move` |
@@ -817,6 +1349,26 @@ costs nothing.
 
 ## Section LVL — `levelling-frame-contract` Phases 1–2 (one levelling frame)
 
+> ### ⚠ SUPERSEDED IN PART, 2026-07-27 — this section describes the C-LEVEL-1-ONLY machine
+>
+> `catch-reach-degenerate-overshoot` Phases 2 and 3 landed **after** this section
+> was written and changed three of its expectations. § CHECK CCATCH-3's banner
+> flagged one of them; this banner covers all three, because they are stated *here*
+> and a top-to-bottom reader meets them here first. Everything else in this section
+> — LVL-0, LVL-1, LVL-2, LVL-3's park-plateau gate, LVL-4's parked-tilt gate — is
+> **unchanged and still the authority**.
+>
+> | stated below | **actually correct now** |
+> |---|---|
+> | *"What did NOT land: the visible pre-throw tilt swing… it survives this fix at roughly its original size"*, and **pre-brief item 3** (`+2.9198°` at a 3.70 s lead, `0.789132°` per second of lead) | **The swing is GONE.** C-CATCH-1 stopped `build_catch` manufacturing an arrival twist for a gravity-level catch, so the reach is **flat / monotone** and commands no swing at all. Everything the pre-brief says about *why* the swing existed is still the correct explanation of the **pre-fix** data — read it as history |
+> | **CHECK LVL-3's `peak_above_park` REPORT block** (expect `+2.9198°`, cross-check `implied lead ≈ 3.7 s`) | `peak_above_park` is now **≈ 0** on a healthy level catch, and `implied lead` is meaningless when the model's own input is zero. **Do not score either.** § CHECK CCATCH-2 replaces them: peak above park ≤ `1.05 ×` the requested displacement, monotone toward the target |
+> | **CHECK LVL-3's `settle_rx` REPORT** (expect **−1.0784°**) and **CHECK LVL-4's** *"Platform tilt during the catch settle, expected 0.30° off level"* and *"peak tilt during the reach, expected ≈2.92°"* | Settle is now **exactly the commanded target** (`−0.7788 / −0.0692°` for the 2026-07-25 offset) and the residual vs gravity at contact is **0.0000°**, not 0.3008°. The mocap peak during the reach is the requested displacement, not `2.92°` |
+> | **CHECK LVL-5**: *"REPORT: expect ≈16 mm, unchanged"* | The 16 mm **was** the 0.3008° through-seat residual, and C-CATCH-1 removed that residual. The criterion is now **CCATCH-2t: < 10 mm**. It is a **prediction, not a measurement** — nothing has yet measured a post-C-CATCH-1 catch error, so a reading between 10 and 16 mm is new information, not a contract failure |
+>
+> Pre-brief items **1** (the resting platform sits 0.78° off its own frame) and
+> **2** (the first `go_home` after a `level` is a real 2.77 mm move) are
+> **unaffected and still correct**.
+
 **Plan**: `plans/active/levelling-frame-contract.md` § Phases 1–2
 **Contract**: `ros_ws/docs/levelling_frame.md` (**C-LEVEL-1**)
 **What landed**: `trajectory_node` applied the gravity-levelling correction on
@@ -832,6 +1384,9 @@ level was. All six surfaces now pass through one shared `motion/levelling.py`, a
 **What did NOT land**: the *visible* pre-throw tilt swing. That is `build_catch`'s
 arrival twist, it survives this fix at roughly its original size, and pre-brief
 item 3 below is the one thing to read before scoring anything here.
+*(**⚠ No longer true as of `catch-reach-degenerate-overshoot` Phase 2 — the swing
+is GONE.** See the SUPERSEDED banner at the head of this section. This paragraph is
+the correct account of the machine as it stood when C-LEVEL-1 landed alone.)*
 
 **Build needs**: **colcon + relaunch** (`trajectory_node.py`,
 `mpc_bridge_node.py`, `motion/levelling.py`, `motion/trajectory/planner.py`
@@ -861,7 +1416,12 @@ changed). **No firmware flash. No interface change** — `colcon build
 >    Two hardware runbooks still describe this teardown `go_home` as "a genuine
 >    no-op" (`session_phase1_hold.md`, `mvp_bench_runbook.md`) — they are
 >    annotated, but if you are working from memory, expect the small move.
-> 3. **THE PRE-THROW TILT SWING IS STILL THERE. This fix does not remove it.**
+> 3. **⚠ NO LONGER TRUE — `catch-reach-degenerate-overshoot` Phase 2 REMOVED the
+>    swing (see this section's SUPERSEDED banner). Read item 3 as the pre-fix
+>    account; it is why the swing existed, and it is still the right explanation of
+>    the 2026-07-25 data. Expect a FLAT reach now.**
+>
+>    **THE PRE-THROW TILT SWING IS STILL THERE. This fix does not remove it.**
 >    You will still see the platform "slowly tilt back, then forward" before every
 >    toss, and it will be roughly the same size as on 2026-07-25 — about
 >    **+2.9°** at the ~3.7 s catch lead that session ran. That is **not** a
@@ -882,6 +1442,16 @@ changed). **No firmware flash. No interface change** — `colcon build
 >    Removing the swing is `plans/active/catch-reach-degenerate-overshoot.md`.
 >
 > ### ⚠ AND ONE THING THIS FIX DOES **NOT** CLOSE — the criteria below are revised
+>
+> **⚠ AND THEN C-CATCH-1 DID CLOSE IT (2026-07-27 note).** Everything in this box
+> is a correct account of the machine with C-LEVEL-1 alone, and it correctly
+> explains the 16 mm. `catch-reach-degenerate-overshoot` Phase 2 then landed and
+> removed the through-seat's wrong aim, so the 0.3008° residual is **0.0000°** and
+> the 16 mm term is gone. The *first* criterion stays revised — "flat to ±0.05°
+> across the whole goal" is still replaced by LVL-3's park plateau, for the separate
+> reason that a park-plateau measurement is what actually tests frame agreement. The
+> *second* is un-revised: **catch error < 10 mm is live again**, as
+> § CHECK CCATCH-2's gated row. It is a prediction, not yet a measurement.
 >
 > The plan's Phase 4 predicted commanded `rx` **flat to ±0.05° across the whole
 > goal** and a catch error **< 10 mm**. **Neither is reachable by this fix**, and
@@ -1037,6 +1607,14 @@ probe prints a `NOTE:` when it detects this shape, but do not rely on it.)
   which is exactly **twice** the correction and means the correction is being
   applied twice (the mirror bug: a derived/FK-seeded pose routed through the
   correction).
+- **⚠ SUPERSEDED 2026-07-27 — DO NOT SCORE THE NEXT TWO BULLETS.** `peak_above_park`
+  and `settle_rx` both described the C-LEVEL-1-only machine. C-CATCH-1 removed the
+  arrival twist that produced both, so on a healthy capture `peak_above_park` is now
+  **≈ 0** (not `+2.9198°`) and `settle_rx` is **exactly the commanded target** (not
+  `−1.0784°`). `implied lead` is meaningless once the model's own input is zero.
+  § CHECK CCATCH-2 carries the replacements. The two bullets are kept verbatim
+  because they remain the correct account of the **pre-fix** bag, which is what
+  CATCH-2 reproduces.
 - **REPORT, never gate**: `peak_above_park`. Post-fix this equals the platform's
   **physical peak tilt against gravity**, and it is *larger* than the pre-fix
   reading of the same name — pre-fix the park itself sat 0.7788° high, so
@@ -1078,16 +1656,98 @@ without depending on a defect this plan does not own.
 
 Validates: Phases 1–2 against an instrument that does **not** share the FK path.
 
-From the same bag, read `/rigid_body_poses` for the `Platform` body.
+> ### ⚠ SUPERSEDED 2026-07-27 — LVL-4 IS NO LONGER A GATE. Its ABORT signature is what a CORRECT machine produces.
+>
+> Two defects, both found by building the instrument this row had never had:
+>
+> **1. There was no instrument at all.** `grep -rn rigid_body_poses tools/probes/`
+> returns **nothing** — no probe in the repo reads the topic. The row carried a
+> `±0.10°` number and a "stop the sitting" ABORT with no documented way to produce
+> the number, so at the bench it would be skipped or hand-rolled under time
+> pressure. A validated reader is supplied below.
+>
+> **2. `Base` is not a gravity reference, so the ±0.10° premise is inverted.** The
+> row assumed the mocap `Base` body is level, hence that a levelled Platform reads
+> `≈ 0°` against it. Measured on the pre-fix reference bag
+> (`~/Desktop/rosbags/2026-07-25_15-17-48`, run 2026-07-27 with the reader below):
+> parked Platform-vs-`Base` tilt is **0.0869° median over the whole bag, 0.132°
+> median over the quiet 5–40 s window** — i.e. the platform sits essentially *on*
+> the `Base` body's frame. At that same physical state the inclinometer measured
+> **0.782°** off gravity (the bag's own `/gravity_offset`:
+> `hypot(0.013592, 0.001207) = 0.013646 rad`; the `tilt_x` component alone is
+> `0.7788°`). Both cannot be level: **`Base` is ~0.78° off gravity**, and its
+> local frame is a QTM body-definition artefact, not a plumb line.
+>
+> The correction moves the platform *physically* — that is the whole point of
+> "a commanded `−0.78°` **is** physically level" — so a correctly-levelled
+> post-fix park is expected to read **≈ 0.78° against `Base`**, which is verbatim
+> the old ABORT ("physically tilted by ~0.78° while parked ⇒ stop the sitting").
+> Scoring it as written aborts a working machine, exactly as § CHECK CCATCH-3's
+> `peak off the park` row did. **LVL-4 is now REPORT-only.** The gated levelling
+> verdict is § CHECK LVL-3, which is instrumented, and whose own three-way
+> discrimination (`≈ 0` / correct / `≈ 2×`) this row can only corroborate.
 
-- **PASS**: between goals (during the park plateau LVL-3 identified), the
-  Platform's total tilt against the `Base` frame is within **±0.10°** of level —
-  i.e. it does **not** track the commanded `−0.78°`, because the correction's
-  whole purpose is that a commanded `−0.78°` *is* physically level.
-- **ABORT**: the platform is physically tilted by ~0.78° while parked. That
-  inverts the sign of the correction: `correction_from_offset` negates the
-  measured error, and a physical tilt of the same magnitude means it is being
-  **added** instead. Stop the sitting.
+**The reader (validated 2026-07-27 on the reference bag: 46 161 samples over
+290.3 s, ~53 s wall-clock, 0 failures).** Venv, standing rule 5. `world →
+platform_start` is a **translation-only** static TF (`mocap_node.py:195-203`,
+`rotation.w = 1.0`), so the two bodies' quaternions are directly comparable.
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+python - "$BAG" <<'PY'
+import glob, sys, math
+import numpy as np
+from mcap_ros2.reader import read_ros2_messages
+def qmat(q):
+    x, y, z, w = q
+    return np.array([[1-2*(y*y+z*z), 2*(x*y-z*w),   2*(x*z+y*w)],
+                     [2*(x*y+z*w),   1-2*(x*x+z*z), 2*(y*z-x*w)],
+                     [2*(x*z-y*w),   2*(y*z+x*w),   1-2*(x*x+y*y)]])
+rows = []
+for path in sorted(glob.glob(sys.argv[1] + '/*.mcap')):
+    for m in read_ros2_messages(path, topics=['/rigid_body_poses']):
+        d = {b.name: b.pose.pose.orientation for b in m.ros_msg.bodies}
+        if 'Base' not in d or 'Platform' not in d:
+            continue
+        qb = (d['Base'].x, d['Base'].y, d['Base'].z, d['Base'].w)
+        qp = (d['Platform'].x, d['Platform'].y, d['Platform'].z, d['Platform'].w)
+        if any(math.isnan(v) for v in qb + qp):
+            continue           # Catching_Cone drops out as NaN; Base/Platform can too
+        zp = (qmat(qb).T @ qmat(qp)) @ np.array([0.0, 0.0, 1.0])
+        rows.append((m.log_time_ns * 1e-9,
+                     math.degrees(math.acos(max(-1.0, min(1.0, float(zp[2]))))),
+                     math.degrees(math.atan2(zp[1], zp[2])),
+                     math.degrees(-math.atan2(zp[0], math.hypot(zp[1], zp[2])))))
+a = np.array([[r[1], r[2], r[3]] for r in rows])
+print('samples %d over %.1f s' % (len(rows), rows[-1][0] - rows[0][0]))
+print('tilt_deg median %.4f  p95 %.4f  max %.4f'
+      % (np.median(a[:, 0]), np.percentile(a[:, 0], 95), a[:, 0].max()))
+print('rx_deg   median %+.4f  min %+.4f  max %+.4f' % (np.median(a[:, 1]), a[:, 1].min(), a[:, 1].max()))
+print('ry_deg   median %+.4f  min %+.4f  max %+.4f' % (np.median(a[:, 2]), a[:, 2].min(), a[:, 2].max()))
+PY
+```
+
+Narrow it to the park by adding a bag-relative time filter on `rows` (the same
+`t − rows[0][0]` convention `--t0` uses — see § CHECK LVL-3).
+
+- **REPORT (the headline)**: parked Platform-vs-`Base` tilt. Against the pre-fix
+  baseline of **0.087°**, expect it to have moved **BY the correction**, i.e. to
+  read **≈ 0.78°** (`hypot(tilt_x, tilt_y)` from LVL-1). Reading **≈ 0.087°
+  unchanged** says the correction never reached the legs — cross-check LVL-3,
+  which gates that. Reading **≈ 1.56°** (twice the correction) is the
+  double-application signature LVL-3 also names; that one **is** worth stopping
+  for, but confirm it on LVL-3 first, because this row's absolute zero is an
+  unmeasured constant and LVL-3's is not.
+- **Sanity check the reader itself, in the same output**: `ry_deg max` should
+  land near the reload pre-tilt (reference bag: **+11.33°** against a commanded
+  `−10.64°` settle — magnitude and axis match, sign is this reader's own `atan2`
+  convention, not a fault) and `rx_deg` should stay inside roughly `[−3.7, +1.5]°`.
+  If those are wrong the frames are wrong and nothing else here means anything.
+- **⚠ SUPERSEDED 2026-07-27 — the next two REPORT bullets described the
+  C-LEVEL-1-only machine.** With C-CATCH-1 in force the mocap should read
+  **≈ 0° off level at the catch settle** (not `0.30°`) and a reach peak equal to the
+  **requested displacement** (not `≈2.92°`). Kept verbatim as the correct account of
+  the pre-fix bag.
 - **REPORT**: the Platform tilt during the catch settle, expected **0.30°** off
   level (the through-seat overshoot).
 - **REPORT**: the Platform's peak tilt during the catch reach, expected
@@ -1097,6 +1757,17 @@ From the same bag, read `/rigid_body_poses` for the `Platform` body.
   contribution at the peak. Not a gate.
 
 ### CHECK LVL-5 — catch error (expectation-setting, not a gate this round)
+
+> **⚠ SUPERSEDED 2026-07-27 by § CHECK CCATCH-2's tracker-catch-error row
+> (run-sheet id CCATCH-2t).** The `≈16 mm` below **was** the 0.3008° through-seat
+> residual — `0.005250 rad × 3.93 m/s × 0.8 s = 16.5 mm` — and C-CATCH-1 removed
+> that residual, so the criterion is now **< 10 mm** and it *is* gated (by
+> CCATCH-2). Two honest caveats, because the correction runs the other way from the
+> usual: **< 10 mm is a prediction, not a measurement** — nothing has yet measured a
+> post-C-CATCH-1 catch error on hardware — and the bullet below that calls a reading
+> "materially below 16 mm" a *surprise* is now inverted: it is the **expected**
+> result. A reading between 10 and 16 mm is new information about what else
+> contributes, not a failure of either contract.
 
 Validates: nothing this plan closes — recorded so the number is on file for the
 `build_catch` through-seat decision.
@@ -1133,6 +1804,12 @@ Validates: nothing this plan closes — recorded so the number is on file for th
 > **Do not start Phase 2's sitting from this section alone.** Phase 2 changes
 > commanded motion at ball contact on *every* catch, including the shipping reload
 > path, and its invariant (C-CATCH-1) is not yet ratified.
+>
+> **⚠ UPDATE 2026-07-27: Phase 2 AND Phase 3 have both landed** (`407154f`,
+> `e58ed89`), so "not yet ratified" is history and "Phase 2's sitting" is **this**
+> sitting. Its shape is not derived from this section: it is § THE RUN SHEET at the
+> top of this file, stage 6. The instruction above still holds in the form that
+> matters — do not start from this section alone.
 
 **Prerequisites for CATCH-1/2 (analysis only):** none beyond the venv. No colcon
 build, no relaunch, no firmware flash. Nothing here actuates the machine — these
@@ -1341,23 +2018,32 @@ well as by `outcome`** — as everywhere else in this file.
 
 ### CHECK CCATCH-3 — the reload path CHANGED, on purpose (regression watch)
 
-> **⚠ SUPERSEDED 2026-07-26 by § Section ZSEAT — four of the rows below now ABORT
-> on CORRECT behaviour.** The operator set the manufactured seat rate
-> (`planner._CATCH_TILT_THROUGH_RATE_RADPS`) to **0.0**, so the reload's
-> through-seat no longer exists at all. Corrections, row by row, so a top-to-bottom
-> reader cannot act on the stale table:
+> **⚠ SUPERSEDED 2026-07-26 by § Section ZSEAT — FIVE of the rows below now ABORT
+> on CORRECT behaviour, and a sixth has gone stale.** The operator set the
+> manufactured seat rate (`planner._CATCH_TILT_THROUGH_RATE_RADPS`) to **0.0**, so
+> the reload's through-seat no longer exists at all. Corrections, row by row, so a
+> top-to-bottom reader cannot act on the stale table:
 >
 > | row | table below says | **actually correct now** |
 > |---|---|---|
 > | segment count | `3 → 3`, ABORT if 2 | **2** — reach + quiescent hold. 3 would mean the zero default did not land |
 > | seat rate at ball contact | `0.070000` unchanged, ABORT below `0.0665` | **`0.000000 rad/s`** — a parked rim is the intended state |
 > | settle `rx` / `ry` | `+1.844635 / −10.928741°` | **`+1.774062 / −10.636334°`** = exactly the commanded target (a further `−0.070573 / +0.292407°`) |
+> | **`peak off the park`** | `10.9287°`, **ABORT if the delta exceeds `0.10°` in either direction** | **`10.6363°`** — a further **`−0.292407°`**, i.e. **2.9× that row's own ABORT threshold on a HEALTHY capture.** The row is the ry-axis peak, so it moves by exactly the ry settle delta above; the reach is monotone to the target with no overshoot past it (measured `0.000000°` past target, vs `0.292407°` at the `0.07` rate). Without this correction the table's closing paragraph sends the operator to "the receive tilt being threaded through is not the wire orientation" — a fault hunt on a working machine |
 > | predicted acc / jerk | `142.0 / 3935` | **`37.9 / 170`** (and vel `23.8 → 29.0` — it goes *up*; see ZSEAT-3) |
 > | the "PASS / ABORT" paragraph under the table | ABORT if the last 0.8 s is **flat** | **flat is the PASS** — inverted outright |
 >
-> The rest of the table — the aim rotation, `peak off the park`, the
-> `N further catch install(s)` census line — is unaffected and still reads as
-> written. Score the reload against § Section ZSEAT, not against this table.
+> **STALE rather than false — `arrival-rate bound`.** That row's ABORT is "the probe
+> prints `BINDS`". At a `0.0` default the probe cannot print `BINDS` at all: it
+> prints `MANUFACTURES NOTHING (default 0.0 since 2026-07-26 — the bound is dormant,
+> not removed)`, and the `0.20004 rad/s` bound itself is still computed and still
+> correct. So the row can never fire and never PASS as written — read it as
+> informational, and see § CHECK ZSEAT-3, which quotes the new wording.
+>
+> The rest of the table — the aim rotation (still `4.0997°`, still scoreable, the
+> seat's *aim* is unchanged by the zero default) and the `N further catch install(s)`
+> census line — is unaffected and still reads as written. Score the reload against
+> § Section ZSEAT, not against this table.
 
 Validates: that the intended, quantified change on the **shipping** reload path is
 the one that actually happened — and nothing larger.
@@ -1879,10 +2565,13 @@ PY
 > fix, and it lands after § Section CCATCH.
 > `planner._CATCH_TILT_THROUGH_RATE_RADPS` is now **`0.0`**.
 >
-> It supersedes four rows of **§ CHECK CCATCH-3** — a banner at the head of that
+> It supersedes **five** rows of **§ CHECK CCATCH-3** (and leaves a sixth, the
+> `arrival-rate bound`, *stale* rather than false) — a banner at the head of that
 > check lists them, and one of them (*flat commanded tilt in the last 0.8 s*) is
-> **inverted**: what CCATCH-3 tells you to ABORT on is now the PASS. Read that
-> banner before scoring any reload.
+> **inverted**: what CCATCH-3 tells you to ABORT on is now the PASS. The fifth,
+> added 2026-07-27, is `peak off the park`, which moves `−0.292407°` on a HEALTHY
+> capture against its own `> 0.10°` ABORT. Read that banner before scoring any
+> reload.
 >
 > Nothing in **§ CHECK CCATCH-2** changes. A gravity-level catch already had a
 > zero arrival twist under C-CATCH-1 (`smag == 0`), so every CCATCH-2 number is
@@ -1972,10 +2661,11 @@ reached the cup) is BB scatter and is not evidence about the seat.
 
 | quantity | PASS | ABORT (route back to this section) |
 |---|---|---|
-| caught / attempted | **≥ 12/19 (0.63)** — i.e. no worse than sitting 4's 15/19 (0.79) by more than one binomial sigma (σ ≈ 0.09 at n = 19) | **≤ 11/19 (0.58)**, i.e. ≥ 2σ down |
+| caught / attempted | **rate ≥ 0.63** (≥ 8/12, ≥ 12/19) — i.e. no worse than sitting 4's 15/19 (0.79) by more than one binomial sigma (σ ≈ 0.09 at n = 19) | **rate ≤ 0.58** (≤ 6/12, ≤ 11/19), i.e. ≥ 2σ down |
+| caught / attempted, **between** those two rates | — | **INCONCLUSIVE, not a verdict.** Score the RATE, never a fixed count: the sitting mandates only `n ≥ 12`, where 7/12 = 0.583 satisfies *neither* predicate and a literal reading of "12/19" as *twelve catches* is unachievable at n = 12 at all. Report the raw count and either extend the sitting toward `n = 19` or repeat |
 | **bounce-outs** (touched the cup, left it) | **≤ 1** across the sitting | **≥ 3**, or **≥ 2 consecutive** — this is the seat-deflection signature and it is what the `0.07` existed to prevent |
 | bounce-out vs sitting 4 | sitting 4's misses were BB scatter + late arrival, **not** bounce-out | any bounce-out cluster that was **absent** before is attributable to this change until shown otherwise |
-| commanded tilt over the last 0.8 s before landing (FK of `/leg_setpoint_echo`) | **flat**, `< 0.05°` of motion — the rim is parked, as intended | `≈ 0.9°` of round trip — the zero default did **not** land (stale install: colcon + relaunch) |
+| commanded tilt over the last 0.8 s before landing (FK of `/leg_setpoint_echo`) — `levelling_tilt_bag_check.py --t0 <landing−0.8> --t1 <landing>` (**seconds from bag start**), read `span_deg`, ignore its `VERDICT:` | **flat**, `< 0.05°` of motion — the rim is parked, as intended | `≈ 0.9°` of round trip — the zero default did **not** land (stale install: colcon + relaunch) |
 | `peak_leg_acc_mmps2` / `_jerk_mmps3` on a reload catch install | `≈ 38 / ≈ 170` (was `142 / 3935`) | still `≈ 142 / ≈ 3935` — stale install |
 | plan segments on a reload catch install | **2** | 3 — stale install |
 
@@ -2053,7 +2743,7 @@ timing rather than by inspection of a trace alone):
 
 | quantity | PASS | ABORT |
 |---|---|---|
-| commanded platform pose (FK of `/leg_setpoint_echo`) over `release ± 0.10 s` | **flat**, `< 0.02°` and `< 0.2 mm` of motion | any commanded motion — a plan is running through the release |
+| commanded platform pose (FK of `/leg_setpoint_echo`) over `release ± 0.10 s` — produce it with `levelling_tilt_bag_check.py --t0 <release−0.10> --t1 <release+0.10>` (**seconds from bag start**) and read the plateau table's `span_deg`; ignore that probe's `VERDICT:` line, which scores the *park* against the offset and means nothing on a 0.2 s window | **flat**, `< 0.02°` and `< 0.2 mm` of motion | any commanded motion — a plan is running through the release |
 | `/trajectory/status` `plan_time_remaining_s` at release | ≤ 0 (terminal hold), or a hold segment | a `move` plan mid-reach |
 | Tier 8b only: first `catch/dynamic_target` timestamp | **≥** `t_release` | before `t_release` — the deferred reach fired early |
 

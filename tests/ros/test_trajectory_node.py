@@ -40,6 +40,34 @@ from controller.teensy_link.setpoint_pump import SetpointPump
 
 _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
 
+# ── the manufactured through-seat rate this file runs the seat machinery against ──
+#
+# `planner._CATCH_TILT_THROUGH_RATE_RADPS` SHIPS AT 0.0 (operator decision,
+# 2026-07-26). `build_catch` gates its whole seat block on `rate > 0.0`, so at the
+# shipped default the decay segment, the arrival twist and the `receive_tilt`
+# argument itself are all BIT-IDENTICALLY INERT — a catch is reach + quiescent hold
+# whatever the ball is doing. Any test that means to say something about the SEAT
+# (its existence, its aim, its knot joins) therefore has to restore a non-zero
+# MANUFACTURED rate first, or it silently degenerates into a statement about every
+# catch and passes against an implementation with no seat in it at all.
+#
+# Restore the MODULE CONSTANT, never `tilt_through_rate_radps=`: the kwarg takes
+# `_catch_arrival_rate`'s deliberately-UNBOUNDED requested branch (C-CATCH-1 honours
+# caller-requested motion verbatim), so it exercises the seam and never the bound —
+# and `_plan_and_install_catch` correctly never passes it, so the constant is the
+# only way the node's own path can reach a seat.
+#
+# Value: the rate that shipped from the Phase-6 catch landing until 2026-07-26, so
+# it matches `tests/motion/test_trajectory_planner_catch.py::_SEAT_RATE_RADPS` and
+# `tests/ros/test_levelling_frame.py::_PRE_FIX_SEAT_RATE_RADPS`.
+_SEAT_RATE_RADPS = 0.07
+
+
+def _set_seat_rate(monkeypatch, rate=_SEAT_RATE_RADPS):
+    """Restore a non-zero MANUFACTURED through-seat rate for one test."""
+    monkeypatch.setattr(planner, '_CATCH_TILT_THROUGH_RATE_RADPS', float(rate))
+    return float(rate)
+
 
 def _go_to_pose_req(x=0.0, y=0.0, z=170.0, duration_s=0.0, lean_gain=0.0):
     req = GoToPose.Request()
@@ -1583,7 +1611,7 @@ def test_dynamic_target_tilted_installs_tilt_through_seat_plan(monkeypatch):
     still live and is what a seat-tuning session re-enables. `_plan_and_install_catch`
     (correctly) never passes the rate, so the module constant is the only way in.
     """
-    monkeypatch.setattr(planner, '_CATCH_TILT_THROUGH_RATE_RADPS', 0.07)
+    _set_seat_rate(monkeypatch)
     node = _traj_armed_node()
     node._on_dynamic_target(_dyn_target_tilted(node, x=10.0, z=190.0, lead_s=3.0,
                                                tilt_rad=0.15))
@@ -1632,10 +1660,31 @@ def test_dynamic_target_tilted_catch_is_stationary_at_the_shipped_default():
     assert np.allclose(v_end, 0.0, atol=1e-9) and np.allclose(a_end, 0.0, atol=1e-9)
 
 
-def test_dynamic_target_level_catch_has_no_tilt_through():
+def test_dynamic_target_level_catch_has_no_tilt_through(monkeypatch):
     """A LEVEL catch (identity orientation) has no tilt direction to carry through the
     seat, so ``build_catch`` degenerates to reach + quiescent hold (2 segments) with no
-    residual tilt rate — the tilt-through path is opt-in on a real receive tilt."""
+    residual tilt rate — the tilt-through path is opt-in on a real receive tilt
+    **whenever a seat rate exists**.
+
+    Runs with the MANUFACTURED seat rate restored, and that is the whole content of
+    the test. At the shipped 0.0 default `build_catch` gates its seat block on
+    `rate > 0.0`, so the receive tilt is bit-identically inert: "2 segments, zero
+    arrival twist" is then true of *every* catch, level or tilted, and this test
+    would pass against a planner that ignores the receive tilt entirely — it would
+    be a statement about the DEFAULT, not about the level case. With the rate
+    restored, the tilted contrast below is what makes the level assertion mean
+    something: same rate, same node, same call, different ball.
+
+    Note the level half is guarded TWICE over and the docstring should not overclaim
+    which guard it is testing: this fixture loads no levelling correction, so a level
+    wire orientation gives both `smag == 0` (no seat direction) *and* a zero
+    C-CATCH-1 `_catch_scale` (the reach carries no tilt displacement either), and
+    each independently forces the arrival rate to zero. Mutation-verified 2026-07-27:
+    removing the `smag` guard alone leaves this passing; removing the `smag` guard
+    **and** the scale bound makes it fail, while the pre-repair body — the same
+    assertions without the restored rate — passes under that same mutation.
+    """
+    _set_seat_rate(monkeypatch)
     node = _traj_armed_node()
     node._on_dynamic_target(_dyn_target(node, x=10.0, z=190.0, lead_s=3.0))
     plan = node._active_plan
@@ -1643,11 +1692,33 @@ def test_dynamic_target_level_catch_has_no_tilt_through():
     _, v_arr, _ = plan.state_at(3.0)
     assert np.allclose(v_arr, 0.0, atol=1e-6)
 
+    # ...while a REAL receive tilt at the SAME rate does get the seat. Without this
+    # half the level assertion cannot tell "no seat because the ball is level" from
+    # "no seat, ever".
+    tilted_node = _traj_armed_node()
+    tilted_node._on_dynamic_target(
+        _dyn_target_tilted(tilted_node, x=10.0, z=190.0, lead_s=3.0, tilt_rad=0.15))
+    tilted_plan = tilted_node._active_plan
+    assert len(tilted_plan.segments) == 3, (
+        'a real receive tilt must still be seated at a non-zero manufactured rate — '
+        'otherwise the level assertion above is a statement about the default')
+    _, v_tilted, _ = tilted_plan.state_at(3.0)
+    assert float(np.hypot(v_tilted[3], v_tilted[4])) > 1e-3
 
-def test_dynamic_target_catch_knots_pump_accepted():
+
+@pytest.mark.parametrize('seat_rate', (0.0, _SEAT_RATE_RADPS))
+def test_dynamic_target_catch_knots_pump_accepted(monkeypatch, seat_rate):
     """Production-in-the-loop at the node boundary: every 40 Hz knot the emitter ships
     for an installed (tilted) ``build_catch`` plan is accepted by a REAL SetpointPump —
-    the load-bearing emitter/pump invariant, re-asserted for the catch path."""
+    the load-bearing emitter/pump invariant, re-asserted for the catch path.
+
+    Swept over both catch shapes. At the shipped 0.0 rate the installed plan is
+    reach + quiescent hold, so the **reach → decay knot join** — the one boundary in
+    a catch plan where the tilt velocity is non-zero, and therefore the one most
+    likely to emit a knot step the pump refuses — is pushed through a real pump
+    nowhere in the suite. The seated leg restores it.
+    """
+    _set_seat_rate(monkeypatch, seat_rate)
     pub = _CapturePub()
     node = _node(command_pub_factory=lambda: pub)
     node._pub = pub
@@ -1657,6 +1728,9 @@ def test_dynamic_target_catch_knots_pump_accepted():
     node._on_dynamic_target(_dyn_target_tilted(node, x=15.0, y=8.0, z=190.0,
                                                lead_s=2.5, tilt_rad=0.18))
     assert node._active_plan.kind == 'move'
+    # Pin that the sweep really is over two DIFFERENT plan shapes — otherwise a
+    # future change that drops the decay would make both legs the same test again.
+    assert len(node._active_plan.segments) == (3 if seat_rate else 2)
     pump = SetpointPump(mm_to_rev=hw.GEOM_MM_TO_REV,
                         max_step_rev=hw.JB_OP_MAX_POSITION_STEP_REV)
     t = time.perf_counter()

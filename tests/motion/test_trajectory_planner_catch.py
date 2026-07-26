@@ -210,7 +210,18 @@ def test_quiescent_hold_is_still(monkeypatch, seat_rate):
         assert np.allclose(v, 0.0, atol=1e-9)
 
 
-def test_catch_hold_after_false_returns_to_neutral():
+@pytest.mark.parametrize('seat_rate', (0.0, _SEAT_RATE_RADPS))
+def test_catch_hold_after_false_returns_to_neutral(monkeypatch, seat_rate):
+    """The optional return leg, on both catch shapes.
+
+    Swept because the return is seeded from ``settle_pose``, and ``settle_pose`` is
+    the TARGET at the shipped 0.0 rate but the target plus the seat OVERSHOOT once a
+    rate exists. So at 0.0 the "return from wherever the decay left the rim" join is
+    never built at all — the combination of a decay and a return-to-neutral is
+    untested, which is exactly what makes the join-continuity assertion below worth
+    having: an endpoint-only test lands on NEUTRAL either way.
+    """
+    _set_seat_rate(monkeypatch, seat_rate)
     plan, rep = planner.build_catch(REST, _tilted_catch_pose(), 0.9, _limits(),
                                     _geom(), settle_hold_s=0.5,
                                     hold_after=False, neutral_pose=NEUTRAL)
@@ -218,6 +229,14 @@ def test_catch_hold_after_false_returns_to_neutral():
     p_end, v_end, _ = plan.state_at(plan.total_duration + 1.0)
     assert np.allclose(p_end, NEUTRAL, atol=1e-6)
     assert np.allclose(v_end, 0.0)
+    # Every segment join is position-continuous — including hold → return, which at a
+    # non-zero rate starts from the overshoot pose rather than from the catch target.
+    # A return seeded off the target instead would jump 0.3° at that join and still
+    # end on NEUTRAL, so the endpoint assertions above cannot see it.
+    for i, (a, b) in enumerate(zip(plan.segments, plan.segments[1:])):
+        assert np.allclose(np.asarray(a.p1, dtype=float),
+                           np.asarray(b.p0, dtype=float), atol=1e-12), (
+            f'segment {i} → {i + 1} join is discontinuous in position')
 
 
 def test_hold_after_false_requires_neutral():
@@ -228,8 +247,27 @@ def test_hold_after_false_requires_neutral():
 
 # ── loud rejection (fixed lead) ──
 
-def test_too_tight_lead_rejected_too_fast():
-    """A too-tight catch lead is loudly rejected with the minimal feasible lead."""
+@pytest.mark.parametrize('seat_rate', (0.0, _SEAT_RATE_RADPS))
+def test_too_tight_lead_rejected_too_fast(monkeypatch, seat_rate):
+    """A too-tight catch lead is loudly rejected with the minimal feasible lead —
+    and that lead is one the caller's retry actually gets.
+
+    Swept because ``_min_feasible_catch`` stretches the reach with the arrival twist
+    held FIXED, and at the shipped 0.0 rate that twist is the zero vector, so the
+    only regime its own docstring reasons about (a non-zero fixed twist under
+    C-CATCH-1's ``2.5·scale/T`` bound) is never entered.
+
+    The retry assertion is the one with teeth, and nothing else in the suite makes
+    it: the reported minimum comes from a **reach-only** search while
+    ``build_catch`` then re-gates the ASSEMBLED plan (reach + decay + hold), so a
+    search that under-reports by even one stretch step hands the caller a lead that
+    raises TOO_FAST again — an infinite retry loop at the catch coordinator, not a
+    diagnostic nicety. Measured 2026-07-27: min lead 0.499359 s at rate 0.0 and
+    0.494105 s at 0.07 (a terminal tilt rate along the travel lets the reach coast
+    slower mid-flight, so the seated shape is marginally CHEAPER), both accepted on
+    rebuild.
+    """
+    _set_seat_rate(monkeypatch, seat_rate)
     catch_pose = _tilted_catch_pose(reach_xy=(70.0, 0.0))
     # A tight lead at low session limits forces a leg-limit failure.
     tight = TrajectoryLimits.from_config(hw)   # the low Phase-1 defaults
@@ -238,6 +276,12 @@ def test_too_tight_lead_rejected_too_fast():
                             settle_hold_s=0.5)
     assert ei.value.code == TOO_FAST
     assert ei.value.min_duration_s > 0.26
+    # The reported minimum is a lead the caller can actually use.
+    retry, retry_rep = planner.build_catch(REST, catch_pose,
+                                           ei.value.min_duration_s, tight, _geom(),
+                                           settle_hold_s=0.5)
+    assert retry_rep.ok
+    assert len(retry.segments) == (3 if seat_rate else 2)
 
 
 def test_out_of_stroke_catch_rejected_workspace():
@@ -630,12 +674,23 @@ def test_receive_tilt_shape_is_checked_loudly():
 
 # ── production-in-the-loop: every catch knot pump-accepted ──
 
-def test_every_catch_knot_pump_accepted():
+@pytest.mark.parametrize('seat_rate', (0.0, _SEAT_RATE_RADPS))
+def test_every_catch_knot_pump_accepted(monkeypatch, seat_rate):
+    """The file's production-in-the-loop invariant, on BOTH catch shapes.
+
+    Swept because the reach → decay knot join is the only boundary in a catch plan
+    where the tilt velocity is non-zero, and it is therefore the one that can emit a
+    knot step the pump refuses. At the shipped 0.0 rate that join does not exist, so
+    without the sweep no real ``SetpointPump`` sees it anywhere in the suite — the
+    invariant would read green while covering only the easy shape.
+    """
+    _set_seat_rate(monkeypatch, seat_rate)
     geom = _geom()
     emit = KnotEmitter(geom)
     pump = _pump()
     plan, _ = planner.build_catch(REST, _tilted_catch_pose(), 0.9, _limits(), geom,
                                   settle_hold_s=0.5)
+    assert len(plan.segments) == (3 if seat_rate else 2)
     n = int(plan.total_duration / 0.025) + 40
     for i in range(n):
         sp, reason = pump.build(emit.frame(plan, i * 0.025, i),

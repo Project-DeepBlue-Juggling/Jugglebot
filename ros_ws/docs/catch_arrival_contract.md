@@ -412,7 +412,23 @@ one the bench will actually see. Measured 2026-07-26 through the same harness
 | residual past the seat | 0.300803° | **0.000000°** | −0.3008° |
 | segments | reach / decay / hold | **reach / hold** | −1 |
 | plan duration | lead + 0.65 s | **lead + 0.50 s** | −0.15 s |
-| predicted vel / acc / jerk | 23.8 / 139.7 / 3935 | **29.0 / 37.9 / 170** | see below |
+| predicted vel / acc / jerk | 23.8 / 142.0 / 3935 | **29.0 / 37.9 / 170** | see below |
+
+**Read the `rate 0.07` column as the POST-frame-fix reading, not the pre-fix one.**
+Corrected 2026-07-27: it previously carried `139.7` for the acceleration, which is
+the **pre-fix** figure from the table above (and the one the bag published), while
+its jerk `3935` was already the post-fix-at-`0.07` value — so the row matched
+neither column and disagreed with `plans/active/catch-reach-degenerate-overshoot.md`
+and the operator runbook's § CHECK ZSEAT-3, both of which read `142.0 / 3935`.
+Re-measured through the production planner on the recorded reload geometry (seed at
+the park, target `rx +1.774062° / ry −10.636334°`, wire receive tilt `10.87°`, lead
+2.3712 s): pre-fix `23.8057 / 139.7252 / 3873.2`, post-fix at `0.07`
+`23.7533 / 141.9508 / 3935.0`, shipped at `0.0` `29.0235 / 37.9498 / 169.7`. The
+`23.8` velocity is the one figure that is genuinely shared — it rounds the same on
+both sides of the frame fix and is also what the bag published — which is how the
+row's other half stayed wrong without looking wrong. `tools/probes/README.md`'s
+`23.8 / 139.7 / 3873` is the **pre-fix** triple and is self-consistent; it is the
+probe's own printed left-hand column and does not need changing.
 
 Note the **velocity goes UP** while acc and jerk collapse, and that is arithmetic,
 not a surprise: a terminal tilt rate in the travel direction lets the reach coast

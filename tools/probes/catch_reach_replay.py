@@ -1636,22 +1636,66 @@ def self_check():
     # it on the identical inputs (or the counterfactual is not measuring the fix).
     # One-sided would be worthless: a `build_fixed` that silently fell back to the
     # plan-frame aim would print "no change" forever and read as a healthy result.
+    #
+    # WHY THE FIXED HALF RUNS AT A MANUFACTURED 0.07 AND NOT AT THE LIVE DEFAULT
+    # (2026-07-27). Since the seat rate shipped to 0.0, `build_catch` gates its whole
+    # seat block on `rate > 0.0`, so `build_fixed`'s three assertions below — zero
+    # excursion, two segments, settle on the target — hold for ANY aim, including the
+    # plan-frame fallback this case exists to forbid. That is precisely the vacuity
+    # the comment above warns against, arrived at from the other direction: the
+    # counterfactual went one-sided while still printing OK. `--self-check PASS 10/10`
+    # gates a powered sitting (§ CHECK ZSEAT-1 in the operator runbook), so a future
+    # session that drops `receive_tilt` as dead plumbing would get a green light and
+    # then read a counterfactual computed off the plan-frame aim.
+    #
+    # Restoring the capture-record 0.07 for the duration of this ONE rebuild puts the
+    # aim back in the arithmetic, and the case fails as designed. try/finally because
+    # a leaked constant would silently re-score every later case in this function.
+    #
+    # WHICH CONJUNCTS ACTUALLY DISCRIMINATE — measured 2026-07-27, do not "simplify".
+    # A plan-frame fallback at the manufactured 0.07 produces THREE segments and a
+    # settle 0.0394 deg PAST the target (-0.81817503 vs -0.77878414). Its wrong-side
+    # excursion stays 0.000000 -- NOT ~2.3 deg, which is `build_replay`'s figure on
+    # its deliberately-unbounded requested-rate path. `build_fixed` leaves the rate
+    # to the planner, so C-CATCH-1 throttles the fallback to 2.5*scale/T = 0.009203
+    # rad/s, which is exactly the ratio at which a rest-seeded quintic first leaves
+    # its seed on the far side -- i.e. the bound pins the excursion to zero by
+    # construction. So `seated_wrong < 1e-9` is inert here and the LOAD-BEARING
+    # conjuncts are the segment count and the settle-rx equality. Dropping either as
+    # "redundant belt-and-braces next to the excursion check" re-opens exactly the
+    # vacuity this case was landed to close.
     park = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     pre_plan, _pre_rep = build_replay(park, target, REFERENCE_LEAD_S, limits, geom)
+    _live_rate = planner._CATCH_TILT_THROUGH_RATE_RADPS
+    try:
+        planner._CATCH_TILT_THROUGH_RATE_RADPS = THROUGH_SEAT_RATE_RADPS
+        seated_fix, _sf_rep = build_fixed(park, target, np.zeros(2),
+                                          REFERENCE_LEAD_S, limits, geom)
+    finally:
+        planner._CATCH_TILT_THROUGH_RATE_RADPS = _live_rate
+    # ...and once more at the LIVE default, so the shipped shape stays pinned too.
     fix_plan, _fix_rep = build_fixed(park, target, np.zeros(2), REFERENCE_LEAD_S,
                                      limits, geom)
     park_deg, target_deg = np.degrees(park[3:5]), np.degrees(target[3:5])
     pre_wrong = wrong_side_excursion_deg(pre_plan, park_deg, target_deg)
+    seated_wrong = wrong_side_excursion_deg(seated_fix, park_deg, target_deg)
     fix_wrong = wrong_side_excursion_deg(fix_plan, park_deg, target_deg)
     check('C-CATCH-1 counterfactual is two-sided on the reference reach',
-          pre_wrong > 2.0 and fix_wrong < 1e-9 and len(fix_plan.segments) == 2
+          pre_wrong > 2.0
+          and seated_wrong < 1e-9 and len(seated_fix.segments) == 2
+          and abs(float(np.degrees(seated_fix.final_pose[3]))
+                  - REFERENCE_TARGET_RX_DEG) < 1e-9
+          and fix_wrong < 1e-9 and len(fix_plan.segments) == 2
           and abs(float(np.degrees(fix_plan.final_pose[3]))
                   - REFERENCE_TARGET_RX_DEG) < 1e-9,
           f'wrong-side excursion pre {pre_wrong:.4f} deg -> fixed '
-          f'{fix_wrong:.3e} deg; segments {len(pre_plan.segments)} -> '
+          f'{seated_wrong:.3e} deg at a manufactured {THROUGH_SEAT_RATE_RADPS} '
+          f'(the aim-discriminating rebuild), {fix_wrong:.3e} deg at the live '
+          f'{planner._CATCH_TILT_THROUGH_RATE_RADPS} default; segments '
+          f'{len(pre_plan.segments)} -> {len(seated_fix.segments)} / '
           f'{len(fix_plan.segments)}; settle rx '
           f'{np.degrees(pre_plan.final_pose[3]):+.6f} -> '
-          f'{np.degrees(fix_plan.final_pose[3]):+.6f} '
+          f'{np.degrees(seated_fix.final_pose[3]):+.6f} '
           f'(target {REFERENCE_TARGET_RX_DEG:+.6f})')
 
     # 10. The bound factor still equals the quintic geometry it was derived from.

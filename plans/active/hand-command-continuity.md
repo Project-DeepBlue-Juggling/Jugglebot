@@ -213,7 +213,7 @@ converting the `[0, 11.1]` rev end-stop bound into sim mm.
 | 2 | Repack safety guard while a stroke is in flight (item 5) | full pytest | **DONE** (same enforcement point — the retry defers rather than repacks; cap and keep-the-latch preserved) |
 | 3 | Prime rev derived from stroke geometry (item 6) | full pytest + codegen | **DONE** (prime 9.858 → the derived 9.9594 rev; `HAND_STROKE_TOP_REV` emitted by codegen; three-route drift guard; no threshold widened. Review also corrected the bang-bang-vs-quintic profile model three neighbours were sized against — see Phase 3 — Outcome) |
 | 4 | Velocity-continuous prelude — sim mirror then firmware (item 4) | sim tests + xref; flash | **DONE in source, NOT FLASHED** (`makeSmoothMove` seeds `(x0, v0, 0) → (target, 0, 0)`; exact `pos = x0 + δ·s + (v0·T)·h` decomposition; closed-form duration bound; TWO cannot-fit tests — excursion against the end stops and duration against the longest rest-to-rest move the stroke admits — both falling back to today's profile. Scope narrowed against the plan and recorded: continuity is affordable only to ~9.1 rev/s at the stroke top / ~20.3 rev/s mid-stroke, so the measured ~120 rev/s case still falls back and stays owned by Phase 1. Finalize moved the commanded-position floor off the bottom hard stop and added the duration cap — see Phase 4 — Outcome) |
-| 5 | Hardware validation (operator-run) | `trunc=-`, `seeds=0`, `peak <= 10.060` rev, `dip_below_x3 <= 0.10` rev; throw scatter recorded | TODO |
+| 5 | Hardware validation (operator-run) | `trunc=-`, `seeds=0`, `peak <= 10.060` rev, `dip_below_x3 <= 0.10` rev; throw scatter recorded | **TODO — operator-run.** Run it from `tests/hardware/session_anomaly_fixes.md` § THE RUN SHEET (stage 6 rows HAND-1…HAND-4, stage 7 HAND-1b), which is the authority for the order, the shared capture and the numbers. **Phase 4's half needs a PLATFORM TEENSY FLASH, not a colcon build, and an un-flashed board is UNDETECTABLE from the Jetson** (no `FW_VERSION` on that board) — see the runbook's § DEPLOYMENT MATRIX row C. Row 4 (`dip_below_x3`) is qualified by row 7 (`first_neg_cmd`) once Phase 4 is flashed: on a toss where a braking prelude fires, the two score the same event in opposite directions and row 4 becomes REPORT |
 
 ## Implementation Phases
 
@@ -341,6 +341,15 @@ decelerating**, because the announcement's `throw_time` is up to 23 ms early.
 The margin must cover the dispatch latency, not merely the model's `t_dec`.
 `margin = 40 ms` (**1.7× the worst measured shift**, either clock path) leaves
 the slack budget intact:
+
+> **⚠ SUPERSEDED by Phase 1 — the `546 ms` / `208 ms` in the table below are NOT
+> the shipped windows.** Phase 0 sized them with neither the smooth-move duration
+> FLOOR (`fmaxf(T, 0.05f)`, so the prelude is 50–76 ms and never zero) nor
+> `_MIN_EVENT_DELAY_S = 0.3`. The real windows are **395 ms at 0.80 s** (not 546)
+> and **115 ms at 0.55 s** (not 208) — carried in `catch_coordinator_node.py:1033`
+> and `motion/trajectory/hand_stroke.py:97`. Size the runbook's H1.5 slack row
+> against 395/115; see § Phases 1–2 — Outcome below. Kept as the correct account of
+> the model Phase 0 could see.
 
 | flight | `t_dec` | earliest safe arm | latest usable arm | window |
 |---|---|---|---|---|

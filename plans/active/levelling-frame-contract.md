@@ -287,7 +287,7 @@ annotations`.
 | 1 | Contract doc + `motion` helper + unit tests | full pytest | **DONE 2026-07-26 — `aea7b49`. Operator gate cleared in `3365ac8`. Extraction verified bit-identical (max &#124;Δ&#124; = 0.000e+00 over 36 offset×orientation pairs), contract C-LEVEL-1 at `ros_ws/docs/levelling_frame.md`. See § Phase 1 — Outcome.** |
 | 2 | Migrate every ingest path (**six**, not five); delete the ad-hoc call sites; bypass test | full pytest | **DONE 2026-07-26 — `aea7b49`. All six E surfaces + `mpc_bridge_node`'s B1 route through the shared helper; the verbatim second copy is deleted. Two AST manifests with discovered file sets, mutation-verified against six seeded regressions. Surfaced and escalated (NOT fixed): `build_catch`'s through-seat aims off the plan-frame tilt. See § Phase 2 — Outcome.** |
 | 3 | `REJECTED_NOT_LEVELLED` gate in toss CHECKING | full pytest | **DONE 2026-07-26 — `e36d60d`.** Table C's contradiction is resolved by candidate **(b) only**: `TrajectoryStatus` gains `gravity_correction_loaded` and the gate observes the APPLIER, on a FRESH status. Transient-local QoS (candidate a) was considered and REJECTED — its latch lives in the publisher, so the whole-graph relaunch that motivates the hazard would not benefit. See § Phase 3 — Outcome. |
-| 4 | Hardware validation (operator-run) | park plateau within ±0.05° of `(−tilt_x, −tilt_y)` via `tools/probes/levelling_tilt_bag_check.py`; first `go_home` worst leg 2.77 ± 0.30 mm; mocap parked tilt within ±0.10° of level. Catch error and pre-throw swing are REPORT-only (≈16 mm and ≈+2.92° expected, both unchanged) | TODO — criteria REVISED, see § Phase 4 |
+| 4 | Hardware validation (operator-run) | park plateau within ±0.05° of `(−tilt_x, −tilt_y)` via `tools/probes/levelling_tilt_bag_check.py`; first `go_home` worst leg 2.77 ± 0.30 mm; mocap parked tilt within ±0.10° of level | **TODO — operator-run. Criteria REVISED TWICE; the runbook is the authority.** Run it from `tests/hardware/session_anomaly_fixes.md` § THE RUN SHEET (rows LVL-1…LVL-4, LG-1…LG-5), not from § Phase 4 below. **First revision** (in-run): "commanded `rx` flat to ±0.05° across the whole goal" is unreachable — replaced by the park-plateau criterion. **Second revision (2026-07-27)**: § Phase 4's "catch error ≈16 mm and pre-throw swing ≈+2.92°, both unchanged, REPORT-only" is now WRONG in both halves — `catch-reach-degenerate-overshoot` Phase 2 (C-CATCH-1) removed the 0.3008° through-seat residual that caused the 16 mm **and** the arrival twist that caused the swing. Catch error is now a GATED `< 10 mm` (runbook CCATCH-2t, a prediction not yet measured) and the reach is expected FLAT |
 
 ## Implementation Phases
 
@@ -1306,6 +1306,17 @@ the CORRECTED note). The executable version, with commands, lives in
   0.78° tilt while parked means the correction's sign is inverted ⇒ stop.
 - A toss commanded before `level` returns `REJECTED_NOT_LEVELLED` — **Phase 3
   only; do not score it against Phases 1–2.**
+
+> **⚠ SUPERSEDED 2026-07-27 — both REPORT bullets below described the
+> C-LEVEL-1-only machine.** `catch-reach-degenerate-overshoot` Phase 2 (C-CATCH-1)
+> landed after this section was written and removed the manufactured arrival twist,
+> which is the source of *both* numbers: the 0.3008° through-seat residual behind
+> the 16 mm, and the `0.789132° × lead` swing behind `+2.9198°`. Post-C-CATCH-1 the
+> catch error is a **gated `< 10 mm`** (a prediction, not yet measured) and the
+> reach is **flat**, so `peak_above_park ≈ 0` and `implied lead` is meaningless.
+> Score Phase 4 from `tests/hardware/session_anomaly_fixes.md` § THE RUN SHEET, not
+> from the bullets below; they are kept because they remain the correct account of
+> the pre-fix bag that `tools/probes/catch_reach_replay.py` reproduces.
 
 **REPORT, do not gate:**
 - Tracker catch error. **Expect ≈16 mm, unchanged** — the original `< 10 mm`
