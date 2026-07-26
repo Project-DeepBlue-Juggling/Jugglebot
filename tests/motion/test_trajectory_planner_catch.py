@@ -27,6 +27,42 @@ from controller.teensy_link.setpoint_pump import SetpointPump
 NEUTRAL = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
 REST = (NEUTRAL, np.zeros(6), np.zeros(6))
 
+# ── the seat rate this file runs the through-seat machinery against ──────────
+#
+# `planner._CATCH_TILT_THROUGH_RATE_RADPS` SHIPS AT 0.0 (operator decision,
+# 2026-07-26: the trajectory builder manufactures no motion; platform motion at a
+# catch is permitted but never mandated). That makes every through-seat behaviour —
+# the decay segment, the settle overshoot, and above all the C-CATCH-1 bound —
+# unreachable at the default, and it makes them unreachable SILENTLY. There are
+# exactly two ways a test in this file can pretend to still cover them:
+#
+#   (a) `assert rate == approx(planner._CATCH_TILT_THROUGH_RATE_RADPS)` degenerates
+#       to `0 == 0` and passes against any implementation whatsoever;
+#   (b) passing `tilt_through_rate_radps=<anything>` takes `_catch_arrival_rate`'s
+#       DELIBERATELY UNBOUNDED requested branch (C-CATCH-1: requested motion is
+#       honoured verbatim), so it exercises the seam, never the bound.
+#
+# Between them the bound becomes structurally untestable while the whole
+# `test_ccatch1_*` block stays green. The only remaining way in is to restore a
+# non-zero MANUFACTURED rate, i.e. monkeypatch the module constant — which is what
+# `_set_seat_rate` does, explicitly, on the first line of every test that needs it.
+# Tests that pin the SHIPPED behaviour deliberately do not call it.
+#
+# Value: the rate that shipped from the Phase-6 catch landing until 2026-07-26, so
+# every pinned number below (0.059469 rad/s of clipped Tier-8b rate, 0.3008° of
+# settle overshoot, 2.3237° of pre-fix excursion) keeps its recorded meaning.
+_SEAT_RATE_RADPS = 0.07
+
+
+def _set_seat_rate(monkeypatch, rate=_SEAT_RATE_RADPS):
+    """Restore a non-zero MANUFACTURED through-seat rate for one test.
+
+    Patches the module constant, never the `tilt_through_rate_radps` kwarg — see
+    the block above for why the kwarg cannot substitute for this.
+    """
+    monkeypatch.setattr(planner, '_CATCH_TILT_THROUGH_RATE_RADPS', float(rate))
+    return float(rate)
+
 
 def _geom():
     return StewartGeometry()
@@ -53,6 +89,15 @@ def _tilted_catch_pose(reach_xy=(40.0, 0.0), catch_z=180.0,
 # ── structure + invariants ──
 
 def test_catch_reaches_pose_and_ends_at_rest():
+    """The SHIPPED catch: reaches its pose and arrives fully STILL.
+
+    The residual-tilt-rate half of this test moved to
+    ``test_a_seated_catch_rides_a_residual_tilt_rate_through_contact`` when the
+    manufactured rate went to 0.0 — it is a property of a seated catch, not of
+    every catch. Asserting the arrival twist is *exactly* zero here (rather than
+    dropping the assertion) is what makes this a pin on the shipped decision
+    instead of a hole.
+    """
     catch_pose = _tilted_catch_pose()
     plan, rep = planner.build_catch(REST, catch_pose, 0.9, _limits(), _geom(),
                                     settle_hold_s=0.5)
@@ -62,14 +107,38 @@ def test_catch_reaches_pose_and_ends_at_rest():
     assert np.allclose(pa, catch_pose, atol=1e-6)
     # Translational arrival velocity is ZERO (velocity matching is the hand's job).
     assert np.allclose(va[:3], 0.0, atol=1e-9)
-    # A small residual tilt rate rides through the seat (rim not parked).
-    assert np.hypot(va[3], va[4]) > 1e-3
+    # ...and so is the tilt rate, at the shipped default: nothing is manufactured.
+    assert np.allclose(va[3:], 0.0, atol=1e-12)
     # Rest-terminating: the terminal hold has zero twist.
     _, v_end, a_end = plan.state_at(plan.total_duration + 1.0)
     assert np.allclose(v_end, 0.0) and np.allclose(a_end, 0.0)
 
 
-def test_catch_has_reach_decay_hold_segments():
+def test_a_seated_catch_rides_a_residual_tilt_rate_through_contact(monkeypatch):
+    """The through-seat, when a seat rate exists — the coverage the zero default
+    would otherwise have deleted rather than moved.
+
+    A parked tilted rim deflects the ball (the bb-sim geometry finding), so when
+    the seat rate is non-zero the rim must still be MOVING through the seat angle
+    at contact, along the receive tilt, with the translational arrival velocity
+    still pinned at zero.
+    """
+    rate = _set_seat_rate(monkeypatch)
+    catch_pose = _tilted_catch_pose()
+    plan, rep = planner.build_catch(REST, catch_pose, 0.9, _limits(), _geom(),
+                                    settle_hold_s=0.5)
+    assert rep.ok
+    _pa, va, _aa = plan.state_at(0.9)
+    assert np.allclose(va[:3], 0.0, atol=1e-9)
+    assert np.hypot(va[3], va[4]) > 1e-3
+    assert float(np.hypot(va[3], va[4])) == pytest.approx(rate, rel=1e-12)
+    _, v_end, a_end = plan.state_at(plan.total_duration + 1.0)
+    assert np.allclose(v_end, 0.0) and np.allclose(a_end, 0.0)
+
+
+def test_catch_has_reach_decay_hold_segments(monkeypatch):
+    """The three-segment shape — reachable only with a non-zero seat rate now."""
+    _set_seat_rate(monkeypatch)
     plan, _ = planner.build_catch(REST, _tilted_catch_pose(), 0.9, _limits(),
                                   _geom(), settle_hold_s=0.5)
     # reach + tilt-decay + quiescent-hold.
@@ -79,8 +148,33 @@ def test_catch_has_reach_decay_hold_segments():
     assert plan.segments[2].duration == pytest.approx(0.5)    # settle_hold_s
 
 
-def test_level_catch_skips_the_decay_segment():
-    """A straight-down arrival has no tilt to ramp through → reach + hold only."""
+def test_the_shipped_catch_is_reach_plus_quiescent_hold():
+    """Every catch nobody gave an opinion about is TWO segments (2026-07-26).
+
+    The counterpart pin to the test above. A tilted receive tilt is the case that
+    used to manufacture a decay; at the shipped default it does not, and the plan
+    is 0.15 s shorter for it. Anything downstream that assumes a catch plan runs
+    ``lead + 0.15 + settle_hold`` (the replay probe's FK window is the live
+    example) breaks against this, loudly, rather than at the bench.
+    """
+    plan, rep = planner.build_catch(REST, _tilted_catch_pose(), 0.9, _limits(),
+                                    _geom(), settle_hold_s=0.5)
+    assert rep.ok
+    assert len(plan.segments) == 2
+    assert plan.segments[0].duration == pytest.approx(0.9)
+    assert plan.segments[1].duration == pytest.approx(0.5)
+    assert plan.total_duration == pytest.approx(1.4)
+    # The settle IS the target — no overshoot past the seat to hold through release.
+    assert np.allclose(plan.final_pose, _tilted_catch_pose(), atol=1e-12)
+
+
+def test_level_catch_skips_the_decay_segment(monkeypatch):
+    """A straight-down arrival has no tilt to ramp through → reach + hold only.
+
+    Run with the seat rate RESTORED: at the shipped 0.0 every catch skips the
+    decay, so this test would pass without saying anything about the level case.
+    """
+    _set_seat_rate(monkeypatch)
     level_pose = np.array([30.0, 0.0, 180.0, 0.0, 0.0, 0.0])
     plan, rep = planner.build_catch(REST, level_pose, 0.9, _limits(), _geom(),
                                     settle_hold_s=0.5)
@@ -88,13 +182,27 @@ def test_level_catch_skips_the_decay_segment():
     assert len(plan.segments) == 2      # reach + hold, no decay
     _, va, _ = plan.state_at(0.9)
     assert np.allclose(va, 0.0, atol=1e-9)   # no residual tilt rate
+    # ...while a TILTED one at the same rate does get the decay (the contrast is
+    # the whole content of this test).
+    seated, _r = planner.build_catch(REST, _tilted_catch_pose(), 0.9, _limits(),
+                                     _geom(), settle_hold_s=0.5)
+    assert len(seated.segments) == 3
 
 
-def test_quiescent_hold_is_still():
-    """The hold segment holds pose with zero twist across its whole window."""
+@pytest.mark.parametrize('seat_rate', (0.0, _SEAT_RATE_RADPS))
+def test_quiescent_hold_is_still(monkeypatch, seat_rate):
+    """The hold segment holds pose with zero twist across its whole window.
+
+    Swept over both the shipped (two-segment) and seated (three-segment) shapes:
+    the hold's start moves by ``tilt_decay_s`` between them, so a hard-coded
+    ``0.9 + 0.15`` would sample past the plan end at the shipped default and
+    score the emitter's terminal freeze as if it were the hold.
+    """
+    _set_seat_rate(monkeypatch, seat_rate)
     plan, _ = planner.build_catch(REST, _tilted_catch_pose(), 0.9, _limits(),
                                   _geom(), settle_hold_s=0.5)
-    t_hold_start = 0.9 + 0.15
+    t_hold_start = float(plan.total_duration) - 0.5
+    assert t_hold_start == pytest.approx(0.9 + (0.15 if seat_rate else 0.0))
     p0, _, _ = plan.state_at(t_hold_start + 0.01)
     for dt in np.linspace(0.02, 0.48, 10):
         p, v, a = plan.state_at(t_hold_start + dt)
@@ -164,6 +272,17 @@ def test_assembled_catch_plan_regates_ok():
 
 
 # ── C-CATCH-1: no manufactured motion (ros_ws/docs/catch_arrival_contract.md) ──
+#
+# WHY THIS BLOCK STILL EXISTS WITH THE SEAT RATE AT ZERO. The bound cannot bind
+# today — the planner manufactures nothing to bound. It is kept, and kept
+# genuinely exercised via `_set_seat_rate`, because it is the guard for the moment
+# somebody raises the constant again, which `_CATCH_TILT_THROUGH_RATE_RADPS`'s own
+# docstring anticipates as a seat-tuning session. Deleting a bound on the day it
+# stops binding guarantees it is absent on the day the value moves — and the value
+# moving is exactly the 2026-07-25 failure mode (a manufactured constant outrunning
+# a request by 3.76x). Every test below therefore restores a non-zero manufactured
+# rate first; none of them reaches the bound by passing `tilt_through_rate_radps`,
+# which would take the unbounded requested branch.
 
 
 def _wrong_side_deg(plan, seed, target, n=6001):
@@ -183,7 +302,7 @@ def _wrong_side_deg(plan, seed, target, n=6001):
     return float(np.degrees(worst))
 
 
-def test_ccatch1_bounds_the_unrequested_excursion_at_a_long_lead():
+def test_ccatch1_bounds_the_unrequested_excursion_at_a_long_lead(monkeypatch):
     """The 2026-07-25 defect, as a planner-level regression.
 
     A SMALL requested tilt at a LONG lead is the regime where the manufactured
@@ -197,7 +316,12 @@ def test_ccatch1_bounds_the_unrequested_excursion_at_a_long_lead():
     0.3846°), NOT on a signature error: it calls `build_catch` exactly as callers
     did before C-CATCH-1 landed, with no new argument. Verified by stashing the
     fix, 2026-07-26.
+
+    Runs with the manufactured seat rate restored to 0.07 — at the shipped 0.0 the
+    excursion is identically zero and the assertion reads `0 <= 0.3846`, which
+    would hold against a planner with no bound in it at all.
     """
+    _set_seat_rate(monkeypatch)
     seed = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     # 0.78° of tilt, the magnitude of the 2026-07-25 levelling correction.
     target = np.array([0.0, 0.0, 170.0, -0.013592347, -0.001207157, 0.0])
@@ -213,8 +337,9 @@ def test_ccatch1_bounds_the_unrequested_excursion_at_a_long_lead():
         'request (ros_ws/docs/catch_arrival_contract.md)')
 
 
-def test_ccatch1_holds_across_the_lead_and_tilt_envelope():
+def test_ccatch1_holds_across_the_lead_and_tilt_envelope(monkeypatch):
     """One assertion, swept — a single lucky case proves nothing about a bound."""
+    _set_seat_rate(monkeypatch)
     seed = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     for tilt_deg in (0.05, 0.2, 0.78, 2.0, 6.0, 10.6):
         for lead in (0.6, 1.2, 2.371, 3.707, 8.0):
@@ -228,14 +353,15 @@ def test_ccatch1_holds_across_the_lead_and_tilt_envelope():
                 + 1e-9, f'tilt {tilt_deg}°, lead {lead}s'
 
 
-def test_ccatch1_leaves_a_request_alone_where_it_is_already_satisfied():
+def test_ccatch1_leaves_a_request_alone_where_it_is_already_satisfied(monkeypatch):
     """The bound must be a NO-OP wherever the request justifies the motion.
 
     A bound that quietly re-shapes healthy plans would be a silent behaviour change
     on the shipping reload path. The 2026-07-25 reload reach (10.78° request, 2.37 s
     lead) sits at amplification 0.174, well under 0.494, so its arrival twist must
-    come out at the full `_CATCH_TILT_THROUGH_RATE_RADPS`.
+    come out at the full manufactured rate, unclipped.
     """
+    rate = _set_seat_rate(monkeypatch)
     seed = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     target = np.array([11.876738, 2.866503, 171.162592,
                        0.030963215, -0.185639047, 0.001280344])
@@ -245,12 +371,11 @@ def test_ccatch1_leaves_a_request_alone_where_it_is_already_satisfied():
                                      receive_tilt=np.array([0.044516438,
                                                             -0.184444299]))
     _p, v, _a = plan.state_at(2.3712)
-    assert float(np.hypot(v[3], v[4])) == pytest.approx(
-        planner._CATCH_TILT_THROUGH_RATE_RADPS, rel=1e-12)
+    assert float(np.hypot(v[3], v[4])) == pytest.approx(rate, rel=1e-12)
     assert len(plan.segments) == 3
 
 
-def test_ccatch1_keeps_the_seat_on_an_on_pose_supersede():
+def test_ccatch1_keeps_the_seat_on_an_on_pose_supersede(monkeypatch):
     """The bound's SCALE is the catch's physical size, not the residual travel.
 
     The shipping reload re-installs the catch every balls tick from
@@ -270,6 +395,7 @@ def test_ccatch1_keeps_the_seat_on_an_on_pose_supersede():
     So the scale is ``max(residual travel, seat magnitude)`` and this test pins the
     supersede end of it. It FAILS against a residual-only bound.
     """
+    rate = _set_seat_rate(monkeypatch)
     target = np.array([11.876738, 2.866503, 171.162592,
                        0.030963215, -0.185639047, 0.001280344])
     receive_tilt = np.array([0.044516438, -0.184444299])
@@ -285,15 +411,14 @@ def test_ccatch1_keeps_the_seat_on_an_on_pose_supersede():
                                          settle_hold_s=0.5,
                                          receive_tilt=receive_tilt)
         _p, v, _a = plan.state_at(lead)
-        assert float(np.hypot(v[3], v[4])) == pytest.approx(
-            planner._CATCH_TILT_THROUGH_RATE_RADPS, rel=1e-12), (
+        assert float(np.hypot(v[3], v[4])) == pytest.approx(rate, rel=1e-12), (
             f'the through-seat was throttled on an on-pose supersede at lead '
             f'{lead}s — the rim arrives at the ball parked '
             f'(ros_ws/docs/catch_arrival_contract.md, C-CATCH-1 scale)')
         assert len(plan.segments) == 3
 
 
-def test_ccatch1_clips_the_tier_8b_advisory_spot_checks():
+def test_ccatch1_clips_the_tier_8b_advisory_spot_checks(monkeypatch):
     """The one SHIPPING-ADJACENT place the bound binds, pinned with its magnitude.
 
     ``sim/toss_gate.py`` Tier 8b seeds ``build_catch`` from the swing-compensated
@@ -310,7 +435,13 @@ def test_ccatch1_clips_the_tier_8b_advisory_spot_checks():
     0.2555° of settle overshoot instead of 0.3008° is explained rather than
     re-derived. Geometry captured from the gate 2026-07-26; the two binding points
     are ADVISORY, outside the binding 50 mm ring, so no gate PASS band moves.
+
+    At the shipped 0.0 seat rate the 8b spot checks manufacture nothing and there is
+    nothing to clip, so this runs with the rate restored — otherwise the one place
+    the bound demonstrably binds would stop being covered the moment it stopped
+    firing.
     """
+    _set_seat_rate(monkeypatch)
     pre = np.array([-0.654831587, 0.0, 170.0, -0.0, 0.011281881, 0.0])
     catch = np.array([51.282428118, 0.0, 170.0, 0.0, -0.011316297, 0.0])
     travel = float(np.linalg.norm(catch[3:5] - pre[3:5]))
@@ -325,7 +456,7 @@ def test_ccatch1_clips_the_tier_8b_advisory_spot_checks():
     assert _wrong_side_deg(plan, pre, catch) <= (40.0 / 81.0) * np.degrees(travel)
 
 
-def test_ccatch1_bounds_the_settle_overshoot_under_a_raised_decay():
+def test_ccatch1_bounds_the_settle_overshoot_under_a_raised_decay(monkeypatch):
     """The bound covers BOTH departures the manufactured rate creates.
 
     The reach excursion is ``(16/81)·|v1|·T``; the settle overshoot is
@@ -339,7 +470,13 @@ def test_ccatch1_bounds_the_settle_overshoot_under_a_raised_decay():
     So a seat-tuning session raising ``tilt_decay_s`` would quadruple that residual
     with every other ``test_ccatch1_*`` still green. Both halves are bounded by the
     same 40/81, so no second tuning constant enters.
+
+    A seat-tuning session is exactly the situation this runs under, so the seat rate
+    is restored to the pre-2026-07-26 0.07 here: the whole point is what happens
+    when somebody sets the constant back to a non-zero value and then reaches for
+    ``tilt_decay_s``.
     """
+    _set_seat_rate(monkeypatch)
     seed = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     seat = np.radians(1.0) * np.array([0.164519, -0.986375])
     target = np.array([0.0, 0.0, 170.0, seat[0], seat[1], 0.0])
@@ -361,7 +498,7 @@ def test_ccatch1_bounds_the_settle_overshoot_under_a_raised_decay():
         plan.final_pose[3:5] - target[3:5]))) == pytest.approx(0.3008, abs=1e-3)
 
 
-def test_ccatch1_honours_an_explicitly_requested_arrival_rate():
+def test_ccatch1_honours_an_explicitly_requested_arrival_rate(monkeypatch):
     """Requested motion is NOT bounded — the seam a moving-platform catch needs.
 
     Platform motion during a catch is permitted; it must never be MANDATED by a
@@ -370,26 +507,83 @@ def test_ccatch1_honours_an_explicitly_requested_arrival_rate():
     module default is bounded. Without this asymmetry the invariant would forbid a
     future planner that deliberately specifies an arrival twist — and the offline
     replay probes could not rebuild a pre-C-CATCH-1 capture at all.
+
+    The asymmetry is between a MANUFACTURED rate and a REQUESTED one, so both sides
+    have to be the same number for the comparison to mean anything — hence the
+    manufactured rate is restored to 0.07 and the same 0.07 is requested. (At the
+    shipped default the manufactured side is 0 and `0 < 0.15*0` is false, which is
+    how the vacuity shows up here rather than as a silent pass.)
     """
+    rate = _set_seat_rate(monkeypatch)
     seed = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     target = np.array([0.0, 0.0, 170.0, -0.013592347, -0.001207157, 0.0])
     bounded, _r1 = planner.build_catch((seed, np.zeros(6), np.zeros(6)), target,
                                        3.707, _limits(), _geom(), settle_hold_s=0.5)
     asked, _r2 = planner.build_catch(
         (seed, np.zeros(6), np.zeros(6)), target, 3.707, _limits(), _geom(),
-        settle_hold_s=0.5,
-        tilt_through_rate_radps=planner._CATCH_TILT_THROUGH_RATE_RADPS)
+        settle_hold_s=0.5, tilt_through_rate_radps=rate)
     assert float(np.hypot(*asked.state_at(3.707)[1][3:5])) == pytest.approx(
-        planner._CATCH_TILT_THROUGH_RATE_RADPS, rel=1e-12)
-    assert float(np.hypot(*bounded.state_at(3.707)[1][3:5])) < 0.15 * float(
-        planner._CATCH_TILT_THROUGH_RATE_RADPS)
+        rate, rel=1e-12)
+    assert float(np.hypot(*bounded.state_at(3.707)[1][3:5])) < 0.15 * rate
     # The explicitly-requested one is the pre-fix plan, excursion and all.
     assert _wrong_side_deg(asked, seed, target) == pytest.approx(2.3237, abs=1e-3)
     assert _wrong_side_deg(bounded, seed, target) <= (40.0 / 81.0) * float(
         np.degrees(np.linalg.norm(target[3:5] - seed[3:5])))
 
 
-def test_receive_tilt_aims_the_seat_and_a_level_one_disables_it():
+def test_the_shipped_default_manufactures_nothing_but_still_obeys_a_caller():
+    """The 2026-07-26 operator decision, and the seam that survives it.
+
+    Two halves, and the second is the one that keeps this a DEFAULT rather than a
+    stationarity rule:
+
+    (a) With no opinion from the caller, the recorded reload geometry — an 11.08°
+        seat, the one real receive tilt in the repo — arrives with a *zero* tilt
+        rate, carries no decay segment, and settles exactly on its target. Nothing
+        is manufactured.
+    (b) The SAME call with ``tilt_through_rate_radps`` supplied gets that rate
+        verbatim, decay segment and settle overshoot included, even though the
+        module default is zero. A future planner that decides from an optimisation
+        that a moving rim catches better says so and is obeyed.
+
+    The failure mode (b) guards against is a well-meaning simplification: "the
+    default is zero, so the parameter and the decay-segment branch are dead code —
+    delete them". That would convert a default into a mandate and make a
+    moving-platform catch unrepresentable, which is the opposite of the decision
+    this file records.
+    """
+    seed = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    target = np.array([11.876738, 2.866503, 171.162592,
+                       0.030963215, -0.185639047, 0.001280344])
+    receive_tilt = np.array([0.044516438, -0.184444299])
+
+    quiet, rep = planner.build_catch((seed, np.zeros(6), np.zeros(6)), target,
+                                     2.3712, _limits(), _geom(),
+                                     settle_hold_s=0.5, receive_tilt=receive_tilt)
+    assert rep.ok
+    _p, v, _a = quiet.state_at(2.3712)
+    assert np.allclose(v, 0.0, atol=1e-12)
+    assert len(quiet.segments) == 2
+    assert np.allclose(quiet.final_pose, target, atol=1e-12)
+
+    moving, rep2 = planner.build_catch(
+        (seed, np.zeros(6), np.zeros(6)), target, 2.3712, _limits(), _geom(),
+        settle_hold_s=0.5, receive_tilt=receive_tilt,
+        tilt_through_rate_radps=_SEAT_RATE_RADPS)
+    assert rep2.ok
+    _p2, v2, _a2 = moving.state_at(2.3712)
+    assert float(np.hypot(v2[3], v2[4])) == pytest.approx(_SEAT_RATE_RADPS,
+                                                          rel=1e-12)
+    assert len(moving.segments) == 3
+    # ...aimed along the receive tilt, overshooting the seat by frac*rate*decay.
+    overshoot = np.asarray(moving.final_pose)[3:5] - target[3:5]
+    assert float(np.linalg.norm(overshoot)) == pytest.approx(
+        0.5 * _SEAT_RATE_RADPS * 0.15, rel=1e-12)
+    assert np.allclose(overshoot / np.linalg.norm(overshoot),
+                       receive_tilt / np.linalg.norm(receive_tilt), atol=1e-12)
+
+
+def test_receive_tilt_aims_the_seat_and_a_level_one_disables_it(monkeypatch):
     """The frame half of the fix, at the planner boundary.
 
     `catch_pose[3:5]` and the gravity-referenced receive tilt are the same vector
@@ -397,7 +591,13 @@ def test_receive_tilt_aims_the_seat_and_a_level_one_disables_it():
     whose BALL arrives vertically gets no through-seat even though its commanded
     pose is tilted — which is the whole 2026-07-25 case, and the reason the fix is
     "by construction" rather than a `|tilt| ≈ 0` threshold.
+
+    Needs a non-zero manufactured rate on BOTH halves: at the shipped 0.0 the
+    "level ball gets no seat" half is true of every catch (so it says nothing about
+    the receive tilt), and the tilted half would divide a zero twist by its own zero
+    norm.
     """
+    rate = _set_seat_rate(monkeypatch)
     seed = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     tilted_pose = np.array([0.0, 0.0, 170.0, -0.0136, -0.0012, 0.0])
 
@@ -413,7 +613,7 @@ def test_receive_tilt_aims_the_seat_and_a_level_one_disables_it():
     tilted_ball, _r2 = planner.build_catch(
         (seed, np.zeros(6), np.zeros(6)), tilted_pose, 1.2, _limits(), _geom(),
         settle_hold_s=0.5, receive_tilt=seat_dir,
-        tilt_through_rate_radps=planner._CATCH_TILT_THROUGH_RATE_RADPS)
+        tilt_through_rate_radps=rate)
     _p, v, _a = tilted_ball.state_at(1.2)
     assert np.allclose(np.asarray(v[3:5]) / float(np.hypot(v[3], v[4])),
                        seat_dir / float(np.linalg.norm(seat_dir)), atol=1e-12)

@@ -1092,7 +1092,11 @@ bounds every departure from the target that an arrival twist it *derives* create
 tilt **scale** (the larger of the requested displacement and the receive-tilt
 magnitude). The reload's seat is untouched by that bound, at the pre-tilt install
 **and** at every on-pose supersede through ball contact; what moves on the reload
-is the seat's *aim*.
+is the seat's *aim*. *(Correction, 2026-07-26: that last clause held for the two
+days C-CATCH-1 shipped with a `0.07` rate. The operator has since set the
+manufactured rate to `0.0`, so what moves on the reload is the seat's aim **and
+then the seat itself** — see § Section ZSEAT. The bound sentence stays true: it is
+not the bound that removed the seat.)*
 
 **Prerequisites:** `cd ~/Desktop/Jugglebot/ros_ws && colcon build
 --packages-select jugglebot && source install/setup.bash`, then **relaunch** —
@@ -1150,6 +1154,24 @@ The tracker still reports `MISSED` on real catches, so **judge catches by eye as
 well as by `outcome`** — as everywhere else in this file.
 
 ### CHECK CCATCH-3 — the reload path CHANGED, on purpose (regression watch)
+
+> **⚠ SUPERSEDED 2026-07-26 by § Section ZSEAT — four of the rows below now ABORT
+> on CORRECT behaviour.** The operator set the manufactured seat rate
+> (`planner._CATCH_TILT_THROUGH_RATE_RADPS`) to **0.0**, so the reload's
+> through-seat no longer exists at all. Corrections, row by row, so a top-to-bottom
+> reader cannot act on the stale table:
+>
+> | row | table below says | **actually correct now** |
+> |---|---|---|
+> | segment count | `3 → 3`, ABORT if 2 | **2** — reach + quiescent hold. 3 would mean the zero default did not land |
+> | seat rate at ball contact | `0.070000` unchanged, ABORT below `0.0665` | **`0.000000 rad/s`** — a parked rim is the intended state |
+> | settle `rx` / `ry` | `+1.844635 / −10.928741°` | **`+1.774062 / −10.636334°`** = exactly the commanded target (a further `−0.070573 / +0.292407°`) |
+> | predicted acc / jerk | `142.0 / 3935` | **`37.9 / 170`** (and vel `23.8 → 29.0` — it goes *up*; see ZSEAT-3) |
+> | the "PASS / ABORT" paragraph under the table | ABORT if the last 0.8 s is **flat** | **flat is the PASS** — inverted outright |
+>
+> The rest of the table — the aim rotation, `peak off the park`, the
+> `N further catch install(s)` census line — is unaffected and still reads as
+> written. Score the reload against § Section ZSEAT, not against this table.
 
 Validates: that the intended, quantified change on the **shipping** reload path is
 the one that actually happened — and nothing larger.
@@ -1662,3 +1684,198 @@ PY
   expects exactly one `REJECTED_NO_BALL` and will FAIL on a `NOT_LEVELLED`
   trace. Use the inline reader above; the `check` subcommand is for the dry and
   no-ball traces, unchanged.
+
+---
+
+## Section ZSEAT — the manufactured through-seat rate ships at ZERO
+
+> **Appended 2026-07-26.** This section is an **operator decision**, not a bug
+> fix, and it lands after § Section CCATCH.
+> `planner._CATCH_TILT_THROUGH_RATE_RADPS` is now **`0.0`**.
+>
+> It supersedes four rows of **§ CHECK CCATCH-3** — a banner at the head of that
+> check lists them, and one of them (*flat commanded tilt in the last 0.8 s*) is
+> **inverted**: what CCATCH-3 tells you to ABORT on is now the PASS. Read that
+> banner before scoring any reload.
+>
+> Nothing in **§ CHECK CCATCH-2** changes. A gravity-level catch already had a
+> zero arrival twist under C-CATCH-1 (`smag == 0`), so every CCATCH-2 number is
+> untouched by this change.
+
+**What changed, and what deliberately did not.** The trajectory builder no longer
+**manufactures** an arrival tilt rate. Every catch nobody gave an opinion about is
+now *reach + quiescent hold*: two segments, the rim stationary at ball contact,
+the settle exactly on the commanded target, and the plan 0.15 s shorter.
+
+What did **not** change is the caller seam. Platform motion during a catch or a
+throw is **permitted** — an explicitly-supplied `tilt_through_rate_radps` is still
+honoured verbatim and unbounded, still builds the decay segment, and is what a
+future optimising planner will use. It is simply never **mandated** by a constant
+in the builder. There is no rule anywhere that a catch must command no motion, and
+none should be added; C-CATCH-1 itself still contains no stationarity clause.
+
+**Prerequisites:** `cd ~/Desktop/Jugglebot/ros_ws && colcon build
+--packages-select jugglebot && source install/setup.bash`, then **relaunch** — the
+launch runs the *installed* copy, and the change is in
+`motion/trajectory/planner.py`. **No firmware flash. No config regeneration.**
+Standing session rules still apply: power-cycle the can-bridge Teensy first, and
+`level` after every relaunch.
+
+### THE RISK THIS SECTION EXISTS TO SCORE — read before the sitting
+
+The `0.07 rad/s` seat rate existed for one physical reason: **a parked *tilted*
+rim deflects the ball** (the bb-sim geometry finding). Two catches, two very
+different exposures:
+
+- **The self-toss catch seats LEVEL.** A level rim has no deflection geometry, so
+  zero costs it nothing — and under C-CATCH-1 its seat rate was already zero.
+  **No new risk on this path.**
+- **The reload catch seats at 11.08° of tilt.** That is exactly the geometry the
+  bb-sim finding concerns, and this change makes that rim **stationary at
+  contact**. **This is the live risk, and it is not mitigated in code — on
+  purpose.**
+
+Two facts that bound the risk without removing it, both worth knowing before you
+score a miss:
+
+1. `0.07 rad/s` has **never been validated on hardware**. It was an estimate, and
+   its own leg-velocity sizing note was 2× wrong until it was measured
+   (2026-07-26: 14.24 mm/s, not ~7).
+2. Until commit `407154f` the seat was aimed off the **plan-frame** tilt, so on
+   every levelled catch it pointed along the levelling correction rather than at
+   the ball. Any bench impression of the seat formed before that commit was formed
+   on a **mis-aimed** seat, and is not evidence that a correctly-aimed one helps.
+
+So the reload is the experiment. Score it, do not argue it.
+
+### CHECK ZSEAT-1 — instrument health (run FIRST, no bag, no robot)
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+python tools/probes/catch_reach_replay.py --self-check
+```
+
+- **PASS**: `SELF-CHECK: PASS`, **10/10** `OK`, exit 0. Case 7 must show
+  `planner._CATCH_TILT_THROUGH_RATE_RADPS=0.0` **and**
+  `recorded-session rate (capture record, NOT a live mirror)=0.07`.
+- **ABORT**: `planner._CATCH_TILT_THROUGH_RATE_RADPS` reads anything but `0.0` —
+  the source tree is not the one this section describes. Stop; do not score.
+- Note: the *recorded-session* `0.07` is deliberately **not** synced to the new
+  default. It is what the reference bag ran at, and `build_replay` passes it
+  explicitly so pre-2026-07-26 captures keep reproducing.
+
+### CHECK ZSEAT-2 — reload seating and bounce-out (**the scored row**)
+
+Validates: that removing the seat from an 11.08° tilted rim did not cost catches.
+This is the check the whole section exists for, and a failure routes back here —
+not to C-CATCH-1, not to the levelling contract.
+
+Run a normal reload sitting, **≥ 12 reload attempts** (sitting 4's 19 is the
+reference sample size; below ~12 the binomial noise swamps the effect you are
+looking for). Record with the § Recording list **plus** `/trajectory/diagnostics
+/trajectory/target_feedback /catch/dynamic_target /gravity_offset
+/throw_announcements`.
+
+Score every attempt by eye as well as by `outcome` — the tracker still reports
+`MISSED` on real catches, so `outcome` alone is not the verdict anywhere in this
+file. For each attempt record one line: **caught / bounced-out / missed-arrival**,
+where *bounced-out* means the ball **touched the cup and left it**. Bounce-out is
+the failure mode this change could newly cause; a missed arrival (ball never
+reached the cup) is BB scatter and is not evidence about the seat.
+
+| quantity | PASS | ABORT (route back to this section) |
+|---|---|---|
+| caught / attempted | **≥ 12/19 (0.63)** — i.e. no worse than sitting 4's 15/19 (0.79) by more than one binomial sigma (σ ≈ 0.09 at n = 19) | **≤ 11/19 (0.58)**, i.e. ≥ 2σ down |
+| **bounce-outs** (touched the cup, left it) | **≤ 1** across the sitting | **≥ 3**, or **≥ 2 consecutive** — this is the seat-deflection signature and it is what the `0.07` existed to prevent |
+| bounce-out vs sitting 4 | sitting 4's misses were BB scatter + late arrival, **not** bounce-out | any bounce-out cluster that was **absent** before is attributable to this change until shown otherwise |
+| commanded tilt over the last 0.8 s before landing (FK of `/leg_setpoint_echo`) | **flat**, `< 0.05°` of motion — the rim is parked, as intended | `≈ 0.9°` of round trip — the zero default did **not** land (stale install: colcon + relaunch) |
+| `peak_leg_acc_mmps2` / `_jerk_mmps3` on a reload catch install | `≈ 38 / ≈ 170` (was `142 / 3935`) | still `≈ 142 / ≈ 3935` — stale install |
+| plan segments on a reload catch install | **2** | 3 — stale install |
+
+**If ZSEAT-2 ABORTs on bounce-out**, the finding is *"a stationary tilted rim
+deflects the ball on hardware, and the bb-sim geometry finding is confirmed"*.
+That is a real, publishable result and the fix is a **one-line default**, not a
+redesign: raise `planner._CATCH_TILT_THROUGH_RATE_RADPS` off zero and re-run.
+C-CATCH-1 is still in force and will bound whatever value goes in — the contract
+was kept live for exactly this moment. Log the bounce-out count and the value
+tried; that is the start of the seat-tuning session the constant's docstring has
+always anticipated.
+
+### CHECK ZSEAT-3 — the offline counterfactual agrees with the machine
+
+Validates: that the capture matches the numbers this change was reasoned from.
+Read-only, on the ZSEAT-2 bag.
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+python tools/probes/catch_reach_replay.py --bag ~/Desktop/rosbags/<SESSION> --list
+python tools/probes/catch_reach_replay.py --bag ~/Desktop/rosbags/<SESSION> \
+    --thrower ball_butler --toss N --json
+```
+
+The **C-CATCH-1 COUNTERFACTUAL** block now prints
+`MANUFACTURES NOTHING (default 0.0 since 2026-07-26 — the bound is dormant, not
+removed)` on its `arrival-rate bound` line. On a *post-fix* capture the recorded
+reach and the counterfactual should collapse together.
+
+Reference deltas, measured 2026-07-26 offline on
+`~/Desktop/rosbags/2026-07-25_15-17-48 --thrower ball_butler --toss 2`
+(lead 2.3712 s, wire receive tilt 10.87°) — **C-CATCH-1 at `0.07` → shipped
+`0.0`**:
+
+| quantity | rate 0.07 | **rate 0.0 (shipped)** | delta | ABORT if |
+|---|---|---|---|---|
+| arrival tilt rate at contact | `0.070000 rad/s` (4.011 °/s) | **`0.000000`** | −0.070000 | non-zero — stale install |
+| settle `rx` | `+1.844635°` | **`+1.774062°`** (= target) | `−0.070573°` | \|settle − target\| > 0.02° |
+| settle `ry` | `−10.928741°` | **`−10.636334°`** (= target) | `+0.292407°` | \|settle − target\| > 0.02° |
+| residual past the seat | `0.300803°` | **`0.000000°`** | −0.3008° | > 0.02° |
+| segments | 3 | **2** | −1 | 3 |
+| plan duration | lead + 0.65 s | **lead + 0.50 s** | −0.15 s | lead + 0.65 s |
+| predicted `peak_leg_vel_mmps` | `23.8` | **`29.0`** | **+22 %** | > 60 (session ceiling 1000) |
+| predicted `peak_leg_acc_mmps2` | `142.0` | **`37.9`** | −73 % | > 200 (session ceiling 5000) |
+| predicted `peak_leg_jerk_mmps3` | `3935` | **`170`** | −96 % | > 500 (session ceiling 30000) |
+| seat aim rotation (unchanged by this change) | `4.0997°` | `4.0997°` | — | > 6° |
+
+**The velocity row is not a typo and is not a regression.** A terminal tilt rate
+pointing along the travel lets the reach coast slower through its middle
+(`p' = d·ψ'/T + v1·φ'`, and `φ'(0.5) = −0.4375`), so removing it restores the
+plain rest-to-rest `1.875·d/T` peak. 29 mm/s against a 1000 mm/s ceiling. Stated
+here because *"every number got smaller"* would be a false expectation, and an
+operator who held it would ABORT on a healthy capture.
+
+### CHECK ZSEAT-4 — the throw is stationary at release, on both tiers
+
+Validates: the operator asked for stationary catches **and throws**. This confirms
+there is no residual *commanded* platform rate at the release instant. It is a
+read of the capture, not a new manoeuvre.
+
+Reason it is expected to hold (verified against the code 2026-07-26, and by
+timing rather than by inspection of a trace alone):
+
+- **Tier 8a** runs the stock announcement pre-tilt, i.e. a `build_catch` plan with
+  arrival at `landing − 1.5 s` and a 0.5 s quiescent hold, then `hold_after=True`
+  freezes the final pose. Release is at `landing − flight`, and the shipped flight
+  band is `0.55 … 1.10 s`, so release always falls in the **zero-twist hold** (long
+  flights) or after the plan has ended (short flights). A release inside the reach
+  would need a flight > 1.5 s, outside the band.
+- **Tier 8b** suppresses that pre-tilt (`catch/pretilt_hold`) and holds the
+  positioned pose at A open-loop; the deferred A→B reach is published **at**
+  `t_release`, never before. At the release instant the platform is in
+  `go_to_pose`'s terminal hold.
+
+| quantity | PASS | ABORT |
+|---|---|---|
+| commanded platform pose (FK of `/leg_setpoint_echo`) over `release ± 0.10 s` | **flat**, `< 0.02°` and `< 0.2 mm` of motion | any commanded motion — a plan is running through the release |
+| `/trajectory/status` `plan_time_remaining_s` at release | ≤ 0 (terminal hold), or a hold segment | a `move` plan mid-reach |
+| Tier 8b only: first `catch/dynamic_target` timestamp | **≥** `t_release` | before `t_release` — the deferred reach fired early |
+
+### Not in this section
+
+- Whether the *level* (self-toss) catch commands a swing — § CHECK CCATCH-2,
+  unchanged by this section.
+- Whether the seat's **aim** is right — § CHECK CCATCH-3's aim rotation row, still
+  valid.
+- Re-tuning the seat rate. That is the follow-on session ZSEAT-2's ABORT path
+  opens, and it needs its own plan.

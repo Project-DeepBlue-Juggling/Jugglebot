@@ -1566,12 +1566,24 @@ def test_timed_target_publishes_reject_feedback():
 
 # ── catch/dynamic_target consumption (gated by the catch-armed latch) ──
 
-def test_dynamic_target_tilted_installs_tilt_through_seat_plan():
+def test_dynamic_target_tilted_installs_tilt_through_seat_plan(monkeypatch):
     """Phase 7: a tilted catch routes through ``build_catch`` (not the Phase-5 reach-only
     ``build_timed``), so the installed plan carries the receive tilt through the seat —
     the reach arrives at the tilted pose with a small residual tilt rate that decays to
     rest, then a quiescent hold. Structural evidence: MORE than the level catch's
-    reach+hold (the tilt-through decay segment is present), and the plan ends at rest."""
+    reach+hold (the tilt-through decay segment is present), and the plan ends at rest.
+
+    Runs with the MANUFACTURED seat rate restored to its pre-2026-07-26 value.
+    `planner._CATCH_TILT_THROUGH_RATE_RADPS` now ships at 0.0 (the builder
+    manufactures no motion — a default, not a rule; an explicit
+    `tilt_through_rate_radps` is still honoured verbatim), so at the shipped
+    default a tilted catch is reach + hold like a level one. That case is pinned
+    by ``test_dynamic_target_tilted_catch_is_stationary_at_the_shipped_default``
+    below; this test keeps the through-seat PATH covered, because the path is
+    still live and is what a seat-tuning session re-enables. `_plan_and_install_catch`
+    (correctly) never passes the rate, so the module constant is the only way in.
+    """
+    monkeypatch.setattr(planner, '_CATCH_TILT_THROUGH_RATE_RADPS', 0.07)
     node = _traj_armed_node()
     node._on_dynamic_target(_dyn_target_tilted(node, x=10.0, z=190.0, lead_s=3.0,
                                                tilt_rad=0.15))
@@ -1588,6 +1600,36 @@ def test_dynamic_target_tilted_installs_tilt_through_seat_plan():
     _, v_end, a_end = plan.state_at(plan.total_duration)
     assert np.allclose(v_end, 0.0, atol=1e-6)
     assert np.allclose(a_end, 0.0, atol=1e-6)
+
+
+def test_dynamic_target_tilted_catch_is_stationary_at_the_shipped_default():
+    """The 2026-07-26 operator decision, at the node boundary.
+
+    A REAL receive tilt — the reload geometry, the one case that used to get a
+    seat — now installs reach + quiescent hold and arrives fully still, because
+    the builder manufactures nothing. It is still `build_catch` (kind ``move``,
+    accepted, rest-terminating, settling exactly on the commanded tilt), not a
+    fallback to a bare reach: the plan is two segments and the second is the
+    literal quiescent hold, which ``build_timed`` does not produce.
+
+    This is the pin that makes the sibling test above honest. Without it the
+    shipped behaviour would be asserted nowhere and the monkeypatch there would
+    read as "the seat exists" to anyone skimming.
+    """
+    node = _traj_armed_node()
+    node._on_dynamic_target(_dyn_target_tilted(node, x=10.0, z=190.0, lead_s=3.0,
+                                               tilt_rad=0.15))
+    plan = node._active_plan
+    assert plan.kind == 'move'
+    assert node.target_feedback_pub.published[-1].accepted is True
+    assert len(plan.segments) == 2               # reach + quiescent hold, no decay
+    _, v_arr, _ = plan.state_at(3.0)
+    assert np.allclose(v_arr, 0.0, atol=1e-12)   # nothing manufactured
+    # The settle IS the reach target — no overshoot past the seat to hold.
+    assert np.allclose(np.asarray(plan.final_pose),
+                       np.asarray(plan.segments[0].p1), atol=1e-12)
+    _, v_end, a_end = plan.state_at(plan.total_duration)
+    assert np.allclose(v_end, 0.0, atol=1e-9) and np.allclose(a_end, 0.0, atol=1e-9)
 
 
 def test_dynamic_target_level_catch_has_no_tilt_through():

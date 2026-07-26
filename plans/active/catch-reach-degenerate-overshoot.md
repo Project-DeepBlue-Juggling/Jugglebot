@@ -208,6 +208,7 @@ requested tilt *toward zero*, and the amplification goes as `1/|tilt|`.
 | 0 | Offline reproduction from the recorded session | the excursion reproduced from recorded inputs | **DONE** (2026-07-26) — all 7 catch reaches reproduced; `tools/probes/catch_reach_replay.py`; see Outcome |
 | 1 | Root cause, written | mechanism traced end-to-end in prose | **DONE** (2026-07-26) — folded into Phase 0; all three features traced, blast radius stated; see Outcome |
 | 2 | Fix + invariant + test | full pytest | **DONE** (2026-07-26) — C-CATCH-1 landed (`ros_ws/docs/catch_arrival_contract.md`), enforced at `planner._catch_arrival_rate`; `pytest tests/ -q`, run 2026-07-26 on the Jetson in the project venv: **3543 passed, 3 xfailed in 1376.13 s (22:56)**; see Outcome |
+| 3 | The manufactured seat rate ships at **zero** (operator decision, added after Phase 2) | full pytest + all 7 recorded reaches still `REPRODUCED` + a mutation test proving the C-CATCH-1 block is not vacuous | **DONE** (2026-07-26) — `pytest tests/ -q`: **3574 passed, 3 xfailed in 1382.00 s (23:02)**; mutation test: both bound halves removed ⇒ 5 of 7 `ccatch1` tests fail, 2 survivors are negative cases by construction; see Outcome |
 
 ## Implementation Phases
 
@@ -586,6 +587,101 @@ PASS/ABORT criteria. Requires `colcon build --packages-select jugglebot` **and a
 relaunch** (the launch runs the installed copy; a stale install reproduces the
 pre-fix behaviour exactly). No firmware flash, no config regeneration.
 
+### Phase 3 — the manufactured seat rate ships at ZERO
+
+Added **2026-07-26, after Phase 2 landed**, by an operator decision this plan was
+not written to anticipate. One line of behaviour:
+`planner._CATCH_TILT_THROUGH_RATE_RADPS = 0.07 → 0.0`.
+
+**The decision, in the operator's own framing, because the framing is the
+load-bearing part.** Platform motion during a catch or a throw is **PERMITTED but
+never MANDATED**: the only reason the platform should be moving at contact is that
+*the planner determined it produces a better trajectory*. It should never be a
+constant in the trajectory builder. Setting the manufactured fallback to zero is
+the cleanest expression of that — the builder now manufactures nothing, and motion
+appears only when a caller asks for it. Stationary catches and throws are the
+near-term preference; more aggressive juggling will later need a moving platform.
+
+**So this is a DEFAULT, and explicitly not a rule.** Nothing was added that asserts
+a catch commands no motion. `tilt_through_rate_radps` is unchanged, the decay-segment
+code path is unchanged, and C-CATCH-1's rule that an explicitly-supplied rate is
+returned verbatim and **unbounded** is unchanged — that is the seam a future
+optimising planner uses, and it is pinned by
+`test_the_shipped_default_manufactures_nothing_but_still_obeys_a_caller`.
+
+**The vacuity trap, which is most of the work in this phase.** At a zero default
+the C-CATCH-1 bound is unreachable in two independent ways, both silent:
+(a) `assert rate == approx(planner._CATCH_TILT_THROUGH_RATE_RADPS)` degenerates to
+`0 == 0`; (b) passing `tilt_through_rate_radps=` takes the deliberately-unbounded
+*requested* branch. Between them the whole `test_ccatch1_*` block stays green while
+proving nothing. Every such test now restores a non-zero **module constant** via
+`_set_seat_rate(monkeypatch)` — never via the kwarg — and the block was
+mutation-tested by deleting the bound. The same trap in the ROS tests is handled by
+a `_PRE_FIX_SEAT_RATE_RADPS = 0.07` capture-record constant, and in the probe by
+splitting its single mirror into a *live default* mirror (`0.0`, compared against
+production) and a *capture record* (`0.07`, pinned to itself so nobody syncs it and
+makes every pre-2026-07-26 bag score NOT-REPRODUCED).
+
+**The physical risk, surfaced and deliberately not solved in code.** The `0.07`
+existed because *a parked tilted rim deflects the ball* (the bb-sim geometry
+finding). A vertical catch seats level, so zero costs it nothing — under C-CATCH-1
+its seat rate was already zero. The **reload** catch seats at 11.08°, which is
+exactly that geometry, and its rim is now stationary at contact. Two mitigating
+facts, stated alongside the risk and not instead of it: the constant has **never**
+been validated on hardware, and until `407154f` its aim was wrong on every levelled
+catch, so no bench impression of it was formed on a correctly-aimed seat. Scored at
+the bench by `tests/hardware/session_anomaly_fixes.md` § Section ZSEAT (ZSEAT-2 is
+the scored row: reload seating and bounce-out); a failure routes back to this phase
+and its fix is a one-line default, with C-CATCH-1 already in force to bound
+whatever value goes in.
+
+#### Outcome — 2026-07-26
+
+Measured through the committed harness, `tools/probes/catch_reach_replay.py`
+against `~/Desktop/rosbags/2026-07-25_15-17-48`: all **seven** recorded reaches
+still read `REPRODUCED`, exit 0 (5 self-toss + 2 reload) — `build_replay` passes
+the rate explicitly, so the verdict half is untouched by the default. `--self-check`
+`SELF-CHECK: PASS` 10/10, exit 0.
+
+The **reload delta** — the path this change actually alters, at the recorded
+geometry (lead 2.3712 s, wire receive tilt 10.87°), C-CATCH-1 at `0.07` → shipped
+`0.0`:
+
+| | rate 0.07 | rate 0.0 | delta |
+|---|---|---|---|
+| arrival tilt rate at contact | `0.070000 rad/s` | **`0.000000`** | −0.070000 |
+| settle `rx` / `ry` | `+1.844635 / −10.928741°` | **`+1.774062 / −10.636334°`** (= the target) | `−0.070573 / +0.292407°` |
+| residual past the seat | `0.300803°` | **`0.000000°`** | −0.3008° |
+| segments / duration | 3 / lead + 0.65 s | **2 / lead + 0.50 s** | −1 / −0.15 s |
+| predicted vel / acc / jerk | `23.8 / 142.0 / 3935` | **`29.0 / 37.9 / 170`** | +22 % / −73 % / −96 % |
+
+The **on-pose supersede** — the plan actually frozen through ball contact — goes
+further: at `0.0` the previous plan's settle *is* the target, so the supersede is a
+literal no-motion plan (all predicted peaks `0.0`) and the commanded tilt over the
+last 0.8 s before landing goes from a `≈0.9°` round trip to flat. That inverts one
+of § CHECK CCATCH-3's ABORT criteria, which is corrected in place by a banner there.
+
+The self-toss (level) catch is **unchanged in every respect** — its receive-tilt
+magnitude was already zero, so `smag == 0` had already disabled the seat at
+`407154f`.
+
+Note the predicted leg **velocity rises** 22 % while acc and jerk collapse. That is
+arithmetic, not a surprise: with `p' = d·ψ'/T + v1·φ'` and `φ'(0.5) = −0.4375`, a
+terminal rate along the travel lets the reach coast slower through its middle, so
+removing it restores the plain rest-to-rest `1.875·d/T` peak (29 mm/s against a
+1000 mm/s session ceiling). Recorded because "everything got smaller" would be a
+false expectation at the bench.
+
+**Throw side, confirmed rather than assumed.** There is no residual *commanded*
+platform rate at the release instant on either tier, before or after this change.
+Tier 8a's release falls inside the catch plan's zero-twist quiescent hold (arrival
+`landing − 1.5 s` + 0.5 s hold, then `hold_after=True`) for the whole shipped
+`0.55 … 1.10 s` flight band — a release inside the reach would need a flight
+> 1.5 s. Tier 8b suppresses that pre-tilt via `catch/pretilt_hold` and holds the
+positioned pose at A open-loop, publishing its deferred A→B reach **at**
+`t_release`. What this change removes on 8a is the `0.3008°` *pose* offset the hold
+was holding — and for a level catch that had already gone to zero at `407154f`.
+
 ## Risk register
 
 | Risk | Mitigation | Status |
@@ -596,6 +692,9 @@ pre-fix behaviour exactly). No firmware flash, no config regeneration.
 | A narrow degenerate-case special case ships and hides the amplifier | Phase 2 pre-commits to a bounded-excursion invariant instead | **retired** (2026-07-26) — no threshold shipped. A level receive tilt yields a zero arrival twist *by construction* (`smag == 0`), and the bounded-excursion invariant landed alongside it as C-CATCH-1 |
 | The Phase-2 invariant enshrines a stationary platform | Phase 0 proposes withdrawing the first clause; C-CATCH-1 bounds *unrequested* excursion only, so a deliberately-specified arrival twist stays legal | **retired** (2026-07-26) — resolved in the contract itself rather than by citation. C-CATCH-1 as landed does not mention platform stationarity at all: it distinguishes **requested** motion from **manufactured** motion. An arrival twist a caller passes explicitly (`tilt_through_rate_radps=`) is honoured verbatim and unbounded, so a future moving-platform catch is legal by construction; only the rate `build_catch` falls back to from its OWN module constant is bounded. The failure mode that drove this, stated plainly rather than as an appeal: a blanket stationarity clause would mandate a parked rim just as surely as the old constant mandated motion, and a parked tilted rim deflects the ball. No operator ratification is outstanding — there is no stationarity clause left to ratify |
 | The instrument mis-scores a HEALTHY capture and routes a correct fix back for rework | two-sided validation is the acceptance criterion: `--self-check` (no bag) plus both the FLAG case (`--toss 2`) and the ACCEPT case (`--thrower ball_butler --toss 2`) must pass, and the verdict tolerance scales with the commanded span | **retired for three known paths** — the 2026-07-26 review found and fixed all three: a sticky `last_rejection` latch that forced NOT-REPRODUCED on every reach after one unrelated session rejection; an unbounded `/gravity_offset` lookup that scored pre-re-level reaches with a post-re-level correction; and a self-check blind to two of five mirrored constants |
+| Zeroing the manufactured seat rate (Phase 3) parks the **tilted** reload rim at ball contact, which is exactly the geometry the bb-sim deflection finding concerns | Not mitigated in code, on purpose — the constant was never hardware-validated and its aim was wrong until `407154f`, so the bench is the only place this can be settled. Scored by `tests/hardware/session_anomaly_fixes.md` § Section ZSEAT, CHECK ZSEAT-2 (caught/attempted ≥ 12/19; **bounce-outs ≤ 1**, ≥ 3 or ≥ 2 consecutive aborts) | **open — deliberately.** A failure routes back to Phase 3 and its fix is a one-line default; C-CATCH-1 is kept live and will bound whatever value replaces the zero |
+| Zeroing the default silently makes the whole C-CATCH-1 test block vacuous | Every `test_ccatch1_*` restores a non-zero rate by monkeypatching the **module constant** (`_set_seat_rate`), never by passing `tilt_through_rate_radps` (the unbounded requested branch); mutation-tested by deleting the bound | **retired** (2026-07-26) — see the Phase 3 Outcome; two tests pass without the bound *by design* (they assert the bound is a no-op) and that is unchanged from before Phase 3, verified on the pre-change tree |
+| "The default is zero, so the parameter and the decay path are dead code" — a future simplification converts the default into a mandate | `test_the_shipped_default_manufactures_nothing_but_still_obeys_a_caller` pins both halves: nothing manufactured, and an explicit rate honoured verbatim including the decay segment and the settle overshoot | **retired** (2026-07-26) |
 | Fixing this changes commanded motion at ball contact on **every** catch, including the shipping reload path | Phase 2 needs a powered sitting; the reload leg's own numbers are now in the plan (settle `+1.8235 / −10.9330°` = target × 1.0279) so a regression is measurable, and `catch_reach_replay.py` scores a post-fix capture the same way | **open — deliberately, and now quantified.** The reload change is aim-only: seat aim rotates `4.0997°`, settle moves `+0.021086°` rx / `+0.004297°` ry, predicted acc/jerk `139.7/3873 → 142.0/3935` (+1.6 %, three orders under the session ceilings). The reload seat RATE at contact is **unchanged** at `0.070000 rad/s` — that took a correction during finalize (see the Phase 2 Outcome: sizing the bound on residual travel alone de-rated it 15.7×). Gated at the bench by `tests/hardware/session_anomaly_fixes.md` § Section CCATCH, CCATCH-3 |
 
 ## Notes for collaborators

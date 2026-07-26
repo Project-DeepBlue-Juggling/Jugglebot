@@ -142,6 +142,25 @@ reload reach keeps its seat with the aim rotated 4.0997 deg and the settle moved
 0.0215 deg. The counterfactual is REPORTED and never gated: the verdict is about
 reproducing what the robot DID run.
 
+**AND THEN THE SEAT WAS TURNED OFF, 2026-07-26 (operator decision).**
+``planner._CATCH_TILT_THROUGH_RATE_RADPS`` now ships at **0.0**: the trajectory
+builder manufactures no motion, so an unopinionated catch arrives with zero twist,
+carries no decay segment and settles exactly on its target. Platform motion at a
+catch stays PERMITTED — an explicitly-supplied ``tilt_through_rate_radps`` is
+honoured verbatim, which is both the seam a future optimising planner uses and the
+seam :func:`build_replay` uses — it is simply never MANDATED by a constant. Two
+consequences for this probe, and they pull in opposite directions:
+
+* :func:`build_replay` is UNAFFECTED. It passes the rate explicitly, so every
+  recorded reach still reproduces bit-for-bit and every VERDICT below is unchanged.
+* :func:`build_fixed` IS affected — the counterfactual now shows what a zero-seat
+  planner would command. On the reload that is the visible change: the rim is
+  stationary at contact and the settle loses its 0.3008 deg overshoot.
+
+``THROUGH_SEAT_RATE_RADPS`` below is therefore a CAPTURE RECORD (0.07, what the
+bag ran at), not a mirror of the live default; the live default has its own mirror,
+``PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS``, and self-check case 7 compares both.
+
 :func:`build_replay` deliberately keeps rebuilding the PRE-fix plan (see its
 docstring) — a probe whose job is to reproduce a recorded capture must be able to
 express the physics that capture contains.
@@ -324,8 +343,19 @@ EVENT_TOPICS = (STATUS, DIAG, FEEDBACK, DYNTARGET, GRAVITY, THROWS)
 PRETILT_EARLY_S = 1.5
 #: ``planner.build_catch(tilt_decay_s=...)`` default.
 TILT_DECAY_S = 0.15
-#: ``planner._CATCH_TILT_THROUGH_RATE_RADPS``.
+#: The tilt-through-seat rate the REFERENCE SESSION RAN AT — a capture record, not
+#: a mirror of a live production constant. ``planner._CATCH_TILT_THROUGH_RATE_RADPS``
+#: shipped to **0.0** on 2026-07-26 (the builder manufactures no motion); this stays
+#: at 0.07 because every recorded reach in this bag was planned with it, and
+#: :func:`build_replay` passes it EXPLICITLY so the replay keeps rebuilding the plan
+#: the robot actually ran. Syncing this to the new default would make every reach in
+#: every pre-2026-07-26 capture score NOT-REPRODUCED — the instrument-fails-a-working
+#: -system trap. Self-check case 7 pins it to 0.07 for exactly that reason.
 THROUGH_SEAT_RATE_RADPS = 0.07
+#: ``planner._CATCH_TILT_THROUGH_RATE_RADPS`` — the LIVE default, mirrored so a
+#: seat-tuning session that raises it off zero breaks the self-check and has to come
+#: back here. :func:`build_fixed` (the post-fix counterfactual) rides on this value.
+PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS = 0.0
 #: ``planner._CATCH_TILT_OVERSHOOT_FRAC``.
 THROUGH_SEAT_OVERSHOOT_FRAC = 0.5
 #: ``emitter.KNOT_DT_S`` — the 40 Hz knot the realized-peak tracker differences.
@@ -851,6 +881,14 @@ def build_fixed(seed_pose, target, wire_tilt, lead_s, limits, geom,
     ``trajectory_node._catch_target_from_msg`` now hands over), and the arrival rate
     is left to the planner so C-CATCH-1 bounds it. Nothing else moves: same seed,
     same corrected target, same lead.
+
+    Since 2026-07-26 "left to the planner" means **zero**
+    (``planner._CATCH_TILT_THROUGH_RATE_RADPS = 0.0``), so this rebuilds a catch
+    that manufactures no motion at all: two segments, a stationary rim at contact
+    and a settle exactly on the target. That is deliberate — this function must
+    track the shipping planner, whatever it currently does, or the counterfactual
+    stops being one. The rate is intentionally NOT passed here; passing it would
+    take C-CATCH-1's requested branch and rebuild a plan no caller would get.
 
     This is the counterfactual the operator reads before a post-fix sitting — what
     the machine WOULD have commanded on this exact recorded ball.
@@ -1382,9 +1420,13 @@ def _print_row(row):
                  '— a level catch)' if aim is None
                  else f'rotates {aim:.4f} deg (plan-frame tilt -> '
                       f'gravity-referenced receive tilt)'))
+        _dflt = PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS
         print(f"  arrival-rate bound 2.5*scale/T = {fx['rate_bound_radps']:.5f} rad/s"
-              f" vs the {THROUGH_SEAT_RATE_RADPS} rad/s default -> "
-              f"{'BINDS' if fx['rate_bound_radps'] < THROUGH_SEAT_RATE_RADPS else 'does not bind'}")
+              f" vs the {_dflt} rad/s shipped default -> "
+              + ('MANUFACTURES NOTHING (default 0.0 since 2026-07-26 — the bound '
+                 'is dormant, not removed)' if _dflt <= 0.0
+                 else ('BINDS' if fx['rate_bound_radps'] < _dflt
+                       else 'does not bind')))
         print(f"  peak off the park  {fx['pre_peak_above_park_deg']:.4f} -> "
               f"{fx['peak_above_park_deg']:.4f} deg")
         print(f"  UNREQUESTED (wrong-side) excursion  "
@@ -1542,8 +1584,18 @@ def self_check():
     mirrored = [
         ('build_catch(tilt_decay_s=)',
          planner.build_catch.__kwdefaults__['tilt_decay_s'], TILT_DECAY_S),
+        # The LIVE default (0.0 since 2026-07-26). Raising it off zero must break
+        # this: `build_fixed`'s counterfactual and every "-> does not bind" line
+        # this probe prints are computed against it.
         ('planner._CATCH_TILT_THROUGH_RATE_RADPS',
-         planner._CATCH_TILT_THROUGH_RATE_RADPS, THROUGH_SEAT_RATE_RADPS),
+         planner._CATCH_TILT_THROUGH_RATE_RADPS,
+         PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS),
+        # The RECORDED-session rate, pinned to itself. Not a production mirror any
+        # more — but if somebody "helpfully" syncs it to the new default, every
+        # pre-2026-07-26 reach silently stops reproducing and the probe fails a
+        # faithful recording. Cheaper to catch here than at a powered sitting.
+        ('recorded-session rate (capture record, NOT a live mirror)',
+         THROUGH_SEAT_RATE_RADPS, 0.07),
         ('planner._CATCH_TILT_OVERSHOOT_FRAC',
          planner._CATCH_TILT_OVERSHOOT_FRAC, THROUGH_SEAT_OVERSHOOT_FRAC),
         ('planner._CATCH_ARRIVAL_RATE_BOUND',

@@ -788,18 +788,53 @@ def build_graceful_stop(state0, limits, geom, *, start_duration_s=None,
 
 # Residual tilt rate at the catch arrival (rad/s), in the receive-tilt-increasing
 # direction, that "ramps the tilt through the seat" — a parked tilted rim deflects
-# the ball (the bb-sim geometry finding), so the tilt is still MOVING through the
-# seat angle at the instant of contact, then decayed to rest over `tilt_decay_s`.
-# Kept deliberately SMALL: at ~0.07 rad/s (~4°/s) the overshoot over a 0.15 s decay
-# is ~0.3°, well inside MAX_TILT (12°) and the hold-quiescence tilt budget (<1°),
-# and the leg velocities it induces are negligible against the session ceilings —
-# 14.24 mm/s, measured 2026-07-26 through the production gate at the shipped rate
-# (an earlier estimate of "~plat_radius·rate ≈ 7 mm/s" here was 2× low; the tilt
-# axis is not through the platform centre, so the lever arm is not plat_radius).
-# This is the DEFAULT the planner falls back to when the caller has no opinion, and
-# in that case C-CATCH-1 bounds it (see `_catch_arrival_rate`). A caller that passes
-# `tilt_through_rate_radps` explicitly has REQUESTED that rate and gets it verbatim.
-_CATCH_TILT_THROUGH_RATE_RADPS = 0.07
+# the ball (the bb-sim geometry finding), so the tilt would still be MOVING through
+# the seat angle at the instant of contact, then decayed to rest over
+# `tilt_decay_s`.
+#
+# ── SHIPPED AT ZERO since 2026-07-26 (operator decision) ─────────────────────
+# The planner MANUFACTURES nothing. With this at 0.0 a catch that nobody gave an
+# opinion about arrives at its target with zero twist, so every catch is
+# reach + quiescent hold and the platform is stationary at ball contact and
+# through the throw that follows it.
+#
+# This is a DEFAULT, not a rule, and the distinction is the whole point. Platform
+# motion during a catch or a throw is PERMITTED — it is simply never MANDATED by a
+# constant in the trajectory builder. The seam that makes it permitted is
+# `build_catch(tilt_through_rate_radps=...)`: an explicitly-supplied rate is
+# REQUESTED motion, returned verbatim and unbounded by `_catch_arrival_rate`, and
+# that is what a future optimising planner uses when it decides a moving rim
+# catches better. Nothing here asserts a catch commands no motion; setting the
+# manufactured fallback to zero is just the cleanest way to say "the builder has no
+# opinion of its own".
+#
+# WHY 0.07 EXISTED, AND WHY ZEROING IT IS NOT FREE. The bb-sim geometry finding
+# above is about a parked *tilted* rim. A gravity-level catch (the self-toss path)
+# seats at zero tilt, so a zero rate costs it nothing — under C-CATCH-1 its
+# receive-tilt magnitude is already zero and the through-seat never engaged. The
+# RELOAD catch is the one that pays: it seats at 11.08° and its rim is now
+# stationary at contact. Two facts that bound that risk, neither of which removes
+# it: (a) 0.07 rad/s has NEVER been validated on hardware — it is an estimate, and
+# its own leg-velocity note here was 2× wrong until it was measured; (b) until
+# commit 407154f the seat was aimed off the PLAN-frame tilt, so on every levelled
+# catch it pointed along the levelling correction rather than at the ball — any
+# bench impression formed before that commit was formed on a mis-aimed seat.
+# Bench-scored by `tests/hardware/session_anomaly_fixes.md` § Section ZSEAT.
+#
+# TO BRING IT BACK (the seat-tuning session this constant has always anticipated):
+# set this to the rate to try and re-run the suite. C-CATCH-1 (`_catch_arrival_rate`)
+# then bounds it against the catch's physical scale exactly as before — the contract
+# is dormant at 0.0, not removed, and `tests/motion/test_trajectory_planner_catch.py`
+# monkeypatches this constant to a non-zero value precisely so the bound stays
+# tested while the shipped default cannot reach it.
+#
+# Sizing notes kept for that session: at 0.07 rad/s (~4°/s) the overshoot over a
+# 0.15 s decay is ~0.3°, well inside MAX_TILT (12°) and the hold-quiescence tilt
+# budget (<1°), and the leg velocities it induces are negligible against the session
+# ceilings — 14.24 mm/s, measured 2026-07-26 through the production gate (an earlier
+# estimate of "~plat_radius·rate ≈ 7 mm/s" here was 2× low; the tilt axis is not
+# through the platform centre, so the lever arm is not plat_radius).
+_CATCH_TILT_THROUGH_RATE_RADPS = 0.0
 
 # Fraction of `rate·decay_s` the tilt overshoots past the seat during the decay
 # (the mean-velocity displacement of a rate→0 decel). Only sets the settle pose;
@@ -890,6 +925,15 @@ def _catch_arrival_rate(seed_tilt, target_tilt, seat_mag, duration_s, decay_s,
       constant, not a request, so every departure from the target it manufactures
       is bounded against the catch's physical scale (:func:`_catch_scale`).
 
+    **The fallback ships at 0.0 (operator decision, 2026-07-26)**, so today this
+    function returns 0.0 for every unopinionated caller and the bound below never
+    binds. It is kept live, and kept tested, because it is the guard for the moment
+    someone raises the constant again — which its own docstring anticipates as a
+    seat-tuning session. A bound that is deleted the day it stops binding is a bound
+    that will not be there when the value moves; the tests reach it by monkeypatching
+    ``_CATCH_TILT_THROUGH_RATE_RADPS``, never by passing ``requested_rate`` (which
+    takes the deliberately-unbounded branch above and would prove nothing).
+
     TWO departures are manufactured by the same rate and BOTH are bounded, by the
     same ``40/81`` factor and with no second free parameter:
 
@@ -970,7 +1014,9 @@ def build_catch(state0, catch_pose, duration_s, limits, geom, *,
 
     ``tilt_through_rate_radps`` is the requested seat rate. ``None`` (the default)
     means the caller has no opinion: the planner falls back to
-    ``_CATCH_TILT_THROUGH_RATE_RADPS`` and **bounds** it under C-CATCH-1
+    ``_CATCH_TILT_THROUGH_RATE_RADPS`` — **which ships at 0.0 since 2026-07-26**, so
+    an unopinionated catch arrives with zero twist, carries no decay segment, and
+    settles exactly on its target — and **bounds** it under C-CATCH-1
     (:func:`_catch_arrival_rate`), so no departure from the target it manufactures
     — during the reach or during the settle — exceeds ``40/81`` of the catch's
     physical tilt SCALE (:func:`_catch_scale`: the larger of the seed → target
@@ -985,12 +1031,14 @@ def build_catch(state0, catch_pose, duration_s, limits, geom, *,
          (a baked-in safety invariant: *velocity matching is the hand's job*, so
          the platform is translationally still at contact — a moving platform at
          seat would fight the hand's velocity-matched catch). The tilt arrives with
-         a small residual rate along the *gravity-referenced* receive tilt, zero
-         for a level receive tilt (see below).
-      2. **Tilt-through-seat decay** — the residual tilt rate decays to rest over
-         ``tilt_decay_s`` (default 0.15 s), the tilt drifting a small overshoot past
-         the seat. So at ``t = duration_s`` (contact) the rim is still *moving*
-         through the seat angle, not parked.
+         a residual rate along the *gravity-referenced* receive tilt — zero at the
+         shipped default, and zero for a level receive tilt (see below).
+      2. **Tilt-through-seat decay** — *present only when the arrival tilt rate is
+         non-zero, which at the shipped default means only when a caller asked for
+         one.* The residual tilt rate decays to rest over ``tilt_decay_s`` (default
+         0.15 s), the tilt drifting a small overshoot past the seat, so at
+         ``t = duration_s`` (contact) the rim is still *moving* through the seat
+         angle rather than parked. **A default catch has two segments, not three.**
       3. **Quiescent hold** — a literal zero-twist hold at the settled pose for
          ``settle_hold_s`` (the ball seats undisturbed; the hold-quiescence gate
          criterion is measured over this window).

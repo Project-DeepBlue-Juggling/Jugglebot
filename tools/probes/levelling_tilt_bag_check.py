@@ -189,15 +189,20 @@ DEFAULT_ROOT = os.path.expanduser('~/Desktop/rosbags')
 OUT_DIR = os.path.join(_REPO, 'temp', 'probes')
 SETPOINT_ECHO = '/leg_setpoint_echo'
 
-#: ``planner._CATCH_TILT_OVERSHOOT_FRAC * _CATCH_TILT_THROUGH_RATE_RADPS
+#: ``planner._CATCH_TILT_OVERSHOOT_FRAC * <the session's seat rate>
 #: * build_catch(tilt_decay_s=0.15)`` — the tilt-through-seat overshoot, in rad.
 #: Kept as a literal rather than imported so this probe stays a *record* of what
 #: the numbers were when the session was scored; if the planner constants move,
-#: the mismatch should be visible, not silently absorbed.
+#: the mismatch should be visible, not silently absorbed. They have since moved:
+#: ``planner._CATCH_TILT_THROUGH_RATE_RADPS`` ships at **0.0** as of 2026-07-26, so
+#: the 0.07 below is history, and deliberately so — this probe scores a capture
+#: recorded before that.
 THROUGH_SEAT_OVERSHOOT_RAD = 0.5 * 0.07 * 0.15
 
-#: ``planner._CATCH_TILT_THROUGH_RATE_RADPS`` — the arrival twist magnitude. Same
-#: literal-not-imported reasoning as above.
+#: The arrival twist magnitude the 2026-07-25 session ran at. Formerly
+#: ``planner._CATCH_TILT_THROUGH_RATE_RADPS``, which now ships at 0.0; same
+#: literal-not-imported reasoning as above, and line 559 passes it EXPLICITLY so
+#: the rebuild stays faithful to the recording rather than to today's default.
 THROUGH_SEAT_RATE_RADPS = 0.07
 
 #: ``max |phi|`` of the quintic's arrival-twist basis ``phi = -4s^3+7s^4-3s^5``,

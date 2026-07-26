@@ -77,6 +77,16 @@ from jugglebot.trajectory_node import TrajectoryNode
 _SESSION_OFFSET = (0.013592347421588673, 0.001207157476773584)
 _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
 
+# The tilt-through-seat rate the 2026-07-25 session RAN AT — a capture record, not
+# a mirror of a live constant, and deliberately NOT read from
+# `planner._CATCH_TILT_THROUGH_RATE_RADPS`. That constant shipped to 0.0 on
+# 2026-07-26 (the builder manufactures no motion); reading it here would rebuild
+# the "pre-fix" counterfactuals below as zero-rate plans, and the closed forms they
+# pin (0.789132 °/s of slope, the −1.078408° settle, the 0.300803° residual) would
+# silently become assertions that 0 == 0. Those numbers came off a bag; they are
+# frozen at the rate the bag was recorded under.
+_PRE_FIX_SEAT_RATE_RADPS = 0.07
+
 _PKG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     'ros_ws', 'src', 'jugglebot', 'jugglebot')
@@ -931,12 +941,12 @@ def test_the_reach_excursion_across_the_plan_is_gone_after_c_catch_1():
         np.asarray(plan.segments[0].p1, dtype=float), reach.duration,
         node._limits, node._geom, settle_hold_s=node._catch_settle_hold_s,
         receive_tilt=held[:2],
-        tilt_through_rate_radps=_planner._CATCH_TILT_THROUGH_RATE_RADPS)
+        tilt_through_rate_radps=_PRE_FIX_SEAT_RATE_RADPS)
     pre_rx = np.degrees(np.array(
         [np.asarray(pre_plan.state_at(float(t))[0])[3] for t in ts]))
     tdir_x = abs(held[0]) / float(np.hypot(held[0], held[1]))
     slope_deg_per_s = np.degrees((16.0 / 81.0)
-                                 * _planner._CATCH_TILT_THROUGH_RATE_RADPS
+                                 * _PRE_FIX_SEAT_RATE_RADPS
                                  * tdir_x)
     assert slope_deg_per_s == pytest.approx(0.789132, abs=1e-6)
     assert (float(np.max(pre_rx)) - held_rx) / reach.duration == pytest.approx(
@@ -948,7 +958,8 @@ def test_the_reach_excursion_across_the_plan_is_gone_after_c_catch_1():
     assert float(np.max(pre_rx)) - held_rx > 0.9
 
 
-def test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt():
+def test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt(
+        monkeypatch):
     """The defect this contract SURFACED, now closed by C-CATCH-1.
 
     `build_catch` used to read ``catch_pose[3:5]`` as "the receive tilt" and ramp a
@@ -977,6 +988,15 @@ def test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt():
     reverse: with no correction, a level catch target has `tmag == 0`, which
     disabled the through-seat entirely. C-CATCH-1 makes every session behave that
     way, correction or not.
+
+    **Half (b) runs with the manufactured seat rate RESTORED to its pre-2026-07-26
+    value.** The shipped default is now 0.0 (the builder manufactures no motion), so
+    at the default half (b) would find two segments and no seat to check the aim of
+    — and the AIM is what this test is for. What it asserts is a property of the
+    seat *whenever there is one*: it points where the BALL is, not where the
+    levelling correction is. Patching the module constant is the only way to reach
+    it through the node's own `_plan_and_install_catch`, which (correctly) never
+    passes `tilt_through_rate_radps`.
     """
     from jugglebot.motion.trajectory import planner as _planner
     node = _node()
@@ -994,14 +1014,14 @@ def test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt():
     # reproducible and this test cannot pass by the seat having been removed.
     tdir = held[:2] / float(np.hypot(held[0], held[1]))
     overshoot = (_planner._CATCH_TILT_OVERSHOOT_FRAC
-                 * _planner._CATCH_TILT_THROUGH_RATE_RADPS * 0.15)
+                 * _PRE_FIX_SEAT_RATE_RADPS * 0.15)
     pre_plan, _rep = _planner.build_catch(
         (np.asarray(node._current_state()[0], dtype=float),
          np.zeros(6), np.zeros(6)),
         np.asarray(plan.segments[0].p1, dtype=float), 1.2,
         node._limits, node._geom, settle_hold_s=node._catch_settle_hold_s,
         receive_tilt=held[:2],
-        tilt_through_rate_radps=_planner._CATCH_TILT_THROUGH_RATE_RADPS)
+        tilt_through_rate_radps=_PRE_FIX_SEAT_RATE_RADPS)
     pre_final = np.asarray(pre_plan.final_pose)[3:5]
     assert np.allclose(pre_final, held[:2] + overshoot * tdir, atol=1e-12)
     assert np.degrees(pre_final[0]) == pytest.approx(-1.078408, abs=1e-6)
@@ -1010,7 +1030,11 @@ def test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt():
         0.300803, abs=1e-5)
 
     # (b) A REAL receive tilt still gets a through-seat, aimed along the WIRE
-    # tilt and not along the wire tilt composed with the correction.
+    # tilt and not along the wire tilt composed with the correction — with the
+    # manufactured rate restored (see the docstring; at the shipped 0.0 there is no
+    # seat on any catch and the aim is unobservable).
+    monkeypatch.setattr(_planner, '_CATCH_TILT_THROUGH_RATE_RADPS',
+                        _PRE_FIX_SEAT_RATE_RADPS)
     wire_tilt = np.array([0.03, -0.12])          # 1.72° / −6.88°, gravity frame
     node2 = _node()
     assert node2._svc_go_to_pose(_go_to_pose_req(z=170.0, duration_s=1.0),

@@ -82,6 +82,22 @@ after this contract lands and re-audits the six ingest sites is chasing the wron
 tree — which is what the "`go_home` is a no-op" docstring already cost this
 investigation once.
 
+> **Both bullets are now CLOSED, by the sibling contract, not by this one.** Kept
+> above verbatim because the *attribution* is the load-bearing part and stays
+> true; only their "deliberately not taken" status has changed.
+> - `407154f` landed **C-CATCH-1** (`ros_ws/docs/catch_arrival_contract.md`).
+>   `build_catch` takes the gravity-referenced receive tilt as its own argument,
+>   so a gravity-level catch's arrival twist is zero by construction: the swing
+>   goes to `0.0000°` and the 16.5 mm residual to `0.0000°`.
+> - The operator decision the second bullet said was *"deliberately not taken"*
+>   **was taken on 2026-07-26**: `_CATCH_TILT_THROUGH_RATE_RADPS` ships at `0.0`,
+>   so the through-seat is not manufactured on *any* catch, including the reload.
+>   Platform motion at a catch stays permitted via
+>   `build_catch(tilt_through_rate_radps=)`; it is no longer mandated.
+>
+> The `0.5 × 0.07 × 0.15` arithmetic above is retained as the derivation of the
+> 2026-07-25 measurement, not as a live number.
+
 ## C-LEVEL-1
 
 > The gravity-levelling correction is applied **exactly once per external pose**,

@@ -156,6 +156,51 @@ def _catch_arrival_rate(seed_tilt, target_tilt, seat_mag, duration_s, decay_s,
                / (_CATCH_TILT_OVERSHOOT_FRAC * decay_s))
 ```
 
+### The manufactured rate SHIPS AT ZERO (operator decision, 2026-07-26)
+
+`_CATCH_TILT_THROUGH_RATE_RADPS = 0.0`. The planner manufactures nothing, so
+`_catch_arrival_rate` returns `0.0` for every caller that has no opinion, and
+**the bound below does not bind on anything the robot currently runs.** Every
+catch is reach + quiescent hold; the rim is stationary at ball contact and
+through the throw that follows it.
+
+Read this correctly, because the distinction is the whole point and it is easy to
+collapse:
+
+* This is **not** a stationarity clause, and C-CATCH-1 still contains none. The
+  contract's subject is where a boundary condition *came from*, never whether the
+  platform is moving. Platform motion during a catch or a throw remains
+  **permitted**; it is simply not **mandated** by a constant in the trajectory
+  builder. Setting the manufactured fallback to zero is the cleanest possible
+  statement of "the builder has no opinion".
+* The caller seam is **unchanged and load-bearing**. An explicitly-supplied
+  `tilt_through_rate_radps` is still returned verbatim and unbounded, still
+  produces the decay segment and the settle overshoot, and is still what a future
+  optimising planner uses to command a deliberately moving rim. Neither the
+  parameter nor the decay code path may be removed as "dead code at the default" —
+  removing them would convert this default into a mandate.
+* **The bound stays live because a default is a value, and values move.** The
+  seat-tuning session `_CATCH_TILT_THROUGH_RATE_RADPS`'s own docstring anticipates
+  is exactly the moment a manufactured rate reappears — and the 2026-07-25 failure
+  was a manufactured rate outrunning the request by 3.76×. A bound deleted on the
+  day it stopped binding is a bound that is absent on the day the value returns.
+  `tests/motion/test_trajectory_planner_catch.py` therefore reaches the bound by
+  **monkeypatching the module constant** (`_set_seat_rate`), never by passing
+  `tilt_through_rate_radps` — which would take the deliberately-unbounded requested
+  branch and prove nothing.
+
+**The physical risk this accepts, stated rather than solved.** The 0.07 rad/s
+existed because *a parked tilted rim deflects the ball* (the bb-sim geometry
+finding). A gravity-level catch seats level, so zero costs it nothing — under this
+contract its receive-tilt magnitude is already zero and the seat never engaged.
+The **reload** catch is the one that pays: it seats at 11.08°, which is precisely
+the geometry that finding concerns, and its rim is now parked at contact. Two
+facts bound the risk without removing it: 0.07 rad/s has never been validated on
+hardware, and until commit `407154f` its aim was wrong on every levelled catch, so
+no bench impression of it was formed on a correctly-aimed seat. Scored at the
+bench by `tests/hardware/session_anomaly_fixes.md` § Section ZSEAT; a reload
+seating or bounce-out failure routes back here.
+
 ### Why the scale is a MAX, and not the requested displacement alone
 
 This is the one part of the contract that was got wrong first and corrected by
@@ -181,11 +226,17 @@ prevent, on the path with the session's 15/19 catch rate. Nothing flagged it: th
 segment count stays 3, and the replay probe scores only the pre-tilt install.
 
 With the seat magnitude in the max, the reload keeps its full seat (scale 10.87°,
-bound `0.200 rad/s` ≫ the `0.07` default) and the 2026-07-25 defect stays closed
-by construction — its wire receive tilt was exactly **zero**, so `seat_mag` is 0,
-the scale *is* the displacement, and nothing about that case changes. Pinned by
-`test_ccatch1_keeps_the_seat_on_an_on_pose_supersede`, which fails against a
+bound `0.200 rad/s` ≫ the `0.07` rate then shipped) and the 2026-07-25 defect stays
+closed by construction — its wire receive tilt was exactly **zero**, so `seat_mag`
+is 0, the scale *is* the displacement, and nothing about that case changes. Pinned
+by `test_ccatch1_keeps_the_seat_on_an_on_pose_supersede`, which fails against a
 residual-only bound.
+
+*(All the rates in this subsection are the 2026-07-26 sizing measurements, taken
+at the then-shipped `0.07`. The manufactured rate is now `0.0` — see above — so
+none of them is a live number; the `max` is retained unchanged because it is what
+makes the bound correct **when** a rate returns, which is the only time it
+matters.)*
 
 ### Why the settle half exists
 
@@ -197,10 +248,14 @@ held *through release* by `hold_after=True`, predicting the session's 16.5 mm
 throw-direction error. Bounding only the reach would leave a seat-tuning session
 free to raise `tilt_decay_s` from 0.15 s to 0.6 s and quadruple that residual with
 every `test_ccatch1_*` still green. Both halves use the same `40/81`, so no second
-tuning constant enters the contract. At the shipped 0.15 s decay the settle half is
-slack by ~18× on the reload and never binds before the reach half — the shipped
-overshoot is unchanged at `0.3008°`. Pinned by
-`test_ccatch1_bounds_the_settle_overshoot_under_a_raised_decay`.
+tuning constant enters the contract. At a `0.07` rate and the shipped 0.15 s decay
+the settle half is slack by ~18× on the reload and never binds before the reach
+half, leaving the overshoot at `0.3008°`. **At the shipped `0.0` rate the overshoot
+is identically zero** and neither half binds — and the seat-tuning session that
+raises the rate and then reaches for `tilt_decay_s` is precisely the situation this
+half exists for. Pinned by
+`test_ccatch1_bounds_the_settle_overshoot_under_a_raised_decay`, which restores a
+non-zero manufactured rate to get there.
 
 `build_catch` aims that rate along `receive_tilt` — the **gravity-referenced**
 receive tilt, passed as its own argument — and derives the settle pose from the
@@ -216,9 +271,11 @@ refuse a catch the caller had requested perfectly reasonably — and no catch at
 all is strictly worse than a rim that rotates through the seat more slowly.
 Every effect of the bound is a **reduction** in commanded motion, and it is a
 no-op wherever the catch's own scale already justifies the motion — the shipping
-reload sits at 0.174 of its scale, well under 0.494, and comes out at the full
-`_CATCH_TILT_THROUGH_RATE_RADPS` at **both** the pre-tilt install and every
-on-pose supersede through ball contact.
+reload sits at 0.174 of its scale, well under 0.494, and came out at the full
+manufactured rate at **both** the pre-tilt install and every on-pose supersede
+through ball contact when that rate was `0.07`. (It is `0.0` today, so the bound is
+a no-op there for the trivial reason as well; the sentence records that the bound
+was never what removed the reload's seat.)
 
 Note "reduction in commanded motion" is a statement about the *rate*, and it does
 not extend to the aim. Re-aiming the seat from the plan-frame tilt to the
@@ -228,6 +285,13 @@ the reload's predicted acc and jerk (139.7/3873 → 142.0/3935). The bound can o
 shrink `|v1|`; the frame fix can move the leg peaks either way.
 
 ### Where the bound DOES bind
+
+**Nowhere, at the shipped `0.0` rate.** The one place it demonstrably binds is
+below, and it binds only once a manufactured rate exists again — which is why
+`test_ccatch1_clips_the_tier_8b_advisory_spot_checks` restores `0.07` before
+measuring. Kept, with its numbers, because "the bound has never been observed to
+fire" and "the bound cannot fire" are different claims and only the second would
+justify deleting it.
 
 One shipping-adjacent place, and it is the bound working rather than a
 regression. `sim/toss_gate.py` Tier 8b seeds `build_catch` from the
@@ -293,7 +357,16 @@ to state a fact that is true by construction at 24 of them.
 
 Each of these is correct behaviour, and each will look like a change at the
 bench. Measured 2026-07-26 through `tools/probes/catch_reach_replay.py` on bag
-`2026-07-25_15-17-48`:
+`2026-07-25_15-17-48`.
+
+> **Two landings, and both tables below are the FIRST one.** The "post-fix"
+> columns are C-CATCH-1 as it landed at `407154f`, with the manufactured rate
+> still at `0.07`. The zero-default decision came after, and it changes the
+> reload rows again — see § *The manufactured rate ships at ZERO* and the third
+> table below. The 0.07 columns are kept because they are what separates the
+> **frame** fix's effect from the **zero-rate** decision's effect, and a bench
+> capture that disagrees with the shipped behaviour needs to know which of the two
+> it is disagreeing with.
 
 **A gravity-level catch (the self-toss pre-tilt, 3.707 s lead).** The wire
 receive tilt is exactly zero, so the through-seat does not engage at all:
@@ -313,12 +386,12 @@ release − 0.05 s and `hold_after=True` holds the settle pose *through* release
 so the hand threw from a platform 0.3008° off gravity-level —
 `0.005250 rad × 3.93 m/s × 0.8 s = 16.5 mm`, against 16 mm measured.
 
-**A real receive tilt (the reload pre-tilt, 10.87° wire, 2.371 s lead).** The
-seat still engages at the full rate — the bound is `0.19842 rad/s` against the
-`0.07` default, so it does not bind — but its **aim rotates by 4.0997°**, from
-the plan-frame tilt to the gravity-referenced one:
+**A real receive tilt (the reload pre-tilt, 10.87° wire, 2.371 s lead), at the
+`0.07` rate.** The seat still engages at the full rate — the bound is
+`0.19842 rad/s` against the `0.07` default, so it does not bind — but its **aim
+rotates by 4.0997°**, from the plan-frame tilt to the gravity-referenced one:
 
-| | pre-fix | post-fix | delta |
+| | pre-fix | post-fix (rate 0.07) | delta |
 |---|---|---|---|
 | settle `rx` | +1.823550° | +1.844635° | **+0.021086°** |
 | settle `ry` | −10.933038° | −10.928741° | **+0.004297°** |
@@ -326,6 +399,27 @@ the plan-frame tilt to the gravity-referenced one:
 | predicted acc / jerk | 139.7 / 3873 | 142.0 / 3935 | +1.6 % / +1.6 % |
 
 Both remain three orders under the session ceilings (5000 mm/s², 30000 mm/s³).
+
+**The same reload reach at the shipped `0.0` rate** — the second landing, and the
+one the bench will actually see. Measured 2026-07-26 through the same harness
+(`--thrower ball_butler --toss 2`), against the `0.07` column above:
+
+| | rate 0.07 | **rate 0.0 (shipped)** | delta |
+|---|---|---|---|
+| arrival tilt rate at contact | 0.070000 rad/s (4.011 °/s) | **0.000000** | −0.070000 |
+| settle `rx` | +1.844635° | **+1.774062°** (= the target) | −0.070573° |
+| settle `ry` | −10.928741° | **−10.636334°** (= the target) | +0.292407° |
+| residual past the seat | 0.300803° | **0.000000°** | −0.3008° |
+| segments | reach / decay / hold | **reach / hold** | −1 |
+| plan duration | lead + 0.65 s | **lead + 0.50 s** | −0.15 s |
+| predicted vel / acc / jerk | 23.8 / 139.7 / 3935 | **29.0 / 37.9 / 170** | see below |
+
+Note the **velocity goes UP** while acc and jerk collapse, and that is arithmetic,
+not a surprise: a terminal tilt rate in the travel direction lets the reach coast
+slower in the middle (`p' = d·ψ'/T + v1·φ'`, and `φ'(0.5) = −0.4375`), so removing
+it restores the plain rest-to-rest `1.875·d/T` peak. 29 mm/s against a 1000 mm/s
+session ceiling — the point is only that "everything gets smaller" would be false.
+
 This is a real, intended change on the **shipping** reload path: watch for it at
 the bench rather than discovering it there.
 
@@ -335,8 +429,10 @@ reload path that is not the plan that runs through ball contact — the referenc
 bag carries **9 and 11** further accepted catch installs per attempt, across
 `landing−0.78..−0.31 s` and `landing−0.83..−0.29 s`, and the last of each is what
 is frozen through the catch. Those installs are why the scale is a `max` (above);
-under the corrected scale their arrival rate is unchanged at `0.070000 rad/s`, so
-the table's silence is now harmless — but `tools/probes/catch_reach_replay.py`
+under the corrected scale their arrival rate was unchanged at `0.070000 rad/s` (it
+is `0.000000` at the shipped rate, along with every other install — the supersede
+seeded exactly on the target is then a literal no-motion plan, all predicted peaks
+`0.0`), so the table's silence is harmless — but `tools/probes/catch_reach_replay.py`
 prints a loud `!! NOT SCORED BY THIS ROW: N further catch install(s)` line for
 them regardless, because an instrument that silently ignores a class of installs
 reads PASS on a machine whose behaviour at contact has changed.
