@@ -330,7 +330,7 @@ running:
 
 | # | what it scores | PASS | ABORT | routes to |
 |---|---|---|---|---|
-| LVL-2 | the first `go_home` after `level` is a real, small, smooth move | **SCALE THE BAND TO YOUR MEASURED OFFSET FIRST** (see below): `predicted_mm ≈ 203 × hypot(tilt_x, tilt_y)` using the **radians** LVL-1's log line printed (equivalently 3.55 mm per **degree** of total tilt — but LVL-1 gives you radians, so use the 203 form and do not convert). PASS = worst-leg excursion within **±11 %** of `predicted_mm`, realized peak leg vel `≈ 0.94 × predicted_mm` mm/s, no pump rejection, no guard latch. At the 2026-07-25 offset (0.78185°) that is the familiar **2.77 ± 0.30 mm** / **2.60 ± 0.50 mm/s**. A **zero** measured offset makes this a genuine no-op — record which case applied | worst leg above **max(1.8 × `predicted_mm`, 5 mm)**, any step rejection, any `MAX_DEVIATION` or guard E-STOP | `levelling-frame-contract` P1–P2, § LVL-2 |
+| LVL-2 | the first `go_home` after `level` is a real, small, smooth move | **SCALE THE BAND TO YOUR MEASURED OFFSET FIRST** (see below): `predicted_mm ≈ 203 × hypot(tilt_x, tilt_y)` using the **radians** LVL-1's log line printed (equivalently 3.55 mm per **degree** of total tilt — but LVL-1 gives you radians, so use the 203 form and do not convert). PASS = worst-leg excursion within **±11 %** of `predicted_mm`, realized peak leg vel `≈ 0.94 × predicted_mm` mm/s, no pump rejection, no guard latch. At the 2026-07-25 offset (0.78185°) that is the familiar **2.77 ± 0.30 mm** / **2.60 ± 0.50 mm/s**. A **zero** measured offset makes this a genuine no-op — record which case applied | worst leg above **max(1.8 × `predicted_mm`, 2.0 mm)** (operator-set floor, 2026-07-27 — see § CHECK LVL-2's banner for what the two arms each catch), any step rejection, any `MAX_DEVIATION` or guard E-STOP | `levelling-frame-contract` P1–P2, § LVL-2 |
 | CCATCH-5 | `peak_leg_*` clears on a report-less install | after `go_to_pose`: `peak_leg_vel_mmps > 0`. After `hold`/`go_home`: `move_seq` advanced **and** `peak_leg_*` all `0.0` | the previous move's non-zero peaks under the new `move_seq` | `catch-reach-degenerate-overshoot` P2, § CCATCH-5 |
 | FK-1 | no spurious FK refusals | `0` × `seed FK failed`, `0` × `guard descent FK failed` across every node log | `>= 1` of either. (`non-finite target extensions` ⇒ **REPORT**, route to the can-bridge, not here) | `fk-convergence-tolerance` P1, § FK-1 |
 | FK-2 | the offline FK verdict | `VERDICT: PASS`, exit 0 — `def_rai` **0** on both topics **and** `hist_rai > 0` on at least one | `def_rai > 0`. `VERDICT: VACUOUS` is **not a pass** — re-run on a richer session | `fk-convergence-tolerance` P1, § FK-2 |
@@ -1603,6 +1603,25 @@ ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "gravity correction se
 > tilt a *healthy* machine reaches 5.0 mm and the fixed ABORT below would fire on
 > correct behaviour at the first actuating move of the sitting. The bullets are
 > kept as the reference-offset instance of the run-sheet form.
+>
+> **The ABORT is now `max(1.8 × predicted_mm, 2.0 mm)`, and the two arms catch
+> different things.** The `1.8 ×` arm is the **double-application detector** — the
+> mirror bug C-LEVEL-1's second half exists to prevent, where an FK-derived seed
+> that is *already* in the corrected frame gets corrected again. Double
+> application produces exactly `2 × predicted`, so an arm at `1.8 ×` catches it
+> with margin **at every offset where that arm binds**. The `2.0 mm` floor exists
+> only so a near-zero offset does not abort on encoder noise (it is ~230× the
+> 8.6 µm leg encoder dead-band), and it is the operator's number: 2 mm of platform
+> travel is rarely enough to decide a catch.
+>
+> Know what that buys and what it does not. The floor binds below **0.313°** of
+> offset; above that the detector arm binds. Double application is therefore
+> caught for any offset above **0.282°** — against 0.705° under the old fixed
+> 5 mm, so 2.5× more of the range is covered. Below 0.282° a doubled correction is
+> ≤ 2.0 mm of leg travel, i.e. below the level the floor was deliberately sized to
+> ignore; that residual blind spot is accepted on the same reasoning that set the
+> floor. At the 2026-07-25 offset (0.78185°) the arm binds at 4.99 mm and the
+> floor never applies, so nothing about scoring that session changes.
 
 Validates: Phases 1–2 ingest E5 (`go_home` targets the *corrected* neutral) and
 the operator pre-brief above. Do this **before** loading a ball.
