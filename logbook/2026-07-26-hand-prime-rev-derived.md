@@ -26,7 +26,7 @@ files_changed:
   - tests/hardware/session_phase7_reload.md
   - plans/active/hand-command-continuity.md
 commits:
-  - PENDING_SHA
+  - 94fe817
 subsystem:
   - config
   - ros

@@ -1240,7 +1240,7 @@ consumer copies, a drift-guard test.
 
 #### Phase 3 — Outcome
 
-**Landed 2026-07-26** in `PENDING_SHA` (code + docs) and `PENDING_SHA_BACKFILL`
+**Landed 2026-07-26** in `94fe817` (code + docs) and `PENDING_SHA_BACKFILL`
 (SHA backfill). Logbook: `logbook/2026-07-26-hand-prime-rev-derived.md`.
 
 `hand_catch_prime_rev` moves `9.858 → 9.9594` rev — it had drifted `0.101403`
