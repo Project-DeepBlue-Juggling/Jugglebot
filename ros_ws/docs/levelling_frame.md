@@ -38,6 +38,19 @@ surfaces a pose can enter through. That is the class this contract closes.
 
 ### What C-LEVEL-1 does NOT close — read this before scoring a bench session
 
+> **Update, 2026-07-26 — both of these are now CLOSED, by C-CATCH-1**
+> (`ros_ws/docs/catch_arrival_contract.md`). The analysis below is correct and is
+> kept verbatim because it is what made the second contract necessary; what has
+> changed is only the last clause of each bullet ("removing it means changing the
+> arrival twist" / "deliberately not taken"). `build_catch` now takes the
+> **gravity-referenced** receive tilt as its own argument, so a gravity-level
+> catch gets a zero arrival twist: the swing goes to **0.0000°** and the settle
+> lands exactly on the target, `0.0000°` off gravity at ball contact. An
+> operator scoring a post-2026-07-26 capture should expect a **flat, monotone**
+> catch reach — the "the visible tilt REMAINS" pre-brief below is superseded.
+> The reload path's seat survives, with its aim rotated 4.0997°; the numbers are
+> in C-CATCH-1's "Consequences at the machine".
+
 **The visible swing, and the 16 mm catch error, are not this contract's.** Both
 belong to `planner.build_catch`, and both survive the fix:
 
@@ -59,7 +72,7 @@ belong to `planner.build_catch`, and both survive the fix:
   off gravity-level at ball contact** — 16.5 mm of drift at 3.93 m/s over 0.8 s,
   against the 16 mm the tracker measured. Pre-existing (`catch/dynamic_target` was
   already corrected before 2026-07-25) and pinned as a characterisation test,
-  `tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt`.
+  `tests/ros/test_levelling_frame.py::test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt`.
   Closing it changes commanded motion at ball contact on every catch including the
   shipping reload path — an operator decision, deliberately not taken.
 

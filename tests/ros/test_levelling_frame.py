@@ -103,15 +103,23 @@ _POSE_BEARING_ARGS = {
     'planner.build_follow': (('target_pose', 'target_pose', 1),),
     'planner.build_timed': (('target_pose', 'target_pose', 1),
                             ('neutral_pose', 'neutral_pose', None)),
+    # `receive_tilt` is orientation-bearing and EXTERNAL, and unlike every other
+    # row here it must reach the planner UNCORRECTED — it is the gravity-referenced
+    # receive tilt C-CATCH-1 aims the through-seat along
+    # (`ros_ws/docs/catch_arrival_contract.md`). Keying on its source text is what
+    # makes "pass the corrected tilt instead" — a one-token edit that silently
+    # restores the 2026-07-25 defect — fail here.
     'planner.build_catch': (('catch_pose', 'catch_pose', 1),
-                            ('neutral_pose', 'neutral_pose', None)),
+                            ('neutral_pose', 'neutral_pose', None),
+                            ('receive_tilt', 'receive_tilt', None)),
     'planner.build_return_to_neutral': (('neutral_pose', 'neutral_pose', 1),),
     'planner.build_hold': (),
     'planner.build_graceful_stop': (),
     'self._follower.follow': (('target_pose', 'target_pose', 1),),
     'self._plan_and_install_timed': (('target_pose', None, 0),
                                      ('neutral_pose', 'neutral', None)),
-    'self._plan_and_install_catch': (('catch_pose', None, 0),),
+    'self._plan_and_install_catch': (('catch_pose', None, 0),
+                                     ('receive_tilt', 'receive_tilt', None)),
 }
 
 # Every planner entry in the live ROS package, with its C-LEVEL-1 classification.
@@ -143,10 +151,14 @@ _PLANNER_MANIFEST = (
     ('trajectory_node.py', 'TrajectoryNode._install_graceful_stop',
      'planner.build_graceful_stop', (), 'D', 'D5 — mode-exit / arm-latch-edge stop'),
     ('trajectory_node.py', 'TrajectoryNode._on_dynamic_target',
-     'self._plan_and_install_catch', (('catch_pose', 'target'),), 'E',
-     'E2 — corrected in _catch_target_from_msg'),
+     'self._plan_and_install_catch',
+     (('catch_pose', 'target'), ('receive_tilt', 'receive_tilt')), 'E',
+     'E2 — corrected in _catch_target_from_msg. The receive_tilt beside it is the '
+     'SAME wire message, deliberately UNCORRECTED (C-CATCH-1): one message, two '
+     'quantities, only one of which is a command'),
     ('trajectory_node.py', 'TrajectoryNode._plan_and_install_catch',
-     'planner.build_catch', (('catch_pose', 'catch_pose'),), 'E',
+     'planner.build_catch',
+     (('catch_pose', 'catch_pose'), ('receive_tilt', 'receive_tilt')), 'E',
      'E2 continued. NOTE: adding hold_after=False + neutral_pose here would create '
      'a SEVENTH external ingest — this row is what makes that visible'),
     ('trajectory_node.py', 'TrajectoryNode._plan_and_install_timed',
@@ -553,14 +565,31 @@ def _timed_req(x=0.0, y=0.0, z=178.0, lead_s=2.5, hold_after=True):
     return req
 
 
-def _dynamic_target(node, x=0.0, y=0.0, z=170.0, lead_s=1.2):
+def _dynamic_target(node, x=0.0, y=0.0, z=170.0, lead_s=1.2, tilt=None):
     import time as _time
     msg = DynamicTargetCommand()
     msg.target_pos = Point(x=x, y=y, z=z)
     msg.target_vel = Vector3()
-    msg.target_quat = Quaternion()          # identity orientation on the wire
+    if tilt is None:
+        msg.target_quat = Quaternion()      # identity orientation on the wire
+    else:
+        # A genuine gravity-referenced receive tilt on the wire, as
+        # `compute_catch_orientation` produces for a non-vertical arrival.
+        w, xq, yq, zq = _rotvec_to_quat(np.array([tilt[0], tilt[1], 0.0]))
+        msg.target_quat = Quaternion(w=w, x=xq, y=yq, z=zq)
     msg.arrival_time = _time.perf_counter() + lead_s
     return msg
+
+
+def _rotvec_to_quat(rotvec):
+    """(w, x, y, z) from a rotation vector — the wire's orientation encoding."""
+    theta = float(np.linalg.norm(rotvec))
+    if theta < 1e-12:
+        return 1.0, 0.0, 0.0, 0.0
+    axis = np.asarray(rotvec, dtype=float) / theta
+    s = float(np.sin(theta / 2.0))
+    return (float(np.cos(theta / 2.0)),
+            float(axis[0] * s), float(axis[1] * s), float(axis[2] * s))
 
 
 def _platform_pose(x=0.0, y=0.0, z=170.0, publisher='SPACEMOUSE'):
@@ -809,7 +838,7 @@ def test_positioning_and_catch_land_in_the_same_frame():
     flat rx trace, because `build_catch` deliberately ramps a tilt-through-seat
     residual whenever the commanded tilt is non-zero — a *separate* effect that
     this contract does not close (see
-    ``test_catch_through_seat_still_aims_off_the_plan_frame_tilt``). Net reach
+    ``test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt``). Net reach
     displacement isolates the frame question exactly, and it is the quantity that
     was −0.7788° on the day.
     """
@@ -848,36 +877,28 @@ def test_the_frame_regression_would_fire_without_the_fix():
         "displacement, or the regression test above proves nothing")
 
 
-def test_the_reach_excursion_across_the_plan_is_the_arrival_twist_alone():
-    """Sample ACROSS the reach, not only at its endpoints — and say what remains.
+def test_the_reach_excursion_across_the_plan_is_gone_after_c_catch_1():
+    """Sample ACROSS the reach, not only at its endpoints.
 
     The plan requires an across-plan sample twice over ("the 2026-07-25 signature
     was a mid-plan excursion to +2.32°, so an endpoint-only assertion would have
     passed while the platform tilted"). The net-displacement assertion above is
     endpoint-only by construction, so this is its across-plan half.
 
-    What it pins is deliberately NOT "flat": `build_catch` specifies a non-zero
-    ARRIVAL TWIST, so even a reach with `p0 == p1` must swing out and come back.
-    With those boundary conditions the quintic collapses exactly to
-    `v1·T·φ(s)`, `φ = −4s³ + 7s⁴ − 3s⁵`, `|φ|` maximal `16/81` at `s = 2/3` —
-    so the excursion is **linear in the catch lead** and this contract cannot
-    remove it.
+    **Re-pointed 2026-07-26 when C-CATCH-1 landed**
+    (`ros_ws/docs/catch_arrival_contract.md`). Under C-LEVEL-1 alone this test
+    pinned a swing it could not remove: `build_catch` read `catch_pose[3:5]` as the
+    receive tilt, so a gravity-LEVEL catch under a correction still got a non-zero
+    arrival twist and the reach swung `(16/81)·rate·|tdir_x|` = 0.789132 °/s of
+    lead — +0.94696° above the park at this fixture's ~1.2 s lead, and +2.92° at
+    the 3.71 s lead the reference session ran. C-CATCH-1 passes the
+    gravity-referenced receive tilt separately; a level catch's is the zero vector,
+    so the arrival twist is zero and the reach is FLAT — `p0 == p1` with no twist
+    term left to bulge it.
 
-    Two numbers, at the ~1.2 s lead the fixture uses (the reach duration is a
-    live-clock lead, so everything below is asserted as a **rate per second of
-    lead** — 0.789132 °/s for this offset direction — rather than as a fixed
-    excursion):
-
-      * post-fix peak, plan frame:      +0.16817°  (was +0.38397° pre-fix)
-      * post-fix peak above the park:   +0.94696°  (was +0.38397° pre-fix)
-
-    The second RISES, and that is not a regression: pre-fix the park itself sat
-    0.7788° high, so measuring from it hid part of the swing. Physically the peak
-    tilt against gravity falls (the first column plus 0.7788° in each case:
-    1.16275° → 0.94696°). This is why `tools/probes/levelling_tilt_bag_check.py`
-    reports `peak_above_park` and never gates on it, and why the runbook's
-    operator pre-brief says the visible tilt REMAINS. Removing it means changing
-    `build_catch`'s arrival twist — `plans/active/catch-reach-degenerate-overshoot.md`.
+    The pre-fix closed form is kept below and asserted against the pre-fix
+    geometry, because a test that only says "flat now" cannot tell a fixed
+    amplifier from a deleted feature.
     """
     from jugglebot.motion.trajectory import planner as _planner
     node = _node()
@@ -886,90 +907,131 @@ def test_the_reach_excursion_across_the_plan_is_the_arrival_twist_alone():
     ts = np.linspace(0.0, reach.duration, 24001)
     rx = np.degrees(np.array(
         [np.asarray(plan.state_at(float(t))[0])[3] for t in ts]))
+    ry = np.degrees(np.array(
+        [np.asarray(plan.state_at(float(t))[0])[4] for t in ts]))
     held_rx = float(np.degrees(held[0]))
+    held_ry = float(np.degrees(held[1]))
 
-    # Closed form, derived from the planner's own constants rather than pasted:
-    # |phi|max = 16/81 at s = 2/3, times the arrival rate's rx component, times
-    # the lead. Nothing here depends on the correction MAGNITUDE — only on its
-    # direction — which is why the swing does not shrink as the machine is
-    # levelled better.
+    # Flat across the WHOLE reach, on both tilt axes — not merely equal at the
+    # endpoints. The plan carries no through-seat decay segment at all.
+    assert float(np.ptp(rx)) == pytest.approx(0.0, abs=1e-12)
+    assert float(np.ptp(ry)) == pytest.approx(0.0, abs=1e-12)
+    assert float(np.max(np.abs(rx - held_rx))) == pytest.approx(0.0, abs=1e-12)
+    assert float(np.max(np.abs(ry - held_ry))) == pytest.approx(0.0, abs=1e-12)
+    assert len(plan.segments) == 2, (
+        'a level catch must be reach + quiescent hold; a third segment means the '
+        'through-seat re-engaged off a frame that is not the gravity frame')
+
+    # The pre-fix geometry, at the identical lead, through the identical planner —
+    # aim the seat at the PLAN-FRAME tilt (what `build_catch` used to read) and
+    # request the rate explicitly (what it used to manufacture).
+    pre_plan, _rep = _planner.build_catch(
+        (np.asarray(node._current_state()[0], dtype=float),
+         np.zeros(6), np.zeros(6)),
+        np.asarray(plan.segments[0].p1, dtype=float), reach.duration,
+        node._limits, node._geom, settle_hold_s=node._catch_settle_hold_s,
+        receive_tilt=held[:2],
+        tilt_through_rate_radps=_planner._CATCH_TILT_THROUGH_RATE_RADPS)
+    pre_rx = np.degrees(np.array(
+        [np.asarray(pre_plan.state_at(float(t))[0])[3] for t in ts]))
     tdir_x = abs(held[0]) / float(np.hypot(held[0], held[1]))
     slope_deg_per_s = np.degrees((16.0 / 81.0)
                                  * _planner._CATCH_TILT_THROUGH_RATE_RADPS
                                  * tdir_x)
     assert slope_deg_per_s == pytest.approx(0.789132, abs=1e-6)
-
-    # The peak measured from where the platform rests, per second of catch lead.
-    assert (float(np.max(rx)) - held_rx) / reach.duration == pytest.approx(
+    assert (float(np.max(pre_rx)) - held_rx) / reach.duration == pytest.approx(
         slope_deg_per_s, rel=1e-4)
-    # The excursion is one-sided: the reach never goes BELOW the park it starts
-    # and ends at, so the whole swing is the arrival twist's overshoot.
-    assert float(np.min(rx)) == pytest.approx(held_rx, abs=1e-9)
-    # ...and it peaks at s = 2/3 of the reach, the closed-form phi extremum.
-    assert float(ts[int(np.argmax(rx))] / reach.duration) == pytest.approx(
+    # ...and it peaked at s = 2/3 of the reach, the closed-form phi extremum.
+    assert float(ts[int(np.argmax(pre_rx))] / reach.duration) == pytest.approx(
         2.0 / 3.0, abs=1e-3)
-
-    # And the direction of the two effects, against the PRE-fix geometry at the
-    # identical lead: the plan-frame peak FALLS, the peak above the park RISES.
-    uncorrected = np.asarray(node._neutral_pose, dtype=float)
-    pre_plan, _rep = _planner.build_catch(
-        (uncorrected, np.zeros(6), np.zeros(6)),
-        np.asarray(plan.segments[0].p1, dtype=float), reach.duration,
-        node._limits, node._geom, settle_hold_s=node._catch_settle_hold_s)
-    pre_rx = np.degrees(np.array(
-        [np.asarray(pre_plan.state_at(float(t))[0])[3] for t in ts]))
-    assert float(np.max(rx)) < float(np.max(pre_rx))          # plan frame: better
-    assert (float(np.max(rx)) - held_rx
-            > float(np.max(pre_rx)) - float(np.degrees(uncorrected[3])))
+    # The whole swing is what C-CATCH-1 removed.
+    assert float(np.max(pre_rx)) - held_rx > 0.9
 
 
-def test_catch_through_seat_still_aims_off_the_plan_frame_tilt():
-    """CHARACTERISATION — a defect this contract surfaces but does NOT close.
+def test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt():
+    """The defect this contract SURFACED, now closed by C-CATCH-1.
 
-    `build_catch` reads ``catch_pose[3:5]`` as "the receive tilt" and ramps a
+    `build_catch` used to read ``catch_pose[3:5]`` as "the receive tilt" and ramp a
     tilt-through-seat residual along it (`_CATCH_TILT_THROUGH_RATE_RADPS`, decayed
     over `tilt_decay_s`, overshooting by `_CATCH_TILT_OVERSHOOT_FRAC·rate·decay`).
-    That premise holds only while the commanded frame IS the gravity frame. Once a
-    levelling correction is loaded, a *gravity-level* catch (identity receive tilt
-    on the wire) arrives here as a non-zero plan-frame tilt — the correction
-    itself — so the through-seat engages and ramps the platform **0.3008° off
-    gravity-level exactly at ball contact**, in the correction's own direction.
-
-    This is pre-existing, not introduced by C-LEVEL-1: `catch/dynamic_target` was
-    already corrected before 2026-07-25. It is pinned here because it is the
-    quantity the 2026-07-25 bag actually recorded:
+    That premise holds only while the commanded frame IS the gravity frame. With a
+    levelling correction loaded, a *gravity-level* catch (identity receive tilt on
+    the wire) arrived as a non-zero plan-frame tilt — the correction itself — so
+    the through-seat engaged and ramped the platform **0.3008° off gravity-level
+    exactly at ball contact**, in the correction's own direction. On the 2026-07-25
+    bag that is the recorded settle:
 
       * closed form settle = −1.078408° rx, −0.095775° ry
       * bag observed       = −1.0784° rx, −0.0958° ry (flat, release −0.5 s → +2 s)
       * residual vs gravity 0.3008° ⇒ 16.5 mm drift at 3.93 m/s over 0.8 s,
         against the 16 mm tracker-measured catch error
 
-    So the plan's Context table mis-attributes the −1.08° and the 16 mm to the
-    frame plumbing. Fixing THIS is what would take the catch error to ~0; it needs
-    an operator decision because it changes commanded motion at ball contact on
-    every catch, including the shipping reload path.
+    `ros_ws/docs/catch_arrival_contract.md` (C-CATCH-1) passes the
+    gravity-referenced receive tilt to `build_catch` as its own argument, so the
+    seat aims at what the BALL is doing. This test now pins both halves: a level
+    catch settles exactly ON its target (residual 0.0000°, the 16.5 mm gone), and
+    a genuinely tilted receive tilt still gets a through-seat — the amplifier was
+    fixed, not the feature deleted.
 
-    The un-levelled 2026-07-25 15:04 baseline is flat for the same reason in
+    The un-levelled 2026-07-25 15:04 baseline was flat for the same reason in
     reverse: with no correction, a level catch target has `tmag == 0`, which
-    disables the through-seat entirely.
+    disabled the through-seat entirely. C-CATCH-1 makes every session behave that
+    way, correction or not.
     """
     from jugglebot.motion.trajectory import planner as _planner
     node = _node()
     held, plan = _positioned_then_catch(node)
 
-    tmag = float(np.hypot(held[0], held[1]))
-    tdir = held[:2] / tmag
+    # (a) A gravity-level catch settles ON gravity-level, with no seat at all.
+    final = np.asarray(plan.final_pose)[3:5]
+    assert np.allclose(final, held[:2], atol=1e-15)
+    assert np.degrees(np.linalg.norm(final - held[:2])) == pytest.approx(
+        0.0, abs=1e-12), 'the settle must no longer sit 0.3008° off gravity-level'
+    assert len(plan.segments) == 2
+
+    # The PRE-fix settle, from the same planner with the old (plan-frame) aim and
+    # the rate requested explicitly — so the number that fell out of the bag stays
+    # reproducible and this test cannot pass by the seat having been removed.
+    tdir = held[:2] / float(np.hypot(held[0], held[1]))
     overshoot = (_planner._CATCH_TILT_OVERSHOOT_FRAC
                  * _planner._CATCH_TILT_THROUGH_RATE_RADPS * 0.15)
-    expected_settle = held[:2] + overshoot * tdir
-
-    final = np.asarray(plan.final_pose)[3:5]
-    assert np.allclose(final, expected_settle, atol=1e-12)
-    assert np.degrees(final[0]) == pytest.approx(-1.078408, abs=1e-6)
-    assert np.degrees(final[1]) == pytest.approx(-0.095775, abs=1e-6)
-    # ...and that settle is 0.3008° OFF gravity-level, not on it.
-    assert np.degrees(np.linalg.norm(final - held[:2])) == pytest.approx(
+    pre_plan, _rep = _planner.build_catch(
+        (np.asarray(node._current_state()[0], dtype=float),
+         np.zeros(6), np.zeros(6)),
+        np.asarray(plan.segments[0].p1, dtype=float), 1.2,
+        node._limits, node._geom, settle_hold_s=node._catch_settle_hold_s,
+        receive_tilt=held[:2],
+        tilt_through_rate_radps=_planner._CATCH_TILT_THROUGH_RATE_RADPS)
+    pre_final = np.asarray(pre_plan.final_pose)[3:5]
+    assert np.allclose(pre_final, held[:2] + overshoot * tdir, atol=1e-12)
+    assert np.degrees(pre_final[0]) == pytest.approx(-1.078408, abs=1e-6)
+    assert np.degrees(pre_final[1]) == pytest.approx(-0.095775, abs=1e-6)
+    assert np.degrees(np.linalg.norm(pre_final - held[:2])) == pytest.approx(
         0.300803, abs=1e-5)
+
+    # (b) A REAL receive tilt still gets a through-seat, aimed along the WIRE
+    # tilt and not along the wire tilt composed with the correction.
+    wire_tilt = np.array([0.03, -0.12])          # 1.72° / −6.88°, gravity frame
+    node2 = _node()
+    assert node2._svc_go_to_pose(_go_to_pose_req(z=170.0, duration_s=1.0),
+                                 GoToPose.Response()).accepted is True
+    node2._plan_t0 = node2._plan_t0 - (node2._active_plan.total_duration + 0.05)
+    _arm(node2, True)
+    node2._on_dynamic_target(
+        _dynamic_target(node2, z=170.0, lead_s=1.2, tilt=wire_tilt))
+    tilted = node2._active_plan
+    assert len(tilted.segments) == 3, 'a real receive tilt must still be seated'
+    reach_end = np.asarray(tilted.state_at(tilted.segments[0].duration)[0])[3:5]
+    seat = np.asarray(tilted.final_pose)[3:5] - reach_end
+    wire_dir = wire_tilt / float(np.linalg.norm(wire_tilt))
+    assert np.allclose(seat / float(np.linalg.norm(seat)), wire_dir, atol=1e-9), (
+        'the through-seat must run along the GRAVITY-REFERENCED receive tilt')
+    assert float(np.linalg.norm(seat)) == pytest.approx(overshoot, abs=1e-12)
+    # ...and the plan-frame tilt it would have aimed at instead is a measurably
+    # different direction, so (b) is not vacuous.
+    plan_frame_dir = reach_end / float(np.linalg.norm(reach_end))
+    assert float(np.degrees(np.arccos(
+        float(np.clip(np.dot(plan_frame_dir, wire_dir), -1.0, 1.0))))) > 1.0
 
 
 def test_without_a_correction_nothing_changes():
@@ -1064,8 +1126,39 @@ def test_correction_never_moves_the_catch_reach_envelope():
     assert np.allclose(centre, [0.0, 0.0, hw.JB_OP_DEFAULT_ACTIVE_Z_MM], atol=1e-9)
 
     msg = _dynamic_target(node, x=25.0, y=-12.0, z=175.0)
-    target, _twist = node._catch_target_from_msg(msg)
+    target, _twist, _seat = node._catch_target_from_msg(msg)
     assert np.array_equal(target[:3], [25.0, -12.0, 175.0])
     node_off = _node(offset=None)
-    target_uncorrected, _ = node_off._catch_target_from_msg(msg)
+    target_uncorrected, _, _ = node_off._catch_target_from_msg(msg)
     assert np.array_equal(target[:3], target_uncorrected[:3])
+
+
+def test_the_receive_tilt_leaves_the_ingest_UNCORRECTED():
+    """C-LEVEL-1 and C-CATCH-1 pull the same wire message two different ways.
+
+    `catch/dynamic_target` carries ONE orientation, and `_catch_target_from_msg`
+    has to hand over two things from it: the **corrected** pose (where the legs are
+    commanded — C-LEVEL-1 E2) and the **uncorrected** receive tilt (what the ball
+    is physically doing — C-CATCH-1's seat direction). Correcting the second is a
+    one-token slip that restores the 2026-07-25 defect in full, and it is invisible
+    to every other test in this file: the corrected pose would still be right.
+    """
+    node = _node()
+    wire = np.array([0.03, -0.12])                # gravity-referenced receive tilt
+    msg = _dynamic_target(node, z=172.0, tilt=wire)
+    target, _twist, seat = node._catch_target_from_msg(msg)
+
+    assert np.allclose(seat, wire, atol=1e-12), (
+        'the receive tilt must be the WIRE orientation, uncorrected')
+    R = levelling.correction_from_offset(*_SESSION_OFFSET)
+    assert np.allclose(target[3:6],
+                       levelling.apply_gravity_correction(
+                           np.array([wire[0], wire[1], 0.0]), R), atol=1e-12)
+    # ...and the two genuinely differ, or the assertion above proves nothing.
+    assert float(np.degrees(np.linalg.norm(target[3:5] - seat))) > 0.5
+
+    # With no correction loaded they coincide, which is why `sim/` (no levelling
+    # concept at all) is correct to let `build_catch` fall back to the catch pose.
+    node_off = _node(offset=None)
+    target_off, _t, seat_off = node_off._catch_target_from_msg(msg)
+    assert np.allclose(target_off[3:5], seat_off, atol=1e-12)

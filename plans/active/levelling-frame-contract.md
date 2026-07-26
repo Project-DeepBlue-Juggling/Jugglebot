@@ -155,7 +155,7 @@ residual.
 > tilt. That changes commanded motion at ball contact on every catch including
 > the shipping reload path, so it is an operator decision and was deliberately
 > **not** taken by the Phase-2 session. It is pinned as a characterisation test
-> (`tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt`)
+> (`tests/ros/test_levelling_frame.py::test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt`)
 > so it cannot drift silently.
 
 > **CORRECTED AGAIN 2026-07-26 by the Phase-1/2 finalize pass — the +2.32° swing
@@ -191,7 +191,20 @@ residual.
 > `+3.099°` is **retired** (it fires on a healthy system at any lead ≥ 3.93 s and
 > sat 0.18° from firing at the lead the reference session ran), and the operator
 > pre-brief now says in as many words that the visible tilt REMAINS. Pinned as
-> `tests/ros/test_levelling_frame.py::test_the_reach_excursion_across_the_plan_is_the_arrival_twist_alone`
+> `tests/ros/test_levelling_frame.py::test_the_reach_excursion_across_the_plan_is_gone_after_c_catch_1`
+>
+> > **SUPERSEDED, 2026-07-26 — the swing is GONE, not merely smaller.** The
+> > analysis above stands as written (it is what made the second contract
+> > necessary), but its operator-facing conclusion is now false. C-CATCH-1
+> > (`ros_ws/docs/catch_arrival_contract.md`, landed with
+> > `plans/active/catch-reach-degenerate-overshoot.md` Phase 2) passes the
+> > gravity-referenced receive tilt to `build_catch` as its own argument, so a
+> > gravity-level catch gets **no through-seat at all** and its reach is FLAT:
+> > `2.3218–2.3340° → 0.0000°` on all five self-toss reaches of the reference
+> > bag. Do **not** brief the operator to expect the `≈+2.92°` swing — a healthy
+> > post-fix machine will not produce it, and scoring the flat capture against
+> > this paragraph would reject a correct fix. The pinning test name in the line
+> > above already reads `..._is_gone_after_c_catch_1`.
 > and, on the instrument side, by
 > `tools/probes/levelling_tilt_bag_check.py --self-check` +
 > `tests/motion/test_levelling_probe.py`.
@@ -1049,13 +1062,32 @@ fixed:**
    through-seat when the gravity-referenced tilt is ~0, (d) accept it. Not taken,
    because it changes commanded motion at ball contact on every catch including
    the shipping reload path. Pinned as
-   `test_catch_through_seat_still_aims_off_the_plan_frame_tilt`.
+   `test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt`.
+
+   > **SUPERSEDED, 2026-07-26 — branch (a) WAS taken.** C-CATCH-1
+   > (`ros_ws/docs/catch_arrival_contract.md`) passes the gravity-referenced
+   > receive tilt to `build_catch` as its own argument. The settle now lands on
+   > the target (`−1.078408° → −0.778784°` rx), the 0.3008° residual at ball
+   > contact goes to `0.0000°`, and with it the 16.5 mm throw-direction error.
+   > The "changes commanded motion at ball contact on the shipping reload path"
+   > objection was *correct and was paid, deliberately and with numbers*: the
+   > reload seat aim rotates **4.0997°** and its settle moves `+0.021086°` rx /
+   > `+0.004297°` ry — bounded, pre-briefed in
+   > `tests/hardware/session_anomaly_fixes.md` § Section CCATCH, and gated
+   > there. The reload seat RATE at contact is unchanged (`0.070000 rad/s`).
 2. **The same reach shaping keeps the visible pre-throw swing** — see the second
    CORRECTED note in § Context. `≈+2.92°` at a 3.70 s lead, post-fix, and that is
    *correct behaviour*. The operator pre-brief in
    `tests/hardware/session_anomaly_fixes.md` § Section LVL says so explicitly, in
    item 3, because a sitting scored against "the tilt should be gone" would fail a
    working fix.
+
+   > **SUPERSEDED, 2026-07-26 — the swing is gone.** C-CATCH-1 removed the
+   > through-seat for a gravity-level catch entirely, so the self-toss reach is
+   > FLAT (`2.32° → 0.0000°` on all five reference reaches). § Section LVL item 3
+   > is a PRE-fix reference; § Section CCATCH supersedes it and says so in its
+   > preamble. Briefing an operator to expect `+2.92°` would now fail a working
+   > machine.
 
 **Deployment for the operator:** `cd ~/Desktop/Jugglebot/ros_ws && colcon build
 --packages-select jugglebot && source install/setup.bash`, then **relaunch**

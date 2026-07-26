@@ -1040,3 +1040,212 @@ Not a check yet; recorded so it is not re-derived under time pressure.
   hazard, not a motion defect, and needs no bench check.
 - The park frame and `go_home` are § Section LVL. If both plans have landed,
   validate them in one sitting but score them separately.
+
+---
+
+## Section CCATCH — `catch-reach-degenerate-overshoot` Phase 2 (contract C-CATCH-1)
+
+> **Appended 2026-07-26, when Phase 2 landed.** This section supersedes three
+> statements made earlier in this file. They are left in place (sections are
+> append-only here) — read these three corrections first or you will score a
+> healthy machine as broken:
+>
+> 1. **§ CHECK CATCH-1** says "8/8 `OK` lines". The self-check now has **ten**
+>    cases (two were added by Phase 2: the two-sided C-CATCH-1 counterfactual and
+>    the bound-factor derivation). PASS is still `SELF-CHECK: PASS` + exit 0.
+> 2. **§ CHECK CATCH-3**'s toss rows are the **pre-fix** reference, and its
+>    `0.790` figure is **wrong in the permissive direction**. The sign-reversal
+>    threshold is `40/81 = 0.4938`, not `ψ(2/3) = 0.790` (that is where the value
+>    *at* `s = 2/3` crosses zero, not where the reach first leaves the park the
+>    wrong way) — a gate sized off 0.790 passes a reach that has already
+>    reversed. Post-fix the toss settle is `−0.778784°` (× 1.000) and the
+>    amplification question is moot anyway: the through-seat does not engage at
+>    all for a level catch. Its reload row is right and is the one to watch: the
+>    reload settle **does** move, by the numbers in CCATCH-3 below.
+> 3. **§ Section LVL**'s operator pre-brief ("the visible tilt REMAINS", the
+>    `+2.92°` swing, `peak_above_park`) described the C-LEVEL-1-only machine.
+>    Post-fix the catch reach is **flat / monotone**: a level catch commands no
+>    swing at all. `ros_ws/docs/levelling_frame.md` carries the same correction.
+>
+> Also now fixed, and no longer "not in this section": the `peak_leg_*`
+> predicted-peak staleness (`tests/hardware/mvp_bench_runbook.md` open item 7).
+> It has its own check, CCATCH-5, and its own commit.
+
+**What changed in the machine.** `planner.build_catch` used to read
+`catch_pose[3:5]` as "the receive tilt" and ramp a tilt-through-seat residual
+along it. With a levelling correction loaded that vector is the *correction*, not
+the ball — so a gravity-level catch got an arrival twist nobody asked for, swung
+`+2.32°` the wrong way mid-flight, and settled `0.3008°` off gravity **at ball
+contact**. `build_catch` now takes the gravity-referenced receive tilt as its own
+argument (contract **C-CATCH-1**, `ros_ws/docs/catch_arrival_contract.md`) and
+bounds every departure from the target that an arrival twist it *derives* creates
+— during the reach and during the settle — to `40/81` of the catch's physical
+tilt **scale** (the larger of the requested displacement and the receive-tilt
+magnitude). The reload's seat is untouched by that bound, at the pre-tilt install
+**and** at every on-pose supersede through ball contact; what moves on the reload
+is the seat's *aim*.
+
+**Prerequisites:** `cd ~/Desktop/Jugglebot/ros_ws && colcon build
+--packages-select jugglebot && source install/setup.bash`, then **relaunch** —
+the launch runs the *installed* copy, and this change is in `trajectory_node.py`
+and `motion/trajectory/planner.py`. **No firmware flash**; nothing here touches
+the Teensy. Standing session rules still apply: reboot the can-bridge Teensy
+first, and `level` is per-boot so a manual `level` is always required.
+
+### CHECK CCATCH-1 — instrument health (run FIRST, no bag, no robot)
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+python tools/probes/catch_reach_replay.py --self-check
+```
+
+- **PASS**: `SELF-CHECK: PASS`, **10/10** `OK`, exit 0.
+- **ABORT**: any `BAD`. Specifically:
+  - *mirrored production constants have not drifted* → a planner constant moved
+    after this section was written; re-derive the mirrors before scoring anything.
+  - *C-CATCH-1 counterfactual is two-sided* → either the probe can no longer
+    rebuild the pre-fix plan (so it cannot reproduce any older capture) or the
+    fixed path is not actually removing the excursion. Do not run the sitting.
+
+### CHECK CCATCH-2 — the level catch commands NO swing (**the headline check**)
+
+Validates: C-CATCH-1 on the self-toss path. Run a normal self-toss goal with the
+§ Recording list **plus** `/trajectory/status /trajectory/diagnostics
+/trajectory/target_feedback /catch/dynamic_target /gravity_offset
+/throw_announcements`.
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+python tools/probes/catch_reach_replay.py --bag ~/Desktop/rosbags/<SESSION> --list
+python tools/probes/catch_reach_replay.py --bag ~/Desktop/rosbags/<SESSION> \
+    --toss N --json --csv
+```
+
+Read the **C-CATCH-1 COUNTERFACTUAL** block it prints, and the FEATURE LEDGER
+above it. For a *post-fix* capture the recorded reach should already look like
+the counterfactual's "fixed" column, so the two collapse together.
+
+| quantity | PASS | ABORT |
+|---|---|---|
+| commanded `rx` across the pre-tilt reach (FK of `/leg_setpoint_echo`) | **monotone** toward the target; peak above park ≤ `1.05 ×` the requested displacement | any excursion **away** from the target > `0.05°` — C-CATCH-1 is not in force (wrong binary? colcon + relaunch skipped?) |
+| toss settle `rx` / `ry` | equals the commanded target to **±0.05°** (for the 2026-07-25 offset: `−0.7788 / −0.0692°`) | `−1.0784 / −0.0958°`, i.e. still `× 1.3847` — the old aim is live |
+| residual vs gravity at ball contact | **≤ 0.05°** | ≥ 0.25° (the pre-fix value was 0.3008°) |
+| plan segments for a level catch | **2** (reach + quiescent hold) | 3 — a decay segment means the seat re-engaged off a non-gravity frame |
+| `peak_leg_acc_mmps2` / `_jerk_mmps3` on `/trajectory/diagnostics` for a toss catch install | `≈ 1.2 / ≈ 3` (was `142.4 / 3950`) | still `≈142 / ≈3950` |
+| `VERDICT` | `REPRODUCED`, exit 0 | `NOT-REPRODUCED` — run CCATCH-1 first |
+| tracker catch error (§ CHECK LVL-5's instrument) | **< 10 mm** | ≥ 16 mm — the improvement did not land |
+
+The tracker still reports `MISSED` on real catches, so **judge catches by eye as
+well as by `outcome`** — as everywhere else in this file.
+
+### CHECK CCATCH-3 — the reload path CHANGED, on purpose (regression watch)
+
+Validates: that the intended, quantified change on the **shipping** reload path is
+the one that actually happened — and nothing larger.
+
+The reload catch has a real receive tilt (10.87° on the wire for the 2026-07-25
+capture), so its through-seat **survives**. What moves is its *aim*: from the
+plan-frame tilt to the gravity-referenced one. Measured 2026-07-26 offline
+through `tools/probes/catch_reach_replay.py` on
+`~/Desktop/rosbags/2026-07-25_15-17-48 --thrower ball_butler --toss 2`
+(lead 2.3712 s, offset `[0.013592347, 0.001207157]`):
+
+| quantity | pre-fix | post-fix | delta | ABORT if |
+|---|---|---|---|---|
+| seat aim direction | plan-frame tilt | gravity receive tilt | **rotated 4.0997°** | > 6° — the wrong tilt is being threaded through |
+| settle `rx` | `+1.823550°` | `+1.844635°` | **+0.021086°** | \|delta\| > 0.10° |
+| settle `ry` | `−10.933038°` | `−10.928741°` | **+0.004297°** | \|delta\| > 0.10° |
+| peak off the park | `10.9330°` | `10.9287°` | `−0.0043°` | > 0.10° in either direction |
+| predicted `peak_leg_acc_mmps2` | `139.7` | `142.0` | +1.6 % | > 200 (session ceiling 5000) |
+| predicted `peak_leg_jerk_mmps3` | `3873` | `3935` | +1.6 % | > 5000 (session ceiling 30000) |
+| arrival-rate bound `2.5·scale/T` | — | `0.20004 rad/s` vs the `0.07` default | **does not bind** | the probe prints `BINDS` — the seat has been throttled on a real receive tilt; re-read the scale |
+| segment count | 3 | 3 | unchanged | 2 — the seat was lost entirely |
+| seat rate **at ball contact** (see below) | `0.070000 rad/s` | `0.070000 rad/s` | **unchanged** | anything below `0.0665` (−5 %) — the supersede burst is being throttled |
+| reload catch success | as flown (sitting 4: 15/19) | **no worse** | — | a drop attributable to the seat |
+
+**The row that needs its own paragraph: the seat rate AT CONTACT.** Every other
+row above is measured on the *pre-tilt* install, whose arrival is `landing −
+1.5 s`. That is **not** the plan that runs through the catch. The coordinator
+re-asserts the pre-tilt every balls tick, the reach freeze releases at `arrival +
+0.5 s` and re-latches at `arrival − 0.3 s`, so **9–11 further catch installs** are
+accepted in the last ~0.7 s (reference bag: `landing−0.78..−0.31 s` and
+`landing−0.83..−0.29 s`) and the *last* of them is frozen through contact. Each is
+seeded already on the target, so its residual travel is ~0.04° against a 10.87°
+seat — the regime where an incorrectly-scaled bound silently de-rates the seat
+**15.7×** while every row above still reads PASS. The probe now prints
+
+```
+!! NOT SCORED BY THIS ROW: N further catch install(s) accepted AFTER the scored arrival,
+   landing-0.832..-0.292 s (reach freeze released at landing-1.000 s).
+```
+
+- **PASS**: that line appears with `N` between 6 and 25 on a reload attempt, and
+  the commanded `ry` in the last 0.8 s before landing tracks the same
+  `≈0.9°` round trip the pre-fix session recorded (this is status-quo behaviour
+  and is deliberately unchanged by Phase 2).
+- **ABORT**: the commanded tilt in the last 0.8 s is **flat** (< 0.1° of motion)
+  where the pre-fix capture showed `≈0.9°` — that is the throttled-seat signature,
+  and it means the bound's scale regressed to the residual travel. Route back to
+  `plans/active/catch-reach-degenerate-overshoot.md` Phase 2 /
+  `ros_ws/docs/catch_arrival_contract.md` § "Why the scale is a MAX".
+- Not an abort, but worth logging: `N == 0` means the open-loop republish path did
+  not run (check `JB_OP_RELOAD_PLATFORM_OPEN_LOOP` and that the announcement was
+  seen) — the sitting is then not exercising this regime at all.
+
+**These are the numbers to watch for at the bench rather than discover there.**
+A delta an order of magnitude larger than the table means the receive tilt being
+threaded through is not the wire orientation.
+
+### CHECK CCATCH-4 — no motion change anywhere else (regression guard)
+
+Validates: the blast radius really is the catch path.
+
+- `go_to_pose`, `go_home`, `timed_target` and the SpaceMouse follower are
+  untouched by C-CATCH-1 (`build_move` / `build_timed` / `build_follow` all take a
+  caller-supplied arrival twist and none manufacture one).
+- **PASS**: a `go_home` and a `go_to_pose` after the reload goal behave exactly as
+  in § Section LVL's CHECK LVL-2 — same durations, same smoothness, no new
+  `last_rejection` on `/trajectory/status`.
+- **ABORT**: any new rejection code, or a duration change > 5 %.
+
+### CHECK CCATCH-5 — `peak_leg_*` reads 0.0 after a report-less install
+
+Validates: the separate diagnostics fix committed alongside C-CATCH-1
+(`tests/hardware/mvp_bench_runbook.md` open item 7).
+
+Six install paths carry no `FeasibilityReport` (`hold`, `go_home`, the guard
+descent, the pending-stop retry, the graceful stop, the follower's input-loss
+stop). They used to leave `peak_leg_*` describing the **superseded** plan under an
+already-advanced `move_seq`. `_install` now clears the field, so those installs
+publish `0.0` — "this install carried no prediction".
+
+```bash
+# read-only; no actuation
+ros2 topic echo /trajectory/diagnostics --once
+```
+
+1. Do a `go_to_pose` → note `peak_leg_vel_mmps` (non-zero) and `move_seq`.
+2. Call `trajectory/hold` (or `go_home`) → re-read.
+
+| | PASS | ABORT |
+|---|---|---|
+| after the `go_to_pose` | `peak_leg_vel_mmps > 0`, matching the accepted move | `0.0` — the write is being erased; the ordering regressed |
+| after the report-less install | `move_seq` advanced **and** `peak_leg_*` all `0.0` | the previous move's non-zero peaks under the new `move_seq` — the clear did not land (relaunch skipped?) |
+| `realized_peak_leg_*` | reset per install, as before | unchanged across an install |
+
+### If CCATCH-2 fails
+
+In this order, cheapest first:
+
+1. Was the build actually installed? `colcon build --packages-select jugglebot`
+   **and** a relaunch — § Build gate. A stale installed copy reproduces the
+   pre-fix behaviour exactly and is by far the most likely cause.
+2. Run CCATCH-1. A drifted mirror means the probe is scoring old physics.
+3. Check the wire: `ros2 topic echo /catch/dynamic_target --once`. If
+   `target_quat` is **not** identity for a vertical self-toss, the coordinator is
+   sending a real receive tilt and the seat is *supposed* to engage — that is not
+   a C-CATCH-1 failure, it is a `compute_catch_orientation` question.
+4. Only then suspect the fix. Capture the bag and score it offline; the
+   counterfactual block says what the planner would have produced.

@@ -110,20 +110,41 @@ asked for. Measured through this harness on the reference session:
 
 A 22x difference in amplification out of one code path, and all seven reaches
 reproduce here. The commanded tilt leaves the park in the WRONG DIRECTION once
-the ratio exceeds ``psi(2/3) = 0.790``: for the toss target that is any lead
-beyond 0.78 s, for the reload target beyond 10.75 s. The reload leg is not
+the ratio exceeds **40/81 = 0.4938** — measured 2026-07-26 as ``min_s
+psi(s)/|phi(s)| = 2.5`` in ``|v1|T/|d|`` units, and the exact factor C-CATCH-1
+bounds a planner-derived twist to. (An earlier draft of this file and of the plan
+said ``psi(2/3) = 0.790``; that is where the value AT ``s = 2/3`` crosses zero,
+which is LATER than the first crossing. ``sign_reversal_lead_s`` below still
+reports the 0.790 form and is labelled as such.) The reload leg is not
 "well behaved" for any reason of its own — it is the same overshoot, 22x smaller
 relative to what it was asked to do. It carries the through-seat settle too
 (``+1.8235 / -10.9330 deg`` = target x 1.0279, matching the bag exactly).
 
 **Why the through-seat engages at all for a level catch** is a frame defect, not
-a tuning value: ``build_catch`` reads ``catch_pose[3:5]`` as "the receive tilt",
+a tuning value: ``build_catch`` read ``catch_pose[3:5]`` as "the receive tilt",
 a premise that holds only while the commanded frame IS the gravity frame. With
 a levelling correction loaded, a gravity-level catch arrives as a NON-ZERO
-plan-frame tilt — the correction itself — so the through-seat aims along the
-correction. Pinned (deliberately unfixed) by
-``tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt``;
-the fix is ``plans/active/catch-reach-degenerate-overshoot.md`` Phase 2.
+plan-frame tilt — the correction itself — so the through-seat aimed along the
+correction.
+
+**CLOSED 2026-07-26 by C-CATCH-1** (``ros_ws/docs/catch_arrival_contract.md``):
+``build_catch`` now takes the gravity-referenced receive tilt as its own argument
+and bounds every departure from the target that an arrival twist it DERIVES
+creates — reach excursion and settle overshoot — to ``40/81`` of the catch's
+physical tilt SCALE (the larger of the seed -> target travel and the receive-tilt
+magnitude). Every scored row below therefore prints a **C-CATCH-1
+COUNTERFACTUAL** block — the same recorded inputs rebuilt through the post-fix
+path (:func:`build_fixed`), so a reader sees what the machine would command for
+that exact ball. On the reference session: the self-toss reach's unrequested
+excursion goes ``2.3239 -> 0.0000 deg`` and its settle ``-1.078408 ->
+-0.778784 deg`` (dead on the target, 0.3008 deg of residual gone), while the
+reload reach keeps its seat with the aim rotated 4.0997 deg and the settle moved
+0.0215 deg. The counterfactual is REPORTED and never gated: the verdict is about
+reproducing what the robot DID run.
+
+:func:`build_replay` deliberately keeps rebuilding the PRE-fix plan (see its
+docstring) — a probe whose job is to reproduce a recorded capture must be able to
+express the physics that capture contains.
 
 THE ``peak_leg_*`` QUESTION
 --------------------------
@@ -311,6 +332,18 @@ THROUGH_SEAT_OVERSHOOT_FRAC = 0.5
 KNOT_DT_S = 0.025
 #: ``max |phi|`` of the arrival-rate basis ``phi = -4s^3+7s^4-3s^5``, at s = 2/3.
 ARRIVAL_TWIST_BASIS_PEAK = 16.0 / 81.0
+#: ``planner._CATCH_ARRIVAL_RATE_BOUND`` — C-CATCH-1's bound on a PLANNER-DERIVED
+#: arrival twist: ``|v1|*T <= 2.5*scale``, where ``scale`` is the catch's physical
+#: tilt size (``planner._catch_scale``: the LARGER of the seed -> target travel and
+#: the receive-tilt magnitude). So the reach excursion it adds may not exceed
+#: ``40/81`` of that scale. Mirrored, not imported, for the same reason as the
+#: constants above.
+ARRIVAL_RATE_BOUND = 2.5
+#: ``planner._CATCH_EXCURSION_FRAC_BOUND`` — the same 40/81, applied to the OTHER
+#: departure the arrival rate manufactures (the settle overshoot past the seat).
+#: Kept as its own mirror so the two halves of C-CATCH-1 cannot drift apart:
+#: ``EXCURSION_FRAC_BOUND == ARRIVAL_TWIST_BASIS_PEAK * ARRIVAL_RATE_BOUND``.
+EXCURSION_FRAC_BOUND = 40.0 / 81.0
 
 # ── Reference capture (2026-07-25_15-17-48, toss #4) ────────────────────────
 REFERENCE_OFFSET = (0.013592347421588673, 0.001207157476773584)
@@ -420,14 +453,70 @@ def excursion_ratio(tilt_x, tilt_y, lead_s, rate=THROUGH_SEAT_RATE_RADPS):
     11.08 deg SETTLE — the settle is already the through-seat overshoot
     (request x 1.0279) and using it here is a category slip.
 
-    The sign flips (the platform leaves the park the WRONG way) once the ratio
-    exceeds ``psi(2/3) = 0.790``: any lead beyond **0.78 s** for the toss target,
-    beyond **10.75 s** for the reload target.
+    The platform leaves the park the WRONG way once the ratio exceeds
+    **40/81 = 0.4938** — measured 2026-07-26 as ``min_s psi(s)/|phi(s)| = 5/2``
+    in ``|v1|T/|d|`` units, and the factor C-CATCH-1 bounds a planner-derived
+    arrival twist to. ``sign_reversal_lead_s`` in the scored row reports the older
+    ``psi(2/3) = 0.790`` form instead (the lead at which the value AT ``s = 2/3``
+    crosses zero — a LATER, weaker threshold); it is kept for continuity with the
+    plan's published numbers and is labelled as such where it is printed. Do not
+    size a threshold off 0.790: at that ratio the reach has already reversed.
     """
     tmag = float(np.hypot(tilt_x, tilt_y))
     if tmag <= 1e-12:
         return float('inf')
     return float(ARRIVAL_TWIST_BASIS_PEAK * rate * float(lead_s) / tmag)
+
+
+def aim_delta_deg(plan_frame_tilt, gravity_tilt):
+    """Angle between the PRE-fix and POST-fix through-seat aim directions, in deg.
+
+    Pre-fix ``build_catch`` aimed along the plan-frame tilt (the corrected target);
+    post-fix it aims along the gravity-referenced receive tilt (the wire
+    orientation). For a gravity-LEVEL catch the second is the zero vector and the
+    angle is undefined — the seat is simply not engaged at all, which is reported
+    as ``None`` rather than as a rotation.
+    """
+    a = np.asarray(plan_frame_tilt, dtype=float)[:2]
+    b = np.asarray(gravity_tilt, dtype=float)[:2]
+    na, nb = float(np.hypot(*a)), float(np.hypot(*b))
+    if na <= 1e-12 or nb <= 1e-12:
+        return None
+    return float(np.degrees(np.arccos(
+        float(np.clip(np.dot(a, b) / (na * nb), -1.0, 1.0)))))
+
+
+def peak_off_park_deg(plan, park_deg, n=8001):
+    """Largest tilt departure from ``park_deg`` (deg, ``(rx, ry)``) over a plan.
+
+    Sampled across the WHOLE plan on both tilt axes: the 2026-07-25 signature was a
+    mid-plan excursion, so an endpoint-only reading would have scored it as clean.
+    """
+    ts = np.linspace(0.0, float(plan.total_duration), int(n))
+    worst = 0.0
+    for axis, ref in ((3, float(park_deg[0])), (4, float(park_deg[1]))):
+        vals = np.degrees([plan.state_at(float(t))[0][axis] for t in ts])
+        worst = max(worst, float(np.max(np.abs(vals - ref))))
+    return worst
+
+
+def wrong_side_excursion_deg(plan, park_deg, target_deg, n=8001):
+    """How far the commanded tilt leaves the park AWAY from the target, in deg.
+
+    Per tilt axis, and reported as the worst of the two. This is the exact quantity
+    C-CATCH-1's bound factor is derived from: ``2.5`` is the largest
+    ``|v1|*T / |target - park|`` for which this is zero. Pre-fix the 2026-07-25
+    toss reach scores **2.32 deg** here against a 0.78 deg request; a reach that
+    only ever moves toward its target scores 0.
+    """
+    ts = np.linspace(0.0, float(plan.total_duration), int(n))
+    worst = 0.0
+    for axis, p, t in ((3, float(park_deg[0]), float(target_deg[0])),
+                       (4, float(park_deg[1]), float(target_deg[1]))):
+        vals = np.degrees([plan.state_at(float(x))[0][axis] for x in ts])
+        away = -np.sign(t - p) if abs(t - p) > 1e-12 else 1.0
+        worst = max(worst, float(np.max(np.maximum(away * (vals - p), 0.0))))
+    return worst
 
 
 def arrival_twist_slope_deg_per_s(tilt_x, tilt_y, rate=THROUGH_SEAT_RATE_RADPS):
@@ -716,8 +805,27 @@ def catch_target_from_msg(msg, correction):
 
 
 def build_replay(seed_pose, target, lead_s, limits, geom,
-                 settle_hold_s=None, tilt_decay_s=TILT_DECAY_S):
-    """Seed ``planner.build_catch`` the way ``_plan_and_install_catch`` does."""
+                 settle_hold_s=None, tilt_decay_s=TILT_DECAY_S,
+                 receive_tilt=None, rate_radps=THROUGH_SEAT_RATE_RADPS):
+    """Seed ``planner.build_catch`` the way ``_plan_and_install_catch`` did.
+
+    **Past tense on purpose.** The default arguments rebuild the PRE-C-CATCH-1
+    plan, which is the only thing that can reproduce a capture recorded before
+    ``ros_ws/docs/catch_arrival_contract.md`` landed:
+
+    * ``receive_tilt=None`` -> the seat is aimed at ``target[3:5]``, the PLAN-FRAME
+      tilt. That is the frame defect itself; with a levelling correction loaded it
+      aims a gravity-level catch's through-seat along the correction.
+    * ``rate_radps`` is passed EXPLICITLY, which under C-CATCH-1 means "the caller
+      requested this arrival twist" and is honoured verbatim. Left implicit, the
+      shipping planner would BOUND the manufactured rate to
+      ``2.5*|target_tilt - seed_tilt|/T`` and the rebuilt plan would no longer be
+      the one the robot ran — the probe would then score a faithful recording as
+      NOT-REPRODUCED, which is the "instrument fails a working system" trap.
+
+    :func:`build_fixed` is the post-fix counterpart, and every scored row reports
+    the two side by side.
+    """
     if settle_hold_s is None:
         settle_hold_s = float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)
     state0 = (np.asarray(seed_pose, dtype=float), np.zeros(6), np.zeros(6))
@@ -725,6 +833,35 @@ def build_replay(seed_pose, target, lead_s, limits, geom,
                                float(lead_s), limits, geom,
                                settle_hold_s=float(settle_hold_s),
                                tilt_decay_s=float(tilt_decay_s),
+                               receive_tilt=(None if receive_tilt is None else
+                                             np.asarray(receive_tilt, float)),
+                               tilt_through_rate_radps=(
+                                   None if rate_radps is None
+                                   else float(rate_radps)),
+                               hold_after=True)
+
+
+def build_fixed(seed_pose, target, wire_tilt, lead_s, limits, geom,
+                settle_hold_s=None):
+    """The SAME recorded inputs through the post-C-CATCH-1 production path.
+
+    Differs from :func:`build_replay` in exactly the two ways the fix does — the
+    seat is aimed at the **gravity-referenced** receive tilt (the wire orientation
+    BEFORE the C-LEVEL-1 ingest correction, which is what
+    ``trajectory_node._catch_target_from_msg`` now hands over), and the arrival rate
+    is left to the planner so C-CATCH-1 bounds it. Nothing else moves: same seed,
+    same corrected target, same lead.
+
+    This is the counterfactual the operator reads before a post-fix sitting — what
+    the machine WOULD have commanded on this exact recorded ball.
+    """
+    if settle_hold_s is None:
+        settle_hold_s = float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)
+    state0 = (np.asarray(seed_pose, dtype=float), np.zeros(6), np.zeros(6))
+    return planner.build_catch(state0, np.asarray(target, dtype=float),
+                               float(lead_s), limits, geom,
+                               settle_hold_s=float(settle_hold_s),
+                               receive_tilt=np.asarray(wire_tilt, float)[:2],
                                hold_after=True)
 
 
@@ -952,6 +1089,32 @@ def check_toss(bag_dir, geom, limits, toss, offset, *, pre_s=1.0, post_s=0.5,
                             install_abs + plan.total_duration - 1e-3)
     row['census'] = census
 
+    # ── what this probe does NOT score ───────────────────────────────────────
+    # Everything above is anchored on `arrival_abs = landing - PRETILT_EARLY_S`,
+    # i.e. the pre-tilt install. On the reload path that is NOT the plan that runs
+    # through ball contact: `catch_coordinator._republish_pretilt` re-asserts the
+    # pose every balls tick, `trajectory_node` releases the reach freeze at
+    # `arrival + settle_hold` and re-latches it at `arrival - reach_freeze`, so a
+    # BURST of further catch installs is accepted in the last ~0.7 s and the last
+    # of them is what is frozen through the catch.
+    #
+    # Counted and printed rather than scored, because an instrument that silently
+    # ignores a whole class of installs reads PASS on a machine whose behaviour at
+    # contact has changed (finalize review, 2026-07-26: sizing C-CATCH-1's bound on
+    # the residual travel de-rated exactly these installs 15.7x while every scored
+    # row here was unchanged). A non-zero count is NORMAL on the reload path and is
+    # not a failure; it tells the operator which window the verdict covers.
+    settle_hold_abs = arrival_abs + float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)
+    post = [t for t, tp, m in events
+            if tp == FEEDBACK and bool(m.accepted) and str(m.source) == 'catch'
+            and arrival_abs < t <= toss['landing_abs']]
+    row['n_accepted_catch_installs_post_arrival'] = len(post)
+    row['post_arrival_install_window_s'] = (
+        [float(post[0] - toss['landing_abs']), float(post[-1] - toss['landing_abs'])]
+        if post else None)
+    row['post_arrival_freeze_release_rel_landing_s'] = float(
+        settle_hold_abs - toss['landing_abs'])
+
     row['plan_total_duration_s'] = float(plan.total_duration)
     row['plan_segments_s'] = [float(s.duration) for s in plan.segments]
     row['report_peaks'] = [float(report.peak_leg_vel_mmps),
@@ -1005,6 +1168,50 @@ def check_toss(bag_dir, geom, limits, toss, offset, *, pre_s=1.0, post_s=0.5,
         acc_mmps2=[float(finals[:, 1].min()), float(finals[:, 1].max())],
         jerk_mmps3=[float(finals[:, 2].min()), float(finals[:, 2].max())])
     row['realized_bag_final'] = census.get('realized_final')
+
+    # ── the C-CATCH-1 counterfactual, from the SAME recorded inputs ──────
+    # What the post-fix planner would have commanded for this exact ball: seat
+    # aimed at the gravity-referenced wire tilt, arrival rate left to the planner
+    # so the C-CATCH-1 bound applies. Reported for every reach, never gated — the
+    # verdict above is about reproducing what the robot DID.
+    try:
+        fplan, freport = build_fixed(seed_pose, target, wire[3:5], lead,
+                                     limits, geom, settle_hold_s=settle_hold_s)
+    except Exception as exc:                                     # noqa: BLE001
+        row['fixed'] = dict(error=f'post-fix rebuild rejected: {exc}')
+    else:
+        park = np.degrees(np.asarray(seed_pose, dtype=float)[3:5])
+        tgt_deg = np.degrees(np.asarray(target, dtype=float)[3:5])
+        pre_peak = peak_off_park_deg(plan, park)
+        fixed_peak = peak_off_park_deg(fplan, park)
+        row['fixed'] = dict(
+            wrong_side_deg=wrong_side_excursion_deg(fplan, park, tgt_deg),
+            pre_wrong_side_deg=wrong_side_excursion_deg(plan, park, tgt_deg),
+            n_segments=len(fplan.segments),
+            segments_s=[float(s.duration) for s in fplan.segments],
+            settle_rx_deg=float(np.degrees(fplan.final_pose[3])),
+            settle_ry_deg=float(np.degrees(fplan.final_pose[4])),
+            settle_delta_rx_deg=float(np.degrees(fplan.final_pose[3]
+                                                 - plan.final_pose[3])),
+            settle_delta_ry_deg=float(np.degrees(fplan.final_pose[4]
+                                                 - plan.final_pose[4])),
+            peak_above_park_deg=fixed_peak,
+            pre_peak_above_park_deg=pre_peak,
+            report_peaks=[float(freport.peak_leg_vel_mmps),
+                          float(freport.peak_leg_acc_mmps2),
+                          float(freport.peak_leg_jerk_mmps3)],
+            aim_delta_deg=aim_delta_deg(target[3:5], wire[3:5]),
+            # C-CATCH-1's scale is the catch's physical tilt SIZE — the LARGER of
+            # the seed -> target travel and the receive-tilt magnitude — not the
+            # travel alone (`planner._catch_scale`). Using travel alone here would
+            # under-report the allowance on any reach seeded near its target and
+            # print "BINDS" for a plan the production planner does not bind.
+            rate_bound_radps=float(
+                ARRIVAL_RATE_BOUND * max(
+                    float(np.linalg.norm(np.asarray(target)[3:5]
+                                         - np.asarray(seed_pose)[3:5])),
+                    float(np.linalg.norm(np.asarray(wire)[3:5]))) / lead),
+        )
 
     # ── verdict ─────────────────────────────────────────────────────────
     # The tolerance is ``max(absolute, fraction of the excursion this reach
@@ -1069,6 +1276,15 @@ def _print_row(row):
           f"to the same absolute arrival — not the decisive signal)")
     print(f"  peak_leg_* values seen           : {c['pred_peaks']}")
     print(f"  => SINGLE INSTALL: {c['single_install']}")
+    n_post = row.get('n_accepted_catch_installs_post_arrival')
+    if n_post:
+        w = row.get('post_arrival_install_window_s') or [float('nan')] * 2
+        print(f"  !! NOT SCORED BY THIS ROW: {n_post} further catch install(s) "
+              f"accepted AFTER the scored arrival,")
+        print(f"     landing{w[0]:+.3f}..{w[1]:+.3f} s (reach freeze released at "
+              f"landing{row['post_arrival_freeze_release_rel_landing_s']:+.3f} s).")
+        print(f"     The LAST of those is the plan frozen through ball contact. "
+              f"This row scores the PRE-TILT reach only.")
 
     print("\n  ── REPLAY SEED (recorded inputs only) ─────────────────────")
     print(f"  install      {row['install_rel_release_s']:+.4f} s rel. release "
@@ -1149,8 +1365,43 @@ def _print_row(row):
           f"(|tilt| {cf['tilt_mag_rad']:.6f} rad, lead {row['lead_s']:.3f} s)")
     print(f"     unrequested excursion / requested displacement. Direction-only,"
           f" so it blows up as the")
-    print(f"     requested tilt -> 0. Sign REVERSES above 0.790; this target "
-          f"reverses for any lead > {cf['sign_reversal_lead_s']:.2f} s.")
+    print(f"     requested tilt -> 0. C-CATCH-1 bounds a PLANNER-DERIVED twist to "
+          f"40/81 = 0.494 of the catch")
+    print(f"     SCALE (max of this displacement and the receive-tilt magnitude),")
+    print(f"     which is exactly where the reach first leaves the park the WRONG "
+          f"way (measured 2026-07-26;")
+    print(f"     the 0.790 quoted elsewhere is where the value AT s = 2/3 crosses "
+          f"zero, which is later).")
+
+    fx = row.get('fixed')
+    if fx and not fx.get('error'):
+        print("\n  ── C-CATCH-1 COUNTERFACTUAL (same recorded inputs, fixed aim) ──")
+        aim = fx['aim_delta_deg']
+        print(f"  through-seat aim   "
+              + ('NOT ENGAGED post-fix (gravity-referenced receive tilt is zero '
+                 '— a level catch)' if aim is None
+                 else f'rotates {aim:.4f} deg (plan-frame tilt -> '
+                      f'gravity-referenced receive tilt)'))
+        print(f"  arrival-rate bound 2.5*scale/T = {fx['rate_bound_radps']:.5f} rad/s"
+              f" vs the {THROUGH_SEAT_RATE_RADPS} rad/s default -> "
+              f"{'BINDS' if fx['rate_bound_radps'] < THROUGH_SEAT_RATE_RADPS else 'does not bind'}")
+        print(f"  peak off the park  {fx['pre_peak_above_park_deg']:.4f} -> "
+              f"{fx['peak_above_park_deg']:.4f} deg")
+        print(f"  UNREQUESTED (wrong-side) excursion  "
+              f"{fx['pre_wrong_side_deg']:.4f} -> {fx['wrong_side_deg']:.4f} deg"
+              f"   <- the quantity C-CATCH-1 bounds")
+        print(f"  settle             rx {row['model_settle_deg']:+.6f} -> "
+              f"{fx['settle_rx_deg']:+.6f} ({fx['settle_delta_rx_deg']:+.6f}) deg"
+              f"   ry {row['model_settle_ry_deg']:+.6f} -> "
+              f"{fx['settle_ry_deg']:+.6f} ({fx['settle_delta_ry_deg']:+.6f}) deg")
+        print(f"  segments           {['%.4f' % s for s in row['plan_segments_s']]}"
+              f" -> {['%.4f' % s for s in fx['segments_s']]}")
+        pv, pa, pj = fx['report_peaks']
+        print(f"  predicted peaks    {v:.1f} / {a:.1f} / {j:.0f}  ->  "
+              f"{pv:.1f} / {pa:.1f} / {pj:.0f}  (vel / acc / jerk)")
+        print("  REPORTED, never gated — the verdict above is about reproducing "
+              "what the robot DID run.")
+
     print(f"\n  VERDICT: {row['verdict']} (tolerance +-{row['tol_applied_deg']:.4f} deg "
           f"= max({row['tol_deg']:.3f}, {row['tol_frac']:.3f} x "
           f"{row['commanded_span_deg']:.3f} deg commanded span))")
@@ -1295,6 +1546,13 @@ def self_check():
          planner._CATCH_TILT_THROUGH_RATE_RADPS, THROUGH_SEAT_RATE_RADPS),
         ('planner._CATCH_TILT_OVERSHOOT_FRAC',
          planner._CATCH_TILT_OVERSHOOT_FRAC, THROUGH_SEAT_OVERSHOOT_FRAC),
+        ('planner._CATCH_ARRIVAL_RATE_BOUND',
+         planner._CATCH_ARRIVAL_RATE_BOUND, ARRIVAL_RATE_BOUND),
+        ('planner._CATCH_EXCURSION_FRAC_BOUND',
+         planner._CATCH_EXCURSION_FRAC_BOUND, EXCURSION_FRAC_BOUND),
+        ('C-CATCH-1 halves share one factor',
+         planner._CATCH_EXCURSION_FRAC_BOUND,
+         ARRIVAL_TWIST_BASIS_PEAK * ARRIVAL_RATE_BOUND),
         ('hw.JB_TRAJ_CATCH_SETTLE_HOLD_S',
          float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S), 0.5),
         ('catch_coordinator_node._PRETILT_EARLY_S',
@@ -1318,6 +1576,50 @@ def self_check():
           f"{score['model_peak_deg']:+.4f} deg (bag {REFERENCE_PEAK_DEG:+.4f}), "
           f"settle {score['model_settle_deg']:+.4f} "
           f"(bag {REFERENCE_SETTLE_DEG:+.4f})")
+
+    # 9. The C-CATCH-1 counterfactual is TWO-SIDED, like the bag verdict.
+    #
+    # `build_replay` must still rebuild the pre-fix excursion (or the probe cannot
+    # reproduce any capture recorded before the fix) AND `build_fixed` must remove
+    # it on the identical inputs (or the counterfactual is not measuring the fix).
+    # One-sided would be worthless: a `build_fixed` that silently fell back to the
+    # plan-frame aim would print "no change" forever and read as a healthy result.
+    park = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    pre_plan, _pre_rep = build_replay(park, target, REFERENCE_LEAD_S, limits, geom)
+    fix_plan, _fix_rep = build_fixed(park, target, np.zeros(2), REFERENCE_LEAD_S,
+                                     limits, geom)
+    park_deg, target_deg = np.degrees(park[3:5]), np.degrees(target[3:5])
+    pre_wrong = wrong_side_excursion_deg(pre_plan, park_deg, target_deg)
+    fix_wrong = wrong_side_excursion_deg(fix_plan, park_deg, target_deg)
+    check('C-CATCH-1 counterfactual is two-sided on the reference reach',
+          pre_wrong > 2.0 and fix_wrong < 1e-9 and len(fix_plan.segments) == 2
+          and abs(float(np.degrees(fix_plan.final_pose[3]))
+                  - REFERENCE_TARGET_RX_DEG) < 1e-9,
+          f'wrong-side excursion pre {pre_wrong:.4f} deg -> fixed '
+          f'{fix_wrong:.3e} deg; segments {len(pre_plan.segments)} -> '
+          f'{len(fix_plan.segments)}; settle rx '
+          f'{np.degrees(pre_plan.final_pose[3]):+.6f} -> '
+          f'{np.degrees(fix_plan.final_pose[3]):+.6f} '
+          f'(target {REFERENCE_TARGET_RX_DEG:+.6f})')
+
+    # 10. The bound factor still equals the quintic geometry it was derived from.
+    #
+    # 2.5 is not a tuning value: it is `min_s psi(s)/|phi(s)|`, the exact ratio at
+    # which a rest-seeded quintic first leaves p0 on the far side from p1. If a
+    # future segment implementation stops being that quintic, the bound stops
+    # meaning what the contract says it means — and would silently permit (or
+    # forbid) motion on a threshold nobody re-derived.
+    ss = np.linspace(1e-9, 1.0 - 1e-9, 200001)
+    got_bound = float(np.min(psi(ss) / np.abs(phi(ss))))
+    d, w = -1.0, -ARRIVAL_RATE_BOUND
+    at_bound = float(np.max(-np.sign(d) * (d * psi(ss) + w * phi(ss))))
+    over = float(np.max(-np.sign(d) * (d * psi(ss) + 1.02 * w * phi(ss))))
+    check('C-CATCH-1 bound factor IS min psi/|phi| (not a tuning value)',
+          abs(got_bound - ARRIVAL_RATE_BOUND) < 1e-6
+          and at_bound <= 1e-9 < over,
+          f'min psi/|phi| = {got_bound:.9f} (mirror {ARRIVAL_RATE_BOUND}); at the '
+          f'bound the wrong-side excursion is {at_bound:.2e}, 2 % over it '
+          f'{over:.2e}')
 
     print(f"\nSELF-CHECK: {'PASS' if bad == 0 else f'FAIL ({bad} case(s))'}")
     return 0 if bad == 0 else 1

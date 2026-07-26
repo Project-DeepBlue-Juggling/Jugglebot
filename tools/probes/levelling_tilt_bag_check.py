@@ -35,6 +35,19 @@ structure into a verdict on contract **C-LEVEL-1**
 
 THE CAVEAT — READ BEFORE SCORING A SESSION
 ------------------------------------------
+    *** SUPERSEDED FOR CAPTURES RECORDED AFTER 2026-07-26. ***
+    C-CATCH-1 (``ros_ws/docs/catch_arrival_contract.md``) landed and closed BOTH
+    caveats below: ``build_catch`` now takes the GRAVITY-REFERENCED receive tilt
+    as its own argument, so a gravity-level catch gets a ZERO arrival twist. On a
+    post-fix capture the commanded ``rx`` IS flat across a catch goal, the settle
+    lands exactly on the target (0.0000 deg off gravity, not 0.3008), and
+    ``peak_above_park`` reads the requested displacement rather than a swing. The
+    two caveats are kept verbatim because they are what made C-CATCH-1 necessary,
+    and because they remain the correct reading of every capture from the
+    C-LEVEL-1-only era (2026-07-25 to 2026-07-26) — including the reference bag
+    this probe's self-check is built on. Score the catch reach itself with
+    ``tools/probes/catch_reach_replay.py``, which prints the pre/post delta.
+
 The commanded ``rx`` will **NOT** be flat across a catch goal, and the plan's
 original "flat to +-0.05 deg across the whole goal" criterion is unreachable.
 ``planner.build_catch`` reads ``catch_pose[3:5]`` as "the receive tilt" and ramps
@@ -55,9 +68,10 @@ through-seat entirely.
 So the 0.3008 deg residual — and the ~16 mm catch error it implies at 3.93 m/s
 over 0.8 s — is **not** closed by C-LEVEL-1. It is a separate frame defect in
 ``build_catch``'s through-seat aim, pinned as a characterisation test in
-``tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt``
-and awaiting an operator decision, because fixing it changes commanded motion at
-ball contact on every catch including the shipping reload path.
+``tests/ros/test_levelling_frame.py::test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt``
+— **closed 2026-07-26 by C-CATCH-1**, which does change commanded motion at ball
+contact on every catch including the shipping reload path (settle delta there:
+rx +0.021086 deg, ry +0.004297 deg; seat aim rotated 4.0997 deg).
 
 THE SECOND CAVEAT — WHY ``peak_above_park`` IS NOT A GATE
 ---------------------------------------------------------
@@ -89,7 +103,11 @@ Two consequences, both of which the first version of this probe got wrong:
   is lead-independent.
 
 Removing the swing means changing ``build_catch``'s arrival twist — see
-``plans/active/catch-reach-degenerate-overshoot.md``, not this plan.
+``plans/active/catch-reach-degenerate-overshoot.md``, not this plan. **That is
+what C-CATCH-1 did on 2026-07-26**: on a post-fix capture ``peak_above_park`` for
+a level catch is the requested displacement (0 for a fully level goal), not
+``0.789132 * lead``. The linear-in-the-lead model above still describes every
+C-LEVEL-1-era capture, which is what this instrument is for.
 
 WHY THIS EXISTS
 ---------------
@@ -509,6 +527,18 @@ def synth_series(offset, *, corrected_park, lead_s=3.70, park_s=6.0,
     UNCORRECTED activate pose — the post-ACTIVATE, pre-``go_home`` window, which is
     correctly uncorrected and can out-last the real park.
 
+    **Both shapes are C-LEVEL-1-era records, and this probe scores them as such.**
+    The arrival rate is REQUESTED explicitly (``tilt_through_rate_radps``) and the
+    seat is aimed at the plan-frame tilt (``receive_tilt=corrected[3:5]``), which
+    is what ``build_catch`` did before ``ros_ws/docs/catch_arrival_contract.md``
+    (C-CATCH-1) landed. Left implicit, the shipping planner would now aim the seat
+    at the gravity-referenced receive tilt and bound the manufactured rate, so the
+    ``corrected_park=True`` case would carry NO through-seat at all — the synthetic
+    series would stop resembling the sessions this instrument exists to score, and
+    its FLAG/ACCEPT discrimination would be scoring physics no capture contains.
+    A post-C-CATCH-1 capture's catch reach is monotone with no swing; score that
+    with ``tools/probes/catch_reach_replay.py``, which reports the delta directly.
+
     Returns ``(times, poses)`` in the same units :func:`reconstruct` produces.
     """
     from jugglebot.motion import levelling
@@ -524,7 +554,9 @@ def synth_series(offset, *, corrected_park, lead_s=3.70, park_s=6.0,
     park = corrected if corrected_park else neutral
     plan, _report = planner.build_catch(
         (park, np.zeros(6), np.zeros(6)), corrected, float(lead_s), limits, geom,
-        settle_hold_s=float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S))
+        settle_hold_s=float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S),
+        receive_tilt=corrected[3:5],
+        tilt_through_rate_radps=THROUGH_SEAT_RATE_RADPS)
 
     times, poses, t = [], [], 0.0
 

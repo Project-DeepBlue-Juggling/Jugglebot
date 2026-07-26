@@ -98,6 +98,21 @@ def _as6(vec, name: str) -> np.ndarray:
     return a
 
 
+def _as_tilt2(vec, name: str) -> np.ndarray:
+    """A two-component ``(rx, ry)`` tilt, in radians.
+
+    Strict about the shape on purpose: the natural mistakes are handing over a
+    3-component rotation vector or a whole 6-DOF pose, and either would silently
+    aim a catch's through-seat off the wrong two numbers — the exact class of frame
+    error C-CATCH-1 exists to close.
+    """
+    a = np.asarray(vec, dtype=float)
+    if a.shape != (2,):
+        raise ValueError(f"{name} must be shape (2,) — the gravity-referenced "
+                         f"(rx, ry) receive tilt in rad — got {a.shape}")
+    return a
+
+
 def _is_at_rest(twist: np.ndarray, accel: np.ndarray) -> bool:
     return (bool(np.all(np.abs(twist) <= _REST_TWIST_EPS))
             and bool(np.all(np.abs(accel) <= _REST_ACCEL_EPS)))
@@ -771,15 +786,19 @@ def build_graceful_stop(state0, limits, geom, *, start_duration_s=None,
 # Phase 6 — the catch trajectory (reach / tilt-through-seat / quiescent hold)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Residual tilt rate at the catch arrival (rad/s), in the tilt-increasing
+# Residual tilt rate at the catch arrival (rad/s), in the receive-tilt-increasing
 # direction, that "ramps the tilt through the seat" — a parked tilted rim deflects
 # the ball (the bb-sim geometry finding), so the tilt is still MOVING through the
 # seat angle at the instant of contact, then decayed to rest over `tilt_decay_s`.
 # Kept deliberately SMALL: at ~0.07 rad/s (~4°/s) the overshoot over a 0.15 s decay
 # is ~0.3°, well inside MAX_TILT (12°) and the hold-quiescence tilt budget (<1°),
-# and the leg velocities it induces (~plat_radius·rate ≈ 7 mm/s) are negligible
-# against the session ceilings. The magnitude is a physical-tuning parameter the
-# operator refines on hardware (Phase 7); this is the conservative sim default.
+# and the leg velocities it induces are negligible against the session ceilings —
+# 14.24 mm/s, measured 2026-07-26 through the production gate at the shipped rate
+# (an earlier estimate of "~plat_radius·rate ≈ 7 mm/s" here was 2× low; the tilt
+# axis is not through the platform centre, so the lever arm is not plat_radius).
+# This is the DEFAULT the planner falls back to when the caller has no opinion, and
+# in that case C-CATCH-1 bounds it (see `_catch_arrival_rate`). A caller that passes
+# `tilt_through_rate_radps` explicitly has REQUESTED that rate and gets it verbatim.
 _CATCH_TILT_THROUGH_RATE_RADPS = 0.07
 
 # Fraction of `rate·decay_s` the tilt overshoots past the seat during the decay
@@ -787,10 +806,141 @@ _CATCH_TILT_THROUGH_RATE_RADPS = 0.07
 # the exact value is not physically critical (the gate is the backstop).
 _CATCH_TILT_OVERSHOOT_FRAC = 0.5
 
+# ── C-CATCH-1 (`ros_ws/docs/catch_arrival_contract.md`) ──────────────────────
+# The largest `|v1|·T / |p1 − p0|` for which a rest-seeded quintic never leaves its
+# seed pose on the FAR side from its target. Derived from the quintic's own
+# geometry, not fitted: with `p(s) = p0 + d·ψ(s) + v1·T·φ(s)` the reach crosses to
+# the wrong side of `p0` iff `|v1|T/|d| > min_s ψ(s)/|φ(s)|`, and
+# `ψ/|φ| = (10−15s+6s²)/(4−7s+3s²)` is strictly increasing on [0,1) with infimum
+# **5/2** as s → 0⁺ (verified numerically 2026-07-26: 2.500000000625 at s = 1e-9,
+# and the excursion is exactly 0 at 2.50 / +1.6e-8 at 2.51).
+#
+# Equivalently, in the excursion units the plan and the replay probe use: the peak
+# unrequested excursion `(16/81)·|v1|·T` may not exceed `40/81 ≈ 0.4938` of the
+# catch's physical tilt scale (`_catch_scale`). NOTE the 2026-07-26 measurement
+# above corrects a claim carried by
+# `plans/active/catch-reach-degenerate-overshoot.md` and
+# `tools/probes/catch_reach_replay.py` that the sign reverses above `ψ(2/3) =
+# 0.790`: that is where the value AT s = 2/3 crosses zero, not where the reach
+# first leaves the park the wrong way. The true first crossing is 40/81.
+_CATCH_ARRIVAL_RATE_BOUND = 2.5
+
+# The same 40/81, expressed directly as a fraction of the catch scale. Used to
+# bound the OTHER departure the arrival rate manufactures — the settle overshoot
+# past the seat during the decay — so the contract's two halves share one factor
+# and no second tuning constant enters. `(16/81)·(5/2) = 40/81` exactly.
+_CATCH_EXCURSION_FRAC_BOUND = 40.0 / 81.0
+
+
+def _catch_scale(seed_tilt, target_tilt, seat_mag):
+    """The catch's physical tilt SCALE (rad) — the denominator C-CATCH-1 bounds against.
+
+    The larger of the two quantities a catch is physically sized by:
+
+    * ``|target_tilt − seed_tilt|`` — how far the rim must *travel* on this plan;
+    * ``seat_mag`` — how tilted the rim must *end up* (the receive-tilt magnitude),
+      which is the quantity that justifies a nonzero arrival rate at all.
+
+    Taking the MAX, rather than the displacement alone, is load-bearing and was
+    established by measurement (2026-07-26, finalize review of the C-CATCH-1
+    landing). The displacement-only reading degenerates precisely where its own
+    physical meaning evaporates: the bound's reading is "the reach must not leave
+    its seed on the far side from its target", which presumes there IS a
+    meaningful displacement. On a C2 supersede that is already ON the target — the
+    shipping reload path, where ``catch_coordinator._republish_pretilt``
+    re-installs the catch every balls tick from ``arrival + settle_hold`` until
+    ``arrival − reach_freeze`` — the target *is* the seed, so every nonzero arrival
+    velocity is "wrong-side" by definition and a displacement-only bound collapses
+    to "no arrival velocity at all".
+
+    Measured consequence of getting this wrong, replayed through this planner on
+    the recorded reload geometry of bag ``2026-07-25_15-17-48``: the arrival rate
+    of the plan that is actually FROZEN through ball contact fell from
+    ``0.070000 rad/s`` (4.011 °/s) to ``0.004460 rad/s`` (0.256 °/s) — a 15.7×
+    de-rate that silently deletes the through-seat on the one path that has a real
+    seat, at the one instant it exists for. A parked tilted rim deflects the ball
+    (the bb-sim geometry finding this whole feature rests on), so that is a
+    behaviour change at ball contact, not a diagnostic nicety.
+
+    With the seat magnitude in the max, the reload keeps its full seat (scale
+    10.87°, bound 0.200 rad/s ≫ the 0.07 default) while the 2026-07-25 defect
+    stays closed by construction: its wire receive tilt was exactly zero, so
+    ``seat_mag`` is 0 and the scale is the displacement, unchanged.
+    """
+    disp = float(np.linalg.norm(np.asarray(target_tilt, dtype=float)
+                                - np.asarray(seed_tilt, dtype=float)))
+    return max(disp, float(seat_mag))
+
+
+def _catch_arrival_rate(seed_tilt, target_tilt, seat_mag, duration_s, decay_s,
+                        requested_rate):
+    """The catch reach's arrival tilt-rate magnitude (rad/s) — the C-CATCH-1 point.
+
+    This is the ONE place a catch plan's arrival twist magnitude is decided, and
+    the invariant it enforces is that :func:`build_catch` may not MANUFACTURE
+    commanded motion:
+
+    * ``requested_rate is not None`` — the caller specified the arrival twist.
+      That is requested motion; it is returned verbatim and is **not** bounded.
+      (This is the seam a future planner uses to command a deliberately moving
+      platform at ball contact from an optimisation, and the seam the offline
+      replay probes use to rebuild a pre-C-CATCH-1 capture faithfully.)
+    * ``requested_rate is None`` — the caller has no opinion, so the planner falls
+      back to ``_CATCH_TILT_THROUGH_RATE_RADPS``. That rate is the planner's own
+      constant, not a request, so every departure from the target it manufactures
+      is bounded against the catch's physical scale (:func:`_catch_scale`).
+
+    TWO departures are manufactured by the same rate and BOTH are bounded, by the
+    same ``40/81`` factor and with no second free parameter:
+
+    * the **reach** excursion ``(16/81)·|v1|·T`` — the wrong-side swing;
+    * the **settle** overshoot ``_CATCH_TILT_OVERSHOOT_FRAC·rate·decay`` — how far
+      past the seat the rim drifts while the rate decays to rest, which
+      ``hold_after=True`` then holds *through release*.
+
+    Bounding only the reach would leave this contract's own headline evidence
+    unenforced: it is the SETTLE residual (0.3008° off gravity, held through
+    release) that predicts the session's 16.5 mm throw-direction error, and
+    ``decay`` does not appear in the reach bound at all. A future seat-tuning
+    session raising ``tilt_decay_s`` from 0.15 s to 0.6 s would quadruple that
+    residual with every ``test_ccatch1_*`` still green.
+
+    The failure mode this closes, measured on bag ``2026-07-25_15-17-48``: a
+    −0.78° catch target produced a **+2.32° commanded excursion in the opposite
+    direction**, peaking 2.0 s before release, because the manufactured arrival
+    rate was a constant while the requested displacement was not — the ratio goes
+    as ``1/|tilt|`` and so blows up exactly where the request is smallest.
+
+    Bounding the RATE rather than rejecting the plan is deliberate: the violation
+    is manufactured by the builder itself, so rejecting would refuse a catch the
+    caller asked for perfectly reasonably — no catch at all is strictly worse than
+    a rim that rotates through the seat more slowly. Every effect of the bound is a
+    REDUCTION in commanded motion.
+    """
+    rate = float(requested_rate if requested_rate is not None
+                 else _CATCH_TILT_THROUGH_RATE_RADPS)
+    rate = max(rate, 0.0)
+    if requested_rate is not None:
+        return rate
+    scale = _catch_scale(seed_tilt, target_tilt, seat_mag)
+    T = float(duration_s)
+    if T <= 0.0:
+        return 0.0
+    # Reach half: (16/81)·|v1|·T ≤ (40/81)·scale  ⟺  |v1| ≤ (5/2)·scale/T.
+    rate = min(rate, _CATCH_ARRIVAL_RATE_BOUND * scale / T)
+    # Settle half: frac·rate·decay ≤ (40/81)·scale. Same factor, so no new tuning
+    # constant enters the contract; at the shipped decay (0.15 s) this is slack by
+    # ~18× on the reload and never binds before the reach half.
+    decay = float(decay_s)
+    if decay > 0.0:
+        rate = min(rate, (_CATCH_EXCURSION_FRAC_BOUND * scale
+                          / (_CATCH_TILT_OVERSHOOT_FRAC * decay)))
+    return rate
+
 
 def build_catch(state0, catch_pose, duration_s, limits, geom, *,
-                settle_hold_s, tilt_decay_s=0.15,
-                tilt_through_rate_radps=_CATCH_TILT_THROUGH_RATE_RADPS,
+                settle_hold_s, tilt_decay_s=0.15, receive_tilt=None,
+                tilt_through_rate_radps=None,
                 hold_after=True, neutral_pose=None):
     """The reload catch trajectory: reach the catch pose at ``t = duration_s``,
     ramp the tilt through the seat, then hold quiescent (and optionally return).
@@ -803,6 +953,31 @@ def build_catch(state0, catch_pose, duration_s, limits, geom, *,
     pose) is the caller's responsibility to respect; an out-of-stroke catch is
     rejected ``WORKSPACE`` by the gate here regardless.
 
+    ``receive_tilt`` is the **gravity-referenced** receive tilt ``(rx, ry)`` in
+    radians — the physical quantity the through-seat aims along, straight from the
+    ball's arrival direction. It is a SEPARATE argument from ``catch_pose`` because
+    the two are not the same vector once a gravity-levelling correction is loaded:
+    ``catch_pose[3:5]`` is then a *plan-frame* tilt carrying the correction, so
+    reading the seat direction out of it aims the through-seat along the correction
+    and ramps a **gravity-level** catch off level exactly at ball contact
+    (``ros_ws/docs/levelling_frame.md`` C-LEVEL-1 rewrites the rotation of every
+    external pose; it deliberately does not rewrite this). ``None`` means "the
+    catch pose is already gravity-referenced" and falls back to ``catch_pose[3:5]``
+    — correct for every caller with no levelling concept (``sim/``), and wrong for
+    any caller that has one. A level receive tilt yields a **zero** arrival twist
+    and hence a reach with no excursion at all, by construction rather than by a
+    ``|tilt| ≈ 0`` threshold.
+
+    ``tilt_through_rate_radps`` is the requested seat rate. ``None`` (the default)
+    means the caller has no opinion: the planner falls back to
+    ``_CATCH_TILT_THROUGH_RATE_RADPS`` and **bounds** it under C-CATCH-1
+    (:func:`_catch_arrival_rate`), so no departure from the target it manufactures
+    — during the reach or during the settle — exceeds ``40/81`` of the catch's
+    physical tilt SCALE (:func:`_catch_scale`: the larger of the seed → target
+    travel and the receive-tilt magnitude, *not* the travel alone — see that
+    function for why). An explicit value is caller-requested motion and is
+    honoured verbatim.
+
     Segments (all C2-joined, gated as one assembled plan):
 
       1. **Reach** — ``state0`` → ``catch_pose`` over the FIXED ``duration_s`` (the
@@ -810,7 +985,8 @@ def build_catch(state0, catch_pose, duration_s, limits, geom, *,
          (a baked-in safety invariant: *velocity matching is the hand's job*, so
          the platform is translationally still at contact — a moving platform at
          seat would fight the hand's velocity-matched catch). The tilt arrives with
-         a small residual rate (see below).
+         a small residual rate along the *gravity-referenced* receive tilt, zero
+         for a level receive tilt (see below).
       2. **Tilt-through-seat decay** — the residual tilt rate decays to rest over
          ``tilt_decay_s`` (default 0.15 s), the tilt drifting a small overshoot past
          the seat. So at ``t = duration_s`` (contact) the rim is still *moving*
@@ -865,16 +1041,24 @@ def build_catch(state0, catch_pose, duration_s, limits, geom, *,
             [f"catch lead {D:.3f}s < minimum timed lead {lead_floor:.3f}s"],
             min_duration_s=lead_floor)
 
-    # Residual tilt rate at arrival: SMALL, in the tilt-INCREASING direction (so the
-    # rim keeps moving through the seat, not parked). Zero for a level catch (no tilt
-    # direction to continue). Translational arrival velocity is always zero.
-    tilt = target[3:5]
-    tmag = float(np.hypot(tilt[0], tilt[1]))
-    rate = max(float(tilt_through_rate_radps), 0.0)
+    # Residual tilt rate at arrival: SMALL, in the RECEIVE-tilt-increasing direction
+    # (so the rim keeps moving through the seat, not parked). Zero for a level
+    # receive tilt — there is no seat to continue through. Translational arrival
+    # velocity is always zero.
+    #
+    # `seat` is the GRAVITY-REFERENCED receive tilt, not `target[3:5]`. With a
+    # levelling correction loaded those differ by the correction, and aiming off the
+    # plan-frame tilt is what made a gravity-level catch ramp 0.30° off level at
+    # contact (bag 2026-07-25_15-17-48; `ros_ws/docs/catch_arrival_contract.md`).
+    seat = (target[3:5] if receive_tilt is None
+            else _as_tilt2(receive_tilt, 'receive_tilt'))
+    smag = float(np.hypot(seat[0], seat[1]))
+    rate = _catch_arrival_rate(pose[3:5], target[3:5], smag, D, decay,
+                               tilt_through_rate_radps)
     arrival_twist = _zero.copy()
     settle_pose = target.copy()
-    if tmag > 1e-9 and rate > 0.0 and decay > 0.0:
-        tdir = tilt / tmag
+    if smag > 1e-9 and rate > 0.0 and decay > 0.0:
+        tdir = seat / smag
         arrival_twist[3] = rate * tdir[0]
         arrival_twist[4] = rate * tdir[1]
         # Overshoot the seat by the mean-velocity displacement of the rate→0 decay.
@@ -939,7 +1123,15 @@ def _min_feasible_catch(pose, twist, accel, target, arrival_twist, limits, geom)
     Stretches the reach duration (the residual ``arrival_twist`` FIXED — a longer
     lead only lowers the leg peaks) from the ``min_timed_lead_s`` floor until
     :func:`validate_follow` passes. Bounded iterations; returns the best duration
-    found (mirrors :func:`_min_feasible_timed`)."""
+    found (mirrors :func:`_min_feasible_timed`).
+
+    Holding the arrival twist fixed while T moves is deliberately conservative
+    under C-CATCH-1: the reach bound is ``2.5·scale/T`` (:func:`_catch_scale` —
+    NOT the seed → target travel alone), and ``scale`` does not depend on T, so a
+    LONGER candidate lead can only shrink the rate the real rebuild uses. The
+    settle half of the bound does not involve T at all. This search therefore
+    over-states the peaks slightly and reports a lead no shorter than the one that
+    will actually work — never one that then fails on the caller's retry."""
     T = float(limits.min_timed_lead_s)
     _zero = np.zeros(POSE_DIM)
     report = None

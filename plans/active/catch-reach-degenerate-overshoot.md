@@ -29,7 +29,7 @@ related_code:
 > C-LEVEL-1 the toss pre-tilt's requested tilt shrinks toward zero, and the
 > amplification is **inversely proportional to the requested tilt** — so the fix to
 > plan 1 makes this worse, not better. The defect is pinned (deliberately unfixed)
-> by `tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt`.
+> by `tests/ros/test_levelling_frame.py::test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt`.
 
 ## Context
 
@@ -181,6 +181,23 @@ reload pre-tilt (lead 2.37 s) — one code path, 22× apart. The commanded tilt 
 the park in the *wrong direction* once the ratio exceeds `ψ(2/3) = 0.790`: for the
 toss target, any lead beyond 0.78 s; for the reload target, beyond 10.75 s.
 
+> **Correction, 2026-07-26 (Phase 2).** The `0.790` threshold in the sentence
+> above is **wrong, and wrong in the permissive direction** — kept visible
+> because a future reader will meet the number in earlier artefacts. `ψ(2/3) =
+> 0.790` is where the value **at `s = 2/3`** crosses zero, not where the reach
+> first leaves the park on the far side from its target. The true first crossing
+> is `min_s ψ(s)/|φ(s)| = 5/2`, i.e. **`40/81 = 0.4938`** in these amplification
+> units — measured over a 4M-point sweep, `2.500000000625` at `s = 1e-9`, with
+> the wrong-side excursion exactly `0` at 2.50 and `+1.6e-8` at 2.51. So the
+> published figure is **1.6× too permissive**: sizing a gate off 0.790 passes a
+> reach that has already reversed.
+>
+> The corrected leads, from the same measured amplification slopes: the toss
+> target reverses beyond **0.487 s** (not 0.78 s), the reload target beyond
+> **6.72 s** (not 10.75 s). Normative home is
+> `ros_ws/docs/catch_arrival_contract.md`; enforced at
+> `planner._CATCH_ARRIVAL_RATE_BOUND`.
+
 This is why the levelling fix does not retire the risk. C-LEVEL-1 drives the toss's
 requested tilt *toward zero*, and the amplification goes as `1/|tilt|`.
 
@@ -190,7 +207,7 @@ requested tilt *toward zero*, and the amplification goes as `1/|tilt|`.
 |---|---|---|---|
 | 0 | Offline reproduction from the recorded session | the excursion reproduced from recorded inputs | **DONE** (2026-07-26) — all 7 catch reaches reproduced; `tools/probes/catch_reach_replay.py`; see Outcome |
 | 1 | Root cause, written | mechanism traced end-to-end in prose | **DONE** (2026-07-26) — folded into Phase 0; all three features traced, blast radius stated; see Outcome |
-| 2 | Fix + invariant + test | full pytest | TODO — **escalated** (see the priority note) and **BLOCKED on operator re-prioritisation**: Phase 1's STOP fired, and C-CATCH-1's rewrite is unratified |
+| 2 | Fix + invariant + test | full pytest | **DONE** (2026-07-26) — C-CATCH-1 landed (`ros_ws/docs/catch_arrival_contract.md`), enforced at `planner._catch_arrival_rate`; `pytest tests/ -q`, run 2026-07-26 on the Jetson in the project venv: **3543 passed, 3 xfailed in 1376.13 s (22:56)**; see Outcome |
 
 ## Implementation Phases
 
@@ -394,7 +411,7 @@ that holds only while the commanded frame *is* the gravity frame. With a levelli
 correction loaded, a gravity-level catch arrives as a non-zero **plan-frame** tilt
 — the correction itself — so the through-seat aims along the correction and the
 reach acquires an arrival rate nobody asked for. Pinned by
-`tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt`.
+`tests/ros/test_levelling_frame.py::test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt`.
 
 Not to be lost: the leg magnitudes here are small in absolute terms
 (`14.2 mm/s`, `142.4 mm/s²`, `3950 mm/s³` against session limits of
@@ -517,6 +534,58 @@ that resizes or removes the through-seat **will** move the reload settle
 (`+1.8235 / −10.9330°`), so that number is a pre-fix reference, never a post-fix
 pass criterion.
 
+#### Outcome — DONE, 2026-07-26
+
+Commits **XXCODESHAXX** (C-CATCH-1) and **XXDIAGSHAXX** (the separate `peak_leg_*`
+diagnostics fix). Logbook: `logbook/2026-07-26-catch-reach-overshoot-fix.md`.
+
+`build_catch` now takes the **gravity-referenced receive tilt** as its own
+argument, so a level catch's arrival twist is zero *by construction* (`smag == 0`)
+rather than by a threshold, and contract **C-CATCH-1**
+(`ros_ws/docs/catch_arrival_contract.md`) bounds every departure from the target
+that a *derived* arrival twist creates — the reach excursion **and** the settle
+overshoot — to `40/81` of the catch's physical tilt scale. One enforcement point,
+`planner._catch_arrival_rate`. The bound factor is the quintic's own geometry
+(`min_s ψ/|φ| = 5/2`, measured), not a fitted value.
+
+On the reference bag all five self-toss reaches go from `2.32°` of unrequested
+excursion to `0.0000°`, the settle lands on the target (`−1.078408° →
+−0.778784°`), and the `0.3008°` residual at ball contact — worth 16.5 mm of
+throw-direction error — goes to zero. Both reload reaches keep their seat, with
+the aim rotated `4.0997°` and the settle moved `+0.021086° / +0.004297°`.
+
+**The correction made during finalize, because it is the part a future reader will
+need.** The bound was first sized against the *residual seed → target travel*.
+Three independent reviewers converged on the same defect and it reproduced: on the
+shipping reload path the coordinator re-installs the catch every balls tick from
+`arrival + settle_hold` to `arrival − reach_freeze`, each install seeded already
+on the target, so the residual collapses and with it the bound — the arrival rate
+of the plan actually frozen through **ball contact** fell `0.070000 → 0.004460
+rad/s`, a **15.7× de-rate** that parks the rim at the instant the through-seat
+exists for. The scale is therefore the **larger** of the residual travel and the
+receive-tilt magnitude: the displacement-only reading degenerates exactly where
+its own physical meaning does, since once the target *is* the seed, every nonzero
+arrival velocity is "wrong-side" by definition. Pinned by
+`test_ccatch1_keeps_the_seat_on_an_on_pose_supersede` (fails against the
+residual-only bound, verified by monkeypatch).
+
+Known, accepted, and pinned: the two **advisory** `T = 0.95` Tier-8b spot checks
+in `sim/toss_gate.py` do bind (`0.070000 → 0.059469 rad/s`, settle overshoot
+`0.3008° → 0.2555°`) — correct behaviour, since there the pre-tilt at A leans
+opposite B's seat and the manufactured excursion reaches 0.581 of the scale. Both
+sit outside the binding 50 mm ring, so no gate PASS band moves.
+
+**Test triple:** `pytest tests/ -q`, run 2026-07-26 on the Jetson in the project venv: **3543 passed, 3 xfailed in 1376.13 s (22:56)**. Probe acceptance, 2026-07-26:
+`tools/probes/catch_reach_replay.py --self-check` → `SELF-CHECK: PASS` 10/10,
+exit 0; all seven recorded reaches (`--toss 1..5`, `--thrower ball_butler --toss
+1,2`) → `REPRODUCED`, exit 0.
+
+**Deferred to the operator:** the bench sitting. `tests/hardware/session_anomaly_fixes.md`
+§ Section CCATCH (CCATCH-1..5) carries the copy-pasteable commands and numeric
+PASS/ABORT criteria. Requires `colcon build --packages-select jugglebot` **and a
+relaunch** (the launch runs the installed copy; a stale install reproduces the
+pre-fix behaviour exactly). No firmware flash, no config regeneration.
+
 ## Risk register
 
 | Risk | Mitigation | Status |
@@ -524,10 +593,10 @@ pass criterion.
 | Inheriting my possibly-wrong "single install" reading | Phase 0 step 1 settles it from raw data before anything else | **retired** — settled; the reading was correct, the staleness worry refuted |
 | Cannot reproduce offline, so the plan stalls | reproduction failure is an acceptable, publishable outcome; do not fix by guesswork | **retired** — all 7 catch reaches reproduced |
 | The mechanism is general, not degenerate-specific | Phase 1's gate escalates the plan's priority if so | **FIRED** — general to every catch with a plan-frame tilt; plan re-rated LIVE |
-| A narrow degenerate-case special case ships and hides the amplifier | Phase 2 pre-commits to a bounded-excursion invariant instead | open — C-CATCH-1 as rewritten |
-| The Phase-2 invariant enshrines a stationary platform | Phase 0 proposes withdrawing the first clause; C-CATCH-1 bounds *unrequested* excursion only, so a deliberately-specified arrival twist stays legal | open — **needs operator ratification at the item-9 re-prioritisation**; the first draft cited a 2026-07-26 "operator principle" that exists nowhere in the repo |
+| A narrow degenerate-case special case ships and hides the amplifier | Phase 2 pre-commits to a bounded-excursion invariant instead | **retired** (2026-07-26) — no threshold shipped. A level receive tilt yields a zero arrival twist *by construction* (`smag == 0`), and the bounded-excursion invariant landed alongside it as C-CATCH-1 |
+| The Phase-2 invariant enshrines a stationary platform | Phase 0 proposes withdrawing the first clause; C-CATCH-1 bounds *unrequested* excursion only, so a deliberately-specified arrival twist stays legal | **retired** (2026-07-26) — resolved in the contract itself rather than by citation. C-CATCH-1 as landed does not mention platform stationarity at all: it distinguishes **requested** motion from **manufactured** motion. An arrival twist a caller passes explicitly (`tilt_through_rate_radps=`) is honoured verbatim and unbounded, so a future moving-platform catch is legal by construction; only the rate `build_catch` falls back to from its OWN module constant is bounded. The failure mode that drove this, stated plainly rather than as an appeal: a blanket stationarity clause would mandate a parked rim just as surely as the old constant mandated motion, and a parked tilted rim deflects the ball. No operator ratification is outstanding — there is no stationarity clause left to ratify |
 | The instrument mis-scores a HEALTHY capture and routes a correct fix back for rework | two-sided validation is the acceptance criterion: `--self-check` (no bag) plus both the FLAG case (`--toss 2`) and the ACCEPT case (`--thrower ball_butler --toss 2`) must pass, and the verdict tolerance scales with the commanded span | **retired for three known paths** — the 2026-07-26 review found and fixed all three: a sticky `last_rejection` latch that forced NOT-REPRODUCED on every reach after one unrelated session rejection; an unbounded `/gravity_offset` lookup that scored pre-re-level reaches with a post-re-level correction; and a self-check blind to two of five mirrored constants |
-| Fixing this changes commanded motion at ball contact on **every** catch, including the shipping reload path | Phase 2 needs a powered sitting; the reload leg's own numbers are now in the plan (settle `+1.8235 / −10.9330°` = target × 1.0279) so a regression is measurable, and `catch_reach_replay.py` scores a post-fix capture the same way | open |
+| Fixing this changes commanded motion at ball contact on **every** catch, including the shipping reload path | Phase 2 needs a powered sitting; the reload leg's own numbers are now in the plan (settle `+1.8235 / −10.9330°` = target × 1.0279) so a regression is measurable, and `catch_reach_replay.py` scores a post-fix capture the same way | **open — deliberately, and now quantified.** The reload change is aim-only: seat aim rotates `4.0997°`, settle moves `+0.021086°` rx / `+0.004297°` ry, predicted acc/jerk `139.7/3873 → 142.0/3935` (+1.6 %, three orders under the session ceilings). The reload seat RATE at contact is **unchanged** at `0.070000 rad/s` — that took a correction during finalize (see the Phase 2 Outcome: sizing the bound on residual travel alone de-rated it 15.7×). Gated at the bench by `tests/hardware/session_anomaly_fixes.md` § Section CCATCH, CCATCH-3 |
 
 ## Notes for collaborators
 

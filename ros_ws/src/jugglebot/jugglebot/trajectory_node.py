@@ -2012,7 +2012,8 @@ class TrajectoryNode(Node):
         self._publish_target_feedback(True, feas.OK, '', arrival_perf, source)
         return True, feas.OK, 'timed target accepted', float(lead), 0.0
 
-    def _plan_and_install_catch(self, catch_pose, arrival_perf, *, source):
+    def _plan_and_install_catch(self, catch_pose, arrival_perf, *, receive_tilt,
+                                source):
         """Build the tilt-through-seat catch plan to ``catch_pose`` arriving at
         ``arrival_perf`` and install it (supersede-safe). Returns the same
         ``(accepted, code, message, planned_s, min_s)`` tuple as
@@ -2020,15 +2021,17 @@ class TrajectoryNode(Node):
 
         The difference from ``_plan_and_install_timed`` is the planner: ``build_catch``
         assembles reach → tilt-through-seat decay → literal quiescent hold (rather than
-        a bare reach-to-rest). The receive tilt is already baked into ``catch_pose``
-        (``rx, ry`` — the coordinator computed it collinear with the ball's arrival
-        velocity in ``compute_catch_orientation``); ``build_catch`` reads that tilt to
-        aim the small through-seat residual rate, and forces translational arrival
-        velocity to zero (velocity matching is the hand's job). Same fast
-        ``validate_follow`` gate and same install-continuity guard, so the C2-supersede
-        and pump-acceptance guarantees carry over unchanged. ``hold_after=True``: the
-        plan holds the settled catch pose (the mode-exit → STANDBY path owns the return
-        to neutral, exactly as the Phase-5 catch reach did).
+        a bare reach-to-rest). ``catch_pose`` is where the legs must be commanded (the
+        C-LEVEL-1-corrected pose); ``receive_tilt`` is the GRAVITY-REFERENCED receive
+        tilt the through-seat must aim along, and the two are different vectors
+        whenever a levelling correction is loaded — hence two arguments, per C-CATCH-1
+        (``ros_ws/docs/catch_arrival_contract.md``). ``build_catch`` forces
+        translational arrival velocity to zero (velocity matching is the hand's job).
+        Same fast ``validate_follow`` gate and same install-continuity guard, so the
+        C2-supersede and pump-acceptance guarantees carry over unchanged.
+        ``hold_after=True``: the plan holds the settled catch pose (the mode-exit →
+        STANDBY path owns the return to neutral, exactly as the Phase-5 catch reach
+        did).
         """
         seed_mono = time.perf_counter()
         lead = arrival_perf - seed_mono
@@ -2037,6 +2040,7 @@ class TrajectoryNode(Node):
                 self._current_state(), catch_pose, lead,
                 self._limits, self._geom,
                 settle_hold_s=self._catch_settle_hold_s,
+                receive_tilt=receive_tilt,
                 hold_after=True)
         except TrajectoryInfeasible as e:
             self._last_rejection = str(e)
@@ -2063,13 +2067,23 @@ class TrajectoryNode(Node):
         return True, feas.OK, 'catch target accepted', float(lead), 0.0
 
     def _catch_target_from_msg(self, msg):
-        """DynamicTargetCommand → (target pose_6dof, arrival twist) in the trajectory
-        convention. The wire pose is ALREADY STOW-relative (0 = stow, ~170 = active —
-        the coordinator subtracts GEOM_INITIAL_HEIGHT from the world intercept), i.e.
-        the same frame as the trajectory pose, so it maps through VERBATIM. Hardware-
-        verified 2026-07-23; the former "+ active_z" lift here was a double-count that
-        drove every catch reach out of stroke. The orientation carries the
-        gravity-levelling correction (C-LEVEL-1 ingest E2)."""
+        """DynamicTargetCommand → (target pose_6dof, arrival twist, receive tilt) in
+        the trajectory convention. The wire pose is ALREADY STOW-relative (0 = stow,
+        ~170 = active — the coordinator subtracts GEOM_INITIAL_HEIGHT from the world
+        intercept), i.e. the same frame as the trajectory pose, so it maps through
+        VERBATIM. Hardware-verified 2026-07-23; the former "+ active_z" lift here was
+        a double-count that drove every catch reach out of stroke. The orientation
+        carries the gravity-levelling correction (C-LEVEL-1 ingest E2).
+
+        The third return is the **gravity-referenced receive tilt** — the wire
+        orientation's ``(rx, ry)`` BEFORE the correction. The coordinator computes it
+        from the ball's arrival velocity against gravity (``compute_catch_orientation``
+        → ``tilt_to_receive``), so it is gravity-referenced by construction, and it is
+        deliberately NOT corrected: C-CATCH-1 (``ros_ws/docs/catch_arrival_contract.md``)
+        needs the physical seat direction, while the corrected pose is where the legs
+        must be commanded. Passing the corrected tilt here instead would aim a
+        gravity-level catch's through-seat along the correction — the 2026-07-25
+        defect, in one line."""
         q = msg.target_quat
         rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
         rotvec = rot_matrix_to_rotvec(rot)
@@ -2086,7 +2100,8 @@ class TrajectoryNode(Node):
         # not a re-expression of the platform frame.
         twist = np.array([float(msg.target_vel.x), float(msg.target_vel.y),
                           float(msg.target_vel.z), 0.0, 0.0, 0.0])
-        return target, twist
+        receive_tilt = np.array([rotvec[0], rotvec[1]])
+        return target, twist, receive_tilt
 
     def _on_dynamic_target(self, msg) -> None:
         """``catch/dynamic_target``: a timed catch target.
@@ -2139,7 +2154,7 @@ class TrajectoryNode(Node):
                     'within reach-freeze window — holding committed catch reach',
                     arrival_perf, 'catch')
                 return
-        target, _twist = self._catch_target_from_msg(msg)
+        target, _twist, receive_tilt = self._catch_target_from_msg(msg)
         # Reach-envelope gate (the envelope build_catch documents as the caller's
         # responsibility): reject any target farther than the envelope (3D) from the
         # pose held at arm-latch raise. WORKSPACE is deliberate — it is a
@@ -2160,14 +2175,17 @@ class TrajectoryNode(Node):
                     False, feas.WORKSPACE, reason, arrival_perf, 'catch')
                 return
         # Phase 7: build the tilt-through-seat catch (reach → through-seat decay →
-        # quiescent hold) rather than the Phase-5 reach-only build_timed. The receive
-        # tilt is already in ``target[3:5]`` (coordinator's collinear compute_catch_
-        # orientation); ``build_catch`` carries a small residual rate through the seat
-        # so the rim is not parked at contact. ``_twist`` (the coordinator's
-        # target_vel — always zero for a stationary catch) is unused: build_catch forces
-        # translational arrival velocity to zero by design.
+        # quiescent hold) rather than the Phase-5 reach-only build_timed.
+        # ``build_catch`` carries a small residual rate through the seat so the rim is
+        # not parked at contact; it aims that rate along ``receive_tilt`` (the
+        # UNCORRECTED wire orientation — the gravity-referenced physical seat), NOT
+        # along ``target[3:5]``, which carries the levelling correction and would
+        # therefore ramp a gravity-level catch off level at contact (C-CATCH-1).
+        # ``_twist`` (the coordinator's target_vel — always zero for a stationary
+        # catch) is unused: build_catch forces translational arrival velocity to zero
+        # by design.
         accepted, _code, _msg, _pl, _mn = self._plan_and_install_catch(
-            target, arrival_perf, source='catch')
+            target, arrival_perf, receive_tilt=receive_tilt, source='catch')
         if accepted:
             self._catch_arrival_perf = arrival_perf
 
