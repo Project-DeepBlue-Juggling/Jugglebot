@@ -268,8 +268,8 @@ instant later (toward the accepted-feedback log time) drives the fitted lag
 to within a few ms of its triggering message, matching the single-digit-ms
 install latency the node documents.
 
-**Outcome, 2026-07-26 — LANDED.** Commits: see the logbook entry's `commits:` frontmatter (backfilled
-immediately after this phase's code commit). Logbook:
+**Outcome, 2026-07-26 — LANDED.** Commit `a680298` (harness, tests, annotation, plan,
+runbooks; SHA backfilled in the immediate follow-up). Logbook:
 `logbook/2026-07-25-catch-reach-overshoot-repro.md`. Full suite, run 2026-07-26:
 `source ~/Desktop/PDJ_venv/venv/bin/activate && python -m pytest tests/ -q` →
 **3527 passed, 3 xfailed in 1367.68 s (0:22:47)** (+10 passed against the `0c0c829`
@@ -313,7 +313,7 @@ it would then be a live risk on the shipping reload path, not a robustness item.
 
 #### Outcome — 2026-07-26: GATE MET, and the escalation clause FIRED
 
-**Outcome, 2026-07-26 — LANDED, folded into Phase 0's commits.** Commits as for Phase 0; logbook
+**Outcome, 2026-07-26 — LANDED, folded into Phase 0's commits.** Commit `a680298` (as for Phase 0); logbook
 `logbook/2026-07-25-catch-reach-overshoot-repro.md`. Same full-suite triple as
 Phase 0: `python -m pytest tests/ -q`, run 2026-07-26 → **3527 passed, 3 xfailed
 in 1367.68 s (0:22:47)**. Phase 1 was folded into Phase 0's deliverable rather than
