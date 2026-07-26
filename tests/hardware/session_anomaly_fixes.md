@@ -46,11 +46,19 @@ row can just say "standing rules apply".
 2. **`level` is per-boot AND per-process.** The Teensy-persisted
    `RobotState.levelling_complete` survives a relaunch; the correction inside
    `trajectory_node` does not. **Run a manual `level` after every launch and every
-   relaunch** — with **ONE deliberate exception**: the stage-5 CAP-RELAUNCH
-   relaunch, where CHECK LG-3 *needs* the un-levelled process state and levelling
-   first would make a healthy machine score as the ABORT. Level again immediately
-   **after** LG-3 is scored, and confirm the refusal clears. `level` is accepted
-   only from **IDLE** and returns to IDLE, so it goes *before* `activate`.
+   relaunch** — with **TWO deliberate exceptions**, both of which *need* the
+   un-levelled process state and would score a healthy machine as an ABORT if you
+   levelled first:
+   - **stage 4's launch, before CHECK LG-1** — LG-1 is the check that the toss
+     refuses an un-levelled launch, so it must be issued with no `level` since the
+     last launch. Level immediately **after** LG-1 is scored (that is CHECK LVL-1,
+     the next row).
+   - **stage 5's CAP-RELAUNCH relaunch, before CHECK LG-3** — same reasoning for
+     the per-process correction. Level again immediately **after** LG-3 is scored,
+     and confirm the refusal clears.
+
+   Everywhere else, level. `level` is accepted only from **IDLE** and returns to
+   IDLE, so it goes *before* `activate`.
 3. **The tracker still reports `MISSED` on real catches.** Judge every catch **by
    eye** as well as by `outcome`, everywhere in this file. Record one truthful
    outcome line per attempt.
@@ -322,7 +330,7 @@ running:
 
 | # | what it scores | PASS | ABORT | routes to |
 |---|---|---|---|---|
-| LVL-2 | the first `go_home` after `level` is a real, small, smooth move | worst-leg excursion **2.77 ± 0.30 mm** (`0.0391 ± 0.0042 rev`), realized peak leg vel **2.60 ± 0.50 mm/s**, no pump rejection, no guard latch. A **zero** measured offset makes this a genuine no-op — record which case applied | any leg **> 5 mm**, any step rejection, any `MAX_DEVIATION` or guard E-STOP | `levelling-frame-contract` P1–P2, § LVL-2 |
+| LVL-2 | the first `go_home` after `level` is a real, small, smooth move | **SCALE THE BAND TO YOUR MEASURED OFFSET FIRST** (see below): `predicted_mm ≈ 203 × hypot(tilt_x, tilt_y)` using the **radians** LVL-1's log line printed (equivalently 3.55 mm per **degree** of total tilt — but LVL-1 gives you radians, so use the 203 form and do not convert). PASS = worst-leg excursion within **±11 %** of `predicted_mm`, realized peak leg vel `≈ 0.94 × predicted_mm` mm/s, no pump rejection, no guard latch. At the 2026-07-25 offset (0.78185°) that is the familiar **2.77 ± 0.30 mm** / **2.60 ± 0.50 mm/s**. A **zero** measured offset makes this a genuine no-op — record which case applied | worst leg above **max(1.8 × `predicted_mm`, 5 mm)**, any step rejection, any `MAX_DEVIATION` or guard E-STOP | `levelling-frame-contract` P1–P2, § LVL-2 |
 | CCATCH-5 | `peak_leg_*` clears on a report-less install | after `go_to_pose`: `peak_leg_vel_mmps > 0`. After `hold`/`go_home`: `move_seq` advanced **and** `peak_leg_*` all `0.0` | the previous move's non-zero peaks under the new `move_seq` | `catch-reach-degenerate-overshoot` P2, § CCATCH-5 |
 | FK-1 | no spurious FK refusals | `0` × `seed FK failed`, `0` × `guard descent FK failed` across every node log | `>= 1` of either. (`non-finite target extensions` ⇒ **REPORT**, route to the can-bridge, not here) | `fk-convergence-tolerance` P1, § FK-1 |
 | FK-2 | the offline FK verdict | `VERDICT: PASS`, exit 0 — `def_rai` **0** on both topics **and** `hist_rai > 0` on at least one | `def_rai > 0`. `VERDICT: VACUOUS` is **not a pass** — re-run on a richer session | `fk-convergence-tolerance` P1, § FK-2 |
@@ -379,13 +387,59 @@ ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "Toss REJECTED_NOT_LEV
 | row | quantity | the command that produces it |
 |---|---|---|
 | LVL-4 | parked Platform-vs-`Base` mocap tilt | § CHECK LVL-4's **inline `/rigid_body_poses` reader** — no `tools/probes/` script reads that topic. **REPORT-only** |
-| ZSEAT-4 | commanded pose flat over `release ± 0.10 s` | `levelling_tilt_bag_check.py --t0 <release−0.10> --t1 <release+0.10>` (seconds from bag start) and read the plateau table's **`span_deg`**, plus `samples` > 0 and `FK failures 0`. **Ignore its `VERDICT:` line** — that gate compares the *park* plateau to the offset and is meaningless on a 0.2 s window |
-| ZSEAT-2 (flatness) | commanded tilt flat over the last 0.8 s before landing | same command, `--t0 <landing−0.8> --t1 <landing>`; read **`span_deg`** |
+| ZSEAT-4 | commanded pose flat over `release ± 0.10 s` | `levelling_tilt_bag_check.py --t0 <release−0.10> --t1 <release+0.10> --plateau-min-s 0.05 --plateau-tol 1.0` (seconds from bag start) and read the plateau table's **`span_deg`** for the tilt and the **`commanded position span (x,y,z) mm`** line for the mm half, plus `samples` > 0 and `FK failures 0`. **Ignore its `VERDICT:` line** — that gate compares the *park* plateau to the offset and is meaningless on a 0.2 s window |
+| ZSEAT-2 (flatness) | commanded tilt flat over the last 0.8 s before landing | same command, `--t0 <landing−0.8> --t1 <landing> --plateau-min-s 0.1 --plateau-tol 1.0`; read **`span_deg`** |
 
 `catch_reach_replay --csv` cannot serve those last two: its series is trimmed to
 the span where the *model* is defined (the plan), so it stops at the plan end —
 verified 2026-07-27, `--thrower ball_butler --toss 2 --post 1.5` still ends at
 `t_rel_release +0.026 s`. Raising `--post` does not extend it.
+
+#### The `--t0/--t1` origin note — read this before running either ZSEAT row
+
+**`--t0/--t1` are seconds from the first `/leg_setpoint_echo` sample in the bag**
+(`levelling_tilt_bag_check.py` zero-bases its axis on that sample). They are **not**
+seconds from the ROS epoch, and they are **not** the `rel_first_s` column that
+`catch_reach_replay.py --list` prints — that column is relative to the *first
+announcement's release*, a different origin, and using it directly will window the
+wrong part of the bag with no error.
+
+**Convert from the absolute release time. This is the only reliable method.**
+
+1. Get the bag's origin — the log time of its first `/leg_setpoint_echo` sample:
+   ```bash
+   source ~/Desktop/PDJ_venv/venv/bin/activate
+   python - <<'PY'
+   import glob, sys
+   from mcap_ros2.reader import read_ros2_messages
+   BAG = '<bag dir>'            # e.g. ~/Desktop/rosbags/2026-07-27_14-31-02
+   for p in sorted(glob.glob(BAG + '/*.mcap')):
+       for m in read_ros2_messages(p, topics=['/leg_setpoint_echo']):
+           print(f"bag origin = {m.log_time_ns*1e-9:.6f}"); sys.exit()
+   PY
+   ```
+2. Get `release_abs` (a ROS epoch, 6 dp) from
+   `python tools/probes/catch_reach_replay.py --bag <bag> --list`.
+3. `--t0 = release_abs − origin − 0.10`, `--t1 = release_abs − origin + 0.10`
+   (use `landing_abs − origin − 0.8` / `− origin` for ZSEAT-2's flatness row).
+
+**Do NOT substitute `ros2 bag info`'s start time for the origin.**
+`teensy_bridge_node` publishes `/leg_setpoint_echo` only once the pump accepts a
+setpoint frame, and stops after 0.5 s without one. The bag is started *before*
+`activate`, so the topic's first sample lags bag start by however long arming
+takes — tens of seconds. That lag is the entire reason this note exists.
+
+**Do NOT locate the release instant from the plateau table's edges on a toss.**
+It is tempting and it produces a **false PASS**. At release the platform is in
+`go_to_pose`'s terminal hold (§ CHECK ZSEAT-4, Tier 8a) — the park plateau
+*contains* release, it does not end there, and it runs on until the next
+operator-issued goal. Anchoring a 0.2 s window on its boundary lands you in the
+idle hold, where the pose is flat by construction, and ZSEAT-4 scores PASS having
+never looked at the release instant. (§ CHECK LVL-3's two-pass plateau recipe is
+sound for what LVL-3 does — locating the *park itself* on a reload, at the default
+`--plateau-tol 0.02`. It does not transfer to locating an *event* inside a hold.)
+
+Do **not** mix the two conventions in one command.
 
 ### Stage 7 — CAP-SHORT (optional, LAST, only if HAND-1 passed)
 
@@ -1158,7 +1212,7 @@ cd ~/Desktop/Jugglebot
 python tools/probes/hand_stroke_timeline.py --trace temp/logs/toss_trace_<stamp>.jsonl --json
 
 # H3.2 / H3.3 / H3.4 — from the launch log of the same sitting
-LOG=~/.ros/log/$(ls -t ~/.ros/log | head -1)/launch.log
+LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log
 grep 'Hand primed to' $LOG                       # H3.2
 grep -c 'ABORTED_PRIME_FAILED' $LOG              # H3.3
 grep -i 'smooth_move_hand' $LOG | grep -iE 'reject|out of range'   # H3.4
@@ -1540,6 +1594,15 @@ ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "gravity correction se
   Phase-3 hazard, and it silently reverts the platform to the pre-fix frame.
 
 ### CHECK LVL-2 — the first `go_home` after `level` is a real, smooth, small move
+
+> **⚠ SUPERSEDED 2026-07-27 by the run-sheet LVL-2 row — score against that, not
+> against the bullets below.** The `2.77 ± 0.30 mm` PASS and the `> 5 mm` ABORT
+> here are the numbers for the **2026-07-25 offset only** (`0.013592, 0.001207`
+> rad = 0.78185°). Both scale with your measured offset:
+> `predicted_mm ≈ 203 × hypot(tilt_x, tilt_y)` in **radians**. At 1.41° of bench
+> tilt a *healthy* machine reaches 5.0 mm and the fixed ABORT below would fire on
+> correct behaviour at the first actuating move of the sitting. The bullets are
+> kept as the reference-offset instance of the run-sheet form.
 
 Validates: Phases 1–2 ingest E5 (`go_home` targets the *corrected* neutral) and
 the operator pre-brief above. Do this **before** loading a ball.
@@ -2665,7 +2728,7 @@ reached the cup) is BB scatter and is not evidence about the seat.
 | caught / attempted, **between** those two rates | — | **INCONCLUSIVE, not a verdict.** Score the RATE, never a fixed count: the sitting mandates only `n ≥ 12`, where 7/12 = 0.583 satisfies *neither* predicate and a literal reading of "12/19" as *twelve catches* is unachievable at n = 12 at all. Report the raw count and either extend the sitting toward `n = 19` or repeat |
 | **bounce-outs** (touched the cup, left it) | **≤ 1** across the sitting | **≥ 3**, or **≥ 2 consecutive** — this is the seat-deflection signature and it is what the `0.07` existed to prevent |
 | bounce-out vs sitting 4 | sitting 4's misses were BB scatter + late arrival, **not** bounce-out | any bounce-out cluster that was **absent** before is attributable to this change until shown otherwise |
-| commanded tilt over the last 0.8 s before landing (FK of `/leg_setpoint_echo`) — `levelling_tilt_bag_check.py --t0 <landing−0.8> --t1 <landing>` (**seconds from bag start**), read `span_deg`, ignore its `VERDICT:` | **flat**, `< 0.05°` of motion — the rim is parked, as intended | `≈ 0.9°` of round trip — the zero default did **not** land (stale install: colcon + relaunch) |
+| commanded tilt over the last 0.8 s before landing (FK of `/leg_setpoint_echo`) — `levelling_tilt_bag_check.py --t0 <landing−0.8> --t1 <landing> --plateau-min-s 0.1 --plateau-tol 1.0` (**seconds from the bag's first `/leg_setpoint_echo` sample** — NOT the ROS epoch and NOT `--list`'s `rel_first_s`; see **§ The `--t0/--t1` origin note**, in THE RUN SHEET above, stage 6), read `span_deg`. **Both flags are required** — at the 0.3 s default a 0.8 s window of real motion yields no plateau and the probe prints only an ERROR, ignore its `VERDICT:` | **flat**, `< 0.05°` of motion — the rim is parked, as intended | `≈ 0.9°` of round trip — the zero default did **not** land (stale install: colcon + relaunch) |
 | `peak_leg_acc_mmps2` / `_jerk_mmps3` on a reload catch install | `≈ 38 / ≈ 170` (was `142 / 3935`) | still `≈ 142 / ≈ 3935` — stale install |
 | plan segments on a reload catch install | **2** | 3 — stale install |
 
@@ -2743,7 +2806,7 @@ timing rather than by inspection of a trace alone):
 
 | quantity | PASS | ABORT |
 |---|---|---|
-| commanded platform pose (FK of `/leg_setpoint_echo`) over `release ± 0.10 s` — produce it with `levelling_tilt_bag_check.py --t0 <release−0.10> --t1 <release+0.10>` (**seconds from bag start**) and read the plateau table's `span_deg`; ignore that probe's `VERDICT:` line, which scores the *park* against the offset and means nothing on a 0.2 s window | **flat**, `< 0.02°` and `< 0.2 mm` of motion | any commanded motion — a plan is running through the release |
+| commanded platform pose (FK of `/leg_setpoint_echo`) over `release ± 0.10 s` — produce it with `levelling_tilt_bag_check.py --t0 <release−0.10> --t1 <release+0.10> --plateau-min-s 0.05 --plateau-tol 1.0` (**seconds from the bag's first `/leg_setpoint_echo` sample** — NOT the ROS epoch and NOT `--list`'s `rel_first_s`; see **§ The `--t0/--t1` origin note**, in THE RUN SHEET above, stage 6) and read the plateau table's `span_deg` for the tilt, and the `commanded position span (x,y,z) mm` line for the mm figure. **Both flags are required**: the default `--plateau-min-s` is 0.3 s, so a 0.2 s window yields no plateau at all, and the probe then prints only `ERROR: no rx plateau …` and returns BEFORE the sample count, the plateau table and the position-span line — the healthy and unhealthy cases would print the same thing; ignore that probe's `VERDICT:` line, which scores the *park* against the offset and means nothing on a 0.2 s window | **flat**, `< 0.02°` and `< 0.2 mm` of motion | any commanded motion — a plan is running through the release |
 | `/trajectory/status` `plan_time_remaining_s` at release | ≤ 0 (terminal hold), or a hold segment | a `move` plan mid-reach |
 | Tier 8b only: first `catch/dynamic_target` timestamp | **≥** `t_release` | before `t_release` — the deferred reach fired early |
 
