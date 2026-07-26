@@ -1807,6 +1807,55 @@ def test_timed_target_excessive_lead_rejected_no_crash():
     assert node._active_plan is committed
 
 
+def test_go_to_pose_records_predicted_peaks_after_the_install_clears_them():
+    """`_install` clears `_last_peak_*`, so the write must come AFTER it.
+
+    The ordering is load-bearing in both directions and each half fails silently
+    on its own: written before the install, the accepted move's peaks are erased
+    and `/trajectory/diagnostics` reports 0.0 for a real move; never cleared, a
+    report-LESS install (hold / go_home / graceful stop / guard descent) leaves
+    the superseded plan's peaks published under an already-advanced `move_seq`,
+    which is the bench observation behind `tests/hardware/mvp_bench_runbook.md`
+    open item 7.
+    """
+    node = _traj_mode_node()
+    resp = node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response())
+    assert resp.accepted is True
+    # Non-zero proves the write survived `_install`'s clear; matching the
+    # re-gated plan proves it is THIS plan's report and not a leftover. The
+    # tolerance is loose because `go_to_pose` is lean-SHAPED: `build_move`
+    # returns the retiming path's report, whose sampling grid differs from a
+    # fresh `validate_follow` by ~3e-4 relative. (`timed_target` below has no
+    # shaper, so it matches exactly — hence the two different tolerances.)
+    rep = feas.validate_follow(node._active_plan, node._limits, node._geom)
+    assert node._last_peak_vel_mmps > 0.0
+    assert node._last_peak_vel_mmps == pytest.approx(rep.peak_leg_vel_mmps,
+                                                     rel=1e-3)
+    assert node._last_peak_acc_mmps2 == pytest.approx(rep.peak_leg_acc_mmps2,
+                                                      rel=1e-3)
+    assert node._last_peak_jerk_mmps3 == pytest.approx(rep.peak_leg_jerk_mmps3,
+                                                       rel=1e-2)
+
+
+def test_a_report_less_install_clears_the_predicted_peaks():
+    """A hold carries no `FeasibilityReport`, so it must publish 0.0, not the
+    previous plan's numbers under a NEW `move_seq` — a diagnostic that silently
+    attributes one plan's peaks to another sent the 2026-07-25 investigation
+    chasing a "stale or cached" field that was neither."""
+    node = _traj_mode_node()
+    assert node._svc_go_to_pose(_go_to_pose_req(z=190.0, duration_s=2.0),
+                                GoToPose.Response()).accepted is True
+    assert node._last_peak_vel_mmps > 0.0
+    seq_before = node._move_seq
+
+    assert node._svc_hold(Trigger.Request(), Trigger.Response()).success is True
+    assert node._move_seq > seq_before, 'the hold must bump move_seq'
+    assert node._last_peak_vel_mmps == 0.0
+    assert node._last_peak_acc_mmps2 == 0.0
+    assert node._last_peak_jerk_mmps3 == 0.0
+
+
 def test_timed_target_records_predicted_peaks():
     """An accepted timed install records the accepting report's PREDICTED leg peaks into
     _last_peak_* (as go_to_pose does), so /diagnose per-move rows carry the right

@@ -379,15 +379,13 @@ class TrajectoryNode(Node):
         # ONLY by the install paths that have a FeasibilityReport in hand:
         # `_svc_go_to_pose`, `_plan_and_install_timed`, `_plan_and_install_catch`
         # and the follower replan (that one only when its result CARRIES a
-        # report — a report-less follower install leaves this stale too).
-        # Six other paths call `_install` (which bumps
-        # `_move_seq` and resets the REALIZED peaks) without touching it —
-        # `_svc_hold`, `_svc_go_home`, `_install_guard_descent`,
+        # report). Every one of those writes AFTER its `_install` call, because
+        # `_install` CLEARS these to 0.0 — so the six install paths with no report
+        # (`_svc_hold`, `_svc_go_home`, `_install_guard_descent`,
         # `_retry_pending_stop`, `_install_graceful_stop` and the follower's
-        # input-loss stop — so after any of those, `peak_leg_*` on
-        # trajectory/diagnostics describes the SUPERSEDED plan under a `move_seq`
-        # that has already advanced. The realized peaks are always current; the
-        # predicted ones are per-plan only for report-carrying installs.
+        # input-loss stop) publish 0.0 rather than the SUPERSEDED plan's peaks under
+        # an already-advanced `move_seq`. `peak_leg_* == 0.0` therefore reads "this
+        # install carried no prediction", never "the previous plan's numbers".
         # NOT the same thing as "cached": the 2026-07-25 investigation read
         # `14.2 / 142.4 / 3950` identically before and after a catch install and
         # inferred staleness, but a catch plan's predicted peaks are the
@@ -1525,6 +1523,20 @@ class TrajectoryNode(Node):
             # lean label to 0.0 here because holds/stops/follower installs are
             # unshaped; go_to_pose sets the real gain (config default 0.6, or the
             # per-move override) immediately after this install returns.
+            #
+            # The PREDICTED peaks are cleared here for the same reason and it is the
+            # load-bearing half: six install paths (`_svc_hold`, `_svc_go_home`,
+            # `_install_guard_descent`, `_retry_pending_stop`, `_install_graceful_stop`
+            # and the follower's input-loss stop) have no FeasibilityReport to write,
+            # so without this clear they left `peak_leg_*` describing the SUPERSEDED
+            # plan under an already-advanced `move_seq` — a diagnostic that silently
+            # attributes one plan's peaks to another (observed at the bench 2026-07-09,
+            # `tests/hardware/mvp_bench_runbook.md` open item 7). Reporting 0.0 for a
+            # report-less install is honest: "this install carried no prediction".
+            # Every report-carrying install therefore writes AFTER `_install`.
+            self._last_peak_vel_mmps = 0.0
+            self._last_peak_acc_mmps2 = 0.0
+            self._last_peak_jerk_mmps3 = 0.0
             self._run_peak_vel_mmps = 0.0
             self._run_peak_acc_mmps2 = 0.0
             self._run_peak_jerk_mmps3 = 0.0
@@ -1810,13 +1822,15 @@ class TrajectoryNode(Node):
                 f"{continuity_bound:.3f})")
             return response
 
+        self._install(plan)              # bumps _move_seq (non-follower install)
         # Record the accepted plan's measured leg peaks (from the report build_move
-        # returned — no second ~350 ms validate) for trajectory/diagnostics.
+        # returned — no second ~350 ms validate) for trajectory/diagnostics. AFTER
+        # `_install`, which clears them: writing first would be erased, and the
+        # ordering is the same one `_plan_and_install_timed` / `_plan_and_install_catch`
+        # already use.
         self._last_peak_vel_mmps = report.peak_leg_vel_mmps
         self._last_peak_acc_mmps2 = report.peak_leg_acc_mmps2
         self._last_peak_jerk_mmps3 = report.peak_leg_jerk_mmps3
-
-        self._install(plan)              # bumps _move_seq (non-follower install)
         self._lean_gain_active = gain    # label this move's A/B arm (install reset it)
         response.accepted = True
         response.code = feas.OK
@@ -2353,12 +2367,11 @@ class TrajectoryNode(Node):
         diag.message = 'streaming' if streaming else 'idle'
         lim = self._limits
         diag.values = [
-            # Gate-PREDICTED peaks of the last accepted REPORT-CARRYING plan
-            # (fine-sampled report). Holds, go_home, graceful stops and guard
-            # descents install WITHOUT a report and leave these untouched, so
-            # they can describe a superseded plan under a newer `move_seq` — see
-            # the `_last_peak_*` note in __init__ before reading these in an
-            # investigation. The realized peaks below are always current.
+            # Gate-PREDICTED peaks of the ACTIVE plan (fine-sampled report). Holds,
+            # go_home, graceful stops and guard descents install WITHOUT a report;
+            # `_install` clears these, so those installs publish 0.0 — "no prediction
+            # for this plan", never the superseded plan's numbers under a newer
+            # `move_seq`. See the `_last_peak_*` note in __init__.
             KeyValue(key='peak_leg_vel_mmps',
                      value=f'{self._last_peak_vel_mmps:.1f}'),
             KeyValue(key='peak_leg_acc_mmps2',

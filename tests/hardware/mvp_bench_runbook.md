@@ -380,10 +380,12 @@ auto-tracks whatever threshold the firmware trips at):
     install paths that call `_install` — which bumps `move_seq` and resets the REALIZED
     peaks — without writing `_last_peak_*`, so the PREDICTED column describes the
     superseded plan. Enumerated and annotated at `trajectory_node.__init__` and at the
-    `_publish_status` KeyValue block; the **fix is still open** (it reorders
-    `_svc_go_to_pose`'s write to after its `_install`, a safety-adjacent install path).
-    Read `/diagnose`'s predicted column only for a `move_seq` whose install carried a
-    `FeasibilityReport`. (b) **`/link_status` is not
+    `_publish_status` KeyValue block; **FIXED 2026-07-26** — `_install` now clears
+    `_last_peak_*` and `_svc_go_to_pose`'s write moved to after its `_install`, so a
+    report-less install publishes `0.0` rather than the superseded plan's peaks. On a
+    post-2026-07-26 capture, read `peak_leg_* == 0.0` as "this install carried no
+    prediction"; on an older one, read the predicted column only for a `move_seq` whose
+    install carried a `FeasibilityReport`. (b) **`/link_status` is not
     in the launch's rosbag record list**, so the E-STOP that occurred at 13:29:47 is
     absent from the bag — the fault channel is invisible to post-hoc analysis. Adding it
     is a one-line launch change and would have made this session self-documenting.
@@ -871,6 +873,12 @@ Carried from the phase open-questions (identical to the closing logbook entry's 
    `trajectory_node.__init__`, fix deferred as its own commit because it reorders a
    safety-adjacent install path. Matters if S4's `/diagnose` review is ever run on a
    spacemouse sortie rather than the battery.
+   **The `peak_leg_*` half is now FIXED (2026-07-26).** `_install` clears
+   `_last_peak_*` alongside the realized peaks and every report-carrying install writes
+   after it (`_svc_go_to_pose`'s write moved), so a report-less install publishes `0.0`
+   — "no prediction for this plan" — instead of the superseded plan's numbers. Bench
+   check: `tests/hardware/session_anomaly_fixes.md` § CHECK CCATCH-5. The
+   realized-peaks-are-per-install half remains open.
 8. **Jolt-fix regression check (deferred until bench-leg testing completes — operator is
    currently rigged for the bench leg)**: on the next powered Jugglebot sitting,
    deliberately latch the guard, then armed `/clear_errors` — the pre-fix ~2 rev/s /
