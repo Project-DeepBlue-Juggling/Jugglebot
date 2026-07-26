@@ -148,7 +148,7 @@ namespace ODriveDefaults {
 
 namespace JBOp {
   constexpr float DEFAULT_ACTIVE_Z_MM = 170.0f;
-  constexpr float HAND_CATCH_PRIME_REV = 9.858f;
+  constexpr float HAND_CATCH_PRIME_REV = 9.9594f;
   constexpr float HAND_RETRACT_REV = 0.0f;
   constexpr float CATCH_VEL_SCALE_DEFAULT = 0.8f;
   constexpr bool RELOAD_PLATFORM_OPEN_LOOP = true;

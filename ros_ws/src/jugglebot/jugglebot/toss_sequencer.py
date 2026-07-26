@@ -220,11 +220,23 @@ MIN_TOSS_THROW_DELAY_S = 3.5         # CHECKING floor (REJECTED_CANT_MAKE_LEAD).
                                      # the real enforcement.
 MIN_THROW_EVENT_DELAY_S = 1.0        # floor on event_delay at dispatch. DERIVED, not
                                      # measured (Phase-5 T0 hard-confirms): prelude
-                                     # smooth-move ≤ full stroke ~0.63 s (100 rev/s²
-                                     # triangular over 9.858 rev; 0.68–1.05 s ascents
-                                     # observed) + throw windup 2·0.187/v ≈ 0.10–0.14 s
-                                     # + margin. The catch-side 0.3 s floor does NOT
-                                     # apply — that assumes a hand already primed at top.
+                                     # smooth-move ≤ full stroke 0.758 s — the QUINTIC
+                                     # T = √(Δ·QUINTIC_S2_MAX/A) the firmware actually
+                                     # solves (Trajectory.h:257) over 9.9594 rev, the
+                                     # derived stroke top since 2026-07-26 (was 9.858
+                                     # ⇒ 0.754 s); matches the 0.68–1.05 s ascents
+                                     # observed. NOT the 0.63 s a triangular profile
+                                     # would give — that model understates this budget
+                                     # by 0.13 s and this comment carried it until
+                                     # 2026-07-26. Model:
+                                     # hand_stroke.smooth_move_duration_s.
+                                     # + throw windup 2·0.187/v ≈ 0.10–0.14 s
+                                     # ⇒ 0.86–0.90 s against the 1.0 s floor, margin
+                                     # 0.102 s. Conservative twice over: the THROWING
+                                     # entry re-check that hand_parked (|pos| ≤ 0.5 rev)
+                                     # caps the REACHABLE prelude at ~0.17 s. The
+                                     # catch-side 0.3 s floor does NOT apply — that
+                                     # assumes a hand already primed at top.
 DEFAULT_TOSS_FLIGHT_TIME_S = 0.8     # 0 => this — the NO-CONFIG fallback only: the
                                      # coordinator resolves a zero goal field against
                                      # the generated JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S

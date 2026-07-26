@@ -211,7 +211,7 @@ converting the `[0, 11.1]` rev end-stop bound into sim mm.
 | 0 | Reusable stroke-timeline probe; confirm the timing window and the sim mirror | probe reproduces the measured dip from the recorded trace | **DONE** (25/25 rows ≤0.4 ms, plus a four-case synthetic post-fix branch that pins the verdict half; see Phase 0 — Outcome) |
 | 1 | Gate the hand-catch arm until the throw stroke completes (item 3) | full pytest | **DONE** (shared `motion/trajectory/hand_stroke.py`; one enforcement point in `_arm_hand_catch`; window 395 ms at 0.80 s / 115 ms at 0.55 s; contract written down at `ros_ws/docs/hand_command_continuity.md` — see Phases 1-2 — Outcome) |
 | 2 | Repack safety guard while a stroke is in flight (item 5) | full pytest | **DONE** (same enforcement point — the retry defers rather than repacks; cap and keep-the-latch preserved) |
-| 3 | Prime rev derived from stroke geometry (item 6) | full pytest + codegen | TODO |
+| 3 | Prime rev derived from stroke geometry (item 6) | full pytest + codegen | **DONE** (prime 9.858 → the derived 9.9594 rev; `HAND_STROKE_TOP_REV` emitted by codegen; three-route drift guard; no threshold widened. Review also corrected the bang-bang-vs-quintic profile model three neighbours were sized against — see Phase 3 — Outcome) |
 | 4 | Velocity-continuous prelude — sim mirror then firmware (item 4) | sim tests + xref; flash | TODO |
 | 5 | Hardware validation (operator-run) | `trunc=-`, `seeds=0`, `peak <= 10.060` rev, `dip_below_x3 <= 0.10` rev; throw scatter recorded | TODO |
 
@@ -1238,6 +1238,58 @@ commit rather than shaving the derivation.
 consumer copies, a drift-guard test.
 **Gate:** `pytest tests/ -q` green; regenerated artefacts staged.
 
+#### Phase 3 — Outcome
+
+**Landed 2026-07-26** in `PENDING_SHA` (code + docs) and `PENDING_SHA_BACKFILL`
+(SHA backfill). Logbook: `logbook/2026-07-26-hand-prime-rev-derived.md`.
+
+`hand_catch_prime_rev` moves `9.858 → 9.9594` rev — it had drifted `0.101403`
+rev = **3.207 mm** below x3 for the life of the constant, so every "catch from
+rest at the top" opened with a real 76.5 ms / 3.2 mm prelude. `generate_config.py`
+now emits `HAND_STROKE_TOP_REV` (x3, in rev) alongside the x2/x5 landmarks; the
+YAML key stays an explicit override with the derivation written beside it, and
+`tests/motion/test_hand_stroke.py::test_catch_prime_equals_the_stroke_top` guards
+it by three independent routes (generated constant, host model, and x3 re-derived
+from the **parsed shipped firmware header** — the only route that survives a
+hand-edit bypassing codegen).
+
+**The Phase-3 risk paragraph above did not bind.** Every park/parked-top window
+was enumerated and measured at both primes and none is tight, so nothing was
+widened: near-band margin `0.2156 rev = 6.8 mm` in the pessimistic reading,
+bridge headroom `1.1406 rev = 36.1 mm`, and `toss_sequencer`'s `hand_parked` gate
+is keyed to `JB_OP_HAND_RETRACT_REV = 0.0` (the **bottom** band), so the kind-0
+off-band hazard is structurally independent of the prime. Peak commanded
+acceleration is **unchanged at 100 rev/s²** — the duration formula solves for it,
+so a taller stroke buys duration, never a harder command.
+
+**What the review added, and it was not in this phase's charter.** The
+`sqrt(a·Δx)` / `2·sqrt(Δ/a)` closed forms three of the prime's neighbours are
+sized against are **bang-bang** forms; `makeSmoothMove` is a quintic. Both a
+duration (`MIN_THROW_EVENT_DELAY_S`'s "~0.63 s" against the real **0.758 s**) and
+a velocity (`_THROW_STROKE_VEL_RPS`'s "peak ascent 31.56 rev/s" against the real
+**24.63 rev/s**) were wrong, in opposite directions, and this phase had
+propagated both while updating them for the new prime. Fixed at the root:
+`hand_stroke.smooth_move_peak_vel_rps` / `_bound_rps` are now the named model all
+four sites quote. The code guard was **not** re-sized — clearing a conservative
+bound is the right thing for a guard to do — but bench row H3.7 was recalibrated
+from `PASS <= 35` (which would have scored a 26 % overspeed as "on model") to
+`PASS <= 30` / DEBRIEF 30-40 / ABORT `>= 40`. `_PRIME_INFLIGHT_S = 1.2` was also
+found unpinned: sized from the ascent duration but never naming the constant, so
+a grep sweep misses it structurally.
+
+**Tests**: `pytest tests/ -q`, run 2026-07-26 on the Jetson — **3531 passed,
+3 xfailed in 1356.73 s (0:22:36)**, exit 0 (baseline at `fbd8d13`: 3527 passed,
+3 xfailed in 1367.68 s; the +4 is exactly the four new test functions, xfail
+unchanged). No test weakened, skipped, deleted or xfailed; the one restated literal
+(`prelude_peak == approx(31.4 → 31.56)`) was adjudicated ACCEPT with the
+tolerance and both inequalities unchanged.
+
+**Deferred to the operator**: `colcon build --packages-select jugglebot` +
+**relaunch**, then `tests/hardware/session_anomaly_fixes.md` § **CHECK HAND-3**
+(7 rows, no extra robot motion — read off the HAND-1 capture plus `launch.log`).
+**No firmware flash**: `JBOp::HAND_CATCH_PRIME_REV` is a dead `constexpr` no
+sketch reads.
+
 ### Phase 4 — Velocity-continuous prelude
 
 The class fix. Firmware, so it is last and gated hardest.
@@ -1353,7 +1405,7 @@ instrument that makes it readable.
 | A kind-3 abort retract stops clobbering an armed stroke | explicit exemption + a test; called out in both Phase 2 and the contract |
 | Velocity-continuous prelude overshoots into the stroke end-stop | bound the excursion against 11.1 rev; decide the cannot-fit behaviour deliberately |
 | Sim mirror is not faithful, so Phase 4's gate is illusory | Phase 0 verifies the mirror *before* it is trusted |
-| Moving the prime rev trips park-band / parked-top windows | Phase 3 greps and checks every consumer before changing the number |
+| Moving the prime rev trips park-band / parked-top windows | **CLOSED, did not bind** (Phase 3, 2026-07-26): every consumer enumerated and every window measured at both primes — tightest is the near-band's `0.2156 rev = 6.8 mm` pessimistic margin, bridge headroom `1.1406 rev`, and `hand_parked` is keyed to the *bottom* band so the kind-0 hazard never involved the prime. Nothing widened; margins pinned by `test_prime_move_leaves_the_park_band_windows_open`. The window the constant-grep sweep DID miss was `_PRIME_INFLIGHT_S` — sized from the ascent duration without naming the constant — now pinned too |
 | Firmware/host version skew after Phase 4 | version bump + a phase-logbook note on mixing |
 | Parallel session editing the same files | `git fetch && git status -sb` before starting and before every push |
 

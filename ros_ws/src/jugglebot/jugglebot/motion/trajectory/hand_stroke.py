@@ -12,12 +12,17 @@ firmware (``Teensy_code/Trajectory.h``) and the simulation mirror
 (``tools/probes/hand_stroke_timeline.py``) briefly made a third, and
 ``catch_coordinator_node`` needing it would have made a fourth.  That is not a
 hypothetical drift risk — it is a failure this codebase has already realised:
-``JB_OP_HAND_CATCH_PRIME_REV`` is a hand-maintained 9.858 against a stroke top
-of 9.9594 rev, 3.2 mm off, so a "catch from rest at the top" has never actually
-started from rest at the top.  A second host copy of the *timing* would fail the
-same way and much more quietly, because the probe that scores the bench capture
-and the node that ships the suppression window would then be scoring different
-models.  The probe imports this module; there is no second copy to pin.
+``JB_OP_HAND_CATCH_PRIME_REV`` was a hand-maintained 9.858 against a stroke top
+of 9.9594 rev, 3.2 mm off, so a "catch from rest at the top" never actually
+started from rest at the top.  (Closed 2026-07-26: the prime is now the derived
+stroke top, guarded by ``tests/motion/test_hand_stroke.py``
+``::test_catch_prime_equals_the_stroke_top``.  The lesson stands even though the
+instance is fixed — it drifted silently for the life of the constant, which is
+exactly what a second copy of the *timing* would do.)  A second host copy of the
+timing would fail the same way and much more quietly, because the probe that
+scores the bench capture and the node that ships the suppression window would
+then be scoring different models.  The probe imports this module; there is no
+second copy to pin.
 
 Positions are motor revs measured from the firmware's encoder zero (the homed
 physical bottom of travel), exactly as ``buildSegment`` emits them
@@ -269,6 +274,54 @@ def smooth_move_duration_s(delta_rev: float) -> float:
     T = math.sqrt(abs(float(delta_rev)) * hw.TEENSY_TRAJ_QUINTIC_S2_MAX
                   / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2)
     return max(T, 0.05)
+
+
+def smooth_move_peak_vel_rps(delta_rev: float) -> float:
+    """Peak velocity ``makeSmoothMove`` actually commands over ``delta_rev``.
+
+    ``Trajectory.h:283`` emits ``vel = delta * s'(tau) / T`` with
+    ``s'(tau) = 30tau^2 - 60tau^3 + 30tau^4``, whose maximum is **1.875** at
+    ``tau = 0.5``.  So the peak is ``|delta| * 1.875 / T``.
+
+    **Read this before quoting sqrt(a * delta).**  A bang-bang (triangular)
+    profile over the same stroke would peak at ``sqrt(a * |delta|)`` — 31.56
+    rev/s at the full 9.9594 rev stroke — and that figure was quoted as "the
+    peak ascent speed" in ``reload_coordinator_node``'s
+    ``_THROW_STROKE_VEL_RPS`` comment, in ``test_toss_coordinator``, and in the
+    HAND-3 bench row.  The shipped profile is a quintic, not a triangle: its
+    real peak is ``1.875 / sqrt(QUINTIC_S2_MAX)`` = **0.7803x** that figure,
+    i.e. **24.63 rev/s** at the full stroke.
+
+    Both numbers have a use and they are not interchangeable:
+
+    * ``sqrt(a * |delta|)`` is a valid conservative UPPER BOUND, which is the
+      right thing for a guard threshold to clear — a guard that clears the
+      bound clears the real peak with room to spare;
+    * this function is the right thing for a BENCH CRITERION, because a
+      capture is compared against what the firmware commands.  Scoring a
+      measured ascent against the bound accepts a 28 % overspeed as nominal,
+      and an overspeed on a smooth move is the signature of a re-seeded or
+      clobbered profile — exactly the failure class this plan exists to catch.
+
+    Rest-to-rest, like :func:`smooth_move_duration_s`, and it moves with that
+    function when Phase 4 replaces the profile with a ``v0 != 0`` quintic.
+    """
+    dur = smooth_move_duration_s(delta_rev)
+    if dur <= 0.0:
+        return 0.0
+    return abs(float(delta_rev)) * 1.875 / dur
+
+
+def smooth_move_peak_vel_bound_rps(delta_rev: float) -> float:
+    """Bang-bang upper bound ``sqrt(a * |delta|)`` on the smooth-move peak.
+
+    NOT what the firmware commands — see :func:`smooth_move_peak_vel_rps` for
+    why both exist and which one a bench criterion may use.  Kept as a named
+    function so the guard comments that legitimately want a conservative bound
+    quote a model rather than a hand-written literal.
+    """
+    return math.sqrt(hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
+                     * abs(float(delta_rev)))
 
 
 #: Prelude the arm-fit check budgets for — ``smooth_move_duration_s`` of the

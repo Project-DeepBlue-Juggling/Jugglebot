@@ -580,6 +580,20 @@ def compute_derived(cfg: dict) -> dict:
     derived["HAND_THROW_POS_M"] = round(x2_m, 6)   # x2: hand position at ball release
     derived["HAND_CATCH_POS_M"] = round(x5_m, 6)   # x5: hand position at ball catch
 
+    # x3, in REV — the reference the hand-catch prime position must equal.
+    #
+    # Unit deviation from its x2/x5 siblings above is deliberate: the quantity it
+    # guards (jugglebot_operational.hand_catch_prime_rev) is a rev, and a drift
+    # guard that has to multiply by a gain to compare is exactly where a rev/mm
+    # slip hides. Emitted in the unit of the comparison, not the unit of the
+    # siblings.
+    #
+    # x3 = accelStroke + velHold = totalStroke holds ALGEBRAICALLY, independent of
+    # the commanded velocity (the decel segment contributes 0.5*INERTIA_RATIO*v*t_acc,
+    # so x3 = 0.5*v*t_acc*(1 + INERTIA_RATIO) + velHold = accelSt + velHold). That is
+    # why it can be written down here at all, with no velocity in scope.
+    derived["HAND_STROKE_TOP_REV"] = x3_m * derived["TEENSY_LINEAR_GAIN"]
+
     # Hand catch offset: height of hand catch point above platform centroid (mm)
     hand_bottom = geom["hand_axis_bottom_offset_mm"]
     derived["HAND_CATCH_OFFSET_MM"] = round(hand_bottom + x5_m * 1000.0, 2)
@@ -664,6 +678,10 @@ def generate_hw_python(cfg: dict) -> str:
     lines.append(f"HAND_THROW_POS_M = {derived['HAND_THROW_POS_M']}")
     lines.append(f"HAND_CATCH_POS_M = {derived['HAND_CATCH_POS_M']}")
     lines.append(f"HAND_CATCH_OFFSET_MM = {derived['HAND_CATCH_OFFSET_MM']}")
+    lines.append("# x3 (rev): throw-stroke end AND catch-trajectory first sample.")
+    lines.append("# JB_OP_HAND_CATCH_PRIME_REV above MUST equal this — see the YAML")
+    lines.append("# comment on jugglebot_operational.hand_catch_prime_rev.")
+    lines.append(f"HAND_STROKE_TOP_REV = {derived['HAND_STROKE_TOP_REV']!r}")
     lines.append(f"BB_LINEAR_GAIN = {derived['BB_LINEAR_GAIN']}")
     lines.append(f"BB_MAX_THROW_SAMPLES = {derived['BB_MAX_THROW_SAMPLES']}")
     lines.append(f"BB_MAX_TRAJ_FRAMES = {derived['BB_MAX_TRAJ_FRAMES']}")

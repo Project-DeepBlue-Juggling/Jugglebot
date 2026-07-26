@@ -32,6 +32,7 @@ import pytest
 
 import jugglebot.hardware_config as hw
 import jugglebot.reload_coordinator_node as rcn
+from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.reload_coordinator_node import (
     ReloadCoordinatorNode,
     _TOSS_SOFT_CATCH_GAINS,
@@ -711,16 +712,44 @@ def test_platform_position_cached_for_configured_body_only():
 
 def test_stroke_watch_threshold_clears_smooth_move_prelude():
     """FIX-5a: the release-stroke threshold sits ABOVE the kind-1 smooth-move
-    prelude's peak ascent (√(100 rev/s² · 9.858 rev) ≈ 31.4 rev/s — a
-    concurrent prime/retract ascent must never fake release evidence) and well
-    BELOW the ≈85 rev/s minimum release-band stroke speed (2.7 m/s sweep
-    floor). Behavioural pin: a prelude-speed ascent does NOT latch, a
-    release-band ascent does. T0 re-tunes against measured stroke telemetry."""
+    prelude's peak ascent and well BELOW the ≈85 rev/s minimum release-band
+    stroke speed (2.7 m/s sweep floor). Behavioural pin: a prelude-speed ascent
+    does NOT latch, a release-band ascent does. T0 re-tunes against measured
+    stroke telemetry.
+
+    **Two peak figures, and the distinction is load-bearing.** ``√(a·Δx)`` =
+    31.56 rev/s is the peak a BANG-BANG profile would reach; the firmware ships
+    a QUINTIC, whose commanded peak is ``|Δ|·1.875/T`` = 24.63 rev/s — 22 %
+    lower. The guard clearing the bound is the conservative thing for a guard to
+    do and that inequality is the one pinned first below, but the bound is not
+    what the hand does, so the commanded peak is pinned too and it is the figure
+    the HAND-3 bench row is scored against. Until 2026-07-26 this docstring, the
+    ``_THROW_STROKE_VEL_RPS`` comment and the bench row all called the bound
+    "the peak"; scoring a capture that way accepts a 28 % overspeed as nominal,
+    and overspeed on a smooth move is the re-seeded/clobbered-profile signature.
+
+    The 31.4 → 31.56 restatement is the 2026-07-26 prime move (9.858 → the
+    derived stroke top 9.9594 rev), which lengthens the full-stroke prime ascent
+    and so raises both figures. The TOLERANCE and both inequalities below are
+    unchanged; the guard's margin against the 40 rev/s threshold went 8.60 →
+    8.44 rev/s on the bound (15.50 → 15.37 rev/s on the commanded peak)."""
     from jugglebot.reload_coordinator_node import _THROW_STROKE_VEL_RPS
     prelude_peak = math.sqrt(100.0 * float(hw.JB_OP_HAND_CATCH_PRIME_REV))
-    assert prelude_peak == pytest.approx(31.4, abs=0.1)
+    assert prelude_peak == pytest.approx(31.56, abs=0.1)
+    assert _THROW_STROKE_VEL_RPS - prelude_peak == pytest.approx(8.44, abs=0.01)
     assert _THROW_STROKE_VEL_RPS > prelude_peak
     assert _THROW_STROKE_VEL_RPS < 85.0
+    # The bound must BE a bound on the commanded peak, and the guard must clear
+    # the commanded peak by more than it clears the bound.
+    commanded_peak = hand_stroke.smooth_move_peak_vel_rps(
+        float(hw.JB_OP_HAND_CATCH_PRIME_REV))
+    assert commanded_peak == pytest.approx(24.63, abs=0.01)
+    assert commanded_peak < prelude_peak
+    assert prelude_peak == pytest.approx(
+        hand_stroke.smooth_move_peak_vel_bound_rps(
+            float(hw.JB_OP_HAND_CATCH_PRIME_REV)), rel=1e-9)
+    assert _THROW_STROKE_VEL_RPS - commanded_peak == pytest.approx(15.37,
+                                                                   abs=0.01)
     now = 100.0
     node = _toss_ready_node(now)
     _install_toss_goal(node)

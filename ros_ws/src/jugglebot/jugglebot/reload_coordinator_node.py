@@ -204,6 +204,13 @@ _HAND_DISPATCH_ATTEMPTS = 4
 # (bottom) / 5.39 rev/s (top — hence the park-band position qualifiers in
 # _hand_dispatch_confirmed); parked-top pos spread [9.675, 10.044] sits inside the
 # ±0.5 near-band around 9.858; telemetry gaps median 10 ms / max 39.6 ms << 0.3 s.
+# 2026-07-26: the prime became the derived stroke top (9.858 -> 9.9594 rev, 3.2 mm
+# up), so the near-band is now [9.4594, 10.4594]. The spread above was measured
+# with the prime COMMANDED to 9.858 and translates up with the target, restoring
+# the 0.317/0.314 rev margins; even read pessimistically as if the hand stayed at
+# the old top it keeps 0.2156 rev = 6.8 mm of clearance on the lower edge. Pinned
+# by tests/ros/test_reload_coordinator_node.py::
+# test_prime_move_leaves_the_park_band_windows_open.
 _HAND_ACK_SETTLE_S = 0.25          # let a lied-ack move begin before reading telemetry
 _HAND_NEAR_TARGET_REV = 0.5        # |pos - target| within this ⇒ already at the target
 _HAND_MOVING_VEL_RPS = 2.0         # |vel| toward the target at/above this ⇒ move underway
@@ -223,9 +230,17 @@ _SEQUENCE_CEILING_MARGIN_S = 5.0
 _HAND_STATE_STALE_S = 0.5
 # Release-stroke signature threshold: hand vel_meas at/above this with the hand out
 # of the bottom park band reads as the throw stroke underway. Sits ABOVE the kind-1
-# smooth-move prelude's peak ascent speed ≈ 31.4 rev/s (100 rev/s² triangular over
-# the 9.858 rev stroke ⇒ v_peak = √(a·Δx)) — so a concurrent prime/retract ascent
-# can never fake release evidence — and well BELOW the ≈85 rev/s minimum
+# smooth-move prelude's peak ascent — so a concurrent prime/retract ascent can never
+# fake release evidence. TWO figures, deliberately, because they are not
+# interchangeable (hand_stroke.smooth_move_peak_vel_rps / _bound_rps):
+#   * COMMANDED peak, what the firmware's quintic actually emits over the full
+#     9.9594 rev stroke: |Δ|·1.875/T = 24.63 rev/s (was 24.50 at 9.858). This is
+#     the figure a BENCH capture is scored against.
+#   * BOUND, √(a·Δx) = 31.56 rev/s (was 31.40), the peak a bang-bang profile over
+#     the same stroke would reach. This threshold clears the BOUND, which is the
+#     conservative thing for a guard to do — but the bound is NOT the peak, and
+#     this comment called it "the peak ascent speed" until 2026-07-26.
+# and well BELOW the ≈85 rev/s minimum
 # release-plane stroke speed at the 2.7 m/s sweep floor. DERIVED, not probed
 # against a recorded throw stroke yet; the tracker CONFIRMED channel is the
 # independent backstop, and Phase-5 T0 re-tunes this against measured stroke

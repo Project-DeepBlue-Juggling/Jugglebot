@@ -312,7 +312,9 @@ feedback phase) → PREPARING (raises the catch-armed latch, BEFORE any throw) �
 AIMING → THROW_PENDING → BALL_IN_FLIGHT → CATCHING → SETTLING`, then a result.
 Under the hood (2026-07-23 ordering: **every arming step precedes the throw**,
 because BB's firmware countdown has no abort opcode): CHECKING dispatches the hand
-prime to top (`JB_OP_HAND_CATCH_PRIME_REV = 9.858`) the moment preconditions pass;
+prime to top (`JB_OP_HAND_CATCH_PRIME_REV` = **9.9594** since 2026-07-26, when it
+became the derived stroke top; 9.858 before that, so a pre-2026-07-26 capture
+reads the old value) the moment preconditions pass;
 PREPARING raises the latch and confirms it; only then does AIMING send
 `bb/throw_at_target`. On **CAUGHT** it lowers the latch and **re-centers**
 (`go_home`, hand keeps the ball); on **any abort** it **retracts the hand to

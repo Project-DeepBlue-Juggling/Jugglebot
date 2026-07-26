@@ -505,6 +505,121 @@ was never exercised. With a 40-60 % ack-failure rate, 5 tosses give that with
 > 99 % probability — but if all 5 read `arms == 1`, say so in the debrief rather
 than recording H2.2 as a PASS.
 
+### CHECK HAND-3 — the hand parks at the stroke top, and nothing misjudges it there
+
+Validates: `hand-command-continuity` **Phase 3** (prime derived from stroke
+geometry). **No extra robot motion is required** — every row below is read off
+the HAND-1 capture plus that sitting's `launch.log`. Row H3.6 needs a SAFE_ABORT,
+which is scored only *if one occurs naturally*.
+
+**What changed, physically.** `JB_OP_HAND_CATCH_PRIME_REV` went from a
+hand-maintained `9.858` to the derived stroke top `9.9594` rev, so **the hand now
+parks 3.2 mm higher**. That is the whole motion change. The prize is small and
+worth stating plainly so this check is not over-invested in: a kind-1 catch
+trajectory begins at `x3 = 9.9594`, and `makeSmoothMove` prepends a prelude from
+wherever the hand actually is to that first sample — so at 9.858 every "catch
+from rest at the top" opened with a real 3.2 mm / 76.5 ms move. It now opens with
+the hand's own settle error and the 50 ms prelude floor. **The prelude does not
+disappear**; its commanded travel does.
+
+**Build needs**: **colcon + relaunch**. **No firmware flash**, and the reason
+matters because the generated `Teensy_code/hardware_config.h` *did* change:
+`JBOp::HAND_CATCH_PRIME_REV` is referenced by **no** `.ino`/`.h`/`.cpp` in any of
+the three sketches — it is a dead `constexpr` that codegen delivers for
+completeness. Verified by grep across `Teensy_code/`, `Teensy_code_canbridge/` and
+`CatchingCone_code/`. Flashing would change nothing; skipping the flash costs
+nothing. (Phase 4 is the flash, and it has not landed.)
+
+#### Pre-flight HAND-3a — confirm the freshly-built code is live
+
+```bash
+INST=~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot
+grep -E "^JB_OP_HAND_CATCH_PRIME_REV|^HAND_STROKE_TOP_REV" $INST/hardware_config.py
+```
+
+- **PASS**: prints `JB_OP_HAND_CATCH_PRIME_REV = 9.9594` **and**
+  `HAND_STROKE_TOP_REV = 9.95940313273228`.
+- **ABORT**: prints `9.858`, or `HAND_STROKE_TOP_REV` is absent — the *installed*
+  copy predates the change, so H3.1/H3.2 below would score the old prime. Rebuild
+  and relaunch.
+
+#### PASS / ABORT
+
+The new prime is **9.9594 rev**. The near-band `_hand_dispatch_confirmed` reads
+is `_HAND_NEAR_TARGET_REV = 0.5` either side, i.e. **[9.4594, 10.4594]** — that
+one is a hard band read out of the shipped code, and it is what H3.1 aborts on.
+
+**The settle envelope `[9.776, 10.145]` is a PREDICTION, not a measured band.**
+It is the 2026-07-24 parked-top spread (`[9.675, 10.044]`, recorded at
+`reload_coordinator_node.py:205`) translated up by 0.1014 rev, on the assumption
+that the spread is command-anchored — the hand parks where it is told, so the
+scatter moves with the target. That assumption is untested, and there is a
+concrete reason to doubt it: the source comment calls it a *parked-top* spread,
+its low edge 9.675 sits inside the pre-fix `dip_below_x3` range in § Section HAND
+(0.339-1.748 rev below x3), and both edges are plausibly x3-anchored quantities
+(throw-stroke ends plus the pre-fix dip) rather than prime-settle scatter — and
+x3-anchored quantities do NOT translate when the prime moves. Note also that the
+envelope is ±0.185 rev wide where `HAND_SETTLE_BAND_REV` is 0.10 rev and
+§ Section HAND row 3 gates `peak <= 10.060` on that tighter figure.
+
+So: **if the observed prime settles cluster near the untranslated
+`[9.675, 10.044]` instead, that is evidence the 2026-07-24 spread was
+x3-anchored, not a fault.** Record it and re-measure the reload ladder's probe
+basis; do not abort and do not chase it as a regression.
+
+**Which capture, and which command turns it into a verdict.** H3.1 / H3.5 / H3.7
+are read off the same `temp/logs/toss_trace_*.jsonl` that § Section HAND already
+records (the trace recorder is mandatory and runs under **system `python3`** with
+the ROS environment sourced, *not* the venv — `tools/probes/hand_stroke_timeline.py`
+is the opposite and needs the venv). H3.2 / H3.3 / H3.4 are plain greps of
+`~/.ros/log/<stamp>/launch.log`. Every row on this check routes to
+`plans/active/hand-command-continuity.md` **Phase 3** on failure.
+
+```bash
+# H3.1 / H3.5 / H3.7 — prime ascents and their rest positions, from the trace
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+python tools/probes/hand_stroke_timeline.py --trace temp/logs/toss_trace_<stamp>.jsonl --json
+
+# H3.2 / H3.3 / H3.4 — from the launch log of the same sitting
+LOG=~/.ros/log/$(ls -t ~/.ros/log | head -1)/launch.log
+grep 'Hand primed to' $LOG                       # H3.2
+grep -c 'ABORTED_PRIME_FAILED' $LOG              # H3.3
+grep -i 'smooth_move_hand' $LOG | grep -iE 'reject|out of range'   # H3.4
+```
+
+| # | measurement | PASS | ABORT |
+|---|---|---|---|
+| H3.1 | `pos_meas` at rest after a prime, from the trace | `9.776 <= pos <= 10.145` rev | outside **[9.4594, 10.4594]** ⇒ the parked hand is outside `_hand_dispatch_confirmed`'s near-band, so a lied ack reads as "not at target" and the ladder re-dispatches into a live ascent — the 2026-07-23 stutter. **DEBRIEF (not abort)** if inside the near-band but outside `[9.776, 10.145]`: nothing misjudges, but the settle envelope moved and the reload ladder's probe basis wants re-measuring |
+| H3.2 | `grep 'Hand primed to' launch.log` | every line reads `9.959 rev` | any line reads `9.858 rev` ⇒ stale install, re-run HAND-3a |
+| H3.3 | `grep -c 'ABORTED_PRIME_FAILED' launch.log` over the sitting | `0` | `>= 1` ⇒ the prime ladder exhausted. Cross-check H3.1: if the hand was physically at top each time, the near-band is the suspect |
+| H3.4 | `grep -i 'smooth_move_hand' launch.log \| grep -iE 'reject\|out of range'` | `0` hits | `>= 1` ⇒ the target left the bridge's `[0, 11.1]` validation range. Structurally impossible at 9.9594 (headroom **1.1406 rev = 36.1 mm**); a hit means the YAML override was mis-typed |
+| H3.5 | peak `pos_meas` during/just after a prime ascent | `<= 10.25` rev (1.6x the measured +0.186 rev overshoot at the old prime) | `>= 10.60` rev — still 0.5 rev short of the 11.1 overextension guard, but the prime is now 0.1014 rev closer to it than it was, so this is the row that watches that. **DEBRIEF (not abort) in `10.25 < peak < 10.60`**: overshoot beyond 1.6x the measured baseline with the end stop 0.5-0.85 rev away — record the peak and route to Phase 3 before further tosses |
+| H3.6 | a SAFE_ABORT retract, **if one occurs naturally** | the hand reaches `\|pos\| <= 0.5` rev | it does not. The retract-descending qualifier moved up with the prime (`pos < 9.4594`, was `9.3580`) — *more* permissive, and the failure it guards (parked-top `\|vel\|` noise, 5.39 rev/s p99, faking a descent) still has **0.317 rev** of separation from the translated parked-top minimum. Do not provoke an abort deliberately |
+| H3.7 | peak `vel_meas` during a full-stroke prime ascent | `<= 30` rev/s — see the calibration note below; the COMMANDED quintic peak is **24.63 rev/s** | `>= 40.0` rev/s ⇒ a prime can fake release evidence (`_THROW_STROKE_VEL_RPS = 40.0`). **DEBRIEF (not abort) in `30 <= peak < 40`**: that is ≥21 % over the commanded 24.63 rev/s, and overspeed on a smooth move is the re-seeded/clobbered-profile signature — record and route to `hand-command-continuity` Phase 3 |
+
+**H3.7 calibration — score against what the firmware COMMANDS, not against the
+guard's bound.** `makeSmoothMove` emits a quintic, and a quintic over Δ peaks at
+`|Δ|·1.875/T` = **24.63 rev/s** at the full 9.9594 rev stroke (was 24.50 at
+9.858). The figure `√(a·Δx)` = 31.56 rev/s that `_THROW_STROKE_VEL_RPS`'s comment
+and `test_stroke_watch_threshold_clears_smooth_move_prelude` quote is the peak a
+*bang-bang* profile would reach — a valid conservative bound for a guard to
+clear, but **28 % above what the hand is actually told to do**. This row was
+first written with `PASS <= 35` against the bound; scoring a capture that way
+accepts a 26 % overspeed (a 31 rev/s reading) as "on model", and overspeed on a
+smooth move is precisely the re-seeded or clobbered profile this plan exists to
+catch. Model of record: `hand_stroke.smooth_move_peak_vel_rps` (bound:
+`smooth_move_peak_vel_bound_rps`). A healthy capture should read **~24-27 rev/s**
+once tracking error and the ODrive's velocity estimate noise are allowed for; a
+reading *below* ~20 rev/s on a full-stroke ascent means it was not a full stroke
+(check H3.1 for where the hand started).
+
+**What a clean HAND-3 does *not* prove.** Nothing here observes the prelude the
+change actually shortens — an armed kind-1's prelude produces no ROS-visible
+signal, the same limitation § CHECK HAND-2 records. What HAND-3 verifies is that
+moving the park position 3.2 mm broke none of the windows that read it. The
+prelude claim itself is pinned offline, in
+`tests/motion/test_hand_stroke.py::test_prime_at_the_stroke_top_costs_no_commanded_prelude_travel`.
 
 ---
 

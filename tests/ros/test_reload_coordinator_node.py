@@ -355,6 +355,61 @@ def test_hand_targets_are_within_bridge_service_range():
     assert 0.0 <= hw.JB_OP_HAND_CATCH_PRIME_REV <= hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
     # The homing reference is intentionally NOT a valid smooth-move target.
     assert hw.HOMING_HAND_ABS_POS_REV < 0.0
+    # Headroom, not just membership: the prime moved 3.2 mm UP on 2026-07-26 when
+    # it became the derived stroke top, and the overextension guard is the wall it
+    # moved toward. 1.1406 rev = 36.1 mm of clearance (was 39.3 mm).
+    assert (hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+            - hw.JB_OP_HAND_CATCH_PRIME_REV) == pytest.approx(1.1406, abs=1e-3)
+
+
+def test_prime_move_leaves_the_park_band_windows_open():
+    """The prime became the derived stroke top on 2026-07-26 (9.858 -> 9.9594 rev,
+    3.2 mm UP). Every window that keys off it must still hold.
+
+    PROBE-DRIVEN, not asserted: ``/tmp/probe_prime_rev_windows.py`` (2026-07-26)
+    computed each margin at both values; the numbers below are its output. Ground
+    truth for the parked-top position spread is the same 2026-07-24 bag reading
+    the module header records at ``reload_coordinator_node.py:205`` —
+    ``[9.675, 10.044]`` rev, MEASURED WITH THE PRIME COMMANDED TO 9.858.
+
+    The hand parks where it is commanded, so post-change the spread translates up
+    with the target and every margin returns to its measured value (0.3170 /
+    0.3140 rev). What is pinned here is the pessimistic TRANSITIONAL case — a hand
+    still standing at the OLD top while the NEW band is applied — because that is
+    the only reading of the measured spread that is not an assumption about
+    physics the change itself alters.
+
+    Why W1/W2 are the ones that would hurt: too LOW a near-band edge and a
+    genuinely-parked hand reads as "not at target", so the ladder re-dispatches
+    into a live ascent (the 2026-07-23 stutter, and the 4/4 lying-ack ladder that
+    produced a false ABORTED_PRIME_FAILED). Too HIGH a retract qualifier and
+    parked-top |vel| noise — 5.39 rev/s p99, above the 2.0 rev/s moving threshold
+    — fakes a descent, so a genuinely lost retract frame is never re-sent and the
+    safing path silently no-ops.
+    """
+    from jugglebot.reload_coordinator_node import (_HAND_NEAR_TARGET_REV,
+                                                   _HAND_MOVING_VEL_RPS)
+    prime = float(hw.JB_OP_HAND_CATCH_PRIME_REV)
+    spread_lo, spread_hi = 9.675, 10.044        # measured at the OLD prime
+
+    # W1 — _hand_dispatch_confirmed's at-target near-band, prime ladder.
+    assert prime - _HAND_NEAR_TARGET_REV < spread_lo
+    assert spread_lo - (prime - _HAND_NEAR_TARGET_REV) == pytest.approx(
+        0.2156, abs=1e-3)                                    # 6.8 mm
+    assert spread_hi < prime + _HAND_NEAR_TARGET_REV
+    assert (prime + _HAND_NEAR_TARGET_REV) - spread_hi == pytest.approx(
+        0.4154, abs=1e-3)                                    # 13.1 mm
+
+    # W2 — the retract-descending qualifier (pos < prime - near-band) must still
+    # EXCLUDE a hand parked at top, or velocity noise fakes "descending".
+    assert spread_lo - (prime - _HAND_NEAR_TARGET_REV) > 0.0
+    assert _HAND_MOVING_VEL_RPS == 2.0        # the noise threshold it pairs with
+
+    # W3 — toss_sequencer's hand_parked band is the BOTTOM one, keyed to
+    # JB_OP_HAND_RETRACT_REV, so a kind-0 stroke's off-band hazard is untouched by
+    # this change. Pinned so a future edit re-keying it to the prime is caught.
+    assert hw.JB_OP_HAND_RETRACT_REV == 0.0
+    assert abs(prime - hw.JB_OP_HAND_RETRACT_REV) > _HAND_NEAR_TARGET_REV
 
 
 def test_safe_on_early_exit_safes_only_when_armed(monkeypatch):

@@ -139,10 +139,11 @@ def test_stroke_top_is_velocity_independent():
 
 
 def test_stroke_positions_agree_with_the_generated_codegen_positions():
-    """``generate_config.py:568-582`` derives ``HAND_THROW_POS_M`` (x2) and
-    ``HAND_CATCH_POS_M`` (x5) from the same algebra by a different route. Two
-    independent derivations of the same physical points must agree, or one of the
-    two consumers (the toss's release plane vs this window) is aiming elsewhere.
+    """``generate_config.py:567-599`` derives ``HAND_THROW_POS_M`` (x2),
+    ``HAND_CATCH_POS_M`` (x5) and ``HAND_STROKE_TOP_REV`` (x3) from the same
+    algebra by a different route. Two independent derivations of the same
+    physical points must agree, or one of the two consumers (the toss's release
+    plane vs this window) is aiming elsewhere.
     """
     m = hand_stroke.HandStrokeModel(3.9308)
     assert m.x2_m == pytest.approx(hw.HAND_THROW_POS_M, abs=1e-6)
@@ -151,6 +152,156 @@ def test_stroke_positions_agree_with_the_generated_codegen_positions():
     assert m.x2_rev == pytest.approx(5.913788, abs=1e-6)
     assert m.x3_rev == pytest.approx(9.959403, abs=1e-6)
     assert m.x5_rev == pytest.approx(6.126715, abs=1e-6)
+    assert m.x3_rev == pytest.approx(hw.HAND_STROKE_TOP_REV, rel=1e-12)
+    assert hand_stroke.STROKE_TOP_REV == pytest.approx(hw.HAND_STROKE_TOP_REV,
+                                                       rel=1e-12)
+
+
+# ── the drift guard: the prime IS the stroke top ────────────────────────────
+
+#: How far ``JB_OP_HAND_CATCH_PRIME_REV`` may sit from the derived stroke top.
+#:
+#: Physically anchored, not a fitted tolerance. 5e-5 rev is **1.6 microns** of
+#: cable travel (``rev_to_mm``), which is:
+#:   * 2000x smaller than the drift this guard exists to catch (the shipped
+#:     9.858 was 0.101403 rev = 3.207 mm below x3);
+#:   * 2000x smaller than the post-fix settle band the bench gates on
+#:     (``HAND_SETTLE_BAND_REV`` = 0.10 rev = 3.163 mm);
+#:   * far below anything the hand encoder can resolve or the position loop can
+#:     hold.
+#: It is wide enough only to admit the YAML's 4-decimal literal (9.9594 against
+#: 9.95940313..., a residual of 3.1e-6 rev) and nothing coarser.
+_PRIME_DRIFT_TOL_REV = 5e-5
+
+
+def test_catch_prime_equals_the_stroke_top():
+    """``JB_OP_HAND_CATCH_PRIME_REV`` MUST equal x3 — the throw stroke's end and
+    the catch trajectory's FIRST SAMPLE.
+
+    **The failure this closes.** ``Trajectory.h``'s ``makeSmoothMove`` prepends a
+    prelude from wherever the hand physically is to the first sample of the
+    trajectory being packed. A kind-1 catch begins at x3. Park the hand anywhere
+    else and every "catch from rest at the top" opens with a real move: at the
+    shipped 9.858 the residual was 0.101403 rev = 3.207 mm, a 76.5 ms prelude
+    charged against the arm-fit budget before the catch profile even starts. The
+    no-op case was never a no-op. (It does not become *exactly* empty either —
+    ``makeSmoothMove``'s dead-band is 1e-6 rev and every non-empty duration is
+    floored at 0.05 s, so the residual settle error still buys a ~50 ms
+    micro-move. The win is that the commanded travel drops from 3.2 mm to the
+    settle error alone, and the prelude from 76.5 ms to the 50 ms floor.)
+
+    **Why a guard rather than derived-only.** The YAML key stays an explicit
+    override so a bench sitting can park the hand elsewhere without editing
+    codegen. The price of that is that it can rot — it already did, silently, for
+    the life of the constant. This test is what makes an override loud: change
+    the YAML and this goes RED, which CLAUDE.md's never-commit-known-failing rule
+    turns into a conversation instead of a slow drift.
+
+    Three routes are pinned, because each catches a different way in:
+
+    1. the generated ``HAND_STROKE_TOP_REV`` (codegen drifting from the YAML);
+    2. ``hand_stroke.STROKE_TOP_REV`` (the host model drifting from codegen);
+    3. the SHIPPED FIRMWARE HEADER, parsed — a hand-edit to
+       ``Teensy_code/hardware_config.h`` that bypasses codegen moves the real x3
+       the Teensy will compute while every host copy stays put.
+    """
+    prime = float(hw.JB_OP_HAND_CATCH_PRIME_REV)
+
+    # 1 — against the generated derived reference.
+    assert abs(prime - hw.HAND_STROKE_TOP_REV) <= _PRIME_DRIFT_TOL_REV
+
+    # 2 — against the host stroke model.
+    assert abs(prime - hand_stroke.STROKE_TOP_REV) <= _PRIME_DRIFT_TOL_REV
+
+    # 3 — against x3 as the FIRMWARE will compute it, from the shipped header.
+    tt = _parse_namespace('TeensyTraj')
+    total = tt['HAND_STROKE_M'] - 2.0 * tt['STROKE_MARGIN_M']
+    gain = tt['LINEAR_GAIN_FACTOR'] / (2.0 * math.pi * tt['HAND_SPOOL_RADIUS_M'])
+    assert abs(prime - total * gain) <= _PRIME_DRIFT_TOL_REV
+
+    # The tolerance is a resolution statement, not slack: state it in mm so a
+    # future reader can judge it without re-deriving the gain.
+    assert hand_stroke.rev_to_mm(_PRIME_DRIFT_TOL_REV) == pytest.approx(1.58e-3,
+                                                                       rel=0.02)
+
+
+def test_prime_at_the_stroke_top_costs_no_commanded_prelude_travel():
+    """What the 3.2 mm buys, stated in the units the arm-fit budget is written in.
+
+    A catch armed with the hand standing exactly at the prime must travel
+    ``|x3 - prime|`` before its own first sample. At the shipped 9.858 that was a
+    real **3.207 mm / 76.5 ms** move. At the prime it is **0.099 microns**, and
+    the resulting prelude is the **0.05 s FLOOR** — not zero.
+
+    Two reasons it is not zero, and both matter for how the win is stated:
+
+    * the YAML carries the derived value to 4 decimals, so the ideal residual is
+      3.1e-6 rev — a tenth of a micron, but still 3x ``makeSmoothMove``'s 1e-6
+      dead-band. Writing more decimals would buy nothing: the firmware compares
+      in ``float`` and the LIVE encoder never reads the target exactly anyway;
+    * the real residual on hardware is the hand's SETTLE ERROR against x3
+      (~0.02 rev), four orders of magnitude larger than the rounding, and that is
+      also floored at 0.05 s.
+
+    So the honest claim is "the commanded prelude travel drops 3.2 mm -> nothing
+    measurable, and its duration 76.5 ms -> the 50 ms floor", NOT "the prelude
+    disappears". This phase's own probe (``/tmp/probe_prime_rev_windows.py``,
+    2026-07-26) printed 0.0 ms because it used the full-precision derived value
+    rather than the shipped 4-decimal literal; this test is what caught that.
+
+    **Which budget this actually returns time to — corrected 2026-07-26.** An
+    earlier draft of this docstring said the saving makes Phase 1's arm-fit check
+    "conservative, never optimistic". It does not, because the two never meet:
+    ``PRELUDE_ALLOWANCE_S`` reaches production only through
+    ``required_arm_lead_s``, whose sole caller is ``_throw_stroke_gate_ok``
+    (``catch_coordinator_node.py:1046``), and that gate returns True immediately
+    unless ``_throw_stroke_clear_ros`` is set — which only the SELF-THROW
+    announcement handler does (it bails at ``:638`` for anyone else's throw). On
+    the self-toss path the hand reaches x3 via the throw stroke itself, so the
+    prime never entered that arithmetic and Phase 1's budget does not move. The
+    26.5 ms is returned on the PRIMED path (BB catch / reload), where it accrues
+    to the firmware's own fit check at ``Teensy_code.ino:533``. Stated precisely
+    because a future session sizing ``ARM_SUPPRESS_MARGIN_S`` off the wrong
+    sentence would shave a window that gained nothing here — and at
+    ``FLIGHT_TIME_MIN_S`` that window is 115 ms wide with ~16 ms of floor
+    headroom.
+
+    **Asserted as a property, not as the 4-decimal rounding artefact.** The
+    residual is pinned with inequalities so that writing a MORE precise YAML
+    value (9.959403, or the full float) keeps this green. Pinning
+    ``residual == approx(3.13e-6)`` would have gone RED on that improvement —
+    the residual drops under ``makeSmoothMove``'s 1e-6 dead-band and the duration
+    becomes 0.0 — which is exactly the false-alarm-on-improvement the drift
+    guard's tolerance was deliberately shaped to avoid, and the YAML comment
+    plus the generated file both display the full-precision value to any reader,
+    so the repo actively invites that edit.
+    """
+    prime = float(hw.JB_OP_HAND_CATCH_PRIME_REV)
+    residual = abs(hand_stroke.STROKE_TOP_REV - prime)
+    assert residual <= _PRIME_DRIFT_TOL_REV
+    assert hand_stroke.rev_to_mm(residual) <= 1.6e-3          # mm, i.e. microns
+    assert hand_stroke.smooth_move_duration_s(residual) <= 0.05
+
+    # "Not zero" is the honest claim, and it is a property of the FLOOR, not of
+    # the YAML's precision: any residual the hardware can actually produce — the
+    # settle error (~0.02 rev), or a residual barely over the 1e-6 dead-band —
+    # still costs the full 0.05 s. This is what survives a more precise YAML.
+    assert hand_stroke.smooth_move_duration_s(2e-6) == pytest.approx(0.05)
+
+    # The shipped-until-2026-07-26 value, for contrast: a genuine 76.5 ms move
+    # over 3.2 mm — 53 % longer than the floor, and real commanded travel.
+    assert hand_stroke.smooth_move_duration_s(
+        abs(hand_stroke.STROKE_TOP_REV - 9.858)) == pytest.approx(0.0765,
+                                                                  abs=1e-4)
+    assert hand_stroke.rev_to_mm(
+        abs(hand_stroke.STROKE_TOP_REV - 9.858)) == pytest.approx(3.207,
+                                                                  abs=1e-3)
+
+    # The floor also covers whatever settle error remains, up to the band the
+    # bench gates on — so the ideal case and the realistic case cost the same.
+    # (PRELUDE_ALLOWANCE_S's own definition is pinned by
+    # test_smooth_move_duration_floor; not restated here.)
+    assert hand_stroke.smooth_move_duration_s(0.02) == pytest.approx(0.05)
 
 
 def test_throw_stroke_spans_the_measured_window():

@@ -120,6 +120,13 @@ _PRIME_RETRY_QUIET_S = 1.5
 # observed with the frame still transmitted and the hand moving. A re-dispatch
 # AFTER the window with the hand already at top is a silent Teensy no-op
 # (delta ≈ 0), so a genuinely lost dispatch still recovers on the next tick.
+# Sized from the ascent, so the PRIME REV moves it even though it does not name
+# the constant — 2026-07-26's move to the derived stroke top (9.858 → 9.9594 rev)
+# lengthened the commanded ascent 0.7544 → 0.7583 s (hand_stroke.
+# smooth_move_duration_s), leaving 0.44 s of model margin and 0.15 s against the
+# observed 1.05 s upper bound. Pinned by tests/ros/test_catch_coordinator_node.py
+# ::test_prime_inflight_window_covers_the_commanded_prime_ascent so a later prime
+# raise or a Phase-4 duration change cannot outgrow it silently.
 _PRIME_INFLIGHT_S = 1.2
 
 # Pre-tilt early arrival: the announcement-derived target used to schedule its

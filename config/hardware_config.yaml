@@ -494,7 +494,25 @@ jugglebot_operational:
   # computed by generate_config.py from the active pose IK at [0, 0, default_active_z_mm, 0, 0, 0].
   # This ensures the gentle-move target matches the control loop's active pose exactly.
   default_active_z_mm: 170.0             # Default platform Z during active catching {mm}
-  hand_catch_prime_rev: 9.858            # Hand position for catch priming (top of stroke) {rev}
+  hand_catch_prime_rev: 9.9594           # Hand position for catch priming (top of stroke) {rev}.
+                                         # EXPLICIT OVERRIDE of a DERIVED quantity. It MUST equal
+                                         # the generated HAND_STROKE_TOP_REV — i.e. x3, the throw
+                                         # stroke's end AND the catch trajectory's first sample:
+                                         #   (hand_stroke_m - 2*stroke_margin_m) * linear_gain_factor
+                                         #     / (2*pi*hand_spool_radius_m)   [teensy_trajectory]
+                                         # WHY it must: a kind-1 catch trajectory begins at x3, and
+                                         # Trajectory.h's makeSmoothMove prepends a prelude from
+                                         # wherever the hand actually is to that first sample. Park
+                                         # the hand anywhere else and every "catch from rest at the
+                                         # top" starts with a real move, so the no-op case is never
+                                         # a no-op. Shipped 9.858 until 2026-07-26 — 0.101 rev =
+                                         # 3.2 mm below x3, a hand-maintained duplicate that had
+                                         # already drifted. Kept overridable (not derived-only) so a
+                                         # bench sitting can park the hand elsewhere without a code
+                                         # change; the drift guard is
+                                         # tests/motion/test_hand_stroke.py::
+                                         # test_catch_prime_equals_the_stroke_top, which goes RED on
+                                         # any override — deliberately, so it surfaces rather than rots.
   hand_retract_rev: 0.0                  # Hand retract target for reload SAFE_ABORT {rev}. MUST stay
                                          # within the bridge's smooth_move_hand range [0, hand max pos]:
                                          # the homing reference (-0.1 rev) is BELOW it, and using that as

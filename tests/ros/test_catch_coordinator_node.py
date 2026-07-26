@@ -21,6 +21,7 @@ from jugglebot_interfaces.msg import TargetFeedback
 
 import jugglebot.hardware_config as hw
 from jugglebot.catch_coordinator_node import CatchCoordinatorNode
+from jugglebot.motion.trajectory import hand_stroke
 
 
 def _fb(accepted, arrival_time, code='TOO_FAST', reason='too tight', source='catch'):
@@ -476,6 +477,42 @@ def test_edge_prime_skipped_while_prime_ascent_inflight(monkeypatch):
     node._prime_dispatch_mono = 0.0                  # no recent dispatch
     node._on_catch_armed(Bool(data=True))
     assert primed == [1]                             # normal edge prime intact
+
+
+def test_prime_inflight_window_covers_the_commanded_prime_ascent():
+    """``_PRIME_INFLIGHT_S`` is sized from the PRIME ASCENT DURATION, so it is a
+    window the prime rev moves — and it does not name the constant, which is why
+    a grep-of-the-constant sweep misses it.
+
+    Added 2026-07-26 with the prime move (9.858 → the derived stroke top
+    9.9594 rev): the commanded full-stroke ascent lengthened 0.7544 → 0.7583 s
+    (``T = sqrt(Δ·QUINTIC_S2_MAX/A)``, ``Trajectory.h:257``). That is nowhere
+    near 1.2 s, but nothing pinned the relationship, so a later prime raise or a
+    Phase-4 duration-formula change could push the commanded ascent past the
+    window silently.
+
+    **What that would cost.** The retry tick at ``catch_coordinator_node.py:717``
+    would fire mid-ascent and re-dispatch a kind-3, which rebuilds the Teensy
+    profile from the live position at ``v(0) = 0`` and yanks the moving hand
+    backwards — the 2026-07-23 stutter (5/12 ascents stalled 60-70 ms with
+    velocity reversals to −4 rev/s).
+
+    Pinned against the COMMANDED duration with 1.5x of headroom, not against the
+    0.68-1.05 s OBSERVED band the constant's comment cites: the observed upper
+    bound already includes dispatch and settle time the model does not claim to
+    cover, so 1.2 s vs 1.05 s (0.15 s, 12.5 % of the window) is the real bench
+    margin and belongs in the comment rather than in an assertion that would go
+    red on ordinary telemetry scatter.
+    """
+    from jugglebot.catch_coordinator_node import (_PRIME_INFLIGHT_S,
+                                                  _PRIME_RETRY_QUIET_S)
+    ascent = hand_stroke.smooth_move_duration_s(
+        float(hw.JB_OP_HAND_CATCH_PRIME_REV))
+    assert ascent == pytest.approx(0.7583, abs=1e-3)
+    assert _PRIME_INFLIGHT_S >= 1.5 * ascent
+    # And the quiet window — which guards the kind-3-clobbers-a-live-catch path —
+    # must not be shorter than the in-flight window it composes with.
+    assert _PRIME_RETRY_QUIET_S >= _PRIME_INFLIGHT_S
 
 
 def test_prime_dispatched_topic_stamps_window():
