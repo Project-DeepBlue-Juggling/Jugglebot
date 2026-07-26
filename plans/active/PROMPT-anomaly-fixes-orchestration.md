@@ -260,7 +260,7 @@ have fired "completed" mid-work in this project before.
 
 ## Run close-out — Outcome
 
-**Landed 2026-07-27**, commits `3d1cd9f` (close-out) and `a5c8c46`
+**Landed 2026-07-27**, commits `2dacc3a` (close-out) and `2fa13ed`
 (`CLAUDE.md`, split out so `git blame` on the pytest rule points at a process
 decision rather than at a runbook coherence pass). Logbook:
 `logbook/2026-07-27-anomaly-run-closeout.md`.

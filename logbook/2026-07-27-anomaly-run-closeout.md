@@ -20,8 +20,8 @@ files_changed:
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
   - CLAUDE.md
 commits:
-  - 3d1cd9f
-  - a5c8c46
+  - 2dacc3a
+  - 2fa13ed
 subsystem:
   - motion
   - ros
