@@ -374,6 +374,33 @@ class TrajectoryNode(Node):
         # reset per install. `_lean_gain_active` is the gain baked into the active
         # plan (0.0 for a hold / lean-off move) — published so /diagnose can label
         # the A/B arm each move belongs to.
+        #
+        # READ BEFORE TRUSTING `_last_peak_*` IN AN INVESTIGATION. It is written
+        # ONLY by the install paths that have a FeasibilityReport in hand:
+        # `_svc_go_to_pose`, `_plan_and_install_timed`, `_plan_and_install_catch`
+        # and the follower replan (that one only when its result CARRIES a
+        # report — a report-less follower install leaves this stale too).
+        # Six other paths call `_install` (which bumps
+        # `_move_seq` and resets the REALIZED peaks) without touching it —
+        # `_svc_hold`, `_svc_go_home`, `_install_guard_descent`,
+        # `_retry_pending_stop`, `_install_graceful_stop` and the follower's
+        # input-loss stop — so after any of those, `peak_leg_*` on
+        # trajectory/diagnostics describes the SUPERSEDED plan under a `move_seq`
+        # that has already advanced. The realized peaks are always current; the
+        # predicted ones are per-plan only for report-carrying installs.
+        # NOT the same thing as "cached": the 2026-07-25 investigation read
+        # `14.2 / 142.4 / 3950` identically before and after a catch install and
+        # inferred staleness, but a catch plan's predicted peaks are the
+        # fixed-shape 0.15 s tilt-through-seat decay's peaks WHENEVER the reach
+        # is small enough for that decay to dominate — so a NEAR-DEGENERATE
+        # catch repeats them at any lead. The converse does NOT hold and must
+        # not be read into this: a large reach exceeds the decay floor and its
+        # predicted vel scales as displacement/lead. Same bag, the two reload
+        # catch installs published `23.6` and `23.8` mm/s against the toss
+        # catches' `14.2`. Predicted peaks MOVING between two catch installs is
+        # therefore normal and is NOT evidence that a non-catch plan came in
+        # between. Settled from raw bag data by
+        # `tools/probes/catch_reach_replay.py`.
         self._last_peak_vel_mmps = 0.0
         self._last_peak_acc_mmps2 = 0.0
         self._last_peak_jerk_mmps3 = 0.0
@@ -2326,7 +2353,12 @@ class TrajectoryNode(Node):
         diag.message = 'streaming' if streaming else 'idle'
         lim = self._limits
         diag.values = [
-            # Gate-PREDICTED peaks of the last accepted plan (fine-sampled report).
+            # Gate-PREDICTED peaks of the last accepted REPORT-CARRYING plan
+            # (fine-sampled report). Holds, go_home, graceful stops and guard
+            # descents install WITHOUT a report and leave these untouched, so
+            # they can describe a superseded plan under a newer `move_seq` — see
+            # the `_last_peak_*` note in __init__ before reading these in an
+            # investigation. The realized peaks below are always current.
             KeyValue(key='peak_leg_vel_mmps',
                      value=f'{self._last_peak_vel_mmps:.1f}'),
             KeyValue(key='peak_leg_acc_mmps2',

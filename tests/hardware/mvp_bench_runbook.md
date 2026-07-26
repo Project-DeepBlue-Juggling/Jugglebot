@@ -375,8 +375,15 @@ auto-tracks whatever threshold the firmware trips at):
     *corrected* neutral, so with a correction loaded it is a real ~2.77 mm worst-leg
     move and realized peaks are NOT 0.0**. See `ros_ws/docs/levelling_frame.md`),
     but its **predicted** peaks were reported identical to move 11's rather than zero —
-    i.e. `peak_leg_*` looks stale for a zero-distance plan. Worth a look before S4 leans
-    on `/diagnose`'s predicted-vs-realized headroom numbers. (b) **`/link_status` is not
+    i.e. `peak_leg_*` looks stale for a zero-distance plan. **DIAGNOSED 2026-07-26**
+    (`logbook/2026-07-25-catch-reach-overshoot-repro.md`): `_svc_go_home` is one of six
+    install paths that call `_install` — which bumps `move_seq` and resets the REALIZED
+    peaks — without writing `_last_peak_*`, so the PREDICTED column describes the
+    superseded plan. Enumerated and annotated at `trajectory_node.__init__` and at the
+    `_publish_status` KeyValue block; the **fix is still open** (it reorders
+    `_svc_go_to_pose`'s write to after its `_install`, a safety-adjacent install path).
+    Read `/diagnose`'s predicted column only for a `move_seq` whose install carried a
+    `FeasibilityReport`. (b) **`/link_status` is not
     in the launch's rosbag record list**, so the E-STOP that occurred at 13:29:47 is
     absent from the bag — the fault channel is invisible to post-hoc analysis. Adding it
     is a one-line launch change and would have made this session self-documenting.
@@ -857,9 +864,13 @@ Carried from the phase open-questions (identical to the closing logbook entry's 
 7. **Diagnostics leftovers from the S3 post-mortem** (`follower-cadence-and-divergence.md`
    § 4.5): realized peaks on the SPACEMOUSE / reactive-catch path are still per-install
    (≈ per-tick) rather than rolling-window, and `peak_leg_*` looks stale for zero-distance
-   plans — both still
-   open; matters if S4's `/diagnose` review is ever run on a spacemouse sortie rather
-   than the battery.
+   plans. The realized-peaks half is still open. The `peak_leg_*` half is **diagnosed**
+   (2026-07-26, `logbook/2026-07-25-catch-reach-overshoot-repro.md`) and **not yet
+   fixed**: six install paths bump `move_seq` without writing `_last_peak_*`, so the
+   PREDICTED column can describe a superseded plan; annotated at
+   `trajectory_node.__init__`, fix deferred as its own commit because it reorders a
+   safety-adjacent install path. Matters if S4's `/diagnose` review is ever run on a
+   spacemouse sortie rather than the battery.
 8. **Jolt-fix regression check (deferred until bench-leg testing completes — operator is
    currently rigged for the bench leg)**: on the next powered Jugglebot sitting,
    deliberately latch the guard, then armed `/clear_errors` — the pre-fix ~2 rev/s /

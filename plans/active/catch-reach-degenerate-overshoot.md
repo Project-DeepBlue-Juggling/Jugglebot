@@ -1,0 +1,586 @@
+---
+title: Catch-reach near-degenerate overshoot — a 0.78° target produced a 2.32° excursion
+created: 2026-07-25
+status: active
+related_logbook:
+  - 2026-07-25-toss-phase3-trace-validated.md
+  - 2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md
+related_code:
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/planner.py::build_catch
+  - ros_ws/src/jugglebot/jugglebot/trajectory_node.py::_on_dynamic_target
+  - ros_ws/src/jugglebot/jugglebot/catch_coordinator_node.py::_republish_pretilt
+---
+
+# Plan — Catch-reach near-degenerate overshoot
+
+**Branch:** `mvp-trajectory-bringup`
+**Covers:** fix item 8 from the 2026-07-25 self-toss anomaly investigation.
+**Sibling plans:** `levelling-frame-contract.md` (items 1–2),
+`hand-command-continuity.md` (3–6), `fk-convergence-tolerance.md` (7).
+
+> **Priority re-rated 2026-07-26 (Phase 0), from "lowest of the four" to LIVE.**
+> The original rating assumed `levelling-frame-contract.md` removes the trigger.
+> It does not. C-LEVEL-1 makes the *park* gravity-level; the through-seat aim in
+> `build_catch` still reads a **plan-frame** tilt as "the receive tilt", so with a
+> correction loaded every catch — including the shipping reload path — engages the
+> through-seat along the correction. Phase 0 reproduced all **seven** catch reaches
+> in the reference session offline (five self-toss pre-tilts and both reload
+> pre-tilts) and showed they are the same mechanism at two amplifications. Post
+> C-LEVEL-1 the toss pre-tilt's requested tilt shrinks toward zero, and the
+> amplification is **inversely proportional to the requested tilt** — so the fix to
+> plan 1 makes this worse, not better. The defect is pinned (deliberately unfixed)
+> by `tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt`.
+
+## Context
+
+### The anomaly
+
+While diagnosing the pre-throw platform tilt, the commanded platform pose (FK of
+`/leg_setpoint_echo`, bag `~/Desktop/rosbags/2026-07-25_15-17-48/`) did something a
+single rest-to-**rest** quintic cannot do. Toss #4 (the 2nd of five *self*-thrown
+announcements in the bag — `catch_reach_replay.py --toss 2`), times relative to the
+scheduled release at 1784956866.88:
+
+| t rel. release | commanded `rx` |
+|---|---|
+| −4.23 s | +0.0044° |
+| −1.98 s | **+2.3204°** (peak) |
+| −0.92 s | ~0° (crossing) |
+| −0.50 s → +2.00 s | **−1.0784°**, flat |
+| +3.92 s | 0.0000° |
+
+The catch target it was reaching for, once the levelling correction is applied at
+ingest, is `rx = −0.77878414°` (verified numerically against the session's
+published offset `[0.013592347421588673, 0.001207157476773584]`).
+
+So a **−0.78° target produced a +2.32° excursion in the opposite direction first**,
+then settled and held at **−1.0784° = 1.385× the target** — a value sitting between
+a single application of the correction (−0.7788°) and a double one (−1.5576°),
+matching neither.
+
+There is also a sharp event at release − 0.6 s: `/trajectory/diagnostics`
+`realized_peak_leg_acc_mmps2` jumps 13.9 → 138.1 and
+`realized_peak_leg_jerk_mmps3` → 2403, right where the tilt goes flat.
+
+### What is NOT the explanation
+
+- **Not a large pre-tilt.** The reload leg's real BB receive pre-tilt in the *same
+  session* is clean: monotonic to `rx = +1.8235°, ry = −10.9330°` (11.08° total)
+  with the matching swing-compensated translation to `(11.88, 2.87, 171.16)`, held,
+  then unwound to exactly zero. No overshoot, no reversal.
+  > **Correction, 2026-07-26 (Phase 0).** The observation stands; the inference
+  > drawn from it — *"so this is not a general property of `build_catch` — it is
+  > specific to the near-degenerate case"* — does **not**. It is exactly the same
+  > property of `build_catch`, at 1/22 the amplification: the reload settle
+  > `+1.8235 / −10.9330°` **is** the through-seat overshoot (target × 1.0279),
+  > not the target. What is degenerate-specific is the *ratio*, not the mechanism.
+  > See `(16/81)·rate·T/|tilt|` below.
+- **Not multiple wire targets.** Only one `catch/dynamic_target` is published in
+  the excursion window; the ~39 Hz republish burst starts only after release.
+- **Not the lean shaper.** `lean_gain` reads `0.00` for the active plan throughout
+  (it is reset to 0 on every non-follower install), and there is no lateral
+  translation to lean into — x/y stay at 0.00 mm.
+
+### The weakest link in the above — SETTLED 2026-07-26 (Phase 0)
+
+> *Original text, kept because the reasoning matters:* My inference that **one**
+> plan spanned the whole excursion rests on two soft signals: `move_seq` staying at
+> 48, and `realized_peak_leg_*` ramping monotonically without a reset. But
+> `peak_leg_vel/acc/jerk` (the *planned* peaks) read identically `14.2 / 142.4 /
+> 3950` both **before** and **after** the install, which strongly suggests that
+> field is stale or cached rather than per-plan. If it is stale, my "single
+> install" reading may be wrong and the excursion could be a sequence of re-plans
+> after all. **Phase 0 must settle this rather than inherit my conclusion.**
+
+**Verdict: the single-install reading is CORRECT, and the staleness worry is
+refuted.** Settled from raw messages by `tools/probes/catch_reach_replay.py`, not
+inherited.
+
+- **One install.** Three load-bearing signals agree over the whole plan window:
+  `move_seq` holds at 48 (a monotonic counter, so a 5 Hz sample still catches
+  every `_install`); `plan_kind` is `move` at every sample (a `HoldPlan` reads
+  `hold`, which is what exposes the emitter step backstop, the escalation hold
+  and the freeze-in-place — the three paths that install by direct assignment and
+  bump nothing); and there are zero accepted `target_feedback` events and zero
+  `catch/dynamic_target` messages inside the window. All five self-tosses in the
+  session score the same way.
+  > **Correction, 2026-07-26 (review).** This bullet originally called a fourth
+  > statistic — `t + plan_time_remaining_s` drifting **1.9 ms across 21 status
+  > samples** — *decisive*, on the reasoning that an install resets the plan-time
+  > origin. Both halves of that were wrong and the correction is worth keeping,
+  > because the wrong version is the kind a future session would inherit.
+  > (a) The statistic is **structurally blind to the very hypothesis it was
+  > credited with refuting**: `_plan_and_install_catch` computes
+  > `lead = arrival_perf − perf_counter()` and installs at `t0 = perf_counter()`,
+  > so the plan end is `arrival_perf + tilt_decay + settle_hold` *no matter when
+  > the install happened* — a re-plan to the same absolute arrival (hypothesis 1
+  > below, verbatim) leaves it untouched. The same bag supplies the
+  > counterexample: the post-release republish burst runs `move_seq` 53 → 64 with
+  > 14 accepted feedbacks across release +0.10…+0.70 s, and the plan end drifts
+  > **1.02 ms — less than the 1.9 ms across the genuinely zero-install window.**
+  > (b) There is no "status rate vs 5 Hz" advantage: one 5 Hz timer
+  > (`trajectory_node.py:478 → _publish_status`) publishes *both* topics, 1453
+  > messages each over the 290.6 s session. Plan-end drift is kept in the census
+  > as one clause of five — it does catch installs that move the plan *end* — but
+  > it is not the reason to believe the verdict.
+- **`peak_leg_*` is per-plan, not stale.** It is written at every install that
+  carries a `FeasibilityReport`; in this very window the preceding `go_to_pose`
+  install wrote `0.0 / 0.0 / 0` and the catch install wrote `14.2 / 142.4 / 3950`,
+  **identical to the rebuilt plan's report at the published precision** (the
+  publisher formats vel/acc to `%.1f` and jerk to `%.0f`; rebuilt
+  `14.2401 / 142.4440 / 3949.7`, so bit-identity is not verifiable from a bag in
+  principle). That `0.0 / 0.0 / 0` one install earlier is the decisive half — the
+  field is *written*, not carried.
+  The values repeat **across these particular catch installs** because a catch
+  plan's predicted peaks are the fixed-shape 0.15 s decay's peaks *whenever the
+  reach is small enough for the decay to dominate*. That qualifier is
+  load-bearing: a reload-sized reach is **not** lead-invariant — measured
+  2026-07-26 through the production planner, its `peak_leg_vel_mmps` runs
+  `82.5 → 30.1 → 24.7 → 15.2 → 14.0 mm/s` at leads `0.8 / 2.0 / 2.371 / 3.707 /
+  8.0 s`, and the bag agrees (`move_seq` 4 and 15, the two reload catch installs,
+  published `23.6` and `23.8`). So predicted peaks *moving* between two catch
+  installs is normal and is **not** evidence that a non-catch plan came in
+  between. Both halves pinned in
+  `tests/motion/test_catch_reach_replay_probe.py`.
+- **There IS a narrow staleness hole, and it is now annotated in the code.** Six
+  install paths bump `move_seq` without writing the field — `_svc_hold`,
+  `_svc_go_home`, `_install_guard_descent`, `_retry_pending_stop`,
+  `_install_graceful_stop` and the follower's input-loss stop — so after any of
+  those, `peak_leg_*` describes the superseded plan. None of them ran in this
+  window. Annotated at both `trajectory_node.__init__` and the
+  `_publish_status` publisher rather than fixed: the fix requires reordering
+  `_svc_go_to_pose`'s write to *after* its `_install` call (it currently writes
+  before), which is a behavioural change to a safety-adjacent install path and
+  does not belong in an analysis phase.
+
+## Why it still matters after the levelling fix
+
+Once `go_to_pose` and `catch/dynamic_target` agree on "level", the toss's pre-tilt
+target equals the held pose exactly and the plan is genuinely degenerate — the
+un-levelled 15:04:35 session is that case and its commanded `rx` is flat to ±0.05°.
+So the trigger is gone for the vertical toss.
+
+But a *small* non-zero receive tilt is a normal operating point, not an exotic one:
+a self-tossed ball that drifts a few millimetres produces a receive tilt of a
+fraction of a degree, and `compute_catch_orientation` will duly ask for it. If a
+0.78° request can become a 2.3° excursion peaking in the wrong direction, then the
+catch reach has a regime where small corrections are amplified — and it would do it
+0.7 s before a catch. That is the risk being retired here.
+
+**Phase 0 sharpened this into one number.** The amplification is
+
+    peak UNREQUESTED excursion / requested tilt displacement
+        = (16/81) · rate · T / |tilt|
+
+identical on both tilt axes (excursion and displacement carry the same `|tdir_i|`
+factor), depending on the tilt *direction* and the lead but **never on the tilt
+magnitude**. So it is inversely proportional to how much tilt was asked for.
+Measured through `tools/probes/catch_reach_replay.py` on the reference session:
+**3.76** for the 0.78° toss pre-tilt (lead 3.71 s) against **0.17** for the 11.08°
+reload pre-tilt (lead 2.37 s) — one code path, 22× apart. The commanded tilt leaves
+the park in the *wrong direction* once the ratio exceeds `ψ(2/3) = 0.790`: for the
+toss target, any lead beyond 0.78 s; for the reload target, beyond 10.75 s.
+
+This is why the levelling fix does not retire the risk. C-LEVEL-1 drives the toss's
+requested tilt *toward zero*, and the amplification goes as `1/|tilt|`.
+
+## Implementation Phase Summary
+
+| Phase | Scope | Gate | Status |
+|---|---|---|---|
+| 0 | Offline reproduction from the recorded session | the excursion reproduced from recorded inputs | **DONE** (2026-07-26) — all 7 catch reaches reproduced; `tools/probes/catch_reach_replay.py`; see Outcome |
+| 1 | Root cause, written | mechanism traced end-to-end in prose | **DONE** (2026-07-26) — folded into Phase 0; all three features traced, blast radius stated; see Outcome |
+| 2 | Fix + invariant + test | full pytest | TODO — **escalated** (see the priority note) and **BLOCKED on operator re-prioritisation**: Phase 1's STOP fired, and C-CATCH-1's rewrite is unratified |
+
+## Implementation Phases
+
+### Phase 0 — Reproduce it offline
+
+No production code changes. The goal is a deterministic offline reproduction, so
+the root cause can be found by reading rather than by hardware sittings.
+
+1. Establish the ground truth of what was installed. From the bag, extract the
+   complete `/trajectory/status` and `/trajectory/diagnostics` series across the
+   excursion (not decimated) plus `/trajectory/target_feedback`, and settle:
+   how many plan installs occurred, what `plan_kind` each was, and whether
+   `peak_leg_*` is per-plan or stale. Fix or annotate the stale field as a
+   by-product — a diagnostic that reports a previous plan's peaks is a trap for the
+   next investigation.
+2. Replay the recorded inputs through the production layer: seed
+   `build_catch` with the pose/twist/accel that `_current_state()` would have
+   returned at install time and the corrected target, and compare the sampled
+   `rx(t)` against the FK-reconstructed commanded `rx(t)`.
+3. This is a reusable replay harness (it is the same shape as the offline-faithful
+   replay pattern that has already paid off once), so it belongs in
+   `tools/probes/` with a README entry and outputs to `temp/probes/` — not `/tmp`.
+
+Candidate hypotheses to discriminate, roughly in order of cheapness:
+
+- **stale-diagnostic illusion** — there were several installs, each re-seeded with
+  the previous plan's live twist/accel and a *shrinking* duration to a fixed
+  absolute arrival; C2 continuity across those turns a small offset into a
+  ringing approach;
+- **non-zero seed boundary conditions** — `state0` carried twist/accel that made
+  the quintic bulge (a quintic with `p0 ≈ p1` but `v0 ≠ 0` does exactly this);
+- **freeze/stop interaction** — the reach-freeze window or a graceful stop
+  truncated the plan part-way, which would explain both the flat hold at a value
+  matching no clean multiple *and* the acceleration spike at release − 0.6 s;
+- **frame composition at the endpoints** — the seed and target rotvecs derived
+  through different compositions, so the interpolation endpoints are not what they
+  appear to be.
+
+**Gate:** the excursion is reproduced offline from recorded inputs, within the
+resolution of the 33 Hz setpoint echo. If it cannot be reproduced, that is itself
+the finding — write it up and stop; do not fix by guesswork.
+
+#### Outcome — 2026-07-26: GATE MET
+
+Harness: `tools/probes/catch_reach_replay.py` (self-check guarded in CI by
+`tests/motion/test_catch_reach_replay_probe.py`). Seeded only from recorded
+inputs — FK of `/leg_setpoint_echo` for the seed pose, `levelling.correct_pose`
+of the `catch/dynamic_target` wire pose for the target, and
+`landing_time − _PRETILT_EARLY_S` for the arrival. One scalar is fitted (the
+emit → Teensy → bridge → echo → record pipeline lag); the zero-lag residual is
+reported next to it.
+
+Measured 2026-07-26, `python tools/probes/catch_reach_replay.py --bag
+~/Desktop/rosbags/2026-07-25_15-17-48 --toss {1..5}` and `--thrower ball_butler
+--toss {1,2}`:
+
+| reach | lead | rx rms / max | ry rms / max | echo lag | verdict |
+|---|---|---|---|---|---|
+| self-toss ×5 | 3.705–3.720 s | 0.0049–0.0062° / ≤ 0.0391° | ≤ 0.0006° / ≤ 0.0035° | +10.0 … +11.0 ms | REPRODUCED |
+| reload ×2 | 2.370–2.371 s | 0.0021–0.0025° / ≤ 0.0093° | ≤ 0.0149° / ≤ 0.0558° | +9.5 ms | REPRODUCED |
+
+(The reload's larger `ry` residual is proportionate: its `ry` excursion is 10.93°
+against the toss's 0.78° in `rx`, so 0.056° is 0.5 % — which is why the harness's
+tolerance is `max(--tol-deg, --tol-frac × commanded span)` rather than a flat
+absolute bound.)
+
+Corroborating, none of it fitted: the plan end predicted from the recorded
+arrival lands within **1 ms** of `t + plan_time_remaining_s` measured off
+`/trajectory/status`; the rebuilt plan's `FeasibilityReport` peaks are
+**identical to the published `peak_leg_*` at the published precision**
+(`14.2401 / 142.4440 / 3949.7` → `14.2 / 142.4 / 3950`); and the fitted lag is positive
+and under half a 25 ms knot, as physics requires. Pushing the assumed install
+instant later (toward the accepted-feedback log time) drives the fitted lag
+*negative* — the echo cannot precede the command — which is what pins the install
+to within a few ms of its triggering message, matching the single-digit-ms
+install latency the node documents.
+
+**Outcome, 2026-07-26 — LANDED.** Commits: see the logbook entry's `commits:` frontmatter (backfilled
+immediately after this phase's code commit). Logbook:
+`logbook/2026-07-25-catch-reach-overshoot-repro.md`. Full suite, run 2026-07-26:
+`source ~/Desktop/PDJ_venv/venv/bin/activate && python -m pytest tests/ -q` →
+**3527 passed, 3 xfailed in 1367.68 s (0:22:47)** (+10 passed against the `0c0c829`
+baseline of 3517; xfail unchanged at 3). Two-sided instrument acceptance, run
+2026-07-26: `--self-check` → `SELF-CHECK: PASS` 8/8 exit 0; FLAG side `--toss 2`
+→ `REPRODUCED` exit 0; ACCEPT side `--thrower ball_butler --toss 2` →
+`REPRODUCED` exit 0. **Deferred operator handoff:** nothing at the bench for this
+phase (offline, read-only, gate already met against a captured bag); § Section
+CATCH of `tests/hardware/session_anomaly_fixes.md` carries CATCH-1/2/3 for
+whenever a capture is scored. The `peak_leg_*` staleness **fix** is deferred as
+its own commit with its own logbook entry — annotated only, see the Notes for
+collaborators.
+
+All four candidate hypotheses were discriminated:
+
+| hypothesis | verdict | evidence |
+|---|---|---|
+| stale-diagnostic illusion (several installs) | **refuted** | one `move_seq`, one `plan_kind`, zero accepted `target_feedback` and zero `catch/dynamic_target` in the window; and `peak_leg_*` is per-plan (see above). *Not* on plan-end drift, which is blind to this hypothesis — see the correction above |
+| non-zero seed boundary conditions | **refuted as stated, half-right in shape** | the seed was at rest (previous plan past its duration; commanded park flat to 0.0000°) and the replay with zero seed twist/accel reproduces to 0.005° rms. The bulge *is* a boundary condition — the specified **arrival** twist `v1`, at the far end |
+| freeze/stop interaction | **refuted** | the reach-freeze first fires at release + 0.506 s, after the plan ended; no graceful stop installed; the flat hold is the plan's own 0.5 s quiescent-hold segment and the acc spike is its 0.15 s decay segment |
+| frame composition at the endpoints | **refuted as arithmetic, confirmed as premise** | `levelling.correct_pose` of the wire pose reproduces the target to 4 dp. The frame error is that `build_catch` reads a **plan-frame** tilt as "the receive tilt" — the composition is right, the interpretation is not |
+
+### Phase 1 — Root cause, in writing
+
+Trace the mechanism end-to-end in prose before proposing a fix — the repo's
+standard for "diagnosis is clear". Specifically account for **all three** measured
+features, because a hypothesis that explains only the overshoot is not the answer:
+
+1. the +2.32° excursion opposite in sign to a −0.78° target;
+2. the settle at 1.385× the target, matching neither single nor double application;
+3. the acceleration/jerk spike at release − 0.6 s coinciding with the tilt going
+   flat.
+
+Then state whether the mechanism is specific to `build_catch` or general to the
+C2-replan-to-fixed-arrival pattern (the follower and chase paths share the shape).
+That determines the blast radius and therefore the fix's shape.
+
+**Gate:** the written trace is reviewed. If the mechanism turns out to be general
+rather than near-degenerate-specific, **stop and re-prioritise this plan upward** —
+it would then be a live risk on the shipping reload path, not a robustness item.
+
+#### Outcome — 2026-07-26: GATE MET, and the escalation clause FIRED
+
+**Outcome, 2026-07-26 — LANDED, folded into Phase 0's commits.** Commits as for Phase 0; logbook
+`logbook/2026-07-25-catch-reach-overshoot-repro.md`. Same full-suite triple as
+Phase 0: `python -m pytest tests/ -q`, run 2026-07-26 → **3527 passed, 3 xfailed
+in 1367.68 s (0:22:47)**. Phase 1 was folded into Phase 0's deliverable rather than
+deferred, because all three features were fully traced by the reproduction itself
+and a separate session would have had to reload the entire trace to write the
+same prose. **Deferred operator handoff:** the gate's escalation clause FIRED —
+execution-order item 9 (P1 → P2) must not start without operator
+re-prioritisation, and C-CATCH-1's rewritten first clause needs ratification at
+the same point.
+
+The mechanism is **not** degenerate-specific. It runs on every catch reach with a
+non-zero plan-frame tilt, including the shipping reload path; the near-degenerate
+case is simply where the amplification is large. The plan is re-rated LIVE (see
+the priority note at the top). It is nonetheless **specific to `build_catch`**:
+`build_timed`, `build_follow` and the chase path all arrive at a caller-supplied
+twist and none of them *manufacture* one, so the blast radius is the catch path
+only.
+
+The three features, end to end:
+
+1. **The +2.32° excursion opposite in sign to a −0.78° target.** `build_catch`
+   gives the reach a non-zero arrival twist `rate · tdir` (tilt-through-seat: a
+   parked tilted rim deflects the ball, so the tilt must still be *moving* at
+   contact). A quintic from rest to `(p1, v1, 0)` decomposes exactly as
+   `p(s) = p0 + (p1−p0)·ψ(s) + v1·T·φ(s)` with `ψ = 10s³−15s⁴+6s⁵` and
+   `φ = −4s³+7s⁴−3s⁵`. `φ` has extremum **−16/81 at s = 2/3**, so a negative
+   specified arrival rate drives a *positive* excursion first. At the reference
+   lead the twist term contributes **+2.925°** and the displacement term
+   **−0.615°** at the same instant; net **+2.32°**, matching the bag to 0.001° at
+   the same sample. It is a specified boundary condition of the reach, and it
+   grows **linearly with the catch lead** (0.789°/s here).
+   *(Sampling note: the `+2.3204°` in the anomaly table above is the echo sample
+   at −1.98 s; the true peak sample sits at −2.0009 s reading `+2.3224°`, which
+   is what the harness compares its `+2.3236°` against. Same excursion, adjacent
+   25 ms knots — not a discrepancy.)*
+2. **The settle at 1.385× the target.** The through-seat overshoot:
+   `settle = target · (1 + 0.5·rate·decay/|tilt|)`. For this offset
+   `|tilt| = 0.0136459 rad` and `0.5 · 0.07 · 0.15 = 0.00525 rad`, so the factor
+   is **1.384732** — closed form `−1.078408° / −0.095775°` against a recorded
+   `−1.0784 / −0.0958`. It matches neither a single nor a double application of
+   the levelling correction because it is neither.
+3. **The acc/jerk spike at release − 0.6 s.** The tilt-through-seat **decay
+   segment**. Gated segment-by-segment at the reference lead: the 3.707 s reach
+   peaks at `13.9 mm/s² / 35 mm/s³`; the 0.150 s decay peaks at
+   `142.4 mm/s² / 3950 mm/s³` — 10.2× the acceleration and 113× the jerk, in a
+   segment 25× shorter. It lands at the arrival, which the coordinator schedules
+   at `landing − 1.5 s` = release − 0.700 s; the 5 Hz diagnostics window
+   −0.814 → −0.614 s straddles exactly that boundary. The tilt "going flat" at the
+   same moment is the same event: the decay ends and the quiescent hold begins.
+   Reproducing the 40 Hz realized-peak tracker over the rebuilt plan needs **two
+   comparisons kept apart** — conflating them produced a false claim in this
+   paragraph's first draft, so both are spelled out:
+   - *Like-for-like, running max truncated at the same instant.* The bag's
+     `−0.6138 s` diagnostics sample is a still-climbing running max, not an
+     end-of-plan value. Truncating the model at the matching `τ = 3.7934 s`
+     gives acc `141.2` / jerk **`2416`** against the bag's `138.1` / **`2403`**.
+     That is the agreement.
+   - *Full-plan, phase-swept band.* The decay is only ~6 knots long and the
+     emitter's grid is not phase-locked to the install, so sweeping the phase
+     over one 25 ms knot spans `138.8–142.4 mm/s²` and `2558–3141 mm/s³`
+     (measured 2026-07-26 at the reference lead; the probe prints `138.7–142.4`
+     and `2551–3148` at the bag's actual 3.7072 s lead). The bag's *end-of-plan*
+     realized values are `138.8 / 2496`. The acceleration is inside the band; the
+     **jerk lands ~2 % under it and that is expected**, because realized jerk is
+     a difference of consecutive knots and so carries the emitter's tick jitter
+     (25.0–27.6 ms measured this session) on top of the phase.
+   > **Correction, 2026-07-26 (review).** The first draft quoted the truncated
+   > model jerk `2416` *inside* the full-plan band `2558–3141` — impossible, since
+   > the band's floor is a superset of the phase-0 value — and said the band was
+   > "bracketing the recorded values" when neither recorded value is inside it
+   > (`138.1 < 138.8`, `2403 < 2558`). Quoting it that way would have had an
+   > operator score a healthy post-fix capture's under-band jerk as a failure.
+   > Feature 3 is **reported and never gated**, precisely for this reason.
+
+**Why the through-seat engages for a level catch at all** is the root cause under
+all three: `build_catch` reads `catch_pose[3:5]` as "the receive tilt", a premise
+that holds only while the commanded frame *is* the gravity frame. With a levelling
+correction loaded, a gravity-level catch arrives as a non-zero **plan-frame** tilt
+— the correction itself — so the through-seat aims along the correction and the
+reach acquires an arrival rate nobody asked for. Pinned by
+`tests/ros/test_levelling_frame.py::test_catch_through_seat_still_aims_off_the_plan_frame_tilt`.
+
+Not to be lost: the leg magnitudes here are small in absolute terms
+(`14.2 mm/s`, `142.4 mm/s²`, `3950 mm/s³` against session limits of
+`1000 / 5000 / 30000`). The defect is **aim**, not violence — the platform is up
+to 2.3° off where it should be through the flight and settles 0.30° off
+gravity-level at ball contact, on a rim whose whole job is to seat a bouncing
+ball.
+
+> **The 0.30° and the 16 mm — which lever arm, corrected 2026-07-26 (review).**
+> An earlier draft of this paragraph asserted that the session's 16 mm tracker
+> catch error must *not* be attributed to the 0.30° residual, on the grounds that
+> "0.30° of cup-axis tilt is order 1 mm at the seat". That reasoning uses the
+> wrong lever arm and **contradicts a landed normative contract**
+> (`ros_ws/docs/levelling_frame.md` § "The 16 mm"), which was not amended — a
+> silent contract drift, which this repo's engineering philosophy forbids
+> outright. The contract is right and the draft was wrong:
+> - **~1 mm** is the *seat-geometry* offset — the cup's own displacement under a
+>   0.30° platform tilt, over a lever arm of a few hundred mm. Real, but not what
+>   the tracker measures.
+> - **16.5 mm** is the *throw-direction* offset, and it is the contract's claim:
+>   the catch plan's quiescent-hold segment runs to release − 0.05 s and
+>   `hold_after=True` holds the settle pose through release, so the hand throws
+>   from a platform sitting 0.3008° off gravity-level. `0.005250 rad × 3.93 m/s ×
+>   0.8 s = 16.5 mm` of landing error. This plan's own Context table confirms the
+>   premise from the bag: commanded `rx` is flat at `−1.0784°` from −0.50 s to
+>   +2.00 s, i.e. across release.
+>
+> So the two numbers are not in conflict and neither is "separate" — they are
+> different lever arms on the same residual, and the contract's is the one that
+> predicts the tracker error. Phase 2's post-fix gate stays as the contract and
+> plan 1 state it (`tracker catch error < 10 mm`).
+
+(`_CATCH_TILT_THROUGH_RATE_RADPS`'s
+docstring estimates the induced leg velocity at "~7 mm/s"; measured 14.2 mm/s —
+a 2× underestimate, still negligible, worth correcting when that constant is next
+touched.)
+
+### Phase 2 — Fix, invariant, test
+
+What is pre-committed is the form of the deliverable: an invariant, one enforcement
+point, and a test — not a special case for the degenerate configuration.
+
+#### The invariant — REWRITTEN 2026-07-26
+
+The original first clause read *"a catch reach whose target differs from the
+current commanded pose by less than the arrival tolerance shall command no
+motion"*. **Phase 0 proposes withdrawing that clause — NOT YET RATIFIED; see the
+caveat below.** The concrete failure mode it would cause: it is a stationarity
+*mandate*, so it would reject a future planner that deliberately specifies an
+arrival twist for a moving-platform catch. Stationary-platform catches are the
+near-term preference; more aggressive juggling will need a moving platform at
+catch and at throw, and this invariant would forbid the right answer for it.
+Platform motion during a catch should be an *output* of the planner deciding it
+produces a better trajectory — which is exactly what today's defect is not, since
+`build_catch` manufactures the arrival twist from a module constant.
+
+> **Ratification caveat, 2026-07-26 (review).** The first draft justified this
+> withdrawal by citing "the operator principle of 2026-07-26", which appears
+> **nowhere in the repository** — no logbook entry, no sibling plan, no memory
+> file, no `docs/` note. That is an appeal to an uncitable authority, and it
+> would have let a fresh Phase-2 session read the withdrawal as operator-ratified
+> and never re-surface it. The root cause above stands on its own and needs no
+> such appeal. But whether the platform may be *moving* at ball contact is an
+> operator call on a change the risk register says "changes commanded motion at
+> ball contact on **every** catch, including the shipping reload path" — so this
+> rewrite must be put to the operator at the same re-prioritisation the fired
+> STOP already requires (execution-order item 9), not carried forward as settled.
+
+The replacement bounds *unrequested* excursion against *what was actually asked
+for*, which still catches a 0.78° request becoming a 2.32° swing while leaving a
+deliberately-specified arrival twist legal:
+
+> **C-CATCH-1.** Over its whole duration, a catch plan's commanded pose shall not
+> depart from the straight-line path between its seed pose and its target pose by
+> more than a bounded factor of what the *request* implies — the target
+> displacement plus the excursion any **explicitly specified** arrival twist
+> requires. Motion the caller did not ask for, in any degree of freedom, is
+> bounded; motion the caller did ask for is not.
+
+Two consequences, both deliberate. (a) An arrival twist the *caller* supplies is
+requested motion and is measured into the bound, so a future moving-platform catch
+passes. (b) An arrival twist `build_catch` *manufactures* from a constant is not
+requested motion, so today's plan fails the bound — which is the point.
+
+#### The fix direction Phase 0/1 points at
+
+Pass the **gravity-referenced receive tilt** to `build_catch` separately from the
+commanded pose. Today `build_catch` infers the through-seat direction from
+`catch_pose[3:5]`, which is a plan-frame quantity, so a level catch under a
+levelling correction gets a through-seat aimed along the correction. Given the
+receive tilt explicitly, the residual follows from what the *ball* is doing and
+goes to zero for a level catch **by construction** — not by a threshold, not by a
+degenerate-case branch.
+
+Note what this does **not** fix on its own: with a genuine small receive tilt the
+amplification `(16/81)·rate·T/|tilt|` is still large, because `rate` is a constant
+while `|tilt|` is not. Sizing the residual rate *relative to* the requested tilt
+(or capping the excursion it may produce) is the second half.
+
+Resist the tempting narrow fix — special-casing "target ≈ current pose" to a hold.
+It hides the amplifier rather than bounding it, and post-C-LEVEL-1 the amplifier is
+pointed straight at the small-but-real receive tilts described above.
+
+**Gate:** `pytest tests/ -q` green; a test that fails against the pre-fix code
+(verify this explicitly — a test that passes both ways proves nothing).
+`tools/probes/catch_reach_replay.py --self-check` must be re-run and its
+mirrored constants re-derived, since the fix moves at least one of them. The
+self-check will now *tell you* which: case 7 compares each mirrored value
+(`build_catch(tilt_decay_s=)`, `_CATCH_TILT_THROUGH_RATE_RADPS`,
+`_CATCH_TILT_OVERSHOOT_FRAC`, `JB_TRAJ_CATCH_SETTLE_HOLD_S`, the coordinator's
+`_PRETILT_EARLY_S`) against its production source and fails loudly on drift.
+Before the 2026-07-26 review it caught only two of the five — `build_replay`
+forced the probe's own `tilt_decay_s` into every production call, so moving
+`build_catch`'s default left the self-check green while the probe silently kept
+building the old decay.
+
+**Also required before scoring the post-fix capture:** re-derive the CATCH-3
+pre-fix baselines in `tests/hardware/session_anomaly_fixes.md` § CATCH. A fix
+that resizes or removes the through-seat **will** move the reload settle
+(`+1.8235 / −10.9330°`), so that number is a pre-fix reference, never a post-fix
+pass criterion.
+
+## Risk register
+
+| Risk | Mitigation | Status |
+|---|---|---|
+| Inheriting my possibly-wrong "single install" reading | Phase 0 step 1 settles it from raw data before anything else | **retired** — settled; the reading was correct, the staleness worry refuted |
+| Cannot reproduce offline, so the plan stalls | reproduction failure is an acceptable, publishable outcome; do not fix by guesswork | **retired** — all 7 catch reaches reproduced |
+| The mechanism is general, not degenerate-specific | Phase 1's gate escalates the plan's priority if so | **FIRED** — general to every catch with a plan-frame tilt; plan re-rated LIVE |
+| A narrow degenerate-case special case ships and hides the amplifier | Phase 2 pre-commits to a bounded-excursion invariant instead | open — C-CATCH-1 as rewritten |
+| The Phase-2 invariant enshrines a stationary platform | Phase 0 proposes withdrawing the first clause; C-CATCH-1 bounds *unrequested* excursion only, so a deliberately-specified arrival twist stays legal | open — **needs operator ratification at the item-9 re-prioritisation**; the first draft cited a 2026-07-26 "operator principle" that exists nowhere in the repo |
+| The instrument mis-scores a HEALTHY capture and routes a correct fix back for rework | two-sided validation is the acceptance criterion: `--self-check` (no bag) plus both the FLAG case (`--toss 2`) and the ACCEPT case (`--thrower ball_butler --toss 2`) must pass, and the verdict tolerance scales with the commanded span | **retired for three known paths** — the 2026-07-26 review found and fixed all three: a sticky `last_rejection` latch that forced NOT-REPRODUCED on every reach after one unrelated session rejection; an unbounded `/gravity_offset` lookup that scored pre-re-level reaches with a post-re-level correction; and a self-check blind to two of five mirrored constants |
+| Fixing this changes commanded motion at ball contact on **every** catch, including the shipping reload path | Phase 2 needs a powered sitting; the reload leg's own numbers are now in the plan (settle `+1.8235 / −10.9330°` = target × 1.0279) so a regression is measurable, and `catch_reach_replay.py` scores a post-fix capture the same way | open |
+
+## Notes for collaborators
+
+- Everything needed to start Phase 0 is already recorded: the bag
+  `~/Desktop/rosbags/2026-07-25_15-17-48/2026-07-25_15-17-48_0.mcap` contains
+  `/leg_setpoint_echo`, `/rigid_body_poses`, `/catch/dynamic_target`,
+  `/trajectory/status`, `/trajectory/diagnostics` and
+  `/trajectory/target_feedback` for five toss attempts, plus two reload attempts
+  with a clean 11.08° pre-tilt as the contrast case. No hardware time is needed
+  before Phase 2.
+- The clean-reload contrast is the most useful single fact in this plan: whatever
+  the mechanism is, it must explain why an 11.08° reach is well-behaved and a
+  0.78° one is not. **It does, in one number** —
+  `(16/81)·rate·T/|tilt|` is 3.76 for the toss and 0.17 for the reload. And the
+  reload is not "well behaved" for any reason of its own: it carries the same
+  through-seat overshoot (settle = target × 1.0279 instead of × 1.3847), just 22×
+  smaller relative to what it was asked to do. Both are reproduced by the same
+  harness, so the contrast is now a runnable command rather than an observation:
+
+      source ~/Desktop/PDJ_venv/venv/bin/activate
+      python tools/probes/catch_reach_replay.py \
+          --bag ~/Desktop/rosbags/2026-07-25_15-17-48 --toss 2
+      python tools/probes/catch_reach_replay.py \
+          --bag ~/Desktop/rosbags/2026-07-25_15-17-48 --thrower ball_butler --toss 2
+
+- Index caveat: the plan's prose calls the excursion "toss #4" counting all seven
+  attempts in the session. In the harness, self-thrown and BB-thrown announcements
+  are indexed separately — the excursion is `--toss 2` (of five self-tosses).
+  `--list` prints the mapping: one table over **every** thrower on a shared time
+  origin, carrying both the all-throwers index and the per-thrower index that
+  `--toss` takes. (It printed one thrower at a time, each zero-based on its own
+  first announcement, until the 2026-07-26 review — which made the two indexings
+  impossible to reconcile without going back to raw `release_abs`, so an operator
+  asking for "toss #4" would have scored `--toss 4` = release +73.8 s, the wrong
+  reach, and never known.)
+- The harness's verdict tolerance is `max(--tol-deg, --tol-frac × commanded span)`.
+  A purely absolute bound scores the clean 11° reload as NOT-REPRODUCED on a 0.5 %
+  error, which is the "instrument fails a working system" trap the sibling
+  levelling probe's two-sided self-check exists to prevent.
+- Deployment: nothing in Phase 0 changes runtime behaviour. The
+  `trajectory_node.py` edit is **comment-only** (the `peak_leg_*` staleness
+  annotation); a `colcon build --packages-select jugglebot` + relaunch is still
+  wanted so the installed copy matches source, but no behaviour depends on it.
+- **Still open, handed to the operator, not fixed here.** The `peak_leg_*`
+  staleness hole was *annotated* rather than fixed, because closing it means
+  reordering `_svc_go_to_pose`'s `_last_peak_*` write to **after** its
+  `self._install(plan)` call (it currently writes before) so that a future
+  `_install` may clear the field — a behavioural reordering in a safety-adjacent
+  install path, with a live assertion in `tests/ros/test_trajectory_node.py` that
+  `_last_peak_*` matches the report after `go_to_pose`. Stated symbolically on
+  purpose: line numbers in a hand-over go stale within one commit, and following
+  a stale one here would land the moved write *before* the install and ship a
+  worse defect than the one being fixed. Per the repo's convention this is its
+  own commit with its own logbook entry. The same hole is recorded independently
+  as open item 7 in `tests/hardware/mvp_bench_runbook.md`, from a 2026-07-09
+  hardware observation — so it is not hypothetical.

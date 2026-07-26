@@ -808,3 +808,120 @@ Validates: nothing this plan closes — recorded so the number is on file for th
   score it.
 - The **hand dip** is `hand-command-continuity` (§ Section HAND). If both have
   landed, validate them in one sitting but score them separately.
+
+---
+
+## Section CATCH — `catch-reach-degenerate-overshoot` (catch-reach excursion)
+
+> **Phase 0/1 (landed 2026-07-26) need NO powered sitting.** They are offline and
+> read-only, and their gate — the excursion reproduced from recorded inputs — is
+> already met against `~/Desktop/rosbags/2026-07-25_15-17-48`. Everything in this
+> section is either (a) an analysis command you can run on any capture without
+> touching the robot, or (b) the shape Phase 2's sitting will need **once the
+> operator has re-prioritised it** (Phase 1's STOP condition FIRED — see the plan).
+>
+> **Do not start Phase 2's sitting from this section alone.** Phase 2 changes
+> commanded motion at ball contact on *every* catch, including the shipping reload
+> path, and its invariant (C-CATCH-1) is not yet ratified.
+
+**Prerequisites for CATCH-1/2 (analysis only):** none beyond the venv. No colcon
+build, no relaunch, no firmware flash. Nothing here actuates the machine — these
+commands open `.mcap` files and import pure-Python planner modules.
+
+**Prerequisites when Phase 2 eventually lands (CATCH-3):** `colcon build
+--packages-select jugglebot` **and a relaunch** (the launch runs the *installed*
+copy). **No firmware flash** — nothing in this plan touches the Teensy.
+
+### CHECK CATCH-1 — instrument health (run FIRST, no bag, no robot)
+
+Validates: `catch-reach-degenerate-overshoot` Phase 0's harness itself.
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+python tools/probes/catch_reach_replay.py --self-check
+```
+
+- **PASS**: `SELF-CHECK: PASS`, 8/8 `OK` lines, exit 0.
+- **ABORT**: any `BAD ` line. In particular a BAD on *mirrored production
+  constants have not drifted* means the planner's constants moved and the probe's
+  closed form is stale — **do not score a session with it** until the mirrored
+  values in `catch_reach_replay.py` are re-derived. This is the expected failure
+  the first time Phase 2 lands, and it is deliberate.
+
+### CHECK CATCH-2 — score a session's catch reaches (read-only, any capture)
+
+Validates: `catch-reach-degenerate-overshoot` Phase 0 (reproduction) on new data.
+
+Recording: add these to the § Recording topic list for any sitting you intend to
+score — `/trajectory/status /trajectory/diagnostics /trajectory/target_feedback
+/catch/dynamic_target /gravity_offset /throw_announcements` (the base list
+already carries `/leg_setpoint_echo`, which is the commanded-pose source).
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot
+# map the prose's "toss #N" onto --toss: ONE table, all throwers, both indices
+python tools/probes/catch_reach_replay.py --bag ~/Desktop/rosbags/<SESSION> --list
+# score one reach (repeat per row; --thrower selects the column)
+python tools/probes/catch_reach_replay.py --bag ~/Desktop/rosbags/<SESSION> \
+    --toss N --json --csv
+```
+
+PASS/ABORT, as numbers the verdict actually enforces:
+
+| Row | PASS | ABORT |
+|---|---|---|
+| `VERDICT` | `REPRODUCED`, exit 0 | `NOT-REPRODUCED`, exit 1 |
+| rx **and** ry `max` residual | ≤ `max(0.05°, 0.01 × commanded span)` — printed as `tolerance ±X` | above it |
+| fitted `echo lag` | `0 < lag ≤ 25.0 ms` (one knot) | negative (unphysical — the echo cannot precede the command) or > 25 ms |
+| `SINGLE INSTALL` | `True` | `False` — read the census rows to see which clause fired |
+| `/gravity_offset` line | absent, or `1 distinct value` | `RE-LEVEL in this session` — re-check which offset each reach was scored against |
+| `fk_failures` (JSON) | `0` | any |
+
+A `NOT-REPRODUCED` is **a publishable result, not a probe bug** — read the
+FEATURE LEDGER before blaming the harness. But run CATCH-1 first: a stale
+instrument produces exactly this reading on a healthy system.
+
+### CHECK CATCH-3 — the pre-fix baseline to compare a Phase-2 capture against
+
+Validates: nothing on its own. These are the reference numbers, measured
+2026-07-26 on the already-captured `2026-07-25_15-17-48` — no sitting needed.
+
+```bash
+python tools/probes/catch_reach_replay.py \
+    --bag ~/Desktop/rosbags/2026-07-25_15-17-48 --toss 2
+python tools/probes/catch_reach_replay.py \
+    --bag ~/Desktop/rosbags/2026-07-25_15-17-48 --thrower ball_butler --toss 2
+```
+
+| quantity | pre-fix value | what a correct Phase-2 fix does to it |
+|---|---|---|
+| toss commanded `rx` peak | `+2.3224°` from a `−0.778784°` target | **must shrink toward the target** — this is the defect |
+| toss settle `rx` | `−1.0784°` (target × 1.38473) | must approach `−0.7788°` (× 1.000) |
+| toss amplification | `3.756` | must drop below `0.790` (the sign-reversal threshold) |
+| reload settle | `+1.8235 / −10.9330°` (target × 1.0279) | **WILL change** — a fix resizes or removes the through-seat. This is a pre-fix **reference, NOT a post-fix pass criterion** |
+| reload catch accuracy | as flown | must be **no worse** |
+| tracker catch error | ≈16 mm (see § CHECK LVL-5) | target `< 10 mm` per `ros_ws/docs/levelling_frame.md` § "The 16 mm" |
+
+### When Phase 2's sitting happens — minimum shape
+
+Not a check yet; recorded so it is not re-derived under time pressure.
+
+1. **Reboot the can-bridge Teensy** before the session (standing session rule).
+2. `level` is per-boot — a manual `level` is **always** required first.
+3. Record with the § Recording list **plus** the six catch topics above.
+4. Score with CATCH-1 → CATCH-2 → CATCH-3, then
+   `tools/probes/levelling_tilt_bag_check.py --offset <TILT_X> <TILT_Y> --t0
+   <after the first go_home>` for the park (§ CHECK LVL-3's instrument).
+5. Judge catches **by eye** as well as by `outcome` — tracker verdicts still read
+   MISSED on real catches.
+
+### Not in this section
+
+- The `peak_leg_*` predicted-peak staleness (six install paths bump `move_seq`
+  without writing the field) is **diagnosed and annotated, not fixed** — see
+  `tests/hardware/mvp_bench_runbook.md` open item 7. It is a diagnostics-reading
+  hazard, not a motion defect, and needs no bench check.
+- The park frame and `go_home` are § Section LVL. If both plans have landed,
+  validate them in one sitting but score them separately.
