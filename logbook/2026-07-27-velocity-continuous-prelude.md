@@ -26,7 +26,7 @@ files_changed:
   - tests/hardware/session_anomaly_fixes.md
   - plans/active/hand-command-continuity.md
 commits:
-  - <CODE_SHA>
+  - 5369fc2
 subsystem:
   - motion
   - can

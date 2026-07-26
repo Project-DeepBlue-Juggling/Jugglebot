@@ -1355,9 +1355,11 @@ Platform Teensy. **This phase requires a firmware flash, not a relaunch.**
 
 #### Phase 4 — Outcome
 
-**Landed in source 2026-07-27, NOT FLASHED.** Commits `<CODE_SHA>` (code) and
-`<DOC_SHA>` (SHA backfill). Full suite: `pytest tests/ -q`, run 2026-07-27 on the
-Jetson — `<TEST_RESULT>`, xfail unchanged at 3.
+**Landed in source 2026-07-27, NOT FLASHED.** Commit `5369fc2` (code; this paragraph backfilled in the
+follow-up commit). Full suite: `pytest tests/ -q`, run 2026-07-27 on the Jetson at
+HEAD `854df28` with the phase uncommitted — **3943 passed, 3 xfailed in 1399.35 s**
+(baseline 3574 passed, 3 xfailed; the +369 is accounted for per changed test file
+in the logbook entry). **xfail unchanged at 3.**
 
 `makeSmoothMove` now reads `current_hand_velocity` — the `extern volatile` that
 sat two lines above it and was never read, which *was* the defect — and seeds the
