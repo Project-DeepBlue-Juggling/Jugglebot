@@ -43,6 +43,45 @@ constexpr int   SAMPLE_RATE         = (int)TeensyTraj::SAMPLE_RATE_HZ;
 /* ----- smooth-move tuning — sourced from hardware_config.h ---- */
 constexpr float MAX_SMOOTH_MOVE_HAND_ACCEL = TeensyTraj::MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2;
 constexpr float QUINTIC_S2_MAX             = TeensyTraj::QUINTIC_S2_MAX;
+constexpr float QUINTIC_H2_MAX             = TeensyTraj::QUINTIC_H2_MAX;
+/* TeensyTraj::QUINTIC_H_MAX (= 16/81, the maximum of quinticH below) is
+   deliberately NOT aliased here: smoothMoveExcursion computes the EXACT
+   excursion rather than the |v0|*T*H_MAX bound, which widens the band over which
+   velocity continuity is affordable.  The constant is consumed host-side by
+   jugglebot/motion/trajectory/hand_stroke.py, where a closed-form bound is what
+   a caller needs to size a window with.                                       */
+constexpr float SMOOTH_MOVE_V0_DEADBAND    = TeensyTraj::SMOOTH_MOVE_V0_DEADBAND_RPS;
+constexpr float SMOOTH_MOVE_MIN_DURATION_S = 0.05f;   // fmaxf guard, historical
+/* Stroke end stops the smooth-move overshoot is checked against.  Upper carries
+   a margin (the overextension guard sits only 0.76 mm below the top of the
+   355 mm stroke).  Lower is ENCODER ZERO — JBOp::HAND_RETRACT_REV, which is also
+   the host's own declared floor for this axis (teensy_bridge_node rejects a
+   smooth-move target below 0, and can/odrive.py clips a hand setpoint below 0
+   and warns).  It is NOT Homing::HAND_ABS_POS_REV = -0.1 rev: that value IS the
+   bottom hard stop (the axis homes DOWNWARD into it at -3 rev/s), so using it
+   here would let a honoured prelude plan commanded travel all the way onto the
+   stop with no allowance for the position loop's own undershoot — measured
+   +0.186 rev of tracking overshoot on this profile family (bench H3.5) against
+   0 rev of margin.  Brute-forced over the honoured branch, the -0.1 floor
+   admitted commanded troughs to -0.0999 rev on the retract, prime AND
+   catch-descent paths, and a PRIME dispatched at the mid-point of a live retract
+   (5.0 rev, -24.6 rev/s) dived to -0.057 rev — 5 rev BELOW its start, for a move
+   whose target is the top of the stroke.  A tighter floor costs nothing: the
+   bound is relaxed to fminf(FLOOR, start, target) below, so every legal target
+   stays servable at any floor value, and a profile whose bulge would go under
+   simply takes the documented rest-to-rest fallback (today's behaviour).       */
+constexpr float SMOOTH_MOVE_POS_CEIL_REV   = Geometry::HAND_MOTOR_MAX_POSITION_REVS
+                                             - TeensyTraj::SMOOTH_MOVE_EXCURSION_MARGIN_REV;
+constexpr float SMOOTH_MOVE_POS_FLOOR_REV  = JBOp::HAND_RETRACT_REV;
+/* Slack on the two end-stop comparisons.  NOT a margin — it absorbs float32
+   rounding in the excursion's interior turning point, which can report a trough
+   a few ulps BELOW a profile's own endpoint even when the profile is monotone in
+   exact arithmetic (a 5.0 -> 0.0 retract at -7.5 rev/s measures -2.4e-6 rev).
+   Without it, endpoint rounding alone would send those moves to the fallback and
+   the fix would be a no-op on the retract path.  1e-4 rev = 3.2 um of cable
+   travel: 1000x tighter than the 0.1 rev the old floor gave away, and three
+   orders of magnitude below the measured position-loop tracking error.        */
+constexpr float SMOOTH_MOVE_END_STOP_EPS_REV = 1e-4f;
 extern volatile float current_hand_position;
 extern volatile float current_hand_velocity;
 
@@ -231,33 +270,258 @@ private:
   }
 };
 
+/* ───────── smooth-move quintic shape functions ─────────
+   pos(τ) = x0 + δ·s(τ) + u·h(τ)     with  u = v0·T,  δ = target − x0.
+   s is the historical rest-to-rest shape; h is what a non-zero start velocity
+   contributes.  h(0) = h(1) = 0 and h ≥ 0, so u never moves the endpoints — it
+   only bulges the profile by u·QUINTIC_H_MAX in the direction of travel.  The
+   `u *` terms vanish EXACTLY at u = 0, so every COMMANDED POSITION of every
+   rest-to-rest hand move the robot already makes is bit-identical to before this
+   change.  One caveat, checked rather than assumed: the FIRST velocity sample of
+   a move with δ < 0 (every retract, every catch-descent prelude) changes from
+   −0.0f to +0.0f, because (δ·s'(0)) is −0.0f while (δ·s'(0) + u·h'(0)) is
+   −0.0f + 0.0f = +0.0f.  int16_t(lrintf(±0.0f · vel_scale)) is 0 either way, so
+   the wire is unchanged; 1426 of 4000 at-rest cases differ in that one field and
+   in nothing else.                                                            */
+inline float quinticS  (float tau) { const float t2=tau*tau, t3=t2*tau, t4=t2*t2;
+                                     return 10.0f*t3 - 15.0f*t4 + 6.0f*t4*tau; }
+inline float quinticS1 (float tau) { const float t2=tau*tau, t3=t2*tau, t4=t2*t2;
+                                     return 30.0f*t2 - 60.0f*t3 + 30.0f*t4; }
+inline float quinticS2 (float tau) { const float t2=tau*tau, t3=t2*tau;
+                                     return 60.0f*tau - 180.0f*t2 + 120.0f*t3; }
+inline float quinticH  (float tau) { const float w=1.0f-tau;
+                                     return tau*w*w*w*(3.0f*tau + 1.0f); }
+inline float quinticH1 (float tau) { const float w=1.0f-tau;
+                                     return w*w*(1.0f + 2.0f*tau - 15.0f*tau*tau); }
+inline float quinticH2 (float tau) { return 12.0f*tau*(1.0f-tau)*(5.0f*tau - 3.0f); }
+
+/* Shortest duration whose peak |acceleration| is bounded by the accel limit.
+   a(τ)·T² = δ·s''(τ) + u·h''(τ), bounded by |δ|·S2 + |v0|·T·H2, so requiring
+   that ≤ A_max gives  A_max·T² − |v0|·H2·T − |δ|·S2 ≥ 0.  The v0 == 0 branch is
+   the HISTORICAL expression, kept verbatim so a rest-to-rest duration (and hence
+   the sample count and smoothDur_us) is bit-identical to before.              */
+inline float smoothMoveDuration(float delta_rev, float v0_rps)
+{
+    const float c = fabsf(delta_rev) * QUINTIC_S2_MAX;
+    if (v0_rps == 0.0f)
+        return sqrtf(c / MAX_SMOOTH_MOVE_HAND_ACCEL);
+    const float b = fabsf(v0_rps) * QUINTIC_H2_MAX;
+    return (b + sqrtf(b*b + 4.0f*MAX_SMOOTH_MOVE_HAND_ACCEL*c))
+           / (2.0f*MAX_SMOOTH_MOVE_HAND_ACCEL);
+}
+
+/* Longest duration a VELOCITY-CONTINUOUS prelude may take before it falls back.
+   Arresting v0 costs time as well as travel: the duration grows linearly in |v0|
+   without bound, so the excursion clamp alone does not stop a prelude from
+   outlasting a move the firmware could previously command.  The cap is the
+   longest REST-TO-REST smooth move the stroke admits (full travel, 0 -> 11.1
+   rev = 0.8005 s), so an honoured prelude can never take longer than a profile
+   this firmware already emitted before the change — which means every host-side
+   window sized on a commanded hand move stays valid without moving.
+
+   The window that made this concrete: catch_coordinator_node._PRIME_INFLIGHT_S =
+   1.2 s suppresses a re-prime while a prime ascent could still be RUNNING (a
+   kind-3 re-dispatch mid-ascent rebuilds the profile from the live position and
+   yanks the hand backwards — the 2026-07-23 stutter, 5/12 ascents stalled 60-70
+   ms).  It is sized from the rest-to-rest ascent, 0.7583 s.  A prime dispatched
+   into a live retract near the retract's own peak descent speed (start ~5.04
+   rev, v0 ~-24.6 rev/s) solves to 1.206 s and OUTGREW it.  Capping is the
+   conservative half of that fix: the profile degrades to today's, rather than a
+   validated host timing constant moving on the strength of an unobserved case.
+   Pinned host-side by tests/ros/test_catch_coordinator_node.py::
+   test_prime_inflight_window_covers_the_commanded_prime_ascent.                */
+inline float smoothMoveMaxDuration()
+{
+    return sqrtf(Geometry::HAND_MOTOR_MAX_POSITION_REVS * QUINTIC_S2_MAX
+                 / MAX_SMOOTH_MOVE_HAND_ACCEL);
+}
+
+/* Lowest / highest commanded position over the move, RELATIVE to the start.
+   pos'(τ) = (1−τ)²·[30δτ² + u(1 + 2τ − 15τ²)], so the interior turning point is
+   a quadratic root.  Both endpoints (0 and δ) are always included, so the
+   interval spans the whole excursion, not only the overshoot.                 */
+inline void smoothMoveExcursion(float delta_rev, float v0_rps, float duration,
+                                float& lo_out, float& hi_out)
+{
+    const float u = v0_rps * duration;
+    float lo = 0.0f, hi = delta_rev > 0.0f ? delta_rev : 0.0f;
+    if (delta_rev < 0.0f) lo = delta_rev;
+
+    const float qa = 30.0f*delta_rev - 15.0f*u;
+    const float qb = 2.0f*u;
+    const float qc = u;
+    float taus[2];
+    int n = 0;
+    if (fabsf(qa) < 1e-12f) {
+        if (fabsf(qb) > 1e-12f) taus[n++] = -qc / qb;
+    } else {
+        const float disc = qb*qb - 4.0f*qa*qc;
+        if (disc >= 0.0f) {
+            const float r = sqrtf(disc);
+            taus[n++] = (-qb + r) / (2.0f*qa);
+            taus[n++] = (-qb - r) / (2.0f*qa);
+        }
+    }
+    for (int i = 0; i < n; ++i) {
+        const float tau = taus[i];
+        if (tau <= 0.0f || tau >= 1.0f) continue;
+        const float p = delta_rev * quinticS(tau) + u * quinticH(tau);
+        if (p < lo) lo = p;
+        if (p > hi) hi = p;
+    }
+    lo_out = lo;
+    hi_out = hi;
+}
+
 /* =====================================================================
-   Smooth point-to-point move
+   Smooth point-to-point move — VELOCITY-CONTINUOUS
    ---------------------------------------------------------------------
    * start position  = live encoder reading  (current_hand_position)
+   * start velocity  = live encoder reading  (current_hand_velocity)
    * end   position  = target_rev   (argument)
-   * boundary cond.  = v=a=0 at both ends   (quintic “S-curve”)
+   * boundary cond.  = (x0, v0, a=0) at the start, (target, 0, 0) at the end
    * duration chosen such that  |a_max| ≤ MAX_SMOOTH_MOVE_HAND_ACCEL
+
+   WHY v0 IS READ AT ALL
+   ---------------------
+   This function is prepended to EVERY hand command — a kind-3 prime / retract /
+   SAFE_ABORT, and the prelude ahead of every kind-0/1/2 stroke (Teensy_code.ino
+   :470 and :522).  It used to seed the quintic v = a = 0 from
+   current_hand_position alone, while current_hand_velocity sat declared two
+   lines above and was never read.  So any command landing while the hand moved
+   commanded a VELOCITY STEP.  Measured 2026-07-25: a catch arm landing 8–18 ms
+   after ball release froze the setpoint at the live encoder value (6.20–7.78
+   rev) with the hand travelling through it at ~120 rev/s; the position loop then
+   coasted to 10.17–10.32 rev — as little as 0.775 rev from the 11.1 rev
+   overextension guard — and yanked the hand 0.34–1.75 rev = 10.7–55.3 mm BELOW
+   the stroke end.  That is the operator-visible post-throw dip.
+
+   THE SHAPE
+   ---------
+   The quintic through (x0, v0, 0) → (x1, 0, 0) decomposes EXACTLY into two fixed
+   shapes (u ≡ v0·T, δ ≡ x1 − x0, τ ≡ t/T):
+
+       pos(τ) = x0 + δ·s(τ) + u·h(τ)
+       s(τ)   = 10τ³ − 15τ⁴ + 6τ⁵                 (the historical rest-to-rest shape)
+       h(τ)   = τ(1−τ)³(3τ+1)
+
+   h(0) = h(1) = 0, so v0 never moves the endpoints — the profile still starts at
+   x0 and lands on the target at rest.  h ≥ 0 with a single maximum QUINTIC_H_MAX
+   = 16/81 at τ = 1/3, so v0's entire effect is to bulge the profile by
+   u·16/81 in the direction of travel.  That bulge IS the overshoot; it is
+   correct (a hand moving away from its target must overshoot to come back) and
+   it is what must be checked against the stroke end stops.
+
+   In coefficient form (A τ³ + B τ⁴ + C τ⁵ added to x0 + u τ):
+       A = 10δ − 6u ,  B = −15δ + 8u ,  C = 6δ − 3u
+   which at u = 0 is (10δ, −15δ, 6δ) — the historical polynomial exactly.
+
+   DURATION
+   --------
+   a(τ)·T² = δ·s''(τ) + u·h''(τ), so the old T = √(|δ|·S2/A_max) — which assumed
+   v0 = 0 — no longer bounds anything.  Bounding the sum by the triangle
+   inequality gives the quadratic
+
+       A_max·T² − |v0|·H2·T − |δ|·S2 ≥ 0
+
+   whose positive root is used below.  At v0 = 0 it reduces bit-identically to
+   the historical formula.  The bound is 98.6 % tight when v0 points AWAY from
+   the target (the case that needs the room, because s'' peaks at τ = 0.2113 and
+   h'' at τ = 0.2427) and conservative — i.e. gentler than necessary — when v0
+   points toward it.  Probed over 20 000 random (δ, v0) pairs: zero violations of
+   A_max.  A closed form was chosen over bisecting the analytic peak: one sqrtf
+   and six flops, with no iteration count and no convergence failure mode, inside
+   a CAN receive handler.
+
+   WHEN THE BULGE WILL NOT FIT
+   ---------------------------
+   The profile falls back to the rest-to-rest quintic — today's exact behaviour,
+   losing continuity but adding no commanded magnitude the firmware could not
+   already produce.  Refusing the command instead was rejected: for a kind-3 that
+   means not clobbering, and a kind-3 retract clobbering an armed kind-0 is the
+   ONLY un-arm mechanism the Teensy offers (a pre-release SAFE_ABORT depends on
+   it) — and refusing via an EMPTY trajectory is worse still, because
+   Teensy_code.ino:472-475 returns before packedMsgs.clear().  Braking harder was
+   also rejected: near a target the bulge has no room to be absorbed by the
+   s-shape's own travel, and the acceleration needed to squeeze it in is bounded
+   by nothing the firmware declares — a SAFE_ABORT retract dispatched with the
+   hand already essentially AT hand_retract_rev = 0 and descending at the measured
+   −60 rev/s would need ~28 000 rev/s², 280× the declared limit.  (Far from the
+   target the same descent is served fine: 5.0 → 0.0 rev at −7.5 rev/s is
+   honoured with a trough 2.4e-6 rev below the endpoint.)  Raising the limit is an
+   operator decision, not this function's.  The fallback is observable — it emits
+   a from-rest quintic seed, which tools/probes/hand_stroke_timeline.py counts and
+   the bench aborts on.
+
+   There are TWO cannot-fit tests, not one: the bulge must fit inside the stroke
+   (smoothMoveExcursion vs the end stops) AND the duration must fit inside
+   smoothMoveMaxDuration(), because arresting v0 costs time as well as travel and
+   the host's windows are sized on the durations this firmware could already
+   command.  See that helper for the failure it closes.
+
+   See plans/active/hand-command-continuity.md Phase 4, contract C-HAND-1, and
+   ros_ws/docs/hand_command_continuity.md.
    ===================================================================== */
 inline Trajectory makeSmoothMove(float target_rev)
 {
     Trajectory tr;
 
     const float start_rev = current_hand_position;          // live encoder
+    const float start_vel = current_hand_velocity;          // live encoder [rev/s]
     const float delta_rev = target_rev - start_rev;
 
-    if (fabsf(delta_rev) < 1e-6f)          // already there → empty traj.
+    /* ----- is the hand at rest? -------------------------------------- *
+     * Below the dead-band the reading is treated as gravity-hold dither on the
+     * ODrive Vel_Estimate rather than as motion, because honouring dither would
+     * command excursion nobody asked for on a stationary hand: 0.280 rev = 8.9 mm
+     * at the dead-band edge, rising as v0² (0.641 rev = 20.3 mm at 9.07 rev/s,
+     * the largest v0 the stroke top can absorb).  The anchor is a p99, not a
+     * maximum — see config/hardware_config.yaml smooth_move_v0_deadband_rps for
+     * the two measured populations it sits between and what is still unmeasured.
+     */
+    const bool at_rest = fabsf(start_vel) <= SMOOTH_MOVE_V0_DEADBAND;
+
+    /* Already there AND at rest → empty traj.  The `at_rest` conjunct NARROWS
+     * this branch: at the target but MOVING now yields a braking profile rather
+     * than nothing.  Never widen it — Teensy_code.ino:472-475 returns from the
+     * kind-3 handler BEFORE packedMsgs.clear() when the move is empty, so a
+     * wider empty case is a wider hole in the only un-arm mechanism available.
+     */
+    if (fabsf(delta_rev) < 1e-6f && at_rest)
         return tr;
 
-    /* ----- derive duration from accel limit ------------------------- *
-     * pos(t) = delta_rev · s(τ) + start_rev ,   τ = t / T
-     * a(t)   = delta_rev / T² · s''(τ)
-     * so  |a_max| = |delta_rev| · QUINTIC_S2_MAX / T²  ≤  A_max
-     */
-    const float T = sqrtf(fabsf(delta_rev) * QUINTIC_S2_MAX / MAX_SMOOTH_MOVE_HAND_ACCEL);
+    float v0 = at_rest ? 0.0f : start_vel;
 
-    /* guard against silly small values (numerics, rounding, …) */
-    const float duration  = fmaxf(T, 0.05f);
+    float duration = fmaxf(smoothMoveDuration(delta_rev, v0),
+                           SMOOTH_MOVE_MIN_DURATION_S);
+
+    if (v0 != 0.0f) {
+        /* ----- will the bulge stay inside the stroke, and the move inside the
+         * time a rest-to-rest move could already take? ------------------ *
+         * Both position bounds are RELAXED to admit the endpoints: the live
+         * position may already be outside the band (a mid-coast reading above the
+         * ceiling is exactly the case that most needs a continuous profile) and a
+         * legal target may sit below the floor, and neither must make the move
+         * infeasible by definition.  EPS absorbs float32 rounding at those
+         * endpoints; it is not headroom (see its declaration).
+         */
+        float lo, hi;
+        smoothMoveExcursion(delta_rev, v0, duration, lo, hi);
+        const float ceil_rev  = fmaxf(SMOOTH_MOVE_POS_CEIL_REV,
+                                      fmaxf(start_rev, target_rev));
+        const float floor_rev = fminf(SMOOTH_MOVE_POS_FLOOR_REV,
+                                      fminf(start_rev, target_rev));
+        if (start_rev + hi > ceil_rev + SMOOTH_MOVE_END_STOP_EPS_REV
+            || start_rev + lo < floor_rev - SMOOTH_MOVE_END_STOP_EPS_REV
+            || duration > smoothMoveMaxDuration()) {
+            /* fall back to the rest-to-rest profile (today's behaviour) */
+            v0 = 0.0f;
+            duration = fmaxf(smoothMoveDuration(delta_rev, 0.0f),
+                             SMOOTH_MOVE_MIN_DURATION_S);
+        }
+    }
+
+    const float u    = v0 * duration;
 
     const float dT   = 1.0f / SAMPLE_RATE;
     const float invT = 1.0f / duration;
@@ -273,20 +537,13 @@ inline Trajectory makeSmoothMove(float target_rev)
     for (float t = 0.0f; t <= duration; t += dT) {
 
         const float tau = t * invT;                // 0 … 1
-        const float tau2 = tau * tau;
-        const float tau3 = tau2 * tau;
-        const float tau4 = tau2 * tau2;
 
-        /*  s(τ)   = 10τ³ − 15τ⁴ + 6τ⁵  */
-        const float s_pos = 10.0f*tau3 - 15.0f*tau4 + 6.0f*tau4*tau;
-        /*  s'(τ)  = 30τ² − 60τ³ + 30τ⁴ */
-        const float s_vel = 30.0f*tau2 - 60.0f*tau3 + 30.0f*tau4;
-        /*  s''(τ) = 60τ − 180τ² + 120τ³ */
-        const float s_acc = 60.0f*tau - 180.0f*tau2 + 120.0f*tau3;
-
-        const float pos_rev = start_rev + delta_rev * s_pos;
-        const float vel_rev = delta_rev * s_vel * invT;
-        const float acc_rev = delta_rev * s_acc * invT2;
+        /*  pos = x0 + δ·s(τ) + u·h(τ)                     */
+        const float pos_rev = start_rev + delta_rev * quinticS(tau) + u * quinticH(tau);
+        /*  vel = (δ·s'(τ) + u·h'(τ)) / T                  */
+        const float vel_rev = (delta_rev * quinticS1(tau) + u * quinticH1(tau)) * invT;
+        /*  acc = (δ·s''(τ) + u·h''(τ)) / T²               */
+        const float acc_rev = (delta_rev * quinticS2(tau) + u * quinticH2(tau)) * invT2;
 
         const float acc_lin = acc_rev / LINEAR_GAIN;        // [m/s²]
         const float tor     = accelToTorque(acc_lin);       // [N·m]

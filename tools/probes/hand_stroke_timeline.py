@@ -292,8 +292,16 @@ _GATE_TRACE = (_GATE_FULL_TRACE if os.path.exists(_GATE_FULL_TRACE)
 #  velocity hold (shiftTime(-(t5-t4))) — unchanged from when the model was local
 #  to this file, and now covered by tests/motion/test_hand_stroke.py.
 #
-#  smooth_move_duration_s is still the PRE-Phase-4 rest-to-rest form; plan
-#  Phase 4 replaces it there and this probe picks the change up automatically.
+#  smooth_move_duration_s now takes an optional v0 (Phase 4's
+#  velocity-continuous prelude), and this probe deliberately calls it with the
+#  default v0 = 0: quintic_T_model_s models the OBSERVED PRE-fix from-rest
+#  quintic that replaced a truncated stroke, which is by definition the v0 = 0
+#  branch.  The v0 == 0 path is the historical expression verbatim, so every
+#  number this probe prints — and the committed --gate fixture's expectations —
+#  are unchanged to the last bit by Phase 4.  Post-fix, a capture that still
+#  shows a from-rest seed is either the arm-gate failing (bench row 2) or
+#  makeSmoothMove's documented cannot-fit fallback; both are meant to be visible
+#  here rather than silent.
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -474,19 +482,39 @@ _RECOVERY_TOL_REV = 0.005    # ~0.16 mm — well above pos quantisation, far bel
                              # anything physically meaningful
 _CATCH_DESC_VEL_REV_S = -1.0  # commanded velocity turning negative = a DOWNWARD
                               # command of some kind (not yet the catch descent)
-_CATCH_DESC_BELOW_X3_REV = 0.5   # how far below x3 the COMMANDED position must
-                              # actually travel before a downward command counts
-                              # as the ARMED CATCH descent.  A negative commanded
-                              # velocity alone is not enough: a `makeSmoothMove`
-                              # BRAKE — which plan Phase 4 step 3 specifically
-                              # charters for the at-target-but-moving case — is
-                              # also downward, and it only ever travels back from
-                              # the coasting peak to x3 — 0.206-0.365 rev over the
-                              # seven observed tosses (peaks 10.1653-10.3248 rev
-                              # against x3 9.9594).  The armed catch runs
-                              # x3 -> x5 = 3.833 rev, so 0.5 rev sits 7.7x clear
-                              # of the descent it must accept and 1.4x clear of
-                              # the largest brake it must reject.
+_CATCH_DESC_ABOVE_X5_REV = 0.33  # how far into the CATCH REGION the COMMANDED
+                              # position must actually travel before a downward
+                              # command counts as the ARMED CATCH descent: it must
+                              # reach `x5 + this`.  A negative commanded velocity
+                              # alone is not enough: a `makeSmoothMove` BRAKE —
+                              # which plan Phase 4 charters for the
+                              # at-target-but-moving case — is also downward.
+                              #
+                              # SIZED AGAINST THE SHIPPED CLAMP, not against the
+                              # pre-fix brake sample.  This threshold was
+                              # originally 0.5 rev below x3, justified by the
+                              # brakes visible in the seven observed tosses
+                              # (0.206-0.365 rev, all of them the settle-from-
+                              # above case).  That premise died with Phase 4: an
+                              # honoured brake seeded from a DOWNWARD velocity
+                              # dives |v0|*T*16/81 = 0.00778*v0^2 rev below x3,
+                              # crossing 0.5 rev at just 8.05 rev/s, and the
+                              # clamp honours it out to 3.213 rev (v0 = 20.32
+                              # rev/s, where Trajectory.h's duration cap takes
+                              # over).  A brake read as the descent collapses the
+                              # peak/pullback/dip window onto itself and makes the
+                              # end-stop `peak` row — the one guarding the 11.1
+                              # rev limit, bench row H4.5 — UNDER-report.
+                              #
+                              # x5 + 0.33 rev = 6.457 rev = x3 - 3.502 rev, so it
+                              # sits 0.29 rev clear of the deepest brake the
+                              # firmware can honour and 0.33 rev clear of x5,
+                              # which every armed descent commands.  Biased deep
+                              # on purpose: too shallow fails SILENTLY on the row
+                              # that guards the end stop, too deep leaves
+                              # `catch_desc` unset and floods the report with
+                              # spurious truncations — a loud failure is the safer
+                              # side of this trade.
                               # Without this, a brake is mistaken for the
                               # descent, and because `catch_desc` bounds BOTH the
                               # truncation scan and the peak/pullback/dip window,
@@ -790,9 +818,10 @@ def _analyse_catch_descent(tl: ThrowTimeline, win, model: StrokeModel,
                            what the probe used to call the catch descent.
     ``catch_desc``         the onset of the descent that actually TRAVELS to the
                            catch — the commanded position must reach
-                           ``x3 - _CATCH_DESC_BELOW_X3_REV`` — found by locating
-                           an unambiguous point inside the descent and then
-                           walking back to the start of its negative-velocity run.
+                           ``x5 + _CATCH_DESC_ABOVE_X5_REV``, i.e. into the catch
+                           region itself — found by locating an unambiguous point
+                           inside the descent and then walking back to the start
+                           of its negative-velocity run.
 
     The distinction is load-bearing, not pedantic.  ``catch_desc`` bounds both the
     truncation scan and the peak/pullback/dip window, so identifying it from a
@@ -813,7 +842,7 @@ def _analyse_catch_descent(tl: ThrowTimeline, win, model: StrokeModel,
         tl.first_neg_cmd_vel = first.t
         tl.first_neg_cmd_vel_rev_s = first.vel_ff_cmd
 
-    floor = model.x3_rev - _CATCH_DESC_BELOW_X3_REV
+    floor = model.x5_rev + _CATCH_DESC_ABOVE_X5_REV
     i = next((k for k, s in enumerate(win)
               if s.t > from_t and s.pos_cmd < floor
               and s.vel_ff_cmd < _CATCH_DESC_VEL_REV_S), None)
@@ -1023,7 +1052,8 @@ _SYNTH_BRAKE_T_S = 0.14      # duration of the synthetic braking prelude
 def _synth_fixed_session(peak_rev: float, tof_s: float = 0.80,
                          v_mps: float = 3.9308, hz: float = 100.0,
                          lag_s: float = 0.008,
-                         brake_at_rel: Optional[float] = None) -> tuple:
+                         brake_at_rel: Optional[float] = None,
+                         brake_dive_rev: Optional[float] = None) -> tuple:
     """An in-memory capture of the POST-FIX shape, built from ``StrokeModel``.
 
     ``pos_cmd`` follows the modelled stroke all the way to x3, holds there, then
@@ -1057,6 +1087,16 @@ def _synth_fixed_session(peak_rev: float, tof_s: float = 0.80,
     t_desc = t_rel + tof_s - m.t_acc_catch
     x3 = m.x3_rev
     t_brake = None if brake_at_rel is None else t_rel + brake_at_rel
+    # A dive of D rev is the excursion of a v0 = sqrt(D / 0.00778) rev/s brake,
+    # whose duration is the firmware's own |v0|*H2/A_max — so the synthetic
+    # carries the real time cost of the depth rather than a made-up one.
+    brake_T = _SYNTH_BRAKE_T_S
+    if brake_dive_rev is not None:
+        brake_T = (math.sqrt(brake_dive_rev
+                             / (hw.TEENSY_TRAJ_QUINTIC_H_MAX * hw.TEENSY_TRAJ_QUINTIC_H2_MAX
+                                / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2))
+                   * hw.TEENSY_TRAJ_QUINTIC_H2_MAX
+                   / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2)
 
     def coast(t):
         u = (t - (t_rel + m.t_dec)) / 0.20
@@ -1068,9 +1108,16 @@ def _synth_fixed_session(peak_rev: float, tof_s: float = 0.80,
         rel = t - t_rel
         if rel <= m.t_dec:
             return m.pos_rev(rel)
-        if t_brake is not None and t_brake <= t < t_brake + _SYNTH_BRAKE_T_S:
+        if t_brake is not None and t_brake <= t < t_brake + brake_T:
+            s = (t - t_brake) / brake_T
+            if brake_dive_rev is not None:
+                # A DOWNWARD brake, in the firmware's own shape: with the target
+                # at x3 and the hand moving down through it, makeSmoothMove emits
+                # x3 + u*h(tau) with u = v0*T < 0.  h(0) = h(1) = 0, so it leaves
+                # x3, dives |u|*16/81 and lands back on x3 at rest.
+                u = -brake_dive_rev / hw.TEENSY_TRAJ_QUINTIC_H_MAX
+                return x3 + u * (s * (1.0 - s) ** 3 * (3.0 * s + 1.0))
             # out-and-back from the live position's stopping point down to x3
-            s = (t - t_brake) / _SYNTH_BRAKE_T_S
             top = coast(t_brake) + 0.05
             return x3 + (top - x3) * (1.0 - s) ** 2 * (1.0 + 2.0 * s)
         if t < t_desc:
@@ -1135,6 +1182,18 @@ def run_fixed_shape_gate() -> int:
     print('GATE — the FIXED shape (synthetic; no real capture has it)')
     x3 = StrokeModel(3.9308).x3_rev
     x3s = StrokeModel(2.6971).x3_rev            # velocity-independent, but be exact
+    # The deepest DOWNWARD brake makeSmoothMove can honour: the duration cap
+    # (smoothMoveMaxDuration) stops it at v0 = A*T_cap/H2, whose excursion is
+    # v0*T_cap*H_MAX = 3.21 rev.  This is the case the old 0.5-rev separator got
+    # wrong — see _CATCH_DESC_ABOVE_X5_REV.
+    _v0_cap = (hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
+               * math.sqrt(hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+                           * hw.TEENSY_TRAJ_QUINTIC_S2_MAX
+                           / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2)
+               / hw.TEENSY_TRAJ_QUINTIC_H2_MAX)
+    _deepest_brake_rev = (_v0_cap * _v0_cap * hw.TEENSY_TRAJ_QUINTIC_H2_MAX
+                          * hw.TEENSY_TRAJ_QUINTIC_H_MAX
+                          / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2)
     cases = [
         # (label,            peak_rev,  tof,  v,      brake_at_rel)
         ('clean',            x3 + 0.02, 0.80, 3.9308, None),
@@ -1182,6 +1241,40 @@ def run_fixed_shape_gate() -> int:
             bad += 0 if ok else 1
             print('  %-4s %-16s %-22s want %-14s got %s'
                   % ('OK' if ok else 'FAIL', label, name, want, got))
+
+    # ── deep-brake: the SEPARATOR at the clamp's reach ────────────────────────
+    # The four cases above are all CLEAN captures.  This one deliberately is not:
+    # it carries the deepest DOWNWARD brake makeSmoothMove can honour (3.21 rev
+    # below x3, at the duration cap), which is the shape the old 0.5-rev
+    # separator misread as the armed catch descent.  Only two properties are
+    # asserted — the two the separator owns — and the rest are PRINTED, because a
+    # 3.2 rev dive is legitimately not a clean capture and the operator must see
+    # it as itself rather than have the gate paper over it.  Concretely: `trunc`
+    # and `dip_below_x3` both fire on this shape, and § CHECK HAND-4 rows H4.3 /
+    # H4.4 tell the operator how to route that.
+    s, t_desc_true = _synth_fixed_session(x3 + 0.02, tof_s=1.10, v_mps=5.3955,
+                                          brake_at_rel=0.050,
+                                          brake_dive_rev=_deepest_brake_rev)
+    tl = analyse_throw(s, s.announcements[0])
+    deep_checks = [
+        # the whole point: a brake at the clamp's reach is NOT the catch descent
+        ('catch_desc', tl.catch_desc, '%.3f' % t_desc_true,
+         tl.catch_desc is not None and abs(tl.catch_desc - t_desc_true) <= 0.020),
+        # ...so the peak window is still the coasting peak, not the brake
+        ('peak_pos_rev', tl.peak_pos_rev, x3 + 0.02,
+         tl.peak_pos_rev is not None and abs(tl.peak_pos_rev - (x3 + 0.02)) <= 0.010),
+    ]
+    for name, got, want, ok in deep_checks:
+        bad += 0 if ok else 1
+        print('  %-4s %-16s %-22s want %-14s got %s'
+              % ('OK' if ok else 'FAIL', 'deep-brake', name, want, got))
+    print('  %-4s %-16s %-22s want %-14s got %s'
+          % ('--', 'deep-brake', 'dip_below_x3_rev', 'reported, not hidden',
+             tl.dip_below_x3_rev))
+    print('  %-4s %-16s %-22s want %-14s got %s'
+          % ('--', 'deep-brake', 'first_neg_cmd_vel', '< catch_desc',
+             tl.first_neg_cmd_vel))
+
     print('  %s — fixed-shape branch' % ('GATE PASS' if bad == 0 else 'GATE FAIL'))
     return 0 if bad == 0 else 1
 

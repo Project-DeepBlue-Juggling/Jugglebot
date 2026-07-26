@@ -247,16 +247,47 @@ def catch_lead_s(v_armed_mps: float) -> float:
     return HandStrokeModel(v_armed_mps).t_acc_catch
 
 
-def smooth_move_duration_s(delta_rev: float) -> float:
-    """``makeSmoothMove``'s duration (``Trajectory.h:257-260``), rest-to-rest.
+#: Quintic landmarks, generated from the same YAML as the firmware's
+#: ``TeensyTraj::`` block.  ``s`` is the rest-to-rest shape
+#: (``10t^3 - 15t^4 + 6t^5``); ``h(tau) = tau(1-tau)^3(3tau+1)`` is what a
+#: NON-ZERO start velocity contributes, ``pos = x0 + delta*s + (v0*T)*h``.
+QUINTIC_S2_MAX = hw.TEENSY_TRAJ_QUINTIC_S2_MAX
+QUINTIC_H_MAX = hw.TEENSY_TRAJ_QUINTIC_H_MAX
+QUINTIC_H2_MAX = hw.TEENSY_TRAJ_QUINTIC_H2_MAX
+MAX_SMOOTH_MOVE_ACCEL_RPS2 = hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
+
+#: ``|current_hand_velocity|`` at or below which ``makeSmoothMove`` treats the
+#: hand as AT REST (``Trajectory.h``).  See the YAML comment for the measured
+#: dither / traverse separation this sits between.
+SMOOTH_MOVE_V0_DEADBAND_RPS = hw.TEENSY_TRAJ_SMOOTH_MOVE_V0_DEADBAND_RPS
+
+#: Duration floor — ``fmaxf(T, 0.05f)``, ``Trajectory.h``.
+SMOOTH_MOVE_MIN_DURATION_S = 0.05
+
+
+def smooth_move_duration_s(delta_rev: float, v0_rps: float = 0.0) -> float:
+    """The ACCEL-LIMITED smooth-move duration (``Trajectory.h``'s ``smoothMoveDuration``).
+
+    **Not the whole of what the firmware emits at non-zero ``v0``.**
+    ``makeSmoothMove`` substitutes the rest-to-rest duration whenever the honoured
+    profile's excursion would leave the stroke or its duration would exceed
+    ``smoothMoveMaxDuration() = 0.8005`` s, so this function over-reports on the
+    fallback branch (at 119.6 rev/s it returns 4.71 s where the firmware emits a
+    0.05 s floored hold).  Harmless today — every caller in this repository passes
+    ``v0 = 0``, where the two agree exactly — but a caller that starts feeding the
+    LIVE velocity in to size an arm window must model the fallback too, or it will
+    refuse or defer exactly the fast arms the prelude exists to serve.
+    ``sim/hand/trajectory.plan_smooth_move`` is the branch-accurate mirror.
 
     Two properties that matter more than the formula:
 
     * the "already there" dead-band is ``|delta| < 1e-6`` rev = **3.16e-5 mm**,
       which no live encoder reading will ever satisfy against a float target —
-      so on hardware the prelude is essentially never *exactly* empty;
-    * every non-empty duration is floored at **0.05 s** (``fmaxf(T, 0.05f)``,
-      ``:260``).
+      so on hardware the prelude is essentially never *exactly* empty.  Since
+      Phase 4 that branch ALSO requires the hand to be at rest
+      (``|v0| <= SMOOTH_MOVE_V0_DEADBAND_RPS``): at the target but moving now
+      yields a braking profile rather than nothing;
+    * every non-empty duration is floored at **0.05 s** (``fmaxf(T, 0.05f)``).
 
     Together those mean a catch armed with the hand "at rest at the top" still
     costs 50-76 ms of prelude, not zero.  That is harmless motion (0.63 mm at
@@ -264,16 +295,60 @@ def smooth_move_duration_s(delta_rev: float) -> float:
     that assumed a zero prelude would hand the Teensy a command it refuses at
     ``:533`` — printing to serial only, so the catch silently never fires.
 
-    **Pre-Phase-4 rest-to-rest form.**  Plan Phase 4 replaces this with a
-    ``v0 != 0`` quintic whose duration formula must change; when it does, this
-    function moves with it and every consumer (this module's callers and
-    ``tools/probes/hand_stroke_timeline.py``) picks the change up at once.
+    **The ``v0 != 0`` form** (Phase 4).  ``a(tau)*T^2 = delta*s''(tau) +
+    (v0*T)*h''(tau)``, bounded by ``|delta|*S2 + |v0|*T*H2``, so the duration is
+    the positive root of ``a_max*T^2 - |v0|*H2*T - |delta|*S2 = 0``.  The
+    ``v0 == 0`` path is the historical ``sqrt(|delta|*S2/a_max)`` expression
+    verbatim, so every rest-to-rest caller — which is every caller in this
+    repository today, including ``PRELUDE_ALLOWANCE_S`` and
+    ``tools/probes/hand_stroke_timeline.py``'s model of the observed PRE-fix
+    from-rest quintic — is unchanged to the last bit.
     """
-    if abs(float(delta_rev)) < 1e-6:
+    if abs(float(delta_rev)) < 1e-6 and abs(float(v0_rps)) <= SMOOTH_MOVE_V0_DEADBAND_RPS:
         return 0.0
-    T = math.sqrt(abs(float(delta_rev)) * hw.TEENSY_TRAJ_QUINTIC_S2_MAX
-                  / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2)
-    return max(T, 0.05)
+    v0 = 0.0 if abs(float(v0_rps)) <= SMOOTH_MOVE_V0_DEADBAND_RPS else float(v0_rps)
+    c = abs(float(delta_rev)) * QUINTIC_S2_MAX
+    if v0 == 0.0:
+        T = math.sqrt(c / MAX_SMOOTH_MOVE_ACCEL_RPS2)
+    else:
+        b = abs(v0) * QUINTIC_H2_MAX
+        T = ((b + math.sqrt(b * b + 4.0 * MAX_SMOOTH_MOVE_ACCEL_RPS2 * c))
+             / (2.0 * MAX_SMOOTH_MOVE_ACCEL_RPS2))
+    return max(T, SMOOTH_MOVE_MIN_DURATION_S)
+
+
+def smooth_move_overshoot_rev(v0_rps: float, duration_s: float) -> float:
+    """Extra excursion a non-zero start velocity adds, in the direction of travel.
+
+    ``|v0| * T * QUINTIC_H_MAX`` — an exact upper bound, and exact outright when
+    the target coincides with the start (the braking case), because ``h`` and
+    ``s`` do not peak at the same ``tau``.  This is the quantity a
+    velocity-continuous prelude has to be checked against the stroke end for:
+    ``GEOM_HAND_MOTOR_MAX_POSITION_REVS - smooth_move_excursion_margin_rev``
+    above, the homing reference below.  ``Trajectory.h``'s
+    ``smoothMoveExcursion`` computes the exact interval; this is the closed-form
+    bound a host-side caller can size a window with.
+    """
+    return abs(float(v0_rps)) * float(duration_s) * QUINTIC_H_MAX
+
+
+def smooth_move_max_continuous_v0_rps(headroom_rev: float) -> float:
+    """Largest ``|v0|`` whose braking profile still fits in ``headroom_rev``.
+
+    Solving ``QUINTIC_H_MAX * H2 * v0^2 / a_max = headroom`` (the braking case,
+    ``delta = 0``, where ``T = |v0|*H2/a_max``).  **This is the width of the
+    velocity band over which Phase 4's continuity is actually affordable**, and
+    it is narrow: 9.1 rev/s against the 0.6406 rev the stroke top leaves below
+    the 10.6 rev ceiling, 20.9 rev/s against the 3.4 rev a mid-stroke freeze
+    leaves.  Above it the profile falls back to rest-to-rest, because the
+    acceleration needed to arrest sooner is not bounded by anything the firmware
+    declares — ``MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100`` rev/s² is a COMFORT
+    limit 19-60x below what the throw profile itself commands (1908 rev/s² at
+    3.93 m/s, 6055 at the 7.0 m/s band top), and closing that gap is an
+    operator decision about envelope semantics, not an implementation detail.
+    """
+    return math.sqrt(max(0.0, float(headroom_rev)) * MAX_SMOOTH_MOVE_ACCEL_RPS2
+                     / (QUINTIC_H_MAX * QUINTIC_H2_MAX))
 
 
 def smooth_move_peak_vel_rps(delta_rev: float) -> float:
@@ -303,8 +378,16 @@ def smooth_move_peak_vel_rps(delta_rev: float) -> float:
       and an overspeed on a smooth move is the signature of a re-seeded or
       clobbered profile — exactly the failure class this plan exists to catch.
 
-    Rest-to-rest, like :func:`smooth_move_duration_s`, and it moves with that
-    function when Phase 4 replaces the profile with a ``v0 != 0`` quintic.
+    Rest-to-rest, deliberately: it is the model a BENCH row scores a prime or a
+    retract ascent against, and both of those are dispatched to a parked hand.
+    Since Phase 4 the profile is velocity-continuous when the live velocity
+    exceeds :data:`SMOOTH_MOVE_V0_DEADBAND_RPS`, and its peak velocity is then
+    ``(|delta|*1.875 + |v0|*T*max|h'|) / T`` — but ``max|h'| = 1`` occurs at
+    ``tau = 0``, i.e. at ``v0`` itself, so a velocity-continuous move never peaks
+    below its own start speed and a bench row written against the rest-to-rest
+    peak would mis-score it.  That is why H3.7 gates a PRIME (parked hand,
+    ``v0`` inside the dead-band, rest-to-rest by construction) and not an
+    arbitrary smooth move.
     """
     dur = smooth_move_duration_s(delta_rev)
     if dur <= 0.0:

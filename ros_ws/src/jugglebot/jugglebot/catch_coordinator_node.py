@@ -127,6 +127,13 @@ _PRIME_RETRY_QUIET_S = 1.5
 # observed 1.05 s upper bound. Pinned by tests/ros/test_catch_coordinator_node.py
 # ::test_prime_inflight_window_covers_the_commanded_prime_ascent so a later prime
 # raise or a Phase-4 duration change cannot outgrow it silently.
+# Phase 4 (velocity-continuous prelude) made that last clause load-bearing: a
+# prime dispatched into a live RETRACT — which never stamps _prime_dispatch_mono,
+# so it is not suppressed — is now seeded with the hand's live descent velocity
+# and solves to 1.206 s at the retract's peak, past this window outright. The
+# firmware bounds an honoured prelude to the longest rest-to-rest move the stroke
+# admits (Trajectory.h::smoothMoveMaxDuration = 0.8005 s) so this window still
+# covers every profile the Teensy can emit; the test asserts BOTH bounds.
 _PRIME_INFLIGHT_S = 1.2
 
 # Pre-tilt early arrival: the announcement-derived target used to schedule its

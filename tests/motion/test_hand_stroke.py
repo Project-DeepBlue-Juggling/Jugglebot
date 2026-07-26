@@ -361,6 +361,126 @@ def test_prelude_allowance_covers_the_bench_pass_band():
         3.163, abs=1e-3)
 
 
+# ── makeSmoothMove: the velocity-continuous form (Phase 4) ──────────────────
+#
+# The FIRMWARE half of C-HAND-1.  Full coverage of the profile itself lives in
+# tests/sim/test_hand_trajectory.py (the mirror) and
+# tests/firmware/test_hand_smooth_move_xref.py (which compiles and runs the
+# shipped Trajectory.h).  What must hold HERE is that the host's own model of the
+# duration — the one PRELUDE_ALLOWANCE_S and the arm-fit check are built on — is
+# the same closed form the firmware now uses, and that nothing Phase 1-3 sized
+# moved.
+
+def test_every_rest_to_rest_host_number_is_unchanged_by_phase_4():
+    """The regression guard on Phases 1-3.
+
+    ``PRELUDE_ALLOWANCE_S`` and ``required_arm_lead_s`` are consulted with the
+    hand AT REST (that is what the arm gate exists to produce), so generalising
+    ``smooth_move_duration_s`` for ``v0 != 0`` must leave them bit-identical or
+    Phase 1's 395 ms / 115 ms windows silently move.
+    """
+    for d in (0.0, 9e-7, 1.1e-6, 0.001, 0.02, 0.04, 0.10, 2.3539, 9.9594):
+        got = hand_stroke.smooth_move_duration_s(d)
+        if abs(d) < 1e-6:
+            assert got == 0.0
+            continue
+        assert got == max(math.sqrt(abs(d) * hw.TEENSY_TRAJ_QUINTIC_S2_MAX
+                                    / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2),
+                          0.05), d
+        # ...and passing v0 = 0 explicitly is the same call
+        assert hand_stroke.smooth_move_duration_s(d, 0.0) == got
+    assert hand_stroke.PRELUDE_ALLOWANCE_S == pytest.approx(0.0759836, abs=1e-6)
+    assert hand_stroke.required_arm_lead_s(3.13) == pytest.approx(
+        hand_stroke.catch_lead_s(3.13) + 0.0759836 + 0.020, abs=1e-6)
+
+
+def test_the_deadband_makes_measured_dither_read_as_at_rest():
+    """``SMOOTH_MOVE_V0_DEADBAND_RPS`` against the measurements that sized it.
+
+    Below 5.39 rev/s (parked-top ``|vel|`` p99, gravity-hold dither, 2026-07-24)
+    the prelude would chase noise on a stationary hand; above ~9.2 rev/s (the
+    slowest GENUINE traverse measured on the same signal) it would ignore real
+    motion and re-introduce the commanded velocity step the phase removes.
+    """
+    assert hand_stroke.SMOOTH_MOVE_V0_DEADBAND_RPS == 6.0
+    assert 5.39 < hand_stroke.SMOOTH_MOVE_V0_DEADBAND_RPS < 9.2
+    # inside the dead-band the duration is the rest-to-rest one, exactly
+    for v0 in (0.0, 0.25, 1.82, 5.39, 6.0, -5.39, -6.0):
+        assert (hand_stroke.smooth_move_duration_s(0.10, v0)
+                == hand_stroke.smooth_move_duration_s(0.10))
+        assert hand_stroke.smooth_move_duration_s(0.0, v0) == 0.0
+    # just outside it, the profile is velocity-continuous and takes longer
+    assert (hand_stroke.smooth_move_duration_s(0.10, 6.01)
+            > hand_stroke.smooth_move_duration_s(0.10))
+    # ...and at the target but MOVING it is no longer empty
+    assert hand_stroke.smooth_move_duration_s(0.0, 6.01) > 0.0
+    assert hand_stroke.smooth_move_duration_s(0.0, -6.01) > 0.0
+
+
+def test_the_duration_bound_pairs_the_two_quintic_landmarks():
+    """``a_max*T^2 - |v0|*H2*T - |delta|*S2 = 0``, from the generated constants."""
+    assert hand_stroke.QUINTIC_H_MAX == pytest.approx(16.0 / 81.0, abs=1e-8)
+    assert hand_stroke.QUINTIC_H2_MAX == pytest.approx(3.9402340, abs=1e-7)
+    a = hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
+    for delta, v0 in [(0.0, 8.0), (0.10, 9.0), (2.2594, 119.6), (-3.83, -20.0)]:
+        T = hand_stroke.smooth_move_duration_s(delta, v0)
+        residual = (a * T * T - abs(v0) * hand_stroke.QUINTIC_H2_MAX * T
+                    - abs(delta) * hand_stroke.QUINTIC_S2_MAX)
+        assert residual == pytest.approx(0.0, abs=1e-6 * max(1.0, a * T * T))
+
+
+def test_the_overshoot_and_the_affordable_velocity_band():
+    """The two quantities the operator's cannot-fit decision turns on.
+
+    ``smooth_move_overshoot_rev`` is the bulge a live velocity adds;
+    ``smooth_move_max_continuous_v0_rps`` inverts it against the room available.
+    Both are pinned because the headline finding of Phase 4 is that the band is
+    NARROW: ~9.1 rev/s at the stroke top, ~20.9 rev/s from a mid-stroke freeze,
+    against the ~120 rev/s a mid-throw command actually lands on.
+    """
+    # braking at the stroke top: 11.1 - 0.5 ceiling leaves 0.6406 rev
+    ceil_rev = (hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+                - hw.TEENSY_TRAJ_SMOOTH_MOVE_EXCURSION_MARGIN_REV)
+    assert ceil_rev == pytest.approx(10.6, abs=1e-9)
+    headroom_top = ceil_rev - hand_stroke.STROKE_TOP_REV
+    assert headroom_top == pytest.approx(0.6406, abs=1e-4)
+    v_top = hand_stroke.smooth_move_max_continuous_v0_rps(headroom_top)
+    assert v_top == pytest.approx(9.07, abs=0.05)
+    # and the inverse agrees: at v_top the overshoot exactly fills the headroom
+    T = hand_stroke.smooth_move_duration_s(0.0, v_top)
+    assert hand_stroke.smooth_move_overshoot_rev(v_top, T) == pytest.approx(
+        headroom_top, rel=1e-6)
+    # from the measured mid-stroke freeze, against the hard 11.1 rev guard
+    v_mid = hand_stroke.smooth_move_max_continuous_v0_rps(
+        hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS - 7.7004)
+    assert v_mid == pytest.approx(20.90, abs=0.05)
+    # the measured release speed is 5.7x beyond even that, which is WHY the
+    # cannot-fit branch is the high-v0 behaviour rather than an edge case
+    assert 119.6 / v_mid == pytest.approx(5.72, abs=0.05)
+    assert hand_stroke.smooth_move_overshoot_rev(
+        119.6, hand_stroke.smooth_move_duration_s(0.0, 119.6)) > 100.0
+
+
+def test_the_comfort_limit_is_far_below_what_the_throw_itself_commands():
+    """Why continuity is unaffordable at high ``v0``, in one number.
+
+    ``MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100`` rev/s² is a COMFORT limit for
+    point-to-point moves, not an actuator limit: the shipped throw profile
+    commands ``|throwD| = throwA / INERTIA_RATIO`` on its own decel ramp — 19x
+    that at the nominal 0.80 s flight and 60x at the band top.  So the arithmetic
+    that says "119.6 rev/s cannot be arrested inside the stroke" is a statement
+    about the declared limit, not about the hand.  Raising it is the operator's
+    envelope decision; this pins the gap so the decision has a number.
+    """
+    gain = hand_stroke.LINEAR_GAIN_REV_PER_M
+    for v, expect in ((3.930820, 1908.0), (hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS, 6055.0)):
+        m = hand_stroke.HandStrokeModel(v)
+        decel_rps2 = abs(m.throwD) * gain
+        assert decel_rps2 == pytest.approx(expect, rel=0.01), v
+        ratio = decel_rps2 / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
+        assert ratio > 19.0
+
+
 # ── the Phase-1 window ──────────────────────────────────────────────────────
 
 def test_margin_covers_the_measured_dispatch_latency():

@@ -10,6 +10,7 @@ ROS 2 is mocked by ``tests/ros/conftest.py``.
 
 from __future__ import annotations
 
+import math
 import time
 import types
 
@@ -510,6 +511,23 @@ def test_prime_inflight_window_covers_the_commanded_prime_ascent():
         float(hw.JB_OP_HAND_CATCH_PRIME_REV))
     assert ascent == pytest.approx(0.7583, abs=1e-3)
     assert _PRIME_INFLIGHT_S >= 1.5 * ascent
+    # ...and against ANY commanded prime, not just the rest-to-rest one.  Phase 4
+    # made the prelude velocity-continuous, so a prime dispatched into a live
+    # retract (which never stamps _prime_dispatch_mono, so it is not suppressed)
+    # is seeded with the hand's live descent velocity and takes LONGER: at the
+    # retract's own peak, start 5.04 rev at -24.6 rev/s, the accel-limited
+    # solution is 1.206 s — past this window outright.  The firmware bounds it
+    # (Trajectory.h::smoothMoveMaxDuration = the longest rest-to-rest move the
+    # stroke admits), so the window still covers every profile the Teensy can
+    # emit; this asserts the two have not drifted apart.  Without the cap the
+    # bound below is 1.206 s and this fails, which is the point.
+    cap = math.sqrt(float(hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS)
+                    * float(hw.TEENSY_TRAJ_QUINTIC_S2_MAX)
+                    / float(hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2))
+    assert cap == pytest.approx(0.80054, abs=1e-4)
+    assert _PRIME_INFLIGHT_S >= cap, (
+        'the in-flight window no longer covers the longest hand move the '
+        'firmware can command')
     # And the quiet window — which guards the kind-3-clobbers-a-live-catch path —
     # must not be shorter than the in-flight window it composes with.
     assert _PRIME_RETRY_QUIET_S >= _PRIME_INFLIGHT_S

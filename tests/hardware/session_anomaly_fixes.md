@@ -41,6 +41,18 @@ source install/setup.bash
 then **relaunch** `jugglebot_launch.py` — the launch runs the *installed* copy,
 so a relaunch without a rebuild keeps the old code.
 
+> ### ⚠ ONE section needs a FIRMWARE FLASH instead: § CHECK HAND-4
+>
+> `hand-command-continuity` Phase 4 lives in
+> `ros_ws/src/jugglebot/Teensy_code/Trajectory.h`, which is compiled into the
+> **Platform Teensy** sketch. `colcon build` does not touch it and the Jetson never
+> executes it, so **HAND-4 requires flashing `Teensy_code/Teensy_code.ino` to the
+> Platform Teensy** (not the can-bridge, not the CatchingCone). There is **no
+> version handshake on that board**, so nothing will tell you if you skipped it —
+> § CHECK HAND-4 row **H4.0** is the only guard. Every other section in this
+> runbook is colcon + relaunch; `levelling-frame-contract` Phase 3 additionally
+> needs `jugglebot_interfaces` rebuilt (see § Section LVLGATE).
+
 ### Recording (do this for every check that produces a verdict)
 
 ```bash
@@ -298,16 +310,31 @@ is looked at.
 | 1 | `trunc` | `-` (the command followed the decel ramp to `x3`) | any instant printed ⇒ the queue was still cleared mid-stroke |
 | 2 | `seeds` | `0` (printed as `-`) | `>= 1` from-rest quintic seed inside the stroke |
 | 3 | `peak` | `<= 10.060` rev (`x3` 9.9594 + 0.10) | `> 10.060` rev; **hard abort at `> 10.5` rev** |
-| 4 | `dip_below_x3` | `<= 0.100` rev (`<= 3.2` mm) — the row prints `OK` | `> 0.100` rev — the row prints `OVER`. Pre-fix range was **0.339–1.748 rev = 10.7–55.3 mm** |
+| 4 | `dip_below_x3` | `<= 0.100` rev (`<= 3.2` mm) — the row prints `OK` | `> 0.100` rev — the row prints `OVER`. Pre-fix range was **0.339–1.748 rev = 10.7–55.3 mm**. **Qualified by row 7 after Phase 4** — see below |
 | 5 | `pullback` | `>= -5.0` rev/s, **given row 3 passed** | `< -5.0` rev/s. Pre-fix range was **−17.9 to −42.4 rev/s** |
 | 6 | `catch_desc` | present, within ~20 ms of `event − t_acc_catch` | absent ⇒ the catch never fired; check the Teensy serial for `Not enough time for smooth-move` |
-| 7 | `first_neg_cmd` | equal to `catch_desc` (no annotation printed) | annotated `<-- NOT the catch descent (a brake?)`: **REPORT, do not abort.** Expected after Phase 4 lands (step 3 charters a braking prelude); before Phase 4 it means an unexplained downward command |
+| 7 | `first_neg_cmd` | equal to `catch_desc` (no annotation printed) | annotated `<-- NOT the catch descent (a brake?)`: **REPORT, do not abort.** Expected after Phase 4 lands (step 3 charters a braking prelude); before Phase 4 it means an unexplained downward command. Phase 4's measured reality narrows this: a braking prelude only appears once the hand's live `\|vel\|` exceeds the 6.0 rev/s dead-band, and the settle tail after a completed stroke reads `<= 0.25` rev/s, so on a clean capture this row should still read `catch_desc`. See § CHECK HAND-4 |
+
+**Row 4 is qualified by row 7 once Phase 4 is flashed, and the qualifier is not
+optional.** Row 4 measures `pos_meas` below `x3` and aborts above 0.100 rev. A
+velocity-continuous BRAKE — the shape Phase 4 charters for the
+at-target-but-moving case — is *also* a commanded excursion below `x3` when the
+hand is moving downward, and the firmware honours it out to **3.213 rev below
+`x3`** (the deepest the excursion clamp and the 0.8005 s duration cap allow, at
+`v0 = 20.3` rev/s). So on a toss where row 7 prints its `<-- NOT the catch descent
+(a brake?)` annotation, rows 4 and 7 score the same event in opposite directions:
+row 7 says REPORT, row 4 says ABORT. **When row 7 is annotated on a toss, score
+row 4 for that toss against the brake's own turning point, not against `x3`, and
+treat it as REPORT** — record `dip_below_x3`, the `vel_meas` at the brake, and
+which command landed. A clean capture is unaffected: the measured settle tail is
+`<= 0.25` rev/s, inside the 6.0 rev/s dead-band, so no brake fires and row 7 reads
+`catch_desc`. Without this qualifier an operator aborts a working fix on the first
+toss that exercises the branch the phase exists to serve, and burns the sitting.
 
 **Why row 4 and not `dip_bottom` / `dip`.** `dip` is peak-minus-bottom, so it is
 non-zero on *any* capture that overshoots and settles — including a perfectly
 fixed one (0.6 mm on the probe's own clean synthetic) and including the bounded
-overshoot plan Phase 4 step 2 makes the *expected* behaviour (20.2 mm at
-10.60 rev, i.e. the size of the smallest pre-fix defect). Gating on it would score
+overshoot plan Phase 4 step 2 makes the *expected* behaviour. Gating on it would score
 a working fix as FAILED. What separates the defect from a healthy stroke is the
 *sign* of the excursion about the stroke end: pre-fix the position loop yanks the
 hand **below** `x3`; a healthy stroke settles **onto** `x3` from above and never
@@ -315,6 +342,17 @@ goes under (the four synthetic post-fix shapes read 0.000–0.001 rev). Same rea
 `pullback` is bounded rather than required non-negative: a healthy settle from the
 coasting peak is genuinely negative — −0.31 rev/s at 0.02 rev of overshoot, −1.58
 at the 10.060 rev ceiling of row 3, −10.03 at 10.60 rev.
+
+**Row 3 governs; 10.60 rev is a CEILING, not an expectation.** The probe's
+`overshoot` synthetic and the `pullback` figures above run out to 10.60 rev
+because that is where Phase 4's excursion clamp caps a velocity-continuous
+prelude (`11.1 − smooth_move_excursion_margin_rev 0.5`). A clean post-fix capture
+must not go near it: Phase 4 measured the hand's live `|vel|` in the +20…+70 ms
+window the gated arm lands in at **≤ 0.25 rev/s**, which is inside the 6.0 rev/s
+dead-band, so the prelude is rest-to-rest and the commanded excursion is
+**≤ 0.0005 rev = 0.02 mm**. Row 3's `<= 10.060` rev therefore still applies
+unchanged after Phase 4, and a reading between 10.060 and 10.60 is an ABORT with
+a specific suspect — see § CHECK HAND-4 row H4.4.
 
 Margins to be aware of when scoring: row 4's band has ~100× headroom on the
 healthy side but only **3.4×** on the tightest pre-fix defect (ball 34, 0.339 rev).
@@ -626,6 +664,154 @@ signal, the same limitation § CHECK HAND-2 records. What HAND-3 verifies is tha
 moving the park position 3.2 mm broke none of the windows that read it. The
 prelude claim itself is pinned offline, in
 `tests/motion/test_hand_stroke.py::test_prime_at_the_stroke_top_costs_no_commanded_prelude_travel`.
+
+---
+
+### CHECK HAND-4 — the velocity-continuous prelude (`hand-command-continuity` Phase 4)
+
+> ## ⚠ THIS CHECK NEEDS A **PLATFORM TEENSY FIRMWARE FLASH**, NOT A COLCON BUILD
+>
+> **Every other check in this runbook is `colcon build` + relaunch. This one is
+> not.** Phase 4's whole deliverable is in `Teensy_code/Trajectory.h`, which is
+> compiled into the **Platform Teensy** sketch — the board that drives the hand
+> via the can-bridge conduit. A relaunch, a rebuild, or both, change **nothing**
+> about this check: `Trajectory.h` is not Python and the Jetson never executes it.
+>
+> Flash **`ros_ws/src/jugglebot/Teensy_code/Teensy_code.ino`** to the **Platform
+> Teensy**. Do **not** flash the can-bridge Teensy (`Teensy_code_canbridge/`) —
+> it is a byte-transparent forwarder for the 0x6D0 payload and needs no change —
+> and do not flash the CatchingCone.
+>
+> **There is no version handshake on this board.** The Platform Teensy carries
+> **no** `FW_VERSION` constant (unlike the can-hub, which has had one since
+> 2026-07-16), so nothing on the Jetson can detect host/firmware skew for the
+> hand path — no log line, no `link_status` field, no refusal. If you run this
+> section without flashing, every row below will read exactly like the pre-fix
+> baseline and there will be no signal telling you why. Row **H4.0** is the only
+> guard; do it first.
+>
+> Config also changed (`config/hardware_config.yaml` gained four
+> `teensy_trajectory` keys), so the regenerated `hardware_config.h` must be in the
+> tree the sketch compiles against. `git pull` before opening the sketch.
+
+**Plan**: `plans/active/hand-command-continuity.md` § Phase 4
+**Contract**: `ros_ws/docs/hand_command_continuity.md` (**C-HAND-1**, firmware half)
+**What landed**: `makeSmoothMove` seeded every profile `v = a = 0` from
+`current_hand_position` while `current_hand_velocity` sat declared `extern
+volatile` two lines above and was **never read**. So any hand command landing
+while the hand moved commanded a *velocity step*. Phases 1–2 stopped the
+catch arm from being such a command; Phase 4 closes the class — a prime, a retract
+ladder rung, a `SAFE_ABORT`, or a forced dispatch have the same failure shape.
+The quintic is now seeded `(x0, v0, a=0) → (target, 0, 0)`, its duration solves a
+corrected acceleration bound, and its overshoot is clamped against the stroke end
+stops.
+
+**Read this before scoring: the fix is a NO-OP on the clean path, by design.**
+The velocity-continuous branch only engages once the hand's live `|vel|` exceeds
+the **6.0 rev/s** dead-band, and the measured settle tail of a completed hand
+move is **≤ 0.25 rev/s** in the +20…+70 ms window the gated arm lands in (three
+2026-07-25 traces). So on a healthy toss HAND-4 should look **identical to
+HAND-1** — the value of the flash is what it does to the *abnormal* paths, and to
+one latent hole. Do not read "nothing changed" as "the flash did not take"; use
+H4.0 for that.
+
+**And the affordable band is narrow — that is the phase's headline finding.**
+Arresting `v0` inside the stroke at the declared 100 rev/s² comfort limit costs
+`0.00778·v0²` rev of travel, so continuity is affordable only up to
+**~9.1 rev/s** at the stroke top (0.6406 rev of headroom to the 10.6 rev ceiling)
+and **~20.9 rev/s** from the measured mid-stroke freeze at 7.7004 rev — where a
+second bound binds first: an honoured prelude may not take longer than the longest
+rest-to-rest move the stroke admits (0.8005 s), which caps it at **~20.3 rev/s**
+anywhere. Row H4.10 reads that one. The hand
+passes the release point at **~120 rev/s**, 5.7× beyond even that, so a command
+landing mid-throw-stroke still takes the documented **rest-to-rest fallback** —
+today's exact profile, no new commanded magnitude, and deliberately *visible* as a
+`seeds` row. Rows H4.5/H4.6 are that distinction.
+
+#### Pre-flight H4.0 — confirm the flash took (**do this first**)
+
+```bash
+# On the Jetson, with the launch NOT running: read the Platform Teensy serial.
+# The smooth-move announcement line is unchanged, so use a BEHAVIOURAL probe.
+#
+# 1. Confirm the tree you flashed from carries the change:
+cd ~/Desktop/Jugglebot && git log --oneline -1 -- ros_ws/src/jugglebot/Teensy_code/Trajectory.h
+grep -c 'current_hand_velocity;' ros_ws/src/jugglebot/Teensy_code/Trajectory.h   # expect 1
+grep -n 'start_vel = current_hand_velocity' ros_ws/src/jugglebot/Teensy_code/Trajectory.h
+grep -n 'SMOOTH_MOVE_V0_DEADBAND_RPS' ros_ws/src/jugglebot/Teensy_code/hardware_config.h
+
+# 2. Offline: compile and run the SHIPPED header and confirm it behaves. This is
+#    the same check pytest runs; it needs g++ and no robot.
+source ~/Desktop/PDJ_venv/venv/bin/activate
+python -m pytest tests/firmware/test_hand_smooth_move_xref.py -q     # expect all pass
+```
+
+| # | read | PASS | ABORT |
+|---|---|---|---|
+| H4.0a | `grep 'start_vel = current_hand_velocity'` | 1 hit | 0 hits ⇒ you are on a pre-Phase-4 tree; do not flash it, `git pull` first |
+| H4.0b | `pytest tests/firmware/test_hand_smooth_move_xref.py` | all pass, **with zero skips** (the headline test compiles and runs the real `Trajectory.h`) | any failure ⇒ do **not** flash; route to `hand-command-continuity` Phase 4. **A SKIP is not a PASS**: `test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror` skips when `g++` is absent, and it is the only thing in the repository that reads the C++ — everything else is a hand-maintained transcription. Run this on a host with `g++` (the Jetson has one) and check the summary says `passed`, not `passed, N skipped` |
+| H4.0c | the sketch was flashed to the **Platform** Teensy after H4.0a passed | you flashed it, this sitting, from this tree | if in any doubt, **re-flash** — there is no version handshake to tell you otherwise, and every row below is meaningless without it |
+
+#### Run
+
+**No new robot motion.** HAND-4 is scored off the **same capture** as HAND-1
+(§ CHECK HAND-1 § Run), re-run after the flash. If HAND-1 was captured before the
+flash, keep that capture as the pre-flash control and take a second one after —
+the pair is far more informative than either alone, and it costs one extra set of
+tosses.
+
+```bash
+# the verdict command, unchanged (see § The analysis command)
+source ~/Desktop/PDJ_venv/venv/bin/activate
+python tools/probes/hand_stroke_timeline.py \
+    --trace temp/logs/toss_trace_<stamp>.jsonl --json
+
+# H4.5 / H4.6 read the Teensy serial for the fallback and the refusal
+```
+
+#### PASS / ABORT
+
+| # | row / read | PASS | ABORT |
+|---|---|---|---|
+| H4.1 | rows 1–5 of § PASS / ABORT per throw, on **every** toss | all PASS, exactly as HAND-1 | any row ABORTs — **except** row 4 on a toss where row 7 is annotated, which is REPORT (see § PASS / ABORT's "Row 4 is qualified by row 7"). A braking prelude is legitimately a commanded excursion below `x3` and rows 4 and 7 would otherwise score the same event in opposite directions. Otherwise: Phase 4 must not have *degraded* the clean path — that is the primary risk of this flash, because the code it changes runs ahead of every hand command |
+| H4.2 | `peak` per toss, against the pre-flash capture | within **±0.05 rev** of the pre-flash reading on the same commanded height | a systematic increase ⇒ a prelude is engaging where the dead-band should have suppressed it: the hand's parked `\|vel\|` is above 6.0 rev/s at your gains/battery state. **The relevant number is the TOP-park dither**, measured once at p99 = 5.39 rev/s (2026-07-24 reload sitting) with its maximum never published — the 2026-07-25 toss traces park at the BOTTOM (≤ 2.16 rev/s) and say nothing about this risk. Record `vel_meas` at the arm instant and route to Phase 4's dead-band. **Size of the effect if it fires:** the excursion is `0.00778 * v0²` rev, so 0.280 rev = 8.9 mm just above the dead-band and 0.641 rev = 20.3 mm at the 9.07 rev/s the stroke top can absorb |
+| H4.3 | `first_neg_cmd` vs `catch_desc` | equal (no annotation) on every toss | annotated `<-- NOT the catch descent (a brake?)`: **REPORT, do not abort.** It means a braking prelude fired, i.e. the hand was genuinely moving >6.0 rev/s when a command landed. Record the toss and the `vel_meas` at that instant — it is the first live evidence of the continuous branch and it belongs in the logbook |
+| H4.4 | `peak`, if it lands in `10.060 < peak <= 10.60` rev | does not occur | occurs ⇒ **ABORT the section.** 10.60 rev is the excursion clamp's ceiling, so a reading in this band means a velocity-continuous prelude ran with a `v0` large enough to use most of the headroom. It is *bounded* (the clamp held) but it is not the clean path. Record `peak`, `first_neg_cmd` and `vel_meas`; route to Phase 4's dead-band and excursion margin |
+| H4.5 | `peak > 10.60` rev | does not occur | **HARD ABORT, E-STOP.** The clamp is `11.1 − 0.5 = 10.60` rev *commanded*; exceeding it means the clamp did not run (flash suspect — re-check H4.0), or the position loop overshot the commanded profile by more than the 0.5 rev margin (2.7× the +0.186 rev tracking overshoot measured at the old prime), or the documented endpoint relaxation served a prelude from a live position *already* above 10.6 rev — which is the pre-fix measured state (10.165–10.325 rev), is legal by design, and never adds a bulge above that live reading. Check `first_neg_cmd` and the live `pos_meas` at the command instant to tell them apart. Either way the next 0.5 rev is the overextension guard and the 0.76 mm after that is the hard stop |
+| H4.6 | `seeds` on any toss, cross-read with H4.3 | `0` (printed `-`) | `>= 1`: same ABORT as HAND-1 row 2, but Phase 4 adds a second suspect. A from-rest seed now means **either** the arm gate failed (Phase 1) **or** `makeSmoothMove` took its documented cannot-fit fallback — because the excursion would have left the stroke, *or* because the arrest would have taken longer than 0.8005 s. Distinguish by the seed's position: a seed *inside* the decel ramp (below `x3`) with `trunc` printed is the Phase-1 failure; a seed at or above `x3` with `trunc = -` is the fallback. Record which, and the `vel_meas` at the seed — above ~9 rev/s at the stroke top it is the excursion clamp, above ~20 rev/s anywhere it is the duration cap |
+| H4.7 | `Not enough time for smooth-move` on the Teensy serial | absent | present ⇒ same hard abort as H1.6. Note Phase 4 can *lengthen* a prelude (a velocity-continuous move takes longer than a rest-to-rest one over the same Δ — up to 0.24 s at the dead-band edge, 0.32 s at 8 rev/s), so if this appears **only** after the flash and H4.3 shows a brake on the same toss, the arm-fit budget needs the continuous prelude added. Route to `hand_stroke.required_arm_lead_s` |
+| H4.8 | a SAFE_ABORT retract, **if one occurs naturally** | the retract still runs and the hand reaches `\|pos\| <= 0.5` rev | it does not. **Hard ABORT** — a kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the Teensy offers, and Phase 4 edits the exact condition (`makeSmoothMove` returning empty) that `Teensy_code.ino:472-475` checks *before* `packedMsgs.clear()`. The change **narrows** that branch (empty now also requires the hand to be at rest), so this should be strictly safer than before the flash — but it is the one row where a regression would be catastrophic and silent. Do **not** provoke an abort deliberately this sitting |
+| H4.9 | minimum commanded/measured `pos` on any toss, and after any retract | `>= 0.0` rev — encoder zero is the excursion clamp's FLOOR and the host's own declared floor for this axis | `< 0.0` rev ⇒ **hard abort.** The bottom hard stop is at −0.1 rev (the axis homes downward into it) and the floor carries no margin for the position loop's +0.186 rev undershoot, so any commanded value below zero is planned travel onto the stop. Route to Phase 4's `SMOOTH_MOVE_POS_FLOOR_REV` |
+| H4.10 | duration of any commanded hand move (last sample − first, from the trace) | `<= 0.8005` s | `>` that ⇒ the firmware's duration cap did not run (flash suspect). The cap is what keeps `catch_coordinator._PRIME_INFLIGHT_S = 1.2` s covering every profile the Teensy can emit; above it a re-prime tick can land inside a live ascent, which is the 2026-07-23 stutter |
+
+**What HAND-4 cannot see, stated plainly.** Every row above is scored on the
+*clean* path, which the fix deliberately leaves unchanged, plus two rows (H4.3,
+H4.6) that only fire if the abnormal path happens to be exercised. The
+velocity-continuous branch itself — the actual deliverable — has **no** row that
+provokes it, because provoking it means dispatching a hand command while the hand
+is moving at 6–9 rev/s, which is either the defect Phases 1–2 removed or a
+deliberate abuse of the un-arm path. It is validated offline instead, against the
+**compiled shipped header**:
+`tests/firmware/test_hand_smooth_move_xref.py::test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror`
+builds `Trajectory.h` with g++ and checks the emitted profile, the branch
+decision, the duration and the excursion interval on fifteen
+`(start, target, v0)` cases including the measured 119.6 rev/s. That test, not
+this section, is the evidence the profile is right; this section is the evidence
+the flash did not break anything the robot does every day.
+
+**One decision the operator owns, and it is why the fallback exists.** When the
+overshoot cannot fit inside the stroke, `makeSmoothMove` reverts to the
+rest-to-rest profile rather than braking harder, because the acceleration needed
+to arrest sooner is not bounded by anything the firmware declares — a SAFE_ABORT
+retract to 0.0 rev dispatched mid-descent at the measured −60 rev/s would need
+**28 000 rev/s²**, 280× the declared 100 rev/s² limit, to fit its overshoot into
+the 0.1 rev of travel above the homing stop. The declared limit is a *comfort*
+limit: the shipped throw profile itself commands 1908 rev/s² at a 0.80 s flight
+and 6055 rev/s² at the band top. **Whether to give `makeSmoothMove` a second,
+higher arrest limit is an envelope decision, not an implementation one** — it
+changes what the machine can physically do at the bench. Nothing in this sitting
+requires the answer; the fallback is today's behaviour, so declining to decide
+costs nothing.
 
 ---
 

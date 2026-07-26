@@ -212,7 +212,7 @@ converting the `[0, 11.1]` rev end-stop bound into sim mm.
 | 1 | Gate the hand-catch arm until the throw stroke completes (item 3) | full pytest | **DONE** (shared `motion/trajectory/hand_stroke.py`; one enforcement point in `_arm_hand_catch`; window 395 ms at 0.80 s / 115 ms at 0.55 s; contract written down at `ros_ws/docs/hand_command_continuity.md` — see Phases 1-2 — Outcome) |
 | 2 | Repack safety guard while a stroke is in flight (item 5) | full pytest | **DONE** (same enforcement point — the retry defers rather than repacks; cap and keep-the-latch preserved) |
 | 3 | Prime rev derived from stroke geometry (item 6) | full pytest + codegen | **DONE** (prime 9.858 → the derived 9.9594 rev; `HAND_STROKE_TOP_REV` emitted by codegen; three-route drift guard; no threshold widened. Review also corrected the bang-bang-vs-quintic profile model three neighbours were sized against — see Phase 3 — Outcome) |
-| 4 | Velocity-continuous prelude — sim mirror then firmware (item 4) | sim tests + xref; flash | TODO |
+| 4 | Velocity-continuous prelude — sim mirror then firmware (item 4) | sim tests + xref; flash | **DONE in source, NOT FLASHED** (`makeSmoothMove` seeds `(x0, v0, 0) → (target, 0, 0)`; exact `pos = x0 + δ·s + (v0·T)·h` decomposition; closed-form duration bound; TWO cannot-fit tests — excursion against the end stops and duration against the longest rest-to-rest move the stroke admits — both falling back to today's profile. Scope narrowed against the plan and recorded: continuity is affordable only to ~9.1 rev/s at the stroke top / ~20.3 rev/s mid-stroke, so the measured ~120 rev/s case still falls back and stays owned by Phase 1. Finalize moved the commanded-position floor off the bottom hard stop and added the duration cap — see Phase 4 — Outcome) |
 | 5 | Hardware validation (operator-run) | `trunc=-`, `seeds=0`, `peak <= 10.060` rev, `dip_below_x3 <= 0.10` rev; throw scatter recorded | TODO |
 
 ## Implementation Phases
@@ -746,7 +746,18 @@ Two more instrument defects were verified and fixed in the same pass:
    descent's negative-velocity run — anchored on measured geometry, not tuned:
    `x3 → x5` is 3.833 rev while the largest coast above `x3` across the seven
    observed tosses is 0.365 rev, so 0.5 rev sits **7.7×** clear of the descent it
-   must accept and **1.4×** clear of the largest brake it must reject. The brake is
+   must accept and **1.4×** clear of the largest brake it must reject.
+   > **SUPERSEDED by Phase 4 (2026-07-27).** The "largest brake it must reject"
+   > premise held only for the settle-from-above case, which is all seven observed
+   > tosses carried. A brake seeded from a *downward* velocity dives
+   > `0.00778·v0²` rev below x3 — past 0.5 rev at 8.05 rev/s and honoured out to
+   > 3.213 rev — and with the 0.5 rev separator the probe put `catch_desc` on the
+   > brake and reported `dip_below_x3 = 0.0` on a capture that dove 3.21 rev.
+   > The separator is now `_CATCH_DESC_ABOVE_X5_REV`: the descent must reach the
+   > catch region (`x5 + 0.33` rev), which no honoured brake can. See § Phase 4 —
+   > Outcome.
+
+   The brake is
    reported separately as `first_neg_cmd`, so it is *visible* rather than shadowing
    the descent it is not. Mutation-verified: with the old predicate the new
    `braking-prelude` gate case fails with `catch_desc` **567 ms early** (at the
@@ -1341,6 +1352,90 @@ The class fix. Firmware, so it is last and gated hardest.
 `Teensy_code/Trajectory.h`, an xref test.
 **Gate:** `pytest tests/ -q` green; the sweep tests pass; a bench flash on the
 Platform Teensy. **This phase requires a firmware flash, not a relaunch.**
+
+#### Phase 4 — Outcome
+
+**Landed in source 2026-07-27, NOT FLASHED.** Commits `<CODE_SHA>` (code) and
+`<DOC_SHA>` (SHA backfill). Full suite: `pytest tests/ -q`, run 2026-07-27 on the
+Jetson — `<TEST_RESULT>`, xfail unchanged at 3.
+
+`makeSmoothMove` now reads `current_hand_velocity` — the `extern volatile` that
+sat two lines above it and was never read, which *was* the defect — and seeds the
+quintic `(x0, v0, a = 0) → (target, 0, 0)`. The profile decomposes exactly into
+`pos = x0 + δ·s(τ) + (v0·T)·h(τ)` with `h(τ) = τ(1−τ)³(3τ+1)`; because
+`h(0) = h(1) = 0` and `h ≥ 0`, the live velocity never moves the endpoints and its
+whole effect is a one-sided bulge of `|v0|·T·16/81` — which *is* the legitimate
+overshoot, and is what gets clamped. The duration is the positive root of
+`a_max·T² − |v0|·H2·T − |δ|·S2 = 0`, which reduces bit-identically to the
+historical form at `v0 = 0`, so every existing rest-to-rest hand move is unchanged
+(every commanded position bit-identical; the one difference is a `−0.0f → +0.0f`
+first velocity sample for `δ < 0`, which encodes to the same `int16` 0).
+
+**Three of the plan's own statements did not survive, and are superseded here.**
+
+1. *Step 2's cannot-fit menu ("refuse loudly, or brake to the limit") is
+   unshippable in both branches.* Refusing means a kind-3 does not clobber, and a
+   kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the
+   Teensy offers; refusing via an empty trajectory is worse still, since
+   `Teensy_code.ino:472-475` returns *before* `packedMsgs.clear()`. Braking to the
+   limit is unbounded by anything the firmware declares (~28 000 rev/s² for a
+   near-target abort at the measured −60 rev/s, 280× the declared limit). Shipped
+   instead: **fall back to the rest-to-rest profile** — today's exact behaviour,
+   adding no commanded magnitude the firmware could not already produce, never
+   empty, and observable as the probe's `seeds` row.
+2. *Step 2's excursion bound `[0, 11.1]` rev was implemented as `[−0.1, 10.6]`,
+   and finalize put the floor back.* `Homing::HAND_ABS_POS_REV = −0.1` rev **is**
+   the bottom hard stop (the axis homes downward into it), and it is below the
+   floor the host itself declares (`teensy_bridge_node` rejects a smooth-move
+   target < 0; `can/odrive.py` clips a hand setpoint < 0 and warns). Brute-forced
+   over the honoured branch, that floor admitted commanded troughs to −0.0999 rev
+   on the retract, prime *and* catch-descent paths, and a prime dispatched at the
+   mid-point of a live retract (5.0 rev, −24.6 rev/s) dived to −0.057 rev — 5 rev
+   *below its start*, for a move whose target is the top of the stroke. The floor
+   is now `JBOp::HAND_RETRACT_REV = 0.0`. The recorded justification for the
+   zero-margin floor ("a margin would make every abort retract infeasible by
+   construction") was **refuted**: the bound is relaxed to
+   `min(FLOOR, start, target)`, so the target is admitted at *any* floor value and
+   the profiles that would have dived under simply take the documented fallback.
+3. *There is no `FW_VERSION` on the Platform Teensy to bump* (step 5). It carries
+   none, so host/firmware skew on the hand path is undetectable from the Jetson.
+   Runbook row **H4.0** is the only guard and it is procedural.
+
+**A second cannot-fit test was added at finalize.** Arresting `v0` costs *time* as
+well as travel, and the duration grows linearly in `|v0|` while the excursion
+grows as `v0²` — so mid-stroke, where there is room for a big bulge, the clamp
+alone let a prelude run arbitrarily long. A prime dispatched into a live retract at
+the retract's own peak descent speed (start ≈ 5.04 rev, −24.6 rev/s) solved to
+**1.206 s**, outgrowing `catch_coordinator_node._PRIME_INFLIGHT_S = 1.2 s` — the
+anti-stutter window whose pinning test names "a Phase-4 duration change" as the
+thing it exists to catch, and which evaluated only the `v0 = 0` branch. An honoured
+prelude is now bounded by `smoothMoveMaxDuration()` = the longest **rest-to-rest**
+move the stroke admits (0.8005 s), so it can never outlast a profile this firmware
+could already emit and every host window sized on one stays valid without moving.
+The pinning test now asserts both bounds.
+
+**Instrument correction, same finalize.** The Phase-0 probe's brake/descent
+separator (`_CATCH_DESC_BELOW_X3_REV = 0.5` rev) was sized on the pre-fix brake
+sample (0.206–0.365 rev, all settle-from-above). An honoured brake seeded from a
+*downward* velocity dives `0.00778·v0²` rev below `x3`, crossing 0.5 rev at just
+8.05 rev/s and honoured out to 3.213 rev. Demonstrated on a synthetic capture at
+the clamp's reach: with the old separator the probe put `catch_desc` at the brake,
+under-reported `peak` by 0.019 rev, and reported `dip_below_x3` as **0.0 rev on a
+capture that dove 3.21 rev = 102 mm below the stroke end** — a false PASS on the
+row guarding the 11.1 rev end stop. The separator is now anchored on the catch
+region (`x5 + 0.33` rev), and a `deep-brake` case at the clamp's reach is a
+permanent gate case.
+
+**Deferred operator handoff.** The flash itself (Platform Teensy only — not the
+can-bridge, not the CatchingCone), and the envelope question the fallback stands
+in for: whether `makeSmoothMove` should get a second, higher acceleration limit so
+it can brake harder instead of falling back. `MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 =
+100` rev/s² is a *comfort* limit 19–60× below what the throw profile itself
+commands (1908 rev/s² at a 0.80 s flight, 6055 at the band top); raising it would
+widen the continuity band from ~9 to ~40 rev/s and changes what the machine can
+physically do. Nothing this sitting needs the answer — the fallback is today's
+behaviour, so declining costs nothing. Bench: `tests/hardware/session_anomaly_fixes.md`
+§ CHECK HAND-4, rows H4.0a–c (pre-flight) and H4.1–H4.10.
 
 ### Phase 5 — Hardware validation (operator-run)
 

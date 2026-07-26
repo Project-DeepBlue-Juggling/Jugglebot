@@ -697,7 +697,75 @@ teensy_trajectory:
   end_profile_hold_s: 0.10              # Hold time at end of motion profile {s}
   sample_rate_hz: 500                   # Trajectory sample rate {Hz}
   max_smooth_move_hand_accel_rps2: 100.0  # Max hand acceleration for smooth moves {rev/s^2}
-  quintic_s2_max: 5.7735027             # Max |s''| for quintic polynomial 10t^3 - 15t^4 + 6t^5
+  quintic_s2_max: 5.7735027             # Max |s''| for quintic polynomial s = 10t^3 - 15t^4 + 6t^5
+                                        # (= 10/sqrt(3), at tau = (1 - 1/sqrt(3))/2). s is the
+                                        # REST-TO-REST shape; the two constants below are the
+                                        # landmarks of its velocity-continuous partner h.
+  quintic_h_max: 0.19753086             # Max h(tau) = tau*(1-tau)^3*(3*tau+1), = 16/81 at tau = 1/3.
+                                        # h is the shape a NON-ZERO start velocity contributes to
+                                        # makeSmoothMove's quintic: pos = start + delta*s + (v0*T)*h.
+                                        # h(0) = h(1) = 0 and h >= 0, so v0 never moves the profile's
+                                        # endpoints — it only bulges it by (v0*T)*16/81 in the
+                                        # direction of travel. That bulge IS the overshoot a
+                                        # velocity-continuous prelude must be checked against the
+                                        # stroke end for.
+  quintic_h2_max: 3.9402340             # Max |h''(tau)|, at tau = (8 - sqrt(19))/15 = 0.2427401.
+                                        # Pairs with quintic_s2_max in the duration bound:
+                                        #   a_max*T^2 - |v0|*h2_max*T - |delta|*s2_max >= 0
+                                        # whose positive root is the shortest duration that still
+                                        # honours max_smooth_move_hand_accel_rps2 when v0 != 0. At
+                                        # v0 = 0 it reduces EXACTLY to the historical
+                                        # sqrt(|delta|*s2_max/a_max).
+  smooth_move_v0_deadband_rps: 6.0      # |current_hand_velocity| at or below this is treated as AT REST
+                                        # by makeSmoothMove {rev/s}. Not a tuning knob — it separates
+                                        # gravity-hold dither from real motion on the ODrive
+                                        # Vel_Estimate the firmware reads (Teensy_code.ino:439-441).
+                                        # Measured on that same signal: parked-hand |vel| p99 = 5.39
+                                        # rev/s at the TOP park / 1.82 at the bottom (2026-07-24 reload
+                                        # session), and the slowest GENUINE traverse observed was
+                                        # +9.2 rev/s (the lied-ack prime ladder). Below 5.39 the
+                                        # prelude chases noise on a stationary hand; above ~9 it ignores
+                                        # real motion and re-introduces the velocity step it exists to
+                                        # remove. 6.0 is a POLICY CHOICE inside that window, not a
+                                        # derived value, and two things about it are worth knowing
+                                        # before anyone leans on it:
+                                        #   * 5.39 is a p99, NOT a maximum, and the max of that
+                                        #     population was never published — so ~1 % of parked-top
+                                        #     samples sit above it and a single tail sample can seed a
+                                        #     prelude on a hand nobody moved. The three 2026-07-25 toss
+                                        #     traces cannot settle it: they park at the BOTTOM (p99
+                                        #     0.12-1.23, max 2.16 rev/s). An independent re-read of the
+                                        #     same traces filtered for STATIONARITY (position spread
+                                        #     < 0.02 rev over +-0.3 s) rather than for a position band
+                                        #     gives |vel| p99 = 0.134-0.144, max 0.96 rev/s, which
+                                        #     suggests the 5.39 figure is a position-band artefact that
+                                        #     swallowed transit samples. If so the dead-band is ~6x
+                                        #     above the true noise floor — conservative, but resting on
+                                        #     an anchor that wants re-measuring at the top park.
+                                        #   * what the branch costs when it DOES fire is set by v0, not
+                                        #     by the dead-band: the excursion is 0.00778*v0^2 rev, so
+                                        #     0.280 rev = 8.9 mm at the 6.0 edge but 0.641 rev = 20.3 mm
+                                        #     at 9.07 rev/s (the most the stroke top can absorb). The
+                                        #     0.280 figure is the branch's INFIMUM, not a bound on it;
+                                        #     do not read it as one, and do not compare a COMMANDED
+                                        #     excursion against bench row H3.5's measured-position PASS
+                                        #     band (see § CHECK HAND-4 rows H4.2/H4.4 for which row
+                                        #     scores which).
+  smooth_move_excursion_margin_rev: 0.5   # Headroom kept below geometry hand_motor_max_position_revs
+                                        # when a velocity-continuous smooth move is allowed to
+                                        # overshoot {rev}. 11.1 - 0.5 = 10.6 rev ceiling. Sized at 2.7x
+                                        # the MEASURED position-loop tracking overshoot on this profile
+                                        # type (+0.186 rev at the old prime, bench row H3.5), because
+                                        # the 11.1 rev overextension guard sits only 0.76 mm below the
+                                        # top of the 355 mm stroke. One-sided on purpose, but NOT because
+                                        # a bottom margin would make the retract target infeasible —
+                                        # that reasoning was wrong (the bound is relaxed to
+                                        # min(FLOOR, start, target), so every legal target is servable
+                                        # at any floor value; a bulge that would go under simply takes
+                                        # the rest-to-rest fallback). The bottom bound is ENCODER ZERO
+                                        # (hand_retract_rev = 0.0) with no margin because that is the
+                                        # floor the HOST already declares for this axis, and it is 0.1
+                                        # rev above the homing reference, which is the physical stop.
   min_event_vel_mps: 0.3                 # Minimum hand event velocity {m/s}
   max_event_vel_mps: 7.0                 # Maximum hand event velocity {m/s}
 
