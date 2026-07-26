@@ -18,7 +18,7 @@ files_changed:
   - tests/hardware/session_anomaly_fixes.md
   - plans/active/catch-reach-degenerate-overshoot.md
 commits:
-  - <pending>
+  - e58ed89
 subsystem:
   - motion
   - ros
