@@ -19,7 +19,7 @@ files_changed:
   - plans/active/catch-reach-degenerate-overshoot.md
   - plans/active/levelling-frame-contract.md
 commits:
-  - XXCODESHAXX
+  - 407154f
 subsystem:
   - motion
   - ros
@@ -233,7 +233,7 @@ reference layer and explicitly not `ros_ws`. C-LEVEL-1 already established
 
 ## Fix
 
-**C-CATCH-1** (commit `XXCODESHAXX`):
+**C-CATCH-1** (commit `407154f`):
 
 - `trajectory_node._catch_target_from_msg` now returns **three** quantities from
   the one wire orientation: `target` (C-LEVEL-1-corrected, where the legs are

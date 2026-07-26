@@ -536,7 +536,7 @@ pass criterion.
 
 #### Outcome — DONE, 2026-07-26
 
-Commits **XXCODESHAXX** (C-CATCH-1) and **XXDIAGSHAXX** (the separate `peak_leg_*`
+Commits **407154f** (C-CATCH-1) and **30e9723** (the separate `peak_leg_*`
 diagnostics fix). Logbook: `logbook/2026-07-26-catch-reach-overshoot-fix.md`.
 
 `build_catch` now takes the **gravity-referenced receive tilt** as its own

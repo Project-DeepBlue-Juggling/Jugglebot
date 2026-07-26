@@ -10,7 +10,7 @@ files_changed:
   - tests/ros/test_trajectory_node.py
   - tests/hardware/mvp_bench_runbook.md
 commits:
-  - XXDIAGSHAXX
+  - 30e9723
 subsystem:
   - ros
 tags:
