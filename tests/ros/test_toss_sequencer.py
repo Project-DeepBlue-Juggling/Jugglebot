@@ -63,6 +63,7 @@ CATCH_POSE = (0.0, 0.0, 170.0)
 def _obs(now, **kw):
     base = dict(
         control_mode=TOSS_CONTROL_MODE, streaming=True, mocap_fresh=True,
+        platform_levelled=True,
         hand_fresh=True, hand_parked=True, ball_seated=True, track_active=False,
         platform_at_target=True, throw_stroke_seen=False,
         ball_track_confirmed=False, ball_caught=False,
@@ -135,19 +136,23 @@ def _to_in_flight(seq):
     ('control_mode', 'SPACEMOUSE', 'REJECTED_WRONG_MODE'),
     ('mocap_fresh', False, 'REJECTED_MOCAP_STALE'),
     ('streaming', False, 'REJECTED_NOT_STREAMING'),
+    ('platform_levelled', False, 'REJECTED_NOT_LEVELLED'),
     ('hand_fresh', False, 'REJECTED_HAND_STALE'),
     ('hand_parked', False, 'REJECTED_HAND_NOT_PARKED'),
     ('ball_seated', False, 'REJECTED_NO_BALL'),
     ('track_active', True, 'REJECTED_TRACK_ACTIVE'),
 ])
 def test_precondition_rejects(field, val, code):
-    """The toss adds three preconditions reload never needed: HAND_STALE (a dead
+    """The toss adds four preconditions reload never needed: HAND_STALE (a dead
     hand link blinds release verification), HAND_NOT_PARKED (a kind-0 throw
     stroke commands ABSOLUTE positions from 0 rev — dispatching off the bottom
-    park band is a physical hazard), and TRACK_ACTIVE (a live
+    park band is a physical hazard), TRACK_ACTIVE (a live
     destination='jugglebot' phantom track would correlate against OUR
-    announcement). The trace-only ball-evidence waiver folds into ball_seated at
-    the node; hand_fresh/hand_parked stay hard even under it."""
+    announcement), and NOT_LEVELLED (an un-levelled launch is 0.78° off gravity
+    ⇒ 43 mm of drift against a ~35 mm cup: the catch is geometrically
+    impossible, so refuse before the ball is airborne). The trace-only
+    ball-evidence waiver folds into ball_seated at the node;
+    hand_fresh/hand_parked stay hard even under it."""
     seq = _fresh()
     d = seq.step(0.0, _obs(0.0, **{field: val}))
     assert d.done is True
@@ -156,6 +161,43 @@ def test_precondition_rejects(field, val, code):
     # A precondition reject happens BEFORE any move or arming — no cleanup.
     assert d.action == ACTION_NONE
     assert seq.prepared is False
+
+
+@pytest.mark.parametrize('also_broken,code', [
+    # The two graph-staleness gates win — a stale graph makes the levelling flag
+    # UNKNOWABLE, and a misleading reject sends the operator to re-run `level`
+    # when the real fault is upstream of the observation entirely.
+    (dict(mocap_fresh=False), 'REJECTED_MOCAP_STALE'),
+    (dict(streaming=False), 'REJECTED_NOT_STREAMING'),
+    # …and NOT_LEVELLED wins over the whole hand-evidence chain and the ball
+    # gates below it: those describe how the throw is dispatched, this one says
+    # the throw cannot be caught wherever it is dispatched from.
+    (dict(hand_fresh=False), 'REJECTED_NOT_LEVELLED'),
+    (dict(hand_parked=False), 'REJECTED_NOT_LEVELLED'),
+    (dict(ball_seated=False), 'REJECTED_NOT_LEVELLED'),
+    (dict(track_active=True), 'REJECTED_NOT_LEVELLED'),
+])
+def test_not_levelled_sits_between_the_graph_gates_and_the_hand_chain(
+        also_broken, code):
+    """Gate order pinned. NOT_LEVELLED is a GEOMETRIC verdict — un-levelled the
+    launch is 0.78° off gravity, i.e. v·sin(θ)·T = 43 mm of drift over a 0.8 s
+    flight at 3.93 m/s against a ~35 mm cup radius — so it outranks every gate
+    about *how* the hand throws. It yields only to the two observations whose
+    failure would make it unknowable rather than false."""
+    seq = _fresh()
+    d = seq.step(0.0, _obs(0.0, platform_levelled=False, **also_broken))
+    assert d.done and d.result.outcome == code
+    assert d.action == ACTION_NONE and seq.prepared is False
+
+
+def test_levelled_machine_proceeds_to_positioning():
+    """The negative half of the gate: platform_levelled True is the ONLY thing
+    the FSM asks about the frame — it never inspects the correction's magnitude,
+    because a genuinely level machine measures a zero offset and must not be
+    refused. (The node builds this flag; test_toss_coordinator pins that half.)"""
+    seq = _fresh()
+    d = seq.step(0.0, _obs(0.0, platform_levelled=True))
+    assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
 
 
 def test_toss_mode_is_trajectory():

@@ -4,7 +4,17 @@
 # Reload is the loader (operator sequence: Reload → Toss → Toss …): a toss with an
 # empty cup comes back REJECTED_NO_BALL, and the coordinator (reload_coordinator_node,
 # the merged ball-ops node) runs ONE ball-op at a time — a goal while the other action
-# runs is REJECTED_BUSY. It pre-positions the platform at the nominated catch (x, y)
+# runs is REJECTED_BUSY. A toss whose trajectory_node holds no gravity-levelling
+# correction is REJECTED_NOT_LEVELLED: un-levelled the launch is 0.78 deg off gravity,
+# i.e. v*sin(theta)*T = 43 mm of lateral drift over a 0.8 s flight at 3.93 m/s against
+# a ~35 mm cup radius, so the catch is geometrically impossible and the throw refuses
+# instead of putting a ball on the floor (same class of loud-early reject as
+# REJECTED_HAND_NOT_PARKED). Read off trajectory/status.gravity_correction_loaded, NOT
+# off RobotState.levelling_complete — that one is Teensy-persisted per boot and stays
+# True across the relaunch that empties the ROS node's correction. The correction is
+# per-process, so a manual `level` is needed after every launch/relaunch; contract
+# C-LEVEL-1, ros_ws/docs/levelling_frame.md.
+# It pre-positions the platform at the nominated catch (x, y)
 # with a profiled move and a timed arrival — plus a config-keyed mocap cross-check
 # (toss_mocap_body parameter), disabled by default until the platform's QTM body is
 # bench-validated (POSITIONING); computes the release

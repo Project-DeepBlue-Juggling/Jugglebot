@@ -27,6 +27,13 @@ where the reload receives from BB):
    the tilt ceiling — event-vel band, workspace pre-check on B and, for 8b, on
    the throw site A), the
    control mode, then the live observations: mocap fresh, trajectory streaming,
+   a gravity-levelling correction loaded in the node that applies it
+   (``REJECTED_NOT_LEVELLED`` — un-levelled the launch is 0.78° off gravity,
+   which is 43 mm of lateral drift over a 0.8 s flight against a ~35 mm cup:
+   the catch is geometrically impossible, so refuse before the ball is in the
+   air. Observed on ``trajectory/status.gravity_correction_loaded``, NOT on the
+   Teensy-persisted ``RobotState.levelling_complete``, which survives the
+   relaunch that empties the correction),
    hand telemetry fresh (``REJECTED_HAND_STALE`` — a dead hand link blinds
    release verification), hand at the bottom park band
    (``REJECTED_HAND_NOT_PARKED`` — a kind-0 stroke commands ABSOLUTE positions
@@ -371,6 +378,22 @@ class TossObservations:
     control_mode: str = ''            # must be the active toss mode (TRAJECTORY) throughout
     streaming: bool = False           # trajectory/status.streaming
     mocap_fresh: bool = False         # rigid_body_poses stamp within the staleness window
+    platform_levelled: bool = False   # trajectory_node affirms, on a FRESH
+                                      # trajectory/status, that it holds a gravity
+                                      # correction (gravity_correction_loaded).
+                                      # NOT RobotState.levelling_complete: that is a
+                                      # Teensy-persisted per-boot flag which stays
+                                      # True across a relaunch that empties the ROS
+                                      # node's in-memory correction, so gating on it
+                                      # would PASS in exactly the state this refuses.
+                                      # NOT "the correction is non-identity" either —
+                                      # a genuinely level machine has a zero offset
+                                      # and must not be refused. Default False =
+                                      # fail-closed: an FSM that was never told is
+                                      # not entitled to assume. Consulted ONLY at
+                                      # CHECKING (like track_active): a status
+                                      # hiccup mid-sequence can never abort a
+                                      # flight or retract into an incoming ball.
     hand_fresh: bool = False          # hand_telemetry stamp within the staleness window —
                                       # a dead hand link blinds release verification
     hand_parked: bool = False         # hand telemetry position within the BOTTOM park
@@ -695,6 +718,31 @@ class TossSequencer:
             return self._reject('MOCAP_STALE')
         if not obs.streaming:
             return self._reject('NOT_STREAMING')
+        if not obs.platform_levelled:
+            # GEOMETRY, not process. Un-levelled, the launch leaves the cup
+            # 0.78° off gravity (the 2026-07-25 measured offset), and a vertical
+            # toss drifts v·sin(θ)·T = 3.93 m/s × sin(0.78°) × 0.8 s = 43 mm
+            # against a ~35 mm cup radius (GEOM_HAND_RADIUS_MM). That drift is
+            # exactly 4·h·sin(θ) — LINEAR in apex height — so 43 mm is the
+            # ~0.79 m config-default apex and a 0.6 m goal gives 33 mm. The
+            # gate is height-INDEPENDENT on purpose: it asks whether the machine
+            # knows where gravity is, not whether one goal fits in the cup (see
+            # ros_ws/docs/levelling_frame.md, C-LEVEL-1.O). The catch is
+            # geometrically impossible before the ball leaves the hand, so the
+            # throw refuses rather than putting a ball on the floor — the same
+            # class of loud-early reject as HAND_NOT_PARKED.
+            #
+            # Placed AFTER mocap_fresh/streaming and BEFORE the hand chain on
+            # purpose. A stale graph makes this flag UNKNOWABLE, not False, and
+            # a misleading reject code sends the operator to the wrong
+            # subsystem — so the two staleness conditions that ARE separately
+            # observable get to speak first. Honest caveat, and the node-side
+            # comment repeats it: `streaming` is a sticky last-value with no
+            # freshness stamp of its own, so a trajectory_node that dies
+            # outright surfaces HERE (its status stops, this goes False) rather
+            # than as NOT_STREAMING. The reject-code table in
+            # tests/hardware/toss_trace_recorder.py names both causes.
+            return self._reject('NOT_LEVELLED')
         if not obs.hand_fresh:
             return self._reject('HAND_STALE')
         if not obs.hand_parked:

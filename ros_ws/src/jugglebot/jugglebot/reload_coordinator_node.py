@@ -32,7 +32,8 @@ existing services:
     unabortable throw heading at an unarmed robot.
 
 So this node subscribes to the state the FSM reasons about (BB heartbeat, mocap
-freshness, trajectory streaming, control mode, tracked-ball status, target feedback),
+freshness, trajectory streaming, the levelling correction trajectory_node reports
+holding, control mode, tracked-ball status, target feedback),
 and executes the actions the FSM asks for: PRIME_HAND (smooth-move hand to top),
 ``bb/reload``, PREPARE (raise the latch, pre-throw), ``bb/throw_at_target``,
 RECENTER (lower latch + go_home), SAFE_ABORT (retract hand + lower latch + go_home).
@@ -169,6 +170,22 @@ _TRANSIENT_FEEDBACK_CODES = frozenset({'FROZEN', 'STALE_STATE'})
 _MOCAP_STALE_S = 0.5
 _HEARTBEAT_STALE_S = 0.5
 _STATUS_STALE_S = 0.5
+# trajectory/status freshness, used ONLY by the toss's platform_levelled
+# observation (`streaming` keeps its historical sticky last-value semantics —
+# the reload FSM consumes it too, and changing when a reload refuses is not this
+# phase's to change). Deliberately NOT the 0.5 s above: those windows are sized
+# for the 100-160 Hz mocap/hand/ball streams, and trajectory/status is 5 Hz, so
+# 0.5 s is only 2.5 periods. Measured inter-arrival over 420 s of recorded
+# self-toss sessions (bags 2026-07-25_15-17-48 and _15-22-50, probe run
+# 2026-07-26, re-measured at finalize): median 200.0 ms, p99 210 ms, MAX
+# 508.5 ms — one gap already past 0.5 s, and four past 0.3 s (two per bag:
+# 384.5/508.5 ms and 334.5/426.2 ms). A 0.5 s window would therefore mint an
+# occasional spurious REJECTED_NOT_LEVELLED on a healthy machine, and a gate
+# that cries wolf gets ignored. 1.0 s is five periods and ~2x the worst gap,
+# while still catching a trajectory_node that has genuinely stopped talking
+# within one second — well inside any real restart, which is the window in
+# which the cached flag would otherwise be a dead process's answer.
+_TRAJ_STATUS_STALE_S = 1.0
 
 # CAUGHT plausibility gate. The tracker's split-track corruption (2026-07-23 re-test)
 # flips CAUGHT on tracks coasting BELOW THE FLOOR near BB — 5 of 6 reloads reported
@@ -357,6 +374,14 @@ class ReloadCoordinatorNode(Node):
         self._hb_mono = 0.0
         self._control_mode = ''
         self._streaming = False
+        # trajectory/status arrival stamp + the levelling-correction affirmation
+        # it carries (contract C-LEVEL-1, ros_ws/docs/levelling_frame.md). The
+        # stamp exists because the flag is only meaningful while the publishing
+        # node is alive: a cached True from a trajectory_node that has since
+        # restarted is the false assurance the toss's REJECTED_NOT_LEVELLED gate
+        # exists to prevent. 0.0 = never heard from it ⇒ fail closed.
+        self._traj_status_mono = 0.0
+        self._gravity_correction_loaded = False
         self._mocap_mono = 0.0
         self._balls = []
         self._balls_mono = 0.0
@@ -597,6 +622,18 @@ class ReloadCoordinatorNode(Node):
     def _on_traj_status(self, msg):
         with self._lock:
             self._streaming = bool(msg.streaming)
+            # Read as a plain attribute, never getattr-with-a-default. A
+            # field-less TrajectoryStatus can only reach here from a publisher
+            # built against a different jugglebot_interfaces than this node —
+            # a genuine build split, which must fail loudly rather than be
+            # papered over into a permanent, unexplained NOT_LEVELLED. (The
+            # same-install case does NOT reach here at all: trajectory_node
+            # raises AttributeError inside its own 5 Hz status timer, rclpy
+            # re-raises it out of spin, and since main() catches only
+            # KeyboardInterrupt the PROCESS EXITS — see the operator runbook's
+            # LVLGATE build box.)
+            self._gravity_correction_loaded = bool(msg.gravity_correction_loaded)
+            self._traj_status_mono = time.perf_counter()
 
     def _on_mocap(self, msg):
         with self._lock:
@@ -826,6 +863,19 @@ class ReloadCoordinatorNode(Node):
         :meth:`_build_observations`; shares the caches and the announced-ball latch).
 
         Toss-only constructions:
+          - ``platform_levelled`` — ``trajectory/status``'s
+            ``gravity_correction_loaded``, gated on that status being FRESH
+            (``_TRAJ_STATUS_STALE_S``). Deliberately NOT
+            ``RobotState.levelling_complete``: that flag is persisted on the
+            Teensy per BOOT, so it still reads True after a relaunch has emptied
+            trajectory_node's in-memory correction — the state
+            ``REJECTED_NOT_LEVELLED`` exists to refuse. Observing the node that
+            APPLIES the correction is the only reading that cannot lie about it,
+            and the freshness gate is what stops a cached True from outliving
+            the process that said it. Not gated on the correction being
+            NON-identity: a genuinely level machine measures a zero offset;
+            "levelled" means a measurement was taken and pushed, not that it was
+            large;
           - ``hand_fresh`` / ``hand_parked`` — the throw-side hand-evidence chain: a
             dead hand link blinds release verification, and a kind-0 stroke commands
             ABSOLUTE positions from 0 rev, so dispatch off the bottom park band
@@ -858,6 +908,8 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             control_mode = self._control_mode
             streaming = self._streaming
+            traj_status_mono = self._traj_status_mono
+            correction_loaded = self._gravity_correction_loaded
             mocap_fresh = (now - self._mocap_mono) < _MOCAP_STALE_S
             platform_pos = self._platform_pos_mm
             hand_pos = self._hand_pos_meas
@@ -871,6 +923,14 @@ class ReloadCoordinatorNode(Node):
             mocap_body = self._toss_mocap_body
             waiver = self._toss_waiver
             throw_dispatched = self._toss_throw_dispatched
+        # platform_levelled — an AFFIRMATION, not an absence of evidence: it is
+        # True only while trajectory_node is currently saying it holds a
+        # correction. Same shape as hand_fresh (stamp > 0 ⇒ heard from at all,
+        # then a window), a different window because the topic is 5 Hz — see
+        # _TRAJ_STATUS_STALE_S.
+        traj_status_fresh = (traj_status_mono > 0.0
+                             and (now - traj_status_mono) < _TRAJ_STATUS_STALE_S)
+        platform_levelled = bool(traj_status_fresh and correction_loaded)
         hand_fresh = hand_mono > 0.0 and (now - hand_mono) < _HAND_STATE_STALE_S
         hand_parked = hand_fresh and (
             abs(hand_pos - float(hw.JB_OP_HAND_RETRACT_REV))
@@ -950,6 +1010,7 @@ class ReloadCoordinatorNode(Node):
             control_mode=control_mode,
             streaming=streaming,
             mocap_fresh=mocap_fresh,
+            platform_levelled=platform_levelled,
             hand_fresh=hand_fresh,
             hand_parked=hand_parked,
             ball_seated=bool(waiver or possession

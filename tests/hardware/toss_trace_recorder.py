@@ -138,7 +138,9 @@ TERMINAL_STATUSES = (STATUS_SUCCEEDED, STATUS_CANCELED, STATUS_ABORTED)
 
 # RJ-1: CHECKING's ordered gates — reject code → the unhealthy precondition
 # wire (an earlier-code reject means the bench state is wrong; fix before the
-# dry capture).  Order matches toss_sequencer.py:504-563.
+# dry capture).  Order matches toss_sequencer.TossSequencer.step's CHECKING
+# block followed by _step_checking (kept name-keyed, not line-keyed: a
+# line-numbered reference rots on the first unrelated edit above it).
 REJECT_WIRE_MAP = {
     'REJECTED_TIER': 'goal/config: JB_OP_TOSS_TIER must be 8a',
     'REJECTED_CANT_MAKE_LEAD': 'goal: throw_delay_s below the 3.5 s floor',
@@ -149,6 +151,13 @@ REJECT_WIRE_MAP = {
                            '(robot not armed into the streaming hold)',
     'REJECTED_MOCAP_STALE': 'rigid_body_poses stale (QTM / mocap_node)',
     'REJECTED_NOT_STREAMING': 'trajectory/status streaming=False (emitter down)',
+    'REJECTED_NOT_LEVELLED': 'trajectory_node holds no gravity correction: run '
+                             '`level` (it is per-PROCESS and every relaunch '
+                             'drops it — RobotState.levelling_complete reading '
+                             'True proves nothing). Same code if trajectory/status '
+                             'itself went silent for >1 s, so if `level` does not '
+                             'clear it, check that trajectory_node is alive and '
+                             'that jugglebot_interfaces was rebuilt',
     'REJECTED_HAND_STALE': 'hand_telemetry stale (Teensy TELEMETRY frames absent)',
     'REJECTED_HAND_NOT_PARKED': 'hand pos_meas outside the +-0.5 rev park band',
     'REJECTED_TRACK_ACTIVE': 'phantom tracker expectation destined jugglebot '
@@ -949,7 +958,9 @@ def check_dt14(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
 def check_rj1(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
     """Loud reject with the RIGHT code; action status ABORTED.  The
     REJECTED_NO_BALL code itself proves the earlier CHECKING gates (mode /
-    streaming / mocap / hand-fresh / hand-parked) all PASSED."""
+    streaming / mocap / LEVELLING / hand-fresh / hand-parked) all PASSED —
+    including, since 2026-07-26, that trajectory_node was reporting a loaded
+    gravity correction on a fresh trajectory/status."""
     subs: List[Tuple[str, str]] = []
     lines = [(t, oc, msg) for (t, oc, msg) in outcome_lines(rows)
              if win.pad_start <= t <= win.pad_end]
@@ -1378,7 +1389,16 @@ def cmd_record(args: argparse.Namespace) -> int:
         def _d_traj(self, msg):
             d = {'streaming': bool(msg.streaming), 'mode': str(msg.mode),
                  'plan_kind': str(msg.plan_kind), 'seq': int(msg.seq),
-                 'last_rejection': str(msg.last_rejection)}
+                 'last_rejection': str(msg.last_rejection),
+                 # C-LEVEL-1.O. Recording it is what makes the levelling gate's
+                 # cross-process wiring (orchestrator /gravity_offset →
+                 # trajectory_node → coordinator CHECKING) visible in a real
+                 # capture — mocked-ROS tests cannot see that ordering at all.
+                 # getattr, unlike the coordinator's plain read: an observability
+                 # tool must degrade rather than die mid-sitting if it is run
+                 # against an interface build that predates the field.
+                 'gravity_correction_loaded': bool(
+                     getattr(msg, 'gravity_correction_loaded', False))}
             self.last_traj = d
             return d
 

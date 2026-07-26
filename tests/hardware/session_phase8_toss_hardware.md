@@ -47,8 +47,19 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
   source install/setup.bash
   ```
   then **relaunch** `jugglebot_launch.py` (launch runs the *installed* copy).
-- Arm per the Phase-1 sequence: launch → home → activate → confirm the 40 Hz hold
-  stream → TRAJECTORY → **zero motion at arm**.
+- Arm per the Phase-1 sequence: launch → home → **`level`** → activate → confirm the
+  40 Hz hold stream → TRAJECTORY → **zero motion at arm**.
+- **The `level` step is not optional as of 2026-07-26.** CHECKING now refuses with
+  `REJECTED_NOT_LEVELLED` unless `trajectory_node` reports a loaded gravity
+  correction, and that correction is **per-process**: `/gravity_offset` is VOLATILE
+  with one latched push per orchestrator boot, so every launch/relaunch (including
+  the build gate's, and this file's mandated Teensy power-cycle) empties it while the
+  Teensy-persisted `RobotState.levelling_complete` still reads `true` and proves
+  nothing. Without it **every toss below refuses before anything moves** — and a
+  Reload still works, so it is easy to load a ball and then discover the refusal.
+  `level` runs from **IDLE** and returns to IDLE, so it goes before `activate`.
+  Contract C-LEVEL-1.O (`ros_ws/docs/levelling_frame.md`); the gate's own checks are
+  `tests/hardware/session_anomaly_fixes.md` § Section LVLGATE.
 
 ### Pre-flight — confirm the freshly-built code is live
 
@@ -57,9 +68,13 @@ ros2 action list | grep jugglebot/toss                                   # toss 
 ros2 interface show jugglebot_interfaces/action/Toss | grep throw_height_m # NEW field present
 ros2 param get /reload_coordinator_node toss_ball_evidence_waiver_trace_only  # -> False (unused here)
 ros2 node list | grep ball_tracker                                        # tracker LIVENESS
+ros2 topic echo /trajectory/status --once | grep gravity_correction_loaded # -> true (after `level`)
 ```
 - `throw_height_m` present, or STOP and rebuild+relaunch (a stale install still has
   `flight_time_s` and will silently use the default height).
+- `gravity_correction_loaded: true`, or the `level` step was skipped / a relaunch
+  dropped it and every toss returns `REJECTED_NOT_LEVELLED`. If the key is missing
+  entirely, `jugglebot_interfaces` was not rebuilt.
 
 ## Loading a ball (before every toss)
 

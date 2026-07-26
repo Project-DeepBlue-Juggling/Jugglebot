@@ -9,3 +9,18 @@ float64 plan_time_remaining_s     # Time until the active plan reaches its termi
 uint64 seq                        # Monotonic emitted-frame counter.
 float64 max_emit_gap_ms           # Max inter-tick emitter gap over the last window (ms).
 string last_rejection             # Most recent rejection reason ('' if none).
+bool gravity_correction_loaded    # True once a /gravity_offset message has been
+                                  # applied IN THIS PROCESS (contract C-LEVEL-1,
+                                  # ros_ws/docs/levelling_frame.md). The correction
+                                  # is per-process and in-memory: /gravity_offset is
+                                  # VOLATILE with one latched push per orchestrator
+                                  # boot and there is no re-request path, so a
+                                  # relaunch silently reverts the commanded frame to
+                                  # the un-levelled one while the Teensy-persisted
+                                  # RobotState.levelling_complete still reads True.
+                                  # This flag is the ONLY observation of the node
+                                  # that actually APPLIES the correction; the toss's
+                                  # REJECTED_NOT_LEVELLED gate consumes it. It says
+                                  # "a correction is loaded", NOT "the correction is
+                                  # non-identity" — a genuinely level machine
+                                  # publishes a zero offset and must not be refused.

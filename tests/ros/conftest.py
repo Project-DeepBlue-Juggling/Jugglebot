@@ -188,6 +188,10 @@ class TrajectoryStatus:
     seq: int = 0
     max_emit_gap_ms: float = 0.0
     last_rejection: str = ''
+    # Mirrors msg/TrajectoryStatus.msg. Default False = the real message's
+    # default too, and the fail-closed reading for the toss's
+    # REJECTED_NOT_LEVELLED gate.
+    gravity_correction_loaded: bool = False
 
 
 # ── jugglebot_interfaces DynamicTargetCommand / TargetFeedback (Phase 5) ──

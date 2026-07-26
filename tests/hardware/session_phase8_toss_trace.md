@@ -77,8 +77,22 @@ valid, just costlier.
   source install/setup.bash
   ```
   then **relaunch** `jugglebot_launch.py` (launch runs the *installed* copy).
-- Arm per the Phase-1 sequence: launch → home → activate → confirm the 40 Hz
-  hold stream → TRAJECTORY → **zero motion at arm**.
+- Arm per the Phase-1 sequence: launch → home → **`level`** → activate →
+  confirm the 40 Hz hold stream → TRAJECTORY → **zero motion at arm**.
+- **The `level` step is not optional as of 2026-07-26.** The toss's CHECKING
+  phase now refuses with `REJECTED_NOT_LEVELLED` unless `trajectory_node`
+  reports a loaded gravity correction, and that correction is **per-process**:
+  `/gravity_offset` is VOLATILE with one latched push per orchestrator boot, so
+  every launch/relaunch (including the build gate's) empties it, while the
+  Teensy-persisted `RobotState.levelling_complete` still reads `true` and
+  proves nothing. Without it **both captures below refuse before doing
+  anything** — Capture R returns `REJECTED_NOT_LEVELLED` instead of
+  `REJECTED_NO_BALL` (checker RJ-1 FAILs) and Capture D never leaves CHECKING.
+  `level` runs from **IDLE** and returns to IDLE, so it goes before `activate`.
+  Confirm with `ros2 topic echo /trajectory/status --once | grep
+  gravity_correction_loaded` → `true`. Contract C-LEVEL-1.O
+  (`ros_ws/docs/levelling_frame.md`); the gate's own checks are
+  `tests/hardware/session_anomaly_fixes.md` § Section LVLGATE.
 
 ### Pre-flight — confirm the freshly-built code is live
 
@@ -90,9 +104,14 @@ ros2 action list  | grep jugglebot/toss          # the toss action is served
 ros2 topic list   | grep catch/prime_hold        # the suppression gate exists
 ros2 param get /reload_coordinator_node toss_ball_evidence_waiver_trace_only   # -> False
 ros2 node list    | grep ball_tracker            # tracker LIVENESS (see below)
+ros2 topic echo /trajectory/status --once | grep gravity_correction_loaded  # -> true
 ```
 
-- **All four present/False, or STOP and rebuild + relaunch.**
+- **All five present/False/true, or STOP and rebuild + relaunch.**
+- `gravity_correction_loaded: true` is the 2026-07-26 addition — `false` means
+  the `level` step above was skipped or a relaunch dropped it, and **every**
+  toss below will return `REJECTED_NOT_LEVELLED`. If the key is missing
+  entirely, `jugglebot_interfaces` was not rebuilt.
 - The tracker-liveness line is load-bearing: a **dead tracker passes every
   CHECKING gate** (Phase-1 known limitation — `balls` silence is expected with
   no ball, so process liveness is the only bench check there is).
@@ -121,8 +140,8 @@ Run this **before** the dry capture: it is simultaneously the refusal-path
 capture the plan requires and the cheapest possible proof that every *other*
 precondition wire is healthy before the waiver ever goes up —
 `REJECTED_NO_BALL` is CHECKING's second-to-last gate, so getting exactly that
-code proves mode/streaming/mocap/hand-fresh/hand-parked all PASSED (checker
-RJ-1). Zero motion.
+code proves mode/streaming/mocap/**levelling**/hand-fresh/hand-parked all PASSED
+(checker RJ-1). Zero motion.
 
 > **⚠️ Superseded default (2026-07-25, single-ball-toss Phase 5 change B):** the
 > ball-evidence gate now defaults OFF (`toss_require_ball_evidence: false` — the

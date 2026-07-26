@@ -237,30 +237,101 @@ These are correct behaviour, and each has been mistaken for a fault before.
   11–13° later shows the ceiling is harder than the characterisation implies, the
   fix is to lower `MAX_TILT_DEG` — **not** to move the clamp.
 
-## Known hazard — the correction can be silently absent
+## The correction can be silently absent — so it is now observable, and the toss refuses
 
-**Unclosed as of Phase 2; Phase 3 of `plans/active/levelling-frame-contract.md`
-owns the closure.** Stated here because "what level means" is what this document
-is for.
+**The delivery hazard is UNCHANGED and is not closeable by this contract; what
+changed (2026-07-26, plan Phase 3) is that it is no longer silent.** Stated here
+because "what level means" is what this document is for.
 
 | Leg | Reality |
 |---|---|
 | publish | `/gravity_offset` is published with **default (VOLATILE) QoS**, not transient-local |
 | frequency | once per `level`, plus **one** latched auto-push on the first IDLE after orchestrator boot |
 | storage | per-process, in memory, in each subscribing node — **no re-request path** |
-| observability | the loaded correction is published on **no topic at all** |
+| observability | `trajectory/status.gravity_correction_loaded` — **the applier's own answer**, 5 Hz. `mpc_bridge_node`'s copy is still unobserved; it is dropped from the launch and reaches `planner` zero times, so nothing gates on it. Give it the same field if it is ever revived |
 
-Therefore: if `trajectory_node` alone restarts after a `level` — a crash, or
-precisely the `colcon build` + relaunch that any change to this package
-requires — its correction silently reverts to identity, and
-`RobotState.levelling_complete` **still reads True**, because that is a
-Teensy-persisted per-boot flag that says nothing about any ROS process's memory.
-That is a *third* pair of meanings for "level", produced by the same class of
-reasoning this contract exists to close.
+Therefore: if `trajectory_node` restarts after a `level` — a crash, or precisely
+the `colcon build` + relaunch that any change to this package requires — its
+correction reverts to identity, and `RobotState.levelling_complete` **still
+reads True**, because that is a Teensy-persisted per-boot flag that says nothing
+about any ROS process's memory. That is a *third* pair of meanings for "level",
+produced by the same class of reasoning this contract exists to close.
 
-Until Phase 3 lands, the operator runbook's standing requirement stands: **level
-manually after every launch or relaunch.** A gate that consumes
-`levelling_complete` alone would *pass* in exactly the state it exists to refuse.
+### C-LEVEL-1.O — the observability half
+
+> Whether a correction is loaded is answered **only** by the node that applies
+> it, on `trajectory/status.gravity_correction_loaded`, and only while that
+> status is **fresh**. `RobotState.levelling_complete` is not that answer and
+> must never be substituted for it. The flag records that an offset was
+> *received and decoded into a usable correction*, **not** that it was
+> non-zero: a genuinely level machine measures a zero tilt whose correction is
+> the identity, and it is levelled. "Usable" is load-bearing — a message with
+> fewer than two values, or with a non-finite one, is dropped and the flag
+> stays False.
+
+Four ways to get this wrong, and what each costs:
+
+- **Gate on `levelling_complete`.** It passes in exactly the state the gate
+  exists to refuse — a relaunched node holding identity — and now with false
+  assurance attached, which is strictly worse than no gate at all.
+- **Gate on `R != I`.** A correctly-levelled machine with a zero measured offset
+  is refused forever, and the operator learns to bypass the gate.
+- **Trust a cached True.** Between a `trajectory_node` dying and its
+  replacement's first status there is no message to flip a consumer's cache, so
+  a consumer without an expiry answers with the dead process's frame. Hence the
+  freshness requirement, and hence the flag is published at 5 Hz rather than
+  latched once.
+- **Set the flag for a message you could not use.**
+  `levelling.correction_from_offset` does no finiteness validation, so a NaN or
+  inf offset would be negated straight into the stored rotation. The flag would
+  read True, the toss would pass CHECKING, and the NaN would surface only
+  downstream as a POSITIONING feasibility rejection — *after* the goal has
+  claimed the platform. `_on_gravity_offset` therefore drops short **and**
+  non-finite messages without setting the flag, keeping the failure where the
+  contract wants it: loud, and before the throw.
+
+**Enforcement**: `toss_sequencer._step_checking` refuses the throw with
+`REJECTED_NOT_LEVELLED`, ordered after the `mocap_fresh` / `streaming` gates
+(a stale graph makes the flag unknowable, and a misleading reject code sends the
+operator to the wrong subsystem) and before the hand-evidence chain (those gates
+describe *how* the throw is dispatched; this one says the throw cannot be caught
+wherever it is dispatched from). **One honest gap in that ordering**: `streaming`
+is a sticky last-value with no freshness stamp of its own — deliberately left
+alone, because the reload FSM consumes it and changing when a reload refuses is
+not this contract's business — so a `trajectory_node` that dies outright
+surfaces as `NOT_LEVELLED` (its status stops, the flag expires) rather than as
+`NOT_STREAMING`. The reject-code table in
+`tests/hardware/toss_trace_recorder.py` names both causes so the operator is not
+sent to re-run `level` against a dead node. The justification is geometric, not
+procedural:
+un-levelled, the launch leaves the cup 0.78° off gravity, which is
+`v·sin θ·T = 3.93 m/s × sin 0.78° × 0.8 s =` **43 mm** of lateral drift against a
+**~35 mm** cup radius (`GEOM_HAND_RADIUS_MM`). The catch is geometrically
+impossible before the ball is in the air.
+
+With `T = 2v/g` and `v = sqrt(2gh)`, that drift is exactly **`4·h·sin θ`** —
+linear in apex height, independent of everything else. 43 mm at the ~0.79 m
+config-default apex; 33 mm at the 0.6 m the operator runbook uses. The gate is
+deliberately **height-independent** all the same: it asks whether the machine
+knows where gravity is, not whether one particular goal happens to fit in the
+cup, and the cup's usable tolerance is the 35 mm radius less the ball radius
+anyway. Do not turn this into a per-goal drift budget — that is the "relax the
+invariant for this one case" move this contract exists to refuse.
+
+**What this does NOT do**: it does not redeliver a lost correction. Transient-local
+QoS on `/gravity_offset` was considered and **not** taken — see the plan's
+Phase 3 outcome for the three failure modes that decided it, the load-bearing one
+being that the latch lives in the *publisher*, so the whole-graph relaunch that
+motivates this hazard would not benefit at all. The operator runbook's standing
+requirement therefore stands unchanged: **level manually after every launch or
+relaunch.** What is new is that forgetting costs a loud refusal instead of a ball
+on the floor.
+
+Two operational facts that make this the common case rather than a corner:
+`levelling_complete` is "since last Teensy bootup", and the operator power-cycles
+the can-bridge Teensy before every sitting — so it is False at every launch and
+the persisted auto-push never fires first. **In practice every session genuinely
+needs a manual `level`.**
 
 ## Enforcement
 
@@ -270,6 +341,10 @@ manually after every launch or relaunch.** A gate that consumes
 | shared implementation | `ros_ws/src/jugglebot/jugglebot/motion/levelling.py` |
 | unit tests (sign, order, round-trip, pinned example) | `tests/motion/test_levelling.py` |
 | structural + behavioural bypass test | `tests/ros/test_levelling_frame.py` |
+| C-LEVEL-1.O — the applier's affirmation | `trajectory_node._publish_status` → `TrajectoryStatus.gravity_correction_loaded` |
+| C-LEVEL-1.O — the consumer + its expiry | `reload_coordinator_node._build_toss_observations` (`_TRAJ_STATUS_STALE_S`) |
+| C-LEVEL-1.O — the refusal | `toss_sequencer._step_checking` ⇒ `REJECTED_NOT_LEVELLED` |
+| C-LEVEL-1.O — tests | `tests/ros/test_trajectory_node.py` (loaded / zero-offset / malformed / restart), `tests/ros/test_toss_coordinator.py` (freshness table, restart end-to-end, persisted-push-alone passes), `tests/ros/test_toss_sequencer.py` (gate order) |
 
 The structural test `ast.parse`s the live package (never imports it, so it needs
 no ROS mocking), discovers every module containing a planner entry or a

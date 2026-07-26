@@ -47,10 +47,16 @@ so a relaunch without a rebuild keeps the old code.
 mkdir -p ~/Desktop/rosbags && cd ~/Desktop/rosbags
 ros2 bag record -o "$(date +%Y-%m-%d_%H-%M-%S)" \
   /robot_state /leg_setpoint_echo /platform_target /rigid_body_poses \
-  /link_status /rosout
+  /link_status /rosout /trajectory/status
 ```
 
 Note the bag directory name — the analysis commands below take it as `--bag`.
+
+`/trajectory/status` was added to this list on 2026-07-26 (extra topics are
+harmless to every existing analysis command). § Section LVLGATE's CHECK LG-4
+diagnoses a suspected staleness false-positive from its inter-arrival gaps, and
+that measurement is only obtainable *after the fact* if the topic was in the bag
+from the start — it is 5 Hz, so the cost is negligible.
 
 ---
 
@@ -756,8 +762,10 @@ Validates: that a correction actually reached `trajectory_node`. **Do this
 first — every check below is vacuous without it**, and `/gravity_offset` is
 published VOLATILE with one latched auto-push per orchestrator boot, so a
 `trajectory_node` that restarted after the `level` holds an identity correction
-while `RobotState.levelling_complete` still reads True (contract § Known hazard;
-`levelling-frame-contract` Phase 3 owns the closure).
+while `RobotState.levelling_complete` still reads True (contract
+§ *The correction can be silently absent* / **C-LEVEL-1.O**;
+`levelling-frame-contract` Phase 3 closed the observability half — see
+§ Section LVLGATE below, which is where that closure is scored).
 
 Run the normal `level` routine, then:
 
@@ -918,9 +926,10 @@ Validates: nothing this plan closes — recorded so the number is on file for th
 
 ### Not in this section
 
-- **`REJECTED_NOT_LEVELLED`** is `levelling-frame-contract` **Phase 3** and has
-  not landed. A toss commanded before `level` is still accepted today; do not
-  score it.
+- **`REJECTED_NOT_LEVELLED`** is `levelling-frame-contract` **Phase 3**. It
+  LANDED 2026-07-26 and has its own section — **§ Section LVLGATE**. Do not
+  score it here; do note that it changes this section's own preconditions, since
+  a toss issued before `level` now refuses instead of running.
 - The **hand dip** is `hand-command-continuity` (§ Section HAND). If both have
   landed, validate them in one sitting but score them separately.
 
@@ -1249,3 +1258,407 @@ In this order, cheapest first:
    a C-CATCH-1 failure, it is a `compute_catch_orientation` question.
 4. Only then suspect the fix. Capture the bag and score it offline; the
    counterfactual block says what the planner would have produced.
+
+---
+
+## Section LVLGATE — `levelling-frame-contract` Phase 3 (`REJECTED_NOT_LEVELLED`)
+
+**Plan**: `plans/active/levelling-frame-contract.md` § Phase 3
+**Contract**: `ros_ws/docs/levelling_frame.md` (**C-LEVEL-1.O**, the
+observability half)
+**Supersedes two forward references in § Section LVL**: CHECK LVL-1 says
+*"`levelling-frame-contract` Phase 3 owns the closure"* — it does; this is it —
+and that section's *Not in this section* bullet said the gate had not landed
+(corrected in place, since leaving it would tell the operator to ignore a check
+that now fires). CHECK LVL-1 itself stays exactly as written: it is still the
+right first check, because it reads the two log lines that say a correction was
+published **and** received.
+
+**What landed**: the correction is per-PROCESS. `/gravity_offset` is VOLATILE
+with one latched push per orchestrator boot and no re-request path, so a
+`trajectory_node` that restarts after a `level` holds the identity while
+`RobotState.levelling_complete` — a **Teensy-persisted per-boot flag** — still
+reads `true`. `trajectory_node` now publishes its own answer on
+`trajectory/status.gravity_correction_loaded`, and the toss's CHECKING phase
+refuses with `REJECTED_NOT_LEVELLED` unless that answer is **True on a status
+less than 1.0 s old**.
+
+Why refuse at all — geometry, not process: un-levelled the launch leaves the cup
+0.78° off gravity, and a vertical toss drifts `v·sin θ·T`, which with
+`T = 2v/g` and `v = sqrt(2gh)` is exactly **`4·h·sin θ`** — linear in apex
+height, and independent of everything else. At the config default apex
+(`throw_height_m: 0`, ~0.79 m ⇒ `v = 3.93 m/s`, `T = 0.80 s`) that is **43 mm**
+against a **~35 mm** cup radius: the catch is *geometrically impossible* before
+the ball leaves the hand.
+
+**The LG commands below use `throw_height_m: 0.6`, where the same formula gives
+33 mm** — nominally *inside* 35 mm, and worth stating plainly so nobody
+"discovers" it later and concludes the gate over-refuses. It does not, for two
+reasons. The cup's usable tolerance is the 35 mm radius **less the ball radius**
+(a ball only stays in if its *centre* lands well inside the rim), so 33 mm is
+already outside it; and the gate is deliberately **height-independent** — it is
+a statement about whether the machine knows where gravity is, not a per-goal
+drift budget. Refusing at 0.6 m is the conservative side of a check whose whole
+job is to be loud before the ball is airborne. Same class of loud-early reject
+as `REJECTED_HAND_NOT_PARKED`.
+
+> ### ⚠ BUILD NEEDS — this section is the ONE with an interface change
+>
+> `TrajectoryStatus.msg` gained a field, so the § Build gate's
+> `--packages-select jugglebot` is **not enough**:
+>
+> ```bash
+> cd ~/Desktop/Jugglebot/ros_ws
+> colcon build --packages-select jugglebot_interfaces jugglebot
+> source install/setup.bash
+> ```
+>
+> then **relaunch** `jugglebot_launch.py`. No firmware flash, no config
+> regeneration. Also add `/trajectory/status` to the § Recording bag before
+> LG-1 (it is in the shared list as of 2026-07-26 — check yours) or LG-4's
+> diagnostic cannot be run at the end of the sitting.
+>
+> **If you rebuild `jugglebot` but not `jugglebot_interfaces`,
+> `trajectory_node` DIES — it does not merely go quiet.** `_publish_status`
+> assigns the new field to a generated message whose `__slots__` lack it,
+> raising `AttributeError` inside the 0.2 s timer callback; rclpy re-raises
+> timer exceptions out of `spin()` (`rclpy/executors.py` `spin_once`) and
+> `trajectory_node.main` catches only `KeyboardInterrupt`, so the **process
+> exits ~200 ms after launch**. What you will actually see is: no
+> `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo
+> /trajectory/status` hangs, and **`activate` FAILS at the A2 arm** ("no mpccmd
+> frame") — you never reach TRAJECTORY, so you never send a toss at all. Do
+> **not** go hunting the levelling gate on that signature. LG-0 catches it in
+> three seconds.
+
+> ### ⚠ OPERATOR PRE-BRIEF
+>
+> 1. **You will now get a loud refusal instead of a wasted throw if you forget
+>    to `level`.** `levelling_complete` is "since the last Teensy bootup" and the
+>    § Shared preconditions power-cycle the can-bridge Teensy every sitting, so
+>    it is `false` at every launch and the orchestrator's persisted auto-push
+>    never fires first. **In practice every session genuinely needs a manual
+>    `level`** — that has always been true; it is now enforced.
+> 2. **Re-`level` after every relaunch, including a mid-sitting one.** The
+>    correction lives in `trajectory_node`'s memory, not on the Teensy.
+> 3. **A zero offset still counts as levelled.** A genuinely level machine
+>    measures ~0 tilt; the gate asks whether a measurement was *taken and
+>    pushed*, never whether it was large. If `level` reports ~0 and the toss
+>    proceeds, that is correct.
+> 4. **`REJECTED_NOT_LEVELLED` has a second, rarer cause**: `trajectory/status`
+>    went silent for > 1 s, i.e. **`trajectory_node` is dead or stalled**. It
+>    reports as a levelling refusal rather than as `REJECTED_NOT_STREAMING`
+>    because `streaming` is a sticky last-value with no freshness stamp of its
+>    own (deliberately — the reload FSM shares that field; see the plan's
+>    Phase 3 Outcome, *Deliberately NOT done*). So: **if a fresh `level` does
+>    not clear the refusal, stop looking at the levelling routine** and run
+>
+>    ```bash
+>    ros2 node list | grep trajectory_node          # decisive: present or not
+>    ros2 topic echo /trajectory/status --once      # returns promptly, or hangs
+>    ```
+>
+>    (`ros2 topic hz` is unreliable on this Foxy box for RELIABLE topics — use
+>    the two above.) A missing node or a hanging echo means the fault is the node, not the
+>    frame — LG-0 and the LG-4 fallback below. (This is not the
+>    stale-interface case: that one kills the node before you can arm, so you
+>    never get as far as a toss.)
+
+### Pre-flight LG-0 — confirm the freshly-built interface and code are live
+
+Read-only, no robot, ~3 s. Run this **before** anything else in this section.
+
+```bash
+grep -c gravity_correction_loaded \
+  ~/Desktop/Jugglebot/ros_ws/install/jugglebot_interfaces/share/jugglebot_interfaces/msg/TrajectoryStatus.msg
+grep -c gravity_correction_loaded \
+  ~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/trajectory_node.py
+grep -c "NOT_LEVELLED" \
+  ~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/toss_sequencer.py
+```
+
+- **PASS**: all three counts are **non-zero** (at the Phase-3 commit they read
+  `1`, `3`, `2` — treat the exact numbers as informational, since a later
+  comment edit moves them; **zero** is the failure).
+- **ABORT**: any count is `0` — the *installed* copy predates Phase 3. Rebuild
+  **both** packages per the build box above and relaunch. Scoring LG-1..LG-5
+  against a stale install proves nothing.
+
+With the graph up, confirm the node is alive and the field is actually on the
+wire:
+
+```bash
+ros2 node list | grep trajectory_node
+ros2 topic echo /trajectory/status --once | grep -E "streaming|gravity_correction_loaded"
+```
+
+- **PASS**: `trajectory_node` is listed, and both keys print. Before any
+  `level`, expect `gravity_correction_loaded: false`.
+- **ABORT**: `trajectory_node` is **absent** — that is the half-rebuild
+  signature (it raised on its first status tick and the process exited). Rebuild
+  both packages and relaunch.
+- **ABORT**: the node is present but the key is missing, or the echo hangs —
+  a *different* publisher build, or the node is not publishing. Fix before
+  continuing.
+
+### CHECK LG-1 — a toss BEFORE `level` is refused (**the headline check**)
+
+Validates: Phase 3, the gate itself.
+
+**Do this with an EMPTY cup.** If the gate fails to fire, the sequence proceeds
+to a dry toss — an empty-hand stroke, the same operation
+`session_phase8_toss_trace.md` runs deliberately — which is safe but is not
+something to discover with a ball in the hand. **Do not run LG-1 with a ball
+seated.**
+
+Sequence: launch → home (if needed) → activate → TRAJECTORY (streaming) →
+**do NOT `level`** →
+
+```bash
+ros2 topic echo /robot_state --once | grep levelling_complete
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.6}" --feedback
+```
+
+- **PASS**: `outcome: REJECTED_NOT_LEVELLED`, the goal terminates within
+  **< 1.0 s** of accept (a CHECKING reject fires on the first FSM tick, ~50 ms —
+  anything near the 6 s positioning timeout means a *different* gate fired
+  late), the platform does **not** move, and the hand does **not** move.
+- **PASS (variant, record it)**: `levelling_complete: true` and the toss
+  proceeds. Then the can-bridge Teensy was **not** power-cycled this sitting, the
+  orchestrator's persisted auto-push fired at the first IDLE, and a correction is
+  genuinely loaded — the gate is right to pass. Power-cycle the Teensy per
+  § Shared preconditions and re-run LG-1; do not score this as a failure, and do
+  not score it as a pass of the gate either.
+- **ABORT**: the toss proceeds with `levelling_complete: false`. The gate is not
+  live — almost certainly LG-0 (stale install). Stop; nothing else in this
+  section is meaningful.
+- **ABORT**: any platform or hand motion during a `REJECTED_*` goal. A CHECKING
+  reject runs `ACTION_NONE` — nothing has moved or armed yet — so motion here is
+  a different fault entirely.
+
+### CHECK LG-2 — after `level`, the same goal is NOT refused
+
+Validates: the negative half. A gate that refuses a correctly-levelled machine
+gets bypassed, which is worse than no gate.
+
+**Write the state transitions out, because `level` is only accepted from
+IDLE.** LG-1 leaves the robot in ACTIVE:TRAJECTORY, where `level` is *silently
+discarded* (`state_machine.IdleHandler` is the only handler that consumes it),
+and `LevellingHandler` ends at `level_deactivate` and returns to **IDLE** — so
+you must re-activate afterwards. The full sequence, mirroring § Section LVL
+CHECK LVL-2:
+
+**`deactivate` → `level` → `activate` → `trajectory` → re-issue the goal.**
+
+Confirm CHECK LVL-1's two log lines after the `level`, then re-issue the
+**same** command as LG-1 (still empty cup — it will dry-toss, which is fine; or
+load a ball and let this be the § Section LVL CHECK LVL-3 toss, one capture
+scoring both).
+
+```bash
+ros2 topic echo /trajectory/status --once | grep gravity_correction_loaded
+```
+
+- **Not a verdict, fix the state**: `REJECTED_WRONG_MODE` means you are not in
+  ACTIVE:TRAJECTORY — re-activate and re-enter the mode, then re-issue. Nothing
+  about the levelling gate has been tested yet.
+
+- **PASS**: `gravity_correction_loaded: true`, and the toss's feedback advances
+  past `CHECKING` to `POSITIONING`. The outcome from there on is § Section LVL's
+  business, not this section's.
+- **PASS (equivalent)**: `level` reported an offset of ~0 and the toss still
+  advances. Correct — see pre-brief item 3. Record that this case applied.
+- **ABORT**: `gravity_correction_loaded: false` immediately after a `level`
+  whose two log lines both appeared. That is a genuine Phase-3 defect (the flag
+  is not being set where the correction is stored) — capture
+  `~/.ros/log` and stop.
+- **ABORT**: `REJECTED_NOT_LEVELLED` after a clean `level`. Re-read
+  `gravity_correction_loaded` a second time before concluding: if it is `true`
+  but the toss still refuses, the coordinator is not consuming it (or its status
+  is stale — LG-4).
+
+### CHECK LG-3 — the relaunch case: the Teensy flag lies, the gate does not
+
+Validates: **the design decision this phase turns on.** This is the check that
+distinguishes the shipped gate from the one the plan originally specified.
+
+From the LG-2 state (levelled, toss accepted), **relaunch `jugglebot_launch.py`
+without re-levelling**. A relaunch blanks `control_mode`, so you must re-arm
+before the goal means anything:
+
+**relaunch → `activate` → `trajectory` → read both flags → send the goal.**
+
+Then, empty cup:
+
+```bash
+ros2 topic echo /robot_state --once | grep levelling_complete
+ros2 topic echo /trajectory/status --once | grep gravity_correction_loaded
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.6}" --feedback
+```
+
+- **PASS**: `levelling_complete: true` **and** `gravity_correction_loaded: false`
+  **and** `outcome: REJECTED_NOT_LEVELLED`. Those three lines together are the
+  whole point: the Teensy still says "this machine has been levelled", the node
+  that actually applies the correction says it holds none, and the gate believes
+  the second one.
+- **Not a verdict, fix the state**: `REJECTED_WRONG_MODE` means you skipped the
+  re-arm above (post-relaunch `control_mode` is empty, and that gate fires
+  *before* CHECKING). Re-activate, re-enter TRAJECTORY, re-issue — **without**
+  running `level`, or the check is spoiled.
+- **ABORT**: `levelling_complete: true` and the toss **proceeds**. The gate is
+  wired to the Teensy flag — the exact false assurance this phase exists to
+  remove. Stop and report; a passing gate here is worse than no gate, because it
+  would launch a 0.78°-off throw with an all-clear.
+- Then `level` again and confirm the refusal clears (this is LG-2 repeated, and
+  it is also the standing operational requirement in pre-brief items 1–2).
+
+### CHECK LG-4 — no spurious refusals across the sitting
+
+Validates: the 1.0 s freshness window on `trajectory/status` is not tight enough
+to mint false refusals on a healthy machine.
+
+At the **end** of the sitting, over every toss goal issued **after** the last
+`level`:
+
+```bash
+ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -h "Toss REJECTED_NOT_LEVELLED" | wc -l
+```
+
+- **PASS**: `0`.
+- **REPORT, do not abort**: a count equal to the number of goals you deliberately
+  issued before a `level` (LG-1, LG-3) — subtract those; they are the successes.
+- **ABORT**: any refusal on a goal issued after a `level`, with
+  `gravity_correction_loaded: true` at the time. That is a staleness false
+  positive.
+
+If that last case happens, measure the gap that caused it before changing
+anything — the window was sized against **measured** inter-arrivals (median
+200.0 ms, p99 210 ms, **max 508.5 ms** over 420 s of the two 2026-07-25 reference
+bags), so a breach is new information about the machine, not a wrong constant:
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+python - <<'PY'
+from pathlib import Path
+from mcap.reader import make_reader
+bag = sorted(Path.home().joinpath('Desktop/rosbags').glob('*/*.mcap'))[-1]
+ts = []
+with open(bag, 'rb') as fh:
+    for _s, ch, m in make_reader(fh).iter_messages():
+        if ch.topic == '/trajectory/status':
+            ts.append(m.log_time / 1e9)
+ts.sort()
+gaps = sorted(b - a for a, b in zip(ts, ts[1:]))
+print(bag.name, 'n=%d' % len(ts),
+      'median=%.1fms' % (gaps[len(gaps)//2]*1e3),
+      'max=%.1fms' % (gaps[-1]*1e3),
+      'over_1s=%d' % sum(g > 1.0 for g in gaps))
+PY
+```
+
+- `/trajectory/status` must have been in the bag from the **start** of the
+  sitting for this to work — it is in the shared § Recording list as of
+  2026-07-26; confirm yours has it *before* LG-1, because this measurement
+  cannot be reconstructed afterwards.
+- `over_1s > 0` ⇒ the window is genuinely too tight for this machine's load;
+  raise `_TRAJ_STATUS_STALE_S` with the measured max in the commit message.
+  `over_1s == 0` ⇒ the refusal came from somewhere else; do not touch the
+  constant.
+
+### CHECK LG-5 — the cross-process ordering (**the one unit tests cannot reach**)
+
+Validates: the wiring `orchestrator_node → /gravity_offset → trajectory_node →
+/trajectory/status → reload_coordinator_node → CHECKING`. Every test behind this
+phase runs against mocked ROS, which is blind to cross-process message
+choreography by construction — two of them feed a real `trajectory_node`'s own
+`_publish_status` output into the real coordinator callback, but nothing in the
+suite can prove that the two *processes* actually exchange it in that order on
+this box. **This check is the only thing that does.** It costs nothing extra: the same recorder capture that
+§ Section HAND and CHECK LVL-3 already require.
+
+Run `tests/hardware/toss_trace_recorder.py record` (see § Section HAND for the
+invocation) spanning: LG-1's refused goal → `level` → LG-2's accepted goal. Then,
+against the resulting `temp/logs/toss_trace_<stamp>.jsonl`:
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+python - "$(ls -t temp/logs/toss_trace_*.jsonl | head -1)" <<'PY'
+import json, re, sys
+# Same outcome-line definition the recorder's own checker uses (OUTCOME_RE +
+# the reload_coordinator_node filter), so this reader and `check` agree about
+# what counts as an outcome. A bare startswith('Toss ') would also catch the
+# coordinator's 'Toss early exit while prepared ...' and 'Toss displaced aim
+# infeasible ...' lines and mis-number "the first outcome".
+OUTCOME_RE = re.compile(r'^Toss ([A-Z][A-Za-z0-9_()]*)')
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+st = [(r['t'], r['d'].get('gravity_correction_loaded'))
+      for r in rows if r.get('topic') == 'trajectory/status']
+flips = [(t, v) for i, (t, v) in enumerate(st)
+         if i == 0 or v != st[i-1][1]]
+outc = []
+for r in rows:
+    if r.get('topic') != '/rosout':
+        continue
+    if r['d'].get('node') != 'reload_coordinator_node':
+        continue
+    m = OUTCOME_RE.match(str(r['d'].get('msg', '')))
+    if m:
+        outc.append((r['t'], m.group(1)))
+print('status rows: %d   loaded-flips: %s' % (len(st), flips))
+for t, oc in outc:
+    print('  t=%.3f  %s' % (t, oc))
+if len(flips) >= 2 and len(outc) >= 2:
+    print('1st outcome -> flip : %+.3f s  (want POSITIVE)' % (flips[1][0] - outc[0][0]))
+    print('flip -> 2nd outcome : %+.3f s  (want > +0.005)' % (outc[1][0] - flips[1][0]))
+else:
+    print('INCOMPLETE: need >=2 flips and >=2 outcomes; see the ABORT rows')
+PY
+```
+
+- **PASS**, all four, and the two printed separations are the numeric test of
+  (2) and (3) — do not eyeball the timestamps:
+  1. `loaded-flips` has exactly **two** entries and the first is `(…, False)`
+     (the pre-`level` state);
+  2. the first outcome is `REJECTED_NOT_LEVELLED`, and
+     `1st outcome -> flip` is **positive** (the refusal precedes the flip);
+  3. the second flip entry is `True`, and `flip -> 2nd outcome` is
+     **> +0.005 s**;
+  4. the second outcome is **not** `REJECTED_NOT_LEVELLED`.
+- **AMBIGUOUS, not PASS**: `flip -> 2nd outcome` is between `0` and `+0.005 s`
+  (the recorder's `--epsilon-ms` honesty rule — rows are stamped at callback
+  execution, and two messages in one executor wait-set cycle can be observed in
+  either order). Re-run; a real capture separates them by the 5 Hz status
+  period, ~0.200 s. A **negative** value is not ambiguity — the second goal ran
+  before the correction landed, so re-run with the `level` completed first.
+- **ABORT**: the flip never happens although CHECK LVL-1's `gravity correction
+  set` line did — the field is not reaching the wire, and every LG check above
+  was scoring the freshness half only.
+- **ABORT**: `loaded-flips` shows `True` before the `level`, with the Teensy
+  power-cycled per § Shared preconditions. Something republished a stale
+  correction; the gate is then reporting a frame nobody established this
+  session.
+- **ABORT**: `INCOMPLETE` — fewer than two flips or fewer than two outcomes.
+  One of the two ABORT rows above applies; read `loaded-flips` to see which.
+
+> **This reader was validated in both directions before it shipped**
+> (2026-07-26, finalize): four synthetic captures in the recorder's own JSONL
+> schema — the clean `False → REJECTED_NOT_LEVELLED → flip → MISSED` shape it
+> must ACCEPT (all four criteria readable, separations `+7.200 s` / `+12.800 s`),
+> plus never-flips, `True`-before-`level`, and a 2 ms flip/goal separation, each
+> of which it must FLAG (and does). Two decoy `/rosout` lines — the
+> coordinator's own `Toss early exit while prepared …` and a `Toss …` line from
+> another node — are correctly excluded by the `OUTCOME_RE` + node filter. An
+> instrument validated only against the broken shape scores a working fix as a
+> failure and burns the sitting.
+
+### Not in this section
+
+- Whether the platform is actually level, and by how much — § Section LVL
+  (CHECK LVL-1..LVL-4). This section only asks whether the machine *knows*.
+- The pre-throw tilt swing, the catch error — § Section LVL and § Section CCATCH.
+- Scoring this capture with `toss_trace_recorder.py check --reject`: that path
+  expects exactly one `REJECTED_NO_BALL` and will FAIL on a `NOT_LEVELLED`
+  trace. Use the inline reader above; the `check` subcommand is for the dry and
+  no-ball traces, unchanged.

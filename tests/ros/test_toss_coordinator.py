@@ -114,12 +114,15 @@ class _TossGoalHandle:
 
 def _toss_ready_node(now):
     """A node with every toss precondition satisfied and caches FRESH at `now`:
-    TRAJECTORY streaming, mocap fresh, hand telemetry fresh AT the bottom park
-    band, ball possession latched, no live tracks."""
+    TRAJECTORY streaming, mocap fresh, a fresh trajectory/status affirming a
+    loaded gravity correction, hand telemetry fresh AT the bottom park band,
+    ball possession latched, no live tracks."""
     node = ReloadCoordinatorNode()
     with node._lock:
         node._control_mode = TOSS_CONTROL_MODE
         node._streaming = True
+        node._traj_status_mono = now
+        node._gravity_correction_loaded = True
         node._mocap_mono = now
         node._balls = []
         node._balls_mono = now
@@ -137,6 +140,7 @@ def _stamp_fresh(node, t):
         node._mocap_mono = t
         node._balls_mono = t
         node._hand_telemetry_mono = t
+        node._traj_status_mono = t
 
 
 def _install_toss_goal(node, pose=(0.0, 0.0, 170.0), flight=0.8, vel_scale=0.0):
@@ -230,6 +234,8 @@ def test_toss_deadline_never_lands_inside_the_flight_window():
     ('mode', 'REJECTED_WRONG_MODE'),
     ('mocap', 'REJECTED_MOCAP_STALE'),
     ('streaming', 'REJECTED_NOT_STREAMING'),
+    ('not_levelled', 'REJECTED_NOT_LEVELLED'),
+    ('traj_status_stale', 'REJECTED_NOT_LEVELLED'),
     ('hand_stale', 'REJECTED_HAND_STALE'),
     ('hand_not_parked', 'REJECTED_HAND_NOT_PARKED'),
     ('no_ball', 'REJECTED_NO_BALL'),
@@ -243,9 +249,12 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     goal abort. TIER is driven through the GENERATED config gate (the node reads
     hw.JB_OP_TOSS_TIER at goal time — the serviceable set is {8a, 8b}, so an
     UNIMPLEMENTED tier like '9z' is REJECTED_TIER); HAND_STALE / HAND_NOT_PARKED
-    / TRACK_ACTIVE are the three preconditions the toss adds over reload (blind
-    release verification / kind-0 absolute-position stroke hazard / F7
-    phantom-track correlation hole)."""
+    / TRACK_ACTIVE / NOT_LEVELLED are the four preconditions the toss adds over
+    reload (blind release verification / kind-0 absolute-position stroke hazard
+    / F7 phantom-track correlation hole / an un-levelled launch drifting 43 mm
+    against a ~35 mm cup). NOT_LEVELLED has two wires — the applier says it
+    holds no correction, or the applier stopped saying anything — and both must
+    refuse."""
     now = time.perf_counter()
     node = _toss_ready_node(now)
     gh = _TossGoalHandle()
@@ -257,6 +266,14 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
         node._mocap_mono = now - 1.0
     elif breakage == 'streaming':
         node._streaming = False
+    elif breakage == 'not_levelled':
+        # trajectory_node is alive and talking, and says it holds no correction
+        # (it restarted after the `level`, or none was ever pushed).
+        node._gravity_correction_loaded = False
+    elif breakage == 'traj_status_stale':
+        # trajectory_node stopped talking: the cached affirmation is a dead
+        # process's answer, so it must not be trusted.
+        node._traj_status_mono = now - 5.0
     elif breakage == 'hand_stale':
         node._hand_telemetry_mono = 0.0
     elif breakage == 'hand_not_parked':
@@ -608,6 +625,163 @@ def test_prepare_snapshot_adds_and_resets_latch(monkeypatch):
 
 
 # ── Toss observation assembly ──────────────────────────────────────────────────
+
+# ── platform_levelled (C-LEVEL-1's observability half → REJECTED_NOT_LEVELLED) ──
+# The gate observes the node that APPLIES the correction, on a FRESH message,
+# never RobotState.levelling_complete. That flag is Teensy-persisted per BOOT: it
+# stays True across a relaunch that empties trajectory_node's in-memory
+# correction, so a gate wired to it would pass in exactly the state it exists to
+# refuse — false assurance, which is strictly worse than today's no gate at all.
+
+def _traj_status(loaded, streaming=True):
+    from jugglebot_interfaces.msg import TrajectoryStatus
+    msg = TrajectoryStatus()
+    msg.streaming = streaming
+    msg.gravity_correction_loaded = bool(loaded)
+    return msg
+
+
+def _real_trajectory_node(offset=None):
+    """A REAL trajectory_node, seeded and streaming in TRAJECTORY, optionally
+    holding `offset` (rad) as its levelling correction. Used so the status
+    message the coordinator consumes is built by the producer rather than
+    fabricated here — a fabricated one would prove only that the coordinator
+    reads a field it was handed."""
+    from jugglebot_interfaces.msg import MotorStateSingle, RobotState
+    from std_msgs.msg import Float64MultiArray, String
+    from jugglebot.trajectory_node import TrajectoryNode
+
+    node = TrajectoryNode(start_emitter=False)
+    rs = RobotState()
+    rs.motor_states = [
+        MotorStateSingle(pos_estimate=float(v))
+        for v in hw.JB_OP_ACTIVATE_POSITION_REVS] + [MotorStateSingle()]
+    rs.is_homed = True
+    node._on_robot_state(rs)
+    node._on_control_mode(String(data='TRAJECTORY'))
+    if offset is not None:
+        node._on_gravity_offset(Float64MultiArray(data=list(offset)))
+    node._publish_status()
+    return node
+
+
+@pytest.mark.parametrize('loaded,age_s,expected', [
+    (True, 0.0, True),        # fresh affirmation
+    (True, 0.5, True),        # inside the window (a 5 Hz topic's worst observed
+                              #   inter-arrival on the reference bags is 0.509 s)
+    (True, 2.0, False),       # the applier went quiet — a dead process's answer
+    (False, 0.0, False),      # alive and says it holds nothing
+    (False, 2.0, False),
+])
+def test_platform_levelled_needs_a_fresh_affirmation_from_the_applier(
+        loaded, age_s, expected):
+    """`platform_levelled` is an AFFIRMATION with an expiry, not a sticky bool.
+    The freshness half is what closes the restart window: between
+    trajectory_node dying and its replacement's first status there is no message
+    to flip the cache, so without an expiry the coordinator would keep answering
+    with the dead process's True while the live one holds identity."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    with node._lock:
+        node._gravity_correction_loaded = loaded
+        node._traj_status_mono = now - age_s
+    assert node._build_toss_observations(now).platform_levelled is expected
+
+
+def test_platform_levelled_false_before_any_status_has_ever_arrived():
+    """Fail closed on silence. A coordinator that has never heard from
+    trajectory_node has no basis to assert the commanded frame is the gravity
+    frame, and `now - 0.0` must not be mistaken for a fresh stamp."""
+    now = 100.0
+    node = ReloadCoordinatorNode()
+    _install_toss_goal(node)
+    assert node._traj_status_mono == 0.0
+    assert node._build_toss_observations(now).platform_levelled is False
+
+
+def test_on_traj_status_caches_both_the_flag_and_its_arrival():
+    now = 100.0
+    node = _toss_ready_node(now)
+    node._on_traj_status(_traj_status(loaded=False))
+    with node._lock:
+        assert node._gravity_correction_loaded is False
+        assert node._traj_status_mono > 0.0
+    node._on_traj_status(_traj_status(loaded=True))
+    with node._lock:
+        assert node._gravity_correction_loaded is True
+
+
+def test_the_persisted_startup_push_alone_satisfies_the_gate():
+    """The NEGATIVE half the plan demands: the gate must NOT fire when only the
+    orchestrator's persisted auto-push has run (first IDLE after boot, gated on
+    the Teensy's levelling_complete) — that is a legitimate way to have a
+    correction loaded, and refusing it would make the gate a re-run-`level`
+    ritual rather than a statement about the frame.
+
+    Driven through the REAL producer: the offset the orchestrator would publish
+    goes into trajectory_node._on_gravity_offset, trajectory_node's own
+    _publish_status builds the message, and THAT message is fed to the
+    coordinator's callback. Fabricating the status here instead would prove only
+    that the coordinator reads a field it was handed."""
+    # Exactly what orchestrator_node's first-IDLE push sends: the tilt persisted
+    # on the Teensy, published once, with no `level` run this session.
+    traj = _real_trajectory_node(
+        offset=[0.013592347421588673, 0.001207157476773584])
+    status = traj.status_pub.published[-1]
+    assert status.gravity_correction_loaded is True
+
+    now = 100.0
+    node = _toss_ready_node(now)
+    with node._lock:                       # nothing known yet — as after a boot
+        node._gravity_correction_loaded = False
+        node._traj_status_mono = 0.0
+    node._on_traj_status(status)
+    with node._lock:                       # re-stamp onto the synthetic clock
+        node._traj_status_mono = now
+    _install_toss_goal(node)
+    assert node._build_toss_observations(now).platform_levelled is True
+
+    seq = _fresh_seq(node, start=now)
+    d = seq.step(now, node._build_toss_observations(now))
+    assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
+
+
+def test_trajectory_node_restart_flips_the_gate_to_refuse():
+    """THE RESTART CASE, end to end. A correction is loaded and the toss is
+    serviceable; trajectory_node is then replaced (crash, or the `colcon build`
+    + relaunch this contract's own deployment mandates). Nothing republishes
+    /gravity_offset — it is VOLATILE and its startup push is latched per
+    orchestrator boot — and RobotState.levelling_complete still reads True
+    because it lives on the Teensy. The replacement's first status says False
+    and the goal must come back REJECTED_NOT_LEVELLED."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+
+    old = _real_trajectory_node(offset=[0.05, -0.03])
+    node._on_traj_status(old.status_pub.published[-1])
+    _install_toss_goal(node)
+    assert node._build_toss_observations(time.perf_counter()).platform_levelled
+
+    fresh = _real_trajectory_node()                # the post-relaunch process
+    node._on_traj_status(fresh.status_pub.published[-1])
+
+    # Re-stamp the SIBLING windows onto the wall clock immediately before the
+    # terminal call. This test runs on real perf_counter (the restart it models
+    # is about two live processes, not a synthetic clock) and builds two whole
+    # TrajectoryNodes in between — measured 0.04 s against the 0.5 s
+    # _MOCAP_STALE_S window, i.e. 12x headroom, but a loaded full-suite run that
+    # spent that budget would report REJECTED_MOCAP_STALE and look like a gate
+    # ordering bug rather than a timing artefact. _stamp_fresh deliberately
+    # touches only the caches this test is NOT about: _gravity_correction_loaded
+    # stays False (set by the replacement node's status above), so the asserted
+    # outcome is unchanged.
+    _stamp_fresh(node, time.perf_counter())
+
+    result = node._execute_toss(_TossGoalHandle())
+    assert result.success is False
+    assert result.outcome == 'REJECTED_NOT_LEVELLED'
+
 
 def test_hand_parked_band_and_freshness():
     """The hand-evidence chain: parked requires BOTH freshness and the bottom

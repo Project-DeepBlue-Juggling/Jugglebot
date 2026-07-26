@@ -68,6 +68,7 @@ to an auto-disarm — is deferred to Phase 2 (orchestrator wiring).
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 
@@ -313,6 +314,20 @@ class TrajectoryNode(Node):
         # lives in motion/levelling.py (one implementation, two consumers); this
         # is only the stored value, rewritten by _on_gravity_offset.
         self._gravity_correction = levelling.identity_correction()
+        # C-LEVEL-1's OBSERVABILITY half: has this process ever been told what
+        # level is? The stored R above cannot answer that — a genuinely level
+        # machine publishes a zero offset, whose correction IS identity, so
+        # "R == I" conflates "no correction loaded" with "correction loaded and
+        # it is zero". Only the second is safe to throw from. Published on
+        # trajectory/status so the toss's REJECTED_NOT_LEVELLED gate observes the
+        # node that APPLIES the correction rather than a proxy for it: the
+        # Teensy-persisted RobotState.levelling_complete stays True across a
+        # relaunch that empties this field, and gating on it would pass in
+        # exactly the state the gate exists to refuse.
+        # Written on the executor thread (_on_gravity_offset), read on the 5 Hz
+        # status timer — a plain bool is GIL-atomic across that split (the
+        # _guard_frozen pattern above).
+        self._gravity_correction_loaded = False
 
         # ── Plan + streaming state (written on ROS + emitter threads) ──
         self._plan_lock = threading.Lock()
@@ -1291,12 +1306,29 @@ class TrajectoryNode(Node):
         the next plan install picks the new one up. Re-framing a live plan would
         step the commanded pose on the wire (2.77 mm on one 25 ms knot for the
         2026-07-25 offset, which the pump's 0.3 rev gate would not catch).
+
+        A malformed message is dropped WITHOUT setting the loaded flag: the
+        flag's whole job is to answer "does this process know where level is?",
+        and a message it could not decode did not tell it. Malformed means
+        either FEWER THAN TWO VALUES or a NON-FINITE value — NaN/inf would
+        otherwise be negated into ``correction_from_offset`` (which does no
+        finiteness validation of its own), poisoning every later target with a
+        NaN rotation that only surfaces downstream as a feasibility rejection
+        AFTER the toss has claimed the platform. Refusing here keeps the loud
+        failure where the contract wants it: before the throw, as
+        ``REJECTED_NOT_LEVELLED``.
         """
         if len(msg.data) < 2:
             return
         tilt_x, tilt_y = float(msg.data[0]), float(msg.data[1])
+        if not (math.isfinite(tilt_x) and math.isfinite(tilt_y)):
+            self.get_logger().error(
+                f"gravity correction IGNORED — non-finite offset "
+                f"[{tilt_x}, {tilt_y}]; this node still holds no correction")
+            return
         self._gravity_correction = levelling.correction_from_offset(
             tilt_x, tilt_y)
+        self._gravity_correction_loaded = True
         self.get_logger().info(
             f"gravity correction set: tilt=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
 
@@ -2375,6 +2407,12 @@ class TrajectoryNode(Node):
         msg.seq = int(seq)
         msg.max_emit_gap_ms = float(gap_ms)
         msg.last_rejection = self._last_rejection
+        # C-LEVEL-1 observability: the loaded correction is otherwise invisible
+        # on every topic, so nothing downstream can tell a levelled node from one
+        # that lost its correction to a relaunch. Publishing the boolean (never
+        # the matrix) is deliberate — a consumer handed the matrix would be one
+        # step from re-applying it, which is the mirror bug the contract forbids.
+        msg.gravity_correction_loaded = bool(self._gravity_correction_loaded)
         self.status_pub.publish(msg)
 
         # Diagnostics: the last accepted move's measured leg peaks + emitter jitter.

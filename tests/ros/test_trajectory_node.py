@@ -668,6 +668,80 @@ def test_status_publishes_typed_trajectory_status():
     assert published.plan_kind == 'hold'
 
 
+# ── C-LEVEL-1 observability: gravity_correction_loaded ────────
+# The correction is per-process, in-memory, delivered by a VOLATILE topic with
+# one latched push per orchestrator boot and no re-request path — so a relaunch
+# empties it while the Teensy-persisted RobotState.levelling_complete still reads
+# True. This flag is the only observation of the node that APPLIES it, and the
+# toss's REJECTED_NOT_LEVELLED gate consumes it.
+
+def test_status_reports_no_correction_until_an_offset_arrives():
+    node = _traj_mode_node()
+    node._publish_status()
+    assert node.status_pub.published[-1].gravity_correction_loaded is False
+    node._on_gravity_offset(Float64MultiArray(data=[0.013592347421588673,
+                                                   0.001207157476773584]))
+    node._publish_status()
+    assert node.status_pub.published[-1].gravity_correction_loaded is True
+
+
+def test_zero_offset_counts_as_loaded_even_though_the_correction_is_identity():
+    """A genuinely level machine measures a ZERO tilt, whose correction IS the
+    identity. Reading "loaded" off `R != I` would refuse that machine forever —
+    the flag records that a measurement was taken and pushed, not that it was
+    large. This is the case a naive non-identity check gets wrong."""
+    node = _traj_mode_node()
+    node._on_gravity_offset(Float64MultiArray(data=[0.0, 0.0]))
+    node._publish_status()
+    assert node.status_pub.published[-1].gravity_correction_loaded is True
+    assert np.allclose(node._gravity_correction, np.eye(3))
+
+
+@pytest.mark.parametrize('data', [
+    [0.05],                              # short — cannot be decoded at all
+    [float('nan'), 0.0],                 # NaN tilt_x
+    [0.0, float('nan')],                 # NaN tilt_y
+    [float('inf'), 0.0],                 # inf tilt_x
+])
+def test_malformed_offset_does_not_count_as_loaded(data):
+    """A message the node could not decode did not tell it where level is; the
+    stored correction is untouched, so the flag must stay False rather than
+    affirm a frame that was never set.
+
+    The NON-FINITE rows matter as much as the short one and are easy to miss:
+    ``levelling.correction_from_offset`` does no finiteness validation, so a
+    NaN offset would be negated straight into the stored rotation. The flag
+    would then read True, the toss would pass CHECKING, and the NaN would only
+    surface downstream as a POSITIONING feasibility rejection — AFTER the goal
+    has claimed the platform. The contract wants that failure loud and early,
+    as REJECTED_NOT_LEVELLED."""
+    node = _traj_mode_node()
+    node._on_gravity_offset(Float64MultiArray(data=data))
+    node._publish_status()
+    assert node.status_pub.published[-1].gravity_correction_loaded is False
+    assert np.all(np.isfinite(node._gravity_correction))
+    assert np.allclose(node._gravity_correction, np.eye(3))
+
+
+def test_a_restarted_node_reports_no_correction_although_the_teensy_flag_persists():
+    """THE RESTART CASE. Node A holds a correction; the `colcon build` +
+    relaunch this contract's own deployment mandates replaces it with node B.
+    Nothing republishes (/gravity_offset is VOLATILE, its startup push is
+    latched per orchestrator boot) and RobotState.levelling_complete is
+    unaffected — it lives on the Teensy. B must therefore report False: the gate
+    that consumes this has to refuse the state, not inherit A's answer."""
+    node_a = _traj_mode_node()
+    node_a._on_gravity_offset(Float64MultiArray(data=[0.05, -0.03]))
+    node_a._publish_status()
+    assert node_a.status_pub.published[-1].gravity_correction_loaded is True
+
+    node_b = _traj_mode_node()                     # the post-relaunch process
+    node_b._on_robot_state(_robot_state())         # levelling_complete lives here,
+    node_b._publish_status()                       #   and says nothing about B
+    assert node_b.status_pub.published[-1].gravity_correction_loaded is False
+    assert np.allclose(node_b._gravity_correction, np.eye(3))
+
+
 # ── leg_torques_diagnostic (gravity FF observability) ─────────
 # trajectory_node republishes each emitted frame's torque_Nm on the SAME topic
 # (leg_torques_diagnostic, Float64MultiArray, 6 leg values, TRUE Nm, extension-

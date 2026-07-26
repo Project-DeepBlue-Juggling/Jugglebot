@@ -286,7 +286,7 @@ annotations`.
 | 0 | Ingest-surface enumeration + frame audit (no code) | written enumeration reviewed by the operator | **DONE 2026-07-25 — see § Phase 0 — Outcome. Operator gate CLEARED 2026-07-25 (`3365ac8`). Three results that change later phases: a SIXTH external path (E6, `timed_target(hold_after=False)`'s neutral return target); the correction's own delivery is volatile + unobservable (Table C ⇒ Phase 3 cannot gate on `levelling_complete`); and the bypass-test manifest key must widen or it is blind to the E6 class it was specified to catch.** |
 | 1 | Contract doc + `motion` helper + unit tests | full pytest | **DONE 2026-07-26 — `aea7b49`. Operator gate cleared in `3365ac8`. Extraction verified bit-identical (max &#124;Δ&#124; = 0.000e+00 over 36 offset×orientation pairs), contract C-LEVEL-1 at `ros_ws/docs/levelling_frame.md`. See § Phase 1 — Outcome.** |
 | 2 | Migrate every ingest path (**six**, not five); delete the ad-hoc call sites; bypass test | full pytest | **DONE 2026-07-26 — `aea7b49`. All six E surfaces + `mpc_bridge_node`'s B1 route through the shared helper; the verbatim second copy is deleted. Two AST manifests with discovered file sets, mutation-verified against six seeded regressions. Surfaced and escalated (NOT fixed): `build_catch`'s through-seat aims off the plan-frame tilt. See § Phase 2 — Outcome.** |
-| 3 | `REJECTED_NOT_LEVELLED` gate in toss CHECKING | full pytest | TODO |
+| 3 | `REJECTED_NOT_LEVELLED` gate in toss CHECKING | full pytest | **DONE 2026-07-26 — commit SHA pending (finalize backfills).** Table C's contradiction is resolved by candidate **(b) only**: `TrajectoryStatus` gains `gravity_correction_loaded` and the gate observes the APPLIER, on a FRESH status. Transient-local QoS (candidate a) was considered and REJECTED — its latch lives in the publisher, so the whole-graph relaunch that motivates the hazard would not benefit. See § Phase 3 — Outcome. |
 | 4 | Hardware validation (operator-run) | park plateau within ±0.05° of `(−tilt_x, −tilt_y)` via `tools/probes/levelling_tilt_bag_check.py`; first `go_home` worst leg 2.77 ± 0.30 mm; mocap parked tilt within ±0.10° of level. Catch error and pre-throw swing are REPORT-only (≈16 mm and ≈+2.92° expected, both unchanged) | TODO — criteria REVISED, see § Phase 4 |
 
 ## Implementation Phases
@@ -1149,6 +1149,134 @@ note the latter is an **interface** change, so it needs `colcon build` of
 `jugglebot_interfaces` as well as `jugglebot`.
 **Gate:** `pytest tests/ -q` green.
 
+#### Phase 3 — Outcome (2026-07-26)
+
+**DONE — commit SHA pending (finalize backfills).** Operator runbook:
+`tests/hardware/session_anomaly_fixes.md` § Section LVLGATE (checks LG-0…LG-5;
+**LG-5 is not optional** — it is the only check that exercises the cross-process
+ordering, which every test behind this phase is blind to by construction).
+
+**Step 3's fork, resolved: candidate (b) alone.** `TrajectoryStatus` gains
+`bool gravity_correction_loaded`, set by `trajectory_node._on_gravity_offset`
+and published at 5 Hz by `_publish_status`; the coordinator stamps every
+`trajectory/status` arrival and feeds `platform_levelled = status_fresh AND
+loaded` into `TossObservations`. The gate therefore observes **the node that
+applies the correction**, which is the only reading that cannot lie about it.
+Recorded as contract **C-LEVEL-1.O** in `ros_ws/docs/levelling_frame.md`, under
+§ *The correction can be silently absent — so it is now observable, and the toss
+refuses* (that heading was previously *Known hazard — the correction can be
+silently absent*; this phase renamed it, because the hazard is no longer
+unclosed). The delivery hazard itself is unchanged — what closed is its
+silence.
+
+**Candidate (a), transient-local QoS on `/gravity_offset`, was considered and
+NOT taken.** Three failure modes decided it, in order of weight:
+
+1. **It does not help the case that motivates the hazard.** A transient-local
+   latch lives in the **publisher**. The `colcon build` + relaunch this plan's
+   own § Deployment mandates restarts `orchestrator_node` too, so there is
+   nothing latched to redeliver. It would only help a partial restart of
+   `trajectory_node` alone while the orchestrator survives — and the launch has
+   no `respawn`, so that is a manual act.
+2. **It creates a silent DDS-level failure of exactly the class this contract
+   exists to close.** A TRANSIENT_LOCAL *subscriber* is incompatible with a
+   VOLATILE *publisher* (requested durability exceeds offered), so the
+   connection is simply never made — no error, no warning, no message. Any
+   hand-run `ros2 topic pub /gravity_offset …` without
+   `--qos-durability transient_local`, or a second publisher added later, would
+   be silently ignored.
+3. **It closes nothing on its own.** It reduces the frequency of the blind state
+   without making it observable, so a gate built on it would still be guessing.
+   (b) is correct regardless of *how* the correction went missing — never
+   published, discovery race, malformed message, node restart, orchestrator
+   never reaching IDLE.
+
+**Step 4 satisfied literally.** The gate asks "is a correction loaded", not "did
+`level` run this session" — the orchestrator's persisted auto-push
+(`orchestrator_node.py`, first IDLE after boot) is a legitimate way to satisfy
+it, pinned by
+`test_the_persisted_startup_push_alone_satisfies_the_gate`, which drives the
+real producer's `_publish_status` output into the real consumer's callback. And
+it is **not** gated on the correction being non-identity:
+`test_zero_offset_counts_as_loaded_even_though_the_correction_is_identity`
+pins that a genuinely level machine (zero measured tilt ⇒ identity correction)
+is not refused.
+
+**The restart case is proven at both levels** —
+`test_a_restarted_node_reports_no_correction_although_the_teensy_flag_persists`
+(the applier) and `test_trajectory_node_restart_flips_the_gate_to_refuse`
+(end to end through `_execute_toss`: correction loaded ⇒ serviceable, replacement
+process ⇒ `REJECTED_NOT_LEVELLED`).
+
+**The freshness window is probe-sized, not copied.** The sibling windows
+(`_MOCAP_STALE_S`, `_HAND_STATE_STALE_S`, `_STATUS_STALE_S`) are all 0.5 s and
+are sized for 100–160 Hz sources; `trajectory/status` is **5 Hz**, so 0.5 s is
+2.5 periods. Measured inter-arrival over 420 s of the two 2026-07-25 reference
+bags (`_15-17-48`, `_15-22-50`; one-off probe, run 2026-07-26, independently
+re-measured at finalize): **median 200.0 ms, p99 210.3 / 204.0 ms, max
+508.5 ms** — one gap already past 0.5 s and **four** past 0.3 s (two per bag:
+384.5 / 508.5 ms and 334.5 / 426.2 ms), so a copied 0.5 s would mint occasional
+spurious refusals on a healthy machine. `_TRAJ_STATUS_STALE_S = 1.0` is five periods and ~2× the worst observed
+gap. The same probe measured the siblings for contrast: mocap max 463.8 ms at
+159 Hz, hand 24.3 ms at 100 Hz.
+
+**Deliberately NOT done: `streaming`'s semantics are unchanged.** It remains a
+sticky last-value with no freshness stamp, because the **reload** FSM consumes
+it too and changing when a reload refuses is a safety-relevant behaviour change
+outside this phase. The visible consequence is recorded in the code and in the
+reject-code map: a `trajectory_node` that dies outright surfaces as
+`REJECTED_NOT_LEVELLED` (its status stops, the flag expires) rather than as
+`REJECTED_NOT_STREAMING`.
+
+**Deferred, with the reason stated (finalize adjudication, 2026-07-26).** A
+reviewer proposed closing that gap *here*, with a toss-only `traj_status_fresh`
+observation and its own reject code, on the correct observation that doing so
+need not touch `streaming` at all. Verified and agreed as a real diagnostic
+weakness — a dead `trajectory_node` now names the wrong subsystem, where before
+this phase it surfaced later as `REJECTED_POSITION(NO_RESPONSE)`, which named
+the right one. Deferred anyway, for a reason that is not scope-protection:
+**"is `trajectory_node` alive" would then have two independent representations
+in one node** — `streaming` (which the reload FSM consumes, un-expiring) and a
+parallel toss-only stamp — and the two would answer differently for the same
+fault. That is precisely the one-enforcement-point violation this contract
+pattern exists to prevent, and it is how a later correct fix to `streaming`
+silently leaves a stale duplicate behind. The single-enforcement-point fix is
+one freshness stamp on `streaming` itself, which changes **when a reload
+refuses** — a safety-relevant behaviour change, and its own small phase. Until
+then the mitigation is documentary and is in place at three levels: the operator
+pre-brief item 4 (with the two commands that distinguish the causes),
+`REJECT_WIRE_MAP`'s entry naming both causes, and the note above. The
+consequential half — no motion, no arming, no ball dropped — is identical under
+either code.
+
+**Deployment:** interface change ⇒ `colcon build --packages-select
+jugglebot_interfaces jugglebot` **+ relaunch**. Building only `jugglebot` makes
+`trajectory_node` **exit**, not merely go quiet: `_publish_status` raises
+`AttributeError` on its first 0.2 s tick, rclpy re-raises timer exceptions out
+of `spin()` (`rclpy/executors.py` `SingleThreadedExecutor.spin_once`), and
+`main()` catches only `KeyboardInterrupt` — so the process tears down ~200 ms
+after launch, there is no 40 Hz emitter, and `activate` fails at the A2 arm long
+before any toss is sent. LG-0 catches it in three seconds. No firmware flash, no
+config regeneration. Verified on this Jetson 2026-07-26: both packages build, the
+generated message carries the field, and assigning an unknown field to a real
+message raises `AttributeError`.
+
+**Gate:** `pytest tests/ -q`, run 2026-07-26 on this Jetson in the project venv
+— **3569 passed, 3 xfailed, 198 warnings in 1399.52s (0:23:19)**, exit 0.
+Baseline at `b9fd45e` was 3543 passed, 3 xfailed in 1376.13s: **+26 passed**,
+accounted for exactly by the 26 new cases (8 sequencer / 7 trajectory_node / 11
+coordinator), **xfail unchanged at 3**.
+
+**Deferred operator handoff.** Software-complete; nothing here is validated on
+hardware yet. `tests/hardware/session_anomaly_fixes.md` § Section LVLGATE,
+checks **LG-0…LG-5**, is the handoff: LG-0 pre-flight (installed-copy greps
+`1 / 3 / 2` plus `ros2 node list | grep trajectory_node`), LG-1 the headline
+refusal before `level`, LG-2 the negative half, **LG-3 the decision this phase
+turns on** (`levelling_complete: true` AND `gravity_correction_loaded: false`
+AND `REJECTED_NOT_LEVELLED`, all three together), LG-4 no spurious refusals
+across the sitting, LG-5 the cross-process ordering. Phase 4's own criteria are
+unchanged by this phase.
+
 ### Phase 4 — Hardware validation (operator-run)
 
 The operator runs all robot-actuating commands; the implementer prepares the exact
@@ -1229,7 +1357,7 @@ so its wiring wants a real-ordering check (the existing
 | Composition order silently reversed during the move to `motion/` | Phase 1 pins `R_gravity @ R_target` with a non-commutative test case |
 | A sixth ingest path appears later | **A sixth already existed (E6) and Phase 0 found it.** The bypass test is the whole point of Phase 2 — and it must be *structural*, because a per-surface behavioural test could never have caught E6. **The manifest key is itself load-bearing**: keyed on the enclosing function + the target argument it is blind to the whole E6 class (one call, two external poses) and to entries outside `trajectory_node.py`. See § *What the Phase-2 bypass test must assert* for the widened key and the live `build_catch` instance of the blind spot |
 | `levelling_complete` semantics drift (Teensy-persisted, per-boot) | Phase 3 gates on "correction loaded" and documents the per-boot reality |
-| **The correction is never delivered, or is lost on a partial restart** | **Found by Phase 0 (Table C), unmitigated today.** `/gravity_offset` is VOLATILE with one latched publish per orchestrator boot; `trajectory_node`'s copy is in-memory with no re-request path and no observability. `RobotState.levelling_complete` cannot detect its absence, so Phase 3 as *wired* (step 3) would pass in exactly the state it exists to refuse — contradicting its own step 4. Phase 3 must close it: transient-local QoS, and/or expose the loaded correction on `TrajectoryStatus` and gate on that |
+| **The correction is never delivered, or is lost on a partial restart** | **Found by Phase 0 (Table C); CLOSED by Phase 3 (2026-07-26) — made loud, not made impossible.** `/gravity_offset` is still VOLATILE with one latched publish per orchestrator boot and `trajectory_node`'s copy is still in-memory with no re-request path; what changed is that the copy is now **observable**. `TrajectoryStatus.gravity_correction_loaded` carries the applier's own answer at 5 Hz, and `toss_sequencer` refuses the throw (`REJECTED_NOT_LEVELLED`) unless that answer is True on a status < 1.0 s old. Transient-local QoS was **rejected** — its latch lives in the publisher, so the whole-graph relaunch that motivates the hazard gains nothing, and a TRANSIENT_LOCAL subscriber silently refuses to connect to any VOLATILE publisher. Contract **C-LEVEL-1.O**; § Phase 3 — Outcome. The operational requirement is unchanged: **`level` after every launch or relaunch** — forgetting now costs a refusal, not a ball on the floor |
 | Correcting `go_home` shifts the stow/park reference the guard trusts | **RESOLVED (Phase 0): nothing trusts an uncorrected neutral.** `motor_guard` reads the commanded pose only for a condition number + leg-extension workspace check; DEACTIVATE stows to leg-space `stow_rev = 0.0`; ACTIVATE TRAP_TRAJs to `JB_OP_ACTIVATE_POSITION_REVS` and nothing compares it to `go_home`'s target. Excursion measured at 2.7736 mm / 0.03908 rev. Details + the one misreadable artefact (`sim/tools/verify_motor_commands.py`) in § Phase 0 — Outcome |
 
 ## Notes for collaborators
