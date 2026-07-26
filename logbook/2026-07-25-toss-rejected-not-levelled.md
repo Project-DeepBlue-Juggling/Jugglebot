@@ -22,7 +22,7 @@ files_changed:
   - tests/hardware/session_phase8_toss_trace.md
   - plans/active/levelling-frame-contract.md
 commits:
-  - PENDING_SHA
+  - e36d60d
 subsystem:
   - ros
   - tools
