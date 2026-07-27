@@ -25,7 +25,7 @@ files_changed:
   - logbook/2026-07-27-velocity-continuous-prelude.md
   - .gitignore
 commits:
-  - 0a1b2c3
+  - bb15d9b
 subsystem:
   - can
   - ros
