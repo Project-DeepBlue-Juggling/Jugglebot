@@ -9,6 +9,20 @@ Toss.action height + operator-guaranteed-ball changes
 throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-position
 (T3), and finally the Tier-8b displaced throw (T4). Each rung has its own PASS/ABORT.
 
+> **⚠ RUN `session_anomaly_fixes.md` FIRST (added 2026-07-27).** The 2026-07-25
+> self-toss anomaly-fix run landed eleven phases that change what this file
+> measures — the levelling frame, the catch arrival twist, the hand-catch arm
+> gating, the catch prime, and a **firmware change requiring a flash**. Its runbook
+> `tests/hardware/session_anomaly_fixes.md` answers *"did those fixes land?"*; this
+> file answers *"how well does the toss work?"*, and a T-rung failure cannot
+> distinguish the two. Run the anomaly runbook first, then come back here.
+>
+> Two things from that run bind this file directly: the build gate is
+> `colcon build --packages-select jugglebot_interfaces jugglebot` (the interfaces
+> package is **not** optional — `TrajectoryStatus.msg` gained a field and a partial
+> rebuild makes `trajectory_node` exit shortly after launch), and the Platform
+> Teensy needs a **flash** it cannot report, since it carries no `FW_VERSION`.
+
 > **⚡ READ THIS FIRST — this session FIRES REAL THROWS.** Jugglebot throws a real
 > ball into the air and attempts to catch it. On any miss (expected early), the ball
 > **lands on the floor** — clear the area. The hand fires a full kind-0 stroke

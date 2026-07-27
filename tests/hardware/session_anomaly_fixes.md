@@ -9,6 +9,38 @@ each other.
 claims, with numeric PASS/ABORT criteria and a named analysis command per check
 so a failure routes straight back to the plan + phase that owns it.
 
+> ## WHICH RUNBOOK IS THIS, AND WHEN — read this before HOW TO USE
+>
+> **This file is the one to step through after the build gate.** It validates that
+> the eleven landed fixes do what their plans claim. It is *not* the toss
+> capability ladder.
+>
+> | file | question it answers | when |
+> |---|---|---|
+> | **this file** | *did the 2026-07-25 anomaly fixes land and work?* | **FIRST**, immediately after `colcon build` + relaunch (+ the firmware flash) |
+> | `session_phase8_toss_hardware.md` | *how well does the toss work?* — the T0–T4 rungs: release characterisation, vertical toss-and-catch, height ladder, toss-at-position, Tier-8b displaced | **AFTER**, once this file passes — its rungs are only meaningful on a machine whose fixes are confirmed |
+> | `session_phase8_toss_trace.md` | the trace-capture recipe both files' analysis rows depend on | as referenced |
+>
+> Running the T-rungs first is not dangerous, but it wastes the sitting: a failure
+> there cannot distinguish "the toss is imperfect" from "a fix did not land", which
+> is precisely the discrimination this file exists to provide. The overlap is
+> deliberate and small — this file's CAP-WORK stage already requires ≥ 12 reloads
+> and ≥ 7 tosses, so it exercises T1-equivalent ground while scoring it against the
+> fixes rather than against the capability.
+>
+> **Build gate, stated once because it has three different answers across this
+> run** — the full form below is correct and strictly covers everything:
+> ```bash
+> cd ~/Desktop/Jugglebot/ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot
+> source install/setup.bash
+> ```
+> then **relaunch** (the launch runs the *installed* copy). `jugglebot_interfaces`
+> is not optional: `TrajectoryStatus.msg` gained a field, and rebuilding only
+> `jugglebot` makes `trajectory_node` **exit** ~200 ms after launch. Phase 4
+> additionally needs a **firmware flash** of the Platform Teensy — see § THE RUN
+> SHEET stage 2, and note the board carries no `FW_VERSION`, so an un-flashed board
+> is silently indistinguishable from the pre-fix one.
+>
 > ## HOW TO USE THIS FILE — read this paragraph before anything else
 >
 > **§ THE RUN SHEET below is the executable document. Work down it.** The
@@ -330,7 +362,7 @@ running:
 
 | # | what it scores | PASS | ABORT | routes to |
 |---|---|---|---|---|
-| LVL-2 | the first `go_home` after `level` is a real, small, smooth move | **SCALE THE BAND TO YOUR MEASURED OFFSET FIRST** (see below): `predicted_mm ≈ 203 × hypot(tilt_x, tilt_y)` using the **radians** LVL-1's log line printed (equivalently 3.55 mm per **degree** of total tilt — but LVL-1 gives you radians, so use the 203 form and do not convert). PASS = worst-leg excursion within **±11 %** of `predicted_mm`, realized peak leg vel `≈ 0.94 × predicted_mm` mm/s, no pump rejection, no guard latch. At the 2026-07-25 offset (0.78185°) that is the familiar **2.77 ± 0.30 mm** / **2.60 ± 0.50 mm/s**. A **zero** measured offset makes this a genuine no-op — record which case applied | worst leg above **max(1.8 × `predicted_mm`, 2.0 mm)** (operator-set floor, 2026-07-27 — see § CHECK LVL-2's banner for what the two arms each catch), any step rejection, any `MAX_DEVIATION` or guard E-STOP | `levelling-frame-contract` P1–P2, § LVL-2 |
+| LVL-2 | the first `go_home` after `level` is a real, small, smooth move | **SCALE THE BAND TO YOUR MEASURED OFFSET FIRST** (see below): `predicted_mm ≈ 203 × hypot(tilt_x, tilt_y)` using the **radians** LVL-1's log line printed (equivalently 3.55 mm per **degree** of total tilt — but LVL-1 gives you radians, so use the 203 form and do not convert). PASS = worst-leg excursion within **±11 %** of `predicted_mm`, realized peak leg vel within **±19 %** of `0.94 × predicted_mm` mm/s (0.94 is `1.875/T` for the 2.0 s min-jerk `go_home`; ±19 % reproduces the familiar ±0.50 mm/s at the reference offset), no pump rejection, no guard latch. At the 2026-07-25 offset (0.78185°) that is the familiar **2.77 ± 0.30 mm** / **2.60 ± 0.50 mm/s**. A **zero** measured offset makes this a genuine no-op — record which case applied | worst leg above **max(1.8 × `predicted_mm`, 2.0 mm)** (operator-set floor, 2026-07-27 — see § CHECK LVL-2's banner for what the two arms each catch), any step rejection, any `MAX_DEVIATION` or guard E-STOP | `levelling-frame-contract` P1–P2, § LVL-2 |
 | CCATCH-5 | `peak_leg_*` clears on a report-less install | after `go_to_pose`: `peak_leg_vel_mmps > 0`. After `hold`/`go_home`: `move_seq` advanced **and** `peak_leg_*` all `0.0` | the previous move's non-zero peaks under the new `move_seq` | `catch-reach-degenerate-overshoot` P2, § CCATCH-5 |
 | FK-1 | no spurious FK refusals | `0` × `seed FK failed`, `0` × `guard descent FK failed` across every node log | `>= 1` of either. (`non-finite target extensions` ⇒ **REPORT**, route to the can-bridge, not here) | `fk-convergence-tolerance` P1, § FK-1 |
 | FK-2 | the offline FK verdict | `VERDICT: PASS`, exit 0 — `def_rai` **0** on both topics **and** `hist_rai > 0` on at least one | `def_rai > 0`. `VERDICT: VACUOUS` is **not a pass** — re-run on a richer session | `fk-convergence-tolerance` P1, § FK-2 |
@@ -428,6 +460,12 @@ wrong part of the bag with no error.
 setpoint frame, and stops after 0.5 s without one. The bag is started *before*
 `activate`, so the topic's first sample lags bag start by however long arming
 takes — tens of seconds. That lag is the entire reason this note exists.
+
+**If the probe prints `no usable /leg_setpoint_echo vectors (legacy sqlite3 bag,
+or topic not recorded)`, check your WINDOW before you re-record.** That message is
+also what an empty `--t0/--t1` span produces — `reconstruct` returns `None` either
+way — and the topic is silent whenever the setpoint stream is stopped. The
+recording is usually fine; the window missed it.
 
 **Do NOT locate the release instant from the plateau table's edges on a toss.**
 It is tempting and it produces a **false PASS**. At release the platform is in
@@ -1809,8 +1847,15 @@ print('ry_deg   median %+.4f  min %+.4f  max %+.4f' % (np.median(a[:, 2]), a[:, 
 PY
 ```
 
-Narrow it to the park by adding a bag-relative time filter on `rows` (the same
-`t − rows[0][0]` convention `--t0` uses — see § CHECK LVL-3).
+Narrow it to the park by adding a bag-relative time filter on `rows` — zero-based
+on this reader's **own** first `/rigid_body_poses` sample (`t − rows[0][0]`), which
+is **not** the same origin as `--t0`. `--t0` zero-bases on the first
+`/leg_setpoint_echo` sample, and QTM streams continuously while
+`/leg_setpoint_echo` stays silent until the pump accepts a setpoint — so the two
+origins differ by however long arming took. Carrying a `--t0`-derived window across
+to this reader selects an earlier span, plausibly the pre-`activate` idle, where the
+*uncorrected* Platform reads 0.087° — which is the signature this check calls "the
+correction never reached the legs". See § The `--t0/--t1` origin note.
 
 - **REPORT (the headline)**: parked Platform-vs-`Base` tilt. Against the pre-fix
   baseline of **0.087°**, expect it to have moved **BY the correction**, i.e. to
