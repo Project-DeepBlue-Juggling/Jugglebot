@@ -80,22 +80,45 @@ row can just say "standing rules apply".
    any inter-arrival gap). Tracking lag grows with that board's uptime — 10 ms at a
    fresh boot to ~240 ms at 30 h — so a timing number without an `uptime_ms` beside
    it is not interpretable.
-2. **`level` is per-boot AND per-process.** The Teensy-persisted
-   `RobotState.levelling_complete` survives a relaunch; the correction inside
-   `trajectory_node` does not. **Run a manual `level` after every launch and every
-   relaunch** — with **TWO deliberate exceptions**, both of which *need* the
-   un-levelled process state and would score a healthy machine as an ABORT if you
-   levelled first:
-   - **stage 4's launch, before CHECK LG-1** — LG-1 is the check that the toss
-     refuses an un-levelled launch, so it must be issued with no `level` since the
-     last launch. Level immediately **after** LG-1 is scored (that is CHECK LVL-1,
-     the next row).
-   - **stage 5's CAP-RELAUNCH relaunch, before CHECK LG-3** — same reasoning for
-     the per-process correction. Level again immediately **after** LG-3 is scored,
-     and confirm the refusal clears.
+2. **CHECK the correction after every launch; `level` only if it is missing.**
+   *(Corrected 2026-07-27. This rule previously read "run a manual `level` after
+   every launch and every relaunch". That was wrong — it would cost a needless
+   levelling routine on every build gate, and it mis-states two of this file's own
+   checks. The correction is recorded rather than silently swapped because the
+   wrong version is the kind a future session would inherit.)*
 
-   Everywhere else, level. `level` is accepted only from **IDLE** and returns to
-   IDLE, so it goes *before* `activate`.
+   The correction inside `trajectory_node` **is** per-process, but it is normally
+   **restored automatically on ROS2 boot**. `RobotState` carries both
+   `levelling_complete` **and** `pose_offset_rad` from the **Platform** Teensy
+   (`teensy_bridge_node.py:1430`); the orchestrator stores both
+   (`orchestrator_node.py:165-167`) and pushes the persisted offset to
+   `/gravity_offset` on the first IDLE entry after boot (`:329-335`). Standing
+   rule 1's power-cycle is the **can-bridge** Teensy, which does **not** clear the
+   Platform Teensy's cache — so a relaunch, including the build gate's, should come
+   back already levelled.
+
+   **Why you check rather than assume:** `/gravity_offset` is VOLATILE, so a
+   `trajectory_node` that finishes subscribing after the push misses it. Whether
+   discovery wins that race is **unmeasured** — this sitting is the first
+   opportunity to observe it, so record what you see.
+
+   ```bash
+   ros2 topic echo /trajectory/status --once | grep gravity_correction_loaded
+   ```
+   `true` ⇒ nothing to do. `false` ⇒ run `level`. It is accepted only from **IDLE**
+   and returns to IDLE, so it goes *before* `activate`. A fresh **Platform Teensy**
+   power-cycle clears the cache and always requires a manual `level`.
+
+   > **⚠ THIS AFFECTS CHECK LG-1 AND CHECK LG-3, WHICH ASSUME THE OPPOSITE.** Both
+   > are written as "launch/relaunch without `level` ⇒ expect
+   > `REJECTED_NOT_LEVELLED`". If the boot auto-push wins the race,
+   > `gravity_correction_loaded` reads `true`, the toss proceeds, and **both checks
+   > fail on a healthy machine.** Before scoring either, read the flag. If it is
+   > `true`, the check's precondition was never established: the reliable way to
+   > force the un-levelled state is a **Platform Teensy** power-cycle (its cache is
+   > "since last bootup"), not the can-bridge power-cycle standing rule 1 mandates.
+   > Record which case you got — that observation settles the race question for
+   > every future sitting, and is worth more than the checks themselves.
 3. **The tracker still reports `MISSED` on real catches.** Judge every catch **by
    eye** as well as by `outcome`, everywhere in this file. Record one truthful
    outcome line per attempt.
@@ -2225,7 +2248,8 @@ not the bound that removed the seat.)*
 the launch runs the *installed* copy, and this change is in `trajectory_node.py`
 and `motion/trajectory/planner.py`. **No firmware flash**; nothing here touches
 the Teensy. Standing session rules still apply: reboot the can-bridge Teensy
-first, and `level` is per-boot so a manual `level` is always required.
+first, and **check** `gravity_correction_loaded` — `level` only if it reads
+`false` (standing rule 2, corrected 2026-07-27).
 
 ### CHECK CCATCH-1 — instrument health (run FIRST, no bag, no robot)
 
@@ -2492,8 +2516,14 @@ as `REJECTED_HAND_NOT_PARKED`.
 >    it is `false` at every launch and the orchestrator's persisted auto-push
 >    never fires first. **In practice every session genuinely needs a manual
 >    `level`** — that has always been true; it is now enforced.
-> 2. **Re-`level` after every relaunch, including a mid-sitting one.** The
->    correction lives in `trajectory_node`'s memory, not on the Teensy.
+> 2. **After a relaunch, CHECK `gravity_correction_loaded` before re-levelling.**
+>    *(Corrected 2026-07-27 — this item previously said to re-`level` after every
+>    relaunch.)* The correction does live in `trajectory_node`'s memory, but the
+>    orchestrator re-pushes the **Platform** Teensy's persisted offset on the first
+>    IDLE entry after boot, and standing rule 1's power-cycle is the *can-bridge*
+>    board, which does not clear that cache. `/gravity_offset` is VOLATILE, so the
+>    push can lose a discovery race — which is exactly why you read the flag rather
+>    than assume either way. See standing rule 2.
 > 3. **A zero offset still counts as levelled.** A genuinely level machine
 >    measures ~0 tilt; the gate asks whether a measurement was *taken and
 >    pushed*, never whether it was large. If `level` reports ~0 and the toss
@@ -2853,7 +2883,8 @@ none should be added; C-CATCH-1 itself still contains no stationarity clause.
 launch runs the *installed* copy, and the change is in
 `motion/trajectory/planner.py`. **No firmware flash. No config regeneration.**
 Standing session rules still apply: power-cycle the can-bridge Teensy first, and
-`level` after every relaunch.
+**check** `gravity_correction_loaded` after the relaunch — `level` only if it reads
+`false` (standing rule 2, corrected 2026-07-27).
 
 ### THE RISK THIS SECTION EXISTS TO SCORE — read before the sitting
 

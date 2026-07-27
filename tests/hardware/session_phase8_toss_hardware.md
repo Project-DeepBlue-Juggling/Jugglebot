@@ -68,17 +68,31 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
   then **relaunch** `jugglebot_launch.py` (launch runs the *installed* copy).
 - Arm per the Phase-1 sequence: launch → home → **`level`** → activate → confirm the
   40 Hz hold stream → TRAJECTORY → **zero motion at arm**.
-- **The `level` step is not optional as of 2026-07-26.** CHECKING now refuses with
-  `REJECTED_NOT_LEVELLED` unless `trajectory_node` reports a loaded gravity
-  correction, and that correction is **per-process**: `/gravity_offset` is VOLATILE
-  with one latched push per orchestrator boot, so every launch/relaunch (including
-  the build gate's, and this file's mandated Teensy power-cycle) empties it while the
-  Teensy-persisted `RobotState.levelling_complete` still reads `true` and proves
-  nothing. Without it **every toss below refuses before anything moves** — and a
-  Reload still works, so it is easy to load a ball and then discover the refusal.
-  `level` runs from **IDLE** and returns to IDLE, so it goes before `activate`.
-  Contract C-LEVEL-1.O (`ros_ws/docs/levelling_frame.md`); the gate's own checks are
-  `tests/hardware/session_anomaly_fixes.md` § Section LVLGATE.
+- **CHECK the correction; `level` only if it is missing.** *(Corrected 2026-07-27 —
+  an earlier version of this bullet said `level` is mandatory after every relaunch.
+  That was wrong, and it would have cost you a needless levelling routine on every
+  build gate.)* CHECKING refuses with `REJECTED_NOT_LEVELLED` unless
+  `trajectory_node` holds a gravity correction, and that correction is
+  **per-process**. But it is normally **restored automatically on ROS2 boot**:
+  `RobotState` carries both `levelling_complete` **and** `pose_offset_rad` from the
+  **Platform** Teensy (`teensy_bridge_node.py:1430`), the orchestrator stores them
+  (`orchestrator_node.py:165-167`), and on the first IDLE entry after boot it pushes
+  the persisted offset to `/gravity_offset` (`:329-335`). The standing session
+  power-cycle is the **can-bridge** Teensy, which does **not** clear the Platform
+  Teensy's cache — so a mid-session relaunch, including this file's build gate,
+  should come back already levelled.
+  **The one caveat, and it is why you check rather than assume:** `/gravity_offset`
+  is VOLATILE, so a `trajectory_node` that finishes subscribing after the push
+  misses it. Whether discovery wins that race is unmeasured. So read the flag:
+  ```bash
+  ros2 topic echo /trajectory/status --once | grep gravity_correction_loaded
+  ```
+  `true` ⇒ nothing to do. `false` ⇒ run `level` (from **IDLE**, so before
+  `activate`). A fresh **Platform Teensy** power-cycle clears the cache and always
+  requires a manual `level`. Without a correction **every toss refuses before
+  anything moves** — and a Reload still works, so it is easy to load a ball and then
+  discover the refusal. Contract C-LEVEL-1.O (`ros_ws/docs/levelling_frame.md`); the
+  gate's own checks are `tests/hardware/session_anomaly_fixes.md` § Section LVLGATE.
 
 ### Pre-flight — confirm the freshly-built code is live
 
