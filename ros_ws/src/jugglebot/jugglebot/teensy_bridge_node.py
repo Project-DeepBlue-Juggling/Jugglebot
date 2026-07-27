@@ -279,7 +279,12 @@ RelayRobotState = namedtuple(
 def _decode_relay_robot_state(data: bytes) -> RelayRobotState:
     """Decode a 0x6E0 RobotState reply exactly as Teensy_code.ino
     decodeStateCANMessage packs it: byte0 flags (bit0 is_homed, bit1 levelling),
-    int16 LE pose*1000 about X (bytes 1-2) and Y (bytes 3-4)."""
+    int16 LE pose*1000 about X (bytes 1-2) and Y (bytes 3-4).
+
+    Bytes 5-6 of the same frame carry the Platform Teensy's FW_VERSION and are
+    decoded separately by ``rpc_args.decode_platform_fw_version`` — deliberately
+    NOT folded into this namedtuple; see ``_platform_fw_version`` in ``__init__``
+    for why. Byte 7 is reserved."""
     if len(data) < 5:
         raise ValueError(f"RobotState reply too short: {len(data)} bytes")
     flags = data[0]
@@ -583,6 +588,22 @@ class TeensyBridgeNode(Node):
         # True once an authoritative relay read (or a bridge-issued write) has set
         # the cache; surfaced on link_status for the operator (the powered bring-up sitting).
         self._cold_start_authoritative = False
+        # Platform-Teensy FW_VERSION, read out of bytes 5-6 of the SAME 0x6E0
+        # RobotState reply that feeds the cache above (see relay_read_robot_state).
+        #   None = no authoritative read has landed yet (we know NOTHING)
+        #   0    = the board ANSWERED and carries pre-versioning firmware — i.e. it
+        #          has not been flashed since 2026-07-27. A definite verdict, not
+        #          an absence: every older firmware zero-fills those bytes.
+        #   >=1  = the board's own release number.
+        # DELIBERATELY NOT A FIELD OF RelayRobotState: that namedtuple is rebuilt
+        # from scratch at three conservative-fallback sites whose meaning is "the
+        # ODrive references may be gone" (boot default, total-read-failure fallback,
+        # REBOOT_ODRIVES clear). The Platform Teensy stays powered through all
+        # three and its firmware cannot change without a flash, so folding the
+        # version in would make a REBOOT_ODRIVES silently erase a known-good
+        # version and raise a false skew alarm — and would make every future
+        # fallback site one more place to remember to preserve it.
+        self._platform_fw_version = None
         # encoder_search_complete is DERIVED (no wire field): is_homed OR a search
         # that completed THIS process. This in-session bit tracks the OR term; it is
         # sticky-True for the process once set (exact can_node parity — can_node only
@@ -635,6 +656,7 @@ class TeensyBridgeNode(Node):
         # production names — so the rename RECONNECTS them to the bridge.
         self.robot_state_pub = self.create_publisher(
             RobotState, 'robot_state', 10)
+        self._warn_if_robot_state_msg_is_stale()
         self.hand_telemetry_pub = self.create_publisher(
             HandTelemetryMessage, 'hand_telemetry', 10)
         self.link_status_pub = self.create_publisher(
@@ -1273,6 +1295,55 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(f"Setpoint echo publish error: {e}",
                                     throttle_duration_sec=5.0)
 
+    # Fields this node assigns on RobotState that a STALE jugglebot_interfaces
+    # build will not have. Keep in step with _publish_robot_state's assignments.
+    _ROBOT_STATE_REQUIRED_FIELDS = ('platform_fw_version', 'platform_fw_version_read')
+
+    def _warn_if_robot_state_msg_is_stale(self):
+        """Name a half-rebuilt tree AT LAUNCH, once, instead of at BOOT timeout.
+
+        A stale ``jugglebot_interfaces`` build is the row-B deployment skip, and it
+        is NOT self-announcing on this node the way it is on ``trajectory_node``.
+        The difference is a ``try/except``: ``trajectory_node._publish_status`` has
+        no handler, so rclpy re-raises out of ``spin()`` and the process EXITS ~200
+        ms after launch (e36d60d) — impossible to miss. ``_publish_robot_state``
+        catches its own exceptions (it must: it also drives the setpoint echo, and
+        a 100 Hz publisher that dies on one bad frame would take the leg-command
+        observability path down with it). So the same stale build here degrades to
+        ONE throttled ERROR per 5 s while ``/robot_state`` silently stops at 100 Hz
+        — and the orchestrator, which waits on ``robot_state``, then reports
+        "Check power and CAN connections", routing the operator to the CAN bus for
+        a pure deployment fault.
+
+        This check closes that gap without adding a refusal: it does not raise, it
+        does not gate publishing, it runs once at construction. Same principle as
+        the Platform FW_VERSION check this phase adds — a skipped deployment step
+        must NAME ITSELF, not present as a hardware fault.
+        """
+        # hasattr on a constructed instance, deliberately: it is the one probe that
+        # is correct for BOTH a real rosidl message (a missing field is absent from
+        # __slots__, so hasattr is False) and the dataclass stand-in in
+        # tests/ros/conftest.py. Introspecting the class (__slots__ /
+        # get_fields_and_field_types) is correct for only one of the two.
+        try:
+            probe = RobotState()
+            missing = [f for f in self._ROBOT_STATE_REQUIRED_FIELDS
+                       if not hasattr(probe, f)]
+        except Exception as e:  # noqa: BLE001 — a probe must never block construction
+            self.get_logger().warning(
+                f'could not introspect RobotState for a staleness check: {e}')
+            return
+        if not missing:
+            return
+        self.get_logger().error(
+            'INTERFACES_STALE: the installed jugglebot_interfaces RobotState is '
+            f'missing {missing} — robot_state will STOP PUBLISHING (one throttled '
+            '"Robot state publish error" per 5 s) and the orchestrator will stall '
+            'in BOOT reporting a power/CAN fault that does not exist. This is a '
+            'HALF-REBUILT TREE, not a hardware fault. Fix: colcon build '
+            '--packages-select jugglebot_interfaces jugglebot && source '
+            'install/setup.bash, then relaunch.')
+
     def _publish_robot_state(self):
         """Publish robot_state, mirroring can_node._publish_robot_state.
 
@@ -1299,6 +1370,7 @@ class TeensyBridgeNode(Node):
                 bb_est = self._latest_bb_est
                 bb_est_mono = self._latest_bb_est_mono
                 cold = self._cold_start_state            # immutable namedtuple
+                fw_version = self._platform_fw_version   # int | None
                 search_session = self._encoder_search_done_session
                 fw_validated = self._firmware_validated
                 fw_mismatch = self._firmware_mismatch_error
@@ -1437,6 +1509,24 @@ class TeensyBridgeNode(Node):
                 self._pose_quat_xyzw = (q.x, q.y, q.z, q.w)
             qx, qy, qz, qw = self._pose_quat_xyzw
             msg.pose_offset_quat = Quaternion(x=qx, y=qy, z=qz, w=qw)
+
+            # Platform-Teensy firmware identity, out of the SAME 0x6E0 frame as
+            # is_homed / levelling / pose above — one frame, one message.
+            # Assigned as PLAIN ATTRIBUTES (never setattr-with-default), the
+            # gravity_correction_loaded precedent from e36d60d: a stale
+            # jugglebot_interfaces build must FAIL, not be papered over.
+            # BUT NOTE THE LIMIT, and do not repeat the claim this comment used to
+            # make: unlike trajectory_node (whose timer has no handler, so rclpy
+            # re-raises out of spin() and the process exits ~200 ms after launch),
+            # this function catches its own exceptions below. A stale build here
+            # therefore yields ONE throttled ERROR per 5 s and a silently-dead
+            # /robot_state — NOT a dead node. That gap is what
+            # _warn_if_robot_state_msg_is_stale() closes, at construction, by name.
+            # Explicit None test, not `fw_version or 0`: 0 is a MEANINGFUL value
+            # here (a pre-versioning board) and the falsy-0 idiom would read as if
+            # it were being treated as "missing".
+            msg.platform_fw_version = 0 if fw_version is None else int(fw_version)
+            msg.platform_fw_version_read = fw_version is not None
 
             self.robot_state_pub.publish(msg)
         except Exception as e:  # noqa: BLE001
@@ -2319,6 +2409,13 @@ class TeensyBridgeNode(Node):
                          value=str(int(self._cold_start_state.is_homed))),
                 KeyValue(key='cold_start_authoritative',
                          value=str(int(self._cold_start_authoritative))),
+                # Platform-Teensy firmware identity. On THIS box `ros2 topic echo`
+                # gives false negatives on high-rate RELIABLE topics
+                # (reference_ros2_topic_echo_flaky_foxy), and robot_state runs at
+                # 100 Hz — so link_status at 10 Hz is the surface a bench operator
+                # can actually read, and it is the one the runbook cites.
+                KeyValue(key='platform_fw_version',
+                         value=self._platform_fw_version_str()),
                 KeyValue(key='setpoints_sent',
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',
@@ -2652,7 +2749,61 @@ class TeensyBridgeNode(Node):
             data = self._await_platform_reply(can_id, expected_dlc=8, timeout=timeout)
             if data is None:
                 return False, 'relay state read: no Platform reply within timeout', None
+            self._record_platform_fw_version(data)
             return True, 'OK', _decode_relay_robot_state(data)
+
+    # ── Platform-Teensy firmware-identity check ──
+    # THE single capture + verdict point for the Platform Teensy's FW_VERSION.
+    # It sits in relay_read_robot_state (the only place holding the raw 0x6E0
+    # bytes) rather than in _refresh_cold_start_state, so EVERY successful state
+    # read refreshes it — a future second caller cannot bypass the check by not
+    # going through the cache layer. Same reasoning as the stroke-window gate
+    # living inside _arm_hand_catch rather than at its call site.
+
+    def _record_platform_fw_version(self, data: bytes):
+        """Capture the Platform Teensy's FW_VERSION from a 0x6E0 reply and log the
+        verdict. Called with _relay_lock held (lock order _relay_lock → _lock,
+        same as _write_is_homed)."""
+        version = rpc_args.decode_platform_fw_version(data)
+        with self._lock:
+            previous = self._platform_fw_version
+            self._platform_fw_version = version
+        expected = rpc_args.PLATFORM_FW_VERSION_EXPECTED
+        if version == expected:
+            # Only announce OK on a CHANGE (incl. the first read), so a reconnect
+            # storm cannot spam the log with good news.
+            if previous != version:
+                self.get_logger().info(
+                    f'PLATFORM_FW_CHECK: OK — Platform Teensy reports v{version} '
+                    f'(expected v{expected})')
+            return
+        # Skew. ERROR level, one greppable token, and the un-versioned case named
+        # explicitly because that is the un-flashed-board signature.
+        if version == rpc_args.PLATFORM_FW_VERSION_UNVERSIONED:
+            detail = ('PRE-VERSIONING firmware (no FW_VERSION) — this board has '
+                      'NOT been flashed since 2026-07-27')
+        else:
+            detail = f'v{version}'
+        self.get_logger().error(
+            f'PLATFORM_FW_CHECK: FAIL — Platform Teensy reports {detail}, host '
+            f'tree expects v{expected}. Hand commands are NOT refused (the skew '
+            f'is reported, never enforced — ros_ws/docs/platform_fw_version.md), '
+            f'but bench results from Teensy_code/ are not trustworthy until the '
+            f'Platform Teensy is re-flashed.')
+
+    def _platform_fw_version_str(self) -> str:
+        """Human/runbook rendering of the cached Platform-Teensy FW_VERSION.
+
+        Three distinct verdicts, never collapsed: ``unknown`` (no authoritative
+        read — a CAN3/relay problem, which also forces a re-home), ``0
+        (PRE-VERSIONING)`` (the board answered and is un-flashed), or the number.
+        """
+        version = self._platform_fw_version
+        if version is None:
+            return 'unknown'
+        if version == rpc_args.PLATFORM_FW_VERSION_UNVERSIONED:
+            return '0 (PRE-VERSIONING)'
+        return str(version)
 
     def relay_write_robot_state(self, is_homed, levelling_complete,
                                 pose_offset_tiltX=0.0, pose_offset_tiltY=0.0):
@@ -2755,6 +2906,18 @@ class TeensyBridgeNode(Node):
             f"cold-start {reason} read failed after "
             f"{self._BOOT_STATE_READ_ATTEMPTS} attempts — defaulting to "
             "is_homed=False (conservative; forces a re-home).")
+        # A MISSING answer must be as findable as a WRONG one: the same
+        # PLATFORM_FW_CHECK token, so one grep of launch.log returns all three
+        # verdicts (OK / FAIL / UNKNOWN) rather than two of them. Note this is
+        # NOT the un-flashed signature — an un-flashed board answers, with 0.
+        # No read landing at all means the relay itself is broken, which the
+        # is_homed=False fallback above already makes loud on its own.
+        if self._platform_fw_version is None:
+            self.get_logger().error(
+                'PLATFORM_FW_CHECK: UNKNOWN — no authoritative RobotState read '
+                'has landed, so the Platform Teensy firmware version cannot be '
+                'confirmed either way. Fix the relay/CAN3 read first; do not '
+                'read this as evidence of a stale flash.')
         return False
 
     def _dispatch_cold_start_reread(self, fn, reason: str, thread_name: str) -> bool:

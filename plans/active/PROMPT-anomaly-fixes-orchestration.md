@@ -315,9 +315,20 @@ analysis command that turns each capture into a verdict, and the plan+phase a
 failure routes to. Three deployments are required and **one of them is silent**:
 `colcon build --packages-select jugglebot_interfaces jugglebot` (both packages —
 `TrajectoryStatus.msg` gained a field), **a Platform Teensy flash** of
-`Teensy_code.ino` (`5369fc2`; the board carries no `FW_VERSION`, so a skipped
-flash is indistinguishable from the expected PASS), and no config regeneration.
+`Teensy_code.ino` (`5369fc2`), and no config regeneration.
 See § DEPLOYMENT MATRIX.
+
+> **Amended 2026-07-27.** The parenthetical above originally read *"the board
+> carries no `FW_VERSION`, so a skipped flash is indistinguishable from the
+> expected PASS"*. That is no longer true. At the operator's request, a phase added
+> after this run closed — `hand-command-continuity` **Phase 6** — gave the Platform
+> Teensy a `FW_VERSION` and a report path (bytes 5-6 of the 0x6E0 RobotState reply
+> it already sends), so a skipped flash now reads `0 (PRE-VERSIONING)` on
+> `link_status/platform_fw_version` and logs `PLATFORM_FW_CHECK: FAIL`. Run-sheet
+> row **FW-1**. It WARNS and never refuses (`ros_ws/docs/platform_fw_version.md`),
+> so the operator must still run the row — but the flash is no longer silent, and
+> `RobotState.msg` gaining two fields is a second reason the two-package build is
+> mandatory.
 
 Two items are deferred out of this run with reasons recorded in the runbook's
 § RESIDUAL RISK: `sim/plant/mujoco_plant.py`'s stale `9.858` rev hand prime (item

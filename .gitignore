@@ -95,5 +95,10 @@ temp/
 # MuJoCo generated log (appears on GLFW/headless errors)
 MUJOCO_LOG.TXT
 
+# PlatformIO build trees for the three Teensy sketches. The bare `build/` rule
+# above already covers .pio/build/, but not .pio/libdeps/ (fetched libraries) or
+# .pio/patched_ld/ (the generated linker script) — both are build artefacts.
+.pio/
+
 # MkDocs build output
 site/

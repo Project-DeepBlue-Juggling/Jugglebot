@@ -1,8 +1,10 @@
 # Hardware Session — 2026-07-25 self-toss anomaly fixes: bench validation
 
 **Run**: the 2026-07-25 self-toss anomaly-fix run (four sibling plans, eleven
-landed phases, one phase runner). Each phase appended its own section as it
-landed, under a strict never-reorder rule so parallel phases could not clobber
+landed phases, one phase runner), **plus one phase added after the run closed** at
+the operator's request — `hand-command-continuity` Phase 6, § Section FW, which
+made the Platform Teensy flash confirmable. Each phase appended its own section as
+it landed, under a strict never-reorder rule so parallel phases could not clobber
 each other.
 
 **Goal**: confirm on hardware that each landed anomaly fix does what its plan
@@ -35,11 +37,14 @@ so a failure routes straight back to the plan + phase that owns it.
 > source install/setup.bash
 > ```
 > then **relaunch** (the launch runs the *installed* copy). `jugglebot_interfaces`
-> is not optional: `TrajectoryStatus.msg` gained a field, and rebuilding only
+> is not optional: `TrajectoryStatus.msg` gained a field and `RobotState.msg`
+> gained two, and rebuilding only
 > `jugglebot` makes `trajectory_node` **exit** ~200 ms after launch. Phase 4
 > additionally needs a **firmware flash** of the Platform Teensy — see § THE RUN
-> SHEET stage 2, and note the board carries no `FW_VERSION`, so an un-flashed board
-> is silently indistinguishable from the pre-fix one.
+> SHEET stage 2. **That flash is now confirmable in one line** (run-sheet row
+> **FW-1**, stage 3): the board declares a `FW_VERSION` and reports it to the
+> Jetson, so an un-flashed board is no longer silently indistinguishable from the
+> pre-fix one.
 >
 > ## HOW TO USE THIS FILE — read this paragraph before anything else
 >
@@ -110,68 +115,71 @@ row can just say "standing rules apply".
 
 ## ⚠ DEPLOYMENT MATRIX — the single biggest foot-gun in this run
 
-Eleven phases landed across three *different* kinds of deployment. Getting this
-wrong is the most likely way to waste a sitting, and **one of the three fails
-silently**.
+Twelve phases landed across three *different* kinds of deployment. Getting this
+wrong is the most likely way to waste a sitting. **Until 2026-07-27 one of the
+three failed silently; Phase 6 closed that — but it made the skip VISIBLE, not
+BLOCKED, so row C still depends on you running its check.**
 
 | | what changed | what you must do | **how you find out you skipped it** |
 |---|---|---|---|
 | **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT (commits `aea7b49`, `e58ed89`, and the hand phases) | `colcon build --packages-select jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py` | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
-| **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s |
-| **C** | `ros_ws/src/jugglebot/Teensy_code/Trajectory.h` + the regenerated `Teensy_code/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`) | **FLASH `Teensy_code/Teensy_code.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **NOTHING. THIS ONE IS SILENT — read the box below.** |
+| **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) and `RobotState.msg` gained `platform_fw_version` / `platform_fw_version_read` (§ Section FW) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically, now from two nodes.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s. **`teensy_bridge_node` behaves DIFFERENTLY — do not expect it to exit.** Its 100 Hz `_publish_robot_state` assigns the two new `RobotState` fields but *catches its own exceptions*, so a half-rebuild there gives you **one throttled `Robot state publish error:` per 5 s and a silently-dead `/robot_state`** — the node stays in `ros2 node list` looking healthy while the orchestrator stalls in BOOT and blames power/CAN. Since 2026-07-27 it also logs, once at construction, `INTERFACES_STALE: …` naming the missing fields and the exact rebuild command — **grep that first** (`grep INTERFACES_STALE "$LOG"`). Note this matters most when `jugglebot_interfaces` is only *partly* stale: if it already carries `gravity_correction_loaded` from an earlier sitting, `trajectory_node` does NOT exit and the loud row-B signature above never appears |
+| **C** | `ros_ws/src/jugglebot/Teensy_code/Trajectory.h` + the regenerated `Teensy_code/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`), and `Teensy_code.ino`'s `FW_VERSION` identity block (§ Section FW) | **FLASH `Teensy_code/Teensy_code.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **Loudly, since 2026-07-27 — read the box below.** `link_status/platform_fw_version` reads `0 (PRE-VERSIONING)` on an un-flashed board and `1` on a flashed one, and the launch log carries a `PLATFORM_FW_CHECK: FAIL` ERROR. Run-sheet row **FW-1** |
 
-> ### ⚠⚠ THE HEADLINE: an un-flashed Platform Teensy is UNDETECTABLE from the Jetson
+> ### ⚠ SUPERSEDED (2026-07-27): the un-flashed Platform Teensy is now DETECTABLE
 >
-> **The Platform Teensy carries no `FW_VERSION` constant.** The can-hub has had one
-> since 2026-07-16; this board has never had one, and Phase 4 correctly declined to
-> add one because that is a protocol change it was not chartered to make. The
-> consequence is exact and it is the most dangerous operational fact this run
-> produced:
+> This box used to read *"THE HEADLINE: an un-flashed Platform Teensy is
+> UNDETECTABLE from the Jetson"* and hand you a **four-link circumstantial chain**
+> (right source → the header compiles → you uploaded → the board rebooted) because
+> the board carried no `FW_VERSION` and nothing on the wire could tell you. **That
+> chain is superseded. Do not run it — run FW-1 instead.** It was inference about
+> your own actions; FW-1 is an observation of the board.
 >
-> **An un-flashed board behaves EXACTLY like the pre-fix one. No log line, no
-> `link_status` field, no refusal, no warning, nothing.** Every other deployment in
-> this run fails loudly — row A throws at a grep, row B kills the node — and this
-> one does not. Worse, § CHECK HAND-4 states plainly that the fix is a *no-op on the
-> clean path by design*, so "HAND-4 looked identical to HAND-1" is the **expected
-> PASS** and is also **exactly what a skipped flash looks like**. The two are
-> indistinguishable from the capture.
+> The board now declares `FW_VERSION` (`Teensy_code.ino`, currently **1**) and
+> reports it in bytes 5-6 of the 0x6E0 RobotState reply it already sends. See
+> `ros_ws/docs/platform_fw_version.md` for the contract; the operator-facing part
+> is two facts:
 >
-> #### The strongest positive confirmation actually available (do all four, in order)
+> **1. The direct check — run-sheet row FW-1, ~3 s, with the graph up:**
+> ```bash
+> LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log; grep PLATFORM_FW_CHECK "$LOG"
+> ros2 topic echo /link_status --once | grep -A1 platform_fw_version   # live confirmation
+> ```
+> The log grep is the primary: the bridge emits a `PLATFORM_FW_CHECK` line at the
+> **boot** RobotState read, before you think to look, and it cannot be missed by a
+> flaky `topic echo`. `OK` is logged only when the version *changes* (so one line
+> per launch on a healthy board, not a reconnect flood); a **`FAIL` is logged on
+> every read** — if you see several, that is one board still stale, not several
+> boards.
 >
-> There is **no** behavioural probe that distinguishes new firmware from old on a
-> stationary hand, and this is by construction, not an oversight:
-> `smoothMoveDuration`'s `v0 == 0` branch is "the HISTORICAL expression, kept
-> verbatim so a rest-to-rest duration (and hence the sample count and
-> `smoothDur_us`) is bit-identical to before". So the `Smooth-move armed: target=…
-> pts=… dur=…` serial line **cannot** confirm the flash — do not read it as
-> confirmation. Provoking the branch that *is* different means dispatching a hand
-> command while the hand moves above 6.0 rev/s, which is either the defect Phases
-> 1–2 removed or a deliberate abuse of the un-arm path. **Do not provoke it.**
+> | log says / `link_status` reads | means | do |
+> |---|---|---|
+> | `PLATFORM_FW_CHECK: OK — … v1` / `1` | flashed, current | continue |
+> | `FAIL — … PRE-VERSIONING …` / `0 (PRE-VERSIONING)` | the board answered and **has not been flashed** | **ABORT stage 2 — flash it, then relaunch** |
+> | `FAIL — … v<other>` / a different number | flashed, but not from this tree | **ABORT** — `git pull`, re-flash |
+> | `UNKNOWN` / `unknown` | no RobotState read landed at all | **NOT a stale flash, and most likely NOT a fault.** A missed boot read on a launch-only restart is a *known benign transient* (it is also why you sometimes get a surprise re-home). **Relaunch once and re-read.** Only if it repeats: investigate CAN3/relay |
+> | **nothing at all** — grep prints no line, `link_status` has no `platform_fw_version` key | the running node predates the check | **ABORT** — you skipped `colcon build`. Rebuild BOTH packages, source, relaunch. Do not score an absent `FAIL` as a pass |
 >
-> What you *can* establish, and it is a genuine chain:
+> **2. The check REPORTS; it does not protect you.** Nothing refuses a hand
+> command, a toss, or a state transition on a skew — deliberately, because the
+> 0x6D0 path carries the kind-3 retract that is the only un-arm mechanism the
+> Teensy offers (`platform_fw_version.md` § Warn, never refuse). **You are the
+> enforcement.** A `0 (PRE-VERSIONING)` reading means every § CHECK HAND-4 row
+> below is meaningless, and the machine will happily let you run them anyway.
 >
-> 1. **The tree carries the change** — `grep -c 'start_vel = current_hand_velocity'
->    ros_ws/src/jugglebot/Teensy_code/Trajectory.h` prints `1`, and `git log
->    --oneline -1 -- ros_ws/src/jugglebot/Teensy_code/Trajectory.h` shows `5369fc2`
->    or later. (Run sheet PF-6 / § H4.0a.)
-> 2. **The shipped header compiles and behaves** — `pytest
->    tests/firmware/test_hand_smooth_move_xref.py -q` passes with **ZERO skips**.
->    That test is the only thing in the repository that reads the C++; a SKIP means
->    `g++` was missing and it read nothing. (§ H4.0b.)
-> 3. **The sketch cannot even compile against a stale config.** `Trajectory.h`
->    references `TeensyTraj::SMOOTH_MOVE_V0_DEADBAND_RPS`, which only exists in the
->    regenerated `Teensy_code/hardware_config.h`. So a **successful compile of the
->    current tree proves both halves of change C are in the source you are
->    flashing.** `git pull` before opening the sketch.
-> 4. **The board rebooted at the moment you flashed it.** A flash resets the MCU, so
->    the Platform Teensy re-prints its boot banner `Teensy platform MCU ready.` on
->    the serial monitor. Watch for that line at flash time — it is the only board-side
->    evidence available, and combined with (1)–(3) it is the whole chain: right
->    source → compiles → uploaded → board restarted.
+> Still true, and still the reason this matters: § CHECK HAND-4's fix is a *no-op
+> on the clean path by design* (`smoothMoveDuration`'s `v0 == 0` branch is
+> bit-identical to the historical expression), so "HAND-4 looked identical to
+> HAND-1" is simultaneously the **expected PASS** and what a skipped flash looks
+> like. No capture can separate them; FW-1 can. Do not try to provoke the branch
+> that *is* different — that means dispatching a hand command while the hand moves
+> above 6.0 rev/s, which is either the defect Phases 1–2 removed or a deliberate
+> abuse of the un-arm path.
 >
-> **If any link is in doubt, RE-FLASH.** It costs about a minute, it is idempotent,
-> and there is no version handshake that will ever tell you otherwise. Record in the
-> session log: the commit you flashed from, the flash time, and the boot banner.
+> Two links of the old chain remain useful as *pre-flash* gates and are kept on the
+> run sheet (PF-6 / INST-4): they check the tree you are about to flash FROM.
+> FW-1 checks the board you flashed TO. Record in the session log: the commit you
+> flashed from, the flash time, and the FW-1 reading.
 
 **Recommended: do change B's build, which strictly covers A.** `colcon build
 --packages-select jugglebot_interfaces jugglebot` is correct for every section in
@@ -219,7 +227,9 @@ source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
 python tools/probes/catch_reach_replay.py   --self-check     # INST-1
 python tools/probes/levelling_tilt_bag_check.py --self-check # INST-2
 python tools/probes/hand_stroke_timeline.py --gate           # INST-3
-python -m pytest tests/firmware/test_hand_smooth_move_xref.py -q   # INST-4
+python -m pytest tests/firmware/test_hand_smooth_move_xref.py \
+                tests/firmware/test_platform_fw_version_xref.py -q   # INST-4
+cd ros_ws/src/jugglebot/Teensy_code && pio run && cd ~/Desktop/Jugglebot   # INST-5
 ```
 
 | # | PASS | ABORT | routes to | detail |
@@ -227,7 +237,16 @@ python -m pytest tests/firmware/test_hand_smooth_move_xref.py -q   # INST-4
 | INST-1 | `SELF-CHECK: PASS`, **10/10 `OK`**, exit 0. Case 7 must show `planner._CATCH_TILT_THROUGH_RATE_RADPS=0.0` **and** `recorded-session rate (capture record, NOT a live mirror)=0.07` | any `BAD` | `catch-reach-degenerate-overshoot` P0/P2/P3 | § CCATCH-1, § ZSEAT-1 |
 | INST-2 | `SELF-CHECK: PASS`, exit 0 (scores a synthetic post-fix session PASS, a pre-fix session FAIL, an ACTIVATE-contaminated session FAIL-with-note) | anything else | `levelling-frame-contract` P1–P2 | § LVL-0 |
 | INST-3 | exit 0 and **TWO** `GATE PASS` lines: `25/25 rows within tolerance` **and** `fixed-shape branch`. **Judge on the exit code and both lines, not the row count** — the count grows whenever a reference row is added and has already produced one stale runbook | `GATE FAIL`, a missing second line, or non-zero exit. `GATE UNAVAILABLE` is different — the fixture is missing; restore or regenerate it | `hand-command-continuity` P0 | § The analysis command |
-| INST-4 | `passed`, with **ZERO skips** | any failure, or `passed, N skipped` — a SKIP means `g++` was absent and the only thing that reads the C++ read nothing. **Do not flash on a skip** | `hand-command-continuity` P4 | § H4.0b |
+| INST-4 | `passed`, with **ZERO skips** | any failure, or `passed, N skipped` — a SKIP means `g++` was absent and the only two things that read the C++ read nothing. **Do not flash on a skip** | `hand-command-continuity` P4 / P6 | § H4.0b, § Section FW |
+| INST-5 | `[SUCCESS]` — the WHOLE Platform sketch compiles and links for the Teensy 4.0 | any error ⇒ **do not open the sketch, do not flash**; the source you are about to flash does not build. Needs network on a cold PlatformIO cache (~1 min); warm it is ~10 s | `hand-command-continuity` P6 | § Section FW |
+
+INST-5 is a **compile gate only** — `Teensy_code/platformio.ini` has no
+`upload_command` on purpose and physically cannot flash the board (see its
+header). It does not replace the Arduino IDE flash in stage 2; it proves the
+sketch builds before you get there. Before 2026-07-27 nothing in the repository
+compiled this sketch at all. It drops a `.pio/` build tree inside `Teensy_code/`
+— gitignored, invisible to `colcon` (`setup.py` does not glob that directory),
+and safe to `rm -rf`.
 
 ### Stage 2 — build and flash (deployment matrix above)
 
@@ -236,8 +255,9 @@ cd ~/Desktop/Jugglebot && git pull
 cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot
 source install/setup.bash
 ```
-then **flash the Platform Teensy** (matrix row C — read that box; the flash is
-silent if skipped), then **launch** `jugglebot_launch.py`.
+then **flash the Platform Teensy** (matrix row C) from the Arduino IDE as usual,
+then **launch** `jugglebot_launch.py`. Confirm the flash with **FW-1** in stage 3
+— that is the check, not the boot banner.
 
 ### Stage 3 — pre-flights against the INSTALLED copy (read-only, ~1 min)
 
@@ -279,9 +299,22 @@ grep -c 'start_vel = current_hand_velocity' \
 Then, **with the graph up** (still read-only):
 
 ```bash
+LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log; grep PLATFORM_FW_CHECK "$LOG"   # FW-1
+grep INTERFACES_STALE "$LOG"                                                     # FW-2
 ros2 node list | grep trajectory_node
 ros2 topic echo /trajectory/status --once | grep -E "streaming|gravity_correction_loaded"
+ros2 topic echo /link_status --once | grep -A1 platform_fw_version               # FW-1 (live)
 ```
+
+| # | PASS | ABORT | routes to |
+|---|---|---|---|
+| FW-1 | `PLATFORM_FW_CHECK: OK — Platform Teensy reports v1`, and `link_status/platform_fw_version` = `1` | `FAIL … PRE-VERSIONING` or `0 (PRE-VERSIONING)` ⇒ **the Platform Teensy was NOT flashed** — go back to stage 2, flash, relaunch, re-run FW-1. `FAIL … v<other>` ⇒ flashed from a different tree; `git pull` + re-flash. `UNKNOWN` / `unknown` ⇒ no read landed; this is usually the **known benign boot-read transient**, so **relaunch once and re-read** before investigating CAN3 (co-signature: `cold-start boot read failed after N attempts`, `cold_start_authoritative` = `0`). **No line at all** ⇒ you skipped `colcon build`; rebuild both packages and relaunch — never score an absent `FAIL` as a pass | `hand-command-continuity` P6 (§ Section FW) |
+| FW-2 | **no output** (grep exits 1) — the installed `jugglebot_interfaces` carries both new `RobotState` fields | any `INTERFACES_STALE:` line ⇒ **you built `jugglebot` without `jugglebot_interfaces`.** `/robot_state` is dead (one throttled error per 5 s, node still listed) and BOOT will time out blaming power/CAN. Rebuild BOTH packages, source, relaunch | `hand-command-continuity` P6 (§ DEPLOYMENT MATRIX row B) |
+
+**A `0 (PRE-VERSIONING)` here invalidates every § CHECK HAND-4 row** and nothing
+in the software will stop you running them — the version is reported, never
+enforced. See § DEPLOYMENT MATRIX row C.
+
 - **PASS**: node listed, both keys print, `gravity_correction_loaded: false` before any `level`.
 - **ABORT**: `trajectory_node` **absent** ⇒ that is the half-rebuild signature of
   deployment-matrix row B. Rebuild **both** packages and relaunch.
@@ -527,10 +560,15 @@ you interpret a surprise.
    **live** stroke shows up as a from-rest `seed`. The other half is unobservable
    from the Jetson. A Teensy-side "armed stroke" field in `hand_telemetry` or
    `link_status` would fix it and is a protocol change, out of scope here.
-3. **The Platform Teensy has no `FW_VERSION`, so host/firmware skew on the hand
-   path is undetectable.** See the deployment-matrix box. The residual is not just
-   this sitting: *every* future Platform-Teensy change inherits it. Adding one is a
-   protocol change and wants its own decision.
+3. **~~The Platform Teensy has no `FW_VERSION`~~ — CLOSED 2026-07-27.** The board
+   now declares one and reports it in the 0x6E0 RobotState reply; run-sheet row
+   **FW-1** reads it, and *every* future Platform-Teensy change inherits the check
+   rather than the blind spot. **What remains residual is the ENFORCEMENT**: a skew
+   warns and never refuses (`ros_ws/docs/platform_fw_version.md` § Warn, never
+   refuse — the 0x6D0 path carries the kind-3 retract, the only un-arm mechanism
+   the Teensy offers). So the operator is still the gate; the difference is that
+   the operator can now see the thing they are gating on. Whether a *toss start*
+   should refuse on a definite `version == 0` is open, and wants its own decision.
 4. **The `ERR_TIMEOUT` hand-ack epidemic is unfixed** (`HAND_TRAJ_CMD` acks fail
    40–60 % of the time and lie in *both* directions). It is the reason the arm can
    be dispatched twice per ball, which is what HAND-2 exists to bound. More hand
@@ -632,10 +670,11 @@ so a relaunch without a rebuild keeps the old code.
 > `ros_ws/src/jugglebot/Teensy_code/Trajectory.h`, which is compiled into the
 > **Platform Teensy** sketch. `colcon build` does not touch it and the Jetson never
 > executes it, so **HAND-4 requires flashing `Teensy_code/Teensy_code.ino` to the
-> Platform Teensy** (not the can-bridge, not the CatchingCone). There is **no
-> version handshake on that board**, so nothing will tell you if you skipped it —
-> § CHECK HAND-4 row **H4.0** and the deployment matrix's four-link chain are the
-> only guards. Every other section in this runbook is colcon + relaunch;
+> Platform Teensy** (not the can-bridge, not the CatchingCone). Since 2026-07-27
+> the board carries a `FW_VERSION` and reports it, so a skipped flash IS
+> detectable — run-sheet row **FW-1**, and § CHECK HAND-4 row **H4.0d**. It is
+> reported, not enforced: nothing refuses a command on a skew, so FW-1 is a check
+> you must actually run. Every other section in this runbook is colcon + relaunch;
 > `levelling-frame-contract` Phase 3 additionally needs `jugglebot_interfaces`
 > rebuilt (see § Section LVLGATE).
 
@@ -1306,13 +1345,17 @@ prelude claim itself is pinned offline, in
 > it is a byte-transparent forwarder for the 0x6D0 payload and needs no change —
 > and do not flash the CatchingCone.
 >
-> **There is no version handshake on this board.** The Platform Teensy carries
-> **no** `FW_VERSION` constant (unlike the can-hub, which has had one since
-> 2026-07-16), so nothing on the Jetson can detect host/firmware skew for the
-> hand path — no log line, no `link_status` field, no refusal. If you run this
-> section without flashing, every row below will read exactly like the pre-fix
-> baseline and there will be no signal telling you why. Row **H4.0** is the only
-> guard; do it first.
+> **There IS a version handshake on this board, as of 2026-07-27.** The Platform
+> Teensy declares `FW_VERSION` (currently **1**) and reports it in bytes 5-6 of the
+> 0x6E0 RobotState reply — row **H4.0d** below, and run-sheet **FW-1**. Read it: if
+> you run this section without flashing, every row below will read exactly like the
+> pre-fix baseline, and H4.0d is the only thing that will tell you why.
+>
+> **It reports; it does not refuse.** A skew produces an ERROR log line and a
+> `link_status` field, and nothing else — no command is blocked, because the
+> 0x6D0 path also carries the kind-3 retract that is the only un-arm mechanism the
+> Teensy offers (`ros_ws/docs/platform_fw_version.md` § Warn, never refuse). The
+> machine will let you run this whole section against a stale board.
 >
 > Config also changed (`config/hardware_config.yaml` gained four
 > `teensy_trajectory` keys), so the regenerated `hardware_config.h` must be in the
@@ -1368,13 +1411,17 @@ grep -n 'SMOOTH_MOVE_V0_DEADBAND_RPS' ros_ws/src/jugglebot/Teensy_code/hardware_
 #    the same check pytest runs; it needs g++ and no robot.
 source ~/Desktop/PDJ_venv/venv/bin/activate
 python -m pytest tests/firmware/test_hand_smooth_move_xref.py -q     # expect all pass
+
+# 3. AFTER the flash, with the launch up: ask the BOARD what it is running.
+LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log; grep PLATFORM_FW_CHECK "$LOG"
 ```
 
 | # | read | PASS | ABORT |
 |---|---|---|---|
 | H4.0a | `grep 'start_vel = current_hand_velocity'` | 1 hit | 0 hits ⇒ you are on a pre-Phase-4 tree; do not flash it, `git pull` first |
 | H4.0b | `pytest tests/firmware/test_hand_smooth_move_xref.py` | all pass, **with zero skips** (the headline test compiles and runs the real `Trajectory.h`) | any failure ⇒ do **not** flash; route to `hand-command-continuity` Phase 4. **A SKIP is not a PASS**: `test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror` skips when `g++` is absent, and it is the only thing in the repository that reads the C++ — everything else is a hand-maintained transcription. Run this on a host with `g++` (the Jetson has one) and check the summary says `passed`, not `passed, N skipped` |
-| H4.0c | the sketch was flashed to the **Platform** Teensy after H4.0a passed | you flashed it, this sitting, from this tree | if in any doubt, **re-flash** — there is no version handshake to tell you otherwise, and every row below is meaningless without it |
+| H4.0c | the sketch was flashed to the **Platform** Teensy after H4.0a passed | you flashed it, this sitting, from this tree | if in any doubt, **re-flash** — it costs a minute and it is idempotent. H4.0d is what settles it |
+| **H4.0d** | `grep PLATFORM_FW_CHECK "$LOG"` — **the direct check; this is the one that decides** | `PLATFORM_FW_CHECK: OK — Platform Teensy reports v1`. Equivalently `ros2 topic echo /link_status --once` shows `platform_fw_version: 1` | `FAIL … PRE-VERSIONING` ⇒ **the board was not flashed; every row below is meaningless.** Flash and relaunch. `FAIL … v<other>` ⇒ flashed from a different tree. `UNKNOWN` ⇒ no read landed — **not** a stale flash, and usually the known benign boot-read transient: **relaunch once and re-read**, investigate CAN3 only if it repeats. **No line at all** ⇒ the `colcon build` was skipped; rebuild both packages and relaunch. This ROW SUPERSEDES the old four-link inference chain: H4.0a–c are about the tree you flash FROM, this is about the board you flashed TO. Contract: `ros_ws/docs/platform_fw_version.md`; phase: `hand-command-continuity` P6 |
 
 #### Run
 
@@ -1436,6 +1483,91 @@ higher arrest limit is an envelope decision, not an implementation one** — it
 changes what the machine can physically do at the bench. Nothing in this sitting
 requires the answer; the fallback is today's behaviour, so declining to decide
 costs nothing.
+
+---
+
+## Section FW — `hand-command-continuity` Phase 6 (Platform Teensy `FW_VERSION`)
+
+**Plan**: `plans/active/hand-command-continuity.md` § Phase 6
+**Contract**: `ros_ws/docs/platform_fw_version.md` (**C-PLATFW-1**)
+**Run-sheet rows**: **INST-4**, **INST-5** (at the desk), **FW-1** and **FW-2**
+(stage 3), **H4.0d** (§ CHECK HAND-4 pre-flight — the same check, cited where it
+decides). FW-2 is the companion deployment check on the *host* half: this phase
+added two fields to `RobotState.msg`, so a `jugglebot`-only rebuild now silently
+kills `/robot_state`; `INTERFACES_STALE` names it at construction.
+
+**No robot motion. No extra capture. Nothing to score after the sitting.** This
+section exists because a *deployment* became observable, not because a behaviour
+changed.
+
+### What changed and why it matters
+
+The Platform Teensy carried no version of any kind, so an un-flashed board was
+indistinguishable from a flashed one from the Jetson — the only deployment in this
+stack that failed silently (row A throws at a grep; row B kills `trajectory_node`
+~200 ms after launch). It now declares `FW_VERSION` and reports it in **bytes 5-6
+of the 0x6E0 RobotState reply it already sends** — the same frame that carries
+`is_homed` / `levelling_complete` / `pose_offset`.
+
+The property that makes this work is not economy, it is what a *stale* board does:
+every firmware built before 2026-07-27 zero-filled those bytes unconditionally, at
+the same dlc 8, so **a pre-versioning board answers — with 0 — rather than going
+silent**. A brand-new query frame would have made the un-flashed signature an
+*absence*, indistinguishable from a CAN3 hiccup or an unpowered board, and would
+have needed a **can-bridge flash** to detect a stale **Platform** flash.
+
+Consequences worth knowing at the bench:
+
+- **No new CAN frame, no new arbitration id, no extra CAN3 duty cycle** — nothing
+  was added to the bus the 0x6D0 hand conduit shares.
+- **No can-bridge change and no can-bridge flash.** Do not flash the can-bridge
+  for this.
+- **The check is one-shot per RobotState read** (boot, UDP reconnect, CAN3
+  recovery), not polled. `link_status` carries the cached value continuously.
+
+### Reading it
+
+| verdict | `link_status/platform_fw_version` | launch log | what it means |
+|---|---|---|---|
+| **OK** | `1` | `PLATFORM_FW_CHECK: OK` | flashed, current — continue |
+| **FAIL, pre-versioning** | `0 (PRE-VERSIONING)` | `PLATFORM_FW_CHECK: FAIL … PRE-VERSIONING` | the board answered and **has not been flashed** — flash, relaunch, re-check |
+| **FAIL, other release** | the number | `PLATFORM_FW_CHECK: FAIL … v<n>` | flashed from a different tree — `git pull`, re-flash |
+| **UNKNOWN** | `unknown` | `PLATFORM_FW_CHECK: UNKNOWN` | **not** a stale flash: no RobotState read landed at all. Most often the **known benign boot-read transient** on a launch-only restart (the same miss that gives you a surprise re-home) — **relaunch once and re-read**; investigate CAN3/relay only if it repeats. Note the verdict does **not** self-heal within a launch: it is re-read only on a UDP reconnect or a CAN3 WARN/BUS_OFF→OK edge, neither of which a clean launch produces |
+| **(no verdict)** | key absent | *(no line)* | **not a board state** — the running node predates the check, i.e. `colcon build --packages-select jugglebot` was skipped. Rebuild both packages, source, relaunch. Never read an absent `FAIL` as a pass |
+
+`robot_state.platform_fw_version` / `.platform_fw_version_read` carry the same
+verdict typed, and land in the bag. Prefer `link_status` live: `ros2 topic echo`
+gives false negatives for high-rate RELIABLE topics on this box and `robot_state`
+runs at 100 Hz.
+
+### THE TRAP: it reports, it does not protect
+
+**Nothing refuses anything on a version skew.** Not a hand command, not a toss,
+not a state transition. That is deliberate and the reason is specific: the
+`SetHandTrajCmd` path carries the kind-3 retract, and a kind-3 clobbering an armed
+kind-0 is the **only un-arm mechanism the Teensy offers** — a pre-release
+`SAFE_ABORT` depends on it. A version gate there would convert a skipped flash
+into "the abort stopped working with a ball about to launch". The full argument,
+including why refusing kind-1 mid-sequence and why gating on a cached relay read
+are both worse, is `ros_ws/docs/platform_fw_version.md` § Warn, never refuse.
+
+So: **a `0 (PRE-VERSIONING)` reading invalidates every § CHECK HAND-4 row, and the
+machine will happily let you run them.** You are the enforcement.
+
+### The compile gate (INST-5)
+
+`Teensy_code/platformio.ini` builds the whole sketch for the Teensy 4.0
+(`cd ros_ws/src/jugglebot/Teensy_code && pio run`). Before 2026-07-27 nothing in
+the repository compiled this sketch — `tests/firmware/test_hand_smooth_move_xref.py`
+host-compiles `Trajectory.h` with `g++`, which is real coverage of that one header
+but not of the `.ino` against FlexCAN_T4, SCL3300 and the generated config.
+
+It is a **compile gate, not a flash path**: it has no `upload_command` and cannot
+flash the board (PlatformIO's bundled loader helpers are glibc-2.34 and will not
+run on this Jetson). **Keep flashing from the Arduino IDE.** The pio build uses
+`-fno-exceptions` and a patched linker script, so its binary is not the image this
+board has been running, and switching the flash toolchain in the same sitting that
+validates the velocity-continuous `makeSmoothMove` would confound the two.
 
 ---
 

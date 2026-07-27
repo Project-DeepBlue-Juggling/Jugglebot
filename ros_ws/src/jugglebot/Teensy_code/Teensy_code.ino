@@ -6,7 +6,9 @@
  *    • Optional debugging of specific CAN IDs
  *    • Timed analysis of RxSdo messages
  *    • SCL3300 inclinometer → CAN (ID 0x7DE)
- *    • Robot state exchange (ID 0x6E0)
+ *    • Robot state exchange (ID 0x6E0) — also reports this firmware's
+ *      FW_VERSION in bytes 5-6; see the FIRMWARE IDENTITY block below and
+ *      ros_ws/docs/platform_fw_version.md
  *    • TIME‑SYNC layer (ID 0x7DD)
  *      – Maintains wall‑time offset (Jetson wall‑time − micros64())
  *      – Prints jitter stats once per second
@@ -27,6 +29,53 @@
 #define DEBUG_TRAFFIC 0    // 0 = silent, 1 = Serial print report CAN traffic frames
 #define DEBUG_TRAJ 0       // 0 = silent, 1 = Serial print each hand traj frame as it gets sent out
 #define DEBUG_TIME_SYNC 0  // 0 = silent, 1 = Serial print periodic messages showing how tight the clocks are synced
+
+/*----------------------------------------------------------------------------*/
+/*                        F I R M W A R E   I D E N T I T Y                   */
+/*----------------------------------------------------------------------------*/
+/*  Mirrors the can-bridge's identity block (Teensy_code_canbridge/
+ *  canbridge_config.h, `CanBridge::FW_NAME` / `FW_VERSION`): a hand-authored
+ *  marker with its bump history inline, printed at boot AND — unlike the
+ *  can-bridge, which has a USB serial console the Jetson can read — reported to
+ *  the host over CAN, because nothing on this board is reachable from the Jetson
+ *  except through the can-bridge conduit.
+ *
+ *  WHY THIS EXISTS.  Until 2026-07-27 this board carried no version of any kind,
+ *  so an UN-FLASHED Platform Teensy was indistinguishable from a flashed one from
+ *  the Jetson: no log line, no field, no warning.  Every other deployment step in
+ *  the stack fails loudly when skipped (a stale colcon install throws; a stale
+ *  jugglebot_interfaces build kills trajectory_node ~200 ms after launch) — the
+ *  firmware was the only one that failed SILENTLY, because a pre-fix board simply
+ *  behaves like a pre-fix board.
+ *
+ *  WHERE IT IS REPORTED: bytes 5-6 of the 0x6E0 RobotState reply
+ *  (`createStateCANMessage`), which were previously hard-zeroed reserved bytes.
+ *  That choice is load-bearing, not incidental — see the frame-layout comment on
+ *  `createStateCANMessage` for why the pre-versioning board's zeros ARE the
+ *  sentinel.
+ *
+ *  VERSION SEMANTICS (identical to the can-bridge's): this is a human-facing
+ *  identity marker.  It has NO runtime effect on this board and gates nothing;
+ *  the host WARNS on a skew and never refuses a hand command
+ *  (ros_ws/docs/platform_fw_version.md § Warn, never refuse).
+ *
+ *    0 = "pre-versioning" — no numbered release; the board predates this block.
+ *        NEVER assign 0 to a release.  It is reserved as the sentinel a
+ *        pre-2026-07-27 board transmits for free (its `createStateCANMessage`
+ *        zero-fills bytes 5-7 unconditionally).
+ *    1 = 2026-07-27.  First numbered release.  Carries the velocity-continuous
+ *        `makeSmoothMove` (`Trajectory.h`, commit 5369fc2): the quintic is seeded
+ *        from the live `current_hand_velocity` instead of v = 0, the empty-return
+ *        branch is now conjunct on at_rest as well as |delta| < 1e-6, and the
+ *        duration bound is the positive root of the corrected quadratic (capped by
+ *        `smoothMoveMaxDuration()`).  Plan: plans/active/hand-command-continuity.md
+ *        Phase 4.  Also carries this identity block itself.
+ *
+ *  Bump on any behavioural change worth telling a bench operator about, and add a
+ *  line above saying WHAT changed and WHEN (the can-bridge's comment style).
+ */
+constexpr char     FW_NAME[]  = "jugglebot-platform";
+constexpr uint16_t FW_VERSION = 1;
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */
@@ -346,6 +395,36 @@ void sendTiltData(platformTilt til) {
 /*----------------------------------------------------------------------------*/
 /*            R O B O T  S T A T E  P A C K / U N P A C K                     */
 /*----------------------------------------------------------------------------*/
+/*  0x6E0 RobotState frame — dlc 8, BOTH directions.
+ *
+ *    byte 0     flags: bit0 is_homed, bit1 levelling_complete
+ *    bytes 1-2  int16 LE  pose_offset_tiltX * 1000  (rad)
+ *    bytes 3-4  int16 LE  pose_offset_tiltY * 1000  (rad)
+ *    bytes 5-6  uint16 LE FW_VERSION      ← Teensy→host ONLY (see below)
+ *    byte 7     reserved, 0
+ *
+ *  BYTES 5-6 ARE MEANINGFUL ONLY IN THE TEENSY→HOST DIRECTION.  The can-bridge's
+ *  STATE_WRITE (platform_relay.cpp `state_write`) zero-fills 5-7 and
+ *  `decodeStateCANMessage` below deliberately never reads them, so a host write
+ *  can never overwrite this board's own version — and FW_VERSION is a compile-time
+ *  constant that lives in no mutable state, so a self-received reply (FlexCAN
+ *  loopback) cannot clobber it either.
+ *
+ *  WHY BYTES 5-6, AND WHY THIS IS THE WHOLE DETECTION MECHANISM.  Every firmware
+ *  built before 2026-07-27 executed `m.buf[5] = m.buf[6] = m.buf[7] = 0;` here,
+ *  unconditionally, at the same dlc 8.  So a PRE-VERSIONING BOARD ANSWERS — with
+ *  0 — rather than staying silent.  That is the property that makes the check
+ *  work: the case that matters most (an un-flashed board) produces a DEFINITE wire
+ *  value, not a timeout that would be indistinguishable from a CAN3 hiccup, an
+ *  unpowered Platform Teensy, or a bridge that does not forward a new id.  A
+ *  brand-new query frame or a dedicated RPC would have had exactly the opposite
+ *  property, and would additionally have needed a CAN-BRIDGE flash to detect a
+ *  stale PLATFORM flash — a second silent deployment to solve a silent deployment.
+ *
+ *  The dlc stays 8 in both directions, so the can-bridge's (can_id, dlc) reply
+ *  correlator (udp_protocol.h PlatformFrame) is untouched, no new CAN id exists,
+ *  and NOT ONE EXTRA FRAME is added to CAN3 — which the 0x6D0 hand conduit shares.
+ */
 void createStateCANMessage(const RobotState &s, CAN_message_t &m) {
   uint8_t flags = (s.is_homed << 0) | (s.levelling_complete << 1);
   int16_t x = int16_t(s.pose_offset_tiltX * 1000.f);
@@ -357,9 +436,14 @@ void createStateCANMessage(const RobotState &s, CAN_message_t &m) {
   m.buf[2] = x >> 8;
   m.buf[3] = y & 0xFF;
   m.buf[4] = y >> 8;
-  m.buf[5] = m.buf[6] = m.buf[7] = 0;
+  m.buf[5] = uint8_t(FW_VERSION & 0xFF);   // firmware identity, LE low byte
+  m.buf[6] = uint8_t(FW_VERSION >> 8);     // firmware identity, LE high byte
+  m.buf[7] = 0;                            // reserved
 }
 
+/*  Host→Teensy state write.  Reads bytes 0-4 ONLY: bytes 5-6 are this board's
+ *  own FW_VERSION on the reply path and must never be written back into `state`
+ *  (see createStateCANMessage above). */
 void decodeStateCANMessage(const CAN_message_t &m, RobotState &s) {
   if (m.len != 8) return;
   uint8_t f = m.buf[0];
@@ -574,6 +658,14 @@ void canSniff(const CAN_message_t &msg) {
 /*----------------------------------------------------------------------------*/
 void setup() {
   Serial.begin(115200);
+
+  /* Identity banner — same shape as the can-bridge's `[boot] %s v%u …`
+   * (Teensy_code_canbridge.ino).  Serial-only, so it is NOT the primary
+   * report path (there is no serial console during a launch); the wire report
+   * in createStateCANMessage is.  This line exists for the one moment a serial
+   * monitor IS attached: the flash itself, where it turns the runbook's
+   * "the board rebooted" evidence into "the board rebooted INTO v<N>". */
+  Serial.printf("[boot] %s v%u\n", FW_NAME, (unsigned)FW_VERSION);
 
   /* CAN bus */
   can1.begin();

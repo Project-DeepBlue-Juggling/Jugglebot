@@ -58,6 +58,15 @@ header it compiles. The Platform Teensy carries no `FW_VERSION`, so an un-flashe
 board is indistinguishable from a fixed one at the bench — runbook row H4.0 is the
 only guard.
 
+> **SUPERSEDED on the `FW_VERSION` point (2026-07-27, Phase 6 —
+> [2026-07-27-platform-teensy-fw-version](2026-07-27-platform-teensy-fw-version.md)).**
+> The board now declares `FW_VERSION` and reports it in bytes 5-6 of the 0x6E0
+> RobotState reply, so an un-flashed board IS detectable: runbook row **FW-1**
+> (`grep PLATFORM_FW_CHECK`) replaces the four-link inference chain H4.0a-c.
+> The rest of this paragraph stands — this entry's own flash is still required,
+> and FW-1 is what confirms it happened. Contract:
+> `ros_ws/docs/platform_fw_version.md`.
+
 ## Problem
 
 Every hand command — a kind-3 prime / retract / `SAFE_ABORT`, and the prelude

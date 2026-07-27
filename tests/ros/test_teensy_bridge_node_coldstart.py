@@ -21,8 +21,11 @@ exactly the on-hardware sequence. ROS 2 is mocked by tests/ros/conftest.py.
 
 from __future__ import annotations
 
+import dataclasses
 import struct
 import time
+import types
+from unittest.mock import MagicMock
 
 from controller.teensy_link import RpcMethod, RpcStatus, MsgType, PlatformFrame
 from controller.teensy_link import (
@@ -55,19 +58,31 @@ def _platform_frame(can_id, data: bytes) -> bytes:
     return pf.pack()
 
 
-def _state_reply(is_homed, levelling, x_milli, y_milli) -> bytes:
-    """The 8-byte 0x6E0 RobotState reply, exactly as Teensy_code.ino packs it."""
+def _state_reply(is_homed, levelling, x_milli, y_milli,
+                 fw_version=rpc_args.PLATFORM_FW_VERSION_EXPECTED) -> bytes:
+    """The 8-byte 0x6E0 RobotState reply, exactly as Teensy_code.ino packs it.
+
+    ``fw_version`` occupies bytes 5-6 (uint16 LE) and defaults to the version this
+    host tree expects — i.e. a CORRECTLY-FLASHED Platform Teensy, which is the
+    premise of every cold-start test below. Pass
+    ``rpc_args.PLATFORM_FW_VERSION_UNVERSIONED`` (0) to simulate a pre-2026-07-27
+    board: the bytes it puts there are zeros, because every firmware built before
+    the identity block zero-filled 5-7 unconditionally.
+    """
     flags = (1 if is_homed else 0) | (2 if levelling else 0)
-    return struct.pack("<Bhh", flags, x_milli, y_milli) + b"\x00\x00\x00"
+    return (struct.pack("<Bhh", flags, x_milli, y_milli)
+            + int(fw_version).to_bytes(2, "little") + b"\x00")
 
 
-def _wire_state_read(teensy, *, is_homed, levelling, x_milli, y_milli):
+def _wire_state_read(teensy, *, is_homed, levelling, x_milli, y_milli,
+                     fw_version=rpc_args.PLATFORM_FW_VERSION_EXPECTED):
     """Register a STATE_READ responder that ACKs + injects a RobotState reply."""
     def handler(req_id, args):
         teensy.send_to_jetson(
             int(MsgType.PLATFORM_FRAME),
             _platform_frame(_STATE_ID,
-                            _state_reply(is_homed, levelling, x_milli, y_milli)))
+                            _state_reply(is_homed, levelling, x_milli, y_milli,
+                                         fw_version)))
         return (int(RpcStatus.OK), b"")
     teensy.on_rpc(int(RpcMethod.STATE_READ), handler)
 
@@ -562,5 +577,348 @@ def test_reboot_clears_encoder_search_complete():
         msg_out = node.robot_state_pub.published[-1]
         assert msg_out.is_homed is False
         assert msg_out.encoder_search_complete is False      # re-search required post-reboot
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── Platform-Teensy firmware identity (bytes 5-6 of the same 0x6E0 reply) ──────
+#
+# WHY THIS RIDES THE COLD-START READ AND IS TESTED HERE. Until 2026-07-27 the
+# Platform Teensy carried no version, so an UN-FLASHED board was indistinguishable
+# from a flashed one from the Jetson — the only deployment in the stack that
+# failed silently. The version is now reported in bytes 5-6 of the RobotState
+# reply the board ALREADY sends, so detecting a stale flash costs no new CAN frame
+# on the bus the 0x6D0 hand conduit shares, and — decisively — a pre-versioning
+# board ANSWERS (with 0) rather than timing out, which a new query frame would
+# have made indistinguishable from a dead CAN3.
+#
+# The verdict is WARNED, never enforced: nothing below asserts a refusal, because
+# there is none. See ros_ws/docs/platform_fw_version.md.
+
+def _messages(mock_method):
+    """All positional first-arg strings across a MagicMock log method's calls."""
+    return [c.args[0] for c in mock_method.call_args_list if c.args]
+
+
+def _link_status_values(node):
+    node._publish_link_status()
+    return {kv.key: kv.value
+            for kv in node.link_status_pub.published[-1].values}
+
+
+def test_a_flashed_board_reports_its_version_and_logs_ok():
+    """The expected version caches, surfaces on both topics, and logs one OK."""
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    try:
+        _wire_state_read(teensy, is_homed=True, levelling=False, x_milli=0,
+                         y_milli=0,
+                         fw_version=rpc_args.PLATFORM_FW_VERSION_EXPECTED)
+        assert node._refresh_cold_start_state('test') is True
+        assert node._platform_fw_version == rpc_args.PLATFORM_FW_VERSION_EXPECTED
+
+        msg = _publish_and_get(node, teensy)
+        assert msg.platform_fw_version == rpc_args.PLATFORM_FW_VERSION_EXPECTED
+        assert msg.platform_fw_version_read is True
+        assert (_link_status_values(node)['platform_fw_version']
+                == str(rpc_args.PLATFORM_FW_VERSION_EXPECTED))
+
+        ok_lines = [m for m in _messages(node._logger.info)
+                    if 'PLATFORM_FW_CHECK: OK' in m]
+        assert len(ok_lines) == 1, _messages(node._logger.info)
+        assert not [m for m in _messages(node._logger.error)
+                    if 'PLATFORM_FW_CHECK' in m]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_an_unflashed_board_is_detected_and_surfaced_everywhere():
+    """THE headline case: a pre-versioning board answers with 0 and is caught.
+
+    Three surfaces, because each covers a hole the others leave: the ERROR log is
+    what a runbook greps out of launch.log after the fact; link_status is the 10 Hz
+    read an operator can actually take live (`ros2 topic echo` gives false negatives
+    on this Foxy box for a 100 Hz RELIABLE topic like robot_state); and the typed
+    robot_state fields are the machine-readable record that lands in the rosbag.
+    """
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    try:
+        _wire_state_read(teensy, is_homed=True, levelling=True, x_milli=1,
+                         y_milli=2,
+                         fw_version=rpc_args.PLATFORM_FW_VERSION_UNVERSIONED)
+        assert node._refresh_cold_start_state('boot') is True
+        assert node._platform_fw_version == 0
+
+        errors = [m for m in _messages(node._logger.error)
+                  if 'PLATFORM_FW_CHECK: FAIL' in m]
+        assert len(errors) == 1, _messages(node._logger.error)
+        assert 'PRE-VERSIONING' in errors[0]
+        # The message must say what to do AND what is not happening, or an
+        # operator reads an ERROR and assumes the stack already protected them.
+        assert 'NOT refused' in errors[0]
+        assert 're-flash' in errors[0]
+
+        msg = _publish_and_get(node, teensy)
+        assert msg.platform_fw_version == 0
+        assert msg.platform_fw_version_read is True     # it ANSWERED — not silence
+        assert (_link_status_values(node)['platform_fw_version']
+                == '0 (PRE-VERSIONING)')
+
+        # The rest of the frame still decoded correctly: the version must not have
+        # displaced is_homed / levelling / pose.
+        assert msg.is_homed is True and msg.levelling_complete is True
+        assert msg.pose_offset_rad == [0.001, 0.002]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_an_unexpected_version_is_reported_as_a_skew_not_as_unversioned():
+    """A board flashed with a DIFFERENT numbered release is its own verdict."""
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    try:
+        other = rpc_args.PLATFORM_FW_VERSION_EXPECTED + 7
+        _wire_state_read(teensy, is_homed=False, levelling=False, x_milli=0,
+                         y_milli=0, fw_version=other)
+        assert node._refresh_cold_start_state('test') is True
+        assert node._platform_fw_version == other
+
+        errors = [m for m in _messages(node._logger.error)
+                  if 'PLATFORM_FW_CHECK: FAIL' in m]
+        assert len(errors) == 1
+        assert f'v{other}' in errors[0]
+        assert 'PRE-VERSIONING' not in errors[0]
+        assert _link_status_values(node)['platform_fw_version'] == str(other)
+        assert _publish_and_get(node, teensy).platform_fw_version == other
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_no_read_at_all_is_reported_as_unknown_not_as_unflashed():
+    """Absence must be as loud as a wrong answer — and must NOT be confused with it.
+
+    A board that never answers is a relay/CAN3 fault; a board that answers 0 has
+    not been flashed. Collapsing the two would send an operator to re-flash a
+    healthy board while the real fault (which also forces a re-home) went
+    undiagnosed.
+    """
+    teensy, client, node = _node(boot_state_read=True)   # no STATE_READ responder
+    try:
+        assert node._platform_fw_version is None
+        assert node._cold_start_authoritative is False
+
+        msg = _publish_and_get(node, teensy)
+        assert msg.platform_fw_version_read is False
+        assert msg.platform_fw_version == 0        # placeholder ONLY; read=False
+        assert _link_status_values(node)['platform_fw_version'] == 'unknown'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_the_unknown_verdict_shares_the_grep_token():
+    """One `grep PLATFORM_FW_CHECK launch.log` returns all three verdicts."""
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    try:
+        assert node._read_cold_start_state_conservative('boot') is False
+        unknown = [m for m in _messages(node._logger.error)
+                   if 'PLATFORM_FW_CHECK: UNKNOWN' in m]
+        assert len(unknown) == 1, _messages(node._logger.error)
+        # It must NOT read as evidence of a stale flash — that is a different fix.
+        assert 'stale flash' in unknown[0]
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_a_reboot_does_not_erase_a_known_version():
+    """REBOOT_ODRIVES clears is_homed / levelling / pose. It must NOT clear the
+    firmware version.
+
+    The Platform Teensy stays powered through an ODrive reboot (it is the board
+    that PERSISTS the cold-start state across one), so its firmware cannot have
+    changed. Clearing the version here — which is what folding it into
+    RelayRobotState would have done — would raise PLATFORM_FW_CHECK: UNKNOWN on a
+    board whose version was read seconds earlier, training the operator to ignore
+    the check.
+    """
+    teensy, client, node = _node()
+    try:
+        _wire_state_read(teensy, is_homed=True, levelling=True, x_milli=0, y_milli=0)
+        assert node._refresh_cold_start_state('boot') is True
+        assert node._platform_fw_version == rpc_args.PLATFORM_FW_VERSION_EXPECTED
+
+        teensy.on_rpc(int(RpcMethod.STATE_WRITE), lambda rid, a: (int(RpcStatus.OK), b""))
+        teensy.on_rpc(int(RpcMethod.REBOOT_ODRIVES), lambda rid, a: (int(RpcStatus.OK), b""))
+        ok, msg = node._reboot_odrives()
+        assert ok, msg
+
+        assert node._cold_start_state.is_homed is False        # cleared, as before
+        assert node._platform_fw_version == rpc_args.PLATFORM_FW_VERSION_EXPECTED
+        assert _publish_and_get(node, teensy).platform_fw_version_read is True
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_a_failed_reread_keeps_the_last_known_version():
+    """A transient relay failure must not downgrade a good version to UNKNOWN.
+
+    Same policy as the cold-start cache's keep-stale-on-failure branch, and for a
+    stronger reason: a firmware version can only change by a flash, and a flash
+    reboots the board. A CAN3 hiccup is no evidence at all that the firmware moved.
+    """
+    teensy, client, node = _node()
+    try:
+        _wire_state_read(teensy, is_homed=True, levelling=False, x_milli=0, y_milli=0)
+        assert node._refresh_cold_start_state('boot') is True
+        assert node._platform_fw_version == rpc_args.PLATFORM_FW_VERSION_EXPECTED
+
+        # Drop the responder: the next read times out.
+        teensy.on_rpc(int(RpcMethod.STATE_READ),
+                      lambda rid, a: (int(RpcStatus.OK), b""))
+        assert node._refresh_cold_start_state('reconnect') is False
+        assert node._platform_fw_version == rpc_args.PLATFORM_FW_VERSION_EXPECTED
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_a_skew_does_not_gate_the_hand_dispatch_path():
+    """The version WARNS; it never refuses. Pinned, because the tempting "safety"
+    change here is actively dangerous.
+
+    ``_svc_set_hand_traj`` carries the kind-3 retract, and a kind-3 clobbering an
+    armed kind-0 is the ONLY un-arm mechanism the Teensy offers — a pre-release
+    SAFE_ABORT depends on it. A version gate in front of it would turn a skipped
+    flash into "the abort path no longer works". The other refusal shapes are no
+    better: refusing kind-1 after the throw has flown drops a ball the pre-fix
+    stack would have caught, and the version's own input (a cached relay read) has
+    a documented benign-transient failure mode of its own.
+    """
+    teensy, client, node = _node()
+    try:
+        _wire_state_read(teensy, is_homed=True, levelling=False, x_milli=0,
+                         y_milli=0,
+                         fw_version=rpc_args.PLATFORM_FW_VERSION_UNVERSIONED)
+        assert node._refresh_cold_start_state('boot') is True
+        assert node._platform_fw_version == 0
+
+        sent = []
+        teensy.on_rpc(int(RpcMethod.HAND_TRAJ_CMD),
+                      lambda rid, a: (sent.append(a), (int(RpcStatus.OK), b""))[1])
+
+        # kind 3 — the SAFE_ABORT retract, the only un-arm mechanism there is.
+        ok, _msg, _ = node._call_rpc(
+            RpcMethod.HAND_TRAJ_CMD, rpc_args.encode_smooth_move_hand(0.0))
+        assert ok, 'the kind-3 retract must dispatch on a version-skewed board'
+        # kind 1 — an armed catch, dispatched mid-sequence after a throw has flown.
+        ok, _msg, _ = node._call_rpc(
+            RpcMethod.HAND_TRAJ_CMD,
+            rpc_args.encode_hand_traj_cmd(1, 3.13, 1_800_000_000_000))
+        assert ok, 'a scheduled catch must dispatch on a version-skewed board'
+        assert len(sent) == 2
+        assert sent[0][0] == 3      # the kind-3 payload reached the wire verbatim
+
+        # ── The REAL dispatch path ────────────────────────────────────────────
+        # The two _call_rpc calls above prove the transport works on a skewed
+        # board, but they enter BELOW the funnel a refusal would be written into.
+        # Both hand services route through node.teensy_hand_traj_cmd, so drive the
+        # SERVICE HANDLERS — the actual entry points an operator/orchestrator hits.
+        sent.clear()
+        # kind 3 via /smooth_move_hand — the SAFE_ABORT retract.
+        res = types.SimpleNamespace(success=None, message='')
+        out = node._svc_smooth_move_hand(types.SimpleNamespace(data=0.0), res)
+        assert out.success is True, (
+            'the kind-3 retract must dispatch through the SERVICE on a '
+            f'version-skewed board; got: {out.message}')
+        # kind 1 via /set_hand_traj_cmd — an armed catch, after a throw has flown.
+        res = types.SimpleNamespace(success=None, message='')
+        out = node._svc_set_hand_traj(
+            types.SimpleNamespace(event_delay=0.5, event_vel=3.13, traj_type=1),
+            res)
+        assert out.success is True, (
+            'a scheduled catch must dispatch through the SERVICE on a '
+            f'version-skewed board; got: {out.message}')
+        assert len(sent) == 2, 'both service dispatches must reach the wire'
+        assert sent[0][0] == 3      # the kind-3 payload reached the wire verbatim
+        assert sent[1][0] == 1
+
+        # Tripwire (not a proof): no host-side gate point on the 0x6D0 conduit may
+        # so much as READ the version. teensy_hand_traj_cmd is included and is the
+        # one that matters — it is the SINGLE FUNNEL both services call, so it is
+        # where this repo's own "one enforcement point" convention would put a
+        # gate, and a gate there is invisible to a tripwire that inspects only the
+        # two leaf handlers.
+        import inspect
+        for fn in (node._svc_set_hand_traj, node._svc_smooth_move_hand,
+                   node.teensy_hand_traj_cmd):
+            src = inspect.getsource(fn)
+            assert '_platform_fw_version' not in src, (
+                f'{fn.__name__} reads the Platform FW version — a version gate on '
+                'the hand path was added. Read '
+                'ros_ws/docs/platform_fw_version.md § Warn, never refuse first: '
+                'this path carries the kind-3 retract, the only un-arm mechanism '
+                'the Teensy offers.')
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_a_stale_interfaces_build_names_itself_at_construction():
+    """A half-rebuilt tree must SAY SO, not present as a power/CAN fault.
+
+    ``_publish_robot_state`` catches its own exceptions, so — unlike
+    ``trajectory_node``, whose uncaught timer exception exits the process ~200 ms
+    after launch — a stale ``jugglebot_interfaces`` build here degrades to one
+    throttled ERROR per 5 s while ``/robot_state`` silently stops at 100 Hz. The
+    orchestrator then stalls in BOOT and blames power/CAN. This check turns that
+    into a named, greppable error at construction.
+    """
+    import jugglebot.teensy_bridge_node as tbn
+
+    @dataclasses.dataclass
+    class _StaleRobotState:            # a pre-2026-07-27 generated message
+        is_homed: bool = False
+        levelling_complete: bool = False
+
+    teensy, client, node = _node()
+    node._logger = MagicMock()
+    try:
+        real = tbn.RobotState
+        tbn.RobotState = _StaleRobotState
+        try:
+            node._warn_if_robot_state_msg_is_stale()
+        finally:
+            tbn.RobotState = real
+
+        errors = [m for m in _messages(node._logger.error)
+                  if 'INTERFACES_STALE' in m]
+        assert len(errors) == 1, _messages(node._logger.error)
+        # It must name BOTH missing fields and the exact remedy, or the operator
+        # cannot tell this from the hardware fault it otherwise looks like.
+        assert 'platform_fw_version' in errors[0]
+        assert 'platform_fw_version_read' in errors[0]
+        assert 'jugglebot_interfaces jugglebot' in errors[0]
+
+        # And it must stay SILENT on a current build — an instrument that cries
+        # wolf on the healthy tree is worse than no instrument.
+        node._logger.reset_mock()
+        node._warn_if_robot_state_msg_is_stale()
+        assert not [m for m in _messages(node._logger.error)
+                    if 'INTERFACES_STALE' in m]
+
+        # Wiring: the check is worthless unless CONSTRUCTION runs it. Pinned by
+        # source inspection because the stale-message case cannot be provoked
+        # through the real constructor without a stale generated package.
+        import inspect
+        assert '_warn_if_robot_state_msg_is_stale()' in inspect.getsource(
+            type(node).__init__), (
+            'TeensyBridgeNode.__init__ no longer runs the RobotState staleness '
+            'check — a half-rebuilt tree goes back to presenting as a power/CAN '
+            'fault at BOOT timeout.')
+        # It must also stay in step with what _publish_robot_state assigns.
+        pub_src = inspect.getsource(node._publish_robot_state)
+        for f in node._ROBOT_STATE_REQUIRED_FIELDS:
+            assert f'msg.{f}' in pub_src, (
+                f'{f} is declared required but never assigned — the check and the '
+                'publish path have drifted apart.')
     finally:
         _teardown(teensy, client, node)

@@ -138,6 +138,10 @@ class RobotState:
     levelling_complete: bool = False
     pose_offset_rad: list = field(default_factory=list)
     pose_offset_quat: object = None
+    # Mirrors msg/RobotState.msg. The defaults are the real message's defaults
+    # AND the honest boot state: nothing read yet, so nothing known.
+    platform_fw_version: int = 0
+    platform_fw_version_read: bool = False
 
 
 @dataclass

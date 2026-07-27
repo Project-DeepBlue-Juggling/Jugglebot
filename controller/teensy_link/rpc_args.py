@@ -250,13 +250,60 @@ def encode_state_write(is_homed: bool, levelling_complete: bool,
                        pose_offset_tiltX: float = 0.0,
                        pose_offset_tiltY: float = 0.0) -> bytes:
     """STATE_WRITE: write the Platform-Teensy RobotState (is_homed / levelling /
-    pose offset). The firmware re-encodes the 0x6E0 RobotState CAN frame."""
+    pose offset). The firmware re-encodes the 0x6E0 RobotState CAN frame.
+
+    Note the asymmetry with :func:`decode_platform_fw_version` below: the write
+    path carries NO version. Bytes 5-6 of the 0x6E0 frame are the Platform
+    Teensy's own identity and are meaningful only Teensy→host; the can-bridge's
+    ``state_write`` zero-fills them and the Teensy's ``decodeStateCANMessage``
+    never reads them."""
     return ArgRobotState(
         is_homed=1 if is_homed else 0,
         levelling_complete=1 if levelling_complete else 0,
         pose_offset_tiltX=float(pose_offset_tiltX),
         pose_offset_tiltY=float(pose_offset_tiltY),
     ).pack()
+
+
+# ── Platform-Teensy firmware identity (0x6E0 reply, bytes 5-6) ────────────────
+# The Platform Teensy carries `FW_VERSION` in Teensy_code/Teensy_code.ino and
+# reports it in the RobotState reply it already sends. THE HOST'S EXPECTED VALUE
+# IS DELIBERATELY A SECOND, INDEPENDENTLY-AUTHORED CONSTANT rather than a shared
+# generated one: the skew being detected is *board vs tree*, and a single codegen'd
+# value would move in the source tree without the board ever being flashed — i.e.
+# it would agree with itself in exactly the situation the check exists to catch.
+# The two are pinned together by tests/firmware/test_platform_fw_version_xref.py.
+
+#: What a pre-2026-07-27 (un-versioned) Platform Teensy reports. NOT a release
+#: number — every firmware built before the identity block existed zero-filled
+#: bytes 5-7 of the reply unconditionally, so this value arrives on the wire from
+#: a real board rather than standing for its silence.
+PLATFORM_FW_VERSION_UNVERSIONED = 0
+
+#: The Platform Teensy firmware version this host tree expects.
+#: Keep in lockstep with `FW_VERSION` in Teensy_code/Teensy_code.ino — that file
+#: carries the bump history explaining what each version means.
+PLATFORM_FW_VERSION_EXPECTED = 1
+
+
+def decode_platform_fw_version(data: bytes) -> int:
+    """Read the Platform Teensy's ``FW_VERSION`` out of a 0x6E0 RobotState reply.
+
+    Bytes 5-6, uint16 little-endian, exactly as ``Teensy_code.ino``
+    ``createStateCANMessage`` packs it.
+
+    A frame too short to carry the field decodes to
+    :data:`PLATFORM_FW_VERSION_UNVERSIONED` rather than raising. That default is
+    the LOUD direction, not the convenient one: an unversioned answer is reported
+    as a skew, whereas raising would take down the caller's read (and with it the
+    ``is_homed`` the same frame carries), and returning the expected version would
+    manufacture false reassurance from a malformed frame. A real board cannot
+    produce a short frame here — the dlc is 8 in every firmware ever flashed — so
+    this branch is defence, not a supported path.
+    """
+    if len(data) < 7:
+        return PLATFORM_FW_VERSION_UNVERSIONED
+    return int.from_bytes(data[5:7], "little")
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

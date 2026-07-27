@@ -22,7 +22,7 @@ Two obligations follow, and they sit on opposite sides of the CAN bus:
 | # | Obligation | Owner | Status |
 |---|---|---|---|
 | **H** | A **scheduled** kind-0/1/2 stroke is not dispatched while another stroke is physically executing. | Host (`catch_coordinator_node`) | **Landed** 2026-07-26 |
-| **F** | The smooth-move prelude is continuous with the live hand **velocity**, not seeded at `v = 0`. | Firmware (`Trajectory.h`) | **Landed in source** 2026-07-27 — **NOT LIVE until the Platform Teensy is flashed** |
+| **F** | The smooth-move prelude is continuous with the live hand **velocity**, not seeded at `v = 0`. | Firmware (`Trajectory.h`) | **Landed in source** 2026-07-27 — **NOT LIVE until the Platform Teensy is flashed.** Whether it is live is now READABLE: `link_status/platform_fw_version` must show `1`, not `0 (PRE-VERSIONING)` — `ros_ws/docs/platform_fw_version.md` |
 
 Obligation H is a mitigation, not a closure. It removes the one dispatch path
 that was reliably violating the invariant. Obligation F is what closes
@@ -223,12 +223,19 @@ Stated so a bench session scores it correctly:
    `Vel_Estimate` frame (`Teensy_code.ino:439-441`) and there is no third field.
    `a0 = 0` is what the plan specifies and it removes the first-order
    discontinuity, which is the one the measured defect was caused by.
-4. **There is no version handshake on the Platform Teensy.** It carries no
-   `FW_VERSION` constant, so host/firmware skew on the hand path is undetectable
-   from the Jetson: an un-flashed board behaves exactly like the pre-fix one with
-   no log line, no `link_status` field and no refusal. Runbook row **H4.0** is the
-   only guard. Adding one is a protocol change (a report field) and is out of
-   scope here.
+4. **~~There is no version handshake on the Platform Teensy.~~ CLOSED 2026-07-27
+   — see `ros_ws/docs/platform_fw_version.md` (contract C-PLATFW-1).** As written
+   here the board carried no `FW_VERSION`, so host/firmware skew on the hand path
+   was undetectable from the Jetson: an un-flashed board behaved exactly like the
+   pre-fix one with no log line, no `link_status` field and no refusal, and runbook
+   row **H4.0**'s procedural chain was the only guard. It now declares
+   `FW_VERSION` and reports it in bytes 5-6 of the 0x6E0 RobotState reply it
+   already sends, surfaced as `robot_state.platform_fw_version` /
+   `link_status/platform_fw_version` / a `PLATFORM_FW_CHECK` log line. **Obligation
+   F's "NOT LIVE until flashed" row above is now directly observable** rather than
+   inferred from a four-link evidence chain. The skew WARNS and never refuses —
+   this path carries the kind-3 retract, the only un-arm mechanism the Teensy
+   offers; see that document's § Warn, never refuse.
 5. **The dead-band's anchor is a p99, not a maximum.** `smooth_move_v0_deadband_rps
    = 6.0` sits above the 2026-07-24 top-park dither p99 of 5.39 rev/s, whose
    maximum was never published — so roughly 1 % of parked-top samples are above the

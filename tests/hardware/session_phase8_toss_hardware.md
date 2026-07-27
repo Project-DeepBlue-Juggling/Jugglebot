@@ -19,9 +19,14 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
 >
 > Two things from that run bind this file directly: the build gate is
 > `colcon build --packages-select jugglebot_interfaces jugglebot` (the interfaces
-> package is **not** optional — `TrajectoryStatus.msg` gained a field and a partial
-> rebuild makes `trajectory_node` exit shortly after launch), and the Platform
-> Teensy needs a **flash** it cannot report, since it carries no `FW_VERSION`.
+> package is **not** optional — `TrajectoryStatus.msg` gained a field, `RobotState.msg`
+> gained two, and a partial rebuild makes `trajectory_node` exit shortly after
+> launch), and the Platform Teensy needs a **flash**. As of 2026-07-27 that flash
+> *is* reportable — the board declares a `FW_VERSION` and
+> `link_status/platform_fw_version` reads `1` when flashed and
+> `0 (PRE-VERSIONING)` when not. It warns, it does not refuse, so read it:
+> `ros2 topic echo /link_status --once | grep -A1 platform_fw_version`
+> (`ros_ws/docs/platform_fw_version.md`).
 
 > **⚡ READ THIS FIRST — this session FIRES REAL THROWS.** Jugglebot throws a real
 > ball into the air and attempts to catch it. On any miss (expected early), the ball

@@ -44,10 +44,19 @@ def _platform_frame(can_id, data: bytes) -> bytes:
     return pf.pack()
 
 
-def _encode_state_frame(is_homed, levelling, x_milli, y_milli) -> bytes:
-    """The 8-byte 0x6E0 RobotState reply, exactly as Teensy_code.ino packs it."""
+def _encode_state_frame(is_homed, levelling, x_milli, y_milli,
+                        fw_version=rpc_args.PLATFORM_FW_VERSION_EXPECTED) -> bytes:
+    """The 8-byte 0x6E0 RobotState reply, exactly as Teensy_code.ino packs it.
+
+    ``fw_version`` occupies bytes 5-6 (uint16 LE). It defaults to the version this
+    host tree expects, i.e. a CORRECTLY-FLASHED board — the case every test here
+    is about. Pass ``rpc_args.PLATFORM_FW_VERSION_UNVERSIONED`` to simulate a
+    pre-2026-07-27 board; the skew check itself is covered in
+    test_teensy_bridge_node_coldstart.py.
+    """
     flags = (1 if is_homed else 0) | (2 if levelling else 0)
-    return struct.pack("<Bhh", flags, x_milli, y_milli) + b"\x00\x00\x00"
+    return (struct.pack("<Bhh", flags, x_milli, y_milli)
+            + int(fw_version).to_bytes(2, "little") + b"\x00")
 
 
 def test_relay_read_robot_state_correlates_platform_frame():
