@@ -70,12 +70,25 @@
  *        duration bound is the positive root of the corrected quadratic (capped by
  *        `smoothMoveMaxDuration()`).  Plan: plans/active/hand-command-continuity.md
  *        Phase 4.  Also carries this identity block itself.
+ *    2 = 2026-07-28.  POST-RELEASE DECELERATION FEEDFORWARD.  `Trajectory.h`'s
+ *        `buildThrow` now sizes the torque feedforward of the decel segment
+ *        (x2 -> x3, after the ball has left) from the axis's TOTAL reflected
+ *        inertia — `throwDecelToTorque`, 9.5e-6 kg m^2 — instead of from
+ *        `accelToTorque`'s hand-mass-on-a-spool model, which implied 7.3695e-6
+ *        and so under-torqued the brake by ~30 %.  The commanded POSITION and
+ *        VELOCITY streams are BIT-IDENTICAL to v1 on every kind; the accel and
+ *        velocity-hold torques, all of kind 1, and `makeSmoothMove` are
+ *        untouched.  Fixes the light end-stop contact measured at ~1.2 m throws
+ *        on 2026-07-27.  Contract: ros_ws/docs/hand_decel_feedforward.md
+ *        (C-HAND-2).  Plan: plans/active/hand-command-continuity.md Phase 7.
+ *        A v1 board is not unsafe, it simply still coasts — but every
+ *        § CHECK HAND-7 row is meaningless on one, so read FW-1 first.
  *
  *  Bump on any behavioural change worth telling a bench operator about, and add a
  *  line above saying WHAT changed and WHEN (the can-bridge's comment style).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 1;
+constexpr uint16_t FW_VERSION = 2;
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */

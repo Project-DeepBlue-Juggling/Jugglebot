@@ -213,6 +213,7 @@ namespace TeensyTraj {
   constexpr float LINEAR_GAIN_FACTOR = 1.035f;
   constexpr float INERTIA_HAND_ONLY_KG = 0.281f;
   constexpr float INERTIA_RATIO = 0.747f;
+  constexpr float THROW_DECEL_REFLECTED_INERTIA_KGM2 = 9.5e-06f;
   constexpr float THROW_VEL_HOLD_PCT = 0.05f;
   constexpr float CATCH_VEL_RATIO = 0.6f;
   constexpr float CATCH_VEL_HOLD_PCT = 0.1f;

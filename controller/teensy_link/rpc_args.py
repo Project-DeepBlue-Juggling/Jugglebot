@@ -283,7 +283,11 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: The Platform Teensy firmware version this host tree expects.
 #: Keep in lockstep with `FW_VERSION` in Teensy_code/Teensy_code.ino — that file
 #: carries the bump history explaining what each version means.
-PLATFORM_FW_VERSION_EXPECTED = 1
+#: 2 (2026-07-28) = the post-release deceleration feedforward, contract C-HAND-2
+#: (ros_ws/docs/hand_decel_feedforward.md). A board still on 1 is not unsafe — it
+#: simply coasts past the stroke end as it did before — but it invalidates every
+#: § CHECK HAND-7 bench row, which is why the check warns loudly.
+PLATFORM_FW_VERSION_EXPECTED = 2
 
 
 def decode_platform_fw_version(data: bytes) -> int:

@@ -12,6 +12,17 @@ Scope: the ROS 2 package `ros_ws/src/jugglebot/`, plus the Platform Teensy
 firmware in `ros_ws/src/jugglebot/Teensy_code/`. The hand is the only actuator
 this contract governs; leg and platform motion are unaffected.
 
+**Sibling contract, added 2026-07-28:** `ros_ws/docs/hand_decel_feedforward.md`
+(**C-HAND-2**) governs how hard the throw stroke *brakes* once a command has
+been legally dispatched. The two do not overlap — C-HAND-1 is about WHEN a
+command may be sent, C-HAND-2 about the torque feedforward of the segment
+after ball release — but they share a failure surface worth knowing about: a
+C-HAND-2 violation (a feedforward sized ABOVE the true reflected inertia)
+produces a commanded dip below `x3` that this contract's own
+`dip_below_x3 <= 0.10 rev` bench row cannot distinguish from the
+queue-clobber defect C-HAND-1 exists to detect. That is why C-HAND-2's
+declared inertia is required to be an under-estimate.
+
 ## The invariant
 
 > **No hand command may create a discontinuity — in position or in velocity —
@@ -22,7 +33,7 @@ Two obligations follow, and they sit on opposite sides of the CAN bus:
 | # | Obligation | Owner | Status |
 |---|---|---|---|
 | **H** | A **scheduled** kind-0/1/2 stroke is not dispatched while another stroke is physically executing. | Host (`catch_coordinator_node`) | **Landed** 2026-07-26 |
-| **F** | The smooth-move prelude is continuous with the live hand **velocity**, not seeded at `v = 0`. | Firmware (`Trajectory.h`) | **Landed in source** 2026-07-27 — **NOT LIVE until the Platform Teensy is flashed.** Whether it is live is now READABLE: `link_status/platform_fw_version` must show `1`, not `0 (PRE-VERSIONING)` — `ros_ws/docs/platform_fw_version.md` |
+| **F** | The smooth-move prelude is continuous with the live hand **velocity**, not seeded at `v = 0`. | Firmware (`Trajectory.h`) | **Landed in source** 2026-07-27 — **NOT LIVE until the Platform Teensy is flashed.** Whether it is live is now READABLE: `link_status/platform_fw_version` must show **`>= 1`**, not `0 (PRE-VERSIONING)` — `ros_ws/docs/platform_fw_version.md` (contract C-PLATFW-1) carries the current expected value, which moved to **2** on 2026-07-28 with C-HAND-2. Read the version against *that* file, never against a number restated here |
 
 Obligation H is a mitigation, not a closure. It removes the one dispatch path
 that was reliably violating the invariant. Obligation F is what closes
@@ -52,11 +63,22 @@ firmware could already emit. So the honest statement of F is:
 > declared acceleration limit, and explicitly, observably declined above it.**
 
 The residual is not an implementation gap — it is a consequence of
-`MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100` rev/s² being a *comfort* limit 19-60x
-below what the throw profile itself commands (1908 rev/s² at a 0.80 s flight,
-6055 at the band top). Widening F means raising that limit, which changes what the
-machine can physically do at the bench — an operator envelope decision, recorded
-as an open question rather than taken here.
+`MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100` rev/s² being a *comfort* limit 19-36×
+below what the throw profile itself commands (**1902 rev/s²** at a 0.80 s flight,
+**3597 rev/s²** at the band top, `FLIGHT_TIME_MAX_S = 1.10 s`). Widening F means
+raising that limit, which changes what the machine can physically do at the bench
+— an operator envelope decision, recorded as an open question rather than taken
+here. **And it is now bounded from above by physics, not just by comfort:**
+C-HAND-2 measures the axis's own deceleration ceiling at `hand_curr_limit_a = 50`
+as 4178–4333 rev/s², so the band top already sits at 83–86 % of it. The headroom
+argument for widening F is 36×, not 60×, and it runs out at ~4200 rev/s².
+
+*(Corrected 2026-07-29. This passage previously read "19-60x" and "6055 rev/s² at
+the band top". 6055 is the decel at the Teensy's `MAX_EVENT_VEL_MPS = 7.0`
+builder clamp — a 1.43 s flight — not at `FLIGHT_TIME_MAX_S`; re-derived from the
+shipped header, `|throwD| = 123.55·v²` rev/s². The old figure asserted the machine
+routinely commands a deceleration above its own physical ceiling. See
+`ros_ws/docs/hand_decel_feedforward.md`.)*
 
 **Also closed by F, and worth naming separately:** the empty-trajectory branch of
 `makeSmoothMove` now requires the hand to be **at rest** as well as at the target.

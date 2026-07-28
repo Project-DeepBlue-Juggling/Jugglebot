@@ -23,8 +23,11 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
 > gained two, and a partial rebuild makes `trajectory_node` exit shortly after
 > launch), and the Platform Teensy needs a **flash**. As of 2026-07-27 that flash
 > *is* reportable — the board declares a `FW_VERSION` and
-> `link_status/platform_fw_version` reads `1` when flashed and
-> `0 (PRE-VERSIONING)` when not. It warns, it does not refuse, so read it:
+> `link_status/platform_fw_version` reads **`2`** when flashed current,
+> `1` on a board carrying only the Phase-4 prelude (**stale — re-flash before any
+> toss above 0.78 m; a v1 board has no post-release decel feedforward and is the
+> board that touched the end stop on 2026-07-27**), and `0 (PRE-VERSIONING)` when
+> never flashed. It warns, it does not refuse, so read it:
 > `ros2 topic echo /link_status --once | grep -A1 platform_fw_version`
 > (`ros_ws/docs/platform_fw_version.md`).
 

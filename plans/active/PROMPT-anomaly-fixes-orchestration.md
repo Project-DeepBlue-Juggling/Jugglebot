@@ -85,7 +85,7 @@ Ordered after the 2026-07-27 validation sitting. Same one-workflow-per-item shap
 |---|---|---|
 | **B** | `caught-gate` — **CAUGHT plausibility gate: un-break the possession verdict** (z-corrupt, xy clean) | **DONE 2026-07-28** — see Outcome below |
 | C | `seat-experiment` prep — the zero-seat A/B the sitting could not separate | pending |
-| D | hand post-release deceleration (operator decision (b), 2026-07-28) | pending |
+| **D** | hand post-release deceleration (operator decision (b), 2026-07-28) | **DONE in source, NOT FLASHED 2026-07-29** — see Outcome below |
 | E | displaced-throw (8b) programme — throw-site-from-current-pose rework, envelope, cap raise | pending |
 | F | `toss_continuous` — `stop_on_miss` defaults TRUE (operator decision (c)) | pending |
 
@@ -133,6 +133,58 @@ wrong** in five artefacts (it claimed the reload filters "received no measuremen
 at all"; they in fact all reach `tracking=CONFIRMED` with 31–516 mm/s velocity
 spread — they are *mis-fed*, not starved). That would have sent the tracker
 investigation after the wrong defect. See the logbook entry's Discussion.
+
+#### Item D — Outcome
+
+**Landed in source 2026-07-29, NOT FLASHED.** Plan:
+`plans/active/hand-command-continuity.md` **Phase 7**. Contract:
+`ros_ws/docs/hand_decel_feedforward.md` (**C-HAND-2**). Probe:
+`tools/probes/hand_decel_authority.py`. Bench:
+`tests/hardware/session_anomaly_fixes.md` § CHECK HAND-7 / stage 8 (CAP-DECEL).
+
+The hand's braking torque feedforward was sized from
+`INERTIA_HAND_ONLY_KG × HAND_SPOOL_RADIUS_M` — a pure translating mass on a spool,
+implying a reflected inertia of **7.3695e-6 kg·m²** against a measured
+**>= 1.0126e-5** (a decel-side lower bound; see the note below). So the only term that commands braking open-loop delivered
+**~70 %** of what the commanded deceleration physically needs, and the remainder
+fell to a position/velocity loop whose integrator unwind constant (0.100 s) is
+1.1–2.1× the entire 47.4–93.3 ms decel ramp. Because `calcThrow` allocates the decel
+**4.046 rev of travel at every speed** (velocity-independent) ending exactly on the
+top of the usable stroke, that shortfall converts directly into end-stop travel —
+`peak = x3 + 4.046·(1/eta − 1)` — and `eta` degrades from 0.98 to 0.80 across the
+flown band.
+
+**The physics rejected the obvious fix.** A steeper commanded ramp is unavailable:
+at the shipped `FLIGHT_TIME_MAX_S = 1.10 s` the profile's own commanded decel is
+already 83–86 % of the axis's torque ceiling at `hand_curr_limit_a = 50`, so the
+steepest commandable ramp buys ~14 % of the overshoot. A computed undershoot is the
+same lever and additionally needs the overshoot *predicted*, against 0.202 rev of
+measured scatter (0.901–1.103) on the tier that touched the stop.
+
+**Deployment: a Platform Teensy flash** (`FW_VERSION` **1 → 2**) plus
+`colcon build --packages-select jugglebot` + relaunch. **Nothing has run on
+hardware**; the ladder in § CHECK HAND-7 is what turns the predicted bracket
+(peak ≤ 10.39 rev, velocity-independent) into a measurement, and its rung R5 — the
+first legal in-band toss at the configured ceiling this machine has ever been asked
+for — runs only after the lower rungs confirm the model.
+
+**Four things the adversarial review changed before this landed**, all covered in
+`logbook/2026-07-29-hand-post-release-decel.md` § *Findings adjudication*:
+(1) the safety clause was anchored on an **accel-phase** inertia that is
+*ball-inclusive* (release is at `x2`, so the ball is in the cup for the whole
+ascent) — re-anchored on a decel-side bound of **1.0126e-5** that uses no `iq`
+measurement; (2) the one-sided-safety proof **omitted gravity**, which brakes in
+the same direction on an upward decel, so the open-loop total does exceed
+`J_true` below `a_cmd ~ 1900 rev/s²` — no declared value fixes that *and* clears
+the abort line, so the enforcement moved to bench row H7.4 plus a new
+**band-floor rung R0**; (3) the verdict probe's decel-current window was anchored
+on the announcement and had **zero overlap with the real deceleration on 13 of 17
+tosses** (it reported the ascent current) — re-anchored, and the probe gained a
+two-sided `--self-check`; (4) the hand ODrive declares
+`torque_soft_min = -0.0551 N·m` = **exactly -10.00 A**, which if live would
+truncate the feedforward and make the phase a no-op — unresolved, so it became
+pre-flight **H7.0c**, read off the live drive *before* the flash.
+
 
 ## Workflow shape — one Workflow invocation per phase
 

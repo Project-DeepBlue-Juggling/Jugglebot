@@ -33,6 +33,14 @@ HAND_SPOOL_RADIUS_M = 0.00521
 LINEAR_GAIN_FACTOR = 1.035
 INERTIA_HAND_ONLY_KG = 0.281
 INERTIA_RATIO = 0.747
+# Total reflected inertia of the hand axis at the motor (rotor + cable-driven
+# load), used ONLY to size the torque feedforward of the post-release
+# DECELERATION segment of a throw.  Mirror of
+# ``teensy_trajectory.throw_decel_reflected_inertia_kgm2`` →
+# ``TeensyTraj::THROW_DECEL_REFLECTED_INERTIA_KGM2``.  See
+# ``ros_ws/docs/hand_decel_feedforward.md`` (contract C-HAND-2) for the
+# identification and for why it is deliberately 7-10 % BELOW the measured value.
+THROW_DECEL_REFLECTED_INERTIA_KGM2 = 9.5e-6
 # Catch velocity as a fraction of the incoming ball speed. Source of truth is
 # config/hardware_config.yaml teensy_trajectory.catch_vel_ratio (0.6) →
 # Teensy_code/hardware_config.h — the platform hand, hardware-validated as reliable.
@@ -101,6 +109,50 @@ def mm_to_rev(mm: float) -> float:
 def rev_to_mm(rev: float) -> float:
     """Motor revs -> mm of cable travel."""
     return float(rev) / _LINEAR_GAIN * 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Torque feedforward — the two conversions, and why there are two
+# ---------------------------------------------------------------------------
+# The Teensy packs a torque feedforward alongside every position/velocity
+# setpoint (``Teensy_code.ino`` packTrajectory -> ODrive ``input_torque``).  It
+# is the ONLY term that commands braking OPEN-LOOP; everything else the drive
+# does on the decel it has to earn from tracking error.
+#
+# ``_TORQUE_K_LEGACY`` is ``Trajectory.h``'s historical ``accelToTorque``:
+# ``a_lin * INERTIA_HAND_ONLY_KG * HAND_SPOOL_RADIUS_M``.  It models the axis as
+# a pure translating mass on a spool, so its IMPLIED reflected inertia is
+# ``m*r/(2*pi*LINEAR_GAIN)`` = 7.3695e-6 kg m^2 — it omits the rotor entirely and
+# uses the raw spool radius rather than the effective one the 1.035 gain factor
+# implies.  Against a measured 1.02e-5 - 1.05e-5 that is ~70 % of the torque the
+# commanded acceleration physically needs.
+#
+# ``_TORQUE_K_THROW_DECEL`` is the corrected conversion, applied ONLY to the
+# post-release decel segment of a throw.  Everything else — the accel and
+# velocity-hold segments, the whole kind-1 catch, and every ``makeSmoothMove``
+# prelude — keeps the legacy conversion, deliberately: correcting the ASCENT
+# feedforward would raise the achieved release velocity and re-calibrate every
+# throw height the machine has flown.  See ros_ws/docs/hand_decel_feedforward.md.
+
+#: N.m per (m/s^2) of hand-axis linear acceleration — historical conversion.
+_TORQUE_K_LEGACY = INERTIA_HAND_ONLY_KG * HAND_SPOOL_RADIUS_M
+#: Reflected inertia the legacy conversion implies (kg m^2).  7.3695e-6.
+#: ``torque = J * alpha_rad = J * 2*pi * a_lin * LINEAR_GAIN``, so equating that
+#: to ``a_lin * m * r`` gives ``J = m*r / (2*pi*LINEAR_GAIN)``.
+LEGACY_IMPLIED_INERTIA_KGM2 = _TORQUE_K_LEGACY / (2.0 * math.pi * _LINEAR_GAIN)
+#: N.m per (m/s^2) — post-release throw deceleration only.
+_TORQUE_K_THROW_DECEL = (THROW_DECEL_REFLECTED_INERTIA_KGM2
+                         * 2.0 * math.pi * _LINEAR_GAIN)
+
+
+def accel_to_torque_nm(a_mps2: float) -> float:
+    """``Trajectory.h::accelToTorque`` — the historical conversion."""
+    return float(a_mps2) * _TORQUE_K_LEGACY
+
+
+def throw_decel_to_torque_nm(a_mps2: float) -> float:
+    """``Trajectory.h::throwDecelToTorque`` — post-release decel segment only."""
+    return float(a_mps2) * _TORQUE_K_THROW_DECEL
 
 
 # ---------------------------------------------------------------------------
@@ -1064,6 +1116,48 @@ class HandThrowTrajectory:
         # Deceleration phase
         tau = t_local - (self._t_acc + self._t_vel)
         return self._throw_speed_mps + self._throwD * tau
+
+    # -- torque feedforward ------------------------------------------------
+    # ``buildThrow``'s ``torA[4]`` in ``Trajectory.h``: one value per segment,
+    # held (not interpolated) across the segment, exactly as the firmware packs
+    # it.  The DECEL segment is the only one on the corrected conversion — see
+    # the module-level note at ``_TORQUE_K_THROW_DECEL`` and contract C-HAND-2.
+
+    @property
+    def accel_torque_nm(self) -> float:
+        """Commanded torque feedforward over the acceleration segment (N.m)."""
+        return accel_to_torque_nm(self._throwA)
+
+    @property
+    def decel_torque_nm(self) -> float:
+        """Commanded torque feedforward over the POST-RELEASE decel segment (N.m).
+
+        Negative (braking).  Sized from the axis's total reflected inertia
+        rather than from the hand mass alone: after release the ball is gone, so
+        the only thing the profile has to stop is rotor + hand, and that is a
+        quantity the firmware can know exactly.
+        """
+        return throw_decel_to_torque_nm(self._throwD)
+
+    def torque_at(self, t: float) -> float:
+        """Commanded torque feedforward (N.m) at time t relative to release."""
+        if t <= self._t_start or t >= self._t_end:
+            return 0.0
+        t_local = t - self._t_start
+        if t_local <= self._t_acc:
+            return self.accel_torque_nm
+        if t_local <= self._t_acc + self._t_vel:
+            return 0.0
+        return self.decel_torque_nm
+
+    def peak_decel_current_a(self, torque_constant_nm_per_a: float) -> float:
+        """|decel torque feedforward| expressed as motor q-axis current (A).
+
+        The quantity that must stay inside ``jugglebot_operational
+        hand_curr_limit_a``: a feedforward that saturates the drive leaves the
+        loop no authority to correct anything on top of it.
+        """
+        return abs(self.decel_torque_nm) / float(torque_constant_nm_per_a)
 
     def _displacement_at_local(self, t_local: float) -> float:
         """Displacement in metres from start position at local time."""

@@ -85,7 +85,43 @@ constexpr float SMOOTH_MOVE_END_STOP_EPS_REV = 1e-4f;
 extern volatile float current_hand_position;
 extern volatile float current_hand_velocity;
 
+/* ───────── torque feedforward — TWO conversions, deliberately ─────────
+   The torque stream is packed into every setpoint frame (packTrajectory ->
+   ODrive `input_torque`).  It is the ONLY term that commands braking
+   OPEN-LOOP; every other newton-metre the drive produces on the decel it has
+   to earn from tracking error, through a loop that is far too slow to do it
+   inside a 47-93 ms ramp (hand_pos_gain 35 rev/s per rev, hand_vel_gain 0.007
+   Nm/(rev/s) = 1.27 A/(rev/s), hand_vel_int_gain 0.07 => a 0.100 s integrator
+   unwind constant, 1.1-2.1x the whole ramp).
+
+   accelToTorque is the HISTORICAL conversion and models the axis as a pure
+   translating mass on a spool.  Its IMPLIED reflected inertia is
+       m*r / (2*pi*LINEAR_GAIN) = 0.281*0.00521 / 198.6588 = 7.3695e-6 kg m^2
+   — it omits the motor's rotor entirely and uses the RAW spool radius instead
+   of the effective radius LINEAR_GAIN_FACTOR = 1.035 implies.  Measured
+   reflected inertia is 1.02e-5 - 1.05e-5 (two independent identifications off
+   the 2026-07-27 sitting; see ros_ws/docs/hand_decel_feedforward.md), so the
+   feedforward delivered ~70 % of the torque the commanded acceleration
+   physically requires.  On the DECEL that shortfall is what the hand coasts
+   out: 0.06 / 0.06 / 0.35 / 1.02 rev past x3 at 2.74 / 3.44 / 3.97 / 4.86 m/s,
+   ending in light physical contact with the end stop.
+
+   throwDecelToTorque is the corrected conversion.  It is applied ONLY to the
+   post-release decel segment of a kind-0 throw (buildThrow's torA[2]).
+   Everything else keeps accelToTorque, and that scoping is load-bearing:
+     * ASCENT — correcting the accel feedforward would make the hand track the
+       ascent better and therefore RAISE the achieved release velocity,
+       re-calibrating every throw height the machine has ever flown.  Operator
+       decision, not this header's.
+     * kind-1 CATCH and makeSmoothMove — bit-identical to before, so the
+       C-HAND-1 arm gate, _PRIME_INFLIGHT_S and every host window sized on a
+       commanded hand move stay valid without moving.
+   The decel segment is also the only place where the inertia is UNAMBIGUOUS:
+   the ball has left, so the axis is exactly rotor + hand.                    */
 inline float accelToTorque(float a) { return a * INERTIA_HAND_ONLY * HAND_SPOOL_R; }
+constexpr float THROW_DECEL_TORQUE_K =
+    TeensyTraj::THROW_DECEL_REFLECTED_INERTIA_KGM2 * 2.f * (float)M_PI * LINEAR_GAIN;
+inline float throwDecelToTorque(float a) { return a * THROW_DECEL_TORQUE_K; }
 
 /* ───────── helper to shift whole trajectory in time ───────── */
 inline void shiftTime(Trajectory& tr, float offset)
@@ -177,10 +213,16 @@ private:
     x6 = x5 + vC * t_vel;
   }
 
-  /* generic 3‑segment builder (a–v–a or v–a–v etc.) */
+  /* generic 3‑segment builder (a–v–a or v–a–v etc.)
+     torA carries the per-segment torque FEEDFORWARD explicitly rather than
+     deriving it from aA inside the loop, because the throw's decel segment is
+     the one place that uses a different acceleration->torque conversion (see
+     throwDecelToTorque above).  Passing it in keeps that fact at the caller,
+     where the segment's meaning is known, instead of hiding a branch here.   */
   Trajectory buildSegment(float start,
                           const float tA[4], const float xA[4],
-                          const float vA[4], const float aA[4])
+                          const float vA[4], const float aA[4],
+                          const float torA[4])
   {
     Trajectory tr;
     unsigned idx = 0;
@@ -196,7 +238,7 @@ private:
       tr.t  .push_back(t);
       tr.x  .push_back(pos * LINEAR_GAIN);
       tr.v  .push_back(vel * LINEAR_GAIN);
-      tr.tor.push_back(accelToTorque(aA[idx]));
+      tr.tor.push_back(torA[idx]);
       t += deltaT;
     }
     return tr;
@@ -209,7 +251,13 @@ private:
     float xA[4] = {0.f, x1, x2, x3};
     float vA[4] = {0.f, v_throw, v_throw, 0.f};
     float aA[4] = {throwA, 0.f, throwD, 0.f};
-    return buildSegment(0.f, tA, xA, vA, aA);
+    /* segment 2 (x2 -> x3) is POST-RELEASE: the ball is gone, so the axis is
+       exactly rotor + hand and the feedforward can be sized from the real
+       reflected inertia.  Segments 0/1 keep the historical conversion — see
+       throwDecelToTorque's comment for why the ascent must not move.        */
+    float torA[4] = {accelToTorque(throwA), 0.f,
+                     throwDecelToTorque(throwD), 0.f};
+    return buildSegment(0.f, tA, xA, vA, aA, torA);
   }
 
   Trajectory buildCatch()
@@ -219,10 +267,24 @@ private:
     float xA[4] = {x3, x5, x6, 0.f};
     float vA[4] = {0.f, vC, vC, 0.f};
     float aA[4] = {catchA, 0.f, catchD, 0.f};
-    return buildSegment(t4, tA, xA, vA, aA);
+    /* kind-1 is UNTOUCHED by the 2026-07-28 decel-feedforward change. */
+    float torA[4] = {accelToTorque(catchA), 0.f,
+                     accelToTorque(catchD), 0.f};
+    return buildSegment(t4, tA, xA, vA, aA, torA);
   }
 
-  /* full 9‑segment throw‑flight‑catch */
+  /* full 9‑segment throw‑flight‑catch (kind 2, `makeFull`)
+     TWO KNOWN DEFECTS, deliberately left alone as of 2026-07-28 — no live host
+     dispatches kind 2 (`grep -rn traj_type ros_ws/src/jugglebot/jugglebot`:
+     only kind 0/1 outside `archived/`), and both are commanded-magnitude
+     changes on a path this phase is not chartered for:
+       1. `accelToTorque(acc * LINEAR_GAIN)` below feeds a rev/s^2 quantity into
+          a conversion whose argument is m/s^2, so kind 2's torque feedforward
+          is LINEAR_GAIN = 31.6x too large.  Every other builder passes m/s^2.
+       2. it does NOT carry buildThrow's corrected post-release decel
+          feedforward, so kind 2's decel would differ from kind 0's even after
+          defect 1 is fixed.
+     Fix them together, with a bench validation, if kind 2 is ever revived.   */
   Trajectory buildCommand()
   {
     const char  typ[9] = {'a','v','a','x','a','v','a','x','e'};

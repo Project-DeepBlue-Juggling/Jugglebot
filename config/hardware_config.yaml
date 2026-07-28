@@ -734,6 +734,87 @@ teensy_trajectory:
   linear_gain_factor: 1.035             # Multiplier on linear gain ("just 'cuz" factor)
   inertia_hand_only_kg: 0.281           # Hand-only inertia {kg}
   inertia_ratio: 0.747                  # Inertia ratio for throw dynamics
+  throw_decel_reflected_inertia_kgm2: 9.5e-6
+                                        # TOTAL reflected inertia of the hand axis at the motor
+                                        # (rotor + cable-driven load), used ONLY to size the torque
+                                        # feedforward of the POST-RELEASE deceleration segment of a
+                                        # kind-0 throw {kg m^2}.  See ros_ws/docs/hand_decel_feedforward.md
+                                        # (contract C-HAND-2) and Trajectory.h throwDecelToTorque().
+                                        #
+                                        # WHY IT EXISTS.  Trajectory.h's accelToTorque() sizes the
+                                        # feedforward as `a_lin * INERTIA_HAND_ONLY_KG * HAND_SPOOL_RADIUS_M`
+                                        # — a pure translating mass on a spool.  That model omits the
+                                        # motor's own rotor inertia entirely and uses the RAW spool
+                                        # radius rather than the effective radius the 1.035
+                                        # linear_gain_factor implies, so its implied reflected inertia is
+                                        #   m*r/(2*pi*LINEAR_GAIN) = 0.281*0.00521/198.6588 = 7.3695e-6
+                                        # against a MEASURED 1.02e-5 - 1.05e-5.  The braking feedforward
+                                        # was therefore ~70 % of what the commanded deceleration
+                                        # physically requires, and the shortfall has to be closed by a
+                                        # position/velocity loop that is far too slow to do it inside a
+                                        # 47-93 ms decel ramp (hand_pos_gain 35 rev/s per rev,
+                                        # hand_vel_gain 0.007 Nm/(rev/s) = 1.27 A/(rev/s),
+                                        # hand_vel_int_gain 0.07 => a 0.100 s integrator unwind constant,
+                                        # 1.1-2.1x the whole ramp).  Consequence, measured on the
+                                        # 2026-07-27 sitting: the hand coasted 0.06 / 0.06 / 0.35 /
+                                        # 1.02 rev past the 9.9594 rev stroke end at 2.74 / 3.44 / 3.97 /
+                                        # 4.86 m/s and made light physical contact with its end stop.
+                                        #
+                                        # HOW 9.5e-6 WAS ARRIVED AT — and why it is deliberately LOW.
+                                        # Anchored on a POST-RELEASE (decel-phase) measurement off that
+                                        # sitting's trace (temp/logs/toss_trace_2026-07-27_15-39-50.jsonl):
+                                        #   (a) per-tier decel torque balance —
+                                        #       J >= (tau_FF_wire + tau_grav) / (2*pi * a_achieved).
+                                        #       A genuine BOUND, not a fit: through the whole overshoot
+                                        #       the hand is AHEAD of pos_cmd so the position loop is
+                                        #       braking too (tau_loop >= 0) and friction only adds.  The
+                                        #       largest of the four tier bounds binds => 1.0126e-5;
+                                        #   (b) regression of achieved-vs-commanded decel across the
+                                        #       four flown tiers => 1.050e-5 kg m^2.
+                                        # The geometric load-only floor (m_hand * (1/(2*pi*LINEAR_GAIN))^2
+                                        # = 7.120e-6) is a hard lower bound and agrees; the ~2.9e-6
+                                        # residual above it is the rotor.
+                                        # DO NOT reinstate the accel-phase torque balance (1.015e-5) as
+                                        # an identification of THIS inertia.  Release is at x2, the end
+                                        # of the velocity hold, so the ball is in the cup for the whole
+                                        # ascent; INERTIA_RATIO = 0.747 = m_hand/(m_hand+m_ball) makes
+                                        # m_ball 0.0952 kg = 2.412e-6 kg m^2 reflected, 24 % of it.
+                                        # Ball-corrected that method gives 7.74e-6 — BELOW this value —
+                                        # and the decel data refutes 7.74e-6 anyway (it would imply a
+                                        # flat eta ~0.95; measured eta is 0.799 at 4.858 m/s).
+                                        # 9.5e-6 sits 6-10 % BELOW the decel-side evidence ON PURPOSE.
+                                        # The feedforward alone can only produce a deceleration of
+                                        # a_cmd * J_ff/J_true, so CONSIDERED ALONE it cannot over-brake
+                                        # while J_ff <= J_true — the hand cannot be commanded to stop
+                                        # short of x3 and then be dragged back up, which would re-create
+                                        # the operator-visible dip Phases 1-4 removed.
+                                        # CAVEAT, stated because the algebra alone is misleading: on an
+                                        # UPWARD decel gravity brakes in the SAME direction, worth
+                                        # +tau_grav/(2*pi*a_cmd) of effective inertia (+1.46e-6 at the
+                                        # band floor, +0.37e-6 at the ceiling).  Open-loop the total
+                                        # therefore EXCEEDS J_true below a_cmd ~1900 rev/s^2.  No
+                                        # declared value fixes that AND clears the 10.60 rev abort line
+                                        # (8.69e-6 would put the pessimistic peak at 10.80), so the real
+                                        # enforcement is bench row H7.4 (dip_below_x3 <= 0.100 rev) and
+                                        # the new band-floor rung R0, not the inequality.  See
+                                        # ros_ws/docs/hand_decel_feedforward.md § The one-sided-safety
+                                        # clause.  Raising this value is a bench decision with measured
+                                        # evidence, not a desk one; LOWERING it is the safe direction.
+                                        #
+                                        # WHAT IT MUST NOT BE APPLIED TO.  The accel and velocity-hold
+                                        # segments keep accelToTorque().  Correcting the feedforward
+                                        # there would make the hand track the ascent better and so RAISE
+                                        # the achieved release velocity — re-calibrating every throw
+                                        # height the machine has ever flown, on a machine whose hand
+                                        # already reaches its end stop.  That is an operator decision.
+                                        # makeSmoothMove and the kind-1 catch are likewise untouched.
+                                        #
+                                        # AUTHORITY.  Peak commanded decel current is
+                                        # J * 2*pi * a_dec / Kt: 31.6 A at the 4.86 m/s tier that
+                                        # touched the stop, 38.9 A at the shipped FLIGHT_TIME_MAX_S =
+                                        # 1.10 s ceiling, against jugglebot_operational
+                                        # hand_curr_limit_a = 50.0 (22 % headroom).  Pinned by
+                                        # tests/sim/test_hand_throw_decel_ff.py.
   throw_vel_hold_pct: 0.05              # Fraction of throw profile at constant velocity
   catch_vel_ratio: 0.6                  # Catch velocity as fraction of throw velocity
   catch_vel_hold_pct: 0.10              # Fraction of catch profile at constant velocity
