@@ -364,6 +364,7 @@ def _toss_node_8b_announce(pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
         node._toss_announced_reach = None
     seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=flight,
                         throw_delay_s=5.0, tier=TIER_8B, throw_site_xy_mm=throw_site,
+                        throw_site_known=True,
                         event_vel_mps=float(release.event_vel_mps))
     seq.start(_time.perf_counter())
     seq._prepare_dispatched = True             # satisfy note_announcement's gate

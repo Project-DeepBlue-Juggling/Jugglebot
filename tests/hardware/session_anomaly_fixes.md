@@ -3494,18 +3494,27 @@ selects which of two shipped choreographies every toss goal runs:
 
 | | Tier 8a (was default) | Tier 8b (is default) |
 |---|---|---|
-| POSITIONING | platform goes **level** to the nominated catch `(x, y)` | platform goes **tilted** to the config throw site `A = (0, 0)` |
+| POSITIONING | platform goes **level** to the nominated catch `(x, y)` | platform **pre-tilts IN PLACE** at the throw site `A` = its own LIVE commanded `(x, y)` (was the config site `(0, 0)` until 2026-07-29 — see § SECTION DISP) |
 | throw | vertical | **tilt-aimed** at the displaced catch `B` |
 | catch pre-tilt | the stock announcement pre-tilt runs | **suppressed** via `catch/pretilt_hold` |
 | A→B platform reach | n/a | **deferred to `t_release`** — it happens in flight |
-| CHECKING gates | tier, lead, flight band, event_vel, workspace | **plus** `\|B − A\| ≤ 70 mm`, the closed-form reach bound, and a tilt clamp — all **before** the workspace box |
+| CHECKING gates | tier, lead, flight band, event_vel, workspace | **plus** a known throw site, `\|B − A\| ≤ toss_max_displacement_mm`, the closed-form reach bound, and a tilt clamp — all **before** the workspace box |
 
-Direction of risk, stated honestly because it cuts both ways. The **gate** gets
-strictly tighter: a goal that used to be accepted at `\|x\| ≤ 150 mm` now refuses
-above `70 mm`, so on the CHECKING path the machine can only refuse *more*. The
-**choreography** does not: 8b tilts the platform, suppresses the stock pre-tilt and
-puts a platform reach into ball flight, none of which 8a does. Do not read "the gate
-is tighter" as "the motion is smaller".
+Direction of risk, stated honestly because it cuts both ways. The **gate** got
+strictly tighter when 8b became the default: a goal accepted at `\|x\| ≤ 150 mm`
+under 8a started refusing above the displacement cap. The **choreography** did not:
+8b tilts the platform, suppresses the stock pre-tilt and puts a platform reach into
+ball flight, none of which 8a does. Do not read "the gate is tighter" as "the motion
+is smaller".
+
+> **AMENDED 2026-07-29 — read § SECTION DISP before running this section.** Two of
+> this section's premises moved. (1) The cap is now
+> `jugglebot_operational.toss_max_displacement_mm` = **150 mm**, not 70. (2) The
+> throw site `A` is the platform's **live commanded pose**, not the config `(0, 0)`,
+> so **every displacement below is measured from wherever the platform is parked** —
+> run each row from a `go_home`d platform or the numbers do not mean what they say.
+> Both rows' PASS/ABORT text below has been re-pointed; the rows themselves still
+> validate what they always did.
 
 **Prerequisites — read the flash line separately, it is not the same step.**
 
@@ -3581,7 +3590,9 @@ grep -n "JB_OP_TOSS_TIER" \
 
 Validates: `catch-reach-degenerate-overshoot` Phase 4 / `single-ball-toss` Phase 4 —
 that the 8b displacement cap is live and answers **before** the workspace box.
-Refused in CHECKING, so **nothing actuates**. `200 mm` is `2.9×` the `70 mm` cap.
+Refused in CHECKING, so **nothing actuates**. **Run it from a `go_home`d platform**
+— the throw site is the live commanded pose, so `x = 200 mm` is a `200 mm`
+displacement only from centre. That is `1.33×` the `150 mm` cap.
 
 ```bash
 ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
@@ -3590,7 +3601,7 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 | quantity | PASS | ABORT |
 |---|---|---|
-| node outcome line | `Toss REJECTED_DISPLACEMENT` | `REJECTED_WORKSPACE` — the build is stale (that is the **8a** answer to this goal), or the gate order moved. Re-run `TIER-PREREQ` |
+| node outcome line | `Toss REJECTED_DISPLACEMENT` | `REJECTED_WORKSPACE` — the build is stale (that is the **8a** answer to this goal), or the gate order moved. Re-run `TIER-PREREQ`. `REJECTED_POSE_UNKNOWN` — `trajectory/commanded_position` is not arriving; the throw site cannot be read and no displacement gate can run. Check trajectory_node is seeded + streaming, then re-run |
 | goal terminal status | `ABORTED` | anything else |
 | hand `pos_cmd` span over the whole goal, from the trace jsonl | **`0.0000 rev`** | any hand motion — a refused goal dispatched a stroke |
 | commanded platform pose span (FK of `/leg_setpoint_echo`) over the goal | **`< 0.02°` and `< 0.2 mm`** | any platform motion — a refused goal reached POSITIONING |
@@ -3599,7 +3610,7 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 Validates: the same two phases — that making the cap tighter did not make the
 workspace gate **unreachable**. `x = 60 mm` is a *live* displacement: inside the
-`70 mm` cap and inside the `256 mm` reach bound at `T = 0.8 s`, so the 8b gates
+`150 mm` cap and inside the `256 mm` reach bound at `T = 0.8 s`, so the 8b gates
 genuinely run **and pass** before `z` answers. `\|z − 170\| = 130 mm` against the
 `±50 mm` band. Refused in CHECKING, so **nothing actuates**.
 
@@ -3610,7 +3621,7 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 | quantity | PASS | ABORT |
 |---|---|---|
-| node outcome line | `Toss REJECTED_WORKSPACE` | `REJECTED_DISPLACEMENT` — the `70 mm` cap has moved **below 60 mm** and is now swallowing every real displaced goal, leaving the workspace branch unreachable. Routes to `single-ball-toss` Phase 4 |
+| node outcome line | `Toss REJECTED_WORKSPACE` | `REJECTED_DISPLACEMENT` — the cap has moved **below 60 mm** and is now swallowing every real displaced goal, leaving the workspace branch unreachable. Routes to `single-ball-toss` Phase 4. (Or the platform is not at centre — re-`go_home` and repeat) |
 | hand `pos_cmd` span / platform pose span | **`0.0000 rev`** / **`< 0.02°`, `< 0.2 mm`** | any motion |
 
 > Why the pair matters. `TIER-A` alone would pass even if the cap had collapsed to
@@ -3671,8 +3682,11 @@ instrument defect on 2026-07-28).
 
 Validates: `single-ball-toss` Phase 4 — a straight repeat of the already-successful
 2026-07-27 T4 geometry, now on the default build rather than a hand-flipped one.
-Aim into `−x` (the Phase-4 asymmetry map flags the `+y`/NW hemisphere weak at 70 mm)
-at `T ≥ 0.80 s`.
+Aim into `−x` at `T ≥ 0.80 s`. **Run it from a `go_home`d platform** — the throw
+site is the live commanded pose. (The `−x` choice came from the 2026-07-25 asymmetry
+map, which is **stale vintage** — it was measured on the pre-2026-07-26 moving-rim
+machine. Keep `−x` here only so this row stays a like-for-like repeat of the
+2026-07-27 T4 geometry; the live directional evidence is § SECTION DISP's re-run map.)
 
 ```bash
 ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
@@ -3681,7 +3695,7 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 | quantity | PASS | ABORT |
 |---|---|---|
-| goal accepted | not refused — `70 mm` is exactly **at** the cap and the cap is a strict `>`, so `70` is legal | `REJECTED_DISPLACEMENT` at exactly 70 mm — the cap became `>=`. Routes to `single-ball-toss` Phase 4 |
+| goal accepted | not refused — `70 mm` is far inside the `150 mm` cap | `REJECTED_DISPLACEMENT` at 70 mm — the cap collapsed, or the platform was not at centre when the goal was sent. Routes to `single-ball-toss` Phase E |
 | first `catch/dynamic_target` vs `t_release` | **`+0.000 s` to `+0.100 s`**, never negative | any value `< 0` |
 | deferred reach travel | **`50–75 mm`** (measured `51.5–72.2 mm` on 2026-07-27) | `< 50 mm` — the reach is not spanning A→B |
 | commanded pose span over `[release − 0.10 s, release]` | **`< 0.02°` and `< 0.2 mm`** | any commanded motion through release |
@@ -3693,9 +3707,12 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   the 2026-07-27 T4 evidence and recorded in
   `logbook/2026-07-28-toss-tier-8b-default.md`. These rows check that it *deployed*
   and *behaves*, not that it is wise.
-- **Raising the 70 mm cap, deriving the throw site from the current pose, and the
-  reach-envelope work.** That is decision (d)'s displaced-throw programme; it needs
-  its own plan and its own gate.
+- **Raising the cap, deriving the throw site from the current pose, and the
+  reach-envelope work.** That was decision (d)'s displaced-throw programme and it
+  **landed 2026-07-29** as `single-ball-toss` Phase E — see § SECTION DISP, which is
+  where its rows live. This section keeps its own rows because they validate the
+  *tier default deployment*, which is a separate question from the displaced-throw
+  capability.
 - **The T0–T4 capability ladder.** `tests/hardware/session_phase8_toss_hardware.md`,
   which runs **after** this file — and note its new § TIER banner: `T0–T3` were
   written for Tier 8a and `T3` in particular does not mean what it says on an 8b
@@ -3800,14 +3817,24 @@ across the whole file, and it cannot be retired on one sitting.
 
 Both FSMs already branch on the verdict (`toss_sequencer._step_in_flight`,
 `reload_sequencer._step_in_flight`): a confirmed catch finishes the goal
-immediately with `RECENTER`, an unconfirmed one runs to the settle deadline and
+immediately, an unconfirmed one runs to the settle deadline and
 finishes with `SAFE_ABORT`. **That branch has been dead on hardware for the
 machine's whole life.** From this build it is live on every successful self-toss:
 
 | | before | after |
 |---|---|---|
 | terminal instant | landing + **0.70 s** (`catch_confirm_window_s`) | the CAUGHT tick — measured landing + **0.202 – 0.442 s**, median **0.209 s**, over the 17 self-tosses |
-| terminal action | `SAFE_ABORT` — **retract** the hand, lower latch, `go_home` | `RECENTER` — lower latch, `go_home`, **no retract** |
+| terminal action | `SAFE_ABORT` — **retract** the hand, lower latch, `go_home` | `STAY` — lower latch, **no retract, NO `go_home`** (2026-07-29; it was `RECENTER` = lower latch + `go_home` between the C-POSSESS-1 build and this one) |
+
+> **AMENDED 2026-07-29 — the CAUGHT terminal no longer calls `go_home`.**
+> `jugglebot_operational.toss_stay_at_pose_on_caught` ships `true`, so a caught
+> toss holds its catch pose and the next toss throws from there (§ SECTION DISP).
+> That **retires the risk POSS-2.3 and POSS-2.4 were written to score** — the
+> earlier-`go_home`-with-a-ball-in-the-cup path does not execute on a caught toss
+> at all now — and replaces it with a different one, scored as **DISP-5**: the
+> platform holds the catch's RECEIVE TILT indefinitely instead of returning to
+> level. Run POSS-2.3/2.4 only if you set the key `false`; both rows are marked
+> accordingly below.
 
 Checked offline against the 2026-07-27 capture before this shipped: the catch
 stroke has already finished by the CAUGHT tick — hand `pos_meas` sits within
@@ -3820,11 +3847,11 @@ leaves the hand inside the `±0.5 rev` bottom park band the *next* goal's
 
 | # | quantity | PASS | ABORT |
 |---|---|---|---|
-| POSS-2.1 | a Toss immediately following a **caught** Toss | accepted — no `REJECTED_HAND_NOT_PARKED` | any such rejection ⇒ `RECENTER` is leaving the hand off the park band. Recover with a Reload (which primes and retracts) and record the `pos_meas` |
+| POSS-2.1 | a Toss immediately following a **caught** Toss | accepted — no `REJECTED_HAND_NOT_PARKED` | any such rejection ⇒ the CAUGHT terminal is leaving the hand off the park band. Recover with a Reload (which primes and retracts) and record the `pos_meas`. **Note under STAY the second goal is also a live § SECTION DISP chaining test** — its throw site is wherever the first caught |
 | POSS-2.2 | hand `pos_meas` at the caught toss's terminal | within **±0.5 rev** of `JB_OP_HAND_RETRACT_REV`; expect **\|pos\| ≤ 0.10 rev** (offline worst case 0.069) | `> 0.5 rev` |
 | | *(provenance, if you need to re-derive the 0.069)* | The offline hand-state-after-CAUGHT analysis was a **one-off `/tmp` probe and is not committed**, so this number cannot be re-run from `tools/probes/`. To re-derive: read `/hand_telemetry` `pos_meas` from `~/Desktop/rosbags/2026-07-27_15-39-38` over the 3 s following each self-toss track's first `CAUGHT` sample (track ids ≥ 80; `possession_verdict_bag_check.py` prints the ids). If you find yourself needing it more than once, promote it — CLAUDE.md's probe rule puts reusable harnesses in `tools/probes/` committed | *(not a check)* |
-| POSS-2.3 | the `go_home` after a caught toss | behaves as LVL-2 (same profiled move, ball seated) | any step rejection, `MAX_DEVIATION`, or guard latch |
-| POSS-2.4 | **does the BALL survive the earlier `go_home`?** The ball marker (mocap) at `go_home` completion, relative to the platform's cup axis | still within **35 mm** (`GEOM_HAND_RADIUS_MM`) of the cup axis, on **every** caught toss | the ball leaves the cup during `go_home`. **This is the row that retires an assertion, so run it deliberately.** § 5 of the contract argues this move is "same class as today" from hand `pos_meas` — which says where the *hand* is, not whether the *ball* has come to rest. A caught toss now starts `go_home` **0.26 – 0.50 s earlier**, essentially at the instant the catch stroke arrests the ball, where before it had the full 0.70 s settle window **plus** a retract. This path has never executed on hardware. If you want zero new risk on the first run, ask for the decoupling in the contract's § 5 residual 2 (resolve the verdict early, hold `go_home` to the old deadline) — it lands the reporting fix with no timing change |
+| POSS-2.3 | **ONLY IF `toss_stay_at_pose_on_caught` is `false`.** The `go_home` after a caught toss | behaves as LVL-2 (same profiled move, ball seated) | any step rejection, `MAX_DEVIATION`, or guard latch. At the shipped `true` there is no `go_home` to score — **N/A, and seeing one is itself the finding**: it means the installed copy is stale |
+| POSS-2.4 | **ONLY IF `toss_stay_at_pose_on_caught` is `false`.** Does the BALL survive the earlier `go_home`? The ball marker (mocap) at `go_home` completion, relative to the platform's cup axis | still within **35 mm** (`GEOM_HAND_RADIUS_MM`) of the cup axis, on **every** caught toss | the ball leaves the cup during `go_home`. **This is the row that retires an assertion, so run it deliberately.** § 5 of the contract argues this move is "same class as today" from hand `pos_meas` — which says where the *hand* is, not whether the *ball* has come to rest. A caught toss now starts `go_home` **0.26 – 0.50 s earlier**, essentially at the instant the catch stroke arrests the ball, where before it had the full 0.70 s settle window **plus** a retract. This path has never executed on hardware. If you want zero new risk on the first run, ask for the decoupling in the contract's § 5 residual 2 (resolve the verdict early, hold `go_home` to the old deadline) — it lands the reporting fix with no timing change |
 
 `catch/prime_hold` is also released **0.26 – 0.50 s** earlier, re-opening
 `catch_coordinator`'s auto-prime with a ball in the cup. **This is not new**:
@@ -3847,6 +3874,407 @@ unexpected hand ascent after a caught toss and record it if you see one.
 - **Turning on `toss_require_ball_evidence`.** Still `false`, deliberately and
   unchanged. It is a precondition that can refuse a goal, and it belongs to
   whoever validates the sensor (sitting logbook, decision row (e)).
+
+---
+
+---
+
+## SECTION DISP — displaced throws to ±150 mm (`single-ball-toss` Phase E)
+
+> **Appended 2026-07-29.** This is operator decision **(d)** of 2026-07-28 —
+> *"throw across large translations, at least ±150 mm at z = 170, from oblique
+> platform positions, with the platform STAYING at its catch pose so sessions chain
+> A → B → C"* — implemented as one phase because its four parts interlock. Validates
+> `plans/active/single-ball-toss.md` **Phase E**. Run it **after** § SECTION TIER
+> (which proves the 8b wrapper deployed) and after § SECTION POSS (whose verdicts
+> are the instrument every rung below is scored with).
+>
+> It **changes premises in sections above**; those have been re-pointed in place and
+> each carries an AMENDED note. If you are reading a printed copy, the three that
+> moved are § SECTION TIER's cap and throw-site rows, § SECTION POSS's `POSS-2.3` /
+> `POSS-2.4` (now conditional), and the Reload precondition list.
+>
+> **⚠ Read the KNOWN LIMITATION box above DISP-6 before you start.** The chaining
+> half of decision (d) is delivered **below ~146 mm and refused AT the 150 mm cap**
+> — a measured, documented gap, not a bench fault. `go_home` between cap-magnitude
+> attempts and do not report the resulting refusal as a Phase-E defect.
+
+### What changed, in one table
+
+| | before (the 2026-07-27 build) | now |
+|---|---|---|
+| throw site `A` | config `jugglebot_operational.toss_throw_site_mm` = `(0, 0)` | the platform's **LIVE commanded pose**, read from the new `trajectory/commanded_position` topic. The config key is **retired** |
+| displacement cap | `70 mm`, hard-coded | `jugglebot_operational.toss_max_displacement_mm` = **`150 mm`**, operator-adjustable |
+| catch reach envelope | `80 mm` around the pose held at arming — which also capped **requested** reach | `80 mm` around the **declared catch point B** (contract **C-REACH-1**, `ros_ws/docs/catch_reach_envelope.md`). Drift is bounded exactly as tightly; requested reach is not |
+| CAUGHT terminal | `RECENTER` — lower latch + `go_home` | **`STAY`** — lower latch, release the holds, **no `go_home`**. `jugglebot_operational.toss_stay_at_pose_on_caught` = `true` |
+| MISSED / ABORT terminals | `SAFE_ABORT` (retract, latch down, `go_home`) | **unchanged** |
+| Reload preconditions | mode, BB, mocap, streaming | **plus `REJECTED_NOT_CENTERED`** — see DISP-7 |
+
+**The failure this closes, and why it had to close before the cap could move.**
+On 2026-07-27, bag `2026-07-27_16-07-30`, four Tier-8b goals at `(100,100)`,
+`(90,90)` and `(80,80)×2` — nominal displacements `141 / 127 / 113 / 113 mm`, run
+under an uncommitted 250 mm cap override — were **all four refused**, `catch target
+146/131/117/117 mm from the armed hold pose exceeds the 80 mm reach envelope`. 4/4.
+The refusal itself is fine; **when** it arrived is not. The deferred A→B reach is
+published at `t_release`, so every one of those rejections landed with the ball
+already airborne and the platform holding at `A`. Nothing recovers from that.
+Raising the cap without moving the envelope centre would have re-run that failure at
+150 mm.
+
+### Deployment for this section — read all three lines
+
+1. **`colcon build --packages-select jugglebot` + relaunch.** Mandatory. The launch
+   runs the *installed* copy; until the rebuild the robot runs the **70 mm cap, the
+   config throw site and the `go_home` terminal** while this file says otherwise.
+2. **No `jugglebot_interfaces` rebuild.** Both new topics
+   (`trajectory/commanded_position`, `catch/reach_center`) are
+   `geometry_msgs/Point` — deliberately, so this change cannot create a split
+   interface build.
+3. **No firmware flash and no config regeneration** *for this section*. (§ Section
+   FW's Platform Teensy flash and § CHECK HAND-7's are separate and still owed.)
+
+### Pre-flight DISP-0 — the installed copy really is Phase E (no robot, no bag, ~20 s)
+
+```bash
+INST=~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot
+grep -n "JB_OP_TOSS_MAX_DISPLACEMENT_MM\|JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT" $INST/hardware_config.py
+grep -c "JB_OP_TOSS_THROW_SITE_MM" $INST/hardware_config.py            # expect 0
+grep -c "ACTION_STAY" $INST/toss_sequencer.py                          # expect >= 2
+grep -c "catch/reach_center" $INST/trajectory_node.py                  # expect >= 1
+grep -c "trajectory/commanded_position" $INST/reload_coordinator_node.py  # expect >= 1
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-0.1 | the two new constants | `JB_OP_TOSS_MAX_DISPLACEMENT_MM = 150.0` and `JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT = True` | missing, or a different cap ⇒ stale install, or an operator lowered the cap deliberately (fine — then **read the cap off this line and use it everywhere below**, do not use 150) |
+| DISP-0.2 | the retired key | `0` | `1` ⇒ the install predates Phase E; **stop**, rebuild, relaunch |
+| DISP-0.3 | the three greps | all non-zero | any zero ⇒ stale install |
+
+Then, with the graph up and **before** anything actuates:
+
+```bash
+ros2 topic echo /trajectory/commanded_position --once
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-0.4 | one message arrives within ~1 s, `x/y/z` matching where the platform is holding (`z ≈ 170` at ACTIVE) | yes | **silence** ⇒ trajectory_node is not seeded/streaming. Every 8b goal will read `REJECTED_POSE_UNKNOWN` until it is. That refusal is correct and is the fail-closed design; fix the graph, do not work around it |
+
+### THE LADDER — climb it in order, and do not skip a rung
+
+Every rung is a `Reload` (to load a ball) followed by the `Toss` shown. Score each
+with the § SECTION POSS instruments — the live `Toss …` outcome line, your own eyes,
+and afterwards:
+
+> **`go_home` BEFORE every `Reload` from DISP-3 onward.** Under `STAY` a caught
+> toss leaves the platform parked at its catch pose, and the Reload precondition
+> tolerance is **`66.5 mm`** — so after any caught displaced toss at `≥ 70 mm` the
+> next rung's `Reload` will correctly refuse `REJECTED_NOT_CENTERED` until you
+> re-centre. **That refusal is the gate working, not a fault.** It is deliberately
+> tighter than the `80 mm` reach envelope: the reload's own pre-tilt shifts the
+> commanded centroid a saturated `13.47 mm` off the catch point
+> (`64.78·sin(12°)`, and `compute_catch_orientation` clamps at `12°` for every
+> real BB arrival), so a tolerance of `80` would have ADMITTED parks in
+> `(66.5, 80] mm` and then rejected the pre-tilt `WORKSPACE` **after BB had been
+> asked to throw** — the DISP-7.1 E-STOP condition, reached through a gate that
+> said yes.
+>
+> **Do NOT send a `Toss` while a move is still executing.** The throw site `A` is
+> SAMPLED once at goal accept from a 5 Hz topic with a 1.0 s staleness window, and
+> nothing refuses a goal issued mid-traverse. A goal sent while the platform is
+> still driving nominates a pose it has **already passed**, and POSITIONING then
+> supersedes the in-flight move with a profiled reversal *back* to it — an
+> unrequested backtrack of up to ~200 mm at the typical 0.2 s sample age. It looks
+> correct in the log (the aim stays self-consistent), so the only defence is the
+> discipline: wait for the move to finish, confirm with
+> `ros2 topic echo /trajectory/commanded_position --once`, **then** send the Toss.
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+python tools/probes/possession_verdict_bag_check.py --bag ~/Desktop/rosbags/<BAG>
+python tools/probes/ball_arrival_offset.py --bag ~/Desktop/rosbags/<BAG> --csv
+```
+
+`ball_arrival_offset.py` is the rung's real measurand: it says **where the ball
+actually arrived** relative to the announced landing, which is the number that
+decides whether a displaced throw is aimed or merely accepted. Pass `--ref X Y Z`
+with the rung's nominated `B` when scoring `possession_verdict_bag_check.py` on a
+displaced rung — the default reference is the ACTIVE catch point and would score
+every displaced catch as a wide miss.
+
+**Standing per-rung ABORT, applies to all of them.** Any `WORKSPACE` line naming the
+reach envelope in the `trajectory_node` log during a flight ⇒ **stop the ladder**.
+That is the 2026-07-27 mid-flight failure recurring, and it means the
+`catch/reach_center` declaration is not reaching trajectory_node. Check for
+`toss declared catch reach centre (…)` in the coordinator log and
+`reach envelope 80 mm about (…) [declared catch/reach_center]` in the
+trajectory_node log on the same goal.
+
+---
+
+#### DISP-1 — the DEGENERATE vertical toss at centre (**never flown; run it first**)
+
+`B` = the live pose = centre, so displacement is `0 mm`, the aim is exactly level,
+and `compute_release_state_tilted` returns the Tier-8a release state **bitwise**.
+This is the operator's "8b subsumes 8a" expectation and it is the cheapest possible
+first exercise of the new throw-site read.
+
+```bash
+# platform at centre: go_home first.
+ros2 service call /trajectory/go_home std_srvs/srv/Trigger
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-1.1 | node outcome line | not a `REJECTED_*` | `REJECTED_POSE_UNKNOWN` ⇒ re-run DISP-0.4. `REJECTED_DISPLACEMENT` ⇒ the platform was not where you thought; echo `/trajectory/commanded_position` and repeat |
+| DISP-1.2 | commanded platform tilt over the whole goal (FK of `/leg_setpoint_echo`) | `\|rx\|`, `\|ry\|` within **`0.05°`** of the levelling target throughout the pre-throw phase | any pre-tilt at all — displacement is 0, so the aim must be exactly level |
+| DISP-1.3 | deferred reach travel (commanded xy span from `t_release` to landing) | **`< 2 mm`** | `> 5 mm` — a zero-displacement reach is moving the platform |
+| DISP-1.4 | caught, over 3 attempts | **≥ 2/3** | `0/3` ⇒ stop; this is the simplest throw the machine can make |
+| DISP-1.5 | terminal | `Toss CAUGHT`, then **no `go_home`** — the platform stays where it is | a `go_home` after a CAUGHT ⇒ the install is stale (DISP-0.1) |
+
+#### DISP-2 — the DEGENERATE vertical toss at an OBLIQUE pose (**never flown**)
+
+The same zero-displacement throw, from `(140, −140)`. Under the retired config throw
+site this goal was a **198 mm displaced** throw and would have refused; it is the
+single clearest demonstration that `A` is now the live pose.
+
+> **Why `(140, −140)` and not `(150, −150)`.** `150.0` is the *exact* value of
+> `TOSS_XY_LIMIT_MM`, and Phase E added a new pre-check that refuses a Tier-8b
+> goal whose **throw site** `A` is outside that box (`abs(ax) > 150.0`). If you
+> drive there by hand the commanded pose is an arbitrary float — `(150.4, −149.7)`
+> echoes as "~(150, −150)" and refuses `REJECTED_WORKSPACE`. `(140, −140)` keeps
+> the whole demonstrative value with 10 mm of margin.
+
+```bash
+ros2 service call /trajectory/go_to_pose ...    # or drive there; then confirm:
+ros2 topic echo /trajectory/commanded_position --once     # expect ~(140, -140, 170)
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 140.0, y: -140.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-2.1 | node outcome line | not a `REJECTED_*` | `REJECTED_DISPLACEMENT` ⇒ the throw site is not being read live — **stop**, this is the phase's headline defect. `REJECTED_WORKSPACE` ⇒ the platform is parked outside the `±150 mm` planning box (check `/trajectory/commanded_position` — **both** components must be `≤ 150.0`); drive back inside and retry. That is a correct refusal, not a defect |
+| DISP-2.2 | coordinator log | `toss declared catch reach centre (150.0, -150.0, 170.0) mm STOW` | a different centre, or no line at all |
+| DISP-2.3 | POSITIONING move travel | **`< 5 mm`** — a pre-tilt in place, not a traverse | `> 20 mm` ⇒ the platform is being sent somewhere; the throw site read is wrong |
+| DISP-2.4 | caught, over 3 attempts | **≥ 2/3** | `0/3` ⇒ record the arrival offset and stop. `(140, −140)` sits just inside the sitting's **worst extremity pose** for commanded-vs-mocap tilt, measured at `(150, −150)`: `0.604°` mocap residual, `42 mm` of implied lateral drift over a 0.78 m flight (`logbook/2026-07-28-anomaly-fixes-validation-sitting.md` § Extremity tilt). That residual is not modelled anywhere and is the likeliest cause of a failure here — more likely than anything Phase E changed |
+
+#### DISP-3 — displaced **70 mm** (parity with the validated T4)
+
+Identical geometry to § CHECK TIER-E, run here as the ladder's known-good anchor:
+this exact displacement is **11/11 accepted with the deferred reach firing correctly**
+on 2026-07-27. From centre, aim `−x`, `T ≥ 0.80 s`.
+
+```bash
+ros2 service call /trajectory/go_home std_srvs/srv/Trigger
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: -70.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-3.1 | first `catch/dynamic_target` vs `t_release` | **`+0.000` to `+0.100 s`**, never negative (measured `+0.013…+0.050` on 11/11) | any value `< 0` |
+| DISP-3.2 | deferred reach travel | **`50–75 mm`** (measured `51.5–72.2 mm`) | `< 50 mm` |
+| DISP-3.3 | commanded pose span over `[release − 0.10 s, release]` | **`< 0.02°` and `< 0.2 mm`** | any commanded motion through release |
+| DISP-3.4 | caught, over 3 attempts | **≥ 2/3** | `0/3` ⇒ **stop the ladder** — the known-good rung regressed, so nothing above it is interpretable |
+| DISP-3.5 | ball arrival offset vs the nominated `B` (`ball_arrival_offset.py`) | record it; expect the same class as the 2026-07-27 self-tosses | *(no ABORT — this is the baseline the next two rungs are compared against)* |
+
+#### DISP-4 — displaced **100 mm** (first rung past hardware evidence)
+
+From centre. `T ≥ 0.80 s` — at `T = 0.55 s` the closed-form reach bound is `83.2 mm`
+and the goal will be refused `REJECTED_DISPLACEMENT`, correctly.
+
+```bash
+ros2 service call /trajectory/go_home std_srvs/srv/Trigger
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: -100.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-4.1 | goal accepted | yes | `REJECTED_DISPLACEMENT` ⇒ the platform was not at centre, or the cap was lowered (DISP-0.1) |
+| DISP-4.2 | deferred reach travel | **`85–115 mm`** | outside — the reach is not spanning A→B |
+| DISP-4.3 | DISP-3.1 and DISP-3.3 re-checked | same PASS bands | same ABORTs |
+| DISP-4.4 | caught, over 5 attempts | **≥ 3/5** | `≤ 1/5` ⇒ stop, do not attempt DISP-5. `2/5` ⇒ record the arrival offsets and **decide with the operator** before climbing |
+| DISP-4.5 | ball arrival offset vs `B`, worst of 5 | **`≤ 2×` the DISP-3.5 worst** | `> 3×` ⇒ the aim is degrading with displacement faster than the cup can absorb; report the trend and stop |
+
+#### DISP-5 — displaced **150 mm** (the cap; the operator's ordered working point)
+
+From centre, and **`T ≥ 0.80 s`**. The closed-form quintic reach bound refuses
+150 mm below `T ≈ 0.669 s`, and the production planner is only `3/8` directions at
+`T = 0.55 s` — so a short flight here is not a marginal choice, it is the wrong one.
+
+```bash
+# REPEAT THIS PAIR for each of the 5 attempts. The go_home is MANDATORY between
+# attempts, not decorative: a caught toss at the cap parks the platform OUTSIDE
+# the +-150 planning box, so attempt 2 refuses without it (see the KNOWN
+# LIMITATION box below).
+ros2 service call /trajectory/go_home std_srvs/srv/Trigger
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: -150.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-5.1 | goal accepted | yes | `REJECTED_DISPLACEMENT` at exactly the cap, **on a goal issued from a `go_home`'d platform**, ⇒ the cap became a `>=` comparison. Routes to `single-ball-toss` Phase E. The same code on a goal issued **after a caught attempt without a `go_home`** is the KNOWN LIMITATION below, not a defect |
+| DISP-5.2 | deferred reach travel | **`130–170 mm`** | outside |
+| DISP-5.3 | peak commanded leg jerk during the reach (`/trajectory/diagnostics` `peak_leg_jerk`) | **`< 30000 mm/s³`**, and expect roughly **`9000–11000`** at `T = 0.80 s` — record it. (Do **not** expect `17578`: that is the closed form's **platform-space** figure, `60·d/T³`. `peak_leg_jerk` is a **leg-space** measurand and the production-faithful sim puts it at `9742` max / `9371` mean over the 150 mm ring at `T = 0.80` — `temp/reports/toss_8b_phaseE_seed0.json`, 80 trials, ~0.55× the platform-space number. The gate's own summary reports `jerk 11203` required across the whole sweep.) | at or above `30000` ⇒ the reach is riding the gate; raise the throw height (longer flight) rather than pushing on. A reading **near `17578`** is not a pass-with-margin story — it is ~1.8× the expected leg-space value and means the reach is spanning more than `B` |
+| DISP-5.4 | DISP-3.1 and DISP-3.3 re-checked | same PASS bands | same ABORTs |
+| DISP-5.5 | caught, over 5 attempts | **≥ 3/5** | `≤ 1/5` ⇒ the cap is not supportable at this direction/flight — record and route to `single-ball-toss` Phase E, **do not** raise `toss_max_displacement_mm` further |
+| DISP-5.6 | **the held tilt after a caught toss** — commanded `rx/ry` (FK of `/leg_setpoint_echo`) once the goal terminates, and the ball's mocap position over the following 10 s | **REPORT.** Expect a held receive tilt of a few degrees (the closed form gives `≈3.6°` of arrival angle at 150 mm / `T = 0.70 s`) and the ball still within `35 mm` (`GEOM_HAND_RADIUS_MM`) of the cup axis | the ball leaves the cup while the platform holds the tilted pose ⇒ **set `toss_stay_at_pose_on_caught: false`, regenerate, rebuild, relaunch**, and record it. This is the one residual `STAY` introduces: the catch already holds this tilt through its settle with a ball in it, but never indefinitely |
+
+> ### ⚠ KNOWN LIMITATION — chaining does **not** work at the cap. `go_home` first.
+>
+> **After a CAUGHT toss whose `B` is at (or within ~3 mm of) the `150 mm` cap,
+> the next Toss and the next Reload will BOTH refuse.** This is a real, measured
+> gap in this phase's headline capability, found in review and shipped knowingly
+> rather than papered over. It is loud, pre-throw and moves nothing — the remedy
+> is one `ros2 service call /trajectory/go_home std_srvs/srv/Trigger`.
+>
+> **Why.** The catch deliberately parks the platform *centroid* slightly OUTSIDE
+> `B` so the *cup* lands ON `B` (swing compensation: `centroid = landing −
+> hand_catch_offset · platform_z`). Measured through the production chain at
+> `B = (−150, 0, 170)`, `T = 0.80 s`: the **cup** ends at `(−150.00, 0)` — exactly
+> `B` — but the **centroid** ends at `(−153.10, 0)`. `trajectory/commanded_position`
+> publishes the *centroid*, so the next goal reads `A = −153.10`, and both
+> surviving gates are applied to that value:
+>
+> - the `±150 mm` planning box on `A` ⇒ `REJECTED_WORKSPACE` for **any** `B`;
+> - the `150 mm` cap on `|B − A|` ⇒ `REJECTED_DISPLACEMENT` for a `B` back at centre.
+>
+> The offset is `hand_catch_offset · sin(receive tilt)` = `64.78 · sin(2.73°)` =
+> `3.10 mm` at `T = 0.80` (`4.05 mm` at `T = 0.70`), i.e. `2.07 %` of the
+> displacement — so it crosses the box at `|B| ≈ 147 mm` on-axis, and crosses the
+> cap on the return leg at any radius ≥ ~`147 mm` in any direction. **Below
+> ~`146 mm` chaining works normally**, which is why DISP-6 chains at `100 mm`.
+>
+> **What this means for the ladder:** run DISP-5 as a set of *single* tosses with a
+> `go_home` between attempts. Do **not** read the refusal that follows a
+> cap-magnitude catch as a Phase-E defect — it is this documented limitation.
+> Routing: `single-ball-toss` Phase E, open question *"throw site frame: centroid
+> vs cup"*.
+
+#### DISP-6 — the chained session A → B → C (**the point of the whole phase**)
+
+Three tosses back to back with **no repositioning between them**. Each goal's `B` is
+the next site; each throw's `A` is where the previous one caught.
+
+**Chain at `100 mm`, deliberately — not at the cap.** See the KNOWN LIMITATION box
+above: a chained toss at `150 mm` refuses by construction. This rung proves the
+mechanism in the range where it works.
+
+```bash
+ros2 service call /trajectory/go_home std_srvs/srv/Trigger
+# A -> B
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 100.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+# B -> C   (no go_home, no reload if the ball was caught)
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 100.0, y: 100.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+# C -> back to centre
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.85}" --feedback
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-6.1 | each goal's declared centre in the coordinator log | matches that goal's nominated `B` | any mismatch |
+| DISP-6.2 | goal 2 and goal 3 accepted **without** an intervening `go_home` or `Reload` | yes | `REJECTED_HAND_NOT_PARKED` ⇒ the catch left the hand off the park band (route to § SECTION POSS `POSS-2.1`). `REJECTED_DISPLACEMENT` here — **at `100 mm`, where the parked centroid is only `~102 mm`** — ⇒ the throw site did not follow the platform; **stop**, this is the chaining defect. (At a *cap-magnitude* `B` the same code is the KNOWN LIMITATION above, not a defect: check which one you are in by reading `/trajectory/commanded_position` — `> 150` on either axis means the limitation.) `REJECTED_WORKSPACE` ⇒ likewise the limitation, not a defect |
+| DISP-6.3 | goal 2's displacement, from the log's declared centre and the previous catch | `≈100 mm` (`(100,0) → (100,100)`), **not** `141 mm` | `141 mm` ⇒ `A` reverted to the origin |
+| DISP-6.4 | caught, per goal | record all three | *(no ABORT — a drop mid-chain is a reload away)* |
+| DISP-6.5 | platform position between goals | never returns to centre | a `go_home` between goals ⇒ stale install |
+
+#### DISP-7 — the RELOAD seam: refuse, loudly, from an oblique park
+
+The reload's catch is hard-fixed at the workspace centre and it never pre-positions.
+With the platform parked off centre it would arm an envelope centred off `(0,0)` and
+reject the incoming BB ball **mid-flight**. It must refuse first.
+
+```bash
+# leave the platform parked from DISP-6 (or drive to ~(150, 0)), then:
+ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload "{}" --feedback
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| DISP-7.1 | node outcome line | `Reload REJECTED_NOT_CENTERED` | **anything that lets BB throw** — if you see a `bb/throw_at_target` call from an off-centre park, **E-STOP the session**: a ball is about to be thrown at a platform that cannot reach it, and the rejection will arrive mid-flight |
+| DISP-7.2 | hand motion during the refused goal | **`0.0000 rev`** span | any — the refusal must precede `ACTION_PRIME_HAND` |
+| DISP-7.3 | after `go_home`, the same Reload | accepted, normal choreography | still `REJECTED_NOT_CENTERED` ⇒ **first confirm `/trajectory/status` is still arriving** (a dead `trajectory_node` mints this code too — its `streaming` observation is a sticky last-value, so a dead link reads as a geometry fault; see `reload_sequencer.py`'s NOT_CENTERED comment). If the link is live, compare `/trajectory/commanded_position` against `(0, 0)`: the tolerance is **`66.5 mm`**, not the `80 mm` envelope — `80 − 64.78·sin(12°)`, because the reload's own pre-tilt shifts the commanded centroid `13.47 mm` off the catch point and the gate must leave room for it |
+
+---
+
+### What the sim gate DID say, and what it does NOT cover
+
+The Tier-8b sim gate was re-run at the current machine for this phase
+(`python sim/toss_gate.py --tier 8b --trials-per-point 10 --seed 0`, run
+2026-07-29, wall **1099.9 s**): **PASS** — binding 50 mm ring 9/9 points at
+`core_clean ≥ 9/10`, and the production-in-the-loop invariants clean
+(`feas_viol 0`, `pump_rejects 0`, **55 770 / 55 770** emitted knots pump-accepted
+across all 350 gating trials, `accepted 350/350`). The catch rate per ring, all at
+`T = 0.80 s`, 10 trials per direction × 8 directions:
+
+| ring | core_clean | worst direction |
+|---|---|---|
+| 0 mm (centre) | 9/10 | — |
+| 50 mm (**binding**) | 79/80 | 9/10 |
+| 70 mm | 78/80 | 9/10 (`−x`, `SW`) |
+| 100 mm | 78/80 | 9/10 (`−x`, `+x`) |
+| **150 mm (the cap)** | **76/80** | **8/10 (`SW`)** |
+
+**The 2026-07-25 directional map is refuted, not merely stale.** It flagged the
+`+y`/NW hemisphere as failing at 70 mm; on the current machine `+y` is
+**10/10 at 70 mm, 10/10 at 100, 9/10 at 150** and NW is **10/10 at every radius**.
+That is why the cap ships as a **simple scalar with no direction-awareness** — and
+why the one direction worth watching is now `SW`, the *opposite* hemisphere, at the
+cap only. Take that as a watch-item for DISP-5, not as a prohibition.
+
+**Five things the gate does not tell you:**
+
+1. **The catch RATE at the cap is not gated.** The 150 mm ring is ADVISORY, because
+   the ball-lands-in-cup verdict is dominated by a release-scatter magnitude that is
+   still the Phase-5 T0 **placeholder** (1 %). Gating the shipped cap on an
+   unmeasured number would make the cap an artefact of it. DISP-4.4/5.5 are the
+   real evidence.
+2. **The contact-DETACH asymmetry map is 1-bit-per-cell evidence, whatever its
+   `n` column says.** Its cells read 0/4 or 4/4 almost everywhere — that is the
+   documented low-fidelity contact model, not a signal. (Until a bug found and
+   fixed on 2026-07-29 it was *literally* one trial replicated: every trial in a
+   cell ran the same seed. Fixed; the re-run at seed 0, 4 trials/cell, now shows
+   real variation — `+x` at 70 mm / `T = 0.60` reads **1/4**, and the landing
+   errors have a spread instead of being identical. The map is still not what the
+   cap rests on.) The gating column above is: kinematic release, 10 trials per
+   direction, genuine 8/10–10/10 spread.
+3. **The 2026-07-25 asymmetry map is stale vintage AND refuted** — measured on the
+   pre-2026-07-26 moving-rim machine (seat rate 0.07, pre-C-CATCH-1 arrival). Its
+   `+y`-hemisphere weakness at 70-100 mm describes a plant that no longer exists,
+   and the current gating column contradicts it directly. Do not use it to pick a
+   direction.
+4. **No off-centre throw site is swept for the CATCH.** The gate sweeps `B` about a
+   chosen `A`, which is geometrically faithful, but every rung above except DISP-2
+   and DISP-6 throws from centre. The extremity-pose behaviour the sitting measured
+   (up to `0.604°` of commanded-vs-mocap tilt residual at `(150, −150)`, worth
+   `≈42 mm` of lateral drift over a 0.78 m flight) is **not modelled anywhere** and
+   is the most likely cause of a DISP-2 or DISP-6 failure.
+5. **The firmware time budget.** Flights below `0.7 s` are firmware-marginal
+   (the kind-1 windup race) and the sim does not model it. Every rung above
+   specifies `T ≥ 0.80 s` for that reason as much as for the reach bound.
+
+### Not in this section
+
+- **Raising the cap above 150 mm.** The production planner accepts the A→B reach out
+  to `~225 mm` (8/8 directions, `T ≥ 0.70 s` — `tools/probes/displaced_reach_frontier.py`,
+  2026-07-29), so kinematics is not the binding constraint; evidence is. Bring
+  DISP-5 data first.
+- **The hand's end-stop margin.** Unchanged by this phase, still owed by
+  § CHECK HAND-7. Every rung above uses `throw_height_m ≤ 0.85`, inside the band
+  that section flags.
+- **Reload catching at a displaced site.** The reload's catch point is still
+  hard-fixed at the workspace centre; DISP-7 refuses rather than extends it. Making
+  reload displaceable is its own phase.
+- **The tracker's split-track corruption on the reload path.** Separate open
+  investigation; it is why DISP-7 scores a *refusal*, which needs no tracker.
 
 ---
 

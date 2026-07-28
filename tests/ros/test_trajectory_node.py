@@ -1848,9 +1848,10 @@ def test_catch_reach_envelope_rejects_far_target():
 
 
 def test_catch_reach_envelope_center_lifecycle():
-    """The envelope center is captured at the arm-latch RAISE (the held pose the catch
-    session starts from) and cleared at the lower edge — a stale center must never
-    bound the NEXT session's targets from an old pose."""
+    """The envelope center is captured at the arm-latch RAISE (with no declaration
+    pending, the held pose the catch session starts from — the co-located default)
+    and cleared at the lower edge — a stale center must never bound the NEXT
+    session's targets from an old pose."""
     node = _traj_mode_node()
     assert node._catch_envelope_center is None
     _arm_catch(node, True)
@@ -1859,6 +1860,155 @@ def test_catch_reach_envelope_center_lifecycle():
                        node._current_state()[0][:3], atol=1e-9)
     _arm_catch(node, False)
     assert node._catch_envelope_center is None
+
+
+# ── C-REACH-1: the declared catch reach centre ────────────────
+# ros_ws/docs/catch_reach_envelope.md. The envelope bounds UNREQUESTED drift
+# around the NOMINATED catch point; requested displacement is gated pre-throw by
+# toss_max_displacement_mm. Before this contract the centre was the held pose,
+# which silently also capped requested reach — measured 4/4 on hardware (bag
+# 2026-07-27_16-07-30): four Tier-8b goals at 113-141 mm nominal displacement all
+# rejected WORKSPACE *mid-flight*, ball airborne.
+
+def _declare_reach_center(node, x=0.0, y=0.0, z=190.0):
+    node._on_reach_center(Point(x=float(x), y=float(y), z=float(z)))
+
+
+def test_creach1_declared_centre_wins_at_the_raise_edge():
+    """A catch/reach_center published BEFORE arm_catch becomes the envelope
+    centre; without it the commanded pose is used."""
+    node = _traj_mode_node()
+    _declare_reach_center(node, x=150.0, y=0.0, z=170.0)
+    assert node._catch_envelope_center is None      # pending only, not applied
+    _arm_catch(node, True)
+    assert np.allclose(node._catch_envelope_center, [150.0, 0.0, 170.0], atol=1e-9)
+    assert node._pending_reach_center is None        # consumed
+
+
+def test_creach1_declared_centre_admits_the_displaced_reach():
+    """THE contract test. A 150 mm displaced catch target is ACCEPTED when its
+    centre was declared, and REJECTED WORKSPACE when it was not — the same node,
+    the same target, the same 80 mm envelope. Without the declaration path this
+    test fails on its first half, which is the mid-flight hardware failure."""
+    # Declared: accepted, and a real catch plan installs.
+    node = _traj_mode_node()
+    _declare_reach_center(node, x=150.0, y=0.0, z=190.0)
+    _arm_catch(node, True)
+    node._on_dynamic_target(_dyn_target(node, x=150.0, z=190.0, lead_s=0.8))
+    assert node.target_feedback_pub.published[-1].accepted is True
+    assert node._active_plan.kind == 'move'
+    arrived = node._active_plan.state_at(node._active_plan.total_duration)[0]
+    assert np.allclose(arrived[:2], [150.0, 0.0], atol=1e-2)
+
+    # Undeclared: the pre-contract behaviour, rejected WORKSPACE.
+    node2 = _traj_armed_node()
+    node2._on_dynamic_target(_dyn_target(node2, x=150.0, z=190.0, lead_s=0.8))
+    fb = node2.target_feedback_pub.published[-1]
+    assert fb.accepted is False and fb.code == feas.WORKSPACE
+    assert 'envelope' in fb.reason
+
+
+def test_creach1_drift_is_still_bounded_around_the_declared_centre():
+    """Decoupling requested reach from the envelope must NOT loosen the drift
+    bound. With the centre declared at B, a target 150 mm PAST B (the drifting
+    landing estimate the envelope exists to stop) is still rejected — the bound
+    moved, it did not widen."""
+    node = _traj_mode_node()
+    _declare_reach_center(node, x=150.0, y=0.0, z=190.0)
+    _arm_catch(node, True)
+    node._on_dynamic_target(_dyn_target(node, x=300.0, z=190.0, lead_s=0.8))
+    fb = node.target_feedback_pub.published[-1]
+    assert fb.accepted is False and fb.code == feas.WORKSPACE
+    # …and a target just inside the envelope of B is still fine.
+    node._on_dynamic_target(_dyn_target(node, x=210.0, z=190.0, lead_s=0.8))
+    assert node.target_feedback_pub.published[-1].accepted is True
+
+
+def test_creach1_declaration_is_scoped_to_exactly_one_raise():
+    """Every arm_catch call of any kind consumes the pending declaration —
+    raise, lower, and the idempotent no-op. A declaration that outlived its goal
+    would centre the NEXT goal's catch somewhere nobody nominated, which is the
+    failure this contract exists to prevent, one goal later."""
+    # (a) consumed by the raise that used it: the NEXT raise falls back.
+    node = _traj_mode_node()
+    _declare_reach_center(node, x=150.0, y=0.0, z=170.0)
+    _arm_catch(node, True)
+    _arm_catch(node, False)
+    _arm_catch(node, True)
+    assert np.allclose(node._catch_envelope_center,
+                       node._current_state()[0][:3], atol=1e-9)
+    # (b) discarded by a LOWER call (a toss that declared then aborted pre-arm:
+    #     every toss teardown calls arm_catch(False)).
+    node = _traj_mode_node()
+    _declare_reach_center(node, x=150.0, y=0.0, z=170.0)
+    _arm_catch(node, False)                  # idempotent no-op — still consumes
+    assert node._pending_reach_center is None
+    _arm_catch(node, True)
+    assert np.allclose(node._catch_envelope_center,
+                       node._current_state()[0][:3], atol=1e-9)
+    # (c) dropped on a mode change, armed or not.
+    node = _traj_mode_node()
+    _declare_reach_center(node, x=150.0, y=0.0, z=170.0)
+    node._on_control_mode(String(data='STANDBY'))
+    assert node._pending_reach_center is None
+
+
+def test_creach1_declaration_never_applies_mid_catch():
+    """A declaration arriving while already armed is stored, never applied: it
+    must not move the envelope out from under an airborne ball."""
+    node = _traj_armed_node()
+    before = np.array(node._catch_envelope_center, dtype=float)
+    _declare_reach_center(node, x=150.0, y=0.0, z=170.0)
+    assert np.allclose(node._catch_envelope_center, before, atol=1e-9)
+    node._on_dynamic_target(_dyn_target(node, x=150.0, z=190.0, lead_s=0.8))
+    assert node.target_feedback_pub.published[-1].accepted is False
+
+
+def test_creach1_non_finite_declaration_is_discarded():
+    """A NaN centre makes every ``excursion > envelope`` comparison False, i.e.
+    it silently DISABLES the gate. Drop it and fall back to the commanded pose,
+    which rejects the displaced reach loudly instead."""
+    node = _traj_mode_node()
+    _declare_reach_center(node, x=float('nan'), y=0.0, z=170.0)
+    assert node._pending_reach_center is None
+    _arm_catch(node, True)
+    assert np.allclose(node._catch_envelope_center,
+                       node._current_state()[0][:3], atol=1e-9)
+    node._on_dynamic_target(_dyn_target(node, x=150.0, z=190.0, lead_s=0.8))
+    assert node.target_feedback_pub.published[-1].accepted is False
+
+
+def test_commanded_position_published_only_while_streaming():
+    """trajectory/commanded_position carries the sampled plan state — the SAME
+    3-vector the envelope centre falls back to — and is published only while
+    seeded+streaming.
+
+    Silence is meaningful and load-bearing: it is what the displaced toss reads
+    as REJECTED_POSE_UNKNOWN rather than guessing a throw site A, and what the
+    reload reads as REJECTED_NOT_CENTERED. An unseeded node has no commanded
+    pose, so publishing anything at all there would be a fabricated one."""
+    node = _node()
+    node._publish_status()
+    assert node.commanded_position_pub.published == []   # never seeded
+    node._on_control_mode(String(data='STANDBY'))
+    node._publish_status()
+    assert node.commanded_position_pub.published == []   # streaming but unseeded
+
+    node = _traj_mode_node()                             # seeded hold, at rest
+    node._publish_status()
+    p = node.commanded_position_pub.published[-1]
+    held = node._current_state()[0][:3]                  # static: exact compare
+    assert (p.x, p.y, p.z) == pytest.approx(tuple(float(v) for v in held),
+                                            abs=1e-9)
+    # It TRACKS the commanded pose rather than reporting a constant: a completed
+    # graceful stop off a fresh seed leaves the hold somewhere else, and the next
+    # publish must follow it.
+    node._on_robot_state(_robot_state(pos_rev=[float(r) + 0.5
+                                               for r in _ACTIVATE_REV]))
+    node._publish_status()
+    p2 = node.commanded_position_pub.published[-1]
+    assert (p2.x, p2.y, p2.z) == pytest.approx(
+        tuple(float(v) for v in node._current_state()[0][:3]), abs=1e-9)
 
 
 # ── catch-armed latch (reload-action-catch-latch Phase 1) ─────

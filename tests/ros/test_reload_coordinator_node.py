@@ -82,14 +82,20 @@ class _Ball:
         self.position = _Pos(x, y, z)
 
 
-def _node_fresh(now):
-    """A node with every observation cached FRESH at `now` and preconditions met."""
+def _node_fresh(now, commanded_pos=(0.0, 0.0, 170.0)):
+    """A node with every observation cached FRESH at `now` and preconditions met.
+
+    ``commanded_pos`` feeds the trajectory/commanded_position cache the reload's
+    REJECTED_NOT_CENTERED gate reads (Phase E, 2026-07-29); the default is the
+    workspace centre, i.e. the state a healthy reload session starts from."""
     node = ReloadCoordinatorNode()
     with node._lock:
         node._hb = _Hb()
         node._hb_mono = now
         node._control_mode = RELOAD_CONTROL_MODE
         node._streaming = True
+        node._commanded_pos_mm = tuple(float(v) for v in commanded_pos)
+        node._commanded_pos_mono = now
         node._mocap_mono = now
         node._balls = []
         node._balls_mono = now
@@ -507,11 +513,114 @@ def test_second_goal_rejected_while_one_active():
     assert node._goal_callback(object()) == GoalResponse.REJECT
 
 
+def test_platform_centered_reads_the_live_commanded_pose():
+    """The node-side half of REJECTED_NOT_CENTERED: measured against the RELOAD
+    catch point (read from _catch_point_mm, not hard-coded) with
+    _RELOAD_CENTERED_TOL_MM as the tolerance.
+
+    xy only, and frame-exact: _catch_point_mm is world while the commanded pose
+    is STOW-relative, but STOW→world adds only z."""
+    import jugglebot.reload_coordinator_node as _rcn
+    tol = _rcn._RELOAD_CENTERED_TOL_MM
+    now = 100.0
+    assert _node_fresh(now)._platform_centered(now) is True
+    assert _node_fresh(now, (tol - 1.0, 0.0, 170.0))._platform_centered(now) is True
+    assert _node_fresh(now, (tol + 1.0, 0.0, 170.0))._platform_centered(now) is False
+    # A caught toss parked at the +-150 mm working range: refused.
+    assert _node_fresh(now, (150.0, -150.0, 170.0))._platform_centered(now) is False
+    # z is NOT part of the test (the reload's z is the ACTIVE plane by
+    # construction; a z difference is not what makes the catch unreachable).
+    assert _node_fresh(now, (0.0, 0.0, 500.0))._platform_centered(now) is True
+
+
+def test_centered_tolerance_leaves_room_for_the_reload_pretilt_swing():
+    """THE gate's reason for existing: an ADMITTED park must still be able to
+    reach the ball BB is about to throw.
+
+    The reload declares no reach centre (C-REACH-1), so its arm raise centres
+    the 80 mm envelope on the PARK — but the target that envelope judges is the
+    pre-tilt catch pose, whose centroid sits hand_catch_offset*sin(tilt) off the
+    catch point, and compute_catch_orientation CLAMPS at MAX_TILT_DEG for every
+    real BB arrival (18-40 deg off vertical). So the shift SATURATES at
+    64.78*sin(12 deg) = 13.47 mm on every single reload.
+
+    With the tolerance set to the bare envelope radius (what shipped in review)
+    a park at 70 mm was ADMITTED and the resulting excursion was 83.5 mm ->
+    rejected WORKSPACE with BB's countdown already started and the ball
+    unsavable. This test fails against that version."""
+    import math
+    import jugglebot.hardware_config as hw
+    import jugglebot.reload_coordinator_node as _rcn
+    from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
+
+    env = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+    swing = float(hw.HAND_CATCH_OFFSET_MM) * math.sin(math.radians(MAX_TILT_DEG))
+    assert swing == pytest.approx(13.469, abs=0.01)
+    # The tolerance is the envelope MINUS the worst-case swing — derived, not a
+    # magic number, and strictly tighter than the envelope.
+    assert _rcn._RELOAD_CENTERED_TOL_MM == pytest.approx(env - swing)
+    assert _rcn._RELOAD_CENTERED_TOL_MM < env
+
+    # The invariant: worst-case admitted park + worst-case adverse swing still
+    # fits inside the envelope, so an admitted reload can never be rejected
+    # WORKSPACE mid-flight for being off centre.
+    now = 100.0
+    worst = _rcn._RELOAD_CENTERED_TOL_MM
+    assert _node_fresh(now, (worst - 1e-6, 0.0, 170.0))._platform_centered(now) is True
+    assert (worst + swing) <= env + 1e-9
+    # And the band that used to be admitted-then-doomed is now refused.
+    for park in (70.0, 75.0, 79.0, 80.0):
+        assert _node_fresh(now, (park, 0.0, 170.0))._platform_centered(now) is False, park
+
+
+def test_platform_centered_is_fail_closed_when_the_pose_is_unknown_or_stale():
+    """No commanded pose, or a stale one, reads NOT centred. trajectory_node
+    publishes the topic only while seeded+streaming, so silence genuinely means
+    "no commanded pose exists" — the state where assuming centre would arm a
+    reload catch against an unknown platform position."""
+    import jugglebot.reload_coordinator_node as _rcn
+    now = 100.0
+    node = _node_fresh(now)
+    with node._lock:
+        node._commanded_pos_mm = None
+        node._commanded_pos_mono = 0.0
+    assert node._platform_centered(now) is False
+    node = _node_fresh(now)
+    with node._lock:
+        node._commanded_pos_mono = now - (_rcn._TRAJ_STATUS_STALE_S + 1.0)
+    assert node._platform_centered(now) is False
+
+
+def test_reload_does_not_declare_a_reach_centre(monkeypatch):
+    """The RELOAD choreography is untouched by contract C-REACH-1: its catch IS
+    the held pose, so the commanded-pose fallback is already the right centre and
+    it must publish nothing on catch/reach_center. A declaration here would be a
+    behaviour change on the shipping path — the toss declares, the reload does
+    not, and that asymmetry is the whole reason the reload stays byte-identical."""
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    now = 100.0
+    node = _node_fresh(now)
+    monkeypatch.setattr(node, '_prime_hand_with_retries', lambda: True)
+    monkeypatch.setattr(node, '_prepare_catch', lambda: True)
+    monkeypatch.setattr(node, '_call_reload', lambda: True)
+    monkeypatch.setattr(node, '_send_throw', lambda s: (True, ''))
+    monkeypatch.setattr(node, '_recenter', lambda: None)
+    monkeypatch.setattr(node, '_safe_abort', lambda: None)
+    seq = ReloadSequencer(catch_point_mm=node._catch_point_mm, throw_delay_s=3.0)
+    seq.start(now)
+    pub = node._publishers['catch/reach_center']
+    for t in (now, now + 0.1, now + 0.2, now + 0.3):
+        node._step_sequence(seq, t)
+    assert seq.prepared is True              # it really did arm
+    assert pub.published == []
+
+
 def _obs_stub():
     from jugglebot.reload_sequencer import ReloadObservations, BB_STATE_IDLE
     return ReloadObservations(
         now=0.0, control_mode=RELOAD_CONTROL_MODE, bb_connected=True,
-        bb_state=BB_STATE_IDLE, ball_in_hand=True, mocap_fresh=True, streaming=True)
+        bb_state=BB_STATE_IDLE, ball_in_hand=True, mocap_fresh=True,
+        streaming=True, platform_centered=True)
 
 
 def test_sequence_deadline_never_lands_inside_the_flight_window():

@@ -80,6 +80,7 @@ from rclpy.node import Node
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import SetBool, Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+from geometry_msgs.msg import Point
 from jugglebot_interfaces.msg import (
     DynamicTargetCommand,
     PlatformPoseCommand,
@@ -255,15 +256,35 @@ class TrajectoryNode(Node):
         # plain bool needs no lock.
         self._catch_armed = False
         # Reach-envelope enforcement (build_catch documents the ≤ envelope excursion as
-        # the CALLER's responsibility — this is the enforcement point). The commanded
-        # position captured at the arm-latch RAISE is the center; any catch target
-        # farther than the envelope (3D) is rejected WORKSPACE before planning. Bounds
-        # two observed failure classes (2026-07-23): a frame-convention regression on
-        # the wire (rejected loudly at ~170 mm instead of as a cryptic leg-stroke
-        # graze) and the platform chasing a drifting ball-tracker landing estimate
-        # hundreds of mm sideways during the flight window. None while disarmed.
+        # the CALLER's responsibility — this is the enforcement point). Any catch
+        # target farther than the envelope (3D) from the CENTER is rejected WORKSPACE
+        # before planning. Bounds two observed failure classes (2026-07-23): a
+        # frame-convention regression on the wire (rejected loudly at ~170 mm instead
+        # of as a cryptic leg-stroke graze) and the platform chasing a drifting
+        # ball-tracker landing estimate hundreds of mm sideways during the flight
+        # window. None while disarmed.
+        #
+        # THE CENTER IS THE NOMINATED CATCH POINT — contract C-REACH-1
+        # (ros_ws/docs/catch_reach_envelope.md), 2026-07-29. It is taken from the
+        # arming coordinator's catch/reach_center declaration when one is pending at
+        # the RAISE edge, and otherwise from the commanded position at that edge (the
+        # co-located default, byte-identical to the pre-C-REACH-1 behaviour and
+        # correct for the reload path, whose catch IS the held pose).
+        #
+        # Why the change: the envelope exists to bound how far an UNREQUESTED,
+        # drifting landing estimate can drag the platform. Centring it on the held
+        # pose silently also capped REQUESTED displacement — so a deliberate,
+        # coordinator-computed A→B toss reach past 80 mm was rejected WORKSPACE
+        # mid-flight with the ball already airborne (hardware, 4/4: bag
+        # 2026-07-27_16-07-30, 113-141 mm goals). Centring on B keeps the drift bound
+        # exactly as tight (±envelope around where the catch is supposed to happen)
+        # while letting requested reach be gated by its own pre-throw contract.
         self._catch_reach_envelope_mm = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
         self._catch_envelope_center = None
+        # Pending catch/reach_center declaration (STOW xyz), or None. Written by the
+        # topic callback, CONSUMED-AND-CLEARED by the next trajectory/arm_catch call
+        # of any kind — see _svc_arm_catch for why "any kind" is the safe rule.
+        self._pending_reach_center = None
 
         # ── Parameters ─────────────────────────────────────────
         self.declare_parameter('control_mode_topic', 'control_mode_topic')
@@ -449,6 +470,14 @@ class TrajectoryNode(Node):
         # Catch coordinator's timed catch target (latch-gated; Phase 5).
         self.create_subscription(DynamicTargetCommand, 'catch/dynamic_target',
                                  self._on_dynamic_target, 10)
+        # Declared reach-envelope centre (contract C-REACH-1,
+        # ros_ws/docs/catch_reach_envelope.md). The arming coordinator publishes
+        # the NOMINATED catch point here BEFORE calling trajectory/arm_catch; the
+        # next arm_catch call consumes it (see _svc_arm_catch). STOW-frame
+        # platform position, mm — the same 3-vector convention as
+        # DynamicTargetCommand.target_pos and as the commanded pose it replaces.
+        self.create_subscription(Point, 'catch/reach_center',
+                                 self._on_reach_center, 10)
         # FIX 1 — Teensy guard state. The bridge publishes /link_status (a
         # DiagnosticStatus) at 10 Hz carrying the guard 'fault_state' KeyValue; we
         # watch it so a latched E-STOP freezes command advancement instead of letting
@@ -495,6 +524,28 @@ class TrajectoryNode(Node):
         # and this is a sample of it (a diagnostic — 5 Hz is plenty).
         self.leg_torques_pub = self.create_publisher(
             Float64MultiArray, 'leg_torques_diagnostic', 10)
+        # The live COMMANDED platform position (STOW frame, mm) — the sampled
+        # plan state, i.e. exactly what the emitter is streaming, not a
+        # measurement. Published on the same 5 Hz status tick.
+        #
+        # It exists because the displaced toss's throw site A is "wherever the
+        # platform actually is" (single-ball-toss Phase E) and NOTHING else on
+        # the graph publishes that: trajectory/status carries no pose, mocap's
+        # platform body has never been validated live, and a coordinator-side
+        # memory of "where I last sent it" goes stale the moment the operator
+        # drives with the SpaceMouse or the GUI. A wrong A is not a harmless
+        # number — POSITIONING translates the platform TO it before throwing.
+        #
+        # POSITION ONLY, deliberately. The gravity-levelling correction rewrites
+        # the commanded ROTATION and never the position (motion/levelling.py
+        # correct_pose), so this 3-vector is identical in the corrected and
+        # uncorrected frames and cannot be double-corrected by a consumer that
+        # feeds it back in as a request (contract C-LEVEL-1's failure mode).
+        # geometry_msgs/Point, not a jugglebot_interfaces type, so adding it
+        # needs no interface-package rebuild — a split build of
+        # jugglebot_interfaces vs jugglebot is a known silent hazard here.
+        self.commanded_position_pub = self.create_publisher(
+            Point, 'trajectory/commanded_position', 10)
         self.create_timer(0.2, self._publish_status)
         # Re-measure the ROS↔perf clock offset every 30 s to track drift (mirrors
         # catch_coordinator_node). NOTE: since the lead_time_s interface change the
@@ -800,6 +851,11 @@ class TrajectoryNode(Node):
             self.get_logger().info(
                 f"catch latch force-disarmed on mode change "
                 f"{self._current_mode}→{mode}")
+        # C-REACH-1: drop any pending catch/reach_center declaration on EVERY mode
+        # change (not only when armed — a declaration published by a coordinator
+        # that then died before arming would otherwise outlive its goal and centre
+        # the NEXT catch). Same force-disarm doctrine as the latch above.
+        self._pending_reach_center = None
         # A3: the escalation + pending-stop latches are cleared on ANY mode change,
         # BEFORE the mid-move stop logic below (which independently re-requests a stop
         # if this transition needs one). A mode change is a fresh context — a stale
@@ -1251,6 +1307,32 @@ class TrajectoryNode(Node):
         return ("Teensy guard latched (E-STOP) — command advancement is frozen at "
                 "the measured hold; recover with /recover (or /clear_errors) before "
                 "commanding motion")
+
+    def _on_reach_center(self, msg) -> None:
+        """``catch/reach_center``: the arming coordinator DECLARES where this
+        catch is nominated to happen (contract C-REACH-1).
+
+        Stored as *pending* only — it becomes the live envelope centre when the
+        next ``trajectory/arm_catch`` raise consumes it, never on arrival. That
+        ordering is deliberate: a declaration that lands while a catch is
+        already armed must not move the envelope out from under an in-flight
+        ball, which is the one way this channel could create motion the operator
+        never asked for.
+
+        Non-finite components are dropped loudly rather than stored: a NaN
+        centre would make every ``excursion > envelope`` comparison False and
+        silently disable the gate for the whole catch — the exact opposite of
+        fail-closed. Dropping leaves the co-located default in place, which
+        rejects the displaced reach loudly instead.
+        """
+        p = (float(msg.x), float(msg.y), float(msg.z))
+        if not all(math.isfinite(v) for v in p):
+            self.get_logger().error(
+                f"catch/reach_center {p} is non-finite — DISCARDED; the arm "
+                f"raise will fall back to the commanded pose (a declared NaN "
+                f"centre would disable the envelope gate entirely)")
+            return
+        self._pending_reach_center = np.array(p, dtype=float)
 
     # ═══════════════════════════════════════════════════════════
     # SpaceMouse / GUI follower (Phase 3)
@@ -2189,7 +2271,9 @@ class TrajectoryNode(Node):
         target, _twist, receive_tilt = self._catch_target_from_msg(msg)
         # Reach-envelope gate (the envelope build_catch documents as the caller's
         # responsibility): reject any target farther than the envelope (3D) from the
-        # pose held at arm-latch raise. WORKSPACE is deliberate — it is a
+        # centre captured at the arm-latch raise — the coordinator's DECLARED
+        # nominated catch point when it declared one, else the pose held at that
+        # raise (contract C-REACH-1). WORKSPACE is deliberate — it is a
         # position-unreachable-by-policy reject, so the coordinator's feasibility
         # blacklist counts it (a drifting landing estimate blacklists out instead of
         # dragging the platform sideways all flight).
@@ -2197,10 +2281,11 @@ class TrajectoryNode(Node):
             excursion = float(np.linalg.norm(
                 target[:3] - self._catch_envelope_center))
             if excursion > self._catch_reach_envelope_mm:
+                c = self._catch_envelope_center
                 reason = (
-                    f"catch target {excursion:.0f} mm from the armed hold pose "
-                    f"exceeds the {self._catch_reach_envelope_mm:.0f} mm reach "
-                    f"envelope")
+                    f"catch target {excursion:.0f} mm from the armed catch "
+                    f"centre ({c[0]:.0f}, {c[1]:.0f}, {c[2]:.0f}) exceeds the "
+                    f"{self._catch_reach_envelope_mm:.0f} mm reach envelope")
                 self._last_rejection = reason
                 self.get_logger().error(f"catch target rejected: {reason}")
                 self._publish_target_feedback(
@@ -2246,8 +2331,22 @@ class TrajectoryNode(Node):
 
         Idempotent: a set-to-current-value call is a no-op (no edge, no bookkeeping),
         mirroring ``_on_control_mode``'s same-mode early return.
+
+        **Any call of any kind consumes the pending ``catch/reach_center``
+        declaration** (contract C-REACH-1), taken before the idempotent early
+        return. A declaration is scoped to exactly one arm raise: leaving one
+        pending would let goal N's centre silently arm goal N+1's catch, which
+        is the failure this contract exists to prevent, one goal later. Clearing
+        on the no-op and lower paths too means the only surviving pending
+        declaration is one whose raise has not happened yet — and every toss
+        teardown (RECENTER / STAY / SAFE_ABORT / the early-exit safing) calls
+        arm_catch(False), so the sequence cannot leak one.
         """
         want = bool(request.data)
+        # Read-and-clear FIRST: see the docstring. `pending` is used only on the
+        # raise edge below; on every other path it is simply discarded.
+        pending = self._pending_reach_center
+        self._pending_reach_center = None
         if want == self._catch_armed:
             response.success = True
             response.message = (
@@ -2258,16 +2357,28 @@ class TrajectoryNode(Node):
         # a graceful stop must sample the state at the transition. _active_move_in_flight
         # locks itself; _install_graceful_stop's _current_state/_install lock themselves.
         move_in_flight = self._active_move_in_flight()
-        # Reach-envelope center: captured at the RAISE edge (the commanded position the
-        # catch session starts from — normally the active hold), cleared at the lower
-        # edge. Every catch target this session is bounded to the envelope around it.
+        # Reach-envelope center: captured at the RAISE edge, cleared at the lower edge.
+        # Every catch target this session is bounded to the envelope around it.
         # Captured BEFORE the latch flips so no ordering ever exposes an
         # armed-with-no-center window (in which _on_dynamic_target would skip the
         # envelope gate); under the current single-threaded spin the callbacks
         # serialize anyway — this is defence-in-depth, not a live race.
+        #
+        # C-REACH-1: a DECLARED centre (catch/reach_center, published before this
+        # call) wins; otherwise the commanded position at this edge — the catch
+        # session's starting pose, normally the active hold. The fallback is the
+        # co-located default and is byte-identical to the pre-2026-07-29 behaviour,
+        # which is why the RELOAD path (which declares nothing, and whose catch IS
+        # the held pose) is unchanged by this contract.
+        centre_src = 'commanded pose'
         if want:
-            self._catch_envelope_center = np.asarray(
-                self._current_state()[0][:3], dtype=float).copy()
+            if pending is not None:
+                self._catch_envelope_center = np.asarray(
+                    pending, dtype=float).copy()
+                centre_src = 'declared catch/reach_center'
+            else:
+                self._catch_envelope_center = np.asarray(
+                    self._current_state()[0][:3], dtype=float).copy()
         else:
             self._catch_envelope_center = None
         self._catch_armed = want
@@ -2277,7 +2388,14 @@ class TrajectoryNode(Node):
                 f"catch latch {'armed' if want else 'disarmed'}")
         response.success = True
         response.message = f"catch latch {'armed' if want else 'disarmed'}"
-        self.get_logger().info(response.message)
+        if want:
+            c = self._catch_envelope_center
+            self.get_logger().info(
+                f"{response.message}; reach envelope "
+                f"{self._catch_reach_envelope_mm:.0f} mm about "
+                f"({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) [{centre_src}]")
+        else:
+            self.get_logger().info(response.message)
         return response
 
     def _svc_timed_target(self, request, response):
@@ -2414,6 +2532,16 @@ class TrajectoryNode(Node):
         # step from re-applying it, which is the mirror bug the contract forbids.
         msg.gravity_correction_loaded = bool(self._gravity_correction_loaded)
         self.status_pub.publish(msg)
+
+        # Live COMMANDED platform position (see the publisher's comment in
+        # __init__). Published ONLY while seeded+streaming: an unseeded node has
+        # no commanded pose, and publishing a stale/None-derived one would let a
+        # consumer site a throw at a pose the machine is not holding. Silence is
+        # the honest signal — the toss's REJECTED_POSE_UNKNOWN reads it as such.
+        if streaming:
+            pos = self._current_state()[0][:3]
+            self.commanded_position_pub.publish(
+                Point(x=float(pos[0]), y=float(pos[1]), z=float(pos[2])))
 
         # Diagnostics: the last accepted move's measured leg peaks + emitter jitter.
         diag = DiagnosticStatus()

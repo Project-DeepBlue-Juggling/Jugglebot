@@ -22,8 +22,10 @@ where the reload receives from BB):
 1. **CHECKING** — loud precondition rejects, strictest first: the tier gate
    (config ``'8a'``/``'8b'`` — anything else ``REJECTED_TIER``), the static goal
    parameters (delay floor, flight-time band, the Tier-8b displaced-throw gates —
-   ``REJECTED_DISPLACEMENT`` for |B−A| past the cap or past the closed-form
-   quintic reach bound over the flight, ``REJECTED_TILT_CLAMP`` for an aim past
+   ``REJECTED_POSE_UNKNOWN`` when the platform's live commanded pose (⇒ the throw
+   site A) could not be read, ``REJECTED_DISPLACEMENT`` for |B−A| past the cap or
+   past the closed-form quintic reach bound over the flight,
+   ``REJECTED_TILT_CLAMP`` for an aim past
    the tilt ceiling — event-vel band, workspace pre-check on B and, for 8b, on
    the throw site A), the
    control mode, then the live observations: mocap fresh, trajectory streaming,
@@ -46,10 +48,15 @@ where the reload receives from BB):
    settle pad); a CONFIG-KEYED mocap cross-check (node parameter naming the
    platform's QTM rigid body; DISABLED by default — no platform body name or
    frame has ever been validated live) can additionally corroborate against
-   the nominated pose before any arming: the ``arm_catch`` raise captures the
-   reach-envelope center from the current commanded pose and C2-stops any
+   the nominated pose before any arming: the ``arm_catch`` raise C2-stops any
    in-flight move, so arming mid-move (or after a silently-refused move —
-   disarmed wire, guard latch) plants the envelope in the wrong place. When
+   disarmed wire, guard latch) leaves the platform SHORT OF A and the throw
+   then fires from a site the aim was not solved for — a mis-aimed ball, and
+   for 8b a pre-tilt that never completed. (Before contract C-REACH-1 this
+   paragraph also carried the reach-envelope centre, which the raise captured
+   from the commanded pose; the toss now DECLARES that centre — see
+   ``ros_ws/docs/catch_reach_envelope.md`` — so the envelope is no longer the
+   casualty of arming mid-move, but the aim still is.) When
    the check is enabled and never corroborates within the deadline ⇒
    ``ABORTED_POSITION_FAILED``; when disabled the node feeds
    ``platform_at_target`` True so arrival rests on the go_to_pose accept +
@@ -110,9 +117,10 @@ where the reload receives from BB):
    ``catch/pretilt_hold`` for the goal's duration (8a is motion-free under the
    stock path and keeps it unchanged).
 6. **SETTLING** — tracker ``CAUGHT`` for OUR announced ball within the confirm
-   window past the scheduled landing ⇒ ``CAUGHT`` (``ACTION_RECENTER``);
-   otherwise ``MISSED_INFEASIBLE_<code>`` (only when NO catch target was ever
-   accepted) or ``MISSED``.
+   window past the scheduled landing ⇒ ``CAUGHT`` (``ACTION_STAY`` by default,
+   ``ACTION_RECENTER`` iff ``stay_at_pose_on_caught`` is False — see
+   ``_terminal_action``); otherwise ``MISSED_INFEASIBLE_<code>`` (only when NO
+   catch target was ever accepted) or ``MISSED``.
 
 ORDERING PRINCIPLE (transposed from reload): every Jugglebot-side arming action
 (platform positioning, catch latch, announcement) happens BEFORE the throw is
@@ -134,8 +142,15 @@ false ``MISSED_INFEASIBLE`` verdicts on every real toss.
 
 Terminal actions (executed by the node, exactly once — the finished-replay path
 returns ``ACTION_NONE``):
-  - ``ACTION_RECENTER`` — on CAUGHT: lower the latch + go_home; the hand keeps
-    the caught ball (no retract), so the next Toss is immediately serviceable.
+  - ``ACTION_STAY`` — on CAUGHT, the default since 2026-07-29
+    (``stay_at_pose_on_caught``): lower the latch, clear ``catch/armed``,
+    release the holds, and issue **no go_home** — the emitter's terminal hold
+    keeps the platform at the catch pose. That is what lets a session CHAIN:
+    the next Toss reads its throw site A from this live pose, so A → B → C
+    needs no operator repositioning between throws. The hand keeps the caught
+    ball (no retract), so the next Toss is immediately serviceable.
+  - ``ACTION_RECENTER`` — on CAUGHT with ``stay_at_pose_on_caught=False``
+    (the pre-2026-07-29 behaviour): lower the latch + go_home.
   - ``ACTION_SAFE_ABORT`` — on ANY not-caught terminal once the platform moved
     (``_positioned``) or the latch raise was dispatched (``_prepare_dispatched``):
     armed-off first, retract ladder, latch-off, go_home. With a seated ball the
@@ -190,6 +205,15 @@ ACTION_REACH_CATCH = 'reach_catch'              # Tier 8b only: publish the ONE 
                                                 #   never evidence-triggered (evidence
                                                 #   can lag 0.5 s and eat the reach lead)
 ACTION_RECENTER = 'recenter'                    # lower latch + go_home (hand keeps ball)
+ACTION_STAY = 'stay'                            # CAUGHT + stay_at_pose_on_caught:
+                                                #   lower latch + catch/armed False +
+                                                #   release the holds, and NO go_home —
+                                                #   the emitter's terminal hold keeps the
+                                                #   platform at the catch pose so the NEXT
+                                                #   toss throws from it (session chaining
+                                                #   A → B → C). Strictly the RECENTER
+                                                #   ladder minus go_home: no new mechanism,
+                                                #   no new commanded motion.
 ACTION_SAFE_ABORT = 'safe_abort'                # armed-off → retract → latch-off → go_home
 
 # Throw-dispatch classifications fed back via note_throw_dispatch. REJECTED is the
@@ -209,10 +233,17 @@ TIER_8A = '8a'                       # co-located vertical toss (Phase 1). The c
                                      # JB_OP_TOSS_TIER) selects the tier, the goal
                                      # cannot.
 TIER_8B = '8b'                       # tilt-aimed displaced throw→catch (Phase 4):
-                                     # pre-tilt at the config throw site A, launch
-                                     # aimed at the displaced B, deferred A→B reach
-                                     # at t_release. Any tier outside {8a, 8b} is
-                                     # REJECTED_TIER.
+                                     # pre-tilt at the throw site A = the platform's
+                                     # LIVE commanded xy (Phase E; was a config site
+                                     # until 2026-07-29), launch aimed at the
+                                     # displaced B, deferred A→B reach at t_release.
+                                     # Any tier outside {8a, 8b} is REJECTED_TIER.
+                                     # 8b SUBSUMES 8a: a goal whose B equals the live
+                                     # pose has zero displacement, so the aim is
+                                     # exactly level and compute_release_state_tilted
+                                     # returns compute_release_state BITWISE — the
+                                     # vertical toss, from wherever the platform
+                                     # already is.
 
 # ── Defaults / floors ──────────────────────────────────────────────────────────
 DEFAULT_TOSS_THROW_DELAY_S = 5.0     # 0 => this. Budget: CHECK ~0.1 + POSITION ≤~2 +
@@ -310,18 +341,30 @@ TOSS_Z_BAND_MM = 50.0                # |z − ACTIVE| bound (the sweep is ±30)
 TEENSY_MIN_EVENT_VEL_MPS = 0.3
 TEENSY_MAX_EVENT_VEL_MPS = 7.0
 
-# ── Tier-8b displaced-throw CHECKING gates (Phase 4) ───────────────────────────
-# |B_xy − A_xy| cap. 70 mm = the intersection of two hard boundaries, minus
-# margin: (a) trajectory_node's catch reach envelope (the arm-edge captures the
-# envelope center at A, so a B-reach target beyond hw.JB_TRAJ_CATCH_REACH_
-# ENVELOPE_MM = 80 mm of A is structurally rejected WORKSPACE mid-flight — after
-# the ball is airborne); (b) the bb Rung-2a "clean box" (~±70 mm: beyond it the
-# contact-detach asymmetry glues/overshoots throws — sim evidence, logbook
-# 2026-06-30). Rejecting here is a loud PRE-THROW verdict for a reach whose
-# gate-level verdict would otherwise arrive only after release. Drift-guard test
-# pins cap < envelope. (T4-at-100 mm needs an operator decision — envelope raise
-# vs an arm-at-B trajectory_node change — deferred past the asymmetry map.)
-TOSS_MAX_DISPLACEMENT_MM = 70.0
+# ── Tier-8b displaced-throw CHECKING gates (Phase 4; re-based Phase E) ─────────
+# |B_xy − A_xy| cap — the NO-CONFIG fallback only. The node resolves
+# hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM and passes it into the ctor
+# (``max_displacement_mm``); this literal serves standalone/test use and the
+# config drift-guard test pins the two equal. Same pattern as
+# DEFAULT_TOSS_FLIGHT_TIME_S.
+#
+# It caps REQUESTED displacement, and nothing else. Until 2026-07-29 it was 70 mm
+# = the intersection of (a) trajectory_node's 80 mm catch reach envelope — which
+# back then was captured at A, so a B-reach beyond it was structurally rejected
+# WORKSPACE *mid-flight, after the ball was airborne* (hardware, 4/4: bag
+# 2026-07-27_16-07-30, 113-141 mm goals) — with (b) the bb Rung-2a "clean box"
+# (~±70 mm). **Contract C-REACH-1 (ros_ws/docs/catch_reach_envelope.md) removed
+# half (a)**: the envelope now centres on the NOMINATED catch B, because it
+# exists to bound UNREQUESTED drift, not requested reach. So this cap is now the
+# sole bound on |B−A| and must carry its own justification rather than inheriting
+# the envelope's — see the YAML key's comment for the evidence (production
+# planner 8/8 out to 225 mm; hardware validated only to 70 mm).
+#
+# The closed-form reach bound below remains a SECOND, flight-dependent gate; it
+# is CONSERVATIVE below T ≈ 0.75 s and OPTIMISTIC above it (measured,
+# tools/probes/displaced_reach_frontier.py 2026-07-29), which is precisely why
+# the cap must not be relaxed to lean on it.
+TOSS_MAX_DISPLACEMENT_MM = 150.0
 # Closed-form peak factors of build_catch's quintic (min-jerk, zero boundary
 # velocities) over displacement d and lead T: peak vel = 1.875·d/T, peak acc =
 # 5.7735·d/T², peak |jerk| = 60·d/T³ (platform space; leg-space peaks are the
@@ -334,9 +377,14 @@ REACH_PEAK_JERK_FACTOR = 60.0
 # test; local copies keep this module importable standalone). Stated caveat:
 # runtime set_limits drift is possible — trajectory_node's own gate remains the
 # truth; this is the loud+early copy so an infeasible A→B reach rejects BEFORE
-# the throw instead of WORKSPACE/TOO_FAST-ing mid-flight. Within the shipped
-# flight band and the 70 mm cap the bound never binds (d_max ≥ 83 mm at
-# T = 0.55 s) — a contract, not a live constraint.
+# the throw instead of WORKSPACE/TOO_FAST-ing mid-flight. At the OLD 70 mm cap
+# the bound never bound (d_max ≥ 83.2 mm at T = 0.55 s) and was a contract, not
+# a live constraint. **At the Phase-E 150 mm cap it is LIVE and binding**: it
+# refuses a 150 mm goal below T ≈ 0.669 s (60·d/T³ = jerk), which is the gate
+# doing exactly its job — the real planner is only 3/8 directions at 150 mm /
+# T = 0.55 s. It is also over-conservative at T = 0.60 (bound 108 mm, real
+# frontier 175 mm), so a legitimate 150 mm @ 0.60 s goal is refused; that is
+# accepted (loud, pre-throw, and the operator raises T rather than flies blind).
 REACH_VEL_LIMIT_MMPS = 1000.0
 REACH_ACC_LIMIT_MMPS2 = 5000.0
 REACH_JERK_LIMIT_MMPS3 = 30000.0
@@ -347,7 +395,18 @@ def reach_displacement_limit_mm(flight_time_s: float) -> float:
     ``flight_time_s`` under the module's session limits — the closed-form
     inversion of the quintic peak factors (d_max = min(vel·T/1.875,
     acc·T²/5.7735, jerk·T³/60)). Reads the module limits at call time (spot
-    values: T = 0.55 → 83.2 mm jerk-bound; T = 0.80 → 256 mm jerk-bound)."""
+    values: T = 0.55 → 83.2 mm jerk-bound; T = 0.80 → 256 mm jerk-bound).
+
+    **It is an approximation of the real gate in BOTH directions, measured.**
+    Against ``planner.build_catch`` over the 8-direction ring
+    (``tools/probes/displaced_reach_frontier.py``, 2026-07-29) the real
+    all-8-directions frontier is 125 mm at T = 0.55 (closed form 83.2 —
+    CONSERVATIVE, it refuses feasible throws), 175 mm at T = 0.60 (cf 108.0 —
+    conservative), and ~225 mm from T = 0.70 up (cf 171.5 → 586.7 — OPTIMISTIC
+    above T ≈ 0.75 s: it would pass a 250-400 mm reach the planner rejects
+    2/8-4/8). It is a loud+early convenience, never the truth: the truth is
+    ``trajectory_node``'s own feasibility gate, and the SAFETY margin against
+    the optimistic half is ``max_displacement_mm``, not this bound."""
     t = float(flight_time_s)
     return min(REACH_VEL_LIMIT_MMPS * t / REACH_PEAK_VEL_FACTOR,
                REACH_ACC_LIMIT_MMPS2 * t * t / REACH_PEAK_ACC_FACTOR,
@@ -478,11 +537,57 @@ class TossSequencer:
     catch_confirm_window_s: float = CATCH_CONFIRM_WINDOW_S
     min_throw_delay_s: float = MIN_TOSS_THROW_DELAY_S
     min_event_delay_s: float = MIN_THROW_EVENT_DELAY_S
-    throw_site_xy_mm: tuple = (0.0, 0.0)        # Tier 8b: throw site A (STOW xy),
-                                                # config-resolved by the node
-                                                # (hw.JB_OP_TOSS_THROW_SITE_MM);
-                                                # ignored for 8a (throw site ==
-                                                # catch site by definition)
+    throw_site_xy_mm: tuple = (0.0, 0.0)        # Tier 8b: throw site A (STOW xy).
+                                                # The node sources it from the
+                                                # platform's LIVE commanded pose
+                                                # (trajectory/commanded_position),
+                                                # never from config — see
+                                                # throw_site_known. Ignored for 8a
+                                                # (throw site == catch site by
+                                                # definition).
+    throw_site_known: bool = False              # Tier 8b: False ⇒ the caller could
+                                                # not read a FRESH commanded
+                                                # platform pose, so A is unknown
+                                                # and CHECKING mints
+                                                # REJECTED_POSE_UNKNOWN. 8a never
+                                                # consults it.
+                                                #
+                                                # Default False = FAIL-CLOSED, the
+                                                # same doctrine as platform_levelled
+                                                # and reload's platform_centered:
+                                                # an FSM that was never told is not
+                                                # entitled to assume. This default
+                                                # is load-bearing, not cosmetic —
+                                                # it pairs with throw_site_xy_mm's
+                                                # (0.0, 0.0), so a caller that
+                                                # omits BOTH would otherwise site
+                                                # the throw at the workspace
+                                                # ORIGIN and be believed. That is
+                                                # the exact phantom site this phase
+                                                # retired the config key to kill,
+                                                # and it is not merely a wrong
+                                                # number: POSITIONING would
+                                                # TRANSLATE the platform to it
+                                                # before throwing, so the guess
+                                                # becomes commanded motion the
+                                                # operator never asked for. The
+                                                # node passes the flag explicitly
+                                                # on BOTH branches.
+    max_displacement_mm: float = TOSS_MAX_DISPLACEMENT_MM
+                                                # Tier 8b |B−A| cap; the node
+                                                # passes hw.JB_OP_TOSS_MAX_
+                                                # DISPLACEMENT_MM (drift-guard
+                                                # test pins the two equal)
+    stay_at_pose_on_caught: bool = True         # CAUGHT terminal: True ⇒
+                                                # ACTION_STAY (hold the catch
+                                                # pose so the next toss can throw
+                                                # from it — session chaining),
+                                                # False ⇒ the pre-2026-07-29
+                                                # ACTION_RECENTER (go_home).
+                                                # Node-resolved from
+                                                # hw.JB_OP_TOSS_STAY_AT_POSE_ON_
+                                                # CAUGHT. NOT-caught terminals are
+                                                # unaffected in either setting.
     tilt_clamp_exceeded: bool = False           # Tier 8b: node-fed flag — the
                                                 # authoritative clamp gate lives in
                                                 # motion/toss_release (compute_
@@ -655,15 +760,25 @@ class TossSequencer:
                 # Displaced-throw gates (Phase 4), after the flight-time band
                 # (the reach bound is meaningless for an out-of-band T) and
                 # before EVENT_VEL (a clamp-rejected goal has no valid release
-                # state, so its event_vel is the meaningless 8a fallback):
-                # the cap first (the primary contract — inside both the reach
-                # envelope captured at A and the Rung-2a clean box), then the
-                # closed-form quintic reach bound over lead = T — both are
-                # loud PRE-THROW verdicts for a reach whose trajectory_node
-                # verdict would otherwise arrive only after release.
+                # state, so its event_vel is the meaningless 8a fallback).
+                #
+                # STRICTEST FIRST: the throw site must be KNOWN before any
+                # gate that measures FROM it. Every displaced gate below is a
+                # function of |B − A|, so an unknown A makes all of them
+                # meaningless — and the node cannot substitute a guess (see
+                # throw_site_known: a guessed A becomes a commanded POSITIONING
+                # translation). REJECTED_POSE_UNKNOWN is the honest verdict and
+                # routes the operator at the trajectory link, not at the goal.
+                if not self.throw_site_known:
+                    return self._reject('POSE_UNKNOWN')
+                # Then the cap (the primary contract — REQUESTED displacement,
+                # config-keyed), then the closed-form quintic reach bound over
+                # lead = T — both are loud PRE-THROW verdicts for a reach whose
+                # trajectory_node verdict would otherwise arrive only after
+                # release, with the ball already airborne.
                 ax, ay = self.throw_site_xy_mm
                 displacement = math.hypot(x - float(ax), y - float(ay))
-                if (displacement > TOSS_MAX_DISPLACEMENT_MM
+                if (displacement > self.max_displacement_mm
                         or displacement > reach_displacement_limit_mm(
                             self.flight_time_s)):
                     return self._reject('DISPLACEMENT')
@@ -680,7 +795,12 @@ class TossSequencer:
                 return self._reject('WORKSPACE')
             if self.tier == TIER_8B:
                 # The throw site A shares B's z (one nominated plane); its xy
-                # gets the same planning-envelope bounds as B.
+                # gets the same planning-envelope bounds as B. Since A is the
+                # platform's LIVE commanded xy (Phase E), this now also refuses
+                # a toss commanded while the platform is parked OUTSIDE the
+                # planning envelope — a real state a SpaceMouse/GUI session can
+                # leave behind, and one where the pre-tilt POSITIONING move
+                # would be planned from an unvalidated pose.
                 ax, ay = self.throw_site_xy_mm
                 if abs(float(ax)) > TOSS_XY_LIMIT_MM or abs(float(ay)) > TOSS_XY_LIMIT_MM:
                     return self._reject('WORKSPACE')
@@ -773,9 +893,13 @@ class TossSequencer:
             # pattern).
             return self._reject('POSITION', code or 'NO_RESPONSE')
         if now < self._position_arrival_time:
-            # The envelope-center invariant: PREPARE strictly after the timed
-            # arrival — arming mid-move C2-stops the move and captures the reach
-            # envelope wherever the platform happened to stop.
+            # The arrived-before-arming invariant: PREPARE strictly after the
+            # timed arrival — arming mid-move C2-stops the move, leaving the
+            # platform wherever it happened to be and firing the throw from a
+            # site the aim was not solved for (for 8b, with an unfinished
+            # pre-tilt). Pre-C-REACH-1 the same stop ALSO planted the reach
+            # envelope at that wrong pose; the toss now declares the envelope
+            # centre, so only the aim is at stake — which is enough.
             return TossDecision(PHASE_POSITIONING, ACTION_NONE, False, None)
         if obs.platform_at_target:
             return self._enter_preparing(now)
@@ -783,17 +907,19 @@ class TossSequencer:
             # Timed arrival passed but the (config-enabled) mocap cross-check
             # never corroborated within the verification window — the silent
             # no-op class (disarmed wire, guard latch): the move was "accepted"
-            # yet the platform is not there. Arming here would capture the
-            # envelope at the wrong pose. Unreachable with the check disabled
-            # (the node then feeds platform_at_target True every tick).
+            # yet the platform is not there. Throwing here would launch the
+            # ball from a site the aim was not solved for. Unreachable with the
+            # check disabled (the node then feeds platform_at_target True every
+            # tick).
             return self._abort('POSITION_FAILED')
         return TossDecision(PHASE_POSITIONING, ACTION_NONE, False, None)
 
     def _enter_preparing(self, now: float) -> TossDecision:
         """Verified arrival → arm the catch BEFORE anything is committed at the
-        hand: the PREPARE bundle raises the latch (capturing the reach-envelope
-        center at the nominated pose) and only after the node confirms it does
-        the announcement — and then the throw — go out."""
+        hand: the node declares the reach-envelope centre (the nominated catch
+        B — contract C-REACH-1) one tick ahead, the PREPARE bundle raises the
+        latch (which consumes that declaration), and only after the node
+        confirms it does the announcement — and then the throw — go out."""
         self._phase = PHASE_PREPARING
         self._prepare_dispatched = True
         return TossDecision(PHASE_PREPARING, ACTION_PREPARE_CATCH, False, None)
@@ -976,9 +1102,14 @@ class TossSequencer:
 
     def _terminal_action(self, result: TossResult) -> str:
         """The cleanup action the node runs on a terminal decision:
-          - a successful catch RE-CENTERs (lower the latch + go_home; the hand
-            keeps the caught ball — no retract — so the next Toss is immediately
-            serviceable);
+          - a successful catch STAYs at the catch pose by default
+            (``stay_at_pose_on_caught``; lower the latch + release the holds,
+            NO go_home — the emitter's terminal hold does the rest) so the next
+            Toss reads its throw site A from where this one caught and a
+            session chains A → B → C. ``False`` restores the pre-2026-07-29
+            RE-CENTER (lower the latch + go_home). Either way the hand keeps
+            the caught ball — no retract — so the next Toss is immediately
+            serviceable;
           - ANY not-caught terminal once the platform moved (``_positioned``) or
             the latch raise was dispatched (``_prepare_dispatched``) SAFE_ABORTs
             (armed-off → retract → latch-off → go_home). The pre-release
@@ -988,10 +1119,16 @@ class TossSequencer:
             MAY still fire with the catch torn down — loud ERROR at the node,
             residual risk accepted (reload's failed-retract posture);
           - a reject BEFORE anything moved or armed → no cleanup (ACTION_NONE).
+        NOT-caught terminals keep go_home in BOTH stay settings, deliberately:
+        a miss leaves a loose ball and possibly a hand at the top of its
+        stroke, where safing to a known pose is the honest cleanup — and
+        chaining, the only thing staying buys, is exactly what a miss has
+        already ended.
+
         The action fires exactly once (the finished-replay path in :meth:`step`
         returns ACTION_NONE)."""
         if result.success:
-            return ACTION_RECENTER
+            return ACTION_STAY if self.stay_at_pose_on_caught else ACTION_RECENTER
         if self._positioned or self._prepare_dispatched:
             return ACTION_SAFE_ABORT
         return ACTION_NONE

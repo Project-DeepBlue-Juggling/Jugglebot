@@ -340,20 +340,40 @@ def test_8b_binding_band_geometric_and_honest(smoke_8b_report):
                                == r['total_pump_frames_emitted'])
 
 
-def test_8b_advisory_70mm_ring_not_binding():
-    """The 70 mm ring (clean-box edge) and the T=0.95 spots are ADVISORY — never
-    in the binding band (a dirty edge point must not fail the gate)."""
-    from sim.toss_gate import default_grid_8b, _TOSS_8B_RING_MM
+def test_8b_advisory_rings_not_binding():
+    """The advisory rings ({70, 100, cap} since Phase E) and the T=0.95 spots
+    are ADVISORY — never in the binding band, so a dirty edge point cannot fail
+    the gate.
+
+    Re-pointed 2026-07-29 from a single 70 mm advisory ring. The cap ring is
+    read from the shipped config key so the gate and the shipped
+    ``toss_max_displacement_mm`` can never describe different machines — and it
+    stays ADVISORY on purpose: the catch RATE at the cap is dominated by a
+    release-noise magnitude that is still the Phase-5 T0 PLACEHOLDER, so gating
+    the shipped cap on it would make the cap an artefact of an unmeasured
+    number. What the advisory rings DO gate is the invariant half (every emitted
+    knot pump-accepted, zero feasibility violations), which they feed because
+    they run the full production pipeline."""
+    import jugglebot.hardware_config as hw
+    from sim.toss_gate import (default_grid_8b, _TOSS_8B_RING_MM,
+                               _TOSS_8B_ADVISORY_RINGS_MM)
+    cap = float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM)
+    assert _TOSS_8B_ADVISORY_RINGS_MM[-1] == pytest.approx(cap)
     pts = default_grid_8b((0.0, 0.0))
-    # 1 centre + 8 binding ring + 8 advisory ring + 2 T=0.95 spots = 19.
-    assert len(pts) == 19
+    # 1 centre + 8 binding ring + 3×8 advisory rings + 2 T=0.95 spots = 35.
+    assert len(pts) == 1 + 8 + 8 * len(_TOSS_8B_ADVISORY_RINGS_MM) + 2 == 35
     disps = sorted({round(math.hypot(x, y), 1) for (x, y, z, T) in pts})
     assert 0.0 in disps and 50.0 in disps and 70.0 in disps
-    # No binding-band membership is claimed for a 70 mm point (displacement > 50).
+    assert 100.0 in disps and round(cap, 1) in disps
+    # No binding-band membership is claimed for any advisory-ring point.
     for (x, y, z, T) in pts:
         d = math.hypot(x, y)
-        if abs(d - 70.0) < 1e-6:
-            assert d > _TOSS_8B_RING_MM      # excluded from the binding ring
+        for r in _TOSS_8B_ADVISORY_RINGS_MM:
+            if abs(d - r) < 1e-6:
+                assert d > _TOSS_8B_RING_MM   # excluded from the binding ring
+    # …and an explicit override replaces them (the CLI's --advisory-rings).
+    slim = default_grid_8b((0.0, 0.0), advisory_rings_mm=(70.0,))
+    assert len(slim) == 19
 
 
 def test_8b_prepare_commands_nonzero_pretilt():
@@ -374,8 +394,18 @@ def test_8b_prepare_commands_nonzero_pretilt():
     assert s_ctr.displacement_mm == pytest.approx(0.0)
 
 
+def test_8b_asymmetry_map_radii_reach_the_shipped_cap():
+    """The MAP's default radii must span the shipped displacement cap, or the
+    directional evidence the operator's ladder relies on stops short of the
+    range the FSM actually permits."""
+    import jugglebot.hardware_config as hw
+    from sim.toss_gate import _ASYMMETRY_RADII_MM
+    assert 70.0 in _ASYMMETRY_RADII_MM and 100.0 in _ASYMMETRY_RADII_MM
+    assert max(_ASYMMETRY_RADII_MM) >= float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM)
+
+
 def test_8b_asymmetry_map_present_and_non_gating():
-    """The ±{70,100} mm directional-asymmetry MAP lives in the DETACH diag column
+    """The ±{70,100,150} mm directional-asymmetry MAP lives in the DETACH diag column
     (contact_diagnostic.asymmetry_map), is NON-GATING (gating flag False, never
     feeds passed), and reports the per-direction seated_n (post-catch seat) +
     landing-error-vs-B metric. A 1-cell slice keeps CI fast (the full map is

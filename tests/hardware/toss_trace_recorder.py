@@ -148,18 +148,37 @@ REJECT_WIRE_MAP = {
                      'YAML or the INSTALLED copy is wrong)',
     'REJECTED_CANT_MAKE_LEAD': 'goal: throw_delay_s below the 3.5 s floor',
     'REJECTED_FLIGHT_TIME': 'goal: flight_time_s outside [0.55, 1.10] s',
-    'REJECTED_DISPLACEMENT': 'goal (Tier 8b only): |B - A| from the config throw '
-                             'site exceeds the 70 mm cap, or exceeds the '
+    'REJECTED_POSE_UNKNOWN': 'goal (Tier 8b only): no FRESH '
+                             'trajectory/commanded_position, so the throw site A '
+                             '(= the platform LIVE commanded xy since 2026-07-29) '
+                             'is unknown and every displacement gate is '
+                             'meaningless. Fail-CLOSED by design — A is never '
+                             'guessed, because POSITIONING would then translate '
+                             'the platform to the guess. Check trajectory_node is '
+                             'seeded + streaming (it publishes the topic only '
+                             'then), then retry',
+    'REJECTED_DISPLACEMENT': 'goal (Tier 8b only): |B - A| from the LIVE throw '
+                             'site exceeds jugglebot_operational.'
+                             'toss_max_displacement_mm (150 mm since 2026-07-29; '
+                             'was 70), or exceeds the '
                              'closed-form reach bound for this flight time '
-                             '(256 mm at T=0.80 s, 83 mm at T=0.55 s). Under 8b '
+                             '(256 mm at T=0.80 s, 108 mm at T=0.60 s, 83 mm at '
+                             'T=0.55 s — so a 150 mm goal needs T >= ~0.67 s). '
+                             'Under 8b '
                              'this gate answers BEFORE the workspace box, so a '
-                             'far-lateral goal reports DISPLACEMENT, not WORKSPACE',
+                             'far-lateral goal reports DISPLACEMENT, not WORKSPACE. '
+                             'NOTE the displacement is measured from wherever the '
+                             'platform is PARKED, not from the origin',
     'REJECTED_TILT_CLAMP': 'goal (Tier 8b only): the aim required to reach B from '
                            'the throw site exceeds the platform tilt ceiling',
     'REJECTED_EVENT_VEL': 'goal: event_vel outside the Teensy [0.3, 7.0] m/s band',
     'REJECTED_WORKSPACE': 'goal: catch pose outside |x|,|y|<=150 mm / z 170+-50 mm. '
-                          'Under Tier 8b from throw site (0,0) the LATERAL half is '
-                          'unreachable (the 70 mm cap answers first) — check z',
+                          'Under Tier 8b the same bound ALSO applies to the live '
+                          'throw site A, so this code additionally means "the '
+                          'platform is parked outside the planning envelope" — '
+                          'go_home and retry. From a centred platform the LATERAL '
+                          'half of the B check is only reachable beyond the '
+                          'displacement cap, so check z first',
     'REJECTED_WRONG_MODE': 'control_mode_topic is not TRAJECTORY '
                            '(robot not armed into the streaming hold)',
     'REJECTED_MOCAP_STALE': 'rigid_body_poses stale (QTM / mocap_node)',

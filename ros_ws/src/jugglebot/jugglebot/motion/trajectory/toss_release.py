@@ -175,9 +175,11 @@ class ThrowTiltInfeasible(ValueError):
     lands with a systematic bias short of B (the bb Rung-2a "landing bias").
     The silent clamp is correct only for the CATCH (a partially-nulled arrival
     still seats); a throw must reject loudly (``REJECTED_TILT_CLAMP``) rather
-    than fly mis-aimed. Never binds inside the Phase-4 envelope — v_lat/v_z
-    reaches tan 12° only at ~315 mm displacement for T = 0.55 s, far outside
-    the ±150 mm workspace — so this is a contract, not a live constraint.
+    than fly mis-aimed. **Still a contract, not a live constraint, at the
+    Phase-E 150 mm cap**: measured
+    (``tools/probes/displaced_reach_frontier.py``, 2026-07-29) the required aim
+    at 150 mm runs 5.75° (T = 0.55 s) down to 1.45° (T = 1.10 s), and the 12°
+    ceiling first binds at ~320 mm / T = 0.55 s (required 12.1°) — 2.1× the cap.
     Carries ``required_deg`` / ``max_tilt_deg`` for the reject diagnostics.
     """
 
@@ -219,7 +221,7 @@ def _tilted_release_pos(a_xy, cup_z_world_mm: float, rx: float, ry: float
 
 def compute_release_state_tilted(catch_position_stow_mm, flight_time_s: float,
                                  *,
-                                 throw_site_xy_mm=None,
+                                 throw_site_xy_mm,
                                  initial_height_mm: float = hw.GEOM_INITIAL_HEIGHT_MM,
                                  hand_catch_offset_mm: float = hw.HAND_CATCH_OFFSET_MM,
                                  hand_throw_offset_mm: float = HAND_THROW_OFFSET_MM,
@@ -227,12 +229,23 @@ def compute_release_state_tilted(catch_position_stow_mm, flight_time_s: float,
                                  ) -> TiltedReleaseState:
     """Tier-8b release state for a tilt-aimed displaced throw → catch.
 
-    The throw launches from site A (``throw_site_xy_mm``, STOW xy; ``None`` →
-    ``hw.JB_OP_TOSS_THROW_SITE_MM``, default the workspace centre) at the
+    The throw launches from site A (``throw_site_xy_mm``, STOW xy) at the
     displaced catch B (``catch_position_stow_mm``, the Toss.action goal —
     same convention as :func:`compute_release_state`). Both sites share the
     goal's nominated platform z. All lateral take-off comes from the slider
     stroke projected through the throw tilt — never platform translation.
+
+    ``throw_site_xy_mm`` is **REQUIRED — there is no default A** (it carried
+    one, ``hw.JB_OP_TOSS_THROW_SITE_MM``, until 2026-07-29; that config key is
+    retired). The only correct throw site is where the platform actually is at
+    release, so any default is a phantom site: the aim is then solved from a
+    point the ball does not leave, and — worse — POSITIONING obediently
+    translates the platform TO that phantom point before throwing, silently
+    undoing an operator who parked it elsewhere. Making the argument mandatory
+    is the single enforcement point for "A is never inferred"; the caller
+    (``reload_coordinator_node._execute_toss``) sources it from
+    ``trajectory/commanded_position`` and refuses the goal outright when that
+    is stale or absent (``REJECTED_POSE_UNKNOWN``).
 
     Chain (single-ball-toss plan Phase 4, all-mm unit discipline —
     ``tilt_geometry``'s lever helpers here are the mm-based production
@@ -268,7 +281,10 @@ def compute_release_state_tilted(catch_position_stow_mm, flight_time_s: float,
     """
     b = np.asarray(catch_position_stow_mm, dtype=float).reshape(3)
     if throw_site_xy_mm is None:
-        throw_site_xy_mm = hw.JB_OP_TOSS_THROW_SITE_MM
+        # Explicit refusal, not a fallback: see the "REQUIRED" paragraph above.
+        raise ValueError(
+            "compute_release_state_tilted: throw_site_xy_mm is required — the "
+            "throw site A is the platform's live commanded xy, never a default")
     a_xy = np.asarray(throw_site_xy_mm, dtype=float).reshape(2)
     z_nom = float(b[2])
 

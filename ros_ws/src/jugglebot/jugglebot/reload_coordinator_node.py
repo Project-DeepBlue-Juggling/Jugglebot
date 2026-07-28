@@ -59,8 +59,10 @@ catch_coordinator → ``catch/dynamic_target``) closes the loop unchanged; the
 PREPARE to terminal so the ball-laden hand is never carried up mid-toss.
 
 TIER 8B (Phase 4, config ``toss_tier='8b'``) displaces the catch: pre-tilt at the
-config throw site A (``compute_release_state_tilted``'s swing-compensated pose is
-the POSITIONING target, so the arm-edge reach envelope is captured at A), launch
+throw site A — **the platform's LIVE commanded xy**, read from
+``trajectory/commanded_position`` (Phase E, 2026-07-29; it was a config site until
+then) — with ``compute_release_state_tilted``'s swing-compensated pose as the
+POSITIONING target, launch
 tilt-aimed at the goal's B, and the platform's A→B reach is DEFERRED to the
 scheduled release: the stock catch_coordinator announcement pre-tilt would
 complete the A→B translate BEFORE the ball is released (its arrival clamps to
@@ -71,7 +73,25 @@ latches the announcement for its hand-arm window but publishes no platform
 target) and itself publishes the ONE ``catch/dynamic_target`` at t_release,
 built from the same ``CatchCoordinator.predicted_catch_command`` math with
 arrival = the announced landing (lead = the flight time by construction). Tier
-8a never touches the new topic — its publish sequence is byte-identical.
+8a never touches ``catch/pretilt_hold`` — its publish sequence is unchanged there.
+
+The reach envelope trajectory_node applies to those targets is centred on the
+DECLARED catch point B (``catch/reach_center``, published on the
+ACTION_PREPARE_CATCH tick — contract C-REACH-1,
+``ros_ws/docs/catch_reach_envelope.md``), not on the pose held at arming. Before
+that contract the envelope was captured at A, so the deferred A→B reach was
+rejected WORKSPACE mid-flight for any displacement past 80 mm — observed 4/4 on
+hardware (bag ``2026-07-27_16-07-30``) with the ball already airborne.
+
+**Session chaining (Phase E).** A CAUGHT toss now ends in ``ACTION_STAY`` rather
+than ``ACTION_RECENTER`` (``jugglebot_operational.toss_stay_at_pose_on_caught``):
+the latch and holds come down but no go_home is issued, so the platform holds its
+catch pose and the NEXT toss reads its throw site A from there — A → B → C with no
+operator repositioning. Not-caught terminals keep SAFE_ABORT's go_home unchanged.
+The seam this opens on the RELOAD path (its catch is hard-fixed at the workspace
+centre with no pre-positioning, so an off-centre park would reject the incoming
+BB ball mid-flight) is closed by the reload FSM's ``REJECTED_NOT_CENTERED``
+precondition, which refuses BEFORE BB is asked to throw.
 """
 
 from __future__ import annotations
@@ -134,6 +154,7 @@ from jugglebot.toss_sequencer import (
     ACTION_REACH_CATCH as TOSS_ACTION_REACH_CATCH,
     ACTION_RECENTER as TOSS_ACTION_RECENTER,
     ACTION_SAFE_ABORT as TOSS_ACTION_SAFE_ABORT,
+    ACTION_STAY as TOSS_ACTION_STAY,
     PHASE_CHECKING as TOSS_PHASE_CHECKING,
     PHASE_POSITIONING as TOSS_PHASE_POSITIONING,
     PHASE_PREPARING as TOSS_PHASE_PREPARING,
@@ -147,6 +168,7 @@ from jugglebot.toss_sequencer import (
     TossSequencer,
 )
 from jugglebot.catch_coordinator import CatchCoordinator
+from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
 from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.toss_release import (
     ThrowTiltInfeasible,
@@ -288,13 +310,43 @@ _HAND_STATE_STALE_S = 0.5
 _THROW_STROKE_VEL_RPS = 40.0
 # Mocap arrival cross-check tolerance for POSITIONING (ABORTED_POSITION_FAILED
 # beyond it). JB_TRAJ_CATCH_REACH_ENVELOPE_MM is the semantically-right existing
-# constant: the arm_catch raise captures the reach-envelope center at the commanded
-# pose, so a platform measured within the envelope radius of the nominated pose
-# still has the nominated catch point covered by the captured envelope; beyond it
-# the catch cannot reach. (A full silent no-op from a corner pose fails this; a
-# near-centre no-op passes — and degrades gracefully, because the envelope then
-# genuinely covers the nominated point from where the platform sits.)
+# constant: a platform measured within one envelope radius of its nominated
+# pre-position pose still has the nominated catch point inside the armed envelope,
+# so the catch can reach it; beyond it the catch cannot. (A full silent no-op from
+# a corner pose fails this; a near-centre no-op passes — and degrades gracefully.)
+# Under contract C-REACH-1 the envelope is centred on the declared catch B rather
+# than on the commanded pose, which does NOT change this argument: the measurand
+# is still "how far the platform is from where the catch was planned from", and
+# for 8b the un-arrived pre-tilt independently corrupts the throw AIM, which the
+# envelope never protected against anyway.
 _TOSS_POSITION_TOL_MM = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+# RELOAD centred-ness tolerance (REJECTED_NOT_CENTERED, _platform_centered).
+#
+# NOT the bare envelope radius, and the difference is the whole point of the
+# gate. The reload declares no reach centre (contract C-REACH-1), so its arm
+# raise centres the envelope on the PARK. The target that envelope then judges
+# is NOT the catch point: catch_coordinator pre-tilts to receive, and
+# _compute_catch_command pulls the centroid back along the tilted platform-z by
+# hand_catch_offset_mm — so the commanded pre-tilt pose sits
+# hand_catch_offset_mm·sin(tilt) laterally off the catch point. Real BB arrivals
+# are 18-40° off vertical and compute_catch_orientation CLAMPS at
+# MAX_TILT_DEG = 12°, so that shift SATURATES at 64.78·sin(12°) = 13.47 mm on
+# every reload (measured across 18/25/30/40° arrivals: 13.469 mm, invariant).
+#
+# With the tolerance set to the envelope radius there is ZERO budget for that
+# systematic shift, so parks in (80 − 13.47, 80] mm are ADMITTED by this gate
+# and then REJECTED WORKSPACE by the envelope — after ACTION_SEND_THROW, with
+# BB's countdown started and the ball unsavable. That is precisely the
+# mid-flight rejection of a real BB throw the gate was added to make
+# impossible, reached through a gate that said yes. Subtracting the shift
+# closes the band by construction: an admitted park + the worst-case pre-tilt
+# swing still lands inside the envelope.
+#
+# Costs nothing in normal operation (a go_home'd platform is at 0 mm) — it only
+# refuses the band that was already doomed, and a refusal moves nothing.
+_RELOAD_CENTERED_TOL_MM = (
+    float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
+    - float(hw.HAND_CATCH_OFFSET_MM) * math.sin(math.radians(MAX_TILT_DEG)))
 # The soft catch gains the toss sets itself at PREPARE. catch/prime_hold suppresses
 # catch_coordinator's auto-prime — which is the ONLY place soft catch gains are
 # normally set (_prime_hand → _set_catch_gains) — so without this the toss's catch
@@ -405,6 +457,13 @@ class ReloadCoordinatorNode(Node):
         # exists to prevent. 0.0 = never heard from it ⇒ fail closed.
         self._traj_status_mono = 0.0
         self._gravity_correction_loaded = False
+        # The platform's live COMMANDED position (STOW mm) + its arrival stamp.
+        # None/0.0 = never heard ⇒ fail closed (REJECTED_POSE_UNKNOWN for a
+        # displaced toss, REJECTED_NOT_CENTERED for a reload). trajectory_node
+        # publishes it only while seeded+streaming, so silence genuinely means
+        # "no commanded pose exists", not "the topic is quiet".
+        self._commanded_pos_mm = None
+        self._commanded_pos_mono = 0.0
         self._mocap_mono = 0.0
         self._balls = []
         self._balls_mono = 0.0
@@ -535,6 +594,14 @@ class ReloadCoordinatorNode(Node):
             String, 'control_mode_topic', self._on_control_mode, 10)
         self.create_subscription(
             TrajectoryStatus, 'trajectory/status', self._on_traj_status, 10)
+        # The platform's LIVE commanded position (STOW mm, 5 Hz) — trajectory_node
+        # publishes it only while seeded+streaming. It is the SOURCE OF TRUTH for
+        # the displaced toss's throw site A and for the reload's centred gate;
+        # silence is meaningful (⇒ REJECTED_POSE_UNKNOWN / REJECTED_NOT_CENTERED),
+        # never a licence to guess.
+        self.create_subscription(
+            Point, 'trajectory/commanded_position',
+            self._on_commanded_position, 10)
         self.create_subscription(
             RigidBodyPoses, 'rigid_body_poses', self._on_mocap, 10)
         self.create_subscription(
@@ -610,6 +677,25 @@ class ReloadCoordinatorNode(Node):
         # the hand-arm stays tracker-driven) — zero hazard, WARN-logged in CCN.
         self._pretilt_hold_pub = self.create_publisher(
             Bool, 'catch/pretilt_hold', 10)
+        # Declared reach-envelope centre (contract C-REACH-1,
+        # ros_ws/docs/catch_reach_envelope.md). Published by the TOSS on the
+        # ACTION_PREPARE_CATCH tick — the SAME tick as prime_hold, i.e. one full
+        # FSM tick (50 ms >> topic latency) before the bundle that calls
+        # trajectory/arm_catch, because the two travel on different transports
+        # with no cross-topic ordering guarantee (the identical reasoning that
+        # split prime_hold off the bundle). trajectory_node consumes it at the
+        # arm RAISE edge.
+        #
+        # Losing it degrades to EXACTLY the pre-contract behaviour — envelope at
+        # A, the deferred A→B reach rejected WORKSPACE mid-flight, ball on the
+        # floor and a loud reject on both nodes. That is a miss, not a hazard,
+        # and it is why the declaration needs no ack.
+        #
+        # The RELOAD path never publishes here: its catch IS the held pose, so
+        # the commanded-pose fallback is already the right centre, and its
+        # choreography stays byte-identical.
+        self._reach_center_pub = self.create_publisher(
+            Point, 'catch/reach_center', 10)
         # Tier 8b's deferred A→B reach target (the same wire catch_coordinator
         # publishes; trajectory_node consumes either publisher identically while
         # the catch-armed latch is raised).
@@ -673,6 +759,39 @@ class ReloadCoordinatorNode(Node):
             # LVLGATE build box.)
             self._gravity_correction_loaded = bool(msg.gravity_correction_loaded)
             self._traj_status_mono = time.perf_counter()
+
+    def _on_commanded_position(self, msg):
+        """``trajectory/commanded_position``: the platform's live COMMANDED
+        (x, y, z) in STOW mm — where the emitter is actually driving it.
+
+        Cached with an arrival stamp; consumers gate on freshness and treat
+        absence as UNKNOWN, never as centre. Non-finite components are dropped
+        (they would poison the throw-site aim and the centred test alike, and a
+        NaN comparison silently reads as "not centred"/"not displaced"
+        depending on the operator, which is exactly the class of quiet wrong
+        answer this channel exists to eliminate)."""
+        p = (float(msg.x), float(msg.y), float(msg.z))
+        if not all(math.isfinite(v) for v in p):
+            self.get_logger().error(
+                f'trajectory/commanded_position {p} is non-finite — DISCARDED')
+            return
+        with self._lock:
+            self._commanded_pos_mm = p
+            self._commanded_pos_mono = time.perf_counter()
+
+    def _live_commanded_position(self, now: float):
+        """The live commanded platform position, or None when unknown/stale.
+
+        ``_TRAJ_STATUS_STALE_S`` is the window: this topic rides the SAME 5 Hz
+        trajectory_node timer as ``trajectory/status``, so it inherits that
+        window rather than inventing a second one. Caller-side ``now`` is
+        ``time.perf_counter()`` (the node's one monotonic domain)."""
+        with self._lock:
+            pos = self._commanded_pos_mm
+            mono = self._commanded_pos_mono
+        if pos is None or mono <= 0.0 or (now - mono) >= _TRAJ_STATUS_STALE_S:
+            return None
+        return pos
 
     def _on_mocap(self, msg):
         with self._lock:
@@ -803,8 +922,41 @@ class ReloadCoordinatorNode(Node):
             ball_in_hand=bool(hb.ball_in_hand) if hb_fresh else False,
             mocap_fresh=mocap_fresh,
             streaming=streaming,
+            platform_centered=self._platform_centered(now),
             ball_caught=ball_caught,
             catch_error_mm=catch_error_mm)
+
+    def _platform_centered(self, now: float) -> bool:
+        """True iff the platform's LIVE commanded xy is within the catch reach
+        envelope of the reload catch point — the RELOAD precondition that a
+        caught toss's stay-at-pose terminal made necessary (see the
+        ``REJECTED_NOT_CENTERED`` gate in ``reload_sequencer._step_checking``).
+
+        Reference point: the reload catch point's xy, which
+        :func:`compute_catch_point_mm` places on-axis at the workspace centre —
+        read from ``self._catch_point_mm`` rather than hard-coded, so the two
+        cannot drift apart. FRAME: ``_catch_point_mm`` is world and the commanded
+        position is STOW-relative, but the STOW→world conversion adds only z
+        (``toss_release.stow_to_global_mm``), so the **xy comparison is exact in
+        either frame** — and it is xy-only on purpose, because the reload's z is
+        the ACTIVE plane by construction and a z difference is not what makes a
+        catch unreachable here.
+
+        Tolerance: the envelope radius MINUS the reload pre-tilt's centroid
+        swing (:data:`_RELOAD_CENTERED_TOL_MM`). The envelope radius alone is
+        NOT the right tolerance and shipping it would have left this gate
+        admitting the exact state it exists to refuse — see that constant for
+        the measured trace. Degradation inside the tightened bound stays
+        graceful (the announcement pre-tilt translates the remaining offset
+        during the flight, planned and gated as any other catch reach).
+
+        UNKNOWN (no fresh commanded position) ⇒ False: fail closed."""
+        pos = self._live_commanded_position(now)
+        if pos is None:
+            return False
+        return math.hypot(pos[0] - float(self._catch_point_mm[0]),
+                          pos[1] - float(self._catch_point_mm[1])) \
+            <= _RELOAD_CENTERED_TOL_MM
 
     def _update_announced_ball_latch(self, balls):
         """Correlate the tracker-assigned id of OUR announced ball and return it.
@@ -1283,15 +1435,44 @@ class ReloadCoordinatorNode(Node):
         # derivation. An OUT-OF-BAND flight time still computes a release state
         # and is then loudly REJECTED_FLIGHT_TIME by the FSM's CHECKING pass.
         tier = str(hw.JB_OP_TOSS_TIER)
-        throw_site = tuple(float(v) for v in hw.JB_OP_TOSS_THROW_SITE_MM)
+        # Tier-8b throw site A = the platform's LIVE commanded xy (Phase E). NOT a
+        # config site: the ball leaves the hand where the platform IS, so any other
+        # A is a phantom the aim is solved for and — because POSITIONING then
+        # translates the platform to the pre-tilt pose derived from it — a
+        # commanded traverse the operator never asked for. Reading it live is also
+        # what makes a session CHAIN: after a CAUGHT toss the platform STAYS at B,
+        # so the next goal's A is that B for free.
+        #
+        # Self-consistency note (why a 200 ms-old read is not a correctness bug):
+        # A is NOMINATED, not observed. POSITIONING commands the platform to the
+        # pre-tilt pose derived from A and CHECKING/PREPARE wait for that arrival,
+        # so the platform is at A at release BY CONSTRUCTION — a stale read yields
+        # a slightly different, still fully self-consistent throw site.
+        #
+        # UNKNOWN ⇒ throw_site_known=False and the FSM rejects POSE_UNKNOWN. There
+        # is deliberately no fallback value here.
+        throw_site = (0.0, 0.0)
+        throw_site_known = True
         tilt_clamp_exceeded = False
         if tier == TIER_8B:
-            # Tier 8b: throw from the config site A, tilt-aimed at the displaced
-            # B. The module's clamp gate is the authoritative aim check — a
-            # raise maps onto the FSM's tilt_clamp_exceeded flag so CHECKING
-            # mints REJECTED_TILT_CLAMP in gate order (no drift-prone second
-            # copy of the aim math; unreachable inside the ±150 mm workspace —
-            # the aim needs ~315 mm of displacement to hit the 12° ceiling).
+            live = self._live_commanded_position(time.perf_counter())
+            if live is None:
+                self.get_logger().error(
+                    'Toss REJECTED_POSE_UNKNOWN: no fresh '
+                    'trajectory/commanded_position — the displaced throw site A '
+                    'is the live commanded pose and is never guessed '
+                    '(trajectory_node publishes it only while seeded+streaming)')
+                throw_site_known = False
+            else:
+                throw_site = (float(live[0]), float(live[1]))
+        if tier == TIER_8B and throw_site_known:
+            # Tier 8b: throw from A, tilt-aimed at the displaced B. The module's
+            # clamp gate is the authoritative aim check — a raise maps onto the
+            # FSM's tilt_clamp_exceeded flag so CHECKING mints REJECTED_TILT_CLAMP
+            # in gate order (no drift-prone second copy of the aim math;
+            # unreachable at the 150 mm cap — the aim needs ~320 mm of
+            # displacement to hit the 12° ceiling, measured
+            # tools/probes/displaced_reach_frontier.py).
             try:
                 release = compute_release_state_tilted(
                     catch_pose, flight, throw_site_xy_mm=throw_site)
@@ -1299,6 +1480,12 @@ class ReloadCoordinatorNode(Node):
                 self.get_logger().error(f'Toss displaced aim infeasible: {exc}')
                 release = None
                 tilt_clamp_exceeded = True
+        elif tier == TIER_8B:
+            # Site unknown: there is no release state to compute (every field of
+            # it is a function of A). The FSM rejects POSE_UNKNOWN on its first
+            # step, before POSITIONING, so nothing downstream reads this None —
+            # same shape as the tilt-clamp branch above.
+            release = None
         else:
             release = compute_release_state(catch_pose, flight)
         seq = TossSequencer(
@@ -1307,6 +1494,9 @@ class ReloadCoordinatorNode(Node):
             event_vel_mps=(float(release.event_vel_mps)
                            if release is not None else 0.0),
             throw_site_xy_mm=throw_site,
+            throw_site_known=throw_site_known,
+            max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
+            stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
             tilt_clamp_exceeded=tilt_clamp_exceeded)
         seq.start(time.perf_counter())
         waiver = bool(self.get_parameter(_TOSS_WAIVER_PARAM).value)
@@ -1526,6 +1716,20 @@ class ReloadCoordinatorNode(Node):
             # A->B reach at t_release. For 8a the topic is NEVER touched (the
             # publish sequence stays byte-identical).
             self._publish_prime_hold(True)
+            # Declare the reach-envelope centre (contract C-REACH-1) on THIS tick,
+            # so it lands in an earlier trajectory_node callback than the
+            # arm_catch raise the bundle makes one full FSM tick later. The
+            # declared centre is the goal's NOMINATED catch pose B, not the
+            # swing-compensated target the reach will actually carry: B is the
+            # operator-nominated quantity, the swing shift is a few mm, and 80 mm
+            # of envelope absorbs it with room for the tracker refinements the
+            # envelope exists to bound.
+            #
+            # Declared for BOTH tiers. For 8a B IS the held pose, so the centre
+            # equals the fallback and the behaviour is unchanged — but declaring
+            # it means the envelope no longer silently depends on POSITIONING
+            # having actually arrived.
+            self._publish_reach_center(seq.catch_pose_stow_mm)
             if seq.tier == TIER_8B:
                 self._publish_pretilt_hold(True)
                 self._toss_pretilt_hold_raised = True
@@ -1540,6 +1744,8 @@ class ReloadCoordinatorNode(Node):
             # ONE announcement-derived catch/dynamic_target for B (lead = the
             # flight time by construction). 8a never emits this action.
             self._publish_toss_reach()
+        elif decision.action == TOSS_ACTION_STAY:
+            self._toss_stay()
         elif decision.action == TOSS_ACTION_RECENTER:
             self._toss_recenter()
         elif decision.action == TOSS_ACTION_SAFE_ABORT:
@@ -1574,10 +1780,11 @@ class ReloadCoordinatorNode(Node):
         ORIENTATION is the throw tilt (tilt_rx, tilt_ry, rz=0). Sourcing the level
         B pose for 8b (as the shared path once did) would pre-position LEVEL at B
         and throw straight up — orphaning the computed pre-tilt aim and firing from
-        the wrong site. The trajectory/arm_catch reach-envelope is captured at the
-        COMMANDED pose (A for 8b, in _prepare_toss_catch), so the deferred A->B
-        reach published at t_release stays inside the 80 mm envelope (B is <= 70 mm
-        from A across the Phase-4 grid). The 8b tilt is encoded through the SAME
+        the wrong site. The reach envelope the deferred A->B target is judged
+        against is the DECLARED catch centre B (contract C-REACH-1; the node
+        publishes catch/reach_center one FSM tick before the arm raise), so the
+        displacement is bounded by toss_max_displacement_mm rather than by the
+        envelope. The 8b tilt is encoded through the SAME
         quaternion round-trip go_to_pose decodes with (rotvec -> matrix -> quat),
         single-sourcing the ik_solver helpers rather than hand-rolling a quaternion.
 
@@ -1641,9 +1848,11 @@ class ReloadCoordinatorNode(Node):
         (``_toss_platform_target_mm``, set in :meth:`_execute_toss`), so the
         commanded pose and the verification target can never diverge. Tier 8a = the
         nominated catch pose B (level); Tier 8b = the swing-compensated pre-tilt
-        pose at the throw site A (``release.pretilt_pose_stow[:3]``). ``release`` is
-        None only on an 8b tilt-clamp raise (the goal is rejected before
-        POSITIONING), so the B fallback there is moot. Returns a float (x, y, z)."""
+        pose at the throw site A (``release.pretilt_pose_stow[:3]``), where A is the
+        platform's live commanded xy — so for 8b this is a pre-tilt IN PLACE, not a
+        traverse. ``release`` is None only when the 8b goal is rejected on the FSM's
+        first step (tilt clamp, or POSE_UNKNOWN) and POSITIONING is never reached,
+        so the B fallback there is moot. Returns a float (x, y, z)."""
         if tier == TIER_8B and release is not None:
             pre = np.asarray(release.pretilt_pose_stow, dtype=float)
             return (float(pre[0]), float(pre[1]), float(pre[2]))
@@ -1673,9 +1882,12 @@ class ReloadCoordinatorNode(Node):
 
           1. soft catch gains (best-effort) — the standing prime_hold suppresses
              the auto-prime that normally sets them (see _TOSS_SOFT_CATCH_GAINS);
-          2. trajectory/arm_catch raise + confirm — captures the reach-envelope
-             center at the (verified) nominated pose; a failure aborts with
-             nothing announced and no throw armed;
+          2. trajectory/arm_catch raise + confirm — consumes the catch/reach_center
+             declaration published on the PREVIOUS tick and captures it as the
+             reach-envelope centre (contract C-REACH-1; falls back to the
+             commanded pose if the declaration was lost, which degrades to a
+             loud mid-flight WORKSPACE reject of the A->B reach — a miss, not a
+             hazard). A failure aborts with nothing announced and no throw armed;
           3. catch/vel_scale — BEFORE the armed edge, so catch_coordinator holds
              this goal's scale before any hand-arm can fire (the reload rule);
           4. catch/prime_dispatched True, ONCE, immediately before the armed
@@ -1853,6 +2065,16 @@ class ReloadCoordinatorNode(Node):
         publisher's comment in __init__ for the invariant it enforces)."""
         self._pretilt_hold_pub.publish(Bool(data=bool(hold)))
 
+    def _publish_reach_center(self, catch_pose_stow_mm):
+        """Declare the reach-envelope centre for the catch about to be armed
+        (contract C-REACH-1; see the publisher's comment in __init__ for the
+        ordering requirement and the benign-degradation argument)."""
+        x, y, z = (float(v) for v in catch_pose_stow_mm)
+        self._reach_center_pub.publish(Point(x=x, y=y, z=z))
+        self.get_logger().info(
+            'toss declared catch reach centre (%.1f, %.1f, %.1f) mm STOW'
+            % (x, y, z))
+
     def _publish_toss_reach(self):
         """Tier 8b's deferred A->B reach (ACTION_REACH_CATCH, time-triggered at
         t_release): build the ONE catch/dynamic_target for B from the stashed
@@ -1922,6 +2144,41 @@ class ReloadCoordinatorNode(Node):
         cross-topic-ordering rationale: a stale pretilt_hold only DEGRADES
         (a reload announcement loses its platform pre-tilt) — never a hazard."""
         self._recenter()
+        self._publish_prime_hold(False)
+        if self._toss_pretilt_hold_raised:
+            self._publish_pretilt_hold(False)
+
+    def _toss_stay(self):
+        """Toss STAY (CAUGHT, the default since 2026-07-29): the RECENTER ladder
+        MINUS go_home — lower the catch latch, publish catch/armed False, then
+        release prime_hold and (iff raised) pretilt_hold LAST.
+
+        The platform is left holding the catch pose because the emitter's
+        terminal hold already does that when nobody commands otherwise: this is
+        *not calling go_home*, not a new mechanism, and it issues no new
+        setpoint of any kind. That is what lets a session CHAIN — the next
+        Toss's throw site A is read from this live commanded pose.
+
+        Ordering is the RECENTER ordering verbatim and load-bearing for the same
+        reason: catch/armed False must precede the prime_hold release, because a
+        released hold meeting a still-armed catch_coordinator re-opens the
+        auto-prime exactly while the caught ball rests in the cup (the ascent
+        would launch it). A stale pretilt_hold only DEGRADES (a later reload
+        announcement loses its platform pre-tilt) — never a hazard — so it goes
+        last of all.
+
+        Residual, deliberately accepted and instrumented rather than designed
+        away: the held pose carries the catch's RECEIVE TILT (up to ~3.6° at the
+        150 mm cap), so the ball rests in a slightly tilted cup until the next
+        command instead of being returned to level. The catch already holds that
+        tilt for the whole quiescent settle with the ball in it, so this extends
+        an existing, hardware-observed state rather than creating one — but it
+        extends it INDEFINITELY, which the machine has never done. The operator
+        runbook scores it (§ SECTION DISP row DISP-5, a REPORT row); set
+        toss_stay_at_pose_on_caught false to revert to go_home if it does not
+        hold."""
+        self._arm_catch(False)
+        self._publish_catch_armed(False)
         self._publish_prime_hold(False)
         if self._toss_pretilt_hold_raised:
             self._publish_pretilt_hold(False)

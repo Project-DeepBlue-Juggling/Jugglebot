@@ -112,10 +112,12 @@ class _TossGoalHandle:
         self.terminal = 'canceled'
 
 
-def _toss_ready_node(now):
+def _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0)):
     """A node with every toss precondition satisfied and caches FRESH at `now`:
     TRAJECTORY streaming, mocap fresh, a fresh trajectory/status affirming a
-    loaded gravity correction, hand telemetry fresh AT the bottom park band,
+    loaded gravity correction, a fresh trajectory/commanded_position (the
+    displaced toss's throw site A — Phase E; absent it the goal is
+    REJECTED_POSE_UNKNOWN), hand telemetry fresh AT the bottom park band,
     ball possession latched, no live tracks."""
     node = ReloadCoordinatorNode()
     with node._lock:
@@ -123,6 +125,8 @@ def _toss_ready_node(now):
         node._streaming = True
         node._traj_status_mono = now
         node._gravity_correction_loaded = True
+        node._commanded_pos_mm = tuple(float(v) for v in commanded_pos)
+        node._commanded_pos_mono = now
         node._mocap_mono = now
         node._balls = []
         node._balls_mono = now
@@ -141,6 +145,7 @@ def _stamp_fresh(node, t):
         node._balls_mono = t
         node._hand_telemetry_mono = t
         node._traj_status_mono = t
+        node._commanded_pos_mono = t
 
 
 def _install_toss_goal(node, pose=(0.0, 0.0, 170.0), flight=0.8, vel_scale=0.0):
@@ -1109,6 +1114,67 @@ def test_prime_hold_raised_tick_before_prepare_bundle(monkeypatch):
     assert flat[flat.index(('prime_dispatched', True)) + 1] == ('armed', True)
 
 
+def test_reach_centre_declared_a_tick_before_the_arm_raise(monkeypatch):
+    """C-REACH-1: catch/reach_center carries the goal's NOMINATED catch B and is
+    published on the ACTION_PREPARE_CATCH tick — one full FSM tick (50 ms >>
+    topic latency) BEFORE the bundle that calls trajectory/arm_catch, which is
+    where trajectory_node consumes it.
+
+    Same cross-topic-ordering reason that split prime_hold off the bundle: the
+    declaration and the service call travel on different transports with no
+    ordering guarantee. Losing the race degrades to the pre-contract behaviour —
+    envelope at A, the A→B reach rejected WORKSPACE mid-flight — which is a
+    missed ball, not a hazard, and is why the declaration needs no ack."""
+    pose = (120.0, -30.0, 170.0)
+    node = _toss_ready_node(100.0)
+    seq = _fresh_seq(node, pose=pose, start=100.0)
+    events = []
+    tick = {'i': 0}
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s: s.note_position_result(100.0, True, 0.3))   # arrival 100.5
+    monkeypatch.setattr(node, '_set_soft_catch_gains', lambda: True)
+    monkeypatch.setattr(
+        node, '_arm_catch',
+        lambda a: events.append((tick['i'], ('arm', a))) or True)
+    monkeypatch.setattr(node, '_publish_catch_armed', lambda a: None)
+    monkeypatch.setattr(node, '_publish_prime_hold', lambda h: None)
+    monkeypatch.setattr(
+        node._reach_center_pub, 'publish',
+        lambda msg: events.append(
+            (tick['i'], ('centre', (msg.x, msg.y, msg.z)))))
+    for t in (100.0, 100.6, 100.7):
+        tick['i'] += 1
+        _stamp_fresh(node, t)
+        node._step_toss_sequence(seq, t)
+    centre = [(i, e) for i, e in events if e[0] == 'centre']
+    assert len(centre) == 1                       # declared ONCE per goal
+    assert centre[0][1][1] == pose                # the NOMINATED B, verbatim
+    arm_tick = next(i for i, e in events if e == ('arm', True))
+    assert centre[0][0] == 2 and arm_tick == 3    # strictly earlier FSM tick
+
+
+def test_reach_centre_declared_for_tier_8b_too(monkeypatch):
+    """The 8b goal declares B while the platform is pre-tilted at A — the case
+    the contract exists for. The declared centre is B, NOT the pre-tilt pose the
+    platform is actually holding."""
+    node = _toss_ready_node(100.0, commanded_pos=(0.0, 0.0, 170.0))
+    seq, _rel = _fresh_seq_8b(node, pose=(140.0, 0.0, 170.0),
+                              throw_site=(0.0, 0.0), start=100.0)
+    published = []
+    monkeypatch.setattr(
+        node, '_position_platform_for_toss',
+        lambda s: s.note_position_result(100.0, True, 0.3))
+    monkeypatch.setattr(node, '_publish_prime_hold', lambda h: None)
+    monkeypatch.setattr(node, '_publish_pretilt_hold', lambda h: None)
+    monkeypatch.setattr(node._reach_center_pub, 'publish',
+                        lambda msg: published.append((msg.x, msg.y, msg.z)))
+    for t in (100.0, 100.6):
+        _stamp_fresh(node, t)
+        node._step_toss_sequence(seq, t)
+    assert published == [(140.0, 0.0, 170.0)]
+
+
 def test_announcement_content_and_frames():
     """The self-announcement: target_id AND thrower_name are this robot
     (target_id is the load-bearing one — the tracker tags destination from it),
@@ -1194,7 +1260,17 @@ def test_toss_choreography_full_walk(monkeypatch):
             node._toss_throw_dispatched = True
         return THROW_DISPATCH_OK, ''
     monkeypatch.setattr(node, '_dispatch_toss_throw', _fake_dispatch)
-    monkeypatch.setattr(node, '_toss_recenter', lambda: order.append('recenter'))
+    # The CAUGHT terminal is _toss_stay since 2026-07-29 (Phase E). Let the REAL
+    # ladder run through the already-wired _arm_catch / _publish_catch_armed /
+    # _publish_prime_hold recorders so the ORDER is pinned, and record go_home
+    # separately so "no go_home on CAUGHT" is asserted rather than assumed —
+    # _toss_recenter is monkeypatched to fail loudly if it is ever reached.
+    monkeypatch.setattr(node, '_go_home',
+                        lambda: order.append('go_home') or True)
+    monkeypatch.setattr(node, '_toss_recenter',
+                        lambda: pytest.fail(
+                            'CAUGHT must STAY, not RECENTER, at the shipped '
+                            'toss_stay_at_pose_on_caught default'))
 
     gh = _TossGoalHandle()
     d = node._step_toss_sequence(seq, t0, gh)
@@ -1232,7 +1308,14 @@ def test_toss_choreography_full_walk(monkeypatch):
     assert d.result.catch_error_mm == pytest.approx(0.0)
     assert order == ['position', ('prime_hold', True), 'gains', ('arm', True),
                      ('vel_scale', 0.8), ('prime_dispatched', True),
-                     ('armed', True), 'announce', 'dispatch', 'recenter']
+                     ('armed', True), 'announce', 'dispatch',
+                     # the STAY ladder: latch down, armed False, THEN the hold
+                     # released last (a released hold meeting a still-armed
+                     # catch_coordinator re-opens the auto-prime with the caught
+                     # ball in the cup) — and NO go_home, which is what leaves
+                     # the platform at B for the next toss to throw from.
+                     ('arm', False), ('armed', False), ('prime_hold', False)]
+    assert 'go_home' not in order
     ann = ann_pub.published[-1]
     assert ann.target_id == 'jugglebot'
     assert gh.feedbacks[0] == PHASE_POSITIONING
@@ -1444,6 +1527,53 @@ def test_toss_recenter_releases_prime_hold_last(monkeypatch):
                      ('prime_hold', False)]
 
 
+def test_toss_stay_is_the_recenter_ladder_minus_go_home(monkeypatch):
+    """STAY (the CAUGHT terminal since 2026-07-29): the RECENTER ordering
+    verbatim — latch lower, catch/armed False, prime_hold False LAST — with
+    **no go_home**, and no retract, and no other command of any kind.
+
+    "Not calling go_home" is the entire mechanism: the emitter's terminal hold
+    already keeps the platform where the catch left it, which is what makes the
+    NEXT toss's throw site A be B. The ordering is load-bearing for the
+    unchanged reason: a released prime_hold meeting a still-armed
+    catch_coordinator re-opens the auto-prime with the caught ball in the cup.
+    """
+    node = ReloadCoordinatorNode()
+    order = []
+    monkeypatch.setattr(node, '_arm_catch',
+                        lambda a: order.append(('arm', a)) or True)
+    monkeypatch.setattr(node, '_publish_catch_armed',
+                        lambda a: order.append(('armed', a)))
+    monkeypatch.setattr(node, '_go_home', lambda: order.append('home') or True)
+    monkeypatch.setattr(node, '_smooth_move_hand',
+                        lambda p: order.append(('hand', p)) or True)
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: order.append(('prime_hold', h)))
+    node._toss_stay()
+    assert order == [('arm', False), ('armed', False), ('prime_hold', False)]
+
+
+def test_toss_stay_releases_pretilt_hold_last_when_raised(monkeypatch):
+    """STAY releases catch/pretilt_hold LAST of all, iff this goal raised it —
+    identical to RECENTER/SAFE_ABORT. A stale pretilt_hold only DEGRADES (a
+    later reload announcement loses its platform pre-tilt), never a hazard."""
+    node = ReloadCoordinatorNode()
+    order = []
+    monkeypatch.setattr(node, '_arm_catch', lambda a: True)
+    monkeypatch.setattr(node, '_publish_catch_armed', lambda a: None)
+    monkeypatch.setattr(node, '_publish_prime_hold',
+                        lambda h: order.append(('prime_hold', h)))
+    monkeypatch.setattr(node, '_publish_pretilt_hold',
+                        lambda h: order.append(('pretilt_hold', h)))
+    node._toss_pretilt_hold_raised = False
+    node._toss_stay()
+    assert order == [('prime_hold', False)]              # 8a: never touched
+    order.clear()
+    node._toss_pretilt_hold_raised = True
+    node._toss_stay()
+    assert order == [('prime_hold', False), ('pretilt_hold', False)]
+
+
 def test_toss_safe_abort_ordering_with_prime_hold_last(monkeypatch):
     """SAFE_ABORT: the reload safing ladder verbatim — catch/armed False FIRST
     (retry-tick stand-down), telemetry-verified retract (which deliberately also
@@ -1620,7 +1750,7 @@ def _fresh_seq_8b(node, pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
         node._toss_announced_reach = None
     seq = TossSequencer(catch_pose_stow_mm=pose, flight_time_s=flight,
                         throw_delay_s=delay, tier=TIER_8B,
-                        throw_site_xy_mm=throw_site,
+                        throw_site_xy_mm=throw_site, throw_site_known=True,
                         event_vel_mps=float(release.event_vel_mps))
     seq.start(start)
     return seq, release
@@ -1896,10 +2026,18 @@ def test_toss_terminals_skip_pretilt_release_when_not_raised(monkeypatch):
     assert pretilt == []
 
 
-def test_8b_uses_tilted_release_with_config_throw_site(monkeypatch):
+@pytest.mark.parametrize('live_xy', [(0.0, 0.0), (150.0, 0.0), (-90.0, 40.0)])
+def test_8b_throw_site_is_the_live_commanded_pose(monkeypatch, live_xy):
     """Tier 8b routes _execute_toss through compute_release_state_tilted at the
-    config throw site A (hw.JB_OP_TOSS_THROW_SITE_MM), tilt-aimed at B — NOT the
-    8a compute_release_state."""
+    throw site A = the platform's LIVE commanded xy (Phase E, 2026-07-29) — NOT
+    a config site and NOT the 8a compute_release_state.
+
+    Re-pointed from test_8b_uses_tilted_release_with_config_throw_site, which
+    pinned A == hw.JB_OP_TOSS_THROW_SITE_MM. That key is retired: a config site
+    is a phantom the aim is solved for while POSITIONING obediently translates
+    the platform to it, so a chained session's second toss would fly back to
+    (0, 0) before throwing. Parametrised over three live poses precisely so the
+    live read cannot be satisfied by a constant."""
     calls = {}
     real = rcn.compute_release_state_tilted
 
@@ -1911,12 +2049,98 @@ def test_8b_uses_tilted_release_with_config_throw_site(monkeypatch):
     monkeypatch.setattr(rcn, 'compute_release_state',
                         lambda *a, **k: pytest.fail('8a path used for an 8b goal'))
     monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    node = _toss_ready_node(time.perf_counter(),
+                            commanded_pos=(live_xy[0], live_xy[1], 170.0))
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
+    # B is 50 mm +x of wherever the platform is, so every leg is a legal
+    # displaced goal regardless of the live pose.
+    gh = _TossGoalHandle(x=live_xy[0] + 50.0, y=live_xy[1], z=170.0,
+                         throw_height=0.8, delay=5.0)
+    node._execute_toss(gh)               # runs to REJECTED_POSITION (go_to_pose n/a)
+    assert calls['pose'] == (live_xy[0] + 50.0, live_xy[1], 170.0)
+    assert calls['site'] == live_xy
+
+
+def test_8b_without_a_fresh_commanded_pose_is_rejected_pose_unknown(monkeypatch):
+    """No fresh trajectory/commanded_position ⇒ REJECTED_POSE_UNKNOWN, and the
+    release state is never computed.
+
+    Fail-closed is the whole point: the alternative to refusing is guessing A,
+    and a guessed A is not merely a wrong number — POSITIONING translates the
+    platform to the pre-tilt pose derived from it, so the guess becomes
+    commanded motion nobody asked for."""
+    monkeypatch.setattr(rcn, 'compute_release_state_tilted',
+                        lambda *a, **k: pytest.fail(
+                            'no release state may be computed without a site'))
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
     node = _toss_ready_node(time.perf_counter())
+    with node._lock:
+        node._commanded_pos_mm = None
+        node._commanded_pos_mono = 0.0
     monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
     gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, throw_height=0.8, delay=5.0)
-    node._execute_toss(gh)               # runs to REJECTED_POSITION (go_to_pose n/a)
-    assert calls['pose'] == (50.0, 0.0, 170.0)
-    assert calls['site'] == tuple(float(v) for v in hw.JB_OP_TOSS_THROW_SITE_MM)
+    result = node._execute_toss(gh)
+    assert result.success is False
+    assert result.outcome == 'REJECTED_POSE_UNKNOWN'
+    assert gh.terminal == 'abort'
+
+
+def test_8b_stale_commanded_pose_is_rejected_pose_unknown(monkeypatch):
+    """A commanded position older than _TRAJ_STATUS_STALE_S is UNKNOWN, not
+    usable: trajectory_node publishes it only while seeded+streaming, so silence
+    means "no commanded pose exists" — the exact state where guessing A is
+    worst."""
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    with node._lock:
+        node._commanded_pos_mono = now - (rcn._TRAJ_STATUS_STALE_S + 1.0)
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
+    gh = _TossGoalHandle(x=50.0, y=0.0, z=170.0, throw_height=0.8, delay=5.0)
+    result = node._execute_toss(gh)
+    assert result.outcome == 'REJECTED_POSE_UNKNOWN'
+
+
+def test_non_finite_commanded_position_is_discarded(monkeypatch):
+    """A NaN/inf commanded position is DROPPED, not cached: it would poison the
+    throw-site aim and make the reload's centred test read False-or-True by
+    accident. The previous good value survives."""
+    node = _toss_ready_node(100.0, commanded_pos=(12.0, -5.0, 170.0))
+    node._on_commanded_position(
+        types.SimpleNamespace(x=float('nan'), y=0.0, z=170.0))
+    with node._lock:
+        assert node._commanded_pos_mm == (12.0, -5.0, 170.0)
+
+
+def test_8b_degenerate_b_equals_live_pose_is_a_vertical_toss(monkeypatch):
+    """B == the live commanded pose ⇒ zero displacement ⇒ the aim is exactly
+    level and the release state is BITWISE the 8a vertical toss.
+
+    This is the operator's "8b subsumes 8a" expectation and the case that has
+    NEVER flown on hardware (all 11 validated T4 throws were displaced): under
+    the retired config throw site a centred goal from an off-centre platform was
+    a >70 mm DISPLACED throw, so the degenerate case was unreachable from
+    anywhere but the origin."""
+    monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
+    node = _toss_ready_node(time.perf_counter(),
+                            commanded_pos=(150.0, -150.0, 170.0))
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8b')
+    captured = {}
+    real = rcn.compute_release_state_tilted
+
+    def _spy(catch_pose, flight, *, throw_site_xy_mm):
+        rs = real(catch_pose, flight, throw_site_xy_mm=throw_site_xy_mm)
+        captured['rs'] = rs
+        return rs
+    monkeypatch.setattr(rcn, 'compute_release_state_tilted', _spy)
+    gh = _TossGoalHandle(x=150.0, y=-150.0, z=170.0, throw_height=0.8, delay=5.0)
+    node._execute_toss(gh)
+    rs = captured['rs']
+    assert rs.displacement_mm == 0.0
+    assert (rs.tilt_rx, rs.tilt_ry) == (0.0, 0.0)
+    ref = compute_release_state((150.0, -150.0, 170.0), rs.flight_time_s)
+    assert np.array_equal(rs.launch_vel_mms, ref.launch_vel_mms)
+    assert np.array_equal(rs.release_pos_global_mm, ref.release_pos_global_mm)
 
 
 def test_8b_tilt_clamp_maps_to_rejected_tilt_clamp(monkeypatch):

@@ -53,7 +53,14 @@ CATCH_PT = (0.0, 0.0, 809.08)
 def _obs(now, **kw):
     base = dict(
         control_mode=RELOAD_CONTROL_MODE, bb_connected=True, bb_state=BB_STATE_IDLE,
-        ball_in_hand=True, mocap_fresh=True, streaming=True, ball_caught=False,
+        ball_in_hand=True, mocap_fresh=True, streaming=True,
+        # Since 2026-07-29 the reload also requires the platform to still be
+        # CENTERED (a caught toss now stays at its catch pose, so "parked off
+        # centre" is a routine state and the reload's fixed-centre catch cannot
+        # reach from there). The healthy-graph default is True; the gate itself
+        # is exercised by test_not_centered_* below.
+        platform_centered=True,
+        ball_caught=False,
         catch_error_mm=float('nan'))
     base.update(kw)
     return ReloadObservations(now=now, **base)
@@ -100,6 +107,7 @@ def _to_throw_pending(seq):
     ('bb_state', BB_STATE_THROWING, 'REJECTED_BB_BUSY'),
     ('mocap_fresh', False, 'REJECTED_MOCAP_STALE'),
     ('streaming', False, 'REJECTED_NOT_STREAMING'),
+    ('platform_centered', False, 'REJECTED_NOT_CENTERED'),
 ])
 def test_precondition_rejects(field, val, code):
     seq = _fresh()
@@ -110,6 +118,47 @@ def test_precondition_rejects(field, val, code):
     # A precondition reject happens BEFORE the prime — nothing armed, no cleanup.
     assert d.action == ACTION_NONE
     assert seq.prepared is False
+
+
+def test_not_centered_is_refused_before_bb_is_asked_to_throw():
+    """The stay-at-pose seam, closed BEFORE anything is committed.
+
+    A caught toss now leaves the platform at its catch pose, so a reload can be
+    commanded with the platform parked off centre. The reload catch is
+    hard-fixed at the workspace centre and the reload never pre-positions, so
+    arming from there would centre the reach envelope off (0, 0) and reject the
+    incoming BB ball WORKSPACE **mid-flight** — ball airborne, nothing
+    recoverable. This gate must therefore fire in CHECKING, before
+    ACTION_PRIME_HAND and long before the throw: nothing moves and BB is never
+    asked."""
+    seq = _fresh()
+    d = seq.step(0.0, _obs(0.0, platform_centered=False))
+    assert d.done and d.result.outcome == 'REJECTED_NOT_CENTERED'
+    assert d.action == ACTION_NONE
+    assert seq.prepared is False
+
+
+@pytest.mark.parametrize('also_broken,code', [
+    # The two graph-staleness gates win: a dead trajectory link makes the
+    # commanded pose UNKNOWABLE rather than off-centre, and a misleading code
+    # would send the operator to `go_home` when the real fault is upstream.
+    (dict(mocap_fresh=False), 'REJECTED_MOCAP_STALE'),
+    (dict(streaming=False), 'REJECTED_NOT_STREAMING'),
+    (dict(bb_connected=False), 'REJECTED_BB_DISCONNECTED'),
+])
+def test_not_centered_yields_to_the_staleness_gates(also_broken, code):
+    """Gate order pinned: NOT_CENTERED sits after every observation whose
+    failure would make it unknowable."""
+    seq = _fresh()
+    d = seq.step(0.0, _obs(0.0, platform_centered=False, **also_broken))
+    assert d.done and d.result.outcome == code
+
+
+def test_centered_default_is_fail_closed():
+    """ReloadObservations.platform_centered defaults False — an FSM that was
+    never told is not entitled to assume. Same doctrine as the toss's
+    platform_levelled."""
+    assert ReloadObservations(now=0.0).platform_centered is False
 
 
 def test_active_reload_mode_is_trajectory():

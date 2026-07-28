@@ -296,13 +296,32 @@ def test_tilted_announcement_landing_is_B():
     assert f['predicted_tof_sec'] == pytest.approx(0.8, abs=1e-12)
 
 
-def test_tilted_default_throw_site_is_config_centre():
-    """throw_site_xy_mm=None resolves hw.JB_OP_TOSS_THROW_SITE_MM — shipped
-    [0, 0], the workspace centre (the Rung-2a evidence base's throw column,
-    making displacement = |B_xy|)."""
-    assert list(hw.JB_OP_TOSS_THROW_SITE_MM) == [0.0, 0.0]
-    rs = tr.compute_release_state_tilted((50.0, 0.0, 170.0), 0.8)
+def test_tilted_throw_site_has_no_default_at_all():
+    """``throw_site_xy_mm`` is REQUIRED — omitting it is a TypeError, and an
+    explicit None is a loud ValueError. There is no default A.
+
+    Re-pointed 2026-07-29 from test_tilted_default_throw_site_is_config_centre,
+    which pinned the opposite: ``None`` → ``hw.JB_OP_TOSS_THROW_SITE_MM``
+    ([0, 0]). That key is RETIRED and the assertion is INVERTED on purpose,
+    because the old default was not a convenience — the ball leaves the hand
+    where the platform is, so a defaulted A is a phantom site the aim is solved
+    for, AND the toss's POSITIONING then translates the platform to it. A
+    chained session's second toss would have flown back to the origin before
+    throwing. Refusing is the only safe behaviour, so this is the enforcement
+    point's test."""
+    assert not hasattr(hw, 'JB_OP_TOSS_THROW_SITE_MM')
+    with pytest.raises(TypeError):
+        tr.compute_release_state_tilted((50.0, 0.0, 170.0), 0.8)
+    with pytest.raises(ValueError, match='throw_site_xy_mm is required'):
+        tr.compute_release_state_tilted((50.0, 0.0, 170.0), 0.8,
+                                        throw_site_xy_mm=None)
+    # …and an explicit site is measured from, not ignored.
+    rs = tr.compute_release_state_tilted((50.0, 0.0, 170.0), 0.8,
+                                         throw_site_xy_mm=(0.0, 0.0))
     assert rs.displacement_mm == pytest.approx(50.0, abs=1e-12)
+    rs = tr.compute_release_state_tilted((50.0, 0.0, 170.0), 0.8,
+                                         throw_site_xy_mm=(-100.0, 0.0))
+    assert rs.displacement_mm == pytest.approx(150.0, abs=1e-12)
 
 
 def test_tilted_error_paths():

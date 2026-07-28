@@ -86,7 +86,7 @@ Ordered after the 2026-07-27 validation sitting. Same one-workflow-per-item shap
 | **B** | `caught-gate` — **CAUGHT plausibility gate: un-break the possession verdict** (z-corrupt, xy clean) | **DONE 2026-07-28** — see Outcome below |
 | C | `seat-experiment` prep — the zero-seat A/B the sitting could not separate | pending |
 | **D** | hand post-release deceleration (operator decision (b), 2026-07-28) | **DONE in source, NOT FLASHED 2026-07-29** — see Outcome below |
-| E | displaced-throw (8b) programme — throw-site-from-current-pose rework, envelope, cap raise | pending |
+| **E** | displaced-throw (8b) programme — throw-site-from-current-pose rework, envelope, cap raise | **DONE in source, NOT FLOWN 2026-07-29** — see Outcome below |
 | F | `toss_continuous` — `stop_on_miss` defaults TRUE (operator decision (c)) | pending |
 
 #### Item B — Outcome
@@ -184,6 +184,85 @@ two-sided `--self-check`; (4) the hand ODrive declares
 `torque_soft_min = -0.0551 N·m` = **exactly -10.00 A**, which if live would
 truncate the feedforward and make the phase a no-op — unresolved, so it became
 pre-flight **H7.0c**, read off the live drive *before* the flash.
+
+
+
+#### Item E — Outcome
+
+**Landed in source 2026-07-29, nothing has flown.** Plan:
+`plans/active/single-ball-toss.md` **Phase E**. Contract:
+`ros_ws/docs/catch_reach_envelope.md` (**C-REACH-1**). Probe:
+`tools/probes/displaced_reach_frontier.py`. Bench:
+`tests/hardware/session_anomaly_fixes.md` § SECTION DISP (rungs DISP-0 … DISP-7).
+
+Four interlocking sub-changes for operator decision (d): the displaced throw's site
+**A** became the platform's live commanded pose (new `trajectory/commanded_position`
+topic; `toss_throw_site_mm` retired; `compute_release_state_tilted`'s site argument
+made REQUIRED), the catch reach envelope was **re-scoped rather than widened**, the
+displacement cap became a config key at **150 mm**, and a CAUGHT toss now **STAYS**
+at its catch pose so sessions chain A → B → C.
+
+**The failure C-REACH-1 closes is a timing failure, not a limit failure.** The
+envelope exists to bound how far a *drifting landing estimate* can drag the
+platform; centring it on the pose held at arming silently also capped *requested*
+reach. Because the displaced toss publishes its A→B reach at `t_release`, that cap
+could only ever fire with the ball already airborne — measured 4/4 on hardware (bag
+`2026-07-27_16-07-30`, 113-141 mm goals, `catch target 146/131/117/117 mm from the
+armed hold pose exceeds the 80 mm reach envelope`). The centre moved to the declared
+catch point B; the 80 mm radius did **not** move, so unrequested drift is bounded
+exactly as tightly as before, about the place the catch is supposed to happen.
+
+**The cap was re-based on measurement, not on the removed inheritance.** The old
+70 mm was *the 80 mm envelope ∩ the Rung-2a clean box*, and C-REACH-1 deleted the
+first half. `tools/probes/displaced_reach_frontier.py` measures the production
+planner's real 8-direction A→B frontier: **125 mm at T = 0.55 s, 175 mm at 0.60,
+~225 mm from 0.70 s up** — so the closed-form quintic bound the FSM gates on is
+CONSERVATIVE below T ≈ 0.75 s and OPTIMISTIC above it, and a 150 mm cap both matches
+the operator's ordered range and keeps that optimism harmless.
+
+**The seam stay-at-pose opens is closed loudly, not documented away.** The reload's
+catch is hard-fixed at the workspace centre with no pre-positioning, so a reload
+commanded from an off-centre park would arm an envelope centred off (0,0) and reject
+the incoming BB ball mid-flight. `reload_sequencer` refuses `REJECTED_NOT_CENTERED`
+in CHECKING, before `ACTION_PRIME_HAND` — nothing moves and BB is never asked.
+Refusal beat an auto-return because an auto-`go_home` injects new commanded motion
+into the shipping reload choreography.
+
+**Deployment: `colcon build --packages-select jugglebot` + relaunch.** No
+`jugglebot_interfaces` rebuild (both new topics are `geometry_msgs/Point` on
+purpose), no firmware flash, and the config regeneration is committed.
+
+**A live hazard found at finalize and fixed.** `REJECTED_NOT_CENTERED`'s tolerance
+was the bare 80 mm envelope radius, leaving **zero** budget for the reload pre-tilt's
+own centroid swing. `compute_catch_orientation` CLAMPS at `MAX_TILT_DEG = 12°` for
+every real BB arrival (18-40° off vertical), so that shift **saturates** at
+`64.78·sin(12°) = 13.47 mm` on every reload — measured invariant across
+18/25/30/40° arrivals. Parks in `(66.5, 80] mm` were therefore ADMITTED by the gate
+and then rejected `WORKSPACE` by the envelope, *after* `ACTION_SEND_THROW` with BB's
+countdown started and the ball unsavable: the DISP-7.1 E-STOP condition reached
+through a gate that said yes. The ladder walks into it (DISP-3 catches at 70 mm,
+STAY parks there, and every rung opens with a Reload). Tolerance is now
+`envelope − hand_catch_offset·sin(MAX_TILT_DEG)` = **66.53 mm**.
+
+**⚠ Ships with a known limitation — two review lenses converged on it.** Chaining
+is refused **at** the cap (works below ~146 mm). The catch parks the platform
+CENTROID outside B so the CUP lands ON B; measured, the cup ends at exactly
+`(−150.00, 0)` and the centroid at `(−153.10, 0)`, and `trajectory/commanded_position`
+publishes the CENTROID — so the next goal reads `A = −153.10` and both the ±150
+planning box and the 150 mm cap refuse. Root cause is a **frame** error, not an aim
+error: the wire supplies a centroid where `compute_release_state_tilted` documents a
+CUP xy. Not fixed because all three candidate fixes need an operator decision — see
+`plans/active/single-ball-toss.md` § Phase E Outcome. Loud, pre-throw, moves
+nothing; the remedy is one `go_home`, and the runbook carries it so the operator
+cannot be mis-routed.
+
+**Two residuals, both instrumented:** under STAY the platform holds the catch's
+receive tilt (~3.6° at the cap) indefinitely instead of returning to level — the
+catch already holds that tilt through its settle with a ball in the cup, but never
+without bound (runbook REPORT row **DISP-5.6**, escape hatch is one config flip);
+and the sim gate's 150 mm ring is **advisory, not binding**, because the catch rate
+at the cap is dominated by a release-scatter magnitude that is still the Phase-5 T0
+placeholder. The hardware ladder is the evidence, and it has not been run.
 
 
 ## Workflow shape — one Workflow invocation per phase

@@ -17,7 +17,11 @@ hardware session — see the ORDERING PRINCIPLE below):
 
 1. **CHECKING** — loud precondition rejects: the robot in the active reload control
    mode (``TRAJECTORY``), ``bb/heartbeat`` connected ∧ IDLE, mocap fresh, trajectory
-   streaming. The moment preconditions pass, emit ``ACTION_PRIME_HAND``: the hand
+   streaming, and the platform still CENTERED (``REJECTED_NOT_CENTERED`` — the
+   reload catch is hard-fixed at the workspace centre and the reload never
+   pre-positions, so a platform parked off centre would reject the incoming ball
+   mid-flight; see the gate's own comment). The moment preconditions pass,
+   emit ``ACTION_PRIME_HAND``: the hand
    starts its ~0.75 s smooth-move to the top of its stroke IMMEDIATELY on command —
    never waiting for a tracked ball (the hardware session showed a prime racing the
    0.878 s flight loses by design). If the hand is empty, call ``bb/reload`` and wait
@@ -134,6 +138,13 @@ class ReloadObservations:
     ball_in_hand: bool = False
     mocap_fresh: bool = False
     streaming: bool = False
+    platform_centered: bool = False   # the platform's LIVE commanded xy is within
+                                      # the catch reach envelope of the reload catch
+                                      # point (the workspace centre), read from a
+                                      # FRESH trajectory/commanded_position.
+                                      # Default False = fail-closed: an FSM that was
+                                      # never told is not entitled to assume.
+                                      # See REJECTED_NOT_CENTERED in _step_checking.
     ball_caught: bool = False         # tracker CAUGHT confirmation for the thrown ball
     catch_error_mm: float = float('nan')
 
@@ -324,6 +335,47 @@ class ReloadSequencer:
             return self._reject('MOCAP_STALE')
         if not obs.streaming:
             return self._reject('NOT_STREAMING')
+        if not obs.platform_centered:
+            # GEOMETRY, not process — and the seam a caught toss now opens.
+            #
+            # The reload catch is HARD-FIXED at the workspace centre and the
+            # reload never pre-positions: it arms trajectory_node's catch latch
+            # wherever the platform happens to sit, which (contract C-REACH-1,
+            # ros_ws/docs/catch_reach_envelope.md) centres the reach envelope
+            # THERE. Since 2026-07-29 a CAUGHT toss STAYS at its catch pose
+            # (jugglebot_operational.toss_stay_at_pose_on_caught) instead of
+            # going home, so "parked 150 mm off centre" is now a routine state —
+            # and a reload commanded from it would arm an envelope centred off
+            # (0, 0) and reject the incoming BB ball WORKSPACE **mid-flight,
+            # with the ball already airborne and unsavable**. That silent
+            # mid-flight rejection of a real BB throw is the failure mode; this
+            # gate makes it impossible by refusing BEFORE BB is asked to throw.
+            #
+            # Refuse rather than auto-return: an auto-go_home would inject new
+            # commanded platform motion into the shipping reload choreography,
+            # which is a bigger change than a loud refusal and one no hardware
+            # session has ever run. The operator's remedy is one `go_home`.
+            #
+            # Placed AFTER mocap/streaming (a dead trajectory link makes this
+            # UNKNOWABLE, not False, and a misleading code sends the operator to
+            # the wrong subsystem) and BEFORE ACTION_PRIME_HAND, so the refusal
+            # leaves the hand where it was — nothing moved, nothing armed.
+            #
+            # KNOWN GAP in that first half, stated rather than silently assumed:
+            # the ordering only routes correctly if `streaming` actually goes
+            # False on a dead link, and the RELOAD's `streaming` observation is
+            # a STICKY last-value with no freshness test (reload_coordinator_
+            # node._build_observations), while `platform_centered` IS freshness-
+            # gated and fails closed. So a trajectory_node that dies after
+            # publishing streaming=True mints NOT_CENTERED (geometry) for what
+            # is really a dead-link fault, and the operator is routed at the
+            # platform instead of the subsystem. Left as-is deliberately:
+            # freshness-gating `streaming` changes when the SHIPPING reload
+            # refuses, on a path this phase promised to leave byte-identical,
+            # and it wants its own evidence. The runbook's DISP-7 row carries
+            # the disambiguation (check /trajectory/status is live before
+            # believing a NOT_CENTERED).
+            return self._reject('NOT_CENTERED')
 
         # Preconditions pass → prime the hand IMMEDIATELY (one-shot), before the
         # (up to 10 s) BB reload wait and the aiming call. The ~0.75 s smooth-move

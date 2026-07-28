@@ -45,9 +45,24 @@ contact-carried per its contract. See the Phase-2 logbook Discussion.
     4.9-32.4 mm, re-hosted on the production stack) need
     ``core_clean >= ceil(0.9 n)``, reported as ``passed_8b_ring``. In a
     tier-8b run DISPLACED points leave the T = 0.80 band (superseded by this
-    one), so the 70 mm ring (clean-box edge) and the T = 0.95 spot checks
-    stay ADVISORY; tier-8a runs are byte-identical (the band is empty there
-    and the old membership logic is untouched).
+    one), so the ADVISORY rings ({70, 100, cap} since Phase E) and the
+    T = 0.95 spot checks stay ADVISORY; tier-8a runs are byte-identical (the
+    band is empty there and the old membership logic is untouched).
+
+    **Why the cap ring is advisory and not binding (Phase E, 2026-07-29).** The
+    shipped displacement cap moved 70 → 150 mm, and the natural instinct is to
+    make the 150 mm ring gate. It does not, for the same reason the contact
+    column has never gated: the ball-lands-in-cup verdict at 150 mm is dominated
+    by release scatter through a MuJoCo contact/capture model this gate's own
+    docstring calls the low-fidelity element, and the release-noise magnitude is
+    still the Phase-5 T0 PLACEHOLDER. Gating the shipped cap on a placeholder
+    would make the cap an artefact of a number nobody has measured. What the
+    advisory rings DO gate is the part sim is authoritative about: they run the
+    full production pipeline, so their trials feed the invariant counters (zero
+    feasibility violations, every emitted knot pump-accepted) that ``passed``
+    conjoins. The catch RATE at the cap is the hardware ladder's job
+    (``tests/hardware/session_anomaly_fixes.md`` § SECTION DISP), and the
+    PLANNABILITY of the reach is `tools/probes/displaced_reach_frontier.py`'s.
 ``passed`` requires every binding band, zero feasibility violations in accepted runs,
 and zero pump rejects with every emitted frame ACCEPTED (the accepted==emitted
 counter is the non-vacuous form of the invariant). Explicit-points/debug runs
@@ -71,10 +86,24 @@ announcement pre-tilt would complete the A→B translate BEFORE release for
 every toss flight, firing the throw from B with the receive tilt), with the
 pump's own per-step gate checking the hold→reach crossing (no waived first
 frame). The catch at B runs the unchanged 8a path. The non-gating detach diag
-column additionally runs the ±{70, 100} mm directional-asymmetry MAP
+column additionally runs the ±{70, 100, 150} mm directional-asymmetry MAP
 (``contact_diagnostic.asymmetry_map``): the Rung-2a glue/overshoot physics
 lives in contact detach, which the gating column's imposed-velocity release
 cannot reproduce — a kinematic-column map would be symmetric and meaningless.
+
+**The throw site A is SWEPT here and read LIVE in production.** Since
+single-ball-toss Phase E the coordinator sources A from the platform's live
+commanded pose (``trajectory/commanded_position``), never from config; this gate
+keeps ``--throw-site`` because a sweep has to *choose* A. The gate is therefore
+faithful to the geometry and deliberately silent about the plumbing — the live
+read has its own unit coverage (``tests/ros/test_toss_coordinator.py::
+test_8b_throw_site_is_the_live_commanded_pose``).
+
+**The 2026-07-25 asymmetry map is STALE VINTAGE — do not inherit it.** It was
+measured on the pre-2026-07-26 machine (moving-rim catch at seat rate 0.07, the
+pre-C-CATCH-1 arrival), so anything read off it — notably the +y-hemisphere
+weakness at 70-100 mm — describes a plant that no longer exists. Re-run the map
+rather than citing it.
 
 **Documented fidelity deltas** (see the Phase-2 logbook):
   * release-velocity noise (``release_vel_noise_frac`` = 1 %) is a PLACEHOLDER
@@ -227,28 +256,51 @@ _RING_8DIR = ((1.0, 0.0), (_R2, _R2), (0.0, 1.0), (-_R2, _R2),
 # Tier-8b binding displaced ring (Rung-2a reliable box: the column + the 50 mm
 # ring, separated 10/10, landing error 4.9-32.4 mm — logbook 2026-06-30).
 _TOSS_8B_RING_MM = 50.0
-_TOSS_8B_ADVISORY_RING_MM = 70.0            # clean-box edge (advisory only)
+# Advisory displaced rings, extended 2026-07-29 (single-ball-toss Phase E) from
+# {70} to {70, 100, cap}: 70 = the bb Rung-2a clean-box edge and the OLD shipped
+# displacement cap (hardware-validated 11/11 at the 2026-07-27 T4 rungs), 100 and
+# 150 = the operator-ordered working range. The cap ring is read from the config
+# key so the gate and the shipped cap can never describe different machines.
+_TOSS_8B_CAP_RING_MM = float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM)
+_TOSS_8B_ADVISORY_RINGS_MM = (70.0, 100.0, _TOSS_8B_CAP_RING_MM)
 _TOSS_8B_FLIGHT_S = 0.80                    # the hardware band (§ 2.6 rules out <=0.61)
-# ±{70, 100} mm directional-asymmetry MAP radii + flights (§ 3.2; non-gating).
-_ASYMMETRY_RADII_MM = (70.0, 100.0)
+# Directional-asymmetry MAP radii + flights (§ 3.2; non-gating). The 150 mm radius
+# is Phase E's; 0.60 s is kept as the Rung-2a characterisation flight even though
+# the production FSM refuses 150 mm there (the closed-form reach bound is 108 mm
+# at T = 0.60), because the map is a PHYSICS characterisation and the refusal is
+# a separate, unit-tested gate — pinned by
+# tests/ros/test_toss_sequencer.py::test_displacement_rejected, whose
+# ((150, 0, 170), (0, 0), 0.60) leg asserts exactly that REJECTED_DISPLACEMENT.
+# So the 150 mm / 0.60 s cells describe a state the FSM will not command; they
+# are kept deliberately, as characterisation, not as evidence for a flight band.
+_ASYMMETRY_RADII_MM = (70.0, 100.0, 150.0)
 _ASYMMETRY_FLIGHTS_S = (0.60, 0.80)         # 0.60 = Rung-2a characterisation; 0.80 = hw band
 
 
-def default_grid_8b(throw_site_xy=(0.0, 0.0)):
+def default_grid_8b(throw_site_xy=(0.0, 0.0), advisory_rings_mm=None):
     """The Tier-8b displaced grid as ``[(x, y, z, T), ...]`` — B positions
     relative to the throw site A (``throw_site_xy``): the centre (A) + the
-    BINDING 50 mm ring (8 directions) + the ADVISORY 70 mm ring + two advisory
+    BINDING 50 mm ring (8 directions) + the ADVISORY rings
+    (``advisory_rings_mm``, default {70, 100, cap}) + two advisory
     T = 0.95 column-displaced spot checks, all at z = 170 / T = 0.80 (the
-    hardware band; short flights are infeasible at these displacements, § 2.6)."""
+    hardware band; short flights are infeasible at these displacements, § 2.6).
+
+    Every ring runs the FULL gating pipeline (production ``build_catch`` +
+    ``KnotEmitter`` + a real ``SetpointPump`` + the feasibility gate), so the
+    advisory rings still contribute to the invariant counters — "does the
+    production stack accept a 150 mm displaced toss end to end" is answered even
+    though its catch RATE does not gate."""
     ax, ay = float(throw_site_xy[0]), float(throw_site_xy[1])
+    rings = (_TOSS_8B_ADVISORY_RINGS_MM if advisory_rings_mm is None
+             else tuple(float(r) for r in advisory_rings_mm))
     z = Z_ACTIVE_MM
     pts = [(ax, ay, z, _TOSS_8B_FLIGHT_S)]                      # centre = A (displacement 0)
     for ux, uy in _RING_8DIR:                                    # binding 50 mm ring
         pts.append((ax + _TOSS_8B_RING_MM * ux, ay + _TOSS_8B_RING_MM * uy,
                     z, _TOSS_8B_FLIGHT_S))
-    for ux, uy in _RING_8DIR:                                    # advisory 70 mm ring
-        pts.append((ax + _TOSS_8B_ADVISORY_RING_MM * ux,
-                    ay + _TOSS_8B_ADVISORY_RING_MM * uy, z, _TOSS_8B_FLIGHT_S))
+    for radius in rings:                                         # advisory rings
+        for ux, uy in _RING_8DIR:
+            pts.append((ax + radius * ux, ay + radius * uy, z, _TOSS_8B_FLIGHT_S))
     pts.append((ax + _TOSS_8B_RING_MM, ay, z, 0.95))            # advisory T=0.95 spots
     pts.append((ax, ay + _TOSS_8B_RING_MM, z, 0.95))
     return pts
@@ -287,6 +339,10 @@ class TossGateConfig:
     grid: str = 'factored'            # 'factored' | 'full'
     tier: str = '8a'                  # '8a' co-located | '8b' tilt-aimed displaced
     throw_site_xy: tuple = (0.0, 0.0)  # Tier-8b throw site A (STOW xy); B = the grid point
+    advisory_rings_mm: tuple | None = None  # Tier-8b advisory ring radii (None ⇒
+                                      # _TOSS_8B_ADVISORY_RINGS_MM = {70, 100, cap})
+    asymmetry_radii_mm: tuple | None = None  # asymmetry-map radii (None ⇒
+                                      # _ASYMMETRY_RADII_MM = {70, 100, 150})
     points: list | None = None        # explicit [(x, y, z, T), ...] override
     prep_gap_s: float = 0.8           # catch-plan install → scheduled release
     settle_hold_s: float = float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S)   # 0.5
@@ -869,7 +925,8 @@ class TossGate:
         if cfg.points is not None:
             points = list(cfg.points)
         elif cfg.tier == '8b':
-            points = default_grid_8b(cfg.throw_site_xy)
+            points = default_grid_8b(cfg.throw_site_xy,
+                                     cfg.advisory_rings_mm)
         else:
             points = default_grid(cfg.grid)
         results = []
@@ -922,8 +979,8 @@ class TossGate:
         return out
 
     def _run_asymmetry_map(self, dirs=None, radii=None, flights=None) -> dict:
-        """The ±{70, 100} mm directional-asymmetry MAP (Tier-8b, § 3.2) — 8
-        directions × radii {70, 100} mm × flights {0.60, 0.80} on the
+        """The ±{70, 100, 150} mm directional-asymmetry MAP (Tier-8b, § 3.2) — 8
+        directions × radii × flights {0.60, 0.80} on the
         contact_carry DETACH plant, ``diag_trials`` per cell. Per-cell metric:
         ``seated_n`` (post-catch seat: caught AND not a >SEPARATION_MS bounce-OUT)
         + landing error (mm) vs the commanded B. NOTE ``seated_n`` is honest to
@@ -941,7 +998,9 @@ class TossGate:
         if self._diag_plant is None:
             self._diag_plant = MuJoCoPlant(geom=self.geom, contact_carry=True)
         dirs = _RING_8DIR if dirs is None else dirs
-        radii = _ASYMMETRY_RADII_MM if radii is None else radii
+        if radii is None:
+            radii = (cfg.asymmetry_radii_mm if cfg.asymmetry_radii_mm is not None
+                     else _ASYMMETRY_RADII_MM)
         flights = _ASYMMETRY_FLIGHTS_S if flights is None else flights
         ax, ay = float(cfg.throw_site_xy[0]), float(cfg.throw_site_xy[1])
         cells = []
@@ -1408,7 +1467,15 @@ def main(argv=None) -> int:
                         "plus the non-gating ±{70,100} mm asymmetry map.")
     p.add_argument('--throw-site', default=None,
                    help="Tier-8b throw site A as 'X,Y' STOW mm (default 0,0 = "
-                        "the workspace centre); B is the swept grid point.")
+                        "the workspace centre); B is the swept grid point. NOTE "
+                        "production reads A from the platform's live commanded "
+                        "pose (single-ball-toss Phase E); here it is swept.")
+    p.add_argument('--advisory-rings', default=None,
+                   help="Tier-8b ADVISORY ring radii, comma-separated mm "
+                        "(default 70,100,<toss_max_displacement_mm>).")
+    p.add_argument('--asymmetry-radii', default=None,
+                   help="directional-asymmetry MAP radii, comma-separated mm "
+                        "(default 70,100,150).")
     p.add_argument('--pose', default=None,
                    help="X,Y,Z single-point debug run (with --flight).")
     p.add_argument('--flight', type=float, default=None,
@@ -1439,9 +1506,14 @@ def main(argv=None) -> int:
     throw_site = (0.0, 0.0)
     if args.throw_site is not None:
         throw_site = tuple(float(v) for v in args.throw_site.split(','))
+    rings = (None if args.advisory_rings is None
+             else tuple(float(v) for v in args.advisory_rings.split(',')))
+    asym = (None if args.asymmetry_radii is None
+            else tuple(float(v) for v in args.asymmetry_radii.split(',')))
     cfg = TossGateConfig(
         trials_per_point=args.trials_per_point, seed=args.seed,
         grid=args.grid, tier=args.tier, throw_site_xy=throw_site, points=points,
+        advisory_rings_mm=rings, asymmetry_radii_mm=asym,
         release_vel_noise_frac=args.release_noise_frac,
         arm_time_err_s=args.arm_time_err_s,
         event_vel_err_frac=args.event_vel_err_frac,
