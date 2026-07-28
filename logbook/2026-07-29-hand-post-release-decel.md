@@ -28,7 +28,7 @@ files_changed:
   - plans/active/hand-command-continuity.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
 commits:
-  - PENDING-BACKFILL
+  - f920087
 subsystem:
   - motion
   - config
