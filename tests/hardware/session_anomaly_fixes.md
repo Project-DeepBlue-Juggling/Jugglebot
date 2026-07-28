@@ -301,6 +301,25 @@ Score the reload and toss halves of CAP-WORK with **separate probe invocations**
 > position-loop coast. **No further tosses above 0.78 m** until the true stroke limit is
 > pinned (three sources disagree: 11.124 / 11.224 / 11.4 rev) and `FLIGHT_TIME_MAX_S`
 > is reconciled with it.
+>
+> > **⚠️ AMENDED 2026-07-28 — IT TOUCHED. The `1.2 mm` is not headroom.** The operator
+> > reports, by ear and by feel at the bench, that those ~1.2 m tosses made **light
+> > physical contact with the hand's end-stop**. So "as pure position-loop coast"
+> > above is wrong: `1.2 mm` is the resolution limit of 100 Hz aliased telemetry that
+> > was watching a *contact*, not a clearance that was nearly consumed. **Do not read
+> > the remaining margin as proportional headroom for a lower toss.** If the contact
+> > coincided with the `11.0506 / 11.0621 rev` peaks then the physical stop sits
+> > *below* the declared `hand_motor_max_position_revs = 11.1` guard and below all
+> > three candidate anchors — i.e. the guard may not be protective. Stated as an
+> > inference: it is unknown *which* of the five throws was heard (peaks ranged
+> > `10.860–11.062`) and whether what was contacted is a compliant bumper or the hard
+> > limit. The **`0.78 m` ceiling above stands unchanged and now rests on a confirmed
+> > hit rather than an inferred near-miss.** The operator's chosen remedy is a more
+> > aggressive post-release hand deceleration, **not** a height cap — and that profile
+> > cannot be sized until the stop position is measured. Full chain in
+> > [`logbook/2026-07-28-anomaly-fixes-validation-sitting.md`](../../logbook/2026-07-28-anomaly-fixes-validation-sitting.md)
+> > § Discussion → *the hand's end-stop margin above 0.78 m* and *Operator testimony
+> > and decisions*.
 
 Read-only pre-flights first; nothing actuates the robot until stage 4.
 "Routes to" is where a failure goes — the plan and phase that owns it.
@@ -782,7 +801,7 @@ ros2 bag record -o "$(date +%Y-%m-%d_%H-%M-%S)" \
   /link_status /rosout /trajectory/status \
   /trajectory/diagnostics /trajectory/target_feedback \
   /catch/dynamic_target /gravity_offset /throw_announcements \
-  /hand_telemetry
+  /hand_telemetry /catch/pretilt_hold
 ```
 
 Note the bag directory name — the analysis commands take it as `--bag`.
@@ -800,6 +819,14 @@ Why each of the later additions is in the shared list rather than per-section:
 - `/hand_telemetry` — lets `tools/probes/hand_stroke_timeline.py --bag` work as a
   fallback. **It is not a substitute for the trace recorder** (below), which
   remains mandatory for every HAND check.
+- `/catch/pretilt_hold` (added 2026-07-28) — the Tier-8b pre-tilt suppression gate.
+  It is published **only** on Tier 8b, and 8b became the shipped default on
+  2026-07-28, so from now on every toss capture can carry it. § SECTION TIER row
+  `TIER-D` reads it directly; a gate left **raised** past a terminal is the failure
+  it exists to catch, and that is unrecoverable from a bag that lacked the topic.
+  1-2 messages per goal; the cost is nil. (`/rosout` carries the same transitions as
+  `catch/pretilt_hold raised` / `released` log lines, so an older bag is not
+  worthless — but it is a text fallback, not the topic.)
 
 **AND, in its own terminal, the trace recorder** — mandatory for every capture,
 because the dip lives in `hand_telemetry` at a resolution the bag path does not
@@ -3110,3 +3137,239 @@ timing rather than by inspection of a trace alone):
   valid.
 - Re-tuning the seat rate. That is the follow-on session ZSEAT-2's ABORT path
   opens, and it needs its own plan.
+
+---
+
+## SECTION TIER — Tier 8b is the shipped default
+
+> **Appended 2026-07-28.** This section is an **operator decision**, not a bug fix,
+> and it lands after § Section ZSEAT. `jugglebot_operational.toss_tier` is now
+> **`"8b"`** (was `"8a"`). Validates
+> `plans/active/catch-reach-degenerate-overshoot.md` **Phase 4** and
+> `plans/active/single-ball-toss.md` **Phase 4**; a failure routes to whichever of
+> the two the failing row names.
+>
+> It changes **no criterion in any section above**. Every row above nominates a
+> catch at `(0, 0, 170)`, i.e. `|B − A| = 0`, and at zero displacement the Tier-8b
+> release state reproduces Tier 8a **bitwise** (`toss_release.py`'s documented
+> degenerate identity). What those rows *do* newly exercise is the 8b **wrapper** —
+> `catch/pretilt_hold` is raised and a 0 mm deferred reach is published — and that
+> co-located path has **never run on hardware**. `TIER-D` below is the row that
+> scores it, and it is why this section runs **before** you score anything else that
+> throws.
+
+**What actually changes at the machine.** The tier does not just relabel a goal — it
+selects which of two shipped choreographies every toss goal runs:
+
+| | Tier 8a (was default) | Tier 8b (is default) |
+|---|---|---|
+| POSITIONING | platform goes **level** to the nominated catch `(x, y)` | platform goes **tilted** to the config throw site `A = (0, 0)` |
+| throw | vertical | **tilt-aimed** at the displaced catch `B` |
+| catch pre-tilt | the stock announcement pre-tilt runs | **suppressed** via `catch/pretilt_hold` |
+| A→B platform reach | n/a | **deferred to `t_release`** — it happens in flight |
+| CHECKING gates | tier, lead, flight band, event_vel, workspace | **plus** `\|B − A\| ≤ 70 mm`, the closed-form reach bound, and a tilt clamp — all **before** the workspace box |
+
+Direction of risk, stated honestly because it cuts both ways. The **gate** gets
+strictly tighter: a goal that used to be accepted at `\|x\| ≤ 150 mm` now refuses
+above `70 mm`, so on the CHECKING path the machine can only refuse *more*. The
+**choreography** does not: 8b tilts the platform, suppresses the stock pre-tilt and
+puts a platform reach into ball flight, none of which 8a does. Do not read "the gate
+is tighter" as "the motion is smaller".
+
+**Prerequisites — read the flash line separately, it is not the same step.**
+
+1. **Build + relaunch (mandatory, and this is the step that fails silently):**
+   ```bash
+   cd ~/Desktop/Jugglebot/ros_ws && colcon build --packages-select jugglebot \
+     && source install/setup.bash
+   ```
+   then **relaunch**. The launch runs the *installed* copy of
+   `jugglebot/hardware_config.py`; until this rebuild the robot executes **Tier 8a**
+   while the repo, the tests, the logbook and this runbook all say 8b. That
+   divergence is invisible from the Jetson except by reading the installed file,
+   which is exactly what `TIER-PREREQ` does.
+2. **No firmware flash for this change.** `grep -rn TOSS_TIER` over
+   `ros_ws/src/jugglebot/Teensy_code/`, `Teensy_code_canbridge/` and
+   `CatchingCone_code/` (excluding the generated `hardware_config.h` itself) returns
+   **0 hits** — no sketch reads the constant, even though three generated headers
+   changed. Any flash this sitting needs comes from § Section FW, not from here.
+3. **No config regeneration.** The six generated consumers are committed and were
+   verified to be the deterministic output of the committed YAML.
+4. **No `jugglebot_interfaces` rebuild.** No `.msg`/`.action` changed.
+
+Standing session rules still apply: **power-cycle the can-bridge Teensy immediately
+before the sitting** (the dispatch shift grew to `+57…78 ms` at ~94 min uptime), log
+`uptime_ms` with every timing number, and check `gravity_correction_loaded` after the
+relaunch — `level` only if it reads `false`.
+
+### Recording for this section
+
+Use the § Recording consolidated command **unchanged** — `/catch/pretilt_hold` was
+added to it on 2026-07-28 for `TIER-D`. Run the trace recorder in its own terminal as
+always. `TIER-PREREQ` needs neither.
+
+### ⚠️ THE ANALYSIS TRAP — do NOT use `--reject` on the refusal rows
+
+`toss_trace_recorder.py check --reject` runs **RJ-1**, and RJ-1 hard-requires
+**exactly one `REJECTED_NO_BALL`** line in the window (`check_rj1`:
+`if len(nb) == 1: PASS else: FAIL`). `TIER-A` and `TIER-B` are refused for
+*different* codes, so RJ-1 sees `len(nb) == 0` and prints
+
+> `FAIL: 0 REJECTED_NO_BALL lines (expected exactly 1) … an earlier-code reject means
+> that precondition wire is unhealthy; fix before the dry capture`
+
+**on a completely correct capture** — and with an empty hint, because
+`REJECTED_DISPLACEMENT` had no `REJECT_WIRE_MAP` entry until 2026-07-28. That is a
+criterion firing on correct behaviour, the defect class the 2026-07-27 run close-out
+existed to retire. RJ-1 is the *un-waived no-ball* check; it is not a general reject
+decoder. **Score `TIER-A`/`TIER-B` from the node's own outcome line**, which is the
+ground truth and needs no instrument:
+
+```bash
+grep -n "Toss REJECTED" ~/.ros/log/latest/reload_coordinator_node*.log | tail -5
+```
+
+`--reject` stays correct for its own row (§ Section HAND's un-waived no-ball
+capture); it is only wrong here.
+
+### CHECK TIER-PREREQ — the installed copy really is 8b (no robot, no bag, ~10 s)
+
+Validates: that the build took. **Run this first; if it fails, score nothing below.**
+
+```bash
+grep -n "JB_OP_TOSS_TIER" \
+  ~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/hardware_config.py
+```
+
+| quantity | PASS | ABORT (route back to this section) |
+|---|---|---|
+| the matched line | reads exactly `JB_OP_TOSS_TIER = '8b'` | reads `'8a'` — the `colcon build` did not take or the relaunch used a stale install. The robot is running Tier 8a while every artefact says 8b. Rebuild, relaunch, re-check. **Do not score any row below** |
+| the grep | exactly **1** matching line | 0 lines — wrong install path or the package is not installed |
+
+### CHECK TIER-A — a past-cap goal is refused, with no motion (**FLAG case**)
+
+Validates: `catch-reach-degenerate-overshoot` Phase 4 / `single-ball-toss` Phase 4 —
+that the 8b displacement cap is live and answers **before** the workspace box.
+Refused in CHECKING, so **nothing actuates**. `200 mm` is `2.9×` the `70 mm` cap.
+
+```bash
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 200.0, y: 0.0, z: 170.0}, throw_height_m: 0.8}" --feedback
+```
+
+| quantity | PASS | ABORT |
+|---|---|---|
+| node outcome line | `Toss REJECTED_DISPLACEMENT` | `REJECTED_WORKSPACE` — the build is stale (that is the **8a** answer to this goal), or the gate order moved. Re-run `TIER-PREREQ` |
+| goal terminal status | `ABORTED` | anything else |
+| hand `pos_cmd` span over the whole goal, from the trace jsonl | **`0.0000 rev`** | any hand motion — a refused goal dispatched a stroke |
+| commanded platform pose span (FK of `/leg_setpoint_echo`) over the goal | **`< 0.02°` and `< 0.2 mm`** | any platform motion — a refused goal reached POSITIONING |
+
+### CHECK TIER-B — the workspace branch is still reachable (**FLAG case**)
+
+Validates: the same two phases — that making the cap tighter did not make the
+workspace gate **unreachable**. `x = 60 mm` is a *live* displacement: inside the
+`70 mm` cap and inside the `256 mm` reach bound at `T = 0.8 s`, so the 8b gates
+genuinely run **and pass** before `z` answers. `\|z − 170\| = 130 mm` against the
+`±50 mm` band. Refused in CHECKING, so **nothing actuates**.
+
+```bash
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 60.0, y: 0.0, z: 300.0}, throw_height_m: 0.8}" --feedback
+```
+
+| quantity | PASS | ABORT |
+|---|---|---|
+| node outcome line | `Toss REJECTED_WORKSPACE` | `REJECTED_DISPLACEMENT` — the `70 mm` cap has moved **below 60 mm** and is now swallowing every real displaced goal, leaving the workspace branch unreachable. Routes to `single-ball-toss` Phase 4 |
+| hand `pos_cmd` span / platform pose span | **`0.0000 rev`** / **`< 0.02°`, `< 0.2 mm`** | any motion |
+
+> Why the pair matters. `TIER-A` alone would pass even if the cap had collapsed to
+> zero and started refusing *every* displaced goal; `TIER-B` is what detects that,
+> because its 60 mm displacement must be **accepted** by the cap before `z` rejects.
+> One row proves the gate fires, the other proves it does not fire too much.
+
+### CHECK TIER-C — an in-band goal is NOT refused (**ACCEPT case, no motion**)
+
+Validates: that the gates added by 8b do not refuse a goal 8a would have taken.
+Send the ordinary centre goal **with the platform not yet armed into the streaming
+hold** (i.e. before stage 4's arm), so it refuses on a *precondition* rather than on
+an envelope gate. This is a **read of the reject code, not of the motion.**
+
+```bash
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.8}" --feedback
+```
+
+| quantity | PASS | ABORT |
+|---|---|---|
+| node outcome line | any of `REJECTED_WRONG_MODE`, `REJECTED_NOT_LEVELLED`, `REJECTED_NO_BALL`, `REJECTED_HAND_*`, `REJECTED_MOCAP_STALE` — i.e. a **precondition** code. The envelope gates passed, which is the whole point | `REJECTED_TIER` — the config names a tier the FSM does not implement (re-run `TIER-PREREQ`). Or `REJECTED_DISPLACEMENT` — displacement is exactly `0 mm` here, so that code is impossible unless the cap or the throw site is corrupt. Both route to `single-ball-toss` Phase 4 |
+
+> **This row is deliberately run un-armed.** Armed, the same goal is *accepted* and
+> throws — see `TIER-D`. Do not run it armed and expect a static row.
+
+### CHECK TIER-D — the co-located 8b throw (**THIS ONE ACTUATES — first ever on hardware**)
+
+Validates: `catch-reach-degenerate-overshoot` Phase 4 — the 8b wrapper at
+`\|B − A\| = 0`. **Every one of the 11 validated Tier-8b throws on 2026-07-27 was
+displaced; this path has no hardware coverage at all.** It is also the shape every
+row *above* this section sends, so run it **before** re-scoring any of them.
+
+Normal toss preconditions: ball seated and confirmed by eye, area clear, armed into
+the streaming hold, bag + trace recorder running. One attempt is enough to score the
+wrapper; take 3 if you want a rate.
+
+```bash
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+```
+
+| quantity | PASS | ABORT |
+|---|---|---|
+| `catch/pretilt_hold` transitions across the goal | exactly **one** `True` then exactly **one** `False`, the `False` **at or before** the terminal | still `True` after the terminal — the gate is stranded and the **next** catch runs with its pre-tilt suppressed. Stop the sitting; routes to `single-ball-toss` Phase 4 |
+| first `catch/dynamic_target` timestamp, relative to `t_release` | **`+0.000 s` to `+0.100 s`**, never negative (measured band 2026-07-27: `+0.013…+0.050 s` on 11/11) | **any value < 0** — the deferred reach fired *before* release. On a displaced throw that un-tilts the platform mid-launch and destroys the aim; here it is the same defect with the aim error masked by `\|B − A\| = 0` |
+| deferred reach travel, `catch/dynamic_target` first→last | **`≤ 2.0 mm`** (nominal 0 mm at `B == A`) | `> 2.0 mm` — a zero-displacement goal is commanding real platform travel in flight |
+| commanded pose span (FK of `/leg_setpoint_echo`) over `[release − 0.10 s, release]` — `levelling_tilt_bag_check.py --t0 <release−0.10> --t1 <release> --plateau-min-s 0.05 --plateau-tol 1.0`, read `span_deg` and the `commanded position span (x,y,z) mm` line | **`< 0.02°` and `< 0.2 mm`** (measured `0.0000° / 0.0000 mm` on 11/11 on 2026-07-27) | any commanded motion through release |
+| hand peak `pos_meas` | `< 10.5 rev` at 0.78 m | `≥ 10.5 rev` — see the end-stop amendment in § THE RUN SHEET's EXECUTED box. **No tosses above 0.78 m this sitting** |
+| caught | by eye; not a gate on one attempt | — |
+
+Score the pre-release **half** window only: a reach that starts *at* release
+necessarily puts motion into the second half of a symmetric `release ± 0.10 s`
+window, so the symmetric form is unsatisfiable by construction (recorded as an
+instrument defect on 2026-07-28).
+
+### CHECK TIER-E — the displaced throw still works (**ACTUATES; regression watch**)
+
+Validates: `single-ball-toss` Phase 4 — a straight repeat of the already-successful
+2026-07-27 T4 geometry, now on the default build rather than a hand-flipped one.
+Aim into `−x` (the Phase-4 asymmetry map flags the `+y`/NW hemisphere weak at 70 mm)
+at `T ≥ 0.80 s`.
+
+```bash
+ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+  "{catch_position: {x: -70.0, y: 0.0, z: 170.0}, throw_height_m: 0.78}" --feedback
+```
+
+| quantity | PASS | ABORT |
+|---|---|---|
+| goal accepted | not refused — `70 mm` is exactly **at** the cap and the cap is a strict `>`, so `70` is legal | `REJECTED_DISPLACEMENT` at exactly 70 mm — the cap became `>=`. Routes to `single-ball-toss` Phase 4 |
+| first `catch/dynamic_target` vs `t_release` | **`+0.000 s` to `+0.100 s`**, never negative | any value `< 0` |
+| deferred reach travel | **`50–75 mm`** (measured `51.5–72.2 mm` on 2026-07-27) | `< 50 mm` — the reach is not spanning A→B |
+| commanded pose span over `[release − 0.10 s, release]` | **`< 0.02°` and `< 0.2 mm`** | any commanded motion through release |
+| caught, over 3 attempts | **≥ 2/3** | `0/3` — routes to `single-ball-toss` Phase 4's asymmetry work, **not** to this section |
+
+### Not in this section
+
+- **Whether the 8b default is the right choice.** It is an operator decision taken on
+  the 2026-07-27 T4 evidence and recorded in
+  `logbook/2026-07-28-toss-tier-8b-default.md`. These rows check that it *deployed*
+  and *behaves*, not that it is wise.
+- **Raising the 70 mm cap, deriving the throw site from the current pose, and the
+  reach-envelope work.** That is decision (d)'s displaced-throw programme; it needs
+  its own plan and its own gate.
+- **The T0–T4 capability ladder.** `tests/hardware/session_phase8_toss_hardware.md`,
+  which runs **after** this file — and note its new § TIER banner: `T0–T3` were
+  written for Tier 8a and `T3` in particular does not mean what it says on an 8b
+  build.
+- **`REJECT_WIRE_MAP` hygiene.** `REJECTED_DISPLACEMENT` and `REJECTED_TILT_CLAMP`
+  were added on 2026-07-28 and the `REJECTED_TIER` hint corrected; `REJECTED_POSITION`
+  is still missing. That backlog is owned by
+  `logbook/2026-07-25-toss-rejected-not-levelled.md` § Follow-ups.

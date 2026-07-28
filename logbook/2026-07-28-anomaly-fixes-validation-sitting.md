@@ -48,6 +48,14 @@ its declared stroke limit on tosses above the run sheet's prescribed heights, an
 the persisted levelling offset is **truncated to int16 milliradians** by the
 Platform Teensy.
 
+> **Amended 2026-07-28 — the hand did not merely come close, it TOUCHED.** Operator
+> testimony arriving after the scoring confirms **light physical contact with the
+> end-stop** on those tosses. The `1.2 mm` above is the resolution limit of the
+> telemetry that was watching the contact, not surviving headroom — and the physical
+> stop may therefore sit *below* the declared `11.1 rev` guard. No verdict in this
+> entry changes; see § Discussion → *Operator testimony and decisions* and *the
+> hand's end-stop margin above 0.78 m*.
+
 ## Symptoms
 
 Not a fault report — a scheduled validation. What the sitting was asked to settle:
@@ -149,7 +157,7 @@ ever be run (§ Discussion).
 | **ZSEAT-2 flatness** | **PASS** | `span_deg = 0.0000` on all five measured windows, plus `commanded position span (x,y,z) mm = 0.00, 0.00, 0.00`. Samples 32–33, FK failures 0 on every window. Independently corroborated: the **installed** `planner.py:837` reads `_CATCH_TILT_THROUGH_RATE_RADPS = 0.0`, mtime `2026-07-27 03:29` (before the 15:23 session) |
 | **ZSEAT-2 bounce-out** | **ABORT** | **3 bounce-outs, all 3 consecutive** (attempts 1, 2, 3 = balls 6, 9, 11). **Both** ABORT clauses tripped (≥ 3 total, and ≥ 2 consecutive) |
 | **ZSEAT-2 overall** | **ABORT** | rate PASS, flatness PASS, bounce-out ABORT ⇒ net ABORT. Routes back to § Section ZSEAT |
-| **ZSEAT-2 attribution** vs sitting 4 | **INCONCLUSIVE** | a competing cause is measured and real — see § The three drops |
+| **ZSEAT-2 attribution** vs sitting 4 | **INCONCLUSIVE** | a competing cause is measured and real — see § The three drops. **Amended 2026-07-28** (verdict unchanged): the bounce-out classification is now eye-witnessed, and the BB warm-up drift is the operator-corroborated proximate trigger; what stays open is the **capture-basin width**, not the trigger — see § Discussion → *Operator testimony and decisions* |
 | **ZSEAT-3** offline counterfactual, reload path | **NOT RUN** | flagged, not scored: the commanded settle measured off the bag is `rx +1.7581° / ry −10.6823°`; ZSEAT-3's reference target is `+1.774062 / −10.636334°` to ±0.02°. `rx` is inside (Δ −0.0160); **`ry` is OUTSIDE** (Δ −0.0460). The target depends on the live gravity offset, which may differ from the 2026-07-25 reference bag — the replay must be run before concluding anything |
 | **ZSEAT-4** release stillness, stage 6 | **PASS** (weak) | **35/35** releases (18 ball_butler + 17 jugglebot): worst tilt span `0.0000°`, worst position span `0.0000 mm`, 7–9 samples per window. Weak because all 35 releases fall inside a stationary hold and the Tier-8a catch point equals the park, so the check could not have failed |
 | **ZSEAT-4** release stillness, Tier 8b (where it has teeth) | **PASS** | **11/11** on the pre-release half window `[release−0.10 s, release]`: `rx` span `0.0000°`, `ry` span `0.0000°`, position span `0.0000 mm` on every displaced throw — and here the deferred A→B reach genuinely fires (51.5–72.2 mm of travel between release and landing) |
@@ -303,6 +311,15 @@ acked) telemetry:
 > **Not yet done, and it outranks everything above**: nobody has asked the operator
 > whether they *saw* the balls touch the cup and leave. Their by-eye classification
 > outranks this trace inference, and it decays by the hour. Ask.
+>
+> **ANSWERED 2026-07-28 — asked, and it confirms the table.** The operator watched
+> all three opening reload attempts and reports that **every one of them touched the
+> rim and bounced out**. The trace classification above was right, and ball 11's
+> `MEDIUM-HIGH` no longer rests on an occluded contact. The operator adds two things
+> the traces cannot see: the throws were **visibly slightly off** during those
+> attempts, and **it resolved afterwards** — an independent eye-witness match to the
+> measured monotonic BB warm-up drift. Full testimony, and what it does and does not
+> settle, in § Discussion → *Operator testimony and decisions (2026-07-28)*.
 
 ### Extremity tilt at ±150 mm — the seed of the lookup-table decision
 
@@ -563,8 +580,15 @@ tree (`git worktree add` at `ac05848`) because
   envelope (`hypot(80,80) = 113 mm > 80 mm`). No reach ever ran in that bag.
 
 On that evidence the operator enabled **Tier 8b as the default**
-(`jugglebot_operational.toss_tier: "8a" → "8b"`). That change is **not yet
-committed** — see § Open Questions.
+(`jugglebot_operational.toss_tier: "8a" → "8b"`).
+
+> **COMMITTED 2026-07-28.** That change is no longer a working-tree edit — it landed
+> with both drift guards re-pointed, its own logbook entry
+> (`logbook/2026-07-28-toss-tier-8b-default.md`, which carries the full-suite
+> triple), and the operator-facing runbook repairs the flip forced. **So `HEAD` is
+> now an 8b tree**: any replay that must be scored against the tier this sitting
+> actually ran under needs a pre-flip worktree — use `6641400`, the last commit
+> before the flip, not `HEAD`. See § Open Questions 1.
 
 ## Discussion
 
@@ -671,6 +695,34 @@ Worse, the anchor itself is ambiguous, and that matters when the measured peak i
 Those give **11.124, 11.224 and 11.4 rev** — the answer moves the remaining margin by
 ~9 mm. **Pin which is true before the next high tosses.**
 
+> **SETTLED 2026-07-28 — it touched. The hand made contact.** The operator reports,
+> by ear and by feel at the bench, that the ~1.2 m throws made **light physical
+> contact with the hand's end-stop**. So the paragraph above is wrong in one word:
+> the `1.2 mm` is not headroom that was *nearly* consumed, it is the resolution
+> limit of the instrument that was watching a contact happen. "100 Hz aliased
+> telemetry cannot settle whether the hand touched its travel limit" was true of the
+> telemetry and false of the world.
+>
+> Three consequences, in increasing order of how much they should change behaviour.
+>
+> 1. The extrapolation to `FLIGHT_TIME_MAX_S = 1.10 s` is **no longer an
+>    extrapolation**. A legal in-band toss is past a limit that an *off*-run-sheet
+>    toss already reached.
+> 2. **The anchor question inverts, and this is the part to re-derive rather than
+>    inherit.** If the contact happened on the throws whose measured peaks were
+>    `11.0506 / 11.0621 rev`, then the physical stop sits at or below **~11.06 rev** —
+>    which is *below* the declared `hand_motor_max_position_revs = 11.1` guard and
+>    below all three candidate anchors (11.124 / 11.224 / 11.4). If that holds, the
+>    guard is not protective and Open Question 3 is mis-scoped: the question is not
+>    "which of the three anchors is true" but "**is the stop below the guard**".
+>    Stated as an inference, deliberately, because two things are unknown: *which*
+>    of the five throws the operator heard (peaks ranged `10.860–11.062`), and
+>    whether what was contacted is a compliant bumper or the hard limit. Both are
+>    bench questions and neither is answerable from this capture.
+> 3. The operator's chosen remedy is **not** a height cap — it is to make the hand's
+>    post-release deceleration more aggressive. See *Operator testimony and
+>    decisions*, decision (b).
+
 **The dispatch shift has outgrown the margin it was sized against.** `+54…+63 ms`
 (bag clock) against a pre-fix `+12.8…+21.9 ms`, versus the 40 ms margin Phase 1's
 stroke-busy window budgets — so the window, anchored on the announcement, now opens
@@ -735,12 +787,106 @@ Ordered by what a failure would cost, with the analysts' importance calls. Sever
 | **`FK-4` — MPC hot loop untouched** | **moot here** | **SKIP.** Requires `run_mpc.py`, deliberately kept off (sole binder on :5557), and the MPC never ran this sitting. Score it on the next sitting that runs the MPC |
 | **`CATCH-1` / `CATCH-3` / `LVL-5`** | **retired** | **SKIP.** Explicitly retired by the run sheet, and this sitting's data confirms it — `CATCH-3`'s table is a *pre*-fix reference, so scoring a post-fix capture against it would abort on correct behaviour |
 
+### Operator testimony and decisions (2026-07-28)
+
+Everything above was scored by five analysts working from traces, bags and logs. The
+operator's own account arrived **after** that scoring, so nothing below fed any
+verdict — it is independent evidence landing late, plus the forward decisions taken
+on the strength of it. Kept as its own subsection, and the verdict tables annotated
+rather than rewritten, so the two stay separable: **every verdict above stands
+exactly as scored.**
+
+#### 1. The three reload drops touched the rim and bounced out — eye-witnessed
+
+The operator watched all three opening reload attempts and reports that **every one
+of them touched the rim of the cup and bounced out**.
+
+This is the answer to the question § The three drops itself flagged as outranking
+everything in it, and it confirms the trace classification **independently**: balls
+6 and 9 were scored `HIGH` on continuously-tracked contact, ball 11 only
+`MEDIUM-HIGH` because its contact was occluded — the testimony retires that last
+inference. It also corroborates the **zero-missed-arrivals** finding from a second
+direction: a ball that touches the rim is a ball that arrived at the cup.
+
+The operator adds two things no trace can see: the throws were **visibly slightly
+off** during those attempts, and **it resolved afterwards**. That is an eye-witness
+match to the measured monotonic BB warm-up drift (arrival `x` walking
+`+6.7 → −21.6 → −10.7 → −14.5 → −27.0 → −36.3 → −30.1 → …`, plateauing around the
+sixth throw) arrived at from mocap alone, by an analyst who had not spoken to the
+operator. Two independent instruments, same signal.
+
+#### 2. The ~1.2 m throws made light physical contact with the hand's end-stop
+
+**This is the sitting's most safety-relevant fact and it arrived after the scoring.**
+The operator reports, by ear and by feel at the bench, that the off-run-sheet
+~1.2 m throws made **light physical contact with the hand's end-stop**.
+
+It upgrades the end-stop finding from *"1.2 mm of margin, and 100 Hz aliased
+telemetry cannot settle whether the hand touched its travel limit"* to **contact
+confirmed** — a near-miss becomes a hit. The full consequence chain, including the
+inference that the physical stop may sit *below* the declared `11.1 rev` guard, is
+annotated in place at § Discussion → *the hand's end-stop margin above 0.78 m*.
+
+#### 3. Decisions taken 2026-07-28
+
+| # | decision | what it does and does not change |
+|---|---|---|
+| **(a)** | **The seat-rate experiment runs next sitting**: raise `planner._CATCH_TILT_THROUGH_RATE_RADPS` to `0.07` for one reload block and compare bounce-outs against the `0.0` block **at matched arrival offsets** | Schedules the pre-registered A/B (Open Question 5). **Nothing changes in the tree now** — the shipped default stays `0.0`, and `C-CATCH-1` is already in force to bound whatever value goes in |
+| **(b)** | **No height cap.** The remedy for the end-stop contact is to make the hand's **post-release deceleration more aggressive** — work ordered | Explicitly rejects the obvious remedy (capping throw height / `FLIGHT_TIME_MAX_S`) in favour of shortening the coast. Not yet designed and not yet in any plan; the anchor question in § Discussion must be pinned first, because a deceleration profile sized against the wrong stop position is the same defect one layer up |
+| **(c)** | **`toss_continuous`'s `stop_on_miss` defaults TRUE** | A decision about **future** feature work: neither symbol exists in the tree today (`grep -rn` for `toss_continuous` and for `stop_on_miss` across the repo, excluding `ros_ws/build` and `ros_ws/install` as artefacts — **zero hits each**, 2026-07-28). Recorded so the default is not re-litigated when the feature is built |
+| **(d)** | **The ±150 mm request is the FULL displaced-throw (Tier 8b) programme**, not just toss-at-position: deriving the throw site from the **current pose** rather than the fixed config site `A`, the reach-envelope work, and raising the 70 mm displacement cap | Re-scopes what read as a workspace request into the 8b feature programme. It is *why* the tier default was flipped — see 5 below. Each of the three is separately safety-relevant (`toss_throw_site_mm` is currently config-only by design, and the 70 mm cap is the intersection of the 80 mm reach envelope with the Rung-2a clean box) |
+| **(e)** | **A ball-in-cup HAND SENSOR has arrived and is being installed 2026-07-28** | Possession sensing becomes hardware-backed from the next run. Today `jugglebot_operational.toss_require_ball_evidence` is `false` *precisely because* "there is NO ball-in-cup sensor" — that YAML comment and that default both become re-decidable once the sensor is live. **Deliberately not changed here**: turning on a precondition that can refuse a goal is a behaviour change, and it belongs to whoever validates the sensor |
+
+#### 4. `ZSEAT-2`'s verdict stands; what moved is the confidence underneath it
+
+No verdict changes. `ZSEAT-2` remains **rate PASS / flatness PASS / bounce-out
+ABORT ⇒ net ABORT**, exactly as scored. What the testimony changes:
+
+- **Bounce-out classification** — was trace inference (`HIGH / HIGH / MEDIUM-HIGH`),
+  now **eye-witnessed** on all three.
+- **Proximate trigger** — the **BB warm-up drift**, now carried by both the
+  measurement (~26–39 mm of arrival-`x` offset, ≈3σ of the catch spread) and the
+  operator's independent *"the throws were visibly off, and it resolved after"*.
+- **What is still OPEN is not the trigger — it is the width of the capture basin.**
+  Whether a non-zero seat would have caught a ball arriving ~30 mm off-centre that
+  the zero seat dropped is untouched by any of this. Attempt 3 dropped at
+  `x = −10.7` and attempt 4 caught at `x = −14.5`, **3.8 mm apart**; that gap is the
+  entire question, and this capture cannot answer it because it contains **no throws
+  at ~+30 mm offset with a non-zero seat**. Decision (a) is the experiment that can.
+
+The honest one-line reading: *the drops were bounce-outs (confirmed), the BB warm-up
+drift put the balls where they bounced (measured, and eye-witnessed), and whether
+the zero seat is what let them bounce is still open.* Resist collapsing that to
+"it was the BB" — the drift describes **the disturbance the seat existed to reject**,
+which is why it is a trigger and not an exoneration.
+
+#### 5. Tier 8b is the shipped default
+
+On the T4 evidence in § The phase-8 T-rung session — 11 of 11 displaced throws
+accepted, out to the 70 mm cap, with the deferred A→B reach firing correctly on
+every one — the operator confirmed `jugglebot_operational.toss_tier: "8b"` as the
+intended **default** on 2026-07-28, because decision (d)'s programme builds on it.
+Open Question 1's "not yet committed" status is resolved; the annotation there
+records what landed, and in particular why the tier drift guard was **re-pinned**
+to `TIER_8B` rather than widened to the serviceable set as that question proposed.
+
 ## Verification
 
 This entry and its sibling commits are **markdown + config only**. No `*.py`,
 `*.h`, `*.ino` or `*.msg` file under any test path changed, so the full suite is not
 the gate — but that justification is traced below, not asserted from the file
 extension.
+
+> **Scope note, 2026-07-28.** That statement was true of the sitting commits
+> (`2655b8a`, `6641400`) and it is left standing because it is what justified their
+> gate. It does **not** cover the later sibling that lands the Tier-8b flip: that
+> commit re-points two `tests/ros/*.py` drift guards, so the **full suite is its
+> gate**. That triple is **not in this entry** — it lives in that commit's own
+> logbook entry, `logbook/2026-07-28-toss-tier-8b-default.md` § Verification, which
+> is where to look for it. The measurements in
+> the third bullet below are likewise a record of the *pre*-fix state — they are what
+> made the two failures diagnosable, not a claim about the tree after the flip
+> landed. See Open Question 1.
 
 - **Logbook search surface** — `pytest tests/sim/test_logbook_search.py -q`, run
   2026-07-28: **24 passed in 0.19 s**. This suite *does* parse the real `logbook/`
@@ -759,9 +905,14 @@ extension.
   before and after: the same 7 files, 7 insertions, 7 deletions). The six generated
   consumer copies are exactly the codegen output of the edited YAML.
 - **The config change's own test surface, traced** —
-  `grep -rln TOSS_TIER tests/ ros_ws/src/jugglebot/jugglebot/ controller/` names
-  `tests/ros/test_toss_sequencer.py` and `tests/ros/test_toss_coordinator.py` as the
-  only tests that read this key.
+  `grep -rln TOSS_TIER tests/ ros_ws/src/jugglebot/jugglebot/ controller/`, run
+  2026-07-28, names **three** files under `tests/`:
+  `tests/ros/test_toss_sequencer.py`, `tests/ros/test_toss_coordinator.py` — the only
+  two that *read* the key — and `tests/hardware/toss_trace_recorder.py`, which names
+  it only inside an operator hint string, imports nothing, and is not collected by
+  pytest. **That third hit was missed when this bullet was first written**, and it is
+  precisely the file whose hint (`JB_OP_TOSS_TIER must be 8a`) the tier flip
+  falsified; it was repaired in the flip's own commit (§ Open Questions 1).
   `pytest tests/ros/test_toss_sequencer.py tests/ros/test_toss_coordinator.py -q`,
   run 2026-07-28: **2 failed, 182 passed in 6.17 s** at `toss_tier: 8b`, and
   **184 passed in 5.78 s** with the same command at `toss_tier: 8a` (the operator's
@@ -785,7 +936,10 @@ recorded above. Concretely:
 - `fk-convergence-tolerance` — 0 failures in 105,318 solves.
 
 Two defects found that nobody was looking for: the **int16-milliradian truncation**
-of the persisted levelling offset, and the **hand end-stop margin** above 0.78 m.
+of the persisted levelling offset, and the **hand end-stop margin** above 0.78 m —
+which operator testimony on 2026-07-28 upgraded from a margin question to
+**confirmed physical contact** with the stop, possibly *below* the declared
+`11.1 rev` guard (§ Discussion → *Operator testimony and decisions*).
 Eleven instrument/runbook defects surfaced, several of which would produce a false
 ABORT on a healthy machine.
 
@@ -822,6 +976,25 @@ ABORT on a healthy machine.
   (axis=YAW)`, so no ball left the BB.
   Superseded by: `ZSEAT-2 rate` row (13/16 = 0.8125). Both denominators clear the
   0.63 gate (13/18 = 0.72), so no verdict changes.
+- [2026-07-28] Open Question 1's recommendation that
+  `test_tier_constant_matches_config` *"wants widening to the serviceable set, not
+  re-pinning to a new single value (re-pinning fires again the next time the operator
+  flips it)"*.
+  WITHDRAWN: it would have made the guard vacuous for the job it exists to do. A
+  `JB_OP_TOSS_TIER in (TIER_8A, TIER_8B)` assertion cannot detect **drift** — it
+  detects only an *unimplemented* tier, which the FSM already rejects at runtime
+  (`toss_sequencer.step`'s `if self.tier not in (TIER_8A, TIER_8B): _reject('TIER')`)
+  and which `test_toss_goal_rejections_via_execute[tier-…]` already covers by driving
+  `'9z'` through the generated config. Widening would therefore have duplicated an
+  existing check while silently dropping the only check on **which** tier ships — and
+  the shipped tier changes what the machine does on every toss goal (8b pre-tilts at
+  a config throw site and defers the A→B reach to `t_release`; 8a does neither). The
+  clause "re-pinning fires again the next time the operator flips it" describes the
+  guard **working**: a default that changes commanded motion should cost one
+  deliberate, reviewed test edit, not be waved through by a set membership.
+  Superseded by: the re-pinned guard and its recorded change history in
+  `tests/ros/test_toss_sequencer.py::test_tier_constant_matches_config`, and the
+  annotation on Open Question 1.
 
 ## Open Questions
 
@@ -844,14 +1017,37 @@ ABORT on a healthy machine.
      verdicts"). The case needs to pin the tier it was written for.
    Both are drift guards doing their job. Neither is a production bug. The fix is a
    `*.py` test edit and was out of scope for the session that found it.
+   > **RESOLVED 2026-07-28.** Landed with both guards re-pointed. The
+   > `test_tier_constant_matches_config` guard was **re-pinned to `TIER_8B`, not
+   > widened to `{8a, 8b}`** — the opposite of what this question proposed, and the
+   > proposal is retracted in § Withdrawn claims with the reason. The rejection-
+   > enumeration row was handled by keeping the `workspace` row asserting
+   > `REJECTED_WORKSPACE` and moving its coordinates to a target the 8b displacement
+   > gate lets through (`x = 60 mm` inside the 70 mm cap, `z = 300 mm` outside the
+   > ±50 mm band), plus a **new** `displacement` row carrying the original
+   > `x = 200 mm` goal and asserting `REJECTED_DISPLACEMENT`. Net `+1` test.
+   > Mutation-checked: reverting the YAML to `8a` turns *both* the tier guard and
+   > the new `displacement` row red, so neither is vacuous.
 2. **Ask the operator, today**: did the three dropped balls touch the cup and leave?
+   > **ANSWERED 2026-07-28 — yes, all three touched the rim and bounced out.** See
+   > § Discussion → *Operator testimony and decisions*, item 1.
 3. **Pin the hand's true stroke limit** (11.124 vs 11.224 vs 11.4 rev) before any
    toss above 0.78 m, and reconcile `FLIGHT_TIME_MAX_S = 1.10 s` with the measured
    end-stop margin.
+   > **RE-SCOPED and made urgent, 2026-07-28.** The operator confirms the ~1.2 m
+   > throws made **light physical contact with the end-stop**, so this is no longer
+   > a margin question. If the contact coincided with the `11.0506 / 11.0621 rev`
+   > peaks, the physical stop sits *below* the declared `11.1 rev` guard and below
+   > all three candidates — making the question "**is the stop below the guard**".
+   > Decision (b) orders a more aggressive post-release deceleration instead of a
+   > height cap, and that profile cannot be sized until this is pinned.
 4. **Fix the int16-milliradian truncation** (`lroundf`, or more bits) — and note that
    `LVL-3` is structurally blind to it, so the fix needs its own check.
 5. **Run the seat A/B**: BB burn-in, then ~6 throws biased +30 mm in x at seat rate
    `0.0`, then the same 6 at `0.07 rad/s`.
+   > **SCHEDULED 2026-07-28 — next sitting** (decision (a)). One reload block at
+   > `0.07`, compared at matched arrival offsets. The shipped default stays `0.0`
+   > until it returns a verdict.
 6. **Resolve `LG-3` on paper** before spending robot time on it.
 7. **Give `catch_reach_replay.py` a session-rate override** — `CATCH-2`, `CCATCH-3`
    and `ZSEAT-3` are all blocked behind it.
@@ -864,6 +1060,19 @@ ABORT on a healthy machine.
     COMPLETE (2026-07-25), so the sentence's condition is satisfied and the `8b`
     value is coherent — but the wording now reads as stale and wants a tidy when the
     change lands.
+    > **DONE 2026-07-28**, in the same commit as the flip: a commit whose diff line
+    > is `toss_tier: "8b"` must not ship a comment three lines below saying `8b` is
+    > `REJECTED_TIER`. The block now describes both serviceable tiers, states that
+    > anything outside `{8a, 8b}` is `REJECTED_TIER`, and records the default's
+    > change history. Comment-only — `python config/generate_config.py` re-run after
+    > the edit produced **no** change to any of the six generated consumers, which is
+    > also the proof that YAML comments do not propagate.
+
+**Newly ordered work** (2026-07-28, from § Discussion → *Operator testimony and
+decisions*, item 3): the hand's post-release deceleration (b), the Tier-8b displaced
+throw programme — throw site from current pose, envelope, cap raise (d), and the
+consequences of the ball-in-cup hand sensor for `toss_require_ball_evidence` (e).
+None is planned yet; they are recorded there rather than duplicated here.
 
 ## Related
 
