@@ -1009,9 +1009,30 @@ class TossGate:
             for radius in radii:
                 for T in flights:
                     bx, by = ax + radius * ux, ay + radius * uy
+                    # BUGFIX 2026-07-29: `i` was constant across this
+                    # comprehension (it advanced only AFTER it), so every trial
+                    # in a cell ran the SAME seed and the map was really ONE
+                    # trial replicated `diag_trials` times. The tell was
+                    # `landing_err_mm_mean == landing_err_mm_worst` EXACTLY in
+                    # every cell that had any seated trial. The
+                    # `i += diag_trials` below shows the intent was always a
+                    # distinct seed per trial. Enumerating the offset here
+                    # restores it; nothing else changes, and the cell dict is
+                    # unchanged.
+                    #
+                    # It does NOT explain the map's near-bimodality, and the
+                    # first draft of this comment claimed it did. Measured on
+                    # the POST-FIX re-run (temp/reports/
+                    # toss_8b_phaseE_asymmetry_seed0.json, seed 0): 47 of 48
+                    # cells still read 0/4 or 4/4, one reads 1/4. That is the
+                    # documented low-fidelity contact model, not a seeding
+                    # artefact — so a 0/4 cell is still NOT evidence of a 0 %
+                    # direction, and the map stays ~1-bit-per-cell at n = 4.
+                    # The directional evidence with real spread is the GATING
+                    # column (8/10-10/10); see the runbook's § SECTION DISP.
                     trials = [self._diag_trial((bx, by, Z_ACTIVE_MM, T),
-                                               cfg.seed + 20000 + i)
-                              for _ in range(cfg.diag_trials)]
+                                               cfg.seed + 20000 + i + k)
+                              for k in range(cfg.diag_trials)]
                     i += cfg.diag_trials
                     caught = [r for r in trials if r['caught']]
                     seated = sum(1 for r in trials
