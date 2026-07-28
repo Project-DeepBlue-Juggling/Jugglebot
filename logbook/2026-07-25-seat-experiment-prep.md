@@ -23,7 +23,7 @@ files_changed:
   - tools/probes/README.md
   - plans/active/catch-reach-degenerate-overshoot.md
 commits:
-  - 0e5bb4c
+  - 2bc3ba2
 subsystem:
   - motion
   - config

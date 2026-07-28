@@ -767,9 +767,9 @@ Scope, in three parts:
 3. `tools/probes/ball_arrival_offset.py` — the arrival-offset measurement the
    protocol is built on, which did not exist in any runnable form.
 
-**Outcome, 2026-07-28 — LANDED.** Commit `0e5bb4c` (the config key, the probe, the
-protocol, the drift guards and the two in-phase probe fixes); commit `a3cb5f1`
-backfills the SHA into the logbook and this section. Logbook:
+**Outcome, 2026-07-28 — LANDED.** Commit `2bc3ba2` (the config key, the probe, the
+protocol, the drift guards and the two in-phase probe fixes), with a small
+follow-up commit backfilling that SHA into the logbook and this section. Logbook:
 `logbook/2026-07-25-seat-experiment-prep.md`. Gate: `pytest tests/ -q`, run
 2026-07-28 on the Jetson in the project venv: **4068 passed, 3 xfailed in
 1422.44 s (0:23:42)**, exit 0 — `+9` on the `f5da09c` baseline of 4059 + 3,
