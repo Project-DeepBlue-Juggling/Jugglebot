@@ -237,6 +237,71 @@ Score the reload and toss halves of CAP-WORK with **separate probe invocations**
 
 ## THE RUN SHEET
 
+> ### ✅ EXECUTED 2026-07-27 — outcome, and what to fix before the next run
+>
+> Stages 1–7 were run (can-bridge Teensy rebooted; Platform Teensy **flashed** and
+> `FW-1` confirmed `v1` on all six launches), then the `session_phase8_toss_hardware.md`
+> T-rungs. **Full verdicts, every measured number, and the Discussion live in
+> [`logbook/2026-07-28-anomaly-fixes-validation-sitting.md`](../../logbook/2026-07-28-anomaly-fixes-validation-sitting.md)** — read that, not this box, before scoring anything.
+>
+> **Outcome in one line**: the levelling frame, the levelling gate, the FK criterion
+> change and the whole hand-command-continuity set **PASS**; **`ZSEAT-2` ABORTs** on
+> its bounce-out arm (3 bounce-outs, all 3 consecutive) while its rate arm passes
+> (13/16 = 0.8125), with attribution **INCONCLUSIVE** against a measured BB warm-up
+> drift. `LG-3` is **INCONCLUSIVE** — the auto-push won **7/7** of the sitting's
+> `/gravity_offset` publishes (the boot-push subset **5/5**), so its precondition was
+> never established. **`LVL-2` and `CCATCH-4` were never run**: no
+> `go_home` or `go_to_pose` was issued anywhere in the sitting (≈60 s of robot time
+> covers both — run them together next sitting).
+>
+> **Two findings that change how you run this file:**
+>
+> 1. **`FW-1`, `FW-2` (and any `launch.log` grep for `trajectory_node` or
+>    `teensy_bridge_node` output — `gravity correction set`, `seeded hold at pose`,
+>    `returning to neutral`) CANNOT WORK AS WRITTEN.** Both nodes are declared
+>    `output='screen'` in `jugglebot_launch.py` (`:157`, `:171`), so their stdout
+>    never reaches `launch.log`. On a **correctly flashed** board `FW-1` returns
+>    nothing — which this file maps to the ABORT *"you skipped colcon build"*. Use
+>    the per-node logs instead, with this form (the `python3_*.log` glob matches
+>    50,943 files and zsh will not word-split an unquoted `$(find …)`):
+>    ```bash
+>    find ~/.ros/log -maxdepth 1 -name 'python3_*.log' -newermt '<date>' -size +0 \
+>         -exec grep -H PLATFORM_FW_CHECK {} \;
+>    ```
+>    Same trap makes **`FK-1`, `FK-3` and `LG-4` as written SELF-PASS** — `ls -t
+>    ~/.ros/log/python3_*.log` matches zero files, so `… | wc -l` prints `0` and
+>    reads as a clean PASS regardless of the truth.
+> 2. **Start the trace recorder BEFORE the `LG-1` goal, not after the `level`.** The
+>    CAP-GATE recorder was started 2 min 34 s after LG-1's refusal and 3 min 4 s
+>    after the loaded-flip, so `LG-5`'s own single-file reader returned `INCOMPLETE`.
+>    The invariant was recovered only because `/trajectory/status`, `/robot_state`
+>    and `/gravity_offset` were all in the bag from the start of the 15:23 recording.
+>    Also note `FW-1` is **not scorable from a trace file at all** —
+>    `toss_trace_recorder.py::_d_link` whitelists six `link_status` keys and drops
+>    `platform_fw_version`.
+>
+> **Three scoring corrections:**
+>
+> - **Use the PERSISTED offset for any capture taken after a relaunch.** The Platform
+>   Teensy truncates the stored offset to **int16 milliradians** (`Teensy_code.ino:430`,
+>   a C cast), so the 15:33 `level` published `[0.014455, 0.002070]` but every later
+>   launch restored `[0.0140, 0.0020]`. This file's instruction to use "the radians
+>   `LVL-1`'s log line printed" is **wrong** for those captures, and the loss (0.0264°)
+>   is half of `LVL-3`'s ±0.05° band.
+> - **`CATCH-2` cannot pass on any post-2026-07-26 capture.** `catch_reach_replay.py:354`
+>   pins `THROUGH_SEAT_RATE_RADPS = 0.07` and deliberately rebuilds the pre-fix plan.
+>   Its `NOT-REPRODUCED` is an instrument verdict, **not a machine finding** — and it
+>   blocks `CCATCH-3` and `ZSEAT-3` with it.
+> - **`ZSEAT-4`'s Tier-8b rows are mutually unsatisfiable as written**: a reach that
+>   starts *at* release necessarily puts motion into the second half of a symmetric
+>   `release ± 0.10 s` window. Score the pre-release half `[release−0.10, release]`.
+>
+> **One safety action**: five **off-run-sheet** ~1.2 m tosses drove the hand's measured
+> peak to `10.86–11.06 rev` — **1.2 mm** from the declared 11.1 rev limit — as pure
+> position-loop coast. **No further tosses above 0.78 m** until the true stroke limit is
+> pinned (three sources disagree: 11.124 / 11.224 / 11.4 rev) and `FLIGHT_TIME_MAX_S`
+> is reconciled with it.
+
 Read-only pre-flights first; nothing actuates the robot until stage 4.
 "Routes to" is where a failure goes — the plan and phase that owns it.
 
