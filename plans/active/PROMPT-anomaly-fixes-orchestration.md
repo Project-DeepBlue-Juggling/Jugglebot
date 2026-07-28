@@ -91,8 +91,8 @@ Ordered after the 2026-07-27 validation sitting. Same one-workflow-per-item shap
 
 #### Item B — Outcome
 
-**Landed 2026-07-28.** Commits `<CODE_SHA>` (code + contract + tests + runbook) and
-`<DOC_SHA>` (SHA backfill). Logbook:
+**Landed 2026-07-28.** Commit `463a031` (code + contract + tests + runbook),
+followed by its SHA-backfill commit. Logbook:
 `logbook/2026-07-28-caught-gate-xy-plausibility.md`. Contract:
 `ros_ws/docs/ball_possession_contract.md` (**C-POSSESS-1**).
 
