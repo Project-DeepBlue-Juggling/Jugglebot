@@ -110,6 +110,11 @@ from jugglebot_interfaces.action import Reload, Toss
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 
 import jugglebot.hardware_config as hw
+from jugglebot.ball_possession import (
+    TrackerArrivalSource,
+    describe as describe_possession,
+    lateral_miss_mm,
+)
 from jugglebot.reload_sequencer import (
     ACTION_CALL_RELOAD,
     ACTION_PREPARE_CATCH,
@@ -187,12 +192,30 @@ _STATUS_STALE_S = 0.5
 # which the cached flag would otherwise be a dead process's answer.
 _TRAJ_STATUS_STALE_S = 1.0
 
-# CAUGHT plausibility gate. The tracker's split-track corruption (2026-07-23 re-test)
-# flips CAUGHT on tracks coasting BELOW THE FLOOR near BB — 5 of 6 reloads reported
-# spurious CAUGHT while the real ball bounced out. A caught ball confirms OUR catch
-# only if its final KF estimate is physically near the catch point.
-_CAUGHT_MAX_XY_ERROR_MM = 200.0
-_CAUGHT_MAX_Z_ERROR_MM = 150.0
+# CAUGHT plausibility gate — contract C-POSSESS-1, ros_ws/docs/ball_possession_contract.md.
+# The tracker's split-track corruption (2026-07-23 re-test) flips CAUGHT on tracks
+# coasting BELOW THE FLOOR near BB — 5 of 6 reloads reported spurious CAUGHT while
+# the real ball bounced out. A caught ball confirms OUR catch only if its final KF
+# estimate is physically near the catch point, HORIZONTALLY.
+#
+# The horizontal qualifier is the whole 2026-07-28 change and it is not cosmetic.
+# The bound this replaced also carried `z_err <= 150 mm`, which is unsatisfiable by a
+# real catch: the tracker declares CAUGHT *because the marker vanished*, so the
+# published position is a dead-reckoned free-fall extrapolation and all of its error
+# lands in z. Measured across the 2026-07-27 sitting's 17 self-tosses — every one a
+# catch the operator watched — z error 305-1007 mm against xy error 0.30-3.88 mm.
+# `success` was therefore False by construction on every ball op ever run. Full error
+# model + the measured distributions: jugglebot/ball_possession.py's module docstring.
+#
+# The tolerance is the catching structure's own entry aperture, single-sourced from
+# the machine geometry rather than a magic number: a ball whose estimate sits further
+# from the cup axis than the opening it must have passed through did not enter the
+# structure. Margins against the same session: 18x above the true-catch maximum
+# (3.88 mm) and 2.9x below the corrupt-track floor (204.9 mm). The 200.0 it replaces
+# cleared that floor by 4.9 mm — a 1.02x margin against minting a FALSE CAUGHT, which
+# is the second instance of the same "bound without an error model" defect and the
+# reason C-POSSESS-1 closes the class instead of the one number.
+_CAUGHT_MAX_XY_ERROR_MM = float(hw.GEOM_ARM_RADIUS_MM)
 
 # Reject-fast service-call bounds.
 _SERVICE_WAIT_S = 2.0
@@ -414,8 +437,24 @@ class ReloadCoordinatorNode(Node):
         # default JB_OP_CATCH_VEL_SCALE_DEFAULT), published on catch/vel_scale at
         # PREPARE so catch_coordinator has it before any arm.
         self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
-        # Once-per-ball log guard for implausible CAUGHT rejections.
-        self._implausible_logged_ids = set()
+        # THE possession source (contract C-POSSESS-1,
+        # ros_ws/docs/ball_possession_contract.md). Every "did we catch it?"
+        # question in this node routes through _possession_confirmed to whatever
+        # sits here, so swapping the source changes NO call site. Today's only
+        # implementation reads the ball tracker and can answer ARRIVAL only; the
+        # ball-in-cup hand sensor (installed 2026-07-28) becomes the PRIMARY
+        # source when its plumbing lands, because it is the only one that can
+        # answer RETENTION. Do not add sensor code here speculatively — the
+        # contract's "Adding a source" section is the handover.
+        self._possession_source = TrackerArrivalSource(
+            arrival_tol_mm=_CAUGHT_MAX_XY_ERROR_MM)
+        # Once-per-(ball, verdict) log guard. Keyed by the VERDICT as well as the
+        # id so the accepted and refused lines each get exactly one emission: the
+        # accepted line is what the operator scores the gate against by eye at the
+        # bench (runbook row POSS-1), and guarding on the id alone would suppress
+        # it whenever the same ball was refused first under a different reference
+        # point.
+        self._possession_logged = set()
         # Cross-action goal claim: set under _lock in the goal-ACCEPT callback (both
         # actions share it), cleared in the execute callbacks' finally alongside
         # _active_seq. Closes the accept→install window in which a second goal's
@@ -668,7 +707,7 @@ class ReloadCoordinatorNode(Node):
         for b in msg.balls:
             if (b.destination == self._robot_name
                     and int(b.status) == _BALL_STATUS_CAUGHT
-                    and self._caught_is_plausible(b, ref_point_mm=ref)):
+                    and self._possession_confirmed(b, ref_point_mm=ref)):
                 with self._lock:
                     self._ball_possession = True
                 break
@@ -752,7 +791,7 @@ class ReloadCoordinatorNode(Node):
             if announced_id is not None:
                 for b in balls:
                     if int(b.id) == announced_id and int(b.status) == _BALL_STATUS_CAUGHT:
-                        if self._caught_is_plausible(b):
+                        if self._possession_confirmed(b):
                             ball_caught = True
                             catch_error_mm = self._catch_error_from_ball(b)
                         break
@@ -815,34 +854,45 @@ class ReloadCoordinatorNode(Node):
                 self._announced_id_untagged = untagged_latch
         return announced_id
 
-    def _caught_is_plausible(self, ball, ref_point_mm=None) -> bool:
-        """A tracker CAUGHT confirms OUR catch only if the ball's final KF estimate is
-        physically near the catch point. The tracker's split-track corruption flips
-        CAUGHT on tracks coasting below the floor near BB (e.g. (−539, −323, −532) mm)
-        — 5 of 6 reloads on 2026-07-23 spuriously reported SUCCESS through that.
-        Rejecting the implausible CAUGHT makes the outcome honest (MISSED) until the
-        tracker investigation lands.
+    def _possession_confirmed(self, ball, ref_point_mm=None) -> bool:
+        """THE possession question, for every caller in this node: does this tracker
+        ``CAUGHT`` confirm that WE have the ball?
+
+        The single seam onto :attr:`_possession_source` (contract C-POSSESS-1,
+        ``ros_ws/docs/ball_possession_contract.md``) — routing all callers through
+        here is what lets the ball-in-cup hand sensor become the primary source
+        later without touching a single call site.
+
+        Renamed from ``_caught_is_plausible`` 2026-07-28 because the semantics
+        changed underneath it: the answer is now a two-part verdict (ARRIVAL +
+        RETENTION), not one spatial plausibility test, and a stale name is how a
+        future reader concludes the z bound is merely missing rather than
+        deliberately forbidden.
 
         ``ref_point_mm`` overrides the reference point (the toss judges against its
         NOMINATED landing point); None = the reload's fixed ACTIVE catch point."""
         ref = self._catch_point_mm if ref_point_mm is None else ref_point_mm
-        xy_err = self._catch_error_from_ball(ball, ref_point_mm=ref)
-        z_err = abs(float(ball.position.z) - float(ref[2]))
-        ok = (xy_err <= _CAUGHT_MAX_XY_ERROR_MM
-              and z_err <= _CAUGHT_MAX_Z_ERROR_MM)
-        if not ok and int(ball.id) not in self._implausible_logged_ids:
-            self._implausible_logged_ids.add(int(ball.id))
-            # INFO, not WARN: split-track corruption flips CAUGHT below the floor on
-            # essentially every flight — this is expected tracker noise, once-per-ball
-            # guarded, and subsumed by the imminent ball-held hand sensor. It must not
-            # read as an error in a working reload.
-            self.get_logger().info(
-                f"Ball {int(ball.id)}: tracker CAUGHT at "
-                f"({float(ball.position.x):.0f}, {float(ball.position.y):.0f}, "
-                f"{float(ball.position.z):.0f}) mm is IMPLAUSIBLE for the catch point "
-                f"(xy err {xy_err:.0f} > {_CAUGHT_MAX_XY_ERROR_MM:.0f} or z err "
-                f"{z_err:.0f} > {_CAUGHT_MAX_Z_ERROR_MM:.0f}) — not counted "
-                f"(split-track corruption; see the 2026-07-23 tracker finding)")
+        verdict = self._possession_source.judge(
+            ball_xyz_mm=(float(ball.position.x), float(ball.position.y),
+                         float(ball.position.z)),
+            ref_point_mm=ref)
+        ok = bool(verdict.confirmed)
+        key = (int(ball.id), ok)
+        if key not in self._possession_logged:
+            self._possession_logged.add(key)
+            # BOTH verdicts are logged, and the wording AND the severity come from
+            # ball_possession so the operator-facing line cannot drift from the
+            # semantics. Both are INFO today: a refusal fires on essentially every
+            # reload (a corrupt split track is the expected reading, not an error
+            # in a working sequence) and the acceptance is the line the bench
+            # scores the gate against by eye (runbook row POSS-1) — so neither
+            # belongs at WARN, and both belong in the log exactly once.
+            severity, line = describe_possession(verdict, _CAUGHT_MAX_XY_ERROR_MM)
+            log = self.get_logger()
+            emit = log.info if severity == 'info' else log.warning
+            emit(f"Ball {int(ball.id)} at "
+                 f"({float(ball.position.x):.0f}, {float(ball.position.y):.0f}, "
+                 f"{float(ball.position.z):.0f}) mm: {line}")
         return ok
 
     def _catch_error_from_ball(self, ball, ref_point_mm=None) -> float:
@@ -852,11 +902,18 @@ class ReloadCoordinatorNode(Node):
         estimate), NOT a settled rest position — the MVP evidence is the tracker-id
         correlation + this KF miss, with a hand-telemetry rest cross-check deferred.
         ``ref_point_mm`` overrides the reference (the toss's nominated landing point);
-        None = the reload's fixed ACTIVE catch point."""
+        None = the reload's fixed ACTIVE catch point.
+
+        Deliberately HORIZONTAL, and that is now a contract clause rather than a
+        convention: the vertical component of the same estimate is dead-reckoning
+        artefact, not miss distance (C-POSSESS-1 § 1). The formula is shared with
+        the possession bound through ``ball_possession.lateral_miss_mm`` so the
+        number the gate decides on and the number the operator reads can never be
+        two different computations."""
         ref = self._catch_point_mm if ref_point_mm is None else ref_point_mm
-        dx = float(ball.position.x) - float(ref[0])
-        dy = float(ball.position.y) - float(ref[1])
-        return float(np.hypot(dx, dy))
+        return lateral_miss_mm(
+            (float(ball.position.x), float(ball.position.y),
+             float(ball.position.z)), ref)
 
     def _build_toss_observations(self, now: float) -> TossObservations:
         """Assemble the toss FSM's observation snapshot (the toss sibling of
@@ -970,7 +1027,7 @@ class ReloadCoordinatorNode(Node):
                             self._toss_track_confirmed = True
                     time_at_land_perf = self._ball_time_at_land_perf(b, now)
                     if int(b.status) == _BALL_STATUS_CAUGHT:
-                        if self._caught_is_plausible(b, ref_point_mm=landing_ref):
+                        if self._possession_confirmed(b, ref_point_mm=landing_ref):
                             ball_caught = True
                             catch_error_mm = self._catch_error_from_ball(
                                 b, ref_point_mm=landing_ref)
@@ -1088,7 +1145,7 @@ class ReloadCoordinatorNode(Node):
             # from the 2026-07-23 third sitting); coordinator clamps to its range.
             self._catch_vel_scale = (vel_scale if vel_scale > 0.0
                                      else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
-        self._implausible_logged_ids = set()
+        self._possession_logged = set()
 
         result = Reload.Result()
         max_sequence_s = _sequence_deadline_s(seq)
@@ -1305,7 +1362,7 @@ class ReloadCoordinatorNode(Node):
             # Tier-8b per-goal state (8a never touches catch/pretilt_hold).
             self._toss_pretilt_hold_raised = False
             self._toss_announced_reach = None
-        self._implausible_logged_ids = set()
+        self._possession_logged = set()
 
         result = Toss.Result()
         max_sequence_s = _toss_deadline_s(seq)

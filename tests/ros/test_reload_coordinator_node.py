@@ -40,6 +40,7 @@ from jugglebot.reload_sequencer import (
     ReloadResult,
     ReloadSequencer,
 )
+from tests.ros import possession_fixtures as fx
 
 
 def _seq_in_flight(node):
@@ -589,6 +590,159 @@ def test_destination_match_preferred_over_untagged():
         node._balls_mono = now
     node._build_observations(now)
     assert node._announced_ball_id == 9
+
+
+# ── The possession seam (C-POSSESS-1, ros_ws/docs/ball_possession_contract.md) ─
+# The verdict surface itself is scored on measured fixtures in
+# tests/ros/test_ball_possession.py; here we test the NODE's half — the tolerance
+# it constructs the source with, that every caller routes through the one seam,
+# and that the log an operator scores by eye says what was observed.
+
+
+def _latch(node, now, ball_id=5):
+    """Put ball_id IN_FLIGHT so _update_announced_ball_latch adopts it."""
+    with node._lock:
+        node._balls = [_Ball(status=1, id=ball_id)]
+        node._balls_mono = now
+    node._build_observations(now)
+
+
+def test_possession_tolerance_is_the_catching_aperture():
+    """Drift guard on the bound: it is the catching structure's entry aperture,
+    not a tuned number, so a geometry change moves it. The 200.0 it replaced sat
+    4.9 mm under the measured corrupt-track floor (204.9 mm) — a 1.02x margin
+    against minting a FALSE CAUGHT."""
+    from jugglebot.ball_possession import lateral_miss_mm
+    from jugglebot.reload_coordinator_node import _CAUGHT_MAX_XY_ERROR_MM
+    assert _CAUGHT_MAX_XY_ERROR_MM == pytest.approx(hw.GEOM_ARM_RADIUS_MM)
+    node = ReloadCoordinatorNode()
+    assert node._possession_source.arrival_tol_mm == pytest.approx(
+        _CAUGHT_MAX_XY_ERROR_MM)
+    # The margins, asserted against the SHIPPED constant rather than the geometry
+    # it is sourced from — otherwise a re-tune of the constant alone would leave
+    # the margin claim green while the shipped gate degraded.
+    ref = node._catch_point_mm
+    clean = max(lateral_miss_mm((x, y, z), ref)
+                for _i, x, y, z in fx.SELF_TOSS_CAUGHT)
+    corrupt = min(lateral_miss_mm((x, y, z), ref)
+                  for _i, x, y, z in fx.RELOAD_CAUGHT)
+    assert _CAUGHT_MAX_XY_ERROR_MM / clean > 18.0        # above real catches
+    assert corrupt / _CAUGHT_MAX_XY_ERROR_MM > 2.9       # under corrupt tracks
+
+
+@pytest.mark.parametrize('ball_id,x,y,z', fx.SELF_TOSS_CAUGHT)
+def test_node_counts_every_real_self_toss_catch(ball_id, x, y, z):
+    """End to end through the node: all 17 real catches of 2026-07-27 reported
+    MISSED because the deleted z bound (305-1007 mm of dead-reckoning) could never
+    pass. RED for every one of the 17 against the pre-2026-07-28 gate."""
+    now = 100.0
+    node = _node_fresh(now)
+    _latch(node, now)
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=x, y=y, z=z)]
+        node._balls_mono = now
+    obs = node._build_observations(now)
+    assert obs.ball_caught is True
+    assert obs.catch_error_mm < hw.GEOM_ARM_RADIUS_MM
+
+
+@pytest.mark.parametrize('ball_id,x,y,z', fx.RELOAD_CAUGHT)
+def test_node_refuses_every_corrupt_reload_track(ball_id, x, y, z):
+    """The negative set stays rejected end to end."""
+    now = 100.0
+    node = _node_fresh(now)
+    _latch(node, now)
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=x, y=y, z=z)]
+        node._balls_mono = now
+    assert node._build_observations(now).ball_caught is False
+
+
+def test_possession_source_is_pluggable_at_one_seam():
+    """C-POSSESS-1 § 3: the ball-in-cup hand sensor becomes the PRIMARY source by
+    replacing ONE attribute — no call site changes.
+
+    Proven, not asserted: a substitute source flips the verdict on a fixture the
+    tracker source refuses, and it is reached from all THREE consumers (the
+    possession latch in _on_balls, the reload observation builder, and the toss
+    observation builder), so none of them has its own private copy of the rule."""
+    from jugglebot.ball_possession import (
+        PossessionVerdict, RETENTION_CONFIRMED, SOURCE_HAND_BALL_SENSOR)
+
+    class _AlwaysYes:
+        name = SOURCE_HAND_BALL_SENSOR
+
+        def __init__(self):
+            self.calls = []
+
+        def judge(self, ball_xyz_mm, ref_point_mm):
+            self.calls.append(tuple(ball_xyz_mm))
+            return PossessionVerdict(self.name, True, RETENTION_CONFIRMED,
+                                     0.0, 0.0, 'SENSOR_HELD')
+
+    corrupt = fx.RELOAD_CAUGHT[0][1:]              # 726 mm out — tracker refuses
+    now = 100.0
+    node = _node_fresh(now)
+    _latch(node, now)
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=corrupt[0], y=corrupt[1],
+                             z=corrupt[2])]
+        node._balls_mono = now
+    assert node._build_observations(now).ball_caught is False   # tracker source
+
+    fake = _AlwaysYes()
+    node._possession_source = fake
+    assert node._build_observations(now).ball_caught is True
+    node._on_balls(types.SimpleNamespace(
+        balls=[_Ball(status=2, id=5, x=corrupt[0], y=corrupt[1], z=corrupt[2])]))
+    assert node._ball_possession is True
+    node._build_toss_observations(now)
+    assert len(fake.calls) >= 3            # all three consumers reached the seam
+
+
+def test_possession_verdict_logged_once_per_outcome():
+    """One INFO line per (ball, verdict) — the accepted line is what the bench
+    scores the gate against by eye (runbook row POSS-1), and the refused line must
+    name the dead-reckoning error model rather than reading as an error in a
+    working sequence."""
+    now = 100.0
+    node = _node_fresh(now)
+    rec = _RecLogger()
+    node._logger = rec
+    _latch(node, now)
+    clean = fx.SELF_TOSS_CAUGHT[0][1:]
+    with node._lock:
+        node._balls = [_Ball(status=2, id=5, x=clean[0], y=clean[1], z=clean[2])]
+        node._balls_mono = now
+    for _ in range(4):
+        node._build_observations(now)
+    ok_lines = [m for lvl, m in rec.records
+                if 'Ball 5' in m and 'CONFIRMED' in m]
+    assert len(ok_lines) == 1
+    assert all(lvl == 'info' for lvl, m in rec.records if 'Ball 5' in m)
+    assert 'UNKNOWN' in ok_lines[0]          # retention is stated, never implied
+
+    corrupt = fx.RELOAD_CAUGHT[0][1:]
+    with node._lock:
+        node._balls = [_Ball(status=2, id=7, x=corrupt[0], y=corrupt[1],
+                             z=corrupt[2])]
+        node._balls_mono = now
+        node._announced_ball_id = 7
+    for _ in range(4):
+        node._build_observations(now)
+    no_lines = [m for _l, m in rec.records if 'Ball 7' in m and 'REFUSED' in m]
+    assert len(no_lines) == 1
+    assert 'dead-reckoned' in no_lines[0]
+
+
+def test_catch_error_is_horizontal_only():
+    """`catch_error_mm` is a LATERAL miss. Folding the vertical component in would
+    report 305-1007 mm of dead-reckoning as catch inaccuracy on every real catch —
+    and it is the same formula the gate decides on (one computation, not two)."""
+    node = ReloadCoordinatorNode()
+    ball = _Ball(status=2, id=5, x=30.0, y=40.0, z=-500.0)
+    assert node._catch_error_from_ball(ball) == pytest.approx(50.0)
+    assert node._possession_confirmed(ball) is True
 
 
 # ── catch_vel_scale relay + prime retry ────────────────────────────────────────

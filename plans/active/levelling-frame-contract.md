@@ -1321,8 +1321,13 @@ the CORRECTED note). The executable version, with commands, lives in
 **REPORT, do not gate:**
 - Tracker catch error. **Expect ≈16 mm, unchanged** — the original `< 10 mm`
   target assumed this plan closed the 0.30° through-seat residual, which it does
-  not. Judge the catch by eye as well; tracker verdicts still read MISSED on real
-  catches (see the Phase-7 reload arc).
+  not. Judge the catch by eye as well. *(Updated 2026-07-28 — this read "tracker
+  verdicts still read MISSED on real catches (see the Phase-7 reload arc)", which
+  since contract C-POSSESS-1 is true only for the reload path.)* This row is a
+  **self-toss**, so its `outcome` is now expected to read `CAUGHT` on a real catch
+  and a `MISSED` is a **finding** — route to
+  `tests/hardware/session_anomaly_fixes.md` § SECTION POSS. Reload verdicts still
+  read `MISSED`, correctly.
 - Peak commanded `rx` above the park. **Never a gate — the earlier "at or above
   +3.099° ⇒ ABORT" line is retired.** Post-fix this equals the platform's
   physical peak tilt against gravity and equals `0.789132° × (catch lead in s)`

@@ -718,6 +718,35 @@ What this does **not** close, handed to the operator:
 - **The co-located (`B == A`) 8b path has never run on hardware.** All 11 validated
   T4 throws were displaced. Row `TIER-D` covers it.
 
+#### `CCATCH-2t` is SCORABLE again since 2026-07-28 (cross-reference)
+
+Phase 4 records `CCATCH-2t` — the **self-toss** tracker catch error — as *"tracker
+corruption confined to Z, so the lateral half is recoverable at 0–4 mm but was not
+formally scored"*. That blocker is retired. **This plan closed no phase for it**;
+the work belongs to the post-sitting follow-on programme, item **B**
+(`plans/active/PROMPT-anomaly-fixes-orchestration.md` § Follow-on programme), and
+is recorded there and in `logbook/2026-07-28-caught-gate-xy-plausibility.md`. It is
+cross-referenced here only because it changes how a Phase-4 row is scored.
+
+What changed: contract **C-POSSESS-1**
+(`ros_ws/docs/ball_possession_contract.md`) deletes the unsatisfiable `z_err <= 150
+mm` half of the CAUGHT gate — the corruption Phase 4 observed as "confined to Z" was
+the gate reading a dead-reckoned free-fall extrapolation as if it were a
+measurement. Self-toss verdicts go **0/17 → 17/17** on this sitting's own capture,
+so `CCATCH-2t` can now be scored from `outcome` rather than by eye, and the lateral
+number it wants is published as `catch_error_mm` (horizontal-only, by contract).
+Score it with `tests/hardware/session_anomaly_fixes.md` § SECTION POSS row
+**POSS-1**, whose analysis command is
+`tools/probes/possession_verdict_bag_check.py --bag <BAG>`.
+
+**Two caveats that bear on Phase 4's other rows.** (1) The **reload** path still
+reads `MISSED` on a real catch — the split-track mis-association is a separate open
+investigation — so `ZSEAT-2`'s catch **rate** arm must still be scored by the mocap
+floor census, exactly as it was. (2) The 70 mm arrival bound is knowingly
+under-sized for a healthy reload path (measured real-marker arrivals 34.4–68.4 mm,
+a 1.02x margin) and must be re-derived by the tracker phase — contract § 4, bench
+row `POSS-1.6`.
+
 ## Risk register
 
 | Risk | Mitigation | Status |

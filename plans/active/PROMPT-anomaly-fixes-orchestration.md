@@ -77,6 +77,63 @@ Dependencies and file contention drive this, not plan numbering.
 | 10 | Emit `tests/hardware/session_anomaly_fixes.md` | Consolidated operator checklist. | **DONE** — accumulated across phases |
 | 11 | **Run close-out** — 9b review repairs + whole-file runbook coherence pass | Added in-run. The runbook accumulated append-only across eleven phases, so rows written early contradicted code that landed later; a top-to-bottom operator would have aborted a healthy sitting on at least four of them. | **DONE 2026-07-27** — see § Run close-out — Outcome |
 
+### Follow-on programme (post-sitting, added 2026-07-28)
+
+Ordered after the 2026-07-27 validation sitting. Same one-workflow-per-item shape.
+
+| Item | Scope | Status |
+|---|---|---|
+| **B** | `caught-gate` — **CAUGHT plausibility gate: un-break the possession verdict** (z-corrupt, xy clean) | **DONE 2026-07-28** — see Outcome below |
+| C | `seat-experiment` prep — the zero-seat A/B the sitting could not separate | pending |
+| D | hand post-release deceleration (operator decision (b), 2026-07-28) | pending |
+| E | displaced-throw (8b) programme — throw-site-from-current-pose rework, envelope, cap raise | pending |
+| F | `toss_continuous` — `stop_on_miss` defaults TRUE (operator decision (c)) | pending |
+
+#### Item B — Outcome
+
+**Landed 2026-07-28.** Commits `<CODE_SHA>` (code + contract + tests + runbook) and
+`<DOC_SHA>` (SHA backfill). Logbook:
+`logbook/2026-07-28-caught-gate-xy-plausibility.md`. Contract:
+`ros_ws/docs/ball_possession_contract.md` (**C-POSSESS-1**).
+
+The root cause was not "150 mm was too tight" — it was *a plausibility bound
+applied to an observable whose error model was never written down*. The tracker
+declares CAUGHT **because the mocap marker vanished**, so the published position is
+a dead-reckoned free-fall extrapolation whose error lands almost entirely in z
+(measured: z 305–1007 mm against xy 0.30–3.88 mm across the sitting's 17
+self-tosses). The `z_err <= 150 mm` half was therefore unsatisfiable and `success`
+was False **by construction on every ball op the machine has ever run**. The z bound
+is deleted (REPORT-only as `plane_drop_mm`, forever); the xy bound is single-sourced
+from `GEOM_ARM_RADIUS_MM`. Self-toss verdicts go **0/17 → 17/17** on the sitting's
+own data; all 18 corrupt reload tracks stay refused, which is the honest verdict.
+
+Full suite: `python -m pytest tests/ -q`, run 2026-07-28 on the Jetson in the
+project venv: **4059 passed, 3 xfailed, 198 warnings in 1405.75 s (0:23:25)**,
+exit 0 (+92 on the `a5972ec` baseline of 3967 passed + 3 xfailed; xfail unchanged).
+
+**Deferred to the operator / later phases — three items, deliberately not closed
+here:**
+1. **No RETENTION (fate) term shipped.** The brief specified arrival AND
+   persistence; what shipped is arrival-only, so an arrive-then-leave bounce-out is
+   still minted CAUGHT. Rejected candidates and their failure modes are enumerated
+   in contract § 7; the ball-in-cup hand sensor closes it. Bench row **POSS-1.2b**
+   is a REPORT row that sizes that work — deliberately **not** an ABORT.
+2. **The 70 mm bound is knowingly under-sized for the RELOAD path** and must be
+   re-derived by the tracker phase, not nudged at the bench. Measured real-marker
+   reload arrivals are 34.4–68.4 mm (a **1.02x** margin), plus up to 80 mm of
+   catch-reach displacement the reference point does not follow. Contract § 4; bench
+   row **POSS-1.6**.
+3. **The earlier `go_home` has never run on hardware** with a ball in the cup. Bench
+   row **POSS-2.4** measures ball retention through it and retires the contract's
+   "same class as today" assertion. A zero-risk decoupling is pre-written in
+   contract § 5 residual 2 if the operator wants it.
+
+Also corrected during finalize: the handed-off tracker signature was **factually
+wrong** in five artefacts (it claimed the reload filters "received no measurements
+at all"; they in fact all reach `tracking=CONFIRMED` with 31–516 mm/s velocity
+spread — they are *mis-fed*, not starved). That would have sent the tracker
+investigation after the wrong defect. See the logbook entry's Discussion.
+
 ## Workflow shape — one Workflow invocation per phase
 
 Do **not** try to pipeline all fourteen phases in one script. One workflow per
@@ -238,8 +295,10 @@ the operator will execute them:
     `Not enough time for smooth-move` on the Teensy serial;
 - which analysis command turns each capture into a verdict (the plan-2 P0 probe is
   the instrument for the dip; FK of `/leg_setpoint_echo` for the tilt);
-- a reminder that tracker verdicts still read MISSED on real catches, so catches
-  are judged by eye as well as by `outcome`;
+- a reminder to judge catches by eye as well as by `outcome`, **split by path**
+  since contract C-POSSESS-1 landed (2026-07-28): self-toss verdicts are now
+  expected to be correct, so a self-toss `MISSED` on a watched catch is a
+  *finding*; reload verdicts still read `MISSED` on a real catch, correctly;
 - a reminder to reboot the can-bridge Teensy before the session, and that
   `levelling_complete` is per-boot so a manual `level` is always required;
 - for each check, which plan and phase it validates, so a failure routes back to

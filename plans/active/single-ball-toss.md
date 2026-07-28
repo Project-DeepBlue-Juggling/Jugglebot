@@ -53,7 +53,9 @@ production-in-the-loop sim harness, and stages hardware bring-up.
 the `Reload` action is the loader. The operator sequence is Reload → Toss
 (→ Toss …), which also means every toss session inherits the Phase-7 session
 disciplines (can-bridge Teensy reboot before each sitting; `uptime_ms` logged
-with any timing measurement; tracker-corruption verdicts judged by eye).
+with any timing measurement; tracker-corruption verdicts judged by eye — **on the
+reload path only** since C-POSSESS-1 landed 2026-07-28; self-toss verdicts are now
+expected to be right, so a self-toss `MISSED` is a finding).
 
 ## Architecture
 
@@ -349,9 +351,14 @@ rungs below are the specification; the runbook is the authority.
 - **ERR_TIMEOUT epidemic (open, Phase-7)** — more hand dispatches per action
   means more exposure; the telemetry ladder is the mitigation; the standing
   investigation stays open.
-- **Tracker verdict corruption (open, Phase-7)** — CAUGHT may read MISSED;
-  hardware PASS counts are judged by eye + tracker-id evidence, as in the
-  fourth sitting.
+- **Tracker verdict corruption (open, Phase-7) — PARTLY RETIRED 2026-07-28.**
+  Split by path since contract **C-POSSESS-1**
+  (`ros_ws/docs/ball_possession_contract.md`): **self-toss** verdicts are now
+  correct (17/17 on the 2026-07-27 capture, where the shipped gate scored 0/17),
+  so a self-toss `MISSED` on a watched catch is a **finding**, not expected noise.
+  **Reload** verdicts still read `MISSED` on a real catch — the split-track
+  mis-association is still open — and PASS counts on that path are still judged by
+  eye + tracker-id evidence, as in the fourth sitting.
 - **Teensy-uptime tracking lag (open)** — all timing-sensitive measurements
   (achieved flight time, catch error) are only meaningful with a fresh
   can-bridge boot; `uptime_ms` is logged alongside every session artefact.

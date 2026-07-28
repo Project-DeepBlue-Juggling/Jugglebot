@@ -39,8 +39,12 @@ passes, or 7c before 7b passes.**
 >    the hand is accepted instead of re-dispatched (the ack channel lies ~59 % of
 >    calls). If you still see a mid-ascent yank, that is NEW evidence.
 > 3. **The launch shell now tells the truth**: ONE outcome line per reload
->    ("Reload CAUGHT/MISSED/..."); the arm-failed and IMPLAUSIBLE spam is demoted
->    (DEBUG/INFO). WARNs you still see are meaningful — note them.
+>    ("Reload CAUGHT/MISSED/..."); the arm-failed and possession-refusal spam is
+>    demoted (DEBUG/INFO). WARNs you still see are meaningful — note them.
+>    *(Updated 2026-07-28: the refusal line is now `Ball N at (x, y, z) mm:
+>    possession REFUSED by tracker_arrival — …`; the old `is IMPLAUSIBLE` wording
+>    is gone, so a grep for it silently returns nothing. Contract
+>    `ros_ws/docs/ball_possession_contract.md`.)*
 > 4. **Expectations for the miss rate**: this round removes only the self-inflicted
 >    platform-move class. Late arrivals (one ball arrived 0.31 s late — 0.18 s after
 >    the hand had already retracted) and BB scatter (one landed 105 mm off-centre)
@@ -81,8 +85,13 @@ passes, or 7c before 7b passes.**
 >    a reachable catch pose" (all 12 third-sitting goals falsely read
 >    MISSED_INFEASIBLE_WORKSPACE off corrupt-track rejects). Expect caught balls to
 >    read `MISSED` while the tracker corruption stands — **keep judging seating by
->    eye/hand telemetry**, and keep counting "IMPLAUSIBLE" warnings for the tracker
->    investigation.
+>    eye/hand telemetry**, and keep counting the possession-refusal lines for the
+>    tracker investigation. *(Updated 2026-07-28: grep `possession REFUSED`, not
+>    `IMPLAUSIBLE` — the wording changed. The RELOAD expectation is unchanged and
+>    correct: every Ball-Butler track in the 2026-07-27 capture is a split track
+>    whose filter is fed by the WRONG marker, so the gate refuses all of them by
+>    design. It is the SELF-TOSS verdict that was un-broken — see
+>    `ros_ws/docs/ball_possession_contract.md` § 4.)*
 > 6. **Watch for `hand prime dispatch failed (attempt N/4)` warnings**: the hand
 >    dispatch path failed ~40–60 % per call last session even on a fresh reboot (a
 >    bridge-Teensy CAN TX issue, investigation queued — NOT the uptime-lag regime).
@@ -117,8 +126,10 @@ passes, or 7c before 7b passes.**
 >    one throw each, judge seating.
 > 4. **CAUGHT verdicts are honest now**: the re-test's 5 spurious `CAUGHT` results
 >    came from corrupt tracker tracks coasting below the floor; those are rejected
->    (watch for "tracker CAUGHT … is IMPLAUSIBLE" warnings — each one is more
->    evidence for the OPEN tracker investigation). Expect `MISSED` on a bounce-out —
+>    (watch for `possession REFUSED by tracker_arrival` lines — each one is more
+>    evidence for the OPEN tracker investigation; the wording was
+>    "tracker CAUGHT … is IMPLAUSIBLE" before 2026-07-28). Expect `MISSED` on a
+>    bounce-out —
 >    **and note that while the corruption stands, a REAL catch may ALSO read
 >    `MISSED`** (the latched announced track is the corrupt one, so its CAUGHT is
 >    rightly rejected). During the vel-scale sweep, judge seating **by eye and hand

@@ -116,8 +116,9 @@ A toss needs a ball seated in the cup. Load it with a Reload (BB throws, JB catc
 ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload \
   "{throw_delay_s: 0.0, catch_vel_scale: 0.0}" --feedback
 ```
-- **PASS**: `outcome: CAUGHT` (or judge by eye — tracker verdicts can read MISSED on
-  a real catch; § Open items). Confirm a ball is physically in the cup before tossing.
+- **PASS**: `outcome: CAUGHT` (or judge by eye — a RELOAD verdict still reads MISSED
+  on a real catch, correctly; § Open items). Confirm a ball is physically in the cup
+  before tossing.
 - If reload misses, retry until a ball is seated. (The toss will not check possession
   — YOU confirm the ball is there.)
 
@@ -212,8 +213,11 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.6}" --feedback
 ```
 - Load a ball before each attempt; 5 attempts.
-- **PASS**: ≥ **3/5** caught (judge by eye + tracker-id evidence — verdicts may read
-  MISSED on a real catch). **ABORT**: uncontrolled platform motion; hand re-dispatch;
+- **PASS**: ≥ **3/5** caught (judge by eye + tracker-id evidence). *(Updated
+  2026-07-28: a SELF-TOSS verdict should now be trustworthy — the possession gate
+  read 17/17 real catches on the 2026-07-27 capture where it previously read 0/17.
+  A self-toss reading `MISSED` on a catch you watched land is a **finding**. See
+  § Open items.)* **ABORT**: uncontrolled platform motion; hand re-dispatch;
   E-STOP.
 
 ## T2 — height ladder (centre)
@@ -276,8 +280,18 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 ## Open items / watch (carried from the reload arc)
 
-- **Tracker verdict corruption**: CAUGHT can read MISSED — judge PASS counts by eye +
-  the tracker-id-correlated evidence, as in the Phase-7 fourth sitting.
+- **Tracker verdict corruption**: *(rewritten 2026-07-28 — half of what this said is
+  no longer true, and the wrong half would make an operator ignore a working verdict.)*
+  The possession gate was fixed (contract **C-POSSESS-1**,
+  `ros_ws/docs/ball_possession_contract.md`): it ANDed a `|z − catch_z| ≤ 150 mm`
+  bound onto a quantity that is a dead-reckoned free-fall extrapolation, so it scored
+  **0 of 17** real self-toss catches. **Self-toss** verdicts are now expected to be
+  right (17/17 offline on the 2026-07-27 capture) — a `MISSED` on a catch you watched
+  land is a finding. **Reload** verdicts still read `MISSED` on a real catch and that
+  is correct: every Ball-Butler track in that capture is a split track carrying no
+  measurements, so the gate refuses to mint a verdict from it. Keep judging by eye +
+  the tracker-id-correlated evidence until a sitting has scored
+  `tests/hardware/session_anomaly_fixes.md` § SECTION POSS row `POSS-1`.
 - **ERR_TIMEOUT epidemic**: more hand dispatches = more exposure; the telemetry-verified
   ladder is the mitigation; log dispatch-failure WARNs / any `ABORTED_NO_RELEASE` as
   epidemic gauge data (two consecutive `ABORTED_NO_RELEASE` ⇒ stop).

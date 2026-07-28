@@ -119,9 +119,26 @@ row can just say "standing rules apply".
    > "since last bootup"), not the can-bridge power-cycle standing rule 1 mandates.
    > Record which case you got — that observation settles the race question for
    > every future sitting, and is worth more than the checks themselves.
-3. **The tracker still reports `MISSED` on real catches.** Judge every catch **by
-   eye** as well as by `outcome`, everywhere in this file. Record one truthful
-   outcome line per attempt.
+3. **Judge every catch by eye as well as by `outcome`, everywhere in this file,
+   and record one truthful outcome line per attempt.** *(Rewritten 2026-07-28.
+   This rule read "The tracker still reports `MISSED` on real catches" — half of
+   that is no longer true, and the wrong half is the one that would make an
+   operator ignore a working verdict.)*
+
+   The possession gate was fixed (contract **C-POSSESS-1**,
+   `ros_ws/docs/ball_possession_contract.md`). What to expect now, per path:
+
+   - **self-toss** — `outcome: CAUGHT` on a real catch. Scored offline on the
+     2026-07-27 capture the gate reads **17 / 17** where it previously read
+     **0 / 17**. A self-toss reading `MISSED` on a catch you watched land is now
+     a **finding**, not the expected noise.
+   - **reload** — still `MISSED` on a real catch, and that is correct behaviour,
+     not a residual bug. Every Ball-Butler track in that capture is a split track
+     whose filter is fed by the **wrong marker**, so the gate refuses to mint a
+     verdict from it. It changes when the tracker investigation closes, or when the
+     hand sensor becomes the primary source — not before.
+
+   Row **POSS-1** is where you write the by-eye counts down beside the gate's.
 4. **`run_mpc.py` must NOT be running** (sole-binder on :5557) unless a check says
    so. Only CHECK FK-4 wants it, and FK-4 is optional.
 5. **Two Python environments, and mixing them up costs you the capture.** The trace
@@ -145,7 +162,7 @@ BLOCKED, so row C still depends on you running its check.**
 
 | | what changed | what you must do | **how you find out you skipped it** |
 |---|---|---|---|
-| **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT (commits `aea7b49`, `e58ed89`, and the hand phases) | `colcon build --packages-select jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py` | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
+| **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT, **POSS** (commits `aea7b49`, `e58ed89`, the hand phases, and the C-POSSESS-1 commit). **§ SECTION POSS adds a NEW module** (`ball_possession.py`), which is the one shape that can land half-applied from a cached build | `colcon build --packages-select jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py` | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4 and **PF-7**, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
 | **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) and `RobotState.msg` gained `platform_fw_version` / `platform_fw_version_read` (§ Section FW) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically, now from two nodes.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s. **`teensy_bridge_node` behaves DIFFERENTLY — do not expect it to exit.** Its 100 Hz `_publish_robot_state` assigns the two new `RobotState` fields but *catches its own exceptions*, so a half-rebuild there gives you **one throttled `Robot state publish error:` per 5 s and a silently-dead `/robot_state`** — the node stays in `ros2 node list` looking healthy while the orchestrator stalls in BOOT and blames power/CAN. Since 2026-07-27 it also logs, once at construction, `INTERFACES_STALE: …` naming the missing fields and the exact rebuild command — **grep that first** (`grep INTERFACES_STALE "$LOG"`). Note this matters most when `jugglebot_interfaces` is only *partly* stale: if it already carries `gravity_correction_loaded` from an earlier sitting, `trajectory_node` does NOT exit and the loud row-B signature above never appears |
 | **C** | `ros_ws/src/jugglebot/Teensy_code/Trajectory.h` + the regenerated `Teensy_code/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`), and `Teensy_code.ino`'s `FW_VERSION` identity block (§ Section FW) | **FLASH `Teensy_code/Teensy_code.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **Loudly, since 2026-07-27 — read the box below.** `link_status/platform_fw_version` reads `0 (PRE-VERSIONING)` on an un-flashed board and `1` on a flashed one, and the launch log carries a `PLATFORM_FW_CHECK: FAIL` ERROR. Run-sheet row **FW-1** |
 
@@ -392,6 +409,9 @@ grep -c gravity_correction_loaded $INST/trajectory_node.py
 grep -c NOT_LEVELLED $INST/toss_sequencer.py
 grep -c 'start_vel = current_hand_velocity' \
   ~/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code/Trajectory.h
+test -f $INST/ball_possession.py \
+  && grep -q GEOM_ARM_RADIUS_MM $INST/reload_coordinator_node.py \
+  && echo PF7_OK || echo PF7_STALE
 ```
 
 | # | PASS | ABORT | routes to |
@@ -402,6 +422,7 @@ grep -c 'start_vel = current_hand_velocity' \
 | PF-4 | `PF4_OK` then `0` for `_apply_gravity_correction` | `PF4_STALE`, or a non-zero count (the deleted second copy is back) | `levelling-frame-contract` P1–P2 (§ LVL-0) |
 | PF-5 | all three `gravity_correction_loaded` / `NOT_LEVELLED` counts **non-zero** (at the Phase-3 commit: `1`, `3`, `2` — treat the exact numbers as informational, **zero** is the failure) | any count `0` | `levelling-frame-contract` P3 (§ LG-0) |
 | PF-6 | `1` hit for `start_vel = current_hand_velocity` | `0` — you are on a pre-Phase-4 tree; **do not flash it**, `git pull` first | `hand-command-continuity` P4 (§ H4.0a) |
+| PF-7 | `PF7_OK` | `PF7_STALE` — `ball_possession.py` is a **new module**, so a partially-cached build is the one way this lands half-applied. Rebuild before capturing: the § SECTION POSS checks are read at *scoring* time, hours later, and a stale install makes POSS-1 score a false ABORT on a capture you can no longer retake | `catch-reach-degenerate-overshoot` follow-on B (§ SECTION POSS) |
 
 Then, **with the graph up** (still read-only):
 
@@ -515,6 +536,7 @@ running:
 | LVL-4 | mocap cross-check (does not share the FK path) | **REPORT-ONLY since 2026-07-27 — it is no longer a gate, and the old `±0.10°` PASS is the PRE-fix reading.** Run § LVL-4's inline reader and record the parked Platform-vs-`Base` tilt; expect it to have moved BY the correction, to **≈ 0.78°** (pre-fix baseline **0.087°**) | nothing here aborts on its own. `≈ 1.56°` (twice the correction) is worth stopping for — **confirm on LVL-3 first**, which is the instrumented, gated version of the same question | `levelling-frame-contract` P1–P2, § LVL-4 |
 | CCATCH-2 | **the catch-reach headline** — a level catch commands NO swing | commanded `rx` across the pre-tilt reach **monotone** toward the target, peak above park ≤ `1.05 ×` the requested displacement; toss settle `rx`/`ry` = the target to **±0.05°**; residual vs gravity at contact **≤ 0.05°**; plan segments **2**; `peak_leg_acc/jerk` **≈ 1.2 / ≈ 3** (was `142.4 / 3950`) | any excursion **away** from the target > `0.05°`; settle at `−1.0784 / −0.0958°` (the old aim is live); 3 segments; still `≈142 / ≈3950` | `catch-reach-degenerate-overshoot` P2, § CCATCH-2 |
 | CCATCH-2t | tracker catch error on a **self-toss** | **< 10 mm** | ≥ 16 mm — the improvement did not land. **Judge by eye too** (standing rule 3) | `catch-reach-degenerate-overshoot` P2, § CCATCH-2 |
+| POSS-1 | **the possession verdict, against your own eyes** — the gate was structurally always-False until 2026-07-28 | **self-toss**: gate `CAUGHT` count **== by-eye catch count**, and `>= 6/7` of the tosses run. **reload**: gate `CAUGHT` count **0** and every attempt logs one `possession REFUSED` line (that IS the pass — see standing rule 3). Every attempt has exactly one INFO `Ball N: possession …` line per verdict | self-toss gate count **< by-eye count − 1** (a real catch scored MISSED); a self-toss `possession CONFIRMED` on a ball that **never arrived at the cup** (a wide miss); a reload reading `CAUGHT` (the split-track corruption would have to have healed — verify before believing it). **NOT an abort**: a `CONFIRMED` on a ball that arrived and *then* left — that is specified behaviour until the cup sensor lands, and is REPORT row `POSS-1.2b` | § SECTION POSS |
 | ZSEAT-2 | **the one genuinely open experiment** — did removing the seat from an 11.08° tilted rim cost catches? | catch **RATE ≥ 0.63** (≥ 8/12, ≥ 12/19 — score the rate, the sitting only mandates `n ≥ 12`); **bounce-outs ≤ 1** across the sitting; commanded tilt over the last 0.8 s before landing **flat, < 0.05°** | rate **≤ 0.58** (≤ 6/12, ≤ 11/19); **≥ 3 bounce-outs or ≥ 2 consecutive**; `≈ 0.9°` of round trip in the last 0.8 s (stale install). **A rate strictly between 0.58 and 0.63 is INCONCLUSIVE, not a failure** — report the raw count and extend toward `n = 19` before deciding | this section — § ZSEAT-2. **Not** C-CATCH-1, **not** the levelling contract |
 | ZSEAT-3 | the capture agrees with the offline counterfactual | arrival tilt rate at contact **`0.000000`**; reload settle `+1.774062 / −10.636334°` (= the target) to **±0.02°**; segments **2**; predicted `29.0 / 37.9 / 170` | non-zero arrival rate; \|settle − target\| > 0.02°; 3 segments; still `142.0 / 3935` | `catch-reach-degenerate-overshoot` P3, § ZSEAT-3 |
 | ZSEAT-4 | the throw is stationary at release | commanded pose over `release ± 0.10 s` **flat**: `< 0.02°` and `< 0.2 mm` | any commanded motion — a plan is running through the release | `catch-reach-degenerate-overshoot` P3, § ZSEAT-4 |
@@ -540,6 +562,7 @@ python tools/probes/catch_reach_replay.py --bag $BAG --list           # index th
 python tools/probes/catch_reach_replay.py --bag $BAG --toss N --json --csv          # CCATCH-2, CATCH-2
 python tools/probes/catch_reach_replay.py --bag $BAG --thrower ball_butler \
        --toss N --json                                               # CCATCH-3, ZSEAT-3
+python tools/probes/possession_verdict_bag_check.py --bag $BAG        # POSS-1
 
 # --- plain greps of the node logs (no venv needed) ---
 ls -t ~/.ros/log/python3_*.log | head -20 | xargs grep -c "seed FK failed"          # FK-1
@@ -2149,8 +2172,13 @@ Validates: nothing this plan closes — recorded so the number is on file for th
 - **REPORT**: the tracker-measured catch error. **Expect ≈16 mm, unchanged.**
   The plan's `< 10 mm` target is not reachable by this fix (see the pre-brief);
   the 16 mm is the 0.3008° through-seat residual, not the frame plumbing.
-- **REPORT**: judge the catch **by eye** as well — tracker verdicts still read
-  MISSED on real catches (the Phase-7 reload arc).
+- **REPORT**: judge the catch **by eye** as well. *(Updated 2026-07-28 — this
+  read "tracker verdicts still read MISSED on real catches (the Phase-7 reload
+  arc)", which is now only half true and the wrong half would make you discard a
+  real finding.)* This row is a **self-toss**, so since C-POSSESS-1 its `outcome`
+  is expected to read `CAUGHT` on a real catch — a `MISSED` here is a **finding**,
+  not expected noise. Reload verdicts do still read `MISSED`, correctly. Standing
+  rule 3 has the full split; row **POSS-1** is where the counts go.
 - **A catch error materially *below* 16 mm would be a surprise** and is worth
   capturing carefully: it would mean the through-seat model is not the dominant
   term after all.
@@ -2275,8 +2303,12 @@ Not a check yet; recorded so it is not re-derived under time pressure.
 4. Score with CATCH-1 → CATCH-2 → CATCH-3, then
    `tools/probes/levelling_tilt_bag_check.py --offset <TILT_X> <TILT_Y> --t0
    <after the first go_home>` for the park (§ CHECK LVL-3's instrument).
-5. Judge catches **by eye** as well as by `outcome` — tracker verdicts still read
-   MISSED on real catches.
+5. Judge catches **by eye** as well as by `outcome`, and score the two paths
+   differently — see standing rule 3. **self-toss**: `outcome` is expected to read
+   `CAUGHT` on a real catch since C-POSSESS-1, so a `MISSED` is a **finding**.
+   **reload**: still reads `MISSED` on a real catch, correctly.
+   *(Updated 2026-07-28; this read "tracker verdicts still read MISSED on real
+   catches" without qualification.)*
 
 ### Not in this section
 
@@ -2388,8 +2420,12 @@ the counterfactual's "fixed" column, so the two collapse together.
 | `VERDICT` | `REPRODUCED`, exit 0 | `NOT-REPRODUCED` — run CCATCH-1 first |
 | tracker catch error (§ CHECK LVL-5's instrument) | **< 10 mm** | ≥ 16 mm — the improvement did not land |
 
-The tracker still reports `MISSED` on real catches, so **judge catches by eye as
-well as by `outcome`** — as everywhere else in this file.
+**Judge catches by eye as well as by `outcome`** — as everywhere else in this
+file. *(Updated 2026-07-28; this read "The tracker still reports `MISSED` on real
+catches, so …".)* The row above is a **self-toss** (`CCATCH-2t`), and since
+C-POSSESS-1 its `outcome` is expected to read `CAUGHT` on a real catch: a `MISSED`
+on a catch you watched land is a **finding**, and routes to § SECTION POSS. Reload
+catches still read `MISSED`, correctly. Standing rule 3 has the split.
 
 ### CHECK CCATCH-3 — the reload path CHANGED, on purpose (regression watch)
 
@@ -3373,3 +3409,146 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   were added on 2026-07-28 and the `REJECTED_TIER` hint corrected; `REJECTED_POSITION`
   is still missing. That backlog is owned by
   `logbook/2026-07-25-toss-rejected-not-levelled.md` § Follow-ups.
+
+---
+
+## SECTION POSS — the possession verdict (contract C-POSSESS-1)
+
+**What landed, and why it needs a bench row at all.** The coordinator's CAUGHT
+gate ANDed two spatial bounds, and the vertical half — `|z − catch_z| ≤ 150 mm` —
+could not be satisfied by a real catch. The tracker declares CAUGHT *because the
+mocap marker vanished*, so the position it publishes at that instant is a
+dead-reckoned free-fall extrapolation from the last sighting, frozen thereafter.
+Measured across the 2026-07-27 sitting's **17 self-tosses, every one a catch the
+operator watched land**: `xy` error **0.30 – 3.88 mm** against `z` error
+**305 – 1007 mm**. All 17 failed. `success` was False by construction on every
+ball op the machine has ever run, which is why standing rule 3 used to say the
+tracker "still reports MISSED on real catches".
+
+The z bound is deleted (REPORT-only, forever) and the horizontal bound is now the
+catching structure's own entry aperture, `GEOM_ARM_RADIUS_MM = 70 mm`, instead of
+`200 mm`. Full reasoning: `ros_ws/docs/ball_possession_contract.md`.
+
+**This row is a REPORTING check.** Nothing here changes what the robot is
+commanded to do at the moment of a catch. It does change *when a caught toss
+terminates* — see § The one behavioural change below, which is the part to watch.
+
+### Deployment
+
+`colcon build --packages-select jugglebot` **+ relaunch**. No interface rebuild,
+no config regeneration, **no firmware flash**. The launch runs the *installed*
+copy, so without the relaunch the machine reproduces the old always-MISSED
+behaviour exactly and this row scores a false ABORT.
+
+Confirm the installed copy carries it, before the sitting:
+
+```bash
+INST=ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot
+
+# 1. The NEW module must exist in the install tree. It is a new file, so a
+#    partially-cached build is the one way this lands half-applied — and the node
+#    would then fail to import, taking the whole launch down rather than
+#    misbehaving quietly.
+ls -l $INST/ball_possession.py
+
+# 2. The bound must be the geometry-sourced one, not the old 200.0 literal.
+grep -n "GEOM_ARM_RADIUS_MM" $INST/reload_coordinator_node.py
+# expect one hit, on the _CAUGHT_MAX_XY_ERROR_MM assignment.
+# no hit  => the install is stale; rebuild before capturing anything.
+
+# 3. Belt and braces — the deleted bound must be gone.
+grep -c "_CAUGHT_MAX_Z_ERROR_MM" $INST/reload_coordinator_node.py   # expect 0
+```
+
+### CHECK POSS-1 — the gate's verdicts against the operator's eyes
+
+Runs off the CAP-WORK capture; no extra actuation. Score it *after* the sitting,
+from the log lines and the bag.
+
+```bash
+# 1. The per-attempt verdict lines the node emits (one INFO per ball per verdict).
+LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log
+grep -c "possession CONFIRMED" "$LOG"
+grep -c "possession REFUSED"   "$LOG"
+grep    "Ball .*: possession"  "$LOG"     # read them; each names its numbers
+
+# 2. The authoritative per-attempt outcomes.
+grep -c "Toss CAUGHT"   "$LOG"
+grep -c "Toss MISSED"   "$LOG"
+grep -c "Reload MISSED" "$LOG"
+
+# 3. The offline verdict on the same bag (venv — standing rule 5).
+source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
+python tools/probes/possession_verdict_bag_check.py \
+       --bag ~/Desktop/rosbags/<CAP-WORK stamp>
+```
+
+The probe prints one row per destination-tagged track with its arrival error, its
+REPORT-only plane drop, and the verdict the coordinator would mint — so a
+disagreement between it and the live log is itself a finding (they run the same
+production source; a mismatch means the installed copy is not the built one).
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| POSS-1.1 | self-toss `Toss CAUGHT` count vs your by-eye catch count | **equal** | gate count `< by-eye − 1` — a real catch scored MISSED. Route to this section, and record the ball's arrival error from the probe |
+| POSS-1.2 | self-toss `CAUGHT` on a ball that **never arrived at the cup** (a wide miss — the probe shows it as a large arrival error) | **zero** | any. This is the false-positive direction and it outranks POSS-1.1 — stop and record the estimate |
+| POSS-1.2b | self-toss `CAUGHT` on a ball that **arrived and then left** (entered the cup, then bounced/rolled out) | **REPORT — do not abort.** Record the ball id, the arrival error, and what you saw | *(no ABORT)* — this is specified behaviour, not a fault: the tracker source cannot observe RETENTION and the contract forbids it from claiming otherwise (C-POSSESS-1 § 2, § 7). The count you write here **sizes the ball-in-cup sensor work**, which is what closes it |
+| POSS-1.3 | reload `Reload CAUGHT` count | **0**, with one `possession REFUSED` line per attempt. **That is the pass** | a reload reading `CAUGHT`. Not automatically wrong, but it means the split-track corruption changed — verify against the probe's arrival error before believing it |
+| POSS-1.4 | log discipline | exactly **one** `Ball N: possession …` line per (ball, verdict); all at INFO | duplicates, or any at WARN/ERROR |
+| POSS-1.5 | probe vs live agreement | the probe's `CAUGHT` count **==** the log's `possession CONFIRMED` count | any difference ⇒ the installed copy is stale (re-run the deployment grep above) |
+| POSS-1.6 | **reload arrival errors, watched not gated** — the probe's `arrival_mm` column for reload attempts | today: **204.9 – 752.9 mm** (all refused, the corrupt-track signature). Just record the range | *(no ABORT)* — but if any reload arrival error lands in the **30 – 100 mm** band, **stop and read this**: that is the signature of the tracker mis-association *healing*, and the 70 mm bound is **knowingly under-sized** for a healthy reload path. The reload era's real-marker tracks measure **34.4 / 34.9 / 37.6 / 68.4 mm**, so a genuine reload catch sits **1.6 mm inside** the bound — a 1.02x margin, plus up to 80 mm of catch-reach displacement the reference point does not follow. Route to `ros_ws/docs/ball_possession_contract.md` § 4; the bound must be re-derived by the tracker phase, **not** nudged at the bench |
+
+Record the raw counts either way. This is the row that retires "judge by eye"
+across the whole file, and it cannot be retired on one sitting.
+
+### The one behavioural change, and what to watch
+
+Both FSMs already branch on the verdict (`toss_sequencer._step_in_flight`,
+`reload_sequencer._step_in_flight`): a confirmed catch finishes the goal
+immediately with `RECENTER`, an unconfirmed one runs to the settle deadline and
+finishes with `SAFE_ABORT`. **That branch has been dead on hardware for the
+machine's whole life.** From this build it is live on every successful self-toss:
+
+| | before | after |
+|---|---|---|
+| terminal instant | landing + **0.70 s** (`catch_confirm_window_s`) | the CAUGHT tick — measured landing + **0.202 – 0.442 s**, median **0.209 s**, over the 17 self-tosses |
+| terminal action | `SAFE_ABORT` — **retract** the hand, lower latch, `go_home` | `RECENTER` — lower latch, `go_home`, **no retract** |
+
+Checked offline against the 2026-07-27 capture before this shipped: the catch
+stroke has already finished by the CAUGHT tick — hand `pos_meas` sits within
+**±0.045 rev** of the retract target on all 17 (range `−0.045 … +0.026`), where
+0.3 s earlier 7 of the 17 were still descending through **0.30 – 3.10 rev** — so
+the earlier terminal cannot interrupt a moving hand, and skipping the retract
+leaves the hand inside the `±0.5 rev` bottom park band the *next* goal's
+`hand_parked` precondition needs (worst excursion over the following 3 s
+**0.069 rev**, a 7.2x margin).
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| POSS-2.1 | a Toss immediately following a **caught** Toss | accepted — no `REJECTED_HAND_NOT_PARKED` | any such rejection ⇒ `RECENTER` is leaving the hand off the park band. Recover with a Reload (which primes and retracts) and record the `pos_meas` |
+| POSS-2.2 | hand `pos_meas` at the caught toss's terminal | within **±0.5 rev** of `JB_OP_HAND_RETRACT_REV`; expect **\|pos\| ≤ 0.10 rev** (offline worst case 0.069) | `> 0.5 rev` |
+| | *(provenance, if you need to re-derive the 0.069)* | The offline hand-state-after-CAUGHT analysis was a **one-off `/tmp` probe and is not committed**, so this number cannot be re-run from `tools/probes/`. To re-derive: read `/hand_telemetry` `pos_meas` from `~/Desktop/rosbags/2026-07-27_15-39-38` over the 3 s following each self-toss track's first `CAUGHT` sample (track ids ≥ 80; `possession_verdict_bag_check.py` prints the ids). If you find yourself needing it more than once, promote it — CLAUDE.md's probe rule puts reusable harnesses in `tools/probes/` committed | *(not a check)* |
+| POSS-2.3 | the `go_home` after a caught toss | behaves as LVL-2 (same profiled move, ball seated) | any step rejection, `MAX_DEVIATION`, or guard latch |
+| POSS-2.4 | **does the BALL survive the earlier `go_home`?** The ball marker (mocap) at `go_home` completion, relative to the platform's cup axis | still within **35 mm** (`GEOM_HAND_RADIUS_MM`) of the cup axis, on **every** caught toss | the ball leaves the cup during `go_home`. **This is the row that retires an assertion, so run it deliberately.** § 5 of the contract argues this move is "same class as today" from hand `pos_meas` — which says where the *hand* is, not whether the *ball* has come to rest. A caught toss now starts `go_home` **0.26 – 0.50 s earlier**, essentially at the instant the catch stroke arrests the ball, where before it had the full 0.70 s settle window **plus** a retract. This path has never executed on hardware. If you want zero new risk on the first run, ask for the decoupling in the contract's § 5 residual 2 (resolve the verdict early, hold `go_home` to the old deadline) — it lands the reporting fix with no timing change |
+
+`catch/prime_hold` is also released **0.26 – 0.50 s** earlier, re-opening
+`catch_coordinator`'s auto-prime with a ball in the cup. **This is not new**:
+today's `SAFE_ABORT` path releases the same hold at the settle deadline with the
+ball equally seated, after retracting the hand to the same ~0.0 rev the catch
+trajectory already reached. Same state, up to half a second earlier. Watch for an
+unexpected hand ascent after a caught toss and record it if you see one.
+
+### Not in this section
+
+- **Fixing the tracker.** The split-track corruption is an open investigation. Its
+  measured signature is in `ros_ws/docs/ball_possession_contract.md` § 4 and in
+  `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`. POSS-1.3 passing at
+  **0 CAUGHT reloads** is this contract working, not the corruption persisting
+  unnoticed.
+- **The ball-in-cup hand sensor.** Installed 2026-07-28; no code exists for it.
+  When its plumbing lands it becomes the PRIMARY possession source and is the only
+  thing that can answer *retention* — did the ball stay in the cup. Until then the
+  tracker source reports retention `UNKNOWN` and every log line says so.
+- **Turning on `toss_require_ball_evidence`.** Still `false`, deliberately and
+  unchanged. It is a precondition that can refuse a goal, and it belongs to
+  whoever validates the sensor (sitting logbook, decision row (e)).
