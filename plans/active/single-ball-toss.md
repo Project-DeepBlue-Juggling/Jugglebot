@@ -443,7 +443,8 @@ REPORT row that measures it, and the escape hatch is one config flip.
 
 ### Phase E — Outcome (landed 2026-07-29)
 
-**Commits:** _(backfilled immediately after commit)_
+**Commits:** `ad80ff0` (the phase), `38a33cf` (the sim/toss_gate.py asymmetry-map
+seed bugfix, its own logical unit).
 
 **Tests:** `python -m pytest tests/ -q`, run 2026-07-29 on the Jetson in the project
 venv: **4140 passed, 3 xfailed, 196 warnings in 1409.60 s (0:23:29)**, exit 0.
