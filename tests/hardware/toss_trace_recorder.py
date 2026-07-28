@@ -19,7 +19,7 @@ Subcommands::
     python3 tests/hardware/toss_trace_recorder.py record   [--out DIR] [--duration S]
             [--mocap-decimate N] [--rosout-all]
     python3 tests/hardware/toss_trace_recorder.py check    TRACE.jsonl
-            (--dry | --reject) [--epsilon-ms 5.0] [--timeline]
+            (--dry | --reject | --continuous) [--epsilon-ms 5.0] [--timeline]
 
 ``record`` needs the ROS 2 environment (system Python 3.8 with
 ``/opt/ros/foxy/setup.bash`` + ``ros_ws/install/setup.bash`` sourced — NOT the
@@ -29,10 +29,36 @@ names, first/last can-bridge ``uptime_ms`` — the uptime-discipline artifact).
 
 ``check`` is pure stdlib (json/argparse only — no rclpy import on this path),
 so it runs anywhere including the venv.  It evaluates the captured JSONL
-against the Phase-3 ordering invariants (DT-1..DT-14 for the waived dry trace,
-RJ-1..RJ-4 for the un-waived REJECTED_NO_BALL trace — IDs match the runbook and
-the Phase-3 design spec) and prints one PASS/FAIL/AMBIGUOUS/SKIP line per
-invariant.  Exit code 0 iff no FAIL.
+against the ordering invariants (DT-1..DT-14 for the waived dry trace,
+RJ-1..RJ-4 for the un-waived REJECTED_NO_BALL trace, CS-1..CS-6 for a
+``TossContinuous`` SESSION trace — IDs match the runbook and the design spec)
+and prints one PASS/FAIL/AMBIGUOUS/SKIP line per invariant.  Exit code 0 iff no
+FAIL.
+
+``--continuous`` (single-ball-toss Phase F) scores a whole session: the goal
+window is the SESSION goal and the per-cycle tosses live inside it, segmented by
+the ``catch/armed`` edges.  It asks the six questions a mocked-ROS unit test
+cannot, because a session multiplies every cross-process seam by ``num_throws``:
+CS-1 cycle accounting agrees across three independent counts; CS-2 the latch
+strictly alternates (a leaked latch would leave the reactive catch path live
+over a loaded cup for a whole dwell); CS-3 the dwell is quiescent (no
+session-level motion, no auto-prime with a ball in the cup); CS-4 the reach
+envelope is re-declared every cycle (contract C-REACH-1's declaration is
+consumed by each arm); CS-5 no hand move between cycles (the firmware fact the
+whole design rests on); CS-6 one announcement per cycle and no cycle releasing
+before the PREVIOUS SCHEDULED LANDING (the two-clock-domain error unit tests are
+blind to).  CS-6 does NOT score the achieved cadence against the REQUESTED
+dwell — the request is not in the trace; the action result's
+``per_cycle_dwell_s`` is what carries that, and runbook rows CONT-1.8 / CONT-2.5
+are where it is scored.
+
+The checker is verified BOTH directions by ``tools/probes/toss_trace_synth.py``,
+whose matrix carries one all-PASS happy case per trace SHAPE and one violation
+trace per invariant.  For the session that means TWO happy cases, not one:
+``cont_happy`` (every cycle CAUGHT — the STAY teardown) and ``cont_dry`` (every
+cycle MISSED — the SAFE_ABORT teardown, which is the shape the MANDATORY
+CONT-STEP-1 pre-flight actually produces, and whose retract lands inside the
+dwell window CS-3 measures).
 
 **Timestamp honesty (RF-3)**: rows are stamped at callback execution; two
 messages landing in the same executor wait-set cycle can be observed in either
@@ -76,8 +102,12 @@ T_CONTROL_MODE = 'control_mode_topic'
 T_BALLS = 'balls'
 T_MOCAP = 'rigid_body_poses'
 T_LINK = 'link_status'
+T_REACH_CENTER = 'catch/reach_center'
+T_COMMANDED_POS = 'trajectory/commanded_position'
 T_TOSS_FB = '/jugglebot/toss/_action/feedback'
 T_TOSS_STATUS = '/jugglebot/toss/_action/status'
+T_CONT_FB = '/jugglebot/toss_continuous/_action/feedback'
+T_CONT_STATUS = '/jugglebot/toss_continuous/_action/status'
 T_RELOAD_FB = '/jugglebot/reload/_action/feedback'
 T_RELOAD_STATUS = '/jugglebot/reload/_action/status'
 T_ROSOUT = '/rosout'
@@ -92,6 +122,26 @@ CHOREOGRAPHY_TOPICS = (
     T_PRIME_HOLD, T_PRIME_DISPATCHED, T_ARMED, T_VEL_SCALE,
     T_ANNOUNCE, T_DYN_TARGET, T_TARGET_FB,
 )
+
+# CS-3's DWELL-quiescence set: wires that must be SILENT between one cycle's
+# disarm and the next cycle's arm. Deliberately NOT the full choreography set —
+# catch/prime_hold and catch/armed both legitimately carry their False edges in
+# that gap (they ARE the teardown), and catch/target_feedback can carry a late
+# reply to an in-flight target. What must not appear is a new COMMAND.
+#
+# catch/reach_center is deliberately NOT here either, and its absence is
+# load-bearing rather than an omission. The coordinator publishes prime_hold
+# True and reach_center as ADJACENT STATEMENTS in one FSM tick, on two
+# different topics — measured as close as 131 us apart on the 2026-07-27 bag —
+# and the gap this set is scanned over ENDS at that prime_hold True. Per this
+# file's own RF-3 banner, two messages landing in the same executor wait-set
+# cycle can be observed in either order, so an inverted observation would put a
+# CORRECT reach_center inside the window and FAIL CS-3 at a runbook STOP row.
+# Nothing is lost: CS-4 requires EXACTLY ONE reach_center in
+# [disarm_i, arm_{i+1}], which spans this whole gap and is strictly stronger
+# than "none in its leading part".
+DWELL_SILENT_TOPICS = (T_DYN_TARGET, T_ANNOUNCE, T_VEL_SCALE,
+                       T_PRIME_DISPATCHED)
 
 # /rosout default node filter (final dotted name component).
 ROSOUT_NODE_FILTER = {
@@ -110,6 +160,27 @@ STROKE_ONSET_TOL_S = 0.3       # DT-9 onset vs announced throw_time
 MIN_TICK_GAP_S = 0.010         # DT-1/DT-2: below this the >=1-FSM-tick gap
                                # both invariants claim does not hold (FAIL)
 CMD_POS_TOL_REV = 0.05         # cmd-echo "changed" threshold (pos_cmd, rev)
+                               # DT-5's PRE-ANNOUNCEMENT window, where the hand
+                               # is idle and nothing has been dispatched. Do NOT
+                               # reuse it in a post-teardown window (see below).
+DWELL_CMD_POS_TOL_REV = 0.15   # CS-3's DWELL window needs its own, LOOSER bound,
+                               # and the derivation matters because CONT-1.3
+                               # makes a CS-3 FAIL a hard STOP. The dwell opens
+                               # at the disarm, so it contains the teardown's
+                               # retract and its settling echo. MEASURED on the
+                               # 2026-07-27 bag (temp/logs/
+                               # toss_trace_2026-07-27_15-39-50.jsonl) over the
+                               # 16 real post-disarm -> next-prime_hold windows
+                               # that follow a toss (no intervening Reload):
+                               # worst ASCENT above the running floor = 0.0440
+                               # rev, worst |delta| from the first sample =
+                               # 0.0446 rev. At the DT-5 value of 0.05 that is a
+                               # 1.12x margin — a coin-flip false STOP on a
+                               # healthy machine. 0.15 rev keeps 3.4x over the
+                               # measurement (16/16 of those windows pass with
+                               # room) while staying 10x BELOW ASCENT_POS_REV
+                               # (1.5) and 66x below the ~9.96 rev auto-prime
+                               # ascent CS-3 exists to catch.
 CMD_VEL_TOL_RPS = 0.5          # cmd-echo "changed" threshold (vel_ff_cmd, rev/s)
 WINDOW_PRE_PAD_S = 0.5         # scan pad before the goal-accept evidence
 WINDOW_END_PAD_S = 2.0         # scan pad after the terminal evidence (teardown)
@@ -123,6 +194,15 @@ MSG_PRETILT = 'pre-tilt target published from announcement'  # catch_coordinator
 MSG_WAIVER = 'waiving the ball-possession'       # reload_coordinator WARN
 CCN_PRIME_RE = re.compile(r'\bprim(?:ed|ing)\b', re.IGNORECASE)
 OUTCOME_RE = re.compile(r'^Toss ([A-Z][A-Za-z0-9_()]*)')
+# The SESSION outcome line (one per TossContinuous goal, emitted after the N
+# per-cycle `Toss <OUTCOME>` lines — see _log_toss_session_outcome).
+SESSION_OUTCOME_RE = re.compile(r'^TossContinuous ([A-Z][A-Za-z0-9_()]*)')
+# CS-6 cadence tolerance. The dwell is honoured to within one coordinator tick
+# (_TICK_S = 50 ms) on the fast side and absorbs cleanup lateness on the slow
+# side, so the check is ONE-SIDED: never early by more than this, allowed to be
+# late (and reports how late, because a persistently late cadence is a finding
+# for the operator even though it is not a fault).
+CADENCE_EARLY_TOL_S = 0.10
 TRANSIENT_FB_CODES = {'FROZEN', 'STALE_STATE'}
 
 # rcl_interfaces/Log levels (Foxy)
@@ -287,13 +367,34 @@ def outcome_lines(rows: List[dict]) -> List[Tuple[float, str, str]]:
     return out
 
 
-def find_goal_windows(rows: List[dict]) -> List[GoalWindow]:
-    """Goal windows from /jugglebot/toss/_action/status transitions (primary),
-    else from the coordinator's /rosout lines (fallback — spec § 4.4)."""
+def session_outcome_lines(rows: List[dict]) -> List[Tuple[float, str, str]]:
+    """All coordinator 'TossContinuous <OUTCOME>' lines as (t, outcome, msg) —
+    exactly one per session goal, emitted AFTER that session's per-cycle
+    'Toss <OUTCOME>' lines."""
+    out = []
+    for r in rosout_rows(rows, node='reload_coordinator_node'):
+        msg = r['d'].get('msg', '')
+        m = SESSION_OUTCOME_RE.match(msg)
+        if m:
+            out.append((r['t'], m.group(1), msg))
+    return out
+
+
+def find_goal_windows(rows: List[dict], status_topic: str = T_TOSS_STATUS,
+                      outcomes=None) -> List[GoalWindow]:
+    """Goal windows from the action's ``_action/status`` transitions (primary),
+    else from the coordinator's /rosout lines (fallback — spec § 4.4).
+
+    ``status_topic`` / ``outcomes`` are parameterised so the SESSION action
+    (TossContinuous) reuses the identical discovery: one goal, one window, and
+    the per-cycle Toss lines live INSIDE it (which is exactly what CS-1 counts).
+    """
+    if outcomes is None:
+        outcomes = outcome_lines(rows)
     first_seen: Dict[str, float] = {}
     terminal: Dict[str, Tuple[float, int]] = {}
     order: List[str] = []
-    for r in topic_rows(rows, T_TOSS_STATUS):
+    for r in topic_rows(rows, status_topic):
         for gid, st in r.get('d', {}).get('goals', []):
             if st >= STATUS_ACCEPTED and gid not in first_seen:
                 first_seen[gid] = r['t']
@@ -301,7 +402,7 @@ def find_goal_windows(rows: List[dict]) -> List[GoalWindow]:
             if st in TERMINAL_STATUSES and gid not in terminal:
                 terminal[gid] = (r['t'], st)
 
-    lines = outcome_lines(rows)
+    lines = list(outcomes)
     windows: List[GoalWindow] = []
     if first_seen:
         used = set()
@@ -344,7 +445,14 @@ def select_window(windows: List[GoalWindow], mode: str) -> Tuple[Optional[GoalWi
     Returns (window, note)."""
     if not windows:
         return None, 'no goal windows found in the trace'
-    if mode == 'dry':
+    if mode == 'continuous':
+        def match(w):
+            # A session window's outcome line is a SESSION outcome; every one
+            # of them is a legitimate capture (COMPLETED, STOPPED_ON_MISS, and
+            # the ABORTED_CYCLE_* / REJECTED_* refusals the ladder deliberately
+            # provokes), so the only discriminator is "it has one".
+            return w.outcome is not None
+    elif mode == 'dry':
         def match(w):
             return w.outcome is not None and (
                 w.outcome == 'MISSED' or w.outcome.startswith('MISSED')
@@ -1089,10 +1197,334 @@ def check_rj4(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
     return Finding('RJ-4', 'PASS', 'no toss feedback rows in the window')
 
 
+# ── CS-1..CS-6 (continuous session, Phase F) ─────────────────────────────────
+#
+# What a continuous trace has to prove that unit tests CANNOT: mocked-ROS tests
+# are blind to cross-process choreography, and a session multiplies every
+# cross-process seam by num_throws. These six ask the questions whose answers
+# only exist on the wire.
+
+
+def cycle_spans(rows: List[dict], win: GoalWindow) -> List[Tuple[float, float]]:
+    """Segment a session window into per-cycle [arm_true, arm_false] spans off
+    the catch/armed edges — a PHYSICAL observable, independent of the
+    coordinator's own feedback (which CS-1 then cross-checks against it)."""
+    spans: List[Tuple[float, float]] = []
+    open_t: Optional[float] = None
+    for r in topic_rows(rows, T_ARMED, win.pad_start, win.pad_end):
+        val = bool(r['d'].get('value'))
+        if val and open_t is None:
+            open_t = r['t']
+        elif not val and open_t is not None:
+            spans.append((open_t, r['t']))
+            open_t = None
+    if open_t is not None:                    # armed at the window edge
+        spans.append((open_t, win.pad_end))
+    return spans
+
+
+def dwell_gaps(rows: List[dict], win: GoalWindow) -> List[Tuple[int, float, float]]:
+    """The QUIESCENT intervals between cycles, as ``(index, t0, t1)``.
+
+    ``t0`` is cycle i's disarm; ``t1`` is cycle i+1's ``catch/prime_hold True``
+    — the first choreography act of the next cycle, NOT its arm. That boundary
+    is load-bearing: the reach-centre declaration and the PREPARE bundle live
+    between the hold and the arm by design (contract C-REACH-1 requires the
+    declaration to land one FSM tick BEFORE the arm), so measuring the dwell up
+    to the arm would score correct behaviour as a violation — the defect class
+    the 2026-07-27 run close-out found four times in this runbook's own
+    criteria."""
+    spans = cycle_spans(rows, win)
+    holds = [r['t'] for r in topic_rows(rows, T_PRIME_HOLD,
+                                        win.pad_start, win.pad_end)
+             if bool(r['d'].get('value'))]
+    gaps: List[Tuple[int, float, float]] = []
+    for i, ((_a, disarm), (arm, _b)) in enumerate(zip(spans, spans[1:]), 1):
+        prep = [h for h in holds if disarm < h <= arm]
+        gaps.append((i, disarm, prep[0] if prep else arm))
+    return gaps
+
+
+def check_cs1(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
+    """ONE session goal, N complete cycles, and the coordinator's own cycle
+    accounting agrees with the wire.
+
+    Failure mode: a session that silently restarted or skipped a cycle. The
+    per-cycle `Toss <OUTCOME>` lines, the catch/armed spans and the feedback
+    cycle_index are three independent counts of the same thing; if they
+    disagree the accounting the operator scores the sitting from is wrong."""
+    subs: List[Tuple[str, str]] = []
+    spans = cycle_spans(rows, win)
+    per_cycle = [oc for _t, oc, _m in outcome_lines(rows)
+                 if win.pad_start <= _t <= win.pad_end]
+    idxs = [int(r['d'].get('cycle_index', 0))
+            for r in topic_rows(rows, T_CONT_FB, win.pad_start, win.pad_end)]
+    live = [i for i in idxs if i > 0]
+    if not spans:
+        return Finding('CS-1', 'FAIL', 'no catch/armed cycle spans in the '
+                                       'session window')
+    if len(per_cycle) != len(spans):
+        subs.append(('FAIL', '%d per-cycle Toss outcome line(s) vs %d '
+                             'catch/armed span(s)' % (len(per_cycle),
+                                                      len(spans))))
+    if live:
+        if live != sorted(live):
+            subs.append(('FAIL', 'feedback cycle_index is not monotonic: %s'
+                         % (sorted(set(live)),)))
+        if sorted(set(live)) != list(range(1, max(live) + 1)):
+            subs.append(('FAIL', 'feedback cycle_index has gaps: %s'
+                         % (sorted(set(live)),)))
+        if max(live) != len(spans):
+            subs.append(('FAIL', 'feedback reached cycle %d but the wire shows '
+                                 '%d armed span(s)' % (max(live), len(spans))))
+    else:
+        subs.append(('FAIL', 'no toss_continuous feedback rows in the window '
+                             '(is the action topic being recorded?)'))
+    sess = [m for _t, _o, m in session_outcome_lines(rows)
+            if win.pad_start <= _t <= win.pad_end]
+    if len(sess) != 1:
+        subs.append(('FAIL', '%d TossContinuous outcome line(s) — exactly one '
+                             'per session goal is the contract' % len(sess)))
+    if not subs:
+        subs.append(('PASS', '%d cycles: %s; one session outcome line'
+                     % (len(spans), per_cycle)))
+    return combine('CS-1', subs)
+
+
+def check_cs2(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
+    """The catch latch strictly ALTERNATES True/False, once per cycle.
+
+    Failure mode this catches: a leaked armed latch across a dwell. That is the
+    exact hazard the quiescent-dwell design (session invariant S5) exists to
+    avoid — an armed latch between cycles leaves catch_coordinator's reactive
+    catch path live over a loaded cup for the whole gap, so any tracked ball
+    entering the volume can command platform motion."""
+    subs: List[Tuple[str, str]] = []
+    seq = [bool(r['d'].get('value'))
+           for r in topic_rows(rows, T_ARMED, win.pad_start, win.pad_end)]
+    if not seq:
+        return Finding('CS-2', 'FAIL', 'no catch/armed rows in the window')
+    if seq[0] is not True:
+        subs.append(('FAIL', 'the first catch/armed edge in the session is '
+                             'False — a latch was already up on entry'))
+    for a, b in zip(seq, seq[1:]):
+        if a == b:
+            subs.append(('FAIL', 'catch/armed repeats %s without the opposite '
+                                 'edge between: %s' % (a, seq)))
+            break
+    if seq[-1] is not False:
+        subs.append(('FAIL', 'the session ends with catch/armed True — the '
+                             'latch outlived the goal'))
+    if not subs:
+        subs.append(('PASS', '%d alternating edges, ends disarmed' % len(seq)))
+    return combine('CS-2', subs)
+
+
+def check_cs3(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
+    """The DWELL is QUIESCENT: between one cycle's disarm and the next cycle's
+    first act, no new command goes out and the hand, once parked, stays parked.
+
+    Failure mode: session-level motion (invariant S2 — the session must command
+    nothing of its own), or an auto-prime ascending with the caught ball in the
+    cup. Both are invisible to a mocked-ROS test because both are cross-process.
+
+    **The hand half is NO-ASCENT, not flat, and the difference decides whether
+    the runbook's first mandatory capture can pass at all.** The dwell window
+    opens at the DISARM, and on a MISSED cycle the coordinator's SAFE_ABORT
+    ladder publishes `catch/armed False` FIRST and only then retracts the hand —
+    so the cycle's own MANDATED retract lands inside this window by
+    construction. On the no-ball dry trace (CONT-STEP-1, every cycle MISSED with
+    no catch stroke to re-park the hand) that retract is a ~10 rev DESCENT. A
+    flat-from-the-first-sample test scores it as session-level motion and FAILs
+    a STOP row on correct behaviour, and anchoring instead on "the first sample
+    inside the park band" does not fix it either — the 0.5 rev park band is wide
+    enough that the tail of the retract ramp is already inside it, so the
+    baseline lands mid-motion (measured on `cont_dry`: baseline 0.250 rev,
+    settled 0.000 rev, a spurious 0.25 rev "move").
+
+    Every hazard this half exists to catch is an ASCENT: an auto-prime kind-3
+    rising to ~9.96 rev with a ball in the cup, or a new throw stroke. Every
+    legitimate command in the window is a descent toward the 0 rev retract
+    target, and the next cycle's own prime cannot appear before `prime_hold
+    True`, which is where the window ENDS. So the check is a running minimum:
+    any sample more than `DWELL_CMD_POS_TOL_REV` ABOVE the lowest `pos_cmd` seen
+    so far in the window is a fault, and a window in which the hand never
+    reaches the park band at all is itself a fault (the next cycle would meet an
+    unparked hand)."""
+    subs: List[Tuple[str, str]] = []
+    gaps = dwell_gaps(rows, win)
+    if not gaps:
+        return Finding('CS-3', 'SKIP', 'fewer than two cycles — no dwell to '
+                                       'inspect')
+    for i, t0, t1 in gaps:
+        for tp in DWELL_SILENT_TOPICS:
+            # The window END is the next cycle's prime_hold True, published in
+            # the same FSM tick as other wires; back it off by the observation
+            # epsilon so a same-wait-set arrival cannot be read as a dwell row.
+            n = len(topic_rows(rows, tp, t0, t1 - ctx.eps_s))
+            if n:
+                subs.append(('FAIL', 'dwell %d->%d: %d %s row(s)'
+                             % (i, i + 1, n, tp)))
+        hand = topic_rows(rows, T_HAND, t0, t1)
+        if not hand:
+            continue
+        if not any(abs(r['d'].get('pos_cmd', 0.0)) <= PARK_BAND_REV
+                   for r in hand):
+            subs.append(('FAIL', 'dwell %d->%d: the hand cmd-echo never returns '
+                                 'to the +-%.1f rev park band (last %.3f rev) — '
+                                 'the cycle teardown did not put it away'
+                         % (i, i + 1, PARK_BAND_REV,
+                            hand[-1]['d'].get('pos_cmd', 0.0))))
+            continue
+        floor = float('inf')
+        for r in hand:
+            p = float(r['d'].get('pos_cmd', 0.0))
+            if p > floor + DWELL_CMD_POS_TOL_REV:
+                subs.append(('FAIL', 'dwell %d->%d: hand cmd-echo ASCENDED '
+                                     '(%.3f -> %.3f rev at t=%.4f, tol %.2f) — '
+                                     'nothing may command the hand up between '
+                                     'cycles'
+                             % (i, i + 1, floor, p, r['t'],
+                                DWELL_CMD_POS_TOL_REV)))
+                break
+            floor = min(floor, p)
+    if not subs:
+        subs.append(('PASS', '%d dwell gap(s) silent on %s, hand reaches park '
+                             'and never ascends by more than %.2f rev'
+                     % (len(gaps), '/'.join(DWELL_SILENT_TOPICS),
+                        DWELL_CMD_POS_TOL_REV)))
+    return combine('CS-3', subs)
+
+
+def check_cs4(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
+    """The reach envelope is RE-DECLARED every cycle, before that cycle's arm.
+
+    Failure mode: contract C-REACH-1's declaration is consumed-and-cleared by
+    each arm_catch call, so a session exercises it N times instead of once. A
+    missing or late declaration on cycle k puts the envelope back on the
+    commanded pose, and the deferred A->B reach is then rejected WORKSPACE
+    mid-flight with the ball already airborne — the 4/4 hardware failure Phase E
+    landed C-REACH-1 to close."""
+    subs: List[Tuple[str, str]] = []
+    spans = cycle_spans(rows, win)
+    if not spans:
+        return Finding('CS-4', 'FAIL', 'no cycle spans')
+    prev_end = win.pad_start
+    for i, (arm, disarm) in enumerate(spans, 1):
+        decls = topic_rows(rows, T_REACH_CENTER, prev_end, arm)
+        if len(decls) != 1:
+            subs.append(('FAIL', 'cycle %d: %d catch/reach_center declaration(s) '
+                                 'before its arm (expected exactly 1)'
+                         % (i, len(decls))))
+        else:
+            v, gap_ms = order_verdict(decls[0]['t'], arm, ctx.eps_s,
+                                      min_gap_s=MIN_TICK_GAP_S)
+            subs.append((v, 'cycle %d: reach_center -> armed %+.1f ms'
+                         % (i, gap_ms)))
+        prev_end = disarm
+    return combine('CS-4', subs)
+
+
+def check_cs5(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
+    """NO HAND MOVE BETWEEN CYCLES — the fact the whole design rests on.
+
+    The firmware catch stroke ends at 0 rev and a kind-0 throw starts at 0 rev,
+    so a caught ball needs nothing between cycles. If that is wrong on this
+    machine, every cycle after the first is REJECTED_HAND_NOT_PARKED at best —
+    and at worst a kind-0 stroke is dispatched off the bottom band, which
+    toss_sequencer documents as a physical hazard. THIS check owns the MEASURED
+    position at each cycle's arm (`pos_meas`, the reading the CHECKING gate
+    itself would have used); the COMMANDED echo during the dwell is CS-3's half.
+    The split is deliberate — the two findings route to different places (an
+    off-band pos_meas at the arm is a machine/firmware finding; a moving pos_cmd
+    in a dwell is a session/coordinator finding)."""
+    subs: List[Tuple[str, str]] = []
+    spans = cycle_spans(rows, win)
+    if not spans:
+        return Finding('CS-5', 'FAIL', 'no cycle spans')
+    for i, (arm, _disarm) in enumerate(spans, 1):
+        # The last telemetry sample AT OR BEFORE the arm — the reading the
+        # CHECKING gate itself would have used. Sampling past the arm would let
+        # a post-arm recovery mask an off-band dispatch.
+        near = [r for r in topic_rows(rows, T_HAND, arm - 0.5, arm)]
+        if not near:
+            subs.append(('FAIL', 'cycle %d: no hand telemetry around the arm'
+                         % i))
+            continue
+        pos = near[-1]['d'].get('pos_meas', float('nan'))
+        if not (abs(pos) <= PARK_BAND_REV):
+            subs.append(('FAIL', 'cycle %d: hand pos_meas %.3f rev at arm is '
+                                 'outside the +-%.1f rev park band'
+                         % (i, pos, PARK_BAND_REV)))
+        else:
+            subs.append(('PASS', 'cycle %d: hand parked at %.3f rev' % (i, pos)))
+    return combine('CS-5', subs)
+
+
+def check_cs6(rows: List[dict], win: GoalWindow, ctx: TraceContext) -> Finding:
+    """Exactly ONE announcement per cycle, and no cycle releases BEFORE the
+    previous cycle's SCHEDULED LANDING.
+
+    Failure mode: the dwell arithmetic crosses two clock domains (the FSM's perf
+    clock schedules the release; the announcement carries an absolute ROS
+    throw_time), and a unit test cannot see a domain error there. Early is a
+    fault — it means a cycle armed before the previous ball was resolved. Late
+    is reported, not failed: lateness is absorbed by design, but a persistently
+    late cadence is something the operator should know.
+
+    **This is NOT a check that the REQUESTED dwell was honoured**, and the
+    distinction is worth stating because the achieved-dwell line it prints reads
+    like one. The requested `dwell_time_s` is nowhere in the trace, so the only
+    thing observable here is the release-vs-landing ordering — i.e. a cadence
+    collapse to a value that is still positive would PASS. The requested-versus-
+    achieved comparison is the action RESULT's `per_cycle_dwell_s`, scored by
+    runbook rows CONT-1.8 and CONT-2.5; the printed value here is the
+    INDEPENDENT wire-side measurement of the same quantity, which is what makes
+    those two rows a genuine cross-check rather than the coordinator marking its
+    own homework."""
+    subs: List[Tuple[str, str]] = []
+    spans = cycle_spans(rows, win)
+    if not spans:
+        return Finding('CS-6', 'FAIL', 'no cycle spans')
+    throw_times: List[float] = []
+    for i, (arm, disarm) in enumerate(spans, 1):
+        anns = topic_rows(rows, T_ANNOUNCE, arm, disarm)
+        mine = [a for a in anns if a['d'].get('target_id') == ROBOT_NAME]
+        if len(mine) != 1:
+            subs.append(('FAIL', 'cycle %d: %d self-announcement(s) inside the '
+                                 'armed span (expected exactly 1)'
+                         % (i, len(mine))))
+            continue
+        tt = mine[0]['d'].get('throw_time')
+        tof = mine[0]['d'].get('predicted_tof_sec')
+        if tt is None or tof is None:
+            subs.append(('FAIL', 'cycle %d: announcement lacks throw_time / '
+                                 'predicted_tof_sec' % i))
+            continue
+        throw_times.append((float(tt), float(tof)))
+    if len(throw_times) < 2:
+        if not subs:
+            subs.append(('SKIP', 'fewer than two announcements — no cadence to '
+                                 'score'))
+        return combine('CS-6', subs)
+    for i, ((t0, tof0), (t1, _tof1)) in enumerate(
+            zip(throw_times, throw_times[1:]), 1):
+        achieved = t1 - (t0 + tof0)          # previous LANDING -> next RELEASE
+        subs.append(('PASS', 'cycle %d->%d achieved dwell %.3f s'
+                     % (i, i + 1, achieved)))
+        if achieved < -CADENCE_EARLY_TOL_S:
+            subs.append(('FAIL', 'cycle %d->%d released %.3f s BEFORE the '
+                                 'previous scheduled landing' % (i, i + 1,
+                                                                 -achieved)))
+    return combine('CS-6', subs)
+
+
 DRY_CHECKS = [check_dt1, check_dt2, check_dt3, check_dt4, check_dt5,
               check_dt6, check_dt7, check_dt8, check_dt9, check_dt10,
               check_dt11, check_dt12, check_dt13, check_dt14]
 REJECT_CHECKS = [check_rj1, check_rj2, check_rj3, check_rj4]
+CONTINUOUS_CHECKS = [check_cs1, check_cs2, check_cs3, check_cs4, check_cs5,
+                     check_cs6]
 
 
 # ── timeline (--timeline; the human review artifact) ─────────────────────────
@@ -1170,7 +1602,12 @@ def cmd_check(args: argparse.Namespace) -> int:
         print('ERROR: trace file not found: %s' % path, file=sys.stderr)
         return 2
     rows = load_trace(path)
-    mode = 'dry' if args.dry else 'reject'
+    if getattr(args, 'continuous', False):
+        mode = 'continuous'
+    elif args.dry:
+        mode = 'dry'
+    else:
+        mode = 'reject'
     eps_s = args.epsilon_ms / 1000.0
 
     print('=' * 72)
@@ -1183,7 +1620,13 @@ def cmd_check(args: argparse.Namespace) -> int:
     print('   times, same-wait-set arrivals can be observed in either order)')
     print('=' * 72)
 
-    windows = find_goal_windows(rows)
+    if mode == 'continuous':
+        # The SESSION goal is the window; the per-cycle Toss goals live INSIDE
+        # it and are segmented by the catch/armed edges (cycle_spans).
+        windows = find_goal_windows(rows, status_topic=T_CONT_STATUS,
+                                    outcomes=session_outcome_lines(rows))
+    else:
+        windows = find_goal_windows(rows)
     win, note = select_window(windows, mode)
     if win is None:
         print('FAIL: %s' % note)
@@ -1208,7 +1651,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         print('*** evidence, not a re-run situation.  (RF-4)')
     print()
 
-    checks = DRY_CHECKS if mode == 'dry' else REJECT_CHECKS
+    checks = {'dry': DRY_CHECKS, 'reject': REJECT_CHECKS,
+              'continuous': CONTINUOUS_CHECKS}[mode]
     findings = [c(rows, win, ctx) for c in checks]
     counts = {'PASS': 0, 'FAIL': 0, 'AMBIGUOUS': 0, 'SKIP': 0}
     for f in findings:
@@ -1272,7 +1716,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         from diagnostic_msgs.msg import DiagnosticStatus
         from rcl_interfaces.msg import Log
         from std_msgs.msg import Bool, Float64, String
-        from jugglebot_interfaces.action import Reload, Toss
+        from geometry_msgs.msg import Point
+        from jugglebot_interfaces.action import Reload, Toss, TossContinuous
         from jugglebot_interfaces.msg import (
             BallStateArray, DynamicTargetCommand, HandTelemetryMessage,
             RigidBodyPoses, TargetFeedback, ThrowAnnouncement,
@@ -1331,8 +1776,18 @@ def cmd_record(args: argparse.Namespace) -> int:
             self._mk(T_BALLS, BallStateArray, 50, self._d_balls)
             self._mk(T_MOCAP, RigidBodyPoses, 200, self._d_mocap)
             self._mk(T_LINK, DiagnosticStatus, 20, self._d_link)
+            # Phase E / F wires: the declared reach centre (contract
+            # C-REACH-1, re-declared once per cycle — CS-4) and the live
+            # commanded pose the next cycle reads its throw site A from (the
+            # chaining evidence a CONT trace is otherwise blind to).
+            self._mk(T_REACH_CENTER, Point, 50, self._d_point)
+            self._mk(T_COMMANDED_POS, Point, 50, self._d_point)
             self._mk(T_TOSS_FB, Toss.Impl.FeedbackMessage, 50, self._d_fb)
             self._mk(T_TOSS_STATUS, GoalStatusArray, status_qos,
+                     self._d_status)
+            self._mk(T_CONT_FB, TossContinuous.Impl.FeedbackMessage, 50,
+                     self._d_cont_fb)
+            self._mk(T_CONT_STATUS, GoalStatusArray, status_qos,
                      self._d_status)
             self._mk(T_RELOAD_FB, Reload.Impl.FeedbackMessage, 50, self._d_fb)
             self._mk(T_RELOAD_STATUS, GoalStatusArray, status_qos,
@@ -1478,6 +1933,18 @@ def cmd_record(args: argparse.Namespace) -> int:
             d = {'goal_id': bytes(msg.goal_id.uuid).hex()[:8],
                  'phase': str(msg.feedback.phase)}
             self.last_phase = d['phase']
+            return d
+
+        @staticmethod
+        def _d_point(msg):
+            return {'x': float(msg.x), 'y': float(msg.y), 'z': float(msg.z)}
+
+        def _d_cont_fb(self, msg):
+            d = {'goal_id': bytes(msg.goal_id.uuid).hex()[:8],
+                 'cycle_index': int(msg.feedback.cycle_index),
+                 'phase': str(msg.feedback.phase),
+                 'catches_confirmed': int(msg.feedback.catches_confirmed)}
+            self.last_phase = 'c%d:%s' % (d['cycle_index'], d['phase'])
             return d
 
         @staticmethod
@@ -1638,6 +2105,11 @@ def main() -> int:
                    help='waived dry-choreography trace (DT-1..DT-14)')
     g.add_argument('--reject', action='store_true',
                    help='un-waived REJECTED_NO_BALL trace (RJ-1..RJ-4)')
+    g.add_argument('--continuous', action='store_true',
+                   help='TossContinuous SESSION trace (CS-1..CS-6): cycle '
+                        'accounting, latch lifecycle, dwell quiescence, '
+                        'per-cycle envelope re-declaration, no hand move '
+                        'between cycles, achieved cadence')
     pc.add_argument('--epsilon-ms', type=float, default=5.0,
                     help='observation-ambiguity band (default 5.0 ms)')
     pc.add_argument('--timeline', action='store_true',

@@ -1700,7 +1700,16 @@ def test_sequence_ceiling_timeout_aborts_and_safes(monkeypatch):
 def test_rclpy_shutdown_aborts_and_safes(monkeypatch):
     """rclpy going down mid-sequence exits ABORTED_SHUTDOWN with the same
     early-exit safing — a shutdown must not strand the latch raised or the
-    hand parted from its park band."""
+    hand parted from its park band.
+
+    It must ALSO leave the goal handle untouched: a status transition on a
+    dying executor can itself raise, and the execute callback's except would
+    then overwrite the ABORTED_SHUTDOWN line already logged with a spurious
+    ABORTED_EXCEPTION and re-raise a fault trace out of a clean shutdown. That
+    was unpinned until 2026-07-29, and the Phase-F _run_toss_cycle extraction
+    silently regressed it (the shutdown exit fell through to the common
+    abort() branch) — TossContinuous asserted parity with a single Toss that
+    had stopped behaving that way."""
     import rclpy
     node = _toss_ready_node(time.perf_counter())
     monkeypatch.setattr(time, 'sleep', lambda *a, **k: None)
@@ -1717,6 +1726,7 @@ def test_rclpy_shutdown_aborts_and_safes(monkeypatch):
     result = node._execute_toss(gh)
     assert result.outcome == 'ABORTED_SHUTDOWN'
     assert safed == [1]
+    assert gh.terminal is None
 
 
 # ── Tier 8b (Phase 4): pretilt_hold choreography + deferred A→B reach ──────────

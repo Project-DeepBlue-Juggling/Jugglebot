@@ -387,6 +387,55 @@ possession latch set over an empty cup, and `RECENTER` instead of `SAFE_ABORT` �
 reporting harm plus a skipped retract, on a hand the catch stroke has already
 parked (§ 5). No commanded magnitude changes.
 
+### 7.1 A continuous SESSION multiplies this exposure — added 2026-07-29
+
+`TossContinuous` (`plans/active/single-ball-toss.md` Phase F) runs `num_throws`
+toss-catch cycles from one goal, with a dwell between them. **Between a catch and
+the next throw the ball sits in the cup with the platform holding, and NOTHING
+re-verifies possession there.** The verdict this contract mints is ARRIVAL-only
+(§ 7 above), so a post-CAUGHT bounce-out during a dwell leaves `_ball_possession`
+set and cycle N+1 fires an empty stroke. That stroke is benign — it is exactly the
+no-ball dry-trace case, a normal kind-0 stroke into an empty cup — but the verdict
+is wrong, and a session repeats the exposure `num_throws` times instead of once.
+
+**`stop_on_miss` does not close it**, and it is worth being explicit about why: the
+flag stops the session on a NOT-caught verdict, and a bounce-out happens *after* a
+CAUGHT verdict. The two failures are disjoint.
+
+**The seam for the sensor's ARRIVAL verdict is already in place and needs no wire
+change** — `_possession_confirmed` → `_possession_source` is where a
+`BallInCupSource` drops in, and the session FSM and the action are untouched by
+it. **RETENTION needs two coordinator edits on top of that, and they are named
+here so the sensor phase does not inherit the belief that the work is already
+done.** Traced 2026-07-29 against the shipped code:
+
+1. **The cycle-start precondition is a LATCH READ, not a source query.**
+   `_build_toss_observations` sets
+   `ball_seated = bool(waiver or possession or not JB_OP_TOSS_REQUIRE_BALL_EVIDENCE)`
+   where `possession` is a plain read of `self._ball_possession`. The one
+   in-observation call to `_possession_confirmed` is inside `if announced_id is
+   not None`, and `_build_toss_cycle` resets `_announced_ball_id = None` for every
+   cycle — so at cycle N+1's CHECKING tick **no code path consults
+   `_possession_source` at all.** Closing retention needs a LIVE sensor read
+   there.
+2. **Nothing can clear the latch during a dwell.** `_on_balls` only ever SETS
+   `_ball_possession` True; the single clear path is gated on
+   `throw_dispatched`, which `_build_toss_cycle` resets False each cycle. And
+   `PossessionSource.judge(ball_xyz_mm, ref_point_mm)` is only reachable from a
+   `/balls` CAUGHT message, while the tracker prunes the terminal track ~2 s
+   after CAUGHT and the dwell floor is 4.10 s (default 6.0 s) — so for most of
+   every dwell nothing calls the source even in principle. Closing retention
+   needs a path that can clear `_ball_possession` **without release evidence**.
+
+Today the gap is additionally masked by
+`jugglebot_operational.toss_require_ball_evidence` defaulting `false` (there is no
+sensor, so a tracker-derived belief must not be able to refuse a physically-loaded
+ball) — flipping that default is part of the same sensor phase, not this one.
+
+Operator-facing statement: runbook § SECTION CONT's *"What this section does NOT
+cover"* tells the operator to **watch the cup between cycles by eye and score a
+lost ball as a finding even when the outcome line says CAUGHT.**
+
 **Who closes it.** The ball-in-cup hand sensor (§ 3), which observes retention
 directly and continuously. Until then the operator-facing statement of this gap is
 runbook row **POSS-1.2** in `tests/hardware/session_anomaly_fixes.md`, which is

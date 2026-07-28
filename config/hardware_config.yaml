@@ -630,6 +630,46 @@ jugglebot_operational:
                                          # ever wired into possession. NOTE: with false, the Phase-3
                                          # dry-trace Capture R (un-waived REJECTED_NO_BALL) no longer
                                          # rejects — enable this for that historical capture only.
+  toss_session_dwell_default_s: 6.0      # Default dwell {s} for a TossContinuous session when the goal's
+                                         # dwell_time_s is 0/unset (single-ball-toss Phase F). DWELL is
+                                         # defined as previous SCHEDULED LANDING → next RELEASE.
+                                         # 6.0 sits comfortably above the 5.60 s floor that the 5.0 s
+                                         # default throw delay implies (see toss_session_dwell_margin_s),
+                                         # so the all-defaults goal is legal without the operator doing
+                                         # arithmetic. toss_session's DEFAULT_SESSION_DWELL_S is the
+                                         # no-config fallback only, pinned equal by the drift-guard test.
+  toss_session_dwell_margin_s: 0.6       # The unavoidable landing → next-cycle-start handoff {s}. The
+                                         # dwell FLOOR is DERIVED from it, never chosen:
+                                         #     dwell_floor = throw_delay_s + this
+                                         # because a cycle's release is its own accept + throw_delay, and
+                                         # the session cannot start cycle N+1 before cycle N's CAUGHT
+                                         # verdict has landed. Arithmetic, all three terms measured or
+                                         # landed:
+                                         #   CAUGHT verdict lands at landing + 0.202–0.442 s (median
+                                         #     0.209) — 17/17 self-tosses of the 2026-07-27 sitting,
+                                         #     logbook/2026-07-28-caught-gate-xy-plausibility.md;
+                                         #   + the node tick that observes it and the tick that starts the
+                                         #     next cycle, 2 × _TICK_S = 0.100 s;
+                                         #   = 0.542 s worst measured, so 0.6 also covers ACTION_STAY's
+                                         #     arm_catch service call on a healthy machine.
+                                         # ⇒ absolute floor 4.10 s (at toss_sequencer's own 3.5 s
+                                         # MIN_TOSS_THROW_DELAY_S), 5.60 s at the 5.0 s default delay.
+                                         # A shorter dwell is REJECTED_DWELL, never silently stretched —
+                                         # a cadence the machine quietly ignores is a lie about what it
+                                         # did. Lateness the other way IS absorbed (a long cleanup just
+                                         # reports a longer achieved dwell; it never aborts).
+                                         # NOTE the 2.0 s figure in the Phase-F brief is UNACHIEVABLE: it
+                                         # needs throw_delay ≤ 1.458 s, i.e. 2.042 s below the toss FSM's
+                                         # own REJECTED_CANT_MAKE_LEAD floor (verified against the real
+                                         # FSM, 2026-07-29: 3.49 s rejects, 3.50 s dispatches). Lowering
+                                         # that floor is a change to the arming/release timing of a
+                                         # hardware-validated path and was deliberately NOT taken.
+  toss_session_max_throws: 20            # Upper bound on TossContinuous num_throws (REJECTED_NUM_THROWS
+                                         # outside [1, this]). An unbounded session is a machine stroking
+                                         # unattended for an unbounded time; 20 cycles at the 6.0 s
+                                         # default dwell is ~2.3 minutes, well past every rung of the
+                                         # § SECTION CONT hardware ladder (which tops out at 5).
+                                         # Lower it for a cautious sitting.
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}

@@ -167,10 +167,10 @@ BLOCKED, so row C still depends on you running its check.**
 
 | | what changed | what you must do | **how you find out you skipped it** |
 |---|---|---|---|
-| **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT, **POSS** (commits `aea7b49`, `e58ed89`, the hand phases, and the C-POSSESS-1 commit). **§ SECTION POSS adds a NEW module** (`ball_possession.py`), which is the one shape that can land half-applied from a cached build | `colcon build --packages-select jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py` | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4 and **PF-7**, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
-| **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) and `RobotState.msg` gained `platform_fw_version` / `platform_fw_version_read` (§ Section FW) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically, now from two nodes.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s. **`teensy_bridge_node` behaves DIFFERENTLY — do not expect it to exit.** Its 100 Hz `_publish_robot_state` assigns the two new `RobotState` fields but *catches its own exceptions*, so a half-rebuild there gives you **one throttled `Robot state publish error:` per 5 s and a silently-dead `/robot_state`** — the node stays in `ros2 node list` looking healthy while the orchestrator stalls in BOOT and blames power/CAN. Since 2026-07-27 it also logs, once at construction, `INTERFACES_STALE: …` naming the missing fields and the exact rebuild command — **grep that first** (`grep INTERFACES_STALE "$LOG"`). Note this matters most when `jugglebot_interfaces` is only *partly* stale: if it already carries `gravity_correction_loaded` from an earlier sitting, `trajectory_node` does NOT exit and the loud row-B signature above never appears |
+| **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT, **POSS** (commits `aea7b49`, `e58ed89`, the hand phases, and the C-POSSESS-1 commit). **§ SECTION POSS adds a NEW module** (`ball_possession.py`), which is the one shape that can land half-applied from a cached build | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py`. **Both packages** (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B) | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4 and **PF-7**, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
+| **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`), `RobotState.msg` gained `platform_fw_version` / `platform_fw_version_read` (§ Section FW), and **2026-07-29 a whole NEW action, `TossContinuous.action`** (§ SECTION CONT) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically, now from two nodes.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s. **`teensy_bridge_node` behaves DIFFERENTLY — do not expect it to exit.** Its 100 Hz `_publish_robot_state` assigns the two new `RobotState` fields but *catches its own exceptions*, so a half-rebuild there gives you **one throttled `Robot state publish error:` per 5 s and a silently-dead `/robot_state`** — the node stays in `ros2 node list` looking healthy while the orchestrator stalls in BOOT and blames power/CAN. Since 2026-07-27 it also logs, once at construction, `INTERFACES_STALE: …` naming the missing fields and the exact rebuild command — **grep that first** (`grep INTERFACES_STALE "$LOG"`). Note this matters most when `jugglebot_interfaces` is only *partly* stale: if it already carries `gravity_correction_loaded` from an earlier sitting, `trajectory_node` does NOT exit and the loud row-B signature above never appears. **⚠ The NEW ACTION makes row B worse, and in a way none of the above describes.** `reload_coordinator_node` imports `TossContinuous` at module scope, so a stale `jugglebot_interfaces` raises `ImportError` before the node is constructed — and that node hosts **all three** ball-op actions. You lose `Reload` and `Toss` too, not just the session: `ros2 action list` shows none of `/jugglebot/reload`, `/jugglebot/toss`, `/jugglebot/toss_continuous`, and `ros2 node list` has no `reload_coordinator_node`. The launch log carries the `ImportError` naming `TossContinuous`. `tests/hardware/toss_trace_recorder.py record` fails the same way, with its own explicit rebuild message. Row CONT-0.3 is the 3-second check |
 | **C** | `ros_ws/src/jugglebot/Teensy_code/Trajectory.h` + the regenerated `Teensy_code/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`; **and § CHECK HAND-7's post-release decel feedforward, 2026-07-28** — a NEW `TeensyTraj::THROW_DECEL_REFLECTED_INERTIA_KGM2` in that same header), and `Teensy_code.ino`'s `FW_VERSION` identity block, now at **2** (§ Section FW) | **FLASH `Teensy_code/Teensy_code.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **Loudly, since 2026-07-27 — read the box below.** `link_status/platform_fw_version` reads `0 (PRE-VERSIONING)` on a never-flashed board, `1` on a board still carrying only the Phase-4 prelude, and **`2`** on one carrying the Phase-7 decel feedforward, and the launch log carries a `PLATFORM_FW_CHECK: FAIL` ERROR. Run-sheet row **FW-1** |
-| **D** | `config/hardware_config.yaml` — `trajectory_op.catch_seat_rate_radps` (§ SECTION SEAT-EXP, added 2026-07-28). Shipped value `0.0`; **only the seat-rate A/B ever moves it** | `python config/generate_config.py` (**venv**, standing rule 5) **then** `colcon build --packages-select jugglebot` + **relaunch**. The regenerate is the step that gets skipped, and skipping it changes *nothing at all* — every consumer imports the **generated** `hardware_config.py`, not the YAML | **Only if you check, and the failure is the quiet kind.** A skipped regenerate or a skipped `colcon` leaves the machine on the previous rate, so the experiment block silently repeats the control block and the A/B reads as "no difference" — a wrong *scientific* answer, not a crash. Rows `SEAT-EXP-1` and `SEAT-EXP-3` are the three-way check (installed constant, YAML, probe self-check); `SEAT-EXP-3.2` is deliberately inverted, a self-check **FAIL** naming that one constant is the positive confirmation |
+| **D** | `config/hardware_config.yaml` — `trajectory_op.catch_seat_rate_radps` (§ SECTION SEAT-EXP, added 2026-07-28). Shipped value `0.0`; **only the seat-rate A/B ever moves it** | `python config/generate_config.py` (**venv**, standing rule 5) **then** `colcon build --packages-select jugglebot_interfaces jugglebot` + **relaunch** (both packages — matrix row B). The regenerate is the step that gets skipped, and skipping it changes *nothing at all* — every consumer imports the **generated** `hardware_config.py`, not the YAML | **Only if you check, and the failure is the quiet kind.** A skipped regenerate or a skipped `colcon` leaves the machine on the previous rate, so the experiment block silently repeats the control block and the A/B reads as "no difference" — a wrong *scientific* answer, not a crash. Rows `SEAT-EXP-1` and `SEAT-EXP-3` are the three-way check (installed constant, YAML, probe self-check); `SEAT-EXP-3.2` is deliberately inverted, a self-check **FAIL** naming that one constant is the positive confirmation |
 
 > ### ⚠ SUPERSEDED (2026-07-27): the un-flashed Platform Teensy is now DETECTABLE
 >
@@ -891,9 +891,12 @@ so a relaunch without a rebuild keeps the old code.
 > the board carries a `FW_VERSION` and reports it, so a skipped flash IS
 > detectable — run-sheet row **FW-1**, and § CHECK HAND-4 row **H4.0d**. It is
 > reported, not enforced: nothing refuses a command on a skew, so FW-1 is a check
-> you must actually run. Every other section in this runbook is colcon + relaunch;
-> `levelling-frame-contract` Phase 3 additionally needs `jugglebot_interfaces`
-> rebuilt (see § Section LVLGATE).
+> you must actually run. Every other section in this runbook is colcon + relaunch —
+> and since 2026-07-29 that colcon is the **two-package** one for ALL of them
+> (`--packages-select jugglebot_interfaces jugglebot`), because
+> `reload_coordinator_node` imports `TossContinuous` at module scope and a
+> `jugglebot`-only build now takes all three ball-op actions down with an
+> `ImportError`. See § DEPLOYMENT MATRIX row B.
 
 ### Recording — ONE list, for every capture
 
@@ -1951,7 +1954,7 @@ Consequences worth knowing at the bench:
 | **FAIL, pre-versioning** | `0 (PRE-VERSIONING)` | `PLATFORM_FW_CHECK: FAIL … PRE-VERSIONING` | the board answered and **has not been flashed** — flash, relaunch, re-check |
 | **FAIL, other release** | the number | `PLATFORM_FW_CHECK: FAIL … v<n>` | flashed from a different tree — `git pull`, re-flash |
 | **UNKNOWN** | `unknown` | `PLATFORM_FW_CHECK: UNKNOWN` | **not** a stale flash: no RobotState read landed at all. Most often the **known benign boot-read transient** on a launch-only restart (the same miss that gives you a surprise re-home) — **relaunch once and re-read**; investigate CAN3/relay only if it repeats. Note the verdict does **not** self-heal within a launch: it is re-read only on a UDP reconnect or a CAN3 WARN/BUS_OFF→OK edge, neither of which a clean launch produces |
-| **(no verdict)** | key absent | *(no line)* | **not a board state** — the running node predates the check, i.e. `colcon build --packages-select jugglebot` was skipped. Rebuild both packages, source, relaunch. Never read an absent `FAIL` as a pass |
+| **(no verdict)** | key absent | *(no line)* | **not a board state** — the running node predates the check, i.e. the `colcon build` was skipped. Rebuild both packages, source, relaunch. Never read an absent `FAIL` as a pass |
 
 `robot_state.platform_fw_version` / `.platform_fw_version_read` carry the same
 verdict typed, and land in the bag. Prefer `link_status` live: `ros2 topic echo`
@@ -2032,8 +2035,8 @@ the correct account of the machine as it stood when C-LEVEL-1 landed alone.)*
 
 **Build needs**: **colcon + relaunch** (`trajectory_node.py`,
 `mpc_bridge_node.py`, `motion/levelling.py`, `motion/trajectory/planner.py`
-changed). **No firmware flash. No interface change** — `colcon build
---packages-select jugglebot` is enough.
+changed). **No firmware flash. No interface change *in this section*** — but build
+`colcon build --packages-select jugglebot_interfaces jugglebot` anyway (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B).
 
 > ### ⚠ OPERATOR PRE-BRIEF — read before the first post-fix launch
 >
@@ -2498,8 +2501,9 @@ build, no relaunch, no firmware flash. Nothing here actuates the machine — the
 commands open `.mcap` files and import pure-Python planner modules.
 
 **Prerequisites when Phase 2 eventually lands (CATCH-3):** `colcon build
---packages-select jugglebot` **and a relaunch** (the launch runs the *installed*
-copy). **No firmware flash** — nothing in this plan touches the Teensy.
+--packages-select jugglebot_interfaces jugglebot` **and a relaunch** (the launch
+runs the *installed* copy) (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B). **No firmware flash** — nothing in
+this plan touches the Teensy.
 
 ### CHECK CATCH-1 — instrument health (run FIRST, no bag, no robot)
 
@@ -2648,7 +2652,8 @@ then the seat itself** — see § Section ZSEAT. The bound sentence stays true: 
 not the bound that removed the seat.)*
 
 **Prerequisites:** `cd ~/Desktop/Jugglebot/ros_ws && colcon build
---packages-select jugglebot && source install/setup.bash`, then **relaunch** —
+--packages-select jugglebot_interfaces jugglebot && source install/setup.bash`,
+then **relaunch** (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B) —
 the launch runs the *installed* copy, and this change is in `trajectory_node.py`
 and `motion/trajectory/planner.py`. **No firmware flash**; nothing here touches
 the Teensy. Standing session rules still apply: reboot the can-bridge Teensy
@@ -2833,8 +2838,8 @@ ros2 topic echo /trajectory/diagnostics --once
 
 In this order, cheapest first:
 
-1. Was the build actually installed? `colcon build --packages-select jugglebot`
-   **and** a relaunch — § Build gate. A stale installed copy reproduces the
+1. Was the build actually installed? `colcon build --packages-select
+   jugglebot_interfaces jugglebot` **and** a relaunch — § Build gate. A stale installed copy reproduces the
    pre-fix behaviour exactly and is by far the most likely cause.
 2. Run CCATCH-1. A drifted mirror means the probe is scoring old physics.
 3. Check the wire: `ros2 topic echo /catch/dynamic_target --once`. If
@@ -2889,8 +2894,9 @@ as `REJECTED_HAND_NOT_PARKED`.
 
 > ### ⚠ BUILD NEEDS — this section is the ONE with an interface change
 >
-> `TrajectoryStatus.msg` gained a field, so the § Build gate's
-> `--packages-select jugglebot` is **not enough**:
+> `TrajectoryStatus.msg` gained a field, so a `jugglebot`-only build is
+> **not enough** (since 2026-07-29 the § Build gate itself specifies both
+> packages, so following it is sufficient here):
 >
 > ```bash
 > cd ~/Desktop/Jugglebot/ros_ws
@@ -3287,7 +3293,8 @@ in the builder. There is no rule anywhere that a catch must command no motion, a
 none should be added; C-CATCH-1 itself still contains no stationarity clause.
 
 **Prerequisites:** `cd ~/Desktop/Jugglebot/ros_ws && colcon build
---packages-select jugglebot && source install/setup.bash`, then **relaunch** — the
+--packages-select jugglebot_interfaces jugglebot && source install/setup.bash`,
+then **relaunch** (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B) — the
 launch runs the *installed* copy, and the change is in
 `motion/trajectory/planner.py`. **No firmware flash. No config regeneration.**
 Standing session rules still apply: power-cycle the can-bridge Teensy first, and
@@ -3520,7 +3527,8 @@ is smaller".
 
 1. **Build + relaunch (mandatory, and this is the step that fails silently):**
    ```bash
-   cd ~/Desktop/Jugglebot/ros_ws && colcon build --packages-select jugglebot \
+   cd ~/Desktop/Jugglebot/ros_ws \
+     && colcon build --packages-select jugglebot_interfaces jugglebot \
      && source install/setup.bash
    ```
    then **relaunch**. The launch runs the *installed* copy of
@@ -3535,7 +3543,13 @@ is smaller".
    changed. Any flash this sitting needs comes from § Section FW, not from here.
 3. **No config regeneration.** The six generated consumers are committed and were
    verified to be the deterministic output of the committed YAML.
-4. **No `jugglebot_interfaces` rebuild.** No `.msg`/`.action` changed.
+4. **`jugglebot_interfaces` MUST still be rebuilt** — not for anything in *this*
+   section, but because since 2026-07-29 `reload_coordinator_node` imports
+   `TossContinuous` at module scope. Build the two-package command (matrix row B)
+   in EVERY section of this runbook; a `jugglebot`-only build now raises
+   `ImportError` before that node is constructed and takes `Reload`, `Toss` and
+   `TossContinuous` down together. `ros2 action list | grep -c jugglebot/toss`
+   returns 2 on a good install.
 
 Standing session rules still apply: **power-cycle the can-bridge Teensy immediately
 before the sitting** (the dispatch shift grew to `+57…78 ms` at ~94 min uptime), log
@@ -3747,10 +3761,14 @@ terminates* — see § The one behavioural change below, which is the part to wa
 
 ### Deployment
 
-`colcon build --packages-select jugglebot` **+ relaunch**. No interface rebuild,
-no config regeneration, **no firmware flash**. The launch runs the *installed*
-copy, so without the relaunch the machine reproduces the old always-MISSED
-behaviour exactly and this row scores a false ABORT.
+`colcon build --packages-select jugglebot_interfaces jugglebot` **+ relaunch**.
+No config regeneration, **no firmware flash**. Nothing in *this* section changes an
+interface, but the two-package build is MANDATORY in every section since
+2026-07-29: `reload_coordinator_node` imports `TossContinuous` at module scope, so
+a `jugglebot`-only build raises `ImportError` before that node is constructed and
+takes `Reload`, `Toss` and `TossContinuous` down together (matrix row B). The
+launch runs the *installed* copy, so without the relaunch the machine reproduces
+the old always-MISSED behaviour exactly and this row scores a false ABORT.
 
 Confirm the installed copy carries it, before the sitting:
 
@@ -3923,13 +3941,20 @@ Raising the cap without moving the envelope centre would have re-run that failur
 
 ### Deployment for this section — read all three lines
 
-1. **`colcon build --packages-select jugglebot` + relaunch.** Mandatory. The launch
-   runs the *installed* copy; until the rebuild the robot runs the **70 mm cap, the
-   config throw site and the `go_home` terminal** while this file says otherwise.
-2. **No `jugglebot_interfaces` rebuild.** Both new topics
+1. **`colcon build --packages-select jugglebot_interfaces jugglebot` + relaunch.**
+   Mandatory. The launch runs the *installed* copy; until the rebuild the robot
+   runs the **70 mm cap, the config throw site and the `go_home` terminal** while
+   this file says otherwise.
+2. **The `jugglebot_interfaces` half is mandatory too, though not for this
+   section's own sake.** Both topics this section adds
    (`trajectory/commanded_position`, `catch/reach_center`) are
-   `geometry_msgs/Point` — deliberately, so this change cannot create a split
-   interface build.
+   `geometry_msgs/Point` — deliberately, so *this* change cannot create a split
+   interface build. But since 2026-07-29 `reload_coordinator_node` imports
+   `TossContinuous` at module scope, so a `jugglebot`-only build raises
+   `ImportError` before that node is constructed and takes `Reload`, `Toss` and
+   `TossContinuous` down together (matrix row B). The DISP-0 greps below read
+   `install/jugglebot/...` only and will PASS on that stale build —
+   `ros2 action list | grep -c jugglebot/toss` (expect **2**) is what detects it.
 3. **No firmware flash and no config regeneration** *for this section*. (§ Section
    FW's Platform Teensy flash and § CHECK HAND-7's are separate and still owed.)
 
@@ -4278,6 +4303,210 @@ cap only. Take that as a watch-item for DISP-5, not as a prohibition.
 
 ---
 
+## SECTION CONT — repeated toss-catch cycles (`single-ball-toss` Phase F)
+
+> **Appended 2026-07-29.** This is operator decision **(c)** of 2026-07-28 —
+> *`toss_continuous {catch_position, throw_height_m, num_throws, dwell_time_s}`,
+> `stop_on_miss` defaults **TRUE***. Validates `plans/active/single-ball-toss.md`
+> **Phase F**. Run it **last**: it is the only section that repeats an actuation
+> unattended, so it must come after § SECTION POSS (whose verdicts it consumes and
+> which is how `stop_on_miss` knows anything at all) and after § SECTION DISP
+> (whose STAY terminal is what makes chaining possible).
+>
+> **The action adds no new capability.** Every cycle is an ordinary `Toss`, built
+> and ticked by the same code, with the same preconditions, the same arming order,
+> the same abort ladder and the same terminals. What is new is *when* the next
+> cycle starts and *whether* it starts at all. If a cycle behaves oddly, the fault
+> routes to the section that owns that behaviour — the session's outcome string
+> carries the cycle's own verdict verbatim (`ABORTED_CYCLE_REJECTED_HAND_NOT_PARKED`
+> and so on) precisely so this routing is mechanical.
+
+### Why no hand move happens between cycles — the fact to sanity-check by eye
+
+The firmware catch stroke **ends at 0 rev** (`Trajectory.h` `buildCatch`,
+`xA = {x3, x5, x6, 0.f}`) and a kind-0 throw stroke **starts at 0 rev**
+(`buildThrow`, `xA = {0.f, x1, x2, x3}`). The catch is its own re-park; the throw
+is its own catch-prime. Measured on the 2026-07-27 sitting: hand `pos_meas` is
+within **±0.045 rev** of park at the CAUGHT instant on all 17 self-tosses, worst
+excursion **0.069 rev** over the following 3 s against the ±0.5 rev park band
+(**7.2×**). **Watch the hand between cycles: it must not move at all.** Any
+between-cycle hand motion is a CS-5 finding and stops the section.
+
+### Deployment for this section — the interfaces build is MANDATORY here
+
+1. **`colcon build --packages-select jugglebot_interfaces jugglebot` + relaunch.**
+   **Both packages.** This section adds a NEW action (`TossContinuous.action`), so
+   the interfaces package genuinely must rebuild — and because
+   `reload_coordinator_node` imports `TossContinuous` at module scope, that is now
+   true of **every** section of this runbook, not just this one (the four
+   per-section blocks that used to say "no interface rebuild" were corrected
+   2026-07-29). A `jugglebot`-only build does not merely leave
+   `/jugglebot/toss_continuous` missing: the node raises `ImportError` before
+   construction and `Reload` and `Toss` disappear with it.
+2. **No firmware flash for this section.** Config regeneration added three
+   `constexpr` to the delivered `hardware_config.h`; no sketch reads them.
+3. **⚠ GATE — `platform_fw_version = 2` before ANY multi-cycle run above 0.6 m.**
+   The § CHECK HAND-7 decel-feedforward fix (`FW_VERSION` 1 → 2) is what keeps the
+   hand off its end stop at height. A session multiplies exposure to that overshoot
+   by `num_throws`, unattended. Read the version with the § Section FW command
+   (`FW-1`); if it reads `0 (PRE-VERSIONING)` or `1`, this section is limited to
+   `throw_height_m ≤ 0.60` and `num_throws ≤ 3`, full stop.
+
+### Pre-flight CONT-0 — the installed copy really is Phase F (no robot, ~30 s)
+
+```bash
+INST=~/Desktop/Jugglebot/ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot
+grep -n "JB_OP_TOSS_SESSION_DWELL_DEFAULT_S\|JB_OP_TOSS_SESSION_DWELL_MARGIN_S\|JB_OP_TOSS_SESSION_MAX_THROWS" $INST/hardware_config.py
+ls $INST/toss_session.py
+# with the graph up:
+ros2 action list | grep toss_continuous
+ros2 interface show jugglebot_interfaces/action/TossContinuous | grep -n "stop_on_miss"
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| CONT-0.1 | the three new constants | `6.0`, `0.6`, `20` | missing ⇒ stale install; a different value is fine but **read it off this line and use it below**, do not use the printed defaults |
+| CONT-0.2 | `toss_session.py` present in the install tree | yes | no ⇒ `jugglebot` not rebuilt |
+| CONT-0.3 | `ros2 action list` | `/jugglebot/toss_continuous` present | absent ⇒ `jugglebot_interfaces` not rebuilt, or the launch was not restarted |
+| CONT-0.4 | the goal field default | `bool stop_on_miss true` | anything else ⇒ **STOP.** The wire default is load-bearing: an omitted field must mean STOP, and a `false` default would run the whole session over a ball on the floor |
+
+### CONT-STEP-0 — the zero-code dispatch-loop baseline (do this FIRST)
+
+Before running a single `toss_continuous` goal, produce the comparison data by
+hand: send **3 separate `Toss` goals** from a shell loop with a sleep between them,
+exactly as a session would. This costs nothing, needs no new code path, and it is
+the only way to tell a *session* defect from a *toss* defect afterwards.
+
+```bash
+# ONE ball, loaded once by a Reload; then three separate tosses, by hand.
+# (Reload first — see the § Recording list for the recorder + bag commands.)
+for i in 1 2 3; do
+  ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
+    "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.60,
+      throw_delay_s: 5.0, catch_vel_scale: 0.0}"
+  sleep 3
+done
+```
+
+| # | quantity | PASS | REPORT / ABORT |
+|---|---|---|---|
+| CONT-B.1 | outcomes of the three hand-dispatched tosses | ≥ 2 of 3 `CAUGHT` | 0 or 1 ⇒ **ABORT the whole section.** The single toss is not healthy enough to repeat; go fix that first (§ SECTION POSS / § SECTION DISP) |
+| CONT-B.2 | hand `pos_meas` between tosses (`--timeline` of the recorder capture, or the § CHECK HAND probe) | stays inside `±0.5 rev`; no commanded move between goals | any between-goal hand motion ⇒ **ABORT.** The no-hand-move premise is wrong on this machine and every rung below is invalid |
+| CONT-B.3 | goal 2 and 3 accepted with **no** `REJECTED_TRACK_ACTIVE` | accepted | a track-active refusal ⇒ REPORT the delay you needed; the session's dwell must exceed it |
+
+### CONT-STEP-1 — the DRY TRACE, no ball (mandatory before any live-ball session)
+
+A 3-cycle session with an **empty cup**. Because
+`jugglebot_operational.toss_require_ball_evidence` is `false` (the operator
+guarantees the ball; there is no ball-in-cup sensor), **every cycle fires a real,
+empty throw stroke** — it does not refuse. That is the same actuation § SECTION
+TIER's Phase-3 dry capture already ran and is safe with the cup empty: the stroke
+is a normal kind-0 stroke, nothing is caught, and each cycle ends `MISSED` through
+its own `SAFE_ABORT` (retract, latch down, `go_home`). Reaching cycle 3 therefore
+**requires `stop_on_miss: false`** — this is the one sanctioned use of that flag.
+
+```bash
+# recorder (system python3 + ROS env, NOT the venv) — see § Recording
+python3 tests/hardware/toss_trace_recorder.py record --out temp/logs
+
+ros2 action send_goal -f /jugglebot/toss_continuous \
+  jugglebot_interfaces/action/TossContinuous \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.60,
+    num_throws: 3, dwell_time_s: 8.0, throw_delay_s: 5.0,
+    catch_vel_scale: 0.0, stop_on_miss: false}"
+
+# then, under the VENV (standing rule 5):
+python tests/hardware/toss_trace_recorder.py check \
+  temp/logs/toss_trace_<stamp>.jsonl --continuous --timeline
+```
+
+> **The checker has been validated against THIS trace shape, offline, before you
+> run it.** `tools/probes/toss_trace_synth.py`'s matrix carries two continuous
+> happy cases, one per session terminal ladder: `cont_happy` (every cycle CAUGHT —
+> the `ACTION_STAY` teardown) and **`cont_dry`** (every cycle MISSED — the
+> `SAFE_ABORT` teardown, i.e. exactly what this step produces, including the ~10
+> rev hand retract that lands inside every dwell window CS-3 measures). Both must
+> read 6/6 PASS, exit 0. If you want to confirm the installed checker before
+> trusting a capture from it, under the venv:
+> `python tools/probes/toss_trace_synth.py --all --verify` — **30/30 OK, matrix
+> CLEAN** is the expected line, and it needs no robot. Until 2026-07-29 only the
+> all-CAUGHT case existed, and the checker as reviewed would have FAILed CONT-1.3
+> on a correct capture of this step.
+
+| # | invariant | what it would catch | PASS | ABORT |
+|---|---|---|---|---|
+| CONT-1.1 | **CS-1** cycle accounting | a session that silently restarted or skipped a cycle — the accounting you score the sitting from would be wrong | `PASS`, 3 cycles, one `TossContinuous` outcome line | any `FAIL` |
+| CONT-1.2 | **CS-2** latch lifecycle | a **leaked armed latch across a dwell** — `catch_coordinator`'s reactive catch path live over a loaded cup for the whole gap, so any tracked ball can command platform motion | `PASS`, strict True/False alternation, ends disarmed | any `FAIL` ⇒ **STOP.** Safety-relevant |
+| CONT-1.3 | **CS-3** dwell quiescence | session-level motion, or an auto-prime ascending with a ball in the cup | `PASS`: both dwell gaps silent on `dynamic_target`/`announce`/`vel_scale`/`prime_dispatched`, the hand command echo reaches the `±0.5 rev` park band in every gap, and never ASCENDS more than `0.15 rev` above the lowest value seen in that gap | any `FAIL` ⇒ **STOP**. Note what is deliberately NOT a failure here: on this MISSED capture each cycle's own `SAFE_ABORT` retract (up to `~10 rev`, downward) lands inside the measured gap by construction — the coordinator disarms BEFORE it retracts. CS-3 scores ascents only. The `0.15 rev` bound is measured, not chosen: worst real ascent over the 16 post-disarm gaps of `temp/logs/toss_trace_2026-07-27_15-39-50.jsonl` is `0.0440 rev` (3.4×), and an auto-prime ascent is `~9.96 rev` (66×) |
+| CONT-1.4 | **CS-4** envelope re-declared | a stale `catch/reach_center` on cycle *k*, which puts the envelope back on the commanded pose and rejects the deferred A→B reach `WORKSPACE` **mid-flight** (the 4/4 hardware failure C-REACH-1 exists to close) | `PASS`, exactly one declaration per cycle, ≥ 10 ms before its arm | any `FAIL` |
+| CONT-1.5 | **CS-5** no hand move | the firmware premise wrong on this machine ⇒ off-band kind-0 dispatch | `PASS`, hand inside `±0.5 rev` at every arm | any `FAIL` ⇒ **STOP**, and re-read CONT-B.2 |
+| CONT-1.6 | **CS-6** release ordering | a clock-domain error between the FSM's perf clock and the announcement's ROS `throw_time` | `PASS`; no cycle releases before the previous scheduled landing. CS-6 does **not** score the achieved cadence against the REQUESTED dwell — the request is not in the trace, so a cadence that collapsed to a still-positive gap would PASS here. Row CONT-1.8 (and CONT-2.5 on the live rungs) is what scores the request; the achieved value CS-6 prints is the INDEPENDENT wire-side measurement of the same quantity, which is what makes the pair a cross-check rather than the coordinator marking its own homework | any `FAIL` |
+| CONT-1.7 | session result | — | `outcome: COMPLETED`, `throws_completed: 3`, `catches_confirmed: 0`, `per_cycle_outcomes: [MISSED, MISSED, MISSED]` | `catches_confirmed > 0` on an empty cup ⇒ a possession verdict is minting CAUGHT out of nothing; **STOP** and route to § SECTION POSS |
+| CONT-1.8 | `per_cycle_dwell_s` | — | entry 1 is `nan`; entries 2–3 are `≥ 8.0` | any entry **below** `8.0` ⇒ the same fault CS-6 catches, **STOP**. Values above `8.0` are EXPECTED here and are not a fault: a MISSED cycle the session continues past waits out a **2.80 s cleanup floor** from its scheduled landing (`CATCH_CONFIRM_WINDOW_S 0.7` + the `2.0 s` `go_home` profile + 2 node ticks), because `_safe_abort` dispatches the retract and the recentre on service ACKS and returns while both are still moving. At the `5.0 s` delay that floor puts the earliest release at `7.80 s`, i.e. **below** the `8.0 s` request, so the floor should NOT bind here and the entries should read close to `8.0`. **REPORT** anything above `8.60` with the value |
+
+### THE LADDER — live ball, climb in order
+
+`go_home` before every `Reload`, exactly as § SECTION DISP requires (a caught toss
+STAYs, and the Reload precondition tolerance is `66.5 mm`).
+
+| rung | goal | why here |
+|---|---|---|
+| **CONT-2** | `num_throws: 3`, `catch_position: (0, 0, 170)`, `throw_height_m: 0.60`, `dwell_time_s: 8.0`, defaults otherwise (`stop_on_miss` omitted ⇒ TRUE) | the first live session, at the height § CHECK HAND-7 has cleared without `FW_VERSION 2`, at centre where nothing else is in play |
+| **CONT-3** | as CONT-2 but `num_throws: 5` | repetition without changing anything else |
+| **CONT-4** | `num_throws: 5`, `throw_height_m: 0.80` | **only after `platform_fw_version = 2` is confirmed** (§ Section FW row FW-1). Unattended repetition is exactly the exposure the decel fix removes |
+| **CONT-5** | `num_throws: 3`, `catch_position: (70, 0, 170)`, `throw_height_m: 0.80` | the chained displaced session — cycle 1 throws `0 → 70`, cycles 2+ are near-degenerate at `70` |
+
+```bash
+ros2 action send_goal -f /jugglebot/toss_continuous \
+  jugglebot_interfaces/action/TossContinuous \
+  "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.60,
+    num_throws: 3, dwell_time_s: 8.0, throw_delay_s: 5.0, catch_vel_scale: 0.0}"
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| CONT-2.1 | `outcome` | `COMPLETED` with `catches_confirmed == num_throws`, **or** `STOPPED_ON_MISS` (a real miss is data, not a fault) | `ABORTED_CYCLE_*` ⇒ read the embedded cycle verdict and route it to that verdict's own section. Do **not** re-run the session to "see if it works" |
+| CONT-2.2 | **the stop actually stops** — on any `STOPPED_ON_MISS` | the machine performs **no further stroke** after the missed cycle's `SAFE_ABORT`, and `len(per_cycle_outcomes) == throws_completed` | another stroke after a miss ⇒ **E-STOP.** `stop_on_miss` is the safety path: a loose ball on the floor under a stroking machine is the whole reason it defaults TRUE |
+| CONT-2.3 | eye-scored catches vs `catches_confirmed` | they agree (self-toss verdicts are trustworthy since C-POSSESS-1) | a disagreement is a **finding** — § SECTION POSS, not this section |
+| CONT-2.4 | hand between cycles | visibly still; `per_cycle` shows no `REJECTED_HAND_NOT_PARKED` | any ⇒ **STOP**, CS-5 class |
+| CONT-2.5 | `per_cycle_dwell_s[1:]` | every entry in `[8.00, 8.60]` — the request, plus at most the `0.6 s` handoff margin | below `8.00` ⇒ cadence inversion, **STOP**. Above `8.60` ⇒ **REPORT** with the value; something in the CAUGHT teardown is slower than the measured `0.442 s` verdict latency + 2 ticks |
+| CONT-2.6 | `per_cycle_catch_error_mm` | all finite entries `< 40 mm`, and **not growing** across cycles | a monotonic growth across cycles ⇒ REPORT: the chained throw site is walking. Log `uptime_ms` with it (standing rule 4 — the Teensy-uptime lag) |
+| CONT-3.1 … CONT-5.1 | as CONT-2.1 … CONT-2.6, per rung | — | — |
+
+### Refusals you should expect, and what they mean
+
+| outcome | meaning | what to do |
+|---|---|---|
+| `REJECTED_NUM_THROWS` | `num_throws` outside `[1, 20]` | fix the goal |
+| `REJECTED_THROW_DELAY` | `throw_delay_s` below the toss FSM's own `MIN_TOSS_THROW_DELAY_S = 3.5 s`. This gate is what makes the `4.10 s` absolute dwell floor a REAL floor instead of an arithmetic identity: without it a goal like `throw_delay 2.0 / dwell 3.0` satisfies `dwell ≥ delay + 0.6`, is ACCEPTED, builds a whole cycle's per-goal state, and only then dies `ABORTED_CYCLE_REJECTED_CANT_MAKE_LEAD` | raise `throw_delay_s` to `≥ 3.5` (or omit it for the `5.0 s` default). Nothing moved |
+| `REJECTED_DWELL` | the dwell is below `throw_delay_s + 0.6 s`. **Derived, not chosen**: a cycle's release is its own accept + `throw_delay`, and the session cannot start cycle N+1 before cycle N's CAUGHT verdict lands (measured `landing + 0.202–0.442 s`, 17/17, 2026-07-27) plus two 50 ms node ticks. Floor is `4.10 s` at the toss FSM's own `3.5 s` delay floor and `5.60 s` at the `5.0 s` default | raise `dwell_time_s`, or lower `throw_delay_s` toward `3.5`. Do **not** treat the refusal as a defect: a cadence the machine quietly ignored would be a lie about what it did |
+| `REJECTED_CHAIN_UNREACHABLE` | with `num_throws ≥ 2`, the predicted cycle-2 throw site falls outside the `±150 mm` planning box. This is Phase E's KNOWN LIMITATION caught **before a ball flies** — the catch parks the platform CENTROID a cup-swing outside `B` so the CUP lands ON `B`, and `trajectory/commanded_position` publishes the centroid. Measured frontier: **`\|B\| ≤ 146.5 mm` chains, `\|B\| ≥ 147.0 mm` does not**; the residual then collapses (cycle 3 `145.938`, cycle 4 `146.001`), so **cycle 2 is the only one at risk** | lower `catch_position`, or run `num_throws: 1`. Nothing moved |
+| `ABORTED_CYCLE_<verdict>` | a cycle was REJECTED or ABORTED — a machine fault, not a missed catch. The session stops **regardless of `stop_on_miss`**, because repeating a fault `num_throws` times is how one fault becomes N | route the embedded verdict to its own section |
+| `REJECTED_BUSY` | a Reload/Toss/session was already running | one ball-op at a time, across all three actions |
+
+### What this section does NOT cover
+
+- **A per-cycle waypoint list** (a different `B` each cycle, A → B → C). Explicitly
+  out of scope for v1: it needs the throw-site frame question of § SECTION DISP's
+  open question settled first, and a fixed `B` is the well-conditioned case
+  (measured, a fixed-`B` chain **converges**).
+- **Possession RETENTION across the dwell.** Nothing re-verifies that the ball is
+  still in the cup between catch and next throw. C-POSSESS-1's verdict is minted at
+  **arrival** — the tracker declares CAUGHT because the marker vanished — so a
+  post-CAUGHT bounce-out during a dwell leaves the latch set and the next cycle
+  fires an empty stroke (benign, but the verdict is wrong), and `stop_on_miss` does
+  **not** close it because the bounce-out happens *after* a CAUGHT. A session
+  multiplies that exposure by `num_throws`. **Watch the cup between cycles by eye,
+  and score a lost ball as a finding even when the outcome line says CAUGHT.** The
+  ball-in-cup hand sensor (installed 2026-07-28) closes this with no wire change —
+  it becomes the primary source behind the existing `_possession_confirmed` seam.
+- **Sessions above 5 cycles.** The config ceiling is 20; the evidence stops where
+  this ladder stops.
+- **Unattended operation.** Every rung above is watched. Nothing in this phase makes
+  the machine safe to leave.
+
+---
+
 ## SECTION SEAT-EXP — the seat-rate A/B (a SEPARATE, LATER sitting)
 
 > **This is not part of § THE RUN SHEET.** That run sheet is marked EXECUTED
@@ -4374,11 +4603,14 @@ Flipping it requires **all four** steps. Skipping the middle two is silent:
 source ~/Desktop/PDJ_venv/venv/bin/activate
 python config/generate_config.py
 # 3. rebuild (NO venv — colcon builds against system python 3.8)
-cd ros_ws && colcon build --packages-select jugglebot && cd ..
+cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && cd ..
 # 4. RELAUNCH jugglebot_launch.py — the launch runs the INSTALLED copy.
 ```
 
-No interface rebuild, **no firmware flash**.
+**No firmware flash.** The `jugglebot_interfaces` half of the build changes nothing
+for this section, but it is mandatory in every section since 2026-07-29
+(`reload_coordinator_node` imports `TossContinuous` at module scope — matrix
+row B).
 
 **Expected commanded-motion change on the reload catch**, measured 2026-07-28
 through the production planner at the recorded reload geometry (lead 2.3712 s,
@@ -4737,7 +4969,7 @@ edit.
 source ~/Desktop/PDJ_venv/venv/bin/activate
 python config/generate_config.py
 git diff --stat                          # expect ONLY the seat-rate line + generated
-cd ros_ws && colcon build --packages-select jugglebot && cd ..
+cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && cd ..
 # 2. RELAUNCH.
 # 3. re-run SEAT-EXP-1 — all three rows must PASS again.
 python -m pytest tests/motion/test_trajectory_planner_catch.py \

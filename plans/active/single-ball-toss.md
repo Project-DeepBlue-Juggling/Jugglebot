@@ -188,6 +188,7 @@ zero feasibility violations, all knots pump-accepted.
 | 4 | Tier 8b — tilt-aimed displaced throw on the production stack | gate sweep extension | COMPLETE (2026-07-25 — 8b binding ring PASS 9/9; asymmetry map landed; ships behind `JB_OP_TOSS_TIER='8a'`) |
 | 5 | Hardware bring-up T0–T4 (operator-run) | staged PASS criteria | RUNBOOK READY (`tests/hardware/session_phase8_toss_hardware.md`, 2026-07-25); T4 **VALIDATED 2026-07-27** (11/11 displaced throws accepted at the then-70 mm cap); T0–T3 captures pending |
 | **E** | **Displaced throws to ±150 mm** — throw site from the live pose, reach envelope re-scoped (**C-REACH-1**), cap re-based, stay-at-pose on CAUGHT | full pytest + the re-run 8b gate + the § SECTION DISP ladder | **LANDED 2026-07-29 (code complete, NOT YET FLOWN)** — see § Phase E Outcome. Ships with one **known limitation**: chaining is refused at the cap (works below ~146 mm) |
+| **F** | **`TossContinuous` — repeated toss-catch cycles with a configurable dwell** (the programme finale, operator decision (c)): new action + pure-Python session FSM, `stop_on_miss` default TRUE, per-cycle accounting | full pytest + the CS-1..CS-6 trace checker (synthetic matrix clean) + the § SECTION CONT ladder | **LANDED 2026-07-29 (code complete, NOT YET RUN)** — see § Phase F Outcome |
 
 ## Implementation Phases
 
@@ -509,6 +510,216 @@ while the repo says otherwise (row DISP-0 greps the installed copy for exactly
 this). **No firmware flash and no `jugglebot_interfaces` rebuild** for this phase:
 both new topics carry `geometry_msgs/Point`, and no sketch reads either new
 generated constant.
+
+### Phase F — `TossContinuous`: repeated toss-catch cycles (operator decision (c), 2026-07-28)
+
+The operator's ask: `toss_continuous {catch_position, throw_height_m, num_throws,
+dwell_time_s}` — repeated toss-catch cycles with a configurable dwell, as the
+bridge between validated single tosses and 2-ball juggling. `stop_on_miss`
+defaults **TRUE**.
+
+**It adds no capability, and that is the design.** Every cycle is an ordinary
+`Toss`, built by `_build_toss_cycle` and ticked by `_run_toss_cycle` — the same
+two methods the single `Toss` now uses, extracted so there is exactly one copy of
+the cycle machinery. A session cannot drift from the toss the hardware ladder
+validated, because there is nothing to drift from. What the outer FSM
+(`toss_session.py`, pure Python, no ROS) owns is exactly three things: *when* the
+next cycle starts, *whether* it starts, and the per-cycle accounting a sitting is
+scored from.
+
+**The found fact it rests on.** The firmware catch stroke ENDS at 0 rev
+(`Trajectory.h` `buildCatch`, `xA = {x3, x5, x6, 0.f}`, line 267) and a kind-0
+throw stroke STARTS at 0 rev (`buildThrow`, `xA = {0.f, x1, x2, x3}`, line 251):
+the catch is its own re-park and the throw is its own catch-prime, so **a caught
+ball needs no hand move between cycles**. Corroborated on the 2026-07-27 sitting —
+hand `pos_meas` within ±0.045 rev of park at the CAUGHT instant on all 17
+self-tosses, worst excursion 0.069 rev over the following 3 s against the ±0.5 rev
+park band (7.2×). The platform side is free because Phase E's `ACTION_STAY` leaves
+the machine at its catch pose and `trajectory/commanded_position` reports it.
+
+**Five session invariants**, stated in the module docstring and pinned by tests:
+S1 at most one live cycle; S2 the session commands no motion of its own; S3
+`stop_on_miss` stops at the cycle boundary and introduces no new abort point; S4
+cancellation obeys the per-cycle phase rules verbatim; S5 the dwell is a quiescent
+wait, never a stretched `throw_delay`.
+
+**The dwell floor is DERIVED, and the brief's 2.0 s figure is unachievable.**
+Dwell is previous SCHEDULED LANDING → next RELEASE, so
+`cycle_start(N+1) = landing(N) + dwell − throw_delay` and the floor is
+`throw_delay + margin`. `throw_delay` cannot go below `MIN_TOSS_THROW_DELAY_S` =
+3.5 s (the toss FSM's own `REJECTED_CANT_MAKE_LEAD`; verified against the real FSM
+— 3.49 s rejects, 3.50 s dispatches), and the margin covers the handoff the
+machine cannot avoid: the CAUGHT verdict lands at `landing + 0.202–0.442 s`
+(median 0.209; 17/17 self-tosses, `logbook/2026-07-28-caught-gate-xy-plausibility.md`)
+plus two 50 ms node ticks = 0.542 s worst measured, so 0.6 s ships. **Absolute
+floor 4.10 s; 5.60 s at the 5.0 s default delay; config default dwell 6.0 s.** A
+2.0 s dwell would need `throw_delay ≤ 1.458 s`, i.e. 2.042 s below the FSM floor.
+Lowering that floor is a change to the arming/release timing of a
+hardware-validated path — a safety fork, deliberately not taken; it is the lever a
+future phase pulls, and it needs a bench measurement of the real
+positioning + prepare budget, not an argument.
+
+**S5's choice, by failure mode.** Stretching `throw_delay` to absorb the dwell
+satisfies the same arithmetic, and was rejected because it leaves `catch/armed`
+RAISED for the whole dwell with a ball resting in the cup — `catch_coordinator`'s
+reactive catch path live over a loaded cup for the entire gap, so any tracked ball
+entering the volume can command platform motion; because an armed dwell looks
+identical to an about-to-throw machine, so the operator's intervention window is
+one in which the robot is armed; and because it moves every cycle's internal
+timing off the profile the hardware measured. Waiting keeps each cycle
+bit-identical to a validated single toss.
+
+**Phase E's KNOWN LIMITATION becomes a pre-throw refusal.** The catch parks the
+platform CENTROID a cup-swing outside `B` so the CUP lands ON `B`, and the wire
+publishes the centroid — so near the ±150 mm planning box a chained session would
+throw one ball, catch it, and then refuse cycle 2 `REJECTED_WORKSPACE` with the
+platform parked off-box and the ball in the cup. `_predicted_chain_site_mm` runs
+the SAME `predicted_catch_command` policy the deferred reach publishes from and
+refuses `REJECTED_CHAIN_UNREACHABLE` before anything moves. Measured frontier:
+**|B| ≤ 146.5 mm chains, |B| ≥ 147.0 mm does not**, and the residual then
+COLLAPSES (cycle 2 `149.017`, cycle 3 `145.938`, cycle 4 `146.001` at B = 146) —
+so **a fixed-B chain converges and cycle 2 is the only one at risk**. Note the
+binding gate is the ±150 box on `A`, not the 150 mm displacement cap: the residual
+|B−A| never exceeds 3.1 mm.
+
+**Possession across the dwell is stated, not designed away.** Nothing re-verifies
+that the ball is still in the cup between catch and next throw: C-POSSESS-1's
+verdict is minted at ARRIVAL (the tracker declares CAUGHT because the marker
+vanished), so a post-CAUGHT bounce-out during a dwell leaves the latch set and the
+next cycle fires an empty stroke — benign, but the verdict is wrong — and
+`stop_on_miss` does not close it because the bounce-out happens *after* a CAUGHT.
+A session multiplies that exposure by `num_throws`. The seam that closes it needs
+no wire change: the coordinator already routes every possession question through
+`_possession_confirmed` → `_possession_source`, and the ball-in-cup hand sensor
+becomes the PRIMARY source there. Recorded in
+`ros_ws/docs/ball_possession_contract.md` § 7.
+
+**v1 is ONE catch point for the whole session.** A per-cycle waypoint list is
+explicitly out of scope and is the obvious v2: it needs Phase E's throw-site frame
+question settled first, and a fixed B is the well-conditioned case (measured, it
+converges).
+
+**Hardware ladder:** `tests/hardware/session_anomaly_fixes.md` § SECTION CONT —
+CONT-0 (pre-flight) → CONT-STEP-0 (the zero-code operator dispatch-loop baseline,
+which produces the comparison data) → CONT-STEP-1 (the no-ball DRY TRACE, 3
+cycles, `stop_on_miss: false`, scored by the new CS-1..CS-6 trace invariants) →
+CONT-2/3 (3 then 5 cycles at 0.60 m) → CONT-4 (5 at 0.80 m, **gated on
+`platform_fw_version = 2`** — unattended repetition multiplies exposure to the
+end-stop overshoot the Phase-D decel fix removes) → CONT-5 (a chained displaced
+session at 70 mm).
+
+### Phase F — Outcome (landed 2026-07-29)
+
+**Code complete, nothing has run.** Action:
+`ros_ws/src/jugglebot_interfaces/action/TossContinuous.action`. FSM:
+`ros_ws/src/jugglebot/jugglebot/toss_session.py`. Node: the third action server on
+`reload_coordinator_node`, plus the `_build_toss_cycle` / `_run_toss_cycle`
+extraction. Config: `jugglebot_operational.toss_session_dwell_default_s` (6.0),
+`_dwell_margin_s` (0.6), `_max_throws` (20). Trace invariants: **CS-1..CS-6** in
+`tests/hardware/toss_trace_recorder.py check --continuous`, verified both
+directions by `tools/probes/toss_trace_synth.py` — **two** happy cases, one per
+session terminal shape (`cont_happy`, every cycle CAUGHT / `ACTION_STAY`;
+`cont_dry`, every cycle MISSED / `SAFE_ABORT`, which is the shape the mandatory
+CONT-STEP-1 pre-flight produces), plus one violation trace per invariant.
+
+**A real defect the tests caught before it shipped.** The session's `success` was
+computed from the counts alone, so a `num_throws = 0` goal satisfied
+`0 == 0 and 0 == 0` **vacuously** and the node called `goal_handle.succeed()` on a
+REJECTED goal. Fixed at the class level rather than the case: `success` now also
+requires the `COMPLETED` terminal, so no terminal that is not a clean completion
+can report success however the counters land.
+
+**A second, pre-existing defect surfaced and fixed.** `tools/probes/toss_trace_synth.py`'s
+`viol_dt7` case had gone **vacuous** — DT-7 stopped being an "exactly one
+dynamic_target" count when it was reworked to bound the pre-position STREAM to
+30 mm of the nominated point, so injecting a duplicate AT (0, 0, 170) was no
+longer a violation. The verification matrix reported `viol_dt7 PASS/MISMATCH` at
+HEAD (confirmed by running the HEAD checker against the HEAD probe). The case now
+injects a target that WANDERS to (95, 0, 170), which is what DT-7 actually guards.
+The full 30-case matrix is clean. It is NOT split into its own commit, though the
+repo's logical-unit rule would normally earn it one: it lives in the same `CASES`
+table and the same generator this phase rewrote, so the two are not independently
+revertible, and a clean matrix is a *prerequisite* for trusting the new CS cases.
+
+**Ten reviewer findings verified and fixed at finalize; four adjudicated
+otherwise.** The two that mattered most converged from independent lenses on the
+same defect: **the CS-1..CS-6 trace checker this phase ships as the bench gate had
+only ever been validated against an all-CAUGHT session, while runbook CONT-STEP-1
+makes an all-MISSED dry trace the MANDATORY capture before any ball flies.** That
+ladder disarms BEFORE it retracts, so the cycle's own mandated retract — ~10 rev on
+a dry trace, since no catch stroke re-parks the hand — lands inside the dwell
+window CS-3 measures. Building the missing `cont_dry` case found two real defects
+in sequence: CS-3's hand bound was DT-5's *idle-window* 0.05 rev, which is 1.12x
+the worst real post-disarm residual (0.0446 rev, measured over the 16 toss-shaped
+gaps of `temp/logs/toss_trace_2026-07-27_15-39-50.jsonl`) — a coin-flip false STOP
+on a hard-STOP row; and the first repair, anchoring on the first in-park sample,
+still FAILed `cont_dry` because the 0.5 rev park band is wide enough that the tail
+of the retract ramp is inside it. Landed formulation is **no-ascent with a running
+minimum** at a measured 0.15 rev (3.4x the worst real ascent, 66x below the ~9.96
+rev auto-prime it exists to catch), plus a new failure for a window where the hand
+never reaches park; validated three ways (`cont_dry` 6/6 PASS, the new
+`viol_cs3_hand` FAILs CS-3 with zero collateral, 16/16 real windows pass).
+
+**The extraction regressed the single Toss, in the direction nobody expected.**
+`_execute_toss`'s `rclpy`-shutdown branch terminalised NOTHING on the goal handle
+at HEAD; after the extraction the discarded `exit_kind` let it fall through to
+`goal_handle.abort()`. The *session* handled shutdown correctly and its test
+asserted parity with "the single Toss does the same" — which the same change had
+made false, and the pre-existing shutdown test never asserted the handle. Fixed,
+and the invariant is now pinned on the single Toss.
+
+**The dwell floor sized only the handoff that commands nothing.**
+`dwell_margin_s = 0.6` covers the CAUGHT handoff (a verdict, two ticks). A MISSED
+cycle the session continues past hands over through a whole `SAFE_ABORT` ladder
+whose every rung returns on a SERVICE ACK — `_go_home()` returns when a 2.0 s
+recentre profile has been *installed*. At the shipped defaults the naive
+arithmetic already starts cycle N+1 **1.7 s before the recentre lands**. Landed
+fix: `DEFAULT_SESSION_MISS_CLEANUP_S = 2.80 s` as a FLOOR on landing -> next cycle
+start after any non-success cycle — it can only lengthen a gap, never shorten one,
+so it makes the docstring's existing "lateness is absorbed" claim true by
+construction. Also landed: `REJECTED_THROW_DELAY`, without which the advertised
+4.10 s absolute floor was an arithmetic identity rather than a floor;
+`catch/reach_center` removed from CS-3's silence set (it is published in the same
+FSM tick as the window's own end boundary, 131 us apart on the real bag, and CS-4
+already covers the whole gap more strictly); CS-6's docstring corrected to what it
+proves; and `ball_possession_contract.md` § 7.1's "no edit to the coordinator"
+upgrade claim refuted and replaced with the two edits retention actually needs.
+
+**Deferred, with the trace recorded**: the unprotected pre-`try` region of
+`_execute_toss_continuous` (structurally real, reachability NOT-PROVEN by both
+reviewers who raised it, pre-existing in `_execute_toss`, and the safe restructure
+needs `session is None` guards on two handlers — the wrong trade at finalize).
+
+**Deployment: `colcon build --packages-select jugglebot_interfaces jugglebot` +
+relaunch — BOTH packages, mandatorily.** This is the first phase since Phase E to
+need the interfaces build, and its failure mode is worse than the msg-field cases
+the runbook already documents: `reload_coordinator_node` imports `TossContinuous`
+at module scope, so a stale interfaces package raises `ImportError` before the
+node is constructed and **all three** ball-op actions disappear — `Reload` and
+`Toss` included. Runbook row CONT-0.3 is the 3-second check. **No firmware flash**
+(config regeneration added three `constexpr` to the delivered
+`hardware_config.h`; no sketch reads them). **The two-package build is now
+mandatory in EVERY section of the runbook, not just § SECTION CONT**, because a
+`jugglebot`-only build now takes `Reload` and `Toss` down along with the session.
+The review found four per-section blocks affirmatively saying "no
+`jugglebot_interfaces` rebuild"; underneath them **every** build instruction in
+the file was the single-package command. All 20 were swept —
+`grep -c 'packages-select jugglebot\b'` now returns 0.
+
+**Verification.** `python tools/probes/toss_trace_synth.py --all --verify`, run
+2026-07-29: **30/30 cases OK, matrix CLEAN** (RED at HEAD on `viol_dt7`). Full
+suite: `pytest tests/ -q`, run 2026-07-29 on the Jetson in the project venv (07:47:07 -> 08:11:09): **4254 passed, 3 xfailed, 198 warnings in 1435.48 s (0:23:55)**, exit 0 — **4254 passed, 3 xfailed in 1435.48 s (0:23:55)** (+114 on the `3332bc6` baseline of 4140 — accounted EXACTLY: `--collect-only` reports 70 tests in `test_toss_session.py` and 44 in `test_toss_continuous_node.py`, both new files; xfail unchanged at 3, so no test was weakened to reach green). Commits: **COMMITSHERE**. Logbook:
+`logbook/2026-07-25-toss-continuous-action.md`.
+
+**Operator handoff, deferred in full.** Nothing in this phase has run on hardware.
+`tests/hardware/session_anomaly_fixes.md` § SECTION CONT is the authority and runs
+LAST — after § SECTION POSS (whose verdicts it consumes) and § SECTION DISP (whose
+`STAY` terminal makes chaining possible). CONT-0 pre-flight → CONT-STEP-0
+(zero-code dispatch-loop baseline; **if it comes back 1-of-3 caught, abort the
+section and go fix the single toss** — a session cannot be more reliable than the
+toss it repeats) → CONT-STEP-1 (the no-ball dry trace, the one sanctioned use of
+`stop_on_miss: false`) → the live ladder CONT-2..CONT-5, with CONT-4 gated on
+`platform_fw_version = 2`.
 
 ## Testing Plan
 - Pure math (ballistics, frames, sequencer) in `tests/motion/`; node behaviour

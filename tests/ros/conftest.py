@@ -560,6 +560,50 @@ class Toss:
     Feedback = _TossFeedback
 
 
+# ── TossContinuous action mock (Phase F) ──────────────────
+
+
+class _TossContinuousGoal:
+    def __init__(self):
+        self.catch_position = Point()
+        self.throw_height_m = 0.0
+        self.num_throws = 0
+        self.dwell_time_s = 0.0
+        self.throw_delay_s = 0.0
+        self.catch_vel_scale = 0.0
+        # MIRRORS the .action IDL default `bool stop_on_miss true`, and the
+        # default is LOAD-BEARING (operator decision (c), 2026-07-28): an
+        # omitted field must mean STOP, never CONTINUE. Pinned equal to the
+        # .action file by
+        # tests/ros/test_toss_session.py::test_stop_on_miss_wire_default_is_true.
+        self.stop_on_miss = True
+
+
+class _TossContinuousResult:
+    def __init__(self):
+        self.success = False
+        self.outcome = ''
+        self.throws_completed = 0
+        self.catches_confirmed = 0
+        self.per_cycle_outcomes = []
+        self.per_cycle_catch_error_mm = []
+        self.per_cycle_flight_s = []
+        self.per_cycle_dwell_s = []
+
+
+class _TossContinuousFeedback:
+    def __init__(self):
+        self.cycle_index = 0
+        self.phase = ''
+        self.catches_confirmed = 0
+
+
+class TossContinuous:
+    Goal = _TossContinuousGoal
+    Result = _TossContinuousResult
+    Feedback = _TossContinuousFeedback
+
+
 # ── rclpy mock ────────────────────────────────────────────────
 
 
@@ -856,6 +900,7 @@ _create_mock_module('jugglebot_interfaces.action', {
     'BallButlerThrowCmd': BallButlerThrowCmd,
     'Reload': Reload,
     'Toss': Toss,
+    'TossContinuous': TossContinuous,
 })
 
 _create_mock_module('geometry_msgs')

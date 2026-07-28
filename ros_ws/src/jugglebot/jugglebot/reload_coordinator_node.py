@@ -1,15 +1,17 @@
-"""ROS2 node: the ball-ops coordinator — the BB→Jugglebot reload action (MVP goal 4)
-and the Jugglebot self-toss action (single-ball-toss plan, Phase 1).
+"""ROS2 node: the ball-ops coordinator — the BB→Jugglebot reload action (MVP goal 4),
+the Jugglebot self-toss action (single-ball-toss plan, Phase 1) and the continuous
+self-toss session (single-ball-toss plan, Phase F).
 
-One node hosts BOTH ball-op actions (the filename stays for launch/setup continuity).
-They are merged deliberately, not for convenience: the two actions share the hand,
+One node hosts ALL THREE ball-op actions (the filename stays for launch/setup
+continuity).
+They are merged deliberately, not for convenience: the actions share the hand,
 the ``catch/armed`` latch, and the Teensy's last-writer-wins trajectory queue, so
 mutual exclusion must be a single in-process ``_lock``-guarded check — a cross-node
 busy mechanism has publish-latency TOCTOU windows in which two live sequences
 double-own the hand (one action's prime/retract erases the other's armed stroke) and
 fight over the latch (one side's disarm silently kills the other's catch). The merge
 also keeps exactly one copy of the bag-probed telemetry-ladder thresholds and of the
-executor discipline both actions' ladders depend on.
+executor discipline the ladders depend on.
 
 RELOAD is a thin wrapper around the pure-Python :class:`reload_sequencer.ReloadSequencer`
 FSM; TOSS wraps :class:`toss_sequencer.TossSequencer` the same way (see the toss
@@ -92,6 +94,23 @@ The seam this opens on the RELOAD path (its catch is hard-fixed at the workspace
 centre with no pre-positioning, so an off-centre park would reject the incoming
 BB ball mid-flight) is closed by the reload FSM's ``REJECTED_NOT_CENTERED``
 precondition, which refuses BEFORE BB is asked to throw.
+
+TOSS_CONTINUOUS (``jugglebot/toss_continuous``, TossContinuous.action, Phase F) is
+the third action and adds **no capability**: it runs ``num_throws`` ordinary tosses
+back to back with a configurable dwell, each one built and driven through the SAME
+:meth:`_build_toss_cycle` / :meth:`_run_toss_cycle` pair the single ``Toss`` uses —
+so there is exactly one copy of the cycle machinery and a session cannot drift from
+a single toss. Its outer FSM is the pure-Python
+:class:`toss_session.TossSessionSequencer`, which owns only *when* the next cycle
+starts, *whether* it starts, and the per-cycle accounting. The session commands no
+motion of its own; every commanded motion belongs to a cycle. Chaining works because
+of two landed facts: the firmware catch stroke ends where a kind-0 throw stroke
+starts (0 rev, ``Trajectory.h``), so no hand move is needed between cycles, and a
+CAUGHT toss STAYs at its catch pose, so cycle N+1's throw site A is cycle N's catch
+B for free. Phase E's KNOWN LIMITATION — ``trajectory/commanded_position`` publishes
+the CENTROID, which sits a cup-swing outside B — is caught BEFORE anything moves by
+:meth:`_predicted_chain_site_mm` (``REJECTED_CHAIN_UNREACHABLE``) instead of letting
+a session throw one ball and then refuse cycle 2 with the platform parked off-box.
 """
 
 from __future__ import annotations
@@ -126,7 +145,7 @@ from jugglebot_interfaces.srv import (
     SetHandGains,
     SetHandTrajCmd,
 )
-from jugglebot_interfaces.action import Reload, Toss
+from jugglebot_interfaces.action import Reload, Toss, TossContinuous
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 
 import jugglebot.hardware_config as hw
@@ -164,8 +183,16 @@ from jugglebot.toss_sequencer import (
     THROW_DISPATCH_REJECTED,
     TIER_8B,
     TOSS_CANCEL_CUTOFF_S,
+    TOSS_XY_LIMIT_MM,
     TossObservations,
+    TossResult,
     TossSequencer,
+)
+from jugglebot.toss_session import (
+    SESSION_ACTION_START_CYCLE,
+    SESSION_PHASE_CHECKING,
+    TossSessionResult,
+    TossSessionSequencer,
 )
 from jugglebot.catch_coordinator import CatchCoordinator
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
@@ -410,6 +437,25 @@ def _toss_deadline_s(seq) -> float:
               + float(seq.flight_time_s) + float(seq.release_grace_s)
               + float(seq.catch_confirm_window_s) + _SEQUENCE_CEILING_MARGIN_S)
     return max(_MAX_SEQUENCE_S, budget)
+
+
+def _toss_session_deadline_s(session, cycle_budget_s: float) -> float:
+    """The node-level hard ceiling for a whole TossContinuous SESSION — same
+    doctrine as :func:`_toss_deadline_s`, applied one level up: never below
+    ``_MAX_SEQUENCE_S`` and never inside a legitimate session window, because the
+    session timeout path SAFE_ABORTs and a SAFE_ABORT under an airborne ball
+    retracts the hand into it.
+
+    Deliberately GENEROUS: it is a backstop of last resort, not the working
+    guard. Each cycle already carries its own :func:`_toss_deadline_s` ceiling
+    inside :meth:`_run_toss_cycle`, so a wedge INSIDE a cycle is caught in ~30 s;
+    this only bounds a wedge in the outer loop, whose only wait is time-based.
+    Budget per cycle = the cycle's own ceiling + a full dwell (the quiescent wait
+    before it), which over-counts because the cycle ceiling already contains
+    ``throw_delay`` — over-counting is the safe direction here."""
+    per_cycle = float(cycle_budget_s) + float(session.dwell_time_s)
+    return max(_MAX_SEQUENCE_S,
+               int(session.num_throws) * per_cycle + _SEQUENCE_CEILING_MARGIN_S)
 
 
 def _sequence_deadline_s(seq) -> float:
@@ -719,18 +765,30 @@ class ReloadCoordinatorNode(Node):
             cancel_callback=self._cancel_callback,
             callback_group=self._cbgroup)
         # The toss shares the goal/cancel callbacks: the busy gate is ONE
-        # _lock-guarded claim spanning both actions (a Toss goal while a Reload
-        # runs — or vice versa — is REJECTED_BUSY at accept), and both defer
-        # cancel semantics to their execute loops.
+        # _lock-guarded claim spanning ALL THREE actions (a Toss goal while a
+        # Reload runs — or a session while either runs, or either while a session
+        # runs — is REJECTED_BUSY at accept), and all three defer cancel semantics
+        # to their execute loops.
         self._toss_action = ActionServer(
             self, Toss, 'jugglebot/toss',
             execute_callback=self._execute_toss,
             goal_callback=self._goal_callback,
             cancel_callback=self._cancel_callback,
             callback_group=self._cbgroup)
+        # The continuous session (Phase F) is the SAME claim and the SAME cancel
+        # policy: it holds ONE busy claim for the whole session, so a Reload or a
+        # Toss dispatched mid-session is REJECTED_BUSY — the one-ball-op rule
+        # extends unchanged rather than gaining a session-shaped exception.
+        self._toss_continuous_action = ActionServer(
+            self, TossContinuous, 'jugglebot/toss_continuous',
+            execute_callback=self._execute_toss_continuous,
+            goal_callback=self._goal_callback,
+            cancel_callback=self._cancel_callback,
+            callback_group=self._cbgroup)
 
         self.get_logger().info(
-            f"Ball-ops coordinator ready (jugglebot/reload + jugglebot/toss); "
+            f"Ball-ops coordinator ready (jugglebot/reload + jugglebot/toss + "
+            f"jugglebot/toss_continuous); "
             f"catch point {self._catch_point_mm} mm (world).")
 
     # ── Subscription callbacks ─────────────────────────────────────────────────
@@ -1251,8 +1309,10 @@ class ReloadCoordinatorNode(Node):
     # ── Action callbacks ───────────────────────────────────────────────────────
 
     def _goal_callback(self, goal_request):
-        # ONE ball-op at a time, across BOTH actions (shared by the reload and toss
-        # servers). rclpy runs accepted goals concurrently, so a second goal accepted
+        # ONE ball-op at a time, across ALL THREE actions (shared by the reload,
+        # toss and toss_continuous servers — a session holds the claim for its
+        # WHOLE life, dwells included).
+        # rclpy runs accepted goals concurrently, so a second goal accepted
         # while the first is live would double-own the hand on the Teensy's
         # last-writer-wins queue (one action's prime/retract erases the other's
         # armed stroke), fight over the single catch/armed latch, and scramble the
@@ -1267,8 +1327,9 @@ class ReloadCoordinatorNode(Node):
                 self._goal_claimed = True
         if busy:
             self.get_logger().warning(
-                'Ball-op goal REJECTED_BUSY — a reload/toss is already in '
-                'progress (one ball-op at a time, across both actions).')
+                'Ball-op goal REJECTED_BUSY — a reload/toss/session is already '
+                'in progress (one ball-op at a time, across all three '
+                'actions).')
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
@@ -1420,16 +1481,98 @@ class ReloadCoordinatorNode(Node):
             with self._lock:
                 self._goal_claimed = False
             return result
+        flight = self._resolve_toss_flight_s(height)
+        seq = self._build_toss_cycle(catch_pose, flight, throw_delay, vel_scale)
+
+        result = Toss.Result()
+
+        def _publish_phase(phase):
+            fb = Toss.Feedback()
+            fb.phase = phase
+            goal_handle.publish_feedback(fb)
+
+        try:
+            r, exit_kind = self._run_toss_cycle(
+                seq,
+                deadline_s=_toss_deadline_s(seq),
+                cancel_now_fn=lambda now: (
+                    goal_handle.is_cancel_requested
+                    and not self._toss_cancel_deferred(seq, now)),
+                feedback_fn=_publish_phase)
+            result.success = bool(r.success)
+            result.outcome = str(r.outcome)
+            result.catch_error_mm = float(r.catch_error_mm)
+            result.achieved_flight_s = float(r.achieved_flight_s)
+            if exit_kind == 'shutdown':
+                # SHUTDOWN terminalises NOTHING on the handle — the behaviour
+                # every release of this node has had, and it must survive the
+                # extraction that gave the session the same code path. rclpy is
+                # tearing down; a goal-status transition on a dying executor can
+                # itself raise, and the except below would then overwrite the
+                # ABORTED_SHUTDOWN line already in the log with a spurious
+                # ABORTED_EXCEPTION and re-raise a fault trace out of a clean
+                # shutdown. TossContinuous skips the same way, deliberately.
+                return result
+            if goal_handle.is_cancel_requested:
+                # Covers BOTH the honoured cancel and a DEFERRED one (past the
+                # cutoff / in flight), which resolves here with the FSM's real
+                # outcome — the catch attempt ran to its own terminal, exactly
+                # the plan's §7 semantics.
+                goal_handle.canceled()
+            elif r.success:
+                goal_handle.succeed()
+            else:
+                goal_handle.abort()
+            return result
+        except Exception:
+            # Unexpected fault mid-sequence: _run_toss_cycle has already safed
+            # the robot and emitted the outcome line. Abort the goal and
+            # re-raise so the executor's own error path still sees the fault.
+            result.success = False
+            result.outcome = 'ABORTED_EXCEPTION'
+            result.catch_error_mm = float('nan')
+            result.achieved_flight_s = float('nan')
+            try:
+                goal_handle.abort()
+            except Exception:  # noqa: BLE001
+                # The handle may already be terminal (fault after succeed/abort);
+                # the original exception must survive the cleanup.
+                self.get_logger().error(
+                    'ABORTED_EXCEPTION: goal_handle.abort() itself failed')
+            raise
+        finally:
+            self._clear_toss_cycle_state()
+            with self._lock:
+                self._goal_claimed = False
+
+    @staticmethod
+    def _resolve_toss_flight_s(height: float) -> float:
+        """Goal ``throw_height_m`` ⇒ the internal flight time (s), in ONE place
+        shared by the single Toss and every TossContinuous cycle."""
         if height == 0.0:
             # 0 ⇒ the generated config default FLIGHT TIME, resolved HERE so the
             # FSM receives the config-resolved value (kept internally as a flight
             # time — the FSM's DEFAULT_TOSS_FLIGHT_TIME_S literal is the no-config
             # fallback only, drift-guard-pinned equal; ~0.784 m apex at 0.8 s).
-            flight = float(hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S)
-        else:
-            # Operator nominates a HEIGHT (m, apex above release); convert ONCE to
-            # the internal flight time via the single tested toss_release module.
-            flight = flight_time_from_height(height)
+            return float(hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S)
+        # Operator nominates a HEIGHT (m, apex above release); convert ONCE to
+        # the internal flight time via the single tested toss_release module.
+        return flight_time_from_height(height)
+
+    def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale):
+        """Build ONE toss cycle: resolve the tier / throw site / release state,
+        construct + start the ``TossSequencer``, and install the per-goal node
+        state the observation builder and the async-event routing read.
+
+        Shared verbatim by the single ``Toss`` and by every ``TossContinuous``
+        cycle — that is the point. Two copies of this would let a session drift
+        from the single toss the hardware ladder validated, and the drift would
+        be invisible until a sitting.
+
+        The goal numerics are the CALLER's gate (both callers refuse
+        REJECTED_BAD_GOAL before reaching here, with nothing built and nothing
+        installed).
+        """
         # The release state (frames + ballistics) comes from the single tested
         # conversion module; the FSM gets its event_vel from here, never a second
         # derivation. An OUT-OF-BAND flight time still computes a release state
@@ -1553,89 +1696,72 @@ class ReloadCoordinatorNode(Node):
             self._toss_pretilt_hold_raised = False
             self._toss_announced_reach = None
         self._possession_logged = set()
+        return seq
 
-        result = Toss.Result()
-        max_sequence_s = _toss_deadline_s(seq)
+    def _clear_toss_cycle_state(self) -> None:
+        """Tear down ONE cycle's per-goal node state. Deliberately does NOT touch
+        ``_goal_claimed`` (that spans a whole session) nor ``_ball_possession``
+        (the latch survives across cycles — a caught ball is still in the cup)."""
+        with self._lock:
+            self._active_seq = None
+            # Per-goal toss state down; the possession plausibility reference
+            # reverts to the ACTIVE catch point between goals.
+            self._toss_release_state = None
+            self._toss_landing_global_mm = None
+            self._toss_platform_target_mm = None
+            self._toss_prepare_pending = False
+            self._toss_throw_dispatched = False
+
+    def _run_toss_cycle(self, seq, *, deadline_s, cancel_now_fn, feedback_fn):
+        """Tick ONE toss cycle to a terminal. Returns ``(TossResult, exit_kind)``
+        with ``exit_kind`` in {'fsm', 'cancel', 'timeout', 'shutdown'}.
+
+        Shared verbatim by the single ``Toss`` and by every ``TossContinuous``
+        cycle. It owns the safing on every NODE-level exit and emits the one
+        authoritative outcome line per cycle; it does NOT touch the goal handle's
+        terminal (succeed/abort/canceled) — that belongs to the caller, because a
+        session's cycle terminal is not the session's terminal.
+
+        ``cancel_now_fn(now) -> bool`` is the caller's per-phase cancel policy
+        (``_toss_cancel_deferred`` for both callers today): True means honour the
+        cancel NOW; a deferred cancel simply keeps ticking and resolves at the
+        FSM's own terminal, because aborting a catch mid-flight drops the ball on
+        the robot."""
+        t_start = time.perf_counter()
         try:
-            t_start = time.perf_counter()
             while rclpy.ok():
                 now = time.perf_counter()
-                if (goal_handle.is_cancel_requested
-                        and not self._toss_cancel_deferred(seq, now)):
+                if cancel_now_fn(now):
                     self._safe_toss_on_early_exit(seq)
-                    goal_handle.canceled()
-                    result.success = False
-                    result.outcome = 'ABORTED_CANCELLED'
-                    result.catch_error_mm = float('nan')
-                    result.achieved_flight_s = float('nan')
-                    self._log_toss_outcome(result)
-                    return result
-                decision = self._step_toss_sequence(seq, now, goal_handle)
+                    r = TossResult(False, 'ABORTED_CANCELLED')
+                    self._log_toss_outcome(r)
+                    return r, 'cancel'
+                decision = self._step_toss_sequence(seq, now, None)
                 if decision.done:
                     r = decision.result
-                    result.success = bool(r.success)
-                    result.outcome = str(r.outcome)
-                    result.catch_error_mm = float(r.catch_error_mm)
-                    result.achieved_flight_s = float(r.achieved_flight_s)
                     self._log_toss_outcome(r)
-                    if goal_handle.is_cancel_requested:
-                        # A DEFERRED cancel (past the cutoff / in flight) resolves
-                        # here with the FSM's real outcome — the catch attempt ran
-                        # to its own terminal, exactly the plan's §7 semantics.
-                        goal_handle.canceled()
-                    elif r.success:
-                        goal_handle.succeed()
-                    else:
-                        goal_handle.abort()
-                    return result
-                if now - t_start > max_sequence_s:
+                    return r, 'fsm'
+                if feedback_fn is not None:
+                    feedback_fn(decision.phase)
+                if now - t_start > deadline_s:
                     self._safe_toss_on_early_exit(seq)
-                    result.success = False
-                    result.outcome = 'ABORTED_TIMEOUT'
-                    result.catch_error_mm = float('nan')
-                    result.achieved_flight_s = float('nan')
-                    self._log_toss_outcome(result)
-                    goal_handle.abort()
-                    return result
+                    r = TossResult(False, 'ABORTED_TIMEOUT')
+                    self._log_toss_outcome(r)
+                    return r, 'timeout'
                 time.sleep(_TICK_S)
             # rclpy shutting down.
             self._safe_toss_on_early_exit(seq)
-            result.success = False
-            result.outcome = 'ABORTED_SHUTDOWN'
-            result.catch_error_mm = float('nan')
-            result.achieved_flight_s = float('nan')
-            self._log_toss_outcome(result)
-            return result
+            r = TossResult(False, 'ABORTED_SHUTDOWN')
+            self._log_toss_outcome(r)
+            return r, 'shutdown'
         except Exception:
             # Unexpected fault mid-sequence (the loop body raised): the robot may
             # be positioned / latched / stroke-armed, so SAFE FIRST, then emit
-            # the one authoritative outcome line, abort the goal, and re-raise so
-            # the executor's own error path still sees the fault.
+            # the one authoritative outcome line and re-raise so the caller (and
+            # the executor's own error path) still sees the fault.
             self._safe_toss_on_early_exit(seq)
-            result.success = False
-            result.outcome = 'ABORTED_EXCEPTION'
-            result.catch_error_mm = float('nan')
-            result.achieved_flight_s = float('nan')
-            self._log_toss_outcome(result)
-            try:
-                goal_handle.abort()
-            except Exception:  # noqa: BLE001
-                # The handle may already be terminal (fault after succeed/abort);
-                # the original exception must survive the cleanup.
-                self.get_logger().error(
-                    'ABORTED_EXCEPTION: goal_handle.abort() itself failed')
+            self._log_toss_outcome(TossResult(False, 'ABORTED_EXCEPTION'))
             raise
-        finally:
-            with self._lock:
-                self._active_seq = None
-                self._goal_claimed = False
-                # Per-goal toss state down; the possession plausibility reference
-                # reverts to the ACTIVE catch point between goals.
-                self._toss_release_state = None
-                self._toss_landing_global_mm = None
-                self._toss_platform_target_mm = None
-                self._toss_prepare_pending = False
-                self._toss_throw_dispatched = False
 
     @staticmethod
     def _invalid_toss_goal_field(catch_pose, throw_height, throw_delay, vel_scale):
@@ -1807,7 +1933,7 @@ class ReloadCoordinatorNode(Node):
             release = self._toss_release_state
         # The STOW-frame POSITION is the SINGLE source shared with the POSITIONING
         # mocap arrival cross-check target (_toss_platform_target_mm, set in
-        # _execute_toss from the SAME _toss_positioning_xyz), so what we command
+        # _build_toss_cycle from the SAME _toss_positioning_xyz), so what we command
         # and what we verify against can never diverge: Tier 8a = level B, Tier 8b
         # = the swing-compensated pre-tilt pose at the throw site A.
         x, y, z = self._toss_positioning_xyz(
@@ -1845,7 +1971,7 @@ class ReloadCoordinatorNode(Node):
         """The STOW-frame platform POSITION the toss pre-positions to — the SINGLE
         source for BOTH the go_to_pose command (:meth:`_position_platform_for_toss`)
         and the POSITIONING mocap arrival cross-check target
-        (``_toss_platform_target_mm``, set in :meth:`_execute_toss`), so the
+        (``_toss_platform_target_mm``, set in :meth:`_build_toss_cycle`), so the
         commanded pose and the verification target can never diverge. Tier 8a = the
         nominated catch pose B (level); Tier 8b = the swing-compensated pre-tilt
         pose at the throw site A (``release.pretilt_pose_stow[:3]``), where A is the
@@ -2223,6 +2349,324 @@ class ReloadCoordinatorNode(Node):
             parts.append(f'flight={fl:.3f} s')
         suffix = f" ({', '.join(parts)})" if parts else ''
         line = f'Toss {result.outcome}{suffix}'
+        if result.success:
+            self.get_logger().info(line)
+        else:
+            self.get_logger().warning(line)
+
+    # ── TossContinuous action (jugglebot/toss_continuous) ──────────────────────
+
+    def _execute_toss_continuous(self, goal_handle):
+        """Run a CONTINUOUS self-toss session: ``num_throws`` ordinary tosses back
+        to back with a configurable dwell, under ONE busy claim.
+
+        The session adds no capability and commands no motion of its own. Each
+        cycle is built by :meth:`_build_toss_cycle` and ticked by
+        :meth:`_run_toss_cycle` — the same two methods the single ``Toss`` uses —
+        so every precondition, arming order, abort ladder and terminal is the
+        validated single-toss one. The outer
+        :class:`toss_session.TossSessionSequencer` owns only when the next cycle
+        starts, whether it starts, and the accounting."""
+        req = goal_handle.request
+        catch_pose = (float(req.catch_position.x), float(req.catch_position.y),
+                      float(req.catch_position.z))
+        height = float(getattr(req, 'throw_height_m', 0.0) or 0.0)
+        throw_delay = float(getattr(req, 'throw_delay_s', 0.0) or 0.0)
+        vel_scale = float(getattr(req, 'catch_vel_scale', 0.0) or 0.0)
+        dwell = float(getattr(req, 'dwell_time_s', 0.0) or 0.0)
+        num_throws = int(getattr(req, 'num_throws', 0) or 0)
+        # stop_on_miss defaults TRUE in the .action IDL AND here: an omitted or
+        # unreadable field must mean STOP, never CONTINUE (operator decision (c),
+        # 2026-07-28). A miss leaves a loose ball on the floor under a machine
+        # that is about to stroke again.
+        stop_on_miss = bool(getattr(req, 'stop_on_miss', True))
+
+        result = TossContinuous.Result()
+        bad_field = self._invalid_toss_session_goal_field(
+            catch_pose, height, throw_delay, vel_scale, dwell)
+        if bad_field is not None:
+            self.get_logger().error(
+                f'TossContinuous goal REJECTED_BAD_GOAL({bad_field}): '
+                f'catch_position={catch_pose}, throw_height_m={height}, '
+                f'num_throws={num_throws}, dwell_time_s={dwell}, '
+                f'throw_delay_s={throw_delay}, catch_vel_scale={vel_scale} '
+                f'— refusing before anything runs.')
+            self._fill_session_result(result, TossSessionResult(
+                success=False,
+                outcome='REJECTED_BAD_GOAL({})'.format(bad_field)))
+            self._log_toss_session_outcome(result)
+            goal_handle.abort()
+            with self._lock:
+                self._goal_claimed = False
+            return result
+
+        flight = self._resolve_toss_flight_s(height)
+        # Phase E's KNOWN LIMITATION, caught BEFORE a ball flies (num_throws >= 2
+        # only — a one-cycle session has no chain). See _predicted_chain_site_mm.
+        chain_reachable = True
+        if num_throws >= 2:
+            site = self._predicted_chain_site_mm(catch_pose, flight)
+            if site is not None:
+                chain_reachable = (abs(site[0]) <= TOSS_XY_LIMIT_MM
+                                   and abs(site[1]) <= TOSS_XY_LIMIT_MM)
+                if not chain_reachable:
+                    self.get_logger().error(
+                        'TossContinuous REJECTED_CHAIN_UNREACHABLE: a CAUGHT '
+                        'catch at %s parks the platform CENTROID at (%.2f, %.2f) '
+                        'mm, outside the +-%.0f mm planning box, so cycle 2 '
+                        'would be rejected WORKSPACE with a ball already thrown '
+                        'and caught. Lower |catch_position| (measured frontier: '
+                        '<= 146.5 mm chains, >= 147.0 does not) or run '
+                        'num_throws=1.'
+                        % (catch_pose, site[0], site[1], TOSS_XY_LIMIT_MM))
+
+        session = TossSessionSequencer(
+            num_throws=num_throws,
+            dwell_time_s=dwell,
+            throw_delay_s=throw_delay,
+            flight_time_s=flight,
+            stop_on_miss=stop_on_miss,
+            max_throws=int(hw.JB_OP_TOSS_SESSION_MAX_THROWS),
+            dwell_default_s=float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S),
+            dwell_margin_s=float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S),
+            chain_site_reachable=chain_reachable)
+        session.start(time.perf_counter())
+        # The ONE SESSION_CHECKING feedback. The FSM leaves CHECKING inside the
+        # same step() that enters it (it either finishes with a reject — and a
+        # finished step publishes no feedback — or falls straight through to
+        # DWELL), so without this publish the phase string the .action documents
+        # is unobservable on the wire: a GUI or an operator waiting for it would
+        # wait forever. cycle_index is 0 here, which CS-1's `> 0` filter drops.
+        self._publish_session_feedback(goal_handle, session,
+                                       SESSION_PHASE_CHECKING)
+        # The session ceiling needs the PER-CYCLE ceiling, which reads a
+        # sequencer's own budgets. Build a THROWAWAY sequencer — never started,
+        # never installed, never stepped — purely so _toss_deadline_s reads the
+        # SAME fields it will read for the real cycles. A second copy of that
+        # formula here is exactly how a ceiling drifts INSIDE a legitimate flight
+        # window, and the timeout path is the one that SAFE_ABORTs.
+        budget_seq = TossSequencer(
+            catch_pose_stow_mm=catch_pose, flight_time_s=flight,
+            throw_delay_s=session.throw_delay_s, event_vel_mps=1.0)
+        max_session_s = _toss_session_deadline_s(
+            session, _toss_deadline_s(budget_seq))
+
+        try:
+            t_start = time.perf_counter()
+            while rclpy.ok():
+                now = time.perf_counter()
+                if goal_handle.is_cancel_requested and not session.cycle_live:
+                    # Honoured immediately between cycles: nothing is armed and
+                    # nothing is airborne (the previous cycle's own terminal
+                    # already left the machine where it belongs), so there is
+                    # nothing to safe and the session issues no motion here.
+                    self._finish_session(
+                        result, session, 'ABORTED_CANCELLED')
+                    goal_handle.canceled()
+                    return result
+                decision = session.step(now)
+                if decision.done:
+                    self._fill_session_result(result, decision.result)
+                    self._log_toss_session_outcome(result)
+                    if goal_handle.is_cancel_requested:
+                        goal_handle.canceled()
+                    elif result.success:
+                        goal_handle.succeed()
+                    else:
+                        goal_handle.abort()
+                    return result
+                if decision.action == SESSION_ACTION_START_CYCLE:
+                    seq = self._build_toss_cycle(
+                        catch_pose, flight, session.throw_delay_s, vel_scale)
+                    try:
+                        cycle_result, exit_kind = self._run_toss_cycle(
+                            seq,
+                            deadline_s=_toss_deadline_s(seq),
+                            cancel_now_fn=(
+                                lambda n, _s=seq: (
+                                    goal_handle.is_cancel_requested
+                                    and not self._toss_cancel_deferred(_s, n))),
+                            feedback_fn=(
+                                lambda phase: self._publish_session_feedback(
+                                    goal_handle, session, phase)))
+                    finally:
+                        # One cycle's node state never outlives its cycle, even
+                        # on the raising path (the session's own finally is the
+                        # belt).
+                        self._clear_toss_cycle_state()
+                    # The session schedules off the cycle's SCHEDULED instants,
+                    # never an observed landing: the observed one is exactly what
+                    # the tracker is least trustworthy about, and a cadence must
+                    # not inherit that noise.
+                    session.note_cycle_result(
+                        cycle_result, seq.t_release,
+                        seq.t_release + float(seq.flight_time_s))
+                    if exit_kind != 'fsm':
+                        # NODE-level exits inside a cycle end the SESSION too.
+                        # The cycle has already safed and logged; terminalise
+                        # with the accounting preserved rather than returning an
+                        # empty result.
+                        outcome = {'cancel': 'ABORTED_CANCELLED',
+                                   'timeout': 'ABORTED_TIMEOUT',
+                                   'shutdown': 'ABORTED_SHUTDOWN'}[exit_kind]
+                        self._finish_session(result, session, outcome)
+                        if exit_kind == 'cancel':
+                            goal_handle.canceled()
+                        elif exit_kind == 'timeout':
+                            goal_handle.abort()
+                        # SHUTDOWN deliberately terminalises NOTHING on the
+                        # handle — the single Toss does the same. rclpy is
+                        # tearing down, and a goal-status transition on a dying
+                        # executor can itself raise, which would replace a clean
+                        # shutdown with a spurious ABORTED_EXCEPTION.
+                        return result
+                    # Let the next step() adjudicate stop_on_miss / COMPLETED.
+                    continue
+                self._publish_session_feedback(
+                    goal_handle, session, decision.phase)
+                if now - t_start > max_session_s:
+                    # Reachable only BETWEEN cycles (a cycle's own ceiling is
+                    # enforced inside _run_toss_cycle), where nothing is armed
+                    # and nothing is airborne — so unlike the per-cycle timeout
+                    # this path needs no safing and commands nothing.
+                    self._finish_session(result, session, 'ABORTED_TIMEOUT')
+                    goal_handle.abort()
+                    return result
+                time.sleep(_TICK_S)
+            # rclpy shutting down.
+            self._finish_session(result, session, 'ABORTED_SHUTDOWN')
+            return result
+        except Exception:
+            # Any fault: the cycle-level handler has already safed the robot if
+            # a cycle was live. Preserve the accounting, abort the goal, re-raise
+            # so the executor's own error path still sees the fault.
+            self._finish_session(result, session, 'ABORTED_EXCEPTION')
+            try:
+                goal_handle.abort()
+            except Exception:  # noqa: BLE001
+                self.get_logger().error(
+                    'ABORTED_EXCEPTION: goal_handle.abort() itself failed')
+            raise
+        finally:
+            self._clear_toss_cycle_state()
+            with self._lock:
+                self._goal_claimed = False
+
+    @staticmethod
+    def _invalid_toss_session_goal_field(catch_pose, throw_height, throw_delay,
+                                         vel_scale, dwell):
+        """Return the name of the first invalid TossContinuous goal numeric, or
+        None. The six shared with ``Toss`` route through
+        :meth:`_invalid_toss_goal_field` so the two actions cannot disagree about
+        what a valid toss goal is; ``dwell_time_s`` gets the same treatment (0.0
+        is the only "use the default" sentinel, so a negative is a sign typo).
+        ``num_throws`` is an integer and is range-checked by the session FSM
+        (REJECTED_NUM_THROWS), which is where its bound lives."""
+        shared = ReloadCoordinatorNode._invalid_toss_goal_field(
+            catch_pose, throw_height, throw_delay, vel_scale)
+        if shared is not None:
+            return shared
+        if not math.isfinite(dwell) or dwell < 0.0:
+            return 'dwell_time_s'
+        return None
+
+    def _predicted_chain_site_mm(self, catch_pose, flight):
+        """The platform CENTROID a CAUGHT catch at ``catch_pose`` will leave the
+        machine holding — i.e. the throw site cycle 2 of a session will read off
+        ``trajectory/commanded_position``. Returns ``(x, y)`` STOW mm, or None
+        when it cannot be predicted.
+
+        This is Phase E's KNOWN LIMITATION made checkable BEFORE anything moves.
+        The catch deliberately parks the CENTROID a cup-swing outside the
+        nominated B so the CUP lands ON B, and the wire publishes the centroid —
+        so near the +-150 mm planning box a chained session throws one ball,
+        catches it, and then refuses cycle 2 ``REJECTED_WORKSPACE`` with the
+        platform parked off-box and the ball in the cup. Measured through this
+        same policy (2026-07-29): B_x 146.0 -> A_x 149.017 (chains), B_x 147.0 ->
+        A_x 150.038 (does not). The residual then COLLAPSES (cycle 3: 145.938,
+        cycle 4: 146.001), so cycle 2 is the only one at risk.
+
+        Single-sourced through ``self._toss_catch_policy`` —
+        ``predicted_catch_command`` is the SAME object and method the deferred
+        A->B reach publishes from, so this prediction cannot drift from the pose
+        the machine will actually be commanded to.
+
+        None (⇒ the check is SKIPPED, not failed) in three cases, each because a
+        reject here would mis-route the operator: Tier 8a never reads a throw
+        site at all; an unknown live pose is already ``REJECTED_POSE_UNKNOWN`` on
+        cycle 1; and a tilt-clamp / policy refusal is already the cycle's own
+        loud verdict."""
+        if str(hw.JB_OP_TOSS_TIER) != TIER_8B:
+            return None
+        live = self._live_commanded_position(time.perf_counter())
+        if live is None:
+            return None
+        try:
+            release = compute_release_state_tilted(
+                catch_pose, flight,
+                throw_site_xy_mm=(float(live[0]), float(live[1])))
+        except ThrowTiltInfeasible:
+            return None
+        fields = build_announcement_fields(release, throw_time_s=0.0)
+        cmd = self._toss_catch_policy.predicted_catch_command(
+            np.asarray(fields['landing_position'], dtype=float),
+            np.asarray(fields['landing_velocity'], dtype=float),
+            float(flight))
+        if cmd is None:
+            return None
+        # target_pos is GLOBAL mm; its xy IS the STOW xy (the two frames differ
+        # in z only, by GEOM_INITIAL_HEIGHT_MM), which is what the +-150 mm
+        # planning box and the displacement cap are both applied to.
+        return (float(cmd.target_pos[0]), float(cmd.target_pos[1]))
+
+    def _publish_session_feedback(self, goal_handle, session, phase) -> None:
+        """Session feedback: the live cycle index, the phase (the CYCLE's Toss
+        phase verbatim while one runs, else the session's own), and the running
+        catch count — so a watched session is scoreable live rather than only at
+        the terminal."""
+        if goal_handle is None:
+            return
+        fb = TossContinuous.Feedback()
+        fb.cycle_index = int(session.cycle_index)
+        fb.phase = str(phase)
+        fb.catches_confirmed = int(session.catches_confirmed)
+        goal_handle.publish_feedback(fb)
+
+    def _finish_session(self, result, session, outcome) -> None:
+        """Terminalise a session from the NODE level, preserving the per-cycle
+        accounting, and emit the one authoritative session outcome line."""
+        self._fill_session_result(result, session.force_terminal(outcome))
+        self._log_toss_session_outcome(result)
+
+    @staticmethod
+    def _fill_session_result(result, session_result) -> None:
+        result.success = bool(session_result.success)
+        result.outcome = str(session_result.outcome)
+        result.throws_completed = int(session_result.throws_completed)
+        result.catches_confirmed = int(session_result.catches_confirmed)
+        result.per_cycle_outcomes = [str(o) for o in
+                                     session_result.cycle_outcomes]
+        result.per_cycle_catch_error_mm = [
+            float(v) for v in session_result.cycle_catch_error_mm]
+        result.per_cycle_flight_s = [float(v) for v in
+                                     session_result.cycle_flight_s]
+        result.per_cycle_dwell_s = [float(v) for v in
+                                    session_result.cycle_dwell_s]
+
+    def _log_toss_session_outcome(self, result) -> None:
+        """The single authoritative per-SESSION outcome line (the reload/toss
+        discipline one level up: exactly one per goal, INFO on success / WARN
+        otherwise). Each CYCLE still emits its own Toss outcome line, so the log
+        reads as N cycle lines followed by one session line."""
+        errs = [v for v in result.per_cycle_catch_error_mm if np.isfinite(v)]
+        dwells = [v for v in result.per_cycle_dwell_s if np.isfinite(v)]
+        parts = [f'{result.catches_confirmed}/{result.throws_completed} caught']
+        if errs:
+            parts.append(f'mean catch_err={float(np.mean(errs)):.0f} mm')
+        if dwells:
+            parts.append(f'dwell {min(dwells):.2f}-{max(dwells):.2f} s')
+        line = (f'TossContinuous {result.outcome} ({", ".join(parts)}); '
+                f'cycles: {list(result.per_cycle_outcomes)}')
         if result.success:
             self.get_logger().info(line)
         else:

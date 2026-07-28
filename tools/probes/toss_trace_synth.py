@@ -6,7 +6,9 @@ matrix for the Phase-3 toss choreography checker
 Motivating logbook entry: ``logbook/2026-07-25-toss-phase3-prep-trace-harness.md``
 (single-ball-toss Phase 3 prep).  The checker it exercises:
 ``tests/hardware/toss_trace_recorder.py`` (DT-1..DT-14 dry invariants,
-RJ-1..RJ-4 reject invariants).
+RJ-1..RJ-4 reject invariants, CS-1..CS-6 continuous-session invariants —
+single-ball-toss Phase F, consumed by ``tests/hardware/session_anomaly_fixes.md``
+§ SECTION CONT).
 
 Why this exists as a committed probe: the checker is the hard gate before any
 ball flies, and the only way to trust an offline checker is to feed it traces
@@ -16,10 +18,22 @@ produces:
 * the two HAPPY-PATH traces (waived dry choreography ending ``Toss MISSED``;
   un-waived ``REJECTED_NO_BALL`` reject) — the checker must PASS every
   invariant and exit 0 on each;
-* ONE VIOLATION TRACE PER INVARIANT (18 cases, ``viol_dt1..viol_dt14`` and
-  ``viol_rj1..viol_rj4``) — each flips exactly the ordering/property its
-  invariant checks, and the checker must FAIL exactly that invariant with
-  zero collateral (all other invariants PASS); and
+* the TWO CONTINUOUS happy-path traces, one per session TERMINAL LADDER —
+  ``cont_happy`` (3-cycle ``TossContinuous`` session, every cycle CAUGHT: the
+  ``ACTION_STAY`` teardown) and ``cont_dry`` (every cycle MISSED: the
+  ``SAFE_ABORT`` teardown, which is the shape the runbook's MANDATORY
+  CONT-STEP-1 pre-flight actually produces, and whose ~10 rev hand retract
+  lands INSIDE every dwell window CS-3 measures).  CS-1..CS-6 must all PASS
+  and exit 0 on both.  Only ``cont_happy`` existed until 2026-07-29, and
+  adding ``cont_dry`` immediately surfaced two real CS-3 defects — an
+  instrument validated on one side only would have FAILed a hard-STOP runbook
+  row on the first correct capture of the sitting;
+* ONE VIOLATION TRACE PER INVARIANT (25 cases, ``viol_dt1..viol_dt14``,
+  ``viol_rj1..viol_rj4`` and ``viol_cs1..viol_cs6`` — CS-3 carries two,
+  ``viol_cs3`` for its silent-topic half and ``viol_cs3_hand`` for its hand
+  half) — each flips exactly the ordering/property its invariant checks, and
+  the checker must FAIL exactly that invariant with zero collateral (all
+  other invariants PASS); and
 * the ``dry_no_release`` VARIANT trace (``ABORTED_NO_RELEASE`` — the throw
   was dispatched, feedback reached THROWING, but no stroke/release evidence
   ever appeared and the release deadline aborted the goal; the live
@@ -29,6 +43,14 @@ produces:
   feedback rows exist on this variant, so the dispatch-time proxy is live
   and the pre-announcement negative scan runs clean — everything else
   PASSes, exit 0.
+
+**2026-07-29**: ``viol_dt7`` had gone VACUOUS and the matrix reported it
+MISMATCH at HEAD.  DT-7 stopped being an "exactly one dynamic_target" count when
+it was reworked to bound the pre-position STREAM to 30 mm of the nominated point
+(a self-announced toss legitimately streams targets off its own predicted
+track), so injecting a duplicate AT (0, 0, 170) was no longer a violation.  The
+case now injects a target that WANDERS to (95, 0, 170) — a real ball pulling the
+reach off the nominated point, which is what DT-7 actually guards.
 
 The ``viol_dt5`` case is the empirically-confirmed 2026-07-25 audit
 inversion: the hand cmd-echo changes BEFORE the announcement (dispatch
@@ -44,7 +66,7 @@ is consistent).  Pure stdlib; runs under any Python >= 3.8, venv or system.
 
 Usage (from the repo root)::
 
-    python tools/probes/toss_trace_synth.py --all            # generate the 21 traces
+    python tools/probes/toss_trace_synth.py --all            # generate the 30 traces
     python tools/probes/toss_trace_synth.py --all --verify   # + run the checker matrix
     python tools/probes/toss_trace_synth.py --case viol_dt5 --verify
     python tools/probes/toss_trace_synth.py --list
@@ -79,7 +101,9 @@ sys.modules['toss_trace_recorder'] = rec   # dataclasses resolves __module__
 _spec.loader.exec_module(rec)
 
 GID = 'aabbccdd'
-VERDICT_RE = re.compile(r'^(DT-\d+|RJ-\d+)\s+(PASS|FAIL|AMBIGUOUS|SKIP)\b')
+SGID = '11223344'        # the TossContinuous SESSION goal id
+VERDICT_RE = re.compile(
+    r'^(DT-\d+|RJ-\d+|CS-\d+)\s+(PASS|FAIL|AMBIGUOUS|SKIP)\b')
 
 
 # ── row builders ─────────────────────────────────────────────────────────────
@@ -250,8 +274,16 @@ def gen_dry(case=None):
         R.append(rosout(103.000, 'catch_coordinator_node',
                         'auto-priming hand for catch (soft gains)', level=20))
     if case == 'viol_dt7':
+        # DT-7 bounds the pre-position STREAM to TARGET_POS_TOL_MM (30 mm) of
+        # the nominated (0, 0, 170); it is no longer an "exactly one target"
+        # count, because a self-announced toss legitimately streams targets off
+        # its own predicted track.  So the violation this case must inject is a
+        # target that WANDERS — a real ball pulling the reach off the nominated
+        # point — not a duplicate AT it.  (Injecting a duplicate at (0,0,170)
+        # is what this case did until 2026-07-29, which made it vacuous: the
+        # verification matrix reported viol_dt7 PASS/MISMATCH at HEAD.)
         R.append(row(101.500, rec.T_DYN_TARGET, {
-            'target_pos': [0.0, 0.0, 170.0],
+            'target_pos': [95.0, 0.0, 170.0],
             'target_quat': [1.0, 0.0, 0.0, 0.0],
             'target_vel': [0.0, 0.0, 0.0], 'arrival_time': 106.8}))
     if case == 'viol_dt8':
@@ -359,6 +391,235 @@ def gen_reject(case=None):
     return R
 
 
+# ── continuous session traces (Phase F: TossContinuous) ─────────────────────
+#
+# TWO happy shapes, because a session has two terminal ladders and only one of
+# them was modelled here until 2026-07-29:
+#
+#   cont_happy  every cycle CAUGHT   -> the ACTION_STAY teardown.  Nothing is
+#                                       retracted, nothing goes home; the catch
+#                                       stroke has already re-parked the hand.
+#   cont_dry    every cycle MISSED   -> the ACTION_SAFE_ABORT teardown.  This is
+#                                       the shape the runbook's MANDATORY
+#                                       CONT-STEP-1 pre-flight produces (no ball
+#                                       in the cup, stop_on_miss false), and it
+#                                       is materially different on the wire: the
+#                                       coordinator publishes catch/armed False
+#                                       FIRST and only THEN retracts the hand, so
+#                                       a ~10 rev retract lands INSIDE the dwell
+#                                       window CS-3 measures.  Validating the
+#                                       checker only against cont_happy would
+#                                       have shipped an instrument that FAILs a
+#                                       hard-STOP row on the first correct
+#                                       capture of the sitting.
+#
+# One SESSION goal window containing three complete cycles, each an ordinary
+# toss.  Anchors per cycle (c = the cycle start; period = dwell + flight =
+# 8.0 + 0.8 = 8.8 s, which is exactly what the session FSM schedules:
+# cycle_start(N+1) = landing(N) + dwell - throw_delay):
+#   c+0.000  session feedback (cycle_index=i, POSITIONING)
+#   c+1.000  prime_hold True            <- the dwell's END boundary (CS-3)
+#   c+1.002  catch/reach_center          <- re-declared EVERY cycle (CS-4)
+#   c+1.050  vel_scale ; c+1.052 prime_dispatched
+#   c+1.060  armed True (+ latch log)    <- cycle span opens (CS-2)
+#   c+1.110  self-announcement (throw_time = c+5.0, tof 0.8)
+#   c+5.000  stroke onset (release)
+#   c+5.800  scheduled landing
+#   c+6.100  'Toss CAUGHT' / 'Toss MISSED'  <- one per cycle (CS-1)
+#   c+6.150  armed False (+ disarm log)  <- cycle span closes; dwell opens
+#   c+6.400  prime_hold False
+# and after the last cycle, ONE 'TossContinuous COMPLETED' line (CS-1).
+#
+# cont_dry additionally scripts, per cycle:
+#   c+5.000..c+6.160   hand HELD at the top of the throw stroke (no catch stroke
+#                      ever fires, so nothing re-parks it)
+#   c+6.160..c+6.960   the SAFE_ABORT retract: pos_cmd 10.0 -> 0.0, entirely
+#                      inside the dwell window, AFTER the disarm
+#   c+6.960..next      parked, carrying a CONT_DRY_RESIDUAL_REV settling residual
+
+CONT_T0 = 300.0
+CONT_PERIOD = 8.8          # flight 0.8 + dwell 8.0
+CONT_DELAY = 5.0
+CONT_FLIGHT = 0.8
+CONT_RETRACT_T0 = 6.160    # retract starts just after the c+6.150 disarm
+CONT_RETRACT_T1 = 6.960
+# The post-retract settling residual on pos_cmd during a dwell.  The MEASURED
+# worst over the 16 real post-disarm windows of the 2026-07-27 bag is 0.0446
+# rev; this case deliberately sits ABOVE the old DT-5-inherited 0.05 rev bound
+# and below CS-3's own DWELL_CMD_POS_TOL_REV (0.15), so cont_dry FAILs if that
+# tolerance is ever reverted to the DT-5 value.  It is a boundary probe, not a
+# measurement claim.
+CONT_DRY_RESIDUAL_REV = 0.10
+
+
+def cont_fb(t, idx, phase, catches):
+    return row(t, rec.T_CONT_FB, {'goal_id': SGID, 'cycle_index': idx,
+                                  'phase': phase,
+                                  'catches_confirmed': catches})
+
+
+def cont_status(t, st):
+    return row(t, rec.T_CONT_STATUS, {'goals': [[SGID, st]]})
+
+
+def gen_continuous(case=None):
+    R = []
+    n_cycles = 3
+    dry = (case == 'cont_dry')
+    t_end = CONT_T0 + (n_cycles - 1) * CONT_PERIOD + 7.0
+    R.append(cont_status(CONT_T0 - 0.2, 2))
+    R.append(cont_status(t_end + 0.3, 4))
+    for t in frange(CONT_T0 - 1.0, t_end + 0.5, 0.5):
+        R.append(traj(t, 'hold'))
+    for t in frange(CONT_T0 - 1.0, t_end + 0.5, 1.0):
+        R.append(row(t, rec.T_CONTROL_MODE, {'value': 'TRAJECTORY'}))
+
+    stroke_windows = []
+    for i in range(1, n_cycles + 1):
+        c = CONT_T0 + (i - 1) * CONT_PERIOD
+        idx = 2 if (case == 'viol_cs1' and i == 3) else i
+        caught_before = 0 if dry else i - 1
+        for t in frange(c, c + 0.95, 0.15):
+            R.append(cont_fb(t, idx, 'POSITIONING', caught_before))
+        for t in (c + 1.005, c + 1.055, c + 1.105):
+            R.append(cont_fb(t, idx, 'PREPARING', caught_before))
+        for t in frange(c + 1.155, c + 4.955, 0.5):
+            R.append(cont_fb(t, idx, 'THROWING', caught_before))
+        for t in (c + 5.150, c + 5.450):
+            R.append(cont_fb(t, idx, 'BALL_IN_FLIGHT', caught_before))
+        # PREPARE bundle -> armed -> announcement
+        R.append(boolrow(c + 1.000, rec.T_PRIME_HOLD, True))
+        if not (case == 'viol_cs4' and i == 2):
+            R.append(row(c + 1.002, rec.T_REACH_CENTER,
+                         {'x': 0.0, 'y': 0.0, 'z': 170.0}))
+        R.append(row(c + 1.050, rec.T_VEL_SCALE, {'value': 0.8}))
+        R.append(boolrow(c + 1.052, rec.T_PRIME_DISPATCHED, True))
+        R.append(boolrow(c + 1.060, rec.T_ARMED, True))
+        R.append(rosout(c + 1.062, 'trajectory_node', 'catch latch armed',
+                        level=20))
+        tt = c + CONT_DELAY
+        if case == 'viol_cs6' and i == 3:
+            # release 0.3 s BEFORE the previous cycle's scheduled landing
+            tt = CONT_T0 + CONT_PERIOD + CONT_DELAY + 0.5
+        R.append(row(c + 1.110, rec.T_ANNOUNCE, {
+            'thrower_name': 'jugglebot', 'target_id': 'jugglebot',
+            'throw_time': round(tt, 4),
+            'landing_time': round(tt + CONT_FLIGHT, 4),
+            'predicted_tof_sec': CONT_FLIGHT,
+            'landing_position': [0.0, 0.0, 170.0],
+            'initial_velocity': [0.0, 0.0, 3.93]}))
+        R.append(row(c + 1.120, rec.T_DYN_TARGET, {
+            'target_pos': [0.0, 0.0, 170.0],
+            'target_quat': [1.0, 0.0, 0.0, 0.0],
+            'target_vel': [0.0, 0.0, 0.0],
+            'arrival_time': round(c + CONT_DELAY + CONT_FLIGHT, 4)}))
+        R.append(row(c + 1.130, rec.T_TARGET_FB, {
+            'accepted': True, 'code': 'OK', 'reason': '',
+            'arrival_time': round(c + CONT_DELAY + CONT_FLIGHT, 4),
+            'source': 'catch'}))
+        if dry:
+            # MISSED carries no diagnostic suffix (the DT-12 discipline).
+            R.append(rosout(c + 6.100, 'reload_coordinator_node',
+                            'Toss MISSED', level=30))
+        else:
+            R.append(rosout(c + 6.100, 'reload_coordinator_node',
+                            'Toss CAUGHT (catch_err=3 mm, flight=0.805 s)',
+                            level=20))
+        # teardown: STAY lowers the latch and releases the hold; no retract,
+        # no go_home — which is exactly why the next cycle needs no hand move.
+        # On the MISSED (cont_dry) ladder the SAFE_ABORT retract goes out
+        # between these two edges; it is scripted in the hand block below.
+        if not (case == 'viol_cs2' and i == n_cycles):
+            R.append(boolrow(c + 6.150, rec.T_ARMED, False))
+            R.append(rosout(c + 6.152, 'trajectory_node',
+                            'catch latch disarmed', level=20))
+        R.append(boolrow(c + 6.400, rec.T_PRIME_HOLD, False))
+        # cont_happy: the catch stroke brings the hand back inside 1.5 s of the
+        # release.  cont_dry: nothing does, so the scripted region runs from the
+        # throw onset all the way to the end of the SAFE_ABORT retract.
+        stroke_windows.append(
+            (c + CONT_DELAY,
+             c + (CONT_RETRACT_T1 if dry else CONT_DELAY + 1.5)))
+        # DWELL feedback between cycles (cycle_index = the last STARTED one)
+        if i < n_cycles:
+            for t in frange(c + 6.5, c + CONT_PERIOD - 0.1, 0.5):
+                R.append(cont_fb(t, idx, 'DWELL', i))
+
+    if dry:
+        R.append(rosout(t_end, 'reload_coordinator_node',
+                        'TossContinuous COMPLETED (0/3 caught, dwell '
+                        '8.00-8.05 s); cycles: [MISSED, MISSED, MISSED]',
+                        level=30))
+    else:
+        R.append(rosout(t_end, 'reload_coordinator_node',
+                        'TossContinuous COMPLETED (3/3 caught, mean '
+                        'catch_err=3 mm, dwell 8.00-8.03 s); cycles: '
+                        '[CAUGHT, CAUGHT, CAUGHT]', level=20))
+
+    # hand telemetry: park grid everywhere except the three strokes.  pos_cmd
+    # stays 0.0 through every dwell — the design's central claim (the catch
+    # stroke ends where the next throw starts, so nothing commands the hand
+    # between cycles).
+    def in_stroke(t):
+        return any(a - 1e-9 <= t <= b + 1e-9 for a, b in stroke_windows)
+
+    for t in frange(CONT_T0 - 1.5, t_end + 0.6, 0.02):
+        if in_stroke(t):
+            continue
+        pos, pcmd = 0.05, 0.0
+        if case == 'viol_cs5':
+            arm3 = CONT_T0 + 2 * CONT_PERIOD + 1.060
+            if arm3 - 0.4 <= t <= arm3:
+                pos = 5.0          # hand off the park band at cycle 3's arm
+        if case == 'viol_cs3_hand':
+            # An auto-prime COMMAND inside the first dwell that the hand never
+            # executes (clobbered on the last-writer-wins queue): pos_cmd
+            # ascends to the top of the stroke and stays there, pos_meas does
+            # not move.  Deliberately pos_cmd-only, which is both the case
+            # where the commanded echo is the ONLY evidence and the way this
+            # case stays free of CS-5 collateral.
+            if CONT_T0 + 7.5 <= t <= CONT_T0 + CONT_PERIOD + 0.9:
+                pcmd = 9.96
+        if dry and t > CONT_T0:
+            # Post-retract settling residual through every dwell.
+            pcmd = CONT_DRY_RESIDUAL_REV if int(t * 5) % 2 else 0.0
+        R.append(hand(t, pos_meas=pos, pos_cmd=pcmd))
+    for k, (a, _b) in enumerate(stroke_windows):
+        for dt, pmeas, vmeas in ((0.00, 0.6, 45.0), (0.02, 2.5, 52.0),
+                                 (0.04, 5.0, 55.0), (0.06, 7.5, 54.0),
+                                 (0.08, 9.0, 50.0), (0.10, 9.5, 44.0)):
+            R.append(hand(a + dt, pos_meas=pmeas, vel_meas=vmeas,
+                          pos_cmd=10.0, vel_ff=50.0))
+        if not dry:
+            for t in frange(a + 0.12, a + 1.5, 0.02):
+                R.append(hand(t, pos_meas=max(0.05, 9.0 - (t - a - 0.12) * 6.5),
+                              vel_meas=-20.0, pos_cmd=0.0))
+            continue
+        # cont_dry: no catch stroke ever fires, so the hand HOLDS at the top of
+        # the throw stroke until the MISSED verdict's SAFE_ABORT retracts it —
+        # and the coordinator publishes catch/armed False BEFORE that retract,
+        # so the whole ~10 rev descent lands inside CS-3's dwell window.  This
+        # is the shape CONT-STEP-1 produces and the reason CS-3's hand half is
+        # "once parked, stays parked" rather than "flat from the disarm".
+        c = CONT_T0 + k * CONT_PERIOD
+        for t in frange(a + 0.12, c + CONT_RETRACT_T0, 0.02):
+            R.append(hand(t, pos_meas=9.90, vel_meas=0.0, pos_cmd=10.0))
+        span = CONT_RETRACT_T1 - CONT_RETRACT_T0
+        for t in frange(c + CONT_RETRACT_T0, c + CONT_RETRACT_T1, 0.02):
+            frac = (t - (c + CONT_RETRACT_T0)) / span
+            R.append(hand(t, pos_meas=max(0.05, 9.90 * (1.0 - frac)),
+                          vel_meas=-12.0, pos_cmd=10.0 * (1.0 - frac)))
+
+    if case == 'viol_cs3':
+        # a platform command inside the first dwell (session-level motion —
+        # invariant S2 — or a leaked reactive target over a loaded cup)
+        R.append(row(CONT_T0 + 7.5, rec.T_DYN_TARGET, {
+            'target_pos': [0.0, 0.0, 170.0],
+            'target_quat': [1.0, 0.0, 0.0, 0.0],
+            'target_vel': [0.0, 0.0, 0.0], 'arrival_time': CONT_T0 + 8.5}))
+    return R
+
+
 # ── case table ───────────────────────────────────────────────────────────────
 # case name -> (mode, targeted invariant or None, one-line description)
 
@@ -387,6 +648,28 @@ CASES = {
     'viol_rj2': ('reject', 'RJ-2', 'prime_hold row during the reject'),
     'viol_rj3': ('reject', 'RJ-3', 'waiver WARN during the un-waived capture'),
     'viol_rj4': ('reject', 'RJ-4', 'a feedback publish during the reject'),
+    'cont_happy': ('continuous', None,
+                   '3-cycle TossContinuous session, all CAUGHT, COMPLETED '
+                   '(the ACTION_STAY teardown)'),
+    'cont_dry': ('continuous', None,
+                 '3-cycle session, all MISSED with the SAFE_ABORT teardown — '
+                 'the shape CONT-STEP-1 produces; the ~10 rev retract lands '
+                 'inside every dwell window'),
+    'viol_cs1': ('continuous', 'CS-1',
+                 'cycle 3 feedback repeats cycle_index 2 (accounting drift)'),
+    'viol_cs2': ('continuous', 'CS-2',
+                 'the session ends with catch/armed still True (leaked latch)'),
+    'viol_cs3': ('continuous', 'CS-3',
+                 'a catch/dynamic_target inside the first dwell (S2 breach)'),
+    'viol_cs3_hand': ('continuous', 'CS-3',
+                      'an auto-prime pos_cmd ascent inside the first dwell — '
+                      'the HAND half of CS-3, which had no violation case'),
+    'viol_cs4': ('continuous', 'CS-4',
+                 'cycle 2 declares no catch/reach_center (stale envelope)'),
+    'viol_cs5': ('continuous', 'CS-5',
+                 'hand off the park band at cycle 3 arm (kind-0 hazard)'),
+    'viol_cs6': ('continuous', 'CS-6',
+                 'cycle 3 releases BEFORE cycle 2 landed (cadence inversion)'),
 }
 
 
@@ -406,6 +689,8 @@ def write_case(name):
     mode, _target, _desc = CASES[name]
     if name == 'dry_no_release':
         rows = gen_dry_no_release()
+    elif mode == 'continuous':
+        rows = gen_continuous(name)
     elif mode == 'dry':
         rows = gen_dry(name)
     else:
@@ -434,7 +719,8 @@ def run_checker(path, mode):
 
 def verify(names):
     all_ids = {'dry': ['DT-%d' % i for i in range(1, 15)],
-               'reject': ['RJ-%d' % i for i in range(1, 5)]}
+               'reject': ['RJ-%d' % i for i in range(1, 5)],
+               'continuous': ['CS-%d' % i for i in range(1, 7)]}
     print('%-14s %-6s %-4s %-10s %-9s %-22s %s'
           % ('case', 'mode', 'exit', 'targeted', 'verdict', 'others', 'RESULT'))
     print('-' * 92)

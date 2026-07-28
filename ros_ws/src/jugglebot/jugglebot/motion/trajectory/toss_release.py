@@ -243,7 +243,7 @@ def compute_release_state_tilted(catch_position_stow_mm, flight_time_s: float,
     translates the platform TO that phantom point before throwing, silently
     undoing an operator who parked it elsewhere. Making the argument mandatory
     is the single enforcement point for "A is never inferred"; the caller
-    (``reload_coordinator_node._execute_toss``) sources it from
+    (``reload_coordinator_node._build_toss_cycle``) sources it from
     ``trajectory/commanded_position`` and refuses the goal outright when that
     is stale or absent (``REJECTED_POSE_UNKNOWN``).
 

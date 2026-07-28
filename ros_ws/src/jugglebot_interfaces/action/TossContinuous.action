@@ -1,0 +1,149 @@
+# Jugglebot repeated self-toss: throw -> catch -> dwell -> throw ... num_throws times,
+# from ONE goal. The bridge between the validated single Toss and 2-ball juggling
+# (single-ball-toss plan, Phase F). Hosted by the same ball-ops node as Reload and Toss
+# (reload_coordinator_node) and covered by the SAME one-ball-op-at-a-time claim: a
+# Reload or Toss goal while a session runs — or a session while either runs — is
+# REJECTED_BUSY at accept, because all three actions own the hand, the catch/armed latch
+# and the Teensy's last-writer-wins trajectory queue.
+#
+# It is a SEQUENCER, not a new capability. Every cycle is an ordinary Toss run by the
+# same toss_sequencer FSM through the same coordinator code path, so every Toss
+# precondition, abort ladder, arming order and terminal applies UNCHANGED per cycle. The
+# session itself commands NO motion of its own: there is no session-level positioning
+# move, no session-level go_home, no session-level hand dispatch. What it adds is (a)
+# when the next cycle starts, (b) whether it starts at all, and (c) the per-cycle
+# accounting the operator scores the sitting from.
+#
+# WHY IT NEEDS NO HAND MOVE BETWEEN CYCLES (the fact the design rests on): the firmware
+# catch stroke ENDS at 0 rev (Trajectory.h buildCatch, xA = {x3, x5, x6, 0.f}) and a
+# kind-0 throw stroke STARTS at 0 rev (buildThrow, xA = {0.f, x1, x2, x3}). The catch is
+# its own re-park and the throw is its own catch-prime. Measured on the 2026-07-27
+# sitting: hand pos_meas is within +-0.045 rev of park at the CAUGHT instant on all 17
+# self-tosses, and its worst excursion over the following 3 s is 0.069 rev against the
+# +-0.5 rev park band (7.2x margin) — so cycle N+1's REJECTED_HAND_NOT_PARKED gate
+# passes with no intervening command.
+#
+# WHY THE PLATFORM NEEDS NO MOVE EITHER: a CAUGHT toss ends in ACTION_STAY (config
+# jugglebot_operational.toss_stay_at_pose_on_caught, default true) and
+# trajectory/commanded_position reports the live pose, so cycle N+1's throw site A is
+# cycle N's catch pose for free. See the KNOWN LIMITATION below.
+#
+# DWELL is defined as previous SCHEDULED LANDING -> next RELEASE, and it is realised as a
+# QUIESCENT WAIT before the next cycle starts — never as a stretched throw_delay. That
+# keeps every cycle's internal timing bit-identical to a validated single toss (the only
+# timing the hardware ladder has ever measured), and it keeps the catch latch DOWN
+# between cycles instead of leaving the reactive-catch path armed over a loaded cup.
+#
+# See plans/active/single-ball-toss.md Phase F and
+# tests/hardware/session_anomaly_fixes.md SECTION CONT.
+
+geometry_msgs/Point catch_position   # nominated catch point for EVERY cycle, mm,
+                                     # STOW-relative platform frame (same convention as
+                                     # Toss.action / TimedTarget.pose; z 170 = ACTIVE
+                                     # plane). v1 is deliberately ONE point for the whole
+                                     # session: a per-cycle waypoint list (A -> B -> C
+                                     # with a different B each cycle) is the obvious v2
+                                     # and is explicitly OUT OF SCOPE here — it needs the
+                                     # throw-site frame question settled first (see the
+                                     # KNOWN LIMITATION below), and a fixed B is the
+                                     # well-conditioned case: measured, a fixed-B chain
+                                     # CONVERGES (residual A-offset 3.017 mm at cycle 2,
+                                     # 0.062 mm at cycle 3, 0.001 mm at cycle 4).
+float64 throw_height_m               # apex height above the release plane (m), same for
+                                     # every cycle; 0 => config default (~0.78 m apex).
+                                     # Converted once to flight time T = sqrt(8*h/g).
+int32 num_throws                     # how many toss-catch cycles to run. Must be in
+                                     # [1, jugglebot_operational.toss_session_max_throws]
+                                     # (20) or REJECTED_NUM_THROWS. num_throws = 1 is
+                                     # exactly one Toss, with the session accounting.
+float64 dwell_time_s                 # previous SCHEDULED LANDING -> next RELEASE (s);
+                                     # 0 => config default toss_session_dwell_default_s.
+                                     # FLOOR, and it is DERIVED not chosen:
+                                     #   dwell >= throw_delay_s + toss_session_dwell_margin_s
+                                     # because a cycle's release is its own accept +
+                                     # throw_delay, and the session cannot start cycle N+1
+                                     # before cycle N's CAUGHT verdict has landed. At the
+                                     # toss FSM's own 3.5 s throw-delay floor that is
+                                     # 4.10 s; at the 5.0 s default throw delay it is
+                                     # 5.60 s. Below it => REJECTED_DWELL. A dwell the
+                                     # machine cannot honour is never silently stretched
+                                     # into a longer one — it is refused, because a
+                                     # cadence that is quietly ignored is a lie about what
+                                     # the machine did.
+                                     # NOTE the ACHIEVED dwell after a MISSED cycle the
+                                     # session continues past (stop_on_miss false) can be
+                                     # LONGER than requested: that cycle's SAFE_ABORT
+                                     # ladder retracts the hand and installs a 2.0 s
+                                     # go_home, both on service acks, so the session waits
+                                     # out a 2.80 s floor from the landing before starting
+                                     # the next cycle. It is a FLOOR, never a shortening;
+                                     # per_cycle_dwell_s reports what actually happened.
+float64 throw_delay_s                # delay from goal-accept to the FIRST release (s);
+                                     # 0 => the Toss default (5.0 s). Cycles 2..N use the
+                                     # SAME internal delay, but their release instants are
+                                     # set by dwell_time_s, so this field only moves the
+                                     # first one. Must be >= the toss FSM's own
+                                     # MIN_TOSS_THROW_DELAY_S (3.5 s) or
+                                     # REJECTED_THROW_DELAY — that gate is what makes the
+                                     # 4.10 s absolute dwell floor above a real floor
+                                     # rather than an arithmetic identity, and it names the
+                                     # field the operator actually set wrong instead of
+                                     # letting cycle 1 die REJECTED_CANT_MAKE_LEAD.
+float64 catch_vel_scale              # 0 => config default; same semantics and clamp
+                                     # [0.3, 1.5] as Toss.action / Reload.action. Applies
+                                     # to every cycle.
+bool stop_on_miss true               # OPERATOR DECISION (c), 2026-07-28: default TRUE.
+                                     # The IDL default above is LOAD-BEARING — an omitted
+                                     # field must mean STOP, never CONTINUE. A missed
+                                     # catch leaves a loose ball on the floor under a
+                                     # machine that is about to stroke again, which is the
+                                     # scenario this flag exists to prevent. Setting it
+                                     # false is a BENCH affordance (the no-ball dry trace
+                                     # needs it to reach cycle 3), never a session default.
+                                     #
+                                     # It governs the MISSED class only. A cycle that ends
+                                     # REJECTED_* or ABORTED_* stops the session
+                                     # REGARDLESS: that is a machine fault, and repeating a
+                                     # fault num_throws times is how one fault becomes N.
+---
+bool success                         # True iff throws_completed == num_throws AND
+                                     # catches_confirmed == num_throws (a clean session).
+                                     # Note COMPLETED can carry success=False when
+                                     # stop_on_miss is false and a cycle missed.
+string outcome                       # COMPLETED | STOPPED_ON_MISS | REJECTED_<code> |
+                                     # ABORTED_<code>. ABORTED_CYCLE_<cycle outcome>
+                                     # carries the failing cycle's own verdict verbatim
+                                     # (e.g. ABORTED_CYCLE_REJECTED_HAND_NOT_PARKED) so a
+                                     # failure routes to the same place a single Toss
+                                     # would have routed it.
+int32 throws_completed               # cycles that got a ball into the air (CAUGHT or
+                                     # MISSED). A cycle rejected before release does NOT
+                                     # count.
+int32 catches_confirmed              # cycles whose announced ball came back CAUGHT
+                                     # (contract C-POSSESS-1's verdict — arrival-only; see
+                                     # ros_ws/docs/ball_possession_contract.md).
+string[] per_cycle_outcomes          # one Toss outcome string per STARTED cycle, in order
+float64[] per_cycle_catch_error_mm   # per cycle, tracker last-KF horizontal miss (NaN
+                                     # when not caught / unknown)
+float64[] per_cycle_flight_s         # per cycle, measured release->catch-plane time (NaN
+                                     # when unknown)
+float64[] per_cycle_dwell_s          # per cycle, the ACHIEVED landing(N-1) -> release(N)
+                                     # spacing. NaN for cycle 1 (no previous landing).
+                                     # This is the measurand the cadence row of the
+                                     # hardware ladder scores: requested dwell is a target
+                                     # the session never undershoots, and a cycle whose
+                                     # cleanup ran long simply reports a longer one.
+---
+int32 cycle_index                    # 1-based index of the live cycle; 0 before the first
+                                     # cycle starts
+string phase                         # SESSION_CHECKING | DWELL, or the live cycle's Toss
+                                     # phase verbatim (CHECKING | POSITIONING | PREPARING |
+                                     # THROWING | BALL_IN_FLIGHT | CATCHING | SETTLING).
+                                     # SESSION_CHECKING is published exactly ONCE, at goal
+                                     # accept with cycle_index 0, BEFORE the session's own
+                                     # CHECKING is adjudicated — so it appears even on a
+                                     # session that is about to be REJECTED, which is
+                                     # exactly when an operator wants to know the goal was
+                                     # received rather than dropped.
+int32 catches_confirmed              # running count, so a watched session is scoreable
+                                     # live rather than only at the terminal
