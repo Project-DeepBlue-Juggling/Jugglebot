@@ -655,6 +655,45 @@ trajectory_op:
                                    # cryptic leg-stroke graze) and the platform chasing a drifting
                                    # ball-tracker landing estimate (drift measured 435-605 mm/s on
                                    # BB throws) hundreds of mm sideways during the flight window.
+  catch_seat_rate_radps: 0.0       # Tilt-through-seat rate {rad/s} build_catch FALLS BACK to when the
+                                   # caller expresses no opinion — planner._CATCH_TILT_THROUGH_RATE_RADPS.
+                                   # SHIPS AT 0.0 and that is a DEFAULT, not a rule: platform motion
+                                   # during a catch or a throw is PERMITTED but never MANDATED, so it
+                                   # must never be MANUFACTURED by a constant in the trajectory builder.
+                                   # At 0.0 the builder manufactures nothing and every unopinionated
+                                   # catch is reach + quiescent hold. A caller that genuinely wants a
+                                   # moving rim still passes build_catch(tilt_through_rate_radps=...),
+                                   # which C-CATCH-1 honours verbatim and unbounded — that seam is
+                                   # unchanged by this key, and is what a future optimising planner uses.
+                                   # WHY IT IS CONFIG AND NOT A LITERAL (added 2026-07-28): the
+                                   # 2026-07-27 sitting could not separate two causes of its three
+                                   # bounce-outs — a stationary 10.8 deg reload rim vs a measured ~26-39
+                                   # mm BB warm-up drift in arrival x. The capture cannot separate them
+                                   # because its basin edge is degenerate: re-scored by
+                                   # tools/probes/ball_arrival_offset.py the attempt that DROPPED and the
+                                   # attempt that CAUGHT arrived at the same offset to within 0.02 mm
+                                   # (-11.507 vs -11.525). An earlier hand analysis put that pair 3.8 mm
+                                   # apart; that figure does not reproduce and must not be reused.
+                                   # The A/B that settles it raises this to 0.07 for
+                                   # ONE reload block at matched arrival offsets. Config-keying it makes
+                                   # that a YAML + regenerate + colcon + relaunch toggle instead of a
+                                   # source edit on the bench, so the experiment cannot land an
+                                   # accidental permanent code change and the deployed value is
+                                   # inspectable in the INSTALLED hardware_config.py.
+                                   # WHATEVER GOES IN IS BOUNDED: C-CATCH-1
+                                   # (ros_ws/docs/catch_arrival_contract.md, enforced at
+                                   # planner._catch_arrival_rate) clips a PLANNER-DERIVED rate to
+                                   # 40/81 of the catch's physical tilt scale, on both the reach
+                                   # excursion and the settle overshoot.
+                                   # Protocol: tests/hardware/session_anomaly_fixes.md SECTION SEAT-EXP.
+                                   # Sizing note for that session: 0.07 rad/s (~4 deg/s) over the 0.15 s
+                                   # decay overshoots the seat by ~0.3 deg. Measured 2026-07-28 through
+                                   # the production planner at the recorded reload geometry, the WHOLE
+                                   # plan peaks at 23.8 mm/s vel, 142.0 mm/s2 acc, 3935 mm/s3 jerk
+                                   # against session limits 1000/5000/30000 = 2.4%/2.8%/13.1%. JERK is
+                                   # the binding one; note leg VELOCITY falls vs the 0.0 plan (29.0),
+                                   # because a terminal rate lets the reach coast slower through its
+                                   # middle. Do not expect "everything gets smaller".
   retime_model: false              # Shaped-move duration search: the retiming MODEL proposes T,
                                    # the UNCHANGED gate (feasibility.validate) verifies it — fallback
                                    # is the legacy 6-pass stretch+bisection loop (shaped-planning-

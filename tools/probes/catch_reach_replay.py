@@ -352,9 +352,18 @@ TILT_DECAY_S = 0.15
 #: every pre-2026-07-26 capture score NOT-REPRODUCED — the instrument-fails-a-working
 #: -system trap. Self-check case 7 pins it to 0.07 for exactly that reason.
 THROUGH_SEAT_RATE_RADPS = 0.07
-#: ``planner._CATCH_TILT_THROUGH_RATE_RADPS`` — the LIVE default, mirrored so a
-#: seat-tuning session that raises it off zero breaks the self-check and has to come
-#: back here. :func:`build_fixed` (the post-fix counterfactual) rides on this value.
+#: A MIRROR of ``planner._CATCH_TILT_THROUGH_RATE_RADPS``, kept here purely as a
+#: DRIFT DETECTOR: self-check case 7 compares it against the live constant, so a
+#: seat-tuning session that raises the rate off zero breaks the self-check and has to
+#: come back here. **Nothing computes with it.** :func:`build_fixed` passes no
+#: arrival rate at all, so the counterfactual it builds rides on the LIVE
+#: ``planner._CATCH_TILT_THROUGH_RATE_RADPS``, resolved at call time — and
+#: :func:`_print_row` reads that live value too, for exactly that reason. (An
+#: earlier docstring here claimed ``build_fixed`` rides on the mirror; it never
+#: did, and believing it is what made ``_print_row`` announce "MANUFACTURES
+#: NOTHING" about a counterfactual built with a 0.07 seat. Fixed 2026-07-28, when
+#: the rate became the YAML key ``trajectory_op.catch_seat_rate_radps`` and the
+#: divergence became reachable by a documented operator action.)
 PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS = 0.0
 #: ``planner._CATCH_TILT_OVERSHOOT_FRAC``.
 THROUGH_SEAT_OVERSHOOT_FRAC = 0.5
@@ -1420,13 +1429,28 @@ def _print_row(row):
                  '— a level catch)' if aim is None
                  else f'rotates {aim:.4f} deg (plan-frame tilt -> '
                       f'gravity-referenced receive tilt)'))
-        _dflt = PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS
+        # The LIVE constant, NOT the mirror. `build_fixed` deliberately passes no
+        # arrival rate, so the counterfactual it just built used whatever the
+        # planner currently falls back to — printing the mirror here made this line
+        # read "MANUFACTURES NOTHING" while the rebuild above had manufactured
+        # 0.07. That was unreachable while the rate was a source literal; it became
+        # reachable on 2026-07-28, when the rate became the YAML key
+        # `trajectory_op.catch_seat_rate_radps` that the seat A/B flips for one
+        # reload block (`tests/hardware/session_anomaly_fixes.md` SECTION SEAT-EXP).
+        # The mirror is kept as the drift detector it is — case 7 owns that job —
+        # and any disagreement is now called out on this line too.
+        _dflt = float(planner._CATCH_TILT_THROUGH_RATE_RADPS)
+        _drift = ('' if _dflt == PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS
+                  else f"   [!] live default {_dflt} != this probe's mirror "
+                       f"{PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS}: the tree is "
+                       f"OFF its shipped seat rate (see --self-check case 7)")
         print(f"  arrival-rate bound 2.5*scale/T = {fx['rate_bound_radps']:.5f} rad/s"
-              f" vs the {_dflt} rad/s shipped default -> "
-              + ('MANUFACTURES NOTHING (default 0.0 since 2026-07-26 — the bound '
-                 'is dormant, not removed)' if _dflt <= 0.0
+              f" vs the {_dflt} rad/s live planner default -> "
+              + ('MANUFACTURES NOTHING (the fallback is 0.0 — the bound is '
+                 'dormant, not removed)' if _dflt <= 0.0
                  else ('BINDS' if fx['rate_bound_radps'] < _dflt
-                       else 'does not bind')))
+                       else 'does not bind'))
+              + _drift)
         print(f"  peak off the park  {fx['pre_peak_above_park_deg']:.4f} -> "
               f"{fx['peak_above_park_deg']:.4f} deg")
         print(f"  UNREQUESTED (wrong-side) excursion  "
@@ -1584,9 +1608,15 @@ def self_check():
     mirrored = [
         ('build_catch(tilt_decay_s=)',
          planner.build_catch.__kwdefaults__['tilt_decay_s'], TILT_DECAY_S),
-        # The LIVE default (0.0 since 2026-07-26). Raising it off zero must break
-        # this: `build_fixed`'s counterfactual and every "-> does not bind" line
-        # this probe prints are computed against it.
+        # The LIVE default (0.0 since 2026-07-26; the YAML key
+        # `trajectory_op.catch_seat_rate_radps` since 2026-07-28). Raising it off
+        # zero must break this row — that is the ENTIRE job of the mirror, and it
+        # is how `SEAT-EXP-3.2` turns this drift guard into positive confirmation
+        # that a bench flip deployed. Note what the mirror does NOT do: neither
+        # `build_fixed` nor `_print_row` computes with it. Both resolve the live
+        # `planner._CATCH_TILT_THROUGH_RATE_RADPS` at call time, so the printed
+        # "-> BINDS / does not bind / MANUFACTURES NOTHING" verdict always
+        # describes the plan that was actually just built.
         ('planner._CATCH_TILT_THROUGH_RATE_RADPS',
          planner._CATCH_TILT_THROUGH_RATE_RADPS,
          PLANNER_DEFAULT_THROUGH_SEAT_RATE_RADPS),

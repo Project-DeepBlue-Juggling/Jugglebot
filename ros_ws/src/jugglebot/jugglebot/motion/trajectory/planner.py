@@ -21,13 +21,16 @@ A plan seed state is ``(pose, twist, accel)`` — each a 6-vector, matching
 ``TrajectoryPlan.state_at``'s return — so a replan chains continuously (C2) off
 the previous plan's sampled state.
 
-Pure Python + numpy. No ROS2 / repo-root imports.
+Pure Python + numpy, plus the generated ``jugglebot.hardware_config`` constants
+module (itself pure Python — the same import ``hand_stroke``/``limits`` already
+make in this package). No ROS2 / repo-root imports.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
+import jugglebot.hardware_config as hw
 from jugglebot.motion.ik_solver import compute_jacobian, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.feasibility import (
     LIMIT_ACC,
@@ -822,11 +825,39 @@ def build_graceful_stop(state0, limits, geom, *, start_duration_s=None,
 # Bench-scored by `tests/hardware/session_anomaly_fixes.md` § Section ZSEAT.
 #
 # TO BRING IT BACK (the seat-tuning session this constant has always anticipated):
-# set this to the rate to try and re-run the suite. C-CATCH-1 (`_catch_arrival_rate`)
-# then bounds it against the catch's physical scale exactly as before — the contract
-# is dormant at 0.0, not removed, and `tests/motion/test_trajectory_planner_catch.py`
-# monkeypatches this constant to a non-zero value precisely so the bound stays
-# tested while the shipped default cannot reach it.
+# ── it is a YAML key as of 2026-07-28, NOT a source edit ─────────────────────
+# Set `trajectory_op.catch_seat_rate_radps` in `config/hardware_config.yaml`, run
+# `python config/generate_config.py`, then `colcon build --packages-select jugglebot`
+# and RELAUNCH (the launch runs the INSTALLED copy of `hardware_config.py`, so a
+# skipped rebuild silently runs the old rate while the repo says otherwise).
+#
+# WHY IT IS CONFIG-KEYED rather than a literal somebody edits at the bench: the
+# 2026-07-27 sitting left the seat's value genuinely undecided (three eye-confirmed
+# bounce-outs on a stationary 10.8 deg rim, against a measured 26-39 mm BB warm-up
+# drift in arrival x that could equally explain them). That capture cannot separate
+# the two because its basin edge is DEGENERATE: re-scored with a defined estimator
+# (`tools/probes/ball_arrival_offset.py`) the attempt that dropped and the attempt
+# that caught arrived at the SAME offset to within 0.02 mm (-11.507 vs -11.525).
+# An earlier hand analysis reported that pair 3.8 mm apart; it does not reproduce,
+# and no absolute number from it may be used as a gate — which is exactly why the
+# A/B below is scored strictly WITHIN a sitting. Settling it needs an A/B
+# *during a sitting*: one reload
+# block at 0.0, one at 0.07, at matched arrival offsets. A source edit mid-sitting
+# has two failure modes a config key does not: the edit is invisible in the
+# installed tree (so "which rate did that block actually run?" becomes unanswerable
+# from the capture), and it can be forgotten and shipped as an accidental permanent
+# default. Protocol: `tests/hardware/session_anomaly_fixes.md` SECTION SEAT-EXP.
+#
+# C-CATCH-1 (`_catch_arrival_rate`) then bounds whatever value goes in against the
+# catch's physical scale exactly as before — the contract is dormant at 0.0, not
+# removed, and `tests/motion/test_trajectory_planner_catch.py` monkeypatches this
+# MODULE ATTRIBUTE to a non-zero value precisely so the bound stays tested while the
+# shipped default cannot reach it. THAT MONKEYPATCH SURFACE IS LOAD-BEARING: the
+# generated constant is read ONCE, HERE, at import, and every consumer reads this
+# module attribute at call time. Moving the `hw.` lookup inside
+# `_catch_arrival_rate` would silently neuter every one of those monkeypatches and
+# take the whole C-CATCH-1 block vacuous while it stayed green — which is the exact
+# trap the 2026-07-26 zeroing phase spent most of its effort closing.
 #
 # Sizing notes kept for that session: at 0.07 rad/s (~4°/s) the overshoot over a
 # 0.15 s decay is ~0.3°, well inside MAX_TILT (12°) and the hold-quiescence tilt
@@ -834,7 +865,10 @@ def build_graceful_stop(state0, limits, geom, *, start_duration_s=None,
 # ceilings — 14.24 mm/s, measured 2026-07-26 through the production gate (an earlier
 # estimate of "~plat_radius·rate ≈ 7 mm/s" here was 2× low; the tilt axis is not
 # through the platform centre, so the lever arm is not plat_radius).
-_CATCH_TILT_THROUGH_RATE_RADPS = 0.0
+#
+# Bound ONCE at import from the generated constant, so this stays a plain module
+# attribute with the same name it has always had — see the monkeypatch note above.
+_CATCH_TILT_THROUGH_RATE_RADPS = float(hw.JB_TRAJ_CATCH_SEAT_RATE_RADPS)
 
 # Fraction of `rate·decay_s` the tilt overshoots past the seat during the decay
 # (the mean-velocity displacement of a rate→0 decel). Only sets the settle pose;
@@ -1014,9 +1048,12 @@ def build_catch(state0, catch_pose, duration_s, limits, geom, *,
 
     ``tilt_through_rate_radps`` is the requested seat rate. ``None`` (the default)
     means the caller has no opinion: the planner falls back to
-    ``_CATCH_TILT_THROUGH_RATE_RADPS`` — **which ships at 0.0 since 2026-07-26**, so
-    an unopinionated catch arrives with zero twist, carries no decay segment, and
-    settles exactly on its target — and **bounds** it under C-CATCH-1
+    ``_CATCH_TILT_THROUGH_RATE_RADPS`` — **which ships at 0.0 since 2026-07-26 and
+    has been the YAML key ``trajectory_op.catch_seat_rate_radps`` since
+    2026-07-28** (so a bench A/B moves it by config + regenerate + colcon, never by
+    editing this file), so an unopinionated catch arrives with zero twist, carries
+    no decay segment, and settles exactly on its target — and **bounds** it under
+    C-CATCH-1
     (:func:`_catch_arrival_rate`), so no departure from the target it manufactures
     — during the reach or during the settle — exceeds ``40/81`` of the catch's
     physical tilt SCALE (:func:`_catch_scale`: the larger of the seed → target

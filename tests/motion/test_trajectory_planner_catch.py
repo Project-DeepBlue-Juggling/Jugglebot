@@ -9,6 +9,8 @@ accepted by a real SetpointPump).
 
 from __future__ import annotations
 
+import importlib
+
 import numpy as np
 import pytest
 
@@ -573,6 +575,138 @@ def test_ccatch1_honours_an_explicitly_requested_arrival_rate(monkeypatch):
     assert _wrong_side_deg(asked, seed, target) == pytest.approx(2.3237, abs=1e-3)
     assert _wrong_side_deg(bounded, seed, target) <= (40.0 / 81.0) * float(
         np.degrees(np.linalg.norm(target[3:5] - seed[3:5])))
+
+
+# ── config drift guards: YAML → generated → module attribute ─────────────────
+#
+# The seat rate became `trajectory_op.catch_seat_rate_radps` on 2026-07-28 so the
+# pre-registered A/B (one reload block at 0.07 against one at 0.0, at matched
+# arrival offsets — `tests/hardware/session_anomaly_fixes.md` SECTION SEAT-EXP) is a
+# YAML + regenerate + colcon toggle instead of a source edit at the bench. Three
+# links now have to hold, and each guard below breaks a different one.
+
+
+def _yaml_seat_rate():
+    """The seat rate as written in `config/hardware_config.yaml` — the SOURCE.
+
+    Read from the YAML, not from the generated module, so this cannot agree with
+    the generated constant by construction.
+    """
+    import os
+    import yaml
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    with open(os.path.join(repo, 'config', 'hardware_config.yaml')) as fh:
+        cfg = yaml.safe_load(fh)
+    section = cfg['trajectory_op']
+    assert 'catch_seat_rate_radps' in section, (
+        'trajectory_op.catch_seat_rate_radps is missing from '
+        'config/hardware_config.yaml — the seat rate is config-keyed since '
+        '2026-07-28 and planner.py reads the generated constant.')
+    return float(section['catch_seat_rate_radps'])
+
+
+def test_generated_seat_rate_matches_the_yaml():
+    """`config/generate_config.py` was actually re-run after the YAML was edited.
+
+    The failure this catches is the whole reason the key exists and is the reason
+    it is worth a test rather than a convention. The bench procedure is: edit the
+    YAML → regenerate → `colcon build --packages-select jugglebot` → relaunch. Skip
+    the regenerate and the tree says 0.07 while every consumer — the installed
+    `hardware_config.py`, the planner, this test suite — still runs 0.0. The
+    resulting reload block would be scored as the experiment's 0.07 arm while the
+    rim was in fact stationary, i.e. the A/B would silently compare 0.0 against 0.0
+    and 'prove' the seat makes no difference.
+
+    This is the same class of silent-deployment failure the sitting already met
+    once (a stale colcon install running Tier 8a while the repo said 8b), which is
+    why row TIER-PREREQ exists. Here it is caught in CI instead.
+    """
+    assert float(hw.JB_TRAJ_CATCH_SEAT_RATE_RADPS) == _yaml_seat_rate(), (
+        f'generated JB_TRAJ_CATCH_SEAT_RATE_RADPS='
+        f'{hw.JB_TRAJ_CATCH_SEAT_RATE_RADPS!r} != YAML '
+        f'trajectory_op.catch_seat_rate_radps={_yaml_seat_rate()!r}. '
+        'Run: python config/generate_config.py')
+
+
+def test_planner_seat_rate_is_bound_from_the_generated_constant(monkeypatch):
+    """`planner._CATCH_TILT_THROUGH_RATE_RADPS` really is the config key.
+
+    Two failure modes, both silent, both of which would make the bench experiment
+    unfalsifiable:
+
+    (a) somebody re-hardcodes the literal in `planner.py` (a plausible "tidy up"
+        of a constant whose value is currently 0.0), so raising the YAML changes
+        nothing and the 0.07 block runs a stationary rim;
+    (b) somebody moves the `hw.` lookup INSIDE `_catch_arrival_rate` to make it
+        "live". That reads better and is worse: every `_set_seat_rate` monkeypatch
+        in this file patches the module attribute, so a call-time lookup would
+        ignore all of them and the entire `test_ccatch1_*` block would go vacuous
+        while staying green — the exact trap the 2026-07-26 zeroing phase spent
+        most of its effort closing. Asserting the monkeypatch still bites is what
+        makes this guard catch (b) rather than merely documenting against it.
+
+    Asserting equality with the generated constant is NOT enough, and that is
+    worth spelling out because the first version of this guard did exactly that
+    and was vacuous. The shipped value is ``0.0``; a re-hardcoded
+    ``_CATCH_TILT_THROUGH_RATE_RADPS = 0.0`` satisfies
+    ``== approx(hw.JB_TRAJ_CATCH_SEAT_RATE_RADPS)`` perfectly, so the guard
+    passed against the very mutation (a) it names. It only starts to bite the day
+    somebody flips the YAML — i.e. at the bench, during the sitting, which is the
+    one moment it exists to protect and the one moment nobody is running pytest.
+
+    So the binding is proven by REBINDING it: point the generated constant at a
+    sentinel, re-import the module, and require the attribute to follow. That is
+    value-independent — it holds at 0.0, at 0.07, and at whatever the seat
+    experiment lands on.
+    """
+    sentinel = 0.1234567
+    monkeypatch.setattr(hw, 'JB_TRAJ_CATCH_SEAT_RATE_RADPS', sentinel)
+    reloaded = importlib.reload(planner)
+    try:
+        assert reloaded._CATCH_TILT_THROUGH_RATE_RADPS == pytest.approx(
+            sentinel, abs=0.0), (
+            'planner._CATCH_TILT_THROUGH_RATE_RADPS did not follow the '
+            'generated constant across a reload — it is a hard-coded literal '
+            'again, so trajectory_op.catch_seat_rate_radps is inert and the '
+            'bench A/B would run 0.0 in both arms.')
+    finally:
+        # Restore the real binding for every test that runs after this one.
+        monkeypatch.undo()
+        importlib.reload(planner)
+
+    # And the shipped tree really is wired to the shipped config value.
+    assert planner._CATCH_TILT_THROUGH_RATE_RADPS == pytest.approx(
+        float(hw.JB_TRAJ_CATCH_SEAT_RATE_RADPS), abs=0.0)
+
+
+def test_the_module_attribute_is_still_the_monkeypatch_surface(monkeypatch):
+    """The read happens ONCE at import, so patching the attribute still bites.
+
+    Guard (b) above, made executable: patch the module attribute to a value that
+    differs from the generated constant and check that an unopinionated
+    `build_catch` actually manufactures a seat. If the lookup ever moves to call
+    time this fails immediately, instead of quietly de-fanging twelve C-CATCH-1
+    tests in three files.
+    """
+    # The probe value must DIFFER from whatever is shipped, or the test passes
+    # trivially — and it must not depend on what is shipped, or this guard joins
+    # the deliberately-red set during the bench A/B and buries the signal. Both
+    # candidates sit well under this geometry's C-CATCH-1 ceiling
+    # (2.5 * 0.1897 rad / 2.3712 s = 0.200 rad/s), so the rate is returned intact.
+    probe_rate = 0.07 if float(hw.JB_TRAJ_CATCH_SEAT_RATE_RADPS) != 0.07 else 0.05
+    rate = _set_seat_rate(monkeypatch, probe_rate)
+    seed = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    target = np.array([11.876738, 2.866503, 171.162592,
+                       0.030963215, -0.185639047, 0.001280344])
+    receive_tilt = np.array([0.044516438, -0.184444299])
+    plan, rep = planner.build_catch((seed, np.zeros(6), np.zeros(6)), target,
+                                    2.3712, _limits(), _geom(),
+                                    settle_hold_s=0.5, receive_tilt=receive_tilt)
+    assert rep.ok
+    assert len(plan.segments) == 3          # reach + decay + hold
+    assert float(np.hypot(*plan.state_at(2.3712)[1][3:5])) == pytest.approx(
+        rate, rel=1e-12)
 
 
 def test_the_shipped_default_manufactures_nothing_but_still_obeys_a_caller():

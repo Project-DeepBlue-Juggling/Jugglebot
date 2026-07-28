@@ -189,6 +189,7 @@ namespace TrajOp {
   constexpr float CATCH_REACH_FREEZE_S = 0.3f;
   constexpr float CATCH_SETTLE_HOLD_S = 0.5f;
   constexpr float CATCH_REACH_ENVELOPE_MM = 80.0f;
+  constexpr float CATCH_SEAT_RATE_RADPS = 0.0f;
   constexpr bool RETIME_MODEL = false;
 }
 

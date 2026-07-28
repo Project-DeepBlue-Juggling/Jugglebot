@@ -189,6 +189,34 @@ collapse:
   `tilt_through_rate_radps` — which would take the deliberately-unbounded requested
   branch and prove nothing.
 
+> **Amended 2026-07-28 — the manufactured rate is now a CONFIG value.**
+> `_CATCH_TILT_THROUGH_RATE_RADPS` is bound **once, at import**, from
+> `trajectory_op.catch_seat_rate_radps` in `config/hardware_config.yaml` (generated
+> as `JB_TRAJ_CATCH_SEAT_RATE_RADPS`). **Nothing in this contract changes**: the
+> shipped value is still `0.0`, the enforcement point is still
+> `_catch_arrival_rate`, and a caller-supplied rate is still verbatim and
+> unbounded. What changed is only *how the default moves* — a YAML edit plus
+> `python config/generate_config.py` plus `colcon build --packages-select
+> jugglebot` plus a relaunch, instead of a source edit.
+>
+> Two reasons, both failure modes rather than tidiness. (a) The seat-tuning
+> session this document anticipates is a **bench A/B**
+> (`tests/hardware/session_anomaly_fixes.md` SECTION SEAT-EXP): one reload block at
+> `0.0`, one at `0.07`, at matched arrival offsets. A source edit made mid-sitting
+> is invisible in the installed tree, so *"which rate did that block actually
+> run?"* becomes unanswerable from the capture — and it can be forgotten and
+> shipped as an accidental permanent default. (b) The value is now readable out of
+> the **installed** `hardware_config.py`, which is what the deployment checks
+> `SEAT-EXP-1` and `SEAT-EXP-3` read.
+>
+> **The import-time binding is itself load-bearing and must not be "improved" into
+> a call-time lookup.** Every test that reaches this bound does so by patching the
+> module attribute. A `hw.` lookup inside `_catch_arrival_rate` would ignore all of
+> them and take the entire `test_ccatch1_*` block vacuous **while it stayed green**
+> — the precise trap the 2026-07-26 zeroing phase spent most of its effort closing.
+> Pinned by `test_the_module_attribute_is_still_the_monkeypatch_surface`, plus the
+> two YAML/generated/module drift guards beside it.
+
 **The physical risk this accepts, stated rather than solved.** The 0.07 rad/s
 existed because *a parked tilted rim deflects the ball* (the bb-sim geometry
 finding). A gravity-level catch seats level, so zero costs it nothing — under this

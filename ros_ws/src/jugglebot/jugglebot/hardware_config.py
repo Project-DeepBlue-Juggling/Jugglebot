@@ -170,6 +170,7 @@ JB_TRAJ_LEAN_GAIN = 0.6
 JB_TRAJ_CATCH_REACH_FREEZE_S = 0.3
 JB_TRAJ_CATCH_SETTLE_HOLD_S = 0.5
 JB_TRAJ_CATCH_REACH_ENVELOPE_MM = 80.0
+JB_TRAJ_CATCH_SEAT_RATE_RADPS = 0.0
 JB_TRAJ_RETIME_MODEL = False
 
 # ============================================================================

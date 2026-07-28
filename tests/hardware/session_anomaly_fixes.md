@@ -160,11 +160,17 @@ wrong is the most likely way to waste a sitting. **Until 2026-07-27 one of the
 three failed silently; Phase 6 closed that — but it made the skip VISIBLE, not
 BLOCKED, so row C still depends on you running its check.**
 
+> **Row D added 2026-07-28** — a **fourth** kind, config regeneration. It does
+> NOT belong to the 2026-07-27 run: it exists only for § SECTION SEAT-EXP, a
+> separate later sitting. Rows A-C are unchanged and nothing in stages 1-7 of
+> § THE RUN SHEET needs D.
+
 | | what changed | what you must do | **how you find out you skipped it** |
 |---|---|---|---|
 | **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT, **POSS** (commits `aea7b49`, `e58ed89`, the hand phases, and the C-POSSESS-1 commit). **§ SECTION POSS adds a NEW module** (`ball_possession.py`), which is the one shape that can land half-applied from a cached build | `colcon build --packages-select jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py` | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4 and **PF-7**, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
 | **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) and `RobotState.msg` gained `platform_fw_version` / `platform_fw_version_read` (§ Section FW) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically, now from two nodes.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s. **`teensy_bridge_node` behaves DIFFERENTLY — do not expect it to exit.** Its 100 Hz `_publish_robot_state` assigns the two new `RobotState` fields but *catches its own exceptions*, so a half-rebuild there gives you **one throttled `Robot state publish error:` per 5 s and a silently-dead `/robot_state`** — the node stays in `ros2 node list` looking healthy while the orchestrator stalls in BOOT and blames power/CAN. Since 2026-07-27 it also logs, once at construction, `INTERFACES_STALE: …` naming the missing fields and the exact rebuild command — **grep that first** (`grep INTERFACES_STALE "$LOG"`). Note this matters most when `jugglebot_interfaces` is only *partly* stale: if it already carries `gravity_correction_loaded` from an earlier sitting, `trajectory_node` does NOT exit and the loud row-B signature above never appears |
 | **C** | `ros_ws/src/jugglebot/Teensy_code/Trajectory.h` + the regenerated `Teensy_code/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`), and `Teensy_code.ino`'s `FW_VERSION` identity block (§ Section FW) | **FLASH `Teensy_code/Teensy_code.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **Loudly, since 2026-07-27 — read the box below.** `link_status/platform_fw_version` reads `0 (PRE-VERSIONING)` on an un-flashed board and `1` on a flashed one, and the launch log carries a `PLATFORM_FW_CHECK: FAIL` ERROR. Run-sheet row **FW-1** |
+| **D** | `config/hardware_config.yaml` — `trajectory_op.catch_seat_rate_radps` (§ SECTION SEAT-EXP, added 2026-07-28). Shipped value `0.0`; **only the seat-rate A/B ever moves it** | `python config/generate_config.py` (**venv**, standing rule 5) **then** `colcon build --packages-select jugglebot` + **relaunch**. The regenerate is the step that gets skipped, and skipping it changes *nothing at all* — every consumer imports the **generated** `hardware_config.py`, not the YAML | **Only if you check, and the failure is the quiet kind.** A skipped regenerate or a skipped `colcon` leaves the machine on the previous rate, so the experiment block silently repeats the control block and the A/B reads as "no difference" — a wrong *scientific* answer, not a crash. Rows `SEAT-EXP-1` and `SEAT-EXP-3` are the three-way check (installed constant, YAML, probe self-check); `SEAT-EXP-3.2` is deliberately inverted, a self-check **FAIL** naming that one constant is the positive confirmation |
 
 > ### ⚠ SUPERSEDED (2026-07-27): the un-flashed Platform Teensy is now DETECTABLE
 >
@@ -2446,8 +2452,8 @@ catches still read `MISSED`, correctly. Standing rule 3 has the split.
 >
 > **STALE rather than false — `arrival-rate bound`.** That row's ABORT is "the probe
 > prints `BINDS`". At a `0.0` default the probe cannot print `BINDS` at all: it
-> prints `MANUFACTURES NOTHING (default 0.0 since 2026-07-26 — the bound is dormant,
-> not removed)`, and the `0.20004 rad/s` bound itself is still computed and still
+> prints `MANUFACTURES NOTHING` (full text amended 2026-07-28 — match on that
+> fragment, not on the parenthetical), and the `0.20004 rad/s` bound itself is still computed and still
 > correct. So the row can never fire and never PASS as written — read it as
 > informational, and see § CHECK ZSEAT-3, which quotes the new wording.
 >
@@ -3090,7 +3096,16 @@ reached the cup) is BB scatter and is not evidence about the seat.
 **If ZSEAT-2 ABORTs on bounce-out**, the finding is *"a stationary tilted rim
 deflects the ball on hardware, and the bb-sim geometry finding is confirmed"*.
 That is a real, publishable result and the fix is a **one-line default**, not a
-redesign: raise `planner._CATCH_TILT_THROUGH_RATE_RADPS` off zero and re-run.
+redesign: raise the seat rate off zero and re-run. **Raise it in the YAML, never
+in `planner.py`** — it is `trajectory_op.catch_seat_rate_radps` in
+`config/hardware_config.yaml` since 2026-07-28, and moving it needs all four of
+YAML → `generate_config.py` → `colcon build` → relaunch (§ DEPLOYMENT MATRIX row
+D). A source edit at the bench is an ABORT under `SEAT-EXP-8.3`: it leaves no
+trace in the *installed* tree, so the capture cannot be attributed to a rate, and
+it can be forgotten and shipped as an accidental permanent default. **Do not
+improvise the A/B from this paragraph — it has a pre-registered protocol:
+§ SECTION SEAT-EXP**, which fixes the warm-up discipline, the matched-arrival
+requirement and the decision rule *before* the data exists.
 C-CATCH-1 is still in force and will bound whatever value goes in — the contract
 was kept live for exactly this moment. Log the bounce-out count and the value
 tried; that is the start of the seat-tuning session the constant's docstring has
@@ -3109,10 +3124,15 @@ python tools/probes/catch_reach_replay.py --bag ~/Desktop/rosbags/<SESSION> \
     --thrower ball_butler --toss N --json
 ```
 
-The **C-CATCH-1 COUNTERFACTUAL** block now prints
-`MANUFACTURES NOTHING (default 0.0 since 2026-07-26 — the bound is dormant, not
-removed)` on its `arrival-rate bound` line. On a *post-fix* capture the recorded
-reach and the counterfactual should collapse together.
+The **C-CATCH-1 COUNTERFACTUAL** block prints `MANUFACTURES NOTHING` on its
+`arrival-rate bound` line whenever the live planner default is `0.0`. **Match on
+that fragment only** — the surrounding wording changed on 2026-07-28 (the line
+now names the *live* planner default rather than a mirrored constant, and appends
+a `[!]` drift callout when the tree is off its shipped seat rate), and it will
+change again if the seat experiment moves the default. A wording mismatch here is
+NOT the stale-install signal that `SEAT-EXP-1`/`3` gate on; those rows read the
+installed constant and the self-check exit code, which are exact. On a *post-fix*
+capture the recorded reach and the counterfactual should collapse together.
 
 Reference deltas, measured 2026-07-26 offline on
 `~/Desktop/rosbags/2026-07-25_15-17-48 --thrower ball_butler --toss 2`
@@ -3172,7 +3192,8 @@ timing rather than by inspection of a trace alone):
 - Whether the seat's **aim** is right — § CHECK CCATCH-3's aim rotation row, still
   valid.
 - Re-tuning the seat rate. That is the follow-on session ZSEAT-2's ABORT path
-  opens, and it needs its own plan.
+  opens, and it now HAS its protocol in this file: **§ SECTION SEAT-EXP**
+  (added 2026-07-28, a separate later sitting — do not fold it into this one).
 
 ---
 
@@ -3552,3 +3573,492 @@ unexpected hand ascent after a caught toss and record it if you see one.
 - **Turning on `toss_require_ball_evidence`.** Still `false`, deliberately and
   unchanged. It is a precondition that can refuse a goal, and it belongs to
   whoever validates the sensor (sitting logbook, decision row (e)).
+
+---
+
+## SECTION SEAT-EXP — the seat-rate A/B (a SEPARATE, LATER sitting)
+
+> **This is not part of § THE RUN SHEET.** That run sheet is marked EXECUTED
+> 2026-07-27 and describes a sitting that has happened. SEAT-EXP is a fresh
+> sitting with its own ordered stages below. Standing rules 1–6 still apply in
+> full; nothing here replaces them.
+
+### The question, and why the last sitting could not answer it
+
+`ZSEAT-2` ABORTed on its bounce-out arm: three eye-confirmed bounce-outs off a
+**stationary 10.8° reload rim**, all three consecutive, at the top of the
+session. Its rate arm passed (13 caught / 16 = 0.8125) and its flatness arm
+proved the zero seat really shipped, so the experiment measured what it set out
+to measure. What it could **not** do is decide *why*, because the same capture
+carries a second measured cause: a monotonic **26–39 mm Ball-Butler warm-up
+drift** in arrival `x` that plateaued around the sixth throw. The three drops
+arrived that much further `+x` than the thirteen catches, and the operator
+independently eye-witnessed the throws being "visibly off" during exactly those
+attempts.
+
+The two hypotheses are **not alternatives**. A ~30 mm off-centre arrival on a
+stationary tilted rim is a *description of the disturbance the 0.07 rad/s seat
+existed to reject*, not a competing explanation for the drop. So the open
+question is narrow and precise:
+
+> **Does a non-zero seat rate widen the capture basin — does it catch a ball
+> ~30 mm off-centre that the zero seat drops?**
+
+Nothing in the 2026-07-27 capture can answer it, because that capture contains
+**no throws at a large `+x` offset with a non-zero seat**. Full evidence:
+[`logbook/2026-07-28-anomaly-fixes-validation-sitting.md`](../../logbook/2026-07-28-anomaly-fixes-validation-sitting.md).
+
+### THE ONE THING THAT DECIDES WHETHER THIS SITTING IS WORTH RUNNING
+
+**Both arms must be flown in the marginal regime.** This is a design constraint,
+not a preference, and it is derived from the last sitting's own numbers.
+
+At the *plateau* offset (`x@1000 ≈ −27 … −54 mm`) the zero seat caught **every
+attempt that got there — 10 of 10 scored**. (The sitting as a whole was 13 caught
+of 16 attempted. The bookkeeping: 18 announcements, 2 of which aborted before a
+ball left the Butler, leaves 16 attempts; 14 of those have a scoreable track. Of
+the 14, three dropped — all in the marginal band, at `+2.8 / −8.9 / −11.5` — one
+caught in the marginal band at `−11.5`, and the remaining 10 caught out on the
+plateau. The last 2 catches are the real balls among the four `NO TRACK`
+announcements, so their arrival offset is simply unknown.) Running the A/B at the
+plateau means the `0.0` arm bounces out ~0 times, the
+`0.07` arm bounces out ~0 times, and the sitting returns `0 vs 0` — which is
+**INCONCLUSIVE with certainty**, and costs a full sitting to learn nothing.
+
+The measured basin edge sits at **`x@1000 ≈ −12 mm`**: attempts 1–3 dropped at
+`+2.8 / −8.9 / −11.5`, attempt 4 caught at `−11.5`, and every attempt from
+`−27.3` outwards caught. **That edge is degenerate** — the drop and the catch
+that bracket it arrived at the same offset to within 0.02 mm — which is why no
+absolute number from the old hand analysis is a gate anywhere in this section and
+why the decision rule is strictly within-sitting.
+
+So the marginal band is **two-sided**:
+
+    −15 mm  ≤  mean x@1000  ≤  −5 mm      (about +25 to +35 mm of aim bias off the plateau)
+
+**The ceiling is not decoration.** A floor-only gate passes in both directions
+that waste the sitting. Under-bias to `−14.5 mm`: with the measured 9–11 mm
+throw-to-throw sd against a `−12 mm` edge, only ~38 % of throws land in the drop
+zone, so the expected `k0` is ≈ 4.6 of 12 — *below* the `k0 ≥ 5` the decision
+table needs, and `5 vs 1` is explicitly not decidable. Over-bias to `+10 mm`
+(the aim mechanism is unspecified and the required shift is 25–35 mm, so
+overshoot is a real risk): ~98 % of throws drop, `k0 ≈ 12` and `k1 ≈ 10–12`, and
+nothing is decidable either. Aim for the **middle** of the band, near `−10 mm`
+— which is where the last sitting's four marginal attempts actually sat (mean
+`−7.3 mm`, `p0 ≈ 3/4`), and where the power table's assumptions hold.
+
+**How to move the arrival offset is the operator's call and is NOT prescribed
+here** — it is Ball-Butler aim, and this file does not invent a command it has
+not verified. What is prescribed is that you **measure** it live (row
+`SEAT-EXP-2`) and do not proceed to the scored blocks until the burn-in bag shows
+the arrivals inside that band. If the offset cannot be moved into it, **stop and
+record INCONCLUSIVE-BY-DESIGN**; do not run the blocks and do not report the
+result as "the seat makes no difference".
+
+### Deployment — a YAML key now, not a source edit
+
+The seat rate is `trajectory_op.catch_seat_rate_radps` in
+`config/hardware_config.yaml` (added 2026-07-28). It ships at **`0.0`** and the
+default is unchanged by this experiment. The whole point of the key is that this
+A/B is a config toggle: nothing is edited in `planner.py`, so the experiment
+cannot leave an accidental permanent code change behind, and the deployed value
+is readable out of the *installed* tree.
+
+Flipping it requires **all four** steps. Skipping the middle two is silent:
+
+```bash
+# 1. edit config/hardware_config.yaml -> trajectory_op.catch_seat_rate_radps: 0.07
+# 2. regenerate (venv — standing rule 5)
+source ~/Desktop/PDJ_venv/venv/bin/activate
+python config/generate_config.py
+# 3. rebuild (NO venv — colcon builds against system python 3.8)
+cd ros_ws && colcon build --packages-select jugglebot && cd ..
+# 4. RELAUNCH jugglebot_launch.py — the launch runs the INSTALLED copy.
+```
+
+No interface rebuild, **no firmware flash**.
+
+**Expected commanded-motion change on the reload catch**, measured 2026-07-28
+through the production planner at the recorded reload geometry (lead 2.3712 s,
+receive tilt 10.87°) — so an operator knows what "working" looks like:
+
+| | seat `0.0` | seat `0.07` |
+|---|---|---|
+| segments / plan duration | 2 / 2.8712 s | 3 / 3.0212 s |
+| arrival tilt rate at contact | `0.000000 rad/s` | `0.070000 rad/s` |
+| settle `rx` / `ry` | `+1.774062 / −10.636334°` | `+1.844635 / −10.928741°` |
+| predicted leg vel / acc / jerk | `29.0 / 37.9 / 170` | `23.8 / 142.0 / 3935` |
+| vs session limits `1000 / 5000 / 30000` | 2.9 % / 0.8 % / 0.6 % | 2.4 % / 2.8 % / 13.1 % |
+
+C-CATCH-1's bound at this geometry is **`0.200047 rad/s`**, so `0.07` is
+returned intact and nothing is clipped. Note the leg **velocity falls** while acc
+and jerk rise — that is arithmetic (a terminal rate along the travel lets the
+reach coast slower through its middle), not a fault.
+
+### Stage order
+
+| stage | what | rate | scored? |
+|---|---|---|---|
+| 0 | prerequisites + `SEAT-EXP-1` deployment check | `0.0` | no |
+| 1 | **BB burn-in**, **≥ 8** reloads, robot catching normally | `0.0` | **no — discarded** |
+| 2 | `SEAT-EXP-2`: confirm the arrival offset has plateaued **and** sits in the marginal band | `0.0` | gate |
+| 3 | **CONTROL block** — throw until **12 are SCORED** (expect to need ~14–15) | `0.0` | **yes** |
+| 4 | flip to `0.07` (4 steps above) + `SEAT-EXP-3` deployment check | `0.07` | no |
+| 5 | **EXPERIMENT block** — throw until **12 are SCORED** (expect to need ~14–15) | `0.07` | **yes** |
+| 6 | `SEAT-EXP-8` revert to `0.0` + rebuild + relaunch | `0.0` | mandatory |
+
+> **Throw more than 12 per arm, and score each bag before ending its block.**
+> `SEAT-EXP-5` wants **12 *scored*** attempts, with missed arrivals and `NO TRACK`
+> announcements excluded from the denominator — so throwing exactly 12 cannot
+> satisfy it if even one ball misses the cup or loses its track. That is not a
+> remote risk here: this protocol deliberately flies the arms **in the marginal
+> band**, where a genuine missed arrival is materially more likely than at the
+> plateau, and the reference capture already lost 4 of 18 announcements to
+> `NO TRACK` for unrelated reasons. Run the probe on the block's bag *before*
+> moving on, and keep throwing until it prints `n = 12`.
+
+**Why a fresh control block when 2026-07-27 already ran 16 at `0.0`.** Because
+the last sitting's `0.0` data is confounded by the very drift under test: its
+three drops are exactly its un-warmed-up throws. A control block taken *after*
+the burn-in, at the same offsets as the experiment block, on the same day, with
+the same BB temperature, is the only `0.0` arm that is comparable to a `0.07` arm
+run minutes later. Re-using the old 16 would re-import the confound the whole
+experiment exists to remove.
+
+### Prerequisites (stage 0)
+
+- Standing rule 1: **power-cycle the can-bridge Teensy**, and log `uptime_ms`
+  beside every timing number.
+- Standing rule 2: check `gravity_correction_loaded`; `level` only if `false`.
+- Standing rule 3: **one truthful outcome line per attempt, by eye.** In this
+  section that is not a nicety — the operator's per-ball verdict is the
+  **primary** outcome (see § Scoring). Reload `outcome` still reads `MISSED` on
+  real catches and cannot be used as the numerator.
+- Recording: rosbag on all topics, plus the trace recorder, for both scored
+  blocks. `/mocap_data` is what the arrival-offset probe reads, so a bag without
+  it cannot be scored at all.
+
+#### CHECK SEAT-EXP-1 — the tree is at the shipped `0.0` before you start
+
+```bash
+INST=ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot
+grep -n "JB_TRAJ_CATCH_SEAT_RATE_RADPS" $INST/hardware_config.py
+grep -n "catch_seat_rate_radps" config/hardware_config.yaml
+source ~/Desktop/PDJ_venv/venv/bin/activate
+python tools/probes/catch_reach_replay.py --self-check ; echo "exit=$?"
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| SEAT-EXP-1.1 | installed `JB_TRAJ_CATCH_SEAT_RATE_RADPS` | `= 0.0` | anything else — a previous experiment was never reverted; **stop and revert before capturing anything** |
+| SEAT-EXP-1.2 | YAML `catch_seat_rate_radps` | `0.0` | disagrees with 1.1 ⇒ the install is stale; rebuild |
+| SEAT-EXP-1.3 | `catch_reach_replay.py --self-check` | `SELF-CHECK: PASS`, `exit=0`, **no `BAD` lines** | any `BAD`, or `exit=1` |
+
+> **Do not pipe the self-check through `tail -1`.** An earlier draft of this block
+> did, and it defeats the row: `$?` then reports `tail`'s status, which is `0`
+> unconditionally, so the `exit 0` half of the criterion becomes unobservable —
+> and the `BAD` lines the row actually gates on are exactly what `tail -1` hides.
+> Neither self-check prints an `N/N` tally, so "no `BAD` lines" is the criterion,
+> not a count.
+
+#### CHECK SEAT-EXP-2 — burn-in gate (stage 2). **This is the go/no-go.**
+
+Score the burn-in bag *before* starting the control block:
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+python tools/probes/ball_arrival_offset.py --bag ~/Desktop/rosbags/<BURN_IN_BAG>
+```
+
+| # | quantity | PASS | ABORT / STOP |
+|---|---|---|---|
+| SEAT-EXP-2.1 | arrival `x@1000` has **plateaued** — the probe's `BURN-IN TREND` line, fitted over the last **8** scored throws | **\|slope\| ≤ 3.00 mm/throw** | still walking ⇒ throw ~6 more and re-score. Measured on 2026-07-27: warm-up throws 1–6 read **−7.13 mm/throw**, the settled plateau **−1.75** (n=8), so the two regimes are cleanly separated by this threshold |
+| SEAT-EXP-2.2 | the plateau sits in the **marginal band** — read the probe's **`PLATEAU (last 8 scored)`** line, *not* the all-scored summary line above it | **−15 mm ≤ mean `x@1000` ≤ −5 mm** | outside it *on either side* ⇒ **do not run the blocks.** Adjust BB aim and re-burn-in; if the offset cannot be moved there, record **INCONCLUSIVE-BY-DESIGN** and end the sitting |
+| SEAT-EXP-2.3 | tracks are usable | ≥ 6 of the last 8 throws scored, **at most 1** flagged `SPARSE` | mostly `NO TRACK` / `SPARSE` ⇒ mocap coverage is too thin to score this experiment at all; fix that first. (2026-07-27 ran 14 usable of 18, with 1 `SPARSE`, so "none sparse" would have been a criterion that fires on a healthy capture) |
+
+> **Why a slope and not "successive change < 10 mm".** The sitting's own
+> recommendation phrased this gate as *successive-throw change under 10 mm*, and
+> that criterion **fires on correct behaviour**: on the 2026-07-27 plateau —
+> a demonstrably settled Butler — successive changes run
+> `0.3, 15.6, 0.8, 11.5, 10.0, 9.0, 6.3` mm, three of seven over the line. The
+> throw-to-throw scatter is ~9–11 mm sd, so a plateau is the absence of a
+> *trend*, not of scatter. Both halves are pinned in the probe's `--self-check`
+> (cases 7 and 8) so the rejected criterion cannot be re-adopted from the prose.
+>
+> **Read the PLATEAU line, not the summary line.** The probe prints two means:
+> an all-scored one (`N scored past the warm-up; x mean …`) and a
+> `PLATEAU (last 8 scored)` one. `SEAT-EXP-2.2` is a statement about the
+> *plateau*, and the all-scored mean is not it — it still carries the warm-up
+> excursion, which points toward `+x`, i.e. **toward passing the gate**. On the
+> 2026-07-27 reference capture the two read `−28.8 mm` and `−38.9 mm`: a
+> **10.1 mm optimistic bias**, two thirds of the whole margin between the band
+> edge (`−15`) and the basin edge (`−12`). A Butler that had genuinely settled
+> at `−22 mm` — outside the band, where the zero seat catches everything — would
+> print ≈ `−11 mm` on the summary line, pass the go/no-go, and spend the sitting
+> collecting `0 vs 0`. The `PLATEAU` line was added on 2026-07-28 for exactly
+> this row.
+>
+> **This gate is a pre-filter, not the protection.** At the measured 11.4 mm sd
+> the slope's own standard error is **2.72 mm/throw at n=6** and **1.76 at n=8**
+> — so a residual drift of a few mm/throw is invisible to it, and over a 12-throw
+> block that is tens of mm of separation between the arms. `SEAT-EXP-6` is what
+> actually catches that, after the fact, from the two block means.
+
+#### CHECK SEAT-EXP-3 — the flip actually deployed (stage 4)
+
+Run **after** the rebuild and relaunch, **before** the experiment block. Four
+independent reads — two static, two from the machine's own commanded motion —
+because a silently-stale install is the failure mode that would make the whole
+sitting compare `0.0` against `0.0` and report it as "no difference":
+
+```bash
+INST=ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot
+grep -n "JB_TRAJ_CATCH_SEAT_RATE_RADPS" $INST/hardware_config.py     # expect 0.07
+source ~/Desktop/PDJ_venv/venv/bin/activate
+python tools/probes/catch_reach_replay.py --self-check ; echo "exit=$?"
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| SEAT-EXP-3.0 | **the relaunch's own preconditions** — `ros2 topic echo /trajectory/status --once`, read `gravity_correction_loaded`; also re-record the can-bridge `uptime_ms` for this block | `true` | `false` ⇒ `level` from IDLE before throwing anything. **Stage 4 mandates a relaunch and a relaunch re-runs the `/gravity_offset` race** (standing rule 2): that topic is VOLATILE, so a `trajectory_node` that finishes subscribing after the push misses it. The toss path refuses loudly on this, but **the reload catch path has no such gate** — `platform_levelled` is consumed only by `toss_sequencer`, so 12 EXPERIMENT reloads would proceed silently with the platform commanded up to 0.78° off gravity. That is a difference in *rim orientation at contact* — the exact variable under test — and `SEAT-EXP-6` cannot see it, because it matches on the BALL's arrival offset, not the platform's attitude |
+| SEAT-EXP-3.1 | installed `JB_TRAJ_CATCH_SEAT_RATE_RADPS` | `= 0.07` | still `0.0` ⇒ the `colcon build` was skipped or failed. **The launch runs the installed copy**; without this the experiment block silently repeats the control |
+| SEAT-EXP-3.2 | `catch_reach_replay.py --self-check` | **`SELF-CHECK: FAIL (1 case(s))`, exit 1, and the single `BAD` line reads exactly `planner._CATCH_TILT_THROUGH_RATE_RADPS: production 0.07 != mirrored 0.0`** (9 of 10 cases `OK`) | any *other* `BAD` row, or `PASS`. **`PASS` here is the ABORT**: it means the tree is still at `0.0` |
+| SEAT-EXP-3.3 | `peak_leg_acc_mmps2` / `peak_leg_jerk_mmps3` on a **reload catch install**, from `/trajectory/diagnostics` **in the first experiment-block bag** | `≈ 142` / `≈ 3935` | still `≈ 38` / `≈ 170` ⇒ the relaunch did not pick up the rebuild. **`0.0 / 0.0` is NEITHER** — see the note below; re-read, do not score it. **These are the same two numbers § CHECK ZSEAT-2 uses, read the other way round** — there they are the PASS for the zero seat, here they are the PASS for the flip |
+| SEAT-EXP-3.4 | **REPORT ONLY, not a gate.** Commanded tilt over the last 0.8 s before landing (FK of `/leg_setpoint_echo`) — same invocation and the same `--t0/--t1` origin caveat as § CHECK ZSEAT-2's flatness row: `levelling_tilt_bag_check.py --t0 <landing−0.8> --t1 <landing> --plateau-min-s 0.1 --plateau-tol 1.0`, read `span_deg` | expect roughly **`0.9°`** of round trip — the rim is moving through the seat. Record whatever you get | — (do not abort on this row; `3.1` and `3.2` are the decisive reads) |
+
+> **Not a segment count.** An earlier draft of `SEAT-EXP-3.3` asked for "3
+> segments vs 2" — which the 2026-07-27 sitting had already recorded as **not
+> scorable from a bag** (`CCATCH-2` row 4: all observables consistent with 2, the
+> count itself unreadable). The two rows above are the same distinction expressed
+> in quantities a bag actually carries.
+>
+> **`SEAT-EXP-3.3` must be read from the BAG, and most messages on that topic are
+> zeros.** Do not reach for `ros2 topic echo /trajectory/diagnostics --once` (the
+> idiom this file uses elsewhere): of the 209 distinct `move_seq` values on that
+> topic during the 2026-07-27 sitting, **exactly 18 carried a non-zero
+> `peak_leg_vel_mmps` — the other 191 read `0.0`**, because report-less installs
+> publish zeros. A `--once` echo has a ~91 % chance of landing on one of those and
+> returning `0.0 / 0.0`, which matches neither the PASS nor the ABORT. Read the
+> topic **out of the experiment-block bag** and take the last message with
+> `peak_leg_vel_mmps > 0` before the first ball arrival — that is the reload
+> pre-tilt reach, which is the install this row is about. This file does not yet
+> carry a verified one-liner for that extraction; the 2026-07-27 sitting did it
+> offline, and inventing an unverified command here is precisely how
+> `§ CHECK LVL-4` and `FW-1` broke.
+>
+> **Why `SEAT-EXP-3.4` is REPORT and not a gate.** Its `≈ 0.9°` is *derived*, not
+> measured: nobody has yet run hardware at `0.07`. The value follows from the
+> pre-tilt republish path — `_republish_pretilt` re-asserts on every `/balls`
+> tick, the reach-freeze releases at `arrival + catch_settle_hold_s`, and each
+> post-release republish installs a degenerate (seed == target) reach that at
+> `0.07` manufactures ~`0.79°` of wrong-side excursion plus ~`0.30°` of settle
+> overshoot inside the window. That reasoning is sound but unvalidated on
+> hardware, and an offline single-plan rebuild that ignores the republish gives a
+> materially different span (2–4°), so the two models disagree about the *window*
+> even though they agree the tilt stops being flat. The zero-seat side IS measured
+> (`span_deg = 0.0000`). Gating a deployment check on the derived half of that
+> pair risks failing a correct deployment, so this row records and does not abort.
+
+> **`SEAT-EXP-3.2` is deliberately an inverted row and is the only one in this
+> file.** The probe's case 7 mirrors the shipped `0.0`, so a self-check FAIL
+> naming that one constant is *positive confirmation the flip deployed*. It is
+> also why the flip must be reverted before anything else in this file is run:
+> row `INST-1` treats any `BAD` as an ABORT, and it is right to.
+
+> **Expected red tests while the tree is flipped.** `pytest` is not part of a
+> sitting, but if you run it: **exactly 6** tests pin the shipped zero seat and
+> go red at `0.07` — `test_self_check_passes`,
+> `test_self_check_catches_a_moved_production_constant`,
+> `test_catch_reaches_pose_and_ends_at_rest`,
+> `test_the_shipped_catch_is_reach_plus_quiescent_hold`,
+> `test_the_shipped_default_manufactures_nothing_but_still_obeys_a_caller`,
+> `test_dynamic_target_tilted_catch_is_stationary_at_the_shipped_default`
+> (measured 2026-07-28 over the nine catch-touching test files: 251 passed,
+> 6 failed; the same set reads 257 passed at `0.0`). That is the tree telling the
+> truth about a deliberate temporary state. **All six must be green again after
+> `SEAT-EXP-8`** — that is the revert's own check.
+
+### Scoring
+
+Three independent readings per attempt. They are ranked, and the ranking matters:
+
+1. **The operator's eye — PRIMARY.** `caught` / `bounced out` / `missed arrival`
+   for every ball, written down at the time. The 2026-07-27 sitting had to
+   reconstruct this from traces afterwards and two of three classifications rested
+   on inference; the testimony that arrived a day later is what settled them.
+   Do not re-run that. **A bounce-out and a missed arrival are different events**
+   and must be recorded separately: a bounce-out is evidence about the rim, a
+   missed arrival is evidence about BB scatter and is *excluded from the
+   numerator*.
+2. **Arrival offset — the matched-arrival half.** Both blocks, same command:
+
+   **Record ONE BAG PER ARM.** This is a hard requirement, not a convenience,
+   and it is the difference between a scorable sitting and a silently mixed one.
+
+   ```bash
+   source ~/Desktop/PDJ_venv/venv/bin/activate
+   # one invocation per arm, each bag scored on its own
+   python tools/probes/ball_arrival_offset.py --bag ~/Desktop/rosbags/<CONTROL_BAG> --csv
+   python tools/probes/ball_arrival_offset.py --bag ~/Desktop/rosbags/<EXPERIMENT_BAG> --csv
+   # then, to get the MATCHED-ARRIVAL CHECK and the pooled sd that SEAT-EXP-6
+   # and 7.1 read, score both arms in ONE invocation over a combined capture:
+   python tools/probes/ball_arrival_offset.py --bag ~/Desktop/rosbags/<BAG> \
+       --discard 8 --group CONTROL=9-20 --group EXPERIMENT=21-32 --csv
+   ```
+
+   > **Why per-arm bags, and why the `--group` ranges above are a trap if you
+   > copy them blind.** `--group` selects on the probe's **attempt index**, and
+   > that index counts `/throw_announcements` messages — *every* announcement,
+   > including ones that never produce a scoreable ball. On the 2026-07-27
+   > reference capture **4 of 18 announcements yielded `NO TRACK`**, and the
+   > sitting independently records two Ball-Butler throws aborting
+   > (`THROW_ABORTED_NOT_SETTLED`, `PV_STALE`) so no ball ever left. Both are
+   > currently-open, recurring BB failures. So "the 12 reloads I threw in the
+   > control block" and "attempts 9–20" are **not the same set**: two BB refusals
+   > during CONTROL push its last two real balls to indices 21–22, and the pasted
+   > `EXPERIMENT=21-32` then scores them into the wrong arm. `SEAT-EXP-6`'s
+   > matched-mean check and `SEAT-EXP-7.1`'s pooled sd are computed on mixed
+   > arms, CONTROL reads `n=10` and trips `SEAT-EXP-5`, and a sitting with 24
+   > good throws in it scores INCONCLUSIVE.
+   >
+   > With one bag per arm the boundary is physical rather than counted, and the
+   > indices restart at 1 in each bag. **Then `--discard` applies only to the
+   > burn-in bag** — do not carry `--discard 8` onto a blocks-only bag, it would
+   > silently drop the first 8 CONTROL throws. If you do combine both arms into
+   > one bag to get the matched-arrival line, derive the ranges from the printed
+   > per-attempt table (each row carries its landing time) against the wall-clock
+   > time of the flip — never from a count of balls thrown.
+   >
+   > `--discard` only excludes attempts from the statistics; it still prints them.
+   Instrument acceptance first, no bag needed:
+   `python tools/probes/ball_arrival_offset.py --self-check` ⇒ `SELF-CHECK: PASS`.
+3. **Possession verdicts — REPORT.** Live since `463a031` (contract
+   **C-POSSESS-1**):
+
+   ```bash
+   python tools/probes/possession_verdict_bag_check.py --bag ~/Desktop/rosbags/<BAG>
+   ```
+   Expect **0 CAUGHT on the reload path** and that is *correct* — the reload
+   tracks are split tracks fed by the wrong marker, so the gate refuses to mint a
+   verdict from them (standing rule 3, § SECTION POSS). This row is here to
+   confirm the refusal is still clean, **not** to supply the numerator. Any
+   *self-toss* in the sitting reading `MISSED` on a watched catch is a finding.
+
+| # | quantity | PASS / REPORT | ABORT |
+|---|---|---|---|
+| SEAT-EXP-4 | `ball_arrival_offset.py --self-check` before scoring | `SELF-CHECK: PASS`, exit 0, **no `BAD` lines** | any `BAD` ⇒ the instrument is not trustworthy; do not score |
+| SEAT-EXP-5 | attempts per arm | **≥ 12** scored in each of CONTROL and EXPERIMENT | fewer ⇒ see the decision rule; the answer is INCONCLUSIVE, not "no difference" |
+| SEAT-EXP-6 | **arms are MATCHED** — read the probe's `SEAT-EXP-6 wants gap <= …` line, which computes this against the arms' own noise | gap **≤ max(5 mm, 2·se)** where `se` is the standard error of the *difference of means*, and BOTH means inside the band (−15…−5 mm) | wider ⇒ the arms are confounded by aim, exactly like the last sitting. Report both means and score INCONCLUSIVE |
+| SEAT-EXP-7.1 | within-block spread | pooled sd reported; expect **~9–11 mm** (2026-07-27 measured 9.0 mm at the plateau, 11.4 mm over the whole session) | a much larger sd ⇒ the BB is not settled; the burn-in gate was passed too early |
+| SEAT-EXP-7.2 | leg peaks on the `0.07` block | within session limits; expect ~`24 / 142 / 3935` against `1000 / 5000 / 30000` | any `MAX_DEVIATION` latch, guard trip or overspeed E-STOP ⇒ **abort the block and revert immediately** |
+
+> **Why `SEAT-EXP-6` is not a flat 5 mm.** A fixed absolute threshold is not a
+> statement about whether two blocks match — it is a statement about millimetres,
+> and it fires on correct behaviour at this experiment's own numbers. At the
+> expected pooled sd of 9–11 mm with `n = 12` per arm, the standard error of the
+> difference of means is `s·√(2/12)` = **3.7 mm at s = 9.0** and **4.7 mm at
+> s = 11.4**. A 5 mm gate is therefore only `1.4` and `1.1` standard errors out,
+> so **two blocks flown at genuinely identical aim exceed it about 17 % and 28 %
+> of the time**. That would ABORT a correct experiment roughly once every four to
+> six sittings — the same "criterion that fires on correct behaviour" defect that
+> got the burn-in gate rewritten from *successive change < 10 mm* to a trend
+> slope, and the reason this row is expressed against its own noise instead. The
+> `max(5 mm, …)` floor keeps the gate from becoming vacuous if the sd comes in
+> unexpectedly small. The probe prints the gap in mm, in standard errors, and the
+> resulting `MATCHED` / `NOT MATCHED` verdict, so runbook and instrument express
+> the question in the same quantity.
+
+### THE DECISION RULE — pre-registered, 2026-07-28, before the sitting
+
+Written down in advance so the outcome cannot be argued after the fact. `k0` =
+bounce-outs in the CONTROL (`0.0`) block, `k1` = bounce-outs in the EXPERIMENT
+(`0.07`) block, both out of `n = 12` scored attempts, missed-arrivals excluded
+from both numerator and denominator.
+
+**The honest power, computed rather than asserted** — two-sided Fisher exact,
+α = 0.05, n = 12 per arm. Reproduce the whole table in a few seconds:
+
+```bash
+source ~/Desktop/PDJ_venv/venv/bin/activate
+python - <<'PY'
+from math import comb
+def fisher(a,b,c,d):
+    n1,n2,k = a+b, c+d, a+c
+    p=lambda i: comb(n1,i)*comb(n2,k-i)/comb(n1+n2,k)
+    return sum(p(i) for i in range(max(0,k-n2), min(k,n1)+1)
+               if p(i) <= p(a)*(1+1e-12))
+n=12
+for k0 in range(n+1):
+    hit=[f'k1={k1} p={fisher(k0,n-k0,k1,n-k1):.3f}'
+         for k1 in range(k0) if fisher(k0,n-k0,k1,n-k1) < 0.05]
+    if hit: print(f'k0={k0:2d}: ' + ', '.join(hit))
+PY
+```
+
+| `k0` (seat `0.0`) | smallest `k1` that is decidable | p |
+|---|---|---|
+| 5 | 0 | 0.037 |
+| 6 | 0 | 0.014 |
+| 7 | 0 or 1 | 0.005 / 0.027 |
+| 9 | ≤ 3 | ≤ 0.039 |
+
+**So at n = 12 per arm this sitting can decide only a LARGE effect** — the zero
+seat must bounce out **at least 5 of 12** while the seat arm bounces out **none**.
+`5 vs 1` is *not* decidable (p > 0.05). That is a property of n, not of the seat,
+and it is why `SEAT-EXP-2.2`'s marginal band is mandatory: in the marginal regime
+the last sitting measured `p0 ≈ 3/4` — 3 bounce-outs in the 4 attempts that
+arrived at `x@1000 ≥ −15 mm`, so treat it as an order of magnitude and not an
+estimate — which would put `k0 ≈ 9` and make the test comfortably powered; at the plateau `p0 ≈ 0` and nothing is decidable at any n
+this sitting can reach. Going to `n = 19` per arm buys almost nothing (it moves
+the `k0 = 5 vs k1 = 0` cell from p 0.037 to 0.046) — **offset, not sample size,
+is the lever.**
+
+| outcome | verdict | action |
+|---|---|---|
+| `SEAT-EXP-6` fails (arms not matched, or outside the marginal band) | **INCONCLUSIVE** | shipped default stays `0.0`. Record both block means. Do NOT report "no difference" |
+| `(k0, k1)` appears in the table above (seat arm better, p < 0.05) | **SEAT DEMONSTRATED** | flip `trajectory_op.catch_seat_rate_radps` to `0.07` as the shipped default, in its own commit with its own logbook entry. C-CATCH-1 already bounds it (`0.200047 rad/s` at the reload geometry, so `0.07` is unclipped) |
+| `k1 ≥ 5` and `k0 = 0` (p < 0.05, seat arm **worse**) | **SEAT HARMFUL** | shipped default stays `0.0`, and this closes the bb-sim deflection premise on hardware. Record it — it is as valuable as the positive result |
+| anything else, including `0 vs 0` | **INCONCLUSIVE** | shipped default stays `0.0`. Say plainly that the sitting was underpowered for the effect it saw, and what `k0` it would have needed |
+
+**No result of this experiment changes `planner.py`.** Every branch is a YAML
+value plus a rebuild.
+
+#### CHECK SEAT-EXP-8 — revert (mandatory, stage 6)
+
+**Run this before the machine is left, whatever the verdict** — unless the
+verdict was SEAT DEMONSTRATED *and* the operator has decided to ship `0.07`, in
+which case the flip lands as a reviewed commit, not as a leftover working-tree
+edit.
+
+```bash
+# 1. edit config/hardware_config.yaml -> catch_seat_rate_radps: 0.0
+source ~/Desktop/PDJ_venv/venv/bin/activate
+python config/generate_config.py
+git diff --stat                          # expect ONLY the seat-rate line + generated
+cd ros_ws && colcon build --packages-select jugglebot && cd ..
+# 2. RELAUNCH.
+# 3. re-run SEAT-EXP-1 — all three rows must PASS again.
+python -m pytest tests/motion/test_trajectory_planner_catch.py \
+                tests/motion/test_catch_reach_replay_probe.py \
+                tests/ros/test_trajectory_node.py -q
+```
+
+| # | quantity | PASS | ABORT |
+|---|---|---|---|
+| SEAT-EXP-8.1 | `SEAT-EXP-1.1/1.2/1.3` re-run | all three PASS | any failure ⇒ the revert is incomplete; **do not leave the machine** |
+| SEAT-EXP-8.2 | the three test files above | green | the 6 expected-red tests are still red ⇒ the regenerate was skipped |
+| SEAT-EXP-8.3 | `git status` | no stray edits outside `config/hardware_config.yaml` and the generated consumers | anything else ⇒ somebody edited source at the bench, which the config key exists to prevent |
+
+### Not in this section
+
+- **Changing what a catch commands beyond the seat rate.** The reach shape, the
+  0.15 s decay, `hold_after`, the settle hold and C-CATCH-1's bound are all
+  untouched. The only variable is the fallback rate.
+- **Fixing the BB warm-up drift.** The burn-in *works around* it; it does not
+  explain or fix it. If the drift is worth removing, that is Ball-Butler work.
+- **The tracker's split-track corruption**, which is why the reload `outcome`
+  cannot supply the numerator. Separate open investigation.
+- **The hand's end-stop margin above ~0.8 m throws.** Unrelated to the reload
+  path this section exercises, but it is the other thing the last sitting said
+  should stop a future one — see § RESIDUAL RISK before adding tosses to this
+  sitting.

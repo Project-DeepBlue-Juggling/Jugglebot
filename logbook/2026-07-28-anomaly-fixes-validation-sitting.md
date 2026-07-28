@@ -291,6 +291,22 @@ marginality: **attempt 3 dropped at `x = −10.7` and attempt 4 caught at
 `x = −14.5` — 3.8 mm apart**, so the capture-basin edge sits exactly where the
 warm-up excursion was crossing.
 
+> **CORRECTION, 2026-07-28 (added by the Phase-C seat-experiment-prep session; the
+> conclusion above is unchanged and if anything strengthened).** The `−10.7` /
+> `−14.5` pair does not reproduce. Re-scored with a defined, deterministic
+> estimator — `tools/probes/ball_arrival_offset.py`, which did not exist when this
+> entry was written and which reproduces this sitting's *other* published arrival
+> numbers to 0.6 mm — the two attempts read **`−11.507` and `−11.525`: 0.02 mm
+> apart, i.e. the same offset**. The original pair came from an ad-hoc fit whose
+> window was not recorded, and attempt 3 is this capture's sparsest track (3
+> samples, all above `z = 1100`), so it is the value most sensitive to that choice.
+> The basin edge is therefore **degenerate, not merely narrow** — a drop and a
+> catch at the *same* measured arrival offset — which makes the "cannot be
+> separated from this capture" verdict below stronger, not weaker. It also means
+> **no absolute number from this hand analysis may be used as a gate**: the
+> follow-on A/B is scored strictly within one sitting, both arms by that probe.
+> See `logbook/2026-07-25-seat-experiment-prep.md`.
+
 This capture contains **no throws at ~+30 mm offset with a non-zero seat**, so the
 two hypotheses cannot be separated from it.
 
