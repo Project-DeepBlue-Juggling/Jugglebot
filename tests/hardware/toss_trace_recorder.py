@@ -142,11 +142,24 @@ TERMINAL_STATUSES = (STATUS_SUCCEEDED, STATUS_CANCELED, STATUS_ABORTED)
 # block followed by _step_checking (kept name-keyed, not line-keyed: a
 # line-numbered reference rots on the first unrelated edit above it).
 REJECT_WIRE_MAP = {
-    'REJECTED_TIER': 'goal/config: JB_OP_TOSS_TIER must be 8a',
+    'REJECTED_TIER': 'goal/config: JB_OP_TOSS_TIER must be 8a or 8b '
+                     '(shipped default: 8b since 2026-07-28 — do NOT "fix" this '
+                     'by reverting the default; a tier outside {8a, 8b} means the '
+                     'YAML or the INSTALLED copy is wrong)',
     'REJECTED_CANT_MAKE_LEAD': 'goal: throw_delay_s below the 3.5 s floor',
     'REJECTED_FLIGHT_TIME': 'goal: flight_time_s outside [0.55, 1.10] s',
+    'REJECTED_DISPLACEMENT': 'goal (Tier 8b only): |B - A| from the config throw '
+                             'site exceeds the 70 mm cap, or exceeds the '
+                             'closed-form reach bound for this flight time '
+                             '(256 mm at T=0.80 s, 83 mm at T=0.55 s). Under 8b '
+                             'this gate answers BEFORE the workspace box, so a '
+                             'far-lateral goal reports DISPLACEMENT, not WORKSPACE',
+    'REJECTED_TILT_CLAMP': 'goal (Tier 8b only): the aim required to reach B from '
+                           'the throw site exceeds the platform tilt ceiling',
     'REJECTED_EVENT_VEL': 'goal: event_vel outside the Teensy [0.3, 7.0] m/s band',
-    'REJECTED_WORKSPACE': 'goal: catch pose outside |x|,|y|<=150 mm / z 170+-50 mm',
+    'REJECTED_WORKSPACE': 'goal: catch pose outside |x|,|y|<=150 mm / z 170+-50 mm. '
+                          'Under Tier 8b from throw site (0,0) the LATERAL half is '
+                          'unreachable (the 70 mm cap answers first) — check z',
     'REJECTED_WRONG_MODE': 'control_mode_topic is not TRAJECTORY '
                            '(robot not armed into the streaming hold)',
     'REJECTED_MOCAP_STALE': 'rigid_body_poses stale (QTM / mocap_node)',

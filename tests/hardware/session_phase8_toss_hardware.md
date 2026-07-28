@@ -129,6 +129,37 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 ```
 - `catch_position` — nominated catch point, **mm, STOW-relative** (z 170 = ACTIVE
   plane); Tier 8a throws and catches at the same (x, y).
+
+> ### ⚠️ TIER: THE SHIPPED DEFAULT IS `8b` SINCE 2026-07-28 — READ BEFORE T0
+>
+> `jugglebot_operational.toss_tier` was flipped `"8a" → "8b"` on 2026-07-28 (operator
+> decision on the T4 evidence below; see
+> [`logbook/2026-07-28-toss-tier-8b-default.md`](../../logbook/2026-07-28-toss-tier-8b-default.md)).
+> **T0–T3 below were written for Tier 8a and their PASS criteria describe 8a
+> behaviour.** They do not self-select a tier — the tier comes from the build — so on
+> a default build they run the **8b** choreography while the prose claims 8a:
+>
+> - the platform pre-positions **tilted at the config throw site `A = (0, 0)`**, not
+>   level at the nominated catch `(x, y)`;
+> - the throw is **tilt-aimed** at the displaced catch;
+> - the A→B platform reach is **deferred to `t_release`**, i.e. it happens in flight.
+>
+> `T0`, `T1` and `T2` all nominate `(0, 0)`, so `|B − A| = 0` and the *release* is
+> bitwise identical to 8a — but `catch/pretilt_hold` is still raised and a 0 mm
+> deferred reach is still published, and **that co-located 8b path has never run on
+> hardware** (every one of the 11 validated T4 throws was displaced). Row `TIER-D` of
+> [`session_anomaly_fixes.md`](session_anomaly_fixes.md) § SECTION TIER scores it, and
+> that file runs first. **`T3` is the
+> one that changes materially**: its ±60 mm corners are inside the 70 mm cap, so they
+> are **ACCEPTED as 8b displaced throws** — its stated purpose ("the POSITIONING move
+> to the nominated x, y") does not happen at all.
+>
+> **Choose one before starting, and record which:**
+>
+> | | how | consequence |
+> |---|---|---|
+> | **(A) Run T0–T3 as written** | set `toss_tier: "8a"` in `config/hardware_config.yaml`, `python config/generate_config.py`, `colcon build --packages-select jugglebot`, relaunch. Flip back to `8b` before T4 (same four steps) | The rungs mean what they say. Costs two rebuilds. **This is the default choice** — T0–T3 are a Tier-8a capability ladder and scoring them against 8b behaviour measures nothing |
+> | **(B) Run everything on the 8b default** | change nothing | T0–T2 are still valid (`\|B − A\| = 0`). **Do NOT run T3's `(0, +60)` corner**: it is an un-gated 8b displaced throw into the `+y` hemisphere that the Phase-4 asymmetry map flags weak, at `T ≈ 0.70 s`, below the `T ≥ 0.80 s` that T4 itself stipulates for displaced throws. Re-score the other three corners against T4's criteria, not T3's |
 - `throw_height_m` — apex height of the ball above release, **metres**. `0` ⇒ config
   default (~0.78 m). `throw_delay_s`/`catch_vel_scale` omitted ⇒ defaults (5.0 s / 0.8).
 - Feedback phases: `CHECKING → POSITIONING → PREPARING → THROWING → BALL_IN_FLIGHT →
@@ -196,7 +227,14 @@ Repeat T1 at rising heights: **0.6 → 1.0 → 1.48 m** (T ≈ 0.70 → 0.90 →
 
 ## T3 — toss-at-position (workspace corners)
 
-Fixed height 0.6 m, catch at the four ±60 mm corners (throw = catch site, Tier 8a):
+> **TIER-SENSITIVE — this rung means nothing on an 8b build.** Under the shipped `8b`
+> default a ±60 mm corner is a *displaced* throw (60 mm is inside the 70 mm cap), so
+> the platform pre-tilts at `(0, 0)` and never makes the POSITIONING move this rung
+> exists to exercise. Run it under option **(A)** (an 8a build) or skip it — and under
+> option (B) do not run the `(0, +60)` corner at all. See § TIER above.
+
+Fixed height 0.6 m, catch at the four ±60 mm corners (throw = catch site, Tier 8a
+**build required**):
 ```bash
 # e.g. +x corner; repeat for (-60,0), (0,60), (0,-60)
 ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
@@ -207,9 +245,16 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 ## T4 — Tier 8b displaced throw→catch (LAST; gated)
 
-**Only after** Phase 4's gate AND the 8b dry-trace addendum (plan § Phase 4 note (d):
-confirm `pretilt_hold` reaches `catch_coordinator` before the announcement). Enable
-8b in config (`toss_tier: "8b"`, + colcon build + relaunch). Displaced A→B: the shipped
+**GATE SATISFIED 2026-07-27** — Phase 4's gate and the 8b dry-trace addendum (plan
+§ Phase 4 note (d): `pretilt_hold` reaches `catch_coordinator` before the
+announcement) both cleared at that sitting, where **11/11 displaced throws were
+accepted out to the 70 mm cap** with the deferred reach firing correctly on every
+one. That is why 8b is now the shipped default; the "LAST; gated" ordering below is
+kept because the rungs still build on each other, not because the tier is withheld.
+**`toss_tier: "8b"` is already the default — the old "enable 8b in config" step is a
+no-op** unless you took option (A) above, in which case flip it back (`toss_tier:
+"8b"`, `python config/generate_config.py`, colcon build, relaunch) **before** this
+rung. Displaced A→B: the shipped
 gate caps displacement at **70 mm**; per the Phase-4 asymmetry map, aim into the
 **−y hemisphere or −x** at **T ≥ 0.80 s** (height ≥ ~0.78 m):
 ```bash

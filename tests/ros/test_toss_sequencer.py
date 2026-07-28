@@ -870,9 +870,23 @@ def test_tier_constant_matches_config():
     """The FSM's serviceable tier MUST mirror the generated config gate
     (jugglebot_operational.toss_tier → JB_OP_TOSS_TIER) — the coordinator
     passes the config value to the ctor, and a drifted default would either
-    reject every goal or silently serve an unimplemented tier."""
+    reject every goal or silently serve an unimplemented tier.
+
+    CHANGE HISTORY (the value is a deliberate operator decision, not a
+    convention — so the guard records which default it is pinning and why):
+    shipped '8a' from the plan's Phase 1 through 2026-07-27. Tier 8b landed
+    behind this same key at Phase 4 (2026-07-25) and was hardware-validated at
+    the 2026-07-27 sitting — T4, displaced throw→catch at the 70 mm cap — after
+    which the operator made 8b the DEFAULT (2026-07-28), because the
+    displaced-throw feature work builds on it. Evidence and verdicts:
+    logbook/2026-07-28-anomaly-fixes-validation-sitting.md.
+
+    The guard's PURPOSE is unchanged by that flip: config and constant must not
+    drift apart silently. It is deliberately pinned to ONE value rather than to
+    the {8a, 8b} serviceable set, because a set membership test would stay green
+    through an accidental revert of the shipped default."""
     from jugglebot.hardware_config import JB_OP_TOSS_TIER
-    assert JB_OP_TOSS_TIER == TIER_8A
+    assert JB_OP_TOSS_TIER == TIER_8B
 
 
 def test_local_constants_match_generated_config():

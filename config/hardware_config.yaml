@@ -536,13 +536,19 @@ jugglebot_operational:
                                          # TIMING stays tracking-driven; only
                                          # the platform reach is frozen to the pre-tilt. False = pre-open-loop
                                          # reactive-platform behaviour.
-  toss_tier: "8a"                        # Serviceable Toss.action capability tier (single-ball-toss plan).
+  toss_tier: "8b"                        # Serviceable Toss.action capability tier (single-ball-toss plan).
                                          # '8a' = toss-at-position: platform pre-positions LEVEL at the
-                                         # nominated catch (x, y), throw site = catch site. Tier 8b
-                                         # (tilt-aimed displaced throw→catch) is REJECTED_TIER until the
-                                         # plan's Phase 4 lands behind this same key. Config-only gate: the
-                                         # locked Toss.action goal carries no tier field, so the plan's
-                                         # "per-goal override" is deferred to Phase 4.
+                                         # nominated catch (x, y), throw site = catch site. '8b' =
+                                         # tilt-aimed displaced throw→catch: pre-tilt at the config throw
+                                         # site A (toss_throw_site_mm), launch aimed at the displaced catch
+                                         # B, deferred A→B reach at t_release, |B−A| capped at 70 mm.
+                                         # BOTH are serviceable; anything else is REJECTED_TIER.
+                                         # DEFAULT was '8a' until 2026-07-27. 8b landed behind this key at
+                                         # the plan's Phase 4 and was hardware-validated at the 2026-07-27
+                                         # sitting (T4, at the 70 mm cap), so the operator made it the
+                                         # default — the displaced-throw feature work builds on it.
+                                         # Config-only gate: the locked Toss.action goal carries no tier
+                                         # field, so a per-goal override stays a goal-schema question.
   toss_release_latency_ms: 0.0           # JB hand command→release latency {ms} for the toss throw stroke:
                                          # the dispatch is shifted EARLY by this while the announced landing
                                          # stays un-shifted (the BB pattern). RESERVED at 0.0 — the BB-side

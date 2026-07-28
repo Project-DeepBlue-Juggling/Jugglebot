@@ -152,7 +152,7 @@ namespace JBOp {
   constexpr float HAND_RETRACT_REV = 0.0f;
   constexpr float CATCH_VEL_SCALE_DEFAULT = 0.8f;
   constexpr bool RELOAD_PLATFORM_OPEN_LOOP = true;
-  constexpr const char* TOSS_TIER = "8a";
+  constexpr const char* TOSS_TIER = "8b";
   constexpr float TOSS_RELEASE_LATENCY_MS = 0.0f;
   constexpr float TOSS_FLIGHT_TIME_DEFAULT_S = 0.8f;
   constexpr float TOSS_THROW_SITE_MM[2] = {0.0f, 0.0f};

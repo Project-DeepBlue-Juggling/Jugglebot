@@ -242,6 +242,7 @@ def test_toss_deadline_never_lands_inside_the_flight_window():
     ('track_active', 'REJECTED_TRACK_ACTIVE'),
     ('delay_floor', 'REJECTED_CANT_MAKE_LEAD'),
     ('flight_band', 'REJECTED_FLIGHT_TIME'),
+    ('displacement', 'REJECTED_DISPLACEMENT'),
     ('workspace', 'REJECTED_WORKSPACE'),
 ])
 def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
@@ -254,7 +255,35 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     / F7 phantom-track correlation hole / an un-levelled launch drifting 43 mm
     against a ~35 mm cup). NOT_LEVELLED has two wires — the applier says it
     holds no correction, or the applier stopped saying anything — and both must
-    refuse."""
+    refuse.
+
+    GATE ORDER, and why the two envelope rows read the way they do. This
+    enumeration runs at the SHIPPED config tier, which became '8b' on
+    2026-07-28. Under 8b the displaced-throw gates (toss_sequencer's CHECKING
+    block: the |B − A| cap, then the closed-form reach bound) run BEFORE the
+    workspace box — documented-in-code and intended, because a cap-rejected
+    goal has no valid tilted release state and so no meaningful event_vel to
+    check. Consequences, measured through this very path on 2026-07-28 (a
+    throw-away probe drove _execute_toss over a coordinate sweep; results are
+    the ground truth quoted here, not inferred from reading the gate):
+
+      x=200 → REJECTED_DISPLACEMENT   (this row read WORKSPACE under 8a)
+      x=80  → REJECTED_DISPLACEMENT   x=71 → REJECTED_DISPLACEMENT
+      x=70  → passes CHECKING         (the 70 mm cap is `>`, so 70 is legal)
+      z=221 → REJECTED_WORKSPACE      z=220 → passes (the ±50 band is `>` too)
+
+    So under 8b with the shipped throw site A = (0, 0), the workspace box's
+    |x|,|y| ≤ 150 mm half is STRUCTURALLY UNREACHABLE through this path: the
+    70 mm displacement cap is strictly tighter than the 150 mm box, so any goal
+    that could violate the box laterally is rejected as DISPLACEMENT first. The
+    z band is the only reachable WORKSPACE branch, and the row is built as
+    x=60 (a LIVE displacement, inside the 70 mm cap and the 256 mm reach bound
+    at T=0.8 s, so the 8b gates genuinely run and pass) plus z=300 (|z − 170| =
+    130 mm, past the ±50 mm band). A zero-displacement variant would reach the
+    same branch while proving less — it would still pass if the cap collapsed
+    to zero and took every real displaced goal with it. The lateral half of the
+    box keeps its coverage at FSM level, tier-agnostic, in
+    test_toss_sequencer.py::test_workspace_precheck_rejected."""
     now = time.perf_counter()
     node = _toss_ready_node(now)
     gh = _TossGoalHandle()
@@ -287,8 +316,13 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
         gh = _TossGoalHandle(delay=2.0)
     elif breakage == 'flight_band':
         gh = _TossGoalHandle(throw_height=0.2)   # →0.404 s, below the flight band
-    elif breakage == 'workspace':
+    elif breakage == 'displacement':
+        # 200 mm from the config throw site A = (0, 0): past the 70 mm cap.
         gh = _TossGoalHandle(x=200.0)
+    elif breakage == 'workspace':
+        # Displacement 60 mm PASSES the 8b gates (cap 70 mm; reach bound 256 mm
+        # at T = 0.8 s), then the ±50 mm z band rejects at |z − 170| = 130 mm.
+        gh = _TossGoalHandle(x=60.0, z=300.0)
     result = node._execute_toss(gh)
     assert result.success is False
     assert result.outcome == expected
