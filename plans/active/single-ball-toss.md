@@ -708,7 +708,7 @@ the file was the single-package command. All 20 were swept —
 
 **Verification.** `python tools/probes/toss_trace_synth.py --all --verify`, run
 2026-07-29: **30/30 cases OK, matrix CLEAN** (RED at HEAD on `viol_dt7`). Full
-suite: `pytest tests/ -q`, run 2026-07-29 on the Jetson in the project venv (07:47:07 -> 08:11:09): **4254 passed, 3 xfailed, 198 warnings in 1435.48 s (0:23:55)**, exit 0 — **4254 passed, 3 xfailed in 1435.48 s (0:23:55)** (+114 on the `3332bc6` baseline of 4140 — accounted EXACTLY: `--collect-only` reports 70 tests in `test_toss_session.py` and 44 in `test_toss_continuous_node.py`, both new files; xfail unchanged at 3, so no test was weakened to reach green). Commits: **COMMITSHERE**. Logbook:
+suite: `pytest tests/ -q`, run 2026-07-29 on the Jetson in the project venv (07:47:07 -> 08:11:09): **4254 passed, 3 xfailed, 198 warnings in 1435.48 s (0:23:55)**, exit 0 (+114 on the `3332bc6` baseline of 4140 — accounted EXACTLY: `--collect-only` reports 70 tests in `test_toss_session.py` and 44 in `test_toss_continuous_node.py`, both new files; xfail unchanged at 3, so no test was weakened to reach green). Commits: **`5e8db9a`** (the single logical unit: the action, the FSM, the node extraction, the finalize fixes, the instrument, and the narrative docs). Logbook:
 `logbook/2026-07-25-toss-continuous-action.md`.
 
 **Operator handoff, deferred in full.** Nothing in this phase has run on hardware.
