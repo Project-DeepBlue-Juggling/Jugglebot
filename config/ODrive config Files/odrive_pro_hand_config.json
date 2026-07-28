@@ -301,7 +301,7 @@
     "gpio17_mode": 17,
     "gpio18_mode": 17,
     "gpio1_mode": 17,
-    "gpio2_mode": 17,
+    "gpio2_mode": 1,
     "gpio3_mode": 17,
     "gpio4_mode": 17,
     "gpio5_mode": 17,
