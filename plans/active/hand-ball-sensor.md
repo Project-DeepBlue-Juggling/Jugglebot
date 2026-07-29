@@ -25,8 +25,8 @@ implementation (`SOURCE_HAND_BALL_SENSOR`), the `toss_require_ball_evidence`
 flip, the post-release-decel work, and the end-stop anchor question are owned
 elsewhere (§ Notes for collaborators → Out of scope). Design approved by the
 operator 2026-07-28; the ODrive-side pin config is already flashed and
-NVM-persisted (recorded in commit `64d2a8f`); no sensor code exists yet
-(Phase 0's fw-version instrumentation aside — `aa14098`).
+NVM-persisted (recorded in commit `64d2a8f`); sensor code has landed
+through Phase 4 — see the phase table for per-phase status.
 
 ## Context
 
@@ -223,7 +223,7 @@ Phase 7 measurement, not a blocker.
 | 1 | `jugglebot_ball_detect` YAML block + codegen + `gpio2_mode` drift test | repo (+ regenerated headers in BallButler's tree) | done (`2b3ab78`; JSON record `64d2a8f`) |
 | 2 | Endpoint-id contract: (board, fw)-qualified ids; 726; consumer migration incl. BallButler + native-golden regen | repo (incl. `tests/firmware/native/` golden) + BallButler lockstep commit | done (`386ade5`; BB `93a91fb`+`334af82`) |
 | 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | done (`7dc347f`; NOT flashed) |
-| 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | pending |
+| 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | done (`6cc38f7`; NOT flashed) |
 | 5 | ROS surface: `/hand_telemetry` fields + `/link_status` KeyValue + RX-age gate | Jetson (colcon) | pending |
 | 6 | GUI ball-in-hand pill + `tests/hardware/session_hand_ball_sensor.md` runbook | Jetson (static files) | pending |
 | 7 | Hardware commissioning: raw-word toggle gate, SDO RTT, soak | operator-run | pending |
@@ -484,8 +484,9 @@ Phase 0's "Live confirmation on powered hardware is Phase 7 step 1").
 
 New `Message("HandSensor", "HAND_SENSOR", ...)` in
 `config/generate_udp_protocol.py`, id **0x8B** — the next free slot in the
-reserved 0x89–0x8F telemetry block (`generate_udp_protocol.py:162-166`;
-update that block's owner comment). Payload (packed, 14 B):
+reserved 0x89–0x8F telemetry block (`generate_udp_protocol.py:163-168` as of
+`6cc38f7`; the block's generic owner comment needed no change — the enum
+entries are the ledger). Payload (packed, 14 B):
 
 ```
 struct HandSensor {
@@ -504,12 +505,14 @@ the poll rate (new good reply ⇒ new frame); while UNKNOWN/stale, a 1 Hz
 keepalive frame carries the flags so staleness is itself observable.
 
 Additive message ⇒ **no `PROTOCOL_VERSION` bump** (LegCmd precedent,
-`udp_protocol.h:253`); `test_wire_layout_frozen`'s pinned digest changes and
+`udp_protocol.h:261` as of `6cc38f7`); `test_wire_layout_frozen`'s pinned digest changes and
 is re-pinned in the same commit (the test prints the new digest);
 `test_protocol_version_frozen` stays at 4. File list: the generator, the
 regenerated/delivered artifacts, and `controller/teensy_link/protocol.py` —
 the hand-maintained re-export shim; a message absent there is unimportable
-from the stable path.
+from the stable path — plus `controller/teensy_link/__init__.py` (the
+package-root re-export; both prior additive messages touched both files —
+see the Phase 4 entry's Discussion).
 
 Done when: xlang codec tests pass in both languages with the new message;
 frozen-layout re-pin lands in the same commit.

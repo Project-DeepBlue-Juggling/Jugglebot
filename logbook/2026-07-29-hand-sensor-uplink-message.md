@@ -18,8 +18,8 @@ files_changed:
   - controller/teensy_link/__init__.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
   - tests/firmware/test_udp_protocol_xlang.py
-# commits: backfilled after the phase-4 commit lands
-commits: []
+commits:
+  - 6cc38f7                # feat(hand-sensor phase-4): additive HAND_SENSOR uplink (0x8B)
 subsystem:
   - can
   - config
