@@ -22,7 +22,10 @@ files_changed:
   - tests/firmware/native/test_odrive_protocol.cpp
   - tests/firmware/native/test_rpc_dispatch.cpp
   - tests/firmware/native/odrive_protocol_golden.json
-commits: []                 # to be backfilled after the Phase 2 commit lands
+commits:
+  - 386ade5                # refactor(hand-sensor phase-2): board+fw-qualified ODrive endpoint ids
+  - 93a91fb                # BallButler repo: chore(config) resync generated hardware_config.h
+  - 334af82                # BallButler repo: feat(endpoints) lockstep alias migration
 subsystem:
   - config
   - can
@@ -225,10 +228,11 @@ its message; commit 2 is the lockstep endpoint change, touching only
   should have.
 - **BallButler `ball_butler_main/CanInterface.h:95-96`** — the two aliases
   re-pointed at `EndpointId::odrive_s1_0_6_11::*` (separate repo, lockstep
-  commit; see Discussion for the two-commit split). **Not yet committed at
-  the time of writing** — the BB working tree carries the edits; BB commits 1
-  and 2 land immediately after this Jugglebot commit, and their SHAs are
-  backfilled here with it.
+  commit; see Discussion for the two-commit split). **Not committed at the
+  time of writing** — the BB working tree carried the edits; BB commits 1
+  and 2 landed immediately after this Jugglebot commit as `93a91fb`
+  (drift-resync) and `334af82` (endpoint lockstep), backfilled into the
+  front matter above.
 
 ### New tests
 

@@ -91,8 +91,8 @@ Three BallButler properties are **deliberately not copied**:
 `config/protocol_config.yaml` already carries `endpoints: GPIO_STATES: 700`,
 propagated by codegen into `config/generated/protocol_config.{h,py}`; the
 generated **`.h`** is copied into all four firmware dirs
-(`generate_config.py:994-997` as of `2b3ab78`) while the **`.py`** goes only
-to the ROS package (`:998`), which is what backs the name→id table in the live
+(`generate_config.py:998-1001` as of `386ade5`) while the **`.py`** goes only
+to the ROS package (`:1002`), which is what backs the name→id table in the live
 `jugglebot/can/odrive.py` (`ENDPOINT_IDS`, dereferenced at import by
 `teensy_bridge_node`). No Jugglebot runtime path resolves `get_gpio_states`
 today — but **BallButler's shipping firmware consumes both flat constants**
@@ -221,7 +221,7 @@ Phase 7 measurement, not a blocker.
 |---|---|---|---|
 | 0 | Surface decoded ODrive fw versions (log + `/link_status`) | Jetson only | done (`aa14098`) |
 | 1 | `jugglebot_ball_detect` YAML block + codegen + `gpio2_mode` drift test | repo (+ regenerated headers in BallButler's tree) | done (`2b3ab78`; JSON record `64d2a8f`) |
-| 2 | Endpoint-id contract: (board, fw)-qualified ids; 726; consumer migration incl. BallButler + native-golden regen | repo (incl. `tests/firmware/native/` golden) + BallButler lockstep commit | pending |
+| 2 | Endpoint-id contract: (board, fw)-qualified ids; 726; consumer migration incl. BallButler + native-golden regen | repo (incl. `tests/firmware/native/` golden) + BallButler lockstep commit | done (`386ade5`; BB `93a91fb`+`334af82`) |
 | 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | pending |
 | 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | pending |
 | 5 | ROS surface: `/hand_telemetry` fields + `/link_status` KeyValue + RX-age gate | Jetson (colcon) | pending |
@@ -280,7 +280,8 @@ legitimately shows fewer axes — the sweep only queries axes that heartbeat).
 
 1. New YAML block, sibling of `ball_butler_ball_detect`
    (`config/hardware_config.yaml`), registered in `config/generate_config.py`
-   (the `(yaml_key, prefix, namespace, title)` registration table at `:472`)
+   (the `(yaml_key, prefix, namespace, title)` registration table at `:476`
+   as of `386ade5`)
    with prefix `JB_BD_` / C++ namespace `JBBallDetect` (as landed in
    `2b3ab78` — uppercase initialism per the generated header's convention,
    e.g. `JBOp`, `BBBallDetect`; the plan originally spelt it `JbBallDetect`):
@@ -341,7 +342,8 @@ checks are green (full suite at end of plan, per the Testing-plan gate).
 2. Teach the two flat emitters the nested shape — they currently interpolate
    `cfg["endpoints"].items()` values directly and would emit invalid C++ for
    a nested dict: `config/generate_config.py:242-245` (C++
-   `namespace EndpointId`) and `:418-419` (Python `ENDPOINT_*`). Pinned
+   `namespace EndpointId`) and `:421-423` (Python `ENDPOINT_*`; post-change
+   line numbers as of `386ade5`). Pinned
    generated names, quoted so Phase 3 and consumers can reference them
    verbatim: C++ `EndpointId::odrive_pro_0_6_11::get_gpio_states` (nested
    namespace), Python `ENDPOINT_ODRIVE_PRO_0_6_11_GET_GPIO_STATES`.
