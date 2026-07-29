@@ -42,7 +42,8 @@ files_changed:
   - tools/probes/link_status_health_scan.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
 # to-be-backfilled: the SHA of the commit carrying this entry + FIX A + FIX B.
-commits: []
+commits:
+  - 64f552c
 subsystem:
   - can
   - ros
