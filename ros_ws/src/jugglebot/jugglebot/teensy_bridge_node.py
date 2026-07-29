@@ -630,12 +630,17 @@ class TeensyBridgeNode(Node):
         #                              FAULT (exact can_node:489-492 / 1085 parity).
         # Until validation lands, firmware_validated stays False (BOOT waits, then
         # FAULTs on BOOT_TIMEOUT_S — can_node's behaviour when versions never come).
-        # _versions is reused ONLY for record_version + validate_group; the latched
-        # bools are read on the publish path under self._lock. The tracker itself is
-        # only touched on the version-poll timer thread (no lock needed for it).
+        # _versions is used for record_version + validate_group + the per-axis fw
+        # rendering (_odrive_fw_versions_str); the latched bools are read on the
+        # publish path under self._lock. The tracker needs no lock: the version-poll
+        # writer and the link_status reader share the node-default
+        # MutuallyExclusiveCallbackGroup, so they never run concurrently.
         self._versions = MotorStateTracker()
         self._firmware_validated = False
         self._firmware_mismatch_error = None     # str once a mismatch is latched (sticky)
+        # Get_Version's fourth byte (fw_unreleased) per axis, kept node-local —
+        # the tracker stores only the (major, minor, rev) triple.
+        self._fw_unreleased = {}
 
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
@@ -1715,7 +1720,10 @@ class TeensyBridgeNode(Node):
             per_axis = rpc_args.decode_axis_versions_result(blob)
             for axis, raw in per_axis.items():
                 (_proto, hw_product, hw_ver, hw_variant,
-                 fw_major, fw_minor, fw_rev, _unrel) = odrive.decode_get_version(raw)
+                 fw_major, fw_minor, fw_rev, unrel) = odrive.decode_get_version(raw)
+                # unrel first, so an axis never renders '-?' once record_version
+                # lands (the renderer is total either way).
+                self._fw_unreleased[axis] = unrel
                 self._versions.record_version(
                     axis, (fw_major, fw_minor, fw_rev),
                     (hw_product, hw_ver, hw_variant))
@@ -1733,11 +1741,34 @@ class TeensyBridgeNode(Node):
                 self._firmware_mismatch_error = error   # sticky; forces FAULT
             else:
                 self._firmware_validated = True
+        versions = self._odrive_fw_versions_str()
         if error:
-            self.get_logger().error(f"Jugglebot firmware check FAILED: {error}")
+            self.get_logger().error(
+                f"Jugglebot firmware check FAILED: {error} (fw {versions})")
         else:
             self.get_logger().info(
-                "Jugglebot firmware check PASSED — all axes match expected versions")
+                "Jugglebot firmware check PASSED — all axes match expected "
+                f"versions (fw {versions})")
+
+    def _odrive_fw_versions_str(self) -> str:
+        """Per-axis ODrive firmware rendering, ``axis:major.minor.rev-unreleased``.
+
+        The fourth Get_Version byte is rendered unconditionally so a reported zero
+        is distinguishable from a byte that was never surfaced (which renders
+        ``-?``, never a fabricated ``-0``). Axes with no
+        version read show ``?`` rather than being dropped — a partial bench rig
+        legitimately sweeps fewer axes (only those that heartbeat).
+        """
+        parts = []
+        for axis in odrive.JUGGLEBOT_AXES:
+            fw = self._versions.firmware_versions.get(axis)
+            if fw is None:
+                parts.append(f'{axis}:?')
+            else:
+                unrel = self._fw_unreleased.get(axis)
+                parts.append(f'{axis}:{fw[0]}.{fw[1]}.{fw[2]}'
+                             f"-{'?' if unrel is None else unrel}")
+        return ' '.join(parts)
 
     # ═══════════════════════════════════════════════════════════
     # Setpoint downlink (Commit 3) — gated, default disabled
@@ -2416,6 +2447,12 @@ class TeensyBridgeNode(Node):
                 # can actually read, and it is the one the runbook cites.
                 KeyValue(key='platform_fw_version',
                          value=self._platform_fw_version_str()),
+                # ODrive firmware per axis — distinct from the Platform-Teensy row
+                # above. The firmware_validated bool only asserts group consistency,
+                # so the actual triples (plus Get_Version's fourth byte) are the only
+                # bench evidence of what the drives are running.
+                KeyValue(key='odrive_fw_versions',
+                         value=self._odrive_fw_versions_str()),
                 KeyValue(key='setpoints_sent',
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',
