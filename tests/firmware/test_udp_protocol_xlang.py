@@ -71,7 +71,7 @@ def test_crc16_matches_generator(gen, proto):
 
 @pytest.mark.parametrize("name", [
     "Setpoint", "HeartbeatJ2T", "Telemetry", "Diagnostic",
-    "HeartbeatT2J", "Profile", "PlatformFrame", "HandCmdEcho",
+    "HeartbeatT2J", "Profile", "PlatformFrame", "HandCmdEcho", "HandSensor",
     "RpcRequest", "RpcResponse",
 ])
 def test_message_pack_unpack_roundtrip(proto, gen, name):
@@ -109,6 +109,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
     ("Setpoint", "SETPOINT"), ("Telemetry", "TELEMETRY"),
     ("HeartbeatT2J", "HEARTBEAT_T2J"), ("Profile", "PROFILE"),
     ("PlatformFrame", "PLATFORM_FRAME"), ("HandCmdEcho", "HAND_CMD_ECHO"),
+    ("HandSensor", "HAND_SENSOR"),
 ])
 def test_frame_encode_decode_roundtrip(proto, gen, name, msg_type_member):
     msg_spec = next(m for m in gen.MESSAGES if m.name == name)
@@ -281,12 +282,13 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
-    # Re-pinned for the Diagnostic bus_current field + heartbeat_seen flag
-    # (2026-07-24 BB robot_state restoration: the GUI's BB charts need bus V/I,
-    # and the append gate needs an explicit phantom-axis discriminator), paired
-    # with the PROTOCOL_VERSION 3→4 bump above (an incompatible-wire change —
-    # the Diagnostic payload grew 36→40 B).
-    _EXPECTED = "5ad4fa88cf2b1ba137139e42304586d1922a6c7053ab6915ce400ef7aa2a95f3"
+    # Re-pinned for the additive HandSensor message (2026-07-29 hand ball-sensor
+    # Phase 4: MsgType HAND_SENSOR 0x8B + a 14 B payload). Backward-compatible
+    # ADDITION — no existing message, arg or framing constant moved — so
+    # PROTOCOL_VERSION deliberately stays at 4 (the LegCmd precedent: an old
+    # Jetson ignores the unknown msg_type, a new one treats never-seen as
+    # UNKNOWN, and the two ends deploy in either order).
+    _EXPECTED = "1e1cf7314377c994944e6baf5e39a0f6e17eb08f7712f671a16d11fdd7ef24ef"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

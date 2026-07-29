@@ -12,6 +12,7 @@
 #include "can_buses.h"
 #include "time_base.h"
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
+#include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
 
 namespace CanBridge {
 
@@ -238,6 +239,49 @@ void hand_cmd_echo_uplink_step() {
     memcpy(p.data, r.buf, 8);
     udp_send_stream(JbUdp::MsgType::HAND_CMD_ECHO, (const uint8_t*)&p, sizeof(p));
   }
+}
+
+// ── Hand ball-sensor uplink — contract in telemetry.h ─────────────────────────
+// Freshness is an EQUALITY test on the reply's wall stamp, never an interval
+// (time_base.h's clock-discipline invariant) — a wall-anchor step changes the
+// stamp, which costs at most one redundant frame.
+static constexpr uint64_t HAND_SENSOR_KEEPALIVE_US = 1000000u;   // 1 Hz while no new reply
+// The uplink sees every good reply only while the poll is no faster than the
+// telemetry tick; a Phase 7 retune below it would silently coalesce raw samples
+// (approved decision #4: the raw per-sample bit must survive to ROS).
+static_assert(JBBallDetect::CHECK_INTERVAL_MS * TELEM_RATE_HZ >= 1000,
+              "hand-sensor poll faster than the telemetry tick — raw samples would coalesce");
+static uint64_t s_hand_sensor_sent_wall_us = 0;   // t_bridge_us of the last uplinked reply (0 ⇒ none)
+static uint8_t  s_hand_sensor_sent_flags   = 0;   // flags of the last frame (a flip is news)
+static uint64_t s_hand_sensor_sent_us      = 0;   // micros64() of the last frame (keepalive pacing)
+
+void hand_sensor_uplink_step() {
+  GpioPollSnapshot s;
+  gpio_poll_snapshot(s);
+  const uint64_t now = micros64();   // interval clock: keepalive pacing
+  namespace HSF = JbUdp::HandSensorFlags;
+  const uint8_t flags = (uint8_t)((s.raw_held     ? HSF::RAW_HELD       : 0u) |
+                                  (s.held         ? HSF::DEBOUNCED_HELD : 0u) |
+                                  (s.valid        ? HSF::VALID          : 0u) |
+                                  (s.stale        ? HSF::STALE          : 0u) |
+                                  (s.time_synced  ? HSF::TIME_SYNCED    : 0u));
+  // A flags change is news too: stale/valid flip at read time while the wall
+  // stamp is frozen (that is what makes them flip), so keying on the stamp
+  // alone would hold a dead sensor's last verdict on the Jetson for up to a
+  // keepalive period (~1.24 s worst case) after the bridge already knows.
+  const bool fresh = (s.t_bridge_us != s_hand_sensor_sent_wall_us) ||
+                     (flags != s_hand_sensor_sent_flags);
+  if (!fresh && (now - s_hand_sensor_sent_us) < HAND_SENSOR_KEEPALIVE_US) return;
+
+  JbUdp::HandSensorPayload p{};
+  p.t_bridge_us = s.t_bridge_us;   // wire-bound absolute timestamp — wall by contract
+  p.raw_states  = s.raw_states;
+  p.flags       = flags;
+  p.miss_count  = s.miss_count;
+  udp_send_stream(JbUdp::MsgType::HAND_SENSOR, (const uint8_t*)&p, sizeof(p));
+  s_hand_sensor_sent_wall_us = s.t_bridge_us;
+  s_hand_sensor_sent_flags   = flags;
+  s_hand_sensor_sent_us      = now;
 }
 
 void telemetry_step() {

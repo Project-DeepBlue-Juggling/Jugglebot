@@ -42,4 +42,13 @@ void platform_uplink_step();
 // command is pending (hand command-echo — feeds hand_telemetry's cmd fields).
 void hand_cmd_echo_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Publishes gpio_poll's
+// hand ball-sensor cache as a HAND_SENSOR frame on every NEW good TxSdo reply
+// (wire rate = the poll rate) plus a 1 Hz keepalive while none lands, so a stale
+// or never-answering sensor is observable on the wire rather than silent.
+// Deliberately NOT gated on JBBallDetect::ENABLED: a kill-switched build still
+// emits the honest-UNKNOWN keepalive, so the operator can tell "bridge alive,
+// sensor compiled out" from "no bridge at all".
+void hand_sensor_uplink_step();
+
 }  // namespace CanBridge

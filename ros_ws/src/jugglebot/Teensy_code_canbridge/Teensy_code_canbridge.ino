@@ -196,6 +196,7 @@ static void task_telem(void*) {
     cmd_result_uplink_step();
     platform_uplink_step();   // Platform-Teensy relay reply uplink
     hand_cmd_echo_uplink_step(); // hand Set_Input_Pos command-echo
+    hand_sensor_uplink_step();   // hand ball-sensor state (per new reply + 1 Hz keepalive)
     vTaskDelayUntil(&last, period);
   }
 }

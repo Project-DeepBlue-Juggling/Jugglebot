@@ -44,6 +44,7 @@ namespace MsgType {
   constexpr uint8_t LEG_CMD = 136u;  // Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check
   constexpr uint8_t PLATFORM_FRAME = 137u;  // Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J)
   constexpr uint8_t HAND_CMD_ECHO = 138u;  // Hand command-echo telemetry (STREAM, T→J)
+  constexpr uint8_t HAND_SENSOR = 139u;  // Hand ball-present sensor state (STREAM, T→J)
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
 }
 namespace RpcMethod {
@@ -108,6 +109,13 @@ namespace GuardMode {
   constexpr uint8_t DISABLED = 0u;
   constexpr uint8_t ENABLED = 1u;
   constexpr uint8_t ESTOP = 2u;
+}
+namespace HandSensorFlags {
+  constexpr uint8_t RAW_HELD = 1u;  // bit0: raw per-sample bit (active-low decoded)
+  constexpr uint8_t DEBOUNCED_HELD = 2u;  // bit1: debounced verdict
+  constexpr uint8_t VALID = 4u;  // bit2: not UNKNOWN (fresh, gated good reply)
+  constexpr uint8_t STALE = 8u;  // bit3: no good reply within the staleness window
+  constexpr uint8_t TIME_SYNCED = 16u;  // bit4: bridge wall anchor set at the reply
 }
 namespace HeartbeatT2JFlags {
   constexpr uint32_t TIME_SYNCED = 1u;  // bit0: Teensy clock synced to the Jetson anchor
@@ -274,6 +282,15 @@ struct HandCmdEchoPayload {
 };
 static_assert(sizeof(HandCmdEchoPayload) == 16, "HandCmdEchoPayload size drift");
 
+// HandSensor: Hand ball-present sensor state. A switch in the hand shorts the hand ODrive Pro's G02 to GND when a ball is seated; no released ODrive firmware pushes GPIO state on CANSimple, so the bridge POLLS get_gpio_states over an RxSdo/TxSdo pair (gpio_poll.cpp) and publishes the decoded cache here. Additive message — no existing frame changes, so NO PROTOCOL_VERSION bump (LegCmd precedent); an old Jetson ignores the unknown msg_type and a new Jetson treats never-seen as UNKNOWN. Emitted from task_telem: one frame per NEW good reply (so naturally rate-limited to the poll rate), plus a 1 Hz keepalive while no new reply lands, so staleness is itself observable on the wire. plans/active/hand-ball-sensor.md § Architecture is NORMATIVE for the signal semantics; these flags describe the bridge's cache and say nothing about the link, so the consumer applies its own RX-age gate.
+struct HandSensorPayload {
+  uint64_t t_bridge_us;  // Bridge WALL-clock (now_wall_us()) at the last good TxSdo reply (us)
+  uint32_t raw_states;  // Last raw get_gpio_states word, verbatim (commissioning + diagnostics)
+  uint8_t flags;  // HandSensorFlags bitset (generated enum is the single source)
+  uint8_t miss_count;  // Consecutive EMPTY readings from good replies (saturating)
+};
+static_assert(sizeof(HandSensorPayload) == 14, "HandSensorPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -309,6 +326,7 @@ constexpr uint16_t BB_AXIS_ESTIMATES_SIZE = 24u;
 constexpr uint16_t LEG_CMD_SIZE = 56u;
 constexpr uint16_t PLATFORM_FRAME_SIZE = 21u;
 constexpr uint16_t HAND_CMD_ECHO_SIZE = 16u;
+constexpr uint16_t HAND_SENSOR_SIZE = 14u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 

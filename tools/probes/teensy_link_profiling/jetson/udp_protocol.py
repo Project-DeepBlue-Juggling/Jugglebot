@@ -44,6 +44,7 @@ class MsgType(IntEnum):
     LEG_CMD = 136  # Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check
     PLATFORM_FRAME = 137  # Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J)
     HAND_CMD_ECHO = 138  # Hand command-echo telemetry (STREAM, T→J)
+    HAND_SENSOR = 139  # Hand ball-present sensor state (STREAM, T→J)
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
 
 class RpcMethod(IntEnum):
@@ -108,6 +109,13 @@ class GuardMode(IntEnum):
     DISABLED = 0
     ENABLED = 1
     ESTOP = 2
+
+class HandSensorFlags(IntEnum):
+    RAW_HELD = 1  # bit0: raw per-sample bit (active-low decoded)
+    DEBOUNCED_HELD = 2  # bit1: debounced verdict
+    VALID = 4  # bit2: not UNKNOWN (fresh, gated good reply)
+    STALE = 8  # bit3: no good reply within the staleness window
+    TIME_SYNCED = 16  # bit4: bridge wall anchor set at the reply
 
 class HeartbeatT2JFlags(IntEnum):
     TIME_SYNCED = 1  # bit0: Teensy clock synced to the Jetson anchor
@@ -469,6 +477,28 @@ class HandCmdEcho:
         vals = _HAND_CMD_ECHO_STRUCT.unpack(data[:16])
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(8)))
+
+# HandSensor: Hand ball-present sensor state. A switch in the hand shorts the hand ODrive Pro's G02 to GND when a ball is seated; no released ODrive firmware pushes GPIO state on CANSimple, so the bridge POLLS get_gpio_states over an RxSdo/TxSdo pair (gpio_poll.cpp) and publishes the decoded cache here. Additive message — no existing frame changes, so NO PROTOCOL_VERSION bump (LegCmd precedent); an old Jetson ignores the unknown msg_type and a new Jetson treats never-seen as UNKNOWN. Emitted from task_telem: one frame per NEW good reply (so naturally rate-limited to the poll rate), plus a 1 Hz keepalive while no new reply lands, so staleness is itself observable on the wire. plans/active/hand-ball-sensor.md § Architecture is NORMATIVE for the signal semantics; these flags describe the bridge's cache and say nothing about the link, so the consumer applies its own RX-age gate.
+HAND_SENSOR_FMT = '<QIBB'
+HAND_SENSOR_SIZE = 14
+_HAND_SENSOR_STRUCT = struct.Struct(HAND_SENSOR_FMT)
+assert _HAND_SENSOR_STRUCT.size == 14
+
+@dataclass
+class HandSensor:
+    t_bridge_us: int = 0
+    raw_states: int = 0
+    flags: int = 0
+    miss_count: int = 0
+
+    def pack(self) -> bytes:
+        return _HAND_SENSOR_STRUCT.pack(self.t_bridge_us, self.raw_states, self.flags, self.miss_count)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'HandSensor':
+        vals = _HAND_SENSOR_STRUCT.unpack(data[:14])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'
