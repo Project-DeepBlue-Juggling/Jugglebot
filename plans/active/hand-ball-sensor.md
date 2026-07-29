@@ -222,9 +222,9 @@ Phase 7 measurement, not a blocker.
 | 0 | Surface decoded ODrive fw versions (log + `/link_status`) | Jetson only | done (`aa14098`) |
 | 1 | `jugglebot_ball_detect` YAML block + codegen + `gpio2_mode` drift test | repo (+ regenerated headers in BallButler's tree) | done (`2b3ab78`; JSON record `64d2a8f`) |
 | 2 | Endpoint-id contract: (board, fw)-qualified ids; 726; consumer migration incl. BallButler + native-golden regen | repo (incl. `tests/firmware/native/` golden) + BallButler lockstep commit | done (`386ade5`; BB `93a91fb`+`334af82`) |
-| 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | done (`7dc347f`; NOT flashed) |
-| 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | done (`6cc38f7`; NOT flashed) |
-| 5 | ROS surface: `/hand_telemetry` fields + `/link_status` KeyValue + RX-age gate | Jetson (colcon) | done (`fafcee0`; NOT colcon-deployed) |
+| 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | done (`7dc347f`; flashed by the operator 2026-07-29) |
+| 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | done (`6cc38f7`; flashed by the operator 2026-07-29) |
+| 5 | ROS surface: `/hand_telemetry` fields + `/link_status` KeyValue + RX-age gate | Jetson (colcon) | done (`fafcee0`; colcon-deployed by the operator 2026-07-29) |
 | 6 | GUI ball-in-hand pill + `tests/hardware/session_hand_ball_sensor.md` runbook | Jetson (static files) | done (`73d70c6`; P3 browser check outstanding) |
 | 7 | Hardware commissioning: raw-word toggle gate, SDO RTT, soak | operator-run | pending |
 
@@ -234,6 +234,8 @@ additive (LegCmd precedent: no existing frame changes ⇒ **no
 `PROTOCOL_VERSION` bump**), so the Jetson and firmware deploy independently
 in either order; an old Jetson silently ignores the unknown msg_type, a new
 Jetson treats "never seen" as UNKNOWN.
+
+**Flash note (2026-07-29):** the operator's FW 4 flash + colcon build + live sitting surfaced a CAN3 bus-health regression (`bus1_health` flapping OK↔WARN) attributed to the poller's interaction with the shared CAN3 command gate — under separate investigation (`logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md`), with a FW_VERSION 5 fix pending flash.
 
 **Cross-repo caution (applies to Phases 1 AND 2):** `generate_config.py`
 copies BOTH `protocol_config.h` and `hardware_config.h` into four firmware
@@ -475,10 +477,9 @@ ops"; a continuous poller amends that — update the comment and confirm
 - `CanBridge::FW_VERSION` 3 → 4 with an inline history line.
 
 Done when: `pio` build passes; firmware cross-reference tests pass; the
-`enabled: false` build compiles the poller out. Landed `7dc347f`, **NOT
-flashed** — the serial toggle's live flip on the bench is deferred to
-Phase 7 step 4, the first time this firmware runs on a Teensy (pattern:
-Phase 0's "Live confirmation on powered hardware is Phase 7 step 1").
+`enabled: false` build compiles the poller out. Landed `7dc347f`, **flashed
+by the operator 2026-07-29** (first time this firmware ran on a Teensy) — the
+serial toggle's live flip on the bench is still deferred to Phase 7 step 4.
 
 ### Phase 4 — additive uplink message
 

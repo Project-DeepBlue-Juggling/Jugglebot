@@ -72,6 +72,7 @@ def test_crc16_matches_generator(gen, proto):
 @pytest.mark.parametrize("name", [
     "Setpoint", "HeartbeatJ2T", "Telemetry", "Diagnostic",
     "HeartbeatT2J", "Profile", "PlatformFrame", "HandCmdEcho", "HandSensor",
+    "CanErrors",
     "RpcRequest", "RpcResponse",
 ])
 def test_message_pack_unpack_roundtrip(proto, gen, name):
@@ -109,7 +110,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
     ("Setpoint", "SETPOINT"), ("Telemetry", "TELEMETRY"),
     ("HeartbeatT2J", "HEARTBEAT_T2J"), ("Profile", "PROFILE"),
     ("PlatformFrame", "PLATFORM_FRAME"), ("HandCmdEcho", "HAND_CMD_ECHO"),
-    ("HandSensor", "HAND_SENSOR"),
+    ("HandSensor", "HAND_SENSOR"), ("CanErrors", "CAN_ERRORS"),
 ])
 def test_frame_encode_decode_roundtrip(proto, gen, name, msg_type_member):
     msg_spec = next(m for m in gen.MESSAGES if m.name == name)
@@ -282,13 +283,17 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
-    # Re-pinned for the additive HandSensor message (2026-07-29 hand ball-sensor
-    # Phase 4: MsgType HAND_SENSOR 0x8B + a 14 B payload). Backward-compatible
-    # ADDITION — no existing message, arg or framing constant moved — so
-    # PROTOCOL_VERSION deliberately stays at 4 (the LegCmd precedent: an old
-    # Jetson ignores the unknown msg_type, a new one treats never-seen as
-    # UNKNOWN, and the two ends deploy in either order).
-    _EXPECTED = "1e1cf7314377c994944e6baf5e39a0f6e17eb08f7712f671a16d11fdd7ef24ef"
+    # Re-pinned for the additive CanErrors message (2026-07-29 CAN3 bus-health
+    # flap fix: MsgType CAN_ERRORS 0x8C + a 48 B payload carrying the CAN3
+    # wire-error and fault-confinement counters that were previously reachable
+    # only over the USB serial console). Backward-compatible ADDITION — no
+    # existing message, arg or framing constant moved — so PROTOCOL_VERSION
+    # deliberately stays at 4 (the LegCmd / HandSensor precedent: an old Jetson
+    # ignores the unknown msg_type, a new one renders never-seen as unknown, and
+    # the two ends deploy in either order).
+    # Previous pin: 1e1cf7314377c994944e6baf5e39a0f6e17eb08f7712f671a16d11fdd7ef24ef
+    #   (additive HandSensor 0x8B, 14 B — 2026-07-29 hand ball-sensor Phase 4).
+    _EXPECTED = "12aa9218da6ba45b1bdcfeab0bb6824d8e1ea3f6b1f52c41f1f454a419fbb8d1"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

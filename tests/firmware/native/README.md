@@ -106,21 +106,31 @@ result.
 ### The cold-start HAL seam (`coldstart_hal.cpp` / `coldstart_hal.h`)
 
 The three cold-start move modules read a DIFFERENT leaf set than the fault/interp
-TUs — their bus/fault gate is `can_buses_stats().jugglebot_health` +
-`fault_can_bus_down()` + `fault_guard_mode()` (not `jugglebot_commands_allowed()`),
-and each DEFINES its own `*_active()` (which would ODR-clash with `fake_hal.o`'s
+TUs — their bus/fault gate is `jugglebot_commands_allowed()` +
+`fault_can_bus_down()` + `fault_guard_mode()`, and each DEFINES its own `*_active()` (which would ODR-clash with `fake_hal.o`'s
 fake predicates). So they get a SEPARATE, self-contained fake HAL, linked ONLY by
 the cold-start drivers, never alongside `fake_hal.o`:
 
 | Symbol | Host stand-in (`coldstart_hal`) |
 |---|---|
 | `micros64()` / `now_wall_us()` | controllable clock (`cs_advance`/`cs_set_mono`) |
-| `can_buses_stats().jugglebot_health` | settable (`cs_set_jugglebot_health`) |
+| `can_buses_stats().jugglebot_health` | settable (`cs_set_jugglebot_health`) — ALSO moves the command gate to the matching verdict, see below |
+| `jugglebot_commands_allowed()` | settable (`cs_set_commands_allowed`); defaults to follow `cs_set_jugglebot_health` |
 | `fault_can_bus_down()` / `fault_guard_mode()` | settable (`cs_set_can_bus_down` / `cs_set_guard_estop`) |
 | `can_jugglebot_send()` | **recording** vector (`cs_sent_*`) + fail injection (`cs_set_send_fail_index`) |
 | the two SIBLING `*_active()` | inline in each driver (the real one comes from the `#include`d module) |
 
 Reset between cases: `cs_reset()` + the module's `*_init()`.
+
+`cs_set_jugglebot_health()` deliberately moves BOTH knobs (health WARN/BUS_OFF ⇒
+commands refused). Before 2026-07-29 the three gates re-derived the bus term from
+the health enum, so tests drove them with that setter alone; they now call
+`jugglebot_commands_allowed()`, and without the coupling those cases would pass
+against a gate nobody set. The coupling is a **default, not an invariant** —
+production runs two classifiers that agree on every cell except
+passive-but-not-yet-sustained (health reports WARN, the gate still allows), and a
+test modelling that cell calls `cs_set_commands_allowed()` *after* the health
+setter to force the divergence.
 
 ## Golden vectors (`fault_golden.json`)
 

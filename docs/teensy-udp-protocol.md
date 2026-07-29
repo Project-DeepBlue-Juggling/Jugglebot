@@ -80,6 +80,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `PLATFORM_FRAME` | 0x89 | Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J) |
 | `HAND_CMD_ECHO` | 0x8A | Hand command-echo telemetry (STREAM, T→J) |
 | `HAND_SENSOR` | 0x8B | Hand ball-present sensor state (STREAM, T→J) |
+| `CAN_ERRORS` | 0x8C | 1 Hz CAN3 wire-error + fault-confinement counters (STREAM, T→J) |
 | `RPC_RESPONSE` | 0x90 | RPC response (RPC port, T→J) |
 
 ### RpcMethod
@@ -387,6 +388,30 @@ Payload **14 bytes**. Python struct fmt: `<QIBB`.
 | `raw_states` | u32 | 1 | Last raw get_gpio_states word, verbatim (commissioning + diagnostics) |
 | `flags` | u8 | 1 | HandSensorFlags bitset (generated enum is the single source) |
 | `miss_count` | u8 | 1 | Consecutive EMPTY readings from good replies (saturating) |
+
+### CanErrors (`MsgType.CAN_ERRORS`, T2J, STREAM port)
+
+CAN3 wire-error + fault-confinement counters, 1 Hz. These numbers were already computed on every 1 kHz service tick (can_buses.cpp poll_bus_errors / service_bus) and then DISCARDED to the USB serial console — can_buses.h said outright that they are 'NOT on the UDP uplink'. That is exactly why the 2026-07-29 CAN3 bus-health flap could not be root-caused from an 8 MB bag: the bag proved the bus was entering error-passive at 42.4 % duty but carried nothing that could say WHICH wire-error class was driving it, so layer 2 of that investigation (logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md) stayed open pending a serial-console bench session. This message closes that gap: it is the Jetson-side half of the discriminator table in that entry. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. CAN3 (the Jugglebot core bus) ONLY — CAN1/CAN2 keep their serial-only counters until something needs them, and a per-bus array would triple the wire cost for two buses nobody is currently debugging. All counters are CUMULATIVE SINCE BOOT (u32, free-running; the consumer differences them) except the three live/derived bytes at the end. Read tec_inc_sum vs rec_inc_sum to attribute error pressure to TX vs RX even when the live counters decay between 1 Hz samples.
+
+Payload **48 bytes**. Python struct fmt: `<IIIIIIIIIIIBBBB`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `ack_cnt` | u32 | 1 | ACKERR snapshots — TX un-ACKed (no other node received it) |
+| `crc_cnt` | u32 | 1 | CRCERR snapshots — RX CRC mismatch (noise / signal integrity) |
+| `form_cnt` | u32 | 1 | FRMERR snapshots — RX fixed-form field violated |
+| `stuff_cnt` | u32 | 1 | STFERR snapshots — RX >5 equal bits (noise / clocking) |
+| `bit0_cnt` | u32 | 1 | BIT0ERR snapshots — TX sent dominant, read back recessive |
+| `bit1_cnt` | u32 | 1 | BIT1ERR snapshots — TX sent recessive, read back dominant |
+| `err_tx_ctx` | u32 | 1 | Wire-error snapshots with ESR1.TX set (error fired while transmitting) |
+| `err_rx_ctx` | u32 | 1 | Wire-error snapshots with ESR1.RX set (error fired while receiving) |
+| `tec_inc_sum` | u32 | 1 | Sum of positive inter-tick TEC deltas — TX-side error PRESSURE (+8/error) |
+| `rec_inc_sum` | u32 | 1 | Sum of positive inter-tick REC deltas — RX-side error pressure (+1/error) |
+| `tx_gated` | u32 | 1 | TX attempts refused by the bus-partner presence gate |
+| `tec_live` | u8 | 1 | ECR TXERRCNT at the last service tick (>=128 => error-passive) |
+| `rec_live` | u8 | 1 | ECR RXERRCNT at the last service tick |
+| `flt_live` | u8 | 1 | Live ESR1 FLTCONF: 0 active / 1 passive / 2 bus-off (INSTANTANEOUS) |
+| `flt_sustained` | u8 | 1 | 1 => flt_live>=1 held >= CAN_PASSIVE_SUSTAIN_US, i.e. the command gate is actually refusing (classify_command_gate). The one bit that distinguishes a harmless transient from a real command outage. |
 
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 

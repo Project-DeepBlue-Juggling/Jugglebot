@@ -192,6 +192,79 @@ TEST_CASE("classify_bus_health pins the health_of truth table (bus-off wiring 20
   CHECK(classify_bus_health(1000, 1001 + T, 1) == JbUdp::BusHealth::WARN);
 }
 
+TEST_CASE("classify_command_gate keys on SUSTAINED confinement, health stays instantaneous") {
+  // The 2026-07-29 CAN3 flap fix. classify_bus_health REPORTS instantaneous
+  // confinement (the uplink must keep telling the truth); classify_command_gate
+  // ACTS only once error-passive has PERSISTED >= CAN_PASSIVE_SUSTAIN_US. Root
+  // cause: error-passive is transient by construction (TEC decays -1 per clean
+  // TX), so gating every CAN3 command on an instantaneous reading created
+  // positive feedback — refusing TX removes the 0x7DD traffic that IS the decay
+  // pump — and amplified a low-rate wire-error source into a 42.4%-duty outage
+  // across every consumer of the predicate. See can_buses.h.
+  //
+  // The classifier takes flt_sustained as an INPUT: the dwell timing itself is
+  // maintained in service_bus() from the 1 kHz ESR1 read (can_buses.cpp) and is
+  // not reachable from the native harness. What is pinned here is the truth
+  // table the gate applies to it.
+  using CanBridge::classify_bus_health;
+  using CanBridge::classify_command_gate;
+  constexpr uint64_t T = CanBridge::CAN_HEARTBEAT_TIMEOUT_US;
+  CHECK(CanBridge::CAN_PASSIVE_SUSTAIN_US == 1000000u);   // 1.0 s dwell contract
+  CHECK(CanBridge::CAN_PASSIVE_SUSTAIN_US < T);           // never slower than staleness
+
+  // Never seen a frame ⇒ UNKNOWN, whatever the registers say (bring-up allows
+  // commands; the TX presence gate independently refuses sends on such a bus).
+  CHECK(classify_command_gate(0, 0, 0, 0) == JbUdp::BusHealth::UNKNOWN);
+  CHECK(classify_command_gate(0, 10 * T, 2, 1) == JbUdp::BusHealth::UNKNOWN);
+
+  // Active confinement, RX fresh ⇒ OK regardless of the (meaningless) sustain bit.
+  CHECK(classify_command_gate(1000, 1000, 0, 0) == JbUdp::BusHealth::OK);
+  CHECK(classify_command_gate(1000, 1000, 0, 1) == JbUdp::BusHealth::OK);
+
+  // THE FIX: passive but NOT yet sustained ⇒ commands still ALLOWED (OK), where
+  // classify_bus_health reports WARN for the very same registers.
+  CHECK(classify_command_gate(1000, 1000, 1, 0) == JbUdp::BusHealth::OK);
+  CHECK(classify_bus_health(1000, 1000, 1) == JbUdp::BusHealth::WARN);
+
+  // Passive AND sustained ⇒ refuse. A genuinely stuck bus still gates.
+  CHECK(classify_command_gate(1000, 1000, 1, 1) == JbUdp::BusHealth::WARN);
+
+  // Bus-off refuses INSTANTLY — exempt from the dwell requirement in both
+  // directions (it is not a counter excursion; TX is physically impossible).
+  CHECK(classify_command_gate(1000, 1000, 2, 0) == JbUdp::BusHealth::BUS_OFF);
+  CHECK(classify_command_gate(1000, 1000, 2, 1) == JbUdp::BusHealth::BUS_OFF);
+  CHECK(classify_command_gate(1000, 1000, 3, 0) == JbUdp::BusHealth::BUS_OFF);  // clamped >=2
+
+  // RX staleness is unchanged and still instantaneous (it is sustained by
+  // definition — 2 s of silence is already a dwell).
+  CHECK(classify_command_gate(1000, 1000 + T, 0, 0) == JbUdp::BusHealth::OK);       // boundary: strict >
+  CHECK(classify_command_gate(1000, 1001 + T, 0, 0) == JbUdp::BusHealth::WARN);
+  // ...and it refuses even when confinement is clean and unsustained.
+  CHECK(classify_command_gate(1000, 1001 + T, 1, 0) == JbUdp::BusHealth::WARN);
+  // Bus-off still outranks staleness (report the cause, not the symptom).
+  CHECK(classify_command_gate(1000, 1001 + T, 2, 0) == JbUdp::BusHealth::BUS_OFF);
+
+  // classify_bus_health is BYTE-UNCHANGED by this work: it has no sustain input
+  // and no gate state can alter its verdict. Pinned explicitly so a future
+  // session cannot "simplify" the two classifiers back into one — that merge is
+  // exactly what would hide the flap from the uplink and from /link_status,
+  // which is the observability the fix depends on keeping.
+  for (uint8_t flt = 0; flt <= 3; ++flt) {
+    const uint8_t reported = classify_bus_health(1000, 1000, flt);
+    // The gate may DIFFER from the report only in the passive-unsustained cell.
+    const uint8_t gated_unsust = classify_command_gate(1000, 1000, flt, 0);
+    const uint8_t gated_sust   = classify_command_gate(1000, 1000, flt, 1);
+    if (flt == 1) {
+      CHECK(reported == JbUdp::BusHealth::WARN);
+      CHECK(gated_unsust == JbUdp::BusHealth::OK);     // the whole point
+      CHECK(gated_sust == JbUdp::BusHealth::WARN);
+    } else {
+      CHECK(gated_unsust == reported);                 // identical everywhere else
+      CHECK(gated_sust == reported);
+    }
+  }
+}
+
 TEST_CASE("hand axis-6 allow-table permits exactly the locked hand ODrive ops") {
   using namespace JbUdp;
   // Permit (the hand homing + command surface).

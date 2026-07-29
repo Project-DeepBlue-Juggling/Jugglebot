@@ -585,6 +585,22 @@ static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_
   h.synced = (uint8_t)((esr1 >> 18) & 1u);
   const uint8_t fc_live = (uint8_t)((esr1 >> 4) & 0x3u);
   h.flt_live = (fc_live >= 2) ? 2 : fc_live;
+  // Sustained-confinement tracking for the COMMAND gate (2026-07-29 CAN3 flap;
+  // the normative split lives at classify_command_gate in can_buses.h). Derived
+  // from the SAME ESR1 read — no extra register access. Edge into confinement
+  // stamps the entry time; leaving it clears both fields, so a bus that keeps
+  // flapping in and out never accumulates toward the sustain threshold. That is
+  // the intent: a flapping bus is self-healing by definition and must not gate
+  // commands, while a genuinely stuck one crosses the threshold and does.
+  if (h.flt_live == 0) {
+    h.flt_passive_since_us = 0;
+    h.flt_sustained        = 0;
+  } else {
+    const uint64_t now_mono = micros64();
+    if (h.flt_passive_since_us == 0) h.flt_passive_since_us = now_mono;
+    h.flt_sustained =
+        ((now_mono - h.flt_passive_since_us) >= CAN_PASSIVE_SUSTAIN_US) ? 1u : 0u;
+  }
   // Live error counters (ECR, base+0x1C): TXERRCNT [7:0], RXERRCNT [15:8]. Sampled
   // every tick; the positive inter-tick deltas accumulate into *_inc_sum so the 1 Hz
   // print can attribute error pressure to TX vs RX even when the live values decay
@@ -733,11 +749,21 @@ bool can_jugglebot_send(const ODrive::CanFrame& f) {
 
 // Shared CAN3 command gate (declared in can_buses.h; consumed by rpc.cpp leg
 // frames + platform_relay reads/writes). WARN/BUS_OFF → refuse; OK/UNKNOWN allow.
-// (jugglebot_health is the health_of() classification below: RX staleness + live
-// fault confinement since the 2026-07-05 bus-off wiring.)
+//
+// Since 2026-07-29 this reads classify_command_gate(), NOT the classify_bus_health()
+// value that feeds the uplink: the gate acts only on SUSTAINED error-passive
+// confinement, while the reported health stays instantaneous and honest. The full
+// root-cause rationale (positive feedback via the TEC decay pump; one predicate
+// amplifying a low-rate wire-error source into a 42 %-duty outage across every CAN3
+// consumer) is at classify_command_gate in can_buses.h. BUS_OFF and RX staleness are
+// unchanged and still act instantly.
 bool jugglebot_commands_allowed() {
-  const uint8_t h = can_buses_stats().jugglebot_health;
-  return h != JbUdp::BusHealth::WARN && h != JbUdp::BusHealth::BUS_OFF;
+  const uint8_t g = classify_command_gate(
+      atomic_read_u64(&s_jugglebot_last_rx_us),   // interval: *_last_rx_us are mono
+      micros64(),
+      s_jugglebot_rxh.flt_live,        // single-byte volatile: atomic on Cortex-M7
+      s_jugglebot_rxh.flt_sustained);  // same, written only by task_can_rx
+  return g != JbUdp::BusHealth::WARN && g != JbUdp::BusHealth::BUS_OFF;
 }
 
 // The bus-transmittable gate for the operator recovery one-shots
@@ -808,6 +834,11 @@ static BusRxHealth snapshot_bus(const volatile BusRxHealth& h) {
   o.tec_inc_sum = h.tec_inc_sum;
   o.rec_inc_sum = h.rec_inc_sum;
   o.tx_gated    = h.tx_gated;
+  // 64-bit: read atomically (torn-load guard). Every other field here is a single
+  // word, but a plain two-word load of this one could tear across a task_can_rx
+  // preemption — same discipline as the *_last_rx_us reads in can_buses_stats().
+  o.flt_passive_since_us = atomic_read_u64(&h.flt_passive_since_us);
+  o.flt_sustained        = h.flt_sustained;
   return o;
 }
 

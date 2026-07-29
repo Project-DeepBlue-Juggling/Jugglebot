@@ -104,6 +104,7 @@ from controller.teensy_link import (
     PlatformFrame,
     HandCmdEcho,
     HandSensor,
+    CanErrors,
 )
 from controller.teensy_link import protocol as p
 from controller.teensy_link import rpc_args
@@ -494,6 +495,12 @@ class TeensyBridgeNode(Node):
         # host-monotonic — t_bridge_us is a foreign wall clock (§ Architecture).
         self._latest_hand_sensor: HandSensor | None = None
         self._latest_hand_sensor_mono = 0.0
+        # Latest CAN_ERRORS frame (CAN3 wire-error + fault-confinement counters,
+        # 1 Hz from the bridge). Read-only instrument: nothing gates on it — it
+        # exists so the CAN3 error CLASS is visible from a rosbag instead of only
+        # over a USB serial console (2026-07-29 CAN3 flap, layer 2). A bridge
+        # older than FW 5 never sends it, so None is a normal steady state.
+        self._latest_can_errors: CanErrors | None = None
         # Last fault_state seen on the T→J heartbeat, for edge-triggered logging in
         # _publish_link_status. None = nothing seen yet (so the first NONE is silent).
         self._last_fault_state: int | None = None
@@ -679,6 +686,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.PLATFORM_FRAME), self._on_platform_frame)
         self._client.subscribe(int(MsgType.HAND_CMD_ECHO), self._on_hand_cmd_echo)  # hand conduit
         self._client.subscribe(int(MsgType.HAND_SENSOR), self._on_hand_sensor)  # ball-present switch
+        self._client.subscribe(int(MsgType.CAN_ERRORS), self._on_can_errors)    # CAN3 wire-error counters
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -1151,6 +1159,20 @@ class TeensyBridgeNode(Node):
         with self._lock:
             self._latest_hand_sensor = hs
             self._latest_hand_sensor_mono = time.monotonic()
+
+    def _on_can_errors(self, msg_type, seq, payload, addr):
+        # RX-thread callback (CAN3 wire-error counters). Pure diagnostics: cached
+        # under the lock and rendered into one /link_status row. No RX stamp is
+        # kept — unlike HAND_SENSOR these counters are cumulative-since-boot, so a
+        # stale copy is still a truthful floor rather than a misleading verdict,
+        # and the operator differences them across an A/B anyway.
+        # Malformed frames dropped (never kill the RX thread).
+        try:
+            ce = CanErrors.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._latest_can_errors = ce
 
     def _on_bb_estimates(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. The drain timer
@@ -1888,6 +1910,37 @@ class TeensyBridgeNode(Node):
         return (f'{state} miss={int(hs.miss_count)} '
                 f'raw=0x{int(hs.raw_states):08x}')
 
+    def _can3_errors_str(self) -> str:
+        """``/link_status`` rendering of the CAN3 wire-error counters.
+
+        One compact row, because this is an INSTRUMENT rather than a status:
+        the operator reads it by differencing two captures (poller on vs off)
+        rather than by looking at any single value. It is the Jetson-side half
+        of the discriminator table in
+        ``logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md`` — the
+        2026-07-29 flap could be SEEN in a bag (``bus1_health`` at 42.4 % WARN)
+        but not EXPLAINED from one, because these counters existed only on the
+        bridge's serial console.
+
+        ``flt``/``sust`` are the two that matter at a glance: ``flt=1`` is an
+        instantaneous error-passive reading (a transient, and normal), while
+        ``sust=1`` means it has persisted past ``CAN_PASSIVE_SUSTAIN_US`` and
+        the command gate is actually refusing CAN3 commands.
+        """
+        with self._lock:
+            ce = self._latest_can_errors
+        if ce is None:
+            # Never-seen is a real, expected state: any bridge older than FW 5.
+            return 'unknown (never seen)'
+        return (f'flt={int(ce.flt_live)} sust={int(ce.flt_sustained)} '
+                f'tec={int(ce.tec_live)} rec={int(ce.rec_live)} '
+                f'tecInc={int(ce.tec_inc_sum)} recInc={int(ce.rec_inc_sum)} '
+                f'ack={int(ce.ack_cnt)} crc={int(ce.crc_cnt)} '
+                f'form={int(ce.form_cnt)} stuff={int(ce.stuff_cnt)} '
+                f'bit0={int(ce.bit0_cnt)} bit1={int(ce.bit1_cnt)} '
+                f'txctx={int(ce.err_tx_ctx)} rxctx={int(ce.err_rx_ctx)} '
+                f'gated={int(ce.tx_gated)}')
+
     # ═══════════════════════════════════════════════════════════
     # Setpoint downlink (Commit 3) — gated, default disabled
     # ═══════════════════════════════════════════════════════════
@@ -2577,6 +2630,11 @@ class TeensyBridgeNode(Node):
                 # dead bridge is visible here rather than absent.
                 KeyValue(key='hand_ball_sensor',
                          value=self._hand_ball_sensor_str()),
+                # CAN3 wire-error instrument (bridge FW 5+). Renders
+                # 'unknown (never seen)' against an older bridge rather than
+                # vanishing, so a missing row never reads as a clean bus.
+                KeyValue(key='can3_errors',
+                         value=self._can3_errors_str()),
                 KeyValue(key='setpoints_sent',
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',

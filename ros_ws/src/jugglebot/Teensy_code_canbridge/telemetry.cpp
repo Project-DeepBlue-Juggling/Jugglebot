@@ -284,6 +284,40 @@ void hand_sensor_uplink_step() {
   s_hand_sensor_sent_us      = now;
 }
 
+// ── CAN3 wire-error uplink — contract in telemetry.h ─────────────────────────
+// Unconditional 1 Hz, NOT on-change: the whole point is a continuous baseline the
+// operator can difference across an A/B (poller on vs off), and "silence means
+// healthy" is exactly the ambiguity that cost the 2026-07-29 investigation a
+// session. A flat 58 B/s is a rounding error against the ~333 frame/s uplink.
+static constexpr uint64_t CAN_ERRORS_PERIOD_US = 1000000u;   // 1 Hz
+static uint64_t s_can_errors_sent_us = 0;
+
+void can_errors_uplink_step() {
+  const uint64_t now = micros64();   // interval clock: emission pacing
+  if (s_can_errors_sent_us != 0 && (now - s_can_errors_sent_us) < CAN_ERRORS_PERIOD_US) return;
+  s_can_errors_sent_us = now;
+
+  const CanRxHealth h = can_buses_rx_health();
+  const BusRxHealth& j = h.jugglebot;     // CAN3 only — see the message summary
+  JbUdp::CanErrorsPayload p{};
+  p.ack_cnt       = j.ack_cnt;
+  p.crc_cnt       = j.crc_cnt;
+  p.form_cnt      = j.form_cnt;
+  p.stuff_cnt     = j.stuff_cnt;
+  p.bit0_cnt      = j.bit0_cnt;
+  p.bit1_cnt      = j.bit1_cnt;
+  p.err_tx_ctx    = j.err_tx_ctx;
+  p.err_rx_ctx    = j.err_rx_ctx;
+  p.tec_inc_sum   = j.tec_inc_sum;
+  p.rec_inc_sum   = j.rec_inc_sum;
+  p.tx_gated      = j.tx_gated;
+  p.tec_live      = j.tec_live;
+  p.rec_live      = j.rec_live;
+  p.flt_live      = j.flt_live;
+  p.flt_sustained = j.flt_sustained;
+  udp_send_stream(JbUdp::MsgType::CAN_ERRORS, (const uint8_t*)&p, sizeof(p));
+}
+
 void telemetry_step() {
   send_telemetry();
   send_bb_estimates();   // BB pitch/hand pos+vel @ TELEM_RATE_HZ (during-throw diagnostics)

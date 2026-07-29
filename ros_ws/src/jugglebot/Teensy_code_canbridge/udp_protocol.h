@@ -45,6 +45,7 @@ namespace MsgType {
   constexpr uint8_t PLATFORM_FRAME = 137u;  // Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J)
   constexpr uint8_t HAND_CMD_ECHO = 138u;  // Hand command-echo telemetry (STREAM, T→J)
   constexpr uint8_t HAND_SENSOR = 139u;  // Hand ball-present sensor state (STREAM, T→J)
+  constexpr uint8_t CAN_ERRORS = 140u;  // 1 Hz CAN3 wire-error + fault-confinement counters (STREAM, T→J)
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
 }
 namespace RpcMethod {
@@ -291,6 +292,26 @@ struct HandSensorPayload {
 };
 static_assert(sizeof(HandSensorPayload) == 14, "HandSensorPayload size drift");
 
+// CanErrors: CAN3 wire-error + fault-confinement counters, 1 Hz. These numbers were already computed on every 1 kHz service tick (can_buses.cpp poll_bus_errors / service_bus) and then DISCARDED to the USB serial console — can_buses.h said outright that they are 'NOT on the UDP uplink'. That is exactly why the 2026-07-29 CAN3 bus-health flap could not be root-caused from an 8 MB bag: the bag proved the bus was entering error-passive at 42.4 % duty but carried nothing that could say WHICH wire-error class was driving it, so layer 2 of that investigation (logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md) stayed open pending a serial-console bench session. This message closes that gap: it is the Jetson-side half of the discriminator table in that entry. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. CAN3 (the Jugglebot core bus) ONLY — CAN1/CAN2 keep their serial-only counters until something needs them, and a per-bus array would triple the wire cost for two buses nobody is currently debugging. All counters are CUMULATIVE SINCE BOOT (u32, free-running; the consumer differences them) except the three live/derived bytes at the end. Read tec_inc_sum vs rec_inc_sum to attribute error pressure to TX vs RX even when the live counters decay between 1 Hz samples.
+struct CanErrorsPayload {
+  uint32_t ack_cnt;  // ACKERR snapshots — TX un-ACKed (no other node received it)
+  uint32_t crc_cnt;  // CRCERR snapshots — RX CRC mismatch (noise / signal integrity)
+  uint32_t form_cnt;  // FRMERR snapshots — RX fixed-form field violated
+  uint32_t stuff_cnt;  // STFERR snapshots — RX >5 equal bits (noise / clocking)
+  uint32_t bit0_cnt;  // BIT0ERR snapshots — TX sent dominant, read back recessive
+  uint32_t bit1_cnt;  // BIT1ERR snapshots — TX sent recessive, read back dominant
+  uint32_t err_tx_ctx;  // Wire-error snapshots with ESR1.TX set (error fired while transmitting)
+  uint32_t err_rx_ctx;  // Wire-error snapshots with ESR1.RX set (error fired while receiving)
+  uint32_t tec_inc_sum;  // Sum of positive inter-tick TEC deltas — TX-side error PRESSURE (+8/error)
+  uint32_t rec_inc_sum;  // Sum of positive inter-tick REC deltas — RX-side error pressure (+1/error)
+  uint32_t tx_gated;  // TX attempts refused by the bus-partner presence gate
+  uint8_t tec_live;  // ECR TXERRCNT at the last service tick (>=128 => error-passive)
+  uint8_t rec_live;  // ECR RXERRCNT at the last service tick
+  uint8_t flt_live;  // Live ESR1 FLTCONF: 0 active / 1 passive / 2 bus-off (INSTANTANEOUS)
+  uint8_t flt_sustained;  // 1 => flt_live>=1 held >= CAN_PASSIVE_SUSTAIN_US, i.e. the command gate is actually refusing (classify_command_gate). The one bit that distinguishes a harmless transient from a real command outage.
+};
+static_assert(sizeof(CanErrorsPayload) == 48, "CanErrorsPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -327,6 +348,7 @@ constexpr uint16_t LEG_CMD_SIZE = 56u;
 constexpr uint16_t PLATFORM_FRAME_SIZE = 21u;
 constexpr uint16_t HAND_CMD_ECHO_SIZE = 16u;
 constexpr uint16_t HAND_SENSOR_SIZE = 14u;
+constexpr uint16_t CAN_ERRORS_SIZE = 48u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 

@@ -95,8 +95,13 @@ static uint8_t  s_result[NUM_AXES] = { HOMING_NONE };   // legs + hand
 //    which fault_machine raises independent of mpc_active; a position/velocity
 //    estop must abort homing, not just an ODrive-reported fatal). ───────────────
 static bool homing_allowed() {
-  const uint8_t h = can_buses_stats().jugglebot_health;
-  if (h == JbUdp::BusHealth::WARN || h == JbUdp::BusHealth::BUS_OFF) return false;
+  // Bus term routed through the SHARED predicate (2026-07-29): this used to
+  // re-derive it from can_buses_stats().jugglebot_health, which is the
+  // INSTANTANEOUS report and would keep refusing on a transient error-passive
+  // blip long after jugglebot_commands_allowed() stopped doing so. One
+  // enforcement point — see classify_command_gate in can_buses.h. The fault /
+  // E-STOP terms below are this gate's own and are unchanged.
+  if (!jugglebot_commands_allowed()) return false;
   if (fault_can_bus_down()) return false;
   if (fault_guard_mode() == JbUdp::GuardMode::ESTOP) return false;
   return true;

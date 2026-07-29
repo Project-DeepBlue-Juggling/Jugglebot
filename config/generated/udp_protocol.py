@@ -45,6 +45,7 @@ class MsgType(IntEnum):
     PLATFORM_FRAME = 137  # Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J)
     HAND_CMD_ECHO = 138  # Hand command-echo telemetry (STREAM, T→J)
     HAND_SENSOR = 139  # Hand ball-present sensor state (STREAM, T→J)
+    CAN_ERRORS = 140  # 1 Hz CAN3 wire-error + fault-confinement counters (STREAM, T→J)
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
 
 class RpcMethod(IntEnum):
@@ -499,6 +500,39 @@ class HandSensor:
         vals = _HAND_SENSOR_STRUCT.unpack(data[:14])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it))
+
+# CanErrors: CAN3 wire-error + fault-confinement counters, 1 Hz. These numbers were already computed on every 1 kHz service tick (can_buses.cpp poll_bus_errors / service_bus) and then DISCARDED to the USB serial console — can_buses.h said outright that they are 'NOT on the UDP uplink'. That is exactly why the 2026-07-29 CAN3 bus-health flap could not be root-caused from an 8 MB bag: the bag proved the bus was entering error-passive at 42.4 % duty but carried nothing that could say WHICH wire-error class was driving it, so layer 2 of that investigation (logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md) stayed open pending a serial-console bench session. This message closes that gap: it is the Jetson-side half of the discriminator table in that entry. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. CAN3 (the Jugglebot core bus) ONLY — CAN1/CAN2 keep their serial-only counters until something needs them, and a per-bus array would triple the wire cost for two buses nobody is currently debugging. All counters are CUMULATIVE SINCE BOOT (u32, free-running; the consumer differences them) except the three live/derived bytes at the end. Read tec_inc_sum vs rec_inc_sum to attribute error pressure to TX vs RX even when the live counters decay between 1 Hz samples.
+CAN_ERRORS_FMT = '<IIIIIIIIIIIBBBB'
+CAN_ERRORS_SIZE = 48
+_CAN_ERRORS_STRUCT = struct.Struct(CAN_ERRORS_FMT)
+assert _CAN_ERRORS_STRUCT.size == 48
+
+@dataclass
+class CanErrors:
+    ack_cnt: int = 0
+    crc_cnt: int = 0
+    form_cnt: int = 0
+    stuff_cnt: int = 0
+    bit0_cnt: int = 0
+    bit1_cnt: int = 0
+    err_tx_ctx: int = 0
+    err_rx_ctx: int = 0
+    tec_inc_sum: int = 0
+    rec_inc_sum: int = 0
+    tx_gated: int = 0
+    tec_live: int = 0
+    rec_live: int = 0
+    flt_live: int = 0
+    flt_sustained: int = 0
+
+    def pack(self) -> bytes:
+        return _CAN_ERRORS_STRUCT.pack(self.ack_cnt, self.crc_cnt, self.form_cnt, self.stuff_cnt, self.bit0_cnt, self.bit1_cnt, self.err_tx_ctx, self.err_rx_ctx, self.tec_inc_sum, self.rec_inc_sum, self.tx_gated, self.tec_live, self.rec_live, self.flt_live, self.flt_sustained)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'CanErrors':
+        vals = _CAN_ERRORS_STRUCT.unpack(data[:48])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'

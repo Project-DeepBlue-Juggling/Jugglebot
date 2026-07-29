@@ -62,9 +62,14 @@ bool can_jugglebot_send(const ODrive::CanFrame& f);  // CAN3 Jugglebot core TX (
 
 // "Never command a confirmed-dead bus." True iff CAN3 (the Jugglebot core bus
 // carrying the leg + hand ODrives AND the Platform-Teensy relay partner) is NOT
-// in a WARN/BUS_OFF state. Since 2026-07-05 those states come from
-// classify_bus_health(): WARN = RX stale > 2 s OR live error-passive; BUS_OFF =
-// live controller bus-off (previously staleness-only — BUS_OFF was unreachable).
+// in a WARN/BUS_OFF state. Since 2026-07-29 those states come from
+// classify_command_gate() — NOT classify_bus_health(): WARN = RX stale > 2 s OR
+// SUSTAINED live error-passive (≥ CAN_PASSIVE_SUSTAIN_US); BUS_OFF = live
+// controller bus-off, refused instantly. The sustain requirement is the fix for
+// the 2026-07-29 CAN3 flap — see classify_command_gate above for why an
+// instantaneous error-passive reading is the wrong thing to gate on. The
+// 2026-07-05 bus-off wiring (BUS_OFF previously unreachable, staleness-only) is
+// preserved unchanged.
 // The shared gate for every CAN3-bound RPC (rpc.cpp leg frames + platform_relay
 // reads/writes). OK/UNKNOWN both allow commands so the initial bring-up sequence
 // works before telemetry warms. (Native harness fakes this via
@@ -210,10 +215,66 @@ inline uint8_t classify_bus_health(uint64_t last_rx_us, uint64_t now_us,
   return JbUdp::BusHealth::OK;
 }
 
+// ── Command gate: SUSTAINED confinement, not instantaneous ────────────────────
+// NORMATIVE SPLIT (2026-07-29): bus health REPORTS instantaneous confinement;
+// the command gate ACTS only on SUSTAINED confinement. classify_bus_health above
+// is deliberately left untouched — it is the observability signal, and it must
+// keep telling the truth on the uplink and in /link_status even while the gate
+// declines to act on a transient.
+//
+// Root cause this split closes (2026-07-29 CAN3 flap,
+// logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md). Error-passive
+// is a TRANSIENT, self-healing controller state by construction: TEC decays −1
+// per successful TX. Gating every CAN3 command on an INSTANTANEOUS reading of it
+// produced two concrete failure modes, both measured:
+//   1. POSITIVE FEEDBACK. Refusing TX removes the very traffic that decays TEC —
+//      the 100 Hz 0x7DD broadcast IS the decay pump (see the classify_bus_health
+//      note above). The gate therefore prolongs the condition it reacts to. The
+//      hand ball-sensor poller (gpio_poll.cpp:247) closed exactly this loop:
+//      poll → wire error → passive → WARN → poller gated → bus quiets → OK →
+//      poll, cycling 213 times in 83.5 s.
+//   2. AMPLIFICATION. Every CAN3 consumer shares this one predicate, so a
+//      low-rate wire-error source became a 42.4 %-duty outage across
+//      platform_relay (0x6D0 hand traj + STATE_READ), hand_ops, rpc.cpp leg
+//      frames, leg_homing and version_check at once — from an error source whose
+//      actual rate was not even measurable at the time (the per-class counters
+//      were serial-console-only; the CanErrors uplink now fixes that).
+//
+// BUS_OFF still refuses INSTANTLY and is exempt from the sustain requirement: it
+// is not a counter excursion, it is "the controller is off the bus and TX is
+// physically impossible", so waiting to act on it would buy nothing. RX staleness
+// (> 2 s) likewise stays instantaneous — it is already a sustained-by-definition
+// measurement.
+//
+// Accepted tradeoff, stated plainly: for up to CAN_PASSIVE_SUSTAIN_US we may emit
+// a discrete command onto a briefly error-passive bus. Bounded — error-passive
+// nodes still transmit normally (only BUS_OFF stops TX), FlexCAN retransmits, each
+// caller's own ack/timeout path handles a genuine loss, and the bus-partner
+// presence gate inside can_*_send() independently refuses a partner-less bus. The
+// 500 Hz leg-setpoint path was ALREADY ungated on this bus (leg_interp.cpp), so
+// this is strictly less exposure than the status quo already accepts.
+//
+// Pure and header-only for the same reason as classify_bus_health: the native
+// harness pins the truth table without compiling can_buses.cpp.
+inline uint8_t classify_command_gate(uint64_t last_rx_us, uint64_t now_us,
+                                     uint8_t flt_live, uint8_t flt_sustained) {
+  if (last_rx_us == 0) return JbUdp::BusHealth::UNKNOWN;
+  if (flt_live >= 2) return JbUdp::BusHealth::BUS_OFF;          // instant, never debounced
+  if (flt_live == 1 && flt_sustained) return JbUdp::BusHealth::WARN;
+  if (now_us - last_rx_us > CAN_HEARTBEAT_TIMEOUT_US) return JbUdp::BusHealth::WARN;
+  return JbUdp::BusHealth::OK;
+}
+
 // ── RX-health observability (bench/debug telemetry) ──────────────────────────
 //  Diagnostic counters that let a future bug be told apart by class. Surfaced over
-//  the USB Serial console by task_diag (NOT on the UDP uplink — the wire format is
-//  owned elsewhere; promoting these to a telemetry frame is a follow-up). Every
+//  the USB Serial console by task_diag; since 2026-07-29 CAN3's subset (the
+//  per-type wire-error counts, TX/RX attribution, live TEC/REC, the inc-sums,
+//  tx_gated and the confinement bytes) ALSO rides the UDP uplink as the additive
+//  CanErrors frame (MsgType 0x8C, telemetry.cpp can_errors_uplink_step) and lands
+//  in /link_status as the can3_errors row. That promotion IS the follow-up this
+//  comment used to defer: being serial-only is precisely why the 2026-07-29 CAN3
+//  flap could be seen in a rosbag but not explained from one. CAN1/CAN2 remain
+//  serial-only until something needs them. Every
 //  field is CUMULATIVE or STICKY-since-boot, so a single rare transient (a one-off
 //  starvation, a momentary bus-off) is never lost between 1 Hz samples. Collected
 //  in can_buses_service() (1 kHz); see can_buses.cpp.
@@ -303,6 +364,12 @@ struct BusRxHealth {
   // caller still tries to TX — the visible witness that the gate is doing its job
   // instead of letting un-ACKed TX pin TEC.
   uint32_t tx_gated;
+  // ── Sustained-confinement tracking (2026-07-29 CAN3 flap) ─────────────────
+  // flt_live above is INSTANTANEOUS. These two derive "has confinement PERSISTED"
+  // from it, sampled on the same 1 kHz service tick, and feed
+  // classify_command_gate() — see the normative split above that classifier.
+  uint64_t flt_passive_since_us;  // micros64() when flt_live last went 0→≥1; 0 ⇒ currently active
+  uint8_t  flt_sustained;         // 1 ⇒ flt_live ≥ 1 held continuously ≥ CAN_PASSIVE_SUSTAIN_US
 };
 
 struct CanRxHealth {

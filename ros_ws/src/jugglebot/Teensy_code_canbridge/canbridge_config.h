@@ -41,7 +41,7 @@ namespace CanBridge {
 
 // ── Identity ────────────────────────────────────────────────────────────────
 constexpr char     FW_NAME[]    = "jugglebot-canbridge";
-constexpr uint16_t FW_VERSION   = 4;          // bump on behavioural change (1→2: 2026-07-16 MAX_DEVIATION_REV 0.5→1.0 guard raise; 2→3: 2026-07-24 Diagnostic bus_current + heartbeat_seen, UDP PROTOCOL_VERSION 4; 3→4: 2026-07-29 gpio_poll hand ball sensor — CAN3 get_gpio_states poll on task_homing + serial console)
+constexpr uint16_t FW_VERSION   = 5;          // bump on behavioural change (1→2: 2026-07-16 MAX_DEVIATION_REV 0.5→1.0 guard raise; 2→3: 2026-07-24 Diagnostic bus_current + heartbeat_seen, UDP PROTOCOL_VERSION 4; 3→4: 2026-07-29 gpio_poll hand ball sensor — CAN3 get_gpio_states poll on task_homing + serial console; 4→5: 2026-07-29 CAN3 command gate keys on SUSTAINED error-passive confinement (classify_command_gate, CAN_PASSIVE_SUSTAIN_US) + additive CanErrors uplink 0x8C)
 
 // ── Network (static, point-to-point /30) ─────────────────────────────────────
 // IP octets and ports come from the generated udp_protocol.h (JbUdp::).
@@ -242,6 +242,24 @@ constexpr uint32_t BB_HEARTBEAT_TIMEOUT_US = BallButler::HEARTBEAT_TIMEOUT_MS * 
 // worst-case ODrive reboot gap) doesn't blip the gate — and on CAN3 the Platform
 // Teensy's 2 Hz TRAFFIC_REPORT keeps the bus "present" through ODrive-only outages.
 constexpr uint32_t BUS_PARTNER_STALENESS_US = 5000000u;  // 5.0 s
+// How long live error-PASSIVE confinement must PERSIST before the CAN3 command
+// gate refuses commands (classify_command_gate in can_buses.h; the observability
+// classifier classify_bus_health is deliberately NOT debounced). BUS_OFF is exempt
+// — it refuses instantly.
+//
+// SIZED BY THE DECAY-PUMP ARITHMETIC, NOT by the observed flap distribution —
+// picking a threshold that makes a symptom disappear is tuning-to-green, and the
+// 2026-07-29 wire errors are still unexplained (layer 2 of that investigation is
+// open pending the bench A/B). The physics: TEC climbs +8 per errored TX and
+// decays −1 per successful one, so recovery time is set by the SUCCESSFUL TX rate.
+// CAN3's floor is the 100 Hz 0x7DD time-sync broadcast (the only TX that survives
+// an idle robot — leg_interp is silent when the output gate is closed), so
+// climbing back from TEC ≈ 160 to the 127 error-active boundary takes ~330 ms.
+// 1.0 s therefore sits comfortably above every excursion a self-healing bus can
+// produce at the minimum TX rate, while staying WELL under the 2.0 s
+// CAN_HEARTBEAT_TIMEOUT_US staleness term — so the gate is never slower to react
+// than the path sitting beside it.
+constexpr uint32_t CAN_PASSIVE_SUSTAIN_US = 1000000u;    // 1.0 s
 // Jetson UDP link: declare lost after LINK_LOST_MISSES missed heartbeats.
 constexpr uint32_t JETSON_LINK_TIMEOUT_US =
     (1000000u / HEARTBEAT_RATE_HZ) * JbUdp::LINK_LOST_MISSES;   // 500 ms

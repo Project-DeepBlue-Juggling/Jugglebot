@@ -55,7 +55,23 @@ uint64_t micros64()    { return g_mono_us; }   // HAL: time_base.h
 uint64_t now_wall_us() { return g_mono_us; }   // HAL: time_base.h (cold-start uses only micros64)
 
 // ── Bus / fault gate ─────────────────────────────────────────────────────────
-void cs_set_jugglebot_health(uint8_t health) { g_health = health; }
+// Setting the reported health ALSO moves the command gate to the verdict the
+// real firmware would reach for that bus state. Before 2026-07-29 the cold-start
+// gates re-derived their bus term from can_buses_stats().jugglebot_health, so a
+// test could drive them with this setter alone; they now call the shared
+// jugglebot_commands_allowed() (one enforcement point — classify_command_gate in
+// can_buses.h). Coupling the two knobs here keeps those tests honest instead of
+// silently passing against a gate nobody set.
+//
+// The coupling is a DEFAULT, not an invariant: production has two classifiers
+// that agree on every cell except passive-but-not-yet-sustained, where health
+// reports WARN while the gate still allows. A test modelling that cell calls
+// cs_set_commands_allowed() AFTER this setter to force the disagreement.
+void cs_set_jugglebot_health(uint8_t health) {
+  g_health = health;
+  g_commands_allowed = (health != JbUdp::BusHealth::WARN &&
+                        health != JbUdp::BusHealth::BUS_OFF);
+}
 void cs_set_can_bus_down(bool down)          { g_can_bus_down = down; }
 void cs_set_guard_estop(bool estop)          { g_guard_estop = estop; }
 void cs_set_commands_allowed(bool allowed)   { g_commands_allowed = allowed; }

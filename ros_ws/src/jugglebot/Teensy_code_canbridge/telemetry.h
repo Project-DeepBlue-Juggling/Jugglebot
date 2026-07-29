@@ -51,4 +51,15 @@ void hand_cmd_echo_uplink_step();
 // sensor compiled out" from "no bridge at all".
 void hand_sensor_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the CAN3
+// wire-error + fault-confinement counters as a CAN_ERRORS frame at a flat 1 Hz.
+// These counters have been computed every 1 kHz service tick since the 2026-07-05
+// marginal-CAN3 work and were reachable ONLY over the USB serial console; the
+// 2026-07-29 CAN3 flap could not be root-caused from a rosbag for exactly that
+// reason (logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md, layer 2).
+// Unconditional rather than on-change ON PURPOSE: an operator differencing an A/B
+// needs a continuous baseline, and "no frame" must never be ambiguous with "no
+// errors".
+void can_errors_uplink_step();
+
 }  // namespace CanBridge

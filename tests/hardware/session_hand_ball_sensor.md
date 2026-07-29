@@ -26,7 +26,7 @@ bridge flash**. No code changes should be needed to run it.
 **Step arc at a glance:**
 | Step | What it proves | Ball? | Robot armed? | Motion? |
 |------|----------------|-------|--------------|---------|
-| **1** flash | FW_VERSION 4 is running; the hand ODrive reports the fw the endpoint table is pinned to | no | no | none |
+| **1** flash | FW_VERSION 5 (or 4 if the CAN3-gate fix has not been flashed yet) is running; the hand ODrive reports the fw the endpoint table is pinned to | no | no | none |
 | **2** toggle gate | endpoint id + pin mode + wiring, end to end (**BLOCKING**) | no | **no** | none |
 | **3** bring-up | home → activate → 40 Hz hold; the arming state steps 4–6 need | optional (see § Safe state) | **arms here** | **FIRST MOTION** (homing + the ACTIVE lift) |
 | **4** reply cadence | the poll is healthy on the loaded bus; sizes the staleness window | no | yes | (a) hold, (b) **platform motion** |
@@ -313,7 +313,8 @@ grep -n 'FW_VERSION' ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config
 grep -n -A1 'namespace odrive_pro_0_6_11' ros_ws/src/jugglebot/Teensy_code_canbridge/protocol_config.h
 grep -n -A7 'namespace JBBallDetect' ros_ws/src/jugglebot/Teensy_code_canbridge/hardware_config.h
 ```
-- **Expected** (verified in-tree 2026-07-29): `FW_VERSION = 4`;
+- **Expected**: `FW_VERSION = 5` (or `4` if the CAN3-gate fix has not landed in the
+  tree yet — verified in-tree at `4` on 2026-07-29, before that fix);
   `odrive_pro_0_6_11::get_gpio_states = 726`; `JBBallDetect` with `ENABLED = true`,
   `GPIO_PIN = 2`, `CHECK_INTERVAL_MS = 20`, `MAX_MISSING_SAMPLES = 5`,
   `CHECK_TIMEOUT_MS = 100`, `EXPECTED_FW[3] = {0, 6, 11}`.
@@ -321,6 +322,36 @@ grep -n -A7 'namespace JBBallDetect' ros_ws/src/jugglebot/Teensy_code_canbridge/
   the blocking-gate box at the top. 700 belongs only under `odrive_s1_0_6_11`.
 - A dirty firmware directory means uncommitted generated headers — resolve before
   flashing, or you will not know what you flashed.
+
+### P5 — CAN3 A/B on the CURRENT FW4, **before** you flash v5
+
+**Run this before the flash, not after.** The 2026-07-29 sitting
+(bag `2026-07-29_22-37-06`) surfaced `bus1_health` flapping OK↔WARN at a **42.4 % duty**
+with FW 4's poller live. The v5 fix changes the CAN3 command gate that produces that flap,
+so the poller-ON/OFF discriminator is only measurable on the firmware that is on the board
+**now** — flash first and the pre-fix arm is gone. Skip this only if the board is already
+running v5.
+
+**Robot idle, ODrives powered, no motion.**
+
+```bash
+ls -l /dev/ttyACM0
+source ~/Desktop/PDJ_venv/venv/bin/activate
+cd ~/Desktop/Jugglebot/ros_ws/src/jugglebot/Teensy_code_canbridge
+pio device monitor -e teensy41
+```
+
+Capture **60 s with the poller ON**, then type `gpio_poll off`, capture **60 s**, then
+`gpio_poll on`, capture **60 s**. Record the 1 Hz `[canhealth] jugglebot …` and
+`[canerrs]  jugglebot …` lines for each phase.
+
+- **The discriminator** is whether `tecInc` / `recInc` climb with the poller ON and go flat
+  with it OFF, and which of `ack= crc= form= stuff= bit0= bit1=` dominates, plus the
+  `txctx=` vs `rxctx=` split.
+- **`pio device monitor` holds `/dev/ttyACM0`** — close it before any flash.
+- **`gpio_poll off` is NOT persistent** — the poller boots ON
+  (`gpio_poll.cpp:190`, `s_enabled = true`), so it must be re-typed after every bridge
+  reboot or power cycle until the fix is flashed.
 
 ---
 
@@ -343,7 +374,7 @@ pio run -e teensy41 -t upload -t monitor
 > assembled robot"*, lands **last** and is what the board ends up running. It is a
 > cadence-only variant (250 Hz telemetry, 100 Hz knots, a forced 250 Hz DIAGNOSTIC
 > on axis 0) with **zero wire-format change**, which is precisely the problem:
-> **every v4 gate in this runbook — the boot banner, `gpio_poll`, the `HAND_SENSOR`
+> **every firmware-identity gate in this runbook — the boot banner, `gpio_poll`, the `HAND_SENSOR`
 > row, the toggle gate — passes identically on it.** Nothing downstream would tell
 > you. `default_envs = teensy41` is now set in `platformio.ini` as a second line of
 > defence, but keep the explicit `-e teensy41` in every command: it is the one that
@@ -377,18 +408,20 @@ surface A, step 5's A/B toggle) runs from **this same shell** — venv active, c
 
 | Check | Expected | If not |
 |---|---|---|
-| **1a** boot banner | `[boot] jugglebot-canbridge v4  eth link=1  ip=192.168.42.2` | **`v3` or lower ⇒ the flash did not take.** Re-flash |
+| **1a** boot banner | `[boot] jugglebot-canbridge v5  eth link=1  ip=192.168.42.2` — **v5 (or v4 if the CAN3-gate fix has not been flashed yet)** | **Anything below the version you just flashed ⇒ the flash did not take.** Re-flash |
 | **1b** LED | on-board LED blinking at 1 Hz | scheduler did not start — see `Teensy_code_canbridge/BRINGUP.md` § "If something goes wrong" |
 | **1c** `gpio_poll` (type it into the monitor) | `[gpio_poll] enabled=1 state=<HELD\|EMPTY\|UNKNOWN> raw=0x……… raw_held=… miss=… stale=… synced=… mismatch=0` — those three are the console's **only** `state=` tokens, and **`UNKNOWN` is expected here** before any good reply has landed (or while `synced=0`) | `[console] unknown command` ⇒ pre-v4 firmware. `[gpio_poll] compiled out` ⇒ built with `jugglebot_ball_detect.enabled=false` |
 | **1d** version park | **no** `[gpio_poll] VERSION MISMATCH … poller parked` line (it repeats once per second while latched) | see 1f |
 
-> **1a is not the only v4 surface.** It is the only surface that prints the FW_VERSION
-> **number** (that number is not on the UDP wire and no ROS topic carries it), but two
-> independent checks below discriminate v4 from v3 without it:
+> **1a is not the only firmware-identity surface.** It is the only surface that prints the
+> FW_VERSION **number** (that number is not on the UDP wire and no ROS topic carries it),
+> but two independent checks below discriminate v4-or-later from v3 without it:
 > **1c** — `gpio_poll` is a v4-only console command, so *any* `[gpio_poll] …` reply proves
-> v4 and `[console] unknown command` proves pre-v4; and **1h** — the 1 Hz `HAND_SENSOR`
-> keepalive is v4-only, so a populated sensor row proves v4 reached the Jetson. A missed
-> banner is therefore an annoyance, not a blocker.
+> v4-or-later and `[console] unknown command` proves pre-v4; and **1h** — the 1 Hz
+> `HAND_SENSOR` keepalive is v4-only, so a populated sensor row proves v4-or-later reached
+> the Jetson. Neither of them separates **v5 from v4** — the banner is the only surface
+> that does, so if you need to know whether the CAN3-gate fix is running, score 1a. A
+> missed banner is otherwise an annoyance, not a blocker.
 
 Jetson-side, after relaunching the stack (`ros2 launch jugglebot jugglebot_launch.py`
 from the P2 shell, so `install/setup.bash` is still sourced):
@@ -404,7 +437,7 @@ PYTHONUNBUFFERED=1 timeout 4 ros2 topic echo /link_status | grep -A1 -e 'key: od
 | **1e** fw line | `Jugglebot firmware check PASSED — all axes match expected versions (fw 0:0.6.11-<u> 1:… 6:0.6.11-<u>)` | **On a partial bench rig this log line NEVER FIRES** — it is emitted only once every present Jugglebot axis has replied, and the sweep only queries axes that heartbeat. The `/link_status` `odrive_fw_versions` row is then the surface; absent axes render `?`, never a fabricated number |
 | **1f** axis 6 triple | `6:0.6.11-<u>` | The **triple** is what matters: `0.6.11` is what the endpoint table (726) is pinned to. Anything else ⇒ **ABORT** — `gpio_poll` will latch the MISMATCH park and never send an RxSdo, which is correct behaviour, not a bug to work around |
 | **1g** `fw_unreleased` | read `<u>` and **record it** | This is Get_Version's fourth byte, surfaced by Phase 0 specifically for this moment. The ODrive GUI reports the drive as `0.6.11-1`; the plan's expectation is that **the CAN frame does not carry the `-1`**, i.e. `<u>` reads `0`. Either value is fine for the endpoint id (0.6.11 and 0.6.11-1 share endpoint-tree CRC 55416) — **record what it actually says**, do not assume. `-?` means the byte was never surfaced (stale node) |
-| **1h** sensor row | `stale miss=0 raw=0x00000000` (or `held`/`empty` if the poll is already running) | **`unknown (never seen)` ⇒ no `HAND_SENSOR` frame has ever reached the Jetson.** On a v4 bridge the 1 Hz keepalive starts within ~1 s of boot regardless of whether the poll is working, so this row is a **secondary confirmation that v4 is running** |
+| **1h** sensor row | `stale miss=0 raw=0x00000000` (or `held`/`empty` if the poll is already running) | **`unknown (never seen)` ⇒ no `HAND_SENSOR` frame has ever reached the Jetson.** On a v4-or-later bridge the 1 Hz keepalive starts within ~1 s of boot regardless of whether the poll is working, so this row is a **secondary confirmation that v4-or-later is running** |
 
 **PASS**: 1a–1h as stated.
 
@@ -413,23 +446,24 @@ row into step 2):
 
 | Failing check | What it means | Do this |
 |---|---|---|
-| **1a** banner reads < v4 | the flash did not take (or you are watching a pre-flash scrollback) | Re-flash: `pio run -e teensy41 -t upload -t monitor`. If the loader waited, press the program button. **ABORT step 2** until a v4 banner (or 1c/1h) confirms v4 |
-| **1a** banner never appears | the monitor attached after the reset | Not itself a failure — re-run `pio run -e teensy41 -t upload -t monitor`, or score v4 from **1c + 1h** instead. Record which surface you used |
+| **1a** banner reads below the version you flashed | the flash did not take (or you are watching a pre-flash scrollback) | Re-flash: `pio run -e teensy41 -t upload -t monitor`. If the loader waited, press the program button. **ABORT step 2** until a banner (or 1c/1h) confirms v4-or-later |
+| **1a** banner never appears | the monitor attached after the reset | Not itself a failure — re-run `pio run -e teensy41 -t upload -t monitor`, or score v4-or-later from **1c + 1h** instead (they cannot tell you v5 vs v4). Record which surface you used |
 | **1b** LED solid / not blinking at 1 Hz | FreeRTOS scheduler did not start (`task_diag` owns the blink) — the console and the poller are both dead with it | `BRINGUP.md` § "If something goes wrong"; check the fatal-path text on the monitor. **ABORT the session** — nothing downstream is trustworthy |
 | **1c** `[console] unknown command` | pre-v4 firmware is running | Re-flash. **ABORT step 2** |
 | **1c** `[gpio_poll] compiled out` | built with `jugglebot_ball_detect.enabled=false` | Fix the YAML, `python config/generate_config.py`, re-flash. **ABORT step 2** |
-| **1c** `enabled=0` | v4 is running but the poller was toggled off (a previous sitting's ABORT-park — see step 2) | Type `gpio_poll on`, confirm `enabled=1`, continue |
+| **1c** `enabled=0` | v4-or-later is running but the poller was toggled off (a previous sitting's ABORT-park — see step 2) | Type `gpio_poll on`, confirm `enabled=1`, continue |
 | **1d** `VERSION MISMATCH … poller parked` | the hand ODrive is not on the expected fw | Go to **1f**. **Do not** widen `EXPECTED_FW` to silence it — the park is protecting you from an unverified endpoint id |
 | **1e** line absent | partial bench rig (expected), **or** a genuinely silent axis | Read `odrive_fw_versions` on `/link_status` instead. If axis 6 renders `?`, the hand ODrive is not heartbeating — power/CAN3 problem. **ABORT step 2**: an axis that never heartbeats never gets a version, and the poller stays parked |
 | **1f** axis 6 is not `0.6.11` | the endpoint table (726) is pinned to a fw the drive is not running | **ABORT.** Do not proceed. Resolve the drive's firmware, or re-derive the endpoint id for the fw it actually runs |
 | **1g** `<u>` reads `-?` | the fourth byte was never surfaced (stale node) | Rebuild + relaunch (P2), re-read. Not a step-2 blocker on its own — but **record** that you could not read it |
-| **1h** `unknown (never seen)` | **no `HAND_SENSOR` frame has EVER reached the Jetson** — with a confirmed-v4 banner this is the **UDP link**, not the sensor | **BLOCKS step 2.** Surface B of the gate reads exactly this row, so a dead row means the gate has only one working surface. Check `/link_status` `bridge_link` and `rx_frames`; the bridge is Jetson-5V powered and outlives the ODrives, so it can be alive with the link down. Also see § Deferred — a `HandSensor` decode failure renders identically with nothing in the log |
+| **1h** `unknown (never seen)` | **no `HAND_SENSOR` frame has EVER reached the Jetson** — with a confirmed v4-or-later banner this is the **UDP link**, not the sensor | **BLOCKS step 2.** Surface B of the gate reads exactly this row, so a dead row means the gate has only one working surface. Check `/link_status` `bridge_link` and `rx_frames`; the bridge is Jetson-5V powered and outlives the ODrives, so it can be alive with the link down. Also see § Deferred — a `HandSensor` decode failure renders identically with nothing in the log |
 
-**If the flash itself fails or you ABORT at step 1** (loader error, 1b, or a v4 banner you
+**If the flash itself fails or you ABORT at step 1** (loader error, 1b, or a banner you
 cannot get): the board is left running **whatever firmware was on it before**. Nothing in
 this session has changed its behaviour, so **no park action is needed** — record the
-FW_VERSION you last confirmed (`v3` if the flash never took) and note that subsequent
-sittings run on that firmware unchanged. Do **not** leave the board half-flashed: a failed
+FW_VERSION you last confirmed (`v4` if the flash never took: the operator flashed v4 on
+2026-07-29 and the board has run it since) and note that subsequent sittings run on that
+firmware unchanged. Do **not** leave the board half-flashed: a failed
 `teensy_loader_cli` write leaves the bootloader waiting, and the board will not run
 *anything* until a write completes. Re-run the flash (with the program button if needed)
 before walking away.
@@ -534,7 +568,8 @@ pio device monitor -e teensy41
 gpio_poll off        # -> [gpio_poll] enabled=0 …
 ```
 
-Record in the results log: **"bridge left at FW_VERSION 4 with `gpio_poll` OFF"**.
+Record in the results log: **"bridge left at FW_VERSION \<the version you flashed\> with
+`gpio_poll` OFF"**.
 
 **Subsequent sittings MAY run on this firmware — yes, deliberately.** With the poller off:
 
@@ -911,7 +946,7 @@ Results go into a **new** `logbook/YYYY-MM-DD-hand-ball-sensor-commissioning.md`
 by the session that runs the sitting, with **(date, command, result) triples** for every
 number — not bare counts. Minimum contents:
 
-- Step 1: the boot banner line (or which alternate v4 surface you scored it from), the
+- Step 1: the boot banner line (or which alternate firmware-identity surface you scored it from), the
   axis-6 fw triple **and** `fw_unreleased`, and whether the Phase 0 log line fired or the
   rig was partial.
 - Step 2: **both literal raw words**, the XOR, the cycle count, all three surfaces
@@ -928,7 +963,7 @@ number — not bare counts. Minimum contents:
   carry motion actually was** (MOTION-B or your substitution), and the
   `max_missing_samples` verdict (keep / retune to N, with the measurement behind it).
 - `uptime_ms` beside **every** timing number (standing rule).
-- If you ABORT-parked the bridge (step 2), say so: **"FW_VERSION 4, `gpio_poll` OFF"**.
+- If you ABORT-parked the bridge (step 2), say so: **"FW_VERSION \<n\>, `gpio_poll` OFF"**.
 
 Then the validated `/hand_telemetry` tri-state hands to the **possession workstream** at
 the C-POSSESS-1 seam (`SOURCE_HAND_BALL_SENSOR`, reserved by name in
@@ -947,6 +982,6 @@ restatements:
   sitting changes the keepalive, that window is silently wrong.
 - **A `HandSensor` decode failure renders as `unknown (never seen)` with nothing in the
   log** — same entry, open question 1. Relevant only if step 1h stays stubborn against a
-  confirmed-v4 banner.
+  confirmed v4-or-later banner.
 - **BallButler's fail-open reload-skip defect** is a separate shipping bug with its own
   investigation; this session's two-hop validity pattern is the shape of its fix.
