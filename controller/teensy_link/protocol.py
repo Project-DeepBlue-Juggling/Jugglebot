@@ -58,6 +58,7 @@ from udp_protocol import (  # noqa: E402, F401
     FaultState,
     GuardMode,
     HeartbeatT2JFlags,  # T2J heartbeat flag bits (incl. the per-leg TORQUE_CLAMP_MASK)
+    HandSensorFlags,  # HAND_SENSOR flag bits (raw/debounced held, valid, stale, time_synced)
     # Framing
     crc16_ccitt,
     encode_frame,

@@ -34,6 +34,19 @@ def _create_mock_module(name, attrs=None):
 
 
 @dataclass
+class MsgTime:
+    """builtin_interfaces/Time stand-in for message FIELDS (not rclpy.time.Time).
+
+    Default-constructed to zero exactly like the real message, so a producer
+    that leaves a stamp untouched is distinguishable from one that wrote a
+    value — the "never seen ⇒ zeroed stamp" contract on HandTelemetryMessage
+    is asserted against these zeros.
+    """
+    sec: int = 0
+    nanosec: int = 0
+
+
+@dataclass
 class MotorStateSingle:
     active_errors: int = 0
     disarm_reason: int = 0
@@ -112,6 +125,12 @@ class HandTelemetryMessage:
     pos_meas: float = 0.0
     vel_meas: float = 0.0
     iq_meas: float = 0.0
+    # Hand ball-present sensor (tri-state: ball_held is meaningless unless
+    # ball_held_valid). Mirrors msg/HandTelemetryMessage.msg defaults.
+    ball_held: bool = False
+    ball_held_raw: bool = False
+    ball_held_valid: bool = False
+    ball_held_stamp: object = field(default_factory=MsgTime)
 
 
 @dataclass

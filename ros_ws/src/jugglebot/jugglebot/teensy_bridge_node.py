@@ -103,6 +103,7 @@ from controller.teensy_link import (
     BbAxisEstimates,
     PlatformFrame,
     HandCmdEcho,
+    HandSensor,
 )
 from controller.teensy_link import protocol as p
 from controller.teensy_link import rpc_args
@@ -168,6 +169,24 @@ _T2J_FLAG_MPC_ACTIVE = 0x8
 # there), so surfacing it is backward-compatible with an unflashed bridge.
 _T2J_TORQUE_CLAMP_MASK = int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK)
 _T2J_TORQUE_CLAMP_SHIFT = int(p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
+
+# HandSensor.flags bits (T→J, hand ball-present sensor) — generated single
+# source: p.HandSensorFlags. An older bridge never sends the frame
+# (never-seen ⇒ UNKNOWN).
+_HAND_SENSOR_FLAG_RAW_HELD = int(p.HandSensorFlags.RAW_HELD)
+_HAND_SENSOR_FLAG_DEBOUNCED_HELD = int(p.HandSensorFlags.DEBOUNCED_HELD)
+_HAND_SENSOR_FLAG_VALID = int(p.HandSensorFlags.VALID)
+_HAND_SENSOR_FLAG_STALE = int(p.HandSensorFlags.STALE)
+_HAND_SENSOR_FLAG_TIME_SYNCED = int(p.HandSensorFlags.TIME_SYNCED)
+
+# Jetson-side RX-age window for HAND_SENSOR. The bridge sends a 1 Hz keepalive
+# whenever no new good reply lands, so ~3 missed keepalives means the FRAME
+# SOURCE died — not that the sensor went quiet. Measured against the Jetson's
+# own monotonic clock at RX, NEVER against HandSensor.t_bridge_us (a foreign
+# wall clock that can step). Without this gate a dead bridge or a dropped link
+# would leave the free-running 100 Hz hand_telemetry timer republishing
+# ball_held=True, ball_held_valid=True from cache forever.
+_HAND_SENSOR_RX_FRESH_S = 3.0
 
 # HeartbeatT2J.bb_flags bits (T→J, Ball Butler cutover).
 _T2J_BB_FLAG_BALL_IN_HAND  = 0x1
@@ -468,6 +487,13 @@ class TeensyBridgeNode(Node):
         self._lock = threading.Lock()
         self._latest_telemetry: Telemetry | None = None
         self._latest_heartbeat: HeartbeatT2J | None = None
+        # Latest HAND_SENSOR frame (hand ball-present switch) + the JETSON
+        # MONOTONIC arrival time. None until the first frame: that is the
+        # tri-state UNKNOWN, and it is also what an unflashed bridge (no Phase
+        # 3/4 firmware) looks like forever. The arrival time is deliberately
+        # host-monotonic — t_bridge_us is a foreign wall clock (§ Architecture).
+        self._latest_hand_sensor: HandSensor | None = None
+        self._latest_hand_sensor_mono = 0.0
         # Last fault_state seen on the T→J heartbeat, for edge-triggered logging in
         # _publish_link_status. None = nothing seen yet (so the first NONE is silent).
         self._last_fault_state: int | None = None
@@ -652,6 +678,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
         self._client.subscribe(int(MsgType.PLATFORM_FRAME), self._on_platform_frame)
         self._client.subscribe(int(MsgType.HAND_CMD_ECHO), self._on_hand_cmd_echo)  # hand conduit
+        self._client.subscribe(int(MsgType.HAND_SENSOR), self._on_hand_sensor)  # ball-present switch
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -1111,6 +1138,20 @@ class TeensyBridgeNode(Node):
         with self._lock:
             self._last_hand_cmd = {'pos': pos, 'vel': vel, 'tor': tor}
 
+    def _on_hand_sensor(self, msg_type, seq, payload, addr):
+        # RX-thread callback (hand ball-present sensor): stash the decoded frame
+        # AND the host monotonic arrival time — the arrival time is the only
+        # thing that can tell a live bridge from a dead one (the frame's own
+        # flags describe the bridge's SDO cache and say nothing about the link).
+        # Malformed frames dropped (never kill the RX thread).
+        try:
+            hs = HandSensor.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._latest_hand_sensor = hs
+            self._latest_hand_sensor_mono = time.monotonic()
+
     def _on_bb_estimates(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. The drain timer
         # publishes on the executor thread (never publish from the RX thread,
@@ -1538,6 +1579,34 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(f"Robot state publish error: {e}",
                                     throttle_duration_sec=5.0)
 
+    def _hand_sensor_snapshot(self):
+        """Cached HAND_SENSOR frame + the Jetson-side freshness verdicts.
+
+        Returns ``(frame, rx_fresh, valid)``. ``frame`` is None until the first
+        HAND_SENSOR arrives — tri-state UNKNOWN (boot, or a bridge running
+        firmware older than the Phase 3/4 poller, which never sends one).
+
+        ``valid`` is the Jetson-side gate and closes the hop the bridge cannot
+        see: the frame's own ``VALID`` (a gated good SDO reply) and
+        ``TIME_SYNCED`` (the bridge's wall anchor is set, so ``t_bridge_us``
+        means something) flags must BOTH be set, AND the frame must have
+        arrived within ``_HAND_SENSOR_RX_FRESH_S`` of now on the HOST monotonic
+        clock. The publisher is a free-running timer over this cache, so
+        without the RX-age term a dead link republishes a stale "ball held"
+        forever.
+        """
+        with self._lock:
+            hs = self._latest_hand_sensor
+            rx_mono = self._latest_hand_sensor_mono
+        if hs is None:
+            return None, False, False
+        rx_fresh = (time.monotonic() - rx_mono) <= _HAND_SENSOR_RX_FRESH_S
+        flags = int(hs.flags)
+        valid = bool(rx_fresh
+                     and flags & _HAND_SENSOR_FLAG_VALID
+                     and flags & _HAND_SENSOR_FLAG_TIME_SYNCED)
+        return hs, rx_fresh, valid
+
     def _publish_hand_telemetry(self):
         """Publish hand_telemetry from axis 6 of the Telemetry frame.
 
@@ -1545,7 +1614,8 @@ class TeensyBridgeNode(Node):
         Telemetry/Diagnostic cache, and (hand conduit) the COMMAND side (pos_cmd/
         vel_ff_cmd/tor_ff_cmd) from the last sniffed HAND_CMD_ECHO — the hand's
         commanded-vs-measured tracking-error diagnostic (catch-tuning) that was
-        dropped to 0 on the bridge until now.
+        dropped to 0 on the bridge until now. Also carries the hand ball-present
+        sensor as a TRI-STATE (ball_held is meaningless unless ball_held_valid).
         """
         try:
             with self._lock:
@@ -1562,6 +1632,23 @@ class TeensyBridgeNode(Node):
             msg.pos_meas = float(telem.pos_rev[_HAND_AXIS])
             msg.vel_meas = float(telem.vel_rps[_HAND_AXIS])
             msg.iq_meas = float(diag.iq_measured) if diag is not None else 0.0
+            # Ball-present sensor. Never-seen leaves the message defaults
+            # (False/False/False + a zero stamp) — an unflashed bridge must not
+            # look like a confident "no ball". A seen-but-not-valid frame keeps
+            # its last-known bits and stamp (the "how stale, and what was it?"
+            # diagnostic) with ball_held_valid False marking them untrustworthy.
+            hs, _rx_fresh, hs_valid = self._hand_sensor_snapshot()
+            msg.ball_held_valid = hs_valid
+            if hs is not None:
+                flags = int(hs.flags)
+                msg.ball_held = bool(flags & _HAND_SENSOR_FLAG_DEBOUNCED_HELD)
+                msg.ball_held_raw = bool(flags & _HAND_SENSOR_FLAG_RAW_HELD)
+                # Bridge wall-clock, already Jetson-epoch microseconds (the
+                # bridge is the time-sync master) — same conversion as
+                # _publish_bb_axis_estimates, NO Jetson-side offset.
+                t_us = int(hs.t_bridge_us)
+                msg.ball_held_stamp.sec = t_us // 1_000_000
+                msg.ball_held_stamp.nanosec = (t_us % 1_000_000) * 1000
             self.hand_telemetry_pub.publish(msg)
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Hand telemetry error: {e}",
@@ -1769,6 +1856,37 @@ class TeensyBridgeNode(Node):
                 parts.append(f'{axis}:{fw[0]}.{fw[1]}.{fw[2]}'
                              f"-{'?' if unrel is None else unrel}")
         return ' '.join(parts)
+
+    def _hand_ball_sensor_str(self) -> str:
+        """``/link_status`` rendering of the hand ball sensor.
+
+        Tri-state by construction: UNKNOWN is rendered explicitly (and
+        ``never seen`` distinguishes "no frame has ever arrived" from "a frame
+        arrived but could not be trusted") and is NEVER rendered as ``empty``
+        — boot, staleness and an un-anchored bridge clock all mean "we don't
+        know", not "no ball" (§ Architecture, normative).
+
+        The raw ``get_gpio_states`` word rides along in hex because it is the
+        Phase 7 step 2 gate's observable: a wrong-but-existing endpoint id
+        answers with a plausible CONSTANT, so only watching bit 2 of this word
+        move on both edges proves the id, the pin mode and the wiring.
+        """
+        hs, rx_fresh, valid = self._hand_sensor_snapshot()
+        if hs is None:
+            return 'unknown (never seen)'
+        flags = int(hs.flags)
+        if valid:
+            state = 'held' if flags & _HAND_SENSOR_FLAG_DEBOUNCED_HELD else 'empty'
+        elif not rx_fresh or flags & _HAND_SENSOR_FLAG_STALE:
+            # Distinguish "the reading aged out" (either hop) from "the bridge
+            # has a fresh frame it still won't vouch for" (e.g. no wall anchor).
+            state = 'stale'
+        else:
+            state = 'unknown'
+        # Lowercase hex to match the bridge console's %08lx — Phase 7 step 2
+        # compares the two surfaces textually.
+        return (f'{state} miss={int(hs.miss_count)} '
+                f'raw=0x{int(hs.raw_states):08x}')
 
     # ═══════════════════════════════════════════════════════════
     # Setpoint downlink (Commit 3) — gated, default disabled
@@ -2453,6 +2571,12 @@ class TeensyBridgeNode(Node):
                 # bench evidence of what the drives are running.
                 KeyValue(key='odrive_fw_versions',
                          value=self._odrive_fw_versions_str()),
+                # Hand ball-present sensor: tri-state word + miss count + the
+                # RAW get_gpio_states word in hex. Rendered unconditionally
+                # (never-seen reads 'unknown (never seen)') so an unflashed or
+                # dead bridge is visible here rather than absent.
+                KeyValue(key='hand_ball_sensor',
+                         value=self._hand_ball_sensor_str()),
                 KeyValue(key='setpoints_sent',
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',
