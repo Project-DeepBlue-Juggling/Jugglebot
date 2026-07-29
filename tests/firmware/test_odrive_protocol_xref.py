@@ -46,7 +46,7 @@ def golden() -> dict:
 # to the golden the REAL C++ header emitted. The (name → args) here MUST match the
 # table in native/test_odrive_protocol.cpp — the two encode the same wire commands
 # in two languages; agreement is the cross-language guarantee.
-_SDO_PARAM = "commutation_mapper.pos_abs"   # proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS == 488
+_SDO_PARAM = "get_gpio_states"   # proto.ENDPOINT_ODRIVE_PRO_0_6_11_GET_GPIO_STATES == 726
 
 
 def _leg_setpoint(axis, setpoint, vel, tor):
@@ -132,9 +132,9 @@ def test_decode_encoder_iq_temps_busvc():
 
 
 def test_decode_sdo_response():
-    data = struct.pack("<BHBf", 0, 488, 0, 3.14)
+    data = struct.pack("<BHBf", 0, 726, 0, 3.14)
     ep, val = od.decode_sdo_response(data)
-    assert ep == 488 and abs(val - 3.14) < 1e-6
+    assert ep == 726 and abs(val - 3.14) < 1e-6
 
 
 # ── Time-sync 0x7DD payload (bus.broadcast_time format) ───────────────────────

@@ -104,6 +104,11 @@ class CANInterface:
     # ODrive command IDs (from generated protocol_config.py)
     COMMANDS = proto.ODRIVE_COMMANDS
 
+    # STALE (2026-07-29): the flat proto endpoint ids were removed (now
+    # board+fw-qualified ENDPOINT_ODRIVE_*), so these two names no longer
+    # resolve. Harmless today — this module is already unimportable (line 47
+    # imports jugglebot.ball_butler_states, which does not exist outside
+    # archived/). Archived, not maintained.
     ARBITRARY_PARAMETER_IDS = {
         "commutation_mapper.pos_abs"  : proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS,
         "get_gpio_states"             : proto.ENDPOINT_GPIO_STATES,

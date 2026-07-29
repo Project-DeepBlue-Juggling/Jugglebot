@@ -55,8 +55,8 @@ static Row rows[] = {
   {"set_vel_gains",         ODrive::encode_set_vel_gains(0, 0.1f, 0.05f)},
   {"clear_errors",          ODrive::encode_clear_errors(0)},
   {"reboot",                ODrive::encode_reboot(0)},
-  {"sdo_read",              ODrive::encode_sdo_read(0, 488)},
-  {"sdo_write",             ODrive::encode_sdo_write(0, 488, 2.5f)},
+  {"sdo_read",              ODrive::encode_sdo_read(0, EndpointId::odrive_pro_0_6_11::get_gpio_states)},
+  {"sdo_write",             ODrive::encode_sdo_write(0, EndpointId::odrive_pro_0_6_11::get_gpio_states, 2.5f)},
   // encode_leg_setpoint: FF (0.5 rps, 0.1 Nm) chosen so leg-scale products are exact.
   {"leg_setpoint_leg0",     ODrive::encode_leg_setpoint(0, 2.0f, 0.5f, 0.1f)},
   {"leg_setpoint_hand",     ODrive::encode_leg_setpoint(HAND_AXIS, 2.0f, 0.5f, 0.1f)},

@@ -228,8 +228,13 @@ namespace SDO {
 // ==========================================================================
 
 namespace EndpointId {
-  constexpr uint16_t commutation_mapper_pos_abs = 488;
-  constexpr uint16_t GPIO_STATES = 700;
+  namespace odrive_pro_0_6_11 {
+    constexpr uint16_t get_gpio_states = 726;
+  }
+  namespace odrive_s1_0_6_11 {
+    constexpr uint16_t get_gpio_states = 700;
+    constexpr uint16_t commutation_mapper_pos_abs = 488;
+  }
 }
 
 // ==========================================================================
