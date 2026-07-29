@@ -432,6 +432,17 @@ BB_BD_MAX_MISSING_SAMPLES = 5
 BB_BD_CHECK_TIMEOUT_MS = 100
 
 # ============================================================================
+# Jugglebot Ball Detection
+# ============================================================================
+
+JB_BD_ENABLED = True
+JB_BD_GPIO_PIN = 2
+JB_BD_CHECK_INTERVAL_MS = 20
+JB_BD_MAX_MISSING_SAMPLES = 5
+JB_BD_CHECK_TIMEOUT_MS = 100
+JB_BD_EXPECTED_FW = [0, 6, 11]
+
+# ============================================================================
 # Catching Cone
 # ============================================================================
 

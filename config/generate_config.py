@@ -469,7 +469,8 @@ HW_SECTIONS = [
     ("ball_butler_operational",  "BB_OP_",     "BBOp",       "Ball Butler Operational"),
     ("ball_butler_heartbeat",    "BB_HB_",     "BBHb",       "Ball Butler Heartbeat Encoding"),
     ("ball_butler_ball_detect",  "BB_BD_",     "BBBallDetect","Ball Butler Ball Detection"),
-    # 23. Catching Cone
+    ("jugglebot_ball_detect",    "JB_BD_",     "JBBallDetect","Jugglebot Ball Detection"),
+    # 24. Catching Cone
     ("catching_cone",            "CC_",        "CatchingCone","Catching Cone"),
 ]
 

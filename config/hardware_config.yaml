@@ -1265,7 +1265,22 @@ ball_butler_ball_detect:
   check_timeout_ms: 100                # SDO request timeout {ms}
 
 # ============================================================
-# 23. Catching Cone
+# 23. Jugglebot Ball Detection
+#     Source: Teensy_code_canbridge (gpio_poll.cpp — NEW)
+#     Ball-presence detection in the Jugglebot hand via the hand ODrive's GPIO.
+# ============================================================
+jugglebot_ball_detect:
+  enabled: true                        # false ⇒ gpio_poll compiles out entirely (kill switch;
+                                       #   requires a reflash). The Phase 7 A/B uses the RUNTIME
+                                       #   serial toggle (`gpio_poll on|off`), not this flag.
+  gpio_pin: 2                          # G02 on the hand ODrive Pro (switch to GND, internal pull-up)
+  check_interval_ms: 20                # 50 Hz continuous poll (operator decision 2026-07-28)
+  max_missing_samples: 5               # HELD→EMPTY debounce; 100 ms window at 50 Hz
+  check_timeout_ms: 100                # SDO reply timeout per request
+  expected_fw: [0, 6, 11]              # ODrive Pro fw the endpoint-id table is pinned against (Get_Version gate)
+
+# ============================================================
+# 24. Catching Cone
 #     Source: CatchingCone_code firmware (NEW)
 #     Instrumented catching cone — a piezo contact sensor on a
 #     Teensy 4.x that broadcasts CAN-synced catch-event timing.
