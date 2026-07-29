@@ -15,6 +15,7 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/rpc.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/version_check.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/version_check.h
+  - ros_ws/docs/can-node-teensy-parity.md
   - tests/firmware/test_gpio_poll_xref.py
   - tests/firmware/native/test_gpio_poll.cpp
   - tests/firmware/native/build.py
@@ -23,7 +24,8 @@ files_changed:
   - tests/firmware/native/hal_shims/Arduino.h
   - tests/firmware/native/README.md
   - tests/firmware/test_native_firmware.py
-commits: []                  # to be backfilled after the phase-3 commit lands
+commits:
+  - 7dc347f                  # feat(hand-sensor phase-3): can-bridge gpio poller for the hand ball sensor
 subsystem:
   - can
 tags:
@@ -191,7 +193,8 @@ relax the contract.
 
 ### Amending "ZERO version SEMANTICS in firmware" rather than quietly violating it
 
-`version_check.h:10-20` declared a split of responsibility whose whole point was
+`version_check.h:10-20` (pre-`7dc347f`; the amendment now occupies `:17-27`)
+declared a split of responsibility whose whole point was
 that firmware caches version bytes and Python decides what they mean. This phase
 needs firmware to decide something. The choice was to **amend the paragraph
 explicitly, in the same commit**, with the root cause written down — not to add
@@ -332,8 +335,9 @@ YAML/codegen was restored and verified clean afterwards.
   the float32 `SdoResponse` / `decode_sdo_response` deleted as dead.
 - **`version_check.h` / `.cpp`** — the amended split paragraph, and
   `version_raw_copy(axis, out8)`.
-- **`rpc.cpp:251`** and **`can_buses.cpp:123`** — both stale comments claiming
-  an encoder-search TxSdo consumer **that never existed** replaced with the
+- **`rpc.cpp:251-255`**, **`can_buses.cpp:125-129`** and
+  **`ros_ws/docs/can-node-teensy-parity.md:376`** — three stale claims of an
+  encoder-search TxSdo consumer **that never existed** replaced with the
   truth. `rpc.cpp` now states that `SDO_READ` has no return path and that hand
   axis 6 is rejected by the allow-table anyway.
 - **`canbridge_config.h`** — `FW_VERSION` 3 → 4 with the inline history line.

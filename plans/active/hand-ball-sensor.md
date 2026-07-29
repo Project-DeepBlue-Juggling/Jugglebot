@@ -222,7 +222,7 @@ Phase 7 measurement, not a blocker.
 | 0 | Surface decoded ODrive fw versions (log + `/link_status`) | Jetson only | done (`aa14098`) |
 | 1 | `jugglebot_ball_detect` YAML block + codegen + `gpio2_mode` drift test | repo (+ regenerated headers in BallButler's tree) | done (`2b3ab78`; JSON record `64d2a8f`) |
 | 2 | Endpoint-id contract: (board, fw)-qualified ids; 726; consumer migration incl. BallButler + native-golden regen | repo (incl. `tests/firmware/native/` golden) + BallButler lockstep commit | done (`386ade5`; BB `93a91fb`+`334af82`) |
-| 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | pending |
+| 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | done (`7dc347f`; NOT flashed) |
 | 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | pending |
 | 5 | ROS surface: `/hand_telemetry` fields + `/link_status` KeyValue + RX-age gate | Jetson (colcon) | pending |
 | 6 | GUI ball-in-hand pill + `tests/hardware/session_hand_ball_sensor.md` runbook | Jetson (static files) | pending |
@@ -406,7 +406,7 @@ the phase's scoped checks are green (full suite at end of plan).
 ### Phase 3 — bridge firmware poller
 
 New TU `Teensy_code_canbridge/gpio_poll.cpp`, hosted on **`task_homing`**
-(`Teensy_code_canbridge.ino:221-231`, `HOMING_RATE_HZ = 100`, `PRIO_HOMING =
+(`Teensy_code_canbridge.ino:222-233` as of `7dc347f`, `HOMING_RATE_HZ = 100`, `PRIO_HOMING =
 2`) alongside `version_check_step()`, with `gpio_poll_init()` called once
 from `setup()` (the `version_check_init()` pattern). That task's header
 comment currently reads "idle the rest of the time — rare bench/cold-start
@@ -433,8 +433,8 @@ ops"; a continuous poller amends that — update the comment and confirm
   (never TX into a dead bus; the un-ACKed-TX TEC climb is a known hazard).
 - Gated on the Phase 2 three-state `Get_Version` check. **This amends a
   documented contract and must do so explicitly:** `version_check.h:10-20`
-  declares "ZERO version SEMANTICS in firmware — validation policy stays in
-  tested Python". The amendment's root cause: the wrong-id failure mode
+  (pre-`7dc347f`) declared "ZERO version SEMANTICS in firmware — validation
+  policy stays in tested Python"; the amendment now occupies `:17-27`. The amendment's root cause: the wrong-id failure mode
   *answers plausibly*, so the refusal must happen before the RxSdo leaves
   the Teensy — only firmware can do that. The firmware gains exactly one
   narrow compare (cached fw triple vs `JBBallDetect::EXPECTED_FW`), not the
@@ -451,8 +451,9 @@ ops"; a continuous poller amends that — update the comment and confirm
   `endpoint_id`, decoding the value as **`uint32`**. The existing
   `decode_sdo_response` unpacks `float32` and must not be reused; add a typed
   variant. Fix **both** stale comments claiming an encoder-search TxSdo
-  consumer exists (`can_buses.cpp:123` and `rpc.cpp:251`) — neither handler
-  has ever existed.
+  consumer exists (`can_buses.cpp:123` and `rpc.cpp:251` pre-`7dc347f`; the
+  replacements now sit at `:125-129` and `:251-255`) — neither handler has
+  ever existed.
 - Cache (one writer on `task_homing`, one reader on `task_telem` — publish
   via a seqlock in the `axis_state.h` style, or a critical-section snapshot;
   the cache holds 64-bit stamps, which tear without one): **last raw
@@ -474,8 +475,10 @@ ops"; a continuous poller amends that — update the comment and confirm
 - `CanBridge::FW_VERSION` 3 → 4 with an inline history line.
 
 Done when: `pio` build passes; firmware cross-reference tests pass; the
-`enabled: false` build compiles the poller out; the serial toggle flips
-polling live on the bench.
+`enabled: false` build compiles the poller out. Landed `7dc347f`, **NOT
+flashed** — the serial toggle's live flip on the bench is deferred to
+Phase 7 step 4, the first time this firmware runs on a Teensy (pattern:
+Phase 0's "Live confirmation on powered hardware is Phase 7 step 1").
 
 ### Phase 4 — additive uplink message
 
