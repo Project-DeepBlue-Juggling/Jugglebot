@@ -85,6 +85,15 @@ _BINARIES = {
         NATIVE_DIR / "test_version_check.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
+    # Hand ball-sensor poller. #includes gpio_poll.cpp AND version_check.cpp (the
+    # Get_Version cache its gate reads — the two share no symbol names, so one TU
+    # is ODR-clean); the fake HAL supplies can_jugglebot_send +
+    # jugglebot_commands_allowed + the clock + time_synced, and the Serial stub
+    # (hal_shims/Arduino.h) swallows the console/park lines.
+    "test_gpio_poll": (
+        NATIVE_DIR / "test_gpio_poll.cpp",
+        ["axis_state", "ball_butler_state", "fake_hal"],
+    ),
     # Hand traj / smooth-move conduit. #includes hand_ops.cpp; the fake
     # HAL supplies can_jugglebot_send + jugglebot_commands_allowed (+ the send-fail
     # hook for the preamble-abort test). The ODrive encoders + 0x6D0 id are

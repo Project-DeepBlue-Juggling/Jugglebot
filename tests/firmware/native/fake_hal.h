@@ -47,6 +47,11 @@ uint64_t fake_mono_us();
 // ── Jetson UDP link freshness (drives udp_last_rx_us()) ──────────────────────
 void fake_set_udp_last_rx_us(uint64_t t_us);
 
+// ── Bridge wall-clock anchor (drives time_synced()) ──────────────────────────
+//  Defaults to TRUE on fake_reset() — an anchored bridge is the steady state, and
+//  a test that cares about the un-anchored case sets it false explicitly.
+void fake_set_time_synced(bool synced);
+
 // ── Cold-start move predicates (drive homing/activate/deactivate_active()) ───
 void fake_set_homing(bool active);
 void fake_set_activate(bool active);

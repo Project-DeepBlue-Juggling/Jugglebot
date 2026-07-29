@@ -48,6 +48,7 @@ using namespace arduino;
 #include "leg_activate.h"        // leg activate (move to active pose)
 #include "leg_deactivate.h"      // leg deactivate (controlled lower + IDLE)
 #include "version_check.h"       // Get_Version sweep + version cache
+#include "gpio_poll.h"           // hand ball-present sensor poll (hand ODrive G02)
 #include "profiling.h"           // Profiling/instrumentation
 
 using namespace CanBridge;
@@ -210,14 +211,14 @@ static void task_fault(void*) {
   }
 }
 
-// Cold-start leg-motion monitor (priority 2) at HOMING_RATE_HZ. Runs the
-// velocity-limited move-to-hardstop (HOME) and the TRAP_TRAJ move to the
-// active pose (ACTIVATE) state machines when an RPC has latched a
-// start; both are cheap no-ops otherwise (idle the rest of the time — rare bench/
-// cold-start ops). HOME and ACTIVATE each reject a start while the OTHER is active
-// (symmetric), and each stays "active" for its whole physical move (homing polls
-// the Iq spike; activate's MONITOR waits for the legs to reach + settle), so at
-// most one drives at a time for the full duration — not just the fire instant.
+// Cold-start leg-motion monitor + slow CAN3 pollers (priority 2) at
+// HOMING_RATE_HZ. Runs the velocity-limited move-to-hardstop (HOME) and the
+// TRAP_TRAJ move to the active pose (ACTIVATE) state machines when an RPC has
+// latched a start; both are cheap no-ops otherwise (rare bench/cold-start ops).
+// HOME and ACTIVATE each reject a start while the OTHER is active (symmetric),
+// and each stays "active" for its whole physical move (homing polls the Iq spike;
+// activate's MONITOR waits for the legs to reach + settle), so at most one drives
+// at a time for the full duration — not just the fire instant.
 static void task_homing(void*) {
   TickType_t last = xTaskGetTickCount();
   const TickType_t period = pdMS_TO_TICKS(1000 / HOMING_RATE_HZ);
@@ -226,6 +227,7 @@ static void task_homing(void*) {
     activate_step();
     deactivate_step();
     version_check_step();   // bus-paced Get_Version sweep (no-op once swept)
+    gpio_poll_step();       // hand ball-sensor SDO poll (rate-limited, ≤1 TX/tick)
     vTaskDelayUntil(&last, period);
   }
 }
@@ -279,12 +281,38 @@ static void print_bus_health(const char* name, const BusRxHealth& b) {
   }
 }
 
+// USB Serial console — line-oriented bench commands, the only INPUT the console
+// has ever had (it was print-only until the hand ball sensor needed a live
+// on/off). Polled from task_diag, so a typed command lands within one diag tick;
+// the static line buffer is what lets a line arrive in fragments across ticks.
+// Commands are dispatched to their owning module, which prints its own reply.
+static void console_step() {
+  static char line[32];
+  static uint8_t len = 0;
+  while (Serial.available()) {
+    const char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (len > 0) {
+        line[len] = '\0';
+        if (!gpio_poll_console(line))
+          Serial.printf("[console] unknown command: %s\n", line);
+      }
+      len = 0;
+    } else if (len < sizeof(line) - 1) {
+      line[len++] = c;
+    }
+    // else: line overflow — the excess is dropped, the prefix still dispatches
+  }
+}
+
 // Diagnostics / LED heartbeat (priority 1, lowest). Blinks the LED at 1 Hz so a
-// bench operator can see the scheduler is alive; prints a one-line status.
+// bench operator can see the scheduler is alive; prints a one-line status; and
+// services the serial console.
 static void task_diag(void*) {
   TickType_t last = xTaskGetTickCount();
   bool on = false;
   for (;;) {
+    console_step();
     on = !on;
     digitalWriteFast(LED_PIN, on);
     if (on) {
@@ -385,6 +413,12 @@ static void task_diag(void*) {
                       (double)bb.yaw_deg, (double)bb.pitch_deg, (double)bb.hand_mm,
                       (unsigned long)age_ms, mark);
       }
+
+      // Hand ball-sensor poller: silent unless the Get_Version gate has parked it
+      // on a firmware mismatch, in which case one loud line per tick. It prints
+      // HERE and not on task_homing because STACK_DIAG is the only stack sized for
+      // Serial formatting (canbridge_config.h:135).
+      gpio_poll_diag_step();
     }
     vTaskDelayUntil(&last, pdMS_TO_TICKS(500));   // toggle every 500 ms → 1 Hz blink
   }
@@ -420,6 +454,7 @@ void setup() {
   activate_init();                 // idle until an ACTIVATE RPC latches a start
   deactivate_init();               // idle until a DEACTIVATE RPC latches a start
   version_check_init();            // clears the version sweep masks
+  gpio_poll_init();                // hand ball-sensor poller (boots ON)
   profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)

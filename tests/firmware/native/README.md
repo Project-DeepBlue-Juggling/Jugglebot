@@ -55,6 +55,10 @@ python tests/firmware/native/build.py --force    # ignore the cache, rebuild
   * `test_platform_relay.cpp` / `test_version_check.cpp` / `test_hand_ops.cpp`
     `#include` their one module (`platform_relay.cpp` / `version_check.cpp` /
     `hand_ops.cpp`).
+  * `test_gpio_poll.cpp` `#include`s **both** `gpio_poll.cpp` and
+    `version_check.cpp` (same no-shared-symbols argument as `test_fault_machine`):
+    the ball-sensor poller's `Get_Version` gate reads the version cache, and
+    `version_record()` is the only honest way to seed it.
   * `test_leg_activate.cpp` / `test_leg_deactivate.cpp` / `test_leg_homing.cpp`
     each `#include` ONE cold-start module `.cpp` (defining its own `*_active()`) and
     supply the two SIBLING predicates inline — so they link `coldstart_hal.o`
@@ -68,7 +72,7 @@ python tests/firmware/native/build.py --force    # ignore the cache, rebuild
     recursive-mutex shim. `test_udp_framing.cpp`, `test_odrive_protocol.cpp`, and
     `test_ball_butler_protocol.cpp` compile the generated C++ framing codec and the
     ODrive / Ball-Butler CAN codecs against their headers (no extra firmware `.cpp`
-    object). `build.py` builds 13 binaries in all.
+    object). `build.py` builds 14 binaries in all.
   * Shared objects compiled once and linked as needed: `axis_state.o`,
     `ball_butler_state.o`, and either `fake_hal.o` (fault/interp/relay/version/hand)
     or `coldstart_hal.o` (the three cold-start move drivers).

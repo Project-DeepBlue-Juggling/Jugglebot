@@ -41,7 +41,7 @@ namespace CanBridge {
 
 // ── Identity ────────────────────────────────────────────────────────────────
 constexpr char     FW_NAME[]    = "jugglebot-canbridge";
-constexpr uint16_t FW_VERSION   = 3;          // bump on behavioural change (1→2: 2026-07-16 MAX_DEVIATION_REV 0.5→1.0 guard raise; 2→3: 2026-07-24 Diagnostic bus_current + heartbeat_seen, UDP PROTOCOL_VERSION 4)
+constexpr uint16_t FW_VERSION   = 4;          // bump on behavioural change (1→2: 2026-07-16 MAX_DEVIATION_REV 0.5→1.0 guard raise; 2→3: 2026-07-24 Diagnostic bus_current + heartbeat_seen, UDP PROTOCOL_VERSION 4; 3→4: 2026-07-29 gpio_poll hand ball sensor — CAN3 get_gpio_states poll on task_homing + serial console)
 
 // ── Network (static, point-to-point /30) ─────────────────────────────────────
 // IP octets and ports come from the generated udp_protocol.h (JbUdp::).

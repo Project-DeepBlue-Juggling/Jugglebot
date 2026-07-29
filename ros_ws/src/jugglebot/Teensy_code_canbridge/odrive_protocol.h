@@ -198,9 +198,16 @@ inline FloatPair decode_iq(const uint8_t* d)   { return decode_encoder_estimate(
 inline FloatPair decode_temps(const uint8_t* d){ return decode_encoder_estimate(d); }  // (fet, motor)
 inline FloatPair decode_bus_voltage_current(const uint8_t* d) { return decode_encoder_estimate(d); }
 
-struct SdoResponse { uint16_t endpoint_id; float value; };
-inline SdoResponse decode_sdo_response(const uint8_t* d) {  // '<BHBf' → (_, endpoint, _, value)
-  SdoResponse r; memcpy(&r.endpoint_id, &d[1], 2); memcpy(&r.value, &d[4], 4); return r;
+// '<BHB' header + the 4-byte payload decoded as a UINT32. The `_u32` suffix
+// stays even though this is now the only C++ SDO decoder: the Python side's
+// odrive.decode_sdo_response unpacks float32, and a same-name/different-
+// semantics pair across the two languages is a worse trap than a long name.
+// (A float32 variant existed here until 2026-07-29 and was removed as dead —
+// no C++ caller ever had one; get_gpio_states returns a bitmask, which a
+// float32 unpack would reinterpret.)
+struct SdoResponseU32 { uint16_t endpoint_id; uint32_t value; };
+inline SdoResponseU32 decode_sdo_response_u32(const uint8_t* d) {
+  SdoResponseU32 r; memcpy(&r.endpoint_id, &d[1], 2); memcpy(&r.value, &d[4], 4); return r;
 }
 
 struct Version {

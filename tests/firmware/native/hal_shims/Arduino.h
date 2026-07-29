@@ -14,7 +14,11 @@
 //      faked now_wall_us()/micros64() from time_base.h, not these);
 //    * an IntervalTimer stub — leg_interp.cpp instantiates one and calls begin();
 //      host-side the test drives interp_isr() directly (it #includes the .cpp), so
-//      the timer never fires.
+//      the timer never fires;
+//    * a USB `Serial` stub — gpio_poll.cpp's console reply + its 1 Hz park line
+//      are print-only diagnostics. The bytes are DISCARDED: the native drivers
+//      assert on state and on the recorded CAN frames, never on console text, so
+//      capturing the output would add a seam with no consumer.
 //
 //  This is one of the two ~10-line shim headers the design proved sufficient
 //  (the other is arduino_freertos.h). See tests/firmware/native/README.md.
@@ -38,3 +42,19 @@ class IntervalTimer {
   void priority(unsigned char) {}
   void end() {}
 };
+
+// ── USB Serial stub (print-only; the host harness discards every byte) ───────
+class HostSerial {
+ public:
+  void begin(unsigned long) {}
+  void flush() {}
+  int  available() { return 0; }      // no console input host-side
+  int  read() { return -1; }
+  void print(const char*) {}
+  void print(char) {}
+  void print(unsigned) {}
+  void println() {}
+  void println(const char*) {}
+  int  printf(const char*, ...) { return 0; }
+};
+inline HostSerial Serial;   // C++17 inline var → one instance across all TUs

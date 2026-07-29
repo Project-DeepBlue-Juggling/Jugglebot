@@ -27,6 +27,7 @@ namespace CanBridge {
 static uint64_t g_wall_us = 0;
 static uint64_t g_mono_us = 0;
 static uint64_t g_udp_last_rx_us = 0;
+static bool     g_time_synced = true;   // bridge wall anchor present (steady state)
 static bool     g_homing = false, g_activate = false, g_deactivate = false;
 static bool     g_commands_allowed = true;   // CAN3 gate; default open (see fake_hal.h)
 static std::vector<SentFrame>      g_sent;
@@ -37,6 +38,7 @@ static int g_send_attempts   = 0;    // attempts since the last reset / fail-ind
 // ── Reset ────────────────────────────────────────────────────────────────────
 void fake_reset() {
   g_wall_us = 0; g_mono_us = 0; g_udp_last_rx_us = 0;
+  g_time_synced = true;
   g_homing = g_activate = g_deactivate = false;
   g_commands_allowed = true;
   g_send_fail_index = -1;
@@ -54,6 +56,9 @@ uint64_t fake_mono_us() { return g_mono_us; }
 // HAL: time_base.h
 uint64_t now_wall_us() { return g_wall_us; }
 uint64_t micros64()    { return g_mono_us; }
+
+void fake_set_time_synced(bool synced) { g_time_synced = synced; }
+bool time_synced() { return g_time_synced; }   // HAL: time_base.h
 
 // ── Jetson link freshness ────────────────────────────────────────────────────
 void     fake_set_udp_last_rx_us(uint64_t t_us) { g_udp_last_rx_us = t_us; }
