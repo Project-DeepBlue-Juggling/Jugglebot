@@ -12,7 +12,8 @@ files_changed:
   - tests/ros/conftest.py
   - tests/ros/test_teensy_bridge_node_hand_sensor.py
 # backfilled after the Phase 5 commit lands
-commits: []
+commits:
+  - fafcee0
 subsystem:
   - ros
   - controller
