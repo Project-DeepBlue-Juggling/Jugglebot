@@ -15,7 +15,8 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/hardware_config.h
   - ros_ws/src/jugglebot/CatchingCone_code/hardware_config.h
   - tests/motion/test_hand_ball_detect_config.py
-commits: []               # backfill: feat(hand-sensor phase-1): jugglebot_ball_detect config block + flashed-pin drift test
+commits:
+  - 2b3ab78                # feat(hand-sensor phase-1): jugglebot_ball_detect config block + flashed-pin drift test
 subsystem:
   - config
 tags:

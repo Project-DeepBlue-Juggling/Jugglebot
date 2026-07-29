@@ -91,8 +91,8 @@ Three BallButler properties are **deliberately not copied**:
 `config/protocol_config.yaml` already carries `endpoints: GPIO_STATES: 700`,
 propagated by codegen into `config/generated/protocol_config.{h,py}`; the
 generated **`.h`** is copied into all four firmware dirs
-(`generate_config.py:993-996`) while the **`.py`** goes only to the ROS
-package (`:997`), which is what backs the name→id table in the live
+(`generate_config.py:994-997` as of `2b3ab78`) while the **`.py`** goes only
+to the ROS package (`:998`), which is what backs the name→id table in the live
 `jugglebot/can/odrive.py` (`ENDPOINT_IDS`, dereferenced at import by
 `teensy_bridge_node`). No Jugglebot runtime path resolves `get_gpio_states`
 today — but **BallButler's shipping firmware consumes both flat constants**
@@ -220,7 +220,7 @@ Phase 7 measurement, not a blocker.
 | Phase | Deliverable | Deploy unit | Status |
 |---|---|---|---|
 | 0 | Surface decoded ODrive fw versions (log + `/link_status`) | Jetson only | done (`aa14098`) |
-| 1 | `jugglebot_ball_detect` YAML block + codegen + `gpio2_mode` drift test | repo (+ regenerated headers in BallButler's tree) | pending (JSON record landed, `64d2a8f`) |
+| 1 | `jugglebot_ball_detect` YAML block + codegen + `gpio2_mode` drift test | repo (+ regenerated headers in BallButler's tree) | done (`2b3ab78`; JSON record `64d2a8f`) |
 | 2 | Endpoint-id contract: (board, fw)-qualified ids; 726; consumer migration incl. BallButler + native-golden regen | repo (incl. `tests/firmware/native/` golden) + BallButler lockstep commit | pending |
 | 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | pending |
 | 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | pending |
@@ -280,8 +280,10 @@ legitimately shows fewer axes — the sweep only queries axes that heartbeat).
 
 1. New YAML block, sibling of `ball_butler_ball_detect`
    (`config/hardware_config.yaml`), registered in `config/generate_config.py`
-   (the `(yaml_key, prefix, namespace, title)` registration table at `:471`)
-   with prefix `JB_BD_` / C++ namespace `JbBallDetect`:
+   (the `(yaml_key, prefix, namespace, title)` registration table at `:472`)
+   with prefix `JB_BD_` / C++ namespace `JBBallDetect` (as landed in
+   `2b3ab78` — uppercase initialism per the generated header's convention,
+   e.g. `JBOp`, `BBBallDetect`; the plan originally spelt it `JbBallDetect`):
 
    ```yaml
    jugglebot_ball_detect:
@@ -296,7 +298,7 @@ legitimately shows fewer axes — the sweep only queries axes that heartbeat).
    ```
 
    `expected_fw` emits as a Python list / C++ array (`JB_BD_EXPECTED_FW` /
-   `JbBallDetect::expected_fw`). The board half of the qualification is NOT
+   `JBBallDetect::EXPECTED_FW`). The board half of the qualification is NOT
    restated here — the axis-6 board identity already lives in the
    `ODRIVE_VER_AXIS_*` registry (`config/generated/hardware_config.py:100-108`)
    and is validated Jetson-side by `EXPECTED_HW_VERSIONS`; the firmware gate
@@ -309,8 +311,9 @@ legitimately shows fewer axes — the sweep only queries axes that heartbeat).
    config.gpio2_mode == 1`, keyed off the new YAML block's `gpio_pin`, so a
    future re-dump of the hand config or a pin move breaks loudly.
 
-Done when: codegen emits `JB_BD_*` constants in both languages, the drift
-test passes, and `pytest tests/ -q` is green.
+Done when: codegen emits the `JB_BD_*` Python constants and the C++
+`JBBallDetect` namespace, the drift test passes, and the phase's scoped
+checks are green (full suite at end of plan, per the Testing-plan gate).
 
 ### Phase 2 — endpoint-id contract (the class fix)
 
@@ -396,7 +399,7 @@ tests/firmware/test_odrive_protocol_xref.py
 tests/firmware/test_native_firmware.py -q` pass against the new symbol
 names; the BallButler `ball_butler_main` build compiles; a grep for the
 removed flat constant names returns zero hits outside `jugglebot/archived/`;
-`pytest tests/ -q` green.
+the phase's scoped checks are green (full suite at end of plan).
 
 ### Phase 3 — bridge firmware poller
 
@@ -408,10 +411,15 @@ comment currently reads "idle the rest of the time — rare bench/cold-start
 ops"; a continuous poller amends that — update the comment and confirm
 `STACK_HOMING` (256 words) still suffices. Discipline, per bullet:
 
-- Internally rate-limited to `JB_BD_CHECK_INTERVAL_MS`; at most one CAN TX
+- Internally rate-limited to `JBBallDetect::CHECK_INTERVAL_MS`; at most one CAN TX
   per tick (bus pacing). **Two distinct off-switches, deliberately separate:**
-  (a) `JB_BD_ENABLED == false` compiles the whole TU out — a build-time kill
-  switch, so flipping it costs a reflash and it is *not* the A/B mechanism;
+  (a) `JBBallDetect::ENABLED == false` compiles the poller's body out — a
+  build-time kill switch, so flipping it costs a reflash and it is *not* the
+  A/B mechanism. **Mechanism constraint (Phase 1 finding):** `ENABLED` emits
+  as a `constexpr bool`, not a macro, so this must be constexpr-gated code
+  (early returns on `!ENABLED`; the compiler eliminates the dead body) —
+  never `#if JB_BD_ENABLED`, which evaluates an undefined identifier to 0
+  and silently compiles the poller out even when enabled;
   (b) when the TU is compiled in, the poller boots ON, and a serial-console
   toggle (`gpio_poll on|off`, diag console) flips it live. Phase 7 step 4's
   A/B uses (b) — no reflash between arms. A compiled-in-but-boots-OFF key
@@ -427,7 +435,7 @@ ops"; a continuous poller amends that — update the comment and confirm
   tested Python". The amendment's root cause: the wrong-id failure mode
   *answers plausibly*, so the refusal must happen before the RxSdo leaves
   the Teensy — only firmware can do that. The firmware gains exactly one
-  narrow compare (cached fw triple vs `JbBallDetect::expected_fw`), not the
+  narrow compare (cached fw triple vs `JBBallDetect::EXPECTED_FW`), not the
   validation policy; update `version_check.h`'s split paragraph in the same
   commit.
 - Two-phase non-blocking request/await state machine (BallButler's
@@ -533,7 +541,8 @@ frozen-layout re-pin lands in the same commit.
 
 Done when: `tests/ros/` covers fresh, stale-by-flags, stale-by-RX-age, and
 never-seen (all three non-fresh cases ⇒ `ball_held_valid == False`), plus
-the `/link_status` row; `pytest tests/ -q` green.
+the `/link_status` row; the phase's scoped checks are green (full suite at
+end of plan).
 
 ### Phase 6 — GUI ball-in-hand pill + session runbook
 
@@ -554,7 +563,8 @@ the `/link_status` row; `pytest tests/ -q` green.
 
 Done when: the pill renders all four states driven from a synthetic
 `HandTelemetryMessage` publisher, verified in the browser against
-`jugglebot-gui.service`; the runbook is committed; `pytest tests/ -q` green.
+`jugglebot-gui.service`; the runbook is committed; the end-of-plan
+full-suite gate (`pytest tests/ -q`) is green.
 Live confirmation against the hand-toggled switch is Phase 7 step 2.
 
 ### Phase 7 — hardware commissioning (operator-run)
@@ -601,7 +611,12 @@ Run from `tests/hardware/session_hand_ball_sensor.md` (written in Phase 6).
 | ROS | new-field population fresh / stale-by-flags / stale-by-RX-age / never-seen; `ball_held_valid` gating; `/link_status` row; Phase 0 version formatting with mocked tracker |
 | Hardware | Phase 7 gates 2–5, operator-run from the session runbook, results recorded with (date, command, result) triples |
 
-Full-suite gate (`pytest tests/ -q`) before every commit, per CLAUDE.md.
+Gate per commit: the scoped checks named in each phase. Full-suite gate
+(`pytest tests/ -q`) **once at the end of the plan**, then once more only if
+its failures force significant changes — operator direction 2026-07-29,
+superseding the per-commit default in CLAUDE.md for this plan. (Phase 0
+predates the direction and ran the full gate: 4256 passed, 3 xfailed,
+2026-07-29.)
 
 ## Notes for collaborators
 
