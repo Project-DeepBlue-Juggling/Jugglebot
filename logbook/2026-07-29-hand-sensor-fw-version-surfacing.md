@@ -8,7 +8,8 @@ related_plan: "hand-ball-sensor.md"
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
   - tests/ros/test_teensy_bridge_node_version.py
-commits: []                # backfill the SHA of the Phase 0 commit
+commits:
+  - aa14098                # feat(hand-sensor phase-0): surface per-axis ODrive fw versions
 subsystem:
   - ros
 tags:

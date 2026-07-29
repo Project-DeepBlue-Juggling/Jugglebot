@@ -25,7 +25,8 @@ implementation (`SOURCE_HAND_BALL_SENSOR`), the `toss_require_ball_evidence`
 flip, the post-release-decel work, and the end-stop anchor question are owned
 elsewhere (§ Notes for collaborators → Out of scope). Design approved by the
 operator 2026-07-28; the ODrive-side pin config is already flashed and
-NVM-persisted (recorded in commit `64d2a8f`); no other code exists yet.
+NVM-persisted (recorded in commit `64d2a8f`); no sensor code exists yet
+(Phase 0's fw-version instrumentation aside — `aa14098`).
 
 ## Context
 
@@ -157,7 +158,7 @@ planned.
 | 3 | **5-sample miss threshold for the debounced verdict** | The debounced verdict is **new to Jugglebot** — BallButler's reported bit is raw, and its `max_missing_samples = 5` sizes a recovery action, not a signal filter (§ Context). The 5 is a starting point inherited by analogy only; at 50 Hz it is a 100 ms window vs the 250 ms the same count gives BallButler at 20 Hz. Both knobs are config values; Phase 7 step 5 is the first thing that actually sizes them. |
 | 4 | **Uplink raw AND debounced bits** | A consumer will track whether the ball moves around in the hand during carry, so the raw per-sample bit must survive to ROS; debounce applies at the verdict layer only. |
 | 5 | **G02 final** | Thermistor occupies G03 on the Pro; G02 was free (`gpio2_mode` was 17 = AUTO, no endstop/brake/step-dir claim). |
-| 6 | **fw 0.6.11-1 confirmed** | No `-1` is expected in CAN `Get_Version` frames; endpoint tree identical to 0.6.11 (CRC 55416) ⇒ **726** stands. Phase 0 surfaces the reply's fourth byte (`fw_unreleased`, currently discarded) to confirm empirically. |
+| 6 | **fw 0.6.11-1 confirmed** | No `-1` is expected in CAN `Get_Version` frames; endpoint tree identical to 0.6.11 (CRC 55416) ⇒ **726** stands. Phase 0 surfaces the reply's fourth byte (`fw_unreleased`) — landed in `aa14098`; empirical confirmation is Phase 7 step 1. |
 | 7 | **`gpio2_mode = 1` (DIGITAL_PULL_UP) flashed + NVM-persisted** | Done by the operator via the ODrive GUI, `save_configuration` + reboot, 2026-07-28. Config backup updated in `64d2a8f`. |
 | 8 | **Scope ends at ROS + GUI pill** | Possession-source implementation stays with the possession workstream (C-POSSESS-1 forbids speculative sensor code and reserves the seam). |
 | 9 | **Boot/unknown default = tri-state UNKNOWN** | Never a bare bool; `ball_seated` must treat UNKNOWN/stale as not-seated once `toss_require_ball_evidence` flips (that flip is NOT this plan's). |
@@ -218,7 +219,7 @@ Phase 7 measurement, not a blocker.
 
 | Phase | Deliverable | Deploy unit | Status |
 |---|---|---|---|
-| 0 | Surface decoded ODrive fw versions (log + `/link_status`) | Jetson only | pending |
+| 0 | Surface decoded ODrive fw versions (log + `/link_status`) | Jetson only | done (`aa14098`) |
 | 1 | `jugglebot_ball_detect` YAML block + codegen + `gpio2_mode` drift test | repo (+ regenerated headers in BallButler's tree) | pending (JSON record landed, `64d2a8f`) |
 | 2 | Endpoint-id contract: (board, fw)-qualified ids; 726; consumer migration incl. BallButler + native-golden regen | repo (incl. `tests/firmware/native/` golden) + BallButler lockstep commit | pending |
 | 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | pending |
@@ -251,19 +252,21 @@ per tick, 1 s re-query until every present axis replies, then idles; the
 sent/received masks reset only in `version_check_init()`). The Jetson pulls
 that Teensy-local cache at each launch via the `GET_AXIS_VERSIONS` RPC and
 decodes `(fw_major, fw_minor, fw_rev)` per axis into
-`MotorStateTracker.firmware_versions` — then discards them: the PASS log
-line prints no numbers, `RobotState.msg` carries only
-`bool firmware_validated`, and `/link_status` has no **ODrive**-version row
-(only `platform_fw_version`). Note `MotorStateTracker.validate_group` checks
+`MotorStateTracker.firmware_versions` — and, before Phase 0, discarded them:
+the PASS log line printed no numbers and `/link_status` had no
+**ODrive**-version row (only `platform_fw_version`). `RobotState.msg` still
+carries only `bool firmware_validated` (Phase 0 added no message field).
+Note `MotorStateTracker.validate_group` checks
 firmware only for *internal consistency within a hardware group* — the
 existing "firmware check PASSED" log does **not** assert fw == 0.6.11.
 
-Work: in `teensy_bridge_node._version_check_poll` (`teensy_bridge_node.py:1681`;
-PASS/FAIL log calls at `:1737` and `:1739-1740`), format the decoded per-axis
-fw versions into the log line — **including the fourth byte,
-`fw_unreleased`, currently discarded as `_unrel` at `:1718`** (the only wire
-evidence that could carry the `-1`). Add an `odrive_fw_versions` KeyValue in
-`_publish_link_status` (`:2291` region), distinct from the existing
+Work: in `teensy_bridge_node._version_check_poll` (`teensy_bridge_node.py:1686`
+as implemented; PASS/FAIL log calls at `:1749-1751` and `:1746-1747`), format
+the decoded per-axis fw versions into the log line — **including the fourth
+byte, `fw_unreleased`, previously discarded as `_unrel` — decoded at `:1723`,
+stored at `:1726`**
+(the only wire evidence that could carry the `-1`). Add an `odrive_fw_versions`
+KeyValue in `_publish_link_status` (`:2322` region), distinct from the existing
 `platform_fw_version` row, rendering absent axes explicitly (e.g. `?`)
 rather than omitting them.
 
