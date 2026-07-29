@@ -225,7 +225,7 @@ Phase 7 measurement, not a blocker.
 | 3 | Bridge firmware: `gpio_poll.cpp`, typed TxSdo decode, `Get_Version` gate, FW_VERSION 4 | bridge flash | done (`7dc347f`; NOT flashed) |
 | 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | done (`6cc38f7`; NOT flashed) |
 | 5 | ROS surface: `/hand_telemetry` fields + `/link_status` KeyValue + RX-age gate | Jetson (colcon) | done (`fafcee0`; NOT colcon-deployed) |
-| 6 | GUI ball-in-hand pill + `tests/hardware/session_hand_ball_sensor.md` runbook | Jetson (static files) | pending |
+| 6 | GUI ball-in-hand pill + `tests/hardware/session_hand_ball_sensor.md` runbook | Jetson (static files) | done (`73d70c6`; P3 browser check outstanding) |
 | 7 | Hardware commissioning: raw-word toggle gate, SDO RTT, soak | operator-run | pending |
 
 Phases 0–2 are pure-repo and independently committable (Phase 2 spans both
@@ -260,13 +260,13 @@ Note `MotorStateTracker.validate_group` checks
 firmware only for *internal consistency within a hardware group* — the
 existing "firmware check PASSED" log does **not** assert fw == 0.6.11.
 
-Work: in `teensy_bridge_node._version_check_poll` (`teensy_bridge_node.py:1686`
-as implemented; PASS/FAIL log calls at `:1749-1751` and `:1746-1747`), format
+Work: in `teensy_bridge_node._version_check_poll` (`teensy_bridge_node.py:1773`
+as of `fafcee0`; PASS/FAIL log calls at `:1837-1839` and `:1833-1834`), format
 the decoded per-axis fw versions into the log line — **including the fourth
-byte, `fw_unreleased`, previously discarded as `_unrel` — decoded at `:1723`,
-stored at `:1726`**
+byte, `fw_unreleased`, previously discarded as `_unrel` — decoded at `:1810`,
+stored at `:1813`**
 (the only wire evidence that could carry the `-1`). Add an `odrive_fw_versions`
-KeyValue in `_publish_link_status` (`:2322` region), distinct from the existing
+KeyValue in `_publish_link_status` (`:2440` region), distinct from the existing
 `platform_fw_version` row, rendering absent axes explicitly (e.g. `?`)
 rather than omitting them.
 
@@ -526,7 +526,7 @@ frozen-layout re-pin lands in the same commit.
 - **Stamp conversion:** `t_bridge_us` arrives already in Jetson-epoch
   microseconds — the bridge is the time-sync master, anchored via
   `TIME_OF_DAY_QUERY`. Convert exactly as `_publish_bb_axis_estimates` does
-  (`teensy_bridge_node.py:1167-1169`: `sec = t_us // 1_000_000`,
+  (`teensy_bridge_node.py:1214` region: `sec = t_us // 1_000_000`,
   `nanosec = (t_us % 1_000_000) * 1000`). **No offset is applied on the
   Jetson side.**
 - **Jetson-side staleness gate (closes the hop BallButler leaves open one
@@ -555,10 +555,10 @@ end of plan).
 ### Phase 6 — GUI ball-in-hand pill + session runbook
 
 - Build the pill in `ros_ws/gui/js/panels.js` next to the existing
-  `flag-level-pill` precedent (`panels.js:185-190`), styled in
+  `flag-level-pill` precedent (`panels.js:~204-211` as of `73d70c6`), styled in
   `ros_ws/gui/css/panels.css` (follow the `.flag-level-pill` rule at
   `:301-304`), driven from the existing `onHandTelemetry` handler
-  (`js/main.js:279`). Four visual states: HELD (filled), EMPTY (hollow),
+  (`js/main.js:282` as of `73d70c6`). Four visual states: HELD (filled), EMPTY (hollow),
   UNKNOWN/STALE (greyed — never rendered as EMPTY), and a flicker marker
   when `ball_held_raw` disagrees with `ball_held` (the operator's
   spotty-contact observability). Static files, no build step; served by the

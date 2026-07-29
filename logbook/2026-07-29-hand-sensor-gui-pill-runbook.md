@@ -12,7 +12,8 @@ files_changed:
   - tests/ros/test_gui_geometry.py
   - tests/hardware/session_hand_ball_sensor.md
 # backfilled after the Phase 6 commit lands
-commits: []
+commits:
+  - 73d70c6
 subsystem:
   - gui
   - ros
