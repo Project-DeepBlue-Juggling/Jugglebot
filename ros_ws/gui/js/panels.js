@@ -149,6 +149,9 @@ export let currentSubMode = '';
 // Left column: error-style flags (good=tick, bad=cross)
 // Right column: progress-style flags (done=tick, waiting=dot)
 // Row 4: Mocap connected (left, updated via setMocapConnected) + aligned (right, via setMocapAligned)
+// Row 5: Ball-in-hand pill (left, via updateBallHeld). type 'pill' carries NO
+// flag icon — it is driven by /hand_telemetry, not robot_state, and the pill
+// itself is the state, so a tick/cross/dot beside it would be dead furniture.
 const FLAGS = [
     // Row 1
     { id: 'flag-undervoltage', type: 'error', labelOk: 'Voltage OK',       labelFail: 'Undervoltage' },
@@ -162,6 +165,8 @@ const FLAGS = [
     // Row 4
     { id: 'flag-mocap',        type: 'error', labelOk: 'Mocap Connected',  labelFail: 'Mocap Disconnected' },
     { id: 'flag-mocap-aligned', type: 'error', labelOk: 'Mocap Aligned',  labelFail: 'Mocap Misaligned' },
+    // Row 5
+    { id: 'flag-ball-held',    type: 'pill', label: 'Ball in Hand' },
 ];
 
 export function initFlagsGrid() {
@@ -172,6 +177,20 @@ export function initFlagsGrid() {
         const item = document.createElement('div');
         if (flag.type === 'spacer') {
             item.className = 'flag-item flag-spacer';
+            grid.appendChild(item);
+            continue;
+        }
+        if (flag.type === 'pill') {
+            // Tri-state pill, no flag icon. The INITIAL DOM STATE IS UNKNOWN and
+            // that is load-bearing: /hand_telemetry does not publish at all until
+            // the bridge's first Telemetry frame lands (teensy_bridge_node's
+            // _publish_hand_telemetry early-returns), so the topic cannot be
+            // relied on to drive the pill to UNKNOWN — it has to be born there.
+            item.className = 'flag-item';
+            item.innerHTML = `
+                <span>${flag.label}</span>
+                <span class="flag-ball-pill unknown" id="${flag.id}-pill">UNKNOWN</span>
+            `;
             grid.appendChild(item);
             continue;
         }
@@ -260,6 +279,86 @@ function updateLevelledAngles(robotState) {
     } else {
         pill.style.display = 'none';
     }
+}
+
+// ---- Ball-in-hand pill (hand ball-present sensor) ----
+
+/** Last raw-vs-debounced disagreement, ms epoch. 0 = no marker latched. */
+let ballFlickerAtMs = 0;
+/** Last DEBOUNCED verdict on a valid sample; null = none yet / validity gap. */
+let ballLastHeld = null;
+/** How long a single disagreeing sample keeps the "~" marker lit. */
+const BALL_FLICKER_HOLD_MS = 1000;
+
+/**
+ * Update the ball-in-hand pill from a HandTelemetryMessage.
+ *
+ * Four visual states, from the four message fields:
+ *   HELD    (filled)  ball_held_valid && ball_held
+ *   EMPTY   (hollow)  ball_held_valid && !ball_held
+ *   UNKNOWN (greyed)  !ball_held_valid, or no message at all
+ *   ~ suffix          ball_held_raw disagrees with ball_held on a VALID reading
+ *
+ * UNKNOWN is NEVER rendered as EMPTY: boot, staleness and an un-anchored bridge
+ * clock all mean "we don't know", not "no ball" (plans/active/hand-ball-sensor.md
+ * § Architecture, normative).
+ *
+ * FLICKER SEMANTICS — the marker means "spotty contact", NOT "an edge happened".
+ * Every verdict flip is ACCOMPANIED by ~100 ms of raw-vs-debounced disagreement,
+ * because the debounce needs MAX_MISSING_SAMPLES (5 at a 50 Hz poll) before the
+ * verdict follows the raw bit. Latching that would light the marker on every
+ * ordinary press and release — the debounce doing exactly its job, reported as a
+ * fault. So the latch is CLEARED whenever the debounced verdict changes value,
+ * and SET only on a valid sample whose raw bit disagrees with the (unchanged)
+ * verdict. With that clear in place, a `~` that persists past an edge is
+ * unambiguous evidence of GENUINE mid-carry flicker — which is the operator
+ * observability the pill exists for. The latch is also cleared on any invalid
+ * sample, so a sub-second UNKNOWN gap cannot relight a pre-gap marker on the
+ * far side of it. (Note the one case that still latches across a gap: the FIRST
+ * valid sample after a validity gap. ballLastHeld was reset to null, so that
+ * sample takes the flip-clear branch — but there was no prior verdict for it to
+ * be "unchanged" from; the verdict is newly DEFINED rather than unchanged, and
+ * the set below re-latches if raw disagrees. Deliberate: a raw-vs-debounced
+ * disagreement on the first reading back from a stale window is worth
+ * surfacing, not suppressing.)
+ *
+ * The marker is held for BALL_FLICKER_HOLD_MS because the sensor is polled at
+ * 50 Hz while this subscription is throttled to 10 Hz — an instantaneous marker
+ * would blink for one frame and be unseeable. It is an event marker, not a live
+ * state; the quantitative surface is a rosbag of /hand_telemetry (the ball-soak
+ * step — tests/hardware/session_hand_ball_sensor.md step 6 / plan Phase 7 step 5
+ * — counts raw dropouts per distinct ball_held_stamp).
+ *
+ * The marker is SINGLE-encoded as a text suffix (no colour/ring channel): the
+ * plan asks for "a flicker marker", singular, and text is colourblind-safe and
+ * assertable from a DOM string.
+ *
+ * @param {object|null} msg - HandTelemetryMessage, or null for "no data"
+ *                            (boot, watchdog timeout, websocket down).
+ */
+export function updateBallHeld(msg) {
+    const pill = document.getElementById('flag-ball-held-pill');
+    if (!pill) return;
+    const valid = !!(msg && msg.ball_held_valid);
+    const held = valid && !!msg.ball_held;
+
+    if (!valid) {
+        ballFlickerAtMs = 0;
+        ballLastHeld = null;
+    } else {
+        if (held !== ballLastHeld) ballFlickerAtMs = 0;   // verdict flip: not flicker
+        ballLastHeld = held;
+        if (!!msg.ball_held_raw !== held) ballFlickerAtMs = Date.now();
+    }
+    const flicker = ballFlickerAtMs !== 0
+        && (Date.now() - ballFlickerAtMs) < BALL_FLICKER_HOLD_MS;
+
+    let klass, text;
+    if (!valid)     { klass = 'unknown'; text = 'UNKNOWN'; }
+    else if (held)  { klass = 'held';    text = 'HELD'; }
+    else            { klass = 'empty';   text = 'EMPTY'; }
+    pill.className = 'flag-ball-pill ' + klass;
+    pill.textContent = flicker ? text + ' ~' : text;
 }
 
 // ---- Collapsible sidebar panels ----

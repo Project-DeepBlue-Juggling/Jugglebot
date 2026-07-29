@@ -311,6 +311,39 @@
     white-space: nowrap;
 }
 
+/* ---- Ball-in-hand pill (System panel) ----
+   Hand ball-present sensor, TRI-STATE. Filled = HELD, hollow = EMPTY, greyed +
+   dashed = UNKNOWN/STALE. UNKNOWN is deliberately a THIRD look, not a dimmer
+   EMPTY: "we don't know" must never read as "no ball". The raw-vs-debounced
+   disagreement marker (spotty contact) is SINGLE-encoded in the pill's TEXT as
+   a trailing " ~" — no CSS class, deliberately: one channel, colourblind-safe,
+   and assertable from the DOM string. */
+.flag-ball-pill {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    border-radius: 999px;
+    padding: 1px 7px;
+    white-space: nowrap;
+    border: 1px solid transparent;
+}
+
+.flag-ball-pill.held {
+    background: var(--accent-green);
+    color: #000;
+    border-color: var(--accent-green);
+}
+
+.flag-ball-pill.empty {
+    color: var(--text-secondary);
+    border-color: var(--border-color);
+}
+
+.flag-ball-pill.unknown {
+    color: var(--text-muted);
+    border-color: var(--text-muted);
+    border-style: dashed;
+}
+
 /* ---- Motion planner panel ---- */
 .motion-badge {
     font-size: var(--font-size-xs);

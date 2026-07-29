@@ -528,3 +528,50 @@ class TestBBCalibrationStaleLatchReset:
         # both resets share the same stale-latch rationale and the same axis.
         assert 'setCatchingConeDisconnected()' in body, \
             'the disconnect branch lost the cone re-baseline'
+
+
+# ---- Ball-in-hand pill ↔ HandTelemetryMessage field-name contract ----
+
+
+HAND_TELEM_MSG = (ROOT / 'ros_ws' / 'src' / 'jugglebot_interfaces' / 'msg'
+                  / 'HandTelemetryMessage.msg')
+
+
+@pytest.fixture(scope='module')
+def hand_telem_msg():
+    """Read HandTelemetryMessage.msg as text."""
+    return HAND_TELEM_MSG.read_text()
+
+
+class TestBallPillFieldNameContract:
+    """Pin the tri-state field names shared by the .msg definition (producer)
+    and the GUI ball-in-hand pill (consumer).
+
+    HONESTY NOTE — a string-level tripwire in this file's regex style, not a
+    behavioural test. It cannot prove the pill renders correctly; it catches
+    the silent-rename failure mode: rosbridge delivers plain JSON, so a field
+    renamed in the .msg leaves ``msg.ball_held_valid`` permanently
+    ``undefined`` in panels.js — which coerces to false, and the pill sits at
+    UNKNOWN forever with no error anywhere. That is indistinguishable at a
+    glance from a genuinely dead sensor, during a session whose whole point is
+    reading this pill (Phase 7 step 2's live surface).
+    """
+
+    FIELDS = ['ball_held', 'ball_held_raw', 'ball_held_valid']
+
+    @pytest.mark.parametrize('field', FIELDS)
+    def test_field_in_msg_definition(self, field, hand_telem_msg):
+        assert re.search(rf'^bool {field}\b', hand_telem_msg, re.M), \
+            f'HandTelemetryMessage.msg no longer declares "bool {field}"'
+
+    @pytest.mark.parametrize('field', FIELDS)
+    def test_field_consumed_by_panels_js(self, field, panels_js):
+        assert re.search(rf'\bmsg\.{field}\b', panels_js), \
+            f'panels.js no longer reads msg.{field} — the pill would render ' \
+            f'from an undefined field (silently UNKNOWN forever)'
+
+    def test_ball_held_raw_is_distinguishable(self, panels_js):
+        # ball_held is a prefix of the other two, so the parametrised checks
+        # above would pass on `msg.ball_held_raw` alone. Pin the bare read.
+        assert re.search(r'\bmsg\.ball_held\b(?!_)', panels_js), \
+            'panels.js no longer reads the bare msg.ball_held verdict'

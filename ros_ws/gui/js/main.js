@@ -24,7 +24,7 @@ import {
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
     updateConeHeartbeat, updateConeTimingResult, setCatchingConeDisconnected,
-    resetBBCalibration,
+    resetBBCalibration, updateBallHeld,
 } from './panels.js';
 import {
     initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
@@ -232,6 +232,9 @@ function onConnectionStateChange(state) {
             // disconnect edge that Catching Cone uses (consistency + no frozen
             // stale readouts). Idempotent if BB was never connected.
             setBBDisconnected();
+            // (The ball-in-hand pill needs no disconnect handling: a websocket
+            // drop stops /hand_telemetry, and the 1 s HAND_TELEM_TIMEOUT_MS
+            // watchdog below drives the pill to UNKNOWN within one period.)
             // Drop the control-mode latch so a reconnect re-arms the speed-limit
             // reset on the next mode-entry edge instead of treating the first
             // post-reconnect message as "same mode".
@@ -481,10 +484,22 @@ function onLinkStatus(msg) {
 }
 
 let latestHandTelemetry = null;
+let handTelemTimeout = null;
+/** /hand_telemetry is throttled to 10 Hz here, so 1 s is ten missed messages. */
+const HAND_TELEM_TIMEOUT_MS = 1000;
 
 function onHandTelemetry(msg) {
     recordTopicMessage('hand_telemetry');
     latestHandTelemetry = msg;
+    updateBallHeld(msg);
+    // Ball-pill staleness watchdog (the setMocapConnected idiom below). The
+    // message's own ball_held_valid covers a dead BRIDGE — the node keeps
+    // publishing and says "I can't vouch for this". It cannot cover a dead
+    // PUBLISHER: if teensy_bridge_node dies (or the subscription drops) the
+    // pill would freeze on its last HELD forever, which is exactly the failure
+    // the tri-state exists to prevent. No message ⇒ UNKNOWN.
+    if (handTelemTimeout) clearTimeout(handTelemTimeout);
+    handTelemTimeout = setTimeout(() => updateBallHeld(null), HAND_TELEM_TIMEOUT_MS);
 }
 
 function onMocapData(msg) {
