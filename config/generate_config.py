@@ -240,8 +240,11 @@ def generate_cpp(cfg: dict) -> str:
     # Endpoints
     lines += cpp_section("Endpoint IDs — ODrive internal parameter addresses")
     lines.append("namespace EndpointId {")
-    for name, val in cfg["endpoints"].items():
-        lines.append(f"  constexpr uint16_t {name} = {val};")
+    for group, entries in cfg["endpoints"].items():
+        lines.append(f"  namespace {group} {{")
+        for name, val in entries.items():
+            lines.append(f"    constexpr uint16_t {name} = {val};")
+        lines.append("  }")
     lines.append("}")
 
     # Mocap alignment
@@ -415,8 +418,9 @@ def generate_python(cfg: dict) -> str:
 
     # Endpoints
     lines += py_section("Endpoint IDs — ODrive internal parameter addresses")
-    for name, val in cfg["endpoints"].items():
-        lines.append(f"ENDPOINT_{name.upper()} = {val}")
+    for group, entries in cfg["endpoints"].items():
+        for name, val in entries.items():
+            lines.append(f"ENDPOINT_{group.upper()}_{name.upper()} = {val}")
 
     # Mocap alignment
     if "mocap_alignment" in cfg:
@@ -469,7 +473,8 @@ HW_SECTIONS = [
     ("ball_butler_operational",  "BB_OP_",     "BBOp",       "Ball Butler Operational"),
     ("ball_butler_heartbeat",    "BB_HB_",     "BBHb",       "Ball Butler Heartbeat Encoding"),
     ("ball_butler_ball_detect",  "BB_BD_",     "BBBallDetect","Ball Butler Ball Detection"),
-    # 23. Catching Cone
+    ("jugglebot_ball_detect",    "JB_BD_",     "JBBallDetect","Jugglebot Ball Detection"),
+    # 24. Catching Cone
     ("catching_cone",            "CC_",        "CatchingCone","Catching Cone"),
 ]
 

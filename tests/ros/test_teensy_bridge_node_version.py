@@ -22,14 +22,16 @@ responder. ROS 2 is mocked by tests/ros/conftest.py.
 from __future__ import annotations
 
 import time
+from unittest.mock import MagicMock
 
 from controller.teensy_link import RpcMethod, RpcStatus, Telemetry
 from controller.teensy_link import rpc_args
 from controller.teensy_link import protocol as p
 
-from jugglebot.can.motor_state import EXPECTED_HW_VERSIONS, JUGGLEBOT_AXES
+from jugglebot.can.motor_state import EXPECTED_HW_VERSIONS, HAND_AXIS, JUGGLEBOT_AXES
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node, _wait_until
+from tests.ros.test_teensy_bridge_node_read import (
+    _build_paired_node, _messages, _wait_until)
 
 
 def _node():
@@ -43,17 +45,19 @@ def _teardown(teensy, client, node):
     teensy.stop()
 
 
-def _raw_version(hw, fw=(0, 6, 11)):
+def _raw_version(hw, fw=(0, 6, 11), unrel=0):
     """An 8-byte ODrive Get_Version reply: proto, hw(product,ver,variant),
     fw(major,minor,rev), unreleased — the layout odrive.decode_get_version reads."""
-    return bytes([0, hw[0], hw[1], hw[2], fw[0], fw[1], fw[2], 0])
+    return bytes([0, hw[0], hw[1], hw[2], fw[0], fw[1], fw[2], unrel])
 
 
-def _wire_versions(teensy, per_axis_hw, fw_per_axis=None):
+def _wire_versions(teensy, per_axis_hw, fw_per_axis=None, unrel_per_axis=None):
     """Register a GET_AXIS_VERSIONS responder returning the given per-axis hw
     versions (fw consistent unless overridden)."""
     fw_per_axis = fw_per_axis or {}
-    raw = {aid: _raw_version(hw, fw_per_axis.get(aid, (0, 6, 11)))
+    unrel_per_axis = unrel_per_axis or {}
+    raw = {aid: _raw_version(hw, fw_per_axis.get(aid, (0, 6, 11)),
+                             unrel_per_axis.get(aid, 0))
            for aid, hw in per_axis_hw.items()}
     blob = rpc_args.encode_axis_versions_result(raw)
 
@@ -133,8 +137,13 @@ def test_version_mismatch_forces_fault():
         exp = EXPECTED_HW_VERSIONS[bad]
         per_axis[bad] = (exp[0], exp[1], exp[2] + 1)   # wrong hw revision
         _wire_versions(teensy, per_axis)
+        node._logger = MagicMock()
         _poll_until_resolved(node)
 
+        # The FAIL line carries the versions too (not just the PASS line).
+        assert any('0:0.6.11-0 1:0.6.11-0 2:0.6.11-0 3:0.6.11-0 '
+                   '4:0.6.11-0 5:0.6.11-0 6:0.6.11-0' in m
+                   for m in _messages(node._logger.error))
         assert node._firmware_validated is False
         assert node._firmware_mismatch_error is not None
         assert f"Axis {bad} hw mismatch" in node._firmware_mismatch_error
@@ -193,5 +202,55 @@ def test_no_responder_default_false():
         node._version_check_poll()
         assert node._firmware_validated is False
         assert _publish(node, teensy).firmware_validated is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── Version rendering — PASS/FAIL log line + /link_status row ─────────────────
+
+def test_fw_versions_render_on_pass_log_and_link_status():
+    """All seven axes reported → the PASS log line and the odrive_fw_versions
+    KeyValue both carry each axis's fw triple AND Get_Version's fourth byte
+    (fw_unreleased, decoded here as 1 on the hand). The byte is rendered even when
+    zero, so 'the drive reports no suffix' is distinguishable from 'the bridge
+    doesn't surface it'."""
+    teensy, client, node = _node()
+    try:
+        _wire_versions(teensy, {aid: EXPECTED_HW_VERSIONS[aid] for aid in JUGGLEBOT_AXES},
+                       unrel_per_axis={HAND_AXIS: 1})
+        node._logger = MagicMock()
+        _poll_until_resolved(node)
+        assert node._firmware_validated is True
+
+        expected = ('0:0.6.11-0 1:0.6.11-0 2:0.6.11-0 3:0.6.11-0 '
+                    '4:0.6.11-0 5:0.6.11-0 6:0.6.11-1')
+        assert any(expected in m for m in _messages(node._logger.info))
+
+        node._publish_link_status()
+        kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+        assert kv['odrive_fw_versions'] == expected
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_fw_versions_render_absent_axes_on_partial_rig():
+    """A partial bench rig (the sweep only queries axes that heartbeat) renders the
+    missing axes as '?' rather than dropping them, so a short list reads as a rig
+    fact and not as a formatting gap. Tracker populated directly (the plan's
+    'mocked tracker'): an incomplete sweep never reaches the PASS/FAIL log lines,
+    so the rendering itself plus the link_status row are the observable surface."""
+    teensy, client, node = _node()
+    try:
+        for aid in JUGGLEBOT_AXES[:3]:
+            node._fw_unreleased[aid] = 0
+            node._versions.record_version(aid, (0, 6, 11),
+                                          EXPECTED_HW_VERSIONS[aid])
+
+        expected = '0:0.6.11-0 1:0.6.11-0 2:0.6.11-0 3:? 4:? 5:? 6:?'
+        assert node._odrive_fw_versions_str() == expected
+
+        node._publish_link_status()
+        kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+        assert kv['odrive_fw_versions'] == expected
     finally:
         _teardown(teensy, client, node)

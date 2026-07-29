@@ -11,6 +11,7 @@
 #include "time_base.h"
 #include "odrive_protocol.h"
 #include "version_check.h"   // cache Get_Version replies (version_record)
+#include "gpio_poll.h"       // hand ball-sensor TxSdo replies (gpio_poll_record)
 
 namespace CanBridge {
 
@@ -120,7 +121,21 @@ static void decode_into_cache(const CAN_message_t& msg) {
       // serialised into the HAND_CMD_ECHO uplink for host-side wall-clock correlation.
       if (axis == HAND_AXIS) hand_cmd_echo_record(d, now_wall_us());
       break;
-    // TxSdo handled elsewhere (encoder-search). Ignore here.
+    case ODriveCmd::TxSdo:
+      // The bridge's ONLY TxSdo consumer: the hand ball-sensor poll's
+      // get_gpio_states reply (gpio_poll.cpp). No encoder-search handler has ever
+      // existed here. The endpoint match is what stops a reply to some other SDO
+      // read from masquerading as a sensor sample; the value is a GPIO bitmask, so
+      // it decodes as uint32 (a float32 unpack would reinterpret the bits).
+      if (axis == HAND_AXIS) {
+        const ODrive::SdoResponseU32 r = ODrive::decode_sdo_response_u32(d);
+        if (r.endpoint_id == EndpointId::odrive_pro_0_6_11::get_gpio_states)
+          // Stamped HERE, at arrival, not when task_homing drains the mailbox:
+          // t_bridge_us is contractually "at the last good TxSdo reply", and the
+          // drain is up to a task tick later.
+          gpio_poll_record(r.value, now_wall_us(), micros64());
+      }
+      break;
     default:
       break;
   }

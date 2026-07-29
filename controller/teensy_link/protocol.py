@@ -76,6 +76,7 @@ from udp_protocol import (  # noqa: E402, F401
     LegCmd,
     PlatformFrame,
     HandCmdEcho,
+    HandSensor,
     RpcRequest,
     RpcResponse,
     # Sizes
@@ -91,6 +92,7 @@ from udp_protocol import (  # noqa: E402, F401
     LEG_CMD_SIZE,
     PLATFORM_FRAME_SIZE,
     HAND_CMD_ECHO_SIZE,
+    HAND_SENSOR_SIZE,
     RPC_REQUEST_SIZE,
     RPC_RESPONSE_SIZE,
     # RPC method argument layouts (hoisted into the generator)

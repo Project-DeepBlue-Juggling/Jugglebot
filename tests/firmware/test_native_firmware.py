@@ -113,6 +113,23 @@ def test_native_version_check_binary_passes(binaries):
         f"handshake diverged from the expected behaviour:\n{r.stdout}\n{r.stderr}")
 
 
+def test_native_gpio_poll_binary_passes(binaries):
+    """The compiled gpio_poll.cpp passes every behaviour assertion for the hand
+    ball-sensor poller — the layer `test_gpio_poll_xref.py` cannot reach, since a
+    source scan pins symbols and executes nothing. Covered: the three-state
+    Get_Version gate (UNRECEIVED = silent + zero RxSdo, MATCH = the OPCODE_WRITE
+    function-invoke on the board-qualified endpoint paced at CHECK_INTERVAL_MS,
+    MISMATCH = latched park with the seen triple stashed); timeout-is-NOT-a-miss
+    (staleness advances, verdict + miss_count frozen); the asymmetric debounce;
+    first-reading-at-face-value on boot AND after a stale gap; the runtime toggle
+    dropping a reply latched across an off-window; arrival-stamped t_bridge_us;
+    and miss_count saturation."""
+    r = _run(binaries["test_gpio_poll"])
+    assert r.returncode == 0, (
+        "native test_gpio_poll FAILED — gpio_poll.cpp diverged from the plan's "
+        f"normative ball-sensor signal semantics:\n{r.stdout}\n{r.stderr}")
+
+
 def test_native_hand_ops_binary_passes(binaries):
     """The compiled hand_ops.cpp passes every behaviour assertion (hand
     conduit: the CLOSED_LOOP + POSITION/PASSTHROUGH preamble to axis 6, the 0x6D0

@@ -220,8 +220,13 @@ sdo:
 # Endpoint IDs (ODrive internal parameter addresses)
 # =============================================================================
 endpoints:
-  commutation_mapper_pos_abs: 488
-  GPIO_STATES:                700
+  # ODrive endpoint ids are firmware-build-specific (flat_endpoints.json).
+  # Qualified by (board, fw). A consumer MUST verify Get_Version before use.
+  odrive_pro_0_6_11:            # hw 4.4.58, fw 0.6.11 and 0.6.11-1 (tree CRC 55416)
+    get_gpio_states: 726
+  odrive_s1_0_6_11:             # BallButler hand (hw 5.2.0) — values proven in production on BB
+    get_gpio_states: 700
+    commutation_mapper_pos_abs: 488
 
 # =============================================================================
 # Motion Capture Alignment

@@ -484,6 +484,19 @@ namespace BBBallDetect {
 }
 
 // ==========================================================================
+// Jugglebot Ball Detection
+// ==========================================================================
+
+namespace JBBallDetect {
+  constexpr bool ENABLED = true;
+  constexpr uint32_t GPIO_PIN = 2u;
+  constexpr uint32_t CHECK_INTERVAL_MS = 20u;
+  constexpr uint32_t MAX_MISSING_SAMPLES = 5u;
+  constexpr uint32_t CHECK_TIMEOUT_MS = 100u;
+  constexpr uint32_t EXPECTED_FW[3] = {0, 6, 11};
+}
+
+// ==========================================================================
 // Catching Cone
 // ==========================================================================
 

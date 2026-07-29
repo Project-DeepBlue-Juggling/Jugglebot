@@ -186,7 +186,7 @@ TEST_CASE("hand axis 6: a permitted method reaches it, a non-permitted one is ER
   CHECK(fake_sent_count() == 1);
   // SDO_READ is NOT in the hand allow-table → ERR_REJECTED, nothing sent.
   reset_all();
-  ArgSdoRead sd{}; sd.axis = HAND_AXIS; sd.endpoint = 488;
+  ArgSdoRead sd{}; sd.axis = HAND_AXIS; sd.endpoint = 726;
   CHECK(call(RpcMethod::SDO_READ, sd) == RpcStatus::ERR_REJECTED);
   CHECK(fake_sent_count() == 0);
 }

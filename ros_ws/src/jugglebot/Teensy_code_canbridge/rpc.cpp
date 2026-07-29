@@ -248,7 +248,11 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::SDO_READ: {
       ArgSdoRead a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
-      // Response value returns async on TxSdo (encoder-search consumes it).
+      // The TxSdo reply has NO return path to this RPC — nothing correlates it
+      // back to the caller, and no encoder-search consumer has ever existed. The
+      // bridge's only TxSdo consumer is gpio_poll's hand ball-sensor poll (axis 6,
+      // get_gpio_states), which this RPC cannot reach anyway: hand_axis6_permitted
+      // rejects SDO_READ for axis 6.
       return send_axis_frame(method, a.axis, ODrive::encode_sdo_read(a.axis, a.endpoint));
     }
     case RpcMethod::SDO_WRITE: {

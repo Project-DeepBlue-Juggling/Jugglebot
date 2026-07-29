@@ -7,13 +7,24 @@
 //  on the can-bridge, so the orchestrator's BOOT no longer wedges on a
 //  hardcoded firmware_validated=False (state_machine.py:232).
 //
-//  Split of responsibility (ZERO version SEMANTICS in firmware — the validation
-//  policy stays in tested Python, motor_state.validate_group):
+//  Split of responsibility (the validation POLICY stays in tested Python,
+//  motor_state.validate_group):
 //    * FIRMWARE (here): once a Jugglebot axis has heartbeated, send it ONE
 //      Get_Version (one frame per cold-start-monitor tick → bus-paced, ≤7 frames
 //      total), cache the raw 8-byte reply, and expose the whole cache + a
-//      received bitmask via the GET_AXIS_VERSIONS RPC. The firmware never parses
-//      or compares versions.
+//      received bitmask via the GET_AXIS_VERSIONS RPC. This TU still parses and
+//      compares nothing.
+//    * AMENDMENT (2026-07-29, hand ball sensor): the firmware now performs
+//      EXACTLY ONE version compare, in gpio_poll.cpp — the cached fw triple for
+//      the hand axis vs JBBallDetect::EXPECTED_FW, gating the ball-sensor poller
+//      (and reading the cache through version_raw_copy below). Root cause, not
+//      convenience: ODrive endpoint ids are firmware-build-specific, and the
+//      wrong-build id ANSWERS PLAUSIBLY (700 on a Pro 0.6.11 is
+//      encoder_estimator1.status — a live-looking sensor that never changes,
+//      with no timeout to diagnose it), so the refusal must happen BEFORE the
+//      RxSdo leaves the Teensy. Only firmware can do that. Everything else —
+//      the expected-version registry, the hw check, the pass/fail latch — stays
+//      in Python.
 //    * JETSON (teensy_bridge_node): pull the blob ONCE via GET_AXIS_VERSIONS,
 //      decode the set-bit axes (jugglebot.can.odrive.decode_get_version) and run
 //      MotorStateTracker.validate_group against EXPECTED_HW_VERSIONS, latching
@@ -56,6 +67,12 @@ void version_record(uint8_t axis, const uint8_t* d8);
 // 8-byte payload per axis, axis-major) into `out`. Returns the byte count, or 0
 // if `cap` is too small. Reads the cache; never touches CAN3.
 uint16_t version_fill_blob(uint8_t* out, uint16_t cap);
+
+// Copy one axis's cached raw 8-byte Get_Version reply into `out8`. Returns false
+// (leaving `out8` untouched) when that axis's reply has not been received — the
+// received bit IS the validity gate. The caller does the decoding; see the
+// amendment note above for gpio_poll's one legitimate compare.
+bool version_raw_copy(uint8_t axis, uint8_t* out8);
 
 // Diagnostics / test accessors.
 uint8_t version_received_mask();    // bit i ⇒ axis i's Get_Version reply cached

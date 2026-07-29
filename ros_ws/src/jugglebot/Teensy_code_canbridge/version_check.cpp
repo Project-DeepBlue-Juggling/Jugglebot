@@ -110,6 +110,15 @@ uint16_t version_fill_blob(uint8_t* out, uint16_t cap) {
   return (uint16_t)sizeof(r);
 }
 
+bool version_raw_copy(uint8_t axis, uint8_t* out8) {
+  if (axis >= NUM_AXES || out8 == nullptr) return false;
+  if ((s_received_mask & (uint8_t)(1u << axis)) == 0) return false;
+  // The received bit is published AFTER the bytes (version_record's barrier), so
+  // seeing it set guarantees the 8 bytes below are the complete reply.
+  for (uint8_t i = 0; i < 8; ++i) out8[i] = s_version_raw[axis][i];
+  return true;
+}
+
 uint8_t version_received_mask()   { return s_received_mask; }
 uint8_t version_query_sent_mask() { return s_query_sent_mask; }
 

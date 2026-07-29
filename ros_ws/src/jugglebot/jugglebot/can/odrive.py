@@ -73,8 +73,7 @@ DEFAULT_LEG_GAINS = [
 # ═══════════════════════════════════════════════════════════════
 
 ENDPOINT_IDS = {
-    'commutation_mapper.pos_abs': proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS,
-    'get_gpio_states': proto.ENDPOINT_GPIO_STATES,
+    'get_gpio_states': proto.ENDPOINT_ODRIVE_PRO_0_6_11_GET_GPIO_STATES,
 }
 
 # ═══════════════════════════════════════════════════════════════

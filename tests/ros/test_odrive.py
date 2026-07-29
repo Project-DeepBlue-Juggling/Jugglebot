@@ -189,24 +189,24 @@ class TestEncodeReboot:
 
 
 class TestEncodeSdoRead:
-    def test_commutation_mapper(self):
-        msg = odrive.encode_sdo_read(0, 'commutation_mapper.pos_abs')
+    def test_get_gpio_states(self):
+        msg = odrive.encode_sdo_read(0, 'get_gpio_states')
         opcode, ep_id, _, val = struct.unpack_from('<BHBf', bytes(msg.data))
         assert opcode == proto.OPCODE_READ
-        assert ep_id == proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS
+        assert ep_id == proto.ENDPOINT_ODRIVE_PRO_0_6_11_GET_GPIO_STATES
         assert val == pytest.approx(0.0)
 
     def test_arb_id(self):
-        msg = odrive.encode_sdo_read(0, 'commutation_mapper.pos_abs')
+        msg = odrive.encode_sdo_read(0, 'get_gpio_states')
         assert msg.arbitration_id == odrive.arb_id(0, 'RxSdo')
 
 
 class TestEncodeSdoWrite:
-    def test_commutation_mapper(self):
-        msg = odrive.encode_sdo_write(0, 'commutation_mapper.pos_abs', 1.23)
+    def test_get_gpio_states(self):
+        msg = odrive.encode_sdo_write(0, 'get_gpio_states', 1.23)
         opcode, ep_id, _, val = struct.unpack_from('<BHBf', bytes(msg.data))
         assert opcode == proto.OPCODE_WRITE
-        assert ep_id == proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS
+        assert ep_id == proto.ENDPOINT_ODRIVE_PRO_0_6_11_GET_GPIO_STATES
         assert val == pytest.approx(1.23, abs=1e-5)
 
 
@@ -312,14 +312,14 @@ class TestDecodeBusVoltageCurrent:
 
 class TestDecodeSdoResponse:
     def test_valid_data(self):
-        ep_id = proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS
+        ep_id = proto.ENDPOINT_ODRIVE_PRO_0_6_11_GET_GPIO_STATES
         data = struct.pack('<BHBf', 0, ep_id, 0, 1.23)
         decoded_ep, val = odrive.decode_sdo_response(data)
         assert decoded_ep == ep_id
         assert val == pytest.approx(1.23, abs=1e-5)
 
     def test_nan_value(self):
-        ep_id = proto.ENDPOINT_COMMUTATION_MAPPER_POS_ABS
+        ep_id = proto.ENDPOINT_ODRIVE_PRO_0_6_11_GET_GPIO_STATES
         data = struct.pack('<BHBf', 0, ep_id, 0, float('nan'))
         _, val = odrive.decode_sdo_response(data)
         assert math.isnan(val)

@@ -195,8 +195,9 @@ OPCODE_WRITE = 0x01
 # Endpoint IDs — ODrive internal parameter addresses
 # ============================================================================
 
-ENDPOINT_COMMUTATION_MAPPER_POS_ABS = 488
-ENDPOINT_GPIO_STATES = 700
+ENDPOINT_ODRIVE_PRO_0_6_11_GET_GPIO_STATES = 726
+ENDPOINT_ODRIVE_S1_0_6_11_GET_GPIO_STATES = 700
+ENDPOINT_ODRIVE_S1_0_6_11_COMMUTATION_MAPPER_POS_ABS = 488
 
 # ============================================================================
 # Motion Capture Alignment

@@ -79,6 +79,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `LEG_CMD` | 0x88 | Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check |
 | `PLATFORM_FRAME` | 0x89 | Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J) |
 | `HAND_CMD_ECHO` | 0x8A | Hand command-echo telemetry (STREAM, T→J) |
+| `HAND_SENSOR` | 0x8B | Hand ball-present sensor state (STREAM, T→J) |
 | `RPC_RESPONSE` | 0x90 | RPC response (RPC port, T→J) |
 
 ### RpcMethod
@@ -161,6 +162,16 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `DISABLED` | 0 |  |
 | `ENABLED` | 1 |  |
 | `ESTOP` | 2 |  |
+
+### HandSensorFlags
+
+| Member | Value | Notes |
+|--------|------:|-------|
+| `RAW_HELD` | 1 | bit0: raw per-sample bit (active-low decoded) |
+| `DEBOUNCED_HELD` | 2 | bit1: debounced verdict |
+| `VALID` | 4 | bit2: not UNKNOWN (fresh, gated good reply) |
+| `STALE` | 8 | bit3: no good reply within the staleness window |
+| `TIME_SYNCED` | 16 | bit4: bridge wall anchor set at the reply |
 
 ### HeartbeatT2JFlags
 
@@ -363,6 +374,19 @@ Payload **16 bytes**. Python struct fmt: `<QBBBBBBBB`.
 |-------|------|------:|-------|
 | `t_bridge_us` | u64 | 1 | Bridge wall-clock at CAN3 RX of the hand Set_Input_Pos (us) |
 | `data` | u8 | 8 | Raw ODrive Set_Input_Pos payload: <f h h> = pos_rev, vel_ff, tor_ff |
+
+### HandSensor (`MsgType.HAND_SENSOR`, T2J, STREAM port)
+
+Hand ball-present sensor state. A switch in the hand shorts the hand ODrive Pro's G02 to GND when a ball is seated; no released ODrive firmware pushes GPIO state on CANSimple, so the bridge POLLS get_gpio_states over an RxSdo/TxSdo pair (gpio_poll.cpp) and publishes the decoded cache here. Additive message — no existing frame changes, so NO PROTOCOL_VERSION bump (LegCmd precedent); an old Jetson ignores the unknown msg_type and a new Jetson treats never-seen as UNKNOWN. Emitted from task_telem: one frame per NEW good reply (so naturally rate-limited to the poll rate), plus a 1 Hz keepalive while no new reply lands, so staleness is itself observable on the wire. plans/active/hand-ball-sensor.md § Architecture is NORMATIVE for the signal semantics; these flags describe the bridge's cache and say nothing about the link, so the consumer applies its own RX-age gate.
+
+Payload **14 bytes**. Python struct fmt: `<QIBB`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_bridge_us` | u64 | 1 | Bridge WALL-clock (now_wall_us()) at the last good TxSdo reply (us) |
+| `raw_states` | u32 | 1 | Last raw get_gpio_states word, verbatim (commissioning + diagnostics) |
+| `flags` | u8 | 1 | HandSensorFlags bitset (generated enum is the single source) |
+| `miss_count` | u8 | 1 | Consecutive EMPTY readings from good replies (saturating) |
 
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 

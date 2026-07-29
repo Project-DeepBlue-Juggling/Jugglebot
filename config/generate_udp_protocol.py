@@ -142,6 +142,7 @@ ENUM_WIDTH = {
     "MsgType": "u8", "RpcMethod": "u16", "RpcStatus": "u16",
     "LinkState": "u8", "BusHealth": "u8", "FaultState": "u8", "GuardMode": "u8",
     "HeartbeatT2JFlags": "u32",
+    "HandSensorFlags": "u8",
 }
 
 ENUMS = {
@@ -163,6 +164,7 @@ ENUMS = {
         # telemetry gap below RPC_RESPONSE 0x90. Owners noted; consumers land as each is implemented.
         ("PLATFORM_FRAME", 0x89, "Verbatim Platform-Teensy relay-reply uplink (STREAM, T→J)"),
         ("HAND_CMD_ECHO",  0x8A, "Hand command-echo telemetry (STREAM, T→J)"),
+        ("HAND_SENSOR",    0x8B, "Hand ball-present sensor state (STREAM, T→J)"),
         ("RPC_RESPONSE",   0x90, "RPC response (RPC port, T→J)"),
     ],
     "RpcMethod": [
@@ -241,6 +243,17 @@ ENUMS = {
     # No new cold-start bit is added: is_homed/levelling/pose ride the relay
     # STATE_READ (a deliberate design decision), not a
     # heartbeat flag.
+    # HandSensor.flags bitset — generated single source for the bits the firmware
+    # producer (telemetry.cpp hand_sensor_uplink_step) sets and the Jetson bridge
+    # reads, replacing prose that would otherwise live only in the field comment
+    # (HeartbeatT2JFlags precedent).
+    "HandSensorFlags": [
+        ("RAW_HELD",       0x01, "bit0: raw per-sample bit (active-low decoded)"),
+        ("DEBOUNCED_HELD", 0x02, "bit1: debounced verdict"),
+        ("VALID",          0x04, "bit2: not UNKNOWN (fresh, gated good reply)"),
+        ("STALE",          0x08, "bit3: no good reply within the staleness window"),
+        ("TIME_SYNCED",    0x10, "bit4: bridge wall anchor set at the reply"),
+    ],
     "HeartbeatT2JFlags": [
         ("TIME_SYNCED",               0x1, "bit0: Teensy clock synced to the Jetson anchor"),
         ("STOW_PENDING_ON_RECONNECT", 0x2, "bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)"),
@@ -499,6 +512,29 @@ MESSAGES = [
         fields=[
             Field("t_bridge_us", "u64", 1, "Bridge wall-clock at CAN3 RX of the hand Set_Input_Pos (us)"),
             Field("data",        "u8",  8, "Raw ODrive Set_Input_Pos payload: <f h h> = pos_rev, vel_ff, tor_ff"),
+        ],
+    ),
+    Message(
+        "HandSensor", "HAND_SENSOR", "T2J", "STREAM",
+        summary=(
+            "Hand ball-present sensor state. A switch in the hand shorts the hand "
+            "ODrive Pro's G02 to GND when a ball is seated; no released ODrive "
+            "firmware pushes GPIO state on CANSimple, so the bridge POLLS "
+            "get_gpio_states over an RxSdo/TxSdo pair (gpio_poll.cpp) and publishes "
+            "the decoded cache here. Additive message — no existing frame changes, "
+            "so NO PROTOCOL_VERSION bump (LegCmd precedent); an old Jetson ignores "
+            "the unknown msg_type and a new Jetson treats never-seen as UNKNOWN. "
+            "Emitted from task_telem: one frame per NEW good reply (so naturally "
+            "rate-limited to the poll rate), plus a 1 Hz keepalive while no new "
+            "reply lands, so staleness is itself observable on the wire. "
+            "plans/active/hand-ball-sensor.md § Architecture is NORMATIVE for the "
+            "signal semantics; these flags describe the bridge's cache and say "
+            "nothing about the link, so the consumer applies its own RX-age gate."),
+        fields=[
+            Field("t_bridge_us", "u64", 1, "Bridge WALL-clock (now_wall_us()) at the last good TxSdo reply (us)"),
+            Field("raw_states",  "u32", 1, "Last raw get_gpio_states word, verbatim (commissioning + diagnostics)"),
+            Field("flags",       "u8",  1, "HandSensorFlags bitset (generated enum is the single source)"),
+            Field("miss_count",  "u8",  1, "Consecutive EMPTY readings from good replies (saturating)"),
         ],
     ),
     Message(
