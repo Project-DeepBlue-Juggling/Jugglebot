@@ -456,7 +456,8 @@ void setup() {
   activate_init();                 // idle until an ACTIVATE RPC latches a start
   deactivate_init();               // idle until a DEACTIVATE RPC latches a start
   version_check_init();            // clears the version sweep masks
-  gpio_poll_init();                // hand ball-sensor poller (boots ON)
+  gpio_poll_init();                // hand ball-sensor poller (TEMP boots OFF — CAN3
+                                   //   isolation; serial `gpio_poll on` re-enables)
   profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)

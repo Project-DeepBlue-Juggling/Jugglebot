@@ -76,6 +76,10 @@ static void reset_all() {
   fake_reset();
   version_check_init();
   gpio_poll_init();
+  // The boot default is TEMP OFF (CAN3 isolation — see gpio_poll_init). Every
+  // case here exercises a RUNNING poller, so enable through the console path,
+  // keeping the suite agnostic to whichever boot default is shipping.
+  REQUIRE(gpio_poll_console("gpio_poll on") == true);
   fake_set_commands_allowed(true);
 }
 

@@ -53,7 +53,8 @@ static bool     s_held         = false;   // debounced verdict
 static uint64_t s_last_good_mono_us = 0;  // writer's mirror of the published mono stamp; 0 ⇒ none
 // Runtime toggle + park latch: written by the console (task_diag), read by the
 // step (task_homing). Single-byte volatile accesses are atomic on Cortex-M7.
-static volatile bool s_enabled  = true;
+// Default mirrors gpio_poll_init() — that assignment is the authoritative one.
+static volatile bool s_enabled  = false;
 static volatile bool s_mismatch = false;
 // The fw triple actually seen when the gate latched (+ fw_unreleased), stashed by
 // the step so task_diag can print the park line without re-decoding the cache.
@@ -187,7 +188,10 @@ void gpio_poll_init() {
   s_miss_count        = 0;
   s_held              = false;
   s_last_good_mono_us = 0;
-  s_enabled           = true;   // boots ON — the Phase 7 A/B arm is the runtime toggle
+  s_enabled           = false;  // TEMP 2026-07-31: boots OFF for the CAN3 wire-error
+                                // isolation experiment (logbook 2026-07-29-can3-bus-
+                                // health-flap-hand-sensor-poller). Serial `gpio_poll on`
+                                // re-enables live. Revert to true (boots ON) when closed.
   s_mismatch          = false;
   for (uint8_t i = 0; i < 4; ++i) s_seen_fw[i] = 0;
   s_reply_states      = 0;
