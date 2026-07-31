@@ -213,7 +213,10 @@ _NUM_AXES = p.NUM_AXES          # 7
 _BB_PITCH_AXIS = proto.NODE_ID_BB_PITCH   # 7
 _BB_HAND_AXIS = proto.NODE_ID_BB_HAND     # 8
 
-# DIAGNOSTIC.flags bits (generated udp_protocol, PROTOCOL_VERSION 4).
+# DIAGNOSTIC.flags bits, mirrored by hand from the generated udp_protocol spec.
+# Deliberately not version-stamped: a stamped comment rots on every bump (this
+# one still said "PROTOCOL_VERSION 4" after the 4→5 bump). The spec is the
+# source of truth; these bits have been stable since they were introduced.
 _DIAG_FLAG_HB_STALE = 0x1   # ODrive CAN heartbeat older than CAN_HEARTBEAT_TIMEOUT
 _DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware boot
 # BB-axis liveness windows for the robot_state append. BB diag is a fixed 1 Hz

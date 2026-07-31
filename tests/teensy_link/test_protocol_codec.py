@@ -11,9 +11,16 @@ from controller.teensy_link import protocol as p
 
 def test_constants_match_firmware_spec():
     # These are load-bearing — if they ever drift we've broken the protocol.
-    assert p.PROTOCOL_VERSION == 4   # bumped for the Diagnostic bus_current field +
-    #                                  heartbeat_seen flag (BB robot_state
-    #                                  restoration — 2026-07-24)
+    #
+    # PROTOCOL_VERSION is deliberately NOT pinned here. Its canonical pin is
+    # tests/firmware/test_udp_protocol_xlang.py::test_protocol_version_frozen,
+    # which checks the generator spec against BOTH the generated Python module
+    # (which is where `p.PROTOCOL_VERSION` comes from) and the committed C++
+    # header, and whose failure message carries the fleet-reflash procedure.
+    # A second literal here duplicated that pin without being named in the
+    # procedure, so a bump updated the canonical one and left this one stale —
+    # which is exactly what happened on the 4→5 bump (bf1e9a5, 2026-07-31).
+    # One constant, one pin.
     assert p.MAGIC == 0x4A42  # "JB" little-endian
     assert p.HEADER_SIZE == 8
     assert p.CRC_SIZE == 2
