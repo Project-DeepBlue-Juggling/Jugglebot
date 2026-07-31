@@ -2,7 +2,7 @@
 title: CAN3 flaps error-passive at 42 % duty with the robot idle — the FW4 hand-sensor poller is the new wire activity, and the command gate turns a transient controller state into a system-wide command outage
 type: investigation
 date: 2026-07-29
-status: in-progress
+status: resolved
 phase: "Hand ball-present sensor — post-flash CAN3 regression (FW_VERSION 4)"
 related_plan: "hand-ball-sensor.md"
 sessions:
@@ -846,6 +846,17 @@ poller-independence with the bench state on record, (b) the physical fault is
 located and fixed — or the errors cease and stay ceased across a soak — and
 (c) the poller is reverted to boots-ON (FW 6 → 7) with a clean session behind
 it. FIX C is then decided or dismissed with the physical verdict on record.
+
+### CLOSED 2026-07-31 — root cause found
+
+Layer 2 is answered: the wire errors were the **bridge's own CAN3 analog drive
+path failing under load** (clean into the 1-node cone bus at 100 Hz, dead
+within seconds against the 8-node Jugglebot chain). Software exonerated by
+exhaustion; the poller and the sensor install are fully cleared. Jugglebot now
+runs on the CAN2 controller (operating config, FW7), the poller boots ON
+again, and FIX C is dismissed — the poll rate was never the problem. Full
+exclusion ladder, conviction evidence, and the landed changes:
+`logbook/2026-07-31-can3-drive-path-fault-jugglebot-to-can2.md`.
 
 ## Withdrawn claims
 

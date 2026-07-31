@@ -365,7 +365,7 @@ class TestCanTrafficKeyValueContract:
     def _consumed_link_status_keys(self, js):
         js = _strip_js_comments(js)
         health_keys = set(re.findall(r"healthKey: '(\w+)'", js))
-        assert health_keys == {'bus1_health', 'bus2_health'}, \
+        assert health_keys == {'bus1_health', 'bus2_health', 'bus3_health'}, \
             f'healthKey extraction went stale: {health_keys}'
         direct = set(re.findall(r'\bkv\.(\w+)\b', js))
         assert 'bridge_link' in direct, \

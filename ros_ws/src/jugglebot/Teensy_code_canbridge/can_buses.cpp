@@ -24,8 +24,21 @@ namespace CanBridge {
 // callers also avoid bursting (one leg/tick), so this is defence-in-depth. ~1 KB
 // RAM/bus, trivial against the ~900 KB headroom.
 static FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_64> can_bb;
-static FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_64> can_cone;
-static FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64> can_jugglebot;
+// OPERATING CONFIG since 2026-07-31: the jugglebot role runs on the CAN2
+// controller and the cone role on CAN3 (physical plugs swapped to match). The
+// bridge's CAN3 analog drive path developed a LOAD-DEPENDENT fault — it drives
+// the 1-node cone bus cleanly at 100 Hz but fails within seconds against the
+// 8-node Jugglebot chain (bit1-dominant TX corruption → error-passive/BUS_OFF;
+// logbook 2026-07-31-can3-drive-path-fault-jugglebot-to-can2). Jugglebot
+// therefore lives on CAN2 until the CAN3 transceiver/stub is repaired; the
+// cone's light load tolerates the weak path. All bus config is per-instance
+// (same CAN_BITRATE, same init), so each role carries its full behaviour to
+// its controller; the ESR1 base addresses in service_bus() are swapped to
+// match. Wire-slot names (bus1_health, can1_* profile slot, can3_errors row)
+// are ROLE-keyed and unchanged. Revert both declarations + the ESR1 addresses
+// when the CAN3 path is fixed and re-validated.
+static FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64> can_cone;
+static FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_64> can_jugglebot;
 
 static volatile uint32_t s_bb_rx = 0, s_bb_tx = 0, s_cone_rx = 0, s_cone_tx = 0,
                          s_jugglebot_rx = 0, s_jugglebot_tx = 0;
@@ -617,8 +630,10 @@ static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_
 
 void can_buses_service() {
   service_bus(can_bb,        s_bb_rxh,        IMXRT_FLEXCAN1_ADDRESS, s_bb_esr1);
-  service_bus(can_cone,      s_cone_rxh,      IMXRT_FLEXCAN2_ADDRESS, s_cone_esr1);
-  service_bus(can_jugglebot, s_jugglebot_rxh, IMXRT_FLEXCAN3_ADDRESS, s_jugglebot_esr1);
+  // Operating config (see instance declarations): cone rides FLEXCAN3,
+  // jugglebot FLEXCAN2 — the ESR1 base must follow the role's controller.
+  service_bus(can_cone,      s_cone_rxh,      IMXRT_FLEXCAN3_ADDRESS, s_cone_esr1);
+  service_bus(can_jugglebot, s_jugglebot_rxh, IMXRT_FLEXCAN2_ADDRESS, s_jugglebot_esr1);
 }
 
 // Drain-and-print helper for the raw-ESR1 snapshot rings (1 Hz diag). Prints only

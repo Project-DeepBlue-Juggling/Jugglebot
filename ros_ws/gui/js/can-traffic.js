@@ -36,27 +36,28 @@ import { nanGaps } from './telemetry-charts.js';
 // ---- Bus registry ----
 //
 // *** WIRE-SLOT → PHYSICAL-BUS MAPPING — do NOT label rows off the KeyValue
-// field names. ***  The can-hub PROFILE uplink frame has TWO wire slots for
-// THREE physical buses, and the firmware fills them re-mapped
-// (Teensy_code_canbridge/profiling.cpp:24-28):
+// field names. ***  Every wire name (PROFILE slots, bus1/2/3_health,
+// can3_errors) is ROLE-keyed at the firmware source, not connector-keyed, so
+// the mapping below is the single place physical labels are assigned:
 //
-//     wire slot can1_*  =  physical CAN3 — Jugglebot core
-//                          (6 leg ODrives + hand ODrive + Platform Teensy)
-//     wire slot can2_*  =  physical CAN1 — Ball Butler
-//     physical CAN2 (catching cone) is NOT on the uplink — acknowledged
-//     firmware TODO; needs a 3rd PROFILE slot (protocol v4) + can-hub flash.
+//     wire slot can1_* / bus1_health  =  jugglebot role — physical CAN2 since
+//                          2026-07-31 (6 leg ODrives + hand ODrive + Platform
+//                          Teensy). The bridge's CAN3 analog drive path has a
+//                          load-dependent fault (can_buses.cpp operating-config
+//                          note), so the Jugglebot loom runs on the CAN2
+//                          controller until that path is repaired.
+//     wire slot can2_* / bus2_health  =  bb role — physical CAN1, Ball Butler.
+//     bus3_health (HeartbeatT2J.flags bits 4-5) = cone role — physical CAN3.
+//                          Health only: the PROFILE frame still has TWO slots,
+//                          so the cone has no traffic charts (3rd-slot TODO).
 //
-// 'link_status' mirrors the same slot semantics AT THE SOURCE: the firmware
-// heartbeat packs bus1_health = jugglebot/CAN3, bus2_health = bb/CAN1
-// (Teensy_code_canbridge.ino:100-101; the wire field NAMES are fixed by
-// udp_protocol.h:184-185).  teensy_bridge_node._publish_link_status relays
-// both fields verbatim (BusHealth enum names, no re-mapping).
+// teensy_bridge_node._publish_link_status relays all three health fields
+// verbatim (BusHealth enum names, no re-mapping).
 //
-// `slot`/`healthKey` of null ⇒ bus not on the uplink: its row renders greyed
-// with 'n/a' values and its series toggle is disabled.  Rows and chart series
-// are generated from this array, so lighting CAN2 up later is a two-field
-// change here (slot: 'can3', healthKey: 'bus3_health' or whatever protocol v4
-// names them) — no layout rework.
+// `slot` of null ⇒ no traffic charts (readouts 'n/a', series toggle
+// disabled); `healthKey` of null too ⇒ the whole row greys out.  Rows and
+// chart series are generated from this array — when the CAN3 path is fixed
+// and the looms swap back, restore desc/slot/healthKey/colours here.
 //
 // Series colours come from the theme accent vars (resolved at chart build
 // time).  Palette checked with the dataviz validator: all-pairs CVD
@@ -70,16 +71,19 @@ const BUSES = [
         tooltip: 'Ball Butler bus (PROFILE wire slot can2) — click to toggle chart series',
     },
     {
-        id: 'can2', label: 'CAN2', desc: 'Catching cone',
-        slot: null, healthKey: null,
-        colorVar: '--accent-cyan', colorFallback: '#06b6d4',
-        tooltip: 'not on uplink — needs protocol v4 + can-hub flash',
-    },
-    {
-        id: 'can3', label: 'CAN3', desc: 'Jugglebot core',
+        id: 'can2', label: 'CAN2', desc: 'Jugglebot core',
         slot: 'can1', healthKey: 'bus1_health',
         colorVar: '--accent-blue', colorFallback: '#3b82f6',
-        tooltip: 'Jugglebot core bus: 6 legs + hand + Platform Teensy (PROFILE wire slot can1) — click to toggle chart series',
+        tooltip: 'Jugglebot core bus: 6 legs + hand + Platform Teensy — on the CAN2 controller since 2026-07-31 (CAN3 drive-path fault) — click to toggle chart series',
+    },
+    {
+        id: 'can3', label: 'CAN3', desc: 'Catching cone',
+        // Health rides HeartbeatT2J.flags bits 4-5 → link_status
+        // 'bus3_health' (UNKNOWN from a pre-cone-uplink flash). The cone role
+        // has no PROFILE slot, so `slot` stays null (no traffic charts).
+        slot: null, healthKey: 'bus3_health',
+        colorVar: '--accent-cyan', colorFallback: '#06b6d4',
+        tooltip: 'Catching cone bus (on the CAN3 controller since 2026-07-31) — health live on uplink; traffic charts need a 3rd PROFILE slot',
     },
 ];
 
@@ -222,8 +226,12 @@ export function initCanTrafficPanel() {
             <span></span>
         </div>`;
     const rows = BUSES.map(bus => {
+        // `na` (no PROFILE slot) gates the traffic readouts + chart toggle;
+        // the row goes fully grey only when the HEALTH key is missing too —
+        // the cone now has health-without-charts, so its dot must stay live.
         const na = bus.slot === null;
-        const naCls = na ? ' can-row-na' : '';
+        const fullNa = na && bus.healthKey === null;
+        const naCls = fullNa ? ' can-row-na' : '';
         const offCls = (!na && !seriesVisible[bus.id]) ? ' series-off' : '';
         const initVal = na ? 'n/a' : '--';
         return `
@@ -240,7 +248,7 @@ export function initCanTrafficPanel() {
             <span class="can-bus-val" id="can-kbits-${bus.id}">${initVal}</span>
             <span class="can-bus-val" id="can-util-${bus.id}">${initVal}</span>
             <span class="can-health-dot unknown" id="can-health-${bus.id}"
-                  title="${bus.label} health: ${na ? 'n/a (not on uplink)' : 'UNKNOWN'}"></span>
+                  title="${bus.label} health: ${bus.healthKey === null ? 'n/a (not on uplink)' : 'UNKNOWN'}"></span>
         </div>`;
     }).join('');
     rowsHost.innerHTML = head + rows;

@@ -163,6 +163,12 @@ _T2J_FLAG_ALL_AXIS_HB_OK = 0x4
 # the arm-took verification bit. Surfaced on /link_status as 'teensy_mpc_active'
 # (ARMING_CONTRACT A5) so a host-armed / firmware-not-armed split is visible.
 _T2J_FLAG_MPC_ACTIVE = 0x8
+# Bits 4-5 carry the cone (CAN2) BusHealth value (generated single source:
+# p.HeartbeatT2JFlags.CONE_HEALTH_MASK / p.HEARTBEAT_CONE_HEALTH_SHIFT).
+# BusHealth.UNKNOWN == 0, so a flash older than the cone-health uplink reads
+# as UNKNOWN — surfacing it is backward-compatible with an unflashed bridge.
+_T2J_CONE_HEALTH_MASK = 0x30
+_T2J_CONE_HEALTH_SHIFT = 4
 # Bits 8-13 carry the per-leg torque_ff ingest-clamp mask (bit 8+i = leg i clamped
 # at UDP ingest on the last ACCEPTED setpoint) — generated single source:
 # p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK / p.HEARTBEAT_TORQUE_CLAMP_SHIFT.
@@ -1766,7 +1772,7 @@ class TeensyBridgeNode(Node):
             if (cur_bus1 == int(BusHealth.OK)
                     and self._last_bus1_health in _degraded):
                 self.get_logger().warning(
-                    "CAN3 bus health recovered to OK (was "
+                    "Jugglebot core bus health recovered to OK (was "
                     f"{_enum_name(BusHealth, self._last_bus1_health)}) — Jugglebot "
                     "may have power-cycled; conservative cold-start re-read.")
                 # OFF the 1 Hz timer thread — the re-read can take ~1.9 s and must
@@ -2663,6 +2669,12 @@ class TeensyBridgeNode(Node):
                              value=_enum_name(BusHealth, hb.bus1_health)),
                     KeyValue(key='bus2_health',
                              value=_enum_name(BusHealth, hb.bus2_health)),
+                    # Cone (CAN2) health rides HeartbeatT2J.flags bits 4-5; an
+                    # old flash leaves them 0 = UNKNOWN (BusHealth's zero value).
+                    KeyValue(key='bus3_health',
+                             value=_enum_name(BusHealth,
+                                              (int(hb.flags) & _T2J_CONE_HEALTH_MASK)
+                                              >> _T2J_CONE_HEALTH_SHIFT)),
                     KeyValue(key='uptime_ms', value=str(int(hb.uptime_ms))),
                     KeyValue(key='time_synced',
                              value=str(int(bool(hb.flags & _T2J_FLAG_TIME_SYNCED)))),

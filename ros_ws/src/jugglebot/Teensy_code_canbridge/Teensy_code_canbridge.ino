@@ -115,6 +115,9 @@ static void send_heartbeat_t2j() {
                                                         // ingest-clamp mask from the last ACCEPTED
                                                         // setpoint (mirrors lead_clamp_mask below;
                                                         // 2026-07-14 gravity-FF observability).
+  // bits 4-5: cone (CAN2) BusHealth — closes the cone-health-uplink TODO above.
+  p.flags      |= ((uint32_t)cs.cone_health << JbUdp::HEARTBEAT_CONE_HEALTH_SHIFT)
+                  & HF::CONE_HEALTH_MASK;
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
 
   // Ball Butler heartbeat snapshot (replaces legacy can_node bb/
@@ -456,8 +459,7 @@ void setup() {
   activate_init();                 // idle until an ACTIVATE RPC latches a start
   deactivate_init();               // idle until a DEACTIVATE RPC latches a start
   version_check_init();            // clears the version sweep masks
-  gpio_poll_init();                // hand ball-sensor poller (TEMP boots OFF — CAN3
-                                   //   isolation; serial `gpio_poll on` re-enables)
+  gpio_poll_init();                // hand ball-sensor poller (boots ON)
   profiling_init();                // instrumentation baselines
 
   // Create tasks. (Higher number = higher priority in FreeRTOS.)

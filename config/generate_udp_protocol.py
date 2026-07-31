@@ -130,6 +130,12 @@ CONSTANTS = [
     # firmware (the clamp is dormant until the can-bridge is reflashed).
     ("HEARTBEAT_TORQUE_CLAMP_SHIFT", 8, "u8",
      "Bit offset of TORQUE_CLAMP_MASK inside HeartbeatT2J.flags (bits 8-13)"),
+    # HeartbeatT2J.flags bit offset of the cone (physical CAN2) BusHealth value
+    # (HeartbeatT2JFlags::CONE_HEALTH_MASK, bits 4-5). Same no-bump packing as the
+    # torque-clamp mask above; BusHealth::UNKNOWN == 0, so a pre-cone-uplink
+    # firmware (which never sets these bits) self-describes as UNKNOWN.
+    ("HEARTBEAT_CONE_HEALTH_SHIFT", 4, "u8",
+     "Bit offset of CONE_HEALTH_MASK inside HeartbeatT2J.flags (bits 4-5)"),
 ]
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -260,8 +266,14 @@ ENUMS = {
         ("STOW_PENDING_ON_RECONNECT", 0x2, "bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)"),
         ("ALL_AXIS_HEARTBEATS_OK",    0x4, "bit2: every present axis heartbeat is fresh"),
         ("MPC_ACTIVE",                0x8, "bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)"),
+        # Cone (physical CAN2) bus health as a 2-bit BusHealth value in bits 4-5
+        # (see HEARTBEAT_CONE_HEALTH_SHIFT). Not a single-bit flag: BusHealth has
+        # four states, and UNKNOWN == 0 makes a stale flash self-describing.
+        ("CONE_HEALTH_MASK",         0x30, "bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/"
+                                           "BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = "
+                                           "UNKNOWN from a pre-cone-uplink flash"),
         # Per-leg torque_ff ingest-clamp mask, packed into free bits of the same u32
-        # (bits 4-7 stay reserved for future single-bit flags; the mask starts at
+        # (bits 6-7 stay reserved for future single-bit flags; the mask starts at
         # bit 8 = HEARTBEAT_TORQUE_CLAMP_SHIFT so it stays byte-aligned/readable).
         ("TORQUE_CLAMP_MASK",      0x3F00, "bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to "
                                            "TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED "
@@ -346,7 +358,7 @@ MESSAGES = [
             Field("bus1_health", "u8",  1, "wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum"),
             Field("bus2_health", "u8",  1, "wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)"),
             Field("fault_state", "u8",  1, "FaultState enum"),
-            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
+            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
             # Ball Butler heartbeat snapshot (CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).
