@@ -1968,9 +1968,17 @@ class TeensyBridgeNode(Node):
         self._mpc_active = bool(active)
         self._client.set_heartbeat_flags(_FLAG_MPC_ACTIVE if active else 0)
         # Enable is the safety-relevant transition (warning); disable is benign.
-        log = self.get_logger().warning if active else self.get_logger().info
-        log(f"mpc_active set to {int(self._mpc_active)} — setpoint output "
-            f"{'ENABLED' if active else 'disabled'}.")
+        # Two DISTINCT call sites, not one line behind a severity-switching bound
+        # method: Foxy's rcutils logger caches severity per source line and raises
+        # 'Logger severity cannot be changed between calls' on a flip — which
+        # killed the node mid-arm (STANDBY) on 2026-07-31, triggering the
+        # safe-shutdown stow.
+        if active:
+            self.get_logger().warning(
+                f"mpc_active set to {int(self._mpc_active)} — setpoint output ENABLED.")
+        else:
+            self.get_logger().info(
+                f"mpc_active set to {int(self._mpc_active)} — setpoint output disabled.")
 
     def _start_setpoint_output(self, setpoint_source=None):
         """Bring up the setpoint source + ingest thread and set mpc_active=1.

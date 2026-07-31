@@ -19,6 +19,7 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/gpio_poll.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/udp_protocol.h
+  - ros_ws/src/jugglebot/jugglebot/ball_butler_node.py
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
   - tests/ros/test_gui_geometry.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
@@ -239,6 +240,51 @@ stale binary after a bump fails silent-and-total, and the check costs 30
 seconds (bind :5006, read one frame's `data[2]`). Wire-verification had been
 done for v6 and FW7 but skipped for FW8 — the one flash where it mattered
 most.
+
+## Corrections and same-evening findings (2026-07-31 evening)
+
+Three items from the post-resolution shakedown, one of them a correction to
+this entry's own narrative:
+
+**1. CORRECTION — the ODrives never went silent; the "group heartbeat stop"
+was a display misread.** A temporary per-cmd frame histogram on the bridge
+(built for this question, then removed) showed the full telemetry mix flowing
+continuously — heartbeats at 7×10 Hz, encoder+Iq at 7×100 Hz, errors at
+7×50 Hz, hand-sensor SDO replies at ~43 Hz — while `[axes]` read `fresh=0/7`.
+The `[axes]` legend: the number after the slash is heartbeat **age in
+milliseconds** (5–95 ms = flowing), and `*` marks **active_errors/disarm ≠
+0** — not staleness (`!` is stale). `fresh` counts axes that are fresh **and
+error-free**; with 48 V down, all seven report uniform DC undervoltage (the
+documented benign bench state), so `fresh=0/7` with `*` marks is the healthy
+48-V-off signature. Every "ODrives heartbeated then went silent as a group"
+observation in this entry and its INDEX row is therefore WRONG as stated —
+the drives streamed throughout. **The core conviction is unaffected**: it
+rests on the bridge's own TX evidence (bit1-dominant corruption, TEC to
+BUS_OFF, the role-swap A/B), not on the misread RX narrative.
+
+**2. The pio-built Platform Teensy image is CAN-mute — pio uploads for that
+board are SUSPENDED.** With the pio V2 image the board ran (USB, boot, app)
+but transmitted zero CAN frames (`bad_axis` frozen at 0 with the board
+connected), killing the relay conduit (`PLATFORM_FW_CHECK: UNKNOWN`). An
+Arduino-IDE reflash of the same V2 source restored full function immediately
+(relay read lands, `platform_fw_version: 2`). Clue for the bench debug: the
+pio-flashed board enumerated in the Arduino IDE as **"Teensy 4.1"** despite
+being a 4.0 — suggesting 4.1-flavoured build leakage (extra_script linker
+lineage / core defines) that would leave the 4.0's CAN pin-mux wrong while
+pin-agnostic subsystems still work. The buttonless upload machinery
+(`upload_platform.sh`) is sound and live-tested but disabled in
+platformio.ini until the image is proven on CAN.
+
+**3. Foxy logger landmine crashed the node mid-arm.** First STANDBY after the
+fixes: `_set_mpc_active`'s single log line bound `.warning`-or-`.info` by
+direction; Foxy's rcutils logger caches severity per source line and raises
+`ValueError: Logger severity cannot be changed between calls` on the flip —
+the service callback's exception killed the node, whose **safe-shutdown then
+correctly ran the profiled stow** (the operator-visible raise-then-lower).
+Pre-existing (June, dormant because both severities rarely fired from one
+process). Fixed with distinct call sites per severity, plus the one sibling
+found by sweep (`ball_butler_node.py:575`, same one-line conditional
+pattern).
 
 ## Related
 

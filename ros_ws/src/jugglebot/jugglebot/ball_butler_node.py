@@ -572,7 +572,13 @@ class BallButlerNode(Node):
 
         res.success = ok
         res.message = msg
-        self.get_logger().info(msg) if ok else self.get_logger().warning(msg)
+        # Distinct call sites per severity: Foxy's rcutils logger caches severity
+        # by source line and raises on a flip (the teensy_bridge _set_mpc_active
+        # crash, 2026-07-31) — a one-line conditional shares the cache key.
+        if ok:
+            self.get_logger().info(msg)
+        else:
+            self.get_logger().warning(msg)
         return res
 
     def _publish_throw_announcement(self, target_name: str,
