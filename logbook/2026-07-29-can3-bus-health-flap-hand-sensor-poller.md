@@ -23,6 +23,7 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/gpio_poll.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_activate.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_deactivate.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_homing.cpp
@@ -33,6 +34,7 @@ files_changed:
   - tests/firmware/native/README.md
   - tests/firmware/native/coldstart_hal.cpp
   - tests/firmware/native/coldstart_hal.h
+  - tests/firmware/native/test_gpio_poll.cpp
   - tests/firmware/native/test_platform_relay.cpp
   - tests/firmware/test_udp_protocol_xlang.py
   - tests/hardware/session_hand_ball_sensor.md
@@ -41,9 +43,11 @@ files_changed:
   - tools/probes/link_status_flash_control.py
   - tools/probes/link_status_health_scan.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
-# to-be-backfilled: the SHA of the commit carrying this entry + FIX A + FIX B.
+# 64f552c: this entry + FIX A + FIX B. cae3e6e: the 2026-07-31 addendum's
+# TEMP poller-boots-OFF isolation experiment (FW_VERSION 5 → 6).
 commits:
   - 64f552c
+  - cae3e6e
 subsystem:
   - can
   - ros
@@ -607,6 +611,10 @@ on `hand_ops`**.
 **With `gpio_poll off`: safe, and equivalent to FW3.** (Re-type it after every bridge
 boot — see the FIX 0 trap.)
 
+**[2026-07-31] v6 (`cae3e6e`) boots the poller OFF by default** — the re-type trap is
+closed for the duration of the isolation experiment. The Phase 7 runbook's
+poller-boots-ON premise is suspended until the revert (FW 6 → 7).
+
 ## Verification
 
 ### What is verified now
@@ -682,6 +690,163 @@ before any flash.**
   flashed, (b) the A/B has run on FW4 and layer 2 is attributed, and (c) FIX C is
   decided or explicitly dismissed with the A/B result on record.
 
+## Addendum — 2026-07-30/31: A/B null, contention killed, the errors observed with the poller silent
+
+### The pre-registered A/B ran and returned NULL (2026-07-30)
+
+The bench A/B (on/off/on, 60 s arms, robot idle) ran on FW4 as gated. **Every
+per-class counter and both increment sums were frozen across all three arms** —
+the fault condition was simply absent that morning. Two consequences:
+
+- **The discriminator table could not fire**, so FIX C stayed undecided on its
+  original criterion (no option implemented; the poll still runs 50 Hz when
+  enabled).
+- **The condition is intermittent on an hours scale**, which retro-weakens the
+  layer-1 attribution: the flap was pinned to "the only new CAN3 wire activity",
+  but the null A/B shows the identical activity running error-free. The poll is
+  the flap's *pacemaker* — its 50 Hz TX attempts are what the instantaneous gate
+  amplified into the 42 % duty cycle — but not necessarily the fault's *source*.
+  Formalised in Withdrawn claims below.
+
+The A/B session's **boot-cumulative** counters (long-uptime boot, read during
+the capture) still closed one question the frozen arms could not: **bit1 = 5907
+in TX context, form = 971, stuff = 141, ack = 0, rxctx = 1**, with a TEC
+excursion to 255 (one historical BUS_OFF somewhere in that boot). By this
+entry's own discriminator table: **bit1-dominant = collision or physical
+layer** — whenever the fault is active, the bridge's own transmissions read
+back corrupted (drove recessive, read dominant).
+
+### Same-arbitration-ID contention: exhaustively excluded (2026-07-30)
+
+An independent investigation asked whether **two nodes can transmit the same
+arbitration ID** on CAN3 (the "collision" arm of bit1). Verdict: **impossible
+for the two IDs that were on the wire during the flap.**
+
+- **Single-transmitter proof for `0x7DD` and `0x0C4`**: every CAN write call
+  site in both Teensy firmwares (all of the Platform Teensy's four), every
+  ODrive's cyclic TX set from the flashed configs, the Platform Teensy's full
+  git history (no 0x7DD transmit has ever existed there), and the Jetson (no
+  CAN netdev since the SocketCAN decommission) — each ID has exactly one
+  transmitter, the bridge. No RTR usage anywhere in live code.
+- **The three genuine shared-ID pairs all die**: Get_Version request/reply
+  share one ID by design, but a collision needs the 1 s re-query to land inside
+  a ~130 µs reply window — ~0.5 collisions/hour against 5 907 observed bit1
+  errors. The `0x6E0`/`0x7DE` relay replies are causally serialized RPC-only
+  traffic, and the flap predated the launch.
+- **Wire-level retro-proof**: CAN3 runs with self-reception disabled, so any
+  *foreign* 0x7DD would be received and counted as a `bad_axis` decode drop.
+  The flap capture's `bad_axis` ticked at **exactly +2/s — precisely the
+  Platform Teensy's 2 Hz `0x7DF` traffic report and not one frame more**. No
+  second 0x7DD transmitter existed during the very session that showed the
+  errors. (Honest blind spot: a foreign `0x0C4` would be dropped *uncounted* —
+  closing that needs a sniffer or a one-line counter. Nothing points there.)
+- **Node-id map corrected on the way through**: CAN3 carries legs 0–5 + hand 6;
+  node 7 is BB pitch **on CAN1**. The per-leg node-id assignments are not
+  recorded in-repo (the leg config JSON is a `node_id: 0` template) — a
+  documentation gap; duplicates are refuted behaviourally (7 distinct axes
+  heartbeat with distinct ids).
+
+With collision dead, the bit1-dominant row reads **physical layer** — and the
+prime suspect by timing is the **hand ODrive's CAN stub**, disturbed by the
+2026-07-28 sensor install inside the hand.
+
+### Physical inspection found nothing (2026-07-31)
+
+Operator inspected the layer thoroughly: **no observable problems**; CANH/CANL
+powered-off resistance **66 Ω** (two 120 Ω terminators nominal ≈ 60 Ω; a
+missing terminator would read ≈ 120 Ω). A clean inspection does not acquit an
+*intermittent* contact — but it removes every gross defect and motivates the
+isolation experiment below.
+
+### The isolation experiment: v6 boots the poller OFF (`cae3e6e`, flashed 2026-07-31)
+
+To decide whether poll traffic is a **necessary condition**, the poller's
+**runtime boot default** flips to OFF (`s_enabled = false` in
+`gpio_poll_init()`; FW_VERSION 5 → 6), so every boot starts radio-silent and
+the operator's reboot-before-session practice can no longer silently re-arm it
+(the FIX 0 trap, now closed by default). Deliberately **not** the
+`jugglebot_ball_detect.enabled` YAML kill switch: that compiles the poller out
+entirely, killing the serial toggle this experiment needs, forces a config
+regen across four firmware dirs including the BallButler repo, and breaks the
+13 native poller cases which compile the real generated header. The serial
+`gpio_poll on|off` toggle survives — the **strong arm** of the experiment is
+flipping the poller live *while errors are ticking* and watching `can3_errors`
+respond (the null A/B is why a quiet poller-off session alone is weak
+evidence).
+
+Interpretation matrix, pre-registered:
+
+| Observation | Conclusion |
+|---|---|
+| Errors tick with the poller OFF | Poller exonerated as necessary condition — fault is traffic-independent; go physical (scope the hand stub, unplug the hand drop) |
+| Quiet with poller OFF, whole session | Weak alone (condition intermittent) — run the live-toggle arm |
+| Counters track a live `gpio_poll on`/`off` toggle | Poll-linked — but still splits two ways: the bridge's TX pattern vs the hand's 50 Hz TxSdo replies through a marginal stub. The retarget-poller-at-a-leg test separates them |
+
+**TEMP state**: the Phase 7 commissioning runbook assumes the poller boots ON —
+**do not run the Phase 7 sitting until this is reverted** (or open it with a
+serial `gpio_poll on`). Revert recipe: restore `s_enabled = true` at both
+`gpio_poll.cpp` sites, restore the `.ino` comment, bump FW_VERSION 6 → 7,
+reflash (the native-fixture enable line stays; it is correct under either
+default).
+
+### First datapoint, minutes after the v6 flash: the burst happened with the poller SILENT
+
+Serial state ~4 min after the v6 boot (no launch running, robot 12 V up,
+poller confirmed `enabled=0`):
+
+```
+[canerrs]  jugglebot ack=0 crc=1 form=6 stuff=1 bit0=0 bit1=7 txctx=7 rxctx=1
+           tecNow=146 recNow=0 tecInc=148 recInc=0        (frozen over 12 s)
+[canhealth] jugglebot ... tec=147 flt=passive fltNow=passive gated=0
+[canhealth] decode_drops jugglebot: short=0 bad_axis=470
+[axes] fresh=0/7 0:s1/13* 1:s1/4* 2:s1/9* 3:s1/3* 4:s1/98* 5:s1/93* H:s1/6*
+```
+
+The TX census for this boot is airtight: the 0x7DD broadcast **self-gates
+unanchored** (`broadcast_0x7dd()` returns on `!time_synced()`; no launch ⇒
+never anchored), the poller booted OFF, RPC needs a client — so the bridge's
+entire CAN3 TX was **`version_check`'s ≤ 7-frame Get_Version sweep** (fired
+because all seven axes heartbeated early in the boot) plus FlexCAN
+auto-retransmits. Those frames collected **~18 failed transmit attempts**
+(`tec_inc_sum` 148 at +8 each, with ~2 successes implied by `tecNow` 146),
+same bit1-dominant TX-context fingerprint, driving TEC straight into
+error-passive, after which the sustained gate closed and — with literally
+nothing left transmitting — every counter froze. **The wire fault corrupted
+the bridge's transmissions in a window containing zero poller frames.** One
+observation, and the bench state at flash time (post-inspection: 48 V state,
+connector seating) needs operator confirmation before it fully counts — but as
+it stands, poller-independence has been observed directly.
+
+Two subsidiary observations from the same boot, recorded for the operator:
+
+- **All seven ODrives heartbeated early (counts 3–98) and then went silent**
+  (`fresh=0/7`) while the Platform Teensy's 2 Hz report kept arriving cleanly
+  (`bad_axis` 470 ≈ 2/s × the ~4 min uptime, REC ≈ 0). Group-wise cessation
+  with clean RX from the other CAN3 node reads as a power/segment event on the
+  ODrive side (48 V off?), not random loss — needs the bench state to
+  interpret.
+- **No recovery deadlock**: the frozen-passive state looks alarming but is not
+  latched — the 100 Hz 0x7DD broadcast is deliberately ungated ("the 0x7DD
+  broadcast IS the decay pump", `can_buses.h:231`) and resumes the moment a
+  launch anchors the clock, pumping TEC back below 128 in ≲ 1 s of clean
+  frames. A reboot achieves the same from zero.
+
+### What this does to FIX C
+
+Option (1), slowing the poll to ≤ 20 Hz, loses its standing as a *fix*: the
+errors happen at seven-frames-per-boot, so rate shapes exposure, not the fault.
+Option (2), ungating the diagnostic read, is unchanged but pointless while the
+fault is live. The FIX C decision now rides on the physical find, not on a rate
+table.
+
+### Closure conditions, restated (supersedes the Outcome list)
+
+The entry closes when (a) the poller-off session confirms or refutes
+poller-independence with the bench state on record, (b) the physical fault is
+located and fixed — or the errors cease and stay ceased across a soak — and
+(c) the poller is reverted to boots-ON (FW 6 → 7) with a clean session behind
+it. FIX C is then decided or dismissed with the physical verdict on record.
+
 ## Withdrawn claims
 
 - **[2026-07-29 23:xx] Claimed CAN3 `WARN` keys on the CAN error-*warning* level
@@ -714,17 +879,36 @@ before any flash.**
   recorded deliberately: **stale plan documents actively mislead**. Those cells are
   corrected in this commit.
 
+- **[2026-07-30/31] The wire errors are *caused by* the hand-sensor poll traffic
+  (the layer-1 headline, read as source attribution).**
+  **WITHDRAWN IN PART:** the *limit-cycle* attribution stands — the 50 Hz TX
+  attempts plus the instantaneous gate are what produced the 42 % duty outage,
+  and the eleven controls still pin that. What does not survive is the poll as
+  the *error source*: the null A/B ran the identical traffic error-free
+  (condition intermittent), and the 2026-07-31 v6 boot reproduced the identical
+  bit1-dominant TX-context errors **with zero poller frames on the wire** (the
+  ≤ 7-frame Get_Version sweep was the boot's entire TX census). The poll was the
+  dominant *victim* and the flap's pacemaker.
+  **Superseded by:** Addendum — 2026-07-30/31, and its isolation-experiment
+  interpretation matrix.
+
 ## Open Questions
 
 1. **Layer 2 — which wire-error class raises TEC/REC?** TX-side vs RX-side, and
    ack/bit1 (arbitration or physical) vs stuff/form/crc (physical only). Gated on the
    bench A/B, which **must run on FW4 before the fix is flashed**.
+   *[2026-07-31] Substantially answered: bit1-dominant, TX context (5 907 boot-
+   cumulative at the A/B; 7 of 8 context snapshots on the v6 boot), collision
+   exhaustively excluded ⇒ physical layer. Remaining: WHERE — prime suspect the
+   hand ODrive stub; see the Addendum's interpretation matrix.*
 2. **Why do ~half the OK-window poll slots also go unserved?** φ = 0.256, not ≈ 1 — the
    command gate explains only part of the 71.06 % slot-miss rate. The residue is
    whatever layer 2 turns out to be.
 3. **Is 50 Hz simply the wrong poll rate?** We run 2.5× BallButler's production-proven
    ≤ 20 Hz. FIX C option (1) is cheap, but should not be chosen before the A/B, or we
    will have "fixed" it without knowing what it was.
+   *[2026-07-31] Moot as a fix: the v6 boot collected the same errors at
+   seven-frames-per-boot. Rate shapes exposure, not the fault (Addendum § FIX C).*
 4. **What does the `ERR_TIMEOUT` epidemic actually report?** *First establish which
    status code the epidemic carries* — the two are different paths and an earlier
    draft of this entry conflated them. If it reports **`ERR_BUS_DOWN`**
