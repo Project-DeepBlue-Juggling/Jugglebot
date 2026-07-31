@@ -4,4 +4,5 @@ numpy>=1.24
 pyspacemouse>=0.6
 matplotlib>=3.7
 pytest>=7.0
+pytest-xdist>=3.6      # parallel test phase — see ./run_tests.sh
 pyyaml>=6.0

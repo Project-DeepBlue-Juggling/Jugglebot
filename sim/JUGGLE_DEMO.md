@@ -226,7 +226,7 @@ pytest tests/sim/test_demo_juggle_sim.py \
        tests/sim/test_demo_trajectory.py -v
 
 # Full suite (~8 min)
-pytest tests/ -q
+./run_tests.sh
 ```
 
 The juggle-demo tests include a 30-second end-to-end run; expect ~30 s

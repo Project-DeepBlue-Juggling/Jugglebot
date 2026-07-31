@@ -285,6 +285,7 @@ class TestT4SpeedTest:
 class TestTrajectoryPerformance:
     """Solve time and constraint satisfaction during trajectories."""
 
+    @pytest.mark.serial  # wall-clock solve budget — see pyproject.toml
     def test_solve_time(self, plant):
         """Mean warm-started solve time < 20 ms during T1."""
         plant.reset()

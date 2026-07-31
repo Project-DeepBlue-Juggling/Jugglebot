@@ -197,7 +197,15 @@ The test:
 
 ### CI expectations
 
-The test runs as part of the default ``pytest tests/ -v`` invocation.
+The test runs as part of the default ``pytest tests/ -v`` invocation, and as
+**phase 2** of the blessed gate ``./run_tests.sh``.  Note that the module
+carries ``pytestmark = pytest.mark.serial`` (registered in ``pyproject.toml``)
+because its ``tracemalloc`` baseline is process-global and is corrupted by
+concurrent load: it is therefore **deselected by any ``-m "not serial"`` run**.
+A hand-rolled ``pytest -n 4 --dist loadfile -m "not serial"`` — i.e. a copy of
+the gate's phase-1 command alone — silently does NOT execute this contract.
+Run ``./run_tests.sh`` (both phases) or plain ``pytest``.
+
 It MUST pass on every commit to ``main``.  A commit that trips the test
 and cannot be resolved by pre-allocation MUST either:
 

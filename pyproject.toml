@@ -2,8 +2,18 @@
 testpaths = ["tests"]
 addopts = [
     "--ignore=tests/hardware",
-    "-p", "no:launch_testing_ros",
-    "-p", "no:launch_testing",
+    "--strict-markers",
+    # ── ROS2 Foxy plugin suppression ──────────────────────────────────────
+    # These names are pytest11 ENTRY-POINT names, not module names.  The
+    # launch plugins ship as `launch` / `launch_ros` (see
+    # /opt/ros/foxy/.../launch_testing-*.egg-info/entry_points.txt), so the
+    # obvious-looking `no:launch_testing` / `no:launch_testing_ros` silently
+    # match nothing and leave the plugins ACTIVE.  That matters: the launch
+    # plugin imports every collected module at collection time, so a single
+    # unimportable test file aborts the whole run as a collection error
+    # instead of failing one file.  Verify with `pytest --trace-config`.
+    "-p", "no:launch",
+    "-p", "no:launch_ros",
     "-p", "no:ament_copyright",
     "-p", "no:ament_flake8",
     "-p", "no:ament_pep257",
@@ -14,6 +24,17 @@ markers = [
     "slow: tests that take > 30s",
     "nightly: tests run only in nightly CI",
     "hypothesis_deep: hypothesis tests benefiting from --hypothesis-profile=ci-deep",
+    # ros_ws/src/jugglebot/test/{test_flake8,test_pep257,test_copyright}.py carry
+    # these. They are normally registered by the ament_* plugins, which the
+    # addopts above disable, and ros_ws has no [tool:pytest] of its own — so a
+    # `colcon test` or a `pytest ros_ws/...` walks up to THIS file and would turn
+    # them into hard collection errors under --strict-markers. Registered so that
+    # stays a no-op rather than a confusing failure.
+    "linter: ament lint marker (ament_* plugins are disabled here)",
+    "flake8: ament lint marker (ament_* plugins are disabled here)",
+    "pep257: ament lint marker (ament_* plugins are disabled here)",
+    "copyright: ament lint marker (ament_* plugins are disabled here)",
+    "serial: must not run under xdist parallelism — the test measures a process-global resource (heap allocation, GC events, wall-clock) whose baseline is polluted by concurrent load or by unrelated tests sharing the interpreter. ./run_tests.sh runs these in a dedicated single-process phase after the parallel phase. Add this ONLY for process-global measurement; a test that merely needs a port or a temp file does not qualify (use an ephemeral port / tmp_path instead).",
 ]
 
 # On Jetson (ROS2 Foxy), the system launch_testing plugin is incompatible

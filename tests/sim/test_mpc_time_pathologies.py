@@ -744,6 +744,7 @@ class TestT3bH3PreCommandRaises:
 # T-U-T3b-H4 — on_post_solve allocating in hot loop (regression check)
 # =====================================================================
 
+@pytest.mark.serial  # tracemalloc baseline is process-global — see pyproject.toml
 class TestT3bH4PostSolveAllocation:
     """T-U-T3b-H4 — Verify that a small per-tick allocation inside the
     `on_post_solve` hook does not bust the hot-loop allocation contract.

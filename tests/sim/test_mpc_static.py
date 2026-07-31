@@ -181,6 +181,7 @@ class TestMPCPerformance:
             f"Settled at {settle_time:.3f}s > {SETTLE_TIME_S}s threshold"
         )
 
+    @pytest.mark.serial  # wall-clock solve budget — see pyproject.toml
     def test_solve_time(self, plant):
         """Mean solve time < 15 ms."""
         plant.reset()

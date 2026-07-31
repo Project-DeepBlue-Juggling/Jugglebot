@@ -22,7 +22,7 @@ It is wired into the normal suite — no separate command:
 
 ```bash
 pytest tests/firmware/test_native_firmware.py -q     # build + run + golden check
-pytest tests/ -q                                      # the full gate (incl. the above)
+./run_tests.sh                                       # the full gate (incl. the above)
 ```
 
 `pytest tests/firmware/test_fault_logic.py -q` runs the golden conformance for the

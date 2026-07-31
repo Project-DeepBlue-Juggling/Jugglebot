@@ -63,6 +63,14 @@ from controller.target import StaticTargetSource
 from controller.telemetry import TelemetryLogger
 
 
+# Every test in this module measures a process-global resource (tracemalloc
+# heap growth, GC events) whose baseline is set by whatever else has already
+# run in the interpreter.  Under xdist that baseline becomes non-deterministic,
+# so the whole module runs in the serial phase — see the `serial` marker
+# definition in pyproject.toml and scripts/run_tests.sh.
+pytestmark = pytest.mark.serial
+
+
 CONTROL_DT = 0.025
 TARGET_POSE = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])  # default Active-like hold
 
