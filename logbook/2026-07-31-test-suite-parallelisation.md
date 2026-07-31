@@ -17,9 +17,9 @@ files_changed:
   - CLAUDE.md
   - sim/JUGGLE_DEMO.md
   - tests/firmware/native/README.md
-# backfilled after the commit lands
+# backfilled 2026-07-31
 commits:
-  - PENDING
+  - 543ce3f
 subsystem:
   - sim
   - motion
@@ -78,9 +78,15 @@ Three changes, plus the plugin fix:
    five `tracemalloc`/GC-event tests and two CasADi wall-clock solve-time budgets —
    registered in `pyproject.toml` with a normative description of what does and
    does not qualify.
-3. **`./run_tests.sh`** — the blessed gate: parallel phase `-m "not serial"`,
-   then serial phase `-m serial`. Both phases always run, exit codes combine, and
-   extra args forward to both (so `--hypothesis-profile=ci-deep` still works).
+3. **`./run_tests.sh`** — the blessed gate, folded into the *existing* root script
+   rather than a new one (it already pinned the venv interpreter, and a second
+   same-named script would have been a trap). Parallel phase `-m "not serial"`,
+   then serial phase `-m serial`; both always run and the exit codes combine.
+   Flag-only args forward to both phases, so `--hypothesis-profile=ci-deep` works.
+   Naming a path still gives one plain serial pytest run — the script's historical
+   passthrough — so iterating on a file stays fast and pdb-able. `-m` and
+   `-n`/`--dist` are **refused**: pytest's `-m` is store-not-append, so a forwarded
+   one would silently replace the phase filter and run the serial tests in parallel.
 4. **`--strict-markers`**, so a typo'd marker fails loudly instead of silently
    selecting nothing. Verified safe: the only custom marker in use is `slow`
    (2 uses), and hypothesis registers its own.
