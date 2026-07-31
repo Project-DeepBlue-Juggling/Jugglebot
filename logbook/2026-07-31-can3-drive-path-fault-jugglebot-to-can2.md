@@ -216,6 +216,30 @@ swapped bus, and the sensor's 07-28 install is exonerated of the wire fault.
    role, physically CAN2 now) — acceptable while the swap holds; rename only
    if it confuses.
 
+## Postscript — the v5 bump's first bite (same day)
+
+The first launch after the PROTOCOL_VERSION 4 → 5 bump went **totally dark on
+every bus** — no CAN data anywhere in the GUI. CAN was perfectly healthy the
+whole time (all 7 heartbeats fresh at the bridge, BB at 42 ms, Platform
+Teensy chattering). The cause: **the FW8 flash carried a stale-header
+binary** — the incremental `pio run` shipped object state built against the
+v4 `udp_protocol.h`, so the bridge spoke v4 against the correctly-rebuilt v5
+node, and the per-frame version gate rejected BOTH directions silently
+(bridge `crc_err` ticking at exactly the 2 Hz TOD-response rate was the
+fingerprint; the node's RPCs all ERR_TIMEOUT, orchestrator boot-timeout).
+
+Diagnosed in one shot by binding :5006 (no launch running) and reading one
+RPC frame's header off the wire: `424a 04 10…` — **version byte 4**. Fix:
+`pio run -t clean` + rebuild + reflash; re-probe read `424a 05 10…` and the
+v5 module decoded it cleanly.
+
+**Lesson (now standing practice): after any PROTOCOL_VERSION bump, clean-build
+the firmware and verify the version byte ON THE WIRE before handover** — a
+stale binary after a bump fails silent-and-total, and the check costs 30
+seconds (bind :5006, read one frame's `data[2]`). Wire-verification had been
+done for v6 and FW7 but skipped for FW8 — the one flash where it mattered
+most.
+
 ## Related
 
 - `logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md` — the flap
