@@ -26,6 +26,7 @@ commits:
   - cae3e6e
   - 08014c0
   - 1e5a8aa
+  - bf1e9a5
 subsystem:
   - can
   - ros
