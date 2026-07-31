@@ -1,6 +1,6 @@
 """Cross-reference ``sim/hand/trajectory.py``'s smooth-move against ``Trajectory.h``.
 
-``Teensy_code/`` is an Arduino sketch with no ``platformio.ini``, so there is no
+``Teensy_code_platform/`` is an Arduino sketch with no ``platformio.ini``, so there is no
 native doctest target for ``Trajectory.h``.  The generator is instead mirrored in
 Python at ``sim/hand/trajectory.py``, and plan
 ``hand-command-continuity.md`` Phase 4 was test-driven in that mirror before the
@@ -8,7 +8,7 @@ velocity-continuous prelude was transcribed to the firmware.  This file is what
 makes the mirror a legitimate gate: it transcribes ``Trajectory.h``'s
 ``smoothMoveDuration`` / ``smoothMoveExcursion`` / ``makeSmoothMove`` 1:1 in numpy
 **float32** (matching the firmware's ``float``), reads every constant out of the
-SHIPPED ``Teensy_code/hardware_config.h`` rather than a copy, and asserts the
+SHIPPED ``Teensy_code_platform/hardware_config.h`` rather than a copy, and asserts the
 mirror reproduces it.
 
 Same shape as ``test_hand_traj_xref.py`` (which pins the 0x6D0 payload against
@@ -95,7 +95,7 @@ if _SIM_DIR not in sys.path:                        # tests/firmware has no conf
 
 from hand import trajectory as mirror              # noqa: E402
 
-_FW_DIR = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code')
+_FW_DIR = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code_platform')
 _HEADER = os.path.join(_FW_DIR, 'hardware_config.h')
 _TRAJ_H = os.path.join(_FW_DIR, 'Trajectory.h')
 
@@ -556,7 +556,7 @@ def test_the_fallback_emits_a_from_rest_seed_so_the_bench_can_see_it():
 # The transcription above is portable but it is still a transcription: a C++
 # syntax error, a wrong namespace qualification or a stray `float` truncation in
 # `Trajectory.h` would leave every test in this file green and surface only when
-# the operator flashes the Platform Teensy.  `Teensy_code/` is an Arduino sketch
+# the operator flashes the Platform Teensy.  `Teensy_code_platform/` is an Arduino sketch
 # with no platformio.ini, so `tests/firmware/native/` does not build it — but
 # `Trajectory.h` needs only <cmath>/<cstdint> and M_PI out of <Arduino.h>, so an
 # 8-line shim is enough to compile and RUN the shipped header on the build host.
@@ -702,7 +702,7 @@ def test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror(tmp_path):
         # The LAST SAMPLE's time, not the duration: `for (t = 0; t <= duration;
         # t += dT)` stops at the largest multiple of 2 ms at or below it, so the
         # emitted profile is up to one sample period short — pre-existing, and
-        # what Teensy_code.ino:524 turns into `smoothDur_us`.  Pinned rather than
+        # what Teensy_code_platform.ino:524 turns into `smoothDur_us`.  Pinned rather than
         # tolerated, because the resulting end-position gap is what a caller
         # relying on "the prelude ends exactly at the main trajectory's first
         # sample" is actually given.
@@ -748,7 +748,7 @@ def test_trajectory_h_structure_lint():
     """
     src = open(_TRAJ_H).read()
     # 1. the empty branch requires BOTH conditions — widening it widens a hole in
-    #    the kind-3 clobber path (Teensy_code.ino:472-475 returns before the clear)
+    #    the kind-3 clobber path (Teensy_code_platform.ino:472-475 returns before the clear)
     assert re.search(r'if\s*\(\s*fabsf\(delta_rev\)\s*<\s*1e-6f\s*&&\s*at_rest\s*\)',
                      src), 'the empty branch must require at_rest'
     assert re.search(r'const\s+bool\s+at_rest\s*=\s*fabsf\(start_vel\)\s*<=\s*'

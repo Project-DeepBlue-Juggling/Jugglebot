@@ -141,7 +141,7 @@ def test_decode_sdo_response():
 
 def test_time_sync_payload_matches_bus_format():
     # The contract is: master encodes (sec, usec) as '<II' on ID 0x7DD; slaves
-    # (Teensy_code.ino handleSyncFrame) reconstruct jetson_us = sec*1e6 + usec.
+    # (Teensy_code_platform.ino handleSyncFrame) reconstruct jetson_us = sec*1e6 + usec.
     w = 1_700_000_123_456            # us since epoch
     sec, usec = w // 1_000_000, w % 1_000_000
     cpp = struct.pack("<II", sec, usec)

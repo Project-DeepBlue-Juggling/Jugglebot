@@ -810,7 +810,7 @@ jugglebot_spacemouse:
 
 # ============================================================
 # 8. Teensy Trajectory
-#    Source: ros_ws/src/jugglebot/Teensy_code/Trajectory.h
+#    Source: ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h
 #    Trajectory generation constants for the platform Teensy's hand axis.
 #    These differ from Ball Butler trajectory constants (different hardware).
 # ============================================================
@@ -930,7 +930,7 @@ teensy_trajectory:
   smooth_move_v0_deadband_rps: 6.0      # |current_hand_velocity| at or below this is treated as AT REST
                                         # by makeSmoothMove {rev/s}. Not a tuning knob — it separates
                                         # gravity-hold dither from real motion on the ODrive
-                                        # Vel_Estimate the firmware reads (Teensy_code.ino:439-441).
+                                        # Vel_Estimate the firmware reads (Teensy_code_platform.ino:439-441).
                                         # Measured on that same signal: parked-hand |vel| p99 = 5.39
                                         # rev/s at the TOP park / 1.82 at the bottom (2026-07-24 reload
                                         # session), and the slowest GENUINE traverse observed was
@@ -982,7 +982,7 @@ teensy_trajectory:
 
 # ============================================================
 # 9. Teensy Operational
-#    Source: ros_ws/src/jugglebot/Teensy_code/Teensy_code.ino
+#    Source: ros_ws/src/jugglebot/Teensy_code_platform/Teensy_code_platform.ino
 #    Platform Teensy operational parameters.
 # ============================================================
 teensy_operational:

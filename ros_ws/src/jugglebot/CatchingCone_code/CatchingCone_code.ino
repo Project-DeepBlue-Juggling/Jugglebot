@@ -71,7 +71,7 @@ constexpr uint8_t FLAG_ANY_CATCH            = 0x02;  // HEARTBEAT byte 6 — set
 
 /*----------------------------------------------------------------------------*/
 /*                        ──  TIME-SYNC  LAYER ──                             */
-/*  Reused from Teensy_code.ino — keep the two in sync if either changes.      */
+/*  Reused from Teensy_code_platform.ino — keep the two in sync if either changes.      */
 /*----------------------------------------------------------------------------*/
 namespace TimeSync {
 

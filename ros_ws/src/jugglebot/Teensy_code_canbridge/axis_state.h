@@ -10,7 +10,7 @@
 //  Concurrency: single-word volatile reads/writes are atomic on Cortex-M7.
 //  The hot pos/vel/timestamp triple is read as
 //  a consistent snapshot via a seqlock-style retry loop (snapshot_pos_vel),
-//  mirroring the platform Teensy's getHandPosVel() in Teensy_code.ino.
+//  mirroring the platform Teensy's getHandPosVel() in Teensy_code_platform.ino.
 //
 //  Convention: pos_rev / vel_rps are in the JUGGLEBOT convention
 //  (positive = leg extension), i.e. ALREADY sign-flipped from the ODrive

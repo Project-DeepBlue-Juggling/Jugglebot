@@ -1,4 +1,4 @@
-"""Hand stroke model — THE host-side copy of ``Teensy_code/Trajectory.h``.
+"""Hand stroke model — THE host-side copy of ``Teensy_code_platform/Trajectory.h``.
 
 The Platform Teensy builds every hand profile from a closed form parameterised
 by one number, the commanded ``event_vel``.  Anything on the Jetson that needs
@@ -7,7 +7,7 @@ is still decelerating, how much lead a catch stroke needs before its event — h
 to reproduce that closed form.  This module is the one place that does.
 
 **Why one place.**  The model already existed twice before this file: the
-firmware (``Teensy_code/Trajectory.h``) and the simulation mirror
+firmware (``Teensy_code_platform/Trajectory.h``) and the simulation mirror
 (``sim/hand/trajectory.py``); the 2026-07-25 Phase-0 timeline probe
 (``tools/probes/hand_stroke_timeline.py``) briefly made a third, and
 ``catch_coordinator_node`` needing it would have made a fourth.  That is not a
@@ -34,7 +34,7 @@ catch velocity hold (``calcCatch``'s "centre of vel hold" comment describes
 
 Constants come from ``jugglebot.hardware_config`` (generated from
 ``config/hardware_config.yaml``) — the same YAML that generates the firmware's
-``Teensy_code/hardware_config.h`` ``TeensyTraj::`` block, so constant drift
+``Teensy_code_platform/hardware_config.h`` ``TeensyTraj::`` block, so constant drift
 between host and firmware is structurally impossible.  Verified header-vs-codegen
 equal for all twelve ``TeensyTraj::`` stroke constants plus ``TeensyOp::``'s
 ``SAFETY_GAP_US`` (``tests/motion/test_hand_stroke.py``
@@ -71,7 +71,7 @@ TOTAL_STROKE_REV = TOTAL_STROKE_M * LINEAR_GAIN_REV_PER_M
 #: nothing: the hand is already standing exactly where the catch profile starts.
 STROKE_TOP_REV = TOTAL_STROKE_REV
 
-#: ``Teensy_code.ino:533`` compares ``now + smoothDur + SAFETY_GAP`` against the
+#: ``Teensy_code_platform.ino:533`` compares ``now + smoothDur + SAFETY_GAP`` against the
 #: main trajectory's first absolute sample and REFUSES the whole command if it
 #: does not fit — printing to serial only (``:534``), invisible to ROS.
 SAFETY_GAP_S = hw.TEENSY_SAFETY_GAP_US / 1e6
@@ -430,7 +430,7 @@ def required_arm_lead_s(v_armed_mps: float,
     """Lead a kind-1 catch arm needs before its event, or the Teensy refuses it.
 
     ``t_acc_catch(v) + prelude + SAFETY_GAP`` — the host-side restatement of
-    ``Teensy_code.ino:533``'s budget check, so the refusal can be predicted
+    ``Teensy_code_platform.ino:533``'s budget check, so the refusal can be predicted
     instead of discovered on the serial console.
 
     **It is a lower bound, deliberately, and two terms are excluded.  Read them
@@ -445,7 +445,7 @@ def required_arm_lead_s(v_armed_mps: float,
        real prelude is 0.37-0.76 s, an order of magnitude larger, and the Teensy
        may refuse that dispatch outright.  That is not a regression — it is
        exactly the pre-fix arithmetic, and ``:533`` returns BEFORE
-       ``packedMsgs.clear()`` (``Teensy_code.ino:533`` vs ``:539``), so a refused
+       ``packedMsgs.clear()`` (``Teensy_code_platform.ino:533`` vs ``:539``), so a refused
        command leaves the live throw stroke intact: the cost is a lost catch, not
        a clobbered stroke.  See ``catch_coordinator_node._throw_stroke_gate_ok``.
     2. *The DOWNSTREAM service transit.*  Only the UPSTREAM leg cancels.

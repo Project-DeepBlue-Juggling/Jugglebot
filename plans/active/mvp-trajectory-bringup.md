@@ -95,7 +95,7 @@ explicitly **not** an optimal-control rework.
   `JB_OP_HAND_CATCH_PRIME_REV`, soft catch gains, then
   `set_hand_traj_cmd(traj_type=1)` once per ball (catch_coordinator_node.py:221–271).
   Hand profiles execute **on the Platform Teensy** (arm-and-forget; firmware
-  traj_type enumeration 0=throw, 1=catch, 2=full — Teensy_code.ino:515–517), carried
+  traj_type enumeration 0=throw, 1=catch, 2=full — Teensy_code_platform.ino:515–517), carried
   as an opaque payload with an absolute wall-clock deadline over CAN 0x6D0.
   **The current hand firmware + config has produced smooth real catches; it is
   close to well-tuned.** Catch-smoothness work therefore targets sim fidelity,
@@ -435,7 +435,7 @@ the proven reference. The Teensy catch profile is velocity-matched by design
 arrival, constant deceleration — mirrored in `sim/hand/trajectory.py`).
 [**Correction (Phase-6 Outcome, 2026-07-08):** the −0.9 above is stale. The
 config/firmware ground truth is `catch_vel_ratio` **0.6**
-(`config/hardware_config.yaml:403` → `Teensy_code/hardware_config.h:199`); the
+(`config/hardware_config.yaml:403` → `Teensy_code_platform/hardware_config.h:199`); the
 `sim/hand/trajectory.py` mirror's hardcoded `CATCH_VEL_RATIO = 0.9` is the stale
 value (a HIGH-priority deferred fix — see the Phase 6 Outcome / logbook Open
 Question 2). The physical implication is material: at 0.6 the catch is a *designed*

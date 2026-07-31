@@ -18,7 +18,7 @@ hard the throw stroke brakes once it has been*.
 > brake harder than the commanded profile — so the hand can never be commanded
 > to stop short of `x3` and then be dragged back up to it.
 
-**One enforcement point:** `Teensy_code/Trajectory.h::throwDecelToTorque`,
+**One enforcement point:** `Teensy_code_platform/Trajectory.h::throwDecelToTorque`,
 consumed by exactly one caller — `buildThrow`'s `torA[2]`.
 **One declared value:** `config/hardware_config.yaml`
 `teensy_trajectory.throw_decel_reflected_inertia_kgm2`.

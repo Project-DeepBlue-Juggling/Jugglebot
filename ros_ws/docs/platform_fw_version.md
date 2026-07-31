@@ -8,7 +8,7 @@ enforcement point + a test that fails on the omission); the other two halves are
 `tests/firmware/test_platform_fw_version_xref.py` /
 `tests/ros/test_teensy_bridge_node_coldstart.py`.
 
-Scope: the Platform Teensy sketch `ros_ws/src/jugglebot/Teensy_code/` and the host
+Scope: the Platform Teensy sketch `ros_ws/src/jugglebot/Teensy_code_platform/` and the host
 that reads it. It says nothing about the can-bridge Teensy, which has had its own
 `FW_VERSION` since 2026-07-16 and its own wire-compat mechanism
 (`JbUdp::PROTOCOL_VERSION`, a hard reject in `decode`).
@@ -47,8 +47,8 @@ Three obligations follow.
 
 | # | Obligation | Owner |
 |---|---|---|
-| **D** | The firmware **declares** `FW_VERSION` with its bump history inline. | `Teensy_code/Teensy_code.ino` |
-| **R** | The firmware **reports** it in bytes 5-6 of the 0x6E0 RobotState reply. | `Teensy_code.ino::createStateCANMessage` |
+| **D** | The firmware **declares** `FW_VERSION` with its bump history inline. | `Teensy_code_platform/Teensy_code_platform.ino` |
+| **R** | The firmware **reports** it in bytes 5-6 of the 0x6E0 RobotState reply. | `Teensy_code_platform.ino::createStateCANMessage` |
 | **S** | The host **surfaces** the verdict — log, `robot_state`, `link_status` — on every read. | `teensy_bridge_node._record_platform_fw_version` |
 
 ## The report path, and why this one
@@ -112,7 +112,7 @@ a repeated question on the wire.
 
 ## Numbering
 
-`FW_VERSION` is a **hand-authored** constant in `Teensy_code.ino` carrying its
+`FW_VERSION` is a **hand-authored** constant in `Teensy_code_platform.ino` carrying its
 bump history inline — the can-bridge's pattern (`canbridge_config.h`), for the
 same reason: a version number with no record of what each bump meant degrades to
 a changed/unchanged bit, and the operator cannot tell an urgent re-flash from a
@@ -257,7 +257,7 @@ answer to "what does the sequencer do when the version is UNKNOWN".
 
 ## Build gate
 
-`Teensy_code/platformio.ini` compiles the whole sketch (`pio run`) against the
+`Teensy_code_platform/platformio.ini` compiles the whole sketch (`pio run`) against the
 real Teensy 4.0 toolchain, FlexCAN_T4, SCL3300 and the generated headers. It is a
 **compile gate, not a flash path** — it deliberately has no `upload_command`; see
 its header for why. Before flashing, the sketch must compile there.

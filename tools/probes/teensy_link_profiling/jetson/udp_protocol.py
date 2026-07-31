@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 
 # ── Constants ──────────────────────────────────────────────────────────
-PROTOCOL_VERSION = 4  # Bumped on any incompatible wire change
+PROTOCOL_VERSION = 5  # Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic)
 MAGIC = 19010  # "JB" little-endian preamble (bytes 0x42 0x4A)
 HEADER_SIZE = 8  # Bytes before payload
 CRC_SIZE = 2  # Trailing CRC-16 bytes
@@ -321,10 +321,10 @@ class HeartbeatT2J:
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(6)), next(it), next(it), next(it), next(it), next(it))
 
 # Profile: 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
-PROFILE_FMT = '<QHHHHHHHHHIIIIHHIIIII'
-PROFILE_SIZE = 66
+PROFILE_FMT = '<QHHHHHHHHHIIIIHHIIIIIIIH'
+PROFILE_SIZE = 76
 _PROFILE_STRUCT = struct.Struct(PROFILE_FMT)
-assert _PROFILE_STRUCT.size == 66
+assert _PROFILE_STRUCT.size == 76
 
 @dataclass
 class Profile:
@@ -341,15 +341,18 @@ class Profile:
     interp_deadline_misses: int = 0
     interp_max_jitter_us: int = 0
     free_heap_bytes: int = 0
+    can3_rx: int = 0
+    can3_tx: int = 0
+    can3_util_x100: int = 0
 
     def pack(self) -> bytes:
-        return _PROFILE_STRUCT.pack(self.t_teensy_us, *self.cpu_pct_x100, self.can1_rx, self.can1_tx, self.can2_rx, self.can2_tx, self.can1_util_x100, self.can2_util_x100, self.udp_rtt_us, self.udp_jitter_us, self.interp_deadline_misses, self.interp_max_jitter_us, self.free_heap_bytes)
+        return _PROFILE_STRUCT.pack(self.t_teensy_us, *self.cpu_pct_x100, self.can1_rx, self.can1_tx, self.can2_rx, self.can2_tx, self.can1_util_x100, self.can2_util_x100, self.udp_rtt_us, self.udp_jitter_us, self.interp_deadline_misses, self.interp_max_jitter_us, self.free_heap_bytes, self.can3_rx, self.can3_tx, self.can3_util_x100)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'Profile':
-        vals = _PROFILE_STRUCT.unpack(data[:66])
+        vals = _PROFILE_STRUCT.unpack(data[:76])
         it = iter(vals)
-        return cls(next(it), tuple(next(it) for _ in range(9)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), tuple(next(it) for _ in range(9)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # ConeFrame: Catching-cone CAN2 frame relay. The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
 CONE_FRAME_FMT = '<QIBBBBBBBBB'
@@ -439,7 +442,7 @@ class LegCmd:
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)))
 
-# PlatformFrame: Verbatim Platform-Teensy relay-reply uplink. The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
+# PlatformFrame: Verbatim Platform-Teensy relay-reply uplink. The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code_platform.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
 PLATFORM_FRAME_FMT = '<QIBBBBBBBBB'
 PLATFORM_FRAME_SIZE = 21
 _PLATFORM_FRAME_STRUCT = struct.Struct(PLATFORM_FRAME_FMT)

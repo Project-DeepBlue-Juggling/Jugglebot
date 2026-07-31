@@ -447,7 +447,7 @@ inline void smoothMoveExcursion(float delta_rev, float v0_rps, float duration,
    WHY v0 IS READ AT ALL
    ---------------------
    This function is prepended to EVERY hand command — a kind-3 prime / retract /
-   SAFE_ABORT, and the prelude ahead of every kind-0/1/2 stroke (Teensy_code.ino
+   SAFE_ABORT, and the prelude ahead of every kind-0/1/2 stroke (Teensy_code_platform.ino
    :470 and :522).  It used to seed the quintic v = a = 0 from
    current_hand_position alone, while current_hand_velocity sat declared two
    lines above and was never read.  So any command landing while the hand moved
@@ -503,7 +503,7 @@ inline void smoothMoveExcursion(float delta_rev, float v0_rps, float duration,
    means not clobbering, and a kind-3 retract clobbering an armed kind-0 is the
    ONLY un-arm mechanism the Teensy offers (a pre-release SAFE_ABORT depends on
    it) — and refusing via an EMPTY trajectory is worse still, because
-   Teensy_code.ino:472-475 returns before packedMsgs.clear().  Braking harder was
+   Teensy_code_platform.ino:472-475 returns before packedMsgs.clear().  Braking harder was
    also rejected: near a target the bulge has no room to be absorbed by the
    s-shape's own travel, and the acceleration needed to squeeze it in is bounded
    by nothing the firmware declares — a SAFE_ABORT retract dispatched with the
@@ -545,7 +545,7 @@ inline Trajectory makeSmoothMove(float target_rev)
 
     /* Already there AND at rest → empty traj.  The `at_rest` conjunct NARROWS
      * this branch: at the target but MOVING now yields a braking profile rather
-     * than nothing.  Never widen it — Teensy_code.ino:472-475 returns from the
+     * than nothing.  Never widen it — Teensy_code_platform.ino:472-475 returns from the
      * kind-3 handler BEFORE packedMsgs.clear() when the move is empty, so a
      * wider empty case is a wider hole in the only un-arm mechanism available.
      */

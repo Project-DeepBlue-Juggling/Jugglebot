@@ -54,7 +54,8 @@ def run(bind_ip, port, duration, out_dir, do_plot):
         print(f"[profile_monitor] running for {duration}s (Ctrl-C to stop early)")
 
     cols = (["t_teensy_us"] + [f"cpu_{n}" for n in TASK_SLOTS] +
-            ["can1_rx", "can1_tx", "can2_rx", "can2_tx", "can1_util_pct", "can2_util_pct",
+            ["can1_rx", "can1_tx", "can2_rx", "can2_tx", "can3_rx", "can3_tx",
+             "can1_util_pct", "can2_util_pct", "can3_util_pct",
              "udp_rtt_us", "udp_jitter_us", "interp_deadline_misses",
              "interp_max_jitter_us", "free_heap_bytes"])
     rows = []
@@ -78,7 +79,9 @@ def run(bind_ip, port, duration, out_dir, do_plot):
                 pr = p.Profile.unpack(payload)
                 row = ([pr.t_teensy_us] + [c / 100.0 for c in pr.cpu_pct_x100] +
                        [pr.can1_rx, pr.can1_tx, pr.can2_rx, pr.can2_tx,
+                        pr.can3_rx, pr.can3_tx,
                         pr.can1_util_x100 / 100.0, pr.can2_util_x100 / 100.0,
+                        pr.can3_util_x100 / 100.0,
                         pr.udp_rtt_us, pr.udp_jitter_us, pr.interp_deadline_misses,
                         pr.interp_max_jitter_us, pr.free_heap_bytes])
                 rows.append(row)

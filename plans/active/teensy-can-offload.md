@@ -1745,7 +1745,7 @@ Proposed by the operator during the U5b sitting; detail in
   current 500 Hz interpolator; the inner loop ports to Teensy.
 - [odrive.py](../../ros_ws/src/jugglebot/jugglebot/can/odrive.py) — ODrive
   protocol encoders/decoders; ports to Teensy C++.
-- [Teensy_code.ino](../../ros_ws/src/jugglebot/Teensy_code/Teensy_code.ino) —
+- [Teensy_code_platform.ino](../../ros_ws/src/jugglebot/Teensy_code_platform/Teensy_code_platform.ino) —
   existing platform Teensy 4.0 firmware (unchanged by this plan).
 - [logbook/2026-05-19-can-loss-fault-response-safety-inversion.md](../../logbook/2026-05-19-can-loss-fault-response-safety-inversion.md) —
   hard-won deferred-stow safety invariant, must be preserved in port.

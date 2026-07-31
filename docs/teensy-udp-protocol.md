@@ -40,7 +40,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 
 | Name | Value | Notes |
 |------|------:|-------|
-| `PROTOCOL_VERSION` | 4 | Bumped on any incompatible wire change |
+| `PROTOCOL_VERSION` | 5 | Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic) |
 | `MAGIC` | 0x4A42 | "JB" little-endian preamble (bytes 0x42 0x4A) |
 | `HEADER_SIZE` | 8 | Bytes before payload |
 | `CRC_SIZE` | 2 | Trailing CRC-16 bytes |
@@ -284,23 +284,26 @@ Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 
 1 Hz firmware instrumentation. Per-task CPU%, CAN bus utilisation, UDP round-trip/jitter, the 500 Hz interp deadline-miss counter, and free heap. Consumed by tools/probes/teensy_link_profiling/jetson.
 
-Payload **66 bytes**. Python struct fmt: `<QHHHHHHHHHIIIIHHIIIII`.
+Payload **76 bytes**. Python struct fmt: `<QHHHHHHHHHIIIIHHIIIIIIIH`.
 
 | Field | Type | Count | Notes |
 |-------|------|------:|-------|
 | `t_teensy_us` | u64 | 1 | Teensy wall-clock (us) |
 | `cpu_pct_x100` | u16 | 9 | Per-task CPU load, pct*100 (PROFILE_NUM_TASKS) |
-| `can1_rx` | u32 | 1 | wire slot 1 = Jugglebot core (CAN3) frames received this window |
-| `can1_tx` | u32 | 1 | wire slot 1 = Jugglebot core (CAN3) frames transmitted this window |
-| `can2_rx` | u32 | 1 | wire slot 2 = Ball Butler (CAN1) frames received this window |
-| `can2_tx` | u32 | 1 | wire slot 2 = Ball Butler (CAN1) frames transmitted this window |
-| `can1_util_x100` | u16 | 1 | wire slot 1 = Jugglebot core (CAN3) bus utilisation, pct*100 |
-| `can2_util_x100` | u16 | 1 | wire slot 2 = Ball Butler (CAN1) bus utilisation, pct*100 |
+| `can1_rx` | u32 | 1 | wire slot 1 = jugglebot role (physical CAN2 since 2026-07-31) frames received this window |
+| `can1_tx` | u32 | 1 | wire slot 1 = jugglebot role frames transmitted this window |
+| `can2_rx` | u32 | 1 | wire slot 2 = Ball Butler (physical CAN1) frames received this window |
+| `can2_tx` | u32 | 1 | wire slot 2 = Ball Butler (physical CAN1) frames transmitted this window |
+| `can1_util_x100` | u16 | 1 | wire slot 1 = jugglebot role bus utilisation, pct*100 |
+| `can2_util_x100` | u16 | 1 | wire slot 2 = Ball Butler bus utilisation, pct*100 |
 | `udp_rtt_us` | u32 | 1 | Last measured Jetson round-trip (us) |
 | `udp_jitter_us` | u32 | 1 | RTT jitter estimate (us) |
 | `interp_deadline_misses` | u32 | 1 | Cumulative 500 Hz deadline misses |
 | `interp_max_jitter_us` | u32 | 1 | Worst interp tick jitter this window (us) |
 | `free_heap_bytes` | u32 | 1 | FreeRTOS free heap (bytes) |
+| `can3_rx` | u32 | 1 | wire slot 3 = cone role (physical CAN3 since 2026-07-31) frames received this window |
+| `can3_tx` | u32 | 1 | wire slot 3 = cone role frames transmitted this window |
+| `can3_util_x100` | u16 | 1 | wire slot 3 = cone role bus utilisation, pct*100 |
 
 ### ConeFrame (`MsgType.CONE_FRAME`, T2J, STREAM port)
 
@@ -356,7 +359,7 @@ Payload **56 bytes**. Python struct fmt: `<Qffffffffffff`.
 
 ### PlatformFrame (`MsgType.PLATFORM_FRAME`, T2J, STREAM port)
 
-Verbatim Platform-Teensy relay-reply uplink. The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
+Verbatim Platform-Teensy relay-reply uplink. The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code_platform.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
 
 Payload **21 bytes**. Python struct fmt: `<QIBBBBBBBBB`.
 

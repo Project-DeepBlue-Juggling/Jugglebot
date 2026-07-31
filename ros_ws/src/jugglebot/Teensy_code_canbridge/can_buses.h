@@ -29,7 +29,7 @@
 //  a future re-pin only touches the wiring file (ADR-0013).
 //
 //  RX is dispatched from canX.events() (pumped by the CAN RX task) via onReceive
-//  callbacks — the proven platform-Teensy idiom (Teensy_code.ino canSniff) — and
+//  callbacks — the proven platform-Teensy idiom (Teensy_code_platform.ino canSniff) — and
 //  decoded straight into the per-axis cache (fast, bounded; the decode is
 //  microseconds and the cache writes are seqlock-guarded).
 //
@@ -131,7 +131,7 @@ uint32_t can_cmd_result_fwd_drops();              // frames dropped on ring over
 // ── Platform-Teensy relay-reply uplink ring (CAN3 0x6E0/0x7DE → UDP) ─
 //  The can-bridge relays the Platform Teensy's RobotState (0x6E0 STATE_UPDATE)
 //  and inclinometer tilt (0x7DE TILT_READING) replies VERBATIM to the host, so
-//  the host owns the byte-layout decode (decouples the bridge from Teensy_code's
+//  the host owns the byte-layout decode (decouples the bridge from Teensy_code_platform's
 //  RobotState/tilt packing). on_jugglebot_rx copies every CAN3 frame whose id is
 //  a Platform reply id into this SPSC ring; platform_uplink_step (telemetry.cpp)
 //  forwards each record as a JbUdp PLATFORM_FRAME. Layout mirrors ConeFrameRec.

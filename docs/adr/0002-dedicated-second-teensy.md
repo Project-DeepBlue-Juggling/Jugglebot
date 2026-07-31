@@ -14,7 +14,7 @@ next question is *which* MCU.
 The project already has a platform Teensy 4.0 running an Arduino super-loop
 that handles the hand trajectory, time-sync slave-side IIR, inclinometer
 readout, and robot-state persistence
-([`ros_ws/src/jugglebot/Teensy_code/`](../../ros_ws/src/jugglebot/Teensy_code/)).
+([`ros_ws/src/jugglebot/Teensy_code_platform/`](../../ros_ws/src/jugglebot/Teensy_code_platform/)).
 A first-pass design considered extending it with the new responsibilities,
 provided the firmware was rewritten on top of FreeRTOS to make room for hard
 real-time scheduling.

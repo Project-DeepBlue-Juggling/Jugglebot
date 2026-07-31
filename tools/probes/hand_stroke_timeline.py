@@ -66,7 +66,7 @@ negative measured velocity, and its magnitude is set by the peak (-0.31 rev/s at
 WHY THIS EXISTS
 ---------------
 ``plans/active/hand-command-continuity.md``.  Any kind-0/1/2 HAND_TRAJ_CMD
-makes ``Teensy_code.ino:539`` clear the whole packed queue and re-prelude from
+makes ``Teensy_code_platform.ino:539`` clear the whole packed queue and re-prelude from
 the LIVE encoder position with ``makeSmoothMove``, whose quintic is seeded
 ``v = a = 0`` (``Trajectory.h:242-301``; ``current_hand_velocity`` is declared
 ``extern`` at :47 and never read).  When the hand-catch arm lands inside the

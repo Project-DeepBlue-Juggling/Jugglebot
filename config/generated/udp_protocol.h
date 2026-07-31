@@ -9,7 +9,7 @@
 namespace JbUdp {
 
 // ── Constants ──────────────────────────────────────────────────────────
-constexpr uint8_t PROTOCOL_VERSION = 4u;  // Bumped on any incompatible wire change
+constexpr uint8_t PROTOCOL_VERSION = 5u;  // Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic)
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -219,19 +219,22 @@ static_assert(sizeof(HeartbeatT2JPayload) == 73, "HeartbeatT2JPayload size drift
 struct ProfilePayload {
   uint64_t t_teensy_us;  // Teensy wall-clock (us)
   uint16_t cpu_pct_x100[9];  // Per-task CPU load, pct*100 (PROFILE_NUM_TASKS)
-  uint32_t can1_rx;  // wire slot 1 = Jugglebot core (CAN3) frames received this window
-  uint32_t can1_tx;  // wire slot 1 = Jugglebot core (CAN3) frames transmitted this window
-  uint32_t can2_rx;  // wire slot 2 = Ball Butler (CAN1) frames received this window
-  uint32_t can2_tx;  // wire slot 2 = Ball Butler (CAN1) frames transmitted this window
-  uint16_t can1_util_x100;  // wire slot 1 = Jugglebot core (CAN3) bus utilisation, pct*100
-  uint16_t can2_util_x100;  // wire slot 2 = Ball Butler (CAN1) bus utilisation, pct*100
+  uint32_t can1_rx;  // wire slot 1 = jugglebot role (physical CAN2 since 2026-07-31) frames received this window
+  uint32_t can1_tx;  // wire slot 1 = jugglebot role frames transmitted this window
+  uint32_t can2_rx;  // wire slot 2 = Ball Butler (physical CAN1) frames received this window
+  uint32_t can2_tx;  // wire slot 2 = Ball Butler (physical CAN1) frames transmitted this window
+  uint16_t can1_util_x100;  // wire slot 1 = jugglebot role bus utilisation, pct*100
+  uint16_t can2_util_x100;  // wire slot 2 = Ball Butler bus utilisation, pct*100
   uint32_t udp_rtt_us;  // Last measured Jetson round-trip (us)
   uint32_t udp_jitter_us;  // RTT jitter estimate (us)
   uint32_t interp_deadline_misses;  // Cumulative 500 Hz deadline misses
   uint32_t interp_max_jitter_us;  // Worst interp tick jitter this window (us)
   uint32_t free_heap_bytes;  // FreeRTOS free heap (bytes)
+  uint32_t can3_rx;  // wire slot 3 = cone role (physical CAN3 since 2026-07-31) frames received this window
+  uint32_t can3_tx;  // wire slot 3 = cone role frames transmitted this window
+  uint16_t can3_util_x100;  // wire slot 3 = cone role bus utilisation, pct*100
 };
-static_assert(sizeof(ProfilePayload) == 66, "ProfilePayload size drift");
+static_assert(sizeof(ProfilePayload) == 76, "ProfilePayload size drift");
 
 // ConeFrame: Catching-cone CAN2 frame relay. The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
 struct ConeFramePayload {
@@ -269,7 +272,7 @@ struct LegCmdPayload {
 };
 static_assert(sizeof(LegCmdPayload) == 56, "LegCmdPayload size drift");
 
-// PlatformFrame: Verbatim Platform-Teensy relay-reply uplink. The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
+// PlatformFrame: Verbatim Platform-Teensy relay-reply uplink. The can-bridge forwards every CAN3 frame it receives whose arbitration id is a Platform-Teensy reply (STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) verbatim, so the host owns the decode and the bridge stays decoupled from the Platform-Teensy byte layout (Teensy_code_platform.ino createStateCANMessage / sendTiltData). The host correlates a reply to its pending relay read by (can_id, dlc): a STATE_READ awaits (0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps bridge-side CAN3 RX for latency/diagnostics. NOTE(bench): the (id, dlc) discriminator is only sound if CAN3 SRX_DIS is set so the bridge's own 0x6E0 STATE_WRITE is not looped back as a reply — verify on the bench before trusting on hardware.
 struct PlatformFramePayload {
   uint64_t t_bridge_us;  // Bridge wall-clock at CAN3 RX (us)
   uint32_t can_id;  // CAN arbitration id (0x6E0 STATE_UPDATE / 0x7DE TILT_READING)
@@ -342,7 +345,7 @@ constexpr uint16_t HEARTBEAT_J2T_SIZE = 12u;
 constexpr uint16_t TELEMETRY_SIZE = 64u;
 constexpr uint16_t DIAGNOSTIC_SIZE = 40u;
 constexpr uint16_t HEARTBEAT_T2J_SIZE = 73u;
-constexpr uint16_t PROFILE_SIZE = 66u;
+constexpr uint16_t PROFILE_SIZE = 76u;
 constexpr uint16_t CONE_FRAME_SIZE = 21u;
 constexpr uint16_t CMD_RESULT_FRAME_SIZE = 21u;
 constexpr uint16_t BB_AXIS_ESTIMATES_SIZE = 24u;

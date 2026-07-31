@@ -355,7 +355,7 @@ class TestCanTrafficKeyValueContract:
         # the BUSES registry (slot: null ⇒ bus not on the uplink).
         js = _strip_js_comments(js)
         slots = set(re.findall(r"slot: '(\w+)'", js))
-        assert slots == {'can1', 'can2'}, \
+        assert slots == {'can1', 'can2', 'can3'}, \
             f'BUSES slot extraction went stale: {slots}'
         suffixes = set(re.findall(r"kv\[`\$\{bus\.slot\}_(\w+)`\]", js))
         assert suffixes == {'rx', 'tx', 'util_pct'}, \

@@ -40,7 +40,7 @@ runbook at `tests/hardware/session_anomaly_fixes.md` — see § Hardware handoff
    contract-shaped fixes in plans 1 and 2.
 5. The code spine: `ros_ws/src/jugglebot/jugglebot/trajectory_node.py`,
    `catch_coordinator_node.py`, `motion/trajectory/planner.py`,
-   `motion/ik_solver.py`, `Teensy_code/Trajectory.h`, `Teensy_code/Teensy_code.ino`,
+   `motion/ik_solver.py`, `Teensy_code_platform/Trajectory.h`, `Teensy_code_platform/Teensy_code_platform.ino`,
    `sim/hand/trajectory.py`.
 6. `plans/active/PROMPT-single-ball-toss-software-run.md` and
    `.claude/workflows/mvp-phase-runner.js` — the established phase-runner shape.
@@ -505,7 +505,7 @@ analysis command that turns each capture into a verdict, and the plan+phase a
 failure routes to. Three deployments are required and **one of them is silent**:
 `colcon build --packages-select jugglebot_interfaces jugglebot` (both packages —
 `TrajectoryStatus.msg` gained a field), **a Platform Teensy flash** of
-`Teensy_code.ino` (`5369fc2`), and no config regeneration.
+`Teensy_code_platform.ino` (`5369fc2`), and no config regeneration.
 See § DEPLOYMENT MATRIX.
 
 > **Amended 2026-07-27.** The parenthetical above originally read *"the board

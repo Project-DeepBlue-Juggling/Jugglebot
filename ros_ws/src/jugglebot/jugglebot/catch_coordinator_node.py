@@ -178,7 +178,7 @@ _MAX_ARM_DISPATCHES = 2
 #
 # The failure it closes, measured 2026-07-25 across seven self-tosses: the Teensy
 # rebuilds its ENTIRE single packed queue on any kind-0/1/2 command
-# (Teensy_code.ino:539 packedMsgs.clear()) and seeds the replacement prelude from
+# (Teensy_code_platform.ino:539 packedMsgs.clear()) and seeds the replacement prelude from
 # current_hand_position with v = 0, a = 0 (Trajectory.h:242-301 —
 # current_hand_velocity is declared extern at :47 and never read). The catch arm
 # was landing 8-18 ms after release, INSIDE the throw's 65 ms deceleration ramp,
@@ -994,7 +994,7 @@ class CatchCoordinatorNode(Node):
            travelling through, which is precisely what runbook row H1.1's
            ``dip_below_x3 <= 0.100 rev`` reads.
         3. **Busy.** Withhold — but only while waiting still leaves the Teensy
-           enough time to build the catch. ``Teensy_code.ino:533`` refuses the
+           enough time to build the catch. ``Teensy_code_platform.ino:533`` refuses the
            WHOLE command when ``now + smoothDur + SAFETY_GAP > firstMainAbs`` and
            prints the refusal to serial only (``:534``), so an arm deferred past
            that point does not merely arrive late — the catch silently never

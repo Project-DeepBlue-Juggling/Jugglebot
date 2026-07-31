@@ -49,7 +49,7 @@ if _SIM_DIR not in sys.path:                    # tests/firmware has no conftest
 
 from hand import trajectory as mirror           # noqa: E402
 
-_FW_DIR = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code')
+_FW_DIR = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code_platform')
 _HEADER = os.path.join(_FW_DIR, 'hardware_config.h')
 
 #: Release speeds spanning the shipped flight band (FLIGHT_TIME_MIN_S 0.55 s ->

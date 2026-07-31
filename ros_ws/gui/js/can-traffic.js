@@ -47,9 +47,9 @@ import { nanGaps } from './telemetry-charts.js';
 //                          note), so the Jugglebot loom runs on the CAN2
 //                          controller until that path is repaired.
 //     wire slot can2_* / bus2_health  =  bb role — physical CAN1, Ball Butler.
-//     bus3_health (HeartbeatT2J.flags bits 4-5) = cone role — physical CAN3.
-//                          Health only: the PROFILE frame still has TWO slots,
-//                          so the cone has no traffic charts (3rd-slot TODO).
+//     wire slot can3_* / bus3_health  =  cone role — physical CAN3. Traffic
+//                          slot added 2026-07-31 (PROTOCOL_VERSION 5); health
+//                          rides HeartbeatT2J.flags bits 4-5.
 //
 // teensy_bridge_node._publish_link_status relays all three health fields
 // verbatim (BusHealth enum names, no re-mapping).
@@ -78,12 +78,9 @@ const BUSES = [
     },
     {
         id: 'can3', label: 'CAN3', desc: 'Catching cone',
-        // Health rides HeartbeatT2J.flags bits 4-5 → link_status
-        // 'bus3_health' (UNKNOWN from a pre-cone-uplink flash). The cone role
-        // has no PROFILE slot, so `slot` stays null (no traffic charts).
-        slot: null, healthKey: 'bus3_health',
+        slot: 'can3', healthKey: 'bus3_health',
         colorVar: '--accent-cyan', colorFallback: '#06b6d4',
-        tooltip: 'Catching cone bus (on the CAN3 controller since 2026-07-31) — health live on uplink; traffic charts need a 3rd PROFILE slot',
+        tooltip: 'Catching cone bus (on the CAN3 controller since 2026-07-31; PROFILE wire slot can3) — click to toggle chart series',
     },
 ];
 

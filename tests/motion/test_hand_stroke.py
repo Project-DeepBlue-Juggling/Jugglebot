@@ -11,7 +11,7 @@ These tests are the drift guard for that arrangement. They assert, in order:
 
 * the shipped firmware header's ``TeensyTraj::`` block and the generated host
   constants are the same numbers (the premise the whole module rests on) —
-  parsed from ``Teensy_code/hardware_config.h``, not from a copy;
+  parsed from ``Teensy_code_platform/hardware_config.h``, not from a copy;
 * the closed forms reproduce the coefficients derived from that header;
 * ``x3 == totalStroke`` independent of velocity, which is what makes a
   correctly-timed catch arm cost nothing;
@@ -41,7 +41,7 @@ from jugglebot.toss_sequencer import FLIGHT_TIME_MIN_S, FLIGHT_TIME_MAX_S
 
 _HEADER = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    'ros_ws', 'src', 'jugglebot', 'Teensy_code', 'hardware_config.h')
+    'ros_ws', 'src', 'jugglebot', 'Teensy_code_platform', 'hardware_config.h')
 
 # catch_coordinator_node._MIN_EVENT_DELAY_S — imported through the node would
 # drag rclpy in; this is a pure-motion test module, so the value is restated and
@@ -65,7 +65,7 @@ def test_shipped_header_matches_generated_constants():
     """Host/firmware constant drift would make every number below a fiction.
 
     ``TeensyTraj::`` is the live block — ``Trajectory.h:29-45`` qualifies every
-    constant explicitly and ``Teensy_code/`` has no ``using namespace``. The
+    constant explicitly and ``Teensy_code_platform/`` has no ``using namespace``. The
     second ``HAND_SPOOL_RADIUS_M`` further down the header is ``BBTraj::``, the
     BallButler's own hand, not a redefinition.
     """
@@ -202,7 +202,7 @@ def test_catch_prime_equals_the_stroke_top():
     1. the generated ``HAND_STROKE_TOP_REV`` (codegen drifting from the YAML);
     2. ``hand_stroke.STROKE_TOP_REV`` (the host model drifting from codegen);
     3. the SHIPPED FIRMWARE HEADER, parsed — a hand-edit to
-       ``Teensy_code/hardware_config.h`` that bypasses codegen moves the real x3
+       ``Teensy_code_platform/hardware_config.h`` that bypasses codegen moves the real x3
        the Teensy will compute while every host copy stays put.
     """
     prime = float(hw.JB_OP_HAND_CATCH_PRIME_REV)
@@ -260,7 +260,7 @@ def test_prime_at_the_stroke_top_costs_no_commanded_prelude_travel():
     the self-toss path the hand reaches x3 via the throw stroke itself, so the
     prime never entered that arithmetic and Phase 1's budget does not move. The
     26.5 ms is returned on the PRIMED path (BB catch / reload), where it accrues
-    to the firmware's own fit check at ``Teensy_code.ino:533``. Stated precisely
+    to the firmware's own fit check at ``Teensy_code_platform.ino:533``. Stated precisely
     because a future session sizing ``ARM_SUPPRESS_MARGIN_S`` off the wrong
     sentence would shave a window that gained nothing here — and at
     ``FLIGHT_TIME_MIN_S`` that window is 115 ms wide with ~16 ms of floor
@@ -336,7 +336,7 @@ def test_smooth_move_duration_floor():
     """Every non-empty prelude costs at least 0.05 s (``fmaxf(T, 0.05f)``).
 
     A fit check that assumed a free prelude would hand the Teensy a command it
-    refuses at ``Teensy_code.ino:533`` — to serial only, so the catch silently
+    refuses at ``Teensy_code_platform.ino:533`` — to serial only, so the catch silently
     never fires.
     """
     for d in (1.1e-6, 0.001, 0.02, 0.04):
@@ -518,7 +518,7 @@ def test_margin_covers_the_measured_dispatch_latency():
 
 
 def test_required_arm_lead_is_the_teensy_budget():
-    """``Teensy_code.ino:533`` refuses the command unless
+    """``Teensy_code_platform.ino:533`` refuses the command unless
     ``now + smoothDur + SAFETY_GAP <= firstMainAbs``, and ``firstMainAbs`` is
     ``event − t_acc_catch`` for a kind-1 (``makeCatch``'s
     ``shiftTime(-(t5-t4))``)."""

@@ -247,10 +247,12 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 4, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
+    assert spec_ver == 5, (   # 1→2: Diagnostic homing_result ([18A]); 2→3: HeartbeatT2J
                               # leg guard-deviation diagnostics (2026-07-10 forensics);
                               # 3→4: Diagnostic bus_current + heartbeat_seen flag
-                              # (2026-07-24 BB robot_state restoration — payload 36→40 B)
+                              # (2026-07-24 BB robot_state restoration — payload 36→40 B);
+                              # 4→5: Profile 3rd CAN slot can3_* (cone role traffic,
+                              # 2026-07-31 — payload 66→76 B, fields appended)
         f"PROTOCOL_VERSION changed to {spec_ver}. If this is an intentional "
         "incompatible-wire bump: update this pin, re-pin test_wire_layout_frozen, and "
         "reflash the whole fleet (Jetson + Teensy ship the same version).")
@@ -293,7 +295,7 @@ def test_wire_layout_frozen(gen):
     # the two ends deploy in either order).
     # Previous pin: 1e1cf7314377c994944e6baf5e39a0f6e17eb08f7712f671a16d11fdd7ef24ef
     #   (additive HandSensor 0x8B, 14 B — 2026-07-29 hand ball-sensor Phase 4).
-    _EXPECTED = "12aa9218da6ba45b1bdcfeab0bb6824d8e1ea3f6b1f52c41f1f454a419fbb8d1"
+    _EXPECTED = "1383b3fc18dc085c51eba58979ef60a3898b2ff74dc99931926d04c0bc7ceccb"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

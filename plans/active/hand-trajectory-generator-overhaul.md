@@ -13,7 +13,7 @@ status: active
 The platform hand axis (a linear actuator mounted colinear with the platform Z
 axis, commanded over CAN `0x6D0` by the platform Teensy) generates its
 throw and catch motion profiles on-board, in
-`ros_ws/src/jugglebot/Teensy_code/Trajectory.h` (`HandTrajGenerator`). Two
+`ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h` (`HandTrajGenerator`). Two
 limitations make that generator unsuitable for smooth juggling:
 
 1. **Unbounded jerk.** `makeThrow()` and `makeCatch()` build three-segment
@@ -175,7 +175,7 @@ scoped in this phase.
 ### Phase 3: Reimplement firmware + Python port — NOT STARTED
 
 **Scope:** replace `calcThrow`/`calcCatch`/`buildThrow`/`buildCatch` in
-`ros_ws/src/jugglebot/Teensy_code/Trajectory.h` with the Phase 2 profile, and
+`ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h` with the Phase 2 profile, and
 replace the corresponding logic in the `sim/hand/trajectory.py` port **in the
 same change** so the two never diverge. Unit tests assert jerk is bounded, the
 firmware and port agree sample-for-sample, and boundary conditions hold across
@@ -257,7 +257,7 @@ Phase 1 baseline; confirm release-velocity accuracy and repeatability.
 
 | File | Action |
 |------|--------|
-| `ros_ws/src/jugglebot/Teensy_code/Trajectory.h` | Modify (throw/catch builders) |
+| `ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h` | Modify (throw/catch builders) |
 | `sim/hand/trajectory.py` | Modify (port, in lockstep) |
 | `config/hardware_config.yaml` | Modify (add hand peak-accel limit) |
 | `config/generated/*` | Regenerate |

@@ -31,7 +31,7 @@ OUTPUT_DIR = SCRIPT_DIR / "generated"
 # Additional output locations so consumers can import/include directly
 ROS_PKG_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "jugglebot"
 BB_FIRMWARE_DIR = REPO_ROOT.parent / "BallButler" / "ball_butler_main"
-PLATFORM_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code"
+PLATFORM_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_platform"
 CATCHING_CONE_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "CatchingCone_code"
 CANBRIDGE_FIRMWARE_DIR = REPO_ROOT / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"
 GUI_JS_DIR = REPO_ROOT / "ros_ws" / "gui" / "js"

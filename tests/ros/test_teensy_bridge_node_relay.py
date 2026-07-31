@@ -46,7 +46,7 @@ def _platform_frame(can_id, data: bytes) -> bytes:
 
 def _encode_state_frame(is_homed, levelling, x_milli, y_milli,
                         fw_version=rpc_args.PLATFORM_FW_VERSION_EXPECTED) -> bytes:
-    """The 8-byte 0x6E0 RobotState reply, exactly as Teensy_code.ino packs it.
+    """The 8-byte 0x6E0 RobotState reply, exactly as Teensy_code_platform.ino packs it.
 
     ``fw_version`` occupies bytes 5-6 (uint16 LE). It defaults to the version this
     host tree expects, i.e. a CORRECTLY-FLASHED board — the case every test here

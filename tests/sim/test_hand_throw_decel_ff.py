@@ -1,7 +1,7 @@
 """Contract C-HAND-2 — the throw's post-release deceleration feedforward.
 
 Normative statement: ``ros_ws/docs/hand_decel_feedforward.md``.
-Enforcement point: ``Teensy_code/Trajectory.h::throwDecelToTorque``, consumed by
+Enforcement point: ``Teensy_code_platform/Trajectory.h::throwDecelToTorque``, consumed by
 exactly one caller (``buildThrow``'s ``torA[2]``), mirrored in
 ``sim/hand/trajectory.py``.
 Firmware cross-reference (compiles and runs the shipped header):
@@ -189,7 +189,7 @@ def test_the_declared_inertia_reaches_the_mirror_and_the_shipped_firmware():
     """Three routes to the same number: YAML codegen, mirror, shipped header.
 
     The header route is the only one that survives a hand-edit of
-    ``Teensy_code/hardware_config.h`` that bypasses ``generate_config.py`` — and
+    ``Teensy_code_platform/hardware_config.h`` that bypasses ``generate_config.py`` — and
     that header is what actually gets flashed.
     """
     import os
@@ -200,7 +200,7 @@ def test_the_declared_inertia_reaches_the_mirror_and_the_shipped_firmware():
 
     repo = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
-    header = os.path.join(repo, 'ros_ws', 'src', 'jugglebot', 'Teensy_code',
+    header = os.path.join(repo, 'ros_ws', 'src', 'jugglebot', 'Teensy_code_platform',
                           'hardware_config.h')
     with open(header) as fh:
         src = fh.read()

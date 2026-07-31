@@ -11,7 +11,7 @@
 //     generic forward-arbitrary-frame primitive (a generic forwarder's only guard
 //     is a runtime allow-list, and one careless edit re-opens leg-command
 //     injection bypassing the step-gate). The firmware owns the CAN frame layout
-//     (mirrors Teensy_code.ino createStateCANMessage), so the Jetson never
+//     (mirrors Teensy_code_platform.ino createStateCANMessage), so the Jetson never
 //     supplies a raw frame.
 //   • READ direction is async: the request frame triggers the Platform Teensy to
 //     answer on the SAME id, and on_jugglebot_rx (can_buses.cpp) forwards that
@@ -41,7 +41,7 @@ uint16_t state_read();
 
 // STATE_WRITE: write the whole RobotState to the Platform Teensy (0x6E0, dlc 8).
 // The firmware encodes the frame from the typed args (flags byte + int16 pose,
-// mirroring Teensy_code.ino createStateCANMessage). No reply. Returns RpcStatus.
+// mirroring Teensy_code_platform.ino createStateCANMessage). No reply. Returns RpcStatus.
 uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s);
 
 }  // namespace Relay

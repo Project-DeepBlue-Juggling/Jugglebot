@@ -9,7 +9,7 @@
 //      arbitration id (0x7DE / 0x6E0) and dlc — so a Platform-Teensy reply is
 //      actually solicited;
 //    * state_write() byte-for-byte re-encodes the 0x6E0 RobotState frame exactly
-//      as Teensy_code.ino decodeStateCANMessage unpacks it (flags + int16 pose) —
+//      as Teensy_code_platform.ino decodeStateCANMessage unpacks it (flags + int16 pose) —
 //      so the can-bridge, as the SOLE writer, cannot corrupt the persisted state;
 //    * every relay send is GATED on jugglebot_commands_allowed() (the never-
 //      command-a-dead-bus fail-fast: ERR_BUS_DOWN, and NOTHING put on CAN3);

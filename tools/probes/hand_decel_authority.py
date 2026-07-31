@@ -38,7 +38,7 @@ is comparing the new numbers against the pre-fix ones this probe produced.
 WHAT IT MEASURES, PER SELF-TOSS
 -------------------------------
 Aligned on the commanded profile re-derived from the SHIPPED firmware header
-(``Teensy_code/hardware_config.h``, namespace ``TeensyTraj``) — not from a copy:
+(``Teensy_code_platform/hardware_config.h``, namespace ``TeensyTraj``) — not from a copy:
 
   ``peak``       max ``pos_meas`` from the stroke through the settle
   ``over_x3``    ``peak - x3``; what has to fit under the end stop
@@ -119,7 +119,7 @@ import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_HEADER = (_REPO_ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'Teensy_code'
+_HEADER = (_REPO_ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'Teensy_code_platform'
            / 'hardware_config.h')
 _OUT_DIR = _REPO_ROOT / 'temp' / 'probes'
 

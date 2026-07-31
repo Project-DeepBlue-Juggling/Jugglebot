@@ -21,13 +21,13 @@ static const char* kTaskSlots[JbUdp::PROFILE_NUM_TASKS] = {
   "canrx", "tsync", "net", "fault", "telem", "hb", "diag", "IDLE", "other"
 };
 
-// Per-window baselines. The PROFILE wire payload has two CAN slots
-// (can1_*/can2_*); with three buses now we report the two
-// safety-relevant ones — wire slot 1 = Jugglebot core (CAN3), wire slot 2 =
-// Ball Butler (CAN1). The wire field names are fixed by udp_protocol.h.
-// TODO: expose cone (CAN2) util on the uplink (a third slot).
+// Per-window baselines. The PROFILE wire payload has three CAN slots since
+// PROTOCOL_VERSION 5 (2026-07-31) — ROLE-keyed: wire slot 1 = jugglebot role,
+// slot 2 = Ball Butler, slot 3 = cone role. The wire field names are fixed by
+// udp_protocol.h; physical-connector labels live in the GUI's bus registry.
 static uint32_t s_prev_jugglebot_rx = 0, s_prev_jugglebot_tx = 0,
-                s_prev_bb_rx = 0, s_prev_bb_tx = 0;
+                s_prev_bb_rx = 0, s_prev_bb_tx = 0,
+                s_prev_cone_rx = 0, s_prev_cone_tx = 0;
 static uint64_t s_prev_us = 0;
 
 #if (configGENERATE_RUN_TIME_STATS == 1) && (configUSE_TRACE_FACILITY == 1)
@@ -71,6 +71,7 @@ void profiling_init() {
   const CanStats c = can_buses_stats();
   s_prev_jugglebot_rx = c.jugglebot_rx; s_prev_jugglebot_tx = c.jugglebot_tx;
   s_prev_bb_rx = c.bb_rx; s_prev_bb_tx = c.bb_tx;
+  s_prev_cone_rx = c.cone_rx; s_prev_cone_tx = c.cone_tx;
   s_prev_us = micros64();
 }
 
@@ -95,12 +96,15 @@ void profiling_step() {
 
   fill_cpu(p.cpu_pct_x100);
 
-  p.can1_rx = c.jugglebot_rx - s_prev_jugglebot_rx;   // wire slot 1 = Jugglebot core (CAN3)
+  p.can1_rx = c.jugglebot_rx - s_prev_jugglebot_rx;   // wire slot 1 = jugglebot role
   p.can1_tx = c.jugglebot_tx - s_prev_jugglebot_tx;
-  p.can2_rx = c.bb_rx - s_prev_bb_rx;                 // wire slot 2 = Ball Butler (CAN1)
+  p.can2_rx = c.bb_rx - s_prev_bb_rx;                 // wire slot 2 = Ball Butler
   p.can2_tx = c.bb_tx - s_prev_bb_tx;
+  p.can3_rx = c.cone_rx - s_prev_cone_rx;             // wire slot 3 = cone role
+  p.can3_tx = c.cone_tx - s_prev_cone_tx;
   p.can1_util_x100 = util_x100(p.can1_rx + p.can1_tx, win);
   p.can2_util_x100 = util_x100(p.can2_rx + p.can2_tx, win);
+  p.can3_util_x100 = util_x100(p.can3_rx + p.can3_tx, win);
   p.udp_rtt_us = udp_last_rtt_us();
   p.udp_jitter_us = udp_rtt_jitter_us();
   p.interp_deadline_misses = interp_deadline_misses();
@@ -112,6 +116,7 @@ void profiling_step() {
   // Reset per-window baselines.
   s_prev_jugglebot_rx = c.jugglebot_rx; s_prev_jugglebot_tx = c.jugglebot_tx;
   s_prev_bb_rx = c.bb_rx; s_prev_bb_tx = c.bb_tx;
+  s_prev_cone_rx = c.cone_rx; s_prev_cone_tx = c.cone_tx;
   s_prev_us = now;
   interp_reset_jitter();          // max-jitter is per-window
 }

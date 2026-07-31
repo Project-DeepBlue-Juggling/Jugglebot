@@ -7,7 +7,7 @@ UN-FLASHED board was indistinguishable from a flashed one from the Jetson — no
 log line, no field, no warning.  Every other deployment step in the stack fails
 loudly when skipped; the firmware was the only one that failed SILENTLY, because
 a pre-fix board simply behaves like a pre-fix board.  The fix is an identity
-constant in ``Teensy_code/Teensy_code.ino`` reported in bytes 5-6 of the 0x6E0
+constant in ``Teensy_code_platform/Teensy_code_platform.ino`` reported in bytes 5-6 of the 0x6E0
 RobotState reply the board already sends, and a host-side expected value in
 ``controller/teensy_link/rpc_args.py``.
 
@@ -51,8 +51,8 @@ from controller.teensy_link import rpc_args
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
-_FW_DIR = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code')
-_INO = os.path.join(_FW_DIR, 'Teensy_code.ino')
+_FW_DIR = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code_platform')
+_INO = os.path.join(_FW_DIR, 'Teensy_code_platform.ino')
 _RELAY_CPP = os.path.join(
     _REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code_canbridge',
     'platform_relay.cpp')
@@ -64,11 +64,11 @@ def _ino_text() -> str:
 
 
 def _firmware_fw_version() -> int:
-    """The shipped ``constexpr uint16_t FW_VERSION`` from Teensy_code.ino."""
+    """The shipped ``constexpr uint16_t FW_VERSION`` from Teensy_code_platform.ino."""
     m = re.search(r'^constexpr\s+uint16_t\s+FW_VERSION\s*=\s*(\d+)\s*;',
                   _ino_text(), re.M)
     assert m is not None, (
-        'no `constexpr uint16_t FW_VERSION = N;` in Teensy_code.ino — the '
+        'no `constexpr uint16_t FW_VERSION = N;` in Teensy_code_platform.ino — the '
         'Platform Teensy identity constant was removed or renamed, which '
         'restores the exact defect this phase closed (an un-flashed board '
         'indistinguishable from a flashed one)')
@@ -95,7 +95,7 @@ def _extract_block(text: str, signature: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def test_firmware_fw_version_matches_the_host_expectation():
-    """``Teensy_code.ino``'s ``FW_VERSION`` == ``PLATFORM_FW_VERSION_EXPECTED``.
+    """``Teensy_code_platform.ino``'s ``FW_VERSION`` == ``PLATFORM_FW_VERSION_EXPECTED``.
 
     Fails in both drift directions.  Bumping the firmware without the host makes
     a correctly-flashed board report a skew every boot (the operator learns to
@@ -125,7 +125,7 @@ def test_firmware_declares_a_name_alongside_the_version():
     boot banner names WHICH board answered — three Teensys share this bench."""
     m = re.search(r'^constexpr\s+char\s+FW_NAME\[\]\s*=\s*"([^"]+)"\s*;',
                   _ino_text(), re.M)
-    assert m is not None, 'no FW_NAME in Teensy_code.ino'
+    assert m is not None, 'no FW_NAME in Teensy_code_platform.ino'
     assert m.group(1) == 'jugglebot-platform'
     assert m.group(1) != 'jugglebot-canbridge', 'that is the OTHER board'
 
@@ -207,7 +207,7 @@ def test_a_short_frame_decodes_to_unversioned_not_to_the_expected_version():
 #  g++-gated: compile and RUN the shipped 0x6E0 codec
 # ══════════════════════════════════════════════════════════════════════════════
 #  Everything above reads the firmware as text.  This runs it.  It is the only
-#  thing in the repository that executes Teensy_code.ino's own bytes, so a
+#  thing in the repository that executes Teensy_code_platform.ino's own bytes, so a
 #  hand-edit that packs the version into the wrong byte, changes the dlc, or lets
 #  a host write reach the version field fails HERE and nowhere else.
 

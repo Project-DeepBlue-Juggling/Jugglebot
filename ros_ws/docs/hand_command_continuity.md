@@ -9,7 +9,7 @@ omission); the other two halves are
 `tests/motion/test_hand_stroke.py`.
 
 Scope: the ROS 2 package `ros_ws/src/jugglebot/`, plus the Platform Teensy
-firmware in `ros_ws/src/jugglebot/Teensy_code/`. The hand is the only actuator
+firmware in `ros_ws/src/jugglebot/Teensy_code_platform/`. The hand is the only actuator
 this contract governs; leg and platform motion are unaffected.
 
 **Sibling contract, added 2026-07-28:** `ros_ws/docs/hand_decel_feedforward.md`
@@ -82,7 +82,7 @@ routinely commands a deceleration above its own physical ceiling. See
 
 **Also closed by F, and worth naming separately:** the empty-trajectory branch of
 `makeSmoothMove` now requires the hand to be **at rest** as well as at the target.
-`Teensy_code.ino:472-475` returns from the kind-3 handler *before*
+`Teensy_code_platform.ino:472-475` returns from the kind-3 handler *before*
 `packedMsgs.clear()` when the move comes back empty, so the old
 position-only condition was a latent hole in the only un-arm mechanism the Teensy
 offers. The new condition is strictly narrower: at the target but moving now
@@ -92,7 +92,7 @@ than nothing.
 ## Why this exists — the failure it closes
 
 The Platform Teensy holds **one** packed trajectory queue. Any kind-0/1/2 command
-rebuilds it from scratch: `Teensy_code.ino:539` calls `packedMsgs.clear()` and
+rebuilds it from scratch: `Teensy_code_platform.ino:539` calls `packedMsgs.clear()` and
 `makeSmoothMove` seeds the replacement prelude from `current_hand_position`.
 Until 2026-07-27 it seeded `v = 0, a = 0`: the live velocity was available —
 `current_hand_velocity` declared `extern volatile` two lines above the function —
@@ -168,7 +168,7 @@ would score the fix against a different model than the one that shipped.
   delay every reload's catch arm — which has no throw stroke to protect and needs
   its lead. A reload announcement leaves the window `None` and the whole gate
   inert.
-* **A closed window dispatches rather than defers.** `Teensy_code.ino:533` refuses
+* **A closed window dispatches rather than defers.** `Teensy_code_platform.ino:533` refuses
   the whole command when it will not fit and prints to serial **only** (`:534`),
   so an arm deferred past that point is not a late catch — it is a silently
   missing one with no ROS-visible signal. A dip is recoverable; a dropped ball is
@@ -218,7 +218,7 @@ Stated so a bench session scores it correctly:
      3.13 m/s, against the caller's `_MIN_EVENT_DELAY_S = 0.3` s floor. At an
      0.80 s flight the arm dispatches with ~0.55 s of `event_delay` and fits; at
      `FLIGHT_TIME_MIN_S = 0.55` the window's right edge IS the 0.3 s floor, so
-     `Teensy_code.ino:533` could refuse the command — a lost catch, with the live
+     `Teensy_code_platform.ino:533` could refuse the command — a lost catch, with the live
      stroke intact (`:533` returns before `packedMsgs.clear()`).
    **Instrumented, not fixed.** Widening `PRELUDE_ALLOWANCE_S` to the continuous
    duration would make the gate defer far more and could close the arm window at
@@ -242,7 +242,7 @@ Stated so a bench session scores it correctly:
    does not continue the ramp the hand was on. Matching `a(0)` would need a live
    acceleration estimate, and the Teensy has none: `current_hand_position` and
    `current_hand_velocity` come from the ODrive's 0x009 `Pos_Estimate`/
-   `Vel_Estimate` frame (`Teensy_code.ino:439-441`) and there is no third field.
+   `Vel_Estimate` frame (`Teensy_code_platform.ino:439-441`) and there is no third field.
    `a0 = 0` is what the plan specifies and it removes the first-order
    discontinuity, which is the one the measured defect was caused by.
 4. **~~There is no version handshake on the Platform Teensy.~~ CLOSED 2026-07-27
@@ -286,7 +286,7 @@ Stated so a bench session scores it correctly:
   the Phase 4 firmware work that closes obligation F.
 * `logbook/2026-07-26-hand-command-continuity-arm-gating.md` — the phase that
   landed obligation H.
-* **Enforcement point for F**: `Teensy_code/Trajectory.h`'s `makeSmoothMove`,
+* **Enforcement point for F**: `Teensy_code_platform/Trajectory.h`'s `makeSmoothMove`,
   mirrored at `sim/hand/trajectory.py`'s `plan_smooth_move`, host model at
   `jugglebot/motion/trajectory/hand_stroke.py`. Pinned by
   `tests/firmware/test_hand_smooth_move_xref.py` (which **compiles and runs the

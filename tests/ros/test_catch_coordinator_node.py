@@ -999,7 +999,7 @@ def test_arm_failed_ack_logged_at_debug():
 #
 # The defect (2026-07-25, seven self-tosses across three sessions): the kind-1
 # catch arm landed 8-18 ms after release, INSIDE the throw's 65 ms deceleration
-# ramp. Teensy_code.ino:539 clears the whole packed queue on any kind-0/1/2
+# ramp. Teensy_code_platform.ino:539 clears the whole packed queue on any kind-0/1/2
 # command and Trajectory.h:242-301 seeds the replacement prelude from
 # current_hand_position with v = 0, a = 0 (current_hand_velocity is declared
 # extern at :47 and never read) — so the queue was replaced by a rest-to-rest
@@ -1273,7 +1273,7 @@ def test_window_closed_dispatches_immediately_and_loudly(monkeypatch):
     """When waiting would push the arm past the Teensy's build deadline, ARM
     ANYWAY and shout.
 
-    Teensy_code.ino:533 refuses the WHOLE command when
+    Teensy_code_platform.ino:533 refuses the WHOLE command when
     now + smoothDur + SAFETY_GAP > firstMainAbs and prints the refusal to serial
     only (:534) — so an arm deferred past that point does not arrive late, the
     catch silently never fires and the ball hits the floor with no ROS-visible

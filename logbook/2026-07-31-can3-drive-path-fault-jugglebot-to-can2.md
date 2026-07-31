@@ -197,7 +197,16 @@ swapped bus, and the sensor's 07-28 install is exonerated of the wire fault.
    set + fw 0.6.11 for the ball sensor (the Get_Version gate parks the poller
    loudly on a mismatch; the config-drift test covers the recorded JSON, not
    the physical drive). If the original returns, nothing to do.
-3. **Cone PROFILE slot** (traffic charts) remains a genuine 3rd-slot TODO.
+3. **Cone PROFILE slot** — ~~remains a genuine 3rd-slot TODO~~ **DONE
+   2026-07-31, same-day follow-up**: `Profile` gained `can3_rx/tx/util_x100`
+   (appended; payload 66 → 76 B, **PROTOCOL_VERSION 4 → 5**, FW_VERSION
+   7 → 8), node publishes the `can3_*` KVs, GUI cone row has full charts.
+   Same follow-up commit: `Teensy_code` → `Teensy_code_platform` rename
+   (repo-wide reference sweep; historical logbook/archived-plan text left
+   as written), and **buttonless platform flashing**
+   (`Teensy_code_platform/upload_platform.sh`: 134-baud soft reboot on the
+   board's pinned USB serial 11744460, MCU-locked program; button press is
+   the fallback — live-tested, 12 s).
 4. **ERR_TIMEOUT epidemic** (memory `project_reload_action_catch_latch`):
    plausibly early manifestations of this same degrading path — worth
    re-checking its incidence now that Jugglebot runs on CAN2, before

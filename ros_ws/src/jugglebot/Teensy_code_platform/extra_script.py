@@ -24,7 +24,7 @@
 #    it via std::vector: `packedMsgs`/`sendUs` growth references
 #    std::__throw_length_error, which pulls libstdc++'s functexcept.o and with it
 #    the exception machinery. Verified on 2026-07-27 by nm-ing the built objects:
-#    Teensy_code.ino.cpp.o's only unwinder-adjacent undefined symbol is
+#    Teensy_code_platform.ino.cpp.o's only unwinder-adjacent undefined symbol is
 #    _ZSt20__throw_length_errorPKc, and the -fno-exceptions family in
 #    platformio.ini is NOT sufficient on its own (the reference comes from the
 #    already-compiled libstdc++, not from our translation unit).

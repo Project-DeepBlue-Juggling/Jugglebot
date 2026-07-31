@@ -266,7 +266,7 @@ def encode_state_write(is_homed: bool, levelling_complete: bool,
 
 
 # ── Platform-Teensy firmware identity (0x6E0 reply, bytes 5-6) ────────────────
-# The Platform Teensy carries `FW_VERSION` in Teensy_code/Teensy_code.ino and
+# The Platform Teensy carries `FW_VERSION` in Teensy_code_platform/Teensy_code_platform.ino and
 # reports it in the RobotState reply it already sends. THE HOST'S EXPECTED VALUE
 # IS DELIBERATELY A SECOND, INDEPENDENTLY-AUTHORED CONSTANT rather than a shared
 # generated one: the skew being detected is *board vs tree*, and a single codegen'd
@@ -281,7 +281,7 @@ def encode_state_write(is_homed: bool, levelling_complete: bool,
 PLATFORM_FW_VERSION_UNVERSIONED = 0
 
 #: The Platform Teensy firmware version this host tree expects.
-#: Keep in lockstep with `FW_VERSION` in Teensy_code/Teensy_code.ino — that file
+#: Keep in lockstep with `FW_VERSION` in Teensy_code_platform/Teensy_code_platform.ino — that file
 #: carries the bump history explaining what each version means.
 #: 2 (2026-07-28) = the post-release deceleration feedforward, contract C-HAND-2
 #: (ros_ws/docs/hand_decel_feedforward.md). A board still on 1 is not unsafe — it
@@ -293,7 +293,7 @@ PLATFORM_FW_VERSION_EXPECTED = 2
 def decode_platform_fw_version(data: bytes) -> int:
     """Read the Platform Teensy's ``FW_VERSION`` out of a 0x6E0 RobotState reply.
 
-    Bytes 5-6, uint16 little-endian, exactly as ``Teensy_code.ino``
+    Bytes 5-6, uint16 little-endian, exactly as ``Teensy_code_platform.ino``
     ``createStateCANMessage`` packs it.
 
     A frame too short to carry the field decodes to

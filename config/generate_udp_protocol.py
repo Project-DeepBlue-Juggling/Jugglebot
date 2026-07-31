@@ -104,7 +104,7 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 4,      "u8",  "Bumped on any incompatible wire change"),
+    ("PROTOCOL_VERSION", 5,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic)"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -394,17 +394,22 @@ MESSAGES = [
         fields=[
             Field("t_teensy_us",  "u64", 1, "Teensy wall-clock (us)"),
             Field("cpu_pct_x100", "u16", 9, "Per-task CPU load, pct*100 (PROFILE_NUM_TASKS)"),
-            Field("can1_rx",      "u32", 1, "wire slot 1 = Jugglebot core (CAN3) frames received this window"),
-            Field("can1_tx",      "u32", 1, "wire slot 1 = Jugglebot core (CAN3) frames transmitted this window"),
-            Field("can2_rx",      "u32", 1, "wire slot 2 = Ball Butler (CAN1) frames received this window"),
-            Field("can2_tx",      "u32", 1, "wire slot 2 = Ball Butler (CAN1) frames transmitted this window"),
-            Field("can1_util_x100", "u16", 1, "wire slot 1 = Jugglebot core (CAN3) bus utilisation, pct*100"),
-            Field("can2_util_x100", "u16", 1, "wire slot 2 = Ball Butler (CAN1) bus utilisation, pct*100"),
+            Field("can1_rx",      "u32", 1, "wire slot 1 = jugglebot role (physical CAN2 since 2026-07-31) frames received this window"),
+            Field("can1_tx",      "u32", 1, "wire slot 1 = jugglebot role frames transmitted this window"),
+            Field("can2_rx",      "u32", 1, "wire slot 2 = Ball Butler (physical CAN1) frames received this window"),
+            Field("can2_tx",      "u32", 1, "wire slot 2 = Ball Butler (physical CAN1) frames transmitted this window"),
+            Field("can1_util_x100", "u16", 1, "wire slot 1 = jugglebot role bus utilisation, pct*100"),
+            Field("can2_util_x100", "u16", 1, "wire slot 2 = Ball Butler bus utilisation, pct*100"),
             Field("udp_rtt_us",   "u32", 1, "Last measured Jetson round-trip (us)"),
             Field("udp_jitter_us", "u32", 1, "RTT jitter estimate (us)"),
             Field("interp_deadline_misses", "u32", 1, "Cumulative 500 Hz deadline misses"),
             Field("interp_max_jitter_us", "u32", 1, "Worst interp tick jitter this window (us)"),
             Field("free_heap_bytes", "u32", 1, "FreeRTOS free heap (bytes)"),
+            # Wire slot 3 (2026-07-31, PROTOCOL_VERSION 5): the cone role.
+            # Appended at the END so every pre-existing field keeps its offset.
+            Field("can3_rx",      "u32", 1, "wire slot 3 = cone role (physical CAN3 since 2026-07-31) frames received this window"),
+            Field("can3_tx",      "u32", 1, "wire slot 3 = cone role frames transmitted this window"),
+            Field("can3_util_x100", "u16", 1, "wire slot 3 = cone role bus utilisation, pct*100"),
         ],
     ),
     Message(
@@ -491,7 +496,7 @@ MESSAGES = [
             "it receives whose arbitration id is a Platform-Teensy reply "
             "(STATE_UPDATE 0x6E0 RobotState, TILT_READING 0x7DE inclinometer) "
             "verbatim, so the host owns the decode and the bridge stays decoupled "
-            "from the Platform-Teensy byte layout (Teensy_code.ino "
+            "from the Platform-Teensy byte layout (Teensy_code_platform.ino "
             "createStateCANMessage / sendTiltData). The host correlates a reply to "
             "its pending relay read by (can_id, dlc): a STATE_READ awaits "
             "(0x6E0, 8); a TILT_READ awaits (0x7DE, 8). `t_bridge_us` only stamps "
@@ -729,7 +734,7 @@ RPC_ARGS = [
     # STATE_WRITE carries the WHOLE Platform-Teensy RobotState (the can-bridge is
     # the sole writer and does read-modify-write through its cache, so a homing
     # write preserves the levelling fields and vice versa). The firmware encodes
-    # the 0x6E0 frame itself (mirroring Teensy_code.ino createStateCANMessage) —
+    # the 0x6E0 frame itself (mirroring Teensy_code_platform.ino createStateCANMessage) —
     # the can-bridge never forwards a Jetson-supplied raw frame (least-privilege).
     # (TILT_READ / STATE_READ take
     # no args — they only trigger a Platform-Teensy reply on 0x7DE / 0x6E0.)

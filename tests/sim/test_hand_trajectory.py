@@ -545,7 +545,7 @@ class TestSmoothMoveBranches:
         """The distinction that is the whole point of the phase.
 
         And it NARROWS the empty branch rather than widening it:
-        ``Teensy_code.ino:472-475`` returns from the kind-3 handler BEFORE
+        ``Teensy_code_platform.ino:472-475`` returns from the kind-3 handler BEFORE
         ``packedMsgs.clear()`` when the move is empty, so every case that used to
         return empty and is now moving produces a real trajectory instead — a
         strictly smaller hole in the only un-arm mechanism the Teensy offers.

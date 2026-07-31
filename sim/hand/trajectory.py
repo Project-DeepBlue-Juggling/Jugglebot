@@ -43,7 +43,7 @@ INERTIA_RATIO = 0.747
 THROW_DECEL_REFLECTED_INERTIA_KGM2 = 9.5e-6
 # Catch velocity as a fraction of the incoming ball speed. Source of truth is
 # config/hardware_config.yaml teensy_trajectory.catch_vel_ratio (0.6) →
-# Teensy_code/hardware_config.h — the platform hand, hardware-validated as reliable.
+# Teensy_code_platform/hardware_config.h — the platform hand, hardware-validated as reliable.
 # (Was 0.9, a stale port value; corrected in Phase 7 — plan § Hand-catch smoothness,
 # logbook 2026-07-08-mvp-phase6 Open Question 2.) At 0.6 the catch is a *designed*
 # ~40% first-contact mismatch: the hand absorbs the ball over the stroke rather than
@@ -115,7 +115,7 @@ def rev_to_mm(rev: float) -> float:
 # Torque feedforward — the two conversions, and why there are two
 # ---------------------------------------------------------------------------
 # The Teensy packs a torque feedforward alongside every position/velocity
-# setpoint (``Teensy_code.ino`` packTrajectory -> ODrive ``input_torque``).  It
+# setpoint (``Teensy_code_platform.ino`` packTrajectory -> ODrive ``input_torque``).  It
 # is the ONLY term that commands braking OPEN-LOOP; everything else the drive
 # does on the decel it has to earn from tracking error.
 #
@@ -322,7 +322,7 @@ class HandCatchTrajectory:
 # ------------------------------------------------
 # ``makeSmoothMove`` is prepended to EVERY hand command: a kind-3 prime/retract/
 # SAFE_ABORT, and the prelude ahead of every kind-0/1/2 stroke
-# (``Teensy_code.ino:470`` and ``:522``).  It used to seed the quintic
+# (``Teensy_code_platform.ino:470`` and ``:522``).  It used to seed the quintic
 # ``v = a = 0`` from ``current_hand_position`` alone, while
 # ``current_hand_velocity`` sat declared ``extern volatile`` two lines above the
 # function and was never read.  So any command landing while the hand moved
@@ -622,7 +622,7 @@ def plan_smooth_move(start_rev: float, target_rev: float,
     load-bearing: ``hand_catch_prime_rev`` was moved to the derived stroke top
     (9.9594 rev) and the catch arm gated to after the throw stroke precisely so
     a catch from rest opens with the smallest possible prelude.  It is also the
-    ONLY branch that returns nothing, and ``Teensy_code.ino:472-475`` returns
+    ONLY branch that returns nothing, and ``Teensy_code_platform.ino:472-475`` returns
     from the kind-3 handler BEFORE ``packedMsgs.clear()`` when the move is
     empty — so widening this branch would widen a hole in the only un-arm
     mechanism the Teensy offers (a pre-release SAFE_ABORT depends on a kind-3
@@ -647,7 +647,7 @@ def plan_smooth_move(start_rev: float, target_rev: float,
     * *Refuse the command.*  For a kind-3 that means not clobbering, and a
       kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the
       Teensy offers.  Refusing via an empty trajectory is worse still — the
-      early return at ``Teensy_code.ino:472-475`` sits BEFORE the queue clear,
+      early return at ``Teensy_code_platform.ino:472-475`` sits BEFORE the queue clear,
       so an armed stroke would survive a SAFE_ABORT.
     * *Brake to the limit* (shorten the duration until the bulge fits, whatever
       acceleration that costs).  Near a target the bulge has no room to be

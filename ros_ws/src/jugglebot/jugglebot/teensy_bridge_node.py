@@ -296,14 +296,14 @@ _MANUAL_RECOVERY_HINT = ("manual recovery: disarm with set_setpoint_output=false
                          "/clear_errors clears directly")
 
 # Decoded Platform-Teensy RobotState (relay read). Fields mirror
-# Teensy_code.ino RobotState (is_homed / levelling_complete / pose offset, rad).
+# Teensy_code_platform.ino RobotState (is_homed / levelling_complete / pose offset, rad).
 RelayRobotState = namedtuple(
     "RelayRobotState",
     ["is_homed", "levelling_complete", "pose_offset_tiltX", "pose_offset_tiltY"])
 
 
 def _decode_relay_robot_state(data: bytes) -> RelayRobotState:
-    """Decode a 0x6E0 RobotState reply exactly as Teensy_code.ino
+    """Decode a 0x6E0 RobotState reply exactly as Teensy_code_platform.ino
     decodeStateCANMessage packs it: byte0 flags (bit0 is_homed, bit1 levelling),
     int16 LE pose*1000 about X (bytes 1-2) and Y (bytes 3-4).
 
@@ -2780,10 +2780,13 @@ class TeensyBridgeNode(Node):
                 KeyValue(key='udp_jitter_us', value=str(pr.udp_jitter_us)),
                 KeyValue(key='can1_util_pct', value=f'{pr.can1_util_x100 / 100.0:.1f}'),
                 KeyValue(key='can2_util_pct', value=f'{pr.can2_util_x100 / 100.0:.1f}'),
+                KeyValue(key='can3_util_pct', value=f'{pr.can3_util_x100 / 100.0:.1f}'),
                 KeyValue(key='can1_rx', value=str(pr.can1_rx)),
                 KeyValue(key='can1_tx', value=str(pr.can1_tx)),
                 KeyValue(key='can2_rx', value=str(pr.can2_rx)),
                 KeyValue(key='can2_tx', value=str(pr.can2_tx)),
+                KeyValue(key='can3_rx', value=str(pr.can3_rx)),
+                KeyValue(key='can3_tx', value=str(pr.can3_tx)),
                 KeyValue(key='cpu_pct_x100',
                          value=','.join(str(c) for c in pr.cpu_pct_x100)),
             ]
@@ -2968,7 +2971,7 @@ class TeensyBridgeNode(Node):
     def relay_read_robot_state(self, timeout=None):
         """STATE_READ: read the Platform-Teensy RobotState. Returns
         (ok, message, RelayRobotState | None). Decodes the 0x6E0 reply exactly as
-        Teensy_code.ino decodeStateCANMessage packs it."""
+        Teensy_code_platform.ino decodeStateCANMessage packs it."""
         timeout = self._RELAY_READ_TIMEOUT_S if timeout is None else timeout
         can_id = proto.CAN_ID_PLATFORM_STATE_UPDATE
         with self._relay_lock:   # serialize the whole relay round-trip
@@ -3019,7 +3022,7 @@ class TeensyBridgeNode(Node):
             f'PLATFORM_FW_CHECK: FAIL — Platform Teensy reports {detail}, host '
             f'tree expects v{expected}. Hand commands are NOT refused (the skew '
             f'is reported, never enforced — ros_ws/docs/platform_fw_version.md), '
-            f'but bench results from Teensy_code/ are not trustworthy until the '
+            f'but bench results from Teensy_code_platform/ are not trustworthy until the '
             f'Platform Teensy is re-flashed.')
 
     def _platform_fw_version_str(self) -> str:

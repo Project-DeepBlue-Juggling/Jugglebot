@@ -27,7 +27,7 @@ static uint16_t send_gated(const ODrive::CanFrame& f) {
 
 uint16_t tilt_read() {
   // Any frame on TILT_READING triggers the Platform Teensy's inclinometer read +
-  // reply (Teensy_code.ino canSniff: `if (msg.id == tiltID) sendTiltData(...)`).
+  // reply (Teensy_code_platform.ino canSniff: `if (msg.id == tiltID) sendTiltData(...)`).
   // A 1-byte request keeps it distinguishable (dlc 1) from the dlc-8 reply.
   ODrive::CanFrame f;
   f.id = PlatformCanId::TILT_READING;
@@ -39,7 +39,7 @@ uint16_t tilt_read() {
 uint16_t state_read() {
   // RobotState read request: STATE_UPDATE id, dlc 1, byte0 == 0x01 (the Platform
   // Teensy answers a dlc-1/0x01 frame with the dlc-8 RobotState; a dlc-8 frame is
-  // instead decoded as a WRITE — Teensy_code.ino canSniff state branch).
+  // instead decoded as a WRITE — Teensy_code_platform.ino canSniff state branch).
   ODrive::CanFrame f;
   f.id = PlatformCanId::STATE_UPDATE;
   f.len = 1;
@@ -55,7 +55,7 @@ uint16_t state_write(const JbUdp::RpcArgs::ArgRobotState& s) {
   // guard (rpc.cpp). is_homed / levelling are bools; only the two floats need checking.
   if (!(std::isfinite(s.pose_offset_tiltX) && std::isfinite(s.pose_offset_tiltY)))
     return JbUdp::RpcStatus::ERR_BAD_ARGS;
-  // Encode the dlc-8 RobotState frame exactly as Teensy_code.ino
+  // Encode the dlc-8 RobotState frame exactly as Teensy_code_platform.ino
   // createStateCANMessage decodes it: byte0 flags (bit0 is_homed, bit1 levelling),
   // int16 LE pose*1000 about X (bytes 1-2) and Y (bytes 3-4), bytes 5-7 zero.
   ODrive::CanFrame f;

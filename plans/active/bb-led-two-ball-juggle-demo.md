@@ -71,7 +71,7 @@ motion *smooth*.
 ### Related work
 
 - Feasibility study: §4 Phase 1 of this document.
-- Hand generator: `ros_ws/src/jugglebot/Teensy_code/Trajectory.h`,
+- Hand generator: `ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h`,
   `sim/hand/trajectory.py` (Python port).
 - Reference-feasibility contract (not enforced here — MPC is bypassed):
   `controller/REFERENCE_LAYER_CONTRACT.md`.
