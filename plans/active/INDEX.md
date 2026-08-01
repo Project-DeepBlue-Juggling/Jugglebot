@@ -30,7 +30,8 @@ and the test fails (that is the point — it catches stale rows).
 
 `PROMPT-*.md` files are self-contained session prompts for phase-runner
 workflows rather than plans, so they are exempt from the table above:
-`PROMPT-anomaly-fixes-orchestration.md`, `PROMPT-single-ball-toss-software-run.md`.
+`PROMPT-anomaly-fixes-orchestration.md`, `PROMPT-single-ball-toss-software-run.md`,
+`PROMPT-err-timeout-hand-path.md` (ERR_TIMEOUT attribution + fix, authored 2026-08-01).
 
 ## Recently archived
 
