@@ -81,7 +81,6 @@ python controller/generate_solver.py
 ```bash
 python sim/main.py [--mpc] [--keyboard] [--pose 0,0,50,0,0,0] [--no-viewer --duration 5]
 python sim/main.py --dashboard --mpc --pose 0,0,50,0,0,0   # dashboard on :8082
-cd sim && docker compose up                                # Docker (GPU required)
 ```
 
 ### Hardware MPC (on Jetson) — DORMANT
@@ -208,5 +207,5 @@ codebase has actually been done — deviate from them only with clear reason.
 - Jacobian convention: J maps `[vx,vy,vz,wx,wy,wz]` to `[q_dot_1..q_dot_6]`
 - Force decomposition: `f = J^{-T} * W` (use `np.linalg.solve(J.T, W)`), NOT `J^T * W`
 - All movements must use profiled trajectories — never command step position changes
-- CAN encoding must match `can_node.py`: negate, scale by appropriate value (check protocol_config), int16, clamp
+- CAN encoding must match the can-bridge firmware (`Teensy_code_canbridge/`) and the generated `protocol_config` constants: negate, scale by appropriate value, int16, clamp (`can_node.py` is deleted; the firmware is the encoding authority)
 - All runtime artifacts live under `temp/` (not `/tmp/`, not under `sim/`). Both `sim/main.py` and `run_mpc.py` write telemetry CSVs and companion `.log`/`.png`/`_report.html` files to `temp/logs/`. Cross-session comparison HTML reports go to `temp/reports/`. Nothing under `sim/` should accumulate runtime output.

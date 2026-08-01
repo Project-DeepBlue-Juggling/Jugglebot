@@ -1,8 +1,0 @@
-.git
-__pycache__
-*.pyc
-*.pyo
-logs/
-*.egg-info
-.pytest_cache
-.mypy_cache
