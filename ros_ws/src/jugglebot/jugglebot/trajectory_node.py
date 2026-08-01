@@ -91,6 +91,7 @@ from jugglebot_interfaces.msg import (
 from jugglebot_interfaces.srv import GoToPose, SetTrajectoryLimits, TimedTarget
 
 import jugglebot.hardware_config as hw
+from jugglebot import clock_offset
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     leg_lengths_to_pose,
@@ -547,12 +548,14 @@ class TrajectoryNode(Node):
         self.commanded_position_pub = self.create_publisher(
             Point, 'trajectory/commanded_position', 10)
         self.create_timer(0.2, self._publish_status)
-        # Re-measure the ROS↔perf clock offset every 30 s to track drift (mirrors
-        # catch_coordinator_node). NOTE: since the lead_time_s interface change the
-        # timed_target service no longer converts through it (relative lead, perf-
-        # anchored at handler entry) — the offset is retained, consumer-less, for
-        # any future ROS-clock-timed surface.
-        self.create_timer(30.0, self._refresh_clock_offset)
+        # Re-measure the ROS↔perf clock offset every REFRESH_PERIOD_S to track
+        # drift (cadence shared with catch_coordinator_node via
+        # jugglebot.clock_offset). NOTE: since the lead_time_s interface change
+        # the timed_target service no longer converts through it (relative lead,
+        # perf-anchored at handler entry) — the offset is retained,
+        # consumer-less, for any future ROS-clock-timed surface.
+        self.create_timer(clock_offset.REFRESH_PERIOD_S,
+                          self._refresh_clock_offset)
 
         if start_emitter:
             self._start_emitter()
@@ -2010,27 +2013,26 @@ class TrajectoryNode(Node):
     # Timed targets + catch (Phase 5)
     # ═══════════════════════════════════════════════════════════
 
+    def _ros_clock_s(self) -> float:
+        """This node's ROS clock, in seconds (the estimator's injected clock)."""
+        return self.get_clock().now().nanoseconds / 1e9
+
     def _measure_clock_offset(self) -> float:
-        """Median (perf_counter − ROS-clock) offset (mirrors catch_coordinator_node).
+        """Median (perf_counter − ROS-clock) offset.
 
         perf_counter is CLOCK_MONOTONIC; the ROS clock is the node's wall clock.
         A ROS-domain arrival time ``t_ros`` maps to the emitter's perf domain as
         ``t_ros + offset``. Sampled a few times and median-filtered to shrug off a
-        scheduler hiccup between the two reads.
+        scheduler hiccup between the two reads.  The estimator itself lives in
+        ``jugglebot.clock_offset`` — shared with ``catch_coordinator_node``,
+        which carried a character-identical copy until 2026-08-01.
         """
-        offsets = []
-        for _ in range(10):
-            t_perf = time.perf_counter()
-            t_ros = self.get_clock().now().nanoseconds / 1e9
-            offsets.append(t_perf - t_ros)
-        return float(np.median(offsets))
+        return clock_offset.measure_offset(self._ros_clock_s)
 
     def _refresh_clock_offset(self) -> None:
         """Periodically re-measure the offset to track drift (median of last 20)."""
-        self._clock_offset_history.append(self._measure_clock_offset())
-        if len(self._clock_offset_history) > 20:
-            self._clock_offset_history.pop(0)
-        self._ros_to_perf_offset = float(np.median(self._clock_offset_history))
+        self._ros_to_perf_offset = clock_offset.refresh_offset(
+            self._clock_offset_history, self._ros_clock_s)
 
     def _ros_time_to_perf(self, ros_time) -> float:
         """THE ROS-clock → perf_counter conversion point (plan Architecture).

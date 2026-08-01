@@ -82,6 +82,7 @@ from jugglebot_interfaces.srv import SetFloat, SetHandGains, SetHandTrajCmd
 from geometry_msgs.msg import Point, Quaternion, Vector3
 
 import jugglebot.hardware_config as hw
+from jugglebot import clock_offset
 from jugglebot.motion.trajectory import hand_stroke
 from jugglebot.tracking.ball import Ball, BallStatus, TrackingConfidence
 from jugglebot.catch_coordinator import CatchCoordinator
@@ -318,8 +319,9 @@ class CatchCoordinatorNode(Node):
         self._pretilt_hold_sub = self.create_subscription(
             Bool, 'catch/pretilt_hold', self._on_pretilt_hold, 10)
 
-        # Re-measure clock offset every 30s to track drift
-        self._clock_timer = self.create_timer(30.0, self._refresh_clock_offset)
+        # Re-measure clock offset every REFRESH_PERIOD_S to track drift
+        self._clock_timer = self.create_timer(clock_offset.REFRESH_PERIOD_S,
+                                              self._refresh_clock_offset)
 
         # Track which ball we last submitted a target for
         self._last_submitted_ball_id: int | None = None
@@ -392,23 +394,26 @@ class CatchCoordinatorNode(Node):
     # Clock offset
     # ==================================================================
 
+    def _ros_clock_s(self) -> float:
+        """This node's ROS clock, in seconds (the estimator's injected clock)."""
+        return self.get_clock().now().nanoseconds / 1e9
+
     def _measure_clock_offset(self) -> float:
-        """Measure offset between perf_counter and ROS2 wall clock."""
-        offsets = []
-        for _ in range(10):
-            t_perf = time.perf_counter()
-            t_ros = self.get_clock().now().nanoseconds / 1e9
-            offsets.append(t_perf - t_ros)
-        return float(np.median(offsets))
+        """Measure offset between perf_counter and ROS2 wall clock.
+
+        Estimator shared with ``trajectory_node`` via ``jugglebot.clock_offset``
+        (both nodes carried character-identical copies until 2026-08-01) —
+        same 10-sample median, same 20-deep history, same 30 s refresh.
+        """
+        return clock_offset.measure_offset(self._ros_clock_s)
 
     def _refresh_clock_offset(self):
-        """Periodically re-measure clock offset to track drift."""
-        new_offset = self._measure_clock_offset()
-        self._clock_offset_history.append(new_offset)
-        # Keep last 20 measurements (10 minutes at 30s interval)
-        if len(self._clock_offset_history) > 20:
-            self._clock_offset_history.pop(0)
-        self._ros_to_perf_offset = float(np.median(self._clock_offset_history))
+        """Periodically re-measure clock offset to track drift.
+
+        Keeps the last 20 measurements (10 minutes at the 30 s timer period).
+        """
+        self._ros_to_perf_offset = clock_offset.refresh_offset(
+            self._clock_offset_history, self._ros_clock_s)
 
     # ==================================================================
     # Ball processing

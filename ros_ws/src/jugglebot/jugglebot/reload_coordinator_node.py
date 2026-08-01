@@ -919,7 +919,13 @@ class ReloadCoordinatorNode(Node):
         offset, read at point of use). The landing stamp is release + ToF, so the settle
         deadline it feeds includes the ball's time-of-flight. Falls back to
         ``now + predicted_tof_sec`` when the stamp is absent/unusable (and to ``now`` if
-        neither is present)."""
+        neither is present).
+
+        NOTE: this is a *single instantaneous* ``perf − ros`` read, deliberately NOT
+        the median-filtered running offset that ``jugglebot.clock_offset`` provides to
+        trajectory_node and catch_coordinator_node.  Whether this path should adopt
+        the filtered offset (fresher vs. hiccup-immune) is an open reconciliation
+        decision, not an oversight — do not "fix" it by unifying without that call."""
         lt = getattr(msg, 'landing_time', None)
         ros_s = 0.0
         if lt is not None:
