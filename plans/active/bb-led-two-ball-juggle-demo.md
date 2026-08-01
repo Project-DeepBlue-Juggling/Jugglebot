@@ -143,15 +143,15 @@ wall clock is the existing CAN `0x7DD` broadcast (`bus.broadcast_time()`,
 
 ### New module layout
 
-Pure-Python demo logic (no ROS2 imports) lives under `controller/demo/`:
+Pure-Python demo logic (no ROS2 imports) lives under `sim/juggle_planner/`:
 
 | File | Role |
 |------|------|
-| `controller/demo/pattern.py` | Oval pattern geometry + tempo spec; derives throw/catch points, apex, period from feasibility math |
-| `controller/demo/juggle_optimizer.py` | Offline CasADi optimiser → periodic platform trajectory file (run once) |
-| `controller/demo/trajectory.py` | `JuggleTrajectory` — loads the trajectory file, `eval(t) → (pose, twist, accel)`, priming/steady/exit segments |
-| `controller/demo/player.py` | `TrajectoryPlayer` — runtime: wall-time → leg-extension command + feedforward via IK |
-| `controller/demo/timeline.py` | `MasterTimeline` — absolute-time hand/BB event schedule; abort handling |
+| `sim/juggle_planner/pattern.py` | Oval pattern geometry + tempo spec; derives throw/catch points, apex, period from feasibility math |
+| `sim/juggle_planner/juggle_optimizer.py` | Offline CasADi optimiser → periodic platform trajectory file (run once) |
+| `sim/juggle_planner/trajectory.py` | `JuggleTrajectory` — loads the trajectory file, `eval(t) → (pose, twist, accel)`, priming/steady/exit segments |
+| `sim/juggle_planner/player.py` | `TrajectoryPlayer` — runtime: wall-time → leg-extension command + feedforward via IK |
+| `sim/juggle_planner/timeline.py` | `MasterTimeline` — absolute-time hand/BB event schedule; abort handling |
 
 The hardware orchestrator is a thin ROS2 wrapper in `ros_ws/` that imports the
 above (matching the project's "ROS2 nodes are thin wrappers, business logic in
@@ -180,7 +180,7 @@ Two coupled sim-fidelity upgrades raised during sim review, tracked in
   hard hand-velocity invariant: the cup velocity is colinear with the ball
   arrival velocity at `catch_vel_ratio` (0.7) of its speed (30 % closing
   velocity seats the ball); facing stays soft. Implemented in
-  `controller/demo/juggle_optimizer.py`. The strict geometric capture gate
+  `sim/juggle_planner/juggle_optimizer.py`. The strict geometric capture gate
   structurally can't judge a moving-cup catch (1/33 strict, 33/33 loose), so
   `JuggleDemoConfig.capture_tolerance_mm` defaults to `None` (loose) as an
   INTERIM pending concern 1.
@@ -222,7 +222,7 @@ Two coupled sim-fidelity upgrades raised during sim review, tracked in
   **Built & validated:** a cup-tracking band-limit characterisation (slider
   near-perfect → throw stroke; platform −3 dB ~5 Hz lateral → smooth
   positioning), the **level-platform decoupling** realisation (drops banking),
-  the per-throw planner `controller/demo/juggle_planner.py` (7 unit tests), and
+  the per-throw planner `sim/juggle_planner/juggle_planner.py` (7 unit tests), and
   a new runner `sim/juggle_online.py` (carry-oval, 100 mm separation) that runs
   end-to-end. **Landed:** the throw slam is fixed (re-plan cycle 0 from the
   achieved pre-roll state → clean `a_cup<−g` separation) and the catch is fixed
@@ -290,16 +290,16 @@ nearly scale-invariant — the overhaul is what unlocks lower throws later.
 ### Phase 2: Offline trajectory optimiser & player core — IN PROGRESS (started 2026-05-22)
 
 **Progress (2026-05-22 → 2026-05-23).** The player core landed 2026-05-22:
-`controller/demo/pattern.py` (oval geometry + tempo, reproducing the Phase 1
-numbers), `controller/demo/trajectory.py` (`JuggleTrajectory` — periodic C2
+`sim/juggle_planner/pattern.py` (oval geometry + tempo, reproducing the Phase 1
+numbers), `sim/juggle_planner/trajectory.py` (`JuggleTrajectory` — periodic C2
 evaluator — plus `build_analytic_oval`, the un-optimised baseline), and
-`controller/demo/player.py` (`TrajectoryPlayer`). Validated by
+`sim/juggle_planner/player.py` (`TrajectoryPlayer`). Validated by
 `tests/sim/test_demo_trajectory.py` (13 unit tests) and
 `tests/sim/test_demo_sim_playback.py` (2 tests — open-loop MuJoCo playback +
 commanded leg-jerk metric).
 
 The CasADi jerk-minimising optimiser landed 2026-05-23 (this commit) as
-`controller/demo/juggle_optimizer.py` — a **level-platform first cut**.
+`sim/juggle_planner/juggle_optimizer.py` — a **level-platform first cut**.
 Discretisation: N quintic-Hermite knots over one period (each knot stores
 `pose`, `twist`, `accel`); analytical per-segment jerk integral via
 `controller/hermite.quintic_jerk_integral` makes the objective a low-degree
@@ -404,10 +404,10 @@ level-locked legacy mode, workspace bounds, custom catch_offset, save/load
 roundtrip, IPOPT convergence, drop-in compatibility with `TrajectoryPlayer`).
 
 **New/modified files:**
-- `controller/demo/pattern.py` (new)
-- `controller/demo/juggle_optimizer.py` (new)
-- `controller/demo/trajectory.py` (new)
-- `controller/demo/player.py` (new)
+- `sim/juggle_planner/pattern.py` (new)
+- `sim/juggle_planner/juggle_optimizer.py` (new)
+- `sim/juggle_planner/trajectory.py` (new)
+- `sim/juggle_planner/player.py` (new)
 - `temp/demo/juggle_trajectory.npz` (generated artefact, gitignored)
 
 **Scope:**
@@ -486,12 +486,12 @@ one-held-one-in-flight) with no regression to `test_ball.py`. The sim
 entry-point decision (§6) is also resolved: a standalone `sim/juggle_demo.py`,
 not a `sim/main.py` mode.
 
-Sub-phase **3b** is complete (2026-05-23): `controller/demo/timeline.py` lands
+Sub-phase **3b** is complete (2026-05-23): `sim/juggle_planner/timeline.py` lands
 `Event` (NamedTuple), `MasterTimeline` (BB priming + alternating hand
 throw/catch events on absolute wall-time; cursor-based `due_events`;
 idempotent `abort` that truncates the future schedule), and `ExitTransient`
 (single C2 quintic-Hermite segment from the abort-instant trajectory state to
-stow with zero twist and accel). `controller/demo/player.py` is extended
+stow with zero twist and accel). `sim/juggle_planner/player.py` is extended
 with `TrajectoryPlayer.abort(exit_transient)` — the source-swap that routes
 subsequent `command_at` calls through the exit transient (lookahead included).
 Validated by `tests/sim/test_demo_timeline.py` (29 tests covering T-U8 event
@@ -573,9 +573,9 @@ On the Jetson the default 30 s run produces **33 captures, 0 drops** in
 **New/modified files:**
 - `sim/model/jugglebot.xml`, `sim/ball/manager.py`, `sim/ball/__init__.py`,
   `sim/plant/mujoco_plant.py` (3a — multi-ball, done)
-- `controller/demo/timeline.py` (new)
+- `sim/juggle_planner/timeline.py` (new)
 - `sim/juggle_demo.py` (new — standalone runner)
-- `controller/demo/player.py` (extended — abort path)
+- `sim/juggle_planner/player.py` (extended — abort path)
 
 **Scope:**
 
@@ -674,9 +674,9 @@ Bring-up order, each a stop point:
 ### Phase 5: Hardware robustness & polish — NOT STARTED
 
 **New/modified files:**
-- `controller/demo/pattern.py`, `juggle_optimizer.py` (tuning re-runs)
-- `controller/demo/timeline.py` (timing offsets)
-- optional: `controller/demo/qtm_correction.py` (new)
+- `sim/juggle_planner/pattern.py`, `juggle_optimizer.py` (tuning re-runs)
+- `sim/juggle_planner/timeline.py` (timing offsets)
+- optional: `sim/juggle_planner/qtm_correction.py` (new)
 
 **Scope:**
 - Tune the operating point and event timing offsets to reach a sustained
@@ -706,7 +706,7 @@ insufficient.
 | T-U7 | `TrajectoryPlayer` exact lookahead | `cmd_next_mm`/`cmd_next2_mm` equal `ik(eval(t+dt))`/`ik(eval(t+2dt))` exactly |
 | T-U8 | `MasterTimeline` event ordering | events strictly time-ordered; per-ball phase offset = `P/2`; throw and catch alternate |
 | T-U9 | `MasterTimeline.abort` | after abort, `due_events` returns no future throws; exit transient ends at the stow pose with zero twist and accel |
-| T-U10 | Player NumPy-only | importing `controller/demo/player.py` does not import `casadi` |
+| T-U10 | Player NumPy-only | importing `sim/juggle_planner/player.py` does not import `casadi` |
 | T-U11 | Hand command encoding | `event_vel`/`traj_type`/wall-time encode to the exact `0x6D0` byte layout (regression against `_send_hand_traj_cmd`) |
 | T-U12 | BB command encoding | yaw/pitch/speed/time encode to the exact `0x7D0` `<hHHH>` layout |
 
@@ -868,12 +868,12 @@ skipped to preserve the fault state, matching `run_mpc.py` behaviour.
 
 | File | Action |
 |------|--------|
-| `controller/demo/pattern.py` | Create |
-| `controller/demo/juggle_optimizer.py` | Create |
-| `controller/demo/trajectory.py` | Create |
-| `controller/demo/player.py` | Create |
-| `controller/demo/timeline.py` | Create |
-| `controller/demo/qtm_correction.py` | Create (optional, Phase 5) |
+| `sim/juggle_planner/pattern.py` | Create |
+| `sim/juggle_planner/juggle_optimizer.py` | Create |
+| `sim/juggle_planner/trajectory.py` | Create |
+| `sim/juggle_planner/player.py` | Create |
+| `sim/juggle_planner/timeline.py` | Create |
+| `sim/juggle_planner/qtm_correction.py` | Create (optional, Phase 5) |
 | `ros_ws/src/jugglebot/jugglebot/juggle_demo_node.py` | Create (Phase 4, pattern A) |
 | `sim/main.py` or `sim/juggle_demo.py` | Modify / create (Phase 3) |
 | `config/hardware_config.yaml` | Modify (leg limits, Phase 4) |
@@ -886,7 +886,7 @@ skipped to preserve the fault state, matching `run_mpc.py` behaviour.
 
 The demo is additive and on a dedicated branch. Rollback of any phase:
 
-- Phases 2–3: new files only — delete `controller/demo/` and the sim entry
+- Phases 2–3: new files only — delete `sim/juggle_planner/` and the sim entry
   point; nothing else is affected.
 - Phase 4: revert the `hardware_config.yaml` leg-limit change and re-run
   `config/generate_config.py`; remove `juggle_demo_node.py`. The MPC path and

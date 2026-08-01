@@ -476,7 +476,7 @@ Port into main from `demo/bb-led-two-ball-juggle`:
   `sim/ball_butler/sim.py`, `sim/hand/trajectory.py`, `sim/main.py`) — carry over
   only juggle-required changes, reconciled with main-side changes since the
   2026-05-22 branch point.
-- `controller/demo/` is **not** ported wholesale: `player.py`'s lookahead/IK
+- `sim/juggle_planner/` is **not** ported wholesale: `player.py`'s lookahead/IK
   logic is absorbed into `motion/trajectory/emitter.py`; `timeline.py`'s
   absolute-wall-time event scheduling into `reload_sequencer.py`;
   `juggle_planner.py`'s boundary-condition math into `ballistics_bc.py`;

@@ -1,42 +1,76 @@
 # Safety Architecture
 
-> **⚠️ STALE for the MVP topology (banner added 2026-08-01).** Sections 1–2
-> below describe the `motor_guard -> motion_bridge_node -> leg_lengths_topic ->
-> can_node` chain. `can_node` was deleted on 2026-07-06 (SocketCAN
-> decommission) and `motor_guard` + `motion_bridge_node` stopped launching on
-> 2026-08-01 (MPC dormancy, `plans/active/refactor-2026-07.md` Phase 3), so
-> **none of that chain runs today**. The live leg path is
-> `trajectory_node -> :5557 -> teensy_bridge_node -> can-bridge Teensy`, and its
-> safety authority is the **Teensy-side `MAX_DEVIATION` guard** plus the bridge's
-> arming contract (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`). Read
-> sections 1–2 as a record of the parked MPC path, not of current behaviour; a
-> proper rewrite is owed and out of scope for the dormancy commit.
->
-> **Section 3 too (noted 2026-08-01).** Its `**File:**` line points at
-> `jugglebot/can_node.py`, deleted in the same 2026-07-06 decommission. The
-> *clamp itself is live* — it was ported to
-> `teensy_link/setpoint_pump.py` (`max_step_rev`, gating each frame
-> against the previously **accepted** setpoint rather than against encoder
-> feedback, and complementary to the Teensy-side `MAX_DEVIATION` guard), so read
-> §3 for the rationale and the module for the current threshold and semantics.
-> Named here rather than patched in place: the whole file is owed one re-framing
-> pass, and spot-patching §3 alone would imply §§1–2 are current.
+**Re-framed 2026-08-01** for the MVP topology (the Phase 3 dormancy of
+`plans/active/refactor-2026-07.md` stopped launching the MPC-era chain this
+file used to describe; the old text is preserved below as the dormant-chain
+record). Constants and thresholds are deliberately NOT duplicated here —
+each layer points at the single place its numbers live, so this file cannot
+drift out of date the way its predecessor did.
 
-Motor command safety is enforced at **three independent layers**. Each layer
-can prevent dangerous commands on its own — the defence-in-depth design means
-a bug in any single component cannot cause the platform to slam.
+## The live leg path and its safety layers
 
-## 1. Motor guard telemetry gating
+```
+trajectory_node → :5557 (ZMQ) → teensy_bridge_node → setpoint_pump (UDP)
+   → can-bridge Teensy (500 Hz leg_interp) → CAN → ODrives
+```
 
-**File:** `jugglebot/motion/motor_guard.py`
+Defence in depth, four independent layers — each can stop a dangerous
+command on its own:
 
-The standalone motor guard process only publishes telemetry (which contains motor
-position/velocity/torque commands) when its mode is `ENABLED`. In `DISABLED`
-or `ESTOP` mode the process is completely silent — no IPC messages leave the
-process.
+1. **Arming contract (bridge, Jetson side).** The bridge refuses to relay
+   motion unless the arming state machine allows it, and a guard E-STOP
+   latches until an explicit `CLEAR_ERRORS`. Normative doc:
+   `ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`; enforcement lives in
+   `teensy_bridge_node.py` (arming section, ~1954–2245).
+2. **Per-frame step clamp (`teensy_link/setpoint_pump.py`).** Each outgoing
+   frame's commanded `u0` is gated against the **previously accepted**
+   setpoint (not encoder feedback): a leg stepping more than `max_step_rev`
+   rejects the frame. Threshold + semantics: the module docstring and
+   `DEFAULT_MAX_STEP_REV` in that file. This is the port of the retired CAN
+   node's step limit — the rationale it inherited is recorded in the dormant
+   section below.
+3. **Firmware deviation guard (can-bridge Teensy).** The `MAX_DEVIATION`
+   latch E-STOPs when a leg's commanded-vs-feedback deviation crosses the
+   configured bound; the latch event is snapshotted for forensics
+   (`Teensy_code_canbridge/fault_machine.h` — MAX_DEVIATION latch-event
+   comment block; interpolation-side handling in `leg_interp.cpp`). **This is
+   the leg-path safety authority in the MVP topology** (owner-confirmed,
+   2026-07-31). A HAND fault E-STOPs the legs too.
+4. **Bus-health command gate (can-bridge Teensy).** `classify_command_gate()`
+   / `jugglebot_commands_allowed()` (`Teensy_code_canbridge/can_buses.h`)
+   refuse non-setpoint commands under *sustained* bus confinement (BUS_OFF
+   instantly), sized so ordinary error-passive blips never flap the gate —
+   see the 2026-07-29 logbook entry for why the gate keys on sustained
+   confinement and why `classify_bus_health` stays separate.
 
-The motor guard also enforces safety checks on every MPC command and every
-interpolation cycle:
+Two standing invariants sit above all four layers:
+
+- **All movements use profiled trajectories** — step position commands are
+  never sent (CLAUDE.md, Critical Conventions). Profiled stow on shutdown is
+  owned by `teensy_bridge_node`.
+- **Control modes** gate which producer may command motion; the mode/
+  streaming contract (including the catch-armed latch that replaced the
+  retired `CATCH` mode on 2026-07-20) is specified in
+  `ros_ws/docs/control_modes.md`, not here.
+
+LEVELLING runs through the bridge's profiled gentle moves (relay path) — no
+MPC involvement; the gravity offset it measures is applied per the levelling
+contract, `ros_ws/docs/levelling_frame.md` (C-LEVEL-1).
+
+## Dormant record — the parked MPC-era chain
+
+> Nothing below runs today. `can_node` was deleted 2026-07-06 (SocketCAN
+> decommission); `motor_guard` + `motion_bridge_node` stopped launching
+> 2026-08-01 (MPC dormancy). The chain is parked, not deleted, for the MPC
+> revival (`controller/`, `run_mpc.py`); this section is its safety design
+> record.
+
+**Chain:** `run_mpc.py → motor_guard (500 Hz) → motion_bridge_node →
+leg_lengths_topic → can_node → ODrives`.
+
+**Motor guard telemetry gating** (`jugglebot/motion/motor_guard.py`): only
+publishes motor commands when `ENABLED`; silent in `DISABLED`/`ESTOP`. Its
+per-cycle checks, as last shipped:
 
 | Check | Threshold | Action |
 |-------|-----------|--------|
@@ -49,81 +83,20 @@ interpolation cycle:
 | Workspace hard limit (cond number) | > 2.0× home | E-stop |
 | IPC heartbeat timeout | > 500 ms | E-stop |
 
-**Why this matters:** On startup the motor guard is `DISABLED` and produces no
-output. Without gating, stale or zero commands would be forwarded to the CAN
-node and interpreted as "retract all legs to 0".
+**Motion bridge command gating** (`jugglebot/motion_bridge_node.py`): only
+published to `leg_lengths_topic` while its `_motor_guard_enabled` flag was
+true; diagnostic-only topics were never gated. (`leg_torques_diagnostic` is
+still published by `trajectory_node` on the live path — diagnostic-only,
+unchanged.)
 
-## 2. Motion bridge command gating
-
-**File:** `jugglebot/motion_bridge_node.py`
-
-The ROS2 bridge node tracks a `_motor_guard_enabled` flag that mirrors
-whether it last sent an `enable` or `disable` IPC command to the motor
-guard. The bridge only publishes to `leg_lengths_topic` (the motor command
-topic consumed by the CAN node) when this flag is `True`.
-
-Diagnostic-only topics (`leg_torques_diagnostic`, `motion/tracking_error`,
-`motion/diagnostics`) are not gated — they cannot command motors.
-(`leg_torques_diagnostic` is also published by `trajectory_node` on the
-trajectory path — same type/semantic — so it carries the gravity feedforward
-regardless of which producer is live; still diagnostic-only, still not gated.)
-
-### Control modes and the motor guard
-
-| Mode | Motor guard | Notes |
-|------|------------|-------|
-| `SPACEMOUSE` | enabled | MPC plans path from spacemouse targets |
-| `GUI` | enabled | MPC plans path from GUI targets |
-| `LEVELLING` | **stays disabled** | Uses CAN node's profiled gentle-move; no MPC needed |
-
-There is **no `CATCH` mode** (retired 2026-07-20 —
-`logbook/2026-07-20-reload-action-catch-latch.md`). Catching is driven by the
-**`jugglebot/reload` action** for its duration via a **catch-armed latch** on
-`trajectory_node` (`trajectory/arm_catch`, mirrored on the `catch/armed` topic that
-gates the hand); a reload runs within the already-enabled **TRAJECTORY** motor-guard
-context, so it needs no dedicated mode row.
-| `ERROR` | e-stopped | Immediate e-stop command sent |
-| `''` (empty) | disabled | Idle / deactivated |
-
-**LEVELLING** is a special case: the levelling sequence uses the CAN node's
-`_gently_move_to_setpoint()` trapezoidal profiles for all platform movement.
-The motor guard is not involved. The gravity offset computed during levelling
-is received by the MPC bridge node via the `gravity_offset` ROS2 topic and
-composed into every outgoing target orientation — the correction applies
-automatically to all input modes.
-
-## 3. CAN node position step limit
-
-**File:** `jugglebot/can_node.py`
-**Config:** `hardware_config.yaml` → `jugglebot_operational.max_position_step_rev`
-**Constant:** `JB_OP_MAX_POSITION_STEP_REV` (default: 0.2 rev ≈ 14 mm)
-
-Last-resort safety net in the CAN node's `_sub_leg_lengths()` callback. Before
-sending any `leg_lengths_topic` command to the ODrives, the CAN node compares
-each commanded position against the leg's current encoder estimate. If **any**
-leg would jump by more than `MAX_POSITION_STEP_REV` from its current position,
-the **entire** command is rejected and an error is logged.
-
-This check runs only when encoder feedback is available
-(`motors.first_heartbeat_received`). It does not affect the CAN node's own
-`_gently_move_to_setpoint()` or `_send_position_target()` calls, which bypass
-this subscriber callback entirely.
-
-**Threshold rationale:** The motor guard interpolates at 500 Hz with a maximum
-motor velocity of ~7.3 rev/s, giving a worst-case per-cycle step of ~0.015 rev.
-The 0.2 rev threshold provides ~13× headroom for normal operation while catching
-catastrophic jumps (e.g., the original bug produced a 2.57 rev step).
-
-### What triggers a rejection
-
-- Stale zero commands from a disabled motor guard (the original incident)
-- Sign errors or unit mismatches in a new command source
-- Race conditions where two command sources fight for motor control
-- Any software bug that produces an implausible position target
-
-### Log output on rejection
-
-```
-[ERROR] Leg command REJECTED: leg 3 would step 2.574 rev (limit 0.2).
-        Commanded=0.0000, actual=2.5741
-```
+**CAN node position step limit** (deleted `jugglebot/can_node.py`; config
+`jugglebot_operational.max_position_step_rev`): rejected any command stepping
+a leg more than the configured bound from its encoder estimate. **Ported to
+the live path** as `setpoint_pump`'s per-frame clamp (layer 2 above, with the
+reference frame deliberately changed to prior-accepted-setpoint). The
+original rationale, kept because it still sizes the live clamp's class of
+catch: the guard interpolated at 500 Hz with ~7.3 rev/s max motor velocity
+(~0.015 rev/cycle worst case), so a generous threshold still catches
+catastrophic jumps — the original incident was a 2.57 rev step from stale
+zero commands of a disabled motor guard; sign/unit errors and
+two-producers-fighting bugs are the same class.

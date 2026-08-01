@@ -16,7 +16,7 @@ related_logbook:
 
 ### Where we are
 
-`sim/juggle_online.py` (+ `controller/demo/juggle_planner.py`) is an online,
+`sim/juggle_online.py` (+ `sim/juggle_planner/juggle_planner.py`) is an online,
 per-throw, task-space planner (Kai Ploeger's `plan_throw`, IEEE 9981678; repo at
 `/home/jetson/Desktop/kinematic_planning_for_nball_toss_juggling/`). It catches
 **5 / 0** then collapses to 1-ball: the catch seats the ball ~15 mm off-centre
@@ -180,7 +180,7 @@ targets**, accurately and repeatably, at **settable cadence** — measured
 open-loop (no catch yet). This is where tilt enters the *throw*.
 
 **Approach.**
-- **Planner** (`controller/demo/juggle_planner.py`): tilted-axis detach (Kai's
+- **Planner** (`sim/juggle_planner/juggle_planner.py`): tilted-axis detach (Kai's
   `cross(cacc − g, hand_axis) == 0` along the *tilted* cup axis); aim the take-off
   velocity along it; tilt is a planner input bounded ≤12°; level (`tilt = 0`) must
   remain the unchanged special case (existing tests pass).
@@ -190,7 +190,7 @@ open-loop (no catch yet). This is where tilt enters the *throw*.
   **cadence** (beat timing over a useful range). Throw one ball, measure landing
   vs target (open-loop). Tracking noise applies to any observation.
 
-**Files.** `controller/demo/juggle_planner.py`, `sim/juggle_online.py`,
+**Files.** `sim/juggle_planner/juggle_planner.py`, `sim/juggle_online.py`,
 `tests/sim/test_demo_juggle_planner.py` (tilt-constraint tests: lateral take-off
 = `slider_speed × sin(tilt)`, detach collinear with the tilted axis),
 `tools/probes/` landing-accuracy harness, logbook.
@@ -464,4 +464,4 @@ default is one-per-segment given the sub-gate decision.)
   `2026-06-27-online-replanning-architecture-and-cup-bandlimit`.
 - The wall: logbook `2026-06-27-online-juggle-throw-fix-catch-axis-split-band-limit-cascade`.
 - BB priming + offline-demo tilt reference: `sim/juggle_demo.py`,
-  `controller/demo/juggle_optimizer.py`, plan `bb-led-two-ball-juggle-demo.md`.
+  `sim/juggle_planner/juggle_optimizer.py`, plan `bb-led-two-ball-juggle-demo.md`.
