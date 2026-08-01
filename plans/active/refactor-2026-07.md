@@ -83,7 +83,24 @@ the probe README-row rule moved into `tools/probes/README.md`).
    linked entries, keep one-line rules (CLAUDE.md is ~24 KB, the largest
    fixed-context artifact — bigger than the memory index).
 
-## Phase 2 — nightly runner + test tiering (APPROVED, 4am; land together)
+## Phase 2 — nightly runner + test tiering (LANDED 2026-08-01, with Phase 3)
+
+Landed together with Phase 3 per the hard rule below — logbook
+`2026-08-01-nightly-tier-and-mpc-dormancy`. Gate: `./run_tests.sh --full`, run
+2026-08-01 on the Jetson under `~/Desktop/PDJ_venv/venv`: **parallel 4313 passed,
+3 xfailed in 438.02 s; serial 9 passed in 39.66 s; total 483 s; RESULT: PASS**
+(exit 0). Collect-only equality gate (`pytest tests/ -q --collect-only -m <expr>`,
+run 2026-08-01): 3890 + 3 + 432 = 4325 and 4316 + 9 = 4325, against 4325
+unfiltered; the nightly tier is 432 tests across exactly 19 files. Default gate
+478 s → 200 s. Two deviations: (a) the `test_motor_guard*.py` demotion (Phase 3
+item 2) is **deferred** — both files were another session's uncommitted work in
+the shared tree; `run_tests.sh`'s zero-serial guard was pre-adjusted so that
+demotion will not empty the default serial phase; (b) a **live-session guard**
+was added to `tools/nightly_suite.sh` beyond the plan text: `Persistent=true`
+fires a missed run at the next boot, which can land inside a powered sitting, and
+the unit's Nice/IOSchedulingClass bound CPU and IO but not memory — the runner
+now waits for the box and writes `DEFERRED` on expiry rather than competing or
+skipping.
 
 **Hard rule: the runner and the first demotion land in the SAME commit.**
 Without a real runner, demoted tests never run (verified: no crontab, no
@@ -120,7 +137,20 @@ timer, `.github/workflows` = docs.yml only).
   sitting and at plan-phase closure; path-trigger — changes under
   `controller/` or `sim/` run `--full` pre-commit.
 
-## Phase 3 — MPC dormancy (APPROVED: remove operationally, park the code)
+## Phase 3 — MPC dormancy (LANDED 2026-08-01, with Phase 2)
+
+Same commit and same gate as Phase 2 above. Item 2 landed except the
+`test_motor_guard*.py` half (foreign-dirty; see above). Two things the plan text
+did not anticipate, both recorded in the logbook entry: `motion_bridge_node` was
+also the **sole publisher of `motion/diagnostics` and `motion/tracking_error`**,
+so the GUI Motion panel now sits at `DISABLED` and those two bag topics record
+empty (accepted — the MPC motion chain genuinely is disabled, and it degrades to
+a badge, never a false ERR); and revival is **both** launch entries, not one,
+because `HardwarePlant.enable()` blocks on motor-feedback telemetry from the
+guard and the guard is fed by `motion_bridge_node`. Doc re-framing (item 3) also
+reached the *published* mkdocs pages `docs/motion_planner/{safety,control_loop}.md`,
+which the plan did not name; the rest of that nav section still describes the
+parked chain and is owed a rewrite.
 
 Owner intent (2026-07-31): remove MPC for now, bring it back later.
 Dependency mapping shows `controller/` is NOT MPC-only — live sim paths
@@ -201,7 +231,12 @@ surface); (b) Phase 4 (teensy_link) BEFORE any teensy_bridge_node split.
   config/generated).
 - Move `controller/demo/` (2,075 lines) → `sim/juggle_planner/`; six test
   files also import it (not just sim scenarios); replace the hand-copied
-  constants at `juggle_optimizer.py:98-102` with real imports.
+  constants at `juggle_optimizer.py:98-102` with real imports. **Gate this
+  move with `./run_tests.sh --full`**: three of those six importers
+  (`test_demo_juggle_{sim,optimizer,planner}.py`) went `nightly` on
+  2026-08-01, so the default gate now sees only
+  `test_demo_{sim_playback,timeline,trajectory}.py`. CLAUDE.md's
+  `sim/`-path trigger already requires `--full` here; this is the reason.
 - Dedupe the ROS-clock→perf_counter offset estimator (three copies in the
   catch-timing path; reload variant already drifting). Byte-equivalence
   gate + recorded-sample test; clock injected as a callable.

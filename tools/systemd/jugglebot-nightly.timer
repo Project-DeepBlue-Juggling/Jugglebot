@@ -1,0 +1,17 @@
+[Unit]
+Description=Run the Jugglebot nightly full-tier test suite at 04:00
+Documentation=file:///home/jetson/Desktop/Jugglebot/tools/nightly_suite.sh
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+# A night the Jetson is off must not silently skip the run: Persistent=true
+# fires the missed job on the next boot. Without it, demoting a test to
+# `nightly` on a box that is powered down overnight is a delete button.
+Persistent=true
+# Spread the start so a 04:00:00 wake-up burst does not collide with anything
+# else scheduled on the hour.
+RandomizedDelaySec=300
+Unit=jugglebot-nightly.service
+
+[Install]
+WantedBy=timers.target

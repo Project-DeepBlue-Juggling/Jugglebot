@@ -22,7 +22,7 @@ and the test fails (that is the point — it catches stale rows).
 | [leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md) | reference | 2026-07-16 | Leg PID tuning methodology. The **gain hunt closed 2026-07-13** (40/0.20/0.32 ships, gains FROZEN); the document stays active as the normative procedure for any future tuning round |
 | [levelling-frame-contract.md](levelling-frame-contract.md) | active | 2026-07-31 | One gravity/levelling correction applied to every pose request |
 | [mvp-trajectory-bringup.md](mvp-trajectory-bringup.md) | active | 2026-07-31 | The live bringup plan: streaming trajectory path, S1–S8 hardware sittings |
-| [refactor-2026-07.md](refactor-2026-07.md) | active | 2026-08-01 | 2026-07 refactor programme (Phase 0 landed; Phase 1 process changes 2026-08-01) |
+| [refactor-2026-07.md](refactor-2026-07.md) | active | 2026-08-01 | 2026-07 refactor programme (Phases 0–3 landed 2026-07-31/2026-08-01: dead-weight sweep, process rules, nightly tier + test tiering, MPC dormancy; Phase 4 next) |
 | [single-ball-toss.md](single-ball-toss.md) | active | 2026-07-29 | Single-ball self-toss capability and its follow-on programme |
 | [teensy-can-offload.md](teensy-can-offload.md) | active | 2026-07-31 | can_node → Teensy CAN offload; re-scoped to a can_node↔Teensy parity audit |
 

@@ -197,16 +197,40 @@ The test:
 
 ### CI expectations
 
-The test runs as part of the default ``pytest tests/ -v`` invocation, and as
-**phase 2** of the blessed gate ``./run_tests.sh``.  Note that the module
-carries ``pytestmark = pytest.mark.serial`` (registered in ``pyproject.toml``)
-because its ``tracemalloc`` baseline is process-global and is corrupted by
-concurrent load: it is therefore **deselected by any ``-m "not serial"`` run**.
-A hand-rolled ``pytest -n 4 --dist loadfile -m "not serial"`` — i.e. a copy of
-the gate's phase-1 command alone — silently does NOT execute this contract.
-Run ``./run_tests.sh`` (both phases) or plain ``pytest``.
+**Changed 2026-08-01 — read this before assuming the default gate ran it.**
+The module now carries ``pytestmark = [pytest.mark.serial, pytest.mark.nightly]``
+(both registered in ``pyproject.toml``), so:
 
-It MUST pass on every commit to ``main``.  A commit that trips the test
+* ``./run_tests.sh`` — the **default** gate — does NOT run it. Its phases are
+  ``-m "not serial and not nightly"`` and ``-m "serial and not nightly"``.
+* ``./run_tests.sh --full`` — phases ``-m "not serial"`` / ``-m serial`` — DOES,
+  in phase 2. **This is the invocation CLAUDE.md makes mandatory for any commit
+  touching ``controller/`` or ``sim/``**, which is exactly the surface that can
+  break this contract. It is also mandatory before any hardware sitting and at
+  plan-phase closure.
+* ``tools/nightly_suite.sh`` at 04:00 runs ``--full`` every night, so a
+  violation that slipped past a gate-only run is caught within 24 h and lands
+  RED in ``temp/reports/nightly/status``.
+* Plain ``pytest`` (no ``-m``) still runs it, as does naming the file.
+
+Why demoted at all: the contract governs ``run_mpc_loop``, and the MPC chain is
+operationally dormant (``plans/active/refactor-2026-07.md`` Phase 3 —
+``jugglebot_launch.py`` no longer starts ``motor_guard`` or
+``motion_bridge_node``, and ``run_mpc.py`` is not launched). Precisely: the loop
+is still *reachable* — ``sim/main.py --mpc --no-viewer`` calls ``run_mpc_loop``
+— but no path from it reaches a motor, and this contract measures a REAL-TIME
+property (a GC pause costs a 40 Hz hardware loop a missed setpoint and costs an
+offline sim run nothing). The contract is NOT relaxed and the threshold is
+unchanged; only its *cadence* moved, and only while nothing runs the loop
+against a deadline. Promotion back to per-commit is part of the MPC revival.
+
+``serial`` still matters independently: the ``tracemalloc`` baseline is
+process-global and corrupted by concurrent load, so a hand-rolled
+``pytest -n 4 --dist loadfile -m "not serial"`` — a copy of the gate's phase-1
+command alone — silently does NOT execute this contract, in either tier.
+
+It MUST pass on every commit to ``main`` that touches the hot loop, and the
+``--full`` path-trigger above is how that obligation is met.  A commit that trips the test
 and cannot be resolved by pre-allocation MUST either:
 
 1. Relocate the offending code off the hot path (e.g. compute in

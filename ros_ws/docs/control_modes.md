@@ -6,7 +6,13 @@ Motor position commands can reach the ODrives through two independent paths.
 Only one should be active at a time — the architecture enforces mutual
 exclusion through control mode gating.
 
-### Path 1: MPC → motor guard → bridge → CAN node
+### Path 1: MPC → motor guard → bridge → CAN node — **DORMANT**
+
+> Not runnable as drawn since 2026-08-01. `can_node` was deleted 2026-07-06
+> (SocketCAN decommission), and `jugglebot_launch.py` stopped starting
+> `motor_guard` and `motion_bridge_node` on 2026-08-01 (MPC dormancy,
+> `plans/active/refactor-2026-07.md` Phase 3). The code is parked, not deleted:
+> revival is re-adding the two launch entries. Path 2 is the live leg path.
 
 ```
 MPC (50 Hz)  →  HardwarePlant  →  motor_guard.py  →  IPC (ZeroMQ)  →  motion_bridge_node.py  →  leg_lengths_topic  →  can_node.py

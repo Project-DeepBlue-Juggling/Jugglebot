@@ -76,6 +76,17 @@ from controller.target import flat_target_to_events
 from tests.sim.test_mpc_input_fuzz import _PHASE_7_BUGFIX_LANDED
 
 
+
+# NIGHTLY TIER — the MPC is operationally dormant (plans/active/refactor-2026-07.md
+# Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
+# leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
+# guard). The code is parked, not deleted, so this battery is parked with it: it
+# runs nightly via tools/nightly_suite.sh and on `./run_tests.sh --full`, which is
+# mandatory before any hardware sitting. Promotion back to per-commit is step 4 of
+# the MPC revival.
+pytestmark = pytest.mark.nightly
+
+
 # Suppress MPC log noise (these tests intentionally drive failures).
 logging.getLogger('controller.mpc').setLevel(logging.CRITICAL)
 

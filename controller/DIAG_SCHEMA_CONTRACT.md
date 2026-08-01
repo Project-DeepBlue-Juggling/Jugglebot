@@ -56,6 +56,13 @@ The contract is enforced by:
   `_CANONICAL_KEYS` is the 8-key frozenset; the property test
   asserts `set(diag.keys()) >= _CANONICAL_KEYS` on every solve
   return.
+  **Cadence (2026-08-01)**: the module is `nightly`-marked with the rest of the
+  MPC battery (the MPC is operationally dormant —
+  `plans/active/refactor-2026-07.md` Phase 3), so the default `./run_tests.sh`
+  does not run it. `./run_tests.sh --full` does, and CLAUDE.md makes `--full`
+  mandatory pre-commit for any change under `controller/` — i.e. for exactly the
+  changes that can break this schema. The 04:00 nightly runs it too. The
+  contract itself is unchanged; only its cadence moved.
 
 ## Consumers — what defaults look like under the pre-fix schema gap
 

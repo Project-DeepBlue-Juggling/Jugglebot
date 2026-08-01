@@ -1,5 +1,17 @@
 # Safety Architecture
 
+> **⚠️ STALE for the MVP topology (banner added 2026-08-01).** Sections 1–2
+> below describe the `motor_guard -> motion_bridge_node -> leg_lengths_topic ->
+> can_node` chain. `can_node` was deleted on 2026-07-06 (SocketCAN
+> decommission) and `motor_guard` + `motion_bridge_node` stopped launching on
+> 2026-08-01 (MPC dormancy, `plans/active/refactor-2026-07.md` Phase 3), so
+> **none of that chain runs today**. The live leg path is
+> `trajectory_node -> :5557 -> teensy_bridge_node -> can-bridge Teensy`, and its
+> safety authority is the **Teensy-side `MAX_DEVIATION` guard** plus the bridge's
+> arming contract (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`). Read
+> sections 1–2 as a record of the parked MPC path, not of current behaviour; a
+> proper rewrite is owed and out of scope for the dormancy commit.
+
 Motor command safety is enforced at **three independent layers**. Each layer
 can prevent dangerous commands on its own — the defence-in-depth design means
 a bug in any single component cannot cause the platform to slam.

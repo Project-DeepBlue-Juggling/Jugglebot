@@ -23,6 +23,15 @@ from sim.juggle_demo import (
 )
 
 
+# NIGHTLY TIER (2026-08-01, plans/active/refactor-2026-07.md Phase 2). These are
+# the demo's END-TO-END sim runs — the file's own docstring calls them
+# "deliberately slow" — and the juggling demo is research/characterization with
+# no path to the hardware leg/hand command chain. They run every night via
+# tools/nightly_suite.sh and on `./run_tests.sh --full` (mandatory before any
+# hardware sitting and at plan-phase closure), just not on every commit.
+pytestmark = pytest.mark.nightly
+
+
 # --------------------------------------------------------------------------
 # T-I3: sustained catches in MuJoCo — the plan §3 Phase 3 exit criterion.
 #

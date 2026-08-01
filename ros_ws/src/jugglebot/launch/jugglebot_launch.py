@@ -6,7 +6,6 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
-from ament_index_python.packages import get_package_share_directory
 import os
 from datetime import datetime
 
@@ -19,19 +18,21 @@ def generate_launch_description():
         default_value='true',
     )
 
-    # PR 3a: per-launch override for the friction-FF enable flag.  Maps
-    # straight to motor_guard's --friction-ff CLI tri-state (yaml/true/
-    # false).  Default 'yaml' = use whatever hardware_config.yaml says.
-    # Use this for on-platform A/B comparison without YAML edits/rebuilds:
-    #   ros2 launch jugglebot jugglebot_launch.py                  # baseline (YAML default)
-    #   ros2 launch jugglebot jugglebot_launch.py friction_ff_enable:=true   # FF on
-    #   ros2 launch jugglebot jugglebot_launch.py friction_ff_enable:=false  # FF off explicit
-    friction_ff_enable = LaunchConfiguration('friction_ff_enable')
+    # DORMANT since 2026-08-01 (MPC dormancy, plans/active/refactor-2026-07.md
+    # Phase 3).  This was PR 3a's per-launch override for motor_guard's
+    # --friction-ff CLI tri-state; motor_guard no longer launches, so nothing
+    # consumes it.  Kept DECLARED rather than deleted — same treatment as
+    # enable_setpoint_output below — so `ros2 launch ... --show-args` still
+    # names it and says it is inert.  Deleting the declaration would not make a
+    # stale `friction_ff_enable:=true` an error either (Foxy silently ignores
+    # unknown launch args), it would just make it invisible.  Friction FF itself
+    # is unaffected: it lives in motor_guard, which is parked with the MPC.
     friction_ff_enable_arg = DeclareLaunchArgument(
         'friction_ff_enable',
         default_value='yaml',
-        description="Override hardware_config.yaml friction_ff.enabled "
-                    "for this launch (yaml | true | false).",
+        description="DORMANT + INERT since the MPC dormancy (2026-08-01): its "
+                    "only consumer was the motor_guard process, which this "
+                    "launch no longer starts. Restored by the MPC revival.",
     )
 
     # Throw aim-correction (the deployed 2D affine). This arg was documented
@@ -91,10 +92,27 @@ def generate_launch_description():
         }],
     )
 
-    motion_bridge_node = Node(
-        package='jugglebot',
-        executable='motion_bridge_node',
-    )
+    # motion_bridge_node is DORMANT (2026-08-01, plans/active/refactor-2026-07.md
+    # Phase 3 — "remove operationally, park the code"). It was the MPC leg path's
+    # ROS side: motor_guard's :5556 interpolated stream -> leg_lengths_topic ->
+    # can_node. can_node was deleted in the 2026-07-06 SocketCAN decommission and
+    # the bridge does not subscribe to leg_lengths_topic, so the topic has had no
+    # consumer since (ros_ws/docs/can-node-teensy-parity.md:410, :548). The node
+    # source, its setup.py entry point and tests/ros/test_motion_bridge_node.py
+    # all stay: revival is re-adding this Node entry.
+    #
+    # ONE OPERATOR-VISIBLE CONSEQUENCE, deliberate and accepted: this node was
+    # also the sole publisher of `motion/diagnostics` and `motion/tracking_error`.
+    # The GUI subscribes to the former (gui/js/main.js:299), and its 3 s timeout
+    # (gui/js/panels.js:697) now fires permanently, so the Motion panel badge sits
+    # at DISABLED with a blank trajectory label (panels.js:758). That is honest —
+    # the MPC motion chain IS disabled — and it degrades to a badge, never to a
+    # false ERR. The two topics stay in the rosbag record list below and record
+    # empty, for the same reason leg_lengths_topic does. The 2026-07-11 GUI work
+    # (logbook/2026-07-11-gui-leg-setpoint-echo-poscmd.md) moved the *leg* half
+    # off this node and explicitly flagged `motion/diagnostics` as the one
+    # remaining GUI dependency; this is that dependency going dark. A GUI-side
+    # rewording of the panel for the MVP topology is owed and out of scope here.
 
     mocap_node = Node(
         package='jugglebot',
@@ -176,19 +194,24 @@ def generate_launch_description():
         additional_env={'PYTHONPATH': _bridge_pythonpath},
     )
 
-    # ── Standalone motor guard process (not a ROS2 node) ────────
-    # 500 Hz interpolator + safety monitor between MPC and motor hardware.
-    # Installed as a console_scripts entry point alongside other executables.
-    pkg_lib_dir = os.path.join(
-        get_package_share_directory('jugglebot'), '..', '..', 'lib', 'jugglebot')
-    motor_guard = ExecuteProcess(
-        cmd=[
-            os.path.join(pkg_lib_dir, 'motor_guard'),
-            '--rate', '500',
-            '--friction-ff', friction_ff_enable,
-        ],
-        output='screen',
-    )
+    # ── motor_guard: DORMANT (2026-08-01) ────────────────────────
+    # plans/active/refactor-2026-07.md Phase 3 — "remove operationally, park the
+    # code". The 500 Hz interpolator + safety monitor sat between the MPC and the
+    # motors on the OLD topology. In the MVP topology it drives nothing: the leg
+    # path is trajectory_node -> :5557 -> teensy_bridge_node -> the can-bridge
+    # Teensy, which does its own 500 Hz interpolation, and the guard's :5556
+    # output "simply goes unconsumed" (teensy_bridge_node.py, the
+    # _MpcCommandSetpointSource docstring). The GUI migrated off it too
+    # (ros_ws/gui/js/main.js:417).
+    #
+    # SAFETY AUTHORITY on the leg path is the Teensy-side MAX_DEVIATION guard,
+    # not this process — it has been that way since the Teensy-side cutover;
+    # launching motor_guard was not adding a safety layer, only a dead process.
+    # The console_scripts entry point + the module + its tests all stay; revival
+    # is re-adding this ExecuteProcess. Note the revival is BOTH entries, not one:
+    # HardwarePlant.enable() blocks on motor-feedback telemetry from the guard's
+    # :5556 (controller/hardware_plant.py ~:1033), and the guard is fed by
+    # motion_bridge_node, so run_mpc.py cannot come back without both.
 
     # ── Rosbridge (WebSocket bridge for the GUI) ─────────────────
     # Launched as direct Nodes rather than including the stock
@@ -240,8 +263,13 @@ def generate_launch_description():
             '/leg_lengths_topic',
             # Accepted leg setpoints (u0, motor revs) echoed by teensy_bridge_node
             # from the :5557 funnel — the commanded side of the leg tracking
-            # story for bag analysis. leg_lengths_topic stays: the MPC
-            # (run_mpc/motor_guard) path may still publish it.
+            # story for bag analysis. leg_lengths_topic stays in the record list
+            # even though its only publisher (motion_bridge_node) is dormant
+            # since 2026-08-01: recording a silent topic costs nothing, and it
+            # keeps bag schemas comparable across the dormancy boundary and after
+            # the MPC revival. Same applies to /motion/tracking_error and
+            # /motion/diagnostics below — motion_bridge_node was their sole
+            # publisher too, so all three record empty until the MPC revival.
             '/leg_setpoint_echo',
             '/hand_telemetry',
             '/mocap_data',
@@ -296,7 +324,6 @@ def generate_launch_description():
         rosapi_node,
         # Core nodes
         orchestrator_node,
-        motion_bridge_node,
         mocap_node,
         spacemouse_handler,
         ball_tracker_node,
@@ -306,8 +333,6 @@ def generate_launch_description():
         reload_coordinator_node,
         trajectory_node,
         teensy_bridge_node,
-        # Standalone processes
-        motor_guard,
         # Recording (conditional)
         rosbag_record,
     ])

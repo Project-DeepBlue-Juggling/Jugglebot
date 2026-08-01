@@ -90,8 +90,27 @@ def _limits(tier):
                                         leg_jerk_mmps3=j)
 
 
-def _optimum_T(target, limits, geom, shaper, lo=0.2, hi=8.0, iters=60):
-    """Fine bisection of the UNCHANGED gate → the true minimal feasible duration."""
+def _optimum_T(target, limits, geom, shaper, lo=0.2, hi=8.0, iters=25):
+    """Fine bisection of the UNCHANGED gate → the true minimal feasible duration.
+
+    ``iters`` was 60 until 2026-08-01; the corpus below calls this 54 times, so
+    each iteration costs 54 build+validate pairs. 25 leaves a bracket of
+    ``(8.0-0.2)/2**25 = 2.3e-7`` s — 4x tighter than the tightest assert that
+    reads this value (``Tm >= opt - 1e-6``), and iterations 26..60 were shaving
+    a bracket that is already below the resolution the asserts can see (at 60 it
+    is 6.8e-18 s, i.e. under double-precision resolution at T~1).
+
+    The remaining error is one-directional and safe. ``hi`` is always a FEASIBLE
+    duration and the function returns ``hi``, so stopping early can only
+    OVERestimate the optimum. That makes ``Tm <= opt*1.05`` and both aggregate
+    overshoot asserts strictly easier. The one assert it makes harder,
+    ``Tm >= opt - 1e-6``, cannot flip either: feasibility is monotone in T, so a
+    gate-valid ``Tm`` is >= the true boundary >= ``lo``, and ``hi - lo`` is
+    2.3e-7 — inside the 1e-6 tolerance. Verified empirically, not just argued:
+    all 54 corpus cases were evaluated at iters=60 and iters=25 and every
+    per-case pass/fail verdict was identical (see
+    logbook/2026-08-01-nightly-tier-and-mpc-dormancy.md).
+    """
     for _ in range(iters):
         mid = 0.5 * (lo + hi)
         plan = planner._build_rest_move(NEUTRAL, np.zeros(6), np.zeros(6),

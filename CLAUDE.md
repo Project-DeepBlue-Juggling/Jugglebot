@@ -18,12 +18,13 @@ Jugglebot is a Stewart platform robot that catches and throws balls. The codebas
 config/hardware_config.yaml  ← single source of truth for all physical parameters
 config/generate_config.py    ← generates .py/.h/.js constants → config/generated/ + consumer dirs
 controller/                  ← MPC runtime: solver, plant abstractions, telemetry, MPC loop, hardware plant
-run_mpc.py                   ← hardware MPC entry point (uses controller/)
+run_mpc.py                   ← hardware MPC entry point (uses controller/) — DORMANT, not launched
 sim/                         ← MuJoCo simulation (plant/, hand/, ball/, input/, viz/, analysis/)
 ros_ws/src/jugglebot/        ← ROS2 package (can/, motion/, tracking/, nodes)
 tests/                       ← all tests (ros/, sim/, motion/, hardware/, archived/)
-tools/                       ← standalone utilities (tracking_analyzer)
-run_tests.sh                 ← the full-suite gate (parallel phase + serial tail)
+tools/                       ← standalone utilities (tracking_analyzer, nightly_suite.sh)
+run_tests.sh                 ← the gate (parallel phase + serial tail; --full adds the nightly tier)
+temp/reports/nightly/        ← 04:00 full-tier run: status, latest.md, per-day reports
 logbook/                     ← engineering logbook (investigation entries, INDEX.md)
 plans/active/                ← in-progress plans and implementation reports
 plans/archived/              ← completed or superseded plans
@@ -45,7 +46,8 @@ plans/archived/              ← completed or superseded plans
 - ROS2 nodes (`*_node.py`) are thin wrappers; business logic lives in pure-Python modules
 - `controller/plant.py` defines `PlantInterface` — implemented by `MuJoCoPlant` (sim) and `HardwarePlant` (real robot via ZMQ IPC)
 - IPC between processes uses ZeroMQ PUB/SUB on tcp://localhost:5556 (telemetry) and :5557 (commands), msgpack serialization
-- `motor_guard.py` is the safety-critical 500 Hz control loop; MPC runs at 40 Hz in a separate process
+- **Leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard**, in can-bridge firmware. The MVP leg path is `trajectory_node` → :5557 → `teensy_bridge_node` → can-bridge Teensy (which does the 500 Hz interpolation). Nothing on the Jetson is in that safety loop.
+- **The MPC chain is parked DORMANT** (2026-08-01, `plans/active/refactor-2026-07.md` Phase 3): `jugglebot_launch.py` no longer starts `motor_guard` or `motion_bridge_node`, and `run_mpc.py` is not launched. `motor_guard.py` was a 500 Hz interpolator + monitor on the *pre-cutover* leg path; it is a parked fallback, not the safety layer — do not describe it as one. All the code, entry points and tests stay; revival = re-add the two launch entries + promote the `nightly`-marked MPC battery. `controller/` is NOT MPC-only, so it is not deleted: live sim paths import `controller.{ballistics,target,telemetry,scheduler,plant}`.
 
 ## Environment
 
@@ -62,8 +64,10 @@ The system `python3` (3.8.10) lacks MuJoCo and other project dependencies. The v
 python config/generate_config.py
 ```
 
-### MPC solver AOT compile (run on Jetson)
+### MPC solver AOT compile (run on Jetson) — DORMANT
 ```bash
+# DORMANT with the rest of the MPC chain (2026-08-01). Nothing launches the MPC,
+# so this is only needed when reviving it. Kept because the revival needs it.
 # Required after any change to controller/mpc.py or controller/params.py.
 # Produces controller/generated/mpc_gen.so (~15-30s), removing the 27-100ms
 # first-solve cold start. Missing → soft fall-back to in-process build;
@@ -78,18 +82,28 @@ python sim/main.py --dashboard --mpc --pose 0,0,50,0,0,0   # dashboard on :8082
 cd sim && docker compose up                                # Docker (GPU required)
 ```
 
-### Hardware MPC (on Jetson)
+### Hardware MPC (on Jetson) — DORMANT
 ```bash
+# NOT part of bring-up (2026-08-01), and NOT runnable as written until revived:
+# HardwarePlant.enable() blocks up to 2 s on motor-feedback telemetry from
+# motor_guard's :5556 and then raises, and neither motor_guard nor its feeder
+# motion_bridge_node is launched any more. Reviving = re-add BOTH launch entries
+# (or start both by hand), THEN stop trajectory_node so run_mpc.py owns the :5557
+# funnel (the single-binder interlock makes a conflict loud). It fails closed —
+# RuntimeError before any command is published — so a mistaken attempt is safe.
 python run_mpc.py --pose 0,0,170,0,0,0 --duration 10   # hold at an active pose
-python run_mpc.py [--dashboard]                        # production: targets from mpc_bridge_node
+python run_mpc.py [--dashboard]                        # targets from mpc_bridge_node
 ```
 
 ### Tests
 ```bash
-# FULL SUITE — the blessed gate. Parallel phase (4 xdist workers, --dist
-# loadfile) then a serial phase for `serial`-marked allocation/timing tests.
+# THE GATE. Parallel phase (4 xdist workers, --dist loadfile) then a serial
+# phase for `serial`-marked allocation/timing tests. Deselects `-m nightly`.
 ./run_tests.sh
+./run_tests.sh --full                         # EVERY tier, `nightly` included
 ./run_tests.sh --hypothesis-profile=ci-deep   # nightly depth (1000; ci-fast=50 per PR)
+cat temp/reports/nightly/status               # GREEN/RED from the 04:00 run
+tools/nightly_suite.sh                        # run the nightly by hand
 
 # Scoped (bare pytest is still right for iterating on one file)
 pytest tests/ros/ -v      # ROS2 node tests (conftest mocks ROS2)
@@ -118,10 +132,11 @@ mkdocs serve   # local preview at http://localhost:8000
 - **Grep before refactoring**: before renaming or refactoring any symbol, grep the entire codebase for all references first. List every file and line number, count total occurrences. After making changes, verify the count drops to zero. A partial find-and-replace is not acceptable.
 - **Analyze control-system implications before changes**: before implementing changes to MPC, feedforward, or timing code, analyze the control-system implications first. What happens to the feedforward path? Could this cause discontinuities, oscillation, or timing issues at 40 Hz? Walk through one MPC cycle step-by-step with the proposed change.
 - **TodoWrite checklist for multi-file tasks**: for tasks involving changes to multiple files, create a TodoWrite checklist before starting. List every file that needs changes, every test that needs updating, and a final verification step. Check off each item as you complete it. Do not declare the task done until all items are checked.
-- **Run the full suite after code changes AND before `git commit`, automatically**: run `./run_tests.sh` after any change to `*.py` or `*.yaml` and again immediately before the commit is written, without being asked. **One run satisfies both obligations when no edit intervenes between the run and the commit**; any later edit invalidates it. (Parallel phase + a serial phase for `serial`-marked tests, ~8 min; bare `pytest tests/ -q` is ~28 min and equivalent-but-slower. `-q` for the gate, `-v` when debugging a failure.) Scoped subsets are fine for iteration; the full suite is the final pre-commit gate. `config/*.yaml` order: edit YAML → `python config/generate_config.py` → stage the regenerated artifacts → run tests → commit. Never commit known-failing code without the user's explicit acknowledgement; report count and result in the same response as the commit. **A "docs-only, so no tests needed" exemption is NOT automatically safe: name the tests that read the path you changed and trace what they actually assert** — never a bare appeal to the file extension, never a mechanism you haven't traced, never coverage inferred from a passing count. Worked example (logbook edits *are* inside the test surface, yet the obvious test misses the two failures you'd most expect it to catch): `logbook/README.md` § "What the logbook tests actually check".
+- **Run the full suite after code changes AND before `git commit`, automatically**: run `./run_tests.sh` after any change to `*.py` or `*.yaml` and again immediately before the commit is written, without being asked. **One run satisfies both obligations when no edit intervenes between the run and the commit**; any later edit invalidates it. (Parallel phase + a serial phase for `serial`-marked tests — **200 s measured 2026-08-01**, down from 478 s pre-tiering; `--full` is 1259 s at ci-deep. Bare `pytest tests/ -q` is ~28 min and runs `nightly` too. `-q` for the gate, `-v` when debugging a failure.) **Use `./run_tests.sh --full` — every tier, `nightly` included — in three cases: (a) before ANY hardware sitting, (b) at plan-phase closure, and (c) pre-commit for any change under `controller/` or `sim/`.** Those are the paths the `nightly` tier covers, so the default gate cannot see a regression you just introduced there. Scoped subsets are fine for iteration; the full suite is the final pre-commit gate. `config/*.yaml` order: edit YAML → `python config/generate_config.py` → stage the regenerated artifacts → run tests → commit. Never commit known-failing code without the user's explicit acknowledgement; report count and result in the same response as the commit. **A "docs-only, so no tests needed" exemption is NOT automatically safe: name the tests that read the path you changed and trace what they actually assert** — never a bare appeal to the file extension, never a mechanism you haven't traced, never coverage inferred from a passing count. Worked example (logbook edits *are* inside the test surface, yet the obvious test misses the two failures you'd most expect it to catch): `logbook/README.md` § "What the logbook tests actually check".
 - **Audit multi-document narrative changes**: run `/audit --unstaged` before any commit touching **≥2 narrative `*.md` files** (logbook entries, plans, READMEs) **or any normative doc** (`CLAUDE.md`, `DOCUMENTATION_GUIDE.md`, `controller/REFERENCE_LAYER_CONTRACT.md`, per-plan tuning-methodology docs, **and any document a rule here delegates an obligation to** — currently `logbook/README.md` and `tools/probes/README.md`; the list is open-ended, so if you move an obligation out of this file the receiving doc joins it). Cross-document inconsistencies (swapped values, stale line refs, contradictory headlines) are common in narrative work and the audit catches them reliably. A single logbook entry landing alongside its code — the common case — does not trigger the gate; code-only commits never did.
 - **Capture user-corrections as memory, proactively**: when the user manually does a step Claude could have done — pushing after a commit, fixing a typo Claude introduced, running a command Claude should have suggested — ask whether the behaviour should be saved to memory so future sessions don't repeat the omission. Memory lives in `~/.claude/projects/-home-jetson-Desktop-Jugglebot/memory/`, indexed in `MEMORY.md`; follow the format of the existing topic files (`feedback_workflow_discipline.md` is a representative one) and prefer a new section in an existing topic file over a new file — 53 single-topic files is how the layer got compacted on 2026-08-01. A typical ask: *"I noticed you pushed manually after my commit — should I remember to push automatically after future commits on this branch?"* Don't wait for `/remember`.
 - **Invite physical-intuition pushback on hardware investigations**: at the start of any hardware-investigation session, and at every framing pivot during one, explicitly tell the user *"if your physical intuition disagrees with my framing, that's load-bearing signal — say so."* User intuition has repeatedly caught framing errors Claude alone missed at conceptual pivots (canonical example: the friction-FF bench arc, `logbook/2026-04-27-friction-feedforward-bench-validation.md` § Discussion). Make it cheap for them to push back; you'll save days.
+- **Session start: read the nightly status**: `cat temp/reports/nightly/status` — one line, `GREEN|RED|DEFERRED <counts> <iso-date>`. This is the ONLY delivery channel for the 04:00 full-tier run (owner's choice: no email, no GUI), so an unread RED is an invisible RED. **Anything that is not a fresh GREEN gets surfaced in your first substantive reply**, before other work: RED → list the failures from `temp/reports/nightly/latest.md`; DEFERRED → a live robot session held the box, so no run happened; a date more than ~2 days old → the runner itself stopped; **file missing entirely → the runner was never armed on this box, or `temp/` (gitignored) was cleaned** — do not read absence as "fine". For the last three, check `systemctl --user list-timers jugglebot-nightly.timer` and re-arm from `tools/systemd/README.md`.
 - **Check for parallel-session work on the branch**: parallel Claude sessions on one branch are a real workflow here. Before starting any non-trivial task AND immediately before every `git push`, run `git fetch && git status -sb`. If `origin/<branch>` is ahead of local OR the working tree contains modifications you didn't make this session, **pause** and surface what you see before continuing — don't `git pull --rebase` silently, don't push over divergence, don't overwrite an unfamiliar working-tree change. (Treat "file modified by external process" system reminders as the same signal.)
 - **Justify design choices by root-cause, not appeal-to-authority**: when surfacing a design alternative to the user (via `AskUserQuestion` or in prose), lead with the **concrete failure modes the choice prevents**, not "the plan says so" / "the contract requires it" / "convention is X". Plans and contracts are shorthand for root causes — restate the root cause at the moment of justification so the user can judge the choice on its merits and push back on the plan if the root cause is wrong. Canonical case (what a root-cause justification looks like, written out as three named regression classes): `logbook/2026-05-11-tier1a-real-solver-failures.md` § "Why T-U-T1a-6 uses `stats()` injection, not real exit codes".
 - **Empirical probe before writing tests for specific failure modes / thresholds**: when a test drives a specific failure code (solver exit, watchdog firing, contract violation) OR asserts a threshold (20 mm shift, 500 ms staleness, N consecutive failures), prototype the driver in a probe first, confirm it behaves deterministically on the pinned dependency stack, then document the confirmed recipe in the test docstring AND the phase's logbook. Resist plan-author hedges like "(or whichever sentinel the code surfaces)" — verify against ground truth; two saves from doing so: `logbook/2026-05-11-tier1a-real-solver-failures.md` §§ "Real-driver strategy per exit code" and "Why `Infeasible_Problem_Detected` needs pinned decision bounds". One-off probes go to `/tmp/probe_*.py`, uncommitted; reusable replay/scenario harnesses go to `tools/probes/<name>.py`, committed, outputs under `temp/probes/` — conventions and rationale (`/tmp` references rot at the next reboot) in `tools/probes/README.md`. When in doubt default to `/tmp/` and promote later.
@@ -186,7 +201,7 @@ codebase has actually been done — deviate from them only with clear reason.
 - **Python 3.8 compatibility** in `ros_ws/`: always use `from __future__ import annotations` for modern type hints
 - **Config codegen**: after editing `hardware_config.yaml` or `protocol_config.yaml`, run `python config/generate_config.py` — never hand-edit generated files
 - `tests/conftest.py` sets up shared paths; `tests/ros/conftest.py` injects mock ROS2 modules for Windows
-- **New tests are parallel by default**: `./run_tests.sh` runs xdist with `--dist loadfile`, so a file's tests share one worker. Write tests that hold under that: bind **ephemeral** ports (`:0`, then read back the assigned port — see `tests/teensy_link/conftest.py`, `tests/sim/_zmq_test_harness.py`) and write files via `tmp_path`, never a fixed shared path. Reach for `@pytest.mark.serial` **only** when the test measures a process-global resource (`tracemalloc` heap growth, GC events, wall-clock timing) whose baseline is corrupted by concurrent load; needing a port or a temp file does not qualify. `serial` costs the whole suite serial time — keep the marked set small (currently 5 tests, ~25 s).
+- **New tests are parallel by default**: `./run_tests.sh` runs xdist with `--dist loadfile`, so a file's tests share one worker. Write tests that hold under that: bind **ephemeral** ports (`:0`, then read back the assigned port — see `tests/teensy_link/conftest.py`, `tests/sim/_zmq_test_harness.py`) and write files via `tmp_path`, never a fixed shared path. Reach for `@pytest.mark.serial` **only** when the test measures a process-global resource (`tracemalloc` heap growth, GC events, wall-clock timing) whose baseline is corrupted by concurrent load; needing a port or a temp file does not qualify. `serial` costs the whole suite serial time — keep the marked set small (9 marked, 3 of them in the default gate). **Marker vocabulary is `serial` + `nightly` and nothing else** (`slow` was deleted 2026-08-01; `--strict-markers` makes a new one a hard error). Demote to `nightly` on CONTENT, never on runtime: research/demo characterization and operationally dormant code only — the hardware-safety surface (teensy_link wire bytes, firmware natives, ROS nodes, `motion/`) is never demoted. See the `nightly` marker's definition in `pyproject.toml` for the full contract.
 - Stewart platform uses mixed mm/rad units; Jacobian is normalized by `plat_radius_mm` before numeric work (condition number ~3-8 at home, not the raw ~450)
 - Jacobian convention: J maps `[vx,vy,vz,wx,wy,wz]` to `[q_dot_1..q_dot_6]`
 - Force decomposition: `f = J^{-T} * W` (use `np.linalg.solve(J.T, W)`), NOT `J^T * W`

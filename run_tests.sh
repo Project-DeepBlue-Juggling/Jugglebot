@@ -6,11 +6,23 @@
 # is discoverable in-repo rather than tribal knowledge.
 #
 # Usage:
-#   ./run_tests.sh                                       # full suite (the pre-commit gate)
-#   ./run_tests.sh --hypothesis-profile=ci-deep          # same, at nightly depth
+#   ./run_tests.sh                                       # per-commit gate (excludes `nightly`)
+#   ./run_tests.sh --full                                # EVERY tier, `nightly` included
+#   ./run_tests.sh --full --hypothesis-profile=ci-deep   # what tools/nightly_suite.sh runs at 04:00
 #   ./run_tests.sh tests/ros                             # a subset
 #   ./run_tests.sh tests/ros/test_throw_ballistics.py -v # any pytest args, passed straight through
 #   JB_TEST_WORKERS=5 ./run_tests.sh                     # override the worker count
+#   JB_JUNIT_DIR=<dir> ./run_tests.sh --full             # also write phase{1,2}.xml there
+#
+# ── TIERS ─────────────────────────────────────────────────────────────────────
+# The default gate deselects `-m nightly`: research/demo characterization and the
+# (dormant, Phase 3) MPC battery. Those still RUN — every night at 04:00 via
+# tools/nightly_suite.sh, and on demand with `--full`. The hardware-safety
+# surface (teensy_link wire bytes, firmware natives, ROS nodes, motion) is NEVER
+# demoted; it is per-commit.
+#
+# `--full` is MANDATORY before any hardware sitting and at plan-phase closure,
+# and pre-commit for any change under controller/ or sim/ (CLAUDE.md).
 #
 # NAMING A PATH runs pytest directly, serial, exactly as this script always has:
 # one startup, ordered output, pdb works. That is the right thing for iterating
@@ -22,11 +34,24 @@
 #
 # tests/hardware/ needs a real robot; it is excluded unless you name it explicitly.
 #
-# ── THE FULL-SUITE GATE ───────────────────────────────────────────────────────
-#   Phase 1  parallel  -m "not serial"  xdist, --dist loadfile   ~4290 tests
-#   Phase 2  serial    -m serial        single process           ~7 tests, ~30 s
+# ── THE TWO-PHASE GATE ────────────────────────────────────────────────────────
+#   default   Phase 1  parallel  -m "not serial and not nightly"  xdist, loadfile
+#             Phase 2  serial    -m "serial and not nightly"      single process
+#   --full    Phase 1  parallel  -m "not serial"
+#             Phase 2  serial    -m "serial"
 #
-# Measured 2026-07-31 on the Jetson: 27:40 fully serial -> ~8 min here.
+# The composition is deliberately `not serial AND not nightly` / `serial AND not
+# nightly` rather than a bare `not nightly`: a serial+nightly test must land in
+# exactly ONE bucket per invocation. Get this wrong and the serial-marked
+# allocation contracts silently vanish from BOTH default phases while the gate
+# still prints PASS. Pinned by the collect-only equality check recorded in
+# logbook/2026-08-01-nightly-tier-and-mpc-dormancy.md:
+#   default-p1 + default-p2 + (nightly) == full-p1 + full-p2
+#
+# Measured on the Jetson: 27:40 fully serial (2026-07-31) -> 478 s two-phase
+# (2026-07-31, pre-tiering) -> **200 s** for the default gate (2026-08-01, warm
+# tree: parallel 182 s / 3890 tests, serial 18 s / 3 tests). `--full` at ci-deep
+# the same day: 1259 s (parallel 1216 s / 4316, serial 43 s / 9).
 # Both phases always run, so one invocation reports every failure in the suite.
 #
 # WHY `--dist loadfile` AND NOT THE DEFAULT `--dist load`
@@ -81,13 +106,34 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
+# ── Tier selection: consume --full, leave everything else for pytest ─────────
+# Stripped BEFORE the passthrough scan below so `--full` is never handed to
+# pytest (which would reject it as an unknown option).
+TIER="gate"
+_args=()
+for arg in "$@"; do
+  case "$arg" in
+    --full) TIER="full" ;;
+    *)      _args+=("$arg") ;;
+  esac
+done
+set -- ${_args[@]+"${_args[@]}"}
+
+if [[ "$TIER" == "full" ]]; then
+  PHASE1_MARK="not serial"
+  PHASE2_MARK="serial"
+else
+  PHASE1_MARK="not serial and not nightly"
+  PHASE2_MARK="serial and not nightly"
+fi
+
 # ── Reject the flags this script owns ────────────────────────────────────────
 # This MUST come before the passthrough check below. pytest's `-m` is
 # store-not-append, so a forwarded `-m` would silently REPLACE the phase filter:
 # phase 1 would run the serial tests in parallel and phase 2 would re-run most of
 # the suite. Checking first also avoids a subtler trap — a flag's VALUE (`-m "not
-# slow"` -> the argument `not slow`) is not a flag, so a passthrough check that
-# ran first would mistake it for a path and silently take the serial branch.
+# nightly"` -> the argument `not nightly`) is not a flag, so a passthrough check
+# that ran first would mistake it for a path and silently take the serial branch.
 for arg in "$@"; do
   case "$arg" in
     -m|-m=*|-m?*|--markers)
@@ -144,10 +190,36 @@ if ! flock -n 9; then
   flock -w 1800 9 || { echo "error: timed out waiting for the suite lock" >&2; exit 1; }
 fi
 
-echo "═══ Phase 1/2: parallel (${WORKERS} workers, --dist loadfile, -m 'not serial')"
+# ── Per-phase junit XML (opt-in) ─────────────────────────────────────────────
+# One --junitxml forwarded through "$@" would be handed to BOTH phases and phase
+# 2 would overwrite phase 1's file. An env var lets each phase get its own path.
+# Gate-only: the passthrough branch above has already exec'd for a named path.
+_junit1=(); _junit2=()
+if [[ -n "${JB_JUNIT_DIR:-}" ]]; then
+  mkdir -p "$JB_JUNIT_DIR"
+  _junit1=(--junitxml="$JB_JUNIT_DIR/phase1.xml")
+  _junit2=(--junitxml="$JB_JUNIT_DIR/phase2.xml")
+fi
+
+# ── Native firmware pre-build ────────────────────────────────────────────────
+# tests/firmware/test_native_firmware.py builds its C++ binaries inside a
+# module-scoped fixture. Under --dist loadfile that whole build (~170 s cold)
+# serializes into ONE xdist worker and becomes the parallel phase's critical
+# path. Building here — inside the suite lock, before any worker starts — moves
+# it off the critical path and shares it across both phases. The build is
+# hash-cached, so a warm tree pays ~0.5 s. Non-fatal: a real compile failure is
+# still reported honestly by the pytest wrapper, which rebuilds on demand.
+if command -v g++ >/dev/null 2>&1; then
+  echo "═══ Pre-build: native firmware test binaries (hash-cached)"
+  "$VENV_PY" tests/firmware/native/build.py >/dev/null \
+    || echo "warning: native pre-build failed — leaving it to tests/firmware/" >&2
+fi
+
+echo "═══ Phase 1/2: parallel (${WORKERS} workers, --dist loadfile, -m '${PHASE1_MARK}')"
 start=$SECONDS
 rc_parallel=0
-"$VENV_PY" -m pytest tests/ -q -n "$WORKERS" --dist loadfile -m "not serial" "$@" || rc_parallel=$?
+"$VENV_PY" -m pytest tests/ -q -n "$WORKERS" --dist loadfile -m "$PHASE1_MARK" \
+  ${_junit1[@]+"${_junit1[@]}"} "$@" || rc_parallel=$?
 t_parallel=$((SECONDS - start))
 
 # pytest returns 2 for a user interrupt (it traps SIGINT itself), so without this
@@ -158,12 +230,13 @@ if [[ $rc_parallel -eq 2 ]]; then
 fi
 
 echo
-echo "═══ Phase 2/2: serial (-m serial)"
+echo "═══ Phase 2/2: serial (-m '${PHASE2_MARK}')"
 start=$SECONDS
 rc_serial=0
 # -p no:xdist makes this phase structurally serial: a stray -n becomes a usage
 # error rather than a silently-parallelised run of the very tests that must not be.
-"$VENV_PY" -m pytest tests/ -q -p no:xdist -m serial "$@" || rc_serial=$?
+"$VENV_PY" -m pytest tests/ -q -p no:xdist -m "$PHASE2_MARK" \
+  ${_junit2[@]+"${_junit2[@]}"} "$@" || rc_serial=$?
 t_serial=$((SECONDS - start))
 
 # pytest exit code 5 == "no tests collected".
@@ -177,20 +250,49 @@ if [[ $rc_parallel -eq 5 ]]; then
   rc_parallel=0
 fi
 if [[ $rc_serial -eq 5 ]]; then
-  if [[ $# -eq 0 ]]; then
-    # A bare full-suite run MUST have serial tests. Zero means the marker was
-    # renamed or dropped and the serial phase silently became a no-op — the
-    # allocation contract would never run while the gate still printed PASS.
-    echo "error: full-suite run collected ZERO serial-marked tests." >&2
-    echo "       the serial phase is a no-op — was the 'serial' marker renamed or dropped?" >&2
-    exit 5
+  # Did the caller pass anything that DESELECTS tests? A path can't have reached
+  # here (the passthrough branch exec'd), so only these flags can narrow the run.
+  # Anything else (--hypothesis-profile, -v, --full) selects the whole suite, and
+  # a zero-serial result under it is the real bug the guard exists for: the
+  # marker renamed/dropped, or `nightly` demoting the LAST serial test, leaving
+  # the allocation contracts unrun while the gate still printed PASS. Before
+  # 2026-08-01 this checked `$# -eq 0`, so `--hypothesis-profile=ci-deep` — i.e.
+  # every nightly run — silently opted out of the guard.
+  _selective=0
+  for arg in "$@"; do
+    case "$arg" in
+      -k|-k=*|--deselect*|--ignore*|--lf|--last-failed|--ff|--failed-first|--co|--collect-only)
+        _selective=1 ;;
+    esac
+  done
+  if [[ $_selective -eq 0 ]]; then
+    # Two very different causes look identical here, so distinguish them by
+    # asking whether ANY serial-marked test exists at all:
+    #   * none anywhere  -> the marker was renamed or dropped. The allocation
+    #     contracts would never run again while the gate still printed PASS.
+    #     Hard fail.
+    #   * some, all nightly -> a legitimate state (every serial test is demoted).
+    #     The gate genuinely has no serial phase; say so and carry on, or the
+    #     next demotion would block every commit on the branch.
+    if "$VENV_PY" -m pytest tests/ -q -p no:xdist -m serial --collect-only \
+         >/dev/null 2>&1; then
+      echo "note: every serial-marked test is 'nightly' — the gate's serial phase is empty."
+      echo "      they still run in './run_tests.sh --full' and the 04:00 nightly."
+      rc_serial=0
+    else
+      echo "error: this run collected ZERO tests for the serial phase (-m '${PHASE2_MARK}')," >&2
+      echo "       and there are no serial-marked tests ANYWHERE in the tree." >&2
+      echo "       the serial phase is a no-op — was the 'serial' marker renamed or dropped?" >&2
+      exit 5
+    fi
+  else
+    echo "(no serial-marked tests in this selection)"
+    rc_serial=0
   fi
-  echo "(no serial-marked tests in this selection)"
-  rc_serial=0
 fi
 
 echo
-echo "═══ Summary: parallel ${t_parallel}s (rc=${rc_parallel}) | serial ${t_serial}s (rc=${rc_serial}) | total $((t_parallel + t_serial))s"
+echo "═══ Summary [${TIER}]: parallel ${t_parallel}s (rc=${rc_parallel}) | serial ${t_serial}s (rc=${rc_serial}) | total $((t_parallel + t_serial))s"
 
 if [[ $rc_parallel -ne 0 || $rc_serial -ne 0 ]]; then
   echo "═══ RESULT: FAIL"

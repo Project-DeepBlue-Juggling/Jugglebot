@@ -43,10 +43,10 @@ Per-test recipe (empirically validated, run 2026-05-11):
 | T-U-T2c-5| ``ZmqTelemetryPubHarness.close_pub()`` mid-cascade + ``freeze_perf_counter_at`` | telemetry-stale cascade fires through real ZMQ end-to-end (no bug) | same |
 | T-U-T2c-6| ``@given`` byte-index × byte-value × mutation-type on valid frame      | decode-or-fail invariant holds  | same                                                           |
 
-Marked ``@pytest.mark.slow`` per Plan 2 Working Note #4 — ZMQ tests
-can be selectively excluded via ``pytest -m "not slow"`` if they ever
-flake under future parallelisation; the default ``pytest tests/ -q``
-gate still runs them.
+Marked ``nightly`` (2026-08-01) — see the pytestmark banner below.  The
+former ``slow`` mark is gone: it was this repo's ONLY use of ``slow``,
+nothing ever selected on it, and the module runs in ~9 s, so the mark
+was both unused and untrue (``slow`` is registered as "> 30 s").
 """
 
 from __future__ import annotations
@@ -75,10 +75,17 @@ from tests.sim._zmq_test_harness import (
 )
 
 
-# All tests in this module use real ZMQ — mark them `slow` so they can
-# be selectively excluded under future parallelisation (pytest -n auto)
-# if a flake ever appears.  Default `pytest tests/ -q` still runs them.
-pytestmark = pytest.mark.slow
+# NIGHTLY TIER — the MPC is operationally dormant (plans/active/refactor-2026-07.md
+# Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
+# leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
+# guard). The corruption surface here is MPC-only — `MpcTargetIPC` (:5558) has
+# exactly one consumer, `controller/zmq_target.py`, and `HardwarePlant._sub`
+# (:5556) belongs to the MPC hardware plant. The LIVE setpoint wire is a
+# different decode path: teensy_bridge_node's `_MpcCommandSetpointSource`
+# deliberately does not reuse BridgeIPC, and tests/ros covers it. So nothing live
+# loses coverage here. Runs nightly via tools/nightly_suite.sh and on
+# `./run_tests.sh --full`, which is mandatory before any hardware sitting.
+pytestmark = pytest.mark.nightly
 
 
 # Whether the Phase 6 bugfix commit has landed.  Flipped to True by the

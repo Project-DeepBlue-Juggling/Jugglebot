@@ -225,9 +225,18 @@ pytest tests/sim/test_demo_juggle_sim.py \
        tests/sim/test_demo_timeline.py \
        tests/sim/test_demo_trajectory.py -v
 
-# Full suite (~8 min)
-./run_tests.sh
+# Full suite
+./run_tests.sh          # the per-commit gate — does NOT run the juggle-demo tests
+./run_tests.sh --full   # includes them (they are `nightly`-marked since 2026-08-01)
 ```
+
+`test_demo_juggle_{sim,optimizer,planner}.py` carry
+`pytestmark = pytest.mark.nightly`: the demo is research characterization with no
+path to the hardware leg/hand command chain, so it runs at 04:00 via
+`tools/nightly_suite.sh` and on `--full`, not on every commit. Naming the files
+explicitly (the first block above) still runs them — that is the right loop when
+working on the demo. `test_demo_timeline.py` / `test_demo_trajectory.py` are NOT
+demoted.
 
 The juggle-demo tests include a 30-second end-to-end run; expect ~30 s
 wall time per test.

@@ -1988,8 +1988,13 @@ class TeensyBridgeNode(Node):
 
         Called ONLY from _arm_setpoint_output after its preconditions pass
         (ARMING_CONTRACT A1; the zero-precondition __init__ boot-arm is removed).
-        ``setpoint_source`` may be injected (tests); otherwise a real ZMQ SUB on
-        motor_guard's :5556 is created.
+        ``setpoint_source`` may be injected (tests); otherwise a real
+        ``_MpcCommandSetpointSource`` is created — a ZMQ SUB on the **:5557**
+        command stream (``mpccmd``), which trajectory_node publishes and the
+        Teensy interpolates. It is NOT motor_guard's :5556 telemetry: that was
+        the pre-cutover Jetson-relay path, and motor_guard has not been on the
+        leg path since (see the ``_MpcCommandSetpointSource`` docstring above,
+        and the launch file — motor_guard stopped launching 2026-08-01).
         """
         if setpoint_source is not None:
             self._sp_source = setpoint_source

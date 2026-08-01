@@ -1,5 +1,8 @@
 # Motor Guard
 
+!!! danger "DORMANT — the motor guard is not launched (banner added 2026-08-01)"
+    `jugglebot_launch.py` stopped starting the `motor_guard` process on 2026-08-01 (MPC dormancy — `plans/active/refactor-2026-07.md` Phase 3). In the MVP topology the 500 Hz interpolation happens on the can-bridge Teensy, fed by `trajectory_node` → ZMQ :5557 → `teensy_bridge_node`, and the leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard — not this process. The code, its entry point and its tests are all parked, not deleted; revival is re-adding the launch entry. See [Motor Command Safety](safety.md) for the same caveat.
+
 This page describes the 500 Hz motor guard process — what happens every 2 ms, how IPC messages are handled, and how the guard protects the hardware.
 
 **Source files:**

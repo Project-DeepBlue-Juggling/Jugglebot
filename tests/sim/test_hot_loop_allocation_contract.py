@@ -63,12 +63,37 @@ from controller.target import StaticTargetSource
 from controller.telemetry import TelemetryLogger
 
 
-# Every test in this module measures a process-global resource (tracemalloc
-# heap growth, GC events) whose baseline is set by whatever else has already
-# run in the interpreter.  Under xdist that baseline becomes non-deterministic,
-# so the whole module runs in the serial phase — see the `serial` marker
-# definition in pyproject.toml and scripts/run_tests.sh.
-pytestmark = pytest.mark.serial
+# `serial` — every test in this module measures a process-global resource
+# (tracemalloc heap growth, GC events) whose baseline is set by whatever else has
+# already run in the interpreter.  Under xdist that baseline becomes
+# non-deterministic, so the whole module runs in the serial phase — see the
+# `serial` marker definition in pyproject.toml and ./run_tests.sh.
+#
+# `nightly` — the MPC HARDWARE chain is operationally dormant
+# (plans/active/refactor-2026-07.md Phase 3: jugglebot_launch.py no longer starts
+# motor_guard/motion_bridge_node, and run_mpc.py is not launched; the leg path is
+# trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION guard).
+#
+# Be precise about what that does and does not mean, because the MPC revival's
+# "promote these back" step will be judged against it: `run_mpc_loop` itself is
+# NOT unreachable — sim/main.py:961 still calls it from `run_mpc_headless`, i.e.
+# every `python sim/main.py --mpc --no-viewer` run, and run_mpc.py drives it if
+# started by hand. What is dormant is every path where the loop's output reaches
+# a motor. This contract measures per-tick allocation determinism, which is a
+# REAL-TIME property: a GC pause costs a 40 Hz hardware loop a missed setpoint,
+# and costs an offline sim run nothing at all. With no real-time consumer, the
+# contract is parked with the deadline it protects — nightly via
+# tools/nightly_suite.sh and on `./run_tests.sh --full`, which is mandatory
+# before any hardware sitting and pre-commit for controller/ and sim/ changes.
+# Promotion back to per-commit is step 4 of the MPC revival.
+#
+# BOTH marks matter and the gate composition depends on it: `serial` alone would
+# leave these in the default serial phase; `nightly` alone would let them run
+# under xdist on `--full` and corrupt their own baseline.  ./run_tests.sh's
+# phase filters are `not serial and not nightly` / `serial and not nightly`
+# (default) and `not serial` / `serial` (--full), so a serial+nightly test lands
+# in exactly one bucket per invocation.
+pytestmark = [pytest.mark.serial, pytest.mark.nightly]
 
 
 CONTROL_DT = 0.025

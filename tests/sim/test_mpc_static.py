@@ -22,6 +22,17 @@ from plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
 
+
+# NIGHTLY TIER — the MPC is operationally dormant (plans/active/refactor-2026-07.md
+# Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
+# leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
+# guard). The code is parked, not deleted, so this battery is parked with it: it
+# runs nightly via tools/nightly_suite.sh and on `./run_tests.sh --full`, which is
+# mandatory before any hardware sitting. Promotion back to per-commit is step 4 of
+# the MPC revival.
+pytestmark = pytest.mark.nightly
+
+
 CONTROL_DT = 0.025   # 40 Hz
 SETTLE_TIME_S = 0.5  # 500 ms
 POS_TOL_MM = 1.5     # 1.5 mm position tolerance (relaxed for smooth quintic reference)

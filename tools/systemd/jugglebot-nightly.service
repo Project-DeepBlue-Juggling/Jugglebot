@@ -1,0 +1,18 @@
+[Unit]
+Description=Jugglebot nightly full-tier test suite
+Documentation=file:///home/jetson/Desktop/Jugglebot/tools/nightly_suite.sh
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/jetson/Desktop/Jugglebot
+ExecStart=/home/jetson/Desktop/Jugglebot/tools/nightly_suite.sh
+# ci-deep hypothesis + a cold native build can run long; run_tests.sh also waits
+# up to 30 min on the suite flock if an interactive gate is in flight.
+TimeoutStartSec=4h
+# The suite is CPU-hungry and this Jetson also runs the robot. Nice it so an
+# early-morning operator session is not starved by the test run.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

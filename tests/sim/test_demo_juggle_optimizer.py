@@ -21,6 +21,15 @@ from controller.demo.juggle_optimizer import (
 )
 
 
+# NIGHTLY TIER (2026-08-01, plans/active/refactor-2026-07.md Phase 2). The
+# juggling DEMO is research/characterization: an offline CasADi NLP whose output
+# feeds a sim player, with no path to the hardware leg/hand command chain. It
+# runs every night via tools/nightly_suite.sh and on `./run_tests.sh --full`
+# (mandatory before any hardware sitting and at plan-phase closure), just not on
+# every commit.
+pytestmark = pytest.mark.nightly
+
+
 # --------------------------------------------------------------------------
 # Shared fixtures — solving the NLP once and sharing the result across
 # tests keeps the file under a second of CasADi/IPOPT setup overhead.
