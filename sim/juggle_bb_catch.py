@@ -77,13 +77,14 @@ import time
 import mujoco
 import numpy as np
 
-_sim_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_sim_dir)
-for _p in (_sim_dir, _repo_root,
-           os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_repo_root, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 from sim.ball_butler.sim import BallButlerSim
 from sim.juggle_catch import CONTROL_DT, SingleCatchConfig, SingleCatchRunner

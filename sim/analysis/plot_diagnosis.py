@@ -22,16 +22,7 @@ matplotlib.use('Agg')  # headless — no display server needed on Jetson
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-# Ensure sim/ and repo root are importable
-_analysis_dir = os.path.dirname(os.path.abspath(__file__))
-_sim_dir = os.path.dirname(_analysis_dir)
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-_repo_root = os.path.dirname(_sim_dir)
-if _repo_root not in sys.path:
-    sys.path.insert(0, _repo_root)
-
-from viz.telemetry import StepRecord  # noqa: E402
+from sim.viz.telemetry import StepRecord  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants

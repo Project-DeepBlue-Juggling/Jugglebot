@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
-from hand.ballistics import (
+from sim.hand.ballistics import (
     compute_launch_velocity,
     compute_arrival_velocity,
     compute_orientation,

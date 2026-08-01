@@ -31,7 +31,7 @@ import numpy as np
 import pytest
 
 from controller.plant import PlantInterface, PlantState
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from tests.sim._hardware_plant_stub import build_hardware_plant_stub
 
 

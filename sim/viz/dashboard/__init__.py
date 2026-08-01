@@ -2,7 +2,7 @@
 
 Usage from main.py::
 
-    from viz.dashboard import DashboardServer
+    from sim.viz.dashboard import DashboardServer
 
     server = DashboardServer(port=8082)
     server.start()

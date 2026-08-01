@@ -22,25 +22,19 @@ import datetime
 
 import numpy as np
 
-# Make sim/, controller/, the jugglebot ROS2 package, and generated config
-# importable when run directly on a fresh clone — without requiring the
-# jugglebot package to be pip-installed (as it is on the Jetson venv).
-# Mirrors the path entries in tests/conftest.py.
-_sim_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_sim_dir)
-for _p in (
-    _sim_dir,                                                # bare plant/, hand/, ball_butler/ imports
-    _repo_root,                                              # controller.*
-    os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),  # jugglebot.motion.* (pure-Python ROS2 pkg)
-    os.path.join(_repo_root, 'config', 'generated'),         # generated hardware/protocol config
-):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
-from viz.telemetry import TelemetryLogger, record_from_arrays
+from sim.viz.telemetry import TelemetryLogger, record_from_arrays
 
 
 CONTROL_DT = 0.02  # 50 Hz
@@ -125,7 +119,7 @@ def run(viewer_mode, dashboard=None):
 
     if viewer_mode:
         import mujoco.viewer
-        from viz.horizon import HorizonRenderer
+        from sim.viz.horizon import HorizonRenderer
 
         horizon = HorizonRenderer(plant.geom.init_height_mm)
 
@@ -190,7 +184,7 @@ def main():
 
     dashboard = None
     if args.dashboard:
-        from viz.dashboard import DashboardServer
+        from sim.viz.dashboard import DashboardServer
         dashboard = DashboardServer(port=args.dashboard_port)
         dashboard.start()
         print(f"Dashboard: http://localhost:{args.dashboard_port}")

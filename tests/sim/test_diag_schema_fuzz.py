@@ -65,7 +65,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
 from controller.plant import PlantState

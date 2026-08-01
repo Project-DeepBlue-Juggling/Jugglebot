@@ -2,7 +2,7 @@
 
 Replaces the offline-trajectory + open-loop-player demo (`sim/juggle_demo.py`)
 with an **online** loop: each throw, observe the in-flight ball, re-plan the
-cup's Cartesian trajectory for the next cycle (`controller.demo.juggle_planner`)
+cup's Cartesian trajectory for the next cycle (`sim.juggle_planner.juggle_planner`)
 from the ACHIEVED cup state, and realise it on the platform+slider via the
 **level-platform decoupling** (centroid_xy = cup_xy, slider = cup_z − offset).
 The cup traces a continuous carry oval (no stop/starts); the throw/catch use the
@@ -56,17 +56,18 @@ from pathlib import Path
 
 import numpy as np
 
-_sim_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_sim_dir)
-for _p in (_sim_dir, _repo_root,
-           os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_repo_root, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 import mujoco
 
-from controller.demo.juggle_planner import (
+from sim.juggle_planner.juggle_planner import (
     GRAVITY, PlannerConfig, ballistic_touchdown, plan_cup_cycle,
 )
 from sim.juggle_tilt import realize_tilted

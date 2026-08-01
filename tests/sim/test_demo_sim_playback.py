@@ -13,11 +13,11 @@ separately, at the real control rate, so it reflects the true trajectory.
 """
 import numpy as np
 
-from controller.demo.pattern import JugglePattern
-from controller.demo.trajectory import build_analytic_oval
-from controller.demo.player import TrajectoryPlayer
+from sim.juggle_planner.pattern import JugglePattern
+from sim.juggle_planner.trajectory import build_analytic_oval
+from sim.juggle_planner.player import TrajectoryPlayer
 from jugglebot.motion.geometry import StewartGeometry
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 
 _CONTROL_DT = 0.025
 _SLOWDOWN = 4.0          # play at 1/4 tempo — see module docstring

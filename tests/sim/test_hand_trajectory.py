@@ -11,7 +11,7 @@ import math
 import numpy as np
 import pytest
 
-from hand.trajectory import (
+from sim.hand.trajectory import (
     HandCatchTrajectory,
     HandSmoothMove,
     HandCatchSequence,
@@ -302,7 +302,7 @@ class TestQuinticShapeIdentities:
 
     def test_quintic_s2_max_is_the_maximum_of_s_second_derivative(self):
         """The pre-existing constant, re-pinned because the bound now pairs the two."""
-        from hand.trajectory import quintic_s2
+        from sim.hand.trajectory import quintic_s2
         vals = [abs(quintic_s2(float(t))) for t in np.linspace(0.0, 1.0, 20001)]
         assert max(vals) <= QUINTIC_S2_MAX + 1e-6
         assert QUINTIC_S2_MAX == pytest.approx(10.0 / math.sqrt(3.0), abs=1e-7)
@@ -315,7 +315,7 @@ class TestQuinticShapeIdentities:
         the same polynomial or the clamp bounds a different curve than the one
         emitted.
         """
-        from hand.trajectory import _quintic_coeffs
+        from sim.hand.trajectory import _quintic_coeffs
         for delta, u in [(2.26, 43.2), (-3.83, 6.1), (0.0, -12.0), (9.96, 0.0)]:
             A, B, C = _quintic_coeffs(delta, u)
             for tau in np.linspace(0.0, 1.0, 501):

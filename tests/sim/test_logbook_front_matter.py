@@ -20,7 +20,7 @@ import re
 import pytest
 
 # Import path setup handled by tests/conftest.py
-from analysis.logbook_search import (
+from sim.analysis.logbook_search import (
     REQUIRED_FRONT_MATTER,
     _SKIP_FILES,
     _parse_frontmatter,

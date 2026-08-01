@@ -29,13 +29,6 @@ import sys
 import numpy as np
 import pytest
 
-_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-for _p in (_REPO, os.path.join(_REPO, 'sim'),
-           os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_REPO, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
-
 pytest.importorskip('mujoco')
 
 from sim.toss_gate import (                                   # noqa: E402

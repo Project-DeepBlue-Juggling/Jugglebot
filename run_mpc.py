@@ -268,10 +268,11 @@ def main():
     # --- Create plant (hardware by default, MuJoCo with --sim) ---
     feedback_pub = None
     if args.use_sim_plant:
-        _sim_dir = os.path.join(_repo_root, 'sim')
-        if _sim_dir not in sys.path:
-            sys.path.insert(0, _sim_dir)
-        from plant.mujoco_plant import MuJoCoPlant
+        # sim/ needs config/generated on the path too (the plant reads the
+        # generated hardware config); use the one bootstrap, not a partial one.
+        from sim._paths import bootstrap_paths
+        bootstrap_paths()
+        from sim.plant.mujoco_plant import MuJoCoPlant
         plant = MuJoCoPlant(control_dt=CONTROL_DT)
         # Hardware tests start from ACTIVE (z=170 mm STOW-relative).  Match
         # that precondition in sim so the dry-run exercises the same motion
@@ -338,10 +339,9 @@ def main():
     dashboard = None
     if args.dashboard:
         # Import from sim/viz since dashboard is visualization-specific
-        _sim_dir = os.path.join(_repo_root, 'sim')
-        if _sim_dir not in sys.path:
-            sys.path.insert(0, _sim_dir)
-        from viz.dashboard import DashboardServer
+        from sim._paths import bootstrap_paths
+        bootstrap_paths()
+        from sim.viz.dashboard import DashboardServer
         dashboard = DashboardServer(port=args.dashboard_port)
         dashboard.start()
 

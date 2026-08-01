@@ -108,7 +108,7 @@ def _get_cached_motor_rev(target_pose: np.ndarray) -> list[float]:
     """
     key = tuple(float(v) for v in target_pose)
     if key not in _IK_PRECOMPUTE_CACHE:
-        from plant.mujoco_plant import MuJoCoPlant as _SimPlant
+        from sim.plant.mujoco_plant import MuJoCoPlant as _SimPlant
         _sim_tmp = _SimPlant()
         target_ext_mm = _sim_tmp.pose_to_extensions(target_pose)
         target_motor_rev = [float(v) for v in

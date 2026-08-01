@@ -22,11 +22,8 @@ import numpy as np
 import yaml
 
 import sys
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
 
-from hand.coordinator import BallSpawn
+from sim.hand.coordinator import BallSpawn
 
 # Gravity in mm/s² (same as hand.ballistics)
 _GRAVITY_MMS2 = 9806.0

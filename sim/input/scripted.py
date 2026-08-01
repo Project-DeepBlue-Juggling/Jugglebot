@@ -30,11 +30,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-import os, sys
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-
 if TYPE_CHECKING:
     Waypoints = list[tuple[np.ndarray, float]]
 
@@ -247,7 +242,7 @@ def get_trajectory(
 # Dynamic target (catch) test sequences — Phase 5C
 # ---------------------------------------------------------------------------
 
-from hand.coordinator import DynamicTarget, BallSpawn
+from sim.hand.coordinator import DynamicTarget, BallSpawn
 
 
 def _ball_landing(
@@ -303,13 +298,13 @@ _CATCH_ANGLE_LIMIT_RAD = np.radians(30.0)
 # platform's local Z axis (mm) at the moment of catch.
 # x5 is in effective-stroke coords; add STROKE_MARGIN to get physical pos.
 # Ball COM offset from hand body = BALL_SEAT_OFFSET (44.4mm).
-from hand.trajectory import (
+from sim.hand.trajectory import (
     INERTIA_RATIO as _IR,
     CATCH_VEL_HOLD_PCT as _CVH,
     _TOTAL_STROKE_M as _TS,
     STROKE_MARGIN_M as _SM,
 )
-from hand.ballistics import compute_hand_offset_mm as _compute_hand_offset_mm
+from sim.hand.ballistics import compute_hand_offset_mm as _compute_hand_offset_mm
 _HAND_AXIS_BOTTOM_OFFSET_MM = -129.0   # from hardware_config.yaml
 _x5_m = _TS - (_TS - _CVH * _TS) * _IR / (1.0 + _IR)
 _HAND_CATCH_X5_PHYSICAL_MM = _SM * 1000.0 + _x5_m * 1000.0
@@ -655,7 +650,7 @@ def make_TC1():
 
     Returns (ThrowCatchPlan, total_duration).
     """
-    from hand.planner import ThrowCatchPlanner
+    from sim.hand.planner import ThrowCatchPlanner
     planner = ThrowCatchPlanner()
     plan = planner.plan(
         throw_pos_mm=np.array([0.0, 0.0, 800.0]),
@@ -675,7 +670,7 @@ def make_TC2():
 
     Returns (ThrowCatchPlan, total_duration).
     """
-    from hand.planner import ThrowCatchPlanner
+    from sim.hand.planner import ThrowCatchPlanner
     planner = ThrowCatchPlanner()
     ball_z = 574.3 + 255.0   # halfway between original 170mm and 340mm offsets
     flight_time = 1.15        # high arc, gentle tilts, plenty of transit time
@@ -693,7 +688,7 @@ def make_TC3():
 
     Returns (ThrowCatchPlan, total_duration).
     """
-    from hand.planner import ThrowCatchPlanner
+    from sim.hand.planner import ThrowCatchPlanner
     planner = ThrowCatchPlanner()
     plan = planner.plan(
         throw_pos_mm=np.array([0.0, 0.0, 800.0]),
@@ -709,7 +704,7 @@ def make_TC4():
 
     Returns (ThrowCatchPlan, total_duration).
     """
-    from hand.planner import ThrowCatchPlanner
+    from sim.hand.planner import ThrowCatchPlanner
     planner = ThrowCatchPlanner()
     plan = planner.plan(
         throw_pos_mm=np.array([0.0, 0.0, 800.0]),
@@ -782,7 +777,7 @@ _BB_DEFAULT_YAW_RAD = float(np.arctan2(
 
 
 def _make_bb_sim():
-    from ball_butler.sim import BallButlerSim
+    from sim.ball_butler.sim import BallButlerSim
     return BallButlerSim.from_hardware_config(
         _BB_DEFAULT_POS_MM, _BB_DEFAULT_YAW_RAD)
 

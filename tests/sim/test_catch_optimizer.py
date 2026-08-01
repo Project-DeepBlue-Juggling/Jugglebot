@@ -312,7 +312,7 @@ class TestOptimizerWithRealIK:
     @pytest.fixture(autouse=True)
     def _setup(self):
         try:
-            from plant.mujoco_plant import MuJoCoPlant
+            from sim.plant.mujoco_plant import MuJoCoPlant
             self.plant = MuJoCoPlant()
         except Exception:
             pytest.skip("MuJoCo not available")

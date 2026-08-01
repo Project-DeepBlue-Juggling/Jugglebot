@@ -15,7 +15,7 @@ tests pin TYPES, not just values, so neither defect can silently return.
 import dataclasses
 
 from controller.telemetry import StepRecord, TelemetryLogger, load_records
-from analysis.compare import load_csv
+from sim.analysis.compare import load_csv
 
 
 _INT_FIELDS = [f.name for f in dataclasses.fields(StepRecord) if f.type == 'int']

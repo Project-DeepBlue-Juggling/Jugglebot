@@ -15,18 +15,10 @@ import logging
 
 import numpy as np
 
-import os, sys
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-_repo_root = os.path.dirname(_sim_dir)
-if _repo_root not in sys.path:
-    sys.path.insert(0, _repo_root)
-
 from controller.mpc import MPCController
 from controller.params import MPCParams
 from controller.target import ReferenceEvent
-from plant.interface import PlantState
+from sim.plant.interface import PlantState
 
 logger = logging.getLogger(__name__)
 

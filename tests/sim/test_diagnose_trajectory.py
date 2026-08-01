@@ -14,7 +14,7 @@ gate-authoritative predicted).
 
 from __future__ import annotations
 
-from analysis.diagnose import summarise_trajectory_moves
+from sim.analysis.diagnose import summarise_trajectory_moves
 
 
 def _sample(t, kind, *, rv=0.0, ra=0.0, rj=0.0,

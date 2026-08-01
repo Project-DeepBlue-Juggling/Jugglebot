@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from sim.juggle_noise import NoiseConfig, JuggleNoise, BallisticEstimator
-from controller.demo.juggle_planner import GRAVITY, ballistic_touchdown
+from sim.juggle_planner.juggle_planner import GRAVITY, ballistic_touchdown
 
 
 # ---- NoiseConfig defaults (the §3 knobs) --------------------------------

@@ -10,7 +10,7 @@ import math
 import pytest
 import numpy as np
 
-from hand.trajectory import (
+from sim.hand.trajectory import (
     HandThrowTrajectory,
     HandThrowSequence,
     HandThrowResult,

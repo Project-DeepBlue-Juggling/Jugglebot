@@ -10,10 +10,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller import MPCController, MPCParams
-from hand.coordinator import HandCoordinator
-from input.scripted import get_catch_sequence
+from sim.hand.coordinator import HandCoordinator
+from sim.input.scripted import get_catch_sequence
 from helpers import run_catch_sim
 
 

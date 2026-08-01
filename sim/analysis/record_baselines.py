@@ -22,18 +22,21 @@ import time
 
 import numpy as np
 
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-_repo_root = os.path.dirname(_sim_dir)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
-from input.scripted import TRAJECTORIES, get_trajectory
-from viz.telemetry import TelemetryLogger, record_from_arrays
+from sim.input.scripted import TRAJECTORIES, get_trajectory
+from sim.viz.telemetry import TelemetryLogger, record_from_arrays
 
 CONTROL_DT = 0.02  # 50 Hz
 BASELINES_DIR = os.path.join(os.path.dirname(__file__), 'baselines')

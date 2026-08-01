@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from controller.target import ReferenceEvent
-from input.toss_loop import TossLoopController, _Phase, _State
+from sim.input.toss_loop import TossLoopController, _Phase, _State
 
 CONTROL_DT = 0.025  # 40 Hz
 
@@ -260,7 +260,7 @@ class TestMPCIntegration:
 
     @pytest.fixture
     def plant(self):
-        from plant.mujoco_plant import MuJoCoPlant
+        from sim.plant.mujoco_plant import MuJoCoPlant
         return MuJoCoPlant()
 
     @pytest.fixture

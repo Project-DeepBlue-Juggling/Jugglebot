@@ -19,15 +19,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from hand.ballistics import (
+from sim.hand.ballistics import (
     compute_launch_velocity,
     compute_arrival_velocity,
     compute_orientation,
     compute_hand_offset_mm,
     rodrigues,
 )
-from hand.coordinator import DynamicTarget, BallSpawn
-from hand.trajectory import (
+from sim.hand.coordinator import DynamicTarget, BallSpawn
+from sim.hand.trajectory import (
     HandThrowSequence,
     HandCatchSequence,
     HandCatchTrajectory,

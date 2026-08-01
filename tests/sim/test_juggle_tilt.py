@@ -175,7 +175,7 @@ def test_realize_tilted_lands_opening_on_target(cup_xy, cup_z):
     """The Rung-0 lever-arm compensation must put the cup OPENING exactly on the
     commanded target, across the workspace and the slider range, under tilt."""
     import mujoco
-    from plant.mujoco_plant import MuJoCoPlant
+    from sim.plant.mujoco_plant import MuJoCoPlant
 
     plant = MuJoCoPlant(control_dt=0.025, contact_carry=True)
     sid = mujoco.mj_name2id(plant.model, mujoco.mjtObj.mjOBJ_SITE, 'hand_opening')

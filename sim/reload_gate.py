@@ -50,13 +50,14 @@ import time
 
 import numpy as np
 
-_sim_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_sim_dir)
-for _p in (_repo_root, _sim_dir,
-           os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_repo_root, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry
@@ -70,14 +71,14 @@ from jugglebot.motion.trajectory.shaping import cup_lateral_shift_mm
 
 from controller.teensy_link.setpoint_pump import SetpointPump
 
-from plant.mujoco_plant import MuJoCoPlant
-from hand.trajectory import HandCatchTrajectory, HandCatchSequence
-from juggle_noise import JuggleNoise, NoiseConfig, BallisticEstimator
+from sim.plant.mujoco_plant import MuJoCoPlant
+from sim.hand.trajectory import HandCatchTrajectory, HandCatchSequence
+from sim.juggle_noise import JuggleNoise, NoiseConfig, BallisticEstimator
 
 # Mechanically-shared gate machinery (constants, thresholds, hold metrics,
 # viewer) lives in gate_common since the toss-gate extraction (2026-07-25);
 # re-imported by name so this module's surface stays byte-identical.
-from gate_common import (
+from sim.gate_common import (
     BALL_R_MM, CUP_Z_BASE_MM, HOLD_TILT_DEG, HOLD_TRAVEL_MM, KNOT_DT_S,
     NEUTRAL_POSE, REACH_ENVELOPE_MM, SEPARATION_MS, VEL_MATCH_FRAC,
     Z_ACTIVE_MM, ViewerClosed, ViewerHook, attach_viewer, tilt_change_deg,

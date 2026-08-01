@@ -7,7 +7,7 @@ import textwrap
 import pytest
 
 # Import path setup handled by tests/conftest.py
-from analysis.logbook_search import (
+from sim.analysis.logbook_search import (
     _parse_frontmatter,
     _extract_section,
     load_entries,

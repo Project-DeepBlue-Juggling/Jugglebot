@@ -21,7 +21,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
 from controller.target import (

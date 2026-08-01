@@ -86,7 +86,7 @@ from controller.scheduler import (
 )
 from controller.target import StaticTargetSource
 from controller.telemetry import TelemetryLogger
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 
 
 

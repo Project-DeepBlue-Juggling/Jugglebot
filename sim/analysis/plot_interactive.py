@@ -18,14 +18,15 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-# Ensure sim/ and repo root are importable
-_analysis_dir = os.path.dirname(os.path.abspath(__file__))
-_sim_dir = os.path.dirname(_analysis_dir)
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-_repo_root = os.path.dirname(_sim_dir)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 try:
     import plotly.graph_objects as go  # noqa: E402
@@ -34,10 +35,10 @@ try:
 except ImportError:
     PLOTLY_AVAILABLE = False
 
-from viz.telemetry import StepRecord  # noqa: E402
+from sim.viz.telemetry import StepRecord  # noqa: E402
 
 # Re-use auto_select_plots and parse_categories from the static module
-from analysis.plot_diagnosis import (  # noqa: E402
+from sim.analysis.plot_diagnosis import (  # noqa: E402
     auto_select_plots,
     parse_categories,
     PLOT_CATEGORIES,
@@ -767,8 +768,8 @@ if __name__ == '__main__':
                         help='Output HTML path (default: <csv>_interactive.html)')
     args = parser.parse_args()
 
-    from analysis.diagnose import run_diagnosis
-    from analysis.compare import load_csv as load_records
+    from sim.analysis.diagnose import run_diagnosis
+    from sim.analysis.compare import load_csv as load_records
 
     # Parse categories
     cats = parse_categories(args.categories)

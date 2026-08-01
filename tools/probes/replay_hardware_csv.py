@@ -70,9 +70,10 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent.parent
-for p in (REPO, REPO / "sim", REPO / "ros_ws" / "src" / "jugglebot"):
-    if str(p) not in sys.path:
-        sys.path.insert(0, str(p))
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 CONTROL_DT = 1.0 / 40.0
 WARMUP_TICKS = 40
@@ -241,7 +242,7 @@ def _load_states(csv_path: Path) -> list[dict]:
 def _build_mpc(variant: str, max_cpu_time: float, max_iter: int):
     from controller.mpc import MPCController
     from controller.params import MPCParams
-    from plant.mujoco_plant import MuJoCoPlant
+    from sim.plant.mujoco_plant import MuJoCoPlant
 
     cls = _make_variant(MPCController, variant)
     params = MPCParams(max_cpu_time=max_cpu_time, max_iter=max_iter)

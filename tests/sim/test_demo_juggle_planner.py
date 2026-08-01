@@ -1,4 +1,4 @@
-"""Unit tests for the online per-throw cup planner (controller/demo/juggle_planner).
+"""Unit tests for the online per-throw cup planner (sim/juggle_planner/juggle_planner).
 
 The planner replaces the offline juggle_optimizer + open-loop TrajectoryPlayer
 with a per-cycle task-space NLP re-solved against the observed ball (Kai-style).
@@ -11,7 +11,7 @@ re-planning); logbook 2026-06-27-online-replanning-architecture-and-cup-bandlimi
 import numpy as np
 import pytest
 
-from controller.demo.juggle_planner import (
+from sim.juggle_planner.juggle_planner import (
     GRAVITY, PlannerConfig, ballistic_touchdown, takeoff_velocity, plan_cup_cycle,
 )
 

@@ -325,13 +325,7 @@ def test_sim_hand_ballistics_reexports_match_controller():
     """sim/hand/ballistics.py must re-export the same symbols with identical
     numerics — this was the compat contract when we extracted the pure-math
     bits to controller/."""
-    import sys
-    import os
-    _sim_dir = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'sim')
-    if _sim_dir not in sys.path:
-        sys.path.insert(0, _sim_dir)
-    from hand import ballistics as sim_ballistics
+    from sim.hand import ballistics as sim_ballistics
     from controller import ballistics as ctl_ballistics
 
     assert sim_ballistics.compute_launch_velocity is (

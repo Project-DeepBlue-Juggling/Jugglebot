@@ -10,14 +10,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
 from controller.scheduler import EventScheduler, ScheduledEvent, EventType, SchedulerPhase
-from hand.scheduled_coordinator import ScheduledCoordinator
-from hand.coordinator import BallSpawn
-from hand.trajectory import HandCatchSequence
-from input.scripted import _compute_catch_target
+from sim.hand.scheduled_coordinator import ScheduledCoordinator
+from sim.hand.coordinator import BallSpawn
+from sim.hand.trajectory import HandCatchSequence
+from sim.input.scripted import _compute_catch_target
 
 CONTROL_DT = 0.025  # 40 Hz
 IDLE_POSE = np.array([0.0, 0.0, 10.0, 0.0, 0.0, 0.0])

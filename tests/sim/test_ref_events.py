@@ -18,7 +18,7 @@ from controller.mpc import (
 )
 from controller.params import MPCParams
 from controller.target import ReferenceEvent, sample_ref_fn
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 
 CONTROL_DT = 0.025  # 40 Hz
 

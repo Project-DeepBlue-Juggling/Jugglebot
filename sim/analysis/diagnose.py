@@ -37,18 +37,19 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-# Ensure sim/ and repo root are importable
-_analysis_dir = os.path.dirname(os.path.abspath(__file__))
-_sim_dir = os.path.dirname(_analysis_dir)
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-_repo_root = os.path.dirname(_sim_dir)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
-from analysis.compare import load_csv, estimate_tau
-from analysis.plot_diagnosis import generate_diagnostic_plots, parse_categories
-from viz.telemetry import StepRecord
+from sim.analysis.compare import load_csv, estimate_tau
+from sim.analysis.plot_diagnosis import generate_diagnostic_plots, parse_categories
+from sim.viz.telemetry import StepRecord
 
 
 # ---------------------------------------------------------------------------
@@ -2609,13 +2610,13 @@ def main():
 
         if use_static:
             # Static matplotlib PNGs embedded in HTML
-            from analysis.report_html import generate_html_report
+            from sim.analysis.report_html import generate_html_report
             html_path = generate_html_report(result, html_path)
             print(f'Static HTML report: {html_path}', file=sys.stderr)
         else:
             # Interactive Plotly report (default)
             try:
-                from analysis.plot_interactive import generate_interactive_report
+                from sim.analysis.plot_interactive import generate_interactive_report
                 # Load records for Plotly (run_diagnosis doesn't expose them)
                 telemetry_records = load_csv(args.csv_path)
                 categories = None if plot_cats == 'auto' else plot_cats
@@ -2635,7 +2636,7 @@ def main():
                     budget_ms=args.budget_ms,
                     plots=plot_cats,
                 )
-                from analysis.report_html import generate_html_report
+                from sim.analysis.report_html import generate_html_report
                 html_path = generate_html_report(result, html_path)
                 print(f'Static HTML report: {html_path}', file=sys.stderr)
 

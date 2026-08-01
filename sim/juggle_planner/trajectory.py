@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 
 from controller.hermite import quintic_interp_with_accel
-from controller.demo.pattern import JugglePattern
+from sim.juggle_planner.pattern import JugglePattern
 
 
 class JuggleTrajectory:

@@ -18,16 +18,11 @@ from enum import Enum, auto
 
 import numpy as np
 
-import os, sys
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-
-from hand.coordinator import HandCoordinator, DynamicTarget, BallSpawn, HandPhase
-from hand.trajectory import HandCatchSequence
-from input.scripted import _compute_catch_target, _ball_landing
-from input.sim_control import SimController
-from plant.interface import PlantState
+from sim.hand.coordinator import HandCoordinator, DynamicTarget, BallSpawn, HandPhase
+from sim.hand.trajectory import HandCatchSequence
+from sim.input.scripted import _compute_catch_target, _ball_landing
+from sim.input.sim_control import SimController
+from sim.plant.interface import PlantState
 
 logger = logging.getLogger(__name__)
 
@@ -511,7 +506,7 @@ class InteractiveCatchController:
         # (collision at hand cup top vs predicted mid-catch position).
         # Shift the hand sequence earlier so ball and hand meet at mid-stroke.
         if target.event_vel_mps is not None and target.arrival_time is not None:
-            from hand.coordinator import _hand_catch_lead_time
+            from sim.hand.coordinator import _hand_catch_lead_time
             lead = _hand_catch_lead_time(target.event_vel_mps)
             target = DynamicTarget(
                 pose_6dof=target.pose_6dof,
@@ -603,7 +598,7 @@ class InteractiveCatchController:
 
         # Apply hand catch lead time (same as _do_spawn)
         if target.event_vel_mps is not None and target.arrival_time is not None:
-            from hand.coordinator import _hand_catch_lead_time
+            from sim.hand.coordinator import _hand_catch_lead_time
             lead = _hand_catch_lead_time(target.event_vel_mps)
             target = DynamicTarget(
                 pose_6dof=target.pose_6dof,

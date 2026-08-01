@@ -9,23 +9,17 @@ import sys
 import time
 import math
 
-# Make sim/, controller/, the jugglebot ROS2 package, and generated config
-# importable when run directly on a fresh clone — without requiring the
-# jugglebot package to be pip-installed (as it is on the Jetson venv).
-# Mirrors the path entries in tests/conftest.py.
-_sim_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_sim_dir)
-for _p in (
-    _sim_dir,                                                # bare plant/, hand/, ball_butler/ imports
-    _repo_root,                                              # controller.*
-    os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),  # jugglebot.motion.* (pure-Python ROS2 pkg)
-    os.path.join(_repo_root, 'config', 'generated'),         # generated hardware/protocol config
-):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 import mujoco.viewer
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 
 CONTROL_DT = 1.0 / 50  # 50 Hz
 

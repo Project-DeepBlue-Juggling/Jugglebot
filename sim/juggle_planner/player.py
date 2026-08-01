@@ -31,10 +31,10 @@ from jugglebot.motion.ik_solver import (
     twist_to_leg_velocities,
 )
 
-from controller.demo.trajectory import JuggleTrajectory
+from sim.juggle_planner.trajectory import JuggleTrajectory
 
 if TYPE_CHECKING:                                # pragma: no cover
-    from controller.demo.timeline import ExitTransient
+    from sim.juggle_planner.timeline import ExitTransient
 
 
 class PlayerCommand(NamedTuple):

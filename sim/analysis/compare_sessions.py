@@ -25,17 +25,18 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-# Ensure sim/ and repo root are importable
-_analysis_dir = os.path.dirname(os.path.abspath(__file__))
-_sim_dir = os.path.dirname(_analysis_dir)
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-_repo_root = os.path.dirname(_sim_dir)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
 if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
-from analysis.compare import load_csv, _align_time, _extract_array
-from analysis.diagnose import analyse_csv, generate_flags
+from sim.analysis.compare import load_csv, _align_time, _extract_array
+from sim.analysis.diagnose import analyse_csv, generate_flags
 
 
 # ---------------------------------------------------------------------------

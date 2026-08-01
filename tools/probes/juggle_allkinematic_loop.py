@@ -39,12 +39,12 @@ import csv
 import os
 import sys
 
-_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-for _p in (_repo_root, os.path.join(_repo_root, 'sim'),
-           os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_repo_root, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 import numpy as np
 import mujoco
@@ -53,7 +53,7 @@ from sim.plant.mujoco_plant import MuJoCoPlant
 from sim.juggle_tilt import cup_axis, realize_tilted, tilt_to_throw, MAX_TILT_DEG
 from sim.juggle_noise import NoiseConfig, JuggleNoise, BallisticEstimator
 from sim.juggle_selfcatch import _QuinticSeg
-from controller.demo.juggle_planner import (
+from sim.juggle_planner.juggle_planner import (
     plan_cup_cycle, takeoff_velocity, ballistic_touchdown, PlannerConfig, GRAVITY)
 
 CONTROL_DT = 0.025

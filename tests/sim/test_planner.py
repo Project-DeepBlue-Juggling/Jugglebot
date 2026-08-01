@@ -8,9 +8,9 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
-from hand.planner import ThrowCatchPlanner, ThrowCatchPlan
-from hand.ballistics import compute_launch_velocity, compute_arrival_velocity, rodrigues
-from hand.trajectory import max_throw_speed_mps
+from sim.hand.planner import ThrowCatchPlanner, ThrowCatchPlan
+from sim.hand.ballistics import compute_launch_velocity, compute_arrival_velocity, rodrigues
+from sim.hand.trajectory import max_throw_speed_mps
 
 
 class TestThrowCatchPlanner:

@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from analysis.compare_sessions import (
+from sim.analysis.compare_sessions import (
     _pct_change,
     _delta_str,
     _count_flags,

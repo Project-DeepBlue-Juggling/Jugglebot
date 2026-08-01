@@ -7,12 +7,12 @@ import math
 import numpy as np
 import pytest
 
-from ball_butler.sim import (
+from sim.ball_butler.sim import (
     BallButlerSim, BallButlerConfig,
     _yaw_solve, _solve_throw, _GRAVITY_MMS2,
 )
-from hand.coordinator import BallSpawn
-from input.scripted import _ball_landing, _compute_catch_target
+from sim.hand.coordinator import BallSpawn
+from sim.input.scripted import _ball_landing, _compute_catch_target
 
 
 # ---------------------------------------------------------------------------

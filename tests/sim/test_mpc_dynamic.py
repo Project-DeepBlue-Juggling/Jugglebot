@@ -10,12 +10,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller import MPCController, MPCParams
 from controller.target import flat_target_to_events
-from hand.coordinator import HandCoordinator, DynamicTarget, HandPhase
-from hand.trajectory import HandCatchSequence
-from input.scripted import get_catch_sequence, BallSpawn
+from sim.hand.coordinator import HandCoordinator, DynamicTarget, HandPhase
+from sim.hand.trajectory import HandCatchSequence
+from sim.input.scripted import get_catch_sequence, BallSpawn
 from helpers import run_catch_sim, IDLE_POSE
 
 
@@ -209,7 +209,7 @@ class TestFeasibilityChecker:
 
     def test_accepts_feasible_target(self, plant):
         """DT1 (moderate pose, 0.9s deadline) should be feasible."""
-        from hand.feasibility import FeasibilityChecker
+        from sim.hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         sequence, _ = get_catch_sequence('DT1')
         target, _ = sequence[0]
@@ -219,7 +219,7 @@ class TestFeasibilityChecker:
 
     def test_rejects_infeasible_target(self, plant):
         """DT4 (extreme pose, 0.3s deadline) should be rejected."""
-        from hand.feasibility import FeasibilityChecker
+        from sim.hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         sequence, _ = get_catch_sequence('DT4')
         target, _ = sequence[0]
@@ -230,7 +230,7 @@ class TestFeasibilityChecker:
 
     def test_rejects_out_of_stroke(self, plant):
         """Target with extensions beyond stroke should be rejected at IK stage."""
-        from hand.feasibility import FeasibilityChecker
+        from sim.hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         # Extreme Z that exceeds stroke
         extreme_pose = np.array([0, 0, 350, 0, 0, 0])
@@ -241,7 +241,7 @@ class TestFeasibilityChecker:
 
     def test_coordinator_rejects_with_checker(self, plant, mpc):
         """When feasibility checker is wired in, DT4 gets a rejection event."""
-        from hand.feasibility import FeasibilityChecker
+        from sim.hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         coordinator = HandCoordinator(feasibility_checker=checker)
         sequence, duration = get_catch_sequence('DT4')
@@ -263,7 +263,7 @@ class TestFeasibilityRefEvents:
 
     def test_catch_uses_flat_reference(self, plant):
         """Catch targets (arrival_twist=None) use the legacy flat-reference path."""
-        from hand.feasibility import FeasibilityChecker
+        from sim.hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         sequence, _ = get_catch_sequence('DT1')
         target, _ = sequence[0]
@@ -275,7 +275,7 @@ class TestFeasibilityRefEvents:
 
     def test_throw_target_with_ref_events(self, plant):
         """Throw target (nonzero twist) triggers event-based coarse MPC solve."""
-        from hand.feasibility import FeasibilityChecker
+        from sim.hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         state = plant.get_state()
         # Moderate throw target: small Z offset (within stroke), downward velocity
@@ -288,7 +288,7 @@ class TestFeasibilityRefEvents:
 
     def test_infeasible_throw_rejected(self, plant):
         """Extreme throw target with tight deadline should be rejected."""
-        from hand.feasibility import FeasibilityChecker
+        from sim.hand.feasibility import FeasibilityChecker
         checker = FeasibilityChecker(plant)
         state = plant.get_state()
         # Extreme pose + very short deadline

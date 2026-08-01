@@ -1,21 +1,21 @@
 """Unit tests for the juggling-demo master timeline (Phase 3b).
 
-Covers controller/demo/timeline.py and the abort extension in
-controller/demo/player.py. Validates the T-U8 (event ordering and
+Covers sim/juggle_planner/timeline.py and the abort extension in
+sim/juggle_planner/player.py. Validates the T-U8 (event ordering and
 content) and T-U9 (abort + exit transient) tests of
 plans/active/bb-led-two-ball-juggle-demo.md §5.
 """
 import numpy as np
 import pytest
 
-from controller.demo.pattern import JugglePattern
-from controller.demo.trajectory import build_analytic_oval
-from controller.demo.timeline import (
+from sim.juggle_planner.pattern import JugglePattern
+from sim.juggle_planner.trajectory import build_analytic_oval
+from sim.juggle_planner.timeline import (
     Event, ExitTransient, MasterTimeline,
     HAND_TRAJ_THROW, HAND_TRAJ_CATCH, HAND_TRAJ_NA,
     build_exit_transient,
 )
-from controller.demo.player import TrajectoryPlayer
+from sim.juggle_planner.player import TrajectoryPlayer
 
 
 # --------------------------------------------------------------------------

@@ -46,15 +46,14 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-_SIM_DIR = os.path.join(_REPO_ROOT, 'sim')
-if _SIM_DIR not in sys.path:
-    sys.path.insert(0, _SIM_DIR)
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+_REPO_ROOT = bootstrap_paths()
 
-from analysis.compare import load_csv  # type: ignore
-from analysis.diagnose import analyse_motion_onset, _load_motor_params  # type: ignore
+from sim.analysis.compare import load_csv  # type: ignore
+from sim.analysis.diagnose import analyse_motion_onset, _load_motor_params  # type: ignore
 
 
 # Harmonics to probe for cogging modulation.  7 = pole pair, 12 = slots,

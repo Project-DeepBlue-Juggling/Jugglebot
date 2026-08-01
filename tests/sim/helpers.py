@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
-from hand.coordinator import HandCoordinator
-from hand.trajectory import HandCatchSequence
+from sim.hand.coordinator import HandCoordinator
+from sim.hand.trajectory import HandCatchSequence
 
 CONTROL_DT = 0.025  # 40 Hz
 # Idle pose just above STOW — keeps all leg extensions above the 5mm margin.

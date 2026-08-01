@@ -12,11 +12,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
 from controller.target import flat_target_to_events
-from input.scripted import _compute_catch_orientation, _compute_catch_target
+from sim.input.scripted import _compute_catch_orientation, _compute_catch_target
 
 CONTROL_DT = 0.025  # 40 Hz
 

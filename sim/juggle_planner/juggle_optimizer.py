@@ -84,22 +84,29 @@ import casadi as cs
 import numpy as np
 
 from controller.ballistics import TILT_LIMIT_RAD
-from controller.demo.pattern import JugglePattern
-from controller.demo.trajectory import JuggleTrajectory, build_analytic_oval
+from sim.juggle_planner.pattern import JugglePattern
+from sim.juggle_planner.trajectory import JuggleTrajectory, build_analytic_oval
 from controller.hermite import quintic_interp_with_accel
 from jugglebot.motion.geometry import StewartGeometry
 
-# Hand-stroke kinematics constants (mirroring sim/hand/trajectory.py
-# and sim/hand/ballistics.py). Lifted here so the optimiser stays inside
-# the controller/ boundary (no sim/ imports). These describe the
-# hardware hand actuator and are not sim-specific.
-_HAND_STROKE_MARGIN_MM = 20.0
-_HAND_TOTAL_STROKE_MM = 315.0
-_HAND_AXIS_BOTTOM_OFFSET_MM = -129.0   # from sim/hand/ballistics.py:22
-_HAND_BALL_SEAT_OFFSET_MM = 44.4       # from sim/hand/ballistics.py:25
-_HAND_INERTIA_RATIO = 0.747            # from sim/hand/trajectory.py:35
-_HAND_THROW_VEL_HOLD_PCT = 0.05        # from sim/hand/trajectory.py:48
-_HAND_CATCH_VEL_HOLD_PCT = 0.10        # from sim/hand/trajectory.py:37
+# Hand-stroke kinematics constants.  Until 2026-08-01 these were seven
+# hand-copied literals with "from sim/hand/trajectory.py:35"-style comments —
+# the optimiser lived under controller/ and could not import sim/.  The move
+# to sim/juggle_planner/ removed that boundary, so they are now real imports
+# from their canonical homes: a hand re-tune can no longer silently leave the
+# optimiser solving against last year's stroke geometry.  (Values verified
+# bit-identical at the swap: 20.0 / 315.0 / -129.0 / 44.4 / 0.747 / 0.05 / 0.10.)
+from sim.hand.ballistics import (                     # noqa: E402
+    _HAND_AXIS_BOTTOM_OFFSET_MM,
+    _BALL_SEAT_OFFSET_MM as _HAND_BALL_SEAT_OFFSET_MM,
+)
+from sim.hand.trajectory import (                     # noqa: E402
+    STROKE_MARGIN_MM as _HAND_STROKE_MARGIN_MM,
+    _TOTAL_STROKE_MM as _HAND_TOTAL_STROKE_MM,
+    INERTIA_RATIO as _HAND_INERTIA_RATIO,
+    THROW_VEL_HOLD_PCT as _HAND_THROW_VEL_HOLD_PCT,
+    CATCH_VEL_HOLD_PCT as _HAND_CATCH_VEL_HOLD_PCT,
+)
 
 
 def _hand_offset_at_release_mm(throw_speed_mps: float) -> float:

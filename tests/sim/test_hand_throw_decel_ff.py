@@ -76,7 +76,7 @@ import math
 
 import pytest
 
-from hand import trajectory as mirror
+from sim.hand import trajectory as mirror
 import hardware_config as hw
 from jugglebot.toss_sequencer import FLIGHT_TIME_MIN_S, FLIGHT_TIME_MAX_S
 

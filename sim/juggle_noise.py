@@ -102,7 +102,7 @@ class BallisticEstimator:
 
     Unit-agnostic: feed positions and ``gravity`` in consistent units (the
     runner feeds SI — metres, m/s², so the estimate drops straight into
-    :func:`controller.demo.juggle_planner.ballistic_touchdown`).
+    :func:`sim.juggle_planner.juggle_planner.ballistic_touchdown`).
     """
 
     def __init__(self, gravity, window: "int | None" = None):

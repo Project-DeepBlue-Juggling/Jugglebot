@@ -679,7 +679,7 @@ class TestOvershootSaturationRegression:
     """
 
     def test_ref_aligns_with_plant_at_first_solve(self):
-        from plant.mujoco_plant import MuJoCoPlant
+        from sim.plant.mujoco_plant import MuJoCoPlant
         from controller.mpc import MPCController
         from controller.params import MPCParams
 

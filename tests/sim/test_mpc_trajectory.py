@@ -24,11 +24,11 @@ import numpy as np
 import pytest
 
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.mpc import MPCController
 from controller.params import MPCParams
 from controller.target import flat_target_to_events
-from input.scripted import make_T1, make_T2, make_T3, make_T4, make_T5, make_T6
+from sim.input.scripted import make_T1, make_T2, make_T3, make_T4, make_T5, make_T6
 
 
 # NIGHTLY TIER — the MPC is operationally dormant (plans/active/refactor-2026-07.md

@@ -51,9 +51,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Print gcc command and extra diagnostics")
     args = parser.parse_args(argv)
 
-    # Ensure the project root is importable (when run as a script, __main__
-    # has no package context).
+    # Ensure the project roots are importable (when run as a script,
+    # __main__ has no package context).  The full bootstrap is required, not
+    # just the repo root: this script imports ``sim.plant.mujoco_plant``,
+    # which imports ``jugglebot.motion.*`` and the generated config modules.
     sys.path.insert(0, str(_project_root()))
+    from sim._paths import bootstrap_paths
+    bootstrap_paths()
 
     # Late imports so the --help message works without casadi/mujoco.
     import casadi as cs  # noqa: F401 — required for the MPC build

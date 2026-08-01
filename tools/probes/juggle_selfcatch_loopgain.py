@@ -58,12 +58,12 @@ import csv
 import os
 import sys
 
-_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-for _p in (_repo_root, os.path.join(_repo_root, 'sim'),
-           os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_repo_root, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 from sim.juggle_selfcatch import run_self_catch, SelfCatchConfig, CATCH_REACH_MM
 

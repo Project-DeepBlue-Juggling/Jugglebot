@@ -30,8 +30,8 @@ import pytest
 # viz.telemetry.StepRecord.  Import via the same path diagnose.py uses
 # (``from viz.telemetry import StepRecord``) — conftest sets up sim/
 # on sys.path for the test collection.
-from viz.telemetry import StepRecord
-from analysis.diagnose import analyse_oscillation
+from sim.viz.telemetry import StepRecord
+from sim.analysis.diagnose import analyse_oscillation
 
 
 # ---------------------------------------------------------------------------

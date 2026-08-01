@@ -4,7 +4,7 @@ Usage (standalone):
     python sim/viz/reference_plot.py [--cycle-time 1.2] [--lateral-spacing 300] [--platform-event-speed-ratio 0.5]
 
 Also importable:
-    from viz.reference_plot import plot_reference
+    from sim.viz.reference_plot import plot_reference
     plot_reference(cycle_time=1.2, lateral_spacing_mm=300, ratio=0.5)
 """
 from __future__ import annotations
@@ -15,17 +15,15 @@ import os
 
 import numpy as np
 
-# Ensure sim/ is on the path
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-
-_repo_root = os.path.abspath(os.path.join(_sim_dir, '..'))
-_ros_pkg = os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot', 'jugglebot')
-_config_gen = os.path.join(_repo_root, 'config', 'generated')
-for p in [_ros_pkg, _config_gen]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 
 def _rodrigues(rv: np.ndarray) -> np.ndarray:
@@ -58,7 +56,7 @@ def _numerical_ik(pose_6dof, base_nodes, plat_nodes, init_height_vec,
 
 def _load_geometry():
     """Load Stewart geometry from hardware_config (no MuJoCo needed)."""
-    from motion.geometry import StewartGeometry
+    from jugglebot.motion.geometry import StewartGeometry
     geom = StewartGeometry()
     return (
         geom.base_nodes,
@@ -84,7 +82,7 @@ def plot_reference(
       4. Leg velocities (finite-difference)
     """
     import matplotlib.pyplot as plt
-    from input.toss_loop import TossLoopController, _quintic_interp
+    from sim.input.toss_loop import TossLoopController, _quintic_interp
 
     ctrl = TossLoopController(
         cycle_time=cycle_time,

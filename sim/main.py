@@ -34,29 +34,23 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-# Make sim/, controller/, the jugglebot ROS2 package, and generated config
-# importable when run directly on a fresh clone — without requiring the
-# jugglebot package to be pip-installed (as it is on the Jetson venv).
-# Mirrors the path entries in tests/conftest.py.
-_sim_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_sim_dir)
-for _p in (
-    _sim_dir,                                                # bare plant/, hand/, ball_butler/ imports
-    _repo_root,                                              # controller.*
-    os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),  # jugglebot.motion.* (pure-Python ROS2 pkg)
-    os.path.join(_repo_root, 'config', 'generated'),         # generated hardware/protocol config
-):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
-from plant.mujoco_plant import MuJoCoPlant
-from plant.interface import PlantState
-from input.sim_control import SimController
-from viz.telemetry import TelemetryLogger, StepRecord, record_from_arrays
+from sim.plant.mujoco_plant import MuJoCoPlant
+from sim.plant.interface import PlantState
+from sim.input.sim_control import SimController
+from sim.viz.telemetry import TelemetryLogger, StepRecord, record_from_arrays
 
 if TYPE_CHECKING:
-    from hand.coordinator import BallSpawn
-    from hand.trajectory import HandCatchSequence
+    from sim.hand.coordinator import BallSpawn
+    from sim.hand.trajectory import HandCatchSequence
 
 
 # MPC control rate (Hz).
@@ -363,7 +357,7 @@ class CatchTargetSource:
         self._build_coordinator()
 
     def _build_coordinator(self):
-        from hand.coordinator import HandCoordinator
+        from sim.hand.coordinator import HandCoordinator
         self._coord = HandCoordinator(
             active_pose=self._active_pose,
             feasibility_checker=self._feasibility)
@@ -432,7 +426,7 @@ class ThrowCatchTargetSource:
                  v_max_mmps: float | None = None,
                  tau_s: float | None = None,
                  clamp_start_twist_mmps: float | None = None):
-        from hand.planner import ThrowCatchPlan
+        from sim.hand.planner import ThrowCatchPlan
         self._plan = plan
         self._active_pose = active_pose
         self._v_max_mmps = v_max_mmps
@@ -443,7 +437,7 @@ class ThrowCatchTargetSource:
         self._build_coordinator()
 
     def _build_coordinator(self):
-        from hand.coordinator import HandCoordinator
+        from sim.hand.coordinator import HandCoordinator
         self._coord = HandCoordinator(active_pose=self._active_pose)
         self._coord.submit_throw_catch(self._plan)
         self._ball_spawned_in_hand = False
@@ -657,7 +651,7 @@ class ScheduledCatchSource:
     """
 
     def __init__(self, coordinator):
-        from hand.scheduled_coordinator import ScheduledCoordinator
+        from sim.hand.scheduled_coordinator import ScheduledCoordinator
         self._coord: ScheduledCoordinator = coordinator
 
     def update(self, sim_time: float, state: PlantState) -> TargetCommand:
@@ -770,8 +764,8 @@ def _execute_hand_cmd(plant, hand_cmd, active_hand_seq, last_hand_cmd_mm,
 
     Returns (active_hand_seq, last_hand_cmd_mm) — updated state.
     """
-    from hand.trajectory import HandCatchSequence, HandThrowSequence
-    from hand.coordinator import BallRelease
+    from sim.hand.trajectory import HandCatchSequence, HandThrowSequence
+    from sim.hand.coordinator import BallRelease
 
     if isinstance(hand_cmd, BallRelease):
         # Release the ball with specified velocity
@@ -984,7 +978,7 @@ def run_mpc_with_viewer(plant: MuJoCoPlant, mpc, source, duration: float,
         - ``print_summary()``: called after each run
     """
     import mujoco.viewer
-    from viz.horizon import HorizonRenderer
+    from sim.viz.horizon import HorizonRenderer
 
     horizon = HorizonRenderer(plant.geom.init_height_mm)
 
@@ -1218,7 +1212,7 @@ def main():
     elif args.throw_catch:
         args.mpc = True
         needs_high_vel = True
-        from input.scripted import get_throw_catch_sequence
+        from sim.input.scripted import get_throw_catch_sequence
         throw_catch_plan, default_duration = get_throw_catch_sequence(args.throw_catch)
         label = f"Throw-catch: {args.throw_catch}"
 
@@ -1226,7 +1220,7 @@ def main():
         args.mpc = True
         needs_feasibility = True
         needs_high_vel = True
-        from input.scripted import get_catch_sequence
+        from sim.input.scripted import get_catch_sequence
         catch_sequence, default_duration = get_catch_sequence(args.catch)
         label = f"Catch: {args.catch}"
 
@@ -1247,7 +1241,7 @@ def main():
     elif args.trajectory:
         args.mpc = True
         needs_high_vel = True
-        from input.scripted import get_trajectory
+        from sim.input.scripted import get_trajectory
         waypoints, default_duration = get_trajectory(args.trajectory)
         label = f"Trajectory: {args.trajectory}"
 
@@ -1351,14 +1345,14 @@ def main():
     # Optional live dashboard
     dashboard = None
     if args.dashboard:
-        from viz.dashboard import DashboardServer
+        from sim.viz.dashboard import DashboardServer
         dashboard = DashboardServer(port=args.dashboard_port)
         dashboard.start()
 
     # Build feasibility checker for catch modes (needs plant)
     feasibility_checker = None
     if needs_feasibility:
-        from hand.feasibility import FeasibilityChecker
+        from sim.hand.feasibility import FeasibilityChecker
         feasibility_checker = FeasibilityChecker(plant)
         print(f"Feasibility checker: coarse MPC (dt={feasibility_checker._coarse_dt}s, "
               f"horizon={feasibility_checker._horizon_s}s)")
@@ -1392,7 +1386,7 @@ def main():
     active_pose = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
 
     if args.cycle_time is not None:
-        from input.toss_loop import TossLoopController
+        from sim.input.toss_loop import TossLoopController
         controller = TossLoopController(
             cycle_time=args.cycle_time,
             hold_ratio=args.hold_ratio,
@@ -1411,7 +1405,7 @@ def main():
         plant.model.vis.quality.shadowsize = 0
 
     elif args.juggle:
-        from input.continuous_throw_catch import ContinuousThrowCatchController
+        from sim.input.continuous_throw_catch import ContinuousThrowCatchController
         controller = ContinuousThrowCatchController(active_pose=active_pose)
         source = ContinuousThrowCatchSource(controller)
         print("\n  Continuous Throw-Catch Mode (Juggle)")
@@ -1430,11 +1424,11 @@ def main():
         plant.model.vis.quality.shadowsize = 0
 
     elif args.interactive_catch:
-        from input.interactive_catch import InteractiveCatchController
+        from sim.input.interactive_catch import InteractiveCatchController
 
         bb_sim = None
         if args.bb:
-            from ball_butler.sim import BallButlerSim
+            from sim.ball_butler.sim import BallButlerSim
             import math
             bb_pos = np.array([300.0, -400.0, 1500.0])
             bb_yaw = math.atan2(-bb_pos[1], -bb_pos[0])
@@ -1493,7 +1487,7 @@ def main():
             clamp_start_twist_mmps=mpc.params.max_ref_start_twist_mmps)
 
     elif args.spacemouse:
-        from input.spacemouse import SpaceMouseInput
+        from sim.input.spacemouse import SpaceMouseInput
         raw_input = SpaceMouseInput()
         if not raw_input.connected:
             print("ERROR: SpaceMouse not available. Use --keyboard instead.")
@@ -1501,7 +1495,7 @@ def main():
         source = InteractiveTargetSource(raw_input, CONTROL_DT)
 
     elif args.keyboard:
-        from input.keyboard import KeyboardInput
+        from sim.input.keyboard import KeyboardInput
         raw_input = KeyboardInput()
         source = InteractiveTargetSource(raw_input, CONTROL_DT)
 
@@ -1532,7 +1526,7 @@ def main():
         # Hardware mode with no explicit target: receive targets from ROS2
         # via mpc_bridge_node → ZMQ :5558.  This is the standard production
         # path where spacemouse/GUI/catch all route through mpc_bridge_node.
-        from input.zmq_target import ZmqTargetSource
+        from sim.input.zmq_target import ZmqTargetSource
         default_z = plant.home_extensions_mm[0] if hasattr(plant, 'home_extensions_mm') else 170.0
         v_max = mpc.params.max_leg_vel_mmps if mpc is not None else None
         tau = mpc.params.tau if mpc is not None else None

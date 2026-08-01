@@ -9,7 +9,7 @@ track a commanded sinusoidal CUP Cartesian trajectory:
 
 For each it reports a lock-in Bode sweep (amplitude ratio + phase lag vs
 frequency) plus a static-gain / workspace check. These numbers ground the
-online cup planner's per-axis limits (``controller/demo/juggle_planner.py``):
+online cup planner's per-axis limits (``sim/juggle_planner/juggle_planner.py``):
 the slider is fast + accurate (do the throw stroke there), the platform tracks
 only smooth lateral motion within a ~150 mm workspace at the operating height.
 
@@ -28,11 +28,12 @@ import sys
 
 import numpy as np
 
-_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-for _p in (_REPO, os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_REPO, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 import mujoco
 from sim.plant.mujoco_plant import MuJoCoPlant

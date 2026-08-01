@@ -151,13 +151,14 @@ import time
 
 import numpy as np
 
-_sim_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_sim_dir)
-for _p in (_repo_root, _sim_dir,
-           os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_repo_root, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 import mujoco
 
@@ -174,13 +175,13 @@ from jugglebot.motion.trajectory.shaping import cup_lateral_shift_mm
 
 from controller.teensy_link.setpoint_pump import SetpointPump
 
-from plant.mujoco_plant import MuJoCoPlant
-from hand.trajectory import (
+from sim.plant.mujoco_plant import MuJoCoPlant
+from sim.hand.trajectory import (
     HandCatchSequence, HandCatchTrajectory, HandThrowSequence, STROKE_MARGIN_MM,
 )
-from juggle_noise import JuggleNoise, NoiseConfig, BallisticEstimator
+from sim.juggle_noise import JuggleNoise, NoiseConfig, BallisticEstimator
 
-from gate_common import (
+from sim.gate_common import (
     CUP_Z_BASE_MM, HOLD_TILT_DEG, HOLD_TRAVEL_MM, KNOT_DT_S, NEUTRAL_POSE,
     SEPARATION_MS, VEL_MATCH_FRAC, Z_ACTIVE_MM, ViewerClosed, attach_viewer,
     tilt_change_deg, travel_mm,

@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import mujoco
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 
 
 @pytest.fixture(scope='module')

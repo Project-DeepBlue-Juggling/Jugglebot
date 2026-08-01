@@ -2,11 +2,11 @@
 
 Wires every Phase 2/3 component together in one process at 40 Hz:
 
-  - :class:`controller.demo.juggle_optimizer` — solves the periodic
+  - :class:`sim.juggle_planner.juggle_optimizer` — solves the periodic
     optimised platform trajectory once at startup.
-  - :class:`controller.demo.player.TrajectoryPlayer` — drives the platform
+  - :class:`sim.juggle_planner.player.TrajectoryPlayer` — drives the platform
     from the trajectory.
-  - :class:`controller.demo.timeline.MasterTimeline` — schedules the BB
+  - :class:`sim.juggle_planner.timeline.MasterTimeline` — schedules the BB
     priming throw + alternating hand throws / catches.
   - :class:`sim.plant.mujoco_plant.MuJoCoPlant` — physics, two-ball
     manager, hand actuator.
@@ -95,32 +95,25 @@ from typing import Optional
 
 import numpy as np
 
-# Make sim/, controller/, the jugglebot ROS2 package, and generated config
-# importable when this script is run directly on a fresh clone — without
-# requiring the jugglebot package to be pip-installed (as it is on the
-# Jetson venv). Mirrors the path entries in tests/conftest.py so the demo
-# runs from any checkout with no PYTHONPATH/install dance.
-_sim_dir = os.path.dirname(os.path.abspath(__file__))
-_repo_root = os.path.dirname(_sim_dir)
-for _p in (
-    _sim_dir,                                               # bare hand/, ball_butler/ imports
-    _repo_root,                                             # controller.*
-    os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'),  # jugglebot.motion.* (pure-Python ROS2 pkg)
-    os.path.join(_repo_root, 'config', 'generated'),        # generated hardware/protocol config
-):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
-from controller.demo.pattern import JugglePattern
+from sim.juggle_planner.pattern import JugglePattern
 from controller.telemetry import record_from_arrays
-from controller.demo.player import TrajectoryPlayer
-from controller.demo.timeline import (
+from sim.juggle_planner.player import TrajectoryPlayer
+from sim.juggle_planner.timeline import (
     DEFAULT_BB_LEAD_S, Event, MasterTimeline,
 )
-from controller.demo.juggle_optimizer import (
+from sim.juggle_planner.juggle_optimizer import (
     OptimizerConfig, optimise_juggle_trajectory,
 )
-from controller.demo.trajectory import JuggleTrajectory, build_analytic_oval
+from sim.juggle_planner.trajectory import JuggleTrajectory, build_analytic_oval
 from sim.ball_butler.sim import BallButlerSim
 from sim.hand.ballistics import compute_hand_offset_mm, rodrigues
 from sim.hand.trajectory import (

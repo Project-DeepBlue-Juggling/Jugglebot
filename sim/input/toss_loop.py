@@ -32,21 +32,16 @@ from enum import Enum, auto
 
 import numpy as np
 
-import os, sys
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-
-from hand.ballistics import compute_hand_offset_mm
-from hand.coordinator import DynamicTarget, BallRelease
-from hand.planner import ThrowCatchPlanner, ThrowCatchPlan, _HAND_CATCH_X5_MM
-from hand.trajectory import (
+from sim.hand.ballistics import compute_hand_offset_mm
+from sim.hand.coordinator import DynamicTarget, BallRelease
+from sim.hand.planner import ThrowCatchPlanner, ThrowCatchPlan, _HAND_CATCH_X5_MM
+from sim.hand.trajectory import (
     HandThrowTrajectory,
     HandCatchTrajectory,
     GRAVITY_MPS2,
 )
-from input.sim_control import SimController
-from plant.interface import PlantState
+from sim.input.sim_control import SimController
+from sim.plant.interface import PlantState
 from controller.target import ReferenceEvent
 
 logger = logging.getLogger(__name__)

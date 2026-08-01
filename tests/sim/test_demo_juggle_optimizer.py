@@ -1,6 +1,6 @@
 """Unit tests for the juggling-demo offline trajectory optimiser (Phase 2).
 
-Covers controller/demo/juggle_optimizer.py — the periodic CasADi NLP that
+Covers sim/juggle_planner/juggle_optimizer.py — the periodic CasADi NLP that
 produces the throw/catch-feasible platform trajectory the runtime player
 loads. Each unit test exercises one constraint or invariant; the
 solver-converges fixture is session-scoped so the full file runs the
@@ -12,9 +12,9 @@ and the test cases T-U3 (throw constraint) / T-U4 (catch constraint) of §5.
 import numpy as np
 import pytest
 
-from controller.demo.pattern import JugglePattern
-from controller.demo.trajectory import JuggleTrajectory
-from controller.demo.juggle_optimizer import (
+from sim.juggle_planner.pattern import JugglePattern
+from sim.juggle_planner.trajectory import JuggleTrajectory
+from sim.juggle_planner.juggle_optimizer import (
     OptimizerConfig, OptimizerResult,
     optimise_juggle_trajectory,
     save_optimised_trajectory,
@@ -106,7 +106,7 @@ def test_throw_ball_release_velocity_lands_at_catch(pattern, result_default):
     checks the landing position matches the matched-catch hand opening
     in xyz.
     """
-    from controller.demo.juggle_optimizer import (
+    from sim.juggle_planner.juggle_optimizer import (
         _hand_offset_at_release_mm, _hand_offset_at_arrival_mm,
     )
     GRAVITY_MMS2 = 9806.0
@@ -306,7 +306,7 @@ def test_out_of_range_catch_offset_raises():
 # --------------------------------------------------------------------------
 def test_optimised_trajectory_drives_trajectory_player(result_default):
     """The output is a drop-in replacement for ``build_analytic_oval``."""
-    from controller.demo.player import TrajectoryPlayer
+    from sim.juggle_planner.player import TrajectoryPlayer
     from jugglebot.motion.geometry import StewartGeometry
     player = TrajectoryPlayer(result_default.trajectory, geom=StewartGeometry())
     # Sample across the period; every command stays finite and the

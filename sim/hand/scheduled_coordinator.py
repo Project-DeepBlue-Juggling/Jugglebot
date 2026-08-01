@@ -7,7 +7,7 @@ spawning, capture notification) on top.
 Usage::
 
     from controller.scheduler import EventScheduler, ScheduledEvent, EventType
-    from hand.scheduled_coordinator import ScheduledCoordinator
+    from sim.hand.scheduled_coordinator import ScheduledCoordinator
 
     scheduler = EventScheduler(active_pose, cumulative_times)
     coord = ScheduledCoordinator(scheduler, feasibility_checker, plant)
@@ -31,21 +31,13 @@ from typing import Optional
 
 import numpy as np
 
-import os, sys
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if _sim_dir not in sys.path:
-    sys.path.insert(0, _sim_dir)
-_repo_root = os.path.dirname(_sim_dir)
-if _repo_root not in sys.path:
-    sys.path.insert(0, _repo_root)
-
 from controller.scheduler import (
     EventScheduler, EventType, HandNotification, ScheduledEvent,
     SchedulerOutput, SchedulerPhase, _next_event_id,
 )
 from controller.target import TargetCommand as BaseTargetCommand
-from hand.coordinator import BallSpawn
-from hand.trajectory import HandCatchSequence
+from sim.hand.coordinator import BallSpawn
+from sim.hand.trajectory import HandCatchSequence
 
 logger = logging.getLogger(__name__)
 

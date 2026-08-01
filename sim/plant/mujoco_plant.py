@@ -20,11 +20,6 @@ import sys
 import numpy as np
 import mujoco
 
-# Allow importing from the production motion package
-_repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-sys.path.insert(0, os.path.join(_repo_root, 'ros_ws', 'src', 'jugglebot'))
-sys.path.insert(0, os.path.join(_repo_root, 'config', 'generated'))
-
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     pose_to_leg_lengths,
@@ -39,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Import BallManager (optional — may not exist in minimal setups)
 try:
-    from ball.manager import BallManager, BallState
+    from sim.ball.manager import BallManager, BallState
     _HAS_BALL = True
 except ImportError:
     _HAS_BALL = False

@@ -24,11 +24,12 @@ from __future__ import annotations
 import os
 import sys
 
-_here = os.path.dirname(os.path.abspath(__file__))
-_root = os.path.dirname(os.path.dirname(_here))
-for _p in (_root, os.path.join(_root, 'sim')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+_root = bootstrap_paths()
 
 import numpy as np
 import mujoco

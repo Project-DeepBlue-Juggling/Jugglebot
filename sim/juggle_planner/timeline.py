@@ -23,8 +23,8 @@ from typing import NamedTuple
 import numpy as np
 
 from controller.hermite import quintic_interp_with_accel
-from controller.demo.pattern import JugglePattern
-from controller.demo.trajectory import JuggleTrajectory
+from sim.juggle_planner.pattern import JugglePattern
+from sim.juggle_planner.trajectory import JuggleTrajectory
 
 
 # Hand CAN `traj_type` values from the ``set_hand_traj_cmd`` service —

@@ -28,12 +28,12 @@ import sys
 
 import numpy as np
 
-_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-for _p in (_REPO, os.path.join(_REPO, 'sim'),
-           os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot'),
-           os.path.join(_REPO, 'config', 'generated')):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+_REPO = bootstrap_paths()
 
 from sim.juggle_catch import run_single_catch, SingleCatchConfig  # noqa: E402
 from sim.juggle_noise import NoiseConfig  # noqa: E402

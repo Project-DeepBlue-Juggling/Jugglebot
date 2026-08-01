@@ -48,7 +48,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from plant.mujoco_plant import MuJoCoPlant
+from sim.plant.mujoco_plant import MuJoCoPlant
 from controller.hot_loop_contract import (
     THRESHOLD_BYTES,
     HOT_LOOP_CONTRACT_WINDOW_TICKS,
@@ -384,7 +384,7 @@ def _build_hardware_fixture():
     # Pre-compute motor positions at TARGET_POSE via MuJoCoPlant's IK so
     # the synthetic telemetry represents a plant already at its goal.
     # Done once at fixture build, outside the measurement window.
-    from plant.mujoco_plant import MuJoCoPlant as _SimPlant
+    from sim.plant.mujoco_plant import MuJoCoPlant as _SimPlant
     _sim_tmp = _SimPlant()
     target_ext_mm = _sim_tmp.pose_to_extensions(TARGET_POSE)
     target_motor_rev = target_ext_mm * _sim_tmp.geom.mm_to_rev

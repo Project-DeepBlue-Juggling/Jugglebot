@@ -21,12 +21,15 @@ import sys
 
 import numpy as np
 
-# Ensure sim/ and ros_ws package are on the path
-_sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-_ros_dir = os.path.abspath(os.path.join(_sim_dir, '..', 'ros_ws', 'src', 'jugglebot'))
-for p in (_sim_dir, _ros_dir):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+# Single path bootstrap (repo root, ros_ws pkg, config/generated);
+# see sim/_paths.py.  Runnable entry scripts only — library modules under
+# sim/ never touch sys.path.
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+from sim._paths import bootstrap_paths  # noqa: E402
+bootstrap_paths()
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry

@@ -9,14 +9,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hand.coordinator import (
+from sim.hand.coordinator import (
     HandCoordinator,
     HandPhase,
     DynamicTarget,
     BallSpawn,
     BallRelease,
 )
-from hand.trajectory import HandCatchSequence, HandThrowSequence, STROKE_MARGIN_MM
+from sim.hand.trajectory import HandCatchSequence, HandThrowSequence, STROKE_MARGIN_MM
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ class TestThrowCatchPostCatch:
 
     def _make_tc_coordinator(self):
         """Build a coordinator with a simple vertical throw-catch plan."""
-        from hand.planner import ThrowCatchPlanner
+        from sim.hand.planner import ThrowCatchPlanner
 
         coord = HandCoordinator(active_pose=_ACTIVE)
         planner = ThrowCatchPlanner()
@@ -367,7 +367,7 @@ class TestPlannerValidation:
 
     def test_negative_throw_time_rejected(self):
         """throw_time < 0 should raise ValueError."""
-        from hand.planner import ThrowCatchPlanner
+        from sim.hand.planner import ThrowCatchPlanner
 
         planner = ThrowCatchPlanner()
         with pytest.raises(ValueError, match="non-negative"):
@@ -380,7 +380,7 @@ class TestPlannerValidation:
 
     def test_catch_before_throw_rejected(self):
         """catch_time <= throw_time should raise ValueError."""
-        from hand.planner import ThrowCatchPlanner
+        from sim.hand.planner import ThrowCatchPlanner
 
         planner = ThrowCatchPlanner()
         with pytest.raises(ValueError, match="after throw_time"):

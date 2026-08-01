@@ -89,11 +89,10 @@ import pytest
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
-_SIM_DIR = os.path.join(_REPO_ROOT, 'sim')
-if _SIM_DIR not in sys.path:                        # tests/firmware has no conftest
-    sys.path.insert(0, _SIM_DIR)
+if _REPO_ROOT not in sys.path:                  # tests/firmware has no conftest
+    sys.path.insert(0, _REPO_ROOT)
 
-from hand import trajectory as mirror              # noqa: E402
+from sim.hand import trajectory as mirror              # noqa: E402
 
 _FW_DIR = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code_platform')
 _HEADER = os.path.join(_FW_DIR, 'hardware_config.h')

@@ -14,9 +14,9 @@ import tempfile
 import numpy as np
 import pytest
 
-from plant.mujoco_plant import MuJoCoPlant
-from plant.interface import PlantState
-from viz.telemetry import TelemetryLogger, StepRecord, record_from_arrays
+from sim.plant.mujoco_plant import MuJoCoPlant
+from sim.plant.interface import PlantState
+from sim.viz.telemetry import TelemetryLogger, StepRecord, record_from_arrays
 
 
 SETTLE_TIME_S = 2.0

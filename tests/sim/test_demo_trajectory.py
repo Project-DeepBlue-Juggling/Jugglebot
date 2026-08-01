@@ -1,6 +1,6 @@
 """Unit tests for the juggling-demo trajectory layer (Phase 2).
 
-Covers controller/demo/{pattern,trajectory,player}.py — the pure-Python,
+Covers sim/juggle_planner/{pattern,trajectory,player}.py — the pure-Python,
 offline trajectory tooling for plans/active/bb-led-two-ball-juggle-demo.md.
 No hardware, no MuJoCo (the sim-playback check lives in
 test_demo_sim_playback.py).
@@ -8,9 +8,9 @@ test_demo_sim_playback.py).
 import numpy as np
 import pytest
 
-from controller.demo.pattern import JugglePattern
-from controller.demo.trajectory import JuggleTrajectory, build_analytic_oval
-from controller.demo.player import TrajectoryPlayer
+from sim.juggle_planner.pattern import JugglePattern
+from sim.juggle_planner.trajectory import JuggleTrajectory, build_analytic_oval
+from sim.juggle_planner.player import TrajectoryPlayer
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     leg_lengths_to_pose, pose_to_leg_lengths, rotvec_to_rot_matrix)
