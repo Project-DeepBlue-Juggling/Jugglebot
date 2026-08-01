@@ -104,8 +104,13 @@ teardown safe.
   55th, `sim/plant/mujoco_plant.py`, uses package-relative imports and is not
   loadable standalone by construction); `--help` exits 0 for all four `tools/`
   CLIs, which *does* reach the argparse defaults; and an AST
-  undefined-global-name scan over all **138** changed `.py` files returns
-  **0 hits** — the check that closes the dangling-rename class.
+  undefined-global-name scan over the **135** `.py` files in this slice's
+  three commits (`git diff --name-only HEAD~3 HEAD | grep '.py$'`, run
+  2026-08-01) returns **0 hits** — the check that closes the
+  dangling-rename class. (An earlier pass reported 138: that count was
+  taken from the dirty working tree, so it included the two foreign
+  `tests/motion/` files owned by another session and double-counted
+  `generate_solver.py`. 135 is the number reproducible from the commits.)
 - `controller/generate_solver.py`'s import chain (`controller.params`,
   `controller.mpc`, `sim.plant.mujoco_plant`) resolves under an emulation of
   the real invocation (`sys.path[0] = controller/`, clean env), run
