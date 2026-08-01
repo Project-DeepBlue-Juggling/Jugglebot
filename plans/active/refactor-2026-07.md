@@ -242,13 +242,19 @@ owner concurs). Confusion is killed by observability, not freshness:
 moving controller/demo into sim (else the move adds dual-module-identity
 surface); (b) Phase 4 (teensy_link) BEFORE any teensy_bridge_node split.
 
-- One import root for sim/: bare-vs-`sim.*` imports currently create two
-  module objects per file in one interpreter (verified live:
-  `sim/reload_gate.py:73-75` vs `tests/sim/test_reload_gate.py:35`) — the
+- [x] One import root for sim/: bare-vs-`sim.*` imports created two module
+  objects per file in one interpreter (verified live pre-fix in
+  `sim/reload_gate.py` vs `tests/sim/test_reload_gate.py`) — the
   "test patches nothing" class. ~50 mechanical rewrites; the single
   bootstrap must keep all four path roots (repo, sim, ros_ws pkg,
-  config/generated).
-- Move `controller/demo/` (2,075 lines) → `sim/juggle_planner/`; six test
+  config/generated). **DONE 2026-08-01** (slice 2) — 179 bare imports across
+  71 files converted; one `sim/_paths.bootstrap_paths()`;
+  `tests/sim/test_sim_import_style.py` is the enforcement point.
+  **Deviation, deliberate**: three roots ship, not four — `sim/` is retired,
+  because with it installed a bare import still mints a twin, so "four roots
+  survive" and "one module object" cannot both hold. Rationale in
+  `logbook/2026-08-01-structure-cleanups`.
+- [x] Move `controller/demo/` (2,075 lines) → `sim/juggle_planner/`; six test
   files also import it (not just sim scenarios); replace the hand-copied
   constants at `juggle_optimizer.py:98-102` with real imports. **Gate this
   move with `./run_tests.sh --full`**: three of those six importers
@@ -256,9 +262,19 @@ surface); (b) Phase 4 (teensy_link) BEFORE any teensy_bridge_node split.
   2026-08-01, so the default gate now sees only
   `test_demo_{sim_playback,timeline,trajectory}.py`. CLAUDE.md's
   `sim/`-path trigger already requires `--full` here; this is the reason.
-- Dedupe the ROS-clock→perf_counter offset estimator (three copies in the
+  **DONE 2026-08-01** (slice 2) — `git mv`, 49 refs across 21 files; the
+  seven constants are now imports from `sim.hand.*`, printed bit-identical
+  before and after. Still owed: 4 active plan documents name the old path
+  (narrative change, deferred); the 9 logbook entries that name it are
+  historical record and must NOT be rewritten.
+- [x] Dedupe the ROS-clock→perf_counter offset estimator (three copies in the
   catch-timing path; reload variant already drifting). Byte-equivalence
-  gate + recorded-sample test; clock injected as a callable.
+  gate + recorded-sample test; clock injected as a callable. **DONE
+  2026-08-01** (slice 2) — `jugglebot/clock_offset.py` (pure);
+  `tests/ros/test_clock_offset.py` asserts exact float equality against a
+  verbatim transcription of the old code. Two of three copies unified;
+  `reload_coordinator_node`'s single-read variant is left with a pointer
+  comment, its reconciliation an **open decision**, not an oversight.
 - Thin trajectory_node's request-validation handlers into
   `motion/trajectory/requests.py` (snapshot-in/decision-out; the
   mode/streaming state machine is fenced OUT per the REJECT list).
@@ -266,9 +282,12 @@ surface); (b) Phase 4 (teensy_link) BEFORE any teensy_bridge_node split.
   contract ~1954–2245 explicitly out of scope; one domain per commit; each
   stage needs setup.py packages check + colcon build + installed-copy
   import smoke; NOT while any sitting series is active).
-- Bridge test harness extraction (`tests/ros/_bridge_harness.py`; 20 files
+- [x] Bridge test harness extraction (`tests/ros/_bridge_harness.py`; 20 files
   currently import from test_teensy_bridge_node_read); collect-only count
-  identical before/after.
+  identical before/after. **DONE 2026-08-01** (slice 2) — 21 importers
+  re-pointed, 19 duplicated `_teardown` copies deleted, plus the
+  byte-identical `_poll` / `_platform_frame` / `_link_kv` / `_messages`
+  helpers; collect-only **4410 → 4410**, the gate this item asked for.
 - [x] Generated topic-choreography map + drift-diff test (banner: "Python-node
   graph only — GUI/rosbridge consumers not included"; topic names are not
   all literals, budget introspection under the mocked-ROS conftest).
@@ -296,6 +315,19 @@ surface); (b) Phase 4 (teensy_link) BEFORE any teensy_bridge_node split.
 `~/Desktop/PDJ_venv/venv`): **parallel 4386 passed, 3 xfailed in 446.49 s;
 serial 9 passed in 40.18 s; total 493 s; RESULT: PASS** (exit 0). Logbook
 `2026-08-01-analysis-safety-nets`.
+
+**Slice 2 gate** (`./run_tests.sh --full`, run 2026-08-01 on the Jetson under
+`~/Desktop/PDJ_venv/venv`): **parallel 4398 passed, 3 xfailed in 444.94 s;
+serial 9 passed, 4401 deselected in 40.23 s; total 491 s; RESULT: PASS**
+(exit 0). Logbook `2026-08-01-structure-cleanups`. Slice 2 covers the four
+items marked `[x]` above (sim import root, `controller/demo` move,
+clock-offset dedup, bridge harness). **Still open in Phase 6**: the
+trajectory_node request-validation thinning and the teensy_bridge_node split.
+Note for whoever takes them: this slice's five review-found breaks were all in
+runnable surface the suite never executes (a build script, three probes, one
+lazily-imported plotter), so a green `--full` is not evidence a tree-wide
+mechanical rewrite is safe — see the entry's "Found at review" table for the
+checks that are.
 - Tracked-media policy (OPEN, owner call deferred): `experimenting/`
   carries ~180 MB git-tracked (1.3 GB on disk, not gitignored — crawled by
   every grep/indexer), `simulations/` ~48 MB. Recommendation:

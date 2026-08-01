@@ -30,19 +30,17 @@ from controller.teensy_link import protocol as p
 
 from jugglebot.can.motor_state import EXPECTED_HW_VERSIONS, HAND_AXIS, JUGGLEBOT_AXES
 
-from tests.ros.test_teensy_bridge_node_read import (
-    _build_paired_node, _messages, _wait_until)
+from tests.ros._bridge_harness import (
+    _build_paired_node,
+    _messages,
+    _teardown,
+    _wait_until,
+)
 
 
 def _node():
     teensy, client, node = _build_paired_node(boot_state_read=False)
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 def _raw_version(hw, fw=(0, 6, 11), unrel=0):

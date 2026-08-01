@@ -24,7 +24,7 @@ from controller.teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic,
 )
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _poll, _teardown
 
 IDLE = 1
 CLOSED_LOOP = 8
@@ -34,21 +34,6 @@ _CONFIG_METHODS = (
     RpcMethod.SET_POS_GAIN, RpcMethod.SET_VEL_GAINS,
     RpcMethod.SET_VEL_CURR_LIMITS, RpcMethod.SET_CONTROLLER_MODE,
 )
-
-
-def _poll(cond, timeout=4.0, dt=0.01):
-    end = time.time() + timeout
-    while time.time() < end:
-        if cond():
-            return True
-        time.sleep(dt)
-    return cond()
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 def _ok_config_handlers(teensy, seen):

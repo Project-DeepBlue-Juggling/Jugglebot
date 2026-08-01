@@ -33,23 +33,17 @@ from __future__ import annotations
 
 from controller.teensy_link import CanErrors, MsgType
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node, _wait_until
+from tests.ros._bridge_harness import (
+    _build_paired_node,
+    _link_kv,
+    _teardown,
+    _wait_until,
+)
 
 
 def _node():
     teensy, client, node = _build_paired_node(boot_state_read=False)
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
-
-
-def _link_kv(node):
-    node._publish_link_status()
-    return {v.key: v.value for v in node.link_status_pub.published[-1].values}
 
 
 def _send(teensy, node, **kw):

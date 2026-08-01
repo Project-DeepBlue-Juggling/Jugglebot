@@ -30,7 +30,7 @@ from controller.teensy_link import rpc_args
 from controller.teensy_link import protocol as p
 from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _poll, _teardown
 
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
@@ -38,12 +38,6 @@ import jugglebot.protocol_config as proto
 _HAND = p.NUM_LEGS  # axis 6
 IDLE = 1
 CLOSED_LOOP = 8
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 def _capture(teensy, method, status=int(RpcStatus.OK), result=b""):
@@ -57,15 +51,6 @@ def _capture(teensy, method, status=int(RpcStatus.OK), result=b""):
 
     teensy.on_rpc(int(method), handler)
     return box
-
-
-def _poll(cond, timeout=4.0, dt=0.01):
-    end = time.time() + timeout
-    while time.time() < end:
-        if cond():
-            return True
-        time.sleep(dt)
-    return cond()
 
 
 # ── set_hand_state ────────────────────────────────────────────────────────────

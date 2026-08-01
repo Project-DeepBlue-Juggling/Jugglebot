@@ -11,7 +11,7 @@ from __future__ import annotations
 from controller.teensy_link import RpcMethod, RpcStatus
 from controller.teensy_link import rpc_args
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _teardown
 
 # Mocked ROS service/message types (tests/ros/conftest.py).
 from std_srvs.srv import Trigger
@@ -22,12 +22,6 @@ from jugglebot_interfaces.msg import SetMotorVelCurrLimitsMessage
 def _node():
     teensy, client, node = _build_paired_node()
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 def _capture(teensy, method, status=int(RpcStatus.OK), result=b""):

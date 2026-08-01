@@ -44,33 +44,17 @@ from rclpy.action import GoalResponse
 from jugglebot_interfaces.srv import ActivateOrDeactivate, GetTiltReadingService
 from std_msgs.msg import Float64MultiArray
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import (
+    _build_paired_node,
+    _platform_frame,
+    _poll,
+    _teardown,
+)
 
 IDLE = 1
 CLOSED_LOOP = 8
 HOME_POS = -abs(hw.HOMING_LEG_ABS_POS_REV)
 _TILT_ID = 0x7DE   # PlatformCanId::TILT_READING
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
-
-
-def _poll(cond, timeout=4.0, dt=0.01):
-    end = time.time() + timeout
-    while time.time() < end:
-        if cond():
-            return True
-        time.sleep(dt)
-    return cond()
-
-
-def _platform_frame(can_id, data: bytes) -> bytes:
-    pf = PlatformFrame(t_bridge_us=1234, can_id=can_id, dlc=len(data),
-                       data=tuple(data) + (0,) * (8 - len(data)))
-    return pf.pack()
 
 
 class _GoalHandle:

@@ -20,81 +20,16 @@ import time
 
 import pytest
 
-from controller.teensy_link import TeensyLinkClient
 from controller.teensy_link import protocol as p
 from controller.teensy_link import (
     MsgType, LinkState, BusHealth, FaultState,
     HeartbeatJ2T, HeartbeatT2J, Telemetry, Diagnostic, Profile,
 )
 
-# Reuse the FakeTeensy loopback peer.
-from tests.teensy_link.conftest import FakeTeensy
-
-
-# ── Helpers ────────────────────────────────────────────────────
-
-def _wait_until(predicate, timeout=2.0, interval=0.005):
-    """Poll ``predicate`` until true or timeout. Returns the final bool."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if predicate():
-            return True
-        time.sleep(interval)
-    return predicate()
-
-
-def _build_paired_node(*, boot_state_read=False):
-    """Build a (FakeTeensy, client, node) triple wired on loopback.
-
-    Mirrors the pairing in tests/teensy_link/conftest.py::fake_teensy_and_client
-    but injects the started client into a TeensyBridgeNode.
-
-    ``boot_state_read`` defaults False so the cold-start boot read does NOT
-    fire during construction (these tests don't wire a Platform-Teensy STATE_READ
-    responder before __init__, and exercise the cold-start path explicitly via
-    tests/ros/test_teensy_bridge_node_coldstart.py). Pass True to exercise the boot
-    read (the cache then ends conservative unless a responder is pre-wired).
-    """
-    from jugglebot.teensy_bridge_node import TeensyBridgeNode
-
-    teensy = FakeTeensy(bind_host="127.0.0.1", stream_port=0, rpc_port=0)
-    teensy.start()
-    client = TeensyLinkClient(
-        teensy_addr=("127.0.0.1", teensy.stream_port),
-        rpc_port=teensy.rpc_port,
-        local_bind_stream=0,
-        local_bind_rpc=0,
-        bind_host="127.0.0.1",
-    )
-    # stow_on_shutdown=False: on_shutdown() must not fire a profiled DEACTIVATE
-    # against the FakeTeensy (which never completes the descent → DeactivateMonitor
-    # would hang the test). Production defaults True; the stow path is exercised
-    # explicitly in test_teensy_bridge_node_shutdown_stow.py.
-    node = TeensyBridgeNode(client=client, boot_state_read=boot_state_read,
-                            stow_on_shutdown=False)  # __init__ starts the client
-
-    jetson_stream_port = client._stream_sock.getsockname()[1]
-    jetson_rpc_port = client._rpc_sock.getsockname()[1]
-    teensy.set_jetson_addr(("127.0.0.1", jetson_stream_port))
-
-    def _send(msg_type, payload, port="stream"):
-        host, _ = teensy._jetson_addr
-        if port == "stream":
-            seq = teensy._tx_seq_stream
-            teensy._tx_seq_stream = (teensy._tx_seq_stream + 1) & 0xFFFF
-            dest = (host, jetson_stream_port)
-            sock = teensy.stream_sock
-        else:
-            seq = teensy._tx_seq_rpc
-            teensy._tx_seq_rpc = (teensy._tx_seq_rpc + 1) & 0xFFFF
-            dest = (host, jetson_rpc_port)
-            sock = teensy.rpc_sock
-        frame = p.encode_frame(msg_type, seq, payload)
-        sock.sendto(frame, dest)
-        return seq
-
-    teensy.send_to_jetson = _send  # type: ignore[assignment]
-    return teensy, client, node
+# Shared loopback harness (node construction, polling, teardown, builders).
+from tests.ros._bridge_harness import (
+    _build_paired_node, _messages, _teardown, _wait_until,
+)
 
 
 @pytest.fixture
@@ -102,9 +37,7 @@ def bridge():
     """Yield (teensy, node) wired on loopback; tear everything down on exit."""
     teensy, client, node = _build_paired_node()
     yield teensy, node
-    node.on_shutdown()       # closes RPC server/client/TOD; injected client untouched
-    client.stop()
-    teensy.stop()
+    _teardown(teensy, client, node)   # node → client → FakeTeensy, one order
 
 
 def _telem(pos=None, vel=None):
@@ -760,9 +693,7 @@ def test_enable_setpoint_output_true_is_inert_no_boot_arm():
         assert node._sp_thread is None            # no ingest thread
         assert node._sp_source is None            # no :5557 subscription
     finally:
-        node.on_shutdown()
-        client.stop()
-        teensy.stop()
+        _teardown(teensy, client, node)
 
 
 def test_link_status_surfaces_firmware_arm_took_bit(bridge):

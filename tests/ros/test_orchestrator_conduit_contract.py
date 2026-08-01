@@ -27,7 +27,7 @@ from jugglebot_interfaces.msg import RobotState
 from jugglebot_interfaces.action import Reload
 from std_msgs.msg import Float64MultiArray
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _teardown
 
 
 # Orchestrator action clients that are DELIBERATELY not bridge-served — they
@@ -38,12 +38,6 @@ from tests.ros.test_teensy_bridge_node_read import _build_paired_node
 # (orchestrator↔bridge drift), NOT a weakening: every bridge-conduit action client
 # is still fully guarded.
 _NON_BRIDGE_ORCH_ACTIONS = {('jugglebot/reload', Reload)}
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 def _orch_service_clients(orch):

@@ -21,7 +21,7 @@ from controller.teensy_link import RpcMethod, RpcStatus, MsgType, PlatformFrame
 from controller.teensy_link import rpc_args
 from controller.teensy_link import protocol as p
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _platform_frame, _teardown
 
 _STATE_ID = 0x6E0   # PlatformCanId::STATE_UPDATE
 _TILT_ID = 0x7DE    # PlatformCanId::TILT_READING
@@ -30,18 +30,6 @@ _TILT_ID = 0x7DE    # PlatformCanId::TILT_READING
 def _node():
     teensy, client, node = _build_paired_node()
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
-
-
-def _platform_frame(can_id, data: bytes) -> bytes:
-    pf = PlatformFrame(t_bridge_us=1234, can_id=can_id, dlc=len(data),
-                       data=tuple(data) + (0,) * (8 - len(data)))
-    return pf.pack()
 
 
 def _encode_state_frame(is_homed, levelling, x_milli, y_milli,

@@ -21,19 +21,13 @@ from controller.teensy_link import RpcMethod, RpcStatus, rpc_args
 
 from std_srvs.srv import Trigger
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _teardown
 from tests.ros.test_teensy_bridge_node_rpc import _capture
 from tests.ros.test_teensy_bridge_node_setpoint import _bring_link_and_telem_up
 
 
 def _node():
     return _build_paired_node()
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 class _DoneFuture:

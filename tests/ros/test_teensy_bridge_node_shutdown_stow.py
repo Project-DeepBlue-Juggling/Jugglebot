@@ -30,7 +30,7 @@ from jugglebot.teensy_bridge_node import (
     _SHUTDOWN_DEACTIVATE_TIMEOUT_S,
 )
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _teardown
 
 
 def _hb(bus1_health=int(BusHealth.OK), flags=0, fault_state=int(FaultState.NONE)):
@@ -51,13 +51,6 @@ def _node_with_stow():
     node._stow_on_shutdown = True
     node._run_deactivate = MagicMock(return_value=(True, "deactivated"))
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node._stow_on_shutdown = False   # don't re-fire the stub during teardown
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 def test_shutdown_stow_fires_deactivate_on_configured_legs_when_bus_healthy():

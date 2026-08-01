@@ -32,7 +32,7 @@ from controller.teensy_link import (
 from controller.teensy_link import rpc_args
 from controller.teensy_link import protocol as p
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node, _wait_until
+from tests.ros._bridge_harness import _build_paired_node, _teardown, _wait_until
 
 # Mocked ROS service/message + action types (tests/ros/conftest.py).
 from std_srvs.srv import Trigger
@@ -44,12 +44,6 @@ from jugglebot.protocol_config import BallButlerCommandType, BallButlerCommandOu
 def _node():
     teensy, client, node = _build_paired_node()
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 def _send_heartbeat(teensy, *, bb_state=1, bb_state_data=0,

@@ -25,27 +25,12 @@ from controller.teensy_link import (
 )
 from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _poll, _teardown
 
 IDLE = 1
 CLOSED_LOOP = 8
 # set_absolute_position(+0.1, ODrive) reads back -0.1 in Jugglebot telemetry.
 HOME_POS = -abs(hw.HOMING_LEG_ABS_POS_REV)
-
-
-def _poll(cond, timeout=4.0, dt=0.01):
-    end = time.time() + timeout
-    while time.time() < end:
-        if cond():
-            return True
-        time.sleep(dt)
-    return cond()
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 # ── cache → HomingAxisStatus mapping ─────────────────────────────────────────

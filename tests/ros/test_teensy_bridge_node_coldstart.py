@@ -34,7 +34,13 @@ from controller.teensy_link import (
 from controller.teensy_link import rpc_args
 from controller.teensy_link import protocol as p
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node, _wait_until
+from tests.ros._bridge_harness import (
+    _build_paired_node,
+    _messages,
+    _platform_frame,
+    _teardown,
+    _wait_until,
+)
 
 _STATE_ID = 0x6E0   # PlatformCanId::STATE_UPDATE
 
@@ -44,18 +50,6 @@ _STATE_ID = 0x6E0   # PlatformCanId::STATE_UPDATE
 def _node(*, boot_state_read=False):
     teensy, client, node = _build_paired_node(boot_state_read=boot_state_read)
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
-
-
-def _platform_frame(can_id, data: bytes) -> bytes:
-    pf = PlatformFrame(t_bridge_us=1234, can_id=can_id, dlc=len(data),
-                       data=tuple(data) + (0,) * (8 - len(data)))
-    return pf.pack()
 
 
 def _state_reply(is_homed, levelling, x_milli, y_milli,
@@ -594,11 +588,6 @@ def test_reboot_clears_encoder_search_complete():
 #
 # The verdict is WARNED, never enforced: nothing below asserts a refusal, because
 # there is none. See ros_ws/docs/platform_fw_version.md.
-
-def _messages(mock_method):
-    """All positional first-arg strings across a MagicMock log method's calls."""
-    return [c.args[0] for c in mock_method.call_args_list if c.args]
-
 
 def _link_status_values(node):
     node._publish_link_status()

@@ -29,13 +29,7 @@ from tests.ros.conftest import (
     ActivateOrDeactivate, GetTiltReadingService, ODriveCommandService,
 )
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
+from tests.ros._bridge_harness import _build_paired_node, _teardown
 
 
 def _cold_start_msg(*, is_homed=False, encoder_search_complete=False):

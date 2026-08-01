@@ -19,7 +19,7 @@ import time
 from diagnostic_msgs.msg import DiagnosticStatus
 
 # Reuse the loopback pairing + helper from the read-side test module.
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node
+from tests.ros._bridge_harness import _build_paired_node, _teardown
 
 
 def _now_us() -> int:
@@ -38,12 +38,6 @@ def _make_node():
     teensy, client, node = _build_paired_node()
     node._heartbeat_timeout_s = 0.5  # short, deterministic threshold for tests
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 def test_no_arm_before_first_heartbeat():

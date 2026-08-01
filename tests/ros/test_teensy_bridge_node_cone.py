@@ -25,7 +25,7 @@ from controller.teensy_link import MsgType
 
 from jugglebot.can import catching_cone
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node, _wait_until
+from tests.ros._bridge_harness import _build_paired_node, _wait_until
 
 
 @pytest.fixture

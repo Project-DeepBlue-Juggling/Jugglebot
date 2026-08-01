@@ -22,7 +22,7 @@ from std_srvs.srv import SetBool
 from controller.teensy_link import MsgType, HeartbeatJ2T
 from controller.teensy_link.protocol import Setpoint
 
-from tests.ros.test_teensy_bridge_node_read import _build_paired_node, _wait_until
+from tests.ros._bridge_harness import _build_paired_node, _teardown, _wait_until
 
 
 class _FakeSource:
@@ -59,12 +59,6 @@ def _cmd(motor_rev, vel=None, cmd_next=None, cmd_next2=None):
 def _node():
     teensy, client, node = _build_paired_node()
     return teensy, client, node
-
-
-def _teardown(teensy, client, node):
-    node.on_shutdown()
-    client.stop()
-    teensy.stop()
 
 
 # ── Default-disabled (the non-negotiable safety default) ──────
