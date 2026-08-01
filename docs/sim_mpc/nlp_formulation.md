@@ -4,8 +4,8 @@ This page describes the nonlinear program (NLP) that the MPC solves every contro
 
 **Source files:**
 
-- `sim/controller/mpc.py` — NLP construction (`_build_problem`) and solve logic
-- `sim/controller/params.py` — all weight and constraint parameters
+- `controller/mpc.py` — NLP construction (`_build_problem`) and solve logic
+- `controller/params.py` — all weight and constraint parameters
 
 ## Decision Variables
 

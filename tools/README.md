@@ -2,6 +2,17 @@
 
 Scripts in this directory bypass ROS2 and talk directly to hardware via python-can. They are designed for bench testing, bring-up, and diagnostics.
 
+## Generators & drift gates (no hardware, no ROS import)
+
+These are the exception to the sentence above: offline generators whose output
+is committed and pinned by a test, so the artifact cannot silently rot. Each
+regenerates in place; run it and commit the diff when its source of truth moves.
+
+| Script | Generates | Pinned by |
+|--------|-----------|-----------|
+| `gen_choreography_map.py` | `ros_ws/docs/choreography.md` — publisher/subscriber/service/action graph of the Python nodes (`--check` exits 1 on drift) | `tests/ros/test_choreography_map.py` |
+| `gen_gui_fk_golden.py` | `tests/ros/gui_fk_golden.json` — Python-IK golden poses replayed through `ros_ws/gui/js/stewart-fk.js` under node | `tests/ros/test_gui_fk_golden.py` |
+
 ## Preview Convention (`--preview`)
 
 **Scope**: these rules bind the *operator-facing hardware harnesses* — the
@@ -82,7 +93,10 @@ This applies to:
 - Error/exception paths
 - Ctrl-C handler (best-effort stow, then idle)
 
-Reference: `smoother_test.py:safe_shutdown()`, `dynamic_target_test.py:safe_idle_all()`.
+Reference implementations: `tests/hardware/free_platform_test.py` and
+`tests/hardware/single_leg_test.py`. (The original references — `smoother_test.py:safe_shutdown()`
+and `dynamic_target_test.py:safe_idle_all()` — were pre-MPC harnesses removed with
+`tests/archived/` in 67889a6, 2026-04-17; recoverable from git history.)
 
 The `--preview` plot must also show the stow segment at the end of the timeline so the operator sees the full motion the robot will execute.
 
@@ -97,25 +111,30 @@ All test harnesses share these safety principles:
 
 ## Test Harnesses
 
+Every row below names a file that exists today. Paths are given because only one
+of these harnesses (`tracking_analyzer.py`) still lives under `tools/` — the rest
+are under `tests/hardware/`.
+
 | Script | Phase | Description |
 |--------|-------|-------------|
-| `single_leg_test.py` | 2 | Single-axis bench tests (torque, e-stop, encoder, force) |
-| `supported_platform_test.py` | 3A | Position control bench tests on a single supported leg |
-| `free_platform_test.py` | 3B-C | Platform-level tests; defines `PlatformTestHarness` |
-| `trajectory_test.py` | 4 | Quintic trajectory hardware validation (T1-T4) |
-| `inertia_test.py` | 5 | Inertia feedforward comparison tests (T5-T7) |
-| `hardening_test.py` | 6 | Workspace boundary, fault injection, endurance (H1-H6) |
-| `dynamic_target_test.py` | 7 | Dynamic target acceptance/tracking (DT1-DT5) |
-| `juggling_test.py` | 7+ | Ball-catching juggling pattern tests |
-| `smoother_test.py` | — | StreamSmoother validation (S1-S5, direct-target smoothing) |
-| `trajectory_viewer.py` | — | 3D Stewart platform viewer + trajectory plot utility |
-| `catch_sim_test.py` | 6 | Offline catch simulation (no hardware). Full tracking + coordinator + hand control pipeline with 3D viewer |
-| `throw_catch_test.py` | 6 | Throw-catch cycle test: platform throws ball to itself, repositions, catches. Reuses catch_sim_test visualizer |
-| `tracking_analyzer.py` | 6 | Rosbag analysis for ball tracking data |
-| `cogging_bench_test.py` | bench-rig | Velocity-mode bench runner with `--sweep`. Produces friction-vs-velocity sweeps for Stribeck fitting. |
-| `breakaway_ramp_test.py` | bench-rig | Torque-mode ramp from rest. Position-only escape detector measures stiction per starting electrical angle. |
-| `torque_step_test.py` | bench-rig | Bidirectional torque-step terminal-velocity test. Reveals controller-fight overhead in velocity-mode measurements. |
-| `friction_ff_demo.py` | bench-rig | Friction-FF effectiveness demo: pos_step / vel_step / sweep modes with Stribeck FF, stiction-boost, and vel_ff toggles. |
+| `tests/hardware/single_leg_test.py` | 2 | Single-axis bench tests (torque, e-stop, encoder, force) |
+| `tests/hardware/supported_platform_test.py` | 3A | Position control bench tests on a single supported leg |
+| `tests/hardware/free_platform_test.py` | 3B-C | Platform-level tests; defines `PlatformTestHarness` |
+| `tools/tracking_analyzer.py` | 6 | Rosbag analysis for ball tracking data |
+| `tests/hardware/cogging_bench_test.py` | bench-rig | Velocity-mode bench runner with `--sweep`. Produces friction-vs-velocity sweeps for Stribeck fitting. |
+| `tests/hardware/breakaway_ramp_test.py` | bench-rig | Torque-mode ramp from rest. Position-only escape detector measures stiction per starting electrical angle. |
+| `tests/hardware/torque_step_test.py` | bench-rig | Bidirectional torque-step terminal-velocity test. Reveals controller-fight overhead in velocity-mode measurements. |
+| `tests/hardware/friction_ff_demo.py` | bench-rig | Friction-FF effectiveness demo: pos_step / vel_step / sweep modes with Stribeck FF, stiction-boost, and vel_ff toggles. |
+
+**Pre-MPC harnesses (removed 2026-04-17).** Nine harnesses this table used to
+list — `trajectory_test.py`, `inertia_test.py`, `hardening_test.py`,
+`dynamic_target_test.py`, `juggling_test.py`, `smoother_test.py`,
+`trajectory_viewer.py`, `catch_sim_test.py`, `throw_catch_test.py` — were deleted
+with `tests/archived/` in commit 67889a6. They exercised the pre-MPC quintic
+path-following controller (`control_loop.py`, archived with them) and were
+already excluded from pytest. Their test *scenarios* remain valid references for
+future MPC hardware tests; recover any of them with
+`git show 67889a6^:tests/archived/<name>`.
 
 ### Friction characterisation & FF demo (single-leg bench rig)
 

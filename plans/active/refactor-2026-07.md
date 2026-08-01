@@ -269,15 +269,33 @@ surface); (b) Phase 4 (teensy_link) BEFORE any teensy_bridge_node split.
 - Bridge test harness extraction (`tests/ros/_bridge_harness.py`; 20 files
   currently import from test_teensy_bridge_node_read); collect-only count
   identical before/after.
-- Generated topic-choreography map + drift-diff test (banner: "Python-node
+- [x] Generated topic-choreography map + drift-diff test (banner: "Python-node
   graph only — GUI/rosbridge consumers not included"; topic names are not
   all literals, budget introspection under the mocked-ROS conftest).
-- GUI kinematics golden vectors: `stewart-fk.js` is the repo's only true
+  **DONE 2026-08-01** (slice 1). `ros_ws/docs/choreography.md`: 75 distinct
+  wires / 140 endpoints, pure `ast`. Parked nodes (`motion_bridge_node`,
+  `mpc_bridge_node` — Phase 3) render `(not launched)`, cross-checked against
+  the launch file in both directions. Only one name in the package is
+  non-literal (`param:control_mode_topic`).
+- [x] GUI kinematics golden vectors: `stewart-fk.js` is the repo's only true
   duplicate kinematics implementation (hand-ported IK + Newton-Raphson FK),
   currently pinned only by a manual browser page — add JS-vs-Python FK
-  golden-vector check runnable in CI.
-- Stale-doc sweep remainder + logbook_search hardening (warn-on-skip +
+  golden-vector check runnable in CI. **DONE 2026-08-01** (slice 1). 25 poses
+  from the Python IK replayed through the real JS under node, no shim; skips
+  (never fails) with no node. `FK_POS_TOL_MM` headroom is derived from a
+  residual-tolerance sweep, not one observation.
+- [x] Stale-doc sweep remainder + logbook_search hardening (warn-on-skip +
   front-matter validation test — it silently drops malformed entries).
+  **DONE 2026-08-01** (slice 1). Contract landed with all three parts:
+  `logbook/README.md` (normative), `scan_entries()` (enforcement),
+  `tests/sim/test_logbook_front_matter.py` (gate). Still owed:
+  `ros_ws/docs/safety.md`'s one re-framing pass (banner-flagged, not
+  spot-patched) — it belongs with the Phase 3 dormancy write-up.
+
+**Slice 1 gate** (`./run_tests.sh --full`, run 2026-08-01 on the Jetson under
+`~/Desktop/PDJ_venv/venv`): **parallel 4386 passed, 3 xfailed in 446.49 s;
+serial 9 passed in 40.18 s; total 493 s; RESULT: PASS** (exit 0). Logbook
+`2026-08-01-analysis-safety-nets`.
 - Tracked-media policy (OPEN, owner call deferred): `experimenting/`
   carries ~180 MB git-tracked (1.3 GB on disk, not gitignored — crawled by
   every grep/indexer), `simulations/` ~48 MB. Recommendation:

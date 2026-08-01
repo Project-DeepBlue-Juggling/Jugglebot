@@ -11,6 +11,16 @@
 > arming contract (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`). Read
 > sections 1–2 as a record of the parked MPC path, not of current behaviour; a
 > proper rewrite is owed and out of scope for the dormancy commit.
+>
+> **Section 3 too (noted 2026-08-01).** Its `**File:**` line points at
+> `jugglebot/can_node.py`, deleted in the same 2026-07-06 decommission. The
+> *clamp itself is live* — it was ported to
+> `controller/teensy_link/setpoint_pump.py` (`max_step_rev`, gating each frame
+> against the previously **accepted** setpoint rather than against encoder
+> feedback, and complementary to the Teensy-side `MAX_DEVIATION` guard), so read
+> §3 for the rationale and the module for the current threshold and semantics.
+> Named here rather than patched in place: the whole file is owed one re-framing
+> pass, and spot-patching §3 alone would imply §§1–2 are current.
 
 Motor command safety is enforced at **three independent layers**. Each layer
 can prevent dangerous commands on its own — the defence-in-depth design means

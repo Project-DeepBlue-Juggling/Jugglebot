@@ -12,7 +12,7 @@ distributed MCUs (platform Teensy, ball-butler Teensy, catching cone Teensy)
 and the Jetson. Today the **Jetson** is the master: it broadcasts a 100 Hz
 sync frame on the legacy shared CAN bus (pre-three-bus topology), ID 0x7DD,
 with the current `(sec, usec)` as `pack('<II', sec, usec)` (see
-[`bus.broadcast_time`](../../ros_ws/src/jugglebot/jugglebot/can/bus.py)).
+`bus.broadcast_time` in the since-deleted `can/bus.py`).
 All three slave Teensys IIR-filter the offset between their local monotonic
 time and the broadcast. (Note: under the new three-bus topology in
 [ADR-0013](0013-three-can-buses.md), the slaves are split across three

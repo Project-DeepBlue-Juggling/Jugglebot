@@ -42,6 +42,14 @@ Where:
   `solve_time`, `tracking`, `workspace`, `torque`
 - `subsystems` are from the flagged code paths: `mpc`, `controller`, `motion`, `can`, etc.
 
+**stdout is pure JSON; warnings go to stderr.** Since 2026-08-01 the loader warns
+about any logbook entry it had to drop or could only partially read (malformed
+front matter), rather than skipping it silently. Bash merges the two streams in
+tool output, so if you see a `logbook_search: WARNING ...` line, strip it before
+parsing and **report it** — a dropped entry is prior art you did not get to see.
+`tests/sim/test_logbook_front_matter.py` keeps the committed logbook at zero
+warnings, so any warning means a brand-new entry is malformed.
+
 If matches are found, include a **Prior Art** section before your fix proposals:
 
 ```

@@ -133,6 +133,29 @@ tags:
 > `commits:` list of short SHAs. New entries do **not** — see
 > [Commit Traceability](#commit-traceability) below.
 
+### Required keys (suite-gated)
+
+**`title`, `type`, `date` and `status` are REQUIRED on every entry**; every
+other key above is optional. `date` must be plain ISO `YYYY-MM-DD`.
+
+This is not a style preference — it is enforced. `sim/analysis/logbook_search.py`
+is what `/investigate`'s fix-proposer consults for prior art, and an entry it
+cannot parse is prior art no future session will ever see. Since 2026-08-01 the
+loader **warns** instead of dropping entries silently, and
+`tests/sim/test_logbook_front_matter.py` fails the default test gate if any
+committed entry is missing one of the four keys, carries a non-ISO `date`, or
+would make the loader warn. An entry with a `title` but a missing `status` still
+loads (it is real prior art) — it just warns, which is still a red gate.
+
+Two ways to redden the gate that look innocent:
+
+- **A trailing YAML comment on a required value.** The front-matter parser is a
+  ~30-line no-dependency reader: it takes everything after the first colon, so
+  `date: 2026-08-02  # backfilled` stores the comment as part of the date and
+  fails the ISO check. Put commentary in the body, not on those four lines.
+- **An unfilled `TEMPLATE.md` placeholder** — a literal `date: YYYY-MM-DD`
+  fails the same check.
+
 ### Entry types and their sections
 
 | Type | Use when... | Sections |

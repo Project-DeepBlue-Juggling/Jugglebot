@@ -4,8 +4,8 @@ This page explains the variable-timestep horizon that lets the MPC handle both i
 
 **Source files:**
 
-- `sim/controller/params.py` — `dt_schedule`
-- `sim/controller/mpc.py` — `_build_reference()`
+- `controller/params.py` — `dt_schedule`
+- `controller/mpc.py` — `_build_reference()`
 
 ## The Problem
 

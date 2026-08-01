@@ -94,12 +94,12 @@ harness.disconnect()
 
 | File | Tests | Speed |
 |---|---|---|
-| `tools/single_leg_test.py` | Phase 2/3A isolated leg tests | N/A |
-| `tools/free_platform_test.py` | Phase 3C platform tests | Low |
-| `tools/supported_platform_test.py` | Supported platform tests | Low |
+| `tests/hardware/single_leg_test.py` | Phase 2/3A isolated leg tests | N/A |
+| `tests/hardware/free_platform_test.py` | Phase 3C platform tests | Low |
+| `tests/hardware/supported_platform_test.py` | Supported platform tests | Low |
 
-!!! note "Archived test harnesses"
-    Several harnesses (`trajectory_test.py`, `hardening_test.py`, `dynamic_target_test.py`, `trajectory_viewer.py`) are in `tools/archived/` — they depend on the pre-MPC trajectory system and need MPC-based equivalents. Their test scenarios remain valid references for future MPC hardware tests.
+!!! note "Removed pre-MPC test harnesses"
+    Several harnesses (`trajectory_test.py`, `hardening_test.py`, `dynamic_target_test.py`, `trajectory_viewer.py`) depended on the pre-MPC quintic trajectory system and were deleted with `tests/archived/` in commit 67889a6 (2026-04-17) — there is no `tools/archived/` directory. Their test scenarios remain valid references for future MPC hardware tests; recover a file with `git show 67889a6^:tests/archived/<name>`.
 
 ## Motion Preview
 

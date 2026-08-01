@@ -297,8 +297,8 @@ The worker process runs `check_feasibility()` without blocking the 500 Hz loop. 
 !!! note "Splice re-check"
     `commit_async_trajectory()` does not commit immediately. It plans the new trajectory from a splice point 200 ms in the future, then sends it back to the worker process for a feasibility re-check. This closes the defense-in-depth gap where the start state may have drifted between the initial check and the commit. The old trajectory continues executing until the re-check passes.
 
-!!! note "Synchronous path (test-only)"
-    For offline tests with frozen clocks, `submit_dynamic_target_sync()` in `tests/helpers.py` provides a blocking synchronous wrapper. This is not used in production.
+!!! note "Synchronous path (removed 2026-04-17)"
+    Offline tests with frozen clocks used to reach for `submit_dynamic_target_sync()`, a blocking wrapper in `tests/archived/test_helpers.py`. That file went with the rest of `tests/archived/` in commit 67889a6 and **there is no synchronous path today** — production and tests both drive the async pipeline (`request_dynamic_target` → `poll_pending_result` → `commit_async_trajectory`). Recover the old wrapper with `git show 67889a6^:tests/archived/test_helpers.py` if a frozen-clock test ever needs it back. (`tests/sim/helpers.py` is unrelated: it exports `run_catch_sim` only.)
 
 ### Return to Active
 

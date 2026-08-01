@@ -93,7 +93,7 @@ They're grouped here by topic for skimming; the canonical order is numeric.
 The overnight autonomous implementation pass on the can-bridge firmware also
 made a number of tactical decisions (frame layout, CRC variant, where to host
 state machines, etc.). Those live in the **handoff document**
-[`HANDOFF-teensy-can-offload-firmware-wip.md`](../../plans/active/HANDOFF-teensy-can-offload-firmware-wip.md)
+[`HANDOFF-teensy-can-offload-firmware-wip.md`](../../plans/archived/2026-07-05%20HANDOFF-teensy-can-offload-firmware-wip.md)
 under "Decisions made autonomously" (D1–D12). If any of those decisions later
 prove load-bearing for future work, **promote them to an ADR** here — but until
 they prove durable, the handoff is the right home.

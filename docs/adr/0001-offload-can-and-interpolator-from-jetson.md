@@ -12,7 +12,8 @@ setpoints to 6 ODrives, receives ~3000 msg/s of telemetry from the same
 ODrives, runs the 500 Hz Hermite interpolator in
 [`motor_guard.py`](../../ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py),
 and exposes everything to ROS 2 via
-[`can_node.py`](../../ros_ws/src/jugglebot/jugglebot/can_node.py).
+`can_node.py` (deleted 2026-07-06 in the SocketCAN decommission — see git
+history and `ros_ws/docs/can-node-teensy-parity.md`).
 
 This architecture has worked, but several pressures have accumulated:
 

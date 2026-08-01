@@ -232,7 +232,7 @@ This is the most architecturally clean solution but requires the most code.
 | `controller/mpc.py` | `_build_reference()` | 586-623 | Reference trajectory + twist construction |
 | `controller/params.py` | `MPCParams` | 68-79 | Q_pos, Q_vel_lin, Qf_pos weights |
 | `sim/input/scripted.py` | `make_DT6()`, `make_DT7()` | 602-640 | Test scenarios |
-| `sim/tests/test_mpc_dynamic.py` | `TestDT6ThrowVelocity` | — | Velocity tracking tests |
+| `tests/sim/test_mpc_dynamic.py` | `TestDT6ThrowVelocity` | — | Velocity tracking tests |
 
 ## Related Bugs
 

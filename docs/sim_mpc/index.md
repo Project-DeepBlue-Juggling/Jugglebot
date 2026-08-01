@@ -127,7 +127,7 @@ Each control step (20 ms) follows this sequence:
 
 ## Relationship to Production Motion Planner
 
-| Aspect | Production (motion/) | Simulation (sim/controller/) |
+| Aspect | Production (motion/) | Simulation (controller/) |
 |---|---|---|
 | Planning approach | Quintic trajectory, open-loop | Receding-horizon NMPC |
 | Control rate | 500 Hz | 50 Hz |

@@ -26,7 +26,7 @@ All 6 tests PASS. No hardware required.
 
 ### Hardware Bench Tests (Single Leg)
 
-All tested on axis 0 using `tools/single_leg_test.py`. ODrive current limit at 50% (10A).
+All tested on axis 0 using `tests/hardware/single_leg_test.py`. ODrive current limit at 50% (10A).
 
 | Test | Result | Detail |
 |---|---|---|

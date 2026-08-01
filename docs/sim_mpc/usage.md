@@ -340,16 +340,16 @@ python -m pytest tests/ -v
 
 ```bash
 # Single test file
-python -m pytest tests/test_mpc_static.py -v
+python -m pytest tests/sim/test_mpc_static.py -v
 
 # Single test case
-python -m pytest tests/test_mpc_static.py::test_cold_start -v
+python -m pytest tests/sim/test_mpc_static.py::test_cold_start -v
 
 # Only MPC tests
 python -m pytest tests/ -v -k "mpc"
 
 # With output (see print statements)
-python -m pytest tests/test_mpc_dynamic.py -v -s
+python -m pytest tests/sim/test_mpc_dynamic.py -v -s
 ```
 
 ## Standalone Demo

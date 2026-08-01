@@ -2,7 +2,7 @@
 
 This page documents the MPC's tunable parameters, their effects, and guidance for adjusting them.
 
-**Source file:** `sim/controller/params.py`
+**Source file:** `controller/params.py`
 
 ## Parameter Reference
 

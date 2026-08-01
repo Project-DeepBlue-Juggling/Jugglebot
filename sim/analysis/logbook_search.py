@@ -28,8 +28,14 @@ _SIM_DIR = os.path.dirname(_ANALYSIS_DIR)
 _REPO_ROOT = os.path.dirname(_SIM_DIR)
 _LOGBOOK_DIR = os.path.join(_REPO_ROOT, 'logbook')
 
-# Files to skip when scanning logbook/
+# Files to skip when scanning logbook/ — structural, by design, never warned about.
 _SKIP_FILES = {'INDEX.md', 'README.md', 'TEMPLATE.md'}
+
+#: Front-matter keys every logbook entry must carry.  ``title`` is load-bearing
+#: (an entry without one cannot be listed, so it is dropped); the rest are
+#: warned about but the entry still loads.  Pinned for the real logbook by
+#: ``tests/sim/test_logbook_front_matter.py``.
+REQUIRED_FRONT_MATTER = ('title', 'type', 'date', 'status')
 
 # Map diagnosis flag messages to flag types for matching
 _FLAG_TYPE_PATTERNS = {
@@ -118,12 +124,26 @@ def _extract_section(text: str, heading: str) -> Optional[str]:
 # Entry loading
 # ---------------------------------------------------------------------------
 
-def load_entries(logbook_dir: str = _LOGBOOK_DIR) -> List[Dict[str, Any]]:
-    """Load all logbook entries with parsed frontmatter and key sections."""
-    entries = []
+def scan_entries(logbook_dir: str = _LOGBOOK_DIR
+                 ) -> tuple[List[Dict[str, Any]], List[str]]:
+    """Load logbook entries AND the problems found while loading them.
+
+    Returns ``(entries, warnings)``.  A warning is emitted for every entry that
+    is dropped (no parseable front matter, or no ``title`` — nothing downstream
+    can display such an entry) and for every entry that loads but is missing one
+    of :data:`REQUIRED_FRONT_MATTER`.  The structural skips in
+    :data:`_SKIP_FILES` are by design and are never warned about.
+
+    Why warn at all: this search is what a fix-proposer consults *before*
+    proposing a fix, so an entry silently dropped for a typo'd front-matter
+    block is prior art that a future session will never see.  Silence made the
+    drop indistinguishable from "no such investigation exists".
+    """
+    entries: List[Dict[str, Any]] = []
+    warnings: List[str] = []
 
     if not os.path.isdir(logbook_dir):
-        return entries
+        return entries, warnings
 
     for fname in sorted(os.listdir(logbook_dir)):
         if fname in _SKIP_FILES or not fname.endswith('.md'):
@@ -134,8 +154,22 @@ def load_entries(logbook_dir: str = _LOGBOOK_DIR) -> List[Dict[str, Any]]:
             text = f.read()
 
         fm = _parse_frontmatter(text)
-        if not fm.get('title'):
+        if not fm:
+            warnings.append(
+                '%s: DROPPED — no parseable YAML front matter (need a leading '
+                '"---" block, closed by "---", holding at least one key)' % fname)
             continue
+        if not fm.get('title'):
+            warnings.append(
+                '%s: DROPPED — front matter has no "title"' % fname)
+            continue
+
+        missing = [key for key in REQUIRED_FRONT_MATTER
+                   if not _nonempty_str(fm.get(key))]
+        if missing:
+            warnings.append(
+                '%s: incomplete front matter — missing/blank: %s'
+                % (fname, ', '.join(missing)))
 
         # Normalize list fields
         for key in ('related_issues', 'subsystem', 'tags', 'sessions',
@@ -155,6 +189,37 @@ def load_entries(logbook_dir: str = _LOGBOOK_DIR) -> List[Dict[str, Any]]:
             'outcome': _extract_section(text, 'Outcome'),
         }
         entries.append(entry)
+
+    return entries, warnings
+
+
+def _nonempty_str(value: Any) -> bool:
+    """True for a non-blank string (list-valued front matter does not count)."""
+    return isinstance(value, str) and bool(value.strip())
+
+
+def load_entries(logbook_dir: str = _LOGBOOK_DIR,
+                 warnings: Optional[List[str]] = None,
+                 warn_stream: Any = None) -> List[Dict[str, Any]]:
+    """Load all logbook entries with parsed frontmatter and key sections.
+
+    Parameters
+    ----------
+    warnings : optional list.  When given, load problems are appended to it and
+        nothing is printed — the caller owns the surfacing.
+    warn_stream : stream for the default surfacing (``sys.stderr`` when
+        omitted).  Pass ``False`` to silence.  Ignored when *warnings* is given.
+    """
+    entries, found = scan_entries(logbook_dir)
+
+    if warnings is not None:
+        warnings.extend(found)
+        return entries
+
+    stream = sys.stderr if warn_stream is None else warn_stream
+    if found and stream:
+        for warning in found:
+            print('logbook_search: WARNING %s' % warning, file=stream)
 
     return entries
 
@@ -178,6 +243,7 @@ def find_similar(
     subsystems: Sequence[str] | None = None,
     issue_ids: Sequence[str] | None = None,
     logbook_dir: str = _LOGBOOK_DIR,
+    warnings: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Find logbook entries with similar symptoms.
 
@@ -187,8 +253,11 @@ def find_similar(
       - Subsystem overlap (weak: +1 per match)
 
     Returns entries sorted by score (highest first), with match reasons.
+
+    Load problems (dropped or incomplete entries) go to *warnings* when a list
+    is supplied, otherwise to stderr — never nowhere.
     """
-    entries = load_entries(logbook_dir)
+    entries = load_entries(logbook_dir, warnings=warnings)
     if not entries:
         return []
 
@@ -290,21 +359,31 @@ def main():
                              '(e.g., VEL_FF_BUG)')
     parser.add_argument('--logbook-dir', type=str, default=_LOGBOOK_DIR,
                         help='Path to logbook directory')
+    parser.add_argument('--strict', action='store_true',
+                        help='Exit 1 if any entry was dropped or is missing '
+                             'required front matter')
     args = parser.parse_args()
 
     flag_types = json.loads(args.flags)
     subsystems = json.loads(args.subsystems)
     issue_ids = json.loads(args.issue_ids)
 
+    warnings: List[str] = []
     matches = find_similar(
         flag_types=flag_types,
         subsystems=subsystems,
         issue_ids=issue_ids,
         logbook_dir=args.logbook_dir,
+        warnings=warnings,
     )
 
+    # stdout stays pure JSON so callers can pipe it; warnings go to stderr.
+    for warning in warnings:
+        print('logbook_search: WARNING %s' % warning, file=sys.stderr)
+
     print(json.dumps(matches, indent=2))
+    return 1 if (args.strict and warnings) else 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
