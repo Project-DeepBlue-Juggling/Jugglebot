@@ -7,8 +7,8 @@ returns a ``BallSpawn`` that the sim's catch pipeline consumes directly.
 
 No MuJoCo bodies are created — BB exists only as a computation.
 
-The ballistics solver is ported from the production code in
-``ros_ws/src/jugglebot/jugglebot/archived/ball_butler_node.py``
+The ballistics solver is ported from the production code in the retired
+``ball_butler_node.py`` (now ``attic/ros-jugglebot-archived/``)
 (``compute_command_for_target`` and ``global_to_bb_frame``).
 """
 

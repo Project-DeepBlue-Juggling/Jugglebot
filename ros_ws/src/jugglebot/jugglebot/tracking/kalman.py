@@ -4,7 +4,8 @@ State: [x, y, z, vx, vy, vz] in mm and mm/s.
 Process model: constant velocity + gravity control input.
 Measurement: 3D position [x, y, z] from mocap markers.
 
-Lifted and cleaned up from archived/kalman_filter.py.
+Lifted and cleaned up from the retired kalman_filter.py (now
+attic/ros-jugglebot-archived/).
 """
 from __future__ import annotations
 

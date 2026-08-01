@@ -394,7 +394,8 @@ the defect. `sim/toss_gate.py` calls
 `planner.build_move` / `build_hold` / `build_catch` directly and the AST pass will
 never see it — correctly, because `sim/` has no gravity-offset concept, so there
 is no correction to omit and no failure mode. The manifest's scope is the ROS
-package, not "every caller of `planner`". `ros_ws/src/jugglebot/jugglebot/archived/`
+package, not "every caller of `planner`". `attic/ros-jugglebot-archived/`
+(formerly `jugglebot/archived/`, moved 2026-07-31)
 holds two dead copies of the old inline transform; neither has a `console_scripts`
 entry and neither is imported by any live module, so they are excluded from both
 the manifest and the grep counts. Deleting archived code is a separate concern.

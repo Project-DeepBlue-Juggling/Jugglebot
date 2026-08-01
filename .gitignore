@@ -89,7 +89,6 @@ Ball Butler/hand_sensor_pcb_rail/fp-info-cache
 !/.claude/commands/
 !/.claude/agents/
 !/.claude/workflows/
-sim/tests/results/
 temp/
 
 # MuJoCo generated log (appears on GLFW/headless errors)

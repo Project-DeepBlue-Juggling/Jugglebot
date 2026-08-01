@@ -88,7 +88,6 @@ sim/
 │   └── baselines/           Saved baseline CSVs
 ├── main.py             Entry point + 50 Hz loop + TargetSource adapters
 ├── demo_mpc.py         Standalone MPC demo (Phase 2)
-├── sweep_speed_ratio.py  Batch sweep of --platform-event-speed-ratio
 ├── test_hand_stroke.py   Visual hand stroke smoke test
 └── MPC_BUGS.md         Known issues tracker
 ```

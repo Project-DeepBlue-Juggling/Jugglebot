@@ -12,7 +12,8 @@ sweeps.  After the sweep completes, this module:
 
 All functions are pure Python + numpy — no ROS2 dependency.
 
-Lifted from archived/ball_butler_node.py with minor cleanup.
+Lifted from the retired ball_butler_node.py (now attic/ros-jugglebot-archived/)
+with minor cleanup.
 """
 
 from __future__ import annotations
