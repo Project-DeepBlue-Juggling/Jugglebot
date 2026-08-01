@@ -200,7 +200,7 @@ def friction_ff_torque_nm(params: FrictionFFParams, axis: int, v_rps: float) -> 
     Computes the SAME quantity as ``MotorGuard._compute_friction_ff_Nm()[axis]``
     for a commanded velocity ``v_rps`` on ``axis`` (all other axes at rest), but
     as a plain scalar so it can be dependency-injected into the bench replay
-    source (``controller.teensy_link.replay_setpoint.RecordedThrowSource``'s
+    source (``teensy_link.replay_setpoint.RecordedThrowSource``'s
     ``torque_ff_fn``) WITHOUT pulling the full ``motor_guard`` / ROS 2 stack into
     ``controller/`` (which must stay pure). The bench driver builds a
     ``lambda v: friction_ff_torque_nm(params, axis, v)`` and injects it.

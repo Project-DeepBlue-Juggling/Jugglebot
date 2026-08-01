@@ -69,7 +69,7 @@ from jugglebot.motion.trajectory import planner
 from jugglebot.motion.trajectory.feasibility import TrajectoryInfeasible
 from jugglebot.motion.trajectory.shaping import cup_lateral_shift_mm
 
-from controller.teensy_link.setpoint_pump import SetpointPump
+from teensy_link.setpoint_pump import SetpointPump
 
 from sim.plant.mujoco_plant import MuJoCoPlant
 from sim.hand.trajectory import HandCatchTrajectory, HandCatchSequence

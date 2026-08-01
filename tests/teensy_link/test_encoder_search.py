@@ -1,4 +1,4 @@
-"""Unit tests for controller/teensy_link/encoder_search.py.
+"""Unit tests for teensy_link/encoder_search.py.
 
 The encoder-index-search orchestration state machine, tested in isolation (no
 ROS, no UDP, no hardware) by driving :meth:`EncoderSearch.step` with controlled
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from controller.teensy_link.encoder_search import (
+from teensy_link.encoder_search import (
     EncoderSearch,
     AxisStatus,
     AXIS_STATE_IDLE as IDLE,

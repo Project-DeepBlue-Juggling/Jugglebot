@@ -448,7 +448,7 @@ Fixed head **8 bytes**, followed by a variable blob.
 
 Per-method argument blobs riding inside an `RpcRequest` (and the one
 result blob). Packed, little-endian. The firmware `rpc.h` consumes the
-generated `JbUdp::RpcArgs::*` structs; `controller/teensy_link/rpc_args.py`
+generated `JbUdp::RpcArgs::*` structs; `teensy_link/rpc_args.py`
 wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 
 ### ArgAxisState (`SET_AXIS_STATE`)

@@ -1,4 +1,4 @@
-"""Fidelity tests for controller/teensy_link/fault_logic.py.
+"""Fidelity tests for teensy_link/fault_logic.py.
 
 Asserts the Jetson-side Python mirror reproduces every named transition in the
 fault decision tree. The authoritative spec for the C++ is the **compiled**
@@ -19,7 +19,7 @@ latch (no firmware analog: it is the Jetson↔Teensy-link half of the invariant)
 
 from __future__ import annotations
 
-from controller.teensy_link.fault_logic import (
+from teensy_link.fault_logic import (
     FaultEvaluator,
     DeferredStowLatch,
     LinkLossLatch,

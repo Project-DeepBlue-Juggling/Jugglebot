@@ -60,12 +60,12 @@ for _p in (_REPO, os.path.join(_REPO, "tools", "probes")):
 import canhub_tier2_hw_validation as probe  # noqa: E402
 from canhub_tier2_hw_validation import C, SerialMonitor, fmt_guard, fmt_diag, fmt_axes  # noqa: E402
 
-from controller.teensy_link import (  # noqa: E402
+from teensy_link import (  # noqa: E402
     TeensyLinkClient, RpcClient, RpcServer, RpcError, RpcTimeout, TimeOfDayServer,
     rpc_args,
 )
-from controller.teensy_link import protocol as p  # noqa: E402
-from controller.teensy_link.protocol import MsgType, RpcMethod, RpcStatus, Setpoint, Telemetry  # noqa: E402
+from teensy_link import protocol as p  # noqa: E402
+from teensy_link.protocol import MsgType, RpcMethod, RpcStatus, Setpoint, Telemetry  # noqa: E402
 
 CLOSED_LOOP = 8
 _FLAG_HOLD = 0x1 | 0x2   # FLAG_HAS_U1 | FLAG_HAS_U2

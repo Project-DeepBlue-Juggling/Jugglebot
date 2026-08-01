@@ -40,7 +40,14 @@ _SIM_TOP_LEVEL = frozenset({
 })
 
 #: Directories scanned.  attic/ is frozen history; ros_ws is a separate root.
-_SCAN_DIRS = ('sim', 'tests', 'tools', 'controller')
+#: ``teensy_link`` is scanned since it became a repo-root package (2026-08-01,
+#: refactor Phase 4) — relocating a package out of ``controller/`` must not
+#: silently drop it out of the bare-import scan.  Only the bare-import rule
+#: reaches it: the sys.path-mutation rule below is explicitly ``sim/``-only, and
+#: ``teensy_link/protocol.py``'s insert is the deliberate, long-standing way
+#: ``config/generated/udp_protocol`` is reached from ROS nodes and standalone
+#: scripts, so it is out of that rule's scope by design, not by omission.
+_SCAN_DIRS = ('sim', 'tests', 'tools', 'controller', 'teensy_link')
 
 #: The one file allowed to mutate sys.path for sim, plus the test suite's own
 #: conftest bootstrap (pytest has no entry script to call bootstrap_paths()).

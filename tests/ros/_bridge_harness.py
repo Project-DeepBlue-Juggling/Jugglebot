@@ -24,9 +24,9 @@ from __future__ import annotations
 
 import time
 
-from controller.teensy_link import PlatformFrame
-from controller.teensy_link import TeensyLinkClient
-from controller.teensy_link import protocol as p
+from teensy_link import PlatformFrame
+from teensy_link import TeensyLinkClient
+from teensy_link import protocol as p
 
 # Reuse the FakeTeensy loopback peer.
 from tests.teensy_link.conftest import FakeTeensy

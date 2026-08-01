@@ -384,9 +384,13 @@ def generate_launch_description():
         output='screen',
     )
 
-    # teensy_bridge_node imports controller.teensy_link from the repo root, which
-    # is OUTSIDE the ROS install tree, so prepend it to PYTHONPATH (mirrors
-    # teensy_bridge_launch.py). Override host path via JUGGLEBOT_REPO.
+    # teensy_bridge_node imports the top-level ``teensy_link`` package, which
+    # lives at the REPO ROOT — OUTSIDE the ROS install tree — so prepend the
+    # repo root to PYTHONPATH (mirrors teensy_bridge_launch.py, which carries
+    # the full rationale for why teensy_link is deliberately NOT installed into
+    # the ROS package: live-tree freshness for the hottest wire-format code,
+    # instead of putting every protocol.py edit behind a `colcon build` whose
+    # omission fails silently). Override host path via JUGGLEBOT_REPO.
     _jugglebot_repo = os.environ.get('JUGGLEBOT_REPO', '/home/jetson/Desktop/Jugglebot')
     _existing_pp = os.environ.get('PYTHONPATH', '')
     _bridge_pythonpath = (f"{_jugglebot_repo}:{_existing_pp}"

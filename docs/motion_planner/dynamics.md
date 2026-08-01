@@ -30,7 +30,7 @@ Two things the `SetpointPump` does that this page's physics does not, and that y
 - [dynamics.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/dynamics.py) — gravity wrench, inertia wrench, feedforward torques
 - [torque_ff.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/torque_ff.py) — the config-gated producer (sign conventions documented here)
 - [conversions.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/conversions.py) — leg force to motor torque conversion
-- [setpoint_pump.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/controller/teensy_link/setpoint_pump.py) — the single wire enforcement point (clamp, ramp, Kt scale)
+- [setpoint_pump.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/teensy_link/setpoint_pump.py) — the single wire enforcement point (clamp, ramp, Kt scale)
 
 ## Why Feedforward Torques?
 

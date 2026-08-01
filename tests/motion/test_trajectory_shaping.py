@@ -33,7 +33,7 @@ from jugglebot.motion.trajectory.emitter import KnotEmitter
 from jugglebot.motion.trajectory.plan import HoldPlan, TrajectoryPlan
 from jugglebot.motion.trajectory.segment import QuinticSegment
 
-from controller.teensy_link.setpoint_pump import SetpointPump
+from teensy_link.setpoint_pump import SetpointPump
 
 NEUTRAL = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
 G = 9806.0

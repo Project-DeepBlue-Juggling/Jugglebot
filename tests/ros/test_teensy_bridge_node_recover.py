@@ -17,7 +17,7 @@ import threading
 import time
 import types
 
-from controller.teensy_link import RpcMethod, RpcStatus, rpc_args
+from teensy_link import RpcMethod, RpcStatus, rpc_args
 
 from std_srvs.srv import Trigger
 

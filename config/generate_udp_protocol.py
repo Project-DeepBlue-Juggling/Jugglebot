@@ -640,7 +640,7 @@ VARIABLE_TAIL = {"RpcRequest", "RpcResponse"}
 # little-endian structs into the C++ header
 # (JbUdp::RpcArgs), the Python module (dataclasses), and the markdown spec; the
 # firmware's rpc.h consumes the generated C++ structs via `using` declarations,
-# and controller/teensy_link/rpc_args.py wraps the generated Python.
+# and teensy_link/rpc_args.py wraps the generated Python.
 #
 # Field names MUST match the firmware rpc.cpp dispatch (a.axis, a.state, ...).
 # ───────────────────────────────────────────────────────────────────────────
@@ -1041,7 +1041,7 @@ def generate_python() -> str:
     a("    Subclasses ValueError so existing ``except ValueError`` handlers still")
     a("    catch it; callers that must distinguish a corrupted frame (bad CRC) from")
     a("    a structurally-malformed one (bad magic/version/length) catch CrcError")
-    a("    specifically. See controller/teensy_link/client.py's RX decode path,")
+    a("    specifically. See teensy_link/client.py's RX decode path,")
     a("    which counts crc_errors vs decode_errors off this distinction.")
     a('    """')
     a("")
@@ -1288,7 +1288,7 @@ def generate_markdown() -> str:
     a("")
     a("Per-method argument blobs riding inside an `RpcRequest` (and the one")
     a("result blob). Packed, little-endian. The firmware `rpc.h` consumes the")
-    a("generated `JbUdp::RpcArgs::*` structs; `controller/teensy_link/rpc_args.py`")
+    a("generated `JbUdp::RpcArgs::*` structs; `teensy_link/rpc_args.py`")
     a(f"wraps the generated Python. `AXIS_ALL = 0x{AXIS_ALL:X}` broadcasts to all legs.")
     a("")
     for arg in RPC_ARGS:

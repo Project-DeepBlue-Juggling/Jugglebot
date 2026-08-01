@@ -1,4 +1,4 @@
-"""Unit tests for controller/teensy_link/homing.py (firmware-reported HomingResult; see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink).
+"""Unit tests for teensy_link/homing.py (firmware-reported HomingResult; see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink).
 
 The homing completion-observer state machine, tested in isolation (no ROS, no UDP,
 no hardware) by driving :meth:`HomingMonitor.step` with controlled monotonic times
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from controller.teensy_link.homing import (
+from teensy_link.homing import (
     HomingMonitor,
     AxisStatus,
     AXIS_STATE_IDLE as IDLE,

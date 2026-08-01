@@ -18,6 +18,7 @@ Jugglebot is a Stewart platform robot that catches and throws balls. The codebas
 config/hardware_config.yaml  ← single source of truth for all physical parameters
 config/generate_config.py    ← generates .py/.h/.js constants → config/generated/ + consumer dirs
 controller/                  ← MPC runtime: solver, plant abstractions, telemetry, MPC loop, hardware plant
+teensy_link/                 ← can-bridge UDP transport (protocol/client/rpc + the leg-op observers)
 run_mpc.py                   ← hardware MPC entry point (uses controller/) — DORMANT, not launched
 sim/                         ← MuJoCo simulation (plant/, hand/, ball/, input/, viz/, analysis/)
 ros_ws/src/jugglebot/        ← ROS2 package (can/, motion/, tracking/, nodes)
@@ -42,10 +43,11 @@ plans/archived/              ← completed or superseded plans
 - Commits carry a `Logbook-Entry: <slug>` trailer. **That trailer is the canonical bidirectional link** between code and logbook: `git blame` → commit → trailer → entry, and `git log --grep "Logbook-Entry: <slug>"` → every commit for an entry. Entries therefore do **not** carry commit SHAs — no `commits:` frontmatter on new entries and no SHA-backfill follow-up commit (convention retired 2026-08-01; historical entries keep theirs).
 
 **Key architectural boundaries:**
-- `ros_ws/.../motion/` and `controller/` are pure Python — no ROS2 imports allowed
+- `ros_ws/.../motion/`, `controller/` and `teensy_link/` are pure Python — no ROS2 imports allowed
 - ROS2 nodes (`*_node.py`) are thin wrappers; business logic lives in pure-Python modules
 - `controller/plant.py` defines `PlantInterface` — implemented by `MuJoCoPlant` (sim) and `HardwarePlant` (real robot via ZMQ IPC)
 - IPC between processes uses ZeroMQ PUB/SUB on tcp://localhost:5556 (telemetry) and :5557 (commands), msgpack serialization
+- **`teensy_link/` is a top-level package at the repo root, deliberately NOT installed into the ROS package** (moved out of `controller/` 2026-08-01, `plans/active/refactor-2026-07.md` Phase 4). Both launch files inject the repo root on `PYTHONPATH` so `teensy_bridge_node` runs the LIVE tree: a wire-format edit is live at the next relaunch instead of sitting behind a `colcon build` whose omission is silent. Import it as `teensy_link…`; `controller/teensy_link.py` is a `sys.modules`-aliasing shim for the old path, to be **deleted after 2026-09**.
 - **Leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard**, in can-bridge firmware. The MVP leg path is `trajectory_node` → :5557 → `teensy_bridge_node` → can-bridge Teensy (which does the 500 Hz interpolation). Nothing on the Jetson is in that safety loop.
 - **The MPC chain is parked DORMANT** (2026-08-01, `plans/active/refactor-2026-07.md` Phase 3): `jugglebot_launch.py` no longer starts `motor_guard` or `motion_bridge_node`, and `run_mpc.py` is not launched. `motor_guard.py` was a 500 Hz interpolator + monitor on the *pre-cutover* leg path; it is a parked fallback, not the safety layer — do not describe it as one. All the code, entry points and tests stay; revival = re-add the two launch entries + promote the `nightly`-marked MPC battery. `controller/` is NOT MPC-only, so it is not deleted: live sim paths import `controller.{ballistics,target,telemetry,scheduler,plant}`.
 

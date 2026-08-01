@@ -20,8 +20,8 @@ import time
 
 import pytest
 
-from controller.teensy_link import protocol as p
-from controller.teensy_link import (
+from teensy_link import protocol as p
+from teensy_link import (
     MsgType, LinkState, BusHealth, FaultState,
     HeartbeatJ2T, HeartbeatT2J, Telemetry, Diagnostic, Profile,
 )
@@ -650,7 +650,7 @@ def test_profile_published(bridge):
 def test_time_of_day_responder(bridge):
     """The Teensy-initiated TIME_OF_DAY_QUERY gets an OK response with 8 bytes."""
     import struct
-    from controller.teensy_link import RpcMethod, RpcStatus, RpcResponse
+    from teensy_link import RpcMethod, RpcStatus, RpcResponse
 
     teensy, node = bridge
     teensy.send_rpc_request(int(RpcMethod.TIME_OF_DAY_QUERY), req_id=77)

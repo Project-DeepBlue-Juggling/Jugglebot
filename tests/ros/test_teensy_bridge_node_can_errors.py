@@ -31,7 +31,7 @@ ROS 2 is mocked by tests/ros/conftest.py.
 
 from __future__ import annotations
 
-from controller.teensy_link import CanErrors, MsgType
+from teensy_link import CanErrors, MsgType
 
 from tests.ros._bridge_harness import (
     _build_paired_node,

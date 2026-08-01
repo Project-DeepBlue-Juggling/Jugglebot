@@ -27,7 +27,7 @@ import struct
 
 import pytest
 
-from controller.teensy_link import rpc_args
+from teensy_link import rpc_args
 
 
 # ── can_node reference (transcribed 1:1) ──────────────────────────────────────

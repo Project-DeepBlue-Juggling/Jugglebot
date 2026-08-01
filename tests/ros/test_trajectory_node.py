@@ -36,7 +36,7 @@ from jugglebot.motion.trajectory import HoldPlan
 from jugglebot.motion.trajectory import TrajectoryInfeasible
 from jugglebot.motion.trajectory.plan import TrajectoryPlan
 from jugglebot.motion.trajectory.segment import QuinticSegment
-from controller.teensy_link.setpoint_pump import SetpointPump
+from teensy_link.setpoint_pump import SetpointPump
 
 _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
 

@@ -15,7 +15,7 @@
 > **Section 3 too (noted 2026-08-01).** Its `**File:**` line points at
 > `jugglebot/can_node.py`, deleted in the same 2026-07-06 decommission. The
 > *clamp itself is live* — it was ported to
-> `controller/teensy_link/setpoint_pump.py` (`max_step_rev`, gating each frame
+> `teensy_link/setpoint_pump.py` (`max_step_rev`, gating each frame
 > against the previously **accepted** setpoint rather than against encoder
 > feedback, and complementary to the Teensy-side `MAX_DEVIATION` guard), so read
 > §3 for the rationale and the module for the current threshold and semantics.

@@ -125,7 +125,7 @@ def test_link_lost_does_not_command_teensy():
     emit any new commands on link loss — only heartbeats (which are liveness,
     not commands) continue. We assert no RPC_REQUEST frame is ever sent.
     """
-    from controller.teensy_link import MsgType
+    from teensy_link import MsgType
     teensy, client, node = _make_node()
     try:
         _set_heartbeat_age(client, 0.0)

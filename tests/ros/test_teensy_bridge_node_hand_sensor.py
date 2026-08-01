@@ -32,8 +32,8 @@ ROS 2 is mocked by tests/ros/conftest.py.
 
 from __future__ import annotations
 
-from controller.teensy_link import HandSensor, MsgType
-from controller.teensy_link import protocol as p
+from teensy_link import HandSensor, MsgType
+from teensy_link import protocol as p
 
 from jugglebot.teensy_bridge_node import _HAND_SENSOR_RX_FRESH_S
 

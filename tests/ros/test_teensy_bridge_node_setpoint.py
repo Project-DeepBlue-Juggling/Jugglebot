@@ -19,8 +19,8 @@ import pytest
 
 from std_srvs.srv import SetBool
 
-from controller.teensy_link import MsgType, HeartbeatJ2T
-from controller.teensy_link.protocol import Setpoint
+from teensy_link import MsgType, HeartbeatJ2T
+from teensy_link.protocol import Setpoint
 
 from tests.ros._bridge_harness import _build_paired_node, _teardown, _wait_until
 
@@ -507,7 +507,7 @@ def test_arm_rejected_on_nan_pos_rev():
     """A leg reporting a non-finite (NaN) encoder ⇒ refuse to arm. The u0-vs-encoder
     precondition must fail CLOSED: the old `d > tol` PASSED a NaN (NaN > tol is
     False), arming onto an unknown pose; `not (d <= tol)` rejects it."""
-    from controller.teensy_link import Telemetry
+    from teensy_link import Telemetry
     teensy, client, node = _node()
     try:
         _bring_link_and_telem_up(teensy, node, leg_pos=0.1)
@@ -539,7 +539,7 @@ def test_arm_rejected_when_guard_fault_latched():
     catch this: link freshness, stream freshness and u0-vs-encoder are all satisfied
     by a healthy stack in front of a latched guard.
     """
-    from controller.teensy_link import protocol as p
+    from teensy_link import protocol as p
     teensy, client, node = _node()
     try:
         # Link + telemetry up, but the heartbeat carries a latched MAX_DEVIATION.
@@ -565,7 +565,7 @@ def test_arm_rejected_when_guard_fault_latched():
 
 def test_arm_allowed_when_guard_fault_none():
     """Control for the test above: fault_state=NONE must not block arming."""
-    from controller.teensy_link import protocol as p
+    from teensy_link import protocol as p
     teensy, client, node = _node()
     try:
         teensy.send_heartbeat_t2j(fault_state=int(p.FaultState.NONE))
@@ -585,7 +585,7 @@ def test_err_bus_down_message_names_latched_guard_fault():
     """ERR_BUS_DOWN is overloaded (bus WARN/BUS_OFF, can-bus-down, AND guard E-STOP).
     When a guard fault is latched, the annotated message must say so — otherwise the
     operator hunts a CAN fault that does not exist (2026-07-09)."""
-    from controller.teensy_link import protocol as p
+    from teensy_link import protocol as p
     teensy, client, node = _node()
     try:
         teensy.send_heartbeat_t2j(fault_state=int(p.FaultState.MAX_DEVIATION))

@@ -3,7 +3,7 @@
 
 Hardware bench driver for the FIRST observable run of encoder index search over
 the can-bridge. It drives the TESTED
-controller/teensy_link/encoder_search.EncoderSearch state machine against real
+teensy_link/encoder_search.EncoderSearch state machine against real
 hardware over the UDP link, using the SET_AXIS_STATE primitive — the same
 orchestration teensy_bridge_node._run_encoder_search uses; this standalone driver
 just gives inline observation. The PRODUCTION path is the
@@ -36,13 +36,13 @@ import threading
 import math
 
 sys.path.insert(0, "/home/jetson/Desktop/Jugglebot")
-from controller.teensy_link import (  # noqa: E402
+from teensy_link import (  # noqa: E402
     TeensyLinkClient, RpcClient, RpcServer, TimeOfDayServer, MsgType,
     Telemetry, Diagnostic, RpcMethod,
 )
-from controller.teensy_link import protocol as p  # noqa: E402
-from controller.teensy_link import rpc_args  # noqa: E402
-from controller.teensy_link.encoder_search import (  # noqa: E402
+from teensy_link import protocol as p  # noqa: E402
+from teensy_link import rpc_args  # noqa: E402
+from teensy_link.encoder_search import (  # noqa: E402
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
 )
 

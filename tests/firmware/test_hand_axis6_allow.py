@@ -4,7 +4,7 @@ The can-bridge replaced its blanket `axis == HAND_AXIS` reject (rpc.cpp) with a
 NARROW (method, axis) allow-table: which RpcMethods it forwards to the hand ODrive
 (axis 6) on CAN3. The table is generated ONCE (config/generate_udp_protocol.py)
 into both a C++ predicate (JbUdp::hand_axis6_permitted, consumed by rpc.cpp's
-send_axis_frame) and a Python frozenset (controller.teensy_link). This test pins:
+send_axis_frame) and a Python frozenset (teensy_link). This test pins:
 
   1. the Python set == the operator-locked permit list (a rename/drop fails here,
      not silently on the bench);
@@ -21,9 +21,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from controller.teensy_link import RpcMethod
-from controller.teensy_link import hand_axis6_permitted
-from controller.teensy_link.protocol import HAND_AXIS6_PERMITTED
+from teensy_link import RpcMethod
+from teensy_link import hand_axis6_permitted
+from teensy_link.protocol import HAND_AXIS6_PERMITTED
 
 _FIRMWARE_H = (Path(__file__).resolve().parents[2]
                / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge"

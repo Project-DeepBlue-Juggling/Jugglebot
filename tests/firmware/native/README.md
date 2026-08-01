@@ -135,7 +135,7 @@ setter to force the divergence.
 ## Golden vectors (`fault_golden.json`)
 
 `test_fault_machine --emit-golden <path>` dumps the firmware-anchored conformance
-vectors (the subset of scenarios the Jetson mirror `controller/teensy_link/
+vectors (the subset of scenarios the Jetson mirror `teensy_link/
 fault_logic.py` models). Regenerate after an *intended* fault-machine change:
 
 ```bash

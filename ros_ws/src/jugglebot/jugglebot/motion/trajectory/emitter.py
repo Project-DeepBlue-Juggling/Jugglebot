@@ -27,7 +27,7 @@ Field mapping (mirrors ``controller/hardware_plant.py::command``):
     since 2026-07-16), in
     which case this field is byte-identical to the pre-feature ``np.zeros(6)``.
     The clamp / Kt wire scale / ramp-in are NOT applied here — they live at the single
-    wire enforcement point, ``controller/teensy_link/setpoint_pump.py``.
+    wire enforcement point, ``teensy_link/setpoint_pump.py``.
 
 Pure Python + numpy (imports ``jugglebot.motion.ipc.make_mpc_command`` for the
 exact field set — a pure dict builder, no ZMQ/UDP transport). No repo-root imports.

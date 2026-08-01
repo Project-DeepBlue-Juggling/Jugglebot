@@ -22,7 +22,7 @@ from jugglebot.motion.trajectory import (
 )
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
-from controller.teensy_link.setpoint_pump import SetpointPump
+from teensy_link.setpoint_pump import SetpointPump
 
 
 NEUTRAL = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])

@@ -24,7 +24,7 @@ from jugglebot.motion.trajectory.feasibility import (
     TrajectoryInfeasible, TOO_FAST, WORKSPACE, validate_follow,
 )
 
-from controller.teensy_link.setpoint_pump import SetpointPump
+from teensy_link.setpoint_pump import SetpointPump
 
 NEUTRAL = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
 REST = (NEUTRAL, np.zeros(6), np.zeros(6))

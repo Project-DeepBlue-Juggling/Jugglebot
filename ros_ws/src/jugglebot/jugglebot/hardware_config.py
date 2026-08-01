@@ -475,5 +475,5 @@ BB_MAX_THROW_SAMPLES = 1001
 BB_MAX_TRAJ_FRAMES = 1813
 # Leg torque-FF wire scale: Nm_true → Nm_odrive
 # = DYNAMICS_MOTOR_KT_ODRIVE_CONFIG_NM_PER_A / DYNAMICS_MOTOR_KT_NM_PER_A.
-# Applied ONCE, in controller/teensy_link/setpoint_pump.py.
+# Applied ONCE, in teensy_link/setpoint_pump.py.
 ODRIVE_LEG_TORQUE_WIRE_SCALE = 0.9672514310008596

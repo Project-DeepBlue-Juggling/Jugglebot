@@ -270,7 +270,7 @@ def test_fault_codes_match_generated_enum():
     # The plain-int FaultState codes duplicated in sysid_lib (so it stays
     # dependency-free) MUST equal the generated wire enum — else a firmware fault
     # would be misclassified. This is the guard against silent drift.
-    from controller.teensy_link import FaultState
+    from teensy_link import FaultState
     assert sid.FAULT_NONE == int(FaultState.NONE)
     assert sid.FAULT_MPC_STALE == int(FaultState.MPC_STALE)
     assert sid.FAULT_LINK_LOST == int(FaultState.LINK_LOST)

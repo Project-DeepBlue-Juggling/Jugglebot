@@ -9,7 +9,7 @@ implementation + a test that fails on the omission); the other two halves are
 Scope: the ROS 2 package `ros_ws/src/jugglebot/`. Neither `sim/` nor
 `controller/` has any gravity-levelling concept — grepped 2026-07-25, the only
 hit outside this package is the `levelling_complete` **boolean flag** in
-`controller/teensy_link/rpc_args.py`, which is a Teensy-persisted per-boot flag
+`teensy_link/rpc_args.py`, which is a Teensy-persisted per-boot flag
 and not the correction. A reader looking for a second implementation should stop
 looking: there is none, and adding one is what this contract forbids.
 

@@ -37,9 +37,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path("/home/jetson/Desktop/Jugglebot")))
-from controller.teensy_link import protocol as p
-from controller.teensy_link.client import TeensyLinkClient
-from controller.teensy_link.rpc import RpcClient, RpcError, RpcTimeout
+from teensy_link import protocol as p
+from teensy_link.client import TeensyLinkClient
+from teensy_link.rpc import RpcClient, RpcError, RpcTimeout
 
 ID_STATE = 0x6E0
 ID_TILT = 0x7DE

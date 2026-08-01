@@ -10,7 +10,7 @@ REAL firmware is compiled and asserted directly by the native harness
 robustness contract for the C++.
 
 **What it is now.** The bridge still runs a Jetson-side Python mirror —
-`controller/teensy_link/fault_logic.py` (`FaultEvaluator` / `DeferredStowLatch`,
+`teensy_link/fault_logic.py` (`FaultEvaluator` / `DeferredStowLatch`,
 and the live `LinkLossLatch`) — as the canonical port for the eventual
 `can_node.py` deletion. This file pins that mirror to a **firmware-anchored
 golden vector** (`native/fault_golden.json`, emitted by the compiled
@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from controller.teensy_link.fault_logic import FaultEvaluator, DeferredStowLatch
+from teensy_link.fault_logic import FaultEvaluator, DeferredStowLatch
 
 _GOLDEN = Path(__file__).resolve().parent / "native" / "fault_golden.json"
 

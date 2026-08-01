@@ -1,4 +1,4 @@
-"""Unit tests for controller/teensy_link/activate.py.
+"""Unit tests for teensy_link/activate.py.
 
 The activate completion-observer state machine, tested in isolation (no ROS, no
 UDP, no hardware) by driving :meth:`ActivateMonitor.step` with controlled
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from controller.teensy_link.activate import (
+from teensy_link.activate import (
     ActivateMonitor,
     AxisStatus,
     AXIS_STATE_CLOSED_LOOP as CL,

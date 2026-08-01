@@ -1,4 +1,4 @@
-"""Byte-layout + round-trip tests for controller/teensy_link/rpc_args.py.
+"""Byte-layout + round-trip tests for teensy_link/rpc_args.py.
 
 Validates the codegen-hoisted RPC argument encoders against the EXACT byte
 layouts the firmware rpc.h / rpc.cpp expect (packed, little-endian). These are
@@ -24,8 +24,8 @@ import struct
 
 import pytest
 
-from controller.teensy_link import rpc_args as ra
-from controller.teensy_link.protocol import (
+from teensy_link import rpc_args as ra
+from teensy_link.protocol import (
     ArgAxisState, ArgControllerMode, ArgVelCurr, ArgPosGain, ArgVelGains,
     ArgAbsPosition, ArgAxisOnly, ArgSdoRead, ArgSdoWrite, ResultTimeOfDay,
     ArgBbThrow,
@@ -188,7 +188,7 @@ def test_method_arg_association_covers_all_commandable_methods():
     ``METHOD.keys()`` (which only caught "someone edited METHOD"). A NEW arg-carrying
     method added to the enum without a METHOD entry now lands in the computed
     'missing' set below and FAILS — the useful direction."""
-    from controller.teensy_link import RpcMethod
+    from teensy_link import RpcMethod
     # The authoritative protocol fact: methods that carry NO request args (correctly
     # absent from METHOD). TIME_OF_DAY_QUERY is Teensy→Jetson (server-side); the
     # reads (TILT_READ/STATE_READ) + BB reload/reset/calibrate + GET_AXIS_VERSIONS

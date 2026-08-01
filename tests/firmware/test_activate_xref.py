@@ -80,7 +80,7 @@ def test_firmware_completion_tol_tighter_than_jetson_observer():
     default (0.05 rev), so the Jetson never declares done before the firmware has
     settled the leg at the target. A single-TU native test cannot see the Python
     controller constant, so this cross-file pin stays here."""
-    from controller.teensy_link.activate import DEFAULT_POS_TOL_REV
+    from teensy_link.activate import DEFAULT_POS_TOL_REV
     assert FirmwareActivate.pos_tol() > 0.0
     assert FirmwareActivate.pos_tol() <= DEFAULT_POS_TOL_REV
 

@@ -6,7 +6,7 @@ import struct
 
 import pytest
 
-from controller.teensy_link import protocol as p
+from teensy_link import protocol as p
 
 
 def test_constants_match_firmware_spec():

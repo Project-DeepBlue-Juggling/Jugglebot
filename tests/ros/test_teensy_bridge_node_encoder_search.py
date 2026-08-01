@@ -14,10 +14,10 @@ import threading
 import time
 import types
 
-from controller.teensy_link import (
+from teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic,
 )
-from controller.teensy_link import rpc_args
+from teensy_link import rpc_args
 
 from tests.ros._bridge_harness import _build_paired_node, _poll, _teardown
 

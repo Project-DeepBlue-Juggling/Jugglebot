@@ -24,9 +24,9 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock
 
-from controller.teensy_link import RpcMethod, RpcStatus, Telemetry
-from controller.teensy_link import rpc_args
-from controller.teensy_link import protocol as p
+from teensy_link import RpcMethod, RpcStatus, Telemetry
+from teensy_link import rpc_args
+from teensy_link import protocol as p
 
 from jugglebot.can.motor_state import EXPECTED_HW_VERSIONS, HAND_AXIS, JUGGLEBOT_AXES
 

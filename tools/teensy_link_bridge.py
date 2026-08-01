@@ -39,7 +39,7 @@ _HERE = Path(__file__).resolve().parent
 _REPO = _HERE.parent
 sys.path.insert(0, str(_REPO))
 
-from controller.teensy_link import (  # noqa: E402
+from teensy_link import (  # noqa: E402
     TeensyLinkClient,
     RpcServer,
     TimeOfDayServer,
@@ -50,7 +50,7 @@ from controller.teensy_link import (  # noqa: E402
     LinkState,
     FaultState,
 )
-from controller.teensy_link import protocol as p  # noqa: E402
+from teensy_link import protocol as p  # noqa: E402
 
 
 def _setup_logging(verbose: bool) -> None:

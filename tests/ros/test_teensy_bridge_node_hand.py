@@ -23,12 +23,12 @@ import threading
 import time
 import types
 
-from controller.teensy_link import (
+from teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic, HandCmdEcho,
 )
-from controller.teensy_link import rpc_args
-from controller.teensy_link import protocol as p
-from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
+from teensy_link import rpc_args
+from teensy_link import protocol as p
+from teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 
 from tests.ros._bridge_harness import _build_paired_node, _poll, _teardown
 

@@ -8,8 +8,8 @@ rpc_args encoding the firmware rpc.cpp memcpy's into its arg structs.
 
 from __future__ import annotations
 
-from controller.teensy_link import RpcMethod, RpcStatus
-from controller.teensy_link import rpc_args
+from teensy_link import RpcMethod, RpcStatus
+from teensy_link import rpc_args
 
 from tests.ros._bridge_harness import _build_paired_node, _teardown
 

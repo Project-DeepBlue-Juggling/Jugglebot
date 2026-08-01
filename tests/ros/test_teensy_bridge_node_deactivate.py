@@ -14,7 +14,7 @@ import threading
 import time
 import types
 
-from controller.teensy_link import (
+from teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic,
 )
 
@@ -259,7 +259,7 @@ def test_run_deactivate_waits_for_wire_disarm_confirmation():
     for the next 10 Hz heartbeat tick — firing DEACTIVATE immediately races
     s_mpc_active=1 on the Teensy (rejected ~every time). _run_deactivate must
     hold the RPC until the firmware's arm-took bit (T2J bit3) drops."""
-    from controller.teensy_link import HeartbeatT2J, LinkState, BusHealth
+    from teensy_link import HeartbeatT2J, LinkState, BusHealth
 
     def _hb(flags):
         return HeartbeatT2J(

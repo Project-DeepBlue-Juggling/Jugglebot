@@ -197,7 +197,7 @@ def test_corner_pose_announcement_crosses_into_accepted_build_catch():
     from jugglebot.motion.trajectory import KnotEmitter, TrajectoryLimits
     from jugglebot.motion.trajectory import planner
     from jugglebot.motion.trajectory import toss_release
-    from controller.teensy_link.setpoint_pump import SetpointPump
+    from teensy_link.setpoint_pump import SetpointPump
     from sim.gate_common import CUP_Z_BASE_MM, Z_ACTIVE_MM
     from sim.hand.trajectory import HandCatchTrajectory
 

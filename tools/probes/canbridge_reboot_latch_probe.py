@@ -41,12 +41,12 @@ from pathlib import Path
 sys.path.insert(0, "/home/jetson/Desktop/Jugglebot")
 sys.path.insert(0, "/home/jetson/Desktop/Jugglebot/ros_ws/src/jugglebot")
 
-from controller.teensy_link import (  # noqa: E402
+from teensy_link import (  # noqa: E402
     TeensyLinkClient, RpcClient, RpcServer, RpcError, RpcTimeout,
     TimeOfDayServer, MsgType, HeartbeatT2J, FaultState, BusHealth,
 )
-from controller.teensy_link import protocol as p  # noqa: E402
-from controller.teensy_link import rpc_args  # noqa: E402
+from teensy_link import protocol as p  # noqa: E402
+from teensy_link import rpc_args  # noqa: E402
 
 TEENSY_IP = "192.168.42.2"
 OBSERVE_S = float(sys.argv[1]) if len(sys.argv) > 1 else 18.0

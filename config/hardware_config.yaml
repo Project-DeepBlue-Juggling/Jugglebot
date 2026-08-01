@@ -132,7 +132,7 @@ dynamics:
                                                 # (a derived constant; see generate_config.compute_derived), so the
                                                 # DELIVERED CURRENT is physically correct — which is the only thing
                                                 # a torque feedforward actually needs — at zero risk to the loop.
-                                                # Enforcement point: controller/teensy_link/setpoint_pump.py.
+                                                # Enforcement point: teensy_link/setpoint_pump.py.
                                                 # Consequence to know: vel_gain's "0.20 Nm/(turn/s)" label is a
                                                 # nominal, not a true Nm; the physically meaningful quantity is
                                                 # vel_gain / torque_constant = 3.628 A/(rev/s).

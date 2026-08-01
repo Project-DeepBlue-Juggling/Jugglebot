@@ -134,7 +134,7 @@ class CrcError(ValueError):
     Subclasses ValueError so existing ``except ValueError`` handlers still
     catch it; callers that must distinguish a corrupted frame (bad CRC) from
     a structurally-malformed one (bad magic/version/length) catch CrcError
-    specifically. See controller/teensy_link/client.py's RX decode path,
+    specifically. See teensy_link/client.py's RX decode path,
     which counts crc_errors vs decode_errors off this distinction.
     """
 

@@ -964,7 +964,7 @@ class BenchSysID:
 def _bridge_ports():
     """(stream_port, rpc_port) from the generated protocol — imported lazily so
     the module (and Path-DIRECT dry-run) never needs teensy_link."""
-    from controller.teensy_link import protocol as p  # noqa: E402
+    from teensy_link import protocol as p  # noqa: E402
     return int(p.PORT_STREAM), int(p.PORT_RPC)
 
 
@@ -1204,11 +1204,11 @@ class BridgeSysID:
     # -- transport (live only) -----------------------------------------------
 
     def _setup_transport(self):
-        from controller.teensy_link import (  # noqa: E402
+        from teensy_link import (  # noqa: E402
             TeensyLinkClient, RpcClient, RpcServer, TimeOfDayServer, MsgType,
             Telemetry, Diagnostic, HeartbeatT2J,
         )
-        from controller.teensy_link import protocol as pr  # noqa: E402
+        from teensy_link import protocol as pr  # noqa: E402
         self._MsgType = MsgType
         self._Telemetry = Telemetry
         self._Diagnostic = Diagnostic
@@ -1216,7 +1216,7 @@ class BridgeSysID:
         self._Setpoint = pr.Setpoint
         self._RpcMethod = pr.RpcMethod
         self._nlegs = int(pr.NUM_LEGS)
-        from controller.teensy_link import rpc_args  # noqa: E402
+        from teensy_link import rpc_args  # noqa: E402
         self._rpc_args = rpc_args
 
         self._client = TeensyLinkClient(
@@ -1814,7 +1814,7 @@ class BridgeSysID:
         """Fire the firmware HOME(axis) RPC (fire-and-monitor; the move runs
         autonomously in the can-bridge HOME handler, velocity-limited + current-
         capped + hardstop-detected) and wait for the axis to settle. Production
-        homing drives controller.teensy_link.homing.HomingMonitor from telemetry
+        homing drives teensy_link.homing.HomingMonitor from telemetry
         (teensy_home_bench.py); here we fire + wait for a finite, stationary encoder
         with a hard timeout, and VERIFY the leg actually MOVED (encoder travel) so a
         rejected / no-op HOME (e.g. ERR_REJECTED while mpc_active, ERR_BUS_DOWN) is not

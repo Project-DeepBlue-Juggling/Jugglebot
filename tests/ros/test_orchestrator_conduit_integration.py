@@ -22,7 +22,7 @@ import types
 
 from jugglebot.state_machine import RobotState
 
-from controller.teensy_link import RpcMethod, RpcStatus
+from teensy_link import RpcMethod, RpcStatus
 
 from tests.ros.conftest import (
     MotorStateSingle, RobotState as RobotStateMsg, MockFuture, Trigger,

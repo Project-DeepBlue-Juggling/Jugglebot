@@ -29,10 +29,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path("/home/jetson/Desktop/Jugglebot")))
 sys.path.insert(0, str(Path("/home/jetson/Desktop/Jugglebot/ros_ws/src/jugglebot")))
 
-from controller.teensy_link import protocol as p
-from controller.teensy_link.client import TeensyLinkClient
-from controller.teensy_link.rpc import RpcClient, RpcError, RpcTimeout
-from controller.teensy_link import rpc_args
+from teensy_link import protocol as p
+from teensy_link.client import TeensyLinkClient
+from teensy_link.rpc import RpcClient, RpcError, RpcTimeout
+from teensy_link import rpc_args
 from jugglebot.can import odrive
 import jugglebot.hardware_config as hw_cfg
 

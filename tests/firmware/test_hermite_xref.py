@@ -59,7 +59,7 @@ def test_beta_pump_knots_match_motor_guard():
     from unittest import mock
     from jugglebot.motion.geometry import StewartGeometry
     import jugglebot.motion.motor_guard as mg
-    from controller.teensy_link.setpoint_pump import (
+    from teensy_link.setpoint_pump import (
         SetpointPump, FLAG_HAS_U1, FLAG_HAS_U2,
     )
 

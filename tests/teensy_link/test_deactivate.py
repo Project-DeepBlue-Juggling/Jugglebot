@@ -1,4 +1,4 @@
-"""Unit tests for controller/teensy_link/deactivate.py.
+"""Unit tests for teensy_link/deactivate.py.
 
 The deactivate completion-observer state machine, tested in isolation (no ROS, no
 UDP, no hardware) by driving :meth:`DeactivateMonitor.step` with controlled
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from controller.teensy_link.deactivate import (
+from teensy_link.deactivate import (
     DeactivateMonitor,
     AxisStatus,
     AXIS_STATE_IDLE as IDLE,

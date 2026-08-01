@@ -20,10 +20,10 @@ import types
 
 import jugglebot.hardware_config as hw
 
-from controller.teensy_link import (
+from teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic,
 )
-from controller.teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
+from teensy_link.homing import HOMING_RUNNING, HOMING_OK  # firmware-reported homing outcome (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 
 from tests.ros._bridge_harness import _build_paired_node, _poll, _teardown
 

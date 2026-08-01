@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from controller.teensy_link import (
+from teensy_link import (
     RpcClient,
     RpcServer,
     RpcError,
@@ -16,7 +16,7 @@ from controller.teensy_link import (
     RpcStatus,
     TimeOfDayServer,
 )
-from controller.teensy_link import protocol as p
+from teensy_link import protocol as p
 
 
 # Import the fake-teensy fixture
@@ -54,7 +54,7 @@ def test_rpc_timeout_after_retries(fake_teensy_and_client):
     # Force timeout by registering a handler that never responds:
     #   The FakeTeensy's auto-responder always replies, so to test timeout we
     #   point the client at a port nothing listens on.
-    from controller.teensy_link import TeensyLinkClient
+    from teensy_link import TeensyLinkClient
 
     nowhere = TeensyLinkClient(
         teensy_addr=("127.0.0.1", 1),  # nothing should be on port 1
@@ -190,8 +190,8 @@ def test_non_idempotent_methods_not_retried(monkeypatch):
     an idempotent method still honours retries. We count RPC_REQUEST sends against a
     dead peer (guaranteed timeout) — HOME sends exactly ONE, SET_POS_GAIN sends
     1 + retries."""
-    from controller.teensy_link import TeensyLinkClient
-    from controller.teensy_link import rpc as rpc_mod
+    from teensy_link import TeensyLinkClient
+    from teensy_link import rpc as rpc_mod
 
     nowhere = TeensyLinkClient(
         teensy_addr=("127.0.0.1", 1), rpc_port=1,

@@ -20,7 +20,7 @@ import types
 
 import jugglebot.hardware_config as hw
 
-from controller.teensy_link import (
+from teensy_link import (
     RpcMethod, RpcStatus, MsgType, Telemetry, Diagnostic,
 )
 

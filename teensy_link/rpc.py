@@ -22,7 +22,7 @@ application's responsibility. This module provides two halves of that:
 
 * :class:`RpcServer` — used to *answer* RPCs initiated by the Teensy. The
   only one defined today is :data:`RpcMethod.TIME_OF_DAY_QUERY` (wall-clock
-  anchor, see :class:`controller.teensy_link.tod_server.TimeOfDayServer`).
+  anchor, see :class:`teensy_link.tod_server.TimeOfDayServer`).
   The infrastructure is generic so additional inbound methods can be
   registered later without rework.
 

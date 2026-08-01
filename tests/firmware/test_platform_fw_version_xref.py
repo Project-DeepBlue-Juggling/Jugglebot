@@ -9,7 +9,7 @@ loudly when skipped; the firmware was the only one that failed SILENTLY, because
 a pre-fix board simply behaves like a pre-fix board.  The fix is an identity
 constant in ``Teensy_code_platform/Teensy_code_platform.ino`` reported in bytes 5-6 of the 0x6E0
 RobotState reply the board already sends, and a host-side expected value in
-``controller/teensy_link/rpc_args.py``.
+``teensy_link/rpc_args.py``.
 
 Those are two INDEPENDENTLY-AUTHORED constants on purpose (see
 ``rpc_args.PLATFORM_FW_VERSION_EXPECTED``: the skew being detected is board vs
@@ -46,7 +46,7 @@ import subprocess
 
 import pytest
 
-from controller.teensy_link import rpc_args
+from teensy_link import rpc_args
 
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(

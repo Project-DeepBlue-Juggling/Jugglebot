@@ -47,7 +47,7 @@ import msgpack  # noqa: E402
 import zmq  # noqa: E402
 
 import hardware_config as hw  # noqa: E402  (config/generated on path)
-from controller.teensy_link.setpoint_pump import SetpointPump  # noqa: E402
+from teensy_link.setpoint_pump import SetpointPump  # noqa: E402
 
 
 def _out_dir() -> str:

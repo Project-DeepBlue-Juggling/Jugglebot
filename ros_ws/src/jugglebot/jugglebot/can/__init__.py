@@ -4,7 +4,7 @@ The SocketCAN transport half of this package (``bus.py``/``CANBus``) was
 deleted in the SocketCAN decommission (2026-07-06; see
 logbook/2026-07-06-phase13-socketcan-decommission.md) along with ``can_node.py``
 — the can-bridge Teensy owns all physical CAN buses now, and the Jetson talks
-to it over UDP (``controller/teensy_link``). What remains is the pure
+to it over UDP (``teensy_link``). What remains is the pure
 protocol/encoding layer, consumed by ``teensy_bridge_node`` and the firmware
 byte-parity xref tests.
 

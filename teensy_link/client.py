@@ -8,8 +8,8 @@ dispatches typed events to registered callbacks.
 It is **transport-only** — frame-type-specific behaviour (TIME_OF_DAY_QUERY
 responses, heartbeat reply, telemetry → ROS topic, etc.) is the caller's
 responsibility. The two upper-layer helpers in this package
-(:class:`controller.teensy_link.rpc.RpcClient` for outgoing RPCs and
-:class:`controller.teensy_link.tod_server.TimeOfDayServer` for incoming RPCs)
+(:class:`teensy_link.rpc.RpcClient` for outgoing RPCs and
+:class:`teensy_link.tod_server.TimeOfDayServer` for incoming RPCs)
 are built on top.
 
 Threading model: one RX thread (``_rx_loop``) + optional one heartbeat thread

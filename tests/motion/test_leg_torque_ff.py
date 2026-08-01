@@ -42,7 +42,7 @@ from jugglebot.motion.ik_solver import (
 from jugglebot.motion.torque_ff import LegTorqueFeedforward
 from jugglebot.motion.trajectory import HoldPlan, KnotEmitter
 
-from controller.teensy_link.setpoint_pump import (
+from teensy_link.setpoint_pump import (
     DEFAULT_TORQUE_FF_MAX_NM,
     DEFAULT_TORQUE_WIRE_SCALE,
     SetpointPump,

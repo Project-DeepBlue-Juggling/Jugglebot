@@ -7,13 +7,13 @@ import time
 
 import pytest
 
-from controller.teensy_link import (
+from teensy_link import (
     TeensyLinkClient,
     HeartbeatJ2T,
     HeartbeatT2J,
     MsgType,
 )
-from controller.teensy_link import protocol as p
+from teensy_link import protocol as p
 
 
 # Imported for the fixture

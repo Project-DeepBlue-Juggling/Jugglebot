@@ -1,4 +1,4 @@
-"""Unit tests for controller/teensy_link/setpoint_pump.py.
+"""Unit tests for teensy_link/setpoint_pump.py.
 
 The pump now consumes the 40 Hz MPC command
 stream (:5557 ``make_mpc_command`` dict) and emits Teensy-side knots (u0/u1/u2 + v0,
@@ -18,10 +18,10 @@ import math
 
 import pytest
 
-from controller.teensy_link.setpoint_pump import (
+from teensy_link.setpoint_pump import (
     SetpointPump, FLAG_HAS_U1, FLAG_HAS_U2,
 )
-from controller.teensy_link.protocol import Setpoint
+from teensy_link.protocol import Setpoint
 
 # Distinct per-axis scales so a wrong-axis mapping is obvious in assertions.
 _MM = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)

@@ -12,7 +12,7 @@ not) and the IDLE-on-arrival that distinguishes deactivate from activate.
 
 What remains here is what a single-TU native test CANNOT see:
   * the Jetson-side RpcMethod id + rpc_args wire-encoding parity (a DIFFERENT
-    module — controller.teensy_link, not leg_deactivate.cpp);
+    module — teensy_link, not leg_deactivate.cpp);
   * CONFIG-SANITY invariants among same-header constants (descent direction, stroke
     bound, gentle limit, timeout margin) — a pure-Python layer that runs even when
     g++ is absent and the native harness skips.
@@ -82,7 +82,7 @@ def test_deactivate_rpc_method_id():
     """DEACTIVATE rides the next id after ACTIVATE (0x0022 → 0x0023) and is distinct
     from every other method (a duplicate id would silently misroute). This pins the
     Jetson-side protocol enum, which no leg_deactivate.cpp native test can see."""
-    from controller.teensy_link import protocol as proto
+    from teensy_link import protocol as proto
     assert proto.RpcMethod.DEACTIVATE == 0x0023
     assert proto.RpcMethod.DEACTIVATE != proto.RpcMethod.ACTIVATE
 
@@ -91,6 +91,6 @@ def test_deactivate_arg_encoding_matches_activate_wire():
     """DEACTIVATE rides ArgAxisOnly, exactly like ACTIVATE — so encode_deactivate and
     encode_activate produce byte-identical wire payloads for the same axis (a
     Jetson-side rpc_args parity, not a firmware-behaviour concern)."""
-    from controller.teensy_link import rpc_args
+    from teensy_link import rpc_args
     for axis in (0, 3, rpc_args.AXIS_ALL):
         assert rpc_args.encode_deactivate(axis) == rpc_args.encode_activate(axis)

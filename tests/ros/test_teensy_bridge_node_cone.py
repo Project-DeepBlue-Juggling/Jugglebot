@@ -20,8 +20,8 @@ import time
 
 import pytest
 
-from controller.teensy_link import protocol as p
-from controller.teensy_link import MsgType
+from teensy_link import protocol as p
+from teensy_link import MsgType
 
 from jugglebot.can import catching_cone
 

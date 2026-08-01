@@ -1,4 +1,4 @@
-"""Tests for controller/teensy_link/replay_setpoint.py.
+"""Tests for teensy_link/replay_setpoint.py.
 
 The recorded-throw source replays an mpc_*.csv command stream as Teensy-side knots for the
 on-hardware float32-residual and motion-onset measurements, scaled so the
@@ -13,7 +13,7 @@ import math
 
 import pytest
 
-from controller.teensy_link.replay_setpoint import (
+from teensy_link.replay_setpoint import (
     RecordedThrowSource,
     ScaleInfo,
     load_recorded_axis,

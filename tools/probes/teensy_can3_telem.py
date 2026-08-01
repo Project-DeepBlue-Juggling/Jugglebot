@@ -25,11 +25,11 @@ import time
 import threading
 
 sys.path.insert(0, "/home/jetson/Desktop/Jugglebot")
-from controller.teensy_link import (  # noqa: E402
+from teensy_link import (  # noqa: E402
     TeensyLinkClient, RpcServer, TimeOfDayServer, MsgType,
     HeartbeatT2J, Telemetry, Diagnostic, LinkState, FaultState,
 )
-from controller.teensy_link import protocol as p  # noqa: E402
+from teensy_link import protocol as p  # noqa: E402
 
 DURATION = float(sys.argv[1]) if len(sys.argv) > 1 else 15.0
 TEENSY_IP = "192.168.42.2"

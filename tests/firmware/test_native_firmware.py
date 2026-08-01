@@ -302,5 +302,5 @@ def test_committed_golden_matches_live_firmware(binaries, tmp_path):
         "(fault_machine.cpp behaviour changed). Regenerate it:\n"
         "  python tests/firmware/native/build.py --golden "
         "tests/firmware/native/fault_golden.json\n"
-        "and update controller/teensy_link/fault_logic.py to match if the change "
+        "and update teensy_link/fault_logic.py to match if the change "
         "was intended.")

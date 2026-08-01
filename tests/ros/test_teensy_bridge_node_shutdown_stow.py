@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from controller.teensy_link.protocol import HeartbeatT2J, BusHealth, FaultState
+from teensy_link.protocol import HeartbeatT2J, BusHealth, FaultState
 from jugglebot.teensy_bridge_node import (
     _T2J_FLAG_STOW_PENDING,
     _SHUTDOWN_DEACTIVATE_TIMEOUT_S,

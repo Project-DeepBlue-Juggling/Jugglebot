@@ -7,7 +7,7 @@ Jetson-side orchestration over SET_AXIS_STATE), the homing *move* runs
 autonomously in the can-bridge HOME handler — there is no per-leg motion RPC, so
 the velocity-limited move-to-hardstop lives in firmware. This driver fires the
 HOME RPC (fire-and-monitor) and drives the TESTED
-controller/teensy_link/homing.HomingMonitor to observe completion from telemetry,
+teensy_link/homing.HomingMonitor to observe completion from telemetry,
 exactly as teensy_bridge_node._run_home does; this standalone driver just gives
 inline observation. The PRODUCTION path is the ``home`` ROS service
 (scoped by the ``home_axes`` parameter); use this driver for bench bring-up of one
@@ -44,13 +44,13 @@ import time
 import threading
 
 sys.path.insert(0, "/home/jetson/Desktop/Jugglebot")
-from controller.teensy_link import (  # noqa: E402
+from teensy_link import (  # noqa: E402
     TeensyLinkClient, RpcClient, RpcServer, TimeOfDayServer, MsgType,
     Telemetry, Diagnostic, RpcMethod,
 )
-from controller.teensy_link import protocol as p  # noqa: E402
-from controller.teensy_link import rpc_args  # noqa: E402
-from controller.teensy_link.homing import (  # noqa: E402
+from teensy_link import protocol as p  # noqa: E402
+from teensy_link import rpc_args  # noqa: E402
+from teensy_link.homing import (  # noqa: E402
     HomingMonitor, AxisStatus,
 )
 import jugglebot.hardware_config as hw  # noqa: E402

@@ -12,8 +12,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import pytest
 
-from controller.teensy_link import protocol as p
-from controller.teensy_link import TeensyLinkClient
+from teensy_link import protocol as p
+from teensy_link import TeensyLinkClient
 
 Address = Tuple[str, int]
 

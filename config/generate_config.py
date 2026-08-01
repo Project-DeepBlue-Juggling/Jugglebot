@@ -638,7 +638,7 @@ def compute_derived(cfg: dict) -> dict:
     # bench-validated velocity loop (vel_gain / torque_constant amps per rev/s) exactly
     # as it was validated.  See the long WHY block in hardware_config.yaml:dynamics.
     #
-    # Sole enforcement point: controller/teensy_link/setpoint_pump.py (the only
+    # Sole enforcement point: teensy_link/setpoint_pump.py (the only
     # production producer of the leg Setpoint frame).  The direct-CAN bench harnesses
     # (single_leg_test, friction_ff_demo, free/supported_platform_test) build their own
     # frames and BYPASS it — they must apply this scale themselves if they ever send a
@@ -706,7 +706,7 @@ def generate_hw_python(cfg: dict) -> str:
     lines.append(f"BB_MAX_TRAJ_FRAMES = {derived['BB_MAX_TRAJ_FRAMES']}")
     lines.append("# Leg torque-FF wire scale: Nm_true → Nm_odrive")
     lines.append("# = DYNAMICS_MOTOR_KT_ODRIVE_CONFIG_NM_PER_A / DYNAMICS_MOTOR_KT_NM_PER_A.")
-    lines.append("# Applied ONCE, in controller/teensy_link/setpoint_pump.py.")
+    lines.append("# Applied ONCE, in teensy_link/setpoint_pump.py.")
     lines.append(
         f"ODRIVE_LEG_TORQUE_WIRE_SCALE = {derived['ODRIVE_LEG_TORQUE_WIRE_SCALE']!r}")
     lines.append("")

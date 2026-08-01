@@ -1,4 +1,4 @@
-"""Tests for controller/teensy_link/synthetic_setpoint.py.
+"""Tests for teensy_link/synthetic_setpoint.py.
 
 The synthetic knot source drives the FIRST armed exercise of the Teensy's
 40 Hz-knot Hermite interp on hardware, so its trajectory math, knot lookahead,
@@ -12,14 +12,14 @@ import math
 
 import pytest
 
-from controller.teensy_link.synthetic_setpoint import (
+from teensy_link.synthetic_setpoint import (
     SyntheticKnotSource,
     TrajectoryParams,
     DEFAULT_SEG_T_S,
     FLAG_HAS_U1,
     FLAG_HAS_U2,
 )
-from controller.teensy_link.protocol import Setpoint
+from teensy_link.protocol import Setpoint
 
 # Axis-0 stroke bounds (canbridge_config.h STROKE_{MIN,MAX}_REV[0]).
 S_MIN = 0.070917

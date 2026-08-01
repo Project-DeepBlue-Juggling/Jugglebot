@@ -27,12 +27,12 @@ import time
 import types
 from unittest.mock import MagicMock
 
-from controller.teensy_link import RpcMethod, RpcStatus, MsgType, PlatformFrame
-from controller.teensy_link import (
+from teensy_link import RpcMethod, RpcStatus, MsgType, PlatformFrame
+from teensy_link import (
     LinkState, BusHealth, FaultState, HeartbeatT2J, Telemetry,
 )
-from controller.teensy_link import rpc_args
-from controller.teensy_link import protocol as p
+from teensy_link import rpc_args
+from teensy_link import protocol as p
 
 from tests.ros._bridge_harness import (
     _build_paired_node,

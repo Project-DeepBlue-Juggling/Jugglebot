@@ -176,25 +176,69 @@ deletion is rejected in favour of:
    enforcement point — duplication verified at ~1013–1055) is DEFERRED to
    the revival's foundation commit.
 
-## Phase 4 — teensy_link → repo root (APPROVED destination: repo-root package)
+## Phase 4 — teensy_link → repo root (SOFTWARE LANDED 2026-08-01; HARDWARE SMOKE OUTSTANDING)
 
-The repo's hottest production code (`protocol.py`, 16 commits since May)
-lives inside its most dormant subsystem, and the launch injects PYTHONPATH
-so the bridge runs live-tree teensy_link beside frozen installed
-`jugglebot.*`. Owner picked **repo root** (keeps live-tree freshness for
-the hottest code; the into-ROS-pkg option would make every protocol.py
-edit colcon-build-gated).
+> ### ⚠️ OUTSTANDING — do this before the first powered session
+> **The disarmed bench link-up smoke has NOT been performed.** Everything
+> below is off-robot evidence. Before anything is armed:
+> 1. `cd ros_ws && colcon build --packages-select jugglebot`, then **relaunch**
+>    — `ros2 launch` runs the INSTALLED copy, and the installed launch file is
+>    what carries the PYTHONPATH injection that makes `teensy_link` importable.
+> 2. Launch, confirm `teensy_bridge_node` comes up and `link_status` reaches
+>    `UP` with heartbeats flowing, and **leave it DISARMED**.
+>
+> Phase 4 is not fully closed until this is reported. Logbook entry
+> `2026-08-01-teensy-link-repo-root` is held at
+> `status: fix-landed-pending-hardware-confirm` for the same reason; flip it to
+> `resolved` when the smoke passes.
 
-- ~80 importing files + the PYTHONPATH injections
-  (`jugglebot_launch.py:160-176`, `teensy_bridge_launch.py:45`; both
-  hard-code the repo path — keep, just re-point).
-- Compat shim MUST be a `sys.modules`-aliasing re-export (the
-  `sim/viz/telemetry.py` pattern), never a second import path — teensy_link
-  defines exception classes (`RpcError`, `RpcTimeout`) and a path-duplicated
-  shim makes `except RpcError` silently miss across the two identities.
-- Gates: grep-count-to-zero; wire bytes pinned by tests/teensy_link +
-  golden fault vectors; colcon build + relaunch + disarmed bench link-up
-  smoke before the first powered session. Land in a quiet window.
+`git mv controller/teensy_link teensy_link` — logbook
+`2026-08-01-teensy-link-repo-root`. Owner picked **repo root** over
+install-into-the-ROS-package: the injection makes the bridge run the LIVE tree,
+so a wire-format edit is live at the next relaunch, where installing it would
+put every `protocol.py` edit behind a `colcon build` whose omission is silent.
+327 references across 134 files; 89 files rewritten. Both PYTHONPATH injections
+(`jugglebot_launch.py` ~389-397, `teensy_bridge_launch.py` ~57) keep their
+hard-coded repo path per the plan — re-pointed only, and
+`teensy_bridge_launch.py`'s superseded "long-term fix: install into the ROS
+package" note now records the decision instead of proposing its opposite.
+
+Two things the mechanical rewrite would have missed, both fixed: `protocol.py`
+derived the repo root as `../..` from its own file (now `..`, and it has a
+`sys.path` fallback, so the break would have surfaced late rather than loudly);
+and the bridge **stopped importing CasADi** — the old path executed
+`controller/__init__.py` → `mpc`, and the ROS package now has zero
+`controller.*` imports. The compat shim `controller/teensy_link.py` is
+`sys.modules` **aliasing** and aliases every submodule explicitly (a re-export
+would give `RpcError`/`RpcTimeout` two class identities and let a `raise` sail
+through the other path's `except`); TEMPORARY, delete after 2026-09.
+
+Gate: `./run_tests.sh --full`, run 2026-08-01 on the Jetson under
+`~/Desktop/PDJ_venv/venv`: **parallel 4406 passed, 3 xfailed in 448.43 s;
+serial 9 passed, 4409 deselected in 40.52 s; total 494 s; RESULT: PASS**
+(exit 0). Wire bytes unmoved — xlang digest
+`1383b3fc18dc085c51eba58979ef60a3898b2ff74dc99931926d04c0bc7ceccb` identical
+before and after, pin file untouched; `fault_golden.json`'s only diff is a
+`_note` path string and a freshly compiled emission still equals the committed
+golden.
+
+Deferred out of this phase, deliberately:
+
+- **7 active plan documents** still name `controller/teensy_link`
+  (accel-ff-inertia, hand-ball-sensor, learned-ff-residuals,
+  leg-gain-tuning-methodology, levelling-frame-contract, mvp-trajectory-bringup,
+  teensy-can-offload) — narrative change, per the Phase 6 `controller/demo`
+  precedent. The shim keeps every instruction in them working until 2026-09;
+  they must be re-pointed before the shim is deleted.
+- **4 firmware comments** under `Teensy_code_canbridge/` (`rpc.h:55`,
+  `leg_activate.h:34`, `leg_deactivate.h:30`, `leg_interp.cpp:156`) — firmware
+  source is out of scope on this branch; comments only, no build or wire impact.
+- **The launch PYTHONPATH injection stays hard-coded**, per the bullet above,
+  even though `jugglebot_launch.py` now has a worktree-aware `_repo_root()`
+  helper next to it. Switching the injection to it is a behaviour change on the
+  production launch path that this off-robot stage cannot validate, and
+  `teensy_bridge_launch.py` would need the same change to stay consistent.
+  Worth doing in a stage that ends at a powered session.
 
 ## Phase 5 — config freshness contract (PARTIALLY LANDED 2026-08-01)
 

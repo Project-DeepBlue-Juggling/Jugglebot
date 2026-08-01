@@ -6,7 +6,7 @@ continuous powered setpoint stream** to a leg over the can-bridge. Unlike encode
 search and homing, which are bounded self-terminating moves, this
 streams a 40 Hz knot trajectory that the leg tracks for as long as it runs. It
 arms the firmware output gate (``mpc_active=1`` via the J→T heartbeat) and drives
-the **synthetic** knot source (``controller/teensy_link/synthetic_setpoint.py``)
+the **synthetic** knot source (``teensy_link/synthetic_setpoint.py``)
 — a KNOWN, bounded command that exercises the Teensy's 40 Hz-knot Hermite interp
 (``leg_interp.cpp`` Mode 1) directly, decoupled from motor_guard / the MPC /
 friction-FF. The deployed production bridge is untouched (still the relay-based path).
@@ -61,16 +61,16 @@ import threading
 import time
 
 sys.path.insert(0, "/home/jetson/Desktop/Jugglebot")
-from controller.teensy_link import (  # noqa: E402
+from teensy_link import (  # noqa: E402
     TeensyLinkClient, RpcClient, RpcServer, TimeOfDayServer, MsgType,
     Telemetry, Diagnostic, LegCmd, RpcMethod, FaultState,
 )
-from controller.teensy_link import protocol as p  # noqa: E402
-from controller.teensy_link import rpc_args  # noqa: E402
-from controller.teensy_link.synthetic_setpoint import (  # noqa: E402
+from teensy_link import protocol as p  # noqa: E402
+from teensy_link import rpc_args  # noqa: E402
+from teensy_link.synthetic_setpoint import (  # noqa: E402
     SyntheticKnotSource, TrajectoryParams,
 )
-from controller.teensy_link.replay_setpoint import (  # noqa: E402
+from teensy_link.replay_setpoint import (  # noqa: E402
     RecordedThrowSource, load_recorded_axis, scale_to_bench, time_stretch,
 )
 import jugglebot.hardware_config as hw  # noqa: E402
@@ -115,7 +115,7 @@ def on_diag(mt, seq, payload, addr):
 
 
 def on_hb(mt, seq, payload, addr):
-    from controller.teensy_link import HeartbeatT2J
+    from teensy_link import HeartbeatT2J
     with _lock:
         _cache["hb"] = HeartbeatT2J.unpack(payload)
 

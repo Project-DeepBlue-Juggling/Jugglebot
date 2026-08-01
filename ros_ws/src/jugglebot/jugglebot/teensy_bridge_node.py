@@ -3,7 +3,7 @@
 This is the can-bridge successor to ``can_node.py``: it exposes the
 same observable surface (robot state, hand telemetry, link/fault health) but
 sources everything from the can-bridge Teensy over the dedicated UDP link
-(``controller/teensy_link``) instead of socketcan. ``can_node`` was DELETED in
+(``teensy_link``) instead of socketcan. ``can_node`` was DELETED in
 the SocketCAN decommission (2026-07-06; see
 logbook/2026-07-06-phase13-socketcan-decommission.md) — the many
 ``can_node.py:NNN`` parity
@@ -85,7 +85,7 @@ from std_msgs.msg import Float32MultiArray, Float64MultiArray
 from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger, SetBool
 
-from controller.teensy_link import (
+from teensy_link import (
     TeensyLinkClient,
     RpcClient,
     RpcServer,
@@ -108,20 +108,20 @@ from controller.teensy_link import (
     HandSensor,
     CanErrors,
 )
-from controller.teensy_link import protocol as p
-from controller.teensy_link import rpc_args
-from controller.teensy_link.fault_logic import LinkLossLatch
-from controller.teensy_link.setpoint_pump import SetpointPump
-from controller.teensy_link.encoder_search import (
+from teensy_link import protocol as p
+from teensy_link import rpc_args
+from teensy_link.fault_logic import LinkLossLatch
+from teensy_link.setpoint_pump import SetpointPump
+from teensy_link.encoder_search import (
     EncoderSearch, AxisStatus, AXIS_STATE_ENCODER_INDEX_SEARCH,
 )
-from controller.teensy_link.homing import (
+from teensy_link.homing import (
     HomingMonitor, AxisStatus as HomingAxisStatus,
 )
-from controller.teensy_link.activate import (
+from teensy_link.activate import (
     ActivateMonitor, AxisStatus as ActivateAxisStatus,
 )
-from controller.teensy_link.deactivate import (
+from teensy_link.deactivate import (
     DeactivateMonitor, AxisStatus as DeactivateAxisStatus,
 )
 from jugglebot.can import catching_cone
@@ -583,7 +583,7 @@ class TeensyBridgeNode(Node):
 
         # Link-loss deferred-stow latch (the bridge's UDP-link watchdog — the
         # Jetson↔Teensy analog of can_node._watchdog_check; the CAN-side latch is
-        # owned by the Teensy firmware). See controller/teensy_link/fault_logic.py.
+        # owned by the Teensy firmware). See teensy_link/fault_logic.py.
         self._link_latch = LinkLossLatch()
         self._last_link_lost = False  # edge detector for logging
         # CAN3 (Jugglebot core) bus-health edge detector for the firmware-validation cold-start
@@ -3367,7 +3367,7 @@ class TeensyBridgeNode(Node):
     # The firmware ENCODER_SEARCH RPC is stubbed (ERR_NOT_IMPL); encoder index
     # search is an ODrive-autonomous axis state, so we orchestrate it from here
     # over the implemented SET_AXIS_STATE primitive + the telemetry/diagnostic
-    # cache. The pure sequencing lives in controller/teensy_link/encoder_search.py
+    # cache. The pure sequencing lives in teensy_link/encoder_search.py
     # (unit-tested); this method is the I/O loop around it. Homing (the firmware move) is
     # the part that must live in firmware (no per-leg motion RPC).
 
