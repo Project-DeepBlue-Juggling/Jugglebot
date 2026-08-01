@@ -563,25 +563,56 @@ class TelemetryLogger:
         self.flush()
         if not self._path or not os.path.exists(self._path):
             return list(self.records)  # fallback: return whatever is in memory
-        out: list[StepRecord] = []
-        field_names = {f.name for f in fields(StepRecord)}
-        float_fields = {f.name for f in fields(StepRecord) if f.type == 'float'}
-        with open(self._path, 'r', newline='') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                kwargs = {}
-                for key, val in row.items():
-                    if key not in field_names:
-                        continue
-                    if key in float_fields:
-                        kwargs[key] = float(val)
-                    else:
-                        kwargs[key] = val
-                out.append(StepRecord(**kwargs))
-        return out
+        return load_records(self._path)
 
     def close(self) -> None:
         self.flush()
+
+
+# ---------------------------------------------------------------------------
+# CSV loading
+# ---------------------------------------------------------------------------
+
+# StepRecord annotation -> converter restoring a CSV cell to its field type.
+# Every StepRecord field must map to one of these; load_records() hard-fails
+# otherwise, so a new field type can never silently round-trip as str.
+_CSV_CONVERTERS = {
+    'float': float,
+    'int': lambda v: int(float(v)),  # tolerate historical '1.0'-style cells
+    'str': str,
+}
+
+
+def _csv_converters() -> "dict[str, object]":
+    convs = {}
+    for f in fields(StepRecord):
+        t = f.type if isinstance(f.type, str) else getattr(f.type, '__name__', repr(f.type))
+        if t not in _CSV_CONVERTERS:
+            raise TypeError(
+                f"StepRecord.{f.name} is annotated {t!r}; the CSV round-trip "
+                "supports float/int/str only - extend _CSV_CONVERTERS alongside "
+                "the new field"
+            )
+        convs[f.name] = _CSV_CONVERTERS[t]
+    return convs
+
+
+def load_records(path: str) -> "list[StepRecord]":
+    """Load a StepRecord CSV, restoring each column to its annotated type.
+
+    The single canonical loader: TelemetryLogger.load() and the
+    sim/analysis consumers (via analysis.compare.load_csv) all delegate
+    here.  Unknown columns are ignored; columns absent from the file
+    (older schemas) keep their StepRecord defaults.
+    """
+    convs = _csv_converters()
+    records: "list[StepRecord]" = []
+    with open(path, newline='') as f:
+        for row in csv.DictReader(f):
+            records.append(StepRecord(**{
+                key: convs[key](val) for key, val in row.items() if key in convs
+            }))
+    return records
 
 
 # ---------------------------------------------------------------------------

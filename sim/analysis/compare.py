@@ -17,10 +17,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
 import os
 import sys
-from dataclasses import fields
 from typing import Sequence
 
 import numpy as np
@@ -29,7 +27,7 @@ _sim_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if _sim_dir not in sys.path:
     sys.path.insert(0, _sim_dir)
 
-from viz.telemetry import StepRecord
+from viz.telemetry import StepRecord, load_records
 
 
 # ---------------------------------------------------------------------------
@@ -37,22 +35,13 @@ from viz.telemetry import StepRecord
 # ---------------------------------------------------------------------------
 
 def load_csv(path: str) -> list[StepRecord]:
-    """Load a StepRecord CSV into a list of records."""
-    field_names = {f.name for f in fields(StepRecord)}
-    records: list[StepRecord] = []
-    with open(path, newline='') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            kwargs = {}
-            for key, val in row.items():
-                if key not in field_names:
-                    continue
-                if key == 'solve_status':
-                    kwargs[key] = val
-                else:
-                    kwargs[key] = float(val)
-            records.append(StepRecord(**kwargs))
-    return records
+    """Load a StepRecord CSV into a list of records.
+
+    Thin alias kept for the existing consumers (diagnose, compare_sessions,
+    plot_interactive, tools/); the canonical typed loader lives in
+    controller.telemetry.load_records.
+    """
+    return load_records(path)
 
 
 # ---------------------------------------------------------------------------

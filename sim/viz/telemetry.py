@@ -2,6 +2,7 @@
 from controller.telemetry import (
     StepRecord,
     TelemetryLogger,
+    load_records,
     record_from_arrays,
     plot_tracking,
     plot_solve_times,
@@ -10,6 +11,7 @@ from controller.telemetry import (
 __all__ = [
     'StepRecord',
     'TelemetryLogger',
+    'load_records',
     'record_from_arrays',
     'plot_tracking',
     'plot_solve_times',
