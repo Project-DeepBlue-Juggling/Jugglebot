@@ -31,7 +31,7 @@ been on hardware yet** — that is this runbook.
   `73dba2b`): chase-clamp tracking (cap-and-chase, never rejects in steady state),
   publish-first emitter (a knot never waits on planning), boundary-margin clamp (the
   S3 deadlock fix), escalation latch + hold backstop. Resolution + analysis corrections:
-  `plans/active/follower-cadence-and-divergence.md` § RESOLUTION.
+  `plans/archived/2026-08-01 follower-cadence-and-divergence.md` § RESOLUTION.
 - Full suite (`pytest tests/ -q`, 2026-07-10, post-rework) = **2304 passed, 5 skipped,
   1 xfailed in 582.32 s**. (Pre-rework 2026-07-08 baseline: 2274 passed, 1 xfailed;
   ci-deep 2026-07-08 green.)
@@ -411,7 +411,7 @@ auto-tracks whatever threshold the firmware trips at):
   MAX_DEVIATION E-STOP and a permanent follower lockup (commanded state parked exactly
   on the stroke bound). Root-caused and fixed by the chase-clamp rework (`73dba2b`);
   full post-mortem + fix disposition in
-  `plans/active/follower-cadence-and-divergence.md` § RESOLUTION.
+  `plans/archived/2026-08-01 follower-cadence-and-divergence.md` § RESOLUTION.
 - **Result (2026-07-10, post-rework)**: **PASS** — (a) and (b) smooth throughout
   ("worked perfectly"), no rejections, no E-STOP, both ascent and descent flown.
   Sub-test (c) **not performed**: the SpaceMouse connects over Bluetooth (the dongle

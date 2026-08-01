@@ -39,7 +39,7 @@ The `/investigate` pipeline walks through 9 gated steps:
 3. **Create logbook entry** — via logbook-updater agent
 4. **Propose fixes** — via fix-proposer agent (1-3 options with risk assessment)
 5. **Implement** — make code changes
-6. **Test** — run `pytest tests/ -v`
+6. **Test** — run `./run_tests.sh` (the full-suite gate)
 7. **Commit** — with `Logbook-Entry:` trailer
 8. **Push** — optional
 9. **Update outcome** — fill in results, set status
@@ -80,6 +80,28 @@ Subsystem tags are auto-detected from file paths. The entry uses sections approp
 
 The plan-reviewer agent critically checks every milestone against the actual codebase before allowing archival. Plans move from `plans/active/` to `plans/archived/` with a completion date.
 
+## Entry Length — short form is the default
+
+**Most entries are short form: 10–30 lines.** What changed, why, and the
+(date, command, result) verification triple. Front matter still carries
+`title` / `type` / `date` / `status` / `phase` / `files_changed` /
+`subsystem`. That is the whole obligation for a routine bugfix, refactor,
+feature, or process change.
+
+**Escalate to the full investigation form — with a real Discussion section —
+when any of these hold** (verbatim from CLAUDE.md's Engineering Philosophy):
+
+> (a) a hypothesis was withdrawn or reframed mid-investigation, (b) a
+> non-obvious tradeoff was accepted, (c) the chosen approach beat another
+> reasonable approach for reasons future-readers wouldn't infer from the
+> code alone.
+
+Under those triggers the Discussion is non-negotiable, and it is written
+*before* the Fix section. Hardware investigations almost always hit at least
+one trigger; a docs or plumbing change almost never does. When in doubt, ask
+whether a future session would be able to reconstruct *why* from the code and
+the commit alone — if not, write the Discussion.
+
 ## Entry Format
 
 Every entry is a markdown file with YAML frontmatter:
@@ -99,8 +121,6 @@ sessions:
 files_changed:               # enables reverse lookups
   - controller/mpc.py
   - ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py
-commits:                     # git traceability
-  - a618751
 subsystem:                   # controlled vocabulary
   - mpc
   - motion
@@ -108,6 +128,10 @@ tags:
   - safety
 ---
 ```
+
+> **Legacy field:** entries written before 2026-08-01 also carry a
+> `commits:` list of short SHAs. New entries do **not** — see
+> [Commit Traceability](#commit-traceability) below.
 
 ### Entry types and their sections
 
@@ -171,8 +195,41 @@ Logbook-Entry: 2026-04-01-cold-hold-fallback-stroke-minimum
 Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 ```
 
-This creates a one-hop path from `git blame` to the full investigation:
-**code line** → `git blame` → **commit** → `Logbook-Entry` trailer → **logbook entry** (with symptoms, discussion, alternatives considered, outcome)
+**The trailer is the canonical link, and it works in both directions:**
+
+- **code → entry**: **code line** → `git blame` → **commit** → `Logbook-Entry`
+  trailer → **logbook entry** (symptoms, discussion, alternatives, outcome)
+- **entry → code**: `git log --grep "Logbook-Entry: <slug>"` lists every commit
+  that belongs to the entry — including follow-ups the entry never knew about
+
+Because the reverse direction is a one-command query, **entries do not carry
+commit SHAs**. The old convention (a `commits:` frontmatter list, backfilled by
+a small follow-up commit right after the real one) was retired on 2026-08-01: it
+cost a second commit on ~30% of commits and duplicated what the trailer already
+provides. Do not add `commits:` to new entries and do not write a backfill
+commit. Historical entries keep their `commits:` blocks — of 175 entries dated
+2026, 156 are reachable by `git log --grep` and a further 16 by their recorded
+SHAs (checked 2026-08-01).
+
+## What the logbook tests actually check
+
+`pytest tests/sim/test_logbook_search.py -q` (run 2026-07-27: **24 passed in
+0.19 s**) *does* parse the real `logbook/` directory, so a logbook edit is not
+automatically outside the test surface — **but it would not catch the two
+failures you would most expect it to**:
+
+- `sim/analysis/logbook_search.py` skips `INDEX.md` outright (`_SKIP_FILES`),
+  so a broken or missing INDEX row passes green.
+- `load_entries` silently `continue`s past any entry whose front matter lacks a
+  `title`, and the test asserts only `len(entries) >= 2` plus the shape of the
+  alphabetically-first entry (a 2026-03-30 file) — so a malformed new entry is
+  dropped, not flagged.
+
+This is the worked example behind CLAUDE.md's rule that a "docs-only, so no
+tests needed" exemption must name the tests that read the path you changed *and*
+trace what they assert. Trace the coverage; never infer it from a passing count.
+(Hardening `logbook_search` to warn-on-skip and validate front matter is a
+tracked item in `plans/active/refactor-2026-07.md` Phase 6.)
 
 ## Interactive Diagnosis Reports
 

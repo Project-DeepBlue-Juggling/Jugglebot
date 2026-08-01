@@ -301,8 +301,9 @@ Per phase:
    - `git diff --cached --stat` between `add` and `commit`.
    - Commit with a `-F` message file (never `-m` with backticks) carrying
      `Logbook-Entry: <slug>` and the `Co-Authored-By: Claude Opus 5 (1M context)`
-     trailer; then backfill the SHA into the logbook entry as a small follow-up
-     commit.
+     trailer. Do **not** write a SHA-backfill follow-up commit and do not add a
+     `commits:` frontmatter field — the trailer is the canonical bidirectional
+     link (retired 2026-08-01; `logbook/2026-08-01-process-rules-phase1.md`).
    - Fetch-guarded `git push`.
    - Update the plan's phase-table status row.
 

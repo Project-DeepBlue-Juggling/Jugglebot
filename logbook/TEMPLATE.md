@@ -24,8 +24,9 @@ sessions:                  # MPC telemetry CSVs, if applicable
 # --- Traceability ---
 files_changed:             # every file modified (enables reverse lookups)
   - <path/to/file.py>
-commits:                   # commit short hashes (filled after committing)
-  - <abcdef0>
+# NOTE: no `commits:` field. The commit's `Logbook-Entry: <slug>` trailer is
+# the canonical link both ways (`git log --grep` finds every commit for this
+# entry). SHA backfill retired 2026-08-01 — see logbook/README.md.
 # --- Classification ---
 subsystem:                 # primary subsystem(s) affected
   - <subsystem>            # mpc | can | tracking | motion | sim | gui | config | controller | ros

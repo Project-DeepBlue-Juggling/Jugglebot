@@ -23,7 +23,7 @@ land.
 
 1. `plans/active/single-ball-toss.md` — authoritative scope, architecture,
    `Toss.action` spec, tiering, gate design.
-2. `plans/active/reload-action-catch-latch.md` — the action pattern being
+2. `plans/archived/2026-08-01 reload-action-catch-latch.md` — the action pattern being
    mirrored; its latch/`trajectory_node` safety notes are normative.
 3. `logbook/2026-07-24-phase8-kickoff-bb-branch-merge.md` — what the
    2026-07-24 merge landed and the design rationale (merge-not-port,

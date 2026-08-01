@@ -1,6 +1,6 @@
 # Plan — RELOAD as a self-contained action; retire CATCH & SHELL modes
 
-**Status:** implemented (design approved 2026-07-20; software landed 2026-07-21 —
+**Status:** implemented, ARCHIVED 2026-08-01 (design approved 2026-07-20; software landed 2026-07-21 —
 Phase 0 SHELL delete `4572925`, Phase 1 catch-armed latch `caea3ec`, Phase 2 action
 owns latch+hand `790e943`, Phase 3 CATCH delete `5d5f4ae`, Phase 4 docs+logbook this
 commit; Q1 cup-plane fix `bdbd186` landed as groundwork. Phase 5 hardware validation
@@ -151,3 +151,24 @@ Each phase is full-`pytest tests/ -q`-gated and committed separately (rollback g
 ## Reference
 - Investigation: 2026-07-20 session (three read-only agents: LEVELLING template, CATCH/SHELL removal
   surface, catch-mechanics re-hosting). Q1 catch-point offset fix (809.08) committed as groundwork.
+
+---
+
+## Archival note (2026-08-01)
+
+**Archived as completed.** Phases 0–4 landed in software on 2026-07-21
+(`4572925` SHELL delete, `caea3ec` catch-armed latch, `790e943` action owns
+latch + hand, `5d5f4ae` CATCH delete, `d25b7b8` docs; `bdbd186` cup-plane
+groundwork). The Phase 5 hardware validation this plan deferred to the operator
+has since been run — see `logbook/2026-07-23-phase7-reload-first-hardware-session.md`
+and `logbook/2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md`
+(15/19 caught; the reload platform pivoted to open-loop by config default).
+
+Continuing catch work is tracked by `plans/active/mvp-trajectory-bringup.md`
+and the hand-ball-sensor / single-ball-toss plans, not here. One known-stale
+detail is deliberately left in place: the 9.858 rev hand prime cited near the
+top of this plan was superseded by the rev-derived prime
+(`logbook/2026-07-26-hand-prime-rev-derived.md`).
+
+Moved out of `plans/active/` by the 2026-07 refactor programme
+(`plans/active/refactor-2026-07.md` § Phase 1, item 5).

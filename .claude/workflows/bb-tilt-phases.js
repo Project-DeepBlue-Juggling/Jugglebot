@@ -124,7 +124,9 @@ for (let ph = from; ph <= to && !aborted; ph++) {
     `1. Apply the audit's BLOCKING findings and reasonable WARNINGs; skip NOTE / out-of-scope (record ` +
     `which in fixesApplied). Audit findings:\n${auditBlock}\n` +
     `   Implementer summary:\n${JSON.stringify(impl)}\n` +
-    `2. FULL TEST GATE: \`pytest tests/ -q\`. It MUST pass. If the ONLY failure is the known order/load- ` +
+    `2. FULL TEST GATE: \`./run_tests.sh\` (the blessed gate; it takes an flock so a concurrent session's ` +
+    `gate queues instead of colliding - a bare \`pytest tests/\` does not and must not be used here). ` +
+    `It MUST pass. If the ONLY failure is the known order/load- ` +
     `flaky \`test_hot_loop_allocation_contract\`, re-run it isolated to confirm it passes and note that; ` +
     `ANY other failure -> set committed=false, do NOT commit, explain in gateAssessment. Cite the ` +
     `(date, command, result) triple in fullSuiteResult.\n` +
@@ -133,7 +135,9 @@ for (let ph = from; ph <= to && !aborted; ph++) {
     `4. COMMIT: stage the phase's files (verify with \`git diff --cached --stat\`); write the message to ` +
     `a file and use \`git commit -F\` (NEVER backticks in -m). Include a \`Logbook-Entry:\` trailer if a ` +
     `logbook entry was created, and end with:\n${COAUTHOR}\n` +
-    `   If a logbook entry was created, backfill its commit SHA in a small follow-up commit.\n` +
+    `   Do NOT write a SHA-backfill follow-up commit: the \`Logbook-Entry:\` trailer IS the canonical ` +
+    `link (convention retired 2026-08-01; \`git log --grep "Logbook-Entry: <slug>"\` is the reverse query), ` +
+    `and entries carry no \`commits:\` frontmatter field.\n` +
     `5. PUSH, FETCH-GUARDED: \`git fetch\`; \`git status -sb\`. If \`origin/${BRANCH}\` is AHEAD of local ` +
     `(has commits you don't have) OR the working tree has foreign changes you didn't make, DO NOT push ` +
     `and DO NOT rebase/pull — set pushStatus='aborted-diverged', describe exactly what you saw in ` +

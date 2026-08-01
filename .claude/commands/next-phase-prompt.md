@@ -18,7 +18,7 @@ prompt for a fresh Claude session to take on.
 
 - `<plan-name>`: plan filename, with or without `.md`, with or
   without the `plans/active/` prefix. Examples:
-  `mpc-sadpath-coverage-tiers-1-3`, `hardware-bringup`,
+  `mpc-sadpath-coverage-tiers-1-3`, `mvp-trajectory-bringup`,
   `plans/active/can-process-refactor.md`.
 - `[phase-number]` (optional): explicit phase to prompt for. If
   omitted, auto-detect the first **NOT STARTED** or **IN PROGRESS**
@@ -56,7 +56,7 @@ prompt for a fresh Claude session to take on.
      where Phase 4 is mid-flight and Phase 5 hasn't started.
    - `date` = parsed from `COMPLETE (YYYY-MM-DD)` suffix if present
 
-   Both `hardware-bringup.md` (heading-only convention) and
+   Both `mvp-trajectory-bringup.md` (heading-only convention) and
    `mpc-sadpath-coverage-tiers-1-3.md` / `can-process-refactor.md`
    (summary-table convention) parse correctly via the appropriate
    path.
@@ -123,8 +123,8 @@ by reading the plan's detailed Phase section and the latest git log:
 2. **`{PREV_BASELINE}`** — Parse the previous phase's Outcome
    paragraph for a passing test count (e.g., `1210/1210 + 1
    xfailed`, `1193 passing`). Fallback: instruct the receiving
-   agent to confirm via `pytest tests/ -q` themselves; use the
-   literal `<run "pytest tests/ -q" to confirm baseline pass count>`.
+   agent to confirm via `./run_tests.sh` themselves; use the
+   literal `<run "./run_tests.sh" to confirm baseline pass count>`.
 
 3. **`{PREV_LOGBOOK_SLUG}`** — Parse the previous phase's Outcome
    paragraph for a logbook link (e.g., `logbook/2026-05-11-tier1a-real-solver-failures.md`).
@@ -190,7 +190,7 @@ prior-phase facts.
 - Without a prior phase (Phase 0 / inaugural):
   > "Targeting Phase 0 of `<plan>` — inaugural phase, no prior
   > baseline. Receiving agent will record the inaugural
-  > `pytest tests/ -q` count and `git log -1` SHA in this phase's
+  > `./run_tests.sh` count and `git log -1` SHA in this phase's
   > logbook."
 
 ### Step 5: Closing note
@@ -207,7 +207,7 @@ After the code block, emit one of:
   > Copy the block above into a fresh Claude session (or `/clear`
   > and paste into this one). This is the plan's inaugural phase;
   > the receiving agent will record the baseline `git log -1` SHA
-  > and `pytest tests/ -q` count in the logbook so future phases
+  > and `./run_tests.sh` count in the logbook so future phases
   > have a reference point.
 
 ## Important notes
@@ -311,7 +311,7 @@ Core values, non-negotiable throughout:
     For production-code changes (e.g., contract enforcement),
     confirm the regression test fails BEFORE the fix and passes
     AFTER (stash the production change, run the new test alone,
-    verify failure; restore and re-run). Run `pytest tests/ -q`
+    verify failure; restore and re-run). Run `./run_tests.sh`
     after each commit; the hot-loop allocation contract test
     (tests/sim/test_hot_loop_allocation_contract.py) MUST stay green
     throughout.
@@ -345,14 +345,14 @@ Core values, non-negotiable throughout:
 
 Process gates, in order:
 
-  1. {IF PREV_PHASE}pytest tests/ -q baseline — must show
+  1. {IF PREV_PHASE}./run_tests.sh baseline — must show
      **{PREV_BASELINE}**. Baseline SHA: **{PREV_SHA}** or later
      (`git log -1` to confirm). If the baseline doesn't match,
      investigate — stale prior-phase facts are the most common cause
      and indicate prior commits weren't pushed or this branch isn't
-     current.{END}{IF NOT PREV_PHASE}pytest tests/ -q — this is the
+     current.{END}{IF NOT PREV_PHASE}./run_tests.sh — this is the
      plan's first phase, so there is no prior baseline. Run
-     `pytest tests/ -q` and record the count (e.g., "1184 passing")
+     `./run_tests.sh` and record the count (e.g., "1184 passing")
      as the inaugural baseline in this phase's logbook Verification
      section.  Also record the current `git log -1` SHA so future
      phases can confirm they started from this point.{END}
@@ -393,7 +393,8 @@ Process gates, in order:
         from the agreed design silently.
 
   4. Verification gate:
-     a. `pytest tests/ -q` at ci-fast (full regression) — must
+     a. `./run_tests.sh` at ci-fast (the blessed full gate: parallel
+        phase + a serial phase for `serial`-marked tests) — must
         equal `{PREV_BASELINE}` + new tests, with no regressions.
      b. If any hypothesis tests added or modified:
         `pytest tests/sim/<changed file> --hypothesis-profile=ci-deep --hypothesis-seed=0`
@@ -405,14 +406,26 @@ Process gates, in order:
 
   5. Logbook entry (one per phase; mirror the prior-phase format):
      a. Frontmatter (type, date, status: resolved, phase reference,
-        related_plan, related_entries, files_changed, commits:
-        `<pending>` for later backfill, subsystem, tags).
-     b. Sections: Summary, Motivation, Design, Implementation,
-        Verification, Discussion, Open Questions, Related.
-     c. Discussion-section depth: include "Why this approach over
-        alternatives", "What was ruled out", and "Tradeoffs
-        accepted". Skipping Discussion is the single most common
-        way this project loses institutional memory.
+        related_plan, related_entries, files_changed, subsystem,
+        tags).  **No `commits:` field** — the commit's
+        `Logbook-Entry:` trailer is the canonical bidirectional
+        link (convention retired 2026-08-01).
+     b. Short form is the default (10-30 lines: what/why + the
+        `(date, command, result)` verification triple).  Escalate
+        to the full section set — Summary, Motivation, Design,
+        Implementation, Verification, Discussion, Open Questions,
+        Related — when a Discussion trigger fires.
+     c. Discussion is NON-NEGOTIABLE under any of the three
+        triggers: (a) a hypothesis was withdrawn or reframed
+        mid-phase, (b) a non-obvious tradeoff was accepted, (c) the
+        chosen approach beat another reasonable approach for
+        reasons future-readers wouldn't infer from the code alone.
+        A phase that hits a trigger almost always hits (c).  Under
+        a trigger, include "Why this approach over alternatives",
+        "What was ruled out" and "Tradeoffs accepted" — skipping it
+        there is the single most common way this project loses
+        institutional memory.  See `logbook/README.md` § "Entry
+        Length — short form is the default".
      d. Xfail accounting if applicable (Plan 2's three-field rule:
         test ID + tracking reference + target close phase or date).
      e. Update logbook/INDEX.md with the new entry as the topmost
@@ -444,9 +457,10 @@ Process gates, in order:
      NOTE-level findings even on clean work.
 
   8. Commit (one logical unit per concrete behaviour change — match
-     prior-phase granularity). Immediately backfill the SHA into
-     the logbook frontmatter (same response, per the project's
-     memory on SHA backfill discipline). Push.
+     prior-phase granularity), then push in the same response. Do
+     NOT write a SHA-backfill follow-up commit — the commit's
+     `Logbook-Entry:` trailer already carries the link, and
+     `git log --grep "Logbook-Entry: <slug>"` is the reverse query.
 
   9. If the plan update wasn't included in the commit above, do it
      as a separate commit (mirrors the prior-phase precedent):
@@ -487,5 +501,5 @@ Ask clarifying questions before assuming any of:
 
 Begin by reading the Phase {TARGET_PHASE} section of the plan in
 full {IF PREV_PHASE}and confirming the baseline (`git log -1` should show
-{PREV_SHA} or later; `pytest tests/ -q` should show {PREV_BASELINE}).{END}{IF NOT PREV_PHASE}and recording the current `git log -1` SHA + `pytest tests/ -q` count as the inaugural baseline in this phase's logbook Verification section.{END}
+{PREV_SHA} or later; `./run_tests.sh` should show {PREV_BASELINE}).{END}{IF NOT PREV_PHASE}and recording the current `git log -1` SHA + `./run_tests.sh` count as the inaugural baseline in this phase's logbook Verification section.{END}
 </prompt-template>

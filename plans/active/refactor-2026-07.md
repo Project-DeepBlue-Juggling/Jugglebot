@@ -41,10 +41,22 @@ hypothesis ci-fast depth before the nightly runner has weeks of history.
   re-pointed at the attic; probes README gained the missing
   `canbridge_reboot_latch_probe.py` row.
 
-## Phase 1 — process changes (APPROVED; land as CLAUDE.md/docs edits)
+## Phase 1 — process changes (LANDED 2026-08-01)
 
-All approved 2026-07-31. Waiting only on coordination with any in-flight
-parallel session before editing shared docs.
+All approved 2026-07-31; all six items implemented 2026-08-01 — logbook
+`2026-08-01-process-rules-phase1`. Gate: `./run_tests.sh`, run 2026-08-01 on
+the Jetson under `~/Desktop/PDJ_venv/venv`: **parallel 4312 passed, 3 xfailed
+in 435.18 s; serial 9 passed in 39.75 s; RESULT: PASS** (exit 0). Two deliberate deviations, both recorded
+there: (a) `leg-gain-tuning-methodology.md` was **left active** — the gain
+*hunt* closed, but the document is the live normative methodology cited by
+`sim/analysis/diagnose.py`, `config/hardware_config.yaml`, four hardware
+harnesses and the active accel-FF plan, so archiving it would have rotted
+production references for no gain; (b) CLAUDE.md landed at **22.1 KB** (25.4 → 22.1, −13%), not the
+~15 KB target — the three named worked examples are fully relocated and every
+rule was tightened, but reaching 15 KB would require deleting rules, which the
+"without losing a single rule" constraint forbids. Review restored ~0.6 KB of
+obligation text the diet had over-trimmed (the open-ended normative-doc list;
+the probe README-row rule moved into `tools/probes/README.md`).
 
 1. **Retire the SHA-backfill second commit** (was 103/342 = 30% of July
    commits). The `Logbook-Entry:` trailer is the canonical link; entries no

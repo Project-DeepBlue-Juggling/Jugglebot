@@ -85,8 +85,6 @@ sessions:
 files_changed:
   - controller/mpc.py
   - ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py
-commits:
-  - a618751
 subsystem:
   - mpc
   - motion
@@ -156,7 +154,11 @@ python sim/analysis/logbook_search.py --issue-ids '["VEL_FF_BUG"]'
 
 ## Commit Traceability
 
-Code-change commits include a `Logbook-Entry:` trailer:
+Code-change commits include a `Logbook-Entry:` trailer. **The trailer is the
+canonical bidirectional link** — entries carry no `commits:` frontmatter field
+(convention retired 2026-08-01; run `git log --grep "Logbook-Entry: <slug>"` for
+the reverse direction, which finds *every* commit for an entry rather than the
+one SHA a manual backfill happened to capture):
 
 ```
 fix: cold-hold fallback holds at current position instead of stroke minimum

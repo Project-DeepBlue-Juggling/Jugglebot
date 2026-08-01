@@ -93,7 +93,8 @@ For each commit in order:
    it lists ANY extra file, stop and surface to the user before committing —
    the user may have staged work in parallel, or a hook may have auto-staged
    something.  Skipping this check has caused real attribution incidents
-   (see `feedback_verify_staged_before_commit` in auto-memory).
+   (see `feedback_commit_and_push_discipline` § "Verify the staged set before
+   every commit" in auto-memory).
 3. Create the commit. Always pass the message via HEREDOC:
    ```bash
    git commit -m "$(cat <<'EOF'

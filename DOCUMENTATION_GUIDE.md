@@ -147,8 +147,11 @@ Essentials you must know:
 - `related_plan:` → a plan file (by filename)
 - `sessions:` → rows in [sim/analysis/log_index.json](sim/analysis/log_index.json)
   (bidirectional — `log_index.json` gets `logbook_entry` pointers added)
-- `commits:` → git shorts, which in turn carry the `Logbook-Entry:` trailer
-  back to the entry
+- the commit's `Logbook-Entry: <slug>` trailer → the canonical link in both
+  directions (`git blame` → commit → entry, and
+  `git log --grep "Logbook-Entry: <slug>"` → every commit for the entry).
+  Entries do **not** carry a `commits:` list; SHA backfill was retired
+  2026-08-01 (historical entries keep theirs)
 
 ### 2.6 [plans/active/](plans/active/) + [plans/archived/](plans/archived/) — Plans
 

@@ -1,7 +1,8 @@
 ---
 title: MPC Hardware Bringup
 created: 2026-03-28
-status: active
+status: superseded   # Phases 0-3 complete 2026-03-30; 4-7 never run (see Archival note)
+completed: 2026-08-01
 ---
 
 # MPC Hardware Bringup Plan
@@ -442,3 +443,26 @@ After each phase, check:
 3. Condition number below soft limit (1.5× home, ~5-12 with normalized Jacobian)
 4. Motor currents reasonable (< 5A during normal operation)
 5. CSV telemetry log saved and reviewable
+
+---
+
+## Archival note (2026-08-01)
+
+**Archived as superseded — not completed, and deliberately so.** Phases 0–3
+completed 2026-03-30 and carry their own PASS/COMPLETE markers in the text
+(desktop verification, Jetson deployment, zero-motion hardware test, 5 mm tiny
+motions). Phases 4–7 (moderate motions, tau calibration, dynamic trajectories,
+production path) were never executed as written: platform control moved off the
+`run_mpc.py` entry point onto the trajectory-node streaming path tracked by
+`plans/active/mvp-trajectory-bringup.md`, and the MPC is being parked
+operationally (`plans/active/refactor-2026-07.md` § Phase 3). The residual
+hardware obligations still tracked against this plan — T-H-T2b-1 / T-H-T2a-1
+CAN-loss and cascade validation — were discharged 2026-05-18
+(`logbook/2026-05-18-hardware-bringup-t2b1-t2a1-cascade-validation.md`).
+
+Last content edit 2026-05-09 (`9909713`). The safety-parameter table near the
+end is a bringup-era record, not a live source of truth: current limits live in
+`config/hardware_config.yaml`.
+
+Moved out of `plans/active/` by the 2026-07 refactor programme
+(`plans/active/refactor-2026-07.md` § Phase 1, item 5).

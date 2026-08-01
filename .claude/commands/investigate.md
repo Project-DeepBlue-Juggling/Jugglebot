@@ -49,7 +49,8 @@ logbook entry that captures the full arc: symptom, diagnosis, discussion, fix, o
 Run the `/diagnose` protocol on the target session(s):
 1. Run `python3 sim/analysis/diagnose.py <csv_path> [--rosbag <path>] --json`
 2. Cross-reference against `sim/analysis/known_issues.yaml`
-3. Read `plans/active/hardware-bringup.md` for phase context
+3. Read `plans/active/mvp-trajectory-bringup.md` for phase context (the older MPC
+   bringup plan is archived at `plans/archived/2026-08-01 hardware-bringup.md`)
 
 **Flush `sim/analysis/log_index.json` immediately** after each diagnose run, not
 just at the very end of `/investigate`. The user may drop out of the investigation
@@ -85,7 +86,8 @@ Spawn the **logbook-updater** agent to:
    - `subsystem:` — auto-detect from files referenced in the diagnosis flags
    - `tags:` — use controlled vocabulary (see TEMPLATE.md)
    - `files_changed:` — leave empty (populated after fix is implemented)
-   - `commits:` — leave empty (populated after committing)
+   - no `commits:` field — the commit's `Logbook-Entry:` trailer is the
+     canonical link (SHA backfill retired 2026-08-01)
 4. Fill in: Summary (from verdict), Symptoms, Diagnosis sections
 5. Set status to `in-progress`
 6. Update `logbook/INDEX.md`
@@ -193,10 +195,10 @@ nonsense data that wastes a hardware session.
 
 ### Step 6: Test
 
-1. Run `pytest tests/ -v`
-2. Report results (count, pass/fail)
+1. Run `./run_tests.sh` (the blessed full-suite gate)
+2. Report results as a (date, command, result) triple
 3. If hardware-specific changes, suggest which hardware test to re-run
-   (referencing the relevant phase from `plans/active/hardware-bringup.md`)
+   (referencing the relevant phase from `plans/active/mvp-trajectory-bringup.md`)
 
 ---
 
@@ -253,17 +255,18 @@ The pre-fix CSV is available from the logbook entry's `sessions:` frontmatter fi
 
 Spawn the **logbook-updater** agent to:
 1. Populate `files_changed:` in frontmatter from `git diff --name-only` of the commit(s)
-2. Populate `commits:` in frontmatter with the commit hash(es)
-3. Fill in the Outcome section:
-   - Test results (pass/fail, key metrics)
-   - Commit hash and message
+2. Fill in the Outcome section:
+   - Test results (pass/fail, key metrics), cited as a (date, command, result) triple
    - Whether pushed
-4. Set status according to this ladder:
+   - Do NOT add a `commits:` frontmatter list and do NOT write a SHA-backfill
+     follow-up commit — the `Logbook-Entry:` trailer already links both ways
+     (`git log --grep "Logbook-Entry: <slug>"`)
+3. Set status according to this ladder:
    - `resolved` — every symptom in the entry's scope is addressed and verified; no open follow-ups inside this entry's scope
    - `tuned` — the specific thing this entry was investigating is addressed (e.g. hold-phase fighting brought into spec) but the entry intentionally leaves a sibling investigation open elsewhere. Use this when a committed change ships a real improvement but the entry's Open Questions or a sibling logbook entry still have work. This is better than stranding entries at `in-progress` forever.
    - `in-progress` — neither of the above; the investigation is genuinely still unfinished
-5. Update `logbook/INDEX.md` with new status
-6. If the entry's Discussion section references a methodology plan in its
+4. Update `logbook/INDEX.md` with new status
+5. If the entry's Discussion section references a methodology plan in its
    frontmatter (`related_plan:`), ensure that plan is linked inline from the
    body text of the Discussion section (not just the frontmatter). A reader
    landing in the entry from `git blame` should see the plan link in prose,

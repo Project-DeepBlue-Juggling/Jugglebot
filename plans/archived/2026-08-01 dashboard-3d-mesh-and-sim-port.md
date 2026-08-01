@@ -1,7 +1,8 @@
 ---
 title: Dashboard 3D Mesh Upgrade + Sim Port
 created: 2026-05-27
-status: active
+status: superseded   # Phase 0 shipped; Phases 1-5 never started (see Archival note)
+completed: 2026-08-01
 ---
 
 # Dashboard 3D Mesh Upgrade + Sim Port
@@ -610,3 +611,22 @@ juggle demo additionally renders balls.
 - `git fetch && git status -sb` before any push; the `refactor` branch
   is shared and the auto-pull webhook means parallel sessions on the
   Jetson may have local changes.
+
+---
+
+## Archival note (2026-08-01)
+
+**Archived as superseded — Phase 0 shipped, Phases 1–5 never started.**
+Phase 0 (extend the telemetry feed: ball positions/velocities, per-leg
+accelerations, throw-director state on the dashboard SSE payload) landed and is
+pinned by `tests/sim/test_dashboard_payload.py`. Phases 1–5 (STL mesh rendering
+in the prod GUI, forking that GUI into the sim dashboard, ball rendering,
+sim-specific overlays, polish) were never started — there is no mesh loader
+under `ros_ws/gui/js/`, which still renders primitive geometry only.
+
+No content edit since the plan was written (2026-05-28, `69644e7`). Nothing in
+the current stack depends on Phases 1–5; revive from here if the 3-D sim
+dashboard is wanted.
+
+Moved out of `plans/active/` by the 2026-07 refactor programme
+(`plans/active/refactor-2026-07.md` § Phase 1, item 5).

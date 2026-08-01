@@ -1,6 +1,6 @@
 # Design proposal — SpaceMouse follower: knot-cadence protection and command-divergence bounding
 
-**Status**: RESOLVED 2026-07-10 — superseded by the implemented **chase-clamp follower
+**Status**: RESOLVED 2026-07-10, ARCHIVED 2026-08-01 — superseded by the implemented **chase-clamp follower
 rework** (commit `73dba2b` on `mvp-trajectory-bringup`); **S3 re-flown 2026-07-10: PASS**
 ("worked perfectly" — operator). See the Resolution section immediately below; the
 original proposal text is preserved unchanged underneath as the historical record.
@@ -399,3 +399,17 @@ take on 4.2 and 4.3 — with 4.3's feedback question settled in discussion first
    4.0 rev/s ODrive ceiling. Is that intentional headroom, or should the lead clamp be
    tightened to `vel_limit / pos_gain = 0.10 rev`? This is a firmware-config question that
    sits outside this proposal but was surfaced by it.
+
+---
+
+## Archival note (2026-08-01)
+
+**Archived as superseded — no open items.** The plan's own header records the
+closure: RESOLVED 2026-07-10, superseded by the implemented chase-clamp
+follower rework (`73dba2b`), with S3 re-flown the same day to an operator PASS.
+Everything below the RESOLUTION section is the original proposal, preserved
+unchanged as the record of what was proposed versus what actually shipped.
+Last content edit 2026-07-10 (`cf8728b`).
+
+Moved out of `plans/active/` by the 2026-07 refactor programme
+(`plans/active/refactor-2026-07.md` § Phase 1, item 5).

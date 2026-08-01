@@ -23,7 +23,9 @@ optimizations. For hardware diagnosis workflows, use `/investigate` instead.
 **If `--from-commits` is provided:**
 1. Run `git show --stat <hash>` for each commit to get files changed and commit messages
 2. Run `git diff <hash>~1..<hash>` to understand the actual changes
-3. Auto-populate: title (from commit message), files_changed, commits, date
+3. Auto-populate: title (from commit message), files_changed, date. Do **not**
+   add a `commits:` frontmatter field — the commit's `Logbook-Entry:` trailer is
+   the canonical link (convention retired 2026-08-01)
 
 **If starting fresh (no commits yet):**
 1. Ask the user what they're about to do (or have just done)
@@ -54,15 +56,22 @@ Based on the type and files involved:
 ### Step 3: Create the logbook entry
 
 Spawn the **logbook-updater** agent to create the entry:
-1. Use the appropriate type template sections:
+1. **Short form is the default** (10–30 lines): what changed, why, and the
+   `(date, command, result)` verification triple. That is the whole obligation
+   for a routine bugfix, refactor, feature or optimization — which is most of
+   what `/log` handles. Escalate to the full type-specific section set below
+   only when a Discussion trigger fires (see "Writing a logbook entry well").
+2. Full form, when escalated — use the appropriate type template sections:
    - **bugfix**: Summary, Problem, Root Cause, Fix, Verification, Outcome
    - **refactor**: Summary, Motivation, Changes, Verification, Outcome
    - **feature**: Summary, Motivation, Design, Implementation, Verification, Outcome
    - **optimization**: Summary, Motivation, Approach, Benchmarks, Verification, Outcome
-2. Fill in frontmatter: title, type, date, status, files_changed, commits, subsystem, tags
-3. Fill in Summary from commit messages or user description
-4. Fill in the type-specific sections with available information
-5. Update `logbook/INDEX.md`
+3. Fill in frontmatter: title, type, date, status, phase, files_changed,
+   subsystem, tags. **No `commits:` field** — the commit's `Logbook-Entry:`
+   trailer is the canonical link.
+4. Fill in Summary from commit messages or user description
+5. Fill in the remaining sections with available information
+6. Update `logbook/INDEX.md`
 
 ### Step 4: Review
 
@@ -107,11 +116,17 @@ docs/                      → docs
 
 ## Writing a logbook entry well
 
-- **The Discussion / Motivation section is the most valuable part.** Write
-  *why this approach over others*, *what was ruled out*, *what tradeoffs
-  were accepted*. Future sessions (human or AI) reconstruct the full arc
-  from this section. If it feels tedious to write, that's signal it's
-  exactly the one that'll save the most time later.
+- **A Discussion section is non-negotiable under any of the three triggers**
+  (verbatim from CLAUDE.md's Engineering Philosophy): (a) a hypothesis was
+  withdrawn or reframed mid-investigation, (b) a non-obvious tradeoff was
+  accepted, (c) the chosen approach beat another reasonable approach for
+  reasons future-readers wouldn't infer from the code alone. Under a trigger
+  it is the most valuable part of the entry — write *why this approach over
+  others*, *what was ruled out*, *what tradeoffs were accepted*, and write it
+  *before* the Fix section. If it feels tedious, that's signal it's exactly
+  the one that'll save the most time later. Outside the triggers a short-form
+  entry with no Discussion is correct; see `logbook/README.md` § "Entry
+  Length — short form is the default".
 - **Don't describe the diff — the diff is in git.** Describe the decision
   tree that produced the diff. The next person to touch this code needs
   to know why it looks the way it does, not what characters changed.

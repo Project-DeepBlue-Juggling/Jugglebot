@@ -1529,7 +1529,7 @@ carries the Ball Butler subsystem only; CAN2 carries the catching cone only.
   in Phase 5); all slaves still clock-locked, frame format/cadence/ID
   identical to before.
 - Run full hardware test plan from
-  [hardware-bringup.md](hardware-bringup.md): Active hold, dynamic moves,
+  [hardware-bringup.md](../archived/2026-08-01%20hardware-bringup.md): Active hold, dynamic moves,
   trajectory, catch.
 
 **Done when:** Full hardware test plan passes on the new architecture.

@@ -22,7 +22,8 @@ related_plan: ""       # filename in plans/ (optional)
 related_issues: []     # known_issues.yaml IDs (optional)
 sessions: []           # MPC telemetry CSVs (optional)
 files_changed: []      # every file modified by this entry's changes
-commits: []            # commit short hashes
+                       # NO `commits:` field — the commit's `Logbook-Entry:`
+                       # trailer is the canonical link (retired 2026-08-01)
 subsystem: []          # from controlled vocabulary (see below)
 tags: []               # from controlled vocabulary (see below)
 ```

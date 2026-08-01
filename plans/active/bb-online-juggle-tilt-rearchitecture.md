@@ -422,7 +422,11 @@ for determinism (the runner already takes `seed`).
   never block on it; any *other* failure blocks the commit.
 - **Reusable probes** → `tools/probes/` (committed) + README entry; one-offs →
   `/tmp`.
-- **Logbook** per substantive rung, real Discussion section; backfill the SHA.
+- **Logbook** per substantive rung — short form (10-30 lines + the
+  (date, command, result) triple) unless a Discussion trigger fires, in which
+  case the Discussion is mandatory. No `commits:` field and no SHA-backfill
+  follow-up: the `Logbook-Entry:` trailer is the canonical link (retired
+  2026-08-01).
 - **No backticks in `git commit -m`** (heredoc/-F); `/audit --unstaged` before any
   commit touching a logbook/plan/normative .md.
 

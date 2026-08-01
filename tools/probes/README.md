@@ -40,6 +40,11 @@ adapt — go here so the references stay live.
 - **Header docstring**: each probe's top-of-file docstring states what
   the probe replays / characterises, the logbook entry that motivated
   it, and the test (if any) whose empirical recipe it underpins.
+- **README row**: every committed probe gets a row in § "Available
+  probes" below, in the **same commit** that adds the probe. A probe
+  nobody can find from this file is a probe nobody re-runs — Phase 0 of
+  the 2026-07 refactor programme had to backfill a missing
+  `canbridge_reboot_latch_probe.py` row for exactly that reason.
 - **Self-contained**: probes set up `sys.path` themselves so they run
   with `python tools/probes/<name>.py ...` from the repo root without
   needing the project venv to be on `PYTHONPATH`.

@@ -1,7 +1,8 @@
 ---
 title: Always-On Telemetry Daemon (ROS2-independent GUI feed via firmware tap)
 created: 2026-06-08
-status: active
+status: deferred   # design only; all six phases NOT STARTED (see Archival note)
+completed: 2026-08-01
 related_config:
   - config/generate_udp_protocol.py → CONSTANTS.PORT_TELEM_TAP
 related_code:
@@ -372,3 +373,22 @@ defect. This is the only GUI-touching work in the plan and is deferred / optiona
   changes.
 - The firmware tap is independently revertable (remove the second send). Left in
   place it is harmless: an unbound tap port simply drops the duplicated frames.
+
+---
+
+## Archival note (2026-08-01)
+
+**Archived as deferred — design only, nothing implemented.** All six phases are
+still marked NOT STARTED in the text above, and none of the named artefacts
+exist: there is no `tools/jugglebot_telemetry_daemon.py` and no `PORT_TELEM_TAP`
+in the generated UDP protocol. No content edit since the plan was written
+(2026-06-08, `49ff5b7`).
+
+The GUI-availability half of the original problem was solved separately — the
+front end is served headless on boot by the `jugglebot-gui.service` systemd unit
+on :8081 — but live data still requires the ROS2 stack, which is exactly the gap
+this plan was written to close. Revive from here if a ROS2-independent live feed
+is wanted.
+
+Moved out of `plans/active/` by the 2026-07 refactor programme
+(`plans/active/refactor-2026-07.md` § Phase 1, item 5).

@@ -10,7 +10,7 @@
 # ACTIVE streaming mode (TRAJECTORY) and does NOT switch modes — leaving that mode
 # mid-sequence is the documented abort (there is no persistent CATCH mode). Preconditions
 # are checked before any ball flies (see reload_sequencer.py).
-# See plans/active/reload-action-catch-latch.md.
+# See the reload-action-catch-latch plan (archived 2026-08-01 under plans/archived/).
 
 float64 throw_delay_s          # delay from now to release; 0 => default 3.0 s
                                # (>= BB's ~2.5 s lead floor — a shorter lead comes back
