@@ -3,11 +3,220 @@ from launch_ros.actions import Node
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
+    LogInfo,
 )
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
+import glob
 import os
+import subprocess
+import sys
 from datetime import datetime
+
+
+# ── Config freshness observability (plans/active/refactor-2026-07.md Phase 5) ──
+#
+# Production is deliberately BUILD-FROZEN: every node imports the *installed*
+# generated modules, so a YAML edit changes nothing until generate_config +
+# colcon build have both run. Staler-than-expected fails safe; fresher-than-
+# expected on an actuator path is the dangerous direction. The failure mode this
+# leaves is not danger but CONFUSION — the operator edits a gain, relaunches,
+# and the robot behaves exactly as before with no signal at all. So the fix is
+# observability, not automatic freshness: name the staleness at bring-up.
+#
+# Two independent links in the chain, reported separately because the fixes
+# differ:
+#   A) YAML -> repo artifacts   (`generate_config.py --check`)  -> regenerate
+#   B) repo artifacts -> INSTALLED copies (byte compare)        -> colcon build
+#
+# HARD CONTRACT: this NEVER blocks, delays past a bounded timeout, or fails the
+# launch. Every failure path — checker missing, crash, timeout, unreadable
+# install tree — degrades to one informational line. A bring-up must never be
+# lost to its own diagnostics.
+#
+# The timeout is 30x the measured cost (0.33 s on the Jetson) and deliberately
+# NOT generous: `ros2 launch` prints nothing at all until
+# generate_launch_description() returns, so every second spent here is a frozen
+# terminal with no explanation. 10 s is a hiccup; 30 s reads as a hang.
+_DRIFT_CHECK_TIMEOUT_S = 10.0
+
+# Only the Python artifacts are checked for install drift: they are the ones the
+# ROS2 nodes import at runtime. The firmware headers are consumed by a compiler,
+# not by this launch, and the codegen check (A) already covers them.
+_INSTALLED_GENERATED_MODULES = ('hardware_config.py', 'protocol_config.py')
+
+# Single severity per call site by construction (all LogInfo): Foxy's rcutils
+# logger caches severity per source line and RAISES on a flip — that is what
+# killed teensy_bridge_node on the first STANDBY arm (971d12c, 2026-07-31).
+# Foxy's launch.actions offers LogInfo only, so "loud" is done with a banner,
+# not with a severity.
+_BANNER = '!' * 78
+
+
+def _repo_root():
+    """Locate the source repo this build came from.
+
+    Order: explicit override -> walk up from THIS file -> the canonical path.
+
+    The walk matters because the file executing here is the colcon-INSTALLED
+    launch script under `<repo>/ros_ws/install/jugglebot/share/...`, so walking
+    up until `config/generate_config.py` appears lands on the repo that produced
+    this install. Parallel sessions on this project isolate with `git worktree`
+    (memory: feedback_parallel_session_worktrees); with a hard-coded root, a
+    launch built from a worktree would check the MAIN tree's YAML against the
+    worktree's install and report drift that is purely an artifact of the
+    diagnostic. Falling back to the canonical path keeps the old behaviour when
+    the install tree lives outside the repo.
+    """
+    override = os.environ.get('JUGGLEBOT_REPO')
+    if override:
+        return override
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        while True:
+            if os.path.isfile(os.path.join(here, 'config', 'generate_config.py')):
+                return here
+            parent = os.path.dirname(here)
+            if parent == here:
+                break
+            here = parent
+    except Exception:  # noqa: BLE001 — diagnostics never raise
+        pass
+    return '/home/jetson/Desktop/Jugglebot'
+
+
+def _installed_jugglebot_dir():
+    """Locate the colcon-installed `jugglebot` python package, or None.
+
+    Walks AMENT_PREFIX_PATH rather than importing the package: importing would
+    execute node modules (rclpy, numpy-quaternion, ...) inside the launch
+    process for a diagnostic.
+    """
+    for prefix in os.environ.get('AMENT_PREFIX_PATH', '').split(os.pathsep):
+        if not prefix:
+            continue
+        for cand in glob.glob(os.path.join(
+                prefix, 'lib', 'python3.*', 'site-packages', 'jugglebot')):
+            if os.path.isdir(cand):
+                return cand
+    return None
+
+
+def _codegen_drift(repo):
+    """Link A: source YAML vs the in-repo generated + delivered artifacts.
+
+    Returns ``(drift_lines, note_lines)``; drift_lines empty == fresh. A check
+    that could not RUN is a note, never drift — reporting "CONFIG DRIFT" for a
+    missing checker would train the operator to ignore the banner.
+
+    Shells out to `config/generate_config.py --check`, which renders every
+    artifact in memory and diffs it — a guaranteed READ-ONLY operation
+    (pinned by tests/firmware/test_config_drift.py). `sys.executable` here is
+    the launch's interpreter, i.e. the SYSTEM python3.8, not the project venv;
+    `--check` is deliberately dependency-light (stdlib + PyYAML) so it runs
+    there.
+
+    The checker's `SKIPPED:` / `NOT CHECKED:` lines are collected EVEN ON
+    EXIT 0: they mean part of the surface was never compared, and a green line
+    that silently covers half the artifacts is the exact trap this whole feature
+    exists to close. `EXTERNAL DRIFT:` / `EXTERNAL SKIPPED:` are deliberately
+    NOT collected — ../BallButler is a separate checkout whose firmware headers
+    no node in this launch reads, and raising the banner for it would spend the
+    banner's only asset, its credibility.
+    """
+    script = os.path.join(repo, 'config', 'generate_config.py')
+    if not os.path.isfile(script):
+        return [], ['codegen check skipped — %s not found' % script]
+    proc = subprocess.run(
+        [sys.executable, script, '--check'],
+        cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        timeout=_DRIFT_CHECK_TIMEOUT_S)
+    detail = proc.stderr.decode('utf-8', 'replace')
+    stripped = [ln.strip() for ln in detail.splitlines()]
+    notes = [ln for ln in stripped
+             if ln.startswith('SKIPPED:') or ln.startswith('NOT CHECKED:')]
+    if proc.returncode == 0:
+        return [], notes
+    lines = [ln for ln in stripped if ln.startswith('DRIFT:')]
+    if lines:
+        return lines, notes
+    # Non-zero without DRIFT lines == the checker itself failed (bad YAML, bad
+    # argument). Report it, but do not claim to know the config is stale.
+    return [], notes + ['codegen check inconclusive — --check exited %d: %s'
+                        % (proc.returncode, detail.strip().replace('\n', ' | '))]
+
+
+def _install_drift(repo):
+    """Link B: in-repo generated artifacts vs the colcon-INSTALLED copies.
+
+    This is the one the codegen check cannot see, and it is the actual trap:
+    `generate_config.py` was run, the repo is self-consistent, and the launch
+    still runs last week's numbers because `colcon build` was not.
+
+    A missing file on either side is a NOTE, never silence: an absent installed
+    module is a packaging regression (setup.py stopped shipping it) and an
+    absent source module means the wrong repo root was resolved — both would
+    otherwise degrade into a green "installed copies agree".
+    """
+    installed = _installed_jugglebot_dir()
+    if installed is None:
+        return [], ['install check skipped — no jugglebot package on '
+                    'AMENT_PREFIX_PATH']
+    src_dir = os.path.join(repo, 'ros_ws', 'src', 'jugglebot', 'jugglebot')
+    drift, notes = [], []
+    for name in _INSTALLED_GENERATED_MODULES:
+        src, dst = os.path.join(src_dir, name), os.path.join(installed, name)
+        if not os.path.isfile(src):
+            notes.append('install check skipped for %s — no repo copy at %s'
+                         % (name, src))
+            continue
+        if not os.path.isfile(dst):
+            notes.append('install check skipped for %s — not present in the '
+                         'installed package (%s); colcon build?' % (name, dst))
+            continue
+        with open(src, 'rb') as f_src, open(dst, 'rb') as f_dst:
+            if f_src.read() != f_dst.read():
+                drift.append('STALE INSTALL: %s differs from the repo copy' % dst)
+    return drift, notes
+
+
+def _config_freshness_actions():
+    """Return the launch actions that report config freshness. Never raises."""
+    try:
+        repo = _repo_root()
+        drift_a, notes_a = _codegen_drift(repo)
+        drift_b, notes_b = _install_drift(repo)
+        drift, notes = drift_a + drift_b, notes_a + notes_b
+        if not drift and not notes:
+            # Scope named precisely: the check covers what generate_config.py
+            # renders. config/generated/udp_protocol.{h,py} come from a DIFFERENT
+            # generator and are NOT covered — and a stale udp_protocol header is
+            # a named past incident on this branch (24608bb), so "generated
+            # artifacts agree" would be an over-claim exactly where it hurts.
+            return [LogInfo(msg='[config] freshness check OK — hardware/protocol/'
+                                'geometry codegen and the installed copies agree.')]
+        if not drift:
+            # Something could not be checked. Say so rather than reporting OK:
+            # a green line for a check that never ran is worse than no line.
+            return [LogInfo(msg='[config] freshness check PARTIAL — no drift in '
+                                'what was checked; NOT checked: '
+                                + '; '.join(notes))]
+        msg = [_BANNER,
+               '!!  CONFIG DRIFT WARNING — this launch is NOT running the '
+               'source config.']
+        msg += ['!!  ' + ln for ln in drift + notes]
+        msg += ['!!',
+                '!!  FIX:  python config/generate_config.py',
+                '!!        cd ros_ws && colcon build --packages-select jugglebot',
+                '!!        then RELAUNCH — the launch runs the INSTALLED copy.',
+                '!!',
+                '!!  Launch CONTINUES. Build-frozen config is the safe direction; '
+                'this is a warning, never a gate.',
+                _BANNER]
+        return [LogInfo(msg='\n'.join(msg))]
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never kill bring-up
+        return [LogInfo(msg='[config] freshness check unavailable (%s: %s) — '
+                            'continuing.' % (type(exc).__name__, exc))]
 
 
 def generate_launch_description():
@@ -312,7 +521,10 @@ def generate_launch_description():
     )
 
     # ── Assemble launch description ──────────────────────────────
+    # The freshness banner goes FIRST so it is not buried under node startup
+    # chatter (the whole point is that the operator sees it).
     return LaunchDescription([
+        *_config_freshness_actions(),
         record_arg,
         friction_ff_enable_arg,
         apply_aim_correction_arg,

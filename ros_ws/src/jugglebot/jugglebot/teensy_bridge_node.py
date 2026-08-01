@@ -44,7 +44,9 @@ Commit 4 adds the RPC service surface. Each is a separate, test-gated commit.
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 import struct
 import threading
 import time
@@ -127,6 +129,47 @@ from jugglebot.can import odrive
 from jugglebot.can.motor_state import MotorStateTracker
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
+
+
+# ── Config identity ────────────────────────────────────────────
+def hardware_config_identity() -> str:
+    """Identify the hardware_config module this PROCESS actually imported.
+
+    Production is build-frozen: `jugglebot.hardware_config` resolves to the
+    colcon-INSTALLED copy, not the repo source and certainly not
+    `config/hardware_config.yaml`. Editing the YAML and relaunching therefore
+    changes nothing, silently — the single most confusing failure mode on this
+    robot ("I changed the gain and it did nothing"). Logging the resolved path,
+    a content hash and the mtime at boot turns that into something an operator
+    can check against a bag or a screenshot after the fact.
+
+    Reads `hw.__file__` rather than recomputing a path so the answer is the
+    module that is really bound, whatever PYTHONPATH did.
+
+    Deliberately scoped to hardware_config only (the tuning surface).
+    `friction_ff_params.py`'s env -> ament-share -> source-tree resolution
+    order is a landed 2026-06-24 crash fix in motor_guard's import chain and is
+    NOT touched here — see plans/active/refactor-2026-07.md Phase 5 item 3.
+
+    Never raises: a diagnostic must not be able to stop the bridge booting.
+    """
+    try:
+        path = getattr(hw, '__file__', None)
+        if not path:
+            return 'hardware_config: UNKNOWN source (module has no __file__)'
+        with open(path, 'rb') as f:
+            digest = hashlib.sha256(f.read()).hexdigest()
+        # %z, not a bare local timestamp: the whole point is reconciling a bag
+        # or a screenshot against a specific artifact after the fact, and an
+        # offset-less local time is ambiguous across a DST change or a
+        # differently-configured box.
+        stamp = time.strftime('%Y-%m-%dT%H:%M:%S%z',
+                              time.localtime(os.path.getmtime(path)))
+        return ('hardware_config: %s sha256=%s mtime=%s'
+                % (path, digest[:16], stamp))
+    except Exception as exc:  # noqa: BLE001 — identity is best-effort
+        return ('hardware_config: identity unavailable (%s: %s)'
+                % (type(exc).__name__, exc))
 
 
 # ── Constants ──────────────────────────────────────────────────
@@ -1057,6 +1100,12 @@ class TeensyBridgeNode(Node):
             f"TeensyBridgeNode up — peer={peer} stream={p.PORT_STREAM} "
             f"rpc={p.PORT_RPC}, DISARMED (mpc_active=0; arming is runtime-only "
             f"via /set_setpoint_output — see ARMING_CONTRACT.md)")
+        # Boot-time config identity, logged ONCE. Its own call site at a FIXED
+        # severity: Foxy's rcutils logger caches severity per source line and
+        # raises on a flip (971d12c). Pairs with jugglebot_launch.py's drift
+        # banner — the launch says whether the INSTALLED copy is stale, this
+        # says which file this process actually got.
+        self.get_logger().info("config identity — " + hardware_config_identity())
 
     # ═══════════════════════════════════════════════════════════
     # RX-thread frame callbacks — keep these short (stash + return)

@@ -5,6 +5,20 @@ generate_config.py -- Generate C++, Python, and JS constants from YAML config fi
 Usage:
     python generate_config.py                  # generate all configs
     python generate_config.py path/to/yaml     # specify protocol YAML only
+    python generate_config.py --check          # drift gate: render in memory,
+                                               # diff every artifact and
+                                               # delivered copy, WRITE NOTHING.
+                                               # exit 0 = fresh, 1 = drift.
+
+The exit code covers IN-REPO destinations only. `../BallButler` is a separate
+git checkout on its own branch; its drift prints as `EXTERNAL DRIFT:` and is
+never allowed to fail this repo's gate or raise its bring-up banner. Anything
+that could not be checked (absent parent dir, missing hardware YAML) prints as
+`SKIPPED:` / `NOT CHECKED:` so a partial run can never masquerade as a clean one.
+
+The --check gate is dependency-light on purpose (stdlib + PyYAML only, no
+numpy/casadi): jugglebot_launch.py runs it with the system python3.8, which
+is not the project venv.  Pinned by tests/firmware/test_config_drift.py.
 
 Outputs:
     config/generated/protocol_config.h          (C++ constexpr header)
@@ -968,30 +982,36 @@ def _rel(path: Path) -> str:
         return str(path)
 
 
-def main():
-    yaml_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_YAML
-    if not yaml_path.exists():
-        print(f"Error: YAML file not found: {yaml_path}", file=sys.stderr)
-        sys.exit(1)
+def build_artifacts(yaml_path: Path):
+    """Render every artifact in memory; touch nothing on disk.
 
+    Returns ``(plan, skipped, notes, bb_available)`` where
+
+      * ``plan``    -- list of ``(dest_path, content, label)`` in emit order.
+                      ``label`` is the verb the write path prints
+                      ("Generated" / "Copied" / "Delivered").
+      * ``skipped`` -- destinations whose PARENT DIRECTORY is absent. The write
+                      path skips these (external repos like ../BallButler are
+                      not always checked out), so ``--check`` must skip exactly
+                      the same set or it would report permanent false drift.
+      * ``notes``   -- informational lines the write path also prints.
+
+    Splitting rendering out of ``main`` is what makes ``--check`` byte-exact by
+    construction: check and write consume the SAME plan, so a new artifact can
+    never be added to one path and forgotten in the other.
+    """
     cfg = load_yaml(yaml_path)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Check for external BallButler repo
+    plan = []
+    skipped = []
+    notes = []
     bb_available = BB_FIRMWARE_DIR.exists()
 
     # ── Protocol config ──
-    cpp_path = OUTPUT_DIR / "protocol_config.h"
-    py_path = OUTPUT_DIR / "protocol_config.py"
-
     cpp_content = generate_cpp(cfg)
     py_content = generate_python(cfg)
-
-    cpp_path.write_text(cpp_content, encoding="utf-8")
-    py_path.write_text(py_content, encoding="utf-8")
-
-    print(f"Generated: {_rel(cpp_path)}")
-    print(f"Generated: {_rel(py_path)}")
+    plan.append((OUTPUT_DIR / "protocol_config.h", cpp_content, "Generated"))
+    plan.append((OUTPUT_DIR / "protocol_config.py", py_content, "Generated"))
 
     # Copy protocol files to consumer directories
     extra_copies = [
@@ -1003,10 +1023,9 @@ def main():
     ]
     for content, dest in extra_copies:
         if dest.parent.exists():
-            dest.write_text(content, encoding="utf-8")
-            print(f"Copied:    {_rel(dest)}")
+            plan.append((dest, content, "Copied"))
         else:
-            print(f"Skipped (dir not found): {_rel(dest)}")
+            skipped.append(dest)
 
     # ── Hardware config ──
     hw_cfg = None
@@ -1014,19 +1033,11 @@ def main():
         hw_cfg = load_yaml(HW_YAML)
         _check_catching_cone_key_collision(cfg, hw_cfg)
 
-        hw_cpp_path = OUTPUT_DIR / "hardware_config.h"
-        hw_py_path = OUTPUT_DIR / "hardware_config.py"
-
         hw_cpp_content = generate_hw_cpp(hw_cfg)
         hw_py_content = generate_hw_python(hw_cfg)
+        plan.append((OUTPUT_DIR / "hardware_config.h", hw_cpp_content, "Generated"))
+        plan.append((OUTPUT_DIR / "hardware_config.py", hw_py_content, "Generated"))
 
-        hw_cpp_path.write_text(hw_cpp_content, encoding="utf-8")
-        hw_py_path.write_text(hw_py_content, encoding="utf-8")
-
-        print(f"Generated: {_rel(hw_cpp_path)}")
-        print(f"Generated: {_rel(hw_py_path)}")
-
-        # Copy hardware config to consumer directories
         hw_copies = [
             (hw_cpp_content, BB_FIRMWARE_DIR / "hardware_config.h"),
             (hw_cpp_content, PLATFORM_FIRMWARE_DIR / "hardware_config.h"),
@@ -1036,37 +1047,161 @@ def main():
         ]
         for content, dest in hw_copies:
             if dest.parent.exists():
-                dest.write_text(content, encoding="utf-8")
-                print(f"Copied:    {_rel(dest)}")
+                plan.append((dest, content, "Copied"))
             else:
-                print(f"Skipped (dir not found): {_rel(dest)}")
+                skipped.append(dest)
     else:
-        print(f"Skipped hardware config (not found): {_rel(HW_YAML)}")
+        notes.append(f"Skipped hardware config (not found): {_rel(HW_YAML)}")
 
     # ── GUI JavaScript config ──
     if hw_cfg is not None:
         gui_js_content = generate_gui_js(hw_cfg, cfg)
-        gui_js_path = OUTPUT_DIR / "geometry-config.js"
-        gui_js_path.write_text(gui_js_content, encoding="utf-8")
-        print(f"Generated: {_rel(gui_js_path)}")
+        plan.append((OUTPUT_DIR / "geometry-config.js", gui_js_content, "Generated"))
 
-        # Deliver to GUI directory
         gui_dest = GUI_JS_DIR / "geometry-config.js"
         if gui_dest.parent.exists():
-            gui_dest.write_text(gui_js_content, encoding="utf-8")
-            print(f"Delivered: {_rel(gui_dest)}")
+            plan.append((gui_dest, gui_js_content, "Delivered"))
         else:
-            print(f"Skipped GUI delivery (dir not found): {_rel(gui_dest)}")
+            skipped.append(gui_dest)
+
+    return plan, skipped, notes, bb_available
+
+
+def is_external(dest: Path) -> bool:
+    """True for destinations that live OUTSIDE this repository.
+
+    Only ``../BallButler`` qualifies today. The distinction is load-bearing for
+    ``--check``: a separate git checkout, on its own branch, at its own commit,
+    must NEVER be able to fail this repo's pre-commit gate or raise this repo's
+    bring-up banner. Its drift is real and worth printing, but it is fixed by
+    running the generator (which delivers into it), not by anything the operator
+    of *this* repo did wrong — and no node in this launch reads those files.
+    """
+    try:
+        dest.resolve().relative_to(REPO_ROOT.resolve())
+        return False
+    except ValueError:
+        return True
+
+
+def check_artifacts(plan):
+    """Compare every planned artifact against what is on disk.
+
+    Returns ``(drift, external_drift)``: lists of ``(dest_path, reason)``, split
+    so only the in-repo half drives the exit code (see :func:`is_external`).
+
+    READ-ONLY by construction: the only filesystem calls here are ``exists()``
+    and ``read_text()``.
+
+    Compares TEXT, not bytes, on purpose. The write path uses
+    ``Path.write_text(..., encoding="utf-8")`` with ``newline=None``, which
+    translates ``\\n`` to ``os.linesep`` — so on Windows every artifact is
+    written CRLF while the rendered string holds LF. A byte compare would report
+    16/16 permanent drift on a perfectly fresh Windows checkout (the repo IS run
+    from a Win10 clone for sim work). ``read_text``'s universal-newline decode
+    normalises both sides, which is also why the sibling
+    ``test_udp_protocol_xlang.py`` gate compares text.
+    """
+    drift, external = [], []
+    for dest, content, _label in plan:
+        bucket = external if is_external(dest) else drift
+        if not dest.exists():
+            bucket.append((dest, "missing"))
+            continue
+        try:
+            on_disk = dest.read_text(encoding="utf-8")
+        except OSError as exc:
+            bucket.append((dest, f"unreadable ({exc.strerror})"))
+            continue
+        except UnicodeDecodeError:
+            bucket.append((dest, "not valid UTF-8"))
+            continue
+        if on_disk != content:
+            bucket.append((dest, "differs from generator output"))
+    return drift, external
+
+
+def _print_bb_warning():
+    print()
+    print("!" * 78)
+    print("!!  WARNING: BallButler directory not found!".ljust(77) + "!")
+    print("!!  Ball Butler config files were NOT updated.".ljust(77) + "!")
+    print(f"!!  Expected: {_rel(BB_FIRMWARE_DIR)} at same level as repo root.".ljust(77) + "!")
+    print("!" * 78)
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    check_only = False
+    if "--check" in argv:
+        check_only = True
+        argv = [a for a in argv if a != "--check"]
+
+    positional = [a for a in argv if not a.startswith("-")]
+    unknown = [a for a in argv if a.startswith("-")]
+    if unknown:
+        print(f"Error: unknown option(s): {' '.join(unknown)}", file=sys.stderr)
+        print("Usage: generate_config.py [--check] [path/to/protocol_config.yaml]",
+              file=sys.stderr)
+        return 2
+
+    yaml_path = Path(positional[0]) if positional else DEFAULT_YAML
+    if not yaml_path.exists():
+        print(f"Error: YAML file not found: {yaml_path}", file=sys.stderr)
+        return 1
+
+    plan, skipped, notes, bb_available = build_artifacts(yaml_path)
+
+    if check_only:
+        # NO WRITES ON THIS PATH — deliberately no OUTPUT_DIR.mkdir() either.
+        drift, external_drift = check_artifacts(plan)
+
+        # Everything that was NOT checked is announced. A verdict that silently
+        # covers half the surface is the failure this gate exists to prevent:
+        # with HW_YAML absent, 9 of 16 artifacts (the entire tuning surface)
+        # would otherwise vanish behind a green "CONFIG FRESH: 7".
+        # jugglebot_launch.py folds these lines into PARTIAL rather than OK.
+        for dest in skipped:
+            prefix = "EXTERNAL SKIPPED" if is_external(dest) else "SKIPPED"
+            print(f"{prefix}: {_rel(dest)} — parent directory not found",
+                  file=sys.stderr)
+        for note in notes:
+            print(f"NOT CHECKED: {note}", file=sys.stderr)
+        for dest, reason in external_drift:
+            print(f"EXTERNAL DRIFT: {_rel(dest)} — {reason} "
+                  f"(separate checkout; does not fail this gate)",
+                  file=sys.stderr)
+        for dest, reason in drift:
+            print(f"DRIFT: {_rel(dest)} — {reason}", file=sys.stderr)
+
+        n_checked = len(plan) - len(
+            [d for d, _c, _l in plan if is_external(d)])
+        if drift:
+            print("", file=sys.stderr)
+            print(f"CONFIG DRIFT: {len(drift)} file(s) out of date "
+                  f"({n_checked} checked). Fix: python config/generate_config.py "
+                  f"&& (cd ros_ws && colcon build --packages-select jugglebot)",
+                  file=sys.stderr)
+            return 1
+        print(f"CONFIG FRESH: {n_checked} artifact(s) match the generator.")
+        return 0
+
+    # ── Write path ──
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    for dest, content, label in plan:
+        dest.write_text(content, encoding="utf-8")
+        print(f"{(label + ':').ljust(10)} {_rel(dest)}")
+    for dest in skipped:
+        print(f"Skipped (dir not found): {_rel(dest)}")
+    for note in notes:
+        print(note)
 
     # Print BallButler warning at the very end so it's impossible to miss
     if not bb_available:
-        print()
-        print("!" * 78)
-        print("!!  WARNING: BallButler directory not found!".ljust(77) + "!")
-        print("!!  Ball Butler config files were NOT updated.".ljust(77) + "!")
-        print(f"!!  Expected: {_rel(BB_FIRMWARE_DIR)} at same level as repo root.".ljust(77) + "!")
-        print("!" * 78)
+        _print_bb_warning()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
