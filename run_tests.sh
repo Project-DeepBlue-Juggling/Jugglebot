@@ -131,6 +131,19 @@ if ! "$VENV_PY" -c 'import xdist' 2>/dev/null; then
   exit 1
 fi
 
+# ── Suite mutex ───────────────────────────────────────────────────────────────
+# Two concurrent gates corrupt the serial-phase timing baselines and can OOM
+# this box (8 xdist workers on 6 cores, zram swap). Parallel Claude sessions
+# are a real workflow, so overlapping gate invocations QUEUE here instead of
+# colliding (observed twice on 2026-08-01). Scoped passthrough runs above do
+# not take the lock — only the full gate does. Waits up to 30 min, then aborts
+# loudly rather than overlap.
+exec 9>"/tmp/jugglebot-run_tests.lock"
+if ! flock -n 9; then
+  echo "run_tests.sh: another gate holds /tmp/jugglebot-run_tests.lock — queuing (max 30 min)..."
+  flock -w 1800 9 || { echo "error: timed out waiting for the suite lock" >&2; exit 1; }
+fi
+
 echo "═══ Phase 1/2: parallel (${WORKERS} workers, --dist loadfile, -m 'not serial')"
 start=$SECONDS
 rc_parallel=0
