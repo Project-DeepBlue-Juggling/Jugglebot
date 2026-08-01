@@ -196,18 +196,35 @@ edit colcon-build-gated).
   golden fault vectors; colcon build + relaunch + disarmed bench link-up
   smoke before the first powered session. Land in a quiet window.
 
-## Phase 5 — config freshness contract (APPROVED design)
+## Phase 5 — config freshness contract (PARTIALLY LANDED 2026-08-01)
+
+Landed: the codegen `--check` drift gate (item 3's parenthetical), item 2 in
+full, and item 1 for **one** node — logbook `2026-08-01-config-drift-gate`.
+Still owed: item 1 for the remaining nodes and for *effective tuning values*
+(delivered is identity only — path + sha256 + mtime — on `teensy_bridge_node`),
+and item 3's loader-unification decision. Three deviations from the plan text,
+all recorded in that entry: the `--check` **exit code covers the 14 in-repo
+destinations only** (`../BallButler` is a separate checkout — it must not be
+able to redden this repo's gate or raise its bring-up banner; its drift prints
+as `EXTERNAL DRIFT:`); the comparison is **text, not "byte-diff"** (the write
+path's `newline=None` emits CRLF on Windows, where a byte compare reports
+permanent drift on a clean checkout); and everything **not** checked is
+announced, because the first version reported a green `CONFIG FRESH: 7` when
+the hardware YAML was absent and 9 of 16 artifacts had silently dropped out.
 
 Production stays **BUILD-FROZEN** (staler-than-expected fails safe;
 fresher-than-expected on an actuator path is the dangerous direction —
 owner concurs). Confusion is killed by observability, not freshness:
 
 1. Every node logs its effective tuning values + a hash of the config it
-   loaded, at boot.
+   loaded, at boot. **[PARTIAL — `teensy_bridge_node` only, identity not
+   values]**
 2. Launch-time drift check: compare source `hardware_config.yaml` (+
    generated artifacts) against the installed copies; on mismatch warn
    loudly — "source config differs from installed — run generate_config +
    colcon build". Converts the silent staleness trap into a named prompt.
+   **[LANDED — two links reported separately: YAML→repo via `--check`, and
+   repo→INSTALLED via byte compare, which is the link `--check` cannot see]**
 3. Any future loader unification must preserve per-consumer resolution
    order — `friction_ff_params.py`'s env → ament-share → source-tree order
    is a landed crash fix (2026-06-24) and sits in motor_guard's import
@@ -216,6 +233,8 @@ owner concurs). Confusion is killed by observability, not freshness:
    memory, byte-diff all delivered copies, one parametrized test) lands
    here too (honest scope: it would NOT have caught the 24608bb stale
    binary — that fix is the pio-clean forcing in Phase 7).
+   **[drift gate LANDED; `friction_ff_params.py` UNTOUCHED — owner decision
+   still pending]**
 
 ## Phase 6 — structural cleanups (sequenced; each independently gated)
 
@@ -268,9 +287,21 @@ surface); (b) Phase 4 (teensy_link) BEFORE any teensy_bridge_node split.
 
 ## Phase 7 — CAN3 residue (software-shaped, hardware verdict untouched)
 
-- ERR_TIMEOUT epidemic recount pre/post bus-role swap from existing bags
+- [x] ERR_TIMEOUT epidemic recount pre/post bus-role swap from existing bags
   (read-only; `link_status_health_scan.py` pattern; count ERR_BUS_DOWN and
-  ERR_TIMEOUT separately — distinct firmware paths).
+  ERR_TIMEOUT separately — distinct firmware paths). **DONE 2026-08-01** —
+  logbook `2026-08-01-err-timeout-recount`. The epidemic **survived** the swap
+  (pre 47–52 %, post 4/8 + 4/8) on a bus reading zero wire errors and zero
+  TX-gate refusals on all 10513 samples, so it is NOT the CAN3 drive-path
+  fault; every failure is `ERR_TIMEOUT`, never `ERR_BUS_DOWN`, and never a
+  host-side `RpcTimeout`. Mechanism narrowed to `bus.write() <= 0` — which is
+  in open tension with the "lying ack" premise behind
+  `_MAX_ARM_DISPATCHES`; the `tx_write_fail` counter below settles it and the
+  latch behaviour stays as-is until then. Follow-ups this opened: split
+  `tx_write_fail` from `tx_gated` and uplink it (a wire change — needs the new
+  MsgType treatment, the payload is exact-size-unpacked), per-send attribution,
+  a TX-queue high-water mark, a `link_status` hand-ack-failure counter, and one
+  ordinary post-swap reload sitting to tighten the 4/8 interval.
 - Bridge-uptime tracking-lag reboot-isolation experiment (pre-registered;
   calendar cost is real — the degraded cell needs a multi-hour soak).
 - Post-repair flash window: wire-visible firmware identity as a **NEW

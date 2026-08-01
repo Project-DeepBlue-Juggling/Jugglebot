@@ -213,6 +213,11 @@ swapped bus, and the sensor's 07-28 install is exonerated of the wire fault.
    plausibly early manifestations of this same degrading path — worth
    re-checking its incidence now that Jugglebot runs on CAN2, before
    investigating it as a separate bug.
+   → **CLOSED 2026-08-01, hypothesis REFUTED**: the epidemic survived the swap
+   at the same rate (pre 47–52 %, post 4/8 and 4/8) on a bus whose own 1 kHz
+   error counters read zero on all 10513 post-swap samples. It is a separate
+   bug — a FlexCAN write rejection on an error-free bus — not this drive-path
+   fault. See `2026-08-01-err-timeout-recount`.
 5. The GUI `can3_errors` row name is role-keyed (it reports the Jugglebot
    role, physically CAN2 now) — acceptable while the swap holds; rename only
    if it confuses.
