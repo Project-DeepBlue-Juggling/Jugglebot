@@ -2,7 +2,7 @@
 title: "teensy_link relocated from controller/ to the repo root (+ sys.modules compat shim)"
 type: refactor
 date: 2026-08-01
-status: fix-landed-pending-hardware-confirm
+status: resolved
 phase: "refactor-2026-07 Phase 4"
 related_plan: refactor-2026-07.md
 files_changed:
@@ -113,7 +113,7 @@ bare-import scan.
   **succeeds** with `PYTHONPATH=/home/jetson/Desktop/Jugglebot` — the launch
   injection is load-bearing and correct.
 
-## Operator steps before the next powered session
+## Operator gate — CONFIRMED 2026-08-01 (steps kept as written)
 
 1. **`cd ros_ws && colcon build --packages-select jugglebot`, then relaunch.**
    `ros2 launch` runs the INSTALLED copy; the launch files carry the PYTHONPATH
@@ -122,3 +122,13 @@ bare-import scan.
    `teensy_bridge_node` comes up and `link_status` reaches `UP` with heartbeats
    flowing, and leave it DISARMED. This is the first run of the moved import on
    real hardware; everything above is off-robot evidence.
+
+**CONFIRMED 2026-08-01 23:17 — both steps done, and exceeded.** The operator
+rebuilt, relaunched, and ran a LEVELLING sequence end-to-end without issue.
+Log check (`~/.ros/log/2026-08-01-23-17-27-*/launch.log`, reviewed
+2026-08-01): bridge started and exited cleanly through the repo-root import;
+`[config] freshness check OK` fired; dormant-chain entries absent; the only
+tracebacks (rclpy `__del__` shutdown noise, `ros2 bag` exit 2 at teardown)
+appear (same class, same shutdown path) in the 2026-07-31 pre-change log. Status flipped to
+`resolved`; the steps above are kept verbatim as the record of what the gate
+required.

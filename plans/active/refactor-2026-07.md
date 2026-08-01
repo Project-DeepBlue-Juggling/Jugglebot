@@ -176,21 +176,18 @@ deletion is rejected in favour of:
    enforcement point — duplication verified at ~1013–1055) is DEFERRED to
    the revival's foundation commit.
 
-## Phase 4 — teensy_link → repo root (SOFTWARE LANDED 2026-08-01; HARDWARE SMOKE OUTSTANDING)
+## Phase 4 — teensy_link → repo root (LANDED 2026-08-01; hardware-confirmed 2026-08-01)
 
-> ### ⚠️ OUTSTANDING — do this before the first powered session
-> **The disarmed bench link-up smoke has NOT been performed.** Everything
-> below is off-robot evidence. Before anything is armed:
-> 1. `cd ros_ws && colcon build --packages-select jugglebot`, then **relaunch**
->    — `ros2 launch` runs the INSTALLED copy, and the installed launch file is
->    what carries the PYTHONPATH injection that makes `teensy_link` importable.
-> 2. Launch, confirm `teensy_bridge_node` comes up and `link_status` reaches
->    `UP` with heartbeats flowing, and **leave it DISARMED**.
->
-> Phase 4 is not fully closed until this is reported. Logbook entry
-> `2026-08-01-teensy-link-repo-root` is held at
-> `status: fix-landed-pending-hardware-confirm` for the same reason; flip it to
-> `resolved` when the smoke passes.
+> **Hardware smoke CONFIRMED, 2026-08-01 23:17.** The operator ran
+> `colcon build --packages-select jugglebot`, relaunched, and exercised a
+> LEVELLING sequence end-to-end — beyond the disarmed link-up smoke the banner
+> asked for. Log evidence (`~/.ros/log/2026-08-01-23-17-27-*/launch.log`):
+> `teensy_bridge_node` started and finished cleanly through the repo-root
+> `teensy_link` import path; the `[config] freshness check OK` banner fired at
+> launch; no motor_guard/motion_bridge entries (dormant chain gone); the only
+> anomalies (rclpy `__del__` shutdown tracebacks, `ros2 bag` exit code 2 at
+> teardown) are the same pre-existing class seen in the 2026-07-31 pre-change
+> log — Foxy shutdown noise, none referencing the bridge or `teensy_link`. Logbook entry flipped to `resolved` accordingly.
 
 `git mv controller/teensy_link teensy_link` — logbook
 `2026-08-01-teensy-link-repo-root`. Owner picked **repo root** over
