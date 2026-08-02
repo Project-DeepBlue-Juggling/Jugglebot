@@ -1,6 +1,6 @@
 # Refactor programme — 2026-07
 
-**Status:** active (Phase 0 landed 2026-07-31)
+**Status:** active (Phases 0–4 landed; 5–7 partial — see the row in `plans/active/INDEX.md`)
 **Owner decisions recorded:** 2026-07-31 (all items below marked APPROVED were
 explicitly approved by the operator in the 2026-07-31 review session)
 **Source:** 13-agent codebase review + adversarial red-team pass, 2026-07-31.
@@ -398,6 +398,26 @@ checks that are.
   MsgType treatment, the payload is exact-size-unpacked), per-send attribution,
   a TX-queue high-water mark, a `link_status` hand-ack-failure counter, and one
   ordinary post-swap reload sitting to tighten the 4/8 interval.
+- [ ] The four counter/identity follow-ups above + the fw-identity item below
+  — **SOFTWARE DONE 2026-08-02** (unchecked per the Phase 5 PARTIAL
+  convention: the reload sitting and the flash are still open) (logbook `2026-08-02-err-timeout-attribution-instrumentation`,
+  four commits). Two additive MsgTypes, FW_VERSION 8→9, no PROTOCOL_VERSION
+  bump: per-bus `tx_deferred` + `tx_q_hwm` + per-stage hand counters
+  (`BRIDGE_TX_DIAG` 0x8D), wire-visible bridge identity warn-never-refuse
+  (`BRIDGE_IDENTITY` 0x8E), host-side `hand_traj_acks` row (works against the
+  CURRENT bridge), pio staleness guard. **The counter is `tx_deferred`, not the
+  `tx_write_fail` named above**: FlexCAN_T4 source (verified) shows
+  `write() <= 0` queues the frame into the 64-slot software ring drained by the
+  TX-complete ISR — deferral, not drop — which withdraws the recount's
+  "never enqueued ⇒ not armed" inference and makes the lying-ack premise
+  compatible with the narrowing (latch fence still holds until counters confirm
+  on hardware). Step 1 sequence analysis (399 outcomes): random, state bug
+  excluded, congestion-consistent. NOT yet done: FW 9 flash + colcon build
+  (operator), the bench discriminator sitting
+  (`tests/hardware/session_err_timeout_bench.md` +
+  `tools/probes/hand_dispatch_ladder.py`),
+  and the ordinary reload sitting. CAN-mute pio platform image (971d12c)
+  root-cause remains open, untouched.
 - Bridge-uptime tracking-lag reboot-isolation experiment (pre-registered;
   calendar cost is real — the degraded cell needs a multi-hour soak).
 - Post-repair flash window: wire-visible firmware identity as a **NEW
@@ -407,6 +427,9 @@ checks that are.
   warn-never-refuse like PLATFORM_FW_VERSION_EXPECTED; pio-clean forcing
   when `udp_protocol.h` is newer than the build dir (the ACTUAL 24608bb
   fix); root-cause the CAN-mute pio platform image (971d12c).
+  **[2026-08-02: identity + pio-clean CODE landed, FW 9 NOT yet flashed — see
+  the SOFTWARE DONE row above; the flash itself and the 971d12c root-cause
+  both remain from this bullet.]**
 - The re-plug discriminating probe: DEFERRED by owner (2026-07-31). If ever
   run: it is a flash→probe→flash-back cycle with a three-part revert (both
   bus declarations + ESR1 addresses), not a "60-second" job.

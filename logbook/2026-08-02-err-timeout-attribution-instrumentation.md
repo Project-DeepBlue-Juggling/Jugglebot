@@ -29,8 +29,10 @@ files_changed:
   - tests/firmware/test_firmware_build_pins.py
   - tests/firmware/test_udp_protocol_xlang.py
   - tests/hardware/toss_trace_recorder.py
+  - tests/hardware/session_err_timeout_bench.md
   - tests/ros/test_teensy_bridge_node_bridge_diag.py
   - tests/ros/test_teensy_bridge_node_hand_acks.py
+  - tools/probes/hand_dispatch_ladder.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
   - logbook/2026-08-01-err-timeout-recount.md
   - logbook/2026-08-02-err-timeout-attribution-instrumentation.md
@@ -162,6 +164,12 @@ modeled, or something else adds pressure. Do not paper over this.
   identity with warn-never-refuse BRIDGE_FW_CHECK. `/link_status` 38→40.
   Independently audited pre-commit: COMMIT-READY, zero blocking findings;
   the six polish notes were applied before the commit was written.
+- Step 3 prep (commit 4) — the operator bench runbook
+  `tests/hardware/session_err_timeout_bench.md` + the
+  `tools/probes/hand_dispatch_ladder.py` driver: dispatches ride the REAL
+  stack (smooth_move_hand to the hand's current position — mechanically null,
+  full 3-send firmware path); A-B-A-prime arms with the refutation cell
+  pre-registered and tx_q_hwm's boot-monotonicity pinned in the method.
 
 ## Discussion
 
@@ -226,7 +234,11 @@ the counters read off `/link_status`.
   products) and stayed quiet on rebuilds with an unchanged header — commit 2
   exercised on its first real trigger, twice, since a late wording fix to a
   payload summary regenerated the header again.
-  `pytest tests/firmware -q`, run 2026-08-02: **399 passed in 192.91 s** (389
+  `pytest tests/firmware -q`, re-run 2026-08-02 post-close-out audit: **399
+  passed in 19.36 s** on a warm native-build cache (the original post-change
+  run rebuilt the native harness and took ~3 min; its wall-clock was cited
+  inconsistently across two documents — 192.91 vs 192.42 s — so the fresh
+  re-run replaces both) (389
   before this arc). `./run_tests.sh`, run 2026-08-02: **4009 passed, parallel
   phase; serial phase empty (4444 deselected); RESULT: PASS**.
   Independent pre-commit audit: COMMIT-READY, zero blocking
@@ -246,4 +258,15 @@ the counters read off `/link_status`.
   the entry link under GFM. Recorded because the first two are the failure mode
   the (date, command, result) rule exists to prevent, and it still got past a
   first pass.
-- Session closure: [close-out commit adds the ./run_tests.sh --full triple]
+- Session closure: `./run_tests.sh --full`, run 2026-08-02: **parallel 4432
+  passed, 3 xfailed in 448.40 s; serial 9 passed in 40.22 s; RESULT: PASS** —
+  every tier, `nightly` included. (One earlier default-gate run this session
+  flaked on the KNOWN flaky
+  `tests/motion/test_motor_guard.py::test_decay_boundary_continuity` — passes
+  3/3 in isolation, same tree green immediately before and after. At least the
+  FIFTH documented occurrence (2026-04-18, 2026-05-10 ×2, the 2026-07-07 run
+  cited in the 2026-07-06 entry, and today); the three 2026-04/05 entries
+  called it heap-state contamination, but the test samples
+  `time.perf_counter()` twice across real work
+  (`test_motor_guard.py:1352,1359`) so wall-clock load is sufficient to
+  explain it — a deterministic-clock rewrite is now overdue.)
