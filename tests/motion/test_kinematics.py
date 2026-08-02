@@ -6,7 +6,7 @@ Tests:
   3. Round-trip test — twist → leg velocities → integrate → verify pose
   4. Bias term test — Jdot*twist matches numerically differentiated J*twist
   5. FK round-trip — IK → FK → IK gives consistent results
-  6. Singularity map — workspace sweep (informational, no pass/fail)
+  6. Singularity map — workspace sweep; asserts no ill-conditioned poses
 
 Run:  python -m jugglebot.motion.tests.test_kinematics
 """
@@ -124,7 +124,9 @@ def test_regression_vs_legacy_ik():
     passed = max_err < 1e-10
     print(f"  [{'PASS' if passed else 'FAIL'}] regression vs legacy IK  "
           f"(max error: {max_err:.2e} mm)")
-    return passed
+    assert passed, (
+        f"new pose_to_leg_lengths diverges from the legacy IK by "
+        f"{max_err:.2e} mm (tol 1e-10) across {len(test_poses)} poses")
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +189,9 @@ def test_numerical_jacobian():
     passed = max_err < 1e-4
     print(f"  [{'PASS' if passed else 'FAIL'}] numerical Jacobian check  "
           f"(max error: {max_err:.2e}, {n_poses} poses)")
-    return passed
+    assert passed, (
+        f"analytical Jacobian differs from the finite-difference Jacobian by "
+        f"{max_err:.2e} (tol 1e-4) across {n_poses} poses")
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +271,9 @@ def test_round_trip():
     passed = max_err < 1e-4  # mm/s tolerance given dt=1e-8
     print(f"  [{'PASS' if passed else 'FAIL'}] round-trip (twist integration)  "
           f"(max error: {max_err:.2e} mm/s, {n_tests} tests)")
-    return passed
+    assert passed, (
+        f"J @ twist disagrees with numerically integrated leg rates by "
+        f"{max_err:.2e} mm/s (tol 1e-4) across {n_tests} cases")
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +314,9 @@ def test_bias_term():
     passed = max_err < 1e-2  # mm/s^2 -- numerical differentiation introduces more error here
     print(f"  [{'PASS' if passed else 'FAIL'}] bias term (Jdot * twist)  "
           f"(max error: {max_err:.2e} mm/s^2, {n_tests} tests)")
-    return passed
+    assert passed, (
+        f"analytical Jdot @ twist bias term differs from the numerical bias by "
+        f"{max_err:.2e} mm/s^2 (tol 1e-2) across {n_tests} cases")
 
 
 # ---------------------------------------------------------------------------
@@ -353,18 +361,26 @@ def test_fk_round_trip():
     print(f"  [{'PASS' if passed else 'FAIL'}] FK round-trip  "
           f"(max pos err: {max_pos_err:.2e} mm, "
           f"max rot err: {max_rot_err:.2e} rad, {n_tests} poses)")
-    return passed
+    assert passed, (
+        f"FK(IK(pose)) does not recover the pose: max position error "
+        f"{max_pos_err:.2e} mm, max rotation error {max_rot_err:.2e} rad "
+        f"(tol 1e-8 each) across {n_tests} random poses plus the active pose")
 
 
 # ---------------------------------------------------------------------------
-# Test 6: Singularity map (informational)
+# Test 6: Singularity map (asserts no ill-conditioned reachable poses)
 # ---------------------------------------------------------------------------
 
 def test_singularity_map():
-    """Sweep workspace and report condition number statistics.
+    """Sweep the workspace and assert it contains no ill-conditioned poses.
 
-    This test is informational — it always passes but prints a summary
-    of the workspace singularity landscape.
+    Was informational-only (``return True``) until 2026-07-31. It already
+    computed the invariant that matters — the count of poses with condition
+    number > 100 — and printed it without checking it, so a Jacobian change that
+    introduced a singular region inside the reachable workspace would have been
+    reported and ignored. CLAUDE.md pins the expected conditioning at ~3-8 after
+    the ``plat_radius_mm`` normalisation; the observed max is ~4.3, so the > 100
+    bar is a loose sanity floor rather than a tight regression gate.
     """
     geom = StewartGeometry()
 
@@ -385,7 +401,14 @@ def test_singularity_map():
               f"max: {s['cond_max']:.1f}")
         print(f"         Ill-conditioned (cond > 100): "
               f"{s['ill_conditioned']}")
-    return True  # always passes — informational only
+
+    assert s['reachable'] > 0, (
+        f"workspace sweep found no reachable poses out of {s['total_poses']} — "
+        f"the sweep bounds or the IK are broken")
+    assert s['ill_conditioned'] == 0, (
+        f"{s['ill_conditioned']} of {s['reachable']} reachable poses have "
+        f"Jacobian condition number > 100 (max {s['cond_max']:.1f}); expected "
+        f"~3-8 after plat_radius_mm normalisation")
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +434,11 @@ def main():
     for name, test_fn in tests:
         print(f"\n{name}")
         try:
-            passed = test_fn()
+            # The tests assert rather than returning a verdict (pytest discards
+            # return values, so a returned bool was never actually checked under
+            # `pytest`). Reaching the next line without an exception IS the pass.
+            test_fn()
+            passed = True
         except Exception as e:
             print(f"  [FAIL] {e}")
             passed = False

@@ -93,9 +93,12 @@ Landed together with Phase 3 per the hard rule below — logbook
 run 2026-08-01): 3890 + 3 + 432 = 4325 and 4316 + 9 = 4325, against 4325
 unfiltered; the nightly tier is 432 tests across exactly 19 files. Default gate
 478 s → 200 s. Two deviations: (a) the `test_motor_guard*.py` demotion (Phase 3
-item 2) is **deferred** — both files were another session's uncommitted work in
-the shared tree; `run_tests.sh`'s zero-serial guard was pre-adjusted so that
-demotion will not empty the default serial phase; (b) a **live-session guard**
+item 2) was **deferred** — both files were another session's uncommitted work in
+the shared tree; `run_tests.sh`'s zero-serial guard was pre-adjusted so that the
+demotion *emptying* the default serial phase does not fail the gate. **Landed
+2026-08-01** by the parallelisation session that owned those files (logbook
+`2026-08-01-vacuous-tests-return-not-assert`); the phase is now empty as
+anticipated and the guard fired live for the first time; (b) a **live-session guard**
 was added to `tools/nightly_suite.sh` beyond the plan text: `Persistent=true`
 fires a missed run at the next boot, which can land inside a powered sitting, and
 the unit's Nice/IOSchedulingClass bound CPU and IO but not memory — the runner
@@ -139,8 +142,10 @@ timer, `.github/workflows` = docs.yml only).
 
 ## Phase 3 — MPC dormancy (LANDED 2026-08-01, with Phase 2)
 
-Same commit and same gate as Phase 2 above. Item 2 landed except the
-`test_motor_guard*.py` half (foreign-dirty; see above). Two things the plan text
+Same commit and same gate as Phase 2 above. Item 2 landed in full; the
+`test_motor_guard*.py` half followed on 2026-08-01 (logbook
+`2026-08-01-vacuous-tests-return-not-assert`), which empties the default serial
+phase as anticipated. Two things the plan text
 did not anticipate, both recorded in the logbook entry: `motion_bridge_node` was
 also the **sole publisher of `motion/diagnostics` and `motion/tracking_error`**,
 so the GUI Motion panel now sits at `DISABLED` and those two bag topics record

@@ -17,6 +17,7 @@ import time
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from jugglebot.motion.conversions import (
     extensions_mm_to_revs,
@@ -153,6 +154,8 @@ def _provide_matching_feedback(guard: MotorGuard, ipc: MockIPC,
 # Test 1: Loop timing
 # ---------------------------------------------------------------------------
 
+@pytest.mark.serial   # 10 s wall-clock jitter measurement — see pyproject.toml
+@pytest.mark.nightly  # characterization, not safety logic — see the nightly marker
 def test_loop_timing():
     """Run the motor guard for a short duration and check jitter.
 
@@ -192,13 +195,24 @@ def test_loop_timing():
     print(f"         max dt:      {guard.stats.max*1000:.3f} ms")
     print(f"         std:         {guard.stats.std*1000:.3f} ms")
 
-    return passed
+    # Guard the guard: with zero cycles the jitter statistic is vacuously small,
+    # so a loop that never ran would otherwise satisfy the gate below.
+    assert n_cycles > 0, (
+        f"guard loop produced no cycles in {duration_s:.0f}s — the run() thread "
+        f"never ticked")
+    assert passed, (
+        f"{rate_hz} Hz loop p99 jitter {jitter_p99*1000:.3f} ms exceeds the "
+        f"{gate_threshold*1000:.3f} ms gate (2x nominal period), "
+        f"over {n_cycles} cycles; mean dt {mean_dt*1000:.3f} ms, "
+        f"max dt {guard.stats.max*1000:.3f} ms")
 
 
 # ---------------------------------------------------------------------------
 # Test 2: IPC latency
 # ---------------------------------------------------------------------------
 
+@pytest.mark.serial   # wall-clock IPC latency measurement — see pyproject.toml
+@pytest.mark.nightly  # characterization, not safety logic — see the nightly marker
 def test_ipc_latency():
     """Measure ZeroMQ round-trip latency.
 
@@ -209,7 +223,7 @@ def test_ipc_latency():
         import msgpack
     except ImportError as e:
         print(f"  [SKIP] IPC latency — missing dependency: {e}")
-        return True
+        pytest.skip(f"IPC latency — missing dependency: {e}")
 
     from jugglebot.motion.ipc import (
         BridgeIPC,
@@ -251,9 +265,9 @@ def test_ipc_latency():
     guard_ipc.close()
     bridge.close()
 
-    if not latencies:
-        print("  [FAIL] IPC latency — no messages received")
-        return False
+    assert latencies, (
+        f"IPC latency — no messages received out of {n_messages} sent; the "
+        f"ZMQ PUB/SUB pair never connected")
 
     lat = np.array(latencies) * 1000  # ms
     passed = np.median(lat) < 2.0
@@ -264,7 +278,10 @@ def test_ipc_latency():
           f"mean: {np.mean(lat):.3f} ms  "
           f"p99: {np.percentile(lat, 99):.3f} ms")
 
-    return passed
+    assert passed, (
+        f"IPC median round-trip latency {np.median(lat):.3f} ms exceeds the "
+        f"2.0 ms gate ({len(latencies)}/{n_messages} messages received; "
+        f"p99 {np.percentile(lat, 99):.3f} ms)")
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +324,17 @@ def test_force_conversion():
     print(f"         100N -> torque: {t100.round(3)} Nm  "
           f"(magnitude ok: {torque_magnitude_ok})")
 
-    return passed
+    # Asserted individually rather than on the `passed` conjunction so a failure
+    # names which of the four conversions broke.
+    assert roundtrip_err < 1e-10, (
+        f"force -> torque -> force round-trip error {roundtrip_err:.2e} N")
+    assert ext_roundtrip_err < 1e-10, (
+        f"extension -> revs -> extension round-trip error "
+        f"{ext_roundtrip_err:.2e} mm")
+    assert radii_ok, f"spool radii outside 5-20 mm: {spool_radii.round(2)} mm"
+    assert torque_magnitude_ok, (
+        f"100 N leg force should map to 0.5-2.0 Nm motor torque, got "
+        f"{t100.round(3)} Nm")
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +351,6 @@ def test_mpc_enable():
     assert guard.mode == GuardMode.ENABLED
     assert not guard._has_mpc_cmd
     print("  [PASS] test_mpc_enable")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +377,6 @@ def test_mpc_command_flow():
         guard._mpc_base_pos_rev, expected_rev, atol=1e-6,
         err_msg="MPC extensions not correctly converted to motor revs")
     print("  [PASS] test_mpc_command_flow")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +403,6 @@ def test_mpc_staleness_estop():
     assert guard.mode == GuardMode.ESTOP
     assert 'mpc_cmd_stale' in (guard._fault_state or '')
     print("  [PASS] test_mpc_staleness_estop")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +426,6 @@ def test_disable_clears_state():
     assert guard.mode == GuardMode.DISABLED
     assert not guard._has_mpc_cmd
     print("  [PASS] test_disable_clears_state")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +446,6 @@ def test_workspace_hard_limit_estops():
     assert guard.mode == GuardMode.ESTOP
     assert 'workspace_hard_limit' in (guard._fault_state or '')
     print("  [PASS] test_workspace_hard_limit_estops")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +467,6 @@ def test_torque_passthrough():
     np.testing.assert_allclose(
         guard._mpc_base_torque_Nm, torque_Nm, atol=1e-10)
     print("  [PASS] test_torque_passthrough")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +485,6 @@ def test_zeros_when_no_feedforward():
 
     np.testing.assert_allclose(guard._mpc_base_torque_Nm, 0.0, atol=1e-10)
     print("  [PASS] test_zeros_when_no_feedforward")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -485,7 +505,6 @@ def test_no_feedback_suppresses():
     # No telemetry should be sent (feedback gate)
     assert len(ipc.sent_telemetry) == 0
     print("  [PASS] test_no_feedback_suppresses")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +529,6 @@ def test_stale_feedback_suppresses():
     # No telemetry should be sent (stale feedback gate)
     assert len(ipc.sent_telemetry) == 0
     print("  [PASS] test_stale_feedback_suppresses")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -536,7 +554,6 @@ def test_motor_overspeed():
     assert 'motor_overspeed' in (guard._fault_state or '')
     print(f"  [PASS] test_motor_overspeed  "
           f"(triggered at {vel_rps[3]:.1f} rev/s, limit {MAX_MOTOR_VEL_RPS:.1f})")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +583,6 @@ def test_max_deviation_estop():
     assert 'max_deviation' in (guard._fault_state or '')
     print(f"  [PASS] test_max_deviation_estop  "
           f"(limit {MAX_DEVIATION_REV} rev)")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +605,6 @@ def test_nan_rejection():
     assert not guard._has_mpc_cmd
     assert guard.mode == GuardMode.ENABLED  # no E-stop, just rejection
     print("  [PASS] test_nan_rejection")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +657,6 @@ def test_nan_feedback_rejection():
                                err_msg="Valid feedback rejected after NaN")
 
     print("  [PASS] test_nan_feedback_rejection")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +698,6 @@ def test_vel_ff_finite_difference():
         guard._mpc_base_vel_rps, expected_rps, atol=1e-6)
 
     print("  [PASS] test_vel_ff_finite_difference")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -717,7 +730,6 @@ def test_vel_ff_sender_preferred():
         err_msg="Guard should prefer sender-provided velocity")
 
     print("  [PASS] test_vel_ff_sender_preferred")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -750,7 +762,6 @@ def test_vel_ff_nan_sender_fallback():
         f"Expected positive vel from finite-diff fallback, got {guard._mpc_cmd_vel_mm_s}"
 
     print("  [PASS] test_vel_ff_nan_sender_fallback")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -774,7 +785,6 @@ def test_ipc_heartbeat_estop():
     assert guard.mode == GuardMode.ESTOP
     assert 'ipc_heartbeat' in (guard._fault_state or '')
     print("  [PASS] test_ipc_heartbeat_estop")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -807,7 +817,6 @@ def test_interpolation_output():
     np.testing.assert_allclose(telem['leg_torques'], torque_Nm, atol=1e-10)
 
     print("  [PASS] test_interpolation_output")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -850,7 +859,6 @@ def test_normal_interpolation_unchanged():
         err_msg="vel_ff should be unmodified within normal window")
 
     print("  [PASS] test_normal_interpolation_unchanged")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -888,7 +896,6 @@ def test_extrapolation_vel_decays():
         err_msg="vel_ff should be 50% at midpoint of decay window")
 
     print("  [PASS] test_extrapolation_vel_decays")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -943,7 +950,6 @@ def test_extrapolation_hold_after_decay():
         err_msg="Position should remain constant after full decay")
 
     print("  [PASS] test_extrapolation_hold_after_decay")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -995,7 +1001,6 @@ def test_extrapolation_bounded():
 
     print(f"  [PASS] test_extrapolation_bounded  "
           f"(bounded={actual_advance[0]:.3f} vs unbounded={unbounded_advance[0]:.3f} rev)")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1055,7 +1060,6 @@ def test_stroke_clamp():
          f"{guard._commanded_torque_ff_Nm}")
 
     print("  [PASS] test_stroke_clamp")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1087,7 +1091,6 @@ def test_enable_idempotent():
     np.testing.assert_array_equal(guard._mpc_prev_ext_mm, prev_ext)
 
     print("  [PASS] test_enable_idempotent")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1119,7 +1122,6 @@ def test_bridge_disable_enable_clears_state():
         "disable+enable must clear _mpc_prev_ext_mm"
 
     print("  [PASS] test_bridge_disable_enable_clears_state")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1171,7 +1173,6 @@ def test_stroke_clamp_workspace_status():
         f"Telemetry speed_scale should be 0.0, got {last_telem['workspace_speed_scale']}"
 
     print("  [PASS] test_stroke_clamp_workspace_status")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1241,7 +1242,6 @@ def test_cubic_interpolation_with_jerk():
         f"Cubic and quadratic should differ, but diff={diff}"
 
     print("  [PASS] test_cubic_interpolation_with_jerk")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1263,7 +1263,6 @@ def test_jerk_zero_on_first_command():
         err_msg="Jerk should be zero after first command")
 
     print("  [PASS] test_jerk_zero_on_first_command")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1309,7 +1308,6 @@ def test_jerk_reset_on_disable():
         "Prev accel should be None after disable+enable"
 
     print("  [PASS] test_jerk_reset_on_disable")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1374,7 +1372,6 @@ def test_decay_boundary_continuity():
         err_msg="Velocity discontinuity at decay boundary")
 
     print("  [PASS] test_decay_boundary_continuity")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1445,7 +1442,6 @@ def test_hermite_interpolation_with_cmd_next():
             f"Mid-segment pos[{i}] should be between endpoints"
 
     print("  [PASS] test_hermite_interpolation_with_cmd_next")
-    return True
 
 
 def test_hermite_no_overshoot():
@@ -1480,7 +1476,6 @@ def test_hermite_no_overshoot():
                 f"s={s:.2f}: pos[{i}] above p1"
 
     print("  [PASS] test_hermite_no_overshoot")
-    return True
 
 
 def test_hermite_late_mpc_clamps_at_endpoint():
@@ -1508,7 +1503,6 @@ def test_hermite_late_mpc_clamps_at_endpoint():
         err_msg="Late MPC: should clamp at cmd_next, not extrapolate past")
 
     print("  [PASS] test_hermite_late_mpc_clamps_at_endpoint")
-    return True
 
 
 def test_hermite_fallback_when_cmd_next_absent():
@@ -1532,7 +1526,6 @@ def test_hermite_fallback_when_cmd_next_absent():
         "Taylor extrapolation should advance position with nonzero velocity"
 
     print("  [PASS] test_hermite_fallback_when_cmd_next_absent")
-    return True
 
 
 def test_hermite_cmd_next_nan_rejected():
@@ -1552,7 +1545,6 @@ def test_hermite_cmd_next_nan_rejected():
         "NaN in cmd_next_mm should be rejected (fallback to extrapolation)"
 
     print("  [PASS] test_hermite_cmd_next_nan_rejected")
-    return True
 
 
 def test_hermite_cleared_on_disable():
@@ -1575,7 +1567,6 @@ def test_hermite_cleared_on_disable():
         "Disable should clear _mpc_next_pos_rev"
 
     print("  [PASS] test_hermite_cleared_on_disable")
-    return True
 
 
 def test_hermite_direction_reversal():
@@ -1623,7 +1614,6 @@ def test_hermite_direction_reversal():
         err_msg="Reversal: cmd_next should be latched at 142mm")
 
     print("  [PASS] test_hermite_direction_reversal")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1684,7 +1674,6 @@ def test_c1_continuity_across_segment_boundary():
         err_msg="Velocity discontinuity at segment boundary — C1 broken")
 
     print("  [PASS] test_c1_continuity_across_segment_boundary")
-    return True
 
 
 def test_c1_without_cmd_next2_falls_back_to_chord():
@@ -1719,7 +1708,6 @@ def test_c1_without_cmd_next2_falls_back_to_chord():
         err_msg="At s=1 without cmd_next2, v1 should equal chord velocity")
 
     print("  [PASS] test_c1_without_cmd_next2_falls_back_to_chord")
-    return True
 
 
 def test_c1_cmd_next2_nan_rejected():
@@ -1745,7 +1733,6 @@ def test_c1_cmd_next2_nan_rejected():
         "NaN in cmd_next2_mm → should be rejected"
 
     print("  [PASS] test_c1_cmd_next2_nan_rejected")
-    return True
 
 
 def test_c1_cmd_next2_ignored_without_cmd_next():
@@ -1770,7 +1757,6 @@ def test_c1_cmd_next2_ignored_without_cmd_next():
         "cmd_next2 without cmd_next should be ignored"
 
     print("  [PASS] test_c1_cmd_next2_ignored_without_cmd_next")
-    return True
 
 
 def test_c1_cleared_on_disable():
@@ -1792,7 +1778,6 @@ def test_c1_cleared_on_disable():
         "Disable should clear _mpc_next2_pos_rev"
 
     print("  [PASS] test_c1_cleared_on_disable")
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -2023,7 +2008,19 @@ def main():
     for name, test_fn in tests:
         print(f"\n{name}")
         try:
-            passed = test_fn()
+            # The tests assert rather than returning a verdict (pytest discards
+            # return values, so a returned bool was never actually checked under
+            # `pytest`). Reaching the next line without an exception IS the pass.
+            test_fn()
+            passed = True
+        except pytest.skip.Exception as e:
+            # pytest.skip raises Skipped, whose MRO is
+            # Skipped -> OutcomeException -> BaseException. It is NOT an
+            # Exception, so the arm below cannot catch it: without this,
+            # test_ipc_latency's missing-zmq skip would abort the whole script
+            # run at test 2 of 45 instead of skipping one test.
+            print(f"  [SKIP] {e}")
+            passed = True
         except Exception as e:
             print(f"  [FAIL] {e}")
             import traceback

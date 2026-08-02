@@ -655,7 +655,8 @@ def test_friction_ff_scratch_buffer_identity():
             f'violated')
 
 
-@pytest.mark.serial  # tracemalloc baseline is process-global — see pyproject.toml
+@pytest.mark.serial   # tracemalloc baseline is process-global — see pyproject.toml
+@pytest.mark.nightly  # characterization, not safety logic — see the nightly marker
 def test_friction_ff_no_steady_state_alloc():
     """In steady state ``_compute_friction_ff_Nm`` allocates ~zero ndarrays.
 

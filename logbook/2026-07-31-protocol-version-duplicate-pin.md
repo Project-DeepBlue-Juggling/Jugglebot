@@ -7,9 +7,6 @@ phase: "Developer workflow — test-suite hygiene"
 files_changed:
   - tests/teensy_link/test_protocol_codec.py
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
-# backfilled after the commit lands
-commits:
-  - PENDING
 subsystem:
   - controller
   - ros

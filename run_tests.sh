@@ -19,7 +19,12 @@
 # (dormant, Phase 3) MPC battery. Those still RUN — every night at 04:00 via
 # tools/nightly_suite.sh, and on demand with `--full`. The hardware-safety
 # surface (teensy_link wire bytes, firmware natives, ROS nodes, motion) is NEVER
-# demoted; it is per-commit.
+# demoted; it is per-commit. ONE carve-out (2026-08-01): three tests/motion/ tests
+# that MEASURE the machine rather than assert a contract — motor_guard's loop-jitter
+# and IPC-latency characterizations and the friction-FF allocation budget.
+# motor_guard's safety logic (E-stops, NaN rejection, workspace limits, staleness)
+# is unmarked and stays per-commit. Those three were the entire default serial
+# phase, so the gate's phase 2 is now empty by design — see the guard below.
 #
 # `--full` is MANDATORY before any hardware sitting and at plan-phase closure,
 # and pre-commit for any change under controller/ or sim/ (CLAUDE.md).
