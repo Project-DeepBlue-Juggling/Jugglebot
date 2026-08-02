@@ -105,9 +105,25 @@ fi
 
 mkdir -p "$JUNIT_DIR"
 
+# ROS env parity with interactive runs — REQUIRED, learned the hard way. The
+# tests/ros suite mocks rclpy but imports the pure-Python ROS packages
+# (diagnostic_msgs, ament_index_python, ...) for real, off the PYTHONPATH that
+# every interactive shell gets from sourcing ROS + the workspace. The first
+# nightly (2026-08-02 04:03) ran under cron's bare env and went RED with 297
+# ModuleNotFoundError failures that no interactive run can reproduce. Source
+# the same overlays interactive shells use; ROS setup scripts reference unset
+# vars, so relax nounset around them.
+set +u
+# shellcheck disable=SC1091
+[[ -f /opt/ros/foxy/setup.bash ]] && source /opt/ros/foxy/setup.bash
+# shellcheck disable=SC1091
+[[ -f "$REPO_ROOT/ros_ws/install/setup.bash" ]] && source "$REPO_ROOT/ros_ws/install/setup.bash"
+set -u
+
 # The venv, not the system python (3.8.10, no mujoco/hypothesis/casadi). Sourcing
 # activate rather than calling the venv python directly so run_tests.sh's own
 # subprocesses (config codegen, the native g++ pre-build) see the same env.
+# AFTER the ROS overlays, so the venv python stays first on PATH.
 if [[ -f "$VENV_DIR/bin/activate" ]]; then
   # shellcheck disable=SC1091
   source "$VENV_DIR/bin/activate"
