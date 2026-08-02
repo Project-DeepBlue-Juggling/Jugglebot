@@ -173,7 +173,7 @@ be **invariant under base tilt**.
 
 | Phase | Scope | Gate | Status |
 |-------|-------|------|--------|
-| 1 | Contract amendment (doc-first) + pure map core (`motion/tilt_map.py`, `levelling.py` extension) + stale-cite fix | `./run_tests.sh` + `/audit` (normative doc) | pending |
+| 1 | Contract amendment (doc-first) + pure map core (`motion/tilt_map.py`, `levelling.py` extension) + stale-cite fix | `./run_tests.sh` + `/audit` (normative doc) | **done** (2026-08-02) |
 | 2 | `trajectory_node` integration: loader, reload service, status fields, ingest keying, structural-test manifest | `./run_tests.sh --full` | pending |
 | 3 | Acquisition tool + offline analyser + session runbook | `./run_tests.sh --full` (pre-sitting) | pending |
 | 4 | Hardware sittings C0–C3 (operator) | per-rung PASS/ABORT | pending |
@@ -200,8 +200,9 @@ residual).
 Also in this phase (docs hygiene): fix the stale
 `teensy_bridge_node.py:1430` citation in
 `tests/hardware/session_phase8_toss_hardware.md:81` (actual: decode
-`:348–372`, publish `:1747–1755`) — flagged independently by every scan
-scout.
+`:349-372`, publish `:1747-1755`) — flagged independently by every scan
+scout. (Line 348 is the comment above the namedtuple; the spec's original
+`:348–372` was off by one and is corrected here to match what shipped.)
 
 Tests (`tests/motion/test_tilt_map.py`, extend `test_levelling.py`): bilinear
 exactness at nodes and midpoints, hull clamping on all four edges + corners,
@@ -211,6 +212,75 @@ identity property.
 
 Gate: `./run_tests.sh`; `/audit --unstaged` before commit (normative doc
 touched). Logbook entry (short form unless a trigger fires).
+
+#### Phase 1 — Outcome (2026-08-02)
+
+**Done as specified.** `ros_ws/docs/levelling_frame.md` carries **C-LEVEL-2**
+(composes with C-LEVEL-1, never replaces it) with every clause the phase asked
+for, plus an Enforcement-table row set naming the three halves. New pure
+`motion/tilt_map.py`: `TiltMapError`, `TiltMap`, `parse_tilt_map`,
+`load_tilt_map`, `lookup`, `map_version`. One new entry point,
+`levelling.correction_for_pose(offset, tilt_map, pose)` — bit-identical to
+`correction_from_offset` when `tilt_map is None`, so non-gating degradation is a
+property of the function, not of a caller's `if`. No existing signature or
+behaviour changed, so the `tests/ros/test_levelling_frame.py` manifests are
+untouched (Phase 2's ingest rewiring is what adds rows there). The stale
+`teensy_bridge_node.py:1430` citation in
+`tests/hardware/session_phase8_toss_hardware.md:81` is fixed to the sites
+verified at HEAD: decode `:349-372`, publish `:1747-1755`.
+
+Two additions beyond the letter of the phase, both additive and reported:
+`TiltMap.z_mm` (capture height carried through as provenance — Phase 3's
+analyser and the runbook both want it; never keyed on), and `lookup` **raising**
+on a non-finite query rather than propagating NaN into the commanded rotation.
+Phase 2's loader/ingest must therefore treat `TiltMapError` from `lookup` the
+same way it treats a rejected map: degrade to offset-only and log, never crash a
+callback. One **substitution**: the `correction_for_pose` tests live in
+`test_tilt_map.py` rather than extending `test_levelling.py`, so the entry
+point's tests sit beside the map they consume; `test_levelling.py` is unchanged.
+
+**What the independent audit changed before commit** (findings taken, not
+argued down):
+
+- **The `< 1e-4 rad` bound was false at its own stated limit.** The draft said
+  "below 1e-4 rad for sub-degree tilts" and pinned it with a *single* point 7×
+  inside the bound. The exact second-order term is `|level_offset × residual|/2`
+  (probe `/tmp/probe_tilt_bound.py`, 2026-08-02, matches the measured matrix
+  difference to 5 s.f.): **7.19e-5 rad** at the measured envelope (0.78185° ×
+  0.604°, holds) but **1.523e-4 rad** at 1° × 1°, and **1.25e-3 rad** at what
+  `MAX_ABS_RESIDUAL_RAD` alone permits. The contract now carries a regime table
+  instead of a bare number, and the test sweeps the azimuth ring at both
+  magnitudes (the error is a cross product, so a fixed direction measures
+  whatever the author happened to pick).
+- **`map_version` churned on provenance.** It hashed the whole `grid` block,
+  including `z_mm` and `orientation` — contradicting all three documents that
+  described it. It now hashes `version` + the two axes + the residual grids,
+  **float-normalised**, so YAML's `170` vs `170.0` cannot churn a version that
+  the Phase-3 tool re-emits every run.
+- **`TiltMap` leaked its invariants.** A hand-built map with a 1-node axis raised
+  `ZeroDivisionError` — a type no caller is told to expect — and
+  `parse_tilt_map` froze arrays it did not own (`np.asarray` returns the caller's
+  object). `__post_init__` now copies, freezes and validates, so the invariant
+  travels with the type whatever route builds it.
+- **The stale-citation fix was half-done.** `tests/hardware/session_anomaly_fixes.md:93`
+  carried the identical `teensy_bridge_node.py:1430` citation for the identical
+  claim; fixed in the same commit, and `grep` for that string now returns only
+  descriptions *of* the fix.
+
+**Phase 2 must widen the structural guard's vocabulary.**
+`tests/ros/test_levelling_frame.py:243` defines
+`_APPLY_FUNCS = {'levelling.correct_pose', 'levelling.apply_gravity_correction'}`
+and `test_every_application_sits_in_a_declared_ingest_handler` forces any other
+callee to be declared `'store'`. `correction_for_pose` is neither: `'store'`
+means *once per `/gravity_offset` message*, and this is *once per external
+pose*. Declaring it `'store'` would be the cheap fix and would silently retire
+the distinction the guard exists to hold. Add a third kind (e.g.
+`'build:E3+E4'`) and teach the assertion about it.
+
+**Verification** — `pytest tests/motion/ tests/ros/test_levelling_frame.py -q`
+(run 2026-08-02): **967 passed in 281.08 s**; `./run_tests.sh --full` (run
+2026-08-02, post-audit-fix tree): **parallel 4501 passed + 3 xfailed in
+451.44 s, serial 9 passed in 40.00 s, total 497 s — RESULT: PASS**.
 
 ### Phase 2 — trajectory_node integration
 

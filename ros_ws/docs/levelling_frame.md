@@ -1,10 +1,18 @@
-# The Levelling Frame — contract C-LEVEL-1
+# The Levelling Frame — contracts C-LEVEL-1 and C-LEVEL-2
 
 **Normative.** This document specifies where the gravity-levelling correction is
 applied and — just as importantly — where it must **not** be. It is the written
 half of the repo's contract pattern (normative statement + one shared
 implementation + a test that fails on the omission); the other two halves are
 `jugglebot/motion/levelling.py` and `tests/ros/test_levelling_frame.py`.
+
+**C-LEVEL-1** (the single measured offset) is the whole of the machine's
+levelling behaviour until a calibration map exists. **C-LEVEL-2** adds a
+*pose-dependent residual* on top of it and is a strict refinement: it changes
+what number the correction is built from, never where or how often the
+correction is applied. Everything C-LEVEL-1 says about placement, enumeration,
+the in-flight rule and the mirror bug applies unchanged. Read C-LEVEL-1 first;
+C-LEVEL-2 is meaningless on its own.
 
 Scope: the ROS 2 package `ros_ws/src/jugglebot/`. Neither `sim/` nor
 `controller/` has any gravity-levelling concept — grepped 2026-07-25, the only
@@ -349,12 +357,254 @@ the can-bridge Teensy before every sitting — so it is False at every launch an
 the persisted auto-push never fires first. **In practice every session genuinely
 needs a manual `level`.**
 
+## C-LEVEL-2 — the pose-dependent residual map
+
+> The gravity-levelling correction may be built from the single measured offset
+> **plus a pose-dependent residual** read from a calibrated (x, y) map. The
+> residual is **added to the offset in rotation-vector space** and passed
+> through the **same single Rodrigues** as C-LEVEL-1, at the **same enumerated
+> ingest sites**, **exactly once per external pose**, keyed on the
+> **uncorrected intent pose**. Outside the calibrated hull the lookup **clamps**
+> — it never extrapolates and never yields NaN. The map is **non-gating**:
+> absent or rejected, behaviour degrades to *exactly* C-LEVEL-1.
+
+### What the map is, and what a residual means
+
+`level` measures the platform's tilt against gravity at **one** pose (the
+firmware ACTIVATE pose) and applies that offset at **every** pose. Any
+pose-dependent kinematic error — geometry, compliance, assembly — is invisible
+to it by construction. Measured on 2026-07-28 (`logbook/2026-07-28-anomaly-fixes-validation-sitting.md`,
+the extremity-tilt table): commanded-level platform tilt error grows from
+**0.041° at (60, 0) to 0.604° at (150, −150)**, is **not** linear in (x, y), and
+repeats to 0.001–0.014° — 15–40× smaller than the effect. At 41.9 mm/° of
+landing displacement (0.6 m toss) against a ~30–40 mm cup basin, the corner of
+the workspace is already the "occasional drop" regime.
+
+A **residual** is what `level` cannot see. At grid node *i*, with a **fresh**
+`level` correction loaded and **no map loaded**, the platform is commanded to
+the *level orientation* at `(xᵢ, yᵢ, z_grid)`, allowed to settle, and the
+inclinometer read N times:
+
+    residual_i = mean(raw_reading) + radians(inclinometer_offset_deg)
+
+— the exact `LevellingHandler` formula, so a residual is dimensionally and
+sign-wise the same object as the `/gravity_offset` the single-offset path
+already carries. **At the home node the residual is ≈ 0 by construction**: it is
+the pose `level` itself measured. The acquisition tool asserts that; a
+home-node residual that is *not* ≈ 0 means the level reference is stale and the
+capture is aborted rather than baked in.
+
+### Composition — additive in the rotation vector, one Rodrigues
+
+    combined = level_offset + bilinear(map, intent_xy)
+    R        = correction_from_offset(combined)          # the C-LEVEL-1 Rodrigues
+
+The two tilts are **summed as rotation vectors**, not composed as two rotations.
+The exact alternative — `R(map) @ R(level)` — differs at second order only, and
+the second-order term is exactly
+
+    |level_offset × residual| / 2
+
+(probe, 2026-08-02: the closed form matches the measured matrix difference to 5
+significant figures across the whole regime). **State the regime with the
+number, because the bound is not universal**:
+
+| Regime | Worst-case error | Verdict |
+|---|---|---|
+| the measured envelope — 0.78185° level offset × 0.604° residual, orthogonal | **7.19e-5 rad** | holds, 28% margin |
+| 1° × 1° orthogonal — the corner of "sub-degree" | **1.523e-4 rad** | **exceeds 1e-4** |
+| 0.0136 rad offset × the `MAX_ABS_RESIDUAL_RAD` 0.05 rad ceiling | **3.40e-4 rad** | 3.4× over |
+| 0.05 × 0.05 rad — what validation alone permits | **1.25e-3 rad** | 12.5× over |
+
+So: the error stays under 1e-4 rad while the *product* of the two magnitudes
+stays under 2e-4 rad² (both axes below **0.810°** if they are equal), which the
+measured machine satisfies with margin — 7.19e-5 rad is 0.0041°, i.e. 0.17 mm at
+the 41.9 mm/° conversion, against a 0.04–0.6° signal. It does **not** hold
+merely because a map passed validation, and the earlier draft of this section
+claimed "< 1e-4 rad for sub-degree tilts" flatly, which is false at 1° × 1°.
+`tests/motion/test_tilt_map.py::test_additive_composition_second_order_bound_over_the_regime`
+sweeps the regime rather than sampling one point inside it, and pins **both**
+the measured-envelope figure and the 1.523e-4 sub-degree worst case — because a
+numeric claim in a normative document that no test measures is a claim that
+rots, and a test that measures one lucky point is the same claim wearing a
+lab coat.
+
+**If a future capture ever runs at a tilted base with a large `level` offset**
+(rung C2 shims the base by 1–2°), re-read that table before assuming the
+additive form is still free: at 2° × 1° the term is 3.0e-4 rad. It is still
+small against the signal, but it is no longer three orders below it, and the
+honest fix at that point is matrix composition, not a wider adjective.
+
+Additive composition is preferred for a reason beyond arithmetic: it keeps the
+number of rotations composed onto a commanded pose at **exactly one**. The
+C-LEVEL-1 module docstring's warning — that the composition is non-commutative
+and a re-derived copy in the wrong order is a *silent* frame error — applies to
+every rotation added to that chain. One Rodrigues has no order to get wrong.
+
+### Keying — the uncorrected intent pose
+
+The lookup keys on `pose[0:2]` of the pose **as it entered the node**, before
+this correction rewrites its rotation. Keying on the *corrected* pose would make
+the lookup depend on its own output and invite a fixed-point iteration; the
+intent pose makes it a single evaluation with a closed form. Position is never
+touched by the correction (C-LEVEL-1, rotation-only), so the intent pose's x/y
+*are* the commanded x/y — the two only diverge under a tilted base, and by
+`sin(tilt)·displacement` (≈5 mm at 2° over 150 mm), which is an accepted and
+documented limitation of the whole rotation-only design, not of the keying.
+
+The rotation components never key the lookup. The map is captured at the level
+orientation and applied additively at **all** commanded orientations (8b
+tilt-aims to 5.75°, reload receive tilt 10.8°). Orientation-dependence of the
+residual is **unmeasured** — rung C0 of `plans/active/tilt-calibration-grid.md`
+sizes it with one tilted-pose probe; a tilt axis would be a follow-on sweep, not
+a licence to key on rotation.
+
+### Evaluation happens at ingest, per target — a per-knot lookup is FORBIDDEN
+
+> The map is evaluated **once per external pose, at the ingest sites C-LEVEL-1
+> enumerates**. Evaluating it per emitted knot, per interpolated sample, or
+> anywhere downstream of `feasibility.validate` is a contract violation.
+
+The idea is superficially attractive — a moving platform passes through the
+field, so "correct continuously" sounds strictly better. It is disqualified
+three times over, and each disqualifier is independently sufficient:
+
+1. **It desyncs the wire's own derivatives.** The 500 Hz leg interpolator on the
+   can-bridge Teensy (`Teensy_code_canbridge/leg_interp.cpp`) is a cubic Hermite
+   over `u0/u1/u2` and the **declared** velocities. Rewriting positions per knot
+   without rewriting the declared velocities they were derived from makes the
+   position ladder and its declared derivative describe different motions —
+   the interpolator then smooths between two inconsistent stories at 500 Hz, on
+   the safety-authority side of the link.
+2. **It escapes the feasibility gate.** `feasibility.validate` measures the plan
+   at build time. A correction applied after that measures one object and ships
+   another — the exact failure C-LEVEL-1 § "Placement" already refuses for the
+   emitter-side variant. The gate's entire value is that **plan == emitted ==
+   gated**.
+3. **It is invisible whether it is right or wrong.** The per-knot delta is a
+   fraction of the whole-move excursion C-LEVEL-1 measured at 0.03908 rev — far
+   below the pump's `MAX_POSITION_STEP_REV = 0.3` step gate and the firmware's
+   `MAX_DEVIATION_REV = 1.0` guard (`Teensy_code_canbridge/hardware_config.h`,
+   `canbridge_config.h`). A correct per-knot lookup and a buggy one produce the
+   same telemetry signature: nothing. Debugging it would mean reasoning about a
+   quantity no guard can see.
+
+The physical cost of *not* doing it is bounded and small: residual transit error
+is `map-gradient × move length`, and it is **exactly zero at the terminal hold**
+— which is where both throws and calibration reads happen. Throws leave from a
+stationary hold; nothing is thrown mid-transit.
+
+### Outside the calibrated hull — clamp, never extrapolate
+
+A query beyond the grid is clamped into `[x₀, x_N] × [y₀, y_M]` and then
+interpolated, so it returns the nearest hull point's residual. Extrapolation is
+refused because a wrong-signed edge extrapolation aims a throw **worse than no
+map at all**, and the grid's edge is precisely where the field is least linear
+(the 07-28 table refutes a 2-gain fit). NaN is refused for the same reason it is
+refused on `/gravity_offset`: it would be negated straight into the commanded
+rotation and surface only downstream, after a goal has claimed the platform. A
+non-finite *query* raises rather than propagating.
+
+### Load validation — all-or-nothing, and loud
+
+A map is loaded only if **every** one of these holds:
+
+| Check | Why it is not optional |
+|---|---|
+| schema `version` is a known integer (`1`) | a future version may change what the numbers *mean*; best-effort parsing of an unknown schema is a silent frame error |
+| both axes strictly increasing, ≥ 2 nodes | a repeated node is a zero-width cell (divide-by-zero in the weights); a single-node axis is a constant offset masquerading as a map |
+| `residual_rad.tx` / `.ty` shaped `[len(y_mm)][len(x_mm)]` | catches the transposed grid, which is invisible on a square/symmetric capture |
+| every node finite | a failed capture node must be resolved by the tool, never shipped as NaN |
+| every `|residual| ≤ 0.05 rad` (≈2.87°) | the measured signal is 0.04–0.6°; beyond ~2.9° it is a capture fault — stale level reference, a leg pinned on its stroke clamp, a units error |
+
+Any failure ⇒ **the map is not loaded**, `tilt_map_loaded` stays false, and the
+reason is logged at ERROR. There is deliberately no partial load, no per-node
+repair and no zero-fill: a half-trusted map is indistinguishable at the machine
+from a correct one until a ball misses. An **absent** file is different from an
+invalid one — absence is silent (soft absence, non-gating); invalidity is loud.
+
+### Observability, and why it is not a gate
+
+> `TrajectoryStatus.tilt_map_loaded` (bool) and `.tilt_map_version` (string) are
+> the applier's own answer to "is a calibration applied, and which one", on the
+> same 5 Hz status as `gravity_correction_loaded`.
+
+`tilt_map_version` is `"<captured.date>-<sha256(content)[:8]>"`, hashed over the
+**applied content only** (`version` + `grid` + `residual_rad`) and not over the
+capture provenance: two files with identical numbers apply the same calibration
+and must report the same version, while an edit to a single node must change it.
+
+**Nothing gates on either field.** `toss_sequencer._step_checking` is unchanged
+— `REJECTED_NOT_LEVELLED` keys on `gravity_correction_loaded` and only on that.
+This is deliberate and is the one thing most likely to be "improved" by a future
+reader: the map is a **refinement**, and refusing to throw without it would trade
+a bounded aim error (0.6° worst-case corner, ≈25 mm at the 0.6 m toss) for a
+machine that cannot juggle at all until a calibration exists. C-LEVEL-1's gate
+asks whether the machine knows *where gravity is*; C-LEVEL-2 asks how precisely
+— a different question, and not a precondition for throwing.
+
+*(Fields land in Phase 2 of `plans/active/tilt-calibration-grid.md`; this
+contract defines them, and the Phase-1 core they observe already exists.)*
+
+### The in-flight rule is inherited, not restated
+
+A live plan keeps the frame it was built in. A map that is loaded — or reloaded
+via `trajectory/reload_tilt_map` — while a plan is executing does **not**
+re-frame that plan; the next plan install picks it up. This is not a second
+policy: it is C-LEVEL-1's in-flight rule, unchanged, and it holds for the same
+structural reason (the correction is baked into the plan's endpoint at build
+time, and nothing re-reads the stored `R` for an installed plan). The
+alternative would step `u0` on the next 25 ms knot by the full map delta —
+which is disqualifier 3 above, arriving by a different door.
+
+### Capture preconditions — a residual is defined relative to a reference
+
+A capture run is only meaningful under all four of these, and the acquisition
+tool refuses to start otherwise:
+
+1. **A fresh `level` immediately before the capture.** Residuals are *defined*
+   relative to that reference. The Teensy-persisted offset truncates at
+   1 mrad/axis (worst case 0.081° combined), so a stale reference rides under
+   every node as an unmodelled constant.
+2. **No map loaded during the capture.** A map loaded while capturing bakes
+   itself into its own successor — the double-application class, arriving
+   through the data rather than the code.
+3. **Hand quiescent.** Tilt reads block the Platform Teensy loop that streams
+   hand moves.
+4. **A freshly rebooted can-bridge Teensy, with `uptime_ms` logged first and
+   last.** Tracking lag grows with bridge uptime (10 ms fresh → ~240 ms at 30 h),
+   and a settle-then-read capture is exactly the kind of measurement that would
+   silently absorb it.
+
+### The map artifact
+
+`config/tilt_calibration.yaml` — **committed, machine-written**, schema v1:
+`version`; a `captured` block (ISO date, git SHA, tool + args, can-bridge
+`uptime_ms` first/last, the `level_offset_rad` loaded at capture, base-condition
+free text); a `grid` block (`z_mm`, `orientation: level`, `x_mm[]`, `y_mm[]`); a
+`residual_rad` block (`tx[iy][ix]`, `ty[iy][ix]`); and an advisory `stats` block
+(per-node sd, `n_reads`, `failed_nodes`). Committed because it is a *measurement
+of this machine* — the same class of artefact as the friction-FF constants — and
+machine-written because hand-editing a calibration is how a plausible-looking
+wrong number gets in. The full schema is reproduced in
+`jugglebot/motion/tilt_map.py`'s module docstring, which is the parser's own
+statement of it.
+
+### Revival obligations (no code today)
+
+| # | Surface | Obligation before it may ship |
+|---|---|---|
+| B1 | `mpc_bridge_node._on_platform_pose` | Dropped from the launch and dormant (`plans/active/refactor-2026-07.md` Phase 3). It holds a **second** copy of the C-LEVEL-1 application and today lacks even the offset validation `_on_gravity_offset` does. Reviving the MPC chain **must** give it the map and the same all-or-nothing validation, or the two pose paths will disagree about where level is — the original C-LEVEL-1 bug, re-created between nodes instead of within one. |
+
 ## Enforcement
 
 | Part | Where |
 |---|---|
 | normative statement | this document |
 | shared implementation | `ros_ws/src/jugglebot/jugglebot/motion/levelling.py` |
+| C-LEVEL-2 — map parse / validate / bilinear lookup | `ros_ws/src/jugglebot/jugglebot/motion/tilt_map.py` |
+| C-LEVEL-2 — the single application entry point | `levelling.correction_for_pose(offset, tilt_map, pose)` |
+| C-LEVEL-2 — tests (interpolation, hull clamp, every rejection, additive-composition bound) | `tests/motion/test_tilt_map.py` |
 | unit tests (sign, order, round-trip, pinned example) | `tests/motion/test_levelling.py` |
 | structural + behavioural bypass test | `tests/ros/test_levelling_frame.py` |
 | C-LEVEL-1.O — the applier's affirmation | `trajectory_node._publish_status` → `TrajectoryStatus.gravity_correction_loaded` |

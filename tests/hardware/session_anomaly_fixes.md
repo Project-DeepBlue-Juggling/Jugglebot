@@ -90,7 +90,8 @@ row can just say "standing rules apply".
    The correction inside `trajectory_node` **is** per-process, but it is normally
    **restored automatically on ROS2 boot**. `RobotState` carries both
    `levelling_complete` **and** `pose_offset_rad` from the **Platform** Teensy
-   (`teensy_bridge_node.py:1430`); the orchestrator stores both
+   (decoded `teensy_bridge_node.py:349-372`, published `:1747-1755`); the
+   orchestrator stores both
    (`orchestrator_node.py:165-167`) and pushes the persisted offset to
    `/gravity_offset` on the first IDLE entry after boot (`:329-335`). Standing
    rule 1's power-cycle is the **can-bridge** Teensy, which does **not** clear the

@@ -78,7 +78,8 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
   `trajectory_node` holds a gravity correction, and that correction is
   **per-process**. But it is normally **restored automatically on ROS2 boot**:
   `RobotState` carries both `levelling_complete` **and** `pose_offset_rad` from the
-  **Platform** Teensy (`teensy_bridge_node.py:1430`), the orchestrator stores them
+  **Platform** Teensy (decoded `teensy_bridge_node.py:349-372`, published
+  `:1747-1755`), the orchestrator stores them
   (`orchestrator_node.py:165-167`), and on the first IDLE entry after boot it pushes
   the persisted offset to `/gravity_offset` (`:329-335`). The standing session
   power-cycle is the **can-bridge** Teensy, which does **not** clear the Platform
