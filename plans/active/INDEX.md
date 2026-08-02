@@ -25,6 +25,7 @@ and the test fails (that is the point — it catches stale rows).
 | [refactor-2026-07.md](refactor-2026-07.md) | active | 2026-08-02 | 2026-07 refactor programme. Landed 2026-07-31/2026-08-01: Phases 0–3 (dead-weight sweep, process rules, nightly tier, MPC dormancy), 5 (partial — config drift gate), 6 slices 1–2 (analysis safety nets, structure cleanups), 7a (ERR_TIMEOUT recount). Phase 4 (teensy_link → repo root) landed, hardware smoke **CONFIRMED 2026-08-01 23:17** (LEVELLING end-to-end). 2026-08-02: Phase 7 attribution instrumentation SOFTWARE DONE (tx_deferred/BRIDGE_TX_DIAG/BRIDGE_IDENTITY, FW9 unflashed; sequence analysis = random, state bug excluded). Remaining: Phase 5 items 1/3, Phase 6 later slices, Phase 7 hardware half (flash, bench discriminator, reload sitting) + 971d12c |
 | [single-ball-toss.md](single-ball-toss.md) | active | 2026-07-29 | Single-ball self-toss capability and its follow-on programme |
 | [teensy-can-offload.md](teensy-can-offload.md) | active | 2026-07-31 | can_node → Teensy CAN offload; re-scoped to a can_node↔Teensy parity audit |
+| [tilt-calibration-grid.md](tilt-calibration-grid.md) | active | 2026-08-02 | Pose-dependent gravity-level reference: inclinometer grid capture → residual tilt map, layered on C-LEVEL-1 |
 
 ## Orchestration prompts
 
