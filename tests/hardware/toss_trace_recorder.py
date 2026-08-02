@@ -1922,9 +1922,17 @@ def cmd_record(args: argparse.Namespace) -> int:
                 if self.uptime_first is None:
                     self.uptime_first = uptime
                 self.uptime_last = uptime
+            # Whitelist, not the whole kv dict — /link_status carries ~38 keys at
+            # 10 Hz and a toss trace only needs the ones a post-session read
+            # actually joins against. can3_errors and hand_traj_acks are the two
+            # CAN3/hand instruments: both are cumulative, so a trace that brackets
+            # a sitting yields the per-sitting delta by subtraction. Without them
+            # a trace can show a stroke that never landed and say nothing about
+            # whether the bridge refused the arm or the ack was simply lost.
             keep = {k: kv[k] for k in
                     ('uptime_ms', 'mpc_active', 'teensy_mpc_active',
-                     'time_synced', 'bus1_health', 'bus2_health') if k in kv}
+                     'time_synced', 'bus1_health', 'bus2_health',
+                     'can3_errors', 'hand_traj_acks') if k in kv}
             return {'uptime_ms': uptime, 'level': int(msg.level.hex(), 16)
                     if isinstance(msg.level, bytes) else int(msg.level),
                     'message': str(msg.message), 'kv': keep}

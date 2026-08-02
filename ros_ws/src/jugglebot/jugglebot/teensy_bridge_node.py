@@ -92,6 +92,7 @@ from teensy_link import (
     TimeOfDayServer,
     RpcMethod,
     RpcError,
+    RpcTimeout,
     MsgType,
     LinkState,
     BusHealth,
@@ -597,6 +598,30 @@ class TeensyBridgeNode(Node):
         # audit 2026-06-29 MEDIUM). This guard keeps at most one re-read in flight
         # (the recovery edge is one-shot). See _read_cold_start_state_conservative_async.
         self._cold_start_reread_inflight = False
+
+        # ── HAND_TRAJ_CMD ack accounting (host-side, no wire change) ──
+        # 20d01e9 (2026-07-24) demoted catch_coordinator's arm-ack failure from
+        # warning to debug because it was an expected epidemic (30/51 = 59 % that
+        # session, while every attempt eventually armed). That was the right call
+        # for log noise and the wrong one for forensics: at the default log level
+        # the error code is now dropped entirely, so every rosbag recorded since
+        # carries NO evidence the arm ack ever failed — and a bag is what survives
+        # a sitting, ~/.ros/log is not. These three counters put the numbers back,
+        # in every bag, against the CURRENT bridge (no firmware change).
+        #
+        # They also split the one distinction the message text cannot: a
+        # Teensy-RETURNED status (the firmware ran hand_ops and refused) from a
+        # HOST-SYNTHESISED RpcTimeout (no response arrived at all). RpcTimeout
+        # subclasses RpcError and carries ERR_TIMEOUT, so BOTH render
+        # 'HAND_TRAJ_CMD: ERR_TIMEOUT' — that pooling is exactly what the
+        # 2026-08-01 recount had to unpick by hand.
+        #
+        # Plain ints, no lock: written on the service-callback thread, read by the
+        # 10 Hz link_status timer. A torn increment costs one count on a forensic
+        # instrument; a lock on the RPC path is not worth that.
+        self._hand_traj_calls = 0
+        self._hand_traj_fail_teensy = 0
+        self._hand_traj_fail_host = 0
 
         # ── Heartbeat: ALWAYS mpc_active=0 at startup ──────────
         # flags=0 ⇒ mpc_active clear. set_heartbeat_flags(0) AFTER start_heartbeat
@@ -1999,6 +2024,35 @@ class TeensyBridgeNode(Node):
                 f'txctx={int(ce.err_tx_ctx)} rxctx={int(ce.err_rx_ctx)} '
                 f'gated={int(ce.tx_gated)}')
 
+    def _hand_traj_acks_str(self) -> str:
+        """``/link_status`` rendering of the HAND_TRAJ_CMD ack tally.
+
+        An instrument, like ``can3_errors``: read by differencing two captures
+        (or by dividing fail by calls over one sitting), not by looking at a
+        single value. It exists because 20d01e9 demoted the arm-ack failure to
+        DEBUG, which removed the error code from every rosbag recorded since —
+        see the counter init in ``__init__`` for the full argument.
+
+        ``fail_teensy`` vs ``fail_host`` is the load-bearing split. The bridge
+        answering with a non-OK status means the firmware ran ``hand_ops`` and
+        one of its three CAN sends was refused; nothing coming back at all means
+        the RPC request or its response was lost on the UDP link. Both render as
+        ``HAND_TRAJ_CMD: ERR_TIMEOUT`` in the log, which is precisely why the
+        2026-08-01 recount had to separate them by hand.
+
+        Total by construction — three int reads and integer arithmetic, no
+        parsing, no attribute chase. A renderer that raises takes the WHOLE
+        ``/link_status`` message down with it, not just its own row. There is no
+        never-seen sentinel because the counters exist from construction: before
+        the first hand command the honest reading is ``calls=0``, and zero calls
+        is not the same claim as zero failures out of many.
+        """
+        calls = self._hand_traj_calls
+        fail_teensy = self._hand_traj_fail_teensy
+        fail_host = self._hand_traj_fail_host
+        return (f'calls={calls} ok={calls - fail_teensy - fail_host} '
+                f'fail_teensy={fail_teensy} fail_host={fail_host}')
+
     # ═══════════════════════════════════════════════════════════
     # Setpoint downlink (Commit 3) — gated, default disabled
     # ═══════════════════════════════════════════════════════════
@@ -2706,6 +2760,14 @@ class TeensyBridgeNode(Node):
                 # vanishing, so a missing row never reads as a clean bus.
                 KeyValue(key='can3_errors',
                          value=self._can3_errors_str()),
+                # Hand-arm ack tally (host-side; works against ANY bridge, no
+                # firmware support needed). 20d01e9 demoted the arm-ack failure
+                # to DEBUG, so since 2026-07-24 a sitting's bag has carried no
+                # trace of it — and the bag is what survives the session. Split
+                # fail_teensy (the bridge answered and refused) from fail_host
+                # (nothing came back) because the log text pools them.
+                KeyValue(key='hand_traj_acks',
+                         value=self._hand_traj_acks_str()),
                 KeyValue(key='setpoints_sent',
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',
@@ -2870,12 +2932,36 @@ class TeensyBridgeNode(Node):
         Blocks on the calling thread until the response arrives (decoded on the
         RX thread) or the timeout × retries budget expires. RpcError/RpcTimeout
         are caught and reported as (False, message).
+
+        This is the single choke point every outbound RPC passes through, which
+        is why the HAND_TRAJ_CMD ack tally lives here rather than in
+        ``teensy_hand_traj_cmd`` (two service handlers reach that method) or in
+        ``catch_coordinator_node`` (which publishes no ``/link_status``).
         """
+        hand_traj = int(method) == int(RpcMethod.HAND_TRAJ_CMD)
+        if hand_traj:
+            # HAND_TRAJ_CMD is in NON_IDEMPOTENT_METHODS (teensy_link/rpc.py),
+            # so retries is forced to 0: one counted call is exactly one wire
+            # attempt and one counted failure is exactly one failed wire attempt,
+            # with no silent re-dispatch underneath inflating either number.
+            self._hand_traj_calls += 1
         try:
             result = self._rpc.call(int(method), args,
                                     timeout=timeout, retries=retries)
             return True, 'OK', result
         except RpcError as e:
+            if hand_traj:
+                # RpcTimeout subclasses RpcError and carries ERR_TIMEOUT, so both
+                # branches render the identical 'HAND_TRAJ_CMD: ERR_TIMEOUT'
+                # string — isinstance is the ONLY discriminator between "the
+                # bridge answered and refused" (fail_teensy: hand_ops ran, a
+                # can_jugglebot_send returned false) and "nothing came back at
+                # all" (fail_host: the request or the response was lost). Those
+                # two point at completely different halves of the system.
+                if isinstance(e, RpcTimeout):
+                    self._hand_traj_fail_host += 1
+                else:
+                    self._hand_traj_fail_teensy += 1
             return False, self._annotate_rpc_error(str(e)), b""
 
     def _annotate_rpc_error(self, message: str) -> str:
