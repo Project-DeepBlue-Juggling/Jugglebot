@@ -16,6 +16,25 @@ package_name = 'jugglebot'
 # (or via the JUGGLEBOT_HW_CONFIG override — see friction_ff_params.py).
 _HW_CONFIG_YAML = os.path.join('..', '..', '..', 'config', 'hardware_config.yaml')
 
+# The machine-written tilt calibration map (contract C-LEVEL-2,
+# ros_ws/docs/levelling_frame.md), installed into the same share/config dir so
+# trajectory_node's loader has an ament fallback when it runs from the install
+# tree.  CONDITIONAL because this file does not exist until an operator has run
+# the Phase-3 acquisition tool: an ament data_files entry naming a missing
+# source is a hard `colcon build` failure, which would make a fresh clone
+# unbuildable over a calibration that is optional by contract (an absent map is
+# a silent, non-gating state).
+#
+# NOTE the loader resolves SOURCE TREE FIRST and this share copy only as a
+# fallback — the exact inverse of hardware_config.yaml above, because the
+# acquisition tool rewrites the source file at runtime and reloads it live.  So
+# this row exists for the detached/install-tree case, and a stale copy of it can
+# never shadow a fresh capture.  See motion/tilt_map.py's module docstring.
+_TILT_CAL_YAML = os.path.join('..', '..', '..', 'config', 'tilt_calibration.yaml')
+_CONFIG_YAMLS = [_HW_CONFIG_YAML]
+if os.path.exists(_TILT_CAL_YAML):
+    _CONFIG_YAMLS.append(_TILT_CAL_YAML)
+
 setup(
     name=package_name,
     version='1.0.0',
@@ -32,7 +51,7 @@ setup(
         ('share/' + package_name + '/srv', glob('srv/*.srv')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'resources'), glob('resources/*')),
-        (os.path.join('share', package_name, 'config'), [_HW_CONFIG_YAML]),
+        (os.path.join('share', package_name, 'config'), _CONFIG_YAMLS),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

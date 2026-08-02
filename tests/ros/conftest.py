@@ -18,6 +18,7 @@ Injection is two-tier:
   import them.
 """
 
+import os
 import struct
 import sys
 import types
@@ -228,6 +229,12 @@ class TrajectoryStatus:
     # default too, and the fail-closed reading for the toss's
     # REJECTED_NOT_LEVELLED gate.
     gravity_correction_loaded: bool = False
+    # C-LEVEL-2 observability (ros_ws/docs/levelling_frame.md). Defaults mirror
+    # the real message again: no map loaded, and NO version string for a map
+    # that is not being applied. Nothing gates on either — the tilt map is a
+    # refinement, so a consumer that refuses to act without one is a bug.
+    tilt_map_loaded: bool = False
+    tilt_map_version: str = ''
 
 
 # ── jugglebot_interfaces DynamicTargetCommand / TargetFeedback (Phase 5) ──
@@ -1120,6 +1127,38 @@ _create_mock_module('rclpy.qos', {
 # ════════════════════════════════════════════════════════════════
 
 import pytest  # noqa: E402 — must come after mock injection
+
+# A path that cannot exist, used to pin the C-LEVEL-2 tilt-map loader OFF.
+_NO_TILT_CAL = os.path.join(
+    os.sep, 'nonexistent', 'jugglebot-tests', 'tilt_calibration.yaml')
+
+
+@pytest.fixture(autouse=True)
+def no_tilt_calibration(monkeypatch):
+    """Every `tests/ros` node starts with NO tilt calibration map loaded.
+
+    `trajectory_node` loads `config/tilt_calibration.yaml` in `__init__`
+    (contract C-LEVEL-2, `ros_ws/docs/levelling_frame.md`), resolving the repo
+    **source tree** before the ament share dir. That file does not exist today —
+    but Phase 4 of `plans/active/tilt-calibration-grid.md` commits a real,
+    machine-written one. Without this fixture, the day that capture lands every
+    TrajectoryNode built in this directory would silently start applying a
+    hardware calibration, and every test that pins an exact corrected rotvec
+    (`test_levelling_frame.py::_expected_rotvec` and its whole E-row family)
+    would fail with a diff of a few thousandths of a radian and no obvious cause.
+
+    Worse than the noise is what it would mean: the suite's answers would depend
+    on whether this particular machine had been calibrated, so the same commit
+    would pass on one checkout and fail on another. A unit test must not read the
+    robot's measurements. Tests that WANT a map set `$JUGGLEBOT_TILT_CAL`
+    themselves (the env override is authoritative, so pointing it at a real file
+    wins) — see `test_trajectory_tilt_map.py`.
+    """
+    # Read the env-var NAME from the module under test, never a literal: a rename
+    # would otherwise leave this fixture green while it pins nothing at all, and
+    # the failure it exists to prevent returns with no test naming it.
+    from jugglebot.motion.tilt_map import TILT_MAP_ENV
+    monkeypatch.setenv(TILT_MAP_ENV, _NO_TILT_CAL)
 
 
 @pytest.fixture

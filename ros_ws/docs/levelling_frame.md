@@ -530,9 +530,15 @@ invalid one — absence is silent (soft absence, non-gating); invalidity is loud
 > same 5 Hz status as `gravity_correction_loaded`.
 
 `tilt_map_version` is `"<captured.date>-<sha256(content)[:8]>"`, hashed over the
-**applied content only** (`version` + `grid` + `residual_rad`) and not over the
-capture provenance: two files with identical numbers apply the same calibration
-and must report the same version, while an edit to a single node must change it.
+**applied numbers only** — the schema `version`, both grid **axes**, and the two
+`residual_rad` grids, float-normalised — and not over the capture provenance:
+two files with identical numbers apply the same calibration and must report the
+same version, while an edit to a single node must change it. `grid.z_mm` and
+`grid.orientation` live inside the `grid` block but are **provenance and are
+excluded**, so two captures differing only in height report the same version;
+read `TiltMap.z_mm` if you need to tell them apart. (An earlier draft of this
+section said "`version` + `grid` + `residual_rad`", which was the pre-Phase-1
+behaviour and was fixed in code before it shipped.)
 
 **Nothing gates on either field.** `toss_sequencer._step_checking` is unchanged
 — `REJECTED_NOT_LEVELLED` keys on `gravity_correction_loaded` and only on that.
@@ -543,8 +549,58 @@ machine that cannot juggle at all until a calibration exists. C-LEVEL-1's gate
 asks whether the machine knows *where gravity is*; C-LEVEL-2 asks how precisely
 — a different question, and not a precondition for throwing.
 
-*(Fields land in Phase 2 of `plans/active/tilt-calibration-grid.md`; this
-contract defines them, and the Phase-1 core they observe already exists.)*
+`tilt_map_version` is `''` whenever no map is loaded, so the pair can never
+report a version for a calibration that is not being applied.
+
+### Delivery — the loader, and why its resolution order is inverted
+
+> The map is loaded from `config/tilt_calibration.yaml`, resolved
+> `$JUGGLEBOT_TILT_CAL` → **repo source tree** → ament share dir, at node
+> construction and on `trajectory/reload_tilt_map`.
+
+That order is the **inverse** of `motion/friction_ff_params.py`'s, deliberately.
+The friction constants are hand-tuned into a committed YAML and a `colcon build`
+is their natural publish step, so share-first is right there. The tilt map is
+*machine-written at runtime by the acquisition tool, which then asks the running
+node to reload it* — share-first would serve the previous build's stale
+calibration until the next `colcon build`, silently, with `tilt_map_loaded` true
+and a plausible-looking version. That is the exact trap `friction_ff_params.py`
+documents in its own docstring, and the capture workflow would walk into it every
+run.
+
+**The env override is authoritative: when `$JUGGLEBOT_TILT_CAL` is set it is the
+only candidate**, existing or not. Falling through would apply *a different
+calibration than the operator named* while reporting success — strictly worse
+than applying none, because C-LEVEL-2 is non-gating and applying none costs only
+precision.
+
+Three load outcomes, and the middle one is a design decision, not a default:
+
+| Outcome | Map | `tilt_map_loaded` | Service `success` | Log |
+|---|---|---|---|---|
+| valid file | swapped in (single reference) | true | true | INFO with version + grid shape |
+| **no file** | **unloaded** | false | **true** | INFO (never had one) / WARN (dropped a live one) |
+| invalid file | **previous kept** | unchanged | false | ERROR naming the failed check |
+
+*No file ⇒ unload, and the call succeeds.* Reload's contract is "make this node's
+map agree with the file", and absence is a legitimate non-gating state. It is
+also load-bearing for the acquisition tool, whose `--force-uninstall` moves the
+file aside and reloads precisely to reach `tilt_map_loaded == false` before a
+capture — capturing with a map loaded bakes the map into its own successor.
+Keeping a stale in-memory map there would defeat the capture preconditions
+silently, in the one workflow that most needs them.
+
+### The ingest degrade path — a lookup that raises must not kill a callback
+
+`tilt_map.lookup` **raises** on a non-finite query rather than returning NaN. A
+non-finite intent pose is an upstream defect, and before C-LEVEL-2 it flowed
+through the rotation-only correction untouched and was refused downstream by
+`feasibility.validate`. The map must not convert that into a dead ROS callback:
+each ingest catches `TiltMapError`, applies the **offset-only** C-LEVEL-1
+correction to that pose, and warns **once per loaded map** (the fault is a
+property of the client, so per-pose logging would bury everything else at the
+full ingest rate). Non-gating is a property of the code path, not of an
+operator's discipline.
 
 ### The in-flight rule is inherited, not restated
 
@@ -604,7 +660,11 @@ statement of it.
 | shared implementation | `ros_ws/src/jugglebot/jugglebot/motion/levelling.py` |
 | C-LEVEL-2 — map parse / validate / bilinear lookup | `ros_ws/src/jugglebot/jugglebot/motion/tilt_map.py` |
 | C-LEVEL-2 — the single application entry point | `levelling.correction_for_pose(offset, tilt_map, pose)` |
+| C-LEVEL-2 — path resolution | `tilt_map.resolve_tilt_map_path` / `tilt_map.tilt_map_candidates` (pure; the node holds no path policy) |
+| C-LEVEL-2 — load / reload / degrade | `trajectory_node._load_tilt_map`, `._svc_reload_tilt_map` (`trajectory/reload_tilt_map`, `std_srvs/Trigger`), `._tilt_map_degraded` |
+| C-LEVEL-2 — the applier's affirmation | `trajectory_node._publish_status` → `TrajectoryStatus.tilt_map_loaded` / `.tilt_map_version` |
 | C-LEVEL-2 — tests (interpolation, hull clamp, every rejection, additive-composition bound) | `tests/motion/test_tilt_map.py` |
+| C-LEVEL-2 — tests (loader, reload, status, per-pose keying, one composition, in-flight, degrade) | `tests/ros/test_trajectory_tilt_map.py` |
 | unit tests (sign, order, round-trip, pinned example) | `tests/motion/test_levelling.py` |
 | structural + behavioural bypass test | `tests/ros/test_levelling_frame.py` |
 | C-LEVEL-1.O — the applier's affirmation | `trajectory_node._publish_status` → `TrajectoryStatus.gravity_correction_loaded` |
@@ -619,6 +679,26 @@ per-entry manifests match frozen data carrying each entry's `E`/`D`
 classification. A new planner entry, a new pose-bearing argument on an existing
 entry, a planner entry in a new module, or a `levelling` application in a new
 function all fail until the author adds a row and *declares* the classification.
+
+Its `levelling` manifest carries **three kinds**, and C-LEVEL-2 is why there are
+three rather than two:
+
+* `store` — once per `/gravity_offset` **message** (`correction_from_offset`,
+  `identity_correction`).
+* `build:` — once per external **pose**, at ingest (`correction_for_pose`). It
+  reads the residual map at that pose's uncorrected x/y, so unlike a `store` it
+  cannot be hoisted to the offset callback.
+* `apply:` — once per external pose, at ingest (`correct_pose`,
+  `apply_gravity_correction`).
+
+Declaring `correction_for_pose` a `store` would have been the one-word fix and
+would have retired the per-message vs per-pose distinction the manifest exists to
+hold: a build hoisted to the offset callback compiles, passes every behavioural
+test that exercises one pose, and applies the *home node's* residual to the whole
+workspace. `test_every_apply_has_a_build_in_the_same_scope` closes the mirror of
+that — an ingest that applies the correction without building it for its pose is
+a working C-LEVEL-1 application that silently ignores the calibration map, and
+the only declared exception is B1 below.
 
 Two call forms the guard depends on, and pins for that reason. Both manifests key
 on the **dotted source name** (`planner.build_*`, `levelling.*`), and the
@@ -656,10 +736,17 @@ the manifest and the grep counts. Deleting archived code is a separate concern.
    request, a wire target, the neutral constant), or was it derived from
    measurement or from an existing plan? If you cannot answer that in one
    sentence, you have found a design problem, not a paperwork problem.
-2. `E` ⇒ apply `levelling.correct_pose(pose, self._gravity_correction)` **once**,
-   at ingest, before the pose reaches any planner entry. `D` ⇒ apply nothing.
-3. Add the row to the manifest in `tests/ros/test_levelling_frame.py` with its
-   classification, and add the row to the E-table above if it is external.
+2. `E` ⇒ **build** the correction for that pose with
+   `levelling.correction_for_pose(self._gravity_offset, self._tilt_map, pose)`
+   and **apply** it with `levelling.correct_pose(pose, correction)` — **once**,
+   at ingest, before the pose reaches any planner entry. Build *and* apply:
+   passing the stored `self._gravity_correction` instead is a working C-LEVEL-1
+   application that silently ignores the calibration map. Catch `TiltMapError`
+   and fall back to the stored correction — never let a lookup kill a callback.
+   `D` ⇒ apply nothing.
+3. Add **both** rows to the manifest in `tests/ros/test_levelling_frame.py`
+   (`build:` and `apply:`) with its classification, and add the row to the
+   E-table above if it is external.
 4. Never apply the correction to a linear velocity or a position. `twist` on
    `TimedTarget` and `target_vel` on `DynamicTargetCommand` are externally
    supplied and are deliberately **not** corrected: the correction is a bias on

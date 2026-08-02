@@ -477,6 +477,12 @@
 - **clients:** _none_
 - **type:** `std_srvs.srv.Trigger`
 
+### `trajectory/reload_tilt_map`
+
+- **servers:** `trajectory_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
 ### `trajectory/reseed_from_measured`
 
 - **servers:** `trajectory_node`
@@ -565,6 +571,7 @@ broken wire cannot hide among them.
 - `set_motor_vel_curr_limits` — topic with no publishers
 - `trajectory/diagnostics` — topic with no subscribers
 - `trajectory/hold` — service with no clients
+- `trajectory/reload_tilt_map` — service with no clients
 - `trajectory/set_limits` — service with no clients
 - `trajectory/timed_target` — service with no clients
 

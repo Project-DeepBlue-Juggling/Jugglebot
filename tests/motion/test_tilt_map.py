@@ -18,6 +18,7 @@ Two deliberate choices in the fixtures, both load-bearing:
 from __future__ import annotations
 
 import copy
+import os
 import math
 
 import numpy as np
@@ -529,6 +530,116 @@ def test_load_error_names_the_path(tmp_path):
     path.write_text(yaml.safe_dump({'version': 7}))
     with pytest.raises(tilt_map.TiltMapError, match='bad.yaml'):
         tilt_map.load_tilt_map(str(path))
+
+
+# ── path resolution ──────────────────────────────────────────────
+#
+# Pure, so it is tested here rather than through the node. What it answers is
+# "WHICH file", and getting that wrong applies a real calibration that is simply
+# not the one the operator meant — a failure with a green status line.
+
+
+def test_env_override_wins_and_is_the_only_candidate(tmp_path):
+    """The override is AUTHORITATIVE — it does not fall through when missing.
+
+    Falling through would apply a *different* calibration than the operator
+    named while reporting `tilt_map_loaded=True` and a plausible version. Since
+    C-LEVEL-2 is non-gating, loading nothing costs only precision, and loading
+    the wrong map costs a mis-aimed throw. So a typo degrades to offset-only.
+    """
+    real = tmp_path / 'tilt_calibration.yaml'
+    real.write_text(yaml.safe_dump(_doc()))
+    env = {tilt_map.TILT_MAP_ENV: str(real)}
+    assert tilt_map.tilt_map_candidates(env) == (str(real),)
+    assert tilt_map.resolve_tilt_map_path(env) == str(real)
+
+    typo = {tilt_map.TILT_MAP_ENV: str(tmp_path / 'tpyo.yaml')}
+    assert tilt_map.tilt_map_candidates(typo) == (str(tmp_path / 'tpyo.yaml'),)
+    assert tilt_map.resolve_tilt_map_path(typo) is None
+
+
+def test_source_tree_is_tried_before_the_ament_share_dir():
+    """The inversion of `friction_ff_params.py`'s order, pinned.
+
+    The acquisition tool rewrites the SOURCE file at runtime and reloads it live;
+    share-first would serve the previous `colcon build`'s copy — stale, silent,
+    and reported as loaded.
+
+    The `isdir` assertion is the load-bearing one and is NOT decoration: an
+    earlier draft of this resolver used a fixed five-level `__file__` walk, which
+    from the colcon install tree lands on `ros_ws/install/jugglebot` — so
+    candidate 0 was `install/jugglebot/config/tilt_calibration.yaml`, a path
+    nothing ever creates (`setup.py` installs into `share/jugglebot/config/`).
+    Every assertion about ORDER still passed while the source-tree candidate was
+    incapable of existing in production and the share copy always won.
+    """
+    candidates = tilt_map.tilt_map_candidates({})
+    assert candidates, 'there must always be at least the source-tree candidate'
+    assert candidates[0] == tilt_map._SRC_TILT_YAML
+    assert os.path.isdir(os.path.dirname(candidates[0])), (
+        f'candidate 0 must name a REAL config dir, not a path that can never '
+        f'exist: {candidates[0]}')
+    shares = [i for i, c in enumerate(candidates)
+              if os.sep + 'share' + os.sep in c]
+    assert all(i > 0 for i in shares), (
+        f'the ament share copy must never precede the source tree: {candidates}')
+
+
+def test_repo_root_is_found_from_an_install_tree_copy(tmp_path):
+    """`colcon` COPIES the package, so resolution must survive relocation.
+
+    From `ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/motion/`
+    a fixed five-level walk yields `ros_ws/install/jugglebot`, whose `config/`
+    directory is never created by anything. The consequence is not a crash but a
+    silent downgrade: the source-tree candidate can never exist, so every load in
+    production resolves the build-time share copy, and the acquisition tool's
+    write-then-reload cycle re-applies the PREVIOUS build's calibration while
+    reporting `tilt_map_loaded=true` with a plausible version string. Searching
+    for the repo-root marker instead makes the answer independent of how deep the
+    package was installed.
+    """
+    repo = tmp_path / 'Jugglebot'
+    (repo / 'config').mkdir(parents=True)
+    (repo / 'config' / 'hardware_config.yaml').write_text('friction_ff: {}\n')
+
+    installed = (repo / 'ros_ws' / 'install' / 'jugglebot' / 'lib'
+                 / 'python3.8' / 'site-packages' / 'jugglebot' / 'motion')
+    installed.mkdir(parents=True)
+    assert tilt_map._find_repo_root(str(installed / 'tilt_map.py')) == str(repo)
+
+    source = repo / 'ros_ws' / 'src' / 'jugglebot' / 'jugglebot' / 'motion'
+    source.mkdir(parents=True)
+    assert tilt_map._find_repo_root(str(source / 'tilt_map.py')) == str(repo)
+
+    # The fixed five-level walk the search replaced, shown failing from the
+    # install tree — so this test cannot pass by the two trees coinciding.
+    fixed = os.path.normpath(
+        os.path.join(str(installed), *(['..'] * 5)))
+    assert fixed != str(repo)
+    assert not os.path.isdir(os.path.join(fixed, 'config'))
+
+
+def test_a_deployment_outside_the_repo_has_no_source_candidate(tmp_path):
+    """No repo root ⇒ no source-tree candidate, and no bogus one either.
+
+    A genuinely detached deployment must fall through to the ament share copy
+    (which IS the right answer there) rather than offering a fabricated path that
+    can never exist, and `$JUGGLEBOT_TILT_CAL` remains the escape hatch.
+    """
+    stray = tmp_path / 'opt' / 'jugglebot' / 'motion'
+    stray.mkdir(parents=True)
+    assert tilt_map._find_repo_root(str(stray / 'tilt_map.py')) is None
+
+
+def test_an_absent_map_resolves_to_none_rather_than_raising(tmp_path):
+    """`friction_ff_params` fail-fasts with FileNotFoundError; this must not.
+
+    Its YAML is a hard runtime dependency. This one is a refinement, and
+    C-LEVEL-2 makes an absent map a silent, non-gating state — raising here
+    would turn "uncalibrated" into "cannot start".
+    """
+    assert tilt_map.resolve_tilt_map_path(
+        {tilt_map.TILT_MAP_ENV: str(tmp_path / 'absent.yaml')}) is None
 
 
 # ── levelling.correction_for_pose — the C-LEVEL-2 entry point ────

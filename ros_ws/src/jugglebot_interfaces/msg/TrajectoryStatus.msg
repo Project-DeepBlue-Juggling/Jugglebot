@@ -24,3 +24,19 @@ bool gravity_correction_loaded    # True once a /gravity_offset message has been
                                   # "a correction is loaded", NOT "the correction is
                                   # non-identity" — a genuinely level machine
                                   # publishes a zero offset and must not be refused.
+
+bool tilt_map_loaded              # True iff a pose-dependent residual tilt map is
+                                  # loaded AND applied (contract C-LEVEL-2,
+                                  # ros_ws/docs/levelling_frame.md). Refinement,
+                                  # never a gate: an absent map is silent and an
+                                  # invalid one is refused whole, and neither
+                                  # blocks a throw — REJECTED_NOT_LEVELLED keys on
+                                  # gravity_correction_loaded and only on that.
+string tilt_map_version           # "<captured.date>-<sha256(content)[:8]>" of the
+                                  # loaded map, hashed over the APPLIED numbers
+                                  # only (schema version + both grid axes + the
+                                  # residual grids), so two files with identical
+                                  # calibration report the same string and an edit
+                                  # to one node changes it. '' when no map is
+                                  # loaded — never a version for a map that is not
+                                  # being applied.

@@ -102,6 +102,7 @@ from jugglebot.motion.ik_solver import (
 )
 from jugglebot.motion.ipc import MpcCommandPub
 from jugglebot.motion import levelling
+from jugglebot.motion import tilt_map
 from jugglebot.motion.trajectory import (
     HoldPlan,
     KnotEmitter,
@@ -350,6 +351,36 @@ class TrajectoryNode(Node):
         # status timer — a plain bool is GIL-atomic across that split (the
         # _guard_frozen pattern above).
         self._gravity_correction_loaded = False
+        # The RAW measured offset behind that matrix, [tilt_x, tilt_y] rad.
+        # C-LEVEL-2 composes `level_offset + map residual` in ROTATION-VECTOR
+        # space and passes the sum through ONE Rodrigues, so the ingest sites
+        # need the offset itself, not the pre-built matrix. Both are stored: the
+        # matrix above stays the C-LEVEL-1 answer and is what the map-degrade
+        # path falls back to, so no ingest ever has to rebuild it under a fault.
+        # Written and read on the executor thread only, always as a pair with
+        # the matrix above (see _on_gravity_offset).
+        self._gravity_offset = (0.0, 0.0)
+
+        # ── C-LEVEL-2: the pose-dependent residual tilt map ──────
+        # `None` = no calibration loaded ⇒ behaviour is EXACTLY C-LEVEL-1. The
+        # map is a refinement and never a gate: an absent file is silent, an
+        # invalid one is loud, and neither blocks a session (the toss's
+        # REJECTED_NOT_LEVELLED still keys on _gravity_correction_loaded alone).
+        # Single-reference swap discipline, exactly as _on_gravity_offset does
+        # for the correction: a load or a trajectory/reload_tilt_map rebinds
+        # this name in one assignment, so an ingest in flight either sees the
+        # whole old map or the whole new one. TiltMap freezes its own arrays
+        # read-only, so a shared reference cannot be mutated underneath a reader.
+        self._tilt_map = None
+        self._tilt_map_loaded = False
+        self._tilt_map_version = ''
+        self._tilt_map_path = ''
+        # WARN-once latch for the ingest degrade path (a non-finite intent pose
+        # makes the lookup raise). Reset on every load/reload so a fresh map gets
+        # a fresh warning; without it a NaN-emitting client would log at the full
+        # ingest rate. See _tilt_map_degraded.
+        self._tilt_map_degrade_logged = False
+        self._load_tilt_map()
 
         # ── Plan + streaming state (written on ROS + emitter threads) ──
         self._plan_lock = threading.Lock()
@@ -504,6 +535,12 @@ class TrajectoryNode(Node):
         # encoder and the subsequent clear cannot re-latch MAX_DEVIATION.
         self.create_service(Trigger, 'trajectory/reseed_from_measured',
                             self._svc_reseed_from_measured)
+        # C-LEVEL-2: re-read config/tilt_calibration.yaml. std_srvs/Trigger, so
+        # this service costs no jugglebot_interfaces rebuild of its own (the
+        # TrajectoryStatus fields already force one). The Phase-3 acquisition
+        # tool calls it after writing the map — that call IS the auto-apply.
+        self.create_service(Trigger, 'trajectory/reload_tilt_map',
+                            self._svc_reload_tilt_map)
 
         # ── Status + diagnostics publication (5 Hz) ─────────────
         self.status_pub = self.create_publisher(
@@ -1370,10 +1407,16 @@ class TrajectoryNode(Node):
         # C-LEVEL-1 ingest E1: a wire target is EXTERNAL, so the levelling
         # correction is applied here, exactly once, before the pose reaches the
         # follower. The emitter thread therefore reads a fully-corrected target.
-        target = levelling.correct_pose(
-            np.array([float(p.x), float(p.y), float(p.z),
-                      rotvec[0], rotvec[1], rotvec[2]]),
-            self._gravity_correction)
+        # C-LEVEL-2: the correction is built FOR THIS POSE — the map residual is
+        # read at the UNCORRECTED intent x/y, once, here.
+        intent = np.array([float(p.x), float(p.y), float(p.z),
+                           rotvec[0], rotvec[1], rotvec[2]])
+        try:
+            correction = levelling.correction_for_pose(
+                self._gravity_offset, self._tilt_map, intent)
+        except tilt_map.TiltMapError as exc:
+            correction = self._tilt_map_degraded('E1 platform_pose', exc)
+        target = levelling.correct_pose(intent, correction)
         # Atomic single-reference publish (pose, timestamp) — no lock needed; the
         # emitter reads whichever tuple is current.
         self._follower_target = (target, time.perf_counter())
@@ -1411,11 +1454,161 @@ class TrajectoryNode(Node):
                 f"gravity correction IGNORED — non-finite offset "
                 f"[{tilt_x}, {tilt_y}]; this node still holds no correction")
             return
+        # C-LEVEL-2 keeps this validation and this flag EXACTLY as they were —
+        # the map changes what number the correction is built from, never
+        # whether a correction is loaded. The raw offset is stored alongside the
+        # matrix because the ingest sites compose `offset + map residual` before
+        # the single Rodrigues; the matrix stays the offset-only answer.
+        self._gravity_offset = (tilt_x, tilt_y)
         self._gravity_correction = levelling.correction_from_offset(
             tilt_x, tilt_y)
         self._gravity_correction_loaded = True
         self.get_logger().info(
             f"gravity correction set: tilt=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
+
+    # ── C-LEVEL-2: tilt-map load / reload / degrade ─────────────
+
+    def _load_tilt_map(self) -> tuple[bool, str]:
+        """Resolve and load ``config/tilt_calibration.yaml``. Returns (ok, message).
+
+        **Never raises** — it runs in ``__init__`` and in a service callback, and
+        C-LEVEL-2 is non-gating: no state of the calibration file may stop the
+        node coming up or take down a callback.
+
+        Three outcomes, and the middle one is the design decision worth reading:
+
+        * **Loaded** — every validation in ``tilt_map.parse_tilt_map`` passed.
+          The map, its version and its path are swapped in as single reference
+          assignments (the ``_on_gravity_offset`` pattern: values first, the
+          observable flag last) and ``ok`` is True.
+        * **No file** — *the map is UNLOADED and ``ok`` is True.* Reload's
+          contract is "make this node's map agree with the file", and absence is
+          a legitimate, non-gating state (C-LEVEL-2: absence silent, invalidity
+          loud). It is also load-bearing for the Phase-3 acquisition tool, whose
+          ``--force-uninstall`` moves the file aside and reloads precisely to
+          reach ``tilt_map_loaded == false`` before a capture — a capture run
+          with a map loaded bakes the map into its own successor. Keeping a
+          stale in-memory map after the operator deliberately removed the file
+          would defeat that, silently, in the one workflow that most needs it.
+          Dropping a live map is logged at WARN; never having had one, at INFO.
+        * **Invalid** — the previous map is **kept**, ``tilt_map_loaded`` is
+          unchanged, ``ok`` is False and the reason is logged at ERROR. All or
+          nothing: there is no partial load and no per-node repair, because a
+          half-trusted map is indistinguishable at the machine from a correct
+          one until a ball misses.
+        """
+        candidates = tilt_map.tilt_map_candidates()
+        path = tilt_map.resolve_tilt_map_path()
+
+        if path is None:
+            had_map = self._tilt_map is not None
+            previous = self._tilt_map_version
+            self._tilt_map = None
+            self._tilt_map_version = ''
+            self._tilt_map_path = ''
+            self._tilt_map_degrade_logged = False
+            self._tilt_map_loaded = False
+            # `candidates` can hold one, two or three paths (the source tree is
+            # absent for a deployment outside the repo, the ament share dir for
+            # an unsourced overlay), so never index it — and say so plainly if
+            # it is empty rather than logging a dangling "tried: ".
+            message = ("no tilt calibration map found (tried: "
+                       + ('; '.join(candidates) if candidates
+                          else '<no candidate paths — set $'
+                               + tilt_map.TILT_MAP_ENV + '>')
+                       + ") — commanded poses use the single gravity offset "
+                         "only (C-LEVEL-1)")
+            if had_map:
+                message = (f"tilt calibration file is gone — map {previous} "
+                           f"UNLOADED. " + message)
+                self.get_logger().warning(message)
+            else:
+                self.get_logger().info(message)
+            return True, message
+
+        try:
+            loaded = tilt_map.load_tilt_map(path)
+        except tilt_map.TiltMapError as exc:
+            kept = self._tilt_map_version if self._tilt_map is not None else 'none'
+            message = (f"tilt calibration REJECTED (nothing loaded from this "
+                       f"file): {exc} — still applying map [{kept}]")
+            self.get_logger().error(message)
+            return False, message
+        except Exception as exc:
+            # load_tilt_map's contract is that every failure is a TiltMapError,
+            # so this is a defect rather than a bad file — but it arrives on a
+            # callback (or in __init__) where raising would take the node down
+            # over a *refinement*. Report it as a rejection and keep running.
+            kept = self._tilt_map_version if self._tilt_map is not None else 'none'
+            message = (f"tilt calibration loader FAILED unexpectedly on {path}: "
+                       f"{type(exc).__name__}: {exc} — still applying map "
+                       f"[{kept}]")
+            self.get_logger().error(message)
+            return False, message
+
+        n_y, n_x = loaded.shape
+        self._tilt_map = loaded
+        self._tilt_map_version = str(loaded.version)
+        self._tilt_map_path = str(path)
+        self._tilt_map_degrade_logged = False
+        self._tilt_map_loaded = True
+        message = (f"tilt calibration loaded: version={loaded.version} "
+                   f"grid={n_x}x{n_y} z_mm={loaded.z_mm} from {path}")
+        self.get_logger().info(message)
+        return True, message
+
+    def _svc_reload_tilt_map(self, request, response):
+        """``trajectory/reload_tilt_map`` (``std_srvs/Trigger``).
+
+        ``std_srvs/Trigger`` deliberately, so adding this service needs no
+        ``jugglebot_interfaces`` rebuild — the observability *fields* already
+        force one, and a second forced rebuild buys nothing.
+
+        The Phase-3 acquisition tool calls this after writing the map file, so
+        the response message carries the loaded ``tilt_map_version`` (and the
+        grid shape) for the tool's readback. C-LEVEL-2's in-flight rule is
+        inherited for free and is NOT re-stated in code: the correction is baked
+        into a plan's endpoint at build time and nothing re-reads it, so a reload
+        during an executing plan cannot re-frame it — the next install picks the
+        new map up.
+        """
+        ok, message = self._load_tilt_map()
+        response.success = bool(ok)
+        response.message = message
+        return response
+
+    def _tilt_map_degraded(self, where: str, exc) -> np.ndarray:
+        """A map lookup raised at ingest — degrade this pose to offset-only.
+
+        Returns the stored C-LEVEL-1 correction, which is exactly what the
+        machine would command with no map at all. ``tilt_map.lookup`` raises on
+        a **non-finite query**, i.e. an intent pose whose x or y is NaN/inf —
+        an upstream defect that the map refuses to launder into the commanded
+        rotation. Before C-LEVEL-2 such a pose flowed through the correction
+        untouched (it rewrites rotation only) and was rejected downstream by
+        ``feasibility.validate``; degrading here preserves that exactly, instead
+        of converting a downstream rejection into a dead callback.
+
+        WARN once per loaded map, not per pose: the fault is a property of the
+        client, so a NaN-emitting one would otherwise log at the full ingest
+        rate and bury everything else (the 4091-ERROR-lines-in-41 s failure mode
+        the seed gate already exists to prevent).
+
+        Each ingest site keeps its own ``try``/``except`` around
+        ``levelling.correction_for_pose`` rather than delegating the whole build
+        to a helper here, deliberately: ``tests/ros/test_levelling_frame.py``'s
+        structural manifest keys on (scope, dotted callee), so a per-site call is
+        what makes *dropping the map at one of the six ingests* a manifest
+        failure. Only the policy — which correction to fall back to, and how
+        loudly — is centralised.
+        """
+        if not self._tilt_map_degrade_logged:
+            self._tilt_map_degrade_logged = True
+            self.get_logger().warning(
+                f"tilt map lookup failed at {where}: {exc} — this pose uses the "
+                f"gravity offset only (C-LEVEL-1). Further failures against map "
+                f"[{self._tilt_map_version}] are silent.")
+        return self._gravity_correction
 
     def _corrected_neutral_pose(self) -> np.ndarray:
         """The neutral active pose as a TARGET, in the levelled frame (C-LEVEL-1).
@@ -1432,9 +1625,17 @@ class TrajectoryNode(Node):
         the ``_last_pose`` initialiser — both **seeds**, which C-LEVEL-1 forbids
         correcting — and a response-string format that reads the *position*
         component. None of them may use this.
+
+        C-LEVEL-2: the map is keyed on the neutral constant's own ``(x, y)``
+        (0, 0 — the home node, where the residual is ≈ 0 by construction), not
+        on wherever the platform currently is. The neutral IS the target here.
         """
-        return levelling.correct_pose(self._neutral_pose,
-                                      self._gravity_correction)
+        try:
+            correction = levelling.correction_for_pose(
+                self._gravity_offset, self._tilt_map, self._neutral_pose)
+        except tilt_map.TiltMapError as exc:
+            correction = self._tilt_map_degraded('E5/E6 neutral', exc)
+        return levelling.correct_pose(self._neutral_pose, correction)
 
     def _follower_tick(self, now: float) -> bool:
         """One follower replan for wall time ``now``. Returns True iff a new plan
@@ -1797,15 +1998,24 @@ class TrajectoryNode(Node):
         external service that reuses it is corrected by construction, and the
         omission — not double-application — is the failure this contract closes
         (four of the six ingest surfaces were uncorrected before 2026-07-25).
+
+        C-LEVEL-2: the map residual is read at this request's **own** x/y — a
+        displaced ``go_to_pose`` gets the residual of where it is going, not of
+        where the platform is holding.
         """
         p = pose_msg.position
         q = pose_msg.orientation
         rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
         rotvec = rot_matrix_to_rotvec(rot)
-        return levelling.correct_pose(
-            np.array([float(p.x), float(p.y), float(p.z),
-                      float(rotvec[0]), float(rotvec[1]), float(rotvec[2])]),
-            self._gravity_correction)
+        intent = np.array(
+            [float(p.x), float(p.y), float(p.z),
+             float(rotvec[0]), float(rotvec[1]), float(rotvec[2])])
+        try:
+            correction = levelling.correction_for_pose(
+                self._gravity_offset, self._tilt_map, intent)
+        except tilt_map.TiltMapError as exc:
+            correction = self._tilt_map_degraded('E3/E4 request pose', exc)
+        return levelling.correct_pose(intent, correction)
 
     def _svc_go_to_pose(self, request, response):
         """``trajectory/go_to_pose``: a profiled point-to-point move (TRAJECTORY mode).
@@ -2203,13 +2413,19 @@ class TrajectoryNode(Node):
         q = msg.target_quat
         rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
         rotvec = rot_matrix_to_rotvec(rot)
-        target = levelling.correct_pose(
-            np.array([
-                float(msg.target_pos.x),
-                float(msg.target_pos.y),
-                float(msg.target_pos.z),
-                rotvec[0], rotvec[1], rotvec[2]]),
-            self._gravity_correction)
+        # C-LEVEL-2: keyed on the catch point's OWN x/y — a displaced catch is
+        # exactly the case the residual map exists for.
+        intent = np.array([
+            float(msg.target_pos.x),
+            float(msg.target_pos.y),
+            float(msg.target_pos.z),
+            rotvec[0], rotvec[1], rotvec[2]])
+        try:
+            correction = levelling.correction_for_pose(
+                self._gravity_offset, self._tilt_map, intent)
+        except tilt_map.TiltMapError as exc:
+            correction = self._tilt_map_degraded('E2 catch/dynamic_target', exc)
+        target = levelling.correct_pose(intent, correction)
         # Linear arrival velocity only (angular arrival rate = 0). Velocity is
         # frame-offset-invariant, so no z adjustment — and C-LEVEL-1's last clause
         # forbids rotating it: the correction is a bias on the commanded ROTATION,
@@ -2533,6 +2749,17 @@ class TrajectoryNode(Node):
         # the matrix) is deliberate — a consumer handed the matrix would be one
         # step from re-applying it, which is the mirror bug the contract forbids.
         msg.gravity_correction_loaded = bool(self._gravity_correction_loaded)
+        # C-LEVEL-2 observability: "is a calibration applied, and WHICH one".
+        # Two fields, not one, because the boolean alone cannot tell an operator
+        # that the map they just captured is the map the node is applying — the
+        # Phase-3 tool writes the file, calls trajectory/reload_tilt_map and then
+        # reads this version back to confirm. Nothing gates on either field: the
+        # map is a refinement, and REJECTED_NOT_LEVELLED still keys on
+        # gravity_correction_loaded alone (C-LEVEL-2 § "why it is not a gate").
+        # The version is '' whenever no map is loaded, so the pair can never
+        # report a version for a calibration that is not being applied.
+        msg.tilt_map_loaded = bool(self._tilt_map_loaded)
+        msg.tilt_map_version = str(self._tilt_map_version)
         self.status_pub.publish(msg)
 
         # Live COMMANDED platform position (see the publisher's comment in

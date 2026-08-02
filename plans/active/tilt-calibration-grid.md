@@ -174,7 +174,7 @@ be **invariant under base tilt**.
 | Phase | Scope | Gate | Status |
 |-------|-------|------|--------|
 | 1 | Contract amendment (doc-first) + pure map core (`motion/tilt_map.py`, `levelling.py` extension) + stale-cite fix | `./run_tests.sh` + `/audit` (normative doc) | **done** (2026-08-02) |
-| 2 | `trajectory_node` integration: loader, reload service, status fields, ingest keying, structural-test manifest | `./run_tests.sh --full` | pending |
+| 2 | `trajectory_node` integration: loader, reload service, status fields, ingest keying, structural-test manifest | `./run_tests.sh --full` | **done** (2026-08-02) |
 | 3 | Acquisition tool + offline analyser + session runbook | `./run_tests.sh --full` (pre-sitting) | pending |
 | 4 | Hardware sittings C0–C3 (operator) | per-rung PASS/ABORT | pending |
 
@@ -305,6 +305,79 @@ regression (8b tilt-aim pose gets exactly one composition); in-flight rule
 
 Gate: `./run_tests.sh --full` at phase closure. Python 3.8 (`from __future__
 import annotations`) throughout `ros_ws/`.
+
+#### Phase 2 — Outcome (2026-08-02)
+
+**Done as specified**, with three decisions Phase 3 depends on and one test the
+phase asked for that cannot exist.
+
+- **Loader** — path policy lives in the pure layer:
+  `tilt_map.tilt_map_candidates(environ=None) -> Tuple[str, ...]` and
+  `tilt_map.resolve_tilt_map_path(environ=None) -> Optional[str]`. Order is
+  `$JUGGLEBOT_TILT_CAL` → repo source tree → ament share, and it returns `None`
+  rather than raising (`friction_ff_params` fail-fasts; that YAML is a hard
+  dependency, this one is a refinement). **The env override is authoritative:
+  when set it is the ONLY candidate.** A typo'd override that fell through would
+  apply *a different calibration than the operator named* while reporting
+  `tilt_map_loaded=True` and a plausible version — strictly worse than applying
+  none, since C-LEVEL-2 is non-gating.
+- **The source-tree candidate is found by SEARCH, not by a fixed `__file__`
+  walk — and the pre-commit audit is what made that necessary.** The first draft
+  copied `friction_ff_params.py`'s five-level walk, which from the colcon install
+  tree lands on `ros_ws/install/jugglebot`; `setup.py` installs config into
+  `share/jugglebot/config/`, so `install/jugglebot/config/` is a directory
+  nothing creates. The source-tree candidate could therefore **never exist in
+  production**, every load would have resolved the build-time share copy, and
+  Phase 3's write-then-reload cycle would have re-applied the previous build's
+  calibration under `tilt_map_loaded=true` — the exact trap the inversion exists
+  to prevent, and green under every test, because every assertion was about the
+  *order* and the order was right. `_find_repo_root` now searches upward for
+  `config/hardware_config.yaml` beside `ros_ws/` (correct from both trees,
+  `None` for a detached deployment). **Phase 3 gets this for free but must not
+  re-introduce a fixed walk of its own** when the tool resolves the file it
+  writes — use `tilt_map.resolve_tilt_map_path`.
+- **Reload with the file absent UNLOADS the map and returns `success=True`.**
+  Reload's contract is "make the node agree with the file". This is load-bearing
+  for Phase 3: `--force-uninstall` moves the file aside and reloads precisely to
+  reach `tilt_map_loaded == false` before a capture, and keeping a stale
+  in-memory map would defeat the capture preconditions silently. Only an
+  **invalid** file keeps the previous map (`success=False`, ERROR, version of
+  what is still applied named in the response).
+- **The structural guard grew a third kind, not a relabel.**
+  `tests/ros/test_levelling_frame.py` now declares `store` (per
+  `/gravity_offset` message) / `build:` (per external pose — `correction_for_pose`)
+  / `apply:` (per external pose — `correct_pose`), with four `build:` rows beside
+  the four `apply:` rows. A new `test_every_apply_has_a_build_in_the_same_scope`
+  closes the C-LEVEL-2 mirror bug: an ingest that applies the correction without
+  building it for its pose is a *working* C-LEVEL-1 application that silently
+  ignores the map. B1 (`mpc_bridge_node`, dormant) is the one declared exception
+  and is the same revival obligation the contract already carries.
+- **The keying regression the phase specified is unwritable, and that is a
+  stronger result than the test.** It asked for a map lookup keyed on the
+  corrected pose to produce a detectably different residual. It cannot:
+  C-LEVEL-1 is rotation-only, so the corrected and uncorrected poses have
+  **identical x/y** and key the same cell — keying on the corrected pose is a
+  fixed-point iteration that converges in one step, not a wrong answer. What is
+  observable, and what is tested instead, is that each external pose is keyed on
+  **its own** x/y: `timed_target(hold_after=False)` — one call, two external
+  poses — must give the (150, 150) target the corner residual and the neutral
+  return the home-node residual, which a correction hoisted per service call
+  would not. The property itself (`corrected[:3] == intent[:3]`) is pinned so
+  that if the correction is ever allowed to move a position, the keying rule
+  stops being free and fails loudly.
+
+Also landed, unasked: an autouse `no_tilt_calibration` fixture in
+`tests/ros/conftest.py`. Once Phase 4 commits a real `config/tilt_calibration.yaml`,
+every `TrajectoryNode` built in `tests/ros/` would otherwise start applying a
+hardware calibration and the whole C-LEVEL-1 E-row family would fail on a
+few-thousandths-of-a-radian diff — and the suite's answers would depend on
+whether *this machine* had been calibrated. The fixture pins the loader off; the
+tests that want a map set the env var themselves.
+
+**Verification** — see the logbook entry's Verification section for the full
+(date, command, result) triples. Phase gate: `./run_tests.sh --full`, run on the
+final tree (the session crossed midnight, so the entry is dated by the work and
+the runs by the clock).
 
 ### Phase 3 — Acquisition tool, analyser, runbook
 

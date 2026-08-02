@@ -214,33 +214,65 @@ _PLANNER_MANIFEST = (
           'offset)'),
 )
 
-# Every call into `jugglebot.motion.levelling` from the live ROS package.
-# ``correct_pose`` / ``apply_gravity_correction`` are APPLICATIONS and may appear
-# only in an E-row ingest handler. ``correction_from_offset`` /
-# ``identity_correction`` only STORE the correction.
+# Every call into `jugglebot.motion.levelling` from the live ROS package, with
+# WHAT KIND of call it is. There are three kinds and the distinction is the
+# guard's, not decoration:
+#
+#   `store`  — once per `/gravity_offset` MESSAGE. `correction_from_offset` /
+#              `identity_correction` in a subscriber or a constructor.
+#   `build:` — once per EXTERNAL POSE, at ingest. `correction_for_pose`
+#              (C-LEVEL-2) reads the residual map at that pose's uncorrected
+#              x/y, so unlike a `store` it must run per pose and cannot be
+#              hoisted to the offset callback.
+#   `apply:` — once per external pose, at ingest. `correct_pose` /
+#              `apply_gravity_correction` compose the built correction into the
+#              pose's rotation.
+#
+# `correction_for_pose` was added by Phase 2 of
+# `plans/active/tilt-calibration-grid.md`. Declaring it `store` would have been
+# the one-word fix and would have silently retired the per-message vs per-pose
+# distinction this manifest exists to hold — a `build` hoisted to the offset
+# callback compiles, passes every behavioural test that uses ONE pose, and
+# applies the home node's residual to the whole workspace.
 _LEVELLING_MANIFEST = (
     ('mpc_bridge_node.py', 'MpcBridgeNode.__init__',
      'levelling.identity_correction', 'store'),
     ('mpc_bridge_node.py', 'MpcBridgeNode._on_gravity_offset',
      'levelling.correction_from_offset', 'store'),
+    # B1 applies a STORED correction with no `build` beside it — that is the
+    # dormant MPC bridge's revival obligation, written down in
+    # `ros_ws/docs/levelling_frame.md` § "Revival obligations", and it is why
+    # `test_every_apply_has_a_build_in_the_same_scope` excludes B1 by name
+    # rather than by accident.
     ('mpc_bridge_node.py', 'MpcBridgeNode._on_platform_pose',
      'levelling.correct_pose', 'apply:B1'),
     ('trajectory_node.py', 'TrajectoryNode.__init__',
      'levelling.identity_correction', 'store'),
     ('trajectory_node.py', 'TrajectoryNode._catch_target_from_msg',
+     'levelling.correction_for_pose', 'build:E2'),
+    ('trajectory_node.py', 'TrajectoryNode._catch_target_from_msg',
      'levelling.correct_pose', 'apply:E2'),
+    ('trajectory_node.py', 'TrajectoryNode._corrected_neutral_pose',
+     'levelling.correction_for_pose', 'build:E5+E6'),
     ('trajectory_node.py', 'TrajectoryNode._corrected_neutral_pose',
      'levelling.correct_pose', 'apply:E5+E6'),
     ('trajectory_node.py', 'TrajectoryNode._on_gravity_offset',
      'levelling.correction_from_offset', 'store'),
     ('trajectory_node.py', 'TrajectoryNode._on_platform_pose',
+     'levelling.correction_for_pose', 'build:E1'),
+    ('trajectory_node.py', 'TrajectoryNode._on_platform_pose',
      'levelling.correct_pose', 'apply:E1'),
+    ('trajectory_node.py', 'TrajectoryNode._pose_from_msg',
+     'levelling.correction_for_pose', 'build:E3+E4'),
     ('trajectory_node.py', 'TrajectoryNode._pose_from_msg',
      'levelling.correct_pose', 'apply:E3+E4'),
 )
 
 _APPLY_FUNCS = frozenset(
     {'levelling.correct_pose', 'levelling.apply_gravity_correction'})
+_BUILD_FUNCS = frozenset({'levelling.correction_for_pose'})
+_STORE_FUNCS = frozenset(
+    {'levelling.correction_from_offset', 'levelling.identity_correction'})
 
 # Modules whose members must be reached by ATTRIBUTE access, never bound directly
 # by `from <module> import name`. Both AST manifests key on the dotted source name
@@ -492,13 +524,57 @@ def test_follower_target_writers_are_frozen(ast_scan):
 
 
 def test_every_application_sits_in_a_declared_ingest_handler():
-    """`correct_pose` / `apply_gravity_correction` may appear only in an E/B row."""
+    """Each callee's declared KIND must match what that callee actually does.
+
+    Three kinds, and the vocabulary is closed (see the comment above
+    `_LEVELLING_MANIFEST`): `apply:` composes a correction into a pose, `build:`
+    computes the correction FOR a pose (C-LEVEL-2's per-pose map lookup), and
+    `store` caches it once per `/gravity_offset` message. A callee declared under
+    the wrong kind is how the per-message / per-pose distinction dies quietly.
+    """
     for _f, where, callee, kind in _LEVELLING_MANIFEST:
         if callee in _APPLY_FUNCS:
             assert kind.startswith('apply:'), (
                 f"{where} applies the correction but is not declared an ingest")
+        elif callee in _BUILD_FUNCS:
+            assert kind.startswith('build:'), (
+                f"{where} builds a POSE-DEPENDENT correction (C-LEVEL-2) but is "
+                f"declared {kind!r}. It is not a 'store': a store runs once per "
+                f"/gravity_offset message, this must run once per external pose")
         else:
-            assert kind == 'store', f"{where}: unexpected kind {kind}"
+            assert callee in _STORE_FUNCS and kind == 'store', (
+                f"{where}: unexpected callee/kind {callee!r}/{kind!r} — add the "
+                f"callee to _APPLY_FUNCS / _BUILD_FUNCS / _STORE_FUNCS and "
+                f"declare what it does")
+
+
+def test_every_apply_has_a_build_in_the_same_scope():
+    """An ingest that applies a correction must have BUILT it for that pose.
+
+    This is the C-LEVEL-2 shape of the omission bug C-LEVEL-1 closed. A seventh
+    ingest — or a revert of one of the six — that calls
+    `levelling.correct_pose(pose, self._gravity_correction)` is a perfectly
+    working C-LEVEL-1 application: the platform is still levelled, every
+    behavioural test that checks "is the correction applied" still passes, and
+    the ONLY symptom is that this one surface silently ignores the calibration
+    map while the other five honour it. That is "two meanings of level in one
+    node" again, one refinement layer up.
+
+    `mpc_bridge_node`'s B1 is the single declared exception and stays one until
+    the MPC chain is revived — `ros_ws/docs/levelling_frame.md` § "Revival
+    obligations" is the written half of that debt. Adding a second exception here
+    means adding a row to that table too.
+    """
+    builds = {(f, where) for f, where, callee, _k in _LEVELLING_MANIFEST
+              if callee in _BUILD_FUNCS}
+    unpaired = sorted(
+        (f, where, kind) for f, where, callee, kind in _LEVELLING_MANIFEST
+        if callee in _APPLY_FUNCS and kind != 'apply:B1'
+        and (f, where) not in builds)
+    assert unpaired == [], (
+        "an ingest applies the levelling correction without building it for "
+        "that pose — it is applying the single offset and ignoring the "
+        f"C-LEVEL-2 residual map: {unpaired}")
 
 
 def test_no_node_reimplements_the_transform():

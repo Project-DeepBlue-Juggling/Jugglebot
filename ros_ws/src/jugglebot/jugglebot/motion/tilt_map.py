@@ -62,8 +62,29 @@ the machine degrades to exactly C-LEVEL-1 behaviour. There is deliberately no
 partial load, no per-node repair and no silent zero-fill — a half-trusted map is
 indistinguishable at the machine from a correct one until a ball misses.
 
+**Path resolution** (:func:`resolve_tilt_map_path`) deliberately **inverts**
+``motion/friction_ff_params.py``'s order. That loader resolves
+``ament share → source tree`` because the friction constants are hand-tuned into
+the committed YAML and a ``colcon build`` is the natural publish step. This one
+resolves ``source tree → ament share``, because the Phase-3 acquisition tool
+*rewrites the source-tree file at runtime* and then asks the running node to
+reload it. Share-first would serve the previous build's stale calibration until
+the next ``colcon build`` — silently, with ``tilt_map_loaded`` still true and a
+``tilt_map_version`` that looks perfectly plausible. That is the exact trap
+``friction_ff_params.py:24-33`` documents, and the acquisition workflow walks
+into it every run.
+
 Pure Python — no ROS imports (consumed by ROS nodes, and by ``tests/motion``
-with no ROS mocking at all).
+with no ROS mocking at all). ``ament_index_python`` is imported lazily and
+defensively inside the resolver for the same reason it is there: the pytest venv
+has no ROS 2 sourced.
+
+Nothing in this module reads the map's *location* policy into its *content*
+policy: :func:`resolve_tilt_map_path` answers "which file", and absence of every
+candidate is **not** an error here — C-LEVEL-2 makes an absent map silent (soft
+absence, non-gating) and only an *invalid* one loud. The resolver therefore
+returns ``None`` rather than raising, unlike ``friction_ff_params``' fail-fast
+``FileNotFoundError``.
 """
 
 from __future__ import annotations
@@ -71,8 +92,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 import yaml
@@ -80,12 +102,15 @@ import yaml
 __all__ = [
     'SCHEMA_VERSION',
     'MAX_ABS_RESIDUAL_RAD',
+    'TILT_MAP_ENV',
     'TiltMapError',
     'TiltMap',
     'parse_tilt_map',
     'load_tilt_map',
     'lookup',
     'map_version',
+    'tilt_map_candidates',
+    'resolve_tilt_map_path',
 ]
 
 #: The only schema version this build understands. A document carrying anything
@@ -99,6 +124,56 @@ SCHEMA_VERSION = 1
 #: node beyond this is a capture fault (stale level reference, a leg pinned on
 #: its stroke clamp, a units error), not a calibration.
 MAX_ABS_RESIDUAL_RAD = 0.05
+
+#: Explicit-override env var. When set it is **authoritative** — see
+#: :func:`tilt_map_candidates` for why it does not fall through.
+TILT_MAP_ENV = 'JUGGLEBOT_TILT_CAL'
+
+def _find_repo_root(start: str) -> Optional[str]:
+    """Walk up from ``start`` to the Jugglebot repo root, or ``None``.
+
+    **Deliberately a search, not a fixed ``__file__`` walk.**
+    ``friction_ff_params.py`` uses a fixed five-level walk, which is correct
+    only from the source checkout: ``colcon`` *copies* the package into
+    ``ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/motion/``,
+    where the same five levels land on ``ros_ws/install/jugglebot`` — and
+    ``setup.py`` installs config into ``share/jugglebot/config/``, so
+    ``install/jugglebot/config/`` is a directory nothing ever creates.
+
+    A fixed walk here would therefore make the source-tree candidate **unable to
+    exist in production**, and the resolver would fall through to the ament share
+    copy on every load — silently restoring exactly the stale-calibration trap
+    this module inverted the resolution order to avoid: the acquisition tool
+    rewrites the source file, calls reload, and the node re-loads the *previous
+    build's* numbers while reporting ``tilt_map_loaded=true`` and a plausible
+    version. (``friction_ff_params.py:24-33`` records that same defect as a
+    shipped bug — the ``motor_guard`` startup crash of 2026-06-24 — reached from
+    the other direction.)
+
+    The marker is ``config/hardware_config.yaml`` beside a ``ros_ws/`` directory:
+    both are committed, both are at the repo root, and neither exists at any
+    other level of either tree. Returns ``None`` for a genuinely detached
+    deployment (an install tree outside the repo), where the share copy IS the
+    right answer and ``$JUGGLEBOT_TILT_CAL`` is the escape hatch.
+    """
+    current = os.path.dirname(os.path.abspath(start))
+    while True:
+        if (os.path.isdir(os.path.join(current, 'ros_ws'))
+                and os.path.exists(os.path.join(current, 'config',
+                                                'hardware_config.yaml'))):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return None
+        current = parent
+
+
+#: Source-tree YAML — the file the Phase-3 acquisition tool writes and the file
+#: that is committed. ``None`` when this module is running from a deployment
+#: outside the repo (see :func:`_find_repo_root`).
+_REPO_ROOT = _find_repo_root(__file__)
+_SRC_TILT_YAML = (os.path.join(_REPO_ROOT, 'config', 'tilt_calibration.yaml')
+                  if _REPO_ROOT else None)
 
 
 class TiltMapError(ValueError):
@@ -390,6 +465,66 @@ def load_tilt_map(path) -> TiltMap:
         return parse_tilt_map(data)
     except TiltMapError as exc:
         raise TiltMapError(f"{path}: {exc}") from exc
+
+
+# ── path resolution ──────────────────────────────────────────────
+
+
+def tilt_map_candidates(
+        environ: Optional[Mapping[str, str]] = None) -> Tuple[str, ...]:
+    """The candidate paths for ``config/tilt_calibration.yaml``, in order.
+
+    ``$JUGGLEBOT_TILT_CAL`` → **repo source tree** → ament share dir. The
+    inversion of ``friction_ff_params.py``'s order is the point; the module
+    docstring says why.
+
+    **The env override is authoritative: when it is set it is the ONLY
+    candidate**, existing or not. Falling through to the source tree would load
+    a *different calibration than the operator named* while reporting
+    ``tilt_map_loaded=True`` and a plausible-looking ``tilt_map_version`` — the
+    same silent-wrong-map failure the share-first order was rejected for, and
+    strictly worse than loading nothing (C-LEVEL-2 is non-gating, so loading
+    nothing costs only precision). A typo'd override therefore degrades to
+    offset-only, loudly, instead of quietly applying the committed map.
+
+    The ament share dir is appended only when ``ament_index_python`` is
+    importable AND knows the package — under the pytest venv (no ROS 2 sourced)
+    it simply does not appear, which is why callers must treat the returned
+    tuple as the whole truth for logging rather than assuming three entries.
+    The source-tree entry is likewise absent for a deployment outside the repo.
+    So this can return one, two or three entries and callers must not index it.
+    """
+    env = (environ if environ is not None else os.environ).get(TILT_MAP_ENV)
+    if env:
+        return (env,)
+
+    candidates = [_SRC_TILT_YAML] if _SRC_TILT_YAML else []
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        candidates.append(os.path.join(
+            get_package_share_directory('jugglebot'),
+            'config', 'tilt_calibration.yaml'))
+    except Exception:
+        # ament_index not importable (the pytest venv without ROS 2 sourced) or
+        # the package is not on the ament index — the source tree is the answer.
+        pass
+    return tuple(candidates)
+
+
+def resolve_tilt_map_path(
+        environ: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """First existing entry of :func:`tilt_map_candidates`, or ``None``.
+
+    ``None`` means **no calibration file exists**, which C-LEVEL-2 defines as a
+    silent, non-gating state — so this returns rather than raises. Contrast
+    ``friction_ff_params._resolve_yaml_path``, which fail-fasts with a
+    ``FileNotFoundError``: its YAML is a hard runtime dependency, this one is a
+    refinement.
+    """
+    for candidate in tilt_map_candidates(environ):
+        if os.path.exists(candidate):
+            return candidate
+    return None
 
 
 # ── lookup ───────────────────────────────────────────────────────
