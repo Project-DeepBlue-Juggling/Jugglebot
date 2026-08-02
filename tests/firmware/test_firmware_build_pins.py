@@ -19,8 +19,10 @@ from pathlib import Path
 
 import pytest
 
-_PIO_INI = (Path(__file__).resolve().parents[2]
-            / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge" / "platformio.ini")
+_FW_DIR = (Path(__file__).resolve().parents[2]
+           / "ros_ws" / "src" / "jugglebot" / "Teensy_code_canbridge")
+_PIO_INI = _FW_DIR / "platformio.ini"
+_EXTRA_SCRIPT = _FW_DIR / "extra_script.py"
 
 
 @pytest.fixture(scope="module")
@@ -83,3 +85,53 @@ def test_known_libs_present_and_pinned(env_teensy41):
     assert "QNEthernet@0.35.0" in joined, "QNEthernet must be pinned to @0.35.0"
     assert re.search(r"platform\s*=\s*teensy@5\.1\.0", env_teensy41), (
         "platform must be pinned to teensy@5.1.0")
+
+
+# ── Stale-object guard (24608bb class) ───────────────────────────────────────
+
+def test_extra_script_forces_clean_when_udp_protocol_h_changes():
+    """extra_script.py must wipe BUILD_DIR when udp_protocol.h content changes.
+
+    Same family of risk as the version pins above, from the other direction: those
+    stop the toolchain drifting under a validated flash, this stops a validated
+    SOURCE tree producing a binary built from pre-edit objects.
+
+    On 2026-07-31 (24608bb) the codegen rewrote udp_protocol.h in place after a
+    PROTOCOL_VERSION 4 -> 5 bump; the incremental ``pio run`` carried the old
+    objects forward and the flashed binary spoke v4 while announcing FW 8. The
+    result was total CAN darkness on a healthy bus, and it was silent — nothing in
+    the build or the banner flagged it. For an ADDITIVE protocol change (new
+    MsgType, new payload struct) there is not even a version gate to make it loud:
+    the bridge emits a short payload, the Jetson's exact-size struct.unpack drops
+    it without a log line, and the row reads 'unknown (never seen)' forever.
+
+    Text assertion rather than an executed build: driving extra_script.py needs a
+    live SCons ``env``, and this test must run on every commit, on any box, with no
+    PlatformIO installed. It pins the three things whose removal reinstates the
+    failure — the content marker, the hash, and the object wipe — so a future
+    simplification that quietly drops the guard trips here instead of at the next
+    flash.
+
+    The wipe is scoped to ``$BUILD_DIR/src`` rather than all of ``$BUILD_DIR``, and
+    that scope is deliberate on both counts (measured 2026-08-02): an
+    ``rmtree($BUILD_DIR)`` from this script kills the very run it is protecting,
+    because the script loads after PlatformIO has already materialised the
+    per-library build dirs; and ``udp_protocol.h`` is a project-local header, so
+    the project's own objects are the only ones that can carry a stale wire format
+    in the first place.
+    """
+    src = _EXTRA_SCRIPT.read_text()
+    assert ".udp_protocol_h_sha256" in src, (
+        "extra_script.py must record a CONTENT hash of udp_protocol.h in BUILD_DIR "
+        "(mtime is not enough — a checkout perturbs mtimes without changing bytes)")
+    assert "hashlib.sha256" in src, "the marker must be a sha256 of the header content"
+    assert 'os.path.join(BUILD_DIR, "src")' in src, (
+        "the guard must target the PROJECT object dir — those are the only objects "
+        "that can embed a stale udp_protocol.h")
+    assert 'name.endswith(".o")' in src and "os.remove(" in src, (
+        "a changed udp_protocol.h must DELETE the project objects; nothing else "
+        "invalidates them, because the codegen rewrites the header in place inside "
+        "src_dir and the incremental build happily carries the old .o files forward")
+    assert "firmware.elf" in src, (
+        "the link products must go too, so a stale firmware.hex cannot be flashed "
+        "after a failed recompile")

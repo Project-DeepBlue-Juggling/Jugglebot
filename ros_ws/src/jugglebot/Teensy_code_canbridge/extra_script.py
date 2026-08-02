@@ -21,9 +21,13 @@
 # The patched output section ends up in ITCM AT> FLASH (same as .ARM.exidx),
 # so the PREL31 cross-section reference is now within range.
 #
-# Hooked into platformio.ini via `extra_scripts = pre:extra_script.py`.
+# Hooked into platformio.ini via `extra_scripts = extra_script.py` — NO `pre:`
+# prefix, deliberately (platformio.ini:62-67): a `pre:` script runs before the
+# platform builder sets LDSCRIPT_PATH and cannot override it. This file therefore
+# runs as straight-line code at SConscript load, registering no SCons actions.
 # =============================================================================
 
+import hashlib
 import os
 import shutil
 
@@ -34,7 +38,111 @@ PROJECT_DIR = env["PROJECT_DIR"]  # type: ignore[index]
 BUILD_DIR = env.subst("$BUILD_DIR")  # type: ignore[attr-defined]
 HOME = os.path.expanduser("~")
 
-# At pre: hook time, LDSCRIPT_PATH may not yet be populated by the platform
+
+# -----------------------------------------------------------------------------
+# Staleness guard: force a clean build whenever udp_protocol.h changes.
+#
+# 24608bb (2026-07-31). config/generate_udp_protocol.py rewrites udp_protocol.h
+# IN PLACE inside src_dir. After a PROTOCOL_VERSION 4 -> 5 bump the incremental
+# `pio run` carried the pre-bump objects forward, and the flashed binary spoke
+# protocol v4 while announcing itself as FW 8. Symptom: total CAN darkness in the
+# GUI on a perfectly healthy CAN bus — the per-frame version gate rejected every
+# frame in both directions. It cost a session to find, because nothing in the
+# build, the flash, or the firmware banner said anything was wrong.
+#
+# That failure was at least loud on the wire once you looked. An ADDITIVE change
+# — a new MsgType, a new payload struct — does NOT bump PROTOCOL_VERSION, so the
+# identical stale-object mechanism instead produces a binary that emits a SHORT
+# payload, which the Jetson's exact-size struct.unpack drops with no log line at
+# all; the affected /link_status row just reads 'unknown (never seen)' forever,
+# indistinguishable from an old bridge. There is no version gate to catch that
+# one. Hence: unconditional guard, not one keyed on the version constant.
+#
+# Content hash, not mtime. A git checkout or a re-run of the generator that
+# produces identical bytes perturbs mtimes without changing the wire format; a
+# spurious clean costs ~30 s of rebuild, a missed one costs a silent mis-flash.
+#
+# The marker lives inside BUILD_DIR so each env (teensy41 and the bench_sysid
+# variant that extends it) tracks its own objects independently, and
+# `pio run -t clean` resets the guard along with everything else.
+#
+# WHY THIS WIPES $BUILD_DIR/src AND NOT $BUILD_DIR (measured 2026-08-02, not
+# assumed): this script runs as straight-line code at SConscript load, which is
+# AFTER PlatformIO's library-dependency finder has materialised the per-library
+# build directories and cached their existence in SCons's Dir nodes. An
+# `shutil.rmtree(BUILD_DIR)` here therefore kills the run it is trying to protect
+# — the src objects compile, then the link stage dies with
+# `*** [.pio/build/teensy41/lib1b6/SPI] ... No such file or directory`. A
+# `pre:`-prefixed second script would run early enough, but `pre:` is exactly what
+# platformio.ini:62-67 forbids (it breaks the LDSCRIPT_PATH override this file
+# also performs), so there is no earlier hook available.
+#
+# Scoping the wipe to $BUILD_DIR/src is not a workaround, it is the correct
+# target: `udp_protocol.h` is a project-local header, so the ONLY objects that can
+# embed the stale wire format are the project's own. The vendored libraries
+# (FrameworkArduino, QNEthernet, freertos-teensy, SPI) cannot include it, and
+# their build directories are precisely the ones that must survive. Wiping every
+# src object plus the link products forces a full recompile of everything that
+# touches the protocol, which is the entire 24608bb failure class.
+#
+# Object FILES are removed, not the src/ directory itself, for the same
+# already-materialised-Dir-node reason.
+#
+# If a build fails partway AFTER the marker is written, the next run sees a
+# matching marker and does NOT wipe. That is correct: every object that exists was
+# compiled against the current header, and SCons rebuilds the missing ones from
+# its own dependency scan.
+#
+# Must run BEFORE _install_size_wrapper(), which writes into BUILD_DIR.
+# -----------------------------------------------------------------------------
+_MARKER_NAME = ".udp_protocol_h_sha256"
+
+
+def _force_clean_if_udp_protocol_changed() -> None:
+    header = os.path.join(PROJECT_DIR, "udp_protocol.h")
+    if not os.path.isfile(header):
+        print(f"[extra_script] WARNING: {header!r} not found; stale-object guard "
+              "SKIPPED (run config/generate_udp_protocol.py).")
+        return
+    with open(header, "rb") as fh:
+        digest = hashlib.sha256(fh.read()).hexdigest()
+
+    marker = os.path.join(BUILD_DIR, _MARKER_NAME)
+    previous = None
+    if os.path.isfile(marker):
+        try:
+            with open(marker, "r") as fh:
+                previous = fh.read().strip()
+        except OSError:
+            previous = None
+
+    src_obj_dir = os.path.join(BUILD_DIR, "src")
+    if previous != digest and os.path.isdir(src_obj_dir):
+        was = ("NO MARKER (first guarded build / hand-cleaned tree)"
+               if previous is None else previous[:12])
+        print(f"[extra_script] *** udp_protocol.h CHANGED ({was} -> {digest[:12]}) "
+              f"— wiping {src_obj_dir} + link products to force a full recompile; "
+              "stale objects flashed a protocol-v4 binary as FW8 on 2026-07-31 "
+              "(24608bb, total CAN darkness on a healthy bus) ***")
+        for root, _dirs, files in os.walk(src_obj_dir):
+            for name in files:
+                if name.endswith(".o"):
+                    os.remove(os.path.join(root, name))
+        # Drop the link products too, so a stale firmware.hex can never be picked
+        # up by a flash step that runs after a compile step failed.
+        for art in ("firmware.elf", "firmware.hex", "firmware.bin"):
+            path = os.path.join(BUILD_DIR, art)
+            if os.path.isfile(path):
+                os.remove(path)
+
+    os.makedirs(BUILD_DIR, exist_ok=True)
+    with open(marker, "w") as fh:
+        fh.write(digest + "\n")
+
+
+_force_clean_if_udp_protocol_changed()
+
+# At extra-script load time, LDSCRIPT_PATH may not yet be populated by the platform
 # builder. Hardcode the well-known Teensy 4.1 path; this script is
 # Teensy-4.1-specific so the hardcode is unambiguous. If you ever build for
 # another Teensy variant, point this at the matching .ld file.
