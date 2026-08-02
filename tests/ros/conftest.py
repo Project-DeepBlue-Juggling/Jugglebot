@@ -3,6 +3,19 @@
 Injects fake ROS2 modules into sys.modules at import time so that
 ``import jugglebot.*`` resolves on Windows without a ROS2 installation.
 Path setup is handled by the parent tests/conftest.py.
+
+Injection is two-tier:
+
+* **Unconditional** — ``rclpy``, ``jugglebot_interfaces``, ``geometry_msgs``,
+  ``std_msgs``, ``std_srvs``, ``sensor_msgs``. These have no non-ROS2
+  implementation, so a mock is the only option and the mock is always used,
+  Jetson included.
+* **Fallback only** — ``diagnostic_msgs`` and ``ament_index_python``
+  (registered at the bottom of this file, guarded by ``try: import``). Both
+  exist for real on the Jetson and are used for real there; the stubs exist
+  so this module's opening claim holds on a box without ROS2. Until
+  2026-08-02 that claim was false: neither was mocked, and five modules
+  import them.
 """
 
 import struct
@@ -958,6 +971,93 @@ _create_mock_module('rclpy.action', {
     'GoalResponse': GoalResponse,
     'CancelResponse': CancelResponse,
 })
+
+
+# ── FALLBACK stubs: diagnostic_msgs / ament_index_python ──────────────
+# Everything above is injected UNCONDITIONALLY — those packages have no
+# non-ROS2 implementation, so a mock is the only option. These two are
+# different, and are registered only when the real package is absent:
+#
+#   * ``diagnostic_msgs`` is DELIBERATELY the real package on the Jetson.
+#     tests/ros/test_teensy_bridge_node_read.py's docstring says so
+#     explicitly, and the real message classes are stricter than any stub
+#     (see the ``level`` note below). Shadowing them unconditionally would
+#     silently lower fidelity on the box that is authoritative for ROS
+#     behaviour, to buy portability nothing on that box needs.
+#   * ``ament_index_python`` is already handled where it matters:
+#     ``motion/friction_ff_params.py`` wraps its import in try/except and
+#     falls back to the source tree, and tests/motion/test_friction_ff_params.py
+#     pins that fallback by simulating the ImportError. Only
+#     ``ball_butler_node.py``'s TOP-LEVEL import is unguarded — its call
+#     site (``:317``) is already inside try/except — so the stub exists
+#     purely so that module can be imported.
+#
+# Together these make tests/ros/ importable without a ROS2 installation
+# (this file's opening docstring claims exactly that, and until 2026-08-02
+# the claim was false for the four modules importing these two packages:
+# teensy_bridge_node, trajectory_node, orchestrator_node, motion_bridge_node,
+# plus ball_butler_node).
+
+try:  # pragma: no cover - exercised on the Jetson, where the real package wins
+    import diagnostic_msgs.msg  # noqa: F401
+except ImportError:
+    class DiagnosticStatus:
+        """Stand-in for diagnostic_msgs/DiagnosticStatus.
+
+        The severity constants are ``bytes``, NOT ints — Foxy declares
+        ``level`` as ``byte``, so the real class asserts
+        ``bytes`` of length 1 and ``DiagnosticStatus(level=1)`` raises.
+        Production assigns ``status.level = DiagnosticStatus.OK`` and tests
+        compare against the same constants, so int constants here would
+        compare equal to each other but never to a real-package value —
+        divergence that only shows up when someone moves a test between
+        platforms. Values verified against the installed Foxy package.
+        """
+        OK = b'\x00'
+        WARN = b'\x01'
+        ERROR = b'\x02'
+        STALE = b'\x03'
+
+        def __init__(self, level=b'\x00', name='', message='',
+                     hardware_id='', values=None):
+            self.level = level
+            self.name = name
+            self.message = message
+            self.hardware_id = hardware_id
+            self.values = values if values is not None else []
+
+    class KeyValue:
+        """Stand-in for diagnostic_msgs/KeyValue (fields: key, value)."""
+
+        def __init__(self, key='', value=''):
+            self.key = key
+            self.value = value
+
+    _create_mock_module('diagnostic_msgs')
+    _create_mock_module('diagnostic_msgs.msg', {
+        'DiagnosticStatus': DiagnosticStatus,
+        'KeyValue': KeyValue,
+    })
+
+try:  # pragma: no cover - exercised on the Jetson, where the real package wins
+    import ament_index_python.packages  # noqa: F401
+except ImportError:
+    class PackageNotFoundError(KeyError):
+        """Real one subclasses KeyError -> LookupError; callers catch broadly."""
+
+    def _get_package_share_directory(package_name, *_args, **_kwargs):
+        # Raise rather than invent a path: without an ament index there IS no
+        # share directory, and every call site in this repo is already inside
+        # try/except and falls back to the source tree. Returning a plausible
+        # but wrong path would turn a handled absence into a silent mislookup.
+        raise PackageNotFoundError(package_name)
+
+    _create_mock_module('ament_index_python')
+    _create_mock_module('ament_index_python.packages', {
+        'get_package_share_directory': _get_package_share_directory,
+        'get_package_share_path': _get_package_share_directory,
+        'PackageNotFoundError': PackageNotFoundError,
+    })
 
 
 class _MockReentrantCallbackGroup:
