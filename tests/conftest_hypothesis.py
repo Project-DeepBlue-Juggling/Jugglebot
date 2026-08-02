@@ -7,13 +7,30 @@ selected via ``--hypothesis-profile=<name>`` on the pytest command line.
 Profiles
 --------
 
-- ``ci-fast`` (default): ``max_examples=50``.  Per-PR runs; full pytest
-  suite target < 5 minutes wall-clock.
-- ``ci-deep``: ``max_examples=1000``.  Nightly runs; full suite target
-  ~10 min wall-clock.  Run with ``pytest tests/ -q --hypothesis-profile=ci-deep``.
+- ``ci-fast`` (default): ``max_examples=50``.  Every per-commit run.
+- ``ci-deep``: ``max_examples=1000``.  The 04:00 nightly, and any explicit
+  ``./run_tests.sh --full --hypothesis-profile=ci-deep``.
 - ``dev``: ``max_examples=200``.  Convenience for local iteration when
   ``ci-fast`` is too coarse to chase a flaky shrink and ``ci-deep`` is
   too slow.
+
+Measured wall-clock, so nobody has to guess from a stale target (the
+figures this replaced — "< 5 minutes" for ci-fast and "~10 min" for
+ci-deep — were written when the suite was ~1200 tests; it is now ~4400,
+and both had been wrong for months):
+
+===================================  ===========  ====================
+run                                  profile      wall-clock
+===================================  ===========  ====================
+``./run_tests.sh`` (per-commit)      ci-fast      206 s  (2026-08-01)
+``./run_tests.sh --full``            ci-fast      485 s  (2026-08-02)
+``./run_tests.sh --full``            ci-deep      25m 52s (2026-08-02)
+===================================  ===========  ====================
+
+The ci-deep row is the 2026-08-02 nightly (``temp/reports/nightly/``,
+GREEN, 4415/4418).  Note it is ~3.2x the ci-fast ``--full`` run rather
+than the 20x the ``max_examples`` ratio might suggest: only the hypothesis
+properties scale, and they are a minority of the suite's cost.
 
 All profiles share ``deadline=None`` (hypothesis's default ``200ms``
 deadline is too tight for the per-example work in this repo's quintic-
