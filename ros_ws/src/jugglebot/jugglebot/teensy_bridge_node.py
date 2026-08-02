@@ -108,6 +108,8 @@ from teensy_link import (
     HandCmdEcho,
     HandSensor,
     CanErrors,
+    BridgeTxDiag,
+    BridgeIdentity,
 )
 from teensy_link import protocol as p
 from teensy_link import rpc_args
@@ -554,6 +556,20 @@ class TeensyBridgeNode(Node):
         # over a USB serial console (2026-07-29 CAN3 flap, layer 2). A bridge
         # older than FW 5 never sends it, so None is a normal steady state.
         self._latest_can_errors: CanErrors | None = None
+        # Latest BRIDGE_TX_DIAG frame (per-bus CAN TX deferral/queue pressure +
+        # hand_ops' per-stage exit tally, 1 Hz from the bridge). Read-only
+        # instrument on the same terms as _latest_can_errors: cumulative
+        # counters, so no arrival stamp is kept — a stale copy is a truthful
+        # floor. A bridge older than FW 9 never sends it, so None is a normal
+        # steady state and must render as such rather than as zeros.
+        self._latest_bridge_tx_diag: BridgeTxDiag | None = None
+        # Latest BRIDGE_IDENTITY frame + the version verdict derived from it.
+        # The verdict is recorded once per CHANGE (see _record_bridge_fw_version)
+        # rather than on every 1 Hz frame, so a skew logs once instead of 3600
+        # times an hour; _bridge_fw_version_seen is what makes "same value again"
+        # distinguishable from "first value".
+        self._latest_bridge_identity: BridgeIdentity | None = None
+        self._bridge_fw_version_seen: int | None = None
         # Last fault_state seen on the T→J heartbeat, for edge-triggered logging in
         # _publish_link_status. None = nothing seen yet (so the first NONE is silent).
         self._last_fault_state: int | None = None
@@ -764,6 +780,8 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.HAND_CMD_ECHO), self._on_hand_cmd_echo)  # hand conduit
         self._client.subscribe(int(MsgType.HAND_SENSOR), self._on_hand_sensor)  # ball-present switch
         self._client.subscribe(int(MsgType.CAN_ERRORS), self._on_can_errors)    # CAN3 wire-error counters
+        self._client.subscribe(int(MsgType.BRIDGE_TX_DIAG), self._on_bridge_tx_diag)      # TX pressure + hand stages
+        self._client.subscribe(int(MsgType.BRIDGE_IDENTITY), self._on_bridge_identity)    # bridge FW identity
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -1256,6 +1274,90 @@ class TeensyBridgeNode(Node):
             return
         with self._lock:
             self._latest_can_errors = ce
+
+    def _on_bridge_tx_diag(self, msg_type, seq, payload, addr):
+        # RX-thread callback (CAN TX-path pressure + hand-stage attribution).
+        # Same contract as _on_can_errors: pure diagnostics, cached under the
+        # lock, no arrival stamp (cumulative counters make a stale copy a
+        # truthful floor). Malformed frames dropped (never kill the RX thread) —
+        # and the except is broad ON PURPOSE: a short payload from a bridge
+        # built against an older header raises struct.error, which is NOT a
+        # ValueError, so a narrow clause would let it escape to the client's
+        # per-callback handler and log a traceback at 1 Hz forever.
+        try:
+            d = BridgeTxDiag.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._latest_bridge_tx_diag = d
+
+    def _on_bridge_identity(self, msg_type, seq, payload, addr):
+        # RX-thread callback (can-bridge firmware identity). Caches the frame and
+        # runs the FW-version verdict; _record_bridge_fw_version is announce-on-
+        # change, so this arriving at 1 Hz forever costs one log line per change.
+        # Malformed frames dropped — see _on_bridge_tx_diag for why the except is
+        # broad.
+        try:
+            bi = BridgeIdentity.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._latest_bridge_identity = bi
+        self._record_bridge_fw_version(int(bi.fw_version))
+
+    # ── Can-bridge firmware-identity check ──
+    # THE single capture + verdict point for the can-bridge's FW_VERSION, and it
+    # sits inside the RX callback for the same reason _record_platform_fw_version
+    # sits inside relay_read_robot_state: that is the only place holding the raw
+    # frame, so a future second consumer of BRIDGE_IDENTITY cannot bypass the
+    # check by reading the cache instead.
+    #
+    # WARN, NEVER REFUSE — identical policy to the Platform Teensy check
+    # (ros_ws/docs/platform_fw_version.md). Refusing on skew would put a version
+    # comparison in front of the hand/leg command path, i.e. it would convert a
+    # reporting defect into an outage; and the skew that matters here is a
+    # DIAGNOSTIC one (an FW 8 bridge simply sends no counters), so there is
+    # nothing unsafe to protect against.
+    #
+    # DEVIATION, recorded deliberately: this is the ONLY rclpy log call made
+    # from the RX thread in this node — every other _on_* callback is log-free,
+    # decodes, stashes under the lock and returns, so a malformed-frame storm
+    # can never turn into a logging storm on the frame-receive path. The
+    # carve-out is justified by the announce-on-change guard below, which bounds
+    # this to at most one line per VERSION CHANGE (realistically one per launch)
+    # rather than one per frame. If a future field here ever logs per-frame,
+    # that reasoning is void and the log belongs on the 10 Hz publish timer
+    # instead.
+
+    def _record_bridge_fw_version(self, version: int):
+        """Log the can-bridge FW_VERSION verdict. Called on the RX thread at 1 Hz.
+
+        Announce-on-change in BOTH directions: at 1 Hz an unconditional log would
+        be 3600 lines an hour, and an operator who sees the same line every second
+        stops reading it — which is how a detector dies.
+        """
+        previous = self._bridge_fw_version_seen
+        if previous == version:
+            return
+        self._bridge_fw_version_seen = version
+        expected = rpc_args.EXPECTED_BRIDGE_FW_VERSION
+        if version == expected:
+            self.get_logger().info(
+                f'BRIDGE_FW_CHECK: OK — can-bridge Teensy reports v{version} '
+                f'(expected v{expected})')
+            return
+        # Skew. ERROR level with one greppable token, and the older/newer
+        # direction named because they fail differently: an older board is
+        # missing counters this session's conclusions may rest on, a newer one
+        # means the host checkout is behind the flashed board.
+        direction = ('OLDER than' if version < expected else 'NEWER than')
+        self.get_logger().error(
+            f'BRIDGE_FW_CHECK: FAIL — can-bridge Teensy reports v{version}, '
+            f'{direction} the v{expected} this host tree expects. Commands are '
+            f'NOT refused (the skew is reported, never enforced — the same '
+            f'warn-never-refuse policy as ros_ws/docs/platform_fw_version.md), '
+            f'but any bench conclusion that reads the bridge_tx_diag counters is '
+            f'untrustworthy until the can-bridge is re-flashed.')
 
     def _on_bb_estimates(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. The drain timer
@@ -2024,6 +2126,91 @@ class TeensyBridgeNode(Node):
                 f'txctx={int(ce.err_tx_ctx)} rxctx={int(ce.err_rx_ctx)} '
                 f'gated={int(ce.tx_gated)}')
 
+    def _bridge_tx_diag_str(self) -> str:
+        """``/link_status`` rendering of the bridge's TX-pressure counters.
+
+        One compact row, an INSTRUMENT rather than a status — read by
+        differencing two captures (e.g. with and without the 500 Hz leg stream),
+        never by looking at a single value.
+
+        ``defer`` is the count of sends whose ``FlexCAN_T4::write()`` returned
+        -1. That is a DEFERRAL into the 64-slot software TX queue, drained by the
+        TX-complete ISR ~0.1-1 ms later — **not** a dropped frame. This is what
+        makes ``hand_ops`` returning ``ERR_TIMEOUT`` and
+        ``catch_coordinator``'s "the ack lies, frames were observed transmitted
+        after a failed ack" both true at once. The two paths that genuinely lose
+        a frame are TX-queue overflow (a 65th pending entry overwrites the
+        oldest) and the vendored ``events()`` drain defect; ``txq`` approaching
+        64 is the observable for the first.
+
+        ``hand`` is the per-stage exit tally the 2026-08-01 recount could not
+        get: three of ``hand_traj_cmd``'s exits return an identical bare
+        ``ERR_TIMEOUT``, so on the wire they were indistinguishable. ``ok`` is
+        derived (calls minus every failure class) rather than counted, so the
+        row is arithmetically self-checking.
+
+        A ONE-OFF ``ok=-1`` is benign and expected: the firmware's six counters
+        are copied by ``task_telem`` while the RPC task may be incrementing
+        them, so a frame can catch ``calls`` from before an invocation and a
+        failure counter from after it. A PERSISTENT negative is real signal —
+        it means an exit path stopped incrementing ``calls``, i.e. the
+        denominator no longer covers the failure classes. The arithmetic is
+        deliberately NOT clamped at zero: clamping would erase exactly that
+        second case while hiding nothing useful about the first.
+
+        Total by construction: field reads and integer arithmetic only. A
+        renderer that raises takes the WHOLE ``/link_status`` message down, not
+        just its own row.
+        """
+        with self._lock:
+            d = self._latest_bridge_tx_diag
+        if d is None:
+            # Never-seen is a real, expected state: any bridge older than FW 9.
+            return 'unknown (never seen)'
+        calls = int(d.hand_calls)
+        rej = int(d.hand_rej_homing)
+        down = int(d.hand_bus_down)
+        pre1 = int(d.hand_pre1_fail)
+        pre2 = int(d.hand_pre2_fail)
+        traj = int(d.hand_traj_fail)
+        return (f'defer jb={int(d.tx_deferred_jb)} bb={int(d.tx_deferred_bb)} '
+                f'cone={int(d.tx_deferred_cone)} '
+                f'txq jb={int(d.tx_q_hwm_jb)} bb={int(d.tx_q_hwm_bb)} '
+                f'cone={int(d.tx_q_hwm_cone)} '
+                f'hand calls={calls} ok={calls - rej - down - pre1 - pre2 - traj} '
+                f'rej={rej} busdown={down} '
+                f'pre1={pre1} pre2={pre2} traj={traj}')
+
+    def _bridge_fw_version_str(self) -> str:
+        """Human/runbook rendering of the can-bridge's reported ``FW_VERSION``.
+
+        Three distinct verdicts, never collapsed: ``unknown (never seen)`` (no
+        BRIDGE_IDENTITY frame has arrived — either a bridge older than FW 9 or
+        no bridge at all), the number plus the protocol version when it matches,
+        and an explicit ``(expected vN)`` suffix when it does not. The skew is
+        spelled out in the row and not only in the log, because the log line is
+        announce-on-change and an operator joining mid-session would otherwise
+        never see it.
+
+        ``proto`` is rendered so the wire byte has a read site at all. It cannot
+        detect protocol skew — a mismatch makes ``decode_frame`` reject every
+        frame in both directions, including this one, so a value shown here is
+        by construction a value that already agreed. What it documents is which
+        protocol the running build was COMPILED against, which is the question
+        the 24608bb stale-object flash (a v4 binary announcing itself as FW 8)
+        left an operator unable to answer from the Jetson side.
+        """
+        with self._lock:
+            bi = self._latest_bridge_identity
+        if bi is None:
+            return 'unknown (never seen)'
+        version = int(bi.fw_version)
+        expected = rpc_args.EXPECTED_BRIDGE_FW_VERSION
+        if version == expected:
+            return f'{version} (proto {int(bi.protocol_version)})'
+        return (f'{version} (SKEW — expected v{expected}, '
+                f'proto {int(bi.protocol_version)})')
+
     def _hand_traj_acks_str(self) -> str:
         """``/link_status`` rendering of the HAND_TRAJ_CMD ack tally.
 
@@ -2768,6 +2955,21 @@ class TeensyBridgeNode(Node):
                 # (nothing came back) because the log text pools them.
                 KeyValue(key='hand_traj_acks',
                          value=self._hand_traj_acks_str()),
+                # Bridge TX-path pressure + the firmware-side half of the
+                # hand-ack story (bridge FW 9+). hand_traj_acks above counts
+                # what the HOST saw; this counts what the BRIDGE did, and only
+                # this one can say WHICH of hand_ops' three sends refused.
+                # Renders 'unknown (never seen)' against an older bridge rather
+                # than vanishing, so a missing row never reads as no pressure.
+                KeyValue(key='bridge_tx_diag',
+                         value=self._bridge_tx_diag_str()),
+                # Can-bridge firmware identity, beside platform_fw_version
+                # above — three Teensys share this bench and until now only one
+                # of them said which build it was running. Warn-never-refuse:
+                # a skew shows up here and in a BRIDGE_FW_CHECK log line, and
+                # is never enforced.
+                KeyValue(key='bridge_fw_version',
+                         value=self._bridge_fw_version_str()),
                 KeyValue(key='setpoints_sent',
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',

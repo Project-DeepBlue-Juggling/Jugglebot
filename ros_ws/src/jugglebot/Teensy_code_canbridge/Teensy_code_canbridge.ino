@@ -201,6 +201,8 @@ static void task_telem(void*) {
     hand_cmd_echo_uplink_step(); // hand Set_Input_Pos command-echo
     hand_sensor_uplink_step();   // hand ball-sensor state (per new reply + 1 Hz keepalive)
     can_errors_uplink_step();    // CAN3 wire-error + confinement counters @ 1 Hz
+    bridge_tx_diag_uplink_step();  // per-bus TX deferral/queue + hand-stage exits @ 1 Hz
+    bridge_identity_uplink_step(); // FW_VERSION + PROTOCOL_VERSION echo @ 1 Hz
     vTaskDelayUntil(&last, period);
   }
 }
@@ -263,12 +265,19 @@ static void print_bus_health(const char* name, const BusRxHealth& b) {
   // machinery is alive). Pre-2026-07-05 captures printed the raw counter AS err=.
   // flt= is the sticky worst-ever confinement; fltNow= is the LIVE FLTCONF that
   // (with RX staleness) drives the health classification the gates + uplink see.
-  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s fltNow=%s gated=%lu chg=%lu\n",
+  // defer= / txq= are the TX-path pair (2026-08-02): defer= counts sends whose
+  // write() returned -1, i.e. the frame went into the 64-slot software txBuffer
+  // instead of a mailbox — DEFERRED, not dropped — and txq= is that buffer's
+  // high-water mark, sampled at send instants. txq= at/near 64 is the one that
+  // means real loss (overflow overwrites the oldest entry). Existing token names
+  // are unchanged ON PURPOSE: the 2026-07-29 A/B discriminator table greps them.
+  Serial.printf("[canhealth] %-9s sync=%u hwm=%u capHit=%lu err=%lu flags=0x%02x rec=%u tec=%u flt=%s fltNow=%s gated=%lu defer=%lu txq=%u chg=%lu\n",
                 name, (unsigned)b.synced, (unsigned)b.depth_hwm, (unsigned long)b.cap_hits,
                 (unsigned long)b.wire_errs, (unsigned)b.err_flags, (unsigned)b.rec_max,
                 (unsigned)b.tec_max, FLT[(b.fault_conf < 3) ? b.fault_conf : 2],
                 FLT[(b.flt_live < 3) ? b.flt_live : 2],
-                (unsigned long)b.tx_gated, (unsigned long)b.err_events);
+                (unsigned long)b.tx_gated, (unsigned long)b.tx_deferred,
+                (unsigned)b.tx_q_hwm, (unsigned long)b.err_events);
   // Marginal-CAN3 diagnostic (2026-07-05): per-type error-snapshot counters, TX/RX
   // capture context, and the live ECR counters + their positive-delta sums. Printed
   // only for a bus that has seen a wire error or TEC/REC movement (healthy buses

@@ -72,7 +72,7 @@ def test_crc16_matches_generator(gen, proto):
 @pytest.mark.parametrize("name", [
     "Setpoint", "HeartbeatJ2T", "Telemetry", "Diagnostic",
     "HeartbeatT2J", "Profile", "PlatformFrame", "HandCmdEcho", "HandSensor",
-    "CanErrors",
+    "CanErrors", "BridgeTxDiag", "BridgeIdentity",
     "RpcRequest", "RpcResponse",
 ])
 def test_message_pack_unpack_roundtrip(proto, gen, name):
@@ -111,6 +111,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
     ("HeartbeatT2J", "HEARTBEAT_T2J"), ("Profile", "PROFILE"),
     ("PlatformFrame", "PLATFORM_FRAME"), ("HandCmdEcho", "HAND_CMD_ECHO"),
     ("HandSensor", "HAND_SENSOR"), ("CanErrors", "CAN_ERRORS"),
+    ("BridgeTxDiag", "BRIDGE_TX_DIAG"), ("BridgeIdentity", "BRIDGE_IDENTITY"),
 ])
 def test_frame_encode_decode_roundtrip(proto, gen, name, msg_type_member):
     msg_spec = next(m for m in gen.MESSAGES if m.name == name)
@@ -285,17 +286,20 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
-    # Re-pinned for the additive CanErrors message (2026-07-29 CAN3 bus-health
-    # flap fix: MsgType CAN_ERRORS 0x8C + a 48 B payload carrying the CAN3
-    # wire-error and fault-confinement counters that were previously reachable
-    # only over the USB serial console). Backward-compatible ADDITION — no
-    # existing message, arg or framing constant moved — so PROTOCOL_VERSION
-    # deliberately stays at 4 (the LegCmd / HandSensor precedent: an old Jetson
-    # ignores the unknown msg_type, a new one renders never-seen as unknown, and
-    # the two ends deploy in either order).
-    # Previous pin: 1e1cf7314377c994944e6baf5e39a0f6e17eb08f7712f671a16d11fdd7ef24ef
-    #   (additive HandSensor 0x8B, 14 B — 2026-07-29 hand ball-sensor Phase 4).
-    _EXPECTED = "1383b3fc18dc085c51eba58979ef60a3898b2ff74dc99931926d04c0bc7ceccb"
+    # Re-pinned for the two additive ERR_TIMEOUT-attribution messages
+    # (2026-08-02): MsgType BRIDGE_TX_DIAG 0x8D + a 42 B payload (per-bus CAN TX
+    # deferral counts and TX-queue high-water marks, plus hand_ops' per-stage
+    # exit tally — three of its five exits returned an identical bare
+    # ERR_TIMEOUT, so the 2026-08-01 recount could not say WHICH send refused),
+    # and MsgType BRIDGE_IDENTITY 0x8E + a 3 B payload putting the can-bridge's
+    # FW_VERSION on the wire for the first time. Backward-compatible ADDITION —
+    # no existing message, arg or framing constant moved — so PROTOCOL_VERSION
+    # deliberately stays at 5 (the LegCmd / HandSensor / CanErrors precedent: an
+    # old Jetson ignores the unknown msg_type, a new one renders never-seen as
+    # unknown, and the two ends deploy in either order).
+    # Previous pin: 1383b3fc18dc085c51eba58979ef60a3898b2ff74dc99931926d04c0bc7ceccb
+    #   (additive CanErrors 0x8C, 48 B — 2026-07-29 CAN3 bus-health flap, FIX B).
+    _EXPECTED = "8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

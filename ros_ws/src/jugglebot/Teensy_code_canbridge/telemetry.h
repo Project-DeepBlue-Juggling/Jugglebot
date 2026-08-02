@@ -62,4 +62,21 @@ void hand_sensor_uplink_step();
 // errors".
 void can_errors_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the per-bus CAN
+// TX deferral/queue counters plus hand_ops' per-stage exit tally as a
+// BRIDGE_TX_DIAG frame at a flat 1 Hz. Unconditional for the same reason as
+// can_errors_uplink_step: the consumer reads this by DIFFERENCING two captures
+// (e.g. with and without the 500 Hz leg stream), which needs a continuous
+// baseline, and "no frame" must never be ambiguous with "no pressure".
+void bridge_tx_diag_uplink_step();
+
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the running
+// build's FW_VERSION + PROTOCOL_VERSION as a BRIDGE_IDENTITY frame at a flat
+// 1 Hz. FW_VERSION previously existed only in the USB serial boot banner, so a
+// Jetson session had no way to tell WHICH firmware answered it. Unconditional
+// rather than send-once-on-connect: the bridge has no notion of a Jetson
+// re-attaching, so a one-shot would be missed by every consumer that started
+// after it.
+void bridge_identity_uplink_step();
+
 }  // namespace CanBridge

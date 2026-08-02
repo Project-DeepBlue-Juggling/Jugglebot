@@ -17,21 +17,34 @@
 #include "leg_homing.h"        // homing_active (HAND_TRAJ_CMD ↔ homing interlock)
 
 namespace CanBridge {
+
+// Per-stage outcome counters — contract (incl. the single-writer argument for
+// the missing PRIMASK) in hand_ops.h.
+static HandOpsCounters s_counters{};
+
+HandOpsCounters hand_ops_counters() { return s_counters; }
+
+void hand_ops_counters_reset() { s_counters = HandOpsCounters{}; }
+
 namespace HandOps {
 
 uint16_t hand_traj_cmd(const JbUdp::RpcArgs::ArgHandTraj& a) {
   using namespace JbUdp;   // RpcStatus::* (JbUdp::RpcStatus is a namespace, not a type)
+  // Counted BEFORE any gate, so it is the honest denominator: OK is derived by
+  // subtracting the five failure counters, and a gate that refuses every call
+  // still shows up as traffic rather than as silence.
+  s_counters.calls++;
   // HAND_TRAJ_CMD ↔ homing interlock, checked FIRST: a hand
   // catch-trajectory must not fire while the SAME firmware state machine is mid-
   // homing (axis 6 homes with the shared move-to-hardstop ladder). A concurrent
   // traj would fight the move-to-hardstop and corrupt the just-defined
   // HAND_ABS_POS_REV reference. Reject before the preamble reaches CAN3.
-  if (homing_active()) return RpcStatus::ERR_REJECTED;
+  if (homing_active()) { s_counters.rej_homing++; return RpcStatus::ERR_REJECTED; }
   // Gate like a leg motion command: a confirmed-stale/dead CAN3 must withhold the
   // trajectory. HAND_TRAJ_CMD is NOT a recovery one-shot, so it keeps the
   // heartbeat-staleness gate (jugglebot_commands_allowed) — NOT the SYNCH
   // bus-transmittable carve-out that CLEAR_ERRORS/REBOOT_ODRIVES use.
-  if (!jugglebot_commands_allowed()) return RpcStatus::ERR_BUS_DOWN;
+  if (!jugglebot_commands_allowed()) { s_counters.bus_down++; return RpcStatus::ERR_BUS_DOWN; }
 
   // Preamble — bring the hand ODrive (axis 6) to CLOSED_LOOP + POSITION/PASSTHROUGH
   // so the Platform Teensy's ensuing trajectory setpoints land. can_node issued
@@ -39,11 +52,15 @@ uint16_t hand_traj_cmd(const JbUdp::RpcArgs::ArgHandTraj& a) {
   // the audit flagged, row 37). ABORT the traj TX if either preamble frame fails to
   // enqueue — running a trajectory against a hand that is not in CLOSED_LOOP/
   // PASSTHROUGH would fault or silently no-op the move.
-  if (!can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::CLOSED_LOOP)))
+  if (!can_jugglebot_send(ODrive::encode_set_state(HAND_AXIS, ODriveState::CLOSED_LOOP))) {
+    s_counters.pre1_fail++;
     return RpcStatus::ERR_TIMEOUT;
+  }
   if (!can_jugglebot_send(ODrive::encode_set_controller_mode(
-          HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH)))
+          HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH))) {
+    s_counters.pre2_fail++;
     return RpcStatus::ERR_TIMEOUT;
+  }
 
   // Forward the host-built 8-byte payload on the FIRMWARE-OWNED 0x6D0 id. The Jetson
   // supplies the payload (incl. the absolute wall_time_ms deadline baked in); the
@@ -53,7 +70,11 @@ uint16_t hand_traj_cmd(const JbUdp::RpcArgs::ArgHandTraj& a) {
   f.id  = PlatformCanId::TRAJ_CMD;   // 0x6D0
   f.len = 8;
   memcpy(f.buf, a.payload, 8);
-  return can_jugglebot_send(f) ? RpcStatus::OK : RpcStatus::ERR_TIMEOUT;
+  if (!can_jugglebot_send(f)) {
+    s_counters.traj_fail++;
+    return RpcStatus::ERR_TIMEOUT;
+  }
+  return RpcStatus::OK;
 }
 
 }  // namespace HandOps

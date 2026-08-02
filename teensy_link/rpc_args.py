@@ -310,6 +310,38 @@ def decode_platform_fw_version(data: bytes) -> int:
     return int.from_bytes(data[5:7], "little")
 
 
+# ── Can-bridge firmware identity (BRIDGE_IDENTITY 0x8E, fw_version) ───────────
+# The can-bridge Teensy has carried `FW_VERSION` in canbridge_config.h since the
+# beginning, but it reached only the USB serial boot banner — so from a Jetson
+# session there was no way to tell WHICH firmware answered, and every bench
+# result was implicitly attributed to whatever the tree happened to say. The
+# 0x8E uplink puts it on the wire; this is the host's side of the comparison.
+#
+# SAME "two independently-authored constants" reasoning as
+# PLATFORM_FW_VERSION_EXPECTED above, and for the same reason: the skew being
+# detected is BOARD vs TREE. A value shared with the firmware via codegen would
+# move in the source tree without the board ever being flashed — i.e. it would
+# agree with itself in exactly the situation the check exists to catch. The two
+# are pinned together by tests/firmware/test_bridge_fw_version_xref.py.
+#
+# There is deliberately NO `UNVERSIONED` sentinel here, unlike the Platform
+# Teensy: a bridge too old to know about 0x8E does not send a zero, it sends
+# NOTHING, and absence is already the honest signal (rendered as
+# 'unknown (never seen)'). Reserving a numeric sentinel would invent a wire
+# value no firmware can produce.
+
+#: The can-bridge Teensy firmware version this host tree expects.
+#: Keep in lockstep with `FW_VERSION` in
+#: ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h — that line
+#: carries the bump history explaining what each version means.
+#: 9 (2026-08-02) = the ERR_TIMEOUT-attribution instrumentation: the additive
+#: BridgeTxDiag (0x8D) and BridgeIdentity (0x8E) uplinks. A board still on 8 is
+#: not unsafe — it simply sends neither frame, so both rows read never-seen —
+#: but every conclusion drawn from tx_deferred / hand-stage attribution needs a
+#: board that actually has the counters, which is why the check is loud.
+EXPECTED_BRIDGE_FW_VERSION = 9
+
+
 # ── Ball Butler ─────────────────────────────────────────────────────────────
 # Firmware-owned encoding: the bridge passes typed args; the can-bridge Teensy
 # range-checks + frame-builds before TX on CAN1.

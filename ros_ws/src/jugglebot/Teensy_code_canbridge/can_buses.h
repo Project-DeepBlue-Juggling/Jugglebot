@@ -299,6 +299,23 @@ inline uint8_t classify_command_gate(uint64_t last_rx_us, uint64_t now_us,
 //    synced      — LIVE ESR1.SYNCH (NOT sticky): 1 = the controller is synchronised to the
 //                  bus right now. The cleanest "is this bus electrically alive" indicator —
 //                  flips 0→1 the instant a powered bus appears, before any frame decodes.
+//    tx_deferred — sends whose FlexCAN_T4::write() returned -1. That overload returns
+//                  1 or -1 and NEVER 0: -1 means no TX mailbox was free, so the frame
+//                  was pushed into the 64-slot software txBuffer and the TX-complete
+//                  ISR sends it ~0.1-1 ms later. This counts DEFERRAL, i.e. TX-path
+//                  pressure — NOT loss. The two paths that genuinely lose a frame are
+//                  txBuffer OVERFLOW (a 65th pending entry silently overwrites the
+//                  oldest — circular_buffer.h push_back, no counter, no return code)
+//                  and the vendored events() TX drain (it writes ONE peeked frame into
+//                  every free mailbox while popping one queue entry per mailbox, so
+//                  the extra entries are discarded unsent). tx_q_hwm below is the
+//                  observable for the first; the second is un-instrumentable without
+//                  patching the vendored library.
+//    tx_q_hwm    — peak software txBuffer occupancy (cap 64), sampled at SEND instants
+//                  rather than on the 1 kHz service tick. Deliberate: the queue drains
+//                  in ~115 us/frame, so post-drain 1 kHz sampling reads ~0 through
+//                  exactly the us-scale bursts that make a send defer. At/near 64 ⇒
+//                  overwrite-loss has occurred or is imminent.
 //  Plus decode_short / decode_bad_axis: CAN3 frames that arrived but could not be
 //  cached (truncated DLC, or a node id outside 0..NUM_AXES) — tells "wrong/garbled
 //  data arriving" apart from "no data arriving".
@@ -364,6 +381,19 @@ struct BusRxHealth {
   // caller still tries to TX — the visible witness that the gate is doing its job
   // instead of letting un-ACKed TX pin TEC.
   uint32_t tx_gated;
+  // ── TX-path pressure (2026-08-02 ERR_TIMEOUT attribution) ─────────────────
+  // Both live in the SAME writer class as tx_gated — the interp ISR and several
+  // FreeRTOS tasks — so both are read-modify-written inside the send's EXISTING
+  // PRIMASK region (never the task_can_rx-only, unmasked class the fields above
+  // belong to). Semantics and the two real loss paths: see the doc block above.
+  // KNOWN COVERAGE GAP (accepted, 2026-08-02): can_buses.cpp compiles in no
+  // native test binary, so these increments have no unit test — exactly as
+  // tx_gated has had none since it landed. Their coverage is the xlang struct
+  // pin, the ROS render test, and the on-hardware [canhealth] serial line.
+  // Building a FlexCAN_T4 host shim to close it is real work, deliberately not
+  // done here.
+  uint32_t tx_deferred;   // sends whose write() returned -1 (queued, NOT dropped)
+  uint16_t tx_q_hwm;      // peak txBuffer occupancy at a send instant (cap 64)
   // ── Sustained-confinement tracking (2026-07-29 CAN3 flap) ─────────────────
   // flt_live above is INSTANTANEOUS. These two derive "has confinement PERSISTED"
   // from it, sampled on the same 1 kHz service tick, and feed

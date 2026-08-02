@@ -13,6 +13,7 @@
 #include "time_base.h"
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 #include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
+#include "hand_ops.h"     // hand_ops_counters() — per-stage HAND_TRAJ_CMD exits uplinked as BRIDGE_TX_DIAG
 
 namespace CanBridge {
 
@@ -316,6 +317,60 @@ void can_errors_uplink_step() {
   p.flt_live      = j.flt_live;
   p.flt_sustained = j.flt_sustained;
   udp_send_stream(JbUdp::MsgType::CAN_ERRORS, (const uint8_t*)&p, sizeof(p));
+}
+
+// ── TX-pressure + hand-stage attribution uplink — contract in telemetry.h ────
+// Unconditional 1 Hz, NOT on-change, for the same reason as the CanErrors step
+// above: the operator reads these by differencing two captures, and silence
+// would be ambiguous with health. ALL THREE buses carry tx_deferred + tx_q_hwm,
+// unlike CanErrors' deliberate CAN3-only scope — that frame's per-bus cost was
+// 15 fields, this one's is 2, so the argument that killed a per-bus array there
+// does not apply here.
+static constexpr uint64_t BRIDGE_TX_DIAG_PERIOD_US = 1000000u;   // 1 Hz
+static uint64_t s_bridge_tx_diag_sent_us = 0;
+
+void bridge_tx_diag_uplink_step() {
+  const uint64_t now = micros64();   // interval clock: emission pacing
+  if (s_bridge_tx_diag_sent_us != 0 &&
+      (now - s_bridge_tx_diag_sent_us) < BRIDGE_TX_DIAG_PERIOD_US) return;
+  s_bridge_tx_diag_sent_us = now;
+
+  const CanRxHealth h = can_buses_rx_health();
+  const HandOpsCounters hc = hand_ops_counters();
+  JbUdp::BridgeTxDiagPayload p{};
+  p.tx_deferred_jb   = h.jugglebot.tx_deferred;
+  p.tx_deferred_bb   = h.bb.tx_deferred;
+  p.tx_deferred_cone = h.cone.tx_deferred;
+  p.tx_q_hwm_jb      = h.jugglebot.tx_q_hwm;
+  p.tx_q_hwm_bb      = h.bb.tx_q_hwm;
+  p.tx_q_hwm_cone    = h.cone.tx_q_hwm;
+  p.hand_calls       = hc.calls;
+  p.hand_rej_homing  = hc.rej_homing;
+  p.hand_bus_down    = hc.bus_down;
+  p.hand_pre1_fail   = hc.pre1_fail;
+  p.hand_pre2_fail   = hc.pre2_fail;
+  p.hand_traj_fail   = hc.traj_fail;
+  udp_send_stream(JbUdp::MsgType::BRIDGE_TX_DIAG, (const uint8_t*)&p, sizeof(p));
+}
+
+// ── Firmware identity uplink — contract in telemetry.h ───────────────────────
+// Both fields are compile-time constants, so this frame never changes within a
+// boot; it is sent at 1 Hz anyway because the bridge cannot observe a Jetson
+// attaching, and 13 B/s buys "the host always knows what it is talking to"
+// within one second of any start order.
+static constexpr uint64_t BRIDGE_IDENTITY_PERIOD_US = 1000000u;   // 1 Hz
+static uint64_t s_bridge_identity_sent_us = 0;
+
+void bridge_identity_uplink_step() {
+  const uint64_t now = micros64();   // interval clock: emission pacing
+  if (s_bridge_identity_sent_us != 0 &&
+      (now - s_bridge_identity_sent_us) < BRIDGE_IDENTITY_PERIOD_US) return;
+  s_bridge_identity_sent_us = now;
+
+  JbUdp::BridgeIdentityPayload p{};
+  p.fw_version       = FW_VERSION;
+  p.protocol_version = JbUdp::PROTOCOL_VERSION;
+  udp_send_stream(JbUdp::MsgType::BRIDGE_IDENTITY, (const uint8_t*)&p, sizeof(p));
 }
 
 void telemetry_step() {

@@ -163,3 +163,23 @@ until a fresh sitting needs re-scoring.
 - Firmware paths read at `hand_ops.cpp:22-56`, `can_buses.cpp:725-763`,
   `telemetry.cpp:295-320` (confirming `CanErrorsPayload` is filled from
   `h.jugglebot`, i.e. the `can3_errors` row is the Jugglebot-role bus).
+
+## Addendum — 2026-08-02: the write-rejection inference is withdrawn (deferral, not drop)
+
+Reading the vendored `FlexCAN_T4` source shows `write()` on the overload
+`send_on()` uses returns only `1` or `-1`, and `-1` means the frame was pushed
+into the 64-slot software `txBuffer` that the TX-complete ISR drains — not
+discarded. **The inference above that a write rejection means "the frame was
+never enqueued ⇒ the hand was NOT armed" is therefore withdrawn**: a deferred
+frame goes out ~0.1–1 ms later.
+
+That dissolves the open tension rather than resolving it either way. The lying-ack
+premise behind `_MAX_ARM_DISPATCHES` and the write-rejection narrowing are
+**compatible** — `hand_ops` returns `ERR_TIMEOUT` the instant `write()` returns
+`-1`, while the frame is transmitted shortly afterwards.
+
+This is source reading, not measurement, so **the latch fence stays up**: no
+re-dispatch or latch behaviour changes until the FW 9 counters confirm it on
+hardware. Full argument, the two genuine frame-loss paths that do remain, and the
+instrumentation that settles it:
+`logbook/2026-08-02-err-timeout-attribution-instrumentation.md`.

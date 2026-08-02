@@ -47,6 +47,8 @@ namespace MsgType {
   constexpr uint8_t HAND_CMD_ECHO = 138u;  // Hand command-echo telemetry (STREAM, T→J)
   constexpr uint8_t HAND_SENSOR = 139u;  // Hand ball-present sensor state (STREAM, T→J)
   constexpr uint8_t CAN_ERRORS = 140u;  // 1 Hz CAN3 wire-error + fault-confinement counters (STREAM, T→J)
+  constexpr uint8_t BRIDGE_TX_DIAG = 141u;  // 1 Hz per-bus CAN TX deferral/queue pressure + per-stage hand-send attribution (STREAM, T→J)
+  constexpr uint8_t BRIDGE_IDENTITY = 142u;  // 1 Hz can-bridge firmware identity: FW_VERSION + PROTOCOL_VERSION echo (STREAM, T→J)
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
 }
 namespace RpcMethod {
@@ -317,6 +319,30 @@ struct CanErrorsPayload {
 };
 static_assert(sizeof(CanErrorsPayload) == 48, "CanErrorsPayload size drift");
 
+// BridgeTxDiag: CAN TX-path pressure per bus, plus per-stage attribution of the HAND_TRAJ_CMD conduit's exits, 1 Hz. Built for the 2026-08-01 ERR_TIMEOUT recount, which could establish THAT the hand arm-ack fails about half the time (139 of 266 arm dispatches pooled across 16 sessions) but not WHICH of hand_ops' three CAN sends refused, nor whether a refusal meant a lost frame. tx_deferred is named for what it measures, and the name is load-bearing: FlexCAN_T4::write(const CAN_message_t&) returns 1 or -1 and NEVER 0, and -1 means no TX mailbox was free so the frame was pushed into the 64-slot software txBuffer that the TX-complete ISR drains. A refused send is therefore a DEFERRAL of ~0.1-1 ms, not a drop — which is what makes catch_coordinator's 'the ack lies, frames were observed transmitted after a failed ack' premise and hand_ops' ERR_TIMEOUT compatible rather than contradictory. The two paths that genuinely LOSE a frame are (a) txBuffer overflow, where a 65th pending entry silently overwrites the oldest, and (b) the vendored events() TX drain, which writes one peeked frame into every free mailbox while popping one queue entry per mailbox; tx_q_hwm approaching 64 is the observable for (a). ALL THREE buses carry both fields — a deliberate contrast with CanErrors' CAN3-only choice, whose per-bus cost was 15 fields against these 2. hand_* attribute every invocation to its exit, so the success count is derivable: OK = hand_calls - hand_rej_homing - hand_bus_down - hand_pre1_fail - hand_pre2_fail - hand_traj_fail. All counters are CUMULATIVE SINCE BOOT (the consumer differences them) except tx_q_hwm_*, which are high-water marks. Unconditional 1 Hz from task_telem rather than on-change, for the same reason as CanErrors: an operator differencing an A/B needs a continuous baseline, and 'silence means healthy' is exactly the ambiguity that cost the 2026-07-29 investigation a session. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
+struct BridgeTxDiagPayload {
+  uint32_t tx_deferred_jb;  // Jugglebot bus: sends whose write() returned -1 (mailbox full → queued to the software txBuffer). NOT a drop — see the summary
+  uint32_t tx_deferred_bb;  // Ball Butler bus: same deferral count
+  uint32_t tx_deferred_cone;  // Cone bus: same deferral count
+  uint16_t tx_q_hwm_jb;  // Jugglebot bus: peak software txBuffer occupancy, sampled at SEND instants inside the send critical section (max 64; at/near 64 ⇒ overwrite-loss occurred or is imminent)
+  uint16_t tx_q_hwm_bb;  // Ball Butler bus: same high-water mark
+  uint16_t tx_q_hwm_cone;  // Cone bus: same high-water mark
+  uint32_t hand_calls;  // hand_traj_cmd invocations, counted at ENTRY before any gate (the denominator the other hand_* fields subtract from)
+  uint32_t hand_rej_homing;  // Exits with ERR_REJECTED: the homing interlock refused
+  uint32_t hand_bus_down;  // Exits with ERR_BUS_DOWN: jugglebot_commands_allowed() refused
+  uint32_t hand_pre1_fail;  // Exits with ERR_TIMEOUT at send #1 (set_state CLOSED_LOOP)
+  uint32_t hand_pre2_fail;  // Exits with ERR_TIMEOUT at send #2 (set_controller_mode)
+  uint32_t hand_traj_fail;  // Exits with ERR_TIMEOUT at send #3 (the 0x6D0 traj frame)
+};
+static_assert(sizeof(BridgeTxDiagPayload) == 42, "BridgeTxDiagPayload size drift");
+
+// BridgeIdentity: Can-bridge firmware identity, 1 Hz. FW_VERSION existed only in the USB serial boot banner, so a Jetson session could not tell WHICH firmware answered it — the same silent-skew defect the Platform Teensy's identity block closed on 2026-07-27 (ros_ws/docs/platform_fw_version.md). fw_version is the ACTIONABLE field: the host compares it against teensy_link.rpc_args.EXPECTED_BRIDGE_FW_VERSION and logs BRIDGE_FW_CHECK on a skew — reported, never enforced. NOTE on protocol_version: it is self-description, NOT skew detection. A PROTOCOL_VERSION mismatch makes decode_frame reject EVERY frame in both directions (the 24608bb total-darkness failure), including this one, so this field can never report the mismatch it appears to be about; it documents what the running build was compiled against once the link decodes at all. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
+struct BridgeIdentityPayload {
+  uint16_t fw_version;  // canbridge_config.h FW_VERSION of the running build
+  uint8_t protocol_version;  // PROTOCOL_VERSION the running build was compiled against (self-description — a mismatch makes this frame undecodable)
+};
+static_assert(sizeof(BridgeIdentityPayload) == 3, "BridgeIdentityPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -354,6 +380,8 @@ constexpr uint16_t PLATFORM_FRAME_SIZE = 21u;
 constexpr uint16_t HAND_CMD_ECHO_SIZE = 16u;
 constexpr uint16_t HAND_SENSOR_SIZE = 14u;
 constexpr uint16_t CAN_ERRORS_SIZE = 48u;
+constexpr uint16_t BRIDGE_TX_DIAG_SIZE = 42u;
+constexpr uint16_t BRIDGE_IDENTITY_SIZE = 3u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 

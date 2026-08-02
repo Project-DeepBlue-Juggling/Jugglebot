@@ -735,11 +735,37 @@ static inline bool partner_recent(const volatile uint64_t* last_rx_us,
   return false;
 }
 
+// ── TX-pressure instrumentation, inside the EXISTING masked region ───────────
+// tx_deferred and tx_q_hwm ride the mask the mailbox write already holds: no new
+// critical section, no added ISR latency. getTXQueueCount() is txBuffer.size(),
+// which is a single member load (circular_buffer.h: `return _available;`) — no
+// loop, no allocation, no FreeRTOS call — so the audited hard invariant at
+// leg_interp.cpp:598-608 (interp_isr and everything it calls make ZERO FreeRTOS
+// API calls) is preserved.
+//
+// The high-water mark is sampled HERE, at the send instant, and not on the 1 kHz
+// service tick. A queued frame leaves in ~115 us at 1 Mbit, so by the time the
+// service tick looks the queue is back to ~0: 1 kHz sampling would read zero
+// through precisely the bursts that make a send defer.
+//
+// What the sample means differs by path, and neither reading is wrong: on the
+// DEFERRAL path the frame just written is itself in the ring, so the sample
+// includes it; on the mailbox path the frame went straight to hardware and is
+// not in the ring at all, so the sample is the backlog this caller found already
+// pending. Both answer "how deep was the software queue at this send instant",
+// which is the pressure signal — not "how many frames are waiting because of me".
+//
+// `ok == false` is a DEFERRAL, not a drop — write() returned -1 and the frame is
+// in the software txBuffer awaiting the TX-complete ISR. See can_buses.h for the
+// two paths that do genuinely lose a frame.
+
 bool can_bb_send(const ODrive::CanFrame& f) {
   if (!partner_recent(&s_bb_last_rx_us, s_bb_rxh)) return false;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_bb, f);
-  if (ok) s_bb_tx++;
+  if (ok) s_bb_tx++; else s_bb_rxh.tx_deferred++;
+  const uint16_t q = (uint16_t)can_bb.getTXQueueCount();
+  if (q > s_bb_rxh.tx_q_hwm) s_bb_rxh.tx_q_hwm = q;
   __set_PRIMASK(pm);
   return ok;
 }
@@ -748,7 +774,9 @@ bool can_cone_send(const ODrive::CanFrame& f) {
   if (!partner_recent(&s_cone_last_rx_us, s_cone_rxh)) return false;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_cone, f);
-  if (ok) s_cone_tx++;
+  if (ok) s_cone_tx++; else s_cone_rxh.tx_deferred++;
+  const uint16_t q = (uint16_t)can_cone.getTXQueueCount();
+  if (q > s_cone_rxh.tx_q_hwm) s_cone_rxh.tx_q_hwm = q;
   __set_PRIMASK(pm);
   return ok;
 }
@@ -757,7 +785,9 @@ bool can_jugglebot_send(const ODrive::CanFrame& f) {
   if (!partner_recent(&s_jugglebot_last_rx_us, s_jugglebot_rxh)) return false;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool ok = send_on(can_jugglebot, f);
-  if (ok) s_jugglebot_tx++;
+  if (ok) s_jugglebot_tx++; else s_jugglebot_rxh.tx_deferred++;
+  const uint16_t q = (uint16_t)can_jugglebot.getTXQueueCount();
+  if (q > s_jugglebot_rxh.tx_q_hwm) s_jugglebot_rxh.tx_q_hwm = q;
   __set_PRIMASK(pm);
   return ok;
 }
@@ -849,6 +879,8 @@ static BusRxHealth snapshot_bus(const volatile BusRxHealth& h) {
   o.tec_inc_sum = h.tec_inc_sum;
   o.rec_inc_sum = h.rec_inc_sum;
   o.tx_gated    = h.tx_gated;
+  o.tx_deferred = h.tx_deferred;
+  o.tx_q_hwm    = h.tx_q_hwm;
   // 64-bit: read atomically (torn-load guard). Every other field here is a single
   // word, but a plain two-word load of this one could tear across a task_can_rx
   // preemption — same discipline as the *_last_rx_us reads in can_buses_stats().

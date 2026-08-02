@@ -47,6 +47,8 @@ class MsgType(IntEnum):
     HAND_CMD_ECHO = 138  # Hand command-echo telemetry (STREAM, T→J)
     HAND_SENSOR = 139  # Hand ball-present sensor state (STREAM, T→J)
     CAN_ERRORS = 140  # 1 Hz CAN3 wire-error + fault-confinement counters (STREAM, T→J)
+    BRIDGE_TX_DIAG = 141  # 1 Hz per-bus CAN TX deferral/queue pressure + per-stage hand-send attribution (STREAM, T→J)
+    BRIDGE_IDENTITY = 142  # 1 Hz can-bridge firmware identity: FW_VERSION + PROTOCOL_VERSION echo (STREAM, T→J)
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
 
 class RpcMethod(IntEnum):
@@ -538,6 +540,56 @@ class CanErrors:
         vals = _CAN_ERRORS_STRUCT.unpack(data[:48])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+
+# BridgeTxDiag: CAN TX-path pressure per bus, plus per-stage attribution of the HAND_TRAJ_CMD conduit's exits, 1 Hz. Built for the 2026-08-01 ERR_TIMEOUT recount, which could establish THAT the hand arm-ack fails about half the time (139 of 266 arm dispatches pooled across 16 sessions) but not WHICH of hand_ops' three CAN sends refused, nor whether a refusal meant a lost frame. tx_deferred is named for what it measures, and the name is load-bearing: FlexCAN_T4::write(const CAN_message_t&) returns 1 or -1 and NEVER 0, and -1 means no TX mailbox was free so the frame was pushed into the 64-slot software txBuffer that the TX-complete ISR drains. A refused send is therefore a DEFERRAL of ~0.1-1 ms, not a drop — which is what makes catch_coordinator's 'the ack lies, frames were observed transmitted after a failed ack' premise and hand_ops' ERR_TIMEOUT compatible rather than contradictory. The two paths that genuinely LOSE a frame are (a) txBuffer overflow, where a 65th pending entry silently overwrites the oldest, and (b) the vendored events() TX drain, which writes one peeked frame into every free mailbox while popping one queue entry per mailbox; tx_q_hwm approaching 64 is the observable for (a). ALL THREE buses carry both fields — a deliberate contrast with CanErrors' CAN3-only choice, whose per-bus cost was 15 fields against these 2. hand_* attribute every invocation to its exit, so the success count is derivable: OK = hand_calls - hand_rej_homing - hand_bus_down - hand_pre1_fail - hand_pre2_fail - hand_traj_fail. All counters are CUMULATIVE SINCE BOOT (the consumer differences them) except tx_q_hwm_*, which are high-water marks. Unconditional 1 Hz from task_telem rather than on-change, for the same reason as CanErrors: an operator differencing an A/B needs a continuous baseline, and 'silence means healthy' is exactly the ambiguity that cost the 2026-07-29 investigation a session. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
+BRIDGE_TX_DIAG_FMT = '<IIIHHHIIIIII'
+BRIDGE_TX_DIAG_SIZE = 42
+_BRIDGE_TX_DIAG_STRUCT = struct.Struct(BRIDGE_TX_DIAG_FMT)
+assert _BRIDGE_TX_DIAG_STRUCT.size == 42
+
+@dataclass
+class BridgeTxDiag:
+    tx_deferred_jb: int = 0
+    tx_deferred_bb: int = 0
+    tx_deferred_cone: int = 0
+    tx_q_hwm_jb: int = 0
+    tx_q_hwm_bb: int = 0
+    tx_q_hwm_cone: int = 0
+    hand_calls: int = 0
+    hand_rej_homing: int = 0
+    hand_bus_down: int = 0
+    hand_pre1_fail: int = 0
+    hand_pre2_fail: int = 0
+    hand_traj_fail: int = 0
+
+    def pack(self) -> bytes:
+        return _BRIDGE_TX_DIAG_STRUCT.pack(self.tx_deferred_jb, self.tx_deferred_bb, self.tx_deferred_cone, self.tx_q_hwm_jb, self.tx_q_hwm_bb, self.tx_q_hwm_cone, self.hand_calls, self.hand_rej_homing, self.hand_bus_down, self.hand_pre1_fail, self.hand_pre2_fail, self.hand_traj_fail)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'BridgeTxDiag':
+        vals = _BRIDGE_TX_DIAG_STRUCT.unpack(data[:42])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+
+# BridgeIdentity: Can-bridge firmware identity, 1 Hz. FW_VERSION existed only in the USB serial boot banner, so a Jetson session could not tell WHICH firmware answered it — the same silent-skew defect the Platform Teensy's identity block closed on 2026-07-27 (ros_ws/docs/platform_fw_version.md). fw_version is the ACTIONABLE field: the host compares it against teensy_link.rpc_args.EXPECTED_BRIDGE_FW_VERSION and logs BRIDGE_FW_CHECK on a skew — reported, never enforced. NOTE on protocol_version: it is self-description, NOT skew detection. A PROTOCOL_VERSION mismatch makes decode_frame reject EVERY frame in both directions (the 24608bb total-darkness failure), including this one, so this field can never report the mismatch it appears to be about; it documents what the running build was compiled against once the link decodes at all. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown.
+BRIDGE_IDENTITY_FMT = '<HB'
+BRIDGE_IDENTITY_SIZE = 3
+_BRIDGE_IDENTITY_STRUCT = struct.Struct(BRIDGE_IDENTITY_FMT)
+assert _BRIDGE_IDENTITY_STRUCT.size == 3
+
+@dataclass
+class BridgeIdentity:
+    fw_version: int = 0
+    protocol_version: int = 0
+
+    def pack(self) -> bytes:
+        return _BRIDGE_IDENTITY_STRUCT.pack(self.fw_version, self.protocol_version)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'BridgeIdentity':
+        vals = _BRIDGE_IDENTITY_STRUCT.unpack(data[:3])
+        it = iter(vals)
+        return cls(next(it), next(it))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'

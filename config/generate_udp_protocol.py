@@ -172,6 +172,8 @@ ENUMS = {
         ("HAND_CMD_ECHO",  0x8A, "Hand command-echo telemetry (STREAM, T→J)"),
         ("HAND_SENSOR",    0x8B, "Hand ball-present sensor state (STREAM, T→J)"),
         ("CAN_ERRORS",     0x8C, "1 Hz CAN3 wire-error + fault-confinement counters (STREAM, T→J)"),
+        ("BRIDGE_TX_DIAG", 0x8D, "1 Hz per-bus CAN TX deferral/queue pressure + per-stage hand-send attribution (STREAM, T→J)"),
+        ("BRIDGE_IDENTITY", 0x8E, "1 Hz can-bridge firmware identity: FW_VERSION + PROTOCOL_VERSION echo (STREAM, T→J)"),
         ("RPC_RESPONSE",   0x90, "RPC response (RPC port, T→J)"),
     ],
     "RpcMethod": [
@@ -597,6 +599,87 @@ MESSAGES = [
             Field("flt_sustained", "u8",  1, "1 => flt_live>=1 held >= CAN_PASSIVE_SUSTAIN_US, i.e. the command "
                                              "gate is actually refusing (classify_command_gate). The one bit that "
                                              "distinguishes a harmless transient from a real command outage."),
+        ],
+    ),
+    Message(
+        "BridgeTxDiag", "BRIDGE_TX_DIAG", "T2J", "STREAM",
+        summary=(
+            "CAN TX-path pressure per bus, plus per-stage attribution of the "
+            "HAND_TRAJ_CMD conduit's exits, 1 Hz. Built for the 2026-08-01 "
+            "ERR_TIMEOUT recount, which could establish THAT the hand arm-ack "
+            "fails about half the time (139 of 266 arm dispatches pooled across "
+            "16 sessions) but not WHICH of hand_ops' three CAN sends refused, "
+            "nor whether a refusal meant a lost frame. "
+            "tx_deferred is named for what it measures, and the name is "
+            "load-bearing: FlexCAN_T4::write(const CAN_message_t&) returns 1 or "
+            "-1 and NEVER 0, and -1 means no TX mailbox was free so the frame was "
+            "pushed into the 64-slot software txBuffer that the TX-complete ISR "
+            "drains. A refused send is therefore a DEFERRAL of ~0.1-1 ms, not a "
+            "drop — which is what makes catch_coordinator's 'the ack lies, frames "
+            "were observed transmitted after a failed ack' premise and hand_ops' "
+            "ERR_TIMEOUT compatible rather than contradictory. The two paths that "
+            "genuinely LOSE a frame are (a) txBuffer overflow, where a 65th "
+            "pending entry silently overwrites the oldest, and (b) the vendored "
+            "events() TX drain, which writes one peeked frame into every free "
+            "mailbox while popping one queue entry per mailbox; tx_q_hwm "
+            "approaching 64 is the observable for (a). ALL THREE buses carry both "
+            "fields — a deliberate contrast with CanErrors' CAN3-only choice, "
+            "whose per-bus cost was 15 fields against these 2. hand_* attribute "
+            "every invocation to its exit, so the success count is derivable: "
+            "OK = hand_calls - hand_rej_homing - hand_bus_down - hand_pre1_fail - "
+            "hand_pre2_fail - hand_traj_fail. All counters are CUMULATIVE SINCE "
+            "BOOT (the consumer differences them) except tx_q_hwm_*, which are "
+            "high-water marks. Unconditional 1 Hz from task_telem rather than "
+            "on-change, for the same reason as CanErrors: an operator "
+            "differencing an A/B needs a continuous baseline, and 'silence means "
+            "healthy' is exactly the ambiguity that cost the 2026-07-29 "
+            "investigation a session. Additive — no existing frame changes, so NO "
+            "PROTOCOL_VERSION bump (the LegCmd / HandSensor precedent): an old "
+            "Jetson ignores the unknown msg_type and a new Jetson renders "
+            "never-seen as unknown."),
+        fields=[
+            Field("tx_deferred_jb",   "u32", 1, "Jugglebot bus: sends whose write() returned -1 (mailbox full → "
+                                                "queued to the software txBuffer). NOT a drop — see the summary"),
+            Field("tx_deferred_bb",   "u32", 1, "Ball Butler bus: same deferral count"),
+            Field("tx_deferred_cone", "u32", 1, "Cone bus: same deferral count"),
+            Field("tx_q_hwm_jb",      "u16", 1, "Jugglebot bus: peak software txBuffer occupancy, sampled at SEND "
+                                                "instants inside the send critical section (max 64; at/near 64 ⇒ "
+                                                "overwrite-loss occurred or is imminent)"),
+            Field("tx_q_hwm_bb",      "u16", 1, "Ball Butler bus: same high-water mark"),
+            Field("tx_q_hwm_cone",    "u16", 1, "Cone bus: same high-water mark"),
+            Field("hand_calls",       "u32", 1, "hand_traj_cmd invocations, counted at ENTRY before any gate "
+                                                "(the denominator the other hand_* fields subtract from)"),
+            Field("hand_rej_homing",  "u32", 1, "Exits with ERR_REJECTED: the homing interlock refused"),
+            Field("hand_bus_down",    "u32", 1, "Exits with ERR_BUS_DOWN: jugglebot_commands_allowed() refused"),
+            Field("hand_pre1_fail",   "u32", 1, "Exits with ERR_TIMEOUT at send #1 (set_state CLOSED_LOOP)"),
+            Field("hand_pre2_fail",   "u32", 1, "Exits with ERR_TIMEOUT at send #2 (set_controller_mode)"),
+            Field("hand_traj_fail",   "u32", 1, "Exits with ERR_TIMEOUT at send #3 (the 0x6D0 traj frame)"),
+        ],
+    ),
+    Message(
+        "BridgeIdentity", "BRIDGE_IDENTITY", "T2J", "STREAM",
+        summary=(
+            "Can-bridge firmware identity, 1 Hz. FW_VERSION existed only in the "
+            "USB serial boot banner, so a Jetson session could not tell WHICH "
+            "firmware answered it — the same silent-skew defect the Platform "
+            "Teensy's identity block closed on 2026-07-27 "
+            "(ros_ws/docs/platform_fw_version.md). fw_version is the ACTIONABLE "
+            "field: the host compares it against "
+            "teensy_link.rpc_args.EXPECTED_BRIDGE_FW_VERSION and logs "
+            "BRIDGE_FW_CHECK on a skew — reported, never enforced. "
+            "NOTE on protocol_version: it is self-description, NOT skew "
+            "detection. A PROTOCOL_VERSION mismatch makes decode_frame reject "
+            "EVERY frame in both directions (the 24608bb total-darkness failure), "
+            "including this one, so this field can never report the mismatch it "
+            "appears to be about; it documents what the running build was "
+            "compiled against once the link decodes at all. Additive — no "
+            "existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / "
+            "HandSensor precedent): an old Jetson ignores the unknown msg_type "
+            "and a new Jetson renders never-seen as unknown."),
+        fields=[
+            Field("fw_version",       "u16", 1, "canbridge_config.h FW_VERSION of the running build"),
+            Field("protocol_version", "u8",  1, "PROTOCOL_VERSION the running build was compiled against "
+                                                "(self-description — a mismatch makes this frame undecodable)"),
         ],
     ),
     Message(
