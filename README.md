@@ -20,3 +20,4 @@ analysers are documented in [tools/README.md](tools/README.md):
   (`friction_ff_demo.py`)
 
 Canonical reference: [logbook/2026-04-27-friction-feedforward-bench-validation.md](logbook/2026-04-27-friction-feedforward-bench-validation.md).
+
