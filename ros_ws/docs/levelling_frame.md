@@ -615,8 +615,7 @@ which is disqualifier 3 above, arriving by a different door.
 
 ### Capture preconditions — a residual is defined relative to a reference
 
-A capture run is only meaningful under all four of these, and the acquisition
-tool refuses to start otherwise:
+A capture run is only meaningful under all four of these:
 
 1. **A fresh `level` immediately before the capture.** Residuals are *defined*
    relative to that reference. The Teensy-persisted offset truncates at
@@ -631,6 +630,23 @@ tool refuses to start otherwise:
    last.** Tracking lag grows with bridge uptime (10 ms fresh → ~240 ms at 30 h),
    and a settle-then-read capture is exactly the kind of measurement that would
    silently absorb it.
+
+**Only (2) is machine-checkable, and the tool's enforcement says so** (Phase 3,
+2026-08-03 — an earlier draft of this paragraph claimed the tool "refuses to
+start" on all four, which overstated what any program can observe):
+
+| # | Enforcement in `tests/hardware/tilt_cal_grid.py` |
+|---|---|
+| 1 | **Operator confirmation** (typed `yes`) plus the **home-node gate**, which aborts the capture when `\|residual(0, 0)\|` is not ≈ 0. The gate catches a *grossly* stale reference; it cannot distinguish "levelled just now" from "levelled twenty minutes and one relaunch ago", because both can leave a small home residual. |
+| 2 | **Hard refusal.** `tilt_map_loaded` must be false; `--force-uninstall` moves the file aside and reloads to reach that state. |
+| 3 | **Operator confirmation only.** Nothing in the system observes hand quiescence from this client. |
+| 4 | **Warn and record**, never refuse — `uptime_ms` is echoed at preflight, warned above 30 min, and written first/last into both `_meta.json` and the map's `captured` block. Refusing would cost a sitting over an effect measured on the hand-dispatch path, not on this request/response read path. |
+
+`--yes` skips the confirmations for rehearsal and prints a loud warning when it
+does so on a live capture. The two confirmed preconditions are therefore
+*operator* obligations that the runbook states and the tool records — not
+guarantees. That distinction is the honest one: a tool that claimed to enforce
+(1) and (3) would be trusted for something it cannot see.
 
 ### The map artifact
 

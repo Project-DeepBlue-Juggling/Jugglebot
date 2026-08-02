@@ -172,6 +172,35 @@ All four scripts share safety conventions: 3 rev stroke cap, brake-resistor-awar
 
 All three accept `--json <path>` to emit a machine-readable result; plots go to `temp/reports/`.
 
+### Tilt calibration grid (contract C-LEVEL-2)
+
+Pose-dependent gravity-level calibration: `level` measures the platform's tilt
+against gravity at **one** pose and applies that offset at **every** pose, so
+pose-dependent kinematic error is invisible to it by construction. These two
+tools measure it over an (x, y) grid and ship it as an interpolatable residual
+map.
+
+| Script | Role |
+|--------|------|
+| `tests/hardware/tilt_cal_grid.py` | **Operator-run** capture. Drives the grid via `trajectory/go_to_pose` (never arms, never changes modes, never commands the hand), reads the inclinometer N times per node, writes `config/tilt_calibration.yaml`, reloads it in the running node, verifies the applied version, then re-measures off-node check poses. Runs under **system python3.8 with ROS 2 sourced** — not the venv. |
+| `tools/tilt_cal_analyse.py` | Offline. Heat maps + quiver of the residual field, per-node sd table, outlier flagging, and a `--diff` mode for map-invariance (rung C2). Accepts `--json`; reports go to `temp/reports/tilt_cal_<ts>/`. |
+
+**Runbook — read it before running either:** `tests/hardware/session_tilt_calibration.md`
+(rungs C0–C3 with numeric PASS/ABORT). Contract: `ros_ws/docs/levelling_frame.md`
+§ C-LEVEL-2. Plan: `plans/active/tilt-calibration-grid.md`.
+
+`tilt_cal_grid.py` takes `--dry-run` (prints the node order and ETA, makes zero
+ROS calls) rather than `--preview`: it commands no continuous motion sequence to
+plot — it is a series of discrete rest-to-rest moves — so the five-row preview
+layout above does not apply. `tilt_cal_analyse.py` is offline analysis and takes
+no preview at all, matching `cogging_map_analyse.py`.
+
+⚠ **Several defaults are PROVISIONAL until rung C0 measures them on hardware**
+(`--dwell-s`, `--n-reads`, `--read-gap-s`, `--threshold-deg`, the home-node
+gate bounds, and the analyser's curvature-flag constants). The SCL3300's noise
+floor is unmeasured in this repo; C0 exists to pin it before any test asserts a
+threshold.
+
 ### catch_sim_test.py
 
 Offline catch simulation that exercises the full pure-Python pipeline: `BallTracker` (Kalman filter + marker matching) → `CatchCoordinator` (catch pose + hand commands) → `TrajectoryManager` (async feasibility + trajectory execution). No ROS2 or hardware required.

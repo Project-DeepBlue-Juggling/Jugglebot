@@ -175,7 +175,7 @@ be **invariant under base tilt**.
 |-------|-------|------|--------|
 | 1 | Contract amendment (doc-first) + pure map core (`motion/tilt_map.py`, `levelling.py` extension) + stale-cite fix | `./run_tests.sh` + `/audit` (normative doc) | **done** (2026-08-02) |
 | 2 | `trajectory_node` integration: loader, reload service, status fields, ingest keying, structural-test manifest | `./run_tests.sh --full` | **done** (2026-08-02) |
-| 3 | Acquisition tool + offline analyser + session runbook | `./run_tests.sh --full` (pre-sitting) | pending |
+| 3 | Acquisition tool + offline analyser + session runbook | `./run_tests.sh --full` (pre-sitting) | **done** (2026-08-03) |
 | 4 | Hardware sittings C0–C3 (operator) | per-rung PASS/ABORT | pending |
 
 ## Implementation Phases
@@ -423,6 +423,131 @@ offset, map-file writer round-trip vs the Phase-1 loader, CSV schema) via
 import, no ROS required.
 
 Gate: `./run_tests.sh --full` (mandatory pre-sitting anyway).
+
+#### Phase 3 — Outcome (2026-08-03)
+
+**Done as specified**, plus three CLI additions each forced by a rung this plan
+already defines, and one design decision left deliberately unfinished.
+
+- **`tests/hardware/tilt_cal_grid.py`** — pure core (grid spec, residual
+  reduction, document assembly, CSV rows) importable with **zero** ROS at module
+  import; `rclpy` and the interface packages are imported inside `run()` only.
+  Runs under system python3.8 with ROS sourced, not the venv. Writes via
+  `tilt_map.tilt_map_candidates()[0]` — **no `__file__` walk anywhere**, per the
+  Phase-2 audit finding — and the post-write `tilt_map_version` readback is the
+  hard guarantee that the node loaded the file the tool wrote.
+- **Three flags beyond the phase's list, each serving a Phase-4 rung that could
+  not otherwise be run:**
+  - `--no-apply` (**C0**): capture + CSV + meta, assemble and validate the map,
+    but write nothing and reload nothing. A read-noise probe must not leave a
+    calibration behind, and C0 runs before any threshold exists to verify
+    against.
+  - `--verify-only` (**C2a**): re-measure the check poses against the
+    already-loaded map with no recapture. C2a is *defined* as "re-`level` only,
+    NO recapture", so without this the rung is unrunnable. Check poses are
+    derived from the loaded map's own axes, which is what makes them identical
+    to the capture run's.
+  - `--read-gap-s` (**C0**): the SCL3300 runs a **10 Hz internal LPF** and is
+    read one sample per trigger, so back-to-back reads resample the same
+    filtered state — the mean is fine but the spread collapses, and the per-read
+    sd is what gates the home node and sizes θ_acc. Default 0.15 s is just over
+    one filter period. Without this the tool would have reported a noise floor
+    the sensor does not have.
+- **Failed nodes are refused, not interpolated.** `--on-fail continue` finishes
+  the sweep (the operator gets the full CSV and learns *which* nodes are bad) but
+  **no map is written** and the exit is nonzero. Filling a failed node from its
+  neighbours would invent calibration data at exactly the place the machine had
+  trouble, and C-LEVEL-2 refuses NaN at load.
+- **The home-node gate is two-sided.** `|residual(0,0)|` must be within
+  `max(3 × sd, floor)` **and** under an absolute ceiling. One-sided fails one of
+  two ways: 3 × sd alone is degenerate on a quiet sensor (the Teensy persistence
+  quantum is 1 mrad/axis on its own, so a tolerance of 3e-9 rad would abort a
+  good capture — and a gate that fires on good data is a gate the third operator
+  disables), while a *noisy* sensor makes 3 × sd wide enough to launder a
+  genuinely stale reference.
+- **A real CLI bug, found by its own test:** `--x -150,-75,0,75,150` — the
+  documented explicit-list form — fails, because argparse only treats a leading
+  `-` as a value for bare negative *numbers*. The parser now appends the `=`
+  fix to that specific error rather than leaving it to be rediscovered at the
+  robot.
+
+**The analyser's outlier threshold is deliberately left provisional, and that is
+the honest result.** The first draft flagged a node whose residual departed from
+its neighbours' mean. That flags the **entire boundary** of a good capture: an
+edge node's neighbours all lie on its interior side, and the residual field is
+genuinely curved (the 07-28 table refutes only a *linear* fit). The statistic is
+now a **second difference** — a pinned leg does not bend the field, it kinks it —
+which correctly ignores a pure gradient. But no *threshold* on it survives
+scrutiny: on a probe field with structured curvature, `4 × median` missed a real
+0.5° pin while `2 × median` flagged ten good nodes. Rather than tune a number on
+one synthetic field and ship it as validated, the flag is a coarse net and the
+report leads with the **top/median curvature ratio**, which needs no threshold at
+all — probe (2026-08-03, smooth field, 5×5/±150, 8 reads at 2e-5 rad): **1.01
+clean, 2.43 at a 0.2° pin, 3.65 at 0.3°, 6.07 at 0.5°**. Rung C1 produces the
+first real field and is what should pin `CURVATURE_FLOOR_DEG` /
+`CURVATURE_FLAG_MULT`; `--curvature-flag-deg` overrides them meanwhile.
+
+**Tests** live in `tests/motion/test_tilt_cal_grid.py` (55) and
+`tests/sim/test_tilt_cal_analyse.py` (21) — 76 together, not `tests/ros/`, following the
+precedent that every importer of a `tests/hardware/` script sits in
+`tests/motion/` and every importer of a `tools/` script in `tests/sim/`. The
+strongest one drives the **real** `state_machine.LevellingHandler` phase and
+compares its output to the tool's reduction: a residual is *defined* as that
+formula, so an assertion restating it would drift in lockstep with a sign flip —
+and a sign flip inverts every node, aiming the machine roughly twice as badly as
+no map at all. A second pushes the writer's own output through
+`tilt_map.parse_tilt_map`, the same function the node loads with.
+
+**What the independent audit changed before commit** (findings taken, not argued
+down):
+
+- **BLOCKING — a second Ctrl-C escaped the return-to-centre guard.** The guard
+  caught `Exception`, which does **not** catch `KeyboardInterrupt`. The return
+  blocks for up to `--timeout-s` plus the move, so the reflex second interrupt
+  landed inside it, propagated out of the `finally`, and skipped the artefact
+  writes, the rclpy shutdown **and** the `RETURN TO CENTRE FAILED` message —
+  leaving the platform parked at a raised displaced pose in silence, which is
+  precisely what the tool's docstring and the runbook both promise cannot
+  happen. Now `except BaseException`, with the artefact write and the shutdown
+  each in their own `finally`, and a structural test pins the handler type
+  because `run()` cannot be exercised without a robot.
+- **The contract overstated its own enforcement.** `levelling_frame.md` claimed
+  the tool "refuses to start" unless all four capture preconditions hold. Only
+  *no map loaded* is machine-checkable; fresh-`level` and hand-quiescent are
+  operator confirmations (`--yes` skips them, now with a loud live-capture
+  warning) and can-bridge uptime is warn-and-record by deliberate choice. The
+  contract now carries a per-precondition enforcement table saying so — a tool
+  trusted to enforce what it cannot observe is worse than one that says it
+  cannot.
+- **The write-target sanity check ran after the four-minute sweep**, despite its
+  own docstring claiming otherwise; hoisted into the preflight.
+- **A home-node *service* failure under the default `--on-fail continue`
+  skipped the stale-level gate** via `continue`, then captured 24 more nodes
+  before refusing for the missing home node. Visit 0 is now unconditionally
+  fatal — aborting early is the whole reason home is measured first.
+- `_meta.json` shipped an empty `nodes` list on the home-gate abort (the
+  runbook's headline ABORT criterion) because summaries were built in a trailing
+  loop; they are now appended per node.
+- Two runbook command errors: C3's `--force-uninstall --dry-run` returns before
+  `run()` and so moves nothing, and C2b told the operator to back up the C1 map
+  *after* the command that overwrites it. Both rewritten as explicit sequences.
+- The SCL3300 "mode 4, 10 Hz LPF" citation pointed at a line range that shows
+  the read path but not the mode; now cited separately (`SCL3300.h:144` for the
+  library default, which the firmware never overrides).
+- Test counts in this Outcome and the logbook were wrong (55/76 claimed against
+  54/75 measured) — corrected, and re-measured after the fixes.
+
+**Phase 4 must update the PROVISIONAL defaults in the same commit as the C0
+logbook entry** — `--dwell-s`, `--n-reads`, `--read-gap-s`, `--threshold-deg`,
+the home-gate floor/ceiling in `tilt_cal_grid.py`, and the two `CURVATURE_*`
+constants in `tilt_cal_analyse.py`. They are marked PROVISIONAL in code
+precisely so that commit is easy to find.
+
+**Verification** — scoped: `pytest tests/motion/test_tilt_cal_grid.py
+tests/sim/test_tilt_cal_analyse.py -q` (run 2026-08-03, post-audit-fix tree):
+**76 passed in 1.05 s**. Phase gate: `./run_tests.sh --full` — the (date,
+command, result) triple is in the logbook entry's Verification section. No
+hardware ran in this phase.
 
 ### Phase 4 — Hardware sittings (operator; runbook is the authority)
 
