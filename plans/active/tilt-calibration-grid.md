@@ -593,8 +593,22 @@ fixed. Logbook: `logbook/2026-08-04-tilt-cal-review-fixes.md`.
 **Verification** — scoped: `pytest tests/motion/test_tilt_cal_grid.py
 tests/motion/test_tilt_map.py tests/ros/test_trajectory_tilt_map.py
 tests/sim/test_tilt_cal_analyse.py tests/ros/test_levelling_frame.py -q` (run
-2026-08-04): **254 passed in 18.86 s**. Phase gate: the `./run_tests.sh --full`
+2026-08-04): **254 passed in 18.95 s**. Phase gate: the `./run_tests.sh --full`
 triple is in the logbook entry's Verification section. No hardware ran.
+
+**Review completion (2026-08-04)**: the two review dimensions lost to the
+usage-limit boundary (cross-doc, conventions) re-ran against `00c7818` with
+adversarial verification — 5 confirmed WARNINGs (all documentation drift left
+behind by the dormancy change; no runtime defects) and 2 actionable NOTEs,
+fixed in the follow-up commit: loaded-vs-applied wording corrected in
+`TrajectoryStatus.msg`, the `_publish_status` comment, a test assertion
+message and the mock conftest; the contract's new-pose-surface recipe now
+names `self._active_tilt_map()` (passing raw `self._tilt_map` would bypass the
+dormancy gate undetected); `CURVATURE_*` pinning moved from C0 to C1
+everywhere; the runbook build-gate signature corrected (AttributeError in the
+5 Hz status timer, not module-scope ImportError); the review-fixes scoped
+triple corrected to 18.95 s; `--force-uninstall` help and the analyser
+docstring aligned with the multi-candidate semantics.
 
 ### Phase 4 — Hardware sittings (operator; runbook is the authority)
 

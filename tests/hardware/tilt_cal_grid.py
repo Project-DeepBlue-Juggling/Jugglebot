@@ -1003,9 +1003,11 @@ def build_parser() -> argparse.ArgumentParser:
                            'read-noise probe must not leave a calibration '
                            'behind.')
     misc.add_argument('--force-uninstall', action='store_true',
-                      help='if a map is loaded, move the file aside (timestamped '
-                           '.bak) and reload so the capture starts with '
-                           'tilt_map_loaded=false.')
+                      help='if a map is loaded, move EVERY existing map '
+                           'candidate aside (source tree AND any ament share '
+                           'copy, each to a timestamped .bak; refuses a '
+                           '$JUGGLEBOT_TILT_CAL-pointed file) and reload so '
+                           'the capture starts with tilt_map_loaded=false.')
     misc.add_argument('--dry-run', action='store_true',
                       help='print the node sequence and ETA; make ZERO ROS '
                            'calls and construct no ROS objects.')
@@ -1512,7 +1514,8 @@ def run(args) -> int:                                    # noqa: C901
                     'single-offset reference, so capturing under a loaded map '
                     'bakes that map into its own successor and the error '
                     'compounds silently on every recapture. Re-run with '
-                    '--force-uninstall to move the file aside and reload.'
+                    '--force-uninstall to move every map candidate aside '
+                    '(source tree and ament share copy) and reload.'
                     .format(status.tilt_map_version))
             else:
                 print('  tilt_map_loaded=False')

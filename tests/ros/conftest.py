@@ -230,9 +230,11 @@ class TrajectoryStatus:
     # REJECTED_NOT_LEVELLED gate.
     gravity_correction_loaded: bool = False
     # C-LEVEL-2 observability (ros_ws/docs/levelling_frame.md). Defaults mirror
-    # the real message again: no map loaded, and NO version string for a map
-    # that is not being applied. Nothing gates on either — the tilt map is a
-    # refinement, so a consumer that refuses to act without one is a bug.
+    # the real message again: no map loaded, empty version. The pair reports
+    # LOADED, not applied — a loaded map is dormant until
+    # gravity_correction_loaded is also true. Nothing gates on either — the
+    # tilt map is a refinement, so a consumer that refuses to act without one
+    # is a bug.
     tilt_map_loaded: bool = False
     tilt_map_version: str = ''
 

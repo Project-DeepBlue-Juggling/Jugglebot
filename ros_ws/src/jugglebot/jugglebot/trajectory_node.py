@@ -2836,15 +2836,18 @@ class TrajectoryNode(Node):
         # the matrix) is deliberate — a consumer handed the matrix would be one
         # step from re-applying it, which is the mirror bug the contract forbids.
         msg.gravity_correction_loaded = bool(self._gravity_correction_loaded)
-        # C-LEVEL-2 observability: "is a calibration applied, and WHICH one".
+        # C-LEVEL-2 observability: "is a calibration LOADED, and WHICH one".
+        # Loaded, not applied: while gravity_correction_loaded is false the map
+        # is dormant (_active_tilt_map returns None and ingest applies identity),
+        # so "applied" is the CONJUNCTION of both booleans, read together.
         # Two fields, not one, because the boolean alone cannot tell an operator
         # that the map they just captured is the map the node is applying — the
         # Phase-3 tool writes the file, calls trajectory/reload_tilt_map and then
         # reads this version back to confirm. Nothing gates on either field: the
         # map is a refinement, and REJECTED_NOT_LEVELLED still keys on
         # gravity_correction_loaded alone (C-LEVEL-2 § "why it is not a gate").
-        # The version is '' whenever no map is loaded, so the pair can never
-        # report a version for a calibration that is not being applied.
+        # The version is '' whenever no map is loaded; a non-empty version with
+        # gravity_correction_loaded=false names a loaded-but-dormant map.
         msg.tilt_map_loaded = bool(self._tilt_map_loaded)
         msg.tilt_map_version = str(self._tilt_map_version)
         self.status_pub.publish(msg)

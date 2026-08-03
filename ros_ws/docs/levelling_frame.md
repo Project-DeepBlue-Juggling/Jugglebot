@@ -822,12 +822,19 @@ the manifest and the grep counts. Deleting archived code is a separate concern.
    measurement or from an existing plan? If you cannot answer that in one
    sentence, you have found a design problem, not a paperwork problem.
 2. `E` ⇒ **build** the correction for that pose with
-   `levelling.correction_for_pose(self._gravity_offset, self._tilt_map, pose)`
+   `levelling.correction_for_pose(self._gravity_offset, self._active_tilt_map(), pose)`
    and **apply** it with `levelling.correct_pose(pose, correction)` — **once**,
    at ingest, before the pose reaches any planner entry. Build *and* apply:
    passing the stored `self._gravity_correction` instead is a working C-LEVEL-1
-   application that silently ignores the calibration map. Catch `TiltMapError`
-   and fall back to the stored correction — never let a lookup kill a callback.
+   application that silently ignores the calibration map. The map argument MUST
+   be `self._active_tilt_map()`, never `self._tilt_map` directly: the accessor
+   is the dormancy gate (§ "The map is gated on the level reference") that
+   returns `None` until a level reference is loaded — passing the raw
+   `self._tilt_map` re-creates the unlevelled residual-only composition at
+   exactly your new surface, and neither the structural manifest (which keys on
+   the call, not its arguments) nor the one-pose behavioural tests will catch
+   it. Catch `TiltMapError` and fall back to the stored correction — never let
+   a lookup kill a callback.
    `D` ⇒ apply nothing.
 3. Add **both** rows to the manifest in `tests/ros/test_levelling_frame.py`
    (`build:` and `apply:`) with its classification, and add the row to the

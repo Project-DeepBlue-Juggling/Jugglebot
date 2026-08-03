@@ -75,7 +75,8 @@ close.
   ```
   then **relaunch** `jugglebot_launch.py` (launch runs the *installed* copy).
   `TrajectoryStatus.msg` gained **two** fields in Phase 2 (`tilt_map_loaded`,
-  `tilt_map_version`). A partial rebuild is a module-scope ImportError and
+  `tilt_map_version`). On a partial rebuild the installed message lacks those
+  fields, the 5 Hz status timer's first tick raises AttributeError, and
   **`trajectory_node` exits ~200 ms after launch** — that exact signature. If
   the launch window shows `trajectory_node` dying immediately, this is why;
   rebuild both packages, do not debug anything else first.
@@ -175,8 +176,10 @@ accuracy **θ_acc**, and the tilted-pose reading vs the centre reading (this
 sizes orientation-dependence — a large difference means the map's
 apply-at-all-orientations assumption needs a follow-on tilt sweep, which is
 **not** in this plan). Retain both CSVs. Then update the PROVISIONAL defaults in
-`tilt_cal_grid.py` and the analyser's `CURVATURE_*` constants in the same
-commit as the C0 logbook entry.
+`tilt_cal_grid.py` (dwell, read count, home-gate floor, θ_acc) in the same
+commit as the C0 logbook entry. The analyser's `CURVATURE_*` constants are
+**pinned at C1, not here** — they need a real measured field, which C0's four
+probe poses are not.
 
 ---
 
@@ -219,6 +222,10 @@ python tools/tilt_cal_analyse.py --csv temp/logs/tilt_cal_grid_<ts>.csv
   likely a leg pinned on its stroke clamp at an extremity, which corrupts that
   node without any rejection.
 - `tilt_map_loaded: true` with the expected version on `trajectory/status`.
+
+**After the rung:** pin the analyser's `CURVATURE_FLOOR_DEG` /
+`CURVATURE_FLAG_MULT` against this first real field (the C0 probe poses cannot
+do it), in the same commit as the C1 logbook entry.
 
 **ABORT**
 - `STALE LEVEL REFERENCE` at the home node ⇒ re-`level` from IDLE and start

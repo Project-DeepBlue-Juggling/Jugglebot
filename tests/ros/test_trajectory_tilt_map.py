@@ -534,7 +534,9 @@ def test_status_reports_both_tilt_map_states(monkeypatch, tmp_path):
     status = node.status_pub.published[-1]
     assert status.tilt_map_loaded is False
     assert status.tilt_map_version == '', (
-        'no version may be published for a map that is not being applied')
+        'no version may be published when no map is loaded (a non-empty '
+        'version with gravity_correction_loaded=false is the loaded-but-'
+        'dormant state and is legitimate; empty is only for NO map)')
 
     path = _write_map(tmp_path / 'tilt_calibration.yaml', _map_doc())
     monkeypatch.setenv('JUGGLEBOT_TILT_CAL', path)

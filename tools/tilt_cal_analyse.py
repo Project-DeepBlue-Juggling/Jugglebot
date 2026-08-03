@@ -608,7 +608,7 @@ def cell_edges(nodes: Sequence[float]) -> List[float]:
     the extent set to the first and last NODE coordinates each pixel centre
     lands half a cell off its node — on the default 5×5 ±150 mm grid the colour
     cell for the node at x=−150 is centred at x=−120 while the text label sits
-    at −150, a 30 mm disagreement. On a non-uniform axis (``--x-nodes`` with
+    at −150, a 30 mm disagreement. On a non-uniform axis (``--x`` with
     unequal spacing, which the tool accepts) the even spread is not merely
     offset: a node can land in a *different node's* pixel. Reading an outlier
     off such a plot then points the operator at the wrong node, which for a
