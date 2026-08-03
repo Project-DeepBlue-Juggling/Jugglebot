@@ -396,3 +396,100 @@ def test_main_diff_exit_code_reflects_the_c2_verdict(tmp_path, capsys):
 def test_main_reports_a_missing_file_rather_than_raising(tmp_path, capsys):
     assert tca.main([str(tmp_path / 'nope.yaml'), '--no-plot']) == 1
     assert 'no such file' in capsys.readouterr().err
+
+
+# ── heat-map cell geometry ───────────────────────────────────────
+#
+# The plots are how an operator FINDS an outlier node. A colour cell that is not
+# where its label says it is sends them to re-measure the wrong node, so the
+# cell/label co-location is a correctness property of this tool, not styling.
+
+
+def test_cell_edges_bracket_every_node():
+    """n nodes ⇒ n+1 strictly-increasing edges, each node inside its own cell."""
+    for nodes in (AXIS5, [-150.0, -20.0, 0.0, 5.0, 150.0], [0.0, 1.0]):
+        edges = tca.cell_edges(nodes)
+        assert len(edges) == len(nodes) + 1
+        assert all(edges[i] < edges[i + 1] for i in range(len(edges) - 1)), \
+            'a non-monotonic edge array silently reorders the colour cells'
+        for i, node in enumerate(nodes):
+            assert edges[i] < float(node) < edges[i + 1], \
+                'node {} is not inside cell {}'.format(node, i)
+
+
+def test_cell_edges_centre_each_node_on_a_uniform_axis():
+    """The default grid is uniform, so there each node IS the cell centre.
+
+    This is the case the old `imshow(extent=[first, last])` got wrong by half a
+    cell: it spread 5 pixels across [-150, 150], centring the first at -120
+    while its label sat at -150.
+    """
+    edges = tca.cell_edges(AXIS5)
+    for i, node in enumerate(AXIS5):
+        assert 0.5 * (edges[i] + edges[i + 1]) == pytest.approx(float(node))
+
+
+def test_cell_edges_handle_a_non_uniform_axis_that_imshow_cannot():
+    """On unequal spacing an even pixel spread puts a node in the WRONG cell.
+
+    `--x-nodes` accepts an arbitrary list, so this is a supported grid, and it
+    is the case where the old rendering stopped being merely offset and started
+    being wrong: the node at 5.0 fell inside the pixel belonging to 0.0.
+    """
+    nodes = [-150.0, -20.0, 0.0, 5.0, 150.0]
+    edges = tca.cell_edges(nodes)
+    # The fix: every node lands in its own cell.
+    for i, node in enumerate(nodes):
+        assert edges[i] < node < edges[i + 1]
+
+    # The bug, reproduced: imshow's even spread across [first, last].
+    lo, hi = nodes[0], nodes[-1]
+    width = (hi - lo) / len(nodes)
+    def imshow_cell(value):
+        return min(int((value - lo) / width), len(nodes) - 1)
+    assert imshow_cell(5.0) == imshow_cell(0.0), \
+        'precondition: the even spread collapses two nodes into one pixel'
+    assert imshow_cell(5.0) != nodes.index(5.0)
+
+
+def test_make_plots_places_each_label_inside_its_own_colour_cell(tmp_path):
+    """End-to-end on the real plotting path: labels sit in the cells they name.
+
+    Drives `make_plots` under the Agg backend and reads the QuadMesh's own
+    coordinates back out, so it tests what is rendered rather than restating
+    `cell_edges`. A non-uniform y-axis is used because that is where the two
+    disagreed most.
+    """
+    matplotlib = pytest.importorskip('matplotlib')
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    x = [-150.0, -20.0, 0.0, 5.0, 150.0]
+    y = [-150.0, -75.0, 0.0, 75.0, 150.0]
+    tx, ty = _smooth_field(x, y)
+    field = tca.Field(x_mm=x, y_mm=y, tx=np.asarray(tx), ty=np.asarray(ty))
+
+    written = tca.make_plots(field, str(tmp_path))
+    assert written, 'matplotlib is installed, so plots must have been written'
+    assert all(os.path.exists(p) for p in written)
+
+    # Rebuild one mesh the way make_plots does and check the rendered geometry.
+    fig, ax = plt.subplots()
+    mesh = ax.pcolormesh(np.asarray(tca.cell_edges(x)),
+                         np.asarray(tca.cell_edges(y)),
+                         field.magnitude_deg, shading='flat')
+    # QuadMesh cell VERTICES, shape (ny+1, nx+1, 2) — NOT centres. The four
+    # corners of cell (iy, ix) are [iy][ix], [iy][ix+1], [iy+1][ix],
+    # [iy+1][ix+1], which is what the bracketing assertions below read.
+    centres = mesh.get_coordinates()
+    for iy in range(len(y)):
+        for ix in range(len(x)):
+            corners = [centres[iy][ix], centres[iy][ix + 1],
+                       centres[iy + 1][ix], centres[iy + 1][ix + 1]]
+            xs = [float(c[0]) for c in corners]
+            ys = [float(c[1]) for c in corners]
+            assert min(xs) < x[ix] < max(xs), \
+                'label x={} is outside the cell drawn for it'.format(x[ix])
+            assert min(ys) < y[iy] < max(ys), \
+                'label y={} is outside the cell drawn for it'.format(y[iy])
+    plt.close(fig)

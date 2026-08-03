@@ -28,8 +28,16 @@ _HW_CONFIG_YAML = os.path.join('..', '..', '..', 'config', 'hardware_config.yaml
 # NOTE the loader resolves SOURCE TREE FIRST and this share copy only as a
 # fallback — the exact inverse of hardware_config.yaml above, because the
 # acquisition tool rewrites the source file at runtime and reloads it live.  So
-# this row exists for the detached/install-tree case, and a stale copy of it can
-# never shadow a fresh capture.  See motion/tilt_map.py's module docstring.
+# this row exists for the detached/install-tree case.  See motion/tilt_map.py's
+# module docstring.
+#
+# Source-first means a stale copy here can never shadow a fresh CAPTURE (the
+# source file exists, so it wins).  It does NOT mean this copy is harmless: it
+# shadows an UNINSTALL.  Once any colcon build has run with the source file
+# present, moving the source file aside makes the resolver fall through to THIS
+# copy — the map stays loaded and the reload reports success.  tilt_cal_grid.py's
+# --force-uninstall therefore moves every existing candidate aside, this one
+# included, and says so when a map survives.
 _TILT_CAL_YAML = os.path.join('..', '..', '..', 'config', 'tilt_calibration.yaml')
 _CONFIG_YAMLS = [_HW_CONFIG_YAML]
 if os.path.exists(_TILT_CAL_YAML):

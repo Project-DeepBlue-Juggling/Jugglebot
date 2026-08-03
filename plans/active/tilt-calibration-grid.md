@@ -549,6 +549,53 @@ tests/sim/test_tilt_cal_analyse.py -q` (run 2026-08-03, post-audit-fix tree):
 command, result) triple is in the logbook entry's Verification section. No
 hardware ran in this phase.
 
+#### Review fixes (2026-08-04) — before any Phase 4 rung runs
+
+A six-dimension adversarial review of the three feature commits (7c440ae,
+3c89785, d4168f3) produced ten findings; all ten reproduced at HEAD and were
+fixed. Logbook: `logbook/2026-08-04-tilt-cal-review-fixes.md`.
+
+- **BLOCKING — a capture on a DISARMED wire.** `go_to_pose` is *accepted* while
+  `mpc_active=0` (streaming-while-disarmed is the legal pre-arm phase), the
+  platform does not move, and the tool wrote + applied + *verified* a plausible
+  all-zeros map that verified precisely because nothing moved. The module
+  docstring's claim that a bypassed preflight would still be harmless was wrong
+  and is corrected. Guarded in three layers: `/link_status` `mpc_active` at
+  preflight, the `DISARMED` marker on every accepted response (re-checked
+  between nodes, outside the per-node `try` so `--on-fail continue` cannot
+  demote it), and a flat-field WARN before the map is written. Same class as the
+  2026-07-15 silent-no-op battery.
+- **`--force-uninstall` could not uninstall.** It moved only the source-tree
+  file; the ament share copy `setup.py` installs then shadowed it and the old
+  map stayed loaded. It now moves every existing candidate aside, refuses to
+  touch an `$JUGGLEBOT_TILT_CAL`-pointed file, and names the resolved path on
+  failure. This had also made rung **C2b's** documented `--force-uninstall`
+  unrunnable after any post-C1 build and silently confounded **C3 arm A**; both
+  runbook rungs gained the caveat and a verification step.
+- **Unlevelled map semantics — a decision, not a bug fix.** With a map loaded
+  and no `/gravity_offset` yet (the state at *every* boot once the YAML is
+  committed) the residual was composed onto the `(0.0, 0.0)` placeholder. The
+  map is now **gated on the level reference**: dormant but loaded and
+  observable until `level` lands. § C-LEVEL-2 gained the state table.
+- **Rung C2b's close-out could not work as written.** "Restore the C1 map" had
+  no `cp` and no reload call, so the shim-contaminated C2 recapture stayed
+  applied in memory for the rest of the session and the `grep` "confirmation"
+  could never have shown the C1 version. Now a four-step sequence — including
+  saving the C2 map, which until now existed *only* at the path step 1
+  overwrites — with the version comparison named explicitly.
+- Also: a 5 Hz status race that could abort a *completed* capture with "APPLIED
+  THE WRONG FILE"; `map_version` hashing ndarrays via `default=str` (identical
+  maps hashing differently, and >1000-node grids colliding through numpy's repr
+  truncation); the analyser's half-cell heat-map skew; a set-but-missing
+  `$JUGGLEBOT_TILT_CAL` degrading silently; preconditions checked only at
+  preflight; and no warning when a map's capture height is off the active plane.
+
+**Verification** — scoped: `pytest tests/motion/test_tilt_cal_grid.py
+tests/motion/test_tilt_map.py tests/ros/test_trajectory_tilt_map.py
+tests/sim/test_tilt_cal_analyse.py tests/ros/test_levelling_frame.py -q` (run
+2026-08-04): **254 passed in 18.86 s**. Phase gate: the `./run_tests.sh --full`
+triple is in the logbook entry's Verification section. No hardware ran.
+
 ### Phase 4 — Hardware sittings (operator; runbook is the authority)
 
 - **C0 — probe** (probe-first rule: no threshold is asserted in a test

@@ -38,10 +38,14 @@ platform's held pose or on a single correction hoisted per service call.
 
 from __future__ import annotations
 
+import os
+import sys
+
 import numpy as np
 import pytest
 import yaml
 
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 from std_msgs.msg import Float64MultiArray, String
 from std_srvs.srv import Trigger
@@ -51,6 +55,18 @@ from jugglebot_interfaces.srv import GoToPose, TimedTarget
 import jugglebot.hardware_config as hw
 from jugglebot.motion import levelling, tilt_map
 from jugglebot.trajectory_node import TrajectoryNode
+
+# The C-LEVEL-2 acquisition tool. Imported with the `tests/hardware/` sys.path
+# idiom (`tests/motion/test_tilt_cal_grid.py` uses the same one) so the two
+# seam tests at the bottom of this file can drive the tool's guards with THIS
+# node's real responses — the tool's own unit tests can only assert against a
+# literal copy of the marker, which would not notice this node rewording it.
+_HW_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'hardware')
+if _HW_DIR not in sys.path:
+    sys.path.insert(0, _HW_DIR)
+
+import tilt_cal_grid as tcg  # noqa: E402
 
 # The offset published during the 2026-07-25 15:17:48 self-toss session — the
 # same capture record `test_levelling_frame.py` pins its E rows against.
@@ -237,7 +253,19 @@ def test_loader_absent_file_is_soft_identity():
                        _expected_rotvec(120.0, -120.0), atol=1e-12)
 
 
-def test_loader_absent_file_logs_info_not_error():
+def test_loader_absent_file_logs_info_not_error(monkeypatch):
+    """PLAIN absence — no env var, no file — is INFO. It must cost nothing.
+
+    `monkeypatch.delenv` is load-bearing and not tidying. The directory fixture
+    pins "no map" by pointing `$JUGGLEBOT_TILT_CAL` at a path that does not
+    exist, which is a *different* state (see the test below): the operator named
+    a file and is not getting it. Without the delenv this test asserted INFO
+    about the override branch while its name claimed the plain one — it could
+    never have caught a regression in either.
+    """
+    monkeypatch.delenv('JUGGLEBOT_TILT_CAL', raising=False)
+    monkeypatch.setattr(tilt_map, '_SRC_TILT_YAML',
+                        '/nonexistent/config/tilt_calibration.yaml')
     node = TrajectoryNode(command_pub_factory=_CapturePub, start_emitter=False)
     # The constructor already ran the loader against a logger we cannot see, so
     # re-run it against one we can — the code path is identical.
@@ -245,8 +273,41 @@ def test_loader_absent_file_logs_info_not_error():
     ok, message = node._load_tilt_map()
     assert ok is True
     assert rec.errors == []
+    assert rec.warnings == []
     assert any('no tilt calibration map found' in line for line in rec.infos)
     assert 'no tilt calibration map found' in message
+
+
+def test_loader_warns_when_the_env_override_points_at_nothing(monkeypatch,
+                                                              tmp_path):
+    """A typo'd `$JUGGLEBOT_TILT_CAL` degrades LOUDLY, naming the path.
+
+    `tilt_map_candidates`' docstring has always promised this degradation is
+    loud, and the reasoning is sound — the override is authoritative, so a typo
+    silently runs the whole session uncalibrated while the operator believes
+    their named map is applied. But the log level was INFO, which at the default
+    level is indistinguishable from the uncalibrated machine's normal boot. The
+    promise and the behaviour disagreed; this pins the behaviour.
+
+    Plain absence stays INFO (the test above): it is the state every machine is
+    in before its first capture and must not shout at anyone.
+    """
+    missing = str(tmp_path / 'typo.yaml')
+    monkeypatch.setenv('JUGGLEBOT_TILT_CAL', missing)
+    node = TrajectoryNode(command_pub_factory=_CapturePub, start_emitter=False)
+    rec = _logger_for(node)
+    ok, message = node._load_tilt_map()
+    # Still non-gating: the load SUCCEEDS and the node runs. Loud, not fatal.
+    assert ok is True
+    assert node._tilt_map is None and node._tilt_map_loaded is False
+    assert rec.errors == []
+    assert rec.infos == []
+    assert len(rec.warnings) == 1
+    # The path is what makes the warning actionable — a typo is invisible
+    # without seeing the string the operator actually set.
+    assert missing in rec.warnings[0]
+    assert 'JUGGLEBOT_TILT_CAL' in rec.warnings[0]
+    assert missing in message
 
 
 def test_loader_happy_path_loads_and_versions(monkeypatch, tmp_path):
@@ -523,6 +584,117 @@ def test_go_to_pose_applies_the_residual_at_its_own_xy(monkeypatch, tmp_path, x,
     assert np.allclose(end[3:6],
                        _expected_rotvec(x, y, tilt_map_obj=node._tilt_map),
                        atol=1e-12)
+
+
+def test_a_loaded_map_is_DORMANT_until_the_node_is_levelled(monkeypatch,
+                                                            tmp_path):
+    """Map loaded, no `/gravity_offset` yet ⇒ ingest behaves as C-LEVEL-1 unlevelled.
+
+    **This is the state every boot is in** once `config/tilt_calibration.yaml`
+    is committed: the map loads in `__init__`, and the offset only arrives when
+    the operator runs `level`. Before this was pinned, the map term was composed
+    onto `_gravity_offset`'s `(0.0, 0.0)` **placeholder** — and that placeholder
+    means "we do not know the tilt", not "the tilt is zero". A residual is
+    *defined* as what is left over after a fresh `level` reference is applied
+    (C-LEVEL-2 § "What the map is"), so applying one unreferenced commands a
+    rotation relative to nothing. It is not a smaller error than no map; it is a
+    differently-wrong one, and no contract clause described it.
+
+    The decision is to gate the map on the offset: identity in, identity out —
+    exactly what the machine did before this phase existed, and what the rest of
+    the stack already assumes an unlevelled node does (the toss's
+    `REJECTED_NOT_LEVELLED` keys on `gravity_correction_loaded` alone).
+    """
+    node, _ = _mapped_node(monkeypatch, tmp_path, offset=None)
+    assert node._gravity_correction_loaded is False
+    # The map is LOADED and observable — dormant, not unloaded. An operator
+    # inspecting trajectory/status must still see which calibration is in place.
+    assert node._tilt_map is not None
+    assert node._tilt_map_loaded is True
+    assert node._tilt_map_version != ''
+    assert node._active_tilt_map() is None
+
+    # A node at a corner where the map's residual is large (0.86°/axis): if the
+    # map leaked through, this endpoint could not be the identity.
+    assert node._svc_go_to_pose(_go_to_pose_req(x=150.0, y=150.0),
+                                GoToPose.Response()).accepted is True
+    end = np.asarray(node._active_plan.final_pose)
+    assert np.allclose(end[3:6], [0.0, 0.0, 0.0], atol=1e-12), \
+        'an unlevelled node must command the requested rotation unchanged'
+
+
+def test_the_dormant_map_starts_applying_the_moment_level_lands(monkeypatch,
+                                                                tmp_path):
+    """Dormancy is not a latch — the offset arriving is enough, with no reload.
+
+    The pair to the test above, and the half that keeps the gate from being a
+    silent permanent disable: an operator who runs `level` after boot must get
+    their calibration without knowing that a reload was ever needed.
+    """
+    node, _ = _mapped_node(monkeypatch, tmp_path, offset=None)
+    assert node._active_tilt_map() is None
+
+    node._on_gravity_offset(Float64MultiArray(data=list(_SESSION_OFFSET)))
+    assert node._active_tilt_map() is node._tilt_map
+
+    assert node._svc_go_to_pose(_go_to_pose_req(x=150.0, y=150.0),
+                                GoToPose.Response()).accepted is True
+    end = np.asarray(node._active_plan.final_pose)
+    assert np.allclose(end[3:6],
+                       _expected_rotvec(150.0, 150.0,
+                                        tilt_map_obj=node._tilt_map),
+                       atol=1e-12)
+
+
+def test_dormancy_is_announced_once_not_at_ingest_rate(monkeypatch, tmp_path):
+    """A dormant map WARNs once — silence here would be the whole bug again.
+
+    `tilt_map_loaded=true` while the map is not being applied is exactly the
+    kind of state this project refuses to leave silent. But the announcement
+    lives on the ingest path, so it must be latched: an unlevelled follower
+    stream would otherwise log at 40 Hz.
+    """
+    node, _ = _mapped_node(monkeypatch, tmp_path, offset=None)
+    rec = _logger_for(node)
+    for _ in range(5):
+        node._active_tilt_map()
+    assert len(rec.warnings) == 1
+    assert 'DORMANT' in rec.warnings[0]
+    assert node._tilt_map_version in rec.warnings[0]
+
+
+def test_loader_warns_when_the_map_was_captured_off_the_active_plane(
+        monkeypatch, tmp_path):
+    """A map captured at z=200 applied in a z=170 session says so, loudly.
+
+    `z_mm` is provenance: excluded from the version hash by design, and never a
+    lookup key — so the residual grid is applied at EVERY height regardless of
+    where it was measured. That is fine for the ±few mm an operator's `--z`
+    might drift and wrong for a deliberate `--z 200` capture, and the version
+    string cannot carry the difference (by design). The load is the only place
+    an operator can be told. WARN, never refuse: C-LEVEL-2 is non-gating, and an
+    off-plane map is a precision question, not a safety one.
+    """
+    doc = _map_doc()
+    doc['grid']['z_mm'] = 200.0
+    node, _ = _mapped_node(monkeypatch, tmp_path, doc=doc)
+    rec = _logger_for(node)
+    ok, _message = node._load_tilt_map()
+
+    assert ok is True
+    assert node._tilt_map_loaded is True, 'non-gating: the map still loads'
+    assert len(rec.warnings) == 1
+    # BOTH numbers, or the operator cannot tell which way the mismatch runs.
+    assert '200.0' in rec.warnings[0]
+    assert str(float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)) in rec.warnings[0]
+
+
+def test_a_map_captured_at_the_active_plane_is_silent(monkeypatch, tmp_path):
+    """The common case must not warn, or the warning above gets ignored."""
+    node, _ = _mapped_node(monkeypatch, tmp_path)   # _map_doc uses z_mm=170.0
+    rec = _logger_for(node)
+    node._load_tilt_map()
+    assert rec.warnings == []
 
 
 def test_a_pose_outside_the_hull_clamps_at_ingest(monkeypatch, tmp_path):
@@ -879,3 +1051,63 @@ def test_every_ingest_survives_a_non_finite_pose(monkeypatch, tmp_path):
     # E5/E6 — finite by construction, and still map-corrected.
     neutral = node._corrected_neutral_pose()
     assert np.allclose(neutral[3:6], _expected_rotvec(0.0, 0.0), atol=1e-15)
+
+
+# ══════════════════════════════════════════════════════════════
+# The seam between this node and the C-LEVEL-2 acquisition tool
+# ══════════════════════════════════════════════════════════════
+
+
+def test_the_acquisition_tool_detects_this_nodes_real_disarmed_marker():
+    """Anti-drift: the tool's detector is driven by the node's ACTUAL response.
+
+    `tests/hardware/tilt_cal_grid.py` aborts a capture when an accepted
+    `go_to_pose` response says the wire is disarmed — because an accepted move
+    on a disarmed wire moves nothing, and a whole capture then writes and
+    "verifies" an all-zeros calibration that verifies precisely because the
+    platform never moved (the 2026-07-15 silent-no-op class).
+
+    The tool's own unit tests assert against a *literal* copy of the marker, so
+    they would stay green if this node reworded it — and the tool would go
+    silently blind in the one situation it exists to catch. This test is the
+    join: the real node produces the real message, and the real detector is
+    asked about it. It lives here rather than in `tests/motion/` because only
+    this directory can construct a `TrajectoryNode`.
+    """
+    node = _node()
+    assert node._wire_armed is False, \
+        'precondition: a node that has seen no /link_status is disarmed'
+    response = node._svc_go_to_pose(_go_to_pose_req(x=100.0, y=0.0),
+                                    GoToPose.Response())
+    assert response.accepted is True, \
+        'precondition: the disarmed wire does NOT reject — that is the trap'
+    assert tcg.response_reports_disarmed(response.message) is True
+
+    # ...and the armed case must not trip it, or the tool aborts every capture.
+    node._on_link_status(DiagnosticStatus(
+        values=[KeyValue(key='mpc_active', value='1')]))
+    assert node._wire_armed is True
+    _run_plan_out(node)
+    armed = node._svc_go_to_pose(_go_to_pose_req(x=-100.0, y=0.0),
+                                 GoToPose.Response())
+    assert armed.accepted is True
+    assert tcg.response_reports_disarmed(armed.message) is False
+
+
+def test_the_tool_reads_the_same_mpc_active_encoding_this_node_does():
+    """Both sides key on `/link_status` `mpc_active == '1'`, a STRING.
+
+    The bridge publishes `str(int(bool))`. A tool that compared against `1`,
+    `True` or `'true'` would silently never see an armed wire (refusing every
+    capture) or never see a disarmed one (the blocking bug). Pinning both
+    consumers to one fixture keeps them from drifting apart.
+    """
+    node = _node()
+    for value, expected in (('1', True), ('0', False)):
+        node._on_link_status(DiagnosticStatus(
+            values=[KeyValue(key='mpc_active', value=value)]))
+        assert node._wire_armed is expected
+        ok, _ = tcg.wire_armed_verdict({'mpc_active': value,
+                                        'fault_state': 'NONE',
+                                        'bridge_link': 'UP'})
+        assert ok is expected

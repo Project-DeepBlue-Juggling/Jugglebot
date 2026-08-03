@@ -338,9 +338,29 @@ def _numeric(value: Any) -> Any:
     ``170`` and ``170.0`` are the same calibration written by two serializers.
     Non-numeric values are returned untouched so a malformed document still
     hashes deterministically (``map_version`` is callable before validation).
+
+    **ndarrays are converted to lists and recursed, not passed through.** A
+    caller holding an in-memory document — the acquisition tool assembling one,
+    a test round-tripping one — can legitimately carry ``residual_rad.tx`` as an
+    ndarray, and ``json.dumps(..., default=str)`` would then hash its *repr*.
+    That repr is wrong twice over: an ndarray and a list of the same numbers
+    hash **differently**, so the same calibration reports two versions depending
+    on who built the dict; and numpy **truncates** its repr past
+    ``threshold=1000`` elements to ``[0.1, 0.2, ..., 0.9]``, so on a grid with
+    more than 1000 nodes two genuinely different maps can share a version — the
+    exact silent-wrong-map failure the version string exists to make impossible.
+    ``tolist()`` also lowers ``np.float64`` to ``float``, which is what the YAML
+    path yields anyway.
     """
     if isinstance(value, bool):
         return value
+    if isinstance(value, np.ndarray):
+        return _numeric(value.tolist())
+    if isinstance(value, np.generic):
+        # np.float64 / np.int64 scalars: json.dumps has no encoder for these
+        # either, and .item() gives the Python number the YAML path would.
+        item = value.item()
+        return item if isinstance(item, bool) else _numeric(item)
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, (list, tuple)):

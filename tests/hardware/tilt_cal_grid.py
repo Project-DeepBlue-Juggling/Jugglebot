@@ -28,14 +28,31 @@ reference is stale and the capture is aborted rather than baked in.
 **Safety posture — request-only, like ``traj_ramp_battery.py``.** This tool
 issues ``trajectory/go_to_pose`` requests and reads services. It **never arms,
 never changes control mode, never touches limits, never commands the hand**.
-Arming, modes and E-STOP belong to the operator. If the platform is not armed in
-TRAJECTORY the preflight refuses before anything is requested, and even if that
-check were bypassed every move would come back ``WRONG_MODE`` / ``STALE_STATE``
-and nothing would move.
+Arming, modes and E-STOP belong to the operator.
+
+**The preflight's mode check is NOT a backstop, and this tool does not rely on
+one.** ``mode != TRAJECTORY`` does come back ``WRONG_MODE``, but the mode is only
+half the question: with the mode right and the **wire disarmed**
+(``mpc_active=0``), ``go_to_pose`` is *accepted* — streaming-while-disarmed is
+the legal pre-arm phase of the ARMING CONTRACT — the setpoints are emitted and
+dropped, and the platform does not move. A whole capture then completes against
+a stationary platform, every residual is the same number, and the tool writes,
+applies and *verifies* a plausible all-zeros calibration that verifies perfectly
+**because** nothing moved. That is not hypothetical: on 2026-07-15 a full ramp
+battery ran exactly that way with zero warnings anywhere. So the disarmed wire is
+guarded explicitly and in three layers — the ``/link_status`` ``mpc_active``
+check (at preflight **and** re-checked from a fresh message before every node),
+the ``DISARMED`` marker on every accepted ``go_to_pose`` response, and a
+flat-field warning before the map is written. See § "pure core: the
+disarmed-wire guard" below.
 
 **Every exit path returns the platform to the centre node first.** Aborts,
-Ctrl-C and exceptions all route through the same return-to-centre; the platform
-is never left parked at a raised displaced pose.
+Ctrl-C and exceptions all route through the same return-to-centre, so the
+platform is not left parked at a raised displaced pose. **One case cannot honour
+that and says so instead**: a wire that disarmed mid-sweep makes the return
+itself un-executable — the move would be "accepted" and dropped like every other
+— so the return is refused and the tool prints ``RETURN TO CENTRE FAILED … bring
+it home manually``. Loudly failing to come home beats silently pretending to.
 
 **Why the moves are deliberately slow.** ``--move-duration-s`` defaults to 3.0 s
 and ``--lean-gain`` is an explicit ``0.0`` (lean shaping OFF, so the terminal
@@ -169,6 +186,21 @@ TOOL_NAME = 'tests/hardware/tilt_cal_grid.py'
 
 class TiltCalError(RuntimeError):
     """An operator-facing refusal: the message is the whole error report."""
+
+
+class TiltCalStatusTimeout(TiltCalError):
+    """``wait_for_status`` gave up waiting for an EXPECTED state.
+
+    Distinct from the base class so a caller can attach its own remedy text —
+    "the ament share copy is shadowing the source tree", "check $JUGGLEBOT_TILT_CAL
+    on both sides" — to a timeout while any other failure still routes through
+    the ordinary ABORT path unchanged. ``last_status`` is the final message seen,
+    so the caller can name what the node actually reported rather than guessing.
+    """
+
+    def __init__(self, message: str, last_status: Any = None):
+        super().__init__(message)
+        self.last_status = last_status
 
 
 class Node(NamedTuple):
@@ -472,6 +504,159 @@ def home_node_verdict(stats: ReadStats) -> Tuple[bool, str]:
                     stats.sd_tx, stats.sd_ty))
 
 
+# ── pure core: the disarmed-wire guard ───────────────────────────────────
+#
+# A capture on a DISARMED wire is the failure this section exists to make
+# impossible. `trajectory/go_to_pose` ACCEPTS a move while mpc_active=0 by
+# design — streaming-while-disarmed is the legal pre-arm phase of the ARMING
+# CONTRACT, so the planning verdict is genuinely "accepted" — and the only
+# marker is a suffix on `response.message`. The platform then does not move, the
+# inclinometer reads the same stationary pose 25 times, every residual comes
+# back identical, and the tool writes, applies and VERIFIES a plausible
+# all-zeros calibration that verifies perfectly because nothing ever moved.
+#
+# Precedent: 2026-07-15, a full ramp battery "accepted" and fully emitted with
+# mpc_active=0 — zero motion, zero warnings anywhere. That incident is why
+# trajectory_node logs the suffix at all; this tool must not discard it.
+#
+# Three independent layers, because each one alone has a hole:
+#   1. the /link_status kv check — cheapest and earliest, but goes stale between
+#                                  messages, so it runs at preflight AND again
+#                                  before every node and check pose;
+#   2. the per-move suffix check — synchronous with the actual command, but it
+#                                  only fires once the sweep is under way, and it
+#                                  is derived from the same /link_status topic
+#                                  (trajectory_node._wire_armed is a bare mirror
+#                                  with no staleness timeout), so a stalled
+#                                  publisher freezes layer 2 exactly as it
+#                                  freezes layer 1 — hence layer 1 treats a
+#                                  silent topic as an abort in its own right;
+#   3. the flat-field check      — sees the SYMPTOM rather than the cause, so it
+#                                  also catches a platform that failed to move
+#                                  for a reason neither of the other two can
+#                                  observe (armed at the Jetson, dead
+#                                  downstream). WARNs; never refuses.
+
+
+#: Residual spread below which a whole capture is judged "flat". A real field
+#: varies 0.041°→0.604° across the workspace (2026-07-28 extremity table), i.e.
+#: ~1e-2 rad end to end — two orders above this. A stationary platform read N
+#: times varies only by sensor noise, which the 1 mrad Teensy quantum bounds
+#: well under this too. PROVISIONAL like every other threshold here until C0/C1
+#: measure a real field; it only ever raises a WARNING, never a refusal.
+FLAT_FIELD_TOL_RAD = 1e-4
+
+
+def response_reports_disarmed(message: Any) -> bool:
+    """Does an ACCEPTED ``go_to_pose`` response say the wire is disarmed?
+
+    Keys on the substring ``DISARMED``, which is what
+    ``trajectory_node._wire_state_suffix`` appends (`` [wire DISARMED — setpoints
+    not reaching the legs]``). Case-insensitive and substring-based on purpose:
+    the exact wording is a log string that may be reworded, while the word
+    itself is the contract. ``go_to_pose``'s only other message content is the
+    accepted-move summary and the rejection codes, none of which carry it.
+    """
+    return 'DISARMED' in str(message or '').upper()
+
+
+def wire_armed_verdict(link_kv: Optional[Dict[str, str]]) -> Tuple[bool, str]:
+    """``(ok, message)`` for a cached ``/link_status`` key-value mapping.
+
+    Reads the keys ``teensy_bridge_node._publish_link_status`` actually
+    publishes, in their actual encodings (verified against that function, not
+    assumed): ``mpc_active`` is ``str(int(bool))`` — ``'1'`` or ``'0'``;
+    ``fault_state`` is a FaultState **enum name**, ``'NONE'`` when clear and
+    ``'UNKNOWN'`` when no heartbeat has been seen; ``bridge_link`` is
+    ``'UP'`` / ``'LOST'`` / ``'NO_HEARTBEAT'``.
+
+    **Every one of the three keys is REQUIRED**, and an absent one is a failure
+    rather than a pass. This runs against a cache that is empty until the first
+    message arrives, so defaulting to "armed" would reintroduce exactly the hole
+    it closes — and a bridge that publishes ``mpc_active`` publishes all three in
+    the same message, so a missing companion key means this is not the publisher
+    the tool thinks it is talking to, not that the field is optional.
+    """
+    kv = link_kv or {}
+    if not kv:
+        return (False,
+                'no /link_status message seen at all — teensy_bridge_node is '
+                'not running, or not publishing. This tool cannot confirm the '
+                'wire is armed, and a capture on a disarmed wire writes a '
+                'plausible all-zeros calibration (2026-07-15).')
+    for key in ('mpc_active', 'fault_state', 'bridge_link'):
+        if key not in kv:
+            return (False,
+                    "/link_status carries no {!r} key (saw: {}) — this is not "
+                    'the bridge this tool expects; refusing to assume the wire '
+                    'is armed.'.format(key, ', '.join(sorted(kv)) or '<empty>'))
+    raw = kv.get('mpc_active')
+    if str(raw).strip() != '1':
+        return (False,
+                'the wire is DISARMED (/link_status mpc_active={!r}). '
+                'go_to_pose is ACCEPTED while disarmed — the platform would not '
+                'move, every node would read the same stationary pose, and this '
+                'tool would write and "verify" an all-zeros map. Arm via the '
+                'orchestrator (auto-arm on ACTIVE entry) or  ros2 service call '
+                '/set_setpoint_output std_srvs/srv/SetBool "{{data: true}}"  '
+                'and re-run.'.format(raw))
+    # 'UNKNOWN' is what the bridge publishes when it has seen NO heartbeat, so
+    # anything that is not exactly 'NONE' is a refusal — a guard latch and an
+    # absent heartbeat are both states in which the legs will not move.
+    fault = str(kv['fault_state']).strip()
+    if fault != 'NONE':
+        return (False,
+                'Teensy guard fault_state={} — leg output is suppressed even '
+                'with mpc_active=1, so a capture would measure a platform that '
+                'cannot move. Recover with  ros2 service call /clear_errors '
+                'std_srvs/srv/Trigger  and re-run.'.format(fault))
+    bridge_link = str(kv['bridge_link']).strip()
+    if bridge_link != 'UP':
+        return (False,
+                'bridge_link={} — the Jetson↔Teensy UDP link is not up, so '
+                'commanded setpoints are not reaching the legs.'
+                .format(bridge_link))
+    return (True,
+            'wire ARMED: mpc_active=1 fault_state={} bridge_link={}'
+            .format(fault, bridge_link))
+
+
+def flat_field_verdict(results: Dict[Tuple[int, int], ReadStats],
+                       tol_rad: float = FLAT_FIELD_TOL_RAD
+                       ) -> Tuple[bool, str]:
+    """``(is_flat, message)`` — is every node's residual the same number?
+
+    The **signature of a capture that never moved**. If the platform stayed put,
+    each node re-measures one stationary pose and the residuals differ only by
+    sensor noise; a real field spans two orders more than ``tol_rad`` across the
+    workspace.
+
+    WARNS, never refuses, and this is deliberate. A flat field is also what a
+    genuinely well-behaved machine would produce, and a *refusal* would make
+    this tool unable to certify the one outcome the whole programme is trying to
+    reach. The operator is told what flatness means and decides.
+    """
+    usable = [s for s in results.values() if s.n_ok >= MIN_GOOD_READS]
+    if len(usable) < 2:
+        return False, 'fewer than two usable nodes — flatness is undefined'
+    spread_tx = max(s.res_tx for s in usable) - min(s.res_tx for s in usable)
+    spread_ty = max(s.res_ty for s in usable) - min(s.res_ty for s in usable)
+    if not (math.isfinite(spread_tx) and math.isfinite(spread_ty)):
+        return False, 'non-finite residual spread — flatness is undefined'
+    if max(spread_tx, spread_ty) > tol_rad:
+        return (False,
+                'field varies: spread tx {:.6f} rad, ty {:.6f} rad over {} '
+                'nodes'.format(spread_tx, spread_ty, len(usable)))
+    return (True,
+            'FLAT FIELD — all {} node residuals agree within {:.6f} rad '
+            '(spread tx {:.2e}, ty {:.2e}). A real residual field spans '
+            '~1e-2 rad across this workspace. The usual cause is that the '
+            'platform NEVER MOVED: every node re-measured one stationary pose. '
+            'Check that the wire was armed for the whole sweep and that the '
+            'commanded poses were actually reached before trusting this map.'
+            .format(len(usable), tol_rad, spread_tx, spread_ty))
+
+
 # ── pure core: map document ──────────────────────────────────────────────
 
 
@@ -594,6 +779,34 @@ def dump_map_yaml(doc: Dict[str, Any]) -> str:
         .format(TOOL_NAME))
     return header + yaml.safe_dump(doc, default_flow_style=False,
                                    sort_keys=False)
+
+
+def uninstall_plan(environ: Optional[Dict[str, str]] = None
+                   ) -> Tuple[List[str], Optional[str]]:
+    """``(paths_to_move_aside, env_override)`` for ``--force-uninstall``.
+
+    Moving aside only the **source-tree** file is not enough to uninstall a map.
+    ``setup.py`` installs ``config/tilt_calibration.yaml`` into
+    ``share/jugglebot/config/`` whenever it exists at build time (a conditional
+    ``data_files`` row), and the resolver's order is env → source tree → ament
+    share. So once ANY ``colcon build`` has run with the file present, removing
+    the source copy just falls through to the share copy: the reload succeeds,
+    the OLD map stays loaded, and the capture is refused with a message naming
+    neither the cause nor the remedy. Every existing candidate has to go.
+
+    **An env-override candidate is never touched.** When ``$JUGGLEBOT_TILT_CAL``
+    is set it is the *only* candidate, and it points at a file the operator
+    named explicitly — possibly outside the repo, possibly the one artefact they
+    are protecting. Renaming it on their behalf is a surprise this tool has no
+    mandate for, so it is returned as ``env_override`` for the caller to refuse
+    on, with instructions.
+    """
+    env = (environ if environ is not None else os.environ).get(
+        tilt_map.TILT_MAP_ENV)
+    if env:
+        return [], env
+    return ([path for path in tilt_map.tilt_map_candidates(environ)
+             if os.path.exists(path)], None)
 
 
 def write_target_path(environ: Optional[Dict[str, str]] = None) -> str:
@@ -861,6 +1074,11 @@ class _Runner:
         self.status = None
         self.status_stamp = 0.0
         self.link_kv = {}
+        # Monotonic count of /link_status messages consumed. `refresh_link` waits
+        # for this to ADVANCE rather than sleeping a fixed interval, so a
+        # mid-sweep wire check reads a message that provably post-dates the
+        # request instead of whatever happened to be cached.
+        self.link_seq = 0
         self.uptime_first = None
         self.uptime_last = None
         self.pose_offset_rad = None
@@ -890,6 +1108,7 @@ class _Runner:
     def _on_link(self, msg):
         kv = {v.key: v.value for v in msg.values}
         self.link_kv = kv
+        self.link_seq += 1
         raw = kv.get('uptime_ms')
         if raw is not None:
             try:
@@ -933,19 +1152,101 @@ class _Runner:
                 .format(name, self.args.timeout_s))
         return result
 
-    def wait_for_status(self, timeout_s: float = 5.0):
+    def wait_for_status(self, timeout_s: float = 5.0, predicate=None,
+                        expected: str = ''):
+        """Wait for a ``/trajectory/status``; optionally for one that SATISFIES.
+
+        ``/trajectory/status`` is published on a **5 Hz timer** (a 0.2 s period),
+        so the first message that arrives after a ``reload_tilt_map`` call can
+        easily have been composed *before* the reload took effect. Reading that
+        one as the readback made every post-reload assertion a coin flip: a
+        completed capture could abort with "APPLIED THE WRONG FILE" naming the
+        version it had just correctly replaced, and ``--force-uninstall`` could
+        report a map "STILL loaded" that was already gone. Both send the
+        operator chasing a shadowing bug that does not exist, after a
+        four-minute sweep.
+
+        With a ``predicate`` this keeps consuming SUCCESSIVE messages until one
+        satisfies it, and only the **timeout** is a failure. That is sound in
+        both directions: the expected state is terminal (nothing else is
+        changing the node's map underneath us), so "never appeared within
+        ``timeout_s``" is a genuine failure and "appeared on message 3" is a
+        genuine success. ``timeout_s`` defaults to 5.0 — 25 status periods.
+        """
         self.status = None
         deadline = time.time() + timeout_s
-        while time.time() < deadline and self.status is None:
-            self.spin(0.1)
-        if self.status is None:
+        last = None
+        while time.time() < deadline:
+            self.spin(0.05)
+            status = self.status
+            if status is None:
+                continue
+            last = status
+            if predicate is None or predicate(status):
+                return status
+        if last is None:
             raise TiltCalError(
                 'no /trajectory/status message in {:.1f} s — trajectory_node is '
                 'not running, or jugglebot_interfaces was not rebuilt (a stale '
                 'install makes trajectory_node exit ~200 ms after launch). '
                 'Build BOTH packages: colcon build --packages-select '
                 'jugglebot_interfaces jugglebot'.format(timeout_s))
-        return self.status
+        raise TiltCalStatusTimeout(
+            'trajectory/status never reported {} within {:.1f} s (last seen: '
+            'tilt_map_loaded={} version={!r})'
+            .format(expected or 'the expected state', timeout_s,
+                    last.tilt_map_loaded, last.tilt_map_version), last)
+
+    def refresh_link(self, timeout_s: float = 2.0) -> Tuple[Dict[str, str], bool]:
+        """``(kv, fresh)`` — wait for a NEW ``/link_status``, then return it.
+
+        ``fresh`` is False when none arrived inside ``timeout_s`` (the cached kv
+        is returned regardless).
+
+        **A stale cache cannot be covered by the per-move check**, which is why
+        the caller aborts on it. The ``DISARMED`` suffix is synchronous with the
+        command, but it is derived from the *same* topic and no more current:
+        ``trajectory_node._wire_armed`` is a bare mirror of the last
+        ``/link_status`` it received, with **no staleness timeout**. So if
+        ``teensy_bridge_node`` dies or its 10 Hz timer stalls mid-sweep — exactly
+        when setpoints stop reaching the Teensy — both this check and the
+        per-move marker freeze at their last value and keep reporting ARMED.
+        """
+        seen = self.link_seq
+        deadline = time.time() + timeout_s
+        while time.time() < deadline and self.link_seq == seen:
+            self.spin(0.05)
+        return self.link_kv, self.link_seq != seen
+
+    def assert_wire_armed(self, where: str) -> None:
+        """Re-check the wire from a FRESH ``/link_status``; abort if it dropped.
+
+        **Layer 1 repeated between nodes**, not layer 2: the preflight kv check
+        happens once and a four-minute sweep gives a wire plenty of time to be
+        disarmed under it (an E-STOP, a mode change, a guard latch). Layer 2 —
+        the per-move ``DISARMED`` suffix — is a separate mechanism screened in
+        :meth:`go_to`. Both exist because neither covers the other's hole.
+
+        A silent ``/link_status`` is itself an abort. See :meth:`refresh_link`:
+        the per-move marker mirrors the same topic with no staleness timeout, so
+        a stalled publisher takes out *both* layers at once and the capture would
+        run to completion against an unobservable wire. This cannot false-fire on
+        jitter — ``/link_status`` is a 10 Hz timer, so the 2 s window is twenty
+        consecutive missed publishes.
+        """
+        kv, fresh = self.refresh_link()
+        if not fresh:
+            raise TiltCalError(
+                'no /link_status message in 2.0 s before {} — teensy_bridge_node '
+                'has stopped publishing (that topic is a 10 Hz timer, so this is '
+                'twenty missed publishes, not jitter). The go_to_pose DISARMED '
+                'marker mirrors the SAME topic with no staleness timeout, so it '
+                'would also freeze reporting ARMED. Refusing to continue against '
+                'a wire this tool can no longer observe.'.format(where))
+        ok, message = wire_armed_verdict(kv)
+        if not ok:
+            raise TiltCalError(
+                'wire check FAILED before {}: {}'.format(where, message))
 
     # -- actions ----------------------------------------------------------
 
@@ -970,6 +1271,21 @@ class _Runner:
                 'go_to_pose REJECTED for {} at ({:+.1f}, {:+.1f}, {:.1f}): '
                 'code={} :: {}'.format(label, x_mm, y_mm, z_mm,
                                        response.code, response.message))
+        # Layer 2 of the disarmed-wire guard, and the authoritative one: this
+        # marker travels on the response to THIS command, so unlike the
+        # /link_status cache it cannot be stale. Discarding it is what let a
+        # whole capture complete against a platform that never moved.
+        if response_reports_disarmed(response.message):
+            raise TiltCalError(
+                'go_to_pose was ACCEPTED for {} at ({:+.1f}, {:+.1f}, {:.1f}) '
+                'but trajectory_node reports the wire is DISARMED :: {}\n'
+                '  Acceptance here is a PLANNING verdict — the setpoints are '
+                'emitted and dropped, so the platform does NOT move. Every node '
+                'from here would re-measure one stationary pose and this tool '
+                'would write, apply and "verify" an all-zeros calibration that '
+                'passes because nothing moved (2026-07-15 precedent). Arm the '
+                'wire and re-run.'.format(label, x_mm, y_mm, z_mm,
+                                          response.message))
         return float(response.planned_duration_s)
 
     def read_tilt_once(self) -> Tuple[float, float]:
@@ -1091,6 +1407,15 @@ def run(args) -> int:                                    # noqa: C901
                 're-run.'.format(status.mode, status.streaming))
         print('  mode=TRAJECTORY streaming=True')
 
+        # Layer 1 of the disarmed-wire guard. mode=TRAJECTORY + streaming=True
+        # says the Jetson is EMITTING; it says nothing about whether the bridge
+        # is forwarding. Only /link_status mpc_active does, and it was already
+        # subscribed and cached here for uptime_ms without ever being read.
+        wire_ok, wire_message = wire_armed_verdict(runner.link_kv)
+        if not wire_ok:
+            raise TiltCalError(wire_message)
+        print('  {}'.format(wire_message))
+
         if not status.gravity_correction_loaded:
             raise TiltCalError(
                 'trajectory/status gravity_correction_loaded=false — there is '
@@ -1112,13 +1437,36 @@ def run(args) -> int:                                    # noqa: C901
                   .format(status.tilt_map_version))
         else:
             if status.tilt_map_loaded and args.force_uninstall:
-                target = write_target_path()
-                if os.path.exists(target):
-                    backup = '{}.{}.bak'.format(target, stamp)
-                    os.rename(target, backup)
-                    print('  moved {} -> {}'.format(target, backup))
-                else:
-                    print('  no file at {} to move aside'.format(target))
+                to_move, env_override = uninstall_plan()
+                if env_override:
+                    raise TiltCalError(
+                        '--force-uninstall refuses to touch an env-pointed map. '
+                        '${} is set to {}, which makes it the ONLY candidate — '
+                        'and it names a file you chose, possibly outside this '
+                        'repo. Either  unset {}  (the source tree and the ament '
+                        'share copy then become the candidates this tool can '
+                        'manage) or move that file aside yourself, then re-run.'
+                        .format(tilt_map.TILT_MAP_ENV, env_override,
+                                tilt_map.TILT_MAP_ENV))
+                if not to_move:
+                    print('  no candidate file exists to move aside (tried: {})'
+                          .format('; '.join(tilt_map.tilt_map_candidates())
+                                  or '<none>'))
+                failures = []
+                for path in to_move:
+                    backup = '{}.{}.bak'.format(path, stamp)
+                    try:
+                        os.rename(path, backup)
+                    except OSError as exc:
+                        failures.append('{} ({})'.format(path, exc))
+                        print('  ! could NOT move {} -> {}: {}'
+                              .format(path, backup, exc))
+                        continue
+                    print('  moved {} -> {}'.format(path, backup))
+                if failures:
+                    print('  ! {} candidate(s) could not be moved; the reload '
+                          'below will say whether one of them is still being '
+                          'resolved.'.format(len(failures)))
                 response = runner.call(runner.cli_reload,
                                        runner._Trigger.Request(),
                                        'trajectory/reload_tilt_map')
@@ -1129,13 +1477,33 @@ def run(args) -> int:                                    # noqa: C901
                         'reload after --force-uninstall returned success=false: '
                         '{} (an absent file must UNLOAD and succeed)'
                         .format(response.message))
-                status = runner.wait_for_status()
-                if status.tilt_map_loaded:
+                try:
+                    status = runner.wait_for_status(
+                        predicate=lambda s: not s.tilt_map_loaded,
+                        expected='tilt_map_loaded=false')
+                except TiltCalStatusTimeout as exc:
+                    still = tilt_map.resolve_tilt_map_path()
                     raise TiltCalError(
                         'map is STILL loaded after --force-uninstall (version '
                         '{!r}) — do not capture: the loaded map would bake '
-                        'itself into its own successor.'
-                        .format(status.tilt_map_version))
+                        'itself into its own successor.\n'
+                        '  This tool resolves {} as the current map file.\n'
+                        '  The usual cause is an AMENT SHARE COPY: setup.py '
+                        'installs config/tilt_calibration.yaml into '
+                        'share/jugglebot/config/ whenever it exists at build '
+                        'time, and the resolver falls through to it once the '
+                        'source-tree file is gone. Remove or rename that copy '
+                        '(or re-run colcon build with the source file absent), '
+                        'then re-run. Candidates tried: {}.\n'
+                        '  If the node runs with a different ${} than this '
+                        'shell, they are resolving different files — check both '
+                        'sides.'
+                        .format(getattr(exc.last_status, 'tilt_map_version',
+                                        '<unknown>'),
+                                still if still else '<no existing candidate>',
+                                '; '.join(tilt_map.tilt_map_candidates())
+                                or '<none>',
+                                tilt_map.TILT_MAP_ENV))
                 print('  tilt_map_loaded=False (uninstalled)')
             elif status.tilt_map_loaded:
                 raise TiltCalError(
@@ -1255,6 +1623,12 @@ def run(args) -> int:                                    # noqa: C901
         for visit, nd in enumerate(order):
             label = 'node {}/{} ({:+.1f}, {:+.1f})'.format(
                 visit + 1, len(order), nd.x_mm, nd.y_mm)
+            # DELIBERATELY outside the try below: that handler converts a
+            # TiltCalError into a failed *node* and, under the default
+            # --on-fail continue, carries on. A wire that disarmed mid-sweep is
+            # never "this one node failed" — every remaining node would
+            # re-measure the same stationary pose — so it must abort the run.
+            runner.assert_wire_armed(label)
             try:
                 stats, raws = runner.measure(nd.x_mm, nd.y_mm, z_mm, label,
                                              offset_rad)
@@ -1308,6 +1682,32 @@ def run(args) -> int:                                    # noqa: C901
 
         # ── write + apply ────────────────────────────────────────────
         if not args.verify_only:
+            # The two capture preconditions were checked once, at preflight,
+            # four minutes ago. Both can change UNDER a sweep — someone reloads
+            # a map, a relaunch drops the per-process level correction — and
+            # either one invalidates every residual just measured. Re-fetch a
+            # FRESH status and refuse to write rather than shipping a map
+            # captured under conditions that no longer held. Aborting here still
+            # routes through the ordinary return-to-centre path, and the CSV and
+            # _meta.json are still written, so nothing is lost but the map.
+            status = runner.wait_for_status()
+            if status.tilt_map_loaded:
+                raise TiltCalError(
+                    'a tilt map became LOADED during the sweep (version {!r}) — '
+                    'refusing to write. The residuals just captured are defined '
+                    'against the single-offset reference, so a map that came up '
+                    'mid-capture makes some of them mean one thing and the rest '
+                    'another. Nothing was written; re-run from a clean state '
+                    '(--force-uninstall).'.format(status.tilt_map_version))
+            if not status.gravity_correction_loaded:
+                raise TiltCalError(
+                    'gravity_correction_loaded went FALSE during the sweep — '
+                    'refusing to write. Every residual is measured relative to '
+                    'that reference; without it they are relative to nothing. '
+                    'The usual cause is a trajectory_node relaunch mid-capture '
+                    '(the correction is per-PROCESS). Re-run `level` from IDLE '
+                    'and start the capture over.')
+
             captured = {
                 'date': datetime.now().strftime('%Y-%m-%d'),
                 'git_sha': git_sha(),
@@ -1326,6 +1726,16 @@ def run(args) -> int:                                    # noqa: C901
                                      args.n_reads)
             validate_map_document(doc)
             expected_version = tilt_map.map_version(doc)
+
+            # Layer 3 of the disarmed-wire guard: the SYMPTOM check. Layers 1
+            # and 2 watch the wire this tool can see; this one watches the data
+            # and so also catches a platform that failed to move for a reason
+            # neither of them observes. WARN, never refuse — a genuinely flat
+            # field is a legitimate (excellent) result, and refusing it would
+            # make this tool unable to certify the best possible outcome.
+            is_flat, flat_message = flat_field_verdict(results)
+            if is_flat:
+                print('\n  !! {}'.format(flat_message))
 
             if args.no_apply:
                 # Rung C0: a read-noise probe must not leave a calibration
@@ -1364,20 +1774,35 @@ def run(args) -> int:                                    # noqa: C901
                         'trajectory_node REJECTED the map this tool just '
                         'wrote: {}'.format(response.message))
 
-                status = runner.wait_for_status()
-                if not status.tilt_map_loaded:
-                    raise TiltCalError(
-                        'reload reported success but trajectory/status says '
-                        'tilt_map_loaded=false — nothing is applied.')
-                if status.tilt_map_version != expected_version:
+                # Poll for the EXPECTED version rather than trusting the first
+                # status to arrive: at 5 Hz that message can have been composed
+                # before the reload landed, which made this abort — after a
+                # completed capture — a coin flip.
+                try:
+                    status = runner.wait_for_status(
+                        predicate=(lambda s: s.tilt_map_loaded
+                                   and s.tilt_map_version == expected_version),
+                        expected='tilt_map_loaded=true version={!r}'
+                                 .format(expected_version))
+                except TiltCalStatusTimeout as exc:
+                    last = exc.last_status
+                    if last is not None and not last.tilt_map_loaded:
+                        raise TiltCalError(
+                            'reload reported success but trajectory/status says '
+                            'tilt_map_loaded=false — nothing is applied.')
                     raise TiltCalError(
                         'APPLIED THE WRONG FILE. trajectory_node reports '
                         'version {!r} but this tool wrote {!r} to {}. The node '
                         'resolved a different candidate path than this tool '
                         'wrote to — check ${} on both sides, and whether an '
-                        'ament share copy is shadowing the source tree.'
-                        .format(status.tilt_map_version, expected_version,
-                                target, tilt_map.TILT_MAP_ENV))
+                        'ament share copy is shadowing the source tree '
+                        '(setup.py installs one whenever the file exists at '
+                        'build time). Candidates from here: {}.'
+                        .format(getattr(last, 'tilt_map_version', '<unknown>'),
+                                expected_version, target,
+                                tilt_map.TILT_MAP_ENV,
+                                '; '.join(tilt_map.tilt_map_candidates())
+                                or '<none>'))
                 print('  applied and CONFIRMED: version {}'
                       .format(status.tilt_map_version))
 
@@ -1388,6 +1813,10 @@ def run(args) -> int:                                    # noqa: C901
         for i, (cx, cy) in enumerate(checks):
             label = 'check {}/{} ({:+.1f}, {:+.1f})'.format(
                 i + 1, len(checks), cx, cy)
+            # Same placement rationale as the capture loop: outside the try, so
+            # a mid-verification disarm aborts rather than scoring a PASS at a
+            # pose the platform never reached.
+            runner.assert_wire_armed(label)
             try:
                 stats, raws = runner.measure(cx, cy, z_mm, label, offset_rad)
             except TiltCalError as exc:

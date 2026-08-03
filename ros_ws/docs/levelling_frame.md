@@ -366,7 +366,8 @@ needs a manual `level`.**
 > ingest sites**, **exactly once per external pose**, keyed on the
 > **uncorrected intent pose**. Outside the calibrated hull the lookup **clamps**
 > — it never extrapolates and never yields NaN. The map is **non-gating**:
-> absent or rejected, behaviour degrades to *exactly* C-LEVEL-1.
+> absent, rejected, **or held dormant while the node is unlevelled**, behaviour
+> degrades to *exactly* C-LEVEL-1.
 
 ### What the map is, and what a residual means
 
@@ -526,7 +527,7 @@ invalid one — absence is silent (soft absence, non-gating); invalidity is loud
 ### Observability, and why it is not a gate
 
 > `TrajectoryStatus.tilt_map_loaded` (bool) and `.tilt_map_version` (string) are
-> the applier's own answer to "is a calibration applied, and which one", on the
+> the applier's own answer to "is a calibration **loaded**, and which one", on the
 > same 5 Hz status as `gravity_correction_loaded`.
 
 `tilt_map_version` is `"<captured.date>-<sha256(content)[:8]>"`, hashed over the
@@ -549,8 +550,13 @@ machine that cannot juggle at all until a calibration exists. C-LEVEL-1's gate
 asks whether the machine knows *where gravity is*; C-LEVEL-2 asks how precisely
 — a different question, and not a precondition for throwing.
 
-`tilt_map_version` is `''` whenever no map is loaded, so the pair can never
-report a version for a calibration that is not being applied.
+`tilt_map_version` is `''` whenever no map is loaded. **The pair reports what is
+LOADED, not what is APPLIED** — a loaded map is *dormant* while
+`gravity_correction_loaded` is false (see § "The map is gated on the level
+reference"), so `tilt_map_loaded=true` with a non-empty version is a legitimate
+state in which no residual is being applied. Read the two flags together:
+`tilt_map_loaded && gravity_correction_loaded` is the condition under which the
+map is actually shaping commanded poses.
 
 ### Delivery — the loader, and why its resolution order is inverted
 
@@ -574,12 +580,13 @@ calibration than the operator named* while reporting success — strictly worse
 than applying none, because C-LEVEL-2 is non-gating and applying none costs only
 precision.
 
-Three load outcomes, and the middle one is a design decision, not a default:
+Four load outcomes, and the second one is a design decision, not a default:
 
 | Outcome | Map | `tilt_map_loaded` | Service `success` | Log |
 |---|---|---|---|---|
 | valid file | swapped in (single reference) | true | true | INFO with version + grid shape |
 | **no file** | **unloaded** | false | **true** | INFO (never had one) / WARN (dropped a live one) |
+| no file, but `$JUGGLEBOT_TILT_CAL` **is set** | unloaded | false | true | **WARN naming the path** |
 | invalid file | **previous kept** | unchanged | false | ERROR naming the failed check |
 
 *No file ⇒ unload, and the call succeeds.* Reload's contract is "make this node's
@@ -589,6 +596,61 @@ file aside and reloads precisely to reach `tilt_map_loaded == false` before a
 capture — capturing with a map loaded bakes the map into its own successor.
 Keeping a stale in-memory map there would defeat the capture preconditions
 silently, in the one workflow that most needs them.
+
+*A set-but-missing override is not plain absence.* Plain absence is the state
+every machine is in before its first capture, so it costs an INFO and nothing
+else. A **set** `$JUGGLEBOT_TILT_CAL` pointing at a path that does not exist is
+an operator who **named a file and is not getting it** — and because the
+override is authoritative, nothing else is tried and the whole session silently
+runs uncalibrated. At the default log level an INFO there is indistinguishable
+from a normal uncalibrated boot, so the typo survives the session. WARN naming
+the path is the difference between "degrades loudly" as a claim and as a
+behaviour.
+
+*A map is also warned about when its capture height is off the active plane.*
+`grid.z_mm` is provenance — excluded from the version hash by design, never a
+lookup key — so a grid captured at one height is applied at every other one and
+nothing downstream can tell. The load logs a WARN naming both numbers when it
+differs from `JB_OP_DEFAULT_ACTIVE_Z_MM` by more than a few mm. WARN, never
+refuse: C-LEVEL-2 is non-gating and an off-plane map is a precision question.
+
+### The map is gated on the level reference — loaded is not the same as applied
+
+> A loaded map is applied **only while a `/gravity_offset` correction is
+> loaded**. With `gravity_correction_loaded == false` the ingest sites behave
+> **exactly** as C-LEVEL-1 unlevelled — identity — and the map term is skipped
+> entirely. The map remains loaded and observable (`tilt_map_loaded` stays
+> true, the version is still published): it is **DORMANT**, not unloaded, and
+> it begins applying the moment the offset arrives, with no reload.
+
+| State | `tilt_map_loaded` | map applied? | commanded rotation |
+|---|---|---|---|
+| levelled, map loaded | true | **yes** | offset + residual, one Rodrigues |
+| **not levelled, map loaded** | **true** | **no (DORMANT)** | identity — C-LEVEL-1 unlevelled |
+| levelled, no map | false | n/a | offset only (C-LEVEL-1) |
+| not levelled, no map | false | n/a | identity |
+
+**Why the gate exists.** A residual is *defined* as what is left over once a
+fresh `level` offset is applied — it is measured against that reference (§ "What
+the map is") and means nothing without it. Before the first `/gravity_offset`
+arrives the stored offset is the `(0.0, 0.0)` **placeholder**, which means "we do
+not know the tilt", not "the tilt is zero". Composing a residual onto it commands
+a rotation referenced to nothing: not a smaller error than applying no map, a
+differently-wrong one.
+
+That state is **reachable at every boot** once `config/tilt_calibration.yaml` is
+committed, because the map loads in `__init__` while the offset only arrives when
+the operator runs `level` — and every session genuinely needs a manual `level`
+(§ C-LEVEL-1's two operational facts). So this is the common path, not a corner.
+Degrading to identity keeps it *exactly* what the machine did before this phase
+existed, and matches what the rest of the stack already assumes an unlevelled
+node does: the toss's `REJECTED_NOT_LEVELLED` gate keys on
+`gravity_correction_loaded` alone.
+
+Dormancy is announced once per loaded map (WARN, latched — the announcement sits
+on the ingest path, so an unlevelled follower stream would otherwise log at
+40 Hz). `tilt_map_loaded == true` while nothing is being applied is exactly the
+kind of state this contract refuses to leave silent.
 
 ### The ingest degrade path — a lookup that raises must not kill a callback
 
@@ -615,7 +677,7 @@ which is disqualifier 3 above, arriving by a different door.
 
 ### Capture preconditions — a residual is defined relative to a reference
 
-A capture run is only meaningful under all four of these:
+A capture run is only meaningful under all five of these:
 
 1. **A fresh `level` immediately before the capture.** Residuals are *defined*
    relative to that reference. The Teensy-persisted offset truncates at
@@ -630,17 +692,24 @@ A capture run is only meaningful under all four of these:
    last.** Tracking lag grows with bridge uptime (10 ms fresh → ~240 ms at 30 h),
    and a settle-then-read capture is exactly the kind of measurement that would
    silently absorb it.
+5. **An ARMED wire, for the whole sweep.** `go_to_pose` is *accepted* while
+   `mpc_active=0` — streaming-while-disarmed is the legal pre-arm phase — so a
+   disarmed capture moves nothing, reads one stationary pose at every node, and
+   produces an all-zeros map that passes its own verification *because* nothing
+   moved. Added 2026-08-04 after review; the same silent-no-op class as the
+   2026-07-15 ramp battery.
 
-**Only (2) is machine-checkable, and the tool's enforcement says so** (Phase 3,
-2026-08-03 — an earlier draft of this paragraph claimed the tool "refuses to
-start" on all four, which overstated what any program can observe):
+**Only (2) and (5) are machine-checkable, and the tool's enforcement says so**
+(Phase 3, 2026-08-03 — an earlier draft of this paragraph claimed the tool
+"refuses to start" on all four, which overstated what any program can observe):
 
 | # | Enforcement in `tests/hardware/tilt_cal_grid.py` |
 |---|---|
 | 1 | **Operator confirmation** (typed `yes`) plus the **home-node gate**, which aborts the capture when `\|residual(0, 0)\|` is not ≈ 0. The gate catches a *grossly* stale reference; it cannot distinguish "levelled just now" from "levelled twenty minutes and one relaunch ago", because both can leave a small home residual. |
-| 2 | **Hard refusal.** `tilt_map_loaded` must be false; `--force-uninstall` moves the file aside and reloads to reach that state. |
+| 2 | **Hard refusal.** `tilt_map_loaded` must be false; `--force-uninstall` moves **every existing candidate** aside (the source tree *and* the ament share copy `setup.py` installs — moving only the source file falls through to the share copy and the old map stays loaded), refusing to touch a `$JUGGLEBOT_TILT_CAL`-pointed file. Re-checked from a **fresh** status immediately before the map is written, so a map that loads mid-sweep still refuses. |
 | 3 | **Operator confirmation only.** Nothing in the system observes hand quiescence from this client. |
 | 4 | **Warn and record**, never refuse — `uptime_ms` is echoed at preflight, warned above 30 min, and written first/last into both `_meta.json` and the map's `captured` block. Refusing would cost a sitting over an effect measured on the hand-dispatch path, not on this request/response read path. |
+| 5 | **Hard refusal, in three layers.** `/link_status` `mpc_active == '1'` at preflight and re-checked from a fresh message before every node and check pose (a silent `/link_status` is itself an abort, because the per-move marker mirrors the same topic with no staleness timeout); the `DISARMED` marker on every **accepted** `go_to_pose` response, screened inside the single `go_to` choke point; and a **flat-field WARN** before the write, which catches a platform that failed to move for a reason the first two cannot observe. The flat-field layer warns rather than refuses — a genuinely flat field is a legitimate result. |
 
 `--yes` skips the confirmations for rehearsal and prints a loud warning when it
 does so on a live capture. The two confirmed preconditions are therefore

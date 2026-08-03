@@ -69,6 +69,7 @@ to an auto-disarm — is deferred to Phase 2 (orchestrator wiring).
 from __future__ import annotations
 
 import math
+import os
 import threading
 import time
 
@@ -180,6 +181,14 @@ _ESCALATE_HOLD_TICKS = 12
 # the worst-case block far under the ~117 ms firmware decay→sprint threshold, and
 # the retry resumes next tick from the decayed seed if it doesn't converge here.
 _STOP_RETRY_ITERS = 6
+
+# C-LEVEL-2 — how far a loaded map's capture height may sit from the standard
+# active plane (hw.JB_OP_DEFAULT_ACTIVE_Z_MM) before the load WARNs. Deliberately
+# a few mm and not zero: the acquisition tool's `--z` is a float the operator
+# types, so 170.0 vs 169.9 is a typing artefact, not a different plane, and a
+# tolerance of zero would make this fire on noise and get ignored. A genuine
+# off-plane capture (the --z 200 case this exists for) misses by tens of mm.
+_TILT_MAP_Z_TOL_MM = 5.0
 
 
 class TrajectoryNode(Node):
@@ -380,6 +389,11 @@ class TrajectoryNode(Node):
         # a fresh warning; without it a NaN-emitting client would log at the full
         # ingest rate. See _tilt_map_degraded.
         self._tilt_map_degrade_logged = False
+        # WARN-once latch for the DORMANT state: a map is loaded but no
+        # `/gravity_offset` has arrived, so _active_tilt_map suppresses it. Same
+        # reset discipline and the same reason (per-pose logging at ingest rate
+        # would bury everything else). See _active_tilt_map.
+        self._tilt_map_dormant_logged = False
         self._load_tilt_map()
 
         # ── Plan + streaming state (written on ROS + emitter threads) ──
@@ -1413,7 +1427,7 @@ class TrajectoryNode(Node):
                            rotvec[0], rotvec[1], rotvec[2]])
         try:
             correction = levelling.correction_for_pose(
-                self._gravity_offset, self._tilt_map, intent)
+                self._gravity_offset, self._active_tilt_map(), intent)
         except tilt_map.TiltMapError as exc:
             correction = self._tilt_map_degraded('E1 platform_pose', exc)
         target = levelling.correct_pose(intent, correction)
@@ -1507,6 +1521,7 @@ class TrajectoryNode(Node):
             self._tilt_map_version = ''
             self._tilt_map_path = ''
             self._tilt_map_degrade_logged = False
+            self._tilt_map_dormant_logged = False
             self._tilt_map_loaded = False
             # `candidates` can hold one, two or three paths (the source tree is
             # absent for a deployment outside the repo, the ament share dir for
@@ -1518,9 +1533,25 @@ class TrajectoryNode(Node):
                                + tilt_map.TILT_MAP_ENV + '>')
                        + ") — commanded poses use the single gravity offset "
                          "only (C-LEVEL-1)")
+            # A SET-but-missing $JUGGLEBOT_TILT_CAL is not plain absence: the
+            # operator asked for a specific calibration and is getting none.
+            # The override is authoritative (it is the ONLY candidate), so a
+            # typo silently degrades the whole session to C-LEVEL-1 while the
+            # operator believes a map is applied — INFO buries that at the
+            # default log level, which is the failure this WARN exists for.
+            # Plain absence (no env var) stays INFO: it is the state every
+            # uncalibrated machine is in and must cost nothing.
+            override = os.environ.get(tilt_map.TILT_MAP_ENV)
             if had_map:
                 message = (f"tilt calibration file is gone — map {previous} "
                            f"UNLOADED. " + message)
+                self.get_logger().warning(message)
+            elif override:
+                message = (f"${tilt_map.TILT_MAP_ENV} is set to {override!r} "
+                           f"but NO FILE EXISTS there — the override is "
+                           f"authoritative, so nothing else was tried and this "
+                           f"session runs UNCALIBRATED. Fix the path or unset "
+                           f"the variable. " + message)
                 self.get_logger().warning(message)
             else:
                 self.get_logger().info(message)
@@ -1551,11 +1582,67 @@ class TrajectoryNode(Node):
         self._tilt_map_version = str(loaded.version)
         self._tilt_map_path = str(path)
         self._tilt_map_degrade_logged = False
+        self._tilt_map_dormant_logged = False
         self._tilt_map_loaded = True
         message = (f"tilt calibration loaded: version={loaded.version} "
                    f"grid={n_x}x{n_y} z_mm={loaded.z_mm} from {path}")
         self.get_logger().info(message)
+        # `z_mm` is provenance — deliberately EXCLUDED from the version hash and
+        # never keyed on by the lookup — so a map captured at one height applies
+        # silently at every other. The residual field is pose-dependent in three
+        # dimensions, not two: a grid captured at z=200 describes a plane the
+        # session at z=170 is not on, and nothing downstream can tell. The
+        # version string cannot carry this (by design), so the load is the only
+        # place an operator can be told. WARN, never refuse: C-LEVEL-2 is
+        # non-gating, and an off-plane map is a precision question, not a safety
+        # one.
+        if loaded.z_mm is not None:
+            standard_z = float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
+            if abs(float(loaded.z_mm) - standard_z) > _TILT_MAP_Z_TOL_MM:
+                self.get_logger().warning(
+                    f"tilt map [{loaded.version}] was captured at "
+                    f"z_mm={float(loaded.z_mm):.1f} but the standard active "
+                    f"plane is {standard_z:.1f} mm — the residual grid is "
+                    f"applied at EVERY height regardless (z is provenance, not "
+                    f"a lookup key), so this calibration is being used off the "
+                    f"plane it was measured on. Recapture at "
+                    f"{standard_z:.1f} mm, or accept the extrapolation "
+                    f"knowingly.")
         return True, message
+
+    def _active_tilt_map(self):
+        """The map the ingest sites may apply — ``None`` until the node is level.
+
+        **The map is gated on the level reference, not on its own loadedness.**
+        A residual is *defined* as what is left over once a **fresh** `level`
+        offset is applied (C-LEVEL-2 § "What the map is"): it is measured
+        against that reference and is meaningless without it. Before the first
+        ``/gravity_offset`` arrives, ``_gravity_offset`` is the ``(0.0, 0.0)``
+        placeholder — "we do not know the tilt", not "the tilt is zero" — so
+        composing a residual onto it would command a rotation referenced to
+        nothing. That state is reachable at **every boot** once
+        ``config/tilt_calibration.yaml`` is committed, because the map loads in
+        ``__init__`` and the offset arrives only when the operator runs `level`.
+
+        Returning ``None`` makes those poses behave **exactly** as C-LEVEL-1
+        unlevelled — identity — which is what the machine did before this phase
+        existed, and what the rest of the stack (the toss's
+        ``REJECTED_NOT_LEVELLED`` gate) already assumes an unlevelled node does.
+        The map stays loaded and observable (``tilt_map_loaded`` is true, the
+        version is published): it is DORMANT, not unloaded, and it starts
+        applying the moment the offset lands with no reload needed.
+        """
+        if not self._gravity_correction_loaded:
+            if self._tilt_map is not None and not self._tilt_map_dormant_logged:
+                self._tilt_map_dormant_logged = True
+                self.get_logger().warning(
+                    f"tilt map [{self._tilt_map_version}] is loaded but DORMANT "
+                    f"— no /gravity_offset yet, and a residual is defined "
+                    f"relative to a fresh `level` reference. Commanded poses "
+                    f"use the identity correction (C-LEVEL-1 unlevelled) until "
+                    f"`level` runs; the map then applies with no reload.")
+            return None
+        return self._tilt_map
 
     def _svc_reload_tilt_map(self, request, response):
         """``trajectory/reload_tilt_map`` (``std_srvs/Trigger``).
@@ -1632,7 +1719,7 @@ class TrajectoryNode(Node):
         """
         try:
             correction = levelling.correction_for_pose(
-                self._gravity_offset, self._tilt_map, self._neutral_pose)
+                self._gravity_offset, self._active_tilt_map(), self._neutral_pose)
         except tilt_map.TiltMapError as exc:
             correction = self._tilt_map_degraded('E5/E6 neutral', exc)
         return levelling.correct_pose(self._neutral_pose, correction)
@@ -2012,7 +2099,7 @@ class TrajectoryNode(Node):
              float(rotvec[0]), float(rotvec[1]), float(rotvec[2])])
         try:
             correction = levelling.correction_for_pose(
-                self._gravity_offset, self._tilt_map, intent)
+                self._gravity_offset, self._active_tilt_map(), intent)
         except tilt_map.TiltMapError as exc:
             correction = self._tilt_map_degraded('E3/E4 request pose', exc)
         return levelling.correct_pose(intent, correction)
@@ -2422,7 +2509,7 @@ class TrajectoryNode(Node):
             rotvec[0], rotvec[1], rotvec[2]])
         try:
             correction = levelling.correction_for_pose(
-                self._gravity_offset, self._tilt_map, intent)
+                self._gravity_offset, self._active_tilt_map(), intent)
         except tilt_map.TiltMapError as exc:
             correction = self._tilt_map_degraded('E2 catch/dynamic_target', exc)
         target = levelling.correct_pose(intent, correction)

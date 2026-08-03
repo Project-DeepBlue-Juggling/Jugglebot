@@ -651,7 +651,12 @@ def test_return_to_centre_guard_catches_base_exception():
     source = open(tcg.__file__.replace('.pyc', '.py')).read()
     marker = 'RETURN TO CENTRE FAILED'
     assert marker in source
-    guard = source[:source.index(marker)]
+    # rindex, not index: the module docstring quotes this operator-facing string
+    # when explaining the one case the return cannot honour (a wire disarmed
+    # mid-sweep). The occurrence that matters is the `print` in the guard, which
+    # is the LAST one — anchoring on the first made the test fail on a prose
+    # mention rather than on the handler it exists to pin.
+    guard = source[:source.rindex(marker)]
     handler = guard.rsplit('except ', 1)[1].split('\n')[0]
     assert handler.startswith('BaseException'), (
         'the return-to-centre handler must catch BaseException so a second '
@@ -670,3 +675,217 @@ def test_dry_run_makes_no_ros_calls(capsys, monkeypatch):
     assert 'home node (stale-level gate)' in out
     assert 'no ROS calls made' in out
     assert 'ETA' in out
+
+
+# ── the disarmed-wire guard ──────────────────────────────────────────────
+#
+# The BLOCKING class this section pins: `trajectory/go_to_pose` is ACCEPTED
+# while the wire is disarmed (streaming-while-disarmed is the legal pre-arm
+# phase of the ARMING CONTRACT), the platform does not move, every node
+# re-measures one stationary pose, and the tool writes + applies + "verifies" an
+# all-zeros calibration that verifies perfectly BECAUSE nothing moved. Precedent
+# for the silent-no-op shape: the 2026-07-15 ramp battery.
+
+
+def test_disarmed_marker_is_detected_in_an_accepted_response():
+    """The real suffix `trajectory_node._wire_state_suffix` appends."""
+    accepted = ('move accepted: target (x=150.0 y=0.0 z=170.0 mm) over 3.000s '
+                '(lean_gain=0.00) [wire DISARMED — setpoints not reaching the '
+                'legs]')
+    assert tcg.response_reports_disarmed(accepted) is True
+
+
+def test_a_normal_accepted_response_is_not_flagged():
+    """No false positives, or the first operator to hit one disables the check."""
+    accepted = ('move accepted: target (x=150.0 y=0.0 z=170.0 mm) over 3.000s '
+                '(lean_gain=0.00)')
+    assert tcg.response_reports_disarmed(accepted) is False
+    assert tcg.response_reports_disarmed('') is False
+    assert tcg.response_reports_disarmed(None) is False
+
+
+def test_disarmed_detection_is_case_insensitive():
+    """Keyed on the WORD, not the wording: the sentence around it is a log
+    string that may be reworded, the marker itself is the contract."""
+    assert tcg.response_reports_disarmed('accepted [wire disarmed]') is True
+
+
+def _kv(**overrides):
+    """A /link_status key-value mapping in the encodings the bridge publishes.
+
+    Verified against `teensy_bridge_node._publish_link_status`, not assumed:
+    `mpc_active` is `str(int(bool))`, `fault_state` is a FaultState enum NAME,
+    `bridge_link` is 'UP'/'LOST'/'NO_HEARTBEAT'.
+    """
+    kv = {'mpc_active': '1', 'fault_state': 'NONE', 'bridge_link': 'UP',
+          'uptime_ms': '12345'}
+    kv.update(overrides)
+    return kv
+
+
+def test_wire_verdict_passes_on_an_armed_link():
+    ok, message = tcg.wire_armed_verdict(_kv())
+    assert ok is True
+    assert 'ARMED' in message
+
+
+@pytest.mark.parametrize('overrides,needle', [
+    ({'mpc_active': '0'}, 'DISARMED'),
+    ({'fault_state': 'MAX_DEVIATION'}, 'MAX_DEVIATION'),
+    # 'UNKNOWN' is what the bridge publishes when it has seen NO heartbeat —
+    # not a clear guard, and it must not read as one.
+    ({'fault_state': 'UNKNOWN'}, 'UNKNOWN'),
+    ({'bridge_link': 'LOST'}, 'bridge_link=LOST'),
+    ({'bridge_link': 'NO_HEARTBEAT'}, 'NO_HEARTBEAT'),
+])
+def test_wire_verdict_refuses_every_unsafe_link_state(overrides, needle):
+    ok, message = tcg.wire_armed_verdict(_kv(**overrides))
+    assert ok is False
+    assert needle in message
+
+
+def test_wire_verdict_refuses_an_empty_or_partial_cache():
+    """An absent key is a FAILURE, never a pass.
+
+    This runs against a cache that is empty until the first message arrives.
+    Defaulting to "armed" there would reintroduce the exact hole it closes —
+    a preflight that passes because nothing has been heard yet.
+    """
+    ok, message = tcg.wire_armed_verdict({})
+    assert ok is False and 'no /link_status' in message
+    ok, message = tcg.wire_armed_verdict(None)
+    assert ok is False
+
+    # ALL THREE keys are required, not just mpc_active. A bridge that publishes
+    # mpc_active publishes the other two in the same message, so a missing
+    # companion means this is not the publisher the tool thinks it is reading —
+    # and falling through on it would silently skip a real refusal (a latched
+    # guard fault, or a downed UDP link).
+    for key in ('mpc_active', 'fault_state', 'bridge_link'):
+        partial = _kv()
+        del partial[key]
+        ok, message = tcg.wire_armed_verdict(partial)
+        assert ok is False, '{} must be required'.format(key)
+        assert key in message
+
+
+def _stats(res_tx, res_ty, n_ok=8, n_total=8, sd=1e-6):
+    """A ReadStats with the raw means filled in consistently.
+
+    `raw_mean_*` are the un-offset sensor means; the flat-field check reads only
+    `res_*` and `n_ok`, but constructing a NamedTuple partially would drift the
+    moment a field is added.
+    """
+    return tcg.ReadStats(res_tx=res_tx, res_ty=res_ty, sd_tx=sd, sd_ty=sd,
+                         raw_mean_tx=res_tx - OFFSET[0],
+                         raw_mean_ty=res_ty - OFFSET[1],
+                         n_ok=n_ok, n_total=n_total)
+
+
+def test_flat_field_is_detected_as_the_disarmed_signature():
+    """Every node the same number ⇒ the platform never moved."""
+    results = {(ix, iy): _stats(0.0021, -0.0013)
+               for ix in range(3) for iy in range(3)}
+    is_flat, message = tcg.flat_field_verdict(results)
+    assert is_flat is True
+    assert 'FLAT FIELD' in message
+    assert 'NEVER MOVED' in message
+
+
+def test_a_real_field_is_not_flagged_flat():
+    """A real field spans ~1e-2 rad across the workspace — two orders above the
+    tolerance — so the check must never fire on a good capture."""
+    results = {}
+    for ix in range(3):
+        for iy in range(3):
+            results[(ix, iy)] = _stats(0.001 * ix, -0.001 * iy)
+    is_flat, _ = tcg.flat_field_verdict(results)
+    assert is_flat is False
+
+
+def test_flat_field_is_undefined_below_two_usable_nodes():
+    """One node cannot be 'flat'; an unusable node must not be counted."""
+    one = {(0, 0): _stats(0.0, 0.0)}
+    assert tcg.flat_field_verdict(one)[0] is False
+    plus_dead = dict(one)
+    plus_dead[(1, 0)] = _stats(0.0, 0.0, n_ok=0)
+    assert tcg.flat_field_verdict(plus_dead)[0] is False
+
+
+def test_the_wire_check_runs_before_the_per_node_try_block():
+    """Structural: `assert_wire_armed` must sit OUTSIDE the per-node try.
+
+    `run()` needs a robot, so this is checked in the source. The placement is
+    the whole point: the try below converts a `TiltCalError` into a failed
+    *node* and, under the default `--on-fail continue`, carries on. A wire that
+    disarmed mid-sweep is never "this one node failed" — every remaining node
+    would re-measure the same stationary pose — so demoting it there would
+    reinstate the bug this guard exists to close.
+    """
+    source = open(tcg.__file__.replace('.pyc', '.py')).read()
+    marker = 'stats, raws = runner.measure(nd.x_mm, nd.y_mm, z_mm, label,'
+    assert marker in source
+    prologue = source[:source.index(marker)]
+    tail = prologue.rsplit('runner.assert_wire_armed(', 1)[1]
+    assert tail.count('try:') == 1, (
+        'assert_wire_armed must be called before the per-node `try:`, so a '
+        'mid-sweep disarm aborts the run instead of scoring one bad node')
+
+
+def test_go_to_checks_the_response_for_the_disarmed_marker():
+    """Structural: every accepted `go_to_pose` is screened, in `go_to` itself.
+
+    Screening at the single choke point rather than per call site is what makes
+    the guarantee total — capture nodes, verification poses and the
+    return-to-centre all route through this one method.
+    """
+    source = open(tcg.__file__.replace('.pyc', '.py')).read()
+    body = source.split('def go_to(', 1)[1].split('\n    def ', 1)[0]
+    assert 'response_reports_disarmed(response.message)' in body
+
+
+# ── --force-uninstall: the ament-share shadow ────────────────────────────
+
+
+def test_uninstall_plan_moves_every_existing_candidate(monkeypatch, tmp_path):
+    """Source tree AND ament share — moving only the source file is a no-op.
+
+    `setup.py` installs `config/tilt_calibration.yaml` into
+    `share/jugglebot/config/` whenever it exists at build time, and the resolver
+    order is env -> source tree -> share. So after ANY colcon build with the
+    file present, removing just the source copy falls through to the share copy:
+    the reload succeeds, the OLD map stays loaded, and the capture is refused
+    with a message naming neither the cause nor the remedy.
+    """
+    src = tmp_path / 'src' / 'tilt_calibration.yaml'
+    share = tmp_path / 'share' / 'tilt_calibration.yaml'
+    absent = tmp_path / 'gone' / 'tilt_calibration.yaml'
+    for path in (src, share):
+        path.parent.mkdir(parents=True)
+        path.write_text('x')
+
+    monkeypatch.delenv(tilt_map.TILT_MAP_ENV, raising=False)
+    monkeypatch.setattr(tilt_map, 'tilt_map_candidates',
+                        lambda environ=None: (str(src), str(share),
+                                              str(absent)))
+    to_move, env_override = tcg.uninstall_plan()
+    assert env_override is None
+    assert to_move == [str(src), str(share)], \
+        'every EXISTING candidate must be moved aside, not just the first'
+
+
+def test_uninstall_plan_refuses_to_touch_an_env_pointed_file(monkeypatch,
+                                                            tmp_path):
+    """An operator's `$JUGGLEBOT_TILT_CAL` file is never renamed behind them.
+
+    When the override is set it is the ONLY candidate, and it names a file the
+    operator chose — possibly outside the repo, possibly the artefact they are
+    protecting. The caller refuses with instructions instead.
+    """
+    named = tmp_path / 'my_calibration.yaml'
+    named.write_text('x')
+    monkeypatch.setenv(tilt_map.TILT_MAP_ENV, str(named))
+    to_move, env_override = tcg.uninstall_plan()
+    assert to_move == []
+    assert env_override == str(named)
+    assert named.exists()

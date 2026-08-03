@@ -591,6 +591,43 @@ def print_report(field: Field, flags: Sequence[Dict[str, Any]],
     print('=' * 72)
 
 
+def cell_edges(nodes: Sequence[float]) -> List[float]:
+    """Cell BOUNDARIES for an axis of node coordinates — ``len(nodes) + 1`` of them.
+
+    Interior edges are the midpoints between adjacent nodes; the two outer edges
+    reflect the first/last half-spacing outward. Each cell is therefore the set
+    of positions **nearer to that node than to any neighbour**, and every node
+    lies strictly inside its own cell — on a uniform axis *and* on a non-uniform
+    one. (On a uniform axis that is also the exact cell centre; on a non-uniform
+    axis a node sits off-centre within its cell, which is correct: the cell is a
+    nearest-node region, not a centred box. Both properties cannot hold at once
+    for unequal spacing, and "inside the right cell" is the one a reader needs.)
+
+    This is what ``pcolormesh`` needs and what ``imshow(extent=...)`` cannot
+    express. ``imshow`` spreads N pixels **evenly** across the extent, so with
+    the extent set to the first and last NODE coordinates each pixel centre
+    lands half a cell off its node — on the default 5×5 ±150 mm grid the colour
+    cell for the node at x=−150 is centred at x=−120 while the text label sits
+    at −150, a 30 mm disagreement. On a non-uniform axis (``--x-nodes`` with
+    unequal spacing, which the tool accepts) the even spread is not merely
+    offset: a node can land in a *different node's* pixel. Reading an outlier
+    off such a plot then points the operator at the wrong node, which for a
+    calibration map is the entire purpose of the plot.
+    """
+    values = [float(v) for v in nodes]
+    n = len(values)
+    if n == 0:
+        return []
+    if n == 1:
+        # Degenerate (the grid spec forbids it) — a unit-wide cell keeps the
+        # single node centred rather than producing an empty edge array.
+        return [values[0] - 0.5, values[0] + 0.5]
+    mids = [0.5 * (values[i] + values[i + 1]) for i in range(n - 1)]
+    return ([values[0] - (mids[0] - values[0])]
+            + mids
+            + [values[-1] + (values[-1] - mids[-1])])
+
+
 def make_plots(field: Field, report_dir: str,
                diff: Optional[Dict[str, Any]] = None) -> List[str]:
     try:
@@ -603,8 +640,8 @@ def make_plots(field: Field, report_dir: str,
 
     os.makedirs(report_dir, exist_ok=True)
     written: List[str] = []
-    extent = [float(field.x_mm[0]), float(field.x_mm[-1]),
-              float(field.y_mm[0]), float(field.y_mm[-1])]
+    x_edges = np.asarray(cell_edges(field.x_mm), dtype=float)
+    y_edges = np.asarray(cell_edges(field.y_mm), dtype=float)
 
     def heat(data_deg, title, fname, cmap='viridis', symmetric=False):
         fig, ax = plt.subplots(figsize=(7, 6))
@@ -614,8 +651,12 @@ def make_plots(field: Field, report_dir: str,
             kwargs = {'vmin': -peak, 'vmax': peak, 'cmap': 'coolwarm'}
         else:
             kwargs = {'cmap': cmap}
-        image = ax.imshow(data_deg, origin='lower', extent=extent,
-                          aspect='equal', interpolation='nearest', **kwargs)
+        # shading='flat' with (n+1)-length edges ⇒ one colour cell per node,
+        # centred on it. The labels below use the NODE coordinates, so cell and
+        # label are co-located by construction rather than by coincidence.
+        image = ax.pcolormesh(x_edges, y_edges, np.asarray(data_deg, dtype=float),
+                              shading='flat', **kwargs)
+        ax.set_aspect('equal')
         for iy in range(field.shape[0]):
             for ix in range(field.shape[1]):
                 value = float(data_deg[iy][ix])

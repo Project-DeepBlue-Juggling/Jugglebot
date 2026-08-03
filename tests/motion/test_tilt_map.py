@@ -495,6 +495,69 @@ def test_map_version_changes_when_an_axis_moves():
     assert tilt_map.map_version(doc) != before
 
 
+def test_map_version_is_stable_across_ndarray_vs_list():
+    """An ndarray-carrying document hashes as the same map as a list one.
+
+    Not hypothetical plumbing: an in-memory document is a legitimate thing to
+    hold — the acquisition tool assembles one, and a caller can perfectly well
+    carry `residual_rad.tx` as the ndarray it computed it in. `json.dumps`'s
+    `default=str` fallback then hashed the ndarray's **repr**, so the same
+    calibration reported two different versions depending on which type the
+    builder happened to use. A version string that depends on the builder's
+    types is not an identity.
+    """
+    before = tilt_map.map_version(_doc())
+    doc = _doc()
+    doc['grid']['x_mm'] = np.asarray(_X_MM, dtype=float)
+    doc['grid']['y_mm'] = np.asarray(_Y_MM, dtype=float)
+    doc['residual_rad']['tx'] = np.asarray(_TX, dtype=float)
+    doc['residual_rad']['ty'] = np.asarray(_TY, dtype=float)
+    assert tilt_map.map_version(doc) == before
+
+
+def test_map_version_sees_a_single_node_edit_on_a_grid_over_1000_nodes():
+    """A big grid must not collapse two different maps onto one version.
+
+    numpy TRUNCATES its repr past `threshold=1000` elements to
+    `[0.1, 0.2, ..., 0.9]`. With the ndarray reaching the hash as a repr, a
+    40x40 grid (1600 nodes) hashed only its first and last few numbers — so two
+    genuinely different calibrations could share a version, which is precisely
+    the silent-wrong-map failure the version string exists to make impossible.
+    Edited node is deep in the truncated middle, where the old code was blind.
+
+    The grid here is larger than any capture the tool would realistically run;
+    that is the point. The failure is a property of the hash, not of the
+    workflow, and nothing stops `--x-nodes` from being long.
+    """
+    n = 40
+    axis = [float(i) for i in range(n)]
+    tx = [[0.001 * (iy * n + ix) for ix in range(n)] for iy in range(n)]
+    ty = [[-0.001 * (iy * n + ix) for ix in range(n)] for iy in range(n)]
+    doc = _doc()
+    doc['grid']['x_mm'] = axis
+    doc['grid']['y_mm'] = list(axis)
+    doc['residual_rad']['tx'] = np.asarray(tx, dtype=float)
+    doc['residual_rad']['ty'] = np.asarray(ty, dtype=float)
+    before = tilt_map.map_version(doc)
+
+    doc['residual_rad']['tx'] = np.asarray(tx, dtype=float)
+    doc['residual_rad']['tx'][20][20] += 0.05      # ~2.9 deg, mid-grid
+    assert tilt_map.map_version(doc) != before
+
+
+def test_map_version_handles_numpy_scalars():
+    """`np.float64` reaches the hash as its number, not as `default=str`.
+
+    Same class as the ndarray case one level down: a document assembled from
+    numpy indexing carries numpy scalars, and those have no json encoder either.
+    """
+    before = tilt_map.map_version(_doc())
+    doc = _doc()
+    doc['grid']['x_mm'] = [np.float64(v) for v in _X_MM]
+    doc['residual_rad']['tx'] = [[np.float64(v) for v in row] for row in _TX]
+    assert tilt_map.map_version(doc) == before
+
+
 # ── load_tilt_map: file-level failures are the same type ─────────
 
 

@@ -288,6 +288,20 @@ python tools/tilt_cal_analyse.py config/tilt_calibration.yaml \
     --diff temp/logs/tilt_cal_C1.yaml
 ```
 
+> **The ament share copy.** `setup.py` installs
+> `config/tilt_calibration.yaml` into `share/jugglebot/config/` whenever it
+> exists at build time, and the loader resolves env → source tree → share. So
+> once you have committed the C1 map and run **any** `colcon build`, there are
+> **two** copies and removing only the source one falls through to the share
+> one. `--force-uninstall` handles this — it moves aside *every* existing
+> candidate — but if it reports the map is **STILL loaded** it will print the
+> path it resolved: remove or rename that share copy (or rebuild with the
+> source file absent) and re-run. Do not proceed with a map loaded; a capture
+> under a loaded map bakes that map into its own successor.
+>
+> If `$JUGGLEBOT_TILT_CAL` is set, `--force-uninstall` **refuses** rather than
+> renaming a file you named. Unset it, or move that file aside yourself.
+
 **PASS**: `max node delta ≤ max(2 × noise, 0.05°)`. The analyser computes that
 bound from the two captures' own recorded per-read sd and prints
 `VERDICT: PASS/FAIL`; its exit code is nonzero on FAIL.
@@ -304,9 +318,36 @@ bound from the two captures' own recorded per-read sd and prints
 **After the rung, record:** the shim geometry and measured base tilt,
 `uptime_ms` first/last for both captures, C2a's per-pose residuals, C2b's max
 node delta and the threshold the analyser computed, and both map versions.
-Retain both maps and both CSVs. **Restore the C1 map** (flat floor) before
-returning the machine to service, and confirm with
-`ros2 topic echo /trajectory/status --once | grep tilt_map_version`.
+Retain both maps and both CSVs.
+
+**Then restore the C1 map — all four steps.** The C2 recapture is still applied
+in memory until you reload, so skipping this leaves the *shim-contaminated* map
+running for the rest of the session and into anything that follows:
+
+```bash
+# 0. SAVE THE C2 MAP FIRST — it exists ONLY at config/tilt_calibration.yaml.
+#    The tool writes the map to the source tree and only the CSV/_meta.json to
+#    temp/logs/, and --force-uninstall's .bak is the C1 map, not this one. Step 1
+#    overwrites it. This is the artefact of the rung that tests the plan's
+#    central hypothesis, and reproducing it costs another shimmed-base sitting.
+cp config/tilt_calibration.yaml temp/logs/tilt_cal_C2.yaml
+
+# 1. put the C1 map back in the source tree (the recapture overwrote it)
+cp temp/logs/tilt_cal_C1.yaml config/tilt_calibration.yaml
+
+# 2. make the RUNNING node load it — a file copy alone changes nothing
+ros2 service call /trajectory/reload_tilt_map std_srvs/srv/Trigger
+
+# 3. confirm the applied version
+ros2 topic echo /trajectory/status --once | grep tilt_map_version
+```
+
+**The confirmation is a comparison, not a glance:** step 3's `tilt_map_version`
+must equal **the version you recorded at C1** ("After the rung, record: …the map
+version"). Reading the field without comparing it to that number cannot tell the
+C1 map from the C2 recapture — both report a plausible-looking version string.
+If they differ, the reload did not pick up the copy: check that step 1 wrote the
+source-tree path the node resolves, and re-read the share-copy note above.
 
 **This rung meets a Discussion trigger** — it tests a design hypothesis, and
 either outcome (invariant / not invariant) is a result a future session must be
@@ -329,18 +370,40 @@ Same session, fresh can-bridge boot, flat floor, C1 map restored. Run the
 cp config/tilt_calibration.yaml temp/logs/tilt_cal_C1.yaml     # keep a copy
 mv config/tilt_calibration.yaml temp/logs/tilt_cal_OFF.yaml    # move it aside
 ros2 service call /trajectory/reload_tilt_map std_srvs/srv/Trigger
-ros2 topic echo /trajectory/status --once | grep tilt_map_loaded   # -> false
+ros2 topic echo /trajectory/status --once | grep tilt_map_loaded   # -> MUST be false
 # ... operator runs the displaced tosses per session_phase8_toss_hardware.md ...
 
 # --- arm B: map ON ---
 cp temp/logs/tilt_cal_C1.yaml config/tilt_calibration.yaml     # restore
 ros2 service call /trajectory/reload_tilt_map std_srvs/srv/Trigger
-ros2 topic echo /trajectory/status --once | grep tilt_map       # -> loaded true + version
+ros2 topic echo /trajectory/status --once | grep tilt_map       # -> loaded true + the C1 version
 # ... repeat the IDENTICAL toss set ...
 ```
 
 Confirm `tilt_map_loaded` before **each** arm of the A/B — an A/B where both
 arms ran in the same state is the easiest way to waste this rung.
+
+> **Arm A's `mv` is not sufficient on its own — verify, do not assume.** Once
+> the C1 map has been committed and **any** `colcon build` has run, a second
+> copy exists at `share/jugglebot/config/tilt_calibration.yaml`, and the loader
+> falls through to it when the source-tree file disappears. The reload then
+> reports **success** with the map **still loaded**, and arm A silently runs
+> with the map ON — which is exactly the "both arms in the same state" waste
+> this rung cannot afford, except invisible.
+>
+> That is why the `grep` above says **MUST be false**. If it is `true`:
+>
+> ```bash
+> # find the copy the node is actually resolving, and move it aside too
+> ros2 topic echo /trajectory/status --once | grep tilt_map_version
+> mv "$(ros2 pkg prefix jugglebot)/share/jugglebot/config/tilt_calibration.yaml" \
+>    temp/logs/tilt_cal_SHARE.yaml
+> ros2 service call /trajectory/reload_tilt_map std_srvs/srv/Trigger
+> ros2 topic echo /trajectory/status --once | grep tilt_map_loaded   # -> false
+> ```
+>
+> Restore that share copy after the rung, or leave it out and rebuild — but
+> record which you did.
 
 **PASS**: hardware-clip behaviour **disappears or measurably reduces** with the
 map on, at the same displaced poses, same session, same boot.
