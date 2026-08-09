@@ -158,12 +158,20 @@ _PRETILT_MIN_LEAD_S = 1.0
 # only fires on timing garbage beyond anything yet observed (a latent-class guard).
 _ARM_LANDING_WINDOW_S = 0.75
 
-# Per-ball hand-arm re-dispatch cap. The HAND_TRAJ_CMD ack is unreliable (~40-60%
-# ERR_TIMEOUT per call, 2026-07-23 epidemic) AND lies — frames were observed
-# transmitted after a failed ack. The kind-1 stroke's catch instant is an ABSOLUTE
-# wall_time invariant across retries, so a lying-ack arm still physically armed; after
-# this many dispatches for one ball we KEEP the latch (assume armed) rather than
-# churning the Teensy's last-writer-wins queue with near-identical repacks forever.
+# Per-ball hand-arm re-dispatch cap. HISTORY: this cap was sized against the
+# 2026-07-23 ERR_TIMEOUT epidemic, when the HAND_TRAJ_CMD ack failed ~40-60% per call
+# and lied (frames observed transmitted after a failed ack). That epidemic was
+# TX-mailbox exhaustion on the can-bridge, CLOSED 2026-08-09 by FW 10
+# (can_jugglebot setMaxMB 16->24 = 16 TX mailboxes; validated 120/120 clean plus a
+# reload sitting — logbook 2026-08-02-err-timeout-attribution-instrumentation). The ack
+# no longer fails for that reason, and no longer lies for it either.
+# The cap and the telemetry-verified re-dispatch ladders are RETAINED DELIBERATELY as
+# defense-in-depth, not by inertia: a host-synthesised RpcTimeout on UDP loss can still
+# fail an ack with the Teensy uninvolved, and the kind-1 stroke's catch instant remains
+# an ABSOLUTE wall_time invariant across retries (so a lying-ack arm is still physically
+# armed — a property of the stroke encoding, not of the transport). After this many
+# dispatches for one ball we KEEP the latch (assume armed) rather than churning the
+# Teensy's last-writer-wins queue with near-identical repacks forever.
 _MAX_ARM_DISPATCHES = 2
 
 # ── C-HAND-1 (host-side half) ────────────────────────────────────────────────
@@ -1127,14 +1135,18 @@ class CatchCoordinatorNode(Node):
     def _on_hand_traj_done(self, future):
         """Callback when hand trajectory arm completes.
 
-        The HAND_TRAJ_CMD ack is unreliable (~40-60% ERR_TIMEOUT per call, 2026-07-23
-        epidemic) AND lies — frames were observed transmitted after a failed ack. A
-        failed ack re-opens the one-shot latch so the next balls tick re-arms, but ONLY
-        up to _MAX_ARM_DISPATCHES per ball: the kind-1 stroke's catch instant is an
-        ABSOLUTE wall_time invariant across retries, so a lying-ack arm still physically
-        armed and further repacks just churn the Teensy's last-writer-wins queue. After
-        the cap we KEEP the latch (assume armed). The expected-epidemic failure is logged
-        at DEBUG, not WARN — a working reload was reading as 30/51 failure spam.
+        The HAND_TRAJ_CMD ack WAS unreliable (~40-60% ERR_TIMEOUT per call) AND lied —
+        frames were observed transmitted after a failed ack — throughout the 2026-07-23
+        epidemic. That epidemic is CLOSED (2026-08-09, FW 10; root cause and validation
+        at _MAX_ARM_DISPATCHES above). The retry path is RETAINED DELIBERATELY: a
+        host-synthesised RpcTimeout on UDP loss can still fail an ack with the Teensy
+        uninvolved. A failed ack re-opens the one-shot latch so the next balls tick
+        re-arms, but ONLY up to _MAX_ARM_DISPATCHES per ball: the kind-1 stroke's catch
+        instant is an ABSOLUTE wall_time invariant across retries, so a lying-ack arm
+        still physically armed and further repacks just churn the Teensy's
+        last-writer-wins queue. After the cap we KEEP the latch (assume armed). A failure
+        here is logged at DEBUG, not WARN — under the historical epidemic a working
+        reload was reading as 30/51 failure spam.
 
         **"Further repacks just churn" is true only with the hand AT REST, and that
         is now an ENFORCED PRECONDITION rather than an assumption.** It always held

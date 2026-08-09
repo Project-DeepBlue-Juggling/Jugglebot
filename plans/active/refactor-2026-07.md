@@ -398,10 +398,9 @@ checks that are.
   MsgType treatment, the payload is exact-size-unpacked), per-send attribution,
   a TX-queue high-water mark, a `link_status` hand-ack-failure counter, and one
   ordinary post-swap reload sitting to tighten the 4/8 interval.
-- [ ] The four counter/identity follow-ups above + the fw-identity item below
-  — **SOFTWARE DONE 2026-08-02** (unchecked per the Phase 5 PARTIAL
-  convention: the reload sitting and the flash are still open) (logbook `2026-08-02-err-timeout-attribution-instrumentation`,
-  four commits). Two additive MsgTypes, FW_VERSION 8→9, no PROTOCOL_VERSION
+- [x] The four counter/identity follow-ups above + the fw-identity item below
+  — **SOFTWARE DONE 2026-08-02; VALIDATED/CLOSED 2026-08-09** (logbook `2026-08-02-err-timeout-attribution-instrumentation`,
+  four commits + the FW 10 fix + the close-out). Two additive MsgTypes, FW_VERSION 8→9, no PROTOCOL_VERSION
   bump: per-bus `tx_deferred` + `tx_q_hwm` + per-stage hand counters
   (`BRIDGE_TX_DIAG` 0x8D), wire-visible bridge identity warn-never-refuse
   (`BRIDGE_IDENTITY` 0x8E), host-side `hand_traj_acks` row (works against the
@@ -424,14 +423,15 @@ checks that are.
   "~50 % vs naive-burst-math" gap is resolved by phase-locked dispatch
   quantisation (`task_net` wakes only on 1 kHz FreeRTOS ticks, commensurate with
   the 500 Hz interp PIT off one crystal ⇒ two phases mod 2 ms, 50 % ceiling)
-  (one link — the PERCLK clock source — is INFERENCE, not read from source; the
+  (one link — the PERCLK clock source — was flagged INFERENCE, not read from source (RETIRED by the phase probe); the
   phase-stamp probe is its falsifiable test).
   Operationally: pre2 fails abort before the 0x6D0 frame (hand IS energised,
   but no stroke is commanded), traj fails have it queued and usually transmitted
   (the lying ack) — so the lying-ack is ~50/50 by stage and now measurable live.
-  **STEP 4 FIX DECIDED 2026-08-09 (owner); IMPLEMENTED 2026-08-09 as FW 10 —
-  FLASH + BENCH VALIDATION PENDING** (logbook entry § "Addendum — 2026-08-09
-  (2)"; post-fix procedure in `tests/hardware/session_err_timeout_bench.md`
+  **STEP 4 FIX DECIDED 2026-08-09 (owner); IMPLEMENTED, FLASHED AND
+  VALIDATED 2026-08-09 as FW 10 — the ERR_TIMEOUT epidemic is CLOSED** (logbook
+  entry §§ "Addendum — 2026-08-09 (2)" and "(3)"; results in
+  `tests/hardware/session_err_timeout_bench.md`
   § "Post-fix validation"). The change: raise
   `can_jugglebot`'s `setMaxMB(16 → 24)`, i.e. 8 → 16 TX mailboxes, **plus** a
   console-only phase-stamp diagnostic logging `micros64() - s_last_tick_us` at
@@ -444,12 +444,36 @@ checks that are.
   frame 2 — and as the one that additionally makes the `events()`
   missing-`break` residual unreachable at the observed occupancy (peak pending 8
   against 16 mailboxes). Expected honestly: the ERR_TIMEOUTs go, the wire latency
-  does not. NOT yet done: **the flash itself**, the post-fix three-arm bench
-  re-run (which also reads `[handphase]` — a uniform phase spread would refute
-  the A3 verdict and re-open the occupancy story), and the ordinary reload
-  sitting. The latch fence stays up until the fix lands AND a sitting validates
-  it — implementing a fix is not validating it.
-  CAN-mute pio platform image (971d12c) root-cause remains open, untouched.
+  does not.
+  **VALIDATED / CLOSED 2026-08-09** (logbook § "Addendum — 2026-08-09 (3)"): the
+  identical three-arm ladder on FW 10 gave **0/40 in every arm — 120/120 clean**
+  (armB was 15/40 pre-fix; Fisher p = 1.21e-05, and `setpoints_sent` 199 → 3327
+  confirms the 500 Hz stream really was live), `defer jb = bb = cone = 0` and
+  `txq` all 0 (the software ring was never entered), `can3_errors` all-zero and
+  `bridge_fw_version` `10 (proto 5)` in all 120 rows, host
+  `fail_teensy = fail_host = 0`. armA2 clean at 393 s uptime vs armA's 123 s, so
+  the A-B-A design kills the freshness confound a second time. The two
+  pre-registered falsification rows both held: `[handphase]` showed **two tight
+  clusters at ~60 µs and ~1060 µs (±3 µs)**, confirming the two-phase
+  quantisation model and **retiring the PERCLK INFERENCE flag**; and `can1_tx`
+  read **~3150 fps unchanged**, **refuting the RM-unverified arbitration-scan
+  hazard at MAXMB = 24**. `interp_max_jitter_us ≤ 2`,
+  `interp_deadline_misses = 0` — the ISR is untouched, as designed. A separate
+  ordinary reload sitting (operator-reported) had the hand responsive on EVERY
+  reload attempt; the one abort was BB-side yaw `NOT_SETTLED`, a known separate
+  item. **The latch fence is DOWN**: `catch_coordinator_node.py`'s
+  `_MAX_ARM_DISPATCHES` comment block and the `_on_hand_traj_done` docstring are
+  corrected (comments + docstrings only; mechanically verified ZERO EXECUTABLE
+  CHANGE — identical AST and bytecode with docstrings stripped), and the cap
+  plus the telemetry-verified ladders are **retained deliberately** as
+  defense-in-depth (host-synthesised `RpcTimeout` on UDP loss still exists; the
+  kind-1 wall-time invariant is a property of the stroke encoding, not the
+  transport). One residual survives: the vendored FlexCAN_T4 `events()`
+  missing-`break`, dormant at `defer jb = 0` but with a blast radius the fix
+  DOUBLED (16 mailboxes, not 8) — reachable only if a future TX producer
+  re-opens the deferral path.
+  Still open from this phase, unchanged: the
+  CAN-mute pio platform image (971d12c) root-cause, untouched.
 - Bridge-uptime tracking-lag reboot-isolation experiment (pre-registered;
   calendar cost is real — the degraded cell needs a multi-hour soak).
 - Post-repair flash window: wire-visible firmware identity as a **NEW
@@ -459,9 +483,9 @@ checks that are.
   warn-never-refuse like PLATFORM_FW_VERSION_EXPECTED; pio-clean forcing
   when `udp_protocol.h` is newer than the build dir (the ACTUAL 24608bb
   fix); root-cause the CAN-mute pio platform image (971d12c).
-  **[2026-08-02: identity + pio-clean CODE landed, FW 9 NOT yet flashed — see
-  the SOFTWARE DONE row above; the flash itself and the 971d12c root-cause
-  both remain from this bullet.]**
+  **[2026-08-02: identity + pio-clean CODE landed. 2026-08-09: FW 9 flashed
+  (bench discriminator), then FW 10 flashed and validated — see the row above.
+  Only the 971d12c root-cause remains from this bullet.]**
 - The re-plug discriminating probe: DEFERRED by owner (2026-07-31). If ever
   run: it is a flash→probe→flash-back cycle with a three-part revert (both
   bus declarations + ESR1 addresses), not a "60-second" job.

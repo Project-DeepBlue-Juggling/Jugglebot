@@ -735,9 +735,9 @@ toss it repeats) → CONT-STEP-1 (the no-ball dry trace, the one sanctioned use 
   to measure the truth. If real scatter is large, Tier-8a catches absorb it
   (co-located, tracker-driven catch); Tier 8b tightens the requirement — the
   knife-edge finding transfers as a hardware risk, not a sim artifact.
-- **ERR_TIMEOUT epidemic (open, Phase-7)** — more hand dispatches per action
-  means more exposure; the telemetry ladder is the mitigation; the standing
-  investigation stays open.
+- **ERR_TIMEOUT epidemic (CLOSED 2026-08-09, FW 10)** — retained as a note: the
+  telemetry ladder mitigation stays as defense-in-depth against host-side
+  RpcTimeout.
 - **Tracker verdict corruption (open, Phase-7) — PARTLY RETIRED 2026-07-28.**
   Split by path since contract **C-POSSESS-1**
   (`ros_ws/docs/ball_possession_contract.md`): **self-toss** verdicts are now

@@ -157,8 +157,8 @@ side-findings in the vendored FlexCAN_T4 and a firmware comment — is in
 `logbook/2026-08-02-err-timeout-attribution-instrumentation.md` § "Addendum —
 2026-08-09".
 
-**Step 4 fix — DECIDED 2026-08-09 (owner), IMPLEMENTED 2026-08-09 as FW 10, flash
-+ bench validation PENDING:** `setMaxMB(16 → 24)` on `can_jugglebot` (8 → 16 TX
+**Step 4 fix — DECIDED 2026-08-09 (owner), IMPLEMENTED 2026-08-09 as FW 10;
+FLASHED AND VALIDATED the same day — see § Results below:** `setMaxMB(16 → 24)` on `can_jugglebot` (8 → 16 TX
 mailboxes) **plus** a console-only phase-stamp diagnostic (`micros64() -
 interp_last_tick_us()` at hand dispatch — the addendum's own falsifiable test,
 shipped with the fix); chosen as the only candidate carrying no 0x6D0
@@ -166,7 +166,7 @@ duplicate-or-invert hazard, and the one that also makes the `events()` residual
 unreachable at the observed occupancy. The latch fence stays up until that fix
 lands AND an ordinary reload sitting validates it. Post-fix procedure below.
 
-## Post-fix validation — FW 10 (procedure; NOT yet run)
+## Post-fix validation — FW 10 (procedure; RAN 2026-08-09 — results below)
 
 Same experiment, same script, one new readout. Re-running the identical three-arm
 ladder is the point: it is the only design that already killed the warm-up/uptime
@@ -213,3 +213,67 @@ ring. At the ladder's ≥ 2 s spacing against a 1 Hz diag tick, expect `+1` line
 
 ABORT criteria are unchanged from the pre-fix session. A PASS here clears the
 bench half only — the latch fence comes down after an ordinary reload sitting.
+
+## Results — post-fix, FW 10, 2026-08-09 (afternoon)
+
+Run on FW 10 (`bridge_fw_version` = `10 (proto 5)` in all 120 logged rows — the
+check that matters, since FW 10 is wire-invisible and a healthy link proves
+nothing about which build is aboard). Bridge uptime 123 s at armA start → 393 s
+at armA2 end, one boot across all three arms. N = 40 dispatches per arm, ≥ 2 s
+apart, zero-distance smooth moves — identical to the pre-fix session.
+
+| arm | leg stream | fails | rate (95 % CP) | pre1 | pre2 | traj | pre-fix |
+|---|---|---|---|---|---|---|---|
+| A (idle) | off | **0/40** | 0.0 % [0.0, 8.8] | 0 | 0 | 0 | 0/40 |
+| B (500 Hz stream, platform holding) | on | **0/40** | 0.0 % [0.0, 8.8] | 0 | 0 | 0 | **15/40** |
+| A2 (idle) | off | **0/40** | 0.0 % [0.0, 8.8] | 0 | 0 | 0 | 0/40 |
+| pooled | — | **0/120** | 0.0 % [0.0, **3.0**] | 0 | 0 | 0 | 15/120 |
+
+armB, the load-bearing arm: **15/40 → 0/40**, Fisher exact **p = 1.21e-05**
+(0/120 pooled vs the pre-fix 15/40: p = 9.0e-11). Under the pre-fix rate of
+0.375, a clean 40 has probability **6.8e-09**. The arm really was loaded:
+per-dispatch `setpoints_sent` climbs **199 → 3327** across armB, so the 500 Hz
+leg ladder was live throughout; armA and armA2 sit static (0 and 3646).
+
+Counters as sampled on the final logged row of armA2: hand **`calls = 119,
+ok = 119`**, `rej = 0, busdown = 0, pre1 = pre2 = traj = 0`;
+**`defer jb = 0, bb = 0, cone = 0`**; `txq jb = bb = cone = 0` (high-water, so the
+software ring was never entered on any bus, all boot). Host `hand_traj_acks`, same
+final-row sampling: `calls = 119, ok = 119, fail_teensy = 0, fail_host = 0`. All 15
+`can3_errors` fields zero in all 120 rows.
+
+**Why 119 and not 120**: each row's counter snapshot precedes that row's own
+dispatch, so the 120th call is not in any file — 119 is the largest readable value.
+The tally of 120/120 comes from the per-row `ok` column, which is 1 on all 120 rows.
+
+CSVs: `temp/probes/hand_dispatch_ladder_armA_2026-08-09_16-33-06.csv`,
+`..._armB_2026-08-09_16-34-42.csv`, `..._armA2_2026-08-09_16-36-19.csv`.
+
+### The pre-registered observable table — every row PASSED
+
+| Observable | Pre-registered PASS | Measured | Verdict |
+|---|---|---|---|
+| arm B failure rate | **0/40** (was 15/40) | **0/40** | **PASS** — the fix's primary claim; 16 mailboxes were enough |
+| `defer jb` increment across arm B | **0** (was +16) | **0** | **PASS** — and mechanistically the strongest row: no producer deferred at all, so the occupancy model's own prediction (peak pending 11 ≤ 16) holds |
+| arms A / A2 | 0/40, unchanged | **0/40, 0/40** | **PASS** — no regression introduced by the mailbox change; armA2 clean at 393 s vs armA's 123 s kills the freshness confound again |
+| `can3_errors` | all 15 fields zero | all zero, 120/120 rows | **PASS** — validity condition held, as in the pre-fix session |
+| `[handphase]` phase_us | **two tight clusters** ⇒ § A3 CONFIRMED; uniform 0–2000 ⇒ REFUTED | **two tight clusters, ≈ 60 µs and ≈ 1060 µs, each ± 3 µs** (operator console reading during armB) | **PASS — the CONFIRM branch fired.** 1000 µs apart = the two 1 kHz FreeRTOS tick parities within the 2 ms interp cycle. This is a falsification test that could have killed the verdict with armB still at 0/40, and did not; it also **retires the PERCLK inference flag**, because non-commensurate clocks could not hold a fixed ±3 µs separation over a 78 s arm |
+| jugglebot bus TX fps (`can1_tx`) | **~3150 fps, unchanged**; a DROP means the arbitration-scan hazard is real | **~3150 fps, unchanged** vs the FW 9 pre-flash baseline | **PASS — the "unchanged" branch fired**, so the one RM-unverified inference in the whole fix is **REFUTED at MAXMB = 24**. The pre-flash baseline capture is what makes this a comparison rather than a plausible-looking number |
+| `interp_max_jitter_us` / `interp_deadline_misses` | within their pre-fix budget | **≤ 2 µs / 0** | **PASS** — the longer `write()` mailbox scan inside the PRIMASK region cost the 500 Hz loop nothing measurable; the ISR is untouched, as designed |
+
+### Sitting half, and what this closes
+
+A separate ordinary reload session followed (operator-reported, not ladder-
+instrumented): **the hand was responsive on every reload attempt.** The single
+abort was BB-side yaw `NOT_SETTLED` — the ball never flew, so it is not a
+hand-path outcome, and it is a known separate open item. That satisfies the
+"ordinary reload sitting" requirement, which existed precisely because a
+null-move ladder is not a reload.
+
+**Both halves are now green, so the ERR_TIMEOUT epidemic is CLOSED and the latch
+fence comes DOWN.** Full close-out reasoning — including what is *not* claimed
+(wire latency was never expected to change and was not measured to) and the one
+surviving residual (the vendored FlexCAN_T4 `events()` missing-`break`, dormant
+at `defer jb = 0` but with a blast radius the fix doubled) — is in
+`logbook/2026-08-02-err-timeout-attribution-instrumentation.md` § "Addendum —
+2026-08-09 (3)".

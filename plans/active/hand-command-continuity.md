@@ -136,7 +136,8 @@ That premise is true for a **reload**, where the hand is parked at the top at re
 — a repack there is genuinely harmless. It is false during a **toss**, where the
 repack lands inside the throw stroke and each one re-clears the queue and
 re-preludes from a new live position. The `HAND_TRAJ_CMD` ack fails 40–60 % of the
-time (the 2026-07-23 ERR_TIMEOUT epidemic), so this fires often —
+time (the 2026-07-23 ERR_TIMEOUT epidemic) [rate now ~0 on FW 10 — the gate is
+retained for the RpcTimeout residual], so this fires often —
 `_MAX_ARM_DISPATCHES = 2` (`catch_coordinator_node.py:144`), which accounts
 exactly for the two observed dispatches per toss.
 
@@ -1116,7 +1117,8 @@ top at rest, and delaying the arm would eat lead the catch needs. Pinned by
 
 An **armed** stroke produces no observable until its event time, so the arm cannot
 be telemetry-verified the way the hand ladders were (`4e33b53`) — which is why
-the retry path exists at all, against a 40-60 % `ERR_TIMEOUT` ack failure rate. A
+the retry path exists at all, against a 40-60 % `ERR_TIMEOUT` ack failure rate
+[rate now ~0 on FW 10 — the gate is retained for the RpcTimeout residual]. A
 Teensy-side "armed stroke" field in `hand_telemetry` or `link_status` would make
 it verifiable; that is a **protocol change and is out of scope here**. Follow-up,
 not solved. What a capture CAN verify is the harm the guard prevents: a repack

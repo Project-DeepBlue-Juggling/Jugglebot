@@ -2,7 +2,7 @@
 title: "ERR_TIMEOUT hand-path: sequences are random (state bug excluded), write() rejection is deferral not drop, and the attribution counters land"
 type: investigation
 date: 2026-08-02
-status: in-progress
+status: resolved
 phase: "refactor-2026-07 Phase 7 / PROMPT-err-timeout-hand-path Steps 1-2"
 related_plan: refactor-2026-07.md
 files_changed:
@@ -22,6 +22,7 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/telemetry.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/telemetry.h
   - ros_ws/src/jugglebot/Teensy_code_canbridge/udp_protocol.h
+  - ros_ws/src/jugglebot/jugglebot/catch_coordinator_node.py
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
   - teensy_link/__init__.py
   - teensy_link/protocol.py
@@ -61,7 +62,7 @@ with hand dispatches (2026-07-23 → 07-31) from `~/.ros/log/*/launch.log`,
 validated cell-for-cell against the recount table (pooled prime 133/63 fail,
 arm 266/139 fail — 202/399 = 50.6 %). Arm-path ordering uses a
 single-outstanding-channel reconstruction justified from
-`catch_coordinator_node.py:1171-1172` (a same-ball re-arm can only follow the
+`catch_coordinator_node.py:1183-1184` (a same-ball re-arm can only follow the
 previous arm's failure callback) and validated empirically: in the codes-visible
 era, 97/97 arm dispatches have visible responses with 0 interleavings, and 167
 measured response→next-dispatch margins are all positive (min +3.5 ms).
@@ -208,13 +209,19 @@ the counters read off `/link_status`.
 1. The prime-path within-session drift (above) — bench A/A' arms test it.
    **NOT REPRODUCED on the bench** (2026-08-09): both idle arms are 0/40, so
    there is no within-session drift to fit and armA vs armA2 cannot separate.
-   The signal remains open for CATCHING sessions, where the prime path is
-   exercised under load; the bench simply has no purchase on it.
+   **CLOSED AS MOOT 2026-08-09 (3)** — the drift was a *within-failure-rate*
+   trend, i.e. a property of the failing regime. With the FW 10 failure rate at
+   zero (120/120 bench, hand responsive on every reload attempt) there is no
+   rate left to drift. Retained as a HISTORICAL NOTE only: it was never
+   reproduced on the bench, and it is not a residual to chase. If hand-dispatch
+   failures ever return, re-read this question before assuming a new mechanism.
 2. The ~50 % vs naive-burst-math gap — tx_q_hwm + Step 3 arms discriminate.
    **RESOLVED 2026-08-09** — see the addendum § A3: phase-locked dispatch
    quantisation (dominant), a congested window of 1–2 stretched slots
    (second-order), bus load alone refuted by ~50×. One INFERENCE link remains
-   flagged there, with its falsifiable test.
+   flagged there, with its falsifiable test. **PERCLK link RETIRED 2026-08-09
+   (3), § A8** — the two ±3 µs clusters 1000 µs apart over a 78 s arm are the
+   observable non-commensurate clocks could not produce.
 3. tx_q_hwm is boot-monotone with no reset RPC — bench arms must run
    low-load-first and read per-arm increments, or reboot between arms; a
    pinned 64 from an earlier phase is NOT evidence about the current one.
@@ -223,18 +230,29 @@ the counters read off `/link_status`.
 4. txBuffer loss paths are un-instrumentable without touching the vendored
    library — tx_q_hwm==64 is the overflow proxy; the events() drain defect is
    a candidate Step 4 item ONLY if attribution shows real frame loss.
-   **TRACKED RESIDUAL** (addendum § A6): the `mb == -1` refill loop's missing
-   `break` (`FlexCAN_T4.tpp:1084-1102`) makes "deferral is not a drop" only
-   CONDITIONALLY true and can duplicate a deferred 0x6D0 on the wire today.
-   Exposure is rare (the TX-complete ISR normally wins the race) and it
-   becomes unreachable at the observed occupancy once the TX mailbox count is
-   raised (peak pending 8 against 16 mailboxes; the ring is only re-entered if
-   a future TX producer doubles the burst), so it is not a fix in its own
-   right — but it must not be forgotten when the Step 4 shape is
-   chosen. Probe: count duplicate 0x6D0 arrivals Platform-Teensy-side.
+   **THE ONE LIVE RESIDUAL — still open at close-out** (addendum § A6): the
+   `mb == -1` refill loop's missing `break` (`FlexCAN_T4.tpp:1084-1102`) makes
+   "deferral is not a drop" only CONDITIONALLY true and can duplicate a
+   deferred 0x6D0 on the wire. On FW 10 it is **unreachable** — `defer jb = 0`
+   across all 120 validated dispatches, so the software ring is never entered
+   at all — but it is *dormant, not fixed*, and the fix made its blast radius
+   WORSE: the break-less loop now duplicates the peeked frame into up to **16**
+   mailboxes instead of 8. **It becomes reachable again the moment any future
+   TX producer re-opens the deferral path** (a second high-rate burst on the jb
+   loom, a raised leg rate, a new periodic emitter). Anything that re-opens
+   deferral must fix the vendored loop, not just re-size the mailboxes. Probe:
+   count duplicate 0x6D0 arrivals Platform-Teensy-side during a deferring
+   dispatch.
 5. One ordinary post-swap reload sitting (n up from 4/8) — unchanged from the
-   recount; now doubles as the counters' first field data. Still open after
-   the 2026-08-09 bench (a null-move ladder is not a reload).
+   recount; now doubles as the counters' first field data. **SATISFIED
+   2026-08-09 (3)** — for its validation purpose. The 4/8 interval is NOT
+   tightened (the session was uncounted); it is moot instead, the mechanism
+   being fixed and measured 0/120 on the bench.
+   The evidence: the operator ran an ordinary reload session on FW 10 and
+   the hand was responsive on EVERY reload attempt. The one abort in that
+   session was BB-side yaw `NOT_SETTLED`, a known and separate open item
+   (`logbook/2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders`;
+   the ball never flew, so it is not a hand-path outcome).
 
 ## Verification
 
@@ -415,7 +433,7 @@ hard **ceiling of 50 %** (one tick parity lands in the congested window), and
 `task_can_rx` (prio 5) runs first on the tick, then lwIP pump → stream drain →
 **RPC drain last** (`udp_link.cpp:159-161`).
 
-⚠️ **One unverified link, flagged as INFERENCE:** `CCM_CSCMR1[PERCLK_CLK_SEL]`
+⚠️ **[RETIRED 2026-08-09 — see § A8] One unverified link, flagged as INFERENCE:** `CCM_CSCMR1[PERCLK_CLK_SEL]`
 was not read on this build to prove PERCLK is the 24 MHz OSC, and δ was not
 measured. The commensurability claim rests on both timers deriving from the one
 crystal — standard for this part, but the one link in the chain not verified from
@@ -595,7 +613,7 @@ Comment-only fix, no behaviour change.
   tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_search.py -q`,
   run 2026-08-09: **55 passed in 0.45 s**.
 
-## Addendum — 2026-08-09 (2): the Step 4 fix is implemented (FW 10), flash + bench validation PENDING
+## Addendum — 2026-08-09 (2): the Step 4 fix is implemented (FW 10), flash + bench validation PENDING — SUPERSEDED by addendum (3)
 
 Both halves of the decided fix are in the tree, in one commit, unflashed.
 
@@ -633,7 +651,7 @@ as the check that nothing leaked onto the wire. Also fixed: the stale
 wire-invisible, an FW 9 board decodes identically — so a healthy link is **not**
 evidence the fix is on the board; the `BRIDGE_FW_CHECK` line is.
 
-**Validation PENDING (nothing below has been run).** Flash FW 10, then re-run the
+**[SUPERSEDED 2026-08-09 (3) — this ran and PASSED]** **Validation PENDING (nothing below has been run).** Flash FW 10, then re-run the
 same three-arm A-B-A ladder (procedure in `tests/hardware/session_err_timeout_bench.md`
 § "Post-fix validation"). Expected: 0/40 in every arm, `defer jb` increment 0, and
 the `[handphase]` samples clustered at two values — a uniform 0–2000 spread refutes
@@ -642,7 +660,7 @@ whole reason the probe ships with the fix. Also compare `interp_max_jitter_us` /
 `interp_deadline_misses` before and after: the longer `write()` mailbox scan sits
 inside the existing PRIMASK region.
 
-**Entry stays in-progress.** The latch fence stays up until the flash lands AND an
+**Entry stayed in-progress until addendum (3); it is now resolved.** The latch fence stays up until the flash lands AND an
 ordinary reload sitting validates it — confirming a mechanism was not fixing it,
 and implementing a fix is not validating it.
 
@@ -669,3 +687,190 @@ the two samples underflows the u64 subtraction and surfaces as `phase_us` ≈
 65480-65535, a value this ring's own contract calls impossible. A rare
 self-inflicted refutation of the very model the probe exists to test. The tick is
 now read into a local first, making the ordering a source-level fact.
+
+## Addendum — 2026-08-09 (3): validated on hardware — CLOSED
+
+FW 10 is flashed. The pre-registered post-fix ladder ran, the phase probe fired,
+and an ordinary reload session followed. Every row of the pre-registered
+observable table PASSED, and two of them were *falsification* tests that could
+have killed the verdict rather than confirm it. **The epidemic is CLOSED.**
+
+### A7. The post-fix three-arm ladder — 120/120
+
+Same script, same design, same N as the pre-fix session; the only changes are the
+board (FW 10) and the added `[handphase]` readout.
+
+| arm | leg stream | fails | rate (95 % CP) | pre1 | pre2 | traj | pre-fix same arm |
+|---|---|---|---|---|---|---|---|
+| A (idle) | off | **0/40** | 0.0 % [0.0, 8.8] | 0 | 0 | 0 | 0/40 |
+| B (500 Hz stream, platform holding) | on | **0/40** | 0.0 % [0.0, 8.8] | 0 | 0 | 0 | **15/40** |
+| A2 (idle) | off | **0/40** | 0.0 % [0.0, 8.8] | 0 | 0 | 0 | 0/40 |
+| pooled | — | **0/120** | 0.0 % [0.0, **3.0**] | 0 | 0 | 0 | 15/120 |
+
+CSVs (operator, 2026-08-09 afternoon; tallies re-derived from the files, not from
+the console):
+`temp/probes/hand_dispatch_ladder_armA_2026-08-09_16-33-06.csv`,
+`..._armB_2026-08-09_16-34-42.csv`, `..._armA2_2026-08-09_16-36-19.csv`.
+
+armB is the load-bearing arm: **15/40 → 0/40**, Fisher exact **p = 1.21e-05**
+(against the pooled 120, p = 9.0e-11). Under the pre-fix armB rate of 0.375, a
+clean 40 has probability **6.8e-09**. The arm was genuinely loaded — the
+per-dispatch `setpoints_sent` field climbs 199 → **3327** across armB's 78 s, i.e.
+the 500 Hz leg ladder was live throughout, exactly as in the pre-fix run. armA and
+armA2 both sit at a static `setpoints_sent` (0 and 3646), so the idle arms really
+were idle.
+
+The A-B-A design earns its keep a second time: armA2 is 0/40 at **393 s** uptime
+against armA's **123 s**, so "it got better because the plant was fresh" is killed
+by construction again, in the direction that matters.
+
+Cumulative firmware counters at the end of armA2 (boot-cumulative, one boot across
+all three arms): hand **`calls = 119, ok = 119`** as sampled on the final logged
+row — each row's counter snapshot precedes that row's own dispatch, so the 120th
+call is not in any file; the `ok` column is 1 on all 120 rows, which is what makes
+120/120 the tally — `rej = 0, busdown = 0, pre1 = pre2 = traj = 0`;
+**`defer jb = 0`, `defer bb = 0`, `defer cone = 0`**;
+`txq jb = bb = cone = 0` (high-water, so it is not merely "zero now" — the ring
+was never entered on any bus, all boot). Host `hand_traj_acks`, same final-row
+sampling: `calls = 119, ok = 119, fail_teensy = 0, fail_host = 0` — the two layers
+agree, and `fail_host = 0` means no host-synthesised `RpcTimeout` either. All 15
+`can3_errors` fields were zero in all 120 logged rows, so the validity condition
+that guarded the pre-fix read holds here too. `bridge_fw_version` read
+**`10 (proto 5)`** in every row — the check that matters, because FW 10 is
+wire-invisible and a healthy link proves nothing about which build is aboard.
+
+`defer jb = 0` is the mechanistic confirmation, not just a green number: the
+pre-fix run deferred 16 frames on this bus, 15 of them hand frames. With 16 TX
+mailboxes against a design-bound peak pending of 11, the software ring is never
+reached — which is precisely the predicted state, and the same fact that makes
+the § A6 `events()` residual dormant.
+
+### A8. The phase probe — the two-phase model is CONFIRMED
+
+`[handphase]` during armB (operator's console reading, `pio device monitor`):
+**two tight clusters, at ≈ 60 µs and ≈ 1060 µs, each ± 3 µs.**
+
+That is the § A3 prediction landing exactly: two dispatch phases and no others,
+**1000 µs apart** = the two 1 kHz FreeRTOS tick parities inside the 2 ms interp
+cycle. A uniform spread over 0–2000 µs would have REFUTED the phase-quantisation
+verdict and re-opened the occupancy story even with armB at 0/40 — that was the
+whole reason the probe shipped with the fix rather than behind it. It did not.
+
+Two consequences worth stating separately:
+
+- **The two-phase quantisation model is empirically confirmed**, so the "~50 %
+  ceiling" explanation of the field rate (Open question 2, § A3) now rests on
+  measurement rather than on commensurate-clock arithmetic.
+- **The PERCLK inference flag is RETIRED.** § A3 carried one unverified link —
+  `CCM_CSCMR1[PERCLK_CLK_SEL]` was never read, so "both timers derive from the one
+  24 MHz crystal" was standard-for-the-part reasoning, not source. The observable
+  it predicted (a *fixed* 1000 µs separation, tight to ±3 µs over a 78 s arm) is
+  exactly what non-commensurate clocks could not produce: any relative drift would
+  smear the clusters or walk their separation. The flag came down the way flags
+  should — by its own pre-registered test, not by being forgotten.
+
+### A9. The two hazards the fix itself could have introduced — both refuted
+
+The fix was not free of risk, and both risks were pre-registered as table rows.
+
+- **The arbitration-scan hazard is REFUTED at MAXMB = 24.** This was the ONE
+  RM-unverified inference in the whole fix: FlexCAN scans all enabled mailboxes
+  each arbitration round, and a longer scan could cost a back-to-back transmission
+  slot — degrading bus THROUGHPUT, invisible to interp jitter. `/profile`'s
+  `can1_tx` (wire slot 1 = the jugglebot role) reads **~3150 fps, unchanged** from
+  the FW 9 baseline captured before the flash. The baseline was captured first
+  precisely because it is unobtainable afterwards; that discipline is what makes
+  this row a real comparison rather than a plausible-looking number.
+- **The ISR is untouched, as designed.** `interp_max_jitter_us ≤ 2` and
+  `interp_deadline_misses = 0` — the longer `write()` mailbox scan sits inside the
+  existing PRIMASK region, and it cost the 500 Hz loop nothing measurable.
+
+### A10. The sitting half — and what CLOSES
+
+A separate ordinary reload session followed the bench (operator-reported, not
+instrumented by the ladder): **the hand was responsive on every reload attempt.**
+The single abort in that session was BB-side yaw `NOT_SETTLED` — the ball never
+flew, so it is not a hand-path outcome, and it is a known separate open item
+(`logbook/2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders`; carried in
+the memory layer as its own OPEN row). That satisfies Open question 5's "one
+ordinary reload sitting" requirement, which existed exactly because a null-move
+ladder is not a reload: the bench proves the mechanism is gone, the sitting proves
+it is gone *on the path the robot actually flies*.
+
+So the fix is validated at **both** levels the fence demanded, and:
+
+**THE ERR_TIMEOUT EPIDEMIC IS CLOSED.** Running since at least 2026-07-23 at
+~40–60 % of hand dispatches (pooled 202/399 = 50.6 % across 16 sessions), it was
+**TX-mailbox exhaustion on the can-bridge, sampled through a tick-quantised
+dispatch phase** — 8 TX mailboxes against a 6-frame leg burst plus up to one
+lingering non-leg co-resident, hit by a dispatch that can only land on one of two
+phases mod the 2 ms interp period. Fixed on 2026-08-09 by
+`can_jugglebot.setMaxMB(16 → 24)` — 16 TX mailboxes — shipped as FW 10 with its
+own falsification probe. 120/120 clean on the bench, `defer jb = 0`, and a clean
+reload sitting.
+
+**The latch fence comes DOWN.** `catch_coordinator_node.py`'s
+`_MAX_ARM_DISPATCHES` comment block is corrected in the same commit as this
+addendum — it asserted an ack that fails 40–60 % of the time and lies, and neither
+half is true of FW 10 any more. The **behaviour is deliberately unchanged**: the
+cap and the telemetry-verified re-dispatch ladders stay as defense-in-depth. A
+host-synthesised `RpcTimeout` on UDP loss can still fail an ack with no Teensy
+involvement at all (`fail_host` is a real counter, it was simply 0 here), and the
+kind-1 wall-time-invariant argument — a retried arm re-derives the same absolute
+catch instant, so a lying-ack arm is still physically armed — is a property of the
+stroke encoding, not of the transport, so it survives the fix untouched. Retaining
+them is a choice, recorded as one, so a future reader does not mistake it for
+inertia and delete them as dead weight. That is the only code touched by this
+close-out, and it is comments + docstrings only — mechanically verified to be a
+ZERO EXECUTABLE CHANGE (identical AST and identical bytecode once docstrings are
+stripped; see the verification below).
+
+**Retained residual (one, and only one):** the vendored FlexCAN_T4 `events()`
+missing-`break` (§ A6, Open question 4) — dormant at `defer jb = 0`, with a blast
+radius that the fix doubled (16 mailboxes, not 8). It is reachable ONLY if a
+future TX producer re-opens the deferral path.
+
+**Honest scope of the claim.** What was validated is the *dispatch* path: acks and
+frames. The wire latency was never expected to change and was not measured to have
+changed — 0x0C7, 0x0CB and 0x6D0 all rank below every leg id, so they still
+transmit after the burst drains. Do not read this closure as a latency result, and
+do not read it as touching the separate bridge-uptime tracking-lag item.
+
+### Addendum 3 verification
+
+- Bench CSVs (operator, 2026-08-09 afternoon), tallies re-derived from the files
+  by the orchestrator: `hand_dispatch_ladder_armA_2026-08-09_16-33-06.csv` 40/40
+  OK, `..._armB_2026-08-09_16-34-42.csv` 40/40 OK,
+  `..._armA2_2026-08-09_16-36-19.csv` 40/40 OK; `bridge_fw_version` =
+  `10 (proto 5)` and `can3_errors` all-zero in **all 120** rows; final logged row
+  `hand calls = 119 ok = 119 pre1 = pre2 = traj = 0`, `defer jb = bb = cone = 0`,
+  `txq jb = bb = cone = 0`; host `hand_traj_acks calls = 119 ok = 119
+  fail_teensy = 0 fail_host = 0` — 119, not 120, because each row's snapshot
+  precedes its own dispatch, so the 120th call is not in any file; the per-row
+  `ok` column is 1 on all 120 rows, which is the tally.
+  armB `setpoints_sent` 199 → 3327 (stream live);
+  uptime 123 s at armA start → 393 s at armA2 end.
+- `[handphase]`, `can1_tx`, `interp_max_jitter_us`, `interp_deadline_misses`:
+  operator console readings during the same session (pio device monitor +
+  `/profile`), recorded above. These are read values, not files — they are cited
+  as operator readings, deliberately, so a future reader does not go looking for
+  a CSV that does not exist.
+- Reload session: operator-reported, no ladder instrumentation. Cited as such.
+- Statistics: Fisher exact and Clopper-Pearson re-computed 2026-08-09 from the
+  tallies above (`scipy.stats`), one-off per the probe policy.
+- Docs + code gate for this close-out: `./run_tests.sh`, run 2026-08-09:
+  **4226 passed, 2 warnings in 188.05 s parallel; serial phase empty (4661
+  deselected); total 199 s; RESULT: PASS**. (The only edit after that run is this
+  citation line itself; the three tests that read this file —
+  `tests/sim/test_logbook_front_matter.py`, `test_logbook_search.py`,
+  `test_plans_index.py` — were re-run after it: 55 passed in 0.45 s.)
+  The only code change in this
+  close-out is in `catch_coordinator_node.py` and is **comments + docstrings
+  only — ZERO EXECUTABLE CHANGE**. `git diff -U0` on that file shows exactly two
+  hunks: the `_MAX_ARM_DISPATCHES` comment block (every changed line starts with
+  `#`) and one paragraph of the `_on_hand_traj_done` docstring. Because a
+  docstring *is* a Python token, "comment-only" was not sufficient and the claim
+  is verified mechanically instead: parsing both the `HEAD` and working versions,
+  stripping every module/class/function docstring node, and comparing gives an
+  **identical AST** (`ast.dump` equal, 92552 chars each) and **identical bytecode**
+  across all 34 code objects (`co_name`/`co_code` pairwise equal). Run 2026-08-09.
