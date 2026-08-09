@@ -15,7 +15,7 @@ takes. This ladder measures the production dispatch path end to end, and reads
 the attribution counters straight off /link_status.
 
 Usage (launch running, bridge FW >= 9 for bridge_tx_diag):
-    python tools/probes/hand_dispatch_ladder.py --n 40 --gap 2.0 \
+    python tools/probes/archived/hand_dispatch_ladder.py --n 40 --gap 2.0 \
         [--label armA] [--out temp/probes/]
 
 Output: one CSV row per dispatch (wall time, uptime_ms, pos_meas, outcome,

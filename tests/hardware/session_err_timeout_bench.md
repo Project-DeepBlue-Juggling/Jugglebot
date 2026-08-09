@@ -92,7 +92,7 @@ guard E-STOP, any can3_errors wire-error tick, any unexpected hand motion
 
 ## Artifacts
 
-Ladder script: tools/probes/hand_dispatch_ladder.py (rclpy; prints per-dispatch
+Ladder script: tools/probes/archived/hand_dispatch_ladder.py (archived 2026-08-09 with the arc CLOSED; still runnable for regression checks) (rclpy; prints per-dispatch
 outcome + counter snapshots; logs to temp/probes/hand_dispatch_ladder_<ts>.csv).
 Session log: this file's Results section, filled by the operator/next session.
 

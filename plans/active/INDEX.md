@@ -31,8 +31,14 @@ and the test fails (that is the point — it catches stale rows).
 
 `PROMPT-*.md` files are self-contained session prompts for phase-runner
 workflows rather than plans, so they are exempt from the table above:
-`PROMPT-anomaly-fixes-orchestration.md`, `PROMPT-single-ball-toss-software-run.md`,
-`PROMPT-err-timeout-hand-path.md` (ERR_TIMEOUT attribution + fix, authored 2026-08-01).
+`PROMPT-anomaly-fixes-orchestration.md`, `PROMPT-single-ball-toss-software-run.md`.
+Completed prompts are DELETED (owner convention, 2026-08-09) — their arc lives in
+the logbook, so the file adds nothing once its Done-means list is satisfied.
+(First deletion: the ERR_TIMEOUT attribution prompt, authored 2026-08-01, every
+Done-means item satisfied 2026-08-09 — see the ERR_TIMEOUT closure entry in the
+logbook. Filenames deliberately not written here: the plans-index guard treats
+any md name in this file as a live plans/active reference, which is exactly the
+staleness protection we want to keep.)
 
 ## Recently archived
 
