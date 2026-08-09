@@ -12,6 +12,7 @@ files_changed:
   - tests/hardware/session_err_timeout_bench.md
   - tools/probes/README.md
   - tools/probes/archived/hand_dispatch_ladder.py
+  - tools/probes/archived/link_status_flash_control.py
 subsystem:
   - tooling
 tags:
@@ -30,8 +31,14 @@ Two owner-directed housekeeping moves after the ERR_TIMEOUT closure
    reach for today" directory. Each keeps a ledger row in
    `tools/probes/README.md § Archived probes`. First occupant:
    `hand_dispatch_ladder.py` (the instrument behind the 15/40→0/40
-   discriminator and the 120/120 FW 10 validation). Live references updated
-   (bench runbook, memory); historical logbook text deliberately untouched —
+   discriminator and the 120/120 FW 10 validation). Second occupant, same
+   day: `link_status_flash_control.py` (flash-comparison control for the
+   CAN3 drive-path arc, CLOSED 2026-07-31). `link_status_health_scan.py`
+   stays LIVE deliberately — it is the generic per-session `/link_status`
+   scanner that later arcs (the ERR_TIMEOUT recount included) reused; the
+   convention archives by investigation status, not by age. Live references
+   updated (bench runbook, memory, README cross-reference, each probe's own
+   usage docstring); historical logbook text deliberately untouched —
    it records where the file lived when its commits were made. Grep before
    and after the move: 0 live references to the old path remain.
 2. **`plans/active/PROMPT-err-timeout-hand-path.md` DELETED** (owner
@@ -50,8 +57,10 @@ Two owner-directed housekeeping moves after the ERR_TIMEOUT closure
   text. The pre-commit audit caught one more the sweep pattern missed: the
   probe's OWN usage docstring still named its old path — fixed (the
   runnability promise beats byte-identical-rename purity; the move still
-  registers as a rename at ~99 % similarity).
-- `./run_tests.sh`, run 2026-08-09: **4226 passed, RESULT PASS** (190.41 s
+  registers as a rename at ~99 % similarity). The same docstring fix was
+  applied pre-emptively to `link_status_flash_control.py` (three usage
+  lines).
+- `./run_tests.sh`, run 2026-08-09 (twice — once per archival commit; latest cited): **4226 passed, RESULT PASS** (187.51 s
   parallel; serial phase empty). A first run FAILED on
   `test_index_mentions_no_plan_that_left_plans_active` — the plans-index
   guard correctly caught the deletion note naming the deleted file; the note

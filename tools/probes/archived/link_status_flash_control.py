@@ -51,9 +51,9 @@ REFERENCES
 
 USAGE
     source ~/Desktop/PDJ_venv/venv/bin/activate
-    python tools/probes/link_status_flash_control.py <bag.mcap|session-dir> ...
-    python tools/probes/link_status_flash_control.py --sessions 20
-    python tools/probes/link_status_flash_control.py --match 2026-07-2 --out
+    python tools/probes/archived/link_status_flash_control.py <bag.mcap|session-dir> ...
+    python tools/probes/archived/link_status_flash_control.py --sessions 20
+    python tools/probes/archived/link_status_flash_control.py --match 2026-07-2 --out
 
     `--out` writes a CSV under `temp/probes/` (gitignored). stdout is the
     primary human surface.
