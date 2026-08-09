@@ -95,3 +95,73 @@ guard E-STOP, any can3_errors wire-error tick, any unexpected hand motion
 Ladder script: tools/probes/hand_dispatch_ladder.py (rclpy; prints per-dispatch
 outcome + counter snapshots; logs to temp/probes/hand_dispatch_ladder_<ts>.csv).
 Session log: this file's Results section, filled by the operator/next session.
+
+## Results — 2026-08-09
+
+Run on FW 9 (`bridge_fw_version` = `9 (proto 5)` in all 127 logged rows), bridge uptime
+369 s at armA start → 660 s at armA2 end (a deliberately FRESH plant, 6.2–11.0 min
+post-reboot). N = 40 dispatches per arm, ≥ 2 s apart, zero-distance smooth moves.
+
+| arm | leg stream | fails | rate (95 % CP) | pre1 | pre2 | traj |
+|---|---|---|---|---|---|---|
+| A (idle) | off | 0/40 | 0.0 % [0.0, 8.8] | 0 | 0 | 0 |
+| B (500 Hz stream, platform holding) | on | **15/40** | **37.5 % [22.7, 54.2]** | **0** | **7** | **8** |
+| A2 (idle) | off | 0/40 | 0.0 % [0.0, 8.8] | 0 | 0 | 0 |
+
+Cross-arm counters (post-armB firmware snapshot, boot-cumulative):
+`defer jb = 16` (15 hand deferrals + 1 non-hand jb deferral, localised to
+dispatch 25's interval — 0-based CSV `i`, 1-based #26), `defer bb = 0`,
+`defer cone = 0`; `txq jb high-water = 2` (bb 0, cone 0 — watermark, not a count);
+**`can3_errors` all 15 fields zero in all 127 logged rows** — the validity
+condition held. (127 = the three arms' 3 × 40 **plus** the 7 rows of the aborted
+run below. Those 7 are pooled for the wire-error check and for boot invariants
+like `bridge_fw_version` **only** — a wire-error count is a property of the bus
+during the logging window whether or not a dispatch reached the Teensy. They are
+NEVER pooled into a rate; every rate above is out of 40.)
+Host `hand_traj_acks`: `calls = 80, ok = 65, fail_teensy = 15, fail_host = 0`,
+agreeing exactly with the firmware's own counters (26/26 cross-layer identities
+pass). `rej = 0`, `busdown = 0` throughout.
+
+Fisher exact, armB vs pooled idle (0/80): **p = 8.5e-09**. The A-B-A design also
+kills the warm-up/uptime confound: armA2 returns to 0/40 at a *higher* uptime
+(582 s) than armA (369 s).
+
+**Interpretation row that fired — row 1: "B fail-rate >> A, A ≈ A' ≈ low" ⇒
+congestion CONFIRMED.** The `tx_deferred ≈ 3 × (per-stage fail sum)` clause in
+that row's wording is wrong as written and should be read as satisfied: a failing
+dispatch aborts at its failing stage, so it contributes exactly **one** deferral,
+not three — and the arithmetic closes exactly at 15 hand deferrals for 15 fails.
+
+The per-stage split also fires row 4, but not in either of the two shapes that
+row anticipated. Row 4's `pre1` branch — "hand never in CLOSED_LOOP, stroke never
+armed" — did NOT occur at all (`pre1 = 0`). The 7 `pre2` failures are a **third**
+case the row did not name: `pre1` succeeded, so the hand **IS** in CLOSED_LOOP and
+energised; what failed is the `Set_Controller_Mode` send, so `hand_ops` returns
+before the 0x6D0 frame and **no stroke is commanded**. The correct operational
+phrasing is *"no stroke"*, not *"hand never armed"* and not *"hand de-energised"* —
+the ack is truthful about the stroke, and the hand is live. The 8 `traj` failures
+are row 4's armed-state-ambiguity cell (frame queued and usually transmitted, ack
+lying). So both operational stories run at roughly 50/50 and the ladder can now
+tell them apart per dispatch. Row 5 (A' >> A, the prime-drift signal) did **not**
+fire — both idle arms are clean, so the bench has no purchase on that signal.
+
+CSVs: `temp/probes/hand_dispatch_ladder_armA_2026-08-09_13-33-28.csv`,
+`..._armB_2026-08-09_13-35-19.csv`, `..._armA2_2026-08-09_13-37-01.csv`.
+⚠️ A fourth file, `..._armA_2026-08-09_13-33-08.csv`, is an ABORTED 7-dispatch
+run (`Invalid target: -0.140 rev` — a HOST-side reject; nothing reached the
+Teensy, counters stayed 0). **Do not pool it with armA.**
+
+Full mechanism — the mailbox-occupancy readout behind the 0/7/8 split, why the
+rate is 37.5 % and not the naive ~6 %, the statistics-honesty caveats, and two
+side-findings in the vendored FlexCAN_T4 and a firmware comment — is in
+`logbook/2026-08-02-err-timeout-attribution-instrumentation.md` § "Addendum —
+2026-08-09".
+
+**Step 4 fix — DECIDED 2026-08-09 (owner), implementation pending:**
+`setMaxMB(16 → 24)` on `can_jugglebot` (8 → 16 TX mailboxes) **plus** a
+console-only phase-stamp diagnostic (`micros64() - s_last_tick_us` at hand
+dispatch — the addendum's own falsifiable test, shipped with the fix); chosen as
+the only candidate carrying no 0x6D0 duplicate-or-invert hazard, and the one that
+also makes the `events()` residual unreachable at the observed occupancy. The
+latch fence stays up until that fix lands AND an ordinary reload sitting
+validates it.

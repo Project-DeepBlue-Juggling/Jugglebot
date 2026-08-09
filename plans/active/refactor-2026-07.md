@@ -412,12 +412,38 @@ checks that are.
   "never enqueued ⇒ not armed" inference and makes the lying-ack premise
   compatible with the narrowing (latch fence still holds until counters confirm
   on hardware). Step 1 sequence analysis (399 outcomes): random, state bug
-  excluded, congestion-consistent. NOT yet done: FW 9 flash + colcon build
-  (operator), the bench discriminator sitting
-  (`tests/hardware/session_err_timeout_bench.md` +
-  `tools/probes/hand_dispatch_ladder.py`),
-  and the ordinary reload sitting. CAN-mute pio platform image (971d12c)
-  root-cause remains open, untouched.
+  excluded, congestion-consistent. **BENCH DISCRIMINATOR SITTING DONE
+  2026-08-09** (FW 9 flashed + colcon build done as its preconditions;
+  `tests/hardware/session_err_timeout_bench.md` § Results, full mechanism in the
+  logbook entry's Addendum): A-B-A ladder, N=40/arm — idle 0/40, 500 Hz leg
+  stream 15/40 = 37.5 %, idle again 0/40 at higher uptime, Fisher
+  p = 8.5e-09, `can3_errors` zero throughout. **Congestion CONFIRMED**, and the
+  mechanism is quantified rather than merely named: the per-stage split
+  (pre1 0 / pre2 7 / traj 8) reads out the pending-mailbox count against the
+  source-verified 8 TX mailboxes and the 6-frame leg burst, and the
+  "~50 % vs naive-burst-math" gap is resolved by phase-locked dispatch
+  quantisation (`task_net` wakes only on 1 kHz FreeRTOS ticks, commensurate with
+  the 500 Hz interp PIT off one crystal ⇒ two phases mod 2 ms, 50 % ceiling)
+  (one link — the PERCLK clock source — is INFERENCE, not read from source; the
+  phase-stamp probe is its falsifiable test).
+  Operationally: pre2 fails abort before the 0x6D0 frame (hand IS energised,
+  but no stroke is commanded), traj fails have it queued and usually transmitted
+  (the lying ack) — so the lying-ack is ~50/50 by stage and now measurable live.
+  **STEP 4 FIX DECIDED 2026-08-09 (owner), IMPLEMENTATION PENDING:** raise
+  `can_jugglebot`'s `setMaxMB(16 → 24)`, i.e. 8 → 16 TX mailboxes, **plus** a
+  console-only phase-stamp diagnostic logging `micros64() - s_last_tick_us` at
+  each hand dispatch — the addendum's own falsifiable test for the
+  phase-quantisation verdict, shipped WITH the fix rather than deferred behind a
+  green result. Chosen over the other two assessed candidates (bounded retry in
+  `hand_ops`; continue-past-deferral) as the only one with no 0x6D0
+  duplicate-or-invert hazard — retry re-sends a frame `write() == -1` has already
+  enqueued, and continue-past-deferral lets frame 3 overtake a ring-queued
+  frame 2 — and as the one that additionally makes the `events()`
+  missing-`break` residual unreachable at the observed occupancy (peak pending 8
+  against 16 mailboxes). Expected honestly: the ERR_TIMEOUTs go, the wire latency
+  does not. NOT yet done: that implementation, and the ordinary reload sitting.
+  The latch fence stays up until the fix lands AND a sitting validates it.
+  CAN-mute pio platform image (971d12c) root-cause remains open, untouched.
 - Bridge-uptime tracking-lag reboot-isolation experiment (pre-registered;
   calendar cost is real — the degraded cell needs a multi-hour soak).
 - Post-repair flash window: wire-visible firmware identity as a **NEW
