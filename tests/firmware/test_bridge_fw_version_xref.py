@@ -102,16 +102,37 @@ def test_the_bump_history_records_what_this_version_carries():
 
     A version number with no record of what each bump MEANT degrades to a
     changed/unchanged bit, and the operator cannot tell whether a re-flash is
-    urgent or cosmetic.  Pinned on the substance (the two additive MsgTypes this
-    release exists for), not on prose style.
+    urgent or cosmetic.  Pinned on the substance of each release, not on prose
+    style.
+
+    The history is CUMULATIVE, so every clause below stays asserted as the
+    version climbs.  Add a clause for each new release: without one this test
+    keeps passing forever on the old clauses while silently covering nothing —
+    which is the same "detector dies quietly" failure the module docstring
+    describes for a drifted version pin.
     """
     text = _config_text()
     m = re.search(r'^constexpr\s+uint16_t\s+FW_VERSION\s*=\s*\d+\s*;(.*)$',
                   text, re.M)
     assert m is not None
     history = m.group(1)
+    # FW 9 — the two additive MsgTypes that release existed for.
     assert '8→9' in history or '8->9' in history, history
     assert 'BridgeTxDiag' in history and 'BridgeIdentity' in history, history
+    # FW 10 — the ERR_TIMEOUT fix.  The substance an operator needs is the TX
+    # mailbox raise (that is what stops the ~37 % hand-dispatch failures under
+    # the 500 Hz leg stream) and, just as important, that the bump is
+    # wire-invisible: an FW 9 board decodes identically, so "the link is fine"
+    # is NOT evidence that the fix is on the board.
+    assert '9→10' in history or '9->10' in history, history
+    assert 'setMaxMB' in history, history
+    assert 'handphase' in history, history
+    # The wire-invisibility is the operationally dangerous half of this release:
+    # an FW 9 board decodes every frame identically, so the usual "the link is
+    # healthy" reflex says nothing about whether the fix is aboard.  If a future
+    # edit drops this phrase, the operator loses the one written warning that
+    # BRIDGE_FW_CHECK — not link health — is the check that matters here.
+    assert 'NO WIRE CHANGE' in history, history
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

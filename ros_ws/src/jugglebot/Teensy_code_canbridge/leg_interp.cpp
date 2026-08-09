@@ -98,7 +98,13 @@ static float s_stow_pos[NUM_LEGS];
 static float s_stow_speed = 0.0f;        // accel-ramped descent speed (rev/s)
 static volatile uint32_t s_deadline_misses = 0;
 static volatile uint32_t s_max_jitter_us = 0;
-static uint64_t s_last_tick_us = 0;
+// Monotonic (us) stamp of the most recent 500 Hz tick. Written ONLY by interp_isr
+// (and zeroed by interp_reset() when the interp is quiescent). `volatile` since
+// 2026-08-09 because interp_last_tick_us() now reads it from TASK context for the
+// hand-dispatch phase stamp — the ISR must not keep it in a register across ticks.
+// Task-side reads go through atomic_read_u64 (a u64 is two 32-bit accesses on this
+// core, so an unmasked read can tear across the ISR's store).
+static volatile uint64_t s_last_tick_us = 0;
 // Per-leg lead-clamp-engaged flag from the most recent computed tick (bit i = leg i).
 // Diagnostic only (surfaced on the 10 Hz HeartbeatT2J): a single naturally-aligned
 // byte, written once per tick by the ISR (atomic store on Cortex-M7), read by the
@@ -609,6 +615,12 @@ void leg_interp_init() {
 }
 
 uint64_t interp_last_setpoint_us() { return atomic_read_u64(&s_last_setpoint_us); }
+// Torn-load guard is mandatory here: s_last_tick_us is written by interp_isr, and
+// this accessor runs in TASK context (hand_ops, on task_net). Without the mask the
+// two 32-bit loads can straddle the ISR's store and produce a nonsense u64 — which
+// in the phase stamp would look like a wild phase value, i.e. exactly the kind of
+// artefact that would falsely refute the phase-quantisation model.
+uint64_t interp_last_tick_us() { return atomic_read_u64(&s_last_tick_us); }
 float interp_base_pos(uint8_t i) { return (i < NUM_LEGS) ? s_base_pos[i] : 0.0f; }
 bool  interp_have_latched() { return s_have_latched; }
 void interp_set_output_enabled(bool en) { s_output_enabled = en; }

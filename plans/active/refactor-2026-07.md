@@ -429,7 +429,10 @@ checks that are.
   Operationally: pre2 fails abort before the 0x6D0 frame (hand IS energised,
   but no stroke is commanded), traj fails have it queued and usually transmitted
   (the lying ack) — so the lying-ack is ~50/50 by stage and now measurable live.
-  **STEP 4 FIX DECIDED 2026-08-09 (owner), IMPLEMENTATION PENDING:** raise
+  **STEP 4 FIX DECIDED 2026-08-09 (owner); IMPLEMENTED 2026-08-09 as FW 10 —
+  FLASH + BENCH VALIDATION PENDING** (logbook entry § "Addendum — 2026-08-09
+  (2)"; post-fix procedure in `tests/hardware/session_err_timeout_bench.md`
+  § "Post-fix validation"). The change: raise
   `can_jugglebot`'s `setMaxMB(16 → 24)`, i.e. 8 → 16 TX mailboxes, **plus** a
   console-only phase-stamp diagnostic logging `micros64() - s_last_tick_us` at
   each hand dispatch — the addendum's own falsifiable test for the
@@ -441,8 +444,11 @@ checks that are.
   frame 2 — and as the one that additionally makes the `events()`
   missing-`break` residual unreachable at the observed occupancy (peak pending 8
   against 16 mailboxes). Expected honestly: the ERR_TIMEOUTs go, the wire latency
-  does not. NOT yet done: that implementation, and the ordinary reload sitting.
-  The latch fence stays up until the fix lands AND a sitting validates it.
+  does not. NOT yet done: **the flash itself**, the post-fix three-arm bench
+  re-run (which also reads `[handphase]` — a uniform phase spread would refute
+  the A3 verdict and re-open the occupancy story), and the ordinary reload
+  sitting. The latch fence stays up until the fix lands AND a sitting validates
+  it — implementing a fix is not validating it.
   CAN-mute pio platform image (971d12c) root-cause remains open, untouched.
 - Bridge-uptime tracking-lag reboot-isolation experiment (pre-registered;
   calendar cost is real — the degraded cell needs a multi-hour soak).

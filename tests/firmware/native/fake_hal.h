@@ -77,6 +77,16 @@ size_t            fake_sent_count_cmd(uint8_t cmd_id);
 //  frame is never sent.
 void              fake_set_send_fail_index(int attempt_index);
 
+// ── NOT HERE: leg_interp symbols (interp_last_tick_us & friends) ─────────────
+//  A seam for a leg_interp symbol looks like it belongs in this file and MUST NOT
+//  go here. test_fault_machine and test_leg_interp both #include the REAL
+//  leg_interp.cpp *and* link fake_hal.o, so any leg_interp definition added here is
+//  a duplicate-symbol link failure in those two binaries — the ODR rule stated at
+//  build.py:16-24. Stub such symbols in the DRIVER that needs them instead
+//  (test_hand_ops.cpp does this for interp_last_tick_us; test_udp_link.cpp does it
+//  for micros64/net_ethernet_service). The link error is loud, so this note exists
+//  to save the diagnosis, not to prevent a silent bug.
+
 // ── GROWABLE inbound-CAN3 injection hook (initially unused; the relay/version tests use it) ─
 //  A test pushes a frame the bridge's CAN3 RX would have received; the future
 //  relay/version decode TU drains it via fake_can3_rx_pop(). The harness initially only

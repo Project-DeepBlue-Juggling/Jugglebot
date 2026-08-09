@@ -157,11 +157,59 @@ side-findings in the vendored FlexCAN_T4 and a firmware comment — is in
 `logbook/2026-08-02-err-timeout-attribution-instrumentation.md` § "Addendum —
 2026-08-09".
 
-**Step 4 fix — DECIDED 2026-08-09 (owner), implementation pending:**
-`setMaxMB(16 → 24)` on `can_jugglebot` (8 → 16 TX mailboxes) **plus** a
-console-only phase-stamp diagnostic (`micros64() - s_last_tick_us` at hand
-dispatch — the addendum's own falsifiable test, shipped with the fix); chosen as
-the only candidate carrying no 0x6D0 duplicate-or-invert hazard, and the one that
-also makes the `events()` residual unreachable at the observed occupancy. The
-latch fence stays up until that fix lands AND an ordinary reload sitting
-validates it.
+**Step 4 fix — DECIDED 2026-08-09 (owner), IMPLEMENTED 2026-08-09 as FW 10, flash
++ bench validation PENDING:** `setMaxMB(16 → 24)` on `can_jugglebot` (8 → 16 TX
+mailboxes) **plus** a console-only phase-stamp diagnostic (`micros64() -
+interp_last_tick_us()` at hand dispatch — the addendum's own falsifiable test,
+shipped with the fix); chosen as the only candidate carrying no 0x6D0
+duplicate-or-invert hazard, and the one that also makes the `events()` residual
+unreachable at the observed occupancy. The latch fence stays up until that fix
+lands AND an ordinary reload sitting validates it. Post-fix procedure below.
+
+## Post-fix validation — FW 10 (procedure; NOT yet run)
+
+Same experiment, same script, one new readout. Re-running the identical three-arm
+ladder is the point: it is the only design that already killed the warm-up/uptime
+confound, and a single loaded arm on its own could not.
+
+0. Preconditions:
+   - **BEFORE flashing**, capture the pre-fix baseline on the FW 9 board: one
+     `/profile` sample with the 500 Hz leg stream running (`can1_tx`,
+     `interp_max_jitter_us`, `interp_deadline_misses`). Two of the rows below are
+     before/after comparisons and the "before" is unobtainable once FW 10 is on
+     the board.
+   - Flash the bridge to FW 10 (`pio run -e teensy41 -t upload` from
+     `Teensy_code_canbridge` — **operator runs the flash**). FW 10 is
+     WIRE-INVISIBLE (no MsgType, no payload, PROTOCOL_VERSION still 5), so a
+     healthy link proves nothing about which build is aboard: confirm
+     `bridge_fw_version` reads `10 (proto 5)` and `BRIDGE_FW_CHECK` is OK before
+     believing any number from this session.
+   - No `colcon build` is needed for the firmware half; `teensy_link/` runs live
+     from the tree, so the bumped `EXPECTED_BRIDGE_FW_VERSION` is already in
+     effect. (A `colcon build` is still needed if `teensy_bridge_node.py` moved.)
+   - Reboot the bridge Teensy (standing rule), log `uptime_ms` per block.
+1. **Open a pio device monitor for arm B**: `pio device monitor -e teensy41` from
+   `Teensy_code_canbridge`, to read the 1 Hz `[handphase]` lines. **Open it only
+   AFTER the flash** — the monitor holds `/dev/ttyACM0` and a flash with it open
+   fails. Close it before any re-flash.
+2. Run arms A / B / A2 exactly as above (N = 40, ≥ 2 s apart, zero-distance
+   smooth moves; arm B with the 500 Hz leg stream and the platform holding).
+
+Pre-registered reads — decide before looking:
+
+| Observable | PASS | What a miss means |
+|---|---|---|
+| arm B failure rate | **0/40** (was 15/40) | any failure at all ⇒ 16 mailboxes was not enough, or the mechanism is not purely occupancy |
+| `defer jb` increment across arm B | **0** (was +16) | non-zero with 0 hand failures ⇒ a non-hand producer is still deferring; read `tx_q_hwm_jb` too |
+| arms A / A2 | 0/40, unchanged | a regression introduced by the mailbox change would show here first |
+| `can3_errors` | all 15 fields zero | any wire-error tick invalidates the run, exactly as in the pre-fix session |
+| `[handphase]` phase_us | **two tight clusters** ⇒ § A3's phase-quantisation verdict CONFIRMED | a ~uniform spread over 0–2000 ⇒ verdict **REFUTED**; the fix may still work, but the *explanation* is wrong and the occupancy story re-opens. Record this honestly even if arm B is 0/40 — a green fix is not evidence for the model that predicted it |
+| **jugglebot bus TX fps** — `/profile` key `can1_tx` (wire slot 1 = jugglebot role; `teensy_bridge_node.py:3114`) | **~3150 fps, unchanged** vs a pre-fix boot | a DROP means the MAXMB arbitration-scan hazard is real: FlexCAN scans all enabled mailboxes each arbitration round and the RM notes the scan duration scales with MAXMB, which can cost a back-to-back transmission slot. This is the **one RM-unverified inference** in the whole fix. It degrades bus THROUGHPUT, not ISR timing, so **interp jitter would not show it** — capture `can1_tx` on a pre-fix boot before flashing, or the comparison is unavailable afterwards |
+| `interp_max_jitter_us` / `interp_deadline_misses` | within their pre-fix budget | the one place the longer `write()` mailbox scan could cost the 500 Hz loop (it runs inside the existing PRIMASK region). The arbitration-scan hazard is the row above, and this row cannot see it. Capture both before and after on the same boot |
+
+Note `[handphase]` prints on-change and reports `+N` since the last line, so an
+N > 8 burst is visible as an overrun rather than silently truncated to the 8-deep
+ring. At the ladder's ≥ 2 s spacing against a 1 Hz diag tick, expect `+1` lines.
+
+ABORT criteria are unchanged from the pre-fix session. A PASS here clears the
+bench half only — the latch fence comes down after an ordinary reload sitting.

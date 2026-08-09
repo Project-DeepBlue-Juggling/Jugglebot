@@ -49,6 +49,7 @@ using namespace arduino;
 #include "leg_deactivate.h"      // leg deactivate (controlled lower + IDLE)
 #include "version_check.h"       // Get_Version sweep + version cache
 #include "gpio_poll.h"           // hand ball-present sensor poll (hand ODrive G02)
+#include "hand_ops.h"            // hand traj conduit — the [handphase] diag ring
 #include "profiling.h"           // Profiling/instrumentation
 
 using namespace CanBridge;
@@ -354,6 +355,32 @@ static void task_diag(void*) {
                     (unsigned long)can_cone_fwd_drops(),
                     (unsigned long)can_cmd_result_fwd_drops());
       can_buses_print_esr1();   // raw ESR1 words of fresh error snapshots (diagnostic)
+
+      // Hand-dispatch interp-phase stamp (2026-08-09) — the falsifiable test for the
+      // phase-locked-dispatch-quantisation verdict (logbook 2026-08-02 addendum § A3,
+      // contract in hand_ops.h). Each sample is the dispatch's µs offset within the
+      // 2 ms interp cycle plus the stage it exited at. PRE-REGISTERED READ: two tight
+      // clusters ⇒ model confirmed; a uniform spread over 0-2000 ⇒ model REFUTED and
+      // the mailbox-occupancy story re-opens. Printed ON-CHANGE like print_esr1_ring,
+      // so a healthy idle bench stays quiet and `+N` reports every dispatch since the
+      // last line even when N exceeds the 8-deep ring (an overrun is visible, not
+      // silent). Console only — nothing here is on the wire.
+      {
+        static uint32_t handphase_n = 0;
+        const HandPhaseRing r = hand_phase_ring();
+        if (r.n != handphase_n) {
+          const uint32_t fresh = r.n - handphase_n;
+          const uint32_t show = (fresh > HAND_PHASE_RING_LEN) ? HAND_PHASE_RING_LEN : fresh;
+          Serial.printf("[handphase] +%lu:", (unsigned long)fresh);
+          for (uint32_t i = 0; i < show; ++i) {
+            const HandPhaseSample& s = r.v[(r.n - show + i) % HAND_PHASE_RING_LEN];
+            Serial.printf(" %u/%s", (unsigned)s.phase_us,
+                          hand_phase_outcome_name(s.outcome));
+          }
+          Serial.println();
+          handphase_n = r.n;
+        }
+      }
 
       // Per-axis "are all ODrives responding?" line (USB Serial bench/debug, alongside
       // the [canhealth] lines — NOT on the UDP uplink yet). Columns: legs 0..5 then

@@ -53,9 +53,86 @@ struct HandOpsCounters {
 // as can_buses' snapshot_bus).
 HandOpsCounters hand_ops_counters();
 
-// Zero the counters. Production never calls this (the file-statics boot zeroed);
-// it is the test-isolation seam that keeps the native cases order-independent,
-// exactly like version_check_init().
+// ── Hand-dispatch interp-phase stamp (2026-08-09) — CONSOLE-ONLY DIAGNOSTIC ──
+//  The 2026-08-09 bench proved the ERR_TIMEOUTs are TX-mailbox congestion, and the
+//  entry's addendum § A3 explains the *rate* (37.5 %, not the naive ~6 %) with
+//  PHASE-LOCKED DISPATCH QUANTISATION: task_net wakes only on 1 kHz FreeRTOS ticks,
+//  and the 1 kHz SysTick and the 500 Hz interp PIT are exactly commensurate off one
+//  24 MHz crystal, so a dispatch can occupy only TWO phases mod the 2 ms interp
+//  period. One link in that chain (PERCLK's clock source) is INFERENCE, not read
+//  from source — so the verdict ships with its own falsification test rather than
+//  being believed because the fix went green.
+//
+//  PRE-REGISTERED READ (do not re-derive after seeing the data):
+//    * phase_us clustered at two values ⇒ the phase model is CONFIRMED and
+//      setMaxMB(24) is the right shape of fix;
+//    * phase_us spread ~uniformly over 0-2000 ⇒ the verdict is REFUTED and the
+//      mailbox-occupancy story re-opens.
+//
+//  NOT ON THE WIRE. This is a USB-serial `[handphase]` line off task_diag; no
+//  MsgType, no payload change, no PROTOCOL_VERSION bump. A diagnostic that answers
+//  one question on one bench session does not earn a permanent wire field.
+struct HandPhaseSample {
+  uint16_t phase_us;   // micros64() - interp_last_tick_us() at ENTRY: 0..~2000 within
+                       // the 2 ms interp cycle. Stamped BEFORE the gates so EVERY call
+                       // is stamped, including the ones that never reach a CAN send —
+                       // an outcome-conditional stamp could not show that OK and FAIL
+                       // occupy different phases, which is the whole comparison.
+                       // Truncating cast: an interp stall > 65 ms wraps this, and a
+                       // stamp taken before the first interp tick is meaningless.
+  uint8_t  outcome;    // HandPhaseOutcome below
+};
+
+// Outcome codes. Deliberately a SEPARATE enumeration from RpcStatus: three of the
+// five failure exits return the identical bare ERR_TIMEOUT, which is the whole
+// reason the per-stage counters exist, so a status code cannot label a sample.
+enum HandPhaseOutcome : uint8_t {
+  HAND_PHASE_OK         = 0,
+  HAND_PHASE_REJ_HOMING = 1,
+  HAND_PHASE_BUS_DOWN   = 2,
+  HAND_PHASE_PRE1       = 3,
+  HAND_PHASE_PRE2       = 4,
+  HAND_PHASE_TRAJ       = 5,
+};
+
+// Ring depth. 8 is one 1 Hz diag tick's worth at the bench ladder's ≥2 s dispatch
+// spacing with a wide margin; the console print reports the total push count too, so
+// an overrun is visible (+N > 8) rather than silent.
+constexpr uint8_t HAND_PHASE_RING_LEN = 8;
+
+struct HandPhaseRing {
+  HandPhaseSample v[HAND_PHASE_RING_LEN];
+  uint32_t        n;   // total pushes since boot; newest sample is v[(n-1) % LEN]
+};
+
+// Snapshot the ring. SINGLE WRITER (hand_traj_cmd on task_net, exactly like the
+// counters above); read by task_diag and by the native tests. The race is BENIGN and
+// bounded by construction: task_diag can copy a slot mid-write and print one garbled
+// sample, or see `n` advance past a slot it already copied. Both are cosmetic on a
+// 1 Hz console line at ≤0.5 Hz dispatch rates, and neither can affect control flow —
+// nothing reads this ring except a printf. Masking IRQs to make a debug print tidy
+// would add an IRQ-off window on the leg-setpoint path to buy nothing.
+HandPhaseRing hand_phase_ring();
+
+// Console label for an outcome code. Header-inline so the .ino's diag print needs no
+// new link dependency (the same reason is_platform_reply_id lives in can_buses.h).
+inline const char* hand_phase_outcome_name(uint8_t o) {
+  switch (o) {
+    case HAND_PHASE_OK:         return "OK";
+    case HAND_PHASE_REJ_HOMING: return "rej_homing";
+    case HAND_PHASE_BUS_DOWN:   return "bus_down";
+    case HAND_PHASE_PRE1:       return "pre1";
+    case HAND_PHASE_PRE2:       return "pre2";
+    case HAND_PHASE_TRAJ:       return "traj";
+    default:                    return "?";
+  }
+}
+
+// Zero the counters AND the phase ring. Production never calls this (the file-statics
+// boot zeroed); it is the test-isolation seam that keeps the native cases
+// order-independent, exactly like version_check_init(). The ring is folded in here
+// rather than given its own reset so a test can never isolate one instrument and
+// silently inherit the other's leftovers.
 void hand_ops_counters_reset();
 
 namespace HandOps {

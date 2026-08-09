@@ -516,7 +516,8 @@ half-executed stroke. That is the safety-relevant result and it is unambiguous.
 **The latch fence STILL holds.** Confirming a mechanism is not fixing it; the
 fence comes down when a fix lands AND an ordinary sitting validates it.
 
-**Step 4 fix — DECIDED 2026-08-09 (owner), implementation pending.** Two parts,
+**Step 4 fix — DECIDED 2026-08-09 (owner); IMPLEMENTED the same day as FW 10,
+flash + bench validation pending — see "Addendum — 2026-08-09 (2)".** Two parts,
 landing together: (1) raise `can_jugglebot`'s `setMaxMB(16 → 24)`, i.e. **8 → 16
 TX mailboxes**; (2) a **console-only phase-stamp diagnostic** logging
 `micros64() - s_last_tick_us` at each hand dispatch — A3's falsifiable test,
@@ -593,3 +594,78 @@ Comment-only fix, no behaviour change.
 - Docs gate for this addendum: `pytest tests/sim/test_plans_index.py
   tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_search.py -q`,
   run 2026-08-09: **55 passed in 0.45 s**.
+
+## Addendum — 2026-08-09 (2): the Step 4 fix is implemented (FW 10), flash + bench validation PENDING
+
+Both halves of the decided fix are in the tree, in one commit, unflashed.
+
+**(1) `can_jugglebot.setMaxMB(16 → 24)`** — 8 → 16 TX mailboxes, jugglebot bus
+only (`can_buses.cpp`). `mailboxOffset()` is fixed at 8 regardless of MAXMB
+(6 RX-FIFO engine MBs + 2 filter-table MBs, RFFN = 0), so TX count is `MAXMB − 8`.
+Sizing: measured peak pending 8 (6-frame leg burst + ≤2 non-leg co-residents) plus
+a worst-case 3-frame hand dispatch = 11 ≤ 16. Costs zero MCU RAM (peripheral RAM)
+and does not lengthen the FlexCAN ISR (it breaks at the highest *flagged* mailbox).
+bb/cone are unchanged: both deferred 0 frames across the whole bench arm and each
+carries only the 100 Hz 0x7DD fan-out plus event-driven RPC relays, never a 500 Hz
+burst, so a symmetric change is risk without need. The call order
+`setMaxMB → enableFIFO → enableFIFOInterrupt` is load-bearing and preserved —
+reversing it silently clears BUF5M and the bus goes RX-dark with no error.
+
+One asymmetry to record before it is forgotten: parking the § A6 `events()`
+missing-`break` defect is **one-directional in blast radius**. At the observed
+occupancy the software ring is never entered, so the defect is unreachable — but if
+anything ever re-opens the deferral path, that break-less loop now duplicates the
+peeked frame into up to **16** mailboxes instead of 8, i.e. a deferred 0x6D0
+duplicates twice as hard as it did on FW 9. Anything that re-opens deferral must fix
+the vendored loop, not just re-size the mailboxes.
+
+**(2) The `[handphase]` console diagnostic** — `hand_ops` stamps
+`micros64() - interp_last_tick_us()` at HAND_TRAJ_CMD *entry* (before the gates, so
+every dispatch is stamped at the same point and the OK/FAIL phase distributions are
+comparable) and pushes `{phase_us, outcome}` into an 8-deep ring that `task_diag`
+prints on change. `leg_interp` gained a torn-load-guarded `interp_last_tick_us()`
+accessor; `s_last_tick_us` is now `volatile`. **No wire change** — no MsgType, no
+payload, PROTOCOL_VERSION stays 5, and `test_wire_layout_frozen` passes unchanged
+as the check that nothing leaked onto the wire. Also fixed: the stale
+`can_buses.cpp` NVIC-priority comment from § A6(ii).
+
+`FW_VERSION` 9 → 10 and `EXPECTED_BRIDGE_FW_VERSION` 9 → 10. Because the bump is
+wire-invisible, an FW 9 board decodes identically — so a healthy link is **not**
+evidence the fix is on the board; the `BRIDGE_FW_CHECK` line is.
+
+**Validation PENDING (nothing below has been run).** Flash FW 10, then re-run the
+same three-arm A-B-A ladder (procedure in `tests/hardware/session_err_timeout_bench.md`
+§ "Post-fix validation"). Expected: 0/40 in every arm, `defer jb` increment 0, and
+the `[handphase]` samples clustered at two values — a uniform 0–2000 spread refutes
+§ A3's phase-quantisation verdict and re-opens the occupancy story, which is the
+whole reason the probe ships with the fix. Also compare `interp_max_jitter_us` /
+`interp_deadline_misses` before and after: the longer `write()` mailbox scan sits
+inside the existing PRIMASK region.
+
+**Entry stays in-progress.** The latch fence stays up until the flash lands AND an
+ordinary reload sitting validates it — confirming a mechanism was not fixing it,
+and implementing a fix is not validating it.
+
+### Addendum 2 verification
+
+- `pio run -e teensy41` and `pio run -e teensy41_bench_sysid`, run 2026-08-09:
+  both **SUCCESS** (9.28 s / 9.34 s).
+- `pytest tests/firmware -q`, run 2026-08-09: **399 passed in 193.61 s** —
+  including `test_wire_layout_frozen` UNCHANGED, which is itself the check that
+  nothing about this change reached the wire.
+- `./run_tests.sh --full`, run 2026-08-09: **4649 passed, 3 xfailed** in the
+  parallel phase + **9 passed** serial, **RESULT PASS**, total 499 s. Run because
+  the next step for this change is a hardware sitting; the 3 xfails are the
+  pre-existing `nightly`-tier ones, unrelated to this change.
+- `./run_tests.sh`, run 2026-08-09 (final pre-commit gate): **4226 passed,
+  RESULT PASS**, total 201 s.
+
+An independent pre-commit audit returned **COMMIT-READY** with 4 warnings and
+3 notes, all applied before the commit. The one that mattered was caught by
+reading the disassembly, not the source: `micros64() - interp_last_tick_us()`
+written as a single expression leaves the two calls only *indeterminately
+sequenced*, and GCC emits `micros64()` first — so an interp tick landing between
+the two samples underflows the u64 subtraction and surfaces as `phase_us` ≈
+65480-65535, a value this ring's own contract calls impossible. A rare
+self-inflicted refutation of the very model the probe exists to test. The tick is
+now read into a local first, making the ordering a source-level fact.

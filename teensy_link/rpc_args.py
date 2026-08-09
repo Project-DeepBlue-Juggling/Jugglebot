@@ -339,7 +339,14 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: not unsafe — it simply sends neither frame, so both rows read never-seen —
 #: but every conclusion drawn from tx_deferred / hand-stage attribution needs a
 #: board that actually has the counters, which is why the check is loud.
-EXPECTED_BRIDGE_FW_VERSION = 9
+#: 10 (2026-08-09) = the ERR_TIMEOUT FIX: 16 TX mailboxes on the Jugglebot bus
+#: (setMaxMB 16→24) + the console-only [handphase] diagnostic. This bump is
+#: WIRE-INVISIBLE — no MsgType, no payload, PROTOCOL_VERSION still 5 — so a board
+#: still on 9 decodes identically and stays perfectly usable; what it does NOT
+#: have is the fix, so it keeps failing ~37 % of hand dispatches under the 500 Hz
+#: leg stream. That is exactly why the skew must be loud: the symptom of running
+#: FW 9 here is a hand that intermittently does not stroke, not a dark link.
+EXPECTED_BRIDGE_FW_VERSION = 10
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

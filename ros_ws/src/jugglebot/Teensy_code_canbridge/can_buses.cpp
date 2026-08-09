@@ -464,9 +464,76 @@ void can_buses_init() {
   can_cone.enableFIFOInterrupt();
   can_cone.onReceive(on_cone_rx);
 
+  // ── setMaxMB(24) — 16 TX mailboxes on the Jugglebot bus (2026-08-09) ───────
+  // JUGGLEBOT BUS ONLY. FW 10's ERR_TIMEOUT fix: with the old setMaxMB(16) this
+  // bus had EIGHT TX mailboxes, and the 500 Hz interp ISR fills six of them in
+  // one back-to-back burst (leg_interp.cpp:533-541). A hand dispatch landing in
+  // the post-burst window found ≤2 mailboxes free, so FlexCAN_T4::write()
+  // returned -1 (deferral into the software ring) and hand_ops reported
+  // ERR_TIMEOUT. Measured on the bench 2026-08-09: 0/40 failures with the leg
+  // stream idle, 15/40 with it running (Fisher p = 8.5e-09), and the per-stage
+  // split pre1 0 / pre2 7 / traj 8 reads out the pending count directly.
+  //
+  //  * 24 ⇒ 16 TX mailboxes. mailboxOffset() is 6 + (RFFN+1)*2 and is FIXED at 8
+  //    (6 MBs for the RX-FIFO engine + 2 for the 8-entry ID filter table) —
+  //    INDEPENDENT of MAXMB (FlexCAN_T4.tpp:439-444; RFFN is 0 because nothing
+  //    in this tree ever calls setRFFN/setFIFOFilter and begin() only ORs into
+  //    CTRL2). So TX mailboxes = MAXMB − 8: 16 → 8, 24 → 16.
+  //  * SIZING: the DESIGN BOUND on pending is 8 — the 6-frame leg burst plus the
+  //    only two other producers on this bus (the 100 Hz 0x7DD broadcast and the
+  //    50 Hz hand SDO poll). The bench MEASURED at most 7: pre1_fail = 0 across
+  //    40 trials means P = 8 never occurred, i.e. the two non-leg frames were
+  //    never simultaneously resident. Size to the design bound, not the measured
+  //    one — 8 + a worst-case 3-frame hand dispatch = 11 ≤ 16, with margin for a
+  //    future producer. 24 rather than 32/64 because the write() scan below is
+  //    linear in MAXMB and runs inside our PRIMASK region.
+  //  * COST: zero MCU RAM — mailboxes are FlexCAN peripheral RAM; the MCU-side
+  //    buffers are the RX_SIZE_256 / TX_SIZE_64 template parameters and are
+  //    untouched. The FlexCAN ISR scan does NOT grow either: flexcan_interrupt
+  //    computes exit_point = 64 - __builtin_clzll(iflag|1) and breaks at the
+  //    highest FLAGGED mailbox (tpp:1194-1197), so unused high MBs are never
+  //    walked. What does grow is write()'s free-mailbox scan (tpp:1038), which
+  //    runs inside can_jugglebot_send()'s IRQ-off region: ~1 iteration on the
+  //    happy path (it breaks at the first inactive MB) and only the full 16-MB
+  //    walk on the congested path — i.e. exactly where a longer scan is bought
+  //    by not deferring. Sub-µs per send against the 2000 µs interp period;
+  //    watch interp_max_jitter_us / interp_deadline_misses on the bench anyway.
+  //    UNVERIFIED against the RM: FlexCAN's TX arbitration scans all ENABLED
+  //    mailboxes each round and the RM notes the scan duration scales with MAXMB,
+  //    which at a low protocol clock can cost a back-to-back transmission slot.
+  //    That hazard degrades BUS TX THROUGHPUT, not ISR timing — so watch the
+  //    jugglebot TX fps (Profile wire slot 1, can1_tx), not just interp jitter:
+  //    interp jitter would stay clean while the bus quietly lost slots.
+  //  * ORDER IS LOAD-BEARING: setMaxMB MUST precede enableFIFO() +
+  //    enableFIFOInterrupt(), as it does here. setMaxMB internally does
+  //    disableFIFO → write MCR[MAXMB] → enableFIFO (tpp:446-457), and
+  //    enableFIFO() calls writeIMASK(0ULL) which CLEARS BUF5M, while
+  //    enableFIFOInterrupt() early-returns if BUF5M is already set
+  //    (tpp:182-226). Calling setMaxMB AFTER enableFIFO therefore silently kills
+  //    the RX-FIFO interrupt and the bus goes RX-DARK with no error reported.
+  //    setMaxMB also clears every mailbox and RXIMR mask, so it is init-only —
+  //    calling it at runtime would destroy in-flight leg setpoints.
+  //  * EFFECT: converts a deferral into a hardware-queued (late) transmission.
+  //    The ERR_TIMEOUTs go away; the WIRE LATENCY DOES NOT — 0x0C7, 0x0CB and
+  //    0x6D0 all rank below every leg id (0x00C-0x0AC), so they still go out
+  //    after the burst drains. It also parks the vendored events() mb == -1
+  //    refill defect (no break; writes one frame into every free mailbox while
+  //    popping others — logbook 2026-08-02 addendum § A6): at the observed
+  //    occupancy the software ring is never entered, so that path is
+  //    unreachable. It becomes reachable again if a future TX producer doubles
+  //    the burst — and the parking is ONE-DIRECTIONAL in blast radius: when the
+  //    ring IS re-entered, that break-less loop now duplicates the peeked frame
+  //    into up to 16 mailboxes instead of 8, so a deferred 0x6D0 duplicates twice
+  //    as hard as it did on FW 9. Anything that re-opens the deferral path must
+  //    FIX THE VENDORED LOOP, not just re-size the mailboxes.
+  //
+  // NOT applied to bb/cone: both deferred 0 frames across the whole bench arm and
+  // each carries only the 100 Hz 0x7DD fan-out plus event-driven RPC relays
+  // (bb: rpc.cpp:137 send_bb_frame), never a 500 Hz burst — so a symmetric change
+  // would be risk without need.
   can_jugglebot.begin();
   can_jugglebot.setBaudRate(CAN_BITRATE);
-  can_jugglebot.setMaxMB(16);
+  can_jugglebot.setMaxMB(24);
   can_jugglebot.enableFIFO();
   can_jugglebot.enableFIFOInterrupt();
   can_jugglebot.onReceive(on_jugglebot_rx);
@@ -488,9 +555,17 @@ void can_buses_init() {
 // per-tick decode cost during a backlog burst.
 //
 // Why this keeps the 500 Hz interp ISR un-starved: decode runs in this priority-5
-// FreeRTOS task, BELOW the leg-setpoint IntervalTimer ISR (leg_interp.cpp, NVIC
-// priority 32, above the FreeRTOS syscall ceiling), which preempts the task at any
-// instruction. A larger per-tick drain therefore cannot delay the leg setpoints; it
+// FreeRTOS task, BELOW the leg-setpoint IntervalTimer ISR (leg_interp.cpp:608, NVIC
+// priority 16, above the FreeRTOS syscall ceiling), which preempts the task at any
+// instruction. The number matters: the ceiling
+// (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY, 2 << (8-4)) is itself 32, and BASEPRI
+// masks any interrupt whose priority VALUE is >= BASEPRI — so an ISR at 32 would sit
+// EXACTLY AT the ceiling and be masked by every RTOS critical section, contradicting the
+// conclusion this comment draws. At the real value of 16 (16 < 32) both the number and
+// the conclusion hold. (This line said 32 until 2026-08-09; the conclusion was always
+// right, but a reader who trusted the number over the conclusion would reason correctly
+// about masking and land on the opposite answer.)
+// A larger per-tick drain therefore cannot delay the leg setpoints; it
 // only shortens the tick slice left to LOWER-priority tasks (net, telem, fault), and
 // only while a backlog actually exists — the loop breaks the instant the buffer empties.
 // The bounded drain also shrinks ONE specific rxBuffer race: the library's

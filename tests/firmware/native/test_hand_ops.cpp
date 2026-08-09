@@ -43,7 +43,23 @@
 #include "odrive_protocol.h"
 #include "canbridge_config.h"
 #include "can_buses.h"
+#include "leg_interp.h"   // declares interp_last_tick_us (we fake it below)
 #include "fake_hal.h"
+
+// ── Driver-local fake for interp_last_tick_us() ──────────────────────────────
+//  Deliberately NOT in fake_hal.cpp: test_fault_machine and test_leg_interp both
+//  #include the REAL leg_interp.cpp *and* link fake_hal.o, so a definition there
+//  would be a duplicate-symbol link error in those two binaries (the ODR rule at
+//  build.py:16-24). Driver-local stubbing is the established alternative —
+//  test_udp_link.cpp does the same for micros64/net_ethernet_service.
+//
+//  Paired with fake_hal's clock (micros64()), this makes the dispatch PHASE
+//  exactly determined: phase_us == fake_mono_us() - g_fake_interp_tick_us.
+static uint64_t g_fake_interp_tick_us = 0;
+namespace CanBridge {
+uint64_t interp_last_tick_us() { return g_fake_interp_tick_us; }
+}  // namespace CanBridge
+static void fake_set_interp_tick_us(uint64_t t_us) { g_fake_interp_tick_us = t_us; }
 
 #include "hand_ops.cpp"   // the unit under test
 
@@ -241,6 +257,63 @@ TEST_CASE("counters accumulate across calls and stay attributed per stage") {
 
   check_counters(/*calls=*/5, /*rej=*/0, /*down=*/1,
                  /*pre1=*/1, /*pre2=*/0, /*traj=*/1, /*ok=*/2);
+}
+
+// ── Interp-phase stamp (2026-08-09) ─────────────────────────────────────────
+//  The [handphase] ring is the falsifiable test for the phase-locked-dispatch
+//  verdict (logbook 2026-08-02 addendum § A3), so what has to be right is that the
+//  stamp is taken at ENTRY — the same point for every dispatch, before the gates —
+//  and that the exit stage is labelled correctly. A stamp taken per-exit instead
+//  would make the OK and FAIL phase distributions incomparable by construction,
+//  and the bench read (two clusters vs uniform) would be meaningless while still
+//  looking like data. That is the regression these cases exist to catch.
+TEST_CASE("a dispatch is phase-stamped at ENTRY and labelled with its exit stage") {
+  fake_reset();
+  hand_ops_counters_reset();
+  fake_set_commands_allowed(true);
+  const auto a = make_traj_arg();
+
+  // OK dispatch at phase 812 µs into the 2 ms interp cycle.
+  fake_set_interp_tick_us(5'000'000);
+  fake_set_clock(/*wall=*/0, /*mono=*/5'000'812);
+  CHECK(HandOps::hand_traj_cmd(a) == JbUdp::RpcStatus::OK);
+
+  // A pre2 failure at a DIFFERENT phase. The stamp must be the entry phase, not
+  // anything measured at the failing send.
+  fake_set_send_fail_index(1);            // set_controller_mode refuses to enqueue
+  fake_set_interp_tick_us(9'000'000);
+  fake_set_clock(/*wall=*/0, /*mono=*/9'001'793);
+  CHECK(HandOps::hand_traj_cmd(a) == JbUdp::RpcStatus::ERR_TIMEOUT);
+
+  const auto r = hand_phase_ring();
+  REQUIRE(r.n == 2);
+  CHECK(r.v[0].phase_us == 812);
+  CHECK(r.v[0].outcome  == HAND_PHASE_OK);
+  CHECK(r.v[1].phase_us == 1793);
+  CHECK(r.v[1].outcome  == HAND_PHASE_PRE2);
+  // The stamp is orthogonal to the counters — both instruments must agree.
+  check_counters(/*calls=*/2, /*rej=*/0, /*down=*/0,
+                 /*pre1=*/0, /*pre2=*/1, /*traj=*/0, /*ok=*/1);
+}
+
+TEST_CASE("the reset seam clears the phase ring too, not just the counters") {
+  // The ring is folded into hand_ops_counters_reset() precisely so a case cannot
+  // isolate one instrument and inherit the other's leftovers — a ring that
+  // survived reset would let a stale sample from a previous case masquerade as
+  // this one's phase.
+  fake_reset();
+  hand_ops_counters_reset();
+  fake_set_commands_allowed(true);
+  fake_set_interp_tick_us(1'000'000);
+  fake_set_clock(/*wall=*/0, /*mono=*/1'000'400);
+  CHECK(HandOps::hand_traj_cmd(make_traj_arg()) == JbUdp::RpcStatus::OK);
+  REQUIRE(hand_phase_ring().n == 1);
+
+  hand_ops_counters_reset();
+  const auto r = hand_phase_ring();
+  CHECK(r.n == 0);
+  CHECK(r.v[0].phase_us == 0);
+  CHECK(r.v[0].outcome  == HAND_PHASE_OK);   // 0 == HAND_PHASE_OK; the count is what says "empty"
 }
 
 TEST_CASE("the reset seam zeroes every counter") {
