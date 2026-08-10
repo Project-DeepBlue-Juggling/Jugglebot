@@ -109,9 +109,36 @@ import numpy as np
 import yaml
 
 import jugglebot.hardware_config as hw
-from jugglebot import toss_record
+from jugglebot import toss_record, toss_trim
 from jugglebot.motion import toss_cal
 from jugglebot.motion.trajectory.toss_release import aim_target_offset_mm
+# The reduction, the Jacobian and the three admission filters MOVED into the
+# production package in phase 2e (``jugglebot/toss_trim.py``) and are imported —
+# never re-implemented — here. Root cause: the ONLINE session trim and this
+# OFFLINE fit must admit and reduce a toss identically, or the map an operator
+# promotes is fitted on a different population from the one the machine learnt
+# on, and nothing would ever surface the difference. Same argument D11 makes for
+# the labeller. This module keeps its own names so every caller, CLI and test is
+# unchanged by the move.
+from jugglebot.toss_trim import (          # noqa: F401  (re-exported)
+    AIM_LABELS,
+    APEX_SANITY_FRAC,
+    FIT_RMS_MAX_MM,
+    SPEED_SE_MAX,
+    SPEED_TIMING_N_MIN,
+    TAU_SE_MAX_MS,
+    TIMING_POLL_DT_MS_MAX,
+    TIMING_POLL_DT_MS_MIN,
+    achieved_apex_m,
+    achieved_flight_s,
+    admit_for_aim,
+    admit_for_speed,
+    admit_for_timing,
+    aim_landing_jacobian,
+    applied_aim_rad,
+    reduce_to_aim,
+)
+from jugglebot.toss_trim import _G, _is_pair, _num, _z_of   # noqa: F401
 
 __all__ = [
     'TossFitError',
@@ -134,8 +161,14 @@ __all__ = [
 ]
 
 
-class TossFitError(RuntimeError):
-    """Any refusal to fit or to write. Carries the operator-facing reason."""
+#: Any refusal to fit or to write. Carries the operator-facing reason.
+#:
+#: An **alias** of :class:`jugglebot.toss_trim.TossTrimError`, not a subclass:
+#: the reduction and the admission filters moved into the production package in
+#: phase 2e, and every ``except TossFitError`` here must keep catching what those
+#: moved functions raise. A subclass would silently stop catching them — the
+#: quietest possible way to turn a named refusal into a traceback out of a fit.
+TossFitError = toss_trim.TossTrimError
 
 
 TOOL_NAME = 'tests/hardware/toss_cal_fit.py'
@@ -172,27 +205,6 @@ THETA_ACC_RAD = math.radians(0.15)
 #: the check into the fit it exists to test.
 NODE_SNAP_TOL_MM = 1.0
 
-#: G2 track quality — the mocap descending-branch fit RMS ceiling, mm. Same
-#: number ``tools/probes/toss_record_miner._mark_usable`` already applies, kept
-#: identical on purpose: two different quality bars would make
-#: ``usable_for_aim_fit`` and this module disagree about the same row.
-FIT_RMS_MAX_MM = 3.0
-
-#: G3 apex sanity — fractional tolerance on ``|h_ach − h_cmd| / h_cmd``. A wrong
-#: apex mis-normalises the reduction (the gain is linear in h), so a toss that
-#: missed its commanded height by more than this is routed to the SPEED
-#: estimator instead of the aim fit.
-APEX_SANITY_FRAC = 0.10
-
-#: Labels admitted to the AIM fit (§ 3.7 item 4). CAUGHT and BOUNCED both mean
-#: the ball arrived and its offset is real. MISSED is admitted too — see
-#: :func:`admit_for_aim`, which requires a non-sparse mocap fit for it — because
-#: the missed tosses are the most informative aim records and excluding them
-#: biases the fit toward the cup. NO_RELEASE and UNKNOWN are excluded: the first
-#: has no flight, the second has no verdict (D13 — UNKNOWN never collapses).
-AIM_LABELS = (toss_record.LABEL_CAUGHT, toss_record.LABEL_BOUNCED,
-              toss_record.LABEL_MISSED)
-
 #: The mandatory partition keys (§ 3.7). ``z_mm`` is derived from
 #: ``goal_catch_xyz_stow_mm[2]``; every other entry is a record field.
 PARTITION_KEYS: Tuple[str, ...] = (
@@ -200,56 +212,10 @@ PARTITION_KEYS: Tuple[str, ...] = (
     'toss_tier', 'z_mm', 'hand_odrive_config_sha',
 )
 
-# ── The re-derived timing gate (design § 10 hands this to 2c) ────────────────
-#
-# § 3.7 item 5 gated the timing fit on ``sensor_poll_dt_ms_median`` being within
-# 10 % of the configured ``JB_BD_CHECK_INTERVAL_MS`` (20 ms). MEASURED on the
-# reference bag ``2026-08-10_16-30-44`` (31 self-tosses, mined 2026-08-11 with
-# ``tools/probes/toss_record_miner.py --bag 2026-08-10_16-30-44 --jsonl``): the
-# per-record median poll cadence is **60 / 63 / 70 / 80 / 87 ms**
-# (min / p5 / median / p95 / max). The shipped gate refuses 100 % of records, so
-# it is not a gate, it is an outage.
-#
-# The re-derivation starts from what the gate PROTECTS rather than from the
-# configured constant. The timing measurand is
-# ``t_departure_raw_ros − announce_throw_time_ros``, and a raw sensor edge is
-# quantised by the poll cadence Δ, giving a per-sample sd of Δ/√12. On the
-# reference bag that prediction is **20.50 ms** against a measured sd of
-# **20.51 ms** over the 31 departures (ratio 1.001) — i.e. the ENTIRE observed
-# dispersion of the release-shift measurand is the instrument's quantisation, and
-# the release timing itself is more repeatable than the sensor can see. So the
-# honest gate is a PRECISION gate on Δ, not a match against a constant the plant
-# does not honour.
-
-#: Floor. A per-record median cadence BELOW the firmware's own configured poll
-#: interval is not a fast sensor, it is a stamp that is not the poll stamp — a
-#: different firmware, or a mined field that does not mean what this fit thinks.
-#: Refuse rather than fit a measurand of unknown provenance.
-TIMING_POLL_DT_MS_MIN = float(hw.JB_BD_CHECK_INTERVAL_MS)
-
-#: Ceiling, sized on REACHABILITY rather than on the plant. The τ trim applies at
-#: ``se ≤ 5 ms`` (§ 3.6.1), and with quantisation-limited samples
-#: ``se = Δ/√(12·n)``, so ``n = Δ²/300`` for Δ in ms. At Δ = 200 ms that is
-#: **n = 133** admitted tosses — more than the entire 129-toss first capture
-#: (§ 6). Past this cadence a timing fit is not merely imprecise, it is
-#: unreachable inside a sitting, and saying so is more honest than accumulating a
-#: fit that will never gate. It is 2.3× the worst per-record median measured on
-#: the reference bag, so it does not bind on today's plant.
-TIMING_POLL_DT_MS_MAX = 200.0
-
-#: Standard-error ceiling for the release-latency (τ) estimate, ms (§ 3.6.1,
-#: unchanged). The deadband is 10 ms, so 5 ms is the "estimate beats half the
-#: smallest correction worth making" bar.
-TAU_SE_MAX_MS = 5.0
-
-#: Standard-error ceiling for the speed gain ``k_v``, as a fraction (§ 3.6.1:
-#: "apply at n ≥ 5 with se ≤ 1 %").
-SPEED_SE_MAX = 0.01
-
-#: Minimum admitted tosses for the τ / k_v estimates (§ 3.6.1).
-SPEED_TIMING_N_MIN = 5
-
-_G = 9.80665
+# The re-derived timing gate (TIMING_POLL_DT_MS_MIN / _MAX / TAU_SE_MAX_MS /
+# SPEED_SE_MAX / SPEED_TIMING_N_MIN) and the reduction's _G moved to
+# jugglebot/toss_trim.py in phase 2e together with the admission filters that
+# read them — see the import block above. They are re-exported unchanged.
 
 
 # ── Corpus ───────────────────────────────────────────────────────────────────
@@ -297,16 +263,6 @@ def sha256_of(path: str) -> str:
         for chunk in iter(lambda: handle.read(65536), b''):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _z_of(rec: Dict[str, Any]) -> Optional[float]:
-    xyz = rec.get('goal_catch_xyz_stow_mm')
-    if not xyz or len(xyz) < 3 or xyz[2] is None:
-        return None
-    try:
-        return round(float(xyz[2]), 3)
-    except (TypeError, ValueError):
-        return None
 
 
 def partition_key(rec: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -407,277 +363,20 @@ def select_partition(records: Sequence[Dict[str, Any]], *,
     return list(records), census, None, warnings
 
 
-# ── Physics: the production forward model, differentiated ────────────────────
+# ── Physics + admission: IMPORTED from jugglebot/toss_trim.py ────────────────
+#
+# ``aim_landing_jacobian`` / ``achieved_flight_s`` / ``achieved_apex_m`` /
+# ``applied_aim_rad`` / ``reduce_to_aim`` and the three ``admit_for_*`` filters
+# moved into the production package in phase 2e and are imported at the top of
+# this file. The sign argument, the fixed-point derivation and the guard
+# vocabulary now live in that module's docstring — read it there, once.
+#
+# Two things this move BUYS, both of which are the reason for it rather than
+# tidiness: the online session trim and this offline fit can no longer drift
+# apart about what a toss reduces to or which tosses are admissible; and
+# ``reduce_to_aim``'s minus (the design text writes a plus, which diverges — see
+# the 2c logbook section) exists in exactly one place for exactly one review.
 
-
-def aim_landing_jacobian(flight_time_s: float,
-                         catch_z_stow_mm: float) -> np.ndarray:
-    """``J`` (2×2, mm/rad): ``d(landing offset) / d(aim rx, ry)`` at zero aim.
-
-    Column 0 is ``∂L/∂rx``, column 1 is ``∂L/∂ry``, rows are ``(Lx, Ly)``.
-
-    Computed by finite-differencing the **production**
-    :func:`toss_release.aim_target_offset_mm` — the same function
-    ``reload_coordinator_node._toss_aim_for_goal`` calls to APPLY the map — at a
-    1e-6 rad step. That is deliberate and it is the single most important line in
-    this module: it means the fit and the apply path cannot disagree about the
-    sign or the axis pairing, because there is only one implementation of either.
-    A re-derived ``S`` here would be a second place for a sign to be wrong, and a
-    sign error aims the machine roughly twice as badly as no map at all.
-
-    The step is far inside the model's linear regime (the map's whole authority
-    is 1° = 0.0175 rad and the offset is smooth through zero), and the model is
-    exactly linear at the origin, so the difference quotient is the derivative to
-    ~1e-10 relative.
-
-    Sanity: at h = 0.78 m (T = 0.7977 s), z = 170 mm this returns
-    ``[[0, 3126.53], [-3126.53, 0]]`` — magnitude 0.21 % above the design's
-    idealised ``4h`` = 3120 mm/rad, and a 90° rotation, NOT a scaled identity.
-    """
-    T = float(flight_time_s)
-    if not math.isfinite(T) or T <= 0.0:
-        raise TossFitError(
-            'aim_landing_jacobian needs a positive flight time, got {!r}'
-            .format(flight_time_s))
-    z = float(catch_z_stow_mm)
-    if not math.isfinite(z):
-        raise TossFitError(
-            'aim_landing_jacobian needs a finite catch z, got {!r}'
-            .format(catch_z_stow_mm))
-    eps = 1e-6
-    col_rx = np.asarray(aim_target_offset_mm(eps, 0.0, T, z), dtype=float) / eps
-    col_ry = np.asarray(aim_target_offset_mm(0.0, eps, T, z), dtype=float) / eps
-    return np.column_stack([col_rx, col_ry])
-
-
-def achieved_flight_s(rec: Dict[str, Any]) -> Optional[float]:
-    """The flight time to normalise this toss by: mocap-achieved if it exists,
-    else the commanded one.
-
-    Mocap first because the reduction's gain is linear in the flight time, so
-    normalising a short throw by its commanded time mis-scales its residual —
-    which is exactly the error G3 (apex sanity) is sized to bound.
-    """
-    for name in ('achieved_flight_s_mocap', 'flight_time_s'):
-        T = _num(rec.get(name))
-        if T is not None and T > 0.0:
-            return T
-    return None
-
-
-def achieved_apex_m(rec: Dict[str, Any]) -> Optional[float]:
-    """Apex implied by the achieved flight time, ``h = g·T²/8`` — the inverse of
-    ``T = √(8h/g)``. Used only by G3; the reduction itself uses ``J(T, z)``."""
-    T = achieved_flight_s(rec)
-    if T is None:
-        return None
-    return _G * T * T / 8.0
-
-
-def applied_aim_rad(rec: Dict[str, Any]) -> Optional[Tuple[float, float]]:
-    """The aim this toss actually commanded, radians — or ``None`` if unknown.
-
-    ``total_aim_rad`` is the declared "what was actually commanded" field and is
-    preferred; ``map_aim_rad + trim_aim_rad`` is the fallback for a record
-    written before the total was carried.
-
-    **Unknown is not zero.** A mined-only row (no ``/toss/record`` declaration —
-    every row of the three 2026-08-10 bags) cannot say what aim was applied, and
-    guessing zero would make the fixed point subtract a bias that was in fact
-    already applied, i.e. it would re-learn a correction the machine is already
-    making. :func:`admit_for_aim` refuses such a row and names it.
-    """
-    total = rec.get('total_aim_rad')
-    if _is_pair(total):
-        return (float(total[0]), float(total[1]))
-    parts = []
-    for name in ('map_aim_rad', 'trim_aim_rad'):
-        value = rec.get(name)
-        if not _is_pair(value):
-            return None
-        parts.append((float(value[0]), float(value[1])))
-    return (parts[0][0] + parts[1][0], parts[0][1] + parts[1][1])
-
-
-def _num(value: Any) -> Optional[float]:
-    """``float(value)`` when it is a finite number, else ``None``.
-
-    Every threshold comparison below goes through this rather than a bare
-    ``float()``: a corpus row is decoded from JSON written by a machine that may
-    predate this build, so a string or a null in a numeric field is a data
-    problem to be *reported as a refusal*, never a ``TypeError`` five frames up
-    that kills a whole fit.
-    """
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
-
-
-def _is_pair(value: Any) -> bool:
-    return (isinstance(value, (list, tuple)) and len(value) == 2
-            and all(isinstance(v, (int, float)) and not isinstance(v, bool)
-                    and math.isfinite(float(v)) for v in value))
-
-
-def reduce_to_aim(rec: Dict[str, Any]) -> Tuple[float, float]:
-    """One toss → the commanded aim ``b`` that would have landed it on B, rad.
-
-    ``b = A − J⁻¹ · land_err``  where ``A`` is the aim that WAS applied
-    (:func:`applied_aim_rad`) and ``J`` the production aim→landing Jacobian at
-    this toss's flight time and height.
-
-    Why this is a converging fixed point, and why that matters operationally:
-    with ``land_err = J·(A + ψ)`` the expression is ``A − (A + ψ) = −ψ``,
-    **independent of A**. So a capture may run with the previous map installed —
-    records inside one node carrying different applied biases reduce to the same
-    ``b`` — and the ``--force-uninstall`` dance stays an escape hatch rather than
-    a step of the routine (§ 3.7 item 3).
-
-    See the module docstring for why the design's written ``+`` is not this.
-    """
-    aim = applied_aim_rad(rec)
-    if aim is None:
-        raise TossFitError(
-            '{}: the applied aim is unknown, so this toss cannot be reduced '
-            '(see applied_aim_rad)'.format(rec.get('toss_uid')))
-    err = rec.get('land_err_mm')
-    if not _is_pair(err):
-        raise TossFitError(
-            '{}: land_err_mm is absent or malformed'.format(rec.get('toss_uid')))
-    T = achieved_flight_s(rec)
-    z = _z_of(rec)
-    if T is None or z is None:
-        raise TossFitError(
-            '{}: no usable flight time / catch z to build the Jacobian'
-            .format(rec.get('toss_uid')))
-    J = aim_landing_jacobian(T, z)
-    delta = np.linalg.solve(J, np.array([float(err[0]), float(err[1])]))
-    return (float(aim[0]) - float(delta[0]), float(aim[1]) - float(delta[1]))
-
-
-# ── Admission (§ 3.6.2, as far as ONE record can decide) ─────────────────────
-
-
-def admit_for_aim(rec: Dict[str, Any]) -> Tuple[bool, str]:
-    """``(admitted, reason)`` for the AIM fit.
-
-    Enforces the label-inclusion rule (§ 3.7 item 4) and guards G1 (release
-    evidence), G2 (track quality), G3 (apex sanity) and G9 (ball evidence). The
-    guards this deliberately does NOT enforce — G4 plant health, G5 levelling,
-    G6 uptime trend, G7/G8 outlier and change detection — need the partition and
-    the running estimate, which one row does not have; G4 additionally needs the
-    PLANT block, which ships null until it is wired (§ 10). :func:`fit_nodes`
-    and :func:`timing_fit` own the ones that are decidable from a partition.
-
-    ``rimshot`` candidates are admitted for aim and excluded from timing, exactly
-    as § 3.7 item 4 states — a rim transit moves the catch TIME, not the arrival
-    POSITION.
-    """
-    label = rec.get('label')
-    if label is None or label == toss_record.LABEL_UNKNOWN:
-        return False, 'label_unknown'                          # G9 / D13
-    if label == toss_record.LABEL_NO_RELEASE:
-        return False, 'label_no_release'
-    if label not in AIM_LABELS:
-        return False, 'label_{}'.format(str(label).lower())
-
-    if rec.get('t_departure_raw_ros') is None and not rec.get(
-            'ball_track_confirmed') and not rec.get('throw_stroke_seen'):
-        return False, 'no_release_evidence'                    # G1
-
-    if not _is_pair(rec.get('land_err_mm')):
-        return False, 'no_mocap_fit'
-    if rec.get('fit_sparse'):
-        return False, 'mocap_fit_sparse'                       # G2
-    rms = _num(rec.get('fit_rms_mm'))
-    if rms is None:
-        return False, 'mocap_fit_rms_unknown'
-    if rms > FIT_RMS_MAX_MM:
-        return False, 'mocap_fit_quality'                      # G2
-    if label == toss_record.LABEL_MISSED and (_num(rec.get('n_fit')) or 0) < 5:
-        # MISSED is admitted ONLY on a non-sparse fit: it is the most
-        # informative aim record there is, and excluding it would bias the whole
-        # map toward the cup — but a thin track on a missed ball is exactly the
-        # case where the estimator extrapolates.
-        return False, 'missed_with_thin_track'
-
-    if rec.get('retry_of'):
-        return False, 'retry_cycle'                            # G11
-    if rec.get('reload_settle'):
-        return False, 'reload_settle'                          # G10
-
-    if applied_aim_rad(rec) is None:
-        return False, 'applied_aim_unknown'
-
-    h_ach = achieved_apex_m(rec)
-    h_cmd = _num(rec.get('apex_height_m'))
-    if h_ach is not None and h_cmd is not None and h_cmd > 0.0:
-        if abs(h_ach - h_cmd) / h_cmd > APEX_SANITY_FRAC:
-            return False, 'apex_out_of_band'                    # G3
-    if _z_of(rec) is None or achieved_flight_s(rec) is None:
-        return False, 'no_geometry'
-    return True, ''
-
-
-def admit_for_timing(rec: Dict[str, Any]) -> Tuple[bool, str]:
-    """``(admitted, reason)`` for the release-latency (τ) fit — the RE-DERIVED
-    gate (see the :data:`TIMING_POLL_DT_MS_MIN` block).
-
-    Requires: a departure edge and an announcement to measure against; a
-    wall-anchored ``ball_held_stamp`` (a bridge-boot-relative stamp mis-times
-    every edge by the whole bridge uptime — the largest silent error available
-    anywhere in this pipeline, § 7 R2); a measured poll cadence inside the
-    reachability band; and not a rimshot candidate.
-
-    Note what is NOT required: agreement with ``JB_BD_CHECK_INTERVAL_MS``. The
-    plant runs at ~3.5× the configured interval and has done for every bag we
-    have; a gate on the configured number refuses 100 % of records.
-    """
-    if rec.get('t_departure_raw_ros') is None:
-        return False, 'no_departure_edge'
-    if rec.get('announce_throw_time_ros') is None:
-        return False, 'no_announcement'
-    if rec.get('ball_held_stamp_wall_anchored') is False:
-        return False, 'bridge_stamp_not_wall_anchored'
-    if rec.get('rimshot'):
-        return False, 'rimshot_candidate'
-    dt = _num(rec.get('sensor_poll_dt_ms_median'))
-    if dt is None:
-        return False, 'poll_cadence_unmeasured'
-    if dt < TIMING_POLL_DT_MS_MIN:
-        return False, 'poll_cadence_below_configured_interval'
-    if dt > TIMING_POLL_DT_MS_MAX:
-        return False, 'poll_cadence_unreachable'
-    return True, ''
-
-
-def admit_for_speed(rec: Dict[str, Any]) -> Tuple[bool, str]:
-    """``(admitted, reason)`` for the speed-gain (``k_v``) fit.
-
-    Consumes ``achieved_flight_s_mocap`` against ``flight_time_s`` (§ 3.7
-    item 5), so it needs BOTH and a released ball. Deliberately does NOT apply
-    G3: a toss whose apex missed by more than 10 % is precisely the record the
-    speed fit exists to consume (``admit_for_aim`` routes it here).
-    """
-    label = rec.get('label')
-    if label in (None, toss_record.LABEL_UNKNOWN, toss_record.LABEL_NO_RELEASE):
-        return False, 'label_unusable'
-    for name in ('achieved_flight_s_mocap', 'flight_time_s'):
-        value = rec.get(name)
-        try:
-            ok = value is not None and math.isfinite(float(value)) \
-                and float(value) > 0.0
-        except (TypeError, ValueError):
-            ok = False
-        if not ok:
-            return False, 'no_flight_pair'
-    if rec.get('retry_of') or rec.get('reload_settle'):
-        return False, 'interlude_cycle'
-    return True, ''
 
 
 # ── Grid geometry ────────────────────────────────────────────────────────────
@@ -1477,6 +1176,15 @@ def synthetic_corpus(x_mm: Sequence[float], y_mm: Sequence[float], *,
                     'apex_height_m': float(apex_m),
                     'toss_tier': '8a',
                     'tilt_map_version': 'synthetic-tilt/1',
+                    # G5 (levelling) is enforced by the SHARED admission filter
+                    # from phase 2e on, so a synthetic corpus has to model a
+                    # correctly-levelled machine explicitly. Leaving these null
+                    # would make every synthetic record refuse with
+                    # ``no_gravity_correction`` — which is the guard working,
+                    # not a fixture quirk.
+                    'gravity_correction_loaded': True,
+                    'tilt_map_applied': True,
+                    'toss_cal_version': 'synthetic-toss-cal/1',
                     'bridge_fw_version': '10 (proto 5)',
                     'platform_fw_version': '2',
                     'map_aim_rad': [applied[0], applied[1]],

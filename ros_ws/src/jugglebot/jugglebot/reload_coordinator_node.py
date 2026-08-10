@@ -123,6 +123,8 @@ import threading
 import time
 from datetime import datetime
 
+import yaml
+
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -217,7 +219,7 @@ from jugglebot.toss_session import (
     resolve_on_empty_cup,
 )
 from jugglebot.catch_coordinator import CatchCoordinator
-from jugglebot import clock_offset, toss_record
+from jugglebot import clock_offset, toss_record, toss_trim
 from jugglebot.toss_record import latch_announced_ball
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion import toss_cal
@@ -498,6 +500,13 @@ _TOSS_WAIVER_PARAM = 'toss_ball_evidence_waiver_trace_only'
 # global double-adds GEOM_INITIAL_HEIGHT_MM. Resolve the real body name + frame
 # on the bench (Phase-3 dry trace / T0) before enabling.
 _TOSS_MOCAP_BODY_PARAM = 'toss_mocap_body'
+# Layer-2 session trim (design § 3.6, phase 2e) — a node PARAMETER, DEFAULT
+# FALSE. The estimator runs regardless; this decides only whether its output is
+# ADDED to the commanded aim. Rollback is `ros2 param set … false` and takes
+# effect at the NEXT goal build, never mid-cycle: the trim is frozen into the
+# release state at _build_toss_cycle, which is what makes "disable the trim" a
+# statement about the next throw rather than a race with the one in the air.
+_TOSS_TRIM_PARAM = 'toss_trim_enabled'
 # Toss terminals on which the platform's true motion state is UNKNOWN: an
 # ack-timed-out go_to_pose may still execute (the service returns at plan-INSTALL,
 # so a missing/late ack does not mean no motion — the plan may be running or land
@@ -675,6 +684,14 @@ class ReloadCoordinatorNode(Node):
         # other line in the console — the 4091-ERRORs-in-41 s failure mode.
         self._toss_cal_dormant_reason = ''
         self._toss_cal_dormant_logged = ''
+        # ── Layer 2: the SESSION TRIM (phase 2e, jugglebot/toss_trim.py) ──
+        # RAM only, one per GOAL, discarded when the goal ends — its only
+        # persistent trace is a PROPOSAL under temp/logs/ that an operator
+        # promotes through the explicit calibration routine or does not
+        # (premise P1). None between goals; never reused across two.
+        self._toss_trim = None
+        self._toss_trim_t0 = 0.0
+        self._toss_trim_belt_warned = False
         # The platform's live COMMANDED position (STOW mm) + its arrival stamp.
         # None/0.0 = never heard ⇒ fail closed (REJECTED_POSE_UNKNOWN for a
         # displaced toss, REJECTED_NOT_CENTERED for a reload). trajectory_node
@@ -863,6 +880,14 @@ class ReloadCoordinatorNode(Node):
         # Trace-only waiver parameter (D4d): declared here, read at each toss
         # goal-accept — see _TOSS_WAIVER_PARAM.
         self.declare_parameter(_TOSS_WAIVER_PARAM, False)
+        # Layer-2 session trim (phase 2e): declared here, read ONCE per goal
+        # build — see _TOSS_TRIM_PARAM. DEFAULT FALSE, deliberately: the trim
+        # costs ~1 mm of aim when there is nothing to correct (measured, see
+        # toss_trim.SE_GATE), it has never been validated on hardware, and its
+        # measurement channel is not live yet (toss_trim's module docstring).
+        # It still LEARNS and still writes its proposal while disabled, which is
+        # the whole point — zero authority, full instrumentation.
+        self.declare_parameter(_TOSS_TRIM_PARAM, False)
         # Mocap arrival cross-check body (D7-revised): declared here, re-read at
         # each toss goal-accept — see _TOSS_MOCAP_BODY_PARAM ('' = disabled).
         self.declare_parameter(_TOSS_MOCAP_BODY_PARAM, '')
@@ -1915,6 +1940,7 @@ class ReloadCoordinatorNode(Node):
             catch_pose=catch_pose, throw_delay=throw_delay, vel_scale=vel_scale,
             raw_goal={'throw_height_m': height, 'throw_delay_s': throw_delay,
                       'catch_vel_scale': vel_scale})
+        self._toss_trim_begin(goal_id=_goal_id_hex(goal_handle))
         # Loud goal-numerics gate BEFORE anything runs (mirrors ball_butler_node's
         # non-finite target guard): a NaN/inf would flow through the release-state
         # ballistics into a NaN announcement / event_vel command, and a NEGATIVE
@@ -2006,6 +2032,10 @@ class ReloadCoordinatorNode(Node):
             raise
         finally:
             self._clear_toss_cycle_state()
+            # The trim is per GOAL, so it dies here — with its proposal written.
+            # In the `finally` deliberately: a cancelled or aborted goal's trim
+            # is exactly the one an operator wants to read.
+            self._toss_trim_end()
             with self._lock:
                 self._goal_claimed = False
 
@@ -2207,18 +2237,39 @@ class ReloadCoordinatorNode(Node):
         aim belongs to BallButler. ``tests/motion/test_toss_cal.py`` enforces
         that structurally, in the shape of C-LEVEL-2's own manifest test.
 
-        Returns the applied-calibration block: the commanded aim (rad), the
-        virtual-target offset it corresponds to at THIS toss's flight time (mm,
-        a report field — never the stored unit), the clamp hits, and the
-        loaded/applied/version provenance. ``aim_rad`` is ``(0.0, 0.0)`` — and
-        ``offset_mm`` exactly ``(0.0, 0.0)`` — whenever no map is loaded or the
-        map is dormant, which is what makes the disabled path today's machine.
+        Returns the applied-calibration block for the whole goal, split into its
+        two contributions so the record can carry both:
+
+        * ``map_aim_rad`` / ``map_offset_mm`` — layer 1, the persistent
+          home-referenced field (:mod:`jugglebot.motion.toss_cal`);
+        * ``trim_aim_rad`` / ``trim_offset_mm`` — layer 2, this goal's RAM-only
+          common-mode session trim (:mod:`jugglebot.toss_trim`), zero unless
+          ``toss_trim_enabled`` is set AND the estimator has left WARMUP;
+        * ``aim_rad`` / ``offset_mm`` — the TOTAL, which is what the platform is
+          actually commanded to and what the virtual target is built from.
+
+        **The TOTAL is re-clamped HERE, at apply** (D7), over ``map + trim`` — not
+        at either layer's own update. Each layer bounds itself (parse time for
+        the map, ``TRIM_MAX`` for the trim) but 1.0° + 0.15° is 1.15°, past the
+        authority every downstream argument is sized on, and the only place that
+        sum exists is this line.
+
+        ``aim_rad`` is exactly ``(0.0, 0.0)`` — and ``offset_mm`` exactly
+        ``(0.0, 0.0)`` — whenever no map is loaded (or it is dormant) and the
+        trim commands nothing, which is what makes the disabled path today's
+        machine bit for bit.
+
+        **Layer 2 does not depend on layer 1's dormancy.** A DORMANT map is one
+        fitted against a different layer 0; the trim was measured *this goal*
+        against *this* layer 0, so it stays valid and stays applied. That is
+        § 3.2's separation doing its job rather than an exception to it.
         """
         with self._lock:
             cal = self._toss_cal
             live_tilt = self._tilt_map_version
             version = self._toss_cal_version
             already_logged = self._toss_cal_dormant_logged
+            trim = self._toss_trim
         reason = cal.provenance_mismatch(live_tilt) if cal is not None else ''
         if reason:
             with self._lock:
@@ -2233,32 +2284,73 @@ class ReloadCoordinatorNode(Node):
         block = {
             'aim_rad': (0.0, 0.0),
             'offset_mm': (0.0, 0.0),
+            'map_aim_rad': (0.0, 0.0),
+            'map_offset_mm': (0.0, 0.0),
+            'trim_aim_rad': (0.0, 0.0),
+            'trim_offset_mm': (0.0, 0.0),
             'clamp_hits': [],
             'loaded': bool(cal is not None),
             'applied': bool(cal is not None and not reason),
+            'trim_enabled': False,
             'version': version,
         }
-        if cal is None or reason:
+
+        # ── layer 1 ──
+        map_aim = (0.0, 0.0)
+        if cal is not None and not reason:
+            try:
+                map_aim = toss_cal.lookup(cal, float(catch_pose[0]),
+                                          float(catch_pose[1]))
+            except (toss_cal.TossCalError, ValueError) as exc:
+                # Degrade this goal to an unaimed toss rather than converting a
+                # calibration fault into a dead action callback. Loud, and per
+                # goal: unlike the tilt map's per-pose lookup this runs ~10 times
+                # a minute, so it cannot bury the console.
+                self.get_logger().error(
+                    f"toss aim lookup FAILED for catch pose {tuple(catch_pose)}: "
+                    f"{exc} — this goal is thrown UNAIMED (C-TOSS-CAL-1 is a "
+                    f"refinement, never a gate)")
+                block['applied'] = False
+                map_aim = (0.0, 0.0)
+
+        # ── layer 2 — THE single per-goal trim read (§ 3.6) ──
+        trim_aim = (0.0, 0.0)
+        enabled = bool(self.get_parameter(_TOSS_TRIM_PARAM).value)
+        block['trim_enabled'] = enabled
+        if enabled and trim is not None:
+            trim_aim = trim.aim()
+
+        if map_aim == (0.0, 0.0) and trim_aim == (0.0, 0.0):
+            # Not one floating-point operation on the disabled path.
             return block
+
         try:
-            raw_rx, raw_ry = toss_cal.lookup(cal, float(catch_pose[0]),
-                                             float(catch_pose[1]))
-            rx, ry, hits = toss_cal.clamp_total_aim(raw_rx, raw_ry)
+            rx, ry, hits = toss_cal.clamp_total_aim(map_aim[0] + trim_aim[0],
+                                                    map_aim[1] + trim_aim[1])
             offset = aim_target_offset_mm(rx, ry, float(flight),
                                           float(catch_pose[2]))
+            map_offset = aim_target_offset_mm(map_aim[0], map_aim[1],
+                                              float(flight),
+                                              float(catch_pose[2]))
         except (toss_cal.TossCalError, ValueError) as exc:
-            # Degrade this goal to an unaimed toss rather than converting a
-            # calibration fault into a dead action callback. Loud, and per goal:
-            # unlike the tilt map's per-pose lookup this runs ~10 times a
-            # minute, so it cannot bury the console.
             self.get_logger().error(
-                f"toss aim lookup FAILED for catch pose {tuple(catch_pose)}: "
-                f"{exc} — this goal is thrown UNAIMED (C-TOSS-CAL-1 is a "
-                f"refinement, never a gate)")
+                f"toss aim composition FAILED for catch pose "
+                f"{tuple(catch_pose)}: {exc} — this goal is thrown UNAIMED "
+                f"(C-TOSS-CAL-1 is a refinement, never a gate)")
             block['applied'] = False
             return block
         block['aim_rad'] = (float(rx), float(ry))
         block['offset_mm'] = (float(offset[0]), float(offset[1]))
+        block['map_aim_rad'] = (float(map_aim[0]), float(map_aim[1]))
+        block['map_offset_mm'] = (float(map_offset[0]), float(map_offset[1]))
+        block['trim_aim_rad'] = (float(trim_aim[0]), float(trim_aim[1]))
+        # The trim's mm REPORT value is the DIFFERENCE of the two commanded
+        # offsets, not `aim_target_offset_mm(trim)` on its own: what the trim
+        # actually moved is the virtual target, and after the total clamp that
+        # displacement is exactly total − map. Computing it independently would
+        # report a trim the machine did not command whenever the clamp bound.
+        block['trim_offset_mm'] = (float(offset[0]) - float(map_offset[0]),
+                                   float(offset[1]) - float(map_offset[1]))
         block['clamp_hits'] = list(hits)
         return block
 
@@ -3248,6 +3340,8 @@ class ReloadCoordinatorNode(Node):
             vel_scale = self._catch_vel_scale
             stroke_seen = self._toss_stroke_seen
             track_confirmed = self._toss_track_confirmed
+            trim = self._toss_trim
+        trim_snapshot = trim.snapshot() if trim is not None else None
         ctx = ctx or {}
         # A cycle was actually built iff a flight time was resolved. On the
         # REJECTED_BAD_GOAL path nothing was built, so the node's RESOLVED
@@ -3382,17 +3476,33 @@ class ReloadCoordinatorNode(Node):
                 getattr(hw, 'JB_OP_TOSS_RELEASE_LATENCY_MS', 0.0)),
         })
         if aim is not None:
-            map_aim = [float(aim['aim_rad'][0]), float(aim['aim_rad'][1])]
             rec.update({
-                'map_aim_rad': map_aim,
-                'total_aim_rad': list(map_aim),
-                # REPORT field: mm at THIS toss's apex, never the stored unit.
-                # It is the exact virtual-target offset that was commanded, so
-                # it needs no re-derivation (and cannot drift from one).
-                'map_aim_mm_at_h': [float(aim['offset_mm'][0]),
-                                    float(aim['offset_mm'][1])],
+                'map_aim_rad': [float(v) for v in aim['map_aim_rad']],
+                'trim_aim_rad': [float(v) for v in aim['trim_aim_rad']],
+                'total_aim_rad': [float(v) for v in aim['aim_rad']],
+                # REPORT fields: mm at THIS toss's apex, never the stored unit.
+                # They are the exact virtual-target offsets that were commanded,
+                # so they need no re-derivation (and cannot drift from one).
+                'map_aim_mm_at_h': [float(v) for v in aim['map_offset_mm']],
+                'trim_aim_mm_at_h': [float(v) for v in aim['trim_offset_mm']],
                 'clamp_hits': list(aim['clamp_hits']),
                 'toss_cal_applied': bool(aim['applied']),
+            })
+        # ── Layer 2 provenance (§ 3.6) ──
+        # Written from the trim's OWN snapshot, not from the aim block: the
+        # state and the sample count describe the estimator, which keeps
+        # learning whether or not `toss_trim_enabled` let its output through.
+        # `trim_aim_rad` above is what was COMMANDED (zero while disabled); this
+        # is what was KNOWN. A corpus has to be able to tell those apart, or a
+        # future reader cannot say whether a session had no bias or no
+        # permission.
+        if trim_snapshot is not None:
+            rec.update({
+                'trim_source_n': int(trim_snapshot['n']),
+                'trim_state': str(trim_snapshot['state']),
+                'trim_reset_reason': str(trim_snapshot['reason'] or ''),
+                'speed_bias_applied': float(trim_snapshot['speed_k_v']),
+                'timing_bias_applied_ms': float(trim_snapshot['tau_ms']),
             })
         return rec
 
@@ -3492,6 +3602,136 @@ class ReloadCoordinatorNode(Node):
         except Exception as exc:                               # noqa: BLE001
             self.get_logger().warning('toss/record publish failed: {}'.format(exc))
         self._belt_toss_record(payload)
+        self._toss_trim_observe(record)
+
+    # ── Layer 2: the session trim (contract C-TOSS-CAL-1 § 3.6, phase 2e) ─────
+
+    def _toss_trim_begin(self, *, goal_id: str) -> None:
+        """Start a FRESH session trim for one goal.
+
+        Warm-started from the persistent map's ``anchor.aim_rad`` — the absolute
+        aim residual measured at the home anchor, which the map deliberately does
+        NOT ship as a correction because it is ``level``-noise contaminated
+        (§ 3.2). As a *prior with strength n₀* it is exactly the right object:
+        the session overrides it after ~5 admitted tosses if it disagrees, and
+        starts from the best available guess if it does not.
+
+        Never reuses the previous goal's estimator. The trim is defined as
+        common-mode-per-goal; carrying one across a re-``level``, a map reload or
+        an operator's coffee break would make it estimate a quantity that
+        changed underneath it.
+        """
+        with self._lock:
+            cal = self._toss_cal
+            session_id = self._session_id
+        anchor = getattr(cal, 'anchor_aim_rad', None) if cal is not None else None
+        k_v = getattr(cal, 'speed_k_v', None) if cal is not None else None
+        try:
+            trim = toss_trim.SessionTrim(anchor_aim_rad=anchor,
+                                         speed_k_v_prior=k_v,
+                                         session_id=session_id,
+                                         goal_id=str(goal_id or ''))
+        except toss_trim.TossTrimError as exc:
+            # A malformed anchor is a map-validation failure that parse_toss_cal
+            # should already have caught; if one gets here the goal runs with NO
+            # trim rather than with a guessed one, and says so.
+            self.get_logger().error(
+                'session trim NOT started ({}) — this goal runs with the '
+                'persistent map alone'.format(exc))
+            trim = None
+        with self._lock:
+            self._toss_trim = trim
+            self._toss_trim_t0 = time.perf_counter()
+            self._toss_trim_belt_warned = False
+
+    def _toss_trim_observe(self, record: dict) -> None:
+        """Feed ONE cycle's declaration to the session trim, then print TRIM.
+
+        The declaration is the ingest point on purpose: it is the single object
+        that already carries every field the § 3.6.2 guards read, it is minted
+        exactly once per cycle terminal, and it is the same shape the offline
+        replay consumes — so the live and offline estimators cannot be fed
+        different things.
+
+        **Instrument-grade failure handling**, like the record itself: the whole
+        body is guarded and a fault costs a measurement, never a teardown.
+        """
+        with self._lock:
+            trim = self._toss_trim
+            pose = self._toss_record_ctx.get('catch_pose') \
+                if self._toss_record_ctx else None
+            flight = self._toss_record_ctx.get('flight') \
+                if self._toss_record_ctx else None
+            aim = self._toss_aim
+            t0 = self._toss_trim_t0
+        if trim is None:
+            return
+        try:
+            verdict = trim.observe(record)
+            lines = trim.console_lines(
+                node_xy_mm=(pose[:2] if pose else None),
+                map_aim_rad=(aim['map_aim_rad'] if aim else None),
+                flight_time_s=flight,
+                catch_z_stow_mm=(pose[2] if pose and len(pose) > 2 else None),
+                uptime_ms=None,
+                elapsed_s=(time.perf_counter() - t0
+                           if t0 else None),
+                applied=bool(aim and aim.get('trim_enabled')),
+                cycle_index=(record or {}).get('cycle_index'))
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning(
+                'session trim update failed ({}) — instrument only, the cycle '
+                'is unaffected'.format(exc))
+            return
+        for line in lines:
+            self.get_logger().info(line)
+        if not verdict.admitted and verdict.reason:
+            self.get_logger().info(
+                '     trim REFUSED this toss: {} (freeze-never-zero: the '
+                'commanded trim is unchanged)'.format(verdict.reason))
+
+    def _toss_trim_end(self) -> None:
+        """Discard the goal's trim and write its PROPOSAL to ``temp/logs/``.
+
+        **Never auto-promoted.** Premise P1: promotion into
+        ``config/toss_calibration.yaml`` needs the explicit routine and its
+        acceptance gates, so this writes a document the map loader structurally
+        cannot read (different ``schema``, no ``grid``, no ``aim_rad``) into a
+        gitignored directory. A mistaken ``cp`` into ``config/`` is then refused
+        loudly by ``parse_toss_cal`` rather than silently applied.
+
+        Best-effort, one WARN per goal: a full disk costs the proposal, never a
+        teardown.
+        """
+        with self._lock:
+            trim = self._toss_trim
+            self._toss_trim = None
+        if trim is None or not _RECORD_BELT_DIR:
+            return
+        try:
+            doc = trim.proposal(
+                written_at=self._ros_clock_s(),
+                git_sha=self._git_sha,
+                git_dirty=self._git_dirty,
+                toss_cal_version=self._toss_cal_version or None,
+                tilt_map_version=self._tilt_map_version or None,
+                toss_trim_enabled=bool(
+                    self.get_parameter(_TOSS_TRIM_PARAM).value))
+            os.makedirs(_RECORD_BELT_DIR, exist_ok=True)
+            path = os.path.join(
+                _RECORD_BELT_DIR,
+                '{}_trim_proposal.yaml'.format(self._session_id))
+            with open(path, 'w') as fh:
+                yaml.safe_dump(doc, fh, sort_keys=False, default_flow_style=False)
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning(
+                'session trim proposal NOT written ({}) — instrument only, the '
+                'goal is unaffected'.format(exc))
+            return
+        self.get_logger().info(
+            'TRIM proposal written: {} — SESSION-ONLY, promote through '
+            'tests/hardware/toss_cal_fit.py, never by copying it into config/'
+            .format(path))
 
     def _belt_toss_record(self, payload: str) -> None:
         """Append one line to ``temp/logs/toss_records_<session>.jsonl``.
@@ -3615,6 +3855,9 @@ class ReloadCoordinatorNode(Node):
             self._dwell_tilt_next_at = 0.0
             self._dwell_tilt_degraded = False
             self._toss_record_prev_uid = None
+        # A FRESH Layer-2 trim for this session — same reasoning, one layer up:
+        # the trim estimates a common mode that is only constant WITHIN a goal.
+        self._toss_trim_begin(goal_id=_goal_id_hex(goal_handle))
         session.start(time.perf_counter())
         # The ONE SESSION_CHECKING feedback. The FSM leaves CHECKING inside the
         # same step() that enters it (it either finishes with a reject — and a
@@ -3781,6 +4024,10 @@ class ReloadCoordinatorNode(Node):
             raise
         finally:
             self._clear_toss_cycle_state()
+            # The trim is per GOAL, so it dies here — with its proposal written.
+            # In the `finally` deliberately: a cancelled or aborted goal's trim
+            # is exactly the one an operator wants to read.
+            self._toss_trim_end()
             with self._lock:
                 self._goal_claimed = False
 
