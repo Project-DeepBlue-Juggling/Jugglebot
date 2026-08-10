@@ -1217,3 +1217,50 @@ def sample_bb_heartbeat_data():
     """
     state_byte = (1 << 1) | 0x01  # state=1 (IDLE), ball_in_hand=True
     return struct.pack('<BBHHH', state_byte, 0, 1000, 500, 200)
+
+
+# ── Toss-record sink isolation (parallel safety + operator artefact hygiene) ──
+# ``reload_coordinator_node`` resolves BOTH of its file sinks — the JSONL record
+# belt and the end-of-goal trim proposal — to ``<repo>/temp/logs`` at import.
+# That is right in production and wrong under pytest, for two separate reasons:
+#
+#  1. it is a FIXED SHARED PATH, and the gate runs four xdist workers over one
+#     working tree (CLAUDE.md "New tests are parallel by default");
+#  2. worse, a test-written ``toss_records_*.jsonl`` is byte-indistinguishable
+#     from a real session's and lands in exactly the directory the toss-cal
+#     capture workflow mines. Measured 2026-08-11 before this fixture: 468
+#     synthetic ``toss_records_*.jsonl`` + 175 ``*_trim_proposal.yaml`` had
+#     accumulated in the operator's ``temp/logs`` from ordinary suite runs.
+#
+# Patch-if-already-imported: the module is only in ``sys.modules`` for the test
+# files that actually exercise it, so no test pays an import it did not ask for
+# and a mock-configuration change cannot turn this into a collection error.
+# A test that patches ``_RECORD_BELT_DIR`` itself still wins (its monkeypatch is
+# applied later); a test that needs the PRODUCTION-resolved value asks for the
+# ``real_record_belt_dir`` fixture below.
+
+_RCN_MODULE = 'jugglebot.reload_coordinator_node'
+
+
+@pytest.fixture
+def real_record_belt_dir():
+    """The production-resolved ``_RECORD_BELT_DIR``, before isolation redirects it.
+
+    ``_isolate_toss_record_sinks`` DEPENDS on this fixture, which is what forces
+    pytest to instantiate it first — so this always reads the unpatched constant
+    even though the isolation fixture is autouse.
+    """
+    rcn = sys.modules.get(_RCN_MODULE)
+    return None if rcn is None else getattr(rcn, '_RECORD_BELT_DIR', None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_toss_record_sinks(tmp_path, monkeypatch, real_record_belt_dir):
+    """Redirect the record belt / trim proposal sinks into this test's tmp dir."""
+    rcn = sys.modules.get(_RCN_MODULE)
+    if rcn is None or real_record_belt_dir is None:
+        # Not imported, or a deployment outside the repo checkout — in the
+        # latter case the production code writes nothing at all.
+        return
+    monkeypatch.setattr(rcn, '_RECORD_BELT_DIR',
+                        str(tmp_path / 'record_sinks'))

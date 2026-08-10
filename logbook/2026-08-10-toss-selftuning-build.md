@@ -1895,3 +1895,147 @@ sitting. Operator decision 4 / D19.
 - **`--force-uninstall` is no longer on the routine path** (§ 3.7 item 3's
   fixed-point property removed it) but SC-1 is the one rung that still needs it,
   because its estimator is the raw landing error rather than the reduction.
+
+---
+
+## Independent validation of 2a–2f, and the sink the tests were writing to (2026-08-11)
+
+An independent pass re-derived every acceptance instrument rather than trusting
+the six phase reports. Everything held. One defect surfaced, test-side.
+
+### What was re-derived
+
+- The full gate, both acceptance closed loops (zero-bias bitwise identity and
+  the injected-bias sign recovery), the miner's bag-free self-check and its
+  reproduction of the reference bag's hand-mined census, all four rung
+  dry-runs under a sabotaged `rclpy`, a two-package `colcon build` with an
+  install-vs-source diff, and `config/generate_config.py` determinism. Numbers
+  in Verification below.
+- The eight safety invariants were traced **in code**, not in the phase reports:
+  `toss_sequencer.py` is byte-untouched across the whole build (`git diff
+  ada807d..HEAD` is empty for it), so the 3.5 s `MIN_TOSS_THROW_DELAY_S` floor
+  stands; `resolve_on_empty_cup` whitelists exactly `RELOAD` and returns `STOP`
+  for everything else — empty, misspelt, absent, and a raising `str()`; `_freeze`
+  never touches `_delta`; `toss_trim.py` contains no `open(`, no `yaml` import
+  and no path construction at all, so the trim structurally cannot persist;
+  `toss_cal.lookup` has exactly one call scope and that scope exactly one
+  caller (AST manifest); `_release_is_tilted(self._toss_commanded_release())`
+  is what raises `catch/pretilt_hold`, so any non-zero aim raises it
+  tier-independently; the `ABORTED_NO_RELEASE` retry is gated on
+  `EVIDENCE_SEATED_NAME` alone, and `HandBallSensorSource.evidence` returns
+  `UNKNOWN` on a stale or invalid sample; and the Layer-1.5 read has one call
+  site, inside the session loop's `SESSION_PHASE_DWELL` + `not
+  session.cycle_live` branch, which `_run_toss_cycle` blocks for a cycle's
+  whole life.
+
+### The defect: the suite was writing production-shaped artefacts into `temp/logs/`
+
+`reload_coordinator_node` resolves BOTH file sinks — the JSONL record belt
+(2a) and the end-of-goal trim proposal (2e) — to `<repo>/temp/logs` at import.
+Three test modules construct a node and drive a goal terminal without patching
+that constant, so every suite run appended real files to the operator's own
+artefact directory. Measured before the fix: **468 `toss_records_*.jsonl` +
+175 `*_trim_proposal.yaml`**, attributable at +2 / +6 / +20 files per run to
+`test_toss_record_publisher.py`, `test_toss_continuous_node.py` and
+`test_toss_coordinator.py` respectively.
+
+Two things are wrong with that, and the second is the one that matters. It is a
+**fixed shared path** under a four-worker xdist gate, which the parallel-default
+convention forbids outright. But worse, a test-written
+`toss_records_<session>.jsonl` is **byte-indistinguishable from a real
+session's** and lands in exactly the directory the 2f capture workflow mines —
+the belt exists precisely so a `record:=false` bench session still produces a
+corpus, so "glob `temp/logs/toss_records_*.jsonl`" is a workflow the build
+invites. The first hardware capture would have been mining 468 synthetic files
+alongside its own.
+
+The production behaviour is correct and unchanged: writing to `temp/logs` is the
+belt's whole point. The fix is isolation at the test boundary — an autouse
+fixture in `tests/ros/conftest.py` that redirects `_RECORD_BELT_DIR` into the
+test's `tmp_path`, patching only when the module is already in `sys.modules` so
+no test pays an import it did not ask for.
+
+**Why the accompanying test edit is not a weakening.**
+`test_the_belt_dir_is_resolved_by_marker_not_by_a_fixed_walk` asserted on
+`rcn._RECORD_BELT_DIR` directly — under an autouse redirect that assertion
+passes vacuously against whatever the fixture chose, which is the exact
+"coverage inferred from a passing count" failure the docs-exemption rule warns
+about. So the isolation fixture *depends on* a `real_record_belt_dir` fixture,
+which forces pytest to instantiate that one first and read the **unpatched**
+constant; the test now asserts the production resolution equals
+`os.path.join(_REPO_ROOT, 'temp', 'logs')`, and adds a non-vacuity assertion
+that the live constant really was redirected. The test is strictly stronger
+than before.
+
+### Verification
+
+All run 2026-08-11 on the Jetson.
+
+- `./run_tests.sh --full` (pre-fix, run 2026-08-11) → **RESULT PASS**, parallel
+  **5388 passed, 3 xfailed in 476.90 s**, serial **9 passed, 5391 deselected in
+  40.21 s**, total 523 s.
+- `python tools/probes/toss_record_miner.py --self-check` (run 2026-08-11) →
+  **22/22 cases pass**, exit 0.
+- `python tools/probes/toss_record_miner.py --bag 2026-08-10_16-30-44` (run
+  2026-08-11) → `70666 samples, ball_held_valid 70666/70666 (100.0 %), 38
+  catches, 39 departures, 39 held segments`, quick-drops at 0.569 / 0.999 /
+  0.988 s, `CAUGHT=19, MISSED=12` over 31 self-tosses, every row `mined-only`.
+  **The hand-mined ground truth exactly — 39 / 38 / 3.**
+- `pytest tests/motion/test_toss_release.py <the three closed-loop fit tests>
+  <the three AST manifest tests> -v` (run 2026-08-11) → **139 passed in 5.01 s**,
+  including `test_zero_aim_reproduces_compute_release_state_bitwise`,
+  `test_zero_aim_offset_is_exactly_zero`,
+  `test_closed_loop_the_fitted_map_cancels_the_injected_bias`,
+  `test_a_sign_flipped_fit_doubles_the_error` and
+  `test_closed_loop_recovers_a_SPATIAL_field_node_by_node`.
+- `pytest tests/motion/test_toss_trim.py tests/ros/test_toss_session.py
+  tests/ros/test_toss_trim_node.py tests/ros/test_toss_continuous_node.py -q`
+  (run 2026-08-11) → **298 passed in 25.04 s**.
+- `pytest` over the remaining nine toss modules (run 2026-08-11) → **465 passed
+  in 66.11 s**.
+- `python /tmp/probe_grid_noros.py` (run 2026-08-11) — an INDEPENDENT sabotage
+  probe that replaces `rclpy`, `rclpy.node` and `rclpy.action` with modules
+  whose every attribute raises, then calls `toss_cal_grid.main()` for all four
+  rungs → `{'sc0': 0, 'sc1': 0, 'sc2': 2, 'sc3': 2}`, **no ROS object
+  constructed on any dry-run path**. The two `2`s are the SC-0 ledger gate
+  refusing SC-2 and SC-3, which is D14 working.
+- `python tests/hardware/toss_cal_grid.py --rung {sc0,sc1,sc2,sc3} --dry-run`
+  (run 2026-08-11) → 25 / 32 / 88 / 30 tosses, ETA 335 / 415 / 1142 / 402 s,
+  ball budget worst-case 15 / 12 / 33 / 18 reloads, IK stroke preflight OK at
+  ≥ 10 mm margin.
+- `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot`
+  (no venv, run 2026-08-11) → **2 packages finished, 0 failed**. Deployment
+  proven twice: `diff` of the nine touched modules between
+  `install/jugglebot/lib/python3.8/site-packages/jugglebot` and `src` is
+  **identical for all nine**, and the installed IDL reads back
+  `on_empty_cup default = 'STOP'`, `max_reloads default = 0`,
+  `reloads_used` present.
+- `python config/generate_config.py` (run 2026-08-11) → exit 0 and `git status
+  --porcelain` unchanged: the codegen is deterministic against the committed
+  artefacts.
+- Post-fix leak check (run 2026-08-11): the five node-building toss test modules
+  run scoped → **266 passed in 36.34 s** with a `temp/logs` file-count delta of
+  **0** (was +28 for the same five).
+- `./run_tests.sh --full` (post-fix, run 2026-08-11) → **RESULT PASS**, parallel
+  **5388 passed, 3 xfailed in 482.58 s**, serial **9 passed, 5391 deselected in
+  40.78 s**, total 529 s — the SAME 5388 as the pre-fix run, which is the check
+  that the isolation neither dropped a test nor silently skipped one. The
+  `temp/logs` `toss_records_*` / `*_trim_proposal*` count was **unchanged across
+  the whole four-worker run** (newest file still the 07:04 pre-fix attribution
+  probe).
+
+### Open
+
+- **The 643 already-accumulated files are still in `temp/logs/`.** They are
+  gitignored, and every timestamp falls inside the 2026-08-11 00:10–07:01 build
+  window — which is desk-side work by construction (the whole build was, and
+  2a's belt did not exist before it), so on the evidence they are all test
+  output. That is an inference from timestamps, not proof, and deleting another
+  session's artefacts is the operator's call rather than a validator's.
+  Suggested, before the first capture:
+  `rm -f temp/logs/toss_records_*.jsonl temp/logs/*_trim_proposal.yaml`.
+- **`tests/hardware/` writes were not audited for the same class.**
+  `toss_cal_grid.py` and `toss_cal_fit.py` write under `temp/logs` by design and
+  are operator-invoked, not suite-invoked, so they are out of scope here — but
+  the probe-map install/restore path writes to the *production* map target, and
+  its restore is only exercised by unit tests, never end-to-end.

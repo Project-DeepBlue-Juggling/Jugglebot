@@ -332,16 +332,27 @@ def test_the_belt_is_skipped_outside_a_repo_checkout(monkeypatch):
     assert called == []
 
 
-def test_the_belt_dir_is_resolved_by_marker_not_by_a_fixed_walk():
+def test_the_belt_dir_is_resolved_by_marker_not_by_a_fixed_walk(
+        real_record_belt_dir):
     """A fixed number of ``dirname`` hops cannot be right in both trees: this
     module runs from ``ros_ws/src`` under pytest and from the colcon install tree
     in production. That is the tilt-cal Phase-2 finding, which produced a path
-    that could not exist in production while looking fine in the source tree."""
+    that could not exist in production while looking fine in the source tree.
+
+    Reads ``real_record_belt_dir`` — the PRODUCTION-resolved constant captured
+    before ``tests/ros/conftest.py``'s autouse isolation fixture redirects the
+    sink into a tmp dir. Asserting on ``rcn._RECORD_BELT_DIR`` directly would
+    pass vacuously against whatever the fixture chose.
+    """
     assert rcn._REPO_ROOT is not None, 'running inside the repo checkout'
     assert os.path.isdir(os.path.join(rcn._REPO_ROOT, 'ros_ws'))
     assert os.path.exists(os.path.join(rcn._REPO_ROOT, 'config',
                                        'hardware_config.yaml'))
-    assert rcn._RECORD_BELT_DIR.endswith(os.path.join('temp', 'logs'))
+    assert real_record_belt_dir == os.path.join(rcn._REPO_ROOT, 'temp', 'logs')
+    assert real_record_belt_dir.endswith(os.path.join('temp', 'logs'))
+    # The isolation fixture really did redirect the live constant, so no test in
+    # this suite can write a production-shaped artefact into temp/logs.
+    assert rcn._RECORD_BELT_DIR != real_record_belt_dir
 
 
 # ── Provenance ────────────────────────────────────────────────────────────────
