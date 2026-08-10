@@ -216,6 +216,26 @@ def fit_plane_crossing(samples, plane, band):
 
     ``samples`` is an iterable of ``(t, x, y, z)`` for ONE throw window, in any
     order. Only the descending run before the first sub-plane sample is used.
+
+    The five-tuple is the SHIPPED shape and stays that way; callers that also
+    need the fit residual (the toss-record corpus's G2 track-quality guard) call
+    :func:`fit_plane_crossing_full`, which this delegates to. One fit, two views
+    — a second least-squares here would be a second place for the band selection
+    to drift.
+    """
+    got = fit_plane_crossing_full(samples, plane, band)
+    return None if got is None else got[:5]
+
+
+def fit_plane_crossing_full(samples, plane, band):
+    """-> (x_at_plane, y_at_plane, n, z_lo, z_hi, rms_mm, t_lo, t_hi) or None.
+
+    ``rms_mm`` is the RMS of the fitted residual over the band rows, taken as
+    ``hypot(dx, dy)`` per row — one number for "did x(z) and y(z) actually look
+    like straight lines?". Added 2026-08-10 for the toss-record miner
+    (``plans/active/toss-selftuning.md`` § 3.6.2 guard G2: fit RMS <= 3 mm); the
+    2-sample degenerate case reports 0.0, which is arithmetically true and is why
+    G2 pairs the RMS with a minimum sample count rather than trusting it alone.
     """
     rows = sorted(samples)
     cut = len(rows)
@@ -233,11 +253,16 @@ def fit_plane_crossing(samples, plane, band):
     if szz <= 0.0:
         return None
     out = []
+    resid_sq = [0.0] * n
     for col in (1, 2):
         v_mean = sum(r[col] for r in band_rows) / n
         slope = sum((r[3] - z_mean) * (r[col] - v_mean) for r in band_rows) / szz
         out.append(v_mean + slope * (plane - z_mean))
-    return out[0], out[1], n, min(zs), max(zs)
+        for i, r in enumerate(band_rows):
+            resid_sq[i] += (r[col] - (v_mean + slope * (r[3] - z_mean))) ** 2
+    rms = math.sqrt(sum(resid_sq) / n)
+    ts = [r[0] for r in band_rows]
+    return (out[0], out[1], n, min(zs), max(zs), rms, min(ts), max(ts))
 
 
 def trend(values):
