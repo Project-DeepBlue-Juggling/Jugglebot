@@ -253,7 +253,7 @@ def test_loader_absent_file_is_soft_identity():
                        _expected_rotvec(120.0, -120.0), atol=1e-12)
 
 
-def test_loader_absent_file_logs_info_not_error(monkeypatch):
+def test_loader_absent_file_logs_info_not_error(monkeypatch, tmp_path):
     """PLAIN absence — no env var, no file — is INFO. It must cost nothing.
 
     `monkeypatch.delenv` is load-bearing and not tidying. The directory fixture
@@ -262,10 +262,30 @@ def test_loader_absent_file_logs_info_not_error(monkeypatch):
     a file and is not getting it. Without the delenv this test asserted INFO
     about the override branch while its name claimed the plain one — it could
     never have caught a regression in either.
+
+    Absence is manufactured at the RESOLVER seam — `tilt_map_candidates`, which
+    `resolve_tilt_map_path` reaches through a module-global lookup, so patching
+    the one attribute pins both. Patching `_SRC_TILT_YAML` alone (what this test
+    did until 2026-08-10) is no longer enough, and the way it broke is the
+    reason to say so here: `config/tilt_calibration.yaml` is now a committed
+    file, `setup.py` installs it whenever it exists, and so every `colcon build`
+    populates the THIRD candidate, `share/jugglebot/config/`. The source-tree
+    candidate was blanked and the ament one silently answered in its place —
+    this became a happy-path test wearing an absence test's name, and the two
+    "nothing was logged loudly" assertions above it still passed.
+
+    Scope: the candidate CHAIN is not this test's subject (it belongs to
+    `test_loader_uses_the_real_candidate_chain_when_no_override_is_set` and to
+    tests/motion/test_tilt_map.py). What this test owns is the loader's log
+    LEVEL when resolution comes back empty with no override set.
     """
+    absent = str(tmp_path / 'never-captured' / 'tilt_calibration.yaml')
     monkeypatch.delenv('JUGGLEBOT_TILT_CAL', raising=False)
-    monkeypatch.setattr(tilt_map, '_SRC_TILT_YAML',
-                        '/nonexistent/config/tilt_calibration.yaml')
+    monkeypatch.setattr(tilt_map, 'tilt_map_candidates',
+                        lambda environ=None: (absent,))
+    # The pin must actually bite: if resolution still finds something, every
+    # assertion below is about the wrong branch.
+    assert tilt_map.resolve_tilt_map_path() is None
     node = TrajectoryNode(command_pub_factory=_CapturePub, start_emitter=False)
     # The constructor already ran the loader against a logger we cannot see, so
     # re-run it against one we can — the code path is identical.
@@ -276,6 +296,7 @@ def test_loader_absent_file_logs_info_not_error(monkeypatch):
     assert rec.warnings == []
     assert any('no tilt calibration map found' in line for line in rec.infos)
     assert 'no tilt calibration map found' in message
+    assert absent in message                 # the INFO names what it tried
 
 
 def test_loader_warns_when_the_env_override_points_at_nothing(monkeypatch,

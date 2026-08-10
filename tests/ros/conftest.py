@@ -1141,13 +1141,21 @@ def no_tilt_calibration(monkeypatch):
 
     `trajectory_node` loads `config/tilt_calibration.yaml` in `__init__`
     (contract C-LEVEL-2, `ros_ws/docs/levelling_frame.md`), resolving the repo
-    **source tree** before the ament share dir. That file does not exist today —
-    but Phase 4 of `plans/active/tilt-calibration-grid.md` commits a real,
-    machine-written one. Without this fixture, the day that capture lands every
-    TrajectoryNode built in this directory would silently start applying a
-    hardware calibration, and every test that pins an exact corrected rotvec
-    (`test_levelling_frame.py::_expected_rotvec` and its whole E-row family)
-    would fail with a diff of a few thousandths of a radian and no obvious cause.
+    **source tree** before the ament share dir. That file is now REAL: the first
+    machine-written capture was committed on 2026-08-10 (3df256b), which is the
+    day this fixture stopped being anticipatory and started being the only thing
+    holding the line. Without it, every TrajectoryNode built in this directory
+    would silently apply a hardware calibration, and every test that pins an
+    exact corrected rotvec (`test_levelling_frame.py::_expected_rotvec` and its
+    whole E-row family) would fail with a diff of a few thousandths of a radian
+    and no obvious cause.
+
+    Both non-override candidates now resolve, so a test cannot manufacture
+    absence by blanking one of them: `setup.py` installs the YAML whenever it
+    exists, so `colcon build` populates `share/jugglebot/config/` too. Absence
+    has to be pinned at `tilt_map_candidates` itself — see
+    `test_trajectory_tilt_map.py::test_loader_absent_file_logs_info_not_error`,
+    which learned that the expensive way.
 
     Worse than the noise is what it would mean: the suite's answers would depend
     on whether this particular machine had been calibrated, so the same commit

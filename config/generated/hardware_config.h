@@ -150,9 +150,9 @@ namespace JBOp {
   constexpr float DEFAULT_ACTIVE_Z_MM = 170.0f;
   constexpr float HAND_CATCH_PRIME_REV = 9.9594f;
   constexpr float HAND_RETRACT_REV = 0.0f;
-  constexpr float CATCH_VEL_SCALE_DEFAULT = 0.8f;
+  constexpr float CATCH_VEL_SCALE_DEFAULT = 0.9f;
   constexpr bool RELOAD_PLATFORM_OPEN_LOOP = true;
-  constexpr const char* TOSS_TIER = "8b";
+  constexpr const char* TOSS_TIER = "8a";
   constexpr float TOSS_RELEASE_LATENCY_MS = 0.0f;
   constexpr float TOSS_FLIGHT_TIME_DEFAULT_S = 0.8f;
   constexpr float TOSS_MAX_DISPLACEMENT_MM = 150.0f;
@@ -169,7 +169,7 @@ namespace JBOp {
   constexpr float SHUTDOWN_STOW_TIMEOUT_S = 15.0f;
   constexpr float MAX_VALID_TILT_RAD = 0.785f;
   constexpr float INCLINOMETER_OFFSET_DEG[2] = {-0.6f, -0.2f};
-  constexpr float LEVELLING_SETTLE_S = 0.5f;
+  constexpr float LEVELLING_SETTLE_S = 1.0f;
   constexpr float MAX_POSITION_STEP_REV = 0.3f;
 }
 

@@ -38,6 +38,8 @@ from jugglebot.reload_coordinator_node import (
 )
 from jugglebot.reload_sequencer import ReloadSequencer
 from jugglebot.toss_sequencer import (
+    TIER_8A,
+    TIER_8B,
     TOSS_CONTROL_MODE,
     TOSS_XY_LIMIT_MM,
     TossResult,
@@ -292,11 +294,31 @@ def test_a_rejected_session_never_reports_success(monkeypatch):
 
 # ── Chain reachability (Phase E's KNOWN LIMITATION, caught pre-throw) ─────────
 
+
+@pytest.fixture
+def tier_8b(monkeypatch):
+    """Pin tier 8b at the seam production reads it.
+
+    `_predicted_chain_site_mm` and `_build_toss_cycle` both resolve
+    `hw.JB_OP_TOSS_TIER` per call, and the chain-reachability gate below EXISTS
+    only under 8b — at 8a the platform pre-positions LEVEL at B every cycle and
+    never reads a throw site, so there is no chain to be unreachable and the
+    predictor returns None by design (`test_chain_check_is_skipped_on_tier_8a`).
+
+    8b is a CAPABILITY under test, not the shipped default: the operator flipped
+    the shipped tier back to '8a' on 2026-08-10. These tests used to inherit 8b
+    from the config, which meant a YAML edit turned all nine of them into
+    `assert None is not None` — a config decision wearing a code regression's
+    clothes. The pin is what decouples them."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8B)
+
+
 @pytest.mark.parametrize('bx,expect_x', [
     (0.0, 0.000), (70.0, 71.448), (140.0, 142.894),
     (146.0, 149.017), (147.0, 150.038), (150.0, 153.100)])
 def test_predicted_chain_site_matches_the_production_policy(bx, expect_x,
-                                                            monkeypatch):
+                                                            monkeypatch,
+                                                            tier_8b):
     """The prediction is single-sourced through the SAME
     ``predicted_catch_command`` the deferred A->B reach publishes from, so it
     cannot drift from where the machine will actually be commanded. These values
@@ -311,7 +333,7 @@ def test_predicted_chain_site_matches_the_production_policy(bx, expect_x,
     assert site[1] == pytest.approx(0.0, abs=1e-6)
 
 
-def test_chain_frontier_is_between_146_and_147_mm(monkeypatch):
+def test_chain_frontier_is_between_146_and_147_mm(monkeypatch, tier_8b):
     """The frontier is sharp and the binding gate is the +-150 mm planning box on
     A, NOT the 150 mm displacement cap (the residual |B-A| never exceeds
     3.1 mm)."""
@@ -326,7 +348,7 @@ def test_chain_frontier_is_between_146_and_147_mm(monkeypatch):
         assert math.hypot(bx - site[0], site[1]) < 3.2   # never the cap
 
 
-def test_chain_unreachable_refuses_before_a_ball_flies(monkeypatch):
+def test_chain_unreachable_refuses_before_a_ball_flies(monkeypatch, tier_8b):
     """Without this the session throws ONE ball, catches it, then refuses cycle 2
     REJECTED_WORKSPACE with the platform parked outside the planning box and the
     ball in the cup — actuation for nothing. The refusal moves nothing."""
@@ -354,7 +376,8 @@ def test_chain_gate_does_not_fire_for_a_single_cycle_session(monkeypatch):
     assert result.outcome == 'COMPLETED'
 
 
-def test_chain_check_is_skipped_when_the_pose_is_unknown(monkeypatch):
+def test_chain_check_is_skipped_when_the_pose_is_unknown(monkeypatch,
+                                                         tier_8b):
     """An unknown live pose is already REJECTED_POSE_UNKNOWN on cycle 1 —
     rejecting CHAIN_UNREACHABLE here instead would send the operator to the wrong
     subsystem. The check declines rather than guessing."""
@@ -374,7 +397,7 @@ def test_chain_check_is_skipped_on_tier_8a(monkeypatch):
     site, so there is no chain to be unreachable."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
-    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', '8a')
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8A)
     node = _ready_node(clock)
     assert node._predicted_chain_site_mm((147.0, 0.0, 170.0), FLIGHT) is None
 

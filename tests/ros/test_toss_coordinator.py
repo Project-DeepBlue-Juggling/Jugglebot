@@ -57,6 +57,7 @@ from jugglebot.toss_sequencer import (
     THROW_DISPATCH_AMBIGUOUS,
     THROW_DISPATCH_OK,
     THROW_DISPATCH_REJECTED,
+    TIER_8A,
     TIER_8B,
     TOSS_CONTROL_MODE,
     TossDecision,
@@ -262,33 +263,48 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     holds no correction, or the applier stopped saying anything — and both must
     refuse.
 
-    GATE ORDER, and why the two envelope rows read the way they do. This
-    enumeration runs at the SHIPPED config tier, which became '8b' on
-    2026-07-28. Under 8b the displaced-throw gates (toss_sequencer's CHECKING
-    block: the |B − A| cap, then the closed-form reach bound) run BEFORE the
-    workspace box — documented-in-code and intended, because a cap-rejected
-    goal has no valid tilted release state and so no meaningful event_vel to
-    check. Consequences, measured through this very path on 2026-07-28 (a
-    throw-away probe drove _execute_toss over a coordinate sweep; results are
-    the ground truth quoted here, not inferred from reading the gate):
+    TIER. Every row but the last two runs at whatever tier the config ships
+    ('8a' since the operator's 2026-08-10 flip), because the gates they drive
+    are tier-agnostic. The two envelope rows PIN 8b at the seam the node reads
+    (`hw.JB_OP_TOSS_TIER`, resolved per goal in `_build_toss_cycle`): 8b is a
+    CAPABILITY under test here, not the shipped default, and the |B − A| cap
+    they are about exists only under it. Before the flip these rows inherited
+    8b ambiently, so `displacement` quietly became REJECTED_WORKSPACE the
+    moment the YAML changed — the pin is what makes them mean the same thing
+    at either shipped default.
 
-      x=200 → REJECTED_DISPLACEMENT   (this row read WORKSPACE under 8a)
-      x=80  → REJECTED_DISPLACEMENT   x=71 → REJECTED_DISPLACEMENT
-      x=70  → passes CHECKING         (the 70 mm cap is `>`, so 70 is legal)
+    GATE ORDER, and why the two envelope rows read the way they do. Under 8b
+    the displaced-throw gates (toss_sequencer's CHECKING block: the |B − A|
+    cap, then the closed-form reach bound) run BEFORE the workspace box —
+    documented-in-code and intended, because a cap-rejected goal has no valid
+    tilted release state and so no meaningful event_vel to check. Consequences,
+    measured through this very path on 2026-07-28 (a throw-away probe drove
+    _execute_toss over a coordinate sweep; results are the ground truth quoted
+    here, not inferred from reading the gate). NOTE the sweep predates Phase E:
+    it was taken at the then-70 mm cap, and the cap is
+    `hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM` = 150 mm today, so the three middle
+    rows are HISTORY, not live expectations. Only the first and last survive
+    unchanged at 150 mm, and they are the two the parametrisation drives:
+
+      x=200 → REJECTED_DISPLACEMENT   (200 > 150; this row reads WORKSPACE at 8a)
+      x=80  → REJECTED_DISPLACEMENT   x=71 → REJECTED_DISPLACEMENT   [at cap 70]
+      x=70  → passes CHECKING         (the cap is `>`, so a goal AT it is legal)
       z=221 → REJECTED_WORKSPACE      z=220 → passes (the ±50 band is `>` too)
 
-    So under 8b with the shipped throw site A = (0, 0), the workspace box's
+    So under 8b with a throw site A = (0, 0), the workspace box's
     |x|,|y| ≤ 150 mm half is STRUCTURALLY UNREACHABLE through this path: the
-    70 mm displacement cap is strictly tighter than the 150 mm box, so any goal
-    that could violate the box laterally is rejected as DISPLACEMENT first. The
+    displacement cap is never looser than the 150 mm box, so any goal that
+    could violate the box laterally is rejected as DISPLACEMENT first. The
     z band is the only reachable WORKSPACE branch, and the row is built as
-    x=60 (a LIVE displacement, inside the 70 mm cap and the 256 mm reach bound
+    x=60 (a LIVE displacement, inside the cap and the 256 mm reach bound
     at T=0.8 s, so the 8b gates genuinely run and pass) plus z=300 (|z − 170| =
     130 mm, past the ±50 mm band). A zero-displacement variant would reach the
     same branch while proving less — it would still pass if the cap collapsed
     to zero and took every real displaced goal with it. The lateral half of the
     box keeps its coverage at FSM level, tier-agnostic, in
-    test_toss_sequencer.py::test_workspace_precheck_rejected."""
+    test_toss_sequencer.py::test_workspace_precheck_rejected, and the SHIPPED
+    8a reading of the x=200 goal is pinned by
+    test_8a_has_no_displacement_cap_so_a_far_goal_reads_workspace below."""
     now = time.perf_counter()
     node = _toss_ready_node(now)
     gh = _TossGoalHandle()
@@ -322,11 +338,18 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     elif breakage == 'flight_band':
         gh = _TossGoalHandle(throw_height=0.2)   # →0.404 s, below the flight band
     elif breakage == 'displacement':
-        # 200 mm from the config throw site A = (0, 0): past the 70 mm cap.
+        # 8b is the capability under test, not the shipped default (operator
+        # flipped the shipped tier to '8a' on 2026-08-10) — the |B − A| cap is
+        # an 8b gate, so the tier is pinned at the seam the node reads.
+        monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8B)
+        # 200 mm from the live throw site A = (0, 0): past the 150 mm cap.
         gh = _TossGoalHandle(x=200.0)
     elif breakage == 'workspace':
-        # Displacement 60 mm PASSES the 8b gates (cap 70 mm; reach bound 256 mm
-        # at T = 0.8 s), then the ±50 mm z band rejects at |z − 170| = 130 mm.
+        monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8B)
+        # Displacement 60 mm PASSES the 8b gates (cap 150 mm; reach bound
+        # 256 mm at T = 0.8 s), then the ±50 mm z band rejects at
+        # |z − 170| = 130 mm — which is what makes this the WORKSPACE row and
+        # not a second DISPLACEMENT row.
         gh = _TossGoalHandle(x=60.0, z=300.0)
     result = node._execute_toss(gh)
     assert result.success is False
@@ -334,6 +357,32 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     assert gh.terminal == 'abort'
     assert math.isnan(result.catch_error_mm)
     assert math.isnan(result.achieved_flight_s)
+
+
+def test_8a_has_no_displacement_cap_so_a_far_goal_reads_workspace(monkeypatch):
+    """The 8a half of the envelope pair above, pinned rather than inherited.
+
+    Tier 8a pre-positions LEVEL at the nominated catch site and throws from
+    there, so throw site == catch site and there is no |B − A| to cap: the
+    SAME x=200 goal that is REJECTED_DISPLACEMENT under 8b falls through to the
+    workspace box and reads REJECTED_WORKSPACE. Both readings are correct; which
+    one the machine gives depends on the shipped tier, which is an operator
+    decision that has now moved twice (8a → 8b 2026-07-28, 8b → 8a 2026-08-10).
+
+    Pinning both directions explicitly is the point. While 8b shipped, this
+    reading had no test at all and the 8b reading was covered only by accident
+    of the config — so the flip turned a config edit into a test failure that
+    looked like a code regression. Neither row can do that again."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_TIER', TIER_8A)
+    monkeypatch.setattr(rcn, 'compute_release_state_tilted',
+                        lambda *a, **k: pytest.fail(
+                            'the tilted 8b aim must not run for an 8a goal'))
+    node = _toss_ready_node(time.perf_counter())
+    gh = _TossGoalHandle(x=200.0)
+    result = node._execute_toss(gh)
+    assert result.success is False
+    assert result.outcome == 'REJECTED_WORKSPACE'
+    assert gh.terminal == 'abort'
 
 
 @pytest.mark.parametrize('kwargs,field', [
@@ -1306,8 +1355,15 @@ def test_toss_choreography_full_walk(monkeypatch):
     d = node._step_toss_sequence(seq, t0 + 5.9, gh)
     assert d.done and d.result.outcome == 'CAUGHT'
     assert d.result.catch_error_mm == pytest.approx(0.0)
+    # vel_scale is the CONFIG default relayed verbatim, not a number this test
+    # owns: the goal leaves catch_vel_scale at 0, so `_install_toss_goal`
+    # resolves JB_OP_CATCH_VEL_SCALE_DEFAULT exactly as `_execute_toss` does.
+    # Reading it from `hw` keeps this an ORDER test — which is its whole
+    # subject — instead of a second, silent pin on the operator's catch-speed
+    # knob (which moved 0.8 → 0.9 on 2026-08-10 and broke the literal).
     assert order == ['position', ('prime_hold', True), 'gains', ('arm', True),
-                     ('vel_scale', 0.8), ('prime_dispatched', True),
+                     ('vel_scale', float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)),
+                     ('prime_dispatched', True),
                      ('armed', True), 'announce', 'dispatch',
                      # the STAY ladder: latch down, armed False, THEN the hold
                      # released last (a released hold meeting a still-armed

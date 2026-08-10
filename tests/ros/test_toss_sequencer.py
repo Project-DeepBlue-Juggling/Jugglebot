@@ -24,6 +24,7 @@ catch_error on non-CAUGHT terminals.
 from __future__ import annotations
 
 import math
+import os
 
 import pytest
 
@@ -881,20 +882,42 @@ def test_tier_constant_matches_config():
     reject every goal or silently serve an unimplemented tier.
 
     CHANGE HISTORY (the value is a deliberate operator decision, not a
-    convention — so the guard records which default it is pinning and why):
-    shipped '8a' from the plan's Phase 1 through 2026-07-27. Tier 8b landed
-    behind this same key at Phase 4 (2026-07-25) and was hardware-validated at
-    the 2026-07-27 sitting — T4, displaced throw→catch at the 70 mm cap — after
-    which the operator made 8b the DEFAULT (2026-07-28), because the
-    displaced-throw feature work builds on it. Evidence and verdicts:
-    logbook/2026-07-28-anomaly-fixes-validation-sitting.md.
+    convention): shipped '8a' from the plan's Phase 1 through 2026-07-27. Tier
+    8b landed behind this same key at Phase 4 (2026-07-25) and was
+    hardware-validated at the 2026-07-27 sitting — T4, displaced throw→catch at
+    the then-70 mm cap — after which the operator made 8b the DEFAULT
+    (2026-07-28). On 2026-08-10 the operator flipped the shipped tier back to
+    '8a'; the 8b CAPABILITY stays in the code behind this key, and the tests that
+    exercise it now pin `hw.JB_OP_TOSS_TIER` explicitly.
 
-    The guard's PURPOSE is unchanged by that flip: config and constant must not
-    drift apart silently. It is deliberately pinned to ONE value rather than to
-    the {8a, 8b} serviceable set, because a set membership test would stay green
-    through an accidental revert of the shipped default."""
+    WHAT THIS GUARD ASSERTS, and why it is no longer a literal. It used to read
+    `== TIER_8B`, on the reasoning that a set-membership test would stay green
+    through an accidental revert of the shipped default. That reasoning fails
+    against the actual threat model: the shipped tier is an OPERATOR decision
+    that changes on hardware evidence, so a literal makes every deliberate flip
+    look like a regression and trains the next reader to retune the test rather
+    than read it. What must never happen silently is DRIFT — the YAML edited
+    without `python config/generate_config.py`, leaving the node reading a
+    stale generated tier while the file the operator edited says otherwise. So
+    the two legs are: the generated constant equals the YAML it is generated
+    from, and whatever they agree on is a tier the FSM actually implements
+    (an unimplemented value would REJECT_TIER every goal at runtime).
+    Sibling of test_hand_ball_detect_config.py::test_generated_pin_matches_the_yaml."""
+    import yaml
+
     from jugglebot.hardware_config import JB_OP_TOSS_TIER
-    assert JB_OP_TOSS_TIER == TIER_8B
+
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    with open(os.path.join(repo_root, 'config', 'hardware_config.yaml')) as f:
+        yml = yaml.safe_load(f)
+
+    assert yml['jugglebot_operational']['toss_tier'] == JB_OP_TOSS_TIER, (
+        'hardware_config.yaml jugglebot_operational.toss_tier != generated '
+        'JB_OP_TOSS_TIER — run: python config/generate_config.py')
+    assert JB_OP_TOSS_TIER in (TIER_8A, TIER_8B), (
+        f'shipped toss_tier {JB_OP_TOSS_TIER!r} is not a tier the FSM serves '
+        f'({TIER_8A} / {TIER_8B}) — every Toss goal would be REJECTED_TIER')
 
 
 def test_local_constants_match_generated_config():
