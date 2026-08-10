@@ -178,7 +178,7 @@ be **invariant under base tilt**.
 | 1 | Contract amendment (doc-first) + pure map core (`motion/tilt_map.py`, `levelling.py` extension) + stale-cite fix | `./run_tests.sh` + `/audit` (normative doc) | **done** (2026-08-02) |
 | 2 | `trajectory_node` integration: loader, reload service, status fields, ingest keying, structural-test manifest | `./run_tests.sh --full` | **done** (2026-08-02) |
 | 3 | Acquisition tool + offline analyser + session runbook | `./run_tests.sh --full` (pre-sitting) | **done** (2026-08-03) |
-| 4 | Hardware sittings C0–C3 (operator) | per-rung PASS/ABORT | pending |
+| 4 | Hardware sittings C0–C3 (operator) | per-rung PASS/ABORT | **done** (2026-08-10 — C0 pins taken, C1 + C2a PASS, map committed; C2b optional/not run, C3 superseded by an informal toss retest) |
 
 ## Implementation Phases
 
@@ -647,6 +647,60 @@ docstring aligned with the multi-candidate semantics.
 
 Each rung closes with a logbook entry; C2 almost certainly meets a
 Discussion trigger (it tests a design hypothesis).
+
+#### Phase 4 — Outcome (2026-08-10)
+
+**The plan's central hypothesis is hardware-validated and the first calibration
+map is shipped.** Narrative, numbers and the withdrawn-hypothesis account live in
+`logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md`
+(one entry for the whole arc, owner's one-file rule); this is the plan-side
+summary only.
+
+- **C0 — complete.** Two 3×3 `--no-apply` captures (2026-08-10). Pins:
+  **`--dwell-s 2.0`** (per-read sd median 0.38 mrad vs 0.56 mrad at 0.5 s),
+  `--n-reads 30` for probe work (production keeps the shipped 8), and the
+  orientation-dependence probe at **~+0.10° per 6° commanded rx (1.7 %)** —
+  under θ_acc, so the tilt-axis sweep stays a follow-on. Both captures were then
+  discarded by the end-of-sweep drift gate over a reproducible ~1.6–1.8 mrad ty
+  home offset with `/gravity_offset` silent; the owner reframed that as platform
+  **arrival repeatability**, and the referencing became **anchor-mean**
+  (commit `7cbfd9d` — no `Logbook-Entry` trailer, owner's speed directive).
+- **C1 — PASSED** (2026-08-10 15:16). `python3 tests/hardware/tilt_cal_grid.py
+  --dwell-s 2.0 --base-condition "C1 baseline. Flat floor, no shims"`, exit 0,
+  artifacts `temp/logs/tilt_cal_grid_20260810_151658*`. 5×5 over ±150 mm at
+  z = 170, 25/25 nodes, **7 home anchors OK** (p-p 0.0398° tx / 0.0797° ty),
+  field tx **−0.208…+0.289°** and ty **−0.204…+0.134°** (same order and worst
+  quadrant as the 2026-07-28 seed table), map auto-applied and **confirmed as
+  version `2026-08-10-3bf7964f`**, and **all 6 off-node check poses PASS**
+  home-referenced at **|r| = 0.043…0.137°** against the 0.15° threshold.
+  Can-bridge uptime was ~15.5 h, not a fresh boot — accepted deliberately
+  (static inclinometer reads, nothing timing-sensitive), and recorded.
+- **C2a — PASSED** (2026-08-10 15:24). `python3
+  tests/hardware/tilt_cal_grid.py --verify-only`, exit 0, artifacts
+  `temp/logs/tilt_cal_grid_20260810_152421*`. Base deliberately tilted **~6°
+  about ~x** (boxes under legs 4/5) — 3–6× the 1–2° this rung nominates — then
+  **re-`level` only, NO recapture**: **6/6 checks PASS at |r| = 0.018…0.146°**.
+  **The layered design is hardware-validated**: base tilt is absorbed by `level`
+  as common-mode while the flat-floor map stays valid unchanged. (`--verify-only`
+  ran at the default `--dwell-s 1.0`, not the 2.0 pin.)
+- **Map committed** as `3df256b` — `config/tilt_calibration.yaml`, version
+  `2026-08-10-3bf7964f`, data-only, no `Logbook-Entry` trailer. Loads at every
+  boot; dormant until `level` lands, active thereafter.
+- **C2b — optional, NOT run.** With C2a passing, the recapture-and-diff would
+  add map-invariance numbers, not a different verdict.
+- **C3 — SUPERSEDED, not done.** An owner-run toss retest (2026-08-10
+  afternoon, tier temporarily flipped to 8a) threw vertically at multiple flat
+  poses and **caught most throws** after two tunings — `levelling_settle_s`
+  0.5 → 1.0 and `catch_vel_scale_default` 0.8 → 0.9. The motivating
+  clipped-throw symptom is addressed at the poses tested, so the formal map-off
+  / map-on A/B was not run; it stays available if the quantitative record is
+  ever wanted.
+- **Owner decision (2026-08-10): `toss_tier` stays `"8a"`** as the shipped
+  default, superseding the 2026-07-28 8b-default decision
+  (`logbook/2026-07-28-toss-tier-8b-default.md` is the historical record).
+- **Open**: the leg-0 `SPINOUT_DETECTED` root cause (evidence bag
+  `2026-08-09_23-56-48`, first-of-class — check mechanically next sitting);
+  C2b; the tilt-axis orientation sweep.
 
 **2026-08-10 — C0 COMPLETE; anchor-mean referencing landed; C1 next.** Two 3×3
 `--no-apply` captures (`temp/logs/tilt_cal_grid_20260810_115343*`, `_120735*`)

@@ -935,7 +935,10 @@ Why each of the later additions is in the shared list rather than per-section:
   remains mandatory for every HAND check.
 - `/catch/pretilt_hold` (added 2026-07-28) — the Tier-8b pre-tilt suppression gate.
   It is published **only** on Tier 8b, and 8b became the shipped default on
-  2026-07-28, so from now on every toss capture can carry it. § SECTION TIER row
+  2026-07-28, so from now on every toss capture can carry it. (**Amended
+  2026-08-10**: the default went back to **`8a`**, so a default-build capture
+  carries **no** `catch/pretilt_hold` messages — record the topic anyway, but read
+  its absence as "8a build", not as a fault. See § SECTION TIER.) § SECTION TIER row
   `TIER-D` reads it directly; a gate left **raised** past a terminal is the failure
   it exists to catch, and that is unrecoverable from a bag that lacked the topic.
   1-2 messages per goal; the cost is nil. (`/rosout` carries the same transitions as
@@ -3480,6 +3483,17 @@ timing rather than by inspection of a trace alone):
 ---
 
 ## SECTION TIER — Tier 8b is the shipped default
+
+> **AMENDED 2026-08-10 — the default went BACK to `8a`.** `toss_tier` was flipped
+> `"8b" → "8a"` on 2026-08-10 (owner decision after the tilt-map validation and an
+> 8a toss retest; see
+> [`logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md`](../../logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md)
+> § *Arc wrap-up*). This whole section — including **`CHECK TIER-PREREQ`, which
+> ABORTS on `'8a'`** — describes the 2026-07-28 → 2026-08-10 window: on a default
+> build today TIER-PREREQ reads `JB_OP_TOSS_TIER = '8a'`, which is now **correct,
+> not a failed build**. To run this section as written you must flip to `"8b"`
+> first (`config/hardware_config.yaml` → `python config/generate_config.py` →
+> `colcon build --packages-select jugglebot` → relaunch) and flip back afterwards.
 
 > **Appended 2026-07-28.** This section is an **operator decision**, not a bug fix,
 > and it lands after § Section ZSEAT. `jugglebot_operational.toss_tier` is now

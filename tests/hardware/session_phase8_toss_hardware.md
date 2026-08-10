@@ -137,6 +137,19 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 > ### ⚠️ TIER: THE SHIPPED DEFAULT IS `8b` SINCE 2026-07-28 — READ BEFORE T0
 >
+> > **AMENDED 2026-08-10 — THE DEFAULT IS BACK TO `8a`; THIS BANNER IS SUPERSEDED
+> > BUT KEPT FOR CONTEXT.** `jugglebot_operational.toss_tier` was flipped
+> > `"8b" → "8a"` on 2026-08-10 (owner decision, taken after the tilt-map
+> > validation and an 8a toss retest that caught most throws at multiple flat
+> > poses — see
+> > [`logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md`](../../logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md)
+> > § *Arc wrap-up*). **On a default build today, `T0`–`T3` run as written** —
+> > option (A)'s config flip is a no-op and option (B) does not apply — and
+> > **`T4` now needs option (A) in reverse**: set `toss_tier: "8b"`,
+> > `python config/generate_config.py`, `colcon build --packages-select jugglebot`,
+> > relaunch, and flip back to `8a` afterwards. Everything below describes the
+> > 2026-07-28 → 2026-08-10 window.
+>
 > `jugglebot_operational.toss_tier` was flipped `"8a" → "8b"` on 2026-07-28 (operator
 > decision on the T4 evidence below; see
 > [`logbook/2026-07-28-toss-tier-8b-default.md`](../../logbook/2026-07-28-toss-tier-8b-default.md)).
@@ -166,7 +179,7 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 > | **(A) Run T0–T3 as written** | set `toss_tier: "8a"` in `config/hardware_config.yaml`, `python config/generate_config.py`, `colcon build --packages-select jugglebot`, relaunch. Flip back to `8b` before T4 (same four steps) | The rungs mean what they say. Costs two rebuilds. **This is the default choice** — T0–T3 are a Tier-8a capability ladder and scoring them against 8b behaviour measures nothing |
 > | **(B) Run everything on the 8b default** | change nothing | T0–T2 are still valid (`\|B − A\| = 0`). **Do NOT run T3's `(0, +60)` corner**: it is an un-gated 8b displaced throw into the `+y` hemisphere that the Phase-4 asymmetry map flags weak, at `T ≈ 0.70 s`, below the `T ≥ 0.80 s` that T4 itself stipulates for displaced throws. Re-score the other three corners against T4's criteria, not T3's |
 - `throw_height_m` — apex height of the ball above release, **metres**. `0` ⇒ config
-  default (~0.78 m). `throw_delay_s`/`catch_vel_scale` omitted ⇒ defaults (5.0 s / 0.8).
+  default (~0.78 m). `throw_delay_s`/`catch_vel_scale` omitted ⇒ defaults (5.0 s / 0.9 — raised from 0.8 on 2026-08-10).
 - Feedback phases: `CHECKING → POSITIONING → PREPARING → THROWING → BALL_IN_FLIGHT →
   CATCHING → SETTLING`. Result `outcome`: `CAUGHT | MISSED | REJECTED_<code> | ABORTED_<code>`.
 

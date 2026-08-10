@@ -589,7 +589,124 @@ the symptom quantitatively. Each rung closes with a logbook entry quoting its
 
 ---
 
-## Session result — <date>: **<PASS/FAIL>**
+## Session results — 2026-08-09 / 2026-08-10: **C0 PINS TAKEN, C1 PASS, C2a PASS**
 
-*(fill in per rung, in the format of `session_phase1_hold.md` § Session result —
-a criterion/measured/verdict table, then the sequencing observed)*
+Logbook (one entry for the whole arc, owner's one-file rule):
+[`logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md`](../../logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md).
+Rung C0's own numbers are recorded in place at § Rung C0 § Result above; this
+section is the session-level roll-up.
+
+### C0 — probe
+
+**Sitting 1 (2026-08-09): ABORTED, no probe completed.** Six attempts on disk
+(`temp/logs/tilt_cal_grid_20260809_{234616,235315,235440,235459,235631,235711}`),
+all `exit_code 2`. One real gate abort — the **now-retired** start-of-capture
+`STALE LEVEL REFERENCE` gate, mistuned against the level path's own
+single-sample scatter (1.2–1.7 mrad/axis) — and one **leg-0
+`SPINOUT_DETECTED`** collapse 2.5 s into the move to (−150, −150), kinematics
+exonerated. Both blockers are written up in the logbook entry; the leg-0 root
+cause is **OPEN**.
+
+**Sitting 2 (2026-08-10): both 3×3 `--no-apply` captures completed all nine
+nodes**, `temp/logs/tilt_cal_grid_20260810_115343*` (`--dwell-s 0.5`) and
+`_120735*` (`--dwell-s 2.0`), `uptime_ms` 43.5 M → 44.5 M (~12 h).
+
+| Criterion | Measured | Verdict |
+|---|---|---|
+| Finite reads at every pose, mid-TRAJECTORY | all nine nodes both runs, plus the tilted probe pose | PASS |
+| Per-read sd stable between dwell settings | **0.25–0.92 mrad, median 0.38** at 2.0 s vs **0.42–1.35 mrad, median 0.56** at 0.5 s — ~33 % quieter | FAIL as stated ⇒ **`--dwell-s` raised to 2.0** (the platform was still settling at 0.5 s) |
+| Orientation-dependence probe | **~+0.10° residual at 6° commanded rx ≈ 1.7 % of commanded** | under θ_acc — tilt-axis sweep stays a **follow-on** |
+| End-of-sweep home re-measure | **+1.81 mrad (run 1) / +1.59 mrad (run 2) on ty**, reproducible; `/gravity_offset` **silent**, ODrive forensics **clean** | the drift gate aborted both — **that behaviour was the bug**; referencing went **anchor-mean** |
+
+**Pins carried into C1**: `--dwell-s 2.0` (passed explicitly), `--n-reads 30`
+for probe work only (production captures keep the shipped default 8),
+`--read-gap-s 0.15` and `--threshold-deg 0.15` unchanged.
+
+### C1 — baseline capture + verify, 2026-08-10 15:16: **PASS**
+
+`python3 tests/hardware/tilt_cal_grid.py --dwell-s 2.0 --base-condition "C1
+baseline. Flat floor, no shims"` → **exit 0**. Artifacts
+`temp/logs/tilt_cal_grid_20260810_151658.csv` / `_meta.json`; map
+`config/tilt_calibration.yaml` (committed as `3df256b`).
+
+| Criterion | Measured | Verdict |
+|---|---|---|
+| Capture completes, no unusable node | **25/25 nodes**, `failed_nodes: []`, `--n-reads` 8 | PASS |
+| Home-anchor series non-aborting | **7 anchors**, verdict **OK**; p-p **tx 0.000695 rad (0.0398°)**, **ty 0.001390 rad (0.0797°)** | PASS (below even the 0.002 rad WARN) |
+| `\|m_home\|` below the 0.010 rad WARN | within WARN | PASS |
+| Field consistent with the 2026-07-28 seed table | tx **−0.208…+0.289°**, ty **−0.204…+0.134°**; worst nodes **(−75, +150) tx +0.289°** and **(+150, −150) (−0.208, −0.204)°** — same order, same worst quadrant as C0's 3×3 and the seed table | PASS |
+| Map applied and confirmed | `tilt_map_version` = **`2026-08-10-3bf7964f`**, readback matched what the tool wrote | PASS |
+| Every check-pose home-referenced residual ≤ θ_acc (0.15°) | **6/6 PASS**, \|r\| = **0.0428, 0.0532, 0.0570, 0.0664, 0.0680, 0.1369°** | PASS |
+
+**Anchor series — record this, it is evidence on an open question.** The ty
+series' largest consecutive step (0.001390 rad) **equals** its total p-p: one
+excursion after the first anchor, then a plateau. That is a
+**step-after-first-excursion** signature, which fits the owner's
+**arrival-repeatability** reading and does *not* fit steady thermal drift. It is
+the second data point on that question, not yet decisive — keep copying the
+anchor table into the notes on every future capture.
+
+**Uptime honesty.** `uptime_ms` **55 701 003 → 55 990 503**, i.e. **~15.5 h — the
+can-bridge was NOT freshly booted**, against this runbook's own
+power-cycle-before-the-sitting precondition. Accepted deliberately: the uptime
+hazard is *tracking lag*, and every number here is a static inclinometer read at
+a settled hold. Quote the uptime alongside the numbers anyway — a future capture
+taken on a fresh boot is the comparison that would show it mattered.
+
+**Still owed from this rung**: the analyser's `CURVATURE_FLOOR_DEG` /
+`CURVATURE_FLAG_MULT` were **not** pinned against this first real field.
+
+### C2a — tilted base, re-`level` only, 2026-08-10 15:24: **PASS**
+
+`python3 tests/hardware/tilt_cal_grid.py --verify-only` → **exit 0**. Artifacts
+`temp/logs/tilt_cal_grid_20260810_152421*`. `uptime_ms` **56 144 203 →
+56 300 003** (~15.6 h, same continuous session).
+
+| Criterion | Measured | Verdict |
+|---|---|---|
+| Base shim geometry | **~6° about ~x**, boxes under **legs 4 and 5** (3–6× the 1–2° this rung nominates) | recorded |
+| Re-`level` only, **no** recapture | `--verify-only`; no map written, C1 map still applied | as specified |
+| Every check residual ≤ θ_acc (0.15°) | **6/6 PASS**, \|r\| = **0.0181, 0.0345, 0.0467, 0.0477, 0.0549, 0.1462°** | PASS |
+| `go_to_pose` rejection pattern near workspace limits | none | PASS |
+
+**The design hypothesis is hardware-validated**: base tilt is absorbed by
+`level` as **common-mode** while the flat-floor map stays valid **unchanged** at
+a tilted base. The map does not need recapturing when the machine is moved.
+
+Two caveats to carry: `--verify-only` ran at the **default `--dwell-s 1.0`**,
+not the C0 pin of 2.0, so its reads are marginally noisier than C1's — and the
+worst check (0.1462°) sits close to the 0.15° threshold, so a re-run at 2.0 s is
+the honest way to tighten that margin. Also unchanged: C-LEVEL-1 is
+rotation-only, so at a 6° base the base-frame/gravity-frame x/y diverge by
+`sin(tilt) · displacement` (~15 mm at 6° over 150 mm) — a **position** error,
+out of scope here, and not a C2 failure.
+
+### Operator tunings made during the same sitting
+
+Both were made by the operator during the afternoon toss retest, and both are
+committed with this arc:
+
+| Parameter | Was | Now |
+|---|---|---|
+| `jugglebot_operational.levelling_settle_s` | 0.5 | **1.0** |
+| `jugglebot_operational.catch_vel_scale_default` | 0.8 | **0.9** |
+
+`levelling_settle_s` lengthens the post-ACTIVATE settle before the single
+inclinometer read that *builds* the level reference — i.e. it makes the
+reference this whole rung depends on quieter. Re-read § Preconditions with that
+in mind if you are comparing a pre-2026-08-10 capture against a later one.
+
+### Rung status at the end of the arc
+
+| Rung | Status |
+|---|---|
+| **C0** | **DONE** — pins taken (`--dwell-s 2.0`; orientation-dependence sized at 1.7 %); read-autocorrelation / `n_eff` no longer needed (the gate that wanted it was retired) |
+| **C1** | **PASS** — map `2026-08-10-3bf7964f` captured, applied, verified 6/6, and committed (`3df256b`) |
+| **C2a** | **PASS** — invariance under a ~6° base tilt confirmed 6/6 |
+| **C2b** | **OPTIONAL, NOT RUN** — with C2a passing, the recapture-and-diff buys map-invariance numbers, not a different verdict. The four-step "restore the C1 map" sequence above was therefore never needed; run it if you ever do C2b |
+| **C3** | **SUPERSEDED** — an informal owner-run toss retest (2026-08-10 afternoon, tier temporarily flipped to 8a) threw vertically at multiple flat poses and **caught most throws** after the two tunings above, addressing the motivating clipped-throw symptom at the poses tested. **No formal map-off / map-on A/B was run**, so there is still no quantitative symptom record; the A/B stays available and cheap |
+
+**Open after this arc**: the leg-0 `SPINOUT_DETECTED` root cause (evidence bag
+`2026-08-09_23-56-48`, first-of-class — **check mechanically next sitting**, and
+see § *If a leg collapses* above before touching anything), C2b, and the
+tilt-axis orientation sweep.

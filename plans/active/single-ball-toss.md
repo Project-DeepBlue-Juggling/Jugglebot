@@ -349,7 +349,12 @@ rungs below are the specification; the runbook is the authority.
   > 150 mm cap (8/10)**. Phase E therefore ships a simple scalar cap with no
   > direction-awareness; the one watch-direction lives in the runbook ladder.
   Set
-  `JB_OP_TOSS_TIER='8b'` for the session (it is the shipped default since
+  `JB_OP_TOSS_TIER='8b'` for the session (**amended 2026-08-10: no longer the
+  shipped default — `toss_tier` went back to `"8a"` on 2026-08-10 by owner
+  decision after the tilt-map validation and an 8a toss retest, so this flip is
+  now required, not a no-op; see
+  `logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md`
+  § *Arc wrap-up*.** It was the shipped default from
   2026-07-28; `JB_OP_TOSS_THROW_SITE_MM` is retired — Phase E throws from the live
   pose, so pre-position with `go_to_pose` instead). PASS: ≥3/5.
   **Superseded for anything past 70 mm** by Phase E's § SECTION DISP ladder.

@@ -695,7 +695,13 @@ the phase's status is readable without reconstructing it from three documents.
 experiment stays open.** Commit `9247a33` makes `jugglebot_operational.toss_tier:
 "8b"` the shipped default — the operator's decision on this phase's own T4 evidence
 (11/11 displaced throws accepted out to the 70 mm cap, `ZSEAT-4` reading `0.0000°`
-tilt span and `0.0000 mm` position span pre-release on all 11). Commit `46e39cb`
+tilt span and `0.0000 mm` position span pre-release on all 11). **Superseded
+2026-08-10: `toss_tier` went back to `"8a"` as the shipped default** — owner
+decision after the tilt-map validation and an 8a toss retest that caught most
+throws at multiple flat poses
+(`logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md`
+§ *Arc wrap-up*). The 2026-07-28 decision and its evidence stand as recorded;
+only the shipped value changed. Commit `46e39cb`
 amends the sitting record with the operator testimony that arrived after scoring.
 Gate: `pytest tests/ -q`, run 2026-07-28 on the Jetson in the project venv:
 **3967 passed, 3 xfailed in 1409.71 s** (`+1` on the `6641400` baseline of 3966 + 3
