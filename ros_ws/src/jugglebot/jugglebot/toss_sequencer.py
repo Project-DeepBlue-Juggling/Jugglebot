@@ -622,7 +622,7 @@ class TossSequencer:
                                                 # hw.JB_OP_TOSS_STAY_AT_POSE_ON_
                                                 # CAUGHT. NOT-caught terminals are
                                                 # unaffected in either setting.
-    tilt_clamp_exceeded: bool = False           # Tier 8b: node-fed flag — the
+    tilt_clamp_exceeded: bool = False           # BOTH tiers: node-fed flag — the
                                                 # authoritative clamp gate lives in
                                                 # motion/toss_release (compute_
                                                 # release_state_tilted raises
@@ -630,7 +630,12 @@ class TossSequencer:
                                                 # maps the raise onto this flag so
                                                 # CHECKING mints REJECTED_TILT_CLAMP
                                                 # without a drift-prone second copy
-                                                # of the aim math here
+                                                # of the aim math here. Two
+                                                # sources: a displaced 8b goal
+                                                # near the 12 deg ceiling, and
+                                                # (either tier) an aim-corrected
+                                                # virtual target — hence not
+                                                # gated on the tier
 
     # ── internal state ──
     _phase: str = field(default=PHASE_CHECKING, init=False)
@@ -816,11 +821,29 @@ class TossSequencer:
                         or displacement > reach_displacement_limit_mm(
                             self.flight_time_s)):
                     return self._reject('DISPLACEMENT')
-                if self.tilt_clamp_exceeded:
-                    # The motion-module clamp gate fired: the required aim
-                    # exceeds the tilt ceiling, and a silently clamped aim
-                    # lands the ball short of B (the Rung-2a landing bias).
-                    return self._reject('TILT_CLAMP')
+            if self.tilt_clamp_exceeded:
+                # The motion-module clamp gate fired: the required aim exceeds
+                # the tilt ceiling, and a silently clamped aim lands the ball
+                # short of B (the Rung-2a landing bias).
+                #
+                # BOTH TIERS, deliberately (audit fix, 2026-08-11). This was
+                # inside the 8b block, which was right while the only source of
+                # a raise was a displaced goal near the ceiling. The aim
+                # correction added a SECOND source that exists in 8a too: the
+                # node tilts toward a VIRTUAL target for the aim in either tier
+                # (`aim_site` is B for 8a, the live A for 8b), and a raise there
+                # sets this flag and leaves `release_cmd` None. With the check
+                # 8b-only, an 8a goal in that state fell through to the
+                # EVENT_VEL band with the zero fallback and reported
+                # REJECTED_EVENT_VEL — fail-closed, but naming the Teensy speed
+                # limit for an aim-ceiling fault, which routes the operator to
+                # the wrong subsystem entirely.
+                #
+                # Gate order for 8b is UNCHANGED: still POSE_UNKNOWN →
+                # DISPLACEMENT → TILT_CLAMP → EVENT_VEL, because this sits
+                # immediately after the block it left
+                # (test_displacement_precedes_tilt_clamp pins it).
+                return self._reject('TILT_CLAMP')
             if not (TEENSY_MIN_EVENT_VEL_MPS <= self.event_vel_mps
                     <= TEENSY_MAX_EVENT_VEL_MPS):
                 return self._reject('EVENT_VEL')

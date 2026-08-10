@@ -534,7 +534,11 @@ def generate_launch_description():
             # it lacks every topic below, so its bag can never answer what the
             # catch latch, the reach centre or the commanded pose were doing.
             #
-            # All low-rate except /trajectory/commanded_position (5 Hz Point).
+            # ALL low-rate, no exception — the busiest is
+            # /trajectory/commanded_position, and that is a Point on
+            # trajectory_node's create_timer(0.2, _publish_status), i.e. 5 Hz.
+            # (The plan's § 3.5 called it 40 Hz and built a bag-size caveat on
+            # it; corrected 2026-08-11. There is no bag-size objection here.)
             #
             # "Will rosbag2 record a topic that does not exist yet?" — YES on
             # this box, and that is measured rather than assumed. rosbag2 0.3.11

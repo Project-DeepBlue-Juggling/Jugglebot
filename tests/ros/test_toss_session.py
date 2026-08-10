@@ -99,6 +99,13 @@ def _run_cycle(session, now, result, *, delay=DELAY, flight=FLIGHT):
     return t_release, landing
 
 
+def _after_cleanup(landing):
+    """The earliest instant a continuation past a SAFE_ABORT ladder may start —
+    the shared cleanup floor, measured from the cycle's SCHEDULED landing. Both
+    the continued MISS and the single ABORTED_NO_RELEASE retry wear it."""
+    return landing + DEFAULT_SESSION_MISS_CLEANUP_S
+
+
 # ── CHECKING: session-level rejects (nothing built, nothing installed) ─────────
 
 @pytest.mark.parametrize('num_throws', [0, -1, DEFAULT_SESSION_MAX_THROWS + 1])
@@ -840,7 +847,7 @@ def test_no_release_retries_once_on_a_valid_held_sensor():
     assert d.action == SESSION_ACTION_START_CYCLE
     s.note_cycle_result(_no_release(), DELAY, DELAY + FLIGHT,
                         ball_evidence=EVIDENCE_SEATED_NAME)
-    d = s.step(DELAY)
+    d = s.step(_after_cleanup(DELAY + FLIGHT))
     assert d.action == SESSION_ACTION_START_CYCLE
     assert s.cycle_is_retry is True
 
@@ -867,7 +874,7 @@ def test_two_consecutive_no_releases_stop_the_session():
     s.step(0.0)
     s.note_cycle_result(_no_release(), DELAY, DELAY + FLIGHT,
                         ball_evidence=EVIDENCE_SEATED_NAME)
-    d = s.step(DELAY)
+    d = s.step(_after_cleanup(DELAY + FLIGHT))
     assert d.action == SESSION_ACTION_START_CYCLE          # the retry
     s.note_cycle_result(_no_release(), 2 * DELAY, 2 * DELAY + FLIGHT,
                         ball_evidence=EVIDENCE_SEATED_NAME)
@@ -882,15 +889,58 @@ def test_the_no_release_streak_is_CONSECUTIVE_not_cumulative():
     s.step(0.0)
     s.note_cycle_result(_no_release(), DELAY, DELAY + FLIGHT,
                         ball_evidence=EVIDENCE_SEATED_NAME)
-    s.step(DELAY)                                          # retry starts
+    s.step(_after_cleanup(DELAY + FLIGHT))                 # retry starts
     s.note_cycle_result(_caught(), 2 * DELAY, 2 * DELAY + FLIGHT)
     d = s.step(2 * DELAY + 100.0)
     assert d.action == SESSION_ACTION_START_CYCLE
     s.note_cycle_result(_no_release(), 3 * DELAY, 3 * DELAY + FLIGHT,
                         ball_evidence=EVIDENCE_SEATED_NAME)
-    d = s.step(3 * DELAY)
+    d = s.step(_after_cleanup(3 * DELAY + FLIGHT))
     assert d.action == SESSION_ACTION_START_CYCLE          # retried again
     assert s.cycle_is_retry is True
+
+
+def test_the_no_release_retry_waits_for_its_own_cleanup_ladder():
+    """AUDIT FIX 2026-08-11. The retry branch used to `return` without touching
+    `_next_cycle_at`, leaving it at the PREVIOUS cycle's already-past instant —
+    so the retry started on the very next FSM tick, immediately after a
+    SAFE_ABORT ladder that had merely *dispatched* the retract and the go_home.
+
+    An ABORTED_NO_RELEASE terminates in PHASE_THROWING with the platform
+    positioned and the latch raised, so `_terminal_action` returns
+    ACTION_SAFE_ABORT — the IDENTICAL ladder a continued MISS tears down
+    through, and therefore the identical floor. Beyond the two refusals the MISS
+    floor prevents (a mid-traverse throw site A, REJECTED_HAND_NOT_PARKED), this
+    branch had a third cost: the retry would normally die
+    REJECTED_HAND_NOT_PARKED, which is not ABORTED_NO_RELEASE, so the "two
+    consecutive non-releases stop the session" epidemic gauge could never fire
+    and the operator would be routed to the wrong subsystem."""
+    s = _session(num_throws=5)
+    assert s.step(0.0).action == SESSION_ACTION_START_CYCLE
+    landing = DELAY + FLIGHT
+    s.note_cycle_result(_no_release(), DELAY, landing,
+                        ball_evidence=EVIDENCE_SEATED_NAME)
+    # The pre-fix behaviour: the very next tick after the terminal.
+    assert s.step(landing).action == SESSION_ACTION_NONE
+    assert s.step(_after_cleanup(landing) - 0.001).action \
+        == SESSION_ACTION_NONE
+    d = s.step(_after_cleanup(landing))
+    assert d.action == SESSION_ACTION_START_CYCLE
+    assert s.cycle_is_retry is True
+
+
+def test_the_retry_floor_is_the_same_constant_the_miss_path_uses():
+    """One constant, three continuations past the SAFE_ABORT ladder (continued
+    MISS, NO_RELEASE retry, reload interlude rung 4). Pinning the retry against
+    `next_cycle_at` rather than against a literal is what stops a future edit to
+    the go_home profile from fixing two of the three and leaving the third."""
+    s = _session(num_throws=5)
+    s.step(0.0)
+    landing = DELAY + FLIGHT
+    s.note_cycle_result(_no_release(), DELAY, landing,
+                        ball_evidence=EVIDENCE_SEATED_NAME)
+    assert s.next_cycle_at == pytest.approx(
+        landing + DEFAULT_SESSION_MISS_CLEANUP_S)
 
 
 def test_the_seated_evidence_string_matches_ball_possession():
@@ -920,7 +970,7 @@ def test_retry_flag_is_worn_by_exactly_one_cycle():
     s.step(0.0)
     s.note_cycle_result(_no_release(), DELAY, DELAY + FLIGHT,
                         ball_evidence=EVIDENCE_SEATED_NAME)
-    s.step(DELAY)
+    s.step(_after_cleanup(DELAY + FLIGHT))
     assert s.cycle_is_retry is True
     s.note_cycle_result(_caught(), 2 * DELAY, 2 * DELAY + FLIGHT)
     s.step(2 * DELAY + 100.0)

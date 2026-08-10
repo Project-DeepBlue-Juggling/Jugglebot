@@ -1108,21 +1108,39 @@ class SessionTrim:
         return (float(self._delta[0]), float(self._delta[1]))
 
     def speed_gain(self) -> float:
-        """``k_v`` — the multiplier on ``event_vel_mps`` (§ 3.6.1). 1.0 until the
-        estimate passes its own gate.
+        """``k_v`` — the multiplier § 3.6.1 defines on ``event_vel_mps``. 1.0
+        until the estimate passes its own gate.
 
-        Safe by construction: ``x3`` (``hand_stroke::STROKE_TOP_REV``) is
-        algebraically velocity-independent, so a speed trim cannot move the hand
-        toward the end stop, and ``validate_event_vel`` still gates the result
-        against ``[TEENSY_TRAJ_MIN_EVENT_VEL_MPS, TEENSY_TRAJ_MAX_EVENT_VEL_MPS]``
-        = [0.3, 7.0] m/s, which a ±10 % trim on 3.91 m/s clears by 1.6×.
+        **NOT WIRED as of 2026-08-11 — this is an OBSERVABLE, not a command.**
+        Nothing in ``reload_coordinator_node`` calls it: the node's only trim
+        consumer is :meth:`aim`, and ``event_vel_mps`` is still taken verbatim
+        from ``release_cmd``. The estimator runs, the console prints it and
+        :meth:`proposal` records it, so a sitting produces the *evidence* for
+        wiring it — and wiring it is a deliberate later decision, because it
+        would give a session-local estimator authority over launch speed on the
+        hardware path. Do not read the paragraph below as "this is applied and
+        it is safe"; read it as the safety argument the wiring decision starts
+        from.
+
+        Safe by construction WHEN wired: ``x3``
+        (``hand_stroke::STROKE_TOP_REV``) is algebraically velocity-independent,
+        so a speed trim cannot move the hand toward the end stop, and
+        ``validate_event_vel`` still gates the result against
+        ``[TEENSY_TRAJ_MIN_EVENT_VEL_MPS, TEENSY_TRAJ_MAX_EVENT_VEL_MPS]`` =
+        [0.3, 7.0] m/s, which a ±10 % trim on 3.91 m/s clears by 1.6×.
         """
         return float(self._kv)
 
     def release_latency_ms(self) -> float:
         """Session-local τ, ms (§ 3.6.1). 0.0 until the estimate passes its gate.
 
-        **Never persisted.** It is uptime-dependent by nature — the measured
+        **NOT WIRED as of 2026-08-11 — an OBSERVABLE, not a command**, exactly
+        as :meth:`speed_gain` above: nothing reads it, ``event_delay_s`` still
+        carries only the config-shipped ``release_latency_ms_applied``. It is
+        measured and reported so the shift is *visible* per session.
+
+        **Never persisted**, and that stays true whatever the wiring decision is.
+        It is uptime-dependent by nature — the measured
         announcement→physical-release shift runs +12.8…+23.4 ms at a fresh boot
         and +118–133 ms at ~16 h of can-bridge uptime — so a number written into
         ``config/hardware_config.yaml`` would be a lie about a different plant.

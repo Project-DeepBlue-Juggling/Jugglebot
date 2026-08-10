@@ -128,16 +128,77 @@ def test_the_default_fit_plane_is_the_cup_plane_not_the_probe_default(miner):
     assert miner.DEFAULT_PLANE_MM != 1000.0
 
 
+def _plane_rows():
+    """One row past the 5 mm tolerance, one inside it. Both start ADMITTED, so
+    the assertions below distinguish 'refused' from 'never admitted'."""
+    return [{'toss_uid': 'a', 'catch_point_global_mm': [0.0, 0.0, 500.0],
+             'land_plane_mm': 400.0, 'usable_for_aim_fit': True,
+             'usable_for_speed_fit': True, 'usable_for_timing_fit': True,
+             'excluded_reason': None},
+            {'toss_uid': 'b', 'catch_point_global_mm': [0.0, 0.0, 500.0],
+             'land_plane_mm': 501.0, 'usable_for_aim_fit': True,
+             'usable_for_speed_fit': True, 'usable_for_timing_fit': True,
+             'excluded_reason': None}]
+
+
 def test_a_declared_plane_mismatch_is_reported_loudly(miner):
     """One line per row, never averaged away. A corpus scoring arrivals at the
     wrong height is the failure that looks like data."""
-    rows = [{'toss_uid': 'a', 'catch_point_global_mm': [0.0, 0.0, 500.0],
-             'land_plane_mm': 400.0},
-            {'toss_uid': 'b', 'catch_point_global_mm': [0.0, 0.0, 500.0],
-             'land_plane_mm': 501.0}]
-    problems = miner.check_declared_planes(rows)
+    problems = miner.check_declared_planes(_plane_rows())
     assert len(problems) == 1
     assert 'a' in problems[0]
+
+
+def test_a_declared_plane_mismatch_is_REFUSED_not_merely_reported(miner):
+    """AUDIT FIX 2026-08-11. Plan § 7 R1 says the miner REFUSES a plane more than
+    5 mm from ``catch_point_global_mm[2]``; it was only printing, and the
+    mismatched rows kept ``usable_for_aim_fit: true``.
+
+    A printed warning protects nothing downstream — the fit and the ``--jsonl``
+    corpus both select on the flag, not on a human having read stdout — and R1's
+    whole point is that this error is INVISIBLE in the residuals until a
+    displaced throw, i.e. until exactly the moment the map is used in anger."""
+    rows = _plane_rows()
+    lines = miner.enforce_declared_planes(rows)
+    assert len(lines) == 1 and 'a' in lines[0]
+    assert rows[0]['usable_for_aim_fit'] is False
+    assert rows[0]['usable_for_speed_fit'] is False
+    assert 'plane_mismatch' in rows[0]['excluded_reason']
+    # Inside the tolerance: untouched, including the reason string.
+    assert rows[1]['usable_for_aim_fit'] is True
+    assert rows[1]['excluded_reason'] is None
+
+
+def test_the_plane_refusal_spares_the_TIMING_fit(miner):
+    """The timing fit reads sensor edges and release instants, which the mocap
+    fit plane has no bearing on. Refusing it too would throw away good data for
+    an unrelated fault."""
+    rows = _plane_rows()
+    miner.enforce_declared_planes(rows)
+    assert rows[0]['usable_for_timing_fit'] is True
+
+
+def test_the_plane_refusal_preserves_an_existing_exclusion_reason(miner):
+    """The reasons ACCUMULATE — a row excluded for a bad mocap fit AND a wrong
+    plane must say both, or the operator fixes one and re-mines expecting a row
+    that is still refused."""
+    rows = _plane_rows()
+    rows[0]['excluded_reason'] = 'mocap_fit_quality'
+    miner.enforce_declared_planes(rows)
+    assert rows[0]['excluded_reason'] == 'mocap_fit_quality,plane_mismatch'
+
+
+def test_the_plane_refusal_runs_before_the_corpus_is_written(miner):
+    """The flag the jsonl carries must be the ENFORCED one: a corpus written
+    with ``usable_for_aim_fit: true`` on a wrong-plane row is precisely the
+    artefact the refusal exists to stop, and it outlives the stdout it was
+    reported on. Pinned structurally — the call sits between the join and
+    ``write_outputs`` in ``main``."""
+    src = open(_PROBE_PATH).read()
+    join_at = src.index('rows = toss_record.join(')
+    enforce_at = src.index('enforce_declared_planes(rows)', join_at)
+    write_at = src.index('write_outputs(name, rows, led)', join_at)
+    assert join_at < enforce_at < write_at
 
 
 def test_the_self_toss_filter_drops_ball_butler_throws(miner):

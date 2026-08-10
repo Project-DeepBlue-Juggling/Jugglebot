@@ -123,9 +123,17 @@ string on_empty_cup "STOP"           # STOP (default) | RELOAD — what the sess
                                      # misspelt, an older client's unset field) resolves to
                                      # STOP. An unreadable field must never start an
                                      # autonomous BB reload the operator did not ask for.
-                                     # RELOAD is reachable only with stop_on_miss false: with
-                                     # it true the MISSED cycle that dropped the ball has
-                                     # already stopped the session one cycle earlier.
+                                     # RELOAD is reachable under BOTH stop_on_miss settings,
+                                     # and the PRIMARY route is stop_on_miss TRUE — the case
+                                     # named two lines up. A CAUGHT cycle whose ball bounces
+                                     # out during the dwell is not a MISS (the verdict was
+                                     # minted at ARRIVAL and nothing re-verifies retention),
+                                     # so stop_on_miss never sees it; the NEXT cycle finds an
+                                     # empty cup and mints REJECTED_NO_BALL, and that is what
+                                     # fires the interlude. With stop_on_miss FALSE there is
+                                     # a second route: a MISSED cycle drops the ball, the
+                                     # session continues, and the next cycle finds the cup
+                                     # empty for the ordinary reason.
                                      # PREREQUISITE, checked LIVE at the interlude: config
                                      # jugglebot_operational.toss_require_ball_evidence must
                                      # be true. With it false a drop produces a silent empty

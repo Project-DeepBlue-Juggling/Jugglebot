@@ -151,6 +151,25 @@ site A and a hand still descending both end in loud refusals — but one of them
 (``REJECTED_HAND_NOT_PARKED``) is a machine-fault verdict for a cadence fault, and
 it would route the operator to the wrong subsystem.
 
+**The floor belongs to the SAFE_ABORT LADDER, not to the MISS outcome**, and every
+continuation past that ladder gets it — there are three, and all three reuse the
+one constant so they cannot drift apart:
+
+1. the continued MISS (above);
+2. the single ``ABORTED_NO_RELEASE`` retry (audit fix, 2026-08-11). A non-release
+   terminates in ``PHASE_THROWING`` with the platform positioned and the latch
+   raised, so its terminal action is the identical ``ACTION_SAFE_ABORT``. It had
+   been returning from :meth:`note_cycle_result` without rescheduling at all,
+   leaving ``_next_cycle_at`` at the previous cycle's already-past instant — so
+   the retry started on the very next tick, inside its own teardown. Beyond the
+   two refusals above, that had a second cost specific to this branch: the retry
+   would normally die ``REJECTED_HAND_NOT_PARKED``, which is NOT
+   ``ABORTED_NO_RELEASE``, so the "two consecutive non-releases stop the session"
+   gauge could never fire;
+3. the reload interlude's rung 4 (:meth:`_settle_after_reload` in the node), which
+   spends the same floor as a blocking wait because the interlude runs inside the
+   node rather than across FSM ticks.
+
 ## Known limitation inherited from Phase E — chaining near the ±150 mm box edge
 
 A catch parks the platform CENTROID slightly outside B so the CUP lands ON B, and
@@ -712,6 +731,34 @@ class TossSessionSequencer:
             if (self._no_release_streak < NO_RELEASE_MAX_CONSECUTIVE
                     and str(ball_evidence or '') == EVIDENCE_SEATED_NAME):
                 self._retry_next = True
+                # The retry gets the SAME cleanup floor the MISS path gets, for
+                # the SAME reason: an ABORTED_NO_RELEASE reaches this hook with
+                # `_positioned` and `_prepare_dispatched` both true, so its
+                # terminal action is ACTION_SAFE_ABORT — the identical ladder,
+                # dispatched on the identical service acks. Without the floor
+                # `_next_cycle_at` still holds the PREVIOUS cycle's instant,
+                # which is already in the past, so the retry starts on the very
+                # next FSM tick — while the retract is still descending and the
+                # 2.0 s recentre profile is still traversing. That is exactly the
+                # REJECTED_HAND_NOT_PARKED / mid-traverse-throw-site pair the
+                # MISS floor was added to prevent, and it would ALSO destroy the
+                # epidemic gauge this branch exists to feed: the retry would die
+                # a machine-fault verdict instead of a second ABORTED_NO_RELEASE,
+                # so "two consecutive non-releases stop the session" could never
+                # fire and the operator would be routed to the wrong subsystem.
+                #
+                # `landing_perf` is a SCHEDULED instant (t_release + flight), not
+                # an observed one, and for a non-release nothing actually flew —
+                # but the constant is still a valid floor here, with slack: this
+                # ladder starts at `t_release + release_grace_s` (0.5 s), so the
+                # need measured from t_release is 0.5 + GO_HOME_DURATION_S +
+                # 2 ticks = 2.60 s, while this grants flight + 2.80 s >= 2.80 s
+                # for any flight >= 0. Reusing the constant (rather than deriving
+                # a second, shorter one) is also what keeps the two teardown
+                # floors from drifting apart — the reload interlude's rung 4
+                # reuses it for the third time.
+                self._next_cycle_at = (float(landing_perf)
+                                       + float(self.miss_cleanup_s))
                 return
             self._stop_outcome = 'ABORTED_CYCLE_{}'.format(outcome)
             return

@@ -108,7 +108,10 @@ BALL_STATUS_IN_FLIGHT = 1
 #: ball_arrival_offset's 1000 mm default: for a vertical toss ``v_xy ~ 0`` so a
 #: wrong plane looks perfect right up until a displaced throw, at which point
 #: every node is biased in a direction correlated with displacement (plan § 7
-#: R1). Declared rows override it with their own ``catch_point_global_mm[2]``.
+#: R1). It is the plane the mocap crossing is FITTED at, chosen before any
+#: declaration is joined, so `--plane` is the only way to move it; a declaration
+#: that disagrees by more than the tolerance below is REFUSED rather than
+#: silently re-fitted (`enforce_declared_planes`).
 DEFAULT_PLANE_MM = (float(hw.GEOM_INITIAL_HEIGHT_MM)
                     + float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
                     + float(hw.HAND_CATCH_OFFSET_MM))
@@ -501,11 +504,19 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
         row.update(mine_traj(data, throw_ros))
         ball_id, _untagged = mine_ball_latch(data, throw_ros, landing_ros, robot)
         row['ball_track_confirmed'] = ball_id is not None
-        # land_err needs a catch point. Mined-only rows take the ANNOUNCED
-        # landing position, which for tier 8a IS the nominated cup point (D4:
-        # the announcement is the prediction of where the ball goes, and after
-        # any aim correction that is still B). A declared row overrides it at
-        # join time with catch_point_global_mm and the plane check runs then.
+        # land_err needs a catch point, and the ANNOUNCED landing position is
+        # that point on BOTH tiers — not just 8a. `_announce_toss` builds the
+        # announcement from `_toss_release_state`, which is the UNCORRECTED
+        # release, and the declaration's `catch_point_global_mm` comes from the
+        # same object; an aim correction only ever moves `_toss_release_cmd`
+        # (D4). So this IS the schema's definition of land_err_mm (`land_xy −
+        # catch_point_global_mm[:2]`) computed from the mined half, and the join
+        # deliberately does NOT recompute it — there is nothing to correct.
+        # (The comment here used to claim the join overrode it. It never did,
+        # and it never needed to; corrected with the § 7 R1 audit fix.)
+        # What the join DOES add is the plane check — see
+        # `enforce_declared_planes`, which needs both halves and so cannot run
+        # from here.
         cup = ann.get('landing_position')
         if cup and row.get('land_xy_global_mm'):
             row['land_err_mm'] = [row['land_xy_global_mm'][0] - cup[0],
@@ -560,25 +571,67 @@ def _mark_usable(row: dict) -> None:
     row['excluded_reason'] = ','.join(sorted(set(reasons))) or None
 
 
-def check_declared_planes(rows) -> list:
-    """LOUD, one line each, never averaged away (plan § 7 R1).
+def mismatched_planes(rows) -> list:
+    """The rows whose declared cup plane disagrees with the plane they were
+    fitted at. PURE — it decides nothing and marks nothing.
 
     A declared ``catch_point_global_mm[2]`` more than 5 mm from the plane the fit
     actually ran at means the corpus is scoring arrivals at the wrong height —
     invisible for a vertical toss, and biased in a direction correlated with
     displacement the moment a throw is displaced.
     """
-    problems = []
+    bad = []
     for row in rows:
         cup = row.get('catch_point_global_mm')
         plane = row.get('land_plane_mm')
         if not cup or plane is None or cup[2] is None:
             continue
         if abs(float(cup[2]) - float(plane)) > PLANE_MISMATCH_TOL_MM:
-            problems.append(
-                'PLANE MISMATCH {}: declared cup z {:.1f} mm, fitted at '
-                '{:.1f} mm'.format(row.get('toss_uid'), float(cup[2]), plane))
-    return problems
+            bad.append(row)
+    return bad
+
+
+def check_declared_planes(rows) -> list:
+    """LOUD, one line each, never averaged away (plan § 7 R1). PURE."""
+    return ['PLANE MISMATCH {}: declared cup z {:.1f} mm, fitted at {:.1f} mm '
+            '— REFUSED for the aim + speed fits; re-mine with --plane {:.1f}'
+            .format(row.get('toss_uid'),
+                    float(row['catch_point_global_mm'][2]),
+                    float(row['land_plane_mm']),
+                    float(row['catch_point_global_mm'][2]))
+            for row in mismatched_planes(rows)]
+
+
+def enforce_declared_planes(rows) -> list:
+    """REFUSE every row whose declared cup plane disagrees with the fit plane,
+    and return the loud lines. Called on the JOINED rows, which is the earliest
+    point both halves exist.
+
+    AUDIT FIX 2026-08-11. Plan § 7 R1 says the miner *refuses* a plane differing
+    from ``catch_point_global_mm[2]`` by more than 5 mm; it was only PRINTING,
+    and the mismatched rows kept ``usable_for_aim_fit: true``. A printed warning
+    protects nothing downstream: ``toss_cal_fit`` and the record miner's own
+    ``--jsonl`` corpus both select on the flag, not on a human having read stdout
+    — and the whole point of R1 is that this error is *invisible in the
+    residuals* until a displaced throw, which is exactly when the map gets used.
+
+    Aim and speed are refused; TIMING is not. The timing fit reads sensor edges
+    and release instants, which the fit plane has no bearing on whatsoever, and
+    refusing it would throw away good data for an unrelated fault.
+
+    The plane cannot simply be corrected here: ``mine_mocap`` fits the crossing
+    at a plane chosen BEFORE the declaration is joined, so a mismatch means the
+    mocap window was already reduced against the wrong height. Re-mining with
+    ``--plane <declared z>`` is the fix, and the message says so.
+    """
+    lines = check_declared_planes(rows)
+    for row in mismatched_planes(rows):
+        row['usable_for_aim_fit'] = False
+        row['usable_for_speed_fit'] = False
+        reasons = [r for r in (row.get('excluded_reason') or '').split(',') if r]
+        row['excluded_reason'] = ','.join(
+            sorted(set(reasons + ['plane_mismatch'])))
+    return lines
 
 
 # ── Reporting ─────────────────────────────────────────────────────────────────
@@ -935,6 +988,13 @@ def main(argv=None) -> int:
             continue
         mined = mine_bag(data, robot=args.robot, plane_mm=args.plane)
         rows = toss_record.join(data.declarations, mined)
+        # Plan § 7 R1's REFUSAL, applied at the earliest point both halves of
+        # the comparison exist: the mined row owns `land_plane_mm`, the
+        # declaration owns `catch_point_global_mm`, and only the join has both.
+        # Before `write_outputs`, so the flag the corpus carries is the enforced
+        # one — a jsonl written with `usable_for_aim_fit: true` on a
+        # wrong-plane row is exactly the artefact the refusal exists to stop.
+        enforce_declared_planes(rows)
         led = ledger(data.hand)
         print_report(name, rows, led, data)
         if args.jsonl:

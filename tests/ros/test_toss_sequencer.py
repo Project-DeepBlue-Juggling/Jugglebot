@@ -1205,6 +1205,28 @@ def test_tilt_clamp_rejected():
     assert d.action == ACTION_NONE and seq.prepared is False
 
 
+def test_tilt_clamp_rejects_in_tier_8a_too():
+    """AUDIT FIX 2026-08-11. The clamp check used to live INSIDE the 8b block,
+    which was right while the only source of a ThrowTiltInfeasible raise was a
+    displaced goal near the 12° ceiling. The AIM CORRECTION added a second
+    source present in BOTH tiers: the node tilts toward a virtual target for the
+    aim whatever the tier, and a raise there leaves `release_cmd` None, so
+    `event_vel_mps` falls back to 0.0.
+
+    8b-only, an 8a goal in that state fell through to the EVENT_VEL band and
+    reported REJECTED_EVENT_VEL — fail-closed, but naming the Teensy speed limit
+    for an aim-ceiling fault, which routes the operator to the wrong subsystem.
+    Note the zero event_vel below: it reproduces the node's own fallback, so the
+    test fails on the pre-fix code for the right reason."""
+    seq = TossSequencer(catch_pose_stow_mm=(0.0, 0.0, 170.0),
+                        flight_time_s=0.8, throw_delay_s=5.0,
+                        event_vel_mps=0.0, tilt_clamp_exceeded=True)
+    seq.start(0.0)
+    d = seq.step(0.0, _obs(0.0))
+    assert d.done and d.result.outcome == 'REJECTED_TILT_CLAMP'
+    assert d.action == ACTION_NONE and seq.prepared is False
+
+
 def test_displacement_precedes_tilt_clamp():
     """Gate order: the displacement cap is checked BEFORE the tilt clamp — a
     goal that trips both reads REJECTED_DISPLACEMENT (the primary contract)."""

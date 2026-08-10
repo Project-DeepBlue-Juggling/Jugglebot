@@ -2039,3 +2039,220 @@ All run 2026-08-11 on the Jetson.
   are operator-invoked, not suite-invoked, so they are out of scope here — but
   the probe-map install/restore path writes to the *production* map target, and
   its restore is only exercised by unit tests, never end-to-end.
+
+---
+
+## Audit fixes — closing out Phase 2 (2026-08-11)
+
+An independent audit of the whole 2a–2f build returned **NOT CLEAN**: eleven
+findings — **2 HIGH, 6 MEDIUM, 3 LOW**. Both HIGHs sit in 2d's
+newly-commanded-motion surface, which is the one phase that moves the machine.
+
+**Seven landed as fixes here; four are carried.** House policy is fix-and-land
+every HIGH whose diagnosis is clear, plus any MEDIUM/LOW that is trivially safe,
+and route the rest to the operator untouched. The split, by the audit's own
+`fix_clarity`: everything marked *clear* was fixed; the two marked *needs-design*
+(the interlude cancel, the Layer-1.5 read budget) and the two marked
+*needs-operator* (the probe-map install target, the `temp/logs` backlog) were
+not. That is recorded honestly below, including the one HIGH left standing.
+
+One *clear* finding was fixed in the honest direction rather than the obvious
+one. Defect 6 offered two repairs — **wire** `speed_gain()` / `release_latency_ms()`,
+or **stop claiming they are wired**. Wiring them would hand a session-local
+estimator authority over launch speed and release timing on the hardware path,
+which is a safety decision with an operator in it, not a finalisation edit. So
+the docstrings and the 2e plan row were corrected instead: they have their own
+gates, they have **no authority at all**, and the row that said otherwise now
+says so.
+
+### What was fixed (7 of 11)
+
+| # | Sev | Defect | Fix |
+|---|---|---|---|
+| 1 | **HIGH** | `ABORTED_NO_RELEASE` retry started on the very NEXT FSM tick — `note_cycle_result` returned without touching `_next_cycle_at` | the retry now wears the same cleanup floor a continued MISS does (`toss_session.py`) |
+| 2 | MED | the session trim seeded its prior from a **DORMANT** map's `anchor.aim_rad` + `speed.k_v` | dormant ⇒ no prior, and it says so (`_toss_trim_begin`) |
+| 3 | MED | the miner only PRINTED a declared-plane mismatch; plan § 7 R1 says it **refuses** | `enforce_declared_planes` marks the row unusable for the aim + speed fits, before the corpus is written |
+| 4 | MED | the `TossContinuous` IDL claimed RELOAD is "reachable only with `stop_on_miss` false" — the feature's own primary route contradicts it | comment corrected on the wire and in plan § 3.9's field block |
+| 5 | LOW | an aim-corrected **8a** goal that raised `ThrowTiltInfeasible` reported `REJECTED_EVENT_VEL` | the `tilt_clamp_exceeded` gate moved out of the `TIER_8B` block; 8b gate order unchanged |
+| 6 | LOW | `speed_gain()` / `release_latency_ms()` docstrings read as if applied; nothing consumes them | both marked **NOT WIRED — an observable, not a command** |
+| 7 | LOW | plan § 3.5 called `/trajectory/commanded_position` a 40 Hz `Point` and built a bag-size caveat on it | it is 5 Hz (`create_timer(0.2, _publish_status)`); plan + launch comment corrected |
+
+### Discussion
+
+#### The MISS cleanup floor belongs to the LADDER, not to the MISS
+
+The obvious repair for defect 1 is one line: give the retry branch an instant.
+The question that mattered was *which* instant, and answering it reframed what
+the existing floor is for.
+
+`DEFAULT_SESSION_MISS_CLEANUP_S` was introduced in 2d as "the MISS path needs a
+bigger floor than the CAUGHT one", named after the outcome. But nothing in its
+derivation is about missing: it is `CATCH_CONFIRM_WINDOW_S + GO_HOME_DURATION_S +
+2 × NODE_TICK_S`, i.e. the time an **`ACTION_SAFE_ABORT` ladder** keeps moving
+the machine after `_run_toss_cycle` has returned — every rung of that ladder is
+dispatched on a service ack. So the invariant is *"any continuation past a
+SAFE_ABORT ladder waits for the ladder"*, and the enumeration of continuations is
+short and closed: the continued MISS, the `ABORTED_NO_RELEASE` retry, and the
+reload interlude. The interlude already had it (rung 4, `_settle_after_reload`).
+The retry did not, and it did not because the branch was written as an
+accounting decision (`_retry_next = True`) rather than as a scheduling one.
+
+An `ABORTED_NO_RELEASE` reaches `note_cycle_result` from `PHASE_THROWING` with
+`_positioned` and `_prepare_dispatched` both true, so `_terminal_action` returns
+`ACTION_SAFE_ABORT` — *the identical ladder*. That premise is not an inference:
+`tests/ros/test_toss_sequencer.py::test_not_caught_terminals_always_safe_abort`
+already parametrises `MISSED` and `ABORTED_NO_RELEASE` against the same expected
+action, in both `stay_at_pose_on_caught` settings, and has done since before this
+build. The floor was missing from the one continuation whose teardown was already
+pinned identical to the one that has it. With `_next_cycle_at` still holding the
+previous cycle's already-past instant, `step()` started the retry immediately,
+inside the retract's descent and the 2.0 s recentre traverse.
+
+**The third consequence is the one that made this HIGH rather than MEDIUM.** Two
+of the outcomes are the pair the MISS floor was added for and are refusals, not
+hazards: a mid-traverse `trajectory/commanded_position` read as throw site A, and
+`REJECTED_HAND_NOT_PARKED`. But this branch exists to feed the epidemic gauge —
+*two consecutive non-releases stop the session*. The retry would normally have
+died `REJECTED_HAND_NOT_PARKED`, which is not `ABORTED_NO_RELEASE`, so the
+streak would reset, the gauge could never fire, and the operator would be handed
+a machine-fault code pointing at the hand park band for a release fault. The
+first sitting would have spent its NO_RELEASE budget chasing the wrong subsystem.
+
+#### Why reuse the MISS constant instead of deriving a NO_RELEASE-specific one
+
+The teardown a non-release triggers starts at `t_release + release_grace_s`
+(0.5 s), not at the settle deadline, so the *derived* need measured from
+`t_release` is `0.5 + GO_HOME_DURATION_S + 2 × NODE_TICK_S` = **2.60 s**, while
+reusing the constant grants `flight_time + 2.80 s` ≥ **2.80 s**. Reuse is
+therefore always at least as long as a bespoke derivation, with ≥ 0.2 s of slack
+at the degenerate `flight_time = 0`, and more in practice.
+
+That is the tradeoff, stated plainly: a slightly longer wait than strictly
+required, bought in exchange for **one constant with three call sites instead of
+three constants that can drift**. The drift is the real risk — an edit to
+`trajectory_node`'s `go_home_duration_s` must not fix two continuations and leave
+the third silently wrong. `test_the_retry_floor_is_the_same_constant_the_miss_
+path_uses` pins the retry against `next_cycle_at`, not against a literal, so the
+derivation test already in the file (`test_the_miss_cleanup_floor_is_derived_
+from_its_sources`) keeps covering all three.
+
+#### The dormant map's prior was walking in behind the fence
+
+`_toss_aim_for_goal`'s docstring says, correctly, that **layer 2 does not depend
+on layer 1's dormancy**: the trim's measurement is taken *this goal against this
+layer 0*, so a map fitted under a different levelling layer cannot invalidate it.
+That sentence is easy to over-read, and 2e over-read it. `_toss_trim_begin` seeds
+the estimator's **prior** from `cal.anchor_aim_rad` — which is not a measurement
+this session took, it is a number carried in from the distrusted map. Entering at
+n₀ = 4 it is precisely the D3 double-count layer 1's dormancy fence exists to
+prevent, arriving with a quarter of the fence's authority and none of its warning.
+
+`speed.k_v` is refused on the same evidence. The argument for keeping it — the
+provenance verdict is about the *levelling* layer, and a speed gain is arguably
+orthogonal — is exactly the "just this once" carve-out that kills contracts. The
+dormancy verdict is about the map as a whole; a map that cannot be trusted to aim
+is not trusted to scale.
+
+This one is currently inert (the trim is disabled by default and, with no live
+`land_err_mm`, commands zero regardless), and it moves in the fail-closed
+direction, which is why it was safe to land here rather than defer.
+
+#### What was NOT fixed, and why
+
+**The reload interlude's cancel (HIGH, `needs-design`).** `_run_reload_interlude`
+passes a bare `goal_handle.is_cancel_requested` as `cancel_now_fn`, so a session
+cancel during the interlude is honoured in *any* reload phase — including with a
+BallButler ball airborne — and runs `_safe_abort()` (retract + latch down) under
+it. That is the hazard `_toss_cancel_deferred` exists to avoid, transposed onto
+the reload path, and the opposite of what plan § 6's rollback table promises for a
+session cancel.
+
+It is left untouched deliberately. The fix is not a line: the reload FSM has no
+equivalent of `_toss_cancel_deferred`, so somebody must decide *which* reload
+phases defer a cancel to the terminal and which honour it immediately — a
+question about a ball in the air over a machine, on the shipping `Reload` action
+that four sittings of hardware evidence sit behind. Guessing at it in a
+finalisation step would be the "just this once" version of a safety decision.
+**It is carried to the operator as the top open question, and it is a real
+constraint on the first sitting: do not cancel a `TossContinuous` session during
+a reload interlude — let the interlude finish and cancel in the dwell.**
+
+The remaining unfixed items (the Layer-1.5 read budget, the probe-map install
+target, the `temp/logs` backlog, SC-1's unconsumed verdict, the trim's missing
+live measurement channel, G4's conditional enforceability) are carried in the
+per-phase **Open** sections above and in the plan's § 10, unchanged.
+
+### Verification
+
+All run 2026-08-11 on the Jetson, after the fixes above.
+
+- `./run_tests.sh --full` (run 2026-08-11) → **RESULT PASS**, parallel
+  **5396 passed, 3 xfailed in 482.81 s**, serial **9 passed, 5399 deselected in
+  40.75 s**, total 529 s. **5396 vs the pre-fix 5388 is exactly +8**, which is
+  the eight regression tests below — the arithmetic is the check that no
+  existing test was silently dropped or skipped to make the fixes pass.
+- `pytest tests/ros/ -q` (run 2026-08-11) → **1899 passed in 188.28 s**, from a
+  1891 baseline (+8, the same eight).
+- `python tools/probes/toss_record_miner.py --self-check` (run 2026-08-11) →
+  **22/22 cases pass**, exit 0.
+- `/usr/bin/python3 -m py_compile` over all six touched Python files under the
+  REAL 3.8.10 (run 2026-08-11) → exit 0.
+- `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot`
+  (no venv, run 2026-08-11) → **2 packages finished, 0 failed** — the
+  `.action` comment change is a wire-adjacent edit, so the interfaces package is
+  rebuilt first by the standing rule.
+- `./run_tests.sh` (run 2026-08-11, AFTER the narrative edits above, which were
+  the only changes made after the `--full` run) → **RESULT PASS**, parallel
+  **4973 passed in 219.93 s**, serial 9 s, total 231 s. Run because a docs-only
+  delta is not automatically exempt here: `tests/sim/test_plans_index.py` splits
+  each `plans/active/INDEX.md` row on `|` and requires four filled cells,
+  `test_logbook_front_matter.py` and `test_logbook_search.py` re-parse every
+  entry's YAML — all three read paths this section edited.
+
+The **eight** regression tests, each named for the defect it pins:
+
+| # | Test | File |
+|---|---|---|
+| 1 | `test_the_no_release_retry_waits_for_its_own_cleanup_ladder` | `tests/ros/test_toss_session.py` |
+| 1 | `test_the_retry_floor_is_the_same_constant_the_miss_path_uses` | `tests/ros/test_toss_session.py` |
+| 2 | `test_a_DORMANT_map_contributes_NO_prior` | `tests/ros/test_toss_trim_node.py` |
+| 3 | `test_a_declared_plane_mismatch_is_REFUSED_not_merely_reported` | `tests/ros/test_toss_record_miner.py` |
+| 3 | `test_the_plane_refusal_spares_the_TIMING_fit` | `tests/ros/test_toss_record_miner.py` |
+| 3 | `test_the_plane_refusal_preserves_an_existing_exclusion_reason` | `tests/ros/test_toss_record_miner.py` |
+| 3 | `test_the_plane_refusal_runs_before_the_corpus_is_written` | `tests/ros/test_toss_record_miner.py` |
+| 5 | `test_tilt_clamp_rejects_in_tier_8a_too` | `tests/ros/test_toss_sequencer.py` |
+
+(`#` is the defect number from the table at the top of this section. Defects 4,
+6 and 7 are comment/docstring corrections with nothing new to pin — 4's wire
+declaration is already pinned by `test_on_empty_cup_wire_default_is_stop`, which
+was re-run against the rebuilt IDL.)
+
+Four existing tests in `tests/ros/test_toss_session.py` were also updated: they
+stepped the session at the instant *immediately after* the NO_RELEASE terminal,
+i.e. they encoded the defect's timing as the expected behaviour. They now step
+through the shared `_after_cleanup(landing)` helper, so the floor has exactly
+one expression on the test side too.
+
+### Open
+
+Carried to the operator, in the order they bite:
+
+1. **Do not cancel a `TossContinuous` session during a reload interlude** (the
+   unfixed HIGH above). Cancel in the dwell instead.
+2. **Clear the test-written backlog before the first capture.** Measured
+   2026-08-11 after this session's two full `tests/ros/` runs: **481
+   `toss_records_*.jsonl` + 190 `*_trim_proposal.yaml`**, newest 07:04 — i.e.
+   **unchanged by this session**, which is the standing confirmation that the
+   isolation fixture from the validation section holds. Suggested:
+   `rm -f temp/logs/toss_records_*.jsonl temp/logs/*_trim_proposal.yaml`.
+3. **`git status config/` immediately after the first SC-0 run.** SC-0 installs
+   its ±0.5° probe maps by overwriting the git-tracked
+   `config/toss_calibration.yaml`; the restore is `BaseException`-guarded but a
+   SIGKILL or power loss would leave a probe map installed and reported as an
+   applied calibration.
+4. **Layer 1.5 will not produce the authorised covariate at the shipped
+   cadence** (2d's own § 10 item, unchanged): the quiescent dwell at
+   dwell 6.0 / delay 5.0 is ~0.7 s, so the machine takes 1–2 reads of the
+   authorised 8 and honestly stamps `dwell_tilt_degraded`. Getting the full
+   schedule needs `dwell_time_s` ≈ 7.5 s+, which is a goal field, not a code
+   change.

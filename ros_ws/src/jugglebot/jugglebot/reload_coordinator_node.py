@@ -3616,6 +3616,23 @@ class ReloadCoordinatorNode(Node):
         the session overrides it after ~5 admitted tosses if it disagrees, and
         starts from the best available guess if it does not.
 
+        **A DORMANT map contributes NO prior** (audit fix, 2026-08-11). This is
+        the one place layer 2 *does* read layer 1, and it is easy to misread
+        against :meth:`_toss_aim_for_goal`'s "layer 2 does not depend on layer
+        1's dormancy": that statement is about the trim's own MEASUREMENT, which
+        is taken this goal against this layer 0 and stays valid. The prior is a
+        different object — a number carried in from a map fitted under a
+        DIFFERENT levelling layer — and letting it in at n₀ = 4 is exactly the
+        D3 double-count the dormancy fence exists to prevent, arriving through
+        the back door with a quarter of the fence's authority and none of its
+        warning. Dormant ⇒ the estimator starts neutral and learns from scratch,
+        which is the same fail-closed posture layer 1 already takes.
+
+        ``speed.k_v`` is refused on the same evidence and for the same reason:
+        the dormancy verdict is about the map as a WHOLE — a map that cannot be
+        trusted to aim cannot be trusted to scale either, and a partial trust is
+        how a fence stops being one.
+
         Never reuses the previous goal's estimator. The trim is defined as
         common-mode-per-goal; carrying one across a re-``level``, a map reload or
         an operator's coffee break would make it estimate a quantity that
@@ -3624,8 +3641,18 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             cal = self._toss_cal
             session_id = self._session_id
-        anchor = getattr(cal, 'anchor_aim_rad', None) if cal is not None else None
-        k_v = getattr(cal, 'speed_k_v', None) if cal is not None else None
+            live_tilt = self._tilt_map_version
+        reason = cal.provenance_mismatch(live_tilt) if cal is not None else ''
+        if reason:
+            self.get_logger().warning(
+                'session trim starts with NO prior — the toss aim map is '
+                'DORMANT ({}). Its anchor residual and speed gain were measured '
+                'under a different levelling layer, so seeding them would be '
+                'the D3 double-count in miniature.'.format(reason))
+        usable = cal if (cal is not None and not reason) else None
+        anchor = getattr(usable, 'anchor_aim_rad', None) \
+            if usable is not None else None
+        k_v = getattr(usable, 'speed_k_v', None) if usable is not None else None
         try:
             trim = toss_trim.SessionTrim(anchor_aim_rad=anchor,
                                          speed_k_v_prior=k_v,

@@ -475,6 +475,39 @@ def test_the_trim_is_warm_started_from_the_maps_anchor(monkeypatch, tmp_path):
     assert trim.speed_gain() == pytest.approx(1.03)
 
 
+def test_a_DORMANT_map_contributes_NO_prior(monkeypatch, tmp_path):
+    """AUDIT FIX 2026-08-11. The identical map, DORMANT — its ``requires``
+    names a tilt-map version the machine is not running.
+
+    Layer 1 already refuses to apply it (D3: an aim residual fitted under one
+    levelling layer double-counts another's delta). The prior was walking in
+    behind that fence: ``_toss_trim_begin`` read ``anchor.aim_rad`` and
+    ``speed.k_v`` off the same distrusted map and seeded the estimator with them
+    at n₀ = 4 — the same double-count, at a quarter of the authority and with
+    none of the warning. Note this is NOT a retreat from "layer 2 does not
+    depend on layer 1's dormancy": the trim's own MEASUREMENT is taken this goal
+    against this layer 0 and is untouched. Only the borrowed number is refused.
+    """
+    doc = _cal_doc(0.0, 0.0, tilt_version='2026-01-01-00000000')
+    doc['anchor'] = {'aim_rad': [math.radians(0.08), math.radians(-0.03)]}
+    doc['speed'] = {'k_v': 1.03}
+    node = _node_with_map(monkeypatch, tmp_path, doc)
+    assert node._toss_cal is not None                 # loaded…
+    assert node._toss_cal_status_snapshot()['toss_cal_applied'] is False  # …dormant
+    warnings = []
+    node.get_logger().warning = warnings.append
+    node._toss_trim_begin(goal_id='abc')
+    trim = node._toss_trim
+    assert isinstance(trim, toss_trim.SessionTrim)
+    snap = trim.snapshot()
+    assert snap['prior_rad'][0] == pytest.approx(0.0)
+    assert snap['prior_rad'][1] == pytest.approx(0.0)
+    assert trim.speed_gain() == pytest.approx(1.0)
+    # And it says so — a silently neutered prior is a number nobody can explain
+    # later from the console alone.
+    assert any('DORMANT' in w for w in warnings), warnings
+
+
 def test_the_console_trim_block_is_emitted_once_per_cycle(monkeypatch,
                                                           tmp_path):
     node = _node_with_map(monkeypatch, tmp_path, None)
