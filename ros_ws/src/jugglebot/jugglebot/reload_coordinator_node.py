@@ -115,6 +115,7 @@ a session throw one ball and then refuse cycle 2 with the platform parked off-bo
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import subprocess
@@ -126,6 +127,7 @@ import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile
 
 import numpy as np
 
@@ -206,10 +208,12 @@ from jugglebot.catch_coordinator import CatchCoordinator
 from jugglebot import clock_offset, toss_record
 from jugglebot.toss_record import latch_announced_ball
 from jugglebot.motion.tilt_map import find_repo_root
+from jugglebot.motion import toss_cal
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
 from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.toss_release import (
     ThrowTiltInfeasible,
+    aim_target_offset_mm,
     apex_height_from_flight_time,
     build_announcement_fields,
     compute_release_state,
@@ -567,6 +571,22 @@ class ReloadCoordinatorNode(Node):
         # Record-only provenance mirrors of the same message (never gated on).
         self._tilt_map_loaded = False
         self._tilt_map_version = ''
+        # ── Toss AIM calibration (contract C-TOSS-CAL-1, motion/toss_cal.py) ──
+        # This node OWNS the aim map (operator decision 7): the map rewrites a
+        # GOAL, so it belongs where goals are built, whereas the tilt map lives
+        # in trajectory_node because it rewrites POSES at ingest. Loaded once in
+        # __init__ and again on toss/reload_calibration; a single reference swap
+        # (values first, the observable flag last) so a concurrent goal build
+        # sees either the whole old map or the whole new one.
+        self._toss_cal = None
+        self._toss_cal_loaded = False
+        self._toss_cal_version = ''
+        self._toss_cal_path = ''
+        # D3 dormancy: WARN once per (map, live tilt-map version) pairing, not
+        # per goal. A dormant map at 10 goals/min would otherwise bury every
+        # other line in the console — the 4091-ERRORs-in-41 s failure mode.
+        self._toss_cal_dormant_reason = ''
+        self._toss_cal_dormant_logged = ''
         # The platform's live COMMANDED position (STOW mm) + its arrival stamp.
         # None/0.0 = never heard ⇒ fail closed (REJECTED_POSE_UNKNOWN for a
         # displaced toss, REJECTED_NOT_CENTERED for a reload). trajectory_node
@@ -665,6 +685,18 @@ class ReloadCoordinatorNode(Node):
         self._ball_possession = False
         # Per-toss-goal state (None/False between goals):
         self._toss_release_state = None       # motion ReleaseState (announcement physics)
+        # The COMMANDED release state (C-TOSS-CAL-1). Identical OBJECT to
+        # _toss_release_state whenever the commanded aim is zero — i.e. with no
+        # aim map loaded it is not merely equal, it is the same object, so the
+        # disabled path costs not one extra floating-point operation. When an aim
+        # IS commanded the two diverge on exactly the fields the aim moves: the
+        # commanded tilt, the pre-tilt pose, the release point, the launch vector
+        # and event_vel. _toss_release_state stays the UNCORRECTED vertical toss
+        # to B, because D4 announces the uncorrected landing — that is what keeps
+        # the correlation→catch path, the receive-tilt computation and the
+        # possession plausibility bound bitwise unchanged.
+        self._toss_release_cmd = None
+        self._toss_aim = None                 # per-goal applied-calibration block (record-only)
         self._toss_landing_global_mm = None   # nominated cup point — CAUGHT plausibility ref
         self._toss_platform_target_mm = None  # nominated PLATFORM pose, global (mocap check)
         self._toss_waiver = False             # trace-only ball-evidence waiver, read per goal
@@ -682,9 +714,13 @@ class ReloadCoordinatorNode(Node):
         # guarantee — the armed edge could beat the hold and auto-prime the
         # ball-laden hand).
         self._toss_prepare_pending = False
-        # Tier 8b only: catch/pretilt_hold was raised this goal — the terminal
-        # teardowns release it iff raised, so an 8a goal's publish sequence
-        # stays byte-identical (it never touches the topic).
+        # catch/pretilt_hold was raised this goal — the terminal teardowns
+        # release it iff raised, so a LEVEL goal's publish sequence stays
+        # byte-identical (it never touches the topic). Keyed on "the commanded
+        # release carries a non-zero tilt", NOT on the tier (D3): the moment an
+        # 8a toss commands an aim tilt, the stock announcement pre-tilt would
+        # otherwise level the platform back BEFORE release and every log line
+        # would still report the aim as applied.
         self._toss_pretilt_hold_raised = False
         # Tier 8b only: the announced landing state stashed at ANNOUNCE for the
         # deferred A->B reach to reuse — (landing_pos_global_mm, landing_vel_mms,
@@ -851,6 +887,29 @@ class ReloadCoordinatorNode(Node):
         # file I/O out of the node that owns the hand, the latch and the abort
         # ladder — a full disk must not be able to stall a teardown.
         self._toss_record_pub = self.create_publisher(String, 'toss/record', 10)
+        # ── Toss aim-calibration observability (C-TOSS-CAL-1) ──
+        # LATCHED std_msgs/String JSON rather than typed status fields, for two
+        # independent reasons. (1) TrajectoryStatus is published by
+        # trajectory_node, which does not own this map and cannot know whether it
+        # is applied — the design's P2 preflight grep against /trajectory/status
+        # is not implementable, and cross-node field-filling would be a lie.
+        # (2) A new typed field forces a jugglebot_interfaces rebuild, and a
+        # partial two-package colcon build takes down every ball-op action —
+        # exactly the ImportError class the runbook's build gate exists to
+        # prevent (D10, the same argument that made /toss/record a String).
+        # TRANSIENT_LOCAL so `ros2 topic echo /toss/calibration_status --once`
+        # answers immediately: the map changes only on load and on reload, so an
+        # unlatched topic would be silent exactly when the operator asks.
+        self._toss_cal_status_pub = self.create_publisher(
+            String, 'toss/calibration_status',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        # std_srvs/Trigger, mirroring trajectory/reload_tilt_map: adding it needs
+        # no interfaces rebuild, and the response message carries the loaded
+        # version so the phase-2c fit tool can READ BACK what the node actually
+        # loaded — the hard guarantee that it loaded the file the tool wrote.
+        self.create_service(Trigger, 'toss/reload_calibration',
+                            self._svc_reload_toss_calibration)
+        self._load_toss_cal()
         # One node launch = one session id; also names the best-effort belt file.
         self._session_id = '{}-{}'.format(
             datetime.now().strftime('%Y%m%d-%H%M%S'), os.getpid())
@@ -935,8 +994,19 @@ class ReloadCoordinatorNode(Node):
             # on a build split, while a missing provenance string must degrade to
             # "unknown" rather than take the coordinator down.
             self._tilt_map_loaded = bool(getattr(msg, 'tilt_map_loaded', False))
-            self._tilt_map_version = str(getattr(msg, 'tilt_map_version', '') or '')
+            new_tilt_version = str(getattr(msg, 'tilt_map_version', '') or '')
+            tilt_version_changed = new_tilt_version != self._tilt_map_version
+            self._tilt_map_version = new_tilt_version
+            if tilt_version_changed:
+                # The aim map's APPLIED-ness is a function of this string (D3),
+                # so a tilt-map reload can flip a dormant aim map live and must
+                # re-arm the once-per-pairing dormancy WARN.
+                self._toss_cal_dormant_logged = ''
             self._traj_status_mono = time.perf_counter()
+        if tilt_version_changed:
+            # Outside the lock: publishing under it would hold the FSM's own
+            # mutex through a middleware call at the status rate.
+            self._publish_toss_cal_status()
 
     def _on_commanded_position(self, msg):
         """``trajectory/commanded_position``: the platform's live COMMANDED
@@ -1784,6 +1854,266 @@ class ReloadCoordinatorNode(Node):
         # the internal flight time via the single tested toss_release module.
         return flight_time_from_height(height)
 
+    # ── Toss AIM calibration (contract C-TOSS-CAL-1) ───────────────────────────
+
+    def _load_toss_cal(self):
+        """Resolve and load ``config/toss_calibration.yaml``. Returns (ok, message).
+
+        **Never raises** — it runs in ``__init__`` and in a service callback, and
+        C-TOSS-CAL-1 is non-gating: no state of the calibration file may stop
+        this node coming up, take down a callback, or change a rejection code.
+
+        Three outcomes, the ``tilt_map`` loader's shape verbatim:
+
+        * **Loaded** — every validation in ``toss_cal.parse_toss_cal`` passed.
+          Loaded is NOT applied: the provenance gate (D3) decides that per goal
+          and is reported separately.
+        * **No file** — the map is UNLOADED and ``ok`` is True. Reload's contract
+          is "make this node's map agree with the file", and absence is a
+          legitimate, non-gating state producing **exactly the pre-2b toss**.
+          It is also load-bearing for the acquisition tool's
+          ``--force-uninstall``, which moves the file aside and reloads precisely
+          to reach ``toss_cal_loaded == false`` before a capture — keeping a
+          stale in-memory map there would bake the map into its own successor.
+        * **Invalid** — the previous map is **kept**, ``toss_cal_loaded`` is
+          unchanged, ``ok`` is False, ERROR logged. All or nothing: a
+          half-trusted aim map is indistinguishable at the machine from a
+          correct one until a ball misses.
+        """
+        candidates = toss_cal.toss_cal_candidates()
+        path = toss_cal.resolve_toss_cal_path()
+
+        if path is None:
+            with self._lock:
+                had_map = self._toss_cal is not None
+                previous = self._toss_cal_version
+                self._toss_cal = None
+                self._toss_cal_version = ''
+                self._toss_cal_path = ''
+                self._toss_cal_dormant_reason = ''
+                self._toss_cal_dormant_logged = ''
+                self._toss_cal_loaded = False
+            # `candidates` holds one, two or three paths (no source tree for a
+            # deployment outside the repo, no share dir for an unsourced
+            # overlay), so never index it.
+            message = ("no toss aim calibration found (tried: "
+                       + ('; '.join(candidates) if candidates
+                          else '<no candidate paths — set $'
+                               + toss_cal.TOSS_CAL_ENV + '>')
+                       + ") — tosses are aimed vertically, exactly as before "
+                         "phase 2b (C-TOSS-CAL-1: absence is silent)")
+            override = os.environ.get(toss_cal.TOSS_CAL_ENV)
+            if had_map:
+                message = (f"toss calibration file is gone — map {previous} "
+                           f"UNLOADED. " + message)
+                self.get_logger().warning(message)
+            elif override:
+                # A SET-but-missing override is not plain absence: the operator
+                # asked for a specific calibration and is getting none. The
+                # override is authoritative (it is the ONLY candidate), so a typo
+                # silently un-aims the whole session while the operator believes
+                # a map is applied — INFO would bury that.
+                message = (f"${toss_cal.TOSS_CAL_ENV} is set to {override!r} "
+                           f"but NO FILE EXISTS there — the override is "
+                           f"authoritative, so nothing else was tried and this "
+                           f"session throws UNAIMED. Fix the path or unset the "
+                           f"variable. " + message)
+                self.get_logger().warning(message)
+            else:
+                self.get_logger().info(message)
+            self._publish_toss_cal_status()
+            return True, message
+
+        try:
+            loaded = toss_cal.load_toss_cal(path)
+        except toss_cal.TossCalError as exc:
+            with self._lock:
+                kept = (self._toss_cal_version if self._toss_cal is not None
+                        else 'none')
+            message = (f"toss calibration REJECTED (nothing loaded from this "
+                       f"file): {exc} — still applying map [{kept}]")
+            self.get_logger().error(message)
+            self._publish_toss_cal_status()
+            return False, message
+        except Exception as exc:                                   # noqa: BLE001
+            # load_toss_cal's contract is that every failure is a TossCalError,
+            # so this is a defect rather than a bad file — but it arrives on a
+            # callback (or in __init__) where raising would take the ball-ops
+            # node down over a *refinement*. Report it as a rejection, keep
+            # running, keep throwing.
+            with self._lock:
+                kept = (self._toss_cal_version if self._toss_cal is not None
+                        else 'none')
+            message = (f"toss calibration loader FAILED unexpectedly on {path}: "
+                       f"{type(exc).__name__}: {exc} — still applying map "
+                       f"[{kept}]")
+            self.get_logger().error(message)
+            self._publish_toss_cal_status()
+            return False, message
+
+        n_y, n_x = loaded.shape
+        with self._lock:
+            self._toss_cal = loaded
+            self._toss_cal_version = str(loaded.version)
+            self._toss_cal_path = str(path)
+            self._toss_cal_dormant_reason = ''
+            self._toss_cal_dormant_logged = ''
+            self._toss_cal_loaded = True
+            live_tilt = self._tilt_map_version
+        message = (f"toss aim calibration loaded: version={loaded.version} "
+                   f"grid={n_x}x{n_y} z_mm={loaded.z_mm} from {path}")
+        self.get_logger().info(message)
+        mismatch = loaded.provenance_mismatch(live_tilt)
+        if mismatch:
+            self.get_logger().warning(
+                f"toss aim map [{loaded.version}] is LOADED but DORMANT — "
+                f"{mismatch}. Nothing is applied: an aim residual fitted under "
+                f"one levelling layer double-counts another's delta (D3). "
+                f"Tosses aim vertically until the provenance agrees.")
+        self._publish_toss_cal_status()
+        return True, message
+
+    def _svc_reload_toss_calibration(self, request, response):
+        """``toss/reload_calibration`` (``std_srvs/Trigger``).
+
+        Called by the phase-2c fit tool right after it writes the map file; the
+        response message carries the loaded version and the applied/dormant
+        verdict so the tool can read back what the node actually holds. The
+        in-flight rule is inherited rather than restated: the aim is baked into
+        a goal at ``_build_toss_cycle`` and nothing re-reads it, so a reload
+        during a live cycle cannot re-aim it — the next goal picks it up.
+        """
+        ok, message = self._load_toss_cal()
+        snapshot = self._toss_cal_status_snapshot()
+        response.success = bool(ok)
+        response.message = '{} | applied={} version={}'.format(
+            message, snapshot['toss_cal_applied'],
+            snapshot['toss_cal_version'] or 'none')
+        return response
+
+    def _toss_cal_status_snapshot(self) -> dict:
+        """The observable calibration state — loaded / applied / version.
+
+        ``loaded`` and ``applied`` are deliberately separate booleans, the same
+        distinction C-LEVEL-2's review had to go back and fix in four documents:
+        a map can be present, valid and *doing nothing* because its provenance
+        does not match the machine it is running on.
+        """
+        with self._lock:
+            cal = self._toss_cal
+            live_tilt = self._tilt_map_version
+            version = self._toss_cal_version
+            path = self._toss_cal_path
+        reason = cal.provenance_mismatch(live_tilt) if cal is not None else ''
+        return {
+            'toss_cal_loaded': bool(cal is not None),
+            'toss_cal_applied': bool(cal is not None and not reason),
+            'toss_cal_version': version,
+            'toss_cal_path': path,
+            'dormant_reason': reason or '',
+            'requires_tilt_map_version': (
+                str(cal.requires_tilt_map_version) if cal is not None else ''),
+            'live_tilt_map_version': live_tilt,
+            'estimator_version': toss_cal.ESTIMATOR_VERSION,
+        }
+
+    def _publish_toss_cal_status(self) -> None:
+        """Publish the latched calibration status. Instrument only — every
+        failure is swallowed, because an observability topic must never be able
+        to take down the node that owns the hand and the abort ladder."""
+        try:
+            self._toss_cal_status_pub.publish(
+                String(data=json.dumps(self._toss_cal_status_snapshot(),
+                                       sort_keys=True)))
+        except Exception as exc:                                   # noqa: BLE001
+            self.get_logger().warning(
+                'toss/calibration_status publish failed: {}'.format(exc))
+
+    def _toss_aim_for_goal(self, catch_pose, flight):
+        """THE single per-goal aim lookup (contract C-TOSS-CAL-1, D4).
+
+        Called from exactly one place — :meth:`_build_toss_cycle` — and nowhere
+        else. Not the 40 Hz emitter, not per Hermite knot, not
+        ``catch_coordinator``, and never on the reload path: a BallButler ball's
+        aim belongs to BallButler. ``tests/motion/test_toss_cal.py`` enforces
+        that structurally, in the shape of C-LEVEL-2's own manifest test.
+
+        Returns the applied-calibration block: the commanded aim (rad), the
+        virtual-target offset it corresponds to at THIS toss's flight time (mm,
+        a report field — never the stored unit), the clamp hits, and the
+        loaded/applied/version provenance. ``aim_rad`` is ``(0.0, 0.0)`` — and
+        ``offset_mm`` exactly ``(0.0, 0.0)`` — whenever no map is loaded or the
+        map is dormant, which is what makes the disabled path today's machine.
+        """
+        with self._lock:
+            cal = self._toss_cal
+            live_tilt = self._tilt_map_version
+            version = self._toss_cal_version
+            already_logged = self._toss_cal_dormant_logged
+        reason = cal.provenance_mismatch(live_tilt) if cal is not None else ''
+        if reason:
+            with self._lock:
+                self._toss_cal_dormant_reason = reason
+                self._toss_cal_dormant_logged = reason
+            if reason != already_logged:
+                self.get_logger().warning(
+                    f"toss aim map [{version}] is LOADED but DORMANT — {reason}. "
+                    f"This goal aims vertically. Re-fit the map against the live "
+                    f"levelling layer, or reload the tilt map it was captured "
+                    f"under (D3).")
+        block = {
+            'aim_rad': (0.0, 0.0),
+            'offset_mm': (0.0, 0.0),
+            'clamp_hits': [],
+            'loaded': bool(cal is not None),
+            'applied': bool(cal is not None and not reason),
+            'version': version,
+        }
+        if cal is None or reason:
+            return block
+        try:
+            raw_rx, raw_ry = toss_cal.lookup(cal, float(catch_pose[0]),
+                                             float(catch_pose[1]))
+            rx, ry, hits = toss_cal.clamp_total_aim(raw_rx, raw_ry)
+            offset = aim_target_offset_mm(rx, ry, float(flight),
+                                          float(catch_pose[2]))
+        except (toss_cal.TossCalError, ValueError) as exc:
+            # Degrade this goal to an unaimed toss rather than converting a
+            # calibration fault into a dead action callback. Loud, and per goal:
+            # unlike the tilt map's per-pose lookup this runs ~10 times a
+            # minute, so it cannot bury the console.
+            self.get_logger().error(
+                f"toss aim lookup FAILED for catch pose {tuple(catch_pose)}: "
+                f"{exc} — this goal is thrown UNAIMED (C-TOSS-CAL-1 is a "
+                f"refinement, never a gate)")
+            block['applied'] = False
+            return block
+        block['aim_rad'] = (float(rx), float(ry))
+        block['offset_mm'] = (float(offset[0]), float(offset[1]))
+        block['clamp_hits'] = list(hits)
+        return block
+
+    @staticmethod
+    def _release_is_tilted(release) -> bool:
+        """True iff this release state carries a NON-ZERO commanded tilt.
+
+        THE predicate the three former ``tier == TIER_8B`` branches are re-keyed
+        on (design F2/D3). Tier is a proxy for the thing that actually matters —
+        "is the commanded release orientation non-level?" — and the proxy breaks
+        the moment an 8a toss commands an aim. Keying on the release state
+        instead makes each branch say what it means, and it keeps a zero-aim
+        goal on the byte-identical level path whatever its tier.
+        """
+        if release is None:
+            return False
+        return (float(getattr(release, 'tilt_rx', 0.0)) != 0.0
+                or float(getattr(release, 'tilt_ry', 0.0)) != 0.0)
+
+    def _toss_commanded_release(self):
+        """The COMMANDED release state for the live cycle (aim applied), or None."""
+        with self._lock:
+            return self._toss_release_cmd
+
     def _build_toss_cycle(self, catch_pose, flight, throw_delay, vel_scale):
         """Build ONE toss cycle: resolve the tier / throw site / release state,
         construct + start the ``TossSequencer``, and install the per-goal node
@@ -1856,11 +2186,49 @@ class ReloadCoordinatorNode(Node):
             release = None
         else:
             release = compute_release_state(catch_pose, flight)
+        # ── The AIM (contract C-TOSS-CAL-1, D1/D4) ──
+        # ONE lookup, here, for the whole goal. `release` stays the UNCORRECTED
+        # state and is what ANNOUNCE, the possession plausibility reference and
+        # the record's catch point all read — D4: the announcement is the
+        # prediction of where the ball goes, and after a correct aim correction
+        # that is B, so keeping it uncorrected leaves the correlation→catch path,
+        # the receive-tilt computation and the plausibility bound bitwise
+        # unchanged. `release_cmd` is what the PLATFORM is commanded to and what
+        # the hand is dispatched at.
+        aim = self._toss_aim_for_goal(catch_pose, flight)
+        release_cmd = release
+        if release is not None and aim['aim_rad'] != (0.0, 0.0):
+            # The aim rides the existing, test-pinned tilted path via a VIRTUAL
+            # target displaced by the aim's own ballistic offset (D2). The throw
+            # site is unchanged — 8a throws from B, 8b from the live A — so the
+            # only thing the virtual target moves is the commanded aim.
+            virtual_b = (float(catch_pose[0]) + aim['offset_mm'][0],
+                         float(catch_pose[1]) + aim['offset_mm'][1],
+                         float(catch_pose[2]))
+            aim_site = (throw_site if tier == TIER_8B
+                        else (float(catch_pose[0]), float(catch_pose[1])))
+            try:
+                release_cmd = compute_release_state_tilted(
+                    virtual_b, flight, throw_site_xy_mm=aim_site)
+            except ThrowTiltInfeasible as exc:
+                # Only reachable when a displaced 8b goal was already near the
+                # 12° ceiling and the ≤1° aim pushed it over. Same terminal as
+                # an un-aimed infeasible aim — REJECTED_TILT_CLAMP, loudly —
+                # never a silently clamped, mis-aimed throw.
+                self.get_logger().error(
+                    f'Toss aim-corrected displaced aim infeasible: {exc}')
+                release = None
+                release_cmd = None
+                tilt_clamp_exceeded = True
         seq = TossSequencer(
             catch_pose_stow_mm=catch_pose, flight_time_s=flight,
             throw_delay_s=throw_delay, tier=tier,
-            event_vel_mps=(float(release.event_vel_mps)
-                           if release is not None else 0.0),
+            # The COMMANDED launch speed: the aim tilts the launch, so |v| grows
+            # by 1/cos(aim) (0.015 % at 1°). The FSM still gates it through
+            # validate_event_vel, so an aim can no more push event_vel past the
+            # bridge's [0.3, 7.0] m/s than a displacement can.
+            event_vel_mps=(float(release_cmd.event_vel_mps)
+                           if release_cmd is not None else 0.0),
             throw_site_xy_mm=throw_site,
             throw_site_known=throw_site_known,
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
@@ -1889,6 +2257,8 @@ class ReloadCoordinatorNode(Node):
             self._catch_vel_scale = (vel_scale if vel_scale > 0.0
                                      else float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT))
             self._toss_release_state = release
+            self._toss_release_cmd = release_cmd
+            self._toss_aim = aim
             # release is None on a Tier-8b tilt-clamp raise (the FSM rejects
             # REJECTED_TILT_CLAMP on the first step, so the nominated landing is
             # never consulted); guard the deref. None ⇒ the possession
@@ -1903,12 +2273,13 @@ class ReloadCoordinatorNode(Node):
             # _TOSS_MOCAP_BODY_PARAM; converting to global here double-adds
             # GEOM_INITIAL_HEIGHT_MM). It is the SAME _toss_positioning_xyz the
             # go_to_pose command uses (single source, so command and verification
-            # can never diverge): Tier 8a = the nominated catch pose B, Tier 8b =
-            # the swing-compensated pre-tilt pose at the throw site A (else an
-            # operator who configures a platform body for an 8b sitting gets
-            # measured-A vs target-B → a spurious ABORTED_POSITION_FAILED).
+            # can never diverge), fed the COMMANDED release: a level goal = the
+            # nominated catch pose B, a tilted one = the swing-compensated
+            # pre-tilt pose at the throw site (else an operator who configures a
+            # platform body for a tilted sitting gets measured-A vs target-B → a
+            # spurious ABORTED_POSITION_FAILED).
             self._toss_platform_target_mm = self._toss_positioning_xyz(
-                tier, catch_pose, release)
+                catch_pose, release_cmd)
             self._toss_waiver = waiver
             self._toss_mocap_body = str(
                 self.get_parameter(_TOSS_MOCAP_BODY_PARAM).value or '')
@@ -1917,7 +2288,8 @@ class ReloadCoordinatorNode(Node):
             self._toss_throw_dispatched = False
             self._toss_stroke_seen = False
             self._toss_track_confirmed = False
-            # Tier-8b per-goal state (8a never touches catch/pretilt_hold).
+            # Raised iff the COMMANDED release carries a tilt (a level goal
+            # never touches catch/pretilt_hold).
             self._toss_pretilt_hold_raised = False
             self._toss_announced_reach = None
         self._possession_logged = set()
@@ -1932,6 +2304,8 @@ class ReloadCoordinatorNode(Node):
             # Per-goal toss state down; the possession plausibility reference
             # reverts to the ACTIVE catch point between goals.
             self._toss_release_state = None
+            self._toss_release_cmd = None
+            self._toss_aim = None
             self._toss_landing_global_mm = None
             self._toss_platform_target_mm = None
             self._toss_prepare_pending = False
@@ -2081,7 +2455,14 @@ class ReloadCoordinatorNode(Node):
             # it means the envelope no longer silently depends on POSITIONING
             # having actually arrived.
             self._publish_reach_center(seq.catch_pose_stow_mm)
-            if seq.tier == TIER_8B:
+            # Re-keyed from `tier == TIER_8B` onto the thing that actually
+            # matters (D3): ANY non-zero commanded tilt, tier-independent.
+            # Without the hold, catch_coordinator._on_throw_announcement's stock
+            # pre-tilt completes the un-tilt to level >= 1 s BEFORE release — its
+            # own docstring states the failure — so an aimed 8a toss would be
+            # levelled back and every log line would still report the aim as
+            # applied. Silent-wrong is the expensive failure class here.
+            if self._release_is_tilted(self._toss_commanded_release()):
                 self._publish_pretilt_hold(True)
                 self._toss_pretilt_hold_raised = True
             self._toss_prepare_pending = True
@@ -2154,23 +2535,22 @@ class ReloadCoordinatorNode(Node):
         ABORTED_POSITION_TIMEOUT) therefore gets a best-effort go_home from
         _step_toss_sequence — go_home supersedes any zombie move by design
         (see _TOSS_POSITION_UNKNOWN_TERMINALS)."""
-        with self._lock:
-            release = self._toss_release_state
+        release = self._toss_commanded_release()
         # The STOW-frame POSITION is the SINGLE source shared with the POSITIONING
         # mocap arrival cross-check target (_toss_platform_target_mm, set in
         # _build_toss_cycle from the SAME _toss_positioning_xyz), so what we command
-        # and what we verify against can never diverge: Tier 8a = level B, Tier 8b
-        # = the swing-compensated pre-tilt pose at the throw site A.
-        x, y, z = self._toss_positioning_xyz(
-            seq.tier, seq.catch_pose_stow_mm, release)
-        if seq.tier == TIER_8B:
-            # Tier 8b: tilt-aimed at A. release is a TiltedReleaseState
+        # and what we verify against can never diverge: a level goal = B, a tilted
+        # one = the swing-compensated pre-tilt pose at the throw site.
+        x, y, z = self._toss_positioning_xyz(seq.catch_pose_stow_mm, release)
+        if self._release_is_tilted(release):
+            # A tilted release — Tier 8b's displaced aim, or a Tier-8a aim from
+            # the calibration map, or both. `release` is a TiltedReleaseState
             # post-CHECKING (a tilt-clamp raise is rejected on the first FSM step,
             # before POSITIONING is ever reached) — the unguarded read mirrors
             # _announce_toss's read of the same stash.
             orientation = self._tilt_quaternion(release.tilt_rx, release.tilt_ry)
         else:
-            orientation = Quaternion()              # identity = level platform (8a)
+            orientation = Quaternion()              # identity = level platform
         if not self._go_to_pose_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error('trajectory/go_to_pose service unavailable')
             seq.note_position_result(time.perf_counter(), False, 0.0, 'NO_RESPONSE')
@@ -2191,20 +2571,26 @@ class ReloadCoordinatorNode(Node):
         seq.note_position_result(now, bool(resp.accepted),
                                  float(resp.planned_duration_s), str(resp.code))
 
-    @staticmethod
-    def _toss_positioning_xyz(tier, catch_pose_stow_mm, release):
+    @classmethod
+    def _toss_positioning_xyz(cls, catch_pose_stow_mm, release):
         """The STOW-frame platform POSITION the toss pre-positions to — the SINGLE
         source for BOTH the go_to_pose command (:meth:`_position_platform_for_toss`)
         and the POSITIONING mocap arrival cross-check target
         (``_toss_platform_target_mm``, set in :meth:`_build_toss_cycle`), so the
-        commanded pose and the verification target can never diverge. Tier 8a = the
-        nominated catch pose B (level); Tier 8b = the swing-compensated pre-tilt
-        pose at the throw site A (``release.pretilt_pose_stow[:3]``), where A is the
-        platform's live commanded xy — so for 8b this is a pre-tilt IN PLACE, not a
-        traverse. ``release`` is None only when the 8b goal is rejected on the FSM's
-        first step (tilt clamp, or POSE_UNKNOWN) and POSITIONING is never reached,
-        so the B fallback there is moot. Returns a float (x, y, z)."""
-        if tier == TIER_8B and release is not None:
+        commanded pose and the verification target can never diverge.
+
+        Keyed on the COMMANDED release, not the tier (design F2): a LEVEL release
+        pre-positions to the nominated catch pose B; a TILTED one (Tier 8b's
+        displaced aim, a Tier-8a aim from the calibration map, or both)
+        pre-positions to the swing-compensated pre-tilt pose at the throw site
+        (``release.pretilt_pose_stow[:3]``). For 8a the throw site IS B, so that
+        is a pre-tilt IN PLACE offset by the cup swing (≤ 1.13 mm at the 1° aim
+        authority) — which is what puts the CUP on B at both release and catch.
+
+        ``release`` is None only when the goal is rejected on the FSM's first step
+        (tilt clamp, or POSE_UNKNOWN) and POSITIONING is never reached, so the B
+        fallback there is moot. Returns a float (x, y, z)."""
+        if cls._release_is_tilted(release):
             pre = np.asarray(release.pretilt_pose_stow, dtype=float)
             return (float(pre[0]), float(pre[1]), float(pre[2]))
         x, y, z = catch_pose_stow_mm
@@ -2656,6 +3042,10 @@ class ReloadCoordinatorNode(Node):
             announce = self._toss_record_announce
             seq = self._active_seq
             release = self._toss_release_state
+            release_cmd = self._toss_release_cmd
+            aim = self._toss_aim
+            cal_version = self._toss_cal_version
+            cal_present = self._toss_cal is not None
             gravity_loaded = self._gravity_correction_loaded
             tilt_loaded = self._tilt_map_loaded
             tilt_version = self._tilt_map_version
@@ -2673,6 +3063,8 @@ class ReloadCoordinatorNode(Node):
         if not built:
             seq = None
             release = None
+            release_cmd = None
+            aim = None
             vel_scale = None
         now_ros = self._ros_clock_s()
         cycle = int(ctx.get('cycle_index', 0) or 0)
@@ -2735,29 +3127,58 @@ class ReloadCoordinatorNode(Node):
                 'goal_stop_on_miss': bool(getattr(session, 'stop_on_miss', True)),
             })
         if release is not None:
+            # catch_point_global_mm comes from the UNCORRECTED state: it is B's
+            # cup point, the quantity the miner independently recomputes from
+            # goal_catch_xyz_stow_mm and fails loud on mismatch (plan § 7 R1).
+            # An aim-corrected catch point would make that check fire on every
+            # aimed toss and would redefine land_err against a target the
+            # operator never nominated.
+            rec['catch_point_global_mm'] = [
+                float(v) for v in release.catch_point_global_mm]
+        if release_cmd is not None:
+            # Everything the machine actually DID comes from the commanded
+            # state: the release point, the launch vector, the dispatched
+            # event_vel and the commanded tilt.
             rec.update({
-                'event_vel_mps': float(release.event_vel_mps),
+                'event_vel_mps': float(release_cmd.event_vel_mps),
                 'release_pos_global_mm': [float(v) for v in
-                                          release.release_pos_global_mm],
-                'launch_vel_mms': [float(v) for v in release.launch_vel_mms],
-                'catch_point_global_mm': [float(v) for v in
-                                          release.catch_point_global_mm],
-                'aim_tilt_rx_rad': float(getattr(release, 'tilt_rx', 0.0)),
-                'aim_tilt_ry_rad': float(getattr(release, 'tilt_ry', 0.0)),
+                                          release_cmd.release_pos_global_mm],
+                'launch_vel_mms': [float(v) for v in release_cmd.launch_vel_mms],
+                'aim_tilt_rx_rad': float(getattr(release_cmd, 'tilt_rx', 0.0)),
+                'aim_tilt_ry_rad': float(getattr(release_cmd, 'tilt_ry', 0.0)),
             })
-        # Phase 2a applies NOTHING, and the record says so explicitly rather
-        # than by omission: a null here means "no calibration layer exists yet",
-        # which is what the corpus must be able to prove about its own baseline.
+        # ── Applied calibration (§ 3.3, "the most important block") ──
+        # Explicit ZEROS, never nulls: a null reads as "unknown", a zero reads as
+        # "nothing was applied", and the corpus has to be able to prove which one
+        # its baseline was. That holds for the REJECTED_BAD_GOAL path too — a
+        # goal that never built a cycle commanded exactly zero aim. The session
+        # trim is phase 2e, so trim_aim_rad is a standing zero here.
         rec.update({
             'map_aim_rad': [0.0, 0.0],
             'trim_aim_rad': [0.0, 0.0],
             'total_aim_rad': [0.0, 0.0],
-            'toss_cal_loaded': False,
+            'map_aim_mm_at_h': [0.0, 0.0],
+            'trim_aim_mm_at_h': [0.0, 0.0],
+            'clamp_hits': [],
+            'toss_cal_loaded': bool(cal_present),
+            'toss_cal_version': cal_version or None,
             'toss_cal_applied': False,
             'release_latency_ms_applied': float(
                 getattr(hw, 'JB_OP_TOSS_RELEASE_LATENCY_MS', 0.0)),
-            'clamp_hits': [],
         })
+        if aim is not None:
+            map_aim = [float(aim['aim_rad'][0]), float(aim['aim_rad'][1])]
+            rec.update({
+                'map_aim_rad': map_aim,
+                'total_aim_rad': list(map_aim),
+                # REPORT field: mm at THIS toss's apex, never the stored unit.
+                # It is the exact virtual-target offset that was commanded, so
+                # it needs no re-derivation (and cannot drift from one).
+                'map_aim_mm_at_h': [float(aim['offset_mm'][0]),
+                                    float(aim['offset_mm'][1])],
+                'clamp_hits': list(aim['clamp_hits']),
+                'toss_cal_applied': bool(aim['applied']),
+            })
         return rec
 
     def _toss_record_seq_fields(self, seq) -> dict:

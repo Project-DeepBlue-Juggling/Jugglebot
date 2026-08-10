@@ -1894,12 +1894,16 @@ def _fresh_seq_8b(node, pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
             int(b.id) for b in node._balls if int(b.status) == 1}
         node._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
         node._toss_release_state = release
+        # Zero aim map in these fixtures ⇒ the commanded release IS the
+        # announcement release, the same object (C-TOSS-CAL-1's disabled path).
+        node._toss_release_cmd = release
+        node._toss_aim = None
         node._toss_landing_global_mm = tuple(
             float(v) for v in release.catch_point_global_mm)
-        # Mirror _execute_toss: the 8b cross-check target is the commanded A pose
-        # (single source _toss_positioning_xyz), NOT the nominated catch B.
+        # Mirror _execute_toss: the tilted cross-check target is the commanded A
+        # pose (single source _toss_positioning_xyz), NOT the nominated catch B.
         node._toss_platform_target_mm = ReloadCoordinatorNode._toss_positioning_xyz(
-            TIER_8B, pose, release)
+            pose, release)
         node._toss_waiver = False
         node._toss_prepare_pending = False
         node._toss_throw_dispatched = False

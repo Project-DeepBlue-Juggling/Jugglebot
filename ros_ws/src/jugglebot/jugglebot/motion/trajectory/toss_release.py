@@ -15,6 +15,10 @@ Consumed by ``toss_sequencer`` / ``reload_coordinator_node``; siblings
 tested STOW-relative → global conversion for the toss (plan § Frame convention);
 the global → STOW producer already lives in
 ``catch_coordinator._compute_catch_command``. Do not add another.
+:func:`aim_target_offset_mm` is the same rule one layer up: THE single commanded
+aim-angle → virtual-target-displacement conversion for the toss aim map
+(contract C-TOSS-CAL-1, ``jugglebot/motion/toss_cal.py``), so the aim rides the
+already-tested Tier-8b geometry instead of a second copy of it.
 
 **Full ballistic inverse, not the idealised magnitude.** The launch velocity is
 the full release-plane → catch-plane solution ``vz = Δz/T + g·T/2`` with
@@ -337,6 +341,83 @@ def compute_release_state_tilted(catch_position_stow_mm, flight_time_s: float,
         pretilt_pose_stow=pretilt_pose_stow,
         displacement_mm=float(np.hypot(b[0] - a_xy[0], b[1] - a_xy[1])),
     )
+
+
+def aim_target_offset_mm(aim_rx: float, aim_ry: float, flight_time_s: float,
+                         catch_z_stow_mm: float, *,
+                         initial_height_mm: float = hw.GEOM_INITIAL_HEIGHT_MM,
+                         hand_catch_offset_mm: float = hw.HAND_CATCH_OFFSET_MM,
+                         hand_throw_offset_mm: float = HAND_THROW_OFFSET_MM,
+                         max_tilt_deg: float = tilt_geometry.MAX_TILT_DEG
+                         ) -> np.ndarray:
+    """The VIRTUAL-TARGET lateral offset (2,) mm that makes
+    :func:`compute_release_state_tilted` command exactly the aim tilt
+    ``(aim_rx, aim_ry)``.
+
+    THE aim → displacement conversion for contract C-TOSS-CAL-1
+    (``plans/active/toss-selftuning.md`` D1): the toss aim map stores a
+    *commanded tilt* in radians, and the only sanctioned way to command it is to
+    displace the tilted path's target by this offset and let the existing,
+    test-pinned Tier-8b math derive the tilt. Riding the shipped path is what
+    makes "zero bias ⇒ today's machine" **provable** rather than argued, and it
+    means there is no second implementation of the aim geometry for a sign to be
+    wrong in (D2). Do not add another.
+
+    ``catch_z_stow_mm`` is the goal's nominated platform z (STOW mm); both sites
+    share it, so the offset is a function of the aim, the flight time and the
+    height only — never of xy.
+
+    Derivation, exact — no small-angle step. The cup axis is ``a =
+    cup_axis(rx, ry)`` and the ball leaves ALONG it, so ``v = |v|·a``. The
+    ballistic inverse gives ``v_z = Δz/T + g·T/2`` with ``Δz = catch_z −
+    release_z`` and ``release_z`` the tilted release plane (``arm·(1 − a_z)``
+    below the level one — the same ``_tilted_release_pos`` term). Eliminating
+    ``|v|``::
+
+        d = v_xy·T = (Δz + g·T²/2) · a_xy / a_z
+
+    **Zero aim returns exactly ``[0.0, 0.0]``** (``a = (0, 0, 1)``), so the
+    disabled path adds no floating-point operation at all.
+
+    Verified against the production path by ``/tmp/probe_toss_cal_aim.py``
+    (2026-08-11) over h ∈ {0.45, 0.60, 0.78, 1.00} m × |aim| ∈ {0, 0.05, 0.10,
+    0.15, 0.5, 1.0}° × 5 azimuths × 3 goal poses: worst round-trip tilt error
+    **8.35e-13 rad (4.8e-11°)**, i.e. the fixed-point pass in
+    :func:`compute_release_state_tilted` closes on the requested aim to machine
+    precision. The same probe pins the gain against the design's ``4h``
+    approximation: 54.578 mm/deg at h = 0.78 m vs the idealised 54.454, a 0.23 %
+    difference carried by the ``Δz`` and drop terms this form keeps exactly.
+    ``tests/motion/test_toss_release.py`` re-runs the round trip at a 1e-9 rad
+    gate.
+    """
+    axis = tilt_geometry.cup_axis(float(aim_rx), float(aim_ry))
+    a_z = float(axis[2])
+    from_vertical_deg = float(np.degrees(np.arccos(np.clip(a_z, -1.0, 1.0))))
+    if from_vertical_deg > float(max_tilt_deg):
+        # Unreachable from a validated map (the aim authority is 1°, the ceiling
+        # 12°), but the offset diverges as the axis approaches horizontal — a
+        # 90° "aim" would produce a target ~1e17 mm away and a plausible-looking
+        # pose command. Refuse at the SAME ceiling compute_release_state_tilted
+        # enforces, rather than inventing a second one: an aim past that ceiling
+        # has no sanctioned throw to be the target of.
+        raise ValueError(
+            "aim_target_offset_mm: aim ({:.6f}, {:.6f}) rad is {:.2f} deg from "
+            "vertical, past the {:.2f} deg tilt ceiling — there is no "
+            "sanctioned throw for it".format(
+                float(aim_rx), float(aim_ry), from_vertical_deg,
+                float(max_tilt_deg)))
+    # Release plane at the nominated pose, level; the lever arm is taken there,
+    # exactly as compute_release_state_tilted takes it.
+    cup_z_world = (float(catch_z_stow_mm) + float(initial_height_mm)
+                   + float(hand_throw_offset_mm))
+    arm = tilt_geometry.cup_lever_arm_mm(cup_z_world)
+    delta_z = (float(hand_catch_offset_mm) - float(hand_throw_offset_mm)
+               + arm * (1.0 - a_z))
+    T = float(flight_time_s)
+    if T <= 0.0:
+        raise ValueError(f"flight_time_s must be > 0 (got {T})")
+    scale = (delta_z + 0.5 * ballistics_bc.GRAVITY_MMS2 * T * T) / a_z
+    return np.array([scale * float(axis[0]), scale * float(axis[1])])
 
 
 def validate_event_vel(event_vel_mps: float, *,

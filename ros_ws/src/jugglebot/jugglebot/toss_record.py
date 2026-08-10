@@ -208,9 +208,10 @@ FIELDS: Tuple[Field, ...] = (
     # ── Provenance ────────────────────────────────────────────────────────────
     Field('git_sha', 'provenance', 'D', 's', 'HEAD at node launch'),
     Field('git_dirty', 'provenance', 'D', 'b', 'working tree dirty at launch'),
-    Field('toss_cal_version', 'provenance', 'D', 's', 'null until phase 2b'),
-    Field('toss_cal_loaded', 'provenance', 'D', 'b', 'null until phase 2b'),
-    Field('toss_cal_applied', 'provenance', 'D', 'b', 'null until phase 2b'),
+    Field('toss_cal_version', 'provenance', 'D', 's', 'phase 2b: motion/toss_cal.map_version'),
+    Field('toss_cal_loaded', 'provenance', 'D', 'b', 'a map is present + valid'),
+    Field('toss_cal_applied', 'provenance', 'D', 'b',
+          'loaded AND the D3 provenance gate agrees — loaded is not applied'),
     Field('tilt_map_version', 'provenance', 'DM', 's', 'TrajectoryStatus'),
     Field('tilt_map_applied', 'provenance', 'DM', 'b',
           'tilt_map_loaded AND gravity_correction_loaded, read together'),

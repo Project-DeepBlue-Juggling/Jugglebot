@@ -289,6 +289,12 @@
     = target_id = this robot) so the correlation -> catch path closes
     unchanged (ros_ws/docs/ball_possession_contract.md).
 
+### `toss/calibration_status`
+
+- **publishers:** `reload_coordinator_node`
+- **subscribers:** _none_
+- **type:** `std_msgs.msg.String`
+
 ### `toss/record`
 
 - **publishers:** `reload_coordinator_node`
@@ -459,6 +465,12 @@
 - **clients:** `catch_coordinator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.srv.SetFloat`
 
+### `toss/reload_calibration`
+
+- **servers:** `reload_coordinator_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
 ### `trajectory/arm_catch`
 
 - **servers:** `trajectory_node`
@@ -575,7 +587,9 @@ broken wire cannot hide among them.
 - `recover` — service with no clients
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
+- `toss/calibration_status` — topic with no subscribers
 - `toss/record` — topic with no subscribers
+- `toss/reload_calibration` — service with no clients
 - `trajectory/diagnostics` — topic with no subscribers
 - `trajectory/hold` — service with no clients
 - `trajectory/reload_tilt_map` — service with no clients

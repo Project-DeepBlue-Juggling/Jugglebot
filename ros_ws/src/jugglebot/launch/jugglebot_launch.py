@@ -546,6 +546,12 @@ def generate_launch_description():
             # the only exposure was a startup race, and that evidence closes it.
             '/rosout',
             '/toss/record',
+            # The aim map's loaded/applied/version verdict (C-TOSS-CAL-1).
+            # Latched and published only on load/reload, so a bag is the only
+            # after-the-fact witness that a session's map was DORMANT rather
+            # than applied — the distinction the whole provenance gate exists
+            # for, and one no per-toss record can prove was not edited later.
+            '/toss/calibration_status',
             '/catch/armed',
             '/catch/prime_hold',
             '/catch/prime_dispatched',
