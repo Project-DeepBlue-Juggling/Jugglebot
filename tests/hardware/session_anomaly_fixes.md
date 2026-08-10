@@ -3908,6 +3908,13 @@ unexpected hand ascent after a caught toss and record it if you see one.
   unchanged. It is a precondition that can refuse a goal, and it belongs to
   whoever validates the sensor (sitting logbook, decision row (e)).
 
+  > **⚠ BOTH SUPERSEDED 2026-08-10** (`catch-robustness` Phase 1,
+  > `logbook/2026-08-10-sensor-truth-possession.md`). The sensor's plumbing landed
+  > and it IS the primary source; the gate defaults `true`, so a valid-empty cup is
+  > `REJECTED_NO_BALL` and a blind sensor is `REJECTED_BALL_UNKNOWN`. These two
+  > bullets are kept because they are what the rows below were scored against —
+  > a POSS row read against them is still being read correctly.
+
 ---
 
 ---
@@ -4414,7 +4421,23 @@ done
 A 3-cycle session with an **empty cup**. Because
 `jugglebot_operational.toss_require_ball_evidence` is `false` (the operator
 guarantees the ball; there is no ball-in-cup sensor), **every cycle fires a real,
-empty throw stroke** — it does not refuse. That is the same actuation § SECTION
+empty throw stroke** — it does not refuse.
+
+> **⚠ THIS STEP NEEDS THE ESCAPE HATCH SINCE 2026-08-10.** The gate now defaults
+> `true` and reads the hand ball sensor live, so an empty-cup session is refused
+> `REJECTED_NO_BALL` at cycle 1 and **the dry trace never fires a stroke** — the
+> step cannot do its job as written. To run it, set
+> `toss_require_ball_evidence: false` (config → `python config/generate_config.py`
+> → `colcon build --packages-select jugglebot` → relaunch) for the dry trace only,
+> and set it back before the live-ball session.
+>
+> The trace-only waiver parameter is the cheaper alternative and it **does** cover
+> a whole session — `_build_toss_cycle` re-reads the parameter on every cycle, so
+> all three cycles are waived and each logs its own WARN (verified in code
+> 2026-08-10, not assumed). Prefer it: it needs no rebuild and no relaunch, and it
+> cannot be left switched on by accident across a power cycle the way a config
+> default can. Whichever you use, say which in the session notes. The rest of this
+> step is unchanged. That is the same actuation § SECTION
 TIER's Phase-3 dry capture already ran and is safe with the cup empty: the stroke
 is a normal kind-0 stroke, nothing is caught, and each cycle ends `MISSED` through
 its own `SAFE_ABORT` (retract, latch down, `go_home`). Reaching cycle 3 therefore

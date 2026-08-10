@@ -69,10 +69,12 @@ def _obs(now, **kw):
     base = dict(
         control_mode=TOSS_CONTROL_MODE, streaming=True, mocap_fresh=True,
         platform_levelled=True,
-        hand_fresh=True, hand_parked=True, ball_seated=True, track_active=False,
+        hand_fresh=True, hand_parked=True, ball_seated=True,
+        ball_evidence='SEATED', track_active=False,
         platform_at_target=True, throw_stroke_seen=False,
         ball_track_confirmed=False, ball_caught=False,
-        catch_error_mm=float('nan'), ball_time_at_land_perf=float('nan'))
+        catch_error_mm=float('nan'), catch_event_dt_s=float('nan'),
+        ball_time_at_land_perf=float('nan'))
     base.update(kw)
     return TossObservations(now=now, **base)
 
@@ -144,7 +146,6 @@ def _to_in_flight(seq):
     ('platform_levelled', False, 'REJECTED_NOT_LEVELLED'),
     ('hand_fresh', False, 'REJECTED_HAND_STALE'),
     ('hand_parked', False, 'REJECTED_HAND_NOT_PARKED'),
-    ('ball_seated', False, 'REJECTED_NO_BALL'),
     ('track_active', True, 'REJECTED_TRACK_ACTIVE'),
 ])
 def test_precondition_rejects(field, val, code):
@@ -166,6 +167,29 @@ def test_precondition_rejects(field, val, code):
     # A precondition reject happens BEFORE any move or arming — no cleanup.
     assert d.action == ACTION_NONE
     assert seq.prepared is False
+
+
+@pytest.mark.parametrize('evidence,code', [
+    ('EMPTY', 'REJECTED_NO_BALL'),
+    ('UNKNOWN', 'REJECTED_BALL_UNKNOWN'),
+])
+def test_ball_evidence_refusals_name_the_sensor_state(evidence, code):
+    """The ball-evidence gate mints TWO codes because they send the operator to
+    two different subsystems (C-POSSESS-1 § 3.3).
+
+    `NO_BALL` means the sensor looked and the cup is empty — load a ball.
+    `BALL_UNKNOWN` means the sensor could not answer at all (boot before the
+    first TxSdo reply, a stale reply, an un-anchored bridge clock, a dead
+    poller). Collapsing the second into the first would send the operator hunting
+    for a ball while the actual fault is the sensor, and — worse — a future
+    reader would have no way to tell that UNKNOWN *refuses*, which is the
+    fail-closed choice this project made against BallButler's fail-open boot
+    default. Both are pre-motion: nothing has moved and nothing is armed."""
+    seq = _fresh()
+    d = seq.step(0.0, _obs(0.0, ball_seated=False, ball_evidence=evidence))
+    assert d.done and d.result.success is False
+    assert d.result.outcome == code
+    assert d.action == ACTION_NONE and seq.prepared is False
 
 
 @pytest.mark.parametrize('also_broken,code', [

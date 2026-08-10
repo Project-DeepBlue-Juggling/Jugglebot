@@ -274,6 +274,17 @@ REJECT_WIRE_MAP = {
     'REJECTED_HAND_NOT_PARKED': 'hand pos_meas outside the +-0.5 rev park band',
     'REJECTED_TRACK_ACTIVE': 'phantom tracker expectation destined jugglebot '
                              '(wait for expiry / restart tracker; see RF-5)',
+    'REJECTED_NO_BALL': 'the hand ball sensor reads a VALID EMPTY cup — load a '
+                        'ball. Live since 2026-08-10 (toss_require_ball_evidence '
+                        'defaults true); before that this code only fired with '
+                        'the gate turned on by hand',
+    'REJECTED_BALL_UNKNOWN': 'the hand ball sensor cannot answer (boot before the '
+                             'first TxSdo reply, a stale reply, an un-anchored '
+                             'bridge clock, a dead gpio_poll). A SENSOR fault, '
+                             'NOT a missing ball — check /hand_telemetry '
+                             'ball_held_valid and /link_status hand_ball_sensor. '
+                             'It refuses on purpose: a fail-open sensor gate is '
+                             'the BallButler defect this project declined to copy',
     'REJECTED_BUSY': 'another ball-op goal is running',
 }
 

@@ -157,7 +157,7 @@ namespace JBOp {
   constexpr float TOSS_FLIGHT_TIME_DEFAULT_S = 0.8f;
   constexpr float TOSS_MAX_DISPLACEMENT_MM = 150.0f;
   constexpr bool TOSS_STAY_AT_POSE_ON_CAUGHT = true;
-  constexpr bool TOSS_REQUIRE_BALL_EVIDENCE = false;
+  constexpr bool TOSS_REQUIRE_BALL_EVIDENCE = true;
   constexpr float TOSS_SESSION_DWELL_DEFAULT_S = 6.0f;
   constexpr float TOSS_SESSION_DWELL_MARGIN_S = 0.6f;
   constexpr uint32_t TOSS_SESSION_MAX_THROWS = 20u;
@@ -494,6 +494,9 @@ namespace JBBallDetect {
   constexpr uint32_t MAX_MISSING_SAMPLES = 5u;
   constexpr uint32_t CHECK_TIMEOUT_MS = 100u;
   constexpr uint32_t EXPECTED_FW[3] = {0, 6, 11};
+  constexpr float ARRIVAL_LEAD_S = 0.2f;
+  constexpr float ARRIVAL_WINDOW_S = 1.5f;
+  constexpr float RETENTION_WINDOW_S = 1.5f;
 }
 
 // ==========================================================================

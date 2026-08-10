@@ -776,7 +776,8 @@ def test_possession_source_is_pluggable_at_one_seam():
     possession latch in _on_balls, the reload observation builder, and the toss
     observation builder), so none of them has its own private copy of the rule."""
     from jugglebot.ball_possession import (
-        PossessionVerdict, RETENTION_CONFIRMED, SOURCE_HAND_BALL_SENSOR)
+        ARRIVAL_CONFIRMED, PossessionVerdict, RETENTION_CONFIRMED,
+        SOURCE_HAND_BALL_SENSOR)
 
     class _AlwaysYes:
         name = SOURCE_HAND_BALL_SENSOR
@@ -786,8 +787,9 @@ def test_possession_source_is_pluggable_at_one_seam():
 
         def judge(self, ball_xyz_mm, ref_point_mm):
             self.calls.append(tuple(ball_xyz_mm))
-            return PossessionVerdict(self.name, True, RETENTION_CONFIRMED,
-                                     0.0, 0.0, 'SENSOR_HELD')
+            return PossessionVerdict(self.name, ARRIVAL_CONFIRMED,
+                                     RETENTION_CONFIRMED, 0.0, 0.0,
+                                     'SENSOR_HELD')
 
     corrupt = fx.RELOAD_CAUGHT[0][1:]              # 726 mm out — tracker refuses
     now = 100.0

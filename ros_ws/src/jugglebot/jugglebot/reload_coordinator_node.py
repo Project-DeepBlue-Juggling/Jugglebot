@@ -150,9 +150,14 @@ from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 
 import jugglebot.hardware_config as hw
 from jugglebot.ball_possession import (
+    EVIDENCE_EMPTY,
+    EVIDENCE_SEATED,
+    EVIDENCE_UNKNOWN,
+    HandBallSensorSource,
     TrackerArrivalSource,
     describe as describe_possession,
     lateral_miss_mm,
+    merge_possession,
 )
 from jugglebot.reload_sequencer import (
     ACTION_CALL_RELOAD,
@@ -542,17 +547,32 @@ class ReloadCoordinatorNode(Node):
         # default JB_OP_CATCH_VEL_SCALE_DEFAULT), published on catch/vel_scale at
         # PREPARE so catch_coordinator has it before any arm.
         self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
-        # THE possession source (contract C-POSSESS-1,
+        # THE possession sources (contract C-POSSESS-1,
         # ros_ws/docs/ball_possession_contract.md). Every "did we catch it?"
-        # question in this node routes through _possession_confirmed to whatever
-        # sits here, so swapping the source changes NO call site. Today's only
-        # implementation reads the ball tracker and can answer ARRIVAL only; the
-        # ball-in-cup hand sensor (installed 2026-07-28) becomes the PRIMARY
-        # source when its plumbing lands, because it is the only one that can
-        # answer RETENTION. Do not add sensor code here speculatively — the
-        # contract's "Adding a source" section is the handover.
+        # question in this node routes through _possession_confirmed, which is
+        # the ONE merge point (§ 3.2).
+        #
+        # _possession_source is the tracker CORROBORATOR — ARRIVAL only, and the
+        # only supplier of arrival_err_mm (the catch-accuracy number the hardware
+        # runbooks score, which the sensor cannot produce). It stays the
+        # duck-typed swap seam that test_possession_source_is_pluggable_at_one_seam
+        # exercises.
         self._possession_source = TrackerArrivalSource(
             arrival_tol_mm=_CAUGHT_MAX_XY_ERROR_MM)
+        # _ball_sensor is the PRIMARY source (2026-08-10): the ball-in-cup hand
+        # sensor is the only one that can observe RETENTION, and its ARRIVAL beats
+        # the tracker's whenever it can see. TICK-DRIVEN — it reads the cup, so it
+        # takes no ball and no reference point, which is exactly the shape the
+        # contract's § 3 said a genuinely primary source would need.
+        # Staleness reuses _HAND_STATE_STALE_S rather than minting a fourth
+        # window: the question ("is the Jetson still hearing the hand?") is
+        # literally the one that constant already answers for hand_fresh, and two
+        # constants for one question is how they drift apart.
+        self._ball_sensor = HandBallSensorSource(
+            arrival_lead_s=float(hw.JB_BD_ARRIVAL_LEAD_S),
+            arrival_window_s=float(hw.JB_BD_ARRIVAL_WINDOW_S),
+            retention_window_s=float(hw.JB_BD_RETENTION_WINDOW_S),
+            stale_s=_HAND_STATE_STALE_S)
         # Once-per-(ball, verdict) log guard. Keyed by the VERDICT as well as the
         # id so the accepted and refused lines each get exactly one emission: the
         # accepted line is what the operator scores the gate against by eye at the
@@ -890,10 +910,24 @@ class ReloadCoordinatorNode(Node):
                 break
 
     def _on_hand_telemetry(self, msg):
+        now = time.perf_counter()
         with self._lock:
             self._hand_pos_meas = float(msg.pos_meas)
             self._hand_vel_meas = float(msg.vel_meas)
-            self._hand_telemetry_mono = time.perf_counter()
+            self._hand_telemetry_mono = now
+            # Feed the PRIMARY possession source. The mono clock, not
+            # ball_held_stamp: staleness here asks whether the JETSON is still
+            # hearing the sensor, and the bridge stamp is wall-epoch only once
+            # the bridge's clock anchor lands (plans/active/hand-ball-sensor.md
+            # § Architecture, "Clock discipline"). ball_held is meaningless
+            # unless ball_held_valid — the source enforces that, so both are
+            # passed through untouched and nothing here decides anything.
+            # getattr, not a bare read: an older node running against a bag or a
+            # pre-Phase-5 message must degrade to UNKNOWN, never to "no ball".
+            self._ball_sensor.note_sample(
+                now,
+                held=bool(getattr(msg, 'ball_held', False)),
+                valid=bool(getattr(msg, 'ball_held_valid', False)))
 
     def _on_announcement(self, msg):
         # Only OUR ball's announcement (thrown by BB, aimed at us) advances the FSM.
@@ -1070,6 +1104,31 @@ class ReloadCoordinatorNode(Node):
                 self._announced_id_untagged = untagged_latch
         return announced_id
 
+    def _expected_landing_perf(self):
+        """The ACTIVE sequence's predicted landing on the perf clock, or None.
+
+        The hand ball sensor needs a window to look for its arrival edge in
+        (C-POSSESS-1 § 3.2), and both FSMs already own that number — the toss
+        because it is its own announcer, the reload from BB's announcement. It is
+        read fresh on every query and never latched, so a finished goal's window
+        cannot survive to veto the next ball's CAUGHT.
+
+        None (⇒ ``ARRIVAL_UNKNOWN`` ⇒ the merge falls back to the tracker) whenever
+        no sequence is running or none has scheduled a throw yet — which is the
+        honest answer: with nothing in the air, "did it arrive?" has no referent."""
+        with self._lock:
+            seq = self._active_seq
+        if seq is None:
+            return None
+        land = getattr(seq, 'landing_perf', None)
+        if land is None:
+            return None
+        try:
+            land = float(land)
+        except (TypeError, ValueError):
+            return None
+        return land if math.isfinite(land) else None
+
     def _possession_confirmed(self, ball, ref_point_mm=None) -> bool:
         """THE possession question, for every caller in this node: does this tracker
         ``CAUGHT`` confirm that WE have the ball?
@@ -1086,14 +1145,27 @@ class ReloadCoordinatorNode(Node):
         deliberately forbidden.
 
         ``ref_point_mm`` overrides the reference point (the toss judges against its
-        NOMINATED landing point); None = the reload's fixed ACTIVE catch point."""
+        NOMINATED landing point); None = the reload's fixed ACTIVE catch point.
+
+        THE MERGE POINT (C-POSSESS-1 § 3.2, 2026-08-10). The tracker source is
+        consulted for ARRIVAL-as-corroboration and for ``arrival_err_mm``; the hand
+        sensor is consulted for the real answer. ``merge_possession`` owns the
+        rules — do not re-derive them here."""
         ref = self._catch_point_mm if ref_point_mm is None else ref_point_mm
-        verdict = self._possession_source.judge(
+        tracker = self._possession_source.judge(
             ball_xyz_mm=(float(ball.position.x), float(ball.position.y),
                          float(ball.position.z)),
             ref_point_mm=ref)
+        verdict = merge_possession(
+            sensor=self._ball_sensor.observe(time.perf_counter(),
+                                             self._expected_landing_perf()),
+            tracker=tracker)
         ok = bool(verdict.confirmed)
-        key = (int(ball.id), ok)
+        # Keyed on the ARRIVAL STATE, not on the boolean: UNKNOWN and REFUSED both
+        # project to False but say opposite things about where the fault is, and
+        # keying on the bool would emit whichever fired first and swallow the
+        # other for the rest of the goal.
+        key = (int(ball.id), verdict.arrival)
         if key not in self._possession_logged:
             self._possession_logged.add(key)
             # BOTH verdicts are logged, and the wording AND the severity come from
@@ -1154,12 +1226,32 @@ class ReloadCoordinatorNode(Node):
             ABSOLUTE positions from 0 rev, so dispatch off the bottom park band
             (|pos| ≤ _HAND_NEAR_TARGET_REV of the retract target — the reload
             ladder's near-band) is a physical hazard;
-          - ``ball_seated`` — TRUE unless the ball-evidence gate is required
-            (config ``toss_require_ball_evidence``, default false — the operator
-            guarantees the ball; there is no ball-in-cup sensor). When required,
-            it is the sticky possession latch OR the trace-only waiver; possession
-            is CLEARED here on OUR release evidence (the ball left the cup) and
-            re-set by the next plausible CAUGHT (chainable Toss → Toss);
+          - ``ball_seated`` / ``ball_evidence`` — the ball-evidence precondition.
+            ``ball_evidence`` is the LIVE tri-state hand-sensor read
+            (``HandBallSensorSource.evidence``), which is C-POSSESS-1 § 3.3
+            edit 1: before 2026-08-10 this was a plain read of the sticky
+            ``_ball_possession`` latch, so a ball that bounced out during a
+            ``TossContinuous`` dwell left the latch standing and cycle N+1 fired
+            an empty stroke. ``ball_seated`` is the boolean the FSM gates on and
+            ``ball_evidence`` only refines the REJECT CODE, so there is exactly
+            one truth. When the gate is required (``toss_require_ball_evidence``,
+            default TRUE since 2026-08-10): SEATED passes, EMPTY refuses
+            ``REJECTED_NO_BALL``, and **UNKNOWN also refuses**
+            (``REJECTED_BALL_UNKNOWN``) — a dead sensor must not silently allow
+            throws, which is precisely the fail-open boot default this project
+            refused to copy from BallButler. The trace-only waiver still forces a
+            pass; ``toss_require_ball_evidence: false`` restores the
+            pre-2026-08-10 unconditional pass and is the operator's escape hatch.
+            The sticky latch is still maintained — SET by a plausible CAUGHT and
+            now also by a valid SEATED, CLEARED on OUR release evidence and now
+            also by a valid EMPTY (§ 3.3 edit 2) — but with the gate on it is no
+            longer what CHECKING reads;
+          - ``catch_event_dt_s`` — the sensor's arrival edge minus the predicted
+            landing, i.e. WHEN the ball actually entered the cup. NaN until an
+            edge lands inside the window. The first such quantity the machine has
+            ever had (a tracker CAUGHT stamps when the marker VANISHED, which is
+            a different event); it feeds the outcome line and the Phase-2
+            learning loop, and it is a diagnostic — nothing branches on it;
           - ``track_active`` — a LIVE track (TO_BE_THROWN / IN_FLIGHT) already
             destined for us would correlate against OUR announcement (the F7
             phantom-track hole); consulted only at CHECKING, before our own
@@ -1217,6 +1309,16 @@ class ReloadCoordinatorNode(Node):
                 + _HAND_NEAR_TARGET_REV):
             with self._lock:
                 self._toss_stroke_seen = True
+        # THE live ball-evidence read (C-POSSESS-1 § 3.3 edit 1). One call, one
+        # place — every downstream use below reads this variable, never the source
+        # again, so the whole observation is built from ONE instant's cup state.
+        ball_evidence = self._ball_sensor.evidence(now)
+        landing_perf = self._expected_landing_perf()
+        catch_event_perf = self._ball_sensor.arrival_time(landing_perf)
+        catch_event_dt_s = (catch_event_perf - landing_perf
+                            if (landing_perf is not None
+                                and math.isfinite(catch_event_perf))
+                            else float('nan'))
         track_active = False
         ball_caught = False
         catch_error_mm = float('nan')
@@ -1264,6 +1366,17 @@ class ReloadCoordinatorNode(Node):
                 # leave a caught toss possession-less.)
                 self._ball_possession = False
                 possession = False
+            # C-POSSESS-1 § 3.3 edit 2 — the latch can now be corrected WITHOUT
+            # release evidence, because the sensor reads the cup directly. This
+            # is what stops a bounce-out during a TossContinuous dwell from
+            # leaving a belief the machine then acts on. UNKNOWN touches nothing:
+            # blindness is not evidence in either direction.
+            if ball_evidence == EVIDENCE_EMPTY:
+                self._ball_possession = False
+                possession = False
+            elif ball_evidence == EVIDENCE_SEATED:
+                self._ball_possession = True
+                possession = True
         if not mocap_body:
             # Cross-check DISABLED (the shipped default — see
             # _TOSS_MOCAP_BODY_PARAM): arrival = go_to_pose accept + timed
@@ -1286,14 +1399,20 @@ class ReloadCoordinatorNode(Node):
             platform_levelled=platform_levelled,
             hand_fresh=hand_fresh,
             hand_parked=hand_parked,
-            ball_seated=bool(waiver or possession
-                             or not hw.JB_OP_TOSS_REQUIRE_BALL_EVIDENCE),
+            # NOT `or possession`: with the gate on, CHECKING reads the LIVE cup,
+            # never the sticky latch (C-POSSESS-1 § 3.3 edit 1). UNKNOWN refuses
+            # here and `ball_evidence` below tells the FSM which code to mint.
+            ball_seated=bool(waiver
+                             or not hw.JB_OP_TOSS_REQUIRE_BALL_EVIDENCE
+                             or ball_evidence == EVIDENCE_SEATED),
+            ball_evidence=ball_evidence,
             track_active=track_active,
             platform_at_target=platform_at_target,
             throw_stroke_seen=stroke_seen,
             ball_track_confirmed=track_confirmed,
             ball_caught=ball_caught,
             catch_error_mm=catch_error_mm,
+            catch_event_dt_s=catch_event_dt_s,
             ball_time_at_land_perf=time_at_land_perf)
 
     def _ball_time_at_land_perf(self, ball, now_perf: float) -> float:
@@ -2345,14 +2464,24 @@ class ReloadCoordinatorNode(Node):
     def _log_toss_outcome(self, result) -> None:
         """The single authoritative per-toss outcome line (the reload discipline:
         exactly one per goal, INFO on success / WARN otherwise), carrying the
-        diagnostic fields when finite."""
+        diagnostic fields when finite.
+
+        ``catch_dt`` is the HAND-SENSOR catch-event time (arrival edge minus the
+        predicted landing) — the machine's first direct measurement of WHEN the
+        ball entered the cup, and the per-toss timing record the Phase-2 learning
+        loop consumes. It is read with ``getattr`` because this method is called
+        with BOTH a ``TossResult`` and (on the bad-goal path) the action's own
+        Result message, and only the former carries the field."""
         err = float(result.catch_error_mm)
         fl = float(result.achieved_flight_s)
+        dt = float(getattr(result, 'catch_event_dt_s', float('nan')))
         parts = []
         if np.isfinite(err):
             parts.append(f'catch_err={err:.0f} mm')
         if np.isfinite(fl):
             parts.append(f'flight={fl:.3f} s')
+        if np.isfinite(dt):
+            parts.append(f'catch_dt={dt:+.3f} s')
         suffix = f" ({', '.join(parts)})" if parts else ''
         line = f'Toss {result.outcome}{suffix}'
         if result.success:

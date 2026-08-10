@@ -485,6 +485,18 @@ class ReloadSequencer:
             return self._landing_time_perf
         return self._throw_time + self.throw_delay_s
 
+    @property
+    def landing_perf(self) -> float:
+        """Public read of the predicted landing — the window the hand ball sensor
+        looks for its arrival edge in (C-POSSESS-1 § 3.2). NaN until a throw has
+        actually been stamped, so a sensor query before the throw answers
+        ``ARRIVAL_UNKNOWN`` instead of looking around t=0. Deliberately NOT gated
+        on the ANNOUNCEMENT: the release-relative fallback is a real (if coarser)
+        prediction, and the sensor window is ~10x the gap between the two."""
+        if self._landing_time_perf is None and self._throw_time <= 0.0:
+            return float('nan')
+        return self._landing_perf()
+
     def _step_settling(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if obs.ball_caught:
             return self._finish(ReloadResult(True, 'CAUGHT', obs.catch_error_mm))

@@ -120,10 +120,15 @@ worked example.
 
 1. **CHECKING** — preconditions: ACTIVE + TRAJECTORY streaming a hold, mocap
    fresh, hand at catch-rest (**hand-parked** — a physical-hazard gate, reliably
-   from hand telemetry), no reload/toss already active. Ball possession is **NOT
-   gated by default** (`toss_require_ball_evidence: false` — no ball-in-cup
-   sensor; the operator guarantees the ball); `REJECTED_NO_BALL` fires only when
-   that config gate is enabled.
+   from hand telemetry), no reload/toss already active. Ball evidence **IS**
+   gated by default since 2026-08-10 (`toss_require_ball_evidence: true`): the
+   node reads the hand ball sensor LIVE, so a valid-empty cup is
+   `REJECTED_NO_BALL` and a sensor that cannot answer is `REJECTED_BALL_UNKNOWN`
+   (it refuses — see `ros_ws/docs/ball_possession_contract.md` § 3.3). The
+   pre-2026-08-10 reading of this step — *"NOT gated by default
+   (`toss_require_ball_evidence: false` — no ball-in-cup sensor; the operator
+   guarantees the ball)"* — is what the config `false` now restores as the
+   operator's escape hatch.
 2. **POSITIONING** — profiled `go_to_pose` to the nominated catch (x, y) at the
    toss-ready z (Tier 8a: throw site = catch site; Tier 8b: throw site A).
 3. **PREPARING** — compute the release state (release position from

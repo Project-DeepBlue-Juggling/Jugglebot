@@ -37,10 +37,15 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
 > (release up to ~5.4 m/s at the 1.48 m band ceiling); **stay clear of the hand's
 > stroke path and the landing zone**. E-STOP is always in reach.
 >
-> **The operator guarantees a ball is in the hand before every toss.** There is no
-> ball-in-cup sensor — the ball-evidence CHECKING gate is OFF by default
-> (`toss_require_ball_evidence: false`), so the toss will NOT refuse an empty cup; a
-> forgotten ball fires an empty stroke (benign) but wastes the rung. Load a ball
+> **Load a ball before every toss — and since 2026-08-10 the machine checks.** The
+> ball-evidence CHECKING gate is ON by default (`toss_require_ball_evidence: true`)
+> and reads the hand ball sensor LIVE: an empty cup is refused `REJECTED_NO_BALL`
+> before anything moves. **A `REJECTED_BALL_UNKNOWN` is a SENSOR fault, not a
+> missing ball** — the poller is not answering; do not "fix" it by loading another
+> ball, and do not flip the config off to get past it without saying so in the
+> session notes. Setting `toss_require_ball_evidence: false` restores the old
+> behaviour (no refusal, a forgotten ball fires a benign empty stroke and wastes
+> the rung) and is the escape hatch if the sensor is unavailable. Load a ball
 > first (see § Loading).
 
 ## Roles & safety framing
