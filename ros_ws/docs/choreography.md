@@ -289,6 +289,12 @@
     = target_id = this robot) so the correlation -> catch path closes
     unchanged (ros_ws/docs/ball_possession_contract.md).
 
+### `toss/record`
+
+- **publishers:** `reload_coordinator_node`
+- **subscribers:** _none_
+- **type:** `std_msgs.msg.String`
+
 ### `trajectory/commanded_position`
 
 - **publishers:** `trajectory_node`
@@ -569,6 +575,7 @@ broken wire cannot hide among them.
 - `recover` — service with no clients
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
+- `toss/record` — topic with no subscribers
 - `trajectory/diagnostics` — topic with no subscribers
 - `trajectory/hold` — service with no clients
 - `trajectory/reload_tilt_map` — service with no clients

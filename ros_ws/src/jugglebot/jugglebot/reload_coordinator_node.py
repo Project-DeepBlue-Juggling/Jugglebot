@@ -116,8 +116,11 @@ a session throw one ball and then refuse cycle 2 with the platform parked off-bo
 from __future__ import annotations
 
 import math
+import os
+import subprocess
 import threading
 import time
+from datetime import datetime
 
 import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
@@ -200,10 +203,14 @@ from jugglebot.toss_session import (
     TossSessionSequencer,
 )
 from jugglebot.catch_coordinator import CatchCoordinator
+from jugglebot import clock_offset, toss_record
+from jugglebot.toss_record import latch_announced_ball
+from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
 from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.toss_release import (
     ThrowTiltInfeasible,
+    apex_height_from_flight_time,
     build_announcement_fields,
     compute_release_state,
     compute_release_state_tilted,
@@ -433,6 +440,55 @@ _TOSS_POSITION_UNKNOWN_TERMINALS = frozenset({
     'REJECTED_POSITION(NO_RESPONSE)', 'ABORTED_POSITION_TIMEOUT'})
 
 
+#: Best-effort JSONL belt for the per-toss record (toss-selftuning § 3.3). The
+#: bag is canonical; this exists ONLY for the ``record:=false`` bench session.
+#:
+#: Resolved with tilt_map's MARKER walk, never a fixed number of ``dirname``
+#: hops: this module runs from the colcon install tree in production and from
+#: ``ros_ws/src`` under pytest, and those are different depths. A fixed walk is
+#: the tilt-cal Phase-2 finding — it produced a path that could not exist in
+#: production while looking perfectly reasonable in the source tree. ``None``
+#: for a deployment outside the repo, where the belt simply does not run.
+_REPO_ROOT = find_repo_root(__file__)
+_RECORD_BELT_DIR = (os.path.join(_REPO_ROOT, 'temp', 'logs')
+                    if _REPO_ROOT else None)
+
+
+def _goal_id_hex(goal_handle) -> str:
+    """The action goal uuid as hex, or '' when the handle cannot supply one.
+
+    Guarded because the record must survive a test double / a partially-built
+    handle: a provenance field is never worth an exception on the terminal path.
+    """
+    try:
+        return bytes(goal_handle.goal_id.uuid).hex()
+    except Exception:                                          # noqa: BLE001
+        return ''
+
+
+def _repo_revision():
+    """-> ``(sha, dirty)`` for the running tree, or ``(None, None)``.
+
+    Called ONCE at node construction, never on a teardown path. Provenance the
+    corpus cannot reconstruct any other way: a bag records what the machine did,
+    not which code did it, and ``toss_cal_fit.py``'s partition census is only
+    honest if every record names its build. Fully guarded — a node that refuses
+    to start because ``git`` is missing would be a spectacular own goal for a
+    field that is pure metadata.
+    """
+    cwd = os.path.dirname(os.path.abspath(__file__))
+    try:
+        sha = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], cwd=cwd,
+            stderr=subprocess.DEVNULL, timeout=5.0).decode().strip()
+        dirty = bool(subprocess.check_output(
+            ['git', 'status', '--porcelain'], cwd=cwd,
+            stderr=subprocess.DEVNULL, timeout=5.0).decode().strip())
+        return sha, dirty
+    except Exception:                                          # noqa: BLE001
+        return None, None
+
+
 def _toss_deadline_s(seq) -> float:
     """The node-level hard ceiling for THIS toss goal — same doctrine as
     :func:`_sequence_deadline_s`: never below _MAX_SEQUENCE_S and never inside a
@@ -508,6 +564,9 @@ class ReloadCoordinatorNode(Node):
         # exists to prevent. 0.0 = never heard from it ⇒ fail closed.
         self._traj_status_mono = 0.0
         self._gravity_correction_loaded = False
+        # Record-only provenance mirrors of the same message (never gated on).
+        self._tilt_map_loaded = False
+        self._tilt_map_version = ''
         # The platform's live COMMANDED position (STOW mm) + its arrival stamp.
         # None/0.0 = never heard ⇒ fail closed (REJECTED_POSE_UNKNOWN for a
         # displaced toss, REJECTED_NOT_CENTERED for a reload). trajectory_node
@@ -631,6 +690,14 @@ class ReloadCoordinatorNode(Node):
         # deferred A->B reach to reuse — (landing_pos_global_mm, landing_vel_mms,
         # landing_time_ros_seconds). None between goals / for 8a.
         self._toss_announced_reach = None
+        # ── Per-toss RECORD (instrument only, zero control authority) ──
+        # toss-selftuning plan § 3.3/§ 3.4, D10. Everything here is written by
+        # the record path and read by NOTHING in the FSM: if every line below
+        # were deleted the machine would behave identically. That is the
+        # property to preserve when this block grows in phases 2b/2d/2e.
+        self._toss_record_ctx = None          # per-cycle declaration context
+        self._toss_record_announce = None     # (throw_time_ros, landing_time_ros)
+        self._toss_record_belt_warned = False  # one WARN per goal, then silence
         # Tier 8b: the pure catch-pose policy for the deferred A→B reach —
         # the SAME class + construction catch_coordinator_node uses (pinned
         # equal by a drift-guard test), so the reach target's receive-tilt/
@@ -772,6 +839,31 @@ class ReloadCoordinatorNode(Node):
         # existing correlation → catch path closes the loop unchanged.
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
+        # ── The per-toss RECORD declaration (toss-selftuning § 3.4, D10) ──
+        # std_msgs/String carrying JSON, deliberately NOT a typed message: a
+        # schema tweak on a typed message needs a two-package colcon build, which
+        # is exactly the partial-build ImportError class the runbook's build gate
+        # exists to prevent. The cost of JSON-in-String is paid down by
+        # jugglebot/toss_record.py owning encode/decode/validate plus a FIELDS
+        # drift-guard test.
+        #
+        # The bag is the CANONICAL sink. Publishing rather than writing keeps
+        # file I/O out of the node that owns the hand, the latch and the abort
+        # ladder — a full disk must not be able to stall a teardown.
+        self._toss_record_pub = self.create_publisher(String, 'toss/record', 10)
+        # One node launch = one session id; also names the best-effort belt file.
+        self._session_id = '{}-{}'.format(
+            datetime.now().strftime('%Y%m%d-%H%M%S'), os.getpid())
+        self._git_sha, self._git_dirty = _repo_revision()
+        # FILTERED perf-ros offset, for the record only. The FSM keeps using its
+        # single instantaneous read (_announcement_landing_perf); carrying BOTH
+        # numbers is what turns that method's documented open reconciliation
+        # question into a measurement instead of an argument (§ 3.3).
+        self._clock_offset_history = []
+        self._perf_minus_ros_s = clock_offset.refresh_offset(
+            self._clock_offset_history, self._ros_clock_s)
+        self.create_timer(clock_offset.REFRESH_PERIOD_S,
+                          self._refresh_clock_offset)
 
         # ── Action servers (reload + toss) ──
         # ReentrantCallbackGroup so the multi-second execute_callback (which blocks on
@@ -836,6 +928,14 @@ class ReloadCoordinatorNode(Node):
             # KeyboardInterrupt the PROCESS EXITS — see the operator runbook's
             # LVLGATE build box.)
             self._gravity_correction_loaded = bool(msg.gravity_correction_loaded)
+            # Record-only provenance (toss-selftuning D3/G5): an aim residual
+            # fitted under tilt map A double-counts tilt map B's delta, so the
+            # map identity has to travel WITH every toss. getattr-with-default
+            # here and NOT above deliberately: the levelling gate must fail loud
+            # on a build split, while a missing provenance string must degrade to
+            # "unknown" rather than take the coordinator down.
+            self._tilt_map_loaded = bool(getattr(msg, 'tilt_map_loaded', False))
+            self._tilt_map_version = str(getattr(msg, 'tilt_map_version', '') or '')
             self._traj_status_mono = time.perf_counter()
 
     def _on_commanded_position(self, msg):
@@ -1069,35 +1169,21 @@ class ReloadCoordinatorNode(Node):
         Two hardening passes (2026-07-23 re-test): (1) ids already IN_FLIGHT
         when the throw was accepted are excluded (a phantom untagged track that
         predated the throw was latched as "our" ball); (2) a destination match
-        is preferred over the empty-destination fallback."""
+        is preferred over the empty-destination fallback.
+
+        The RULE itself lives in ``jugglebot.toss_record.latch_announced_ball``
+        (extracted 2026-08-10, toss-selftuning plan D11) so the offline record
+        miner correlates ``/balls`` with the same logic instead of a lookalike
+        copy; this method keeps the locking and the state, which is the half that
+        cannot be pure."""
         with self._lock:
             announced_id = self._announced_ball_id
             preexisting = set(self._preexisting_flight_ids)
             untagged_latch = self._announced_id_untagged
-        candidates = [
-            b for b in balls
-            if int(b.status) == _BALL_STATUS_IN_FLIGHT
-            and int(b.id) not in preexisting]
-        dest_match = next(
-            (int(b.id) for b in candidates
-             if b.destination == self._robot_name), None)
-        if announced_id is None:
-            if dest_match is not None:
-                announced_id = dest_match
-                untagged_latch = False
-            else:
-                for b in candidates:
-                    if not b.destination:
-                        announced_id = int(b.id)
-                        untagged_latch = True
-                        break
-        elif untagged_latch and dest_match is not None:
-            # An UNTAGGED latch is provisional (audit, 2026-07-23): a phantom
-            # spawning during the countdown could grab it first. The moment a
-            # destination-tagged candidate appears, re-latch to it — the
-            # tagged track is the tracker's own claim about OUR ball.
-            announced_id = dest_match
-            untagged_latch = False
+        announced_id, untagged_latch = latch_announced_ball(
+            balls, robot_name=self._robot_name, announced_id=announced_id,
+            preexisting_ids=preexisting, untagged_latch=untagged_latch,
+            in_flight_status=_BALL_STATUS_IN_FLIGHT)
         if announced_id is not None:
             with self._lock:
                 self._announced_ball_id = announced_id
@@ -1582,6 +1668,14 @@ class ReloadCoordinatorNode(Node):
         height = float(getattr(req, 'throw_height_m', 0.0) or 0.0)
         throw_delay = float(getattr(req, 'throw_delay_s', 0.0) or 0.0)
         vel_scale = float(getattr(req, 'catch_vel_scale', 0.0) or 0.0)
+        # Open the record context FIRST, so a REJECTED_BAD_GOAL terminal below
+        # declares its own identity instead of the previous goal's (instrument
+        # only — see _publish_toss_record).
+        self._open_toss_record(
+            action='toss', goal_id=_goal_id_hex(goal_handle), cycle_index=1,
+            catch_pose=catch_pose, throw_delay=throw_delay, vel_scale=vel_scale,
+            raw_goal={'throw_height_m': height, 'throw_delay_s': throw_delay,
+                      'catch_vel_scale': vel_scale})
         # Loud goal-numerics gate BEFORE anything runs (mirrors ball_butler_node's
         # non-finite target guard): a NaN/inf would flow through the release-state
         # ballistics into a NaN announcement / event_vel command, and a NEGATIVE
@@ -1608,6 +1702,12 @@ class ReloadCoordinatorNode(Node):
             return result
         flight = self._resolve_toss_flight_s(height)
         seq = self._build_toss_cycle(catch_pose, flight, throw_delay, vel_scale)
+        self._open_toss_record(
+            action='toss', goal_id=_goal_id_hex(goal_handle), cycle_index=1,
+            catch_pose=catch_pose, flight=flight,
+            throw_delay=throw_delay, vel_scale=vel_scale,
+            raw_goal={'throw_height_m': height, 'throw_delay_s': throw_delay,
+                      'catch_vel_scale': vel_scale})
 
         result = Toss.Result()
 
@@ -2253,6 +2353,13 @@ class ReloadCoordinatorNode(Node):
             self._toss_announced_reach = (
                 np.array(lp, dtype=float), np.array(lv, dtype=float),
                 landing_time_ros_s)
+            # THE JOIN KEY, stashed for the per-toss record. The SAME float this
+            # method wrote into ThrowAnnouncement.throw_time, so the declaration
+            # and the bagged announcement match exactly rather than to a
+            # tolerance (toss-selftuning § 3.4). Record-only — nothing reads it
+            # back into the FSM.
+            self._toss_record_announce = (
+                now_ros.nanoseconds * 1e-9 + delta_s, landing_time_ros_s)
         self._announce_pub.publish(ann)
         seq.note_announcement()
 
@@ -2488,6 +2595,293 @@ class ReloadCoordinatorNode(Node):
             self.get_logger().info(line)
         else:
             self.get_logger().warning(line)
+        self._publish_toss_record(result)
+
+    # ── The per-toss record (INSTRUMENT ONLY — no control authority) ──────────
+
+    def _ros_clock_s(self) -> float:
+        """The node's ROS clock in seconds — ``clock_offset``'s injection point."""
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _refresh_clock_offset(self) -> None:
+        """30 s median-filtered ``perf - ros`` refresh, for the RECORD only.
+
+        The FSM is untouched: ``_announcement_landing_perf`` keeps its single
+        instantaneous read. Both numbers land in every record so the open
+        reconciliation question that method documents becomes a measurement.
+        """
+        with self._lock:
+            history = self._clock_offset_history
+        offset = clock_offset.refresh_offset(history, self._ros_clock_s)
+        with self._lock:
+            self._perf_minus_ros_s = offset
+
+    def _open_toss_record(self, *, action, goal_id, cycle_index,
+                          catch_pose, throw_delay, vel_scale, raw_goal,
+                          flight=None, session=None) -> None:
+        """Install the declaration context for ONE cycle. Never reads back into
+        the FSM; deleting this method changes no commanded motion.
+
+        Called BEFORE the goal-numerics gate as well as after the cycle is
+        built, so a ``REJECTED_BAD_GOAL`` terminal records ITS own identity
+        rather than inheriting the previous goal's — a census whose rejected rows
+        carry the wrong ``toss_uid`` is worse than one with no rejected rows.
+        ``flight`` is therefore optional: on that path no flight time was ever
+        resolved, and the record says so with a null. The live sequencer is read
+        at terminal time from ``self._active_seq``, not carried here — one source
+        for "which FSM is running", the one the rest of the node already uses.
+        """
+        ctx = {
+            'action': action,
+            'goal_id': goal_id,
+            'cycle_index': int(cycle_index),
+            'catch_pose': tuple(float(v) for v in catch_pose),
+            'flight': (float(flight) if flight is not None else None),
+            'throw_delay': float(throw_delay),
+            'vel_scale': float(vel_scale),
+            'raw_goal': dict(raw_goal),
+            'session': session,
+        }
+        with self._lock:
+            self._toss_record_ctx = ctx
+            self._toss_record_announce = None
+            self._toss_record_belt_warned = False
+
+    def _toss_record_fields(self, result) -> dict:
+        """Assemble THE declaration for this cycle. Pure-ish: reads cached state
+        under the lock, allocates a dict, touches no hardware and no service."""
+        rec = toss_record.blank_record()
+        with self._lock:
+            ctx = self._toss_record_ctx
+            announce = self._toss_record_announce
+            seq = self._active_seq
+            release = self._toss_release_state
+            gravity_loaded = self._gravity_correction_loaded
+            tilt_loaded = self._tilt_map_loaded
+            tilt_version = self._tilt_map_version
+            perf_minus_ros = self._perf_minus_ros_s
+            vel_scale = self._catch_vel_scale
+            stroke_seen = self._toss_stroke_seen
+            track_confirmed = self._toss_track_confirmed
+        ctx = ctx or {}
+        # A cycle was actually built iff a flight time was resolved. On the
+        # REJECTED_BAD_GOAL path nothing was built, so the node's RESOLVED
+        # per-goal state (_catch_vel_scale, _active_seq, _toss_release_state) is
+        # still the PREVIOUS goal's — reading it would attribute the last toss's
+        # numbers to this rejection. Raw goal fields stay valid either way.
+        built = ctx.get('flight') is not None
+        if not built:
+            seq = None
+            release = None
+            vel_scale = None
+        now_ros = self._ros_clock_s()
+        cycle = int(ctx.get('cycle_index', 0) or 0)
+        goal_id = str(ctx.get('goal_id') or '')
+        rec.update({
+            'toss_uid': '{}-{}-{}'.format(self._session_id, goal_id[:8], cycle),
+            'session_id': self._session_id,
+            'goal_id': goal_id or None,
+            'action': str(ctx.get('action') or 'toss'),
+            'cycle_index': cycle or None,
+            't_record_ros': now_ros,
+            'perf_minus_ros_s': perf_minus_ros,
+            # The FSM's own crossing recipe, sampled here rather than filtered —
+            # see _announcement_landing_perf for why the two coexist.
+            'perf_minus_ros_inst_s': time.perf_counter() - now_ros,
+            'git_sha': self._git_sha,
+            'git_dirty': self._git_dirty,
+            'gravity_correction_loaded': gravity_loaded,
+            'tilt_map_applied': bool(tilt_loaded and gravity_loaded),
+            'tilt_map_version': tilt_version or None,
+            'toss_tier': str(hw.JB_OP_TOSS_TIER),
+            'catch_knobs': self._toss_record_catch_knobs(vel_scale),
+            'outcome': str(getattr(result, 'outcome', '') or 'UNKNOWN'),
+            'success': bool(getattr(result, 'success', False)),
+            'throw_stroke_seen': bool(stroke_seen),
+            'ball_track_confirmed': bool(track_confirmed),
+            'achieved_flight_s_fsm': float(
+                getattr(result, 'achieved_flight_s', float('nan'))),
+            'catch_error_mm_fsm': float(
+                getattr(result, 'catch_error_mm', float('nan'))),
+            'catch_event_dt_s_fsm': float(
+                getattr(result, 'catch_event_dt_s', float('nan'))),
+        })
+        if announce is not None:
+            rec['announce_throw_time_ros'] = float(announce[0])
+            rec['announce_landing_time_ros'] = float(announce[1])
+        raw = ctx.get('raw_goal') or {}
+        pose = ctx.get('catch_pose')
+        rec.update({
+            'goal_catch_xyz_stow_mm': list(pose) if pose else None,
+            'goal_throw_height_m_raw': raw.get('throw_height_m'),
+            'goal_throw_delay_s_raw': raw.get('throw_delay_s'),
+            'goal_catch_vel_scale_raw': raw.get('catch_vel_scale'),
+            'goal_catch_vel_scale': vel_scale,
+        })
+        if ctx.get('flight') is not None:
+            rec['flight_time_s'] = float(ctx['flight'])
+            rec['goal_throw_height_m'] = float(
+                apex_height_from_flight_time(float(ctx['flight'])))
+            rec['apex_height_m'] = rec['goal_throw_height_m']
+        if seq is not None:
+            rec.update(self._toss_record_seq_fields(seq))
+        if ctx.get('throw_delay') is not None:
+            rec['goal_throw_delay_s'] = float(ctx['throw_delay'])
+        session = ctx.get('session')
+        if session is not None:
+            rec.update({
+                'goal_num_throws': int(getattr(session, 'num_throws', 0)) or None,
+                'goal_dwell_time_s': float(getattr(session, 'dwell_time_s', 0.0)),
+                'goal_stop_on_miss': bool(getattr(session, 'stop_on_miss', True)),
+            })
+        if release is not None:
+            rec.update({
+                'event_vel_mps': float(release.event_vel_mps),
+                'release_pos_global_mm': [float(v) for v in
+                                          release.release_pos_global_mm],
+                'launch_vel_mms': [float(v) for v in release.launch_vel_mms],
+                'catch_point_global_mm': [float(v) for v in
+                                          release.catch_point_global_mm],
+                'aim_tilt_rx_rad': float(getattr(release, 'tilt_rx', 0.0)),
+                'aim_tilt_ry_rad': float(getattr(release, 'tilt_ry', 0.0)),
+            })
+        # Phase 2a applies NOTHING, and the record says so explicitly rather
+        # than by omission: a null here means "no calibration layer exists yet",
+        # which is what the corpus must be able to prove about its own baseline.
+        rec.update({
+            'map_aim_rad': [0.0, 0.0],
+            'trim_aim_rad': [0.0, 0.0],
+            'total_aim_rad': [0.0, 0.0],
+            'toss_cal_loaded': False,
+            'toss_cal_applied': False,
+            'release_latency_ms_applied': float(
+                getattr(hw, 'JB_OP_TOSS_RELEASE_LATENCY_MS', 0.0)),
+            'clamp_hits': [],
+        })
+        return rec
+
+    def _toss_record_seq_fields(self, seq) -> dict:
+        """The FSM half of the declaration, read off the live sequencer.
+
+        Several of these have no public accessor on ``TossSequencer`` and are
+        read as private fields. That is deliberate for an INSTRUMENT: widening
+        the sequencer's public surface for fields nothing branches on would
+        invite something to start branching on them. Every read goes through
+        ``getattr`` with a default, so a rename in the FSM degrades this record
+        to a null rather than raising on a terminal path — and a null here is
+        visible in the corpus, which is how the drift gets noticed.
+        """
+        dispatch = getattr(seq, '_throw_dispatch_result', None)
+        position = getattr(seq, '_position_result', None)
+        out = {
+            'phase_at_terminal': str(getattr(seq, 'phase', '') or '') or None,
+            'prepare_ok': getattr(seq, '_prepare_result', None),
+            'catch_target_accepted': bool(getattr(seq, '_catch_accepted', False)),
+            'announce_lead_short': bool(getattr(seq, 'announce_lead_short', False)),
+            't_accept_perf': float(getattr(seq, '_t_accept', 0.0)) or None,
+            't_release_perf': float(getattr(seq, 't_release', 0.0)) or None,
+            'event_delay_s': (float(getattr(seq, 'throw_delay_s', 0.0))
+                              if getattr(seq, 'throw_delay_s', 0.0) else None),
+            'throw_site_xy_mm': [float(v) for v in
+                                 getattr(seq, 'throw_site_xy_mm', (0.0, 0.0))],
+        }
+        landing = getattr(seq, 'landing_perf', None)
+        if landing is not None:
+            try:
+                out['t_landing_sched_perf'] = float(landing)
+            except (TypeError, ValueError):
+                pass
+        if dispatch:
+            out['throw_dispatch_class'] = str(dispatch[0])
+            out['throw_dispatch_message'] = str(dispatch[1]) or None
+        if position:
+            out['position_accepted'] = bool(position[0])
+            out['position_planned_s'] = float(position[1])
+            out['position_code'] = str(position[2]) or None
+        return out
+
+    @staticmethod
+    def _toss_record_catch_knobs(vel_scale) -> dict:
+        """The catch-side tunables in force for this toss.
+
+        Recorded because a corpus that pools two catch tunings is a corpus of
+        two machines (plan § 7 R3) — and the knobs are config, so nothing else in
+        the bag witnesses them.
+
+        ``vel_scale`` may be ``None``: on the REJECTED_BAD_GOAL path no cycle was
+        built, so no scale was ever resolved, and a null is the honest value. It
+        must NOT fall back to the config default — that would record a knob the
+        machine did not run.
+        """
+        return {
+            'catch_vel_scale': (float(vel_scale) if vel_scale is not None
+                                else None),
+            'catch_vel_ratio': float(hw.TEENSY_TRAJ_CATCH_VEL_RATIO),
+            'catch_vel_hold_pct': float(hw.TEENSY_TRAJ_CATCH_VEL_HOLD_PCT),
+            'catch_reach_freeze_s': float(hw.JB_TRAJ_CATCH_REACH_FREEZE_S),
+            'catch_settle_hold_s': float(hw.JB_TRAJ_CATCH_SETTLE_HOLD_S),
+            'catch_reach_envelope_mm': float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM),
+            # The gains the TOSS itself installs at PREPARE — the soft-catch set,
+            # not the ODrive defaults. Recording the defaults here would be a
+            # record of numbers the machine was not running.
+            'hand_pos_gain': float(_TOSS_SOFT_CATCH_GAINS['pos_gain']),
+            'hand_vel_gain': float(_TOSS_SOFT_CATCH_GAINS['vel_gain']),
+            'hand_vel_int_gain': float(
+                _TOSS_SOFT_CATCH_GAINS['vel_integrator_gain']),
+        }
+
+    def _publish_toss_record(self, result) -> None:
+        """Publish ONE declaration on ``toss/record`` and belt it to JSONL.
+
+        Called from the single authoritative outcome line, so exactly one record
+        exists per cycle terminal — including the REJECTED_BAD_GOAL path, where
+        the census matters most and the record degrades to identity + outcome.
+
+        **Fails silently, by design.** This is an instrument; it must never be
+        able to affect a teardown. The whole body is guarded, the belt write
+        happens OUTSIDE ``self._lock``, and the belt warns once per goal and then
+        goes quiet — a full disk is a lost measurement, never a stalled abort
+        ladder.
+        """
+        try:
+            record = self._toss_record_fields(result)
+            payload = toss_record.encode(record)
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning(
+                'toss record NOT built ({}) — instrument only, the cycle is '
+                'unaffected'.format(exc))
+            return
+        try:
+            self._toss_record_pub.publish(String(data=payload))
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning('toss/record publish failed: {}'.format(exc))
+        self._belt_toss_record(payload)
+
+    def _belt_toss_record(self, payload: str) -> None:
+        """Append one line to ``temp/logs/toss_records_<session>.jsonl``.
+
+        The bag is canonical; this belt exists only so a ``record:=false`` bench
+        session still produces a corpus. Same bytes from the same encoder, so a
+        belt line and a bag line are the same record.
+        """
+        if not _RECORD_BELT_DIR:
+            return
+        try:
+            os.makedirs(_RECORD_BELT_DIR, exist_ok=True)
+            path = os.path.join(
+                _RECORD_BELT_DIR,
+                'toss_records_{}.jsonl'.format(self._session_id))
+            with open(path, 'a') as fh:
+                fh.write(payload + '\n')
+        except Exception as exc:                               # noqa: BLE001
+            with self._lock:
+                warned = self._toss_record_belt_warned
+                self._toss_record_belt_warned = True
+            if not warned:
+                self.get_logger().warning(
+                    'toss record belt write failed ({}) — the bag is the '
+                    'canonical sink; silencing further belt warnings for this '
+                    'goal'.format(exc))
 
     # ── TossContinuous action (jugglebot/toss_continuous) ──────────────────────
 
@@ -2613,6 +3007,16 @@ class ReloadCoordinatorNode(Node):
                 if decision.action == SESSION_ACTION_START_CYCLE:
                     seq = self._build_toss_cycle(
                         catch_pose, flight, session.throw_delay_s, vel_scale)
+                    self._open_toss_record(
+                        action='toss_continuous',
+                        goal_id=_goal_id_hex(goal_handle),
+                        cycle_index=session.cycle_index,
+                        catch_pose=catch_pose, flight=flight,
+                        throw_delay=session.throw_delay_s, vel_scale=vel_scale,
+                        raw_goal={'throw_height_m': height,
+                                  'throw_delay_s': throw_delay,
+                                  'catch_vel_scale': vel_scale},
+                        session=session)
                     try:
                         cycle_result, exit_kind = self._run_toss_cycle(
                             seq,
