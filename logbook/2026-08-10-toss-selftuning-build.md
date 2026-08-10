@@ -936,3 +936,281 @@ raise, not the root cause.
 - **`N_MIN` (8), `TRIM_FRACTION` (0.10), `NODE_SNAP_TOL_MM` (1.0) and the
   200 ms timing ceiling stay PROVISIONAL** in the tilt tool's convention, so the
   commit that pins each is easy to find.
+---
+
+## Phase 2d — auto-reload, the reopened retry, and a covariate that does not fit (2026-08-11)
+
+**The first phase of this build that commands motion.** 2a–2c were an
+instrument, a lookup applied at zero, and an offline fit; 2d gives a
+`TossContinuous` session one motion-bearing interlude — `go_home` plus the
+shipping reload sequence — so a sitting survives a dropped ball instead of ending
+on one. Everything it commands is an existing, hardware-validated mechanism; what
+is new is *when* they run and *what refuses them*.
+
+### What landed
+
+| Deliverable | Where |
+|---|---|
+| `on_empty_cup` (IDL default `"STOP"`) + `max_reloads` (0 ⇒ config 3) + `reloads_used` on the result | `jugglebot_interfaces/action/TossContinuous.action` |
+| The whitelist resolver — anything that is not exactly `RELOAD` is `STOP` | `toss_session.resolve_on_empty_cup` |
+| `SESSION_ACTION_RELOAD` / `SESSION_PHASE_RELOAD`, the budget + floor counters, the interlude handshake | `toss_session.py` |
+| The § 3.9 ladder: precondition gate → verified-arrival recentre → the reload FSM → settle → `RELOAD_SETTLE` | `reload_coordinator_node._run_reload_interlude` and friends |
+| BB fail-open boot fence (`_bb_ball_in_hand_observed_false`) | `reload_coordinator_node._on_heartbeat` |
+| The BB terminal-outcome relay, and the targeted `THROW_ABORTED_NOT_SETTLED` retry | `ball_butler_node` → `bb/throw_outcome` → `_bb_throw_outcome_since` |
+| `ABORTED_NO_RELEASE` single retry, gated on a valid-HELD cup (operator decision 6) | `toss_session.note_cycle_result(..., ball_evidence=)` |
+| Layer 1.5 — N reads at a fixed gap in the QUIESCENT dwell, recorded as a covariate | `_maybe_read_dwell_tilt`, `_dwell_tilt_fields` |
+| `reload_settle` / `retry_of` / `goal_on_empty_cup` / `goal_max_reloads` / the `dwell_tilt` block, written | `_open_toss_record`, `_toss_record_fields` |
+| Four config keys | `jugglebot_operational.toss_session_{max_reloads,floor_pause_every,dwell_tilt_reads,dwell_tilt_gap_s}` |
+
+### Discussion
+
+#### The design's Layer-1.5 read budget does not fit in the dwell, and the arithmetic says so
+
+§ 3.10 asks for **N = 8 reads at a 0.15 s gap, ~1.2 s of a 6.0 s dwell**. That
+reads as 20 % of the window. It is not: the *quiescent* dwell — the only place
+§ 3.10 permits a read — is
+
+    quiescent = dwell_time_s − throw_delay_s − (CAUGHT-verdict latency)
+
+because a cycle's release is its own accept + `throw_delay`, so cycle N+1 STARTS
+at `landing + dwell − throw_delay` and everything after that instant is the next
+cycle's own countdown, PREPARE and THROW included. At the shipped defaults
+(dwell 6.0, delay 5.0) that is **1.0 s minus the 0.202–0.442 s verdict latency ≈
+0.7 s**, not 6.0. Eight reads do not fit; one or two do.
+
+This was not visible from the design text and it is the kind of error that would
+have shipped as a mystery ("why is `dwell_tilt_n` always 1?"). Three responses
+were considered:
+
+1. **Read during cycle N+1's CHECKING/POSITIONING**, which is before PREPARE.
+   Rejected: § 3.10's rule 1 is *reads never overlap PREPARE→THROW*, and the only
+   thing that currently makes that rule STRUCTURAL rather than a check is that
+   `_run_toss_cycle` blocks the session loop for a cycle's whole life. Putting a
+   read inside the cycle tick converts a structural guarantee into a conditional
+   one, on a service that blocks the Platform-Teensy loop streaming hand moves.
+   Wrong trade for a covariate with zero authority.
+2. **Raise the default dwell** so the schedule fits. Rejected here: operator
+   decision 3 fixed the cadence at 6.0 s, and this build does not get to move it
+   to make an instrument comfortable.
+3. **Ship the schedule, let the degrade rule do exactly what it was written
+   for**, and state the arithmetic where the operator will meet it — in the
+   config comment, the method docstring and this entry. Chosen. `dwell_tilt_n`
+   of 1–2 with `dwell_tilt_degraded` true is the *correct* reading at the shipped
+   cadence, and an operator who wants the full N buys it with `dwell_time_s ≈
+   7.5 s+` on the goal. That is one number in the capture tool, not a firmware
+   change.
+
+The follow-on the design already registered — timer-driven background SCL3300
+sampling into a cache, so a tilt read is a cache read — dissolves the whole
+constraint. Until it lands, the dwell-only schedule and degrade-never-delay are
+the fence.
+
+#### `THROW_ABORTED_NOT_SETTLED` exists, but nothing could see it
+
+§ 3.9 makes the BB not-positioned-in-time retry conditional: *"the retry must be
+targeted at the identifiable code … if no distinct code exists, the retry is not
+shipped."* The code exists — `BallButlerCommandOutcome.THROW_ABORTED_NOT_SETTLED`
+= 41, observed twice on hardware (2026-07-23 and 2026-07-24 sittings, both
+`axis=YAW`). But tracing it from firmware to consumer showed it could not reach
+one: `bb/throw_at_target` is **fire-and-forget** — `ball_butler_node` publishes
+the announcement and returns `success=True` as soon as the goal is dispatched,
+and the firmware's terminal `CMD_RESULT` arrives later on a callback that only
+**logs** it. From the reload FSM's seat a NOT_SETTLED throw is indistinguishable
+from an ordinary `MISSED`: the announcement landed, no ball came.
+
+So the design's binary — *ship the targeted retry, or ship nothing* — had a third
+option it did not anticipate: **make the code observable, then target it.**
+`ball_butler_node` now relays `result.message` on `bb/throw_outcome`
+(`std_msgs/String`; its leading token is the enum member name, so the consumer
+compares a named code rather than pattern-matching a sentence), and the
+coordinator caches it with an arrival stamp.
+
+The alternative rejected explicitly: infer NOT_SETTLED from the *absence of a
+tracked ball* (no `/balls` entry ever went IN_FLIGHT with `destination == us`).
+That proxy is available today and needs no wire — and it is wrong, because it
+also fires on every tracker failure, which is a different fault with a different
+remedy. The design's own words rule it out: a blanket retry "would swallow the
+fail-open boot bug and every real BB fault." A retry that asks an unwell machine
+to throw more real balls has to be keyed on the machine saying what is wrong.
+
+Two guards make the relay safe to consume: the cached outcome is ignored unless
+it is stamped **after this attempt began** (a stale NOT_SETTLED must not licence
+retrying a reload that failed for another reason), and every retry is charged to
+`max_reloads` — the retry re-enters the reload FSM and each re-entry is a real
+ball, so it cannot be free.
+
+#### The completion test moved from cycles to throws, and that is why a drop costs no data point
+
+Before this phase, `note_cycle_result` ended the session at
+`_cycle_index >= num_throws`. With auto-reload, a `REJECTED_NO_BALL` cycle
+consumes an index while flying nothing — so a 10-throw session with three drops
+would silently deliver seven data points. The completion test is now
+`_throws >= num_throws`.
+
+The two are **identical for every session the pre-2026-08-11 machine could run**,
+and that is the argument for making the change here rather than treating it as a
+behaviour edit: the only outcomes that do not increment `_throws` are the
+`REJECTED_*`/`ABORTED_*` family, and before this phase every one of those stopped
+the session before the check was reached. Nothing that could previously happen
+lands differently. The runaway that the cycle counter used to fence is now fenced
+by `max_reloads` and by `NO_RELEASE_MAX_CONSECUTIVE`, which are the fences that
+actually bound the new loops — a cycle counter never did.
+
+#### One sensor rung, two codes
+
+§ 3.9 names a single sensor code (`STOPPED_SENSOR_UNKNOWN`) for the rung "hand
+sensor `ball_held_valid` and reads empty". Tri-state means that rung can fail two
+ways, and they are not the same failure. UNKNOWN is blindness: refuse, because a
+dead sensor must not licence an autonomous BB throw at a cup nobody can see into
+— the fail-open default this project declined to copy from BallButler. SEATED is
+a **contradiction**: the interlude is only entered from `REJECTED_NO_BALL`, which
+is minted on a valid EMPTY read moments earlier, so a SEATED read here means
+something is wrong with the belief — and acting on it throws a real ball at a
+hand that already holds one. Shipping `STOPPED_CUP_NOT_EMPTY` is a deviation from
+the design's letter in the fail-closed direction, and it names the state the
+operator has to go and look at.
+
+#### `_execute_reload` was not refactored, deliberately
+
+The interlude drives the reload FSM through the node's own `_step_sequence` and
+its own `_safe_on_early_exit` — the mechanism is shared, so a rung added to the
+reload ladder lands in one place and both callers see it. What is duplicated is
+the ~15-line loop shell, because the rest of `_execute_reload` is goal-handle
+bookkeeping the interlude does not have: it owns no handle, and a session's
+interlude terminal is not the session's terminal. Refactoring would have edited a
+path with four sittings of hardware evidence behind it to serve a caller with
+none. The drift risk that matters (the ladder) is closed; the drift risk that
+remains (a loop-shell edit) is visible in two adjacent methods.
+
+#### S2 is amended, not quietly broken
+
+`toss_session`'s S2 said *"the session commands NO motion of its own."* That is
+now false, and the module docstring says so in those words rather than letting a
+future reader discover it. The amendment is bounded three ways: the interlude is
+entered from `REJECTED_NO_BALL` **only** — the one toss terminal where the FSM
+provably commanded nothing (minted in CHECKING, `_terminal_action` returns
+`ACTION_NONE`), so the machine is quiescent; every rung is an existing validated
+mechanism; and it is fenced by the budget and the floor tally. A session that
+omits `on_empty_cup` is bit-unchanged.
+
+#### The recentre pad is measured, not chosen
+
+`_go_home()` returns on the service ACK at plan-**install**, not on arrival — the
+same trap the MISS-cleanup floor already documents — so the interlude waits the
+profile out and then confirms a **fresh** commanded position inside
+`_RELOAD_CENTERED_TOL_MM` (66.53 mm). The profile is deterministic:
+`planner.build_return_to_neutral` takes `max(go_home_duration_s 2.0,
+min_move_duration_s 0.20)` and an infeasible move is refused at the service call.
+The only unmodelled terms are the ack→install latency and the publish period of
+the channel being read, so the pad was sized on the latter: across five bags of
+2026-08-10 (`12-06-49`, `15-16-03`, `16-04-26`, `16-13-48`, `16-30-44`),
+**15,409 inter-sample gaps** on `/trajectory/status` — the SAME 5 Hz timer that
+publishes `/trajectory/commanded_position` — ran **median 0.200 s, p99 ≤ 0.252 s,
+worst 0.643 s**. `_RECENTRE_VERIFY_PAD_S = 1.5` is 2.3× that worst gap and 1.5×
+the `_TRAJ_STATUS_STALE_S` freshness window the read applies. Erring long is
+free: by then the platform is parked, and the only cost of a longer window is
+time on a path that is already failing.
+
+### Fix
+
+Nine surfaces, in dependency order.
+
+1. **`TossContinuous.action`** — `string on_empty_cup "STOP"`, `int32
+   max_reloads`, `int32 reloads_used`. The string default is load-bearing and the
+   node re-applies it through `resolve_on_empty_cup`, which whitelists the one
+   dangerous value; a negative `max_reloads` is `REJECTED_BAD_GOAL(max_reloads)`
+   rather than coerced.
+2. **`config/hardware_config.yaml`** — `toss_session_max_reloads: 3`,
+   `toss_session_floor_pause_every: 5`, `toss_session_dwell_tilt_reads: 8`,
+   `toss_session_dwell_tilt_gap_s: 0.15`; regenerated and re-run for determinism.
+3. **`toss_session.py`** — the resolver, the two counters, `SESSION_ACTION_RELOAD`
+   / `SESSION_PHASE_RELOAD`, `note_reload_result`, the `ball_evidence`-gated
+   `ABORTED_NO_RELEASE` retry with its consecutive gauge, the two inherited flags
+   (each consumed at `START_CYCLE`, so exactly one cycle wears each), and the
+   completion test.
+4. **`reload_coordinator_node.py`** — `_reload_interlude_gate`,
+   `_recentre_for_reload`, `_run_reload_interlude`, `_run_one_reload_attempt`,
+   `_settle_after_reload`, the heartbeat fence, `_on_bb_throw_outcome` /
+   `_bb_throw_outcome_since`, `_maybe_read_dwell_tilt` / `_read_platform_tilt` /
+   `_dwell_tilt_fields`, the `get_platform_tilt` client, and the session-loop
+   wiring.
+5. **`ball_butler_node.py`** — the `bb/throw_outcome` relay (telemetry only;
+   guarded so it can never break the result chain).
+6. **The record** — `goal_on_empty_cup`, `goal_max_reloads`, `reload_settle`,
+   `retry_of`, and the `dwell_tilt` block, all written by `_toss_record_fields`.
+   `_toss_uid` is now one formula in one place, because `retry_of` names a uid it
+   minted.
+7. **`ros_ws/docs/choreography.md`** — regenerated; it picks up both new wires.
+8. **Tests** — 34 new (see Verification).
+9. **`plans/active/toss-selftuning.md`** — the 2d row marked landed, § 10 gains
+   the dwell-window finding.
+
+### Verification
+
+- **The gate** (`./run_tests.sh`, run 2026-08-11): **RESULT PASS — 4752 passed
+  of 5187 collected (435 deselected: the `nightly` tier), 221 s total**
+  (parallel 213 s, serial phase empty as the wrapper reports).
+- **`colcon build --packages-select jugglebot_interfaces jugglebot`**, run
+  2026-08-11: **2 packages finished, 0 failed** (interfaces 2 min 9 s, jugglebot
+  2.49 s). Interfaces FIRST — the `.action` changed, and a partial build takes
+  down every ball-op action. Verified against the BUILT IDL rather than the
+  source: `TossContinuous.Goal().on_empty_cup == 'STOP'`,
+  `max_reloads == 0`, `Result().reloads_used == 0`, so the mock in
+  `tests/ros/conftest.py` mirrors the wire rather than merely agreeing with the
+  file.
+- **73 new test functions** (29 FSM, 40 node, 4 record), several parametrised.
+- **Config determinism**: `python config/generate_config.py` run twice, second
+  run produced no further diff (2026-08-11).
+- **The recentre pad probe** (`/tmp/probe_go_home_settle.py`, run 2026-08-11):
+  15,409 `/trajectory/status` inter-sample gaps across five 2026-08-10 bags —
+  median 0.200 s, p99 ≤ 0.252 s, worst 0.643 s.
+
+New tests, by gate:
+
+| Gate (build spec) | Test |
+|---|---|
+| a node test for every named stop code | `test_gate_refuses_*` (×6), `test_the_interlude_cannot_be_entered_from_an_off_centre_park`, `test_a_not_settled_run_that_exhausts_the_budget_stops_with_the_budget_code`, `test_the_retry_is_targeted_at_that_code_and_nothing_else` |
+| the interlude cannot be entered from an off-centre park | `test_the_interlude_cannot_be_entered_from_an_off_centre_park`, `test_a_stale_commanded_position_reads_as_not_centred` |
+| an omitted `on_empty_cup` STOPS | `test_an_omitted_on_empty_cup_stops_the_session` + `test_on_empty_cup_wire_default_is_stop` + the 9-case whitelist parametrisation |
+| `stop_on_miss` semantics unchanged | `test_stop_on_miss_semantics_are_unchanged_by_the_reload_policy` |
+| NO_RELEASE retry fires ONLY on valid-HELD | `test_no_release_retry_is_gated_on_the_live_cup_read` (tri-state), `test_two_consecutive_no_releases_stop_the_session`, `test_the_no_release_streak_is_CONSECUTIVE_not_cumulative` |
+| a live `false` `toss_require_ball_evidence` refuses to arm | `test_gate_refuses_when_ball_evidence_is_disabled` |
+| dwell reads provably absent between PREPARE and THROW | `test_dwell_tilt_reads_have_exactly_one_call_site_and_it_is_the_dwell` (structural), `test_a_tight_dwell_degrades_the_read_count_never_the_throw` |
+
+### Open
+
+- **Layer 1.5 is thin at the shipped cadence.** At dwell 6.0 / delay 5.0 the
+  quiescent window admits ~1–2 reads, not 8, and the record says so
+  (`dwell_tilt_degraded`). The operator's lever is `dwell_time_s ≈ 7.5 s+` on the
+  capture goal; the structural fix is the registered SCL3300 async-cache firmware
+  follow-on. **D17 — "is arrival repeatability the dominant σ term?" — cannot be
+  answered from a 6.0 s-cadence corpus.**
+- **`STOPPED_FLOOR_CLEAR_REQUIRED` is unreachable at the shipped defaults**:
+  `max_reloads` 3 binds before `floor_pause_every` 5. It is a fence for a
+  deliberately long-budget session, and it is tested at the FSM level with an
+  explicit threshold rather than the default.
+- **The BB relay is best-effort telemetry.** `bb/throw_outcome` is a plain
+  `String` on a depth-10 QoS; a dropped message costs a retry (the session stops
+  by name instead), never a safety property. If the retry proves load-bearing on
+  hardware it wants a typed message and a sequence number.
+- **`_run_one_reload_attempt` duplicates `_execute_reload`'s loop shell.** By
+  choice (see the Discussion). If a third caller appears, extract it.
+- **A harness lesson, not a code one: never start the gate on its RESULT line.**
+  A run launched the instant `./run_tests.sh` printed `RESULT: PASS` — and a
+  concurrent `pytest --collect-only` against the same tree — produced a run that
+  collected **5096 instead of 5187** and passed 4661 instead of 4752, with no
+  failure and no error. Two pytest processes share `__pycache__` and the
+  assertion-rewrite cache, and `run_tests.sh`'s lock only serialises gates, not
+  ad-hoc pytest. Re-run alone it reproduces exactly (4752 / 5187, twice). A
+  silently SHORT collection that still says PASS is the worst shape a gate can
+  take, so: one pytest at a time, and wait for the process to exit, not for its
+  last line.
+- **The interlude's reload uses the reload FSM's OWN default throw delay**, not
+  the session's `throw_delay_s`. That is deliberate — the session's delay is a
+  toss parameter and the reload's is a BB countdown floor — but it means a
+  session's cadence and its interlude's are set by different numbers, which is
+  worth an operator's eye on the first sitting.
+- **Nothing measures how long an interlude actually takes.** The budget
+  (`_reload_interlude_budget_s`) is derived from constants; the first sitting
+  should compare it against the wall clock before anyone leans on the session
+  ceiling.
