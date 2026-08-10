@@ -1214,3 +1214,338 @@ New tests, by gate:
   (`_reload_interlude_budget_s`) is derived from constants; the first sitting
   should compare it against the wall clock before anyone leans on the session
   ceiling.
+
+---
+
+## Phase 2e — the session trim, and the measurement it does not have (2026-08-11)
+
+**The layer the design calls "the common mode".** 2b landed the persistent,
+home-referenced *spatial field*; 2e lands the RAM-only, per-goal *offset* that
+field deliberately leaves out — the part `level` noise moves every session and
+that therefore must never be persisted. The estimator ships complete, gated,
+property-tested and **DISABLED by default**, and the phase's central finding is
+why that default is the honest one rather than the cautious one.
+
+### What landed
+
+| Deliverable | Where |
+|---|---|
+| The estimator: shrinkage mean (`n₀ = 4`), significance + deadband + step + trim clamps, G1–G11 admission, CUSUM freeze, CONVERGED/STALLED, freeze-never-zero | `jugglebot/toss_trim.py` — `SessionTrim` |
+| The reduction and the three admission filters, **MOVED out of `tests/hardware/toss_fit_lib.py`** into the production package and imported back | `jugglebot/toss_trim.py` ← `toss_fit_lib` |
+| `δ(P) = c + G·(P − P_anchor)`, structurally refused unless the geometry supports it | `toss_trim.fit_affine` |
+| Speed gain `k_v` and session-local release latency `τ`, each with its own gate and authority; `τ` **never persisted** | `SessionTrim._observe_speed` / `_observe_tau` |
+| `toss_trim_enabled` — node parameter, **DEFAULT FALSE**; read ONCE per goal | `reload_coordinator_node._toss_aim_for_goal` |
+| The TOTAL re-clamped **at apply** over `map + trim`; map/trim/total reported separately | same method + `_toss_record_fields` |
+| One ingest point, fed by the canonical declaration | `_toss_trim_observe`, called from `_publish_toss_record` |
+| The end-of-goal PROPOSAL, written to `temp/logs/<session>_trim_proposal.yaml`, never promoted | `_toss_trim_end`, `SessionTrim.proposal` |
+| The `TRIM` console block, carrying `SESSION-ONLY` / `PERSISTENT` / `APPLIED` explicitly | `SessionTrim.console_lines` |
+
+### Discussion
+
+#### 1. The trim has no live measurement, and the two candidates are both forbidden
+
+§ 3.6's measurement is `land_err_mm`. Its schema origin is **M — mined**: it is
+produced offline by the mocap descending-branch estimator and joined into the
+record by `tools/probes/toss_record_miner.py`. The node has no producer of it,
+and the only two things it *could* be wired to are both refused on their merits:
+
+* `TossResult.catch_error_mm` is D5's named-forbidden observable — a
+  dead-reckoned free-fall extrapolation, a scalar *distance* rather than a signed
+  2-vector, and defined only for CAUGHT balls, i.e. selection-biased toward the
+  cup, which is the one direction an aim fit must not be biased in;
+* `BallState.landing_position` is the same tracker Kalman filter's predicted
+  plane crossing — the same lineage, one message earlier, and never validated
+  against the arrival-offset estimator the map is fitted from.
+
+Wiring either would have given an unreviewed online estimator ±0.15° of real
+authority on an observable the design forbids. So the seam is built and the
+measurement is refused **by name**: a live record reaches `SessionTrim.observe`,
+fails admission at `no_mocap_fit`, is counted in the refusal census, and the trim
+stays in `WARMUP` commanding exactly `(0.0, 0.0)`.
+
+That is not a stub. It is the reason `toss_trim_enabled` defaults false, the
+reason the end-of-goal artefact is a *proposal* an operator promotes (premise
+P1), and it composes: the ingest point is the canonical declaration, so the day a
+`land_err_mm` appears in it — replayed from a mined corpus, or from a future live
+arrival estimator — the loop starts closing with no further plumbing.
+`toss_trim.replay(records)` is the offline counterpart and is how the property
+tests close it today. `test_the_live_record_shape_is_refused_by_name_not_silently_ignored`
+is the test that should start failing when a live source lands.
+
+#### 2. The design's `2·se` gate lets 45.7 % of NOISE-ONLY sessions command a trim
+
+Probed before a line of the estimator was written (`/tmp/probe_toss_trim.py`,
+400 synthetic sessions of 60 tosses at σ = 20 mm/axis, landing errors generated
+through the production forward model): the design's `n ≥ 3 ∧ |r| ≥ 2·se` gate
+commanded a non-zero trim in **45.7 %** of sessions with **zero** true bias —
+mean 2.85 mm, and the 8.19 mm clamp at the 95th percentile.
+
+Root cause: the gate is a single-look significance test **re-evaluated at every
+update**. A wandering estimate eventually clears it by chance; the design's
+one-shot arithmetic (`se = σ/√(n₀+n)`) cannot see the sequential
+multiple-comparison problem it creates. Three tightenings were scanned together —
+`N_MIN_APPLY`, `SE_GATE`, and a consecutive-confirmation run — and chosen on
+**the expected residual aim error in mm**, not on the false-action rate, because
+what an operator feels is `E|δ − b|` (`/tmp/probe_toss_trim4.py`, 300 sessions ×
+72 tosses):
+
+| true bias | no trim | gate 2.0 | **gate 2.5** | gate 3.0 |
+|---|---|---|---|---|
+| 0.00° | 0.00 | 2.01 | **1.03** | 0.53 |
+| 0.07° | 3.82 | 3.74 | **3.79** | 3.77 |
+| 0.10° | 5.46 | 3.02 | **3.30** | 4.12 |
+| 0.15° | 8.19 | 2.89 | **2.95** | 3.78 |
+| 0.30° | 8.19 | 0.22 | **0.11** | 0.06 |
+
+Shipped: `N_MIN_APPLY = 6`, `SE_GATE = 2.5`, `SE_GATE_CONFIRM = 3`. 2.5 halves
+2.0's zero-bias cost for ≤ 0.3 mm at the biases worth correcting, and beats 3.0
+by 0.8 mm right in the band the trim exists for.
+
+#### 3. At the common mode the trim was SIZED on, it is a wash — and that is the number to watch
+
+The same table says something the design does not: **at the `level` common mode
+the trim exists to cancel — 1.2–1.7 mrad/axis = 0.069–0.097° = 3.8–5.3 mm — the
+trim is a wash at σ = 20 mm** (3.79 vs 3.82 mm). It only starts paying above
+~0.12°, and below ~0.07° it is a net cost.
+
+The whole value proposition therefore turns on σ, the per-toss arrival scatter —
+and **σ has never been measured on this machine**: the reference sitting reports
+`NO TRACK` on all 31 descending branches (2a, § 10). 20 mm is the design's own
+working figure, carried here as `SIGMA_PRIOR_MM` and flagged PROVISIONAL in as
+many words. If σ is really 20 mm, the honest operator recommendation is *fit the
+map, leave the trim off*; if the first real corpus puts σ nearer 8–10 mm, the
+trim pays at the common mode and `toss_trim_enabled` becomes worth flipping. That
+is a measurement, not an argument, and it is the first thing the first corpus
+should be asked.
+
+#### 4. G8's "shift > 3·se" is not a reachable threshold; re-derived from what it protects
+
+`3·se` is a moving target (`se` shrinks as `σ/√(n₀+n)`), and measured, a 3·se
+shift at n = 16 is **0.75 σ** — which no sequential test detects reliably inside
+a 60-toss goal at any tolerable false-alarm rate. Same shape as 2c's timing gate:
+re-derive from what the guard protects. G8 exists to catch the **braking-clamp
+class** of regime change — a large mid-session shift, tens of mm — so the spec
+becomes *rare false alarms, near-certain detection of ≥ 2 σ*
+(`/tmp/probe_toss_trim3.py`, 300 sessions per cell, shift injected at n = 20):
+
+| k | h | false alarm | 1σ step | 2σ step | 3σ step |
+|---|---|---|---|---|---|
+| 0.5 | 5.0 | 35.3 % | 78.0 % / 7 | 84.7 % / 3 | 84.7 % / 2 |
+| 0.5 | 7.0 | 6.7 % | 72.0 % / 10 | 98.3 % / 5 | 98.3 % / 3 |
+| **0.5** | **8.0** | **2.0 %** | 61.3 % / 12 | **99.7 % / 6** | 99.7 % / 4 |
+| 1.0 | 5.0 | 2.0 % | 13.0 % / 8 | 82.7 % / 5 | 98.7 % / 3 |
+
+(detected % / median samples to alarm). Shipped `k = 0.5, h = 8.0`. A false alarm
+costs precision only — it freezes a bounded trim and shouts — so the asymmetry is
+deliberate.
+
+**Two implementation defects had to be fixed before those numbers were even
+reachable**, and both are worth recording because both looked right:
+
+* **σ̂ as MAD·1.4826.** The design says "running robust sd" and MAD is the
+  obvious reading. It is consistent only asymptotically and is biased **low** at
+  the n = 5…10 this estimator lives in, so every standardised residual was
+  inflated. Measured consequence: over a 60-toss goal the G8 false-alarm rate
+  could not be driven below **14.8 %** at ANY `(k, h)` in the scan, and the
+  pairs that got closest detected a real shift in under 7 % of sessions
+  (probe 2). The
+  robustness is already bought better elsewhere: **G7 removes a > 4 σ̂ reduction
+  before it ever enters the history**, so a plain `ddof=1` sd over that history
+  is outlier-free by construction, unbiased, and far lower variance. One guard,
+  one place.
+* **Referencing the CUSUM (and G7) on the shrinkage estimate `r`.** `r` carries
+  the prior's pull, `n₀/(n₀+n)` of the distance between prior and data — 44 % of
+  it at n = 5. A session whose plant disagrees with its anchor therefore looks
+  like a stream of outliers on its own warm start: a 0.60° bias at σ = 2 mm
+  tripped `FROZEN_OUTLIERS` at n = 5 on the first seed tried. **`r` is what the trim ACTS
+  on and deliberately borrows strength from the prior; G7 and G8 judge whether
+  THE DATA is behaving, and a prior is not data.** They now reference the plain
+  running mean.
+
+#### 5. Four bugs the property tests found, all in the "obvious" reading of § 3.6.3
+
+Written out because each one is a working program that silently does the wrong
+thing, which is this project's expensive failure class:
+
+1. **The deadband belongs on the ESTIMATE, not on the step.** Putting it on the
+   step — "the quantity actually being commanded", which reads as the careful
+   choice — creates a dead ZONE between `DEADBAND` (0.10°) and `TRIM_MAX`
+   (0.15°): the first move toward any target below 0.10° is itself below 0.10°,
+   so **a real 0.12° bias produced no command at all**. The design's placement
+   asks *"is this bias worth correcting?"* and `STEP_MAX` bounds how fast the
+   answer is applied — two questions, two constants.
+2. **CONVERGED must not fire while the trim is SATURATED.** A clamped `δ` with a
+   small remaining demand is indistinguishable from convergence if you look only
+   at the demand — and it is the opposite: the estimator is asking for more
+   authority than it has and being refused. That is the case § 3.6.3 wants an
+   ERROR on (`STALLED`), and it was reporting "the loop settled".
+3. **CONVERGED must not LATCH.** `r_n` is a shrinkage mean whose estimand moves
+   as the prior's weight decays, so a session warm-started from an anchor that
+   disagrees with the plant passes through `r ≈ 0` on its way to the truth.
+   Latched there, it froze at zero and rode `r` to −0.108° without ever
+   commanding anything. CONVERGED is now DESCRIPTIVE and re-evaluated; the
+   `FROZEN_*` states stay terminal. Its criterion also gained the term that makes
+   it honest — `demand + 2.5·se < DEADBAND`, an upper confidence bound — because
+   without it the state cannot tell *"I have evidence of no bias"* from *"I have
+   no evidence of a bias"*.
+4. **A guard freeze must override CONVERGED.** With the freeze short-circuit on
+   `frozen` (which includes CONVERGED), three consecutive 4σ outliers after
+   convergence were counted and then silently discarded. Convergence is a
+   statement about the estimate; a guard is a statement about the plant; the
+   plant wins. Hence the `frozen` / `learning_stopped` split, which is also what
+   keeps G8 watching a converged session — the braking-clamp scenario is
+   precisely a plant that shifts *after* the loop settled.
+
+#### 5b. G5's session check latches LAYER 0 only — a map reload must not freeze the trim
+
+Caught in review rather than by a test, and it would have been a quiet
+operational trap. The first implementation latched
+`(tilt_map_version, toss_cal_version)` and froze `LEVELLING_CHANGED` on any
+change to either. But a **layer-1** reload mid-goal is harmless to this
+estimator by construction: the measurement is `y = reduce_to_aim(rec) −
+map_aim_rad(rec)`, and `reduce_to_aim` is the fixed point `b = A − J⁻¹·land_err
+= −ψ`, independent of the applied aim — so a record thrown under map A and one
+thrown under map B reduce to the *same* common-mode demand. Freezing there would
+punish precisely the workflow the capture routine is built around: fit, call
+`toss/reload_calibration`, verify.
+
+Layer 0 is genuinely different, and D3 says why: it moves the physical baseline
+the residual is measured against, so a residual fitted under tilt map A
+double-counts tilt map B's delta. So the latch is `tilt_map_version` alone, and
+`test_a_LAYER_ONE_map_reload_mid_goal_does_NOT_freeze_the_trim` pins it. The
+general shape is worth keeping: *a guard that fires on "something changed" needs
+to name which layer it is guarding, or it will fire on the layer whose changes
+it was designed to tolerate.*
+
+#### 6. One condition, no new constant, makes the loop self-terminating
+
+With the deadband correctly on `|r|`, `δ` is re-assigned to `r` at every update
+and therefore tracks `r`'s own random walk forever: measured at σ = 20 mm, the
+commanded trim never went 20 updates without a nudge in 240 tosses. That is
+exactly the churn the deadband exists to prevent and which the deadband — placed
+correctly — cannot prevent.
+
+The fix needed no new number: **move `δ` only when what is already commanded is
+significantly wrong**, `|r − δ| ≥ SE_GATE·se`. It is the same significance test
+as the first condition, asked about the residual instead of about the estimate.
+Read together the rule is *act when the estimate is significantly non-zero,
+worth correcting, and significantly different from what is already commanded*.
+Measured after: **0–2 commanded moves per 240-toss session**, and CONVERGED and
+"the pose stopped moving" became the same event instead of two.
+
+#### 7. The reduction and the admission filters moved into the production package
+
+2c put `reduce_to_aim`, `aim_landing_jacobian` and `admit_for_{aim,timing,speed}`
+in `tests/hardware/toss_fit_lib.py`, which was right when only an offline tool
+used them. 2e needs the same functions **online**, and a production module cannot
+import a test-directory one. The alternatives were a copy or a move.
+
+A copy would let the ONLINE trim and the OFFLINE fit drift about what a toss
+reduces to and which tosses are admissible — so the map an operator promotes
+would be fitted on a different population from the one the machine learnt on, and
+**nothing would ever surface the difference**. That is D11's argument for the
+labeller, one layer up. So: moved to `jugglebot/toss_trim.py`, imported back
+under the same names, `TossFitError` aliased (not subclassed — a subclass would
+silently stop catching what the moved functions raise), and pinned by
+`test_the_fit_library_imports_the_reduction_rather_than_copying_it`, which
+asserts object identity rather than equality.
+
+The move also let G4 (plant health) and G5 (levelling) finally be *implemented*
+rather than named. G5 is enforced fully. G4 is enforced **conditionally** and the
+gap is counted: `dip_below_x3_rev` / `stroke_peak_rev` ship null until the PLANT
+block is wired (§ 10), and refusing every record for a field the pipeline does
+not produce would make the guard indistinguishable from an outage, while
+admitting silently is how the braking clamp hid for a whole session. So a record
+that CARRIES the fields and is out of band is refused by name, and one that does
+not is admitted with `g4_unenforceable` incremented in the snapshot, the console
+and the proposal.
+
+`toss_fit_lib.synthetic_corpus` gained `gravity_correction_loaded` /
+`tilt_map_applied` / `toss_cal_version` as a consequence — a synthetic corpus now
+has to model a correctly-levelled machine explicitly, which is the guard working.
+
+#### 8. Two clamps are magnitudes, not per-axis boxes
+
+§ 3.6 opens "per axis `a ∈ {x, y}`" and the estimator follows that exactly —
+mean, sd, se, significance gate and deadband are all per axis. The two
+**authority** clamps are not: `TRIM_MAX` and the apply-time total are clamped on
+`hypot(rx, ry)`, direction-preserving. Root cause is the one
+`toss_cal._check_aim_magnitude` already argues one layer up: every quantity the
+bound is sized on (the C-LEVEL-2 composition regime, the 1.13 mm cup swing, the
+55 mm landing shift) is the from-vertical aim, and a per-axis box permits
+`hypot` = 1.414× the bound at the corners — 41 % more authority than the number
+that was justified.
+
+The TOTAL clamp lives at the apply seam and nowhere else, which is D7's *"re-
+clamped AT APPLY, not only at update"*: each layer bounds itself (1.0° for the
+map, 0.15° for the trim) and 1.15° is past the authority both arguments assume,
+so the only place that sum exists is the one line that adds them. `toss_trim.py`
+deliberately does **not** import `toss_cal` — operator decision 7 makes
+`reload_coordinator_node` the map's single owner and `tests/motion/test_toss_cal.py`
+pins it structurally — so the trim owns `TRIM_MAX` and the node owns the total.
+
+#### 9. CONVERGED and STALLED restated in the fixed-point convention
+
+The design writes both criteria against `|r_n|`, "how much error is left". This
+module's `r_n` is the *required total aim* (2c's fixed point `b = A − J⁻¹·land_err
+= −ψ`, independent of what is applied), so the equivalent quantity is the
+**residual demand** `|r_n − δ|` — how much the estimator is still asking for.
+Mechanical, but it has to be written down: read the design's text literally
+against this convention and CONVERGED can never fire, because `r_n` stays at the
+plant bias no matter how well the trim cancels it.
+
+### Verification
+
+- `./run_tests.sh` (run 2026-08-11): **RESULT PASS — 4847 passed in 218.09 s**
+  (parallel 221 s, serial phase empty as shipped). The parallel phase covers
+  `tests/motion/test_toss_trim.py` (**78** collected) and
+  `tests/ros/test_toss_trim_node.py` (**18**) alongside the 2b/2c/2d suites the
+  reduction move touches.
+- Scoped, while iterating: `pytest tests/motion/test_toss_cal_fit.py
+  tests/motion/test_toss_cal_analyse.py tests/motion/test_toss_cal.py
+  tests/motion/test_toss_record.py -q` (run 2026-08-11) → **171 passed in
+  11.33 s**, i.e. the 2b/2c surface is byte-for-byte unaffected by moving the
+  reduction into the production package.
+- `./run_tests.sh --full` (run 2026-08-11) at phase closure — the `nightly` tier
+  covers `controller/` and `sim/`, neither of which this phase touches, but the
+  plan's own gate asks for it at phase closure: **RESULT PASS — 5271 passed,
+  3 xfailed in 475.76 s (parallel) + 9 passed in 40.41 s (serial), total 521 s**.
+  That is the run the tree was frozen for: an earlier `--full` was discarded
+  because a scoped `pytest` overlapped it, which is 2d's own lesson about two
+  pytest processes sharing `__pycache__`.
+- Docs-only edits landed after that run — the two gate numbers above and one
+  Discussion subsection. **Coverage traced rather than assumed** (CLAUDE.md's
+  rule): `tests/sim/test_logbook_search.py` parses `logbook/` but asserts only
+  `len(entries) >= 2` plus the shape of the alphabetically-first entry (a
+  2026-03-30 file), and `tests/sim/test_plans_index.py` asserts the active-plan
+  file set and that each row has ≥ 4 cells with cells 1–3 non-empty. Neither
+  reads this entry's prose or that row's scope text, and the frontmatter and the
+  table structure are unchanged.
+- Probes, all uncommitted under `/tmp/` per `tools/probes/README.md`:
+  `probe_toss_trim.py` (geometry + the design's gate), `…trim2.py` (the MAD and
+  chasing-reference defects), `…trim3.py` (the shipped CUSUM table),
+  `…trim4.py` (the `E|δ − b|` table that chose `SE_GATE`).
+- `colcon build` is **not** required: no `.msg`/`.srv`/`.action` changed, and the
+  two touched packages' Python is read from the installed tree only for
+  `jugglebot`, which the launch already sources.
+
+### Open, carried into the plan
+
+- **No live measurement channel** (§ 1 above). The trim learns nothing on a live
+  session until either the miner's `land_err_mm` is replayed into it or a live
+  arrival estimator lands. Registered, not built.
+- **σ is unmeasured and the trim's value depends on it** (§ 3). First corpus
+  question.
+- **The `TRIM` console line cannot carry can-bridge uptime.** The design asks for
+  `uptime_ms` on every line; `reload_coordinator_node` does not subscribe to
+  `/link_status` and 2a's argument against adding that subscription to the node
+  that owns the hand, the latch and the abort ladder still stands. The line says
+  `uptime UNMEASURED` in as many words and carries goal-elapsed seconds instead;
+  the bag carries `/link_status` at 5 Hz for the offline join.
+- **`FROZEN_STALLED` on a real sub-clamp bias is expected at σ = 20 mm**, not
+  evidence of a plant change: measured, 1/20 sessions at a 0.12° bias. An
+  operator reading the STALLED banner on the first sitting needs to know that
+  before they go looking for a braking clamp.
+- **G4 is still only conditionally enforceable** (the PLANT block ships null) and
+  D16's automatic timing-fit refusal is still reported rather than enforced —
+  both inherited from 2a/2c, both now *counted* rather than merely named.

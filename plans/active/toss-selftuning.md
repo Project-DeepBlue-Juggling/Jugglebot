@@ -459,6 +459,29 @@ the first corpus.
 | `TRIM_MAX` | 0.15° = 2.618e-3 rad | 8.2 | = θ_acc, the tilt map's own accuracy floor, and ~1.5–2σ of the `level` single-sample scatter (1.2–1.7 mrad/axis) the trim exists to cancel. **A trim demanding more than that is a plant change, and the loop must FREEZE and shout rather than integrate into it.** 8.2 mm is 23 % of the capture radius, so a fully saturated wrong-signed trim cannot by itself cause a miss. |
 | `TOTAL_MAX` | 1.0° | 55 | Keeps the additive-rotation composition inside C-LEVEL-2's documented 1°×1° regime entry (cross term 1.523e-4 rad) and caps the cup-swing side effect at `64.78 × sin(1°) = 1.13 mm`. |
 
+> **AMENDED BY THE 2e BUILD (2026-08-11) — read this table with
+> `jugglebot/toss_trim.py`'s constants block beside it.** Four rows above are
+> superseded by measurement, each with its probe and its root cause in that
+> module and in the logbook's § Phase 2e; the rest ship verbatim.
+>
+> | Written above | Shipped | Why |
+> |---|---|---|
+> | apply at `n ≥ 3` | `N_MIN_APPLY = 6` | the gate is re-tested every update, so it is a sequential multiple comparison |
+> | `\|r_n\| ≥ 2·se` | `SE_GATE = 2.5`, held on `SE_GATE_CONFIRM = 3` consecutive updates | the written gate commanded a trim in **45.7 %** of ZERO-bias sessions; 2.5 halves the zero-bias cost (2.01 → 1.03 mm) for ≤ 0.3 mm at the biases worth correcting |
+> | DEADBAND on `\|r_n\|`, applied as written | same — but it is **not** on the step | a deadband on the step opens a 0.10–0.15° dead zone in which no correction can ever be commanded |
+> | G8 "a shift > 3·se" | tabular CUSUM, `k = 0.5`, `h = 8.0` sd units | 3·se at n = 16 is 0.75 σ, undetectable inside a goal; re-derived from what G8 protects (2 % false alarm, 99.7 % detection of a 2σ shift within 6 tosses) |
+>
+> Two further deviations, same place: the two **authority** clamps (`TRIM_MAX`
+> and the apply-time total) are **magnitudes**, not the per-axis boxes "per axis
+> a ∈ {x, y}" reads as — a box permits `hypot` = 1.414× the bound, 41 % more
+> authority than the number that was justified; and a third apply condition,
+> `|r_n − δ| ≥ 2.5·se`, was added with **no new constant** because without it
+> `δ` tracks `r`'s random walk forever (measured: never 20 quiet updates in 240
+> tosses; with it, 0–2 commanded moves per session). § 3.6.3's CONVERGED and
+> STALLED are restated against the residual demand `|r_n − δ|`, CONVERGED
+> gained an upper-confidence-bound term, it may not fire while saturated, and it
+> is **descriptive rather than latching** — the `FROZEN_*` states stay terminal.
+
 **Why a decaying-gain shrinkage mean and not an EWMA** — see the decision table,
 D6. In one line: the estimand is *constant within a session*, so a fixed-gain
 filter never converges and injects noise forever, while a shrinkage mean's
@@ -466,6 +489,9 @@ standard error falls as `σ/√(n₀+n)` (at σ = 20: 8.9 mm at **n₀+n = 5**, 
 9, 4.0 at 25 — i.e. after 1, 5 and 21 admitted tosses on top of the `n₀ = 4`
 prior). The gate `|r| ≥ 2·se` then guarantees a trim is only ever
 applied when the estimated bias exceeds twice the noise the action injects.
+(Shipped at **2.5·se, held over three consecutive updates** — the amendment box
+above has the measurement that moved it. The argument for a decaying gain over a
+fixed one is unaffected: it is about the estimand, not the threshold.)
 
 #### 3.6.1 Structure and scalars
 
@@ -521,6 +547,20 @@ A toss contributes only if **all** hold:
 | G10 post-reload | the cycle immediately after a reload interlude is excluded (`RELOAD_SETTLE`) | the hand has just primed-to-top and retracted, the platform has just traversed home→node; that cycle is not steady-state |
 | G11 retry cycle | a cycle retried under the `ABORTED_NO_RELEASE` carve-out (§ 3.9) is recorded and **excluded from every fit** | a retried cycle's dwell, hand state and dispatch history are not the steady-state ones the map describes |
 
+> **IMPLEMENTED BY THE 2e BUILD (2026-08-11), with two notes.** All eleven guards
+> now exist in ONE place — `jugglebot.toss_trim` — shared by the online trim and
+> by `toss_fit_lib`'s offline fit, so the two can no longer disagree about which
+> tosses are admissible. **G4** is enforced *conditionally*: `dip_below_x3_rev` /
+> `stroke_peak_rev` ship null until the PLANT block is wired (§ 10), so a record
+> that CARRIES them and is out of band is refused by name and one that does not
+> is admitted with `g4_unenforceable` counted in the snapshot, the console and
+> the proposal — refusing every record for a field the pipeline does not produce
+> would make the guard indistinguishable from an outage, and admitting silently
+> is how the braking clamp hid for a whole session. **G6** is D16's *measured*
+> trend test, made concrete: `(|slope|·sd(uptime)) / sd(per-node means)` over the
+> admitted reductions, refusing τ above 1.0 and reporting UNKNOWN — not "benign"
+> — when the session has too few paired samples, no uptime span or a single node.
+
 #### 3.6.3 Stop criteria — freeze, never zero
 
 - **CONVERGED** — `|r_n| < DEADBAND` for 3 consecutive updates at n ≥ 6 ⇒ freeze
@@ -536,6 +576,20 @@ A toss contributes only if **all** hold:
   guards tripped, tilt_map_version, estimator_version)`. Promotion into
   `config/toss_calibration.yaml` requires the explicit routine and its acceptance
   gates. This is premise P1, enforced rather than documented.
+
+> **AMENDED BY THE 2e BUILD (2026-08-11).** Read `|r_n|` above as the **residual
+> demand** `|r_n − δ|` — this module's `r_n` is the *required total aim* (2c's
+> fixed point, independent of what is applied), so read literally CONVERGED can
+> never fire, because `r_n` stays at the plant bias no matter how well the trim
+> cancels it. Three further corrections, all measured, all in the logbook's
+> § Phase 2e: CONVERGED gained an upper-confidence-bound term
+> (`demand + 2.5·se < DEADBAND`, because without it the criterion cannot tell "I
+> have evidence of no bias" from "I have no evidence of a bias"); it **may not
+> fire while `|δ|` is saturated** (a clamped trim with a small remaining demand
+> is the STALLED case, not the converged one); and it is **descriptive and
+> re-evaluated, not a latch** — the `FROZEN_*` states stay terminal, and a guard
+> freeze overrides CONVERGED. P1 is enforced by the proposal being written in a
+> schema `parse_toss_cal` REFUSES, so a mistaken `cp` into `config/` fails loudly.
 
 ### 3.7 Map format and versioning — `config/toss_calibration.yaml`
 
@@ -948,7 +1002,7 @@ is **consumed, not re-implemented**.
 | **2b** ✅ **LANDED 2026-08-11** | **Map plumbing, applied at zero.** | `config/toss_calibration.yaml` loader (`jugglebot/motion/toss_cal.py`, C-LEVEL-2 loader shape: candidates, env override, all-or-nothing validation, `map_version` over float-normalised numbers only); `toss/reload_calibration` Trigger + status fields; the aim applied in `_build_toss_cycle` through the tilted path; the three `TIER_8B` branches re-keyed on non-zero tilt; **`catch/pretilt_hold` raised for any non-zero aim** | MET: **zero-bias bitwise identity** pinned in `tests/motion/test_toss_release.py` (the aim path at bias 0 equals `compute_release_state` field-for-field, and the offset is exactly `[0.0, 0.0]`), and at the node the disabled path returns the SAME OBJECT (`is`, not `==`). `pretilt_hold` structural test over every axis and sign. D4 single-lookup: an AST manifest pinning `toss_cal.lookup` to one scope and that scope to one caller. Absent map ⇒ no new rejection code, no new topic traffic. `./run_tests.sh --full` (run 2026-08-11) → **5009 + 9 passed, 3 xfailed in 515 s**. **Deviations, both in the logbook**: the status fields ship on a latched `toss/calibration_status` JSON topic, not on `TrajectoryStatus` (a different node publishes that message and cannot know whether this map is applied); and the version hash also covers `units.aim`, `anchor.aim_rad` and `speed.k_v`, because 2e acts on all three. |
 | **2c** ✅ **LANDED 2026-08-11** | **Closed-loop sign test, offline.** | AS SHIPPED: `tests/hardware/toss_fit_lib.py` (the pure core — partition rule + census, the fixed-point reduction, admission, the D15 thin-node rule, both write-refusing guards, the document build validated through the production loader, `synthetic_corpus`), `tests/hardware/toss_cal_fit.py` (thin CLI: `--dry-run` / `--no-apply` / `--group` / `--allow-cross-partition` / `--allow-flat-field` / `--reload` + version readback), `tools/toss_cal_analyse.py` (heat map + quiver in LANDING space, per-node n/sd, anchor series, residual-vs-uptime scatter, map-vs-map diff, `--group` A/B, HTML+PNG to `temp/reports/`, `--json`) | MET: the closed loop injects a known bias, runs the REAL fit, installs the map and replays through the **production apply path** — 8+ mm uncorrected → **< 1 mm** corrected; a sign flip is pinned to fail by **>1.8×** the uncorrected error. Spatial-field recovery checked node by node on an asymmetric field. Both guards refuse the write. Version stability: identical numbers ⇒ identical version, one node ⇒ changed. `./run_tests.sh --full` (run 2026-08-11) → **5084 + 9 passed, 3 xfailed in 518 s**. **Deviations, all in the logbook**: § 3.7 item 3's sign corrected (`+` → `−`) and `S⁻¹/(4h)` replaced by a Jacobian differentiated out of the apply path; § 3.7 item 5's timing gate re-derived; home-referencing invariance is 1e-6 rad rather than byte-identical (the ballistic model is only second-order linear); `--allow-flat-field` added as a documented override. **NOT met, because not built:** G4's braking-clamp REFUSE (the PLANT block still ships null) and D16's automatic timing-fit refusal (reported, not enforced). |
 | **2d** ✅ **LANDED 2026-08-11** | **`TossContinuous` auto-reload — the first phase that commands motion.** | AS SHIPPED: `on_empty_cup` (IDL default `"STOP"`, re-applied by a **whitelist** resolver — anything not exactly `RELOAD` is STOP) / `max_reloads` (0 ⇒ config 3; negative ⇒ `REJECTED_BAD_GOAL(max_reloads)`) / `reloads_used` on the result; `SESSION_ACTION_RELOAD` + `SESSION_PHASE_RELOAD` with the § 3.9 ladder verbatim; verified-arrival recentre (`GO_HOME_DURATION_S` + a **measured** 1.5 s pad, timeout ⇒ `STOPPED_RECENTRE_FAILED`, never a reload attempt); the BB `observed_false` fence; the targeted `THROW_ABORTED_NOT_SETTLED` retry within budget — **which needed a new wire**, see the deviations; the valid-HELD-gated `ABORTED_NO_RELEASE` single retry with its two-consecutive stop; floor tally + pause; `reload_settle` / `retry_of` / `goal_on_empty_cup` / `goal_max_reloads` and the **Layer-1.5 dwell reads** written to the record; four config keys | MET: `./run_tests.sh` (run 2026-08-11) → **RESULT PASS, 4752 passed of 5187 collected in 221 s**; `colcon build --packages-select jugglebot_interfaces jugglebot` (run 2026-08-11) → **2 packages finished, 0 failed**, and the BUILT IDL is read back (`on_empty_cup` `'STOP'`, `max_reloads` 0, `reloads_used` on the result) so the test mock mirrors the wire rather than the file. Node tests for every named stop code (`STOPPED_BALL_EVIDENCE_DISABLED` / `_BB_NOT_READY` / `_BB_UNVERIFIED` / `_SENSOR_UNKNOWN` / `_CUP_NOT_EMPTY` / `_RECENTRE_FAILED` / `_RELOAD_BUDGET` / `_FLOOR_CLEAR_REQUIRED`); the off-centre park cannot enter the interlude; an omitted `on_empty_cup` STOPS (plus a 9-case whitelist parametrisation); the NO_RELEASE retry is tri-state-gated; a live `false` `toss_require_ball_evidence` refuses to arm; `stop_on_miss` unchanged under both policies; the dwell reads have exactly ONE call site and it is the quiescent-dwell branch (structural test). **Deviations, all in the logbook**: `THROW_ABORTED_NOT_SETTLED` exists but was **unobservable** (`bb/throw_at_target` is fire-and-forget), so `ball_butler_node` now relays the firmware's terminal outcome on `bb/throw_outcome` and the retry keys on that named code; the sensor rung ships **two** codes (UNKNOWN vs the SEATED contradiction), fail-closed; the session completion test moved from `cycle_index` to `throws` (behaviour-identical for every pre-2026-08-11 session) so a drop costs a reload rather than a data point; `_execute_reload` was deliberately NOT refactored. **NOT met as designed:** the Layer-1.5 read budget does not fit the shipped cadence — see § 10. |
-| **2e** | **The session trim.** | `jugglebot/toss_trim.py` (pure: shrinkage estimator, gates, clamps, guards, stop criteria); read **once** at `_build_toss_cycle`; `toss_trim_enabled` param default **false**; proposal written to `temp/logs/`; console `TRIM` line carrying `SESSION-ONLY` vs `PERSISTENT` explicitly | Property tests: never exceeds `TRIM_MAX`; total re-clamped at apply; freezes rather than zeroes on every guard; refuses the affine model when rank-deficient; a synthetic constant bias at σ = 20 converges inside the clamp and stops. Full suite green. |
+| **2e** ✅ **LANDED 2026-08-11** | **The session trim.** | AS SHIPPED: `jugglebot/toss_trim.py` — the shrinkage estimator (`n₀ = 4`), per-axis significance + deadband gates, magnitude `STEP_MAX`/`TRIM_MAX` clamps, admission guards G1–G11, a two-sided CUSUM freeze, CONVERGED/STALLED, freeze-never-zero on every guard path, `fit_affine` structurally refusing a rank-deficient geometry, and the `k_v` / session-local `τ` estimators with their own gates and authority (`τ` never persisted); **plus the reduction, the Jacobian and the three `admit_for_*` filters MOVED here from `tests/hardware/toss_fit_lib.py`** and imported back — one implementation shared by the online trim and the offline fit (D11's argument one layer up), which is also what finally implements G4 (conditionally, gap counted) and G5 (fully). At the node: `toss_trim_enabled` (default **false**), read ONCE at `_build_toss_cycle`, the TOTAL re-clamped **at apply** over `map + trim`, map/trim/total recorded separately, one ingest point fed by the canonical declaration, the end-of-goal proposal to `temp/logs/`, and the `TRIM` console block | MET: `./run_tests.sh` (run 2026-08-11) → **RESULT PASS, 4847 passed in 218.09 s**; `./run_tests.sh --full` (run 2026-08-11) → **RESULT PASS, 5271 passed + 3 xfailed in 475.76 s parallel and 9 passed in 40.41 s serial, total 521 s**. All five property gates pinned (`tests/motion/test_toss_trim.py`, **78** collected) plus the node seams (`tests/ros/test_toss_trim_node.py`, **18**) including a D4-shaped AST manifest for the single trim read and the single ingest point. **Deviations, all in the logbook**: `SE_GATE` is 2.5 not 2 and needs 3 consecutive confirmations at n ≥ 6 (the design's gate commanded a trim in 45.7 % of NOISE-ONLY sessions); G8's `3·se` re-derived as `k = 0.5, h = 8.0`; the deadband is on the ESTIMATE not the step; CONVERGED is descriptive rather than latching and cannot fire while saturated; the two authority clamps are magnitudes, not per-axis boxes. **NOT met, because it does not exist:** the loop cannot close LIVE — `land_err_mm` is a MINED field and both live candidates are D5-forbidden, so a live record is refused by name (`no_mocap_fit`) and the trim commands zero. See § 10. |
 | **2f** | **Acquisition tool.** | `tests/hardware/toss_cal_grid.py` — rungs SC-0…SC-3, all R1–R9 preflight refusals hoisted, `--dry-run` printing node order + toss count + **ETA + ball budget**, `BaseException` guard, `_meta.json` with `abort_reason` always set, **`STOPPED_RELOAD_BUDGET` ⇒ mark node thin/stale and skip to the next node**, reload-service + version readback | `--dry-run` makes zero service calls and zero action goals (test-asserted). A test that a `STOPPED_RELOAD_BUDGET` terminal advances the node cursor and does not abort the capture. Importer tests from `tests/motion/` (the `tests/hardware/` convention). Wire-disarmed refusal re-checked between nodes, outside the per-node `try` (test-asserted). Full suite green. |
 
 **2a is DONE** (2026-08-10). Its gate passed with two amendments the bags
@@ -1416,6 +1470,55 @@ the measurements.
   interlude's are set by different numbers. Worth an operator's eye on the first
   sitting, alongside **the interlude's real wall-clock cost**, which is currently
   derived from constants (`_reload_interlude_budget_s`) and never measured.
+
+### Raised by the 2e build (2026-08-11)
+
+- **The session trim has NO live measurement channel, and neither candidate is
+  admissible.** § 3.6's measurand is `land_err_mm`, whose schema origin is **M —
+  mined**: it comes from the offline mocap descending-branch estimator via
+  `toss_record_miner.py`. `reload_coordinator_node` has no producer of it, and
+  the two things it could be wired to are both refused on their merits —
+  `TossResult.catch_error_mm` is D5's named-forbidden observable (dead-reckoned,
+  a scalar *distance* not a signed 2-vector, and defined only for CAUGHT balls,
+  i.e. biased toward the cup) and `BallState.landing_position` is the same
+  tracker Kalman filter's predicted plane crossing, one message earlier. The
+  build therefore ships the seam and refuses the measurement **by name**: a live
+  record fails admission at `no_mocap_fit`, the trim stays `WARMUP` and commands
+  exactly `(0, 0)`. `toss_trim.replay(records)` closes the loop offline today.
+  Closing it live needs either a live arrival estimator in the node or an
+  operator-driven replay of a mined corpus into a session — **registered, not
+  built**, and it is the decision that governs whether the trim is ever more
+  than an instrument.
+- **At the common mode the trim was SIZED on, it is a WASH — and σ has never
+  been measured on this machine.** Measured expected residual aim error
+  `E|δ − b|` over 300 sessions × 72 tosses at σ = 20 mm/axis: at the `level`
+  common mode (0.069–0.097° = 3.8–5.3 mm) the trim returns 3.79 mm against
+  3.82 mm with no trim, and at **zero** bias it COSTS ~1.03 mm. It only starts
+  paying above ~0.12°. The whole value proposition turns on σ, the per-toss
+  arrival scatter, and the reference sitting reports `NO TRACK` on all 31
+  descending branches (2a) — so 20 mm is the design's working figure, not a
+  measurement. **First question for the first corpus.** If σ really is 20 mm the
+  honest recommendation is *fit the map, leave the trim off*.
+- **`FROZEN_STALLED` on a real sub-clamp bias is EXPECTED at σ = 20 mm** — 1/20
+  synthetic sessions at a 0.12° bias, because the estimate wanders past the
+  0.15° clamp on its way. An operator meeting the STALLED banner on the first
+  sitting needs to know that before they go hunting a braking clamp. The § 6
+  console/decision rows should say so.
+- **The `TRIM` console line cannot carry can-bridge uptime.** § 6 asks for
+  `uptime_ms` on every line; this node does not subscribe to `/link_status` and
+  2a's argument against adding that subscription to the node that owns the hand,
+  the latch and the abort ladder still stands. The line says `uptime UNMEASURED`
+  in as many words and carries goal-elapsed seconds instead; the bag carries the
+  topic at 5 Hz for the offline join. Revisit only with a reason of its own.
+- **Four of § 3.6's constants were amended against probes, and § 3.6's constants
+  table should be read with `toss_trim.py`'s beside it**: `SE_GATE` 2.5 with a
+  3-update confirmation at n ≥ 6 (the design's `n ≥ 3 ∧ |r| ≥ 2·se` commanded a
+  trim in **45.7 %** of zero-bias sessions — a sequential multiple-comparison
+  problem the one-shot arithmetic cannot see); G8's `3·se` re-derived as a
+  tabular CUSUM `k = 0.5, h = 8.0` (2 % false alarm, 99.7 % detection of a 2σ
+  shift within 6 tosses) because 3·se at n = 16 is 0.75σ and undetectable; the
+  DEADBAND on the estimate rather than the step; and both authority clamps as
+  magnitudes rather than the design's literal per-axis boxes.
 
 ### Carried from the design
 
