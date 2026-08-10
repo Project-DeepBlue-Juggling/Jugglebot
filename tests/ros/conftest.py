@@ -618,6 +618,13 @@ class _TossContinuousGoal:
         # .action file by
         # tests/ros/test_toss_session.py::test_stop_on_miss_wire_default_is_true.
         self.stop_on_miss = True
+        # MIRRORS `string on_empty_cup "STOP"` — the same doctrine one level on:
+        # an omitted or unreadable field must never start an autonomous BB
+        # reload. Pinned equal to the .action file by
+        # tests/ros/test_toss_session.py::test_on_empty_cup_wire_default_is_stop.
+        self.on_empty_cup = 'STOP'
+        # 0 => the config default (JB_OP_TOSS_SESSION_MAX_RELOADS, 3).
+        self.max_reloads = 0
 
 
 class _TossContinuousResult:
@@ -630,6 +637,7 @@ class _TossContinuousResult:
         self.per_cycle_catch_error_mm = []
         self.per_cycle_flight_s = []
         self.per_cycle_dwell_s = []
+        self.reloads_used = 0
 
 
 class _TossContinuousFeedback:

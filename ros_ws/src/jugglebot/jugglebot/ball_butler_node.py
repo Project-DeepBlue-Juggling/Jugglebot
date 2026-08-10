@@ -40,6 +40,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from geometry_msgs.msg import Point, Vector3
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from ament_index_python.packages import get_package_share_directory
@@ -247,6 +248,21 @@ class BallButlerNode(Node):
         # publish here using the solver's actual target z and serial-chain ToF.
         self.throw_announcement_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
+
+        # ── Publisher: the firmware's TERMINAL throw outcome ──
+        # bb/throw_at_target is FIRE-AND-FORGET: it publishes the announcement and
+        # returns success as soon as the goal is dispatched, so its caller never
+        # learns what the firmware actually did. THROW_ABORTED_NOT_SETTLED (BB not
+        # positioned in time — no ball ever left, observed on the 2026-07-23 and
+        # 2026-07-24 sittings, both axis=YAW) was therefore visible only in this
+        # node's log, and to a consumer it looked identical to an ordinary MISS.
+        # Relaying it makes ONE consumer decision possible: TossContinuous's
+        # auto-reload interlude retries that ONE code within its budget instead of
+        # stopping the session on a known BB-side defect. Best-effort telemetry —
+        # nothing here gates a throw, and a dropped message costs a retry, never
+        # a safety property.
+        self.throw_outcome_pub = self.create_publisher(
+            String, 'bb/throw_outcome', 10)
 
         # ── Service servers ─────────────────────────────────────
         self.create_service(
@@ -480,13 +496,23 @@ class BallButlerNode(Node):
             lambda fut, tid=target_id: self._on_throw_result(fut, tid))
 
     def _on_throw_result(self, future, target_id: str):
-        """Firmware terminal outcome (relayed CMD_RESULT) — log success/reason."""
+        """Firmware terminal outcome (relayed CMD_RESULT) — log it AND relay it.
+
+        The relay carries ``result.message``, whose LEADING TOKEN is the
+        ``BallButlerCommandOutcome`` member name (``_bb_outcome_text`` builds it
+        as ``NAME (axis=..., detail1=...)``), so a consumer compares against a
+        named firmware code rather than pattern-matching a sentence."""
         try:
             result = future.result().result
         except Exception as e:  # noqa: BLE001
             self.get_logger().warn(f'bb/throw result error: {e}')
             return
         tgt = target_id or 'point'
+        try:
+            self.throw_outcome_pub.publish(String(data=str(result.message)))
+        except Exception as e:  # noqa: BLE001
+            # Telemetry only — never let the relay break the result chain.
+            self.get_logger().warn(f'bb/throw_outcome publish failed: {e}')
         if result.success:
             self.get_logger().info(f'bb/throw OK for {tgt}: {result.message}')
         else:

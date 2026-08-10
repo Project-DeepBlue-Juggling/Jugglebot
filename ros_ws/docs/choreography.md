@@ -68,6 +68,12 @@
 - **subscribers:** _none_
 - **type:** `std_msgs.msg.Float32MultiArray`
 
+### `bb/throw_outcome`
+
+- **publishers:** `ball_butler_node`
+- **subscribers:** `reload_coordinator_node`
+- **type:** `std_msgs.msg.String`
+
 ### `catch/armed`
 
 - **publishers:** `reload_coordinator_node`
@@ -402,7 +408,7 @@
 ### `get_platform_tilt`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** `orchestrator_node`
+- **clients:** `orchestrator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.srv.GetTiltReadingService`
 
 ### `home`

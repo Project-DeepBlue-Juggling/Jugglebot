@@ -669,6 +669,50 @@ jugglebot_operational:
                                          # default dwell is ~2.3 minutes, well past every rung of the
                                          # § SECTION CONT hardware ladder (which tops out at 5).
                                          # Lower it for a cautious sitting.
+  toss_session_max_reloads: 3            # Default budget of BB reload attempts for ONE
+                                         # TossContinuous session (goal max_reloads 0 => this).
+                                         # THE ONLY machine-side fence on ball supply:
+                                         # ball_butler_node exposes no ball-count or magazine
+                                         # field, so supply has no machine observability and no
+                                         # fiction is invented for it — the operator stages the
+                                         # balls. On exhaustion the session fails CLOSED with
+                                         # STOPPED_RELOAD_BUDGET; the capture tool reads that
+                                         # terminal as "this node is exhausted", marks the node
+                                         # thin and skips to the next one.
+  toss_session_floor_pause_every: 5      # Balls on the floor within ONE session before the
+                                         # session stops cleanly between cycles
+                                         # (STOPPED_FLOOR_CLEAR_REQUIRED) so the operator can
+                                         # clear them. Every drop leaves a ball under a machine
+                                         # that is about to stroke again, and nothing on the
+                                         # robot can see the floor — the count is the session's
+                                         # own tally of reload interludes entered.
+                                         # 0 disables the pause. At the default max_reloads of 3
+                                         # the BUDGET binds first, so this is a fence for a
+                                         # deliberately long-budget session, not a routine gate.
+  toss_session_dwell_tilt_reads: 8       # Layer 1.5 — inclinometer reads taken during the
+                                         # QUIESCENT dwell and recorded as a per-toss COVARIATE
+                                         # with ZERO control authority (toss-selftuning § 3.10,
+                                         # operator decision 2). Nothing is applied; the reads
+                                         # exist so "is arrival repeatability actually the
+                                         # dominant sigma term?" becomes a measurement.
+                                         # 0 disables the schedule entirely.
+                                         # HARD RULE: get_platform_tilt BLOCKS the Platform-
+                                         # Teensy loop that streams hand moves, so the reads
+                                         # live entirely in the quiescent dwell (never between
+                                         # PREPARE and THROW) and the READ COUNT degrades before
+                                         # the throw's schedule moves — dwell_tilt_n = 0 is a
+                                         # legal record.
+                                         # NOTE the arithmetic, because it bites at the shipped
+                                         # defaults: the quiescent dwell is only
+                                         # dwell_time_s - throw_delay_s minus the CAUGHT-verdict
+                                         # latency, i.e. ~0.7 s at dwell 6.0 / delay 5.0 — so
+                                         # 8 reads fit only with a longer dwell (~7.5 s+). At
+                                         # the default cadence expect 1-2 reads and
+                                         # dwell_tilt_degraded true.
+  toss_session_dwell_tilt_gap_s: 0.15    # Spacing {s} between consecutive Layer-1.5 dwell reads.
+                                         # Matches the tilt-calibration grid's own read_gap_s so
+                                         # the covariate and the calibration capture sample the
+                                         # SCL3300 the same way.
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}

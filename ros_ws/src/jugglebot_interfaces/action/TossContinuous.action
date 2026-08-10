@@ -105,6 +105,44 @@ bool stop_on_miss true               # OPERATOR DECISION (c), 2026-07-28: defaul
                                      # REJECTED_* or ABORTED_* stops the session
                                      # REGARDLESS: that is a machine fault, and repeating a
                                      # fault num_throws times is how one fault becomes N.
+                                     # ONE carve-out since 2026-08-11, and it is NOT a
+                                     # relaxation: REJECTED_NO_BALL with on_empty_cup RELOAD
+                                     # runs the reload interlude instead of stopping. That
+                                     # terminal is the one where the FSM provably commanded
+                                     # NOTHING (minted in CHECKING, before _positioned /
+                                     # _prepare_dispatched, so _terminal_action is
+                                     # ACTION_NONE), so the interlude is entered from a
+                                     # provably quiescent machine.
+string on_empty_cup "STOP"           # STOP (default) | RELOAD — what the session does when a
+                                     # cycle is REJECTED_NO_BALL, i.e. the cup is empty
+                                     # because the previous ball bounced out during the dwell
+                                     # (the retention case stop_on_miss structurally cannot
+                                     # see — see the S3 header above).
+                                     # The IDL default is LOAD-BEARING and the node re-applies
+                                     # it: ANY value that is not exactly "RELOAD" (empty,
+                                     # misspelt, an older client's unset field) resolves to
+                                     # STOP. An unreadable field must never start an
+                                     # autonomous BB reload the operator did not ask for.
+                                     # RELOAD is reachable only with stop_on_miss false: with
+                                     # it true the MISSED cycle that dropped the ball has
+                                     # already stopped the session one cycle earlier.
+                                     # PREREQUISITE, checked LIVE at the interlude: config
+                                     # jugglebot_operational.toss_require_ball_evidence must
+                                     # be true. With it false a drop produces a silent empty
+                                     # dry stroke and the session would "reload" around a
+                                     # toss that never happened —
+                                     # STOPPED_BALL_EVIDENCE_DISABLED.
+int32 max_reloads                    # How many reload attempts the WHOLE session may spend.
+                                     # 0 => config default
+                                     # (jugglebot_operational.toss_session_max_reloads, 3).
+                                     # Negative => REJECTED_BAD_GOAL(max_reloads), the same
+                                     # sign-typo doctrine the other numerics carry.
+                                     # This is the ONLY machine-side fence on ball supply:
+                                     # ball_butler_node has no ball-count or magazine field,
+                                     # so supply has NO machine observability and none is
+                                     # invented here. On exhaustion the SESSION fails closed
+                                     # with STOPPED_RELOAD_BUDGET; the capture tool treats
+                                     # that terminal as "node exhausted" and skips the node.
 ---
 bool success                         # True iff throws_completed == num_throws AND
                                      # catches_confirmed == num_throws (a clean session).
@@ -127,6 +165,11 @@ float64[] per_cycle_catch_error_mm   # per cycle, tracker last-KF horizontal mis
                                      # when not caught / unknown)
 float64[] per_cycle_flight_s         # per cycle, measured release->catch-plane time (NaN
                                      # when unknown)
+int32 reloads_used                   # reload attempts actually spent (<= the resolved
+                                     # max_reloads). The session is the only witness of this
+                                     # — the interlude runs under the session's own busy
+                                     # claim, so no external Reload goal exists to count —
+                                     # and the capture tool scores "node exhausted" from it.
 float64[] per_cycle_dwell_s          # per cycle, the ACHIEVED landing(N-1) -> release(N)
                                      # spacing. NaN for cycle 1 (no previous landing).
                                      # This is the measurand the cadence row of the

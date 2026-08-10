@@ -209,17 +209,25 @@ def test_the_calibration_block_is_explicitly_zero_not_absent():
     assert row['toss_cal_applied'] is False
 
 
-def test_the_layer_1_5_block_is_null_until_2d():
-    """Schema in 2a, reads in 2d. Null is a LEGAL record for good — § 3.10's
-    degrade-never-delay rule makes ``dwell_tilt_n = 0`` legal on real hardware,
-    so analysers must tolerate the absent block from day one."""
+def test_the_layer_1_5_block_degrades_to_an_empty_read_set():
+    """Schema in 2a, reads in 2d. A toss with NO dwell reads — a single ``Toss``,
+    which has no dwell at all, or a session dwell too tight for one read — records
+    ``dwell_tilt_n = 0`` and nulls for the statistics. That is a LEGAL record for
+    good: § 3.10's degrade-never-delay rule makes it the routine outcome at the
+    shipped 6.0 s cadence, so analysers must tolerate it rather than treat it as
+    corruption.
+
+    ``dwell_tilt_n`` and ``dwell_tilt_degraded`` are NOT null, because "how many
+    reads did this toss get?" has a definite answer for every toss — and a null
+    there would let a fit silently treat "no reads" as "not measured yet"."""
     node = _node()
     _open(node)
     node._log_toss_outcome(TossResult(True, 'CAUGHT'))
     row = _records(node)[0]
-    for name in ('dwell_tilt_rad', 'dwell_tilt_sd_rad', 'dwell_tilt_n',
-                 'dwell_tilt_span_s', 'dwell_tilt_last_read_to_release_s',
-                 'dwell_tilt_degraded'):
+    assert row['dwell_tilt_n'] == 0
+    assert row['dwell_tilt_degraded'] is False
+    for name in ('dwell_tilt_rad', 'dwell_tilt_sd_rad', 'dwell_tilt_span_s',
+                 'dwell_tilt_last_read_to_release_s'):
         assert row[name] is None, name
 
 
@@ -380,3 +388,55 @@ def test_uptime_and_firmware_are_left_to_the_miner():
     assert row['uptime_ms_at_release'] is None
     assert row['bridge_fw_version'] is None
     assert 'link_status' not in node._subscriptions
+
+
+# ══ 2d — the session-policy and exclusion fields ═════════════════════════════
+
+def test_the_resolved_reload_policy_is_recorded_not_the_raw_field():
+    """RESOLVED, never raw: ``on_empty_cup`` has already been through the
+    whitelist and ``max_reloads`` through the config default, so the corpus
+    records the policy the machine RAN rather than the string the operator typed.
+    A corpus that stored the raw field could not tell a session that reloaded
+    from one whose typo silently resolved to STOP."""
+    from jugglebot.toss_session import ON_EMPTY_CUP_RELOAD, TossSessionSequencer
+    node = _node()
+    session = TossSessionSequencer(num_throws=3, dwell_time_s=8.0,
+                                   throw_delay_s=5.0,
+                                   on_empty_cup=ON_EMPTY_CUP_RELOAD,
+                                   max_reloads=3)
+    _open(node, action='toss_continuous', session=session, cycle_index=2)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    row = _records(node)[0]
+    assert row['goal_on_empty_cup'] == 'RELOAD'
+    assert row['goal_max_reloads'] == 3
+    # G10 is an explicit boolean on every session cycle — "was this cycle after a
+    # reload?" has a definite answer, and a null would let a fit include it.
+    assert row['reload_settle'] is False
+    assert row['retry_of'] is None
+
+
+def test_the_two_exclusion_flags_reach_the_record():
+    from jugglebot.toss_session import TossSessionSequencer
+    node = _node()
+    session = TossSessionSequencer(num_throws=3, dwell_time_s=8.0,
+                                   throw_delay_s=5.0)
+    _open(node, action='toss_continuous', session=session, cycle_index=1)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    _open(node, action='toss_continuous', session=session, cycle_index=2,
+          reload_settle=True, retry=True)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    row = _records(node)[1]
+    assert row['reload_settle'] is True
+    assert row['retry_of'] == _records(node)[0]['toss_uid']
+
+
+def test_a_single_toss_carries_no_session_policy_fields():
+    """A plain ``Toss`` has no session, so the reload policy has no referent —
+    and a null is the honest value, not a default nobody chose."""
+    node = _node()
+    _open(node)
+    node._log_toss_outcome(TossResult(True, 'CAUGHT'))
+    row = _records(node)[0]
+    assert row['goal_on_empty_cup'] is None
+    assert row['goal_max_reloads'] is None
+    assert row['reload_settle'] is None

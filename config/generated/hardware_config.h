@@ -161,6 +161,10 @@ namespace JBOp {
   constexpr float TOSS_SESSION_DWELL_DEFAULT_S = 6.0f;
   constexpr float TOSS_SESSION_DWELL_MARGIN_S = 0.6f;
   constexpr uint32_t TOSS_SESSION_MAX_THROWS = 20u;
+  constexpr uint32_t TOSS_SESSION_MAX_RELOADS = 3u;
+  constexpr uint32_t TOSS_SESSION_FLOOR_PAUSE_EVERY = 5u;
+  constexpr uint32_t TOSS_SESSION_DWELL_TILT_READS = 8u;
+  constexpr float TOSS_SESSION_DWELL_TILT_GAP_S = 0.15f;
   constexpr float TARGET_REACHED_POS_TOL_REV = 0.01f;
   constexpr float TARGET_REACHED_VEL_TOL_RPS = 0.1f;
   constexpr float GENTLE_MOVE_VEL_LIMIT_RPS = 2.5f;

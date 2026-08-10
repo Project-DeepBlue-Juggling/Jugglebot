@@ -552,6 +552,13 @@ def generate_launch_description():
             # than applied — the distinction the whole provenance gate exists
             # for, and one no per-toss record can prove was not edited later.
             '/toss/calibration_status',
+            # The BB firmware's TERMINAL throw outcome, relayed by
+            # ball_butler_node (2026-08-11). bb/throw_at_target is
+            # fire-and-forget, so this is the ONLY channel on which
+            # THROW_ABORTED_NOT_SETTLED — BB not positioned in time, ball never
+            # left — is observable at all; without it a bag cannot explain why a
+            # TossContinuous reload interlude retried, or why it stopped.
+            '/bb/throw_outcome',
             '/catch/armed',
             '/catch/prime_hold',
             '/catch/prime_dispatched',

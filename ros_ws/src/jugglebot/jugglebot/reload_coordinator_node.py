@@ -145,6 +145,7 @@ from jugglebot_interfaces.msg import (
 )
 from jugglebot_interfaces.srv import (
     BallButlerThrow,
+    GetTiltReadingService,
     GoToPose,
     SetFloat,
     SetHandGains,
@@ -171,7 +172,9 @@ from jugglebot.reload_sequencer import (
     ACTION_RECENTER,
     ACTION_SAFE_ABORT,
     ACTION_SEND_THROW,
+    BB_STATE_IDLE,
     ReloadObservations,
+    ReloadResult,
     ReloadSequencer,
     compute_catch_point_mm,
 )
@@ -199,10 +202,19 @@ from jugglebot.toss_sequencer import (
     TossSequencer,
 )
 from jugglebot.toss_session import (
+    DEFAULT_SESSION_MISS_CLEANUP_S,
+    GO_HOME_DURATION_S,
+    ON_EMPTY_CUP_RELOAD,
+    OUTCOME_STOPPED_RELOAD_BUDGET,
+    SESSION_ACTION_NONE,
+    SESSION_ACTION_RELOAD,
     SESSION_ACTION_START_CYCLE,
     SESSION_PHASE_CHECKING,
+    SESSION_PHASE_DWELL,
+    SESSION_PHASE_RELOAD,
     TossSessionResult,
     TossSessionSequencer,
+    resolve_on_empty_cup,
 )
 from jugglebot.catch_coordinator import CatchCoordinator
 from jugglebot import clock_offset, toss_record
@@ -390,6 +402,58 @@ _TOSS_POSITION_TOL_MM = float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
 _RELOAD_CENTERED_TOL_MM = (
     float(hw.JB_TRAJ_CATCH_REACH_ENVELOPE_MM)
     - float(hw.HAND_CATCH_OFFSET_MM) * math.sin(math.radians(MAX_TILT_DEG)))
+
+# ── The auto-reload interlude (TossContinuous on_empty_cup: RELOAD, § 3.9) ────
+# How long past the go_home PROFILE the interlude keeps looking for a fresh,
+# centred trajectory/commanded_position before minting STOPPED_RECENTRE_FAILED.
+#
+# The profile itself is deterministic and does NOT stretch: planner.
+# build_return_to_neutral takes `dur = max(go_home_duration_s, min_move_duration_s)`
+# = max(2.0, 0.20) = 2.0 s, and an infeasible move is refused at the service call
+# (so _go_home() returns False and we never get here). The only unmodelled terms
+# are the ack→install latency and the publish period of the channel we read.
+#
+# MEASURED (2026-08-11, five bags 2026-08-10_12-06-49 / _15-16-03 / _16-04-26 /
+# _16-13-48 / _16-30-44, 15,409 inter-sample gaps on /trajectory/status — the
+# SAME 5 Hz trajectory_node timer that publishes /trajectory/commanded_position):
+# median 0.200 s, p99 <= 0.252 s, worst 0.643 s. So 1.5 s is 2.3x the worst
+# observed publish gap and 1.5x the _TRAJ_STATUS_STALE_S freshness window the
+# read itself applies. Erring long is free: by then the platform is parked and
+# the only cost of a longer window is time on a path that is already failing.
+_RECENTRE_VERIFY_PAD_S = 1.5
+
+# ── Layer 1.5 — the dwell inclinometer covariate (§ 3.10, operator decision 2) ─
+# get_platform_tilt BLOCKS the Platform-Teensy loop that streams hand moves, so
+# the two hard rules are, in priority order: reads NEVER overlap PREPARE→THROW,
+# and a tight dwell degrades the READ COUNT rather than the throw's schedule.
+#
+# The client-side timeout deliberately ABANDONS a read that needs the bridge's
+# retry ladder: teensy_bridge_node runs _TILT_READ_ATTEMPTS (3) x
+# _RELAY_READ_TIMEOUT_S (0.5) = up to 1.5 s, which does not fit in a quiescent
+# dwell that is itself ~0.7-3 s. A healthy read is one relay round-trip (CAN,
+# milliseconds), so 0.30 s passes every healthy read and refuses to let a sick
+# one eat the window. The covariate has ZERO control authority, so an abandoned
+# read costs a data point and nothing else.
+_DWELL_TILT_READ_TIMEOUT_S = 0.30
+# Slack reserved between the last possible read and the next cycle's start.
+_DWELL_TILT_GUARD_S = 0.20
+
+# The ONE identifiable BB-side abort the interlude retries within budget: the
+# firmware's BallButlerCommandOutcome.THROW_ABORTED_NOT_SETTLED (41) — BB was not
+# positioned in time, so no ball ever left it (observed twice on hardware: the
+# 2026-07-23 and 2026-07-24 sittings, both `axis=YAW`). bb/throw_at_target is
+# FIRE-AND-FORGET — ball_butler_node publishes the announcement and returns
+# success BEFORE the firmware's terminal CMD_RESULT exists — so this code reaches
+# us only on the bb/throw_outcome topic, and a reload that hit it otherwise looks
+# exactly like an ordinary MISSED. Retrying the whole not-caught class instead
+# would swallow the BB fail-open boot bug and every real BB fault; that is why
+# the retry is keyed on this string and why the log line names it.
+_BB_NOT_SETTLED_CODE = 'THROW_ABORTED_NOT_SETTLED'
+# How recent a bb/throw_outcome must be to describe THIS reload attempt. The
+# reload FSM's own budget from throw to terminal is throw_delay (>= 2.5 s) +
+# announcement grace + confirm window, so anything older than the sequence
+# ceiling belongs to a previous attempt and must not license a retry.
+_BB_THROW_OUTCOME_STALE_S = float(_MAX_SEQUENCE_S)
 # The soft catch gains the toss sets itself at PREPARE. catch/prime_hold suppresses
 # catch_coordinator's auto-prime — which is the ONLY place soft catch gains are
 # normally set (_prime_hand → _set_catch_gains) — so without this the toss's catch
@@ -504,7 +568,25 @@ def _toss_deadline_s(seq) -> float:
     return max(_MAX_SEQUENCE_S, budget)
 
 
-def _toss_session_deadline_s(session, cycle_budget_s: float) -> float:
+def _reload_interlude_budget_s(session) -> float:
+    """Wall time the whole auto-reload allowance can legitimately consume.
+
+    Per attempt: the recentre (profile + verification window) + a full reload
+    sequence ceiling + the post-reload settle floor. Multiplied by the session's
+    reload budget, because every attempt is charged to it. Zero when the session
+    cannot reload at all, so a STOP session's ceiling is bit-unchanged."""
+    if str(getattr(session, 'on_empty_cup', '')) != ON_EMPTY_CUP_RELOAD:
+        return 0.0
+    per_attempt = (GO_HOME_DURATION_S + _RECENTRE_VERIFY_PAD_S
+                   + _sequence_deadline_s(ReloadSequencer(catch_point_mm=(0.0,
+                                                                         0.0,
+                                                                         0.0)))
+                   + DEFAULT_SESSION_MISS_CLEANUP_S)
+    return max(0, int(getattr(session, 'max_reloads', 0))) * per_attempt
+
+
+def _toss_session_deadline_s(session, cycle_budget_s: float,
+                             reload_budget_s: float = 0.0) -> float:
     """The node-level hard ceiling for a whole TossContinuous SESSION — same
     doctrine as :func:`_toss_deadline_s`, applied one level up: never below
     ``_MAX_SEQUENCE_S`` and never inside a legitimate session window, because the
@@ -517,10 +599,16 @@ def _toss_session_deadline_s(session, cycle_budget_s: float) -> float:
     this only bounds a wedge in the outer loop, whose only wait is time-based.
     Budget per cycle = the cycle's own ceiling + a full dwell (the quiescent wait
     before it), which over-counts because the cycle ceiling already contains
-    ``throw_delay`` — over-counting is the safe direction here."""
+    ``throw_delay`` — over-counting is the safe direction here.
+
+    ``reload_budget_s`` adds the auto-reload interludes a session may legitimately
+    spend (:func:`_reload_interlude_budget_s`). Without it an on_empty_cup RELOAD
+    session that actually uses its budget would trip the session ceiling for doing
+    exactly what it was asked to do — and this ceiling's exit path is an ABORT."""
     per_cycle = float(cycle_budget_s) + float(session.dwell_time_s)
     return max(_MAX_SEQUENCE_S,
-               int(session.num_throws) * per_cycle + _SEQUENCE_CEILING_MARGIN_S)
+               int(session.num_throws) * per_cycle + float(reload_budget_s)
+               + _SEQUENCE_CEILING_MARGIN_S)
 
 
 def _sequence_deadline_s(seq) -> float:
@@ -734,6 +822,31 @@ class ReloadCoordinatorNode(Node):
         self._toss_record_ctx = None          # per-cycle declaration context
         self._toss_record_announce = None     # (throw_time_ros, landing_time_ros)
         self._toss_record_belt_warned = False  # one WARN per goal, then silence
+        self._toss_record_prev_uid = None     # the PREVIOUS cycle's toss_uid, so
+                                              #   an ABORTED_NO_RELEASE retry can
+                                              #   name what it retried (guard G11)
+        # ── Layer 1.5 dwell inclinometer covariate (§ 3.10) ──
+        # Filled ONLY from the session's quiescent-dwell loop and consumed (and
+        # cleared) by the next cycle's _open_toss_record. Zero control authority:
+        # nothing in any FSM reads these.
+        self._dwell_tilt_reads = []           # [(t_perf, rx_rad, ry_rad), ...]
+        self._dwell_tilt_next_at = 0.0
+        self._dwell_tilt_degraded = False
+        # ── The auto-reload interlude's two consumer-side fences ──
+        # (a) BallButler heartbeats ball_in_hand = TRUE from boot, BEFORE its first
+        #     GPIO read (plans/active/hand-ball-sensor.md § the fail-open boot
+        #     default), and this node gates that bit only on heartbeat freshness.
+        #     A freshly-rebooted BB therefore makes the reload FSM SKIP
+        #     ACTION_CALL_RELOAD: it primes the hand, raises the latch, throws at
+        #     an empty BB and dies ABORTED_NO_ANNOUNCEMENT having armed everything
+        #     for nothing. Inside an autonomous session nobody is watching the
+        #     heartbeat, so the session latches the first FALSE it ever sees and
+        #     the interlude refuses until then. The underlying defect stays owned
+        #     by its own investigation — this is a CONSUMER-side fence.
+        self._bb_ball_in_hand_observed_false = False
+        # (b) the BB firmware's terminal throw outcome, which bb/throw_at_target
+        #     cannot return (it is fire-and-forget). (text, t_perf) or None.
+        self._bb_throw_outcome = None
         # Tier 8b: the pure catch-pose policy for the deferred A→B reach —
         # the SAME class + construction catch_coordinator_node uses (pinned
         # equal by a drift-guard test), so the reach target's receive-tilt/
@@ -781,6 +894,12 @@ class ReloadCoordinatorNode(Node):
             ThrowAnnouncement, 'throw_announcements', self._on_announcement, 10)
         self.create_subscription(
             TargetFeedback, 'trajectory/target_feedback', self._on_target_feedback, 10)
+        # The BB firmware's TERMINAL throw outcome, relayed by ball_butler_node.
+        # bb/throw_at_target returns as soon as the goal is dispatched, so this
+        # topic is the ONLY channel on which THROW_ABORTED_NOT_SETTLED — BB not
+        # positioned in time, ball never left — can reach a consumer.
+        self.create_subscription(
+            String, 'bb/throw_outcome', self._on_bb_throw_outcome, 10)
 
         # ── Service clients ──
         self._reload_cli = self.create_client(Trigger, 'bb/reload')
@@ -804,6 +923,13 @@ class ReloadCoordinatorNode(Node):
         self._go_to_pose_cli = self.create_client(GoToPose, 'trajectory/go_to_pose')
         self._hand_traj_cli = self.create_client(SetHandTrajCmd, 'set_hand_traj_cmd')
         self._hand_gains_cli = self.create_client(SetHandGains, 'set_hand_gains')
+        # Layer-1.5 COVARIATE ONLY (§ 3.10): the same get_platform_tilt the
+        # orchestrator's levelling handler drives. Called ONLY from the session's
+        # quiescent dwell — never from a cycle, never between PREPARE and THROW —
+        # because the read blocks the Platform-Teensy loop that streams hand
+        # moves. Nothing branches on the result.
+        self._tilt_cli = self.create_client(
+            GetTiltReadingService, 'get_platform_tilt')
 
         # ── Publisher: catch-armed state ──
         # catch_coordinator_node gates its hand prime/arm on this so it only actuates the
@@ -968,6 +1094,49 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             self._hb = msg
             self._hb_mono = time.perf_counter()
+            # The consumer-side fence on BallButler's fail-open boot default (see
+            # _bb_ball_in_hand_observed_false). Latched on the FIRST false ever
+            # seen and never cleared: it answers "has this BB's GPIO actually
+            # spoken?", which is a property of the BB process, not of a moment.
+            if not bool(getattr(msg, 'ball_in_hand', False)):
+                self._bb_ball_in_hand_observed_false = True
+
+    def _on_bb_throw_outcome(self, msg):
+        """``bb/throw_outcome``: the BB firmware's TERMINAL CMD_RESULT text,
+        relayed by ``ball_butler_node`` (``NAME (axis=..., detail1=...)``).
+
+        Cached with an arrival stamp and consulted by exactly one caller — the
+        auto-reload interlude, deciding whether a failed reload was the known
+        ``THROW_ABORTED_NOT_SETTLED`` (BB not positioned in time, so no ball ever
+        left) and therefore retryable within budget. Nothing else in this node
+        reads it, and no FSM branches on it."""
+        try:
+            text = str(msg.data)
+        except Exception:                                      # noqa: BLE001
+            return
+        with self._lock:
+            self._bb_throw_outcome = (text, time.perf_counter())
+
+    def _bb_throw_outcome_since(self, t_perf: float):
+        """The BB throw outcome CODE reported after ``t_perf``, or None.
+
+        Returns the leading token — the ``BallButlerCommandOutcome`` member name —
+        so the caller compares against a named code rather than pattern-matching a
+        human-readable sentence. Anything older than ``t_perf``, or older than
+        ``_BB_THROW_OUTCOME_STALE_S``, belongs to a previous attempt and is not
+        reported: a stale NOT_SETTLED must never license a retry of a reload that
+        failed for some other reason."""
+        with self._lock:
+            cached = self._bb_throw_outcome
+        if not cached:
+            return None
+        text, stamp = cached
+        if stamp < float(t_perf):
+            return None
+        if (time.perf_counter() - stamp) >= _BB_THROW_OUTCOME_STALE_S:
+            return None
+        token = str(text).split()[0] if str(text).strip() else ''
+        return token or None
 
     def _on_control_mode(self, msg):
         with self._lock:
@@ -3002,9 +3171,18 @@ class ReloadCoordinatorNode(Node):
         with self._lock:
             self._perf_minus_ros_s = offset
 
+    def _toss_uid(self, goal_id, cycle_index) -> str:
+        """THE per-cycle record identity. One formula, one place — the retry
+        back-reference (``retry_of``) names a uid this method minted, so a second
+        copy of the format string is how a corpus ends up with dangling
+        references."""
+        return '{}-{}-{}'.format(self._session_id,
+                                 str(goal_id or '')[:8], int(cycle_index))
+
     def _open_toss_record(self, *, action, goal_id, cycle_index,
                           catch_pose, throw_delay, vel_scale, raw_goal,
-                          flight=None, session=None) -> None:
+                          flight=None, session=None, reload_settle=False,
+                          retry=False) -> None:
         """Install the declaration context for ONE cycle. Never reads back into
         the FSM; deleting this method changes no commanded motion.
 
@@ -3017,18 +3195,35 @@ class ReloadCoordinatorNode(Node):
         at terminal time from ``self._active_seq``, not carried here — one source
         for "which FSM is running", the one the rest of the node already uses.
         """
+        uid = self._toss_uid(goal_id, cycle_index)
         ctx = {
             'action': action,
             'goal_id': goal_id,
             'cycle_index': int(cycle_index),
+            'uid': uid,
             'catch_pose': tuple(float(v) for v in catch_pose),
             'flight': (float(flight) if flight is not None else None),
             'throw_delay': float(throw_delay),
             'vel_scale': float(vel_scale),
             'raw_goal': dict(raw_goal),
             'session': session,
+            # Guard G10: the cycle after a reload interlude is excluded from
+            # every fit. Guard G11: a retried cycle names what it retried.
+            'reload_settle': bool(reload_settle),
         }
         with self._lock:
+            prev_uid = self._toss_record_prev_uid
+            # The Layer-1.5 reads taken during the dwell that PRECEDED this
+            # cycle belong to this cycle's record — they describe the platform
+            # attitude the throw was launched from. Snapshotted and cleared here
+            # so a read can never be attributed to two cycles.
+            ctx['dwell_tilt'] = list(self._dwell_tilt_reads)
+            ctx['dwell_tilt_degraded'] = bool(self._dwell_tilt_degraded)
+            self._dwell_tilt_reads = []
+            self._dwell_tilt_next_at = 0.0
+            self._dwell_tilt_degraded = False
+            ctx['retry_of'] = prev_uid if (retry and prev_uid) else None
+            self._toss_record_prev_uid = uid
             self._toss_record_ctx = ctx
             self._toss_record_announce = None
             self._toss_record_belt_warned = False
@@ -3070,7 +3265,8 @@ class ReloadCoordinatorNode(Node):
         cycle = int(ctx.get('cycle_index', 0) or 0)
         goal_id = str(ctx.get('goal_id') or '')
         rec.update({
-            'toss_uid': '{}-{}-{}'.format(self._session_id, goal_id[:8], cycle),
+            'toss_uid': (ctx.get('uid')
+                         or self._toss_uid(goal_id, cycle)),
             'session_id': self._session_id,
             'goal_id': goal_id or None,
             'action': str(ctx.get('action') or 'toss'),
@@ -3125,7 +3321,26 @@ class ReloadCoordinatorNode(Node):
                 'goal_num_throws': int(getattr(session, 'num_throws', 0)) or None,
                 'goal_dwell_time_s': float(getattr(session, 'dwell_time_s', 0.0)),
                 'goal_stop_on_miss': bool(getattr(session, 'stop_on_miss', True)),
+                # RESOLVED, never raw: on_empty_cup has already been through
+                # resolve_on_empty_cup and max_reloads through the config
+                # default, so the corpus records the policy the machine ran
+                # rather than the string the operator typed.
+                'goal_on_empty_cup': str(getattr(session, 'on_empty_cup', '')),
+                'goal_max_reloads': int(getattr(session, 'max_reloads', 0)),
             })
+        # Guards G10 / G11 — the two exclusion flags. Explicit booleans on every
+        # session cycle (never null), because "was this cycle after a reload?" has
+        # a definite answer for every cycle a session ran, and a null would make
+        # a fit silently include it.
+        if ctx.get('session') is not None:
+            rec['reload_settle'] = bool(ctx.get('reload_settle', False))
+        if ctx.get('retry_of'):
+            rec['retry_of'] = str(ctx['retry_of'])
+        # ── Layer 1.5 (§ 3.10) — COVARIATE, zero control authority ──
+        rec['dwell_tilt_degraded'] = bool(ctx.get('dwell_tilt_degraded', False))
+        rec.update(self._dwell_tilt_fields(
+            list(ctx.get('dwell_tilt') or []),
+            getattr(seq, 't_release', None) if seq is not None else None))
         if release is not None:
             # catch_point_global_mm comes from the UNCORRECTED state: it is B's
             # cup point, the quantity the miner independently recomputes from
@@ -3330,16 +3545,24 @@ class ReloadCoordinatorNode(Node):
         # 2026-07-28). A miss leaves a loose ball on the floor under a machine
         # that is about to stroke again.
         stop_on_miss = bool(getattr(req, 'stop_on_miss', True))
+        # on_empty_cup carries the SAME doctrine one level further: the IDL
+        # default is STOP and `resolve_on_empty_cup` whitelists the single
+        # dangerous value, so an omitted, empty, misspelt or older-client field
+        # can never start an autonomous BB reload the operator did not ask for.
+        on_empty_cup = resolve_on_empty_cup(getattr(req, 'on_empty_cup', ''))
+        max_reloads_raw = int(getattr(req, 'max_reloads', 0) or 0)
 
         result = TossContinuous.Result()
         bad_field = self._invalid_toss_session_goal_field(
-            catch_pose, height, throw_delay, vel_scale, dwell)
+            catch_pose, height, throw_delay, vel_scale, dwell,
+            max_reloads=max_reloads_raw)
         if bad_field is not None:
             self.get_logger().error(
                 f'TossContinuous goal REJECTED_BAD_GOAL({bad_field}): '
                 f'catch_position={catch_pose}, throw_height_m={height}, '
                 f'num_throws={num_throws}, dwell_time_s={dwell}, '
-                f'throw_delay_s={throw_delay}, catch_vel_scale={vel_scale} '
+                f'throw_delay_s={throw_delay}, catch_vel_scale={vel_scale}, '
+                f'max_reloads={max_reloads_raw} '
                 f'— refusing before anything runs.')
             self._fill_session_result(result, TossSessionResult(
                 success=False,
@@ -3379,7 +3602,19 @@ class ReloadCoordinatorNode(Node):
             max_throws=int(hw.JB_OP_TOSS_SESSION_MAX_THROWS),
             dwell_default_s=float(hw.JB_OP_TOSS_SESSION_DWELL_DEFAULT_S),
             dwell_margin_s=float(hw.JB_OP_TOSS_SESSION_DWELL_MARGIN_S),
-            chain_site_reachable=chain_reachable)
+            chain_site_reachable=chain_reachable,
+            on_empty_cup=on_empty_cup,
+            max_reloads=(max_reloads_raw if max_reloads_raw > 0
+                         else int(hw.JB_OP_TOSS_SESSION_MAX_RELOADS)),
+            floor_pause_every=int(hw.JB_OP_TOSS_SESSION_FLOOR_PAUSE_EVERY))
+        # Per-session reset of the Layer-1.5 accumulator. It is instrument state,
+        # so a leftover read from a previous goal would attribute one session's
+        # platform attitude to another's toss.
+        with self._lock:
+            self._dwell_tilt_reads = []
+            self._dwell_tilt_next_at = 0.0
+            self._dwell_tilt_degraded = False
+            self._toss_record_prev_uid = None
         session.start(time.perf_counter())
         # The ONE SESSION_CHECKING feedback. The FSM leaves CHECKING inside the
         # same step() that enters it (it either finishes with a reject — and a
@@ -3399,7 +3634,8 @@ class ReloadCoordinatorNode(Node):
             catch_pose_stow_mm=catch_pose, flight_time_s=flight,
             throw_delay_s=session.throw_delay_s, event_vel_mps=1.0)
         max_session_s = _toss_session_deadline_s(
-            session, _toss_deadline_s(budget_seq))
+            session, _toss_deadline_s(budget_seq),
+            reload_budget_s=_reload_interlude_budget_s(session))
 
         try:
             t_start = time.perf_counter()
@@ -3425,6 +3661,19 @@ class ReloadCoordinatorNode(Node):
                     else:
                         goal_handle.abort()
                     return result
+                if decision.action == SESSION_ACTION_RELOAD:
+                    # The auto-reload interlude (§ 3.9). Entered ONLY from a
+                    # REJECTED_NO_BALL terminal, i.e. from a machine that
+                    # commanded nothing — every rung below is an existing,
+                    # validated mechanism, and every refusal names itself.
+                    self._publish_session_feedback(goal_handle, session,
+                                                   SESSION_PHASE_RELOAD)
+                    ok, stop_code, attempts = self._run_reload_interlude(
+                        session,
+                        cancel_now_fn=(lambda: goal_handle.is_cancel_requested))
+                    session.note_reload_result(ok, attempts=attempts,
+                                               stop_code=stop_code)
+                    continue
                 if decision.action == SESSION_ACTION_START_CYCLE:
                     seq = self._build_toss_cycle(
                         catch_pose, flight, session.throw_delay_s, vel_scale)
@@ -3436,8 +3685,12 @@ class ReloadCoordinatorNode(Node):
                         throw_delay=session.throw_delay_s, vel_scale=vel_scale,
                         raw_goal={'throw_height_m': height,
                                   'throw_delay_s': throw_delay,
-                                  'catch_vel_scale': vel_scale},
-                        session=session)
+                                  'catch_vel_scale': vel_scale,
+                                  'on_empty_cup': on_empty_cup,
+                                  'max_reloads': max_reloads_raw},
+                        session=session,
+                        reload_settle=bool(session.cycle_reload_settle),
+                        retry=bool(session.cycle_is_retry))
                     try:
                         cycle_result, exit_kind = self._run_toss_cycle(
                             seq,
@@ -3458,9 +3711,17 @@ class ReloadCoordinatorNode(Node):
                     # never an observed landing: the observed one is exactly what
                     # the tracker is least trustworthy about, and a cadence must
                     # not inherit that noise.
+                    # The LIVE cup state at the cycle's terminal, read once and
+                    # passed in. It licenses exactly one decision — whether an
+                    # ABORTED_NO_RELEASE may be retried (operator decision 6) —
+                    # and it is read HERE, after the cycle has torn down, so it
+                    # describes the cup the retry would stroke over rather than
+                    # some earlier moment's belief.
                     session.note_cycle_result(
                         cycle_result, seq.t_release,
-                        seq.t_release + float(seq.flight_time_s))
+                        seq.t_release + float(seq.flight_time_s),
+                        ball_evidence=self._ball_sensor.evidence(
+                            time.perf_counter()))
                     if exit_kind != 'fsm':
                         # NODE-level exits inside a cycle end the SESSION too.
                         # The cycle has already safed and logged; terminalise
@@ -3484,6 +3745,17 @@ class ReloadCoordinatorNode(Node):
                     continue
                 self._publish_session_feedback(
                     goal_handle, session, decision.phase)
+                # ── Layer 1.5, and its ONLY call site ──
+                # Structurally confined to the quiescent dwell: _run_toss_cycle
+                # is a BLOCKING call, so no iteration of this loop happens while
+                # a cycle is live — there is no reachable path from PREPARE or
+                # THROW to a tilt read. The extra `not session.cycle_live` is a
+                # belt, not the mechanism (test_dwell_tilt_reads_have_one_call
+                # _site_and_it_is_the_quiescent_dwell pins the structure).
+                if (decision.action == SESSION_ACTION_NONE
+                        and decision.phase == SESSION_PHASE_DWELL
+                        and not session.cycle_live):
+                    self._maybe_read_dwell_tilt(now, session)
                 if now - t_start > max_session_s:
                     # Reachable only BETWEEN cycles (a cycle's own ceiling is
                     # enforced inside _run_toss_cycle), where nothing is armed
@@ -3514,21 +3786,383 @@ class ReloadCoordinatorNode(Node):
 
     @staticmethod
     def _invalid_toss_session_goal_field(catch_pose, throw_height, throw_delay,
-                                         vel_scale, dwell):
+                                         vel_scale, dwell, max_reloads=0):
         """Return the name of the first invalid TossContinuous goal numeric, or
         None. The six shared with ``Toss`` route through
         :meth:`_invalid_toss_goal_field` so the two actions cannot disagree about
         what a valid toss goal is; ``dwell_time_s`` gets the same treatment (0.0
         is the only "use the default" sentinel, so a negative is a sign typo).
         ``num_throws`` is an integer and is range-checked by the session FSM
-        (REJECTED_NUM_THROWS), which is where its bound lives."""
+        (REJECTED_NUM_THROWS), which is where its bound lives.
+
+        ``max_reloads`` carries the same sign-typo doctrine: 0 is the only "use
+        the config default" sentinel, so a negative is refused BY NAME rather
+        than coerced. Coercing it would be the worst of both worlds — the
+        operator asked for something the machine cannot represent, and silently
+        substituting a 3-ball budget for it is exactly the class of quiet wrong
+        answer the numerics gate exists to eliminate."""
         shared = ReloadCoordinatorNode._invalid_toss_goal_field(
             catch_pose, throw_height, throw_delay, vel_scale)
         if shared is not None:
             return shared
         if not math.isfinite(dwell) or dwell < 0.0:
             return 'dwell_time_s'
+        if int(max_reloads) < 0:
+            return 'max_reloads'
         return None
+
+    # ── The auto-reload interlude (§ 3.9) ─────────────────────────────────────
+
+    def _reload_interlude_gate(self, session):
+        """The node's half of the interlude precondition gate — the rungs that
+        are OBSERVATIONS rather than counters (the session owns budget + floor,
+        and has already passed them before ``SESSION_ACTION_RELOAD`` is emitted).
+
+        Returns a named stop code, or None. **Nothing moves on any refusal**: the
+        gate runs before the recentre and before the reload FSM is even built, so
+        a refused interlude leaves the machine exactly where the rejected cycle
+        left it — which is quiescent, because the interlude is only ever entered
+        from ``REJECTED_NO_BALL``.
+
+        Ordered so the code names the rung the operator must actually fix."""
+        # (1) The RUNTIME prerequisite. Phase 1 shipped
+        # toss_require_ball_evidence TRUE, but the operator's total-bypass escape
+        # hatch must not silently re-open the dry-stroke path: with the gate off,
+        # CHECKING passes on an empty cup, a drop produces a silent empty stroke,
+        # and the session would be "reloading" around tosses that never happened.
+        if not bool(hw.JB_OP_TOSS_REQUIRE_BALL_EVIDENCE):
+            return 'STOPPED_BALL_EVIDENCE_DISABLED'
+        now = time.perf_counter()
+        # (2) BB ready. Read through the SAME freshness-gated snapshot the reload
+        # FSM's own CHECKING uses, so the interlude cannot admit a state the
+        # sequence would immediately reject.
+        obs = self._build_observations(now)
+        if not obs.bb_connected or obs.bb_state != BB_STATE_IDLE:
+            return 'STOPPED_BB_NOT_READY'
+        # (3) The BB fail-open boot fence (consumer side — see
+        # _bb_ball_in_hand_observed_false). A BB that has never published a FALSE
+        # has never had its GPIO speak, and its `true` is a boot default.
+        with self._lock:
+            bb_verified = self._bb_ball_in_hand_observed_false
+        if not bb_verified:
+            return 'STOPPED_BB_UNVERIFIED'
+        # (4) The cup. UNKNOWN refuses — a dead sensor must not license an
+        # autonomous BB throw at a cup nobody can see into. SEATED refuses too,
+        # and gets its own code: the interlude was entered because the cup read
+        # EMPTY one moment ago, so a SEATED read here is a CONTRADICTION, and
+        # reloading onto a loaded cup throws a ball at a hand that already holds
+        # one. (§ 3.9 names one sensor code; splitting it is the one deviation
+        # here, and it is in the fail-closed direction.)
+        evidence = self._ball_sensor.evidence(now)
+        if evidence == EVIDENCE_SEATED:
+            return 'STOPPED_CUP_NOT_EMPTY'
+        if evidence != EVIDENCE_EMPTY:
+            return 'STOPPED_SENSOR_UNKNOWN'
+        return None
+
+    def _recentre_for_reload(self) -> bool:
+        """``go_home`` + VERIFIED arrival — rung 2 of the interlude ladder.
+
+        The reload catch is hard-fixed at the workspace centre and the reload
+        never pre-positions, so ``reload_sequencer._step_checking`` refuses an
+        off-centre park (``REJECTED_NOT_CENTERED``) — see that gate's own comment
+        for why it refuses rather than auto-returning. With
+        ``toss_stay_at_pose_on_caught`` true, "parked 150 mm off centre" is the
+        ROUTINE state after a CAUGHT cycle, so the session must recentre itself.
+
+        ``_go_home()`` returns on the service ACK at plan-INSTALL, not on
+        arrival, which is exactly the trap the MISS-cleanup floor already
+        documents. So this waits the profile out and then CONFIRMS, against a
+        FRESH ``trajectory/commanded_position``, that the platform is inside
+        ``_RELOAD_CENTERED_TOL_MM``. A timeout is ``STOPPED_RECENTRE_FAILED`` and
+        NEVER a reload attempt: asking BB to throw at a platform we could not
+        prove is centred is the mid-flight-rejection failure the centred gate
+        exists to make impossible."""
+        if not self._go_home():
+            self.get_logger().error(
+                'reload interlude: trajectory/go_home dispatch FAILED — not '
+                'attempting a reload from an unproven pose')
+            return False
+        t0 = time.perf_counter()
+        deadline = t0 + GO_HOME_DURATION_S + _RECENTRE_VERIFY_PAD_S
+        while rclpy.ok():
+            now = time.perf_counter()
+            if now >= t0 + GO_HOME_DURATION_S and self._platform_centered(now):
+                return True
+            if now >= deadline:
+                pos = self._live_commanded_position(now)
+                self.get_logger().error(
+                    'reload interlude: recentre NOT verified within %.2f s — '
+                    'commanded position %s vs tolerance %.2f mm (a stale or '
+                    'absent trajectory/commanded_position reads as NOT centred, '
+                    'by design)'
+                    % (GO_HOME_DURATION_S + _RECENTRE_VERIFY_PAD_S,
+                       'unknown' if pos is None else '(%.1f, %.1f) mm'
+                       % (pos[0], pos[1]), _RELOAD_CENTERED_TOL_MM))
+                return False
+            time.sleep(_TICK_S)
+        return False
+
+    def _run_reload_interlude(self, session, *, cancel_now_fn=None):
+        """Run ONE auto-reload interlude. Returns ``(ok, stop_code, attempts)``.
+
+        The ladder is § 3.9 verbatim, and every rung of it is an EXISTING
+        validated mechanism — the interlude invents no motion primitive:
+
+          1. precondition gate (:meth:`_reload_interlude_gate`) — nothing moves;
+          2. ``go_home`` + VERIFIED arrival (:meth:`_recentre_for_reload`);
+          3. the reload FSM, driven through the SAME :meth:`_step_sequence` the
+             shipping ``Reload`` action drives, with the SAME abort ladder and
+             the SAME terminal actions;
+          4. settle to the MISS-cleanup floor past the reload's landing, exactly
+             as the MISS path already does;
+          5. the caller flags the next cycle ``RELOAD_SETTLE`` (guard G10).
+
+        Rung 3 may run more than once: the BB firmware's
+        ``THROW_ABORTED_NOT_SETTLED`` (BB not positioned in time, ball never
+        left) is retried within the session's remaining budget, because it is a
+        known BB-side defect rather than a Jugglebot fault. The retry is keyed on
+        that CODE — not on "the reload did not catch" — so it cannot swallow the
+        BB fail-open boot bug or any real BB fault, and the log line names it.
+
+        The whole loop deliberately does NOT own the goal handle: a session's
+        interlude terminal is not the session's terminal."""
+        stop = self._reload_interlude_gate(session)
+        if stop is not None:
+            self.get_logger().warning(
+                'reload interlude REFUSED %s — nothing moved (reloads %d/%d, '
+                'floor %d)'
+                % (stop, session.reloads_used, session.max_reloads,
+                   session.floor_balls))
+            return False, stop, 0
+        if not self._recentre_for_reload():
+            return False, 'STOPPED_RECENTRE_FAILED', 0
+
+        attempts = 0
+        # The FSM refuses to emit SESSION_ACTION_RELOAD with no budget left, so
+        # this is a belt — and it fails CLOSED rather than granting a courtesy
+        # attempt, because "at least one" is exactly how a fence stops being one.
+        budget = int(session.reload_budget_remaining)
+        if budget <= 0:
+            return False, OUTCOME_STOPPED_RELOAD_BUDGET, 0
+        while attempts < budget:
+            attempts += 1
+            t_attempt = time.perf_counter()
+            outcome = self._run_one_reload_attempt(cancel_now_fn=cancel_now_fn)
+            if outcome is None:
+                return False, 'STOPPED_RELOAD_CANCELLED', attempts
+            if outcome.success:
+                self.get_logger().info(
+                    'reload interlude CAUGHT on attempt %d/%d — next cycle is '
+                    'flagged RELOAD_SETTLE and excluded from the fit'
+                    % (attempts, budget))
+                return True, None, attempts
+            code = self._bb_throw_outcome_since(t_attempt)
+            if code == _BB_NOT_SETTLED_CODE and attempts < budget:
+                self.get_logger().warning(
+                    'reload interlude attempt %d/%d ended %s with BB reporting '
+                    '%s — BB was not positioned in time, so no ball ever left '
+                    'it. Retrying within the reload budget (this retry is '
+                    'targeted at that ONE code; every other BB failure stops '
+                    'the session).'
+                    % (attempts, budget, outcome.outcome, _BB_NOT_SETTLED_CODE))
+                continue
+            if code == _BB_NOT_SETTLED_CODE:
+                self.get_logger().error(
+                    'reload interlude EXHAUSTED the budget on %s (%d attempts)'
+                    % (_BB_NOT_SETTLED_CODE, attempts))
+                return False, OUTCOME_STOPPED_RELOAD_BUDGET, attempts
+            self.get_logger().error(
+                'reload interlude attempt %d/%d ended %s%s — stopping the '
+                'session (only %s is retryable)'
+                % (attempts, budget, outcome.outcome,
+                   '' if code is None else ' (BB reported %s)' % code,
+                   _BB_NOT_SETTLED_CODE))
+            return (False, 'STOPPED_RELOAD_{}'.format(outcome.outcome),
+                    attempts)
+        return False, OUTCOME_STOPPED_RELOAD_BUDGET, attempts
+
+    def _run_one_reload_attempt(self, *, cancel_now_fn=None):
+        """Drive ONE reload sequence to its terminal. Returns the
+        :class:`ReloadResult`, or None if a cancel was honoured.
+
+        Deliberately a SEPARATE loop from :meth:`_execute_reload` rather than a
+        refactor of it. What must be shared is the MECHANISM — the FSM, the
+        observation builder, the action dispatch and the terminal safing — and
+        all of that is shared, through :meth:`_step_sequence` and
+        :meth:`_safe_on_early_exit`. What is NOT shared is the ~15 lines of
+        goal-handle bookkeeping, and pulling those apart would edit a
+        hardware-validated shipping path (four sittings of evidence) to serve a
+        caller that has no goal handle. The duplication is the loop shell only,
+        and the drift that matters — a rung added to the reload ladder — lands in
+        ``_step_sequence`` where BOTH callers see it."""
+        seq = ReloadSequencer(catch_point_mm=self._catch_point_mm,
+                              throw_delay_s=0.0)
+        seq.start(time.perf_counter())
+        with self._lock:
+            self._active_seq = seq
+            self._announced_ball_id = None
+            self._announced_id_untagged = False
+            self._preexisting_flight_ids = set()
+            self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
+        self._possession_logged = set()
+        max_sequence_s = _sequence_deadline_s(seq)
+        cancelled = False
+        try:
+            t_start = time.perf_counter()
+            while rclpy.ok():
+                if cancel_now_fn is not None and cancel_now_fn():
+                    cancelled = True
+                    self._safe_on_early_exit(seq)
+                    self._log_reload_outcome(
+                        ReloadResult(False, 'ABORTED_CANCELLED'))
+                    return None
+                now = time.perf_counter()
+                decision = self._step_sequence(seq, now, None)
+                if decision.done:
+                    self._log_reload_outcome(decision.result)
+                    return decision.result
+                if now - t_start > max_sequence_s:
+                    self._safe_on_early_exit(seq)
+                    r = ReloadResult(False, 'ABORTED_TIMEOUT')
+                    self._log_reload_outcome(r)
+                    return r
+                time.sleep(_TICK_S)
+            self._safe_on_early_exit(seq)
+            r = ReloadResult(False, 'ABORTED_SHUTDOWN')
+            self._log_reload_outcome(r)
+            return r
+        finally:
+            with self._lock:
+                self._active_seq = None
+            # Rung 4 — SETTLE. The reload's own terminal action (RECENTER on a
+            # catch, SAFE_ABORT otherwise) dispatches on SERVICE ACKS, so it
+            # returns while the go_home profile is still traversing. The MISS
+            # path already carries exactly this floor and for exactly this
+            # reason; reusing the constant is what keeps the two from drifting.
+            # SKIPPED on a cancel: the floor exists to protect the NEXT cycle,
+            # and a cancelled session has none — waiting it out would only make
+            # the operator's cancel look 2.8 s slower than it is. (The safing has
+            # already run above; this is a wait, not a teardown step.)
+            if not cancelled:
+                self._settle_after_reload()
+
+    def _settle_after_reload(self) -> None:
+        """Hold for the MISS-cleanup floor so the next cycle does not start
+        inside the reload's own teardown. Commands nothing — it waits."""
+        deadline = time.perf_counter() + DEFAULT_SESSION_MISS_CLEANUP_S
+        while rclpy.ok() and time.perf_counter() < deadline:
+            time.sleep(_TICK_S)
+
+    # ── Layer 1.5 — the dwell inclinometer covariate (§ 3.10) ─────────────────
+
+    def _maybe_read_dwell_tilt(self, now: float, session) -> None:
+        """Take at most ONE ``get_platform_tilt`` read, if one is due and the
+        quiescent dwell has room for it. COVARIATE ONLY: nothing reads the result
+        except the record writer.
+
+        Two hard rules, in priority order (§ 3.10):
+
+        1. **Reads never overlap PREPARE→THROW.** This is structural, not a
+           check: the only call site is the session loop's quiescent-dwell
+           branch, and ``_run_toss_cycle`` blocks that loop for a cycle's whole
+           life.
+        2. **A tight dwell degrades the READ COUNT, never the throw.** The read
+           is refused unless it can finish, worst case, a full
+           ``_DWELL_TILT_GUARD_S`` before the next cycle is due to start.
+
+        The arithmetic bites at the shipped defaults and is stated rather than
+        discovered later: the QUIESCENT dwell is ``dwell_time_s − throw_delay_s``
+        minus the CAUGHT-verdict latency, because the rest of the nominal dwell
+        is the next cycle's own throw countdown. At dwell 6.0 / delay 5.0 that is
+        ~0.7 s, so 8 reads at 0.15 s do NOT fit and the record honestly reports
+        ``dwell_tilt_degraded`` with n of 1-2. A longer ``dwell_time_s`` (~7.5 s+)
+        buys the full schedule."""
+        want = int(getattr(hw, 'JB_OP_TOSS_SESSION_DWELL_TILT_READS', 0) or 0)
+        if want <= 0:
+            return
+        gap = float(getattr(hw, 'JB_OP_TOSS_SESSION_DWELL_TILT_GAP_S', 0.15))
+        with self._lock:
+            taken = len(self._dwell_tilt_reads)
+            next_at = self._dwell_tilt_next_at
+        if taken >= want:
+            return
+        if now < next_at:
+            return
+        # Rule 2 — the throw's schedule is never a function of the covariate.
+        room = float(session.next_cycle_at) - now
+        if room < (_DWELL_TILT_READ_TIMEOUT_S + _DWELL_TILT_GUARD_S):
+            with self._lock:
+                self._dwell_tilt_degraded = True
+            return
+        reading = self._read_platform_tilt()
+        with self._lock:
+            self._dwell_tilt_next_at = now + gap
+            if reading is None:
+                # A failed read is a lost data point and nothing else. It still
+                # advances the schedule, so a dead inclinometer cannot turn the
+                # dwell into a retry storm against a service that blocks the
+                # Platform-Teensy loop.
+                self._dwell_tilt_degraded = True
+            else:
+                self._dwell_tilt_reads.append(
+                    (now, float(reading[0]), float(reading[1])))
+
+    def _read_platform_tilt(self):
+        """ONE ``get_platform_tilt`` call -> ``(rx, ry)`` rad, or None.
+
+        NaN is the service's documented failure shape (the bridge returns
+        ``[nan, nan]`` when the relay read fails), so it maps to None here rather
+        than into the record — a NaN covariate that reached the corpus would be
+        indistinguishable from a real reading of zero in any downstream fit that
+        forgot to check."""
+        try:
+            if not self._tilt_cli.service_is_ready():
+                return None
+            future = self._tilt_cli.call_async(GetTiltReadingService.Request())
+            resp = self._wait_future(future,
+                                     timeout_s=_DWELL_TILT_READ_TIMEOUT_S)
+            if resp is None:
+                return None
+            tilt = list(getattr(resp, 'tilt_xy', []) or [])
+            if len(tilt) < 2:
+                return None
+            rx, ry = float(tilt[0]), float(tilt[1])
+            if not (math.isfinite(rx) and math.isfinite(ry)):
+                return None
+            return rx, ry
+        except Exception as exc:                               # noqa: BLE001
+            self.get_logger().warning(
+                'dwell tilt read failed ({}) — covariate only, the session is '
+                'unaffected'.format(exc))
+            return None
+
+    @staticmethod
+    def _dwell_tilt_fields(reads, t_release_perf) -> dict:
+        """The Layer-1.5 record block from a cycle's dwell reads. Pure."""
+        n = len(reads)
+        out = {'dwell_tilt_n': n}
+        if n == 0:
+            return out
+        xs = [r[1] for r in reads]
+        ys = [r[2] for r in reads]
+        mean_x = sum(xs) / n
+        mean_y = sum(ys) / n
+        out['dwell_tilt_rad'] = [mean_x, mean_y]
+        if n >= 2:
+            # POPULATION sd: these are the reads that were actually taken, not a
+            # sample from which a wider population is being inferred.
+            out['dwell_tilt_sd_rad'] = [
+                math.sqrt(sum((v - mean_x) ** 2 for v in xs) / n),
+                math.sqrt(sum((v - mean_y) ** 2 for v in ys) / n)]
+        out['dwell_tilt_span_s'] = float(reads[-1][0] - reads[0][0])
+        if t_release_perf is not None and math.isfinite(float(t_release_perf)):
+            # THE field that proves rule 1 held on this toss: positive means the
+            # last read finished before the release. A corpus can therefore audit
+            # the invariant instead of trusting this docstring.
+            out['dwell_tilt_last_read_to_release_s'] = float(
+                float(t_release_perf) - reads[-1][0])
+        return out
 
     def _predicted_chain_site_mm(self, catch_pose, flight):
         """The platform CENTROID a CAUGHT catch at ``catch_pose`` will leave the
@@ -3612,6 +4246,7 @@ class ReloadCoordinatorNode(Node):
                                      session_result.cycle_flight_s]
         result.per_cycle_dwell_s = [float(v) for v in
                                     session_result.cycle_dwell_s]
+        result.reloads_used = int(getattr(session_result, 'reloads_used', 0))
 
     def _log_toss_session_outcome(self, result) -> None:
         """The single authoritative per-SESSION outcome line (the reload/toss
@@ -3625,6 +4260,8 @@ class ReloadCoordinatorNode(Node):
             parts.append(f'mean catch_err={float(np.mean(errs)):.0f} mm')
         if dwells:
             parts.append(f'dwell {min(dwells):.2f}-{max(dwells):.2f} s')
+        if int(getattr(result, 'reloads_used', 0) or 0):
+            parts.append(f'reloads {int(result.reloads_used)}')
         line = (f'TossContinuous {result.outcome} ({", ".join(parts)}); '
                 f'cycles: {list(result.per_cycle_outcomes)}')
         if result.success:
