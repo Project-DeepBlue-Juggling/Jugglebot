@@ -14,6 +14,7 @@ and the test fails (that is the point — it catches stale rows).
 | [bb-online-juggle-tilt-rearchitecture.md](bb-online-juggle-tilt-rearchitecture.md) | active | 2026-07-04 | Online-juggle bring-up: clean catch → single-ball toss → two-ball, tilt-aimed |
 | [bridge-clock-frequency-discipline.md](bridge-clock-frequency-discipline.md) | active | 2026-07-25 | Bridge clock rate discipline for µs-stable time across a multi-hour session |
 | [catch-reach-degenerate-overshoot.md](catch-reach-degenerate-overshoot.md) | active | 2026-07-28 | Catch-reach near-degenerate overshoot (0.78° target → 2.32° excursion) |
+| [catch-robustness.md](catch-robustness.md) | active | 2026-08-10 | Catch-success robustness programme: hand-drive braking-clamp diagnosis, sensor-truth possession verdicts + ball-evidence gate, drive-restoration bench phase, toss self-tuning loop |
 | [fk-convergence-tolerance.md](fk-convergence-tolerance.md) | active | 2026-07-27 | FK convergence tolerance — spurious "did not converge" at round-off residuals |
 | [hand-ball-sensor.md](hand-ball-sensor.md) | active | 2026-07-30 | Hand ball-present sensor: Phases 0–6 landed, Phase 7 gated on the hand-ODrive identity check |
 | [hand-command-continuity.md](hand-command-continuity.md) | active | 2026-07-31 | Hand command continuity across the Jetson→Platform-Teensy conduit |
