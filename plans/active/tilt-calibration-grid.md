@@ -540,10 +540,11 @@ down):
   54/75 measured) — corrected, and re-measured after the fixes.
 
 **Phase 4 must update the PROVISIONAL defaults in the same commit as the C0
-logbook entry** — `--dwell-s`, `--n-reads`, `--read-gap-s`, `--threshold-deg`,
-the drift-gate floor/`n_eff` in `tilt_cal_grid.py` (2026-08-10: the home-gate
-floor/ceiling this paragraph originally named were retired with the
-home-referencing redesign), and the two `CURVATURE_*` constants in
+logbook entry** — `--dwell-s`, `--n-reads`, `--read-gap-s`, `--threshold-deg`
+in `tilt_cal_grid.py` (2026-08-10: the home-gate floor/ceiling this paragraph
+originally named were retired with the home-referencing redesign, and the
+drift-gate floor/`n_eff` that briefly replaced them were retired with the
+anchor-mean redesign), and the two `CURVATURE_*` constants in
 `tilt_cal_analyse.py`. They are marked PROVISIONAL in code precisely so that
 commit is easy to find.
 
@@ -626,7 +627,8 @@ docstring aligned with the multi-candidate semantics.
 - **C1 — baseline capture + verify**: fresh `level` (recommended) → capture
   5×5/±150 → auto-apply → verification at ≥6 off-node check poses. PASS:
   every check's **home-referenced** residual ≤ **θ_acc (provisional 0.15°
-  until C0 pins it)**; **home drift gate PASS** and `|m_home|` under the
+  until C0 pins it)**; **home-anchor series non-aborting** (a p-p WARN is not
+  a failure) and `|m_home|` under the
   0.010 rad WARN; map min/max consistent with the 07-28 seed table (same
   order, same worst quadrant). 0.15° ≈ 8 mm at the 0.78 m default toss —
   well inside the 30–40 mm basin.
@@ -646,7 +648,22 @@ docstring aligned with the multi-candidate semantics.
 Each rung closes with a logbook entry; C2 almost certainly meets a
 Discussion trigger (it tests a design hypothesis).
 
-**2026-08-10 — C0 attempt (2026-08-09) aborted; blockers fixed, C0 to re-run.**
+**2026-08-10 — C0 COMPLETE; anchor-mean referencing landed; C1 next.** Two 3×3
+`--no-apply` captures (`temp/logs/tilt_cal_grid_20260810_115343*`, `_120735*`)
+completed all nine nodes: **`--dwell-s 2.0` pinned** (per-read sd median
+0.38 mrad vs 0.56 mrad at 0.5 s), `--n-reads 30` retained for probes, and the
+orientation-dependence probe measured **~0.10° at 6° commanded rx (1.7 %)** —
+under θ_acc, so the tilt-axis sweep stays a follow-on. Both runs then hit the
+end-of-sweep drift gate on a **reproducible +1.81 / +1.59 mrad ty home offset**
+with the `/gravity_offset` monitor silent and forensics clean; **mechanism
+OPEN**, owner's arrival-repeatability hypothesis leading (warm-up the
+alternative), owner tolerance 0.5°. Response: the map is now **anchor-mean
+home-referenced** (k home anchors interleaved through the sweep, reference =
+their mean) and the gate is reframed to report-always / WARN at 2 mrad p-p /
+abort only at 0.5° p-p or a 5 mrad consecutive step. **C1 next**, with
+`--dwell-s 2.0` explicit.
+
+**2026-08-10 — C0 attempt (2026-08-09) aborted; blockers fixed, C0 re-run.**
 Six attempts: one real gate abort (the home gate's 1.5 mrad floor sits inside
 the level reference's own 1.2–1.7 mrad/axis single-sample scatter — mistuned
 against physics, structurally untunable) and a first-of-class leg-0

@@ -403,6 +403,135 @@ def test_csv_mode_excludes_home_end_and_verify_home_from_the_field(tmp_path):
     assert field.metadata['verify_home_rad'] == pytest.approx([0.25, 0.25])
 
 
+# ── home anchors (anchor-mean referencing, 2026-08-10) ───────────────────
+
+
+def _write_anchor_csv(tmp_path, name='anchors.csv'):
+    """A capture CSV carrying MID-SWEEP 'home_anchor' rows as well as the
+    end-of-sweep 'home_end' row."""
+    import csv as _csv
+    hw_dir = os.path.join(_REPO_ROOT, 'tests', 'hardware')
+    if hw_dir not in sys.path:
+        sys.path.insert(0, hw_dir)
+    import tilt_cal_grid as tcg
+
+    offset = tcg.mounting_offset_rad()
+    path = tmp_path / name
+    with open(str(path), 'w', newline='') as handle:
+        writer = _csv.DictWriter(handle, fieldnames=list(tcg.CSV_COLUMNS))
+        writer.writeheader()
+        for k in range(2):
+            writer.writerow(tcg.csv_row(
+                'iso', float(k), 'capture', 0, 0, 0, 0.0, 0.0, 170.0, k,
+                0.001 - offset[0], 0.001 - offset[1], offset, 1))
+            writer.writerow(tcg.csv_row(
+                'iso', 2.0 + k, 'capture', 1, 1, 0, 150.0, 0.0, 170.0, k,
+                0.002 - offset[0], 0.002 - offset[1], offset, 1))
+        # mid-sweep anchor at (0, 0) — same node indices as the home visit,
+        # so ONLY the phase tag keeps it out of the field
+        for k in range(2):
+            writer.writerow(tcg.csv_row(
+                'iso', 60.0 + k, tcg.PHASE_HOME_ANCHOR, 4, 0, 0,
+                0.0, 0.0, 170.0, k,
+                0.0016 - offset[0], 0.0018 - offset[1], offset, 1))
+        for k in range(2):
+            writer.writerow(tcg.csv_row(
+                'iso', 120.0 + k, tcg.PHASE_HOME_END, 9, 0, 0,
+                0.0, 0.0, 170.0, k,
+                0.0022 - offset[0], 0.0026 - offset[1], offset, 1))
+    return str(path)
+
+
+def test_csv_mode_keeps_mid_sweep_anchors_out_of_the_field(tmp_path):
+    """A 'home_anchor' row sits at the home node's own ix/iy — averaging it in
+    would fold arrival-to-arrival variation into that node's residual, which
+    is the one quantity the anchors exist to report separately."""
+    field = tca.load_csv_field(_write_anchor_csv(tmp_path))
+    assert field.tx[0][0] == pytest.approx(0.001, abs=1e-12)
+    assert int(field.n_reads[0][0]) == 2
+
+
+def test_csv_mode_summarises_the_anchor_series_separately(tmp_path):
+    field = tca.load_csv_field(_write_anchor_csv(tmp_path))
+    home = field.metadata['home_reference']
+    anchors = home['anchors']
+    assert len(anchors) == 2                     # mid-sweep + end
+    assert anchors[0]['t_s'] == pytest.approx(60.0)
+    assert anchors[0]['m_ty_rad'] == pytest.approx(0.0018, abs=1e-12)
+    assert anchors[1]['m_ty_rad'] == pytest.approx(0.0026, abs=1e-12)
+    assert anchors[0]['n_ok'] == 2
+    # The reconstruction is honest about what a CSV cannot give it: the START
+    # anchor is the home grid node and stays in the field.
+    assert 'START anchor' in home['referenced']
+
+
+def test_report_prints_the_anchor_table_pp_and_trend(tmp_path, capsys):
+    """Map metadata carrying anchors must surface as a table with the p-p and
+    the signed trend — a monotonic trend argues sensor warm-up, scatter about
+    a mean argues arrival repeatability, and the report is where that call
+    gets made."""
+    tx, ty = _smooth_field(AXIS5, AXIS5)
+    doc = _doc(AXIS5, AXIS5, tx, ty)
+    doc['captured']['home_reference'] = {
+        'referenced': 'anchor-mean',
+        'anchors': [
+            {'t_s': 4.6, 'm_tx_rad': 0.0001, 'm_ty_rad': 0.0016,
+             'sd_tx_rad': 5.5e-4, 'sd_ty_rad': 7.0e-4, 'n_ok': 30},
+            {'t_s': 68.2, 'm_tx_rad': 0.0004, 'm_ty_rad': 0.0025,
+             'sd_tx_rad': 5.1e-4, 'sd_ty_rad': 6.6e-4, 'n_ok': 30},
+            {'t_s': 132.9, 'm_tx_rad': 0.0007, 'm_ty_rad': 0.0034,
+             'sd_tx_rad': 7.1e-4, 'sd_ty_rad': 8.7e-4, 'n_ok': 30},
+        ],
+        'anchor_mean_rad': [0.0004, 0.0025],
+        'anchor_pp_rad': [0.0006, 0.0018],
+        'trend_rad': [0.0006, 0.0018],
+        'anchor_verdict': 'OK',
+    }
+    field = tca.load_map_field(_write(tmp_path, 'anchored.yaml', doc))
+    tca.print_report(field, [])
+    out = capsys.readouterr().out
+    assert 'home anchors (3)' in out
+    assert 'their MEAN' in out
+    assert '132.9' in out
+    assert '+0.003400' in out
+    assert 'trend +0.001800 rad' in out
+    assert 'anchor mean (the shipped reference)' in out
+    assert 'anchor-mean' in out
+
+
+def test_report_flags_an_anchor_spread_over_the_warn_without_calling_it_a_fault(
+        tmp_path, capsys):
+    tx, ty = _smooth_field(AXIS5, AXIS5)
+    doc = _doc(AXIS5, AXIS5, tx, ty)
+    doc['captured']['home_reference'] = {
+        'referenced': 'anchor-mean',
+        'anchors': [
+            {'t_s': 0.0, 'm_tx_rad': 0.0, 'm_ty_rad': 0.0,
+             'sd_tx_rad': 5e-4, 'sd_ty_rad': 5e-4, 'n_ok': 30},
+            {'t_s': 90.0, 'm_tx_rad': 0.0, 'm_ty_rad': 0.0031,
+             'sd_tx_rad': 5e-4, 'sd_ty_rad': 5e-4, 'n_ok': 30},
+        ],
+    }
+    field = tca.load_map_field(_write(tmp_path, 'wide.yaml', doc))
+    tca.print_report(field, [])
+    out = capsys.readouterr().out
+    assert 'spread exceeds' in out
+    assert 'Not a fault' in out
+    assert 'arrival repeatability' in out.lower()
+    assert 'warm-up' in out.lower()
+
+
+def test_report_says_nothing_about_anchors_when_a_capture_has_none(tmp_path,
+                                                                   capsys):
+    """Pre-2026-08-10 maps must print exactly as before — no empty section,
+    no placeholder row."""
+    tx, ty = _smooth_field(AXIS5, AXIS5)
+    field = tca.load_map_field(
+        _write(tmp_path, 'plain.yaml', _doc(AXIS5, AXIS5, tx, ty)))
+    tca.print_report(field, [])
+    assert 'home anchors' not in capsys.readouterr().out
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────
 
 

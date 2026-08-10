@@ -367,44 +367,244 @@ def test_home_reference_aborts_when_the_sensor_barely_answered():
     assert 'finite reads' in message
 
 
-def test_drift_gate_formula_at_the_observed_noise():
-    """Worked numbers from the 2026-08-09 artifacts: sd 0.68 mrad/read, 30
-    reads, n_eff = 15 ⇒ tol = max(3·sqrt(2·0.68e-3²/15), 0.5 mrad) = 0.745
-    mrad. A 1 mrad relaunch-repush step must trip it; the observed
-    start-vs-end agreement must not."""
-    start = _home_stats(0.0016, 0.0002, 0.00068)
-    tol = max(3.0 * math.sqrt(2 * 0.00068 ** 2 / 15.0), 0.0005)
-    assert tol == pytest.approx(7.45e-4, rel=0.01)
-
-    quiet_end = _home_stats(0.0016 + 0.5 * tol, 0.0002, 0.00068)
-    ok, message = tcg.home_drift_verdict(start, quiet_end)
-    assert ok, message
-
-    stepped_end = _home_stats(0.0016 + 0.001, 0.0002, 0.00068)
-    ok, message = tcg.home_drift_verdict(start, stepped_end)
-    assert not ok
-    assert 'CHANGED' in message
+# ── the home-ANCHOR series (2026-08-10) ─────────────────────────────────
+#
+# The tight statistical drift gate that briefly replaced the staleness abort
+# is RETIRED. It compared the start and end home means against a
+# read-noise-derived tolerance (0.87/0.94 mrad) and aborted BOTH complete C0
+# captures on 2026-08-10 over a reproducible ~1.6-1.8 mrad ty offset, with the
+# causal /gravity_offset monitor silent and the ODrive forensics clean — i.e.
+# the correction had NOT changed. Discarding a finished, usable capture over
+# an effect ~4.8x inside the owner's 0.5 deg repeatability tolerance was
+# the bug. What replaces it: k home anchors interleaved through the sweep,
+# the mean of them as the shipped reference, and gates sized to the
+# repeatability tolerance rather than to read noise.
 
 
-def test_drift_gate_floor_covers_a_quiet_sensor():
-    """sd → 0 must not collapse the tolerance to 0 (bit-identical reads are
-    real: the SCL3300 is int16-quantised). The 0.5 mrad floor is the bound on
-    undetected mid-sweep corruption — 19% of the provisional theta_acc."""
-    start = _home_stats(0.001, 0.0, 1e-9)
-    ok, _ = tcg.home_drift_verdict(start, _home_stats(0.0014, 0.0, 1e-9))
-    assert ok, 'drift under the floor must pass'
-    ok, message = tcg.home_drift_verdict(start,
-                                         _home_stats(0.0016, 0.0, 1e-9))
-    assert not ok
-    assert 'floor' in message
+def _anchor(t_s, m_tx, m_ty, sd=5e-4, n_ok=30):
+    return tcg.HomeAnchor(t_s=t_s, m_tx=m_tx, m_ty=m_ty, sd_tx=sd, sd_ty=sd,
+                          n_ok=n_ok)
 
 
-def test_drift_gate_fails_loudly_without_an_end_measurement():
-    start = _home_stats(0.001, 0.0, 5e-4)
-    ok, message = tcg.home_drift_verdict(
-        start, _home_stats(0.0, 0.0, 0.0, n_ok=1))
-    assert not ok
+#: The C0 run-1 artifact, verbatim (temp/logs/tilt_cal_grid_20260810_115343*):
+#: home measured at the start of the sweep and again 138 s later at its end.
+#: The ty pair differs by +1.812 mrad — the number the retired gate aborted on.
+_C0_RUN1_START = _anchor(4.6, 0.00012847090099471145, 0.0015778696825412158,
+                         sd=5.485521847912701e-4)
+_C0_RUN1_END = _anchor(132.9, 0.0006909304729026296, 0.003389884411325777,
+                       sd=7.119917258411154e-4)
+
+
+def test_anchor_mean_of_one_anchor_is_that_anchor_bit_identically():
+    """The reduction to the previous design must be EXACT, not approximate."""
+    mean = tcg.anchor_mean_rad([_C0_RUN1_START])
+    assert mean[0] == _C0_RUN1_START.m_tx
+    assert mean[1] == _C0_RUN1_START.m_ty
+
+
+@pytest.mark.parametrize('k', [1, 2, 3, 4, 5, 6, 7, 8])
+def test_zero_scatter_anchors_reduce_bit_identically_to_single_home(k):
+    """k identical anchors must give back the value with NO last-digit drift.
+
+    This is the property that lets the anchor-mean design ship as a
+    refinement rather than a change: a perfectly repeatable machine produces
+    exactly the map the single-home referencing produced. Naive ``sum/k``
+    fails it — three copies of a float sum to a rounded ``3a`` whose quotient
+    by 3 can miss ``a`` by an ULP, and a committed machine-written YAML that
+    changes in its last digit because a redundant measurement AGREED is an
+    unexplainable diff.
+    """
+    value_tx, value_ty = 0.0016272979, -0.0011481
+    anchors = [_anchor(10.0 * i, value_tx, value_ty) for i in range(k)]
+    mean = tcg.anchor_mean_rad(anchors)
+    assert mean[0] == value_tx
+    assert mean[1] == value_ty
+
+
+def test_anchor_mean_is_the_arithmetic_mean_when_they_differ():
+    anchors = [_anchor(0.0, 0.001, 0.002), _anchor(50.0, 0.003, 0.004),
+               _anchor(100.0, 0.005, 0.000)]
+    mean = tcg.anchor_mean_rad(anchors)
+    assert mean[0] == pytest.approx(0.003)
+    assert mean[1] == pytest.approx(0.002)
+
+
+def test_anchor_mean_ignores_an_unusable_anchor_and_refuses_an_empty_series():
+    anchors = [_anchor(0.0, 0.001, 0.002),
+               _anchor(50.0, 99.0, 99.0, n_ok=1),      # no sd, not usable
+               _anchor(100.0, 0.003, 0.004)]
+    mean = tcg.anchor_mean_rad(anchors)
+    assert mean[0] == pytest.approx(0.002)
+    with pytest.raises(tcg.TiltCalError, match='no usable home anchor'):
+        tcg.anchor_mean_rad([_anchor(0.0, 0.001, 0.002, n_ok=1)])
+
+
+def test_anchor_spread_reports_pp_trend_and_the_worst_consecutive_step():
+    """Trend is END minus START and signed; p-p is order-free; max_step is
+    over CONSECUTIVE anchors — the three together are what separate a
+    monotonic warm-up from scatter from a discrete event."""
+    anchors = [_anchor(0.0, 0.0, 0.000), _anchor(30.0, 0.0, 0.003),
+               _anchor(60.0, 0.0, 0.001), _anchor(90.0, 0.0, 0.002)]
+    spread = tcg.anchor_spread(anchors)
+    assert spread['ty']['pp'] == pytest.approx(0.003)
+    assert spread['ty']['trend'] == pytest.approx(0.002)
+    assert spread['ty']['max_step'] == pytest.approx(0.003)
+    assert spread['ty']['max_step_index'] == 0
+    assert spread['n_anchors'] == 4
+
+
+def test_todays_reproducible_home_offset_no_longer_aborts():
+    """THE regression this change exists for — run 1 of 2026-08-10, verbatim.
+
+    Both C0 captures completed all nine nodes and were then thrown away by
+    the drift gate over this exact pair (ty +1.812 mrad against a 0.865 mrad
+    tolerance), with /gravity_offset silent and the forensics clean. It must
+    now be shipped. It sits just UNDER the 2.0 mrad p-p WARN line, so the
+    verdict is 'ok' — the WARN is sized above the observed effect deliberately
+    (a warning that fires on every healthy capture is a warning nobody reads);
+    a third anchor continuing this trend crosses it, which is exactly when the
+    operator should start recording the series.
+    """
+    verdict, message = tcg.anchor_series_verdict(
+        [_C0_RUN1_START, _C0_RUN1_END])
+    assert verdict == 'ok', message
+    spread = tcg.anchor_spread([_C0_RUN1_START, _C0_RUN1_END])
+    assert spread['ty']['pp'] == pytest.approx(0.0018120147, abs=1e-9)
+    assert spread['ty']['pp'] < tcg.ANCHOR_PP_WARN_RAD
+    # ...and the same series is nowhere near either abort line.
+    assert spread['ty']['pp'] < tcg.ANCHOR_PP_ABORT_RAD
+    assert spread['ty']['max_step'] < tcg.ANCHOR_STEP_ABORT_RAD
+
+
+def test_anchor_series_warns_above_the_pp_warn_but_does_not_abort():
+    """A WARN must be prominent, NON-blocking, and name BOTH open mechanisms —
+    an operator who reads one as settled stops recording the series, and the
+    series is the only thing that discriminates them."""
+    anchors = [_anchor(0.0, 0.0, 0.000), _anchor(60.0, 0.0, 0.0015),
+               _anchor(120.0, 0.0, 0.0025)]
+    verdict, message = tcg.anchor_series_verdict(anchors)
+    assert verdict == 'warn'
+    assert 'ARRIVAL REPEATABILITY' in message
+    assert 'WARM-UP' in message
+    assert 'discriminate' in message
+    assert 'VALID' in message
+
+
+def test_anchor_series_aborts_at_the_half_degree_repeatability_ceiling():
+    """0.0087 rad = 0.5 deg is the OWNER-STATED repeatability tolerance, not a
+    statistical bound: past it, which arrival was used as the reference stops
+    being a rounding error against the 0.15 deg theta_acc."""
+    assert tcg.ANCHOR_PP_ABORT_RAD == pytest.approx(math.radians(0.5),
+                                                    abs=5e-5)
+    # Ramped over three steps so no CONSECUTIVE step trips its own (5 mrad)
+    # ceiling — this test is about the p-p line and nothing else.
+    def _ramp(total):
+        return [_anchor(60.0 * i, 0.0, total * i / 3.0) for i in range(4)]
+
+    assert tcg.anchor_series_verdict(
+        _ramp(tcg.ANCHOR_PP_ABORT_RAD - 1e-5))[0] == 'warn'
+    verdict, message = tcg.anchor_series_verdict(
+        _ramp(tcg.ANCHOR_PP_ABORT_RAD + 1e-5))
+    assert verdict == 'abort'
+    assert 'REPEATABILITY TOLERANCE' in message
+
+
+def test_anchor_series_aborts_on_a_discrete_consecutive_step():
+    """A 5 mrad step between two ADJACENT anchors is an event (re-level,
+    relaunch re-push, mechanical snap), and stays fatal even though the total
+    spread is well inside the 0.5 deg ceiling — the two gates make different
+    physical claims."""
+    anchors = [_anchor(0.0, 0.0, 0.0), _anchor(60.0, 0.0, 0.0055),
+               _anchor(120.0, 0.0, 0.0056)]
+    verdict, message = tcg.anchor_series_verdict(anchors)
+    assert verdict == 'abort'
+    assert 'DISCRETE STEP' in message
+    assert 'anchors 1 and 2' in message
+    # The same total spread reached SMOOTHLY (no single step over the limit)
+    # is only a WARN — that is the whole distinction.
+    smooth = [_anchor(60.0 * i, 0.0, 0.0056 * i / 4.0) for i in range(5)]
+    assert tcg.anchor_series_verdict(smooth)[0] == 'warn'
+
+
+def test_anchor_series_aborts_when_an_anchor_barely_answered():
+    anchors = [_anchor(0.0, 0.0, 0.001), _anchor(60.0, 0.0, 0.0, n_ok=1)]
+    verdict, message = tcg.anchor_series_verdict(anchors)
+    assert verdict == 'abort'
     assert 'finite reads' in message
+    assert tcg.anchor_series_verdict([])[0] == 'abort'
+
+
+def test_anchor_table_lines_render_every_anchor_with_its_clock():
+    lines = tcg.anchor_table_lines([_C0_RUN1_START, _C0_RUN1_END])
+    assert len(lines) == 3                     # header + 2 rows
+    assert 't_s' in lines[0] and 'n_ok' in lines[0]
+    assert '+0.001578' in lines[1]
+    assert '132.9' in lines[2]
+
+
+# ── mid-sweep anchor scheduling ─────────────────────────────────────────
+
+
+def test_revisit_schedule_for_the_3x3_probe_grid():
+    """9 nodes = 8 non-home visits; at every 4 that is ONE mid-sweep anchor,
+    so 3 anchors total (start + 1 + end)."""
+    assert tcg.home_revisit_after_visits(9, 4) == [4]
+
+
+def test_revisit_schedule_for_the_5x5_default_grid():
+    """25 nodes = 24 non-home visits ⇒ five mid-sweep anchors ⇒ 7 total."""
+    assert tcg.home_revisit_after_visits(25, 4) == [4, 8, 12, 16, 20]
+
+
+def test_revisit_schedule_never_anchors_immediately_before_the_end_anchor():
+    """The last non-home visit is skipped: the end-of-sweep re-measure already
+    anchors there, and two home measurements separated by nothing but a
+    re-move would sample the same arrival twice — which is precisely the
+    variation the series exists to measure."""
+    # 9 nodes, every 8 non-home visits: the only candidate IS the last one.
+    assert tcg.home_revisit_after_visits(9, 8) == []
+    assert 24 not in tcg.home_revisit_after_visits(25, 6)
+    assert tcg.home_revisit_after_visits(25, 6) == [6, 12, 18]
+
+
+def test_revisit_schedule_can_be_disabled():
+    """0 keeps the start and end anchors and nothing else — the minimum the
+    anchor-mean design degrades to, and still an improvement on one anchor."""
+    assert tcg.home_revisit_after_visits(25, 0) == []
+    assert tcg.home_revisit_after_visits(25, -1) == []
+
+
+def test_revisit_every_defaults_to_four_on_the_cli():
+    args = tcg.build_parser().parse_args([])
+    assert args.home_revisit_every == tcg.DEFAULT_HOME_REVISIT_EVERY == 4
+    assert tcg.build_parser().parse_args(
+        ['--home-revisit-every', '0']).home_revisit_every == 0
+
+
+# ── the forensics epilogue is conditional ───────────────────────────────
+
+
+def test_forensics_epilogue_fires_only_on_a_real_drive_error():
+    """The 'capture evidence BEFORE any relaunch' line used to print on EVERY
+    abort — including the two 2026-08-10 gate aborts whose drives were clean.
+    Telling an operator to preserve evidence that does not exist trains them
+    to skip the line on the one abort where it is genuinely perishable."""
+    clean = {'motor_states': [{'axis': 0, 'active_errors': 0,
+                               'disarm_reason': 0}],
+             'motor_error_edges': {}}
+    assert tcg.forensics_has_drive_error(clean) is False
+    assert tcg.forensics_has_drive_error({}) is False
+    spun_out = {'motor_states': [{'axis': 0, 'active_errors': 0,
+                                  'disarm_reason': 67108864}],
+                'motor_error_edges': {}}
+    assert tcg.forensics_has_drive_error(spun_out) is True
+    # The edge latch alone is enough: the abort-time snapshot can be clean
+    # while the fault-time edge is not (the 2026-08-09 shape).
+    edge_only = {'motor_states': [{'axis': 0, 'active_errors': 0,
+                                   'disarm_reason': 0}],
+                 'motor_error_edges': {'0': {'active_errors': 67108864,
+                                             'disarm_reason': 0}}}
+    assert tcg.forensics_has_drive_error(edge_only) is True
 
 
 def test_fault_error_is_a_tilt_cal_error_subclass():
@@ -718,25 +918,70 @@ def test_bilinear_lookup_commutes_with_the_home_constant():
         assert r_ty == pytest.approx(m_ty - home_ref[1], abs=1e-12)
 
 
-def test_home_reference_metadata_rides_the_captured_block(tmp_path):
-    """The home-referencing evidence (m_home start/end, drift, verdict) must
-    survive the write → load round trip as metadata, per the amended schema."""
+def test_anchor_metadata_round_trips_through_the_production_parser(tmp_path):
+    """The whole anchor series must survive write → load as metadata.
+
+    ``tilt_map.parse_tilt_map`` passes the ``captured`` block through
+    untouched (``tilt_map.py:462-470``), so the nested ``anchors`` list needs
+    no loader change — this test is what says so, and what would fail if the
+    loader ever started validating or flattening that block. The series is the
+    evidence that discriminates arrival repeatability from sensor warm-up
+    across captures; losing it at the write boundary would lose the answer.
+    """
     x, y, results, home_ref = _capture_with_home()
+    anchors = [tcg.HomeAnchor(t_s=4.6, m_tx=home_ref[0], m_ty=home_ref[1],
+                              sd_tx=5.5e-4, sd_ty=7.0e-4, n_ok=30),
+               tcg.HomeAnchor(t_s=68.2, m_tx=home_ref[0] + 3e-4,
+                              m_ty=home_ref[1] + 9e-4, sd_tx=5.1e-4,
+                              sd_ty=6.6e-4, n_ok=30),
+               tcg.HomeAnchor(t_s=132.9, m_tx=home_ref[0] + 5.6e-4,
+                              m_ty=home_ref[1] + 1.81e-3, sd_tx=7.1e-4,
+                              sd_ty=8.7e-4, n_ok=30)]
+    mean = tcg.anchor_mean_rad(anchors)
+    spread = tcg.anchor_spread(anchors)
     captured = dict(_CAPTURED)
     captured['home_reference'] = {
-        'm_home_rad': list(home_ref),
-        'sd_home_rad': [1e-5, 2e-5],
-        'm_home_end_rad': [home_ref[0] + 1e-4, home_ref[1] - 5e-5],
-        'drift_rad': [1e-4, -5e-5],
-        'drift_verdict': 'PASS',
+        'referenced': 'anchor-mean',
+        'anchors': [a.as_dict() for a in anchors],
+        'anchor_mean_rad': list(mean),
+        'anchor_pp_rad': [spread['tx']['pp'], spread['ty']['pp']],
+        'trend_rad': [spread['tx']['trend'], spread['ty']['trend']],
+        'anchor_verdict': 'OK',
     }
-    doc = tcg.build_map_document(x, y, 170.0, results, captured, 8, home_ref)
+    doc = tcg.build_map_document(x, y, 170.0, results, captured, 8, mean)
     path = tmp_path / 'tilt_calibration.yaml'
     path.write_text(tcg.dump_map_yaml(doc))
     loaded = tilt_map.load_tilt_map(str(path))
-    assert loaded.metadata['home_reference']['drift_verdict'] == 'PASS'
-    assert loaded.metadata['home_reference']['m_home_rad'] == \
-        pytest.approx(list(home_ref))
+
+    home = loaded.metadata['home_reference']
+    assert home['referenced'] == 'anchor-mean'
+    assert len(home['anchors']) == 3
+    assert home['anchors'][2]['t_s'] == pytest.approx(132.9)
+    assert home['anchors'][2]['m_ty_rad'] == pytest.approx(
+        home_ref[1] + 1.81e-3)
+    assert home['anchors'][0]['n_ok'] == 30
+    assert home['anchor_mean_rad'] == pytest.approx(list(mean))
+    assert home['trend_rad'][1] == pytest.approx(1.81e-3)
+    assert home['anchor_pp_rad'][1] == pytest.approx(1.81e-3)
+
+
+def test_anchor_mean_referencing_ships_the_mean_not_the_first_anchor(tmp_path):
+    """The node grid must be shifted by the MEAN — checking the map, not just
+    the helper, because the reference enters the document at one call site and
+    a wrong argument there is silent (every node is merely offset, and the
+    field's *shape* still looks right)."""
+    x, y, results, first_home = _capture_with_home()
+    anchors = [_anchor(0.0, first_home[0], first_home[1]),
+               _anchor(130.0, first_home[0] + 0.0006, first_home[1] + 0.0018)]
+    mean = tcg.anchor_mean_rad(anchors)
+    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, mean)
+    hx, hy = tcg.home_index(x, y)
+    # The home node ships its own departure from the mean — NOT zero — and
+    # that departure is exactly half the anchor gap here.
+    assert doc['residual_rad']['ty'][hy][hx] == pytest.approx(-0.0009, abs=1e-9)
+    parsed = tilt_map.parse_tilt_map(doc)
+    tx, ty = tilt_map.lookup(parsed, x[0], y[0])
+    assert ty == pytest.approx(results[(0, 0)].res_ty - mean[1], abs=1e-9)
 
 
 # ── CSV schema ───────────────────────────────────────────────────────────
@@ -784,6 +1029,41 @@ def test_verification_rows_are_marked_off_grid():
     assert row['phase'] == 'verify'
 
 
+def test_mid_sweep_anchor_rows_carry_their_own_phase_tag():
+    """A mid-sweep home anchor sits at the home node's coordinates and index,
+    so ONLY the phase tag distinguishes it from the home grid visit. Without a
+    distinct tag the analyser would average a re-arrival into the home node's
+    residual — folding in exactly the arrival-to-arrival variation the anchors
+    exist to expose separately.
+    """
+    assert tcg.PHASE_HOME_ANCHOR == 'home_anchor'
+    assert tcg.PHASE_HOME_END == 'home_end'
+    assert tcg.PHASE_HOME_ANCHOR != 'capture'
+    row = tcg.csv_row('t', 61.2, tcg.PHASE_HOME_ANCHOR, 4, 2, 2,
+                      0.0, 0.0, 170.0, 0, 0.001, 0.002, OFFSET, 99)
+    assert row['phase'] == 'home_anchor'
+    assert (row['x_mm'], row['y_mm']) == (0.0, 0.0)
+    assert row['t_s'] == pytest.approx(61.2)
+
+
+def test_the_tool_tags_its_anchor_rows_with_the_phase_constants():
+    """Structural: ``run()`` needs a robot, so pin that both anchor record
+    sites pass the CONSTANTS rather than an inline string literal that could
+    drift away from the analyser's phase filter — a drift whose only symptom
+    would be a re-arrival quietly averaged into the home node's residual.
+    """
+    source = open(tcg.__file__.replace('.pyc', '.py')).read()
+    calls = source.count('measure_home_anchor(')
+    assert calls == 3, (
+        'expected the definition plus the mid-sweep and end-of-sweep calls, '
+        'found {}'.format(calls))
+    assert 'PHASE_HOME_ANCHOR,' in source
+    assert 'PHASE_HOME_END,' in source
+    # ...and no bare literal at a record site.
+    assert "record('home_anchor'" not in source
+    assert "record('home_end'" not in source
+
+
 # ── write target ─────────────────────────────────────────────────────────
 
 
@@ -812,11 +1092,25 @@ def test_source_tree_detection_distinguishes_a_share_tree():
 
 
 def test_estimate_duration_includes_the_three_non_grid_visits():
-    """25 nodes + 6 checks + home re-measure (drift gate) + verification home
-    reference + return to centre = 34 visit-equivalents."""
+    """25 nodes + 6 checks + end anchor + verification home reference +
+    return to centre = 34 visit-equivalents, before any mid-sweep anchor."""
     per_visit = 3.0 + 1.0 + 2 * (tcg.EST_READ_S + 0.15)
     assert tcg.estimate_duration_s(25, 6, 3.0, 1.0, 2, 0.15) == \
         pytest.approx(34 * per_visit)
+
+
+def test_estimate_duration_counts_the_mid_sweep_home_anchors():
+    """Each mid-sweep anchor is a FULL visit (move + dwell + reads). On the
+    5x5 default that is five of them; an ETA that omitted them would
+    understate a ~6 min capture by ~45 s at the C0 working point."""
+    per_visit = 3.0 + 2.0 + 30 * (tcg.EST_READ_S + 0.15)
+    revisits = tcg.home_revisit_after_visits(25, 4)
+    assert len(revisits) == 5
+    with_anchors = tcg.estimate_duration_s(25, 6, 3.0, 2.0, 30, 0.15,
+                                           len(revisits))
+    assert with_anchors == pytest.approx(39 * per_visit)
+    assert with_anchors - tcg.estimate_duration_s(
+        25, 6, 3.0, 2.0, 30, 0.15) == pytest.approx(5 * per_visit)
 
 
 # ── CLI wiring ───────────────────────────────────────────────────────────

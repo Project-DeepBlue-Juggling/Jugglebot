@@ -25,10 +25,11 @@ close.
 ---
 
 > **⚡ READ THIS FIRST — the platform moves continuously for several minutes.**
-> A default capture drives **25 grid nodes plus 6 check poses plus a return to
-> centre**, each a ±150 mm traverse at z = 170 — about **4 minutes of near-
-> continuous motion** with only a ~1 s dwell between moves. It looks
-> unattended; it is not.
+> A default capture drives **25 grid nodes, 6 home anchors beyond the first, 6
+> check poses and a return to centre**, each a ±150 mm traverse at z = 170 —
+> **~5.3 minutes of near-continuous motion** at the pinned `--dwell-s 2.0`
+> (measured from the tool's own `--dry-run` ETA, 2026-08-10; re-read it after
+> any timing change). It looks unattended; it is not.
 >
 > - **E-STOP in reach for the whole capture.** Do not walk away between nodes.
 > - **The hand stays quiescent.** No ball ops, no reloads, no hand moves during
@@ -83,18 +84,40 @@ close.
 - Arm per the Phase-1 sequence: launch → home → **`level`** → activate →
   confirm the 40 Hz hold stream → TRAJECTORY → **zero motion at arm**.
 - **A correction loaded and CONSTANT throughout the sweep** (2026-08-10: the
-  map is **home-referenced** — every shipped residual is
-  `measured − m_home`, so a stale-but-constant level reference cancels
+  map is **anchor-mean home-referenced** — the home pose is re-measured k
+  times through the sweep and every shipped residual is
+  `measured − mean(anchors)`, so a stale-but-constant level reference cancels
   *exactly*; the algebra is in `levelling_frame.md` § C-LEVEL-2). A **fresh
   `level` immediately before is RECOMMENDED, not required**: it keeps
   `|m_home|` small and the tool's 0.010 rad WARN meaningful. What IS required
   — and now machine-checked — is that the correction does not **change**
   mid-sweep: the tool subscribes `/gravity_offset` and aborts on any message
-  during the sweep, and re-measures the home node at sweep end behind a drift
-  gate. The confirm prompt asks for constancy intent, not freshness. (The old
-  start-of-capture `STALE LEVEL REFERENCE` abort is retired — it was mistuned
-  against the level path's own single-sample scatter, 1.2–1.7 mrad/axis
-  measured 2026-08-09, and false-aborted 40–60 % of healthy attempts.)
+  during the sweep, and the anchor series aborts on a discrete step between
+  two consecutive anchors. The confirm prompt asks for constancy intent, not
+  freshness. (The old start-of-capture `STALE LEVEL REFERENCE` abort is
+  retired — mistuned against the level path's own single-sample scatter,
+  1.2–1.7 mrad/axis measured 2026-08-09. Its replacement, a tight statistical
+  start-vs-end drift gate, is retired too — it aborted **both** complete C0
+  captures on 2026-08-10 over ~1.6–1.8 mrad of reproducible home variation
+  with the `/gravity_offset` monitor silent; see § Rung C0 § Result.)
+
+### What the home-anchor gate does now (2026-08-10)
+
+The tool re-measures the home pose at the start, after every
+`--home-revisit-every` non-home grid visits (default **4** ⇒ ~3 anchors on a
+3×3, ~7 on the 5×5) and at the end. Every capture **prints the anchor table**
+(`t_s`, `m_tx`, `m_ty`, sd, `n_ok`), the per-axis peak-to-peak spread and the
+signed start-to-end trend — record it with the session notes, it is the
+evidence that settles the mechanism below.
+
+| Outcome | Condition | What to do |
+|---|---|---|
+| **report** | always | Copy the anchor table into the session notes. |
+| **WARN** | any axis p-p > **0.002 rad** | Nothing — the capture is valid and was written. Note whether the series *trends* (warm-up) or *scatters* (arrival repeatability). |
+| **ABORT** | any axis p-p > **0.0087 rad** (0.5°, the owner's repeatability tolerance) | Real: check for a shifting base, a loose platform joint, or a leg not returning to its commanded position. |
+| **ABORT** | consecutive-anchor step > **0.005 rad** | A discrete event — re-level, relaunch re-push, or something mechanical letting go. `/gravity_offset` is the causal detector and should also have fired. |
+
+Smooth sub-WARN wander of the home reading is **expected and accepted**.
 - **Verification reads no longer need a re-`level`**: check poses are scored
   **home-referenced** (the verification pass re-measures home first and
   subtracts it), so the constant reference drops out of PASS/FAIL too.
@@ -170,14 +193,14 @@ without destroying the evidence.
 **No threshold below C1 is asserted in a test until this rung pins it.** The
 SCL3300's noise floor, its settling time, and its orientation-dependence are all
 unmeasured in this repo. Every default in `tilt_cal_grid.py` marked PROVISIONAL
-(`--dwell-s 1.0`, `--n-reads 8`, `--read-gap-s 0.15`, `--threshold-deg 0.15`,
-the drift-gate floor `HOME_DRIFT_TOL_FLOOR_RAD` and its `n_eff = n/2`
-correlation assumption) is a placeholder waiting on these numbers. C0 now also
-pins **read autocorrelation at the 0.15 s gap** (the 2026-08-09 series show
-AR(1) effective-N ≈ 14–23 of 30 — per-read timestamps in the CSV are real as
-of 2026-08-10, so this is computable from the artifact) and, if time allows,
-**level-to-level scatter** (~10 successive `level`s; the three 2026-08-09
-levels scattered 1.15–2.40 mrad).
+(`--dwell-s`, `--n-reads`, `--read-gap-s 0.15`, `--threshold-deg 0.15`) is a
+placeholder waiting on these numbers. C0 now also pins **read autocorrelation
+at the 0.15 s gap** (the 2026-08-09 series show AR(1) effective-N ≈ 14–23 of
+30 — per-read timestamps in the CSV are real as of 2026-08-10, so this is
+computable from the artifact) and, if time allows, **level-to-level scatter**
+(~10 successive `level`s; the three 2026-08-09 levels scattered 1.15–2.40
+mrad). **C0 RAN on 2026-08-10 — see § Result below**; what remains open from
+this rung is θ_acc confirmation at C1 and the read-autocorrelation number.
 
 This is also the **first hardware exercise of mid-TRAJECTORY tilt reads** —
 `get_platform_tilt` has no state gating, and that it works while holding a pose
@@ -206,8 +229,9 @@ whether it *would* be accepted.
 > four corners were proven with on 2026-07-27); CSV timestamps are per-read
 > and real; and any mid-move/mid-read fault aborts immediately with a decoded
 > ODrive forensics dump in the console and `_meta.json` (`abort_reason` is
-> now always recorded). Expect two extra home visits per capture: the
-> end-of-sweep drift re-measure and (on applying runs) the verification home
+> now always recorded). Expect **several extra home visits** per capture: the
+> interleaved home anchors (start + every 4 non-home visits + end — the
+> reference is their mean), and on applying runs the verification home
 > reference.
 
 Then the **orientation-dependence probe**, which the grid tool cannot do (it
@@ -243,11 +267,45 @@ dwell, the chosen `--dwell-s` / `--n-reads` / `--read-gap-s`, the achievable
 accuracy **θ_acc**, and the tilted-pose reading vs the centre reading (this
 sizes orientation-dependence — a large difference means the map's
 apply-at-all-orientations assumption needs a follow-on tilt sweep, which is
-**not** in this plan). Retain both CSVs. Then update the PROVISIONAL defaults in
-`tilt_cal_grid.py` (dwell, read count, drift-gate floor + n_eff, θ_acc) in the
-same commit as the C0 logbook entry. The analyser's `CURVATURE_*` constants are
-**pinned at C1, not here** — they need a real measured field, which C0's four
-probe poses are not.
+**not** in this plan). Retain both CSVs. The analyser's `CURVATURE_*` constants
+are **pinned at C1, not here** — they need a real measured field, which C0's
+four probe poses are not.
+
+### Rung C0 — Result, 2026-08-10: **PINS TAKEN, gate reframed**
+
+Two 3×3 `--no-apply` captures, both completing all nine nodes cleanly:
+`temp/logs/tilt_cal_grid_20260810_115343*` (`--dwell-s 0.5`) and
+`_120735*` (`--dwell-s 2.0`), `uptime_ms` 43.5 M → 44.5 M (~12 h — the bridge
+was not freshly booted; quote that with any lag-sensitive reading).
+
+- **`--dwell-s 2.0` is PINNED** (was 1.0). Per-read sd across all nine nodes
+  and both axes: **0.25–0.92 mrad, median 0.38 mrad at 2.0 s** vs **0.42–1.35
+  mrad, median 0.56 mrad at 0.5 s** — a ~33 % quieter read, i.e. the platform
+  was still settling at 0.5 s. `--n-reads 30` stays for probe work; the
+  shipped default (8) is unchanged for production captures.
+- **Home re-measure offset — the reason anchors exist.** Both captures ended
+  with home shifted **+1.81 mrad (run 1) and +1.59 mrad (run 2) on ty**
+  against their own start (tx: +0.56 / +0.42 mrad), *reproducibly*, with the
+  `/gravity_offset` monitor **silent** and the ODrive forensics **clean** — so
+  the loaded correction had not changed. The old drift gate (tol 0.87 / 0.94
+  mrad) aborted and discarded both complete captures; that behaviour was the
+  bug. **Mechanism is OPEN**, owner's **arrival-repeatability** hypothesis
+  leading (hand-built, FDM parts, path-dependent hysteresis on re-arriving at
+  a pose; two identical sweeps reproducing the same offset fits), with SCL3300
+  **warm-up / thermal settling** the live alternative. Owner tolerance for
+  repeatability is **0.5° (8.7 mrad)**, so ~0.1° is comfortably inside it and
+  inside θ_acc 0.15°. The map is now **anchor-mean referenced** and every
+  capture reports its anchor series — that series discriminates the two
+  mechanisms for free, so no dedicated sitting is owed.
+- **Orientation-dependence probe**: ~**+0.10° residual at 6° commanded rx**
+  ≈ **1.7 % of commanded tilt**, i.e. under θ_acc across the 8b aim range. The
+  apply-at-all-orientations assumption holds for now; a **tilt-axis sweep
+  stays a follow-on**, not a blocker.
+- Field shape from the 3×3 (dwell 2.0), **anchor-mean referenced**: |M| runs
+  0.047° at home → **0.287° at (150, −150)**, mean 0.147° — same order *and*
+  the same worst quadrant as the 2026-07-28 seed table (0.604° at
+  (150, −150)); a 3×3 undersamples the corner, so a smaller peak is expected.
+  Analyser on the raw CSV: curvature ratio 1.49, no flagged outliers.
 
 ---
 
@@ -257,18 +315,19 @@ Fresh can-bridge boot; **fresh `level` immediately before**; flat floor, no
 shims; hand quiescent and empty.
 
 ```bash
-python3 tests/hardware/tilt_cal_grid.py \
+python3 tests/hardware/tilt_cal_grid.py --dwell-s 2.0 \
     --base-condition "C1 baseline, flat floor, no shims"
 # if a map is already loaded from an earlier attempt:
-python3 tests/hardware/tilt_cal_grid.py --force-uninstall \
+python3 tests/hardware/tilt_cal_grid.py --force-uninstall --dwell-s 2.0 \
     --base-condition "C1 baseline, flat floor, no shims"
 ```
 
-Use the `--dwell-s` / `--n-reads` / `--threshold-deg` C0 pinned. The tool
-captures 5×5 over ±150 mm at z = 170 (home node first — it is the reference
-every other node is shipped against — then centre-out, corners last, then the
-home re-measure behind the drift gate), writes `config/tilt_calibration.yaml`,
-calls `reload_tilt_map`, confirms
+`--dwell-s 2.0` is the C0 pin and is passed **explicitly** (the shipped default
+is still 1.0). `--n-reads` and `--threshold-deg` keep their defaults. The tool
+captures 5×5 over ±150 mm at z = 170 (home node first — it is anchor 1 — then
+centre-out with a home anchor after every 4 non-home visits, corners last, then
+the end-of-sweep anchor; the shipped reference is the **mean** of all 7),
+writes `config/tilt_calibration.yaml`, calls `reload_tilt_map`, confirms
 the applied `tilt_map_version` matches what it wrote, then re-measures 6
 off-node check poses and prints PASS/FAIL per pose. **Nonzero exit = FAIL.**
 
@@ -280,10 +339,10 @@ python tools/tilt_cal_analyse.py --csv temp/logs/tilt_cal_grid_<ts>.csv
 ```
 
 **PASS**
-- **Home drift gate PASS** (the tool re-measures home at sweep end;
-  `|drift| ≤ tol` per axis) and `|m_home|` below the 0.010 rad WARN. The home
-  node *ships* exactly 0 by construction now — the thing to watch is the
-  drift, which says the reference stayed constant.
+- **Home anchor series reported and non-aborting**, and `|m_home|` below the
+  0.010 rad WARN. A p-p **WARN is not a failure** — copy the table into the
+  notes and record whether the series trends (warm-up) or scatters (arrival
+  repeatability). Expect ~1–2 mrad of spread on ty based on C0.
 - **Every** check-pose **home-referenced** residual magnitude
   `|check − m_home_verify| ≤ θ_acc` (provisional **0.15°** until C0 pins it;
   the tool re-measures home before the checks and subtracts it — printed as
@@ -303,10 +362,13 @@ python tools/tilt_cal_analyse.py --csv temp/logs/tilt_cal_grid_<ts>.csv
 do it), in the same commit as the C1 logbook entry.
 
 **ABORT**
-- `HOME DRIFT GATE FAILED` at sweep end ⇒ the level reference **changed
-  mid-sweep** (re-level, relaunch re-push, or physical settling). Re-run the
-  capture; do not override — early and late nodes were measured against
-  different references, which home-referencing cannot cancel.
+- `HOME ANCHOR SPREAD EXCEEDS THE REPEATABILITY TOLERANCE` (any axis p-p >
+  0.0087 rad = 0.5°) ⇒ the machine is not returning to the same pose within
+  the tolerance the whole design assumes. Check for a shifting base, a loose
+  platform joint, or a leg not returning to its commanded position.
+- `DISCRETE STEP IN THE HOME ANCHOR SERIES` (consecutive anchors > 0.005 rad
+  apart) ⇒ an event, not wander: re-level, relaunch re-push, or something
+  mechanical letting go. Re-run the capture; do not override.
 - `LEVEL REFERENCE CHANGED MID-SWEEP` (a `/gravity_offset` message arrived
   during the sweep) ⇒ same class, caught causally. Re-run from the start.
 - `|m_home|` above the **0.05 rad** sanity ceiling ⇒ the platform is ~3°
@@ -324,8 +386,11 @@ do it), in the same commit as the C1 logbook entry.
 
 **After the rung, record:** `uptime_ms` first/last, the map version, the min/max
 residual and worst quadrant vs the seed table, every check-pose residual, the
-analyser's curvature ratio. Retain the CSV, `_meta.json`, and the analyser
-report dir. **Commit `config/tilt_calibration.yaml`** with the C1 logbook entry.
+analyser's curvature ratio, and **the full home-anchor table with its p-p and
+trend** (this is the second data point on the arrival-repeatability vs
+warm-up question — a 7-anchor series is the first one able to separate them).
+Retain the CSV, `_meta.json`, and the analyser report dir. **Commit
+`config/tilt_calibration.yaml`** with the C1 logbook entry.
 
 ---
 

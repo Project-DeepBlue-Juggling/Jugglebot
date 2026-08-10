@@ -381,40 +381,76 @@ repeats to 0.001–0.014° — 15–40× smaller than the effect. At 41.9 mm/° 
 landing displacement (0.6 m toss) against a ~30–40 mm cup basin, the corner of
 the workspace is already the "occasional drop" regime.
 
-A **residual** is what `level` cannot see — and the map is **HOME-REFERENCED**
-(2026-08-10) so that measuring it does not depend on the level reference's
-freshness. At grid node *i*, with **any constant correction loaded** and **no
-map loaded**, the platform is commanded to the *level orientation* at
-`(xᵢ, yᵢ, z_grid)`, allowed to settle, and the inclinometer read N times. The
-tool measures at each node
+**The sensor, stated plainly.** The Murata SCL3300 inclinometer is mounted
+**rigidly to the platform** and never moves relative to it. It always reads
+**absolute inclination with respect to gravity** — it is not a relative or
+incremental sensor, and it has no notion of the platform's commanded pose. Its
+axes are **not perfectly aligned** with the platform frame, which is the whole
+reason for the small **constant** mounting offset
+`inclinometer_offset_deg = [-0.6, -0.2]` deg
+(`config/hardware_config.yaml`, experimentally found). The residual formula
+below adds that offset **exactly as `LevellingHandler` does** — same constant,
+same sign, same axis order — so a residual and a `/gravity_offset` are the
+same kind of object and can be added.
+
+A **residual** is what `level` cannot see — and the map is **ANCHOR-MEAN
+HOME-REFERENCED** (2026-08-10) so that measuring it depends neither on the
+level reference's freshness nor on which single arrival at home happened to be
+used as the reference. At grid node *i*, with **any constant correction
+loaded** and **no map loaded**, the platform is commanded to the *level
+orientation* at `(xᵢ, yᵢ, z_grid)`, allowed to settle, and the inclinometer
+read N times. The tool measures at each node
 
     m_i = mean(raw_reading) + radians(inclinometer_offset_deg)
 
 — the exact `LevellingHandler` formula, so `m` is dimensionally and sign-wise
 the same object as the `/gravity_offset` the single-offset path already
-carries — and **ships**
+carries. The home pose is re-measured **k times through the sweep** — at the
+start, after every `--home-revisit-every` non-home grid visits (default 4:
+k ≈ 3 on a 3×3, k ≈ 7 on the 5×5 default), and at the end — and the tool
+**ships**
 
-    M(Pᵢ) := m_i − m_home
+    M(Pᵢ) := m_i − mean over the k anchors of m_home
 
-where `m_home` is the same measurement at the home node `(0, 0)`, taken first.
 The algebra is why freshness stopped being a capture precondition: writing the
 platform's true pose-dependent field as `f(P)` and the loaded correction as
 `C_cap`, every measurement is `m_i = f(Pᵢ) − C_cap` (the mounting bias cancels
 inside the formula above), so
 
-    M(Pᵢ) = m_i − m_home = f(Pᵢ) − f(home)
+    M(Pᵢ) = m_i − m̄_home = f(Pᵢ) − f(home)
 
 — `C_cap` cancels **exactly**, whatever it is, however stale it is, as long as
-it is **constant across the sweep**. `map(home) = 0` holds *exactly by
-construction* (the home node ships `m_home − m_home`), not approximately by
-gate. What remains of the reference dependence: a second-order
-vector-vs-rotation term bounded by `|Δf × m_home| / 2` ≈ **5.3e-5 rad** at the
-0.010 rad `|m_home|` WARN bound (inside the 1e-4 budget of the composition
-table below), and the systematic `f(home) − f(activate)` — same position,
-arrival and orientation history differing — which **replaces** the previous
-design's stochastic apply-time error `ε_cap − ε_now` (σ ≈ 1.7 mrad, the level
-reference's own single-sample scatter): a strict improvement unless rung C0's
-tilted-pose probe surprises.
+it is **constant across the sweep**. With zero anchor scatter this reduces
+**bit-identically** to the single-anchor form it replaces, and `map(home) = 0`
+exactly; with real scatter the home node ships its own (sub-mrad) departure
+from the anchor mean, which is correct and is deliberately not forced to zero.
+
+**Why the mean, and not a time interpolation.** Both C0 captures on 2026-08-10
+completed cleanly and then re-measured home **+1.81 / +1.59 mrad on ty**
+against the start — reproducibly, with the causal `/gravity_offset` monitor
+silent and the ODrive forensics clean, so the loaded correction had *not*
+changed. The mechanism is **open**, with the owner's **arrival-repeatability**
+hypothesis leading: Jugglebot is hand-built from FDM-printed parts, and
+re-arriving at a pose after a workspace tour lands within ~1–2 mrad of tilt
+with path-dependent hysteresis — deterministic enough that two identical sweep
+sequences reproduced the same offset. **Sensor warm-up / thermal settling**
+after the ODrive power-cycle fits the same data. The anchor series recorded on
+every future capture discriminates them for free (repeatability scatters about
+a mean; warm-up trends monotonically), so no dedicated sitting is owed.
+
+The mean is the right estimator under **both**: it averages per-arrival noise
+as `σ/√k` under repeatability, and centres a smooth drift at `±` half its
+total under warm-up. A time interpolation would presuppose the drift
+hypothesis, and both residuals are far inside the owner-stated repeatability
+tolerance of **0.5° (8.7 mrad)** and the 0.15° `θ_acc` — the design responses
+here are at the ~0.1° scale, i.e. inside both bounds either way. What remains
+of the reference dependence: a second-order vector-vs-rotation term bounded by
+`|Δf × m_home| / 2` ≈ **5.3e-5 rad** at the 0.010 rad `|m_home|` WARN bound
+(inside the 1e-4 budget of the composition table below), and the systematic
+`f(home) − f(activate)` — same position, arrival and orientation history
+differing — which **replaces** the previous design's stochastic apply-time
+error `ε_cap − ε_now` (σ ≈ 1.7 mrad, the level reference's own single-sample
+scatter): a strict improvement unless rung C0's tilted-pose probe surprises.
 
 The previous design asserted `residual(home) ≈ 0 by construction` and ABORTED
 the capture when a start-of-capture gate found otherwise ("stale level
@@ -425,12 +461,41 @@ session-scale scatter is σ ≈ 1.2–1.7 mrad/axis, so the gate's 1.5 mrad floo
 sat *inside* the healthy distribution (≈40–60 % false aborts per attempt over
 two axes) while a correctly-sized 3σ floor (~3.6–4.6 mrad) collides with its
 own 5 mrad staleness ceiling. Home-referencing removes the quantity that gate
-was trying to protect. What replaces it (enforcement table below): an
-**end-of-capture home re-measure drift gate** (catches a correction that
-changed mid-sweep), a **causal `/gravity_offset` mid-sweep monitor** (any
-message during the sweep aborts), a `|m_home|` **WARN at 0.010 rad** (level
-grossly stale — harmless to the home-referenced map, worth surfacing) and a
-**hard abort at 0.05 rad** (aligned with `MAX_ABS_RESIDUAL_RAD`).
+was trying to protect.
+
+Its first replacement — a **tight statistical drift gate** on the start-vs-end
+home means — was retired the same day it first ran, for the same class of
+reason: it aborted **both** complete C0 captures (2026-08-10) over the ~1.6–1.8
+mrad ty offset described above, against a read-noise-derived tolerance of
+0.75–0.94 mrad. Discarding a finished, usable capture over an effect **an
+~4.8x inside the owner's repeatability tolerance (1.8 mrad of 8.7)** was the defect;
+the measurement was fine. **The abort-and-discard behaviour was the bug, not
+the measurement.**
+
+What enforces the reference now:
+
+- **Anchors are REPORTED on every capture** — the per-anchor table (`t_s`,
+  `m_tx`, `m_ty`, sd, `n_ok`), the per-axis peak-to-peak spread, and the signed
+  start-to-end trend. The series is evidence, not just a gate input.
+- **WARN** (prominent, non-blocking) when any axis's anchor p-p exceeds
+  **0.002 rad**. The message names both open mechanisms — arrival
+  repeatability of the hand-built FDM structure vs sensor warm-up / thermal
+  settling — and says the series across captures will discriminate them.
+- **ABORT** only when any axis's p-p exceeds **0.0087 rad (0.5°, the
+  owner-stated repeatability tolerance)**, or a single **consecutive-anchor
+  step** exceeds **0.005 rad**. A step between two adjacent anchors is a
+  discrete *event* — a re-level, a relaunch re-pushing the int16-mrad Teensy
+  copy, a mechanical snap — which is a different physical claim from smooth
+  wander of the same total size.
+- The **causal `/gravity_offset` mid-sweep monitor** is unchanged and remains
+  the detector for a correction that actually changed (any message during the
+  sweep aborts).
+- A `|m_home|` **WARN at 0.010 rad** (level grossly stale — harmless to a
+  home-referenced map, worth surfacing) and a **hard abort at 0.05 rad**
+  (aligned with `MAX_ABS_RESIDUAL_RAD`).
+
+Smooth sub-WARN variation of the home reading across a sweep is **accepted and
+reported**, not a failure.
 
 **Verification scoring is home-referenced too.** A check pose measured after
 the map is applied reads `≈ m_home` even when the map is perfect — the
@@ -737,7 +802,7 @@ which is disqualifier 3 above, arriving by a different door.
 A capture run is only meaningful under all five of these:
 
 1. **A correction loaded and CONSTANT throughout the sweep.** The
-   home-referenced residual `M(P) = m(P) − m(home)` cancels the loaded
+   home-referenced residual `M(P) = m(P) − m̄(home)` cancels the loaded
    correction exactly, so freshness is **not** required — but a correction
    that *changes mid-sweep* (a re-level; a relaunch re-pushing the
    Teensy-persisted copy, which is int16-mrad truncated, worst 1 mrad/axis
@@ -763,14 +828,14 @@ A capture run is only meaningful under all five of these:
 
 **(1), (2) and (5) are machine-checkable, and the tool's enforcement says so.**
 (1) became checkable when the map went home-referenced (2026-08-10):
-*constancy* is observable — a mid-sweep `/gravity_offset` message and an
-end-of-sweep home drift are both machine-visible — where *freshness* never
-was. An earlier draft claimed the tool "refuses to start" on all four
-preconditions, which overstated what any program can observe:
+*constancy* is observable — a mid-sweep `/gravity_offset` message and a
+discrete step in the home-anchor series are both machine-visible — where
+*freshness* never was. An earlier draft claimed the tool "refuses to start" on
+all four preconditions, which overstated what any program can observe:
 
 | # | Enforcement in `tests/hardware/tilt_cal_grid.py` |
 |---|---|
-| 1 | **Machine-checked twice — causally and by outcome** (2026-08-10; plus a typed `yes` so the operator *plans* constancy rather than discovering the abort). Causal: a `/gravity_offset` subscription ABORTS the sweep the moment any message arrives mid-capture — a re-level or a relaunch re-push is *observed*, not inferred. Outcome: an **end-of-capture home re-measure** gates the drift `d = m_home_end − m_home_start` per axis at `tol = max(3·√((sd_start² + sd_end²)/n_eff), 0.0005 rad)`, `n_eff = n/2` until C0 pins read autocorrelation. `\|m_home_start\|` additionally **WARNs above 0.010 rad** (level grossly stale — harmless to the home-referenced map, worth surfacing) and **hard-aborts above 0.05 rad** (`MAX_ABS_RESIDUAL_RAD` alignment; the second-order term reaches 2.6e-4 rad there). The retired start-of-capture staleness ABORT is documented in § "What the map is" — it was mistuned against the level path's own physics. |
+| 1 | **Machine-checked twice — causally and by outcome** (2026-08-10; plus a typed `yes` so the operator *plans* constancy rather than discovering the abort). Causal: a `/gravity_offset` subscription ABORTS the sweep the moment any message arrives mid-capture — a re-level or a relaunch re-push is *observed*, not inferred. Outcome: the **home-anchor series** (k re-measures of the home pose interleaved through the sweep) is reported in full on every capture, **WARNs** above a 0.002 rad per-axis peak-to-peak spread, and **ABORTS** only above 0.0087 rad (0.5°, the owner's repeatability tolerance) or on a **consecutive-anchor step above 0.005 rad** — the discrete-event signature. The tight statistical drift gate this replaced aborted both complete C0 captures over ~1.6–1.8 mrad of reproducible, mechanism-open home variation; see § "What the map is". `\|m_home\|` additionally **WARNs above 0.010 rad** (level grossly stale — harmless to the home-referenced map, worth surfacing) and **hard-aborts above 0.05 rad** (`MAX_ABS_RESIDUAL_RAD` alignment; the second-order term reaches 2.6e-4 rad there). |
 | 2 | **Hard refusal.** `tilt_map_loaded` must be false; `--force-uninstall` moves **every existing candidate** aside (the source tree *and* the ament share copy `setup.py` installs — moving only the source file falls through to the share copy and the old map stays loaded), refusing to touch a `$JUGGLEBOT_TILT_CAL`-pointed file. Re-checked from a **fresh** status immediately before the map is written, so a map that loads mid-sweep still refuses. |
 | 3 | **Operator confirmation only.** Nothing in the system observes hand quiescence from this client. |
 | 4 | **Warn and record**, never refuse — `uptime_ms` is echoed at preflight, warned above 30 min, and written first/last into both `_meta.json` and the map's `captured` block. Refusing would cost a sitting over an effect measured on the hand-dispatch path, not on this request/response read path. |
@@ -789,11 +854,13 @@ something it cannot see.
 `config/tilt_calibration.yaml` — **committed, machine-written**, schema v1:
 `version`; a `captured` block (ISO date, git SHA, tool + args, can-bridge
 `uptime_ms` first/last, the `level_offset_rad` loaded at capture, a
-`home_reference` block — `m_home_rad`, `sd_home_rad`, `m_home_end_rad`,
-`drift_rad`, `drift_verdict`, the home-referencing evidence — and
+`home_reference` block — `referenced: 'anchor-mean'`, the full `anchors[]`
+series (`t_s`, `m_tx_rad`, `m_ty_rad`, `sd_tx_rad`, `sd_ty_rad`, `n_ok`),
+`anchor_mean_rad`, `anchor_pp_rad`, `trend_rad`, `anchor_verdict`, plus
+`m_home_rad` / `m_home_end_rad` for continuity with pre-anchor captures — and
 base-condition free text); a `grid` block (`z_mm`, `orientation: level`,
 `x_mm[]`, `y_mm[]`); a `residual_rad` block (`tx[iy][ix]`, `ty[iy][ix]`,
-**home-referenced**: node value = measured − `m_home`); and an advisory
+**home-referenced**: node value = measured − `anchor_mean_rad`); and an advisory
 `stats` block (per-node sd, `n_reads`, `failed_nodes`). The schema is
 unchanged by home-referencing — only what the tool writes into the grids
 changed meaning, plus the `captured` metadata gained the home-reference

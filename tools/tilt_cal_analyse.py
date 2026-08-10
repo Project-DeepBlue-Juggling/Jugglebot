@@ -125,6 +125,14 @@ CURVATURE_FLAG_MULT = 4.0
 #: outlier diagnostic; the flag is only its loud subset.
 CURVATURE_RANK_N = 5
 
+#: Mirrors ``tilt_cal_grid.ANCHOR_PP_WARN_RAD`` — the anchor-spread level at
+#: which the report says "record this". Duplicated rather than imported: the
+#: capture tool lives in ``tests/hardware/`` and imports ROS-adjacent modules,
+#: and this offline analyser must stay importable without them. The number is
+#: advisory here (the capture tool owns the gate), so a drift costs a
+#: differently-worded note, not a wrong verdict.
+ANCHOR_PP_WARN_RAD = 0.002
+
 
 class Field:
     """A residual field on a grid, however it was obtained."""
@@ -215,6 +223,9 @@ def load_csv_field(path: str) -> Field:
     coords: Dict[Tuple[int, int], Tuple[float, float]] = {}
     checks: List[Dict[str, Any]] = []
     verify_home: List[Tuple[float, float]] = []
+    # Mid-sweep + end-of-sweep home anchors, grouped by their visit index.
+    # The FIRST anchor is the home grid node itself and stays in the field.
+    anchor_reads: Dict[Tuple[str, int], List[Tuple[float, float, float]]] = {}
     z_values: List[float] = []
     with open(path, 'r') as handle:
         for row in csv.DictReader(handle):
@@ -224,6 +235,21 @@ def load_csv_field(path: str) -> Field:
                 x, y = float(row['x_mm']), float(row['y_mm'])
                 z_values.append(float(row['z_mm']))
             except (KeyError, ValueError):
+                continue
+            if row.get('phase') in ('home_anchor', 'home_end'):
+                # 2026-08-10 anchor-mean referencing: these are re-measures of
+                # the HOME POSE interleaved through the sweep, never grid
+                # nodes. Averaging one into the home node would fold
+                # arrival-to-arrival variation into that node's residual —
+                # exactly the quantity the anchors exist to expose separately.
+                if ok:
+                    try:
+                        t_s = float(row.get('t_s') or 'nan')
+                    except ValueError:
+                        t_s = float('nan')
+                    key = (str(row.get('phase')), int(row.get('visit') or 0))
+                    anchor_reads.setdefault(key, []).append(
+                        (t_s, res[0], res[1]))
                 continue
             if row.get('phase') == 'verify':
                 if ok:
@@ -239,11 +265,10 @@ def load_csv_field(path: str) -> Field:
                     verify_home.append(res)
                 continue
             if row.get('phase') != 'capture':
-                # 2026-08-10: the tool also writes 'home_end' rows (the
-                # drift-gate re-measure). This filter is what the docstring
-                # above always claimed; without it the home node would
-                # average its start and end measurements and the field would
-                # mix pre-/post-apply reads.
+                # Any other phase the tool grows is excluded by default. This
+                # filter is what the docstring above always claimed; without
+                # it the home node would average its start and later
+                # measurements and the field would mix pre-/post-apply reads.
                 continue
             if not ok:
                 continue
@@ -284,6 +309,30 @@ def load_csv_field(path: str) -> Field:
         arr = np.asarray(verify_home, dtype=float)
         field.metadata['verify_home_rad'] = [float(np.mean(arr[:, 0])),
                                              float(np.mean(arr[:, 1]))]
+    if anchor_reads:
+        # Ordered by time, so the printed series reads as the sweep ran. The
+        # capture's own start anchor is the home grid node and is NOT here —
+        # the summary says so rather than pretending to a complete series.
+        anchors = []
+        for _key, reads in anchor_reads.items():
+            arr = np.asarray(reads, dtype=float)
+            anchors.append({
+                't_s': float(np.min(arr[:, 0])),
+                'm_tx_rad': float(np.mean(arr[:, 1])),
+                'm_ty_rad': float(np.mean(arr[:, 2])),
+                'sd_tx_rad': (float(np.std(arr[:, 1], ddof=1))
+                              if arr.shape[0] >= 2 else float('nan')),
+                'sd_ty_rad': (float(np.std(arr[:, 2], ddof=1))
+                              if arr.shape[0] >= 2 else float('nan')),
+                'n_ok': int(arr.shape[0]),
+            })
+        anchors.sort(key=lambda a: (math.inf if math.isnan(a['t_s'])
+                                    else a['t_s']))
+        field.metadata['home_reference'] = {
+            'anchors': anchors,
+            'referenced': 'anchor-mean (reconstructed from CSV; the START '
+                          'anchor is the home grid node and is not included)',
+        }
     return field
 
 
@@ -470,6 +519,63 @@ def c2_threshold_deg(a: Field, b: Field,
                    .format(noise, DIFF_FLOOR_DEG))
 
 
+def print_anchor_section(field: Field) -> None:
+    """Print the home-anchor series, if this capture recorded one.
+
+    The anchors ARE the map's reference (every residual is ``measured −
+    mean(anchors)``, 2026-08-10), and their spread is the open question the
+    C0 captures raised: a reproducible ~1.6-1.8 mrad ty offset on re-arriving
+    at home, with the ``/gravity_offset`` monitor silent — arrival
+    repeatability of the hand-built FDM structure, or SCL3300 warm-up? A
+    monotonic trend across the series argues warm-up; scatter about a mean
+    argues repeatability. Printing it on every run is how that question gets
+    answered without a dedicated sitting.
+    """
+    home = (field.metadata or {}).get('home_reference')
+    if not isinstance(home, dict):
+        return
+    anchors = home.get('anchors')
+    if not anchors:
+        return
+    print('\n  home anchors ({}) — the map reference is their MEAN:'
+          .format(len(anchors)))
+    print('    {:>3} {:>9} {:>12} {:>12} {:>10} {:>10} {:>6}'.format(
+        '#', 't_s', 'm_tx_rad', 'm_ty_rad', 'sd_tx', 'sd_ty', 'n_ok'))
+    txs, tys = [], []
+    for i, a in enumerate(anchors):
+        try:
+            tx, ty = float(a['m_tx_rad']), float(a['m_ty_rad'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        txs.append(tx)
+        tys.append(ty)
+        print('    {:>3d} {:>9.1f} {:>+12.6f} {:>+12.6f} {:>10.6f} {:>10.6f} '
+              '{:>6}'.format(i + 1, float(a.get('t_s', float('nan'))), tx, ty,
+                             float(a.get('sd_tx_rad', float('nan'))),
+                             float(a.get('sd_ty_rad', float('nan'))),
+                             a.get('n_ok', '-')))
+    if not txs:
+        return
+    for name, values in (('tx', txs), ('ty', tys)):
+        pp = max(values) - min(values)
+        trend = values[-1] - values[0]
+        print('    {}: p-p {:.6f} rad ({:.4f} deg), trend {:+.6f} rad '
+              '({:+.4f} deg, end minus start)'
+              .format(name, pp, pp * RAD2DEG, trend, trend * RAD2DEG))
+    mean = home.get('anchor_mean_rad')
+    if mean:
+        print('    anchor mean (the shipped reference) = ({:+.6f}, {:+.6f}) '
+              'rad'.format(float(mean[0]), float(mean[1])))
+    print('    referenced: {}'.format(home.get('referenced', 'anchor-mean')))
+    worst_pp = max(max(txs) - min(txs), max(tys) - min(tys))
+    if worst_pp > ANCHOR_PP_WARN_RAD:
+        print('    !! spread exceeds {:.4f} rad. Not a fault — well inside '
+              'the 0.5 deg repeatability tolerance — but record it: arrival '
+              'repeatability (scatter about a mean) vs sensor warm-up (a '
+              'monotonic trend) is still open, and this series is what '
+              'discriminates them.'.format(ANCHOR_PP_WARN_RAD))
+
+
 def print_report(field: Field, flags: Sequence[Dict[str, Any]],
                  diff: Optional[Dict[str, Any]] = None,
                  diff_other: Optional[Field] = None,
@@ -535,6 +641,8 @@ def print_report(field: Field, flags: Sequence[Dict[str, Any]],
             print('\n  nodes with fewer usable reads than the best node:')
             for x, y, n in low:
                 print('    ({:+5d}, {:+5d}): {} reads'.format(x, y, n))
+
+    print_anchor_section(field)
 
     # The ranking is the real outlier diagnostic; the flag list below is only
     # its loud subset, and its threshold is provisional until rung C1.

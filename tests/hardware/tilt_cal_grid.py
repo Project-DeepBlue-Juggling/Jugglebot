@@ -13,33 +13,74 @@ Plan: ``plans/active/tilt-calibration-grid.md`` (Phase 3 builds this; Phase 4's
 rungs C0–C3 run it — ``tests/hardware/session_tilt_calibration.md`` is the
 runbook and is the authority for what to do at the robot).
 
-**What a residual is — HOME-REFERENCED (2026-08-10).** ``level`` measures the
-platform's tilt against gravity at exactly one pose and applies that offset
-everywhere, so every *pose-dependent* kinematic error is invisible to it. With
-ANY constant correction loaded and **no map loaded**, this tool commands the
-level orientation at each node and measures::
+**What a residual is — ANCHOR-MEAN HOME-REFERENCED (2026-08-10).** ``level``
+measures the platform's tilt against gravity at exactly one pose and applies
+that offset everywhere, so every *pose-dependent* kinematic error is invisible
+to it. With ANY constant correction loaded and **no map loaded**, this tool
+commands the level orientation at each node and measures::
 
     m_i = mean(raw_reading) + radians(JB_OP_INCLINOMETER_OFFSET_DEG)
 
 — the exact ``state_machine.LevellingHandler`` formula (``:455-460``; an ADD,
-per axis, in radians) — and **ships** ``M(P_i) := m_i − m_home``, the home
-node's own measurement subtracted from every node. Writing the platform's true
-field as ``f(P)`` and the loaded correction as ``C_cap``, each measurement is
-``m_i = f(P_i) − C_cap``, so ``M(P_i) = f(P_i) − f(home)``: the correction
-cancels EXACTLY, however stale, as long as it is CONSTANT across the sweep.
-``map(home) = 0`` exactly by construction. The old start-of-capture "STALE
-LEVEL REFERENCE" abort is retired — it was mistuned against physics (the level
-reference is ONE int16-quantised SCL3300 sample with measured session scatter
-σ ≈ 1.2–1.7 mrad/axis; the 1.5 mrad floor sat inside that distribution and
-false-aborted 40–60 % of healthy attempts, and a correctly-sized floor
-collides with its own ceiling). What replaced it: an END-OF-SWEEP home
-re-measure with a drift gate (the correction changed mid-sweep ⇒ abort), a
-causal ``/gravity_offset`` mid-sweep monitor (any message during the sweep ⇒
-abort), a ``|m_home|`` WARN at 0.010 rad (level grossly stale — harmless to
-the home-referenced map, worth surfacing) and a hard abort at 0.05 rad.
-Verification check poses are scored home-referenced too (home is re-measured
-first and subtracted), or a constant stale level would fail every check pose
-of a perfectly valid capture. Contract: ``levelling_frame.md`` § C-LEVEL-2.
+per axis, in radians). The home pose is re-measured **k times through the
+sweep** — at the start, after every ``--home-revisit-every`` non-home grid
+visits, and at the end — and the shipped residual is referenced to the **MEAN
+of those anchors**::
+
+    M(P_i) := m_i − mean_over_anchors(m_home)
+
+Writing the platform's true field as ``f(P)`` and the loaded correction as
+``C_cap``, each measurement is ``m_i = f(P_i) − C_cap``, so
+``M(P_i) = f(P_i) − f(home)``: the correction cancels EXACTLY, however stale,
+as long as it is CONSTANT across the sweep.
+
+**Why the MEAN, and not the first anchor or a time interpolation.** Two C0
+captures on 2026-08-10 (``temp/logs/tilt_cal_grid_20260810_115343*`` and
+``_120735*``) each completed all nine nodes cleanly and then re-measured home
+**+1.81 mrad / +1.59 mrad on ty** against the start — reproducibly, with the
+``/gravity_offset`` monitor silent and the ODrive forensics clean, i.e. *not*
+a changed correction. The mechanism is OPEN, with two live candidates:
+**arrival repeatability** (Jugglebot is hand-built with FDM-printed parts;
+re-arriving at a pose after a workspace tour lands within ~1–2 mrad of tilt,
+path-dependent hysteresis — the leading hypothesis, and consistent with two
+identical sweeps reproducing the same offset) and **sensor warm-up / thermal
+settling** of the SCL3300 after the ODrive power-cycle. The anchor series
+recorded on every capture from here discriminates them for free: arrival
+repeatability scatters about a mean, warm-up trends monotonically.
+
+The mean is the right reference under BOTH. Under arrival repeatability it
+averages per-arrival noise down as ``σ/sqrt(k)``; under a smooth time drift it
+centres the error at ``±`` half the total drift instead of pinning it to one
+end. Either residual is far inside the owner-stated 0.5 deg (8.7 mrad)
+repeatability tolerance and the 0.15 deg ``θ_acc``, so a time interpolation
+would buy nothing a future session could measure while making the map depend
+on a mechanism nobody has yet identified. With zero anchor scatter the mean
+reduces **bit-identically** to the single-home referencing it replaces
+(test-pinned).
+
+**The gate is a REPORT first.** Anchors are printed on every capture — the
+per-anchor table, the per-axis peak-to-peak spread and the signed
+start-to-end trend — because the series is the evidence that settles the
+mechanism. A p-p spread above 0.002 rad WARNs prominently and does **not**
+stop the capture. The capture aborts only on a spread above **0.0087 rad**
+(0.5 deg, the owner-stated repeatability tolerance) or a single
+**consecutive-anchor step above 0.005 rad** — a discrete event (a re-level, a
+relaunch re-push, a mechanical snap) rather than the smooth wander the design
+now tolerates. The retired tight statistical drift gate discarded two complete,
+usable captures over ~1.8 mrad; the gate's abort-and-discard behaviour was the
+bug, not the measurement. The causal ``/gravity_offset`` monitor is unchanged
+and remains the detector for an actually-changed correction.
+
+The earlier start-of-capture "STALE LEVEL REFERENCE" abort stays retired — it
+was mistuned against physics (the level reference is ONE int16-quantised
+SCL3300 sample with measured session scatter σ ≈ 1.2–1.7 mrad/axis; the
+1.5 mrad floor sat inside that distribution and false-aborted 40–60 % of
+healthy attempts). What screens the reference now: a ``|m_home|`` WARN at
+0.010 rad (level grossly stale — harmless to a home-referenced map, worth
+surfacing) and a hard abort at 0.05 rad. Verification check poses are scored
+home-referenced too (home is re-measured first and subtracted), or a constant
+stale level would fail every check pose of a perfectly valid capture.
+Contract: ``levelling_frame.md`` § C-LEVEL-2.
 
 **Safety posture — request-only, like ``traj_ramp_battery.py``.** This tool
 issues ``trajectory/go_to_pose`` requests and reads services. It **never arms,
@@ -228,23 +269,41 @@ DEFAULT_CHECK_POSES = 6
 DEFAULT_THRESHOLD_DEG = 0.15     # PROVISIONAL (C0 pins theta_acc)
 DEFAULT_TIMEOUT_S = 5.0
 
-#: End-of-sweep home DRIFT gate (replaces the retired start-of-capture
-#: staleness abort, 2026-08-10 — that gate compared a single-sample level
-#: reference with measured session scatter 1.2-1.7 mrad/axis against a
-#: 1.5 mrad floor derived from 4.5 s of read noise, and false-aborted 40-60%
-#: of healthy attempts; see levelling_frame.md § "What the map is").
-#: The drift ``d = m_home_end - m_home_start`` is gated per axis at
-#: ``max(HOME_DRIFT_SD_MULT * sqrt((sd_start^2 + sd_end^2) / n_eff),
-#: HOME_DRIFT_TOL_FLOOR_RAD)``. Both start and end are N-read means of the
-#: SAME sensor minutes apart, so the comparison is noise-vs-noise on a
-#: matched footing — unlike the old gate. ``n_eff = n/2`` until rung C0 pins
-#: the read autocorrelation at the 0.15 s gap.
-#: Floor 0.0005 rad = 0.029 deg = 19% of the provisional theta_acc; the
-#: 1 mrad relaunch-repush truncation step lands at >= 5.5 sigma of the
-#: observed read-noise budget, so the gate catches it with margin.
-HOME_DRIFT_SD_MULT = 3.0
-HOME_DRIFT_TOL_FLOOR_RAD = 0.0005  # ~0.029 deg  PROVISIONAL (C0 pins n_eff)
-N_EFF_DIVISOR = 2.0                # n_eff = n_ok / 2 until C0 pins rho
+#: Mid-sweep home re-measures: one anchor after every N **non-home** grid
+#: visits. 0 disables them (the start and end anchors always exist). The
+#: default 4 gives ~3 anchors on the 3x3 probe grid and ~7 on the 5x5 default
+#: — enough to see the shape of the home series without spending a third of
+#: the sweep on it (each anchor costs one move + dwell + n_reads, ~9 s at the
+#: C0 working point, so 5 mid-sweep anchors add ~45 s to a ~4 min capture).
+DEFAULT_HOME_REVISIT_EVERY = 4
+
+#: Anchor-series gates (2026-08-10). These REPLACE the tight statistical drift
+#: gate, which compared start-vs-end home means against a read-noise-derived
+#: tolerance (~0.75-0.94 mrad) and aborted BOTH complete C0 captures on
+#: 2026-08-10 over a reproducible ~1.6-1.8 mrad ty offset — with the causal
+#: /gravity_offset monitor silent and the forensics clean, i.e. the level
+#: reference had NOT changed. Discarding a finished, usable capture over an
+#: effect ~4.8x INSIDE the owner's repeatability tolerance was the bug.
+#:
+#: The mechanism is OPEN: platform arrival repeatability (hand-built, FDM
+#: parts, path-dependent hysteresis on re-arriving at a pose) leads; SCL3300
+#: warm-up / thermal settling fits too. The anchor series recorded on every
+#: capture from here discriminates them, which is why the WARN is prominent
+#: and non-blocking rather than absent.
+#:
+#: WARN: any axis's anchor peak-to-peak spread over 0.002 rad (0.115 deg) —
+#: above the ~1 mrad read-noise floor of an N-read mean, so it reports real
+#: pose-return variation and not sensor noise.
+#: ABORT: p-p over 0.0087 rad = **0.5 deg, the owner-stated repeatability
+#: tolerance** — beyond it the "which arrival is the reference" question stops
+#: being a rounding error against the 0.15 deg theta_acc.
+#: ABORT: any single CONSECUTIVE-anchor step over 0.005 rad — a discrete event
+#: (re-level, relaunch re-push of the int16-mrad Teensy copy, a mechanical
+#: snap), which is a different physical claim from smooth wander and stays
+#: fatal at a threshold the smooth case does not reach.
+ANCHOR_PP_WARN_RAD = 0.002       # 0.115 deg — prominent, NON-blocking
+ANCHOR_PP_ABORT_RAD = 0.0087     # 0.5 deg — owner repeatability tolerance
+ANCHOR_STEP_ABORT_RAD = 0.005    # a discrete event between two anchors
 
 #: ``|m_home|`` sanity bounds. Under home-referencing a nonzero home
 #: measurement is HARMLESS to the map (it cancels), so these are not
@@ -288,6 +347,14 @@ CSV_COLUMNS = (
     'raw_tx_rad', 'raw_ty_rad', 'res_tx_rad', 'res_ty_rad',
     'ok', 'uptime_ms', 'note',
 )
+
+#: Phase tag for a MID-SWEEP home re-measure. Distinct from ``'capture'`` so
+#: the analyser cannot average an anchor into the home grid node (that would
+#: mix a start-of-sweep value with re-arrivals minutes later, exactly the
+#: variation the anchors exist to measure) and distinct from ``'home_end'`` so
+#: the final anchor stays identifiable in every historical CSV.
+PHASE_HOME_ANCHOR = 'home_anchor'
+PHASE_HOME_END = 'home_end'
 
 TOOL_NAME = 'tests/hardware/tilt_cal_grid.py'
 
@@ -352,6 +419,42 @@ class Node(NamedTuple):
     iy: int
     x_mm: float
     y_mm: float
+
+
+class HomeAnchor(NamedTuple):
+    """One measurement of the home pose, timestamped within the capture.
+
+    The capture interleaves k of these — start, every
+    ``--home-revisit-every`` non-home grid visits, end — and the shipped
+    reference is their MEAN. ``t_s`` is seconds from the run's monotonic
+    start, matching the CSV ``t_s`` column, so an anchor row in the report can
+    be found in the CSV without guesswork; it is what makes the series a
+    *time* series and therefore able to separate a monotonic warm-up trend
+    from arrival-to-arrival scatter.
+    """
+
+    t_s: float
+    m_tx: float
+    m_ty: float
+    sd_tx: float
+    sd_ty: float
+    n_ok: int
+
+    @classmethod
+    def from_stats(cls, t_s: float, stats: ReadStats) -> 'HomeAnchor':
+        return cls(t_s=float(t_s), m_tx=stats.res_tx, m_ty=stats.res_ty,
+                   sd_tx=stats.sd_tx, sd_ty=stats.sd_ty, n_ok=stats.n_ok)
+
+    def as_dict(self) -> Dict[str, Any]:
+        """The metadata row shape (``captured.home_reference.anchors[i]``)."""
+        return {
+            't_s': round(float(self.t_s), 3),
+            'm_tx_rad': float(self.m_tx),
+            'm_ty_rad': float(self.m_ty),
+            'sd_tx_rad': float(self.sd_tx),
+            'sd_ty_rad': float(self.sd_ty),
+            'n_ok': int(self.n_ok),
+        }
 
 
 class ReadStats(NamedTuple):
@@ -493,10 +596,12 @@ def centre_out_order(x_mm: Sequence[float],
 def visit_order(x_mm: Sequence[float], y_mm: Sequence[float]) -> List[Node]:
     """The capture order: **home node first**, then centre-out, corners last.
 
-    Home is measured first — its reading is the reference every other node is
-    shipped against (``M = m − m_home``) — and exactly once *as a grid node*:
-    the END of the sweep re-measures the same pose for the drift gate, but
-    that reading is the gate's evidence, never a second value for the node.
+    Home is measured first — that reading is the FIRST home anchor, and the
+    shipped reference is the mean of all of them — and exactly once *as a grid
+    node*: the mid-sweep revisits and the end-of-sweep re-measure return to
+    the same pose, but those readings are anchors, never a second value for
+    the node. (Averaging them into the node would fold the very arrival-to-
+    arrival variation the anchors exist to measure into the node's residual.)
     """
     hx, hy = home_index(x_mm, y_mm)
     home = Node(ix=hx, iy=hy, x_mm=float(x_mm[hx]), y_mm=float(y_mm[hy]))
@@ -664,59 +769,225 @@ def home_reference_verdict(stats: ReadStats) -> Tuple[str, str]:
     return ('ok', 'home reference OK: {}'.format(detail))
 
 
-def home_drift_verdict(start: ReadStats, end: ReadStats) -> Tuple[bool, str]:
-    """The END-OF-SWEEP drift gate: did the correction change mid-capture?
+def _exact_mean(values: Sequence[float]) -> float:
+    """Mean that is **bit-identical to the value itself** at zero scatter.
 
-    ``d = m_home_end − m_home_start`` per axis, gated at
-    ``tol = max(HOME_DRIFT_SD_MULT * sqrt((sd_start² + sd_end²) / n_eff),
-    HOME_DRIFT_TOL_FLOOR_RAD)`` with ``n_eff = min(n_ok) / N_EFF_DIVISOR``
-    (reads are weakly correlated at the 0.15 s gap; C0 pins the real number).
-    Unlike the retired staleness gate this compares two N-read means of the
-    SAME sensor minutes apart — a matched-footing comparison whose dominant
-    noise terms actually appear in its own tolerance. A failure means the
-    reference the early nodes were measured against is not the reference the
-    late nodes were measured against, which corrupts the map non-uniformly —
-    the one thing home-referencing cannot cancel.
-
-    The causal ``/gravity_offset`` monitor covers the same class earlier and
-    more sharply; this gate is the OUTCOME check that also catches whatever
-    the monitor cannot see (a mechanical shift, thermal settling of the base).
+    ``sum(v)/k`` does not have that property in floating point: three copies
+    of ``a`` sum to a rounded ``3a`` whose quotient by 3 can miss ``a`` by an
+    ULP. That ULP would make the anchor-mean design fail to reduce exactly to
+    the single-home referencing it replaces, and "the map changed in the last
+    digit because we added a redundant measurement that agreed" is precisely
+    the kind of unexplainable diff a machine-written, committed YAML must not
+    produce. So identical inputs short-circuit, and everything else goes
+    through ``math.fsum`` (exactly-rounded summation — no accumulation order
+    dependence either).
     """
-    if end.n_ok < MIN_GOOD_READS:
-        return (False,
-                'home re-measure returned only {}/{} finite reads — the drift '
-                'gate has no end-point; the capture cannot be certified'
-                .format(end.n_ok, end.n_total))
-    n_eff = max(1.0, min(start.n_ok, end.n_ok) / N_EFF_DIVISOR)
-    problems = []
-    detail = []
-    for axis, r0, r1, s0, s1 in (
-            ('tx', start.res_tx, end.res_tx, start.sd_tx, end.sd_tx),
-            ('ty', start.res_ty, end.res_ty, start.sd_ty, end.sd_ty)):
-        drift = r1 - r0
-        tol = max(HOME_DRIFT_SD_MULT * math.sqrt((s0 ** 2 + s1 ** 2) / n_eff),
-                  HOME_DRIFT_TOL_FLOOR_RAD)
-        detail.append('{}: drift {:+.6f} rad vs tol {:.6f}'.format(
-            axis, drift, tol))
-        if abs(drift) > tol:
-            problems.append(
-                '{}: |{:+.6f}| rad ({:+.4f} deg) > tol {:.6f} rad '
-                '(max({:.1f}x sqrt((sd_start^2+sd_end^2)/n_eff={:.1f}), '
-                'floor {:.6f}))'
-                .format(axis, drift, math.degrees(drift), tol,
-                        HOME_DRIFT_SD_MULT, n_eff, HOME_DRIFT_TOL_FLOOR_RAD))
-    if problems:
-        return (False,
-                'HOME DRIFT GATE FAILED — the level reference CHANGED during '
-                'the sweep: ' + '; '.join(problems) +
-                '. Early nodes and late nodes were measured against different '
-                'references, which corrupts the map NON-uniformly (the one '
-                'error home-referencing cannot cancel). Usual causes: a '
-                're-level or relaunch mid-sweep (the /gravity_offset monitor '
-                'should also have fired), or the base/platform physically '
-                'settling. Nothing was written; re-run the capture.')
-    return (True, 'home drift gate PASS: ' + '; '.join(detail) +
-            ' (n_eff {:.1f})'.format(n_eff))
+    items = [float(v) for v in values]
+    if not items:
+        raise TiltCalError('cannot average an empty anchor series')
+    first = items[0]
+    if all(v == first for v in items):
+        return first
+    return math.fsum(items) / len(items)
+
+
+def usable_anchors(anchors: Sequence[HomeAnchor]) -> List[HomeAnchor]:
+    """Anchors with enough finite reads to mean anything (``>= MIN_GOOD_READS``)."""
+    return [a for a in anchors if a.n_ok >= MIN_GOOD_READS]
+
+
+def anchor_mean_rad(anchors: Sequence[HomeAnchor]) -> Tuple[float, float]:
+    """The shipped reference: the MEAN of every usable home anchor.
+
+    ``M(P_i) = m_i − anchor_mean`` for every node. With one anchor, or with k
+    anchors that agree exactly, this returns that value **bit-identically** —
+    so the anchor-mean map reduces to the previous single-home map with no
+    numeric change at all (see :func:`_exact_mean`).
+
+    Why the mean rather than the first anchor or a time interpolation is
+    argued in the module docstring: it is the right estimator under BOTH open
+    mechanisms (arrival repeatability ⇒ σ/sqrt(k); smooth drift ⇒ centred at
+    ± half the total), and the difference between them is far inside the
+    0.5 deg repeatability tolerance and the 0.15 deg theta_acc.
+    """
+    good = usable_anchors(anchors)
+    if not good:
+        raise TiltCalError(
+            'no usable home anchor ({} recorded, none with >= {} finite '
+            'reads) — the map has no reference and cannot be written'
+            .format(len(anchors), MIN_GOOD_READS))
+    return (_exact_mean([a.m_tx for a in good]),
+            _exact_mean([a.m_ty for a in good]))
+
+
+def anchor_spread(anchors: Sequence[HomeAnchor]) -> Dict[str, Any]:
+    """Peak-to-peak, trend and worst consecutive step of the home series.
+
+    Pure reduction, no verdict — :func:`anchor_series_verdict` applies the
+    thresholds and the report prints these numbers whatever the verdict is.
+    ``trend`` is END minus START (signed, so a monotonic warm-up is legible as
+    such); ``max_step`` is over CONSECUTIVE anchors, which is what separates a
+    discrete event from smooth wander of the same total size.
+    """
+    good = usable_anchors(anchors)
+    out: Dict[str, Any] = {'n_anchors': len(good), 'n_recorded': len(anchors)}
+    for axis, values in (('tx', [a.m_tx for a in good]),
+                         ('ty', [a.m_ty for a in good])):
+        if not values:
+            out[axis] = {'pp': float('nan'), 'trend': float('nan'),
+                         'max_step': float('nan'), 'max_step_index': None}
+            continue
+        steps = [values[i + 1] - values[i] for i in range(len(values) - 1)]
+        worst = max(range(len(steps)), key=lambda i: abs(steps[i])) \
+            if steps else None
+        out[axis] = {
+            'pp': max(values) - min(values),
+            'trend': values[-1] - values[0],
+            'max_step': abs(steps[worst]) if worst is not None else 0.0,
+            'max_step_signed': steps[worst] if worst is not None else 0.0,
+            'max_step_index': worst,
+        }
+    return out
+
+
+def anchor_table_lines(anchors: Sequence[HomeAnchor]) -> List[str]:
+    """The per-anchor report table, one string per line (header included).
+
+    Printed on EVERY capture — clean or not. The series is the evidence that
+    will settle whether the ~1.6-1.8 mrad home offset seen on both 2026-08-10
+    C0 captures is arrival repeatability or sensor warm-up, and evidence that
+    is only printed when something fails is evidence nobody collects.
+    """
+    lines = ['    {:>3} {:>9} {:>12} {:>12} {:>10} {:>10} {:>6}'.format(
+        '#', 't_s', 'm_tx_rad', 'm_ty_rad', 'sd_tx', 'sd_ty', 'n_ok')]
+    for i, a in enumerate(anchors):
+        lines.append(
+            '    {:>3d} {:>9.1f} {:>+12.6f} {:>+12.6f} {:>10.6f} {:>10.6f} '
+            '{:>6d}'.format(i + 1, a.t_s, a.m_tx, a.m_ty, a.sd_tx, a.sd_ty,
+                            a.n_ok))
+    return lines
+
+
+def anchor_series_verdict(anchors: Sequence[HomeAnchor]) -> Tuple[str, str]:
+    """``('ok' | 'warn' | 'abort', message)`` for the home-anchor series.
+
+    Replaces the retired start-vs-end statistical drift gate. The thresholds
+    are the module constants and their rationale is there; in one line: this
+    gate no longer tries to detect "the reference moved at all", because the
+    reference demonstrably moves ~1-2 mrad on a healthy machine and the map
+    does not care. It detects (a) variation large enough to matter against the
+    owner's 0.5 deg repeatability tolerance, and (b) a discrete step between
+    two consecutive anchors, which is a re-level / relaunch / mechanical snap
+    rather than the pose-return wander the design now absorbs.
+
+    A WARN names BOTH open mechanisms deliberately: an operator who reads
+    "arrival repeatability" as settled fact would stop recording the series,
+    and the series is what discriminates them.
+    """
+    good = usable_anchors(anchors)
+    if len(good) < 1:
+        return ('abort',
+                'no usable home anchor ({} recorded) — the capture has no '
+                'reference to ship residuals against'.format(len(anchors)))
+    if len(good) < len(anchors):
+        bad = [i + 1 for i, a in enumerate(anchors)
+               if a.n_ok < MIN_GOOD_READS]
+        return ('abort',
+                'home anchor(s) {} returned fewer than {} finite reads — the '
+                'inclinometer stopped answering at the reference pose, so the '
+                'anchor series cannot certify this capture'
+                .format(bad, MIN_GOOD_READS))
+
+    spread = anchor_spread(anchors)
+    detail = '; '.join(
+        '{}: p-p {:.6f} rad ({:.4f} deg), trend {:+.6f} rad ({:+.4f} deg), '
+        'worst consecutive step {:.6f} rad'
+        .format(axis, spread[axis]['pp'], math.degrees(spread[axis]['pp']),
+                spread[axis]['trend'], math.degrees(spread[axis]['trend']),
+                spread[axis]['max_step'])
+        for axis in ('tx', 'ty'))
+    header = '{} home anchor(s) over {:.0f} s — {}'.format(
+        len(good), (good[-1].t_s - good[0].t_s), detail)
+
+    over_pp = [axis for axis in ('tx', 'ty')
+               if spread[axis]['pp'] > ANCHOR_PP_ABORT_RAD]
+    if over_pp:
+        return ('abort',
+                'HOME ANCHOR SPREAD EXCEEDS THE REPEATABILITY TOLERANCE on {} '
+                '— {}. The ceiling is {:.4f} rad (0.5 deg), the repeatability '
+                'this machine is expected to hold; past it the map depends on '
+                'WHICH arrival was used as the reference, which is no longer '
+                'a rounding error against the {:.2f} deg theta_acc. Nothing '
+                'was written. Check for a shifting base, a loose platform '
+                'joint, or a leg that is not returning to its commanded '
+                'position, then re-run.'
+                .format('/'.join(over_pp), header, ANCHOR_PP_ABORT_RAD,
+                        DEFAULT_THRESHOLD_DEG))
+
+    over_step = [axis for axis in ('tx', 'ty')
+                 if spread[axis]['max_step'] > ANCHOR_STEP_ABORT_RAD]
+    if over_step:
+        where = ', '.join(
+            '{} between anchors {} and {} ({:+.6f} rad)'.format(
+                axis, spread[axis]['max_step_index'] + 1,
+                spread[axis]['max_step_index'] + 2,
+                spread[axis]['max_step_signed'])
+            for axis in over_step)
+        return ('abort',
+                'DISCRETE STEP IN THE HOME ANCHOR SERIES — {} exceeds the '
+                '{:.4f} rad consecutive-step ceiling. {}. A step between two '
+                'consecutive anchors is an EVENT, not the smooth arrival-to-'
+                'arrival wander this capture tolerates: a re-level or relaunch '
+                're-pushing the int16-mrad Teensy copy (the /gravity_offset '
+                'monitor is the causal detector and should also have fired), '
+                'or something mechanical letting go. Nothing was written; '
+                'diagnose before re-running.'
+                .format(where, ANCHOR_STEP_ABORT_RAD, header))
+
+    over_warn = [axis for axis in ('tx', 'ty')
+                 if spread[axis]['pp'] > ANCHOR_PP_WARN_RAD]
+    if over_warn:
+        return ('warn',
+                'HOME ANCHOR SPREAD above the {:.4f} rad WARN on {} — {}. '
+                'The capture is VALID and was written: every residual is '
+                'referenced to the MEAN of these anchors, and this spread is '
+                'well inside the 0.0087 rad (0.5 deg) repeatability tolerance '
+                'and the {:.2f} deg theta_acc. Two mechanisms remain open — '
+                'ARRIVAL REPEATABILITY of the hand-built FDM structure '
+                '(path-dependent hysteresis on re-arriving at a pose; scatters '
+                'about a mean) versus SENSOR WARM-UP / thermal settling of the '
+                'SCL3300 (trends monotonically). The anchor series across '
+                'captures will discriminate them — record this table with the '
+                'session notes.'
+                .format(ANCHOR_PP_WARN_RAD, '/'.join(over_warn), header,
+                        DEFAULT_THRESHOLD_DEG))
+    return ('ok', 'home anchor series OK — {}'.format(header))
+
+
+def home_revisit_after_visits(n_nodes: int, revisit_every: int) -> List[int]:
+    """Grid-visit indices after which a mid-sweep home anchor is inserted.
+
+    Counting is in **non-home grid visits**: visit 0 of the order IS the home
+    node (and is the first anchor), so an anchor lands after non-home visits
+    ``N, 2N, 3N, …`` — which are grid indices ``N, 2N, 3N, …`` — while the
+    last non-home visit is skipped because the end-of-sweep re-measure already
+    anchors there. Two consecutive home measurements separated by nothing but
+    a re-move would measure the same arrival twice, which is the one thing the
+    series must not do.
+
+    3x3 (9 nodes, 8 non-home) at N=4 ⇒ one mid-sweep anchor ⇒ 3 anchors total.
+    5x5 (25 nodes, 24 non-home) at N=4 ⇒ five ⇒ 7 total. ``revisit_every <= 0``
+    disables mid-sweep anchors entirely (start + end remain).
+    """
+    if revisit_every <= 0 or n_nodes <= 2:
+        return []
+    n_non_home = n_nodes - 1
+    out: List[int] = []
+    k = 1
+    while k * revisit_every < n_non_home:
+        out.append(k * revisit_every)
+        k += 1
+    return out
 
 
 def decode_error_bits(mask: int) -> List[str]:
@@ -964,15 +1235,23 @@ def build_map_document(x_mm: Sequence[float], y_mm: Sequence[float],
                        home_ref: Tuple[float, float]) -> Dict[str, Any]:
     """Assemble the schema-v1 document from the per-node reductions.
 
-    **Shipped residuals are HOME-REFERENCED**: every stored node value is
-    ``measured − home_ref`` per axis, where ``home_ref`` is the home node's
-    own measured residual ``(res_tx, res_ty)``. The home node therefore ships
-    **exactly 0.0** (it subtracts itself — float-exact, not approximate), and
-    any constant in the measurements — a stale level reference above all —
-    cancels out of every node identically. Adding a constant to every
-    measured residual (home included) produces a byte-identical document.
+    **Shipped residuals are ANCHOR-MEAN HOME-REFERENCED**: every stored node
+    value is ``measured − home_ref`` per axis, where ``home_ref`` is
+    :func:`anchor_mean_rad` over the home anchors interleaved through the
+    sweep. Any constant in the measurements — a stale level reference above
+    all — cancels out of every node identically: adding a constant to every
+    measured residual (anchors included) produces a byte-identical document.
     Bilinear interpolation commutes with the constant exactly, so no lookup
     or apply-side change accompanies this.
+
+    The home node ships **exactly 0.0 only when the anchors agree exactly**
+    (one anchor, or a perfectly repeatable machine — the previous design's
+    "subtracts itself" case, preserved bit-identically by ``_exact_mean``).
+    With real anchor scatter it ships the home node's own departure from the
+    anchor mean — sub-mrad, correct, and *deliberately* not forced to zero:
+    zeroing it would push that same scatter onto every other node instead of
+    splitting it, and would hide the one number that says how repeatable the
+    machine was during the sweep.
 
     Residuals are rounded to 9 dp (1 nrad — six orders below the sensor's own
     resolution) and axes to 6 dp, purely so the committed YAML is diff-readable
@@ -1189,15 +1468,19 @@ def csv_row(iso: str, t_s: float, phase: str, visit: int,
 
 def estimate_duration_s(n_nodes: int, n_checks: int, move_s: float,
                         dwell_s: float, n_reads: int,
-                        read_gap_s: float) -> float:
+                        read_gap_s: float, n_home_revisits: int = 0) -> float:
     """Wall-clock ETA for the dry-run plan.
 
     The ``+ 3`` covers the three non-grid visits every full capture makes:
-    the end-of-sweep home re-measure (drift gate), the verification home
-    reference (home-referenced scoring), and the return to centre.
+    the end-of-sweep home anchor, the verification home reference
+    (home-referenced scoring), and the return to centre.
+    ``n_home_revisits`` adds the MID-SWEEP anchors, which cost a full
+    move + dwell + read set each — on the 5x5 default that is five extra
+    visits, and an ETA that omitted them would understate the capture by
+    ~45 s at the C0 working point.
     """
     per_visit = move_s + dwell_s + n_reads * (EST_READ_S + read_gap_s)
-    return (n_nodes + n_checks + 3) * per_visit
+    return (n_nodes + n_checks + n_home_revisits + 3) * per_visit
 
 
 def git_sha() -> str:
@@ -1289,6 +1572,17 @@ def build_parser() -> argparse.ArgumentParser:
                              'here is identical at any gain.')
     timing.add_argument('--timeout-s', type=float, default=DEFAULT_TIMEOUT_S,
                         help='per-service-call timeout (default %(default)s).')
+    timing.add_argument('--home-revisit-every', type=int,
+                        default=DEFAULT_HOME_REVISIT_EVERY,
+                        help='insert a home re-measure (an ANCHOR) after every '
+                             'N non-home grid visits (default %(default)s; 0 '
+                             'disables mid-sweep anchors). The start and end '
+                             'home measurements are always anchors, and every '
+                             'shipped residual is referenced to the MEAN of '
+                             'all of them — which averages down the ~1-2 mrad '
+                             'arrival-to-arrival variation measured on '
+                             '2026-08-10. Each anchor costs one full '
+                             'move+dwell+read visit.')
 
     ver = ap.add_argument_group('verification')
     ver.add_argument('--check-poses', type=int, default=DEFAULT_CHECK_POSES,
@@ -1362,21 +1656,31 @@ def print_plan(x_mm: Sequence[float], y_mm: Sequence[float], z_mm: float,
     print('  move={:.2f}s  dwell={:.2f}s  n_reads={}  read_gap={:.2f}s  '
           'lean_gain={}'.format(args.move_duration_s, args.dwell_s,
                                 args.n_reads, args.read_gap_s, lean_desc))
+    revisits = home_revisit_after_visits(len(order), args.home_revisit_every)
+    print('  home anchors: {} total (start + {} mid-sweep + end) — the shipped '
+          'reference is their MEAN'
+          .format(len(revisits) + 2, len(revisits)))
     print('  visit order (home node FIRST, then centre-out — corners LAST):')
     for i, n in enumerate(order):
-        tag = '  <- home node (home reference; re-measured at sweep end '\
-              'for the drift gate)' if i == 0 else ''
+        tag = ('  <- home node (home reference, anchor 1 of {})'
+               .format(len(revisits) + 2) if i == 0 else '')
         print('    {:>3d}. ({:+7.1f}, {:+7.1f}) [ix={}, iy={}]{}'
               .format(i + 1, n.x_mm, n.y_mm, n.ix, n.iy, tag))
+        if i in revisits:
+            print('         -> HOME ANCHOR ({:+7.1f}, {:+7.1f}) [phase {}]'
+                  .format(0.0, 0.0, PHASE_HOME_ANCHOR))
+    print('         -> HOME ANCHOR ({:+7.1f}, {:+7.1f}) [phase {}, '
+          'end of sweep]'.format(0.0, 0.0, PHASE_HOME_END))
     print('  verification check poses (off-node, cell centres; scored '
           'home-referenced):')
     for i, (cx, cy) in enumerate(checks):
         print('    {:>3d}. ({:+7.1f}, {:+7.1f})'.format(i + 1, cx, cy))
     eta = estimate_duration_s(len(order), len(checks), args.move_duration_s,
-                              args.dwell_s, args.n_reads, args.read_gap_s)
-    print('  ETA ~ {:.0f} s ({:.1f} min) including the end-of-sweep home '
-          're-measure, the verification home reference and the return to '
-          'centre'.format(eta, eta / 60.0))
+                              args.dwell_s, args.n_reads, args.read_gap_s,
+                              len(revisits))
+    print('  ETA ~ {:.0f} s ({:.1f} min) including {} mid-sweep home anchor(s), '
+          'the end-of-sweep anchor, the verification home reference and the '
+          'return to centre'.format(eta, eta / 60.0, len(revisits)))
 
 
 # ── runtime (ROS) ────────────────────────────────────────────────────────
@@ -1819,6 +2123,25 @@ class _Runner:
                                     offset_rad), reads)
 
 
+def forensics_has_drive_error(fx: Dict[str, Any]) -> bool:
+    """Does this snapshot actually contain a nonzero ODrive error/disarm code?
+
+    Gates the "capture evidence BEFORE any relaunch" epilogue. That line used
+    to print on EVERY abort, including the two 2026-08-10 C0 gate aborts whose
+    forensics were entirely clean — telling an operator to preserve
+    drive-side evidence that does not exist trains them to skip the line on
+    the run where it matters, which is the one abort where the evidence is
+    genuinely perishable (the next launch's BOOT pre-flight clears it).
+    """
+    for entry in (fx.get('motor_states') or []):
+        if entry.get('active_errors') or entry.get('disarm_reason'):
+            return True
+    for edge in (fx.get('motor_error_edges') or {}).values():
+        if edge.get('active_errors') or edge.get('disarm_reason'):
+            return True
+    return False
+
+
 def print_forensics(fx: Dict[str, Any]) -> None:
     """Console rendering of a :meth:`_Runner.forensics` snapshot.
 
@@ -1874,9 +2197,16 @@ def print_forensics(fx: Dict[str, Any]) -> None:
         print('  /gravity_offset DURING SWEEP: {} message(s), last {}'.format(
             fx.get('gravity_msgs_since_sweep_start'),
             fx.get('last_gravity_offset')), file=sys.stderr)
-    print('  full snapshot lands in _meta.json (forensics key). Capture '
-          'evidence BEFORE any relaunch: the next launch BOOT pre-flight '
-          'auto-clears the ODrive error record.', file=sys.stderr)
+    if forensics_has_drive_error(fx):
+        print('  full snapshot lands in _meta.json (forensics key). CAPTURE '
+              'EVIDENCE BEFORE ANY RELAUNCH: a nonzero ODrive error/disarm '
+              'code is present above, and the next launch BOOT pre-flight '
+              'auto-clears the drive-side record.', file=sys.stderr)
+    else:
+        print('  full snapshot lands in _meta.json (forensics key). No ODrive '
+              'error or disarm code in this snapshot — the drives were clean '
+              'at abort time, so nothing drive-side is perishable here.',
+              file=sys.stderr)
     print('---------------------------------------------------------------',
           file=sys.stderr)
 
@@ -2128,7 +2458,7 @@ def run(args) -> int:                                    # noqa: C901
         # any height — it cancels out of every shipped residual. At z != 170
         # (the ACTIVATE pose `level` measures) m_home additionally contains a
         # REAL pose-dependent component, which is fine for the same reason;
-        # only the |m_home| WARN/abort bounds and the end-of-sweep drift gate
+        # only the |m_home| WARN/abort bounds and the anchor-series gates
         # apply. Say so, so a WARN at an unusual height reads correctly.
         if not args.verify_only and abs(float(args.z) - DEFAULT_Z_MM) > 1e-6:
             print('  ! --z {} is not the ACTIVATE height {}: expect a larger '
@@ -2143,7 +2473,7 @@ def run(args) -> int:                                    # noqa: C901
                   'confirmations on a LIVE capture. Hand quiescence has no '
                   'programmatic check at all; correction constancy IS '
                   'machine-checked (mid-sweep /gravity_offset abort + the '
-                  'end-of-sweep home drift gate), but only after motion has '
+                  'home-anchor series), but only after motion has '
                   'been spent on the violation.')
         if not args.yes:
             thc.safety_gate(
@@ -2155,7 +2485,8 @@ def run(args) -> int:                                    # noqa: C901
                 'keeps |m_home| small), not required. A correction that '
                 'CHANGES mid-sweep corrupts every node measured after the '
                 'change; the tool machine-checks this (mid-sweep '
-                '/gravity_offset abort + end-of-sweep home drift gate).',
+                '/gravity_offset abort, plus the home-anchor series, which '
+                'aborts on a discrete step between consecutive anchors).',
                 'yes')
             thc.safety_gate(
                 'Is the HAND quiescent (no hand move in flight, no ball op '
@@ -2227,14 +2558,53 @@ def run(args) -> int:                                    # noqa: C901
 
         results: Dict[Tuple[int, int], ReadStats] = {}
         failed_nodes: List[Tuple[int, int]] = []
+        anchors: List[HomeAnchor] = []
+        # Mid-sweep home anchors: grid-visit indices after which the platform
+        # returns to (0, 0) and re-measures. The start (visit 0) and the
+        # end-of-sweep re-measure are anchors too, so this list is the
+        # ADDITIONAL ones.
+        revisit_after = set(home_revisit_after_visits(
+            len(order), args.home_revisit_every))
         reached_motion = True
         # Arm the constancy monitor: any /gravity_offset message from here to
         # the last read is a capture-precondition violation and aborts.
         runner.mark_sweep_started()
 
+        def measure_home_anchor(index: int, phase: str,
+                                label: str) -> HomeAnchor:
+            """Move home, re-measure, record the CSV rows, bank the anchor.
+
+            Used for every anchor after the first (which is the home GRID
+            visit). The rows are tagged ``home_anchor`` / ``home_end`` rather
+            than ``capture`` so neither this tool nor the analyser can fold a
+            re-arrival into the home node's own residual.
+            """
+            hx, hy = home_index(x_mm, y_mm)
+            runner.assert_wire_armed(label)
+            stats, reads = runner.measure(0.0, 0.0, z_mm, label, offset_rad)
+            record(phase, index, hx, hy, 0.0, 0.0, reads)
+            if stats.n_ok < MIN_GOOD_READS:
+                raise TiltCalError(
+                    '{} returned only {}/{} finite reads — the anchor series '
+                    'is the map\'s reference, so a dead anchor cannot be '
+                    'skipped over. Nothing was written; re-run (a longer '
+                    '--dwell-s is the usual fix).'
+                    .format(label, stats.n_ok, stats.n_total))
+            t_s = (reads[0].t_mono - started_mono) if reads else (
+                time.monotonic() - started_mono)
+            anchor = HomeAnchor.from_stats(t_s, stats)
+            anchors.append(anchor)
+            print('  home anchor {}: m = {} sd ({:.6f}, {:.6f}) rad  '
+                  'reads {}/{}'
+                  .format(len(anchors), _fmt_deg(anchor.m_tx, anchor.m_ty),
+                          anchor.sd_tx, anchor.sd_ty, stats.n_ok,
+                          stats.n_total))
+            return anchor
+
         # ── capture ──────────────────────────────────────────────────
         if order:
-            print('\n== capture ({} nodes) =='.format(len(order)))
+            print('\n== capture ({} nodes, {} home anchors) =='
+                  .format(len(order), len(revisit_after) + 2))
         for visit, nd in enumerate(order):
             label = 'node {}/{} ({:+.1f}, {:+.1f})'.format(
                 visit + 1, len(order), nd.x_mm, nd.y_mm)
@@ -2316,43 +2686,77 @@ def run(args) -> int:                                    # noqa: C901
                     print('  home reference: {}'.format(message))
                 if verdict == 'abort':
                     raise TiltCalError(message)
+                # ANCHOR 1. The home grid visit doubles as the first anchor —
+                # same move, same dwell, same read count as every other one.
+                anchors.append(HomeAnchor.from_stats(
+                    (reads[0].t_mono - started_mono) if reads
+                    else (time.monotonic() - started_mono), stats))
 
-        # ── end-of-sweep home re-measure: the DRIFT gate ─────────────
-        # The OUTCOME half of the constancy check (the /gravity_offset
-        # monitor is the causal half): re-measure the reference pose and
-        # gate the drift. Runs for --no-apply too — C0 is exactly where the
-        # drift statistics come from. home_ref is what every node is shipped
-        # against; it is defined here, before any document is assembled.
+            if visit in revisit_after:
+                measure_home_anchor(
+                    visit, PHASE_HOME_ANCHOR,
+                    'home anchor {} (mid-sweep, after visit {}/{})'
+                    .format(len(anchors) + 1, visit + 1, len(order)))
+
+        # ── end-of-sweep home anchor + the anchor-series REPORT ──────
+        # The anchors are the map's reference AND the record that settles
+        # whether the home pose's ~1-2 mrad re-arrival offset (both 2026-08-10
+        # C0 captures) is arrival repeatability or sensor warm-up. The report
+        # prints on every capture; only a 0.5 deg spread or a 5 mrad
+        # consecutive step aborts. The causal /gravity_offset monitor remains
+        # the detector for a correction that actually changed. Runs for
+        # --no-apply too — C0 is exactly where these statistics come from.
         home_ref = (0.0, 0.0)
         if not args.verify_only and order:
             hx, hy = home_index(x_mm, y_mm)
-            start_stats = results.get((hx, hy))
-            if start_stats is None:
+            if results.get((hx, hy)) is None:
                 raise TiltCalError(
                     'the home node has no usable measurement — cannot '
                     'home-reference the map (this should have aborted at '
                     'visit 0).')
-            label = 'home re-measure (end-of-sweep drift gate)'
-            print('\n== home re-measure (drift gate) ==')
-            runner.assert_wire_armed(label)
-            end_stats, end_reads = runner.measure(0.0, 0.0, z_mm, label,
-                                                  offset_rad)
-            record('home_end', len(order), hx, hy, 0.0, 0.0, end_reads)
-            drift_ok, drift_message = home_drift_verdict(start_stats,
-                                                         end_stats)
-            print('  {}'.format(drift_message))
-            home_ref = (start_stats.res_tx, start_stats.res_ty)
+            print('\n== home anchor (end of sweep) ==')
+            measure_home_anchor(len(order), PHASE_HOME_END,
+                                'home anchor {} (end of sweep)'
+                                .format(len(anchors) + 1))
+
+            spread = anchor_spread(anchors)
+            anchor_verdict, anchor_message = anchor_series_verdict(anchors)
+            home_ref = anchor_mean_rad(anchors)
+            print('\n== home anchor series ({} anchors, reference = their '
+                  'MEAN) =='.format(len(anchors)))
+            for line in anchor_table_lines(anchors):
+                print(line)
+            print('  anchor mean (the shipped reference) = {}'
+                  .format(_fmt_deg(*home_ref)))
+            if anchor_verdict == 'abort':
+                home_meta = {
+                    'anchors': [a.as_dict() for a in anchors],
+                    'anchor_verdict': 'ABORT',
+                    'referenced': 'anchor-mean',
+                }
+                raise TiltCalError(anchor_message)
+            if anchor_verdict == 'warn':
+                print('\n  !! {}'.format(anchor_message))
+            else:
+                print('  {}'.format(anchor_message))
+
             home_meta = {
-                'm_home_rad': [start_stats.res_tx, start_stats.res_ty],
-                'sd_home_rad': [start_stats.sd_tx, start_stats.sd_ty],
-                'm_home_end_rad': [end_stats.res_tx, end_stats.res_ty],
-                'sd_home_end_rad': [end_stats.sd_tx, end_stats.sd_ty],
-                'drift_rad': [end_stats.res_tx - start_stats.res_tx,
-                              end_stats.res_ty - start_stats.res_ty],
-                'drift_verdict': 'PASS' if drift_ok else 'FAIL',
+                'referenced': 'anchor-mean',
+                'anchors': [a.as_dict() for a in anchors],
+                'anchor_mean_rad': [home_ref[0], home_ref[1]],
+                'anchor_pp_rad': [spread['tx']['pp'], spread['ty']['pp']],
+                'trend_rad': [spread['tx']['trend'], spread['ty']['trend']],
+                'anchor_max_step_rad': [spread['tx']['max_step'],
+                                        spread['ty']['max_step']],
+                'anchor_verdict': anchor_verdict.upper(),
+                # Kept for continuity with pre-anchor captures and the
+                # analyser's older readers: the FIRST and LAST anchors under
+                # their previous names. They are no longer the reference.
+                'm_home_rad': [anchors[0].m_tx, anchors[0].m_ty],
+                'sd_home_rad': [anchors[0].sd_tx, anchors[0].sd_ty],
+                'm_home_end_rad': [anchors[-1].m_tx, anchors[-1].m_ty],
+                'sd_home_end_rad': [anchors[-1].sd_tx, anchors[-1].sd_ty],
             }
-            if not drift_ok:
-                raise TiltCalError(drift_message)
 
         # ── write + apply ────────────────────────────────────────────
         if not args.verify_only:
