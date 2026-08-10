@@ -6,14 +6,24 @@ WHAT IT DOES
 Reads ``/hand_telemetry`` and ``/throw_announcements`` straight out of a rosbag,
 feeds every sample into the shipped ``jugglebot.ball_possession.HandBallSensorSource``
 — the same object ``reload_coordinator_node`` constructs, with the same
-``JB_BD_*`` windows — and prints, per announced throw, the verdict the coordinator
-would have minted:
+``JB_BD_*`` windows — and prints, per announced throw, the sensor's verdict
+resolved with FULL HINDSIGHT (see the timing caveat below):
 
-    CAUGHT    ARRIVAL CONFIRMED and RETENTION CONFIRMED
+    CAUGHT    ARRIVAL CONFIRMED and RETENTION not REJECTED
     BOUNCE    ARRIVAL CONFIRMED and RETENTION REJECTED  (it arrived, then left)
     MISSED    ARRIVAL REJECTED  (the window closed with no empty->held edge)
     UNKNOWN   ARRIVAL UNKNOWN   (the sensor could not look — the merge would then
                                  fall back to the tracker, C-POSSESS-1 § 3.2)
+
+**A BOUNCE row is a live CAUGHT.** The probe scores each announcement once its
+arrival AND retention windows have both closed; the coordinator answers on the
+first confirmed tick, where retention is still ``UNKNOWN`` and § 2 consequence 3
+forbids it from vetoing. So the label this probe prints is the verdict the
+coordinator would have minted only for CAUGHT / MISSED / UNKNOWN — a BOUNCE is
+the reporting residual C-POSSESS-1 § 7 keeps by design (the goal terminates
+CAUGHT, and retention binds on the NEXT cycle's precondition and the possession
+latch instead). That is exactly why BOUNCE is worth counting offline: it is the
+count nobody can read off the live log.
 
 plus the **sensor ledger** for the whole bag: sample count, ``ball_held_valid``
 fraction, every debounced transition, held-segment durations, and the
@@ -406,12 +416,23 @@ def print_report(name, rows, led, tracker_mode=None):
 # ── Self-check (two-sided instrument acceptance; needs NO bag) ────────────────
 
 def self_check() -> int:
-    """Nine cases. Two-sided by construction: every ACCEPT case has a REFUSE twin
-    one measured millisecond away, so a window that silently widened or a
-    retention rule that stopped firing fails here rather than at the bench."""
+    """Two-sided by construction: every ACCEPT case has a REFUSE twin one measured
+    millisecond away, so a window that silently widened or a retention rule that
+    stopped firing fails here rather than at the bench.
+
+    "Two-sided" has to mean ABSOLUTE on at least one side of each window. A case
+    written relative to the constant it is guarding (``RETENTION_WINDOW_S + 0.2``)
+    follows that constant wherever it goes and can only catch a NARROWING — which
+    is how the retention window shipped on 2026-08-10 with no widen guard at all
+    (audit finding). The absolute cases are pinned to the measured session and are
+    MEANT to go red when a window is re-sized: re-run the probe over the bags, and
+    re-baseline them deliberately."""
     fails = []
+    n_checks = 0
 
     def check(name, got, want):
+        nonlocal n_checks
+        n_checks += 1
         if got != want:
             fails.append('{}: got {!r}, want {!r}'.format(name, got, want))
 
@@ -445,6 +466,11 @@ def self_check() -> int:
           run(0.4, hold_s=0.999)['label'], LABEL_BOUNCE)
     check('a hold past the retention window',
           run(0.4, hold_s=RETENTION_WINDOW_S + 0.2)['label'], LABEL_CAUGHT)
+    # The WIDEN twin, absolute: a 1.55 s hold is a keeper at the shipped 1.50 s
+    # window and a BOUNCE at anything from ~1.56 s up. The case above cannot see a
+    # widening because it is written relative to the constant.
+    check('a 1.55 s hold at the SHIPPED 1.50 s window (widen guard)',
+          run(0.4, hold_s=1.55)['label'], LABEL_CAUGHT)
     # Blindness beats both.
     check('blind across the window', run(0.4, blind=True)['label'], LABEL_UNKNOWN)
     # No edge at all: the ball never left the cup, so nothing arrived.
@@ -458,7 +484,7 @@ def self_check() -> int:
 
     for f in fails:
         print('FAIL  {}'.format(f))
-    print('{}/9 self-check cases pass'.format(9 - len(fails)))
+    print('{}/{} self-check cases pass'.format(n_checks - len(fails), n_checks))
     return 1 if fails else 0
 
 

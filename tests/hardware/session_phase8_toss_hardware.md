@@ -309,11 +309,13 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   bound onto a quantity that is a dead-reckoned free-fall extrapolation, so it scored
   **0 of 17** real self-toss catches. **Self-toss** verdicts are now expected to be
   right (17/17 offline on the 2026-07-27 capture) — a `MISSED` on a catch you watched
-  land is a finding. **Reload** verdicts still read `MISSED` on a real catch and that
-  is correct: every Ball-Butler track in that capture is a split track carrying no
-  measurements, so the gate refuses to mint a verdict from it. Keep judging by eye +
-  the tracker-id-correlated evidence until a sitting has scored
-  `tests/hardware/session_anomaly_fixes.md` § SECTION POSS row `POSS-1`.
+  land is a finding. ~~**Reload** verdicts still read `MISSED` on a real catch and that
+  is correct~~ — **⚠ SUPERSEDED 2026-08-10**: that held because every Ball-Butler track
+  in that capture is a split track carrying no measurements, so the TRACKER refused it;
+  the hand ball sensor is the primary source now
+  (`logbook/2026-08-10-sensor-truth-possession.md`) and **a reload catch reads `CAUGHT`**.
+  Keep judging by eye + the tracker-id-correlated evidence until a sitting has scored
+  `tests/hardware/session_anomaly_fixes.md` § SECTION POSS rows `POSS-1` / `POSS-1.3`.
 - **ERR_TIMEOUT epidemic**: more hand dispatches = more exposure; the telemetry-verified
   ladder is the mitigation; log dispatch-failure WARNs / any `ABORTED_NO_RELEASE` as
   epidemic gauge data (two consecutive `ABORTED_NO_RELEASE` ⇒ stop).

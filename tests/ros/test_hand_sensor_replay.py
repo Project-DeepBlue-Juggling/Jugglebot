@@ -69,7 +69,7 @@ def replayed(probe):
 # ── The instrument's own acceptance ───────────────────────────────────────────
 
 def test_probe_self_check_is_clean(probe):
-    """Nine two-sided cases at the measured instants. Every ACCEPT case has a
+    """Ten two-sided cases at the measured instants. Every ACCEPT case has a
     REFUSE twin, so a window that silently widened fails here."""
     assert probe.self_check() == 0
 
@@ -92,6 +92,24 @@ def test_probe_self_check_catches_a_widened_arrival_window(probe, monkeypatch):
     operator's hand-reload from being counted as a catch."""
     assert probe.self_check() == 0, 'baseline must be green before mutating'
     monkeypatch.setattr(probe, 'ARRIVAL_WINDOW_S', 5.0)
+    assert probe.self_check() == 1
+
+
+@pytest.mark.parametrize('window_s', (1.6, 5.0, 0.9))
+def test_probe_self_check_catches_a_RESIZED_retention_window(probe, monkeypatch,
+                                                             window_s):
+    """The retention half of the same guard, added by the 2026-08-10 audit.
+
+    It shipped one-sided: every retention case was written RELATIVE to
+    ``RETENTION_WINDOW_S`` (``hold_s=RETENTION_WINDOW_S + 0.2``), so it followed
+    the constant wherever it went and only a NARROWING could fail. A widened
+    retention window is the direction that matters most — it turns a legitimate
+    re-throw into a spurious BOUNCE, i.e. the machine reports a bounce-out that
+    never happened, on the one rule that has never seen a real bounce-out on
+    hardware. 1.6 s is the smallest step that must fail; 0.9 s pins the
+    narrow side that already worked."""
+    assert probe.self_check() == 0, 'baseline must be green before mutating'
+    monkeypatch.setattr(probe, 'RETENTION_WINDOW_S', window_s)
     assert probe.self_check() == 1
 
 
@@ -140,11 +158,17 @@ def test_the_three_measured_seat_then_leaves_are_in_the_ledger(replayed):
     post-catch bounce-outs — they prove the sensor RESOLVES a sub-second
     seat-then-leave, which is the property the window rests on."""
     _rows, led, _doc = replayed
+    longest_pinned_s = 1.000     # the bag's 0.999 s event, on the fixture's ms grid
     durations = sorted(d for _t, d in led['quick_drops'])
-    assert durations == pytest.approx([0.571, 0.989, 1.000], abs=0.002)
+    assert durations == pytest.approx([0.571, 0.989, longest_pinned_s], abs=0.002)
     assert max(durations) < float(hw.JB_BD_RETENTION_WINDOW_S)
-    # 1.5x margin on the longest — the number the shipped default is sized on.
-    assert float(hw.JB_BD_RETENTION_WINDOW_S) / max(durations) >= 1.5
+    # The 1.5x margin the shipped default is sized on, asserted against the PINNED
+    # longest rather than the measured one (audit 2026-08-10): `1.5 / 1.000` is
+    # exactly 1.5, so a ratio assert on `max(durations)` sat ON its own boundary
+    # while the approx above admits 1.002 — green today, red on a rounding wobble
+    # nobody changed. A re-cut fixture must go red on the pin above and be
+    # re-baselined deliberately; that is the assert that owns the question.
+    assert float(hw.JB_BD_RETENTION_WINDOW_S) >= 1.5 * longest_pinned_s
 
 
 def test_no_replayed_throw_is_unknown(replayed):

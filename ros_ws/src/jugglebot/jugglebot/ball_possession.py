@@ -418,6 +418,13 @@ class HandBallSensorSource:
         self.stale_s = float(stale_s)
         # Edge log: (t, held_after). Bounded — only edges inside the two live
         # windows are ever consulted, and a session's worth would leak.
+        # EVICTION, since both bounds fail in a direction and neither is asserted:
+        # a deque drops from the LEFT (oldest first), so overflow can only discard
+        # evidence older than the live windows — unless the machine produced >64
+        # edges or >32 invalidity gaps INSIDE one 1.5 s window, which is a sensor
+        # chattering at ~40 Hz, not a catch. If it ever happened, an evicted blind
+        # span fails OPEN (an honest UNKNOWN becomes CONFIRMED/REJECTED), so size
+        # these up rather than down if the sample rate ever rises.
         self._edges: Deque[Tuple[float, bool]] = collections.deque(maxlen=64)
         # Closed blind spans (start, end); the open one is tracked separately so
         # "blind right now" needs no sentinel end time.
@@ -438,7 +445,15 @@ class HandBallSensorSource:
 
         A sample that is invalid, or that arrives after a gap longer than
         ``stale_s``, opens a blind span and updates NOTHING else — in particular
-        it never moves ``_held``, so it can never synthesise an edge."""
+        it never moves ``_held``, so it can never synthesise an edge.
+
+        WARM-UP, a consequence of that rule worth stating because it is invisible
+        at the call site: the FIRST sample after construction has no predecessor,
+        so its gap is infinite and it opens a blind span like any stale one. The
+        source therefore needs TWO samples before :meth:`evidence` can answer
+        anything but ``UNKNOWN`` — ~10-20 ms at the 100 Hz ``/hand_telemetry``
+        cadence, and in the conservative direction (a goal issued in that window
+        refuses rather than guesses)."""
         t = float(t)
         with self._mu:
             gap = float('inf') if self._last_t is None else t - self._last_t
@@ -608,6 +623,31 @@ def merge_possession(sensor: PossessionVerdict,
         reason='{}/{}'.format(sensor.reason, tracker.reason))
 
 
+def _tracker_cross_check(verdict: PossessionVerdict, tol_mm: float) -> str:
+    """The TRACKER's number rendered as CORROBORATION of a decision already made,
+    never as the decision itself.
+
+    `tol_mm` is the TRACKER's bound, so it may only ever be printed against the
+    tracker's own `arrival_err_mm`, and "agrees"/"DISAGREES" is decided by
+    comparing what the tracker would have said (`err <= tol_mm`) with what the
+    verdict actually says. Both directions of disagreement are now normal readings
+    rather than contradictions — the sensor confirming a split track the tracker
+    refuses, and the sensor vetoing a tracker CAUGHT (C-POSSESS-1 § 3.2 rule 2) —
+    so one helper serves both branches and neither can drift from the other.
+    """
+    err = verdict.arrival_err_mm
+    if not (err == err):                           # NaN — no tracker in the merge
+        return 'tracker cross-check unavailable'
+    tracker_arrived = err <= tol_mm
+    rel = (f'{err:.1f} mm <= {tol_mm:.0f} mm' if tracker_arrived
+           else f'{err:.0f} mm > {tol_mm:.0f} mm')
+    if tracker_arrived == verdict.arrival_ok:
+        return f'tracker cross-check {rel} — agrees'
+    return (f'tracker cross-check {rel} — DISAGREES (the tracker estimate is a '
+            f'dead-reckoned free-fall extrapolation and splits on reload tracks; '
+            f'the cup is the primary observation)')
+
+
 def describe(verdict: PossessionVerdict, tol_mm: float) -> Tuple[str, str]:
     """-> (severity, one-line human summary) for the coordinator's log.
 
@@ -623,26 +663,22 @@ def describe(verdict: PossessionVerdict, tol_mm: float) -> Tuple[str, str]:
     for a miss, where "UNKNOWN" sends them to the sensor, which is the actual
     fault. Both non-confirmed shapes end "Not counted" so the bench tally is
     unambiguous either way.
+
+    REACHABILITY, so nobody hunts for a line that cannot be emitted: through
+    today's only caller (`_possession_confirmed`) the UNKNOWN shape is DEFENSIVE —
+    it runs on a tracker CAUGHT, the tracker always has an estimate in hand, and
+    the merge falls back to it, so the merged arrival is never UNKNOWN. It exists
+    for the first tick-driven consumer that calls `observe` with no tracker
+    verdict; rendering that as "REFUSED … 0 mm from the catch point" would be
+    actively misleading. The REFUSED shape has TWO authors and prints
+    differently for each (below) — that split is not cosmetic: since 2026-08-10
+    the commonest REFUSED on a self-toss is the sensor vetoing a tracker CAUGHT,
+    where the tracker's own number is *small*.
     """
     if verdict.arrival_ok:
-        # The cross-check is REPORTED, never re-decided here — and its wording has
-        # to survive the sensor and the tracker disagreeing, which is now a normal
-        # reading rather than a contradiction. C-POSSESS-1 § 3's "one thing a new
-        # source must not forget" is exactly this: `tol_mm` is the TRACKER's bound,
-        # so a merged verdict the sensor minted must not print "arrival 500 mm <=
-        # 70 mm" and look like a broken gate.
-        err = verdict.arrival_err_mm
-        if not (err == err):                       # NaN — no tracker in the merge
-            cross = 'tracker cross-check unavailable'
-        elif err <= tol_mm:
-            cross = (f'tracker cross-check {err:.1f} mm <= {tol_mm:.0f} mm — '
-                     f'agrees')
-        else:
-            cross = (f'tracker cross-check {err:.0f} mm > {tol_mm:.0f} mm — '
-                     f'DISAGREES (expected on a split track; the cup is the '
-                     f'primary observation)')
         return 'info', (
-            f'possession CONFIRMED by {verdict.source} — {cross}; retention '
+            f'possession CONFIRMED by {verdict.source} — '
+            f'{_tracker_cross_check(verdict, tol_mm)}; retention '
             f'{verdict.retention} [{verdict.reason}] — '
             f'ros_ws/docs/ball_possession_contract.md')
     if verdict.arrival == ARRIVAL_UNKNOWN:
@@ -651,6 +687,19 @@ def describe(verdict: PossessionVerdict, tol_mm: float) -> Tuple[str, str]:
             f'observed an arrival [{verdict.reason}]; tracker cross-check '
             f'{verdict.arrival_err_mm:.0f} mm. UNKNOWN is NOT "no ball": it is '
             f'"nothing could look" (C-POSSESS-1 § 2) — see '
+            f'ros_ws/docs/ball_possession_contract.md. Not counted')
+    if verdict.source in (SOURCE_MERGED, SOURCE_HAND_BALL_SENSOR):
+        # The SENSOR refused. `merge_possession` names itself the author only when
+        # the sensor positively observed the arrival state, so in this branch the
+        # cup — not the tracker — is what said no, and the tracker's `tol_mm` must
+        # NOT be printed as the reason. Printing it was the exact mirror of the
+        # CONFIRMED-branch wart fixed on 2026-08-10: a sensor veto of a tracker
+        # CAUGHT rendered as "arrival 3 mm > 70 mm from the catch point", which
+        # sends an operator hunting a tracker fault that is not there.
+        return 'info', (
+            f'possession REFUSED by {verdict.source} — the cup sensor did not '
+            f'observe the ball arrive in its window; '
+            f'{_tracker_cross_check(verdict, tol_mm)} [{verdict.reason}] — see '
             f'ros_ws/docs/ball_possession_contract.md. Not counted')
     return 'info', (
         f'possession REFUSED by {verdict.source} — arrival '

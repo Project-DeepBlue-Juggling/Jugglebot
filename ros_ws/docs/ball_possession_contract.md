@@ -227,7 +227,15 @@ claim", "cannot answer late", "cannot clear the latch"). The contract therefore
 recognises a second kind:
 
 > **C-POSSESS-1.B.** A **tick-driven source** has a `name` and
-> `observe(now) -> PossessionVerdict`. It takes no ball and no reference point: it
+> `observe(now, landing_t=None) -> PossessionVerdict`, where `landing_t` is the
+> caller's *predicted landing instant* in the same clock as `now` (the FSMs'
+> `landing_perf`), `None`/NaN meaning "nothing is in the air". The window is
+> passed **per query and never latched**: a latched arm/disarm pair outlives its
+> goal, and a window that outlives its goal vetoes the *next* ball's arrival with
+> a stale "nothing came in" — a lifecycle bug that would otherwise have to be
+> guarded in three teardown paths. A source with no `landing_t` answers
+> `ARRIVAL_UNKNOWN`, which § 2 consequence 3 forbids from vetoing anything.
+> It takes no ball and no reference point: it
 > observes the *cup*, so it can answer on a tick when no track exists, before a
 > throw, and during a dwell. A tick-driven source MAY additionally expose
 > `evidence(now) -> SEATED | EMPTY | UNKNOWN`, which is a **different question**

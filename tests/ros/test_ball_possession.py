@@ -750,3 +750,32 @@ def test_describe_never_prints_a_contradictory_cross_check():
     # A sensor-only verdict has no tracker number at all — say so, do not print NaN.
     _sev, line3 = describe(_sensor_says(ARRIVAL_CONFIRMED), TOL)
     assert 'unavailable' in line3 and 'nan' not in line3.lower()
+
+
+def test_describe_attributes_a_sensor_veto_to_the_sensor():
+    """The MIRROR of the wart above, on the path this phase was BUILT to enable
+    (audit 2026-08-10). § 3.2 rule 2 lets a valid sensor REJECTED veto a tracker
+    CAUGHT — the headline capability — and that is the commonest REFUSED on a
+    self-toss the tracker still likes. The old REFUSED branch printed the
+    TRACKER's error against the TRACKER's tolerance unconditionally, so a sensor
+    veto rendered as "arrival <small> mm > 70 mm from the catch point" (the audit
+    reproduced it live at 3 mm; this test drives 1 mm): a line that is
+    arithmetically false and routes the operator to the wrong subsystem, on the
+    row (runbook POSS-1) they score the sitting with."""
+    veto = merge_possession(sensor=_sensor_says(ARRIVAL_REJECTED),
+                            tracker=_tracker_says(True))     # tracker err 1.0 mm
+    _sev, line = describe(veto, TOL)
+    assert 'REFUSED' in line and 'cup sensor' in line
+    assert 'DISAGREES' in line                  # the tracker WOULD have confirmed
+    assert '> 70 mm' not in line                # the wart itself
+    assert 'Not counted' in line
+    # The tracker-authored refusal keeps its own wording — the number IS the
+    # reason there, and the plane-drop note is what makes it REPORT-only.
+    _sev, tracker_line = describe(_tracker_says(False), TOL)
+    assert 'REFUSED' in tracker_line and '> 70 mm' in tracker_line
+    assert 'cup sensor' not in tracker_line
+    # Sensor and tracker agreeing on a refusal must not read as a disagreement.
+    both = merge_possession(sensor=_sensor_says(ARRIVAL_REJECTED),
+                            tracker=_tracker_says(False))
+    _sev, both_line = describe(both, TOL)
+    assert 'agrees' in both_line and 'DISAGREES' not in both_line

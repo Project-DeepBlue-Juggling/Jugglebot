@@ -11,6 +11,7 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
   - ros_ws/src/jugglebot/jugglebot/toss_sequencer.py
   - ros_ws/src/jugglebot/jugglebot/reload_sequencer.py
+  - ros_ws/src/jugglebot_interfaces/action/Toss.action
   - config/hardware_config.yaml
   - tools/probes/hand_sensor_verdict_replay.py
   - tools/probes/data/hand_sensor_replay_fixture.json
@@ -26,6 +27,7 @@ files_changed:
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/session_phase8_toss_trace.md
   - tests/hardware/session_anomaly_fixes.md
+  - tests/hardware/session_phase7_reload.md
   - logbook/INDEX.md
 subsystem:
   - ros
@@ -215,10 +217,96 @@ remains the operator's total-bypass escape hatch, and is tested as one.
 - `tools/probes/hand_sensor_verdict_replay.py` + its committed fixture cut and
   README row.
 
+## Audit fixes (2026-08-10, same day, post-merge)
+
+An independent audit of the three phase commits (`9caf6bc` / `2716e3b` /
+`6920e88`) found the logic sound — the gate refuses on EMPTY **and** on UNKNOWN,
+`RETENTION_UNKNOWN` never collapses into success, no lock-order inversion, the
+arm/catch latch and `_MAX_ARM_DISPATCHES` untouched — and the real exposure in
+**reachability, not logic**. What was fixed:
+
+1. **The operator scoring rows were inverted by this very phase** (the HIGH one).
+   `tests/hardware/session_anomaly_fixes.md` row **POSS-1** listed *"a reload
+   reading `CAUGHT`"* in its ABORT column and its reload PASS criterion read
+   *"gate `CAUGHT` count 0 … every attempt logs one `possession REFUSED` line
+   (that IS the pass)"* — i.e. the phase's headline capability scored as a
+   failure. Rewritten in place, along with `POSS-1.3`, standing rule 3's reload
+   bullet, `POSS-1.6`'s "all refused" wording, and the same stale expectation in
+   `tests/hardware/session_phase7_reload.md` item 5. Two rows added: **POSS-1.7**
+   (the reload's `CAUGHT` terminal, REPORT and deliberately ungated — see Open)
+   and **POSS-1.8** (the UNKNOWN paths, with the *"kill the SDO poller, not the
+   link"* recipe, because `hand_fresh` gates before `ball_seated`). A section
+   banner now states the inversion before any row is scored, and the deployment
+   pre-flight gained the sensor-half greps + a print of the four live constants.
+   The `/audit --unstaged` pass over those edits then found **five more instances
+   of the same inversion** that the finding had not named, all corrected: three
+   surviving *"reload catches still read `MISSED`, correctly"* sentences (two in
+   `session_anomaly_fixes.md` §§ CCATCH-2t / LVL-5, one in
+   `session_phase8_toss_hardware.md`); `CONT-STEP-1`'s preamble, which still
+   opened *"Because `toss_require_ball_evidence` is `false` … it does not
+   refuse"* two lines above the banner saying the opposite; and **`CONT-1.7`**,
+   whose PASS (`COMPLETED`, 3 throws, 3 MISSED cycles on an **empty cup**) is
+   unreachable under the shipped gate — an empty cup now gives
+   `ABORTED_CYCLE_REJECTED_NO_BALL` at cycle 1 and the whole dry-trace step
+   returns no data. The § POSS command block also gained the `SENSOR_BLIND`,
+   `Reload CAUGHT` and `REJECTED_BALL_UNKNOWN` greps and the sensor-half probe
+   invocation, because the old block only counted lines whose meaning changed.
+2. **`describe()`'s REFUSED branch attributed every refusal to the tracker** —
+   the exact mirror of the wart the CONFIRMED branch was fixed for in this same
+   phase, and on the path the phase was *built* to enable. A sensor veto of a
+   tracker CAUGHT (§ 3.2 rule 2 — the headline capability) printed
+   `arrival 3 mm > 70 mm from the catch point`: arithmetically false, and it
+   routes the operator to the wrong subsystem on the row they score the sitting
+   with. Both branches now share `_tracker_cross_check`, which decides
+   agrees/DISAGREES by comparing what the tracker *would* have said with what the
+   verdict *does* say, so the two cannot drift apart again. Pinned by
+   `test_describe_attributes_a_sensor_veto_to_the_sensor` (the mirror of the
+   existing CONFIRMED-side test).
+3. **The retention window shipped with no widen guard.** Every retention case in
+   the probe's self-check was written *relative* to `RETENTION_WINDOW_S`
+   (`hold_s=RETENTION_WINDOW_S + 0.2`), so it followed the constant wherever it
+   went and only a *narrowing* could fail. Added an absolute twin (a 1.55 s hold
+   is a keeper at the shipped 1.50 s window, a BOUNCE at ≥1.56 s) — 10 cases now,
+   counted programmatically rather than hard-coded — plus a parametrised mutation
+   test over 1.6 / 5.0 / 0.9 s. Widening is the direction that matters: it invents
+   bounce-outs on the one rule with no real bounce-out behind it.
+4. **`test_the_three_measured_seat_then_leaves_are_in_the_ledger` sat on its own
+   boundary.** `RETENTION_WINDOW_S / max(durations)` = `1.5 / 1.000` = exactly
+   1.5 against a `>= 1.5` assert, while the `approx(…, abs=0.002)` above it admits
+   1.002 — green today, red on a rounding wobble nobody caused. The margin is now
+   asserted against the *pinned* longest, and the pin owns the re-baseline
+   question.
+5. **Four doc corrections**: `ReloadSequencer.landing_perf`'s *"the sensor window
+   is ~10x the gap between the two"* is **~2x** (the gap is the ball's whole
+   time of flight, ~0.6–0.7 s, against a 1.50 s window) — restated with the
+   failure direction (a real catch read MISSED, never a false CAUGHT) and pointed
+   at the bench-watch item; the probe header claimed to print *"the verdict the
+   coordinator would have minted"* while defining `CAUGHT` as arrival **and**
+   retention CONFIRMED, so a `BOUNCE` row is really a live `CAUGHT` (§ 7
+   residual) — stated, in the module and in `tools/probes/README.md`;
+   C-POSSESS-1.B's normative signature gained the `landing_t` parameter that is
+   the clause's load-bearing design element; `Toss.action`'s header documents
+   `REJECTED_BALL_UNKNOWN` beside `REJECTED_NO_BALL` (comment-only — no IDL
+   surface change, so no `jugglebot_interfaces` rebuild is implied, and the
+   runbook's mandatory two-package build covers it anyway).
+6. **Two undocumented behaviours in `HandBallSensorSource`**: the `_edges` (64) /
+   `_blind_spans` (32) eviction — a `deque` drops oldest-first, so overflow can
+   only discard evidence older than the live windows, but an evicted blind span
+   fails **OPEN** in the retention direction, so size up not down; and the
+   two-sample warm-up (the first `note_sample` has no predecessor, so its gap is
+   infinite and it opens a blind span — `evidence()` needs two samples, ~10–20 ms
+   at 100 Hz, in the conservative direction).
+
+Three findings were **not** fixed and are carried as open items below: the reload
+`CAUGHT` terminal's first hardware execution (operator decision, not a code fix),
+the `stale_s` comment vs the real ball-evidence age bound, and `_ball_possession`
+being write-only state.
+
 ## Verification
 
 - Probe self-check (`python tools/probes/hand_sensor_verdict_replay.py
-  --self-check`, run 2026-08-10): **9/9 cases pass, exit 0**.
+  --self-check`, run 2026-08-10): **10/10 cases pass, exit 0** (was 9/9 before the
+  audit added the absolute retention widen guard).
 - Three-bag replay (command above, run 2026-08-10): **35 CAUGHT / 46 MISSED /
   0 BOUNCE / 0 UNKNOWN** over 81 announcements; catch band +137…+798 ms; ledger
   reconciles exactly with the independent transition counts (table above).
@@ -234,7 +322,35 @@ remains the operator's total-bypass escape hatch, and is tested as one.
   labels in three bags). Sized against seat-then-leave events of the right shape
   but the wrong provenance; see the § note above.
 - **The reload's `CAUGHT` terminal is newly live.** Same class as the toss change
-  § 5 analysed, but not separately measured — watch it at the next sitting.
+  § 5 analysed, but not separately measured — watch it at the next sitting. The
+  audit rated this the second HIGH and left it deliberately unfixed: making the
+  sensor primary turns `ReloadResult.success` True for the first time, so
+  `ACTION_RECENTER` (lower latch + `go_home`, **no** hand retract) executes on
+  hardware for the first time in the machine's history. Whether to gate it —
+  and on what — is an **operator decision**, not a code fix; runbook row
+  **POSS-1.7** now makes the path visible and records the three things to watch
+  without inventing a threshold. Its window anchor is also weaker than the
+  toss's: `ReloadSequencer.landing_perf` falls back to `throw_time + throw_delay`
+  before BB's announcement lands, ~2x inside the window rather than the toss's
+  exact release-derived instant (docstring corrected — see Audit fixes 5).
+- **The `stale_s` comment does not survive the second hop.** The constructor
+  passes `stale_s=_HAND_STATE_STALE_S` (0.5 s) to answer *"is the Jetson still
+  hearing the sensor"*, but `/hand_telemetry` is a free-running 100 Hz timer over
+  a **cache** in `teensy_bridge_node`, so the gap term almost never fires and the
+  real bound on ball-evidence age is the bridge's `_HAND_SENSOR_RX_FRESH_S` =
+  **3.0 s** plus the firmware's 240 ms `REPLY_STALE_US`. Left unfixed on purpose:
+  the fix is a design choice (publish the RX age, or tighten the bridge's own
+  bound), not a comment edit, and the current behaviour is not wrong — only its
+  stated justification is.
+- **`_ball_possession` is now write-only state.** With the gate ON,
+  `ball_seated` is derived from the live `evidence()` read and the latch has no
+  consumer; C-POSSESS-1 § 3.3 edit 2 ("a valid EMPTY clears the latch, a valid
+  SEATED sets it") is therefore enforced on state nothing reads, and the write
+  only runs inside `_build_toss_observations`, which is not ticked during the
+  `TossContinuous` DWELL that § 3.3 names as the failure it fixes. Nothing
+  misbehaves today; the contract's third leg is only nominally present for that
+  clause. Decision needed: give the latch a consumer, or amend § 3.3 to record it
+  as diagnostic-only.
 - **The one-tick CAUGHT-over-a-bounced-ball reporting residual** stands
   (Discussion § 1). Runbook row POSS-1.2 stays a REPORT row.
 - **BallButler's generated `hardware_config.h` is stale in that repo** — it was
