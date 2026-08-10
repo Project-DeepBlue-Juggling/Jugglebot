@@ -915,12 +915,19 @@ is **consumed, not re-implemented**.
 
 | Ph | Scope | Deliverables | Gate |
 |---|---|---|---|
-| **2a** | **Instrument only — zero new control authority.** No map, no trim, nothing applied. | `jugglebot/toss_record.py` (pure: `FIELDS`, encode/decode/validate, `label_from_sensor`, `latch_announced_ball`, `join`); `/toss/record` publisher at the FSM terminal + best-effort JSONL belt; **Layer 1.5 dwell inclinometer covariate** (§ 3.10: N=8 reads at 0.15 s, dwell-only, degrade-never-delay); `tools/probes/toss_record_miner.py` with `--self-check`; the **one** bag-record list; `tests/motion/test_toss_record.py` + `tests/sim/test_toss_record_miner.py` | Full suite green. Miner reproduces the hand-mined ground truth from the three 2026-08-10 bags — **39 departures / 38 catches / 3 quick-drops in `2026-08-10_16-30-44`** — as a committed acceptance fixture in the `tests/ros/possession_fixtures.py` pattern. `FIELDS` drift-guard passes. A test that the dwell read schedule is abandoned on leaving dwell and never overlaps PREPARE→THROW. |
+| **2a** ✅ **LANDED 2026-08-10** | **Instrument only — zero new control authority.** No map, no trim, nothing applied. | AS SHIPPED: `jugglebot/toss_record.py` (pure: `FIELDS`, encode/decode/validate, `label_from_sensor`, `latch_announced_ball`, `join`, `names_by_origin`); `/toss/record` publisher at the FSM terminal + best-effort JSONL belt; the Layer 1.5 dwell-tilt **schema only**, nullable (the READS move to 2d — operator's build spec); `tools/probes/toss_record_miner.py` with `--self-check` / `--emit-fixture` / `--sensor-only`; the **one** bag-record list; `tests/motion/test_toss_record.py` + `tests/ros/test_toss_record_publisher.py` + `tests/ros/test_toss_record_miner.py` (in `tests/ros/` beside its fixture, not `tests/sim/`). DEFERRED: the PLANT block and `floor_arrival` (§ 10). | MET: full suite green (`./run_tests.sh --full`, 2026-08-10). Miner reproduces the hand-mined ground truth of `2026-08-10_16-30-44` — **39 departures / 38 catches / 3 quick-drops** — as `tests/ros/toss_record_fixtures.py` in the `possession_fixtures.py` pattern, with a graceful skip when the bag is absent. `FIELDS` drift-guard passes. **NOT met, because not built:** the dwell-read schedule test — it belongs with the reads in 2d. |
 | **2b** | **Map plumbing, applied at zero.** | `config/toss_calibration.yaml` loader (`jugglebot/motion/toss_cal.py`, C-LEVEL-2 loader shape: candidates, env override, all-or-nothing validation, `map_version` over float-normalised numbers only); `toss/reload_calibration` Trigger + status fields; the aim applied in `_build_toss_cycle` through the tilted path; the three `TIER_8B` branches re-keyed on non-zero tilt; **`catch/pretilt_hold` raised for any non-zero aim** | **Zero-bias bitwise-identity test** (`compute_release_state` vs the aim path at `bias = 0`, exact equality). Structural test: `pretilt_hold` raised on every non-zero-aim goal. D4 single-lookup test. Absent map ⇒ exactly today's behaviour, no new rejection code. Full suite green. |
 | **2c** | **Closed-loop sign test, offline.** | `tests/hardware/toss_cal_fit.py` core (pure, importable) + `tools/toss_cal_analyse.py`; partition rule; the fixed-point reduction; the acceptance gates | **Inject a known synthetic aim bias into a replayed corpus, re-fit, assert the fit recovers it with the correct sign and magnitude** — driving the *real* fit, not a restated residual (the strongest test in `tests/motion/test_tilt_cal_grid.py` has exactly this shape, and a residual restated as an assertion drifts in lockstep with a sign flip). Flat-field and ball-actually-flew guards refuse to write. Full suite green. |
 | **2d** | **`TossContinuous` auto-reload.** | `on_empty_cup` / `max_reloads` goal fields (STOP as IDL default, `max_reloads` default 3); `SESSION_ACTION_RELOAD` interlude with the § 3.9 ladder; verified-arrival recentre; BB `observed_false` latch; targeted retry of the identifiable BB not-positioned-in-time abort within budget; **`ABORTED_NO_RELEASE` single retry gated on valid-HELD** (§ 3.9, D9); floor counter + pause; `RELOAD_SETTLE` and `retry_of` flags on the record | Node tests for every named stop code. A test that the interlude **cannot** be entered from an off-centre park. A test that an omitted `on_empty_cup` STOPS. A test that `ABORTED_NO_RELEASE` retries on valid-HELD, does NOT retry on UNKNOWN or EMPTY, and stops on the second consecutive occurrence. A test that a `false` live `toss_require_ball_evidence` refuses to arm the interlude. `stop_on_miss` semantics unchanged. Full suite green. |
 | **2e** | **The session trim.** | `jugglebot/toss_trim.py` (pure: shrinkage estimator, gates, clamps, guards, stop criteria); read **once** at `_build_toss_cycle`; `toss_trim_enabled` param default **false**; proposal written to `temp/logs/`; console `TRIM` line carrying `SESSION-ONLY` vs `PERSISTENT` explicitly | Property tests: never exceeds `TRIM_MAX`; total re-clamped at apply; freezes rather than zeroes on every guard; refuses the affine model when rank-deficient; a synthetic constant bias at σ = 20 converges inside the clamp and stops. Full suite green. |
 | **2f** | **Acquisition tool.** | `tests/hardware/toss_cal_grid.py` — rungs SC-0…SC-3, all R1–R9 preflight refusals hoisted, `--dry-run` printing node order + toss count + **ETA + ball budget**, `BaseException` guard, `_meta.json` with `abort_reason` always set, **`STOPPED_RELOAD_BUDGET` ⇒ mark node thin/stale and skip to the next node**, reload-service + version readback | `--dry-run` makes zero service calls and zero action goals (test-asserted). A test that a `STOPPED_RELOAD_BUDGET` terminal advances the node cursor and does not abort the capture. Importer tests from `tests/motion/` (the `tests/hardware/` convention). Wire-disarmed refusal re-checked between nodes, outside the per-node `try` (test-asserted). Full suite green. |
+
+**2a is DONE** (2026-08-10). Its gate passed with two amendments the bags
+forced — the catch-search window and the timing-fit poll gate, both in § 10 — and
+one deviation from the deliverable list: the Layer-1.5 dwell READS are deferred
+to 2d (2a lands the nullable schema only), and the miner's test lives in
+`tests/ros/` next to its fixture rather than `tests/sim/`. Full write-up:
+`logbook/2026-08-10-toss-selftuning-build.md` § Phase 2a.
 
 **Ordering rationale.** 2a ships value on day one (the three existing bags become
 a corpus) and carries zero hardware risk. 2b lands the authority with the disable
@@ -1247,6 +1254,75 @@ might be wrong.
 ---
 
 ## 10. Open
+
+### Raised by the 2a build against real bags (2026-08-10)
+
+Three of these are design assumptions in this document that the reference bag
+contradicted. See `logbook/2026-08-10-toss-selftuning-build.md` § Phase 2a for
+the measurements.
+
+- **§ 3.3's catch-search window is WRONG and has been superseded in code.** The
+  draft `[landing − 0.30, landing + 0.70]` uses `CATCH_CONFIRM_WINDOW_S`, which
+  is the FSM's terminal *deadline*, not a sensor window. Scored on
+  `2026-08-10_16-30-44` it relabels the **+798 ms** arrival MISSED — the
+  population maximum, and the very row `JB_BD_ARRIVAL_WINDOW_S` was sized on.
+  `toss_record.label_from_sensor` uses the shipped `JB_BD_ARRIVAL_*` windows,
+  injected, so the offline label and the live `HandBallSensorSource` agree by
+  construction. **Read § 3.3's window as `[landing − JB_BD_ARRIVAL_LEAD_S,
+  landing + JB_BD_ARRIVAL_WINDOW_S]`.**
+- **§ 3.7 item 5's timing-fit gate is unsatisfiable on this plant.** It requires
+  `sensor_poll_dt_ms_median` within 10 % of 20 ms. Measured: **p5 32 / median 71
+  / p95 111 ms**, against a configured `JB_BD_CHECK_INTERVAL_MS` of 20. The gate
+  as written refuses 100 % of records. **2c owns re-deriving it from the measured
+  distribution.** The underlying 3.5x poll-cadence gap has no diagnosis and is a
+  can-bridge question, not this plan's.
+- **D12's ~100 ms debounce estimate is low by 2.4x, and the lag is asymmetric.**
+  Measured: `empty→held` 0/0/0 ms, `held→empty` 232/**241**/295 ms — consistent
+  with the documented five-miss-to-drop / one-hit-to-restore firmware rule at the
+  measured 71 ms poll. 241 ms is *larger* than the +118–133 ms uptime dispatch
+  shift the fresh-boot discipline exists to control, which strengthens D12
+  rather than weakening it.
+- **Ball visibility in the descending band is an unchecked capture
+  precondition, and the reference sitting fails it.** In ±1.5 s of a landing that
+  bag carries four unlabelled markers — three static rig markers outside the
+  ±300 mm lateral gate and one slow-drifting platform marker below the cup plane.
+  The shipped `ball_arrival_offset.py` independently reports **`NO TRACK` on all
+  31**, so `usable_for_aim_fit` is 0/31 and the sitting cannot support an aim fit
+  at *any* record-list completeness. The ball IS tracked once it reaches the floor
+  (the probe's floor census fires after five of the misses), so this is a
+  coverage gap over the cup, not a labelling problem. D18 fixes the topic list; it
+  does not fix this. Proposed P2 preflight row: one throw, one
+  `toss_record_miner.py` run, require a non-null `land_xy_global_mm` before
+  spending a sitting.
+- **The PLANT block ships null in 2a, with its mapping already worked out.**
+  § 3.4 requires the row builder to be IMPORTED, not re-implemented, and wiring
+  `hand_stroke_timeline` needs its session-relative clock mapped back onto the
+  record's ROS instants — a mapping error there writes plausible WRONG plant
+  numbers into the corpus, and 2a has nothing to validate the result against.
+  The field mapping, so no work is lost:
+  `stroke_peak_rev` ← `ThrowTimeline.peak_pos_rev`;
+  `dip_below_x3_rev` ← `.dip_below_x3_rev`;
+  `pullback_rps` ← `.pullback_vel_rev_s`;
+  `trunc` ← `.trunc is not None`;
+  `seeds` ← `.n_seeds`;
+  `dispatch_shift_ms` ← `.shift_ms`.
+  **`iq_brake_min_a` has NO shipped builder** — `HandSample` does not carry
+  `iq_meas` — so it needs both a new computation and a pinned braking window,
+  which must be measured before it is written down. Until the block lands, guard
+  G4 (plant health) cannot be enforced from a record, which `_mark_usable`
+  already states rather than pretending otherwise.
+- **`floor_arrival` ships null in 2a.** The floor census lives in
+  `ball_arrival_offset.read_bag`, which the miner does not reuse (it imports the
+  estimator, not the reader). Small follow-on; the sitting above is the argument
+  for it.
+- **`uptime_ms_at_release` ships MINED-only in 2a** (the schema marks it `D+M`).
+  The coordinator does not subscribe to `/link_status`, and adding a subscription
+  to the node that owns the hand, the latch and the abort ladder for a pure
+  covariate spends the surface D10 argues to protect; the bag carries the topic
+  at 5 Hz, so the miner recovers it to ~200 ms. If a later phase wants it
+  declared, argue it on its own merits.
+
+### Carried from the design
 
 - **SCL3300 async-read firmware follow-on (REGISTERED, not built here).**
   Restructure the Platform-Teensy `get_platform_tilt` path to timer-driven
