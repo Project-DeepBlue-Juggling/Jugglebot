@@ -543,7 +543,9 @@ def write_html(data: Dict[str, Any], images: Sequence[str], report_dir: str,
             'axes differ — no diff (a diff across grids would report a number '
             'for a node one map never captured)' if not diff.get('same_axes')
             else 'max node delta <b>{:.4f}°</b> ({:.1f} mm) at ({:+.0f}, '
-                 '{:+.0f}); mean {:.4f}°. § 3.8 gate: ≤ max(2·se, 0.05°).'
+                 '{:+.0f}); mean {:.4f}°. § 3.8 gate is &le; max(2&middot;se, '
+                 '0.05&deg;) &mdash; this page shows the floor half; take '
+                 '2&middot;se from each map&rsquo;s stats block.'
                  .format(diff['max_delta_rad'] * RAD2DEG,
                          diff['max_delta_rad'] * gain,
                          diff['worst_node']['x_mm'], diff['worst_node']['y_mm'],
@@ -682,11 +684,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         base = map_field(cal) if cal is not None else data
         diff = diff_maps(base, map_field(other))
         if diff.get('same_axes'):
-            gate = max(DIFF_FLOOR_RAD, 0.0)
+            # The gate is max(2*se, DIFF_FLOOR_RAD) and the 2*se half needs the
+            # per-node se of BOTH captures, which a map file does not carry. So
+            # the floor is printed as what it is - the floor - and the operator
+            # applies the se half from the stats block. Printing a single number
+            # here would look like the whole gate and would pass a re-capture
+            # that only cleared its weaker half.
             print('\n=== MAP vs MAP  max node delta {:.4f}° ({:.1f} mm) — '
-                  'gate max(2·se, {:.2f}°)'.format(
+                  '§ 3.8 gate is max(2·se, {:.2f}°); this is the FLOOR half, '
+                  'take 2·se from stats.sd_r*_rad'.format(
                       diff['max_delta_rad'] * RAD2DEG,
-                      diff['max_delta_rad'] * gain, gate * RAD2DEG))
+                      diff['max_delta_rad'] * gain,
+                      DIFF_FLOOR_RAD * RAD2DEG))
         else:
             print('\n=== MAP vs MAP  axes differ — no diff')
 

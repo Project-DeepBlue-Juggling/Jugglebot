@@ -306,13 +306,15 @@ def test_closed_loop_under_realistic_noise_lands_inside_the_predicted_se():
     retest to σ ≈ 26). At the 3126 mm/rad production gain that is 6.4 mrad per
     toss, so a 270-toss pooled estimate has ``se = 6.4/√270`` = 0.39 mrad.
 
-    The bound is **4·se**, not the textbook 3, and the number is measured rather
-    than chosen: the per-node estimator is a 10 %-trimmed mean, which at n = 30
-    drops 3 samples per tail and inflates the estimator's variance ~1.2× over the
-    plain mean. A 20-seed probe (2026-08-11) puts the observed pooled error at a
-    max of **3.27 se** with an empirical sd of 1.19 se, so 4 se is ~3.4 empirical
-    sigma — tight enough that a sign flip (which sits at 2·bias/se ≈ 20 se) or a
-    transposed axis cannot pass, loose enough not to be a flake generator.
+    The bound is **4·se**, and it is measured rather than chosen. A 200-seed
+    probe (2026-08-11) of this exact pipeline gives an empirical pooled-error sd
+    of **1.016 / 0.993 se** per axis — i.e. the 10 %-trimmed per-node mean costs
+    essentially nothing at n = 30 (its own sd penalty is 2.7 %, and pooling nine
+    nodes washes that out) — with a worst observed error over 400 axis-draws of
+    **3.27 se** and a 99.9th percentile of 3.04. So 4 se is a genuine ~4 sigma:
+    tight enough that a sign flip (which sits at 2·bias/se ≈ 20 se, asserted
+    below) or a transposed axis cannot pass, loose enough not to be a flake
+    generator on a seeded test.
     """
     psi = (math.radians(0.22), math.radians(-0.11))
     corpus = fit.synthetic_corpus(GRID_X, GRID_Y, plant_bias_rad=psi,

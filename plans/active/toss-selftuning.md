@@ -588,10 +588,28 @@ degraded plant"* structural rather than remembered.
 
 1. Select in-partition records with `usable_for_aim_fit`.
 2. Require `n ≥ N_MIN` (**PROVISIONAL 8**).
-3. Reduce each toss to the bias that would have landed it on B:
-   `b_i = map_aim_rad_i + trim_aim_rad_i + S⁻¹·land_err_mm_i/(4·h_ach,i)`,
+3. Reduce each toss to the commanded aim that would have landed it on B:
+   `b_i = map_aim_rad_i + trim_aim_rad_i − J⁻¹·land_err_mm_i`,
    then `bias_new = trimmed_mean(b_i)` (drop top/bottom 10 %), reporting `n`,
    `sd`, `date_range`.
+   **CORRECTED BY THE 2c BUILD (2026-08-11), twice over.** This row originally
+   read `+ S⁻¹·land_err/(4·h)`. (a) The sign is a **minus**: with applied aim `A`
+   and plant bias `ψ` the landing error is `J·(A + ψ)`, so the plus form
+   evaluates to `2A + ψ` — at `A = 0` it ships the plant bias *uncancelled*,
+   which (since `aim_rad` is the COMMANDED aim) roughly doubles the landing error
+   and diverges on the next capture. The minus gives `A − (A + ψ) = −ψ`,
+   independent of `A`, which is exactly the fixed-point property the paragraph
+   below claims. (b) `S⁻¹/(4h)` is replaced by `J⁻¹`, where
+   `J = ∂(aim_target_offset_mm)/∂(rx, ry)` is finite-differenced from the
+   **production apply path** — so there is no second implementation of the aim
+   geometry for a sign to be wrong in. Measured: `J = [[0, 3126.5], [−3126.5, 0]]`
+   mm/rad at h = 0.78 m, i.e. `S` is a **90° rotation, not a scaled identity**,
+   and the magnitude is 0.209 % above the idealised `4h` (this is the derivative
+   at zero aim; 2b's 54.578 mm/deg is the same quantity as a secant at finite
+   aim, and the model's real curvature separates them in the fourth significant
+   figure). SC-0 still measures `S`
+   on hardware — it now confirms the plant obeys the production model rather than
+   supplying a number the fit would otherwise have to guess.
    **Because the applied bias is recorded per toss, captures do not have to run
    with the map uninstalled** — this is the tilt plan's home-referencing
    amendment transposed, and it removes the `--force-uninstall` dance from the
@@ -605,8 +623,19 @@ degraded plant"* structural rather than remembered.
    aim, excluded from timing.
 5. Speed fit consumes `achieved_flight_s_mocap` vs `flight_time_s`; timing fit
    consumes `t_departure_raw_ros − announce_throw_time_ros`, gated on
-   `ball_held_stamp_wall_anchored` and `sensor_poll_dt_ms_median` within 10 % of
-   20 ms.
+   `ball_held_stamp_wall_anchored` and on `sensor_poll_dt_ms_median` inside
+   **[20 ms, 200 ms]**.
+   **RE-DERIVED BY THE 2c BUILD (2026-08-11).** The original gate ("within 10 %
+   of 20 ms", the configured `JB_BD_CHECK_INTERVAL_MS`) refuses 100 % of records:
+   the measured per-record cadence on `2026-08-10_16-30-44` is 60 / 63 / **70** /
+   80 / 87 ms (min/p5/median/p95/max). The replacement is a **precision** gate,
+   because the measured departure-shift sd (20.51 ms) equals the poll
+   quantisation `Δ/√12` (20.50 ms) to a ratio of 1.001 — the whole observed
+   dispersion is the instrument. Floor = the configured interval (a cadence
+   *faster* than the poller means the stamp is not the poll stamp). Ceiling =
+   200 ms, where `se ≤ 5 ms` needs `n = Δ²/300` = **133** admitted tosses, more
+   than the entire 129-toss first capture, i.e. the cadence at which a timing fit
+   stops being reachable inside a sitting.
 6. Outside the hull: **clamp to the nearest node, never extrapolate** (C-LEVEL-2
    verbatim — a wrong-signed edge extrapolation aims worse than no map).
 7. **Deliberate deviation from the tilt tool:** a node with `n < N_MIN` **keeps
@@ -917,7 +946,7 @@ is **consumed, not re-implemented**.
 |---|---|---|---|
 | **2a** ✅ **LANDED 2026-08-10** | **Instrument only — zero new control authority.** No map, no trim, nothing applied. | AS SHIPPED: `jugglebot/toss_record.py` (pure: `FIELDS`, encode/decode/validate, `label_from_sensor`, `latch_announced_ball`, `join`, `names_by_origin`); `/toss/record` publisher at the FSM terminal + best-effort JSONL belt; the Layer 1.5 dwell-tilt **schema only**, nullable (the READS move to 2d — operator's build spec); `tools/probes/toss_record_miner.py` with `--self-check` / `--emit-fixture` / `--sensor-only`; the **one** bag-record list; `tests/motion/test_toss_record.py` + `tests/ros/test_toss_record_publisher.py` + `tests/ros/test_toss_record_miner.py` (in `tests/ros/` beside its fixture, not `tests/sim/`). DEFERRED: the PLANT block and `floor_arrival` (§ 10). | MET: full suite green (`./run_tests.sh --full`, 2026-08-10). Miner reproduces the hand-mined ground truth of `2026-08-10_16-30-44` — **39 departures / 38 catches / 3 quick-drops** — as `tests/ros/toss_record_fixtures.py` in the `possession_fixtures.py` pattern, with a graceful skip when the bag is absent. `FIELDS` drift-guard passes. **NOT met, because not built:** the dwell-read schedule test — it belongs with the reads in 2d. |
 | **2b** ✅ **LANDED 2026-08-11** | **Map plumbing, applied at zero.** | `config/toss_calibration.yaml` loader (`jugglebot/motion/toss_cal.py`, C-LEVEL-2 loader shape: candidates, env override, all-or-nothing validation, `map_version` over float-normalised numbers only); `toss/reload_calibration` Trigger + status fields; the aim applied in `_build_toss_cycle` through the tilted path; the three `TIER_8B` branches re-keyed on non-zero tilt; **`catch/pretilt_hold` raised for any non-zero aim** | MET: **zero-bias bitwise identity** pinned in `tests/motion/test_toss_release.py` (the aim path at bias 0 equals `compute_release_state` field-for-field, and the offset is exactly `[0.0, 0.0]`), and at the node the disabled path returns the SAME OBJECT (`is`, not `==`). `pretilt_hold` structural test over every axis and sign. D4 single-lookup: an AST manifest pinning `toss_cal.lookup` to one scope and that scope to one caller. Absent map ⇒ no new rejection code, no new topic traffic. `./run_tests.sh --full` (run 2026-08-11) → **5009 + 9 passed, 3 xfailed in 515 s**. **Deviations, both in the logbook**: the status fields ship on a latched `toss/calibration_status` JSON topic, not on `TrajectoryStatus` (a different node publishes that message and cannot know whether this map is applied); and the version hash also covers `units.aim`, `anchor.aim_rad` and `speed.k_v`, because 2e acts on all three. |
-| **2c** | **Closed-loop sign test, offline.** | `tests/hardware/toss_cal_fit.py` core (pure, importable) + `tools/toss_cal_analyse.py`; partition rule; the fixed-point reduction; the acceptance gates | **Inject a known synthetic aim bias into a replayed corpus, re-fit, assert the fit recovers it with the correct sign and magnitude** — driving the *real* fit, not a restated residual (the strongest test in `tests/motion/test_tilt_cal_grid.py` has exactly this shape, and a residual restated as an assertion drifts in lockstep with a sign flip). Flat-field and ball-actually-flew guards refuse to write. Full suite green. |
+| **2c** ✅ **LANDED 2026-08-11** | **Closed-loop sign test, offline.** | AS SHIPPED: `tests/hardware/toss_fit_lib.py` (the pure core — partition rule + census, the fixed-point reduction, admission, the D15 thin-node rule, both write-refusing guards, the document build validated through the production loader, `synthetic_corpus`), `tests/hardware/toss_cal_fit.py` (thin CLI: `--dry-run` / `--no-apply` / `--group` / `--allow-cross-partition` / `--allow-flat-field` / `--reload` + version readback), `tools/toss_cal_analyse.py` (heat map + quiver in LANDING space, per-node n/sd, anchor series, residual-vs-uptime scatter, map-vs-map diff, `--group` A/B, HTML+PNG to `temp/reports/`, `--json`) | MET: the closed loop injects a known bias, runs the REAL fit, installs the map and replays through the **production apply path** — 8+ mm uncorrected → **< 1 mm** corrected; a sign flip is pinned to fail by **>1.8×** the uncorrected error. Spatial-field recovery checked node by node on an asymmetric field. Both guards refuse the write. Version stability: identical numbers ⇒ identical version, one node ⇒ changed. `./run_tests.sh --full` (run 2026-08-11) → **5084 + 9 passed, 3 xfailed in 518 s**. **Deviations, all in the logbook**: § 3.7 item 3's sign corrected (`+` → `−`) and `S⁻¹/(4h)` replaced by a Jacobian differentiated out of the apply path; § 3.7 item 5's timing gate re-derived; home-referencing invariance is 1e-6 rad rather than byte-identical (the ballistic model is only second-order linear); `--allow-flat-field` added as a documented override. **NOT met, because not built:** G4's braking-clamp REFUSE (the PLANT block still ships null) and D16's automatic timing-fit refusal (reported, not enforced). |
 | **2d** | **`TossContinuous` auto-reload.** | `on_empty_cup` / `max_reloads` goal fields (STOP as IDL default, `max_reloads` default 3); `SESSION_ACTION_RELOAD` interlude with the § 3.9 ladder; verified-arrival recentre; BB `observed_false` latch; targeted retry of the identifiable BB not-positioned-in-time abort within budget; **`ABORTED_NO_RELEASE` single retry gated on valid-HELD** (§ 3.9, D9); floor counter + pause; `RELOAD_SETTLE` and `retry_of` flags on the record | Node tests for every named stop code. A test that the interlude **cannot** be entered from an off-centre park. A test that an omitted `on_empty_cup` STOPS. A test that `ABORTED_NO_RELEASE` retries on valid-HELD, does NOT retry on UNKNOWN or EMPTY, and stops on the second consecutive occurrence. A test that a `false` live `toss_require_ball_evidence` refuses to arm the interlude. `stop_on_miss` semantics unchanged. Full suite green. |
 | **2e** | **The session trim.** | `jugglebot/toss_trim.py` (pure: shrinkage estimator, gates, clamps, guards, stop criteria); read **once** at `_build_toss_cycle`; `toss_trim_enabled` param default **false**; proposal written to `temp/logs/`; console `TRIM` line carrying `SESSION-ONLY` vs `PERSISTENT` explicitly | Property tests: never exceeds `TRIM_MAX`; total re-clamped at apply; freezes rather than zeroes on every guard; refuses the affine model when rank-deficient; a synthetic constant bias at σ = 20 converges inside the clamp and stops. Full suite green. |
 | **2f** | **Acquisition tool.** | `tests/hardware/toss_cal_grid.py` — rungs SC-0…SC-3, all R1–R9 preflight refusals hoisted, `--dry-run` printing node order + toss count + **ETA + ball budget**, `BaseException` guard, `_meta.json` with `abort_reason` always set, **`STOPPED_RELOAD_BUDGET` ⇒ mark node thin/stale and skip to the next node**, reload-service + version readback | `--dry-run` makes zero service calls and zero action goals (test-asserted). A test that a `STOPPED_RELOAD_BUDGET` terminal advances the node cursor and does not abort the capture. Importer tests from `tests/motion/` (the `tests/hardware/` convention). Wire-disarmed refusal re-checked between nodes, outside the per-node `try` (test-asserted). Full suite green. |
@@ -1274,11 +1303,13 @@ the measurements.
   injected, so the offline label and the live `HandBallSensorSource` agree by
   construction. **Read § 3.3's window as `[landing − JB_BD_ARRIVAL_LEAD_S,
   landing + JB_BD_ARRIVAL_WINDOW_S]`.**
-- **§ 3.7 item 5's timing-fit gate is unsatisfiable on this plant.** It requires
-  `sensor_poll_dt_ms_median` within 10 % of 20 ms. Measured: **p5 32 / median 71
-  / p95 111 ms**, against a configured `JB_BD_CHECK_INTERVAL_MS` of 20. The gate
-  as written refuses 100 % of records. **2c owns re-deriving it from the measured
-  distribution.** The underlying 3.5x poll-cadence gap has no diagnosis and is a
+- ~~**§ 3.7 item 5's timing-fit gate is unsatisfiable on this plant.**~~
+  **CLOSED by 2c (2026-08-11).** Re-derived from the measured distribution as a
+  *precision* gate, `[20 ms, 200 ms]` plus the `se ≤ 5 ms` apply bar — see § 3.7
+  item 5 and the logbook's § Phase 2c. The finding that decided it: the measured
+  departure-shift sd (20.51 ms) **is** the poll quantisation `Δ/√12` (20.50 ms),
+  ratio 1.001, so the release timing is more repeatable than the instrument can
+  see. The underlying 3.5x poll-cadence gap still has no diagnosis and is still a
   can-bridge question, not this plan's.
 - **D12's ~100 ms debounce estimate is low by 2.4x, and the lag is asymmetric.**
   Measured: `empty→held` 0/0/0 ms, `held→empty` 232/**241**/295 ms — consistent
@@ -1325,6 +1356,32 @@ the measurements.
   covariate spends the surface D10 argues to protect; the bag carries the topic
   at 5 Hz, so the miner recovers it to ~200 ms. If a later phase wants it
   declared, argue it on its own merits.
+
+### Raised by the 2c build (2026-08-11)
+
+- **G4 (plant health) is still unenforceable from a record, so § 7 R3's
+  braking-clamp REFUSE is NOT implemented.** `iq_brake_min_a` needs the PLANT
+  block, which ships null (2a). `toss_fit_lib.admit_for_aim` names the guards it
+  does enforce and does not pretend to this one; the R3 mitigation
+  *"`toss_cal_fit.py` printing a REFUSE when the `iq_brake_min_a` median sits
+  outside the post-restore band"* is therefore still remembered rather than
+  structural. Wiring the PLANT block closes it.
+- **D16's automatic refusal is reported, not enforced.** The residual-vs-uptime
+  trend and the anchor peak-to-peak are printed by both tools and carried in
+  `--json`, but *"the analyser refuses a timing fit whose within-session trend
+  exceeds the between-node signal"* is currently an operator's eye on two
+  numbers. Small follow-on; belongs with the first corpus whose uptime span is
+  hours rather than minutes (the analyser withholds the per-hour slope below a
+  0.25 h span for exactly that reason).
+- **A never-measured node with no previous value refuses the write** — D15 covers
+  the *thin* node (keeps its previous value, `stale: true`) but is silent on the
+  node that has never flown. Shipping a zero there is not neutral: the bilinear
+  blend would drag its measured neighbours toward zero across half a cell. The
+  ball-actually-flew guard names the nodes and refuses; if a future capture wants
+  a partial grid, this is the rule to revisit deliberately.
+- **`--group` A/B scoring is exposed on BOTH tools** over one implementation
+  (`toss_fit_lib.score_groups`). § 3.7 item 8 put it on the fit; the analyser is
+  where an operator will look.
 
 ### Carried from the design
 

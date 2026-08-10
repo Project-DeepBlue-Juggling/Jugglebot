@@ -634,3 +634,305 @@ tests/sim/test_plans_index.py -q` (run 2026-08-11) → **57 passed in 0.50 s**.
   extrapolation. It applies uniformly because the aim is a property of the
   PLANT, not of the tier; if that turns out to be wrong, the fix is a tier gate
   in `_toss_aim_for_goal`, one line.
+
+---
+
+## Phase 2c — the fit, the analyser, and the closed loop that proves the sign (2026-08-11)
+
+**Still zero control authority, and still desk-side.** Nothing in this phase runs
+on the robot or changes what the machine commands. What it adds is the ability to
+turn a corpus into `config/toss_calibration.yaml` — and, more importantly, the
+ability to find out **offline, before a sitting**, whether that map would aim the
+machine or fight it.
+
+### What landed
+
+| Deliverable | Where |
+|---|---|
+| The pure fit core — partition rule, reduction, admission, gates, document build | `tests/hardware/toss_fit_lib.py` |
+| The thin desk-side CLI over it (`--dry-run` / `--no-apply` / `--group` / `--reload` + version readback) | `tests/hardware/toss_cal_fit.py` |
+| The analyser — heat map + quiver, per-node n/sd, anchor series, residual-vs-uptime scatter, map-vs-map diff, `--group` A/B, HTML+PNG to `temp/reports/`, `--json` | `tools/toss_cal_analyse.py` |
+| The synthetic replay corpus (also the CLI's own driver) | `toss_fit_lib.synthetic_corpus` |
+| Tests | `tests/motion/test_toss_cal_fit.py` (61), `tests/motion/test_toss_cal_analyse.py` (14) |
+
+### Discussion
+
+#### 1. The design's reduction has a sign error, and it is the one that matters
+
+§ 3.7 item 3 writes the per-toss reduction as
+
+```
+b_i = map_aim_i + trim_aim_i + S⁻¹ · land_err_i / (4·h_i)          ← a PLUS
+```
+
+That expression does not close. With applied aim `A` and plant bias `ψ`, the
+landing error is `land_err = J·(A + ψ)`, so `J⁻¹·land_err = A + ψ` and the design's
+formula evaluates to **`2A + ψ`**. At `A = 0` it returns the plant bias
+*uncancelled* — and `aim_rad` is defined as the **commanded** aim (`toss_cal.py`'s
+docstring, 2b), so shipping `+ψ` commands the machine to tilt *into* its own error.
+Applied once it roughly doubles the landing error; applied again on the next
+capture it diverges.
+
+The fixed point is the minus:
+
+```
+b_i = A_i − J⁻¹ · land_err_i  =  A − (A + ψ)  =  −ψ      independent of A
+```
+
+and that independence is precisely the property § 3.7 item 3 is *arguing for* two
+sentences later ("captures do not have to run with the map uninstalled … a
+converging fixed point rather than a one-shot measurement"). So the design's prose
+and its formula disagree with each other; the prose is right.
+
+**Why this was worth catching in a build phase rather than at SC-0.** SC-0 measures
+`S` on hardware and blocks the grid capture, so a wrong sign would eventually have
+surfaced — after a power-up, a level, an arm and 25 tosses. It would have surfaced
+as *"the gain is right but every sign is inverted"*, which reads exactly like a
+frame-convention problem in the geometry and would have sent the session hunting
+`tilt_geometry` rather than the fit. Catching it offline costs nothing and leaves
+SC-0 doing what it is actually for: confirming that the *plant* obeys the
+production model.
+
+#### 2. The sign is never written down — it is differentiated out of the apply path
+
+The obvious implementation of `S` is to write the 2×2 matrix into the fit. That is
+a second place for a sign to be wrong, and R1 lists exactly that class as one of
+the four silent routes to a map that aims worse than none.
+
+Instead `aim_landing_jacobian(T, z)` **finite-differences the production
+`toss_release.aim_target_offset_mm`** — the same function
+`reload_coordinator_node._toss_aim_for_goal` calls to apply the map — at a 1e-6 rad
+step. There is consequently one implementation of the aim geometry in the repo, and
+the fit's inverse is that implementation read backwards. If the apply path's
+convention ever changes, the fit's changes with it, in the same direction, in the
+same commit.
+
+Doing it that way immediately produced a result worth stating plainly, because it
+falsifies the intuitive guess:
+
+```
+J(h = 0.78 m, z = 170 mm)  =  [[    0.0,  3126.5],
+                               [-3126.5,     0.0]]  mm/rad
+```
+
+`S = [[0, 1], [−1, 0]]` — a **90° rotation**, not a scaled identity. A tilt about
+`+rx` moves the ball in `−y`; a tilt about `+ry` moves it in `+x` (right-hand rule
+on the cup axis). An identity `S` — which is what "correct an x error with an x
+tilt" writes down — would push the ball sideways instead of back, and would look
+like a plausible field on the analyser's quiver. The design's insistence that `S`
+be *measured* rather than assumed is vindicated by the production geometry before a
+single ball flies; the same rotation is why the analyser draws its quiver in
+landing space (`J·aim`) rather than in tilt space.
+
+The magnitude also pins the design's idealised `4h`: 3126.53 vs 3120.0 mm/rad, a
+**0.209 %** difference carried by the `Δz` and drop terms the exact form keeps.
+`4h` stays valid for back-of-envelope work and a test holds the two within 1 %.
+
+(Reconciling with 2b's number, which is the same physical fact reported
+differently: 3126.53 mm/rad = **54.568 mm/deg**, the *derivative at zero aim*,
+against 2b's probe figure of 54.578 mm/deg, a *secant at finite aim*. The model
+has real curvature — the secant at 1° is 3126.86 mm/rad = 54.574 — so the two
+differ in the fourth significant figure by construction, not by disagreement.)
+
+#### 3. The acceptance test is a closed loop, not a restated residual
+
+The plan asked for *"inject a known synthetic aim bias into a replayed corpus, run
+the REAL fit, assert it recovers sign AND magnitude"*, and warned that a residual
+restated as an assertion drifts in lockstep with a sign flip. The shipped test goes
+one step further than recovering the number:
+
+1. `synthetic_corpus` builds `land_err_mm` from the **forward** production model
+   `aim_target_offset_mm(A + ψ)`;
+2. the **real** fit runs — `fit_nodes` → `anchor_estimate` → `build_map_document`
+   → the production `toss_cal.parse_toss_cal`;
+3. a second corpus is replayed with that map installed and applied **through the
+   production apply path** (`toss_cal.lookup` → `clamp_total_aim` →
+   `aim_target_offset_mm`);
+4. the assertion is on the *landing error*: 8+ mm uncorrected, under 1 mm
+   corrected.
+
+So the round trip exercises the production sign convention in both directions
+instead of restating one of them, and a sign flip does not merely fail the
+assertion — `test_a_sign_flipped_fit_doubles_the_error` pins that it fails it by
+**>1.8×** the uncorrected error, which is the consequence the whole SC-0 blocking
+rung exists to prevent.
+
+A companion test drives the same loop with a **spatially varying** bias and checks
+the shipped grid node by node through `toss_cal.lookup`, on a deliberately
+asymmetric field — a transposed `[iy][ix]` is invisible on a symmetric one.
+
+#### 4. The timing gate the design handed to this phase, re-derived from the bag
+
+§ 10 recorded that § 3.7 item 5's timing-fit gate — `sensor_poll_dt_ms_median`
+within 10 % of the configured `JB_BD_CHECK_INTERVAL_MS` (20 ms) — is unsatisfiable,
+and gave 2c the job of re-deriving it. Measured per-record on
+`2026-08-10_16-30-44` (31 self-tosses, mined 2026-08-11):
+
+| statistic | min | p5 | median | p95 | max |
+|---|---|---|---|---|---|
+| per-record `sensor_poll_dt_ms_median` | 60 | 63 | **70** | 80 | 87 |
+
+The shipped gate refuses 100 % of them. It is not a gate, it is an outage.
+
+The re-derivation started from what the gate *protects* rather than from the
+constant. The measurand is `t_departure_raw_ros − announce_throw_time_ros`, and a
+raw sensor edge is quantised by the poll cadence Δ, so its per-sample sd should be
+`Δ/√12`. Over the reference bag's 31 departures:
+
+```
+measured sd  20.51 ms
+predicted    20.50 ms   (Δ/√12 at Δ = 70.998 ms)
+ratio        1.001
+```
+
+**The entire observed dispersion of the release-shift measurand is the
+instrument's quantisation.** The release timing itself is more repeatable than the
+sensor can see. That reframes the gate from "does the cadence match a number" to
+"is the cadence precise enough for the estimate to gate", which is what shipped:
+
+- **floor = `JB_BD_CHECK_INTERVAL_MS` (20 ms)** — a per-record median *below* the
+  firmware's own poll interval is not a fast sensor, it is a stamp that is not the
+  poll stamp (different firmware, or a mined field that does not mean what the fit
+  thinks). Refuse a measurand of unknown provenance rather than fit it.
+- **ceiling = 200 ms**, sized on *reachability*: with quantisation-limited samples
+  `se = Δ/√(12·n)`, so the τ trim's `se ≤ 5 ms` needs `n = Δ²/300`. At Δ = 200 ms
+  that is **133** admitted tosses — more than the entire 129-toss first capture
+  (§ 6). Past that cadence a timing fit is not merely imprecise, it is unreachable
+  inside a sitting, and saying so is more honest than accumulating a fit that will
+  never gate. It is 2.3× the worst per-record median measured, so it does not bind
+  on today's plant.
+
+The underlying 3.5× poll-cadence gap still has no diagnosis and is still a
+can-bridge question, not this plan's.
+
+#### 5. Two smaller deviations, both weakenings of a claim the design overstated
+
+**(a) The home-referencing invariance is not byte-identical here.**
+`tilt_cal_grid`'s equivalent property is exact because its reduction is a plain
+subtraction of inclinometer readings. This reduction runs through the ballistic
+model, which is linear only to second order in the aim, so a 2.4 mrad common
+shift — the worst observed level-to-level jump — perturbs each shipped node by at
+most **2.6e-7 rad** on the test fixture: **8e-4 mm** of landing shift at h = 0.78 m,
+**four** orders below the 0.15° (2.618e-3 rad) flat-field floor. The test asserts
+1e-6 rad rather than equality, and a real failure of home-referencing would show
+up at the size of the shift itself (2.4e-3), four orders larger.
+
+**(b) The flat-field guard refuses, but with a documented override.** § 3.8 says
+"WARN and refuse to write" and that is what ships, plus `--allow-flat-field`, which
+is stamped into `captured.flat_field_override`. Root cause for having an override
+at all: a *common-mode-only* plant produces a flat grid legitimately — all of the
+bias lives in `anchor.aim_rad` — and on that plant a refusal with no escape would
+make the tool unable to ship the one map its own § 3.2 architecture predicts.
+
+#### 6. What the fit does when a node has nothing (D15, and the hole D15 leaves)
+
+A **thin** node (some tosses, fewer than `N_MIN` = 8) keeps its previous value,
+marked `stale: true` with its `n` and source — the deliberate deviation from the
+tilt tool's all-or-nothing write, because this map is an incremental refinement and
+refusing would block 24 good nodes over one thin week. It is never interpolated
+from its neighbours.
+
+D15 does not cover a node that was **never** measured and has no previous value.
+Shipping a zero there is not neutral: bilinear interpolation would drag its
+measured neighbours toward zero across half a cell, inventing calibration between
+them. So the ball-actually-flew guard refuses the write and names the nodes. The
+same guard refuses a corpus in which **nothing flew anywhere** even when a previous
+map exists — the toss analogue of the 2026-07-15 DISARMED tilt capture that wrote a
+plausible all-zeros map because the platform never moved.
+
+Related: a previous map on a **different grid** is not carried by index. `[iy][ix]`
+on a different grid reads a different physical pose; that is the transposed-index
+error dressed up as a refresh.
+
+#### 7. The only real corpus that exists still cannot support a fit, and the tool says so
+
+Run against the reference bag's mined corpus, the fit refuses:
+
+```
+EXCLUSIONS
+  no_mocap_fit                     31
+REFUSED: BALL NEVER FLEW: not one of the 9 grid nodes has a single admitted toss.
+```
+
+That is the § 10 finding from 2a — the mocap cannot see the ball over the cup on
+that sitting, 0/31 usable — surfacing through the fit rather than through a
+reader's memory. The refusal ordering was changed for this: the ball-flew guard
+runs **before** the anchor estimate, because on such a corpus the anchor also fails
+and its message ("no admitted toss at the home node") is the first symptom to
+raise, not the root cause.
+
+### Fix
+
+- **`tests/hardware/toss_fit_lib.py`** (new, pure, importable, no ROS): the
+  partition rule and census; `aim_landing_jacobian`; `reduce_to_aim`;
+  `admit_for_aim` / `_timing` / `_speed`; `fit_nodes` with the D15 thin-node rule;
+  `anchor_visits` / `anchor_estimate` (mean over VISITS, not tosses — a visit with
+  12 tosses must not outvote three with 4 each); `flat_field_verdict` and
+  `ball_flew_verdict`; `sigma_land_mm`, `r_eff_mm`, `speed_fit`, `timing_fit`,
+  `score_groups`; `build_map_document` / `validate_map_document` (through the
+  production loader) / `dump_map_yaml` / `diff_documents` / `write_target_path`;
+  `synthetic_corpus`.
+- **`tests/hardware/toss_cal_fit.py`** (new): argument parsing, ordering and
+  printing only. Refusals hoisted ahead of any work. `rclpy` is imported inside the
+  `--reload` function, so the desk-side default path never needs a graph and
+  `tests/motion/` can import the CLI on a box with no ROS.
+- **`tools/toss_cal_analyse.py`** (new): the four panels, the diff, the A/B rows.
+- **Tests**: `tests/motion/test_toss_cal_fit.py`,
+  `tests/motion/test_toss_cal_analyse.py`.
+
+### Verification
+
+- `./run_tests.sh` (run 2026-08-11) → **4647 passed in 210.23 s** (before the
+  analyser commit) and **4661 passed in 210.77 s** (after it).
+- `./run_tests.sh --full` (run 2026-08-11) → **5084 + 9 passed, 3 xfailed in
+  518 s** (parallel 474 s, serial 44 s). `--full` because a plan-phase closure
+  gets every tier.
+- `pytest tests/motion/test_toss_cal_fit.py -q` (run 2026-08-11) → **61 passed in
+  3.05 s**. `pytest tests/motion/test_toss_cal_analyse.py -q` (run 2026-08-11) →
+  **14 passed in 4.47 s**.
+- `python tools/probes/toss_record_miner.py --bag 2026-08-10_16-30-44 --jsonl`
+  (run 2026-08-11) → 31 rows, `usable_for_aim_fit: 0/31`, per-record poll cadence
+  60/63/70/80/87 ms (min/p5/median/p95/max) — the measurement the timing gate was
+  re-derived from.
+- `python tests/hardware/toss_cal_fit.py --corpus <that corpus> --dry-run`
+  (run 2026-08-11) → exit 1, `REFUSED: BALL NEVER FLEW`, exclusions
+  `no_mocap_fit 31`.
+- A **200-seed** probe of the noisy closed loop (2026-08-11) put the empirical
+  pooled-error sd at **1.016 / 0.993 se** per axis, the worst error over 400
+  axis-draws at **3.27 se** and the 99.9th percentile at 3.04 — which is where
+  the test's 4-se bound comes from. (An earlier 20-seed run read 1.19 se and was
+  used to justify the bound as "trimmed-mean variance inflation"; at 20 seeds an
+  sd estimate carries ~16 % relative uncertainty, so that was noise, and the
+  trimmed mean's real cost at n = 30 is 2.7 % before pooling washes it out. The
+  bound did not change; the reason for it did, and the wrong reason was caught by
+  the pre-commit audit.)
+- **No `colcon` build**: nothing under `ros_ws/` changed. The fit imports
+  `jugglebot.motion.toss_cal` and `jugglebot.toss_record` but adds nothing to the
+  package.
+
+### Open
+
+- **`--group` A/B scoring lives in the analyser AND the fit**, sharing one
+  implementation (`toss_fit_lib.score_groups`). § 3.7 item 8 put it on the fit;
+  the analyser is where an operator will actually look. One function, two front
+  doors.
+- **`ESTIMATOR_VERSION` is now written by the fit** into `requires.estimator_version`
+  and the estimator's own parameters are pulled from
+  `tools/probes/ball_arrival_offset` at write time rather than copied. The 2b open
+  item — *bump it whenever the fit-plane rule, band width, lateral gate or minimum
+  sample count changes* — is now enforceable by inspection of the artefact, but is
+  still a human obligation: `ball_arrival_offset.py` carries no version of its own.
+- **G4 (plant health) still cannot be enforced from a record.** The PLANT block
+  ships null (2a, § 10), so `iq_brake_min_a` is unavailable and § 7 R3's
+  *"toss_cal_fit prints a REFUSE when the braking-clamp median sits outside the
+  post-restore band"* is **not implemented**. `admit_for_aim` names the guards it
+  does enforce and does not pretend to this one.
+- **G6/G8 are reported, not enforced.** The residual-vs-uptime trend and the
+  anchor peak-to-peak are printed by both tools and carried in `--json`; the
+  design's D16 refusal (*"the analyser refuses a timing fit whose within-session
+  trend exceeds the between-node signal"*) needs a comparison the fit has and the
+  operator currently makes by eye. Wiring it is a small follow-on and belongs with
+  the first real corpus that has an hours-long uptime span.
+- **`N_MIN` (8), `TRIM_FRACTION` (0.10), `NODE_SNAP_TOL_MM` (1.0) and the
+  200 ms timing ceiling stay PROVISIONAL** in the tilt tool's convention, so the
+  commit that pins each is easy to find.
