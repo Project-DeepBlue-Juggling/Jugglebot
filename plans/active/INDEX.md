@@ -27,6 +27,7 @@ and the test fails (that is the point — it catches stale rows).
 | [single-ball-toss.md](single-ball-toss.md) | active | 2026-07-29 | Single-ball self-toss capability and its follow-on programme |
 | [teensy-can-offload.md](teensy-can-offload.md) | active | 2026-07-31 | can_node → Teensy CAN offload; re-scoped to a can_node↔Teensy parity audit |
 | [tilt-calibration-grid.md](tilt-calibration-grid.md) | active | 2026-08-10 | Pose-dependent gravity-level reference: inclinometer grid capture → residual tilt map, layered on C-LEVEL-1. Phase 4 done — map v`2026-08-10-3bf7964f` committed + validated (C1 6/6 ≤ 0.137°; C2a 6° base tilt 6/6 ≤ 0.146°, layered design hardware-validated); C2b optional not run, C3 superseded by an informal 8a toss retest; leg-0 SPINOUT root cause still open |
+| [toss-selftuning.md](toss-selftuning.md) | active | 2026-08-10 | Toss self-tuning loop (catch-robustness Phase 2): per-toss record `toss_record/1`, home-referenced persistent aim map `config/toss_calibration.yaml` written only by an explicit calibration routine, session-local common-mode trim, `TossContinuous` auto-reload-on-drop, Layer 1.5 dwell-tilt covariate. Design APPROVED 2026-08-10 (§ 9 operator decisions); build 2a–2f desk-side, in progress |
 
 ## Orchestration prompts
 
