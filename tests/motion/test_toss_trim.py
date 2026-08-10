@@ -245,6 +245,29 @@ def test_every_guard_path_freezes_and_never_zeroes(maker, expected):
     assert trim.snapshot()['reason'], 'a freeze must name its cause'
 
 
+def test_a_LAYER_ONE_map_reload_mid_goal_does_NOT_freeze_the_trim():
+    """G5's session check latches the LAYER-0 tilt map only.
+
+    A layer-1 (aim map) reload mid-goal is harmless to this estimator BY
+    CONSTRUCTION: the reduction subtracts the aim the toss actually applied, so a
+    record thrown under map A and one thrown under map B reduce to the same
+    common-mode demand. That is the fixed-point property § 3.7 item 3 is arguing
+    for, and freezing on it would punish the exact workflow the capture routine
+    uses — fit, reload, verify. Layer 0 is the one that moves the baseline the
+    residual is measured against (D3), and it still freezes.
+    """
+    trim = toss_trim.SessionTrim()
+    corpus = _corpus((math.radians(0.10), 0.0), n=30, sigma_mm=2.0, seed=5)
+    for rec in corpus[:15]:
+        trim.observe(rec)
+    for rec in corpus[15:]:
+        rec['toss_cal_version'] = '2026-08-11-a-NEWER-map'
+        verdict = trim.observe(rec)
+        assert verdict.admitted is True, verdict
+    assert not trim.learning_stopped, trim.snapshot()
+    assert trim.n == 30
+
+
 def test_a_frozen_trim_keeps_recording_and_refuses_by_name():
     """"Freeze, keep recording" (§ 3.6.3). The corpus of a frozen goal is
     exactly the corpus an operator needs to see WHY it froze, so the records
@@ -656,11 +679,15 @@ def test_the_proposal_carries_everything_the_design_asks_for():
     estimator_version)*."""
     trim = toss_trim.replay(_corpus((math.radians(0.05), 0.0), n=90,
                                     sigma_mm=2.0, seed=3, nodes=3))
-    doc = trim.proposal(tilt_map_version='synthetic-tilt/1')
+    doc = trim.proposal(tilt_map_version='synthetic-tilt/1',
+                        estimator_version='arrival-offset/1')
     assert set(doc['trim']) >= {'c_rad', 'se_rad', 'n', 'node_coverage',
                                 'guards_tripped', 'state', 'reason'}
     assert doc['tilt_map_version'] == 'synthetic-tilt/1'
-    assert doc['estimator_version'] == toss_record.SCHEMA
+    # The estimator identity is passed IN by the node (this module may not
+    # import the map loader); the RECORD schema is what the trim itself knows.
+    assert doc['estimator_version'] == 'arrival-offset/1'
+    assert doc['record_schema'] == toss_record.SCHEMA
     assert len(doc['trim']['node_coverage']) == 9
 
 

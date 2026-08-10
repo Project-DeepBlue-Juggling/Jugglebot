@@ -3715,6 +3715,10 @@ class ReloadCoordinatorNode(Node):
                 git_dirty=self._git_dirty,
                 toss_cal_version=self._toss_cal_version or None,
                 tilt_map_version=self._tilt_map_version or None,
+                # The arrival-offset estimator this trim's measurand comes from.
+                # It is passed IN rather than read inside toss_trim because that
+                # module may not import the map loader (operator decision 7).
+                estimator_version=toss_cal.ESTIMATOR_VERSION,
                 toss_trim_enabled=bool(
                     self.get_parameter(_TOSS_TRIM_PARAM).value))
             os.makedirs(_RECORD_BELT_DIR, exist_ok=True)

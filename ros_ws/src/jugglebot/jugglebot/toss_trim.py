@@ -894,11 +894,13 @@ def _history_sd(values: np.ndarray) -> Optional[np.ndarray]:
     **Where the design's "running ROBUST sd" went, and why this is the robust
     one.** The obvious reading is MAD·1.4826, and that was the first
     implementation. Measured, it broke the CUSUM: MAD·1.4826 is consistent only
-    asymptotically and is biased **low** by 20–80 % at n = 5…10, so every
-    standardised residual was inflated and the G8 false-alarm rate could not be
-    driven under 15 % at any ``(k, h)`` (``/tmp/probe_toss_trim2.py``,
-    2026-08-11). Correcting the bias means carrying a finite-sample factor table
-    — a second calibrated constant defending a first.
+    asymptotically and is biased **low** at the n = 5…10 this estimator lives in,
+    so every standardised residual was inflated. Measured consequence: the G8
+    false-alarm rate could not be driven below **14.8 %** over a 60-toss goal at
+    ANY ``(k, h)`` in the scan (``/tmp/probe_toss_trim2.py``, 2026-08-11), and
+    the pairs that got close detected a real shift in under 7 % of sessions.
+    Correcting the bias means carrying a finite-sample factor table — a second
+    calibrated constant defending a first.
 
     The robustness is already bought somewhere better: **G7 removes a > 4 σ̂
     reduction BEFORE it ever enters this history** (:meth:`SessionTrim.observe`
@@ -998,6 +1000,7 @@ class SessionTrim:
 
         self._ys: List[np.ndarray] = []
         self._nodes: List[Tuple[float, float]] = []
+        self._uptimes: List[float] = []     # paired with _ys, for G6/D16
         self._gains: List[float] = []
         self._delta = np.zeros(2)
         self._state = STATE_WARMUP
@@ -1030,7 +1033,6 @@ class SessionTrim:
         self._kv = 1.0 if self._kv_prior is None else self._kv_prior
         self._kv_state = STATE_WARMUP
         self._tau_samples: List[float] = []
-        self._tau_uptime: List[float] = []
         self._tau_ms = 0.0
         self._tau_state = STATE_WARMUP
         self._tau_refusal = ''
@@ -1155,14 +1157,28 @@ class SessionTrim:
             self._count(reason)
             return AimObservation(uid, False, reason, None, None)
 
-        # G5's session half: the levelling stack must not CHANGE mid-goal.
-        prov = (rec.get('tilt_map_version'), rec.get('toss_cal_version'))
+        # G5's session half: LAYER 0 must not change mid-goal.
+        #
+        # Only ``tilt_map_version`` is latched, deliberately — **not**
+        # ``toss_cal_version``. A layer-1 (aim map) reload mid-goal is HARMLESS
+        # to this estimator by construction: the reduction subtracts the aim the
+        # toss actually applied (``y = reduce_to_aim(rec) − map_aim_rad(rec)``),
+        # so a record thrown under map A and one thrown under map B reduce to the
+        # same common-mode demand. That invariance is the fixed-point property
+        # the whole design rests on (§ 3.7 item 3), and freezing on it would
+        # punish the exact workflow the capture routine uses — fit, reload,
+        # verify. Layer 0 is different: it moves the physical baseline the
+        # residual is measured against, and a residual fitted under tilt map A
+        # double-counts tilt map B's delta (D3).
+        prov = (rec.get('tilt_map_version'),)
         if self._provenance is None:
             self._provenance = prov
         elif prov != self._provenance:
             self._freeze('LEVELLING_CHANGED',
-                         'layer-0/1 provenance changed mid-goal: {} -> {}'
-                         .format(self._provenance, prov))
+                         'the LAYER-0 tilt map changed mid-goal: {} -> {}. The '
+                         'residual measured before it double-counts the delta '
+                         '(D3), so this goal stops learning and holds.'
+                         .format(self._provenance[0], prov[0]))
             self._count('provenance_changed')
             return AimObservation(uid, False, 'provenance_changed', None, None)
 
@@ -1199,7 +1215,7 @@ class SessionTrim:
         # every early sample look like an outlier whenever the session's true
         # bias is far from the anchor prior, and the loop freezes on its own
         # warm start. Measured while writing the property tests: a 0.60° bias at
-        # σ = 2 mm tripped ``FROZEN_OUTLIERS`` at n = 5, every time.
+        # σ = 2 mm tripped ``FROZEN_OUTLIERS`` at n = 5, on the first seed tried.
         #
         # The split is the right one on its own terms: ``_r`` is what the trim
         # ACTS on and deliberately borrows strength from the prior, while G7 and
@@ -1224,8 +1240,15 @@ class SessionTrim:
         self._cusum(y)
 
         self._ys.append(y)
-        if node is not None:
-            self._nodes.append(node)
+        # _nodes and _uptimes are index-paired with _ys — G6's trend test reads
+        # all three together, so an unknown node or uptime is stored as a
+        # placeholder rather than skipped (a shorter list would silently
+        # mis-pair every subsequent sample).
+        self._nodes.append(node if node is not None else (float('nan'),
+                                                          float('nan')))
+        self._uptimes.append(_num(rec.get('uptime_ms_at_release'))
+                             if _num(rec.get('uptime_ms_at_release')) is not None
+                             else float('nan'))
         T = achieved_flight_s(rec)
         z = _z_of(rec)
         if T is not None and z is not None:
@@ -1404,8 +1427,8 @@ class SessionTrim:
             # case would freeze the loop at zero on a barely-formed estimate and
             # never let it act when the estimate sharpened. Measured while
             # writing the property tests: a real 0.12° bias at σ = 4 mm reported
-            # CONVERGED at n = 6 with |r| = 0.079° ± 0.016° and never moved
-            # again, while |r| went on to 0.12°.
+            # CONVERGED at n = 6 with |r| = 0.079° and se = 0.019°, and never
+            # moved again while |r| went on past 0.11°.
             se_mag = float(np.hypot(*self._se))
             if all(d + SE_GATE * se_mag < DEADBAND_RAD
                    for d in hist[-CONVERGED_UPDATES:]):
@@ -1481,8 +1504,6 @@ class SessionTrim:
         if t_dep is None or t_ann is None:
             return
         self._tau_samples.append(1000.0 * (t_dep - t_ann))
-        self._tau_uptime.append(_num(rec.get('uptime_ms_at_release')) or
-                                float('nan'))
         n = len(self._tau_samples)
         if n < SPEED_TIMING_N_MIN:
             return
@@ -1507,38 +1528,62 @@ class SessionTrim:
         self._tau_state = STATE_ACTIVE
 
     def _uptime_trend_ratio(self) -> Optional[float]:
-        """(uptime-explained sd) / (between-node sd) for the τ samples, or None.
+        """G6 / D16, measured: (uptime-explained sd) / (between-node sd) of the
+        AIM reductions. ``None`` when the session cannot answer.
 
-        ``None`` when the corpus cannot answer — fewer than 5 paired samples, no
-        uptime span, or a single node. D16's rule is a MEASURED within-session
-        trend test, so an unmeasurable trend is reported as unknown rather than
-        assumed benign; the caller (:meth:`snapshot`) surfaces it.
+        D16 replaced an invented uptime *ceiling* with a **measured
+        within-session trend test**, and this is it, computed over the same
+        quantity the map is fitted from so both sides of the ratio are in the
+        same units and neither needs a scale factor:
+
+        * numerator — the sd of ``ŷ`` explained by a linear fit on
+          ``uptime_ms_at_release``, i.e. ``|slope| · sd(uptime)``;
+        * denominator — the sd of the per-node MEANS of ``ŷ``, i.e. the
+          between-node signal the map exists to describe.
+
+        Above 1.0 the session is measuring its own bridge uptime more than it is
+        measuring its own geometry, and the τ estimate (the channel uptime moves
+        directly) is refused. ``None`` — fewer than 5 paired samples, no uptime
+        span, or fewer than two visited nodes — is reported as UNKNOWN rather
+        than assumed benign, which is the whole point of turning a ceiling into
+        a measurement.
         """
-        if len(self._tau_samples) < SPEED_TIMING_N_MIN:
+        if len(self._ys) < SPEED_TIMING_N_MIN or not self._uptimes:
             return None
-        up = np.asarray(self._tau_uptime, dtype=float)
-        tau = np.asarray(self._tau_samples, dtype=float)
+        ys = np.asarray(self._ys, dtype=float)
+        up = np.asarray(self._uptimes, dtype=float)
+        if up.shape[0] != ys.shape[0]:
+            return None
         good = np.isfinite(up)
         if int(good.sum()) < SPEED_TIMING_N_MIN:
             return None
-        up, tau = up[good], tau[good]
+        up, ys = up[good], ys[good]
         if float(np.ptp(up)) <= 0.0:
             return None
-        slope = float(np.polyfit(up, tau, 1)[0])
-        explained = abs(slope) * float(np.std(up))
-        between = (float(np.std(np.asarray(self._ys)[:, 0]))
-                   if len(self._ys) >= 2 else 0.0)
+        nodes = [self._nodes[i] for i, keep in enumerate(good)
+                 if keep and i < len(self._nodes)
+                 and math.isfinite(self._nodes[i][0])]
+        by_node: Dict[Tuple[float, float], List[int]] = {}
+        for index, node in enumerate(nodes):
+            by_node.setdefault((round(node[0], 1), round(node[1], 1)),
+                               []).append(index)
+        if len(by_node) < 2 or len(nodes) != ys.shape[0]:
+            return None
+        means = np.asarray([ys[idx].mean(axis=0) for idx in by_node.values()])
+        between = float(np.linalg.norm(means.std(axis=0)))
         if between <= 0.0:
             return None
-        # Both in their own units, so compare each against its own population sd.
-        return explained / (float(np.std(tau)) or 1e-9) / max(
-            between / (float(np.std(np.asarray(self._ys))) or 1e-9), 1e-9)
+        slopes = np.asarray([np.polyfit(up, ys[:, axis], 1)[0]
+                             for axis in (0, 1)])
+        explained = float(np.linalg.norm(slopes) * np.std(up))
+        return explained / between
 
     # ── reporting ────────────────────────────────────────────────────────────
 
     def snapshot(self) -> Dict[str, Any]:
         """Everything the record, the console and the proposal read. No I/O."""
-        nodes = sorted({(round(x, 1), round(y, 1)) for x, y in self._nodes})
+        nodes = sorted({(round(x, 1), round(y, 1)) for x, y in self._nodes
+                        if math.isfinite(x) and math.isfinite(y)})
         return {
             'schema': TRIM_SCHEMA,
             'state': self._state,
@@ -1673,7 +1718,12 @@ class SessionTrim:
                           'gates; never copy this file into config/.'),
             'session_id': self.session_id,
             'goal_id': self.goal_id,
-            'estimator_version': toss_record.SCHEMA,
+            # The RECORD schema, not the arrival-offset estimator's version:
+            # that identity lives in ``toss_cal.ESTIMATOR_VERSION`` and this
+            # module may not import that loader (operator decision 7), so the
+            # NODE passes it in as ``estimator_version=`` — see
+            # ``reload_coordinator_node._toss_trim_end``.
+            'record_schema': toss_record.SCHEMA,
             'trim': {
                 'c_rad': list(snap['aim_rad']),
                 'c_deg': [math.degrees(v) for v in snap['aim_rad']],
