@@ -1003,7 +1003,7 @@ is **consumed, not re-implemented**.
 | **2c** ✅ **LANDED 2026-08-11** | **Closed-loop sign test, offline.** | AS SHIPPED: `tests/hardware/toss_fit_lib.py` (the pure core — partition rule + census, the fixed-point reduction, admission, the D15 thin-node rule, both write-refusing guards, the document build validated through the production loader, `synthetic_corpus`), `tests/hardware/toss_cal_fit.py` (thin CLI: `--dry-run` / `--no-apply` / `--group` / `--allow-cross-partition` / `--allow-flat-field` / `--reload` + version readback), `tools/toss_cal_analyse.py` (heat map + quiver in LANDING space, per-node n/sd, anchor series, residual-vs-uptime scatter, map-vs-map diff, `--group` A/B, HTML+PNG to `temp/reports/`, `--json`) | MET: the closed loop injects a known bias, runs the REAL fit, installs the map and replays through the **production apply path** — 8+ mm uncorrected → **< 1 mm** corrected; a sign flip is pinned to fail by **>1.8×** the uncorrected error. Spatial-field recovery checked node by node on an asymmetric field. Both guards refuse the write. Version stability: identical numbers ⇒ identical version, one node ⇒ changed. `./run_tests.sh --full` (run 2026-08-11) → **5084 + 9 passed, 3 xfailed in 518 s**. **Deviations, all in the logbook**: § 3.7 item 3's sign corrected (`+` → `−`) and `S⁻¹/(4h)` replaced by a Jacobian differentiated out of the apply path; § 3.7 item 5's timing gate re-derived; home-referencing invariance is 1e-6 rad rather than byte-identical (the ballistic model is only second-order linear); `--allow-flat-field` added as a documented override. **NOT met, because not built:** G4's braking-clamp REFUSE (the PLANT block still ships null) and D16's automatic timing-fit refusal (reported, not enforced). |
 | **2d** ✅ **LANDED 2026-08-11** | **`TossContinuous` auto-reload — the first phase that commands motion.** | AS SHIPPED: `on_empty_cup` (IDL default `"STOP"`, re-applied by a **whitelist** resolver — anything not exactly `RELOAD` is STOP) / `max_reloads` (0 ⇒ config 3; negative ⇒ `REJECTED_BAD_GOAL(max_reloads)`) / `reloads_used` on the result; `SESSION_ACTION_RELOAD` + `SESSION_PHASE_RELOAD` with the § 3.9 ladder verbatim; verified-arrival recentre (`GO_HOME_DURATION_S` + a **measured** 1.5 s pad, timeout ⇒ `STOPPED_RECENTRE_FAILED`, never a reload attempt); the BB `observed_false` fence; the targeted `THROW_ABORTED_NOT_SETTLED` retry within budget — **which needed a new wire**, see the deviations; the valid-HELD-gated `ABORTED_NO_RELEASE` single retry with its two-consecutive stop; floor tally + pause; `reload_settle` / `retry_of` / `goal_on_empty_cup` / `goal_max_reloads` and the **Layer-1.5 dwell reads** written to the record; four config keys | MET: `./run_tests.sh` (run 2026-08-11) → **RESULT PASS, 4752 passed of 5187 collected in 221 s**; `colcon build --packages-select jugglebot_interfaces jugglebot` (run 2026-08-11) → **2 packages finished, 0 failed**, and the BUILT IDL is read back (`on_empty_cup` `'STOP'`, `max_reloads` 0, `reloads_used` on the result) so the test mock mirrors the wire rather than the file. Node tests for every named stop code (`STOPPED_BALL_EVIDENCE_DISABLED` / `_BB_NOT_READY` / `_BB_UNVERIFIED` / `_SENSOR_UNKNOWN` / `_CUP_NOT_EMPTY` / `_RECENTRE_FAILED` / `_RELOAD_BUDGET` / `_FLOOR_CLEAR_REQUIRED`); the off-centre park cannot enter the interlude; an omitted `on_empty_cup` STOPS (plus a 9-case whitelist parametrisation); the NO_RELEASE retry is tri-state-gated; a live `false` `toss_require_ball_evidence` refuses to arm; `stop_on_miss` unchanged under both policies; the dwell reads have exactly ONE call site and it is the quiescent-dwell branch (structural test). **Deviations, all in the logbook**: `THROW_ABORTED_NOT_SETTLED` exists but was **unobservable** (`bb/throw_at_target` is fire-and-forget), so `ball_butler_node` now relays the firmware's terminal outcome on `bb/throw_outcome` and the retry keys on that named code; the sensor rung ships **two** codes (UNKNOWN vs the SEATED contradiction), fail-closed; the session completion test moved from `cycle_index` to `throws` (behaviour-identical for every pre-2026-08-11 session) so a drop costs a reload rather than a data point; `_execute_reload` was deliberately NOT refactored. **NOT met as designed:** the Layer-1.5 read budget does not fit the shipped cadence — see § 10. |
 | **2e** ✅ **LANDED 2026-08-11** | **The session trim.** | AS SHIPPED: `jugglebot/toss_trim.py` — the shrinkage estimator (`n₀ = 4`), per-axis significance + deadband gates, magnitude `STEP_MAX`/`TRIM_MAX` clamps, admission guards G1–G11, a two-sided CUSUM freeze, CONVERGED/STALLED, freeze-never-zero on every guard path, `fit_affine` structurally refusing a rank-deficient geometry, and the `k_v` / session-local `τ` estimators with their own gates and authority (`τ` never persisted); **plus the reduction, the Jacobian and the three `admit_for_*` filters MOVED here from `tests/hardware/toss_fit_lib.py`** and imported back — one implementation shared by the online trim and the offline fit (D11's argument one layer up), which is also what finally implements G4 (conditionally, gap counted) and G5 (fully). At the node: `toss_trim_enabled` (default **false**), read ONCE at `_build_toss_cycle`, the TOTAL re-clamped **at apply** over `map + trim`, map/trim/total recorded separately, one ingest point fed by the canonical declaration, the end-of-goal proposal to `temp/logs/`, and the `TRIM` console block | MET: `./run_tests.sh` (run 2026-08-11) → **RESULT PASS, 4847 passed in 218.09 s**; `./run_tests.sh --full` (run 2026-08-11) → **RESULT PASS, 5271 passed + 3 xfailed in 475.76 s parallel and 9 passed in 40.41 s serial, total 521 s**. All five property gates pinned (`tests/motion/test_toss_trim.py`, **78** collected) plus the node seams (`tests/ros/test_toss_trim_node.py`, **18**) including a D4-shaped AST manifest for the single trim read and the single ingest point. **Deviations, all in the logbook**: `SE_GATE` is 2.5 not 2 and needs 3 consecutive confirmations at n ≥ 6 (the design's gate commanded a trim in 45.7 % of NOISE-ONLY sessions); G8's `3·se` re-derived as `k = 0.5, h = 8.0`; the deadband is on the ESTIMATE not the step; CONVERGED is descriptive rather than latching and cannot fire while saturated; the two authority clamps are magnitudes, not per-axis boxes. **NOT met, because it does not exist:** the loop cannot close LIVE — `land_err_mm` is a MINED field and both live candidates are D5-forbidden, so a live record is refused by name (`no_mocap_fit`) and the trim commands zero. See § 10. |
-| **2f** | **Acquisition tool.** | `tests/hardware/toss_cal_grid.py` — rungs SC-0…SC-3, all R1–R9 preflight refusals hoisted, `--dry-run` printing node order + toss count + **ETA + ball budget**, `BaseException` guard, `_meta.json` with `abort_reason` always set, **`STOPPED_RELOAD_BUDGET` ⇒ mark node thin/stale and skip to the next node**, reload-service + version readback | `--dry-run` makes zero service calls and zero action goals (test-asserted). A test that a `STOPPED_RELOAD_BUDGET` terminal advances the node cursor and does not abort the capture. Importer tests from `tests/motion/` (the `tests/hardware/` convention). Wire-disarmed refusal re-checked between nodes, outside the per-node `try` (test-asserted). Full suite green. |
+| **2f** ✅ **LANDED 2026-08-11** | **Acquisition tool.** | AS SHIPPED: `tests/hardware/toss_cal_grid.py` — rungs SC-0…SC-3 with the § 3.8 gates, all R1–R9 hoisted into ONE pure function over an observation dict, `--dry-run` printing node order + toss count + ETA + **ball budget** + a **gate POWER report**, `BaseException`-guarded probe-map restore *then* return-to-centre, `_meta.json` with `abort_reason` always set, per-toss rows appended **inside** the goal's spin loop, `STOPPED_RELOAD_BUDGET` ⇒ thin/stale + skip + continue, uniform **probe maps** for SC-0's commanded aims (written through `toss_cal_candidates()[0]`, reloaded, version read back, restored on every exit), a **rung ledger** (`temp/logs/toss_cal_rungs.json`) that makes "SC-0 BLOCKS everything" a refusal rather than a sentence, and desk-side `--score` from a mined corpus. Grid geometry + the disarmed-wire verdict are IMPORTED from `tilt_cal_grid.py`, not restated | MET: `./run_tests.sh` (run 2026-08-11) → **RESULT PASS, 4965 passed in 216.76 s**; `tests/motion/test_toss_cal_grid.py` → **117 passed** (run 2026-08-11). `--dry-run` makes zero ROS calls with `rclpy` monkeypatched to explode; the `STOPPED_RELOAD_BUDGET` branch is pinned to `continue` and to carry no `raise`; the wire check is pinned OUTSIDE the per-goal `try` **and** re-run per goal; the safety envelope is a set-equality manifest over every `create_client` / `create_subscription` / `ActionClient` site with **zero publishers**. **Deviations, all in the logbook**: every gate is three-valued and refuses on EVIDENCE (the literal SC-0 gate refuses a perfect plant 67.4 % of the time at the design's own σ, SC-3's 92.0 %); SC-0's accept test is applied in the PREDICTED Jacobian basis (2c measured `S` as a 90° rotation, which inverts the design's literal diagonal/off-diagonal wording); capture and scoring are two invocations because `land_err_mm` is MINED; SC-3's ≥6 off-node poses need edge midpoints on a 3×3; § 5 P5.4's doubled-bias wording corrected. **NOT met as designed:** SC-1 cannot decide the units at any sample size that fits a sitting — see § 10. |
 
 **2a is DONE** (2026-08-10). Its gate passed with two amendments the bags
 forced — the catch-search window and the timing-fit poll gate, both in § 10 — and
@@ -1519,6 +1519,70 @@ the measurements.
   shift within 6 tosses) because 3·se at n = 16 is 0.75σ and undetectable; the
   DEADBAND on the estimate rather than the step; and both authority clamps as
   magnitudes rather than the design's literal per-axis boxes.
+
+### Raised by the 2f build (2026-08-11)
+
+- **Three of § 3.8's four gates, taken literally, refuse a HEALTHY machine most
+  of the time — and the arithmetic is the finding.** They are point comparisons
+  against thresholds whose standard error the design never computed. Measured
+  (`/tmp/probe_toss_sc_gates.py`, 2026-08-11, 20 000 trials per cell, plant
+  obeying the production model exactly, at the design's own working σ = 20
+  mm/axis): the literal **SC-0** gate passes a perfect plant **32.6 %** of the
+  time (its ±25 % band is 1.08 se wide at n = 5, δ = 0.5°), and the literal
+  **SC-3** gate passes a perfect map **8.0 %** of the time (per-pose se 8.94 mm
+  against a 10 mm bound). Raising `n` to fix them costs 90 + 96 = 186 tosses —
+  more than the whole 129-toss first capture — and raising δ to 1.0° displaces the
+  landing 54.6 mm against an 80 mm reach envelope, so most probe tosses would
+  miss. **Shipped instead: every gate is three-valued** (FAIL only when the
+  `2·se` interval EXCLUDES the bound, PASS only when it is wholly inside,
+  INCONCLUSIVE otherwise, with the resolving `n` printed). Nothing the gates
+  exist to catch is weakened — a sign flip leaks **0 of 120 000** trials under
+  both forms. Read § 3.8's gate table with `toss_cal_grid.py`'s beside it.
+- **SC-1 cannot decide the map's UNITS at any sample size that fits a sitting.**
+  At n = 8, σ = 20 and the design's own inferred ψ ≈ 0.37°, the exponent's 95 %
+  CI has a **median width of 4.47** against a 0.6-wide rad band and lands inside
+  a branch **0.1 %** of the time; n = 32 at ψ = 1.0° reaches 13.6 %. The branch
+  table's escape hatch (*"CI spanning two branches ⇒ working height only"*) is
+  therefore the **expected** result, not the exception, and the tool says so
+  before the 32 tosses are spent. The rung keeps its place because its OTHER
+  product — the **first honest `σ_L` on this machine** — is the number three
+  gates' resolving power and 2e's whole trim-value question depend on. A
+  different experiment, not more tosses, is what would settle the exponent.
+- **The `working_height_only` branch has NO consumer.** `toss_cal.parse_toss_cal`
+  accepts only `units.aim: rad` (deliberately), and `toss_fit_lib` writes
+  `height_scaling_exponent: 1.0` with `h_capture_m: null` — so nothing warns when
+  a map captured at h = 0.78 m is applied at another `throw_height_m`. Wiring
+  `h_capture_m` at write time plus a WARN at apply is a small follow-on and
+  should land with the first capture that returns the ambiguous branch, which per
+  the row above is nearly all of them.
+- **§ 3.8's SC-0 accept test is written for a scaled-identity `S`, and `S` is a
+  90° rotation** (2c measured it: `J = [[0, 3126.5], [−3126.5, 0]]`). In the raw
+  `(Lx,Ly)×(rx,ry)` basis the design's "diagonal" is the ZERO entry and its
+  "off-diagonal" is the gain, so a tool applying the words literally would refuse
+  every healthy capture and pass a transposed one. The gate is applied to
+  `D = J_pred⁻¹·J_meas`, which means what § 3.8 means and reduces to it exactly
+  when `J_pred` is a scaled identity.
+- **A capture cannot score itself, and this is the same gap 2e reported.**
+  `land_err_mm` is MINED, so § 3.8's rungs are captured in one invocation and
+  scored in another (`--score <corpus>`), with a ledger between them carrying the
+  blocking preconditions. Closing it live needs the same live arrival estimator
+  the session trim needs; if that ever lands, both close together.
+- **§ 3.8's "≥6 off-node check poses" and "3×3 first capture" are unsatisfiable
+  from cell centres alone** — a 3×3 has 2×2 = 4 interior cells. The tool extends
+  the tilt tool's centres with **edge midpoints** (off-node, inside the hull,
+  exercising the blend along one axis). Worth a line in § 3.8 if the check-pose
+  count is ever revisited.
+- **§ 5 P5.4's doubled-bias wording is loose.** With the correct sign the error
+  over bias ×0/×1/×2 runs `|b| → ~0 → |b| reversed`; with the wrong sign it runs
+  `|b| → 2|b| → 3|b|`. The discriminator is the DIRECTION, not a doubling — which
+  is exactly what SC-0 measures, with a gate on it, so P5.4 *is* SC-0 re-run at
+  the fitted magnitude. The tool's printed run plan says this.
+- **`trajectory/go_home` is in the tool's manifest, and it is a motion command.**
+  § 3.8 says safing is reached by cancelling the goal, and that is what happens
+  mid-capture — but a CAUGHT cycle ends in `ACTION_STAY`, so after a corner node
+  the routine end state is "parked 150 mm off centre, raised", with no goal left
+  to cancel. `go_home` is the coordinator's own safing Trigger, arms nothing,
+  changes no mode, and the tool verifies ARRIVAL rather than trusting the ack.
 
 ### Carried from the design
 

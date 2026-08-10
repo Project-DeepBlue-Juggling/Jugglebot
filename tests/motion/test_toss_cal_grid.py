@@ -504,7 +504,7 @@ def test_the_literal_designed_gate_refuses_a_healthy_plant():
 
     At the design's own n = 5, δ = 0.5° and its own working σ = 20 mm/axis, the
     standard error of the gain ratio is ~0.23 — so the ±25 % band is barely ONE
-    se wide and a PERFECT plant fails it most of the time (33.0 % pass over
+    se wide and a PERFECT plant fails it most of the time (32.6 % pass over
     20 000 probe trials, ``/tmp/probe_toss_sc_gates.py``, 2026-08-11). This test
     reproduces the arithmetic that forced the three-valued gate, so the
     deviation cannot be "tidied" back without meeting the number again.
@@ -569,7 +569,7 @@ def test_sc1_branch_table_is_applied_verbatim(exponent, expect):
 
 def test_sc1_ci_spanning_two_branches_selects_working_height_only():
     """The design's escape hatch — and, at the sample sizes § 3.8 asks for, the
-    EXPECTED outcome (0.2 % of ladders decide at n=8, σ=20 over 20 000 probe
+    EXPECTED outcome (0.1 % of ladders decide at n=8, σ=20 over 20 000 probe
     trials). It must not read as a failure."""
     rng = np.random.default_rng(3)
     points = [(h, max(1.0, 25.0 * (h / 0.78) + rng.normal(0.0, 9.0)))

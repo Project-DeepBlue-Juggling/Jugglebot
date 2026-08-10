@@ -1549,3 +1549,349 @@ plant bias no matter how well the trim cancels it.
 - **G4 is still only conditionally enforceable** (the PLANT block ships null) and
   D16's automatic timing-fit refusal is still reported rather than enforced —
   both inherited from 2a/2c, both now *counted* rather than merely named.
+
+---
+
+## Phase 2f — the acquisition tool, and three gates that could not be met (2026-08-11)
+
+**The last desk-side phase.** 2a made a bag a corpus, 2b landed the map's
+authority, 2c the fit and the offline sign test, 2d the auto-reload interlude,
+2e the session trim. 2f is the thing an operator actually runs at the robot:
+`tests/hardware/toss_cal_grid.py`, which drives design § 3.8's four rungs by
+**sending `TossContinuous` goals and observing**, and nothing else.
+
+The phase's central finding is that **three of § 3.8's four gates, taken
+literally, refuse a healthy machine most of the time.** They were written as
+point comparisons against thresholds whose precision the design never computed.
+Measuring that precision is what this section is mostly about.
+
+### What landed
+
+| Deliverable | Where |
+|---|---|
+| The tool: rungs SC-0…SC-3, R1–R9 hoisted, forensics-on-abort, `_meta.json` with `abort_reason` **always** set | `tests/hardware/toss_cal_grid.py` |
+| Rung specs, ball budget, ETA, the gate POWER report | `rung_goals`, `ball_budget`, `estimate_duration_s`, `print_plan` |
+| The nine refusals as ONE pure function over a plain observation dict | `preflight_refusals`, `hand_sensor_verdict`, `write_target_verdict` |
+| Three-valued gates: `PASS` / `INCONCLUSIVE` / `FAIL`, refusing on evidence | `interval_verdict`, `sc0_verdict`, `sc1_units_verdict`, `sc3_verdict` |
+| SC-0's commanded aims, via **uniform probe maps** written to the production write target and **restored on every exit path** | `probe_map_document`, `_ProbeMapSession` |
+| The rung ledger that makes "SC-0 BLOCKS everything" structural | `load_ledger` / `record_rung` / `rung_precondition`, `temp/logs/toss_cal_rungs.json` |
+| Desk-side scoring from a MINED corpus, zero ROS calls | `--score`, `run_score`, `score_rung` |
+| Node exhaustion ⇒ mark thin/stale, **skip, continue** | the `node_exhausted(outcome)` branch of `run()` |
+| `--dry-run` / `--no-apply` / `--verify-only` / `--force-uninstall` (ALL candidates) / `--yes` / `--on-fail` | `build_parser` |
+| 117 tests | `tests/motion/test_toss_cal_grid.py` |
+
+Grid geometry (`visit_order`, `check_poses`, `home_revisit_after_visits`,
+`build_axis`, `home_index`, `stroke_margin_problems`) and the disarmed-wire
+verdict are **imported from `tilt_cal_grid.py`, not restated**. § 3.7 says this
+map uses "the same axes as `tilt_calibration.yaml`" and the wire is literally the
+same wire with the same `/link_status` encodings; a second implementation of
+either is a second place for the node order or the DISARMED semantics to drift,
+and the tilt tool's version has a hardware finding behind every branch.
+
+### Discussion
+
+#### 1. Three blocking gates, measured — and why a gate that always refuses is worse than no gate
+
+§ 3.8's accept tests are point comparisons: SC-0's "diagonal within ±25 % of the
+predicted `4h`, off-diagonal < 30 % of the diagonal"; SC-3's "`|mean L|` ≤ 10 mm
+at ≥5 of 6"; SC-1's "slope ∈ [0.7, 1.3] ⇒ store in rad". Each is compared against
+an estimate whose **standard error the design never computed**, and each rung's
+sample size is fixed by the same document.
+
+So the first thing this phase did was compute them. Probe
+`/tmp/probe_toss_sc_gates.py` (2026-08-11), 20 000 Monte-Carlo trials per cell,
+plant obeying the production model *exactly*, at three values of the per-toss
+arrival scatter σ (20 mm/axis is the design's own working figure, and 2e's open
+row records that it has **never been measured on this machine**):
+
+| rung | sample size | σ = 10 | **σ = 20** | σ = 30 |
+|---|---|---|---|---|
+| SC-0 literal (5 arms × n=5, δ=0.5°) | 25 tosses | 91.9 % | **32.6 %** | 10.9 % |
+| SC-0 evidence | 25 tosses | 100 % | **97.3 %** | 64.6 % |
+| SC-3 literal (6 poses × n=5) | 30 tosses | 92.3 % | **8.0 %** | 0.4 % |
+| SC-3 evidence | 30 tosses | 100 % | **99.9 %** | 99.3 % |
+
+Those are **pass rates on a perfect plant**. At the design's own working σ the
+literal SC-0 gate refuses a healthy machine two times in three and the literal
+SC-3 gate refuses a perfect map eleven times in twelve.
+
+The arithmetic behind SC-0 is one line: the gain ratio's standard error is
+`√2·σ/√n / (2δ) / gain`, which at n = 5, δ = 0.5° and σ = 20 is **0.232** — so
+the ±25 % band the design compares against is **1.08 se wide**. It is not a
+threshold at all, it is a coin flip. SC-3 is the same shape: at n = 5 and σ = 20
+the per-pose standard error is 8.94 mm against a 10 mm bound.
+
+Two obvious repairs were rejected before the shipped one.
+
+**Raise `n`.** SC-0 needs **n ≥ 18 per arm** (90 tosses) for the ±25 % band to be
+2 se wide, and SC-3 needs **n ≥ 16 per pose** (96 tosses over 6 poses) for the
+10 mm bound (`sc0_resolvable_n` / `sc3_resolvable_n`, both test-pinned). Together
+that is **186 tosses**, more than the entire 129-toss first capture § 6 budgets,
+spent before a single grid node is measured.
+
+**Raise the probe δ.** This one nearly works: se scales as `1/δ`, and at δ = 1.0°
+the literal SC-0 gate passes 91.1 % at n = 5. But δ = 1.0° displaces the landing
+by `4h·δ` = **54.6 mm against an 80 mm reach envelope**, so most probe tosses
+would MISS. Each of the four non-zero arms is its own goal with its own
+`max_reloads = 3`, and 5 tosses per arm at a ~50 % miss rate sits *right on* that
+budget — so most arms would end `STOPPED_RELOAD_BUDGET`, be marked node-exhausted
+and skipped, and the rung would score itself out of existence. δ stays 0.5°
+(27 mm — catchable) and is exposed as `--sc0-probe-deg` with that arithmetic in
+its help text.
+
+**What shipped instead: every gate is three-valued and refuses on evidence.**
+
+* **FAIL** — the `2·se` interval **excludes** the design's bound. Blocking.
+* **PASS** — the interval lies **wholly inside** it. Proven.
+* **INCONCLUSIVE** — it straddles. Reported with the `n` that would resolve it,
+  and never counted as a pass by a later rung's precondition.
+
+The design's point estimate is still printed on every line. And **nothing the
+gates exist to catch is weakened**: over 120 000 trials spanning every σ, a sign
+flip leaks **0** under both forms, and a 2× gain error leaks 1.07 % at σ = 20
+(0.03 % at n = 8) against the literal gate's 0 % — bought with a 3× reduction in
+false refusals. The trade is precisely stated because it is a real trade.
+
+The root cause worth naming, because it is a class and not a bug: **a threshold
+without a power calculation is not a gate.** It is a gate against noise. The
+first thing an operator does with a blocking gate that always fails is disable
+it, at which point the protection is gone entirely — so the *conservative*
+choice here is not the literal one.
+
+That reasoning is also why SC-0's blocking rung is the **sign** specifically. The
+sign is what SC-0 exists to protect (a flip inverts every node and aims the
+machine roughly twice as badly as no map), it is a factor of −1 rather than a
+25 % band, and at n = 5, σ = 30 it is still resolved with a 0/120 000 leak rate.
+The gain band is reported and refuses only on evidence. `rung_precondition`
+therefore lets an **INCONCLUSIVE** SC-0 through to SC-2 and blocks a **FAIL** —
+blocking on INCONCLUSIVE would block every capture forever, since the band is
+finer than any sample size that fits a sitting.
+
+#### 2. SC-1 cannot decide the units, at any sample size that fits a sitting
+
+The same probe, applied to the height ladder, is blunter still. At the design's
+n = 8, σ = 20 and its own inferred residual (ψ ≈ 0.37°), the exponent's 95 % CI
+has a **median width of 4.47** — seven times the width of the `[0.7, 1.3]` rad
+band — and lands inside a branch **0.1 %** of the time. Even n = 32 at a 1.0°
+bias reaches only 13.6 %. Three effects compound: the signal is a few mm, the
+per-height standard error is σ/√n ≈ 7 mm, and the lever arm is only
+`log(1.00/0.45) = 0.80`.
+
+So the branch table's escape hatch — *"CI spanning two branches ⇒ store at the
+working height only and WARN elsewhere"* — is **not the exception; it is the
+expected outcome**, roughly 99 times in 100. That is shipped verbatim
+(`sc1_units_verdict` walks `SC1_BRANCHES` in order and falls through to
+`working_height_only`), reported as INCONCLUSIVE rather than FAIL, and
+**`--dry-run` says so before the 32 tosses are spent** rather than after.
+
+The rung is not thereby worthless, and the design already says why in a clause
+that turns out to be the important one: *"Also fits `k_v` and gives the first
+honest `σ_L`."* σ_L is the number every gate in this document's precision depends
+on, the number 2e's whole trim-value question turns on, and a number that has
+never been measured on this machine. It is now SC-1's **primary** product, and
+`score_rung` prints it as such. The units decision is the bonus the rung will
+usually not deliver.
+
+An alternative estimator was considered and gives nothing: reducing each toss
+through `toss_trim.reduce_to_aim` yields the plant bias in radians, whose
+log-log slope against height is `p − 1` — the same statistic with the same noise.
+The limit is the signal-to-noise ratio, not the parameterisation.
+
+#### 3. SC-0's accept test is applied in the PREDICTED basis, because `S` is a rotation
+
+§ 3.8 says "diagonal within ±25 % of the predicted `4h`, off-diagonal < 30 % of
+the diagonal". That wording presumes `S` is a **scaled identity**. The 2c build
+measured it out of the production apply path and it is a **90° rotation**:
+`J = [[0, 3126.5], [−3126.5, 0]]` mm/rad. In the raw `(Lx, Ly)×(rx, ry)` basis
+the design's "diagonal" is therefore the **zero** entry and its "off-diagonal" is
+the gain — the literal test is inverted on this plant, and a tool that applied it
+as written would refuse every healthy capture and pass a transposed one.
+
+`sc0_measure` returns `D = J_pred⁻¹ · J_meas`, and the gate is applied to `D`.
+That means exactly what § 3.8's words mean, and it **reduces to them
+bit-for-bit** whenever `J_pred` is a scaled identity. It is the same correction
+2c made to § 3.7 item 3's sign, for the same reason: there is one implementation
+of the aim geometry, and everything else is expressed in its terms.
+
+A pleasant consequence, pinned by
+`test_sc0_recovers_the_production_jacobian_to_the_models_own_curvature`: on a
+noiseless corpus `D` comes back **1.0000305**, not 1.0. That residual is physics.
+SC-0 measures a *secant* over ±0.5° while `aim_landing_jacobian` is the
+derivative *at zero*, and the ballistic model's real curvature separates them —
+the same fourth-significant-figure gap 2c measured between 2b's 54.578 mm/deg
+secant and the 3126.5 mm/rad derivative. Measured at δ = 0.125/0.25/0.5/1.0°:
+6.1e-6, 1.10e-5, 3.05e-5, 1.09e-4 — monotone in δ, approaching the δ² law, and
+**three orders below the ±25 % band**. It is pinned as a test so a future reader
+meeting a non-unit `D` on synthetic data does not go hunting a sign error.
+
+#### 4. Capture and scoring are two invocations, because the observable is mined
+
+This is 2e's finding arriving one layer up. The **only** admissible aim
+observable is `land_err_mm` (D5), and its schema origin is **M — mined**: it
+comes from the offline mocap descending-branch estimator via
+`toss_record_miner.py`. Nothing in the live graph produces it, and the two things
+that could be wired to it are the two D5 forbids. So the tool **cannot score its
+own rungs live**, and pretending otherwise would mean gating a blocking rung on a
+forbidden observable — the exact substitution F5 spends a page refusing.
+
+Three shapes were considered:
+
+* **Score live off `catch_error_mm`.** Refused: D5, and it exists only for CAUGHT
+  balls, so the gate would be selection-biased toward the cup — the one direction
+  an aim gate must not be biased in.
+* **Read the bag while it is still being written.** Refused: the rosbag2 sqlite
+  file is open, and a gate that sometimes reads a truncated database is worse
+  than one that refuses.
+* **Two invocations, with a ledger between them.** Shipped. A capture writes an
+  `UNSCORED` row into `temp/logs/toss_cal_rungs.json` carrying the exact mine
+  command; `--rung <r> --score <corpus>` fills in the verdict; and
+  `rung_precondition` refuses SC-2 until SC-0 carries a non-FAIL verdict **and**
+  SC-1 has been scored at all.
+
+That is what turns "SC-0 BLOCKS everything" from a sentence in a plan into a
+refusal in code. The ledger is deliberately strict in one direction: an
+**unreadable** ledger raises rather than resetting to empty, because "no SC-0
+row" and "a corrupt SC-0 row" must not look the same to the rung about to spend
+72 tosses on the difference.
+
+#### 5. SC-0's aims are commanded by writing probe maps, and the restore is the safety property
+
+`TossContinuous` has no aim field. The aim is applied by
+`reload_coordinator_node._build_toss_cycle` from the persistent map, so **the map
+is the only aim authority** and there is no way to command `(±0.5°, 0)` except by
+writing one. SC-0 therefore writes a **uniform** map — every node the same value,
+so `lookup` returns it bit-identically everywhere in the hull and the clamp
+returns it outside — through `toss_cal_candidates()[0]`, reloads, and **reads the
+version back**.
+
+The dangerous half is not the write, it is the *not restoring*. A ±0.5° probe map
+left installed aims every later throw 27 mm off **while every log line reports a
+calibration as applied** — the silent-wrong class this whole plan is built
+around. So `_ProbeMapSession` snapshots the pre-rung file once, and the restore
+runs from the outer `finally`, **before** the return-to-centre and under a
+`BaseException` guard. Ordering is load-bearing: the return-to-centre can itself
+fail, and if it does, the machine must at least be left with the calibration it
+started with. A failed restore prints the exact `cp`/`git checkout` and the
+reload command, to stderr.
+
+SC-1 deliberately does **not** write a zero probe map, though an earlier draft
+did. It needs a zero applied aim for the same reason (a correcting map makes
+`|L|` a residual, not the plant bias), but that is enforceable as a **refusal**
+— `sc1_baseline_verdict`, pointing at `--force-uninstall` — and a rung that
+writes nothing has nothing to restore. Fewer writes, fewer restore paths, same
+guarantee.
+
+#### 6. Two smaller deviations, both forced by arithmetic
+
+**§ 3.8 asks for ≥6 off-node check poses AND a 3×3 first capture; a 3×3 has 4
+interior cells.** `tilt_cal_grid.check_poses` derives cell centres, so it caps at
+four and the two requirements are unsatisfiable together. `off_node_poses` uses
+the tilt tool's centres verbatim and then extends with **edge midpoints**, which
+sit off-node, inside the hull, and exercise the bilinear blend along exactly one
+axis — the case a transposed `[iy][ix]` grid passes at a cell centre and fails on
+an edge. Centres first, because they exercise both axes at once.
+
+**§ 5 P5.4's doubled-bias wording does not survive the arithmetic.** "If doubling
+the bias doubles the error, the sign is wrong" is loose: with the *correct* sign
+the error over bias ×0/×1/×2 runs `|b| → ~0 → |b| reversed`, and with the wrong
+sign it runs `|b| → 2|b| → 3|b|`. What discriminates is the **direction**, not
+the magnitude ladder. The printed run plan says so and points at the rung that
+measures direction with a gate on it: P5.4 *is* SC-0, run at the fitted bias
+magnitude. The intent is preserved exactly — one node, five tosses, before a
+whole grid is trusted.
+
+#### 7. What the tool is allowed to touch, as a manifest
+
+The safety claim is "it sends toss goals and observes", and a claim like that is
+only as good as the list of things the code can reach. So the list is a test.
+`test_the_tool_never_arms_never_switches_mode_and_never_moves_the_hand` extracts
+every literal ROS name from every `create_client` / `create_subscription` /
+`ActionClient` site and asserts set equality against the manifest: three services
+(`toss/reload_calibration`, `trajectory/go_home`,
+`reload_coordinator_node/get_parameters`), seven subscriptions, one action, and
+**zero publishers**. A new client fails the test, which is the point.
+
+One entry deserves its own justification. **`trajectory/go_home` is a motion
+command**, and § 3.8 says safing "belongs to the coordinator and is reached by
+cancelling the goal". Cancelling is what the tool does mid-capture. But a CAUGHT
+cycle ends in `ACTION_STAY`, so after a corner node the *routine* end state is
+"parked 150 mm off centre with a raised platform" — the exact hazard the tilt
+tool's return-to-centre exists to prevent — and no cancel fixes that, because
+there is no goal left to cancel. `trajectory/go_home` is the same Trigger the
+coordinator itself calls to safe the machine (`_safe_abort`, `_go_home`), it
+arms nothing and changes no mode, and the tool **verifies arrival** against a
+fresh `/trajectory/commanded_position` rather than trusting the ack, which
+returns at plan-install. Failing to come home is printed loudly; silently
+pretending to is what the guard is for.
+
+R4's parameter read is the other one worth a sentence: it **fails closed**. "I
+could not check whether the session trim is on" is not "the session trim is off",
+and a trim moving under a capture contaminates the persistent map with a RAM-only
+estimate nobody reviewed.
+
+### Fix
+
+`tests/hardware/toss_cal_grid.py` (new) and `tests/motion/test_toss_cal_grid.py`
+(new). No production code changed, no `.msg`/`.srv`/`.action` changed, so
+**`colcon build` is not required** for this phase — the tool runs from the source
+tree under the system python3.8 with ROS 2 sourced, like every other script in
+`tests/hardware/`.
+
+Node exhaustion is the one behaviour worth restating in code terms. A goal that
+returns `STOPPED_RELOAD_BUDGET` appends its summary with
+`node_state: 'thin/stale (reload budget exhausted)'`, records the node in
+`exhausted_nodes` (which reaches both `_meta.json` and the ledger), prints the
+census, and `continue`s. There is no `raise` in that branch, and a test asserts
+there is not — § 3.7 item 7 already writes a thin node correctly (previous value,
+`stale: true`), so an exhausted node costs one node's refresh rather than a
+sitting. Operator decision 4 / D19.
+
+### Verification
+
+- `./run_tests.sh` (run 2026-08-11) → **RESULT PASS, 4965 passed in 216.76 s**
+  parallel; the serial phase is empty by the 2026-08-01 carve-out (5400
+  deselected in 5.36 s), total 228 s.
+- `pytest tests/motion/test_toss_cal_grid.py -q` (run 2026-08-11) → **117 passed
+  in 1.06 s**. Every one of R1–R9 has its own refusal test; every gate has a
+  PASS, an INCONCLUSIVE and a FAIL case; the ledger has one test per blocking
+  precondition.
+- `python tests/hardware/toss_cal_grid.py --rung {sc0,sc1,sc2,sc3} --dry-run`
+  (run 2026-08-11) → node order, toss count (25 / 32 / 88 / 30), ETA, ball
+  budget, gate power and the P5.4 step, with `rclpy` monkeypatched to explode in
+  the test that pins it: **zero ROS calls, zero ROS objects**.
+- The gate arithmetic: `python /tmp/probe_toss_sc_gates.py` with `TRIALS=20000`
+  (run 2026-08-11) → the table in § 1 above; the sign-flip row is 0 leaks over
+  6 configurations x 20 000 = **120 000** trials. Uncommitted, per
+  `tools/probes/README.md`'s `/tmp` default; every number it produced is quoted
+  in the tool's module docstring and in the tests that depend on it, so the
+  probe's loss costs nothing.
+- Closed loop, offline: `sc0_measure` on a corpus generated by the FORWARD
+  production model (`toss_fit_lib.synthetic_corpus` →
+  `aim_target_offset_mm`) recovers `D = I` to 3e-5, and the same corpus with its
+  landing errors negated is refused **FAIL** by name.
+
+### Open, carried into the plan
+
+- **σ_L is still the first question of the first corpus**, and now three gates'
+  resolving power depends on it, not just the trim's value. `--sigma-mm` feeds
+  the power REPORT only; every gate's standard error is estimated from the data.
+- **SC-1 will almost certainly return `working_height_only`, and NOTHING enforces
+  that today.** `toss_cal.parse_toss_cal` accepts only `units.aim: rad` (by
+  design — the build refuses any other unit), and `toss_fit_lib` writes
+  `height_scaling_exponent: 1.0` with `h_capture_m: null`. So the
+  working-height-only branch is a *reported verdict with no consumer*: no warning
+  fires when the map is applied at a different `throw_height_m`. Wiring
+  `h_capture_m` at write time and a WARN at apply is a small, well-scoped
+  follow-on, and it should land with the first capture that actually returns the
+  ambiguous branch — which, per § 2 above, is nearly all of them. If the height
+  dependence ever needs to be *resolved* rather than fenced, that needs a
+  different experiment, not more tosses.
+- **The gate power report assumes the tool's own cadence.** The ETA prices a drop
+  at § 6's ~25 s all-in and the reload interlude's real wall-clock cost has never
+  been measured (2d's open row). The first sitting measures both.
+- **No rung scores itself.** Every capture ends `UNSCORED` until a mined corpus
+  is fed back. That is correct today, and it is the same dependency 2e's trim
+  has: if a live arrival estimator ever lands, both close together.
+- **`--force-uninstall` is no longer on the routine path** (§ 3.7 item 3's
+  fixed-point property removed it) but SC-1 is the one rung that still needs it,
+  because its estimator is the raw landing error rather than the reduction.

@@ -55,9 +55,9 @@ machine most of the time** (probe ``/tmp/probe_toss_sc_gates.py``, 2026-08-11,
 ===========  ====================================  ================
 rung          literal gate, PERFECT plant           evidence gate
 ===========  ====================================  ================
-SC-0 n=5      **33.0 %** pass (σ=30: 10.1 %)        97.3 %
+SC-0 n=5      **32.6 %** pass (σ=30: 10.9 %)        97.3 %
 SC-3 n=5      **8.0 %** pass  (σ=30: 0.4 %)         99.9 %
-SC-1 n=8      **0.2 %** of ladders decide units     unchanged
+SC-1 n=8      **0.1 %** of ladders decide units     unchanged
 ===========  ====================================  ================
 
 A blocking gate that refuses a healthy plant two times in three does not protect
@@ -72,17 +72,17 @@ is **three-valued** and refuses only on evidence:
 
 The design's point estimate is still printed on every line, and nothing the
 gates exist to catch is weakened: at every σ tested, a **sign flip leaks 0 of
-24 000 trials** under both forms, and a 2× gain error leaks 1.15 % at σ=20
-(0.05 % at n=8) against the literal gate's 0 % — bought with a 3× reduction in
+120 000 trials** under both forms, and a 2× gain error leaks 1.07 % at σ=20
+(0.03 % at n=8) against the literal gate's 0 % — bought with a 3× reduction in
 false refusals.  See § Phase 2f of
 ``logbook/2026-08-10-toss-selftuning-build.md``.
 
 SC-1 IN PARTICULAR CANNOT DECIDE THE UNITS, AND SAYS SO UP FRONT
 ----------------------------------------------------------------
 At the design's n = 8 and σ = 20 mm the exponent's 95 % CI has a median width of
-**4.40** — three times the width of the whole ``[0.7, 1.3]`` rad band — and lands
-inside a branch **0.2 %** of the time.  Even n = 32 at a 1.0° bias reaches only
-14.3 %.  The branch table's escape hatch ("CI spanning two branches ⇒ store at
+**4.47** — seven times the width of the whole ``[0.7, 1.3]`` rad band — and lands
+inside a branch **0.1 %** of the time.  Even n = 32 at a 1.0° bias reaches only
+13.6 %.  The branch table's escape hatch ("CI spanning two branches ⇒ store at
 the working height only and WARN elsewhere") is therefore not the exception, it
 is the expected outcome.  The rung still earns its 32 tosses: it produces the
 **first honest σ_L on this machine**, which is the number every other gate's
@@ -219,10 +219,14 @@ SC3_ACCURACY_MM = 10.0           # ~1.2x θ_acc's 8.2 mm floor
 SC3_MIN_PASSING = 5              # of --check-poses
 SC3_COMMON_MODE_MM = 6.0         # pooled |c|, must fit one session-trim authority
 
-# Anchor-series gates — the tilt-cal ones VERBATIM (§ 3.8's table says so).
-ANCHOR_PP_WARN_RAD = tcg.ANCHOR_PP_WARN_RAD
-ANCHOR_PP_ABORT_RAD = tcg.ANCHOR_PP_ABORT_RAD
-ANCHOR_STEP_ABORT_RAD = tcg.ANCHOR_STEP_ABORT_RAD
+# The anchor-series gate of § 3.8's table is deliberately NOT here. Anchors are
+# captured (SC-2 interleaves home-anchor goals every --home-revisit-every nodes)
+# but they are SCORED offline, by `toss_fit_lib.anchor_visits` /
+# `anchor_estimate` and `tools/toss_cal_analyse.py`, from the same mined corpus
+# every other number comes from — because an anchor's measurand is
+# ``land_err_mm``, which this tool cannot see (see the docstring). Re-declaring
+# the thresholds here would be a second, unreachable copy of a gate that already
+# has an owner.
 
 # R7: stricter than tilt_cal_grid on purpose — static inclinometer reads are
 # uptime-insensitive, a TIMING bias is not (§ 3.8).
@@ -820,7 +824,7 @@ def sc0_verdict(D: np.ndarray, se: float, detail: Optional[Dict[str, Any]] = Non
     Order matters: the SIGN is checked first and on its own, because a sign flip
     inverts every node and aims the machine roughly twice as badly as no map at
     all, and it is the ONE part of this rung the sample size can actually
-    resolve (0 leaks in 24 000 probe trials at every σ tested).
+    resolve (0 leaks in 120 000 probe trials at every σ tested).
     """
     D = np.asarray(D, dtype=float)
     diag = [float(D[0][0]), float(D[1][1])]
@@ -1612,7 +1616,7 @@ def print_plan(rung: str, x_mm: Sequence[float], y_mm: Sequence[float],
               .format(se, args.sc0_n, 0.25 / se if se > 0 else float('inf'),
                       need, need * 5))
         print('    The SIGN — what this rung exists to protect — is resolved at '
-              'n=5 (0 leaks in 24 000 probe trials).')
+              'n=5 (0 leaks in 120 000 probe trials).')
     elif rung == 'sc1':
         print('    the exponent CI is ~4.4 wide at n=8, sigma=20 (median over '
               '20 000 probe ladders) against a 0.6-wide rad band: the units '
