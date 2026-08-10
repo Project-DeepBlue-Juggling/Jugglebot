@@ -101,13 +101,15 @@ be **invariant under base tilt**.
 
 ### Map semantics and math
 
-- **Residual definition**: at grid node i, with a *fresh* `level` correction
-  loaded and the map **not** loaded, command the level orientation at
-  (xᵢ, yᵢ, z_grid), dwell, read N times:
-  `residual_i = mean(raw_reading) + radians(inclinometer_offset_deg)` — the
-  exact LevellingHandler formula. At the home node this is ≈ 0 by
-  construction (the tool asserts it; a violation means the level reference is
-  stale → abort capture).
+- **Residual definition** (amended 2026-08-10 — **HOME-REFERENCED**): at grid
+  node i, with **any constant** correction loaded and the map **not** loaded,
+  command the level orientation at (xᵢ, yᵢ, z_grid), dwell, read N times:
+  `m_i = mean(raw_reading) + radians(inclinometer_offset_deg)` — the exact
+  LevellingHandler formula — and ship `M(Pᵢ) = m_i − m_home`. The loaded
+  correction cancels exactly; `map(home) = 0` exactly by construction; the
+  original fresh-level precondition and start-of-capture staleness abort are
+  retired (see the 2026-08-10 note under Phase 4 and `levelling_frame.md`
+  § C-LEVEL-2 for the algebra and the replacement gates).
 - **Application**: `combined_offset(pose) = level_offset +
   bilinear(map, intent_xy)`, then the existing single Rodrigues
   `correction_from_offset(combined_offset)`. Additive rotation-vector
@@ -539,9 +541,11 @@ down):
 
 **Phase 4 must update the PROVISIONAL defaults in the same commit as the C0
 logbook entry** — `--dwell-s`, `--n-reads`, `--read-gap-s`, `--threshold-deg`,
-the home-gate floor/ceiling in `tilt_cal_grid.py`, and the two `CURVATURE_*`
-constants in `tilt_cal_analyse.py`. They are marked PROVISIONAL in code
-precisely so that commit is easy to find.
+the drift-gate floor/`n_eff` in `tilt_cal_grid.py` (2026-08-10: the home-gate
+floor/ceiling this paragraph originally named were retired with the
+home-referencing redesign), and the two `CURVATURE_*` constants in
+`tilt_cal_analyse.py`. They are marked PROVISIONAL in code precisely so that
+commit is easy to find.
 
 **Verification** — scoped: `pytest tests/motion/test_tilt_cal_grid.py
 tests/sim/test_tilt_cal_analyse.py -q` (run 2026-08-03, post-audit-fix tree):
@@ -619,12 +623,13 @@ docstring aligned with the multi-candidate semantics.
   θ_acc, and sizes orientation-dependence (the tilted-pose reading). Also
   the first hardware exercise of mid-TRAJECTORY tilt reads. PASS: N-read
   mean repeatability ≤ 0.03°; reads return finite at all four poses.
-- **C1 — baseline capture + verify**: fresh `level` → capture 5×5/±150 →
-  auto-apply → verification at ≥6 off-node check poses. PASS: every check
-  residual ≤ **θ_acc (provisional 0.15° until C0 pins it)**; home node ≈ 0;
-  map min/max consistent with the 07-28 seed table (same order, same worst
-  quadrant). 0.15° ≈ 8 mm at the 0.78 m default toss — well inside the
-  30–40 mm basin.
+- **C1 — baseline capture + verify**: fresh `level` (recommended) → capture
+  5×5/±150 → auto-apply → verification at ≥6 off-node check poses. PASS:
+  every check's **home-referenced** residual ≤ **θ_acc (provisional 0.15°
+  until C0 pins it)**; **home drift gate PASS** and `|m_home|` under the
+  0.010 rad WARN; map min/max consistent with the 07-28 seed table (same
+  order, same worst quadrant). 0.15° ≈ 8 mm at the 0.78 m default toss —
+  well inside the 30–40 mm basin.
 - **C2 — deliberately tilted base (the extreme validation)**: shim the base
   by ~1–2° → re-`level` only (NO recapture) → repeat C1's check poses.
   PASS: residuals still ≤ θ_acc — proves base tilt is absorbed as
@@ -640,6 +645,17 @@ docstring aligned with the multi-candidate semantics.
 
 Each rung closes with a logbook entry; C2 almost certainly meets a
 Discussion trigger (it tests a design hypothesis).
+
+**2026-08-10 — C0 attempt (2026-08-09) aborted; blockers fixed, C0 to re-run.**
+Six attempts: one real gate abort (the home gate's 1.5 mrad floor sits inside
+the level reference's own 1.2–1.7 mrad/axis single-sample scatter — mistuned
+against physics, structurally untunable) and a first-of-class leg-0
+SPINOUT_DETECTED collapse at (−150, −150) with kinematics exonerated. Fixes:
+the map is now **home-referenced** (staleness gate retired; end-of-sweep drift
+gate + mid-sweep `/gravity_offset` abort replace it), per-read CSV timestamps,
+mid-read fault detection + decoded ODrive forensics on abort, centre-out
+ordering, lean deferred to config, IK stroke preflight. Full account:
+`logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md`.
 
 ## Testing plan
 
@@ -667,10 +683,12 @@ an action server.
 - **Extrapolation**: clamp-to-hull only; a wrong-signed edge extrapolation
   aims throws worse than no map.
 - **Persistence quantization**: the Teensy-persisted single offset truncates
-  at 1 mrad/axis (worst 0.081° combined) — runbook requires a fresh `level`
-  before capture and before validation reads so truncation never rides under
-  the map during a sitting; across reboots it is a known accuracy-floor term
-  (future firmware `lroundf` fix, out of scope).
+  at 1 mrad/axis (worst 1.0 mrad/axis, biased toward zero) — under
+  home-referencing (2026-08-10) a *constant* truncated reference cancels out
+  of the map entirely; the residual hazard is a mid-sweep relaunch
+  re-pushing the truncated copy, which the `/gravity_offset` monitor and the
+  end-of-sweep drift gate both catch (the 1 mrad step lands at ≥ 5.5 σ of
+  the gate's noise budget). The firmware `lroundf` fix stays out of scope.
 - **Workspace edges**: ±150 mm corners near stroke clamps; grid nodes stay
   inside the toss planning box, rejections are handled as node failures, and
   the firmware stroke clamp silently pinning a leg would corrupt that node's
@@ -695,5 +713,9 @@ an action server.
 - `Teensy_code_canbridge/` and `Teensy_code_platform/` live under
   `ros_ws/src/jugglebot/`, not the repo root (CLAUDE.md's sketch is
   approximate here).
-- Grid captures are meaningless without a fresh `level` immediately before —
-  the residuals are *defined* relative to that reference.
+- Grid captures need a correction **loaded and CONSTANT** through the sweep
+  (2026-08-10, home-referencing): the loaded reference cancels exactly out of
+  the shipped residuals, so freshness is recommended only — it keeps
+  `|m_home|` small. A correction that *changes* mid-sweep is what corrupts a
+  capture, and the tool machine-checks that (drift gate + `/gravity_offset`
+  monitor).

@@ -381,19 +381,64 @@ repeats to 0.001–0.014° — 15–40× smaller than the effect. At 41.9 mm/° 
 landing displacement (0.6 m toss) against a ~30–40 mm cup basin, the corner of
 the workspace is already the "occasional drop" regime.
 
-A **residual** is what `level` cannot see. At grid node *i*, with a **fresh**
-`level` correction loaded and **no map loaded**, the platform is commanded to
-the *level orientation* at `(xᵢ, yᵢ, z_grid)`, allowed to settle, and the
-inclinometer read N times:
+A **residual** is what `level` cannot see — and the map is **HOME-REFERENCED**
+(2026-08-10) so that measuring it does not depend on the level reference's
+freshness. At grid node *i*, with **any constant correction loaded** and **no
+map loaded**, the platform is commanded to the *level orientation* at
+`(xᵢ, yᵢ, z_grid)`, allowed to settle, and the inclinometer read N times. The
+tool measures at each node
 
-    residual_i = mean(raw_reading) + radians(inclinometer_offset_deg)
+    m_i = mean(raw_reading) + radians(inclinometer_offset_deg)
 
-— the exact `LevellingHandler` formula, so a residual is dimensionally and
-sign-wise the same object as the `/gravity_offset` the single-offset path
-already carries. **At the home node the residual is ≈ 0 by construction**: it is
-the pose `level` itself measured. The acquisition tool asserts that; a
-home-node residual that is *not* ≈ 0 means the level reference is stale and the
-capture is aborted rather than baked in.
+— the exact `LevellingHandler` formula, so `m` is dimensionally and sign-wise
+the same object as the `/gravity_offset` the single-offset path already
+carries — and **ships**
+
+    M(Pᵢ) := m_i − m_home
+
+where `m_home` is the same measurement at the home node `(0, 0)`, taken first.
+The algebra is why freshness stopped being a capture precondition: writing the
+platform's true pose-dependent field as `f(P)` and the loaded correction as
+`C_cap`, every measurement is `m_i = f(Pᵢ) − C_cap` (the mounting bias cancels
+inside the formula above), so
+
+    M(Pᵢ) = m_i − m_home = f(Pᵢ) − f(home)
+
+— `C_cap` cancels **exactly**, whatever it is, however stale it is, as long as
+it is **constant across the sweep**. `map(home) = 0` holds *exactly by
+construction* (the home node ships `m_home − m_home`), not approximately by
+gate. What remains of the reference dependence: a second-order
+vector-vs-rotation term bounded by `|Δf × m_home| / 2` ≈ **5.3e-5 rad** at the
+0.010 rad `|m_home|` WARN bound (inside the 1e-4 budget of the composition
+table below), and the systematic `f(home) − f(activate)` — same position,
+arrival and orientation history differing — which **replaces** the previous
+design's stochastic apply-time error `ε_cap − ε_now` (σ ≈ 1.7 mrad, the level
+reference's own single-sample scatter): a strict improvement unless rung C0's
+tilted-pose probe surprises.
+
+The previous design asserted `residual(home) ≈ 0 by construction` and ABORTED
+the capture when a start-of-capture gate found otherwise ("stale level
+reference"). That gate was **mistuned against physics and structurally
+untunable** (2026-08-09 C0 sitting, six attempts): the level reference is ONE
+int16-quantised SCL3300 sample (LSB = (90/2¹⁴)° = 9.587e-5 rad) whose measured
+session-scale scatter is σ ≈ 1.2–1.7 mrad/axis, so the gate's 1.5 mrad floor
+sat *inside* the healthy distribution (≈40–60 % false aborts per attempt over
+two axes) while a correctly-sized 3σ floor (~3.6–4.6 mrad) collides with its
+own 5 mrad staleness ceiling. Home-referencing removes the quantity that gate
+was trying to protect. What replaces it (enforcement table below): an
+**end-of-capture home re-measure drift gate** (catches a correction that
+changed mid-sweep), a **causal `/gravity_offset` mid-sweep monitor** (any
+message during the sweep aborts), a `|m_home|` **WARN at 0.010 rad** (level
+grossly stale — harmless to the home-referenced map, worth surfacing) and a
+**hard abort at 0.05 rad** (aligned with `MAX_ABS_RESIDUAL_RAD`).
+
+**Verification scoring is home-referenced too.** A check pose measured after
+the map is applied reads `≈ m_home` even when the map is perfect — the
+constant the capture correctly tolerated is still in the loop — so the
+verification pass re-measures the home node first and scores every check pose
+as `|check − m_home_verify| ≤ θ_acc`. Scoring the raw check residual would
+fail every pose under a stale-but-constant level whose capture was perfectly
+valid.
 
 ### Composition — additive in the rotation vector, one Rodrigues
 
@@ -435,6 +480,15 @@ lab coat.
 additive form is still free: at 2° × 1° the term is 3.0e-4 rad. It is still
 small against the signal, but it is no longer three orders below it, and the
 honest fix at that point is matrix composition, not a wider adjective.
+
+The same second-order arithmetic bounds what home-referencing leaves behind at
+**capture**: the constant reference cancels at first order in
+`M(P) = m(P) − m(home)`, and the remaining vector-vs-rotation term is
+`|Δf × m_home| / 2` — 5.3e-5 rad at the 0.010 rad `|m_home|` WARN bound,
+2.6e-4 rad at the 0.05 rad hard abort, which is why the abort sits there.
+(Bilinear interpolation is indifferent to the whole scheme: a constant shift
+commutes exactly through the interpolation weights, so
+`bilinear(M) = bilinear(m) − m_home` with no approximation.)
 
 Additive composition is preferred for a reason beyond arithmetic: it keeps the
 number of rotations composed onto a commanded pose at **exactly one**. The
@@ -516,7 +570,7 @@ A map is loaded only if **every** one of these holds:
 | both axes strictly increasing, ≥ 2 nodes | a repeated node is a zero-width cell (divide-by-zero in the weights); a single-node axis is a constant offset masquerading as a map |
 | `residual_rad.tx` / `.ty` shaped `[len(y_mm)][len(x_mm)]` | catches the transposed grid, which is invisible on a square/symmetric capture |
 | every node finite | a failed capture node must be resolved by the tool, never shipped as NaN |
-| every `|residual| ≤ 0.05 rad` (≈2.87°) | the measured signal is 0.04–0.6°; beyond ~2.9° it is a capture fault — stale level reference, a leg pinned on its stroke clamp, a units error |
+| every `|residual| ≤ 0.05 rad` (≈2.87°) | the measured signal is 0.04–0.6°; beyond ~2.9° it is a capture fault — a leg pinned on its stroke clamp, or a units error. (A stale level reference is **no longer a candidate cause**: it cancels exactly out of the home-referenced residuals; the capture tool's `|m_home|` WARN is the diagnostic that replaced it.) |
 
 Any failure ⇒ **the map is not loaded**, `tilt_map_loaded` stays false, and the
 reason is logged at ERROR. There is deliberately no partial load, no per-node
@@ -630,13 +684,16 @@ refuse: C-LEVEL-2 is non-gating and an off-plane map is a precision question.
 | levelled, no map | false | n/a | offset only (C-LEVEL-1) |
 | not levelled, no map | false | n/a | identity |
 
-**Why the gate exists.** A residual is *defined* as what is left over once a
-fresh `level` offset is applied — it is measured against that reference (§ "What
-the map is") and means nothing without it. Before the first `/gravity_offset`
-arrives the stored offset is the `(0.0, 0.0)` **placeholder**, which means "we do
-not know the tilt", not "the tilt is zero". Composing a residual onto it commands
-a rotation referenced to nothing: not a smaller error than applying no map, a
-differently-wrong one.
+**Why the gate exists.** The shipped residual `M(P) = f(P) − f(home)` is
+reference-free at *capture* (§ "What the map is" — the loaded correction
+cancels), but *applying* it composes a rotation onto the live correction
+`C_now` — and before the first `/gravity_offset` arrives the stored offset is
+the `(0.0, 0.0)` **placeholder**, which means "we do not know the tilt", not
+"the tilt is zero". Composing a residual onto it commands a rotation
+referenced to nothing: not a smaller error than applying no map, a
+differently-wrong one. The gate **stands** under home-referencing; what moved
+(2026-08-10) is only its justification — from "the residual is defined against
+the reference" to "the *application* is".
 
 That state is **reachable at every boot** once `config/tilt_calibration.yaml` is
 committed, because the map loads in `__init__` while the offset only arrives when
@@ -675,14 +732,19 @@ time, and nothing re-reads the stored `R` for an installed plan). The
 alternative would step `u0` on the next 25 ms knot by the full map delta —
 which is disqualifier 3 above, arriving by a different door.
 
-### Capture preconditions — a residual is defined relative to a reference
+### Capture preconditions — constancy, quiescence, an armed wire
 
 A capture run is only meaningful under all five of these:
 
-1. **A fresh `level` immediately before the capture.** Residuals are *defined*
-   relative to that reference. The Teensy-persisted offset truncates at
-   1 mrad/axis (worst case 0.081° combined), so a stale reference rides under
-   every node as an unmodelled constant.
+1. **A correction loaded and CONSTANT throughout the sweep.** The
+   home-referenced residual `M(P) = m(P) − m(home)` cancels the loaded
+   correction exactly, so freshness is **not** required — but a correction
+   that *changes mid-sweep* (a re-level; a relaunch re-pushing the
+   Teensy-persisted copy, which is int16-mrad truncated, worst 1 mrad/axis
+   biased toward zero) splits the sweep across two references and corrupts
+   every node measured after the change. A fresh `level` immediately before
+   is still **RECOMMENDED**: it keeps `|m_home|` small and the 0.010 rad WARN
+   meaningful.
 2. **No map loaded during the capture.** A map loaded while capturing bakes
    itself into its own successor — the double-application class, arriving
    through the data rather than the code.
@@ -699,32 +761,43 @@ A capture run is only meaningful under all five of these:
    moved. Added 2026-08-04 after review; the same silent-no-op class as the
    2026-07-15 ramp battery.
 
-**Only (2) and (5) are machine-checkable, and the tool's enforcement says so**
-(Phase 3, 2026-08-03 — an earlier draft of this paragraph claimed the tool
-"refuses to start" on all four, which overstated what any program can observe):
+**(1), (2) and (5) are machine-checkable, and the tool's enforcement says so.**
+(1) became checkable when the map went home-referenced (2026-08-10):
+*constancy* is observable — a mid-sweep `/gravity_offset` message and an
+end-of-sweep home drift are both machine-visible — where *freshness* never
+was. An earlier draft claimed the tool "refuses to start" on all four
+preconditions, which overstated what any program can observe:
 
 | # | Enforcement in `tests/hardware/tilt_cal_grid.py` |
 |---|---|
-| 1 | **Operator confirmation** (typed `yes`) plus the **home-node gate**, which aborts the capture when `\|residual(0, 0)\|` is not ≈ 0. The gate catches a *grossly* stale reference; it cannot distinguish "levelled just now" from "levelled twenty minutes and one relaunch ago", because both can leave a small home residual. |
+| 1 | **Machine-checked twice — causally and by outcome** (2026-08-10; plus a typed `yes` so the operator *plans* constancy rather than discovering the abort). Causal: a `/gravity_offset` subscription ABORTS the sweep the moment any message arrives mid-capture — a re-level or a relaunch re-push is *observed*, not inferred. Outcome: an **end-of-capture home re-measure** gates the drift `d = m_home_end − m_home_start` per axis at `tol = max(3·√((sd_start² + sd_end²)/n_eff), 0.0005 rad)`, `n_eff = n/2` until C0 pins read autocorrelation. `\|m_home_start\|` additionally **WARNs above 0.010 rad** (level grossly stale — harmless to the home-referenced map, worth surfacing) and **hard-aborts above 0.05 rad** (`MAX_ABS_RESIDUAL_RAD` alignment; the second-order term reaches 2.6e-4 rad there). The retired start-of-capture staleness ABORT is documented in § "What the map is" — it was mistuned against the level path's own physics. |
 | 2 | **Hard refusal.** `tilt_map_loaded` must be false; `--force-uninstall` moves **every existing candidate** aside (the source tree *and* the ament share copy `setup.py` installs — moving only the source file falls through to the share copy and the old map stays loaded), refusing to touch a `$JUGGLEBOT_TILT_CAL`-pointed file. Re-checked from a **fresh** status immediately before the map is written, so a map that loads mid-sweep still refuses. |
 | 3 | **Operator confirmation only.** Nothing in the system observes hand quiescence from this client. |
 | 4 | **Warn and record**, never refuse — `uptime_ms` is echoed at preflight, warned above 30 min, and written first/last into both `_meta.json` and the map's `captured` block. Refusing would cost a sitting over an effect measured on the hand-dispatch path, not on this request/response read path. |
 | 5 | **Hard refusal, in three layers.** `/link_status` `mpc_active == '1'` at preflight and re-checked from a fresh message before every node and check pose (a silent `/link_status` is itself an abort, because the per-move marker mirrors the same topic with no staleness timeout); the `DISARMED` marker on every **accepted** `go_to_pose` response, screened inside the single `go_to` choke point; and a **flat-field WARN** before the write, which catches a platform that failed to move for a reason the first two cannot observe. The flat-field layer warns rather than refuses — a genuinely flat field is a legitimate result. |
 
 `--yes` skips the confirmations for rehearsal and prints a loud warning when it
-does so on a live capture. The two confirmed preconditions are therefore
-*operator* obligations that the runbook states and the tool records — not
-guarantees. That distinction is the honest one: a tool that claimed to enforce
-(1) and (3) would be trusted for something it cannot see.
+does so on a live capture. The confirmations are the constancy *intent* for
+(1) — the machine checks catch a violation only after motion has been spent on
+it — and hand quiescence for (3), which remains a pure *operator* obligation
+the runbook states and the tool records, not a guarantee. That distinction is
+the honest one: a tool that claimed to enforce (3) would be trusted for
+something it cannot see.
 
 ### The map artifact
 
 `config/tilt_calibration.yaml` — **committed, machine-written**, schema v1:
 `version`; a `captured` block (ISO date, git SHA, tool + args, can-bridge
-`uptime_ms` first/last, the `level_offset_rad` loaded at capture, base-condition
-free text); a `grid` block (`z_mm`, `orientation: level`, `x_mm[]`, `y_mm[]`); a
-`residual_rad` block (`tx[iy][ix]`, `ty[iy][ix]`); and an advisory `stats` block
-(per-node sd, `n_reads`, `failed_nodes`). Committed because it is a *measurement
+`uptime_ms` first/last, the `level_offset_rad` loaded at capture, a
+`home_reference` block — `m_home_rad`, `sd_home_rad`, `m_home_end_rad`,
+`drift_rad`, `drift_verdict`, the home-referencing evidence — and
+base-condition free text); a `grid` block (`z_mm`, `orientation: level`,
+`x_mm[]`, `y_mm[]`); a `residual_rad` block (`tx[iy][ix]`, `ty[iy][ix]`,
+**home-referenced**: node value = measured − `m_home`); and an advisory
+`stats` block (per-node sd, `n_reads`, `failed_nodes`). The schema is
+unchanged by home-referencing — only what the tool writes into the grids
+changed meaning, plus the `captured` metadata gained the home-reference
+fields; the loader and apply path are untouched. Committed because it is a *measurement
 of this machine* — the same class of artefact as the friction-FF constants — and
 machine-written because hand-editing a calibration is how a plausible-looking
 wrong number gets in. The full schema is reproduced in

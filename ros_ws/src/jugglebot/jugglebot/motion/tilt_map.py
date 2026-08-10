@@ -10,12 +10,17 @@ pose ingest**, keyed on the *uncorrected intent* pose.
 **What a residual is.** The ``level`` routine measures the platform's tilt
 against gravity at exactly one pose (the firmware ACTIVATE pose) and applies
 that single offset everywhere. Any *pose-dependent* kinematic error is invisible
-to it by construction. A residual is what is left over: with a fresh ``level``
-correction loaded and **no map loaded**, the platform is commanded to the level
-orientation at grid node ``(x, y, z_grid)`` and the inclinometer is read —
-``residual = mean(raw_reading) + radians(inclinometer_offset_deg)``, the exact
-``LevellingHandler`` formula. At the home node the residual is ≈ 0 by
-construction.
+to it by construction. A residual is what is left over, stored
+**home-referenced** (2026-08-10): with any **constant** correction loaded and
+**no map loaded**, the platform is commanded to the level orientation at grid
+node ``(x, y, z_grid)`` and the inclinometer is read —
+``m = mean(raw_reading) + radians(inclinometer_offset_deg)``, the exact
+``LevellingHandler`` formula — and the grids store ``M(P) = m(P) − m(home)``,
+so the loaded correction cancels exactly (however stale, as long as it is
+constant across the sweep) and the home node stores **exactly 0** by
+construction. The algebra, and the drift/constancy gates that replaced the
+retired start-of-capture staleness abort, live in
+``ros_ws/docs/levelling_frame.md`` § C-LEVEL-2 § "What the map is".
 
 **How it is applied.** ``combined = level_offset + bilinear(map, intent_xy)``,
 fed to the *existing* single Rodrigues in :mod:`jugglebot.motion.levelling`
@@ -44,6 +49,8 @@ committed ``config/tilt_calibration.yaml``)::
       uptime_ms_first: ...
       uptime_ms_last: ...
       level_offset_rad: [.., ..]
+      home_reference: {...}          # m_home start/end, drift, verdict —
+                                     # the home-referencing evidence (2026-08-10)
       base_condition: "free text"
     grid:
       z_mm: 170.0

@@ -361,6 +361,48 @@ def test_csv_mode_refuses_a_file_with_no_usable_rows(tmp_path):
         tca.load_csv_field(str(path))
 
 
+def test_csv_mode_excludes_home_end_and_verify_home_from_the_field(tmp_path):
+    """The 2026-08-10 tool writes 'home_end' (drift-gate re-measure) and
+    'verify_home' (verification reference) rows at the home coordinates. If
+    they averaged into the field, the home node would silently mix its start
+    and end measurements — and mix pre-/post-apply reads — exactly the
+    corruption the phase filter's own comment describes. verify_home must
+    instead surface as metadata (the tool scores checks against it)."""
+    import csv as _csv
+    hw_dir = os.path.join(_REPO_ROOT, 'tests', 'hardware')
+    if hw_dir not in sys.path:
+        sys.path.insert(0, hw_dir)
+    import tilt_cal_grid as tcg
+
+    offset = tcg.mounting_offset_rad()
+    path = tmp_path / 'phases.csv'
+    with open(str(path), 'w', newline='') as handle:
+        writer = _csv.DictWriter(handle, fieldnames=list(tcg.CSV_COLUMNS))
+        writer.writeheader()
+        # a 1x2 grid: home (0,0) plus one neighbour, 2 reads each
+        for k in range(2):
+            writer.writerow(tcg.csv_row(
+                'iso', 0.0, 'capture', 0, 0, 0, 0.0, 0.0, 170.0, k,
+                0.001 - offset[0], 0.001 - offset[1], offset, 1))
+            writer.writerow(tcg.csv_row(
+                'iso', 0.0, 'capture', 1, 1, 0, 150.0, 0.0, 170.0, k,
+                0.002 - offset[0], 0.002 - offset[1], offset, 1))
+        # grossly different home_end and verify_home rows at (0, 0)
+        writer.writerow(tcg.csv_row(
+            'iso', 9.0, 'home_end', 2, 0, 0, 0.0, 0.0, 170.0, 0,
+            0.5 - offset[0], 0.5 - offset[1], offset, 1))
+        writer.writerow(tcg.csv_row(
+            'iso', 9.5, 'verify_home', -1, -1, -1, 0.0, 0.0, 170.0, 0,
+            0.25 - offset[0], 0.25 - offset[1], offset, 1))
+
+    field = tca.load_csv_field(str(path))
+    # capture-only mean at home: the 0.5/0.25 rad rows must not participate
+    assert field.tx[0][0] == pytest.approx(0.001, abs=1e-12)
+    assert int(field.n_reads[0][0]) == 2
+    # ...and verify_home surfaces as the scoring reference, not as field data
+    assert field.metadata['verify_home_rad'] == pytest.approx([0.25, 0.25])
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────
 
 

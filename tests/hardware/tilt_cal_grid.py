@@ -13,17 +13,33 @@ Plan: ``plans/active/tilt-calibration-grid.md`` (Phase 3 builds this; Phase 4's
 rungs C0–C3 run it — ``tests/hardware/session_tilt_calibration.md`` is the
 runbook and is the authority for what to do at the robot).
 
-**What a residual is.** ``level`` measures the platform's tilt against gravity at
-exactly one pose and applies that offset everywhere, so every *pose-dependent*
-kinematic error is invisible to it. With a fresh ``level`` loaded and **no map
-loaded**, this tool commands the level orientation at each node and computes::
+**What a residual is — HOME-REFERENCED (2026-08-10).** ``level`` measures the
+platform's tilt against gravity at exactly one pose and applies that offset
+everywhere, so every *pose-dependent* kinematic error is invisible to it. With
+ANY constant correction loaded and **no map loaded**, this tool commands the
+level orientation at each node and measures::
 
-    residual = mean(raw_reading) + radians(JB_OP_INCLINOMETER_OFFSET_DEG)
+    m_i = mean(raw_reading) + radians(JB_OP_INCLINOMETER_OFFSET_DEG)
 
-— the exact ``state_machine.LevellingHandler`` formula (``:455-460``; it is an
-ADD, per axis, in radians). At the home node that is ≈ 0 *by construction*: it is
-the pose ``level`` itself measured. A home node that is not ≈ 0 means the level
-reference is stale and the capture is aborted rather than baked in.
+— the exact ``state_machine.LevellingHandler`` formula (``:455-460``; an ADD,
+per axis, in radians) — and **ships** ``M(P_i) := m_i − m_home``, the home
+node's own measurement subtracted from every node. Writing the platform's true
+field as ``f(P)`` and the loaded correction as ``C_cap``, each measurement is
+``m_i = f(P_i) − C_cap``, so ``M(P_i) = f(P_i) − f(home)``: the correction
+cancels EXACTLY, however stale, as long as it is CONSTANT across the sweep.
+``map(home) = 0`` exactly by construction. The old start-of-capture "STALE
+LEVEL REFERENCE" abort is retired — it was mistuned against physics (the level
+reference is ONE int16-quantised SCL3300 sample with measured session scatter
+σ ≈ 1.2–1.7 mrad/axis; the 1.5 mrad floor sat inside that distribution and
+false-aborted 40–60 % of healthy attempts, and a correctly-sized floor
+collides with its own ceiling). What replaced it: an END-OF-SWEEP home
+re-measure with a drift gate (the correction changed mid-sweep ⇒ abort), a
+causal ``/gravity_offset`` mid-sweep monitor (any message during the sweep ⇒
+abort), a ``|m_home|`` WARN at 0.010 rad (level grossly stale — harmless to
+the home-referenced map, worth surfacing) and a hard abort at 0.05 rad.
+Verification check poses are scored home-referenced too (home is re-measured
+first and subtracted), or a constant stale level would fail every check pose
+of a perfectly valid capture. Contract: ``levelling_frame.md`` § C-LEVEL-2.
 
 **Safety posture — request-only, like ``traj_ramp_battery.py``.** This tool
 issues ``trajectory/go_to_pose`` requests and reads services. It **never arms,
@@ -54,15 +70,38 @@ itself un-executable — the move would be "accepted" and dropped like every oth
 — so the return is refused and the tool prints ``RETURN TO CENTRE FAILED … bring
 it home manually``. Loudly failing to come home beats silently pretending to.
 
-**Why the moves are deliberately slow.** ``--move-duration-s`` defaults to 3.0 s
-and ``--lean-gain`` is an explicit ``0.0`` (lean shaping OFF, so the terminal
-pose is the pure commanded one and nothing about the transit is inherited from
-node config). Unshaped ±150 mm laterals are the guard-latch canary *at minimum
-duration* — 0.94–1.08 rev deviation against a 1.0 rev latch
-(``logbook/2026-07-17-wobble-latch-unshaped-traverse.md``) — but that was
-measured at ~312 mm/s leg peaks. A 300 mm traverse over 3.0 s runs about a third
-of that, which is what makes lean 0.0 safe here. Do not shorten the duration to
-save time without re-reading that entry.
+**Transit shaping — lean deferred to node config, duration deliberately slow.**
+``--move-duration-s`` defaults to 3.0 s and ``--lean-gain`` defaults to
+``-1.0`` = defer to the node's configured gain (ships 0.6, per
+``GoToPose.srv``: negative ⇒ config; an EXPLICIT 0.0 forces lean OFF). Lean
+shaping affects the TRANSIT only: the lean window w(s) is exactly zero at
+s = 0 and s = 1 (``shaping.py`` clamped-smoothstep window), so the terminal
+pose — the thing this tool measures — is the pure commanded pose at ANY gain.
+An earlier default of an explicit 0.0 argued that lean off keeps the terminal
+pose pure; that inverts under scrutiny (the terminal pose is pure regardless),
+and shaped transits are the precedent-proven working point: all four ±150
+corners were held on 2026-07-27 with lean 0.6
+(``logbook/2026-07-28-anomaly-fixes-validation-sitting.md``). The slow
+duration is the other half: unshaped ±150 mm laterals at MINIMUM duration are
+the guard-latch canary — 0.94–1.08 rev deviation against a 1.0 rev latch at
+~312 mm/s leg peaks (``logbook/2026-07-17-wobble-latch-unshaped-traverse.md``)
+— while a 212 mm diagonal over 3.0 s runs ~71 mm/s mean. Do not shorten the
+duration to save time without re-reading that entry.
+
+**Faults are detected mid-node, not just at boundaries (2026-08-10).** On the
+2026-08-09 C0 sitting, leg 0's ODrive latched SPINOUT_DETECTED 2.5 s into the
+move to (−150, −150); the platform collapsed, 30 reads ran against it, and the
+fault surfaced only at the NEXT node's boundary wire check, 6.1 s later. The
+tool now consults the cached ``/link_status`` kv (callbacks already pump
+during the gap spins — zero extra service calls) at arrival and after EVERY
+read, aborts immediately naming the read index, and dumps forensics on any
+abort: the full link kv, per-leg ODrive ``active_errors``/``disarm_reason``
+RAW and DECODED (name table from ``jugglebot/can/odrive.py``), a
+first-nonzero-error edge latch per leg, the last trajectory status, and
+wall + uptime clocks — into the console AND ``_meta.json``, whose
+``abort_reason`` field is now always written. Capture forensics BEFORE any
+relaunch: the next launch's BOOT pre-flight auto-clears the drive-side error
+record.
 
 **Why reads are spaced (``--read-gap-s``).** The Murata SCL3300 is read **one
 sample per trigger** (``Teensy_code_platform.ino:377-396``, ``getInclination()``)
@@ -84,7 +123,8 @@ the exit code is nonzero: interpolating a failed node from its neighbours would
 invent calibration data at exactly the place the machine had trouble, and
 C-LEVEL-2 forbids shipping NaN. Re-run (usually with a longer ``--dwell-s``).
 
-Usage (operator; stack up, platform ARMED in TRAJECTORY, fresh ``level`` done)::
+Usage (operator; stack up, platform ARMED in TRAJECTORY, a correction loaded —
+fresh ``level`` RECOMMENDED, constancy through the sweep REQUIRED)::
 
     # default capture — 5x5 over +/-150 mm at z=170, write + apply + verify
     python3 tests/hardware/tilt_cal_grid.py --base-condition "flat floor, no shims"
@@ -123,6 +163,48 @@ import yaml
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion import tilt_map
+from jugglebot.motion import workspace
+from jugglebot.motion.geometry import StewartGeometry
+from jugglebot.motion.ik_solver import pose_to_leg_lengths
+
+# The ODrive error-bit name table, for decoding forensics dumps.
+# ``jugglebot/can/odrive.py`` is the authority, but its package __init__
+# pulls the jugglebot_interfaces message bindings and python-can — present on
+# the robot and on this Jetson's test environment, absent on an off-robot
+# checkout — so the pure core vendors the table as a fallback rather than
+# make its import hostage to the ROS workspace.
+# ``tests/motion/test_tilt_cal_grid.py`` pins vendored == authoritative
+# whenever the real import is available, so drift is a test failure, not a
+# silent wrong decode. 67108864 -> 'SPINOUT_DETECTED' is the 2026-08-09
+# leg-0 code.
+try:
+    from jugglebot.can.odrive import ERROR_CODES as ODRIVE_ERROR_CODES
+except Exception:                                        # noqa: BLE001
+    # Vendored from ros_ws/src/jugglebot/jugglebot/can/odrive.py ERROR_CODES.
+    ODRIVE_ERROR_CODES = {
+        1: 'INITIALIZING',
+        2: 'SYSTEM_LEVEL',
+        4: 'TIMING_ERROR',
+        8: 'MISSING_ESTIMATE',
+        16: 'BAD_CONFIG',
+        32: 'DRV_FAULT',
+        64: 'MISSING_INPUT',
+        256: 'DC_BUS_OVER_VOLTAGE',
+        512: 'DC_BUS_UNDER_VOLTAGE',
+        1024: 'DC_BUS_OVER_CURRENT',
+        2048: 'DC_BUS_OVER_REGEN_CURRENT',
+        4096: 'CURRENT_LIMIT_VIOLATION',
+        8192: 'MOTOR_OVER_TEMP',
+        16384: 'INVERTER_OVER_TEMP',
+        32768: 'VELOCITY_LIMIT_VIOLATION',
+        65536: 'POSITION_LIMIT_VIOLATION',
+        16777216: 'WATCHDOG_TIMER_EXPIRED',
+        33554432: 'ESTOP_REQUESTED',
+        67108864: 'SPINOUT_DETECTED',
+        134217728: 'BRAKE_RESISTOR_DISARMED',
+        268435456: 'THERMISTOR_DISCONNECTED',
+        1073741824: 'CALIBRATION_ERROR',
+    }
 
 import _th_test_common as thc
 
@@ -146,18 +228,44 @@ DEFAULT_CHECK_POSES = 6
 DEFAULT_THRESHOLD_DEG = 0.15     # PROVISIONAL (C0 pins theta_acc)
 DEFAULT_TIMEOUT_S = 5.0
 
-#: Home-node gate. ``|residual(0,0)|`` must satisfy BOTH:
-#:   * within ``HOME_NODE_SD_MULT x`` the per-read sd, floored by
-#:     ``HOME_NODE_TOL_FLOOR_RAD`` — the floor exists because a quiet sensor
-#:     makes ``3 x sd`` degenerate (the Teensy persistence quantum alone is
-#:     1 mrad/axis), and a gate that false-aborts on a good level reference
-#:     gets disabled by the third operator who hits it;
-#:   * under ``HOME_NODE_ABS_CEIL_RAD`` unconditionally — so a *noisy* sensor
-#:     cannot launder a genuinely stale level reference through a wide 3 x sd.
-#: One-sided gates fail one of those two ways round; this one fails neither.
-HOME_NODE_SD_MULT = 3.0
-HOME_NODE_TOL_FLOOR_RAD = 0.0015   # ~0.086 deg  PROVISIONAL
-HOME_NODE_ABS_CEIL_RAD = 0.005     # ~0.287 deg  PROVISIONAL
+#: End-of-sweep home DRIFT gate (replaces the retired start-of-capture
+#: staleness abort, 2026-08-10 — that gate compared a single-sample level
+#: reference with measured session scatter 1.2-1.7 mrad/axis against a
+#: 1.5 mrad floor derived from 4.5 s of read noise, and false-aborted 40-60%
+#: of healthy attempts; see levelling_frame.md § "What the map is").
+#: The drift ``d = m_home_end - m_home_start`` is gated per axis at
+#: ``max(HOME_DRIFT_SD_MULT * sqrt((sd_start^2 + sd_end^2) / n_eff),
+#: HOME_DRIFT_TOL_FLOOR_RAD)``. Both start and end are N-read means of the
+#: SAME sensor minutes apart, so the comparison is noise-vs-noise on a
+#: matched footing — unlike the old gate. ``n_eff = n/2`` until rung C0 pins
+#: the read autocorrelation at the 0.15 s gap.
+#: Floor 0.0005 rad = 0.029 deg = 19% of the provisional theta_acc; the
+#: 1 mrad relaunch-repush truncation step lands at >= 5.5 sigma of the
+#: observed read-noise budget, so the gate catches it with margin.
+HOME_DRIFT_SD_MULT = 3.0
+HOME_DRIFT_TOL_FLOOR_RAD = 0.0005  # ~0.029 deg  PROVISIONAL (C0 pins n_eff)
+N_EFF_DIVISOR = 2.0                # n_eff = n_ok / 2 until C0 pins rho
+
+#: ``|m_home|`` sanity bounds. Under home-referencing a nonzero home
+#: measurement is HARMLESS to the map (it cancels), so these are not
+#: staleness gates: the WARN (0.010 rad = 0.57 deg, >= 5.9 sigma of measured
+#: level scatter — essentially never a false fire) surfaces a level so stale
+#: the sweep is physically tilted by more than the field being measured; the
+#: ABORT (0.05 rad, aligned with tilt_map.MAX_ABS_RESIDUAL_RAD) is where the
+#: second-order term |Δf x m_home|/2 = 2.6e-4 rad exceeds the composition
+#: budget and something is genuinely broken.
+HOME_REF_WARN_RAD = 0.010
+HOME_REF_ABORT_RAD = 0.05
+
+#: Per-node IK stroke-margin preflight: refuse any pose whose worst leg comes
+#: within this margin of the Jetson/firmware hard extension bound
+#: [LEG_HARD_MARGIN_MM, stroke - LEG_HARD_MARGIN_MM] = [5, 275] mm. Pure
+#: numpy (ik_solver.pose_to_leg_lengths at identity orientation — the loaded
+#: correction shifts extensions by <= ~2.2 mm at these magnitudes, well
+#: inside this margin). The default 5x5/±150 grid's worst corrected margin is
+#: +20.6 mm (ik-stroke analysis, 2026-08-10), so this refuses nothing the
+#: plan intends while catching a --x/--y/--z excursion before any motion.
+STROKE_PREFLIGHT_MARGIN_MM = 10.0
 
 #: Capture wants a freshly power-cycled can-bridge Teensy (the uptime-lag
 #: discipline). Warn, never refuse — the tilt read path is request/response over
@@ -201,6 +309,40 @@ class TiltCalStatusTimeout(TiltCalError):
     def __init__(self, message: str, last_status: Any = None):
         super().__init__(message)
         self.last_status = last_status
+
+
+class TiltCalFaultError(TiltCalError):
+    """A RUN-level abort that must never be demoted to a failed node.
+
+    The per-node/per-check ``try`` blocks convert a :class:`TiltCalError` into
+    a failed *node* and, under the default ``--on-fail continue``, carry on.
+    That is right for a flaky read and catastrophically wrong for a wire that
+    disarmed, a guard fault that latched, or a correction that changed
+    mid-sweep — every remaining node would measure a collapsed or re-referenced
+    platform. Both handlers re-raise this subclass unconditionally.
+
+    Precedent: 2026-08-09, leg-0 SPINOUT_DETECTED latched mid-move; 30 reads
+    ran against a collapsed platform because nothing between the boundary
+    checks could abort the run.
+    """
+
+
+class TiltRead(NamedTuple):
+    """One inclinometer read with ITS OWN clocks.
+
+    The 2026-08-09 CSVs stamped all 30 rows of a node with one ``iso`` and one
+    ``uptime_ms`` captured after the read loop, which made intra-node fault
+    correlation impossible from the CSV (the leg-0 collapse had to be timed
+    from the launch log). ``t_wall`` feeds the ``iso`` column, ``t_mono`` the
+    ``t_s`` column (monotonic — immune to wall-clock steps), ``uptime_ms`` is
+    the can-bridge clock as cached at THIS read.
+    """
+
+    t_wall: float
+    t_mono: float
+    uptime_ms: Optional[int]
+    tx: float
+    ty: float
 
 
 class Node(NamedTuple):
@@ -305,55 +447,60 @@ def build_axis(box_mm: float, nodes: int, name: str) -> List[float]:
 def home_index(x_mm: Sequence[float], y_mm: Sequence[float]) -> Tuple[int, int]:
     """Index of the ``(0, 0)`` home node, or refuse.
 
-    The home node is not a nicety: it is the stale-level-reference gate, and
-    C-LEVEL-2 defines the residual there as ≈ 0 *by construction*. A grid
-    without it (``--nodes 4`` over a symmetric box, say) can still be captured
-    arithmetically but ships with no evidence that the reference it is measured
-    against was valid — which is the one failure that silently corrupts **every**
-    node at once. Refuse instead.
+    The home node is not a nicety: it is the **reference node** — every shipped
+    residual is ``measured − m_home``, so a grid without ``(0, 0)``
+    (``--nodes 4`` over a symmetric box, say) has nothing to reference against
+    and cannot be captured under C-LEVEL-2's home-referenced definition at
+    all. Refuse instead.
     """
     tol = 1e-6
     ix = next((i for i, v in enumerate(x_mm) if abs(v) <= tol), None)
     iy = next((i for i, v in enumerate(y_mm) if abs(v) <= tol), None)
     if ix is None or iy is None:
         raise TiltCalError(
-            'the home node (0, 0) must be one of the grid nodes — it is the '
-            'stale-level-reference gate, and the residual there is 0 by '
-            'construction. Use an odd --nodes over a symmetric --box, or put '
-            '0 in both --x and --y. Got x={}, y={}'
+            'the home node (0, 0) must be one of the grid nodes — the map is '
+            'HOME-REFERENCED (every shipped residual is measured minus the '
+            'home measurement), so a grid without (0, 0) has no reference. '
+            'Use an odd --nodes over a symmetric --box, or put 0 in both --x '
+            'and --y. Got x={}, y={}'
             .format(list(x_mm), list(y_mm)))
     return (ix, iy)
 
 
-def serpentine_order(x_mm: Sequence[float],
+def centre_out_order(x_mm: Sequence[float],
                      y_mm: Sequence[float]) -> List[Node]:
-    """Boustrophedon sweep: rows of increasing y, alternating x direction.
+    """Every grid node sorted centre-out: radius ascending, **corners LAST**.
 
-    Minimises travel — a raster order would fly the full x span back at the end
-    of every row, which on a 5x5/±150 grid is four extra 300 mm traverses.
+    Replaced the boustrophedon serpentine (2026-08-10). The serpentine
+    minimised travel but made visit 2 the far corner — on the 2026-08-09 C0
+    sitting the first post-home move was the 212 mm diagonal to (−150, −150),
+    the sweep's longest traverse and its highest-stroke pose, and the leg-0
+    collapse there cost the whole capture with zero usable field data banked.
+    Centre-out banks the inner (low-stroke) nodes before the corner poses, so
+    a fault at an extremity loses the corners, not the capture. Costs more
+    total travel; each move is still individually shaped and slow.
+
+    Tie-break within a radius ring is CCW angle from +x then index — fully
+    deterministic, never dict/float-order dependent.
     """
-    order: List[Node] = []
-    for iy, y in enumerate(y_mm):
-        xs = list(enumerate(x_mm))
-        if iy % 2:
-            xs.reverse()
-        for ix, x in xs:
-            order.append(Node(ix=ix, iy=iy, x_mm=float(x), y_mm=float(y)))
-    return order
+    nodes = [Node(ix=ix, iy=iy, x_mm=float(x), y_mm=float(y))
+             for iy, y in enumerate(y_mm) for ix, x in enumerate(x_mm)]
+    nodes.sort(key=lambda n: (round(n.x_mm ** 2 + n.y_mm ** 2, 6),
+                              math.atan2(n.y_mm, n.x_mm), n.ix, n.iy))
+    return nodes
 
 
 def visit_order(x_mm: Sequence[float], y_mm: Sequence[float]) -> List[Node]:
-    """The capture order: **home node first**, then the serpentine sweep.
+    """The capture order: **home node first**, then centre-out, corners last.
 
-    Home is measured first and exactly once — its reading both gates the level
-    reference (before ten minutes of platform motion are spent on a capture that
-    would be discarded) and populates its own grid node. Re-measuring it in its
-    serpentine slot would produce two different numbers for one node and force
-    an arbitrary choice between them.
+    Home is measured first — its reading is the reference every other node is
+    shipped against (``M = m − m_home``) — and exactly once *as a grid node*:
+    the END of the sweep re-measures the same pose for the drift gate, but
+    that reading is the gate's evidence, never a second value for the node.
     """
     hx, hy = home_index(x_mm, y_mm)
     home = Node(ix=hx, iy=hy, x_mm=float(x_mm[hx]), y_mm=float(y_mm[hy]))
-    rest = [n for n in serpentine_order(x_mm, y_mm)
+    rest = [n for n in centre_out_order(x_mm, y_mm)
             if not (n.ix == hx and n.iy == hy)]
     return [home] + rest
 
@@ -462,46 +609,195 @@ def node_is_good(stats: ReadStats, n_reads_requested: int) -> bool:
     return stats.n_ok * 2 >= n_reads_requested
 
 
-def home_node_verdict(stats: ReadStats) -> Tuple[bool, str]:
-    """The stale-level-reference gate. Returns ``(ok, human message)``.
+def home_reference_verdict(stats: ReadStats) -> Tuple[str, str]:
+    """Sanity-screen the home REFERENCE measurement. ``(verdict, message)``.
 
-    Both axes are gated independently rather than on the vector magnitude: a
-    stale reference usually leans on one axis, and a magnitude check dilutes a
-    single-axis error by up to sqrt(2) against the same tolerance.
+    ``verdict`` is ``'ok'`` / ``'warn'`` / ``'abort'``. Under home-referencing
+    a nonzero ``m_home`` is HARMLESS to the map — it cancels out of every
+    shipped residual — so this is **not** a staleness gate (the old one is
+    retired; it false-aborted 40–60 % of healthy attempts because the level
+    reference's own single-sample scatter is 1.2–1.7 mrad/axis against its
+    1.5 mrad floor). What is left to screen:
+
+    * too few finite reads ⇒ ``abort`` — no reference, no map;
+    * ``|m_home| > 0.05 rad`` ⇒ ``abort`` — the second-order term
+      ``|Δf × m_home|/2`` exceeds the composition budget there (2.6e-4 rad),
+      and a platform 2.9° off level at its own levelling pose is broken, not
+      stale;
+    * ``|m_home| > 0.010 rad`` ⇒ ``warn`` — ≥ 5.9 σ of measured level scatter
+      (never a false fire on a healthy path), harmless to the map (second
+      order 5.3e-5 rad), but the sweep is physically tilted by more than the
+      0.6° field it is measuring, and the operator should know why.
+
+    Both axes screened independently: a gross error usually leans on one axis
+    and a magnitude check dilutes it by up to sqrt(2).
     """
     if stats.n_ok < MIN_GOOD_READS:
-        return (False,
+        return ('abort',
                 'home node returned only {}/{} finite reads — the inclinometer '
                 'is not answering reliably; fix that before capturing'
                 .format(stats.n_ok, stats.n_total))
+    worst = max(abs(stats.res_tx), abs(stats.res_ty))
+    detail = ('m_home ({:+.6f}, {:+.6f}) rad = ({:+.4f}, {:+.4f}) deg, '
+              'per-read sd ({:.6f}, {:.6f}) rad'
+              .format(stats.res_tx, stats.res_ty,
+                      math.degrees(stats.res_tx), math.degrees(stats.res_ty),
+                      stats.sd_tx, stats.sd_ty))
+    if worst > HOME_REF_ABORT_RAD:
+        return ('abort',
+                'home reference |m_home| = {:.4f} rad ({:.2f} deg) exceeds '
+                'the {:.3f} rad sanity ceiling — this is not a stale level, '
+                'it is a platform ~{:.1f} deg off level at its own levelling '
+                'pose (collapsed leg? units error?). {}. Diagnose before '
+                'capturing anything.'
+                .format(worst, math.degrees(worst), HOME_REF_ABORT_RAD,
+                        math.degrees(worst), detail))
+    if worst > HOME_REF_WARN_RAD:
+        return ('warn',
+                'home reference |m_home| = {:.4f} rad ({:.2f} deg) is above '
+                'the {:.3f} rad WARN — the level reference is grossly stale. '
+                'HARMLESS to the map (home-referencing cancels it; second-'
+                'order residue <= 5.3e-5 rad at this bound is already priced '
+                'in), but the sweep is running physically tilted by more than '
+                'the field it measures. A fresh `level` would zero this. {}'
+                .format(worst, math.degrees(worst), HOME_REF_WARN_RAD, detail))
+    return ('ok', 'home reference OK: {}'.format(detail))
+
+
+def home_drift_verdict(start: ReadStats, end: ReadStats) -> Tuple[bool, str]:
+    """The END-OF-SWEEP drift gate: did the correction change mid-capture?
+
+    ``d = m_home_end − m_home_start`` per axis, gated at
+    ``tol = max(HOME_DRIFT_SD_MULT * sqrt((sd_start² + sd_end²) / n_eff),
+    HOME_DRIFT_TOL_FLOOR_RAD)`` with ``n_eff = min(n_ok) / N_EFF_DIVISOR``
+    (reads are weakly correlated at the 0.15 s gap; C0 pins the real number).
+    Unlike the retired staleness gate this compares two N-read means of the
+    SAME sensor minutes apart — a matched-footing comparison whose dominant
+    noise terms actually appear in its own tolerance. A failure means the
+    reference the early nodes were measured against is not the reference the
+    late nodes were measured against, which corrupts the map non-uniformly —
+    the one thing home-referencing cannot cancel.
+
+    The causal ``/gravity_offset`` monitor covers the same class earlier and
+    more sharply; this gate is the OUTCOME check that also catches whatever
+    the monitor cannot see (a mechanical shift, thermal settling of the base).
+    """
+    if end.n_ok < MIN_GOOD_READS:
+        return (False,
+                'home re-measure returned only {}/{} finite reads — the drift '
+                'gate has no end-point; the capture cannot be certified'
+                .format(end.n_ok, end.n_total))
+    n_eff = max(1.0, min(start.n_ok, end.n_ok) / N_EFF_DIVISOR)
     problems = []
-    for axis, res, sd in (('tx', stats.res_tx, stats.sd_tx),
-                          ('ty', stats.res_ty, stats.sd_ty)):
-        tol = max(HOME_NODE_SD_MULT * sd, HOME_NODE_TOL_FLOOR_RAD)
-        if abs(res) > tol or abs(res) > HOME_NODE_ABS_CEIL_RAD:
+    detail = []
+    for axis, r0, r1, s0, s1 in (
+            ('tx', start.res_tx, end.res_tx, start.sd_tx, end.sd_tx),
+            ('ty', start.res_ty, end.res_ty, start.sd_ty, end.sd_ty)):
+        drift = r1 - r0
+        tol = max(HOME_DRIFT_SD_MULT * math.sqrt((s0 ** 2 + s1 ** 2) / n_eff),
+                  HOME_DRIFT_TOL_FLOOR_RAD)
+        detail.append('{}: drift {:+.6f} rad vs tol {:.6f}'.format(
+            axis, drift, tol))
+        if abs(drift) > tol:
             problems.append(
-                '{}: |{:+.6f}| rad ({:+.4f} deg) vs tolerance {:.6f} rad '
-                '(max({:.1f}x sd {:.6f}, floor {:.6f})), absolute ceiling '
-                '{:.6f} rad'
-                .format(axis, res, math.degrees(res), tol, HOME_NODE_SD_MULT,
-                        sd, HOME_NODE_TOL_FLOOR_RAD, HOME_NODE_ABS_CEIL_RAD))
+                '{}: |{:+.6f}| rad ({:+.4f} deg) > tol {:.6f} rad '
+                '(max({:.1f}x sqrt((sd_start^2+sd_end^2)/n_eff={:.1f}), '
+                'floor {:.6f}))'
+                .format(axis, drift, math.degrees(drift), tol,
+                        HOME_DRIFT_SD_MULT, n_eff, HOME_DRIFT_TOL_FLOOR_RAD))
     if problems:
         return (False,
-                'STALE LEVEL REFERENCE — the home node (0, 0) residual is not '
-                '~0, which by C-LEVEL-2 it must be by construction. ' +
-                '; '.join(problems) +
-                '. Most likely: `level` was not run immediately before this '
-                'capture, or it was run and then the process that applies it '
-                'was relaunched (the correction is per-PROCESS). Re-run '
-                '`level` from IDLE and start over. Capturing against a stale '
-                'reference corrupts EVERY node identically and the map would '
-                'look perfectly plausible.')
-    return (True,
-            'home node OK: residual ({:+.6f}, {:+.6f}) rad = ({:+.4f}, '
-            '{:+.4f}) deg, per-read sd ({:.6f}, {:.6f}) rad'
-            .format(stats.res_tx, stats.res_ty,
-                    math.degrees(stats.res_tx), math.degrees(stats.res_ty),
-                    stats.sd_tx, stats.sd_ty))
+                'HOME DRIFT GATE FAILED — the level reference CHANGED during '
+                'the sweep: ' + '; '.join(problems) +
+                '. Early nodes and late nodes were measured against different '
+                'references, which corrupts the map NON-uniformly (the one '
+                'error home-referencing cannot cancel). Usual causes: a '
+                're-level or relaunch mid-sweep (the /gravity_offset monitor '
+                'should also have fired), or the base/platform physically '
+                'settling. Nothing was written; re-run the capture.')
+    return (True, 'home drift gate PASS: ' + '; '.join(detail) +
+            ' (n_eff {:.1f})'.format(n_eff))
+
+
+def decode_error_bits(mask: int) -> List[str]:
+    """ODrive error bitmask → names, via the ``can/odrive.py`` table.
+
+    Decomposes ``active_errors`` and ``disarm_reason`` alike (same bit
+    vocabulary). Unknown bits are surfaced as a hex remainder rather than
+    silently dropped — an undecodable bit is exactly the datum a forensics
+    dump must not eat. ``67108864 → ['SPINOUT_DETECTED']`` is the 2026-08-09
+    leg-0 code.
+    """
+    mask = int(mask)
+    names: List[str] = []
+    for bit in sorted(ODRIVE_ERROR_CODES):
+        if mask & bit:
+            names.append(ODRIVE_ERROR_CODES[bit])
+            mask &= ~bit
+    if mask:
+        names.append('UNKNOWN_BITS_0x{:08X}'.format(mask))
+    return names
+
+
+# ── pure core: IK stroke-margin preflight ────────────────────────────────
+
+
+_GEOMETRY: Optional[StewartGeometry] = None
+
+
+def _stewart_geometry() -> StewartGeometry:
+    global _GEOMETRY
+    if _GEOMETRY is None:
+        _GEOMETRY = StewartGeometry()
+    return _GEOMETRY
+
+
+def stroke_margin_problems(
+        poses_mm: Sequence[Tuple[float, float]], z_mm: float,
+        margin_mm: float = STROKE_PREFLIGHT_MARGIN_MM) -> List[str]:
+    """Refusal lines for every pose too close to a leg extension bound.
+
+    Pure-numpy IK (``ik_solver.pose_to_leg_lengths``, identity orientation —
+    poses here are STOW-relative exactly like ``GoToPose``, and the loaded
+    gravity correction moves extensions by ≤ ~2.2 mm at grid magnitudes, well
+    inside the margin). A pose is refused when its worst leg's distance to the
+    Jetson/firmware hard bound ``[LEG_HARD_MARGIN_MM, stroke −
+    LEG_HARD_MARGIN_MM]`` = [5, 275] mm is under ``margin_mm``.
+
+    This runs BEFORE any motion (and in ``--dry-run``): a node on a stroke
+    clamp does not fail loudly at capture time — the firmware clamps per leg
+    at 500 Hz and the node's reading is silently wrong. Sanity anchor: home
+    ``(0, 0, 170)`` sits mid-stroke at ~154 mm on all six legs.
+
+    Kinematic scope note: the 2026-08-09 leg-0 collapse was NOT a stroke
+    event — leg 0 was the most-RETRACTED leg at (−150, −150) with ≥ 85 mm of
+    margin (SPINOUT_DETECTED, a drive-side fault). This gate exists for the
+    class, not that instance.
+    """
+    geom = _stewart_geometry()
+    lo = float(workspace.LEG_HARD_MARGIN_MM)
+    hi = float(geom.leg_stroke_mm) - float(workspace.LEG_HARD_MARGIN_MM)
+    problems: List[str] = []
+    seen = set()
+    for x, y in poses_mm:
+        key = (round(float(x), 6), round(float(y), 6))
+        if key in seen:
+            continue
+        seen.add(key)
+        ext = pose_to_leg_lengths(
+            np.array([float(x), float(y), float(z_mm)], dtype=float),
+            np.eye(3), geom)
+        margins = np.minimum(ext - lo, hi - ext)
+        worst = int(np.argmin(margins))
+        if margins[worst] < margin_mm:
+            problems.append(
+                '({:+.1f}, {:+.1f}, {:.1f}): leg {} extension {:.1f} mm is '
+                '{:.1f} mm from the [{:.0f}, {:.0f}] mm hard bound '
+                '(< {:.0f} mm preflight margin); per-leg ext {}'
+                .format(x, y, z_mm, worst, ext[worst], margins[worst],
+                        lo, hi, margin_mm,
+                        [round(float(e), 1) for e in ext]))
+    return problems
 
 
 # ── pure core: the disarmed-wire guard ───────────────────────────────────
@@ -664,8 +960,19 @@ def build_map_document(x_mm: Sequence[float], y_mm: Sequence[float],
                        z_mm: float,
                        results: Dict[Tuple[int, int], ReadStats],
                        captured: Dict[str, Any],
-                       n_reads: int) -> Dict[str, Any]:
+                       n_reads: int,
+                       home_ref: Tuple[float, float]) -> Dict[str, Any]:
     """Assemble the schema-v1 document from the per-node reductions.
+
+    **Shipped residuals are HOME-REFERENCED**: every stored node value is
+    ``measured − home_ref`` per axis, where ``home_ref`` is the home node's
+    own measured residual ``(res_tx, res_ty)``. The home node therefore ships
+    **exactly 0.0** (it subtracts itself — float-exact, not approximate), and
+    any constant in the measurements — a stale level reference above all —
+    cancels out of every node identically. Adding a constant to every
+    measured residual (home included) produces a byte-identical document.
+    Bilinear interpolation commutes with the constant exactly, so no lookup
+    or apply-side change accompanies this.
 
     Residuals are rounded to 9 dp (1 nrad — six orders below the sensor's own
     resolution) and axes to 6 dp, purely so the committed YAML is diff-readable
@@ -698,8 +1005,8 @@ def build_map_document(x_mm: Sequence[float], y_mm: Sequence[float],
                 sdx_row.append(float('nan'))
                 sdy_row.append(float('nan'))
                 continue
-            tx_row.append(round(stats.res_tx, 9))
-            ty_row.append(round(stats.res_ty, 9))
+            tx_row.append(round(stats.res_tx - float(home_ref[0]), 9))
+            ty_row.append(round(stats.res_ty - float(home_ref[1]), 9))
             sdx_row.append(round(stats.sd_tx, 9))
             sdy_row.append(round(stats.sd_ty, 9))
         tx_grid.append(tx_row)
@@ -753,11 +1060,12 @@ def validate_map_document(doc: Dict[str, Any]):
         raise TiltCalError(
             'refusing to write — the map this capture produced would be '
             'REJECTED by trajectory_node:\n  {}\n'
-            'Likely causes, in order: (a) a stale level reference (was `level` '
-            'run from IDLE immediately before the capture, in THIS process?) — '
-            'that shifts every node by the same large amount; (b) a leg pinned '
-            'on its stroke clamp at an extremity node, which corrupts that node '
-            'only; (c) a units error if this tool was edited. The measured '
+            'Likely causes, in order: (a) a leg pinned on its stroke clamp at '
+            'an extremity node, which corrupts that node only (the IK '
+            'preflight bounds this but cannot see a mechanical bind); (b) a '
+            'units error if this tool was edited. A stale level reference is '
+            'NOT a candidate: the residuals are home-referenced, so any '
+            'constant reference error cancels out of every node. The measured '
             'pose-dependent signal is 0.04-0.6 deg; the bound is {:.2f} deg.'
             .format(exc, math.degrees(tilt_map.MAX_ABS_RESIDUAL_RAD)))
 
@@ -882,9 +1190,14 @@ def csv_row(iso: str, t_s: float, phase: str, visit: int,
 def estimate_duration_s(n_nodes: int, n_checks: int, move_s: float,
                         dwell_s: float, n_reads: int,
                         read_gap_s: float) -> float:
-    """Wall-clock ETA for the dry-run plan (includes return-to-centre)."""
+    """Wall-clock ETA for the dry-run plan.
+
+    The ``+ 3`` covers the three non-grid visits every full capture makes:
+    the end-of-sweep home re-measure (drift gate), the verification home
+    reference (home-referenced scoring), and the return to centre.
+    """
     per_visit = move_s + dwell_s + n_reads * (EST_READ_S + read_gap_s)
-    return (n_nodes + n_checks + 1) * per_visit
+    return (n_nodes + n_checks + 3) * per_visit
 
 
 def git_sha() -> str:
@@ -943,7 +1256,8 @@ def build_parser() -> argparse.ArgumentParser:
                            '(default %(default)s).')
     grid.add_argument('--nodes', type=int, default=DEFAULT_NODES,
                       help='nodes per axis for --box (default %(default)s; must '
-                           'be odd so (0,0) is a node — the home gate).')
+                           'be odd so (0,0) is a node — the home reference '
+                           'every other node is shipped against).')
     grid.add_argument('--z', type=float, default=DEFAULT_Z_MM,
                       help='capture height in mm (default %(default)s). z is a '
                            'scalar by design: a z sweep is a config change.')
@@ -965,9 +1279,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help='commanded duration for every go_to_pose (default '
                              '%(default)s — deliberately slow; see the module '
                              'docstring before shortening it).')
-    timing.add_argument('--lean-gain', type=float, default=0.0,
-                        help='lean gain passed explicitly on every move '
-                             '(default %(default)s = OFF).')
+    timing.add_argument('--lean-gain', type=float, default=-1.0,
+                        help='lean gain passed on every move (default '
+                             '%(default)s = defer to the node config gain, '
+                             'ships 0.6 — the precedent-proven transit shape; '
+                             'an EXPLICIT 0.0 forces lean OFF). Lean shapes '
+                             'the TRANSIT only: the lean window is zero at '
+                             'both endpoints, so the terminal pose measured '
+                             'here is identical at any gain.')
     timing.add_argument('--timeout-s', type=float, default=DEFAULT_TIMEOUT_S,
                         help='per-service-call timeout (default %(default)s).')
 
@@ -1013,8 +1332,9 @@ def build_parser() -> argparse.ArgumentParser:
                            'calls and construct no ROS objects.')
     misc.add_argument('--yes', action='store_true',
                       help='skip the interactive operator confirmations '
-                           '(rehearsal only — the confirmations are the fresh-'
-                           'level and hand-quiescent preconditions).')
+                           '(rehearsal only — the confirmations are the '
+                           'constant-correction and hand-quiescent '
+                           'preconditions).')
     misc.add_argument('--out-dir', default=None,
                       help='CSV/meta output directory (default temp/logs/).')
     return ap
@@ -1037,21 +1357,26 @@ def print_plan(x_mm: Sequence[float], y_mm: Sequence[float], z_mm: float,
           .format(len(x_mm), len(y_mm), z_mm))
     print('  x_mm: {}'.format(list(x_mm)))
     print('  y_mm: {}'.format(list(y_mm)))
+    lean_desc = ('{} (defer to node config, ships 0.6)'.format(args.lean_gain)
+                 if args.lean_gain < 0 else str(args.lean_gain))
     print('  move={:.2f}s  dwell={:.2f}s  n_reads={}  read_gap={:.2f}s  '
           'lean_gain={}'.format(args.move_duration_s, args.dwell_s,
-                                args.n_reads, args.read_gap_s, args.lean_gain))
-    print('  visit order (home node FIRST, then serpentine):')
+                                args.n_reads, args.read_gap_s, lean_desc))
+    print('  visit order (home node FIRST, then centre-out — corners LAST):')
     for i, n in enumerate(order):
-        tag = '  <- home node (stale-level gate)' if i == 0 else ''
+        tag = '  <- home node (home reference; re-measured at sweep end '\
+              'for the drift gate)' if i == 0 else ''
         print('    {:>3d}. ({:+7.1f}, {:+7.1f}) [ix={}, iy={}]{}'
               .format(i + 1, n.x_mm, n.y_mm, n.ix, n.iy, tag))
-    print('  verification check poses (off-node, cell centres):')
+    print('  verification check poses (off-node, cell centres; scored '
+          'home-referenced):')
     for i, (cx, cy) in enumerate(checks):
         print('    {:>3d}. ({:+7.1f}, {:+7.1f})'.format(i + 1, cx, cy))
     eta = estimate_duration_s(len(order), len(checks), args.move_duration_s,
                               args.dwell_s, args.n_reads, args.read_gap_s)
-    print('  ETA ~ {:.0f} s ({:.1f} min) including the return to centre'
-          .format(eta, eta / 60.0))
+    print('  ETA ~ {:.0f} s ({:.1f} min) including the end-of-sweep home '
+          're-measure, the verification home reference and the return to '
+          'centre'.format(eta, eta / 60.0))
 
 
 # ── runtime (ROS) ────────────────────────────────────────────────────────
@@ -1069,6 +1394,7 @@ class _Runner:
         from jugglebot_interfaces.srv import GoToPose, GetTiltReadingService
         from jugglebot_interfaces.msg import TrajectoryStatus, RobotState
         from diagnostic_msgs.msg import DiagnosticStatus
+        from std_msgs.msg import Float64MultiArray
         from std_srvs.srv import Trigger
 
         self.node = node
@@ -1076,6 +1402,7 @@ class _Runner:
         self.status = None
         self.status_stamp = 0.0
         self.link_kv = {}
+        self.link_stamp = 0.0
         # Monotonic count of /link_status messages consumed. `refresh_link` waits
         # for this to ADVANCE rather than sleeping a fixed interval, so a
         # mid-sweep wire check reads a message that provably post-dates the
@@ -1084,6 +1411,19 @@ class _Runner:
         self.uptime_first = None
         self.uptime_last = None
         self.pose_offset_rad = None
+        # Forensics state: last per-leg motor summary from /robot_state, plus a
+        # FIRST-nonzero-error edge latch per leg. The latch matters because the
+        # on-change DIAGNOSTIC feed can coalesce, and the abort-time snapshot
+        # shows abort-time state, not fault-time state — the edge is the datum
+        # the 2026-08-09 sitting only had because a bag happened to be rolling.
+        self.motor_states = None
+        self.motor_error_edge: Dict[int, Dict[str, Any]] = {}
+        # Constancy monitor: /gravity_offset traffic. Any message between the
+        # baseline mark (set when the sweep begins) and the last read violates
+        # the constant-correction capture precondition, CAUSALLY observed.
+        self.gravity_msg_count = 0
+        self.gravity_baseline = None
+        self.last_gravity = None
 
         self._GoToPose = GoToPose
         self._Tilt = GetTiltReadingService
@@ -1100,6 +1440,8 @@ class _Runner:
                                  self._on_link, 10)
         node.create_subscription(RobotState, '/robot_state',
                                  self._on_robot_state, 10)
+        node.create_subscription(Float64MultiArray, '/gravity_offset',
+                                 self._on_gravity_offset, 10)
 
     # -- subscriptions ----------------------------------------------------
 
@@ -1110,6 +1452,7 @@ class _Runner:
     def _on_link(self, msg):
         kv = {v.key: v.value for v in msg.values}
         self.link_kv = kv
+        self.link_stamp = time.time()
         self.link_seq += 1
         raw = kv.get('uptime_ms')
         if raw is not None:
@@ -1125,6 +1468,100 @@ class _Runner:
         data = list(getattr(msg, 'pose_offset_rad', []) or [])
         if len(data) >= 2:
             self.pose_offset_rad = [float(data[0]), float(data[1])]
+        states = list(getattr(msg, 'motor_states', []) or [])
+        if not states:
+            return
+        summary = []
+        for i, ms in enumerate(states):
+            entry = {
+                'axis': i,
+                'current_state': int(getattr(ms, 'current_state', 0)),
+                'active_errors': int(getattr(ms, 'active_errors', 0)),
+                'disarm_reason': int(getattr(ms, 'disarm_reason', 0)),
+                'pos_estimate': float(getattr(ms, 'pos_estimate',
+                                              float('nan'))),
+                'vel_estimate': float(getattr(ms, 'vel_estimate',
+                                              float('nan'))),
+                'iq_measured': float(getattr(ms, 'iq_measured',
+                                             float('nan'))),
+                'bus_voltage': float(getattr(ms, 'bus_voltage',
+                                             float('nan'))),
+            }
+            summary.append(entry)
+            if ((entry['active_errors'] or entry['disarm_reason'])
+                    and i not in self.motor_error_edge):
+                self.motor_error_edge[i] = {
+                    't_wall': time.time(),
+                    'iso': datetime.now().isoformat(timespec='milliseconds'),
+                    'uptime_ms': self.uptime_last,
+                    'active_errors': entry['active_errors'],
+                    'disarm_reason': entry['disarm_reason'],
+                }
+        self.motor_states = summary
+
+    def _on_gravity_offset(self, msg):
+        self.gravity_msg_count += 1
+        self.last_gravity = {
+            't_wall': time.time(),
+            'iso': datetime.now().isoformat(timespec='milliseconds'),
+            'data': [float(v) for v in list(getattr(msg, 'data', []) or [])],
+        }
+
+    # -- forensics ---------------------------------------------------------
+
+    def forensics(self) -> Dict[str, Any]:
+        """Everything already flowing into this process, stashed and decoded.
+
+        Zero service calls — this is a pure snapshot of the caches, safe to
+        take on any abort path including a dead link. Per-leg ODrive error
+        masks are dumped RAW and DECODED (``decode_error_bits``): the
+        2026-08-09 sitting's leg-0 code survived only because a rosbag was
+        rolling, and the next launch's BOOT pre-flight auto-clears the
+        drive-side record.
+        """
+        now = time.time()
+
+        def _decorate(entry):
+            out = dict(entry)
+            out['active_errors_decoded'] = decode_error_bits(
+                entry.get('active_errors', 0))
+            out['disarm_reason_decoded'] = decode_error_bits(
+                entry.get('disarm_reason', 0))
+            return out
+
+        status = self.status
+        status_snapshot = None
+        if status is not None:
+            status_snapshot = {}
+            for field in ('mode', 'streaming', 'gravity_correction_loaded',
+                          'tilt_map_loaded', 'tilt_map_version'):
+                status_snapshot[field] = getattr(status, field, None)
+        return {
+            'wall_iso': datetime.now().isoformat(timespec='milliseconds'),
+            'uptime_ms_last': self.uptime_last,
+            'link_kv': dict(self.link_kv),
+            'link_age_s': (round(now - self.link_stamp, 3)
+                           if self.link_stamp else None),
+            'motor_states': ([_decorate(e) for e in self.motor_states]
+                             if self.motor_states else None),
+            'motor_error_edges': {str(leg): _decorate(edge)
+                                  for leg, edge in
+                                  sorted(self.motor_error_edge.items())},
+            'last_traj_status': status_snapshot,
+            'status_age_s': (round(now - self.status_stamp, 3)
+                             if self.status_stamp else None),
+            'pose_offset_rad': self.pose_offset_rad,
+            'last_gravity_offset': self.last_gravity,
+            'gravity_msgs_total': self.gravity_msg_count,
+            'gravity_msgs_since_sweep_start': (
+                self.gravity_msg_count - self.gravity_baseline
+                if self.gravity_baseline is not None else None),
+        }
+
+    def nan_read(self) -> TiltRead:
+        """A stamped NaN read for the failure-path CSV rows."""
+        return TiltRead(time.time(), time.monotonic(), self.uptime_last,
+                        float('nan'), float('nan'))
 
     # -- plumbing ---------------------------------------------------------
 
@@ -1236,6 +1673,7 @@ class _Runner:
         jitter — ``/link_status`` is a 10 Hz timer, so the 2 s window is twenty
         consecutive missed publishes.
         """
+        self.assert_correction_constant(where)
         kv, fresh = self.refresh_link()
         if not fresh:
             raise TiltCalError(
@@ -1249,6 +1687,52 @@ class _Runner:
         if not ok:
             raise TiltCalError(
                 'wire check FAILED before {}: {}'.format(where, message))
+
+    def mark_sweep_started(self) -> None:
+        """Arm the constancy monitor: /gravity_offset traffic from here on is
+        a capture-precondition violation. Called once, after the prompts and
+        before the first commanded motion."""
+        self.gravity_baseline = self.gravity_msg_count
+
+    def assert_correction_constant(self, where: str) -> None:
+        """The CAUSAL half of capture precondition 1 (constant correction).
+
+        Any ``/gravity_offset`` message after :meth:`mark_sweep_started` means
+        the reference changed mid-sweep — a re-level, or a relaunch re-pushing
+        the Teensy-persisted (int16-mrad truncated) copy — and every node
+        measured after it is referenced differently from those before. That is
+        observed directly here, not inferred from the drift it happens to
+        leave, so a zig-zag that nets to zero drift still aborts.
+        """
+        if self.gravity_baseline is None:
+            return
+        n = self.gravity_msg_count - self.gravity_baseline
+        if n:
+            raise TiltCalFaultError(
+                'LEVEL REFERENCE CHANGED MID-SWEEP (detected {}): {} '
+                '/gravity_offset message(s) arrived since the sweep began '
+                '(last: {}). The capture precondition is a CONSTANT '
+                'correction — nodes measured after the change are referenced '
+                'differently from those before, which home-referencing cannot '
+                'cancel. Nothing usable was captured; re-run from the start.'
+                .format(where, n, self.last_gravity))
+
+    def assert_cached_wire_ok(self, where: str) -> None:
+        """Mid-node fault check against the CACHED ``/link_status`` kv.
+
+        Zero extra service calls and zero waiting: the ``spin(read_gap_s)``
+        between reads is already pumping ``_on_link``, so the cache tracks the
+        10 Hz publisher within ~0.1 s. On the 2026-08-09 leg-0 collapse this
+        check — at arrival, before read 0 — would have caught the fault ~1 s
+        after the latch instead of 6.1 s and 30 garbage reads later at the
+        next node boundary. Raises :class:`TiltCalFaultError` so the per-node
+        ``try`` cannot demote a latched fault to a failed node.
+        """
+        self.assert_correction_constant(where)
+        ok, message = wire_armed_verdict(self.link_kv)
+        if not ok:
+            raise TiltCalFaultError(
+                'FAULT DETECTED {} — {}'.format(where, message))
 
     # -- actions ----------------------------------------------------------
 
@@ -1278,7 +1762,7 @@ class _Runner:
         # /link_status cache it cannot be stale. Discarding it is what let a
         # whole capture complete against a platform that never moved.
         if response_reports_disarmed(response.message):
-            raise TiltCalError(
+            raise TiltCalFaultError(
                 'go_to_pose was ACCEPTED for {} at ({:+.1f}, {:+.1f}, {:.1f}) '
                 'but trajectory_node reports the wire is DISARMED :: {}\n'
                 '  Acceptance here is a PLANNING verdict — the setpoints are '
@@ -1301,16 +1785,100 @@ class _Runner:
 
     def measure(self, x_mm: float, y_mm: float, z_mm: float, label: str,
                 offset_rad: Tuple[float, float]
-                ) -> Tuple[ReadStats, List[Tuple[float, float]]]:
-        """Move, dwell, then N spaced sequential reads. Returns (stats, raws)."""
+                ) -> Tuple[ReadStats, List[TiltRead]]:
+        """Move, dwell, then N spaced sequential reads. Returns (stats, reads).
+
+        Each read carries ITS OWN wall/monotonic/uptime stamps (the 2026-08-09
+        CSVs shared one timestamp per node, which cost the fault forensics),
+        and the cached-kv fault check runs at ARRIVAL and after EVERY read —
+        a mid-move or mid-read guard latch aborts within one read of the
+        cache seeing it, naming the read index, instead of surfacing at the
+        next node boundary after a full set of garbage reads.
+        """
         planned = self.go_to(x_mm, y_mm, z_mm, label)
         self.spin(planned + self.args.dwell_s)
-        raws: List[Tuple[float, float]] = []
-        for i in range(self.args.n_reads):
-            if i:
-                self.spin(self.args.read_gap_s)
-            raws.append(self.read_tilt_once())
-        return residual_from_reads(raws, offset_rad), raws
+        reads: List[TiltRead] = []
+        try:
+            self.assert_cached_wire_ok('on arrival at {}'.format(label))
+            for i in range(self.args.n_reads):
+                if i:
+                    self.spin(self.args.read_gap_s)
+                tx, ty = self.read_tilt_once()
+                reads.append(TiltRead(time.time(), time.monotonic(),
+                                      self.uptime_last, tx, ty))
+                self.assert_cached_wire_ok(
+                    'after read {} at {}'.format(i, label))
+        except TiltCalFaultError as exc:
+            # The stamped reads taken BEFORE the fault check fired are
+            # primary evidence (on 2026-08-09 the collapsed-platform tilt
+            # series was exactly what the analysis needed) — attach them so
+            # the caller can write them to the CSV before re-raising.
+            exc.reads = reads
+            raise
+        return (residual_from_reads([(r.tx, r.ty) for r in reads],
+                                    offset_rad), reads)
+
+
+def print_forensics(fx: Dict[str, Any]) -> None:
+    """Console rendering of a :meth:`_Runner.forensics` snapshot.
+
+    Printed on EVERY abort, before the meta is written: the operator standing
+    at the robot needs the decoded ODrive error names NOW (the next launch's
+    BOOT pre-flight auto-clears the drive-side record), and the meta JSON is
+    for the session that reads the artifacts later.
+    """
+    print('\n-- forensics ------------------------------------------------',
+          file=sys.stderr)
+    kv = fx.get('link_kv') or {}
+    print('  link_kv: fault_state={} mpc_active={} bridge_link={} '
+          'uptime_ms={} (age {} s)'.format(
+              kv.get('fault_state'), kv.get('mpc_active'),
+              kv.get('bridge_link'), kv.get('uptime_ms'),
+              fx.get('link_age_s')), file=sys.stderr)
+    for key in ('guard_fault_leg', 'live_deviation', 'max_dev_leg',
+                'max_dev_value'):
+        if key in kv:
+            print('  link_kv: {}={}'.format(key, kv[key]), file=sys.stderr)
+    states = fx.get('motor_states') or []
+    for entry in states:
+        if entry.get('active_errors') or entry.get('disarm_reason'):
+            print('  leg {}: state={} active_errors={} {} disarm_reason={} '
+                  '{} pos={:.3f} vel={:.3f} iq={:.2f} vbus={:.1f}'.format(
+                      entry.get('axis'), entry.get('current_state'),
+                      entry.get('active_errors'),
+                      entry.get('active_errors_decoded'),
+                      entry.get('disarm_reason'),
+                      entry.get('disarm_reason_decoded'),
+                      entry.get('pos_estimate', float('nan')),
+                      entry.get('vel_estimate', float('nan')),
+                      entry.get('iq_measured', float('nan')),
+                      entry.get('bus_voltage', float('nan'))),
+                  file=sys.stderr)
+    if states and not any(e.get('active_errors') or e.get('disarm_reason')
+                          for e in states):
+        print('  motor_states: all {} axes error-clean at abort time'
+              .format(len(states)), file=sys.stderr)
+    edges = fx.get('motor_error_edges') or {}
+    for leg, edge in edges.items():
+        print('  FIRST-ERROR EDGE leg {}: {} active_errors={} {} '
+              'disarm_reason={} {} (uptime_ms {})'.format(
+                  leg, edge.get('iso'), edge.get('active_errors'),
+                  edge.get('active_errors_decoded'),
+                  edge.get('disarm_reason'),
+                  edge.get('disarm_reason_decoded'),
+                  edge.get('uptime_ms')), file=sys.stderr)
+    print('  traj status: {} (age {} s)  pose_offset_rad: {}'.format(
+        fx.get('last_traj_status'), fx.get('status_age_s'),
+        fx.get('pose_offset_rad')), file=sys.stderr)
+    if fx.get('gravity_msgs_since_sweep_start'):
+        print('  /gravity_offset DURING SWEEP: {} message(s), last {}'.format(
+            fx.get('gravity_msgs_since_sweep_start'),
+            fx.get('last_gravity_offset')), file=sys.stderr)
+    print('  full snapshot lands in _meta.json (forensics key). Capture '
+          'evidence BEFORE any relaunch: the next launch BOOT pre-flight '
+          'auto-clears the ODrive error record.', file=sys.stderr)
+    print('---------------------------------------------------------------',
+          file=sys.stderr)
 
 
 def _fmt_deg(tx: float, ty: float) -> str:
@@ -1353,11 +1921,14 @@ def run(args) -> int:                                    # noqa: C901
         raise
 
     started = time.time()
+    started_mono = time.monotonic()
     rc = 0
     node_summaries: List[Dict[str, Any]] = []
     check_summaries: List[Dict[str, Any]] = []
     reached_motion = False
     z_mm = float(args.z)
+    abort_reason: Optional[str] = None
+    home_meta: Optional[Dict[str, Any]] = None
 
     try:
         csv_file = open(csv_path, 'w', newline='')
@@ -1373,12 +1944,17 @@ def run(args) -> int:                                    # noqa: C901
         csv_file.flush()
 
     def record(phase: str, visit: int, ix: int, iy: int, x: float, y: float,
-               raws: Sequence[Tuple[float, float]], note: str = '') -> None:
-        now_iso = datetime.now().isoformat(timespec='milliseconds')
-        for k, (rtx, rty) in enumerate(raws):
-            emit(csv_row(now_iso, time.time() - started, phase, visit, ix, iy,
-                         x, y, z_mm, k, rtx, rty, offset_rad,
-                         runner.uptime_last, note))
+               reads: Sequence[TiltRead], note: str = '') -> None:
+        # Per-read stamps, not one per node: iso from each read's own wall
+        # clock, t_s from its monotonic clock, uptime_ms as cached AT that
+        # read. The 2026-08-09 CSVs stamped all 30 rows post-loop, which made
+        # intra-node fault timing unrecoverable from the artifact.
+        for k, r in enumerate(reads):
+            iso = datetime.fromtimestamp(r.t_wall).isoformat(
+                timespec='milliseconds')
+            emit(csv_row(iso, r.t_mono - started_mono, phase, visit, ix, iy,
+                         x, y, z_mm, k, r.tx, r.ty, offset_rad,
+                         r.uptime_ms, note))
 
     try:
         # ── preflight ────────────────────────────────────────────────
@@ -1420,10 +1996,13 @@ def run(args) -> int:                                    # noqa: C901
 
         if not status.gravity_correction_loaded:
             raise TiltCalError(
-                'trajectory/status gravity_correction_loaded=false — there is '
-                'no level reference to measure residuals against, and every '
-                'residual is DEFINED relative to it. Run `level` from IDLE '
-                '(over /orchestrator_command, not the /activate service), then '
+                'trajectory/status gravity_correction_loaded=false — capture '
+                'precondition 1 (C-LEVEL-2) requires a correction LOADED and '
+                'CONSTANT for the sweep. Home-referencing makes freshness '
+                'optional, but "no correction at all" is not a constant '
+                'correction: the map would later be applied on top of a live '
+                'one this capture never saw. Run `level` from IDLE (over '
+                '/orchestrator_command, not the /activate service), then '
                 're-run. Note the correction is per-PROCESS: a relaunch drops '
                 'it silently.')
         print('  gravity_correction_loaded=True')
@@ -1510,12 +2089,13 @@ def run(args) -> int:                                    # noqa: C901
             elif status.tilt_map_loaded:
                 raise TiltCalError(
                     'a tilt map is loaded (version {!r}) and capture must run '
-                    'with NO map: residuals are defined against the '
-                    'single-offset reference, so capturing under a loaded map '
-                    'bakes that map into its own successor and the error '
-                    'compounds silently on every recapture. Re-run with '
-                    '--force-uninstall to move every map candidate aside '
-                    '(source tree and ament share copy) and reload.'
+                    'with NO map: a loaded map shapes the very poses being '
+                    'measured, so capturing under it bakes that map into its '
+                    'own successor and the error compounds silently on every '
+                    'recapture (home-referencing cancels a constant offset, '
+                    'not a pose-dependent one). Re-run with --force-uninstall '
+                    'to move every map candidate aside (source tree and ament '
+                    'share copy) and reload.'
                     .format(status.tilt_map_version))
             else:
                 print('  tilt_map_loaded=False')
@@ -1524,8 +2104,9 @@ def run(args) -> int:                                    # noqa: C901
             print('  ! /robot_state.pose_offset_rad not seen — recording the '
                   'level offset as "unknown" in the map metadata.')
         else:
-            print('  level offset (Teensy-persisted, 1 mrad quantised) = '
-                  '{} rad'.format(runner.pose_offset_rad))
+            print('  level offset (bridge /robot_state cache; a fresh level '
+                  'is full-float, only a relaunch re-push is 1 mrad '
+                  'quantised) = {} rad'.format(runner.pose_offset_rad))
 
         # Resolve (and sanity-check) the write target NOW, not after a
         # four-minute sweep. A detached deployment resolves the ament share
@@ -1543,31 +2124,39 @@ def run(args) -> int:                                    # noqa: C901
                     .format(target, tilt_map.TILT_MAP_ENV))
             print('  write target {}'.format(target))
 
-        # The home-node residual is ~0 by construction only at the pose `level`
-        # itself measured — the firmware ACTIVATE pose, z = 170. At any other
-        # height a nonzero home residual is a REAL pose-dependent residual, and
-        # the gate below would misreport it as a stale level reference and send
-        # the operator re-levelling over a cause that is not the cause.
+        # Under home-referencing a nonzero m_home is EXPECTED and harmless at
+        # any height — it cancels out of every shipped residual. At z != 170
+        # (the ACTIVATE pose `level` measures) m_home additionally contains a
+        # REAL pose-dependent component, which is fine for the same reason;
+        # only the |m_home| WARN/abort bounds and the end-of-sweep drift gate
+        # apply. Say so, so a WARN at an unusual height reads correctly.
         if not args.verify_only and abs(float(args.z) - DEFAULT_Z_MM) > 1e-6:
-            print('  ! --z {} is not the ACTIVATE height {}: the home-node gate '
-                  'assumes the level reference was measured at this pose. A '
-                  'nonzero home residual here is REAL, not stale — read a gate '
-                  'failure accordingly.'.format(args.z, DEFAULT_Z_MM))
+            print('  ! --z {} is not the ACTIVATE height {}: expect a larger '
+                  '|m_home| (it now contains a real pose-dependent term). '
+                  'Harmless — the map is home-referenced — but read a '
+                  '0.010 rad WARN with that in mind.'
+                  .format(args.z, DEFAULT_Z_MM))
 
         base_condition = args.base_condition
         if args.yes and not args.verify_only:
-            print('  ! --yes: SKIPPING the fresh-`level` and hand-quiescent '
-                  'confirmations on a LIVE capture. Those two capture '
-                  'preconditions have no programmatic check — the home-node '
-                  'gate catches only a grossly stale reference, and nothing '
-                  'at all observes the hand.')
+            print('  ! --yes: SKIPPING the constancy and hand-quiescent '
+                  'confirmations on a LIVE capture. Hand quiescence has no '
+                  'programmatic check at all; correction constancy IS '
+                  'machine-checked (mid-sweep /gravity_offset abort + the '
+                  'end-of-sweep home drift gate), but only after motion has '
+                  'been spent on the violation.')
         if not args.yes:
             thc.safety_gate(
-                'Was `level` run from IDLE in THIS session, with THIS running '
-                'trajectory_node process (no relaunch since)?\n'
-                '  Every residual below is measured relative to that '
-                'reference. A stale one corrupts all of them identically and '
-                'the map still looks plausible.', 'yes')
+                'CONSTANT-CORRECTION precondition: will the loaded gravity '
+                'correction stay UNCHANGED for the whole sweep (no re-level, '
+                'no relaunch, no /gravity_offset push mid-capture)?\n'
+                '  The map is HOME-REFERENCED, so a stale-but-CONSTANT '
+                'correction cancels exactly — freshness is RECOMMENDED (it '
+                'keeps |m_home| small), not required. A correction that '
+                'CHANGES mid-sweep corrupts every node measured after the '
+                'change; the tool machine-checks this (mid-sweep '
+                '/gravity_offset abort + end-of-sweep home drift gate).',
+                'yes')
             thc.safety_gate(
                 'Is the HAND quiescent (no hand move in flight, no ball op '
                 'running)?\n'
@@ -1616,9 +2205,32 @@ def run(args) -> int:                                    # noqa: C901
             order = visit_order(x_mm, y_mm)
         checks = check_poses(x_mm, y_mm, args.check_poses)
 
+        # IK stroke-margin preflight — BEFORE any motion, every pose this run
+        # will command (grid nodes, check poses, home). A pose on a stroke
+        # clamp does not fail loudly at capture time: the firmware clamps per
+        # leg at 500 Hz and the node's reading is silently wrong.
+        preflight_poses = ([(nd.x_mm, nd.y_mm) for nd in order]
+                           + [(cx, cy) for cx, cy in checks]
+                           + [(0.0, 0.0)])
+        stroke_problems = stroke_margin_problems(preflight_poses, z_mm)
+        if stroke_problems:
+            raise TiltCalError(
+                'IK stroke-margin preflight REFUSED {} pose(s) — worst leg '
+                'within {:.0f} mm of the [5, 275] mm hard extension bound:\n'
+                '  {}\nShrink --box / adjust --x/--y/--z. No motion was '
+                'commanded.'.format(len(stroke_problems),
+                                    STROKE_PREFLIGHT_MARGIN_MM,
+                                    '\n  '.join(stroke_problems)))
+        print('  IK stroke preflight OK: every pose keeps >= {:.0f} mm of '
+              'leg-extension margin ({} poses checked)'
+              .format(STROKE_PREFLIGHT_MARGIN_MM, len(preflight_poses)))
+
         results: Dict[Tuple[int, int], ReadStats] = {}
         failed_nodes: List[Tuple[int, int]] = []
         reached_motion = True
+        # Arm the constancy monitor: any /gravity_offset message from here to
+        # the last read is a capture-precondition violation and aborts.
+        runner.mark_sweep_started()
 
         # ── capture ──────────────────────────────────────────────────
         if order:
@@ -1633,29 +2245,41 @@ def run(args) -> int:                                    # noqa: C901
             # re-measure the same stationary pose — so it must abort the run.
             runner.assert_wire_armed(label)
             try:
-                stats, raws = runner.measure(nd.x_mm, nd.y_mm, z_mm, label,
-                                             offset_rad)
+                stats, reads = runner.measure(nd.x_mm, nd.y_mm, z_mm, label,
+                                              offset_rad)
+            except TiltCalFaultError as exc:
+                # A latched fault / disarmed wire / mid-sweep re-level is a
+                # RUN-level abort, never "this one node failed" — demoting it
+                # under --on-fail continue is how 30 reads ran against a
+                # collapsed platform on 2026-08-09. Bank the partial reads
+                # first: they are the tilt series at the fault edge.
+                record('capture', visit, nd.ix, nd.iy, nd.x_mm, nd.y_mm,
+                       getattr(exc, 'reads', None) or [runner.nan_read()],
+                       note=str(exc)[:200])
+                raise
             except TiltCalError as exc:
                 print('  [FAIL] {} :: {}'.format(label, exc))
                 record('capture', visit, nd.ix, nd.iy, nd.x_mm, nd.y_mm,
-                       [(float('nan'), float('nan'))], note=str(exc)[:200])
+                       [runner.nan_read()], note=str(exc)[:200])
                 failed_nodes.append((nd.ix, nd.iy))
                 # A home-node failure is fatal whatever --on-fail says: the
-                # home node IS the stale-level gate, and `continue` would jump
-                # past it and spend four more minutes capturing a grid that
-                # build_map_document will refuse anyway for the missing node.
-                # Aborting early is the entire reason home is measured first.
+                # home node IS the reference every other node is shipped
+                # against, and `continue` would jump past it and spend four
+                # more minutes capturing a grid that build_map_document will
+                # refuse anyway for the missing node. Aborting early is the
+                # entire reason home is measured first.
                 if visit == 0 or args.on_fail == 'abort':
                     raise
                 rc = 1
                 continue
 
-            record('capture', visit, nd.ix, nd.iy, nd.x_mm, nd.y_mm, raws)
+            record('capture', visit, nd.ix, nd.iy, nd.x_mm, nd.y_mm, reads)
             results[(nd.ix, nd.iy)] = stats
-            # Appended per node, not in a trailing loop: on the home-gate abort
-            # — the runbook's headline ABORT criterion — a trailing loop never
-            # runs and _meta.json ships an empty 'nodes', exactly when the
-            # operator was told to retain the per-node reduction.
+            # Appended per node, not in a trailing loop: on ANY mid-sweep
+            # abort (a fault, the |m_home| sanity abort, later the drift
+            # gate) a trailing loop never runs and _meta.json would ship an
+            # empty 'nodes', exactly when the operator most needs the
+            # per-node reduction retained.
             node_summaries.append({
                 'ix': nd.ix, 'iy': nd.iy,
                 'x_mm': nd.x_mm, 'y_mm': nd.y_mm,
@@ -1671,6 +2295,13 @@ def run(args) -> int:                                    # noqa: C901
                           stats.sd_tx, stats.sd_ty, stats.n_ok, stats.n_total))
             if not good:
                 failed_nodes.append((nd.ix, nd.iy))
+                if visit == 0:
+                    raise TiltCalError(
+                        'home node produced only {}/{} usable reads — it is '
+                        'the reference every other node is shipped against, '
+                        'so the sweep cannot produce a map; aborting before '
+                        'four minutes of motion reach the same refusal at '
+                        'build time'.format(stats.n_ok, stats.n_total))
                 if args.on_fail == 'abort':
                     raise TiltCalError(
                         '{} produced only {}/{} usable reads and --on-fail='
@@ -1678,10 +2309,50 @@ def run(args) -> int:                                    # noqa: C901
                 rc = 1
 
             if visit == 0:
-                ok, message = home_node_verdict(stats)
-                print('  home gate: {}'.format(message))
-                if not ok:
+                verdict, message = home_reference_verdict(stats)
+                if verdict == 'warn':
+                    print('  !! home reference WARN: {}'.format(message))
+                else:
+                    print('  home reference: {}'.format(message))
+                if verdict == 'abort':
                     raise TiltCalError(message)
+
+        # ── end-of-sweep home re-measure: the DRIFT gate ─────────────
+        # The OUTCOME half of the constancy check (the /gravity_offset
+        # monitor is the causal half): re-measure the reference pose and
+        # gate the drift. Runs for --no-apply too — C0 is exactly where the
+        # drift statistics come from. home_ref is what every node is shipped
+        # against; it is defined here, before any document is assembled.
+        home_ref = (0.0, 0.0)
+        if not args.verify_only and order:
+            hx, hy = home_index(x_mm, y_mm)
+            start_stats = results.get((hx, hy))
+            if start_stats is None:
+                raise TiltCalError(
+                    'the home node has no usable measurement — cannot '
+                    'home-reference the map (this should have aborted at '
+                    'visit 0).')
+            label = 'home re-measure (end-of-sweep drift gate)'
+            print('\n== home re-measure (drift gate) ==')
+            runner.assert_wire_armed(label)
+            end_stats, end_reads = runner.measure(0.0, 0.0, z_mm, label,
+                                                  offset_rad)
+            record('home_end', len(order), hx, hy, 0.0, 0.0, end_reads)
+            drift_ok, drift_message = home_drift_verdict(start_stats,
+                                                         end_stats)
+            print('  {}'.format(drift_message))
+            home_ref = (start_stats.res_tx, start_stats.res_ty)
+            home_meta = {
+                'm_home_rad': [start_stats.res_tx, start_stats.res_ty],
+                'sd_home_rad': [start_stats.sd_tx, start_stats.sd_ty],
+                'm_home_end_rad': [end_stats.res_tx, end_stats.res_ty],
+                'sd_home_end_rad': [end_stats.sd_tx, end_stats.sd_ty],
+                'drift_rad': [end_stats.res_tx - start_stats.res_tx,
+                              end_stats.res_ty - start_stats.res_ty],
+                'drift_verdict': 'PASS' if drift_ok else 'FAIL',
+            }
+            if not drift_ok:
+                raise TiltCalError(drift_message)
 
         # ── write + apply ────────────────────────────────────────────
         if not args.verify_only:
@@ -1697,19 +2368,22 @@ def run(args) -> int:                                    # noqa: C901
             if status.tilt_map_loaded:
                 raise TiltCalError(
                     'a tilt map became LOADED during the sweep (version {!r}) — '
-                    'refusing to write. The residuals just captured are defined '
-                    'against the single-offset reference, so a map that came up '
-                    'mid-capture makes some of them mean one thing and the rest '
-                    'another. Nothing was written; re-run from a clean state '
-                    '(--force-uninstall).'.format(status.tilt_map_version))
+                    'refusing to write. A map shapes the poses being measured, '
+                    'so a map that came up mid-capture makes some nodes mean '
+                    'one thing and the rest another (a pose-dependent change; '
+                    'home-referencing cancels only constants). Nothing was '
+                    'written; re-run from a clean state (--force-uninstall).'
+                    .format(status.tilt_map_version))
             if not status.gravity_correction_loaded:
                 raise TiltCalError(
                     'gravity_correction_loaded went FALSE during the sweep — '
-                    'refusing to write. Every residual is measured relative to '
-                    'that reference; without it they are relative to nothing. '
-                    'The usual cause is a trajectory_node relaunch mid-capture '
-                    '(the correction is per-PROCESS). Re-run `level` from IDLE '
-                    'and start the capture over.')
+                    'refusing to write. The capture precondition is a '
+                    'correction loaded and CONSTANT; a correction that '
+                    'DISAPPEARED mid-sweep is the constancy violation in its '
+                    'bluntest form (nodes before and after are referenced '
+                    'differently). The usual cause is a trajectory_node '
+                    'relaunch mid-capture (the correction is per-PROCESS). '
+                    'Re-run `level` from IDLE and start the capture over.')
 
             captured = {
                 'date': datetime.now().strftime('%Y-%m-%d'),
@@ -1721,12 +2395,14 @@ def run(args) -> int:                                    # noqa: C901
                 'level_offset_rad': (runner.pose_offset_rad
                                      if runner.pose_offset_rad is not None
                                      else 'unknown'),
-                'level_offset_source': ('robot_state.pose_offset_rad '
-                                        '(Teensy-persisted, 1 mrad quantised)'),
+                'level_offset_source': ('robot_state.pose_offset_rad (bridge '
+                                        'cache; fresh level = full float, '
+                                        'relaunch re-push = 1 mrad quantised)'),
+                'home_reference': home_meta,
                 'base_condition': base_condition,
             }
             doc = build_map_document(x_mm, y_mm, z_mm, results, captured,
-                                     args.n_reads)
+                                     args.n_reads, home_ref)
             validate_map_document(doc)
             expected_version = tilt_map.map_version(doc)
 
@@ -1809,9 +2485,32 @@ def run(args) -> int:                                    # noqa: C901
                 print('  applied and CONFIRMED: version {}'
                       .format(status.tilt_map_version))
 
-        # ── verification pass ────────────────────────────────────────
+        # ── verification pass — HOME-REFERENCED scoring ──────────────
+        # With the map applied, a check pose measures ≈ m_home even when the
+        # map is perfect (the constant the capture correctly tolerated is
+        # still in the loop), so home is re-measured FIRST and subtracted
+        # from every check. Scoring the raw check residual would fail every
+        # pose under a stale-but-constant level whose capture was valid.
+        verify_ref = (0.0, 0.0)
+        if checks:
+            label = 'verification home reference'
+            print('\n== verification home reference ==')
+            runner.assert_wire_armed(label)
+            ref_stats, ref_reads = runner.measure(0.0, 0.0, z_mm, label,
+                                                  offset_rad)
+            record('verify_home', -1, -1, -1, 0.0, 0.0, ref_reads)
+            if not node_is_good(ref_stats, args.n_reads):
+                raise TiltCalError(
+                    'the verification home reference produced only {}/{} '
+                    'usable reads — check poses cannot be scored without it'
+                    .format(ref_stats.n_ok, ref_stats.n_total))
+            verify_ref = (ref_stats.res_tx, ref_stats.res_ty)
+            print('  m_home(verify) = {} — subtracted from every check pose'
+                  .format(_fmt_deg(*verify_ref)))
+
         print('\n== verification ({} off-node check poses, threshold {:.3f} '
-              'deg) =='.format(len(checks), args.threshold_deg))
+              'deg, home-referenced) =='.format(len(checks),
+                                                args.threshold_deg))
         n_fail = 0
         for i, (cx, cy) in enumerate(checks):
             label = 'check {}/{} ({:+.1f}, {:+.1f})'.format(
@@ -1821,11 +2520,16 @@ def run(args) -> int:                                    # noqa: C901
             # pose the platform never reached.
             runner.assert_wire_armed(label)
             try:
-                stats, raws = runner.measure(cx, cy, z_mm, label, offset_rad)
+                stats, reads = runner.measure(cx, cy, z_mm, label, offset_rad)
+            except TiltCalFaultError as exc:
+                record('verify', i, -1, -1, cx, cy,
+                       getattr(exc, 'reads', None) or [runner.nan_read()],
+                       note=str(exc)[:200])
+                raise
             except TiltCalError as exc:
                 print('  [FAIL] {} :: {}'.format(label, exc))
                 record('verify', i, -1, -1, cx, cy,
-                       [(float('nan'), float('nan'))], note=str(exc)[:200])
+                       [runner.nan_read()], note=str(exc)[:200])
                 n_fail += 1
                 check_summaries.append({
                     'x_mm': cx, 'y_mm': cy, 'verdict': 'FAIL',
@@ -1834,7 +2538,7 @@ def run(args) -> int:                                    # noqa: C901
                 if args.on_fail == 'abort':
                     raise
                 continue
-            record('verify', i, -1, -1, cx, cy, raws)
+            record('verify', i, -1, -1, cx, cy, reads)
             if not node_is_good(stats, args.n_reads):
                 print('  [FAIL] {} only {}/{} usable reads'
                       .format(label, stats.n_ok, stats.n_total))
@@ -1846,16 +2550,22 @@ def run(args) -> int:                                    # noqa: C901
                     'n_ok': stats.n_ok,
                 })
                 continue
-            magnitude = _magnitude_deg(stats.res_tx, stats.res_ty)
+            ref_tx = stats.res_tx - verify_ref[0]
+            ref_ty = stats.res_ty - verify_ref[1]
+            magnitude = _magnitude_deg(ref_tx, ref_ty)
             verdict = 'PASS' if magnitude <= args.threshold_deg else 'FAIL'
             if verdict == 'FAIL':
                 n_fail += 1
-            print('  [{}] {} residual {} |r|={:.4f} deg  sd ({:.6f}, {:.6f})'
-                  .format(verdict, label, _fmt_deg(stats.res_tx, stats.res_ty),
-                          magnitude, stats.sd_tx, stats.sd_ty))
+            print('  [{}] {} home-ref residual {} |r|={:.4f} deg  raw {}  '
+                  'sd ({:.6f}, {:.6f})'
+                  .format(verdict, label, _fmt_deg(ref_tx, ref_ty),
+                          magnitude, _fmt_deg(stats.res_tx, stats.res_ty),
+                          stats.sd_tx, stats.sd_ty))
             check_summaries.append({
                 'x_mm': cx, 'y_mm': cy,
                 'res_tx_rad': stats.res_tx, 'res_ty_rad': stats.res_ty,
+                'ref_tx_rad': ref_tx, 'ref_ty_rad': ref_ty,
+                'verify_home_rad': list(verify_ref),
                 'magnitude_deg': magnitude, 'verdict': verdict,
                 'sd_tx_rad': stats.sd_tx, 'sd_ty_rad': stats.sd_ty,
                 'n_ok': stats.n_ok,
@@ -1868,11 +2578,40 @@ def run(args) -> int:                                    # noqa: C901
             print('\n  all {} check poses PASS.'.format(len(checks)))
 
     except TiltCalError as exc:
+        abort_reason = str(exc)
         print('\nABORT: {}'.format(exc), file=sys.stderr)
+        try:
+            print_forensics(runner.forensics())
+        except Exception as fx_exc:                       # noqa: BLE001
+            print('  (forensics dump itself failed: {})'.format(fx_exc),
+                  file=sys.stderr)
         rc = 2
     except KeyboardInterrupt:
+        abort_reason = 'interrupted by operator (KeyboardInterrupt)'
         print('\nABORT: interrupted by operator.', file=sys.stderr)
+        try:
+            print_forensics(runner.forensics())
+        except Exception as fx_exc:                       # noqa: BLE001
+            print('  (forensics dump itself failed: {})'.format(fx_exc),
+                  file=sys.stderr)
         rc = 130
+    except SystemExit as exc:
+        # thc.safety_gate declines via sys.exit(1). Without this handler the
+        # meta records exit_code 0 / abort_reason None while the process
+        # exits 1 — recreating the "forensically indistinguishable attempt"
+        # class this change exists to close. Re-raised: the exit code is the
+        # gate's, not ours.
+        abort_reason = 'operator declined a safety gate (SystemExit {})'.format(
+            exc.code)
+        rc = exc.code if isinstance(exc.code, int) else 2
+        raise
+    except BaseException as exc:                          # noqa: BLE001
+        # Anything else (OSError on the map write, an rclpy failure
+        # mid-sweep, EOFError at a prompt): record WHY before propagating,
+        # so the meta is never silent about a crash.
+        abort_reason = 'unexpected {}: {}'.format(type(exc).__name__, exc)
+        rc = rc or 3
+        raise
     finally:
         # Never park displaced — this runs on every path, including aborts.
         #
@@ -1897,6 +2636,13 @@ def run(args) -> int:                                    # noqa: C901
                       .format(type(exc).__name__, exc), file=sys.stderr)
                 rc = rc or 2
         try:
+            # A final cache snapshot is written on EVERY run, clean or not —
+            # it costs nothing (pure cache read) and the clean-run baseline is
+            # itself evidence when the next run aborts.
+            try:
+                _final_forensics = runner.forensics()
+            except Exception:                             # noqa: BLE001
+                _final_forensics = None
             meta = {
                 'tool': TOOL_NAME,
                 'git_sha': git_sha(),
@@ -1919,6 +2665,12 @@ def run(args) -> int:                                    # noqa: C901
                 'no_apply': bool(args.no_apply),
                 'nodes': node_summaries,
                 'checks': check_summaries,
+                'home_reference': home_meta,
+                # ALWAYS present (None on a clean run): the 2026-08-09
+                # header-only attempts were indistinguishable exit_code-2s
+                # because the abort reason lived only on stderr.
+                'abort_reason': abort_reason,
+                'forensics': _final_forensics,
                 'exit_code': rc,
             }
             with open(meta_path, 'w') as handle:
@@ -1956,6 +2708,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             checks = check_poses(x_mm, y_mm, args.check_poses)
             if args.dry_run:
                 print_plan(x_mm, y_mm, float(args.z), order, checks, args)
+                problems = stroke_margin_problems(
+                    [(nd.x_mm, nd.y_mm) for nd in order]
+                    + [(cx, cy) for cx, cy in checks] + [(0.0, 0.0)],
+                    float(args.z))
+                if problems:
+                    print('\n  !! IK stroke preflight WOULD REFUSE {} '
+                          'pose(s):\n    {}'.format(
+                              len(problems), '\n    '.join(problems)))
+                    print('\ndry-run: no ROS calls made, no ROS objects '
+                          'constructed.')
+                    return 2
+                print('  IK stroke preflight OK: every pose keeps >= '
+                      '{:.0f} mm of leg-extension margin'
+                      .format(STROKE_PREFLIGHT_MARGIN_MM))
                 print('\ndry-run: no ROS calls made, no ROS objects '
                       'constructed.')
                 return 0

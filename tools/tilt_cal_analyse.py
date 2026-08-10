@@ -214,6 +214,7 @@ def load_csv_field(path: str) -> Field:
     by_node: Dict[Tuple[int, int], List[Tuple[float, float]]] = {}
     coords: Dict[Tuple[int, int], Tuple[float, float]] = {}
     checks: List[Dict[str, Any]] = []
+    verify_home: List[Tuple[float, float]] = []
     z_values: List[float] = []
     with open(path, 'r') as handle:
         for row in csv.DictReader(handle):
@@ -228,6 +229,21 @@ def load_csv_field(path: str) -> Field:
                 if ok:
                     checks.append({'x_mm': x, 'y_mm': y,
                                    'res_tx_rad': res[0], 'res_ty_rad': res[1]})
+                continue
+            if row.get('phase') == 'verify_home':
+                # The verification pass's own home reference (2026-08-10):
+                # the tool scores every check pose home-referenced,
+                # |check − m_home_verify|, so this mean is what makes the
+                # report agree with the tool's PASS/FAIL.
+                if ok:
+                    verify_home.append(res)
+                continue
+            if row.get('phase') != 'capture':
+                # 2026-08-10: the tool also writes 'home_end' rows (the
+                # drift-gate re-measure). This filter is what the docstring
+                # above always claimed; without it the home node would
+                # average its start and end measurements and the field would
+                # mix pre-/post-apply reads.
                 continue
             if not ok:
                 continue
@@ -264,6 +280,10 @@ def load_csv_field(path: str) -> Field:
                   version='(from CSV, unwritten)', source=path,
                   n_reads=counts)
     field.metadata = {'check_poses': checks}
+    if verify_home:
+        arr = np.asarray(verify_home, dtype=float)
+        field.metadata['verify_home_rad'] = [float(np.mean(arr[:, 0])),
+                                             float(np.mean(arr[:, 1]))]
     return field
 
 
@@ -552,11 +572,32 @@ def print_report(field: Field, flags: Sequence[Dict[str, Any]],
 
     checks = field.metadata.get('check_poses') if field.metadata else None
     if checks:
-        print('\n  verification poses recorded in the CSV:')
-        for chk in checks:
-            mag = math.hypot(chk['res_tx_rad'], chk['res_ty_rad']) * RAD2DEG
-            print('    ({:+7.1f}, {:+7.1f}) |r| = {:.4f} deg'
-                  .format(chk['x_mm'], chk['y_mm'], mag))
+        ref = field.metadata.get('verify_home_rad')
+        if ref:
+            # The tool scores checks HOME-REFERENCED (|check − m_home_verify|,
+            # 2026-08-10) — print both so this report cannot contradict the
+            # tool's PASS/FAIL under a stale-but-constant level, which the
+            # capture legitimately tolerates.
+            print('\n  verification poses recorded in the CSV '
+                  '(home-ref = raw − m_home_verify, the tool\'s PASS/FAIL '
+                  'quantity; m_home_verify = ({:+.6f}, {:+.6f}) rad):'
+                  .format(ref[0], ref[1]))
+            for chk in checks:
+                raw_mag = math.hypot(chk['res_tx_rad'],
+                                     chk['res_ty_rad']) * RAD2DEG
+                ref_mag = math.hypot(chk['res_tx_rad'] - ref[0],
+                                     chk['res_ty_rad'] - ref[1]) * RAD2DEG
+                print('    ({:+7.1f}, {:+7.1f}) home-ref |r| = {:.4f} deg  '
+                      '(raw {:.4f} deg)'
+                      .format(chk['x_mm'], chk['y_mm'], ref_mag, raw_mag))
+        else:
+            print('\n  verification poses recorded in the CSV (RAW — no '
+                  'verify_home rows found; pre-2026-08-10 capture):')
+            for chk in checks:
+                mag = math.hypot(chk['res_tx_rad'],
+                                 chk['res_ty_rad']) * RAD2DEG
+                print('    ({:+7.1f}, {:+7.1f}) |r| = {:.4f} deg'
+                      .format(chk['x_mm'], chk['y_mm'], mag))
 
     if diff is not None and diff_other is not None:
         print('\n' + '=' * 72)
@@ -586,8 +627,10 @@ def print_report(field: Field, flags: Sequence[Dict[str, Any]],
             if verdict == 'FAIL':
                 print('  A FAIL means the map is NOT invariant under the base '
                       'condition change — base tilt is not being fully absorbed '
-                      'as common-mode by `level`, or one of the two captures '
-                      'ran against a stale level reference.')
+                      'as common-mode by `level`. (A stale level reference is '
+                      'not a candidate cause: both maps are home-referenced, '
+                      'so a constant reference cancels out of each by '
+                      'construction.)')
     print('=' * 72)
 
 

@@ -97,9 +97,9 @@ def test_home_index_locates_the_origin():
 def test_home_index_refuses_a_grid_without_the_origin():
     """An even --nodes over a symmetric box has no (0, 0) node.
 
-    The home node is the stale-level-reference gate — the one failure that
-    corrupts every node identically while leaving the map looking plausible —
-    so a grid that cannot check it is refused rather than captured.
+    The home node is the REFERENCE node — every shipped residual is
+    ``measured − m_home`` — so a grid without it has nothing to reference
+    against and is refused rather than captured.
     """
     axis = tcg.build_axis(150.0, 4, 'x')
     assert 0.0 not in axis
@@ -107,26 +107,27 @@ def test_home_index_refuses_a_grid_without_the_origin():
         tcg.home_index(axis, axis)
 
 
-def test_serpentine_alternates_direction_each_row():
-    x = [-1.0, 0.0, 1.0]
-    y = [-1.0, 0.0, 1.0]
-    order = tcg.serpentine_order(x, y)
-    row0 = [n.x_mm for n in order if n.iy == 0]
-    row1 = [n.x_mm for n in order if n.iy == 1]
-    row2 = [n.x_mm for n in order if n.iy == 2]
-    assert row0 == [-1.0, 0.0, 1.0]
-    assert row1 == [1.0, 0.0, -1.0]      # reversed — this is the whole point
-    assert row2 == [-1.0, 0.0, 1.0]
-    # Rows are visited in increasing y, so the sweep never jumps rows twice.
-    assert [n.iy for n in order] == sorted(n.iy for n in order)
+def test_centre_out_radii_never_decrease():
+    """The whole point of centre-out: inner (low-stroke) data banks first.
 
-
-def test_serpentine_visits_every_node_exactly_once():
+    2026-08-09: the serpentine's visit 2 was the 212 mm far-corner diagonal,
+    and the leg-0 collapse there cost the entire capture with zero field data
+    banked. Radius-monotone ordering makes an extremity fault lose the
+    corners, not the capture.
+    """
     x = tcg.build_axis(150.0, 5, 'x')
     y = tcg.build_axis(150.0, 5, 'y')
-    order = tcg.serpentine_order(x, y)
+    order = tcg.centre_out_order(x, y)
+    radii = [math.hypot(n.x_mm, n.y_mm) for n in order]
+    assert radii == sorted(radii)
     assert len(order) == 25
     assert len({(n.ix, n.iy) for n in order}) == 25
+
+
+def test_centre_out_is_deterministic():
+    x = tcg.build_axis(150.0, 5, 'x')
+    y = tcg.build_axis(150.0, 5, 'y')
+    assert tcg.centre_out_order(x, y) == tcg.centre_out_order(x, y)
 
 
 def test_visit_order_measures_the_home_node_first_and_only_once():
@@ -136,9 +137,21 @@ def test_visit_order_measures_the_home_node_first_and_only_once():
     assert (order[0].x_mm, order[0].y_mm) == (0.0, 0.0)
     assert len(order) == 25
     assert len({(n.ix, n.iy) for n in order}) == 25
-    # Exactly one visit to the origin: two readings for one node would force an
-    # arbitrary choice between them.
+    # Exactly one GRID visit to the origin (the end-of-sweep drift re-measure
+    # is gate evidence, never a second value for the node).
     assert sum(1 for n in order if n.x_mm == 0.0 and n.y_mm == 0.0) == 1
+
+
+def test_visit_order_leaves_the_corners_for_last():
+    """Corners are the highest-stroke poses (worst-leg hard margin ~20 mm vs
+    ~118 mm at home) — they carry the residual field's largest values AND its
+    highest fault exposure, so they must come after the inner data is safe."""
+    x = tcg.build_axis(150.0, 5, 'x')
+    y = tcg.build_axis(150.0, 5, 'y')
+    order = tcg.visit_order(x, y)
+    last_four = {(n.x_mm, n.y_mm) for n in order[-4:]}
+    assert last_four == {(-150.0, -150.0), (150.0, -150.0),
+                         (-150.0, 150.0), (150.0, 150.0)}
 
 
 def test_visit_order_indices_address_their_own_coordinates():
@@ -303,51 +316,172 @@ def test_node_is_good_needs_an_sd_and_half_the_requested_reads():
     assert tcg.node_is_good(_stats(8), 8)
 
 
-# ── home-node gate ───────────────────────────────────────────────────────
+# ── home reference screen + end-of-sweep drift gate ─────────────────────
+#
+# The start-of-capture STALE LEVEL REFERENCE abort is RETIRED (2026-08-10).
+# It compared |m_home| — whose dominant variance is the level reference's own
+# single-sample scatter, measured 1.2-1.7 mrad/axis on 2026-08-09 — against a
+# 1.5 mrad floor derived from 4.5 s of read noise, and false-aborted 40-60%
+# of healthy attempts. Under home-referencing m_home CANCELS out of every
+# shipped residual, so what remains is a tri-state sanity screen on the
+# reference measurement plus a matched-footing drift gate at sweep end.
 
 
-def _home_stats(res_tx, res_ty, sd):
-    return tcg.ReadStats(n_ok=8, n_total=8, raw_mean_tx=0.0, raw_mean_ty=0.0,
-                         res_tx=res_tx, res_ty=res_ty, sd_tx=sd, sd_ty=sd)
+def _home_stats(res_tx, res_ty, sd, n_ok=30):
+    return tcg.ReadStats(n_ok=n_ok, n_total=30, raw_mean_tx=0.0,
+                         raw_mean_ty=0.0, res_tx=res_tx, res_ty=res_ty,
+                         sd_tx=sd, sd_ty=sd)
 
 
-def test_home_gate_passes_a_fresh_reference():
-    ok, message = tcg.home_node_verdict(_home_stats(1e-5, -2e-5, 2e-5))
-    assert ok, message
+def test_home_reference_accepts_the_residual_that_falsely_aborted_c0():
+    """The 2026-08-09 abort case: m_home_tx = +1.6273 mrad, sd 0.50 mrad —
+    ~1.0-1.4 sigma of the level path's real physics, killed by the old gate
+    (missed its 1.5020 mrad tolerance by 8.3%). It must pass clean now."""
+    verdict, message = tcg.home_reference_verdict(
+        _home_stats(0.0016272979, -0.0011481, 0.0005))
+    assert verdict == 'ok', message
 
 
-def test_home_gate_fails_a_stale_reference_and_says_so():
-    ok, message = tcg.home_node_verdict(_home_stats(0.02, 0.0, 2e-5))
-    assert not ok
-    assert 'STALE LEVEL REFERENCE' in message
+def test_home_reference_warns_on_a_grossly_stale_level():
+    verdict, message = tcg.home_reference_verdict(_home_stats(0.02, 0.0, 5e-4))
+    assert verdict == 'warn'
+    assert 'HARMLESS' in message
     assert 'level' in message
 
 
-def test_home_gate_floor_does_not_false_abort_on_a_quiet_sensor():
-    """3 x sd alone is degenerate when the sensor is quiet: the Teensy
-    persistence quantum is 1 mrad/axis on its own, so a tolerance of 3e-9 rad
-    would abort a perfectly good capture — and a gate that fires on good data
-    is a gate the third operator disables."""
-    ok, _ = tcg.home_node_verdict(_home_stats(1e-3, 0.0, 1e-9))
-    assert ok, 'residual inside the absolute floor must pass'
+def test_home_reference_aborts_only_at_the_sanity_ceiling():
+    verdict, message = tcg.home_reference_verdict(_home_stats(0.06, 0.0, 5e-4))
+    assert verdict == 'abort'
+    assert 'sanity ceiling' in message
+    # Boundary: the WARN threshold itself is still ok-side of warn.
+    assert tcg.home_reference_verdict(
+        _home_stats(tcg.HOME_REF_WARN_RAD, 0.0, 5e-4))[0] == 'ok'
+    assert tcg.home_reference_verdict(
+        _home_stats(tcg.HOME_REF_WARN_RAD + 1e-4, 0.0, 5e-4))[0] == 'warn'
 
 
-def test_home_gate_ceiling_beats_a_wide_sd():
-    """The mirror failure: a *noisy* sensor makes 3 x sd wide enough to launder
-    a genuinely stale reference. The absolute ceiling refuses it anyway."""
-    stats = _home_stats(0.02, 0.0, 0.01)     # 3 x sd = 0.03 > 0.02 residual
-    assert 3.0 * stats.sd_tx > abs(stats.res_tx), 'fixture must exercise this'
-    ok, message = tcg.home_node_verdict(stats)
+def test_home_reference_aborts_when_the_sensor_barely_answered():
+    verdict, message = tcg.home_reference_verdict(
+        _home_stats(0.0, 0.0, 0.0, n_ok=1))
+    assert verdict == 'abort'
+    assert 'finite reads' in message
+
+
+def test_drift_gate_formula_at_the_observed_noise():
+    """Worked numbers from the 2026-08-09 artifacts: sd 0.68 mrad/read, 30
+    reads, n_eff = 15 ⇒ tol = max(3·sqrt(2·0.68e-3²/15), 0.5 mrad) = 0.745
+    mrad. A 1 mrad relaunch-repush step must trip it; the observed
+    start-vs-end agreement must not."""
+    start = _home_stats(0.0016, 0.0002, 0.00068)
+    tol = max(3.0 * math.sqrt(2 * 0.00068 ** 2 / 15.0), 0.0005)
+    assert tol == pytest.approx(7.45e-4, rel=0.01)
+
+    quiet_end = _home_stats(0.0016 + 0.5 * tol, 0.0002, 0.00068)
+    ok, message = tcg.home_drift_verdict(start, quiet_end)
+    assert ok, message
+
+    stepped_end = _home_stats(0.0016 + 0.001, 0.0002, 0.00068)
+    ok, message = tcg.home_drift_verdict(start, stepped_end)
     assert not ok
-    assert 'ceiling' in message
+    assert 'CHANGED' in message
 
 
-def test_home_gate_fails_when_the_sensor_barely_answered():
-    stats = tcg.ReadStats(n_ok=1, n_total=8, raw_mean_tx=0.0, raw_mean_ty=0.0,
-                          res_tx=0.0, res_ty=0.0, sd_tx=0.0, sd_ty=0.0)
-    ok, message = tcg.home_node_verdict(stats)
+def test_drift_gate_floor_covers_a_quiet_sensor():
+    """sd → 0 must not collapse the tolerance to 0 (bit-identical reads are
+    real: the SCL3300 is int16-quantised). The 0.5 mrad floor is the bound on
+    undetected mid-sweep corruption — 19% of the provisional theta_acc."""
+    start = _home_stats(0.001, 0.0, 1e-9)
+    ok, _ = tcg.home_drift_verdict(start, _home_stats(0.0014, 0.0, 1e-9))
+    assert ok, 'drift under the floor must pass'
+    ok, message = tcg.home_drift_verdict(start,
+                                         _home_stats(0.0016, 0.0, 1e-9))
+    assert not ok
+    assert 'floor' in message
+
+
+def test_drift_gate_fails_loudly_without_an_end_measurement():
+    start = _home_stats(0.001, 0.0, 5e-4)
+    ok, message = tcg.home_drift_verdict(
+        start, _home_stats(0.0, 0.0, 0.0, n_ok=1))
     assert not ok
     assert 'finite reads' in message
+
+
+def test_fault_error_is_a_tilt_cal_error_subclass():
+    """The per-node handlers re-raise TiltCalFaultError and demote plain
+    TiltCalError to a failed node — the hierarchy IS the contract."""
+    assert issubclass(tcg.TiltCalFaultError, tcg.TiltCalError)
+    assert not issubclass(tcg.TiltCalError, tcg.TiltCalFaultError)
+
+
+# ── ODrive error decode (forensics) ─────────────────────────────────────
+
+
+def test_decode_names_the_2026_08_09_spinout():
+    assert tcg.decode_error_bits(67108864) == ['SPINOUT_DETECTED']
+
+
+def test_decode_handles_zero_combined_and_unknown_bits():
+    assert tcg.decode_error_bits(0) == []
+    assert tcg.decode_error_bits(512 | 4096) == [
+        'DC_BUS_UNDER_VOLTAGE', 'CURRENT_LIMIT_VIOLATION']
+    # An undecodable bit is surfaced, never eaten — it is exactly the datum a
+    # forensics dump must not lose.
+    assert tcg.decode_error_bits(1 << 23) == ['UNKNOWN_BITS_0x00800000']
+    assert tcg.decode_error_bits((1 << 23) | 512) == [
+        'DC_BUS_UNDER_VOLTAGE', 'UNKNOWN_BITS_0x00800000']
+
+
+def test_vendored_error_table_matches_the_authoritative_one():
+    """The tool vendors ERROR_CODES (its package __init__ needs the ROS
+    workspace); this pin makes drift a test failure instead of a silent
+    wrong decode at the robot."""
+    odrive = pytest.importorskip(
+        'jugglebot.can.odrive',
+        reason='jugglebot.can needs jugglebot_interfaces + python-can')
+    assert tcg.ODRIVE_ERROR_CODES == odrive.ERROR_CODES
+
+
+# ── IK stroke-margin preflight ───────────────────────────────────────────
+
+
+def test_stroke_preflight_home_sits_mid_stroke():
+    """Sanity anchor for the frame convention (ik_solver's module header says
+    'offset from the active position'; its docstrings and every call site are
+    stow-relative): (0, 0, 170) must land mid-stroke, not near a bound."""
+    from jugglebot.motion.ik_solver import pose_to_leg_lengths
+    ext = pose_to_leg_lengths(np.array([0.0, 0.0, 170.0]), np.eye(3),
+                              tcg._stewart_geometry())
+    assert all(100.0 < e < 200.0 for e in ext), ext
+
+
+def test_stroke_preflight_passes_the_default_grid_and_checks():
+    x = tcg.build_axis(150.0, 5, 'x')
+    y = tcg.build_axis(150.0, 5, 'y')
+    poses = ([(n.x_mm, n.y_mm) for n in tcg.visit_order(x, y)]
+             + tcg.check_poses(x, y, 6) + [(0.0, 0.0)])
+    assert tcg.stroke_margin_problems(poses, 170.0) == []
+
+
+def test_stroke_preflight_refuses_an_overtravel_pose_naming_the_leg():
+    problems = tcg.stroke_margin_problems([(0.0, 300.0)], 170.0)
+    assert len(problems) == 1
+    message = problems[0]
+    assert '+300.0' in message
+    assert 'leg 0' in message          # legs 0/3 hit 287.4 mm; 0 reported
+    assert 'hard bound' in message
+
+
+def test_stroke_preflight_margin_is_the_gate_not_the_hard_bound():
+    """A pose INSIDE the hard bound but within 10 mm of it is refused: the
+    firmware clamps per leg at 500 Hz and the node's reading would be
+    silently wrong, never loudly rejected."""
+    # (165, 165, 170): worst leg 267.4 mm — legal against the 275 mm hard
+    # bound, but only 7.6 mm of margin (measured 2026-08-10, identity R).
+    problems = tcg.stroke_margin_problems([(165.0, 165.0)], 170.0)
+    assert problems, 'a <10 mm margin must be refused even though legal'
+    # ...and a pose with >=10 mm margin passes: (160, 160) sits at 11.7 mm.
+    assert tcg.stroke_margin_problems([(160.0, 160.0)], 170.0) == []
 
 
 # ── map document ─────────────────────────────────────────────────────────
@@ -387,7 +521,7 @@ def test_map_document_round_trips_through_the_production_loader():
     calls, so this is a statement about the machine and not about a schema doc.
     """
     x, y, results = _asymmetric_capture()
-    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     parsed = tilt_map.parse_tilt_map(doc)
 
     assert parsed.shape == (len(y), len(x))
@@ -410,7 +544,7 @@ def test_map_document_is_indexed_iy_ix():
     """A transposed grid is invisible on a square capture and fatal on a real
     one, so the fixture is 3 x 4."""
     x, y, results = _asymmetric_capture()
-    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     tx = doc['residual_rad']['tx']
     assert len(tx) == len(y)
     assert all(len(row) == len(x) for row in tx)
@@ -427,7 +561,7 @@ def test_map_document_refuses_an_unusable_node():
                                     res_tx=float('nan'), res_ty=float('nan'),
                                     sd_tx=float('nan'), sd_ty=float('nan'))
     with pytest.raises(tcg.TiltCalError) as excinfo:
-        tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+        tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     message = str(excinfo.value)
     assert 'unusable node' in message
     # The refusal must name the node, in operator coordinates.
@@ -439,7 +573,7 @@ def test_map_document_refuses_a_missing_node():
     x, y, results = _asymmetric_capture()
     del results[(0, 0)]
     with pytest.raises(tcg.TiltCalError, match='unusable node'):
-        tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+        tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
 
 
 def test_validate_refuses_an_out_of_bound_residual_with_a_physical_hint():
@@ -448,7 +582,7 @@ def test_validate_refuses_an_out_of_bound_residual_with_a_physical_hint():
     x, y, results = _asymmetric_capture()
     results[(2, 3)] = results[(2, 3)]._replace(
         res_tx=tilt_map.MAX_ABS_RESIDUAL_RAD * 2.0)
-    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     with pytest.raises(tcg.TiltCalError) as excinfo:
         tcg.validate_map_document(doc)
     message = str(excinfo.value)
@@ -462,13 +596,13 @@ def test_validate_accepts_a_residual_at_the_measured_envelope():
     real capture must not trip the sanity bound."""
     x, y, results = _asymmetric_capture()
     results[(2, 3)] = results[(2, 3)]._replace(res_tx=math.radians(0.604))
-    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     assert tcg.validate_map_document(doc) is not None
 
 
 def test_dumped_yaml_reloads_and_carries_a_do_not_edit_header():
     x, y, results = _asymmetric_capture()
-    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     text = tcg.dump_map_yaml(doc)
     assert 'MACHINE-WRITTEN' in text
     assert 'C-LEVEL-2' in text
@@ -479,7 +613,7 @@ def test_dumped_yaml_reloads_and_carries_a_do_not_edit_header():
 
 def test_written_file_loads_through_load_tilt_map(tmp_path):
     x, y, results = _asymmetric_capture()
-    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     path = tmp_path / 'tilt_calibration.yaml'
     path.write_text(tcg.dump_map_yaml(doc))
     loaded = tilt_map.load_tilt_map(str(path))
@@ -492,18 +626,117 @@ def test_map_version_is_stable_across_a_rewrite_of_identical_numbers():
     nothing was recalibrated sends an operator hunting a difference that does
     not exist."""
     x, y, results = _asymmetric_capture()
-    first = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    first = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     later = dict(_CAPTURED, git_sha='different', uptime_ms_last=999999)
-    second = tcg.build_map_document(x, y, 170.0, results, later, 8)
+    second = tcg.build_map_document(x, y, 170.0, results, later, 8, (0.0, 0.0))
     assert tilt_map.map_version(first) == tilt_map.map_version(second)
 
 
 def test_map_version_changes_when_a_single_node_changes():
     x, y, results = _asymmetric_capture()
-    first = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    first = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     results[(0, 1)] = results[(0, 1)]._replace(res_tx=0.00777)
-    second = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8)
+    second = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, (0.0, 0.0))
     assert tilt_map.map_version(first) != tilt_map.map_version(second)
+
+
+# ── home-referencing math ────────────────────────────────────────────────
+#
+# The 2026-08-10 redesign: shipped residual = measured − m_home, so the
+# loaded correction C_cap cancels EXACTLY (m_i = f(P_i) − C_cap ⇒
+# M(P_i) = f(P_i) − f(home)). These tests pin the three properties the
+# contract states: exact cancellation of a constant, map(home) == 0 exactly,
+# and bilinear commuting with the constant.
+
+
+def _capture_with_home():
+    """An asymmetric grid that CONTAINS (0, 0), with a nonzero home residual
+    (the realistic case: the level reference is never exactly zero)."""
+    x = [-100.0, 0.0, 150.0]
+    y = [-150.0, 0.0, 30.0, 120.0]
+    results = {}
+    for ix in range(len(x)):
+        for iy in range(len(y)):
+            results[(ix, iy)] = tcg.ReadStats(
+                n_ok=8, n_total=8, raw_mean_tx=0.0, raw_mean_ty=0.0,
+                res_tx=0.0011 * (ix + 1) + 0.00013 * iy,
+                res_ty=-0.0019 * (iy + 1) - 0.00031 * ix,
+                sd_tx=1e-5, sd_ty=2e-5)
+    hx, hy = tcg.home_index(x, y)
+    home = results[(hx, hy)]
+    return x, y, results, (home.res_tx, home.res_ty)
+
+
+def test_home_node_ships_exactly_zero():
+    """Not approximately — EXACTLY. The home node subtracts itself, and float
+    subtraction of identical values is exact, so the old gate's 'residual(home)
+    ≈ 0 by construction' claim becomes '== 0.0 by arithmetic'."""
+    x, y, results, home_ref = _capture_with_home()
+    doc = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, home_ref)
+    hx, hy = tcg.home_index(x, y)
+    assert doc['residual_rad']['tx'][hy][hx] == 0.0
+    assert doc['residual_rad']['ty'][hy][hx] == 0.0
+
+
+def test_a_stale_but_constant_correction_cancels_exactly():
+    """THE worked example behind the redesign: add a constant to every
+    measured residual — home included — exactly what a stale C_cap does (the
+    2026-08-09 level scatter was 1.2-2.4 mrad between successive levels), and
+    the shipped document must be BYTE-IDENTICAL, version included."""
+    x, y, results, home_ref = _capture_with_home()
+    clean = tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8,
+                                   home_ref)
+
+    stale_shift = (0.0024, -0.0017)   # ~the worst observed level-to-level jump
+    shifted = {
+        key: stats._replace(res_tx=stats.res_tx + stale_shift[0],
+                            res_ty=stats.res_ty + stale_shift[1])
+        for key, stats in results.items()
+    }
+    shifted_ref = (home_ref[0] + stale_shift[0], home_ref[1] + stale_shift[1])
+    stale = tcg.build_map_document(x, y, 170.0, shifted, _CAPTURED, 8,
+                                   shifted_ref)
+
+    assert stale['residual_rad'] == clean['residual_rad']
+    assert tilt_map.map_version(stale) == tilt_map.map_version(clean)
+
+
+def test_bilinear_lookup_commutes_with_the_home_constant():
+    """No interpolation change accompanies home-referencing: a constant shift
+    passes exactly through the bilinear weights, so lookups on the
+    home-referenced map equal lookups on the raw map minus m_home."""
+    x, y, results, home_ref = _capture_with_home()
+    referenced = tilt_map.parse_tilt_map(
+        tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8, home_ref))
+    raw = tilt_map.parse_tilt_map(
+        tcg.build_map_document(x, y, 170.0, results, _CAPTURED, 8,
+                               (0.0, 0.0)))
+    for qx, qy in [(-50.0, -60.0), (75.0, 15.0), (0.0, 0.0), (149.0, 119.0)]:
+        r_tx, r_ty = tilt_map.lookup(referenced, qx, qy)
+        m_tx, m_ty = tilt_map.lookup(raw, qx, qy)
+        assert r_tx == pytest.approx(m_tx - home_ref[0], abs=1e-12)
+        assert r_ty == pytest.approx(m_ty - home_ref[1], abs=1e-12)
+
+
+def test_home_reference_metadata_rides_the_captured_block(tmp_path):
+    """The home-referencing evidence (m_home start/end, drift, verdict) must
+    survive the write → load round trip as metadata, per the amended schema."""
+    x, y, results, home_ref = _capture_with_home()
+    captured = dict(_CAPTURED)
+    captured['home_reference'] = {
+        'm_home_rad': list(home_ref),
+        'sd_home_rad': [1e-5, 2e-5],
+        'm_home_end_rad': [home_ref[0] + 1e-4, home_ref[1] - 5e-5],
+        'drift_rad': [1e-4, -5e-5],
+        'drift_verdict': 'PASS',
+    }
+    doc = tcg.build_map_document(x, y, 170.0, results, captured, 8, home_ref)
+    path = tmp_path / 'tilt_calibration.yaml'
+    path.write_text(tcg.dump_map_yaml(doc))
+    loaded = tilt_map.load_tilt_map(str(path))
+    assert loaded.metadata['home_reference']['drift_verdict'] == 'PASS'
+    assert loaded.metadata['home_reference']['m_home_rad'] == \
+        pytest.approx(list(home_ref))
 
 
 # ── CSV schema ───────────────────────────────────────────────────────────
@@ -578,10 +811,12 @@ def test_source_tree_detection_distinguishes_a_share_tree():
         'tilt_calibration.yaml') is False
 
 
-def test_estimate_duration_includes_the_return_to_centre():
+def test_estimate_duration_includes_the_three_non_grid_visits():
+    """25 nodes + 6 checks + home re-measure (drift gate) + verification home
+    reference + return to centre = 34 visit-equivalents."""
     per_visit = 3.0 + 1.0 + 2 * (tcg.EST_READ_S + 0.15)
     assert tcg.estimate_duration_s(25, 6, 3.0, 1.0, 2, 0.15) == \
-        pytest.approx(32 * per_visit)
+        pytest.approx(34 * per_visit)
 
 
 # ── CLI wiring ───────────────────────────────────────────────────────────
@@ -590,7 +825,12 @@ def test_estimate_duration_includes_the_return_to_centre():
 def test_defaults_match_the_documented_capture():
     args = tcg.build_parser().parse_args([])
     assert args.box == 150.0 and args.nodes == 5 and args.z == 170.0
-    assert args.lean_gain == 0.0, 'lean must be explicitly OFF by default'
+    assert args.lean_gain == -1.0, (
+        'lean must DEFER TO NODE CONFIG (ships 0.6) by default: the lean '
+        'window is zero at both endpoints so the terminal pose is unaffected, '
+        'and the shaped transit is the precedent-proven working point (all '
+        'four ±150 corners held 2026-07-27 at lean 0.6). An explicit 0.0 '
+        'would force lean OFF per GoToPose.srv.')
     assert args.on_fail == 'continue'
     assert args.check_poses == 6
     assert args.threshold_deg == pytest.approx(0.15)
@@ -672,7 +912,8 @@ def test_dry_run_makes_no_ros_calls(capsys, monkeypatch):
     monkeypatch.setitem(sys.modules, 'rclpy', _explode)
     assert tcg.main(['--dry-run']) == 0
     out = capsys.readouterr().out
-    assert 'home node (stale-level gate)' in out
+    assert 'home node (home reference' in out
+    assert 'IK stroke preflight OK' in out
     assert 'no ROS calls made' in out
     assert 'ETA' in out
 
@@ -823,13 +1064,37 @@ def test_the_wire_check_runs_before_the_per_node_try_block():
     reinstate the bug this guard exists to close.
     """
     source = open(tcg.__file__.replace('.pyc', '.py')).read()
-    marker = 'stats, raws = runner.measure(nd.x_mm, nd.y_mm, z_mm, label,'
+    marker = 'stats, reads = runner.measure(nd.x_mm, nd.y_mm, z_mm, label,'
     assert marker in source
     prologue = source[:source.index(marker)]
     tail = prologue.rsplit('runner.assert_wire_armed(', 1)[1]
     assert tail.count('try:') == 1, (
         'assert_wire_armed must be called before the per-node `try:`, so a '
         'mid-sweep disarm aborts the run instead of scoring one bad node')
+
+
+def test_fault_errors_escape_both_demotion_handlers():
+    """Structural: `except TiltCalFaultError: raise` must precede the
+    `except TiltCalError` demotion in BOTH the capture loop and the verify
+    loop. Without the re-raise, a latched guard fault raised INSIDE measure()
+    (arrival/per-read cached checks, the go_to DISARMED marker) is demoted to
+    a failed node under the default --on-fail continue — which is exactly how
+    30 reads ran against a collapsed platform on 2026-08-09.
+    """
+    source = open(tcg.__file__.replace('.pyc', '.py')).read()
+    markers = (
+        'stats, reads = runner.measure(nd.x_mm, nd.y_mm, z_mm, label,',
+        'stats, reads = runner.measure(cx, cy, z_mm, label, offset_rad)',
+    )
+    for marker in markers:
+        assert marker in source, marker
+        after = source[source.index(marker):]
+        fault_pos = after.find('except TiltCalFaultError')
+        demote_pos = after.find('except TiltCalError as exc:')
+        assert fault_pos != -1 and demote_pos != -1, marker
+        assert fault_pos < demote_pos, (
+            'the TiltCalFaultError re-raise must precede the TiltCalError '
+            'demotion handler after `{}`'.format(marker))
 
 
 def test_go_to_checks_the_response_for_the_disarmed_marker():

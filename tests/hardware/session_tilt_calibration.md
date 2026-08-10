@@ -82,19 +82,27 @@ close.
   rebuild both packages, do not debug anything else first.
 - Arm per the Phase-1 sequence: launch → home → **`level`** → activate →
   confirm the 40 Hz hold stream → TRAJECTORY → **zero motion at arm**.
-- **A FRESH `level`, run from IDLE, immediately before the capture.** This is
-  not the usual "check the flag, only `level` if missing" rule — a grid capture
-  is *meaningless* without it. Every residual is **defined** relative to that
-  reference, so a stale one shifts every node by the same amount and produces a
-  map that looks perfectly plausible and aims every throw wrong. The tool asks
-  you to confirm it and gates the home node on it, but neither check can
-  distinguish "levelled twenty minutes and one relaunch ago" from "levelled just
-  now". **Also re-`level` before each rung's verification reads** — the Teensy
-  persistence truncates at 1 mrad/axis (worst 0.081° combined), so a reboot in
-  between puts truncation under the map.
+- **A correction loaded and CONSTANT throughout the sweep** (2026-08-10: the
+  map is **home-referenced** — every shipped residual is
+  `measured − m_home`, so a stale-but-constant level reference cancels
+  *exactly*; the algebra is in `levelling_frame.md` § C-LEVEL-2). A **fresh
+  `level` immediately before is RECOMMENDED, not required**: it keeps
+  `|m_home|` small and the tool's 0.010 rad WARN meaningful. What IS required
+  — and now machine-checked — is that the correction does not **change**
+  mid-sweep: the tool subscribes `/gravity_offset` and aborts on any message
+  during the sweep, and re-measures the home node at sweep end behind a drift
+  gate. The confirm prompt asks for constancy intent, not freshness. (The old
+  start-of-capture `STALE LEVEL REFERENCE` abort is retired — it was mistuned
+  against the level path's own single-sample scatter, 1.2–1.7 mrad/axis
+  measured 2026-08-09, and false-aborted 40–60 % of healthy attempts.)
+- **Verification reads no longer need a re-`level`**: check poses are scored
+  **home-referenced** (the verification pass re-measures home first and
+  subtracts it), so the constant reference drops out of PASS/FAIL too.
 - Remember the correction is **per-PROCESS**: any relaunch (including this
   build gate) silently drops it while `RobotState.levelling_complete` still
-  reads True.
+  reads True — and a relaunch **mid-sweep** re-pushes the Teensy-persisted
+  copy (int16-mrad truncated), which is exactly the constancy violation the
+  drift gate and `/gravity_offset` monitor exist to catch.
 
 ### Pre-flight — read-only, confirms the freshly-built code is live
 
@@ -116,13 +124,60 @@ python3 tests/hardware/tilt_cal_grid.py --dry-run                             # 
 
 ---
 
+## If a leg collapses (ODRIVE_FATAL) — forensics FIRST, then recover
+
+Precedent: 2026-08-09, leg 0 latched **SPINOUT_DETECTED** (`disarm_reason`
+67108864, `active_errors` 0) 2.5 s into the move to (−150, −150) — a
+first-of-class fault at a pose with proven precedent (held 4×, thrown from 4×
+on 2026-07-27); kinematics are exonerated (leg 0 was the *most-retracted* leg
+there, ≥ 85 mm from every bound). The fault itself is an **OPEN hardware
+follow-up** for the next sitting; this section is how to handle a recurrence
+without destroying the evidence.
+
+1. **Capture forensics BEFORE any relaunch or clear.** The next launch's BOOT
+   pre-flight auto-clears the drive-side error record — the 2026-08-09 code
+   survived only because a rosbag happened to be rolling. The ODrive
+   re-broadcasts its error cyclically until cleared or powered off, so while
+   the stack is still up:
+   ```bash
+   ros2 topic echo /robot_state --once     # motor_states: active_errors / disarm_reason per leg
+   ```
+   confirm the session rosbag is rolling (it captures the fault edge too),
+   and keep the launch-window scrollback. The tilt tool now dumps the decoded
+   ODrive errors (console + `_meta.json` `forensics` key, `abort_reason`
+   always set) on any abort — save that meta path with the session notes.
+2. **Clear and recover — no relaunch needed.** FAULT entry already disarmed
+   the wire, so the direct-clear branch runs (`/recover` is for the
+   armed-latch case, not this):
+   ```bash
+   ros2 topic pub --once /orchestrator_command std_msgs/msg/String "{data: clear_errors}"
+   # (equivalent: ros2 service call /clear_errors std_srvs/srv/Trigger)
+   ```
+   The guard latch releases, FAULT exits to BOOT, and BOOT skips to IDLE via
+   the persisted `is_homed`.
+3. **`activate` re-raises the collapsed leg safely**: the firmware ACTIVATE
+   seeds an error-gated TRAP_TRAJ **from the actual (collapsed) position** —
+   no manual repositioning, no jump.
+4. **Do NOT re-home** — *unless ODrive power was interrupted*. Then the
+   encoder reference is gone while the Platform-Teensy `is_homed=true`
+   persists, i.e. the BOOT skip-to-IDLE is now telling a lie: treat
+   `is_homed` as stale and re-home before any motion.
+
+---
+
 ## Rung C0 — probe (pins every threshold the later rungs assert)
 
 **No threshold below C1 is asserted in a test until this rung pins it.** The
 SCL3300's noise floor, its settling time, and its orientation-dependence are all
 unmeasured in this repo. Every default in `tilt_cal_grid.py` marked PROVISIONAL
 (`--dwell-s 1.0`, `--n-reads 8`, `--read-gap-s 0.15`, `--threshold-deg 0.15`,
-and the home-gate floor/ceiling) is a placeholder waiting on these numbers.
+the drift-gate floor `HOME_DRIFT_TOL_FLOOR_RAD` and its `n_eff = n/2`
+correlation assumption) is a placeholder waiting on these numbers. C0 now also
+pins **read autocorrelation at the 0.15 s gap** (the 2026-08-09 series show
+AR(1) effective-N ≈ 14–23 of 30 — per-read timestamps in the CSV are real as
+of 2026-08-10, so this is computable from the artifact) and, if time allows,
+**level-to-level scatter** (~10 successive `level`s; the three 2026-08-09
+levels scattered 1.15–2.40 mrad).
 
 This is also the **first hardware exercise of mid-TRAJECTORY tilt reads** —
 `get_platform_tilt` has no state gating, and that it works while holding a pose
@@ -141,6 +196,19 @@ python3 tests/hardware/tilt_cal_grid.py --no-apply --nodes 3 --n-reads 30 \
 `--no-apply` is the point of the rung: a read-noise probe must not leave a
 calibration behind. The tool still assembles and validates the map and reports
 whether it *would* be accepted.
+
+> **Re-run guidance after the 2026-08-09 aborted sitting**: the command line is
+> **unchanged** (above). What changed in the tool (2026-08-10): the capture is
+> home-referenced so the `STALE LEVEL REFERENCE` abort that killed attempt
+> 23:53 cannot recur (a fresh `level` is now recommended, not gating); the
+> node order is centre-out so the corners — where the leg-0 collapse happened
+> — come LAST; lean defers to the node config (0.6, the transit shape all
+> four corners were proven with on 2026-07-27); CSV timestamps are per-read
+> and real; and any mid-move/mid-read fault aborts immediately with a decoded
+> ODrive forensics dump in the console and `_meta.json` (`abort_reason` is
+> now always recorded). Expect two extra home visits per capture: the
+> end-of-sweep drift re-measure and (on applying runs) the verification home
+> reference.
 
 Then the **orientation-dependence probe**, which the grid tool cannot do (it
 commands the level orientation only, by design — the map is *defined* at that
@@ -176,8 +244,8 @@ accuracy **θ_acc**, and the tilted-pose reading vs the centre reading (this
 sizes orientation-dependence — a large difference means the map's
 apply-at-all-orientations assumption needs a follow-on tilt sweep, which is
 **not** in this plan). Retain both CSVs. Then update the PROVISIONAL defaults in
-`tilt_cal_grid.py` (dwell, read count, home-gate floor, θ_acc) in the same
-commit as the C0 logbook entry. The analyser's `CURVATURE_*` constants are
+`tilt_cal_grid.py` (dwell, read count, drift-gate floor + n_eff, θ_acc) in the
+same commit as the C0 logbook entry. The analyser's `CURVATURE_*` constants are
 **pinned at C1, not here** — they need a real measured field, which C0's four
 probe poses are not.
 
@@ -197,8 +265,10 @@ python3 tests/hardware/tilt_cal_grid.py --force-uninstall \
 ```
 
 Use the `--dwell-s` / `--n-reads` / `--threshold-deg` C0 pinned. The tool
-captures 5×5 over ±150 mm at z = 170 (home node first as the stale-reference
-gate), writes `config/tilt_calibration.yaml`, calls `reload_tilt_map`, confirms
+captures 5×5 over ±150 mm at z = 170 (home node first — it is the reference
+every other node is shipped against — then centre-out, corners last, then the
+home re-measure behind the drift gate), writes `config/tilt_calibration.yaml`,
+calls `reload_tilt_map`, confirms
 the applied `tilt_map_version` matches what it wrote, then re-measures 6
 off-node check poses and prints PASS/FAIL per pose. **Nonzero exit = FAIL.**
 
@@ -210,10 +280,15 @@ python tools/tilt_cal_analyse.py --csv temp/logs/tilt_cal_grid_<ts>.csv
 ```
 
 **PASS**
-- Home node residual ≈ 0 (the tool's own gate; it aborts otherwise).
-- **Every** check-pose residual magnitude ≤ **θ_acc** (provisional **0.15°**
-  until C0 pins it). 0.15° ≈ 8 mm at the 0.78 m default toss — well inside the
-  30–40 mm basin.
+- **Home drift gate PASS** (the tool re-measures home at sweep end;
+  `|drift| ≤ tol` per axis) and `|m_home|` below the 0.010 rad WARN. The home
+  node *ships* exactly 0 by construction now — the thing to watch is the
+  drift, which says the reference stayed constant.
+- **Every** check-pose **home-referenced** residual magnitude
+  `|check − m_home_verify| ≤ θ_acc` (provisional **0.15°** until C0 pins it;
+  the tool re-measures home before the checks and subtracts it — printed as
+  "home-ref residual"). 0.15° ≈ 8 mm at the 0.78 m default toss — well inside
+  the 30–40 mm basin.
 - Map min/max **consistent with the 2026-07-28 seed table**: same order of
   magnitude (0.04–0.6°) and the **same worst quadrant**. A map whose corner is
   10× the seed table is measuring something else.
@@ -228,10 +303,19 @@ python tools/tilt_cal_analyse.py --csv temp/logs/tilt_cal_grid_<ts>.csv
 do it), in the same commit as the C1 logbook entry.
 
 **ABORT**
-- `STALE LEVEL REFERENCE` at the home node ⇒ re-`level` from IDLE and start
-  over. Do not override this.
+- `HOME DRIFT GATE FAILED` at sweep end ⇒ the level reference **changed
+  mid-sweep** (re-level, relaunch re-push, or physical settling). Re-run the
+  capture; do not override — early and late nodes were measured against
+  different references, which home-referencing cannot cancel.
+- `LEVEL REFERENCE CHANGED MID-SWEEP` (a `/gravity_offset` message arrived
+  during the sweep) ⇒ same class, caught causally. Re-run from the start.
+- `|m_home|` above the **0.05 rad** sanity ceiling ⇒ the platform is ~3°
+  off level at its own levelling pose — that is a fault (collapsed leg?),
+  not staleness. Diagnose before re-running.
 - The tool refuses to write ("unusable node") ⇒ re-run with a longer
-  `--dwell-s`; check whether the named nodes sit on a leg stroke clamp.
+  `--dwell-s`; check whether the named nodes sit on a leg stroke clamp (the
+  IK preflight refuses commanded overtravel but cannot see a mechanical
+  bind).
 - `APPLIED THE WRONG FILE` ⇒ the node resolved a different path than the tool
   wrote. Stop: check `$JUGGLEBOT_TILT_CAL` on both sides and whether an ament
   share copy is shadowing the source tree. Do not "just re-run".
@@ -265,7 +349,12 @@ python3 tests/hardware/tilt_cal_grid.py --verify-only
 
 `--verify-only` re-measures the **same** check poses (they are derived
 deterministically from the loaded map's own axes) against the already-applied
-C1 map. It captures nothing and writes no map.
+C1 map. It captures nothing and writes no map. **The fresh re-level here is
+deliberate and stays**: it is not a capture precondition (capture no longer
+has one) — it IS the invariance hypothesis under test, composing a new `C_now`
+under the old map. Scoring is home-referenced like every verification pass.
+(C2b's *recapture* side needs no fresh level at all now — the shim's
+common-mode term cancels by construction, which strengthens the rung.)
 
 **PASS**: every check residual still ≤ θ_acc — base tilt was absorbed as
 common-mode by `level` and the C1 map is still valid at a tilted base.

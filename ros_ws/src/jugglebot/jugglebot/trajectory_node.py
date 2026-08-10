@@ -1614,13 +1614,14 @@ class TrajectoryNode(Node):
         """The map the ingest sites may apply — ``None`` until the node is level.
 
         **The map is gated on the level reference, not on its own loadedness.**
-        A residual is *defined* as what is left over once a **fresh** `level`
-        offset is applied (C-LEVEL-2 § "What the map is"): it is measured
-        against that reference and is meaningless without it. Before the first
-        ``/gravity_offset`` arrives, ``_gravity_offset`` is the ``(0.0, 0.0)``
-        placeholder — "we do not know the tilt", not "the tilt is zero" — so
-        composing a residual onto it would command a rotation referenced to
-        nothing. That state is reachable at **every boot** once
+        The stored residual is reference-free at capture (home-referenced,
+        2026-08-10: ``M(P) = f(P) − f(home)``), but *applying* it composes a
+        rotation onto the live correction ``C_now`` (C-LEVEL-2 § "The map is
+        gated on the level reference"). Before the first ``/gravity_offset``
+        arrives, ``_gravity_offset`` is the ``(0.0, 0.0)`` placeholder — "we
+        do not know the tilt", not "the tilt is zero" — so composing the
+        residual onto it would command a rotation referenced to nothing. That
+        state is reachable at **every boot** once
         ``config/tilt_calibration.yaml`` is committed, because the map loads in
         ``__init__`` and the offset arrives only when the operator runs `level`.
 
@@ -1637,10 +1638,11 @@ class TrajectoryNode(Node):
                 self._tilt_map_dormant_logged = True
                 self.get_logger().warning(
                     f"tilt map [{self._tilt_map_version}] is loaded but DORMANT "
-                    f"— no /gravity_offset yet, and a residual is defined "
-                    f"relative to a fresh `level` reference. Commanded poses "
-                    f"use the identity correction (C-LEVEL-1 unlevelled) until "
-                    f"`level` runs; the map then applies with no reload.")
+                    f"— no /gravity_offset yet, and applying the map means "
+                    f"composing it onto a live level correction, which does "
+                    f"not exist. Commanded poses use the identity correction "
+                    f"(C-LEVEL-1 unlevelled) until `level` runs; the map then "
+                    f"applies with no reload.")
             return None
         return self._tilt_map
 
