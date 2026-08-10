@@ -348,3 +348,289 @@ tests/sim/test_plans_index.py -q` → **57 passed in 0.53 s**.
 - **`uptime_ms_at_release` is mined-only** in 2a. If a later phase needs it
   declared, that is a `/link_status` subscription on the coordinator and should
   be argued on its own merits, not slipped in.
+
+---
+
+## Phase 2b — the map, applied at zero (2026-08-11)
+
+**The authority lands with its disable path proved rather than argued.** The aim
+map is loadable, gated, observable and wired into the one seam that builds a toss
+goal — and because no `config/toss_calibration.yaml` exists yet, every commanded
+number is bit-for-bit what the machine did before this phase.
+
+### What landed
+
+| Deliverable | Where |
+|---|---|
+| The pure loader — schema v1, all-or-nothing validation, `map_version`, hull-clamped `lookup`, apply-time `clamp_total_aim` | `ros_ws/src/jugglebot/jugglebot/motion/toss_cal.py` |
+| THE aim-angle → virtual-target conversion | `motion/trajectory/toss_release.aim_target_offset_mm` |
+| The ONE per-goal lookup + apply | `reload_coordinator_node._toss_aim_for_goal`, called only from `_build_toss_cycle` |
+| `toss/reload_calibration` (`std_srvs/Trigger`) with a version readback | `reload_coordinator_node._svc_reload_toss_calibration` |
+| `toss/calibration_status` — latched JSON `loaded`/`applied`/`version` | `reload_coordinator_node._publish_toss_cal_status`, + the one bag-record list |
+| The three `tier == TIER_8B` branches re-keyed on "the commanded release carries a non-zero tilt" | `_position_platform_for_toss`, `_toss_positioning_xyz`, the `catch/pretilt_hold` raise |
+| Record fields `map_aim_rad` / `total_aim_rad` / `map_aim_mm_at_h` / `clamp_hits` / `toss_cal_*` filled for real | `_toss_record_fields` |
+| Tests | `tests/motion/test_toss_cal.py`, `tests/ros/test_toss_calibration.py`, additions to `tests/motion/test_toss_release.py` |
+
+### Discussion
+
+#### 1. What the map STORES was the first decision, and it decides where the sign can be wrong
+
+`aim_rad` stores the **commanded aim tilt**, in the production
+`TiltedReleaseState.tilt_rx`/`tilt_ry` convention — not the measured plant bias.
+
+The design's § 3.7 fit reduces each toss to
+`b_i = map_aim_i + trim_aim_i + S⁻¹·land_err_i/(4h)` and calls it "the bias that
+would have landed it on B", and § 3.6's trim update is `δ ← δ_prev + clamp(−r_n −
+δ_prev, …)` — a *negated* estimate. Read together, both `map_aim_rad` and
+`trim_aim_rad` are **corrections**, i.e. things the machine commands. Adopting
+that as the storage convention has one consequence worth stating plainly: **the
+runtime apply path contains no sign flip at all**, so there is no runtime place
+for a sign to be wrong. Every sign question collapses into the fit tool (2c) and
+into rung SC-0, which measures the sign on hardware instead of assuming it. It
+also makes the corpus self-checking: for an 8a toss `aim_tilt_rx_rad` should
+equal `map_aim_rad[0]`, and the node writes both from different objects.
+
+The alternative — store the measured residual and negate at apply — was rejected
+because it puts a sign in the one place nobody re-derives: the live path, at
+10 goals/min, where a flip is invisible until a whole sitting has been thrown
+against it.
+
+#### 2. The aim is applied as a VIRTUAL TARGET, and the round trip is exact
+
+D1 says the aim rides the existing tilted release path "with a virtual aim
+target", and D2 says the three `TIER_8B` branches re-key on a non-zero tilt. What
+the design does not spell out is the conversion: given a commanded aim
+`(rx, ry)`, *how far* must the target move?
+
+The exact form, derived from the same geometry `compute_release_state_tilted`
+uses internally (the ball leaves ALONG the cup axis, so `v = |v|·a`, and
+`v_z = Δz/T + g·T/2`):
+
+```
+d = (Δz + g·T²/2) · a_xy / a_z ,   a = cup_axis(rx, ry),
+Δz = HAND_CATCH_OFFSET − HAND_THROW_OFFSET + arm·(1 − a_z)
+```
+
+**Probed before it was coded** (`/tmp/probe_toss_cal_aim.py`, 2026-08-11), over
+h ∈ {0.45, 0.60, 0.78, 1.00} m × |aim| ∈ {0, 0.05, 0.10, 0.15, 0.5, 1.0}° × 5
+azimuths × 3 goal poses: the production path derives back the requested aim to a
+worst error of **8.35e-13 rad (4.8e-11°)**, and at zero aim the offset is
+**exactly `[0.0, 0.0]`**, so `compute_release_state_tilted` reproduces
+`compute_release_state` bitwise. The same probe pins the gain against the
+design's own `b = 4h·θ` sizing model — **54.578 vs 54.454 mm/deg at h = 0.78,
++0.23 %** — which is the check that the model every constant in § 3.6 was sized
+with still describes the code that applies them. Both numbers are now driven
+round-trip tests, not restated residuals; a restated residual drifts in lockstep
+with the algebra error it is supposed to catch.
+
+The alternative — invert `tilt_to_throw` numerically to find the target — was
+rejected as a second implementation of the aim geometry, which is precisely what
+D2 exists to avoid.
+
+#### 3. Two release states, because D4 means what it says
+
+This is the non-obvious tradeoff of the phase. D4 requires the announcement to
+carry the **uncorrected** landing: the announcement is the *prediction of where
+the ball goes*, and after a correct aim correction that is B. Keeping it
+uncorrected is what leaves the correlation → catch path, the receive-tilt
+computation and the possession plausibility bound bitwise unchanged.
+
+But the tilted path's `catch_point_global_mm` is the *virtual* target, and its
+`launch_vel_mms` carries the aim's lateral component — so announcing straight
+off the corrected state would move the announced landing by up to 55 mm and tilt
+the announced arrival by up to 1°, changing the receive tilt on every aimed toss.
+
+So the node now carries two states:
+
+- `_toss_release_state` — **uncorrected**. Read by `_announce_toss`,
+  `_toss_landing_global_mm` (possession plausibility) and the record's
+  `catch_point_global_mm`. Every existing reader is untouched.
+- `_toss_release_cmd` — **commanded**. Read by exactly two seams:
+  `_position_platform_for_toss` (orientation + the swing-compensated pre-tilt
+  xyz, via the single `_toss_positioning_xyz`) and the sequencer's `event_vel`.
+
+The cost is a second object and a second thing to keep in step. What buys it back
+is that **when the aim is zero the two are the same OBJECT, not merely equal** —
+the disabled path executes not one extra floating-point operation, so "no map" is
+identical to today by construction rather than by float luck. That is asserted
+with `is`, not `==`, in `test_absent_map_leaves_the_release_state_untouched`.
+
+A cheaper-looking option was to build the corrected state and then
+`dataclasses.replace` its `catch_point_global_mm` back to B. It was rejected
+because the *velocity* fields would still carry the aim, so the receive tilt
+would change anyway — a fix that looks like D4 and is not.
+
+#### 4. `pretilt_hold` re-keyed, and a deliberate 8b behaviour change
+
+The three branches are now keyed on `_release_is_tilted(commanded release)`
+rather than `tier == TIER_8B`. That is the design's instruction, and it is also
+the honest predicate: the thing that matters is "is the commanded release
+orientation non-level?", of which the tier was only ever a proxy.
+
+The proxy and the predicate disagree in exactly one case: a **Tier-8b goal with
+zero displacement**, where the tilt is exactly zero. Today that raises
+`pretilt_hold`; after the re-key it does not. Accepted deliberately — with zero
+displacement the stock pre-tilt's A→B translate is zero and its un-tilt is to
+level, which is the pose already held, so it is the same argument F3 makes for
+today's 8a. Recorded here because it is the one behavioural difference the re-key
+introduces, and a future reader tracing "why did 8b stop holding the pre-tilt at
+A == B" should find it named rather than inferred.
+
+#### 5. Where the status fields went, and why not `TrajectoryStatus`
+
+§ 3.7 asks for `toss_cal_loaded` / `toss_cal_applied` / `toss_cal_version`
+"published on status", and § 6's P2 preflight greps them off
+`/trajectory/status`. **That grep is not implementable.** `TrajectoryStatus` is
+published by `trajectory_node`, which does not own this map (operator decision 7
+puts it in `reload_coordinator_node`, because the map rewrites a GOAL while the
+tilt map rewrites POSES at ingest) and therefore cannot know whether it is
+applied. Cross-node field-filling would be a lie with a plausible-looking value
+in it — the exact failure class the loaded-vs-applied distinction exists to kill.
+
+The minimal faithful deviation: a **latched `std_msgs/String` JSON topic**,
+`toss/calibration_status`, owned by the node that owns the map, carrying
+`loaded`, `applied`, `version`, `path`, `dormant_reason` and both tilt-map
+versions. Same D10 argument the `/toss/record` publisher already makes — a typed
+field forces a `jugglebot_interfaces` rebuild, and a partial two-package colcon
+build takes down every ball-op action. `TRANSIENT_LOCAL` because the map changes
+only on load and reload, so an unlatched topic would be silent exactly when the
+operator asks. The operator's one-liner becomes
+`ros2 topic echo /toss/calibration_status --once`, and it is on the bag-record
+list so a sitting's DORMANT-vs-applied verdict is recoverable afterwards.
+
+The plan's § 6 P2 row is now wrong as written; it is carried in Open.
+
+#### 6. The version hash is one step wider than the design's literal text
+
+§ 3.7 says the hash covers "schema version, both axes, the bias grids". It covers
+those plus `units.aim`, `anchor.aim_rad` and `speed.k_v`.
+
+Root cause, which is the design's own stated intent: *two files whose applied
+numbers are identical report the same version; an edit to a single applied node
+changes it.* `units.aim` decides what the grids MEAN. `anchor.aim_rad` is the
+session trim's warm-start prior and `speed.k_v` the speed prior — phase 2e
+**acts on both**, so under the literal rule an edit to either would change the
+machine's behaviour without changing the version, which is precisely the property
+the version string exists to deny. Everything genuinely provenance (`captured`,
+`requires`, `jacobian`, `stats`, `grid.z_mm`, `grid.orientation`) stays out, so
+the fit tool's re-emit still cannot churn the version.
+
+Both of the tilt map's own audit findings are inherited verbatim and re-tested:
+float-normalisation (so `170` and `170.0` agree) and `ndarray → tolist()`
+recursion (so an ndarray does not hash as its truncated repr and collide across
+large grids).
+
+#### 7. The authority bound is a magnitude, and it is checked twice
+
+`TOTAL_MAX_RAD = 1.0°` per D7, applied to `hypot(rx, ry)` — **not** per axis. A
+per-axis box would admit `hypot = 1.414°` at the corners, 41 % past the authority
+that the composition-regime argument (C-LEVEL-2's 1°×1° cross term, 1.523e-4
+rad), the cup-swing cap (1.131 mm, measured) and the landing-shift number
+(54.578 mm at h = 0.78, measured) are all sized on.
+
+Checked at parse time per node, and again at apply via `clamp_total_aim`. The
+apply-time clamp is *provably* a no-op in 2b — a bilinear blend of bounded
+vectors is a convex combination, and there is a test that sweeps a saturated map
+to say so — but D7 requires the total to be re-clamped at apply rather than only
+at update, and 2e's trim adds to this number. Landing the enforcement point with
+the seam it protects is cheaper than bolting one on beside it later.
+
+#### 8. Dormancy fails CLOSED on an unknown tilt-map version
+
+D3 makes a `requires.tilt_map_version` mismatch dormant. The case the design does
+not name is an **empty** live version — no `/trajectory/status` heard yet, or a
+build that publishes none. That is treated as a mismatch: *"I cannot verify which
+levelling layer is underneath me"* is not *"the right one is underneath me"*, and
+applying an aim residual on an unverified layer 0 is exactly the double-count D3
+exists to prevent. It costs only precision, and it self-heals — a
+`/trajectory/status` arrival carrying the matching version flips the map to
+applied live, with no reload, and republishes the status topic. Tested.
+
+The WARN is loud but fires **once per (map, live tilt-version) pairing**: a
+dormant map at 10 goals/min would otherwise bury every other console line, the
+4091-ERROR-lines-in-41 s failure mode the seed gate already exists to prevent.
+
+### Fix
+
+- **`motion/toss_cal.py`** — new pure module, C-LEVEL-2 loader shape: candidate
+  search via `find_repo_root` (imported from `tilt_map`, **never** a fixed
+  `__file__` walk), authoritative `$JUGGLEBOT_TOSS_CAL` override, source tree
+  before ament share, all-or-nothing `parse_toss_cal`, hull-clamped `lookup`,
+  `map_version` over float-normalised applied numbers only, `clamp_total_aim`,
+  and `TossCal.provenance_mismatch` for D3.
+- **`motion/trajectory/toss_release.aim_target_offset_mm`** — THE aim-angle →
+  virtual-target conversion, refusing an aim past the same 12° ceiling
+  `compute_release_state_tilted` enforces.
+- **`reload_coordinator_node`** — owns the map (decision 7): loads in `__init__`
+  and on `toss/reload_calibration`, publishes `toss/calibration_status`,
+  evaluates `_toss_aim_for_goal` **once per goal** in `_build_toss_cycle`,
+  carries `_toss_release_cmd` beside `_toss_release_state`, re-keys the three
+  tilt branches, and fills the record's applied-calibration block.
+- **`setup.py`** — conditional `config/toss_calibration.yaml` share install,
+  mirroring the tilt map's row and its `--force-uninstall` caveat.
+- **`jugglebot_launch.py`** — `/toss/calibration_status` joins THE ONE list.
+- **`ros_ws/docs/choreography.md`** — regenerated (the new topic + service).
+
+### Verification
+
+- `./run_tests.sh --full` (run 2026-08-11) → **5009 + 9 passed, 3 xfailed in
+  515 s** (parallel 471 s, serial 44 s). `--full` because a plan-phase closure
+  gets every tier.
+- `pytest tests/motion/test_toss_cal.py tests/motion/test_toss_release.py
+  tests/ros/test_toss_calibration.py -q` (run 2026-08-11) → **203 passed in
+  6.64 s** — the scoped iteration record.
+- `/tmp/probe_toss_cal_aim.py` (run 2026-08-11) → worst virtual-target
+  round-trip error **8.35e-13 rad**; zero-aim offset exactly `[0.0, 0.0]`; gain
+  **54.578 mm/deg at h = 0.78** vs the design's idealised `4h` = 54.454.
+- `cd ros_ws && colcon build --packages-select jugglebot` (run 2026-08-11) →
+  `Finished <<< jugglebot`, 1 package. `jugglebot_interfaces` is untouched:
+  `Trigger` + `String` were chosen precisely so this phase needs no two-package
+  build.
+- The gate's own catch: `tests/ros/test_choreography_map.py` failed on the first
+  gate run because the new topic and service made `ros_ws/docs/choreography.md`
+  stale. Regenerated with `python tools/gen_choreography_map.py`.
+
+**Three defects in this phase's own work, found by the pre-commit audit and
+fixed before the commit** — recorded because two of them are test-integrity
+faults, the kind that are invisible precisely because the test passes:
+`test_the_repo_ships_no_toss_calibration_yet` walked one directory too few and
+asserted against `<repo>/tests/config/`, so it could never fail (now asserts the
+walk landed on the repo root first); a `textwrap.dedent` over a whole module in
+the `__file__`-walk guard did nothing; and 2a's `FIELDS` notes still read "null
+until phase 2b" for the three `toss_cal_*` fields this phase fills.
+
+**The one edit after the gate** is this Verification block. Naming its test
+surface rather than appealing to the file extension, per `logbook/README.md`
+§ "What the logbook tests actually check":
+`tests/sim/test_logbook_front_matter.py` parses every committed entry and asserts
+the required front-matter keys and an ISO `date` (this block touches neither),
+`tests/sim/test_logbook_search.py` indexes `logbook/` but skips `INDEX.md` and
+drops any entry lacking a `title`, and `tests/sim/test_plans_index.py` pins the
+plan/INDEX pairing. Re-run after this edit: `pytest
+tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_search.py
+tests/sim/test_plans_index.py -q` (run 2026-08-11) → **57 passed in 0.50 s**.
+
+### Open
+
+- **The plan's § 6 P2 preflight row is wrong.** It greps `toss_cal_*` off
+  `/trajectory/status`; the fields live on `/toss/calibration_status` because a
+  different node owns the map. The plan text is corrected in the same commit;
+  the operator runbooks that copy that row have not been touched and should be
+  when 2f lands the tool that reads it.
+- **`ESTIMATOR_VERSION = 'arrival-offset/1'` is asserted, not yet earned.**
+  `tools/probes/ball_arrival_offset.py` carries no version of its own, so 2b
+  declares the string and gates on it. 2c must write the same string from the
+  fit tool AND bump it whenever the fit-plane rule, band width, lateral gate or
+  minimum sample count changes — otherwise the gate is decorative.
+- **`aim_rad` is stored in the commanded convention, so SC-0 is the only thing
+  that can prove the sign.** Nothing in 2b can: with no map loaded there is no
+  aim to be wrong about. The 2c closed-loop sign test and the P5.4
+  doubled-bias-on-one-node first application remain the two gates that matter.
+- **Tier 8b composes the aim in DISPLACEMENT, not in tilt.** The virtual target
+  moves by the aim's own ballistic offset, so a displaced 8b throw gets the aim
+  added to its target rather than to its angle — physically the right
+  composition (lateral displacements add; tilts only approximately do), but the
+  map is fitted at 8a and R6 refuses a non-8a capture, so an 8b aim is
+  extrapolation. It applies uniformly because the aim is a property of the
+  PLANT, not of the tier; if that turns out to be wrong, the fix is a tier gate
+  in `_toss_aim_for_goal`, one line.
