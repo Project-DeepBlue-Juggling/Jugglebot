@@ -518,6 +518,49 @@ def generate_launch_description():
             '/cone/timing_result',
             '/bb/odrive_diag',
             '/bb/axis_estimates',
+            # ── THE ONE LIST (toss-selftuning D18, 2026-08-10) ──────────────
+            # Until now two divergent record lists existed — this one and the
+            # operator runbook's — and NEITHER was sufficient: the runbook's had
+            # /rosout and /catch/pretilt_hold but not /balls or /mocap_data (the
+            # two the mocap landing offset and the tracker join need), and this
+            # one had the reverse. Their UNION is what a session actually needs,
+            # so this list became the union and the runbooks now say
+            # `record:=true` instead of maintaining a second one.
+            #
+            # Root cause for adding rather than trimming: a missing topic is
+            # unrecoverable after the fact, and a recorded silent topic costs
+            # nothing — exactly the argument /leg_lengths_topic above already
+            # makes. The 2026-08-10_16-30-44 sitting is the standing evidence:
+            # it lacks every topic below, so its bag can never answer what the
+            # catch latch, the reach centre or the commanded pose were doing.
+            #
+            # All low-rate except /trajectory/commanded_position (5 Hz Point).
+            #
+            # "Will rosbag2 record a topic that does not exist yet?" — YES on
+            # this box, and that is measured rather than assumed. rosbag2 0.3.11
+            # (Foxy) recorded /motion/diagnostics into
+            # ~/Desktop/rosbags/2026-08-10_16-30-44 with its type resolved and
+            # message_count 0, and motion_bridge_node — its SOLE publisher — has
+            # not been launched since 2026-08-01. The action topics below are a
+            # strictly easier case: their publishers exist from node startup, so
+            # the only exposure was a startup race, and that evidence closes it.
+            '/rosout',
+            '/toss/record',
+            '/catch/armed',
+            '/catch/prime_hold',
+            '/catch/prime_dispatched',
+            '/catch/vel_scale',
+            '/catch/reach_center',
+            '/catch/pretilt_hold',
+            '/trajectory/commanded_position',
+            # Ball-op action feedback + status: the per-cycle phase string and
+            # the goal terminal. Nothing else in a bag carries WHICH cycle of a
+            # session a given instant belongs to, which is the join a per-toss
+            # corpus is built on.
+            '/jugglebot/toss/_action/feedback',
+            '/jugglebot/toss/_action/status',
+            '/jugglebot/toss_continuous/_action/feedback',
+            '/jugglebot/toss_continuous/_action/status',
             '-s', 'mcap', '-o', bag_dir,
         ],
         output='screen',

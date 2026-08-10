@@ -907,26 +907,40 @@ so a relaunch without a rebuild keeps the old code.
 > `jugglebot`-only build now takes all three ball-op actions down with an
 > `ImportError`. See § DEPLOYMENT MATRIX row B.
 
-### Recording — ONE list, for every capture
+### Recording — ONE list, for every capture: `record:=true`
 
-Individual sections below each say "append these topics". **Do not run two
-different lists.** Extra topics are harmless to every analysis command in this
-file, and a missing topic is unrecoverable after the fact — several of these
-measurements *cannot* be reconstructed from a bag that lacked them. Use this
-consolidated command for **every** capture (CAP-GATE, CAP-RELAUNCH, CAP-WORK,
-CAP-SHORT):
+**Amended 2026-08-10 (toss-selftuning D18). There is no longer a runbook record
+list. Launch with `record:=true` and you have it:**
 
 ```bash
-mkdir -p ~/Desktop/rosbags && cd ~/Desktop/rosbags
-ros2 bag record -o "$(date +%Y-%m-%d_%H-%M-%S)" \
-  /robot_state /leg_setpoint_echo /platform_target /rigid_body_poses \
-  /link_status /rosout /trajectory/status \
-  /trajectory/diagnostics /trajectory/target_feedback \
-  /catch/dynamic_target /gravity_offset /throw_announcements \
-  /hand_telemetry /catch/pretilt_hold
+ros2 launch jugglebot jugglebot_launch.py record:=true
 ```
 
-Note the bag directory name — the analysis commands take it as `--bag`.
+Note the bag directory name it prints (`~/Desktop/rosbags/<stamp>`) — the
+analysis commands take it as `--bag`.
+
+**Why the hand-rolled list was retired rather than kept in sync.** Until
+2026-08-10 this file carried its own `ros2 bag record` command and
+`jugglebot_launch.py` carried a different one, and **neither was sufficient**:
+this one had `/rosout` and `/catch/pretilt_hold` but *not* `/balls` or
+`/mocap_data` — the two topics the mocap landing offset and the tracker join
+both need — and the launch list had exactly the reverse. Two lists is not a
+maintenance annoyance; it is a mechanism for shipping a capture that cannot
+answer its own question, and it did: `~/Desktop/rosbags/2026-08-10_16-30-44`
+carries none of `/rosout`, `/catch/armed`, `/catch/pretilt_hold`,
+`/trajectory/commanded_position` or any action feedback, so no amount of later
+analysis can recover what the catch latch or the commanded pose were doing during
+that sitting. The launch list is now the **union** and it is the only list.
+
+Two consequences worth stating:
+
+- The old command also named `/platform_target`, which has had **no publisher**
+  since the SocketCAN decommission (`can_node` is deleted). It is not in the
+  union, and its absence from a new bag is correct, not a regression.
+- A recorded silent topic costs nothing, and every `record:=true` bag now carries
+  several by design — `/leg_lengths_topic`, `/motion/*` (dormant since the MPC
+  parking) and `/catch/pretilt_hold` on an 8a build. Read a 0-message channel as
+  "that publisher was not running", never as a fault.
 
 Why each of the later additions is in the shared list rather than per-section:
 
@@ -1135,8 +1149,11 @@ row 4 below) has nothing to compare to.
 
 ### Capture requirement for every HAND check
 
-The dip lives in `hand_telemetry`, which the § Recording bag list above does
-**not** include. Run the toss-trace recorder alongside the bag, in its own
+The dip lives in `hand_telemetry`. The § Recording ONE list (`record:=true`)
+**does** carry it as of 2026-08-10 — but at the launch's 100 Hz publish rate, not
+the recorder's own sampling, so the two are not yet known to be equivalent (the
+per-toss record's `plant_block_source: trace|bag` field exists to settle that).
+Until it is settled, run the toss-trace recorder alongside the bag, in its own
 terminal, with **system `python3` and the ROS env sourced — NOT the venv**
 (`tests/hardware/toss_trace_recorder.py`'s own docstring states this, and
 `tests/hardware/session_phase8_toss_trace.md:100` gives the same instruction; the
@@ -1151,24 +1168,22 @@ python3 tests/hardware/toss_trace_recorder.py record
 live line shows `hand ~100 Hz` before any goal is sent — `hand 0 Hz` means the
 Teensy telemetry stream is down and no HAND verdict is possible.)
 
-**The trace recorder is not optional for a HAND check.** The § Recording bag
-command above records `/robot_state /leg_setpoint_echo /platform_target
-/rigid_body_poses /link_status /rosout` — **neither** `/hand_telemetry` **nor**
-`/throw_announcements`, which are the two topics this probe reads for the stroke
-timeline. Run the probe's `--bag` path only against a bag recorded with both
-topics added:
+**The trace recorder is not optional for a HAND check** — but the *reason* has
+narrowed. It used to be that the runbook's hand-rolled record command carried
+neither `/hand_telemetry` nor `/throw_announcements`, so the probe's `--bag` path
+had nothing to read. Since 2026-08-10 the ONE list (`record:=true`, § Recording)
+carries **both**, plus `/rosout`, so a `record:=true` bag feeds
+`hand_stroke_timeline.py --bag` directly. What the bag path still does not give
+you is the trace recorder's own resolution — and whether that limitation is real
+is now a **measurement** rather than an inherited claim: the per-toss record
+carries `plant_block_source: trace|bag` precisely so the two can be compared on
+the same sitting (toss-selftuning § 8). Until that comparison has been run, keep
+running the trace recorder for a HAND check.
 
-```bash
-# optional: a bag that ALSO feeds the HAND probe (append to the § Recording list)
-  /hand_telemetry /throw_announcements
-```
-
-Such a bag **does** carry `/rosout` (the § Recording command records it), and the
-probe reads the arm-dispatch count from it — it detects the channel rather than
-assuming the format. `arms` reads `?` only when the source genuinely has no
-`/rosout`, which is true of the three 2026-07-25 evidence bags (recorded before
-that list) but not of a bag recorded with the command above. `?` never means zero;
-the launch log `~/.ros/log/<stamp>/launch.log` is the fallback source.
+`arms` reads `?` only when the source genuinely has no `/rosout`, which is true
+of the three 2026-07-25 evidence bags (recorded before that list) but not of a
+`record:=true` bag. `?` never means zero; the launch log
+`~/.ros/log/<stamp>/launch.log` is the fallback source.
 
 ### The analysis command — this is what turns a capture into a verdict
 
@@ -2540,10 +2555,10 @@ python tools/probes/catch_reach_replay.py --self-check
 
 Validates: `catch-reach-degenerate-overshoot` Phase 0 (reproduction) on new data.
 
-Recording: add these to the § Recording topic list for any sitting you intend to
-score — `/trajectory/status /trajectory/diagnostics /trajectory/target_feedback
-/catch/dynamic_target /gravity_offset /throw_announcements` (the base list
-already carries `/leg_setpoint_echo`, which is the commanded-pose source).
+Recording: `record:=true` (§ Recording). The topics this section scores —
+`/trajectory/status /trajectory/diagnostics /trajectory/target_feedback
+/catch/dynamic_target /gravity_offset /throw_announcements /leg_setpoint_echo` —
+are all in the ONE list as of 2026-08-10; nothing to append.
 
 ```bash
 source ~/Desktop/PDJ_venv/venv/bin/activate
@@ -2597,7 +2612,8 @@ Not a check yet; recorded so it is not re-derived under time pressure.
 
 1. **Reboot the can-bridge Teensy** before the session (standing session rule).
 2. `level` is per-boot — a manual `level` is **always** required first.
-3. Record with the § Recording list **plus** the six catch topics above.
+3. Record with `record:=true` — the ONE list (§ Recording) already carries the
+   six catch topics above as of 2026-08-10.
 4. Score with CATCH-1 → CATCH-2 → CATCH-3, then
    `tools/probes/levelling_tilt_bag_check.py --offset <TILT_X> <TILT_Y> --t0
    <after the first go_home>` for the park (§ CHECK LVL-3's instrument).
@@ -2692,10 +2708,10 @@ python tools/probes/catch_reach_replay.py --self-check
 
 ### CHECK CCATCH-2 — the level catch commands NO swing (**the headline check**)
 
-Validates: C-CATCH-1 on the self-toss path. Run a normal self-toss goal with the
-§ Recording list **plus** `/trajectory/status /trajectory/diagnostics
-/trajectory/target_feedback /catch/dynamic_target /gravity_offset
-/throw_announcements`.
+Validates: C-CATCH-1 on the self-toss path. Run a normal self-toss goal with
+`record:=true` — the ONE list (§ Recording) carries `/trajectory/status
+/trajectory/diagnostics /trajectory/target_feedback /catch/dynamic_target
+/gravity_offset /throw_announcements` as of 2026-08-10.
 
 ```bash
 source ~/Desktop/PDJ_venv/venv/bin/activate
@@ -2920,9 +2936,9 @@ as `REJECTED_HAND_NOT_PARKED`.
 > ```
 >
 > then **relaunch** `jugglebot_launch.py`. No firmware flash, no config
-> regeneration. Also add `/trajectory/status` to the § Recording bag before
-> LG-1 (it is in the shared list as of 2026-07-26 — check yours) or LG-4's
-> diagnostic cannot be run at the end of the sitting.
+> regeneration. `/trajectory/status` must be in the bag before LG-1 or LG-4's
+> diagnostic cannot be run at the end of the sitting — `record:=true` carries it
+> (shared list since 2026-07-26, the ONE list since 2026-08-10).
 >
 > **If you rebuild `jugglebot` but not `jugglebot_interfaces`,
 > `trajectory_node` DIES — it does not merely go quiet.** `_publish_status`
@@ -3171,9 +3187,9 @@ PY
 ```
 
 - `/trajectory/status` must have been in the bag from the **start** of the
-  sitting for this to work — it is in the shared § Recording list as of
-  2026-07-26; confirm yours has it *before* LG-1, because this measurement
-  cannot be reconstructed afterwards.
+  sitting for this to work — `record:=true` carries it (§ Recording). This
+  measurement cannot be reconstructed afterwards, which is exactly why the two
+  divergent record lists were collapsed into one on 2026-08-10.
 - `over_1s > 0` ⇒ the window is genuinely too tight for this machine's load;
   raise `_TRAJ_STATUS_STALE_S` with the measured max in the commit message.
   `over_1s == 0` ⇒ the refusal came from somewhere else; do not touch the
@@ -3368,9 +3384,9 @@ not to C-CATCH-1, not to the levelling contract.
 
 Run a normal reload sitting, **≥ 12 reload attempts** (sitting 4's 19 is the
 reference sample size; below ~12 the binomial noise swamps the effect you are
-looking for). Record with the § Recording list **plus** `/trajectory/diagnostics
-/trajectory/target_feedback /catch/dynamic_target /gravity_offset
-/throw_announcements`.
+looking for). Record with `record:=true` — the ONE list (§ Recording) carries
+`/trajectory/diagnostics /trajectory/target_feedback /catch/dynamic_target
+/gravity_offset /throw_announcements` as of 2026-08-10.
 
 Score every attempt by eye as well as by `outcome` — the tracker still reports
 `MISSED` on real catches, so `outcome` alone is not the verdict anywhere in this
@@ -3584,9 +3600,9 @@ relaunch — `level` only if it reads `false`.
 
 ### Recording for this section
 
-Use the § Recording consolidated command **unchanged** — `/catch/pretilt_hold` was
-added to it on 2026-07-28 for `TIER-D`. Run the trace recorder in its own terminal as
-always. `TIER-PREREQ` needs neither.
+Use `record:=true` **unchanged** (§ Recording) — `/catch/pretilt_hold` has been
+in the record list since 2026-07-28 for `TIER-D` and is in the ONE list. Run the
+trace recorder in its own terminal as always. `TIER-PREREQ` needs neither.
 
 ### ⚠️ THE ANALYSIS TRAP — do NOT use `--reject` on the refusal rows
 
