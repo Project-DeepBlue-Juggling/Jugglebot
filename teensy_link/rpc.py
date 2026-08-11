@@ -231,11 +231,17 @@ class RpcClient:
 # ── Incoming RPCs (Teensy → Jetson) ───────────────────────────────────────
 
 
-RpcHandler = Callable[[int, bytes, Address], Tuple[int, bytes]]
+RpcHandler = Callable[..., Tuple[int, bytes]]
 """``(req_id, args, from_addr) -> (status, result_blob)``.
 
 Status is an :class:`RpcStatus` value; the result_blob is method-specific.
 The handler must not raise — return ``ERR_REJECTED`` or similar instead.
+
+A handler registered with ``register(..., wants_rx_stamp=True)`` is instead
+called as ``(req_id, args, from_addr, rx_wall_us)``, where ``rx_wall_us`` is the
+kernel CLOCK_REALTIME receive time of the request datagram in microseconds, or
+``None`` when the platform/kernel did not supply one. The opt-in is explicit so
+the extra argument can never reach a 3-argument handler.
 """
 
 
@@ -250,10 +256,14 @@ class RpcServer:
 
     def __init__(self, link: TeensyLinkClient):
         self._link = link
-        self._handlers: Dict[int, RpcHandler] = {}
+        # method -> (handler, wants_rx_stamp)
+        self._handlers: Dict[int, Tuple[RpcHandler, bool]] = {}
         self._lock = threading.Lock()
+        # with_rx_stamp=True: the RPC socket is the one the client opens with
+        # SO_TIMESTAMPNS, so inbound requests carry the kernel receive time t2.
+        # It is forwarded only to handlers that asked for it (see register()).
         self._unsubscribe = link.subscribe(
-            int(p.MsgType.RPC_REQUEST), self._on_request
+            int(p.MsgType.RPC_REQUEST), self._on_request, with_rx_stamp=True
         )
 
     def close(self) -> None:
@@ -267,32 +277,45 @@ class RpcServer:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def register(self, method: int, handler: RpcHandler) -> None:
+    def register(self, method: int, handler: RpcHandler, *,
+                 wants_rx_stamp: bool = False) -> None:
         """Register a handler for a specific RPC method.
 
         Overwrites any prior handler for that method.
+
+        ``wants_rx_stamp=True`` opts the handler into the 4-argument form
+        ``(req_id, args, addr, rx_wall_us)``; the default keeps the 3-argument
+        contract every existing handler was written against.
         """
         with self._lock:
-            self._handlers[int(method)] = handler
+            self._handlers[int(method)] = (handler, bool(wants_rx_stamp))
 
     def unregister(self, method: int) -> None:
         with self._lock:
             self._handlers.pop(int(method), None)
 
-    def _on_request(self, msg_type: int, seq: int, payload: bytes, addr: Address) -> None:
+    def _on_request(self, msg_type: int, seq: int, payload: bytes, addr: Address,
+                    rx_wall_us: Optional[int] = None) -> None:
+        # rx_wall_us defaults to None so a direct call (tests, or a caller that
+        # dispatches without the client) still works unchanged.
         if len(payload) < p.RPC_REQUEST_SIZE:
             logger.warning("RPC_REQUEST too short (%d bytes) from %s", len(payload), addr)
             return
         head = p.RpcRequest.unpack(payload[: p.RPC_REQUEST_SIZE])
         args = payload[p.RPC_REQUEST_SIZE : p.RPC_REQUEST_SIZE + head.arg_len]
         with self._lock:
-            handler = self._handlers.get(int(head.method))
-        if handler is None:
+            entry = self._handlers.get(int(head.method))
+        if entry is None:
             status = int(p.RpcStatus.ERR_UNKNOWN_METHOD)
             result_blob = b""
         else:
+            handler, wants_rx_stamp = entry
             try:
-                status, result_blob = handler(int(head.req_id), args, addr)
+                if wants_rx_stamp:
+                    status, result_blob = handler(int(head.req_id), args, addr,
+                                                  rx_wall_us)
+                else:
+                    status, result_blob = handler(int(head.req_id), args, addr)
             except Exception:
                 logger.exception(
                     "RPC handler for method=%d req_id=%d raised; returning ERR_REJECTED",

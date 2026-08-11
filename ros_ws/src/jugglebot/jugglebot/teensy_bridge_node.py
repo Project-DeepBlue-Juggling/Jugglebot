@@ -3055,6 +3055,22 @@ class TeensyBridgeNode(Node):
                 # is never enforced.
                 KeyValue(key='bridge_fw_version',
                          value=self._bridge_fw_version_str()),
+                # How the wall-clock ANCHOR the Teensy time-syncs to was stamped
+                # (bridge-temporal-trustworthiness P2). 'kernel-midpoint' =
+                # (kernel RX t2 + pre-send userspace t3)/2, which cancels this
+                # node's processing delay out of the firmware's stamp + rtt/2.
+                # 'userspace' = the pre-P2 t3-only stamp, i.e. the anchor carries
+                # a +processing/2 bias again — a fallback that MUST be visible in
+                # the bag rather than inferred. 'unknown' until the Teensy's
+                # first TIME_OF_DAY_QUERY (boot, then every ~30 s).
+                KeyValue(key='tod_stamp_mode',
+                         value=self._tod.stamp_mode),
+                # stamp_mode reports only the LAST query; a guard that fires
+                # intermittently (e.g. NTP slew) leaves the mode reading
+                # 'kernel-midpoint' while some anchors were userspace-stamped —
+                # this count is the only artefact that reveals the flapping.
+                KeyValue(key='tod_implausible_rx_stamps',
+                         value=str(self._tod.implausible_rx_stamps)),
                 KeyValue(key='setpoints_sent',
                          value=str(self._sp_pump.frames_built)),
                 KeyValue(key='setpoints_rejected',

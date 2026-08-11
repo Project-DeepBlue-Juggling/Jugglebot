@@ -663,6 +663,13 @@ def test_time_of_day_responder(bridge):
     blob = got[0].payload[p.RPC_RESPONSE_SIZE:p.RPC_RESPONSE_SIZE + resp.res_len]
     (wall_us,) = struct.unpack('<Q', blob)
     assert wall_us > 0
+    # P2 (bridge-temporal-trustworthiness): HOW that stamp was built is bagged.
+    # A silent userspace fallback would restore the +processing/2 anchor bias
+    # invisibly, so /link_status carries the mode the responder actually used.
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}
+    assert kv['tod_stamp_mode'] == node._tod.stamp_mode
+    assert kv['tod_stamp_mode'] in ('kernel-midpoint', 'userspace')
 
 
 # ── ARMING_CONTRACT (A1 / A5) ──────────────────────────────────

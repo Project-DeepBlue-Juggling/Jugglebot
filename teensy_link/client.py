@@ -19,6 +19,16 @@ Threading model: one RX thread (``_rx_loop``) + optional one heartbeat thread
 Callback contract: subscribers are invoked **on the RX thread**. Keep them
 short — do not block. For heavy work (e.g. ROS publishes), enqueue and process
 on a dedicated thread.
+
+Kernel RX timestamping (P2 of ``plans/active/bridge-temporal-trustworthiness.md``):
+the **RPC socket only** is opened with ``SO_TIMESTAMPNS`` so each received frame
+carries the kernel's CLOCK_REALTIME receive time ``t2`` in ancillary data. That
+``t2`` is handed to timestamp-aware subscribers (``subscribe(..,
+with_rx_stamp=True)``) as a fifth argument, and is what lets
+:class:`teensy_link.tod_server.TimeOfDayServer` answer a TIME_OF_DAY_QUERY with
+the midpoint ``(t2 + t3)/2`` instead of the userspace-only ``t3`` — which
+cancels the server's processing delay out of the Teensy's ``stamp + rtt/2``
+anchor. The STREAM socket keeps the plain ``recvfrom`` path: it pays nothing.
 """
 
 from __future__ import annotations
@@ -39,6 +49,65 @@ logger = logging.getLogger(__name__)
 Address = Tuple[str, int]
 FrameCallback = Callable[[int, int, bytes, Address], None]
 """``(msg_type, seq, payload, from_addr)`` — invoked on RX thread."""
+
+StampedFrameCallback = Callable[[int, int, bytes, Address, Optional[int]], None]
+"""``(msg_type, seq, payload, from_addr, rx_wall_us)`` — the opt-in variant.
+
+``rx_wall_us`` is the kernel's CLOCK_REALTIME receive time in microseconds, or
+``None`` when the frame arrived without one (STREAM socket, unsupported
+platform, or a degraded probe). Register with
+``subscribe(msg_type, cb, with_rx_stamp=True)``.
+"""
+
+
+# ── Kernel RX timestamping constants ──────────────────────────────────────
+# Python 3.8.10 (this Jetson's system interpreter, which runs ros_ws/) does NOT
+# name SO_TIMESTAMPNS / SCM_TIMESTAMPNS in its ``socket`` module — measured
+# 2026-08-11, and the 3.9 on this box is the same. So the numeric constant is
+# the fallback, taken from /usr/include/asm-generic/socket.h where
+# ``SO_TIMESTAMPNS`` resolves to ``SO_TIMESTAMPNS_OLD = 35`` for a 64-bit
+# ``time_t``, and ``SCM_TIMESTAMPNS == SO_TIMESTAMPNS``. ``getattr`` first so a
+# future interpreter that DOES name it wins over our hard-coded number.
+#
+# The constant being right is NOT proof the mechanism works — the setsockopt can
+# succeed on a kernel that never delivers the cmsg. Hence the runtime probe in
+# _drain_socket: the mode only becomes "kernel" once a real packet has actually
+# carried a parseable timestamp.
+SO_TIMESTAMPNS = getattr(socket, "SO_TIMESTAMPNS", 35)
+SCM_TIMESTAMPNS = getattr(socket, "SCM_TIMESTAMPNS", SO_TIMESTAMPNS)
+
+# struct timespec { time_t tv_sec; long tv_nsec; } — two native words, 16 bytes
+# on aarch64/x86-64. A platform where it is not 16 bytes (32-bit ARM) simply
+# fails the length check in _parse_rx_timestamp_us and degrades to userspace.
+_TIMESPEC = struct.Struct("@qq")
+
+# recvmsg/CMSG_SPACE are POSIX-only — absent on Windows (the sim box runs parts
+# of this suite). Probed at import so setup can fall back without raising.
+_HAS_RECVMSG = hasattr(socket.socket, "recvmsg") and hasattr(socket, "CMSG_SPACE")
+_RX_ANCBUF_SIZE = socket.CMSG_SPACE(_TIMESPEC.size) if _HAS_RECVMSG else 0
+
+# Observable-fallback vocabulary (plan § P2: "log the mode once at startup and
+# expose it where a bag can see it"). PROBING = setsockopt accepted, no packet
+# has confirmed delivery yet; KERNEL = confirmed on a real packet; USERSPACE =
+# unavailable or degraded, i.e. today's pre-P2 behaviour.
+RX_STAMP_PROBING = "probing"
+RX_STAMP_KERNEL = "kernel"
+RX_STAMP_USERSPACE = "userspace"
+
+
+def _parse_rx_timestamp_us(ancdata) -> Optional[int]:
+    """Extract the SCM_TIMESTAMPNS CLOCK_REALTIME stamp (µs) from ancillary data.
+
+    Returns ``None`` when no usable timestamp cmsg is present — which is the
+    signal the caller uses to degrade the mode rather than silently stamp in
+    userspace.
+    """
+    for level, ctype, cdata in ancdata:
+        if (level == socket.SOL_SOCKET and ctype == SCM_TIMESTAMPNS
+                and len(cdata) >= _TIMESPEC.size):
+            sec, nsec = _TIMESPEC.unpack_from(cdata)
+            return sec * 1_000_000 + nsec // 1000
+    return None
 
 
 @dataclass
@@ -117,11 +186,16 @@ class TeensyLinkClient:
         # Per-message-type last-rx-seq for gap detection.
         self._last_rx_seq: Dict[int, int] = {}
 
-        # Callbacks: list per msg_type. A separate "wildcard" list catches
-        # all frames (used by diagnostics).
-        self._callbacks: Dict[int, List[FrameCallback]] = {}
+        # Callbacks: list of (callback, wants_rx_stamp) per msg_type. A separate
+        # "wildcard" list catches all frames (used by diagnostics) and is always
+        # called with the plain 4-argument contract.
+        self._callbacks: Dict[int, List[Tuple[FrameCallback, bool]]] = {}
         self._wildcard_callbacks: List[FrameCallback] = []
         self._cb_lock = threading.Lock()
+
+        # Kernel RX timestamping state for the RPC socket (see module docstring).
+        # Starts USERSPACE — no socket exists yet, so nothing can be stamped.
+        self._rx_stamp_mode = RX_STAMP_USERSPACE
 
         # Threads
         self._rx_thread: Optional[threading.Thread] = None
@@ -179,6 +253,40 @@ class TeensyLinkClient:
         self._rpc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._rpc_sock.bind((self._bind_host, self._bind_rpc))
         self._rpc_sock.setblocking(False)
+        # RPC socket ONLY: ask the kernel to stamp each datagram's receive time.
+        # The stream socket does not pay for this (it has no anchor role).
+        self._arm_rx_timestamps(self._rpc_sock)
+
+    def _arm_rx_timestamps(self, sock: socket.socket) -> None:
+        """Attempt SO_TIMESTAMPNS on ``sock``; set the startup mode and log it once.
+
+        Success here means only that the option was ACCEPTED. Confirmation that
+        a timestamp actually arrives is the first-packet probe in
+        :meth:`_drain_socket`, which is what moves the mode PROBING → KERNEL (or
+        degrades it to USERSPACE).
+        """
+        if not _HAS_RECVMSG:
+            self._rx_stamp_mode = RX_STAMP_USERSPACE
+            logger.info(
+                "RPC RX kernel timestamping unavailable (no recvmsg/CMSG_SPACE on "
+                "this platform) — TIME_OF_DAY stamps fall back to userspace time"
+            )
+            return
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)
+        except (OSError, OverflowError) as e:
+            self._rx_stamp_mode = RX_STAMP_USERSPACE
+            logger.warning(
+                "RPC RX kernel timestamping setsockopt(SO_TIMESTAMPNS=%d) failed: %s "
+                "— TIME_OF_DAY stamps fall back to userspace time",
+                SO_TIMESTAMPNS, e,
+            )
+            return
+        self._rx_stamp_mode = RX_STAMP_PROBING
+        logger.info(
+            "RPC RX kernel timestamping armed (SO_TIMESTAMPNS=%d); awaiting "
+            "first-packet confirmation", SO_TIMESTAMPNS,
+        )
 
     def _close_sockets(self) -> None:
         for s in (self._stream_sock, self._rpc_sock):
@@ -201,6 +309,18 @@ class TeensyLinkClient:
         if self._rpc_sock is None:
             raise RuntimeError("client not started")
         return self._rpc_sock
+
+    @property
+    def rx_stamp_mode(self) -> str:
+        """Kernel-RX-timestamping mode of the RPC socket — the observable fallback.
+
+        One of :data:`RX_STAMP_PROBING` (armed, not yet confirmed by a real
+        packet), :data:`RX_STAMP_KERNEL` (confirmed), :data:`RX_STAMP_USERSPACE`
+        (unavailable, refused, or degraded after a packet arrived without a
+        timestamp). A silent fallback would reintroduce the ``+p/2`` anchor bias
+        invisibly, so this is surfaced rather than inferred.
+        """
+        return self._rx_stamp_mode
 
     # ── Sending ──────────────────────────────────────────────────────────
 
@@ -272,22 +392,38 @@ class TeensyLinkClient:
 
     # ── Subscription ─────────────────────────────────────────────────────
 
-    def subscribe(self, msg_type: int, callback: FrameCallback) -> Callable[[], None]:
+    def subscribe(
+        self,
+        msg_type: int,
+        callback: FrameCallback,
+        *,
+        with_rx_stamp: bool = False,
+    ) -> Callable[[], None]:
         """Register a callback for a specific msg_type.
 
         Returns an unsubscribe function. The callback is invoked on the RX
         thread; keep it fast.
+
+        ``with_rx_stamp=False`` (the default, and every pre-existing caller)
+        keeps the 4-argument contract ``(msg_type, seq, payload, addr)``.
+        ``with_rx_stamp=True`` opts into the 5-argument
+        :data:`StampedFrameCallback` contract, whose extra ``rx_wall_us`` is the
+        kernel receive time in µs (or ``None``). The opt-in is explicit rather
+        than signature-sniffed so adding the argument can never silently break a
+        handler that did not ask for it.
         """
         with self._cb_lock:
-            self._callbacks.setdefault(int(msg_type), []).append(callback)
+            self._callbacks.setdefault(int(msg_type), []).append(
+                (callback, bool(with_rx_stamp))
+            )
 
         def _unsub() -> None:
             with self._cb_lock:
                 lst = self._callbacks.get(int(msg_type), [])
-                try:
-                    lst.remove(callback)
-                except ValueError:
-                    pass
+                for i, (cb, _wants) in enumerate(lst):
+                    if cb is callback:
+                        del lst[i]
+                        return
 
         return _unsub
 
@@ -331,9 +467,32 @@ class TeensyLinkClient:
 
     def _drain_socket(self, sock: socket.socket) -> None:
         # Drain pending frames on this socket without blocking, bounded per wakeup.
+        #
+        # The RPC socket uses recvmsg (same syscall class as recvfrom, one call
+        # per datagram) so the kernel's RX timestamp rides along in ancillary
+        # data. Hoisted out of the loop: one identity check per wakeup, not per
+        # frame. The stream socket stays on recvfrom.
+        stamped = (sock is self._rpc_sock
+                   and self._rx_stamp_mode in (RX_STAMP_PROBING, RX_STAMP_KERNEL))
         for _ in range(self._MAX_DRAIN_PER_WAKE):
+            rx_wall_us: Optional[int] = None
             try:
-                data, addr = sock.recvfrom(p.MAX_FRAME + 64)
+                if stamped:
+                    data, ancdata, _msg_flags, addr = sock.recvmsg(
+                        p.MAX_FRAME + 64, _RX_ANCBUF_SIZE
+                    )
+                    rx_wall_us = _parse_rx_timestamp_us(ancdata)
+                    if rx_wall_us is None:
+                        # setsockopt was accepted but the kernel is not actually
+                        # delivering — degrade for the life of this client. This
+                        # is the RUNTIME half of the probe; without it a silent
+                        # userspace fallback would look like kernel stamping.
+                        stamped = False
+                        self._degrade_rx_stamping()
+                    elif self._rx_stamp_mode == RX_STAMP_PROBING:
+                        self._confirm_rx_stamping()
+                else:
+                    data, addr = sock.recvfrom(p.MAX_FRAME + 64)
             except BlockingIOError:
                 return
             except OSError:
@@ -368,7 +527,7 @@ class TeensyLinkClient:
             )
             if msg_type == int(p.MsgType.HEARTBEAT_T2J):
                 self.stats.last_t2j_heartbeat_us = self.stats.last_rx_us
-            self._dispatch(msg_type, seq, payload, addr)
+            self._dispatch(msg_type, seq, payload, addr, rx_wall_us)
         else:
             # Loop ran the full cap without a BlockingIOError return — the socket
             # still had frames. Count it (surfaced on [diag]); the remainder is
@@ -387,16 +546,61 @@ class TeensyLinkClient:
                 self.stats.seq_gaps_by_type.get(msg_type, 0) + 1
             )
 
-    def _dispatch(self, msg_type: int, seq: int, payload: bytes, addr: Address) -> None:
+    def _confirm_rx_stamping(self) -> None:
+        """PROBING → KERNEL on the first packet that actually carried a stamp.
+
+        Logged ONCE (a state transition, not a per-packet event) — the RX loop
+        must not gain per-frame work.
+        """
+        self._rx_stamp_mode = RX_STAMP_KERNEL
+        logger.info(
+            "RPC RX kernel timestamping CONFIRMED on first packet — "
+            "TIME_OF_DAY stamps use the (t2+t3)/2 midpoint"
+        )
+
+    def _degrade_rx_stamping(self) -> None:
+        """→ USERSPACE after a real packet arrived with no usable timestamp.
+
+        One-shot: the mode latches, the drain goes back to ``recvfrom``, and the
+        warning is emitted once, not per frame.
+        """
+        if self._rx_stamp_mode == RX_STAMP_USERSPACE:
+            return
+        self._rx_stamp_mode = RX_STAMP_USERSPACE
+        logger.warning(
+            "RPC RX kernel timestamping DEGRADED: setsockopt(SO_TIMESTAMPNS=%d) "
+            "was accepted but a received packet carried no timestamp — "
+            "TIME_OF_DAY stamps fall back to userspace time (anchor regains the "
+            "+processing/2 bias)", SO_TIMESTAMPNS,
+        )
+
+    def _dispatch(
+        self,
+        msg_type: int,
+        seq: int,
+        payload: bytes,
+        addr: Address,
+        rx_wall_us: Optional[int] = None,
+    ) -> None:
         with self._cb_lock:
             type_cbs = list(self._callbacks.get(msg_type, ()))
             wild_cbs = list(self._wildcard_callbacks)
-        for cb in type_cbs + wild_cbs:
+        for cb, wants_stamp in type_cbs:
+            try:
+                if wants_stamp:
+                    cb(msg_type, seq, payload, addr, rx_wall_us)   # type: ignore[call-arg]
+                else:
+                    cb(msg_type, seq, payload, addr)
+            except Exception:
+                logger.exception(
+                    "callback for msg_type=%d raised; continuing", msg_type
+                )
+        for cb in wild_cbs:
             try:
                 cb(msg_type, seq, payload, addr)
             except Exception:
                 logger.exception(
-                    "callback for msg_type=%d raised; continuing", msg_type
+                    "wildcard callback for msg_type=%d raised; continuing", msg_type
                 )
 
     # ── Convenience queries ──────────────────────────────────────────────
