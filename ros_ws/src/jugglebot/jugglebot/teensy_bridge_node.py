@@ -104,6 +104,7 @@ from teensy_link import (
     ConeFrame,
     CmdResultFrame,
     BbAxisEstimates,
+    LegCmd,
     PlatformFrame,
     HandCmdEcho,
     HandSensor,
@@ -659,6 +660,10 @@ class TeensyBridgeNode(Node):
         # depend on drain timing.
         self._latest_bb_est: BbAxisEstimates | None = None
         self._latest_bb_est_mono = 0.0
+        # Same queue-then-drain shape for the Teensy's POST-CLAMP executed leg
+        # command (LEG_CMD, 100 Hz), drained by _publish_leg_cmd_executed. Also
+        # declared before the subscribe block for the same startup-race reason.
+        self._leg_cmd_queue = []  # list of LegCmd, drained by timer
 
         # ── BB loud command-outcome channel (CMD_RESULT relay) ──
         # One outstanding throw at a time (firmware is serialized → no correlation
@@ -782,6 +787,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.CAN_ERRORS), self._on_can_errors)    # CAN3 wire-error counters
         self._client.subscribe(int(MsgType.BRIDGE_TX_DIAG), self._on_bridge_tx_diag)      # TX pressure + hand stages
         self._client.subscribe(int(MsgType.BRIDGE_IDENTITY), self._on_bridge_identity)    # bridge FW identity
+        self._client.subscribe(int(MsgType.LEG_CMD), self._on_leg_cmd)          # post-clamp executed leg cmd
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -806,6 +812,30 @@ class TeensyBridgeNode(Node):
         # stack streams). See _publish_leg_setpoint_echo for the freshness gate.
         self.leg_setpoint_echo_pub = self.create_publisher(
             Float64MultiArray, 'leg_setpoint_echo', 10)
+
+        # The Teensy's OWN report of what it actually commanded to the leg
+        # ODrives: the 500 Hz interp ladder's output (axes[i].target_pos_rev /
+        # target_vel_rps) AFTER the lead and stroke clamps, sampled at the 100 Hz
+        # telemetry rate and stamped with the bridge wall clock (t_teensy_us,
+        # time-synced to the Jetson). NOT the same thing as leg_setpoint_echo
+        # above — that is the ACCEPTED u0 knot as it entered the :5557 funnel on
+        # THIS box, i.e. the far end of the same wire. The pair is the point:
+        #   /leg_setpoint_echo  → what the Jetson asked for, when it asked
+        #   /leg_cmd_executed   → what the Teensy commanded, when it commanded it
+        #   robot_state         → what the encoders did
+        # Those three timelines are the three-way discriminator
+        # logbook/2026-07-18-teensy-uptime-tracking-degradation.md needed and did
+        # not have: without the middle one, a lag that grows with bridge uptime
+        # (10 ms fresh → ~240 ms at 30 h) cannot be attributed to Jetson→Teensy
+        # transport vs the interp ladder vs the ODrives, and the entry's Addendum
+        # names "LEG_CMD not published" as the first of its telemetry gaps. It is
+        # also the input to the alarmed end-to-end command-latency monitor that
+        # closure Addendum requires (plans/active/bridge-temporal-trustworthiness.md
+        # P0 → P3).
+        self.leg_cmd_executed_pub = self.create_publisher(
+            JointState, 'leg_cmd_executed', 50)
+        # (_leg_cmd_queue is initialized above, before the subscribe block, to
+        # avoid a startup race with the already-live RX thread.)
 
         # ── Ball Butler (cutover, production names) ────
         # Intentional naming deviation from the earlier "all under /teensy/*"
@@ -981,6 +1011,7 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.01, self._drain_cone_catch_events) # 100 Hz cone events (cheap when idle)
         self.create_timer(0.1, self._publish_cone_heartbeat)   # 10 Hz cone (matches CAN2 rate)
         self.create_timer(0.01, self._publish_bb_axis_estimates)  # 100 Hz drain (BB pitch/hand est.)
+        self.create_timer(0.01, self._publish_leg_cmd_executed)   # 100 Hz drain (Teensy post-clamp leg cmd)
         self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
@@ -1378,6 +1409,22 @@ class TeensyBridgeNode(Node):
             self._latest_bb_est = e
             self._latest_bb_est_mono = time.monotonic()
 
+    def _on_leg_cmd(self, msg_type, seq, payload, addr):
+        # RX-thread callback: decode + queue every sample. Same contract as
+        # _on_bb_estimates — the drain timer publishes on the executor thread,
+        # NEVER this one (a rclpy publish here would put DDS work on the socket
+        # RX path that also carries the 100 Hz telemetry and the RPC replies).
+        # Malformed frames dropped.
+        try:
+            c = LegCmd.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            q = self._leg_cmd_queue
+            q.append(c)
+            if len(q) > 4000:        # ~40 s at 100 Hz — bound if the drain stalls
+                del q[:len(q) - 4000]
+
     def _on_cmd_result(self, msg_type, seq, payload, addr):
         # RX-thread callback (loud command-outcome channel). Decode the relayed CMD_RESULT
         # CAN frame; if it's a THROW outcome and a throw goal is outstanding, hand
@@ -1424,6 +1471,44 @@ class TeensyBridgeNode(Node):
             js.position = [float(e.pitch_pos_rev), float(e.hand_pos_rev)]
             js.velocity = [float(e.pitch_vel_rps), float(e.hand_vel_rps)]
             self.bb_estimates_pub.publish(js)
+
+    def _publish_leg_cmd_executed(self):
+        """Drain queued LEG_CMD samples → /leg_cmd_executed (JointState).
+
+        WHAT this is: the can-bridge Teensy's own report of what its 500 Hz
+        interp ladder commanded to the leg ODrives — axes[i].target_pos_rev /
+        target_vel_rps AFTER the lead and stroke clamps
+        (telemetry.cpp::send_leg_cmd, sampled at the 100 Hz telemetry rate).
+        It is NOT /leg_setpoint_echo, which is the ACCEPTED u0 knot at the
+        Jetson end of the same wire.
+
+        WHY it exists: it is the missing middle timeline of the
+        commanded → executed → measured chain, so a bag can attribute the
+        uptime-growing command lag of
+        logbook/2026-07-18-teensy-uptime-tracking-degradation.md to
+        Jetson→Teensy transport, the interp ladder, or the ODrives, instead of
+        only observing the total. It is also the input the alarmed end-to-end
+        latency monitor that entry's closure Addendum requires will consume.
+
+        Each sample is stamped with the bridge wall-clock at sample time
+        (c.t_teensy_us, time-synced to the Jetson), so per-sample timing is
+        correct regardless of when this drain runs — and, critically, the
+        stamp is the TEENSY's clock, which is what makes a Jetson-vs-Teensy
+        one-way delay measurable at all. position=motor rev, velocity=rev/s,
+        Jugglebot convention (positive = extension); name=[leg0..leg5].
+        """
+        with self._lock:
+            batch = self._leg_cmd_queue
+            self._leg_cmd_queue = []
+        for c in batch:
+            js = JointState()
+            t_us = int(c.t_teensy_us)
+            js.header.stamp.sec = t_us // 1_000_000
+            js.header.stamp.nanosec = (t_us % 1_000_000) * 1000
+            js.name = [f'leg{i}' for i in range(_NUM_LEGS)]
+            js.position = [float(v) for v in c.cmd_pos_rev]
+            js.velocity = [float(v) for v in c.cmd_vel_rps]
+            self.leg_cmd_executed_pub.publish(js)
 
     # ═══════════════════════════════════════════════════════════
     # Read-side publishers (mirror can_node field-by-field)

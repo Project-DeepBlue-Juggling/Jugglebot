@@ -518,6 +518,21 @@ def generate_launch_description():
             '/cone/timing_result',
             '/bb/odrive_diag',
             '/bb/axis_estimates',
+            # The two telemetry gaps the 2026-07-18 uptime-lag investigation
+            # named (logbook/2026-07-18-teensy-uptime-tracking-degradation.md,
+            # Addendum). /profile is the 1 Hz firmware instrumentation —
+            # udp_rtt_us, udp_jitter_us, interp deadline misses/jitter — which
+            # WAS published but never bagged, so that entry could only tell the
+            # operator to "watch it live" and its seven-session table could
+            # never be joined to RTT-vs-uptime after the fact. /leg_cmd_executed
+            # is the Teensy's post-clamp executed leg command at 100 Hz, the
+            # middle timeline between /leg_setpoint_echo (what the Jetson asked
+            # for) and robot_state (what the encoders did); without it a
+            # degraded session's bag cannot say whether the lag is transport,
+            # interp, or ODrive. Together they are what makes a degraded bag
+            # self-diagnosing instead of merely degraded.
+            '/profile',
+            '/leg_cmd_executed',
             # ── THE ONE LIST (toss-selftuning D18, 2026-08-10) ──────────────
             # Until now two divergent record lists existed — this one and the
             # operator runbook's — and NEITHER was sufficient: the runbook's had

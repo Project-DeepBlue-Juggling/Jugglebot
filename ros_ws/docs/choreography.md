@@ -188,6 +188,12 @@
 - **subscribers:** `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.msg.HandTelemetryMessage`
 
+### `leg_cmd_executed`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `sensor_msgs.msg.JointState`
+
 ### `leg_lengths_topic`
 
 - **publishers:** `motion_bridge_node` (not launched)
@@ -580,6 +586,7 @@ broken wire cannot hide among them.
 - `jugglebot/reload_request` — service with no clients
 - `jugglebot/toss` — action with no clients
 - `jugglebot/toss_continuous` — action with no clients
+- `leg_cmd_executed` — topic with no subscribers
 - `leg_lengths_topic` — topic with no subscribers
 - `leg_setpoint_echo` — topic with no subscribers
 - `leg_torques_diagnostic` — topic with no subscribers

@@ -11,8 +11,13 @@ files_changed:
   - plans/active/INDEX.md
   - logbook/2026-08-11-bridge-temporal-trustworthiness-kickoff.md
   - logbook/INDEX.md
-subsystem: [can, motion]
-tags: [docs, planning, performance, IPC]
+subsystem:
+  - can
+  - motion
+tags:
+  - docs
+  - performance
+  - IPC
 ---
 
 # Bridge temporal trustworthiness arc opened

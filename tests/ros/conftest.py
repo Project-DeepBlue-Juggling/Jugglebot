@@ -7,9 +7,14 @@ Path setup is handled by the parent tests/conftest.py.
 Injection is two-tier:
 
 * **Unconditional** — ``rclpy``, ``jugglebot_interfaces``, ``geometry_msgs``,
-  ``std_msgs``, ``std_srvs``, ``sensor_msgs``. These have no non-ROS2
-  implementation, so a mock is the only option and the mock is always used,
-  Jetson included.
+  ``std_msgs``, ``std_srvs``. These have no non-ROS2 implementation, so a mock
+  is the only option and the mock is always used, Jetson included.
+  (``sensor_msgs`` was listed here until 2026-08-11 but has never actually been
+  injected: ``teensy_bridge_node``'s two ``JointState`` publishers bind the REAL
+  Foxy package. That is fine on the Jetson and load-bearing for the
+  ``MockHeader`` stub below — the real ``JointState`` constructs a
+  ``std_msgs.msg.Header``, which DOES resolve to the mock — but it does mean the
+  bridge test family cannot import on a box with no ROS 2 install.)
 * **Fallback only** — ``diagnostic_msgs`` and ``ament_index_python``
   (registered at the bottom of this file, guarded by ``try: import``). Both
   exist for real on the Jetson and are used for real there; the stubs exist
@@ -359,6 +364,25 @@ class MockString:
 @dataclass
 class MockBool:
     data: bool = False
+
+
+@dataclass
+class MockHeader:
+    """std_msgs/Header stand-in (fields: stamp, frame_id).
+
+    Load-bearing for the REAL ``sensor_msgs`` messages. ``sensor_msgs`` is NOT
+    mocked here (it is the real Foxy package on the Jetson), and the real
+    ``JointState.__init__`` does ``from std_msgs.msg import Header`` — which
+    resolves to THIS module, because std_msgs IS mocked unconditionally. Without
+    a Header stub, ``JointState()`` raises ImportError, so no test could
+    construct one and the node's two JointState publishers
+    (``bb/axis_estimates`` since 2026-07, ``leg_cmd_executed`` from 2026-08-11)
+    were unreachable from the suite. The real ``header`` setter asserts
+    ``isinstance(value, Header)`` against this same stub, so the pairing is
+    consistent.
+    """
+    stamp: MsgTime = field(default_factory=MsgTime)
+    frame_id: str = ''
 
 
 # ── std_srvs mock ─────────────────────────────────────────────
@@ -968,6 +992,7 @@ _create_mock_module('std_msgs.msg', {
     'Float64': MockFloat64,
     'String': MockString,
     'Bool': MockBool,
+    'Header': MockHeader,
 })
 
 _create_mock_module('std_srvs')
