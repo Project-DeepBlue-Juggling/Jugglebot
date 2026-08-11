@@ -93,6 +93,13 @@ RECORDED_TOPICS = [
     # robot_state (what the encoders did). Without it a degraded session's bag
     # cannot attribute the lag to transport vs interp vs ODrive.
     '/leg_cmd_executed',
+    # The per-anchor clock-discipline series (FW 11 CLOCK_DIAG 0x8F). Its value
+    # is a fit over HOURS of samples — the crystal's ppm and thermal coefficient
+    # — so a session that publishes it without recording it produces nothing at
+    # all. It records EMPTY until the bridge is flashed to FW 11 (deliberately
+    # held until after the S1 aged-bridge experiment), and a silent topic is
+    # exactly what this list's add-never-trim rule is for.
+    '/clock_diag',
 ]
 
 

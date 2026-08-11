@@ -98,6 +98,31 @@ static float s_stow_pos[NUM_LEGS];
 static float s_stow_speed = 0.0f;        // accel-ramped descent speed (rev/s)
 static volatile uint32_t s_deadline_misses = 0;
 static volatile uint32_t s_max_jitter_us = 0;
+// ── 500 Hz ladder occupancy (FW 11, uplinked on CLOCK_DIAG 0x8F) ─────────────
+// The last two telemetry gaps named in the Addendum to
+// logbook/2026-07-18-teensy-uptime-tracking-degradation.md: neither the recovery
+// slew's duty nor the Mode-2 extrapolation duty left the chip, so "the response
+// shape also slows" could never be tested against "the ladder is falling back to
+// extrapolation more often".
+//
+// CUMULATIVE SINCE BOOT and never cleared by a reader — the emitter differences
+// two consecutive reads to get a window (profiling.cpp's s_prev_* idiom, and the
+// CanErrors / BridgeTxDiag "the consumer differences them" discipline). That is
+// what makes them RACE-FREE, and the choice is deliberate: a read-then-zero at
+// the emit site would leave a window in which an ISR increment lands between the
+// read and the store and is silently lost. At 500 Hz that window is hit often
+// enough to matter, and a lost tick in a duty-cycle numerator is indistinguishable
+// from a real change in occupancy.
+// Each is a single naturally-aligned word, so the ISR's read-modify-write is
+// uninterruptible-by-a-second-writer (the ISR is the ONLY writer) and the
+// task-side load is atomic on Cortex-M7 — no PRIMASK guard needed, unlike the
+// u64 s_last_tick_us above. `volatile` so the ISR cannot cache them in a register
+// across ticks and the task cannot hoist its load out of a loop.
+// u32 wraps after ~99 days of continuous ticking; the emitter's unsigned
+// subtraction is wrap-correct, so the wrap costs a consumer nothing.
+static volatile uint32_t s_tick_count         = 0;
+static volatile uint32_t s_recover_slew_ticks = 0;
+static volatile uint32_t s_extrap_ticks       = 0;
 // Monotonic (us) stamp of the most recent 500 Hz tick. Written ONLY by interp_isr
 // (and zeroed by interp_reset() when the interp is quiescent). `volatile` since
 // 2026-08-09 because interp_last_tick_us() now reads it from TASK context for the
@@ -274,6 +299,12 @@ static void latch_from_staging() {
 // ── 500 Hz ISR — port of teensy_interp.tick + CAN TX ──────────────────────────
 static void interp_isr() {
   const uint64_t now_mono = micros64();
+  // Occupancy denominator, counted at the very TOP so it covers every entry
+  // including the ones that return early below (deferred stow, or before the
+  // first setpoint is latched). That makes it a true tick census — it should
+  // equal 500 x window_seconds, and a shortfall is ISR starvation, which is a
+  // second and independent read on the health interp_deadline_misses reports.
+  ++s_tick_count;
   // Jitter / deadline-miss accounting.
   if (s_last_tick_us != 0) {
     const uint32_t dt_tick = (uint32_t)(now_mono - s_last_tick_us);
@@ -380,6 +411,7 @@ static void interp_isr() {
     }
   } else if (dt <= MAXEXT) {
     // Mode 2: cubic Taylor extrapolation.
+    ++s_extrap_ticks;   // occupancy: this tick ran open-loop off the last knot
     const float dt2 = dt * dt;
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
       cmd_pos[i] = s_base_pos[i] + s_base_vel[i] * dt
@@ -487,6 +519,14 @@ static void interp_isr() {
     for (uint8_t i = 0; i < NUM_LEGS; ++i) s_recover_pos[i] = axes[i].pos_rev;
     s_recover_speed = 0.0f;
   } else if (s_recover_slewing) {
+    // Occupancy counted HERE, at the override, not at the flag. During a
+    // cold-start move (the branch above) the flag can stay armed while the ramp
+    // is pinned to the live encoder and skipped — those ticks emit the
+    // cold-start move's commands, not the ramp's, so counting them would
+    // overstate the answer to the only question this counter is asked: how often
+    // did the transmitted command come from the recovery ramp instead of the
+    // trajectory.
+    ++s_recover_slew_ticks;
     const float dt_tick = INTERP_PERIOD_US * 1e-6f;
     s_recover_speed += RECOVER_SLEW_ACCEL_RPS2 * dt_tick;
     if (s_recover_speed > RECOVER_SLEW_VEL_RPS) s_recover_speed = RECOVER_SLEW_VEL_RPS;
@@ -581,6 +621,9 @@ void interp_reset() {
   s_recover_speed = 0.0f;
   s_deadline_misses = 0;
   s_max_jitter_us = 0;
+  s_tick_count = 0;
+  s_recover_slew_ticks = 0;
+  s_extrap_ticks = 0;
   s_last_tick_us = 0;
   s_lead_clamp_mask = 0;
   s_torque_clamp_mask = 0;
@@ -628,6 +671,12 @@ bool interp_output_enabled() { return s_output_enabled; }
 uint32_t interp_deadline_misses() { return s_deadline_misses; }
 uint32_t interp_max_jitter_us() { return s_max_jitter_us; }
 void interp_reset_jitter() { s_max_jitter_us = 0; }
+// Cumulative-since-boot occupancy census. No PRIMASK guard: each is a single
+// naturally-aligned 32-bit word, so the load is atomic on Cortex-M7 (the u64
+// interp_last_tick_us above is the case that genuinely needs the mask).
+uint32_t interp_tick_count() { return s_tick_count; }
+uint32_t interp_recover_slew_ticks() { return s_recover_slew_ticks; }
+uint32_t interp_extrap_ticks() { return s_extrap_ticks; }
 uint8_t interp_lead_clamp_mask() { return s_lead_clamp_mask; }
 uint8_t interp_torque_clamp_mask() { return s_torque_clamp_mask; }
 

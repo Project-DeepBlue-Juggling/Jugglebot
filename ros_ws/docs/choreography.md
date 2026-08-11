@@ -151,6 +151,12 @@
     catch/armed rises, so catch_coordinator_node holds the value before any
     arm (ros_ws/docs/hand_command_continuity.md).
 
+### `clock_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ### `cone/catch_event`
 
 - **publishers:** `teensy_bridge_node`
@@ -578,6 +584,7 @@ broken wire cannot hide among them.
 - `bb/reset` — service with no clients
 - `bb/start_accuracy_calibration` — service with no clients
 - `clear_errors` — service with no clients
+- `clock_diag` — topic with no subscribers
 - `cone/heartbeat` — topic with no subscribers
 - `cone/timing_result` — topic with no subscribers
 - `configure` — service with no clients

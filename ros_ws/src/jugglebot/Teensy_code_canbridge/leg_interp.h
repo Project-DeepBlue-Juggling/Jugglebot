@@ -60,6 +60,24 @@ uint32_t interp_deadline_misses();
 uint32_t interp_max_jitter_us();
 void     interp_reset_jitter();
 
+// ── 500 Hz ladder occupancy census (FW 11 → CLOCK_DIAG 0x8F) ─────────────────
+// CUMULATIVE SINCE BOOT — the caller differences two consecutive reads to get a
+// window count, exactly as profiling.cpp does with the CAN frame counters. There
+// is deliberately NO reset entry point: a read-then-clear at the emit site would
+// silently drop any ISR increment that landed between the two, and at 500 Hz that
+// loss is indistinguishable from a real change in occupancy. u32 wrap (~99 days)
+// is harmless because unsigned subtraction is wrap-correct.
+//   interp_tick_count()        — EVERY ISR entry, including early returns (stow,
+//                                pre-first-latch). The duty-cycle denominator and
+//                                a tick-census cross-check of interp_deadline_misses.
+//   interp_recover_slew_ticks()— ticks where the re-enable recovery ramp actually
+//                                OVERRODE the streamed command (not merely armed).
+//   interp_extrap_ticks()      — ticks that took the Mode-2 cubic-Taylor branch,
+//                                i.e. ran open-loop with no u1 knot available.
+uint32_t interp_tick_count();
+uint32_t interp_recover_slew_ticks();
+uint32_t interp_extrap_ticks();
+
 // Per-leg lead-clamp-engaged bitmask from the most recent computed 500 Hz tick
 // (bit i = leg i). Diagnostic telemetry (surfaced on HeartbeatT2J) for the
 // 2026-07-10 stutter/lead diagnosis.

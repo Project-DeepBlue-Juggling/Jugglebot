@@ -49,6 +49,7 @@ class MsgType(IntEnum):
     CAN_ERRORS = 140  # 1 Hz CAN3 wire-error + fault-confinement counters (STREAM, T→J)
     BRIDGE_TX_DIAG = 141  # 1 Hz per-bus CAN TX deferral/queue pressure + per-stage hand-send attribution (STREAM, T→J)
     BRIDGE_IDENTITY = 142  # 1 Hz can-bridge firmware identity: FW_VERSION + PROTOCOL_VERSION echo (STREAM, T→J)
+    CLOCK_DIAG = 143  # Per-accepted-TOD-anchor wall-clock discipline sample + 500 Hz interp occupancy (STREAM, T→J)
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
 
 class RpcMethod(IntEnum):
@@ -120,6 +121,11 @@ class HandSensorFlags(IntEnum):
     VALID = 4  # bit2: not UNKNOWN (fresh, gated good reply)
     STALE = 8  # bit3: no good reply within the staleness window
     TIME_SYNCED = 16  # bit4: bridge wall anchor set at the reply
+
+class ClockDiagFlags(IntEnum):
+    STEPPED = 1  # bit0: this anchor STEPPED the offset (|err_us| > TIME_STEP_THRESHOLD_US, or the first anchor) instead of slewing the IIR. A step means the measured offset moved further in one interval than any crystal can explain (>20 ms in 30 s = >666 ppm), i.e. boot, a re-acquisition after a link gap, or a Jetson clock step — so freq_ppb over that interval is NOT a crystal reading and FREQ_VALID is cleared with it
+    FIRST_ANCHOR = 2  # bit1: the FIRST anchor since boot — there was no prior offset to difference against, so err_us is reported as 0 because it does not EXIST, not because it was zero
+    FREQ_VALID = 4  # bit2: freq_ppb carries a real measurement. When CLEAR, freq_ppb is 0 and that 0 means NO SAMPLE — never 'zero frequency error'. The read site must branch on this bit, which is why it is a positive assertion rather than an invalid flag
 
 class HeartbeatT2JFlags(IntEnum):
     TIME_SYNCED = 1  # bit0: Teensy clock synced to the Jetson anchor
@@ -590,6 +596,35 @@ class BridgeIdentity:
         vals = _BRIDGE_IDENTITY_STRUCT.unpack(data[:3])
         it = iter(vals)
         return cls(next(it), next(it))
+
+# ClockDiag: ONE SAMPLE PER ACCEPTED TIME-OF-DAY ANCHOR (~30 s steady state, 500 ms during the pre-first-anchor fast retry), carrying the wall-clock discipline state that time_base.cpp::set_wall_anchor has always computed and then DISCARDED, plus the 500 Hz interp ladder's fallback-mode occupancy over the window since the previous emit. Built for plans/active/bridge-temporal-trustworthiness.md P1; it is the raw material the clock plan's Phase 1 needs before the servo in plans/active/bridge-clock-frequency-discipline.md is touched — the ACTUAL crystal ppm, its thermal coefficient, and the RTT-jitter floor that sets the achievable Kp/Ki — and the occupancy half closes the two remaining telemetry gaps named in the Addendum to logbook/2026-07-18-teensy-uptime-tracking-degradation.md (recover-slew and extrapolation-mode occupancy were not uplinked at all). WHY THE TWO HALVES SHARE A FRAME: they are read together. The question is whether a session's growing command lag is the transport (rtt_us climbing), the clock (err_us / freq_ppb wandering) or the interp ladder falling back to extrapolation — and a single frame makes those three answers simultaneous by construction rather than by a join across two cadences. SELF-CONTAINED BY DESIGN: every derived quantity here can be re-derived by the consumer from the raw fields on the same sample (measured offset = jetson_wall_us - t_local_us; freq_ppb = 1e9 * delta(measured offset) / dt_local_us), so a firmware arithmetic bug is falsifiable from a bag instead of having to be trusted. THE X-AXIS IS t_local_us (micros64, the raw crystal), NOT a wall stamp: the wall clock is the quantity under measurement and it STEPS, so stamping these samples with now_wall_us() would fold the measurand into its own time base. That is also why the frame needs no header timestamp from the host. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW 10 board never sends this frame, so its consumer surface must read EMPTY, never error.
+CLOCK_DIAG_FMT = '<QQIIiiIIIIB'
+CLOCK_DIAG_SIZE = 49
+_CLOCK_DIAG_STRUCT = struct.Struct(CLOCK_DIAG_FMT)
+assert _CLOCK_DIAG_STRUCT.size == 49
+
+@dataclass
+class ClockDiag:
+    t_local_us: int = 0
+    jetson_wall_us: int = 0
+    dt_local_us: int = 0
+    rtt_us: int = 0
+    err_us: int = 0
+    freq_ppb: int = 0
+    anchor_seq: int = 0
+    interp_ticks: int = 0
+    recover_slew_ticks: int = 0
+    extrap_ticks: int = 0
+    flags: int = 0
+
+    def pack(self) -> bytes:
+        return _CLOCK_DIAG_STRUCT.pack(self.t_local_us, self.jetson_wall_us, self.dt_local_us, self.rtt_us, self.err_us, self.freq_ppb, self.anchor_seq, self.interp_ticks, self.recover_slew_ticks, self.extrap_ticks, self.flags)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ClockDiag':
+        vals = _CLOCK_DIAG_STRUCT.unpack(data[:49])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'

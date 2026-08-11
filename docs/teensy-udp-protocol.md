@@ -84,6 +84,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `CAN_ERRORS` | 0x8C | 1 Hz CAN3 wire-error + fault-confinement counters (STREAM, T→J) |
 | `BRIDGE_TX_DIAG` | 0x8D | 1 Hz per-bus CAN TX deferral/queue pressure + per-stage hand-send attribution (STREAM, T→J) |
 | `BRIDGE_IDENTITY` | 0x8E | 1 Hz can-bridge firmware identity: FW_VERSION + PROTOCOL_VERSION echo (STREAM, T→J) |
+| `CLOCK_DIAG` | 0x8F | Per-accepted-TOD-anchor wall-clock discipline sample + 500 Hz interp occupancy (STREAM, T→J) |
 | `RPC_RESPONSE` | 0x90 | RPC response (RPC port, T→J) |
 
 ### RpcMethod
@@ -176,6 +177,14 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `VALID` | 4 | bit2: not UNKNOWN (fresh, gated good reply) |
 | `STALE` | 8 | bit3: no good reply within the staleness window |
 | `TIME_SYNCED` | 16 | bit4: bridge wall anchor set at the reply |
+
+### ClockDiagFlags
+
+| Member | Value | Notes |
+|--------|------:|-------|
+| `STEPPED` | 1 | bit0: this anchor STEPPED the offset (\|err_us\| > TIME_STEP_THRESHOLD_US, or the first anchor) instead of slewing the IIR. A step means the measured offset moved further in one interval than any crystal can explain (>20 ms in 30 s = >666 ppm), i.e. boot, a re-acquisition after a link gap, or a Jetson clock step — so freq_ppb over that interval is NOT a crystal reading and FREQ_VALID is cleared with it |
+| `FIRST_ANCHOR` | 2 | bit1: the FIRST anchor since boot — there was no prior offset to difference against, so err_us is reported as 0 because it does not EXIST, not because it was zero |
+| `FREQ_VALID` | 4 | bit2: freq_ppb carries a real measurement. When CLEAR, freq_ppb is 0 and that 0 means NO SAMPLE — never 'zero frequency error'. The read site must branch on this bit, which is why it is a positive assertion rather than an invalid flag |
 
 ### HeartbeatT2JFlags
 
@@ -451,6 +460,26 @@ Payload **3 bytes**. Python struct fmt: `<HB`.
 |-------|------|------:|-------|
 | `fw_version` | u16 | 1 | canbridge_config.h FW_VERSION of the running build |
 | `protocol_version` | u8 | 1 | PROTOCOL_VERSION the running build was compiled against (self-description — a mismatch makes this frame undecodable) |
+
+### ClockDiag (`MsgType.CLOCK_DIAG`, T2J, STREAM port)
+
+ONE SAMPLE PER ACCEPTED TIME-OF-DAY ANCHOR (~30 s steady state, 500 ms during the pre-first-anchor fast retry), carrying the wall-clock discipline state that time_base.cpp::set_wall_anchor has always computed and then DISCARDED, plus the 500 Hz interp ladder's fallback-mode occupancy over the window since the previous emit. Built for plans/active/bridge-temporal-trustworthiness.md P1; it is the raw material the clock plan's Phase 1 needs before the servo in plans/active/bridge-clock-frequency-discipline.md is touched — the ACTUAL crystal ppm, its thermal coefficient, and the RTT-jitter floor that sets the achievable Kp/Ki — and the occupancy half closes the two remaining telemetry gaps named in the Addendum to logbook/2026-07-18-teensy-uptime-tracking-degradation.md (recover-slew and extrapolation-mode occupancy were not uplinked at all). WHY THE TWO HALVES SHARE A FRAME: they are read together. The question is whether a session's growing command lag is the transport (rtt_us climbing), the clock (err_us / freq_ppb wandering) or the interp ladder falling back to extrapolation — and a single frame makes those three answers simultaneous by construction rather than by a join across two cadences. SELF-CONTAINED BY DESIGN: every derived quantity here can be re-derived by the consumer from the raw fields on the same sample (measured offset = jetson_wall_us - t_local_us; freq_ppb = 1e9 * delta(measured offset) / dt_local_us), so a firmware arithmetic bug is falsifiable from a bag instead of having to be trusted. THE X-AXIS IS t_local_us (micros64, the raw crystal), NOT a wall stamp: the wall clock is the quantity under measurement and it STEPS, so stamping these samples with now_wall_us() would fold the measurand into its own time base. That is also why the frame needs no header timestamp from the host. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW 10 board never sends this frame, so its consumer surface must read EMPTY, never error.
+
+Payload **49 bytes**. Python struct fmt: `<QQIIiiIIIIB`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_local_us` | u64 | 1 | micros64() captured inside set_wall_anchor at this anchor. The pure-crystal monotonic x-axis for every fit made from these samples — see the summary. Also the epoch reference: measured offset = jetson_wall_us - t_local_us |
+| `jetson_wall_us` | u64 | 1 | The anchor value ACTUALLY APPLIED, i.e. the Jetson's stamp already advanced by rtt/2 (time_sync_master.cpp::on_tod_response). Carried raw rather than as a pre-computed offset so (a) the consumer derives the measured offset itself and (b) the anchor can be cross-referenced against the Jetson's own bag clock, which is what makes the one-way-delay asymmetry of the plan's coupling section checkable at all |
+| `dt_local_us` | u32 | 1 | micros64() elapsed since the PREVIOUS accepted anchor (0 on the first). The denominator of freq_ppb, carried so the estimate is re-derivable AND so its precision is visible: measurement noise is ~RTT-jitter, so implied-ppb noise scales as 1/dt and a 500 ms fast-retry interval is orders of magnitude noisier than a 30 s steady-state one. Consumers filter on this. Saturates at UINT32_MAX (~71.6 min), and a saturating interval also clears FREQ_VALID |
+| `rtt_us` | u32 | 1 | Round-trip of the TOD exchange that produced this anchor (micros64() at receipt minus at send). THE shared discriminator of the arc: RTT growing with bridge uptime implicates the UDP transport for the command-latency half AND invalidates the rtt/2 symmetry assumption this very anchor rests on. Also the input to the min-RTT anchor gating the clock plan's Phase 4 adds — the least-queued round-trip is the most symmetric one |
+| `err_us` | i32 | 1 | The offset error BEFORE this anchor was applied: (measured offset) - (offset the servo was already holding). This is the `diff` set_wall_anchor computes on every anchor and throws away, and it is the phase error a type-2 servo would act on. i32 is provably wide enough on the branch that matters: the slew branch is entered only when \|diff\| <= TIME_STEP_THRESHOLD_US (20 ms). On a STEP it saturates at INT32_MIN/MAX (+-~35 min) — read STEPPED before reading a large value. 0 with FIRST_ANCHOR set means no prior offset existed |
+| `freq_ppb` | i32 | 1 | Implied fractional frequency error of the bridge crystal against the Jetson over the interval since the previous anchor, in parts per BILLION: 1e9 * (measured offset now - measured offset then) / dt_local_us. Computed from consecutive MEASUREMENTS, not from the servo's slewed state, so it is open-loop with respect to the IIR and reports the crystal rather than the filter's response. ppb not ppm because the interesting range is single-digit-to-tens of ppm and a ppm integer would quantise the whole signal away. VALID ONLY when FREQ_VALID is set; 0 otherwise, and that 0 is NO SAMPLE (see ClockDiagFlags) |
+| `anchor_seq` | u32 | 1 | Count of accepted anchors since boot (1 on the first). This frame is emitted once per anchor with no retransmission on a lossy transport, so without a sequence a silently dropped sample would corrupt every interval-based conclusion drawn downstream while looking like clean data. It is also the de-duplication key for any consumer that re-renders the latest sample |
+| `interp_ticks` | u32 | 1 | 500 Hz interp ISR ticks in the window since the previous CLOCK_DIAG emit. THE DENOMINATOR: the two occupancy counters below are duty cycles, and the window length is NOT a constant (30 s steady state, 500 ms during fast retry, wider still if a frame was lost), so a raw count without this is uninterpretable. Doubles as a tick-loss detector — it should equal 500 * window_seconds, and a shortfall is ISR starvation that interp_deadline_misses on the PROFILE frame counts a different way. Counts EVERY tick including the ones that return early (deferred stow, or before the first setpoint is latched); on an armed session streaming setpoints those are zero |
+| `recover_slew_ticks` | u32 | 1 | Ticks in this window in which the re-enable recovery slew (leg_interp.cpp s_recover_slewing, the 2026-07-11 clear-errors-jolt ramp) actually OVERRODE the streamed command. Counted at the override, not at the flag, so a slew that is armed but held (the cold-start carve-out, where the ramp is pinned to the live encoder and skipped) does not inflate the number — the question the counter exists to answer is how often the emitted command came from the ramp instead of the trajectory |
+| `extrap_ticks` | u32 | 1 | Ticks in this window that took the Mode-2 cubic-Taylor EXTRAPOLATION branch, i.e. no u1 knot was available and the ladder ran open-loop off the last one. This is the discriminator for 'the response shape also slows': a session whose extrapolation occupancy rises is one whose setpoint stream is arriving late or sparse at the Teensy, which is a different fault from the same lag appearing with the ladder fully fed |
+| `flags` | u8 | 1 | ClockDiagFlags bitfield: STEPPED / FIRST_ANCHOR / FREQ_VALID. Read this BEFORE err_us or freq_ppb |
 
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 

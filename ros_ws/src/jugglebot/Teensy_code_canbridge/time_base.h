@@ -75,6 +75,39 @@ bool time_synced();
 // SLEWS via the IIR for smooth, monotonic small-drift correction.
 void set_wall_anchor(uint64_t jetson_wall_us);
 
+// ── Per-anchor clock-discipline diagnostics (FW 11, CLOCK_DIAG 0x8F) ─────────
+//  set_wall_anchor() has always computed the pre-slew offset error and thrown it
+//  away, so the ONE quantity that says how well this clock is actually
+//  disciplined has never left the chip. This captures it, plus enough context to
+//  make each sample self-contained, so a bag can answer the questions
+//  plans/active/bridge-clock-frequency-discipline.md Phase 1 asks (what IS the
+//  crystal's ppm, how does it move with temperature, where is the RTT-jitter
+//  floor) BEFORE the servo is redesigned around a guess.
+//
+//  Diagnostics ONLY. Nothing in the clock or the interp reads these fields, so a
+//  wrong value here cannot move a leg — which is why the capture is allowed to
+//  sit in set_wall_anchor at all.
+struct ClockAnchorSample {
+  uint64_t t_local_us;       // micros64() at the anchor (the pure-crystal x-axis)
+  uint64_t jetson_wall_us;   // the RTT-corrected anchor value actually applied
+  uint32_t dt_local_us;      // micros64 since the previous accepted anchor (0 on the first);
+                             // saturates at UINT32_MAX (~71.6 min)
+  int32_t  err_us;           // pre-slew offset error (the discarded `diff`), saturated to i32;
+                             // 0 and meaningless when FIRST_ANCHOR is set
+  int32_t  freq_ppb;         // implied crystal frequency error vs the Jetson over dt_local_us;
+                             // 0 and meaningless unless FREQ_VALID is set
+  uint32_t anchor_seq;       // accepted anchors since boot (1 on the first) — the frame-loss key
+  uint8_t  flags;            // JbUdp::ClockDiagFlags (STEPPED / FIRST_ANCHOR / FREQ_VALID)
+};
+
+// Snapshot the most recent accepted anchor's diagnostics into *out. Returns false
+// (leaving *out untouched) until the first anchor has landed. Safe from any task:
+// the copy is IRQ-masked, because the struct is many words wide and the writer
+// (the net task, inside set_wall_anchor) can preempt a reader mid-copy and hand
+// it a mix of two anchors — which in a ppm fit is not noise, it is a fabricated
+// data point.
+bool clock_last_anchor(ClockAnchorSample* out);
+
 // IIR slew gain for small-drift correction: new_offset += diff >> shift.
 constexpr uint8_t TIME_OFFSET_IIR_SHIFT = 4;
 

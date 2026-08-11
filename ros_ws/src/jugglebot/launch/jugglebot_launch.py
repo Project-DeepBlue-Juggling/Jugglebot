@@ -533,6 +533,21 @@ def generate_launch_description():
             # self-diagnosing instead of merely degraded.
             '/profile',
             '/leg_cmd_executed',
+            # The third gap from the same Addendum, closed by FW 11's additive
+            # CLOCK_DIAG (0x8F): one sample per accepted time-of-day anchor
+            # carrying the bridge's wall-clock discipline state (pre-slew offset
+            # error, exchange RTT, implied crystal ppb) AND the 500 Hz interp
+            # ladder's recover-slew / Mode-2-extrapolation occupancy, neither of
+            # which was uplinked at all. It is the raw material
+            # plans/active/bridge-clock-frequency-discipline.md Phase 1 needs —
+            # the actual crystal ppm and its thermal coefficient come from a fit
+            # over HOURS of these samples, which is only possible if the whole
+            # series is in the bag. ~1 msg / 30 s. NOTE: the can-bridge is
+            # deliberately still on FW 10 until after the S1 aged-bridge
+            # experiment (a flash is a reboot, and the aged state IS the
+            # experiment), so until that flash this topic records EMPTY — which
+            # is precisely the add-a-silent-topic case the rule below blesses.
+            '/clock_diag',
             # ── THE ONE LIST (toss-selftuning D18, 2026-08-10) ──────────────
             # Until now two divergent record lists existed — this one and the
             # operator runbook's — and NEITHER was sufficient: the runbook's had

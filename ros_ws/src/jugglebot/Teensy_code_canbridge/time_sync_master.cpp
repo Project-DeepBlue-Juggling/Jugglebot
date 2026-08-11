@@ -12,6 +12,7 @@
 #include "odrive_protocol.h"
 #include "can_buses.h"
 #include "time_base.h"
+#include "leg_interp.h"   // the 500 Hz occupancy census carried on CLOCK_DIAG
 
 namespace CanBridge {
 
@@ -21,6 +22,9 @@ static uint16_t s_pending_req = 0;
 static bool     s_pending = false;
 static uint64_t s_send_us = 0;          // micros64() at last TOD request
 static uint64_t s_next_query_us = 0;    // when to send the next TOD request
+// RTT of the exchange that produced the newest accepted anchor (CLOCK_DIAG).
+// Written by on_tod_response (net task), read by clock_diag_step (tsync task).
+static volatile uint32_t s_last_anchor_rtt_us = 0;
 
 // ── 0x7DD broadcast (matches bus.py broadcast_time: pack('<II', sec, usec)) ───
 // Fan out the SAME frame on all three subsystem buses (ADR-0013): BB on CAN1,
@@ -75,13 +79,92 @@ static void on_tod_response(uint16_t /*seq*/, const uint8_t* payload, uint16_t l
   // ~one-way-delay ago. Estimate one-way ≈ RTT/2 and advance the anchor by it so
   // now_wall_us() ≈ the Jetson's current wall-clock at receipt.
   const uint32_t rtt = (uint32_t)(micros64() - s_send_us);
+  // Pair the RTT with the anchor it produced, for CLOCK_DIAG. Stored BEFORE
+  // set_wall_anchor deliberately: the emitter (task_time_sync) decides there is
+  // something new to send by observing the anchor's bumped anchor_seq, so
+  // publishing the RTT first makes "new seq visible ⇒ its RTT already stored" a
+  // happens-before rather than a race with a two-instruction window. Reading
+  // udp_last_rtt_us() at emit time instead would have been right only by
+  // cadence accident (anchors are 30 s apart, the emit follows within 10 ms) —
+  // true today, and silently wrong the moment the resync interval changes.
+  // Single naturally-aligned word ⇒ the store and the cross-task load are atomic.
+  s_last_anchor_rtt_us = rtt;
   set_wall_anchor(r.jetson_wall_us + rtt / 2);
   udp_note_rtt(rtt);
   s_pending = false;
 }
 
+// ── CLOCK_DIAG (0x8F) emitter — FW 11 ─────────────────────────────────────────
+//  One frame per ACCEPTED anchor: the clock-discipline sample time_base captured,
+//  plus the 500 Hz interp occupancy differenced over the window since the last
+//  emit. Cadence therefore follows the anchor cadence — ~30 s in steady state,
+//  500 ms during the pre-first-anchor fast retry.
+//
+//  WHY THIS RUNS HERE AND NOT IN on_tod_response. on_tod_response is a udp_link
+//  RX handler, dispatched from inside drain_socket's bounded drain loop on the
+//  net task — the same loop that carries every SETPOINT. udp_link.h's own
+//  contract for handlers is "fast / non-blocking", and a udp_send_stream() there
+//  would build and transmit a frame under NetLock from inside the RX drain
+//  (recursive, so not a deadlock, but it lengthens the path the 40 Hz setpoint
+//  stream shares). Deferring to task_time_sync costs at most one 100 Hz tick
+//  (<= 10 ms) of emit latency against a 30 s cadence, and costs the SAMPLE
+//  nothing at all: t_local_us was stamped at the anchor, so the delay cannot
+//  move a timestamp — only the frame's arrival, which no consumer times from.
+static uint32_t s_diag_last_seq     = 0;   // anchor_seq of the last sample emitted
+static uint32_t s_diag_prev_ticks   = 0;   // interp census snapshots at that emit
+static uint32_t s_diag_prev_recover = 0;
+static uint32_t s_diag_prev_extrap  = 0;
+
+static void clock_diag_step() {
+  ClockAnchorSample s;
+  if (!clock_last_anchor(&s)) return;         // no anchor has landed yet
+  if (s.anchor_seq == s_diag_last_seq) return; // already emitted this one
+  s_diag_last_seq = s.anchor_seq;
+
+  // Read the census ONCE and difference against the previous emit's snapshot.
+  // Unsigned subtraction is wrap-correct, so the u32 rollover at ~99 days of
+  // uptime needs no special case (and this arc is precisely about long uptimes).
+  // Numerators FIRST, denominator LAST: the 500 Hz ISR can fire between these
+  // reads, and with the denominator freshest an interleaved tick lands in
+  // interp_ticks while the numerators miss it — the window's ratio can only
+  // round DOWN, never report extrap_ticks > interp_ticks (>100 % duty).
+  const uint32_t recover = interp_recover_slew_ticks();
+  const uint32_t extrap  = interp_extrap_ticks();
+  const uint32_t ticks   = interp_tick_count();
+
+  JbUdp::ClockDiagPayload p{};
+  p.t_local_us         = s.t_local_us;
+  p.jetson_wall_us     = s.jetson_wall_us;
+  p.dt_local_us        = s.dt_local_us;
+  p.rtt_us             = s_last_anchor_rtt_us;   // the RTT of THIS anchor's exchange (see on_tod_response)
+  p.err_us             = s.err_us;
+  p.freq_ppb           = s.freq_ppb;
+  p.anchor_seq         = s.anchor_seq;
+  p.interp_ticks       = ticks   - s_diag_prev_ticks;
+  p.recover_slew_ticks = recover - s_diag_prev_recover;
+  p.extrap_ticks       = extrap  - s_diag_prev_extrap;
+  p.flags              = s.flags;
+
+  // Advance the snapshots even if the send fails: the counters are a census of
+  // WHAT HAPPENED, and holding them back on a dropped frame would silently fold
+  // two windows into one and manufacture an occupancy spike. A lost frame is
+  // already detectable — anchor_seq skips.
+  s_diag_prev_ticks   = ticks;
+  s_diag_prev_recover = recover;
+  s_diag_prev_extrap  = extrap;
+
+  udp_send_stream(JbUdp::MsgType::CLOCK_DIAG, (const uint8_t*)&p, sizeof(p));
+}
+
 void time_sync_master_init() {
   udp_on_rpc_response(on_tod_response);
+  // Baseline the occupancy census here rather than at zero, so the first
+  // window is "since init" instead of "since power-on" — otherwise the first
+  // CLOCK_DIAG's denominator silently includes whatever ran during setup().
+  // Same read order as clock_diag_step (numerators first, denominator last).
+  s_diag_prev_recover = interp_recover_slew_ticks();
+  s_diag_prev_extrap  = interp_extrap_ticks();
+  s_diag_prev_ticks   = interp_tick_count();
 }
 
 void time_sync_step() {
@@ -96,6 +179,8 @@ void time_sync_step() {
         : 500000ULL;
     s_next_query_us = now + interval_us;
   }
+
+  clock_diag_step();   // emits only on the tick after a NEW anchor is accepted
 }
 
 }  // namespace CanBridge

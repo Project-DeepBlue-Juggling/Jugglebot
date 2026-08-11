@@ -286,20 +286,25 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
-    # Re-pinned for the two additive ERR_TIMEOUT-attribution messages
-    # (2026-08-02): MsgType BRIDGE_TX_DIAG 0x8D + a 42 B payload (per-bus CAN TX
-    # deferral counts and TX-queue high-water marks, plus hand_ops' per-stage
-    # exit tally — three of its five exits returned an identical bare
-    # ERR_TIMEOUT, so the 2026-08-01 recount could not say WHICH send refused),
-    # and MsgType BRIDGE_IDENTITY 0x8E + a 3 B payload putting the can-bridge's
-    # FW_VERSION on the wire for the first time. Backward-compatible ADDITION —
-    # no existing message, arg or framing constant moved — so PROTOCOL_VERSION
-    # deliberately stays at 5 (the LegCmd / HandSensor / CanErrors precedent: an
-    # old Jetson ignores the unknown msg_type, a new one renders never-seen as
-    # unknown, and the two ends deploy in either order).
-    # Previous pin: 1383b3fc18dc085c51eba58979ef60a3898b2ff74dc99931926d04c0bc7ceccb
-    #   (additive CanErrors 0x8C, 48 B — 2026-07-29 CAN3 bus-health flap, FIX B).
-    _EXPECTED = "8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df"
+    # Re-pinned for the additive CLOCK_DIAG message (2026-08-11, can-bridge
+    # FW 11, plans/active/bridge-temporal-trustworthiness.md P1): MsgType
+    # CLOCK_DIAG 0x8F + a 49 B payload carrying one sample per accepted
+    # time-of-day anchor — the pre-slew offset error that set_wall_anchor has
+    # always computed and discarded, the exchange RTT, the implied crystal
+    # frequency error in ppb, and the 500 Hz interp ladder's recover-slew /
+    # Mode-2-extrapolation occupancy over the window since the previous emit.
+    # 0x8F was the LAST free uplink id below RPC_RESPONSE 0x90, so nothing was
+    # renumbered to make room; a future uplink needs a new id block, not a
+    # shuffle of these. Backward-compatible ADDITION — no existing message, arg
+    # or framing constant moved — so PROTOCOL_VERSION deliberately stays at 5
+    # (the LegCmd / HandSensor / CanErrors precedent: an old Jetson ignores the
+    # unknown msg_type, a new one renders never-seen as unknown, and the two ends
+    # deploy in either order — which here they explicitly DO, the host decode
+    # shipping while FW 11 stays unflashed until after the S1 experiment).
+    # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
+    #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
+    #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
+    _EXPECTED = "6b66f062444b9b0816db6c7a0bedb6aac0f07ba8a77e7f5a677831fe5ccc6a73"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

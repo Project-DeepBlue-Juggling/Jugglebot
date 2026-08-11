@@ -346,7 +346,19 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: have is the fix, so it keeps failing ~37 % of hand dispatches under the 500 Hz
 #: leg stream. That is exactly why the skew must be loud: the symptom of running
 #: FW 9 here is a hand that intermittently does not stroke, not a dark link.
-EXPECTED_BRIDGE_FW_VERSION = 10
+#: 11 (2026-08-11) = the bridge-temporal-trustworthiness P1 instrumentation: the
+#: additive ClockDiag (0x8F) uplink — per-anchor clock-discipline sample plus the
+#: 500 Hz interp occupancy census. Additive, so a board on 10 decodes every other
+#: frame identically and stays fully usable; it simply sends no 0x8F, and
+#: /clock_diag records EMPTY rather than erroring.
+#: EXPECTED IS BUMPED WHILE THE BOARD IS STILL ON 10, ON PURPOSE. FW 11 is
+#: committed unflashed until after the S1 aged-bridge experiment (a flash is a
+#: reboot, and the aged state IS the experiment), so a loud
+#: `10 (SKEW — expected v11)` row on /link_status for the whole pre-flash window
+#: is the CORRECT report: the tree has FW 11, the board does not. Reporting
+#: agreement in that window would be exactly the failure mode the
+#: 0x8E frame was added to prevent — inferring a flash instead of confirming it.
+EXPECTED_BRIDGE_FW_VERSION = 11
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

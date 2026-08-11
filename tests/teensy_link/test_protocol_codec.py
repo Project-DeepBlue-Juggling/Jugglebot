@@ -220,3 +220,170 @@ def test_torque_clamp_mask_zero_on_legacy_flags():
         decoded = p.HeartbeatT2J.unpack(hb.pack())
         assert ((int(decoded.flags) & int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK))
                 >> p.HEARTBEAT_TORQUE_CLAMP_SHIFT) == 0
+
+
+# ── CLOCK_DIAG (0x8F) — bridge-temporal-trustworthiness P1 ───────────────────
+#
+# The additive per-anchor clock-discipline + interp-occupancy uplink introduced
+# with can-bridge FW 11. FW 11 is committed UNFLASHED (the flash reboots the
+# Teensy and destroys the aged uptime state the S1 experiment interrogates), so
+# for the whole pre-flash window these tests are the ONLY thing standing between
+# the frame and a silent layout error: no board is emitting it and no bag can
+# contradict it. That is the reason to pin the semantics here and not merely the
+# byte count.
+
+
+def test_clock_diag_msg_type_is_143_and_below_rpc_response():
+    # 0x8F was the LAST free uplink id under RPC_RESPONSE (0x90). A regression
+    # that renumbers it silently re-points every recorded frame at another
+    # message type, and a bag captured across the change would decode as garbage
+    # rather than fail — so this is pinned as a literal, not derived.
+    assert int(p.MsgType.CLOCK_DIAG) == 143 == 0x8F
+    assert int(p.MsgType.CLOCK_DIAG) < int(p.MsgType.RPC_RESPONSE)
+    # Nothing else may share the id.
+    others = [int(v) for k, v in vars(p.MsgType).items()
+              if isinstance(v, p.MsgType) and k != 'CLOCK_DIAG']
+    assert 143 not in others
+
+
+def test_clock_diag_is_additive_protocol_version_unchanged():
+    """FW 11 adds a message type and changes NO existing frame.
+
+    The whole reason CLOCK_DIAG is a new ``MsgType`` rather than fields appended
+    to PROFILE is that the decoders here are exact-size unpacks: an appended
+    field turns into a per-frame decode error on an unaware Jetson, so the frame
+    goes DARK instead of degrading. A new type is ignored cleanly. That property
+    is only worth anything if ``PROTOCOL_VERSION`` also stays put — a bump makes
+    ``decode_frame`` reject EVERY frame in both directions (the 24608bb
+    total-darkness failure), which would take the link down over a diagnostic.
+    """
+    assert p.PROTOCOL_VERSION == 5
+    # The frames that existed before FW 11 keep their exact sizes.
+    assert p.PROFILE_SIZE == 76
+    assert p.HEARTBEAT_T2J_SIZE == 73
+    assert p.LEG_CMD_SIZE == 56
+    assert p.BRIDGE_TX_DIAG_SIZE == 42
+    assert p.BRIDGE_IDENTITY_SIZE == 3
+
+
+def test_clock_diag_roundtrip():
+    # Distinct, sign-varied values per field: with a uniform payload a
+    # transposed pair or a truncated slice still "looks plausible". err_us and
+    # freq_ppb are the two SIGNED fields and both are given negative values —
+    # an accidental 'I' in the struct format would raise on pack rather than
+    # round-trip, which is exactly the failure this catches.
+    cd = p.ClockDiag(
+        t_local_us=0x0123_4567_89AB_CDEF,
+        jetson_wall_us=1_754_000_000_123_456,
+        dt_local_us=30_000_017,
+        rtt_us=1_234,
+        err_us=-987,
+        freq_ppb=-12_345,
+        anchor_seq=4_294_967_295,      # u32 max — the wrap boundary
+        interp_ticks=15_000,
+        recover_slew_ticks=37,
+        extrap_ticks=421,
+        flags=int(p.ClockDiagFlags.FREQ_VALID),
+    )
+    blob = cd.pack()
+    assert len(blob) == p.CLOCK_DIAG_SIZE == 49
+    d = p.ClockDiag.unpack(blob)
+    assert d.t_local_us == 0x0123_4567_89AB_CDEF
+    assert d.jetson_wall_us == 1_754_000_000_123_456
+    assert d.dt_local_us == 30_000_017
+    assert d.rtt_us == 1_234
+    assert d.err_us == -987
+    assert d.freq_ppb == -12_345
+    assert d.anchor_seq == 4_294_967_295
+    assert d.interp_ticks == 15_000
+    assert d.recover_slew_ticks == 37
+    assert d.extrap_ticks == 421
+    assert d.flags == int(p.ClockDiagFlags.FREQ_VALID)
+
+
+def test_clock_diag_signed_fields_survive_the_extremes():
+    # err_us saturates at the int32 rails in firmware (a STEP can carry an
+    # arbitrary jump), so both rails must survive the codec rather than wrap into
+    # a plausible small number with the wrong sign.
+    for err, freq in ((-2_147_483_648, 2_147_483_647),
+                      (2_147_483_647, -2_147_483_648)):
+        d = p.ClockDiag.unpack(p.ClockDiag(err_us=err, freq_ppb=freq).pack())
+        assert d.err_us == err
+        assert d.freq_ppb == freq
+
+
+def test_clock_diag_step_vs_slew_flag_semantics():
+    """STEPPED / FIRST_ANCHOR / FREQ_VALID are independent bits with a contract.
+
+    The semantics being pinned, all three of which a consumer MUST honour:
+
+    * a SLEWED anchor (the steady-state case) carries neither STEPPED nor
+      FIRST_ANCHOR, and normally carries FREQ_VALID — this is the only shape
+      whose ``freq_ppb`` is a crystal measurement;
+    * a STEPPED anchor never carries FREQ_VALID, because a step means the
+      measured offset moved further in one interval than any crystal can explain
+      (>20 ms in 30 s is >666 ppm), so the interval contains a link gap, a boot,
+      or a host clock jump;
+    * the FIRST anchor since boot carries STEPPED **and** FIRST_ANCHOR — it
+      steps the whole epoch — and its ``err_us`` of 0 means the value does not
+      EXIST, there having been no prior offset to difference against.
+
+    The bits are three separate powers of two so a consumer can test them
+    independently; a shared/overlapping encoding would make "stepped" and "first"
+    indistinguishable, and the first anchor of every session would then look like
+    a mid-session fault.
+    """
+    F = p.ClockDiagFlags
+    assert (int(F.STEPPED), int(F.FIRST_ANCHOR), int(F.FREQ_VALID)) == (1, 2, 4)
+
+    # Steady state: slewed, frequency sample usable.
+    slewed = p.ClockDiag.unpack(
+        p.ClockDiag(err_us=-412, freq_ppb=-8_700, dt_local_us=30_000_000,
+                    flags=int(F.FREQ_VALID)).pack())
+    assert not slewed.flags & int(F.STEPPED)
+    assert not slewed.flags & int(F.FIRST_ANCHOR)
+    assert slewed.flags & int(F.FREQ_VALID)
+
+    # First anchor after boot: stepped AND first, no frequency sample, err_us 0
+    # because there was nothing to difference against.
+    first = p.ClockDiag.unpack(
+        p.ClockDiag(err_us=0, freq_ppb=0, dt_local_us=0,
+                    anchor_seq=1,
+                    flags=int(F.STEPPED) | int(F.FIRST_ANCHOR)).pack())
+    assert first.flags & int(F.STEPPED)
+    assert first.flags & int(F.FIRST_ANCHOR)
+    assert not first.flags & int(F.FREQ_VALID)
+    assert first.err_us == 0
+
+    # Mid-session re-acquisition after a link gap: stepped but NOT first, so
+    # err_us is real (and may be saturated), and the frequency sample is refused.
+    regained = p.ClockDiag.unpack(
+        p.ClockDiag(err_us=2_147_483_647, freq_ppb=0,
+                    dt_local_us=4_294_967_295, anchor_seq=97,
+                    flags=int(F.STEPPED)).pack())
+    assert regained.flags & int(F.STEPPED)
+    assert not regained.flags & int(F.FIRST_ANCHOR)
+    assert not regained.flags & int(F.FREQ_VALID)
+
+    # THE misread this encoding exists to prevent: freq_ppb is 0 on every sample
+    # above that lacks FREQ_VALID, and that 0 is NO SAMPLE — never "zero
+    # frequency error". A consumer that reads the number without the bit cannot
+    # tell a perfectly-disciplined crystal from a refused measurement.
+    for sample in (first, regained):
+        assert sample.freq_ppb == 0
+        assert not sample.flags & int(F.FREQ_VALID)
+
+
+def test_clock_diag_full_frame_roundtrip_and_unknown_type_tolerance():
+    # End-to-end through the framing layer, and the standing wire-compatibility
+    # property that makes an additive MsgType safe: a decoder that has never
+    # heard of 0x8F still decodes the FRAME (magic/version/CRC/length all check
+    # out) and hands back the type for the dispatcher to ignore. Nothing raises,
+    # so an FW 11 board on an old Jetson is quiet, not broken.
+    cd = p.ClockDiag(t_local_us=42, anchor_seq=7,
+                     flags=int(p.ClockDiagFlags.FREQ_VALID))
+    frame = p.encode_frame(int(p.MsgType.CLOCK_DIAG), 11, cd.pack())
+    mt, seq, payload = p.decode_frame(frame)
+    assert mt == 143
+    assert seq == 11
+    assert p.ClockDiag.unpack(payload).anchor_seq == 7

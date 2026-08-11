@@ -111,6 +111,7 @@ from teensy_link import (
     CanErrors,
     BridgeTxDiag,
     BridgeIdentity,
+    ClockDiag,
 )
 from teensy_link import protocol as p
 from teensy_link import rpc_args
@@ -664,6 +665,12 @@ class TeensyBridgeNode(Node):
         # command (LEG_CMD, 100 Hz), drained by _publish_leg_cmd_executed. Also
         # declared before the subscribe block for the same startup-race reason.
         self._leg_cmd_queue = []  # list of LegCmd, drained by timer
+        # And again for the can-bridge's per-anchor clock diagnostics (CLOCK_DIAG,
+        # ~1 per 30 s), drained by _publish_clock_diag. Same declare-before-
+        # subscribe rule. An FW 10 board never sends 0x8F, so on the pre-flash
+        # bridge this queue simply stays empty forever and /clock_diag records as
+        # a silent topic — the visible-absence the record list explicitly blesses.
+        self._clock_diag_queue = []  # list of ClockDiag, drained by timer
 
         # ── BB loud command-outcome channel (CMD_RESULT relay) ──
         # One outstanding throw at a time (firmware is serialized → no correlation
@@ -788,6 +795,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.BRIDGE_TX_DIAG), self._on_bridge_tx_diag)      # TX pressure + hand stages
         self._client.subscribe(int(MsgType.BRIDGE_IDENTITY), self._on_bridge_identity)    # bridge FW identity
         self._client.subscribe(int(MsgType.LEG_CMD), self._on_leg_cmd)          # post-clamp executed leg cmd
+        self._client.subscribe(int(MsgType.CLOCK_DIAG), self._on_clock_diag)    # per-anchor clock + interp occupancy
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -836,6 +844,33 @@ class TeensyBridgeNode(Node):
             JointState, 'leg_cmd_executed', 50)
         # (_leg_cmd_queue is initialized above, before the subscribe block, to
         # avoid a startup race with the already-live RX thread.)
+
+        # The can-bridge's per-anchor wall-clock discipline sample plus the 500 Hz
+        # interp ladder's fallback occupancy (CLOCK_DIAG 0x8F, FW 11), one message
+        # per accepted time-of-day anchor: ~1 per 30 s in steady state, ~2 Hz
+        # during the pre-first-anchor fast retry.
+        #
+        # WHY A TOPIC AND NOT A /link_status KeyValue ROW, unlike its 1 Hz
+        # siblings can3_errors / bridge_tx_diag: those carry CUMULATIVE counters,
+        # where re-rendering the latest value at 10 Hz loses nothing because the
+        # operator reads them by DIFFERENCING two captures. This frame is the
+        # opposite — a SERIES of independent per-anchor MEASUREMENTS whose whole
+        # purpose is a fit over hours (the crystal's ppm and its thermal
+        # coefficient, per plans/active/bridge-clock-frequency-discipline.md
+        # Phase 1). On a KeyValue row every sample would land in the bag ~300
+        # times and the analysis would begin by de-duplicating a string; on a
+        # topic each sample is published exactly once, in order. That is the same
+        # split already drawn between /profile (latest-wins cache) and
+        # /bb/axis_estimates + /leg_cmd_executed (queue→drain series).
+        #
+        # DiagnosticStatus, matching /profile: this is firmware instrumentation,
+        # and the KeyValue keys make the wire fields self-describing in the bag.
+        # Its lack of a header stamp is not a gap here — the sample carries its
+        # OWN x-axis in t_local_us (the bridge's raw micros64 crystal). A ROS
+        # header stamp would be host-arrival time, and a wall stamp would be the
+        # very quantity under measurement folded into its own time base.
+        self.clock_diag_pub = self.create_publisher(
+            DiagnosticStatus, 'clock_diag', 20)
 
         # ── Ball Butler (cutover, production names) ────
         # Intentional naming deviation from the earlier "all under /teensy/*"
@@ -1012,6 +1047,9 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.1, self._publish_cone_heartbeat)   # 10 Hz cone (matches CAN2 rate)
         self.create_timer(0.01, self._publish_bb_axis_estimates)  # 100 Hz drain (BB pitch/hand est.)
         self.create_timer(0.01, self._publish_leg_cmd_executed)   # 100 Hz drain (Teensy post-clamp leg cmd)
+        # 1 Hz is ample for a ~30 s (worst case 500 ms) anchor cadence, and keeps
+        # a queue that is empty 99 % of the time off the 100 Hz timer group.
+        self.create_timer(1.0, self._publish_clock_diag)          # 1 Hz drain (per-anchor clock diag)
         self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
@@ -1425,6 +1463,30 @@ class TeensyBridgeNode(Node):
             if len(q) > 4000:        # ~40 s at 100 Hz — bound if the drain stalls
                 del q[:len(q) - 4000]
 
+    def _on_clock_diag(self, msg_type, seq, payload, addr):
+        # RX-thread callback: decode + queue every per-anchor clock sample. Same
+        # contract as _on_leg_cmd — the drain timer publishes on the executor
+        # thread, NEVER this one. Malformed frames dropped; the except is broad
+        # for the reason spelled out on _on_bridge_tx_diag (a short payload raises
+        # struct.error, which is not a ValueError).
+        #
+        # EVERY sample is queued, never latest-wins: anchors are ~30 s apart and
+        # each one is an independent measurement, so dropping one to keep the
+        # newest would delete a data point from a fit that has only ~120 of them
+        # per hour.
+        try:
+            cd = ClockDiag.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            q = self._clock_diag_queue
+            q.append(cd)
+            # ~17 h of anchors at the 30 s cadence, or ~17 min of the 500 ms fast
+            # retry. Bounds a stalled drain without ever plausibly truncating a
+            # real session (drop-oldest, matching the other queues).
+            if len(q) > 2000:
+                del q[:len(q) - 2000]
+
     def _on_cmd_result(self, msg_type, seq, payload, addr):
         # RX-thread callback (loud command-outcome channel). Decode the relayed CMD_RESULT
         # CAN frame; if it's a THROW outcome and a throw goal is outstanding, hand
@@ -1509,6 +1571,76 @@ class TeensyBridgeNode(Node):
             js.position = [float(v) for v in c.cmd_pos_rev]
             js.velocity = [float(v) for v in c.cmd_vel_rps]
             self.leg_cmd_executed_pub.publish(js)
+
+    def _publish_clock_diag(self):
+        """Drain queued CLOCK_DIAG samples → /clock_diag (DiagnosticStatus).
+
+        One message per accepted time-of-day anchor, each carrying the bridge's
+        wall-clock discipline state at that anchor plus the 500 Hz interp
+        ladder's fallback occupancy over the window since the previous one.
+
+        WHAT MAKES IT USABLE: every sample is self-contained. ``t_local_us`` is
+        the bridge's raw ``micros64()`` — the pure crystal, the only honest
+        x-axis for a clock fit, since the wall clock is the measurand and it
+        STEPS. ``jetson_wall_us`` is the anchor actually applied, so a consumer
+        derives the measured offset itself (``jetson_wall_us - t_local_us``)
+        rather than trusting a firmware subtraction, and can re-derive
+        ``freq_ppb`` from consecutive samples. ``anchor_seq`` is what makes a
+        LOST frame visible: this is one-shot-per-anchor on a lossy transport, so
+        without it a dropped sample would silently widen an interval and corrupt
+        a rate fit while looking like clean data.
+
+        ``flags`` is rendered BEFORE the values it qualifies, and ``freq_ppb`` is
+        rendered as ``n/a`` when FREQ_VALID is clear. That is deliberate: the
+        wire carries 0 in that case, and a bare ``0`` reads as "no frequency
+        error" — the exact opposite of "no measurement". Closing that misread at
+        the render site is cheaper than trusting every future consumer to check
+        a bit.
+
+        An FW 10 board never sends 0x8F, so on the pre-flash bridge this drains
+        nothing and the topic records EMPTY — the visible absence the record
+        list's add-never-trim rule is built around, not an error.
+        """
+        with self._lock:
+            batch = self._clock_diag_queue
+            self._clock_diag_queue = []
+        for cd in batch:
+            flags = int(cd.flags)
+            stepped = bool(flags & int(p.ClockDiagFlags.STEPPED))
+            first = bool(flags & int(p.ClockDiagFlags.FIRST_ANCHOR))
+            freq_valid = bool(flags & int(p.ClockDiagFlags.FREQ_VALID))
+            msg = DiagnosticStatus()
+            msg.name = 'teensy/clock_diag'
+            msg.hardware_id = 'can_bridge_teensy'
+            # A STEP outside the first anchor is the one state worth flagging: it
+            # means the measured offset moved further in one interval than any
+            # crystal can explain, i.e. a link gap or a host clock jump. The first
+            # anchor of a session steps by construction and is not a problem.
+            msg.level = (DiagnosticStatus.WARN
+                         if (stepped and not first) else DiagnosticStatus.OK)
+            msg.message = (
+                f'seq={int(cd.anchor_seq)} rtt={int(cd.rtt_us)}us '
+                f'err={int(cd.err_us)}us '
+                f'freq={int(cd.freq_ppb) if freq_valid else "n/a"}ppb')
+            msg.values = [
+                # Read these first — they qualify everything below.
+                KeyValue(key='stepped', value=str(int(stepped))),
+                KeyValue(key='first_anchor', value=str(int(first))),
+                KeyValue(key='freq_valid', value=str(int(freq_valid))),
+                KeyValue(key='anchor_seq', value=str(int(cd.anchor_seq))),
+                KeyValue(key='t_local_us', value=str(int(cd.t_local_us))),
+                KeyValue(key='jetson_wall_us', value=str(int(cd.jetson_wall_us))),
+                KeyValue(key='dt_local_us', value=str(int(cd.dt_local_us))),
+                KeyValue(key='rtt_us', value=str(int(cd.rtt_us))),
+                KeyValue(key='err_us', value=str(int(cd.err_us))),
+                KeyValue(key='freq_ppb',
+                         value=str(int(cd.freq_ppb)) if freq_valid else 'n/a'),
+                KeyValue(key='interp_ticks', value=str(int(cd.interp_ticks))),
+                KeyValue(key='recover_slew_ticks',
+                         value=str(int(cd.recover_slew_ticks))),
+                KeyValue(key='extrap_ticks', value=str(int(cd.extrap_ticks))),
+            ]
+            self.clock_diag_pub.publish(msg)
 
     # ═══════════════════════════════════════════════════════════
     # Read-side publishers (mirror can_node field-by-field)
