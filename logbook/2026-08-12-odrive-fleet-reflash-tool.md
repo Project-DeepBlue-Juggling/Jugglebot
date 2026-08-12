@@ -7,6 +7,7 @@ files_changed:
   - tools/odrive_fleet_reflash.py
   - tests/motion/test_odrive_fleet_reflash.py
   - tests/motion/test_leg_torque_ff.py
+  - config/ODrive config Files/odrive_pro_leg_config.json
   - logbook/INDEX.md
 subsystem:
   - can
@@ -139,6 +140,40 @@ success, NVM holds the snapshot's commutation offset *marked valid* while that
 drive's own calibration has not run. That leg must not be armed until
 calibration succeeds.
 
+### What `calib_scan_distance` actually bounds
+
+Owner asked whether it is only "how far the motor will spin if it NEVER hits an
+encoder index pulse". **It is not** — that describes the *index search*, which is
+a different sub-procedure:
+
+- **`ENCODER_INDEX_SEARCH`** does stop at the pulse, and is bounded under 1 motor
+  rev because the index fires once per encoder revolution. This robot has
+  measured it: `tests/hardware/teensy_encoder_search_bench.py` recorded the leg
+  moving **~0.035 motor-rev** on 2026-06-21, and its docstring bounds it at
+  "< ~1 motor rev". It is driven by the lockin config, not by
+  `calib_scan_distance` (0.5.6: `run_index_search()` → `run_lockin_spin(
+  config.calibration_lockin, …)`).
+- **`ENCODER_OFFSET_CALIBRATION`** is what consumes `calib_scan_distance`, and it
+  is a deliberate full traverse — the whole distance one way, then back — because
+  it is correlating encoder counts against commanded electrical angle over a long
+  baseline and checking CPR within `calib_range`. In ODrive 0.5.6's
+  `Encoder::run_offset_calibration` the forward scan loop's **only** exit is
+  `total_distance >= config_.calib_scan_distance`; there is no index test in it.
+
+Evidence quality, stated plainly: 0.5.6 is the last open-source firmware, and
+ODrive Pro 0.6.x is closed, so this is inference from the same-named parameter
+rather than from the running binary. What supports the inference: the 0.6 docs
+describe `calib_scan_distance` as the offset-calibration parameter (it merely
+moved from `<axis>.encoder.config` to `<axis>.config` in 0.6), and the defaults
+are numerically identical — 0.5.x shipped `16π rad` (= 8.0 turns) and `4π rad/s`
+(= 2.0 turns/s), which is exactly what this snapshot carries. The cheap
+definitive check is one leg with `--only <n>` and eyes on it.
+
+Consequence for the guard, now folded in: comparing the scan against the whole
+280 mm stroke is **necessary but not sufficient**, because the excursion is
+one-directional from wherever the leg is sitting. The warning says so and tells
+the operator to position each leg with that much travel free ahead of it.
+
 ### Two pre-existing tests were failing, from a data-file re-capture
 
 Mid-session the target snapshot was replaced with a **fresh capture from a live
@@ -157,21 +192,27 @@ odrivetool the operator captured with — that is not something a Kt pin should
 have an opinion about. Verified by running the file against both shapes
 (`git stash` of the working-tree capture, then restore): **54 passed** each way.
 
-**Open for the owner** (not resolved here): the re-captured snapshot also moved
-`axis0.controller.config.vel_limit` 4.0 → **12.0**, the `trap_traj` limits
-(`vel_limit` 20.0 → 2.5, accel 10 → 30, decel 8 → 30), and enabled
-`hall_encoder1` with calibrated edges and `hall_polarity` 192 where it had been
-disabled. Those are now what gets flashed to all six legs. The runtime CAN push
-at every home/activate overrides `vel_limit` (`ODRIVE_LEG_VEL_LIMIT_RPS` = 6.0),
-so that one is inert in practice; the others are not obviously intentional and
-the file is still uncommitted.
+The re-capture also moved three things beyond the calibration values, all of
+which get flashed to all six legs. Owner adjudicated them the same day:
+
+| property | HEAD → capture | resolution |
+|---|---|---|
+| `axis0.trap_traj.config.{vel,accel,decel}_limit` | 20.0 → 2.5, 10 → 30, 8 → 30 | **intended** (owner) — kept |
+| `hall_encoder1.config.*` (9 props: `enabled`, `hall_polarity` 192, `*_calibrated`, 5 edges) | disabled → enabled+calibrated | **not intended** — reverted to the original backup values programmatically, so no hand-typed float landed in the file |
+| `axis0.controller.config.vel_limit` | 4.0 → **12.0** | **still unconfirmed.** Inert in practice — `_run_configure()` pushes `ODRIVE_LEG_VEL_LIMIT_RPS` = 6.0 over CAN at every home/activate, which is authoritative over NVM — but 12.0 is what a leg carries before the session's first push |
 
 ### Verification (addendum)
 
-`./run_tests.sh` (run 2026-08-12, after the test fix): **5092 passed, 0 failed in
-225.23 s**; serial phase empty (5527 deselected); total 237 s, `RESULT: PASS`.
-The same command before the fix was **RED — 2 failed, 5090 passed** on the two
-`test_leg_torque_ff.py` pins above.
+`./run_tests.sh` (run 2026-08-12, final — test fix, calibration step, and the
+`hall_encoder1` revert all in tree): **5092 passed, 0 failed in 240.09 s**;
+serial phase empty (5527 deselected); `RESULT: PASS`. The same command **before**
+the test fix was **RED — 2 failed, 5090 passed** on the two
+`test_leg_torque_ff.py` pins above, which is how the data-file re-capture
+surfaced at all.
+
+`pytest tests/motion/test_leg_torque_ff.py -q` (run 2026-08-12, after the
+`hall_encoder1` revert): **54 passed in 0.78 s** — these are the pins that read
+the snapshot, so they are the ones that would catch a bad edit to it.
 
 `pytest tests/motion/test_odrive_fleet_reflash.py -q` (run 2026-08-12): **57
 passed in 0.28 s** — added the travel/stroke guard (including the live check

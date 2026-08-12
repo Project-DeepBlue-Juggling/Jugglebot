@@ -39,11 +39,18 @@ calibration-owned properties are then excluded from the final verify — having
 calibration overwrite them is the point.
 
 **The calibration actuates the leg, and by default commands more travel than the
-leg has.** ``ENCODER_OFFSET_CALIBRATION`` scans open-loop for
-``calib_scan_distance`` revolutions; the snapshot's 8.0 rev is ~564 mm of leg
-travel against a ``GEOM_LEG_STROKE_MM`` of 280 — 2x the stroke — at
-``calib_scan_vel`` 2.0 rev/s ≈ 141 mm/s. Nothing in the ODrive stops the scan at
-the end of travel. The script therefore refuses to start unless the scan fits the
+leg has.** ``calib_scan_distance`` is the **encoder-offset** (commutation) scan
+length, not an index-search ceiling: the scan traverses the full distance one way
+and then back, with no early exit when the index pulse arrives (ODrive 0.5.6
+``Encoder::run_offset_calibration`` — the forward loop breaks only on
+``total_distance >= calib_scan_distance``; Pro 0.6.x firmware is closed, but the
+parameter moved from ``encoder.config`` to ``axis.config`` in 0.6 keeping the same
+role and the same 8 rev / 2 rev-per-s defaults). The *index search* is the
+separate sub-procedure that does stop at the pulse, bounded under 1 rev.
+
+So the snapshot's 8.0 rev is ~564 mm of leg travel against a
+``GEOM_LEG_STROKE_MM`` of 280 — 2x the stroke — at 2.0 rev/s ≈ 141 mm/s, and
+nothing in the ODrive stops the scan at the end of travel. The script therefore refuses to start unless the scan fits the
 stroke, and offers two ways forward: ``--calib-scan-distance <rev>`` to shorten
 the scan, or ``--force`` when the legs are mechanically free to run that far.
 There is also one confirmation prompt before the first drive is touched
@@ -293,6 +300,13 @@ def check_calibration_travel(
     ``ENCODER_OFFSET_CALIBRATION`` scans open-loop for ``calib_scan_distance``
     revolutions — it has no idea the axis is a spool on a 280 mm actuator, and
     nothing in the ODrive stops it at the end of travel.
+
+    Necessary but not sufficient: this compares against the WHOLE stroke, while
+    the leg needs that much travel remaining *in the scan direction*. The scan
+    runs the full distance one way and then back (ODrive 0.5.6
+    ``Encoder::run_offset_calibration``: the forward loop's only exit is
+    ``total_distance >= calib_scan_distance``, with no index check), so the
+    excursion is one-directional from wherever the leg happens to be sitting.
     """
     problems: List[str] = []
     for node_id in sorted(set(node_ids)):
@@ -314,9 +328,13 @@ def describe_calibration_motion(
     lines = [
         'FULL_CALIBRATION_SEQUENCE will be run on node(s) {}, one at a time.'.format(
             sorted(set(node_ids))),
-        'It MOVES THE MOTOR: motor calibration, index search, then an open-loop',
-        'encoder-offset scan of {:.1f} rev at {:.1f} rev/s.'.format(
+        'It MOVES THE MOTOR: motor calibration (a twitch), index search (bounded',
+        'by the index pulse, under 1 rev — this robot has measured ~0.035 rev),',
+        'then an open-loop encoder-offset scan of {:.1f} rev at {:.1f} rev/s.'.format(
             scan_distance_rev, scan_vel_rev_s),
+        'The offset scan does NOT stop at the index: it runs the full distance one',
+        'way and back, so the excursion below is one-directional from wherever the',
+        'leg is sitting. Position each leg with that much travel free.',
     ]
     for node_id in sorted(set(node_ids)):
         lines.append('  node {}: {:.0f} mm of leg travel at {:.0f} mm/s (stroke {:.0f} mm)'.format(
@@ -994,10 +1012,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for line in travel_problems:
                 print('  {}'.format(line), file=sys.stderr)
             fits_rev = LEG_STROKE_MM / max(MM_PER_REV)
-            print('  The offset-calibration scan is open-loop; nothing in the ODrive\n'
-                  '  stops it at the end of travel. Either free the legs mechanically\n'
-                  '  and pass --force, or shorten the scan with --calib-scan-distance\n'
-                  '  (up to {:.2f} rev fits the {:.0f} mm stroke).'.format(
+            print('  The offset scan is open-loop and does not stop at the index pulse;\n'
+                  '  nothing in the ODrive stops it at the end of travel either. Either\n'
+                  '  free the legs mechanically and pass --force, or shorten the scan\n'
+                  '  with --calib-scan-distance (up to {:.2f} rev fits the {:.0f} mm\n'
+                  '  stroke). Note the excursion is one-directional from wherever each\n'
+                  '  leg starts, so fitting the stroke is necessary, not sufficient —\n'
+                  '  position each leg with that much travel free ahead of it.'.format(
                       fits_rev, LEG_STROKE_MM), file=sys.stderr)
             if not (args.force or args.dry_run):
                 raise SystemExit('refusing to command more travel than the leg has')
