@@ -101,7 +101,9 @@ ball's flight needs none of it.
      (`plans/active/toss-selftuning.md`, `mvp-trajectory-bringup` only)
      carries over: live closure stays forbidden.
    - **Contact softness**: hand-drive channels pending the Phase-0b probe —
-     `vel_meas` (TELEMETRY frame, genuinely 100 Hz) and `iq_meas`
+     `vel_meas` (TELEMETRY frame, nominally 100 Hz — the 0b census measured
+     ~10 % duplicate samples and ~50 Hz effective through fast strokes) and
+     `iq_meas`
      (DIAGNOSTIC frame: on-change at |Δiq_setpoint| > 0.5 A, else a 1 Hz
      forced refresh, republished at 100 Hz from cache — the `hand_telemetry`
      publish rate is not the per-field refresh rate).
@@ -149,10 +151,13 @@ learning); the 0b softness metric's cross-check ground truth (harsher
 contact should predict more bounce); and an admission grade for the learner
 — **not** a differenced QP channel (no analytic ∂/∂u; the same role split as
 the measured transient). Cadence caveats inherited from the toss-build 2a
-findings: the sensor poll runs at p50 ≈ 71 ms against a configured 20 ms,
-and the debounce lag is asymmetric (≈0 ms on the catch edge, ≈241 ms on the
-departure edge) — so Phase 0d opens with the same distinct-sample census
-discipline as `iq_meas`.
+findings and sharpened by the 0d census: the sensor poll cadence is
+session-dependent (per-bag p50 spans 20–76 ms; the reference bag's 71 ms is
+not a standing property — read `sensor_poll_dt_ms_median` per record), and
+the debounce lag is asymmetric and tracks the poll (≈0 ms on the catch
+edge; ≈241 ms on the departure edge at a 71 ms poll, ≈110 ms at 20 ms) — so
+Phase 0d opened with the same distinct-sample census discipline as
+`iq_meas`.
 
 **The SNR→0 problem, named** (owner, 2026-08-11): as catches soften, the
 measured impact transient sinks toward the noise floor exactly at the target.
@@ -239,7 +244,7 @@ block with an independent analytic answer.
 
 | Phase | Content | Gate | Status |
 |---|---|---|---|
-| 0 | Measurement substrate: arrival-velocity/flight-time mining (0a), catch-softness probe (0b), release-state backcast (0c), sensor-settle census (0d) | 0b/0d outcomes pre-registered | in progress — G-3 closed 2026-08-12 |
+| 0 | Measurement substrate: arrival-velocity/flight-time mining (0a), catch-softness probe (0b), release-state backcast (0c), sensor-settle census (0d) | 0b/0d outcomes pre-registered | **DONE 2026-08-12** — 0b → outcome (ii), 0d → outcome (i); results + corrections in the phase text |
 | 1 | Sensitivity core + update law + offline replay validation + conditioning-based v1 freeze | F-vs-4hθ identity; held-out prediction; NULL-exit repeatability criterion | after 0 |
 | 2 | Production wiring, ship dormant | full suite; byte-identical-OFF; one-apply-point structural test | after 1 |
 | 3 | Hardware A/B vs aim-map-only baseline (operator) | pre-registered criteria + abort signatures; absorb-or-keep decision | G-1, G-2 |
@@ -251,9 +256,19 @@ block with an independent analytic answer.
 
 - **0a — Arrival kinematics.** Extend the toss-record miner: arrival-velocity
   vector at the catch-plane crossing from the Kalman track's descending
-  branch, and flight-time error, added to the mined record (schema version
-  bump per the record's own rules). Pure mining; the D5 live-closure
-  prohibition is untouched.
+  branch, and flight-time error, added to the mined record (field additions
+  per the record's own schema rules — superseded detail: see Landed below).
+  Pure mining; the D5 live-closure prohibition is untouched.
+  **Landed 2026-08-12**: 24 additive origin-'M' fields across four blocks
+  (`command_ref`, `arrival`, `backcast`, `split`), plus the
+  `usable_for_release_fit` selection flag (origin 'X', added at audit:
+  `backcast_fit_n`/`arrival_fit_n` ≥ 20 and `release_vel_se_mms` ≤ 50) —
+  **no schema bump**, per the record's own rule (additive fields do not
+  bump). Velocities are
+  whole-branch fits carrying their own standard errors (`*_vel_se_mms`);
+  rolling-window fits proved unstable (±17 % against the bag clock) and were
+  rejected. Headline: flight-time error **+101 ms median on a commanded
+  903 ms**.
 - **0b — Catch-softness probe.** From already-bagged catches, extract
   `hand_telemetry` `vel_meas`/`iq_meas` around the contact instant. The
   probe's first question is a **cadence census, not a noise question**:
@@ -277,11 +292,52 @@ block with an independent analytic answer.
   to produce trustworthy contact/release truth, because the install is
   invasive and small-cluster rigid-body tracking on a fast hand is unproven
   here.
+  **Run 2026-08-12 — the evidence selects outcome (ii)** (probe:
+  `tools/probes/hand_contact_softness.py`). The contact-window `vel_meas`
+  transient is 8.8× the still-hand noise floor but **1.03× the matched
+  cross-label control** (CAUGHT vs MISSED at identical commanded
+  choreography — ball present vs absent), so the apparent transient is the
+  commanded stroke, not the ball; the iq impulse is 1.45× under the same
+  control (shared disjoint quiet-held baseline; under the significance
+  bar). `iq_meas`'s on-change gate does open at contact (13× transition
+  rate vs quiet-held) but thins with softness exactly as pre-registered
+  (3 distinct values/window in the softest third vs 12 in the harshest).
+  Two corrections to this plan's own text from the census: `vel_meas` is
+  NOT genuinely 100 Hz (10.5 % duplicate samples bag-wide, ~50 Hz effective
+  through the fastest stroke — duplicates alias into exactly the impact
+  band), and outcome (iii) named the wrong direction — the observed fourth
+  cell (cadence-starved `iq` with the stronger within-cycle signal,
+  transient-free `vel`) occurred once and is reported UNREGISTERED by the
+  probe rather than rounded into a box. Caveat: every bag predates the G-2
+  drive restoration, so the census ran through the braking clamp; 0b's
+  verdict is re-checked after restoration — the one thing that could move
+  it.
 - **0c — Release-state backcast.** Fit the ascending track to the ballistic
   model → measured release-velocity vector and release time; compare against
   the commanded release state. This is the throw critical point's input-side
   truth, and it localizes any throw error to *release* vs *flight* — the
   discriminator everything downstream leans on.
+  **Landed 2026-08-12.** The vertical channels are clean and the headline is
+  large: **the hand throws ~11 % fast, consistently** (+478 mm/s pooled
+  median on a commanded 4436, n = 19 under `usable_for_release_fit` across
+  the three mocap-bearing bags; reference bag +473, n = 16; independently
+  cross-checked by the measured apex, 4924 vs 4900 mm/s). Release-time error vs the announcement
+  is −4.6 ms median — which reframes the 2a "release runs late" reading as a
+  sensor-cadence artefact (the sensor departure edge sits +172 ms late at a
+  71 ms poll and +95 ms at 54 ms, tracking cadence; mocap is the independent
+  truth; addendum recorded in the 2a entry). **The release-vs-flight split
+  is NOT clean — the phase's most important negative result**: the lateral
+  channels carry a ~±100 mm/s repeatable branch-to-branch velocity artefact,
+  magnitude and whole-arc average both consistent with a mocap marker
+  ~30 mm off the ball centre on a ball spinning ~0.5 rev/s (genuine Magnus
+  not yet separated) — so the direction-error channels are not trusted
+  until it is resolved (entry condition E-1, Phase 1). A pre-existing miner
+  bug also fell out: the descending-branch selector cut at the first
+  sub-plane sample, which for a self toss is the ball resting in the cup
+  below the plane — `land_xy_global_mm` had been null on every self toss
+  ever mined; fixed in the miner, reference bag `usable_for_aim_fit`
+  0/31 → 7/31, overturning the 2a "this bag cannot support an aim fit"
+  finding (addendum in that entry).
 - **0d — Sensor-settle census (the messy-catch score; owner metric,
   2026-08-12).** From the same bags, census `ball_held_raw` / `ball_held`
   around each catch: distinct-sample cadence first (re-verify the 2a
@@ -295,8 +351,32 @@ block with an independent analytic answer.
   the mined record fields and the Phase-3 criteria; (ii) it does not → it
   stays a diagnostic, and a faster sensor poll (firmware change) is written
   up as a follow-on.
+  **Run 2026-08-12 — the evidence selects outcome (i)** (probe:
+  `tools/probes/hand_sensor_settle.py`). Score = **raw `ball_held_raw`
+  flips within W = 0.75 s of the arrival edge**, W derived twice over (the
+  flip-median plateau's low end, and the smallest window recalling all
+  three reference quick-drops — 0.5 s recalls only 1/3). Pooled 11 bags /
+  58 catches at threshold ≥ 1: recall 3/3 on the known quick-drops,
+  false-clean 0 %, false-messy 3/55 = 5.5 % — and the three false-messy
+  rows all score exactly 2 with 9–12 s possession, i.e. plausibly genuinely
+  rattly-but-kept, which is what the owner's framing calls messy. The
+  debounced count at W ≥ 1.5 s is the ground-truth label restated and
+  proves nothing; only the raw count is informative. Cadence correction to
+  this plan's own text: the poll's p50 is NOT a standing 71 ms — per-bag
+  p50 spans 20–76 ms and the departure debounce lag tracks it, so
+  `sensor_poll_dt_ms_median` is read per record, never assumed.
 
 ### Phase 1 — Sensitivity core + offline validation *(no wiring)*
+
+**Entry condition E-1 (added 2026-08-12, from 0c):** the lateral
+branch-to-branch velocity artefact (~±100 mm/s on exactly the aim channels;
+marker-offset vs Magnus unseparated) is resolved — by marker-geometry
+correction, a spin estimate, or an error model that demotes the
+direction-error channels — before any fit trusts `release_dir_err_rad` or
+the arrival-direction error. The vertical channels (release speed, flight
+time) are unaffected and usable immediately; a Phase-1 v1 restricted to
+them (the `event_vel` trim against the ~11 % fast throw) does not wait on
+E-1.
 
 Pure-Python core (home decided at the G-3 merge: `tests/hardware/` fit-lib
 sibling, promoted into the production package only if the apply path needs

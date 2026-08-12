@@ -130,6 +130,8 @@ gate refuses **100 %** of records. Carried in Open below; 2c owns the fix.
 
 #### 4. The reference bag cannot support an aim fit at all, and that is a finding
 
+**(Withdrawn 2026-08-12 — see § Withdrawn claims at the end of this entry.)**
+
 The miner produces a complete corpus from `2026-08-10_16-30-44` — 31 self-tosses,
 19 CAUGHT / 12 MISSED, every row `mined-only` — but **`usable_for_aim_fit` is
 0/31**, because the mocap block is empty.
@@ -340,6 +342,8 @@ tests/sim/test_plans_index.py -q` → **57 passed in 0.53 s**.
   reference sitting has no unlabelled ball marker near the cup, so it cannot
   support an aim fit at any record-list completeness. Proposal: a P2 preflight —
   one throw, one miner run, require a non-null `land_xy_global_mm`.
+  *(Withdrawn 2026-08-12 — the ball was present and the estimator never looked;
+  see § Withdrawn claims.)*
 - **SCL3300 async-read firmware follow-on** (registered by operator decision 2,
   not built here): restructure the Platform-Teensy `get_platform_tilt` path to
   timer-driven background sampling into a cache, so a tilt read never blocks the
@@ -2256,3 +2260,35 @@ Carried to the operator, in the order they bite:
    authorised 8 and honestly stamps `dwell_tilt_degraded`. Getting the full
    schedule needs `dwell_time_s` ≈ 7.5 s+, which is a goal field, not a code
    change.
+
+## Withdrawn claims
+
+- **(withdrawn 2026-08-12)** § 2a finding 4 concluded *"the ball is absent
+  from the descending fit band"* (finding 4, precise statement), restated in
+  § Open as *"it cannot support an aim fit at any record-list
+  completeness"*. The ball was there; the estimator never looked.
+  `fit_plane_crossing_full` selects the descending branch by cutting at the
+  first sub-plane sample in time order — correct for a Ball-Butler arrival,
+  wrong for a self toss whose window opens with our own ball resting in the
+  cup ~110 mm *below* the plane, so that one resting row cut the run to zero
+  and `land_xy_global_mm` was null on every self toss ever mined. Two of the
+  finding's own supports fall with it: the `ball_arrival_offset` "NO TRACK
+  on all 31, independently" cross-check was **not independent** — the shipped
+  probe delegates to the same `fit_plane_crossing_full` and so shared the
+  identical sub-plane cut; and finding 4's *"slow-drifting marker at
+  z ≈ 695 mm, below the 809.08 mm cup plane and settling like a
+  platform-mounted marker"* is the ball itself, at rest in the cup. Fixed in
+  the miner (post-apex row selection before delegating; the shipped
+  `ball_arrival_offset` estimator untouched) during critical-point-ilc
+  Phase 0: the same bag now yields `usable_for_aim_fit` 7/31 and
+  `land_err_mm` on 16/31 rows (median 54.5 mm). Evidence:
+  `logbook/2026-08-12-critical-point-ilc-g3-and-phase0.md`.
+- **(reframed 2026-08-12)** § 2a's *"the release runs late"* reading (the
+  `DEPARTURE_LEAD_S` rationale) attributed the sensor departure edge's lag
+  to dispatch latency. The mocap backcast puts the true release at
+  **−4.6 ms median** against the announced `throw_time` on the same bag,
+  while the sensor departure edge sits +172 ms late at a 71 ms poll and
+  +95 ms at 54 ms — the lag tracks the poll cadence, so it is a
+  sensor-cadence artefact, not a late release. The lead constant still does
+  its job (it compensates the sensor channel's own lag); only the physical
+  attribution is withdrawn. Same evidence trail.
