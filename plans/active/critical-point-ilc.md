@@ -118,11 +118,11 @@ ball's flight needs none of it.
 ## Command vector u and task error e (v1 candidates)
 
 **u, throw side:** aim tilt `(rx, ry)` (rides the tilted release path via
-`compute_release_state_tilted` — presupposing the toss-selftuning D2
-tier-independent re-keying that arrives with G-3; at this base the tilted
-path is still gated on `JB_OP_TOSS_TIER == '8b'` while the shipped default
-is `'8a'`); hand `event_vel` trim `δv`; release-timing offset `δt_rel`
-(hand-stroke phase relative to the platform cycle).
+`compute_release_state_tilted` — the toss-selftuning D2 tier-independent
+re-keying this presupposes arrived with the G-3 merge on 2026-08-12; before
+it, the tilted path was gated on `JB_OP_TOSS_TIER == '8b'` while the shipped
+default is `'8a'`); hand `event_vel` trim `δv`; release-timing offset
+`δt_rel` (hand-stroke phase relative to the platform cycle).
 **u, catch side:** catch-pose offset `(x, y)`; catch `event_vel` trim; catch
 timing offset.
 
@@ -137,6 +137,22 @@ direction error at the catch-plane crossing (2); flight-time error (1).
 the contact instant — a **modeled surrogate**, differentiable through
 `hand_stroke` + ballistics — plus the **measured impact transient** as a
 validation channel.
+
+**e, catch critical point, third channel — hand-sensor settle (owner,
+2026-08-12):** the hand ball sensor is highly reliable, so a catch whose
+reading bounces between BALL and EMPTY after arrival is a **messy catch**.
+The score counts `ball_held_raw` flips (and debounced `ball_held` verdict
+transitions) inside a settle window after the first post-arrival BALL
+sample. Roles, fixed here: a graded catch-quality label on every record; a
+Phase-3 regression criterion (the messy rate must not increase under
+learning); the 0b softness metric's cross-check ground truth (harsher
+contact should predict more bounce); and an admission grade for the learner
+— **not** a differenced QP channel (no analytic ∂/∂u; the same role split as
+the measured transient). Cadence caveats inherited from the toss-build 2a
+findings: the sensor poll runs at p50 ≈ 71 ms against a configured 20 ms,
+and the debounce lag is asymmetric (≈0 ms on the catch edge, ≈241 ms on the
+departure edge) — so Phase 0d opens with the same distinct-sample census
+discipline as `iq_meas`.
 
 **The SNR→0 problem, named** (owner, 2026-08-11): as catches soften, the
 measured impact transient sinks toward the noise floor exactly at the target.
@@ -207,12 +223,15 @@ block with an independent analytic answer.
   `mvp-trajectory-bringup`, not in this tree) sits directly in the
   catch-softness path; learning against a clamped drive fits the clamp, not
   the catch.
-- **G-3 (mechanical):** merge/rebase this branch onto the
-  `mvp-trajectory-bringup` state carrying the toss-record substrate (≥
-  `7cb818d`) before Phase-0 *implementation* starts. This workspace
-  deliberately bases at `5e046cc`, prior to both in-flight arcs (owner
-  direction, 2026-08-11); the plan text is written against the substrate's
-  state at `7cb818d`.
+- **G-3 (mechanical): SATISFIED 2026-08-12** — merge commit `712bcee`
+  brought `mvp-trajectory-bringup` at `e75badd` (a superset of the required
+  `7cb818d` substrate) into this branch; the gate passed on the merged tree
+  (5073/5078, 2026-08-12). Original obligation: merge/rebase this branch
+  onto the substrate state before Phase-0 *implementation* starts — this
+  workspace deliberately based at `5e046cc`, prior to both in-flight arcs
+  (owner direction, 2026-08-11). Post-merge, every "not in this tree" /
+  "mvp-only" annotation in this plan is historical: the cited files and
+  sections are now in-tree.
 - **Not gated on** completion of the toss-selftuning capture campaign — see
   § Relationship for the rationale.
 
@@ -220,7 +239,7 @@ block with an independent analytic answer.
 
 | Phase | Content | Gate | Status |
 |---|---|---|---|
-| 0 | Measurement substrate: arrival-velocity/flight-time mining (0a), catch-softness probe (0b), release-state backcast (0c) | 0b outcome pre-registered | blocked on G-3 only |
+| 0 | Measurement substrate: arrival-velocity/flight-time mining (0a), catch-softness probe (0b), release-state backcast (0c), sensor-settle census (0d) | 0b/0d outcomes pre-registered | in progress — G-3 closed 2026-08-12 |
 | 1 | Sensitivity core + update law + offline replay validation + conditioning-based v1 freeze | F-vs-4hθ identity; held-out prediction; NULL-exit repeatability criterion | after 0 |
 | 2 | Production wiring, ship dormant | full suite; byte-identical-OFF; one-apply-point structural test | after 1 |
 | 3 | Hardware A/B vs aim-map-only baseline (operator) | pre-registered criteria + abort signatures; absorb-or-keep decision | G-1, G-2 |
@@ -263,6 +282,19 @@ block with an independent analytic answer.
   the commanded release state. This is the throw critical point's input-side
   truth, and it localizes any throw error to *release* vs *flight* — the
   discriminator everything downstream leans on.
+- **0d — Sensor-settle census (the messy-catch score; owner metric,
+  2026-08-12).** From the same bags, census `ball_held_raw` / `ball_held`
+  around each catch: distinct-sample cadence first (re-verify the 2a
+  findings — poll p50 ≈ 71 ms, asymmetric debounce — on the mined windows),
+  then the flip statistics in a settle window after arrival. Deliverables:
+  the messy-catch score definition (flips within a window W, W fixed from
+  the census), its distribution over clean catches vs the 2026-08-10
+  reference bag's three known quick-drops (labeled ground truth), and
+  admission thresholds. Pre-registered outcomes mirror 0b: (i) the score
+  discriminates known-messy from clean at the available cadence → it joins
+  the mined record fields and the Phase-3 criteria; (ii) it does not → it
+  stays a diagnostic, and a faster sensor poll (firmware change) is written
+  up as a follow-on.
 
 ### Phase 1 — Sensitivity core + offline validation *(no wiring)*
 
