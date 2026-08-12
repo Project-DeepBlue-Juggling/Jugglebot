@@ -74,6 +74,12 @@
 - **subscribers:** `reload_coordinator_node`
 - **type:** `std_msgs.msg.String`
 
+### `cache_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ### `catch/armed`
 
 - **publishers:** `reload_coordinator_node`
@@ -583,6 +589,7 @@ broken wire cannot hide among them.
 - `bb/odrive_diag` — topic with no subscribers
 - `bb/reset` — service with no clients
 - `bb/start_accuracy_calibration` — service with no clients
+- `cache_diag` — topic with no subscribers
 - `clear_errors` — service with no clients
 - `clock_diag` — topic with no subscribers
 - `cone/heartbeat` — topic with no subscribers

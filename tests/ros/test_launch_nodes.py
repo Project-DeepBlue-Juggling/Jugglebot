@@ -100,6 +100,15 @@ RECORDED_TOPICS = [
     # held until after the S1 aged-bridge experiment), and a silent topic is
     # exactly what this list's add-never-trim rule is for.
     '/clock_diag',
+    # The encoder-cache freshness census (FW 12 CACHE_DIAG 0x91) — the
+    # instrument that decides what S1 left open: a stale encoder cache under the
+    # lead clamp, or a leg that genuinely trails. /robot_state and
+    # /leg_cmd_executed cannot separate those (they read the same cache), so
+    # this topic is the only place the answer exists, and the answer is a trend
+    # across an hours-long soak. It records EMPTY until the bridge is flashed to
+    # FW 12, and a silent topic is exactly what this list's add-never-trim rule
+    # is for.
+    '/cache_diag',
 ]
 
 

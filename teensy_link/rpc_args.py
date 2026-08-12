@@ -358,7 +358,17 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: is the CORRECT report: the tree has FW 11, the board does not. Reporting
 #: agreement in that window would be exactly the failure mode the
 #: 0x8E frame was added to prevent — inferring a flash instead of confirming it.
-EXPECTED_BRIDGE_FW_VERSION = 11
+#: 12 (2026-08-12) = the CacheDiag (0x91) encoder-cache freshness census: the
+#: confirmation instrument for the one question the S1 aged-bridge experiment
+#: left open (is the encoder cache the lead clamp measures against going STALE
+#: with uptime, or does the leg genuinely trail?). Additive again, so an FW 11
+#: board decodes every other frame identically and stays fully usable; it simply
+#: sends no 0x91, and /cache_diag records EMPTY rather than erroring. The same
+#: bumped-while-the-board-is-behind situation as 11 above applies until the
+#: operator flashes: /link_status will read `11 (SKEW — expected v12)`, which is
+#: the CORRECT report — the tree has FW 12, the board does not — and it is
+#: advisory everywhere, never enforced.
+EXPECTED_BRIDGE_FW_VERSION = 12
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

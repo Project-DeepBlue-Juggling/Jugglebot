@@ -112,6 +112,7 @@ from teensy_link import (
     BridgeTxDiag,
     BridgeIdentity,
     ClockDiag,
+    CacheDiag,
 )
 from teensy_link import protocol as p
 from teensy_link import rpc_args
@@ -134,6 +135,34 @@ from jugglebot.can import odrive
 from jugglebot.can.motor_state import MotorStateTracker
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
+
+
+#: /cache_diag WARN threshold on the per-axis encoder-cache age FLOOR
+#: (``CacheDiag.age_min_us``), microseconds.
+#:
+#: The floor is what the bridge-temporal investigation is hunting: between two
+#: ODrive ``get_encoder_estimate`` broadcasts the cache age ramps from ~0 to one
+#: broadcast period (a few ms), so a healthy floor sits near zero at ANY uptime,
+#: and a floor of tens or hundreds of ms means the cache is not being written.
+#:
+#: 20 ms is chosen from both ends rather than picked round. Below: it is several
+#: times the broadcast period, so ordinary jitter, a missed frame or a late
+#: telemetry tick cannot reach it. Above: the firmware's own feedback-staleness
+#: guard (``canbridge_config.h MOTOR_FB_STALENESS_US``) fires at 150 ms and
+#: suppresses commands, so this WARNs at roughly a seventh of the level at which
+#: the bridge would already be defending itself — early enough to be a warning
+#: rather than a post-mortem, which is the entire class this arc exists to close
+#: ("command-latency drift is invisible until a session is already degraded").
+#: The 290-340 ms lag S1 measured is an order of magnitude above it.
+#:
+#: ADVISORY ONLY: this sets a DiagnosticStatus level on an instrumentation
+#: topic. Nothing gates, refuses or actuates on it.
+CACHE_AGE_FLOOR_WARN_US = 20_000
+
+#: ``CacheDiag`` age fields saturate here rather than wrapping (u32 max, ~71.6
+#: min). Also what an axis that has never been cached reports — read
+#: ``seen_mask`` before treating the rail as staleness.
+CACHE_AGE_SATURATED_US = 0xFFFF_FFFF
 
 
 # ── Config identity ────────────────────────────────────────────
@@ -671,6 +700,11 @@ class TeensyBridgeNode(Node):
         # bridge this queue simply stays empty forever and /clock_diag records as
         # a silent topic — the visible-absence the record list explicitly blesses.
         self._clock_diag_queue = []  # list of ClockDiag, drained by timer
+        # And once more for the encoder-cache freshness census (CACHE_DIAG,
+        # 1 Hz), drained by _publish_cache_diag. Same declare-before-subscribe
+        # rule. An FW <= 11 board never sends 0x91, so on a pre-flash bridge this
+        # queue stays empty forever and /cache_diag records as a silent topic.
+        self._cache_diag_queue = []  # list of CacheDiag, drained by timer
 
         # ── BB loud command-outcome channel (CMD_RESULT relay) ──
         # One outstanding throw at a time (firmware is serialized → no correlation
@@ -796,6 +830,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.BRIDGE_IDENTITY), self._on_bridge_identity)    # bridge FW identity
         self._client.subscribe(int(MsgType.LEG_CMD), self._on_leg_cmd)          # post-clamp executed leg cmd
         self._client.subscribe(int(MsgType.CLOCK_DIAG), self._on_clock_diag)    # per-anchor clock + interp occupancy
+        self._client.subscribe(int(MsgType.CACHE_DIAG), self._on_cache_diag)    # encoder-cache age + CAN RX ring
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -871,6 +906,32 @@ class TeensyBridgeNode(Node):
         # very quantity under measurement folded into its own time base.
         self.clock_diag_pub = self.create_publisher(
             DiagnosticStatus, 'clock_diag', 20)
+
+        # The can-bridge's encoder-cache freshness census (CACHE_DIAG 0x91,
+        # FW 12), one message per 1 s window. Same queue→drain series shape as
+        # /clock_diag above, and for the same reason: each window is an
+        # independent MEASUREMENT (a per-axis cache-age floor and peak reduced
+        # from ~100 samples), and the conclusion is a trend across an hours-long
+        # soak, so a latest-wins row would delete most of the evidence.
+        #
+        # WHAT IT ANSWERS. S1 (2026-08-12) put the uptime command-latency drift
+        # inside the Teensy — RTT flat at 1-3 ms, interp deadline misses 0, heap
+        # and CAN throughput flat, ODrives and the Jetson-side link exonerated —
+        # leaving one fork: is axes[i].pos_timestamp_us (the encoder cache the
+        # leg_interp lead clamp measures `fb` against) going stale with uptime,
+        # or does the leg genuinely trail? /robot_state and /leg_cmd_executed
+        # BOTH read that cache, so they move together under a stale cache and
+        # cannot separate the two. age_min_us can: it is a floor, and a floor
+        # that grows with uptime is a cache that is not being written. The
+        # per-axis enc_frames counters then say WHOSE fault the stall is —
+        # frames arriving through it (stale value on the wire) or not arriving
+        # at all (the ODrive's broadcast, or per-axis loss on the bus).
+        #
+        # No header stamp, again deliberately: the sample carries its own x-axis
+        # in t_local_us, which is the bridge's raw micros64 — i.e. its power-on
+        # UPTIME, the independent variable of the whole investigation.
+        self.cache_diag_pub = self.create_publisher(
+            DiagnosticStatus, 'cache_diag', 20)
 
         # ── Ball Butler (cutover, production names) ────
         # Intentional naming deviation from the earlier "all under /teensy/*"
@@ -1050,6 +1111,9 @@ class TeensyBridgeNode(Node):
         # 1 Hz is ample for a ~30 s (worst case 500 ms) anchor cadence, and keeps
         # a queue that is empty 99 % of the time off the 100 Hz timer group.
         self.create_timer(1.0, self._publish_clock_diag)          # 1 Hz drain (per-anchor clock diag)
+        # Matches the frame's own 1 Hz emit cadence: at most one sample is ever
+        # waiting, so the queue exists for thread hand-off, not for buffering.
+        self.create_timer(1.0, self._publish_cache_diag)          # 1 Hz drain (encoder-cache census)
         self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
@@ -1487,6 +1551,33 @@ class TeensyBridgeNode(Node):
             if len(q) > 2000:
                 del q[:len(q) - 2000]
 
+    def _on_cache_diag(self, msg_type, seq, payload, addr):
+        # RX-thread callback: decode + queue every encoder-cache census window.
+        # Identical contract to _on_clock_diag — queue here, publish on the
+        # executor thread in the drain timer, never on this socket thread, which
+        # also carries the 100 Hz telemetry and every RPC reply. Malformed frames
+        # dropped, with the same broad except: a short payload raises
+        # struct.error, which is NOT a ValueError, and an exception escaping an
+        # RX callback poisons the shared thread.
+        #
+        # EVERY window is queued, never latest-wins. Each frame is a reduction
+        # over ~100 samples that no longer exist anywhere else — dropping one to
+        # keep the newest deletes a second of evidence from a soak whose entire
+        # conclusion is a trend line.
+        try:
+            cd = CacheDiag.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            q = self._cache_diag_queue
+            q.append(cd)
+            # ~1 h at the 1 Hz emit cadence. Bounds a stalled drain (the drain is
+            # also 1 Hz, so in health this queue holds 0 or 1 entries) without
+            # truncating anything a real session would produce. Drop-oldest,
+            # matching the other queues.
+            if len(q) > 3600:
+                del q[:len(q) - 3600]
+
     def _on_cmd_result(self, msg_type, seq, payload, addr):
         # RX-thread callback (loud command-outcome channel). Decode the relayed CMD_RESULT
         # CAN frame; if it's a THROW outcome and a throw goal is outstanding, hand
@@ -1641,6 +1732,128 @@ class TeensyBridgeNode(Node):
                 KeyValue(key='extrap_ticks', value=str(int(cd.extrap_ticks))),
             ]
             self.clock_diag_pub.publish(msg)
+
+    def _publish_cache_diag(self):
+        """Drain queued CACHE_DIAG windows → /cache_diag (DiagnosticStatus).
+
+        One message per 1 s window, each carrying the can-bridge's per-axis
+        ENCODER-CACHE AGE floor and peak (reduced on-chip from a sample per
+        100 Hz telemetry tick) plus the CAN RX-ring occupancy and decode-discard
+        counters that have existed on the Teensy since 2026-06-04 / 2026-07-05
+        and were never uplinked.
+
+        WHAT IT DECIDES. S1 (2026-08-12) localized the uptime command-latency
+        drift to the Teensy and exonerated everything measurable around it —
+        RTT flat at 1-3 ms, zero interp deadline misses, flat heap, flat CAN
+        throughput, ODrives and the Jetson-side link cleared. Two candidates
+        survived: the encoder cache the ``leg_interp`` lead clamp measures
+        ``fb`` against is going stale with uptime, or the leg genuinely trails.
+        ``/robot_state`` and ``/leg_cmd_executed`` both read that same cache, so
+        under a stale cache they move together and look exactly like real lag.
+        ``age_min_us`` breaks the tie, because it is a FLOOR: jitter, sampling
+        luck and a late tick can raise a maximum but none of them can raise a
+        minimum. A floor that grows with uptime confirms the stale cache; a
+        floor that stays at the broadcast period while the lag grows refutes it.
+
+        ``enc_frames_*`` then splits the confirming case in two. The S1 bag
+        forensics found the per-axis cache VALUE stalling for 30-500 ms in a fat
+        tail (9-18 % of refresh intervals > 30 ms on an aged bridge against 4.3 %
+        fresh) while every AGGREGATE CAN RX counter stayed flat — which is not a
+        contradiction, because an aggregate cannot see one axis of seven go
+        quiet. Differenced across a stall window, a counter that kept ADVANCING
+        means the frames arrived and the decode ran, so the frozen value came in
+        over the wire; a counter that PAUSED means nothing arrived for that axis.
+        Different faults, different owners, and no other field separates them.
+
+        ``seen_mask`` is rendered FIRST and the ages are qualified by it. An
+        axis that has never been cached (the single-leg bench rig, a dark hand
+        ODrive) reports the u32 saturation rail, which is honest but reads
+        identically to a catastrophically stale cache — and it must not raise
+        the level, or a bench session would WARN continuously and teach the
+        operator to ignore the row.
+
+        An FW <= 11 board never sends 0x91, so on the pre-flash bridge this
+        drains nothing and the topic records EMPTY — the visible absence the
+        record list's add-never-trim rule is built around, not an error.
+        """
+        with self._lock:
+            batch = self._cache_diag_queue
+            self._cache_diag_queue = []
+        for cd in batch:
+            seen = int(cd.seen_mask)
+            ages_min = [int(v) for v in cd.age_min_us]
+            ages_max = [int(v) for v in cd.age_max_us]
+            # Only axes that have ever been cached can be judged. An unseen axis
+            # is absent, not stale.
+            seen_idx = [i for i in range(len(ages_min)) if seen & (1 << i)]
+            worst_floor = max((ages_min[i] for i in seen_idx), default=0)
+            msg = DiagnosticStatus()
+            msg.name = 'teensy/cache_diag'
+            msg.hardware_id = 'can_bridge_teensy'
+            msg.level = (DiagnosticStatus.WARN
+                         if worst_floor >= CACHE_AGE_FLOOR_WARN_US
+                         else DiagnosticStatus.OK)
+            msg.message = (
+                f'seq={int(cd.seq)} uptime={int(cd.t_local_us) // 1000}ms '
+                f'worst_age_floor={worst_floor}us '
+                f'samples={int(cd.samples)}/{int(cd.window_us)}us')
+            values = [
+                # Read this first — it qualifies every age below.
+                KeyValue(key='seen_mask', value=str(seen)),
+                KeyValue(key='seq', value=str(int(cd.seq))),
+                KeyValue(key='t_local_us', value=str(int(cd.t_local_us))),
+                KeyValue(key='window_us', value=str(int(cd.window_us))),
+                KeyValue(key='samples', value=str(int(cd.samples))),
+                # The single number an operator watches during a soak.
+                KeyValue(key='worst_age_floor_us', value=str(worst_floor)),
+            ]
+            # Per-axis rows, 0-5 legs and 6 the hand. Rendered as 'n/a' for an
+            # axis outside seen_mask: the wire carries the saturation rail
+            # there, and a bare 4294967295 in a bag reads as a measured age.
+            for i in range(len(ages_min)):
+                ok = bool(seen & (1 << i))
+                values.append(KeyValue(
+                    key=f'age_min_us_{i}',
+                    value=str(ages_min[i]) if ok else 'n/a'))
+            for i in range(len(ages_max)):
+                ok = bool(seen & (1 << i))
+                values.append(KeyValue(
+                    key=f'age_max_us_{i}',
+                    value=str(ages_max[i]) if ok else 'n/a'))
+            # Per-axis get_encoder_estimate frames decoded AND cached, CUMULATIVE
+            # since the bridge booted. Rendered RAW and differenced by the
+            # consumer, matching the can3_errors / bridge_tx_diag counters — the
+            # node holds no previous sample, so a node-side delta would silently
+            # widen across a dropped frame, which is the failure `seq` exists to
+            # make visible rather than to paper over.
+            #
+            # The 'n/a' discipline above deliberately does NOT extend here: for an
+            # age, the wire's saturation rail on an unseen axis is a MISSING
+            # measurement; for a frame count, 0 is a measurement — that axis
+            # received nothing — and it is the single most diagnostic value the
+            # field can carry. Blanking it would erase the answer.
+            for i in range(len(cd.enc_frames)):
+                values.append(KeyValue(
+                    key=f'enc_frames_{i}', value=str(int(cd.enc_frames[i]))))
+            values.extend([
+                KeyValue(key='rx_depth_hwm_jb',
+                         value=str(int(cd.rx_depth_hwm_jb))),
+                KeyValue(key='rx_depth_hwm_bb',
+                         value=str(int(cd.rx_depth_hwm_bb))),
+                KeyValue(key='rx_depth_hwm_cone',
+                         value=str(int(cd.rx_depth_hwm_cone))),
+                KeyValue(key='rx_cap_hits_jb',
+                         value=str(int(cd.rx_cap_hits_jb))),
+                KeyValue(key='rx_cap_hits_bb',
+                         value=str(int(cd.rx_cap_hits_bb))),
+                KeyValue(key='rx_cap_hits_cone',
+                         value=str(int(cd.rx_cap_hits_cone))),
+                KeyValue(key='decode_short', value=str(int(cd.decode_short))),
+                KeyValue(key='decode_bad_axis',
+                         value=str(int(cd.decode_bad_axis))),
+            ])
+            msg.values = values
+            self.cache_diag_pub.publish(msg)
 
     # ═══════════════════════════════════════════════════════════
     # Read-side publishers (mirror can_node field-by-field)

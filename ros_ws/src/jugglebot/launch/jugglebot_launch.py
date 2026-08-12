@@ -548,6 +548,19 @@ def generate_launch_description():
             # experiment), so until that flash this topic records EMPTY — which
             # is precisely the add-a-silent-topic case the rule below blesses.
             '/clock_diag',
+            # The confirmation instrument for what S1 (2026-08-12) left open,
+            # carried by FW 12's additive CACHE_DIAG (0x91): the can-bridge's own
+            # per-axis ENCODER-CACHE AGE floor and peak per 1 s window, plus the
+            # CAN RX-ring depth/cap-hit counters. S1 put the uptime latency drift
+            # inside the Teensy with the transport, the interp deadline, the heap
+            # and the ODrives all cleared, leaving one fork — a stale encoder
+            # cache under the lead clamp, or a leg that genuinely trails — and
+            # /robot_state and /leg_cmd_executed cannot separate them because
+            # they read that same cache. This topic is the only place the answer
+            # exists, and the answer is a TREND over an hours-long soak, so a
+            # session that publishes it without recording it produces nothing.
+            # 1 msg/s. Records EMPTY until the bridge is flashed to FW 12.
+            '/cache_diag',
             # ── THE ONE LIST (toss-selftuning D18, 2026-08-10) ──────────────
             # Until now two divergent record lists existed — this one and the
             # operator runbook's — and NEITHER was sufficient: the runbook's had

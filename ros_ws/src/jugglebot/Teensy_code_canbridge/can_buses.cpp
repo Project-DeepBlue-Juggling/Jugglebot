@@ -46,7 +46,8 @@ static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot
 
 // RX-health observability counters (see can_buses.h "RX-health observability").
 // Single-writer: task_can_rx — the service loop (depth/cap/bus-error fields) and the
-// decode callback (decode_* fields). EXCEPTION: tx_gated is written by the TX gate in
+// decode callback (decode_* fields, and s_enc_frames below, which is in exactly that
+// class). EXCEPTION: tx_gated is written by the TX gate in
 // partner_recent() from sender contexts (interp ISR + tasks) under a PRIMASK-masked
 // increment. (One boot-window exception: before the first
 // events() call flips the library's isEventsUsed, the FlexCAN ISR dispatches the decode
@@ -56,6 +57,13 @@ static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot
 // cross-task read in task_diag therefore needs no lock and no reset drops a transient.
 static volatile BusRxHealth s_bb_rxh{}, s_cone_rxh{}, s_jugglebot_rxh{};
 static volatile uint32_t s_decode_short = 0, s_decode_bad_axis = 0;
+// Per-axis get_encoder_estimate frames decoded AND cached — the same
+// single-writer class as the two decode_* counters above (task_can_rx, one word,
+// cumulative, never reset), so it inherits their lock-free cross-task read.
+// Rationale for a PER-AXIS counter where the aggregates already exist: an
+// aggregate cannot see one axis of seven stop broadcasting, and that is exactly
+// the shape the 2026-08-12 S1 bag forensics found. See CanRxHealth::enc_frames.
+static volatile uint32_t s_enc_frames[NUM_AXES] = {0};
 
 // Hand command-echo recorder. Defined later in this TU (near the ring
 // helpers); forward-declared here so decode_into_cache can stash a sniffed hand
@@ -99,6 +107,12 @@ static void decode_into_cache(const CAN_message_t& msg) {
       const float pos = ODrive::leg_sign(axis, p.a);
       const float vel = ODrive::leg_sign(axis, p.b);
       write_pos_vel(a, pos, vel, micros64());   // pos_timestamp_us monotonic: MOTOR_FB_STALE reads it as an interval
+      // Count AFTER the cache write, deliberately: the useful invariant is
+      // "enc_frames[axis] advanced ⇒ write_pos_vel completed for that axis", so a
+      // bag showing a stalled VALUE against an advancing counter places the fault
+      // at or above this line (a stale estimate on the wire), never below it.
+      // Counting before the write would only have proved the frame was classified.
+      s_enc_frames[axis]++;
       break;
     }
     case ODriveCmd::get_iq: {
@@ -971,6 +985,11 @@ CanRxHealth can_buses_rx_health() {
   s.jugglebot = snapshot_bus(s_jugglebot_rxh);
   s.decode_short    = s_decode_short;
   s.decode_bad_axis = s_decode_bad_axis;
+  // Single-word loads, one per axis. A torn read ACROSS axes is harmless here for
+  // the same reason snapshot_bus gives: these are differenced over a 1 s window,
+  // and an axis sampled one frame early simply moves that frame into the next
+  // window — it cannot manufacture a stall, which is the only conclusion drawn.
+  for (uint8_t i = 0; i < NUM_AXES; ++i) s.enc_frames[i] = s_enc_frames[i];
   return s;
 }
 

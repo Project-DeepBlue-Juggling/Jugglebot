@@ -387,3 +387,189 @@ def test_clock_diag_full_frame_roundtrip_and_unknown_type_tolerance():
     assert mt == 143
     assert seq == 11
     assert p.ClockDiag.unpack(payload).anchor_seq == 7
+
+
+# ── CACHE_DIAG (0x91) — the encoder-cache freshness census, FW 12 ────────────
+#
+# The confirmation instrument for the one question the S1 aged-bridge experiment
+# left open: with the transport, the interp deadline, the heap, CAN throughput,
+# the ODrives and the Jetson-side link all cleared, is the Teensy's ENCODER
+# CACHE going stale with uptime (so the lead clamp pins the command to a
+# position the leg left hundreds of ms ago), or does the leg genuinely trail?
+# Like CLOCK_DIAG before it, FW 12 is committed before any board runs it, so
+# these tests are the only thing standing between the frame and a silent layout
+# error.
+
+
+def test_cache_diag_msg_type_is_145_and_opens_a_block_above_rpc_response():
+    # 0x91 is the FIRST id of a new uplink block: 0x81-0x8F was full and 0x90 is
+    # RPC_RESPONSE. Pinned as a literal because a renumber would silently
+    # re-point every already-recorded frame at another message type — a bag
+    # spanning the change would decode as garbage rather than fail.
+    assert int(p.MsgType.CACHE_DIAG) == 145 == 0x91
+    # Deliberately ABOVE RpcResponse, and that is safe BY CONSTRUCTION: the
+    # STREAM/RPC split is which socket a frame was sent on, and both ends
+    # dispatch through a msg_type table. If anyone ever adds a range test
+    # (`msg_type < RPC_RESPONSE` as a stand-in for "is an uplink"), this
+    # assertion is the note that it was considered and rejected.
+    assert int(p.MsgType.CACHE_DIAG) > int(p.MsgType.RPC_RESPONSE)
+    # Nothing else may share the id.
+    others = [int(v) for k, v in vars(p.MsgType).items()
+              if isinstance(v, p.MsgType) and k != 'CACHE_DIAG']
+    assert 145 not in others
+
+
+def test_cache_diag_is_additive_protocol_version_unchanged():
+    """FW 12 adds a message type and changes NO existing frame.
+
+    Same reasoning as CLOCK_DIAG's equivalent: these decoders are exact-size
+    unpacks, so an appended field on an existing frame is a per-frame decode
+    error on an unaware Jetson and the frame goes DARK instead of degrading. A
+    new type is ignored cleanly. And that only holds if ``PROTOCOL_VERSION``
+    stays put — a bump makes ``decode_frame`` reject EVERY frame in both
+    directions (the 24608bb total-darkness failure), which would take the link
+    down over a diagnostic.
+    """
+    assert p.PROTOCOL_VERSION == 5
+    # Every frame that existed before FW 12 keeps its exact size — including
+    # CLOCK_DIAG, which shipped one firmware revision earlier and is the one
+    # most likely to be disturbed by an edit in the same region of the spec.
+    assert p.CLOCK_DIAG_SIZE == 49
+    assert p.PROFILE_SIZE == 76
+    assert p.HEARTBEAT_T2J_SIZE == 73
+    assert p.LEG_CMD_SIZE == 56
+    assert p.BRIDGE_TX_DIAG_SIZE == 42
+    assert p.BRIDGE_IDENTITY_SIZE == 3
+
+
+def test_cache_diag_roundtrip():
+    # Distinct values per field and per ARRAY SLOT: the two 7-wide age arrays sit
+    # adjacent on the wire, so a uniform payload would let an off-by-one slice
+    # (min[1:8] read as max[0:7]) round-trip while silently attributing every
+    # leg's age to its neighbour. Every slot here is unique across BOTH arrays.
+    cd = p.CacheDiag(
+        t_local_us=226_800_000_000,          # 63 h — the S1 aged-bridge point
+        age_min_us=(101, 202, 303, 404, 505, 606, 707),
+        age_max_us=(3_701, 3_802, 3_903, 4_004, 4_105, 4_206, 4_307),
+        enc_frames=(61_000_001, 61_000_002, 61_000_003, 61_000_004,
+                    61_000_005, 61_000_006, 61_000_007),
+        seq=3_600,
+        window_us=1_000_013,
+        rx_cap_hits_jb=0,
+        rx_cap_hits_bb=7,
+        rx_cap_hits_cone=13,
+        decode_short=2,
+        decode_bad_axis=5,
+        rx_depth_hwm_jb=9,
+        rx_depth_hwm_bb=3,
+        rx_depth_hwm_cone=1,
+        samples=100,
+        seen_mask=0x7F,
+    )
+    blob = cd.pack()
+    assert len(blob) == p.CACHE_DIAG_SIZE == 129
+    d = p.CacheDiag.unpack(blob)
+    assert d.t_local_us == 226_800_000_000
+    assert tuple(d.age_min_us) == (101, 202, 303, 404, 505, 606, 707)
+    assert tuple(d.age_max_us) == (3_701, 3_802, 3_903, 4_004, 4_105, 4_206, 4_307)
+    assert tuple(d.enc_frames) == (61_000_001, 61_000_002, 61_000_003,
+                                   61_000_004, 61_000_005, 61_000_006,
+                                   61_000_007)
+    assert d.seq == 3_600
+    assert d.window_us == 1_000_013
+    assert d.rx_cap_hits_jb == 0
+    assert d.rx_cap_hits_bb == 7
+    assert d.rx_cap_hits_cone == 13
+    assert d.decode_short == 2
+    assert d.decode_bad_axis == 5
+    assert d.rx_depth_hwm_jb == 9
+    assert d.rx_depth_hwm_bb == 3
+    assert d.rx_depth_hwm_cone == 1
+    assert d.samples == 100
+    assert d.seen_mask == 0x7F
+
+
+def test_cache_diag_per_axis_arrays_are_seven_wide_legs_then_hand():
+    # Six legs AND the hand: the hand shares the same axes[] cache and its
+    # dispatch shift tracked the same uptime curve (2026-07-28 anomaly-fixes
+    # sitting), so a six-wide array would have excluded the very axis that first
+    # made the drift visible outside the leg path.
+    #
+    # All THREE per-axis arrays are checked together because they are read
+    # together, per axis: an age is only interpretable against that same axis's
+    # frame count (a stalled value with the count advancing is a different fault
+    # from a stalled value with the count paused). One array drifting in width
+    # would silently misalign exactly that comparison.
+    cd = p.CacheDiag()
+    assert len(cd.age_min_us) == 7
+    assert len(cd.age_max_us) == 7
+    assert len(cd.enc_frames) == 7
+    # The mask is one bit per axis and must reach axis 6.
+    d = p.CacheDiag.unpack(p.CacheDiag(seen_mask=1 << 6).pack())
+    assert d.seen_mask == 0x40
+
+
+def test_cache_diag_enc_frames_are_cumulative_and_wrap_correct():
+    """The per-axis frame counters survive the u32 boundary, and 0 is a value.
+
+    They are CUMULATIVE SINCE BOOT and differenced by the consumer, so the only
+    codec property that matters is that the whole u32 range round-trips —
+    including the wrap boundary, since unsigned differencing across it is
+    correct and must not be "helped" by a signed slip. At the ~272 frames/s/axis
+    broadcast rate the wrap is ~182 days away, which is well beyond any uptime
+    this investigation contemplates but is exactly the sort of assumption that
+    goes unchecked until it bites.
+
+    0 is pinned separately because it is the DIAGNOSTIC value, not a null: an
+    axis whose count does not move across a window received nothing, which is
+    the upstream half of the split this field exists to make.
+    """
+    d = p.CacheDiag.unpack(p.CacheDiag(
+        enc_frames=(0, 1, 4_294_967_294, 4_294_967_295, 0, 2_147_483_648, 7)
+    ).pack())
+    assert tuple(d.enc_frames) == (0, 1, 4_294_967_294, 4_294_967_295, 0,
+                                   2_147_483_648, 7)
+    # Wrap-correct differencing across the u32 boundary, which is how the
+    # consumer reads two adjacent samples.
+    assert (d.enc_frames[3] + 3) % 2**32 == 2
+    assert (2 - d.enc_frames[3]) % 2**32 == 3
+
+
+def test_cache_diag_ages_saturate_at_the_u32_rail_rather_than_wrapping():
+    """The saturation rail survives the codec intact.
+
+    The firmware clamps an age to ``UINT32_MAX`` instead of letting it wrap,
+    because a wrapped age reads as a small, HEALTHY number — the single failure
+    this frame must never produce, given that its whole job is to detect ages
+    that grew. The rail is also what an axis that has never been cached reports,
+    which is why ``seen_mask`` is a separate field rather than an inference from
+    a magic value.
+    """
+    rail = 0xFFFF_FFFF
+    d = p.CacheDiag.unpack(p.CacheDiag(
+        age_min_us=(rail,) * 7, age_max_us=(rail,) * 7,
+        window_us=rail, seq=rail, samples=0xFFFF, seen_mask=0).pack())
+    assert tuple(d.age_min_us) == (rail,) * 7
+    assert tuple(d.age_max_us) == (rail,) * 7
+    assert d.window_us == rail
+    assert d.seq == rail
+    assert d.samples == 0xFFFF
+    # seen_mask 0 with every age at the rail is the legitimate "nothing has ever
+    # been cached" shape (a bridge that booted with no ODrives on the bus). It
+    # must decode, not raise: a pre-arm frame is the FIRST one a session sees.
+    assert d.seen_mask == 0
+
+
+def test_cache_diag_full_frame_roundtrip_and_unknown_type_tolerance():
+    # End-to-end through the framing layer, plus the property that makes an
+    # additive MsgType safe: a decoder that has never heard of 0x91 still decodes
+    # the FRAME (magic/version/CRC/length all check out) and hands the type back
+    # for the dispatcher to ignore. Nothing raises, so an FW 12 board talking to
+    # an old Jetson is quiet, not broken — and 0x91 sitting ABOVE RPC_RESPONSE
+    # changes nothing about that, which is the point of exercising it here.
+    cd = p.CacheDiag(t_local_us=99, seq=5, seen_mask=0x3F)
+    frame = p.encode_frame(int(p.MsgType.CACHE_DIAG), 21, cd.pack())
+    mt, seq, payload = p.decode_frame(frame)
+    assert mt == 145
+    assert seq == 21
+    assert p.CacheDiag.unpack(payload).seq == 5

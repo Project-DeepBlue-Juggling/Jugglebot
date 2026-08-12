@@ -286,6 +286,48 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
+    # Re-pinned AGAIN within FW 12 (2026-08-12) for CACHE_DIAG's third per-axis
+    # array, enc_frames[7] — the per-axis get_encoder_estimate frame counter,
+    # 101 B -> 129 B. Driven by the S1 bag forensics: the per-axis cache VALUE
+    # stalls for 30-500 ms in a fat tail (9-18 % of refresh intervals > 30 ms on
+    # an aged bridge against 4.3 % fresh) while every AGGREGATE CAN RX counter
+    # stays flat and the uplink cadence stays perfect — not a contradiction,
+    # because an aggregate cannot see ONE axis of seven go quiet. Differenced
+    # across a stall window the counter answers the split nothing else could:
+    # still advancing ⇒ frames arrived and the decode ran (a stale estimate came
+    # in over the wire); paused ⇒ nothing arrived (the ODrive's broadcast, or a
+    # per-axis loss on the bus). FIELD APPENDED TO AN UNRELEASED MESSAGE, not to
+    # a deployed one: CACHE_DIAG has never been on a wire (FW 12 is written and
+    # unflashed, and no host before this commit decodes 0x91), so the exact-size
+    # unpack hazard that forces a new MsgType for a DEPLOYED frame does not
+    # apply, and no bag exists that this could invalidate. Every other message is
+    # untouched, so PROTOCOL_VERSION deliberately stays at 5.
+    # Previous pin: 5ab882feb633f043b8dbbaf27cdb438dafe52d32e3faa5bd4e7b1556241e8526
+    #   (CACHE_DIAG 0x91 at 101 B, before enc_frames — same commit, never flashed).
+    #
+    # Re-pinned for the additive CACHE_DIAG message (2026-08-12, can-bridge
+    # FW 12, plans/active/bridge-temporal-trustworthiness.md): MsgType
+    # CACHE_DIAG 0x91 + a 129 B payload carrying, once a second, the per-axis
+    # ENCODER-CACHE AGE floor and peak over the window (reduced on-chip from a
+    # sample per 100 Hz telemetry tick), the seen-mask that says which axes have
+    # ever been cached at all, and the CAN RX-ring depth/cap-hit + decode-discard
+    # counters that have been computed on the Teensy since 2026-06-04 /
+    # 2026-07-05 and were never uplinked. It is the instrument that decides the
+    # question S1 left open — stale encoder cache under the lead clamp, or a leg
+    # that genuinely trails.
+    # 0x91 OPENS A NEW UPLINK ID BLOCK ABOVE RpcResponse 0x90, because 0x81-0x8F
+    # is now full (CLOCK_DIAG took the last one). Nothing was renumbered to make
+    # room, and nothing anywhere routes on a MsgType range — the STREAM/RPC split
+    # is which socket a frame was sent on, and both ends dispatch through a
+    # msg_type table. Backward-compatible ADDITION — no existing message, arg or
+    # framing constant moved — so PROTOCOL_VERSION deliberately stays at 5 (the
+    # LegCmd / HandSensor / CanErrors / ClockDiag precedent: an old Jetson
+    # ignores the unknown msg_type, a new one renders never-seen as unknown, and
+    # the two ends deploy in either order — which here they again explicitly DO,
+    # the host decode shipping while FW 12 is written but not flashed).
+    # Previous pin: 6b66f062444b9b0816db6c7a0bedb6aac0f07ba8a77e7f5a677831fe5ccc6a73
+    #   (additive CLOCK_DIAG 0x8F 49 B — 2026-08-11 can-bridge FW 11).
+    #
     # Re-pinned for the additive CLOCK_DIAG message (2026-08-11, can-bridge
     # FW 11, plans/active/bridge-temporal-trustworthiness.md P1): MsgType
     # CLOCK_DIAG 0x8F + a 49 B payload carrying one sample per accepted
@@ -304,7 +346,7 @@ def test_wire_layout_frozen(gen):
     # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
     #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
     #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
-    _EXPECTED = "6b66f062444b9b0816db6c7a0bedb6aac0f07ba8a77e7f5a677831fe5ccc6a73"
+    _EXPECTED = "6829255fff74613beb5de7524f623bf03d299eab2e4e1985cfb39f117bec2618"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

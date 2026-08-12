@@ -51,6 +51,7 @@ class MsgType(IntEnum):
     BRIDGE_IDENTITY = 142  # 1 Hz can-bridge firmware identity: FW_VERSION + PROTOCOL_VERSION echo (STREAM, T→J)
     CLOCK_DIAG = 143  # Per-accepted-TOD-anchor wall-clock discipline sample + 500 Hz interp occupancy (STREAM, T→J)
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
+    CACHE_DIAG = 145  # 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)
 
 class RpcMethod(IntEnum):
     NOP = 0  # No-op (link test)
@@ -625,6 +626,40 @@ class ClockDiag:
         vals = _CLOCK_DIAG_STRUCT.unpack(data[:49])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+
+# CacheDiag: ENCODER-CACHE FRESHNESS CENSUS, 1 Hz. The confirmation instrument for the surviving question of logbook/2026-07-18-teensy-uptime-tracking-degradation.md. The S1 experiment (2026-08-12) localized the uptime command-latency drift to the Teensy: at 63 h of bridge uptime the end-to-end leg lag is 290-340 ms with the leg_interp lead clamp pinning the executed command at fb+MAX_LEAD_REV for 44-74 % of ticks (5.8 % on a fresh boot), while udp_rtt_us is flat at 1-3 ms, interp_deadline_misses is 0, the heap is flat and CAN throughput is flat. Setpoints therefore ARRIVE on time and the ladder EXECUTES on time — so either the leg genuinely trails, or the `fb` the lead clamp measures against (axes[i].pos_rev, written by can_buses.cpp decode_into_cache on each ODrive get_encoder_estimate frame) is STALE and the clamp is pinning the command to a position the leg left hundreds of milliseconds ago. TODAY'S TELEMETRY CANNOT TELL THOSE APART: /robot_state and /leg_cmd_executed both read that same cache, so a stale cache moves both together and looks exactly like a real lag. This frame measures the cache's freshness DIRECTLY, which is the one observable that separates them. WHAT NOMINAL LOOKS LIKE: the ODrive broadcasts get_encoder_estimate per axis continuously, so age_min_us should sit near 0 and age_max_us near one broadcast period (a few ms) FOREVER, at any uptime. age_min_us is the headline: it is a FLOOR, and a floor cannot be produced by jitter, scheduling or sampling luck - only by the cache actually not being written. A floor that grows with uptime confirms the stale-cache mechanism; a floor that stays at the broadcast period while the lag grows REFUTES it and sends the hunt to the ODrive's own position loop. SAMPLED FROM TASK CONTEXT, NOT THE ISR (telemetry.cpp cache_diag_uplink_step, on task_telem at TELEM_RATE_HZ): the age is read through axis_state.h's existing snapshot_pos_vel seqlock, the same reader send_telemetry already uses for this triple at the same rate, so the census adds ZERO work to the 500 Hz interp ISR and opens no new IRQ-off window. Every accumulator behind this frame is written and read by that one task, so there is no cross-context counter to get wrong. WHY A PER-AXIS FRAME COUNTER SITS BESIDE THE AGES (enc_frames, added 2026-08-12). The S1 bag forensics found the per-axis cache VALUE stalling for 30-500 ms in a fat tail — 9-18 % of refresh intervals > 30 ms on an aged bridge against 4.3 % fresh — while every AGGREGATE CAN RX counter stayed flat and the uplink cadence stayed perfect. That is not a contradiction: an aggregate cannot see ONE axis of seven go quiet, because the other six keep the total moving. So the aggregates could observe the stall's consequence and never its cause, and one question stayed open — did the ODrive pause broadcasting that axis, or did the frame arrive and the cache not update? enc_frames answers it directly, and the two answers have different owners. The RX-ring fields are the other half: depth_hwm and cap_hits have been computed on every 1 kHz service tick since the 2026-06-04 drain-to-empty fix (can_buses.cpp service_bus, CAN_RX_DRAIN_BUDGET) and were NEVER uplinked — CanErrors 0x8C deliberately carries only wire-error and fault-confinement fields. They are the direct witness of the one mechanism that could starve the cache from inside the bridge, and cap_hits is the documented overflow PRECURSOR that must stay 0. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag / ClockDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW <= 11 board never sends this frame, so its consumer surface must read EMPTY, never error. INSTRUMENTATION ONLY: nothing in the firmware reads any field or accumulator introduced for this frame, so a wrong value here cannot move a leg.
+CACHE_DIAG_FMT = '<QIIIIIIIIIIIIIIIIIIIIIIIIIIIIHHHHB'
+CACHE_DIAG_SIZE = 129
+_CACHE_DIAG_STRUCT = struct.Struct(CACHE_DIAG_FMT)
+assert _CACHE_DIAG_STRUCT.size == 129
+
+@dataclass
+class CacheDiag:
+    t_local_us: int = 0
+    age_min_us: tuple = field(default_factory=lambda: (0,) * 7)
+    age_max_us: tuple = field(default_factory=lambda: (0,) * 7)
+    enc_frames: tuple = field(default_factory=lambda: (0,) * 7)
+    seq: int = 0
+    window_us: int = 0
+    rx_cap_hits_jb: int = 0
+    rx_cap_hits_bb: int = 0
+    rx_cap_hits_cone: int = 0
+    decode_short: int = 0
+    decode_bad_axis: int = 0
+    rx_depth_hwm_jb: int = 0
+    rx_depth_hwm_bb: int = 0
+    rx_depth_hwm_cone: int = 0
+    samples: int = 0
+    seen_mask: int = 0
+
+    def pack(self) -> bytes:
+        return _CACHE_DIAG_STRUCT.pack(self.t_local_us, *self.age_min_us, *self.age_max_us, *self.enc_frames, self.seq, self.window_us, self.rx_cap_hits_jb, self.rx_cap_hits_bb, self.rx_cap_hits_cone, self.decode_short, self.decode_bad_axis, self.rx_depth_hwm_jb, self.rx_depth_hwm_bb, self.rx_depth_hwm_cone, self.samples, self.seen_mask)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'CacheDiag':
+        vals = _CACHE_DIAG_STRUCT.unpack(data[:129])
+        it = iter(vals)
+        return cls(next(it), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'

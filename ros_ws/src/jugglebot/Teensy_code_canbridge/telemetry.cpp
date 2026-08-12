@@ -353,6 +353,147 @@ void bridge_tx_diag_uplink_step() {
   udp_send_stream(JbUdp::MsgType::BRIDGE_TX_DIAG, (const uint8_t*)&p, sizeof(p));
 }
 
+// ── Encoder-cache freshness census — contract in telemetry.h ────────────────
+// The confirmation instrument for the surviving question of
+// logbook/2026-07-18-teensy-uptime-tracking-degradation.md, after the S1
+// experiment localized the uptime command-latency drift to the Teensy with the
+// transport, the interp deadline, the heap and the ODrives all exonerated: is
+// axes[i].pos_timestamp_us — the encoder cache the leg_interp lead clamp
+// measures `fb` against — going STALE with uptime, or does the leg genuinely
+// trail? /robot_state and /leg_cmd_executed both read that same cache, so
+// nothing already on the wire can tell those apart. This measures the cache's
+// freshness directly.
+//
+// DIAGNOSTICS ONLY: nothing in the firmware reads any state below, so a wrong
+// value here cannot move a leg.
+static constexpr uint64_t CACHE_DIAG_PERIOD_US = 1000000u;    // 1 Hz emit
+static constexpr uint32_t CACHE_AGE_SAT_US     = 0xFFFFFFFFu; // saturation rail (~71.6 min)
+
+// The wire array widths and the firmware's axis count must agree, or the census
+// would silently report six legs and a garbage seventh (or overrun the payload).
+// All three per-axis arrays are checked: they are read TOGETHER per axis (an age
+// against that axis's frame count), so a width that drifted on one of them alone
+// would misalign the very comparison the frame exists to support.
+static_assert(sizeof(JbUdp::CacheDiagPayload::age_min_us) /
+                  sizeof(JbUdp::CacheDiagPayload::age_min_us[0]) == NUM_AXES,
+              "CacheDiag age_min array width != NUM_AXES");
+static_assert(sizeof(JbUdp::CacheDiagPayload::age_max_us) /
+                  sizeof(JbUdp::CacheDiagPayload::age_max_us[0]) == NUM_AXES,
+              "CacheDiag age_max array width != NUM_AXES");
+static_assert(sizeof(JbUdp::CacheDiagPayload::enc_frames) /
+                  sizeof(JbUdp::CacheDiagPayload::enc_frames[0]) == NUM_AXES,
+              "CacheDiag enc_frames array width != NUM_AXES");
+
+// Window accumulators. ALL of these are touched by task_telem and nothing else.
+static uint64_t s_cache_diag_sent_us = 0;   // micros64() at the last emit (0 ⇒ none yet)
+static uint32_t s_cache_diag_seq     = 0;   // frames emitted since boot
+static uint32_t s_age_min_us[NUM_AXES];     // valid only for axes whose seen bit is set —
+static uint32_t s_age_max_us[NUM_AXES];     // an axis's first REAL fold in a window seeds BOTH
+static uint16_t s_age_samples        = 0;
+static uint8_t  s_age_seen_mask      = 0;
+
+void cache_diag_uplink_step() {
+  const uint64_t now = micros64();   // interval clock: ages + emission pacing.
+                                     // NEVER now_wall_us — an anchor step would
+                                     // underflow an age into a huge "fresh" number.
+
+  // ── Fold ONE sample per call (TELEM_RATE_HZ) into the open window ──────────
+  // snapshot_pos_vel is axis_state.h's seqlock reader — the SAME reader
+  // send_telemetry() already uses on this exact triple at this exact rate. It is
+  // the right atomic discipline here: the writer (can_buses.cpp
+  // decode_into_cache, on the PRIORITY-5 task_can_rx) preempts this priority-3
+  // task, and pos_timestamp_us is a u64, i.e. two 32-bit loads on Cortex-M7 that
+  // a preemption can tear. Unlike atomic_read_u64 the seqlock achieves that
+  // WITHOUT masking interrupts, so this census cannot delay the 500 Hz interp
+  // ISR by even one instruction — which is what makes "instrumentation only,
+  // no control-path effect" a structural property rather than a claim.
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    float pos, vel; uint64_t ts;
+    snapshot_pos_vel(axes[i], pos, vel, ts);
+    if (ts == 0) {
+      // Never cached (absent axis / pre-first-frame): fold NOTHING. The emit
+      // step paints the rail into min/max for any axis whose seen bit is still
+      // clear — so "no data" and "catastrophically stale" stay different
+      // answers, AND a first frame landing mid-window cannot leave a rail from
+      // earlier ts==0 folds inside a window whose seen bit ends up set.
+      continue;
+    }
+    const uint8_t bit = (uint8_t)(1u << i);
+    // ts can EXCEED now: the priority-5 writer (task_can_rx) may stamp between
+    // our micros64() capture above and this snapshot — a seqlock retry returns
+    // the NEWER timestamp. That sample is maximally FRESH; clamp its age to 0.
+    // An unclamped subtraction would wrap to ~2^64 and paint the saturation
+    // rail into age_max — a spurious "stale" spike in the exact instrument the
+    // S2 soak reads.
+    const uint64_t d = (ts <= now) ? (now - ts) : 0;
+    const uint32_t age =
+        (d > (uint64_t)CACHE_AGE_SAT_US) ? CACHE_AGE_SAT_US : (uint32_t)d;
+    if (!(s_age_seen_mask & bit)) {
+      s_age_seen_mask |= bit;   // first REAL sample this window seeds both extrema
+      s_age_min_us[i] = age;
+      s_age_max_us[i] = age;
+    } else {
+      if (age < s_age_min_us[i]) s_age_min_us[i] = age;
+      if (age > s_age_max_us[i]) s_age_max_us[i] = age;
+    }
+  }
+  if (s_age_samples != 0xFFFFu) ++s_age_samples;   // saturate; window_us stays honest
+
+  // ── Emit once the window is full ──────────────────────────────────────────
+  // The fold above ran FIRST, so the emit-instant read is this window's LAST
+  // sample: the frame is never built from a window that excludes its own
+  // timestamp.
+  if (s_cache_diag_sent_us != 0 &&
+      (now - s_cache_diag_sent_us) < CACHE_DIAG_PERIOD_US) return;
+  const uint64_t win64 = (s_cache_diag_sent_us == 0) ? 0ULL : (now - s_cache_diag_sent_us);
+  s_cache_diag_sent_us = now;
+  ++s_cache_diag_seq;
+
+  const CanRxHealth h = can_buses_rx_health();
+  JbUdp::CacheDiagPayload p{};
+  p.t_local_us = now;
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    // Rail for axes with no real sample this window: their extrema statics hold
+    // stale values from an earlier window (or nothing), never data from this one.
+    const bool seen = (s_age_seen_mask & (uint8_t)(1u << i)) != 0;
+    p.age_min_us[i] = seen ? s_age_min_us[i] : CACHE_AGE_SAT_US;
+    p.age_max_us[i] = seen ? s_age_max_us[i] : CACHE_AGE_SAT_US;
+    // Cumulative since boot, NOT differenced here: the consumer differences two
+    // frames, and `seq` is what tells it whether the two are adjacent. Doing the
+    // subtraction on-chip would hide a dropped frame inside a plausible-looking
+    // count (the BridgeTxDiag census idiom, and the opposite of ClockDiag's
+    // occupancy fields — those are differenced on-chip because their window is
+    // the ANCHOR interval, which the host cannot reconstruct).
+    p.enc_frames[i] = h.enc_frames[i];
+  }
+  p.seq                = s_cache_diag_seq;
+  p.window_us          = (win64 > (uint64_t)CACHE_AGE_SAT_US)
+                             ? CACHE_AGE_SAT_US : (uint32_t)win64;
+  // Bus fields are addressed by ROLE (jugglebot / bb / cone), matching
+  // BridgeTxDiag. The jugglebot and cone CONTROLLERS are currently swapped in
+  // hardware (can_buses.cpp), so a controller-numbered name would be wrong the
+  // moment that swap is undone.
+  p.rx_cap_hits_jb     = h.jugglebot.cap_hits;
+  p.rx_cap_hits_bb     = h.bb.cap_hits;
+  p.rx_cap_hits_cone   = h.cone.cap_hits;
+  p.decode_short       = h.decode_short;
+  p.decode_bad_axis    = h.decode_bad_axis;
+  p.rx_depth_hwm_jb    = h.jugglebot.depth_hwm;
+  p.rx_depth_hwm_bb    = h.bb.depth_hwm;
+  p.rx_depth_hwm_cone  = h.cone.depth_hwm;
+  p.samples            = s_age_samples;
+  p.seen_mask          = s_age_seen_mask;
+  udp_send_stream(JbUdp::MsgType::CACHE_DIAG, (const uint8_t*)&p, sizeof(p));
+
+  // Close the window AFTER the payload is built, and unconditionally — the send
+  // result is deliberately ignored. Holding the extrema back on a dropped frame
+  // would silently merge two windows and manufacture a peak; a lost frame is
+  // already visible as a gap in `seq`. Zeroing the seen mask re-arms the
+  // per-axis seeding above, so the extrema need no sentinel value.
+  s_age_samples   = 0;
+  s_age_seen_mask = 0;
+}
+
 // ── Firmware identity uplink — contract in telemetry.h ───────────────────────
 // Both fields are compile-time constants, so this frame never changes within a
 // boot; it is sent at 1 Hz anyway because the bridge cannot observe a Jetson

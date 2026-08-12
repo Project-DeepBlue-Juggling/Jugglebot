@@ -179,6 +179,19 @@ ENUMS = {
         # after this needs a new id block, NOT a renumber of the ids above.
         ("CLOCK_DIAG",     0x8F, "Per-accepted-TOD-anchor wall-clock discipline sample + 500 Hz interp occupancy (STREAM, T→J)"),
         ("RPC_RESPONSE",   0x90, "RPC response (RPC port, T→J)"),
+        # ── Uplink id block 2 — ABOVE RpcResponse (0x91-0xFF) ─────────────────
+        # The block below 0x90 is FULL. Per the note on 0x8F, a new uplink takes
+        # a fresh id here rather than renumbering an existing one: an id change
+        # silently re-points every already-recorded frame at another message
+        # type, so a bag spanning the change decodes as garbage instead of
+        # failing. Nothing routes on the numeric value or on any 0x90 boundary —
+        # the STREAM/RPC split is which SOCKET a frame was sent on
+        # (udp_link.cpp send_to / drain_socket), and both ends dispatch through a
+        # msg_type table, never a range test — so an uplink id above
+        # RPC_RESPONSE is ordinary. Verified 2026-08-12 across teensy_link/,
+        # the firmware and the generated headers: no comparison against a
+        # MsgType value exists anywhere.
+        ("CACHE_DIAG",     0x91, "1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)"),
     ],
     "RpcMethod": [
         ("NOP",                0x0000, "No-op (link test)"),
@@ -820,6 +833,185 @@ MESSAGES = [
             Field("flags",         "u8",  1,
                   "ClockDiagFlags bitfield: STEPPED / FIRST_ANCHOR / FREQ_VALID. Read this BEFORE "
                   "err_us or freq_ppb"),
+        ],
+    ),
+    Message(
+        "CacheDiag", "CACHE_DIAG", "T2J", "STREAM",
+        summary=(
+            "ENCODER-CACHE FRESHNESS CENSUS, 1 Hz. The confirmation instrument "
+            "for the surviving question of "
+            "logbook/2026-07-18-teensy-uptime-tracking-degradation.md. "
+            "The S1 experiment (2026-08-12) localized the uptime command-latency "
+            "drift to the Teensy: at 63 h of bridge uptime the end-to-end leg lag "
+            "is 290-340 ms with the leg_interp lead clamp pinning the executed "
+            "command at fb+MAX_LEAD_REV for 44-74 % of ticks (5.8 % on a fresh "
+            "boot), while udp_rtt_us is flat at 1-3 ms, interp_deadline_misses is "
+            "0, the heap is flat and CAN throughput is flat. Setpoints therefore "
+            "ARRIVE on time and the ladder EXECUTES on time — so either the leg "
+            "genuinely trails, or the `fb` the lead clamp measures against "
+            "(axes[i].pos_rev, written by can_buses.cpp decode_into_cache on each "
+            "ODrive get_encoder_estimate frame) is STALE and the clamp is pinning "
+            "the command to a position the leg left hundreds of milliseconds ago. "
+            "TODAY'S TELEMETRY CANNOT TELL THOSE APART: /robot_state and "
+            "/leg_cmd_executed both read that same cache, so a stale cache moves "
+            "both together and looks exactly like a real lag. This frame measures "
+            "the cache's freshness DIRECTLY, which is the one observable that "
+            "separates them. "
+            "WHAT NOMINAL LOOKS LIKE: the ODrive broadcasts get_encoder_estimate "
+            "per axis continuously, so age_min_us should sit near 0 and "
+            "age_max_us near one broadcast period (a few ms) FOREVER, at any "
+            "uptime. age_min_us is the headline: it is a FLOOR, and a floor "
+            "cannot be produced by jitter, scheduling or sampling luck - only by "
+            "the cache actually not being written. A floor that grows with uptime "
+            "confirms the stale-cache mechanism; a floor that stays at the "
+            "broadcast period while the lag grows REFUTES it and sends the hunt "
+            "to the ODrive's own position loop. "
+            "SAMPLED FROM TASK CONTEXT, NOT THE ISR (telemetry.cpp "
+            "cache_diag_uplink_step, on task_telem at TELEM_RATE_HZ): the age is "
+            "read through axis_state.h's existing snapshot_pos_vel seqlock, the "
+            "same reader send_telemetry already uses for this triple at the same "
+            "rate, so the census adds ZERO work to the 500 Hz interp ISR and "
+            "opens no new IRQ-off window. Every accumulator behind this frame is "
+            "written and read by that one task, so there is no cross-context "
+            "counter to get wrong. "
+            "WHY A PER-AXIS FRAME COUNTER SITS BESIDE THE AGES (enc_frames, added "
+            "2026-08-12). The S1 bag forensics found the per-axis cache VALUE "
+            "stalling for 30-500 ms in a fat tail — 9-18 % of refresh intervals "
+            "> 30 ms on an aged bridge against 4.3 % fresh — while every "
+            "AGGREGATE CAN RX counter stayed flat and the uplink cadence stayed "
+            "perfect. That is not a contradiction: an aggregate cannot see ONE "
+            "axis of seven go quiet, because the other six keep the total moving. "
+            "So the aggregates could observe the stall's consequence and never "
+            "its cause, and one question stayed open — did the ODrive pause "
+            "broadcasting that axis, or did the frame arrive and the cache not "
+            "update? enc_frames answers it directly, and the two answers have "
+            "different owners. "
+            "The RX-ring fields are the other half: depth_hwm and cap_hits have "
+            "been computed on every 1 kHz service tick since the 2026-06-04 "
+            "drain-to-empty fix (can_buses.cpp service_bus, CAN_RX_DRAIN_BUDGET) "
+            "and were NEVER uplinked — CanErrors 0x8C deliberately carries only "
+            "wire-error and fault-confinement fields. They are the direct witness "
+            "of the one mechanism that could starve the cache from inside the "
+            "bridge, and cap_hits is the documented overflow PRECURSOR that must "
+            "stay 0. "
+            "Additive — no existing frame changes, so NO PROTOCOL_VERSION bump "
+            "(the LegCmd / HandSensor / BridgeTxDiag / ClockDiag precedent): an "
+            "old Jetson ignores the unknown msg_type and a new Jetson renders "
+            "never-seen as unknown. An FW <= 11 board never sends this frame, so "
+            "its consumer surface must read EMPTY, never error. "
+            "INSTRUMENTATION ONLY: nothing in the firmware reads any field or "
+            "accumulator introduced for this frame, so a wrong value here cannot "
+            "move a leg."),
+        fields=[
+            Field("t_local_us",     "u64", 1,
+                  "micros64() at the emit instant — the pure-crystal monotonic clock, never the "
+                  "steppable wall (time_base.h's clock-discipline invariant). This IS the bridge's "
+                  "power-on uptime, which is the independent variable of the whole investigation, so "
+                  "carrying it makes every sample self-locating without a join against /link_status "
+                  "uptime_ms. Also the x-axis every age fit is plotted against"),
+            Field("age_min_us",     "u32", 7,
+                  "THE HEADLINE. Per-axis MINIMUM encoder-cache age over the window just closed, in "
+                  "microseconds: min over the window of (micros64() at sample - axes[i].pos_timestamp_us). "
+                  "Indices 0-5 are the legs, 6 is the HAND (the hand path shares this cache, and its "
+                  "dispatch shift tracked the same uptime curve — 2026-07-28 anomaly-fixes sitting). "
+                  "A MINIMUM rather than an instantaneous read because the quantity under test is a "
+                  "FLOOR: between two encoder frames the age ramps 0 -> one broadcast period, so any "
+                  "single read is a uniform sample of that ramp, whereas the minimum over ~100 reads "
+                  "is the floor itself and cannot be explained by sampling luck. Nominal is near 0; "
+                  "a floor of hundreds of ms is a cache that is not being written. Saturates at "
+                  "UINT32_MAX (~71.6 min) rather than wrapping — a wrapped age would read as a small, "
+                  "healthy number, which is the one failure this frame must never produce. An axis "
+                  "whose bit is clear in seen_mask has never been cached at all and reads the "
+                  "saturation rail; read seen_mask FIRST"),
+            Field("age_max_us",     "u32", 7,
+                  "Per-axis MAXIMUM cache age over the same window, same units and same saturation. "
+                  "The burst detector, and the pair that makes the mechanism legible: min and max both "
+                  "rising = the cache has a growing floor (staleness); min flat at ~0 with max rising = "
+                  "the broadcast has GAPS but recovers, a different fault with a different owner. "
+                  "It also recovers the per-axis frame RATE without touching the CAN RX decode path: "
+                  "with the cache written every broadcast, max is one broadcast period, so a rate "
+                  "collapse shows up here — though enc_frames below is the direct, unambiguous "
+                  "witness of that and is what a stall analysis should read"),
+            Field("enc_frames",     "u32", 7,
+                  "Per-axis get_encoder_estimate frames DECODED AND CACHED, CUMULATIVE SINCE BOOT "
+                  "(the consumer differences two samples — the BridgeTxDiag census idiom). Same "
+                  "indexing as the age arrays: 0-5 legs, 6 hand. "
+                  "THE SPLIT THIS EXISTS TO MAKE. The 2026-08-12 S1 bag forensics found the per-axis "
+                  "cache VALUE stalling for 30-500 ms in a fat tail (9-18 % of refresh intervals "
+                  "> 30 ms on an aged bridge against 4.3 % fresh) while every AGGREGATE CAN RX "
+                  "counter stayed flat and the uplink cadence stayed perfect. An aggregate CANNOT "
+                  "see one axis of seven go quiet — the other six keep the total moving — which is "
+                  "why the existing counters could observe the stall's consequence and never its "
+                  "cause. Read against a stall window: the counter STILL ADVANCING means frames "
+                  "arrived and the decode ran, so the frozen value came in over the wire (an ODrive "
+                  "sending a stale estimate) rather than being lost on the way in; the counter "
+                  "PAUSED means nothing arrived for that axis, and the fault is upstream — the "
+                  "ODrive's broadcast scheduler or a per-axis loss on the bus. Those are different "
+                  "faults with different owners and no other field separates them. "
+                  "Incremented AFTER write_pos_vel() in can_buses.cpp decode_into_cache, so the "
+                  "invariant is one-directional and load-bearing: enc_frames[i] advanced ⇒ that "
+                  "axis's cache write COMPLETED. A stalled value against an advancing counter "
+                  "therefore places the fault at or above that line, never below it. "
+                  "Unlike the ages, 0 here is a MEASUREMENT (that axis received nothing this "
+                  "window), not a missing one — so the seen_mask 'n/a' discipline deliberately does "
+                  "NOT extend to this field. u32 wraps at ~4.3e9 frames, i.e. ~182 days at the "
+                  "~272 frames/s/axis broadcast rate, and unsigned differencing is wrap-correct"),
+            Field("seq",            "u32", 1,
+                  "Emitted-frame counter since boot (1 on the first). This frame is one-shot per "
+                  "window on a lossy transport with no retransmission, so without a sequence a "
+                  "silently dropped sample would join two windows into one and inflate an age_max "
+                  "while looking like clean data. Also the de-duplication key for a latest-value "
+                  "consumer"),
+            Field("window_us",      "u32", 1,
+                  "micros64() elapsed since the previous emit (0 on the FIRST frame, where no window "
+                  "exists). The honest window length: nominal 1 000 000, and a longer one means "
+                  "task_telem was delayed — which would itself be a finding on a box whose command "
+                  "latency is under investigation. Saturates at UINT32_MAX (~71.6 min)"),
+            Field("rx_cap_hits_jb", "u32", 1,
+                  "Jugglebot bus (ROLE, not controller number — the jugglebot/cone controllers are "
+                  "swapped in the current operating config, can_buses.cpp): service ticks on which the "
+                  "per-tick CAN_RX_DRAIN_BUDGET (32) bound with frames STILL QUEUED. can_buses.h calls "
+                  "this the overflow PRECURSOR and says it must stay 0. This is the residual-pressure "
+                  "witness for the FlexCAN_T4 one-frame-per-events() staleness bug fixed on 2026-06-04 "
+                  "by the drain-to-empty loop: nonzero means the fix's budget is now the binding "
+                  "constraint, and a value that GROWS with uptime is a bridge-internal path to a stale "
+                  "cache. CUMULATIVE SINCE BOOT — the consumer differences two samples"),
+            Field("rx_cap_hits_bb",   "u32", 1, "Ball Butler bus: same budget-bound tick count, cumulative"),
+            Field("rx_cap_hits_cone", "u32", 1, "Cone bus: same budget-bound tick count, cumulative"),
+            Field("decode_short",     "u32", 1,
+                  "Jugglebot-bus frames that ARRIVED and were then DISCARDED by the decode because the "
+                  "DLC was short (< 8). Carried because it is the only counter that distinguishes "
+                  "'no encoder data arriving' from 'encoder data arriving and being thrown away' — the "
+                  "second is a stale-cache mechanism that every other field here would render as "
+                  "silence. Computed since the 2026-07-05 marginal-CAN3 work, never uplinked. "
+                  "CUMULATIVE SINCE BOOT"),
+            Field("decode_bad_axis",  "u32", 1,
+                  "Same, for frames whose decoded node id was >= NUM_AXES. Cumulative since boot"),
+            Field("rx_depth_hwm_jb",  "u16", 1,
+                  "Jugglebot bus: peak rxBuffer occupancy observed at a service tick since boot (cap "
+                  "256). A HIGH-WATER MARK, not a counter — it never decreases, so it is read as a "
+                  "level and not differenced. can_buses.h: single digits in health, climbing toward "
+                  "256 means task_can_rx is being starved. Paired with cap_hits it separates 'the "
+                  "backlog got deep' from 'the drain gave up with work left'"),
+            Field("rx_depth_hwm_bb",   "u16", 1, "Ball Butler bus: same high-water mark"),
+            Field("rx_depth_hwm_cone", "u16", 1, "Cone bus: same high-water mark"),
+            Field("samples",           "u16", 1,
+                  "Telemetry ticks in this window — nominally TELEM_RATE_HZ (100 in the production "
+                  "build, 250 in BENCH_SYSID_BUILD), and 1 on the first frame, which closes a "
+                  "zero-length window. An UPPER BOUND on any axis's fold count: an axis first seen "
+                  "mid-window, or never seen (its rail-painted extrema), folded fewer or zero. "
+                  "The denominator that makes the extrema interpretable — a min over 100 samples is a "
+                  "floor, a min over 2 is an anecdote — and an independent task_telem starvation "
+                  "detector: samples well below window_us x TELEM_RATE_HZ / 1e6 means the telemetry "
+                  "task itself was late, which would bias the extrema toward the ramp's low end. "
+                  "Saturates rather than wrapping"),
+            Field("seen_mask",         "u8",  1,
+                  "Bit i set = axis i's pos_timestamp_us was nonzero during this window, i.e. an "
+                  "encoder frame has EVER been cached for it. READ THIS BEFORE THE AGES: an absent "
+                  "axis (the single-leg bench rig, a dark hand ODrive) has age_min == age_max == the "
+                  "saturation rail, which is honest but indistinguishable from a catastrophically "
+                  "stale cache. One byte closes that ambiguity at the source instead of asking every "
+                  "consumer to cross-reference the heartbeat mask on another frame"),
         ],
     ),
     Message(

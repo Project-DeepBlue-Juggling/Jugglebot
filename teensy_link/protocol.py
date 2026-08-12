@@ -85,6 +85,7 @@ from udp_protocol import (  # noqa: E402, F401
     BridgeTxDiag,
     BridgeIdentity,
     ClockDiag,
+    CacheDiag,
     RpcRequest,
     RpcResponse,
     # Sizes
@@ -105,6 +106,7 @@ from udp_protocol import (  # noqa: E402, F401
     BRIDGE_TX_DIAG_SIZE,
     BRIDGE_IDENTITY_SIZE,
     CLOCK_DIAG_SIZE,
+    CACHE_DIAG_SIZE,
     RPC_REQUEST_SIZE,
     RPC_RESPONSE_SIZE,
     # RPC method argument layouts (hoisted into the generator)
