@@ -226,6 +226,37 @@ repeatability premise (`plans/active/learned-ff-residuals.md`, gate G-A).
 The offline measurement vehicle is that plan's Phase-0 residual extractor,
 whose Gate 0 is validation against this entry's seven-bag lag table.
 
+## Addendum (2026-08-12) — S1 ran: Arm C alone fixed it, so the drift is Teensy-internal
+
+The pre-registered experiment ran on 2026-08-12 with the bridge aged to
+**62.9–63.1 h**. **Only Arm C (Teensy reboot) restored the ≤20 ms-class lag**
+(15.8 ms). Arm A left it at 340 ms; Arm B's link bounce did not fix it, and the
+decisive control — link bounced, ODrives freshly power-cycled, **Teensy still
+aged** — measured 290 ms with zero ODrive errors. The 63 h points extend this
+entry's curve rather than saturating it.
+
+Candidate status after S1: **1 (Jetson-side transport) dead** — killed by Arm B
+*and* by `udp_rtt_us` flat at 1–3 ms across 63 h (the fresh bag as high as any of
+the five); **2 (ODrive accumulator) dead** — Arm A plus the control; **4
+(interp overruns) dead** — `interp_deadline_misses` 0 in every bag,
+`interp_max_jitter_us` ≤3 µs, exactly the data-refutation this entry predicted.
+**Candidate 3's mechanism shape is confirmed**: per-axis encoder-cache
+**refresh-stall tail** — median refresh 10.0–10.2 ms in every bag, but
+frac >30 ms of 9.15/17.75/16.43 % aged vs 4.29 % fresh, p95 80–130 ms vs 30 ms,
+per-leg independent, and the lead clamp pinning from move *onset*. Note also
+that this entry's "~30 ms of the added lag is visible in the Teensy's own
+`live_deviation`" split is withdrawn — the clamp bounds that number by
+construction.
+
+Full record, exonerations with data, method corrections and the remaining
+cache-stall vs ODrive-silent-per-axis split (which needs FW 12's per-axis frame
+counters):
+`logbook/2026-08-12-s1-aged-bridge-isolation-teensy-internal.md`.
+
+**This entry stays `open`** — S1 resolved the *experiment*, not the issue. The
+2026-07-24 closure contract still stands: the fix **and** the alarmed
+end-to-end latency monitor, now gated on the FW 12 soak.
+
 ## Verification
 
 - All forensics offline/read-only; scripts + per-commit JSON in the session

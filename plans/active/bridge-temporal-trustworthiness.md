@@ -425,6 +425,52 @@ attribution unambiguous**:
 flashing FW 11 as (or immediately after) Arm C costs nothing that the
 experiment has not already spent.
 
+### S1 RESULTS (run 2026-08-12, bridge aged 62.9–63.1 h) — Teensy-internal CONFIRMED
+
+Full record: `logbook/2026-08-12-s1-aged-bridge-isolation-teensy-internal.md`.
+Verdict: **only Arm C (Teensy reboot) restored smooth motion** — 15.8 ms
+end-to-end lag at 27 s uptime vs 290–340 ms at 63 h (the historical curve does
+NOT saturate at ~240 ms). The decisive control is the post-power-cycle Arm B
+bag (`14-52-00`): fresh ODrives + bounced link + aged Teensy → still 290 ms.
+Exonerated with data: Jetson transport (RTT flat 1–3 ms — the coupling-insight
+branch where RTT flatness clears the clock half is TAKEN), Teensy→ODrive TX
+(zero deferral/queue in absolute terms over 63 h in bags 1–3; bag 4 opens
+with a frozen 519/64 accrued during the ODrive power-cycle's bus-down window,
+in-bag delta 0), RX wire-error loss (zero
+in-battery deltas), heap, interp scheduling, ODrive-internal state, and the
+stream-vs-RPC socket asymmetry (one 1 kHz drain loop, stream before RPC — a
+stream backlog would inflate RTT, not hide from it). Surviving mechanism
+signature: **per-axis encoder-cache refresh stalls** — median refresh a
+constant 10 ms in every bag; the TAIL degrades (9–18 % of intervals > 30 ms
+aged vs 4.3 % fresh, p95 80–130 ms, max ~500 ms), per-leg independent, while
+the uplink cadence stays perfect — the value inside on-time messages freezes.
+A 130 ms stale anchor at 2.5 rev/s hides 0.325 rev = 3× the lead-clamp budget,
+and clamping starts at move ONSET (94 % within 100 ms; 30/49 before motion).
+Caveats carried: Arm C was an FW 10→11 *flash*, not a bare reboot (clean
+re-test = bare power-cycle after the next soak); "ODrive paused broadcasting
+per-axis" is not fully closed until FW 12's per-axis frame counters run; and
+**P0's `/leg_cmd_executed` saturates as a transport/execution discriminator
+exactly when the clamp pins** (post-clamp command ≡ fb + 0.100) — the P3
+monitor must watch clamp duty + cache age, not only lag.
+
+### S2 — FW 12 confirmation soak (brief-launch protocol)
+
+FW 12 (`CACHE_DIAG` 0x91, instrumentation only): per-axis cache-age
+min/max per 1 Hz window, per-axis encoder-frame counters (splits "ODrive went
+silent" from "cache stopped updating"), the never-uplinked `depth_hwm` /
+`cap_hits` RX-ring counters, and decode-discard counters. Protocol — the
+accumulator lives in TEENSY power-on time, not ROS uptime (the whole
+historical curve was measured with ROS down between sittings), so: flash
+FW 12 (t=0), keep Teensy + ODrives powered and idle, ROS DOWN between
+samples; every 2–4 h a ~3-minute `record:=true` launch (no homing, no arming,
+no motion — kilobyte-scale bags); after 16–24 h one battery run on the aged
+plant (lag + cache age simultaneously), then a **bare power-cycle** (no flash
+— also the Arm C flash-confound re-test) and one fresh battery. Decision
+rule: cache-age tail grows with uptime ⇒ mechanism confirmed, fix targets the
+cache path; flat cache-age under a still-lagging aged battery ⇒ the stall is
+below the cache sampling point, reopen with the per-axis frame counters and
+`depth_hwm`/`cap_hits` as the discriminators.
+
 ### P3 — the latency fix + the alarmed end-to-end latency monitor
 
 **Scope is deliberately unspecified until S1 localizes the drift.** The fix may
