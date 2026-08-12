@@ -451,6 +451,29 @@ def test_pump_defaults_match_generated_config():
     assert DEFAULT_TORQUE_FF_MAX_NM == pytest.approx(hw.DYNAMICS_TORQUE_FF_MAX_NM)
 
 
+def _flashed_odrive_value(path):
+    """Read a dotted property path from the committed leg-ODrive snapshot.
+
+    Shape-agnostic on purpose. ``odrivetool backup-config`` on 0.6.10 writes a
+    FLAT ``{'a.b.c': value}`` file, while older captures — including this
+    snapshot before 2026-08-12 — were nested. Whichever the operator's
+    odrivetool produces is what lands in the repo, so these pins must key on
+    the property path and never on the file's shape: keying on the shape turns
+    a routine re-capture into a red gate that says nothing about the value
+    being pinned.
+    """
+    json_path = os.path.join(_REPO_ROOT, 'config', 'ODrive config Files',
+                             'odrive_pro_leg_config.json')
+    with open(json_path) as f:
+        cfg = json.load(f)
+    if path in cfg:            # flat
+        return cfg[path]
+    node = cfg                 # nested
+    for part in path.split('.'):
+        node = node[part]
+    return node
+
+
 def test_yaml_kt_odrive_config_matches_the_flashed_odrive_json():
     """The YAML's copy of the drive's torque_constant must equal what is FLASHED.
 
@@ -460,11 +483,7 @@ def test_yaml_kt_odrive_config_matches_the_flashed_odrive_json():
     and every leg feedforward is delivered at the wrong current — silently, because
     nothing in the system ever reads torque_constant back off a drive.
     """
-    json_path = os.path.join(_REPO_ROOT, 'config', 'ODrive config Files',
-                             'odrive_pro_leg_config.json')
-    with open(json_path) as f:
-        cfg = json.load(f)
-    flashed = float(cfg['axis0']['config']['motor']['torque_constant'])
+    flashed = float(_flashed_odrive_value('axis0.config.motor.torque_constant'))
 
     yaml_path = os.path.join(_REPO_ROOT, 'config', 'hardware_config.yaml')
     with open(yaml_path) as f:
@@ -499,11 +518,7 @@ def test_odrive_input_torque_scale_matches_the_firmware_wire_scale():
     to vendor defaults would use 1000 and deliver **10× the intended feedforward
     torque** — silently. This is the pin that makes that drift loud.
     """
-    json_path = os.path.join(_REPO_ROOT, 'config', 'ODrive config Files',
-                             'odrive_pro_leg_config.json')
-    with open(json_path) as f:
-        cfg = json.load(f)
-    flashed = float(cfg['axis0']['config']['can']['input_torque_scale'])
+    flashed = float(_flashed_odrive_value('axis0.config.can.input_torque_scale'))
     assert flashed == pytest.approx(float(pc.INPUT_SCALE_LEG_TOR)), (
         f'ODrive input_torque_scale={flashed} but the bridge encodes at '
         f'{pc.INPUT_SCALE_LEG_TOR} counts/Nm')
