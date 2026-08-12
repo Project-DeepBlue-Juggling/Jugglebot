@@ -125,10 +125,15 @@ PROV_DECLARED = 'declared-only'
 # Every ``ball_butler`` announcement in the same bag has NO departure edge, which
 # is the correct answer — a Butler ball never leaves our cup.
 #
-#: How far BEFORE the announced throw_time a departure edge is still ours. All
-#: measured shifts are positive (the release runs LATE), so this is pure headroom
-#: for the fault direction — an early release is a real defect and must be
-#: visible as a number rather than invisible as a missing edge.
+#: How far BEFORE the announced throw_time a departure edge is still ours. The
+#: measured departure-edge shifts are all positive, but that is NOT evidence the
+#: release runs late: the lag tracks the SENSOR POLL CADENCE rather than dispatch
+#: — the mocap backcast of the same tosses puts the release 4.6 ms EARLY
+#: (−4.6 ms; see the 2026-08-12 addendum in
+#: ``logbook/2026-08-10-toss-selftuning-build.md``). So this lead is headroom for
+#: the sensor channel's own lag, and for the fault direction the edges cannot
+#: resolve — an early release is a real defect and must be visible as a number
+#: rather than invisible as a missing edge.
 DEPARTURE_LEAD_S = 0.30
 #: How far after it. 4.7x the measured worst case (+212 ms), and the window is
 #: additionally clamped to end at ``landing - arrival_lead`` so it can never
@@ -344,13 +349,112 @@ FIELDS: Tuple[Field, ...] = (
     Field('fit_rms_mm', 'mocap', 'M', 'f', 'G2 track quality'),
     Field('fit_sparse', 'mocap', 'M', 'b', ''),
     Field('apex_z_mm', 'mocap', 'M', 'f', ''),
-    Field('achieved_flight_s_mocap', 'mocap', 'M', 'f', ''),
+    Field('achieved_flight_s_mocap', 'mocap', 'M', 'f',
+          'MEASURED release -> catch-plane crossing, both instants read off the '
+          'SAME mocap arc in the bag clock (so no clock crossing enters it). '
+          'Defined by tools/probes/toss_record_miner.mine_arc; null in every '
+          'corpus written before 2026-08-12'),
     Field('t_land_bag', 'mocap', 'M', 'f', 'bag clock — /mocap_data has no header'),
     Field('qtm_offset_s', 'mocap', 'M', 'f', ''),
     Field('mocap_gap_ms_max', 'mocap', 'M', 'f', ''),
     Field('land_plane_mm', 'mocap', 'M', 'f',
           'the fit plane USED — so a historical plane mismatch is detectable'),
     Field('floor_arrival', 'mocap', 'M', 'i', 'REPORT-only floor census'),
+
+    # ── Command reference for the mined errors (ILC Phase 0a/0c) ──────────────
+    # The commanded release state the arrival/backcast errors are differenced
+    # against, RECORDED rather than assumed: on a mined-only row every 'D' field
+    # (launch_vel_mms, flight_time_s) is null by construction, so without these
+    # the errors below would not be auditable from the corpus alone.
+    Field('cmd_launch_vel_mms', 'command_ref', 'M', 'f3',
+          'commanded release velocity the mined errors are taken against; '
+          'equals the declared launch_vel_mms when a declaration joined'),
+    Field('cmd_flight_time_s', 'command_ref', 'M', 'f',
+          'commanded release->cup flight time, same source as '
+          'cmd_launch_vel_mms'),
+    Field('cmd_release_source', 'command_ref', 'M', 's',
+          "where cmd_* came from. 'announcement' is the only value the miner "
+          'emits: the announcement is filled from the same ReleaseState the '
+          'declaration reports, and it is the ONLY source on a bag predating '
+          '/toss/record. The slot is named rather than assumed so a corpus can '
+          'still say so if that ever changes'),
+
+    # ── Arrival kinematics (ILC Phase 0a; mined from the DESCENDING branch) ───
+    # Definition point: tools/probes/toss_record_miner.mine_arc. The nominal is
+    # ballistics_bc.arrival_velocity(cmd_launch_vel_mms, cmd_flight_time_s) —
+    # the PRODUCTION function, never a second copy (plan constraint 1), and it
+    # is deliberately NOT stored: one production call reproduces it, a stored
+    # copy could drift from it.
+    Field('arrival_vel_mms', 'arrival', 'M', 'f3',
+          'MEASURED ball velocity at the catch-plane crossing (global mm/s)'),
+    Field('arrival_dir_err_rad', 'arrival', 'M', 'f2',
+          'measured - nominal per-axis lean of the arrival velocity off the '
+          'vertical it is travelling along: [atan2(vx,|vz|), atan2(vy,|vz|)]'),
+    Field('arrival_dir_err_norm_rad', 'arrival', 'M', 'f',
+          'total angle between the measured and nominal arrival directions'),
+    Field('arrival_speed_err_mms', 'arrival', 'M', 'f',
+          '|v_measured| - |v_nominal| at the catch plane'),
+    Field('t_arrival_fit_bag', 'arrival', 'M', 'f',
+          'MEASURED catch-plane crossing instant, bag clock (t_land_bag is the '
+          'ANNOUNCED landing crossed into the bag clock — not the same number)'),
+    Field('arrival_fit_n', 'arrival', 'M', 'i', 'rows in the descending fit'),
+    Field('arrival_fit_rms_mm', 'arrival', 'M', 'f',
+          '3-D RMS residual of the descending ballistic fit'),
+    Field('arrival_vel_se_mms', 'arrival', 'M', 'f',
+          '1-sigma standard error on the fitted VERTICAL arrival velocity. THE '
+          'noise floor this phase owes Phase 1 — a short branch fits a clean '
+          'RMS and a badly wrong velocity, and only this number says so. The '
+          'lateral components are ~10x better determined (their residual is '
+          '2-8 mm against 25-34 mm in z, because the bag clock error shows up '
+          'multiplied by the axis speed)'),
+    Field('flight_time_err_s', 'arrival', 'M', 'f',
+          'achieved_flight_s_mocap - cmd_flight_time_s'),
+
+    # ── Release-state backcast (ILC Phase 0c; ASCENDING branch) ──────────────
+    # The throw critical point's INPUT-side truth. Everything here is
+    # attributable to the RELEASE (hand stroke, dispatch timing, aim);
+    # everything in `land_err_flight_mm` below is what the release does NOT
+    # explain. That split is the discriminator the whole ILC leans on.
+    Field('release_pos_track_mm', 'backcast', 'M', 'f3',
+          'MEASURED release point: the ascending fit evaluated where it crosses '
+          'the release plane'),
+    Field('release_vel_track_mms', 'backcast', 'M', 'f3',
+          'MEASURED release velocity at that crossing (global mm/s)'),
+    Field('t_release_fit_bag', 'backcast', 'M', 'f',
+          'MEASURED release instant, bag clock'),
+    Field('release_time_err_ms', 'backcast', 'M', 'f',
+          't_release_fit crossed to ros MINUS announce_throw_time_ros — an '
+          'INDEPENDENT dispatch-shift measurement (the sensor departure edge is '
+          'the other one, and they disagree; see the 0a/0c logbook)'),
+    Field('release_vel_err_mms', 'backcast', 'M', 'f3',
+          'release_vel_track_mms - cmd_launch_vel_mms, per axis'),
+    Field('release_speed_err_mms', 'backcast', 'M', 'f',
+          '|measured| - |commanded| release speed'),
+    Field('release_dir_err_rad', 'backcast', 'M', 'f2',
+          'per-axis lean error of the release velocity, same convention as '
+          'arrival_dir_err_rad'),
+    Field('backcast_fit_n', 'backcast', 'M', 'i', 'rows in the ascending fit'),
+    Field('backcast_fit_rms_mm', 'backcast', 'M', 'f',
+          '3-D RMS residual of the ascending ballistic fit'),
+    Field('release_vel_se_mms', 'backcast', 'M', 'f',
+          '1-sigma standard error on the fitted VERTICAL release velocity — the '
+          'arrival_vel_se_mms twin, and the same warning applies'),
+
+    # ── Release-vs-flight split of the landing error (ILC Phase 0c) ──────────
+    # By construction land_err_release_mm + land_err_flight_mm == land_err_mm,
+    # exactly. The first half is what the MEASURED release state already
+    # predicts (propagated to the cup plane by the production ballistics), i.e.
+    # the error a better throw would remove; the second is everything the
+    # ballistic model does not explain — drag, spin, marker offset, mocap error.
+    Field('land_err_release_mm', 'split', 'M', 'f2',
+          'RELEASE-attributable part of land_err_mm — where the MEASURED '
+          'release state lands under production ballistics, minus the cup. It '
+          'equals "measured release vs COMMANDED release" only because the '
+          'announced landing IS the commanded release own ballistic landing '
+          '(build_announcement_fields); an announcement inconsistent with its '
+          'own release state would land its inconsistency here'),
+    Field('land_err_flight_mm', 'split', 'M', 'f2',
+          'FLIGHT residual: land_err_mm minus the release-attributable part'),
 
     # ── Plant (mined; row builder IMPORTED from hand_stroke_timeline) ─────────
     Field('stroke_peak_rev', 'plant', 'M', 'f', ''),
@@ -379,6 +483,10 @@ FIELDS: Tuple[Field, ...] = (
     Field('usable_for_aim_fit', 'quality', 'X', 'b', ''),
     Field('usable_for_timing_fit', 'quality', 'X', 'b', ''),
     Field('usable_for_speed_fit', 'quality', 'X', 'b', ''),
+    Field('usable_for_release_fit', 'quality', 'X', 'b',
+          'the ARC fits are trustworthy: both branches long enough and the '
+          'fitted release velocity SE small. NOT implied by _speed_fit, which '
+          'gates on the landing fit'),
     Field('excluded_reason', 'quality', 'X', 's', ''),
 )
 

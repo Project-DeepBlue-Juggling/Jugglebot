@@ -9,6 +9,14 @@ witnesses, and — when the coordinator was publishing them — the ``/toss/reco
 DECLARATIONS joined on ``announce_throw_time_ros``. (The PLANT block is deferred;
 see ``mine_bag``.)
 
+Since 2026-08-12 it also mines the **throw critical point** for
+``plans/active/critical-point-ilc.md`` Phase 0a/0c: the ball's arrival velocity
+at the catch-plane crossing and its direction/speed error against the nominal,
+the flight-time error, the **release-state backcast** (measured release
+position, velocity and instant from the ascending branch), and the exact
+RELEASE-vs-FLIGHT split of the landing error. :func:`mine_arc` is the definition
+point for all of it; the ballistics it uses are the production ones.
+
     python tools/probes/toss_record_miner.py --bag 2026-08-10_16-30-44
     python tools/probes/toss_record_miner.py --bag A --bag B --jsonl
     python tools/probes/toss_record_miner.py --self-check
@@ -68,6 +76,8 @@ import os
 import sys
 from datetime import datetime
 
+import numpy as np
+
 _HERE = os.path.dirname(os.path.abspath(__file__))          # tools/probes
 _REPO = os.path.dirname(os.path.dirname(_HERE))             # repo root
 # _HERE is on the list because the sibling probe import (ball_arrival_offset) is
@@ -88,6 +98,16 @@ from jugglebot.toss_record import (                              # noqa: E402
     edges,
     label_from_sensor,
     latch_announced_ball,
+)
+# The PRODUCTION ballistics and the PRODUCTION release geometry — imported, never
+# re-derived (critical-point-ilc plan, design constraint 1: "one forward chain,
+# differentiated numerically, never a symbolic twin"). Everything this file adds
+# on top is *estimation* (least squares over noisy markers), which has no
+# production home; every propagation, crossing solve and nominal arrival velocity
+# goes through `ballistics_bc`.
+from jugglebot.motion.trajectory import ballistics_bc            # noqa: E402
+from jugglebot.motion.trajectory.toss_release import (           # noqa: E402
+    HAND_THROW_OFFSET_MM,
 )
 
 DEFAULT_ROOT = os.path.expanduser('~/Desktop/rosbags')
@@ -115,13 +135,133 @@ BALL_STATUS_IN_FLIGHT = 1
 DEFAULT_PLANE_MM = (float(hw.GEOM_INITIAL_HEIGHT_MM)
                     + float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
                     + float(hw.HAND_CATCH_OFFSET_MM))
-#: The miner REFUSES a declared catch plane this far from the plane it fitted at.
+#: The miner REFUSES a catch plane this far from the plane it fitted at — whether
+#: it comes from a DECLARATION (`enforce_declared_planes`, on the joined rows) or
+#: from the ANNOUNCEMENT alone (`mine_bag`, on every row, declaration or not).
 PLANE_MISMATCH_TOL_MM = 5.0
+
+# ── The release-fit admission gate (ILC Phase 0a/0c) ──────────────────────────
+# `usable_for_speed_fit` selects on the LANDING fit — `land_xy_global_mm` and its
+# RMS — which is the wrong gate for a statistic about the RELEASE velocity: the
+# two are different fits over different branches, and the reference bag proves
+# they dissociate (rows 28/29 carry a clean 58/67-sample arc pair and NO landing
+# fit at all, while rows 1-3 carry a good landing fit and are excluded for a
+# 4-5 mm landing RMS that says nothing about the backcast). Before this flag the
+# "clean fits" population behind the headline release-speed number was not
+# expressible from the corpus — it existed only as a filter somebody applied by
+# hand in a report, which is how a headline becomes unreproducible.
+
+#: Fewest rows a branch may have and still admit its release-velocity estimate.
+#: 5x :data:`MIN_ARC_SAMPLES` — the floor below which a fit is refused outright —
+#: and it sits in the middle of a 5x gap in the measured corpus, not at its edge:
+#: across the three mocap bags every admitted branch carries 49-80 rows and every
+#: refused one carries 4-10. A threshold anywhere in 11..48 selects the same
+#: population, so this is not a boundary fitted to the data.
+RELEASE_FIT_MIN_SAMPLES = 20
+#: Largest 1-sigma standard error on the fitted release velocity that still
+#: admits the row, mm/s. The effect being MEASURED on this corpus is a release
+#: speed error of ~+480 mm/s, so this bounds the estimator's own uncertainty an
+#: order below the signal. Measured: admitted rows run se 5-21 mm/s, refused ones
+#: 101-1610 — the same clean separation, and for the same reason (a 60 ms branch
+#: cannot determine a velocity, see :func:`fit_ballistic`'s ``se_mms``).
+RELEASE_FIT_MAX_SE_MMS = 50.0
 
 BAND_MM = 300.0
 LATERAL_MM = 300.0
 MIN_FIT_SAMPLES = 5
 PRE_S, POST_S = 1.2, 1.2
+
+# ── Arc mining (ILC Phase 0a/0c) ──────────────────────────────────────────────
+#: ONE gravity, imported from the production ballistics. The repo has exactly one
+#: value — 9806.0 mm/s², in `motion/trajectory/ballistics_bc` AND in
+#: `tracking/ballistics` (``GRAVITY_MMPS2``), both of which say "must match
+#: hw.GRAVITY_MPS2 * 1000". The "tracker-side 9810" that `toss_release`'s module
+#: header and `toss_sequencer`'s comment warn about is not a live PRODUCTION
+#: constant anywhere — which is the claim that matters here and the only one this
+#: file's fits depend on. It is NOT gone from the tree: `ball_arrival_offset`'s
+#: synthetic-track generator uses it, two stale test-local constants still carry
+#: it (`tests/ros/test_reload_integration.py`, `tests/ros/test_toss_integration.py`
+#: — whose "the 9810 the tracking stack uses" comment is now false), and `attic/`
+#: is full of it. (The census here used to say "the only 9810 left in the tree",
+#: which was over-claimed: a reader who greps finds four live hits and stops
+#: trusting the rest of the paragraph.) Using the same constant on both sides of
+#: every difference below is what makes a gravity-convention error cancel
+#: exactly instead of masquerading as a plant residual.
+GRAVITY_MMS2 = ballistics_bc.GRAVITY_MMS2
+
+# WHY THE VELOCITY FITS SPAN A WHOLE BRANCH AND NOT A BAND NEAR THE PLANE.
+# ``/mocap_data`` carries NO HEADER, so its only clock is the bag's ``log_time``,
+# and that clock is not locally faithful. Measured on 2026-08-12_19-02-52 toss 8
+# (144 tracked samples over a full arc):
+#
+#   * x(t) and y(t) fit straight lines to 2.2 / 8.0 mm RMS — the geometry is
+#     fine;
+#   * z(t) against the production gravity leaves 34 mm RMS, and a free-g fit
+#     reads 9131 mm/s^2 instead of 9806. Both are the same defect seen through a
+#     fast axis: at 4.9 m/s a 7 ms timestamp error IS 34 mm, while on the
+#     24 mm/s lateral axis it is 0.2 mm.
+#   * rolling 8-sample (30-90 ms) windows — the band-shaped estimator this file
+#     used first — return vz scattered by +-800 mm/s about the truth, i.e. +-17 %
+#     at the plane. That estimator is not noisy, it is unusable.
+#   * the SAME data fitted over a whole branch (73 ascending / 72 descending
+#     samples) returns +4900.0 / -4841.8 mm/s at the two planes against
+#     +4924.3 / -4910.9 derived independently from the apex height — agreement to
+#     0.5 % and 1.4 %.
+#
+# So each branch is fitted whole. The branch SPLIT is kept: it is what makes
+# release-vs-flight a real discriminator rather than one fit imposed on both
+# ends, and it is what stops drag cancelling itself — a no-drag fit over a full
+# arc hides the asymmetry, a per-branch pair exposes it as a release-vs-arrival
+# speed difference.
+
+#: How far before the first ascending sample the backcast is anchored. Purely a
+#: parameterisation of the SAME fitted arc — the state is propagated there with
+#: `ballistics_bc.position_at`/`velocity_at` — and it exists because
+#: `ballistics_bc.touchdown_time` refuses a crossing in the past (a production
+#: guard worth keeping), so the reference instant has to sit below the release
+#: plane for the ascending root to be "in the future".
+ASCENT_REF_LEAD_S = 0.5
+
+#: QTM already TOLD us which points are rig. Any unlabelled row landing in a cell
+#: a LABELLED marker has occupied anywhere in the capture is dropped. This is
+#: what identifies the single-frame label dropouts that otherwise poison the
+#: fits: measured on 2026-08-12_19-02-52, the platform's own rim markers lose
+#: their labels for single frames and reappear as UNLABELLED markers at
+#: z ≈ 1056-1068 mm — inside both the lateral gate and the descending fit band,
+#: within ~1 mm of the labelled position they just lost. Left in, they scored
+#: toss 8 of that bag with a 44 mm fit residual and a 12° arrival-direction
+#: error, all of it contamination. Cell size, with the 26 neighbours also
+#: checked, puts the effective tolerance at 6-10 mm: two orders below the >70 mm
+#: the ball ever passes from a platform rim marker.
+#:
+#: TWO MOTION-BASED FILTERS WERE TRIED FIRST AND BOTH ARE WRONG HERE, recorded so
+#: nobody re-adds them. (1) *"Did anything move near this row recently?"* measures
+#: displacement between DIFFERENT markers, so a stray sitting beside a 4.4 m/s
+#: ball reads as moving. (2) *"Does this row have a twin ≥0.15 s away and within
+#: 8 mm?"* is worse: it deletes the BALL. A near-vertical toss passes each height
+#: twice, seconds apart and — because the lateral drift is ~24 mm/s — millimetres
+#: apart, so the test fires on precisely the throws this phase exists to measure.
+#: It silently removed the whole ascending branch of 4 of the 5 tracked tosses.
+FIXTURE_CELL_MM = 6.0
+
+#: Trimmed-fit floor: a row is only rejected as an outlier if it is BOTH beyond
+#: 3x the MEDIAN residual AND beyond this absolute distance. Median, not RMS: one
+#: 200 mm stray inflates the RMS enough to protect itself, which is exactly how
+#: the first version of this fit kept the platform markers it was written to
+#: reject. Without the absolute floor a clean 4-sample arc rejects its own worst
+#: point every pass.
+TRIM_FLOOR_MM = 25.0
+#: Fewest rows that may produce a velocity. Two rows determine a line exactly and
+#: report zero residual, which reads as "perfect" — the same trap `fit_sparse`
+#: exists for on the position side.
+MIN_ARC_SAMPLES = 4
+
+#: The descending branch ends when the ball comes back UP by this much. Sized
+#: above the measured z noise (25-34 mm RMS on a whole branch — see
+#: :data:`ASCENT_REF_LEAD_S`'s preamble) so ordinary jitter never truncates a
+#: good descent, and far below a real bounce-out (the reference sitting's ball 11
+#: reappeared 345 mm above its free-fall prediction).
+BOUNCE_TOL_MM = 40.0
 
 
 def make_windows() -> SensorWindows:
@@ -142,6 +282,24 @@ def _stamp_s(t) -> float:
     return float(t.sec) + float(t.nanosec) * 1e-9
 
 
+def hand_sample_time(stamp_s: float, log_time_s: float,
+                     log_minus_stamp_s: float) -> float:
+    """THE clock rule for a ``/hand_telemetry`` sample, in one place.
+
+    ROS-stamped where the publisher gave us a stamp, else crossed from the bag
+    clock by the median ``log_time - stamp`` offset — never silently zero, which
+    would put the whole hand stream 56 years away from the announcements.
+
+    A function rather than two inline copies because ``hand_contact_softness``
+    makes its own second decode pass over the same topic for the drive fields,
+    and its samples must land on the SAME clock as the sensor bits they are read
+    against. A restated rule is a rule that drifts, and the drift here is
+    invisible: every drive metric would simply be measured somewhere else.
+    """
+    return (float(stamp_s) if stamp_s > 0.0
+            else float(log_time_s) - float(log_minus_stamp_s))
+
+
 class BagData(object):
     """Everything one bag contributes, decoded once."""
 
@@ -151,6 +309,8 @@ class BagData(object):
         self.declarations = []    # decoded /toss/record rows
         self.balls = []           # (t_bag, [ball, ...])
         self.mocap = []           # (t_bag, x, y, z) unlabelled markers
+        self.fixture_cells = {}   # {int(t_bag): {cell, ...}} for LABELLED
+        #                           markers — see FIXTURE_CELL_MM
         self.link = []            # (t_bag, {key: value})
         self.traj = []            # (t_bag, tilt_map_loaded, version, gravity)
         self.log_minus_stamp_s = 0.0
@@ -217,6 +377,19 @@ def read_bag(path: str, *, sensor_only: bool = False) -> BagData:
                         'landing_position': [float(dec.landing_position.x),
                                              float(dec.landing_position.y),
                                              float(dec.landing_position.z)],
+                        # The COMMANDED release state, as the thrower published
+                        # it. `build_announcement_fields` fills these from the
+                        # same ReleaseState the declaration reports, so they are
+                        # the command reference on a bag that predates
+                        # /toss/record — which is the whole § 3.3 inversion.
+                        'initial_position': [float(dec.initial_position.x),
+                                             float(dec.initial_position.y),
+                                             float(dec.initial_position.z)],
+                        'initial_velocity': [float(dec.initial_velocity.x),
+                                             float(dec.initial_velocity.y),
+                                             float(dec.initial_velocity.z)],
+                        'predicted_tof_sec': float(
+                            getattr(dec, 'predicted_tof_sec', 0.0) or 0.0),
                         't_bag': t,
                     })
                 elif ch.topic == '/toss/record':
@@ -238,12 +411,9 @@ def read_bag(path: str, *, sensor_only: bool = False) -> BagData:
     raw_hand.sort()
     offs = sorted(t - s for t, s, _d, _r, _v, _st in raw_hand if s > 0)
     data.log_minus_stamp_s = offs[len(offs) // 2] if offs else 0.0
-    # ROS-stamped where the publisher gave us a stamp, else crossed from the
-    # bag clock by the median offset — never silently zero, which would put the
-    # whole hand stream 56 years away from the announcements.
     for t, s, d, r, v, st in raw_hand:
         data.hand.append(SensorSample(
-            t=(s if s > 0 else t - data.log_minus_stamp_s),
+            t=hand_sample_time(s, t, data.log_minus_stamp_s),
             held=d, raw=r, valid=v, stamp=st))
 
     if sensor_only:
@@ -274,12 +444,27 @@ def read_bag(path: str, *, sensor_only: bool = False) -> BagData:
                     data.balls.append((t, list(dec.balls)))
                 else:
                     for mk in dec.markers:
-                        if mk.label:
-                            continue
                         px, py = float(mk.position.x), float(mk.position.y)
                         if abs(px) > LATERAL_MM or abs(py) > LATERAL_MM:
                             continue
-                        data.mocap.append((t, px, py, float(mk.position.z)))
+                        pz = float(mk.position.z)
+                        if mk.label:
+                            # A LABELLED marker is rig, by QTM's own account.
+                            # Remembered as (SECOND, cell): a cell, not a point,
+                            # so the lookup is O(27) instead of an O(n*m) scan;
+                            # bucketed by second because the platform MOVES
+                            # between tosses and a session-wide fixture set is a
+                            # swath of space, not a set of points. Measured on
+                            # 2026-08-12_19-02-52 the session-wide version held
+                            # 3374 cells and deleted 301 of toss 8's 341
+                            # candidate rows — it ate the ball. Per-second
+                            # buckets hold the same information at the only
+                            # scope where "the rig is here" is true.
+                            data.fixture_cells.setdefault(
+                                int(math.floor(t)), set()).add(
+                                    _cell(px, py, pz))
+                            continue
+                        data.mocap.append((t, px, py, pz))
     data.mocap.sort()
     data.balls.sort(key=lambda row: row[0])
     return data
@@ -349,6 +534,146 @@ def self_tosses(announcements, robot: str):
             if a['thrower'] == robot and (a['target'] or robot) == robot]
 
 
+def _cell(x, y, z, size: float = FIXTURE_CELL_MM):
+    return (int(math.floor(x / size)), int(math.floor(y / size)),
+            int(math.floor(z / size)))
+
+
+def fixtures_near(fixture_cells, lo: float, hi: float) -> set:
+    """The labelled-marker cells occupied in ``[lo, hi]``, second buckets ±1."""
+    out = set()
+    for sec in range(int(math.floor(lo)) - 1, int(math.floor(hi)) + 2):
+        cells = fixture_cells.get(sec)
+        if cells:
+            out |= cells
+    return out
+
+
+def drop_fixtures(rows, cells) -> list:
+    """Unlabelled rows that do NOT sit where a labelled marker has been. PURE.
+
+    ``cells`` is a flat set — see :func:`fixtures_near` for the time scoping. The
+    26 neighbouring cells are checked as well as the row's own, so the effective
+    tolerance is 6-10 mm rather than "same cell": a marker one micron across a
+    cell boundary must not survive.
+    """
+    if not cells:
+        return list(rows)
+    keep = []
+    for t, x, y, z in rows:
+        cx, cy, cz = _cell(x, y, z)
+        if any((cx + i, cy + j, cz + k) in cells
+               for i in (-1, 0, 1) for j in (-1, 0, 1) for k in (-1, 0, 1)):
+            continue
+        keep.append((t, x, y, z))
+    return keep
+
+
+def fit_ballistic(rows, *, g: float = GRAVITY_MMS2,
+                  trim_floor_mm: float = TRIM_FLOOR_MM,
+                  min_samples: int = MIN_ARC_SAMPLES, passes: int = 3):
+    """Least-squares ballistic state from ``(t, x, y, z)`` rows.
+
+    -> ``(pos_mm, vel_mms, t_ref, n, rms_mm, se_mms)`` or ``None``;
+    ``pos``/``vel`` are the state AT ``t_ref`` (the mean sample time), so that
+
+        ``ballistics_bc.position_at(pos, vel, t - t_ref)``
+
+    reproduces the fitted arc exactly. The forward model IS that production
+    function — ``x`` and ``y`` linear in time, ``z`` with the one gravity — and
+    :func:`self_check` pins the round trip so the estimator here can never end up
+    integrating a different physics from the planner it is scoring.
+
+    Trimmed once per pass: a row beyond ``max(3·median residual,
+    trim_floor_mm)`` is dropped and the fit repeated, never below
+    ``min_samples`` rows. Robustness is not optional here — a single mislabelled
+    platform marker inside the band moves an arrival velocity by more than the
+    effect being measured — but a *hard* 3·rms rule on a clean 4-sample arc
+    rejects its own worst point every pass, hence the absolute floor.
+
+    ``se_mms`` is the per-axis 1-sigma standard error of the fitted VELOCITY,
+    ``sigma_axis / sqrt(sum (t - t_mean)^2)`` with ``sigma_axis`` from that
+    axis's own residuals at ``n - 2`` dof. It is the field that makes a short
+    branch confessable: on 2026-08-12_19-02-52 toss 6 the ascending branch fits
+    6 rows over 60 ms with an RMS of 11.5 mm — which looks clean — and returns a
+    release speed 1400 mm/s wrong. Its ``se`` is an order larger than toss 8's,
+    which spans 490 ms. A corpus that carried the velocity and not the ``se``
+    would be carrying a plausible wrong number, which is the one thing the
+    record exists to prevent.
+    """
+    kept = sorted(rows)
+    if len(kept) < min_samples:
+        return None
+    result = None
+    for _ in range(max(1, passes)):
+        n = len(kept)
+        if n < min_samples:
+            break
+        ts = np.array([r[0] for r in kept], dtype=float)
+        t_ref = float(ts.mean())
+        u = ts - t_ref
+        design = np.stack([np.ones_like(u), u], axis=1)
+        # z is made linear by subtracting the KNOWN gravity term, so the fit
+        # solves for (position, velocity) only — 2 unknowns per axis. Fitting g
+        # as a third unknown was tried and rejected on evidence: on
+        # 2026-08-12_19-02-52 toss 8 a free-g fit reads 8426 (ascending) and
+        # 7315 (descending) mm/s², i.e. it absorbs the bag-clock error into the
+        # physics and then reports velocities consistent with a gravity the
+        # planet does not have. Holding g at the planner's value is also what
+        # the corpus actually wants measured: "how does this throw differ from
+        # the model the machine flew?"
+        cols = []
+        for idx, extra in ((1, None), (2, None), (3, 0.5 * g * u * u)):
+            v = np.array([r[idx] for r in kept], dtype=float)
+            cols.append(v if extra is None else v + extra)
+        coef = [np.linalg.lstsq(design, c, rcond=None)[0] for c in cols]
+        pos = np.array([coef[0][0], coef[1][0], coef[2][0]])
+        vel = np.array([coef[0][1], coef[1][1], coef[2][1]])
+        pred = np.stack([design.dot(c) for c in coef], axis=1)
+        meas = np.stack([np.array([r[1] for r in kept], dtype=float),
+                         np.array([r[2] for r in kept], dtype=float),
+                         cols[2]], axis=1)
+        resid = np.sqrt(((pred - meas) ** 2).sum(axis=1))
+        rms = float(np.sqrt((resid ** 2).mean()))
+        suu = float((u * u).sum())
+        dof = max(n - 2, 1)
+        se = np.array([
+            float(np.sqrt(((pred[:, k] - meas[:, k]) ** 2).sum() / dof
+                          / suu)) if suu > 0.0 else float('inf')
+            for k in range(3)])
+        result = (pos, vel, t_ref, n, rms, se)
+        limit = max(3.0 * float(np.median(resid)), float(trim_floor_mm))
+        survivors = [r for r, e in zip(kept, resid) if e <= limit]
+        if len(survivors) == n or len(survivors) < min_samples:
+            break
+        kept = survivors
+    return result
+
+
+def _lean_rad(vel):
+    """Per-axis lean of a velocity off the vertical it travels along, radians.
+
+    ``[atan2(vx, |vz|), atan2(vy, |vz|)]`` — positive x means "drifting toward
+    +x". ``|vz|`` rather than ``vz`` so a release (``vz > 0``) and the arrival it
+    produces (``vz < 0``) are described in the SAME sense: a throw that leans
+    toward +x arrives leaning toward +x, and the two error channels can be read
+    against each other without a sign table.
+    """
+    v = np.asarray(vel, dtype=float).reshape(3)
+    ref = abs(float(v[2]))
+    return (math.atan2(float(v[0]), ref), math.atan2(float(v[1]), ref))
+
+
+def _angle_between_rad(a, b) -> float:
+    """Total angle between two vectors, radians. ``None``-safe on zero length."""
+    va = np.asarray(a, dtype=float).reshape(3)
+    vb = np.asarray(b, dtype=float).reshape(3)
+    na, nb = float(np.linalg.norm(va)), float(np.linalg.norm(vb))
+    if na <= 0.0 or nb <= 0.0:
+        return float('nan')
+    return float(np.arccos(np.clip(float(va.dot(vb)) / (na * nb), -1.0, 1.0)))
+
+
 def mine_mocap(data: BagData, landing_ros: float, plane_mm: float,
                band_mm: float = BAND_MM) -> dict:
     """The arrival block for ONE toss, via the IMPORTED estimator."""
@@ -357,24 +682,271 @@ def mine_mocap(data: BagData, landing_ros: float, plane_mm: float,
     if not data.mocap:
         return out
     land_bag = landing_ros + data.log_minus_stamp_s
-    lo, hi = land_bag - PRE_S, land_bag + POST_S
-    window = [(t, x, y, z) for t, x, y, z in data.mocap
-              if lo <= t <= hi and abs(x) <= LATERAL_MM and abs(y) <= LATERAL_MM]
-    got = fit_plane_crossing_full(window, plane_mm, band_mm)
+    window = mocap_window(data, land_bag)
+    if not window:
+        return out
+    # THE DESCENDING BRANCH, made explicit — and this is a FIX, not a tidy-up.
+    # `fit_plane_crossing_full` locates the descending branch by cutting at the
+    # first SUB-PLANE sample in time order. That is right for the window it was
+    # written for (a Ball-Butler arrival, which opens with the ball already
+    # falling) and wrong for a self toss, whose window opens with OUR OWN ball
+    # sitting in the cup ~110 mm BELOW the plane: the very first row cuts the run
+    # to zero length and the fit returns None. Measured on 2026-08-12_19-02-52:
+    # all 17 self tosses reported `land_xy_global_mm: null` while the bag carries
+    # a clean arc for several of them. So the apex is found first and only
+    # post-apex rows reach the shipped estimator, whose own cut then still does
+    # the job it was written for — excluding the post-contact excursion.
+    ball = ball_rows(data, land_bag)
+    apex_t = max(ball, key=lambda r: r[3])[0] if ball else None
+    descending = ([r for r in ball if r[0] >= apex_t] if apex_t is not None
+                  else [])
+    got = fit_plane_crossing_full(descending, plane_mm, band_mm)
+    gaps = [window[i + 1][0] - window[i][0] for i in range(len(window) - 1)]
+    out.update({
+        'apex_z_mm': (max(r[3] for r in ball) if ball else None),
+        't_land_bag': land_bag,
+        'mocap_gap_ms_max': (max(gaps) * 1e3 if gaps else None),
+    })
     if got is None:
         return out
     x, y, n, z_lo, z_hi, rms, _t_lo, _t_hi = got
-    gaps = [window[i + 1][0] - window[i][0] for i in range(len(window) - 1)]
     out.update({
         'land_xy_global_mm': [x, y],
         'n_fit': int(n),
         'fit_rms_mm': float(rms),
         'fit_sparse': bool(n < MIN_FIT_SAMPLES),
-        'apex_z_mm': max((z for _t, _x, _y, z in window), default=None),
-        't_land_bag': land_bag,
-        'mocap_gap_ms_max': (max(gaps) * 1e3 if gaps else None),
     })
     del z_lo, z_hi          # reported by the estimator, not carried in the schema
+    return out
+
+
+def mocap_window(data: BagData, land_bag: float) -> list:
+    """The laterally-gated ``(t, x, y, z)`` rows around one landing, sorted."""
+    lo, hi = land_bag - PRE_S, land_bag + POST_S
+    return [(t, x, y, z) for t, x, y, z in data.mocap
+            if lo <= t <= hi and abs(x) <= LATERAL_MM and abs(y) <= LATERAL_MM]
+
+
+def ball_rows(data: BagData, land_bag: float) -> list:
+    """THE ball-candidate rows for one toss: gated, de-fixtured, de-dwelled.
+
+    One selection, used by BOTH the landing fit and the arc fits, so the mocap
+    block and the arrival/backcast block can never end up describing different
+    sets of markers.
+    """
+    lo, hi = land_bag - PRE_S, land_bag + POST_S
+    return drop_fixtures(mocap_window(data, land_bag),
+                         fixtures_near(data.fixture_cells, lo, hi))
+
+
+def command_reference(ann: dict, plane_mm: float) -> dict:
+    """The COMMANDED release state the mined errors are differenced against.
+
+    -> ``{'cmd_launch_vel_mms', 'cmd_flight_time_s', 'cmd_release_source',
+    'release_plane_mm'}``; the velocity/time keys are ``None`` when the bag
+    witnesses no command.
+
+    Sourced from the announcement, which `build_announcement_fields` fills from
+    the very ``ReleaseState`` the declaration reports — so a bag that predates
+    ``/toss/record`` still carries the reference (the § 3.3 inversion). The join
+    later upgrades `launch_vel_mms` / `flight_time_s` from the declaration; these
+    stay mined so the errors are auditable on a mined-only row, where every 'D'
+    field is null by construction.
+
+    ``release_plane_mm`` is the announcement's own commanded release z when the
+    bag has one, else the fit plane walked down the two GENERATED offsets
+    (``hand_catch_offset − hand_throw_offset`` = 6.736 mm — the cup plane sits
+    ABOVE the release plane). Never a third copy of the geometry.
+    """
+    vel = ann.get('initial_velocity')
+    tof = ann.get('predicted_tof_sec') or 0.0
+    ann_flight = float(ann.get('landing_time') or 0.0) - float(
+        ann.get('throw_time') or 0.0)
+    if not tof and ann_flight > 0.0:
+        tof = ann_flight
+    pos = ann.get('initial_position')
+    release_plane = (float(pos[2]) if pos and float(pos[2]) > 0.0
+                     else float(plane_mm) - float(hw.HAND_CATCH_OFFSET_MM)
+                     + float(HAND_THROW_OFFSET_MM))
+    out = {'release_plane_mm': release_plane,
+           'cmd_launch_vel_mms': None, 'cmd_flight_time_s': None,
+           'cmd_release_source': None}
+    if vel and any(v != 0.0 for v in vel) and tof > 0.0:
+        out['cmd_launch_vel_mms'] = [float(v) for v in vel]
+        out['cmd_flight_time_s'] = float(tof)
+        out['cmd_release_source'] = 'announcement'
+    return out
+
+
+def branches(rows, release_plane_mm: float, plane_mm: float):
+    """-> ``(ascending, descending)`` row lists for one toss. PURE.
+
+    Only rows at or above the RELEASE plane are considered: below it the ball is
+    still in the hand being accelerated, so those samples are not on a ballistic
+    arc at all and would drag the backcast toward the stroke.
+
+    The descending list stops as soon as the ball comes back UP by more than
+    :data:`BOUNCE_TOL_MM` — the same intent as
+    `ball_arrival_offset.fit_plane_crossing_full`'s sub-plane cut, for the same
+    reason (a bounce-out's post-contact excursion is large and its direction
+    correlates with the outcome being scored), expressed as "it stopped
+    descending" because the release-plane gate has already removed everything
+    that fell INTO the cup. ``plane_mm`` is accepted for symmetry with the
+    shipped estimator and to keep the two selections one call apart.
+    """
+    del plane_mm                     # the gate above the release plane is enough
+    above = sorted(r for r in rows if r[3] >= release_plane_mm)
+    if not above:
+        return [], []
+    apex_t = max(above, key=lambda r: r[3])[0]
+    asc = [r for r in above if r[0] <= apex_t]
+    desc = []
+    z_min = None
+    for row in above:
+        if row[0] < apex_t:
+            continue
+        if z_min is not None and row[3] > z_min + BOUNCE_TOL_MM:
+            break
+        desc.append(row)
+        z_min = row[3] if z_min is None else min(z_min, row[3])
+    return asc, desc
+
+
+def mine_arc(data: BagData, ann: dict, plane_mm: float,
+             land_xy=None) -> dict:
+    """Arrival kinematics (0a) + release-state backcast (0c) for ONE toss.
+
+    THE definition point for every ``arrival`` / ``backcast`` / ``split`` field
+    (``plans/active/critical-point-ilc.md`` Phase 0a/0c). Two ballistic fits over
+    the SAME ball rows `land_xy` is derived from (:func:`ball_rows`), split at
+    the apex by :func:`branches`:
+
+    * **descending** — the arrival velocity where the fitted arc crosses the
+      catch plane, and with it the arrival direction/speed errors against the
+      nominal;
+    * **ascending** — backcast to the release-plane crossing, giving the
+      measured release position, velocity and INSTANT.
+
+    Each branch is fitted WHOLE, not over a band near its plane. That is a
+    measured decision, not a preference — see :data:`ASCENT_REF_LEAD_S`'s
+    preamble for the numbers: a band-shaped estimator over 30-90 ms returns
+    ``vz`` scattered by ±800 mm/s because ``/mocap_data`` has no header and the
+    bag clock is only faithful in the large.
+
+    **The discriminator.** The measured release state is propagated to the cup
+    plane by ``ballistics_bc.arrival_state_at_z`` — the production catch-side
+    boundary condition — and the landing error is split exactly:
+
+        ``land_err_mm = land_err_release_mm + land_err_flight_mm``
+
+    the first being what the measured release already predicts (RELEASE-side
+    fault: stroke speed, aim, dispatch timing), the second everything the
+    no-drag ballistic model does not explain (FLIGHT-side: drag, spin,
+    marker-centre offset, mocap error). The identity is pinned in
+    :func:`self_check`.
+    """
+    ref = command_reference(ann, plane_mm)
+    out = {'cmd_launch_vel_mms': ref['cmd_launch_vel_mms'],
+           'cmd_flight_time_s': ref['cmd_flight_time_s'],
+           'cmd_release_source': ref['cmd_release_source']}
+    if not data.mocap:
+        return out
+    land_bag = float(ann.get('landing_time') or 0.0) + data.log_minus_stamp_s
+    release_plane = float(ref['release_plane_mm'])
+    asc, desc = branches(ball_rows(data, land_bag), release_plane, plane_mm)
+
+    # ── 0a: the descending branch → arrival state at the catch plane ──────────
+    arrival_vel = None
+    fit = fit_ballistic(desc)
+    if fit is not None:
+        pos, vel, t_ref, n, rms, se = fit
+        out['arrival_fit_n'] = int(n)
+        out['arrival_fit_rms_mm'] = float(rms)
+        out['arrival_vel_se_mms'] = float(se[2])
+        try:
+            dt = ballistics_bc.touchdown_time(pos, vel, plane_mm,
+                                              descending=True)
+        except ValueError:
+            dt = None
+        if dt is not None:
+            arrival_vel = ballistics_bc.velocity_at(vel, dt)
+            out['arrival_vel_mms'] = [float(v) for v in arrival_vel]
+            out['t_arrival_fit_bag'] = float(t_ref + dt)
+
+    # ── 0c: the ascending branch → release state at the release plane ─────────
+    release_vel = release_pos = None
+    fit = fit_ballistic(asc)
+    if fit is not None:
+        pos, vel, t_ref, n, rms, se = fit
+        out['backcast_fit_n'] = int(n)
+        out['backcast_fit_rms_mm'] = float(rms)
+        out['release_vel_se_mms'] = float(se[2])
+        # Anchor the state BEFORE the release so the ascending crossing is in
+        # the future — `touchdown_time` refuses a past crossing, and that guard
+        # is worth keeping rather than working around with a private solver.
+        lead = float(asc[0][0]) - ASCENT_REF_LEAD_S - t_ref
+        p_lead = ballistics_bc.position_at(pos, vel, lead)
+        v_lead = ballistics_bc.velocity_at(vel, lead)
+        try:
+            dt = ballistics_bc.touchdown_time(p_lead, v_lead, release_plane,
+                                              descending=False)
+        except ValueError:
+            dt = None
+        if dt is not None:
+            release_pos = ballistics_bc.position_at(p_lead, v_lead, dt)
+            release_vel = ballistics_bc.velocity_at(v_lead, dt)
+            out['release_pos_track_mm'] = [float(v) for v in release_pos]
+            out['release_vel_track_mms'] = [float(v) for v in release_vel]
+            out['t_release_fit_bag'] = float(t_ref + lead + dt)
+            throw_ros = ann.get('throw_time')
+            if throw_ros:
+                out['release_time_err_ms'] = (
+                    (t_ref + lead + dt - data.log_minus_stamp_s)
+                    - float(throw_ros)) * 1e3
+
+    # ── The measured flight time, and its error against the command ──────────
+    if out.get('t_arrival_fit_bag') is not None and \
+            out.get('t_release_fit_bag') is not None:
+        flight = out['t_arrival_fit_bag'] - out['t_release_fit_bag']
+        out['achieved_flight_s_mocap'] = float(flight)
+        if ref['cmd_flight_time_s']:
+            out['flight_time_err_s'] = float(flight - ref['cmd_flight_time_s'])
+
+    # ── The errors against the command ────────────────────────────────────────
+    cmd_v = ref['cmd_launch_vel_mms']
+    cmd_t = ref['cmd_flight_time_s']
+    if cmd_v is not None and cmd_t:
+        if release_vel is not None:
+            out['release_vel_err_mms'] = [
+                float(release_vel[i] - cmd_v[i]) for i in range(3)]
+            out['release_speed_err_mms'] = float(
+                np.linalg.norm(release_vel) - np.linalg.norm(cmd_v))
+            meas, nom = _lean_rad(release_vel), _lean_rad(cmd_v)
+            out['release_dir_err_rad'] = [meas[0] - nom[0], meas[1] - nom[1]]
+        if arrival_vel is not None:
+            # The nominal arrival velocity is the PRODUCTION propagation of the
+            # commanded release — never a second copy of the ballistics.
+            nom_arr = ballistics_bc.arrival_velocity(cmd_v, cmd_t)
+            out['arrival_speed_err_mms'] = float(
+                np.linalg.norm(arrival_vel) - np.linalg.norm(nom_arr))
+            meas, nom = _lean_rad(arrival_vel), _lean_rad(nom_arr)
+            out['arrival_dir_err_rad'] = [meas[0] - nom[0], meas[1] - nom[1]]
+            out['arrival_dir_err_norm_rad'] = _angle_between_rad(
+                arrival_vel, nom_arr)
+
+    # ── The RELEASE-vs-FLIGHT split of the landing error ─────────────────────
+    cup = ann.get('landing_position')
+    if release_pos is not None and land_xy is not None and cup:
+        try:
+            pred, _v, _t = ballistics_bc.arrival_state_at_z(
+                release_pos, release_vel, plane_mm, descending=True)
+        except ValueError:
+            pred = None
+        if pred is not None:
+            out['land_err_release_mm'] = [float(pred[0] - cup[0]),
+                                          float(pred[1] - cup[1])]
+            out['land_err_flight_mm'] = [float(land_xy[0] - pred[0]),
+                                         float(land_xy[1] - pred[1])]
     return out
 
 
@@ -522,7 +1094,25 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
             row['land_err_mm'] = [row['land_xy_global_mm'][0] - cup[0],
                                   row['land_xy_global_mm'][1] - cup[1]]
             row['land_err_norm_mm'] = math.hypot(*row['land_err_mm'])
+        # ILC Phase 0a/0c. AFTER the land fit, because the release-vs-flight
+        # split differences against `land_xy_global_mm` and the identity
+        # land_err = release-part + flight-part only holds if both halves read
+        # the same landing point.
+        row.update(mine_arc(data, ann, this_plane,
+                            land_xy=row.get('land_xy_global_mm')))
         _mark_usable(row)
+        # THE SAME PLANE CHECK, on the MINED half. `enforce_declared_planes`
+        # compares the fit plane against the DECLARATION, so it can only fire on
+        # a joined row — and the whole reference corpus is `mined-only`, which
+        # means the check that exists to catch "the corpus is scoring arrivals at
+        # the wrong height" never ran on a single row of it. The announcement's
+        # own `landing_position[2]` is the same quantity the declaration's
+        # `catch_point_global_mm[2]` is (both come from `_toss_release_state`;
+        # see the land_err comment above), so it answers the same question on a
+        # bag that predates `/toss/record`. Same constant, same refusal.
+        if cup and len(cup) > 2 and cup[2] is not None and abs(
+                float(cup[2]) - float(this_plane)) > PLANE_MISMATCH_TOL_MM:
+            refuse_plane(row)
         rows.append(row)
     return rows
 
@@ -568,7 +1158,50 @@ def _mark_usable(row: dict) -> None:
         timing_reasons.append('rimshot_candidate')
     row['usable_for_timing_fit'] = not timing_reasons
     row['usable_for_speed_fit'] = not reasons
+    # The RELEASE-side gate is deliberately NOT `reasons`: it asks whether the
+    # two ARC fits are trustworthy, and says nothing about the landing fit those
+    # reasons are about. See RELEASE_FIT_MIN_SAMPLES for the dissociation this
+    # rests on, and why re-using `usable_for_speed_fit` here would both drop good
+    # rows and admit bad ones.
+    row['usable_for_release_fit'] = _release_fit_ok(row)
     row['excluded_reason'] = ','.join(sorted(set(reasons))) or None
+
+
+def _release_fit_ok(row: dict) -> bool:
+    """Is this row's RELEASE-velocity estimate admissible? (ILC Phase 0c)
+
+    Three conditions, all on the fits' own self-report: both branches carry at
+    least :data:`RELEASE_FIT_MIN_SAMPLES` rows, and the fitted release velocity's
+    1-sigma standard error is under :data:`RELEASE_FIT_MAX_SE_MMS`. The ARRIVAL
+    branch is required as well as the ascending one because a row whose
+    descending branch never fitted is a row whose arc was only half seen — the
+    corpus's short-branch failures are exactly those rows, and their release
+    speeds are wrong by 1000-1600 mm/s against a signal of 480.
+    """
+    for name in ('backcast_fit_n', 'arrival_fit_n'):
+        n = row.get(name)
+        if n is None or int(n) < RELEASE_FIT_MIN_SAMPLES:
+            return False
+    se = row.get('release_vel_se_mms')
+    if se is None or not math.isfinite(float(se)):
+        return False
+    return float(se) <= RELEASE_FIT_MAX_SE_MMS
+
+
+def refuse_plane(row: dict) -> None:
+    """Mark ONE row refused for a catch-plane mismatch. The single enforcement
+    point, called from both the declared path (:func:`enforce_declared_planes`)
+    and the mined-only path (:func:`mine_bag`).
+
+    EVERY fit flag is cleared, not a subset — see
+    :func:`enforce_declared_planes` for what each of them depends on the plane
+    for.
+    """
+    for flag in ('usable_for_aim_fit', 'usable_for_speed_fit',
+                 'usable_for_timing_fit', 'usable_for_release_fit'):
+        row[flag] = False
+    reasons = [r for r in (row.get('excluded_reason') or '').split(',') if r]
+    row['excluded_reason'] = ','.join(sorted(set(reasons + ['plane_mismatch'])))
 
 
 def mismatched_planes(rows) -> list:
@@ -615,9 +1248,18 @@ def enforce_declared_planes(rows) -> list:
     — and the whole point of R1 is that this error is *invisible in the
     residuals* until a displaced throw, which is exactly when the map gets used.
 
-    Aim and speed are refused; TIMING is not. The timing fit reads sensor edges
-    and release instants, which the fit plane has no bearing on whatsoever, and
-    refusing it would throw away good data for an unrelated fault.
+    **EVERY fit flag is refused, TIMING included (audit fix 2026-08-12).** The
+    carve-out this used to make — "the timing fit reads sensor edges and release
+    instants, which the fit plane has no bearing on" — was true when it was
+    written and stopped being true the moment Phase 0a landed. Release-side
+    timing still is plane-independent: ``release_time_err_ms`` compares the
+    ascending backcast's crossing of the RELEASE plane against the announced
+    ``throw_time``. **Arrival-side timing is not.** ``t_arrival_fit_bag`` IS the
+    ``plane_mm`` crossing of the descending fit, and ``achieved_flight_s_mocap``
+    and ``flight_time_err_s`` are both derived from it — so a 20 mm plane error
+    moves the measured flight time by ~4 ms at a 4.9 m/s arrival, the same order
+    as the dispatch shift the timing fit exists to measure. One flag cannot be
+    half-true, so the row is refused.
 
     The plane cannot simply be corrected here: ``mine_mocap`` fits the crossing
     at a plane chosen BEFORE the declaration is joined, so a mismatch means the
@@ -626,11 +1268,7 @@ def enforce_declared_planes(rows) -> list:
     """
     lines = check_declared_planes(rows)
     for row in mismatched_planes(rows):
-        row['usable_for_aim_fit'] = False
-        row['usable_for_speed_fit'] = False
-        reasons = [r for r in (row.get('excluded_reason') or '').split(',') if r]
-        row['excluded_reason'] = ','.join(
-            sorted(set(reasons + ['plane_mismatch'])))
+        refuse_plane(row)
     return lines
 
 
@@ -667,21 +1305,112 @@ def print_report(name: str, rows, led: dict, data: BagData) -> None:
         cat = row.get('t_catch_raw_ros')
         land = row.get('announce_landing_time_ros') or 0.0
         err = row.get('land_err_norm_mm')
-        print('  {:>4} {:12.3f} {:>10} {:>9} {:>9} {:>9}  {}'.format(
-            i, throw, row.get('label'),
-            '{:+.0f}'.format((dep - throw) * 1e3) if dep else '-',
-            '{:+.0f}'.format((cat - land) * 1e3) if cat else '-',
+        # Every cell is None-safe. A declared-only row (a declaration the bag
+        # kept but whose announcement it lost) carries NO derived label at all,
+        # and formatting that None used to abort the whole report AFTER the
+        # per-toss table had printed — losing the ledger, the plane checks and
+        # the jsonl for a bag whose only fault was an unmatched declaration.
+        # Found running 2026-08-12_19-02-52 (19 declarations, 17 announcements).
+        print('  {:>4} {:>13} {:>10} {:>9} {:>9} {:>9}  {}'.format(
+            i, '{:.3f}'.format(throw) if throw else '-',
+            row.get('label') or '-',
+            '{:+.0f}'.format((dep - throw) * 1e3) if dep and throw else '-',
+            '{:+.0f}'.format((cat - land) * 1e3) if cat and land else '-',
             '{:.1f}'.format(err) if err is not None else '-',
             row.get('record_provenance') or '-'))
     counts = {}
     for row in rows:
-        counts[row['label']] = counts.get(row['label'], 0) + 1
+        key = row['label'] or '(none)'          # declared-only rows have none
+        counts[key] = counts.get(key, 0) + 1
     print('  labels: ' + ', '.join('{}={}'.format(k, counts[k])
                                    for k in sorted(counts)))
     usable = sum(1 for r in rows if r.get('usable_for_aim_fit'))
-    print('  usable_for_aim_fit: {}/{}'.format(usable, len(rows)))
+    rel = sum(1 for r in rows if r.get('usable_for_release_fit'))
+    print('  usable_for_aim_fit: {}/{}   usable_for_release_fit: {}/{}'.format(
+        usable, len(rows), rel, len(rows)))
     for problem in check_declared_planes(rows):
         print('  ' + problem)
+    print_arc_report(rows)
+
+
+def _fmt(value, spec='{:.1f}'):
+    return '-' if value is None else spec.format(value)
+
+
+def print_arc_report(rows) -> None:
+    """The ILC Phase-0a/0c block: arrival kinematics and release backcast.
+
+    Printed separately from the label table because it answers a different
+    question — *did this sitting see the ball at all, and where did the throw
+    error come from?* — and because a bag with no mocap has an entirely empty
+    block, which is itself the finding worth seeing at a glance.
+    """
+    have = {i for i, r in enumerate(rows)
+            if r.get('arrival_vel_mms') or r.get('release_vel_track_mms')}
+    print('  --- arc (0a arrival / 0c backcast): {}/{} rows carry a fit'
+          .format(len(have), len(rows)))
+    if not have:
+        return
+    head = ('#', 'n_as', 'se_as', 'n_ar', 'se_ar', 'v_rel_z', 'v_arr_z',
+            'dv_rel', 'dirE_mr', 'trelE_ms', 'Tflt', 'dT_ms')
+    fmt = ('    {:>4} {:>5} {:>7} {:>5} {:>7} {:>9} {:>9} {:>9} {:>8} {:>8} '
+           '{:>8} {:>8}')
+    print(fmt.format(*head))
+    for i, row in enumerate(rows, 1):
+        if (i - 1) not in have:
+            continue
+        rv = row.get('release_vel_track_mms')
+        av = row.get('arrival_vel_mms')
+        de = row.get('arrival_dir_err_norm_rad')
+        print(fmt.format(
+            i, _fmt(row.get('backcast_fit_n'), '{:d}'),
+            _fmt(row.get('release_vel_se_mms'), '{:.0f}'),
+            _fmt(row.get('arrival_fit_n'), '{:d}'),
+            _fmt(row.get('arrival_vel_se_mms'), '{:.0f}'),
+            _fmt(rv[2] if rv else None, '{:.0f}'),
+            _fmt(av[2] if av else None, '{:.0f}'),
+            _fmt(row.get('release_speed_err_mms'), '{:+.0f}'),
+            _fmt(de * 1e3 if de is not None else None, '{:.1f}'),
+            _fmt(row.get('release_time_err_ms'), '{:+.0f}'),
+            _fmt(row.get('achieved_flight_s_mocap'), '{:.3f}'),
+            _fmt((row.get('flight_time_err_s') or 0.0) * 1e3
+                 if row.get('flight_time_err_s') is not None else None,
+                 '{:+.0f}')))
+        split_r = row.get('land_err_release_mm')
+        split_f = row.get('land_err_flight_mm')
+        if split_r and split_f:
+            print('         split: land_err {} mm = RELEASE {} + FLIGHT {}'
+                  .format(['{:+.1f}'.format(v) for v in row['land_err_mm']],
+                          ['{:+.1f}'.format(v) for v in split_r],
+                          ['{:+.1f}'.format(v) for v in split_f]))
+    for name, key, spec in (
+            ('release speed err (mm/s)', 'release_speed_err_mms', '{:+.0f}'),
+            ('release time err (ms)', 'release_time_err_ms', '{:+.0f}'),
+            ('arrival dir err (mrad)', 'arrival_dir_err_norm_rad', '{:.1f}'),
+            ('flight time err (ms)', 'flight_time_err_s', '{:+.1f}')):
+        vals = [r.get(key) for r in rows if r.get(key) is not None]
+        if key == 'arrival_dir_err_norm_rad':
+            vals = [v * 1e3 for v in vals]
+        if key == 'flight_time_err_s':
+            vals = [v * 1e3 for v in vals]
+        if not vals:
+            continue
+        vals.sort()
+        med = vals[len(vals) // 2]
+        p95 = vals[min(len(vals) - 1, int(round(0.95 * (len(vals) - 1))))]
+        print('    {:26s} n={:<3d} median {:>9} p95 {:>9}'.format(
+            name, len(vals), spec.format(med), spec.format(p95)))
+    # THE HEADLINE POPULATION, expressible from the corpus rather than applied by
+    # hand in a report: the rows whose ARC fits are admissible. Printed next to
+    # the all-rows line above so the difference between them is visible — on the
+    # reference bag it is 16 clean rows against 22 with any release number at
+    # all, and the six excluded ones are wrong by 1000-1600 mm/s.
+    clean = sorted(r['release_speed_err_mms'] for r in rows
+                   if r.get('usable_for_release_fit')
+                   and r.get('release_speed_err_mms') is not None)
+    print('    {:26s} n={:<3d} median {:>9} (usable_for_release_fit)'.format(
+        'release speed err, CLEAN', len(clean),
+        '-' if not clean else '{:+.0f}'.format(clean[len(clean) // 2])))
 
 
 def write_outputs(name: str, rows, led: dict) -> str:
@@ -846,6 +1575,35 @@ def _synth(throw=100.0, flight=0.8, *, departure_dt=0.17, catch_dt=None,
     return out, throw, landing
 
 
+def synth_arc(release_pos, release_vel, *, plane_mm, t_release=10.0, dt=0.005,
+              wobble_mm=0.0):
+    """A pure ballistic arc sampled at a mocap-like rate -> ``(t, x, y, z)``.
+
+    Built with ``ballistics_bc.position_at``, i.e. the SAME propagator the fit
+    inverts. That is deliberate and it is not circular: these cases test the
+    ESTIMATOR (does least squares recover the state, does the crossing solve pick
+    the right root, does trimming reject a stray), not the physics. The physics
+    is written out longhand and checked independently in
+    ``tests/ros/test_toss_record_miner.py``.
+
+    ``wobble_mm`` adds a deterministic sawtooth to x and z so a case can be run
+    against a non-exact track without depending on a random seed.
+    """
+    out = []
+    t = 0.0
+    end = ballistics_bc.touchdown_time(release_pos, release_vel, plane_mm,
+                                       descending=True) + 0.02
+    i = 0
+    while t <= end:
+        p = ballistics_bc.position_at(release_pos, release_vel, t)
+        w = wobble_mm * ((i % 3) - 1)
+        out.append((t_release + t, float(p[0]) + w, float(p[1]),
+                    float(p[2]) + w))
+        t += dt
+        i += 1
+    return out
+
+
 def self_check() -> int:
     """Two-sided by construction, and pinned to MEASURED instants.
 
@@ -944,6 +1702,179 @@ def self_check() -> int:
           toss_record.join([{'announce_throw_time_ros': 1.0}],
                            [{'announce_throw_time_ros': 1.02}]
                            )[0]['record_provenance'], 'mined-only')
+
+    # ── ILC Phase 0a/0c: the arc estimator ───────────────────────────────────
+    plane = 809.08
+    rel_plane = plane - float(hw.HAND_CATCH_OFFSET_MM) + HAND_THROW_OFFSET_MM
+    rel_pos = np.array([150.0, -120.0, rel_plane])
+    rel_vel = np.array([60.0, -25.0, 4436.0])
+    t_rel = 1000.0
+    arc = synth_arc(rel_pos, rel_vel, plane_mm=plane, t_release=t_rel)
+    asc, desc = branches(arc, rel_plane, plane)
+    check('the branch split finds both halves of a synthetic arc',
+          len(asc) > 20 and len(desc) > 20, True)
+
+    def _release_from(rows):
+        pos, vel, t_ref, _n, _rms, _se = fit_ballistic(rows)
+        lead = float(rows[0][0]) - ASCENT_REF_LEAD_S - t_ref
+        p = ballistics_bc.position_at(pos, vel, lead)
+        v = ballistics_bc.velocity_at(vel, lead)
+        dt = ballistics_bc.touchdown_time(p, v, rel_plane, descending=False)
+        return (ballistics_bc.position_at(p, v, dt),
+                ballistics_bc.velocity_at(v, dt), t_ref + lead + dt)
+
+    got_pos, got_vel, got_t = _release_from(asc)
+    check('a pure ballistic ascent backcasts to its own release VELOCITY',
+          bool(np.max(np.abs(got_vel - rel_vel)) < 1.0), True)
+    check('a pure ballistic ascent backcasts to its own release POSITION',
+          bool(np.max(np.abs(got_pos - rel_pos)) < 0.1), True)
+    check('a pure ballistic ascent backcasts to its own release INSTANT',
+          abs(got_t - t_rel) < 1e-3, True)
+
+    def _arrival_from(rows):
+        pos, vel, t_ref, _n, _rms, _se = fit_ballistic(rows)
+        dt = ballistics_bc.touchdown_time(pos, vel, plane, descending=True)
+        return ballistics_bc.velocity_at(vel, dt), t_ref + dt
+
+    arr_vel, arr_t = _arrival_from(desc)
+    # The nominal the corpus differences against is the PRODUCTION propagation of
+    # the commanded release. On a noise-free arc the two must agree exactly, and
+    # a disagreement here means the miner and the planner are running different
+    # ballistics — the one failure design constraint 1 exists to make impossible.
+    flight = ballistics_bc.touchdown_time(rel_pos, rel_vel, plane,
+                                          descending=True)
+    check('the descending fit recovers the PRODUCTION arrival velocity',
+          bool(np.max(np.abs(
+              arr_vel - ballistics_bc.arrival_velocity(rel_vel, flight)))
+              < 1.0), True)
+    check('the measured flight time recovers the production touchdown time',
+          abs((arr_t - got_t) - flight) < 2e-3, True)
+
+    # REFUSE — an arc with fewer than MIN_ARC_SAMPLES rows yields no state at
+    # all. Two rows determine a line exactly and report zero residual, which
+    # would read as a perfect measurement.
+    check('a 3-row arc is REFUSED rather than fitted',
+          fit_ballistic(arc[:3]) is None, True)
+
+    # The fit's forward model IS the production propagator (constraint 1).
+    pos, vel, t_ref, _n, _rms, _se = fit_ballistic(desc)
+    row = desc[len(desc) // 2]
+    fwd = ballistics_bc.position_at(pos, vel, row[0] - t_ref)
+    check('the fitted state re-generates the arc through ballistics_bc',
+          bool(max(abs(fwd[0] - row[1]), abs(fwd[1] - row[2]),
+                   abs(fwd[2] - row[3])) < 1e-6), True)
+
+    # Two-sided on the TRIM: a stray inside the branch must not move the answer,
+    # and the untrimmed fit must be shown to move — a trim that is not
+    # load-bearing is a trim nobody would notice going missing.
+    # A stray at the END of a branch has the most leverage on the slope, which
+    # is exactly where the real ones landed (the platform rim markers reappear
+    # while the ball is near the cup plane).
+    sparse = desc[-12:]                 # the branch length real tosses deliver
+    sparse_vel = fit_ballistic(sparse)[1]
+    stray = list(sparse) + [(sparse[-1][0] + 0.005, sparse[-1][1] + 300.0,
+                             sparse[-1][2], sparse[-1][3] + 250.0)]
+    trimmed = fit_ballistic(stray)
+    naive = fit_ballistic(stray, trim_floor_mm=1e9)
+    check('a 250 mm stray at the end of the branch is TRIMMED out',
+          bool(abs(float(trimmed[1][2] - sparse_vel[2])) < 1.0), True)
+    check('and the untrimmed fit really is moved by it (the trim matters)',
+          bool(abs(float(naive[1][2] - sparse_vel[2])) > 200.0), True)
+
+    # The standard error is what makes a SHORT branch confessable — comparable
+    # RMS, an order more uncertainty. Toss 6 of 2026-08-12_19-02-52 is the real
+    # case: 6 rows, 11.5 mm RMS, and a release speed 1400 mm/s wrong. Run on a
+    # WOBBLED arc, because on a noise-free one both standard errors are zero and
+    # the case could not fail.
+    noisy = synth_arc(rel_pos, rel_vel, plane_mm=plane, t_release=t_rel,
+                      wobble_mm=8.0)
+    n_asc, _n_desc = branches(noisy, rel_plane, plane)
+    short = [r for r in n_asc if r[0] <= n_asc[0][0] + 0.06]
+    long_se = fit_ballistic(n_asc)[5][2]
+    short_se = (fit_ballistic(short)[5][2] if len(short) >= MIN_ARC_SAMPLES
+                else float('inf'))
+    check('a 60 ms branch reports a far larger velocity standard error',
+          short_se > 5.0 * long_se, True)
+
+    # A labelled-marker cell is refused; the ball a few cm away is not.
+    cells = {int(math.floor(t_rel)): {_cell(0.0, 0.0, 1000.0)}}
+    kept = drop_fixtures([(t_rel, 1.0, 1.0, 1001.0), (t_rel, 60.0, 0.0, 1000.0)],
+                         cells[int(math.floor(t_rel))])
+    check('an unlabelled row sitting on a LABELLED cell is dropped',
+          [r[1] for r in kept], [60.0])
+
+    # The branch rules, both of them, on the shapes that actually broke:
+    # a ball resting in the cup BELOW the release plane (which used to cut the
+    # landing fit to zero length), and a post-contact excursion.
+    with_rest = [(t_rel - 0.3, 150.0, -120.0, 700.0)] + arc
+    a2, d2 = branches(with_rest, rel_plane, plane)
+    check('the ball resting in the cup is not part of the ascending branch',
+          len(a2), len(asc))
+    bounced = list(arc) + [(arc[-1][0] + 0.02 * i, 400.0, -400.0, plane + 200.0)
+                           for i in range(1, 6)]
+    _a3, d3 = branches(bounced, rel_plane, plane)
+    check('a post-contact excursion is cut out of the descending branch',
+          len(d3), len(desc))
+
+    # The lean convention: a throw leaning +x arrives leaning +x, so release and
+    # arrival errors can be read against each other without a sign table.
+    check('the lean sign is the same going up and coming down',
+          _lean_rad(rel_vel)[0] > 0.0
+          and _lean_rad(ballistics_bc.arrival_velocity(rel_vel, flight))[0] > 0.0,
+          True)
+
+    # The RELEASE-FIT admission flag, both sides. `usable_for_speed_fit` gates on
+    # the LANDING fit and so cannot express the population behind the headline
+    # release-speed number: the reference bag carries rows with a clean 58/67-row
+    # arc pair and no landing fit at all, and rows with a good landing fit whose
+    # ascending branch is 6 rows long and 1400 mm/s wrong.
+    def _rel(bc, ar, se, **extra):
+        row = toss_record.blank_record()
+        row.update({'backcast_fit_n': bc, 'arrival_fit_n': ar,
+                    'release_vel_se_mms': se, 'label': 'CAUGHT',
+                    't_departure_raw_ros': 1.0, 'land_xy_global_mm': [0.0, 0.0],
+                    'fit_rms_mm': 0.5})
+        row.update(extra)
+        _mark_usable(row)
+        return row
+
+    check('a long-branch, low-SE arc is admissible for the release fit',
+          _rel(60, 60, 7.0)['usable_for_release_fit'], True)
+    check('a 6-row ascending branch is NOT, whatever its RMS',
+          _rel(6, 60, 380.0)['usable_for_release_fit'], False)
+    check('nor is one whose DESCENDING branch never fitted',
+          _rel(60, None, 7.0)['usable_for_release_fit'], False)
+    check('nor is a long branch with a large velocity standard error',
+          _rel(60, 60, RELEASE_FIT_MAX_SE_MMS + 1.0)['usable_for_release_fit'],
+          False)
+    check('the flag is INDEPENDENT of the landing fit, both ways',
+          (_rel(60, 60, 7.0, land_xy_global_mm=None)['usable_for_release_fit'],
+           _rel(6, None, 300.0)['usable_for_speed_fit']),
+          (True, True))
+
+    # The plane refusal on a MINED-ONLY row. `enforce_declared_planes` needs a
+    # declaration, so before this the whole reference corpus — every row
+    # `mined-only` — was never plane-checked at all.
+    mined_bad = _rel(60, 60, 7.0)
+    refuse_plane(mined_bad)
+    check('a plane-refused row loses EVERY fit flag, timing included',
+          [mined_bad[f] for f in ('usable_for_aim_fit', 'usable_for_speed_fit',
+                                  'usable_for_timing_fit',
+                                  'usable_for_release_fit')],
+          [False, False, False, False])
+    check('...and says why', mined_bad['excluded_reason'], 'plane_mismatch')
+
+    # The split IDENTITY. It is what makes "release vs flight" a decomposition
+    # rather than two loosely-related numbers, and it must hold to the bit.
+    cup = [150.0, -120.0, plane]
+    pred, _v, _t = ballistics_bc.arrival_state_at_z(got_pos, got_vel, plane,
+                                                   descending=True)
+    land = [float(pred[0]) + 12.0, float(pred[1]) - 7.0]
+    rel_part = [float(pred[0]) - cup[0], float(pred[1]) - cup[1]]
+    fly_part = [land[0] - float(pred[0]), land[1] - float(pred[1])]
+    check('land_err == release-part + flight-part, exactly',
+          [round(rel_part[i] + fly_part[i], 9) for i in (0, 1)],
+          [round(land[i] - cup[i], 9) for i in (0, 1)])
 
     for f in fails:
         print('FAIL  {}'.format(f))

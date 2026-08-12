@@ -146,6 +146,19 @@ EXPECTED_FIELDS = (
     'fit_rms_mm', 'fit_sparse', 'apex_z_mm', 'achieved_flight_s_mocap',
     't_land_bag', 'qtm_offset_s', 'mocap_gap_ms_max', 'land_plane_mm',
     'floor_arrival',
+    # command reference for the mined errors (ILC Phase 0a/0c)
+    'cmd_launch_vel_mms', 'cmd_flight_time_s', 'cmd_release_source',
+    # arrival kinematics (ILC Phase 0a)
+    'arrival_vel_mms', 'arrival_dir_err_rad', 'arrival_dir_err_norm_rad',
+    'arrival_speed_err_mms', 't_arrival_fit_bag', 'arrival_fit_n',
+    'arrival_fit_rms_mm', 'arrival_vel_se_mms', 'flight_time_err_s',
+    # release-state backcast (ILC Phase 0c)
+    'release_pos_track_mm', 'release_vel_track_mms', 't_release_fit_bag',
+    'release_time_err_ms', 'release_vel_err_mms', 'release_speed_err_mms',
+    'release_dir_err_rad', 'backcast_fit_n', 'backcast_fit_rms_mm',
+    'release_vel_se_mms',
+    # release-vs-flight split of the landing error
+    'land_err_release_mm', 'land_err_flight_mm',
     # plant
     'stroke_peak_rev', 'dip_below_x3_rev', 'pullback_rps', 'trunc', 'seeds',
     'iq_brake_min_a', 'dispatch_shift_ms', 'hand_traj_acks', 'can_errors',
@@ -154,7 +167,7 @@ EXPECTED_FIELDS = (
     'label', 'label_source', 'label_confidence', 'label_reason', 'rimshot',
     'disagreement', 'record_provenance', 'join_residual_ms',
     'usable_for_aim_fit', 'usable_for_timing_fit', 'usable_for_speed_fit',
-    'excluded_reason',
+    'usable_for_release_fit', 'excluded_reason',
 )
 
 

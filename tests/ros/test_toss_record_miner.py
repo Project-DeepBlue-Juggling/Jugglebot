@@ -134,11 +134,11 @@ def _plane_rows():
     return [{'toss_uid': 'a', 'catch_point_global_mm': [0.0, 0.0, 500.0],
              'land_plane_mm': 400.0, 'usable_for_aim_fit': True,
              'usable_for_speed_fit': True, 'usable_for_timing_fit': True,
-             'excluded_reason': None},
+             'usable_for_release_fit': True, 'excluded_reason': None},
             {'toss_uid': 'b', 'catch_point_global_mm': [0.0, 0.0, 500.0],
              'land_plane_mm': 501.0, 'usable_for_aim_fit': True,
              'usable_for_speed_fit': True, 'usable_for_timing_fit': True,
-             'excluded_reason': None}]
+             'usable_for_release_fit': True, 'excluded_reason': None}]
 
 
 def test_a_declared_plane_mismatch_is_reported_loudly(miner):
@@ -169,13 +169,114 @@ def test_a_declared_plane_mismatch_is_REFUSED_not_merely_reported(miner):
     assert rows[1]['excluded_reason'] is None
 
 
-def test_the_plane_refusal_spares_the_TIMING_fit(miner):
-    """The timing fit reads sensor edges and release instants, which the mocap
-    fit plane has no bearing on. Refusing it too would throw away good data for
-    an unrelated fault."""
+def test_the_plane_refusal_covers_the_TIMING_fit_too(miner):
+    """AUDIT FIX 2026-08-12. This used to assert the opposite — that timing was
+    SPARED, because "the timing fit reads sensor edges and release instants,
+    which the fit plane has no bearing on". That was true when it was written and
+    stopped being true the moment Phase 0a landed.
+
+    Release-side timing is still plane-independent (``release_time_err_ms``
+    compares the ascending backcast's RELEASE-plane crossing against the
+    announced ``throw_time``). Arrival-side timing is not: ``t_arrival_fit_bag``
+    IS the ``land_plane_mm`` crossing of the descending fit, and
+    ``achieved_flight_s_mocap`` / ``flight_time_err_s`` are derived from it — at
+    a 4.9 m/s arrival a 20 mm plane error is ~4 ms of flight time, the same order
+    as the dispatch shift the timing fit exists to measure. One flag cannot be
+    half-true."""
     rows = _plane_rows()
     miner.enforce_declared_planes(rows)
-    assert rows[0]['usable_for_timing_fit'] is True
+    assert rows[0]['usable_for_timing_fit'] is False
+    assert rows[0]['usable_for_release_fit'] is False
+    # And the row INSIDE the tolerance keeps every flag — the refusal has to
+    # stay a refusal, not become a blanket.
+    assert rows[1]['usable_for_timing_fit'] is True
+    assert rows[1]['usable_for_release_fit'] is True
+
+
+def test_a_mined_only_row_is_plane_checked_against_its_announcement(miner):
+    """The check that only ever ran on JOINED rows, run on the corpus that has
+    no declarations.
+
+    ``enforce_declared_planes`` compares the fit plane against
+    ``catch_point_global_mm``, which only a declaration carries — so on the whole
+    reference corpus (every row ``mined-only``) the R1 refusal never fired once.
+    The announcement's ``landing_position[2]`` is the same quantity from the same
+    ``_toss_release_state``, so it answers the same question on a bag that
+    predates ``/toss/record``, against the SAME constant.
+    """
+    windows = _miner_windows()
+
+    class _Data(object):
+        hand = []
+        balls = []
+        mocap = []
+        link = []
+        traj = []
+        declarations = []
+        fixture_cells = {}
+        log_minus_stamp_s = 0.0
+
+        def __init__(self, cup_z):
+            self.announcements = [{
+                'thrower': 'jugglebot', 'target': 'jugglebot',
+                'throw_time': 100.0, 'landing_time': 100.8,
+                'landing_position': [0.0, 0.0, cup_z],
+                'initial_position': [0.0, 0.0, 802.34],
+                'initial_velocity': [0.0, 0.0, 4000.0],
+                'predicted_tof_sec': 0.8, 't_bag': 100.0}]
+
+    plane = miner.DEFAULT_PLANE_MM
+    ok = miner.mine_bag(_Data(plane + miner.PLANE_MISMATCH_TOL_MM - 0.5),
+                        windows=windows)[0]
+    bad = miner.mine_bag(_Data(plane + miner.PLANE_MISMATCH_TOL_MM + 0.5),
+                         windows=windows)[0]
+    assert 'plane_mismatch' not in (ok['excluded_reason'] or '')
+    assert 'plane_mismatch' in bad['excluded_reason']
+    for flag in ('usable_for_aim_fit', 'usable_for_speed_fit',
+                 'usable_for_timing_fit', 'usable_for_release_fit'):
+        assert bad[flag] is False, flag
+
+
+def test_the_release_fit_flag_is_not_the_speed_fit_flag(miner):
+    """The population behind the headline release-speed statistic, made
+    expressible from the corpus.
+
+    ``usable_for_speed_fit`` gates on the LANDING fit — ``land_xy_global_mm`` and
+    its RMS — and the release-velocity backcast is a different fit over a
+    different branch. The reference bag proves they dissociate in BOTH
+    directions: rows with a clean 58/67-sample arc pair and no landing fit at
+    all, and rows with a good landing fit whose ascending branch is 6 rows long
+    and returns a release speed 1400 mm/s wrong. Before the flag the "clean fits"
+    subset existed only as a filter somebody applied by hand in a report.
+    """
+    def row(**kw):
+        r = {'label': 'CAUGHT', 't_departure_raw_ros': 1.0,
+             'land_xy_global_mm': [0.0, 0.0], 'fit_rms_mm': 0.5}
+        r.update(kw)
+        miner._mark_usable(r)
+        return r
+
+    good = dict(backcast_fit_n=60, arrival_fit_n=67, release_vel_se_mms=7.0)
+    assert row(**good)['usable_for_release_fit'] is True
+    # No landing fit -> refused for speed, ADMITTED for release.
+    no_land = row(land_xy_global_mm=None, **good)
+    assert (no_land['usable_for_speed_fit'], no_land['usable_for_release_fit']) \
+        == (False, True)
+    # A short branch -> admitted for speed, REFUSED for release.
+    short = row(backcast_fit_n=6, arrival_fit_n=None,
+                release_vel_se_mms=382.0)
+    assert (short['usable_for_speed_fit'], short['usable_for_release_fit']) \
+        == (True, False)
+    # Each condition alone is load-bearing.
+    assert row(backcast_fit_n=miner.RELEASE_FIT_MIN_SAMPLES - 1,
+               arrival_fit_n=67,
+               release_vel_se_mms=7.0)['usable_for_release_fit'] is False
+    assert row(backcast_fit_n=60, arrival_fit_n=67,
+               release_vel_se_mms=miner.RELEASE_FIT_MAX_SE_MMS + 0.1
+               )['usable_for_release_fit'] is False
+    assert row(backcast_fit_n=60, arrival_fit_n=67,
+               release_vel_se_mms=miner.RELEASE_FIT_MAX_SE_MMS
+               )['usable_for_release_fit'] is True
 
 
 def test_the_plane_refusal_preserves_an_existing_exclusion_reason(miner):
@@ -353,3 +454,247 @@ def test_the_mined_labels_match_the_fixture(mined):
         counts[row['label']] = counts.get(row['label'], 0) + 1
     assert counts == fx.LABELS
     assert len(rows) == fx.N_SELF_TOSSES
+
+
+# ── ILC Phase 0a/0c: the arc estimator ────────────────────────────────────────
+#
+# The miner's --self-check drives these paths with arcs generated BY
+# ``ballistics_bc.position_at`` — right for testing the estimator, circular for
+# testing the physics. So the fixtures below are written LONGHAND from the
+# closed form, with the gravity constant spelled out, and the recovered state is
+# compared against the numbers that generated it. If the miner and the planner
+# ever end up integrating different physics, this is where it shows.
+#
+# Confirmed recipe (2026-08-12, the empirical-probe rule): a 4436 mm/s vertical
+# release with a 60/-25 mm/s lateral component, sampled every 5 ms — the cadence
+# ``/mocap_data`` actually runs at on 2026-08-12_19-02-52 (~235 Hz, i.e. 4.3 ms
+# median) — is recovered to well under 1 mm/s. The tolerances below are 1 mm/s
+# and 1 ms, i.e. ~200x tighter than the release errors this phase measures
+# (+357..+503 mm/s) and ~10x tighter than the measured release-time scatter.
+
+_G_MMS2 = 9806.0            # spelled out, NOT imported: see the note above
+
+
+def _longhand_arc(p0, v0, plane_mm, t_release=1000.0, dt=0.005):
+    """A ballistic arc from the closed form, in the miner's (t, x, y, z) shape."""
+    import math as _math
+    disc = v0[2] ** 2 - 2.0 * _G_MMS2 * (plane_mm - p0[2])
+    t_end = (v0[2] + _math.sqrt(disc)) / _G_MMS2
+    rows = []
+    k = 0
+    while k * dt <= t_end:
+        t = k * dt
+        rows.append((t_release + t,
+                     p0[0] + v0[0] * t,
+                     p0[1] + v0[1] * t,
+                     p0[2] + v0[2] * t - 0.5 * _G_MMS2 * t * t))
+        k += 1
+    return rows
+
+
+def _planes(miner):
+    plane = miner.DEFAULT_PLANE_MM
+    return plane, plane - float(hw.HAND_CATCH_OFFSET_MM) + \
+        miner.HAND_THROW_OFFSET_MM
+
+
+def test_the_miner_uses_the_production_ballistics_and_gravity(miner):
+    """Design constraint 1, made grep-proof: one forward chain. A private copy of
+    the ballistics — or of the gravity constant — is exactly the drift the
+    plan's ``JB_OP_HAND_CATCH_PRIME_REV`` precedent is about."""
+    from jugglebot.motion.trajectory import ballistics_bc
+    assert miner.ballistics_bc is ballistics_bc
+    assert miner.GRAVITY_MMS2 == ballistics_bc.GRAVITY_MMS2 == _G_MMS2
+    # And the tracker agrees, so no comparison in this pipeline crosses a
+    # gravity convention. The "tracker-side 9810" warned about in
+    # toss_release.py's header is not a live PRODUCTION constant — which is the
+    # claim this test can make and the only one the fits depend on. It is NOT
+    # absent from the tree, and the miner's own census used to over-claim that:
+    # `ball_arrival_offset`'s synthetic-track generator uses 9810, two stale
+    # test-local constants still carry it (tests/ros/test_reload_integration.py
+    # and tests/ros/test_toss_integration.py, whose "the 9810 the tracking stack
+    # uses" description is now false), and attic/ is full of it.
+    from jugglebot.tracking.ballistics import GRAVITY_MMPS2
+    assert GRAVITY_MMPS2 == _G_MMS2
+
+
+def test_a_longhand_ballistic_ascent_backcasts_to_its_own_release(miner):
+    """THE 0c acceptance. A pure arc, sampled at the mocap rate, must return the
+    release velocity, position and instant that generated it."""
+    from jugglebot.motion.trajectory import ballistics_bc
+    plane, rel_plane = _planes(miner)
+    p0 = [150.0, -120.0, rel_plane]
+    v0 = [60.0, -25.0, 4436.0]
+    asc, _desc = miner.branches(_longhand_arc(p0, v0, plane), rel_plane, plane)
+    assert len(asc) > 20
+    pos, vel, t_ref, n, rms, se = miner.fit_ballistic(asc)
+    lead = asc[0][0] - miner.ASCENT_REF_LEAD_S - t_ref
+    p = ballistics_bc.position_at(pos, vel, lead)
+    v = ballistics_bc.velocity_at(vel, lead)
+    dt = ballistics_bc.touchdown_time(p, v, rel_plane, descending=False)
+    got_v = ballistics_bc.velocity_at(v, dt)
+    got_p = ballistics_bc.position_at(p, v, dt)
+    assert n == len(asc) and rms < 1e-6
+    for i in range(3):
+        assert got_v[i] == pytest.approx(v0[i], abs=1.0)
+        assert got_p[i] == pytest.approx(p0[i], abs=0.1)
+    assert t_ref + lead + dt == pytest.approx(1000.0, abs=1e-3)
+
+
+def test_a_longhand_ballistic_descent_recovers_the_arrival_velocity(miner):
+    """THE 0a acceptance, and it is two claims at once: the descending fit
+    recovers the truth, AND that truth is what the production
+    ``arrival_velocity`` predicts from the commanded release. The second is the
+    one that would catch a miner quietly running its own ballistics."""
+    from jugglebot.motion.trajectory import ballistics_bc
+    plane, rel_plane = _planes(miner)
+    p0 = [150.0, -120.0, rel_plane]
+    v0 = [60.0, -25.0, 4436.0]
+    _asc, desc = miner.branches(_longhand_arc(p0, v0, plane), rel_plane, plane)
+    pos, vel, t_ref, _n, _rms, _se = miner.fit_ballistic(desc)
+    dt = ballistics_bc.touchdown_time(pos, vel, plane, descending=True)
+    got = ballistics_bc.velocity_at(vel, dt)
+    flight = ballistics_bc.touchdown_time(p0, v0, plane, descending=True)
+    want = ballistics_bc.arrival_velocity(v0, flight)
+    for i in range(3):
+        assert got[i] == pytest.approx(want[i], abs=1.0)
+
+
+def test_the_arc_estimator_reports_its_own_noise_floor(miner):
+    """A SHORT branch fits a clean RMS and a badly wrong velocity — measured on
+    2026-08-12_19-02-52 toss 6 (6 rows, 11.5 mm RMS, release speed 1400 mm/s
+    wrong). ``se`` is the only field that says so, so it has to grow."""
+    plane, rel_plane = _planes(miner)
+    rows = miner.synth_arc([150.0, -120.0, rel_plane], [60.0, -25.0, 4436.0],
+                           plane_mm=plane, t_release=1000.0, wobble_mm=8.0)
+    asc, _desc = miner.branches(rows, rel_plane, plane)
+    short = [r for r in asc if r[0] <= asc[0][0] + 0.06]
+    assert len(short) >= miner.MIN_ARC_SAMPLES
+    assert miner.fit_ballistic(short)[5][2] > \
+        5.0 * miner.fit_ballistic(asc)[5][2]
+
+
+def test_a_resting_ball_below_the_release_plane_is_not_the_arc(miner):
+    """THE bug this phase found in the shipped landing fit. A self toss's window
+    opens with our own ball sitting in the cup ~110 mm BELOW the catch plane;
+    ``fit_plane_crossing_full`` cuts the descending run at the first sub-plane
+    sample, so that one resting row cut the run to zero and every self toss on
+    2026-08-12_19-02-52 reported ``land_xy_global_mm: null`` from a bag that
+    carries clean arcs."""
+    plane, rel_plane = _planes(miner)
+    arc = _longhand_arc([150.0, -120.0, rel_plane], [0.0, 0.0, 4436.0], plane)
+    rest = [(arc[0][0] - 0.3 + 0.01 * i, 150.0, -120.0, 697.0)
+            for i in range(20)]
+    asc, desc = miner.branches(rest + arc, rel_plane, plane)
+    assert all(r[3] >= rel_plane for r in asc + desc)
+    # And the shipped estimator, handed the post-apex rows, now produces a fit.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'ball_arrival_offset',
+        os.path.join(_REPO, 'tools', 'probes', 'ball_arrival_offset.py'))
+    bao = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bao)
+    assert bao.fit_plane_crossing_full(rest + arc, plane, 300.0) is None
+    got = bao.fit_plane_crossing_full(desc, plane, 300.0)
+    assert got is not None
+    assert got[0] == pytest.approx(150.0, abs=1.0)
+
+
+def test_a_labelled_marker_cell_is_refused_and_the_ball_is_not(miner):
+    """QTM's own labels are the strongest available discriminator, and the
+    platform rim markers that lose them for single frames land INSIDE the
+    descending fit band. Two-sided: the stray goes, the ball 60 mm away stays."""
+    cells = {miner._cell(0.0, 0.0, 1000.0)}
+    kept = miner.drop_fixtures(
+        [(1.0, 1.0, 1.0, 1001.0), (1.0, 60.0, 0.0, 1000.0)], cells)
+    assert [r[1] for r in kept] == [60.0]
+    # Time-scoped: the platform MOVES between tosses, so a session-wide fixture
+    # set is a swath of space. On 2026-08-12_19-02-52 it held 3374 cells and
+    # deleted 301 of toss 8's 341 candidate rows.
+    buckets = {10: {miner._cell(0.0, 0.0, 1000.0)}}
+    assert miner.fixtures_near(buckets, 10.0, 10.5) == buckets[10]
+    assert miner.fixtures_near(buckets, 40.0, 40.5) == set()
+
+
+def test_the_release_vs_flight_split_is_an_exact_decomposition(miner):
+    """It is a DECOMPOSITION or it is two loosely-related numbers. Driven
+    end-to-end through ``mine_arc`` on a synthetic bag so the identity is
+    asserted on the fields a corpus actually carries."""
+    plane, rel_plane = _planes(miner)
+    p0 = [150.0, -120.0, rel_plane]
+    v0 = [90.0, -40.0, 4436.0]
+    data = miner.BagData()
+    data.mocap = _longhand_arc(p0, v0, plane, t_release=1000.0)
+    # The announced landing is the COMMANDED release's own ballistic landing —
+    # that is what `build_announcement_fields` publishes, and it is what makes
+    # "release-attributable landing error" equal "measured release vs commanded
+    # release" rather than "commanded release vs a cup it was never aimed at".
+    from jugglebot.motion.trajectory import ballistics_bc as _bc
+    cup, _cv, tof = _bc.arrival_state_at_z(p0, v0, plane, descending=True)
+    ann = {'thrower': 'jugglebot', 'target': 'jugglebot',
+           'throw_time': 1000.0, 'landing_time': 1000.0 + tof,
+           'landing_position': [float(cup[0]), float(cup[1]), plane],
+           'initial_position': list(p0), 'initial_velocity': list(v0),
+           'predicted_tof_sec': tof, 't_bag': 1000.0}
+    land_xy = [155.0, -100.0]
+    out = miner.mine_arc(data, ann, plane, land_xy=land_xy)
+    assert out['cmd_release_source'] == 'announcement'
+    rel, fly = out['land_err_release_mm'], out['land_err_flight_mm']
+    for i in (0, 1):
+        assert rel[i] + fly[i] == pytest.approx(
+            land_xy[i] - ann['landing_position'][i], abs=1e-6)
+    # A throw that IS the command has no release-attributable landing error.
+    assert abs(rel[0]) < 1.0 and abs(rel[1]) < 1.0
+
+
+def test_mine_arc_reports_errors_against_the_announcement_alone(miner):
+    """The § 3.3 inversion, extended to 0a/0c: a bag that predates
+    ``/toss/record`` still carries the commanded release state, because
+    ``build_announcement_fields`` fills the announcement from the same
+    ``ReleaseState`` the declaration reports. Without this the errors would be
+    unavailable on exactly the historical corpus the miner exists to unlock."""
+    plane, rel_plane = _planes(miner)
+    v0 = [0.0, 0.0, 4436.0]
+    fast = [0.0, 0.0, 4700.0]
+    data = miner.BagData()
+    data.mocap = _longhand_arc([150.0, -120.0, rel_plane], fast, plane,
+                               t_release=1000.0)
+    ann = {'throw_time': 1000.0, 'landing_time': 1000.9,
+           'landing_position': [150.0, -120.0, plane],
+           'initial_position': [150.0, -120.0, rel_plane],
+           'initial_velocity': list(v0), 'predicted_tof_sec': 0.9}
+    out = miner.mine_arc(data, ann, plane)
+    assert out['cmd_launch_vel_mms'] == v0
+    assert out['release_speed_err_mms'] == pytest.approx(264.0, abs=2.0)
+    assert out['release_vel_err_mms'][2] == pytest.approx(264.0, abs=2.0)
+    assert out['release_time_err_ms'] == pytest.approx(0.0, abs=2.0)
+    # A faster throw arrives faster and LATER — both signs matter.
+    assert out['arrival_speed_err_mms'] > 0.0
+    assert out['flight_time_err_s'] > 0.0
+    assert out['achieved_flight_s_mocap'] == pytest.approx(
+        2.0 * 4700.0 / _G_MMS2, abs=5e-3)
+
+
+def test_the_lean_error_convention_is_signed_the_same_way_at_both_events(miner):
+    """A throw leaning +x arrives leaning +x. Without this the release and
+    arrival direction channels would need a sign table to be read together, and
+    a sign table is where the ILC update law would get its sign wrong."""
+    from jugglebot.motion.trajectory import ballistics_bc
+    v0 = [60.0, -25.0, 4436.0]
+    up = miner._lean_rad(v0)
+    down = miner._lean_rad(ballistics_bc.arrival_velocity(v0, 0.9))
+    assert up[0] > 0.0 and down[0] > 0.0
+    assert up[1] < 0.0 and down[1] < 0.0
+    assert miner._lean_rad([0.0, 0.0, -4400.0]) == (0.0, 0.0)
+
+
+def test_a_bounce_back_up_ends_the_descending_branch(miner):
+    """The post-contact excursion guard, restated for a branch whose sub-plane
+    rows are already gone: the ball coming back UP is the signal."""
+    plane, rel_plane = _planes(miner)
+    arc = _longhand_arc([150.0, -120.0, rel_plane], [0.0, 0.0, 4436.0], plane)
+    _a, desc = miner.branches(arc, rel_plane, plane)
+    bounced = list(arc) + [(arc[-1][0] + 0.02 * i, 400.0, -400.0, plane + 200.0)
+                           for i in range(1, 6)]
+    _a2, desc2 = miner.branches(bounced, rel_plane, plane)
+    assert len(desc2) == len(desc)
