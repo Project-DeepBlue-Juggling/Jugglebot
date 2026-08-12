@@ -6,6 +6,7 @@ status: resolved
 files_changed:
   - tools/odrive_fleet_reflash.py
   - tests/motion/test_odrive_fleet_reflash.py
+  - tests/motion/test_leg_torque_ff.py
   - logbook/INDEX.md
 subsystem:
   - can
@@ -98,3 +99,89 @@ bench.
 reboot-and-refind, verify — is untested. First use should be `--dry-run`: it
 records the fleet map, backs up all six drives and prints the per-drive diff
 against the target without erasing anything.
+
+## Addendum, same day — the calibration step, and a stroke it does not fit
+
+Owner's request: after the flash and the node-ID restore, run each leg through
+`FULL_CALIBRATION_SEQUENCE` and save once more, one leg at a time. That closes
+the loop on the verbatim-flash decision above — the snapshot's per-motor values
+stop mattering once each drive measures its own.
+
+**Flow is now 7 steps**, calibration and a second save appended. The config
+verify stays at step 5, *before* the motor turns, deliberately: the calibration
+is about to spin using the values just flashed (`calib_scan_vel`,
+`calibration_current`, the encoder setup), so proving NVM holds them while the
+axis is still stationary is worth one extra reboot. The calibration-owned
+properties are then excluded from the final verify — having calibration
+overwrite them is the point — and what calibration wrote is reported by
+diffing the config *before and after the procedure*, so the report is measured
+rather than assumed. Anything it changes outside `CALIBRATION_OWNED_PATHS` is
+flagged with a `?` instead of being silently accepted; that set is what we
+expect, not what we know.
+
+**The finding that changed the design: the configured scan does not fit the
+leg.** `ENCODER_OFFSET_CALIBRATION` scans open-loop for `calib_scan_distance`
+revolutions, and the snapshot carries the ODrive default **8.0 rev**. Through
+`GEOM_MM_TO_REV` that is **~564 mm of leg travel** against a
+`GEOM_LEG_STROKE_MM` of **280 mm** — **2.0×the stroke** — at `calib_scan_vel`
+2.0 rev/s ≈ 141 mm/s. Nothing in the ODrive stops the scan at the end of
+travel; it is open-loop by construction. So the tool **refuses to actuate**
+unless the scan fits, and names both ways forward: `--calib-scan-distance <rev>`
+(≤3.95 rev fits) or `--force` when the legs are mechanically free. The guard
+runs *before* discovery so the refusal is instant rather than arriving after a
+30 s USB wait, and `--dry-run` prints the same motion summary. One typed
+confirmation gates the actuating run (`--yes` restores the unattended
+behaviour); `--no-calibration` keeps the config-only path.
+
+A calibration failure **aborts the run** rather than continuing to the next
+leg, and says what state the leg is in: between step 4's save and step 6's
+success, NVM holds the snapshot's commutation offset *marked valid* while that
+drive's own calibration has not run. That leg must not be armed until
+calibration succeeds.
+
+### Two pre-existing tests were failing, from a data-file re-capture
+
+Mid-session the target snapshot was replaced with a **fresh capture from a live
+drive** — `odrivetool` 0.6.10 writes `backup-config` **flat**
+(`{'a.b.c': value}`), where the committed snapshot was nested, and 16 values
+moved with it. Two pins in `tests/motion/test_leg_torque_ff.py` read
+`cfg['axis0']['config'][...]` and so raised `KeyError: 'axis0'` — a **red gate
+that said nothing about the values being pinned**, which are the drive's
+`torque_constant` (the wire-scale mirror) and `input_torque_scale` (the pin that
+makes a vendor-default restore, and its 10× feedforward, loud).
+
+Fixed at the right altitude rather than by re-nesting the file: a
+`_flashed_odrive_value(path)` helper keys on the **property path**, so either
+shape reads the same. Which shape lands in the repo is decided by whichever
+odrivetool the operator captured with — that is not something a Kt pin should
+have an opinion about. Verified by running the file against both shapes
+(`git stash` of the working-tree capture, then restore): **54 passed** each way.
+
+**Open for the owner** (not resolved here): the re-captured snapshot also moved
+`axis0.controller.config.vel_limit` 4.0 → **12.0**, the `trap_traj` limits
+(`vel_limit` 20.0 → 2.5, accel 10 → 30, decel 8 → 30), and enabled
+`hall_encoder1` with calibrated edges and `hall_polarity` 192 where it had been
+disabled. Those are now what gets flashed to all six legs. The runtime CAN push
+at every home/activate overrides `vel_limit` (`ODRIVE_LEG_VEL_LIMIT_RPS` = 6.0),
+so that one is inert in practice; the others are not obviously intentional and
+the file is still uncommitted.
+
+### Verification (addendum)
+
+`./run_tests.sh` (run 2026-08-12, after the test fix): **5092 passed, 0 failed in
+225.23 s**; serial phase empty (5527 deselected); total 237 s, `RESULT: PASS`.
+The same command before the fix was **RED — 2 failed, 5090 passed** on the two
+`test_leg_torque_ff.py` pins above.
+
+`pytest tests/motion/test_odrive_fleet_reflash.py -q` (run 2026-08-12): **57
+passed in 0.28 s** — added the travel/stroke guard (including the live check
+that the *real* snapshot's 8 rev scan trips it, so a default run cannot actuate
+without an override), the `AxisState`/`ProcedureResult` int constants pinned
+against `odrive.enums`, and `CalibrationOutcome.ok` proven false for SUCCESS
+carrying a latched error. Two of this file's own tests were failing the same way
+`test_leg_torque_ff.py` was — they indexed the fixture as nested — and are now
+shape-agnostic too.
+
+Still **no hardware path exercised**, and calibration adds three more untested
+ones: the state-machine wait (which guards against `procedure_result` reading a
+stale SUCCESS before the procedure starts), the abort path, and the final save.
