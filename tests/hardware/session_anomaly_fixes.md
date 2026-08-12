@@ -133,11 +133,19 @@ row can just say "standing rules apply".
      2026-07-27 capture the gate reads **17 / 17** where it previously read
      **0 / 17**. A self-toss reading `MISSED` on a catch you watched land is now
      a **finding**, not the expected noise.
-   - **reload** — still `MISSED` on a real catch, and that is correct behaviour,
-     not a residual bug. Every Ball-Butler track in that capture is a split track
-     whose filter is fed by the **wrong marker**, so the gate refuses to mint a
-     verdict from it. It changes when the tracker investigation closes, or when the
-     hand sensor becomes the primary source — not before.
+   - **reload** — ~~still `MISSED` on a real catch~~ **⚠ THIS FLIPPED 2026-08-10.**
+     The bullet used to read "still `MISSED` on a real catch, and that is correct
+     behaviour" — because every Ball-Butler track in the 2026-07-27 capture is a
+     split track whose filter is fed by the **wrong marker**, so the tracker
+     refused verdicts the operator watched land. That bullet named its own expiry
+     condition — *"it changes when the tracker investigation closes, or when the
+     hand sensor becomes the primary source"* — and the second one has now
+     happened (`logbook/2026-08-10-sensor-truth-possession.md`, catch-robustness
+     Phase 1). **A reload catch now reads `CAUGHT`**: the hand ball sensor reads
+     the *cup*, so it does not care where the tracker thinks the ball was, and it
+     is the primary source. The tracker's arrival error survives as REPORT-only
+     corroboration on the same line. A reload catch you watched land that still
+     reads `MISSED` is now a **finding**, exactly like a self-toss one.
 
    Row **POSS-1** is where you write the by-eye counts down beside the gate's.
 4. **`run_mpc.py` must NOT be running** (sole-binder on :5557) unless a check says
@@ -571,7 +579,7 @@ running:
 | LVL-4 | mocap cross-check (does not share the FK path) | **REPORT-ONLY since 2026-07-27 — it is no longer a gate, and the old `±0.10°` PASS is the PRE-fix reading.** Run § LVL-4's inline reader and record the parked Platform-vs-`Base` tilt; expect it to have moved BY the correction, to **≈ 0.78°** (pre-fix baseline **0.087°**) | nothing here aborts on its own. `≈ 1.56°` (twice the correction) is worth stopping for — **confirm on LVL-3 first**, which is the instrumented, gated version of the same question | `levelling-frame-contract` P1–P2, § LVL-4 |
 | CCATCH-2 | **the catch-reach headline** — a level catch commands NO swing | commanded `rx` across the pre-tilt reach **monotone** toward the target, peak above park ≤ `1.05 ×` the requested displacement; toss settle `rx`/`ry` = the target to **±0.05°**; residual vs gravity at contact **≤ 0.05°**; plan segments **2**; `peak_leg_acc/jerk` **≈ 1.2 / ≈ 3** (was `142.4 / 3950`) | any excursion **away** from the target > `0.05°`; settle at `−1.0784 / −0.0958°` (the old aim is live); 3 segments; still `≈142 / ≈3950` | `catch-reach-degenerate-overshoot` P2, § CCATCH-2 |
 | CCATCH-2t | tracker catch error on a **self-toss** | **< 10 mm** | ≥ 16 mm — the improvement did not land. **Judge by eye too** (standing rule 3) | `catch-reach-degenerate-overshoot` P2, § CCATCH-2 |
-| POSS-1 | **the possession verdict, against your own eyes** — the gate was structurally always-False until 2026-07-28 | **self-toss**: gate `CAUGHT` count **== by-eye catch count**, and `>= 6/7` of the tosses run. **reload**: gate `CAUGHT` count **0** and every attempt logs one `possession REFUSED` line (that IS the pass — see standing rule 3). Every attempt has exactly one INFO `Ball N: possession …` line per verdict | self-toss gate count **< by-eye count − 1** (a real catch scored MISSED); a self-toss `possession CONFIRMED` on a ball that **never arrived at the cup** (a wide miss); a reload reading `CAUGHT` (the split-track corruption would have to have healed — verify before believing it). **NOT an abort**: a `CONFIRMED` on a ball that arrived and *then* left — that is specified behaviour until the cup sensor lands, and is REPORT row `POSS-1.2b` | § SECTION POSS |
+| POSS-1 | **the possession verdict, against your own eyes** — the gate was structurally always-False until 2026-07-28. **⚠ REWRITTEN 2026-08-10: the hand ball sensor is now the PRIMARY source, which INVERTS the reload half of this row** (`logbook/2026-08-10-sensor-truth-possession.md`) | **self-toss**: gate `CAUGHT` count **== by-eye catch count**, and `>= 6/7` of the tosses run. **reload**: gate `CAUGHT` count **== by-eye reload catch count** — the old criterion (*"count 0, and every attempt logs one `possession REFUSED` — that IS the pass"*) is exactly backwards now; a reload reading `CAUGHT` is the headline capability of the change. **Zero `SENSOR_BLIND` in any possession line's `[reason]` bracket** — that, not a `possession UNKNOWN` line, is what a blind sensor looks like here (the merge falls back to the tracker and the line names the tracker as author; the reason string is the only thing that says the sensor could not look). Three bags, 203,922 samples, 100 % valid, so it has never been observed. Every attempt has exactly one INFO `Ball N: possession …` line per verdict | gate count **< by-eye count − 1** on **either** path (a real catch scored MISSED); a `possession CONFIRMED` on a ball that **never arrived at the cup** — on either path, and it now means the *cup sensor* is lying, which outranks everything else in this section; **any `SENSOR_BLIND`** ⇒ record it, first hardware exercise of that path (route to POSS-1.8). **NOT an abort**: a reload reading `CAUGHT` (that is the fix working — it was the ABORT until 2026-08-10); a `CONFIRMED` on a ball that arrived and *then* left within the goal, still REPORT row `POSS-1.2b` | § SECTION POSS |
 | ZSEAT-2 | **the one genuinely open experiment** — did removing the seat from an 11.08° tilted rim cost catches? | catch **RATE ≥ 0.63** (≥ 8/12, ≥ 12/19 — score the rate, the sitting only mandates `n ≥ 12`); **bounce-outs ≤ 1** across the sitting; commanded tilt over the last 0.8 s before landing **flat, < 0.05°** | rate **≤ 0.58** (≤ 6/12, ≤ 11/19); **≥ 3 bounce-outs or ≥ 2 consecutive**; `≈ 0.9°` of round trip in the last 0.8 s (stale install). **A rate strictly between 0.58 and 0.63 is INCONCLUSIVE, not a failure** — report the raw count and extend toward `n = 19` before deciding | this section — § ZSEAT-2. **Not** C-CATCH-1, **not** the levelling contract |
 | ZSEAT-3 | the capture agrees with the offline counterfactual | arrival tilt rate at contact **`0.000000`**; reload settle `+1.774062 / −10.636334°` (= the target) to **±0.02°**; segments **2**; predicted `29.0 / 37.9 / 170` | non-zero arrival rate; \|settle − target\| > 0.02°; 3 segments; still `142.0 / 3935` | `catch-reach-degenerate-overshoot` P3, § ZSEAT-3 |
 | ZSEAT-4 | the throw is stationary at release | commanded pose over `release ± 0.10 s` **flat**: `< 0.02°` and `< 0.2 mm` | any commanded motion — a plan is running through the release | `catch-reach-degenerate-overshoot` P3, § ZSEAT-4 |
@@ -899,26 +907,40 @@ so a relaunch without a rebuild keeps the old code.
 > `jugglebot`-only build now takes all three ball-op actions down with an
 > `ImportError`. See § DEPLOYMENT MATRIX row B.
 
-### Recording — ONE list, for every capture
+### Recording — ONE list, for every capture: `record:=true`
 
-Individual sections below each say "append these topics". **Do not run two
-different lists.** Extra topics are harmless to every analysis command in this
-file, and a missing topic is unrecoverable after the fact — several of these
-measurements *cannot* be reconstructed from a bag that lacked them. Use this
-consolidated command for **every** capture (CAP-GATE, CAP-RELAUNCH, CAP-WORK,
-CAP-SHORT):
+**Amended 2026-08-10 (toss-selftuning D18). There is no longer a runbook record
+list. Launch with `record:=true` and you have it:**
 
 ```bash
-mkdir -p ~/Desktop/rosbags && cd ~/Desktop/rosbags
-ros2 bag record -o "$(date +%Y-%m-%d_%H-%M-%S)" \
-  /robot_state /leg_setpoint_echo /platform_target /rigid_body_poses \
-  /link_status /rosout /trajectory/status \
-  /trajectory/diagnostics /trajectory/target_feedback \
-  /catch/dynamic_target /gravity_offset /throw_announcements \
-  /hand_telemetry /catch/pretilt_hold
+ros2 launch jugglebot jugglebot_launch.py record:=true
 ```
 
-Note the bag directory name — the analysis commands take it as `--bag`.
+Note the bag directory name it prints (`~/Desktop/rosbags/<stamp>`) — the
+analysis commands take it as `--bag`.
+
+**Why the hand-rolled list was retired rather than kept in sync.** Until
+2026-08-10 this file carried its own `ros2 bag record` command and
+`jugglebot_launch.py` carried a different one, and **neither was sufficient**:
+this one had `/rosout` and `/catch/pretilt_hold` but *not* `/balls` or
+`/mocap_data` — the two topics the mocap landing offset and the tracker join
+both need — and the launch list had exactly the reverse. Two lists is not a
+maintenance annoyance; it is a mechanism for shipping a capture that cannot
+answer its own question, and it did: `~/Desktop/rosbags/2026-08-10_16-30-44`
+carries none of `/rosout`, `/catch/armed`, `/catch/pretilt_hold`,
+`/trajectory/commanded_position` or any action feedback, so no amount of later
+analysis can recover what the catch latch or the commanded pose were doing during
+that sitting. The launch list is now the **union** and it is the only list.
+
+Two consequences worth stating:
+
+- The old command also named `/platform_target`, which has had **no publisher**
+  since the SocketCAN decommission (`can_node` is deleted). It is not in the
+  union, and its absence from a new bag is correct, not a regression.
+- A recorded silent topic costs nothing, and every `record:=true` bag now carries
+  several by design — `/leg_lengths_topic`, `/motion/*` (dormant since the MPC
+  parking) and `/catch/pretilt_hold` on an 8a build. Read a 0-message channel as
+  "that publisher was not running", never as a fault.
 
 Why each of the later additions is in the shared list rather than per-section:
 
@@ -1127,8 +1149,11 @@ row 4 below) has nothing to compare to.
 
 ### Capture requirement for every HAND check
 
-The dip lives in `hand_telemetry`, which the § Recording bag list above does
-**not** include. Run the toss-trace recorder alongside the bag, in its own
+The dip lives in `hand_telemetry`. The § Recording ONE list (`record:=true`)
+**does** carry it as of 2026-08-10 — but at the launch's 100 Hz publish rate, not
+the recorder's own sampling, so the two are not yet known to be equivalent (the
+per-toss record's `plant_block_source: trace|bag` field exists to settle that).
+Until it is settled, run the toss-trace recorder alongside the bag, in its own
 terminal, with **system `python3` and the ROS env sourced — NOT the venv**
 (`tests/hardware/toss_trace_recorder.py`'s own docstring states this, and
 `tests/hardware/session_phase8_toss_trace.md:100` gives the same instruction; the
@@ -1143,24 +1168,22 @@ python3 tests/hardware/toss_trace_recorder.py record
 live line shows `hand ~100 Hz` before any goal is sent — `hand 0 Hz` means the
 Teensy telemetry stream is down and no HAND verdict is possible.)
 
-**The trace recorder is not optional for a HAND check.** The § Recording bag
-command above records `/robot_state /leg_setpoint_echo /platform_target
-/rigid_body_poses /link_status /rosout` — **neither** `/hand_telemetry` **nor**
-`/throw_announcements`, which are the two topics this probe reads for the stroke
-timeline. Run the probe's `--bag` path only against a bag recorded with both
-topics added:
+**The trace recorder is not optional for a HAND check** — but the *reason* has
+narrowed. It used to be that the runbook's hand-rolled record command carried
+neither `/hand_telemetry` nor `/throw_announcements`, so the probe's `--bag` path
+had nothing to read. Since 2026-08-10 the ONE list (`record:=true`, § Recording)
+carries **both**, plus `/rosout`, so a `record:=true` bag feeds
+`hand_stroke_timeline.py --bag` directly. What the bag path still does not give
+you is the trace recorder's own resolution — and whether that limitation is real
+is now a **measurement** rather than an inherited claim: the per-toss record
+carries `plant_block_source: trace|bag` precisely so the two can be compared on
+the same sitting (toss-selftuning § 8). Until that comparison has been run, keep
+running the trace recorder for a HAND check.
 
-```bash
-# optional: a bag that ALSO feeds the HAND probe (append to the § Recording list)
-  /hand_telemetry /throw_announcements
-```
-
-Such a bag **does** carry `/rosout` (the § Recording command records it), and the
-probe reads the arm-dispatch count from it — it detects the channel rather than
-assuming the format. `arms` reads `?` only when the source genuinely has no
-`/rosout`, which is true of the three 2026-07-25 evidence bags (recorded before
-that list) but not of a bag recorded with the command above. `?` never means zero;
-the launch log `~/.ros/log/<stamp>/launch.log` is the fallback source.
+`arms` reads `?` only when the source genuinely has no `/rosout`, which is true
+of the three 2026-07-25 evidence bags (recorded before that list) but not of a
+`record:=true` bag. `?` never means zero; the launch log
+`~/.ros/log/<stamp>/launch.log` is the fallback source.
 
 ### The analysis command — this is what turns a capture into a verdict
 
@@ -2464,8 +2487,10 @@ Validates: nothing this plan closes — recorded so the number is on file for th
   arc)", which is now only half true and the wrong half would make you discard a
   real finding.)* This row is a **self-toss**, so since C-POSSESS-1 its `outcome`
   is expected to read `CAUGHT` on a real catch — a `MISSED` here is a **finding**,
-  not expected noise. Reload verdicts do still read `MISSED`, correctly. Standing
-  rule 3 has the full split; row **POSS-1** is where the counts go.
+  not expected noise. Reload verdicts ~~do still read `MISSED`~~ **read `CAUGHT` on
+  a real catch too since 2026-08-10** — the hand ball sensor is the primary source
+  and does not care about the split track (standing rule 3, rewritten). Row
+  **POSS-1** is where the counts go.
 - **A catch error materially *below* 16 mm would be a surprise** and is worth
   capturing carefully: it would mean the through-seat model is not the dominant
   term after all.
@@ -2530,10 +2555,10 @@ python tools/probes/catch_reach_replay.py --self-check
 
 Validates: `catch-reach-degenerate-overshoot` Phase 0 (reproduction) on new data.
 
-Recording: add these to the § Recording topic list for any sitting you intend to
-score — `/trajectory/status /trajectory/diagnostics /trajectory/target_feedback
-/catch/dynamic_target /gravity_offset /throw_announcements` (the base list
-already carries `/leg_setpoint_echo`, which is the commanded-pose source).
+Recording: `record:=true` (§ Recording). The topics this section scores —
+`/trajectory/status /trajectory/diagnostics /trajectory/target_feedback
+/catch/dynamic_target /gravity_offset /throw_announcements /leg_setpoint_echo` —
+are all in the ONE list as of 2026-08-10; nothing to append.
 
 ```bash
 source ~/Desktop/PDJ_venv/venv/bin/activate
@@ -2587,7 +2612,8 @@ Not a check yet; recorded so it is not re-derived under time pressure.
 
 1. **Reboot the can-bridge Teensy** before the session (standing session rule).
 2. `level` is per-boot — a manual `level` is **always** required first.
-3. Record with the § Recording list **plus** the six catch topics above.
+3. Record with `record:=true` — the ONE list (§ Recording) already carries the
+   six catch topics above as of 2026-08-10.
 4. Score with CATCH-1 → CATCH-2 → CATCH-3, then
    `tools/probes/levelling_tilt_bag_check.py --offset <TILT_X> <TILT_Y> --t0
    <after the first go_home>` for the park (§ CHECK LVL-3's instrument).
@@ -2682,10 +2708,10 @@ python tools/probes/catch_reach_replay.py --self-check
 
 ### CHECK CCATCH-2 — the level catch commands NO swing (**the headline check**)
 
-Validates: C-CATCH-1 on the self-toss path. Run a normal self-toss goal with the
-§ Recording list **plus** `/trajectory/status /trajectory/diagnostics
-/trajectory/target_feedback /catch/dynamic_target /gravity_offset
-/throw_announcements`.
+Validates: C-CATCH-1 on the self-toss path. Run a normal self-toss goal with
+`record:=true` — the ONE list (§ Recording) carries `/trajectory/status
+/trajectory/diagnostics /trajectory/target_feedback /catch/dynamic_target
+/gravity_offset /throw_announcements` as of 2026-08-10.
 
 ```bash
 source ~/Desktop/PDJ_venv/venv/bin/activate
@@ -2713,8 +2739,9 @@ the counterfactual's "fixed" column, so the two collapse together.
 file. *(Updated 2026-07-28; this read "The tracker still reports `MISSED` on real
 catches, so …".)* The row above is a **self-toss** (`CCATCH-2t`), and since
 C-POSSESS-1 its `outcome` is expected to read `CAUGHT` on a real catch: a `MISSED`
-on a catch you watched land is a **finding**, and routes to § SECTION POSS. Reload
-catches still read `MISSED`, correctly. Standing rule 3 has the split.
+on a catch you watched land is a **finding**, and routes to § SECTION POSS. ~~Reload
+catches still read `MISSED`, correctly.~~ **Since 2026-08-10 a reload catch reads
+`CAUGHT` too** (hand ball sensor primary) — standing rule 3 has the rewritten split.
 
 ### CHECK CCATCH-3 — the reload path CHANGED, on purpose (regression watch)
 
@@ -2909,9 +2936,9 @@ as `REJECTED_HAND_NOT_PARKED`.
 > ```
 >
 > then **relaunch** `jugglebot_launch.py`. No firmware flash, no config
-> regeneration. Also add `/trajectory/status` to the § Recording bag before
-> LG-1 (it is in the shared list as of 2026-07-26 — check yours) or LG-4's
-> diagnostic cannot be run at the end of the sitting.
+> regeneration. `/trajectory/status` must be in the bag before LG-1 or LG-4's
+> diagnostic cannot be run at the end of the sitting — `record:=true` carries it
+> (shared list since 2026-07-26, the ONE list since 2026-08-10).
 >
 > **If you rebuild `jugglebot` but not `jugglebot_interfaces`,
 > `trajectory_node` DIES — it does not merely go quiet.** `_publish_status`
@@ -3160,9 +3187,9 @@ PY
 ```
 
 - `/trajectory/status` must have been in the bag from the **start** of the
-  sitting for this to work — it is in the shared § Recording list as of
-  2026-07-26; confirm yours has it *before* LG-1, because this measurement
-  cannot be reconstructed afterwards.
+  sitting for this to work — `record:=true` carries it (§ Recording). This
+  measurement cannot be reconstructed afterwards, which is exactly why the two
+  divergent record lists were collapsed into one on 2026-08-10.
 - `over_1s > 0` ⇒ the window is genuinely too tight for this machine's load;
   raise `_TRAJ_STATUS_STALE_S` with the measured max in the commit message.
   `over_1s == 0` ⇒ the refusal came from somewhere else; do not touch the
@@ -3357,9 +3384,9 @@ not to C-CATCH-1, not to the levelling contract.
 
 Run a normal reload sitting, **≥ 12 reload attempts** (sitting 4's 19 is the
 reference sample size; below ~12 the binomial noise swamps the effect you are
-looking for). Record with the § Recording list **plus** `/trajectory/diagnostics
-/trajectory/target_feedback /catch/dynamic_target /gravity_offset
-/throw_announcements`.
+looking for). Record with `record:=true` — the ONE list (§ Recording) carries
+`/trajectory/diagnostics /trajectory/target_feedback /catch/dynamic_target
+/gravity_offset /throw_announcements` as of 2026-08-10.
 
 Score every attempt by eye as well as by `outcome` — the tracker still reports
 `MISSED` on real catches, so `outcome` alone is not the verdict anywhere in this
@@ -3573,9 +3600,9 @@ relaunch — `level` only if it reads `false`.
 
 ### Recording for this section
 
-Use the § Recording consolidated command **unchanged** — `/catch/pretilt_hold` was
-added to it on 2026-07-28 for `TIER-D`. Run the trace recorder in its own terminal as
-always. `TIER-PREREQ` needs neither.
+Use `record:=true` **unchanged** (§ Recording) — `/catch/pretilt_hold` has been
+in the record list since 2026-07-28 for `TIER-D` and is in the ONE list. Run the
+trace recorder in its own terminal as always. `TIER-PREREQ` needs neither.
 
 ### ⚠️ THE ANALYSIS TRAP — do NOT use `--reject` on the refusal rows
 
@@ -3755,6 +3782,25 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 ## SECTION POSS — the possession verdict (contract C-POSSESS-1)
 
+> **⚠ AMENDED 2026-08-10 — READ BEFORE SCORING ANY ROW BELOW.** The **hand ball
+> sensor is now the PRIMARY possession source** and the tracker is demoted to the
+> arrival corroborator (`logbook/2026-08-10-sensor-truth-possession.md`,
+> `plans/active/catch-robustness.md` Phase 1, contract §§ 2.1 / 3.2 / 3.3). Three
+> consequences for this section, all of them scoring-critical:
+> 1. **`POSS-1.3` and the reload half of the top-level `POSS-1` row are
+>    INVERTED.** A reload reading `CAUGHT` was the ABORT and is now the expected
+>    PASS. Both rows are rewritten in place; do not score them from memory.
+> 2. **Two rows are new**: `POSS-1.7` (the reload's `CAUGHT` terminal executes for
+>    the first time — REPORT, ungated on purpose) and `POSS-1.8` (the `UNKNOWN`
+>    paths, which are test-only in this build).
+> 3. **The ball-evidence gate is ON** (`toss_require_ball_evidence: true`), so a
+>    toss into a valid-empty cup is `REJECTED_NO_BALL` and one whose sensor cannot
+>    answer is `REJECTED_BALL_UNKNOWN`. Both are the gate working.
+>
+> Everything the section says about the TRACKER's numbers (the 70 mm bound, the
+> deleted z bound, the split-track signature) is unchanged and still scored — the
+> tracker just no longer decides.
+
 **What landed, and why it needs a bench row at all.** The coordinator's CAUGHT
 gate ANDed two spatial bounds, and the vertical half — `|z − catch_z| ≤ 150 mm` —
 could not be satisfied by a real catch. The tracker declares CAUGHT *because the
@@ -3803,6 +3849,15 @@ grep -n "GEOM_ARM_RADIUS_MM" $INST/reload_coordinator_node.py
 
 # 3. Belt and braces — the deleted bound must be gone.
 grep -c "_CAUGHT_MAX_Z_ERROR_MM" $INST/reload_coordinator_node.py   # expect 0
+
+# 4. ADDED 2026-08-10. The SENSOR half — the part that inverts POSS-1.3 and turns
+#    the ball-evidence gate on. Without it the section silently re-measures the
+#    tracker-only era and you score the inverted rows against the old plant.
+grep -c "HandBallSensorSource" $INST/ball_possession.py             # expect >= 1
+grep -c "REJECTED_BALL_UNKNOWN\|BALL_UNKNOWN" $INST/toss_sequencer.py  # expect >= 1
+python3 -c "import sys; sys.path.insert(0, '$INST/..'); import jugglebot.hardware_config as h; print(h.JB_OP_TOSS_REQUIRE_BALL_EVIDENCE, h.JB_BD_ARRIVAL_LEAD_S, h.JB_BD_ARRIVAL_WINDOW_S, h.JB_BD_RETENTION_WINDOW_S)"
+# expect: True 0.2 1.5 1.5   — anything else and the windows you score are not the
+# windows the robot ran.
 ```
 
 ### CHECK POSS-1 — the gate's verdicts against the operator's eyes
@@ -3815,33 +3870,48 @@ from the log lines and the bag.
 LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log
 grep -c "possession CONFIRMED" "$LOG"
 grep -c "possession REFUSED"   "$LOG"
+grep -c "SENSOR_BLIND"         "$LOG"     # ADDED 2026-08-10 — expect 0 (POSS-1.8)
 grep    "Ball .*: possession"  "$LOG"     # read them; each names its numbers
+# The REFUSED lines now have TWO authors and say which: "the cup sensor did not
+# observe the ball arrive" (the sensor vetoed — since 2026-08-10 the commonest
+# refusal on a self-toss the tracker still likes) vs "arrival N mm > 70 mm from
+# the catch point" (the tracker refused, sensor blind or absent). Read the words,
+# not just the count — they route to different subsystems.
 
 # 2. The authoritative per-attempt outcomes.
 grep -c "Toss CAUGHT"   "$LOG"
 grep -c "Toss MISSED"   "$LOG"
+grep -c "Reload CAUGHT" "$LOG"            # ADDED 2026-08-10 — no longer always 0
 grep -c "Reload MISSED" "$LOG"
+grep -c "REJECTED_BALL_UNKNOWN\|REJECTED_NO_BALL" "$LOG"   # the live gate refusing
 
 # 3. The offline verdict on the same bag (venv — standing rule 5).
 source ~/Desktop/PDJ_venv/venv/bin/activate && cd ~/Desktop/Jugglebot
 python tools/probes/possession_verdict_bag_check.py \
        --bag ~/Desktop/rosbags/<CAP-WORK stamp>
+# ADDED 2026-08-10 — the SENSOR half, which is what decides now. Sibling probe:
+python tools/probes/hand_sensor_verdict_replay.py \
+       --bag <CAP-WORK stamp> --merge-tracker refuse --json
 ```
 
-The probe prints one row per destination-tagged track with its arrival error, its
-REPORT-only plane drop, and the verdict the coordinator would mint — so a
-disagreement between it and the live log is itself a finding (they run the same
-production source; a mismatch means the installed copy is not the built one).
+`possession_verdict_bag_check.py` prints one row per destination-tagged track with
+its arrival error, its REPORT-only plane drop, and the TRACKER's verdict — which
+since 2026-08-10 is the *corroborator*, not the decision, so a disagreement with
+the live log is a finding only where the sensor was UNKNOWN. `hand_sensor_verdict_replay.py`
+replays the deciding half; note its `BOUNCE` label is a live `CAUGHT` (it scores
+with both windows closed, the coordinator answers on the first confirmed tick).
 
 | # | quantity | PASS | ABORT |
 |---|---|---|---|
 | POSS-1.1 | self-toss `Toss CAUGHT` count vs your by-eye catch count | **equal** | gate count `< by-eye − 1` — a real catch scored MISSED. Route to this section, and record the ball's arrival error from the probe |
 | POSS-1.2 | self-toss `CAUGHT` on a ball that **never arrived at the cup** (a wide miss — the probe shows it as a large arrival error) | **zero** | any. This is the false-positive direction and it outranks POSS-1.1 — stop and record the estimate |
 | POSS-1.2b | self-toss `CAUGHT` on a ball that **arrived and then left** (entered the cup, then bounced/rolled out) | **REPORT — do not abort.** Record the ball id, the arrival error, and what you saw | *(no ABORT)* — this is specified behaviour, not a fault: the tracker source cannot observe RETENTION and the contract forbids it from claiming otherwise (C-POSSESS-1 § 2, § 7). The count you write here **sizes the ball-in-cup sensor work**, which is what closes it |
-| POSS-1.3 | reload `Reload CAUGHT` count | **0**, with one `possession REFUSED` line per attempt. **That is the pass** | a reload reading `CAUGHT`. Not automatically wrong, but it means the split-track corruption changed — verify against the probe's arrival error before believing it |
+| POSS-1.3 | reload `Reload CAUGHT` count **⚠ INVERTED 2026-08-10 — read this row, do not score it from memory** | **== your by-eye reload catch count.** Until 2026-08-10 the pass was **0** with one `possession REFUSED` per attempt, because every destination-tagged reload track is a split track 204.9–752.9 mm out and the TRACKER refused catches the operator watched land. The hand ball sensor is primary now: it reads the cup, so the split track no longer suppresses the verdict | a reload catch you watched land still reading `MISSED` ⇒ either the sensor half is not deployed (re-run the deployment greps — `HandBallSensorSource` must be in the installed `ball_possession.py`) or the arrival edge fell outside the window: record `catch_dt` off the outcome line and route to `catch-robustness` Phase 1. A `CAUGHT` on a reload that visibly did **not** land in the cup is the false-positive direction and outranks it |
 | POSS-1.4 | log discipline | exactly **one** `Ball N: possession …` line per (ball, verdict); all at INFO | duplicates, or any at WARN/ERROR |
 | POSS-1.5 | probe vs live agreement | the probe's `CAUGHT` count **==** the log's `possession CONFIRMED` count | any difference ⇒ the installed copy is stale (re-run the deployment grep above) |
-| POSS-1.6 | **reload arrival errors, watched not gated** — the probe's `arrival_mm` column for reload attempts | today: **204.9 – 752.9 mm** (all refused, the corrupt-track signature). Just record the range | *(no ABORT)* — but if any reload arrival error lands in the **30 – 100 mm** band, **stop and read this**: that is the signature of the tracker mis-association *healing*, and the 70 mm bound is **knowingly under-sized** for a healthy reload path. The reload era's real-marker tracks measure **34.4 / 34.9 / 37.6 / 68.4 mm**, so a genuine reload catch sits **1.6 mm inside** the bound — a 1.02x margin, plus up to 80 mm of catch-reach displacement the reference point does not follow. Route to `ros_ws/docs/ball_possession_contract.md` § 4; the bound must be re-derived by the tracker phase, **not** nudged at the bench |
+| POSS-1.6 | **reload arrival errors, watched not gated** — the probe's `arrival_mm` column for reload attempts | today: **204.9 – 752.9 mm** ("all refused" **meant the TRACKER refused**, and since 2026-08-10 that no longer suppresses the verdict — the same numbers now print as REPORT-only cross-check on a line that can still read `CAUGHT`). Just record the range | *(no ABORT)* — but if any reload arrival error lands in the **30 – 100 mm** band, **stop and read this**: that is the signature of the tracker mis-association *healing*, and the 70 mm bound is **knowingly under-sized** for a healthy reload path. The reload era's real-marker tracks measure **34.4 / 34.9 / 37.6 / 68.4 mm**, so a genuine reload catch sits **1.6 mm inside** the bound — a 1.02x margin, plus up to 80 mm of catch-reach displacement the reference point does not follow. Route to `ros_ws/docs/ball_possession_contract.md` § 4; the bound must be re-derived by the tracker phase, **not** nudged at the bench |
+| POSS-1.7 | **NEW AND UNGATED, 2026-08-10 — the reload's `CAUGHT` terminal executes for the first time in the machine's history.** A successful reload runs `ACTION_RECENTER`: lower the catch latch + `go_home`, deliberately **no** hand retract (the hand is holding the ball). Every reload ever run terminated `SAFE_ABORT` instead, because the tracker refused every reload catch by construction — so `POSS-1.3` flipping is what makes this path live | **REPORT — no PASS/ABORT is set here on purpose.** Record three things: (a) does the `go_home` after a caught reload behave like LVL-2 — same profiled move, no step rejection; (b) does the BALL stay in the cup through it (mocap ball marker within `GEOM_HAND_RADIUS_MM` = **35 mm** of the cup axis) — this is POSS-2.4's question on the reload path; (c) is the hand left inside the **±0.5 rev** park band the next goal's `hand_parked` precondition needs | a `MAX_DEVIATION` or guard E-STOP during that `go_home` is a **hard stop for the section**. Nothing else here aborts: the row deliberately sets no threshold, because the path has no measured baseline and gating it is an operator decision (`plans/active/catch-robustness.md` Phase 1 open items). If you want zero new risk on the first run, do the reload rungs with `go_home` issued manually and score (b) on the held pose first |
+| POSS-1.8 | **the blind-sensor paths, which are TEST-ONLY in this build** (203,922 real samples across three bags were 100 % `ball_held_valid`). Two operator-visible signatures, and they are NOT the same line: (a) `REJECTED_BALL_UNKNOWN` on a *toss goal* — the live `evidence()` read at CHECKING could not answer; (b) `SENSOR_BLIND` inside the `[reason]` bracket of a possession line — the verdict silently fell back to the tracker (a bare `possession UNKNOWN` line is effectively unreachable through today's caller: it only runs on a tracker CAUGHT, and the tracker always has an estimate to fall back to) | **zero of each** on a healthy sensor. To exercise it deliberately, **kill the SDO poller, not the link**: `hand_fresh` gates *before* `ball_seated`, so dropping the whole bridge gives `REJECTED_HAND_STALE`, not `REJECTED_BALL_UNKNOWN` | *(no ABORT on the deliberate test)* — but either signature during normal running is a **finding**: record the surrounding `ball_held_valid` stream and route to `plans/active/hand-ball-sensor.md`. A goal refused `REJECTED_BALL_UNKNOWN` is the gate working (fail-closed by design, deliberately NOT BallButler's fail-open boot default); `toss_require_ball_evidence: false` is the documented total bypass if you need to finish a sitting |
 
 Record the raw counts either way. This is the row that retires "judge by eye"
 across the whole file, and it cannot be retired on one sitting.
@@ -3907,6 +3977,13 @@ unexpected hand ascent after a caught toss and record it if you see one.
 - **Turning on `toss_require_ball_evidence`.** Still `false`, deliberately and
   unchanged. It is a precondition that can refuse a goal, and it belongs to
   whoever validates the sensor (sitting logbook, decision row (e)).
+
+  > **⚠ BOTH SUPERSEDED 2026-08-10** (`catch-robustness` Phase 1,
+  > `logbook/2026-08-10-sensor-truth-possession.md`). The sensor's plumbing landed
+  > and it IS the primary source; the gate defaults `true`, so a valid-empty cup is
+  > `REJECTED_NO_BALL` and a blind sensor is `REJECTED_BALL_UNKNOWN`. These two
+  > bullets are kept because they are what the rows below were scored against —
+  > a POSS row read against them is still being read correctly.
 
 ---
 
@@ -4411,10 +4488,27 @@ done
 
 ### CONT-STEP-1 — the DRY TRACE, no ball (mandatory before any live-ball session)
 
-A 3-cycle session with an **empty cup**. Because
+A 3-cycle session with an **empty cup**. ~~Because
 `jugglebot_operational.toss_require_ball_evidence` is `false` (the operator
 guarantees the ball; there is no ball-in-cup sensor), **every cycle fires a real,
-empty throw stroke** — it does not refuse. That is the same actuation § SECTION
+empty throw stroke** — it does not refuse.~~ **That premise expired 2026-08-10 —
+read the box immediately below before running this step.**
+
+> **⚠ THIS STEP NEEDS THE ESCAPE HATCH SINCE 2026-08-10.** The gate now defaults
+> `true` and reads the hand ball sensor live, so an empty-cup session is refused
+> `REJECTED_NO_BALL` at cycle 1 and **the dry trace never fires a stroke** — the
+> step cannot do its job as written. To run it, set
+> `toss_require_ball_evidence: false` (config → `python config/generate_config.py`
+> → `colcon build --packages-select jugglebot` → relaunch) for the dry trace only,
+> and set it back before the live-ball session.
+>
+> The trace-only waiver parameter is the cheaper alternative and it **does** cover
+> a whole session — `_build_toss_cycle` re-reads the parameter on every cycle, so
+> all three cycles are waived and each logs its own WARN (verified in code
+> 2026-08-10, not assumed). Prefer it: it needs no rebuild and no relaunch, and it
+> cannot be left switched on by accident across a power cycle the way a config
+> default can. Whichever you use, say which in the session notes. The rest of this
+> step is unchanged. That is the same actuation § SECTION
 TIER's Phase-3 dry capture already ran and is safe with the cup empty: the stroke
 is a normal kind-0 stroke, nothing is caught, and each cycle ends `MISSED` through
 its own `SAFE_ABORT` (retract, latch down, `go_home`). Reaching cycle 3 therefore
@@ -4456,7 +4550,7 @@ python tests/hardware/toss_trace_recorder.py check \
 | CONT-1.4 | **CS-4** envelope re-declared | a stale `catch/reach_center` on cycle *k*, which puts the envelope back on the commanded pose and rejects the deferred A→B reach `WORKSPACE` **mid-flight** (the 4/4 hardware failure C-REACH-1 exists to close) | `PASS`, exactly one declaration per cycle, ≥ 10 ms before its arm | any `FAIL` |
 | CONT-1.5 | **CS-5** no hand move | the firmware premise wrong on this machine ⇒ off-band kind-0 dispatch | `PASS`, hand inside `±0.5 rev` at every arm | any `FAIL` ⇒ **STOP**, and re-read CONT-B.2 |
 | CONT-1.6 | **CS-6** release ordering | a clock-domain error between the FSM's perf clock and the announcement's ROS `throw_time` | `PASS`; no cycle releases before the previous scheduled landing. CS-6 does **not** score the achieved cadence against the REQUESTED dwell — the request is not in the trace, so a cadence that collapsed to a still-positive gap would PASS here. Row CONT-1.8 (and CONT-2.5 on the live rungs) is what scores the request; the achieved value CS-6 prints is the INDEPENDENT wire-side measurement of the same quantity, which is what makes the pair a cross-check rather than the coordinator marking its own homework | any `FAIL` |
-| CONT-1.7 | session result | — | `outcome: COMPLETED`, `throws_completed: 3`, `catches_confirmed: 0`, `per_cycle_outcomes: [MISSED, MISSED, MISSED]` | `catches_confirmed > 0` on an empty cup ⇒ a possession verdict is minting CAUGHT out of nothing; **STOP** and route to § SECTION POSS |
+| CONT-1.7 | session result | — | `outcome: COMPLETED`, `throws_completed: 3`, `catches_confirmed: 0`, `per_cycle_outcomes: [MISSED, MISSED, MISSED]`. **Reachable only with the escape hatch raised** (see the box at the head of this step): under the shipped `toss_require_ball_evidence: true` an empty cup gives `ABORTED_CYCLE_REJECTED_NO_BALL` at cycle 1 and none of CONT-1.1…1.8 gets its data | `catches_confirmed > 0` on an empty cup ⇒ a possession verdict is minting CAUGHT out of nothing; **STOP** and route to § SECTION POSS. `ABORTED_CYCLE_REJECTED_NO_BALL` ⇒ the hatch is not actually raised — that is the gate working, not a session fault |
 | CONT-1.8 | `per_cycle_dwell_s` | — | entry 1 is `nan`; entries 2–3 are `≥ 8.0` | any entry **below** `8.0` ⇒ the same fault CS-6 catches, **STOP**. Values above `8.0` are EXPECTED here and are not a fault: a MISSED cycle the session continues past waits out a **2.80 s cleanup floor** from its scheduled landing (`CATCH_CONFIRM_WINDOW_S 0.7` + the `2.0 s` `go_home` profile + 2 node ticks), because `_safe_abort` dispatches the retract and the recentre on service ACKS and returns while both are still moving. At the `5.0 s` delay that floor puts the earliest release at `7.80 s`, i.e. **below** the `8.0 s` request, so the floor should NOT bind here and the entries should read close to `8.0`. **REPORT** anything above `8.60` with the value |
 
 ### THE LADDER — live ball, climb in order

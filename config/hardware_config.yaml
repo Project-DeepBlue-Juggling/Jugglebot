@@ -615,21 +615,20 @@ jugglebot_operational:
                                          # (0, 0) and reject the incoming BB ball MID-FLIGHT. Reload
                                          # therefore refuses REJECTED_NOT_CENTERED before asking BB to
                                          # throw — see reload_sequencer's platform_centered gate.
-  toss_require_ball_evidence: false      # Whether Toss CHECKING enforces a ball-in-cup precondition
-                                         # (REJECTED_NO_BALL). DEFAULT false: there is NO ball-in-cup
-                                         # sensor — "possession" is only a tracker-derived belief (a
-                                         # plausible CAUGHT), and tracker verdicts are unreliable (the
-                                         # false-MISSED corruption of the Phase-7 reload arc), so a
-                                         # physically-loaded ball can fail to register and spuriously
-                                         # block a legitimate throw. The operator guarantees a ball is in
-                                         # the hand before commanding a toss (single-ball-toss Phase 5), so
-                                         # the software belief must not be able to reject; the hand-parked
-                                         # CHECKING gate (reliably known from hand telemetry) still stands,
-                                         # and a forgotten ball just fires an empty stroke (benign — a
-                                         # missed-reload no-op). Set true only if a real ball-held sensor is
-                                         # ever wired into possession. NOTE: with false, the Phase-3
-                                         # dry-trace Capture R (un-waived REJECTED_NO_BALL) no longer
-                                         # rejects — enable this for that historical capture only.
+  toss_require_ball_evidence: true       # Whether Toss CHECKING enforces a ball-in-cup precondition.
+                                         # DEFAULT true since 2026-08-10 — the condition the old `false`
+                                         # was written under ("there is NO ball-in-cup sensor") no longer
+                                         # holds. The G02 hand switch is wired, polled and operator-
+                                         # validated in situ, and CHECKING now reads it LIVE rather than
+                                         # reading a tracker-derived belief: SEATED passes, a valid-empty
+                                         # cup is REJECTED_NO_BALL, and a sensor that cannot answer is
+                                         # REJECTED_BALL_UNKNOWN (it REFUSES — a fail-open sensor gate is
+                                         # the BallButler defect this project declined to copy). See
+                                         # ros_ws/docs/ball_possession_contract.md § 3.3.
+                                         # Set false to restore the pre-2026-08-10 unconditional pass —
+                                         # the operator's escape hatch when the sensor is unavailable and
+                                         # a ball is guaranteed by hand. NOTE: the Phase-3 dry-trace
+                                         # Capture R (un-waived REJECTED_NO_BALL) works again at true.
   toss_session_dwell_default_s: 6.0      # Default dwell {s} for a TossContinuous session when the goal's
                                          # dwell_time_s is 0/unset (single-ball-toss Phase F). DWELL is
                                          # defined as previous SCHEDULED LANDING → next RELEASE.
@@ -670,6 +669,50 @@ jugglebot_operational:
                                          # default dwell is ~2.3 minutes, well past every rung of the
                                          # § SECTION CONT hardware ladder (which tops out at 5).
                                          # Lower it for a cautious sitting.
+  toss_session_max_reloads: 3            # Default budget of BB reload attempts for ONE
+                                         # TossContinuous session (goal max_reloads 0 => this).
+                                         # THE ONLY machine-side fence on ball supply:
+                                         # ball_butler_node exposes no ball-count or magazine
+                                         # field, so supply has no machine observability and no
+                                         # fiction is invented for it — the operator stages the
+                                         # balls. On exhaustion the session fails CLOSED with
+                                         # STOPPED_RELOAD_BUDGET; the capture tool reads that
+                                         # terminal as "this node is exhausted", marks the node
+                                         # thin and skips to the next one.
+  toss_session_floor_pause_every: 5      # Balls on the floor within ONE session before the
+                                         # session stops cleanly between cycles
+                                         # (STOPPED_FLOOR_CLEAR_REQUIRED) so the operator can
+                                         # clear them. Every drop leaves a ball under a machine
+                                         # that is about to stroke again, and nothing on the
+                                         # robot can see the floor — the count is the session's
+                                         # own tally of reload interludes entered.
+                                         # 0 disables the pause. At the default max_reloads of 3
+                                         # the BUDGET binds first, so this is a fence for a
+                                         # deliberately long-budget session, not a routine gate.
+  toss_session_dwell_tilt_reads: 8       # Layer 1.5 — inclinometer reads taken during the
+                                         # QUIESCENT dwell and recorded as a per-toss COVARIATE
+                                         # with ZERO control authority (toss-selftuning § 3.10,
+                                         # operator decision 2). Nothing is applied; the reads
+                                         # exist so "is arrival repeatability actually the
+                                         # dominant sigma term?" becomes a measurement.
+                                         # 0 disables the schedule entirely.
+                                         # HARD RULE: get_platform_tilt BLOCKS the Platform-
+                                         # Teensy loop that streams hand moves, so the reads
+                                         # live entirely in the quiescent dwell (never between
+                                         # PREPARE and THROW) and the READ COUNT degrades before
+                                         # the throw's schedule moves — dwell_tilt_n = 0 is a
+                                         # legal record.
+                                         # NOTE the arithmetic, because it bites at the shipped
+                                         # defaults: the quiescent dwell is only
+                                         # dwell_time_s - throw_delay_s minus the CAUGHT-verdict
+                                         # latency, i.e. ~0.7 s at dwell 6.0 / delay 5.0 — so
+                                         # 8 reads fit only with a longer dwell (~7.5 s+). At
+                                         # the default cadence expect 1-2 reads and
+                                         # dwell_tilt_degraded true.
+  toss_session_dwell_tilt_gap_s: 0.15    # Spacing {s} between consecutive Layer-1.5 dwell reads.
+                                         # Matches the tilt-calibration grid's own read_gap_s so
+                                         # the covariate and the calibration capture sample the
+                                         # SCL3300 the same way.
   target_reached_pos_tol_rev: 0.01       # Position tolerance for target-reached check {rev}
   target_reached_vel_tol_rps: 0.1        # Velocity tolerance for target-reached check {rev/s}
   gentle_move_vel_limit_rps: 2.5         # Velocity limit during gentle moves {rev/s}
@@ -1278,6 +1321,24 @@ jugglebot_ball_detect:
   max_missing_samples: 5               # HELD→EMPTY debounce; 100 ms window at 50 Hz
   check_timeout_ms: 100                # SDO reply timeout per request
   expected_fw: [0, 6, 11]              # ODrive Pro fw the endpoint-id table is pinned against (Get_Version gate)
+  # --- Possession-verdict windows (JETSON-side only; the firmware ignores these) ---
+  # Sized empirically from the three 2026-08-10 retest bags (16-04-26 / 16-13-48 /
+  # 16-30-44; 203,922 hand samples, 100 % ball_held_valid) — see
+  # jugglebot/ball_possession.py::HandBallSensorSource and
+  # logbook/2026-08-10-sensor-truth-possession.md.
+  arrival_lead_s: 0.20                 # window opens this far BEFORE the predicted landing.
+                                       #   Guard only: no sensor rise in 35/35 measured catches
+                                       #   preceded the prediction (earliest +137 ms).
+  arrival_window_s: 1.50               # window closes this far AFTER it. Measured catch band
+                                       #   +137…+798 ms (n=35, both throwers, 3 bags) ⇒ 1.9x
+                                       #   margin; the next non-catch rise is +3194 ms ⇒ 2.1x
+                                       #   clearance. Must absorb the uptime-dependent dispatch
+                                       #   shift (+54–63 ms fresh, +118–133 ms at ~16 h).
+  retention_window_s: 1.50             # held must persist this long past arrival to read
+                                       #   CONFIRMED. Longest measured seat-then-leave 0.999 s
+                                       #   ⇒ 1.5x; shorter than MIN_TOSS_THROW_DELAY_S (3.5 s)
+                                       #   by 2.3x, so a legitimate throw can never read as a
+                                       #   bounce-out.
 
 # ============================================================
 # 24. Catching Cone

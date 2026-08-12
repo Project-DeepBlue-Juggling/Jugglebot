@@ -143,12 +143,17 @@ precondition wire is healthy before the waiver ever goes up —
 code proves mode/streaming/mocap/**levelling**/hand-fresh/hand-parked all PASSED
 (checker RJ-1). Zero motion.
 
-> **⚠️ Superseded default (2026-07-25, single-ball-toss Phase 5 change B):** the
-> ball-evidence gate now defaults OFF (`toss_require_ball_evidence: false` — the
-> operator guarantees the ball; there is no ball-in-cup sensor), so an un-waived
-> toss no longer `REJECTED_NO_BALL` by default. This historical Capture R needs
-> the gate ENABLED: set `toss_require_ball_evidence: true` (config → colcon build
-> → relaunch) for this capture only. Phase 3 is CLOSED; this note is for re-runs.
+> **⚠️ Default flipped TWICE — read both, in order.** (1) 2026-07-25
+> (single-ball-toss Phase 5, change B): the gate defaulted OFF
+> (`toss_require_ball_evidence: false`), so an un-waived toss no longer
+> `REJECTED_NO_BALL`d and this capture needed the gate turned on by hand.
+> (2) **2026-08-10** (catch-robustness Phase 1): the gate defaults **ON** again,
+> now backed by the hand ball sensor, so **Capture R works as originally written
+> with no config change** — an empty cup is refused live. One caveat if you re-run
+> it: with the cup empty the refusal comes from the SENSOR, so a
+> `REJECTED_BALL_UNKNOWN` here means the poller is down (an instrument fault, and
+> the capture is invalid), not that the gate worked. Phase 3 is CLOSED; this note
+> is for re-runs.
 
 ```bash
 ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \

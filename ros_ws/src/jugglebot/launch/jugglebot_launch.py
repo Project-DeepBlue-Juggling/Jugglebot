@@ -518,6 +518,109 @@ def generate_launch_description():
             '/cone/timing_result',
             '/bb/odrive_diag',
             '/bb/axis_estimates',
+            # The two telemetry gaps the 2026-07-18 uptime-lag investigation
+            # named (logbook/2026-07-18-teensy-uptime-tracking-degradation.md,
+            # Addendum). /profile is the 1 Hz firmware instrumentation —
+            # udp_rtt_us, udp_jitter_us, interp deadline misses/jitter — which
+            # WAS published but never bagged, so that entry could only tell the
+            # operator to "watch it live" and its seven-session table could
+            # never be joined to RTT-vs-uptime after the fact. /leg_cmd_executed
+            # is the Teensy's post-clamp executed leg command at 100 Hz, the
+            # middle timeline between /leg_setpoint_echo (what the Jetson asked
+            # for) and robot_state (what the encoders did); without it a
+            # degraded session's bag cannot say whether the lag is transport,
+            # interp, or ODrive. Together they are what makes a degraded bag
+            # self-diagnosing instead of merely degraded.
+            '/profile',
+            '/leg_cmd_executed',
+            # The third gap from the same Addendum, closed by FW 11's additive
+            # CLOCK_DIAG (0x8F): one sample per accepted time-of-day anchor
+            # carrying the bridge's wall-clock discipline state (pre-slew offset
+            # error, exchange RTT, implied crystal ppb) AND the 500 Hz interp
+            # ladder's recover-slew / Mode-2-extrapolation occupancy, neither of
+            # which was uplinked at all. It is the raw material
+            # plans/active/bridge-clock-frequency-discipline.md Phase 1 needs —
+            # the actual crystal ppm and its thermal coefficient come from a fit
+            # over HOURS of these samples, which is only possible if the whole
+            # series is in the bag. ~1 msg / 30 s. NOTE: the can-bridge is
+            # deliberately still on FW 10 until after the S1 aged-bridge
+            # experiment (a flash is a reboot, and the aged state IS the
+            # experiment), so until that flash this topic records EMPTY — which
+            # is precisely the add-a-silent-topic case the rule below blesses.
+            '/clock_diag',
+            # The confirmation instrument for what S1 (2026-08-12) left open,
+            # carried by FW 12's additive CACHE_DIAG (0x91): the can-bridge's own
+            # per-axis ENCODER-CACHE AGE floor and peak per 1 s window, plus the
+            # CAN RX-ring depth/cap-hit counters. S1 put the uptime latency drift
+            # inside the Teensy with the transport, the interp deadline, the heap
+            # and the ODrives all cleared, leaving one fork — a stale encoder
+            # cache under the lead clamp, or a leg that genuinely trails — and
+            # /robot_state and /leg_cmd_executed cannot separate them because
+            # they read that same cache. This topic is the only place the answer
+            # exists, and the answer is a TREND over an hours-long soak, so a
+            # session that publishes it without recording it produces nothing.
+            # 1 msg/s. Records EMPTY until the bridge is flashed to FW 12.
+            '/cache_diag',
+            # ── THE ONE LIST (toss-selftuning D18, 2026-08-10) ──────────────
+            # Until now two divergent record lists existed — this one and the
+            # operator runbook's — and NEITHER was sufficient: the runbook's had
+            # /rosout and /catch/pretilt_hold but not /balls or /mocap_data (the
+            # two the mocap landing offset and the tracker join need), and this
+            # one had the reverse. Their UNION is what a session actually needs,
+            # so this list became the union and the runbooks now say
+            # `record:=true` instead of maintaining a second one.
+            #
+            # Root cause for adding rather than trimming: a missing topic is
+            # unrecoverable after the fact, and a recorded silent topic costs
+            # nothing — exactly the argument /leg_lengths_topic above already
+            # makes. The 2026-08-10_16-30-44 sitting is the standing evidence:
+            # it lacks every topic below, so its bag can never answer what the
+            # catch latch, the reach centre or the commanded pose were doing.
+            #
+            # ALL low-rate, no exception — the busiest is
+            # /trajectory/commanded_position, and that is a Point on
+            # trajectory_node's create_timer(0.2, _publish_status), i.e. 5 Hz.
+            # (The plan's § 3.5 called it 40 Hz and built a bag-size caveat on
+            # it; corrected 2026-08-11. There is no bag-size objection here.)
+            #
+            # "Will rosbag2 record a topic that does not exist yet?" — YES on
+            # this box, and that is measured rather than assumed. rosbag2 0.3.11
+            # (Foxy) recorded /motion/diagnostics into
+            # ~/Desktop/rosbags/2026-08-10_16-30-44 with its type resolved and
+            # message_count 0, and motion_bridge_node — its SOLE publisher — has
+            # not been launched since 2026-08-01. The action topics below are a
+            # strictly easier case: their publishers exist from node startup, so
+            # the only exposure was a startup race, and that evidence closes it.
+            '/rosout',
+            '/toss/record',
+            # The aim map's loaded/applied/version verdict (C-TOSS-CAL-1).
+            # Latched and published only on load/reload, so a bag is the only
+            # after-the-fact witness that a session's map was DORMANT rather
+            # than applied — the distinction the whole provenance gate exists
+            # for, and one no per-toss record can prove was not edited later.
+            '/toss/calibration_status',
+            # The BB firmware's TERMINAL throw outcome, relayed by
+            # ball_butler_node (2026-08-11). bb/throw_at_target is
+            # fire-and-forget, so this is the ONLY channel on which
+            # THROW_ABORTED_NOT_SETTLED — BB not positioned in time, ball never
+            # left — is observable at all; without it a bag cannot explain why a
+            # TossContinuous reload interlude retried, or why it stopped.
+            '/bb/throw_outcome',
+            '/catch/armed',
+            '/catch/prime_hold',
+            '/catch/prime_dispatched',
+            '/catch/vel_scale',
+            '/catch/reach_center',
+            '/catch/pretilt_hold',
+            '/trajectory/commanded_position',
+            # Ball-op action feedback + status: the per-cycle phase string and
+            # the goal terminal. Nothing else in a bag carries WHICH cycle of a
+            # session a given instant belongs to, which is the join a per-toss
+            # corpus is built on.
+            '/jugglebot/toss/_action/feedback',
+            '/jugglebot/toss/_action/status',
+            '/jugglebot/toss_continuous/_action/feedback',
+            '/jugglebot/toss_continuous/_action/status',
             '-s', 'mcap', '-o', bag_dir,
         ],
         output='screen',

@@ -161,7 +161,7 @@ planned.
 | 6 | **fw 0.6.11-1 confirmed** | No `-1` is expected in CAN `Get_Version` frames; endpoint tree identical to 0.6.11 (CRC 55416) ⇒ **726** stands. Phase 0 surfaces the reply's fourth byte (`fw_unreleased`) — landed in `aa14098`; empirical confirmation is Phase 7 step 1. |
 | 7 | **`gpio2_mode = 1` (DIGITAL_PULL_UP) flashed + NVM-persisted** | Done by the operator via the ODrive GUI, `save_configuration` + reboot, 2026-07-28. Config backup updated in `64d2a8f`. |
 | 8 | **Scope ends at ROS + GUI pill** | Possession-source implementation stays with the possession workstream (C-POSSESS-1 forbids speculative sensor code and reserves the seam). |
-| 9 | **Boot/unknown default = tri-state UNKNOWN** | Never a bare bool; `ball_seated` must treat UNKNOWN/stale as not-seated once `toss_require_ball_evidence` flips (that flip is NOT this plan's). |
+| 9 | **Boot/unknown default = tri-state UNKNOWN** | Never a bare bool; `ball_seated` must treat UNKNOWN/stale as not-seated once `toss_require_ball_evidence` flips (that flip is NOT this plan's). **Honoured 2026-08-10 when the flip landed**: UNKNOWN/stale mints `REJECTED_BALL_UNKNOWN` and refuses the throw. |
 | 10 | **Decel fix / end-stop anchor stay separate work items** | Per decision (b) of the 2026-07-28 sitting. |
 
 ## Architecture
@@ -226,7 +226,7 @@ Phase 7 measurement, not a blocker.
 | 4 | Additive `MsgType HAND_SENSOR` uplink | bridge flash + Jetson (independent) | done (`6cc38f7`; flashed by the operator 2026-07-29) |
 | 5 | ROS surface: `/hand_telemetry` fields + `/link_status` KeyValue + RX-age gate | Jetson (colcon) | done (`fafcee0`; colcon-deployed by the operator 2026-07-29) |
 | 6 | GUI ball-in-hand pill + `tests/hardware/session_hand_ball_sensor.md` runbook | Jetson (static files) | done (`73d70c6`; P3 browser check outstanding) |
-| 7 | Hardware commissioning: raw-word toggle gate, SDO RTT, soak | operator-run | pending |
+| 7 | Hardware commissioning: raw-word toggle gate, SDO RTT, soak | operator-run | steps 4-5 open (bench tuning, **not blockers** — the operator validated the sensor in situ 2026-08-10 and the possession flip landed on that authorisation; see § Out of scope) |
 
 Phases 0–2 are pure-repo and independently committable (Phase 2 spans both
 repos in lockstep). Phases 3–4 ship in one bridge flash. Phase 4's message is
@@ -669,9 +669,37 @@ predates the direction and ran the full gate: 4256 passed, 3 xfailed,
   paraphrase here; the pointer is safer against contract drift. Two further
   seam facts recorded during this plan's recon: all three seam call sites
   are gated on a tracker `CAUGHT`, and `judge()` carries no time argument.
+
+  > **LANDED 2026-08-10** as `ball_possession.HandBallSensorSource`, in
+  > `plans/active/catch-robustness.md` Phase 1. Both recon facts held and both
+  > shaped the design: the source is **tick-driven** (`observe(now, landing_t)`),
+  > a second source kind the contract now specifies in § 3.2, precisely because
+  > `judge()` carries no time; and the ball-evidence precondition became a live
+  > `evidence(now)` read (§ 3.3) precisely because the seam call sites are gated
+  > on a tracker `CAUGHT`.
+
 - **`toss_require_ball_evidence` flip**: deferred to whoever validates the
   sensor, per decision (e) of the 2026-07-28 sitting. Not flipped by any
   phase of this plan.
+
+  > **⚠ GATE SUPERSEDED 2026-08-10 — operator authorisation.** This plan's
+  > position that the flip is forbidden until **Phase 7** validates the sensor is
+  > superseded: the operator validated the sensor **in situ** and authorised both
+  > the sensor-primary possession source and the flip (recorded in
+  > `plans/active/catch-robustness.md` § Owner decisions). The default is now
+  > `true`. **Phase 7 steps 4–5 remain open as bench work, not as blockers** —
+  > they size the debounce/poll knobs and measure SDO RTT, which is tuning on a
+  > sensor already known to work, not permission to use it. The supporting
+  > evidence for the authorisation is in the bags rather than the bench: 203,922
+  > `/hand_telemetry` samples across three 2026-08-10 sessions at **100 %
+  > `ball_held_valid`**, with the sensor's arrival edge landing +137…+798 ms after
+  > every announced catch and no non-catch edge closer than +3194 ms
+  > (`tools/probes/hand_sensor_verdict_replay.py`).
+  >
+  > Note what this does **not** waive: the plan's decision-9 requirement that the
+  > signal be tri-state and that `ball_seated` treat UNKNOWN/stale as *not*
+  > seated is honoured exactly — an UNKNOWN sensor mints `REJECTED_BALL_UNKNOWN`
+  > and refuses the throw.
 - **Post-release decel fix + end-stop anchor**: separate ordered work
   (decision (b) of the same sitting).
 - **BallButler fail-open reload-skip defect** (found during this

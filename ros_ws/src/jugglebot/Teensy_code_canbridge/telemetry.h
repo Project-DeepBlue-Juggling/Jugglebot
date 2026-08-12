@@ -70,6 +70,28 @@ void can_errors_uplink_step();
 // baseline, and "no frame" must never be ambiguous with "no pressure".
 void bridge_tx_diag_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Folds ONE per-axis
+// encoder-cache-age sample into the current window on EVERY call, and emits the
+// window's per-axis age floor/peak plus the CAN RX-ring occupancy as a
+// CACHE_DIAG frame at a flat 1 Hz. Unconditional, like its two 1 Hz siblings:
+// the consumer reads it as a trend across a multi-hour soak, so a gap must never
+// be ambiguous with health.
+//
+// WHY IT SAMPLES AT 100 Hz BUT SENDS AT 1 Hz. The quantity under test is the
+// cache-age FLOOR (see the CacheDiag summary in config/generate_udp_protocol.py:
+// this is the instrument that separates "the leg genuinely trails" from "the
+// lead clamp is measuring against a stale encoder cache"). Between two ODrive
+// encoder broadcasts the age ramps 0 -> one broadcast period, so a single 1 Hz
+// read is a uniform sample of that ramp and says nothing about the floor; the
+// MINIMUM over ~100 reads IS the floor. The extra cost is one seqlock read per
+// axis per tick — the same read send_telemetry() already performs — and NO ISR
+// work at all.
+//
+// CONCURRENCY: every accumulator behind this frame is written and read ONLY by
+// task_telem, so there is no cross-context counter, no reader-side clear of a
+// counter another context writes, and no IRQ-off window.
+void cache_diag_uplink_step();
+
 // Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the running
 // build's FW_VERSION + PROTOCOL_VERSION as a BRIDGE_IDENTITY frame at a flat
 // 1 Hz. FW_VERSION previously existed only in the USB serial boot banner, so a

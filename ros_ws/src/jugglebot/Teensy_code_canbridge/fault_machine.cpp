@@ -389,7 +389,15 @@ static void evaluate_guard() {
   if (s_mpc_active && interp_have_latched()) {
     const uint64_t now = micros64();   // interval clock — never the steppable wall
     for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-      if (leg_present(i) && (now - axes[i].pos_timestamp_us > MOTOR_FB_STALENESS_US)) {
+      // atomic_read_u64: a naked u64 load is two 32-bit reads on Cortex-M7, and
+      // task_can_rx (the writer, higher priority) can preempt between them — a
+      // torn timestamp here makes the staleness guard flap in BOTH directions.
+      // now > ts guards the ordering half of the hazard: the prio-5 writer can
+      // stamp AFTER our `now` capture, and an unclamped subtraction would wrap
+      // past the threshold — a false one-tick MOTOR_FB_STALE (~100 ms output
+      // suppression) on the live leg path.
+      const uint64_t ts = atomic_read_u64(&axes[i].pos_timestamp_us);
+      if (leg_present(i) && now > ts && (now - ts > MOTOR_FB_STALENESS_US)) {
         fb_stale = true; break;
       }
     }

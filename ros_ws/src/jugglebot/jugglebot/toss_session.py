@@ -40,6 +40,19 @@ Every commanded motion in a session belongs to a cycle and is already covered by
 the single-toss ladder. A session-level move would be new commanded motion with
 zero hardware evidence behind it.
 
+**S2 is AMENDED, not quietly broken, by the auto-reload interlude (2026-08-11).**
+``on_empty_cup: RELOAD`` gives the session exactly one motion-bearing interlude,
+and it is bounded three ways so the amendment stays as narrow as the original
+invariant made it: (a) it is entered from ``REJECTED_NO_BALL`` ONLY — the one
+toss terminal where the cycle FSM provably commanded nothing (minted in CHECKING,
+``_terminal_action`` returns ``ACTION_NONE``), so the machine is quiescent;
+(b) every rung of it is an EXISTING validated mechanism — ``trajectory/go_home``
+and the shipping ``ReloadSequencer``, driven through the node's own
+``_step_sequence`` — so the interlude invents no motion primitive; (c) it is
+fenced by ``max_reloads`` and by the floor tally. The default is still STOP, and
+a goal that omits the field gets STOP (:func:`resolve_on_empty_cup`), so the
+pre-2026-08-11 session is bit-unchanged.
+
 **S3 — ``stop_on_miss`` stops at the CYCLE BOUNDARY and introduces no new abort
 point.** The safing on a miss is the cycle's OWN ``ACTION_SAFE_ABORT`` (armed-off
 → retract → latch-off → go_home), which has already run by the time this FSM sees
@@ -138,6 +151,25 @@ site A and a hand still descending both end in loud refusals — but one of them
 (``REJECTED_HAND_NOT_PARKED``) is a machine-fault verdict for a cadence fault, and
 it would route the operator to the wrong subsystem.
 
+**The floor belongs to the SAFE_ABORT LADDER, not to the MISS outcome**, and every
+continuation past that ladder gets it — there are three, and all three reuse the
+one constant so they cannot drift apart:
+
+1. the continued MISS (above);
+2. the single ``ABORTED_NO_RELEASE`` retry (audit fix, 2026-08-11). A non-release
+   terminates in ``PHASE_THROWING`` with the platform positioned and the latch
+   raised, so its terminal action is the identical ``ACTION_SAFE_ABORT``. It had
+   been returning from :meth:`note_cycle_result` without rescheduling at all,
+   leaving ``_next_cycle_at`` at the previous cycle's already-past instant — so
+   the retry started on the very next tick, inside its own teardown. Beyond the
+   two refusals above, that had a second cost specific to this branch: the retry
+   would normally die ``REJECTED_HAND_NOT_PARKED``, which is NOT
+   ``ABORTED_NO_RELEASE``, so the "two consecutive non-releases stop the session"
+   gauge could never fire;
+3. the reload interlude's rung 4 (:meth:`_settle_after_reload` in the node), which
+   spends the same floor as a blocking wait because the interlude runs inside the
+   node rather than across FSM ticks.
+
 ## Known limitation inherited from Phase E — chaining near the ±150 mm box edge
 
 A catch parks the platform CENTROID slightly outside B so the CUP lands ON B, and
@@ -194,9 +226,14 @@ from jugglebot.toss_sequencer import (
 
 # ── Feedback phases (TossContinuous.action feedback.phase — LOCKED strings) ────
 # While a cycle is live the node reports the CYCLE's Toss phase verbatim; these
-# two are the session's own.
+# three are the session's own.
 SESSION_PHASE_CHECKING = 'SESSION_CHECKING'
 SESSION_PHASE_DWELL = 'DWELL'
+SESSION_PHASE_RELOAD = 'RELOAD'      # the auto-reload interlude (§ 3.9). Additive:
+                                     # an existing consumer that only knows the
+                                     # first two sees a phase it does not
+                                     # recognise, never a phase that changed
+                                     # meaning.
 
 # ── Actions the node executes on the session's behalf ─────────────────────────
 SESSION_ACTION_NONE = 'none'
@@ -204,6 +241,32 @@ SESSION_ACTION_START_CYCLE = 'start_cycle'   # build + run ONE TossSequencer, th
                                              #   feed its result back through
                                              #   note_cycle_result. Never emitted
                                              #   while a cycle is outstanding (S1).
+SESSION_ACTION_RELOAD = 'reload'             # run the reload interlude (§ 3.9),
+                                             #   then report through
+                                             #   note_reload_result. Emitted ONLY
+                                             #   after a REJECTED_NO_BALL cycle,
+                                             #   i.e. from a state where the toss
+                                             #   FSM provably commanded NOTHING.
+
+# ── on_empty_cup (TossContinuous.action) ──────────────────────────────────────
+ON_EMPTY_CUP_STOP = 'STOP'
+ON_EMPTY_CUP_RELOAD = 'RELOAD'
+
+
+def resolve_on_empty_cup(raw) -> str:
+    """Goal field -> the resolved policy. ANYTHING that is not exactly ``RELOAD``
+    resolves to ``STOP``.
+
+    The same doctrine ``stop_on_miss`` carries, and it is load-bearing for the
+    same reason: an omitted, empty, misspelt or older-client field must never
+    start an autonomous BB reload the operator did not ask for. Whitelisting the
+    one dangerous value (rather than blacklisting the safe one) is what makes a
+    typo fail in the safe direction."""
+    try:
+        text = str(raw or '').strip().upper()
+    except Exception:                                          # noqa: BLE001
+        return ON_EMPTY_CUP_STOP
+    return ON_EMPTY_CUP_RELOAD if text == ON_EMPTY_CUP_RELOAD else ON_EMPTY_CUP_STOP
 
 # ── Defaults / floors (the NO-CONFIG fallbacks only) ──────────────────────────
 # The node resolves the generated JB_OP_TOSS_SESSION_* keys and passes them into
@@ -224,6 +287,16 @@ DEFAULT_SESSION_MAX_THROWS = 20      # upper bound on num_throws. An unbounded
                                      # an unbounded time; 20 cycles at the 6.0 s
                                      # default dwell is ~2.3 minutes, well past any
                                      # rung of the hardware ladder.
+DEFAULT_SESSION_MAX_RELOADS = 3      # goal max_reloads 0 => this. The ONLY
+                                     # machine-side fence on ball supply (there is
+                                     # no ball-count or magazine field anywhere on
+                                     # ball_butler_node, so supply has no machine
+                                     # observability and none is invented).
+DEFAULT_SESSION_FLOOR_PAUSE_EVERY = 5  # balls on the floor before the session stops
+                                     # cleanly so the operator can clear them. 0
+                                     # disables. At max_reloads 3 the budget binds
+                                     # first — this is the fence for a long-budget
+                                     # session, not a routine gate.
 
 # ── The MISS-path cleanup floor (see the module docstring's dwell section) ────
 # The two node-side numbers the MISS teardown is made of. Both are read from
@@ -261,6 +334,39 @@ _MISS_PREFIX = 'MISSED'
 OUTCOME_COMPLETED = 'COMPLETED'
 OUTCOME_STOPPED_ON_MISS = 'STOPPED_ON_MISS'
 
+# ── The reload interlude's terminals (§ 3.9) ──────────────────────────────────
+# Every one of them STOPS the session, and every one names WHICH rung refused, so
+# the operator routes the failure without reading a log. The two below are the
+# FSM's own (it owns the counters); the node owns the observation-driven rest
+# (STOPPED_BB_NOT_READY / STOPPED_BB_UNVERIFIED / STOPPED_SENSOR_UNKNOWN /
+# STOPPED_CUP_NOT_EMPTY / STOPPED_BALL_EVIDENCE_DISABLED / STOPPED_RECENTRE_FAILED)
+# and hands them back through :meth:`note_reload_result`.
+OUTCOME_STOPPED_RELOAD_BUDGET = 'STOPPED_RELOAD_BUDGET'
+OUTCOME_STOPPED_FLOOR_CLEAR_REQUIRED = 'STOPPED_FLOOR_CLEAR_REQUIRED'
+#: Fallback when the node reports a failed interlude with no code of its own —
+#: never expected, and it still STOPS, because an unnamed failure is still a
+#: failure and continuing would stroke over a cup nobody proved has a ball.
+OUTCOME_STOPPED_RELOAD_FAILED = 'STOPPED_RELOAD_FAILED'
+
+# The ONE cycle terminal the interlude is entered from. Chosen because it is the
+# only toss terminal where the FSM provably commanded NOTHING: it is minted in
+# CHECKING, before `_positioned` or `_prepare_dispatched`, so `_terminal_action`
+# returns ACTION_NONE and the machine is quiescent when the interlude starts.
+RELOAD_TRIGGER_OUTCOME = 'REJECTED_NO_BALL'
+
+# The terminal the single retry is gated on (operator decision 6, 2026-08-10).
+NO_RELEASE_OUTCOME = 'ABORTED_NO_RELEASE'
+#: Two CONSECUTIVE ABORTED_NO_RELEASE stop the session. One is a stroke that did
+#: not release with the ball demonstrably still in the cup — retryable. Two in a
+#: row is a plant fault repeating, and repeating a fault num_throws times is how
+#: one fault becomes N (the epidemic gauge the whole abort ladder is built on).
+NO_RELEASE_MAX_CONSECUTIVE = 2
+#: The sensor state that licenses the retry. Deliberately the STRING, not an
+#: import of ``ball_possession.EVIDENCE_SEATED``: this module is pure and takes
+#: the evidence as a caller-supplied observation, and a drift-guard test pins the
+#: two equal rather than a runtime import doing it silently.
+EVIDENCE_SEATED_NAME = 'SEATED'
+
 
 @dataclass
 class TossSessionResult:
@@ -272,6 +378,7 @@ class TossSessionResult:
     cycle_catch_error_mm: List[float] = field(default_factory=list)
     cycle_flight_s: List[float] = field(default_factory=list)
     cycle_dwell_s: List[float] = field(default_factory=list)
+    reloads_used: int = 0
 
 
 @dataclass
@@ -327,6 +434,15 @@ class TossSessionSequencer:
                                                 #   session has no chain to check; the
                                                 #   node passes it explicitly whenever
                                                 #   num_throws >= 2.
+    on_empty_cup: str = ON_EMPTY_CUP_STOP       # STOP (default) | RELOAD. The ctor
+                                                #   default matches the ACTION's IDL
+                                                #   default and the node re-resolves
+                                                #   the raw field through
+                                                #   resolve_on_empty_cup, so a value
+                                                #   that is not exactly RELOAD can
+                                                #   never reach here as RELOAD.
+    max_reloads: int = DEFAULT_SESSION_MAX_RELOADS
+    floor_pause_every: int = DEFAULT_SESSION_FLOOR_PAUSE_EVERY
 
     # ── internal state ──
     _phase: str = field(default=SESSION_PHASE_CHECKING, init=False)
@@ -337,6 +453,17 @@ class TossSessionSequencer:
     _last_landing: float = field(default=float('nan'), init=False)
     _throws: int = field(default=0, init=False)
     _catches: int = field(default=0, init=False)
+    _reloads_used: int = field(default=0, init=False)
+    _floor_balls: int = field(default=0, init=False)
+    _reload_pending: bool = field(default=False, init=False)
+    _no_release_streak: int = field(default=0, init=False)
+    # Flags the NEXT cycle inherits, latched here and CONSUMED at START_CYCLE so
+    # exactly one cycle wears each (guards G10 / G11 depend on that: a flag that
+    # leaked to a second cycle would exclude a clean toss from every fit).
+    _retry_next: bool = field(default=False, init=False)
+    _reload_settle_next: bool = field(default=False, init=False)
+    _cycle_is_retry: bool = field(default=False, init=False)
+    _cycle_reload_settle: bool = field(default=False, init=False)
     _outcomes: List[str] = field(default_factory=list, init=False)
     _errors: List[float] = field(default_factory=list, init=False)
     _flights: List[float] = field(default_factory=list, init=False)
@@ -387,6 +514,46 @@ class TossSessionSequencer:
         return self._cycle_live
 
     @property
+    def reloads_used(self) -> int:
+        return self._reloads_used
+
+    @property
+    def reload_budget_remaining(self) -> int:
+        """Attempts the interlude may still spend. The node runs the BB
+        not-positioned-in-time retry INSIDE one interlude, so it needs the
+        remaining budget — the retry is not free, it is the same fence."""
+        return max(0, int(self.max_reloads) - self._reloads_used)
+
+    @property
+    def floor_balls(self) -> int:
+        """Balls this session has put on the floor — its own count of reload
+        interludes entered. Nothing on the robot can see the floor; this is a
+        tally, not a measurement, and it is named that way on purpose."""
+        return self._floor_balls
+
+    @property
+    def next_cycle_at(self) -> float:
+        """The instant the next cycle is scheduled to start. Read by the node's
+        Layer-1.5 dwell reads to size their own budget — the covariate must fit
+        inside the quiescent window with room, never push against it."""
+        return self._next_cycle_at
+
+    @property
+    def cycle_is_retry(self) -> bool:
+        """True while the LIVE cycle is the single ABORTED_NO_RELEASE retry.
+        Consumed by the node to stamp ``retry_of`` on the record (guard G11)."""
+        return self._cycle_is_retry
+
+    @property
+    def cycle_reload_settle(self) -> bool:
+        """True while the LIVE cycle is the first one after a reload interlude.
+        Stamps ``reload_settle`` on the record, which excludes the cycle from
+        every fit (guard G10): the platform has just been recentred and the ball
+        has just been re-seated by a BB throw, so its arrival state is not the
+        steady-state one the map is being fitted from."""
+        return self._cycle_reload_settle
+
+    @property
     def finished(self) -> bool:
         return self._finished
 
@@ -426,12 +593,31 @@ class TossSessionSequencer:
             return TossSessionDecision(self._phase, SESSION_ACTION_NONE,
                                        self._cycle_index, False, None)
 
+        # The reload interlude, before any cycle can start. Emitted from the
+        # REJECTED_NO_BALL terminal only, and the budget/floor gates have already
+        # passed inside note_cycle_result — so reaching here means the SESSION's
+        # own preconditions hold and only the node's observation-driven ones are
+        # left. Re-emitted every step until note_reload_result answers, exactly
+        # as START_CYCLE is not re-emitted while a cycle is live.
+        if self._reload_pending:
+            self._phase = SESSION_PHASE_RELOAD
+            return TossSessionDecision(SESSION_PHASE_RELOAD,
+                                       SESSION_ACTION_RELOAD,
+                                       self._cycle_index, False, None)
+
         if now >= self._next_cycle_at:
+            self._phase = SESSION_PHASE_DWELL
             self._cycle_index += 1
             self._cycle_live = True
+            # CONSUME the inherited flags here — one cycle wears each.
+            self._cycle_is_retry = self._retry_next
+            self._cycle_reload_settle = self._reload_settle_next
+            self._retry_next = False
+            self._reload_settle_next = False
             return TossSessionDecision(SESSION_PHASE_DWELL,
                                        SESSION_ACTION_START_CYCLE,
                                        self._cycle_index, False, None)
+        self._phase = SESSION_PHASE_DWELL
         return TossSessionDecision(SESSION_PHASE_DWELL, SESSION_ACTION_NONE,
                                    self._cycle_index, False, None)
 
@@ -474,7 +660,8 @@ class TossSessionSequencer:
     # ── discrete event (from the node) ─────────────────────────────────────────
 
     def note_cycle_result(self, result: TossResult, t_release: float,
-                          landing_perf: float) -> None:
+                          landing_perf: float, *,
+                          ball_evidence: Optional[str] = None) -> None:
         """Consume the cycle the node just ran to its terminal.
 
         ``t_release`` and ``landing_perf`` are the cycle's own scheduled instants
@@ -483,6 +670,12 @@ class TossSessionSequencer:
         off an observed one, because the observed landing is exactly the quantity
         the tracker is least trustworthy about and a cadence must not inherit
         that noise.
+
+        ``ball_evidence`` is the node's LIVE tri-state hand-sensor read at the
+        cycle's terminal (``SEATED`` / ``EMPTY`` / ``UNKNOWN``, or None when it
+        was not taken). It is consulted for exactly ONE decision — whether an
+        ``ABORTED_NO_RELEASE`` may be retried — and never as a gate on anything
+        that moves.
 
         Ignored once finished, and ignored when no cycle is live (S1's other
         half: a result for a cycle nobody started must not advance the count)."""
@@ -500,9 +693,75 @@ class TossSessionSequencer:
         if bool(result.success):
             self._throws += 1
             self._catches += 1
+            self._no_release_streak = 0
         elif outcome.startswith(_MISS_PREFIX):
             # A ball flew and was not caught. It counts as a throw.
             self._throws += 1
+            self._no_release_streak = 0
+        elif outcome == RELOAD_TRIGGER_OUTCOME \
+                and self.on_empty_cup == ON_EMPTY_CUP_RELOAD:
+            # THE auto-reload trigger (§ 3.9). Nothing flew and — uniquely among
+            # the toss terminals — nothing was ARMED either: REJECTED_NO_BALL is
+            # minted in CHECKING before `_positioned` / `_prepare_dispatched`, so
+            # the cycle's own `_terminal_action` was ACTION_NONE. That is what
+            # makes it safe to enter an interlude here and not from, say, a
+            # MISSED (whose SAFE_ABORT ladder is still running) or an
+            # ABORTED_PREPARE_FAILED (a machine fault, not an empty cup).
+            #
+            # It does NOT count as a throw, and with the completion test keyed on
+            # THROWS (see below) it therefore does not consume one of the
+            # num_throws slots the operator asked for — a drop costs a reload,
+            # not a data point.
+            self._no_release_streak = 0
+            stop = self._reload_precheck()
+            if stop is not None:
+                self._stop_outcome = stop
+                return
+            self._reload_pending = True
+            return
+        elif outcome == NO_RELEASE_OUTCOME:
+            # Operator decision 6 (2026-08-10), which REOPENED the design's D9
+            # deferral. The hand sensor answers the only question that made the
+            # retry unsafe: with a VALID HELD read the ball is demonstrably still
+            # in the cup, so the airborne-ball hazard a blind retry would carry is
+            # structurally absent. UNKNOWN and EMPTY both refuse — blindness is
+            # not evidence, and an EMPTY cup after a non-release means the ball
+            # went somewhere nobody watched.
+            self._no_release_streak += 1
+            if (self._no_release_streak < NO_RELEASE_MAX_CONSECUTIVE
+                    and str(ball_evidence or '') == EVIDENCE_SEATED_NAME):
+                self._retry_next = True
+                # The retry gets the SAME cleanup floor the MISS path gets, for
+                # the SAME reason: an ABORTED_NO_RELEASE reaches this hook with
+                # `_positioned` and `_prepare_dispatched` both true, so its
+                # terminal action is ACTION_SAFE_ABORT — the identical ladder,
+                # dispatched on the identical service acks. Without the floor
+                # `_next_cycle_at` still holds the PREVIOUS cycle's instant,
+                # which is already in the past, so the retry starts on the very
+                # next FSM tick — while the retract is still descending and the
+                # 2.0 s recentre profile is still traversing. That is exactly the
+                # REJECTED_HAND_NOT_PARKED / mid-traverse-throw-site pair the
+                # MISS floor was added to prevent, and it would ALSO destroy the
+                # epidemic gauge this branch exists to feed: the retry would die
+                # a machine-fault verdict instead of a second ABORTED_NO_RELEASE,
+                # so "two consecutive non-releases stop the session" could never
+                # fire and the operator would be routed to the wrong subsystem.
+                #
+                # `landing_perf` is a SCHEDULED instant (t_release + flight), not
+                # an observed one, and for a non-release nothing actually flew —
+                # but the constant is still a valid floor here, with slack: this
+                # ladder starts at `t_release + release_grace_s` (0.5 s), so the
+                # need measured from t_release is 0.5 + GO_HOME_DURATION_S +
+                # 2 ticks = 2.60 s, while this grants flight + 2.80 s >= 2.80 s
+                # for any flight >= 0. Reusing the constant (rather than deriving
+                # a second, shorter one) is also what keeps the two teardown
+                # floors from drifting apart — the reload interlude's rung 4
+                # reuses it for the third time.
+                self._next_cycle_at = (float(landing_perf)
+                                       + float(self.miss_cleanup_s))
+                return
+            self._stop_outcome = 'ABORTED_CYCLE_{}'.format(outcome)
+            return
         else:
             # REJECTED_* / ABORTED_*: nothing flew, or the sequence tore down
             # mid-way. The session ALWAYS stops, whatever stop_on_miss says —
@@ -519,7 +778,17 @@ class TossSessionSequencer:
             # to safe, and nothing new is commanded.
             self._stop_outcome = OUTCOME_STOPPED_ON_MISS
             return
-        if self._cycle_index >= self.num_throws:
+        if self._throws >= self.num_throws:
+            # Keyed on THROWS, not on cycle_index — and the two are IDENTICAL for
+            # every session the pre-2026-08-11 machine could run: the only
+            # outcomes that do not increment `_throws` are the REJECTED_*/
+            # ABORTED_* family, and every one of those STOPPED the session before
+            # reaching here. So this is behaviour-preserving today, and it is what
+            # makes an auto-reloaded REJECTED_NO_BALL (and the single
+            # ABORTED_NO_RELEASE retry) cost a cycle index without costing one of
+            # the num_throws data points the operator asked for. The runaway is
+            # fenced by max_reloads and by NO_RELEASE_MAX_CONSECUTIVE, not by this
+            # counter.
             self._stop_outcome = OUTCOME_COMPLETED
             return
         # Schedule the next cycle so its release lands one dwell past this
@@ -550,6 +819,47 @@ class TossSessionSequencer:
                           float(landing_perf) + float(self.miss_cleanup_s))
         self._next_cycle_at = next_at
 
+    def _reload_precheck(self) -> Optional[str]:
+        """The SESSION's half of the interlude precondition gate — the two rungs
+        that are counters rather than observations. Returns a stop code, or None
+        when the node may proceed to its own (BB-ready / BB-verified / sensor /
+        recentre) rungs.
+
+        The floor tally is incremented FIRST and unconditionally: a ball reached
+        the floor whether or not any budget remains, and a count that skips the
+        exhausting drop would under-report exactly the sitting that needs the
+        pause most. The CODES are then checked budget-first, per § 3.9."""
+        self._floor_balls += 1
+        if self.reload_budget_remaining <= 0:
+            return OUTCOME_STOPPED_RELOAD_BUDGET
+        if 0 < int(self.floor_pause_every) <= self._floor_balls:
+            return OUTCOME_STOPPED_FLOOR_CLEAR_REQUIRED
+        return None
+
+    def note_reload_result(self, ok: bool, *, attempts: int = 1,
+                           stop_code: Optional[str] = None) -> None:
+        """Consume the interlude the node just ran.
+
+        ``attempts`` is how many reload attempts it actually SPENT — the BB
+        not-positioned-in-time retry re-enters the reload FSM inside one
+        interlude, and every re-entry is a real BB ball, so it is charged to the
+        same budget. ``stop_code`` is the node's named refusal (its half of the
+        precondition gate, or a failed reload); the session stops on it.
+
+        A successful interlude flags the NEXT cycle ``reload_settle`` — the cycle
+        after a reload is excluded from every fit (guard G10), because a
+        just-recentred platform holding a just-delivered ball is not the steady
+        state the map is fitted from."""
+        if self._finished or not self._reload_pending:
+            return
+        self._reload_pending = False
+        self._phase = SESSION_PHASE_DWELL
+        self._reloads_used += max(0, int(attempts))
+        if ok:
+            self._reload_settle_next = True
+            return
+        self._stop_outcome = str(stop_code or OUTCOME_STOPPED_RELOAD_FAILED)
+
     # ── terminal ───────────────────────────────────────────────────────────────
 
     def _finish(self, outcome: str) -> TossSessionDecision:
@@ -572,7 +882,8 @@ class TossSessionSequencer:
             cycle_outcomes=list(self._outcomes),
             cycle_catch_error_mm=list(self._errors),
             cycle_flight_s=list(self._flights),
-            cycle_dwell_s=list(self._dwells))
+            cycle_dwell_s=list(self._dwells),
+            reloads_used=self._reloads_used)
         self._finished = True
         return TossSessionDecision(self._phase, SESSION_ACTION_NONE,
                                    self._cycle_index, True, self._result)

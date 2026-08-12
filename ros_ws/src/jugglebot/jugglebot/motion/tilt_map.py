@@ -136,7 +136,7 @@ MAX_ABS_RESIDUAL_RAD = 0.05
 #: :func:`tilt_map_candidates` for why it does not fall through.
 TILT_MAP_ENV = 'JUGGLEBOT_TILT_CAL'
 
-def _find_repo_root(start: str) -> Optional[str]:
+def find_repo_root(start: str) -> Optional[str]:
     """Walk up from ``start`` to the Jugglebot repo root, or ``None``.
 
     **Deliberately a search, not a fixed ``__file__`` walk.**
@@ -177,8 +177,8 @@ def _find_repo_root(start: str) -> Optional[str]:
 
 #: Source-tree YAML — the file the Phase-3 acquisition tool writes and the file
 #: that is committed. ``None`` when this module is running from a deployment
-#: outside the repo (see :func:`_find_repo_root`).
-_REPO_ROOT = _find_repo_root(__file__)
+#: outside the repo (see :func:`find_repo_root`).
+_REPO_ROOT = find_repo_root(__file__)
 _SRC_TILT_YAML = (os.path.join(_REPO_ROOT, 'config', 'tilt_calibration.yaml')
                   if _REPO_ROOT else None)
 

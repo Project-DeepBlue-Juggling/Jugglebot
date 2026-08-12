@@ -37,10 +37,15 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
 > (release up to ~5.4 m/s at the 1.48 m band ceiling); **stay clear of the hand's
 > stroke path and the landing zone**. E-STOP is always in reach.
 >
-> **The operator guarantees a ball is in the hand before every toss.** There is no
-> ball-in-cup sensor — the ball-evidence CHECKING gate is OFF by default
-> (`toss_require_ball_evidence: false`), so the toss will NOT refuse an empty cup; a
-> forgotten ball fires an empty stroke (benign) but wastes the rung. Load a ball
+> **Load a ball before every toss — and since 2026-08-10 the machine checks.** The
+> ball-evidence CHECKING gate is ON by default (`toss_require_ball_evidence: true`)
+> and reads the hand ball sensor LIVE: an empty cup is refused `REJECTED_NO_BALL`
+> before anything moves. **A `REJECTED_BALL_UNKNOWN` is a SENSOR fault, not a
+> missing ball** — the poller is not answering; do not "fix" it by loading another
+> ball, and do not flip the config off to get past it without saying so in the
+> session notes. Setting `toss_require_ball_evidence: false` restores the old
+> behaviour (no refusal, a forgotten ball fires a benign empty stroke and wastes
+> the rung) and is the escape hatch if the sensor is unavailable. Load a ball
 > first (see § Loading).
 
 ## Roles & safety framing
@@ -304,11 +309,13 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   bound onto a quantity that is a dead-reckoned free-fall extrapolation, so it scored
   **0 of 17** real self-toss catches. **Self-toss** verdicts are now expected to be
   right (17/17 offline on the 2026-07-27 capture) — a `MISSED` on a catch you watched
-  land is a finding. **Reload** verdicts still read `MISSED` on a real catch and that
-  is correct: every Ball-Butler track in that capture is a split track carrying no
-  measurements, so the gate refuses to mint a verdict from it. Keep judging by eye +
-  the tracker-id-correlated evidence until a sitting has scored
-  `tests/hardware/session_anomaly_fixes.md` § SECTION POSS row `POSS-1`.
+  land is a finding. ~~**Reload** verdicts still read `MISSED` on a real catch and that
+  is correct~~ — **⚠ SUPERSEDED 2026-08-10**: that held because every Ball-Butler track
+  in that capture is a split track carrying no measurements, so the TRACKER refused it;
+  the hand ball sensor is the primary source now
+  (`logbook/2026-08-10-sensor-truth-possession.md`) and **a reload catch reads `CAUGHT`**.
+  Keep judging by eye + the tracker-id-correlated evidence until a sitting has scored
+  `tests/hardware/session_anomaly_fixes.md` § SECTION POSS rows `POSS-1` / `POSS-1.3`.
 - **ERR_TIMEOUT epidemic**: more hand dispatches = more exposure; the telemetry-verified
   ladder is the mitigation; log dispatch-failure WARNs / any `ABORTED_NO_RELEASE` as
   epidemic gauge data (two consecutive `ABORTED_NO_RELEASE` ⇒ stop).

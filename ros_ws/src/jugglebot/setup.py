@@ -39,9 +39,21 @@ _HW_CONFIG_YAML = os.path.join('..', '..', '..', 'config', 'hardware_config.yaml
 # --force-uninstall therefore moves every existing candidate aside, this one
 # included, and says so when a map survives.
 _TILT_CAL_YAML = os.path.join('..', '..', '..', 'config', 'tilt_calibration.yaml')
+# The machine-written toss AIM calibration map (contract C-TOSS-CAL-1,
+# jugglebot/motion/toss_cal.py, plans/active/toss-selftuning.md § 3.7).  Same
+# shape and the same three reasons as the tilt map above: CONDITIONAL because
+# the file does not exist until a capture has run and an ament data_files entry
+# naming a missing source is a hard `colcon build` failure; source-tree-first
+# resolution so a live capture+reload can never be shadowed; and this share copy
+# therefore exists only for the detached/install-tree case — while still being
+# able to shadow an UNINSTALL, which is why the acquisition tool's
+# --force-uninstall must move EVERY candidate aside, this one included.
+_TOSS_CAL_YAML = os.path.join('..', '..', '..', 'config', 'toss_calibration.yaml')
 _CONFIG_YAMLS = [_HW_CONFIG_YAML]
 if os.path.exists(_TILT_CAL_YAML):
     _CONFIG_YAMLS.append(_TILT_CAL_YAML)
+if os.path.exists(_TOSS_CAL_YAML):
+    _CONFIG_YAMLS.append(_TOSS_CAL_YAML)
 
 setup(
     name=package_name,

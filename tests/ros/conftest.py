@@ -7,9 +7,14 @@ Path setup is handled by the parent tests/conftest.py.
 Injection is two-tier:
 
 * **Unconditional** — ``rclpy``, ``jugglebot_interfaces``, ``geometry_msgs``,
-  ``std_msgs``, ``std_srvs``, ``sensor_msgs``. These have no non-ROS2
-  implementation, so a mock is the only option and the mock is always used,
-  Jetson included.
+  ``std_msgs``, ``std_srvs``. These have no non-ROS2 implementation, so a mock
+  is the only option and the mock is always used, Jetson included.
+  (``sensor_msgs`` was listed here until 2026-08-11 but has never actually been
+  injected: ``teensy_bridge_node``'s two ``JointState`` publishers bind the REAL
+  Foxy package. That is fine on the Jetson and load-bearing for the
+  ``MockHeader`` stub below — the real ``JointState`` constructs a
+  ``std_msgs.msg.Header``, which DOES resolve to the mock — but it does mean the
+  bridge test family cannot import on a box with no ROS 2 install.)
 * **Fallback only** — ``diagnostic_msgs`` and ``ament_index_python``
   (registered at the bottom of this file, guarded by ``try: import``). Both
   exist for real on the Jetson and are used for real there; the stubs exist
@@ -361,6 +366,25 @@ class MockBool:
     data: bool = False
 
 
+@dataclass
+class MockHeader:
+    """std_msgs/Header stand-in (fields: stamp, frame_id).
+
+    Load-bearing for the REAL ``sensor_msgs`` messages. ``sensor_msgs`` is NOT
+    mocked here (it is the real Foxy package on the Jetson), and the real
+    ``JointState.__init__`` does ``from std_msgs.msg import Header`` — which
+    resolves to THIS module, because std_msgs IS mocked unconditionally. Without
+    a Header stub, ``JointState()`` raises ImportError, so no test could
+    construct one and the node's two JointState publishers
+    (``bb/axis_estimates`` since 2026-07, ``leg_cmd_executed`` from 2026-08-11)
+    were unreachable from the suite. The real ``header`` setter asserts
+    ``isinstance(value, Header)`` against this same stub, so the pairing is
+    consistent.
+    """
+    stamp: MsgTime = field(default_factory=MsgTime)
+    frame_id: str = ''
+
+
 # ── std_srvs mock ─────────────────────────────────────────────
 
 
@@ -618,6 +642,13 @@ class _TossContinuousGoal:
         # .action file by
         # tests/ros/test_toss_session.py::test_stop_on_miss_wire_default_is_true.
         self.stop_on_miss = True
+        # MIRRORS `string on_empty_cup "STOP"` — the same doctrine one level on:
+        # an omitted or unreadable field must never start an autonomous BB
+        # reload. Pinned equal to the .action file by
+        # tests/ros/test_toss_session.py::test_on_empty_cup_wire_default_is_stop.
+        self.on_empty_cup = 'STOP'
+        # 0 => the config default (JB_OP_TOSS_SESSION_MAX_RELOADS, 3).
+        self.max_reloads = 0
 
 
 class _TossContinuousResult:
@@ -630,6 +661,7 @@ class _TossContinuousResult:
         self.per_cycle_catch_error_mm = []
         self.per_cycle_flight_s = []
         self.per_cycle_dwell_s = []
+        self.reloads_used = 0
 
 
 class _TossContinuousFeedback:
@@ -960,6 +992,7 @@ _create_mock_module('std_msgs.msg', {
     'Float64': MockFloat64,
     'String': MockString,
     'Bool': MockBool,
+    'Header': MockHeader,
 })
 
 _create_mock_module('std_srvs')
@@ -1209,3 +1242,50 @@ def sample_bb_heartbeat_data():
     """
     state_byte = (1 << 1) | 0x01  # state=1 (IDLE), ball_in_hand=True
     return struct.pack('<BBHHH', state_byte, 0, 1000, 500, 200)
+
+
+# ── Toss-record sink isolation (parallel safety + operator artefact hygiene) ──
+# ``reload_coordinator_node`` resolves BOTH of its file sinks — the JSONL record
+# belt and the end-of-goal trim proposal — to ``<repo>/temp/logs`` at import.
+# That is right in production and wrong under pytest, for two separate reasons:
+#
+#  1. it is a FIXED SHARED PATH, and the gate runs four xdist workers over one
+#     working tree (CLAUDE.md "New tests are parallel by default");
+#  2. worse, a test-written ``toss_records_*.jsonl`` is byte-indistinguishable
+#     from a real session's and lands in exactly the directory the toss-cal
+#     capture workflow mines. Measured 2026-08-11 before this fixture: 468
+#     synthetic ``toss_records_*.jsonl`` + 175 ``*_trim_proposal.yaml`` had
+#     accumulated in the operator's ``temp/logs`` from ordinary suite runs.
+#
+# Patch-if-already-imported: the module is only in ``sys.modules`` for the test
+# files that actually exercise it, so no test pays an import it did not ask for
+# and a mock-configuration change cannot turn this into a collection error.
+# A test that patches ``_RECORD_BELT_DIR`` itself still wins (its monkeypatch is
+# applied later); a test that needs the PRODUCTION-resolved value asks for the
+# ``real_record_belt_dir`` fixture below.
+
+_RCN_MODULE = 'jugglebot.reload_coordinator_node'
+
+
+@pytest.fixture
+def real_record_belt_dir():
+    """The production-resolved ``_RECORD_BELT_DIR``, before isolation redirects it.
+
+    ``_isolate_toss_record_sinks`` DEPENDS on this fixture, which is what forces
+    pytest to instantiate it first — so this always reads the unpatched constant
+    even though the isolation fixture is autouse.
+    """
+    rcn = sys.modules.get(_RCN_MODULE)
+    return None if rcn is None else getattr(rcn, '_RECORD_BELT_DIR', None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_toss_record_sinks(tmp_path, monkeypatch, real_record_belt_dir):
+    """Redirect the record belt / trim proposal sinks into this test's tmp dir."""
+    rcn = sys.modules.get(_RCN_MODULE)
+    if rcn is None or real_record_belt_dir is None:
+        # Not imported, or a deployment outside the repo checkout — in the
+        # latter case the production code writes nothing at all.
+        return
+    monkeypatch.setattr(rcn, '_RECORD_BELT_DIR',
+                        str(tmp_path / 'record_sinks'))

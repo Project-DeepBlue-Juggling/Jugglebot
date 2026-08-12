@@ -68,6 +68,18 @@
 - **subscribers:** _none_
 - **type:** `std_msgs.msg.Float32MultiArray`
 
+### `bb/throw_outcome`
+
+- **publishers:** `ball_butler_node`
+- **subscribers:** `reload_coordinator_node`
+- **type:** `std_msgs.msg.String`
+
+### `cache_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ### `catch/armed`
 
 - **publishers:** `reload_coordinator_node`
@@ -145,6 +157,12 @@
     catch/armed rises, so catch_coordinator_node holds the value before any
     arm (ros_ws/docs/hand_command_continuity.md).
 
+### `clock_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ### `cone/catch_event`
 
 - **publishers:** `teensy_bridge_node`
@@ -181,6 +199,12 @@
 - **publishers:** `teensy_bridge_node`
 - **subscribers:** `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.msg.HandTelemetryMessage`
+
+### `leg_cmd_executed`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `sensor_msgs.msg.JointState`
 
 ### `leg_lengths_topic`
 
@@ -289,6 +313,18 @@
     = target_id = this robot) so the correlation -> catch path closes
     unchanged (ros_ws/docs/ball_possession_contract.md).
 
+### `toss/calibration_status`
+
+- **publishers:** `reload_coordinator_node`
+- **subscribers:** _none_
+- **type:** `std_msgs.msg.String`
+
+### `toss/record`
+
+- **publishers:** `reload_coordinator_node`
+- **subscribers:** _none_
+- **type:** `std_msgs.msg.String`
+
 ### `trajectory/commanded_position`
 
 - **publishers:** `trajectory_node`
@@ -390,7 +426,7 @@
 ### `get_platform_tilt`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** `orchestrator_node`
+- **clients:** `orchestrator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.srv.GetTiltReadingService`
 
 ### `home`
@@ -452,6 +488,12 @@
 - **servers:** `teensy_bridge_node`
 - **clients:** `catch_coordinator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.srv.SetFloat`
+
+### `toss/reload_calibration`
+
+- **servers:** `reload_coordinator_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
 
 ### `trajectory/arm_catch`
 
@@ -547,7 +589,9 @@ broken wire cannot hide among them.
 - `bb/odrive_diag` — topic with no subscribers
 - `bb/reset` — service with no clients
 - `bb/start_accuracy_calibration` — service with no clients
+- `cache_diag` — topic with no subscribers
 - `clear_errors` — service with no clients
+- `clock_diag` — topic with no subscribers
 - `cone/heartbeat` — topic with no subscribers
 - `cone/timing_result` — topic with no subscribers
 - `configure` — service with no clients
@@ -556,6 +600,7 @@ broken wire cannot hide among them.
 - `jugglebot/reload_request` — service with no clients
 - `jugglebot/toss` — action with no clients
 - `jugglebot/toss_continuous` — action with no clients
+- `leg_cmd_executed` — topic with no subscribers
 - `leg_lengths_topic` — topic with no subscribers
 - `leg_setpoint_echo` — topic with no subscribers
 - `leg_torques_diagnostic` — topic with no subscribers
@@ -569,6 +614,9 @@ broken wire cannot hide among them.
 - `recover` — service with no clients
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
+- `toss/calibration_status` — topic with no subscribers
+- `toss/record` — topic with no subscribers
+- `toss/reload_calibration` — service with no clients
 - `trajectory/diagnostics` — topic with no subscribers
 - `trajectory/hold` — service with no clients
 - `trajectory/reload_tilt_map` — service with no clients

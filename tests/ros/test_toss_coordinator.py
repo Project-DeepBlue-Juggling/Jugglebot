@@ -119,7 +119,7 @@ def _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0)):
     loaded gravity correction, a fresh trajectory/commanded_position (the
     displaced toss's throw site A — Phase E; absent it the goal is
     REJECTED_POSE_UNKNOWN), hand telemetry fresh AT the bottom park band,
-    ball possession latched, no live tracks."""
+    ball possession latched, a SEATED hand ball sensor, no live tracks."""
     node = ReloadCoordinatorNode()
     with node._lock:
         node._control_mode = TOSS_CONTROL_MODE
@@ -135,18 +135,46 @@ def _toss_ready_node(now, commanded_pos=(0.0, 0.0, 170.0)):
         node._hand_vel_meas = 0.0
         node._hand_telemetry_mono = now
         node._ball_possession = True
+    _feed_ball_sensor(node, now, held=True)
     return node
 
 
-def _stamp_fresh(node, t):
+def _feed_ball_sensor(node, t, held=True, valid=True):
+    """Drive the node's hand ball sensor to a definite state at synthetic time `t`.
+
+    TWO samples on purpose. These tests jump the clock in whole seconds, so a
+    single sample always arrives after a gap longer than the source's staleness
+    bound and is (correctly) treated as the far side of a blind window — which
+    reads UNKNOWN, not SEATED. The pair re-establishes the link exactly the way a
+    reconnecting node does: the first sample closes the blind span, the second
+    lands 10 ms later and re-seeds the verdict. Deliberately produces NO edge, so
+    it can never manufacture an arrival — a test that wants one must say so with
+    an explicit empty→held pair (see `_feed_sensor_catch`)."""
+    node._ball_sensor.note_sample(float(t) - 0.01, held=bool(held), valid=bool(valid))
+    node._ball_sensor.note_sample(float(t), held=bool(held), valid=bool(valid))
+
+
+def _feed_sensor_catch(node, t_release, t_catch):
+    """Simulate one real throw as the SENSOR sees it: the ball leaves the cup at
+    the release stroke and re-enters at the catch. The empty→held edge is what
+    C-POSSESS-1 § 3.2 requires before the sensor will confirm an arrival, so a
+    node test that drives a tracker CAUGHT without this is asserting a merged
+    verdict the sensor vetoes — which is the whole point of the merge."""
+    _feed_ball_sensor(node, float(t_release), held=False)
+    _feed_ball_sensor(node, float(t_catch), held=False)
+    node._ball_sensor.note_sample(float(t_catch) + 0.01, held=True, valid=True)
+
+
+def _stamp_fresh(node, t, held=True, valid=True):
     """Re-stamp the freshness clocks at synthetic time `t` (the observation
-    builder compares them against the step's `now`)."""
+    builder compares them against the step's `now`), including the ball sensor."""
     with node._lock:
         node._mocap_mono = t
         node._balls_mono = t
         node._hand_telemetry_mono = t
         node._traj_status_mono = t
         node._commanded_pos_mono = t
+    _feed_ball_sensor(node, t, held=held, valid=valid)
 
 
 def _install_toss_goal(node, pose=(0.0, 0.0, 170.0), flight=0.8, vel_scale=0.0):
@@ -245,6 +273,7 @@ def test_toss_deadline_never_lands_inside_the_flight_window():
     ('hand_stale', 'REJECTED_HAND_STALE'),
     ('hand_not_parked', 'REJECTED_HAND_NOT_PARKED'),
     ('no_ball', 'REJECTED_NO_BALL'),
+    ('ball_unknown', 'REJECTED_BALL_UNKNOWN'),
     ('track_active', 'REJECTED_TRACK_ACTIVE'),
     ('delay_floor', 'REJECTED_CANT_MAKE_LEAD'),
     ('flight_band', 'REJECTED_FLIGHT_TIME'),
@@ -329,8 +358,19 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
     elif breakage == 'hand_not_parked':
         node._hand_pos_meas = 5.0            # mid-stroke, outside the bottom band
     elif breakage == 'no_ball':
-        monkeypatch.setattr(hw, 'JB_OP_TOSS_REQUIRE_BALL_EVIDENCE', True)
+        # The sensor positively reads an EMPTY cup. Since 2026-08-10 CHECKING is
+        # a LIVE sensor read, so clearing the latch alone no longer produces this
+        # code (and must not — that is the stale-belief gate C-POSSESS-1 § 3.3
+        # replaced). The gate default is now true, so nothing is monkeypatched.
         node._ball_possession = False
+        _feed_ball_sensor(node, now, held=False)
+    elif breakage == 'ball_unknown':
+        # The other half of the same gate: the sensor cannot answer (a dead
+        # poller, boot before the first TxSdo reply). It REFUSES, with its OWN
+        # code — a fail-open sensor gate is the BallButler defect this project
+        # declined to copy.
+        node._ball_possession = True
+        _feed_ball_sensor(node, now, held=True, valid=False)
     elif breakage == 'track_active':
         node._balls = [_Ball(status=1, destination='jugglebot', id=9)]
     elif breakage == 'delay_floor':
@@ -547,24 +587,58 @@ def test_waiver_waives_possession_only(monkeypatch):
             == 'REJECTED_HAND_NOT_PARKED')
 
 
-def test_no_ball_does_not_reject_by_default(monkeypatch):
-    """Change B (single-ball-toss Phase 5): with the SHIPPED default
-    toss_require_ball_evidence=false, an empty-cup toss does NOT
-    REJECTED_NO_BALL — there is no ball-in-cup sensor, "possession" is only an
-    unreliable tracker belief, and the operator guarantees the ball, so the
-    software belief must not block a legitimate throw. The goal proceeds past
-    CHECKING to a scripted positioning reject (hand-parked stays hard — the
-    waiver test covers that the physical-hazard gates are untouched)."""
-    assert bool(hw.JB_OP_TOSS_REQUIRE_BALL_EVIDENCE) is False   # shipped default
+def test_the_ball_evidence_gate_ships_enabled(monkeypatch):
+    """The 2026-08-10 flip, pinned at the generated constant.
+
+    The `false` default shipped 2026-07-25 for one stated reason — *"there is NO
+    ball-in-cup sensor"*, so a throw could only be gated on an unreliable
+    tracker-derived belief and a physically-loaded ball would be refused. That
+    condition no longer holds: the G02 switch is wired, polled and validated in
+    situ, and CHECKING reads it LIVE. Pinning the constant (not just the
+    behaviour) is what makes a silent revert visible."""
+    assert bool(hw.JB_OP_TOSS_REQUIRE_BALL_EVIDENCE) is True
+
+
+def test_the_config_escape_hatch_restores_the_unconditional_pass(monkeypatch):
+    """`toss_require_ball_evidence: false` is the operator's escape hatch, and it
+    must remain a TOTAL bypass: with it off, a positively-EMPTY cup gets past
+    CHECKING exactly as it did before 2026-08-10. Without this the operator has
+    no way to run the machine when the sensor is unavailable, and a sensor fault
+    would strand a whole sitting.
+
+    The goal proceeds to a scripted positioning reject — hand-parked and the
+    other physical-hazard gates stay hard, which the waiver test covers."""
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_REQUIRE_BALL_EVIDENCE', False)
     now = time.perf_counter()
     node = _toss_ready_node(now)
-    node._ball_possession = False                # empty cup, no waiver
+    node._ball_possession = False
+    _feed_ball_sensor(node, now, held=False)     # sensor says EMPTY, and is right
     monkeypatch.setattr(
         node, '_position_platform_for_toss',
         lambda seq: seq.note_position_result(
             time.perf_counter(), False, 0.0, 'WORKSPACE'))
     result = node._execute_toss(_TossGoalHandle())
     assert result.outcome == 'REJECTED_POSITION(WORKSPACE)'     # got PAST NO_BALL
+
+
+def test_an_unknown_sensor_refuses_rather_than_passing(monkeypatch):
+    """The safety asymmetry, at the node. BallButler boots `ball_in_hand_ = true`
+    and a dead ODrive republishes the stale value forever; for a *throw* gate that
+    is fail-OPEN, and this project recorded it as one of three BallButler
+    properties deliberately not copied. An UNKNOWN sensor therefore refuses — and
+    with a code of its own, because `NO_BALL` would send the operator hunting for
+    a ball when the fault is the sensor."""
+    now = time.perf_counter()
+    node = _toss_ready_node(now)
+    node._ball_possession = True                 # a stale belief must not rescue it
+    _feed_ball_sensor(node, now, held=True, valid=False)
+    assert node._execute_toss(_TossGoalHandle()).outcome == 'REJECTED_BALL_UNKNOWN'
+    # …and staleness is the same answer as invalidity: the node stopped hearing
+    # the sensor, so it does not know, so it refuses.
+    node2 = _toss_ready_node(now)
+    _feed_ball_sensor(node2, now - 5.0, held=True)
+    node2._hand_telemetry_mono = now             # hand link "fresh", sensor is not
+    assert node2._execute_toss(_TossGoalHandle()).outcome == 'REJECTED_BALL_UNKNOWN'
 
 
 # ── Possession latch (D4a — no ball-in-cup sensor exists) ──────────────────────
@@ -626,23 +700,42 @@ def test_possession_survives_safe_abort(monkeypatch):
     assert node._ball_possession is True
 
 
-def test_possession_cleared_on_release_evidence(monkeypatch):
+def test_release_evidence_clears_possession_but_the_sensor_overrules_it(monkeypatch):
     """OUR release evidence (the throw-stroke telemetry signature after the
-    dispatch) clears possession — the ball left the cup. A missed toss stays
-    cleared (next toss is honestly REJECTED_NO_BALL); a caught one re-latches
-    via the CAUGHT path (chainable Toss → Toss)."""
-    monkeypatch.setattr(hw, 'JB_OP_TOSS_REQUIRE_BALL_EVIDENCE', True)
+    dispatch) clears possession — but since 2026-08-10 a LIVE sensor read has the
+    last word, and that ordering is deliberate rather than incidental.
+
+    The stroke signature fires during the ASCENT (|vel| ≥ 40 rev/s, off the park
+    band), and the ball does not leave the cup until the release point near the
+    top. So at the instant the release-evidence branch fires, a healthy sensor is
+    still reading HELD — and it is *right*. The release clear is a prediction
+    ("we saw the stroke, so the ball must be gone"); the sensor is the
+    observation. Letting the prediction win would put the machine back to
+    believing a model over the cup, which is the whole failure C-POSSESS-1 § 3.2
+    made the sensor primary to end.
+
+    The stroke watch itself is untouched — `throw_stroke_seen` is still latched,
+    because it is release evidence for the FSM, not a possession claim."""
     now = 100.0
-    node = _toss_ready_node(now)
+    node = _toss_ready_node(now)                 # sensor SEATED
     _install_toss_goal(node)
     with node._lock:
         node._toss_throw_dispatched = True
         node._hand_vel_meas = 50.0           # ≫ the 40 rev/s stroke threshold
         node._hand_pos_meas = 3.0            # clear of the bottom park band
     obs = node._build_toss_observations(now)
-    assert obs.throw_stroke_seen is True
+    assert obs.throw_stroke_seen is True         # release evidence still latches
+    assert node._ball_possession is True         # the cup still holds it — sensor wins
+    assert obs.ball_seated is True
+
+    # Once the ball IS gone, the sensor says so and the latch follows — with no
+    # release evidence needed at all (C-POSSESS-1 § 3.3 edit 2: the latch-clear
+    # path that a TossContinuous dwell bounce-out previously had no way to take).
+    _feed_ball_sensor(node, now + 0.1, held=False)
+    obs2 = node._build_toss_observations(now + 0.1)
     assert node._ball_possession is False
-    assert obs.ball_seated is False
+    assert obs2.ball_seated is False
+    assert obs2.ball_evidence == 'EMPTY'
 
 
 # ── Phantom-track poisoning (FIX-2: goal-start snapshot + dispatch gating) ─────
@@ -1801,12 +1894,16 @@ def _fresh_seq_8b(node, pose=(50.0, 0.0, 170.0), throw_site=(0.0, 0.0),
             int(b.id) for b in node._balls if int(b.status) == 1}
         node._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
         node._toss_release_state = release
+        # Zero aim map in these fixtures ⇒ the commanded release IS the
+        # announcement release, the same object (C-TOSS-CAL-1's disabled path).
+        node._toss_release_cmd = release
+        node._toss_aim = None
         node._toss_landing_global_mm = tuple(
             float(v) for v in release.catch_point_global_mm)
-        # Mirror _execute_toss: the 8b cross-check target is the commanded A pose
-        # (single source _toss_positioning_xyz), NOT the nominated catch B.
+        # Mirror _execute_toss: the tilted cross-check target is the commanded A
+        # pose (single source _toss_positioning_xyz), NOT the nominated catch B.
         node._toss_platform_target_mm = ReloadCoordinatorNode._toss_positioning_xyz(
-            TIER_8B, pose, release)
+            pose, release)
         node._toss_waiver = False
         node._toss_prepare_pending = False
         node._toss_throw_dispatched = False

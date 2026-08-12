@@ -668,11 +668,11 @@ def test_repo_root_is_found_from_an_install_tree_copy(tmp_path):
     installed = (repo / 'ros_ws' / 'install' / 'jugglebot' / 'lib'
                  / 'python3.8' / 'site-packages' / 'jugglebot' / 'motion')
     installed.mkdir(parents=True)
-    assert tilt_map._find_repo_root(str(installed / 'tilt_map.py')) == str(repo)
+    assert tilt_map.find_repo_root(str(installed / 'tilt_map.py')) == str(repo)
 
     source = repo / 'ros_ws' / 'src' / 'jugglebot' / 'jugglebot' / 'motion'
     source.mkdir(parents=True)
-    assert tilt_map._find_repo_root(str(source / 'tilt_map.py')) == str(repo)
+    assert tilt_map.find_repo_root(str(source / 'tilt_map.py')) == str(repo)
 
     # The fixed five-level walk the search replaced, shown failing from the
     # install tree — so this test cannot pass by the two trees coinciding.
@@ -691,7 +691,7 @@ def test_a_deployment_outside_the_repo_has_no_source_candidate(tmp_path):
     """
     stray = tmp_path / 'opt' / 'jugglebot' / 'motion'
     stray.mkdir(parents=True)
-    assert tilt_map._find_repo_root(str(stray / 'tilt_map.py')) is None
+    assert tilt_map.find_repo_root(str(stray / 'tilt_map.py')) is None
 
 
 def test_an_absent_map_resolves_to_none_rather_than_raising(tmp_path):

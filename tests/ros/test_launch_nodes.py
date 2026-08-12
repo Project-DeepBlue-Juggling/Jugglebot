@@ -1,4 +1,5 @@
-"""test_launch_nodes.py — String-level tripwire on jugglebot_launch.py's node set.
+"""test_launch_nodes.py — String-level tripwire on jugglebot_launch.py's node set
+and on the topics THE ONE rosbag record list must keep.
 
 HONESTY NOTE — this is a string-level tripwire in the regex style of
 test_gui_geometry.py, NOT a behavioural launch test.  It reads the launch file
@@ -18,6 +19,13 @@ cone/timing_result had zero publishers and a piezo hit surfaced nothing in the
 GUI even though teensy_bridge_node kept publishing cone/catch_event +
 cone/heartbeat.  See logbook/2026-05-23-throw-director-and-cone-live-
 integration.md for the validated-working reference wiring.
+
+The record-list half (added 2026-08-11, bridge-temporal-trustworthiness P0)
+catches the mirror-image regression: a topic silently dropped from — or never
+added to — the single ``ros2 bag record`` list, which makes a session bag unable
+to answer the question the session was run to answer.  A missing topic is
+unrecoverable after the fact; a recorded quiet one costs nothing, which is why
+that list's standing rule is add-never-trim.
 """
 
 import re
@@ -55,6 +63,61 @@ CONSUMER_WIRED_NODES = [
     # per-catch predicted-vs-actual delta (the 2026-07-06 regression).
     'catch_correlation_node',
 ]
+
+
+@pytest.fixture(scope='module')
+def rosbag_record_body(launch_src):
+    """Slice the ``ros2 bag record`` argument list out of the launch file.
+
+    Bounded at the trailing ``'-s', 'mcap'`` so a topic string appearing
+    elsewhere in the file (a comment, a remap) cannot satisfy a membership
+    check for THE ONE LIST.
+    """
+    m = re.search(r"'ros2',\s*'bag',\s*'record',(.*?)'-s',\s*'mcap'",
+                  launch_src, re.S)
+    assert m, "Could not find the 'ros2 bag record' command list"
+    return m.group(1)
+
+
+# Topics whose ABSENCE from the record list is unrecoverable after the fact —
+# the standing add-never-trim rule for THE ONE LIST (toss-selftuning D18).
+RECORDED_TOPICS = [
+    # The 1 Hz firmware instrumentation (udp_rtt_us, udp_jitter_us, interp
+    # deadline misses/jitter). It was PUBLISHED but not bagged, which is why
+    # logbook/2026-07-18-teensy-uptime-tracking-degradation.md could only tell
+    # the operator to "watch it live" and its seven-session lag-vs-uptime table
+    # can never be joined against RTT retrospectively.
+    '/profile',
+    # The Teensy's post-clamp executed leg command at 100 Hz — the middle
+    # timeline between /leg_setpoint_echo (what the Jetson asked for) and
+    # robot_state (what the encoders did). Without it a degraded session's bag
+    # cannot attribute the lag to transport vs interp vs ODrive.
+    '/leg_cmd_executed',
+    # The per-anchor clock-discipline series (FW 11 CLOCK_DIAG 0x8F). Its value
+    # is a fit over HOURS of samples — the crystal's ppm and thermal coefficient
+    # — so a session that publishes it without recording it produces nothing at
+    # all. It records EMPTY until the bridge is flashed to FW 11 (deliberately
+    # held until after the S1 aged-bridge experiment), and a silent topic is
+    # exactly what this list's add-never-trim rule is for.
+    '/clock_diag',
+    # The encoder-cache freshness census (FW 12 CACHE_DIAG 0x91) — the
+    # instrument that decides what S1 left open: a stale encoder cache under the
+    # lead clamp, or a leg that genuinely trails. /robot_state and
+    # /leg_cmd_executed cannot separate those (they read the same cache), so
+    # this topic is the only place the answer exists, and the answer is a trend
+    # across an hours-long soak. It records EMPTY until the bridge is flashed to
+    # FW 12, and a silent topic is exactly what this list's add-never-trim rule
+    # is for.
+    '/cache_diag',
+]
+
+
+@pytest.mark.parametrize('topic', RECORDED_TOPICS)
+def test_topic_is_in_the_rosbag_record_list(rosbag_record_body, topic):
+    """The topic is an argument of the launch file's single ``ros2 bag record``."""
+    assert f"'{topic}'," in rosbag_record_body, (
+        f'{topic} is not in the rosbag record list — a session bag will be '
+        f'missing it, and a missing topic is unrecoverable after the fact.')
 
 
 @pytest.mark.parametrize('executable', CONSUMER_WIRED_NODES)

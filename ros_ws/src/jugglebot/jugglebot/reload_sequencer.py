@@ -485,6 +485,33 @@ class ReloadSequencer:
             return self._landing_time_perf
         return self._throw_time + self.throw_delay_s
 
+    @property
+    def landing_perf(self) -> float:
+        """Public read of the predicted landing — the window the hand ball sensor
+        looks for its arrival edge in (C-POSSESS-1 § 3.2). NaN until a throw has
+        actually been stamped, so a sensor query before the throw answers
+        ``ARRIVAL_UNKNOWN`` instead of looking around t=0.
+
+        Deliberately NOT gated on the ANNOUNCEMENT: the release-relative fallback
+        is a real (if coarser) prediction, and answering ``ARRIVAL_UNKNOWN`` for
+        the whole pre-announcement stretch would make the sensor blind exactly
+        where the reload spends its time. **How much coarser, stated honestly**
+        (an earlier draft of this docstring claimed "~10x the gap", which does not
+        survive tracing it): the fallback treats RELEASE as landing, so it is
+        early by the ball's whole time of flight — ``~0.6-0.7 s``, the same term
+        :meth:`_step_throw_pending`'s deadline comment names — against a
+        ``JB_BD_ARRIVAL_WINDOW_S`` of 1.50 s. That is ~2x of headroom, not 10x,
+        and a late arrival measured from the fallback anchor CAN fall outside the
+        window. The failure direction is the safe one — a real catch read MISSED,
+        never a false CAUGHT — but it is a bench-watch item, not a proof:
+        ``plans/active/catch-robustness.md`` Phase 1 open items. In practice the
+        FSM only reaches ``BALL_IN_FLIGHT`` after ``_announced``, so the fallback
+        anchor is what a query sees during ``THROW_PENDING``, before BB's
+        announcement lands."""
+        if self._landing_time_perf is None and self._throw_time <= 0.0:
+            return float('nan')
+        return self._landing_perf()
+
     def _step_settling(self, now: float, obs: ReloadObservations) -> ReloadDecision:
         if obs.ball_caught:
             return self._finish(ReloadResult(True, 'CAUGHT', obs.catch_error_mm))

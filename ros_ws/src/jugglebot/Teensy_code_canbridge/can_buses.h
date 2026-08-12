@@ -406,6 +406,22 @@ struct CanRxHealth {
   BusRxHealth bb, cone, jugglebot;
   uint32_t decode_short;     // CAN3 frames dropped in decode: DLC < 8 (truncated)
   uint32_t decode_bad_axis;  // CAN3 frames dropped in decode: node id >= NUM_AXES
+  // Per-axis get_encoder_estimate frames DECODED AND CACHED, cumulative since boot
+  // (index 0-5 legs, 6 hand). Added 2026-08-12 for the bridge-temporal arc: the S1
+  // bag forensics found the per-axis cache VALUE stalling 30-500 ms (9-18 % of
+  // refresh intervals > 30 ms on an aged bridge vs 4.3 % fresh) while every
+  // AGGREGATE RX counter stayed flat — an aggregate cannot see one axis of seven
+  // going quiet, because the other six keep the total moving. These are the split:
+  // during a stall window the counter still ADVANCING means frames arrived and the
+  // decode ran, so the freeze is at or above write_pos_vel (i.e. the ODrive sent a
+  // stale value); the counter PAUSED means nothing arrived, and the fault is the
+  // ODrive's broadcast or a per-axis loss on the bus.
+  // Incremented AFTER write_pos_vel() so the invariant is one-directional and
+  // useful: enc_frames[i] advanced ⇒ that axis's cache write COMPLETED. Same
+  // single-writer discipline as decode_short/decode_bad_axis above — one word,
+  // task_can_rx only, cumulative, read whole by the consumer, which differences
+  // two samples (the BridgeTxDiag census idiom).
+  uint32_t enc_frames[NUM_AXES];
 };
 CanRxHealth can_buses_rx_health();
 

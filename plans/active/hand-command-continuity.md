@@ -1498,6 +1498,25 @@ E-STOP.
 Validate alongside `plans/active/levelling-frame-contract.md` Phase 4 in one
 sitting if both have landed, but score them separately.
 
+##### Addendum 2026-08-10 — the dip recurred at 1.0 m, and it is NOT a Phase 1–4 regression
+
+The operator-visible post-throw dip came back on every 1.0 m throw of the
+2026-08-10 tier-8a retest. Diagnosed offline as a **hand-drive braking clamp**,
+not a continuity regression: across 54 strokes at 4.436 m/s the probe reads
+`trunc = -` and `seeds = 0` on **all 54** (the Phase-1 arm gate holds and no
+queue is cleared), and `tor_ff_cmd` reads the FW-2 value −0.1500 N·m on all 54
+(the Phase-7 feedforward is commanded at full size). What is missing is
+*delivery*: braking `iq_meas` floors at ≈ −11.8 A against the −27.2 A that
+−0.1500 N·m asks for at Kt 0.0055133, while motoring on the same channel reaches
++49.6 A. That matches the pre-registered risk in § Phase 7 — Outcome finding 4
+and C-HAND-2 § *The negative torque clamp*: the drive was **swapped on
+2026-07-31**, so the "probably not binding" counter-evidence measured on
+2026-07-27 does not transfer, and **pre-flight H7.0c is now the next action**.
+Nothing in Phases 1–7 changes on this basis. Details, numbers and the open
+question about C-HAND-2's declared inertia:
+`logbook/2026-08-10-hand-drive-braking-clamp-diagnosis.md`; programme plan:
+`plans/active/catch-robustness.md`.
+
 ### Phase 6 — Platform Teensy `FW_VERSION` (added 2026-07-27, operator-requested)
 
 Added **after** this plan's run closed, at the operator's explicit request. The

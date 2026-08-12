@@ -32,6 +32,22 @@ related_code:
 > Latency monitoring is owned by that investigation's closure (its 2026-07-24
 > Addendum); the two are complementary halves of temporal trustworthiness.
 
+> **2026-08-11 — sequencing:** both halves are now driven by one arc,
+> `plans/active/bridge-temporal-trustworthiness.md`. This plan stays the
+> **authoritative design reference**; that plan owns only the ordering.
+> Mapping: **Phase 1 → arc P1** (the per-anchor diagnostics ship as an additive
+> `CLOCK_DIAG` uplink in FW 11 — *superseded detail*: baseline capture moves to
+> **after** the latency fix, because crystal ppm measured through a drifting,
+> possibly asymmetric transport is contaminated); **Phase 2 → arc P2**, with a
+> correction to the kernel-RX-stamping design sketched in § "The PREEMPT-RT
+> question" (restated in § Proposed design 2 / Phase 2) — kernel RX
+> stamping *alone* flips the sign of the server-processing term rather than
+> deleting it, so the arc returns `(t2 + t3)/2` (kernel RX midpointed with a
+> just-before-send userspace stamp) in the existing `jetson_wall_us` field;
+> **Phases 3–5 → arc P4**, which must run after the latency fix. Rationale for
+> the ordering, and the coupling that motivates it (the anchor's `rtt/2`
+> assumes path symmetry), are in that plan's § "The coupling insight".
+
 # Bridge Clock — Frequency/Rate Discipline
 
 ## Purpose

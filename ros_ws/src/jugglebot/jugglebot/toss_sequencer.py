@@ -13,7 +13,9 @@ The TOSS action OWNS the platform + hand for its duration and runs from the acti
 streaming mode (``TRAJECTORY``, armed + streaming a hold) — leaving the mode
 mid-sequence is the documented abort, exactly the reload doctrine. The ball is
 sourced by a prior Reload (operator sequence Reload → Toss → Toss …); a toss with
-an empty cup is ``REJECTED_NO_BALL``.
+an empty cup is ``REJECTED_NO_BALL``, and one whose ball sensor cannot answer is
+``REJECTED_BALL_UNKNOWN`` (C-POSSESS-1 § 3.3 — a dead sensor refuses, it does not
+pass).
 
 Design (plan § Choreography; deliberate deviations from ``reload_sequencer``
 are called out inline — each exists because the toss THROWS from its own hand
@@ -40,7 +42,10 @@ where the reload receives from BB):
    release verification), hand at the bottom park band
    (``REJECTED_HAND_NOT_PARKED`` — a kind-0 stroke commands ABSOLUTE positions
    from 0 rev, so a throw dispatched off-band is a physical hazard), ball
-   possession evidence (``REJECTED_NO_BALL``), and no live tracker expectation
+   evidence from the LIVE hand ball sensor — ``REJECTED_NO_BALL`` on a
+   valid-empty cup, ``REJECTED_BALL_UNKNOWN`` on a sensor that cannot answer
+   (two codes because they send the operator to two different subsystems) —
+   and no live tracker expectation
    already destined for us (``REJECTED_TRACK_ACTIVE`` — a phantom
    destination='jugglebot' track would correlate against OUR announcement).
 2. **POSITIONING** — profiled ``go_to_pose`` to the nominated catch pose (Tier
@@ -175,6 +180,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from typing import Optional
+
+# Pure-python sibling module (no ROS): the ball-evidence vocabulary lives with the
+# possession contract, so the FSM's reject codes and the node's live sensor read
+# can never drift into two spellings of the same state.
+from jugglebot.ball_possession import EVIDENCE_UNKNOWN
 
 # ── Feedback phases (Toss.action feedback.phase — LOCKED strings) ──────────────
 PHASE_CHECKING = 'CHECKING'
@@ -462,11 +472,24 @@ class TossObservations:
                                       # a throw dispatched off-band is a physical hazard,
                                       # so it gates CHECKING and is RE-VERIFIED at
                                       # THROWING entry (ABORTED_HAND_NOT_PARKED).
-    ball_seated: bool = False         # node possession latch (plausible-CAUGHT for a
-                                      # destination='jugglebot' ball, sticky across
-                                      # SAFE_ABORT retracts) OR the trace-only waiver
-                                      # parameter — the waiver never covers hand_fresh /
-                                      # hand_parked, which stay hard.
+    ball_seated: bool = False         # THE ball-evidence precondition, as a single
+                                      # boolean so there is one truth. Since 2026-08-10
+                                      # the node builds it from the LIVE hand ball
+                                      # sensor (C-POSSESS-1 § 3.3), not from the sticky
+                                      # possession latch: a ball that bounced out during
+                                      # a TossContinuous dwell used to leave the latch
+                                      # standing and cycle N+1 fired an empty stroke.
+                                      # The trace-only waiver still forces it True; the
+                                      # waiver never covers hand_fresh / hand_parked,
+                                      # which stay hard. Default False = fail-closed.
+    ball_evidence: str = EVIDENCE_UNKNOWN
+                                      # WHY ball_seated reads as it does — the live cup
+                                      # state (ball_possession.EVIDENCE_*). It refines
+                                      # only the REJECT CODE and nothing branches on it
+                                      # otherwise: an operator who reads NO_BALL goes
+                                      # hunting for a ball, where an UNKNOWN sensor is
+                                      # a sensor fault, and sending them to the wrong
+                                      # subsystem costs a sitting.
     track_active: bool = False        # any LIVE track on `balls` still destined for
                                       # 'jugglebot' (in-flight or pending expectation —
                                       # NOT the seated ball's own pruned/CAUGHT track):
@@ -494,6 +517,16 @@ class TossObservations:
                                       # plausibility-gated vs the NOMINATED catch point
     catch_error_mm: float = float('nan')  # hypot(ball xy − nominated landing xy) at the
                                       # CAUGHT tick; NaN otherwise
+    catch_event_dt_s: float = float('nan')
+                                      # HAND-SENSOR catch-event time: the ball's observed
+                                      # arrival edge in the cup MINUS the predicted
+                                      # landing. NaN until an edge lands in the window.
+                                      # Not the same event as a tracker CAUGHT (which
+                                      # stamps when the marker VANISHED) and not the same
+                                      # as achieved_flight_s (which is derived from the
+                                      # tracker's landing-plane crossing). REPORTED, never
+                                      # branched on — it is the Phase-2 learning loop's
+                                      # per-toss timing record.
     ball_time_at_land_perf: float = float('nan')
                                       # live time_at_land of the latched ball (ROS→perf
                                       # crossed by the node), refreshed while in flight —
@@ -506,6 +539,7 @@ class TossResult:
     outcome: str
     catch_error_mm: float = float('nan')
     achieved_flight_s: float = float('nan')
+    catch_event_dt_s: float = float('nan')   # see TossObservations.catch_event_dt_s
 
 
 @dataclass
@@ -588,7 +622,7 @@ class TossSequencer:
                                                 # hw.JB_OP_TOSS_STAY_AT_POSE_ON_
                                                 # CAUGHT. NOT-caught terminals are
                                                 # unaffected in either setting.
-    tilt_clamp_exceeded: bool = False           # Tier 8b: node-fed flag — the
+    tilt_clamp_exceeded: bool = False           # BOTH tiers: node-fed flag — the
                                                 # authoritative clamp gate lives in
                                                 # motion/toss_release (compute_
                                                 # release_state_tilted raises
@@ -596,7 +630,12 @@ class TossSequencer:
                                                 # maps the raise onto this flag so
                                                 # CHECKING mints REJECTED_TILT_CLAMP
                                                 # without a drift-prone second copy
-                                                # of the aim math here
+                                                # of the aim math here. Two
+                                                # sources: a displaced 8b goal
+                                                # near the 12 deg ceiling, and
+                                                # (either tier) an aim-corrected
+                                                # virtual target — hence not
+                                                # gated on the tier
 
     # ── internal state ──
     _phase: str = field(default=PHASE_CHECKING, init=False)
@@ -782,11 +821,29 @@ class TossSequencer:
                         or displacement > reach_displacement_limit_mm(
                             self.flight_time_s)):
                     return self._reject('DISPLACEMENT')
-                if self.tilt_clamp_exceeded:
-                    # The motion-module clamp gate fired: the required aim
-                    # exceeds the tilt ceiling, and a silently clamped aim
-                    # lands the ball short of B (the Rung-2a landing bias).
-                    return self._reject('TILT_CLAMP')
+            if self.tilt_clamp_exceeded:
+                # The motion-module clamp gate fired: the required aim exceeds
+                # the tilt ceiling, and a silently clamped aim lands the ball
+                # short of B (the Rung-2a landing bias).
+                #
+                # BOTH TIERS, deliberately (audit fix, 2026-08-11). This was
+                # inside the 8b block, which was right while the only source of
+                # a raise was a displaced goal near the ceiling. The aim
+                # correction added a SECOND source that exists in 8a too: the
+                # node tilts toward a VIRTUAL target for the aim in either tier
+                # (`aim_site` is B for 8a, the live A for 8b), and a raise there
+                # sets this flag and leaves `release_cmd` None. With the check
+                # 8b-only, an 8a goal in that state fell through to the
+                # EVENT_VEL band with the zero fallback and reported
+                # REJECTED_EVENT_VEL — fail-closed, but naming the Teensy speed
+                # limit for an aim-ceiling fault, which routes the operator to
+                # the wrong subsystem entirely.
+                #
+                # Gate order for 8b is UNCHANGED: still POSE_UNKNOWN →
+                # DISPLACEMENT → TILT_CLAMP → EVENT_VEL, because this sits
+                # immediately after the block it left
+                # (test_displacement_precedes_tilt_clamp pins it).
+                return self._reject('TILT_CLAMP')
             if not (TEENSY_MIN_EVENT_VEL_MPS <= self.event_vel_mps
                     <= TEENSY_MAX_EVENT_VEL_MPS):
                 return self._reject('EVENT_VEL')
@@ -868,6 +925,16 @@ class TossSequencer:
         if not obs.hand_parked:
             return self._reject('HAND_NOT_PARKED')
         if not obs.ball_seated:
+            # TWO codes, because they send the operator to different subsystems.
+            # EMPTY is "the cup is empty" — load a ball. UNKNOWN is "the ball
+            # sensor cannot answer" (boot before the first TxSdo reply, a stale
+            # reply, an un-anchored bridge clock, a dead poller) — and it REFUSES
+            # rather than passing, because a fail-open sensor gate is the exact
+            # BallButler defect this project declined to copy
+            # (plans/active/hand-ball-sensor.md § "Three BallButler properties
+            # deliberately not copied", row 1). C-POSSESS-1 § 3.3.
+            if obs.ball_evidence == EVIDENCE_UNKNOWN:
+                return self._reject('BALL_UNKNOWN')
             return self._reject('NO_BALL')
         # Last gate: no live tracker expectation may already be destined for us —
         # a phantom destination='jugglebot' track (an earlier announcement whose
@@ -1036,7 +1103,8 @@ class TossSequencer:
         if obs.ball_caught:
             self._phase = PHASE_SETTLING
             return self._finish(TossResult(
-                True, 'CAUGHT', obs.catch_error_mm, self._achieved_flight_s()))
+                True, 'CAUGHT', obs.catch_error_mm, self._achieved_flight_s(),
+                obs.catch_event_dt_s))
         if now >= self._settle_deadline:
             self._phase = PHASE_SETTLING
             return self._step_settling(now, obs)
@@ -1054,10 +1122,21 @@ class TossSequencer:
         announcement to refine it, unlike reload's ``_landing_time_perf``)."""
         return self._t_release + self.flight_time_s
 
+    @property
+    def landing_perf(self) -> float:
+        """Public read of the scheduled landing — the window the hand ball sensor
+        looks for its arrival edge in (C-POSSESS-1 § 3.2). NaN before ``start()``
+        has stamped a release, so a sensor query on a goal that has not scheduled
+        anything answers ``ARRIVAL_UNKNOWN`` rather than looking around t=0."""
+        if self._t_release <= 0.0:
+            return float('nan')
+        return self._landing_perf()
+
     def _step_settling(self, now: float, obs: TossObservations) -> TossDecision:
         if obs.ball_caught:
             return self._finish(TossResult(
-                True, 'CAUGHT', obs.catch_error_mm, self._achieved_flight_s()))
+                True, 'CAUGHT', obs.catch_error_mm, self._achieved_flight_s(),
+                obs.catch_event_dt_s))
         if self._catch_infeasible is not None:
             # No catch target was EVER accepted for this flight — the platform
             # never had a reachable catch pose — and the ball did not land in

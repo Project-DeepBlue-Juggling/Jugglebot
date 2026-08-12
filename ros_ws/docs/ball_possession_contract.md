@@ -129,6 +129,29 @@ Three consequences, all deliberate:
    direction (a structurally-unreachable `True`). `RETENTION_REJECTED` — a source
    that positively saw the ball leave — does veto.
 
+### 2.1 ARRIVAL is tri-state too — corrected 2026-08-10
+
+The clause above says **both** parts are tri-state, and until 2026-08-10 the code
+only made RETENTION so: `PossessionVerdict.arrival_ok` was a bare `bool`, which
+forces *"I could not look"* and *"I looked and it did not arrive"* onto the same
+value. **That is this contract's own § 1 defect one level down** — a boolean
+applied to an observable whose failure modes were never enumerated — and it was
+inert only for as long as the sole source was one that always has an estimate in
+hand. The hand sensor is the first source that can be genuinely blind (boot before
+the first TxSdo reply, a stale reply, an un-anchored bridge clock, a
+`Get_Version` gate that has not passed), so the hole became reachable the moment
+it landed.
+
+> **C-POSSESS-1.A.** `arrival` is `CONFIRMED` / `REJECTED` / `UNKNOWN`, exactly as
+> `retention` is. `arrival_ok` is a **derived projection** (`arrival ==
+> CONFIRMED`), never an independently-settable field — so no source can report the
+> two inconsistently. `ARRIVAL_UNKNOWN` projects to `False`: blindness is the
+> conservative direction and must never mint a catch.
+
+Enforcement point: `ball_possession.PossessionVerdict` (the property, not a
+field). Pinned by
+`tests/ros/test_ball_possession.py::test_arrival_ok_is_a_projection_not_a_field`.
+
 ## 3. Adding a source
 
 A source is any object with a `name` from `ball_possession.SOURCE_*` and a
@@ -175,21 +198,105 @@ being read off a number that means nothing. It is a *reporting* wart, not a
 verdict one — `judge` is unaffected — but it is the kind that survives for a year
 because nothing fails.
 
-### The ball-in-cup hand sensor (`SOURCE_HAND_BALL_SENSOR`)
+### The ball-in-cup hand sensor (`SOURCE_HAND_BALL_SENSOR`) — LANDED 2026-08-10
 
-Installed on the machine 2026-07-28; **no code exists for it yet and none should
-be written speculatively.** When its plumbing lands it becomes the **PRIMARY**
-source, because it is the only one that can observe RETENTION: it reads the cup
-directly and keeps reading it after the catch. `TrackerArrivalSource` is then
-demoted to a cross-check — it still supplies `arrival_err_mm`, which is the
-catch-accuracy number the hardware runbooks score and which the sensor cannot
-supply.
+Installed on the machine 2026-07-28. **It is now the PRIMARY source**
+(`ball_possession.HandBallSensorSource`), because it is the only one that can
+observe RETENTION: it reads the cup directly and keeps reading it after the catch.
+`TrackerArrivalSource` is demoted to the arrival **corroborator** — it still
+supplies `arrival_err_mm`, which is the catch-accuracy number the hardware
+runbooks score and which the sensor cannot supply.
 
-Whether an affirmative `RETENTION_CONFIRMED` should then gate the possession latch
-(and therefore `toss_require_ball_evidence` / `REJECTED_NO_BALL`) is **not decided
-here.** Turning on a precondition that can refuse a goal is a behaviour change and
-belongs to whoever validates the sensor — recorded as such in
-`logbook/2026-07-28-anomaly-fixes-validation-sitting.md` row (e).
+Whether an affirmative sensor read should gate the possession latch (and therefore
+`toss_require_ball_evidence` / `REJECTED_NO_BALL`) was left open here for whoever
+validated the sensor. **Decided 2026-08-10 by the operator, who validated the
+sensor in situ: yes.** `toss_require_ball_evidence` now defaults `true` and the
+precondition is a LIVE sensor read (§ 3.3). The gate the hand-ball-sensor plan
+carried — *"the flip is forbidden until Phase 7 validates"* — is **SUPERSEDED** by
+that authorisation; Phase 7 steps 4–5 remain open as bench work, not as blockers.
+Recorded at the plan's own statement of the gate
+(`plans/active/hand-ball-sensor.md` § Notes for collaborators → Out of scope) and
+in `plans/active/catch-robustness.md`.
+
+### 3.2 Merging two sources — the tick-driven kind, and the merge rules
+
+The § 3 seam above describes one shape of source: `judge(ball_xyz_mm,
+ref_point_mm)`, a **filter on a tracker `CAUGHT`**. That section already recorded
+why the sensor cannot be that shape ("a source cannot originate a possession
+claim", "cannot answer late", "cannot clear the latch"). The contract therefore
+recognises a second kind:
+
+> **C-POSSESS-1.B.** A **tick-driven source** has a `name` and
+> `observe(now, landing_t=None) -> PossessionVerdict`, where `landing_t` is the
+> caller's *predicted landing instant* in the same clock as `now` (the FSMs'
+> `landing_perf`), `None`/NaN meaning "nothing is in the air". The window is
+> passed **per query and never latched**: a latched arm/disarm pair outlives its
+> goal, and a window that outlives its goal vetoes the *next* ball's arrival with
+> a stale "nothing came in" — a lifecycle bug that would otherwise have to be
+> guarded in three teardown paths. A source with no `landing_t` answers
+> `ARRIVAL_UNKNOWN`, which § 2 consequence 3 forbids from vetoing anything.
+> It takes no ball and no reference point: it
+> observes the *cup*, so it can answer on a tick when no track exists, before a
+> throw, and during a dwell. A tick-driven source MAY additionally expose
+> `evidence(now) -> SEATED | EMPTY | UNKNOWN`, which is a **different question**
+> from ARRIVAL — "is a ball in the cup right now", not "did one come in around the
+> predicted landing".
+
+When both kinds are installed, they are combined at **one** place —
+`ball_possession.merge_possession`, reached only through
+`ReloadCoordinatorNode._possession_confirmed` — by three rules:
+
+1. **RETENTION is the sensor's, always.** The tracker is forbidden from claiming
+   retention (§ 2 consequence 2); there is nothing to merge. Taking anything else
+   from the tracker here would re-open § 7's accepted bounce-out trap.
+2. **ARRIVAL is the sensor's whenever the sensor observed it (`CONFIRMED` or
+   `REJECTED`); the tracker's only when the sensor is `UNKNOWN`.** The sensor
+   reads the cup, so it is the one source whose error model does not run through a
+   dead-reckoned free-fall extrapolation — that is *why* it is primary, and why a
+   valid sensor `ARRIVAL_REJECTED` **vetoes** a tracker `CAUGHT`. That veto is the
+   § 7 false-CAUGHT class finally being closed rather than accepted. The fallback
+   is not politeness: a blind sensor that refused everything would leave the
+   machine strictly **less** capable than before the sensor landed, so the
+   degradation path is exactly today's tracker-only behaviour.
+3. **`arrival_err_mm` / `plane_drop_mm` stay the TRACKER's, always** — the sensor
+   cannot supply them, and § 3's "the one thing a new source must not forget" is
+   about exactly this reporting wart.
+
+**The direction of the new failure mode, sized honestly.** A sensor that reads
+valid-EMPTY on a genuinely seated ball (a stuck-open switch, a ball resting off the
+contact) turns every catch into `MISSED` → `SAFE_ABORT`, i.e. a retract under a
+seated ball. That is not a new hazard: it is the behaviour EVERY toss had before
+2026-07-28, and § 5 already argues it safe (the cup carries the ball down at
+~3.16 m/s² ≪ g). False-MISSED remains the conservative direction.
+
+**Retention deliberately does NOT gate the catch verdict.** § 3 records that a
+source "cannot answer late" — `toss_sequencer._step_in_flight` finishes the goal
+on the first confirmed tick. Requiring `RETENTION_CONFIRMED` before minting the
+catch would hold the terminal open for the whole retention window (1.5 s), an
+actuation-timing change on the one path (`RECENTER`/`STAY`) whose safety argument
+in § 5 was written against today's timing. So a fresh arrival mints
+`RETENTION_UNKNOWN`, which consequence 3 forbids from vetoing, and retention binds
+where it can still act: § 3.3.
+
+### 3.3 The ball-evidence precondition is a LIVE read — § 7.1's two edits, landed
+
+§ 7.1 named two coordinator edits the sensor phase must not inherit as "already
+done". Both are now done, and this is where they are specified:
+
+1. **The cycle-start precondition is a live source query, not a latch read.**
+   `_build_toss_observations` sets `ball_seated` from
+   `HandBallSensorSource.evidence(now)`, not from `self._ball_possession`. With the
+   gate required:
+   `SEATED ⇒ pass`, `EMPTY ⇒ REJECTED_NO_BALL`, `UNKNOWN ⇒ REJECTED_BALL_UNKNOWN`.
+   **`UNKNOWN` refuses.** A dead sensor must not silently allow throws — that is
+   the fail-open boot default this project explicitly refused to copy from
+   BallButler — and it gets its OWN outcome code because an operator who reads
+   `NO_BALL` goes hunting for a ball, where the fault is the sensor.
+   `toss_require_ball_evidence: false` restores the pre-2026-08-10 unconditional
+   pass and is the operator's escape hatch.
+2. **The latch can be cleared without release evidence.** A valid `EMPTY`
+   clears `_ball_possession`; a valid `SEATED` sets it. The latch is no longer a
+   belief that can outlive the ball.
 
 ## 4. What this contract does NOT claim
 
@@ -251,6 +358,14 @@ belongs to whoever validates the sensor — recorded as such in
 - **It does not change actuation.** `toss_require_ball_evidence` stays `false`, so
   `ball_seated` remains unconditionally True and no goal is refused that was not
   refused before. It does change *when a successful toss terminates* — see § 5.
+
+  > **⚠ SUPERSEDED 2026-08-10.** This bullet described the state at the 2026-07-28
+  > landing and is kept because § 5's safety argument is written against it. The
+  > flip is now made (§ 3.2 / § 3.3): the default is `true`, and CHECKING refuses
+  > `REJECTED_NO_BALL` on a valid-empty cup and `REJECTED_BALL_UNKNOWN` on a
+  > sensor that cannot answer. Both are pre-motion rejects — nothing has moved and
+  > nothing is armed at CHECKING — so the refusals add no actuation, they only
+  > subtract goals. § 5's timing analysis is untouched.
 
 ## 5. The one behavioural consequence, and why it is safe
 
@@ -321,8 +436,10 @@ rather than argued away here.**
 | part | where |
 |---|---|
 | normative statement | this document |
-| enforcement point | `jugglebot/ball_possession.py` — `TrackerArrivalSource.judge`, reached only through `ReloadCoordinatorNode._possession_confirmed` |
-| tests | `tests/ros/test_ball_possession.py` (the verdict surface, on 2026-07-27 fixtures) and `tests/ros/test_reload_coordinator_node.py` (the node seam) |
+| enforcement point | `jugglebot/ball_possession.py` — `TrackerArrivalSource.judge`, `HandBallSensorSource.observe` and `merge_possession`, all reached only through `ReloadCoordinatorNode._possession_confirmed` |
+| enforcement point (§ 3.3, the precondition) | `ReloadCoordinatorNode._build_toss_observations` — the ONE live `evidence(now)` read, consumed by `toss_sequencer._step_checking` |
+| tests | `tests/ros/test_ball_possession.py` (the verdict surface, on 2026-07-27 fixtures + the 2026-08-10 sensor timings), `tests/ros/test_reload_coordinator_node.py` (the node seam) and `tests/ros/test_toss_coordinator.py` (the CHECKING refusals) |
+| bag replay | `tools/probes/hand_sensor_verdict_replay.py` — replays `/hand_telemetry` + `/throw_announcements` through the PRODUCTION verdict logic and prints per-throw labels; `tests/ros/test_hand_sensor_replay.py` runs it on a committed fixture cut and skips when `~/Desktop/rosbags` is absent |
 
 The tests are built from the sitting's **measured** values, not synthetic ones:
 `tests/ros/possession_fixtures.py` carries all 35 tagged-track CAUGHT estimates
@@ -366,6 +483,20 @@ production code branches on `retention`, and
 for all three measured bounce-outs at their true mocap arrival. So the trap is
 **accepted and documented, not closed.**
 
+> **✔ CLOSED 2026-08-10 — but read HOW, because it is not how this section
+> anticipated.** `HandBallSensorSource` observes retention directly, and it is
+> `RETENTION_REJECTED` on a bounce-out (§ 3.2 rule 1). It does **not** close the
+> trap by delaying the catch verdict — § 3 records that a source cannot answer
+> late, so the retention answer is not available at the tick that mints the catch,
+> and the fresh arrival still carries `RETENTION_UNKNOWN`. What it closes is the
+> *consequence*: the possession latch a bounce-out used to leave standing is now
+> cleared by the sensor's live `EMPTY` (§ 3.3 edit 2), and the next cycle's
+> precondition is that same live read rather than the stale latch (edit 1). So the
+> ONE tick that reports CAUGHT over a just-bounced ball survives as a **reporting**
+> error; the actuation consequence — cycle N+1 firing an empty stroke — is gone.
+> `stay_at_pose_on_caught` keeps the hand where it is either way. The rejected
+> candidates below stay rejected on their own merits.
+
 Why it was not built, with the failure mode each rejected option carries:
 
 | candidate | why not |
@@ -388,6 +519,12 @@ reporting harm plus a skipped retract, on a hand the catch stroke has already
 parked (§ 5). No commanded magnitude changes.
 
 ### 7.1 A continuous SESSION multiplies this exposure — added 2026-07-29
+
+> **✔ BOTH EDITS LANDED 2026-08-10** — see § 3.3, which is now the normative
+> statement of what they do. This section is kept verbatim below because it is the
+> *specification* the edits were built against, and because its trace of the
+> shipped code is what a future reader needs in order to check that the edits
+> actually went where the gap was. Read § 3.3 for what the code does today.
 
 `TossContinuous` (`plans/active/single-ball-toss.md` Phase F) runs `num_throws`
 toss-catch cycles from one goal, with a dwell between them. **Between a catch and
@@ -443,3 +580,13 @@ deliberately scoped so that an arrive-then-leave CONFIRMED is a **REPORT** row t
 sizes the sensor work, and only a CONFIRMED on a ball that never arrived is an
 ABORT. Do not tighten that row into an ABORT before the sensor lands: it would
 abort a healthy sitting on behaviour this contract specifies.
+
+**Resolution, 2026-08-10.** Edit 1 landed as the live `evidence(now)` read
+(§ 3.3.1); edit 2 landed as the sensor's `EMPTY` clearing `_ball_possession`
+(§ 3.3.2); the default flipped to `true` under the operator's in-situ validation
+(§ 3). The residual is the ONE tick that still reports CAUGHT over a ball that
+bounced out immediately afterwards — a reporting error the retention term records
+as `RETENTION_REJECTED` in the very next verdict but cannot retract, because the
+goal has already finished. POSS-1.2 therefore stays a REPORT row and stays
+un-tightened: it is now scoring a known, bounded reporting residual rather than an
+un-sized actuation gap.

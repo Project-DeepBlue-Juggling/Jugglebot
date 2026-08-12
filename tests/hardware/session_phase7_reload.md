@@ -92,6 +92,15 @@ passes, or 7c before 7b passes.**
 >    whose filter is fed by the WRONG marker, so the gate refuses all of them by
 >    design. It is the SELF-TOSS verdict that was un-broken — see
 >    `ros_ws/docs/ball_possession_contract.md` § 4.)*
+>    **⚠ SUPERSEDED 2026-08-10 — "expect caught balls to read `MISSED`" is now
+>    WRONG on this path.** The hand ball sensor became the PRIMARY possession
+>    source (`logbook/2026-08-10-sensor-truth-possession.md`); it reads the *cup*,
+>    so the split track no longer suppresses the verdict and **a reload catch now
+>    reads `CAUGHT`**. A caught ball still reading `MISSED` is a finding, and one
+>    consequence is new on hardware: a successful reload terminates
+>    `ACTION_RECENTER` (lower latch + `go_home`, no hand retract) instead of
+>    `SAFE_ABORT`. Score it with `session_anomaly_fixes.md` § SECTION POSS rows
+>    `POSS-1.3` / `POSS-1.7`, which own this now.
 > 6. **Watch for `hand prime dispatch failed (attempt N/4)` warnings**: the hand
 >    dispatch path failed ~40–60 % per call last session even on a fresh reboot (a
 >    bridge-Teensy CAN TX issue, investigation queued — NOT the uptime-lag regime).

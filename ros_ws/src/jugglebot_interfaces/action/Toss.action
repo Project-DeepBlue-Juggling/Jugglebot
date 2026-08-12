@@ -2,7 +2,14 @@
 # catch it. Runs within ACTIVE:TRAJECTORY (no mode switch — leaving the mode
 # mid-sequence is the documented abort), mirrors Reload.action choreography.
 # Reload is the loader (operator sequence: Reload → Toss → Toss …): a toss with an
-# empty cup comes back REJECTED_NO_BALL, and the coordinator (reload_coordinator_node,
+# empty cup comes back REJECTED_NO_BALL — and since 2026-08-10 that answer comes from
+# the HAND BALL SENSOR read live at CHECKING, not from a latch, so there is a second
+# code beside it: REJECTED_BALL_UNKNOWN, returned when the sensor cannot answer
+# (invalid/stale ball_held_valid). UNKNOWN refuses — deliberately fail-closed, and
+# deliberately a DIFFERENT code, because an operator who reads NO_BALL goes hunting for
+# a ball while the fault is in the sensor. `toss_require_ball_evidence: false` is the
+# total-bypass escape hatch. Contract: ros_ws/docs/ball_possession_contract.md § 3.3.
+# The coordinator (reload_coordinator_node,
 # the merged ball-ops node) runs ONE ball-op at a time — a goal while the other action
 # runs is REJECTED_BUSY. A toss whose trajectory_node holds no gravity-levelling
 # correction is REJECTED_NOT_LEVELLED: un-levelled the launch is 0.78 deg off gravity,

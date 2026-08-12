@@ -203,6 +203,8 @@ static void task_telem(void*) {
     hand_sensor_uplink_step();   // hand ball-sensor state (per new reply + 1 Hz keepalive)
     can_errors_uplink_step();    // CAN3 wire-error + confinement counters @ 1 Hz
     bridge_tx_diag_uplink_step();  // per-bus TX deferral/queue + hand-stage exits @ 1 Hz
+    cache_diag_uplink_step();      // encoder-cache age floor/peak + CAN RX ring @ 1 Hz
+                                   // (samples the ages EVERY tick — see telemetry.h)
     bridge_identity_uplink_step(); // FW_VERSION + PROTOCOL_VERSION echo @ 1 Hz
     vTaskDelayUntil(&last, period);
   }

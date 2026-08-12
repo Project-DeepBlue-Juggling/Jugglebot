@@ -360,3 +360,127 @@ def test_error_paths():
     assert tr.validate_event_vel(7.1) is False
     assert tr.validate_event_vel(0.3) is True
     assert tr.validate_event_vel(7.0) is True
+
+
+# ── The AIM conversion (contract C-TOSS-CAL-1, D1/D2) ──
+
+def test_zero_aim_offset_is_exactly_zero():
+    """THE disable path, at the strictest possible bar: not "close to zero",
+    EXACTLY 0.0 on both axes at every height and pose. An absent aim map must
+    cost not one extra floating-point operation, so "no map" cannot differ from
+    today even by an ULP."""
+    for h in (0.45, 0.60, 0.78, 1.00):
+        T = tr.flight_time_from_height(h)
+        for z in (140.0, 170.0, 200.0):
+            d = tr.aim_target_offset_mm(0.0, 0.0, T, z)
+            assert d.tolist() == [0.0, 0.0]
+
+
+def test_zero_aim_reproduces_compute_release_state_bitwise():
+    """The 2b gate. The aim path AT ZERO BIAS is bit-for-bit the shipped Tier-8a
+    toss — this is what makes "disable the map and you have today's machine"
+    provable rather than argued (F2/D2), and it is what makes a NEAR-zero map
+    (the flat-field case § 3.8 refuses to write) safe as well."""
+    for pose in ((0.0, 0.0, 170.0), (60.0, -60.0, 170.0), (-150.0, 150.0, 140.0)):
+        T = tr.flight_time_from_height(0.78)
+        d = tr.aim_target_offset_mm(0.0, 0.0, T, pose[2])
+        virtual = (pose[0] + d[0], pose[1] + d[1], pose[2])
+        a = tr.compute_release_state(pose, T)
+        b = tr.compute_release_state_tilted(virtual, T,
+                                            throw_site_xy_mm=pose[:2])
+        assert np.array_equal(a.release_pos_global_mm, b.release_pos_global_mm)
+        assert np.array_equal(a.launch_vel_mms, b.launch_vel_mms)
+        assert np.array_equal(a.catch_point_global_mm, b.catch_point_global_mm)
+        assert a.event_vel_mps == b.event_vel_mps
+        assert a.flight_time_s == b.flight_time_s
+        assert (b.tilt_rx, b.tilt_ry) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize('h', [0.45, 0.60, 0.78, 1.00])
+@pytest.mark.parametrize('deg', [0.05, 0.10, 0.15, 0.5, 1.0])
+@pytest.mark.parametrize('azimuth_deg', [0.0, 37.0, 90.0, 180.0, 253.0])
+def test_the_virtual_target_commands_exactly_the_requested_aim(h, deg,
+                                                               azimuth_deg):
+    """The round trip that makes the virtual-target mechanism self-verifying:
+    displace the target by ``aim_target_offset_mm`` and the PRODUCTION tilted
+    path derives back exactly the aim that was asked for.
+
+    Gate 1e-9 rad. Measured worst error over this whole sweep plus three goal
+    poses: **8.35e-13 rad (4.8e-11 deg)** — ``/tmp/probe_toss_cal_aim.py``,
+    2026-08-11. The gate carries ~3 orders of headroom, which is the right
+    margin for a quantity whose only failure mode is a formula change.
+
+    This is deliberately a DRIVEN round trip, not a restated residual: an
+    algebra error in the offset and a matching one in the assertion would drift
+    in lockstep, which is exactly what the tilt-cal sign test learned."""
+    T = tr.flight_time_from_height(h)
+    theta = np.radians(deg)
+    phi = np.radians(azimuth_deg)
+    rx, ry = theta * np.cos(phi), theta * np.sin(phi)
+    for pose in ((0.0, 0.0, 170.0), (150.0, -150.0, 170.0)):
+        d = tr.aim_target_offset_mm(rx, ry, T, pose[2])
+        virtual = (pose[0] + d[0], pose[1] + d[1], pose[2])
+        state = tr.compute_release_state_tilted(virtual, T,
+                                                throw_site_xy_mm=pose[:2])
+        assert np.hypot(state.tilt_rx - rx, state.tilt_ry - ry) < 1e-9
+
+
+def test_the_aim_gain_matches_the_designs_4h_model_to_a_quarter_percent():
+    """§ F1's ``b = 4·h·θ`` is the design's whole sizing model — the mm/deg
+    table, the 55 mm authority, the 5.5 mm deadband. This production form keeps
+    the Δz and tilted-drop terms exactly, so it should sit just ABOVE 4h and by
+    a fraction of a percent. Measured 54.578 vs 54.454 mm/deg at h = 0.78
+    (/tmp/probe_toss_cal_aim.py, 2026-08-11) = +0.23 %.
+
+    A failure here means the model the plan sized every constant with no longer
+    describes the code that applies them."""
+    for h in (0.45, 0.60, 0.78, 1.00):
+        T = tr.flight_time_from_height(h)
+        d = tr.aim_target_offset_mm(np.radians(1.0), 0.0, T, 170.0)
+        ideal = 4.0 * h * 1000.0 * np.radians(1.0)
+        got = float(np.hypot(d[0], d[1]))
+        assert ideal < got < ideal * 1.005
+
+
+def test_the_aim_offset_takes_no_xy_at_all():
+    """Both sites share the goal's nominated z, so the offset is a function of
+    the aim, the flight time and the height ONLY — structurally, by having no xy
+    parameter to get wrong. If that ever stops holding, the map's grid axes and
+    its application stop meaning the same thing.
+
+    The z dependence is real but tiny (the tilted-drop lever term alone): 170 vs
+    200 mm moves a 0.128° aim by 1.5e-7 mm. It is kept exact rather than dropped
+    because it costs nothing and dropping it would make the round trip above
+    approximate."""
+    import inspect
+    params = list(inspect.signature(tr.aim_target_offset_mm).parameters)
+    assert params[:4] == ['aim_rx', 'aim_ry', 'flight_time_s', 'catch_z_stow_mm']
+    T = tr.flight_time_from_height(0.78)
+    base = tr.aim_target_offset_mm(0.002, -0.001, T, 170.0)
+    assert np.array_equal(base, tr.aim_target_offset_mm(0.002, -0.001, T, 170.0))
+    hi = tr.aim_target_offset_mm(0.002, -0.001, T, 200.0)
+    assert 0.0 < float(np.max(np.abs(hi - base))) < 1e-5
+
+
+def test_the_aim_offset_refuses_an_aim_past_the_tilt_ceiling():
+    """The offset diverges as the cup axis approaches horizontal — a 90° 'aim'
+    would produce a target ~1e17 mm away and a plausible-looking pose command.
+    Refused at the SAME 12° ceiling compute_release_state_tilted enforces (and
+    with the same strict `>`), never a second, different one."""
+    T = tr.flight_time_from_height(0.78)
+    for bad_deg in (12.5, 45.0, 90.0, 179.0):
+        with pytest.raises(ValueError) as exc:
+            tr.aim_target_offset_mm(np.radians(bad_deg), 0.0, T, 170.0)
+        assert 'tilt ceiling' in str(exc.value)
+    # Just inside the ceiling is accepted, and still round-trips — though only
+    # to 1e-6 rad, not the 1e-9 the ≤1° aim band holds: the tilted path's ONE
+    # fixed-point pass is sized for small aims, and 11.9° is 12x past the map's
+    # authority. Recorded rather than tightened, because nothing in this
+    # contract may command an aim that large.
+    ok = tr.aim_target_offset_mm(np.radians(11.9), 0.0, T, 170.0)
+    state = tr.compute_release_state_tilted((ok[0], ok[1], 170.0), T,
+                                            throw_site_xy_mm=(0.0, 0.0))
+    assert np.hypot(state.tilt_rx, state.tilt_ry) == pytest.approx(
+        np.radians(11.9), abs=1e-6)
+    with pytest.raises(ValueError):
+        tr.aim_target_offset_mm(0.001, 0.0, 0.0, 170.0)
