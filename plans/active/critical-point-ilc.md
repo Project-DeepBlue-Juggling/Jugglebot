@@ -124,7 +124,10 @@ ball's flight needs none of it.
 re-keying this presupposes arrived with the G-3 merge on 2026-08-12; before
 it, the tilted path was gated on `JB_OP_TOSS_TIER == '8b'` while the shipped
 default is `'8a'`); hand `event_vel` trim `δv`; release-timing offset
-`δt_rel` (hand-stroke phase relative to the platform cycle).
+`δt_rel` (hand-stroke phase relative to the platform cycle — **refused from
+v1 at Phase 1**: its Jacobian column is structurally zero, a rigid time
+translation; the physical invariance is argued, not measured — see
+§ Phase-1 core results).
 **u, catch side:** catch-pose offset `(x, y)`; catch `event_vel` trim; catch
 timing offset.
 
@@ -245,7 +248,7 @@ block with an independent analytic answer.
 | Phase | Content | Gate | Status |
 |---|---|---|---|
 | 0 | Measurement substrate: arrival-velocity/flight-time mining (0a), catch-softness probe (0b), release-state backcast (0c), sensor-settle census (0d) | 0b/0d outcomes pre-registered | **DONE 2026-08-12** — 0b → outcome (ii), 0d → outcome (i); results + corrections in the phase text |
-| 1 | Sensitivity core + update law + offline replay validation + conditioning-based v1 freeze | F-vs-4hθ identity; held-out prediction; NULL-exit repeatability criterion | after 0 |
+| 1 | Sensitivity core + update law + offline replay validation + conditioning-based v1 freeze | F-vs-4hθ identity; held-out prediction; NULL-exit repeatability criterion | **core DONE 2026-08-13** — V1–V4 all PASS; v1 = {event_vel_trim} under E-1; E-1 mechanism resolved (whole-arc estimator implementation pending); **Gate 1 = operator checkpoint OPEN** (sizing memo + the SPEED_AUTHORITY decision, § Phase 1 results) |
 | 2 | Production wiring, ship dormant | full suite; byte-identical-OFF; one-apply-point structural test | after 1 |
 | 3 | Hardware A/B vs aim-map-only baseline (operator) | pre-registered criteria + abort signatures; absorb-or-keep decision | G-1, G-2 |
 | 4 | Extensions (sketch): measured-softness closure, platform stroke knots, two-ball follow-through | — | after 3 |
@@ -328,10 +331,12 @@ block with an independent analytic answer.
   truth; addendum recorded in the 2a entry). **The release-vs-flight split
   is NOT clean — the phase's most important negative result**: the lateral
   channels carry a ~±100 mm/s repeatable branch-to-branch velocity artefact,
-  magnitude and whole-arc average both consistent with a mocap marker
-  ~30 mm off the ball centre on a ball spinning ~0.5 rev/s (genuine Magnus
-  not yet separated) — so the direction-error channels are not trusted
-  until it is resolved (entry condition E-1, Phase 1). A pre-existing miner
+  magnitude and whole-arc average initially read as a mocap marker ~30 mm
+  off the ball centre on a ball spinning ~0.5 rev/s (owner input 2026-08-12
+  re-ranked this: the ball is fully tape-covered, no discrete marker exists,
+  and the leading hypothesis is now visible-centroid bias — see E-1) — so
+  the direction-error channels are not trusted until it is resolved (entry
+  condition E-1, Phase 1). A pre-existing miner
   bug also fell out: the descending-branch selector cut at the first
   sub-plane sample, which for a self toss is the ball resting in the cup
   below the plane — `land_xy_global_mm` had been null on every self toss
@@ -369,14 +374,72 @@ block with an independent analytic answer.
 ### Phase 1 — Sensitivity core + offline validation *(no wiring)*
 
 **Entry condition E-1 (added 2026-08-12, from 0c):** the lateral
-branch-to-branch velocity artefact (~±100 mm/s on exactly the aim channels;
-marker-offset vs Magnus unseparated) is resolved — by marker-geometry
-correction, a spin estimate, or an error model that demotes the
-direction-error channels — before any fit trusts `release_dir_err_rad` or
-the arrival-direction error. The vertical channels (release speed, flight
-time) are unaffected and usable immediately; a Phase-1 v1 restricted to
-them (the `event_vel` trim against the ~11 % fast throw) does not wait on
-E-1.
+branch-to-branch velocity artefact (~±100 mm/s on exactly the aim channels)
+is resolved before any fit trusts `release_dir_err_rad` or the
+arrival-direction error. The vertical channels (release speed, flight time)
+are unaffected and usable immediately; a Phase-1 v1 restricted to them (the
+`event_vel` trim against the ~11 % fast throw) does not wait on E-1.
+**Hypothesis re-ranking (owner input, 2026-08-12):** the balls are
+completely covered in retroreflective tape — QTM sees one blob, not a
+discrete marker — so the original spinning-marker-offset hypothesis loses
+its mechanism. Leading hypothesis is now **visible-centroid bias**: the
+tracked point is the centroid of the visible reflective cap, which shifts
+with viewing geometry and occlusion along the arc, by up to ~a ball radius
+(the fitted ~30 mm offset is of exactly that scale) — and, being
+geometry-locked, repeats identically on every toss of the same arc, which
+is what 0c observed. The owner has separately observed the extreme form: a
+*held* ball bisected into two markers in QTM when a platform strut occludes
+cameras at the bottom of the stroke. Magnus remains the alternative.
+Discrimination is desk-side on the existing tracks: blob-split events near
+the arc ends, residual-vs-height/arc-phase structure (centroid bias is
+geometry-correlated and smooth; a spin offset would be periodic), and
+whether the branch-velocity delta is locked to the room geometry or to the
+ball.
+**RESOLVED (mechanism) 2026-08-13 — H-centroid CONFIRMED by parity
+decomposition** (probe: `temp/probes/e1_artefact/probe_e1_artefact.py` — the
+surviving copy; promotion to `tools/probes/mocap_parity_bias.py`
+recommended and pending, since `temp/` is gitignored and these numbers
+currently have no committed provenance): a position bias is an EVEN function of time about a
+ballistic apex while any aerodynamic force is ODD, and the measured even
+part — a smooth height-locked curve, b_y −23.3 mm at z=882 → −2.5 mm at
+z=1882 — repeats across 19 arcs, three cup positions and two sittings at
+1.45 mm cross-toss sd (pairwise r = 0.998), is room-position-locked, and a
+bias profile fitted on **other** arcs collapses the branch delta from
+−104.4 mm/s to a median 13.1 mm/s leave-one-out (10.5 mm/s cross-bag) — an
+8–10× held-out collapse that transfers across sittings. (Subtracting each
+arc's own even part leaves −0.7 ± 1.4 mm/s, but that statistic is
+near-tautological by construction and is reported only as numerical
+closure.)
+Magnus refuted twice (parity + a data-derived aero bound: 4.3 m/s of indoor
+wind required); spin refuted (residual periodicity 40–60× too small); the
+owner's bisection observed and quantified (7/50 held-ball windows show two
+markers, median 53 mm apart — 91 of 1577 two-marker frames sit under 40 mm;
+0 of 2554 in-flight frames show a companion within a ball diameter, 11
+within 140 mm). Conventional point markers reconstruct at 0.14–0.15 mm on
+the platform pairs and 1.5 mm on the base pair — an order of magnitude
+under the artefact either way; the fully-taped sphere is the special case. **Adopted resolution (implementation pending, next unit):
+never derive a lateral/direction quantity from a single branch** — whole-arc
+fits are bias-immune by parity (residual leak = coverage asymmetry about the
+apex, measured 2.1 mm/s median / 7.0 mm/s worst); the miner's
+lateral estimators move to whole-arc fits, a `coverage_asym_s` field with a
+~0.1 s refusal is added, and the lateral release/flight split is marked
+not-meaningful under per-branch estimators (under the bias-immune estimator
+there is no measurable lateral flight-phase physics, so lateral landing
+error is release-side). Height-restricting fit windows does NOT work — the
+bias gradient is constant over the whole arc. What the resolution avoids:
+the per-branch descending arrival direction carries 10.9 mrad ≈ 54 mm of
+phantom aim error per toss (derivation: the descending branch's offset from
+the whole-arc truth is (−53.3, +16.2) mm/s, |Δv| ≈ 55.7 mm/s over the
+~5.1 m/s arrival speed ≈ 10.9 mrad; through the ≈4·h aim gain at the
+corpus apex ≈ 54 mm). **Standing caveat**: only the bias *gradient*
+is measured; the absolute offset (bounded ~a ball radius) is not, so any
+mocap-closed aim loop converges to the measurement's cup, not the world's —
+pre-existing across the whole mocap aim stack. Definitive closure is a
+~20-minute no-robot capture: the taped ball fixtured with 3+ conventional
+point markers, static at several heights/positions, giving b(x,y,z)
+absolutely. (Also: the ball radius is not in `hardware_config.yaml`; the
+probe assumed 35 mm — the blob-split separations are the only in-data
+measurement of the ball's optical scale.)
 
 Pure-Python core (home decided at the G-3 merge: `tests/hardware/` fit-lib
 sibling, promoted into the production package only if the apply path needs
@@ -397,6 +460,91 @@ all four required:
 
 Gate 1: a sizing memo fixing Q, R, τ, the v1 channel subset (SVD screen), and
 the artifact key quantization. Operator checkpoint before wiring.
+
+**Phase-1 core results (2026-08-13; `tests/hardware/ilc_fit_lib.py` +
+`ilc_fit.py` CLI + 48 tests).** All four validations PASS:
+
+- **V1**: F's aim block equals the production `aim_landing_jacobian` to
+  3.4e-11 relative, and the exact identity is now written down and pinned —
+  `dL/dθ = 4h + Δz` with Δz = 6.736 mm (measured 4006.736 vs 4h = 4000.0 at
+  h = 1.0). The structure is a 90° rotation, not a scaled identity.
+- **V2**: synthetic closed loop recovers an injected 3-channel perturbation
+  within 10 % (sign-flipped F pinned to FAIL at ×2.0 residual); the
+  real-corpus out-of-channel test fits on flight time alone and cancels
+  86.8 % of the release-speed rms (459.0 → 60.8 mm/s), with the model's
+  dT/dv = 2/g cross-check agreeing to 4.7 %.
+- **V3**: leave-one-out 84.9 % (flight time) / 86.4 % (speed) rms
+  reduction; a pure-noise control corpus is pinned < 5 %. Honest caveat,
+  asserted in the tests: one commanded flight time only — a single
+  operating point cannot separate a launch-speed gain from an offset.
+- **V4**: R_rep = 0.9858 / 0.9790 against a derived 0.5 NULL-exit
+  threshold — the residual is overwhelmingly repeatable. **No NULL-exit.**
+
+**Conditioning screen**: F is block-diagonal; full-size singular values
+[2.921, 2.921, 2.608, 0], condition 1.12 over retained.
+`release_timing_offset` is REFUSED: its Jacobian column is **structurally
+zero by construction** — in this model a dispatch shift enters only as a
+rigid translation of the release instant, and every landing quantity is a
+difference of instants that both carry it. The invariance of the landing
+point itself rests on the physical argument that the platform holds its
+pose through the flight, which the model does not test (audit demotion,
+2026-08-13: the zero is a modelling structure, not a measurement of the
+planner). The real seam is `_dispatch_toss_throw`'s `release_latency`
+shift, and the quantity a dispatch shift does move (`release_time_err_ms`)
+is a scheduling error owned by `toss_trim.release_latency_ms` and G-1. Under the E-1 mask the screen
+reports `aim_rx/aim_ry` as `e1_blocked` (they clear the floor at 2.92σ
+unmasked — closing E-1 is a mask change, not a redesign). **v1 =
+{event_vel_trim}, a 1-DOF loop.** (Risk 4 did not materialise — the
+suspected `event_vel`/timing degeneracy is actually exact orthogonality;
+the degeneracy rule stays implemented and test-driven.)
+
+**Gate-1 sizing memo (proposed; operator sign-off required):**
+Q = diag(1/σ²) from the measured corpus — σ(land_err) 14.7 mm,
+σ(arrival_dir) 2.38 mrad, σ(flight_time) 0.0139 s (raw inter-toss sd,
+deliberately not the noise-decomposed 0.0122 — understating noise
+over-trusts the channel); `release_speed_err` stays a cross-check channel
+(exactly proportional to flight time in-model, dT/dv = 2/g — including both
+would double-weight one measurement). R = diag(ρ/τ_j²), ρ = 0.25 in scaled
+coordinates (a soft continuation of the screen: 80 % step at s = 1; v1's
+channel runs s = 2.61, cost 4 %). τ per iteration: aim 0.005818 rad
+(TOTAL_MAX_RAD/3 — full D7 authority within Phase 3's k ≤ 3);
+event_vel_trim 0.040 (bracket: floor 0.007 = 2× noise-equivalent command,
+ceiling 0.10, binding constraint 0.1076/3 = 0.0359). Artifact key: pose xy
+150 mm cells (= the tilt/aim grid nodes, so an ILC cell and an aim-map node
+name the same pose for Phase 3's absorb-or-keep), pose z 10 mm (2× the
+miner's plane-mismatch tolerance), flight time 50 ms (the gain-vs-offset
+discrimination bound ±28 ms, taken with margin).
+
+**Decision required (Gate 1, refused by the module rather than decided):**
+the pooled corpus requires `event_vel_trim = −0.1076`, which exceeds
+`toss_trim.SPEED_AUTHORITY` (±0.10) by 7.6 % — and this is not a pooling
+artefact: per goal cell the required trim is −0.096 / −0.112 / −0.124
+(n = 8/6/3), so two of three cells exceed the authority on their own.
+Options: (a) an ILC-specific authority ±0.15 (the safety argument carries:
+`STROKE_TOP_REV` is velocity-independent so a speed trim cannot walk the
+hand to the end stop, `validate_event_vel` still gates, and a ±0.15
+authority cannot reach either rail anywhere in the sequencer's flight-time
+band — at T = 0.55 s, −15 % is 2.30 m/s, 7.7× the 0.3 m/s floor; at
+T = 1.10 s, +15 % is 6.21 m/s, still inside the 7.0 m/s ceiling at 1.13×
+clear, the binding side); (b) accept clamping at −0.10, which removes
+~93 % of the vertical residual and leaves ~+7 ms of flight time; (c)
+attribute part of the residual to a commanded-height error rather than a
+plant gain.
+
+**Corpus provenance facts the fit refuses to hide**: the 19 usable rows
+split 16/3 on `bridge_fw_version` (10 vs 12) — the partition rule refuses
+to pool them without an explicit flag; and 16 of 19 were recorded at
+**16.7 h of can-bridge uptime**, the exact regime G-1 exists to close. The
+G-1 uptime refusal is implemented but ships disabled with a loud census —
+any threshold below 16.7 h collapses the corpus to 3 rows, and fixing the
+healthy threshold is G-1's job, not the fit library's.
+
+**Follow-ups flagged, not fixed here**: in-tree aim-gain doc drift (three
+values for one gain — `toss_fit_lib` 3126.5, `toss_trim` 3126.64, exact
+3126.736 — and `aim_target_offset_mm`'s 54.578 mm/deg is a secant at 1°,
+not the derivative 54.5718; both correct, not interchangeable); the E-1
+whole-arc estimator implementation in the miner; the parity probe's
+promotion.
 
 ### Phase 2 — Production wiring *(software only, ship dormant)*
 
