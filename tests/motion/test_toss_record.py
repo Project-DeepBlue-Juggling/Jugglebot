@@ -122,7 +122,8 @@ EXPECTED_FIELDS = (
     'throw_site_xy_mm',
     # calibration
     'map_aim_rad', 'trim_aim_rad', 'total_aim_rad', 'map_aim_mm_at_h',
-    'trim_aim_mm_at_h', 'speed_bias_applied', 'timing_bias_applied_ms',
+    'trim_aim_mm_at_h', 'ilc_aim_rad', 'ilc_vel_trim', 'speed_bias_applied',
+    'timing_bias_applied_ms',
     'clamp_hits', 'trim_source_n', 'trim_state', 'trim_reset_reason',
     # dwell tilt (Layer 1.5)
     'dwell_tilt_rad', 'dwell_tilt_sd_rad', 'dwell_tilt_n', 'dwell_tilt_span_s',
@@ -148,6 +149,8 @@ EXPECTED_FIELDS = (
     'floor_arrival',
     # command reference for the mined errors (ILC Phase 0a/0c)
     'cmd_launch_vel_mms', 'cmd_flight_time_s', 'cmd_release_source',
+    # the WHOLE-ARC fit (ILC entry condition E-1, resolved 2026-08-13)
+    'arc_fit_n', 'arc_fit_rms_mm', 'arc_lateral_vel_se_mms', 'coverage_asym_s',
     # arrival kinematics (ILC Phase 0a)
     'arrival_vel_mms', 'arrival_dir_err_rad', 'arrival_dir_err_norm_rad',
     'arrival_speed_err_mms', 't_arrival_fit_bag', 'arrival_fit_n',
@@ -167,7 +170,7 @@ EXPECTED_FIELDS = (
     'label', 'label_source', 'label_confidence', 'label_reason', 'rimshot',
     'disagreement', 'record_provenance', 'join_residual_ms',
     'usable_for_aim_fit', 'usable_for_timing_fit', 'usable_for_speed_fit',
-    'usable_for_release_fit', 'excluded_reason',
+    'usable_for_release_fit', 'usable_for_lateral_fit', 'excluded_reason',
 )
 
 

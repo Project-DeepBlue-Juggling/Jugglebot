@@ -17,6 +17,15 @@ position, velocity and instant from the ascending branch), and the exact
 RELEASE-vs-FLIGHT split of the landing error. :func:`mine_arc` is the definition
 point for all of it; the ballistics it uses are the production ones.
 
+Since 2026-08-13 every **LATERAL** velocity in that block comes from a WHOLE-ARC
+fit rather than a per-branch one, and a ``coverage_asym_s`` field gates it. That
+is the resolution of the ILC plan's entry condition E-1 — the mocap tracks the
+centroid of the visible retroreflective cap, which carries a height-locked
+position bias, and a per-branch lateral slope reads that bias as ±100 mm/s of
+velocity on exactly the aim channels. The parity argument and the numbers are
+written out above :data:`ASCENT_REF_LEAD_S`; the diagnostic that measured them is
+``tools/probes/mocap_parity_bias.py``.
+
     python tools/probes/toss_record_miner.py --bag 2026-08-10_16-30-44
     python tools/probes/toss_record_miner.py --bag A --bag B --jsonl
     python tools/probes/toss_record_miner.py --self-check
@@ -208,11 +217,51 @@ GRAVITY_MMS2 = ballistics_bc.GRAVITY_MMS2
 #     +4924.3 / -4910.9 derived independently from the apex height — agreement to
 #     0.5 % and 1.4 %.
 #
-# So each branch is fitted whole. The branch SPLIT is kept: it is what makes
-# release-vs-flight a real discriminator rather than one fit imposed on both
-# ends, and it is what stops drag cancelling itself — a no-drag fit over a full
-# arc hides the asymmetry, a per-branch pair exposes it as a release-vs-arrival
-# speed difference.
+# So each branch is fitted whole. The branch SPLIT is kept FOR THE VERTICAL
+# CHANNELS: it is what makes release-vs-flight a real discriminator there rather
+# than one fit imposed on both ends, and it is what stops drag cancelling itself
+# — a no-drag fit over a full arc hides the asymmetry, a per-branch pair exposes
+# it as a release-vs-arrival speed difference.
+#
+# THE LATERAL CHANNELS DO NOT USE THE SPLIT (E-1, resolved 2026-08-13).
+# ``plans/active/critical-point-ilc.md`` § Phase 1, entry condition E-1: the
+# tracked point is the centroid of the visible retroreflective cap, biased by a
+# height-locked b(z) of ~20 mm — CONFIRMED by parity decomposition (probe:
+# ``tools/probes/mocap_parity_bias.py``). The parity argument, which is the whole
+# of why this file changed:
+#
+#   * height is an EVEN function of time about a ballistic apex, so a
+#     height-locked position bias enters the lateral track as an EVEN function of
+#     tau = t - t_apex, on top of the true straight line;
+#   * a PER-BRANCH line fit therefore reads ``v_true +- <db/dz . |vz|>`` — equal
+#     and opposite on the two branches. Measured: v_y +94.6 ascending against
+#     -13.5 descending, a 104.4 mm/s branch delta that repeats across 19 arcs,
+#     three cup positions and two sittings at 1.45 mm cross-toss sd;
+#   * a WHOLE-ARC fit is bias-immune by construction: the least-squares slope
+#     picks up ``cov(tau, b)/var(tau)``, and ``cov(tau, even(tau)) = 0`` exactly
+#     when the sample coverage is symmetric about the apex. What survives is the
+#     COVERAGE ASYMMETRY, measured at 2.1 mm/s median / 7.0 mm/s worst against
+#     the 104.4 mm/s it replaces — see :data:`COVERAGE_ASYM_MAX_S`.
+#
+# What the per-branch estimator cost, stated as the number that forced the
+# change: the descending branch's offset from the whole-arc truth is
+# (-53.3, +16.2) mm/s, i.e. |dv| ~ 55.7 mm/s over a ~5.1 m/s arrival = 10.9 mrad
+# of phantom arrival-direction error per toss — about 44 mm of phantom aim error
+# through the (4h + dz) landing gain, which is 4007 mm/rad at the corpus goal
+# (`toss_trim.aim_landing_jacobian(T = 0.9032 s, z = 170 mm)`, so 0.0109 rad x
+# 4007 = 43.7 mm). That is THREE times the aim channel's own scatter (the
+# corpus's per-axis landing sd, 15.7 / 13.6 mm, pooled to 14.7 mm), and it is
+# REPEATABLE, so it does not average away.
+#
+# Height-restricting the fit window does NOT work and was tried: the bias
+# gradient is essentially constant over the whole arc, so a narrow window trades
+# the same bias for a worse conditioned fit.
+#
+# STANDING CAVEAT, and it is not closed by any of this: only the bias GRADIENT is
+# measured. The absolute offset (bounded by ~a ball radius) is not, so any
+# mocap-closed aim loop converges to the measurement's cup rather than the
+# world's. Pre-existing across the whole mocap aim stack; closure is a ~20-minute
+# no-robot capture of the taped ball fixtured with conventional point markers.
 
 #: How far before the first ascending sample the backcast is anchored. Purely a
 #: parameterisation of the SAME fitted arc — the state is propagated there with
@@ -255,6 +304,47 @@ TRIM_FLOOR_MM = 25.0
 #: report zero residual, which reads as "perfect" — the same trap `fit_sparse`
 #: exists for on the position side.
 MIN_ARC_SAMPLES = 4
+
+#: Largest ``|coverage_asym_s|`` — the mean sample time's offset from the fitted
+#: apex, seconds — that still admits a row's LATERAL quantities (E-1, 2026-08-13).
+#: It is the one term the whole-arc estimator does not kill: ``cov(tau, b)`` is
+#: exactly zero for coverage symmetric about the apex, so what leaks is the
+#: asymmetry.
+#:
+#: Sized on the measured corpus, not chosen — and the two populations must be
+#: named, because they answer different questions and their statistics differ by
+#: an order of magnitude (re-mine of 2026-08-13, the three mocap bags):
+#:
+#: * among the **19 rows the release-fit gate admits** — the population any ILC
+#:   fit actually reads — ``|coverage_asym_s|`` runs 0.0001-0.0732 s, median
+#:   **0.0148 s**, and this gate refuses **0 of them**;
+#: * across **all 32 mined arcs**, median **0.052 s**, worst **0.600 s**, and
+#:   this gate refuses **12** — every one a half-seen arc that
+#:   ``usable_for_release_fit`` already refuses on its own.
+#:
+#: So 0.1 s does NOT sit above the worst arc the corpus contains: the worst is
+#: 6x ABOVE the gate, and 12 of 32 arcs are refused by it. That is the gate
+#: working as intended rather than a hole in it — it is a GROSS-TRUNCATION guard
+#: (one branch cut by an occlusion or a short window), not a filter fitted to the
+#: data, and the evidence for "not fitted to the data" is that it costs the
+#: release-fit population nothing. On a ~1.0 s arc it refuses a coverage
+#: imbalance past ~10 %.
+#:
+#: HONEST LIMIT, and this is the DEMOTION the E-1 close-out recorded rather than
+#: a caveat added afterwards: the plan's one-line phrasing ("residual leak =
+#: coverage asymmetry") reads tighter than the measurement supports. This is the
+#: FIRST MOMENT of the coverage, and a zero first moment does not prove a
+#: symmetric distribution. One arc (2026-08-12_17-45-44 #0 — the PARITY PROBE's
+#: arc index, not a miner row index) has ``coverage_asym_s`` = 0.0003 s and still
+#: leaks 6.0 mm/s, because its coverage is asymmetric in SHAPE. So this field is
+#: a gross-truncation guard and NOT a leak predictor; the residual ~7 mm/s
+#: (~1.4 mrad at a 5 m/s arrival) is a standing uncertainty on the lateral
+#: velocity channels, an order under the artefact it replaces and reported here
+#: rather than assumed away.
+#:
+#: The measured leak the whole-arc estimator does clear: 2.1 mm/s median /
+#: 7.0 mm/s worst, against the 104.4 mm/s per-branch artefact it replaces.
+COVERAGE_ASYM_MAX_S = 0.1
 
 #: The descending branch ends when the ball comes back UP by this much. Sized
 #: above the measured z noise (25-34 mm RMS on a whole branch — see
@@ -833,6 +923,25 @@ def mine_arc(data: BagData, ann: dict, plane_mm: float,
     ``vz`` scattered by ±800 mm/s because ``/mocap_data`` has no header and the
     bag clock is only faithful in the large.
 
+    **AND A THIRD FIT, over the WHOLE ARC, which owns every LATERAL velocity**
+    (E-1, resolved 2026-08-13 — see the block above :data:`ASCENT_REF_LEAD_S`).
+    A per-branch lateral slope reads ``v_true ± <db/dz·|vz|>`` under a
+    height-locked centroid bias, which is a 104 mm/s branch-to-branch artefact on
+    exactly the aim channels; the whole-arc slope cancels it by parity. So:
+
+    * ``arrival_vel_mms[0:2]`` and ``release_vel_track_mms[0:2]`` — and with them
+      ``arrival_dir_err_rad``, ``release_dir_err_rad`` and the lateral landing
+      split — come from the WHOLE-ARC fit propagated to each plane crossing;
+    * every VERTICAL quantity (``[2]`` of each velocity, both crossing instants,
+      the flight time, both speed errors, both standard errors and both fit
+      counts) is unchanged and still per-branch. The vertical channels were never
+      contaminated: a height-locked bias is a *lateral* error by construction, and
+      the vertical branch split is what exposes drag.
+
+    The propagation is written out through ``ballistics_bc.velocity_at`` even
+    though a no-drag lateral velocity is constant along the arc, so that a future
+    model with a lateral force does not silently keep a constant.
+
     **The discriminator.** The measured release state is propagated to the cup
     plane by ``ballistics_bc.arrival_state_at_z`` — the production catch-side
     boundary condition — and the landing error is split exactly:
@@ -841,9 +950,23 @@ def mine_arc(data: BagData, ann: dict, plane_mm: float,
 
     the first being what the measured release already predicts (RELEASE-side
     fault: stroke speed, aim, dispatch timing), the second everything the
-    no-drag ballistic model does not explain (FLIGHT-side: drag, spin,
-    marker-centre offset, mocap error). The identity is pinned in
-    :func:`self_check`.
+    no-drag ballistic model does not explain. The identity is pinned in
+    :func:`self_check` and is unchanged.
+
+    **What the split MEANS is not unchanged, and this is the re-marking E-1's
+    resolution requires.** Both halves are lateral (xy) quantities, and under the
+    bias-immune estimator there is no measurable lateral flight-phase physics
+    left in them: the parity decomposition bounds any lateral aerodynamic force
+    at the sub-mm/s scale (Magnus would need 3.4-8.8 rev/s against an observed
+    ~0.5, and would land in the ODD channel, which is empty), and the remaining
+    difference between the two halves is the difference between two ESTIMATORS of
+    the same crossing — the descending-band position fit that produced
+    ``land_xy_global_mm`` against the propagated release state. So
+    **lateral landing error is release-side**; ``land_err_flight_mm`` is an
+    estimator-agreement diagnostic, not a flight-physics channel, and nothing may
+    fit it as one. The VERTICAL split (``release_speed_err_mms`` against
+    ``flight_time_err_s``) is untouched and stays meaningful — it is two disjoint
+    branches measuring the same throw, and it is what V2b cross-checks on.
     """
     ref = command_reference(ann, plane_mm)
     out = {'cmd_launch_vel_mms': ref['cmd_launch_vel_mms'],
@@ -854,6 +977,59 @@ def mine_arc(data: BagData, ann: dict, plane_mm: float,
     land_bag = float(ann.get('landing_time') or 0.0) + data.log_minus_stamp_s
     release_plane = float(ref['release_plane_mm'])
     asc, desc = branches(ball_rows(data, land_bag), release_plane, plane_mm)
+
+    # ── E-1: the WHOLE-ARC fit, which owns both LATERAL velocities ────────────
+    # The union, not a re-selection: exactly the rows the two branch fits see,
+    # de-duplicated at the apex row they share. Fitting a different set here
+    # would make the lateral and vertical channels describe different arcs.
+    arc_lat_arrival = arc_lat_release = None
+    arc_fit = fit_ballistic(sorted(set(asc) | set(desc)))
+    if arc_fit is not None:
+        pos, vel, t_ref, n, rms, se = arc_fit
+        out['arc_fit_n'] = int(n)
+        out['arc_fit_rms_mm'] = float(rms)
+        out['arc_lateral_vel_se_mms'] = float(max(se[0], se[1]))
+        # The apex instant of the FITTED arc, so the asymmetry is measured
+        # against the parity centre rather than against the noisiest sample.
+        # t_ref is the mean sample time by construction (`fit_ballistic`), so
+        # this is exactly the probe's `mean(tau)` and reduces to -vz(t_ref)/g.
+        out['coverage_asym_s'] = float(t_ref - (t_ref + float(vel[2])
+                                                / GRAVITY_MMS2))
+        for tag, target, descending in (('arrival', plane_mm, True),
+                                        ('release', release_plane, False)):
+            try:
+                dt = ballistics_bc.touchdown_time(pos, vel, target,
+                                                  descending=descending)
+            except ValueError:
+                # The ascending crossing is in the PAST of t_ref, which
+                # `touchdown_time` refuses on purpose; anchor below the release
+                # plane exactly as the backcast does, and for the same reason.
+                if descending:
+                    continue
+                lead = float(asc[0][0]) - ASCENT_REF_LEAD_S - t_ref
+                p_lead = ballistics_bc.position_at(pos, vel, lead)
+                v_lead = ballistics_bc.velocity_at(vel, lead)
+                try:
+                    dt = lead + ballistics_bc.touchdown_time(
+                        p_lead, v_lead, target, descending=False)
+                except ValueError:
+                    continue
+            lat = ballistics_bc.velocity_at(vel, dt)
+            if tag == 'arrival':
+                arc_lat_arrival = (float(lat[0]), float(lat[1]))
+            else:
+                arc_lat_release = (float(lat[0]), float(lat[1]))
+
+    def _lateral(vel, lateral):
+        """The branch fit's VERTICAL component with the whole-arc LATERAL pair.
+
+        ``None`` when the whole-arc fit did not produce one: the lateral channels
+        are then absent rather than silently per-branch, because a per-branch
+        lateral velocity is the E-1 artefact itself.
+        """
+        if lateral is None:
+            return None
+        return np.array([lateral[0], lateral[1], float(vel[2])])
 
     # ── 0a: the descending branch → arrival state at the catch plane ──────────
     arrival_vel = None
@@ -869,8 +1045,10 @@ def mine_arc(data: BagData, ann: dict, plane_mm: float,
         except ValueError:
             dt = None
         if dt is not None:
-            arrival_vel = ballistics_bc.velocity_at(vel, dt)
-            out['arrival_vel_mms'] = [float(v) for v in arrival_vel]
+            arrival_vel = _lateral(ballistics_bc.velocity_at(vel, dt),
+                                   arc_lat_arrival)
+            if arrival_vel is not None:
+                out['arrival_vel_mms'] = [float(v) for v in arrival_vel]
             out['t_arrival_fit_bag'] = float(t_ref + dt)
 
     # ── 0c: the ascending branch → release state at the release plane ─────────
@@ -894,9 +1072,11 @@ def mine_arc(data: BagData, ann: dict, plane_mm: float,
             dt = None
         if dt is not None:
             release_pos = ballistics_bc.position_at(p_lead, v_lead, dt)
-            release_vel = ballistics_bc.velocity_at(v_lead, dt)
+            release_vel = _lateral(ballistics_bc.velocity_at(v_lead, dt),
+                                   arc_lat_release)
             out['release_pos_track_mm'] = [float(v) for v in release_pos]
-            out['release_vel_track_mms'] = [float(v) for v in release_vel]
+            if release_vel is not None:
+                out['release_vel_track_mms'] = [float(v) for v in release_vel]
             out['t_release_fit_bag'] = float(t_ref + lead + dt)
             throw_ros = ann.get('throw_time')
             if throw_ros:
@@ -936,7 +1116,8 @@ def mine_arc(data: BagData, ann: dict, plane_mm: float,
 
     # ── The RELEASE-vs-FLIGHT split of the landing error ─────────────────────
     cup = ann.get('landing_position')
-    if release_pos is not None and land_xy is not None and cup:
+    if (release_pos is not None and release_vel is not None
+            and land_xy is not None and cup):
         try:
             pred, _v, _t = ballistics_bc.arrival_state_at_z(
                 release_pos, release_vel, plane_mm, descending=True)
@@ -1164,7 +1345,46 @@ def _mark_usable(row: dict) -> None:
     # rests on, and why re-using `usable_for_speed_fit` here would both drop good
     # rows and admit bad ones.
     row['usable_for_release_fit'] = _release_fit_ok(row)
+    # E-1 (2026-08-13). A SEPARATE flag, for the same reason
+    # `usable_for_release_fit` is one: it asks a different question of a
+    # different fit. `usable_for_aim_fit` gates the AIM MAP's fit, which consumes
+    # `land_err_mm` — a landing POSITION, which the branch artefact never
+    # touched — so folding the lateral-velocity guard into it would drop good
+    # rows from a fit that does not depend on the estimator being guarded. The
+    # vertical flags are untouched for the mirror-image reason.
+    row['usable_for_lateral_fit'] = _lateral_fit_ok(row)
+    if row.get('coverage_asym_s') is not None and not row[
+            'usable_for_lateral_fit']:
+        # Recorded only when a REAL measurement was refused. An absent
+        # `coverage_asym_s` is not appended: there is no lateral estimate to
+        # exclude, and the null field plus the False flag already say so.
+        reasons.append('coverage_asym')
     row['excluded_reason'] = ','.join(sorted(set(reasons))) or None
+
+
+def _lateral_fit_ok(row: dict) -> bool:
+    """Is this row's LATERAL (whole-arc) estimate admissible? (E-1, 2026-08-13)
+
+    Two ways to fail, and they are different failures:
+
+    * ``coverage_asym_s`` **absent** — either the row carries no arc at all, or
+      it was mined BEFORE the whole-arc estimator existed and its lateral
+      velocities ARE the per-branch artefact (~104 mm/s, ~11 mrad of phantom
+      arrival direction, ~44 mm of phantom aim). A corpus mixes mines freely —
+      ``ilc_fit_lib.load_corpus`` globs ``toss_records_*.jsonl`` — so absence has
+      to REFUSE rather than default-pass, or one stale file silently re-opens
+      E-1 inside a fit that has stopped masking the lateral channels.
+    * present and beyond :data:`COVERAGE_ASYM_MAX_S` — a half-seen arc, where
+      the whole-arc fit's parity cancellation no longer holds.
+    """
+    asym = row.get('coverage_asym_s')
+    if asym is None:
+        return False
+    try:
+        asym = float(asym)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(asym) and abs(asym) <= COVERAGE_ASYM_MAX_S
 
 
 def _release_fit_ok(row: dict) -> bool:
@@ -1198,7 +1418,8 @@ def refuse_plane(row: dict) -> None:
     for.
     """
     for flag in ('usable_for_aim_fit', 'usable_for_speed_fit',
-                 'usable_for_timing_fit', 'usable_for_release_fit'):
+                 'usable_for_timing_fit', 'usable_for_release_fit',
+                 'usable_for_lateral_fit'):
         row[flag] = False
     reasons = [r for r in (row.get('excluded_reason') or '').split(',') if r]
     row['excluded_reason'] = ','.join(sorted(set(reasons + ['plane_mismatch'])))
@@ -1260,6 +1481,13 @@ def enforce_declared_planes(rows) -> list:
     moves the measured flight time by ~4 ms at a 4.9 m/s arrival, the same order
     as the dispatch shift the timing fit exists to measure. One flag cannot be
     half-true, so the row is refused.
+
+    **The LATERAL flag too** (E-1, 2026-08-13). The whole-arc lateral VELOCITY is
+    plane-independent — no-drag ``vx``/``vy`` are constant along the arc — but
+    ``arrival_dir_err_rad`` is a LEAN, ``atan2(vx, |vz|)``, and its ``|vz|`` is
+    the descending fit evaluated at ``plane_mm``. A 20 mm plane error moves that
+    denominator, so the direction channel is as plane-dependent as the flight
+    time is.
 
     The plane cannot simply be corrected here: ``mine_mocap`` fits the crossing
     at a plane chosen BEFORE the declaration is joined, so a mismatch means the
@@ -1326,8 +1554,18 @@ def print_report(name: str, rows, led: dict, data: BagData) -> None:
                                    for k in sorted(counts)))
     usable = sum(1 for r in rows if r.get('usable_for_aim_fit'))
     rel = sum(1 for r in rows if r.get('usable_for_release_fit'))
-    print('  usable_for_aim_fit: {}/{}   usable_for_release_fit: {}/{}'.format(
-        usable, len(rows), rel, len(rows)))
+    lat = sum(1 for r in rows if r.get('usable_for_lateral_fit'))
+    print('  usable_for_aim_fit: {}/{}   usable_for_release_fit: {}/{}   '
+          'usable_for_lateral_fit: {}/{}'.format(
+              usable, len(rows), rel, len(rows), lat, len(rows)))
+    asym = [abs(r['coverage_asym_s']) for r in rows
+            if r.get('coverage_asym_s') is not None]
+    if asym:
+        print('  coverage_asym_s: n={} median {:.4f} s  max {:.4f} s  '
+              '(refusal at {:.2f} s: {} row(s))'.format(
+                  len(asym), float(np.median(asym)), max(asym),
+                  COVERAGE_ASYM_MAX_S,
+                  sum(1 for v in asym if v > COVERAGE_ASYM_MAX_S)))
     for problem in check_declared_planes(rows):
         print('  ' + problem)
     print_arc_report(rows)
@@ -1833,7 +2071,7 @@ def self_check() -> int:
         row.update({'backcast_fit_n': bc, 'arrival_fit_n': ar,
                     'release_vel_se_mms': se, 'label': 'CAUGHT',
                     't_departure_raw_ros': 1.0, 'land_xy_global_mm': [0.0, 0.0],
-                    'fit_rms_mm': 0.5})
+                    'fit_rms_mm': 0.5, 'coverage_asym_s': 0.0})
         row.update(extra)
         _mark_usable(row)
         return row
@@ -1852,6 +2090,90 @@ def self_check() -> int:
            _rel(6, None, 300.0)['usable_for_speed_fit']),
           (True, True))
 
+    # ── E-1: the WHOLE-ARC lateral estimator ─────────────────────────────────
+    # The artefact, reproduced on a SYNTHETIC arc with a known height-locked
+    # bias, and then removed. This is the whole of E-1 in eight lines: b(z) is
+    # applied to y as a linear function of height, so the per-branch fits split
+    # by +-<db/dz . |vz|> while the whole-arc fit returns the truth. Written
+    # against an EXACT prediction, not a tolerance around a measurement: with
+    # b(z) = k.(z - z0) the ascending slope error is +k.<|vz|> and the
+    # descending is -k.<|vz|>, so the branch delta is 2.k.<|vz|> and the
+    # whole-arc estimate is exact for symmetric coverage.
+    k_bias = 0.02                       # mm of y bias per mm of height
+    biased = [(t, x, y + k_bias * (z - rel_plane), z) for t, x, y, z in arc]
+    b_asc, b_desc = branches(biased, rel_plane, plane)
+    v_asc = fit_ballistic(b_asc, trim_floor_mm=1e9)[1]
+    v_desc = fit_ballistic(b_desc, trim_floor_mm=1e9)[1]
+    v_whole = fit_ballistic(sorted(set(b_asc) | set(b_desc)),
+                            trim_floor_mm=1e9)[1]
+    # Measured on this arc at k = 0.02: asc +19.6, desc -68.7 (delta -88.3)
+    # against a truth of -25.0, which the whole-arc fit returns to 0.5 mm/s.
+    check('a height-locked bias SPLITS the two branches\' lateral velocity',
+          float(v_desc[1] - v_asc[1]) < -50.0, True)
+    check('...while the WHOLE-ARC fit recovers the true lateral velocity',
+          bool(abs(float(v_whole[1]) - float(rel_vel[1])) < 1.0), True)
+    # ... and the miner's own estimator, end to end, agrees with the whole-arc
+    # fit rather than with either branch. `mine_arc` is the definition point, so
+    # this is the case that would fail if a lateral component ever went back to
+    # a branch fit.
+    class _ArcData(object):
+        hand = []
+        balls = []
+        link = []
+        traj = []
+        declarations = []
+        fixture_cells = {}
+        log_minus_stamp_s = 0.0
+        announcements = []
+
+        def __init__(self, rows):
+            self.mocap = list(rows)
+
+    ann = {'thrower': 'jugglebot', 'target': 'jugglebot',
+           'throw_time': t_rel, 'landing_time': t_rel + flight,
+           'landing_position': [float(rel_pos[0]), float(rel_pos[1]),
+                                float(plane)],
+           'initial_position': [float(v) for v in rel_pos],
+           'initial_velocity': [float(v) for v in rel_vel],
+           'predicted_tof_sec': float(flight)}
+    # `ball_rows` windows +-1.2 s about the ANNOUNCED landing, so the synthetic
+    # arc has to sit inside that window — it does, at 0.9 s of flight.
+    mined = mine_arc(_ArcData(biased), ann, plane)
+    check('mine_arc takes the LATERAL arrival velocity from the whole arc',
+          bool(abs(mined['arrival_vel_mms'][1] - float(v_whole[1])) < 1.0),
+          True)
+    check('...and NOT from the descending branch',
+          bool(abs(mined['arrival_vel_mms'][1] - float(v_desc[1])) > 30.0),
+          True)
+    check('...and the release lateral velocity from the whole arc too',
+          bool(abs(mined['release_vel_track_mms'][1] - float(v_whole[1]))
+               < 1.0), True)
+    check('the VERTICAL arrival velocity is still the descending branch',
+          bool(abs(mined['arrival_vel_mms'][2]
+                   - float(_arrival_from(b_desc)[0][2])) < 1e-6), True)
+    check('a symmetric synthetic arc reports a small coverage asymmetry',
+          abs(mined['coverage_asym_s']) < COVERAGE_ASYM_MAX_S, True)
+    # The gate, both sides, ABSOLUTE — a widened COVERAGE_ASYM_MAX_S fails here.
+    check('a coverage asymmetry inside 0.1 s ADMITS the lateral estimate',
+          _rel(60, 60, 7.0, coverage_asym_s=0.09)['usable_for_lateral_fit'],
+          True)
+    check('a coverage asymmetry past 0.1 s REFUSES it',
+          _rel(60, 60, 7.0, coverage_asym_s=0.11)['usable_for_lateral_fit'],
+          False)
+    check('...and says why, without touching the VERTICAL flags',
+          [_rel(60, 60, 7.0, coverage_asym_s=0.11)[f] for f in
+           ('excluded_reason', 'usable_for_release_fit',
+            'usable_for_speed_fit')],
+          ['coverage_asym', True, True])
+    # A PRE-E-1 mine carries no coverage_asym_s at all, and its lateral
+    # velocities ARE the artefact. Absence must refuse, not default-pass.
+    stale = _rel(60, 60, 7.0)
+    stale.pop('coverage_asym_s')
+    _mark_usable(stale)
+    check('a row mined BEFORE the whole-arc estimator is refused for lateral',
+          (stale['usable_for_lateral_fit'], stale['excluded_reason']),
+          (False, None))
+
     # The plane refusal on a MINED-ONLY row. `enforce_declared_planes` needs a
     # declaration, so before this the whole reference corpus — every row
     # `mined-only` — was never plane-checked at all.
@@ -1860,8 +2182,9 @@ def self_check() -> int:
     check('a plane-refused row loses EVERY fit flag, timing included',
           [mined_bad[f] for f in ('usable_for_aim_fit', 'usable_for_speed_fit',
                                   'usable_for_timing_fit',
-                                  'usable_for_release_fit')],
-          [False, False, False, False])
+                                  'usable_for_release_fit',
+                                  'usable_for_lateral_fit')],
+          [False, False, False, False, False])
     check('...and says why', mined_bad['excluded_reason'], 'plane_mismatch')
 
     # The split IDENTITY. It is what makes "release vs flight" a decomposition

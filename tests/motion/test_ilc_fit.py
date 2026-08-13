@@ -344,43 +344,53 @@ def test_a_deliberately_degenerate_pair_is_excluded_not_regularised():
     assert 'aim_rx' in v['detail']
 
 
-def test_mask_none_means_the_E1_mask_in_every_family():
-    """ONE default mask across the module — the report family and the solve
-    family cannot describe two different systems.
+def test_mask_none_means_the_FULL_SIZE_mask_in_every_family():
+    """ONE default mask across the module, and since 2026-08-13 it is FULL SIZE.
 
-    ``conditioning`` and ``screen_channels`` used to read ``mask=None`` as
-    ``np.ones(N_E)`` while ``weight_matrix``, ``solve_step``,
-    ``required_command``, ``iterate`` and ``fit_corpus`` read it as
-    :data:`ilc_fit_lib.E1_MASK`. Same keyword, same sentinel, opposite meaning:
-    a caller who omitted the argument got a full-size conditioning report
-    ("three channels retained") justifying a step that had in fact been solved
-    on one channel. The full-size report is still available and is now
-    explicit.
+    Two facts, and they are separate. **One default**: ``conditioning`` and
+    ``screen_channels`` once read ``mask=None`` as ``np.ones(N_E)`` while
+    ``weight_matrix``, ``solve_step``, ``required_command``, ``iterate`` and
+    ``fit_corpus`` read it as :data:`ilc_fit_lib.E1_MASK` — same keyword, same
+    sentinel, opposite meaning, so a caller who omitted the argument got a
+    full-size conditioning report ("three channels retained") justifying a step
+    solved on one channel. **Full size**: E-1 CLOSED 2026-08-13 (owner-adopted;
+    the miner's lateral estimators moved to whole-arc fits), so the shared
+    default became :data:`ilc_fit_lib.DEFAULT_MASK` = all five channels. The
+    historical masked answer stays reproducible by passing ``E1_MASK``, and this
+    test pins both readings against the same ``F``.
     """
     F = lib.sensitivity(goal=GOAL)
 
-    assert np.array_equal(lib.conditioning(F)['mask'], lib.E1_MASK)
-    assert np.array_equal(lib.screen_channels(F)['report']['mask'], lib.E1_MASK)
+    assert np.array_equal(lib.DEFAULT_MASK, np.ones(lib.N_E))
+    assert np.array_equal(lib.conditioning(F)['mask'], lib.DEFAULT_MASK)
+    assert np.array_equal(lib.screen_channels(F)['report']['mask'],
+                          lib.DEFAULT_MASK)
     assert np.array_equal(np.diag(lib.weight_matrix()),
-                          lib.E1_MASK / lib.SIGMA_E ** 2)
+                          lib.DEFAULT_MASK / lib.SIGMA_E ** 2)
 
     # The verdicts follow the mask, not the family.
-    assert lib.screen_channels(F)['retained_labels'] == ('event_vel_trim',)
-    assert lib.screen_channels(F, mask=lib.E1_MASK)['retained_labels'] \
-        == ('event_vel_trim',)
+    assert lib.screen_channels(F)['retained_labels'] \
+        == ('aim_rx', 'aim_ry', 'event_vel_trim')
     assert lib.screen_channels(F, mask=np.ones(lib.N_E))['retained_labels'] \
         == ('aim_rx', 'aim_ry', 'event_vel_trim')
+    # ... and the HISTORICAL mask still reproduces the v1 answer exactly.
+    assert lib.screen_channels(F, mask=lib.E1_MASK)['retained_labels'] \
+        == ('event_vel_trim',)
 
-    # ... and the solve family agrees with the report family under the default:
-    # a lateral-only residual asks for NOTHING, because E-1 blocks every channel
-    # that observes it.
+    # The solve family agrees with the report family under the default: a
+    # lateral-only residual now asks for a real aim correction, where under E-1
+    # it asked for nothing.
     lateral = np.array([50.0, -50.0, 0.0, 0.0, 0.0])
-    assert lib.required_command(F, lateral) == pytest.approx(np.zeros(lib.N_U),
-                                                             abs=1e-12)
-    assert lib.solve_step(F, lateral) == pytest.approx(np.zeros(lib.N_U),
-                                                       abs=1e-12)
-    # The E-1 blocked screen must SAY so for the same matrix.
-    blocked = [v for v in lib.screen_channels(F)['verdicts']
+    need = lib.required_command(F, lateral)
+    assert np.linalg.norm(need[:2]) > 1e-3
+    assert need[2:] == pytest.approx(np.zeros(2), abs=1e-12)
+    assert lib.required_command(F, lateral, mask=lib.E1_MASK) \
+        == pytest.approx(np.zeros(lib.N_U), abs=1e-12)
+    assert lib.solve_step(F, lateral, mask=lib.E1_MASK) \
+        == pytest.approx(np.zeros(lib.N_U), abs=1e-12)
+    # The blocked-vs-weak distinction is retained, and is now reachable only by
+    # asking for the historical mask by name.
+    blocked = [v for v in lib.screen_channels(F, mask=lib.E1_MASK)['verdicts']
                if v['channel'] == 'aim_rx'][0]
     assert blocked['reason'] == 'e1_blocked'
 
@@ -537,17 +547,26 @@ def test_the_event_vel_band_is_unreachable_inside_the_speed_authority():
 
     What is true, and is worth pinning, is the *reachability* statement: over the
     whole sequencer flight-time band and the whole speed authority, ``event_vel``
-    stays comfortably inside [0.3, 7.0] m/s — 2.44 m/s at the slowest corner,
-    5.94 at the fastest — so the band gate is defence in depth against a
+    stays inside [0.3, 7.0] m/s, so the band gate is defence in depth against a
     mis-specified goal, never a constraint the ILC's own step can bind. If that
     ever stops being true (a wider authority, a wider flight-time band), this
     test fails and the screen has to account for a second binding gate.
+
+    **Re-derived at the WIDENED authority (owner decision 2026-08-13, Gate 1:
+    :data:`ilc_fit_lib.ILC_SPEED_AUTHORITY` = ±0.15, up from ``toss_trim``'s
+    ±0.10).** That decision was taken ON this sweep, so the sweep runs at the new
+    bound and the two rails that sized it are asserted by value: at T = 0.55 s
+    the −15 % rail is **2.30 m/s, 7.7x clear of the 0.3 m/s floor**; at
+    T = 1.10 s the +15 % rail is **6.21 m/s, 1.13x inside the 7.0 m/s ceiling**.
+    The ceiling at the long-flight end is the BINDING side, and the margin there
+    is what a future authority widening spends.
     """
     corners = []
+    rails = {}
     for T in (0.55, lib.CORPUS_FLIGHT_TIME_S, 1.10):
         goal = lib.TossGoal(catch_pose_stow_mm=(0.0, 0.0, 170.0),
                             flight_time_s=T)
-        for dv in (-toss_trim.SPEED_AUTHORITY, +toss_trim.SPEED_AUTHORITY):
+        for dv in (-lib.ILC_SPEED_AUTHORITY, +lib.ILC_SPEED_AUTHORITY):
             u = np.array([0.0, 0.0, dv, 0.0])
             _n, _c, _l, ev = lib.release_state_for_command(u, goal)
             assert validate_event_vel(ev), (
@@ -556,8 +575,18 @@ def test_the_event_vel_band_is_unreachable_inside_the_speed_authority():
             ok, why = lib.admit_command(u, goal)
             assert ok, why
             corners.append(ev)
+            rails[(T, dv)] = ev
     assert min(corners) > hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS
     assert max(corners) < hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS
+
+    # The two rails the Gate-1 decision was taken on, by value.
+    slow = rails[(0.55, -lib.ILC_SPEED_AUTHORITY)]
+    fast = rails[(1.10, +lib.ILC_SPEED_AUTHORITY)]
+    assert slow == pytest.approx(2.30, abs=0.02)
+    assert fast == pytest.approx(6.21, abs=0.02)
+    assert slow / hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS > 7.0
+    # The BINDING side. A margin, not a comfort — 13 % is what is left.
+    assert 1.0 < hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS / fast < 1.2
 
     # ... and the gate itself is real, driven directly rather than inferred from
     # a refusal that some other check produced.
@@ -588,14 +617,34 @@ def test_the_event_vel_gate_is_wired_into_admit_command():
         'the substitution leaked — the real gate must admit the nominal command')
 
 
-def test_the_authority_bound_is_never_widened_by_this_module():
-    """A command past ``toss_trim.SPEED_AUTHORITY`` is REFUSED with the bound's
-    owner named. This module does not widen a safety authority to make its own
-    answer fit; that is an operator decision (Gate 1)."""
+def test_the_speed_authority_is_the_ILCs_own_and_toss_trims_is_untouched():
+    """Gate 1's decision, pinned from both sides.
+
+    The operator widened the ILC's accumulated speed trim to ±0.15 on
+    2026-08-13 (``plans/active/critical-point-ilc.md``, "Gate 1 CLOSED") because
+    the measured corpus asks for −0.1076 and two of three goal cells exceed
+    ±0.10 on their own. The decision was ILC-SPECIFIC, and the thing that makes
+    it safe rather than convenient is that it did NOT touch
+    ``toss_trim.SPEED_AUTHORITY`` — a different loop, a different update law, a
+    different measurand. Both halves are asserted here, because a future edit
+    that "unifies" the two constants would look like tidying and would silently
+    widen the session trim.
+    """
+    assert lib.ILC_SPEED_AUTHORITY == 0.15
+    assert toss_trim.SPEED_AUTHORITY == 0.10
+    assert lib.AUTHORITY[2] == lib.ILC_SPEED_AUTHORITY
+
+    # Inside the ILC bound: ADMITTED, including the value the corpus asks for.
+    for dv in (-0.1076, -lib.ILC_SPEED_AUTHORITY, +lib.ILC_SPEED_AUTHORITY):
+        ok, why = lib.admit_command(np.array([0.0, 0.0, dv, 0.0]), GOAL)
+        assert ok, why
+    # Past it: REFUSED, with the bound's owner named — this module still does
+    # not widen a bound to make its own answer fit.
     ok, why = lib.admit_command(
-        np.array([0.0, 0.0, toss_trim.SPEED_AUTHORITY * 1.01, 0.0]), GOAL)
+        np.array([0.0, 0.0, lib.ILC_SPEED_AUTHORITY * 1.01, 0.0]), GOAL)
     assert not ok
-    assert 'toss_trim.SPEED_AUTHORITY' in why
+    assert 'ILC_SPEED_AUTHORITY' in why
+    assert 'toss_trim.SPEED_AUTHORITY' in why      # named as NOT changed
 
 
 def test_an_inadmissible_goal_is_refused_before_any_fitting():
@@ -964,6 +1013,94 @@ def test_the_admission_gate_is_the_miners_own_flag(corpus):
         ok, why = lib.admit_record(rec)
         if not rec.get('usable_for_release_fit'):
             assert not ok and 'usable_for_release_fit' in why
+
+
+def test_the_E1_admission_refuses_a_pre_whole_arc_mine_and_says_so():
+    """**The guard that makes lifting the E-1 mask safe.**
+
+    ``load_corpus``'s documented glob (``temp/probes/toss_records_*.jsonl``)
+    matches every mine of every bag, and de-duplicates by ``toss_uid`` — by mine
+    STAMP, not by miner version. So a corpus can perfectly well contain rows
+    mined before 2026-08-13, whose lateral velocities came from PER-BRANCH fits
+    and therefore ARE the E-1 artefact: 10.9 mrad of phantom arrival direction,
+    about 44 mm of phantom aim through the 4007 mm/rad landing gain, and
+    repeatable, so averaging does not touch it. With the mask lifted and no
+    gate, that row's
+    aim error would be fitted as plant.
+
+    ``coverage_asym_s`` is the discriminator, because only the whole-arc
+    estimator emits it. Three conditions are pinned here, plus the property that
+    makes the refusal cheap rather than corpus-destroying.
+    """
+    def row(**kw):
+        base = {'usable_for_release_fit': True, 'flight_time_err_s': 0.1,
+                'land_err_mm': [10.0, 20.0],
+                'arrival_dir_err_rad': [0.003, 0.008],
+                'coverage_asym_s': 0.01}
+        base.update(kw)
+        return base
+
+    # 1. A modern row admits on every channel.
+    good = row()
+    assert lib.lateral_admissible(good) == (True, '')
+    assert lib.admit_record(good, need_lateral=True)[0]
+    assert not np.isnan(lib.measured_error(good)).any()
+
+    # 2. A PRE-E-1 mine has no coverage_asym_s. Refused, and the reason names
+    #    the mechanism rather than saying "missing field".
+    stale = row()
+    del stale['coverage_asym_s']
+    ok, why = lib.lateral_admissible(stale)
+    assert not ok and 'whole-arc' in why
+    assert not lib.admit_record(stale, need_lateral=True)[0]
+
+    # 3. A half-seen arc: present, out of bound. ABSOLUTE against the miner's
+    #    constant, so widening COVERAGE_ASYM_MAX_S fails here.
+    import toss_record_miner as miner                                # noqa: E402
+    assert lib.lateral_admissible(
+        row(coverage_asym_s=miner.COVERAGE_ASYM_MAX_S * 0.99))[0]
+    ok, why = lib.lateral_admissible(
+        row(coverage_asym_s=miner.COVERAGE_ASYM_MAX_S * 1.01))
+    assert not ok and 'coverage_asym_s' in why
+
+    # THE PROPERTY THAT MAKES IT CHEAP: a refused row keeps its VERTICAL
+    # channel. `pooled_error` averages per channel, so the stale row still
+    # contributes the flight time it measured perfectly well — losing the whole
+    # row would be paying for the artefact twice.
+    e = lib.measured_error(stale)
+    assert np.isnan(e[:4]).all()
+    assert e[4] == pytest.approx(0.1)
+    assert lib.admit_record(stale)[0], 'the vertical admission must not move'
+    pooled, counts = lib.pooled_error([good, stale])
+    assert list(counts) == [1, 1, 1, 1, 2]
+    assert pooled[1] == pytest.approx(20.0)     # good's value, not an average
+
+
+def test_a_channel_with_no_measurements_is_not_fitted_as_a_measured_zero():
+    """``pooled_error`` returns 0.0 with a count of 0 for an unmeasured channel,
+    and a 0.0 residual under a non-zero weight is NOT "no information" — it is
+    "this channel is already perfect", which cancels corrections the other
+    channels ask for on a coupled column.
+
+    Invisible while the E-1 mask zeroed the lateral channels anyway; reachable
+    the moment it was lifted, which is why ``fit_corpus`` intersects the mask
+    with the counts and returns both.
+    """
+    goal = lib.TossGoal(catch_pose_stow_mm=(0.0, 150.0, 170.0),
+                        flight_time_s=lib.CORPUS_FLIGHT_TIME_S)
+    rows = lib.synthetic_corpus(goal, u_plant=np.array([0.004, 0.0, 0.02, 0.0]),
+                                n=40, seed=11)
+    for r in rows:                       # a corpus with NO lateral measurement
+        del r['coverage_asym_s']
+    fit = lib.fit_corpus(rows, goal=goal)
+    assert list(fit['channel_counts']) == [0, 0, 0, 0, 40]
+    assert list(fit['mask']) == [1.0] * lib.N_E
+    assert list(fit['mask_effective']) == [0.0, 0.0, 0.0, 0.0, 1.0]
+    # The vertical correction still comes out; the aim channels are silent
+    # rather than confidently zero-seeking.
+    assert fit['du'][2] < 0.0
+    assert fit['du'][0] == pytest.approx(0.0, abs=1e-12)
+    assert fit['screen']['retained_labels'] == ('event_vel_trim',)
 
 
 def test_the_G1_uptime_refusal_is_available_and_its_cost_is_visible(corpus):

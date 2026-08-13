@@ -688,6 +688,148 @@ def test_the_lean_error_convention_is_signed_the_same_way_at_both_events(miner):
     assert miner._lean_rad([0.0, 0.0, -4400.0]) == (0.0, 0.0)
 
 
+def _biased_arc(p0, v0, plane, rel_plane, k_bias, t_release=1000.0):
+    """A longhand ballistic arc with a HEIGHT-LOCKED lateral bias on y.
+
+    ``b(z) = k.(z - z_release)`` — the E-1 mechanism, written out: the tracked
+    point is the centroid of the visible reflective cap, so it moves with the
+    ball's HEIGHT, which is an even function of time about the apex.
+    """
+    return [(t, x, y + k_bias * (z - rel_plane), z)
+            for t, x, y, z in _longhand_arc(p0, v0, plane, t_release=t_release)]
+
+
+def test_the_lateral_velocity_comes_from_the_WHOLE_ARC_not_a_branch(miner):
+    """E-1's resolution, driven longhand through ``mine_arc``.
+
+    A height-locked position bias is EVEN in ``tau = t - t_apex`` because height
+    is, so a per-branch lateral slope reads ``v_true +- <db/dz.|vz|>`` — equal
+    and opposite on the two branches, mean = the truth. On the real corpus that
+    was a 104 mm/s branch delta sitting on exactly the aim channels, worth
+    ~10.9 mrad ≈ 44 mm of phantom aim per toss (0.0109 rad through the
+    4007 mm/rad ``4h + dz`` landing gain at the corpus goal — three times the
+    corpus's own 14.7 mm landing scatter), and REPEATABLE, so it would not have
+    averaged away.
+
+    Recipe confirmed with ``tools/probes/mocap_parity_bias.py`` before this test
+    was written (2026-08-13, its ``--self-check`` cases 2-3): at k = 0.02 mm of
+    bias per mm of height the branch estimates land ~44 mm/s either side of the
+    truth while the whole-arc fit lands within ~1.5 mm/s of it.
+
+    Two-sided in the way that matters: the lateral components must MOVE to the
+    whole-arc value, and the VERTICAL component must NOT — the vertical branch
+    split is what makes release-vs-flight a discriminator, and E-1 never touched
+    it.
+    """
+    plane, rel_plane = _planes(miner)
+    p0 = [150.0, -120.0, rel_plane]
+    v0 = [60.0, -25.0, 4436.0]
+    k_bias = 0.02
+    rows = _biased_arc(p0, v0, plane, rel_plane, k_bias)
+    asc, desc = miner.branches(rows, rel_plane, plane)
+    v_asc = miner.fit_ballistic(asc, trim_floor_mm=1e9)[1]
+    v_desc = miner.fit_ballistic(desc, trim_floor_mm=1e9)[1]
+    # The artefact, reproduced: the two branches straddle the truth.
+    assert v_asc[1] > v0[1] + 30.0
+    assert v_desc[1] < v0[1] - 30.0
+
+    data = miner.BagData()
+    data.mocap = rows
+    from jugglebot.motion.trajectory import ballistics_bc as _bc
+    cup, _cv, tof = _bc.arrival_state_at_z(p0, v0, plane, descending=True)
+    ann = {'thrower': 'jugglebot', 'target': 'jugglebot',
+           'throw_time': 1000.0, 'landing_time': 1000.0 + tof,
+           'landing_position': [float(cup[0]), float(cup[1]), plane],
+           'initial_position': list(p0), 'initial_velocity': list(v0),
+           'predicted_tof_sec': tof, 't_bag': 1000.0}
+    out = miner.mine_arc(data, ann, plane)
+
+    for field in ('arrival_vel_mms', 'release_vel_track_mms'):
+        got = out[field]
+        assert got[1] == pytest.approx(v0[1], abs=2.0), field
+        assert abs(got[1] - v_asc[1]) > 30.0, field
+        assert abs(got[1] - v_desc[1]) > 30.0, field
+    # The VERTICAL components are still each branch's own, to the bit.
+    d_pos, d_vel = miner.fit_ballistic(desc)[0], miner.fit_ballistic(desc)[1]
+    dt_arr = _bc.touchdown_time(d_pos, d_vel, plane, descending=True)
+    assert out['arrival_vel_mms'][2] == pytest.approx(
+        float(_bc.velocity_at(d_vel, dt_arr)[2]), abs=1e-9)
+    # ... and the direction channels inherit the fix rather than needing one.
+    assert out['arrival_dir_err_rad'][1] == pytest.approx(0.0, abs=5e-4)
+    assert out['release_dir_err_rad'][1] == pytest.approx(0.0, abs=5e-4)
+
+
+def test_the_coverage_asym_gate_is_its_own_flag_and_refuses_a_stale_mine(miner):
+    """The E-1 admission gate: what it refuses, and what it must NOT refuse.
+
+    ``coverage_asym_s`` is the mean sample time's offset from the fitted apex —
+    the residual leak's driver, since ``cov(tau, b)`` is exactly zero for
+    coverage symmetric about the apex. Three things are pinned:
+
+    1. a whole arc reports a SMALL asymmetry and admits;
+    2. a truncated arc reports a large one and is refused — the case the gate
+       exists for;
+    3. ``usable_for_lateral_fit`` is a SEPARATE flag. Folding it into
+       ``usable_for_aim_fit`` would drop rows from the aim MAP's fit, which
+       consumes ``land_err_mm`` — a landing POSITION the branch artefact never
+       touched — and the vertical flags must not move either.
+
+    And the one that protects a mixed corpus: a row with NO ``coverage_asym_s``
+    is a PRE-2026-08-13 mine whose lateral velocities are the artefact itself, so
+    absence refuses rather than defaulting to pass.
+    """
+    plane, rel_plane = _planes(miner)
+    p0 = [150.0, -120.0, rel_plane]
+    v0 = [60.0, -25.0, 4436.0]
+    rows = _longhand_arc(p0, v0, plane)
+    data = miner.BagData()
+    data.mocap = rows
+    ann = {'throw_time': 1000.0, 'landing_time': 1000.9,
+           'landing_position': [150.0, -120.0, plane],
+           'initial_position': list(p0), 'initial_velocity': list(v0),
+           'predicted_tof_sec': 0.9}
+    whole = miner.mine_arc(data, ann, plane)
+    assert abs(whole['coverage_asym_s']) < miner.COVERAGE_ASYM_MAX_S
+    assert whole['arc_fit_n'] >= 2 * miner.RELEASE_FIT_MIN_SAMPLES
+
+    # Cut the descending branch short — a half-seen arc.
+    apex_t = max(rows, key=lambda r: r[3])[0]
+    data.mocap = [r for r in rows if r[0] <= apex_t + 0.15]
+    cut = miner.mine_arc(data, ann, plane)
+    assert abs(cut['coverage_asym_s']) > miner.COVERAGE_ASYM_MAX_S
+
+    def flags(**kw):
+        row = {'label': 'CAUGHT', 't_departure_raw_ros': 1.0,
+               'land_xy_global_mm': [0.0, 0.0], 'fit_rms_mm': 0.5,
+               'backcast_fit_n': 60, 'arrival_fit_n': 67,
+               'release_vel_se_mms': 7.0}
+        row.update(kw)
+        miner._mark_usable(row)
+        return row
+
+    ok = flags(coverage_asym_s=whole['coverage_asym_s'])
+    bad = flags(coverage_asym_s=cut['coverage_asym_s'])
+    stale = flags()
+    assert (ok['usable_for_lateral_fit'], bad['usable_for_lateral_fit'],
+            stale['usable_for_lateral_fit']) == (True, False, False)
+    # The other four flags are untouched by the lateral refusal, in BOTH the
+    # refused-measurement case and the stale-mine case.
+    for row in (bad, stale):
+        for flag in ('usable_for_aim_fit', 'usable_for_speed_fit',
+                     'usable_for_timing_fit', 'usable_for_release_fit'):
+            assert row[flag] is True, flag
+    # A refused MEASUREMENT says why; an absent one does not invent a reason.
+    assert bad['excluded_reason'] == 'coverage_asym'
+    assert stale['excluded_reason'] is None
+    # The threshold is ABSOLUTE, so widening COVERAGE_ASYM_MAX_S fails here.
+    assert flags(coverage_asym_s=0.099)['usable_for_lateral_fit'] is True
+    assert flags(coverage_asym_s=0.101)['usable_for_lateral_fit'] is False
+    # A plane mismatch takes the lateral flag with it: arrival_dir_err_rad is a
+    # LEAN, and its |vz| denominator is the descending fit at the fit plane.
+    miner.refuse_plane(ok)
+    assert ok['usable_for_lateral_fit'] is False
+
+
 def test_a_bounce_back_up_ends_the_descending_branch(miner):
     """The post-contact excursion guard, restated for a branch whose sub-plane
     rows are already gone: the ball coming back UP is the signal."""

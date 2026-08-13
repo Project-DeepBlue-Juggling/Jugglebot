@@ -91,25 +91,34 @@ excludes it by the same rank test that would exclude any other degenerate
 channel. No private model of a stroke-phase-dependent release was written; there
 is no production model of one to call.
 
-E-1 AND WHY ``F`` IS STILL COMPUTED FULL-SIZE
----------------------------------------------
-Phase 1's entry condition E-1 (2026-08-12, from 0c) is open: a ±100 mm/s
-repeatable branch-to-branch velocity artefact sits on exactly the lateral
-channels, leading hypothesis visible-centroid bias. So the **measured** lateral
-channels are excluded from the fit until it closes — :data:`E1_BLOCKED` masks
-``land_err_x``, ``land_err_y``, ``arrival_dir_x``, ``arrival_dir_y`` out of every
-residual this module fits. It does **not** mask them out of ``F``: ``F`` is
-model-only, computed by differencing the planner, and the mocap artefact cannot
-reach it. Computing it full-size is what lets the conditioning report and the v1
-screen speak about all four command channels today, and it is what makes closing
-E-1 a *mask change* rather than a re-derivation.
+E-1: CLOSED 2026-08-13, AND IT WAS A MASK CHANGE
+-------------------------------------------------
+Phase 1's entry condition E-1 (opened 2026-08-12 from 0c) was a ±100 mm/s
+repeatable branch-to-branch velocity artefact sitting on exactly the lateral
+channels. Between those two dates :data:`E1_BLOCKED` masked ``land_err_x``,
+``land_err_y``, ``arrival_dir_x``, ``arrival_dir_y`` out of every residual this
+module fitted, while ``F`` stayed full-size — ``F`` is model-only, computed by
+differencing the planner, and no mocap artefact can reach it. That separation is
+what made this a mask change rather than a re-derivation, and it is why the
+closure edit is :data:`DEFAULT_MASK` and nothing else.
 
-Corroboration of E-1's size from this corpus, because it is worth seeing next to
-the exclusion (n = 19 usable rows, mined 2026-08-12): the release-branch lean
-runs ``+0.0181 rad`` in y and the arrival-branch lean ``−0.0024`` rad, a
-branch-to-branch delta of 0.0205 rad = **91 mm/s** at the 4436 mm/s release —
-the artefact, at its stated magnitude, sitting on the aim channels at three
-times the size of their own scatter (sd 0.0030 / 0.0020 rad).
+The mechanism is a **measurement bias, confirmed by parity about the apex**: the
+tracked point is the centroid of the visible retroreflective cap, so it carries a
+height-locked ``b(z)``; height is EVEN in ``tau = t − t_apex``, so the bias
+enters a lateral channel as an even function while any aerodynamic force is ODD.
+The fix lives in the MINER (``toss_record_miner.mine_arc`` takes every lateral
+velocity from a whole-arc fit, which is bias-immune by parity, and mines
+``coverage_asym_s`` with a refusal past ``COVERAGE_ASYM_MAX_S``), and the
+evidence is reproducible from ``tools/probes/mocap_parity_bias.py``. See
+:data:`DEFAULT_MASK` for the numbers and :func:`lateral_admissible` for the
+admission requirement that keeps a pre-E-1 corpus from re-opening it.
+
+What the artefact was worth, kept for scale (n = 19 usable rows, mined
+2026-08-12, PER-BRANCH estimators): the release-branch lean ran ``+0.0181 rad``
+in y against the arrival-branch ``−0.0024`` rad, a branch-to-branch delta of
+0.0205 rad = **91 mm/s** at the 4436 mm/s release — three times the aim
+channels' own scatter (sd 0.0030 / 0.0020 rad), and repeatable, so it would not
+have averaged away.
 
 THE AIM BLOCK'S CROSS-CHECK IS AN IDENTITY, NOT A TOLERANCE
 ------------------------------------------------------------
@@ -215,11 +224,18 @@ from jugglebot.toss_sequencer import (                              # noqa: E402
 # constraint 1 names.
 import toss_record_miner as _miner                                  # noqa: E402
 
+#: The E-1 lateral-admission threshold, RE-EXPORTED from the miner rather than
+#: copied. The miner owns it because the miner is what measures
+#: ``coverage_asym_s``; this module needs the name so a CLI and a test can print
+#: and pin the same number without reaching into a private import.
+COVERAGE_ASYM_MAX_S = _miner.COVERAGE_ASYM_MAX_S
+
 __all__ = [
     'IlcFitError', 'TossGoal',
     'U_CHANNELS', 'U_LABELS', 'N_U', 'CATCH_CHANNELS',
-    'E_LABELS', 'N_E', 'E1_BLOCKED', 'E1_MASK', 'SIGMA_E',
-    'FD_STEPS', 'TAU0', 'AUTHORITY', 'RHO_DAMPING', 'MAX_TRUST_SHRINKS',
+    'E_LABELS', 'N_E', 'E1_BLOCKED', 'E1_MASK', 'DEFAULT_MASK', 'SIGMA_E',
+    'FD_STEPS', 'TAU0', 'AUTHORITY', 'ILC_SPEED_AUTHORITY', 'RHO_DAMPING',
+    'MAX_TRUST_SHRINKS', 'lateral_admissible', 'COVERAGE_ASYM_MAX_S',
     'REPEATABILITY_MIN', 'zero_command', 'catch_channel',
     'release_state_for_command', 'e_model', 'release_speed_err_model',
     'sensitivity', 'conditioning', 'screen_channels',
@@ -263,6 +279,41 @@ class UChannel(NamedTuple):
     tau0: float          # proposed per-iteration trust region (PROVISIONAL)
 
 
+#: **The ILC's own accumulated-``event_vel_trim`` authority. OWNER DECISION,
+#: 2026-08-13, Gate 1** (``plans/active/critical-point-ilc.md``, "Gate 1 CLOSED
+#: 2026-08-13 (owner decisions): (1) the speed-authority question below is
+#: DECIDED as option (a) — an ILC-specific ±0.15 authority").
+#:
+#: It exists because the measured corpus asks for more than ``toss_trim``'s
+#: ±0.10: the pooled vertical residual requires ``event_vel_trim = −0.1076``,
+#: and that is not a pooling artefact — per goal cell it is −0.096 / −0.112 /
+#: −0.124 (n = 8/6/3), so two of three cells exceed ±0.10 on their own.
+#:
+#: **``toss_trim.SPEED_AUTHORITY`` IS NOT CHANGED and must not be.** That
+#: constant bounds the SESSION TRIM, a different loop with a different update
+#: law, a different measurand and a different operator model; widening it here
+#: would silently widen that one. This is a second, named bound, owned by this
+#: module, applied to this module's channel.
+#:
+#: The safety argument, root cause first rather than by appeal to the gate memo:
+#:
+#: * a speed trim cannot walk the hand into its end stop — ``STROKE_TOP_REV`` is
+#:   algebraically velocity-independent, so the stroke's TRAVEL is unchanged by
+#:   any ``k_v``;
+#: * ``validate_event_vel`` still gates every command against the bridge's
+#:   [0.3, 7.0] m/s acceptance band, and :func:`admit_command` runs it;
+#: * **and the band is unreachable anywhere in the sequencer's flight-time
+#:   band**, which is the measurement that makes the first two more than
+#:   assertions. Measured by rail sweep over [FLIGHT_TIME_MIN_S,
+#:   FLIGHT_TIME_MAX_S] = [0.55, 1.10] s: at T = 0.55 s the −15 % rail gives
+#:   **2.30 m/s, 7.7× clear of the 0.3 m/s floor**; at T = 1.10 s the +15 % rail
+#:   gives **6.21 m/s, 1.13× inside the 7.0 m/s ceiling**. The ceiling at the
+#:   long-flight end is the BINDING side and it is the one to watch if the
+#:   sequencer's band ever widens — ``test_the_event_vel_band_is_unreachable_
+#:   inside_the_speed_authority`` re-derives both rails rather than restating
+#:   them.
+ILC_SPEED_AUTHORITY = 0.15
+
 #: THE throw-side command vector. Order is load-bearing: it indexes every ``u``
 #: array, every column of ``F`` and every screen verdict in this module.
 #:
@@ -274,10 +325,12 @@ class UChannel(NamedTuple):
 #: which is what makes the plan's eventual "absorb the aim map" decision a
 #: question about update laws rather than about representations.
 #:
-#: **event_vel_trim** is ``k_v − 1`` in ``toss_trim``'s parametrisation, so its
-#: authority is that module's :data:`~jugglebot.toss_trim.SPEED_AUTHORITY`
-#: verbatim rather than a number invented here. See the module docstring for why
-#: the multiply is the one non-production operation in the file.
+#: **event_vel_trim** is ``k_v − 1`` in ``toss_trim``'s parametrisation. Its
+#: authority was that module's ``SPEED_AUTHORITY`` verbatim until Gate 1 closed;
+#: it is now :data:`ILC_SPEED_AUTHORITY`, an ILC-specific ±0.15 the owner decided
+#: on 2026-08-13 with the rail sweep in front of them. See that constant for the
+#: whole argument, and the module docstring for why the multiply is the one
+#: non-production operation in the file.
 #:
 #: **release_timing_offset** is seconds of shift on the dispatch's
 #: ``event_delay`` (``hw.JB_OP_TOSS_RELEASE_LATENCY_MS`` is the shipped
@@ -313,19 +366,24 @@ U_CHANNELS: Tuple[UChannel, ...] = (
         seam=('multiplies release_cmd.event_vel_mps — '
               'toss_trim.SessionTrim.speed_gain\'s documented semantic; '
               'NOT WIRED in production (Phase 2 wires it)'),
-        authority=toss_trim.SPEED_AUTHORITY,
-        authority_src='toss_trim.SPEED_AUTHORITY (+-10 %)',
-        # 1e-4 = 0.01 %, 1/1000 of the authority and ~4x the double-precision
+        authority=ILC_SPEED_AUTHORITY,
+        authority_src=('ilc_fit_lib.ILC_SPEED_AUTHORITY (+-15 %, owner '
+                       'decision 2026-08-13 Gate 1; toss_trim.SPEED_AUTHORITY '
+                       'is +-10 % and is deliberately NOT changed)'),
+        # 1e-4 = 0.01 %, 1/1500 of the authority and ~4x the double-precision
         # noise floor of the two ballistic solves it passes through.
         fd_step=1e-4,
-        # 0.040, and it is a bracket rather than a taste. FLOOR: never chase
+        # 0.040, and it is a bracket rather than a taste — APPROVED as proposed
+        # in the Gate-1 sizing memo (owner, 2026-08-13). FLOOR: never chase
         # noise — 2x the noise-equivalent command (2 * se(flight-time mean)
         # 0.0032 s / 0.906 s per unit) = 0.007. CEILING: never let one step
-        # spend the whole authority — 0.10. INSIDE that, the binding constraint
-        # is Phase 3's "k <= 3 iterations" criterion against the MEASURED
-        # requirement of 0.1076, i.e. tau >= 0.0359. 0.040 is the smallest
-        # round value that meets it, and smallest is the right end of the
-        # bracket to sit on: a smaller step is less exposure to a wrong F.
+        # spend the whole authority — 0.15 since the memo, and 0.040 was already
+        # inside the tighter 0.10 the bracket was drawn against, so the widening
+        # does not move it. INSIDE that, the binding constraint is Phase 3's
+        # "k <= 3 iterations" criterion against the MEASURED requirement of
+        # 0.1076, i.e. tau >= 0.0359. 0.040 is the smallest round value that
+        # meets it, and smallest is the right end of the bracket to sit on: a
+        # smaller step is less exposure to a wrong F.
         tau0=0.040),
     UChannel(
         name='release_timing_offset', unit='s',
@@ -408,15 +466,48 @@ E_LABELS: Tuple[str, ...] = ('land_err_x', 'land_err_y',
                              'flight_time_err')
 N_E = len(E_LABELS)
 
-#: Channels the **E-1 entry condition** excludes from FITTING until the lateral
-#: branch-to-branch artefact is resolved. The vertical channel is unaffected and
-#: is usable immediately — the plan says so in as many words, and it is the one
-#: the ~11 %-fast throw lives on.
+#: **HISTORICAL** — the channels entry condition E-1 excluded from FITTING
+#: between 2026-08-12 and 2026-08-13, kept by name because the plan, the logbook
+#: and this module's own screen all refer to it, and because a reader needs to be
+#: able to reproduce the masked answer from the same corpus.
 E1_BLOCKED: Tuple[str, ...] = ('land_err_x', 'land_err_y',
                                'arrival_dir_x', 'arrival_dir_y')
-#: 1.0 where a channel is fitted, 0.0 where E-1 blocks it.
+#: 1.0 where a channel was fitted under E-1, 0.0 where E-1 blocked it.
 E1_MASK = np.array([0.0 if lbl in E1_BLOCKED else 1.0 for lbl in E_LABELS],
                    dtype=float)
+
+#: **THE MODULE-WIDE DEFAULT MASK — full-size since 2026-08-13.**
+#:
+#: E-1 CLOSED 2026-08-13. Owner-adopted resolution, evidence in
+#: ``plans/active/critical-point-ilc.md`` § Phase 1 E-1 and reproducible from
+#: ``tools/probes/mocap_parity_bias.py``: the lateral branch-to-branch artefact
+#: was a height-locked **measurement** bias (the tracked point is the centroid of
+#: the visible retroreflective cap), CONFIRMED by parity decomposition about the
+#: apex — a position bias is EVEN in ``tau = t - t_apex`` while any aerodynamic
+#: force is ODD, and the measured even part repeats across 19 arcs, three object
+#: positions and two sittings at 1.45 mm cross-arc sd (pairwise r = 0.998). A
+#: bias profile fitted on OTHER arcs collapses the branch delta from −104.4 mm/s
+#: to 13.1 mm/s leave-one-out. Magnus was refuted twice (parity, and a
+#: data-derived aero bound); spin was refuted by residual periodicity 40–60× too
+#: small.
+#:
+#: The fix is in the MINER, not here: ``toss_record_miner.mine_arc`` takes every
+#: lateral velocity from a WHOLE-ARC fit, which is bias-immune by parity, and
+#: mines ``coverage_asym_s`` — the residual leak's driver — with a refusal past
+#: ``COVERAGE_ASYM_MAX_S``. So closing E-1 IS a mask change here, exactly as the
+#: plan said it would be, and this constant is that change.
+#:
+#: **The admission requirement that makes it safe.** A corpus glob
+#: (``temp/probes/toss_records_*.jsonl``) happily matches files mined BEFORE the
+#: whole-arc estimator, whose lateral channels are the artefact itself — 10.9
+#: mrad ≈ 44 mm of phantom aim per toss (0.0109 rad through the 4007 mm/rad
+#: ``4h + dz`` landing gain at the corpus goal), repeatable, so it would not
+#: average away. :func:`admit_record` therefore requires a present, in-bound
+#: ``coverage_asym_s`` before any lateral channel is read, and
+#: :func:`measured_error` returns ``nan`` in the lateral channels of a row that
+#: fails it. One enforcement point each, and a stale file loses its lateral
+#: channels rather than the whole corpus.
+DEFAULT_MASK = np.ones(N_E, dtype=float)
 
 #: Per-channel measurement noise, in each channel's own unit. **PROVISIONAL**
 #: until a corpus larger than 19 rows exists, in the convention
@@ -431,6 +522,30 @@ E1_MASK = np.array([0.0 if lbl in E1_BLOCKED else 1.0 for lbl in E_LABELS],
 #:   0.0122 s the 23 %-plant / 77 %-noise decomposition implies: a Q weight that
 #:   under-states the noise over-trusts the channel, and the decomposition rests
 #:   on one correlation coefficient at n = 19.
+#:
+#: **STALE IN ONE CHANNEL, deliberately not fixed here (2026-08-13).** The E-1
+#: re-mine changed the lateral estimator, so ``arrival_dir``'s measured scatter
+#: moved: on the re-mined corpus the per-axis sd is 0.00296 / 0.00308, pooled
+#: **0.00302 rad**, i.e. 27 % above the 0.00238 sitting in this array. ``land_err``
+#: (14.73 vs 14.7) and ``flight_time`` (0.01385 vs 0.0139) are unchanged, because
+#: their estimators were. This array is NOT updated because Gate 1 approved
+#: ``Q = diag(1/sigma^2)`` with these numbers on 2026-08-13 and re-deriving an
+#: approved weight is an owner decision, not a tidy-up. The cost of leaving it is
+#: bounded and measured: it over-trusts ``arrival_dir`` relative to ``land_err``,
+#: moving the pooled aim requirement from |aim| = 0.00997 to 0.01044 rad
+#: (57.1 % -> 59.8 % of the D7 authority) — inside the authority either way.
+#:
+#: **The gap the weights are arbitrating is NOT noise, and this is the finding to
+#: carry forward.** The two lateral channels disagree SYSTEMATICALLY, in y only,
+#: by +18.0 mm at the plane (pooled; +17.4 / +19.5 / +15.4 across the three goal
+#: cells) while agreeing in x to under 1.3 mm. ``land_err_mm`` is a POSITION fit
+#: at the catch plane and so carries the centroid bias b_y(z_plane) absolutely;
+#: ``arrival_dir_err_rad`` is a whole-arc VELOCITY and is bias-immune. So the gap
+#: is a direct read-out of the standing E-1 caveat — only the bias GRADIENT was
+#: measured, never the absolute offset — and its size (~18 mm) is the same order
+#: as the measured b_y profile's own span (21 mm). Until the fixtured no-robot
+#: capture closes that, a mocap-closed aim loop converges to the measurement's
+#: cup, not the world's, and these two channels are how far apart those are.
 SIGMA_E = np.array([14.7, 14.7, 0.00238, 0.00238, 0.0139], dtype=float)
 
 #: The cross-check channel (NOT part of ``e``). ``release_speed_err_mms`` is the
@@ -665,19 +780,24 @@ def sensitivity(u=None, goal: Optional[TossGoal] = None, *,
 
 
 def weight_matrix(sigma_e=None, mask=None) -> np.ndarray:
-    """``Q = diag(mask / sigma^2)`` — measurement-noise whitening, E-1 masked.
+    """``Q = diag(mask / sigma^2)`` — measurement-noise whitening.
 
     ``Q`` is a chi-square weighting, which is the honest default when the
     channels carry different units (mm, rad and s cannot be summed without one).
     The alternative — task-priority weighting, where a task-critical but noisy
     channel keeps its weight — is a REAL decision this module deliberately does
-    not make: under E-1 exactly one channel survives the mask, so the two
-    weightings produce the identical v1 step and choosing between them on today's
-    evidence would be choosing on no evidence at all. Gate 1 records it as
-    deferred.
+    not make, and Gate 1 recorded it as deferred. **It stopped being free on
+    2026-08-13.** Under E-1 exactly one channel survived the mask, so the two
+    weightings produced the identical step; with the mask lifted, the aim answer
+    is a chi-square compromise between ``land_err`` (whitened weight
+    ``|F|/sigma`` = 273) and ``arrival_dir`` (422), and the two do NOT agree —
+    on the 2026-08-13 corpus ``land_err`` alone asks for ``aim_rx`` = +0.01249
+    rad and ``arrival_dir`` alone for +0.00798. See :data:`SIGMA_E`'s note on
+    what that gap is, and do not read the pooled answer as though the channels
+    corroborated each other.
     """
     s = SIGMA_E if sigma_e is None else np.asarray(sigma_e, dtype=float)
-    m = E1_MASK if mask is None else np.asarray(mask, dtype=float)
+    m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
     return np.diag(m / (s ** 2))
 
 
@@ -701,18 +821,18 @@ def conditioning(F, *, sigma_e=None, tau=None, mask=None) -> Dict[str, Any]:
     value — reported separately because that coincidence is a property of this
     plant, not of the method).
 
-    ``mask=None`` means :data:`E1_MASK`, the SAME default as
+    ``mask=None`` means :data:`DEFAULT_MASK`, the SAME default as
     :func:`weight_matrix`, :func:`solve_step`, :func:`required_command`,
     :func:`iterate` and :func:`fit_corpus`. One default across the whole module,
-    because the alternative — this family defaulting to the full-size mask and
-    that family to E-1 — is how a report and the step it justifies come to
-    describe two different systems. The full-size report is available, and it is
-    now an EXPLICIT ``mask=np.ones(N_E)``.
+    because the alternative — this family defaulting to one mask and that family
+    to another — is how a report and the step it justifies come to describe two
+    different systems. Since E-1 closed (2026-08-13) that default is FULL SIZE;
+    the historical masked answer is an EXPLICIT ``mask=E1_MASK``.
     """
     F = np.asarray(F, dtype=float).reshape(N_E, N_U)
     s = SIGMA_E if sigma_e is None else np.asarray(sigma_e, dtype=float)
     t = TAU0 if tau is None else np.asarray(tau, dtype=float)
-    m = E1_MASK if mask is None else np.asarray(mask, dtype=float)
+    m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
     F_hat = (np.diag(m / s) @ F) @ np.diag(t)
     U, sv, Vt = np.linalg.svd(F_hat)
     keep = sv > (sv[0] * 1e-12 if sv.size and sv[0] > 0 else 0.0)
@@ -754,10 +874,12 @@ def screen_channels(F, *, sigma_e=None, tau=None, mask=None) -> Dict[str, Any]:
     FIRST that fires, because a degenerate-and-silent channel is more usefully
     named silent):
 
-    1. **blocked by E-1** — the channel clears the floor on the UNMASKED matrix
-       but not under ``mask``. That is a different fact from "this channel is
-       weak", and conflating the two would make closing E-1 look like a
-       re-derivation instead of the mask change it is.
+    1. **blocked by the MASK** — the channel clears the floor on the UNMASKED
+       matrix but not under ``mask``. That is a different fact from "this channel
+       is weak", and keeping the two apart is what made closing E-1 a mask change
+       rather than a re-derivation. Since 2026-08-13 the default mask is full
+       size, so this rule fires only for a caller who passes :data:`E1_MASK`
+       explicitly — which is exactly how the historical answer is reproduced.
     2. **below the noise floor** — scaled column norm < :data:`SCREEN_SNR_MIN`.
        A structurally-zero column (``release_timing_offset``) lands here with a
        norm of exactly 0.0 whether or not a mask is applied.
@@ -765,13 +887,12 @@ def screen_channels(F, *, sigma_e=None, tau=None, mask=None) -> Dict[str, Any]:
        :data:`SCREEN_COS_MAX`.
     4. otherwise **retained**.
 
-    ``mask=None`` means :data:`E1_MASK` — the v1 answer, and the module-wide
-    default (see :func:`conditioning`). The full-size report the plan asks for
-    ("F is computed full-size ... and the SVD screen reports on all channels") is
-    an EXPLICIT ``mask=np.ones(N_E)``; rule 1 above still needs the full-size
-    matrix internally, and computes it regardless of what was asked for.
+    ``mask=None`` means :data:`DEFAULT_MASK`, the module-wide default (see
+    :func:`conditioning`), which is FULL SIZE since E-1 closed. Rule 1 still
+    needs the full-size matrix internally and computes it regardless of what was
+    asked for, so the historical ``mask=E1_MASK`` report is unchanged.
     """
-    m = E1_MASK if mask is None else np.asarray(mask, dtype=float)
+    m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
     full = np.ones(N_E)
     rep = conditioning(F, sigma_e=sigma_e, tau=tau, mask=m)
     unmasked = (rep if np.array_equal(m, full)
@@ -1037,7 +1158,7 @@ def required_command(F, e_meas, *, mask=None, sigma_e=None) -> np.ndarray:
     F = np.asarray(F, dtype=float).reshape(N_E, N_U)
     e = np.asarray(e_meas, dtype=float).reshape(N_E)
     s = SIGMA_E if sigma_e is None else np.asarray(sigma_e, dtype=float)
-    m = E1_MASK if mask is None else np.asarray(mask, dtype=float)
+    m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
     W = np.diag(m / s)
     return np.linalg.pinv(W @ F) @ (-(W @ e))
 
@@ -1056,17 +1177,23 @@ def authority_report(F, e_meas, *, mask=None, sigma_e=None) -> Dict[str, Any]:
     ``joint_fraction`` beside their per-axis ``required`` / ``fraction``, and
     their ``exceeds`` is the joint verdict.
 
-    This is the question the trust-region loop cannot answer — it
-    asymptotes toward a bound rather than reporting it — and it is the one Gate 1
-    has to decide, because the answer on the present corpus is *no by a small
-    margin*: the pooled vertical residual asks for ``event_vel_trim`` = −0.108
-    against ``toss_trim.SPEED_AUTHORITY`` = 0.10.
+    This is the question the trust-region loop cannot answer — it asymptotes
+    toward a bound rather than reporting it — and it is the one Gate 1 had to
+    decide. On the present corpus the pooled vertical residual asks for
+    ``event_vel_trim`` = −0.1076, which exceeded ``toss_trim.SPEED_AUTHORITY``
+    (±0.10) by 7.6 %. **The operator decided it on 2026-08-13**, on the rail
+    sweep this module supplied: an ILC-SPECIFIC :data:`ILC_SPEED_AUTHORITY` of
+    ±0.15, leaving ``toss_trim``'s bound untouched. The required command is now
+    72 % of the bound and this report says ``ok``.
 
-    This module states that and stops. Widening a safety authority is an operator
-    decision with a physics argument attached (``STROKE_TOP_REV`` is
-    algebraically velocity-independent, so a speed trim cannot walk the hand into
-    its end stop, and ``validate_event_vel`` still gates the result) — but it is
-    not a decision a fit library makes about itself.
+    That is what a widening looks like when it is done properly, and the shape is
+    the point: this module still refuses rather than widening, the widened bound
+    is a NEW named constant owned by the loop that needed it, and the physics
+    argument is attached (``STROKE_TOP_REV`` is algebraically
+    velocity-independent, so a speed trim cannot walk the hand into its end stop;
+    ``validate_event_vel`` still gates the result; and neither rail is reachable
+    anywhere in the sequencer's flight-time band). A fit library does not decide
+    this about itself.
     """
     need = required_command(F, e_meas, mask=mask, sigma_e=sigma_e)
     # The aim pair's bound is on its MAGNITUDE (toss_cal.clamp_total_aim), so its
@@ -1147,7 +1274,7 @@ def iterate(goal: TossGoal, e_meas, *, n_iter: int = 3, u0=None, tau=None,
     """
     u = zero_command() if u0 is None else np.asarray(u0, dtype=float).reshape(N_U)
     e = np.asarray(e_meas, dtype=float).reshape(N_E)
-    m = E1_MASK if mask is None else np.asarray(mask, dtype=float)
+    m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
     out: List[Dict[str, Any]] = []
     for k in range(int(n_iter)):
         F = sensitivity(u, goal)
@@ -1327,6 +1454,50 @@ def _pair(value: Any) -> Optional[Tuple[float, float]]:
     return None if a is None or b is None else (a, b)
 
 
+def lateral_admissible(rec: Dict[str, Any]) -> Tuple[bool, str]:
+    """May this row's LATERAL channels be read at all? ``(ok, reason)``.
+
+    **THE E-1 admission requirement, and the single enforcement point for it.**
+    Both :func:`admit_record` (``need_lateral``) and :func:`measured_error` go
+    through here, so there is exactly one definition of "this row's lateral
+    numbers are trustworthy" and a caller cannot get the channels by a different
+    door.
+
+    Two conditions, in this order:
+
+    1. ``coverage_asym_s`` present, and within
+       ``toss_record_miner.COVERAGE_ASYM_MAX_S``. **Absence is a refusal, not a
+       default-pass**, and that is the whole point: the field only exists on rows
+       mined after the whole-arc estimator landed (2026-08-13). A row mined
+       before it carries PER-BRANCH lateral velocities, i.e. the E-1 artefact
+       itself — 10.9 mrad of phantom arrival direction, ≈44 mm of phantom aim,
+       and REPEATABLE, so it does not average away. The documented corpus glob
+       matches both mines (:func:`load_corpus`'s de-duplication is by
+       ``toss_uid``, not by miner version), so without this check lifting the
+       mask would silently re-open E-1 on any corpus with a stale file in it.
+    2. the channels themselves present — ``land_err_mm`` and
+       ``arrival_dir_err_rad``.
+
+    The threshold is IMPORTED from the miner rather than restated, for the same
+    reason ``_lean_rad`` is: one definition of the gate, or the corpus and the
+    fit disagree about which rows are in it.
+    """
+    asym = _num(rec.get('coverage_asym_s'))
+    if asym is None:
+        return False, ('no coverage_asym_s — mined before the E-1 whole-arc '
+                       'estimator, so its lateral channels ARE the artefact')
+    if abs(asym) > COVERAGE_ASYM_MAX_S:
+        return False, ('coverage_asym_s {:+.4f} s exceeds {:.2f} s — a '
+                       'half-seen arc, where the whole-arc fit\'s parity '
+                       'cancellation no longer holds'
+                       .format(asym, COVERAGE_ASYM_MAX_S))
+    if _pair(rec.get('land_err_mm')) is None:
+        return False, 'no land_err_mm'
+    if _pair(rec.get('arrival_dir_err_rad')) is None:
+        return False, 'no arrival_dir_err_rad'
+    return True, ''
+
+
 def admit_record(rec: Dict[str, Any], *, need_lateral: bool = False,
                  uptime_max_ms: Optional[float] = None) -> Tuple[bool, str]:
     """Is this row admissible to the ILC fit? ``(ok, reason)``.
@@ -1338,9 +1509,13 @@ def admit_record(rec: Dict[str, Any], *, need_lateral: bool = False,
     becomes unreproducible. On top of it:
 
     * the vertical channels must be present (``flight_time_err_s``);
-    * ``need_lateral`` additionally requires ``land_err_mm`` and
-      ``arrival_dir_err_rad`` — used only by the reporting paths, since E-1
-      blocks those channels from the fit itself;
+    * ``need_lateral`` additionally requires :func:`lateral_admissible`.
+      **It is NOT the default**, and that asymmetry is deliberate: a row with a
+      clean flight time and no landing fit is a perfectly good vertical-channel
+      measurement, and :func:`pooled_error` averages per CHANNEL, so refusing the
+      whole row would throw away vertical data to protect a lateral channel that
+      :func:`measured_error` has already nulled. Pass ``need_lateral=True`` when
+      a caller needs a row that can answer on every channel;
     * ``uptime_max_ms`` is the plan's G-1 defence-in-depth refusal
       (*"the learner refuses records whose uptime_ms exceeds the healthy
       threshold"*) and it defaults to **None = no refusal**. Not an oversight:
@@ -1353,10 +1528,9 @@ def admit_record(rec: Dict[str, Any], *, need_lateral: bool = False,
     if _num(rec.get('flight_time_err_s')) is None:
         return False, 'no flight_time_err_s'
     if need_lateral:
-        if _pair(rec.get('land_err_mm')) is None:
-            return False, 'no land_err_mm'
-        if _pair(rec.get('arrival_dir_err_rad')) is None:
-            return False, 'no arrival_dir_err_rad'
+        ok, why = lateral_admissible(rec)
+        if not ok:
+            return False, why
     if uptime_max_ms is not None:
         up = _num(rec.get('uptime_ms_at_release'))
         if up is None:
@@ -1375,14 +1549,20 @@ def measured_error(rec: Dict[str, Any]) -> np.ndarray:
     the miner already differenced each channel against the production nominal
     (``mine_arc``), so recomputing anything here would be a second definition of
     the measurand.
+
+    **One gate, and it is not arithmetic either**: a row that fails
+    :func:`lateral_admissible` comes back ``nan`` in the four lateral channels
+    and keeps its vertical one. This is where the E-1 refusal has to live — the
+    channels are pooled with a per-channel ``nanmean`` (:func:`pooled_error`), so
+    a stale row that merely failed ``admit_record(need_lateral=True)`` would
+    still contribute its contaminated lateral numbers through every path that
+    admits on the vertical channel alone. Refusing at the read is the only place
+    that closes all of them at once.
     """
     out = np.full(N_E, np.nan, dtype=float)
-    land = _pair(rec.get('land_err_mm'))
-    if land is not None:
-        out[0], out[1] = land
-    adir = _pair(rec.get('arrival_dir_err_rad'))
-    if adir is not None:
-        out[2], out[3] = adir
+    if lateral_admissible(rec)[0]:
+        out[0], out[1] = _pair(rec.get('land_err_mm'))
+        out[2], out[3] = _pair(rec.get('arrival_dir_err_rad'))
     ft = _num(rec.get('flight_time_err_s'))
     if ft is not None:
         out[4] = ft
@@ -1838,6 +2018,13 @@ def synthetic_corpus(goal: TossGoal, *, u_plant, n: int = 12,
             'backcast_fit_n': 60, 'arrival_fit_n': 60,
             'release_vel_se_mms': 7.5, 'arrival_vel_se_mms': 11.0,
             'usable_for_release_fit': True,
+            # E-1's admission requirement, satisfied EXPLICITLY rather than by
+            # omission: a synthetic corpus that skipped it would exercise the
+            # lateral-channel refusal instead of the closed loop, and the V2a
+            # aim channels would silently come back zero.
+            'arc_fit_n': 120, 'arc_fit_rms_mm': 2.0,
+            'arc_lateral_vel_se_mms': 1.5,
+            'coverage_asym_s': 0.0, 'usable_for_lateral_fit': True,
             'uptime_ms_at_release': int(uptime_ms + i * dt_s * 1e3),
             'tilt_map_version': 'synthetic-tilt/1',
             'bridge_fw_version': '10 (proto 5)',
@@ -1909,6 +2096,19 @@ def fit_corpus(records: Sequence[Dict[str, Any]], *, goal: Optional[TossGoal] = 
     Passing ``goal=`` explicitly bypasses the cell selection entirely and fits
     every admitted row at that geometry — the shape a synthetic single-goal
     corpus wants, and the caller's responsibility on a real one.
+
+    **``cell_goals`` is returned for every recoverable cell, not just the fitted
+    one**, and it is the reason a POOLED caller can still gate per cell. A pooled
+    fit has ONE ``goal`` — the modal cell's — but its ``du`` is written to every
+    cell the corpus visited, and those cells differ in pose AND flight time. The
+    production gates (:func:`admit_command`) are goal-dependent in both: the
+    sequencer's flight-time band and workspace box, the tilt feasibility and the
+    bridge's ``event_vel`` acceptance band all move with the goal. Validating
+    every cell against the modal cell's geometry is therefore a gate that can
+    pass for a command the machine would reject at the cell it is written to, so
+    the geometry each cell would be fitted at is returned rather than left to a
+    caller to re-derive (a second definition of "this cell's goal" is a second
+    thing to drift).
     """
     admitted = [r for r in records
                 if admit_record(r, uptime_max_ms=uptime_max_ms)[0]]
@@ -1941,15 +2141,31 @@ def fit_corpus(records: Sequence[Dict[str, Any]], *, goal: Optional[TossGoal] = 
         goal = _goal_from_rows(groups[cell])
 
     e_meas, counts = pooled_error(rows)
-    m = E1_MASK if mask is None else np.asarray(mask, dtype=float)
+    m = DEFAULT_MASK if mask is None else np.asarray(mask, dtype=float)
+    # A channel with NO measurements comes back 0.0 from `pooled_error` with a
+    # count of 0, and a 0.0 residual under a non-zero weight is not "no
+    # information" — it is the assertion "this channel is already perfect",
+    # which drives the step toward cancelling any correction the other channels
+    # ask for on a coupled column. Invisible while the E-1 mask zeroed the
+    # lateral channels anyway; reachable the moment it was lifted. So the mask
+    # the step actually runs under is intersected with the counts, and BOTH are
+    # returned so a report can say which channels were fitted rather than which
+    # were requested.
+    m_eff = m * (counts > 0).astype(float)
     F = sensitivity(zero_command(), goal)
-    step = propose_step(F, e_meas, goal, tau=tau, rho=rho, mask=m)
-    return {'goal': goal, 'goal_cell': cell, 'pooled': bool(pool_across_goals),
+    step = propose_step(F, e_meas, goal, tau=tau, rho=rho, mask=m_eff)
+    # Every recoverable cell's own geometry. `goal_key` returns non-None only
+    # when `goal_of` did, so a non-None group can always produce one.
+    cell_goals = {k: _goal_from_rows(v) for k, v in groups.items()
+                  if k is not None}
+    return {'goal': goal, 'goal_cell': cell, 'cell_goals': cell_goals,
+            'pooled': bool(pool_across_goals),
             'n_admitted': len(admitted), 'n_rows': len(rows),
             'e_meas': e_meas, 'channel_counts': counts, 'F': F,
+            'mask': m, 'mask_effective': m_eff,
             'du': step['du'], 'u_next': step['u_next'],
             'shrinks': step['shrinks'], 'refusals': step['refusals'],
-            'screen': screen_channels(F, mask=m),
+            'screen': screen_channels(F, mask=m_eff),
             'partition_census': census, 'partition_key': part_key,
             'warnings': warnings,
             'goal_cells': dict((k, len(v)) for k, v in groups.items()),

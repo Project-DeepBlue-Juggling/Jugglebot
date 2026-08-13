@@ -269,6 +269,23 @@ FIELDS: Tuple[Field, ...] = (
     Field('map_aim_mm_at_h', 'calibration', 'D', 'f2',
           'REPORT field: mm at THIS toss apex, never the stored unit'),
     Field('trim_aim_mm_at_h', 'calibration', 'D', 'f2', 'REPORT field'),
+    # Layer 3 — the critical-point ILC correction (critical-point-ilc.md
+    # Phase 2). ADDITIVE fields, so no schema bump (§ 3.7 item 1).
+    #
+    # POST-GATE, both of them, and that is the whole reason they exist: the plan's
+    # risk 5 is that a correction partially truncated by the D7 total-aim clamp
+    # (or refused by validate_event_vel) desynchronises applied-u from recorded-u,
+    # and the learner then fits against a command the machine never flew. The
+    # apply seam refuses rather than truncates and writes the REFUSED value —
+    # exactly (0, 0) / 0.0 — here. `total_aim_rad` already carries the sum, so
+    # these two say how much of it layer 3 asked for AND GOT.
+    Field('ilc_aim_rad', 'calibration', 'D', 'f2',
+          'layer 3: the ILC aim contribution APPLIED, rad. Explicit zeros when '
+          'the feature is off, the artifact is absent/dormant, the goal cell '
+          'missed, or the total-aim clamp REFUSED it'),
+    Field('ilc_vel_trim', 'calibration', 'D', 'f',
+          'layer 3: the ILC event_vel trim APPLIED, k_v - 1. Explicit zero on '
+          'every path above plus a validate_event_vel refusal'),
     Field('speed_bias_applied', 'calibration', 'D', 'f', 'k_v, phase 2e'),
     Field('timing_bias_applied_ms', 'calibration', 'D', 'f', 'tau, phase 2e'),
     Field('clamp_hits', 'calibration', 'D', 'l', 'per-channel clamp names'),
@@ -379,17 +396,50 @@ FIELDS: Tuple[Field, ...] = (
           '/toss/record. The slot is named rather than assumed so a corpus can '
           'still say so if that ever changes'),
 
-    # ── Arrival kinematics (ILC Phase 0a; mined from the DESCENDING branch) ───
+    # ── The WHOLE-ARC fit (ILC entry condition E-1, resolved 2026-08-13) ──────
+    # Definition point: tools/probes/toss_record_miner.mine_arc. A THIRD ballistic
+    # fit over the union of the two branches, and it owns every LATERAL velocity
+    # component below. WHY, in one paragraph: the tracked point is the centroid of
+    # the visible retroreflective cap, so it carries a height-locked position bias
+    # b(z) of ~20 mm; height is EVEN about a ballistic apex, so a per-branch line
+    # fit reads v_true +- <db/dz.|vz|> and the two branches disagree by 104 mm/s
+    # on exactly the aim channels, repeatably. A whole-arc slope cancels that by
+    # parity, leaving only the sample coverage's asymmetry about the apex — which
+    # is what `coverage_asym_s` measures and what gates `usable_for_lateral_fit`.
+    # Evidence and the refuted alternatives: plans/active/critical-point-ilc.md
+    # § Phase 1 E-1; probe tools/probes/mocap_parity_bias.py.
+    Field('arc_fit_n', 'arc', 'M', 'i',
+          'rows in the WHOLE-ARC fit (both branches, apex row de-duplicated)'),
+    Field('arc_fit_rms_mm', 'arc', 'M', 'f',
+          '3-D RMS residual of the whole-arc ballistic fit'),
+    Field('arc_lateral_vel_se_mms', 'arc', 'M', 'f',
+          'worst of the two 1-sigma standard errors on the fitted LATERAL '
+          'velocities — the noise floor of every direction channel below'),
+    Field('coverage_asym_s', 'arc', 'M', 'f',
+          'mean sample time MINUS the fitted apex instant, seconds. The one '
+          'term the whole-arc estimator does not cancel: cov(tau, b) is exactly '
+          'zero for coverage symmetric about the apex, so this is the bias-leak '
+          'driver. A GROSS-TRUNCATION guard, not a leak predictor (one 0.0003 s '
+          'arc still leaks 6 mm/s). Measured on the 2026-08-13 re-mine, by '
+          'population: over the 19 usable_for_release_fit rows, 0.0001-0.0732 s '
+          '(median 0.0148), 0 refused; over all 32 mined arcs, median 0.052 s, '
+          'worst 0.600 s, 12 refused — every one a half-seen arc the '
+          'release-fit gate already refuses. Refused past '
+          'COVERAGE_ASYM_MAX_S = 0.1 s'),
+
+    # ── Arrival kinematics (ILC Phase 0a; VERTICAL from the DESCENDING branch) ─
     # Definition point: tools/probes/toss_record_miner.mine_arc. The nominal is
     # ballistics_bc.arrival_velocity(cmd_launch_vel_mms, cmd_flight_time_s) —
     # the PRODUCTION function, never a second copy (plan constraint 1), and it
     # is deliberately NOT stored: one production call reproduces it, a stored
     # copy could drift from it.
     Field('arrival_vel_mms', 'arrival', 'M', 'f3',
-          'MEASURED ball velocity at the catch-plane crossing (global mm/s)'),
+          'MEASURED ball velocity at the catch-plane crossing (global mm/s). '
+          'xy from the WHOLE-ARC fit (E-1), z from the descending branch'),
     Field('arrival_dir_err_rad', 'arrival', 'M', 'f2',
           'measured - nominal per-axis lean of the arrival velocity off the '
-          'vertical it is travelling along: [atan2(vx,|vz|), atan2(vy,|vz|)]'),
+          'vertical it is travelling along: [atan2(vx,|vz|), atan2(vy,|vz|)]. '
+          'Bias-immune since E-1: the numerator is whole-arc'),
     Field('arrival_dir_err_norm_rad', 'arrival', 'M', 'f',
           'total angle between the measured and nominal arrival directions'),
     Field('arrival_speed_err_mms', 'arrival', 'M', 'f',
@@ -419,7 +469,8 @@ FIELDS: Tuple[Field, ...] = (
           'MEASURED release point: the ascending fit evaluated where it crosses '
           'the release plane'),
     Field('release_vel_track_mms', 'backcast', 'M', 'f3',
-          'MEASURED release velocity at that crossing (global mm/s)'),
+          'MEASURED release velocity at that crossing (global mm/s). xy from '
+          'the WHOLE-ARC fit (E-1), z from the ascending branch'),
     Field('t_release_fit_bag', 'backcast', 'M', 'f',
           'MEASURED release instant, bag clock'),
     Field('release_time_err_ms', 'backcast', 'M', 'f',
@@ -432,7 +483,10 @@ FIELDS: Tuple[Field, ...] = (
           '|measured| - |commanded| release speed'),
     Field('release_dir_err_rad', 'backcast', 'M', 'f2',
           'per-axis lean error of the release velocity, same convention as '
-          'arrival_dir_err_rad'),
+          'arrival_dir_err_rad, and whole-arc in the same sense. NOTE the '
+          'consequence: release and arrival now share ONE lateral velocity, so '
+          'these two channels differ only through their |vz| denominators and '
+          'their nominals — they are not independent lateral measurements'),
     Field('backcast_fit_n', 'backcast', 'M', 'i', 'rows in the ascending fit'),
     Field('backcast_fit_rms_mm', 'backcast', 'M', 'f',
           '3-D RMS residual of the ascending ballistic fit'),
@@ -443,18 +497,38 @@ FIELDS: Tuple[Field, ...] = (
     # ── Release-vs-flight split of the landing error (ILC Phase 0c) ──────────
     # By construction land_err_release_mm + land_err_flight_mm == land_err_mm,
     # exactly. The first half is what the MEASURED release state already
-    # predicts (propagated to the cup plane by the production ballistics), i.e.
-    # the error a better throw would remove; the second is everything the
-    # ballistic model does not explain — drag, spin, marker offset, mocap error.
+    # predicts (propagated to the cup plane by the production ballistics).
+    #
+    # RE-MARKED 2026-08-13 (E-1's resolution). Both halves are LATERAL (xy)
+    # quantities, and under the whole-arc estimator the second half is NOT
+    # measurable flight-phase physics:
+    #   * the parity decomposition puts an upper bound on any lateral
+    #     aerodynamic force well under the artefact it was competing with —
+    #     Magnus would need 3.4-8.8 rev/s against an observed ~0.5, and would
+    #     land in the ODD channel about the apex, which is empty;
+    #   * so what remains in land_err_flight_mm is the disagreement between two
+    #     ESTIMATORS of the same crossing — the descending-band position fit
+    #     behind land_xy_global_mm, against the release state propagated
+    #     forward — plus the unmeasured ABSOLUTE centroid bias, which both
+    #     halves carry and neither resolves.
+    # Read it as an estimator-agreement diagnostic. **Lateral landing error is
+    # RELEASE-side**, and nothing may fit land_err_flight_mm as a flight
+    # channel. The VERTICAL split is untouched and stays meaningful:
+    # release_speed_err_mms against flight_time_err_s are two disjoint branches
+    # measuring one throw, which is exactly what the ILC's V2b cross-check
+    # leans on.
     Field('land_err_release_mm', 'split', 'M', 'f2',
           'RELEASE-attributable part of land_err_mm — where the MEASURED '
           'release state lands under production ballistics, minus the cup. It '
           'equals "measured release vs COMMANDED release" only because the '
           'announced landing IS the commanded release own ballistic landing '
           '(build_announcement_fields); an announcement inconsistent with its '
-          'own release state would land its inconsistency here'),
+          'own release state would land its inconsistency here. Since E-1 this '
+          'is the whole of the lateral landing error, to estimator agreement'),
     Field('land_err_flight_mm', 'split', 'M', 'f2',
-          'FLIGHT residual: land_err_mm minus the release-attributable part'),
+          'land_err_mm minus the release-attributable part. NOT a flight-physics '
+          'channel since E-1 (2026-08-13) — an estimator-agreement diagnostic; '
+          'see the block comment above'),
 
     # ── Plant (mined; row builder IMPORTED from hand_stroke_timeline) ─────────
     Field('stroke_peak_rev', 'plant', 'M', 'f', ''),
@@ -487,7 +561,17 @@ FIELDS: Tuple[Field, ...] = (
           'the ARC fits are trustworthy: both branches long enough and the '
           'fitted release velocity SE small. NOT implied by _speed_fit, which '
           'gates on the landing fit'),
-    Field('excluded_reason', 'quality', 'X', 's', ''),
+    Field('usable_for_lateral_fit', 'quality', 'X', 'b',
+          'the WHOLE-ARC lateral estimate is admissible (E-1, 2026-08-13): '
+          'coverage_asym_s present and within COVERAGE_ASYM_MAX_S. A separate '
+          'flag for the same reason _release_fit is one — _aim_fit gates the '
+          'aim MAP, which consumes only the landing POSITION and never carried '
+          'the branch artefact. ABSENT coverage_asym_s refuses: that is a '
+          'pre-E-1 mine, whose lateral velocities ARE the artefact'),
+    Field('excluded_reason', 'quality', 'X', 's',
+          'every refusal this row accumulated, comma-joined and sorted — across '
+          'ALL the usable_* flags, not one of them. A null coverage_asym_s is '
+          'deliberately NOT a reason: there is no lateral estimate to exclude'),
 )
 
 FIELD_NAMES: Tuple[str, ...] = tuple(f.name for f in FIELDS)
