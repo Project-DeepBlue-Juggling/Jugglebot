@@ -154,6 +154,7 @@ namespace JBOp {
   constexpr bool RELOAD_PLATFORM_OPEN_LOOP = true;
   constexpr const char* TOSS_TIER = "8a";
   constexpr float TOSS_RELEASE_LATENCY_MS = 0.0f;
+  constexpr bool TOSS_ILC_ENABLED = false;
   constexpr float TOSS_FLIGHT_TIME_DEFAULT_S = 0.8f;
   constexpr float TOSS_MAX_DISPLACEMENT_MM = 150.0f;
   constexpr bool TOSS_STAY_AT_POSE_ON_CAUGHT = true;

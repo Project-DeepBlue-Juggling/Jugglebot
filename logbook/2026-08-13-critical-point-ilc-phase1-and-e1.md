@@ -80,7 +80,10 @@ coverage asymmetry about the apex (2.1 mm/s median, 7.0 mm/s worst) — so
 the miner's lateral estimators move to whole-arc fits with a
 `coverage_asym_s` refusal (~0.1 s), implementation queued as the next unit.
 What this avoids is concrete: the per-branch descending arrival direction
-carries 10.9 mrad ≈ 54 mm of phantom aim error per toss — exactly what the
+carries 10.9 mrad ≈ 44 mm of phantom aim error per toss *(corrected
+2026-08-13 at the next unit's audit: through the production landing gain
+4h+Δz ≈ 4020 mm/rad it is 43.8 mm; the 54 first written here used an
+apex-above-floor height no production gain produces)* — exactly what the
 ILC would have chased. A consequence worth naming: under the bias-immune
 estimator there is no measurable lateral flight-phase physics, so lateral
 landing error is release-side — the release-vs-flight discriminator 0c

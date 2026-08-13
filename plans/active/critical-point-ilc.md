@@ -248,8 +248,8 @@ block with an independent analytic answer.
 | Phase | Content | Gate | Status |
 |---|---|---|---|
 | 0 | Measurement substrate: arrival-velocity/flight-time mining (0a), catch-softness probe (0b), release-state backcast (0c), sensor-settle census (0d) | 0b/0d outcomes pre-registered | **DONE 2026-08-12** — 0b → outcome (ii), 0d → outcome (i); results + corrections in the phase text |
-| 1 | Sensitivity core + update law + offline replay validation + conditioning-based v1 freeze | F-vs-4hθ identity; held-out prediction; NULL-exit repeatability criterion | **core DONE 2026-08-13** — V1–V4 all PASS; v1 = {event_vel_trim} under E-1; E-1 mechanism resolved (whole-arc estimator implementation pending); **Gate 1 = operator checkpoint OPEN** (sizing memo + the SPEED_AUTHORITY decision, § Phase 1 results) |
-| 2 | Production wiring, ship dormant | full suite; byte-identical-OFF; one-apply-point structural test | after 1 |
+| 1 | Sensitivity core + update law + offline replay validation + conditioning-based v1 freeze | F-vs-4hθ identity; held-out prediction; NULL-exit repeatability criterion | **core DONE 2026-08-13** — V1–V4 all PASS; **E-1 resolved AND implemented same day** (whole-arc estimators landed, aim channels live, 3-DOF fit consistent across cells); **Gate 1 CLOSED 2026-08-13** (owner: ±0.15 ILC authority; sizing memo approved; next = Phase 2 dormant) |
+| 2 | Production wiring, ship dormant | full suite; byte-identical-OFF; one-apply-point structural test | **DONE 2026-08-13** — `motion/toss_ilc.py` + the `_build_toss_cycle` seam + `JB_OP_TOSS_ILC_ENABLED` default false; 161 tests; results + the artifact-writer semantics in the phase text |
 | 3 | Hardware A/B vs aim-map-only baseline (operator) | pre-registered criteria + abort signatures; absorb-or-keep decision | G-1, G-2 |
 | 4 | Extensions (sketch): measured-softness closure, platform stroke knots, two-ball follow-through | — | after 3 |
 
@@ -410,31 +410,55 @@ bias profile fitted on **other** arcs collapses the branch delta from
 arc's own even part leaves −0.7 ± 1.4 mm/s, but that statistic is
 near-tautological by construction and is reported only as numerical
 closure.)
-Magnus refuted twice (parity + a data-derived aero bound: 4.3 m/s of indoor
-wind required); spin refuted (residual periodicity 40–60× too small); the
+Magnus refuted twice (parity + a data-derived aero bound: ~3.9 m/s of
+indoor wind required at nominal drag); spin refuted (residual periodicity
+40–60× too small); the
 owner's bisection observed and quantified (7/50 held-ball windows show two
 markers, median 53 mm apart — 91 of 1577 two-marker frames sit under 40 mm;
 0 of 2554 in-flight frames show a companion within a ball diameter, 11
 within 140 mm). Conventional point markers reconstruct at 0.14–0.15 mm on
 the platform pairs and 1.5 mm on the base pair — an order of magnitude
-under the artefact either way; the fully-taped sphere is the special case. **Adopted resolution (implementation pending, next unit):
-never derive a lateral/direction quantity from a single branch** — whole-arc
-fits are bias-immune by parity (residual leak = coverage asymmetry about the
-apex, measured 2.1 mm/s median / 7.0 mm/s worst); the miner's
-lateral estimators move to whole-arc fits, a `coverage_asym_s` field with a
-~0.1 s refusal is added, and the lateral release/flight split is marked
-not-meaningful under per-branch estimators (under the bias-immune estimator
-there is no measurable lateral flight-phase physics, so lateral landing
-error is release-side). Height-restricting fit windows does NOT work — the
+under the artefact either way; the fully-taped sphere is the special case. **Adopted resolution — IMPLEMENTED 2026-08-13: never derive a
+lateral/direction quantity from a single branch.** The miner's lateral
+velocities at both plane crossings now come from a third, whole-arc fit
+(vertical components, crossing instants and SEs stay per-branch — they were
+never contaminated); `coverage_asym_s` + `usable_for_lateral_fit` landed
+with a 0.1 s refusal, and the parity diagnostic is promoted as
+`tools/probes/mocap_parity_bias.py` (reproduces the load-bearing E-1
+numbers exactly — the parity verdict, held-out collapse and leak figures;
+position-lock rows are re-based per-group and the aero bound recomputed;
+committed provenance). Re-mined results: arrival and
+release directions now AGREE (one shared lateral velocity — they are no
+longer independent measurements, recorded in the field docs), the arrival-y
+channel moved +10.3 mrad (the predicted phantom was 10.9), and the lateral
+flight term collapsed ~58 → ~6 mm — **lateral landing error is
+release-side, measured**. Two honest demotions from the implementation:
+`coverage_asym_s` is a gross-truncation guard, NOT a leak predictor (a
+0.0003 s row still leaks 6 mm/s — it is a first moment; the ~7 mm/s ≈
+1.4 mrad residual is a standing lateral uncertainty, documented at
+`COVERAGE_ASYM_MAX_S`); and the wind bound is corrected and weakened —
+3.9 m/s at nominal drag, 1.5 m/s at the data-implied 2.6× drag bound (the
+first-draft 4.3 traced to nothing in the repo) — so the load-bearing draft
+refutations are the two-sitting position-lock and the blob census, not the
+magnitude. Height-restricting fit windows does NOT work — the
 bias gradient is constant over the whole arc. What the resolution avoids:
-the per-branch descending arrival direction carries 10.9 mrad ≈ 54 mm of
-phantom aim error per toss (derivation: the descending branch's offset from
-the whole-arc truth is (−53.3, +16.2) mm/s, |Δv| ≈ 55.7 mm/s over the
-~5.1 m/s arrival speed ≈ 10.9 mrad; through the ≈4·h aim gain at the
-corpus apex ≈ 54 mm). **Standing caveat**: only the bias *gradient*
+the per-branch descending arrival direction carries 10.9 mrad ≈ 44 mm of
+phantom aim error per toss (derivation, corrected at audit 2026-08-13: the
+descending branch's offset from the whole-arc truth is (Δx +16.2, Δy
+−53.3) mm/s, |Δv| ≈ 55.7 mm/s over the ~5.1 m/s arrival speed ≈
+10.9 mrad; through the production landing gain 4h+Δz ≈ 4020 mm/rad at the
+corpus operating point ≈ 43.8 mm — the first-draft 54 mm used an
+apex-above-floor h no production gain produces). **Standing caveat**: only the bias *gradient*
 is measured; the absolute offset (bounded ~a ball radius) is not, so any
 mocap-closed aim loop converges to the measurement's cup, not the world's —
-pre-existing across the whole mocap aim stack. Definitive closure is a
+pre-existing across the whole mocap aim stack. The 2026-08-13 re-mine made
+this caveat **numerically visible**: expressed at the plane through the
+aim gain, `land_err` (a plane-position fit, carrying b_y(z_plane)
+absolutely) and `arrival_dir` (whole-arc, bias-immune) disagree by a
+systematic **+18.0 mm in y in every goal cell** (+17.4/+19.5/+15.4; x
+agrees to 0.85 mm) — the size of the measured b_y span. The pooled aim fit
+is a chi-square compromise between two channels that disagree about the
+world; documented in `weight_matrix`/`SIGMA_E`, not papered over. Definitive closure is a
 ~20-minute no-robot capture: the taped ball fixtured with 3+ conventional
 point markers, static at several heights/positions, giving b(x,y,z)
 absolutely. (Also: the ball radius is not in `hardware_config.yaml`; the
@@ -462,7 +486,8 @@ Gate 1: a sizing memo fixing Q, R, τ, the v1 channel subset (SVD screen), and
 the artifact key quantization. Operator checkpoint before wiring.
 
 **Phase-1 core results (2026-08-13; `tests/hardware/ilc_fit_lib.py` +
-`ilc_fit.py` CLI + 48 tests).** All four validations PASS:
+`ilc_fit.py` CLI + 48 tests — 50 after the same-day E-1 mask lift).** All
+four validations PASS:
 
 - **V1**: F's aim block equals the production `aim_landing_jacobian` to
   3.4e-11 relative, and the exact identity is now written down and pinned —
@@ -494,7 +519,9 @@ shift, and the quantity a dispatch shift does move (`release_time_err_ms`)
 is a scheduling error owned by `toss_trim.release_latency_ms` and G-1. Under the E-1 mask the screen
 reports `aim_rx/aim_ry` as `e1_blocked` (they clear the floor at 2.92σ
 unmasked — closing E-1 is a mask change, not a redesign). **v1 =
-{event_vel_trim}, a 1-DOF loop.** (Risk 4 did not materialise — the
+{event_vel_trim}, a 1-DOF loop** *(superseded 2026-08-13 — the E-1
+resolution lifted the mask the same day; v1 is 3-DOF, see § Post-E-1
+additions)*. (Risk 4 did not materialise — the
 suspected `event_vel`/timing degeneracy is actually exact orthogonality;
 the degeneracy rule stays implemented and test-driven.)
 
@@ -515,7 +542,13 @@ name the same pose for Phase 3's absorb-or-keep), pose z 10 mm (2× the
 miner's plane-mismatch tolerance), flight time 50 ms (the gain-vs-offset
 discrimination bound ±28 ms, taken with margin).
 
-**Decision required (Gate 1, refused by the module rather than decided):**
+**Gate 1 CLOSED 2026-08-13 (owner decisions):** (1) the speed-authority
+question below is DECIDED as option (a) — an ILC-specific ±0.15 authority,
+on the measured rail sweep (neither event_vel rail reachable anywhere in
+the flight-time band; `validate_event_vel` still gates every command);
+(2) the sizing memo below is APPROVED as proposed; (3) the next unit is the
+E-1 whole-arc estimator + Phase-2 production wiring shipped dormant.
+Original decision framing, retained for the record:
 the pooled corpus requires `event_vel_trim = −0.1076`, which exceeds
 `toss_trim.SPEED_AUTHORITY` (±0.10) by 7.6 % — and this is not a pooling
 artefact: per goal cell the required trim is −0.096 / −0.112 / −0.124
@@ -542,9 +575,23 @@ healthy threshold is G-1's job, not the fit library's.
 **Follow-ups flagged, not fixed here**: in-tree aim-gain doc drift (three
 values for one gain — `toss_fit_lib` 3126.5, `toss_trim` 3126.64, exact
 3126.736 — and `aim_target_offset_mm`'s 54.578 mm/deg is a secant at 1°,
-not the derivative 54.5718; both correct, not interchangeable); the E-1
-whole-arc estimator implementation in the miner; the parity probe's
-promotion.
+not the derivative 54.5718; both correct, not interchangeable). E-1
+implementation and the probe promotion: LANDED 2026-08-13 (see § E-1).
+**Post-E-1 additions (2026-08-13)**: the fitting mask defaults to full-size
+(all five channels; `E1_MASK` retained as a named historical constant) with
+`lateral_admissible()` as the single coverage-gate enforcement point;
+`ILC_SPEED_AUTHORITY = 0.15` landed per the Gate-1 owner decision (
+`toss_trim.SPEED_AUTHORITY` untouched, both pinned by test). The 3-DOF fit
+on the re-mined corpus: per-cell aim (rx, ry) consistent across all three
+cells (|aim| 0.0091–0.0105 rad, 52.4–60.1 % of the D7 clamp; exceeds the
+per-iteration τ0 at 1.57–1.80×, so iteration 0 clips and convergence lands
+at iteration 2, inside Phase 3's k ≤ 3 — nothing widened); `event_vel_trim`
+−0.1076 unchanged to six decimals (71.7 % of the new authority, worst cell
+82.6 %). **One open micro-decision**: `SIGMA_E`'s arrival-dir entry is 27 %
+stale under the adopted estimator (measured 0.00302 vs the Gate-1-approved
+0.00238 rad); re-deriving an approved weight is an owner call — bounded
+cost either way (|aim| 0.00997 → 0.01044 rad, 57.1 % → 59.8 % of
+authority).
 
 ### Phase 2 — Production wiring *(software only, ship dormant)*
 
@@ -559,6 +606,42 @@ driven with a deliberately infeasible Δu; provenance-mismatch dormancy; a
 `test_shipped_config_has_the_feature_off` tripwire. Full suite + the
 (date, command, result) triple; `--full` if anything under `controller/` or
 `sim/` is touched (expected: nothing).
+
+**Phase-2 results (2026-08-13; `jugglebot/motion/toss_ilc.py` + the seam +
+161 tests).** Shipped DORMANT behind `jugglebot_operational.
+toss_ilc_enabled: false` → `JB_OP_TOSS_ILC_ENABLED` — config + codegen
+rather than a node parameter, decided on root cause: this arms a *learned*
+correction, so which build applied it must be answerable from git alone
+when a corpus fitted under it is read back months later; the
+`toss_trim_enabled` parameter precedent does not transfer (RAM-only,
+dies with its goal). The Phase-3 baseline arm needs no rebuild:
+`$JUGGLEBOT_TOSS_ILC` is authoritative-when-set and an absent target is the
+silent zero-correction state. **Composition**: `clamp_total_aim(map + trim
++ ilc)` — the existing D7 clamp stays the final authority; a clamp hit
+REFUSES the ILC contribution whole (WARN) and re-composes `map + trim`
+exactly as before (risk 5's root cause: a truncated step is not the step
+that was solved for; layer-1/2 clamp semantics untouched). The
+`event_vel` trim is gated by `validate_event_vel`; a refusal drops the
+trim and flies the nominal. Applied values are recorded per toss
+(`ilc_aim_rad`, `ilc_vel_trim`, origin 'D', additive — no schema bump);
+the record's `event_vel_mps` now reads what `_dispatch_toss_throw`
+actually sends. Layer 3 depends on layer 1's dormancy (its provenance
+records the applied aim map) while layer 2 does not — a deliberate,
+documented asymmetry. **The artifact writer** (`ilc_fit.py
+--write-artifact`) emits the accumulated `u` (not the step): `--from-artifact`
+seeds `u_prev` per cell and the accumulated vector is re-validated through
+`admit_command` — Phase 3's k ≤ 3 loop made real. It REFUSES unprovable
+provenance: a mined-only corpus carries `toss_cal_version = None`, and
+stamping "no aim map" on evidence that says "nobody wrote it down" would
+corrupt the dormancy gate — `--declare-toss-cal/--declare-tilt-map` are
+the recorded escape hatch, so **the 2026-08-12 corpus cannot be written
+without a declaration** (correct, surfaced, not papered over). Named
+follow-ups: an `ilc_version` field in the record would make the corpus
+self-describing (today: recoverable via `git_sha` + the committed
+artifact); `model_config_identity` covers config, not code (a geometry
+change moving no constant will not move the hash — `git_sha` is that
+channel); `release_timing_offset` is refused by name in the artifact
+schema.
 
 ### Phase 3 — Hardware A/B *(operator-run, batch learning between runs)*
 
