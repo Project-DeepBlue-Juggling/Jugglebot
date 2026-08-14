@@ -8,6 +8,7 @@ related_logbook:
   - 2026-07-18-teensy-uptime-tracking-degradation.md   # the LATENCY half — open; owns the four-arm experiment and the closure contract
   - 2026-08-12-s1-aged-bridge-isolation-teensy-internal.md  # S1 — the four-arm isolation; Teensy-internal CONFIRMED
   - 2026-08-14-ring-audit-available-leak-delay-line.md  # S2 endgame + the ring audit — the named defect, and what S3 must confirm
+  - 2026-08-14-s3-conviction-ring-leak-measured.md     # S3 — the leak MEASURED at 97 % of a lap; the stale-install near-miss and its self-check
   - 2026-07-28-anomaly-fixes-validation-sitting.md     # the drift reaching the hand/throw dispatch path
   - 2026-08-10-sensor-truth-possession.md              # the drift sizing the ARRIVAL window (release lag vs uptime)
   - 2026-08-02-err-timeout-attribution-instrumentation.md  # the 0x8D/0x8E additive-MsgType precedent this arc's FW 11 follows
@@ -227,7 +228,7 @@ Verified state of the telemetry surface (2026-08-11):
 | **P2** | Midpoint-stamped TOD responder (kernel RX + pre-send userspace, `(t2+t3)/2`) | no | n/a | full suite; Py 3.8-safe with graceful fallback |
 | **S1** | Aged-bridge sitting: passive capture, then the four-arm isolation experiment | no | no | operator; `--full` gate before the sitting |
 | **S2** | FW 12 `CACHE_DIAG` confirmation soak (brief-launch protocol) + the offline forensics rounds | yes (FW 12) | yes — the flash IS t0 | decision rule in § S2; **answered NO**, see § S2 RESULTS |
-| **S3** | FW 13 `RING_DIAG` conviction soak — motionless, ~3–4 h, no battery | yes (FW 13) | yes — the flash IS t0 | `true_depth − avail_reported` growing over the soak |
+| **S3** | FW 13 `RING_DIAG` conviction soak — motionless, ~3–4 h, no battery | yes (FW 13) | yes — the flash IS t0 | `true_depth − avail_reported` growing over the soak; **CONVICTED at 247–248 of 256**, see § S3 RESULTS |
 | **P3** | Latency root-cause fix (FW 14; the Jetson honesty fix landed with the FW 13 change-set) + the alarmed end-to-end command-latency monitor | yes — scope known since the 2026-08-14 audit | after S3 convicts | lag ≤ 20 ms sustained at high uptime |
 | **P4** | the clock-servo firmware (= clock plan Phases 3–5; FW number assigned at implementation — FW 12/13 were claimed by the latency instrumentation) | yes | yes | clock plan acceptance; **must follow P3** |
 
@@ -580,6 +581,86 @@ criterion 2: lag ≤ 20 ms sustained at high uptime), and then the alarmed
 monitor of P3. (The Jetson honesty fix — the `/robot_state` staleness gate —
 landed with the FW 13 change-set, not FW 14.) Only both deliverables together close
 `logbook/2026-07-18-teensy-uptime-tracking-degradation.md`.
+
+### S3 RESULTS — CONVICTED (2026-08-14)
+
+Full record: `logbook/2026-08-14-s3-conviction-ring-leak-measured.md`.
+
+**The § S3 conviction criterion is met, at the ceiling.** On a bridge aged
+**4.01–4.04 h** (bag `2026-08-14_18-18-59`, **92 `/ring_diag` samples**):
+
+| Quantity | Value |
+|---|---|
+| `leak_jb` = `true_depth_jb − avail_reported_jb` | **247–248** (`true_depth_jb` 247–248 against `avail_reported_jb` **0**) |
+| `leak_hwm_jb` | **249** — **≈ 97 % of the 256-slot lap** |
+| `leak_bb` / `leak_cone` | **1** / **0** — the collision-rate traffic scaling, confirmed |
+| `fifo_overflows`, all buses | **0** — **no peripheral loss; pure software-ring stranding** |
+| `probe_ticks` | **1000** per window |
+| Delivery-lag integral | **151–183 ms** (see residual (a)) |
+| `robot_state_stale_skips` | **29** — the Jetson honesty gate is live |
+
+**Two independent cross-checks agree.** echo→exec **aged − fresh = 115.4 ms**
+falls inside the predicted **114–135 ms** one-lap band. And the saturation
+arithmetic — 256 slots ÷ ~90 slots/h ≈ **2.84 h** — retro-explains the historical
+plateau: 3.8 h → 252 ms, ≈ 28 h → 283 ms, ≈ 63 h → 290–340 ms is a lag that
+**saturated by hour three**, not one still climbing.
+
+**Root cause of the arc is ESTABLISHED: one missing IRQ guard around the vendored
+FlexCAN_T4 ring pop.**
+
+**The bracketing sessions** (same day, FW 13): **17 s** uptime — operator
+"silky", e2e **19.9 ms**, clamp duty **0.0000**; **3.80 h** — "janky", e2e
+**252.2 ms**, duty **0.4588**. Neither carries `/ring_diag` samples (see the
+incident below) and neither is cited for anything else.
+
+**THE INSTALL-SKEW INCIDENT — the conviction was nearly lost.** The first pass'
+bags recorded **no `/ring_diag` at all**: the ROS node ran a **stale `install/`
+tree dated 2026-08-12** with zero `ring_diag` references, while
+`BRIDGE_FW_CHECK` printed **OK** throughout. The check was not wrong — it is
+**structurally blind to install skew**, comparing the board's `FW_VERSION` (13)
+against `EXPECTED_BRIDGE_FW_VERSION` (13) read from the **live repo-root
+`teensy_link/` tree**, which the launch injects on PYTHONPATH and colcon never
+installs. Firmware currency and host currency are independent halves, and only
+one had a detector. `jugglebot_launch._install_drift` covers the generated
+**config** modules only, so a stale node source passes it green.
+
+Two consequences, both landed:
+
+- **Recovery cost nothing but a rebuild.** `colcon build` + relaunch **does not
+  reboot the Teensy**, so the aged state survived and the soak did not have to
+  be re-aged — the conviction bag was taken the same afternoon at 4.01–4.04 h.
+  Record this: a host-side rebuild is always available mid-soak.
+- **An install-skew self-check now ships in `teensy_bridge_node`**: at
+  construction it hashes its own `__file__` against the repo-source copy
+  (walk-up resolution, `JUGGLEBOT_REPO` override), renders **three verdicts**
+  (`0` clean / `1` stale / `unknown` could not run), logs loudly on skew with
+  both paths and mtimes, publishes `install_skew` + `install_skew_detail` on
+  `/link_status` beside `bridge_fw_version` so a **bag can never again silently
+  record a stale node**, and appends the host verdict to the `BRIDGE_FW_CHECK`
+  line. **Advisory, never a gate** — same policy as `BRIDGE_FW_CHECK`.
+
+**Two second-order residuals, recorded rather than reconciled here.** Both are
+instrument limitations, and both are FW 14 validation-pass obligations:
+
+- **(a) The delivery-lag integral's absolute value.** **151–183 ms**, creeping
+  **~0.35 ms/s** across the bag, against a naive **129 ms** (leak ÷ 1,920 fps).
+  Known contributors: a boot-time offset plus **16 reseeds** in the window. **The
+  trend is the instrument, not the absolute** — and the creep is unexplained.
+- **(b) The SDO RTT floor reads BELOW the ring delay** (**46.9–47.9 ms**
+  against ~130 ms). Cause: **single-slot request-stamp mispairing under
+  pipelining** — at a 20 ms poll period and a ~130 ms delay there are **~6
+  replies in flight**, so the probe's floor argument breaks. This *only* happens
+  because delay ≫ poll period, so it is weak confirmation of the mechanism, not
+  a contradiction.
+
+**FW 14 acceptance criteria** (all three, on an AGED validation soak — the leak
+counter **stays aboard**, it is how the fix is proven):
+
+1. **`leak ≡ 0`** on every bus at high uptime;
+2. **end-to-end lag ≤ 20 ms sustained** on the aged plant;
+3. **residuals (a) and (b) reconciled** — the lag integral's absolute value and
+   creep explained, and the RTT probe either fixed (multi-slot request stamps) or
+   its limitation restated with the pipelining arithmetic.
 
 ### P3 — the latency fix + the alarmed end-to-end latency monitor
 

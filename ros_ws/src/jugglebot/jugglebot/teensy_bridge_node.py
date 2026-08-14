@@ -237,6 +237,150 @@ def hardware_config_identity() -> str:
                 % (type(exc).__name__, exc))
 
 
+# ── Install-skew self-check ────────────────────────────────────
+#
+# THE INCIDENT THIS CLOSES (2026-08-14, S3 of bridge-temporal-trustworthiness).
+# The operator flashed can-bridge FW 13, relaunched, and the conviction bag
+# recorded no /ring_diag at all: `colcon build` had not taken effect, so this
+# node ran from a two-day-old `install/` tree that predates the RING_DIAG
+# subscribe. BRIDGE_FW_CHECK reported OK throughout — and it was RIGHT to,
+# which is the whole problem: it compares the board's FW_VERSION against
+# `rpc_args.EXPECTED_BRIDGE_FW_VERSION` read from the LIVE repo-root
+# `teensy_link/` tree (injected on PYTHONPATH by the launch, deliberately NOT
+# colcon-installed), so it is structurally blind to the currency of the NODE's
+# own build. Firmware currency and host currency are two independent halves and
+# only one of them had a detector.
+#
+# jugglebot_launch.py already carries the sibling check for the GENERATED CONFIG
+# modules (`_install_drift`, link B) — but its scope is exactly
+# `hardware_config.py` + `protocol_config.py`, so a stale node source with
+# unchanged config passes it green. This check covers the node's own source.
+#
+# ADVISORY ONLY, same policy as BRIDGE_FW_CHECK and the launch banner: a stale
+# install is a CONFUSION failure, not a danger one (build-frozen is the safe
+# direction), and putting a hash comparison in front of the leg/hand command
+# path would convert a reporting gap into an outage.
+_SOURCE_TREE_REL = ('ros_ws', 'src', 'jugglebot', 'jugglebot',
+                    'teensy_bridge_node.py')
+
+#: The three verdicts, never collapsed. 'unknown' is NOT a synonym for clean —
+#: a check that could not run must read differently from one that ran and
+#: agreed, or the row manufactures reassurance (the launch banner's
+#: PARTIAL-vs-OK rule, same reasoning).
+INSTALL_SKEW_CLEAN = '0'
+INSTALL_SKEW_STALE = '1'
+INSTALL_SKEW_UNKNOWN = 'unknown'
+
+
+def _repo_source_copy(running_path: str) -> str | None:
+    """Locate the repo-source copy of this module, or None.
+
+    Resolution: ``JUGGLEBOT_REPO`` override (EXCLUSIVE when set — a missing
+    file under it yields None/unknown, never a fall-through to a different
+    tree), else walk up from the RUNNING file.
+
+    The walk is what makes this work under colcon: the running file is
+    ``<repo>/ros_ws/install/jugglebot/lib/python3.N/site-packages/jugglebot/
+    teensy_bridge_node.py``, so the first ancestor that carries
+    ``ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py`` is the repo that
+    produced this install. Anchoring on the compared file itself (rather than on
+    `config/generate_config.py`, the launch's anchor) means a resolved root can
+    never lack the file the verdict is about. Running live from the source tree
+    resolves to the file itself, which is a true clean verdict, not a special
+    case.
+
+    The env override mirrors ``jugglebot_launch._repo_root`` so a worktree
+    session can pin its own tree. Unlike the launch this does NOT fall back to
+    the canonical ``/home/jetson/Desktop/Jugglebot``: for a deploy whose source
+    tree is genuinely absent, comparing against whatever unrelated checkout sits
+    at a hard-coded path would manufacture a skew verdict about a tree this
+    process never came from. An honest ``unknown`` is the weaker claim and the
+    correct one.
+    """
+    override = os.environ.get('JUGGLEBOT_REPO')
+    if override:
+        # The override is AUTHORITATIVE, never a hint: an operator who pinned a
+        # worktree must get a verdict about THAT tree or no verdict at all. A
+        # silent fall-through to the walk-up would verdict against a different
+        # repo and log CLEAN — the same manufactured-reassurance class this
+        # check exists to close (a typo'd override yields `unknown` naming the
+        # override path, not a plausible-looking answer about the wrong tree).
+        cand = os.path.join(override, *_SOURCE_TREE_REL)
+        return cand if os.path.isfile(cand) else None
+    roots = []
+    here = os.path.dirname(os.path.abspath(running_path))
+    while True:
+        roots.append(here)
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    for root in roots:
+        cand = os.path.join(root, *_SOURCE_TREE_REL)
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def install_skew_verdict(running_path: str | None = None) -> tuple[str, str]:
+    """Compare the RUNNING module's source against the repo-source copy.
+
+    Returns ``(verdict, detail)`` where verdict is one of the three
+    ``INSTALL_SKEW_*`` tokens and detail is the operator-facing explanation
+    (both paths and their mtimes on a skew; the reason on ``unknown``).
+
+    Content hash, not mtime: colcon copies the ``.py`` verbatim, so equal bytes
+    is exactly "this process is running the code the repo says it is", while
+    mtimes differ on every build and would false-positive constantly. The mtimes
+    are REPORTED (never compared) because they are what tells the operator which
+    side is behind, which is the difference between "run colcon build" and
+    "your checkout is stale".
+
+    Never raises: a diagnostic must not be able to stop the bridge booting.
+    """
+    try:
+        running = os.path.abspath(running_path if running_path is not None
+                                  else __file__)
+        source = _repo_source_copy(running)
+        if source is None:
+            override = os.environ.get('JUGGLEBOT_REPO')
+            if override:
+                return (INSTALL_SKEW_UNKNOWN,
+                        'JUGGLEBOT_REPO=%s carries no %s — the override is '
+                        'authoritative, so no other tree was consulted — '
+                        'install currency NOT checked' %
+                        (override, os.path.join(*_SOURCE_TREE_REL)))
+            return (INSTALL_SKEW_UNKNOWN,
+                    'no repo source tree found from %s (deploy without a '
+                    'checkout, or an unexpected install layout) — install '
+                    'currency NOT checked' % running)
+        with open(running, 'rb') as f_run:
+            run_digest = hashlib.sha256(f_run.read()).hexdigest()
+        with open(source, 'rb') as f_src:
+            src_digest = hashlib.sha256(f_src.read()).hexdigest()
+        if run_digest == src_digest:
+            return (INSTALL_SKEW_CLEAN,
+                    'running %s matches repo source %s (sha256=%s)'
+                    % (running, source, run_digest[:16]))
+        return (INSTALL_SKEW_STALE,
+                'running %s (mtime %s) DIFFERS from repo source %s (mtime %s)'
+                % (running, _mtime_stamp(running), source,
+                   _mtime_stamp(source)))
+    except Exception as exc:  # noqa: BLE001 — the check is best-effort
+        return (INSTALL_SKEW_UNKNOWN,
+                'install check errored (%s: %s) — install currency NOT checked'
+                % (type(exc).__name__, exc))
+
+
+def _mtime_stamp(path: str) -> str:
+    """Local mtime with a UTC offset (see hardware_config_identity on why %z)."""
+    try:
+        return time.strftime('%Y-%m-%dT%H:%M:%S%z',
+                             time.localtime(os.path.getmtime(path)))
+    except OSError:
+        return 'unknown'
+
+
 # ── Constants ──────────────────────────────────────────────────
 # Mirror of can_node._HEARTBEAT_TIMEOUT_S: the can-bridge link is declared lost
 # after this long without a T→J heartbeat. 2 s matches the CAN watchdog so the
@@ -539,6 +683,34 @@ class TeensyBridgeNode(Node):
         # production; unit tests (which call on_shutdown against a FakeTeensy that
         # never completes the descent) pass False via _build_paired_node.
         self._stow_on_shutdown = bool(stow_on_shutdown)
+
+        # ── Install-skew self-check ────────────────────────────
+        # Runs FIRST, before the RX thread exists: _record_bridge_fw_version
+        # renders this verdict from the RX thread, and the check must not be a
+        # value that thread can observe half-written. Two file reads, once.
+        # One log call per verdict, each at a FIXED severity on its own source
+        # line — Foxy's rcutils logger caches severity per line and RAISES on a
+        # flip (971d12c), so a single call site with a computed level would be a
+        # crash waiting for the first stale install.
+        self._install_skew, self._install_skew_detail = install_skew_verdict()
+        if self._install_skew == INSTALL_SKEW_STALE:
+            self.get_logger().error(
+                'INSTALL_SKEW: FAIL — this node is NOT running the repo source. '
+                + self._install_skew_detail + '. BRIDGE_FW_CHECK cannot see '
+                'this: it compares the flashed firmware against the LIVE '
+                'teensy_link tree, so it reads OK while this node runs a stale '
+                'build (2026-08-14: an S3 conviction bag recorded no /ring_diag '
+                'for exactly this reason). FIX: cd ros_ws && colcon build '
+                '--packages-select jugglebot, then RELAUNCH. Nothing is '
+                'refused — advisory only.')
+        elif self._install_skew == INSTALL_SKEW_UNKNOWN:
+            self.get_logger().warning(
+                'INSTALL_SKEW: INCONCLUSIVE — ' + self._install_skew_detail
+                + '. Treat this node build as UNVERIFIED; it is not evidence '
+                'that the install is fresh.')
+        else:
+            self.get_logger().info(
+                'INSTALL_SKEW: OK — ' + self._install_skew_detail)
 
         # ── Parameters ─────────────────────────────────────────
         self.declare_parameter('teensy_ip', p.TEENSY_IP)
@@ -1561,7 +1733,7 @@ class TeensyBridgeNode(Node):
         if version == expected:
             self.get_logger().info(
                 f'BRIDGE_FW_CHECK: OK — can-bridge Teensy reports v{version} '
-                f'(expected v{expected})')
+                f'(expected v{expected}){self._install_skew_note()}')
             return
         # Skew. ERROR level with one greppable token, and the older/newer
         # direction named because they fail differently: an older board is
@@ -1574,7 +1746,28 @@ class TeensyBridgeNode(Node):
             f'NOT refused (the skew is reported, never enforced — the same '
             f'warn-never-refuse policy as ros_ws/docs/platform_fw_version.md), '
             f'but any bench conclusion that reads the bridge_tx_diag counters is '
-            f'untrustworthy until the can-bridge is re-flashed.')
+            f'untrustworthy until the can-bridge is re-flashed.'
+            f'{self._install_skew_note()}')
+
+    def _install_skew_note(self) -> str:
+        """The host half of the currency verdict, appended to BRIDGE_FW_CHECK.
+
+        The two halves are reported in ONE line because they are one question —
+        "is what is running what the repo says?" — and the 2026-08-14 S3 miss is
+        precisely what happens when an operator reads the firmware half as an
+        answer to both. Rendered on the OK line too: a green firmware verdict
+        beside a silent host verdict is the shape of the original trap.
+        """
+        if self._install_skew == INSTALL_SKEW_STALE:
+            # Phrased to read correctly after BOTH call sites' punctuation —
+            # '(expected v13)' and 'until the can-bridge is re-flashed.'
+            return (' BUT NOTE — install_skew=1: this NODE is running a stale '
+                    'colcon install, so nothing it reports about the bridge is '
+                    'trustworthy. ' + self._install_skew_detail)
+        if self._install_skew == INSTALL_SKEW_UNKNOWN:
+            return (' [install_skew=unknown — the node build could not be '
+                    'checked against a repo source tree]')
+        return ' [install_skew=0 — node build matches the repo source]'
 
     def _on_bb_estimates(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. The drain timer
@@ -3733,6 +3926,26 @@ class TeensyBridgeNode(Node):
                 # is never enforced.
                 KeyValue(key='bridge_fw_version',
                          value=self._bridge_fw_version_str()),
+                # The HOST half of the same currency question, deliberately
+                # adjacent to the firmware half: '0' clean, '1' this node is
+                # running a stale colcon install, 'unknown' the check could not
+                # run. A bare token so a bag consumer can compare it exactly.
+                #
+                # WHY A PERSISTENT ROW AND NOT ONLY THE STARTUP LOG. The verdict
+                # is logged once, at construction; /rosout recording races node
+                # startup, and an operator (or an analysis script) joining a
+                # bag mid-session would otherwise have no way to tell a fresh
+                # node from the stale one that produced the 2026-08-14 S3 bag.
+                # Same argument as bridge_fw_version's above.
+                KeyValue(key='install_skew', value=self._install_skew),
+                # The token alone cannot distinguish "source absent" from
+                # "check errored", and on a '1' it cannot say WHICH side is
+                # behind — which is the difference between rebuilding and
+                # updating the checkout. The detail is static per process, so
+                # it costs one string per publish and makes the bag
+                # self-explanatory without the log.
+                KeyValue(key='install_skew_detail',
+                         value=self._install_skew_detail),
                 # How the wall-clock ANCHOR the Teensy time-syncs to was stamped
                 # (bridge-temporal-trustworthiness P2). 'kernel-midpoint' =
                 # (kernel RX t2 + pre-send userspace t3)/2, which cancels this

@@ -301,6 +301,36 @@ the S2 freeze statistics, the secondary audit finds and the honest residual (the
 measured 283–340 ms exceeds the delay line's 135 ms ceiling):
 `logbook/2026-08-14-ring-audit-available-leak-delay-line.md`.
 
+## Addendum (2026-08-14, S3) — the leak is MEASURED at 97 % of a lap; the root cause is established
+
+FW 13's `RING_DIAG` ran the conviction soak and the prediction held at the
+ceiling. On a bridge aged **4.01–4.04 h** (bag `2026-08-14_18-18-59`, **92
+samples**): `true_depth_jb` **247–248** stranded against `avail_reported_jb`
+**0** — `leak_jb` **247–248**, high-water **249**, **≈ 97 % of the 256-slot
+lap** — with `leak_bb` **1**, `leak_cone` **0** (the traffic scaling the
+collision-rate argument requires) and `fifo_overflows` **0** on every bus. No
+peripheral loss: **pure software-ring stranding**.
+
+Two independent cross-checks agree. **echo→exec aged − fresh = 115.4 ms**, inside
+the predicted **114–135 ms** one-lap band. And **256 ÷ ~90 slots/h ≈ 2.84 h to
+saturate**, which retro-explains this entry's own plateau: 3.8 h → 252 ms, ≈ 28 h
+→ 283 ms, ≈ 63 h → 290–340 ms is a lag that **saturated by hour three**, not one
+still climbing with uptime.
+
+**Root cause of this arc is now ESTABLISHED, not inferred: one missing IRQ guard
+around the vendored FlexCAN_T4 ring pop.**
+
+**This entry stays `open`.** The 2026-07-24 contract is unchanged: **FW 14** (the
+fix; the leak counter stays aboard, acceptance **`leak ≡ 0` and lag ≤ 20 ms on an
+AGED validation soak**) **and** the alarmed end-to-end latency monitor. Two
+second-order residuals ride into that validation pass — the delivery-lag
+integral's absolute value (151–183 ms against a naive 129 ms, creeping
+~0.35 ms/s) and the SDO RTT floor's mispairing under pipelining (46.9–47.9 ms).
+
+Full record, including the stale-`install/` near-miss that nearly cost the
+measurement and the install-skew self-check that closes that class:
+`logbook/2026-08-14-s3-conviction-ring-leak-measured.md`.
+
 ## Verification
 
 - All forensics offline/read-only; scripts + per-commit JSON in the session
