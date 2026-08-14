@@ -1181,8 +1181,16 @@ FCTP_FUNC void FCTP_OPT::flexcan_interrupt() {
       msg.mb = FIFO; /* store the mailbox the message came from (for callback reference) */
       (void)FLEXCANb_TIMER(_bus);
       writeIFLAGBit(5); /* clear FIFO bit only! */
-      if ( iflag & FLEXCAN_IFLAG1_BUF6I ) writeIFLAGBit(6); /* clear FIFO bit only! */
-      if ( iflag & FLEXCAN_IFLAG1_BUF7I ) writeIFLAGBit(7); /* clear FIFO bit only! */
+      /* JUGGLEBOT PATCH (2026-08-14, can-bridge FW 13 RING_DIAG): count the two
+         FIFO condition flags before clearing them. Bit 6 = FIFO WARNING (the
+         hardware FIFO reached its almost-full mark), bit 7 = FIFO OVERFLOW (a
+         frame was LOST at the peripheral, upstream of the software ring and of
+         every counter the bridge keeps). Upstream clears both and records
+         neither, so that loss has always been silent. Both increments run in
+         ISR context, which is the only writer, so they are exact — unlike the
+         `_available`-derived depth counters this frame exists to convict. */
+      if ( iflag & FLEXCAN_IFLAG1_BUF6I ) { fifo_warn_count++; writeIFLAGBit(6); } /* clear FIFO bit only! */
+      if ( iflag & FLEXCAN_IFLAG1_BUF7I ) { fifo_overflow_count++; writeIFLAGBit(7); } /* clear FIFO bit only! */
       frame_distribution(msg);
       ext_output1(msg);
       ext_output2(msg);

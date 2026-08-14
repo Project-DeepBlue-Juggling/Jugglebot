@@ -63,6 +63,39 @@ class Circular_Buffer {
         uint16_t size() { return _available; }
         uint16_t available() { return _available; }
         uint16_t capacity() { return _size; }
+        // JUGGLEBOT PATCH (2026-08-14, can-bridge FW 13 RING_DIAG): read-only
+        // probe of the ring's raw indices, for the `_available` under-count
+        // instrument. `_available` is RMW'd non-atomically by BOTH the CAN ISR
+        // (increment, via write()) and the task-side pop (decrement, via read()/
+        // readBytes()), and in FlexCAN_T4::events() the pop runs BEFORE the
+        // NVIC_DISABLE_IRQ guard — so the race is one-directional (ISR preempts
+        // task, never the reverse) and ISR increments get swallowed. `_available`
+        // therefore monotonically UNDER-counts, while head/tail (single-writer
+        // each in steady state) stay correct. `true_depth - avail` is that leak.
+        //
+        // READ ORDER IS LOAD-BEARING and deliberate: head and tail FIRST, then
+        // _available. A push concurrent with this probe advances tail and
+        // _available together, so reading the depth first and the count second
+        // can only make the reported leak SMALLER by one, never larger. The
+        // opposite order would manufacture a phantom +1 leak on every probe that
+        // happened to straddle a push — in the one instrument whose entire job is
+        // to decide whether a leak exists. (FW 11's "numerators first so a duty
+        // can only round down" precedent.)
+        //
+        // Reading from task context races the ISR by +/-1 regardless; that is
+        // acceptable for a 1 Hz diagnostic and is why nothing here is masked.
+        // STRICTLY READ-ONLY — no index is written, no pop/push logic is touched.
+        void probe(uint16_t &out_head, uint16_t &out_tail,
+                   uint16_t &out_available, uint16_t &out_depth) {
+          const uint16_t h = head;
+          const uint16_t t = tail;
+          out_head = h;
+          out_tail = t;
+          // head/tail run modulo 2*_size (the classic full-vs-empty distinction),
+          // so the true occupancy is their difference under that same modulus.
+          out_depth = (uint16_t)(((uint32_t)t - (uint32_t)h) & (2u * (uint32_t)_size - 1u));
+          out_available = _available;
+        }
         uint16_t length_back() { return (((int)_cabuf[((head+size()-1)&(_size-1))][0] << 8*sizeof(T)) | (int)_cabuf[((head+size()-1)&(_size-1))][1]); }
         uint16_t length_front() { return (((int)_cabuf[((head)&(_size-1))][0] << 8*sizeof(T)) | (int)_cabuf[((head)&(_size-1))][1]); }
         T list();

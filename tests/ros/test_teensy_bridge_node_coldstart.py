@@ -491,8 +491,29 @@ def test_reboot_clears_cache_even_if_write_fails():
 # ── encoder_search_complete derivation ─────────────────────────
 
 def _publish_and_get(node, teensy):
+    """Land a FRESH telemetry frame, then publish, then read the message back.
+
+    The wait is on the telemetry GENERATION advancing, not on
+    ``_latest_telemetry is not None``. The `is not None` form short-circuits from
+    the second call onward — the latch is already populated — so it never proved
+    the newly-sent frame had actually landed, and every call after the first was
+    racing the RX thread while silently passing. Two things now depend on getting
+    this right:
+
+    * ``_publish_robot_state`` skips a publish whose telemetry latch has not moved
+      since the last one (the honesty gate that stops the publisher fabricating
+      duplicate samples), so a helper that publishes before the new frame lands
+      would return the PREVIOUS message from ``published[-1]`` and assert against
+      the wrong snapshot;
+    * the assertions here are about fields that change between calls, which is
+      exactly the case a stale ``published[-1]`` would pass by accident.
+
+    Waiting on the generation makes the helper prove what its name claims.
+    """
+    before = node._telemetry_gen
     teensy.send_telemetry(pos_rev=_telem().pos_rev, vel_rps=_telem().vel_rps)
-    assert _wait_until(lambda: node._latest_telemetry is not None)
+    assert _wait_until(lambda: node._telemetry_gen > before), (
+        'the telemetry frame never reached the node')
     node._publish_robot_state()
     return node.robot_state_pub.published[-1]
 
@@ -567,8 +588,12 @@ def test_reboot_clears_encoder_search_complete():
         assert ok, msg
         assert node._cold_start_state.is_homed is False
         assert node._encoder_search_done_session is False   # cleared by the reboot hook
-        node._publish_robot_state()   # telemetry already cached from _publish_and_get
-        msg_out = node.robot_state_pub.published[-1]
+        # A FRESH telemetry frame, not a bare _publish_robot_state() on the
+        # cached latch: the publisher's honesty gate skips a publish whose
+        # telemetry has not moved, so the bare call would be suppressed and
+        # published[-1] would hand back the PRE-reboot message — which asserts
+        # True on both fields below and would report the reboot hook as broken.
+        msg_out = _publish_and_get(node, teensy)
         assert msg_out.is_homed is False
         assert msg_out.encoder_search_complete is False      # re-search required post-reboot
     finally:

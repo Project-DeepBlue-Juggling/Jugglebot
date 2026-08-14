@@ -511,8 +511,31 @@ FCTP_CLASS class FlexCAN_T4 : public FlexCAN_T4_Base {
     bool error(CAN_error_t &error, bool printDetails);
     uint32_t getRXQueueCount() { return rxBuffer.size(); }
     uint32_t getTXQueueCount() { return txBuffer.size(); }
+    /* JUGGLEBOT PATCH (2026-08-14, can-bridge FW 13 RING_DIAG): read-only
+       passthrough to the RX ring's raw indices. getRXQueueCount() above returns
+       `_available`, which the events()-pop-before-NVIC_DISABLE_IRQ race makes
+       monotonically UNDER-count, so it is blind to a stranded backlog BY
+       CONSTRUCTION and so are the depth_hwm / cap_hits counters built on it.
+       `depth` here is derived from head/tail instead and is the TRUE occupancy;
+       `depth - available` is the leak. See Circular_Buffer::probe for the read
+       ordering and the +/-1 task-vs-ISR race. Nothing is written. */
+    void rxRingProbe(uint16_t &head, uint16_t &tail, uint16_t &available, uint16_t &depth) {
+      rxBuffer.probe(head, tail, available, depth);
+    }
+    /* JUGGLEBOT PATCH (2026-08-14, can-bridge FW 13 RING_DIAG): the FIFO
+       overflow / warning IFLAG bits (7 / 6) are cleared in flexcan_interrupt()
+       and were never counted anywhere, so a hardware-FIFO overrun — frames lost
+       BEFORE the software ring, upstream of every counter the bridge has — has
+       always been invisible. Incremented in the ISR at the clear site, so they
+       are exact and race-free; read from task context as single aligned words. */
+    uint32_t getFIFOOverflowCount() { return fifo_overflow_count; }
+    uint32_t getFIFOWarnCount() { return fifo_warn_count; }
 
   private:
+    /* JUGGLEBOT PATCH (2026-08-14, can-bridge FW 13 RING_DIAG): see the two
+       accessors above. ISR is the only writer; cumulative, never cleared. */
+    volatile uint32_t fifo_overflow_count = 0;
+    volatile uint32_t fifo_warn_count = 0;
     void setMBFilterProcessing(FLEXCAN_MAILBOX mb_num, uint32_t filter_id, uint32_t calculated_mask);
     void writeTxMailbox(uint8_t mb_num, const CAN_message_t &msg);
     uint64_t readIMASK();// { return (((uint64_t)FLEXCANb_IMASK2(_bus) << 32) | FLEXCANb_IMASK1(_bus)); }

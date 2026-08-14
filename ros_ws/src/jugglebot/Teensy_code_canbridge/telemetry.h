@@ -92,6 +92,34 @@ void bridge_tx_diag_uplink_step();
 // counter another context writes, and no IRQ-off window.
 void cache_diag_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the CAN RX-ring
+// TRUE-occupancy census as a RING_DIAG frame at a flat 1 Hz. Unconditional, like
+// its three 1 Hz siblings: the conclusion is a trend across a multi-hour soak, so
+// a gap must never be ambiguous with health.
+//
+// WHAT IT IS FOR. The conviction instrument for the FlexCAN_T4 `_available`
+// leak — the surviving candidate after S2 killed the cache-AGE hypothesis. The
+// library's events() pops the RX ring before its NVIC_DISABLE_IRQ guard, so the
+// ISR's `_available++` races the task-side `_available--` one-directionally and
+// increments are swallowed; `_available` under-counts, the drain loop stops
+// early, and a residue D is stranded that makes every delivery D frames old.
+// `true_depth - avail_reported` on the jugglebot bus is the leak, and it is the
+// single number the hypothesis stands or falls on. See the RingDiag summary in
+// config/generate_udp_protocol.py for the full mechanism.
+//
+// WHY THIS STEP DOES ALMOST NOTHING. Every reduction behind this frame is
+// performed where the data lives — the occupancy extrema on the 1 kHz service
+// tick in can_buses.cpp, the delivery lag in the RX decode, the SDO round trip
+// in gpio_poll's existing request/reply pair. This step only TAKES three
+// snapshots once a second and differences the cumulative counters into window
+// quantities, so it adds no ISR work, no new IRQ-off window on any hot path, and
+// nothing at all to the 500 Hz interp ladder.
+//
+// CONCURRENCY: the three take-functions each do their own masking against their
+// own writer (all of which outrank task_telem). The window state below is
+// touched by task_telem alone.
+void ring_diag_uplink_step();
+
 // Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the running
 // build's FW_VERSION + PROTOCOL_VERSION as a BRIDGE_IDENTITY frame at a flat
 // 1 Hz. FW_VERSION previously existed only in the USB serial boot banner, so a

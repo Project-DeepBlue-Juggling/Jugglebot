@@ -368,7 +368,22 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: operator flashes: /link_status will read `11 (SKEW — expected v12)`, which is
 #: the CORRECT report — the tree has FW 12, the board does not — and it is
 #: advisory everywhere, never enforced.
-EXPECTED_BRIDGE_FW_VERSION = 12
+#: 13 (2026-08-14) = the RingDiag (0x92) CAN RX-ring true-occupancy census: the
+#: conviction instrument for the FlexCAN_T4 `_available` leak, which is the
+#: surviving candidate mechanism after S2 killed the cache-AGE hypothesis. The
+#: library's ``events()`` pops the RX ring before its ``NVIC_DISABLE_IRQ`` guard,
+#: so the ISR's ``_available++`` races the task-side ``_available--``
+#: one-directionally, the count under-reports, and the bridge's drain loop leaves
+#: a residue that makes every delivery N frames old. ``getRXQueueCount()`` returns
+#: that same corrupted count, so every counter the bridge already had is blind to
+#: it — hence a new frame rather than a new field. Additive again, so an FW 12
+#: board decodes every other frame identically and stays fully usable; it simply
+#: sends no 0x92, and ``/ring_diag`` records EMPTY rather than erroring. The same
+#: bumped-while-the-board-is-behind situation as 11 and 12 above applies until the
+#: operator flashes: ``/link_status`` will read `12 (SKEW — expected v13)`, which
+#: is the CORRECT report — the tree has FW 13, the board does not — and it is
+#: advisory everywhere, never enforced.
+EXPECTED_BRIDGE_FW_VERSION = 13
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

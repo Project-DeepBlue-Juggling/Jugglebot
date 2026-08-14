@@ -65,6 +65,103 @@ static volatile uint32_t s_decode_short = 0, s_decode_bad_axis = 0;
 // the shape the 2026-08-12 S1 bag forensics found. See CanRxHealth::enc_frames.
 static volatile uint32_t s_enc_frames[NUM_AXES] = {0};
 
+// ── RX-ring TRUE-occupancy probe (FW 13; contract in can_buses.h) ───────────
+// Written ONLY by service_bus (task_can_rx, priority 5); read by task_telem
+// (priority 3) under PRIMASK. The reader masks and the writer deliberately does
+// NOT: the writer OUTRANKS the reader, so the reader can never preempt a
+// half-written record, and masking in the writer would put IRQ-off time on a
+// path that runs ~2,240 times a second beneath a 500 Hz hard-deadline ISR — the
+// opposite of "instrumentation only". (gpio_poll.h documents the same priority
+// argument in the other direction, where its writer is the LOWER-priority task
+// and therefore must mask.) The masked whole-record read matters because
+// `depth` and `avail` are only meaningful AS A PAIR: catching one from tick N
+// and the other from tick N+1 would fabricate or erase a leak.
+static BusRingProbe s_bb_ringprobe{}, s_cone_ringprobe{}, s_jugglebot_ringprobe{};
+static uint32_t s_ring_probe_ticks = 0;
+
+// ── Jugglebot delivery-lag accumulator (FW 13; contract in can_buses.h) ─────
+// Same writer/reader classes and the same masking argument as the ring probe
+// above: written in on_jugglebot_rx (task_can_rx), read by task_telem at 1 Hz.
+//
+// The gap bound that decides when the 16-bit capture-stamp unwrap is still
+// trustworthy. The jugglebot bus carries ~2,240 frames/s steady, i.e. ~0.45 ms
+// between deliveries, against a 65.536 ms wrap — so 50 ms is ~110 normal
+// inter-frame gaps and still 15 ms clear of the wrap. Exceeding it means the bus
+// genuinely went quiet (ODrives unpowered) or task_can_rx stalled for 50 ms, and
+// in EITHER case the number of elapsed wraps is unknowable. Measured on the
+// DECODE side because the capture side is the very quantity in doubt; the two
+// differ by the delivery lag, which is the ~100 ms the whole investigation is
+// chasing, and 15 ms of headroom plus the reseed's own visibility is the honest
+// trade. Reseeding beats accumulating a wrong unwrap: a corrupted arrival clock
+// poisons every later sample silently and forever, a reseed costs one comparable
+// pair and shows up in lag_reseeds.
+static constexpr uint64_t JB_LAG_UNWRAP_GAP_US = 50000ull;
+// |lag| beyond this is unwrap corruption, not physics: the leak's delivery lag
+// is capped at one ring lap (256 slots ≈ 135 ms at jb rates). See the
+// PHYSICAL-CAP guard in jb_lag_fold.
+static constexpr uint64_t JB_LAG_PHYS_CAP_US   = 200000ull;
+static uint16_t s_jb_ts_prev      = 0;   // previous frame's FlexCAN capture stamp
+static uint64_t s_jb_arrival_us   = 0;   // unwrapped capture clock since the seed
+static uint64_t s_jb_anchor_us    = 0;   // micros64() at the seed
+static uint64_t s_jb_dec_prev_us  = 0;   // micros64() at the previous delivery (gap test)
+static int32_t  s_jb_lag_now_us   = 0;   // (decode elapsed) - (capture elapsed) since the seed
+static int32_t  s_jb_lag_hwm_us   = 0;
+static uint32_t s_jb_lag_frames   = 0;   // frames folded since boot (differenced per window)
+static uint32_t s_jb_lag_reseeds  = 0;
+static bool     s_jb_lag_seeded   = false;
+static bool     s_jb_lag_reseeded_since_read = false;
+
+// Fold one delivered jugglebot frame into the arrival clock. Called from
+// on_jugglebot_rx for EVERY frame — before any id/type classification, so the
+// clock measures DELIVERY and never a subset of it. A handful of integer ops and
+// no division, no masking, no branch on bus state.
+static inline void jb_lag_fold(uint16_t ts, uint64_t now_mono) {
+  if (!s_jb_lag_seeded) {
+    s_jb_lag_seeded  = true;
+    s_jb_arrival_us  = 0;
+    s_jb_anchor_us   = now_mono;
+    s_jb_lag_now_us  = 0;
+    s_jb_lag_hwm_us  = 0;
+  } else if ((now_mono - s_jb_dec_prev_us) >= JB_LAG_UNWRAP_GAP_US) {
+    // Unwrap no longer trustworthy — reseed and say so, rather than adding an
+    // unknown multiple of 65.536 ms to the clock and reporting it as lag.
+    ++s_jb_lag_reseeds;
+    s_jb_lag_reseeded_since_read = true;
+    s_jb_arrival_us  = 0;
+    s_jb_anchor_us   = now_mono;
+    s_jb_lag_now_us  = 0;
+    s_jb_lag_hwm_us  = 0;   // the hwm is only meaningful against ONE reference
+  } else {
+    s_jb_arrival_us += (uint64_t)(uint16_t)(ts - s_jb_ts_prev);
+    // Telescopes exactly to (delivery lag now) - (delivery lag at the seed): the
+    // capture stamps are hardware, taken at reception, so everything the ring
+    // does to the frame afterwards lands in this difference and nowhere else.
+    const int64_t lag = (int64_t)(now_mono - s_jb_anchor_us) - (int64_t)s_jb_arrival_us;
+    // PHYSICAL-CAP guard: one blind spot survives the decode-gap reseed — a bus
+    // quiet of ~66-82 ms behind a still-draining backlog keeps DECODE gaps under
+    // the reseed line while the CAPTURE clock wraps once, stepping the unwrap by
+    // -65.536 ms permanently and silently. But the leak's lag is physically
+    // bounded by one ring lap (~135 ms), so any |lag| beyond ~200 ms is unwrap
+    // corruption, not measurement: force the reseed and count it, so the series
+    // segments visibly instead of carrying a wrapped reference forever.
+    if (lag > (int64_t)JB_LAG_PHYS_CAP_US || lag < -(int64_t)JB_LAG_PHYS_CAP_US) {
+      ++s_jb_lag_reseeds;
+      s_jb_lag_reseeded_since_read = true;
+      s_jb_arrival_us  = 0;
+      s_jb_anchor_us   = now_mono;
+      s_jb_lag_now_us  = 0;
+      s_jb_lag_hwm_us  = 0;
+    } else {
+      const int32_t lag32 = (int32_t)lag;
+      s_jb_lag_now_us = lag32;
+      if (lag32 > s_jb_lag_hwm_us) s_jb_lag_hwm_us = lag32;
+    }
+  }
+  s_jb_ts_prev     = ts;
+  s_jb_dec_prev_us = now_mono;
+  ++s_jb_lag_frames;
+}
+
 // Hand command-echo recorder. Defined later in this TU (near the ring
 // helpers); forward-declared here so decode_into_cache can stash a sniffed hand
 // Set_Input_Pos into the single-slot latest-value store.
@@ -447,6 +544,11 @@ static void on_jugglebot_rx(const CAN_message_t& msg) {
   const uint64_t now      = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   const uint64_t now_mono = micros64();      // interval clock for the health stamp
   atomic_write_u64(&s_jugglebot_last_rx_us, now_mono);   // 64-bit monotonic; read as an interval by health_of
+  // FW 13 RING_DIAG: fold the HARDWARE capture stamp into the delivery-lag
+  // accumulator. Placed here, ABOVE the platform-reply branch, so every
+  // delivered frame counts: the quantity is how late the RING hands frames over,
+  // which has nothing to do with what any given frame turns out to contain.
+  jb_lag_fold(msg.timestamp, now_mono);
   if (is_platform_reply_id(msg.id)) { platform_ring_push(msg, now); return; }
   decode_into_cache(msg);
 }
@@ -589,6 +691,15 @@ void can_buses_init() {
 // non-atomic `_available` increment/decrement between the RX ISR and the unmasked pop
 // is a pre-existing FlexCAN_T4 SPSC property, unchanged here — it self-corrects to a
 // transient ±1 miscount and does not tear frame DATA while head/tail stay far apart.)
+// ⚠️ REFUTED 2026-08-14: the parenthetical above is WRONG on both counts. The race is
+// ONE-directional (the ISR preempts the pop, never the reverse), so the miscount is a
+// MONOTONE LEAK, not a self-correcting transient — `_available` under-counts forever,
+// stranding frames and turning the ring into an uptime-ratcheting delay line; and the
+// "kept near-empty" evidence above was `depth_hwm`, which is derived from `_available`
+// itself (circular). Kept verbatim as the historical record; the correct account is the
+// BusRingProbe contract (can_buses.h) and
+// logbook/2026-08-14-ring-audit-available-leak-delay-line.md § 6. Fix sequenced as
+// FW 14, after the RING_DIAG occupancy measurement convicts on a number.
 static constexpr uint8_t CAN_RX_DRAIN_BUDGET = 32;
 
 // Drain the FlexCAN ESR1-change history (≤16 deep, captured by the library ISR on
@@ -663,7 +774,7 @@ static inline void poll_bus_errors(BusT& bus, volatile BusRxHealth& h, Esr1Ring&
 // bus errors. All work stays in the priority-5 CAN-RX task — see can_buses_service.
 template <typename BusT>
 static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_base,
-                               Esr1Ring& ring) {
+                               Esr1Ring& ring, BusRingProbe& probe) {
   const uint16_t pre = (uint16_t)bus.getRXQueueCount();
   if (pre > h.depth_hwm) h.depth_hwm = pre;
   uint8_t n = 0;
@@ -672,6 +783,27 @@ static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_
   // The do-while always runs once, so tx is serviced every tick even when rx is idle.
   do { r = bus.events(); } while (++n < CAN_RX_DRAIN_BUDGET && (r >> 12) != 0);
   if ((r >> 12) != 0) h.cap_hits++;        // budget bound with frames still queued
+  // ── FW 13: TRUE post-drain occupancy — the leak, measured ─────────────────
+  // THE PROBE POINT IS THE POINT. The loop above exits when `_available` reads
+  // 0, so at THIS instant the reported count is zero by construction while the
+  // ring's head/tail still say what is actually stranded in it. `depth - avail`
+  // is therefore the leak itself, not an inference from it, and every counter
+  // the bridge had before this line — depth_hwm and cap_hits right above
+  // included — is computed from `_available` and cannot see it.
+  // (The other exit is the budget bound, where avail is non-zero and both terms
+  // are elevated; the difference is still the leak, which is why the subtraction
+  // is taken rather than reading depth alone.)
+  uint16_t ph, pt, pa, pd;
+  bus.rxRingProbe(ph, pt, pa, pd);          // reads head/tail BEFORE `_available`,
+                                            // so a racing push can only shrink the
+                                            // reported leak — never invent one
+  probe.depth = pd;
+  probe.avail = pa;
+  if (pd > probe.depth_hwm) probe.depth_hwm = pd;
+  if (pd > pa) {
+    const uint16_t leak = (uint16_t)(pd - pa);
+    if (leak > probe.leak_hwm) probe.leak_hwm = leak;
+  }
   poll_bus_errors(bus, h, ring);
   // Live CAN-bus state from ONE ESR1 read (base+0x20; FlexCAN_T4 exposes no getter,
   // and CAN3's FLEXCAN3_* macros are broken in the core's imxrt.h, so use the
@@ -718,11 +850,58 @@ static inline void service_bus(BusT& bus, volatile BusRxHealth& h, uint32_t can_
 }
 
 void can_buses_service() {
-  service_bus(can_bb,        s_bb_rxh,        IMXRT_FLEXCAN1_ADDRESS, s_bb_esr1);
+  service_bus(can_bb,        s_bb_rxh,        IMXRT_FLEXCAN1_ADDRESS, s_bb_esr1,        s_bb_ringprobe);
   // Operating config (see instance declarations): cone rides FLEXCAN3,
   // jugglebot FLEXCAN2 — the ESR1 base must follow the role's controller.
-  service_bus(can_cone,      s_cone_rxh,      IMXRT_FLEXCAN3_ADDRESS, s_cone_esr1);
-  service_bus(can_jugglebot, s_jugglebot_rxh, IMXRT_FLEXCAN2_ADDRESS, s_jugglebot_esr1);
+  service_bus(can_cone,      s_cone_rxh,      IMXRT_FLEXCAN3_ADDRESS, s_cone_esr1,      s_cone_ringprobe);
+  service_bus(can_jugglebot, s_jugglebot_rxh, IMXRT_FLEXCAN2_ADDRESS, s_jugglebot_esr1, s_jugglebot_ringprobe);
+  // One increment per TICK, not per bus: it is the denominator for the extrema
+  // above, and all three buses are probed exactly once each per tick.
+  ++s_ring_probe_ticks;
+}
+
+CanRingProbe can_buses_ring_probe() {
+  CanRingProbe s{};
+  // Whole-record copy under PRIMASK — see the declaration comment: the reader
+  // (task_telem, priority 3) is OUTRANKED by the writer (task_can_rx, priority
+  // 5), so masking here is what stops a service tick landing between the `depth`
+  // and `avail` reads and fabricating a leak that never existed.
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s.bb          = s_bb_ringprobe;
+  s.cone        = s_cone_ringprobe;
+  s.jugglebot   = s_jugglebot_ringprobe;
+  s.probe_ticks = s_ring_probe_ticks;
+  __set_PRIMASK(pm);
+  // The FIFO counters live in the library instances and are written ONLY by the
+  // FlexCAN ISR (vendored patch P2), so they are exact and each is a single
+  // aligned word — read outside the mask, deliberately: they are cumulative and
+  // independent of the depth/avail pair, so there is nothing to tear across.
+  s.bb.fifo_overflows        = can_bb.getFIFOOverflowCount();
+  s.bb.fifo_warns            = can_bb.getFIFOWarnCount();
+  s.cone.fifo_overflows      = can_cone.getFIFOOverflowCount();
+  s.cone.fifo_warns          = can_cone.getFIFOWarnCount();
+  s.jugglebot.fifo_overflows = can_jugglebot.getFIFOOverflowCount();
+  s.jugglebot.fifo_warns     = can_jugglebot.getFIFOWarnCount();
+  return s;
+}
+
+JbLagProbe can_buses_jb_lag_take() {
+  JbLagProbe s{};
+  // Same masking argument as can_buses_ring_probe: lag_now_us, arrival_us and
+  // the frame count are read as ONE sample (the host differences arrival_us and
+  // frames across windows, so a torn pair would put a frame's interval in the
+  // wrong window), and the reseed flag must be consumed exactly once.
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s.lag_now_us = s_jb_lag_now_us;
+  s.lag_hwm_us = s_jb_lag_hwm_us;
+  s.arrival_us = s_jb_arrival_us;
+  s.frames     = s_jb_lag_frames;
+  s.reseeds    = s_jb_lag_reseeds;
+  s.seeded     = s_jb_lag_seeded;
+  s.reseeded_since_read        = s_jb_lag_reseeded_since_read;
+  s_jb_lag_reseeded_since_read = false;   // one window sees each reseed, exactly once
+  __set_PRIMASK(pm);
+  return s;
 }
 
 // Drain-and-print helper for the raw-ESR1 snapshot rings (1 Hz diag). Prints only

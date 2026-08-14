@@ -561,6 +561,21 @@ def generate_launch_description():
             # session that publishes it without recording it produces nothing.
             # 1 msg/s. Records EMPTY until the bridge is flashed to FW 12.
             '/cache_diag',
+            # The CONVICTION INSTRUMENT for what S2 (2026-08-13) left as the
+            # surviving candidate, carried by FW 13's additive RING_DIAG (0x92):
+            # the CAN RX ring's TRUE occupancy (from head/tail, probed the
+            # instant after the drain loop) beside the `_available` count the
+            # rest of the firmware believes. Their difference is the FlexCAN_T4
+            # leak — events() pops the ring before its NVIC_DISABLE_IRQ guard,
+            # the ISR's increment races the task's decrement one-directionally,
+            # and the drain stops early leaving frames stranded and every later
+            # delivery that many frames old. /cache_diag's ring fields CANNOT
+            # substitute: they come from getRXQueueCount(), i.e. from the very
+            # count the race corrupts, so they read healthy through a leaked
+            # ring. The verdict is a trend over an hours-long soak, so a session
+            # that publishes this without recording it produces nothing.
+            # 1 msg/s. Records EMPTY until the bridge is flashed to FW 13.
+            '/ring_diag',
             # ── THE ONE LIST (toss-selftuning D18, 2026-08-10) ──────────────
             # Until now two divergent record lists existed — this one and the
             # operator runbook's — and NEITHER was sufficient: the runbook's had

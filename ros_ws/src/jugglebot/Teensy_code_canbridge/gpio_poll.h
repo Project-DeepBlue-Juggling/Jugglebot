@@ -66,6 +66,35 @@ void gpio_poll_record(uint32_t raw_states, uint64_t wall_us, uint64_t mono_us);
 // Consistent copy of the published state (task_telem uplink, console).
 void gpio_poll_snapshot(GpioPollSnapshot& out);
 
+// ── SDO round-trip census (2026-08-14, can-bridge FW 13 RING_DIAG) ──────────
+// The CAUSAL cross-check for the FlexCAN_T4 RX-ring `_available` leak. This
+// poller already round-trips the jugglebot bus at 50 Hz, and its reply comes
+// back through the same RX ring as everything else — so if the ring is holding
+// D frames, this round trip's FLOOR grows by exactly D's worth of delay.
+// Aged-minus-fresh on the floor is the ring delay measured end-to-end, through a
+// path whose own floor (the ODrive's SDO service time) is physically fixed.
+// Nothing new goes on the wire: this is two timestamps around traffic that was
+// already there.
+//
+// WHY A FLOOR AND NOT A MEAN. The request is stamped on task_homing (PRIO_HOMING
+// = 2, the lowest real-work task), so a preemption between the stamp and the
+// wire can only INFLATE a sample. Inflation cannot move a minimum drawn from ~50
+// round trips; it would corrupt a mean. The stamp is taken BEFORE the send for
+// the same reason — stamping after would DEFLATE samples, putting the corruption
+// exactly where it does damage.
+struct GpioPollRtt {
+  uint32_t min_us;   // window minimum — THE measurement (see above)
+  uint32_t max_us;   // window maximum — the tail; catches the ~100-150 ms freezes
+  uint32_t last_us;  // most recent sample — the unreduced spot reading
+  uint16_t count;    // round trips COMPLETED this window. READ THIS FIRST: 0 ⇒ the
+                     // other three are 0 because nothing was measured, not because
+                     // the path was instant
+};
+
+// Take and CLEAR the window census (task_telem, 1 Hz). Reader-side PRIMASK: the
+// folding happens in the CAN RX decode context, which outranks the caller.
+void gpio_poll_rtt_take(GpioPollRtt& out);
+
 // 1 Hz diagnostics tick (task_diag). While the version gate is parked on a
 // MISMATCH it prints ONE park line per tick — repeating is what makes the park
 // actually loud, and task_diag is the only task whose stack (STACK_DIAG, 8 KB)

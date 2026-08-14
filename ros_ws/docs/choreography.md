@@ -284,6 +284,12 @@
 - **subscribers:** `ball_butler_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.msg.RigidBodyPoses`
 
+### `ring_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ### `robot_state`
 
 - **publishers:** `teensy_bridge_node`
@@ -612,6 +618,7 @@ broken wire cannot hide among them.
 - `qtm_clock_offset_sec` — topic with no subscribers
 - `reboot_odrives` — service with no clients
 - `recover` — service with no clients
+- `ring_diag` — topic with no subscribers
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
 - `toss/calibration_status` — topic with no subscribers

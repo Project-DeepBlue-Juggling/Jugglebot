@@ -43,4 +43,52 @@ version and living outside the tree, cannot host the instrumentation or the fix.
 
 ## Local patches
 
-- (none at vendor time — the verbatim copy compiles unmodified)
+### P1 — true RX-ring occupancy accessors (2026-08-14, can-bridge FW 13)
+
+Files: `circular_buffer.h` (`Circular_Buffer::probe`), `FlexCAN_T4.h`
+(`FlexCAN_T4::rxRingProbe`).
+
+**Rationale.** Defect 2 above makes `_available` monotonically under-count, and
+`getRXQueueCount()` returns exactly `_available` — so the bridge's existing
+`depth_hwm` and `cap_hits` counters (`can_buses.cpp service_bus`) are blind to a
+stranded backlog *by construction*: they are computed from the very number the
+race corrupts. Any measurement of the leak has to come from somewhere else.
+`head` and `tail` are the somewhere else — each has a single writer in steady
+state (the ISR advances `tail`, the task-side pop advances `head`; the ISR
+touches `head` only when the ring is FULL), so their difference under the ring's
+modulus is the TRUE occupancy. `true_depth − _available` **is** the leak, and it
+is the one number that convicts.
+
+**Minimality.** Read-only. No index is written, no pop or push logic is touched,
+and the defect itself is deliberately NOT fixed here — the fix is sequenced after
+the occupancy measurement so the fix can be judged against a number rather than a
+theory.
+
+**Read ordering is load-bearing** and is documented at the accessor: `head`/`tail`
+first, `_available` last, so a push concurrent with the probe can only shrink the
+reported leak, never invent one. Probing from task context races the ISR by ±1
+regardless; that is acceptable for a 1 Hz diagnostic, which is why nothing is
+IRQ-masked (masking would put the instrument inside the timing budget of the very
+path it is measuring).
+
+### P2 — FIFO overflow / warning counters (2026-08-14, can-bridge FW 13)
+
+Files: `FlexCAN_T4.h` (two `volatile uint32_t` members + two accessors),
+`FlexCAN_T4.tpp` (`flexcan_interrupt`, the IFLAG bit 6/7 clear site).
+
+**Rationale.** Upstream *clears* IFLAG bits 6 (FIFO warning) and 7 (FIFO
+overflow) and records neither. A bit-7 event is a frame lost inside the
+peripheral, upstream of the software ring and therefore upstream of every counter
+the bridge keeps — the one RX loss path that is invisible to all existing
+telemetry. Counted at the clear site, in ISR context, which is the sole writer:
+these two are exact and race-free, in deliberate contrast to the `_available`
+counters they sit beside.
+
+**Known scope limit** (documented, not fixed): the clear site lives inside the
+`iflag & FLEXCAN_IFLAG1_BUF5I` branch, so an overflow is counted only when the
+ISR also has a FIFO frame available. Since an overflow means the FIFO is full,
+BUF5I is co-asserted in every realistic case; the counters are nonetheless a
+lower bound by construction.
+
+**Minimality.** Two increments and two member initialisers. No control flow, no
+clear order, and no register access changes.

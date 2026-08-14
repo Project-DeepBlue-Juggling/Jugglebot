@@ -205,6 +205,8 @@ static void task_telem(void*) {
     bridge_tx_diag_uplink_step();  // per-bus TX deferral/queue + hand-stage exits @ 1 Hz
     cache_diag_uplink_step();      // encoder-cache age floor/peak + CAN RX ring @ 1 Hz
                                    // (samples the ages EVERY tick — see telemetry.h)
+    ring_diag_uplink_step();       // TRUE RX-ring occupancy vs reported `_available`
+                                   // (= the FlexCAN_T4 leak) + jb delivery lag + SDO RTT @ 1 Hz
     bridge_identity_uplink_step(); // FW_VERSION + PROTOCOL_VERSION echo @ 1 Hz
     vTaskDelayUntil(&last, period);
   }

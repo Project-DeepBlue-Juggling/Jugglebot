@@ -425,6 +425,69 @@ struct CanRxHealth {
 };
 CanRxHealth can_buses_rx_health();
 
+// ── RX-ring TRUE-occupancy probe (2026-08-14, can-bridge FW 13) ─────────────
+// The conviction instrument for the FlexCAN_T4 `_available` leak. THE DEFECT
+// (assembly-verified; recorded in lib/FlexCAN_T4/PROVENANCE.md): events() pops
+// the RX ring BEFORE its NVIC_DISABLE_IRQ guard, so the ISR's `_available++` and
+// the task-side `_available--` race one-directionally and increments are
+// swallowed. `_available` therefore UNDER-counts monotonically, the drain loop in
+// service_bus() exits believing the ring is empty while a residue D > 0 is
+// stranded, and from then on every delivered frame is D frames old.
+//
+// WHY THESE FIELDS CANNOT LIVE IN BusRxHealth ABOVE. Its depth_hwm and cap_hits
+// are computed from getRXQueueCount(), which returns `_available` — they are
+// built on the corrupted number and are blind to this failure BY CONSTRUCTION.
+// Keeping the true-occupancy fields in a SEPARATE struct also avoids the other
+// hazard: BusRxHealth is snapshotted by a hand-written field-by-field copy
+// (snapshot_bus) that feeds the CanErrors uplink and the [canhealth] console
+// line, so a field added there and forgotten in that copy reads as uninitialised
+// stack. This struct is copied whole and cannot have that bug.
+//
+// Sampled in service_bus IMMEDIATELY AFTER the drain loop finishes: at that
+// instant `_available` is 0 by definition (that is why the loop exited), so
+// `depth - avail` is the leak itself, measured directly. Single-writer
+// (task_can_rx), one word per field, cumulative or high-water — the same
+// lock-free cross-task read discipline as BusRxHealth's unmasked class.
+struct BusRingProbe {
+  uint16_t depth;           // post-drain TRUE occupancy from head/tail (cap 256)
+  uint16_t avail;           // `_available` at the same probe — the leak is depth - avail
+  uint16_t leak_hwm;        // max(depth - avail) over every service tick since boot
+  uint16_t depth_hwm;       // max TRUE post-drain depth since boot (cf. BusRxHealth::depth_hwm,
+                            // which is the PRE-drain depth from the corrupted `_available`)
+  uint32_t fifo_overflows;  // hardware FIFO overflow events (IFLAG1 bit 7), ISR-counted, exact
+  uint32_t fifo_warns;      // hardware FIFO warning events (IFLAG1 bit 6), ISR-counted, exact
+};
+struct CanRingProbe {
+  BusRingProbe bb, cone, jugglebot;
+  uint32_t probe_ticks;     // service ticks probed since boot (the extrema's denominator)
+};
+// Whole-struct read; the FIFO counters are read from the library instances at
+// call time (single aligned words, ISR-written). DIAGNOSTICS ONLY — nothing in
+// the firmware reads any field of this.
+CanRingProbe can_buses_ring_probe();
+
+// ── Jugglebot delivery-lag accumulator (2026-08-14, can-bridge FW 13) ───────
+// Formulation-2 delivery lag off the FlexCAN HARDWARE capture timestamp, which
+// is stamped at frame reception and is therefore immune to whatever the ring
+// does afterwards — the one clock in the system that can see through the leak.
+// The stamp is 16-bit (1 us/tick at 1 Mbit, wrapping every 65.536 ms), so
+// on_jugglebot_rx accumulates (uint16_t)(ts - ts_prev) into a 64-bit arrival
+// clock; delivery is FIFO-ordered and the jugglebot bus runs ~2240 frames/s
+// (~0.45 ms apart), so the unwrap has ~100x margin. A gap that erodes that
+// margin forces a RESEED rather than a silent corruption — see lag_reseeds.
+struct JbLagProbe {
+  int32_t  lag_now_us;   // (micros64 since seed) - (arrival clock since seed) == lag_now - lag_at_seed
+  int32_t  lag_hwm_us;   // max lag_now_us since the last seed (reset by a reseed)
+  uint64_t arrival_us;   // arrival clock since seed — differenced by the caller for cap_span_us
+  uint32_t frames;       // frames folded since seed (cumulative; differenced per window)
+  uint32_t reseeds;      // cumulative reseeds since boot
+  bool     seeded;       // false ⇒ lag_now_us / lag_hwm_us are 0 because no reference exists
+  bool     reseeded_since_read;  // a reseed landed since the previous take (cleared by the take)
+};
+// Consistent snapshot; CLEARS reseeded_since_read so the caller sees each reseed
+// in exactly one window. Called at 1 Hz from task_telem.
+JbLagProbe can_buses_jb_lag_take();
+
 // Marginal-CAN3 diagnostic (2026-07-05): print one [cantiming] line per bus on the
 // USB Serial console — the DECODED CTRL1 bit timing (prescaler/propseg/pseg1/pseg2/
 // rjw) plus the computed bit rate and sample point, and the CCM CAN root clock.

@@ -62,6 +62,7 @@ from udp_protocol import (  # noqa: E402, F401
     HeartbeatT2JFlags,  # T2J heartbeat flag bits (incl. the per-leg TORQUE_CLAMP_MASK)
     HandSensorFlags,  # HAND_SENSOR flag bits (raw/debounced held, valid, stale, time_synced)
     ClockDiagFlags,  # CLOCK_DIAG flag bits (stepped, first anchor, freq-sample validity)
+    RingDiagFlags,  # RING_DIAG flag bits (arrival-clock seeded, reseeded this window)
     # Framing
     crc16_ccitt,
     encode_frame,
@@ -86,6 +87,7 @@ from udp_protocol import (  # noqa: E402, F401
     BridgeIdentity,
     ClockDiag,
     CacheDiag,
+    RingDiag,
     RpcRequest,
     RpcResponse,
     # Sizes
@@ -107,6 +109,7 @@ from udp_protocol import (  # noqa: E402, F401
     BRIDGE_IDENTITY_SIZE,
     CLOCK_DIAG_SIZE,
     CACHE_DIAG_SIZE,
+    RING_DIAG_SIZE,
     RPC_REQUEST_SIZE,
     RPC_RESPONSE_SIZE,
     # RPC method argument layouts (hoisted into the generator)
