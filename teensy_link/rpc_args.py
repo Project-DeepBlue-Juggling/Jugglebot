@@ -383,7 +383,26 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: operator flashes: ``/link_status`` will read `12 (SKEW — expected v13)`, which
 #: is the CORRECT report — the tree has FW 13, the board does not — and it is
 #: advisory everywhere, never enforced.
-EXPECTED_BRIDGE_FW_VERSION = 13
+#: 14 (2026-08-14) = THE FIX for that leak, now convicted on hardware rather than
+#: suspected: FW 13's ``/ring_diag`` on a 4.03 h board read ``leak_jb`` = 247–248
+#: (``true_depth`` 247–248 against ``avail_reported`` 0, hwm 249 ≈ 97 % of one
+#: 256-slot lap) on the 500 Hz-loaded jugglebot bus, against 1 on bb and 0 on
+#: cone — the arrival × pop ordering the mechanism predicts — with end-to-end leg
+#: lag 19.9 ms fresh vs 252.2 ms at 3.80 h. Two vendored-library patches in
+#: ``lib/FlexCAN_T4/FlexCAN_T4.tpp``'s ``events()``: the RX pop now runs inside the
+#: bus's ``NVIC_DISABLE_IRQ`` mask (with ``dsb; isb``), so the ISR's
+#: ``_available++`` can no longer be swallowed; and the dormant ``mb == -1``
+#: TX-deferral refill loop gets its missing ``break`` (unreachable at
+#: ``tx_deferred == 0``, so it cannot change live behaviour).
+#: WIRE-INVISIBLE, like 9→10 — no MsgType, no payload, PROTOCOL_VERSION still 5 —
+#: so a board on 13 decodes identically and keeps sending 0x92; what it does NOT
+#: have is the fix, so its RX ring keeps ratcheting and its leg lag keeps growing
+#: with uptime. RingDiag is retained UNCHANGED on purpose: it is the fix's own
+#: proof, and post-fix acceptance is ``leak`` ≡ 0 on all three buses at any
+#: uptime. Same bumped-while-the-board-is-behind situation until the operator
+#: flashes: ``/link_status`` will read `13 (SKEW — expected v14)`, which is the
+#: CORRECT report, and it is advisory everywhere, never enforced.
+EXPECTED_BRIDGE_FW_VERSION = 14
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

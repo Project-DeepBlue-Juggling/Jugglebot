@@ -642,6 +642,11 @@ void can_buses_init() {
   //    into up to 16 mailboxes instead of 8, so a deferred 0x6D0 duplicates twice
   //    as hard as it did on FW 9. Anything that re-opens the deferral path must
   //    FIX THE VENDORED LOOP, not just re-size the mailboxes.
+  //    ✅ DISCHARGED, FW 14 (2026-08-14): the vendored loop now has its `break`
+  //    (lib/FlexCAN_T4/PROVENANCE.md § P4), so a deferred frame goes into exactly ONE
+  //    free mailbox. The parking argument above still holds and is still why this is a
+  //    no-op today (defer == 0 on every bus, so the branch never runs) — what changed
+  //    is that re-opening deferral is no longer conditional on remembering to fix it.
   //
   // NOT applied to bb/cone: both deferred 0 frames across the whole bench arm and
   // each carries only the 100 Hz 0x7DD fan-out plus event-driven RPC relays
@@ -700,6 +705,17 @@ void can_buses_init() {
 // BusRingProbe contract (can_buses.h) and
 // logbook/2026-08-14-ring-audit-available-leak-delay-line.md § 6. Fix sequenced as
 // FW 14, after the RING_DIAG occupancy measurement convicts on a number.
+// ✅ CONVICTED, THEN FIXED, FW 14 (2026-08-14). RING_DIAG on a 4.03 h board read
+// leak_jb = 247-248 (true_depth vs avail_reported 0; hwm 249 ≈ 97 % of one lap) against
+// 1 on bb and 0 on cone — the predicted arrival × pop ordering — with e2e leg lag
+// 19.9 ms fresh vs 252.2 ms at 3.80 h. The pop now runs inside the bus's own
+// NVIC_DISABLE_IRQ window (lib/FlexCAN_T4/PROVENANCE.md § P3), which closes BOTH races
+// this paragraph discusses: the `_available` leak AND the ring-full head-vs-pop
+// collision, so the "bounded drain shrinks it" mitigation above is no longer the only
+// thing standing between us and the tear. The drain budget itself is unchanged and
+// still earns its place for every other reason given above. Post-fix acceptance is
+// RING_DIAG leak ≡ 0 on all three buses at any uptime — same instrument, now used to
+// prove its own fix.
 static constexpr uint8_t CAN_RX_DRAIN_BUDGET = 32;
 
 // Drain the FlexCAN ESR1-change history (≤16 deep, captured by the library ISR on

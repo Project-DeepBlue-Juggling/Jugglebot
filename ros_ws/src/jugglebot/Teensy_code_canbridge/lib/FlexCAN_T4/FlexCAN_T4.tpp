@@ -1076,7 +1076,90 @@ FCTP_FUNC uint64_t FCTP_OPT::events() {
   if ( rxBuffer.size() ) {
     CAN_message_t frame;
     uint8_t buf[sizeof(CAN_message_t)];
+    /* ── JUGGLEBOT PATCH (2026-08-14, can-bridge FW 14) — P3, THE FIX ────────
+       UPSTREAM DEFECT: this pop ran here with the CAN ISR LIVE, i.e. entirely
+       outside the NVIC_DISABLE_IRQ window three lines below. pop_front ->
+       Circular_Buffer::readBytes (multi branch) -> memmove out of _cabuf[head],
+       then read(), which advances `head` and does `if (_available) _available--`.
+       Both are non-atomic read-modify-writes (assembly-verified on this
+       toolchain: separate ldrh/sub/strh, no LDREX/STREX, no single-instruction
+       form). The CAN ISR's push -- struct2queueRx -> write() -- performs the
+       mirror-image `if (_available < _size) _available++` and, when the ring is
+       FULL, its own `head` advance.
+
+       The race is ONE-DIRECTIONAL, which is what makes it corrosive rather than
+       noisy: the ISR preempts task context, never the reverse, so an ISR
+       increment that lands inside the consumer's RMW window is SWALLOWED, while
+       a consumer decrement can never be lost to the ISR. `_available` therefore
+       monotonically UNDER-counts. can_buses.cpp's drain-to-empty loop tests
+       `_available`, so it exits believing the ring is empty while a residue D is
+       stranded, and every subsequent delivery is D frames late. D ratchets with
+       uptime and caps at one ring lap (256 slots, ~114-135 ms at Jugglebot-bus
+       rates): the RX ring degrades into an uptime-growing DELAY LINE.
+       CONVICTED on hardware 2026-08-14 via FW 13's RING_DIAG: on a 4.03 h board
+       leak_jb = 247-248 (true_depth 247-248 against avail_reported 0, hwm 249 ~=
+       97 % of a lap) on the 500 Hz-loaded jugglebot bus, 1 and 0 on the two light
+       control buses -- matching the predicted ~90 slots/h ratchet -- with e2e leg
+       lag 19.9 ms fresh vs 252.2 ms at 3.80 h. Full mechanics:
+       logbook/2026-08-14-ring-audit-available-leak-delay-line.md.
+
+       THE FIX, and why THIS shape: mask the bus's own CAN IRQ across the WHOLE
+       pop -- the payload memmove AND both bookkeeping RMWs -- and nothing else.
+       Rejected alternative (b), masking only the `head`/`_available` RMWs inside
+       Circular_Buffer: it would have to be written into read()/readBytes(), which
+       are shared with busESR1/busECR and every other Circular_Buffer instance in
+       the tree, and Circular_Buffer has no idea which NVIC line to mask -- so the
+       narrower guard is actually the WIDER blast radius. It would also leave the
+       payload memmove exposed, and that memmove racing the ISR's overwrite-oldest
+       push is the ring-full frame TEAR (an id from one message with the payload of
+       another, past both decode guards) recorded as secondary find 1 of the same
+       audit. Masking the whole pop closes the leak and the tear with one guard.
+       Rejected alternative (c), __disable_irq(): global masking would put the
+       500 Hz leg-interp IntervalTimer ISR -- the firmware's tightest timing path
+       -- behind a critical section entered up to 32x per drain tick, for no gain
+       over a per-bus mask.
+
+       IRQ-OFF BUDGET (the reason this is affordable): the masked region is a
+       24-byte memmove plus two 16-bit RMWs -- tens of cycles, well under 0.1 us
+       at 600 MHz. can_buses.cpp drains at most CAN_RX_DRAIN_BUDGET = 32 events()
+       calls per 1 kHz tick, so the worst case is ~32 disjoint sub-0.1 us windows
+       ~= a few us per ms of THIS BUS's CAN IRQ masked (<1 % duty), and each
+       individual window is what actually matters for loss. The FlexCAN RX FIFO is
+       6 deep and a 1 Mbit/s classical frame occupies >=115 us of wire time, so the
+       peripheral tolerates ~690 us of ISR latency before it can overflow -- four
+       orders of magnitude above one window here. The existing TX window below
+       already masks the same line for longer (a peek_front plus a writeTxMailbox
+       register sequence), so this does not introduce a new class of masking, it
+       extends an idiom the library already relies on.
+
+       DSB+ISB after the mask write: ARMv7-M does not guarantee that a write to
+       NVIC_ICER takes effect before the following instructions retire, so without
+       the barriers an already-pending CAN IRQ could still be taken a cycle or two
+       INSIDE the window -- which for a fix whose acceptance criterion is leak == 0
+       would leave a small but nonzero hole. The "memory" clobber additionally
+       stops the compiler sinking the non-volatile _cabuf memmove across the
+       (volatile) NVIC write; the ring's own head/tail/_available are volatile and
+       so are already ordered against it.
+
+       Post-fix, `head` and `_available` still have two writers each, but they are
+       MUTUALLY EXCLUDED: the ISR cannot preempt this window, and task context can
+       never preempt the ISR. The ISR-side write() needs no patch of its own.
+       ACCEPTANCE: RING_DIAG leak must read identically 0 on all three buses at
+       any uptime -- the FW 13 instrument is retained UNCHANGED precisely so it
+       can prove its own fix.
+       ────────────────────────────────────────────────────────────────────── */
+    NVIC_DISABLE_IRQ(nvicIrq);
+    asm volatile("dsb\n\tisb" ::: "memory");
     rxBuffer.pop_front(buf, sizeof(CAN_message_t));
+    /* Compiler barrier: head/tail/_available are volatile (their RMWs cannot
+       cross the volatile ISER store), but the payload copy out of _cabuf is
+       NOT — without this barrier a future toolchain could legally sink those
+       loads past the re-enable, silently re-opening the ring-full frame tear
+       while leak==0 still passes. Makes the tear-closure a source guarantee
+       instead of a toolchain-empirical fact. Zero code-size cost. */
+    asm volatile("" ::: "memory");
+    NVIC_ENABLE_IRQ(nvicIrq);
+    /* ── END JUGGLEBOT PATCH ─────────────────────────────────────────────── */
     memmove(&frame, buf, sizeof(frame));
     mbCallbacks((FLEXCAN_MAILBOX)frame.mb, frame);
   }
@@ -1092,6 +1175,35 @@ FCTP_FUNC uint64_t FCTP_OPT::events() {
           //Serial.print("DBG NORM: "); Serial.println(frame.mb);
           writeTxMailbox(i, frame);
           txBuffer.pop_front();
+          /* ── JUGGLEBOT PATCH (2026-08-14, can-bridge FW 14) — P4 ───────────
+             UPSTREAM DEFECT (the library's first confirmed one; recorded in
+             logbook/2026-08-02-err-timeout-attribution-instrumentation.md
+             § Addendum A6): this loop had NO `break`. `frame` is a single peeked
+             deferred frame, so without the break it is written into EVERY free TX
+             mailbox -- one logical frame duplicated onto the wire up to
+             (MAXMB - mailboxOffset()) times -- while `txBuffer.pop_front()` runs
+             the same number of times, discarding the NEXT queued frames unsent.
+             Duplicate transmission AND silent loss from one missing statement.
+             One deferred frame belongs in exactly ONE free mailbox; take the
+             first and stop. (The two ISR-side single-mailbox refill sites in
+       flexcan_interrupt()'s TX-complete handling are
+             already correct -- they target a single mailbox with no loop, which
+             is why the defect is unique to this call site.)
+
+             CURRENTLY UNREACHABLE, DELIBERATELY: on this bridge every bus runs
+             `tx_deferred == 0` (jugglebot bus since the FW 10 setMaxMB 16->24
+             raise; bb/cone never deferred), so `txBuffer` is never entered and
+             this branch never executes. THIS PATCH THEREFORE CANNOT CHANGE LIVE
+             BEHAVIOUR -- it is not a behavioural fix, it is disarming a mine.
+             It is fixed now because the blast radius DOUBLED with that same FW 10
+             raise (8 -> 16 TX mailboxes on the jugglebot bus), because the path
+             re-opens the moment any future TX producer re-introduces deferral,
+             and because we are already in the vendored file with a fix arc that
+             justifies the edit. can_buses.cpp's setMaxMB comment carries the
+             standing warning that anything re-opening deferral must fix this
+             loop -- that warning is now discharged.
+             ─────────────────────────────────────────────────────────────── */
+          break;
         }
       }
     }
