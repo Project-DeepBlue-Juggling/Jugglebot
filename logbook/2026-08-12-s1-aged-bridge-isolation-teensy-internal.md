@@ -381,6 +381,61 @@ deliverables of its 2026-07-24 addendum: the fix, and the alarmed end-to-end
 latency monitor — which this entry has now constrained (method correction (c):
 clamp duty and cache age, not lag alone).
 
+## Addendum (2026-08-14) — the surviving mechanism is superseded: the real fault is a ring delay line, and two of this entry's supporting claims need correcting
+
+S2's soak, a freeze-structure round and a targeted RX-path concurrency audit
+have replaced this entry's mechanism signature with a named defect. Full record:
+`logbook/2026-08-14-ring-audit-available-leak-delay-line.md`.
+
+**What this entry got right, and keeps.** The **arm attributions stand** —
+Teensy-internal, transport and ODrives dead, killed by controls rather than
+argument — and so do the **e2e lag numbers** (310 / 340 / — / 290 / 15.8 ms).
+The identical-firmware reflash in S2 also discharges Open Question 2: Arm C's
+flash-vs-reboot confound is closed, and the recovery attributes to the reboot.
+
+**§ "The surviving mechanism — per-axis encoder-cache refresh stalls" is
+superseded.** Three corrections:
+
+1. **Per-axis independence is REFUTED.** For freezes ≥ 3 samples the aged
+   simultaneous-axis histogram is {1:15, 2:36, 3:26, 4:13} — **193×** the
+   independent expectation. The per-leg clamp-duty spread this entry read as
+   independence does not survive the direct test.
+2. **The refresh-stall tail was ~97 % a Jetson artifact.** On the aged bridge
+   the uplink arrives in ~20 ms **pairs** (31 % of drain ticks paired, against
+   2.6 % fresh — a 12×, uptime-dependent difference). `/robot_state` publishes
+   from a **latest-wins latch** on a **100 Hz ROS-clock timer with no staleness
+   gate**, so a pair-starved tick republishes the latch verbatim: bit-identical,
+   fresh-stamped, and **all axes at once** — which is exactly the 193× co-freeze.
+   The residual ~19 long runs (95–739 ms) are real, and their leading read is a
+   **physically stalled plant** (the clamp-commanded stop plus this entry's own
+   binding signature — leg 0 at 20.53 A against 2.6–3.7 A peers), i.e. a
+   consequence, not a cause.
+3. **The underlying real mechanism was invisible to every instrument this entry
+   had.** `FlexCAN_T4::events()` pops the RX ring **before** its
+   `NVIC_DISABLE_IRQ` guard, so the consumer's non-atomic `_available--`/`head`
+   RMWs race the CAN ISR's `_available++` **one-directionally**: `_available`
+   monotonically under-counts, the drain exits with true occupancy `D > 0`, and
+   every delivery is `D` frames late. `D` ratchets (~40 ms/h) and caps at one
+   ring lap (256 slots ≈ 114–135 ms) — the mod-512 `head ^ 256` full test
+   *proves* duplicates and stale-lap re-reads impossible, so frames arrive
+   **exactly once, in order, late**. A pure delay conserves frame counts, is
+   invisible to a decode-time age stamp, and cannot be reported by a counter
+   derived from `_available` — which is why the cache stayed "fresh", the frame
+   counters stayed flat, and only the clamp and `MAX_DEVIATION` (the two
+   consumers that read delayed *content*) ever showed the fault. Assembly-verified
+   on the project toolchain.
+
+**Exonerations item 1's "arrival cadence" evidence is RE-ATTRIBUTED, not
+withdrawn.** `arrival_cadence.json` measured `/robot_state`'s 100 Hz ROS timer,
+which republishes a latch and is therefore clean by construction — it was never
+evidence about data arrival. The transport exoneration itself **stands**, on the
+independent `udp_rtt_us` flatness and the executed-command evidence.
+
+**Open Question 1 (cache stall vs ODrive-silent-per-axis) is closed, by a third
+answer neither arm named:** `enc_frames` reads a flat 100.0 fps/axis at every
+uptime, so the ODrive never went silent *and* the cache never stopped updating.
+What arrives is late.
+
 ## Withdrawn claims
 
 - [2026-07-18] **Ranked candidate 1: "Jetson-side transport below the ROS emit

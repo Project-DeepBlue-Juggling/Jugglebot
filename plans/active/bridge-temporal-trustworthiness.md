@@ -3,9 +3,11 @@ title: Bridge Temporal Trustworthiness — closing the uptime command-latency dr
 status: active
 owner: harrison
 created: 2026-08-11
-last_updated: 2026-08-11
+last_updated: 2026-08-14
 related_logbook:
   - 2026-07-18-teensy-uptime-tracking-degradation.md   # the LATENCY half — open; owns the four-arm experiment and the closure contract
+  - 2026-08-12-s1-aged-bridge-isolation-teensy-internal.md  # S1 — the four-arm isolation; Teensy-internal CONFIRMED
+  - 2026-08-14-ring-audit-available-leak-delay-line.md  # S2 endgame + the ring audit — the named defect, and what S3 must confirm
   - 2026-07-28-anomaly-fixes-validation-sitting.md     # the drift reaching the hand/throw dispatch path
   - 2026-08-10-sensor-truth-possession.md              # the drift sizing the ARRIVAL window (release lag vs uptime)
   - 2026-08-02-err-timeout-attribution-instrumentation.md  # the 0x8D/0x8E additive-MsgType precedent this arc's FW 11 follows
@@ -224,8 +226,10 @@ Verified state of the telemetry surface (2026-08-11):
 | **P1** | FW 11: additive `CLOCK_DIAG` uplink + recover-slew/extrapolation occupancy counters; Jetson decode in the same commit | yes | **NO — held until after S1** | full suite; wire-invisible to an unaware Jetson |
 | **P2** | Midpoint-stamped TOD responder (kernel RX + pre-send userspace, `(t2+t3)/2`) | no | n/a | full suite; Py 3.8-safe with graceful fallback |
 | **S1** | Aged-bridge sitting: passive capture, then the four-arm isolation experiment | no | no | operator; `--full` gate before the sitting |
-| **P3** | Latency root-cause fix + the alarmed end-to-end command-latency monitor | scope known only after S1 | per S1 outcome | lag ≤ 20 ms sustained at high uptime |
-| **P4** | FW 12 clock servo (= clock plan Phases 3–5) | yes | yes | clock plan acceptance; **must follow P3** |
+| **S2** | FW 12 `CACHE_DIAG` confirmation soak (brief-launch protocol) + the offline forensics rounds | yes (FW 12) | yes — the flash IS t0 | decision rule in § S2; **answered NO**, see § S2 RESULTS |
+| **S3** | FW 13 `RING_DIAG` conviction soak — motionless, ~3–4 h, no battery | yes (FW 13) | yes — the flash IS t0 | `true_depth − avail_reported` growing over the soak |
+| **P3** | Latency root-cause fix (FW 14; the Jetson honesty fix landed with the FW 13 change-set) + the alarmed end-to-end command-latency monitor | yes — scope known since the 2026-08-14 audit | after S3 convicts | lag ≤ 20 ms sustained at high uptime |
+| **P4** | the clock-servo firmware (= clock plan Phases 3–5; FW number assigned at implementation — FW 12/13 were claimed by the latency instrumentation) | yes | yes | clock plan acceptance; **must follow P3** |
 
 ## Implementation phases
 
@@ -471,13 +475,133 @@ cache path; flat cache-age under a still-lagging aged battery ⇒ the stall is
 below the cache sampling point, reopen with the per-axis frame counters and
 `depth_hwm`/`cap_hits` as the discriminators.
 
+### S2 RESULTS + ring audit (2026-08-13/14) — the decision rule answered NO, and the root cause is now a named defect
+
+Full record: `logbook/2026-08-14-ring-audit-available-leak-delay-line.md`.
+
+**The § S2 decision rule took its second branch.** Cache age does **not** grow
+with uptime: p95 **11.05 ms at 27.96 h**, *below* the 1.05–1.30 h soak bags
+(18.05–18.07 ms) and indistinguishable from a 9.4 s fresh boot — while the same
+aged bag carries **282.9 ms** e2e lag against **15.9 ms** fresh (echo→exec
+153.4 / 5.85 ms; clamp duty 0.298 / 0.0007). `enc_frames` reads exactly
+**100.0 fps/axis everywhere**. The first aged `/clock_diag` shows recover-slew
+and extrapolation occupancy ≈ 0 and `interp` at exactly **500.0 Hz** at 28 h.
+**FW 12's own instrument refuted the S1 cache-staleness mechanism**, and the
+identical-firmware reflash that cleared the degradation also closes S1's Arm C
+flash-vs-reboot confound.
+
+**The convicted defect (audit 2026-08-14, verified in compiled assembly with the
+project toolchain, not argued from source):** `FlexCAN_T4::events()` pops the RX
+ring **before** its `NVIC_DISABLE_IRQ` guard, so the consumer's non-atomic
+`_available--`/`head` RMWs race the CAN ISR's `_available++`
+**one-directionally** — increments are swallowed, never decrements. `_available`
+monotonically **under-counts**, the drain-to-empty loop exits with true occupancy
+`D > 0`, and every delivery is `D` frames late. `D` **ratchets** (~1 × 10⁻⁵
+collisions/pop × ~1.6 × 10⁸ pushes/day ≈ 90 slots/h ≈ **40 ms/h**, matching the
+July curve's early ramp) and **caps at one ring lap — 256 slots ≈ 114–135 ms**.
+The mod-512 `head ^ 256` full test bounds the leak at one lap, which **proves**
+stale-lap re-reads, duplicates and replays impossible: **the RX ring is a delay
+line — frames arrive exactly once, in order, late.**
+
+**Why every counter read healthy — blind by construction, and the mechanism
+predicts it:** `depth_hwm`/`cap_hits` derive from `_available` itself (the
+corrupted counter reporting on itself); per-axis cache age is stamped **at
+decode**, downstream of the delay, so `CACHE_DIAG` could never have seen this;
+`enc_frames` counts **deliveries**, which a pure delay conserves. Only the lead
+clamp and `MAX_DEVIATION` read the delayed *content* — and only they showed the
+fault. That is exactly the S2 asymmetry.
+
+**A Jetson-side measurement artifact, and it is large.** ~**97 %** of the S2
+"bit-identical per-axis freezes" are manufactured on the host: the aged uplink
+arrives in ~20 ms **pairs** (31 % paired drain ticks aged vs 2.6 % fresh — 12×,
+uptime-dependent) hitting `/robot_state`'s **latest-wins latch** behind a **100 Hz
+ROS-clock timer with no staleness gate**, so a pair-starved tick republishes the
+latch verbatim — bit-identical, fresh-stamped and inherently **multi-axis**,
+which is the 193× co-freeze the freeze-structure round measured. S1's "arrival
+cadence is clean" exoneration was measuring that same ROS timer, not the data
+(method correction #4 of the arc; the transport exoneration itself stands on
+`udp_rtt_us`). The residual ~19 long runs (95–739 ms) are a **physically stalled
+plant** — clamp-commanded stop plus the S1 binding signature (leg 0 at 20.53 A) —
+a consequence, not a cause.
+
+**Secondary audit finds** (all read-only, none fixed here): the ring-full pop's
+`memmove` can **tear** a frame (id from one message, payload from another, past
+both decode guards); FIFO overflow/warning `IFLAG`s are cleared **uncounted**;
+`writeIFLAGBit` is a W1C RMW footgun (currently harmless); the vendored library
+carries **no NXP errata workarounds**; `isEventsUsed` can never flip back. The
+drain comment above `CAN_RX_DRAIN_BUDGET`'s claims are **refuted** — the ±1 miscount
+is a **monotone** leak, and its supporting evidence was circular (`depth_hwm`
+derives from `_available`).
+
+**Honest residual, recorded rather than smoothed:** the measured aged lag
+(**283–340 ms**) **exceeds** the delay line's proven **135 ms** ceiling. The
+working explanation is clamp-drag amplification on top of the raw delay — **an
+argument, not a measurement**. FW 13's wrap-aware delivery lag settles it.
+
+**Closure path:** FW 13 (instrumentation + the Jetson honesty fix, both
+landed) → S3 conviction soak → FW 14 (fix) → the 2026-07-24 two-deliverable
+contract.
+
+### S3 — FW 13 conviction soak (motionless, ~3–4 h)
+
+**FW 13 — `RING_DIAG` (`MsgType` 0x92), instrumentation only**, landing on the
+**vendored** FlexCAN_T4 (commit `fef2df5`, byte-identical copy of
+framework-arduinoteensy 1.159.0; policy and the two-defect justification in
+`lib/FlexCAN_T4/PROVENANCE.md` — the `events()` TX-deferral missing `break` and
+this leak, both confirmed, both unfixable without a local copy). Contents:
+
+- **True ring occupancy**, walked from `head`/`tail` **independently of
+  `_available`** — `true_depth − avail_reported` **IS the leak**, read directly.
+- **FIFO overflow/warning counters** (secondary find 2 — a real RX overflow is
+  currently unobservable).
+- **Wrap-aware delivery lag** — how late a frame actually is, which is what the
+  283 ms-vs-135 ms residual needs.
+- **An SDO-RTT causal probe** through the same ring — an end-to-end delay figure
+  no consumer-side stamp can fake.
+- **A `/robot_state` staleness gate** on the Jetson (the honesty fix), so the
+  next round's freeze statistics describe the robot rather than the timer.
+
+**Protocol.** Flash FW 13 = **t0**. Keep the Teensy and ODrives **powered and
+idle**, ROS down between samples; one brief `record:=true` launch at the start
+and one at the end (a few in between are fine). **No motion, no arming, no
+battery** — the ring fills on bus traffic alone, so this costs hours, not a
+sitting.
+
+**Conviction criterion:** `true_depth` climbing toward 256 while
+`avail_reported` stays low — i.e. **`true_depth − avail_reported` growing** over
+the soak. Predicted rate ≈ 90 slots/h. **Refutation:** a flat difference over
+3–4 h kills the leak hypothesis outright, and the arc reopens with the wrap-aware
+delivery lag and the SDO-RTT probe as the surviving discriminators.
+
+**Then:** **FW 14** — correct the pop's bookkeeping (guard the ring pop inside
+the existing `NVIC_DISABLE_IRQ` window, or make the `_available` updates atomic)
+— then a **validation soak on a deliberately aged bridge** (acceptance
+criterion 2: lag ≤ 20 ms sustained at high uptime), and then the alarmed
+monitor of P3. (The Jetson honesty fix — the `/robot_state` staleness gate —
+landed with the FW 13 change-set, not FW 14.) Only both deliverables together close
+`logbook/2026-07-18-teensy-uptime-tracking-degradation.md`.
+
 ### P3 — the latency fix + the alarmed end-to-end latency monitor
 
-**Scope is deliberately unspecified until S1 localizes the drift.** The fix may
+**Preamble updated 2026-08-14: the root cause is localized to a named defect.**
+The scope this section deliberately left unspecified is now known — the fix is
+**firmware** (the FlexCAN_T4 RX pop's bookkeeping, FW 14) plus the Jetson
+`/robot_state` honesty fix, pending the S3 conviction measurement. The paragraph
+below is retained as the record of why the scope was withheld until S1/S2
+answered.
+
+**Scope was deliberately unspecified until S1 localized the drift.** The fix may
 be system-level (USB-Ethernet driver, queue discipline, interface
 configuration) rather than firmware, and writing a firmware-shaped remedy into
 this plan before the experiment would prejudge exactly the question S1 exists
 to answer.
+
+**The monitor's alarm input is now calibrated rather than guessed** (S1 method
+correction (c) — a lag-only monitor reads healthiest exactly when the clamp
+pins): **clamp duty**, plus a **T = 100 ms / 0.67 rev/s** content-hold reporting
+threshold measured at **0.28/min healthy vs 4.75/min aged (17×)**. The D3 gate
+that produced it also found **no viable protective threshold** — see the
+supersession banner on `plans/active/lead-clamp-content-freshness.md`.
 
 What is *not* conditional is the second deliverable. Per the 2026-07-24
 Addendum, closing `2026-07-18-teensy-uptime-tracking-degradation.md` requires a
@@ -499,7 +623,11 @@ with `uptime_ms`**. Its inputs are the P0/P1 telemetry:
 The pre-fix baseline for the monitor's threshold comes from S1's Arm 0 and the
 post-fix sessions, not from a guess.
 
-### P4 — FW 12: the clock servo (= clock plan Phases 3–5)
+### P4 — the clock-servo firmware (= clock plan Phases 3–5)
+
+*(Originally drafted as "FW 12"; that number was claimed by the CACHE_DIAG
+instrumentation and FW 13 by the ring-conviction instrument. The clock servo
+takes whatever FW number is current when P4 starts.)*
 
 `bridge-clock-frequency-discipline.md` remains authoritative for the design.
 This arc contributes only the sequencing and the ordering constraint:

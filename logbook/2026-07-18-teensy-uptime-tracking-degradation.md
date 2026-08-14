@@ -257,6 +257,50 @@ counters):
 2026-07-24 closure contract still stands: the fix **and** the alarmed
 end-to-end latency monitor, now gated on the FW 12 soak.
 
+## Addendum (2026-08-14) — a prime suspect, named and assembly-verified: FlexCAN_T4's one-way `_available` leak
+
+S2's confirmation soak plus a targeted RX-path concurrency audit localized the
+drift to a **named defect in the vendored FlexCAN_T4 library**:
+`FlexCAN_T4::events()` pops the RX ring **before** its `NVIC_DISABLE_IRQ` guard,
+so the consumer's non-atomic `_available--`/`head` read-modify-writes race the
+CAN ISR's `_available++` **one-directionally** — increments are swallowed, never
+decrements. `_available` monotonically under-counts, the drain-to-empty loop
+exits with true occupancy `D > 0`, and every delivery is `D` frames late. `D`
+**ratchets** (~1 × 10⁻⁵ collisions/pop × ~1.6 × 10⁸ pushes/day ≈ 90 slots/h ≈
+**40 ms/h**, which matches this entry's own early curve: 10 ms → ~40 ms at
+1.15 h → ~160 ms at 4.38 h) and **caps at one ring lap, 256 slots ≈ 114–135 ms**.
+**The RX ring has become a delay line.** Verified in compiled assembly with the
+project toolchain, not argued from source.
+
+**Candidate 3's wording is superseded.** This entry ranked *"stale-encoder-cache
+→ spurious lead-clamp rate-limiting"*, and S1 confirmed its *shape*. The
+mechanism is now more precisely stated, and the difference matters for the fix:
+the cache is **written promptly and completely** — `enc_frames` reads a flat
+100.0 fps/axis at every uptime, and per-axis cache age is *fresher* at 28 h
+(11.05 ms p95) than at 1.1 h (18.05 ms). The cache **values** are stale because
+**delivery is delayed**, not because the cache stops being updated. Every
+instrument that looked healthy was blind by construction: `depth_hwm`/`cap_hits`
+derive from `_available` itself, cache age is stamped **at decode** (downstream
+of the delay), and `enc_frames` counts deliveries, which a pure delay conserves.
+Only the lead clamp and `MAX_DEVIATION` read the delayed content — and only they
+showed the fault.
+
+**One measurement from conviction:** FW 13's `RING_DIAG` (0x92) reports the ring's
+**true** occupancy independently of `_available`, so `true_depth −
+avail_reported` **is** the leak, read directly. It needs one ~3–4 h **motionless**
+soak — powered and idle, no battery, no arming.
+
+**This entry stays `open`.** The 2026-07-24 contract is unchanged and still
+two-deliverable: the **FW 14 fix** (correct the pop's bookkeeping) plus the
+**alarmed end-to-end latency monitor**, whose alarm input is now calibrated
+(clamp duty + a 100 ms/0.67 rev/s reporting threshold: 0.28/min healthy vs
+4.75/min aged, 17×) rather than guessed.
+
+Full record, including the four analysis rounds, the ~97 %-artifact correction to
+the S2 freeze statistics, the secondary audit finds and the honest residual (the
+measured 283–340 ms exceeds the delay line's 135 ms ceiling):
+`logbook/2026-08-14-ring-audit-available-leak-delay-line.md`.
+
 ## Verification
 
 - All forensics offline/read-only; scripts + per-commit JSON in the session
