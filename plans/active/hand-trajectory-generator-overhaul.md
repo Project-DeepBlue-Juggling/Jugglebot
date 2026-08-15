@@ -1,7 +1,7 @@
 ---
 title: Hand trajectory generator overhaul — jerk-limited, time-budget parameterised
 created: 2026-05-22
-status: active
+status: parked   # 2026-08-15 — untouched since creation, self-declared "a strict improvement, not a prerequisite". NOTE for resumption: the hand firmware changed twice underneath this plan (hand-command-continuity Phase 4 velocity-continuous makeSmoothMove seeding + Phase 7 throwDecelToTorque), so Phase 1's baseline characterisation must be re-taken against Platform FW 2, not FW 0.
 ---
 
 # Hand trajectory generator overhaul
@@ -48,12 +48,12 @@ limitations make that generator unsuitable for smooth juggling:
   acceleration-bounded generator, both flight time (`2v/g`) and event duration
   (`v/a_peak`) scale linearly with `v`, making the two-ball tempo feasibility
   nearly scale-invariant — **this overhaul is what unlocks lower throw heights
-  later** (see `plans/active/bb-led-two-ball-juggle-demo.md` §4 Phase 1).
+  later** (see `plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md` §4 Phase 1).
 
 ### Scope and relationship to the juggling demo
 
 This plan is a **parallel side-quest** to the BB-led two-ball juggling demo
-(`plans/active/bb-led-two-ball-juggle-demo.md`). The two are independent:
+(`plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md`). The two are independent:
 
 - The demo is built against the *current* hand generator and does not depend
   on this overhaul.
@@ -235,7 +235,7 @@ Phase 1 baseline; confirm release-velocity accuracy and repeatability.
   uses `0.9`. The port is supposed to mirror the firmware — this divergence is
   exactly the failure mode this plan's lockstep rule guards against, and it
   must be reconciled (Phase 1). It is also tracked in
-  `plans/active/bb-led-two-ball-juggle-demo.md` §6.
+  `plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md` §6.
 - **Profile family.** 7-segment S-curve vs piecewise-quintic — decided in
   Phase 2 against the Phase 1 characterisation.
 - **CAN payload.** Whether the time budget and stroke start/end fit existing

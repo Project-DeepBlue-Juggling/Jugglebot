@@ -1,6 +1,12 @@
 # Refactor programme — 2026-07
 
-**Status:** active (Phases 0–4 landed; 5–7 partial — see the row in `plans/active/INDEX.md`)
+**Status:** parked 2026-08-15 (Phases 0–4 landed; 5–7 partial — see the row in
+`plans/active/INDEX.md`. The headline arc — ERR_TIMEOUT — closed 2026-08-09 on
+FW 10, and the bridge-uptime bullet was absorbed by
+`bridge-temporal-trustworthiness.md`; what remains is three owner decisions
+(loader unification, tracked-media policy, the deferred re-plug probe) and two
+unscheduled structural refactors. § Standing coordination rules below stays
+LIVE process text regardless of the parked status.)
 **Owner decisions recorded:** 2026-07-31 (all items below marked APPROVED were
 explicitly approved by the operator in the 2026-07-31 review session)
 **Source:** 13-agent codebase review + adversarial red-team pass, 2026-07-31.

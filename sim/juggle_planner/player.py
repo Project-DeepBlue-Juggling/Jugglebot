@@ -7,7 +7,7 @@ feedforward and one-/two-step lookahead) that a plant's ``command()``
 expects. No solver, no feedback, no state beyond the trajectory.
 
 It is a drop-in replacement for the MPC as the 40 Hz command source — see
-``plans/active/bb-led-two-ball-juggle-demo.md`` §2.
+``plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md`` §2.
 
 After an abort, :meth:`abort` swaps the trajectory source for an
 :class:`ExitTransient` (Phase 3 — produced by

@@ -13,7 +13,7 @@ trajectory player, hand sequences, BallButlerSim). The IPOPT solve at
 the runner's startup is shared across tests via a module-scoped
 fixture; per-test re-solves are not needed.
 
-Plan reference: ``plans/active/bb-led-two-ball-juggle-demo.md`` §5
+Plan reference: ``plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md`` §5
 integration tests.
 """
 import pytest

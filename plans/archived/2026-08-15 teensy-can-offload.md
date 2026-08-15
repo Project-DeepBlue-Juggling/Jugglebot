@@ -1,7 +1,8 @@
 ---
 title: Teensy CAN Offload Architecture
 created: 2026-05-27
-status: active
+status: superseded   # architecture shipped, legs cut over; residuals live in the parity matrix (see Archival note)
+completed: 2026-08-15
 ---
 
 # Teensy CAN Offload Architecture
@@ -1757,3 +1758,18 @@ Proposed by the operator during the U5b sitting; detail in
 - PJRC Teensy 4.1 product page: https://www.pjrc.com/store/teensy41.html
 - QNEthernet library: https://github.com/ssilverman/QNEthernet
 - FreeRTOS Teensy port: https://github.com/tsandmann/freertos-teensy
+
+## Archival note (2026-08-15)
+
+The architecture shipped: legs cut over to the can-bridge Teensy, `can_node.py`
+/ `bus.py` deleted and socketcan decommissioned (Phase 13, operator-verified
+2026-07-06). The re-scoped deliverable — the can_node↔Teensy parity audit —
+completed 2026-06-27 as `ros_ws/docs/can-node-teensy-parity.md` (117-capability
+matrix), which is the live successor document: the residual follow-ups (robust
+`clear_errors`, generalised `/configure`, the `/jb/` service prefix,
+`can3_tx_task`) are tracked there as matrix rows. The only unfinished phase
+(U5 tail / Phase 12 full-rate hardware validation) is explicitly gated on the
+Jetson MPC compute question, and the MPC is operationally dormant
+(refactor-2026-07 Phase 3) pending a possible MPC-as-replanner
+re-architecture — if that revival happens, it re-opens from the parity matrix
+and `project_mpc_status.md`, not from this plan.

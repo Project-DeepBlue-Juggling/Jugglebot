@@ -400,7 +400,7 @@ def test_boot_is_unknown_not_empty_and_not_held():
 
     BallButler boots ``ball_in_hand_ = true`` — fail-OPEN — and this project
     recorded that as one of three of its properties deliberately not copied
-    (plans/active/hand-ball-sensor.md § Context). A source that has never had a
+    (plans/archived/2026-08-15 hand-ball-sensor.md § Context). A source that has never had a
     reply knows nothing, and 'nothing' must project to False everywhere it is
     consumed: the evidence read refuses the throw, and the verdict refuses to
     confirm a catch."""
@@ -415,7 +415,7 @@ def test_boot_is_unknown_not_empty_and_not_held():
 
 def test_held_is_meaningless_without_valid():
     """``ball_held`` means nothing unless ``ball_held_valid`` — normative in
-    plans/active/hand-ball-sensor.md § Architecture. A TRUE held bit on an
+    plans/archived/2026-08-15 hand-ball-sensor.md § Architecture. A TRUE held bit on an
     invalid sample is exactly the stale value a dead ODrive republishes forever,
     which is the second BallButler property not copied."""
     src = _sensor()

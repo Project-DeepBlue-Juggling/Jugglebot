@@ -1,7 +1,7 @@
 ---
 title: Learned Feedforward Residuals — Batch ILC on the Leg Torque Channel
 created: 2026-07-24
-status: active
+status: parked   # 2026-08-15 — gates G-A (bridge-temporal closure + latency monitor), G-B (accel-FF concluded; that plan is itself parked) and G-C (stale-hold decay flashed) are all open; no implementation before they clear, per this plan's own rule.
 related_logbook:
   - 2026-07-18-teensy-uptime-tracking-degradation.md
   - 2026-05-08-friction-ff-platform-limit-cycle.md

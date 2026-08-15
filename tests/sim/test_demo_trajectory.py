@@ -1,7 +1,7 @@
 """Unit tests for the juggling-demo trajectory layer (Phase 2).
 
 Covers sim/juggle_planner/{pattern,trajectory,player}.py — the pure-Python,
-offline trajectory tooling for plans/active/bb-led-two-ball-juggle-demo.md.
+offline trajectory tooling for plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md.
 No hardware, no MuJoCo (the sim-playback check lives in
 test_demo_sim_playback.py).
 """

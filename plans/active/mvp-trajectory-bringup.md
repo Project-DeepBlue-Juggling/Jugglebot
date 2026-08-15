@@ -505,10 +505,10 @@ passes; results recorded in the logbook with seeds and configs):
 | 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | **HARDWARE PASS (S1, 2026-07-09)** |
 | 2 | Waypoint moves at low limits | — | move battery + loud rejection | **HARDWARE PASS (S2, 2026-07-09)** |
 | 3 | SpaceMouse streaming | — | manual flight | **HARDWARE PASS (S3, 2026-07-10 — after the chase-clamp rework; first attempt 2026-07-09 failed, see below)** |
-| 4 | Limit ramp-up + lean A/B | — | multiple short sessions | CODE COMPLETE (hardware deferred) |
+| 4 | Limit ramp-up + lean A/B | — | multiple short sessions | **HARDWARE CLOSED 2026-07-17** — working point (1000, 5000, 30000) + `lean_gain 0.6` persisted (see this phase's Outcome block) |
 | 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | SIM GATE CORE PASS (vel-match criterion deferred — see Phase 6/7) |
-| 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | CODE COMPLETE (hardware deferred) |
+| 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | **HARDWARE RUN — four sittings through 2026-07-24** (15/19 caught, open-loop-platform pivot landed; arc continued in `single-ball-toss.md` § Context and the logbook) |
 | 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | PLANNED — expanded in `plans/active/single-ball-toss.md` (2026-07-24) |
 | 9 | *(extra stretch)* Two-ball juggling | Two-ball gate | staged | NOT STARTED (stretch) |
 

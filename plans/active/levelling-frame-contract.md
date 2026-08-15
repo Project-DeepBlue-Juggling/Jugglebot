@@ -1,7 +1,7 @@
 ---
 title: Levelling-frame contract — one gravity correction, applied to every pose request
 created: 2026-07-25
-status: active
+status: parked   # 2026-08-15 — contract C-LEVEL-1/1.O shipped; Phase 4 residue = LVL-2 (~30 s of robot time, bundle with a catch sitting), the LG-3 reachability paper decision, and one OPEN DEFECT with no other owner: the Platform Teensy truncates the persisted offset to int16 milliradians (the STATE_WRITE int16 encode, Teensy_code_platform.ino:443-444; 0.0264° measured / 0.0573° worst-case per axis against the ±0.05° band, and LVL-3 is structurally blind to it) — address at the next levelling touch.
 related_logbook:
   - 2026-07-26-levelling-frame-contract.md
   - 2026-07-25-levelling-frame-enumeration.md
@@ -26,7 +26,7 @@ related_code:
 **Covers:** fix items 1 (universal correction) and 2 (`REJECTED_NOT_LEVELLED` gate)
 from the 2026-07-25 self-toss anomaly investigation.
 **Sibling plans:** `plans/active/hand-command-continuity.md` (items 3–6),
-`plans/active/fk-convergence-tolerance.md` (item 7),
+`plans/archived/2026-08-15 fk-convergence-tolerance.md` (item 7),
 `plans/active/catch-reach-degenerate-overshoot.md` (item 8).
 
 > The retrospective diagnosis for this plan has **not yet been written to the

@@ -8,7 +8,7 @@ point-to-point UDP/Ethernet link and owns three isolated CAN buses.
 **Related:** [ADR-0001: Offload CAN and the interpolator from the
 Jetson](../adr/0001-offload-can-and-interpolator-from-jetson.md) (why this
 exists) · [Wire protocol reference](../teensy-udp-protocol.md) ·
-[Parent plan](../../plans/active/teensy-can-offload.md) (current
+[Parent plan](../../plans/archived/2026-08-15%20teensy-can-offload.md) (current
 implementation status) · [Architecture Decisions](../adr/index.md)
 (ADR-0002 through ADR-0013 cover the individual hardware/protocol choices)
 
@@ -48,7 +48,7 @@ Firmware source: [`ros_ws/src/jugglebot/Teensy_code_canbridge/`](../../ros_ws/sr
 !!! warning "Snapshot, not a live status page"
     This section reflects the state as of **2026-07-06**. The authoritative,
     continuously-updated status lives in
-    [`plans/active/teensy-can-offload.md`](../../plans/active/teensy-can-offload.md)
+    [`plans/archived/2026-08-15 teensy-can-offload.md`](../../plans/archived/2026-08-15%20teensy-can-offload.md)
     (see its "Status snapshot" section) — check there before relying on
     anything below for a decision.
 

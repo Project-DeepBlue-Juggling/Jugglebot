@@ -22,7 +22,7 @@ related_code:
 5 (repack safety), 6 (prime == catch-trajectory start) from the 2026-07-25
 self-toss anomaly investigation.
 **Sibling plans:** `plans/active/levelling-frame-contract.md` (items 1–2),
-`plans/active/fk-convergence-tolerance.md` (7),
+`plans/archived/2026-08-15 fk-convergence-tolerance.md` (7),
 `plans/active/catch-reach-degenerate-overshoot.md` (8).
 
 ## Context

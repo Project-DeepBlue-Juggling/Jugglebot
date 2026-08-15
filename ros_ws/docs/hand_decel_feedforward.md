@@ -2,7 +2,9 @@
 
 **Status:** normative. Landed 2026-07-29 (plan
 `plans/active/hand-command-continuity.md` Phase 7; follow-on item D of
-`plans/active/PROMPT-anomaly-fixes-orchestration.md`).
+the anomaly-fixes orchestration prompt — completed and deleted 2026-08-15 per the
+prompt-deletion convention; the item's narrative lives in
+`logbook/2026-07-29-hand-post-release-decel.md`).
 **Sibling contract:** `ros_ws/docs/hand_command_continuity.md` (**C-HAND-1**),
 which governs *when* a hand command may be dispatched. This one governs *how
 hard the throw stroke brakes once it has been*.

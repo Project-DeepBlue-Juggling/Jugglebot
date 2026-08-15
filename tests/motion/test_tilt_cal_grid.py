@@ -2,7 +2,7 @@
 
 Tool: ``tests/hardware/tilt_cal_grid.py`` (operator-run rclpy CLI).
 Contract: ``ros_ws/docs/levelling_frame.md`` § **C-LEVEL-2**.
-Plan: ``plans/active/tilt-calibration-grid.md`` § Phase 3.
+Plan: ``plans/archived/2026-08-15 tilt-calibration-grid.md`` § Phase 3.
 
 The tool splits into a **pure core** — grid-spec generation, the residual
 reduction, map-document assembly, CSV rows — and a thin rclpy runtime. Only the

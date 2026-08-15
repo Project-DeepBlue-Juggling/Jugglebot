@@ -575,7 +575,7 @@ documented limitation of the whole rotation-only design, not of the keying.
 The rotation components never key the lookup. The map is captured at the level
 orientation and applied additively at **all** commanded orientations (8b
 tilt-aims to 5.75°, reload receive tilt 10.8°). Orientation-dependence of the
-residual is **unmeasured** — rung C0 of `plans/active/tilt-calibration-grid.md`
+residual is **unmeasured** — rung C0 of `plans/archived/2026-08-15 tilt-calibration-grid.md`
 sizes it with one tilted-pose probe; a tilt axis would be a follow-on sweep, not
 a licence to key on rotation.
 

@@ -6,7 +6,7 @@ loads. Each unit test exercises one constraint or invariant; the
 solver-converges fixture is session-scoped so the full file runs the
 optimiser only twice (default config + a custom-catch-offset variant).
 
-Plan reference: plans/active/bb-led-two-ball-juggle-demo.md §4 Phase 2
+Plan reference: plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md §4 Phase 2
 and the test cases T-U3 (throw constraint) / T-U4 (catch constraint) of §5.
 """
 import numpy as np

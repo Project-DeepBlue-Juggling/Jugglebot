@@ -1,7 +1,8 @@
 ---
 title: Ball-Butler-initiated two-ball oval juggling demo
 created: 2026-05-22
-status: active
+status: superseded   # two-ball frontier authority = bb-online-juggle-tilt-rearchitecture Rung 3 (see Archival note)
+completed: 2026-08-15
 ---
 
 # Ball-Butler-initiated two-ball oval juggling demo
@@ -894,3 +895,19 @@ The demo is additive and on a dedicated branch. Rollback of any phase:
   state with a single config revert.
 - The entire effort can be abandoned by deleting branch
   `demo/bb-led-two-ball-juggle` with no impact on `refactor`.
+
+## Archival note (2026-08-15)
+
+Superseded by `plans/active/bb-online-juggle-tilt-rearchitecture.md`, which
+this plan itself names "the two-ball frontier authority" (merged-location note,
+2026-07-24) — its Rung 3 (two-ball columns → oval, BB-seeded, ≥30 catches /
+0 drops) is unblocked as of 2026-07-04 and is the live home for the two-ball
+goal. This plan's Phase 4 hardware-izes an architecture that no longer exists:
+it targets `can_node` ROS services (deleted 2026-07-06) and the
+`HardwarePlant → :5557 → motor_guard` IPC path (motor_guard left the leg path
+at U4, parked dormant 2026-08-01), and its `traj_type` enumeration contradicts
+the firmware's. The offline `sim/juggle_demo.py` remains paused-not-deleted;
+Phase 1's feasibility result (the pattern closes at a sane throw height) and
+the Safety-critical invariants section (zero platform TILT at the throw is
+mandatory; zero velocity is not) carry forward — hardware two-ball gets its
+real re-plan at `mvp-trajectory-bringup.md` Phase 9 when reached.

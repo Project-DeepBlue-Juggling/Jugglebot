@@ -1,7 +1,8 @@
 ---
 title: Tilt calibration grid — pose-dependent gravity-level reference (residual map over the workspace)
 created: 2026-08-02
-status: active
+status: complete   # map committed + hardware-validated 2026-08-10 (see Archival note)
+completed: 2026-08-15
 related_logbook:
   - 2026-07-28-anomaly-fixes-validation-sitting.md
 related_config: config/tilt_calibration.yaml → (new, machine-written); config/hardware_config.yaml → jugglebot_operational.inclinometer_offset_deg
@@ -790,3 +791,20 @@ an action server.
   `|m_home|` small. A correction that *changes* mid-sweep is what corrupts a
   capture, and the tool machine-checks that (drift gate + `/gravity_offset`
   monitor).
+
+## Archival note (2026-08-15)
+
+Complete and hardware-validated: map v`2026-08-10-3bf7964f` committed
+(`3df256b`), C1 6/6 ≤ 0.137° and C2a 6° base-tilt 6/6 ≤ 0.146° (layered design
+validated); C2b optional and not run (would add map-invariance numbers, not a
+different verdict); C3 superseded by the informal 8a toss retest. The leg-0
+`SPINOUT_DETECTED` item from Phase 4's Open list has its own homes: first
+diagnosis in
+`logbook/2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md` and
+the fleet-reflash tool entry (`logbook/2026-08-12-odrive-fleet-reflash-tool.md`).
+**Status at archive time (2026-08-15): re-opened as a SEPARATE hardware
+investigation** — three events including one pre-FW14, estimate-first
++50–63 mrev step; the lead is leg 0's live ODrive config vs backup vs peers
+(the 08-12 fleet-reflash FULL_CALIBRATION + hall_encoder1 flip). It is
+tracked in the project-memory hardware-state file and belongs to the next
+sitting's runbook, not to this plan.

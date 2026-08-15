@@ -1,7 +1,8 @@
 ---
 title: FK convergence tolerance — spurious "did not converge" at round-off-level residuals
 created: 2026-07-25
-status: active
+status: complete   # both phases DONE 2026-07-25; bench FK-1/FK-2 PASS 2026-07-27 (see Archival note)
+completed: 2026-08-15
 related_logbook:
   - 2026-07-25-toss-phase3-trace-validated.md
 related_code:
@@ -232,3 +233,13 @@ struck rather than deleted so the correction is legible:
 
 Live reference for anyone re-running the evidence:
 `python tools/probes/fk_convergence_bag_check.py --bag ~/Desktop/rosbags/2026-07-25_15-17-48`.
+
+## Archival note (2026-08-15)
+
+Both phases DONE (2026-07-25, software complete). Bench checks scored at the
+2026-07-27 sitting (`logbook/2026-07-28-anomaly-fixes-validation-sitting.md`):
+**FK-1 PASS, FK-2 PASS**; FK-3 PARTIAL and structurally unscoreable (no
+pre-change reference print exists to diff against) and FK-4 off the run sheet
+by design while the MPC is dormant (standing rule 4). No remaining work exists
+to schedule — archived complete. Deployment (colcon build + relaunch) happened
+with the 2026-07-27 sitting.

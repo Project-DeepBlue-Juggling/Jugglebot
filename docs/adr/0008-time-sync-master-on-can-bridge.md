@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0009](0009-freertos-tsandmann-port.md), [ADR-0010](0010-onboard-clock-sufficient.md), [ADR-0013](0013-three-can-buses.md), [parent plan](../../plans/active/teensy-can-offload.md)
+- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0009](0009-freertos-tsandmann-port.md), [ADR-0010](0010-onboard-clock-sufficient.md), [ADR-0013](0013-three-can-buses.md), [parent plan](../../plans/archived/2026-08-15%20teensy-can-offload.md)
 
 ## Context
 

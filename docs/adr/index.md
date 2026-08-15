@@ -52,7 +52,7 @@ ADRs are **decisions**, not plans or implementations:
 
 - **[Plans](../../plans/active/)** describe *what we intend to build and how* —
   step-by-step work. They expire when archived. The can-bridge Teensy migration
-  plan ([`teensy-can-offload.md`](../../plans/active/teensy-can-offload.md)) is
+  plan ([`teensy-can-offload.md`](../../plans/archived/2026-08-15%20teensy-can-offload.md)) is
   the canonical example.
 - **[Logbook](../../logbook/)** captures *what happened during an
   investigation or build* — bug post-mortems, surprising findings, rejected

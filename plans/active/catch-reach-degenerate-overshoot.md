@@ -1,7 +1,7 @@
 ---
 title: Catch-reach near-degenerate overshoot — a 0.78° target produced a 2.32° excursion
 created: 2026-07-25
-status: active
+status: parked   # 2026-08-15 — all five phases DONE, the fix (C-CATCH-1 + seat rate 0.0) shipped. Residue = the pre-registered seat-rate A/B (SEAT-EXP), blocked by catch-robustness § Constraints ("no catch-parameter tuning until Phase 0 lands") and by the unsolved +25-35 mm BB x-bias prerequisite; runs as a catch-robustness Phase 3 row when reached.
 related_logbook:
   - 2026-07-25-toss-phase3-trace-validated.md
   - 2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md
@@ -730,9 +730,10 @@ What this does **not** close, handed to the operator:
 Phase 4 records `CCATCH-2t` — the **self-toss** tracker catch error — as *"tracker
 corruption confined to Z, so the lateral half is recoverable at 0–4 mm but was not
 formally scored"*. That blocker is retired. **This plan closed no phase for it**;
-the work belongs to the post-sitting follow-on programme, item **B**
-(`plans/active/PROMPT-anomaly-fixes-orchestration.md` § Follow-on programme), and
-is recorded there and in `logbook/2026-07-28-caught-gate-xy-plausibility.md`. It is
+the work belonged to the post-sitting follow-on programme, item **B** (the
+anomaly-fixes orchestration prompt — item B landed 2026-07-28 as C-POSSESS-1 and
+the prompt, fully satisfied, was deleted 2026-08-15 per convention), and is
+recorded in `logbook/2026-07-28-caught-gate-xy-plausibility.md`. It is
 cross-referenced here only because it changes how a Phase-4 row is scored.
 
 What changed: contract **C-POSSESS-1**

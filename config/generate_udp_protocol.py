@@ -600,7 +600,7 @@ MESSAGES = [
             "Emitted from task_telem: one frame per NEW good reply (so naturally "
             "rate-limited to the poll rate), plus a 1 Hz keepalive while no new "
             "reply lands, so staleness is itself observable on the wire. "
-            "plans/active/hand-ball-sensor.md § Architecture is NORMATIVE for the "
+            "plans/archived/2026-08-15 hand-ball-sensor.md § Architecture is NORMATIVE for the "
             "signal semantics; these flags describe the bridge's cache and say "
             "nothing about the link, so the consumer applies its own RX-age gate."),
         fields=[

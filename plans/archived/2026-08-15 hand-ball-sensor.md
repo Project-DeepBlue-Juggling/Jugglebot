@@ -1,7 +1,8 @@
 ---
 title: Hand ball-present sensor — G02 wiring through firmware, protocol, ROS, GUI
 created: 2026-07-28
-status: active
+status: complete   # Phases 0-6 shipped + in production; Phase 7 steps 4-5 re-homed (see Archival note)
+completed: 2026-08-15
 related_logbook:
   - 2026-07-28-anomaly-fixes-validation-sitting.md
   - 2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md
@@ -708,3 +709,16 @@ predates the direction and ran the full gate: 4256 passed, 3 xfailed,
   that bit only on heartbeat freshness, so a freshly-rebooted BallButler
   makes the reload FSM skip `ACTION_CALL_RELOAD`. Own investigation/logbook;
   the Phase 5 validity pattern is the shape of its fix.
+
+## Archival note (2026-08-15)
+
+Phases 0–6 shipped, flashed and colcon-deployed (operator, 2026-07-29); the
+sensor is in production as the possession source of truth (catch-robustness
+Phase 1 `HandBallSensorSource` + `toss_require_ball_evidence: true`, and
+203,922 `/hand_telemetry` samples at 100 % `ball_held_valid` behind the
+2026-08-10 gate-supersession decision). The two residual Phase 7 steps (4 —
+stroke-jitter observation with polling on/off; 5 — ball soak to size
+`max_missing_samples`/poll rate) are bench TUNING, not blockers, and live on in
+`tests/hardware/session_hand_ball_sensor.md`, now also pointed to by
+`catch-robustness.md`'s bench-phase notes. Authority for downstream possession
+work: `plans/active/catch-robustness.md`.

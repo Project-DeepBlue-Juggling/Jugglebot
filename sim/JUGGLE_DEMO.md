@@ -21,7 +21,7 @@ then sustains the pattern for 30+ catches.
 This README gets a collaborator from a fresh clone to a working sim
 window in ~5 minutes. The deeper architecture, design rationale, and the
 in-progress optimiser cuts live in
-[`plans/active/bb-led-two-ball-juggle-demo.md`](../plans/active/bb-led-two-ball-juggle-demo.md).
+[`plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md`](../plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md).
 
 ---
 
@@ -293,7 +293,7 @@ catch event landed plus the Ball-Butler priming throw. Drops are
 counted separately (ball falling below z = −200 mm).
 
 For deeper context, read the plan doc:
-[`plans/active/bb-led-two-ball-juggle-demo.md`](../plans/active/bb-led-two-ball-juggle-demo.md).
+[`plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md`](../plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md).
 
 ---
 

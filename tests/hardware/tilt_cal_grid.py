@@ -9,7 +9,7 @@ version matches what it just wrote, and re-measures a handful of **off-node**
 check poses to prove the interpolation actually removed the error.
 
 Contract: ``ros_ws/docs/levelling_frame.md`` § **C-LEVEL-2**.
-Plan: ``plans/active/tilt-calibration-grid.md`` (Phase 3 builds this; Phase 4's
+Plan: ``plans/archived/2026-08-15 tilt-calibration-grid.md`` (Phase 3 builds this; Phase 4's
 rungs C0–C3 run it — ``tests/hardware/session_tilt_calibration.md`` is the
 runbook and is the authority for what to do at the robot).
 
@@ -252,7 +252,7 @@ import _th_test_common as thc
 # ── defaults ─────────────────────────────────────────────────────────────
 #
 # Every default marked PROVISIONAL is a placeholder until rung C0 of
-# plans/active/tilt-calibration-grid.md measures it on hardware. C0 exists
+# plans/archived/2026-08-15 tilt-calibration-grid.md measures it on hardware. C0 exists
 # precisely because the SCL3300's noise floor and settling behaviour are
 # unmeasured in this repo, and the probe-first rule forbids asserting a
 # threshold before a probe pins it. Do not promote any of these to "the

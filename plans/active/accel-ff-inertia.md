@@ -1,7 +1,7 @@
 ---
 title: Inertia-aware acceleration feedforward for lateral platform moves
 created: 2026-07-16
-status: active
+status: parked   # 2026-08-15 — nothing schedulable: THE gate (firmware stale-hold torque decay) is unwritten, and the motivating deficit was measured on the uptime-degraded plant, so Phase 0 waits for a healthy-plant baseline after the bridge-temporal fix (FW 14) validates. Resume from Phase 0.
 related_logbook:
   - 2026-07-16-max-deviation-guard-tracking-lag.md
   - 2026-07-18-teensy-uptime-tracking-degradation.md

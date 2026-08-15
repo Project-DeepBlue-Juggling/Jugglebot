@@ -1,7 +1,7 @@
 # Teensy 4.1 can-bridge firmware
 
 The new dedicated CAN microcontroller from
-[`plans/active/teensy-can-offload.md`](../../../../plans/active/teensy-can-offload.md).
+[`plans/archived/2026-08-15 teensy-can-offload.md`](../../../../plans/archived/2026-08-15%20teensy-can-offload.md).
 It owns all leg-ODrive CAN traffic (offloaded from the Jetson), is the system
 time-sync **master**, and talks to the Jetson over a point-to-point UDP link.
 

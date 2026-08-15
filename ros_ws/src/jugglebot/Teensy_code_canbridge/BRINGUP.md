@@ -273,7 +273,7 @@ This walkthrough takes you through plan Phases 2 (FreeRTOS skeleton +
 Ethernet bring-up). The migration plan's subsequent phases — UDP echo,
 protocol contract validation, CAN bus bring-up, ODrive protocol, fault state
 machine replay, Jetson-side bridge, full cutover — are each documented in
-[`teensy-can-offload.md`](../../../../plans/active/teensy-can-offload.md).
+[`teensy-can-offload.md`](../../../../plans/archived/2026-08-15%20teensy-can-offload.md).
 Work them in order; each phase has its own "Done when" criteria.
 
 The single most important next step after Phase 2 is **Phase 5 CAN bench
