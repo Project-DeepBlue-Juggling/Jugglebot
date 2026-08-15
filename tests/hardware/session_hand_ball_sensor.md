@@ -147,13 +147,19 @@ git log --oneline -1
   working-tree changes. If `origin` is ahead or the tree carries edits you did not make,
   **pause and surface it** — another session may be mid-flight.
 
-### P1 — power-cycle the can-bridge Teensy (standing session rule)
+### P1 — ~~power-cycle the can-bridge Teensy~~ record its uptime (rule RETIRED 2026-08-15)
 
-Power-cycle the can-bridge Teensy **before the sitting**, and log `uptime_ms` next to
-every timing number you record. Tracking lag grows with that board's uptime (10 ms at a
-fresh boot → ~240 ms at 30 h), so a timing number without an `uptime_ms` beside it is not
-interpretable. Step 1's flash reboots the board anyway — but do this first so the
-pre-flight measurements are on a fresh board too.
+**The power-cycle-before-the-sitting rule is RETIRED.** It existed only because
+tracking lag grew with the board's uptime (10 ms fresh → ~240 ms at 30 h); the root
+cause was the vendored FlexCAN_T4 `_available` RX-ring leak, fixed in **FW 14** and
+validated at 5.8 h and 15.2 h of continuous uptime
+(`logbook/2026-08-15-fw14-validated-arc-closed.md`). On FW 14+ uptime is no longer a
+tracking-quality variable, so **do not reboot the bridge for timing reasons** — check
+`bridge_fw_version` on `/link_status` if you are unsure which firmware is aboard.
+
+What still stands: **log `uptime_ms` next to every timing number you record** (it is
+now the fix's own regression detector), and watch the `latency_monitor` row on
+`/link_status` during the sitting. Step 1's flash reboots the board anyway.
 
 Once the launch is up (P2), read and record the board's uptime:
 

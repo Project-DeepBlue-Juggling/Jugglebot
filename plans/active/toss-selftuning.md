@@ -1076,15 +1076,27 @@ unvalidated tree writes a calibration nobody can trust later.
 
 ### P1 — Power-up and arm (~10 min)
 
-1. **Power-cycle the can-bridge Teensy.** Non-negotiable for this workstream: the
-   map bakes in a *timing* bias and the dispatch shift is +118–133 ms at ~16 h
-   uptime. A capture on a warm bridge is a capture of the drift.
+1. ~~**Power-cycle the can-bridge Teensy.**~~ **RETIRED 2026-08-15.** The premise —
+   the map bakes in a *timing* bias, and the dispatch shift was +118–133 ms at
+   ~16 h uptime — was true of the *defective* plant only: the cause was the
+   vendored FlexCAN_T4 `_available` RX-ring leak, fixed in **FW 14** and validated
+   at 5.8 h and 15.2 h of continuous uptime with the lag flat at 10–20 ms
+   (`logbook/2026-08-15-fw14-validated-arc-closed.md`). A warm FW 14 bridge is no
+   longer a drifting one. Confirm `bridge_fw_version` ≥ 14 on `/link_status`; below
+   that, the old rule still applies.
 2. Launch → home → **`level`** → activate → confirm 40 Hz hold → TRAJECTORY →
    **zero motion at arm**.
-3. Record `uptime_ms` from `/link_status`; every downstream number quotes it.
+3. Record `uptime_ms` from `/link_status`; every downstream number quotes it. Watch
+   the `latency_monitor` row for the duration of the capture — a leak, cache-age or
+   sustained-clamp-duty alarm during collection invalidates the capture the way a
+   warm bridge used to.
 
-**ABORT** if `uptime_ms` at collection start is already > 30 min — reboot and
-re-arm.
+~~**ABORT** if `uptime_ms` at collection start is already > 30 min~~ — **retired
+with the rule above.** Note that `tests/hardware/toss_cal_grid.py` still enforces
+it as a hard refusal (`R7`, `UPTIME_ABORT_MS`); until that gate is removed or
+re-keyed to `latency_monitor`, a legitimate capture on a warm FW 14 bridge will be
+refused by the tool. Removing it is a code change with its own test, deliberately
+not folded into the documentation closure.
 
 ### P2 — Read-only preflight (~10 min)
 
@@ -1639,6 +1651,8 @@ the measurements.
 - **BB not-positioned-in-time abort code** — the targeted retry in § 3.9 needs a
   distinct, identifiable code in the BB/reload path. If none exists, the retry is
   not shipped and the session stops as today, naming the ambiguity.
-- **Bridge-uptime lag root cause** — owned by
-  [refactor-2026-07.md](refactor-2026-07.md) Phase 7. Until it closes, the
-  fresh-boot discipline and the session-local `τ` trim are the mitigations.
+- ~~**Bridge-uptime lag root cause**~~ — **CLOSED 2026-08-15.** It moved from
+  [refactor-2026-07.md](refactor-2026-07.md) Phase 7 to the bridge-temporal arc,
+  which convicted the vendored FlexCAN_T4 `_available` RX-ring leak and fixed it in
+  FW 14 (`logbook/2026-08-15-fw14-validated-arc-closed.md`). The fresh-boot
+  discipline is retired; the session-local `τ` trim stays on its own merits.

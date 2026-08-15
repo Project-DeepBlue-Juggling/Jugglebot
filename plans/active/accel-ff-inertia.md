@@ -24,6 +24,16 @@ accel-FF exploration: machinery map + coordinated-inertia measurement + design)
 SHIPPED; MAX_DEVIATION guard 1.0 rev + ODrive vel_limit 12 rev/s + ceilings opened
 (2026-07-16, see logbook/2026-07-16-max-deviation-guard-tracking-lag.md).
 
+> **✅ CONTINGENCY DISCHARGED — 2026-08-15.** The reboot experiment ran (S1,
+> 2026-08-12), the root cause was convicted (the vendored FlexCAN_T4 `_available`
+> RX-ring leak) and fixed in **FW 14**, validated at 5.8 h and 15.2 h of continuous
+> uptime with lag flat at 10–20 ms and lead-clamp duty 0
+> (`logbook/2026-08-15-fw14-validated-arc-closed.md`). The prerequisite below is
+> therefore satisfied; what remains of it is the **re-derivation itself** — Phase 0
+> must re-measure the FF's motivating deficit on the now-healthy plant before any
+> design work, because the original deficit may shrink substantially or vanish. The
+> banner below is retained as the record of why.
+>
 > **⚠ PREMISE PARTIALLY CONTINGENT — 2026-07-18 (pending reboot experiment):**
 > tracking lag is now shown to grow with can-bridge Teensy uptime (10 ms fresh
 > boot → ~240 ms at 30 h), and the velocity-loop-lag framing this plan targets

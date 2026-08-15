@@ -91,8 +91,14 @@ never during a session).
 
 ## Prerequisite gates (all three must clear before Phase 1)
 
-- **G-A — The 2026-07-18 uptime-lag investigation is closed** (reboot
-  isolation experiment run, fix + continuous latency monitor landed). ILC's
+- **G-A — CLEARED 2026-08-15. The 2026-07-18 uptime-lag investigation is closed**
+  (reboot isolation experiment run S1 2026-08-12; root cause = the vendored
+  FlexCAN_T4 `_available` RX-ring leak; fix = FW 14, validated at 5.8 h and 15.2 h
+  of continuous uptime; the alarmed continuous latency monitor landed in the same
+  change-set — `logbook/2026-08-15-fw14-validated-arc-closed.md`). Note the
+  corollary below is now cheap to satisfy: uptime is no longer a lag predictor, so
+  the learner's healthy-threshold refusal should be re-keyed off `latency_monitor`
+  / `leak` rather than off `uptime_ms` when Phase 1 starts. ILC's
   premise is a *repeatable* plant; a transport delay drifting 10→240 ms with
   Teensy uptime is non-repeatable error that learning would chase forever —
   and worse, bake into deployed profiles. Corollary, enforced in tooling:

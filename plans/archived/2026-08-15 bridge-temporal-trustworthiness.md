@@ -1,9 +1,10 @@
 ---
 title: Bridge Temporal Trustworthiness — closing the uptime command-latency drift and the clock-precision half in one arc
-status: active
+status: completed   # latency half COMPLETE and validated; the clock half (P4) hands back to bridge-clock-frequency-discipline (see Archival note)
+completed: 2026-08-15
 owner: harrison
 created: 2026-08-11
-last_updated: 2026-08-14
+last_updated: 2026-08-15
 related_logbook:
   - 2026-07-18-teensy-uptime-tracking-degradation.md   # the LATENCY half — open; owns the four-arm experiment and the closure contract
   - 2026-08-12-s1-aged-bridge-isolation-teensy-internal.md  # S1 — the four-arm isolation; Teensy-internal CONFIRMED
@@ -823,3 +824,99 @@ holdover < a few µs/min).
 - `plans/active/refactor-2026-07.md` § Phase 7 — the absorbed bullet.
 - `ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h` line 44 — the
   `FW_VERSION` changelog constant; FW 11 and FW 12 append their entries there.
+
+---
+
+## Archival note (2026-08-15)
+
+**Archived COMPLETE on the latency half — the half this arc was created to close.
+The clock half hands back to `plans/active/bridge-clock-frequency-discipline.md`,
+which was always its authoritative design document and stays active and
+independently schedulable.**
+
+### What shipped
+
+| Phase | Shipped | Evidence |
+|---|---|---|
+| **P0** | LEG_CMD echo subscribed and published; that topic **and** `/profile` added to THE ONE rosbag record list — the three-way transport/interp/ODrive discriminator became available offline from a single bag | `logbook/2026-08-11-bridge-temporal-trustworthiness-kickoff.md` and the P0 entry |
+| **P1** | **FW 11** — additive `CLOCK_DIAG` (0x8F) with per-anchor clock diagnostics plus recover-slew and extrapolation occupancy counters; written and committed **unflashed**, flashed at S1 Arm C exactly as the owner decision required | plan § P1 |
+| **P2** | Midpoint-stamped TOD responder — kernel RX `t2` midpointed with a pre-send userspace `t3`, returned in the existing `jetson_wall_us` field, wire-compatible, with an observable fallback. **This superseded the clock plan's kernel-RX-only sketch**: kernel-RX stamping alone flips the sign of the server-processing term rather than deleting it | plan § P2 |
+| **S1** | The pre-registered four-arm isolation on a bridge aged 62.9–63.1 h. **Only Arm C fixed it** ⇒ Teensy-internal. Jetson transport, ODrives, Teensy→ODrive TX, RX wire errors, heap and interp scheduling all exonerated **with in-bag data** | `logbook/2026-08-12-s1-aged-bridge-isolation-teensy-internal.md` |
+| **S2** | **FW 12** `CACHE_DIAG` soak. Its decision rule took the **second** branch — cache age was *fresher* at 28 h than at 1.1 h — refuting S1's own cache-staleness mechanism with S1's own successor instrument | `logbook/2026-08-14-ring-audit-available-leak-delay-line.md` |
+| — | The RX-path concurrency audit that named the defect, and the FlexCAN_T4 vendoring (`fef2df5`) that made fixing it possible at all | same entry; `lib/FlexCAN_T4/PROVENANCE.md` |
+| **S3** | **FW 13** `RING_DIAG` (0x92) — true ring occupancy read independently of `_available` — plus the Jetson `/robot_state` staleness gate. Convicted at the ceiling: `leak_jb` **247–248** of a 256-slot lap at 4.03 h. Also produced the **install-skew self-check** after a stale `install/` tree nearly cost the measurement | `logbook/2026-08-14-s3-conviction-ring-leak-measured.md` |
+| **P3** | **FW 14** — the ring pop moved inside the `NVIC_DISABLE_IRQ` window (plus the dormant TX-deferral `break`), and the **alarmed end-to-end latency monitor** with the lag-clock normaliser. Validated at **5.8 h and 15.2 h**: `leak ≡ 0`, lag 10–20 ms, clamp duty 0 | `logbook/2026-08-14-fw14-ring-leak-fix.md`, `logbook/2026-08-15-fw14-validated-arc-closed.md` |
+| **P4** | **Not started — deliberately.** Its authoritative design never lived here; see § Hands off | — |
+
+**All six acceptance criteria are met.** (1) The four-arm experiment localized the
+drift unambiguously, and the arm *order* is what made it unambiguous. (2) The fix
+holds at high uptime — 20 ms at 15.2 h against 20 ms fresh, on a deliberately aged
+plant, which was the whole point of the criterion. (3) The alarmed monitor is live
+and logged with `uptime_ms`. (4) The clock half's criteria are handed to its own
+plan, unblocked. (5) The named downstream unblocks are recorded and open. (6) The
+reboot-before-every-session workaround is **retired** across the runbooks.
+
+### What was learned
+
+- **The root cause was one missing IRQ guard** in a vendored library:
+  `FlexCAN_T4::events()` popped the RX ring before `NVIC_DISABLE_IRQ`, so the
+  consumer's non-atomic `_available--` raced the ISR's `_available++` **in one
+  direction only**. The counter under-counted monotonically, the drain exited with
+  the ring non-empty, and **the RX ring became an uptime-ratcheting delay line**
+  (~40 ms/h, capped at one 256-slot lap ≈ 114–135 ms).
+- **A counter derived from the corrupted quantity cannot audit it.**
+  `depth_hwm`/`cap_hits` are computed from `_available`; they read healthy through
+  a 97 %-stranded ring, and we shipped them believing they covered it.
+- **Instrument where the consumer reads, not where the producer writes.** FW 12's
+  cache age is stamped at decode, downstream of the delay, so it could never have
+  seen this. A freshness stamp applied by the consumer measures the consumer.
+- **The mechanism that stuck predicted every instrument's blindness** instead of
+  explaining it away. That is the shape of a correct explanation, and it is the
+  criterion worth carrying to the next hunt.
+- **Measurement beat argument, repeatedly.** The 2026-07-18 full-file firmware
+  audit — a genuine sweep of 18 .cpp + 20 .h — walked past this defect and returned
+  a NULL result with a wrong top-ranked candidate. A compiled-assembly check and
+  then one hardware number convicted it.
+- **The operator's cutover prior was right and quantitatively so**: the leak rate
+  goes as arrival × pop, i.e. ~quadratic in the load the MVP streaming cutover
+  changed. A physical intuition about *when* a fault started, converted into a rate
+  hypothesis, would have saved weeks.
+- **Two second-order instrument artefacts were found and closed** rather than
+  smoothed: the delivery-lag integral is contaminated by a **load-dependent**
+  FlexCAN capture-clock rate error (≈230 ppm idle, ≈580–670 ppm streaming;
+  normalised in software by continuous re-estimation, since one rate pooled across
+  a load transition under-corrects by ~350 ppm — and *why* bus load moves that rate
+  is still unexplained), and the SDO-RTT probe's single-slot stamp pairing is valid
+  only while delay ≪ poll period. Even corrected, the lag integral is a
+  **growth channel since the last reseed**, never an absolute lag — `leak_*` is the
+  absolute-occupancy channel.
+
+### What it hands off
+
+- **P4, the clock servo → `plans/active/bridge-clock-frequency-discipline.md`
+  Phases 3–5.** Its **P4-after-P3 ordering constraint is now SATISFIED**: a
+  frequency estimator will no longer train through a drifting, possibly asymmetric
+  transport. That plan's Phase 1 instrument already exists on the wire as
+  `CLOCK_DIAG`, and its Phase 2 was delivered here as P2 (with the midpoint
+  correction). Min-RTT anchor gating remains its standing defence against any
+  *future* transport asymmetry, independent of this arc's outcome.
+- **The frame-drop follow-on → `plans/active/leg-bus-frame-drops.md`.** The
+  validation battery characterised per-axis encoder-frame drops that are gated by
+  the 500 Hz setpoint stream, not by uptime, and that pre-date FW 14. They are a
+  *different* input to the same lead-clamp amplifier, and — unlike the delay line —
+  a genuine dropout really does age `pos_timestamp_us`, so a timestamp-age-aware
+  clamp works there.
+- **The superseded lead-clamp draft** (`lead-clamp-content-freshness.md`) is
+  archived alongside this plan; its enforcement-point analysis, its
+  `MAX_DEVIATION`/stroke-clamp interaction findings and its velocity-extrapolated
+  anchor are salvaged into the frame-drop plan.
+- **Downstream premises now re-derivable on a healthy plant**: the 0.5→1.0 rev
+  guard raise, the 2.2–2.7 rev/s chase ceiling, the retime-model OFF decision, the
+  accel-FF sizing premise (`plans/active/accel-ff-inertia.md`), and
+  `plans/active/learned-ff-residuals.md` gate **G-A**, which is now CLEARED.
+- **One residue that is code, not documentation**:
+  `tests/hardware/toss_cal_grid.py`'s `R7` refusal (`UPTIME_ABORT_MS`, 30 min) and
+  `tests/hardware/tilt_cal_grid.py`'s matching WARN still gate on bridge uptime.
+  With the rule retired they will refuse or warn on a healthy warm bridge. Removing
+  or re-keying them onto `latency_monitor` is a code change with its own test, and
+  is deliberately **not** folded into the documentation closure.

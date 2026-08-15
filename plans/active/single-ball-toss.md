@@ -52,7 +52,8 @@ production-in-the-loop sim harness, and stages hardware bring-up.
 **Ball sourcing precondition:** a toss needs a ball already seated in the cup —
 the `Reload` action is the loader. The operator sequence is Reload → Toss
 (→ Toss …), which also means every toss session inherits the Phase-7 session
-disciplines (can-bridge Teensy reboot before each sitting; `uptime_ms` logged
+disciplines (~~can-bridge Teensy reboot before each sitting~~ — retired
+2026-08-15, FW 14 fixed the uptime lag; `uptime_ms` logged
 with any timing measurement; tracker-corruption verdicts judged by eye — **on the
 reload path only** since C-POSSESS-1 landed 2026-07-28; self-toss verdicts are now
 expected to be right, so a self-toss `MISSED` is a finding).
@@ -762,9 +763,13 @@ toss it repeats) → CONT-STEP-1 (the no-ball dry trace, the one sanctioned use 
   **Reload** verdicts still read `MISSED` on a real catch — the split-track
   mis-association is still open — and PASS counts on that path are still judged by
   eye + tracker-id evidence, as in the fourth sitting.
-- **Teensy-uptime tracking lag (open)** — all timing-sensitive measurements
-  (achieved flight time, catch error) are only meaningful with a fresh
-  can-bridge boot; `uptime_ms` is logged alongside every session artefact.
+- **Teensy-uptime tracking lag (CLOSED 2026-08-15)** — root cause was the vendored
+  FlexCAN_T4 `_available` RX-ring leak; FW 14 fixed it and validation at 5.8 h and
+  15.2 h of continuous uptime holds the lag at 10–20 ms with zero lead-clamp duty
+  (`logbook/2026-08-15-fw14-validated-arc-closed.md`). Timing-sensitive
+  measurements no longer require a fresh can-bridge boot. `uptime_ms` is still
+  logged alongside every session artefact — it is now the regression detector, not
+  a caveat — and `/link_status` carries an alarmed `latency_monitor` row.
 - **Firmware kind-1 time-budget race at short flights (found in Phase 1's
   control analysis, 2026-07-25).** The tracker-driven catch arm arrives
   mid-throw-decel; the Teensy windup budget silently drops it (Serial-only,

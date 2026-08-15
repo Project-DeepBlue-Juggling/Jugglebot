@@ -79,6 +79,9 @@ catch rate at 1.0 m. Offline diagnosis from the three retest bags
 - Safety forks stay closed: `MIN_TOSS_THROW_DELAY_S = 3.5` floor untouched;
   hand ladders + `_MAX_ARM_DISPATCHES` retained; kind-3 abort clobber rights
   untouched (C-HAND-1 "What must NOT change").
-- Fresh can-bridge boot before every sitting; `uptime_ms` logged with every
-  timing-sensitive number.
+- ~~Fresh can-bridge boot before every sitting;~~ **retired 2026-08-15** (the
+  uptime lag's root cause was fixed in FW 14 and validated at 5.8 h and 15.2 h —
+  `logbook/2026-08-15-fw14-validated-arc-closed.md`). `uptime_ms` is still logged
+  with every timing-sensitive number, and the `latency_monitor` row on
+  `/link_status` is watched during the sitting.
 - All tuning data collection under tier 8a at z = 170 mm, ±150 mm workspace.

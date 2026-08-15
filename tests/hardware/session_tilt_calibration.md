@@ -62,12 +62,17 @@ close.
 ## Preconditions
 
 - Jugglebot powered, ODrives up, CAN3 healthy (green `link_status`).
-- **POWER-CYCLE THE CAN-BRIDGE TEENSY before the sitting** (the uptime-lag
-  discipline). **Quote `uptime_ms` with every number you record** — tracking lag
-  grows with can-bridge uptime (10 ms fresh → ~240 ms at 30 h), and a capture on
-  a degraded plant is a capture of the degradation. The tool echoes it at
-  preflight and records first/last in `_meta.json` **and** the map's `captured`
-  block; it warns above 30 min and never refuses.
+- ~~**POWER-CYCLE THE CAN-BRIDGE TEENSY before the sitting**~~ — **RETIRED
+  2026-08-15.** The uptime-lag degradation was the FlexCAN_T4 `_available`
+  RX-ring leak, fixed in **FW 14** and validated at 5.8 h and 15.2 h of
+  continuous uptime (`logbook/2026-08-15-fw14-validated-arc-closed.md`); on
+  FW 14+ uptime is no longer a tracking-quality variable and a warm bridge is
+  not a degraded one. **Quote `uptime_ms` with every number you record** — that
+  half stands, and is now the fix's own regression detector — and watch the
+  `latency_monitor` row on `/link_status`. The tool echoes uptime at preflight
+  and records first/last in `_meta.json` **and** the map's `captured` block; its
+  30-minute WARN (`tilt_cal_grid.py::UPTIME_WARN_MS`) is now advisory-historical
+  and pending removal, not a reason to reboot.
 - `run_mpc.py` is **NOT** running (sole-binder :5557 interlock).
 - **Build gate — BOTH packages. This is not optional:**
   ```bash

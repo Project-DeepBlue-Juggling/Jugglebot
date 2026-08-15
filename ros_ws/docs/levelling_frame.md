@@ -351,11 +351,28 @@ requirement therefore stands unchanged: **level manually after every launch or
 relaunch.** What is new is that forgetting costs a loud refusal instead of a ball
 on the floor.
 
-Two operational facts that make this the common case rather than a corner:
-`levelling_complete` is "since last Teensy bootup", and the operator power-cycles
-the can-bridge Teensy before every sitting — so it is False at every launch and
-the persisted auto-push never fires first. **In practice every session genuinely
-needs a manual `level`.**
+Two operational facts made this the common case rather than a corner:
+`levelling_complete` is "since last Teensy bootup", and the operator used to
+power-cycle the can-bridge Teensy before every sitting — so it was False at every
+launch and the persisted auto-push never fired first. **In practice every session
+genuinely needs a manual `level`.**
+
+> **Amended 2026-08-15 — the second fact no longer supports the conclusion, for
+> two independent reasons.** (i) The power-cycle-before-every-sitting rule is
+> **retired**: its cause, the can-bridge uptime lag, was fixed in FW 14 and
+> validated at 5.8 h and 15.2 h (`logbook/2026-08-15-fw14-validated-arc-closed.md`),
+> so a bridge left powered across sittings is now the normal case. (ii) The
+> reasoning was already suspect: `levelling_complete` and `pose_offset_rad` are
+> persisted by the **Platform** Teensy, and a *can-bridge* power-cycle does not
+> clear that cache — `tests/hardware/session_anomaly_fixes.md` standing rule 2 and
+> operator pre-brief item 2 both say so explicitly, while pre-brief item 1 asserts
+> the opposite. That contradiction is unreconciled in the record and is flagged
+> here rather than silently resolved.
+>
+> The requirement above is unchanged — **level manually after every launch or
+> relaunch** — but do not rely on the boot state to force it, and treat the
+> orchestrator's persisted auto-push as a live path that can win the discovery
+> race.
 
 ## C-LEVEL-2 — the pose-dependent residual map
 
@@ -815,10 +832,15 @@ A capture run is only meaningful under all five of these:
    through the data rather than the code.
 3. **Hand quiescent.** Tilt reads block the Platform Teensy loop that streams
    hand moves.
-4. **A freshly rebooted can-bridge Teensy, with `uptime_ms` logged first and
-   last.** Tracking lag grows with bridge uptime (10 ms fresh → ~240 ms at 30 h),
-   and a settle-then-read capture is exactly the kind of measurement that would
-   silently absorb it.
+4. **`uptime_ms` logged first and last.** *(Amended 2026-08-15: the "freshly
+   rebooted can-bridge Teensy" half is RETIRED.* Tracking lag used to grow with
+   bridge uptime — 10 ms fresh → ~240 ms at 30 h — and a settle-then-read capture
+   is exactly the kind of measurement that would silently absorb it. The cause was
+   the vendored FlexCAN_T4 `_available` RX-ring leak, fixed in **FW 14** and
+   validated at 5.8 h and 15.2 h of continuous uptime,
+   `logbook/2026-08-15-fw14-validated-arc-closed.md`. *The `uptime_ms` label
+   stands* — it is now how a regression would be caught — and the
+   `latency_monitor` row on `/link_status` alarms live during the capture.)
 5. **An ARMED wire, for the whole sweep.** `go_to_pose` is *accepted* while
    `mpc_active=0` — streaming-while-disarmed is the legal pre-arm phase — so a
    disarmed capture moves nothing, reads one stationary pose at every node, and

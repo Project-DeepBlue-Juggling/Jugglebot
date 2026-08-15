@@ -20,8 +20,12 @@ per-frame deferral implied ~21% under independence.
 
 ## Safety (operator-owned)
 
-- REBOOT the can-bridge Teensy before the session (standing rule). Log uptime_ms
-  with EVERY measurement block (standing rule — the uptime-lag degradation).
+- ~~REBOOT the can-bridge Teensy before the session (standing rule).~~ **RETIRED
+  2026-08-15** — the uptime-lag degradation that rule existed for was the
+  FlexCAN_T4 `_available` RX-ring leak, fixed in FW 14 and validated at 5.8 h and
+  15.2 h (`logbook/2026-08-15-fw14-validated-arc-closed.md`). On FW 14+ uptime is
+  not a tracking-quality variable. Still log uptime_ms with EVERY measurement
+  block, and watch the `latency_monitor` row on `/link_status` during the session.
 - Hand dispatches energise the hand ODrive (preamble = CLOSED_LOOP). Hand strokes
   here are ZERO-DISTANCE smooth moves (target = current position) — mechanically
   null but treat the hand as live at all times. Safe-state between blocks.
@@ -187,7 +191,8 @@ confound, and a single loaded arm on its own could not.
    - No `colcon build` is needed for the firmware half; `teensy_link/` runs live
      from the tree, so the bumped `EXPECTED_BRIDGE_FW_VERSION` is already in
      effect. (A `colcon build` is still needed if `teensy_bridge_node.py` moved.)
-   - Reboot the bridge Teensy (standing rule), log `uptime_ms` per block.
+   - Log `uptime_ms` per block. (The bridge-reboot half of that standing rule was
+     RETIRED 2026-08-15 — see § Safety.)
 1. **Open a pio device monitor for arm B**: `pio device monitor -e teensy41` from
    `Teensy_code_canbridge`, to read the 1 Hz `[handphase]` lines. **Open it only
    AFTER the flash** — the monitor holds `/dev/ttyACM0` and a flash with it open

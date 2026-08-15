@@ -1,9 +1,10 @@
 ---
 title: Content-freshness contract on the can-bridge lead clamp (DRAFT PROPOSAL)
 created: 2026-08-14
-status: proposed
+status: superseded   # premise disproved by the RX-ring delay-line localisation; salvage re-homed (see Archival note)
+completed: 2026-08-15
 owner: harrison
-last_updated: 2026-08-14
+last_updated: 2026-08-15
 related_logbook:
   - 2026-08-12-s1-aged-bridge-isolation-teensy-internal.md
   - 2026-07-18-teensy-uptime-tracking-degradation.md
@@ -1005,3 +1006,55 @@ unwritten measurement.
 - `ros_ws/src/jugglebot/Teensy_code_canbridge/axis_state.h` — the cache, the
   seqlock, and the present-axis contract this document's enforcement-point
   structure mirrors.
+
+---
+
+## Archival note (2026-08-15)
+
+**Archived SUPERSEDED, never implemented. Nothing in this document ever reached
+the leg control path, which is exactly what the draft's own review gate was for.**
+
+**Why it closed.** Its premise — that the fault is a **content freeze** the
+memoryless lead clamp mistakes for truth — was overturned by the 2026-08-14
+RX-ring audit and then by measurement. The real mechanism was a **delay line**
+(the FlexCAN_T4 `_available` one-way leak), under which content changes on
+schedule and is merely *old*, so CF-1's bit-identical detector keys on the wrong
+invariant; and ~97 % of the freeze population the detector was designed against
+turned out to be a Jetson-side `/robot_state` latest-wins artefact, not a Teensy
+phenomenon. The draft's own **D3** gate — the measurement it named as able to
+invalidate itself — was run and did exactly that: there is no `T_FREEZE_MIN` that
+both spares a healthy plant and fires before the anchor is a full clamp budget
+stale. **The detector detects; it does not protect.**
+
+**Why it is not merely deferred.** FW 14 removed the cause, and the consequence
+went with it: end-to-end lag is 10–20 ms with **lead-clamp duty 0 on every move**
+at 5.8 h and 15.2 h of uptime (`logbook/2026-08-15-fw14-validated-arc-closed.md`).
+The § 9 framing was right — this document was a *mitigation of a consequence*, and
+the consequence did not survive its cause's removal.
+
+**Where the salvage lives: `plans/active/leg-bus-frame-drops.md`.** The validation
+battery found a *different*, real input to the same amplifier — per-axis leg-bus
+frame drops, gated by the 500 Hz setpoint stream rather than by uptime, present on
+fresh firmware too. The crucial reframing that makes the salvage usable: under the
+delay line the timestamps were **fresh** and only the content was stale, but a
+genuine dropout means **no cache write happens at all**, so `pos_timestamp_us`
+really does age — **a timestamp-age-aware clamp works there where a
+content-freshness detector could not work here.** Carried forward:
+
+- §§ 2, 5, 6 and 10 — the enforcement-point enumeration, the
+  `MAX_DEVIATION`/stroke-clamp/`MOTOR_OVERSPEED` interaction analysis, the ISR
+  access discipline (bare single-word loads only; `snapshot_pos_vel`'s seqlock
+  retry **would hang the bridge** if called from `interp_isr`), and the verified
+  backstop chain;
+- the **velocity-extrapolated anchor** (`pos + vel·Δt`), measured on fresh-plant
+  data at anchor-error p95 **0.129 → 0.064 rev** and over-budget freezes
+  **0.160 → 0.000** (n = 25) — the right *shape* for any clamp hardening;
+- the **T = 100 ms / 0.67 rev/s content-hold threshold as a REPORTING criterion**
+  (0.28/min healthy vs 4.75/min aged, 17×), which shipped as calibration input to
+  the P3 latency monitor.
+
+**Two live cautions for any rework.** § 7's "new `MsgType` 0x92 (next free)" is
+**stale** — 0x92 was claimed by FW 13's `RING_DIAG`; renumber to 0x93+ or recorded
+bags will mis-decode. And the frontmatter's `status: proposed` was out of the
+`DOCUMENTATION_GUIDE.md` § 2.6 vocabulary; it is resolved here by archiving as
+`superseded`, which leaves the vocabulary question (D5) open and unforced.

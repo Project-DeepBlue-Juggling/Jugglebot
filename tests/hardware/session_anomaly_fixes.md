@@ -75,11 +75,21 @@ so a failure routes straight back to the plan + phase that owns it.
 Every section below used to restate these. They are here, once, so a run-sheet
 row can just say "standing rules apply".
 
-1. **POWER-CYCLE THE CAN-BRIDGE TEENSY before the sitting**, and log `uptime_ms`
-   alongside **every** timing measurement (achieved flight, catch error, `shift`,
-   any inter-arrival gap). Tracking lag grows with that board's uptime — 10 ms at a
-   fresh boot to ~240 ms at 30 h — so a timing number without an `uptime_ms` beside
-   it is not interpretable.
+1. **~~POWER-CYCLE THE CAN-BRIDGE TEENSY before the sitting~~ — RETIRED
+   2026-08-15.** Log `uptime_ms` alongside **every** timing measurement (achieved
+   flight, catch error, `shift`, any inter-arrival gap) — *that* half stands. The
+   power-cycle half existed only because tracking lag grew with the board's uptime
+   (10 ms fresh → ~240 ms at 30 h); the root cause was the vendored FlexCAN_T4
+   `_available` RX-ring leak, fixed in **FW 14** and validated at 5.8 h and 15.2 h
+   of continuous uptime (`logbook/2026-08-15-fw14-validated-arc-closed.md`).
+   **On FW 14+ uptime is no longer a tracking-quality variable — do not reboot the
+   bridge for timing reasons.** What replaces the ceremony: keep the `uptime_ms`
+   label (it is now the fix's own regression detector) and watch the
+   `latency_monitor` row on `/link_status` during the sitting — it alarms on RX-ring
+   leak, encoder-cache age and sustained lead-clamp duty while you are still in the
+   session. Anything below FW 14 is still subject to the old rule; check
+   `bridge_fw_version` on `/link_status` before assuming otherwise. Every "standing
+   rules apply" reference below inherits this retirement.
 2. **CHECK the correction after every launch; `level` only if it is missing.**
    *(Corrected 2026-07-27. This rule previously read "run a manual `level` after
    every launch and every relaunch". That was wrong — it would cost a needless
@@ -2610,7 +2620,8 @@ python tools/probes/catch_reach_replay.py \
 
 Not a check yet; recorded so it is not re-derived under time pressure.
 
-1. **Reboot the can-bridge Teensy** before the session (standing session rule).
+1. ~~**Reboot the can-bridge Teensy** before the session (standing session rule).~~
+   Retired 2026-08-15 — see standing rule 1. Record `uptime_ms` as always.
 2. `level` is per-boot — a manual `level` is **always** required first.
 3. Record with `record:=true` — the ONE list (§ Recording) already carries the
    six catch topics above as of 2026-08-10.
@@ -2686,9 +2697,10 @@ not the bound that removed the seat.)*
 then **relaunch** (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B) —
 the launch runs the *installed* copy, and this change is in `trajectory_node.py`
 and `motion/trajectory/planner.py`. **No firmware flash**; nothing here touches
-the Teensy. Standing session rules still apply: reboot the can-bridge Teensy
-first, and **check** `gravity_correction_loaded` — `level` only if it reads
-`false` (standing rule 2, corrected 2026-07-27).
+the Teensy. Standing session rules still apply — as amended: the bridge reboot is
+**retired** (standing rule 1, 2026-08-15), and you still **check**
+`gravity_correction_loaded` — `level` only if it reads `false` (standing rule 2,
+corrected 2026-07-27).
 
 ### CHECK CCATCH-1 — instrument health (run FIRST, no bag, no robot)
 
@@ -2961,6 +2973,13 @@ as `REJECTED_HAND_NOT_PARKED`.
 >    it is `false` at every launch and the orchestrator's persisted auto-push
 >    never fires first. **In practice every session genuinely needs a manual
 >    `level`** — that has always been true; it is now enforced.
+>    *(Amended 2026-08-15, twice over. The § Shared preconditions power-cycle is
+>    **retired** with standing rule 1, so it no longer happens every sitting; and
+>    the reasoning contradicts item 2 and standing rule 2 below, which state that
+>    `levelling_complete`/`pose_offset_rad` are persisted by the **Platform**
+>    Teensy and are NOT cleared by a can-bridge power-cycle. That contradiction is
+>    unreconciled — flagged, not silently resolved. Either way the conclusion to
+>    act on is item 2: **read `gravity_correction_loaded`, never assume it.**)*
 > 2. **After a relaunch, CHECK `gravity_correction_loaded` before re-levelling.**
 >    *(Corrected 2026-07-27 — this item previously said to re-`level` after every
 >    relaunch.)* The correction does live in `trajectory_node`'s memory, but the
@@ -3053,11 +3072,15 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   anything near the 6 s positioning timeout means a *different* gate fired
   late), the platform does **not** move, and the hand does **not** move.
 - **PASS (variant, record it)**: `levelling_complete: true` and the toss
-  proceeds. Then the can-bridge Teensy was **not** power-cycled this sitting, the
-  orchestrator's persisted auto-push fired at the first IDLE, and a correction is
-  genuinely loaded — the gate is right to pass. Power-cycle the Teensy per
-  § Shared preconditions and re-run LG-1; do not score this as a failure, and do
-  not score it as a pass of the gate either.
+  proceeds. Then a persisted correction was still aboard, the orchestrator's
+  auto-push fired at the first IDLE, and a correction is genuinely loaded — the
+  gate is right to pass. Do not score this as a failure, and do not score it as a
+  pass of the gate either. **To force the un-levelled precondition, power-cycle
+  the PLATFORM Teensy** (its cache is "since last bootup") and re-run LG-1.
+  *(Amended 2026-08-15: this step used to say "power-cycle the Teensy per
+  § Shared preconditions", i.e. the can-bridge board — but standing rule 2 states
+  a can-bridge power-cycle does not clear the Platform Teensy's cache, and the
+  can-bridge power-cycle precondition is itself now retired.)*
 - **ABORT**: the toss proceeds with `levelling_complete: false`. The gate is not
   live — almost certainly LG-0 (stale install). Stop; nothing else in this
   section is meaningful.
@@ -3328,8 +3351,9 @@ none should be added; C-CATCH-1 itself still contains no stationarity clause.
 then **relaunch** (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B) — the
 launch runs the *installed* copy, and the change is in
 `motion/trajectory/planner.py`. **No firmware flash. No config regeneration.**
-Standing session rules still apply: power-cycle the can-bridge Teensy first, and
-**check** `gravity_correction_loaded` after the relaunch — `level` only if it reads
+Standing session rules still apply — as amended: the can-bridge power-cycle is
+**retired** (standing rule 1, 2026-08-15), and you still **check**
+`gravity_correction_loaded` after the relaunch — `level` only if it reads
 `false` (standing rule 2, corrected 2026-07-27).
 
 ### THE RISK THIS SECTION EXISTS TO SCORE — read before the sitting
@@ -3593,10 +3617,12 @@ is smaller".
    `TossContinuous` down together. `ros2 action list | grep -c jugglebot/toss`
    returns 2 on a good install.
 
-Standing session rules still apply: **power-cycle the can-bridge Teensy immediately
-before the sitting** (the dispatch shift grew to `+57…78 ms` at ~94 min uptime), log
-`uptime_ms` with every timing number, and check `gravity_correction_loaded` after the
-relaunch — `level` only if it reads `false`.
+Standing session rules still apply — as amended: ~~power-cycle the can-bridge Teensy
+immediately before the sitting~~ is **retired 2026-08-15** (the dispatch shift that
+grew to `+57…78 ms` at ~94 min uptime was the RX-ring leak, fixed in FW 14 and
+validated at 5.8 h and 15.2 h); still log `uptime_ms` with every timing number, and
+check `gravity_correction_loaded` after the relaunch — `level` only if it reads
+`false`.
 
 ### Recording for this section
 
@@ -4780,8 +4806,8 @@ experiment exists to remove.
 
 ### Prerequisites (stage 0)
 
-- Standing rule 1: **power-cycle the can-bridge Teensy**, and log `uptime_ms`
-  beside every timing number.
+- Standing rule 1 (as amended 2026-08-15): the can-bridge power-cycle is
+  **retired**; log `uptime_ms` beside every timing number.
 - Standing rule 2: check `gravity_correction_loaded`; `level` only if `false`.
 - Standing rule 3: **one truthful outcome line per attempt, by eye.** In this
   section that is not a nicety — the operator's per-ball verdict is the

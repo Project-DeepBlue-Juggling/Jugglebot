@@ -888,12 +888,14 @@ PREFLIGHT = """
       extension is downward this profile drives into the rig. WATCH the leg
       during the small verify nudge at the start and abort if it goes the wrong
       way.
-  [ ] REBOOT the can-bridge Teensy, and note uptime_ms from the first log rows.
-      Tracking lag grows monotonically with its uptime (10 ms at 1.8 min, 250 ms
-      at 24 h; logbook 2026-07-18, still OPEN, cause unknown). That lag is
-      command-to-motion so it cannot corrupt a mocap-vs-encoder comparison — but
-      it is an unexplained timing drift in timing-critical firmware, and this
-      measurement is about a clock.
+  [ ] Note uptime_ms from the first log rows. (The "REBOOT the can-bridge Teensy
+      first" step was RETIRED 2026-08-15: tracking lag used to grow monotonically
+      with its uptime — 10 ms at 1.8 min, 250 ms at 24 h — and the cause turned
+      out to be the vendored FlexCAN_T4 `_available` RX-ring leak, fixed in FW 14
+      and validated at 5.8 h and 15.2 h of continuous uptime; logbook
+      2026-07-18 is now RESOLVED, see 2026-08-15-fw14-validated-arc-closed.)
+      Keep recording uptime_ms anyway — it is the label that would expose a
+      regression, and this measurement is about a clock.
   [ ] The bench leg is the SOLE wire authority. No ROS2 teensy_bridge_node, no
       run_mpc.py, nothing else streaming heartbeats — mpc_active is a single
       firmware bool with no OR-ing of sources, so a second authority silently

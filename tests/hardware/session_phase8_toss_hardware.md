@@ -64,8 +64,11 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
 
 - Jugglebot powered, ODrives up, CAN3 healthy; QTM up streaming **Base + Platform**
   rigid bodies; `/rigid_body_poses` flowing.
-- **POWER-CYCLE THE CAN-BRIDGE TEENSY** before the sitting (the uptime-lag
-  discipline). Log `uptime_ms` alongside every measurement.
+- ~~**POWER-CYCLE THE CAN-BRIDGE TEENSY** before the sitting~~ — **RETIRED
+  2026-08-15** (the uptime-lag root cause, the FlexCAN_T4 `_available` RX-ring
+  leak, was fixed in FW 14 and validated at 5.8 h and 15.2 h —
+  `logbook/2026-08-15-fw14-validated-arc-closed.md`). Log `uptime_ms` alongside
+  every measurement, and watch `/link_status`'s `latency_monitor` row.
 - `run_mpc.py` is **NOT** running (sole-binder :5557 interlock).
 - **Build gate — BOTH the interface AND config changed this cycle (throw-height goal
   field + `toss_require_ball_evidence`):**
@@ -319,5 +322,6 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 - **ERR_TIMEOUT epidemic**: more hand dispatches = more exposure; the telemetry-verified
   ladder is the mitigation; log dispatch-failure WARNs / any `ABORTED_NO_RELEASE` as
   epidemic gauge data (two consecutive `ABORTED_NO_RELEASE` ⇒ stop).
-- **Teensy-uptime lag**: all timing-sensitive numbers (achieved flight, catch error)
-  are only meaningful on a fresh can-bridge boot — `uptime_ms` logged with each.
+- **Teensy-uptime lag**: CLOSED 2026-08-15 (FW 14). Timing-sensitive numbers no
+  longer need a fresh can-bridge boot — but `uptime_ms` is still logged with each,
+  because that label is how a regression would be spotted.
