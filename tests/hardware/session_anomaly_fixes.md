@@ -3286,10 +3286,13 @@ PY
 - **ABORT**: the flip never happens although CHECK LVL-1's `gravity correction
   set` line did — the field is not reaching the wire, and every LG check above
   was scoring the freshness half only.
-- **ABORT**: `loaded-flips` shows `True` before the `level`, with the Teensy
-  power-cycled per § Shared preconditions. Something republished a stale
-  correction; the gate is then reporting a frame nobody established this
-  session.
+- **ABORT**: `loaded-flips` shows `True` before the `level`, with the **Platform**
+  Teensy power-cycled. Something republished a stale correction; the gate is then
+  reporting a frame nobody established this session. *(Amended 2026-08-15: this
+  row used to say "the Teensy power-cycled per § Shared preconditions", which is
+  now a dangling reference twice over — standing rule 1's can-bridge power-cycle
+  is retired, and it was the wrong board anyway: the levelling cache lives on the
+  Platform Teensy, per standing rule 2 and the amendment at CHECK LVL-2's setup.)*
 - **ABORT**: `INCOMPLETE` — fewer than two flips or fewer than two outcomes.
   One of the two ABORT rows above applies; read `loaded-flips` to see which.
 

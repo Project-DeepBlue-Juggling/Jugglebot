@@ -89,9 +89,9 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
   **Platform** Teensy (decoded `teensy_bridge_node.py:349-372`, published
   `:1747-1755`), the orchestrator stores them
   (`orchestrator_node.py:165-167`), and on the first IDLE entry after boot it pushes
-  the persisted offset to `/gravity_offset` (`:329-335`). The standing session
-  power-cycle is the **can-bridge** Teensy, which does **not** clear the Platform
-  Teensy's cache — so a mid-session relaunch, including this file's build gate,
+  the persisted offset to `/gravity_offset` (`:329-335`). The *former* standing
+  session power-cycle (retired 2026-08-15, § Preconditions) was the **can-bridge**
+  Teensy, which does **not** clear the Platform Teensy's cache — so a mid-session relaunch, including this file's build gate,
   should come back already levelled.
   **The one caveat, and it is why you check rather than assume:** `/gravity_offset`
   is VOLATILE, so a `trajectory_node` that finishes subscribing after the push

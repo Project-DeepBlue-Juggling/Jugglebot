@@ -57,8 +57,16 @@ passes, or 7c before 7b passes.**
 >    NOT_SETTLED — the second yaw abort in two sittings). If a goal ends with no
 >    ball flying, check the bridge log for these before suspecting Jugglebot.
 > **Before this session**: `colcon build --packages-select jugglebot` +
-> `source install/setup.bash` + relaunch (no interface changes this round), and
-> power-cycle the can-bridge Teensy as usual.
+> `source install/setup.bash` + relaunch (no interface changes this round).
+> ~~power-cycle the can-bridge Teensy as usual~~ — **RETIRED 2026-08-15.** The
+> uptime-lag degradation the earlier sitting banners in this file kept citing was
+> the vendored FlexCAN_T4 `_available` RX-ring leak; **FW 14** fixed it, validated
+> at 5.8 h and 15.2 h of continuous uptime with the lag flat at 10-20 ms
+> (`logbook/2026-08-15-fw14-validated-arc-closed.md`). On FW 14+ uptime is no
+> longer a tracking-quality variable, so the "reboot isolation experiment" the
+> third- and fourth-sitting banners call outstanding is **closed** — it was run as
+> S1 of the arc and the answer was Teensy-internal. Still log `uptime_ms` with
+> every timing number, and watch the `latency_monitor` row on `/link_status`.
 
 > **⚡ FOURTH SITTING — after the 2026-07-23 evening fixes**
 > (`logbook/2026-07-23-phase7-third-sitting-verdicts-stutter-pretilt.md`. The third

@@ -3,7 +3,8 @@
 **Status:** parked 2026-08-15 (Phases 0–4 landed; 5–7 partial — see the row in
 `plans/active/INDEX.md`. The headline arc — ERR_TIMEOUT — closed 2026-08-09 on
 FW 10, and the bridge-uptime bullet was absorbed by
-`bridge-temporal-trustworthiness.md`; what remains is three owner decisions
+`plans/archived/2026-08-15 bridge-temporal-trustworthiness.md` (closed
+2026-08-15); what remains is three owner decisions
 (loader unification, tracked-media policy, the deferred re-plug probe) and two
 unscheduled structural refactors. § Standing coordination rules below stays
 LIVE process text regardless of the parked status.)

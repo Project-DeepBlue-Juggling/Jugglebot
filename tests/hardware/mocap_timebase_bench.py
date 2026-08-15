@@ -674,12 +674,15 @@ class MocapTimebaseProbe(BridgeSysID):
             # uptime_ms and flags are logged because a timing measurement whose
             # subject is a clock cannot afford to assume the instrument's clock is
             # stationary. logbook/2026-07-18-teensy-uptime-tracking-degradation.md
-            # (status OPEN) measured setpoint->encoder tracking lag growing
-            # MONOTONICALLY with can-bridge Teensy uptime: 10 ms at 1.8 min, 250 ms
-            # at 24 h, resetting on reboot, cause unknown. That particular lag is
-            # command-to-motion and so cannot corrupt a mocap-vs-ENCODER comparison
-            # — but an unexplained uptime-dependent effect in a timing-critical
-            # firmware path is exactly the thing to record rather than assume away.
+            # (status RESOLVED 2026-08-15) measured setpoint->encoder tracking lag
+            # growing MONOTONICALLY with can-bridge Teensy uptime: 10 ms at 1.8 min,
+            # 250 ms at 24 h, resetting on reboot. The cause is now KNOWN — the
+            # vendored FlexCAN_T4 `_available` RX-ring leak, which made delivery an
+            # uptime-ratcheting delay line — and FW 14 fixed it, validated at 5.8 h
+            # and 15.2 h with the lag flat at 10-20 ms
+            # (logbook/2026-08-15-fw14-validated-arc-closed.md). Keep logging
+            # uptime_ms anyway: it is the label that would expose a recurrence, and
+            # it is what makes any timing number here re-checkable later.
             # flags bit0 (TIME_SYNCED) says whether t_teensy_us is anchored at all.
             try:
                 uptime = int(hb.uptime_ms)

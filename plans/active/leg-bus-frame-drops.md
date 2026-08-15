@@ -41,7 +41,8 @@ reference bag carries three episodes in 50 s of streaming, one of which saturate
 the clamp on all six legs.
 
 **The distinction that makes this plan different from the archived
-`lead-clamp-content-freshness.md` draft is load-bearing.** Under the delay line,
+`plans/archived/2026-08-15 lead-clamp-content-freshness.md` draft is
+load-bearing.** Under the delay line,
 frames arrived on time and carried *fresh timestamps* with *stale content*, so no
 timestamp-based freshness test could see the fault — which is precisely why that
 draft's detector was disqualified. A genuine dropout is the opposite case: **no

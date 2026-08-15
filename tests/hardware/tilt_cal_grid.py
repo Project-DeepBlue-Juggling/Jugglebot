@@ -144,6 +144,22 @@ wall + uptime clocks — into the console AND ``_meta.json``, whose
 relaunch: the next launch's BOOT pre-flight auto-clears the drive-side error
 record.
 
+**The "freshly power-cycled bridge" precondition is RETIRED (2026-08-15), and
+what replaced it is a health read.** The warning this tool printed above a 30 min
+``uptime_ms`` existed because the can-bridge's vendored FlexCAN_T4 RX ring leaked
+slots one way, turning delivery into an uptime-ratcheting delay line. **FW 14
+fixed that**, and the fix was validated at 5.8 h *and* 15.2 h of continuous
+uptime — ``leak == 0``, end-to-end lag flat at 10–20 ms, lead-clamp duty 0,
+against 252 ms at 3.8 h before it
+(``logbook/2026-08-15-fw14-validated-arc-closed.md``). On FW 14+ bridge uptime is
+**no longer a tracking-quality variable**, so preflight now asks
+``latency_monitor`` on ``/link_status`` whether the plant is *healthy*
+(:func:`temporal_health_verdict`) and falls back to the old uptime ceiling only
+where health cannot be read — a pre-FW-14 board, an unreadable
+``bridge_fw_version``, or a ROS build too old to publish the row. ``uptime_ms``
+is still recorded on every CSV row and in ``_meta.json``: it stopped being a gate,
+not a label.
+
 **Why reads are spaced (``--read-gap-s``).** The Murata SCL3300 is read **one
 sample per trigger** (``Teensy_code_platform.ino:377-396``, ``getInclination()``)
 in **mode 4**, whose inclination output carries a **10 Hz internal low-pass
@@ -326,11 +342,10 @@ HOME_REF_ABORT_RAD = 0.05
 #: plan intends while catching a --x/--y/--z excursion before any motion.
 STROKE_PREFLIGHT_MARGIN_MM = 10.0
 
-#: Capture wants a freshly power-cycled can-bridge Teensy (the uptime-lag
-#: discipline). Warn, never refuse — the tilt read path is request/response over
-#: the relay, not the hand-dispatch path the lag was measured on, so refusing
-#: would cost a sitting over an effect that may not touch this measurement.
-UPTIME_WARN_MS = 30 * 60 * 1000
+#: The bridge-uptime precondition is NOT here any more. It was retired on
+#: 2026-08-15 and replaced by a plant-HEALTH read; `UPTIME_SAFE_BRIDGE_FW`,
+#: `UPTIME_WARN_MS` and `temporal_health_verdict` live together beside
+#: `wire_armed_verdict` below, with the whole argument written out there.
 
 #: A node needs at least this many finite reads to be usable at all (an sd needs
 #: two), AND at least half of the requested reads — a node where most reads
@@ -1186,6 +1201,218 @@ def wire_armed_verdict(link_kv: Optional[Dict[str, str]]) -> Tuple[bool, str]:
     return (True,
             'wire ARMED: mpc_active=1 fault_state={} bridge_link={}'
             .format(fault, bridge_link))
+
+
+# ── temporal health: what replaced the fresh-boot rule ────────────────────
+#
+# Until FW 14 the can-bridge's vendored FlexCAN_T4 RX ring leaked slots one way
+# (`logbook/2026-08-14-ring-audit-available-leak-delay-line.md`), so delivery
+# delay RATCHETED with the board's uptime — ~40 ms/h up to a 256-slot lap at
+# ~135 ms — and the only defence available was a power-cycle before every
+# sitting. FW 14's IRQ-guarded ring pop fixed it, and the fix was validated at
+# 5.8 h AND 15.2 h of continuous uptime with `leak == 0`, end-to-end lag flat at
+# 10-20 ms and lead-clamp duty 0, against 252 ms at 3.8 h before it
+# (`logbook/2026-08-15-fw14-validated-arc-closed.md`). On FW 14 and later
+# **uptime is no longer a tracking-quality variable**, so a gate keyed on it
+# refuses a healthy plant and measures nothing on a sick one.
+#
+# What replaces it is a HEALTH read rather than a ceremony: the `latency_monitor`
+# row `teensy_bridge_node` publishes on `/link_status`, added by the same closure
+# change-set for exactly this purpose. It is evaluated at 10 Hz INSIDE the node
+# that receives the frames, over three inputs in causal precedence — RING_DIAG
+# leak, then the encoder-cache age floor, then sustained lead-clamp duty — and a
+# stale input is skipped rather than held or zeroed.
+#
+# These tools deliberately do NOT subscribe to `/ring_diag` and re-threshold
+# `leak_*` themselves. That would be a second implementation of a gate that
+# already has an owner, one hop further from the frames, and a second place for
+# `RING_LEAK_WARN_FRAMES` to drift — the same argument `toss_cal_grid` makes for
+# importing this module's wire verdict instead of restating it. The monitor's
+# first and highest-precedence input IS the ring leak.
+
+#: `latency_monitor` tokens, exactly as `teensy_bridge_node` publishes them.
+#: Restated rather than imported because these harnesses run under the system
+#: python3.8 with ROS sourced and must not drag `rclpy` into the pure core;
+#: pinned against the producer's source text by `tests/motion/test_tilt_cal_grid.py`.
+LATENCY_MONITOR_OK = 'OK'
+LATENCY_MONITOR_ALARMS = ('RING_LEAK', 'CACHE_AGE', 'CLAMP_DUTY')
+
+#: Causal precedence, mirroring `teensy_bridge_node._LATENCY_MONITOR_RANK`: an
+#: unknown token sorts ABOVE OK so an unrecognised value can never be reduced
+#: away as "fine".
+_LATENCY_MONITOR_RANK = {LATENCY_MONITOR_OK: 0, 'CLAMP_DUTY': 1,
+                         'CACHE_AGE': 2, 'RING_LEAK': 3}
+_LATENCY_MONITOR_UNKNOWN_RANK = 4
+
+#: What each alarm means for a CAPTURE, in the terms these tools care about.
+_LATENCY_MONITOR_WHY = {
+    'RING_LEAK': 'the CAN RX ring is leaking — bridge telemetry is being '
+                 'DELIVERED LATE and every timing number this capture writes '
+                 'would be shifted by that delay. This is the pre-FW-14 defect '
+                 'signature; check bridge_fw_version and /ring_diag leak_*.',
+    'CACHE_AGE': 'the encoder-cache age floor is high — the feedback the lead '
+                 'clamp measures against is stale, so commanded motion is '
+                 'being pinned to old truth.',
+    'CLAMP_DUTY': 'the lead clamp is saturating on a sustained duty — commanded '
+                  'motion is being held back against stale feedback, which is '
+                  'the amplifier that turned ~130 ms of delivery delay into '
+                  '300 ms of tracking lag.',
+}
+
+#: The can-bridge FW_VERSION at which bridge uptime stopped being a
+#: tracking-quality variable. BELOW this the board genuinely IS uptime-sensitive
+#: and the old power-cycle rule is the only defence there is, so the uptime
+#: refusal is retained — gated on the firmware rather than deleted.
+UPTIME_SAFE_BRIDGE_FW = 14
+
+#: Uptime ceiling applied to PRE-FW-14 boards only (and to the "cannot tell"
+#: fallbacks). Was the unconditional rule until 2026-08-15.
+UPTIME_WARN_MS = 30 * 60 * 1000
+
+
+class TemporalVerdict(NamedTuple):
+    """``(ok, basis, message)`` — is the plant temporally fit to capture on?
+
+    ``basis`` names WHICH rule decided, so a caller (and a test) can tell a
+    health pass from an uptime pass without parsing prose: ``'health'`` (the
+    `latency_monitor` row decided), ``'uptime'`` (the pre-FW-14 / cannot-tell
+    fallback decided) or ``'no_link'`` (nothing to decide from).
+    """
+    ok: bool
+    basis: str
+    message: str
+
+
+def bridge_fw_version_value(link_kv: Optional[Dict[str, str]]) -> Optional[int]:
+    """The can-bridge ``FW_VERSION`` as an int, or ``None`` when not knowable.
+
+    ``teensy_bridge_node._bridge_fw_version_str`` renders three shapes and this
+    parses the leading integer out of the two that carry one: ``'14 (proto 5)'``
+    and ``'13 (SKEW — expected v14, proto 5)'``.  ``'unknown (never seen)'`` —
+    no BRIDGE_IDENTITY frame, i.e. a bridge older than FW 9 or no bridge at all
+    — returns ``None``, and so does an absent key (a node build predating the
+    row).  **"I cannot tell" must never read as "current"**: every caller here
+    treats ``None`` as pre-FW-14 and keeps the old protection.
+    """
+    raw = (link_kv or {}).get('bridge_fw_version')
+    if raw is None:
+        return None
+    head = str(raw).strip().split(' ', 1)[0]
+    try:
+        return int(head)
+    except ValueError:
+        return None
+
+
+def worse_latency_monitor(a: Optional[str], b: Optional[str]) -> Optional[str]:
+    """The worse of two ``latency_monitor`` tokens by causal precedence.
+
+    Used to carry a WORST-SEEN token across a whole capture: a snapshot taken at
+    preflight bounds nothing about a two-hour sitting, and the old uptime gate
+    did bound it (the drift was monotone, so a young start capped the whole
+    run). ``None`` is "not seen" and loses to any real token.
+    """
+    if a is None:
+        return b
+    if b is None:
+        return a
+    rank_a = _LATENCY_MONITOR_RANK.get(a, _LATENCY_MONITOR_UNKNOWN_RANK)
+    rank_b = _LATENCY_MONITOR_RANK.get(b, _LATENCY_MONITOR_UNKNOWN_RANK)
+    return a if rank_a >= rank_b else b
+
+
+def temporal_health_verdict(link_kv: Optional[Dict[str, str]],
+                            uptime_ms: Optional[int],
+                            uptime_limit_ms: int = UPTIME_WARN_MS
+                            ) -> TemporalVerdict:
+    """Is the bridge temporally fit to capture on? — the post-FW-14 rule.
+
+    Three branches, in this order:
+
+    1. **An ALARM outranks everything, on any firmware.** ``latency_monitor`` in
+       ``RING_LEAK`` / ``CACHE_AGE`` / ``CLAMP_DUTY`` is direct evidence that the
+       plant is degraded *now*; no uptime number can acquit it.
+    2. **FW >= 14 with the monitor saying OK** — pass, and quote ``uptime_ms``
+       for the record. Uptime is logged, never gated (the standing discipline
+       survives the rule that motivated it).
+    3. **Anything else falls back to the uptime ceiling** — a pre-FW-14 board,
+       an unreadable ``bridge_fw_version``, or a current bridge behind a ROS
+       build too old to publish the monitor row. Each of those is a state in
+       which the tool cannot see the plant's health, and the board may genuinely
+       be uptime-sensitive, so the old refusal stands.
+
+    Pure — ``link_kv`` is the cached ``/link_status`` key-value mapping, so both
+    harnesses and the unit tests share one implementation.
+    """
+    kv = link_kv or {}
+    if not kv:
+        return TemporalVerdict(
+            False, 'no_link',
+            'no /link_status message seen at all — there is neither a health '
+            'read nor an uptime to fall back on. Absence is not health.')
+
+    fw = bridge_fw_version_value(kv)
+    raw_token = kv.get('latency_monitor')
+    token = str(raw_token).strip() if raw_token is not None else None
+
+    if token in LATENCY_MONITOR_ALARMS:
+        return TemporalVerdict(
+            False, 'health',
+            'latency_monitor={} on /link_status (bridge_fw_version={!r}, '
+            'uptime_ms={}) — {} Fix the plant, not the clock: a power-cycle '
+            'only hides this if the board is pre-FW-{}.'
+            .format(token, kv.get('bridge_fw_version'), uptime_ms,
+                    _LATENCY_MONITOR_WHY[token], UPTIME_SAFE_BRIDGE_FW))
+
+    if fw is not None and fw >= UPTIME_SAFE_BRIDGE_FW:
+        if token == LATENCY_MONITOR_OK:
+            return TemporalVerdict(
+                True, 'health',
+                'plant HEALTHY: latency_monitor=OK on bridge FW {} '
+                '(uptime_ms={}{}). Uptime is recorded, not gated — the '
+                'uptime-lag defect was fixed in FW 14 and validated at 5.8 h '
+                'and 15.2 h (logbook/2026-08-15-fw14-validated-arc-closed.md). '
+                'Keep watching this row for the whole capture.'
+                .format(fw, uptime_ms,
+                        '' if uptime_ms is None
+                        else ', {:.2f} h'.format(int(uptime_ms) / 3600000.0)))
+        prefix = ('bridge FW {} is current, but /link_status carries no '
+                  'latency_monitor row (saw latency_monitor={!r}) — this ROS '
+                  'build predates the monitor, or is a stale colcon install, so '
+                  'the plant health cannot be read. Falling back to the '
+                  'pre-FW-14 uptime rule. Rebuild and relaunch to get the '
+                  'health read'.format(fw, raw_token))
+    else:
+        prefix = ('bridge_fw_version={} is not a confirmed FW {}+, and a '
+                  'pre-FW-{} board genuinely IS uptime-sensitive: its RX ring '
+                  'leaks ~40 ms/h up to a ~135 ms lap. The old rule therefore '
+                  'still governs this board'
+                  .format('ABSENT from /link_status'
+                          if 'bridge_fw_version' not in kv
+                          else repr(kv['bridge_fw_version']),
+                          UPTIME_SAFE_BRIDGE_FW, UPTIME_SAFE_BRIDGE_FW))
+
+    if uptime_ms is None:
+        return TemporalVerdict(
+            False, 'uptime',
+            '{}, and no uptime_ms is available either — the can-bridge '
+            'heartbeat has not arrived, so the one partition key that separates '
+            'a fresh plant from a degraded one is unknown. Absence is not '
+            'freshness.'.format(prefix))
+
+    hours = int(uptime_ms) / 3600000.0
+    if int(uptime_ms) <= uptime_limit_ms:
+        return TemporalVerdict(
+            True, 'uptime',
+            '{}: uptime_ms={} ({:.2f} h), inside the {:.0f} min ceiling.'
+            .format(prefix, uptime_ms, hours, uptime_limit_ms / 60000.0))
+    return TemporalVerdict(
+        False, 'uptime',
+        '{}: uptime_ms={} ({:.2f} h) is past the {:.0f} min ceiling. '
+        'Power-cycle the can-bridge Teensy and re-arm — or flash FW {}+, which '
+        'removes the reason this ceiling exists.'
+        .format(prefix, uptime_ms, hours, uptime_limit_ms / 60000.0,
+                UPTIME_SAFE_BRIDGE_FW))
 
 
 def flat_field_verdict(results: Dict[Tuple[int, int], ReadStats],
@@ -2292,19 +2519,22 @@ def run(args) -> int:                                    # noqa: C901
         status = runner.wait_for_status()
         runner.spin(1.0)   # let /link_status and /robot_state arrive too
 
-        if runner.uptime_last is None:
-            print('  ! no uptime_ms on /link_status yet — the can-bridge '
-                  'heartbeat may not have arrived. Continuing.')
-        else:
-            hours = runner.uptime_last / 3600000.0
-            flag = ' <-- LARGE' if runner.uptime_last > UPTIME_WARN_MS else ''
-            print('  can-bridge uptime_ms = {} ({:.2f} h){}'
-                  .format(runner.uptime_last, hours, flag))
-            if runner.uptime_last > UPTIME_WARN_MS:
-                print('    Tracking lag is known to grow with can-bridge '
-                      'uptime (10 ms fresh -> ~240 ms at 30 h). Capture wants '
-                      'a freshly power-cycled bridge; quote this number with '
-                      'every result.')
+        # Temporal health, not bridge age. WARNS, never refuses — unchanged in
+        # that respect (the tilt read path is request/response over the relay,
+        # not the hand-dispatch path the lag was measured on) — but the question
+        # it asks changed on 2026-08-15: `latency_monitor` on a FW 14+ bridge,
+        # falling back to the uptime ceiling only where health cannot be read.
+        # See `temporal_health_verdict` for the whole argument.
+        health = temporal_health_verdict(runner.link_kv, runner.uptime_last)
+        print('  can-bridge uptime_ms = {} ({})'.format(
+            runner.uptime_last,
+            'unknown' if runner.uptime_last is None
+            else '{:.2f} h'.format(runner.uptime_last / 3600000.0)))
+        print('  {} {}'.format('temporal:' if health.ok else '! temporal:',
+                               health.message))
+        if not health.ok:
+            print('    WARNING only — this tool does not refuse on it. Quote '
+                  'the uptime AND the latency_monitor token with every result.')
 
         if status.mode != 'TRAJECTORY' or not status.streaming:
             raise TiltCalError(

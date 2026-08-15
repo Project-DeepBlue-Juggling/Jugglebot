@@ -77,7 +77,11 @@ tilt-cal failures — is therefore **satisfied**, not outstanding.
 ball-op at a time (`reload_coordinator_node._goal_claimed`, taken at goal
 ACCEPT). Hand-dispatch ladders and `_MAX_ARM_DISPATCHES` retained. Abort paths
 untouched. Trim authority bounded, clamped, and adapted **between tosses only**.
-Fresh can-bridge boot before every sitting; `uptime_ms` recorded per toss.
+~~Fresh can-bridge boot before every sitting~~ — **RETIRED 2026-08-15** (FW 14;
+`logbook/2026-08-15-fw14-validated-arc-closed.md`). What stands in its place: the
+plant must be **healthy** (`latency_monitor` OK on `/link_status`) for the whole
+capture, and `uptime_ms` is still recorded per toss — as a label and the fix's own
+regression detector, no longer as a gate.
 Runtime artifacts under `temp/`, persistent calibration under `config/`
 (machine-written, versioned, like `config/tilt_calibration.yaml`), reusable
 tools under `tools/`.
@@ -352,7 +356,8 @@ edge ⇒ MISSED. (4) Departure, catch edge, dropout inside retention ⇒ BOUNCED
 **Raw is for edge TIMES, debounced is for the VERDICT.** The 5-sample debounce at
 50 Hz is a 100 ms window; using the debounced edge as a timing measurand bakes
 ~100 ms of systematic lag into every timing fit — comparable in size to the
-uptime effect the whole fresh-boot discipline exists to control, and it would
+uptime effect the fresh-boot discipline existed to control (that discipline was
+retired 2026-08-15 with its cause; the size comparison stands), and it would
 look like real physics.
 
 ### 3.4 Dataflow
@@ -736,7 +741,7 @@ found a write-target check running *after* a four-minute sweep):
 | R4 | `toss_trim_enabled == true` | session trim contaminates the persistent map |
 | R5 | hand sensor not valid, or no live `held→empty` transition observed | no ground truth ⇒ no capture. A static read cannot see a stuck bit |
 | R6 | `toss_tier != "8a"` | the map is defined at 8a |
-| R7 | `uptime_ms` > 30 min at collection start | **stricter than `tilt_cal_grid.py` on purpose**: static inclinometer reads are uptime-insensitive; a *timing* bias is not |
+| R7 | **plant not temporally healthy**: `latency_monitor` alarming now or anywhere earlier in the session on FW 14+; `uptime_ms` > 30 min on a pre-FW-14 board, an unreadable `bridge_fw_version`, or a ROS build with no `latency_monitor` row | **stricter than `tilt_cal_grid.py` on purpose**: static inclinometer reads are uptime-insensitive; a *timing* bias is not — this tool therefore REFUSES where the tilt tool warns. **Re-keyed 2026-08-15** from age onto health: the +118–133 ms dispatch shift was a symptom of the FlexCAN_T4 RX-ring leak, fixed in FW 14 and validated at 5.8 h and 15.2 h with the lag flat at 10–20 ms, so a warm FW 14 bridge is not a drifting one. The uptime refusal is **retained, gated on `bridge_fw_version`**, because a pre-FW-14 board genuinely IS uptime-sensitive. Shared implementation: `tilt_cal_grid.temporal_health_verdict` |
 | R8 | write target not writable / not the resolved first candidate | via `toss_cal_candidates()[0]` — **no `__file__` walk anywhere** |
 | R9 | operator confirmations: floor clear, ball supply, E-STOP in reach | `--yes` skips them with a loud live-capture warning |
 
@@ -972,11 +977,11 @@ prevents.
 | **D9** | ~~No `ABORTED_NO_RELEASE` retry in v1.~~ **SUPERSEDED by operator decision 6 (2026-08-10, § 9): retry ONCE iff the sensor reads valid-HELD; UNKNOWN or EMPTY ⇒ stop as today; two consecutive ⇒ stop the session.** | The design's v1 position (defer the retry, measure the frequency, decide with data). | The design deferred on the grounds that the sensor made the retry *plausible* but not *measured*, and that `on_empty_cup: RELOAD` was already one relaxation of the absolute-stop rule. The operator reopened it on the strength of Phase 1's shipped evidence: the hand sensor was 100 % valid across 203,922 samples, and a **valid-HELD** reading at that terminal shows the ball is demonstrably in the cup — which makes the D9 airborne-ball hazard (`toss_sequencer` § "ambiguous ack ∧ blind telemetry ⇒ SAFE_ABORT retracts under an airborne ball") **structurally absent for exactly that reading and no other**. The tri-state gate is what makes the reopening safe: UNKNOWN is not HELD, and the two-consecutive stop preserves the epidemic gauge that would otherwise be traded away. |
 | **D10** | **Bag-first record**: canonical declaration published on `/toss/record` (`std_msgs/String` JSON) + an offline miner that can produce the whole record alone in degraded form. Best-effort JSONL belt. | (a) Node writes the file. (b) Extend `toss_trace_recorder.py`. (c) Miner only. | (a) puts file I/O in the node that owns the hand, the latch and the abort ladder — a full disk can stall a teardown. (b) cannot see the goal, and it is an operator-remembered separate terminal. (c) cannot recover the requested-vs-resolved distinction, the FSM perf instants, the dispatch tri-state, or — decisively — **the calibration bias evaluated for this toss**. A typed message would need a two-package `colcon` build for every schema tweak, which is exactly the partial-build `ImportError` class the runbook's build gate exists to prevent; the cost of JSON-in-String is paid down by a pure module owning encode/decode/validate plus a `FIELDS` drift-guard test. |
 | **D11** | **Production labeller + latch imported by both node and miner** (new pure `jugglebot/toss_record.py`). | Miner re-implements the labeller. | The live and offline definitions of "caught" would drift and nobody would notice until a map was fitted on the wrong labels. The precedent is already load-bearing: `possession_verdict_bag_check.py` constructs the arrival source *exactly as the node does*, deliberately, and Phase 1's `hand_sensor_verdict_replay.py` reconciled EXACTLY with independent transition counts because of it. |
-| **D12** | **Raw edges for TIMES, debounced for the VERDICT**, with the *measured* poll cadence recorded. | Use `ball_held` (debounced) for both. | The 5-sample debounce at 50 Hz is a 100 ms window; using it as a timing measurand puts a systematic ~100 ms late bias into every timing fit — the same size as the uptime effect the whole fresh-boot discipline exists to control, and it would read as real physics. |
+| **D12** | **Raw edges for TIMES, debounced for the VERDICT**, with the *measured* poll cadence recorded. | Use `ball_held` (debounced) for both. | The 5-sample debounce at 50 Hz is a 100 ms window; using it as a timing measurand puts a systematic ~100 ms late bias into every timing fit — the same size as the uptime effect the fresh-boot discipline existed to control (retired 2026-08-15 with its cause; the size comparison stands as written), and it would read as real physics. |
 | **D13** | **UNKNOWN never collapses to a verdict**; `sensor_valid_frac < 1.0` in the decisive window ⇒ label UNKNOWN, all `usable_*` false. | Treat "no valid sample" as "no ball". | Mints a false MISSED on every telemetry hiccup, and those false MISSEDs are exactly the records the aim fit most wants (mocap-visible, non-caught). C-POSSESS-1 § 2 forbids it independently. |
 | **D14** | **SC-0 (sign/gain) and SC-1 (height ladder) BLOCK SC-2**; SC-2 is 3×3 × 8 first, 5×5 only after a 3×3 verifies. | Go straight to a 5×5 grid capture. | A sign flip inverts every node and aims the machine roughly twice as badly as no map — 200 tosses of inverted data is a whole sitting wasted, and the failure is invisible until the verification pass. SC-1 decides whether the map's unit is rad, Δv or mm; getting that wrong makes the map silently invalid at any other `throw_height_m`. And 5×5 does not fit a comfortable sitting (§ 6). |
 | **D15** | **Thin nodes keep their previous value, marked `stale`**; failed/never-flew nodes refuse the write; **never interpolate a node from neighbours**. | Copy the tilt tool's "any failed node ⇒ no write". | A tilt capture is one complete measurement, so all-or-nothing is right there. This map is an incremental refinement, and refusing the write would block 24 good nodes because one had a thin week. Interpolation is refused for the opposite reason: it invents calibration precisely where the machine had trouble. |
-| **D16** | **No invented uptime ceiling.** Hard session-start discipline (fresh boot; abort if `uptime_ms` > 30 min at collection start), `uptime_ms` per toss, and the analyser **refuses a timing fit** whose within-session residual-vs-uptime trend exceeds the between-node signal. | A 2 h or 4 h hard ceiling. | The measured datum is **one point** (+118–133 ms at ~16 h). Neither 2 h nor 4 h is measured, and a sitting is 2–3 h so an above-session ceiling is decorative. Converting the threshold into a *measured within-session trend test* makes the corpus police itself. |
+| **D16** *(re-keyed 2026-08-15, verdict intact)* | **No invented uptime ceiling.** ~~Hard session-start discipline (fresh boot; abort if `uptime_ms` > 30 min at collection start)~~ → **a plant-HEALTH refusal** (`latency_monitor`) on FW 14+, with the uptime abort retained only for pre-FW-14 boards; `uptime_ms` per toss; and the analyser **refuses a timing fit** whose within-session residual-vs-uptime trend exceeds the between-node signal. | A 2 h or 4 h hard ceiling. | The measured datum is **one point** (+118–133 ms at ~16 h). Neither 2 h nor 4 h is measured, and a sitting is 2–3 h so an above-session ceiling is decorative. Converting the threshold into a *measured within-session trend test* makes the corpus police itself. |
 | **D17** | **Layer 1.5 (per-toss inclinometer read in the dwell) ships as a COVARIATE ONLY**, promoted to feedforward only if `R²` of `land_err` on the pre-throw tilt ≥ 0.4. **Operator-APPROVED 2026-08-10** (decision 2, § 9). | Build the feedforward now; or drop it. | It would remove the arrival-repeatability term (1.6–1.8 mrad ≈ 5.0–5.6 mm) and today's `level` common mode **with no loop and therefore no oscillation risk** — genuinely attractive. But it costs ~1.2 s of a 6.0 s dwell (N=8 reads at 0.15 s gap gives σ/√8 ≈ 0.5 mrad ≈ 1.6 mm) and `get_platform_tilt` **blocks the Platform-Teensy loop that streams hand moves**, so reads must live in the quiescent dwell and never inside PREPARE→THROW. Recording it first answers "is arrival repeatability actually the dominant σ term?" for the price of dwell time and zero new authority. |
 | **D18** | **One bag-record list**: extend the launch list to the superset; the runbook says `record:=true`. | Keep two lists. | Both current lists are individually insufficient and their union is required. A missing topic is unrecoverable after the fact; a recorded silent topic costs nothing — the argument the launch file already makes for `/leg_lengths_topic`. |
 | **D19** | **`max_reloads = 3`, session fails closed on exhaustion (`STOPPED_RELOAD_BUDGET`), and the capture tool treats that terminal as a NODE skip, not a capture abort.** No magazine fence is built. | A machine-side ball-supply model; or aborting the capture on budget exhaustion. | No ball-count or magazine field exists on `ball_butler_node.py`, so a supply model would be a fiction with a number attached. Failing the session closed keeps the doctrine; skipping the node keeps a thin node from costing a sitting, and § 3.7 item 7 already writes a thin node correctly (previous value, `stale: true`). Operator decision 4, § 9. |
@@ -1092,11 +1097,16 @@ unvalidated tree writes a calibration nobody can trust later.
    warm bridge used to.
 
 ~~**ABORT** if `uptime_ms` at collection start is already > 30 min~~ — **retired
-with the rule above.** Note that `tests/hardware/toss_cal_grid.py` still enforces
-it as a hard refusal (`R7`, `UPTIME_ABORT_MS`); until that gate is removed or
-re-keyed to `latency_monitor`, a legitimate capture on a warm FW 14 bridge will be
-refused by the tool. Removing it is a code change with its own test, deliberately
-not folded into the documentation closure.
+with the rule above, and the code now agrees (2026-08-15).** `R7` in
+`tests/hardware/toss_cal_grid.py` was re-keyed from age onto **health**: it
+refuses when `latency_monitor` is alarming — now, or anywhere earlier in the
+session (the worst token seen is folded in, because a preflight snapshot bounds
+nothing about a 2–3 h capture the way a monotone uptime ceiling used to) — and it
+falls back to the 30-minute uptime refusal only on a **pre-FW-14 board**, an
+unreadable `bridge_fw_version`, or a ROS build too old to publish the monitor
+row. **ABORT** if R7 refuses; a warm, healthy FW 14 bridge is no longer a refusal.
+Branch logic in `tilt_cal_grid.temporal_health_verdict`, unit-tested in
+`tests/motion/test_toss_cal_grid.py` and `tests/motion/test_tilt_cal_grid.py`.
 
 ### P2 — Read-only preflight (~10 min)
 

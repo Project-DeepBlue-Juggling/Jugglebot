@@ -70,9 +70,13 @@ close.
   not a degraded one. **Quote `uptime_ms` with every number you record** — that
   half stands, and is now the fix's own regression detector — and watch the
   `latency_monitor` row on `/link_status`. The tool echoes uptime at preflight
-  and records first/last in `_meta.json` **and** the map's `captured` block; its
-  30-minute WARN (`tilt_cal_grid.py::UPTIME_WARN_MS`) is now advisory-historical
-  and pending removal, not a reason to reboot.
+  and records first/last in `_meta.json` **and** the map's `captured` block.
+  **The preflight now prints a HEALTH verdict, not an age one**
+  (`tilt_cal_grid.temporal_health_verdict`, 2026-08-15): on FW 14+ it reads
+  `latency_monitor`, and it falls back to the 30-minute ceiling
+  (`UPTIME_WARN_MS`) only for a pre-FW-14 board, an unreadable
+  `bridge_fw_version`, or a ROS build too old to publish the monitor row. It
+  still only WARNS — this tool never refused on it.
 - `run_mpc.py` is **NOT** running (sole-binder :5557 interlock).
 - **Build gate — BOTH packages. This is not optional:**
   ```bash
@@ -211,7 +215,8 @@ This is also the **first hardware exercise of mid-TRAJECTORY tilt reads** —
 `get_platform_tilt` has no state gating, and that it works while holding a pose
 is assumed, not demonstrated.
 
-Fresh can-bridge boot; fresh `level`.
+Healthy plant (`latency_monitor` OK — a fresh can-bridge boot is no longer
+required; see § Preconditions); fresh `level`.
 
 ```bash
 # 3x3 probe at two dwell settings — captures, writes CSV+meta, applies NOTHING
@@ -316,8 +321,9 @@ was not freshly booted; quote that with any lag-sensitive reading).
 
 ## Rung C1 — baseline capture + verify
 
-Fresh can-bridge boot; **fresh `level` immediately before**; flat floor, no
-shims; hand quiescent and empty.
+Healthy plant (`latency_monitor` OK — the fresh-boot rule was retired
+2026-08-15, § Preconditions); **fresh `level` immediately before**; flat floor,
+no shims; hand quiescent and empty.
 
 ```bash
 python3 tests/hardware/tilt_cal_grid.py --dwell-s 2.0 \
@@ -527,7 +533,8 @@ This is the rung that supplies the **quantitative symptom record** the
 motivating sittings never got: displaced vertical tosses clipping platform
 hardware before landing in the hand.
 
-Same session, fresh can-bridge boot, flat floor, C1 map restored. Run the
+Same session, healthy plant (`latency_monitor` OK — no fresh boot needed since
+2026-08-15, § Preconditions), flat floor, C1 map restored. Run the
 **exact symptom geometry** — vertical tosses at a displaced pose, not at
 (0, 0, 170) — with the map **off**, then **on**, back to back.
 
