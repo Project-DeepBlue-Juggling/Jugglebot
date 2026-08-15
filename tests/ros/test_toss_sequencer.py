@@ -960,27 +960,35 @@ def test_local_constants_match_generated_config():
         hw.GEOM_HAND_AXIS_BOTTOM_OFFSET_MM + hw.HAND_THROW_POS_M * 1000.0)
     assert hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S == pytest.approx(
         DEFAULT_TOSS_FLIGHT_TIME_S)
-    # Same fallback/config pairing for the Phase-E displacement cap: the node
-    # resolves JB_OP_TOSS_MAX_DISPLACEMENT_MM into the ctor, the module constant
-    # is the standalone default, and a drift would make the SAME goal fly or
-    # refuse depending on which layer resolved it.
-    assert hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM == pytest.approx(
-        TOSS_MAX_DISPLACEMENT_MM)
-    # The closed-form reach bound and the cap are SEPARATE gates and the cap is
-    # no longer unconditionally slack; pin the crossover flight explicitly so a
-    # change to either shows up as the flight-band shift it really is.
+    # The Phase-E displacement cap and the workspace box are OPERATOR-ADJUSTABLE
+    # YAML keys (2026-08-14): no YAML == module-literal equality pin, because
+    # that pin is precisely what made a YAML edit turn the suite red. What IS
+    # pinned: (a) the module fallbacks keep their documented values, so
+    # standalone/bag use is deterministic; (b) the MECHANISM — the ctor value is
+    # what gates (test_workspace_box_is_ctor_config and the 8b displacement
+    # battery drive explicit ctor values); (c) the RELATIONAL invariant the YAML
+    # comment states: box ≥ cap × 1.03, else the centroid-vs-cup chain
+    # divergence (2.07 % of displacement, measured 2026-07-29) re-binds at the
+    # cap edge and REJECTED_CHAIN_UNREACHABLE returns at the working range.
+    assert TOSS_MAX_DISPLACEMENT_MM == pytest.approx(150.0)
+    assert hw.JB_OP_TOSS_WORKSPACE_XY_MM >= (
+        hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM * 1.03)
+    # The closed-form reach bound and the cap are SEPARATE gates; pin the
+    # FALLBACK-limits crossover flight explicitly so a change to either shows
+    # up as the flight-band shift it really is.
     assert reach_displacement_limit_mm(0.669) == pytest.approx(
         TOSS_MAX_DISPLACEMENT_MM, abs=0.5)
-    # The session limits the closed-form bound gates against. These were
-    # DOCUMENTED as "pinned by the drift-guard test" while nothing pinned them —
-    # harmless at the old 70 mm cap (the bound never bound: d_max >= 83.2 mm at
-    # T = 0.55 s), but Phase E made the bound LIVE, so a stale local copy now
-    # silently over-permits: lower JB_TRAJ_LEG_JERK_LIMIT_MMPS3 to 15000 for a
-    # cautious sitting and a 150 mm goal at T = 0.70 still passes CHECKING here
-    # (module bound 171.5 mm) while the real planner's budget allows only
-    # 60·d/T^3 <= 15000 => 85.8 mm — and the deferred reach then rejects
-    # TOO_FAST at t_release with the ball already airborne, which is exactly the
-    # mid-flight-verdict class contract C-REACH-1 exists to remove.
+    # The FALLBACK limits the closed-form bound gates against when no live
+    # session limits are observed (pre-field publisher, stale status, bag
+    # replay). The pin matters because the fallback path can still over-permit
+    # exactly the way the pre-2026-08-14 module copies did: lower
+    # JB_TRAJ_LEG_JERK_LIMIT_MMPS3 to 15000 in YAML and a stale copy here would
+    # pass a 150 mm goal at T = 0.70 (copy bound 171.5 mm) against a real
+    # budget of 85.8 mm — a TOO_FAST at t_release with the ball airborne, the
+    # mid-flight-verdict class C-REACH-1 exists to remove. The LIVE path closes
+    # that hazard for a running system (the gate follows trajectory/status →
+    # set_limits, test_reach_bound_prefers_live_session_limits); this pin
+    # closes it for the fallback path.
     assert REACH_VEL_LIMIT_MMPS == pytest.approx(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
     assert REACH_ACC_LIMIT_MMPS2 == pytest.approx(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
     assert REACH_JERK_LIMIT_MMPS3 == pytest.approx(
@@ -1093,42 +1101,65 @@ def test_displacement_within_cap_accepted(pose, site, flight):
     assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
 
 
-@pytest.mark.parametrize('next_b', [
-    (0.0, 0.0, 170.0),          # back to centre  -> the cap trips  (153.10 > 150)
-    (-150.0, 0.0, 170.0),       # degenerate here -> the A-box trips (153.10 > 150)
-    (-100.0, 0.0, 170.0),       # a short hop     -> the A-box trips
+@pytest.mark.parametrize('next_b,box_160_outcome', [
+    ((0.0, 0.0, 170.0), 'REJECTED_DISPLACEMENT'),
+                                # back to centre: |B−A| = 153.10 > the 150 cap —
+                                # a REAL requested displacement past the cap, so
+                                # the wider box does not (and must not) admit it
+    ((-150.0, 0.0, 170.0), 'ACCEPTED'),   # degenerate re-throw at the park
+    ((-100.0, 0.0, 170.0), 'ACCEPTED'),   # a short hop back toward centre
 ])
-def test_chaining_at_the_cap_is_refused_known_limitation(next_b):
-    """KNOWN LIMITATION, pinned so it cannot change silently and so the fix has
-    a target. Chaining works below ~146 mm and is REFUSED at the cap.
+def test_chaining_at_the_cap_box_dissolves_the_frame_divergence(next_b,
+                                                                box_160_outcome):
+    """The FORMER known limitation and its 2026-08-14 resolution, both pinned.
 
     The catch parks the platform CENTROID outside B so the CUP lands ON B
     (swing compensation: centroid = landing - hand_catch_offset*platform_z).
     Measured through the production chain at B = (-150, 0, 170), T = 0.80 s: the
     cup ends at exactly (-150.00, 0) but the centroid ends at (-153.10, 0), and
     trajectory/commanded_position publishes the CENTROID. So the next goal reads
-    A = -153.10 and BOTH surviving gates -- the +-150 planning box on A and the
-    150 mm cap on |B-A| -- are applied to a value 3.10 mm outside the nominal.
+    A = -153.10 — a value 2.07 % of the displacement (hand_catch_offset*sin of
+    the receive tilt) outside nominal.
 
-    The offset is hand_catch_offset*sin(receive tilt) = 64.78*sin(2.73 deg),
-    i.e. 2.07 % of the displacement, so it crosses the box at |B| ~ 147 mm.
+    WITH BOX == CAP == 150 (the module fallback, first arm): the A-box trips at
+    the cap edge, chaining worked below ~146 mm and was REFUSED at 150 — the
+    original limitation, kept pinned because a standalone/no-config sequencer
+    still behaves this way.
 
-    Every refusal is loud and pre-throw and moves nothing; the operator's remedy
-    is one go_home (runbook § SECTION DISP, the KNOWN LIMITATION box above
-    DISP-6). The real fix is a frame decision -- A is read as a centroid but
-    compute_release_state_tilted consumes it as the CUP/release xy -- which is
-    an open question on single-ball-toss Phase E, not a number to nudge."""
+    WITH THE SHIPPED BOX (toss_workspace_xy_mm = 160 > cap × 1.03, second arm):
+    the parked centroid sits INSIDE the box, so degenerate and short-hop chain
+    goals are ADMITTED — the limitation is dissolved by the box/cap separation,
+    not by a frame decision. Back-to-centre still refuses on the |B−A| CAP,
+    which is correct: 153.10 mm is a genuinely requested displacement past the
+    cap, and the remedy (raise toss_max_displacement_mm, or one go_home) is the
+    operator's. The centroid-vs-cup frame question itself (A is read as a
+    centroid, compute_release_state_tilted consumes it as the CUP xy) remains
+    open on single-ball-toss Phase E but no longer gates chaining."""
     parked_centroid_x = -153.10     # measured, not assumed
     seq = _fresh_8b(pose=next_b, throw_site=(parked_centroid_x, 0.0),
                     flight_time_s=0.80)
     d = seq.step(0.0, _obs(0.0))
     assert d.done and d.result is not None
     assert d.result.outcome in ('REJECTED_WORKSPACE', 'REJECTED_DISPLACEMENT')
-    # The SAME goal from the nominal (cup) site is accepted — which is what
-    # makes this a frame defect rather than a cap that is simply too low.
+    # The SAME goal from the nominal (cup) site is accepted at the fallback box
+    # — which is what made this a frame divergence rather than a cap that was
+    # simply too low.
     ok = _fresh_8b(pose=next_b, throw_site=(-150.0, 0.0), flight_time_s=0.80)
     d_ok = ok.step(0.0, _obs(0.0))
     assert d_ok.phase == PHASE_POSITIONING and d_ok.action == ACTION_POSITION_PLATFORM
+    # The resolution arm: the shipped YAML box admits the chain goals the
+    # fallback refused, and leaves the cap verdict standing where the request
+    # really does exceed the cap.
+    import jugglebot.hardware_config as hw
+    shipped = _fresh_8b(pose=next_b, throw_site=(parked_centroid_x, 0.0),
+                        flight_time_s=0.80,
+                        workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM))
+    d_s = shipped.step(0.0, _obs(0.0))
+    if box_160_outcome == 'ACCEPTED':
+        assert (d_s.phase == PHASE_POSITIONING
+                and d_s.action == ACTION_POSITION_PLATFORM)
+    else:
+        assert d_s.done and d_s.result.outcome == box_160_outcome
 
 
 def test_reach_displacement_limit_closed_form():
@@ -1151,6 +1182,84 @@ def test_reach_displacement_limit_closed_form():
     assert crossover == pytest.approx(0.669, abs=0.001)
     assert reach_displacement_limit_mm(crossover) == pytest.approx(
         TOSS_MAX_DISPLACEMENT_MM, abs=1e-6)
+
+
+def test_reach_bound_prefers_live_session_limits():
+    """The closed-form reach bound follows the LIVE session limits
+    (trajectory/set_limits → trajectory/status → TossObservations) and falls
+    back to the YAML-default module copies only when they are absent (0.0).
+
+    This is the 2026-08-14 authority change: the operator's set_limits ramp is
+    the primary movement-acceptance authority, so the pre-throw gate must move
+    in lockstep with the feasibility gate it fronts for — in BOTH directions.
+    RAMP UP: at T = 0.60 the fallback jerk bound is 108.0 mm, refusing a
+    150 mm goal the planner would fly at raised limits; with jerk ramped to
+    200 000 the binding term becomes acc (5000·0.36/5.7735 = 311.8 mm) and the
+    goal passes. RAMP DOWN: at T = 0.70 the fallback bound is 171.5 mm, passing
+    a 100 mm goal that a cautious jerk = 15 000 session cannot fly
+    (60·d/T³ ≤ 15 000 ⇒ 85.75 mm) — pre-live-limits that goal TOO_FAST-ed at
+    t_release with the ball airborne (the C-REACH-1 mid-flight-verdict class);
+    now it refuses pre-throw."""
+    # Function level: explicit live values move the bound; None reproduces the
+    # fallback exactly.
+    assert reach_displacement_limit_mm(0.60, jerk_mmps3=200000.0) == (
+        pytest.approx(311.77, abs=0.1))
+    assert reach_displacement_limit_mm(0.70, jerk_mmps3=15000.0) == (
+        pytest.approx(85.75, abs=0.1))
+    assert reach_displacement_limit_mm(0.80, None, None, None) == (
+        reach_displacement_limit_mm(0.80))
+    # FSM level, ramp UP: 150 mm @ T = 0.60 refuses at the fallback limits
+    # (the parametrized battery above pins that) and passes on a live-limits
+    # observation. The cap does not bind (d == cap, not >).
+    up = _fresh_8b(pose=(150.0, 0.0, 170.0), flight_time_s=0.60)
+    d = up.step(0.0, _obs(0.0, leg_vel_limit_mmps=1000.0,
+                          leg_acc_limit_mmps2=5000.0,
+                          leg_jerk_limit_mmps3=200000.0))
+    assert d.phase == PHASE_POSITIONING and d.action == ACTION_POSITION_PLATFORM
+    # FSM level, ramp DOWN: 100 mm @ T = 0.70 passes at the fallback limits but
+    # refuses against a live cautious-session jerk.
+    down_ok = _fresh_8b(pose=(100.0, 0.0, 170.0), flight_time_s=0.70)
+    d_ok = down_ok.step(0.0, _obs(0.0))
+    assert d_ok.phase == PHASE_POSITIONING
+    down = _fresh_8b(pose=(100.0, 0.0, 170.0), flight_time_s=0.70)
+    d_ref = down.step(0.0, _obs(0.0, leg_vel_limit_mmps=1000.0,
+                                leg_acc_limit_mmps2=5000.0,
+                                leg_jerk_limit_mmps3=15000.0))
+    assert d_ref.done and d_ref.result.outcome == 'REJECTED_DISPLACEMENT'
+    # A partial triple (only some fields live) mixes live and fallback
+    # per-term — the `or None` mapping is per-field, not all-or-nothing.
+    assert reach_displacement_limit_mm(
+        0.60, vel_mmps=None, acc_mmps2=None, jerk_mmps3=200000.0) == (
+        pytest.approx(311.77, abs=0.1))
+
+
+def test_workspace_box_is_ctor_config():
+    """The ±workspace box is a ctor value the node resolves from YAML
+    (toss_workspace_xy_mm → hw.JB_OP_TOSS_WORKSPACE_XY_MM), not a hardcoded
+    constant (2026-08-14 — it was the hardcoded ±150, which made raising the
+    displacement cap past 150 inert: REJECTED_WORKSPACE caught the same goal
+    one line later). The module literal is only the no-config fallback, and
+    both the B-box and the 8b A-box read the SAME ctor value."""
+    # B-box, Tier 8a: 180 mm is outside the 150 fallback, inside a 200 box.
+    ref = _fresh(catch_pose_stow_mm=(180.0, 0.0, 170.0))
+    d_ref = ref.step(0.0, _obs(0.0))
+    assert d_ref.done and d_ref.result.outcome == 'REJECTED_WORKSPACE'
+    wide = _fresh(catch_pose_stow_mm=(180.0, 0.0, 170.0),
+                  workspace_xy_mm=200.0)
+    d_wide = wide.step(0.0, _obs(0.0))
+    assert (d_wide.phase == PHASE_POSITIONING
+            and d_wide.action == ACTION_POSITION_PLATFORM)
+    # A-box, Tier 8b: A = (155, 0) is outside the fallback box while |B−A| =
+    # 105 mm stays inside the cap and the T = 0.8 reach bound (256 mm), so the
+    # verdict isolates the A-box; the same goal passes with the wider box.
+    ref_a = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(155.0, 0.0))
+    d_a = ref_a.step(0.0, _obs(0.0))
+    assert d_a.done and d_a.result.outcome == 'REJECTED_WORKSPACE'
+    wide_a = _fresh_8b(pose=(50.0, 0.0, 170.0), throw_site=(155.0, 0.0),
+                       workspace_xy_mm=200.0)
+    d_wa = wide_a.step(0.0, _obs(0.0))
+    assert (d_wa.phase == PHASE_POSITIONING
+            and d_wa.action == ACTION_POSITION_PLATFORM)
 
 
 def test_pose_unknown_rejected_before_every_displacement_gate():

@@ -2852,6 +2852,14 @@ class TrajectoryNode(Node):
         # gravity_correction_loaded=false names a loaded-but-dormant map.
         msg.tilt_map_loaded = bool(self._tilt_map_loaded)
         msg.tilt_map_version = str(self._tilt_map_version)
+        # LIVE session limits (frozen-dataclass reference; atomic swap in
+        # _svc_set_limits, so a lock-free read is a coherent triple). Consumers
+        # (toss reach bound) must judge against what the feasibility gate will
+        # actually enforce, not a module copy of the YAML default.
+        limits = self._limits
+        msg.leg_vel_limit_mmps = float(limits.leg_vel_mmps)
+        msg.leg_acc_limit_mmps2 = float(limits.leg_acc_mmps2)
+        msg.leg_jerk_limit_mmps3 = float(limits.leg_jerk_mmps3)
         self.status_pub.publish(msg)
 
         # Live COMMANDED platform position (see the publisher's comment in

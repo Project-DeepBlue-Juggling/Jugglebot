@@ -893,6 +893,50 @@ def test_on_traj_status_caches_both_the_flag_and_its_arrival():
         assert node._gravity_correction_loaded is True
 
 
+def test_live_limits_ride_traj_status_and_expire_with_it():
+    """The LIVE session limits (2026-08-14) are cached off trajectory/status and
+    fed to the toss FSM ONLY while that status is FRESH — the same window as
+    platform_levelled, and for the same reason: a stale cache could carry a
+    triple the node has since ramped away from, and the reach bound must judge
+    against what the feasibility gate enforces NOW. Stale or never-heard ⇒ 0.0
+    ⇒ the sequencer's YAML-default fallback (the pre-field behaviour), never a
+    refusal — the bound is a loud-early convenience, the planner stays the
+    truth. An old publisher (field-less message) degrades the same way via the
+    dataclass/getattr default rather than taking the coordinator down."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    msg = _traj_status(loaded=True)
+    msg.leg_vel_limit_mmps = 1000.0
+    msg.leg_acc_limit_mmps2 = 5000.0
+    msg.leg_jerk_limit_mmps3 = 15000.0
+    node._on_traj_status(msg)
+    with node._lock:
+        assert node._leg_limits_live == (1000.0, 5000.0, 15000.0)
+        node._traj_status_mono = now          # fresh (the real stamp is perf)
+    obs = node._build_toss_observations(now)
+    assert obs.leg_vel_limit_mmps == pytest.approx(1000.0)
+    assert obs.leg_acc_limit_mmps2 == pytest.approx(5000.0)
+    assert obs.leg_jerk_limit_mmps3 == pytest.approx(15000.0)
+    with node._lock:
+        node._traj_status_mono = now - 2.0    # the applier went quiet
+    stale = node._build_toss_observations(now)
+    assert stale.leg_vel_limit_mmps == 0.0
+    assert stale.leg_acc_limit_mmps2 == 0.0
+    assert stale.leg_jerk_limit_mmps3 == 0.0
+    # Field-less status (pre-2026-08-14 publisher): a bespoke object WITHOUT
+    # the limit attributes, so the real getattr-absence path is exercised (the
+    # conftest TrajectoryStatus mock now always carries the fields, defaulted
+    # 0.0, and cannot test absence). The cache degrades to the absent sentinel
+    # rather than keeping the previous triple.
+    class _PreLiveLimitsStatus:
+        streaming = True
+        gravity_correction_loaded = True
+    node._on_traj_status(_PreLiveLimitsStatus())
+    with node._lock:
+        assert node._leg_limits_live == (0.0, 0.0, 0.0)
+
+
 def test_the_persisted_startup_push_alone_satisfies_the_gate():
     """The NEGATIVE half the plan demands: the gate must NOT fire when only the
     orchestrator's persisted auto-push has run (first IDLE after boot, gated on

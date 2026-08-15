@@ -170,26 +170,30 @@ one constant so they cannot drift apart:
    spends the same floor as a blocking wait because the interlude runs inside the
    node rather than across FSM ticks.
 
-## Known limitation inherited from Phase E — chaining near the ±150 mm box edge
+## Former known limitation (dissolved 2026-08-14) — chaining near the box edge
 
 A catch parks the platform CENTROID slightly outside B so the CUP lands ON B, and
 ``trajectory/commanded_position`` publishes the CENTROID. For a fixed-B session the
 offset is largest at cycle 2 and then collapses (measured through the production
-``predicted_catch_command``, 2026-07-29, B on the +x axis):
+``predicted_catch_command``, 2026-07-29, B on the +x axis, at the then-hardcoded
+±150 box):
 
     B_x     cycle-2 A_x     cycle-3 A_x     cycle-4 A_x
      70.0        71.448          69.970         70.001
     140.0       142.894         139.940        140.001
     146.0       149.017         145.938        146.001
-    147.0       150.038   ← outside the ±150 planning box
+    147.0       150.038   ← outside a ±150 planning box
 
-So a fixed-B chain CONVERGES, and the only cycle at risk is **cycle 2**. The
-frontier is sharp: **|B| ≤ 146.5 mm chains, |B| ≥ 147.0 mm does not.** Note the
-binding gate is the ±150 planning box on A, NOT the 150 mm displacement cap — the
-residual |B−A| never exceeds 3.1 mm. The coordinator pre-checks this before
-anything moves (``REJECTED_CHAIN_UNREACHABLE``) rather than letting the session
-throw one ball, catch it, and then refuse cycle 2 with the platform parked
-off-box and a ball in the cup.
+So a fixed-B chain CONVERGES, and the only cycle at risk is **cycle 2**. At box =
+cap = 150 the frontier was sharp: |B| ≤ 146.5 mm chained, |B| ≥ 147.0 mm did not
+(the binding gate being the box on A, NOT the displacement cap — the residual
+|B−A| never exceeds 3.1 mm). **Since 2026-08-14 the box is the config key
+``toss_workspace_xy_mm`` (shipped 160 > cap × 1.03), the cycle-2 centroid sits
+inside it at every valid B, and cap-edge chains are admitted.** The coordinator
+still pre-checks against the configured box before anything moves
+(``REJECTED_CHAIN_UNREACHABLE``) rather than letting the session throw one ball,
+catch it, and then refuse cycle 2 with the platform parked off-box and a ball in
+the cup — the refusal re-binds only if the box is set below cap × ~1.03.
 
 ## Possession across the dwell — stated honestly, not designed away
 
@@ -428,7 +432,9 @@ class TossSessionSequencer:
                                                 #   catch centroid of cycle 1, through
                                                 #   the SAME predicted_catch_command
                                                 #   policy the deferred reach uses)
-                                                #   lies inside the ±150 planning box.
+                                                #   lies inside the CONFIGURED
+                                                #   toss_workspace_xy_mm box (160
+                                                #   shipped 2026-08-14; was ±150).
                                                 #   False ⇒ REJECTED_CHAIN_UNREACHABLE.
                                                 #   Default True because a single-cycle
                                                 #   session has no chain to check; the
@@ -648,12 +654,15 @@ class TossSessionSequencer:
             # 3.5 s FSM floor — is only visible if the number is named.
             return 'REJECTED_DWELL'
         if self.num_throws >= 2 and not self.chain_site_reachable:
-            # Phase E's KNOWN LIMITATION, caught BEFORE a ball flies. Without
-            # this, a session near the box edge throws one ball, catches it,
-            # then refuses cycle 2 REJECTED_WORKSPACE with the platform parked
+            # The chain pre-check, caught BEFORE a ball flies. Without this, a
+            # session near the box edge throws one ball, catches it, then
+            # refuses cycle 2 REJECTED_WORKSPACE with the platform parked
             # outside the planning box and the ball in the cup — actuation for
-            # nothing. Measured frontier: |B| <= 146.5 mm chains, >= 147.0 does
-            # not (probe, 2026-07-29).
+            # nothing. At the shipped toss_workspace_xy_mm = 160 no valid B
+            # trips it (Phase E's former known limitation, dissolved
+            # 2026-08-14); it re-binds only if the box is set below
+            # cap × ~1.03 (frontier at box = 150: |B| <= 146.5 chained,
+            # >= 147.0 did not — probe, 2026-07-29).
             return 'REJECTED_CHAIN_UNREACHABLE'
         return None
 

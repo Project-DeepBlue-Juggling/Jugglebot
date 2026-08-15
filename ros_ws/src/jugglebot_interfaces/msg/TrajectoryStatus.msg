@@ -39,6 +39,23 @@ bool tilt_map_loaded              # True iff a pose-dependent residual tilt map 
                                   # and neither blocks a throw —
                                   # REJECTED_NOT_LEVELLED keys on
                                   # gravity_correction_loaded and only on that.
+float64 leg_vel_limit_mmps        # LIVE session leg-space limits — the values the
+float64 leg_acc_limit_mmps2       # feasibility gate is enforcing RIGHT NOW, i.e.
+float64 leg_jerk_limit_mmps3      # the YAML working point as ramped by any
+                                  # trajectory/set_limits calls this session
+                                  # (each clamped to its YAML hard ceiling).
+                                  # Published so acceptance pre-checks downstream
+                                  # (the toss sequencer's closed-form reach bound)
+                                  # judge against the SAME limits the planner will
+                                  # enforce at t_release, instead of a stale
+                                  # module copy of the YAML default — a ramp-down
+                                  # otherwise passes a goal the planner then
+                                  # refuses MID-FLIGHT, and a ramp-up is refused
+                                  # pre-throw for no physical reason. 0.0 = field
+                                  # absent (old publisher/bag): consumers fall
+                                  # back to the YAML-default copies, i.e. exactly
+                                  # the pre-field behaviour.
+
 string tilt_map_version           # "<captured.date>-<sha256(content)[:8]>" of the
                                   # loaded map, hashed over the calibration
                                   # numbers only (schema version + both grid axes

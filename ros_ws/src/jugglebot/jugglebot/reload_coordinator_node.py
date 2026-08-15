@@ -107,10 +107,12 @@ motion of its own; every commanded motion belongs to a cycle. Chaining works bec
 of two landed facts: the firmware catch stroke ends where a kind-0 throw stroke
 starts (0 rev, ``Trajectory.h``), so no hand move is needed between cycles, and a
 CAUGHT toss STAYs at its catch pose, so cycle N+1's throw site A is cycle N's catch
-B for free. Phase E's KNOWN LIMITATION — ``trajectory/commanded_position`` publishes
-the CENTROID, which sits a cup-swing outside B — is caught BEFORE anything moves by
-:meth:`_predicted_chain_site_mm` (``REJECTED_CHAIN_UNREACHABLE``) instead of letting
-a session throw one ball and then refuse cycle 2 with the platform parked off-box.
+B for free. The centroid-vs-cup frame divergence — ``trajectory/commanded_position``
+publishes the CENTROID, which sits a cup-swing outside B — is caught BEFORE anything
+moves by :meth:`_predicted_chain_site_mm` (``REJECTED_CHAIN_UNREACHABLE``) instead of
+letting a session throw one ball and then refuse cycle 2 with the platform parked
+off-box. (Phase E's cap-edge chaining refusal itself dissolved 2026-08-14: the
+shipped ``toss_workspace_xy_mm`` = 160 box clears the divergence at every valid B.)
 """
 
 from __future__ import annotations
@@ -198,7 +200,6 @@ from jugglebot.toss_sequencer import (
     THROW_DISPATCH_REJECTED,
     TIER_8B,
     TOSS_CANCEL_CUTOFF_S,
-    TOSS_XY_LIMIT_MM,
     TossObservations,
     TossResult,
     TossSequencer,
@@ -665,6 +666,10 @@ class ReloadCoordinatorNode(Node):
         # exists to prevent. 0.0 = never heard from it ⇒ fail closed.
         self._traj_status_mono = 0.0
         self._gravity_correction_loaded = False
+        # LIVE session leg limits (vel mm/s, acc mm/s², jerk mm/s³) as last
+        # published on trajectory/status. (0,0,0) = never heard / pre-field
+        # publisher — consumers fall back to the YAML-default copies.
+        self._leg_limits_live = (0.0, 0.0, 0.0)
         # Record-only provenance mirrors of the same message (never gated on).
         self._tilt_map_loaded = False
         self._tilt_map_version = ''
@@ -851,7 +856,7 @@ class ReloadCoordinatorNode(Node):
         self._dwell_tilt_degraded = False
         # ── The auto-reload interlude's two consumer-side fences ──
         # (a) BallButler heartbeats ball_in_hand = TRUE from boot, BEFORE its first
-        #     GPIO read (plans/active/hand-ball-sensor.md § the fail-open boot
+        #     GPIO read (plans/archived/2026-08-15 hand-ball-sensor.md § the fail-open boot
         #     default), and this node gates that bit only on heartbeat freshness.
         #     A freshly-rebooted BB therefore makes the reload FSM SKIP
         #     ACTION_CALL_RELOAD: it primes the hand, raises the latch, throws at
@@ -1188,6 +1193,15 @@ class ReloadCoordinatorNode(Node):
             # on a build split, while a missing provenance string must degrade to
             # "unknown" rather than take the coordinator down.
             self._tilt_map_loaded = bool(getattr(msg, 'tilt_map_loaded', False))
+            # LIVE session limits — getattr-with-default like the tilt-map
+            # provenance and NOT like the levelling gate, deliberately: the
+            # toss reach bound has a designed fallback (the YAML-default module
+            # copies) for exactly this absence, so an old publisher must
+            # degrade to that fallback rather than take the coordinator down.
+            self._leg_limits_live = (
+                float(getattr(msg, 'leg_vel_limit_mmps', 0.0)),
+                float(getattr(msg, 'leg_acc_limit_mmps2', 0.0)),
+                float(getattr(msg, 'leg_jerk_limit_mmps3', 0.0)))
             new_tilt_version = str(getattr(msg, 'tilt_map_version', '') or '')
             tilt_version_changed = new_tilt_version != self._tilt_map_version
             self._tilt_map_version = new_tilt_version
@@ -1282,7 +1296,7 @@ class ReloadCoordinatorNode(Node):
             # Feed the PRIMARY possession source. The mono clock, not
             # ball_held_stamp: staleness here asks whether the JETSON is still
             # hearing the sensor, and the bridge stamp is wall-epoch only once
-            # the bridge's clock anchor lands (plans/active/hand-ball-sensor.md
+            # the bridge's clock anchor lands (plans/archived/2026-08-15 hand-ball-sensor.md
             # § Architecture, "Clock discipline"). ball_held is meaningless
             # unless ball_held_valid — the source enforces that, so both are
             # passed through untouched and nothing here decides anything.
@@ -1625,6 +1639,7 @@ class ReloadCoordinatorNode(Node):
             streaming = self._streaming
             traj_status_mono = self._traj_status_mono
             correction_loaded = self._gravity_correction_loaded
+            leg_limits_live = self._leg_limits_live
             mocap_fresh = (now - self._mocap_mono) < _MOCAP_STALE_S
             platform_pos = self._platform_pos_mm
             hand_pos = self._hand_pos_meas
@@ -1763,7 +1778,15 @@ class ReloadCoordinatorNode(Node):
             ball_caught=ball_caught,
             catch_error_mm=catch_error_mm,
             catch_event_dt_s=catch_event_dt_s,
-            ball_time_at_land_perf=time_at_land_perf)
+            ball_time_at_land_perf=time_at_land_perf,
+            # Fed ONLY off a FRESH trajectory/status (same window as
+            # platform_levelled): a stale cache could carry a limits triple the
+            # node has since ramped away from, and the reach bound must judge
+            # against what the feasibility gate enforces NOW. Stale ⇒ 0.0 ⇒
+            # the sequencer's YAML-default fallback (pre-field behaviour).
+            leg_vel_limit_mmps=(leg_limits_live[0] if traj_status_fresh else 0.0),
+            leg_acc_limit_mmps2=(leg_limits_live[1] if traj_status_fresh else 0.0),
+            leg_jerk_limit_mmps3=(leg_limits_live[2] if traj_status_fresh else 0.0))
 
     def _ball_time_at_land_perf(self, ball, now_perf: float) -> float:
         """The tracker's live landing-plane crossing for ``ball``, crossed onto the
@@ -2493,6 +2516,7 @@ class ReloadCoordinatorNode(Node):
             throw_site_xy_mm=throw_site,
             throw_site_known=throw_site_known,
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
+            workspace_xy_mm=float(hw.JB_OP_TOSS_WORKSPACE_XY_MM),
             stay_at_pose_on_caught=bool(hw.JB_OP_TOSS_STAY_AT_POSE_ON_CAUGHT),
             tilt_clamp_exceeded=tilt_clamp_exceeded)
         seq.start(time.perf_counter())
@@ -3851,18 +3875,27 @@ class ReloadCoordinatorNode(Node):
         if num_throws >= 2:
             site = self._predicted_chain_site_mm(catch_pose, flight)
             if site is not None:
-                chain_reachable = (abs(site[0]) <= TOSS_XY_LIMIT_MM
-                                   and abs(site[1]) <= TOSS_XY_LIMIT_MM)
+                # Same configured box the sequencer's WORKSPACE gate enforces
+                # (YAML toss_workspace_xy_mm) — checking the chain against a
+                # different constant than the gate that will refuse cycle 2 is
+                # exactly the drift this predictor exists to pre-empt. With the
+                # YAML default sitting ABOVE the displacement cap, the 2.07 %
+                # centroid-vs-cup divergence no longer binds at the cap edge
+                # (the 146.5/147.0 frontier below was measured with box = cap
+                # = 150).
+                workspace_xy = float(hw.JB_OP_TOSS_WORKSPACE_XY_MM)
+                chain_reachable = (abs(site[0]) <= workspace_xy
+                                   and abs(site[1]) <= workspace_xy)
                 if not chain_reachable:
                     self.get_logger().error(
                         'TossContinuous REJECTED_CHAIN_UNREACHABLE: a CAUGHT '
                         'catch at %s parks the platform CENTROID at (%.2f, %.2f) '
                         'mm, outside the +-%.0f mm planning box, so cycle 2 '
                         'would be rejected WORKSPACE with a ball already thrown '
-                        'and caught. Lower |catch_position| (measured frontier: '
-                        '<= 146.5 mm chains, >= 147.0 does not) or run '
-                        'num_throws=1.'
-                        % (catch_pose, site[0], site[1], TOSS_XY_LIMIT_MM))
+                        'and caught. Lower |catch_position| (at box = cap = '
+                        '150 the measured frontier was <= 146.5 mm chains, '
+                        '>= 147.0 does not) or run num_throws=1.'
+                        % (catch_pose, site[0], site[1], workspace_xy))
 
         session = TossSessionSequencer(
             num_throws=num_throws,
@@ -4448,15 +4481,18 @@ class ReloadCoordinatorNode(Node):
         ``trajectory/commanded_position``. Returns ``(x, y)`` STOW mm, or None
         when it cannot be predicted.
 
-        This is Phase E's KNOWN LIMITATION made checkable BEFORE anything moves.
-        The catch deliberately parks the CENTROID a cup-swing outside the
+        This makes the centroid-vs-cup divergence checkable BEFORE anything
+        moves. The catch deliberately parks the CENTROID a cup-swing outside the
         nominated B so the CUP lands ON B, and the wire publishes the centroid —
-        so near the +-150 mm planning box a chained session throws one ball,
-        catches it, and then refuses cycle 2 ``REJECTED_WORKSPACE`` with the
+        so near the planning-box edge a chained session would throw one ball,
+        catch it, and then refuse cycle 2 ``REJECTED_WORKSPACE`` with the
         platform parked off-box and the ball in the cup. Measured through this
-        same policy (2026-07-29): B_x 146.0 -> A_x 149.017 (chains), B_x 147.0 ->
-        A_x 150.038 (does not). The residual then COLLAPSES (cycle 3: 145.938,
-        cycle 4: 146.001), so cycle 2 is the only one at risk.
+        same policy at the old box = cap = 150 (2026-07-29): B_x 146.0 -> A_x
+        149.017 (chained), B_x 147.0 -> A_x 150.038 (did not). The residual then
+        COLLAPSES (cycle 3: 145.938, cycle 4: 146.001), so cycle 2 is the only
+        one at risk — and at the shipped ``toss_workspace_xy_mm`` = 160 box
+        (2026-08-14) no valid B trips the check at all; it re-binds only if the
+        box is configured below cap × ~1.03.
 
         Single-sourced through ``self._toss_catch_policy`` —
         ``predicted_catch_command`` is the SAME object and method the deferred

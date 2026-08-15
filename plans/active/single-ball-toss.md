@@ -202,7 +202,7 @@ The 2026-07-24 merge of `demo/bb-led-two-ball-juggle` lands the ladder
 primitives, probes, tests, and logbook history in the working branch. Full
 suite green is the phase gate. Doc pointers: `sim/JUGGLE_DEMO.md` gains a
 banner distinguishing the (paused) offline demo from the online ladder;
-`plans/active/bb-led-two-ball-juggle-demo.md` § status gains a merged-location
+`plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md` § status gains a merged-location
 note; the 4 ladder entries never indexed on the demo branch
 (`2026-06-26-contact-mechanics-integration`, `2026-07-03-catch-control-formulation-design-basis`,
 `2026-07-03-motion-quality-review`, `2026-07-03-p2-selfcatch-reunification-tension`)
@@ -490,11 +490,17 @@ gates — the `±150 mm` planning box on `A` and the `150 mm` cap on `|B − A|`
 applied to a value 3.10 mm outside nominal. The offset is
 `hand_catch_offset·sin(receive tilt)` = 2.07 % of displacement, so it crosses the
 box at `|B| ≈ 147 mm`. Every refusal is loud, pre-throw and moves nothing; the
-remedy is one `go_home`. Pinned by
-`tests/ros/test_toss_sequencer.py::test_chaining_at_the_cap_is_refused_known_limitation`,
-documented as C-REACH-1 residual 7, and carried by the runbook's § SECTION DISP
-KNOWN LIMITATION box so the operator is never mis-routed. **Not fixed in this
-phase** — see the open question below; the fix is a frame decision, not a number.
+remedy is one `go_home`.
+**UPDATE 2026-08-14 — chaining refusal DISSOLVED by the box/cap separation**:
+the planning box is now the config key `toss_workspace_xy_mm` (default 160 =
+cap + 10 > cap × 1.03, i.e. above the 2.07 % divergence at the cap edge), so the
+parked centroid sits inside the box and chained goals at the cap are ADMITTED;
+back-to-centre from a cap-edge park still refuses on the `|B − A|` cap, which is
+a genuinely requested displacement. Pinned by
+`tests/ros/test_toss_sequencer.py::test_chaining_at_the_cap_box_dissolves_the_frame_divergence`,
+documented as C-REACH-1 residual 7 (updated in place). The frame decision below
+is therefore no longer *forced* by DISP-5/DISP-6 — those rungs run as written at
+the shipped box — but the centroid-vs-cup question itself stays open.
 
 **Open question the operator owns — the throw-site frame (centroid vs cup).**
 `trajectory/commanded_position` publishes the commanded centroid;
