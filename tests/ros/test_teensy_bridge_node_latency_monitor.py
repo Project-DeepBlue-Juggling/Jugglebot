@@ -253,6 +253,18 @@ def test_a_historical_high_water_does_not_latch_the_alarm():
         _send_cache(node, floor_us=CACHE_AGE_FLOOR_WARN_US + 5_000)
         _send_ring(node, true_depth_jb=0, avail_reported_jb=0, leak_hwm_jb=134)
         assert _tick(node)['latency_monitor'] == LATENCY_MONITOR_CACHE_AGE
+
+        # The bottom of the chain is reachable too. Both downstream conditions
+        # are checked because the precedence makes RING_LEAK mask BOTH, and a
+        # latch that only ever surfaced as a missing CACHE_AGE would still hide
+        # the clamp duty on a bridge with no FW >= 13 cache frames at all.
+        _send_cache(node, floor_us=0)
+        for i in range(_TICKS):
+            _send_ring(node, true_depth_jb=0, avail_reported_jb=0,
+                       leak_hwm_jb=134)
+            _tick(node, mask=(0x3 if i % 5 < 2 else 0))        # 40 % duty
+        assert _tick(node, mask=0x3)['latency_monitor'] == (
+            LATENCY_MONITOR_CLAMP_DUTY)
     finally:
         _teardown(teensy, client, node)
 

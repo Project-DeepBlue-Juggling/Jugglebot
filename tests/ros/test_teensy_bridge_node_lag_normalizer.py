@@ -593,6 +593,51 @@ def test_a_leak_on_another_bus_does_not_bar_the_jugglebot_calibration():
         _teardown(teensy, client, node)
 
 
+def test_a_boot_that_leaked_once_and_recovered_still_calibrates_at_the_node():
+    """The NODE's ring_clean gate reads the high-water as an EVENT, not a level.
+
+    Companion to the normaliser-level recovery test above, and the one that
+    actually pins the gate: that test hands ``ring_clean`` in directly, so it is
+    blind to how the node COMPUTES it. This one drives the real decode path with
+    the firmware's own semantics — ``leak_hwm_jb`` is a maximum since BOOT and
+    ``can_buses_ring_probe`` never clears it, so after any excursion it stays
+    high for the rest of the session no matter how healthy the ring becomes.
+
+    Gate that on the high-water's LEVEL and the corrected row reads ``n/a`` from
+    the first excursion to the next reboot — the instrument going dark at
+    exactly the uptime it was built for, on a bridge whose ring has already
+    recovered. The gate is therefore the SPOT leak plus a fresh-ADVANCE test,
+    and this test is what stops that pair regressing to the level form.
+    """
+    teensy, client, node = _node()
+    try:
+        # The excursion: 97 frames stranded, high-water advancing with it.
+        dirty = _drift_windows(5)
+        kv = _feed_node(node, dirty, true_depth_jb=97, avail_reported_jb=0,
+                        leak_hwm_jb=97)
+        assert kv['lag_corr_windows'] == '0', 'a leaking window calibrated'
+
+        # ...then the ring drains and STAYS drained, while the high-water keeps
+        # reporting 97 forever — the situation the level form cannot survive.
+        last = dirty[-1]
+        clean = _drift_windows(_LAG_CAL_MIN_WINDOWS + 5,
+                               start_seq=last['seq'] + 1,
+                               start_lag=last['lag_now_us'],
+                               t0=last['t_local_us'])
+        kv = _feed_node(node, clean, true_depth_jb=0, avail_reported_jb=0,
+                        leak_hwm_jb=97)
+
+        assert kv['leak_jb'] == '0'
+        assert kv['leak_hwm_jb'] == '97', (
+            'the fixture dropped the historical high-water; it must persist or '
+            'this test proves nothing')
+        assert kv['lag_corr_windows'] == str(_LAG_CAL_MIN_WINDOWS + 5), (
+            'the calibration gate latched on a since-boot maximum')
+        assert kv['lag_now_corrected_us'] != 'n/a'
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_an_unseeded_window_renders_the_corrected_row_as_na():
     """Same ``n/a`` discipline as the raw lag rows it sits beside."""
     teensy, client, node = _node()

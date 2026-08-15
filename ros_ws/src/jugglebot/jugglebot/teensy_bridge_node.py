@@ -1497,8 +1497,9 @@ class TeensyBridgeNode(Node):
         # transport vs the interp ladder vs the ODrives, and the entry's Addendum
         # names "LEG_CMD not published" as the first of its telemetry gaps. It is
         # also the input to the alarmed end-to-end command-latency monitor that
-        # closure Addendum requires (plans/active/bridge-temporal-trustworthiness.md
-        # P0 → P3).
+        # closure Addendum requires (delivered and validated 2026-08-15 —
+        # logbook/2026-08-15-fw14-validated-arc-closed.md; the plan that carried
+        # it, bridge-temporal-trustworthiness P0 → P3, is archived).
         self.leg_cmd_executed_pub = self.create_publisher(
             JointState, 'leg_cmd_executed', 50)
         # (_leg_cmd_queue is initialized above, before the subscribe block, to
