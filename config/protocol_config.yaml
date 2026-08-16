@@ -107,6 +107,37 @@ can_ids:
     CATCH_EVENT:      0x7E0
     HEARTBEAT:        0x7E1
 
+  # Electronic Clapboard <-> Host, on the CONE BUS (the can-bridge's physical
+  # CAN3 peripheral, which has hosted the cone role since the 2026-07-31 bus-role
+  # swap). The clapboard and the catching cone are MUTUALLY EXCLUSIVE by physical
+  # connection — one peripheral on that segment, ever — so the two id blocks
+  # coexist in software and which device is attached is knowable only from the
+  # arbitration ids arriving.
+  #
+  # NORMATIVE SOURCE: ~/Desktop/Github/Electronic-Clapboard docs/protocol.md §8.2.
+  # That section is a cross-repository contract; neither side may change it
+  # unilaterally. Do not invent ids here — copy them from there.
+  #
+  # Distinct ids (rather than reusing 0x7E0/0x7E1, which would be technically
+  # possible given the mutual exclusion) make a MIS-PLUG DIAGNOSABLE: frames
+  # arrive, land in no decode branch and show up as bare relay counts, instead of
+  # a clapboard heartbeat silently decoding as a catch event and injecting
+  # phantom catches into catch_correlation_node.
+  clapboard:
+    FIELD:            0x7E8   # J→C   one 7-byte chunk of one field's text
+    COMMIT:           0x7E9   # J→C   close a transaction: template, mask, CRC
+    LINK:             0x7EA   # B→C   2 Hz ROS2-up/down beacon (bridge-sourced)
+    ACK:              0x7EB   # C→J   transaction outcome + measured render_ms
+    HEARTBEAT:        0x7EC   # C→J   10 Hz liveness; ALSO what opens the TX gate
+    FIRE_EVENT:       0x7ED   # C→J   wall-clock instant of an accepted flash
+    # Inclusive bounds of the WHOLE allocation, reserved 0x7EE-0x7EF included.
+    # A frame anywhere in this block can only have come from a clapboard, so for
+    # the presence question the whole block is the right answer and a future
+    # allocation needs no code edit. Consumed by the firmware's is_clapboard_id()
+    # (can_buses.h) and mirrors the peer's own ID_CLAP_BLOCK_FIRST/LAST.
+    BLOCK_FIRST:      0x7E8
+    BLOCK_LAST:       0x7EF
+
 # =============================================================================
 # Ball Butler State Machine
 # =============================================================================
@@ -184,6 +215,43 @@ catching_cone:
     UNSYNCED:  1   # running, no time-sync acquired yet
     READY:     2   # synced, armed, waiting for an impact
     ERROR:     127
+
+# =============================================================================
+# Electronic Clapboard
+# =============================================================================
+# Wire contract: ~/Desktop/Github/Electronic-Clapboard docs/protocol.md §8.6-8.8.
+clapboard:
+  # If no CLAP_HEARTBEAT frame is received within this window, the clapboard is
+  # considered disconnected. The clapboard heartbeats at 10 Hz UNCONDITIONALLY
+  # from boot (§8.1/§8.7 — it must transmit first, because the bridge's TX gate
+  # will not speak on a bus where no partner has been heard), so 500 ms is five
+  # missed frames — the same margin the catching cone's identical 10 Hz
+  # heartbeat gets, and this presence verdict is timed HOST-SIDE off UDP
+  # arrival rather than mirrored from a firmware flag the way Ball Butler's is
+  # (which would cost new heartbeat flag bits, a regenerate and a reflash for
+  # something the Jetson can time perfectly well with a clock it already has).
+  heartbeat_timeout_ms: 500
+
+  # States — encoded in CLAP_HEARTBEAT byte 0 (§8.7). NOTE the values differ
+  # from the catching cone's (whose ERROR is 127): this enum is the clapboard
+  # repo's can_frames::State and is copied from it verbatim.
+  states:
+    BOOT:         0
+    IDLE:         1
+    RENDERING:    2
+    SCREENSAVER:  3
+    ERROR:        4
+
+  # Transaction outcomes — encoded in CLAP_ACK byte 1 (§8.6). Read by the
+  # SetSlate action (a later phase) and surfaced as the heartbeat's last_error.
+  ack_outcomes:
+    OK:            0x00   # committed and painted
+    REJECTED:      0x01   # generic refusal
+    CRC_MISMATCH:  0x02   # reassembled payload failed the CRC
+    INCOMPLETE:    0x03   # mask named a field with missing chunks
+    BUSY:          0x04   # a render was already in flight
+    NO_TEMPLATE:   0x05   # template_id not present in flash
+    BAD_FIELD_ID:  0x06   # a chunk carried field_id > 7
 
 # =============================================================================
 # Encoding / Scaling

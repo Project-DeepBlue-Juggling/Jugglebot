@@ -173,6 +173,14 @@ def generate_cpp(cfg: dict) -> str:
         lines.append(f"  constexpr uint32_t {name} = {fmt_hex(val)};")
     lines.append("}")
 
+    # Electronic Clapboard CAN IDs (same physical bus as the cone — see the YAML)
+    lines.append("")
+    lines.append("// Electronic Clapboard <-> Host (shares the CONE bus by role)")
+    lines.append("namespace ClapboardCanId {")
+    for name, val in cfg["can_ids"]["clapboard"].items():
+        lines.append(f"  constexpr uint32_t {name} = {fmt_hex(val)};")
+    lines.append("}")
+
     # Ball Butler scalar constants
     lines += cpp_section("Ball Butler State Machine")
     lines.append("namespace BallButler {")
@@ -225,6 +233,27 @@ def generate_cpp(cfg: dict) -> str:
     lines.append("namespace CatchingConeState {")
     for name, val in cfg["catching_cone"]["states"].items():
         lines.append(f"  constexpr uint8_t {name} = {val};")
+    lines.append("}")
+
+    # Electronic Clapboard scalar constants + states + ack outcomes
+    lines += cpp_section("Electronic Clapboard")
+    lines.append("namespace Clapboard {")
+    for name, val in cfg["clapboard"].items():
+        if not isinstance(val, dict):
+            ctype, cval = _cpp_type_and_val(val)
+            lines.append(f"  constexpr {ctype} {name.upper()} = {cval};")
+    lines.append("}")
+    lines.append("")
+    lines.append("// States — encoded in CLAP_HEARTBEAT byte 0")
+    lines.append("namespace ClapboardState {")
+    for name, val in cfg["clapboard"]["states"].items():
+        lines.append(f"  constexpr uint8_t {name} = {val};")
+    lines.append("}")
+    lines.append("")
+    lines.append("// Transaction outcomes — encoded in CLAP_ACK byte 1")
+    lines.append("namespace ClapboardAckOutcome {")
+    for name, val in cfg["clapboard"]["ack_outcomes"].items():
+        lines.append(f"  constexpr uint8_t {name} = {fmt_hex(val)};")
     lines.append("}")
 
     # Heartbeat encoding
@@ -368,6 +397,12 @@ def generate_python(cfg: dict) -> str:
     lines.append("# Catching Cone Teensy <-> Host")
     for name, val in cfg["can_ids"]["catching_cone"].items():
         lines.append(f"CAN_ID_CC_{name} = {fmt_hex(val)}")
+    lines.append("")
+
+    # Electronic Clapboard CAN IDs (same physical bus as the cone — see the YAML)
+    lines.append("# Electronic Clapboard <-> Host (shares the CONE bus by role)")
+    for name, val in cfg["can_ids"]["clapboard"].items():
+        lines.append(f"CAN_ID_CLAP_{name} = {fmt_hex(val)}")
 
     # Ball Butler scalar constants (e.g. heartbeat_timeout_ms)
     lines += py_section("Ball Butler State Machine")
@@ -410,6 +445,22 @@ def generate_python(cfg: dict) -> str:
     lines.append("# States — encoded in CONE_HEARTBEAT byte 0")
     lines.append("class CatchingConeStates(IntEnum):")
     for name, val in cfg["catching_cone"]["states"].items():
+        lines.append(f"    {name} = {val}")
+
+    # Electronic Clapboard scalar constants + states + ack outcomes
+    lines += py_section("Electronic Clapboard")
+    for name, val in cfg["clapboard"].items():
+        if not isinstance(val, dict):
+            lines.append(f"CLAP_{name.upper()} = {val}")
+    lines.append("")
+    lines.append("# States — encoded in CLAP_HEARTBEAT byte 0")
+    lines.append("class ClapboardStates(IntEnum):")
+    for name, val in cfg["clapboard"]["states"].items():
+        lines.append(f"    {name} = {val}")
+    lines.append("")
+    lines.append("# Transaction outcomes — encoded in CLAP_ACK byte 1")
+    lines.append("class ClapboardAckOutcome(IntEnum):")
+    for name, val in cfg["clapboard"]["ack_outcomes"].items():
         lines.append(f"    {name} = {val}")
 
     # Heartbeat encoding

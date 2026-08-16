@@ -126,6 +126,29 @@ class CatchingConeHeartbeatMsg:
 
 
 @dataclass
+class ClapboardHeartbeatMsg:
+    connected: bool = False
+    state: int = 0
+    fire_ready: bool = False
+    template_loaded: bool = False
+    wifi_up: bool = False
+    rail_ok: bool = False
+    time_synced: bool = False
+    fires_since_boot: int = 0
+    rail_mv: int = 0
+    active_template_id: int = 0
+    last_error: int = 0
+
+
+@dataclass
+class ClapboardFireEventMsg:
+    header: object = field(default_factory=lambda: MagicMock())
+    fire_time: object = None
+    fire_time_us: int = 0
+    fires_since_boot: int = 0
+
+
+@dataclass
 class CatchTimingResultMsg:
     header: object = field(default_factory=lambda: MagicMock())
     matched: bool = False
@@ -947,6 +970,8 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'CatchEvent': CatchEventMsg,
     'CatchingConeHeartbeat': CatchingConeHeartbeatMsg,
     'CatchTimingResult': CatchTimingResultMsg,
+    'ClapboardHeartbeat': ClapboardHeartbeatMsg,
+    'ClapboardFireEvent': ClapboardFireEventMsg,
     'HandTelemetryMessage': HandTelemetryMessage,
     'LegsTargetReachedMessage': LegsTargetReachedMessage,
     'RigidBodyPose': RigidBodyPose,

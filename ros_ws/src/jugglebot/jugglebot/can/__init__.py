@@ -12,6 +12,8 @@ Modules:
     odrive.py          — ODrive CAN protocol encode/decode
     ball_butler.py     — Ball Butler heartbeat and command encoding
     catching_cone.py   — catching-cone frame decode
+    clapboard.py       — electronic-clapboard frame decode (same physical bus as
+                         the cone; the two devices are mutually exclusive)
     motor_state.py     — Thread-safe per-axis motor state tracking
     throw_ballistics.py — Ball Butler throw ballistics helpers
 """

@@ -64,6 +64,8 @@ from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
     CatchEvent,
     CatchingConeHeartbeat,
+    ClapboardFireEvent,
+    ClapboardHeartbeat,
     HandTelemetryMessage,
     MotorStateSingle,
     RobotState,
@@ -132,6 +134,7 @@ from teensy_link.deactivate import (
     DeactivateMonitor, AxisStatus as DeactivateAxisStatus,
 )
 from jugglebot.can import catching_cone
+from jugglebot.can import clapboard
 from jugglebot.can import odrive
 from jugglebot.can.motor_state import MotorStateTracker
 import jugglebot.hardware_config as hw
@@ -774,6 +777,14 @@ _FLAG_MPC_ACTIVE = 0x1
 # series out), never a stale flatline at the last commanded value.
 _SETPOINT_ECHO_STALE_S = 0.5
 
+#: Cap on the clapboard fire-event queue (drop-oldest), mirroring the cone
+#: catch-event sibling's 4000. Flashes are hard-limited to one per 1.5 s on the
+#: device, so this only ever guards a wedged 100 Hz drain — but a discrete-event
+#: queue with no bound is how an RX thread turns a stalled timer into an OOM.
+#: Named (rather than inline as the cone's is) so the bound test asserts the
+#: constant instead of re-typing the literal.
+_CLAP_FIRE_QUEUE_MAX = 4000
+
 # HeartbeatT2J.flags bits (T→J), per the protocol SPEC.
 _T2J_FLAG_TIME_SYNCED = 0x1
 _T2J_FLAG_STOW_PENDING = 0x2
@@ -1214,6 +1225,47 @@ class TeensyBridgeNode(Node):
         self._cone_last_hb_mono = 0.0
         self._cone_hb_timeout_s = proto.CC_HEARTBEAT_TIMEOUT_MS / 1000.0
 
+        # ── Electronic clapboard state (SAME relay, different id block) ──
+        # The clapboard rides the cone bus in the cone's place (they are mutually
+        # exclusive by physical connection), so its frames arrive on the very same
+        # CONE_FRAME uplink and are told apart by arbitration id alone. Same
+        # discrete-vs-state split as the cone above: fire events are DISCRETE and
+        # every one is queued and published exactly once (a stash-latest would
+        # delete the sync record the device exists to produce); the heartbeat is
+        # state — latest wins.
+        #
+        # PRESENCE IS TIMED HOST-SIDE, off UDP arrival, exactly as the cone's is —
+        # NOT mirrored from a firmware flag the way _bb_present() reads Ball
+        # Butler's. Root cause: a firmware-flag route would mean new heartbeat
+        # flag bits, a regenerate and a reflash to learn something the Jetson can
+        # measure perfectly well with a monotonic clock it already has.
+        #
+        # Declared HERE, before the subscribe block below, for the same startup
+        # -race reason the queues at :1268 give: the RX thread is already live.
+        self._clap_fire_queue: list = []   # [(decoded ClapboardFireEvent, host_arrival_us)]
+        self._latest_clap_hb = clapboard.ClapboardHeartbeat()
+        self._clap_hb_received = False
+        self._clap_last_hb_mono = 0.0
+        self._clap_hb_timeout_s = proto.CLAP_HEARTBEAT_TIMEOUT_MS / 1000.0
+        # Latest CLAP_ACK, decoded and stashed but NOT yet consumed: the SetSlate
+        # action that correlates txn_ids against it is a later phase, and there is
+        # no way to provoke an ack until the downlink firmware exists. Decoding it
+        # here anyway keeps ONE decode point for the frame, so the action cannot
+        # later grow a second one that drifts.
+        self._latest_clap_ack = None
+        self._latest_clap_ack_mono = 0.0
+        # Count of DOWNLINK-ONLY clapboard ids (0x7E8/0x7E9/0x7EA) seen arriving on
+        # the UPLINK. Per the handoff doc these should never appear inbound; they
+        # are counted here and reported ONCE from the publish timer rather than
+        # logged from the RX callback, because that callback is bound by the
+        # log-free contract at :33-38 (see _record_bridge_fw_version's carve-out
+        # note for why that rule exists: a malformed-frame storm must not become a
+        # logging storm on the frame-receive path).
+        self._clap_downlink_uplink_count = 0
+        # Timer-thread-only latch for that one-shot report — same no-lock argument
+        # as _echo_last_pub_seq (the timer's callback group serializes it).
+        self._clap_downlink_uplink_warned = False
+
         # Link-loss deferred-stow latch (the bridge's UDP-link watchdog — the
         # Jetson↔Teensy analog of can_node._watchdog_check; the CAN-side latch is
         # owned by the Teensy firmware). See teensy_link/fault_logic.py.
@@ -1610,6 +1662,21 @@ class TeensyBridgeNode(Node):
         self.cone_heartbeat_pub = self.create_publisher(
             CatchingConeHeartbeat, 'cone/heartbeat', 10)
 
+        # ── Electronic clapboard (same CONE_FRAME relay, 0x7E8-0x7EF ids) ────
+        # A separate topic family rather than an overload of cone/*: the two
+        # devices are mutually exclusive on the wire but their SEMANTICS share
+        # nothing, and cone/* already has consumers (catch_correlation_node, the
+        # GUI panel, tools/probes/cone_bag_decode.py) that must see no change.
+        #
+        # clapboard/fire_event is the point of the whole device — the wall-clock
+        # instant of each sync flash, on a real topic with a real header.stamp so
+        # it lands in the session bag and can be joined against robot telemetry in
+        # post. A log line would not survive the sitting.
+        self.clapboard_heartbeat_pub = self.create_publisher(
+            ClapboardHeartbeat, 'clapboard/heartbeat', 10)
+        self.clapboard_fire_event_pub = self.create_publisher(
+            ClapboardFireEvent, 'clapboard/fire_event', 10)
+
         # Ball Butler ODrive diagnostics (CAN1 nodes 7=pitch, 8=hand). The bridge
         # emits these as DIAGNOSTIC frames with axis_id 7/8, stashed in
         # self._latest_diag[7|8] by _on_diagnostic; republished as a flat array.
@@ -1761,6 +1828,10 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.1, self._publish_bb_heartbeat)     # 10 Hz BB (matches CAN1 rate)
         self.create_timer(0.01, self._drain_cone_catch_events) # 100 Hz cone events (cheap when idle)
         self.create_timer(0.1, self._publish_cone_heartbeat)   # 10 Hz cone (matches CAN2 rate)
+        # Clapboard: same two-timer shape as the cone, and for the same reason —
+        # discrete events drained fast, state republished at the source's rate.
+        self.create_timer(0.01, self._drain_clapboard_fire_events)  # 100 Hz (cheap when idle)
+        self.create_timer(0.1, self._publish_clapboard_heartbeat)   # 10 Hz (matches the 0x7EC rate)
         self.create_timer(0.01, self._publish_bb_axis_estimates)  # 100 Hz drain (BB pitch/hand est.)
         self.create_timer(0.01, self._publish_leg_cmd_executed)   # 100 Hz drain (Teensy post-clamp leg cmd)
         # 1 Hz is ample for a ~30 s (worst case 500 ms) anchor cadence, and keeps
@@ -1989,10 +2060,47 @@ class TeensyBridgeNode(Node):
         # drain timer publishes ready-made events; anything malformed or
         # unrecognised (future cone frame types) is dropped silently, matching
         # the other RX callbacks' never-kill-the-RX-thread contract.
+        #
+        # THE CONE BUS IS SHARED BY ROLE. The can-bridge's on_cone_rx() has no
+        # arbitration-id filter — it rings and relays every frame on that segment
+        # verbatim — so a plugged-in electronic clapboard's frames already arrive
+        # here and were, until this dispatch existed, silently dropped by the
+        # fall-through. The clapboard branches go FIRST and the cone branches
+        # below are left untouched; tests/ros/test_teensy_bridge_node_cone.py
+        # passing UNMODIFIED is the proof of that (catch_correlation_node and the
+        # analysis tooling depend on the cone path byte-for-byte).
         try:
             cf = ConeFrame.unpack(payload)
             data = bytes(cf.data[:cf.dlc])
-            if cf.can_id == catching_cone.CATCH_EVENT_ID:
+            # ── Electronic clapboard (0x7E8-0x7EF) ──
+            if cf.can_id == clapboard.HEARTBEAT_ID:
+                hb = clapboard.ClapboardHeartbeat.from_can_frame(data)
+                with self._lock:
+                    self._latest_clap_hb = hb
+                    self._clap_hb_received = True
+                    self._clap_last_hb_mono = time.monotonic()
+            elif cf.can_id == clapboard.FIRE_EVENT_ID:
+                fe = clapboard.ClapboardFireEvent.from_can_frame(data)
+                # Wall time (not monotonic) because the frame's own 48-bit stamp
+                # is reconstructed against it — see reconstruct_fire_time_us.
+                arrival_us = int(time.time() * 1e6)
+                with self._lock:
+                    q = self._clap_fire_queue
+                    q.append((fe, arrival_us))
+                    if len(q) > _CLAP_FIRE_QUEUE_MAX:
+                        del q[:len(q) - _CLAP_FIRE_QUEUE_MAX]
+            elif cf.can_id == clapboard.ACK_ID:
+                ack = clapboard.ClapboardAck.from_can_frame(data)
+                with self._lock:
+                    self._latest_clap_ack = ack
+                    self._latest_clap_ack_mono = time.monotonic()
+            elif cf.can_id in clapboard.DOWNLINK_ONLY_IDS:
+                # Downlink-only id seen inbound — count it; the publish timer
+                # reports it once (no logging on the RX thread, per :33-38).
+                with self._lock:
+                    self._clap_downlink_uplink_count += 1
+            # ── EXISTING cone branches — UNCHANGED BELOW THIS LINE ──
+            elif cf.can_id == catching_cone.CATCH_EVENT_ID:
                 evt = catching_cone.CatchEvent.from_can_frame(data)
                 arrival_us = int(time.time() * 1e6)
                 with self._lock:
@@ -6454,6 +6562,112 @@ class TeensyBridgeNode(Node):
             self.cone_heartbeat_pub.publish(msg)
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Cone heartbeat publish error: {e}")
+
+    # ═══════════════════════════════════════════════════════════
+    # Electronic clapboard (same CONE_FRAME relay, 0x7E8-0x7EF id block —
+    # structurally the cone pair above, because the presence problem is the same)
+    # ═══════════════════════════════════════════════════════════
+
+    def _drain_clapboard_fire_events(self):
+        """Publish every queued sync flash on clapboard/fire_event (100 Hz drain).
+
+        The frame carries only the LOW 48 BITS of the clapboard's wall clock (a
+        2026 Unix-µs value needs 51), so the absolute instant is reconstructed
+        against the host's clock at UDP arrival — see
+        ``clapboard.reconstruct_fire_time_us`` for why the wire field cannot be
+        taken at face value. There is no unsynced fallback branch, unlike the
+        cone's: the clapboard emits no fire event at all until its clock is
+        anchored, so every message that reaches here is anchored by construction.
+
+        One failure mode is deliberately left to fail closed: a GROSS backwards
+        host-clock jump (host now near the epoch while the device's anchor was
+        taken from a correct clock) can make the reconstruction land negative,
+        which ``rclpy.time.Time`` refuses. That raises, the per-event ``except``
+        below logs it, and the record is DROPPED rather than published with a
+        wrong stamp — the peer's own judgement (§8.8: a missing sync record is
+        recoverable in post, a wrong one silently corrupts an edit). The >1 s
+        warning fires first, so the log names the cause before the failure.
+        """
+        with self._lock:
+            if not self._clap_fire_queue:
+                return
+            queued = self._clap_fire_queue
+            self._clap_fire_queue = []
+        for fe, arrival_us in queued:
+            try:
+                msg = ClapboardFireEvent()
+                msg.header.frame_id = 'clapboard'
+                fire_us = clapboard.reconstruct_fire_time_us(
+                    fe.wall_us_low48, arrival_us)
+                # Defensive, exactly as the cone drain is: a host-clock jump
+                # between the clapboard's last 0x7DD anchor and this decode can
+                # place the reconstructed high bits in the wrong wrap window. A
+                # flash is necessarily within ms of UDP arrival, so flag anything
+                # beyond ~1 s as a likely artefact rather than a real instant.
+                delta_us = abs(fire_us - arrival_us)
+                if delta_us > 1_000_000:
+                    self.get_logger().warning(
+                        f"Clapboard fire {fe.fires_since_boot}: reconstructed "
+                        f"time {delta_us / 1e6:.2f} s from host now — possible "
+                        "host clock jump or stale clapboard time-sync.",
+                        throttle_duration_sec=5.0)
+                stamp = rclpy.time.Time(nanoseconds=fire_us * 1000).to_msg()
+                msg.header.stamp = stamp
+                msg.fire_time = stamp
+                msg.fire_time_us = fire_us
+                msg.fires_since_boot = fe.fires_since_boot
+                self.clapboard_fire_event_pub.publish(msg)
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error(f"Clapboard fire event publish error: {e}")
+
+    def _publish_clapboard_heartbeat(self):
+        """Publish clapboard/heartbeat (10 Hz) from the latest relayed CLAP_HEARTBEAT.
+
+        ``connected`` requires a clapboard heartbeat within
+        CLAP_HEARTBEAT_TIMEOUT_MS, measured on the host monotonic clock from UDP
+        arrival — the cone's rule, not Ball Butler's firmware-flag one, so no
+        firmware change is needed to know whether a clapboard is attached.
+
+        Publishes connected=False defaults BEFORE the first heartbeat. That is a
+        stated consumer contract, not an accident: a consumer can only render
+        "clapboard disconnected" if the topic is alive to say so.
+        """
+        try:
+            with self._lock:
+                hb = self._latest_clap_hb
+                received = self._clap_hb_received
+                last_mono = self._clap_last_hb_mono
+                downlink_seen = self._clap_downlink_uplink_count
+            connected = (received
+                         and (time.monotonic() - last_mono) < self._clap_hb_timeout_s)
+            msg = ClapboardHeartbeat()
+            msg.connected = connected
+            msg.state = int(hb.state)
+            msg.fire_ready = hb.fire_ready
+            msg.template_loaded = hb.template_loaded
+            msg.wifi_up = hb.wifi_up
+            msg.rail_ok = hb.rail_ok
+            msg.time_synced = hb.time_synced
+            msg.fires_since_boot = hb.fires_since_boot
+            msg.rail_mv = hb.rail_mv
+            msg.active_template_id = hb.active_template_id
+            msg.last_error = hb.last_error
+            self.clapboard_heartbeat_pub.publish(msg)
+            # One-shot report of downlink-only ids seen inbound. Announced here
+            # rather than in the RX callback so the frame-receive path stays
+            # log-free; announced ONCE because the condition is a wiring fault,
+            # not an event, and a repeat at 10 Hz is how a detector dies.
+            if downlink_seen and not self._clap_downlink_uplink_warned:
+                self._clap_downlink_uplink_warned = True
+                self.get_logger().warning(
+                    f'CLAPBOARD: {downlink_seen} frame(s) with a DOWNLINK-ONLY '
+                    f'arbitration id (0x7E8 CLAP_FIELD / 0x7E9 CLAP_COMMIT / '
+                    f'0x7EA CLAP_LINK) arrived on the uplink and were dropped. '
+                    f'Those ids only ever travel Jetson/bridge to clapboard, so '
+                    f'this means a second transmitter on the cone segment or a '
+                    f'bridge echoing its own TX. Reported once per launch.')
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"Clapboard heartbeat publish error: {e}")
 
     # Extra wait (s) past throw_time before the action times out a result. Covers
     # the wind-up + release + the streamer completing and the firmware emitting OK.

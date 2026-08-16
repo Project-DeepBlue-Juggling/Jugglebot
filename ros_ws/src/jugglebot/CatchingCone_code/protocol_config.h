@@ -126,6 +126,18 @@ namespace CatchingConeCanId {
   constexpr uint32_t HEARTBEAT = 0x7E1;
 }
 
+// Electronic Clapboard <-> Host (shares the CONE bus by role)
+namespace ClapboardCanId {
+  constexpr uint32_t FIELD = 0x7E8;
+  constexpr uint32_t COMMIT = 0x7E9;
+  constexpr uint32_t LINK = 0x7EA;
+  constexpr uint32_t ACK = 0x7EB;
+  constexpr uint32_t HEARTBEAT = 0x7EC;
+  constexpr uint32_t FIRE_EVENT = 0x7ED;
+  constexpr uint32_t BLOCK_FIRST = 0x7E8;
+  constexpr uint32_t BLOCK_LAST = 0x7EF;
+}
+
 // ==========================================================================
 // Ball Butler State Machine
 // ==========================================================================
@@ -193,6 +205,34 @@ namespace CatchingConeState {
   constexpr uint8_t UNSYNCED = 1;
   constexpr uint8_t READY = 2;
   constexpr uint8_t ERROR = 127;
+}
+
+// ==========================================================================
+// Electronic Clapboard
+// ==========================================================================
+
+namespace Clapboard {
+  constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 500u;
+}
+
+// States — encoded in CLAP_HEARTBEAT byte 0
+namespace ClapboardState {
+  constexpr uint8_t BOOT = 0;
+  constexpr uint8_t IDLE = 1;
+  constexpr uint8_t RENDERING = 2;
+  constexpr uint8_t SCREENSAVER = 3;
+  constexpr uint8_t ERROR = 4;
+}
+
+// Transaction outcomes — encoded in CLAP_ACK byte 1
+namespace ClapboardAckOutcome {
+  constexpr uint8_t OK = 0x00;
+  constexpr uint8_t REJECTED = 0x01;
+  constexpr uint8_t CRC_MISMATCH = 0x02;
+  constexpr uint8_t INCOMPLETE = 0x03;
+  constexpr uint8_t BUSY = 0x04;
+  constexpr uint8_t NO_TEMPLATE = 0x05;
+  constexpr uint8_t BAD_FIELD_ID = 0x06;
 }
 
 // ==========================================================================

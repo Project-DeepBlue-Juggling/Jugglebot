@@ -119,6 +119,20 @@ RECORDED_TOPICS = [
     # bridge is flashed to FW 13, and a silent topic is exactly what this list's
     # add-never-trim rule is for.
     '/ring_diag',
+    # The electronic clapboard's sync-flash record — the wall-clock instant of
+    # each clap, and the ONLY thing that lets a sitting's multi-camera footage be
+    # aligned against robot telemetry afterwards. Alignment is inherently a
+    # post-session job, so a bag without this topic makes that session's footage
+    # permanently unalignable: the sharpest case of this list's add-never-trim
+    # rule. Records EMPTY until a clapboard is physically attached to the cone
+    # bus, and a silent topic is exactly what that rule is for.
+    '/clapboard/fire_event',
+    # Its companion state channel: attached / time-synced / fire-ready, at 10 Hz.
+    # Without it a bag cannot distinguish "no claps happened" from "claps
+    # happened but went unrecorded" — the clapboard deliberately emits NO fire
+    # event while its wall clock is unanchored, so that gap is expected and only
+    # this topic explains it.
+    '/clapboard/heartbeat',
 ]
 
 

@@ -212,7 +212,7 @@ exactly this reason.
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | 0 | Test-surface prep: `ConeFrame` round-trip, header-inline ID predicates + native tests. No behaviour change, no flash | COMPLETE | 2026-08-16 | Low | The two coverage holes that Phases 1–3 would otherwise land into blind |
-| 1 | Uplink: config, decoder, msgs, dispatch, topics, tests. Jetson-only, `colcon build` alone | NOT STARTED | | Low | A plugged-in clapboard becomes observable in ROS2 with zero firmware work |
+| 1 | Uplink: config, decoder, msgs, dispatch, topics, tests. Jetson-only, `colcon build` alone | COMPLETE | 2026-08-16 | Low | A plugged-in clapboard becomes observable in ROS2 with zero firmware work |
 | 2 | **Firmware, single FW 15**: ID-discriminated health + `CLAPBOARD_PRESENT` bit + 2 Hz `CLAP_LINK` emitter + `CLAP_SEND` RPC + paced `clap_tx` drain + `CLAP_DIAG` | NOT STARTED | | Medium-High | Items 1, 2 and 4 — the whole firmware surface in one flash |
 | 3 | `SetSlate` action on the bridge node: chunking, CRC, `txn_id`, timeout. Jetson-only | NOT STARTED | | Medium | Item 5; end-to-end slate push under test against a FakeTeensy |
 | 4 | Cross-repo contract tests: shared CRC vector, DLC-8 enforcement, layout goldens | NOT STARTED | | Low | The two repos cannot drift apart silently |
@@ -298,7 +298,42 @@ them — so no new binary and no `build.py` entry is required.
 
 ---
 
-### Phase 1: Uplink — Jetson only — NOT STARTED
+### Phase 1: Uplink — Jetson only — COMPLETE (2026-08-16)
+
+> **Landed 2026-08-16.** `logbook/2026-08-16-clapboard-phase1-uplink.md`.
+> The named trap was real and was caught by inspecting the artifacts rather than
+> by any test: `protocol_config.yaml` has no registration table, so both emitter
+> blocks were hand-written and the constants verified present in
+> `protocol_config.h` AND `protocol_config.py` before anything consumed them.
+> `test_teensy_bridge_node_cone.py` passes **unmodified** (T-R1).
+>
+> **One correction to this section's `CLAP_FIRE_EVENT` note, from the peer's
+> code rather than its prose.** The 48-bit µs field is not merely "masked so
+> overflow cannot bleed into the sequence number" — it is the **low 48 bits of a
+> Unix-epoch µs clock that needs 51**, so the host must reconstruct the high bits
+> exactly as it already does for the cone's low-32 catch timestamps. Taking the
+> wire field at face value stamps every flash in 1978. `protocol.md` §8.8's
+> "~8.9 years" is the wrap period, not the representable range, and states no
+> reconstruction rule; `can_frames.h::encode_fire_event`'s
+> `& 0x0000FFFFFFFFFFFF` is the authority. Same class of unstated-but-enforced
+> rule as the strict DLC-8 receive check this plan already flags.
+>
+> Three judgement calls made at implementation time, all documented inline:
+> (a) the heartbeat's `state` and the ack's `outcome` decode as plain ints, NOT
+> coerced to the generated `IntEnum` — a strict coercion raises, the RX callback
+> drops the frame, and the node reports the clapboard *disconnected* 500 ms
+> later, which is a confidently wrong operator-facing verdict where an
+> unrecognised number is merely uninformative (a deliberate deviation from
+> `catching_cone.ConeHeartbeat`); (b) downlink-only ids arriving on the uplink
+> are **counted** on the RX thread and reported **once from the publish timer**,
+> because `_on_cone_frame` is bound by the log-free RX contract at `:33-38`;
+> (c) `CLAP_ACK` is decoded and stashed but not consumed, so Phase 3 inherits one
+> decode point instead of growing a second.
+>
+> The Phase 0 landing note's pre-registered follow-up is done: `is_clapboard_id`
+> now spans `ClapboardCanId::BLOCK_FIRST`..`BLOCK_LAST` instead of literals.
+> Uncalled inlines emit no code, so the firmware is unchanged and no flash is
+> implied. Deploy = `colcon build` of `jugglebot_interfaces` then `jugglebot`.
 
 **New/modified files**
 
@@ -771,7 +806,7 @@ pre-hardware), and at phase closure throughout. Report every count with the
 | Every CAN frame both directions is DLC 8 | clapboard `can_frames.h:191-232` | Silently dropped. No error on either side |
 | Firmware never retries a gated TX and never bypasses the gate | `can_buses.cpp:979-1008` | Un-ACKed TX pins TEC at 128 → bus-off, on an already-marginal drive path |
 | Frames paced one per tick, never burst | Phase 3 drain | Untested load profile on the degraded CAN3 transceiver |
-| Cone dispatch branch byte-identical | `teensy_bridge_node.py:1994-2010` | `catch_correlation_node` and analysis tooling break |
+| Cone dispatch branch byte-identical | `teensy_bridge_node.py:2103-2119` (was `:1994-2010` before Phase 1 inserted the clapboard branches above them) | `catch_correlation_node` and analysis tooling break |
 | New `BusRxHealth` fields must be added to `snapshot_bus` | `can_buses.cpp:1141-1174` | Field reads as uninitialised stack |
 | `-e teensy41` explicit on every flash | `platformio.ini:18-25` | Bench-sysid variant lands last and wins, silently |
 | Confirm flash on `BRIDGE_IDENTITY` | `telemetry.cpp:599-617` | FW 9–14 were wire-identical; a healthy link proves nothing |

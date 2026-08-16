@@ -46,7 +46,7 @@
 #include <cstdint>
 #include "odrive_protocol.h"
 #include "udp_protocol.h"   // JbUdp::BusHealth
-#include "protocol_config.h"  // PlatformCanId (relay reply ids), CatchingConeCanId
+#include "protocol_config.h"  // PlatformCanId (relay reply ids), CatchingConeCanId, ClapboardCanId
 #include "canbridge_config.h" // BUS_PARTNER_STALENESS_US (TX presence gate)
 
 namespace CanBridge {
@@ -208,11 +208,12 @@ inline bool is_platform_reply_id(uint32_t id) {
 // 0x7EE-0x7EF reserved. The reserved pair is deliberately INSIDE the predicate:
 // a frame in this block can only have come from a clapboard, so for the
 // presence question the whole block is the right answer, and a future
-// allocation needs no edit here. Literals rather than named constants because
-// no generated ClapboardCanId namespace exists yet — Phase 1 adds the
-// protocol_config.yaml block, and this predicate should adopt it then.
+// allocation needs no edit here. Adopted the generated ClapboardCanId bounds in
+// Phase 1 (2026-08-16), as the Phase 0 landing note pre-registered: the block is
+// now declared once, in config/protocol_config.yaml, so this predicate and the
+// Jetson-side decoder cannot drift from each other or from the peer repo.
 inline bool is_clapboard_id(uint32_t id) {
-  return id >= 0x7E8u && id <= 0x7EFu;
+  return id >= ClapboardCanId::BLOCK_FIRST && id <= ClapboardCanId::BLOCK_LAST;
 }
 
 // True iff `id` belongs to the CATCHING CONE: 0x7E0 CATCH_EVENT / 0x7E1

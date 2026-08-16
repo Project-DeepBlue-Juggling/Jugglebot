@@ -516,6 +516,24 @@ def generate_launch_description():
             '/cone/catch_event',
             '/cone/heartbeat',
             '/cone/timing_result',
+            # The electronic clapboard, on the same cone bus (it physically
+            # REPLACES the cone, so exactly one of these two families is ever
+            # live in a given sitting). /clapboard/fire_event is the whole point
+            # of the device: the wall-clock instant of each sync flash, which is
+            # what multi-camera footage is aligned against in post. It exists to
+            # be joined with the rest of a session's telemetry AFTER the sitting,
+            # so a bag that lacks it makes that session's footage permanently
+            # unalignable — the strongest form of this list's "a missing topic is
+            # unrecoverable after the fact" rule. /clapboard/heartbeat is the
+            # companion that says whether the device was attached, time-synced
+            # and fire-ready at each instant, which is the only way to tell a
+            # session with no flashes from a session whose flashes went
+            # unrecorded (the clapboard emits NO fire event while unsynced).
+            # Both are low-rate: 10 Hz and one-per-clap. Record EMPTY until a
+            # clapboard is physically attached, which is the add-a-silent-topic
+            # case this list blesses.
+            '/clapboard/heartbeat',
+            '/clapboard/fire_event',
             '/bb/odrive_diag',
             '/bb/axis_estimates',
             # The two telemetry gaps the 2026-07-18 uptime-lag investigation

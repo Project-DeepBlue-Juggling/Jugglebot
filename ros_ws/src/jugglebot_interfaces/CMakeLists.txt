@@ -45,6 +45,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CatchEvent.msg"
   "msg/CatchingConeHeartbeat.msg"
   "msg/CatchTimingResult.msg"
+  # Electronic clapboard — same cone bus as the two above, different id block.
+  "msg/ClapboardHeartbeat.msg"
+  "msg/ClapboardFireEvent.msg"
   "msg/TrajectoryStatus.msg"
   "msg/TargetFeedback.msg"
 

@@ -108,6 +108,16 @@ CAN_ID_BB_CMD_RESULT = 0x7D5
 CAN_ID_CC_CATCH_EVENT = 0x7E0
 CAN_ID_CC_HEARTBEAT = 0x7E1
 
+# Electronic Clapboard <-> Host (shares the CONE bus by role)
+CAN_ID_CLAP_FIELD = 0x7E8
+CAN_ID_CLAP_COMMIT = 0x7E9
+CAN_ID_CLAP_LINK = 0x7EA
+CAN_ID_CLAP_ACK = 0x7EB
+CAN_ID_CLAP_HEARTBEAT = 0x7EC
+CAN_ID_CLAP_FIRE_EVENT = 0x7ED
+CAN_ID_CLAP_BLOCK_FIRST = 0x7E8
+CAN_ID_CLAP_BLOCK_LAST = 0x7EF
+
 # ============================================================================
 # Ball Butler State Machine
 # ============================================================================
@@ -167,6 +177,30 @@ class CatchingConeStates(IntEnum):
     UNSYNCED = 1
     READY = 2
     ERROR = 127
+
+# ============================================================================
+# Electronic Clapboard
+# ============================================================================
+
+CLAP_HEARTBEAT_TIMEOUT_MS = 500
+
+# States — encoded in CLAP_HEARTBEAT byte 0
+class ClapboardStates(IntEnum):
+    BOOT = 0
+    IDLE = 1
+    RENDERING = 2
+    SCREENSAVER = 3
+    ERROR = 4
+
+# Transaction outcomes — encoded in CLAP_ACK byte 1
+class ClapboardAckOutcome(IntEnum):
+    OK = 0
+    REJECTED = 1
+    CRC_MISMATCH = 2
+    INCOMPLETE = 3
+    BUSY = 4
+    NO_TEMPLATE = 5
+    BAD_FIELD_ID = 6
 
 # ============================================================================
 # Encoding / Scaling
