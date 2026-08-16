@@ -214,7 +214,7 @@ exactly this reason.
 | 0 | Test-surface prep: `ConeFrame` round-trip, header-inline ID predicates + native tests. No behaviour change, no flash | COMPLETE | 2026-08-16 | Low | The two coverage holes that Phases 1–3 would otherwise land into blind |
 | 1 | Uplink: config, decoder, msgs, dispatch, topics, tests. Jetson-only, `colcon build` alone | COMPLETE | 2026-08-16 | Low | A plugged-in clapboard becomes observable in ROS2 with zero firmware work |
 | 2 | **Firmware, single FW 15**: ID-discriminated health + `CLAPBOARD_PRESENT` bit + 2 Hz `CLAP_LINK` emitter + `CLAP_SEND` RPC + paced `clap_tx` drain + `CLAP_DIAG` | COMPLETE | 2026-08-16 | Medium-High | Items 1, 2 and 4 — the whole firmware surface in one flash |
-| 3 | `SetSlate` action on the bridge node: chunking, CRC, `txn_id`, timeout. Jetson-only | NOT STARTED | | Medium | Item 5; end-to-end slate push under test against a FakeTeensy |
+| 3 | `SetSlate` action on the bridge node: chunking, CRC, `txn_id`, timeout. Jetson-only | COMPLETE | 2026-08-16 | Medium | Item 5; end-to-end slate push under test against a FakeTeensy |
 | 4 | Cross-repo contract tests: shared CRC vector, DLC-8 enforcement, layout goldens | NOT STARTED | | Low | The two repos cannot drift apart silently |
 | 5 | Bench bring-up + soak with real hardware — **operator sitting, not agent work** | NOT STARTED | | Medium | The whole chain on the degraded CAN3 path |
 | 6 | Doc sweep: five files still say cone = CAN2 (separate commit) | NOT STARTED | | Low | Removes a documented trap for future readers |
@@ -653,7 +653,59 @@ aboard.
 
 ---
 
-### Phase 3: `SetSlate` action — Jetson only — NOT STARTED
+### Phase 3: `SetSlate` action — Jetson only — COMPLETE (2026-08-16)
+
+> **Landed 2026-08-16.** `logbook/2026-08-16-clapboard-phase3-set-slate-action.md`.
+> Everything this section specifies is in, plus the `/clap_diag` topic Phase 2
+> deferred here. No firmware, no flash, no codegen; deploy is `colcon build` of
+> `jugglebot_interfaces` then `jugglebot`.
+>
+> **Two deliberate deviations from the handoff doc's *suggested* interface**
+> (§7 of that doc is explicitly a suggestion; `protocol.md` §8 — the normative
+> half — says nothing about the ROS surface, so there is no spec conflict):
+>
+> 1. **Parallel `uint8[] field_ids` / `string[] field_values`, not
+>    `string[8] fields` with "empty = unchanged".** That shape makes *clearing* a
+>    field inexpressible, and it makes an out-of-range `field_id` structurally
+>    impossible — which would have left **T-U7 testing nothing**.
+> 2. **`outcome` is a `string`, not the wire `uint8`.** TIMEOUT / INVALID_GOAL /
+>    DISPATCH_FAILED never come from the panel, and `ClapboardAckOutcome` is the
+>    clapboard repo's enum to allocate: a host-minted `0x07` collides the moment
+>    they allocate one. The two vocabularies are pinned disjoint by test.
+>    `render_ms` stays a real `uint16` — it is a measurement, not a verdict.
+>
+> **One refinement of this section's `goal_callback` rule.** Validation is
+> ordered *ahead* of the presence check — the same root cause Phase 2's audit
+> found in the firmware (gate-before-args answers `ERR_BUS_DOWN` to a typo; here
+> the analogue is "no clapboard attached" answering a `field_id` of 9) — and a
+> malformed goal is ACCEPTED and then aborted, because `GoalResponse.REJECT`
+> carries no payload and cannot name the offending field. Transient conditions
+> (not attached, already in flight) still REJECT exactly as specified, so T-I11
+> is satisfied as written.
+>
+> Four other notes for the next reader:
+>
+> 1. **All five chunks are sent for every present field, always** — correctness,
+>    not padding. Panel field buffers PERSIST between transactions (that *is*
+>    §8.4's patch semantics) and the CRC covers the full 32-byte buffer, so
+>    sending only the occupied prefix leaves the previous value's tail in the
+>    receiver: wrong text *and* a spurious `CRC_MISMATCH`.
+> 2. **No `RENDERING` feedback phase.** The RPC acks the enqueue; the frames then
+>    drain one per tick and the next thing the host hears is the ack that ends the
+>    goal. The host cannot honestly time a third phase.
+> 3. **`/clap_diag`'s WARN is keyed on a delta**, alone among its rendered
+>    fields. The counters are cumulative, so a level on the total latches yellow
+>    for the session after one legitimate loss and teaches the operator to ignore
+>    the row.
+> 4. **A latent cross-thread window was closed** in the ack handshake (wake
+>    `set()` moved inside the lock). **`bb/throw` has the identical shape at
+>    `_on_cmd_result`** and is left alone — reported, out of scope.
+>
+> **T-H6 is BLOCKED on the clapboard repo, not on this repo.** Its `can.cpp`
+> counts `CLAP_FIELD`/`CLAP_COMMIT` as received and drops them (*"Phase 16
+> consumes these"*): there is no reassembler and no `CLAP_ACK` source on the
+> device yet. Everything here is exercised against a synthetic ack. T-H1–T-H5 and
+> T-H7–T-H9 are unaffected.
 
 **New/modified files**
 

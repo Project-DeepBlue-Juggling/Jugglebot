@@ -654,6 +654,29 @@ def generate_launch_description():
             '/jugglebot/toss/_action/status',
             '/jugglebot/toss_continuous/_action/feedback',
             '/jugglebot/toss_continuous/_action/status',
+            # The slate pushes themselves. Same join argument as the two ball-op
+            # action families above, one level out: nothing else in a bag says
+            # WHICH take a given stretch of telemetry belongs to, and that label
+            # is the entire reason the clapboard exists. /clapboard/fire_event
+            # gives the instant; these give the identity, and only together do
+            # they make a session's footage findable afterwards. The status
+            # channel carries the terminal — an aborted push means the panel is
+            # showing the PREVIOUS take's text over this one's footage, which is
+            # unrecoverable after the fact and invisible without it. Records
+            # EMPTY until a clapboard is attached; the publishers exist from node
+            # startup, so there is no startup race.
+            '/clapboard/set_slate/_action/feedback',
+            '/clapboard/set_slate/_action/status',
+            # The can-bridge's own clapboard-downlink TX census (CLAP_DIAG 0x93,
+            # 1 Hz cumulative). It is the ONLY thing that separates "the bridge
+            # never put the frames on the wire" from "the panel mis-reassembled
+            # them" behind a CRC_MISMATCH or INCOMPLETE ack, and the counters are
+            # cumulative — the verdict is a difference across the session, so a
+            # session that publishes this without recording it produces nothing
+            # at all. Doubly so on this bus, whose analog drive path is
+            # known-degraded. Records EMPTY on a pre-FW-15 bridge, and a silent
+            # topic is exactly what this list's add-never-trim rule is for.
+            '/clap_diag',
             '-s', 'mcap', '-o', bag_dir,
         ],
         output='screen',

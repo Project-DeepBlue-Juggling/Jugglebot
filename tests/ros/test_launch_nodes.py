@@ -133,6 +133,19 @@ RECORDED_TOPICS = [
     # event while its wall clock is unanchored, so that gap is expected and only
     # this topic explains it.
     '/clapboard/heartbeat',
+    # The slate pushes: which take a stretch of telemetry belongs to. The fire
+    # event gives the instant, this gives the identity, and only together do they
+    # make a session's footage findable afterwards. The status channel carries
+    # the terminal, so an aborted push — the panel still showing the PREVIOUS
+    # take over this one's footage — is visible instead of silent.
+    '/clapboard/set_slate/_action/feedback',
+    '/clapboard/set_slate/_action/status',
+    # The can-bridge's own clapboard-downlink TX census (CLAP_DIAG 0x93, 1 Hz).
+    # The only thing that separates "the bridge never sent the frames" from "the
+    # panel mis-reassembled them" behind a CRC_MISMATCH ack, and the counters are
+    # cumulative — the verdict is a difference across the session, so publishing
+    # without recording produces nothing. Records EMPTY on a pre-FW-15 bridge.
+    '/clap_diag',
 ]
 
 

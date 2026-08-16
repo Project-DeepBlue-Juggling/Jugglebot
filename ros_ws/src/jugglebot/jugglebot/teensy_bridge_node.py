@@ -80,7 +80,7 @@ from jugglebot_interfaces.srv import (
     ActivateOrDeactivate,
     GetTiltReadingService,
 )
-from jugglebot_interfaces.action import BallButlerThrowCmd, HomeMotors
+from jugglebot_interfaces.action import BallButlerThrowCmd, HomeMotors, SetSlate
 from geometry_msgs.msg import Quaternion
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from std_msgs.msg import Float32MultiArray, Float64MultiArray
@@ -116,6 +116,7 @@ from teensy_link import (
     ClockDiag,
     CacheDiag,
     RingDiag,
+    ClapDiag,
 )
 from teensy_link import protocol as p
 from teensy_link import rpc_args
@@ -135,6 +136,7 @@ from teensy_link.deactivate import (
 )
 from jugglebot.can import catching_cone
 from jugglebot.can import clapboard
+from jugglebot import clapboard_slate
 from jugglebot.can import odrive
 from jugglebot.can.motor_state import MotorStateTracker
 import jugglebot.hardware_config as hw
@@ -1255,13 +1257,40 @@ class TeensyBridgeNode(Node):
         self._clap_hb_received = False
         self._clap_last_hb_mono = 0.0
         self._clap_hb_timeout_s = proto.CLAP_HEARTBEAT_TIMEOUT_MS / 1000.0
-        # Latest CLAP_ACK, decoded and stashed but NOT yet consumed: the SetSlate
-        # action that correlates txn_ids against it is a later phase, and there is
-        # no way to provoke an ack until the downlink firmware exists. Decoding it
-        # here anyway keeps ONE decode point for the frame, so the action cannot
-        # later grow a second one that drifts.
+        # Latest CLAP_ACK, decoded once here and used twice: as the always-present
+        # "what did the panel last say" stash, and — from the SAME decode point,
+        # never a second one — as the wake for the SetSlate action's txn_id
+        # correlation below.
         self._latest_clap_ack = None
         self._latest_clap_ack_mono = 0.0
+        # ── SetSlate transaction state ────────────────────────
+        # Shape copied from bb/throw (:1394-1401) because the problem is the same:
+        # an RPC that acks the DISPATCH, a terminal outcome that arrives later on
+        # the RX thread, and an execute_callback that must block on it without
+        # holding anything the 100 Hz timers need. _clap_slate_active gates a
+        # second concurrent goal (rejected in goal_callback); _clap_slate_txn is
+        # the id the ack must echo for it to count; the event lives OUTSIDE the
+        # lock, as bb/throw's does.
+        self._clap_slate_lock = threading.Lock()
+        self._clap_slate_event = threading.Event()
+        self._clap_slate_active = False
+        self._clap_slate_txn = None     # int txn_id in flight, or None
+        self._clap_slate_ack = None     # the matching ClapboardAck, or None
+        self._clap_txn_alloc = clapboard_slate.TxnIdAllocator()
+        # CLAP_DIAG (0x93, 1 Hz): the bridge's OWN census of the clapboard
+        # downlink — queued / sent / gated / dropped, cumulative since boot. It is
+        # the only thing that separates "the bridge never put the frames on the
+        # wire" from "the panel mis-reassembled them" when a CLAP_ACK comes back
+        # CRC_MISMATCH or INCOMPLETE, which is why it is read at both ends of a
+        # SetSlate transaction as well as published. Latest-wins stash for the
+        # action; full queue for the topic (see _publish_clap_diag).
+        self._latest_clap_diag = None
+        self._clap_diag_queue: list = []
+        # Previous published (gated + dropped) total, for /clap_diag's level.
+        # Timer-thread-only (the publish timer's MutuallyExclusiveCallbackGroup
+        # serializes it), so it needs no lock. None until the first sample, which
+        # publishes as a BASELINE at OK — see _publish_clap_diag.
+        self._clap_diag_last_lost = None
         # Count of DOWNLINK-ONLY clapboard ids (0x7E8/0x7E9/0x7EA) seen arriving on
         # the UPLINK. Per the handoff doc these should never appear inbound; they
         # are counted here and reported ONCE from the publish timer rather than
@@ -1515,6 +1544,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.CLOCK_DIAG), self._on_clock_diag)    # per-anchor clock + interp occupancy
         self._client.subscribe(int(MsgType.CACHE_DIAG), self._on_cache_diag)    # encoder-cache age + CAN RX ring
         self._client.subscribe(int(MsgType.RING_DIAG), self._on_ring_diag)      # TRUE RX-ring occupancy + delivery lag
+        self._client.subscribe(int(MsgType.CLAP_DIAG), self._on_clap_diag)      # clapboard downlink TX census
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -1684,6 +1714,13 @@ class TeensyBridgeNode(Node):
             ClapboardHeartbeat, 'clapboard/heartbeat', 10)
         self.clapboard_fire_event_pub = self.create_publisher(
             ClapboardFireEvent, 'clapboard/fire_event', 10)
+        # The bridge's OWN downlink census (CLAP_DIAG 0x93, 1 Hz). Named for the
+        # frame and grouped with its four siblings (/can3_errors, /bridge_tx_diag,
+        # /cache_diag, /ring_diag) rather than under clapboard/*, because it is a
+        # report about the CAN-BRIDGE's transmit path, not about the panel — the
+        # panel's own report is clapboard/heartbeat.
+        self.clap_diag_pub = self.create_publisher(
+            DiagnosticStatus, 'clap_diag', 20)
 
         # Ball Butler ODrive diagnostics (CAN1 nodes 7=pitch, 8=hand). The bridge
         # emits these as DIAGNOSTIC frames with axis_id 7/8, stashed in
@@ -1829,6 +1866,31 @@ class TeensyBridgeNode(Node):
             cancel_callback=self._bb_throw_cancel,
             callback_group=self._bb_throw_cbgroup)
 
+        # ── Electronic clapboard SetSlate ACTION ──────────────
+        # Served HERE, not from a clapboard_node.py of its own. Root cause, not
+        # style: TeensyLinkClient has exactly ONE construction site in this whole
+        # package (:1113), and two owners on one UDP socket is a standing bench
+        # failure mode, not a preference. A separate node would need either a
+        # second client (unsafe) or an extra ROS hop to reach this one (pure
+        # cost); the bridge already owns the CAN buses, the RPC client and the
+        # CONE_FRAME subscription the ack arrives on.
+        #
+        # THE DEDICATED ReentrantCallbackGroup IS MANDATORY, for the reason
+        # written out at the bb/throw group above and worse here: this
+        # execute_callback blocks for the panel's whole 1.5-3.5 s e-paper refresh
+        # (plus 410 ms of paced drain before it starts). In the node-default
+        # MutuallyExclusiveCallbackGroup that would serialize with — and stall —
+        # the 100 Hz telemetry timers for seconds, on other MultiThreadedExecutor
+        # threads. Reentrancy also lets a second goal's goal_callback run (and be
+        # rejected) while the first is still awaiting its ack.
+        self._clap_slate_cbgroup = ReentrantCallbackGroup()
+        self._clap_slate_action = ActionServer(
+            self, SetSlate, 'clapboard/set_slate',
+            execute_callback=self._clap_slate_execute,
+            goal_callback=self._clap_slate_goal,
+            cancel_callback=self._clap_slate_cancel,
+            callback_group=self._clap_slate_cbgroup)
+
         # ── Timers (publish on the executor thread) ────────────
         self.create_timer(0.01, self._publish_robot_state)     # 100 Hz (telem rate)
         self.create_timer(0.01, self._publish_hand_telemetry)  # 100 Hz
@@ -1850,6 +1912,8 @@ class TeensyBridgeNode(Node):
         self.create_timer(1.0, self._publish_cache_diag)          # 1 Hz drain (encoder-cache census)
         # Matches the frame's own 1 Hz emit cadence, as with /cache_diag above.
         self.create_timer(1.0, self._publish_ring_diag)           # 1 Hz drain (RX-ring occupancy census)
+        # Matches the frame's own 1 Hz emit cadence, as with the three above.
+        self.create_timer(1.0, self._publish_clap_diag)           # 1 Hz drain (clapboard downlink TX census)
         self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
@@ -2102,6 +2166,33 @@ class TeensyBridgeNode(Node):
                 with self._lock:
                     self._latest_clap_ack = ack
                     self._latest_clap_ack_mono = time.monotonic()
+                # ...and, from this SAME decode point, wake a SetSlate goal whose
+                # txn_id this ack echoes. Two locks, taken in sequence and never
+                # nested: _lock guards the general node state the timers read,
+                # _clap_slate_lock only the action's own handshake (the bb/throw
+                # split, for the same reason — a multi-second action must never be
+                # able to hold the lock the 100 Hz publishers need).
+                #
+                # The txn_id match is the whole correlation: an ack for a
+                # transaction that already timed out, or one from a panel talking
+                # to nobody, must not complete the goal now in flight. `is None`
+                # keeps the FIRST ack for a txn authoritative — a duplicate cannot
+                # overwrite the verdict the waiter is about to read.
+                #
+                # THE SET IS INSIDE THE LOCK, unlike bb/throw's. Outside it, this
+                # thread could stash the ack, be preempted before set(), have the
+                # goal time out and a LATER goal re-arm (clearing the stash), and
+                # then fire set() — waking that new goal with no ack to read. The
+                # window needs a multi-second preemption so it is vanishingly
+                # unlikely, but Event.set() cannot re-enter this lock, so holding
+                # it costs nothing and removes the interleave entirely.
+                with self._clap_slate_lock:
+                    if (self._clap_slate_active
+                            and self._clap_slate_txn is not None
+                            and int(ack.txn_id) == int(self._clap_slate_txn)
+                            and self._clap_slate_ack is None):
+                        self._clap_slate_ack = ack
+                        self._clap_slate_event.set()
             elif cf.can_id in clapboard.DOWNLINK_ONLY_IDS:
                 # Downlink-only id seen inbound — count it; the publish timer
                 # reports it once (no logging on the RX thread, per :33-38).
@@ -2403,6 +2494,32 @@ class TeensyBridgeNode(Node):
             # also 1 Hz, so in health this queue holds 0 or 1 entries) without
             # truncating anything a real session would produce. Drop-oldest,
             # matching the other queues.
+            if len(q) > 3600:
+                del q[:len(q) - 3600]
+
+    def _on_clap_diag(self, msg_type, seq, payload, addr):
+        # RX-thread callback: the can-bridge's clapboard-downlink TX census.
+        # Same contract as its four siblings — decode + stash here, publish on the
+        # executor thread in the drain timer, never on this socket thread, and
+        # drop a malformed frame with the same broad except (a short payload
+        # raises struct.error, which is NOT a ValueError, and an exception
+        # escaping an RX callback poisons the shared thread).
+        #
+        # Stashed TWICE on purpose. The latest-wins copy is what a SetSlate
+        # transaction differences across itself to say whether the bridge or the
+        # panel lost the frames; the queue is what reaches /clap_diag so the same
+        # question is answerable from a bag after the sitting. The counters are
+        # CUMULATIVE since boot, so — unlike RING_DIAG's per-window reductions —
+        # a dropped window loses no information; the queue exists for thread
+        # hand-off, and the bound is only a stalled-drain backstop.
+        try:
+            cd = ClapDiag.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._latest_clap_diag = cd
+            q = self._clap_diag_queue
+            q.append(cd)
             if len(q) > 3600:
                 del q[:len(q) - 3600]
 
@@ -6686,6 +6803,370 @@ class TeensyBridgeNode(Node):
                     f'bridge echoing its own TX. Reported once per launch.')
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Clapboard heartbeat publish error: {e}")
+
+    def _clapboard_present(self) -> bool:
+        """Is a clapboard attached right now? The SetSlate goal gate.
+
+        Deliberately the SAME predicate ``_publish_clapboard_heartbeat`` renders
+        as ``connected`` — a heartbeat inside CLAP_HEARTBEAT_TIMEOUT_MS on the
+        host monotonic clock — and NOT a firmware flag, for the reason the state
+        block gives. The two are pinned equal by
+        tests/ros/test_teensy_bridge_node_set_slate.py so this cannot drift into
+        a second, differently-timed answer to the same question.
+
+        Structural sibling of ``_bb_present()``, which gates bb/calibrate the same
+        way; only the source of the verdict differs.
+        """
+        with self._lock:
+            received = self._clap_hb_received
+            last_mono = self._clap_last_hb_mono
+        return bool(received
+                    and (time.monotonic() - last_mono) < self._clap_hb_timeout_s)
+
+    def _publish_clap_diag(self):
+        """Drain queued CLAP_DIAG frames → /clap_diag (DiagnosticStatus).
+
+        The can-bridge's own census of the clapboard downlink, cumulative since
+        boot: ``queued`` frames handed to it, ``sent`` onto the wire, ``gated``
+        (dropped because the TX presence gate was shut mid-drain), ``dropped``
+        (never got into the ring at all), and the ring high-water mark.
+
+        WHAT IT DECIDES. A ``CLAP_SEND`` RPC acks the DISPATCH, not the outcome —
+        the frames drain one per tick long after it returns — so a mid-drain
+        failure cannot be surfaced as an RPC error. It comes back instead as the
+        panel's ``CRC_MISMATCH`` or ``INCOMPLETE``, and that ack cannot say WHY
+        frames went missing. These counters are the firmware's half of the
+        answer: non-zero ``gated``/``dropped`` across a transaction means the
+        bridge never put them on the wire; both flat means the panel
+        mis-reassembled what it did receive. Different faults, different owners,
+        and nothing else separates them.
+
+        The COUNTERS are rendered RAW and differenced by the consumer, matching
+        ``can3_errors``/``bridge_tx_diag``/``cache_diag`` — a node-side delta in
+        the values would silently widen across a dropped frame instead of making
+        it visible. The LEVEL is the one thing computed from a delta, and
+        deliberately so: these are cumulative-since-boot tallies, so a level
+        keyed on the total would latch WARN for the rest of the session after a
+        single legitimate loss (a slate pushed before the clapboard's first
+        heartbeat opened the TX gate, say) and teach the operator to ignore the
+        row — the same trap ``_publish_cache_diag`` avoids with its ``seen_mask``
+        qualification. WARN therefore means "losing frames NOW". The first sample
+        after launch is a BASELINE at OK, because losses tallied before this node
+        started cannot be attributed to this session; the raw values still carry
+        them, so nothing is hidden.
+
+        A pre-FW-15 board never sends 0x93, so this drains nothing and the topic
+        records EMPTY — the visible absence the record list's add-never-trim rule
+        is built around, not an error.
+        """
+        try:
+            with self._lock:
+                batch = self._clap_diag_queue
+                self._clap_diag_queue = []
+            for cd in batch:
+                lost = int(cd.gated) + int(cd.dropped)
+                # Timer-thread-only, so no lock — the same no-lock argument as
+                # _echo_last_pub_seq (the timer's callback group serializes it).
+                baseline = self._clap_diag_last_lost is None
+                lost_since_previous = (
+                    0 if baseline else max(0, lost - self._clap_diag_last_lost))
+                self._clap_diag_last_lost = lost
+                msg = DiagnosticStatus()
+                msg.name = 'teensy/clap_diag'
+                msg.hardware_id = 'can_bridge_teensy'
+                msg.level = (DiagnosticStatus.WARN if lost_since_previous
+                             else DiagnosticStatus.OK)
+                msg.message = (
+                    f'queued={int(cd.queued)} sent={int(cd.sent)} '
+                    f'gated={int(cd.gated)} dropped={int(cd.dropped)} '
+                    f'ring_hwm={int(cd.ring_hwm)} '
+                    f'lost_since_previous={lost_since_previous}'
+                    + (' (baseline)' if baseline else ''))
+                msg.values = [
+                    KeyValue(key='queued', value=str(int(cd.queued))),
+                    KeyValue(key='sent', value=str(int(cd.sent))),
+                    KeyValue(key='gated', value=str(int(cd.gated))),
+                    KeyValue(key='dropped', value=str(int(cd.dropped))),
+                    KeyValue(key='ring_hwm', value=str(int(cd.ring_hwm))),
+                    # The level's own input, rendered so a bag reader can see why
+                    # a window WARNed without differencing four cumulative
+                    # columns by hand.
+                    KeyValue(key='lost_since_previous',
+                             value=str(lost_since_previous)),
+                ]
+                self.clap_diag_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"Clap diag publish error: {e}",
+                                    throttle_duration_sec=5.0)
+
+    # ═══════════════════════════════════════════════════════════
+    # Electronic clapboard SetSlate action (chunking/CRC/txn_id in
+    # jugglebot.clapboard_slate; this is dispatch + correlation only)
+    # ═══════════════════════════════════════════════════════════
+
+    #: How long to wait for the panel's CLAP_ACK after the RPC has been accepted.
+    #: Budget: ~410 ms of paced one-frame-per-tick drain for a worst-case
+    #: 41-frame transaction, then a 1.5-3.5 s e-paper refresh. 8 s is comfortably
+    #: past that, and the pre-registered CAN3 fallback (halve the drain rate to
+    #: 820 ms) stays comfortably inside it too.
+    #:
+    #: THERE IS NO AUTOMATIC RETRY. A retry racing a slow render comes back BUSY
+    #: and sends the operator hunting a fault that does not exist; recovery is a
+    #: fresh goal with a fresh txn_id. CLAP_SEND is in NON_IDEMPOTENT_METHODS for
+    #: the same reason one layer down, which forces retries=0 on the wire.
+    _CLAP_SLATE_ACK_TIMEOUT_S = 8.0
+
+    def _clap_slate_goal(self, goal_request):
+        """Accept a slate goal only if a clapboard is attached and none is in flight.
+
+        Three checks, and the ORDER IS LOAD-BEARING:
+
+        1. **Validation first.** A malformed goal is a caller error, and it must
+           never be answered "no clapboard attached" — that sends an operator
+           hunting a wiring fault for a typo, the same trap Phase 2's audit caught
+           in the firmware's dispatch (validate before the bus gate, never after).
+           A malformed goal is ACCEPTED here, so ``execute_callback`` can abort it
+           with the exact offending index and value; a ``GoalResponse.REJECT``
+           carries no payload and would tell the caller nothing. It deliberately
+           does NOT claim the single-flight slot, so an invalid goal cannot
+           disturb a transaction already in flight.
+        2. **Presence.** Rejected, mirroring how bb/calibrate gates on
+           ``_bb_present()``: retrying later is the right response, and there is
+           nothing to say beyond "not attached".
+        3. **Single-flight.** Rejected. The panel answers BUSY to a second
+           transaction anyway, and a bridge-side reject is faster and clearer.
+
+        Runs in the action's ReentrantCallbackGroup, so a second goal is rejected
+        promptly while the first is still awaiting its ack.
+        """
+        try:
+            clapboard_slate.validate_slate(
+                goal_request.template_id, goal_request.field_ids,
+                goal_request.field_values)
+        except ValueError:
+            # See (1): accepted so the abort can carry the reason. The slot is
+            # untouched, and execute_callback's own validation — the same pure
+            # function on the same immutable request — reaches the same verdict
+            # and returns before the release path.
+            return GoalResponse.ACCEPT
+        if not self._clapboard_present():
+            self.get_logger().warn(
+                'clapboard/set_slate: rejecting goal — no CLAP_HEARTBEAT within '
+                f'{self._clap_hb_timeout_s * 1000:.0f} ms (clapboard not attached, '
+                'or the cone is on that bus instead)')
+            return GoalResponse.REJECT
+        with self._clap_slate_lock:
+            if self._clap_slate_active:
+                self.get_logger().warn(
+                    'clapboard/set_slate: rejecting goal — a slate push is '
+                    'already in flight')
+                return GoalResponse.REJECT
+            self._clap_slate_active = True
+            self._clap_slate_txn = None
+            self._clap_slate_ack = None
+            self._clap_slate_event.clear()
+        return GoalResponse.ACCEPT
+
+    def _clap_slate_cancel(self, goal_handle):
+        """Reject cancellation — an e-paper refresh in flight has no abort path.
+
+        Once CLAP_COMMIT is on the wire the panel will paint and ack on its own
+        schedule; there is no abort opcode on either transport, and pretending
+        otherwise would leave the action reporting a cancellation the hardware
+        ignored. Same posture as bb/throw's cancel.
+        """
+        return CancelResponse.REJECT
+
+    def _clap_slate_execute(self, goal_handle):
+        """Push the slate and await the panel's terminal CLAP_ACK.
+
+        The CLAP_SEND RPC acks the bridge-side ENQUEUE of the whole burst, not
+        the panel's verdict: the frames then drain onto the cone bus one per tick
+        and the clapboard renders for 1.5-3.5 s. Success is therefore learned
+        only from the CLAP_ACK echoing this transaction's txn_id, set on the RX
+        thread by ``_on_cone_frame`` and waited on here — the bb/throw shape.
+
+        Everything about which bytes go on the wire lives in
+        ``jugglebot.clapboard_slate``; this method does dispatch, correlation and
+        reporting.
+        """
+        req = goal_handle.request
+        result = SetSlate.Result()
+
+        # ── Validation, before a single frame is built ────────
+        # Re-run here (goal_callback ran it too) so the caller gets the reason in
+        # a Result rather than a bare rejection. See _clap_slate_goal (1) for why
+        # this path must NOT touch the single-flight slot.
+        try:
+            clapboard_slate.validate_slate(
+                req.template_id, req.field_ids, req.field_values)
+        except ValueError as e:
+            result.success = False
+            result.outcome = clapboard_slate.OUTCOME_INVALID_GOAL
+            result.message = f'Rejected before any frame was built: {e}'
+            self.get_logger().warn(f'clapboard/set_slate: {result.message}')
+            goal_handle.abort()
+            return result
+
+        txn_id = self._clap_txn_alloc.allocate()
+        try:
+            try:
+                frames = clapboard_slate.build_transaction(
+                    template_id=int(req.template_id),
+                    field_ids=list(req.field_ids),
+                    field_values=list(req.field_values),
+                    txn_id=txn_id,
+                    force_full_refresh=bool(req.force_full_refresh))
+                args = rpc_args.encode_clap_send(frames)
+            except ValueError as e:  # noqa: BLE001 (frame-build range failure)
+                result.success = False
+                result.outcome = clapboard_slate.OUTCOME_INVALID_GOAL
+                result.message = f'Slate encode failed: {e}'
+                self.get_logger().warn(f'clapboard/set_slate: {result.message}')
+                goal_handle.abort()
+                return result
+
+            # Arm the correlation BEFORE the RPC goes out: the panel can ack
+            # while _call_rpc is still returning, and an ack that arrives before
+            # _clap_slate_txn is set would be dropped and the goal would then
+            # wait out the full 8 s for a verdict that already came.
+            with self._clap_slate_lock:
+                self._clap_slate_txn = txn_id
+                self._clap_slate_ack = None
+                self._clap_slate_event.clear()
+
+            diag_before = self._clap_diag_snapshot()
+            self._clap_slate_feedback(goal_handle, 'SENDING')
+
+            ok, m, _ = self._call_rpc(RpcMethod.CLAP_SEND, args)
+            if not ok:
+                # The bridge would not take the burst — a shut TX gate
+                # (ERR_BUS_DOWN: nothing on that bus within 5 s), a full ring
+                # (ERR_REJECTED: enqueue is all-or-nothing, so nothing reached
+                # the wire), or ERR_UNKNOWN_METHOD from a pre-FW-15 board. In
+                # every case NO frame was sent, so no ack will ever come: abort
+                # now rather than burning the 8 s budget.
+                result.success = False
+                result.outcome = clapboard_slate.OUTCOME_DISPATCH_FAILED
+                result.message = (
+                    f'txn {txn_id}: the can-bridge would not queue the '
+                    f'{len(frames)}-frame burst ({m}). Nothing reached the bus.')
+                self.get_logger().warn(f'clapboard/set_slate: {result.message}')
+                goal_handle.abort()
+                return result
+
+            self._clap_slate_feedback(goal_handle, 'AWAITING_ACK')
+
+            if not self._clap_slate_event.wait(
+                    timeout=self._CLAP_SLATE_ACK_TIMEOUT_S):
+                result.success = False
+                result.outcome = clapboard_slate.OUTCOME_TIMEOUT
+                result.message = (
+                    f'txn {txn_id}: no CLAP_ACK within '
+                    f'{self._CLAP_SLATE_ACK_TIMEOUT_S:.1f}s. No retry issued '
+                    f'(a retry racing a slow render answers BUSY). '
+                    + self._clap_diag_delta_text(diag_before))
+                self.get_logger().warn(f'clapboard/set_slate: {result.message}')
+                goal_handle.abort()
+                return result
+
+            with self._clap_slate_lock:
+                ack = self._clap_slate_ack
+            if ack is None:
+                # Unreachable while the RX branch sets the stash and the event
+                # under one lock. Kept as a guard rather than a bare attribute
+                # access because the alternative failure is an AttributeError
+                # raised INSIDE an action execute_callback — a goal that never
+                # terminates, which is far worse to diagnose than a reported
+                # timeout, and the two halves of that handshake live 4000 lines
+                # apart.
+                result.success = False
+                result.outcome = clapboard_slate.OUTCOME_TIMEOUT
+                result.message = (
+                    f'txn {txn_id}: woken with no ack recorded — internal '
+                    f'handshake fault, treat as no answer.')
+                self.get_logger().error(f'clapboard/set_slate: {result.message}')
+                goal_handle.abort()
+                return result
+            result.outcome = ack.outcome_name
+            result.render_ms = int(ack.render_ms)
+            ok_outcome = int(ack.outcome) == int(clapboard.ClapboardAckOutcome.OK)
+            result.success = ok_outcome
+            if ok_outcome:
+                result.message = (
+                    f'txn {txn_id}: painted in {int(ack.render_ms)} ms '
+                    f'({len(frames)} frames).')
+                self.get_logger().info(f'clapboard/set_slate: {result.message}')
+                goal_handle.succeed()
+            else:
+                # The census delta is the point of carrying CLAP_DIAG at all:
+                # CRC_MISMATCH / INCOMPLETE cannot say whether the bridge lost
+                # the frames or the panel mis-reassembled them.
+                result.message = (
+                    f'txn {txn_id}: panel answered {ack.outcome_name} '
+                    f'(state {ack.state}, render_ms {int(ack.render_ms)}). '
+                    + self._clap_diag_delta_text(diag_before))
+                self.get_logger().warn(f'clapboard/set_slate: {result.message}')
+                goal_handle.abort()
+            return result
+        finally:
+            with self._clap_slate_lock:
+                self._clap_slate_active = False
+                self._clap_slate_txn = None
+
+    def _clap_slate_feedback(self, goal_handle, phase):
+        """Publish one feedback phase, never letting a feedback failure kill the goal.
+
+        The goal's value is the slate reaching the panel; a dropped progress
+        string is not worth aborting over, and under the mocked-ROS test harness
+        the handle may not implement publish_feedback at all.
+        """
+        try:
+            fb = SetSlate.Feedback()
+            fb.phase = phase
+            goal_handle.publish_feedback(fb)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().debug(
+                f'clapboard/set_slate: feedback publish failed: {e}')
+
+    def _clap_diag_snapshot(self):
+        """Latest CLAP_DIAG frame, or None on a bridge that does not send one."""
+        with self._lock:
+            return self._latest_clap_diag
+
+    def _clap_diag_delta_text(self, before):
+        """Render the bridge's TX census across this transaction, for a failure message.
+
+        A LOWER BOUND, and said so: CLAP_DIAG is emitted at 1 Hz, so the sample
+        read here may predate the end of the drain. Frames counted as gated or
+        dropped are ones the bridge never put on the wire; a flat delta with a
+        failing ack points at the panel's reassembly instead.
+
+        With no pre-dispatch sample the counters are reported ABSOLUTE and named
+        as such: they are then cumulative since the bridge booted, not since this
+        transaction, and reading them as a delta would blame this slate push for
+        every frame the bridge ever lost.
+        """
+        after = self._clap_diag_snapshot()
+        if after is None:
+            return ('Bridge TX census unavailable (no CLAP_DIAG — a pre-FW-15 '
+                    'can-bridge does not emit 0x93).')
+        tail = ('Non-zero gated/dropped means the bridge never put them on the '
+                'wire; all zero points at the panel.')
+        if before is None:
+            return (
+                f'Bridge TX census, ABSOLUTE since bridge boot (no sample '
+                f'predates this dispatch, so this is not a delta): '
+                f'queued {int(after.queued)} sent {int(after.sent)} '
+                f'gated {int(after.gated)} dropped {int(after.dropped)} '
+                f'(ring_hwm {int(after.ring_hwm)}). {tail}')
+        return (
+            f'Bridge TX census since dispatch (1 Hz, so a lower bound): '
+            f'queued +{int(after.queued) - int(before.queued)} '
+            f'sent +{int(after.sent) - int(before.sent)} '
+            f'gated +{int(after.gated) - int(before.gated)} '
+            f'dropped +{int(after.dropped) - int(before.dropped)} '
+            f'(ring_hwm {int(after.ring_hwm)}). {tail}')
 
     # Extra wait (s) past throw_time before the action times out a result. Covers
     # the wind-up + release + the streamer completing and the firmware emitting OK.

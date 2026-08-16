@@ -1,0 +1,66 @@
+# Push a slate (template + field text) to the Electronic Clapboard over the cone
+# bus (physical CAN3), and wait for the panel's own verdict.  Served by
+# teensy_bridge_node as clapboard/set_slate — NOT by a node of its own, because
+# TeensyLinkClient has exactly one construction site in the package and two
+# owners on one UDP socket is a documented bench failure mode.
+#
+# An ACTION and not a service because the response time is dominated by the
+# e-paper, not the wire: a full refresh is 1.5-3.5 s against ~5 ms of CAN
+# traffic.  The result must not fire until the clapboard's own CLAP_ACK arrives
+# carrying the MEASURED render_ms.
+#
+# PATCH SEMANTICS.  Only the fields named in field_ids are part of the
+# transaction; every other field on the panel retains its previous value.  That
+# is what lets a take number be bumped without resending the scene description.
+#
+# THE DATE IS NOT A FIELD.  The clapboard fills it from its own wall clock,
+# slaved to the bridge's 0x7DD time-sync broadcast.  Sending a date here would
+# race the Jetson's clock against the one the bridge is already distributing.
+#
+# THERE IS NO FIRE COMMAND, HERE OR ANYWHERE.  Firing the sync flash is
+# button-only by design: "ROS2 gets a complete log of every clap; it does not
+# get to clap."
+#
+# Wire contract: Electronic-Clapboard docs/protocol.md section 8.3/8.4/8.6
+# (normative, cross-repository — neither side may change it unilaterally).
+
+# ── Goal ──
+uint8 template_id           # Which stored template to composite into (0-15, section 8.4 byte 0)
+uint8[] field_ids           # Which fields this transaction sets: 0-7, no duplicates.
+                            # Becomes CLAP_COMMIT's field_present_mask.  An EMPTY list is
+                            # legal and means "repaint the current content" — useful with
+                            # force_full_refresh to clear e-paper ghosting.
+string[] field_values       # Parallel to field_ids, same length.  Each at most 32 bytes
+                            # when UTF-8 encoded and free of embedded NULs (the receiver
+                            # finds the string terminator by scanning for one).  Text is
+                            # nominally ASCII; the clapboard renders bytes >= 0x80 as '?'
+                            # rather than rejecting the take label, so non-ASCII is
+                            # accepted here too.
+bool force_full_refresh     # CLAP_COMMIT flags bit0 — force a full panel refresh, which
+                            # clears accumulated e-paper ghosting at the cost of a longer
+                            # render.
+---
+# ── Result — the clapboard's terminal verdict, or why it never came ──
+bool success                # True iff a CLAP_ACK arrived for THIS txn_id with outcome OK
+string outcome              # From the panel (CLAP_ACK section 8.6):
+                            #   OK | REJECTED | CRC_MISMATCH | INCOMPLETE | BUSY |
+                            #   NO_TEMPLATE | BAD_FIELD_ID | UNKNOWN(n)
+                            # Host-side, never a wire value:
+                            #   INVALID_GOAL     - malformed, rejected before a frame was built
+                            #   DISPATCH_FAILED  - the bridge would not queue the burst
+                            #   TIMEOUT          - no CLAP_ACK inside the action's budget
+                            # A STRING and not the wire uint8 on purpose: the outcome enum
+                            # is the clapboard repo's to allocate, and minting host-only
+                            # values inside it would collide the moment they allocate 0x07.
+uint16 render_ms            # Panel time MEASURED by the clapboard; 0 when it never rendered
+string message              # Human-readable detail: txn_id, and for a non-OK outcome the
+                            # bridge's own CLAP_DIAG TX census delta, which is what separates
+                            # "the bridge dropped frames" from "the panel mis-reassembled them"
+---
+# ── Feedback ──
+string phase                # SENDING | AWAITING_ACK
+                            # There is deliberately no RENDERING phase: the CLAP_SEND RPC
+                            # acks the DISPATCH, and the frames then drain onto the bus one
+                            # per tick long after it returns, so the host cannot observe the
+                            # drain-to-render transition.  The only transition it can see is
+                            # the ack, and that ends the goal.

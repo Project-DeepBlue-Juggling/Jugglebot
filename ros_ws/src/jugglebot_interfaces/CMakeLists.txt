@@ -78,6 +78,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/Reload.action"
   "action/Toss.action"
   "action/TossContinuous.action"
+  # Electronic clapboard slate push — served by teensy_bridge_node (which owns
+  # the only TeensyLinkClient), not by a node of its own.
+  "action/SetSlate.action"
   DEPENDENCIES geometry_msgs
 )
 

@@ -157,6 +157,12 @@
     catch/armed rises, so catch_coordinator_node holds the value before any
     arm (ros_ws/docs/hand_command_continuity.md).
 
+### `clap_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ### `clapboard/fire_event`
 
 - **publishers:** `teensy_bridge_node`
@@ -569,6 +575,12 @@
 - **clients:** `ball_butler_node`
 - **type:** `jugglebot_interfaces.action.BallButlerThrowCmd`
 
+### `clapboard/set_slate`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `jugglebot_interfaces.action.SetSlate`
+
 ### `home_motors`
 
 - **servers:** `teensy_bridge_node`
@@ -608,8 +620,10 @@ broken wire cannot hide among them.
 - `bb/reset` — service with no clients
 - `bb/start_accuracy_calibration` — service with no clients
 - `cache_diag` — topic with no subscribers
+- `clap_diag` — topic with no subscribers
 - `clapboard/fire_event` — topic with no subscribers
 - `clapboard/heartbeat` — topic with no subscribers
+- `clapboard/set_slate` — action with no clients
 - `clear_errors` — service with no clients
 - `clock_diag` — topic with no subscribers
 - `cone/heartbeat` — topic with no subscribers

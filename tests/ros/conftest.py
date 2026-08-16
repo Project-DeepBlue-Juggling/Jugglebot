@@ -707,6 +707,47 @@ class TossContinuous:
     Feedback = _TossContinuousFeedback
 
 
+# ── SetSlate action mock (electronic clapboard) ──────────────
+#
+# Plain classes, not dataclasses, matching every other action mock here: the msg
+# mocks above are @dataclass because tests construct them field-by-field, while
+# an action's Goal/Result/Feedback are built empty and populated attribute by
+# attribute, exactly as rosidl's generated classes are.
+
+
+class _SetSlateGoal:
+    def __init__(self):
+        self.template_id = 0
+        # Parallel arrays: field_ids[i] names the field that field_values[i]
+        # sets. MIRRORS SetSlate.action, whose defaults are empty for both — an
+        # empty pair is a legal "repaint the current content" transaction.
+        self.field_ids = []
+        self.field_values = []
+        self.force_full_refresh = False
+
+
+class _SetSlateResult:
+    def __init__(self):
+        self.success = False
+        # A STRING, not the wire uint8: the CLAP_ACK outcome enum belongs to the
+        # clapboard repo, so the host-only tokens (TIMEOUT / INVALID_GOAL /
+        # DISPATCH_FAILED) cannot be minted inside it. See SetSlate.action.
+        self.outcome = ''
+        self.render_ms = 0
+        self.message = ''
+
+
+class _SetSlateFeedback:
+    def __init__(self):
+        self.phase = ''
+
+
+class SetSlate:
+    Goal = _SetSlateGoal
+    Result = _SetSlateResult
+    Feedback = _SetSlateFeedback
+
+
 # ── rclpy mock ────────────────────────────────────────────────
 
 
@@ -1006,6 +1047,7 @@ _create_mock_module('jugglebot_interfaces.action', {
     'Reload': Reload,
     'Toss': Toss,
     'TossContinuous': TossContinuous,
+    'SetSlate': SetSlate,
 })
 
 _create_mock_module('geometry_msgs')
