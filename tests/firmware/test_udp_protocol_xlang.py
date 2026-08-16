@@ -71,7 +71,15 @@ def test_crc16_matches_generator(gen, proto):
 
 @pytest.mark.parametrize("name", [
     "Setpoint", "HeartbeatJ2T", "Telemetry", "Diagnostic",
-    "HeartbeatT2J", "Profile", "PlatformFrame", "HandCmdEcho", "HandSensor",
+    "HeartbeatT2J", "Profile",
+    # ConeFrame is the verbatim CAN-frame relay off the cone bus. It had NO
+    # round-trip test anywhere in tests/ until 2026-08-16 (its only mention was a
+    # fixture builder in test_teensy_bridge_node_cone.py) — a hole worth closing
+    # because the payload is about to carry a SECOND device: the electronic
+    # clapboard shares that bus by role (0x7E8-0x7EF) and every clapboard uplink
+    # frame rides this exact struct. See plans/active/clapboard-can3-integration.md.
+    "ConeFrame",
+    "PlatformFrame", "HandCmdEcho", "HandSensor",
     "CanErrors", "BridgeTxDiag", "BridgeIdentity",
     "RpcRequest", "RpcResponse",
 ])
@@ -109,6 +117,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
 @pytest.mark.parametrize("name,msg_type_member", [
     ("Setpoint", "SETPOINT"), ("Telemetry", "TELEMETRY"),
     ("HeartbeatT2J", "HEARTBEAT_T2J"), ("Profile", "PROFILE"),
+    ("ConeFrame", "CONE_FRAME"),   # see the round-trip list above
     ("PlatformFrame", "PLATFORM_FRAME"), ("HandCmdEcho", "HAND_CMD_ECHO"),
     ("HandSensor", "HAND_SENSOR"), ("CanErrors", "CAN_ERRORS"),
     ("BridgeTxDiag", "BRIDGE_TX_DIAG"), ("BridgeIdentity", "BRIDGE_IDENTITY"),

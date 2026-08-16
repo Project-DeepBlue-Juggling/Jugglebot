@@ -15,6 +15,9 @@
 //      command-a-dead-bus fail-fast: ERR_BUS_DOWN, and NOTHING put on CAN3);
 //    * is_platform_reply_id() classifies the two reply ids and nothing else (the
 //      CAN3 RX ring filter that routes replies to the verbatim uplink);
+//    * is_cone_id() / is_clapboard_id() split the cone bus by ROLE (catching cone
+//      0x7E0-0x7E1 vs electronic clapboard 0x7E8-0x7EF) — the classifier behind
+//      honest cone_health once the two devices share that bus;
 //    * the generated hand_axis6_permitted() allow-table permits exactly the hand
 //      ODrive ops the plan locks and rejects the rest (the compiled predicate the
 //      rpc.cpp axis-6 gate consumes).
@@ -143,6 +146,105 @@ TEST_CASE("is_platform_reply_id classifies exactly the two relay reply ids") {
   CHECK_FALSE(is_platform_reply_id(PlatformCanId::TRAJ_CMD)); // 0x6D0 (hand traj — not a reply)
   CHECK_FALSE(is_platform_reply_id(ODrive::arb_id(0, ODriveCmd::heartbeat_message)));  // a leg frame
   CHECK_FALSE(is_platform_reply_id(0x000u));
+}
+
+TEST_CASE("cone-bus role discriminators split the cone and clapboard id blocks") {
+  // The cone bus is shared BY ROLE, not by device: a catching cone (0x7E0/0x7E1)
+  // or an electronic clapboard (0x7E8-0x7EF) — never both, they are mutually
+  // exclusive by physical connection. cone_health is manufactured from a
+  // timestamp that on_cone_rx stamps for EVERY frame on the bus, so without this
+  // split the bridge reports a catching cone whenever a clapboard heartbeats, and
+  // that field is operator-facing: a wire field naming the wrong peripheral is
+  // worse than one reporting nothing, because it will be believed.
+  //
+  // Normative id allocation: Electronic-Clapboard docs/protocol.md §8.2, a
+  // cross-repo contract neither side may change unilaterally.
+  //
+  // Pinned here BEFORE any caller exists (Phase 2 of
+  // plans/active/clapboard-can3-integration.md wires these into on_cone_rx),
+  // because the classifier is the only branching part of that change and
+  // can_buses.cpp compiles in no native binary — the FlexCAN_T4 host shim that
+  // would close that gap stays deliberately unbuilt (can_buses.h, BusRxHealth
+  // coverage-gap note). Header-inline extraction buys the coverage that matters
+  // for ~1 % of the shim's cost.
+
+  // ── Cone: exactly the two allocated ids, and not the clapboard's ──
+  CHECK(is_cone_id(CatchingConeCanId::CATCH_EVENT));            // 0x7E0
+  CHECK(is_cone_id(CatchingConeCanId::HEARTBEAT));              // 0x7E1
+  CHECK_FALSE(is_clapboard_id(CatchingConeCanId::CATCH_EVENT));
+  CHECK_FALSE(is_clapboard_id(CatchingConeCanId::HEARTBEAT));
+
+  // ── Clapboard: the WHOLE 0x7E8-0x7EF block, reserved pair included ──
+  for (uint32_t id = 0x7E8u; id <= 0x7EFu; ++id) {
+    CHECK(is_clapboard_id(id));
+    CHECK_FALSE(is_cone_id(id));
+  }
+  // ...and each named frame spelled out, so a renumber in either repo fails HERE
+  // rather than as a silently unclassified frame on the bench.
+  CHECK(is_clapboard_id(0x7E8u));   // CLAP_FIELD       J→C
+  CHECK(is_clapboard_id(0x7E9u));   // CLAP_COMMIT      J→C
+  CHECK(is_clapboard_id(0x7EAu));   // CLAP_LINK        Bridge→C
+  CHECK(is_clapboard_id(0x7EBu));   // CLAP_ACK         C→J
+  CHECK(is_clapboard_id(0x7ECu));   // CLAP_HEARTBEAT   C→J
+  CHECK(is_clapboard_id(0x7EDu));   // CLAP_FIRE_EVENT  C→J
+  CHECK(is_clapboard_id(0x7EEu));   // reserved — still clapboard territory
+  CHECK(is_clapboard_id(0x7EFu));   // reserved
+
+  // ── Boundaries: both blocks, both sides, explicit ──
+  CHECK_FALSE(is_cone_id(0x7DFu));       // one below the cone allocation
+  CHECK(is_cone_id(0x7E0u));             //   first cone id
+  CHECK(is_cone_id(0x7E1u));             //   last cone id
+  CHECK_FALSE(is_cone_id(0x7E2u));       // one above
+  CHECK_FALSE(is_clapboard_id(0x7E7u));  // one below the clapboard block
+  CHECK(is_clapboard_id(0x7E8u));        //   first clapboard id
+  CHECK(is_clapboard_id(0x7EFu));        //   last clapboard id
+  CHECK_FALSE(is_clapboard_id(0x7F0u));  // one above
+
+  // ── The unallocated gap belongs to NEITHER role ──
+  // 0x7E2-0x7E7 is why is_cone_id enumerates rather than spanning a range: a
+  // frame here must classify as "no known peripheral", not as a cone.
+  for (uint32_t id = 0x7E2u; id <= 0x7E7u; ++id) {
+    CHECK_FALSE(is_cone_id(id));
+    CHECK_FALSE(is_clapboard_id(id));
+  }
+
+  // ── Neighbouring allocations are neither, including the bridge's OWN TX ──
+  // 0x7DD is the 100 Hz time-sync broadcast the bridge itself puts on this bus;
+  // classifying it as a peripheral would let the bridge see its own traffic as
+  // proof that a peripheral is attached.
+  CHECK_FALSE(is_cone_id(SharedCanId::TIME_SYNC));               // 0x7DD
+  CHECK_FALSE(is_clapboard_id(SharedCanId::TIME_SYNC));
+  CHECK_FALSE(is_cone_id(PlatformCanId::TILT_READING));          // 0x7DE
+  CHECK_FALSE(is_clapboard_id(PlatformCanId::TILT_READING));
+  CHECK_FALSE(is_cone_id(PlatformCanId::TRAFFIC_REPORT));        // 0x7DF
+  CHECK_FALSE(is_clapboard_id(PlatformCanId::TRAFFIC_REPORT));
+  CHECK_FALSE(is_cone_id(0x7F0u));
+  CHECK_FALSE(is_clapboard_id(0x7F0u));
+  CHECK_FALSE(is_cone_id(0x000u));
+  CHECK_FALSE(is_clapboard_id(0x000u));
+
+  // The three id classifiers in this header must not overlap: a Platform-Teensy
+  // relay reply is neither a cone nor a clapboard frame (different bus, and the
+  // cone-bus RX path must never route one into the role discriminators).
+  CHECK_FALSE(is_cone_id(PlatformCanId::STATE_UPDATE));         // 0x6E0
+  CHECK_FALSE(is_clapboard_id(PlatformCanId::STATE_UPDATE));
+  CHECK_FALSE(is_platform_reply_id(CatchingConeCanId::CATCH_EVENT));
+  CHECK_FALSE(is_platform_reply_id(CatchingConeCanId::HEARTBEAT));
+  CHECK_FALSE(is_platform_reply_id(0x7EAu));   // CLAP_LINK
+  CHECK_FALSE(is_platform_reply_id(0x7ECu));   // CLAP_HEARTBEAT
+
+  // ── Mutual exclusivity is TOTAL, not merely local ──
+  // Sweep the whole 11-bit standard id space: no id may satisfy both predicates.
+  // The health discriminator keys a presence decision on this pair, and "both
+  // peripherals present" is a state the physical wiring makes impossible — so it
+  // must be unrepresentable here too. Accumulated (not 2048 CHECKs) so a failure
+  // names the offending id.
+  constexpr uint32_t NONE = 0x1000u;   // sentinel: outside the 11-bit space
+  uint32_t both = NONE;
+  for (uint32_t id = 0; id <= 0x7FFu && both == NONE; ++id) {
+    if (is_cone_id(id) && is_clapboard_id(id)) both = id;
+  }
+  CHECK(both == NONE);
 }
 
 TEST_CASE("bus_partner_present pins the TX presence-gate window semantics") {

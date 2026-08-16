@@ -17,7 +17,8 @@ SKIPS, not fails — the Jetson run is authoritative):
   * `test_leg_interp` — lead/stroke/present-axis clamps, modes, stow descent;
   * `test_platform_relay` — Platform-Teensy relay: trigger frames, 0x6E0
     RobotState re-encode parity, the never-command-a-dead-bus fail-fast,
-    is_platform_reply_id, the generated hand axis-6 allow-table;
+    is_platform_reply_id, the cone-bus role discriminators
+    (is_cone_id / is_clapboard_id), the generated hand axis-6 allow-table;
   * `test_version_check` — Get_Version sweep + raw-version cache;
   * `test_hand_ops` — hand traj/smooth-move conduit + preamble-abort;
   * `test_leg_activate` / `test_leg_deactivate` / `test_leg_homing` — the
@@ -94,8 +95,9 @@ def test_native_leg_interp_binary_passes(binaries):
 def test_native_platform_relay_binary_passes(binaries):
     """The compiled platform_relay.cpp passes every behaviour assertion
     (Platform-Teensy relay: trigger frames, 0x6E0 RobotState re-encode parity, the
-    never-command-a-dead-bus fail-fast, is_platform_reply_id, and the generated
-    hand axis-6 allow-table)."""
+    never-command-a-dead-bus fail-fast, is_platform_reply_id, the cone-bus role
+    discriminators is_cone_id/is_clapboard_id, and the generated hand axis-6
+    allow-table)."""
     r = _run(binaries["test_platform_relay"])
     assert r.returncode == 0, (
         "native test_platform_relay FAILED — platform_relay.cpp / the relay seam "

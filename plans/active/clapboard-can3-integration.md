@@ -211,7 +211,7 @@ exactly this reason.
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| 0 | Test-surface prep: `ConeFrame` round-trip, header-inline ID predicates + native tests. No behaviour change, no flash | NOT STARTED | | Low | The two coverage holes that Phases 1–3 would otherwise land into blind |
+| 0 | Test-surface prep: `ConeFrame` round-trip, header-inline ID predicates + native tests. No behaviour change, no flash | COMPLETE | 2026-08-16 | Low | The two coverage holes that Phases 1–3 would otherwise land into blind |
 | 1 | Uplink: config, decoder, msgs, dispatch, topics, tests. Jetson-only, `colcon build` alone | NOT STARTED | | Low | A plugged-in clapboard becomes observable in ROS2 with zero firmware work |
 | 2 | **Firmware, single FW 15**: ID-discriminated health + `CLAPBOARD_PRESENT` bit + 2 Hz `CLAP_LINK` emitter + `CLAP_SEND` RPC + paced `clap_tx` drain + `CLAP_DIAG` | NOT STARTED | | Medium-High | Items 1, 2 and 4 — the whole firmware surface in one flash |
 | 3 | `SetSlate` action on the bridge node: chunking, CRC, `txn_id`, timeout. Jetson-only | NOT STARTED | | Medium | Item 5; end-to-end slate push under test against a FakeTeensy |
@@ -231,7 +231,18 @@ There is no FW 16 in this plan.
 
 ## 4. Implementation Phases
 
-### Phase 0: Test-surface prep — NOT STARTED
+### Phase 0: Test-surface prep — COMPLETE (2026-08-16)
+
+> **Landed 2026-08-16.** `logbook/2026-08-16-clapboard-phase0-test-surface.md`.
+> Both predictions below held: the two xlang lists are spec-driven and needed no
+> other edit, and `test_platform_relay` already linked what it needed, so no
+> `build.py` entry and no new binary. Firmware `.hex` is **byte-identical** after
+> the header edit (uncalled inlines emit no code), so no flash is implied.
+> Two judgement calls made at implementation time, both documented inline:
+> `is_clapboard_id` spans the **whole** block including the reserved
+> `0x7EE`/`0x7EF` pair, and `is_cone_id` **enumerates** the two cone ids (using
+> the generated `CatchingConeCanId` constants) rather than spanning a range, so
+> the unallocated `0x7E2`–`0x7E7` gap classifies as neither role.
 
 **New/modified files**
 
@@ -241,18 +252,25 @@ There is no FW 16 in this plan.
 - `ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.h` — add header-inline
   predicates next to `is_platform_reply_id` (`:164-170`).
 - `tests/firmware/native/test_platform_relay.cpp` — assert the new predicates.
+- `tests/firmware/test_native_firmware.py` — the two docstrings that enumerate
+  what `test_platform_relay` covers.
 
 **Scope**
 
-`ConeFrame` has **no round-trip test anywhere** — `grep -rn "ConeFrame" tests/`
-yields exactly one hit, a fixture builder. Every clapboard frame rides that
-payload, so the hole is closed before anything depends on it.
+`ConeFrame` had **no round-trip test anywhere** before this phase — at drafting
+time `grep -rn "ConeFrame" tests/` yielded exactly one hit, a fixture builder.
+Every clapboard frame rides that payload, so the hole is closed before anything
+depends on it.
 
-The ID predicates land as pure header-inline functions:
+The ID predicates land as pure header-inline functions (as landed, using the
+generated cone constants — the clapboard block stays literal until Phase 1 adds
+its `protocol_config.yaml` section):
 
 ```cpp
 inline bool is_clapboard_id(uint32_t id) { return id >= 0x7E8u && id <= 0x7EFu; }
-inline bool is_cone_id(uint32_t id)      { return id == 0x7E0u || id == 0x7E1u; }
+inline bool is_cone_id(uint32_t id) {
+  return id == CatchingConeCanId::CATCH_EVENT || id == CatchingConeCanId::HEARTBEAT;
+}
 ```
 
 **Critical details**
@@ -260,7 +278,7 @@ inline bool is_cone_id(uint32_t id)      { return id == 0x7E0u || id == 0x7E1u; 
 `can_buses.cpp` and `telemetry.cpp` compile in **no native test binary**
 (`tests/firmware/native/build.py:53-159`), so `on_cone_rx`, the SPSC ring,
 `can_cone_send` and `cone_uplink_step` have zero compiled coverage. The
-codebase has declined to close this twice (`can_buses.h:419-424`: *"Building a
+codebase has declined to close this twice (`can_buses.h:444-449`: *"Building a
 FlexCAN_T4 host shim to close it is real work, deliberately not done here"*).
 
 **That decision is upheld here.** Adding `can_buses.cpp` to the native build
@@ -794,6 +812,7 @@ requirement follows; the bridge may start in any order.
 | `tests/firmware/test_udp_protocol_xlang.py` | 0,3 | Modified |
 | `Teensy_code_canbridge/can_buses.{h,cpp}` | 0,2 | Modified |
 | `tests/firmware/native/test_platform_relay.cpp` | 0 | Modified |
+| `tests/firmware/test_native_firmware.py` | 0 | Modified |
 | `config/protocol_config.yaml`, `config/generate_config.py` | 1 | Modified |
 | `jugglebot/can/clapboard.py` | 1 | Created |
 | `jugglebot_interfaces/msg/Clapboard*.msg` | 1 | Created |

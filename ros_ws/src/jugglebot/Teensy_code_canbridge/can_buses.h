@@ -46,7 +46,7 @@
 #include <cstdint>
 #include "odrive_protocol.h"
 #include "udp_protocol.h"   // JbUdp::BusHealth
-#include "protocol_config.h"  // PlatformCanId (relay reply ids)
+#include "protocol_config.h"  // PlatformCanId (relay reply ids), CatchingConeCanId
 #include "canbridge_config.h" // BUS_PARTNER_STALENESS_US (TX presence gate)
 
 namespace CanBridge {
@@ -167,6 +167,61 @@ bool can_hand_cmd_echo_pop(HandCmdEchoRec& out);  // true + clears the dirty fla
 // compiling can_buses.cpp (which pulls FlexCAN_T4) on the host.
 inline bool is_platform_reply_id(uint32_t id) {
   return id == PlatformCanId::STATE_UPDATE || id == PlatformCanId::TILT_READING;
+}
+
+// ── Cone-bus ROLE discriminators (2026-08-16, clapboard-can3-integration) ─────
+// The cone bus is shared by role, not by device: the catching cone and the
+// electronic clapboard are MUTUALLY EXCLUSIVE by physical connection (one
+// peripheral on the segment, ever), and which one is attached is knowable only
+// from the arbitration ids arriving. These two predicates are that classifier.
+//
+// WHAT THEY ARE FOR — health reporting, NOT the TX gate. cone_health is
+// manufactured from s_cone_last_rx_us, which on_cone_rx stamps for EVERY frame
+// on the bus, so once a clapboard heartbeats the bridge reports a catching cone
+// that is not there. A wire field that confidently names the wrong peripheral is
+// worse than one that reports nothing, because it will be believed. The fix is a
+// second, ID-DISCRIMINATED timestamp pair beside the shared one.
+//
+// THE SHARED TIMESTAMP MUST STAY ID-AGNOSTIC. s_cone_last_rx_us is the sole
+// input to the bus_partner_present() TX presence gate, and the gate only cares
+// that SOMEONE is on the bus to ACK. Discriminating THAT write would close the
+// gate whenever the attached device is not the one the branch names — silently
+// stopping the 100 Hz 0x7DD time-sync broadcast, so the clapboard never anchors
+// its wall clock, never emits a fire event, and never leaves its screensaver,
+// with no error anywhere. Discriminate the health stamps; never the gate stamp.
+//
+// Pure, header-inline, no statics and no FlexCAN dependency — which is precisely
+// what lets the native harness pin the truth table without compiling
+// can_buses.cpp (same pattern as is_platform_reply_id above, and the same reason:
+// the FlexCAN_T4 host shim remains deliberately not built — see the coverage-gap
+// note in BusRxHealth below).
+//
+// NOTHING CALLS THESE YET. They land ahead of their callers so the classifier is
+// pinned by a compiled test before any behaviour depends on it; Phase 2 wires
+// them into on_cone_rx().
+
+// True iff `id` belongs to the ELECTRONIC CLAPBOARD's block: 0x7E8..0x7EF.
+// Normative source: Electronic-Clapboard docs/protocol.md §8.2 (cross-repo
+// contract — neither side may change it unilaterally). The block is allocated
+// whole: 0x7E8 CLAP_FIELD, 0x7E9 CLAP_COMMIT, 0x7EA CLAP_LINK (all J→C), 0x7EB
+// CLAP_ACK, 0x7EC CLAP_HEARTBEAT, 0x7ED CLAP_FIRE_EVENT (all C→J), and
+// 0x7EE-0x7EF reserved. The reserved pair is deliberately INSIDE the predicate:
+// a frame in this block can only have come from a clapboard, so for the
+// presence question the whole block is the right answer, and a future
+// allocation needs no edit here. Literals rather than named constants because
+// no generated ClapboardCanId namespace exists yet — Phase 1 adds the
+// protocol_config.yaml block, and this predicate should adopt it then.
+inline bool is_clapboard_id(uint32_t id) {
+  return id >= 0x7E8u && id <= 0x7EFu;
+}
+
+// True iff `id` belongs to the CATCHING CONE: 0x7E0 CATCH_EVENT / 0x7E1
+// CONE_HEARTBEAT. Enumerated (not a range) because that is the whole cone
+// allocation — 0x7E2..0x7E7 is unallocated, and treating it as cone would let an
+// unrelated frame report a cone that is not attached, which is the exact lie
+// this pair exists to stop.
+inline bool is_cone_id(uint32_t id) {
+  return id == CatchingConeCanId::CATCH_EVENT || id == CatchingConeCanId::HEARTBEAT;
 }
 
 // ── Bus-partner presence predicate (the TX-gate contract, 2026-07-05) ─────────
