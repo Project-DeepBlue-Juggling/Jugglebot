@@ -394,3 +394,64 @@ def test_truncated_udp_payload_ignored(bridge):
         int(MsgType.CONE_FRAME),
         _cone_frame(clapboard.HEARTBEAT_ID, _heartbeat_data()))
     assert _wait_until(lambda: node._clap_hb_received)
+
+
+# ── /link_status clapboard_present (HeartbeatT2J flags bit 6) ────────────────
+# The bridge's OWN answer to "which peripheral is on the cone bus", independent
+# of the uplink decode above: on_cone_rx discriminates the arbitration id and
+# reports the verdict in the heartbeat's flag word.  The two answers are
+# deliberately redundant — the flag survives a Jetson-side decode bug, and the
+# uplink survives an unflashed bridge (which reports 0 here).
+
+def test_link_status_reports_clapboard_present_from_flag_bit6(bridge):
+    """Bit 6 set → ``clapboard_present`` reads 1 while ``bus3_health`` stays
+    UNKNOWN — the honest pair.  Before this bit existed, a clapboard on the bus
+    made bus3_health read OK, naming a catching cone that was not there."""
+    teensy, node = bridge
+    flags = int(p.HeartbeatT2JFlags.CLAPBOARD_PRESENT)   # cone bits 4-5 left 0
+    hb = p.HeartbeatT2J(t_teensy_us=1, link_state=int(p.LinkState.UP),
+                        bus1_health=int(p.BusHealth.OK),
+                        bus2_health=int(p.BusHealth.OK),
+                        fault_state=int(p.FaultState.NONE),
+                        flags=flags, uptime_ms=1000)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[0].values}
+    assert kv['clapboard_present'] == '1'
+    assert kv['bus3_health'] == 'UNKNOWN'
+
+
+def test_link_status_clapboard_absent_from_an_unflashed_bridge(bridge):
+    """A firmware with no discriminator never sets bit 6, so the row reads 0.
+
+    That is the CORRECT report — "no clapboard reported", not "definitely no
+    clapboard" — and it is why the flash is confirmed on ``bridge_fw_version``,
+    never inferred from this row.  A cone reporting OK on bits 4-5 must not
+    disturb it.
+    """
+    teensy, node = bridge
+    flags = (int(p.BusHealth.OK) << p.HEARTBEAT_CONE_HEALTH_SHIFT)
+    hb = p.HeartbeatT2J(t_teensy_us=1, link_state=int(p.LinkState.UP),
+                        bus1_health=int(p.BusHealth.OK),
+                        bus2_health=int(p.BusHealth.OK),
+                        fault_state=int(p.FaultState.NONE),
+                        flags=flags, uptime_ms=1000)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None)
+    node._publish_link_status()
+    kv = {v.key: v.value for v in node.link_status_pub.published[0].values}
+    assert kv['clapboard_present'] == '0'
+    assert kv['bus3_health'] == 'OK'
+
+
+def test_clapboard_present_bit_does_not_collide_with_its_neighbours():
+    """Bit 6 is disjoint from the cone-health field below it and the torque-clamp
+    mask above it.  A one-bit slip either way would make an unrelated field
+    change the operator-facing clapboard verdict."""
+    clap = int(p.HeartbeatT2JFlags.CLAPBOARD_PRESENT)
+    assert clap == 0x40
+    assert clap & int(p.HeartbeatT2JFlags.CONE_HEALTH_MASK) == 0
+    assert clap & int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK) == 0
+    # ...and it is a single bit, not a multi-bit field.
+    assert clap & (clap - 1) == 0

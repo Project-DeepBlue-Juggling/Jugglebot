@@ -139,6 +139,7 @@ namespace HeartbeatT2JFlags {
   constexpr uint32_t ALL_AXIS_HEARTBEATS_OK = 4u;  // bit2: every present axis heartbeat is fresh
   constexpr uint32_t MPC_ACTIVE = 8u;  // bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
   constexpr uint32_t CONE_HEALTH_MASK = 48u;  // bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
+  constexpr uint32_t CLAPBOARD_PRESENT = 64u;  // bit6: an electronic clapboard (CAN id block 0x7E8-0x7EF) was seen on the cone bus within CAN_HEARTBEAT_TIMEOUT_US; reads 0 from a pre-clapboard flash (no discriminator) and from a bus carrying a catching cone instead
   constexpr uint32_t TORQUE_CLAMP_MASK = 16128u;  // bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
 }
 
@@ -212,7 +213,7 @@ struct HeartbeatT2JPayload {
   uint8_t bus1_health;  // wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum
   uint8_t bus2_health;  // wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)
   uint8_t fault_state;  // FaultState enum
-  uint32_t flags;  // HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)
+  uint32_t flags;  // HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (catching-cone BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 CLAPBOARD_PRESENT (an electronic clapboard shares that bus by role); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)
   uint32_t uptime_ms;  // ms since boot
   uint8_t bb_state;  // BallButlerState enum (0..6, 127=ERROR)
   uint8_t bb_state_data;  // BB error code when bb_state == ERROR, else 0

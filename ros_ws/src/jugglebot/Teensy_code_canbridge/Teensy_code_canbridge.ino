@@ -38,6 +38,7 @@ using namespace arduino;
 #include "udp_link.h"
 #include "can_buses.h"           // three subsystem CAN buses (CAN1/2/3)
 #include "time_sync_master.h"    // 0x7DD time-sync master
+#include "clap_link.h"           // electronic clapboard: 2 Hz CLAP_LINK beacon (cone bus)
 #include "rpc.h"                 // Jetson->Teensy RPC server
 #include "axis_state.h"          // per-axis state cache (populated by CAN RX)
 #include "ball_butler_state.h"   // BB heartbeat cache (populated by CAN1 RX)
@@ -117,8 +118,15 @@ static void send_heartbeat_t2j() {
                                                         // setpoint (mirrors lead_clamp_mask below;
                                                         // 2026-07-14 gravity-FF observability).
   // bits 4-5: cone (CAN2) BusHealth — closes the cone-health-uplink TODO above.
+  // Since 2026-08-16 this is the CATCHING CONE's health specifically: on_cone_rx
+  // discriminates the arbitration id, so an attached electronic clapboard no
+  // longer reports a cone that is not there.
   p.flags      |= ((uint32_t)cs.cone_health << JbUdp::HEARTBEAT_CONE_HEALTH_SHIFT)
                   & HF::CONE_HEALTH_MASK;
+  // bit 6: an electronic clapboard is on that same bus instead. The two devices
+  // are mutually exclusive by physical connection, so this is the other half of
+  // the answer — without it, "cone UNKNOWN" cannot be told from "bus empty".
+  p.flags      |= (cs.clapboard_present ? HF::CLAPBOARD_PRESENT : 0u);
   p.uptime_ms   = (uint32_t)(micros64() / 1000ULL);
 
   // Ball Butler heartbeat snapshot (replaces legacy can_node bb/
@@ -177,13 +185,19 @@ static void task_can_rx(void*) {
   }
 }
 
-// Time-sync master (priority 4) at TIME_SYNC_RATE_HZ. Broadcasts 0x7DD and paces
-// the time-of-day query.
+// Time-sync master (priority 4) at TIME_SYNC_RATE_HZ. Broadcasts 0x7DD, paces
+// the time-of-day query, and carries the clapboard's 2 Hz CLAP_LINK beacon.
 static void task_time_sync(void*) {
   TickType_t last = xTaskGetTickCount();
   const TickType_t period = pdMS_TO_TICKS(1000 / TIME_SYNC_RATE_HZ);
   for (;;) {
     time_sync_step();
+    // Rides this task because it is the cone bus's other 100 Hz producer, so the
+    // beacon and the 0x7DD broadcast can never interleave with each other from
+    // two contexts. link_state() is passed IN rather than read inside clap_link:
+    // the predicate stays single-sourced and the new TU stays natively testable
+    // (clap_link.h states the full argument).
+    clap_link_step(link_state());
     vTaskDelayUntil(&last, period);
   }
 }

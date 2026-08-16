@@ -89,11 +89,22 @@ bool jugglebot_commands_allowed();
 // (Native harness fakes this via fake_set_bus_transmittable if a TU ever needs it.)
 bool jugglebot_bus_transmittable();
 
+// NB: this is a BY-VALUE snapshot built field-by-field in can_buses_stats() from a
+// default-constructed (NOT value-initialised) local, so a field added here MUST be
+// assigned there — the same hazard the BusRxHealth note below spells out. It is a
+// far smaller struct with one construction site, which is why it stays a plain POD.
 struct CanStats {
   uint32_t bb_rx, bb_tx, cone_rx, cone_tx, jugglebot_rx, jugglebot_tx;
   uint8_t  bb_health;          // JbUdp::BusHealth
-  uint8_t  cone_health;
+  uint8_t  cone_health;        // the CATCHING CONE only — ID-discriminated (see is_cone_id)
   uint8_t  jugglebot_health;
+  // Cone-bus ROLE discrimination (2026-08-16, clapboard-can3-integration). 1 iff a
+  // frame in the clapboard block (is_clapboard_id) arrived on the cone bus within
+  // CAN_HEARTBEAT_TIMEOUT_US — the same staleness term classify_bus_health uses, so
+  // this bit and cone_health tell one consistent story about one bus. Rides the
+  // HeartbeatT2J flags as CLAPBOARD_PRESENT (bit 6); see the enum's comment for why
+  // "no cone" alone could not answer "is anything there".
+  uint8_t  clapboard_present;
 };
 CanStats can_buses_stats();
 
@@ -104,9 +115,12 @@ CanStats can_buses_stats();
 //  (consumer: cone_uplink_step in telemetry.cpp), which forwards each record as
 //  a JbUdp CONE_FRAME. The cone's impact timestamp travels inside buf (latched
 //  in the cone's piezo ISR); t_bridge_us only stamps bridge-side CAN RX.
+//  The ring push is deliberately ID-AGNOSTIC: the relay copies every frame on the
+//  bus verbatim, which is what lets the electronic clapboard (0x7E8-0x7EF) share
+//  the segment by role with no wire change (see the role discriminators below).
 struct ConeFrameRec {
   uint64_t t_bridge_us;   // bridge wall-clock at CAN2 RX (us)
-  uint32_t can_id;        // CAN arbitration id (0x7E0 / 0x7E1)
+  uint32_t can_id;        // CAN arbitration id: cone 0x7E0/0x7E1, clapboard 0x7E8-0x7EF
   uint8_t  dlc;           // CAN payload length (0..8)
   uint8_t  buf[8];        // raw CAN payload (zero-padded past dlc)
 };
@@ -196,9 +210,12 @@ inline bool is_platform_reply_id(uint32_t id) {
 // the FlexCAN_T4 host shim remains deliberately not built — see the coverage-gap
 // note in BusRxHealth below).
 //
-// NOTHING CALLS THESE YET. They land ahead of their callers so the classifier is
-// pinned by a compiled test before any behaviour depends on it; Phase 2 wires
-// them into on_cone_rx().
+// WIRED 2026-08-16 (Phase 2a): on_cone_rx() now maintains an ID-discriminated
+// timestamp per role BESIDE the shared gate stamp, can_buses_stats() derives
+// cone_health from the cone-only stamp, and CanStats::clapboard_present from the
+// clapboard one. The truth table stays pinned by the compiled native test
+// (tests/firmware/native/test_platform_relay.cpp) and the unconditional gate write
+// by the regex lint (tests/firmware/test_cone_rx_role_lint.py).
 
 // True iff `id` belongs to the ELECTRONIC CLAPBOARD's block: 0x7E8..0x7EF.
 // Normative source: Electronic-Clapboard docs/protocol.md §8.2 (cross-repo

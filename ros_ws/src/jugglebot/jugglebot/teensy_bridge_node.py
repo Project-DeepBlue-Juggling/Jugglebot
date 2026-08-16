@@ -799,6 +799,14 @@ _T2J_FLAG_MPC_ACTIVE = 0x8
 # as UNKNOWN — surfacing it is backward-compatible with an unflashed bridge.
 _T2J_CONE_HEALTH_MASK = 0x30
 _T2J_CONE_HEALTH_SHIFT = 4
+# Bit 6: an electronic clapboard is attached to that same (cone-role) bus. The
+# cone and the clapboard are mutually exclusive by physical connection, so this
+# is the other half of what bits 4-5 report: without it, a bus3_health of UNKNOWN
+# cannot be told from an empty bus. Generated single source:
+# p.HeartbeatT2JFlags.CLAPBOARD_PRESENT. Reads 0 from any flash older than
+# can-bridge FW 15, which is correct — such a firmware has no discriminator at
+# all — so surfacing it is backward-compatible with an unflashed bridge.
+_T2J_FLAG_CLAPBOARD_PRESENT = int(p.HeartbeatT2JFlags.CLAPBOARD_PRESENT)
 # Bits 8-13 carry the per-leg torque_ff ingest-clamp mask (bit 8+i = leg i clamped
 # at UDP ingest on the last ACCEPTED setpoint) — generated single source:
 # p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK / p.HEARTBEAT_TORQUE_CLAMP_SHIFT.
@@ -4803,10 +4811,20 @@ class TeensyBridgeNode(Node):
                              value=_enum_name(BusHealth, hb.bus2_health)),
                     # Cone (CAN2) health rides HeartbeatT2J.flags bits 4-5; an
                     # old flash leaves them 0 = UNKNOWN (BusHealth's zero value).
+                    # Since can-bridge FW 15 this is the CATCHING CONE specifically
+                    # — read it together with clapboard_present below, because the
+                    # two devices share the bus and only one is ever attached.
                     KeyValue(key='bus3_health',
                              value=_enum_name(BusHealth,
                                               (int(hb.flags) & _T2J_CONE_HEALTH_MASK)
                                               >> _T2J_CONE_HEALTH_SHIFT)),
+                    # Bit 6: an electronic clapboard is on that bus instead. 0 from
+                    # a pre-FW-15 bridge (no discriminator), so a 0 here means
+                    # "no clapboard reported", never "definitely no clapboard" —
+                    # confirm the flash on bridge_fw_version, not on this row.
+                    KeyValue(key='clapboard_present',
+                             value=str(int(bool(int(hb.flags)
+                                                & _T2J_FLAG_CLAPBOARD_PRESENT)))),
                     KeyValue(key='uptime_ms', value=str(int(hb.uptime_ms))),
                     KeyValue(key='time_synced',
                              value=str(int(bool(hb.flags & _T2J_FLAG_TIME_SYNCED)))),

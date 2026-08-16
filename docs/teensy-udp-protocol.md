@@ -204,6 +204,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `ALL_AXIS_HEARTBEATS_OK` | 4 | bit2: every present axis heartbeat is fresh |
 | `MPC_ACTIVE` | 8 | bit3: firmware-side mpc_active (lets a setpoint source verify its arm took) |
 | `CONE_HEALTH_MASK` | 48 | bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash |
+| `CLAPBOARD_PRESENT` | 64 | bit6: an electronic clapboard (CAN id block 0x7E8-0x7EF) was seen on the cone bus within CAN_HEARTBEAT_TIMEOUT_US; reads 0 from a pre-clapboard flash (no discriminator) and from a bus carrying a catching cone instead |
 | `TORQUE_CLAMP_MASK` | 16128 | bits 8-13: bit (8+i) set = leg i's \|torque_ff\| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint) |
 
 ## Messages
@@ -285,7 +286,7 @@ Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 | `bus1_health` | u8 | 1 | wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum |
 | `bus2_health` | u8 | 1 | wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink) |
 | `fault_state` | u8 | 1 | FaultState enum |
-| `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT) |
+| `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (catching-cone BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 CLAPBOARD_PRESENT (an electronic clapboard shares that bus by role); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT) |
 | `uptime_ms` | u32 | 1 | ms since boot |
 | `bb_state` | u8 | 1 | BallButlerState enum (0..6, 127=ERROR) |
 | `bb_state_data` | u8 | 1 | BB error code when bb_state == ERROR, else 0 |

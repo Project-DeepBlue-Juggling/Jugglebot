@@ -143,6 +143,16 @@ _BINARIES = {
         NATIVE_DIR / "test_rpc_dispatch.cpp",
         ["axis_state", "ball_butler_state", "fake_hal"],
     ),
+    # Clapboard CLAP_LINK beacon. #includes clap_link.cpp; the fake HAL supplies
+    # the controllable clock (micros64), and can_cone_send — which fake_hal does
+    # NOT define, clap_link being its first caller besides the time-sync fan-out —
+    # is a recording stub in the driver.  clap_link_step takes link state as a
+    # PARAMETER, which is the whole reason this TU is reachable from a host build
+    # at all (link_state() is static in the .ino, which no test compiles).
+    "test_clap_link": (
+        NATIVE_DIR / "test_clap_link.cpp",
+        ["axis_state", "ball_butler_state", "fake_hal"],
+    ),
     # ODrive-encoder coverage: EXECUTE the real odrive_protocol.h encoders + emit a
     # cross-language golden (pinned by the Python xref to odrive.py). Pure header.
     "test_odrive_protocol": (

@@ -21,6 +21,9 @@ SKIPS, not fails — the Jetson run is authoritative):
     (is_cone_id / is_clapboard_id), the generated hand axis-6 allow-table;
   * `test_version_check` — Get_Version sweep + raw-version cache;
   * `test_hand_ops` — hand traj/smooth-move conduit + preamble-abort;
+  * `test_clap_link` — the electronic clapboard's CLAP_LINK (0x7EA) beacon: the
+    DLC-8 wire rule the peer repo enforces in code but documents nowhere, the
+    exact 2 Hz cadence, and the LinkState → byte-0 mapping;
   * `test_leg_activate` / `test_leg_deactivate` / `test_leg_homing` — the
     cold-start move ladders (request validation, SETUP preamble byte-parity, the
     active/STOW COMMAND, the homing float32 Iq-EMA trip + HAND-vs-LEG dispatch, and
@@ -219,6 +222,21 @@ def test_native_rpc_dispatch_binary_passes(binaries):
     assert r.returncode == 0, (
         "native test_rpc_dispatch FAILED — rpc.cpp dispatch/send_axis_frame diverged "
         f"from the expected (method,axis)/gate-basis behaviour:\n{r.stdout}\n{r.stderr}")
+
+
+def test_native_clap_link_binary_passes(binaries):
+    """The compiled clap_link.cpp passes every assertion for the electronic
+    clapboard's CLAP_LINK (0x7EA) beacon: the DLC-8 wire rule (a 1-byte frame is
+    SILENTLY DROPPED by the clapboard, leaving its panel in screensaver forever
+    with no error on either side — the plan's named most-likely first integration
+    bug, and a rule the peer's protocol.md documents nowhere), the exact 2 Hz
+    cadence off a 100 Hz caller with no drift and no catch-up burst after a
+    refused send, the reserved bytes 1-7 staying zero, and the LinkState → byte-0
+    mapping in which only a healthy bidirectional link reports UP."""
+    r = _run(binaries["test_clap_link"])
+    assert r.returncode == 0, (
+        "native test_clap_link FAILED — clap_link.cpp diverged from the "
+        f"Electronic-Clapboard protocol.md §8.5 wire contract:\n{r.stdout}\n{r.stderr}")
 
 
 def test_native_odrive_protocol_binary_passes(binaries):

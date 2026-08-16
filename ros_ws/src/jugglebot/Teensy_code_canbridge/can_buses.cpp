@@ -44,6 +44,21 @@ static volatile uint32_t s_bb_rx = 0, s_bb_tx = 0, s_cone_rx = 0, s_cone_tx = 0,
                          s_jugglebot_rx = 0, s_jugglebot_tx = 0;
 static volatile uint64_t s_bb_last_rx_us = 0, s_cone_last_rx_us = 0, s_jugglebot_last_rx_us = 0;
 
+// ── Cone-bus ROLE stamps (2026-08-16, clapboard-can3-integration) ────────────
+// s_cone_last_rx_us above is the SHARED, ID-AGNOSTIC stamp and is the sole input
+// to the TX presence gate (partner_recent → can_cone_send). These two are for
+// HEALTH REPORTING ONLY and are stamped behind the is_cone_id / is_clapboard_id
+// discriminators, so cone_health can answer "is a CATCHING CONE attached" rather
+// than "is anything attached" — the lie the clapboard would otherwise make it
+// tell, since the two devices are mutually exclusive on this one segment.
+// NEVER move the gate stamp behind a discriminator: it would close the gate for
+// whichever device is not the one the branch names, stopping the 100 Hz 0x7DD
+// broadcast, so the clapboard never anchors its wall clock, never emits a fire
+// event and never leaves its screensaver — with no error anywhere. Same writer
+// (on_cone_rx, task_can_rx) and same 64-bit atomic discipline as the stamp above.
+static volatile uint64_t s_cone_only_last_rx_us = 0;   // 0x7E0 / 0x7E1 only
+static volatile uint64_t s_clap_last_rx_us = 0;        // 0x7E8-0x7EF only
+
 // RX-health observability counters (see can_buses.h "RX-health observability").
 // Single-writer: task_can_rx — the service loop (depth/cap/bus-error fields) and the
 // decode callback (decode_* fields, and s_enc_frames below, which is in exactly that
@@ -419,16 +434,34 @@ static ConeFrameRec s_cone_ring[CONE_RING_CAP];
 static volatile uint8_t s_cone_ring_head = 0, s_cone_ring_tail = 0;
 static volatile uint32_t s_cone_fwd_drops = 0;
 
-// CAN2 catching cone: no ODrive on this bus → count, then copy the frame into
-// the cone-uplink ring for the Jetson relay. The RX timestamp also drives the
-// cone-presence gate in can_cone_send() (cone-absent tolerance).
+// CAN2 cone-ROLE bus: no ODrive here → count, then copy the frame into the
+// cone-uplink ring for the Jetson relay. The RX timestamp also drives the
+// bus-partner presence gate in can_cone_send() (cone-absent tolerance).
+//
+// The segment carries EXACTLY ONE peripheral, but which one is a physical choice:
+// the catching cone (0x7E0/0x7E1) or the electronic clapboard (0x7E8-0x7EF). Both
+// the counter and the ring push stay ID-AGNOSTIC — the relay forwards every frame
+// verbatim, which is the whole reason the clapboard uplink needed no wire change.
+// Only the two HEALTH stamps discriminate.
 static void on_cone_rx(const CAN_message_t& msg) {
   // DUAL-USE split: s_cone_last_rx_us drives the cone-presence gate + health
   // (INTERVAL → micros64); the ring t_bridge_us is a wire-bound absolute timestamp (→ wall).
   const uint64_t now      = now_wall_us();   // wire-bound absolute timestamp — wall by contract
   const uint64_t now_mono = micros64();      // interval clock for the gate + health stamp
   s_cone_rx++;
+  // UNCONDITIONAL, and it must stay that way — the TX presence gate reads this and
+  // only cares that SOMEONE is on the bus to ACK. Pinned by
+  // tests/firmware/test_cone_rx_role_lint.py; rationale in can_buses.h.
   atomic_write_u64(&s_cone_last_rx_us, now_mono);   // 64-bit monotonic; read as an interval by the cone gate + health_of
+  // Role discrimination — HEALTH ONLY (see the stamp declarations above). Frames
+  // in the unallocated 0x7E2-0x7E7 gap, and the 0x7DD broadcast if it were ever
+  // looped back, match neither and stamp neither: they are evidence that the bus
+  // is alive (already recorded above), not evidence of WHICH device is attached.
+  if (is_clapboard_id(msg.id)) {
+    atomic_write_u64(&s_clap_last_rx_us, now_mono);
+  } else if (is_cone_id(msg.id)) {
+    atomic_write_u64(&s_cone_only_last_rx_us, now_mono);
+  }
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const uint8_t next = (uint8_t)((s_cone_ring_head + 1) % CONE_RING_CAP);
   if (next == s_cone_ring_tail) {
@@ -1131,8 +1164,34 @@ CanStats can_buses_stats() {
   // atomic on Cortex-M7, so no snapshot/seqlock is needed. Per-bus inputs only:
   // each bus's health is independent of the other two by construction.
   s.bb_health = health_of(atomic_read_u64(&s_bb_last_rx_us), s_bb_rxh.flt_live);
-  s.cone_health = health_of(atomic_read_u64(&s_cone_last_rx_us), s_cone_rxh.flt_live);
+  // cone_health reads the ID-DISCRIMINATED cone stamp, NOT the shared gate stamp:
+  // with a clapboard attached instead, this must report UNKNOWN ("no catching cone
+  // has ever been seen") rather than OK. The wire field's SEMANTICS are unchanged —
+  // it still means "catching cone" — which is what lets existing consumers keep
+  // reading it. The bus's own liveness is not lost: it moves to clapboard_present.
+  // flt_live stays the cone BUS's confinement state; confinement is a property of
+  // the controller, not of which peripheral is plugged into it.
+  // KNOWN RESIDUAL, accepted and unchanged by this edit: classify_bus_health
+  // short-circuits to UNKNOWN when last_rx_us == 0, BEFORE it looks at flt_live —
+  // so while a clapboard (or nothing) is attached, a live WARN/BUS_OFF on the cone
+  // controller does not reach this row. That is the PRE-EXISTING "device absent ⇒
+  // UNKNOWN" semantics, not something introduced here: with no cone plugged in at
+  // all, bus3_health has always read UNKNOWN through a bus-off. Fixing it means
+  // editing the classifier all three buses share, which is a far wider blast radius
+  // than this phase; the cone bus carries no safety-critical traffic, and
+  // clapboard_present below still answers "is the bus alive".
+  s.cone_health = health_of(atomic_read_u64(&s_cone_only_last_rx_us), s_cone_rxh.flt_live);
   s.jugglebot_health = health_of(atomic_read_u64(&s_jugglebot_last_rx_us), s_jugglebot_rxh.flt_live);
+  // Clapboard presence: same staleness term classify_bus_health uses for WARN, so
+  // the bit and cone_health cannot disagree about how stale is stale. Deliberately
+  // NOT the 5 s BUS_PARTNER_STALENESS_US window — that one exists to keep an
+  // un-ACKed TX off a partner-less bus and is far too slow to be an operator-facing
+  // "is it plugged in" answer against a 10 Hz clapboard heartbeat.
+  {
+    const uint64_t clap = atomic_read_u64(&s_clap_last_rx_us);
+    s.clapboard_present = (clap != 0 &&
+                           (micros64() - clap) <= CAN_HEARTBEAT_TIMEOUT_US) ? 1u : 0u;
+  }
   return s;
 }
 

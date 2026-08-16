@@ -327,8 +327,21 @@ ENUMS = {
         ("CONE_HEALTH_MASK",         0x30, "bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/"
                                            "BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = "
                                            "UNKNOWN from a pre-cone-uplink flash"),
+        # bit6: the cone bus is shared by ROLE — the catching cone and the
+        # electronic clapboard are mutually exclusive by physical connection, and
+        # which one is attached is knowable only from the arbitration ids arriving
+        # (clapboard block 0x7E8-0x7EF, Electronic-Clapboard docs/protocol.md §8.2).
+        # CONE_HEALTH_MASK above answers "is a CATCHING CONE there"; without this
+        # bit a plugged-in clapboard would read as "no cone AND nothing else",
+        # which is indistinguishable from an empty bus. Reads 0 from any flash
+        # older than FW 15, which is correct rather than merely tolerable: such a
+        # firmware has no clapboard discriminator at all.
+        ("CLAPBOARD_PRESENT",        0x40, "bit6: an electronic clapboard (CAN id block 0x7E8-0x7EF) was seen "
+                                           "on the cone bus within CAN_HEARTBEAT_TIMEOUT_US; reads 0 from a "
+                                           "pre-clapboard flash (no discriminator) and from a bus carrying a "
+                                           "catching cone instead"),
         # Per-leg torque_ff ingest-clamp mask, packed into free bits of the same u32
-        # (bits 6-7 stay reserved for future single-bit flags; the mask starts at
+        # (bit 7 stays reserved for a future single-bit flag; the mask starts at
         # bit 8 = HEARTBEAT_TORQUE_CLAMP_SHIFT so it stays byte-aligned/readable).
         ("TORQUE_CLAMP_MASK",      0x3F00, "bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to "
                                            "TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED "
@@ -413,7 +426,7 @@ MESSAGES = [
             Field("bus1_health", "u8",  1, "wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum"),
             Field("bus2_health", "u8",  1, "wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)"),
             Field("fault_state", "u8",  1, "FaultState enum"),
-            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (cone/CAN2 BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
+            Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (catching-cone BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 CLAPBOARD_PRESENT (an electronic clapboard shares that bus by role); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
             # Ball Butler heartbeat snapshot (CAN1 0x7D1 decoded by the
             # can-bridge into bb_state and forwarded here at heartbeat rate).
