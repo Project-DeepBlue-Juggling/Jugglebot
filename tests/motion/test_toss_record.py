@@ -405,7 +405,7 @@ def test_the_departure_time_comes_from_the_raw_bit():
 
 def test_the_catch_time_is_debounce_free_on_both_bits():
     """The other half of the asymmetry, measured at 0/0/0 ms: any single HELD
-    reading restores HELD (``plans/archived/2026-08-15 hand-ball-sensor.md`` § Debounce
+    reading restores HELD (``plans/archived/hand-ball-sensor.md`` § Debounce
     asymmetry), so raw and debounced agree on the arrival edge. Recording both
     is what proves it stayed true rather than assuming it."""
     got = label(catch_dt=0.4)

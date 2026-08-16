@@ -856,7 +856,7 @@ class ReloadCoordinatorNode(Node):
         self._dwell_tilt_degraded = False
         # ── The auto-reload interlude's two consumer-side fences ──
         # (a) BallButler heartbeats ball_in_hand = TRUE from boot, BEFORE its first
-        #     GPIO read (plans/archived/2026-08-15 hand-ball-sensor.md § the fail-open boot
+        #     GPIO read (plans/archived/hand-ball-sensor.md § the fail-open boot
         #     default), and this node gates that bit only on heartbeat freshness.
         #     A freshly-rebooted BB therefore makes the reload FSM SKIP
         #     ACTION_CALL_RELOAD: it primes the hand, raises the latch, throws at
@@ -1296,7 +1296,7 @@ class ReloadCoordinatorNode(Node):
             # Feed the PRIMARY possession source. The mono clock, not
             # ball_held_stamp: staleness here asks whether the JETSON is still
             # hearing the sensor, and the bridge stamp is wall-epoch only once
-            # the bridge's clock anchor lands (plans/archived/2026-08-15 hand-ball-sensor.md
+            # the bridge's clock anchor lands (plans/archived/hand-ball-sensor.md
             # § Architecture, "Clock discipline"). ball_held is meaningless
             # unless ball_held_valid — the source enforces that, so both are
             # passed through untouched and nothing here decides anything.

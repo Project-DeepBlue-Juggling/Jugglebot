@@ -12,7 +12,7 @@ related_entries:
 files_changed:
   - controller/scheduler.py
   - tests/sim/test_scheduler_contract.py
-  - plans/archived/2026-05-10 mpc-tier0-contracts.md
+  - plans/archived/mpc-tier0-contracts.md
   - logbook/2026-05-09-scheduler-contract-phase-2-s1-s3-enforcement.md
   - logbook/INDEX.md
 commits:
@@ -30,7 +30,7 @@ tags:
 
 ## Summary
 
-Phase 2 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
+Phase 2 of the [mpc-tier0-contracts plan](../plans/archived/mpc-tier0-contracts.md):
 implemented input-domain enforcement for the three input-shape /
 state-collision invariants S1 (submission time), S2 (unique IDs), and
 S3 (bounded slot set) defined in
@@ -152,7 +152,7 @@ silent-bypass vectors the initial implementation missed (NaN
 | ``TestValidationOrder`` | Precedence order | 3 (S1 > S2, S2 > S3, S1 > S3) |
 | ``TestBehaviourChangeRegression`` | Pin the new loud-fail behaviour | 2 (silent-overwrite path now raises and preserves state, replace_next_event is the documented replacement path) |
 
-### plans/archived/2026-05-10 mpc-tier0-contracts.md (modified)
+### plans/archived/mpc-tier0-contracts.md (modified)
 
 Phase 2 marked ``COMPLETE (2026-05-09)`` in both the summary table
 and the detailed Phase 2 heading.

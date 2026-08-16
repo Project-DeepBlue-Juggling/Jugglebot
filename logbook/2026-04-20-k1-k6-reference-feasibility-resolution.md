@@ -4,7 +4,7 @@ type: investigation
 date: 2026-04-20
 status: resolved
 phase: "hardware-bringup — Phase 4 (moderate motions)"
-related_plan: "plans/active/hardware-bringup.md"
+related_plan: "plans/archived/hardware-bringup.md"
 related_issues:
   - MPC_OVERSHOOT_SATURATION
 related_entries:

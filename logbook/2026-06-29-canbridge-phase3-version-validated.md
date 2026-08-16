@@ -315,7 +315,7 @@ in-session fix removes the acute ~1.9 s stall now.
 
 ## Related
 
-- Plan: `plans/active/canbridge-foundation-coldstart-parity.md` (Phase 3 + the
+- Plan: `plans/archived/canbridge-foundation-coldstart-parity.md` (Phase 3 + the
   PRECONDITION block).
 - Phase 2: `2026-06-29-canbridge-phase2-coldstart-relay-state.md` §"The
   reconnect-trigger residual" (the hole this entry closes).

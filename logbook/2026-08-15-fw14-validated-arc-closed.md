@@ -405,7 +405,7 @@ not a measurement*: clamp-drag amplification on top of the raw delay. FW 14
 settles it — removing ~130 ms of delivery delay removed the whole 300 ms, so the
 excess was indeed amplification, and it left with its cause.
 
-That is why `plans/active/lead-clamp-content-freshness.md` is archived rather
+That is why `plans/archived/lead-clamp-content-freshness.md` is archived rather
 than reworked: its premise (a **content freeze** the clamp mistakes for truth)
 was disproved by the delay-line localisation — under a pure delay the content
 changes on schedule, it is merely old, so a content-change detector is looking
@@ -488,13 +488,13 @@ Every one of these was calibrated against a degraded plant, so each is
 - the **2.2–2.7 rev/s chase ceiling** and the 529 mm/s catch-up cap guidance;
 - the **retime-model OFF decision** — on a healthy plant the model's honest
   durations may be comfortably trackable;
-- the **accel-FF sizing premise** (`plans/active/accel-ff-inertia.md`), whose
+- the **accel-FF sizing premise** (`plans/parked/accel-ff-inertia.md`), whose
   motivating deficit was measured on the degraded plant;
-- the **ILC repeatability premise** (`plans/active/learned-ff-residuals.md`, gate
+- the **ILC repeatability premise** (`plans/parked/learned-ff-residuals.md`, gate
   **G-A**), which reads in that plan's own words *"the 2026-07-18 uptime-lag
   investigation is closed"*. **G-A is now open.**
 
-`plans/active/bridge-temporal-trustworthiness.md` is archived; its remaining
+`plans/archived/bridge-temporal-trustworthiness.md` is archived; its remaining
 phase P4 (the clock servo) hands off to
 `plans/active/bridge-clock-frequency-discipline.md`, whose P4-after-P3 ordering
 constraint is now **satisfied** — a frequency estimator will no longer train
@@ -599,7 +599,7 @@ through a drifting transport.
 - `logbook/2026-08-14-s3-conviction-ring-leak-measured.md` — S3, the conviction
   measurement and the two residuals reconciled here.
 - `logbook/2026-08-14-fw14-ring-leak-fix.md` — FW 14 itself.
-- `plans/archived/2026-08-15 bridge-temporal-trustworthiness.md` — the arc plan,
+- `plans/archived/bridge-temporal-trustworthiness.md` — the arc plan,
   archived with this entry.
 - `plans/active/leg-bus-frame-drops.md` — the follow-on for the frame-drop
   phenomenon and the anchor-age-aware clamp.

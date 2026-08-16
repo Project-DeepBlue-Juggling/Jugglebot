@@ -19,7 +19,7 @@ prompt for a fresh Claude session to take on.
 - `<plan-name>`: plan filename, with or without `.md`, with or
   without the `plans/active/` prefix. Examples:
   `mpc-sadpath-coverage-tiers-1-3`, `mvp-trajectory-bringup`,
-  `plans/active/can-process-refactor.md`.
+  `plans/archived/can-process-refactor.md`.
 - `[phase-number]` (optional): explicit phase to prompt for. If
   omitted, auto-detect the first **NOT STARTED** or **IN PROGRESS**
   row in the plan's summary table.
@@ -29,7 +29,8 @@ prompt for a fresh Claude session to take on.
 ### Step 1: Locate and parse the plan
 
 1. Find the plan file in `plans/active/`. If not found there, check
-   `plans/archived/` — if archived, report "plan is already
+   `plans/parked/` (report "plan is parked — see plans/parked/INDEX.md for
+   what would unpark it") then `plans/archived/` — if archived, report "plan is already
    archived; no further phases" and stop. If not found anywhere,
    list available active plans and stop.
 2. Verify the plan has a phased structure. Try in order:

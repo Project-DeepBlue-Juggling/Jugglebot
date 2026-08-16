@@ -19,7 +19,7 @@ files_changed:
   - tests/hardware/session_anomaly_fixes.md
   - tests/hardware/session_phase1_hold.md
   - tests/hardware/mvp_bench_runbook.md
-  - plans/active/levelling-frame-contract.md
+  - plans/parked/levelling-frame-contract.md
 commits:
   - aea7b49
 subsystem:
@@ -408,7 +408,7 @@ relaunch is mandatory** until Phase 3 closes that structurally.
    number.** Four branches with different ball-seating consequences (above). The
    0.3008° residual is the 16 mm catch error; nothing else in this plan reaches it.
 2. **The pre-throw swing — routed to
-   `plans/active/catch-reach-degenerate-overshoot.md`.** That plan's "degenerate
+   `plans/parked/catch-reach-degenerate-overshoot.md`.** That plan's "degenerate
    reach" case is precisely what a post-Phase-2 toss reach now *is* (zero net tilt
    displacement, non-zero arrival twist), so its reproduction survives this plan
    rather than disappearing with it. It should also know that the arrival twist is

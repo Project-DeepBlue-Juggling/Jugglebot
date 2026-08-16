@@ -330,7 +330,7 @@ def test_wire_layout_frozen(gen):
     #   (CACHE_DIAG 0x91 at 101 B, before enc_frames — same commit, never flashed).
     #
     # Re-pinned for the additive CACHE_DIAG message (2026-08-12, can-bridge
-    # FW 12, 'plans/archived/2026-08-15 bridge-temporal-trustworthiness.md'):
+    # FW 12, 'plans/archived/bridge-temporal-trustworthiness.md'):
     # MsgType
     # CACHE_DIAG 0x91 + a 129 B payload carrying, once a second, the per-axis
     # ENCODER-CACHE AGE floor and peak over the window (reduced on-chip from a
@@ -354,7 +354,7 @@ def test_wire_layout_frozen(gen):
     #   (additive CLOCK_DIAG 0x8F 49 B — 2026-08-11 can-bridge FW 11).
     #
     # Re-pinned for the additive CLOCK_DIAG message (2026-08-11, can-bridge
-    # FW 11, 'plans/archived/2026-08-15 bridge-temporal-trustworthiness.md'
+    # FW 11, 'plans/archived/bridge-temporal-trustworthiness.md'
     # P1): MsgType
     # CLOCK_DIAG 0x8F + a 49 B payload carrying one sample per accepted
     # time-of-day anchor — the pre-slew offset error that set_wall_anchor has

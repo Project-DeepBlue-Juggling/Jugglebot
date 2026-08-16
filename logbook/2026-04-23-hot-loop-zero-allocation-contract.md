@@ -31,7 +31,7 @@ files_changed:
   - sim/analysis/diagnose.py
   - sim/main.py
   - logbook/INDEX.md
-  - plans/archived/2026-04-23 hot-loop-zero-allocation-contract.md
+  - plans/archived/hot-loop-zero-allocation-contract.md
 commits:
   - ec08312   # W1–W4d: audit + contract + enforcement + telemetry/runner/hook pre-alloc
   - f38abd3   # W5: gc.disable() wrapper + T-I4 in-tick GC assertion

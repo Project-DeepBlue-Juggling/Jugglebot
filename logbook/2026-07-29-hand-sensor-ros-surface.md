@@ -401,7 +401,7 @@ flash at Phase 7 step 1, in either order relative to this Jetson deploy, because
 
 ## Related
 
-- `plans/active/hand-ball-sensor.md` — Phase 5 (this phase); § Architecture
+- `plans/archived/hand-ball-sensor.md` — Phase 5 (this phase); § Architecture
   remains **normative** for the tri-state semantics this surface renders. Also
   its Out-of-scope § for the **BallButler fail-open reload-skip defect**, whose
   fix is the same two-hop validity shape one layer up.

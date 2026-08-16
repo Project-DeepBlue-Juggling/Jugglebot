@@ -1,6 +1,6 @@
 # Hardware Session — Tilt calibration grid (C-LEVEL-2), rungs C0–C3
 
-**Plan**: `plans/archived/2026-08-15 tilt-calibration-grid.md` § Phase 4
+**Plan**: `plans/archived/tilt-calibration-grid.md` § Phase 4
 **Contract**: `ros_ws/docs/levelling_frame.md` § **C-LEVEL-2** (composes with
 C-LEVEL-1, never replaces it)
 **Tools**: `tests/hardware/tilt_cal_grid.py` (capture, operator-run),

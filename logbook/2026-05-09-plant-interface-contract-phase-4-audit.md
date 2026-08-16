@@ -13,7 +13,7 @@ related_entries:
   - 2026-04-20-k1-k6-reference-feasibility-resolution
 files_changed:
   - controller/PLANT_INTERFACE_CONTRACT.md
-  - plans/archived/2026-05-10 mpc-tier0-contracts.md
+  - plans/archived/mpc-tier0-contracts.md
   - logbook/2026-05-09-plant-interface-contract-phase-4-audit.md
   - logbook/INDEX.md
 commits:
@@ -31,7 +31,7 @@ tags:
 
 ## Summary
 
-Phase 4 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
+Phase 4 of the [mpc-tier0-contracts plan](../plans/archived/mpc-tier0-contracts.md):
 audited [controller/plant.py](../controller/plant.py),
 [controller/hardware_plant.py](../controller/hardware_plant.py), and
 [sim/plant/mujoco_plant.py](../sim/plant/mujoco_plant.py) for invariants

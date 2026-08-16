@@ -5,7 +5,7 @@ description: Critically evaluate whether a plan is truly complete before archivi
 
 # Plan Reviewer Agent
 
-You are invoked before a plan is moved from `plans/active/` to `plans/archived/`.
+You are invoked before a plan is moved from `plans/active/` or `plans/parked/` to `plans/archived/` (the file is moved unchanged — plan filenames never change).
 Your job is to **critically scrutinize** whether the plan is genuinely complete —
 not just "mostly done" or "good enough".
 
@@ -41,7 +41,7 @@ not just "mostly done" or "good enough".
      language.  Plans using xfail discipline typically include a
      rule like "zero unfixed xfails at archival OR each residual
      xfail has a documented justification for why it's permanently
-     acceptable" (see `plans/active/mpc-sadpath-coverage-tiers-1-3.md`'s
+     acceptable" (see `plans/archived/mpc-sadpath-coverage-tiers-1-3.md`'s
      Working Notes for the canonical phrasing).
    - Classify each xfail as either:
      - **DOCUMENTED PERMANENT** — the xfail's `reason=` text

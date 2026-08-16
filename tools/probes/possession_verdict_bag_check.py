@@ -26,7 +26,7 @@ Three consumers reference it by path, so it must survive a reboot:
   * ``tests/hardware/session_anomaly_fixes.md`` § SECTION POSS, row ``POSS-1`` —
     the analysis command that turns the next sitting's bag into a verdict.
 
-Plan: ``plans/active/catch-reach-degenerate-overshoot.md`` (follow-on phase B).
+Plan: ``plans/parked/catch-reach-degenerate-overshoot.md`` (follow-on phase B).
 Consuming test: ``tests/ros/test_ball_possession.py``.
 
 USAGE

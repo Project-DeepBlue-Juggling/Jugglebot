@@ -12,7 +12,7 @@ files_changed:
   - tools/tilt_cal_analyse.py
   - tests/sim/test_tilt_cal_analyse.py
   - tests/hardware/session_tilt_calibration.md
-  - plans/active/tilt-calibration-grid.md
+  - plans/archived/tilt-calibration-grid.md
   - ros_ws/src/jugglebot/jugglebot/motion/tilt_map.py
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py
   - logbook/INDEX.md
@@ -20,7 +20,7 @@ files_changed:
   - config/hardware_config.yaml
   - plans/active/INDEX.md
   - plans/active/single-ball-toss.md
-  - plans/active/catch-reach-degenerate-overshoot.md
+  - plans/parked/catch-reach-degenerate-overshoot.md
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/session_anomaly_fixes.md
 subsystem:
@@ -45,7 +45,7 @@ tags:
 > no-logbook speed directive during the sitting, so `git log --grep` will not
 > reach this entry from them. They are named explicitly here instead.
 
-The 2026-08-09 C0 sitting (rung C0 of `plans/active/tilt-calibration-grid.md`)
+The 2026-08-09 C0 sitting (rung C0 of `plans/archived/tilt-calibration-grid.md`)
 never completed a probe: the operator hit "STALE LEVEL REFERENCE" aborts and
 then a leg collapse. A six-reader forensic pass over the artifacts found **two
 independent blockers**: (1) the home gate's staleness abort was **mistuned
@@ -248,7 +248,7 @@ actually proven with on 2026-07-27.
   error-gated TRAP_TRAJ from actual position; **no re-home unless ODrive
   power was interrupted** (then `is_homed` is stale and must be treated as
   such).
-- **`plans/active/tilt-calibration-grid.md`**: dated Phase-4 note pointing
+- **`plans/archived/tilt-calibration-grid.md`**: dated Phase-4 note pointing
   here, plus surgical fixes to live text (residual-definition bullet, risk
   register, C1 PASS criterion, collaborator notes) that still stated the
   retired freshness premise.
@@ -433,7 +433,7 @@ that decision and is not edited). The three config changes — tier `8a`,
 coordinating session. Live documents that asserted the 8b default each carry a
 dated one-line correction (`tests/hardware/session_phase8_toss_hardware.md`,
 `tests/hardware/session_anomaly_fixes.md`, `plans/active/single-ball-toss.md`,
-`plans/active/catch-reach-degenerate-overshoot.md`); a stale tier claim in a
+`plans/parked/catch-reach-degenerate-overshoot.md`); a stale tier claim in a
 runbook is not cosmetic, because the tier is not selectable per goal — it comes
 from the build, so a rung scored against the wrong choreography measures nothing.
 

@@ -600,7 +600,7 @@ MESSAGES = [
             "Emitted from task_telem: one frame per NEW good reply (so naturally "
             "rate-limited to the poll rate), plus a 1 Hz keepalive while no new "
             "reply lands, so staleness is itself observable on the wire. "
-            "plans/archived/2026-08-15 hand-ball-sensor.md § Architecture is NORMATIVE for the "
+            "plans/archived/hand-ball-sensor.md § Architecture is NORMATIVE for the "
             "signal semantics; these flags describe the bridge's cache and say "
             "nothing about the link, so the consumer applies its own RX-age gate."),
         fields=[
@@ -743,8 +743,8 @@ MESSAGES = [
             "wall-clock discipline state that time_base.cpp::set_wall_anchor "
             "has always computed and then DISCARDED, plus the 500 Hz interp "
             "ladder's fallback-mode occupancy over the window since the "
-            "previous emit. Built for 'plans/archived/2026-08-15 "
-            "bridge-temporal-trustworthiness.md' P1 (arc closed 2026-08-15, "
+            "previous emit. Built for "
+            "'plans/archived/bridge-temporal-trustworthiness.md' P1 (arc closed 2026-08-15, "
             "logbook/2026-08-15-fw14-validated-arc-closed.md); it is the raw "
             "material the clock plan's "
             "Phase 1 needs before the servo in "

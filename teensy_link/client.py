@@ -20,8 +20,8 @@ Callback contract: subscribers are invoked **on the RX thread**. Keep them
 short — do not block. For heavy work (e.g. ROS publishes), enqueue and process
 on a dedicated thread.
 
-Kernel RX timestamping (P2 of ``plans/archived/2026-08-15
-bridge-temporal-trustworthiness.md``, arc closed 2026-08-15 —
+Kernel RX timestamping (P2 of
+``plans/archived/bridge-temporal-trustworthiness.md``, arc closed 2026-08-15 —
 ``logbook/2026-08-15-fw14-validated-arc-closed.md``):
 the **RPC socket only** is opened with ``SO_TIMESTAMPNS`` so each received frame
 carries the kernel's CLOCK_REALTIME receive time ``t2`` in ancillary data. That

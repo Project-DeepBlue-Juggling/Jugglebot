@@ -6,7 +6,7 @@
 #   this script (04:00)     ./run_tests.sh --full at ci-deep depth (1259 s measured)
 #
 # Demoting a test is only honest if something still runs it. Land any demotion
-# and this runner in the SAME commit (plans/active/refactor-2026-07.md Phase 2).
+# and this runner in the SAME commit (plans/parked/refactor-2026-07.md Phase 2).
 #
 # Armed by systemd --user (jugglebot-nightly.timer, OnCalendar=04:00,
 # Persistent=true so a night the Jetson is off fires on the next boot). Linger is

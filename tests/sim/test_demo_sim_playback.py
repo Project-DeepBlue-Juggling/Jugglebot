@@ -3,7 +3,7 @@
 Drives MuJoCoPlant open-loop with the TrajectoryPlayer (platform only — no
 balls, no hand) and confirms the platform physically traces the analytic
 oval. This is the Phase 2 validation gate of
-plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md.
+plans/archived/bb-led-two-ball-juggle-demo.md.
 
 The playback is deliberately run at 1/4 tempo: the point of this test is to
 validate the player -> IK -> plant.command pipeline and the trajectory

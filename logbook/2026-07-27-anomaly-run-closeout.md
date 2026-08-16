@@ -13,10 +13,10 @@ files_changed:
   - tools/probes/catch_reach_replay.py
   - tools/probes/README.md
   - ros_ws/docs/catch_arrival_contract.md
-  - plans/active/levelling-frame-contract.md
+  - plans/parked/levelling-frame-contract.md
   - plans/active/hand-command-continuity.md
-  - plans/active/catch-reach-degenerate-overshoot.md
-  - plans/active/fk-convergence-tolerance.md
+  - plans/parked/catch-reach-degenerate-overshoot.md
+  - plans/archived/fk-convergence-tolerance.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
   - CLAUDE.md
 commits:

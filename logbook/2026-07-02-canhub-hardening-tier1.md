@@ -329,6 +329,6 @@ operator eyeball (read-only observation — no new actuation beyond a normal sit
 
 ## Related
 
-- Plan: `plans/active/canhub-hardening.md` (the 21-item tiered plan; Tier-1 tracked here).
+- Plan: `plans/archived/canhub-hardening.md` (the 21-item tiered plan; Tier-1 tracked here).
 - Fable-5 review run journal: `~/.claude/projects/-home-jetson-Desktop-Jugglebot/464186d7-ba4a-4f04-b124-0f6646ec869d/subagents/workflows/wf_f446b2a9-aae`.
 - Predecessor: `2026-07-02-canbridge-phase4-orchestrator-wiring` (the parity plan this hardens).

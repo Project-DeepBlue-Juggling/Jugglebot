@@ -6,7 +6,7 @@ loads. Each unit test exercises one constraint or invariant; the
 solver-converges fixture is session-scoped so the full file runs the
 optimiser only twice (default config + a custom-catch-offset variant).
 
-Plan reference: plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md §4 Phase 2
+Plan reference: plans/archived/bb-led-two-ball-juggle-demo.md §4 Phase 2
 and the test cases T-U3 (throw constraint) / T-U4 (catch constraint) of §5.
 """
 import numpy as np
@@ -21,7 +21,7 @@ from sim.juggle_planner.juggle_optimizer import (
 )
 
 
-# NIGHTLY TIER (2026-08-01, plans/active/refactor-2026-07.md Phase 2). The
+# NIGHTLY TIER (2026-08-01, plans/parked/refactor-2026-07.md Phase 2). The
 # juggling DEMO is research/characterization: an offline CasADi NLP whose output
 # feeds a sim player, with no path to the hardware leg/hand command chain. It
 # runs every night via tools/nightly_suite.sh and on `./run_tests.sh --full`

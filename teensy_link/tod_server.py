@@ -13,8 +13,8 @@ The response payload layout matches the firmware's
 
 i.e. a single little-endian uint64.
 
-**What goes in that field (P2, 'plans/archived/2026-08-15
-bridge-temporal-trustworthiness.md' — arc closed 2026-08-15,
+**What goes in that field (P2,
+'plans/archived/bridge-temporal-trustworthiness.md' — arc closed 2026-08-15,
 logbook/2026-08-15-fw14-validated-arc-closed.md).**
 The query leaves the Teensy at ``t1``, hits the Jetson kernel at ``t2``, is
 stamped at ``ts``, is sent back at ``t3``, lands at ``t4``. With

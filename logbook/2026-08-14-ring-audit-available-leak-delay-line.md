@@ -440,7 +440,7 @@ lag, most of it, or only the half it can prove.
 
 ## D3 gate result — for the lead-clamp content-freshness proposal
 
-`plans/active/lead-clamp-content-freshness.md` § 11 named **D3** as the
+`plans/archived/lead-clamp-content-freshness.md` § 11 named **D3** as the
 measurement that could invalidate its detector. It was run
 (`s2_analysis/d3_detector_floor/`), and it does.
 
@@ -628,7 +628,7 @@ with a prime suspect and one measurement between it and conviction.
   evidence (a near-empty ring per `depth_hwm`) is **circular**, since `depth_hwm`
   derives from `_available`.
   Superseded by: Findings § 6.
-- [`plans/active/lead-clamp-content-freshness.md`, provisional constants]
+- [`plans/archived/lead-clamp-content-freshness.md`, provisional constants]
   **`T_FREEZE_MIN = 30 ms` "above the healthy refresh p95 so a healthy tail does
   not declare".**
   WITHDRAWN by its own gating measurement: margin is **0.49×** at 30 ms and
@@ -675,9 +675,9 @@ with a prime suspect and one measurement between it and conviction.
 - `logbook/2026-08-02-err-timeout-attribution-instrumentation.md` § Addendum —
   the *other* confirmed FlexCAN_T4 defect (the `events()` TX-deferral missing
   `break`), and half the justification for vendoring.
-- `plans/active/bridge-temporal-trustworthiness.md` — §§ "S2 RESULTS + ring audit",
+- `plans/archived/bridge-temporal-trustworthiness.md` — §§ "S2 RESULTS + ring audit",
   "S3 — FW 13 conviction soak", and P3.
-- `plans/active/lead-clamp-content-freshness.md` — superseded as posed; see its
+- `plans/archived/lead-clamp-content-freshness.md` — superseded as posed; see its
   2026-08-14 banner and § D3 above for the two salvageable pieces.
 - `ros_ws/src/jugglebot/Teensy_code_canbridge/lib/FlexCAN_T4/PROVENANCE.md` —
   the vendoring policy and the two-defect justification (commit `fef2df5`).

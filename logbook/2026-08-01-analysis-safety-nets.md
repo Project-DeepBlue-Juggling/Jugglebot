@@ -199,7 +199,7 @@ every offender — the per-file test id was the only thing lost.
 - Dead paths fixed mechanically: `sim/controller/{mpc,params}.py` →
   `controller/` (3 files + the `sim_mpc/index.md` table), `tools/*_test.py` →
   `tests/hardware/` (2 files), `tests/test_mpc_{static,dynamic}.py` →
-  `tests/sim/` (usage.md), `plans/active/HANDOFF-teensy-can-offload-firmware-wip.md`
+  `tests/sim/` (usage.md), `plans/archived/HANDOFF-teensy-can-offload-firmware-wip.md`
   → `plans/archived/2026-07-05 …` (3 ADRs), `archived/level_platform_node.py`
   → `attic/ros-jugglebot-archived/` (parity matrix). Two dead ADR *links* to
   files deleted in the 2026-07-06 SocketCAN decommission (`can_node.py`,

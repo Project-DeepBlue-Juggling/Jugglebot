@@ -7,7 +7,7 @@
 //  2026-07-28). No ODrive firmware on any released 0.6.x pushes GPIO state on
 //  CANSimple, so the bridge POLLS: an RxSdo function-invoke of get_gpio_states
 //  every JBBallDetect::CHECK_INTERVAL_MS whose TxSdo reply carries the GPIO
-//  bitmask as a uint32. plans/archived/2026-08-15 hand-ball-sensor.md § Architecture is
+//  bitmask as a uint32. plans/archived/hand-ball-sensor.md § Architecture is
 //  NORMATIVE for the signal semantics (tri-state, timeout-is-not-a-miss, the
 //  miss_count freeze, the debounce asymmetry) — read them there, not here.
 //

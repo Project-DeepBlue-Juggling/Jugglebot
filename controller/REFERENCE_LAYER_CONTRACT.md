@@ -297,7 +297,7 @@ If an MPC session saturates again with the
 - [tests/sim/test_mpc_adversarial_sequences.py](../tests/sim/test_mpc_adversarial_sequences.py)
   — end-to-end MuJoCo regression fixture, one test per failure-mode scenario.
   `nightly`-marked since 2026-08-01 (MPC dormancy,
-  `plans/active/refactor-2026-07.md` Phase 3): run by `./run_tests.sh --full`
+  `plans/parked/refactor-2026-07.md` Phase 3): run by `./run_tests.sh --full`
   (mandatory pre-commit for `controller/` changes) and by the 04:00 nightly, not
   by the default gate. The K1–K6 property tests in `test_make_feasible_events.py`
   above are NOT demoted — the contract's primary enforcement stays per-commit.

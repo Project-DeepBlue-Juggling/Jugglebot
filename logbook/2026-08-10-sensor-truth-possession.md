@@ -22,7 +22,7 @@ files_changed:
   - tests/ros/test_toss_sequencer.py
   - tests/ros/test_reload_coordinator_node.py
   - plans/active/catch-robustness.md
-  - plans/active/hand-ball-sensor.md
+  - plans/archived/hand-ball-sensor.md
   - plans/active/single-ball-toss.md
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/session_phase8_toss_trace.md

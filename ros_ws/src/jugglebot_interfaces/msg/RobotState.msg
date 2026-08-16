@@ -12,6 +12,17 @@ bool has_undervoltage             # DC bus undervoltage detected (e.g., E-stop h
 
 bool firmware_validated       # All ODrive axes report consistent firmware/hardware versions
 
+# "Since the last bootup" in the next two fields means since the last **Platform
+# Teensy** boot — never the can-bridge's, never the Jetson's. is_homed and
+# levelling_complete live in ONE RAM global on that board
+# (Teensy_code_platform.ino `RobotState state`, zero-initialised at boot; there is
+# no EEPROM anywhere in that sketch), which sits on Jugglebot's 12 V / ODrive
+# supply. So they survive a ROS relaunch AND a can-bridge reset, and are cleared
+# only by that board losing power (or by an explicit STATE_WRITE —
+# REBOOT_ODRIVES / home / level). teensy_bridge_node caches the relayed value and
+# publishes it here; a FAILED boot read falls back to conservative False for both,
+# which is a READ failure, not a storage loss.
+# encoder_search_complete is DERIVED, not stored: is_homed OR an in-session search.
 bool encoder_search_complete # Has the encoder search been run on every leg?
 bool is_homed                # Have the ODrives been homed since the last bootup?
 bool levelling_complete      # Has the platform been levelled since the last bootup?

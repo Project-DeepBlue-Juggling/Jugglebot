@@ -41,7 +41,7 @@ reference bag carries three episodes in 50 s of streaming, one of which saturate
 the clamp on all six legs.
 
 **The distinction that makes this plan different from the archived
-`plans/archived/2026-08-15 lead-clamp-content-freshness.md` draft is
+`plans/archived/lead-clamp-content-freshness.md` draft is
 load-bearing.** Under the delay line,
 frames arrived on time and carried *fresh timestamps* with *stale content*, so no
 timestamp-based freshness test could see the fault — which is precisely why that
@@ -155,7 +155,7 @@ Measured support, on fresh-plant data from the archived draft's D3 gate: anchor
 error p95 **0.129 → 0.064 rev**, and the fraction of freezes exceeding the clamp
 budget **0.160 → 0.000** (n = 25).
 
-### 3.3 Salvage carried from `plans/archived/2026-08-15 lead-clamp-content-freshness.md`
+### 3.3 Salvage carried from `plans/archived/lead-clamp-content-freshness.md`
 
 Four pieces are re-usable verbatim and must not be re-derived:
 
@@ -262,9 +262,9 @@ session is already degraded. The new `latency_monitor` row is the natural home.
 
 - `logbook/2026-08-15-fw14-validated-arc-closed.md` — the evidence base above, and
   the Y-roughness verdict that motivated looking at ax4 in the first place.
-- `plans/archived/2026-08-15 lead-clamp-content-freshness.md` — the superseded
+- `plans/archived/lead-clamp-content-freshness.md` — the superseded
   draft; §§ 2, 5, 6 and 10 are the salvage named in § 3.3.
-- `plans/archived/2026-08-15 bridge-temporal-trustworthiness.md` § Archival note —
+- `plans/archived/bridge-temporal-trustworthiness.md` § Archival note —
   what the arc handed off, and why this is a separate plan rather than a phase.
 - `ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp` — the lead clamp.
 - `ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp` — the 2 ms

@@ -30,7 +30,7 @@ not re-runnable.
 This is that instrument. Same estimator applied to both arms of the A/B is what
 makes "matched offsets" mean something.
 
-Plan: ``plans/active/catch-reach-degenerate-overshoot.md`` (follow-on phase C).
+Plan: ``plans/parked/catch-reach-degenerate-overshoot.md`` (follow-on phase C).
 Protocol: ``tests/hardware/session_anomaly_fixes.md`` SECTION SEAT-EXP, rows
 ``SEAT-EXP-4`` / ``SEAT-EXP-6`` / ``SEAT-EXP-7.1``.
 Evidence base: ``logbook/2026-07-28-anomaly-fixes-validation-sitting.md``.

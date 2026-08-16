@@ -157,7 +157,7 @@ untrackable" is the same failure class as the morning's unshaped-traverse
 cliff — the unshaped moves were *always* in this class (hence the latches),
 and the model just moved the shaped traverses into it too. The whole class
 closes when commanded acceleration is backed by feedforward torque
-(`plans/active/accel-ff-inertia.md`), or structurally via a tracking-aware
+(`plans/parked/accel-ff-inertia.md`), or structurally via a tracking-aware
 envelope in the planner. Until one of those lands, anything that shortens
 durations — solver honesty included — converts tracking margin into
 deviation. Worth remembering for the next "make planning faster/tighter"
@@ -256,4 +256,4 @@ Verification expectation ("peaks back to ~122 mm/s / jerk ~12k, deviation
   entry (addendum there).
 - `logbook/2026-07-16-max-deviation-guard-tracking-lag.md` — the tracking-lag
   mechanism that makes honest durations untrackable.
-- `plans/active/accel-ff-inertia.md` — the fix that re-enables the model.
+- `plans/parked/accel-ff-inertia.md` — the fix that re-enables the model.

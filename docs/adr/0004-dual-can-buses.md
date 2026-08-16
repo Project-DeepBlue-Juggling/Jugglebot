@@ -3,7 +3,7 @@
 - **Status**: Superseded by [ADR-0013](0013-three-can-buses.md) (2026-06-03)
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0002](0002-dedicated-second-teensy.md), [ADR-0013](0013-three-can-buses.md) (supersedes this ADR), [parent plan](../../plans/archived/2026-08-15%20teensy-can-offload.md)
+- **Related**: [ADR-0002](0002-dedicated-second-teensy.md), [ADR-0013](0013-three-can-buses.md) (supersedes this ADR), [parent plan](../../plans/archived/teensy-can-offload.md)
 
 > **Superseded on 2026-06-03** by [ADR-0013: Three subsystem-isolated CAN
 > buses on the can-bridge Teensy](0013-three-can-buses.md). The two-bus

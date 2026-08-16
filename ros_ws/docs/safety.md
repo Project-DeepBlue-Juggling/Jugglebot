@@ -1,7 +1,7 @@
 # Safety Architecture
 
 **Re-framed 2026-08-01** for the MVP topology (the Phase 3 dormancy of
-`plans/active/refactor-2026-07.md` stopped launching the MPC-era chain this
+`plans/parked/refactor-2026-07.md` stopped launching the MPC-era chain this
 file used to describe; the old text is preserved below as the dormant-chain
 record). Constants and thresholds are deliberately NOT duplicated here —
 each layer points at the single place its numbers live, so this file cannot

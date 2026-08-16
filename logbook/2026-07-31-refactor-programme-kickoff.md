@@ -5,7 +5,7 @@ date: 2026-07-31
 status: resolved
 phase: "Refactor programme Phase 0 — review + dead-weight sweep"
 files_changed:
-  - plans/active/refactor-2026-07.md
+  - plans/parked/refactor-2026-07.md
   - attic/README.md
   - attic/ros-jugglebot-archived/
   - docs/sim_mpc/index.md
@@ -27,7 +27,7 @@ weight, god-files, and process ceremony. The full programme — owner
 decisions of 2026-07-31 included (SHA-backfill retirement, short-form
 logbook default, 4am nightly runner, teensy_link → repo root, MPC
 operational removal with parked code, build-frozen config + drift-warning
-contract) — lives in `plans/active/refactor-2026-07.md`. CAN3 verdict
+contract) — lives in `plans/parked/refactor-2026-07.md`. CAN3 verdict
 stress-tested and upheld as hardware (~85–90%); the legitimate software
 residue is scheduled as plan Phase 7.
 

@@ -203,7 +203,7 @@ The 2026-07-24 merge of `demo/bb-led-two-ball-juggle` lands the ladder
 primitives, probes, tests, and logbook history in the working branch. Full
 suite green is the phase gate. Doc pointers: `sim/JUGGLE_DEMO.md` gains a
 banner distinguishing the (paused) offline demo from the online ladder;
-`plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md` § status gains a merged-location
+`plans/archived/bb-led-two-ball-juggle-demo.md` § status gains a merged-location
 note; the 4 ladder entries never indexed on the demo branch
 (`2026-06-26-contact-mechanics-integration`, `2026-07-03-catch-control-formulation-design-basis`,
 `2026-07-03-motion-quality-review`, `2026-07-03-p2-selfcatch-reunification-tension`)

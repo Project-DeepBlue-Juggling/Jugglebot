@@ -16,7 +16,7 @@ Wires every Phase 2/3 component together in one process at 40 Hz:
     :class:`sim.hand.trajectory.HandCatchSequence` — drive the hand for
     each throw / catch event.
 
-Plan reference: ``plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md`` §4 Phase 3.
+Plan reference: ``plans/archived/bb-led-two-ball-juggle-demo.md`` §4 Phase 3.
 Exit criterion: ≥ 30 consecutive catches detected by
 ``BallManager.check_capture``.
 

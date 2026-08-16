@@ -1280,7 +1280,7 @@ that leg, measured across the expanded test battery (including moves 6 and
 3. The leg's observed stdev is above the mechanical-bandwidth floor of ~5
    µm (below that, you are tuning against measurement noise).
 4. The motion-onset dead-time investigation
-   (`plans/archived/2026-05-08 motion-onset-deadtime-investigation.md`) is either
+   (`plans/archived/motion-onset-deadtime-investigation.md`) is either
    resolved or has a known contribution to the leg's observed stdev that
    you can subtract.
 5. You have a written hypothesis about **why** this leg is different that

@@ -187,7 +187,7 @@ map.
 
 **Runbook — read it before running either:** `tests/hardware/session_tilt_calibration.md`
 (rungs C0–C3 with numeric PASS/ABORT). Contract: `ros_ws/docs/levelling_frame.md`
-§ C-LEVEL-2. Plan: `plans/archived/2026-08-15 tilt-calibration-grid.md`.
+§ C-LEVEL-2. Plan: `plans/archived/tilt-calibration-grid.md`.
 
 `tilt_cal_grid.py` takes `--dry-run` (prints the node order and ETA, makes zero
 ROS calls) rather than `--preview`: it commands no continuous motion sequence to

@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0003](0003-teensy-4_1-over-4_0.md), [ADR-0006](0006-udp-not-tcp.md), [ADR-0007](0007-point-to-point-static-link.md), [parent plan](../../plans/archived/2026-08-15%20teensy-can-offload.md)
+- **Related**: [ADR-0003](0003-teensy-4_1-over-4_0.md), [ADR-0006](0006-udp-not-tcp.md), [ADR-0007](0007-point-to-point-static-link.md), [parent plan](../../plans/archived/teensy-can-offload.md)
 
 ## Context
 

@@ -34,7 +34,7 @@ One-last-pass reconciliation of `ros_ws/docs/can-node-teensy-parity.md` (the
 definition-of-done for "the legacy `can_node` foundation is fully and robustly
 ported") against everything landed since the last reconcile (2026-07-02): the
 whole **canhub-hardening arc** (Tier 1 + Tier 2, archived
-`plans/archived/2026-07-05 canhub-hardening.md`, flashed 2026-07-03,
+`plans/archived/canhub-hardening.md`, flashed 2026-07-03,
 powered-validated 2026-07-04), the **stow-on-shutdown port** (`25557e2`), the
 **deactivate-at-STOW no-op guard** (`559c6dc`), the **[18A] HomingResult
 uplink** (`2b749e3`, `PROTOCOL_VERSION` 1→2), the **marginal-CAN3 resolution +

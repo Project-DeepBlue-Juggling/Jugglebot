@@ -15,7 +15,7 @@ files_changed:
   - tests/sim/test_mpc_input_fuzz.py
   - logbook/2026-05-11-tier1c-input-fuzz-bugfix.md
   - logbook/INDEX.md
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 # Note: controller/generated/mpc_gen.{so,c,hash} regenerated locally
 # via `python controller/generate_solver.py` after the mpc.py edit
 # — these are gitignored (each contributor builds the AOT cache
@@ -260,7 +260,7 @@ codegen rule's tripwire working as designed.
 | ``_T1C_FAULT_FIELD`` (lines 631-644) | Widened from 3 fields to 5; replaced the pre-fix exclusion comment with a post-fix one explaining the sanitization makes both newly-included fields safe to fuzz. |
 | ``TestT1cLegExtNanCorruptsPrevU`` (lines ~810-870) | Removed ``@pytest.mark.xfail(strict=True)`` decorator; rewrote class docstring as regression-pin framing; tightened test body to assert (a) ``_prev_u`` finite, (b) ``cmd`` finite, (c) ``cmd[0] ≈ prev_u[0]`` (substitution-policy pin). |
 
-### plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+### plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 
 Updates the Phase 3 Outcome paragraph to note the bugfix landed in
 the same session, and removes the "Plan 2 archival blocker" entry
@@ -458,7 +458,7 @@ the test infra.
   in the Phase 3 commit.
 - [logbook/2026-04-19-bundle-a-mpc-overshoot-saturation-fix.md](2026-04-19-bundle-a-mpc-overshoot-saturation-fix.md)
   — original W7 / hold_extrap design rationale.
-- [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+- [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2; Phase 3 outcome paragraph updated.
 - [controller/mpc.py](../controller/mpc.py) — ``_handle_failure``
   sanitization landed here.

@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-03
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0002](0002-dedicated-second-teensy.md), [ADR-0003](0003-teensy-4_1-over-4_0.md), [ADR-0004](0004-dual-can-buses.md) (superseded by this ADR), [ADR-0008](0008-time-sync-master-on-can-bridge.md), [parent plan](../../plans/archived/2026-08-15%20teensy-can-offload.md)
+- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0002](0002-dedicated-second-teensy.md), [ADR-0003](0003-teensy-4_1-over-4_0.md), [ADR-0004](0004-dual-can-buses.md) (superseded by this ADR), [ADR-0008](0008-time-sync-master-on-can-bridge.md), [parent plan](../../plans/archived/teensy-can-offload.md)
 
 ## Context
 

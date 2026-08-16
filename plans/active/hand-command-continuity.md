@@ -21,9 +21,9 @@ related_code:
 **Covers:** fix items 3 (arm-after-stroke), 4 (velocity-continuous prelude),
 5 (repack safety), 6 (prime == catch-trajectory start) from the 2026-07-25
 self-toss anomaly investigation.
-**Sibling plans:** `plans/active/levelling-frame-contract.md` (items 1–2),
-`plans/archived/2026-08-15 fk-convergence-tolerance.md` (7),
-`plans/active/catch-reach-degenerate-overshoot.md` (8).
+**Sibling plans:** `plans/parked/levelling-frame-contract.md` (items 1–2),
+`plans/archived/fk-convergence-tolerance.md` (7),
+`plans/parked/catch-reach-degenerate-overshoot.md` (8).
 
 ## Context
 
@@ -1495,7 +1495,7 @@ the Phase-0 probe.
 **ABORT:** any second stroke or mid-ascent yank; hand position exceeding 10.5 rev;
 E-STOP.
 
-Validate alongside `plans/active/levelling-frame-contract.md` Phase 4 in one
+Validate alongside `plans/parked/levelling-frame-contract.md` Phase 4 in one
 sitting if both have landed, but score them separately.
 
 ##### Addendum 2026-08-10 — the dip recurred at 1.0 m, and it is NOT a Phase 1–4 regression

@@ -21,7 +21,7 @@ files_changed:
   - tests/ros/test_can_node.py
   - tests/ros/test_bus.py
   - ros_ws/docs/can-node-teensy-parity.md
-  - plans/active/teensy-can-offload.md
+  - plans/archived/teensy-can-offload.md
 commits:
   - 7c7f61b
 subsystem:
@@ -180,7 +180,7 @@ achievable without any new blacklist file.
 - The living matrix: `ros_ws/docs/can-node-teensy-parity.md` — now the
   authoritative map from the deleted `can_node` surface to its bridge/firmware
   equivalents.
-- Plan: `plans/active/teensy-can-offload.md` Phase 13 — complete. The plan's
+- Plan: `plans/archived/teensy-can-offload.md` Phase 13 — complete. The plan's
   sole remaining thread is Phase 12 (armed dynamic moves — handled
   separately), making it an `/archive-plan` candidate with dynamic-moves as
   the carried-forward thread.

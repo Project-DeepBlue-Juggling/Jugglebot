@@ -462,7 +462,7 @@ three new tests.
   (`logbook/2026-06-25-phase11-u4-production-cutover.md:63`), but `controller/hardware_plant.py:488`
   publishes it live whenever `_has_ff_torque` is set. **Two honest qualifications**: (i) the magnitude
   cited for it (0.013–0.041 Nm/leg, non-zero in 99.6 % of samples) comes from
-  `plans/archived/2026-05-08 friction-ff-motor-guard-integration.md:37` and has **not** been
+  `plans/archived/friction-ff-motor-guard-integration.md:37` and has **not** been
   re-measured on the current stack; (ii) that is the **MPC** path, and **MPC is dormant on this
   branch** — the live MVP trajectory path (`emitter.py:89`) sends `torque_Nm=np.zeros(6)` and has
   simply never computed gravity FF at all. So the *current* loss is a gap, not a regression.

@@ -9,7 +9,7 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
   - ros_ws/src/jugglebot/jugglebot/toss_sequencer.py
   - tools/probes/hand_stroke_timeline.py
-  - plans/archived/2026-08-15 hand-ball-sensor.md
+  - plans/archived/hand-ball-sensor.md
   - plans/active/single-ball-toss.md
   - plans/active/hand-command-continuity.md
 ---

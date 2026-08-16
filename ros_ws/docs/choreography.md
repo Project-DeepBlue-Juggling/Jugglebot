@@ -21,7 +21,7 @@
 > Two scanned modules are NOT started by that launch file and are tagged
 > `(not launched)` wherever they appear: `motion_bridge_node` (dormant) and
 > `mpc_bridge_node` (dropped from the MVP bring-up) - Phase 3 of
-> `plans/active/refactor-2026-07.md`. Their source and entry points are
+> `plans/parked/refactor-2026-07.md`. Their source and entry points are
 > retained for the MPC revival, so their wires are real in the source but
 > silent on a running robot: a wire whose publishers (or service servers)
 > are ALL tagged carries nothing today.

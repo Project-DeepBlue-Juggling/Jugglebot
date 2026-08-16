@@ -41,5 +41,5 @@ tests/sim/test_compare_sessions.py -q`, run 2026-07-31: **26 passed in
 `./run_tests.sh`, run 2026-08-01: **parallel 4292 passed + 3 xfailed in
 434.35 s; serial 9 passed in 39.08 s; total 478 s — RESULT: PASS**.
 
-Found by the 2026-07-31 codebase review (`plans/active/refactor-2026-07.md`
+Found by the 2026-07-31 codebase review (`plans/parked/refactor-2026-07.md`
 Phase 0); empirically reproduced in the venv before fixing.

@@ -240,7 +240,7 @@ and its 2026-07-24 contract; that entry **stays `open`**.
   flashed for this soak.
 - `logbook/2026-07-18-teensy-uptime-tracking-degradation.md` — the parent, still
   `open`; see its 2026-08-14 (S3) addendum.
-- `plans/active/bridge-temporal-trustworthiness.md` § "S3 RESULTS — CONVICTED
+- `plans/archived/bridge-temporal-trustworthiness.md` § "S3 RESULTS — CONVICTED
   (2026-08-14)" and § P3.
 - `ros_ws/src/jugglebot/launch/jugglebot_launch.py::_install_drift` — the
   config-side sibling of the new install-skew check, and the reason its blind

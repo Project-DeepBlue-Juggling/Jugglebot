@@ -503,7 +503,7 @@ What arrives is late.
 - `logbook/2026-07-18-teensy-uptime-tracking-degradation.md` — the parent
   investigation, which pre-registered this experiment and **stays `open`**; see
   its 2026-08-12 addendum.
-- `plans/active/bridge-temporal-trustworthiness.md` — §§ S1 (this sitting), the
+- `plans/archived/bridge-temporal-trustworthiness.md` — §§ S1 (this sitting), the
   coupling insight (`udp_rtt_us` as the shared discriminator — now read flat,
   which clears the clock half of the arc), and P3 (the fix + monitor whose scope
   S1 was gating).

@@ -13,7 +13,7 @@ IDE index, and session context load of the live packages.
 Contents:
 
 - `ros-jugglebot-archived/` — formerly `ros_ws/src/jugglebot/jugglebot/archived/`
-  (moved 2026-07-31; see `plans/active/refactor-2026-07.md`). The pre-can-bridge
+  (moved 2026-07-31; see `plans/parked/refactor-2026-07.md`). The pre-can-bridge
   era: `can_interface.py`, the state-manager/FSM stack, superseded BB volley
   nodes. Never part of the colcon install (`setup.py` packages list excluded it).
 

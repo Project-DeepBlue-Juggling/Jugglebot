@@ -78,7 +78,7 @@ Subsystem tags are auto-detected from file paths. The entry uses sections approp
 /archive-plan hardware-bringup
 ```
 
-The plan-reviewer agent critically checks every milestone against the actual codebase before allowing archival. Plans move from `plans/active/` to `plans/archived/` with a completion date.
+The plan-reviewer agent critically checks every milestone against the actual codebase before allowing archival. Plans move from `plans/active/` (or `plans/parked/`) to `plans/archived/` **without being renamed** — the completion date goes in an `archived:` frontmatter field, not in the filename.
 
 ## Entry Length — short form is the default
 
@@ -252,7 +252,7 @@ This is the worked example behind CLAUDE.md's rule that a "docs-only, so no
 tests needed" exemption must name the tests that read the path you changed *and*
 trace what they assert. Trace the coverage; never infer it from a passing count.
 (Hardening `logbook_search` to warn-on-skip and validate front matter is a
-tracked item in `plans/active/refactor-2026-07.md` Phase 6.)
+tracked item in `plans/parked/refactor-2026-07.md` Phase 6.)
 
 ## Interactive Diagnosis Reports
 
@@ -278,10 +278,15 @@ logbook/
   YYYY-MM-DD-slug.md    ← individual entries
 
 plans/
-  active/                         ← in-progress plans
+  active/                         ← schedulable now
+    INDEX.md
+    <name>.md
+  parked/                         ← deliberately not now
+    INDEX.md                      ← each row names what would unpark it
     <name>.md
   archived/                       ← completed/superseded plans
-    YYYY-MM-DD <name>.md          ← prefixed with completion date
+    INDEX.md                      ← sorted by the `archived:` frontmatter date
+    <name>.md                     ← SAME filename; a plan is never renamed
 
 sim/analysis/
   diagnose.py           ← analysis engine (MPC telemetry + rosbag)

@@ -57,7 +57,7 @@ chain has one negation; the platform has two.
 ## Symptoms
 
 User report after running the PR 3a A/B procedure
-(plans/archived/2026-05-08 friction-ff-motor-guard-integration.md §9):
+(plans/archived/friction-ff-motor-guard-integration.md §9):
 
 > Step 2 was a FAIL.  The motion-onset was worse with ff on, and the
 > platform exhibited growing oscillations whenever holding at a pose
@@ -425,7 +425,7 @@ explicitly disabled via `--friction-ff false` CLI flag or the
 
 Integration plan §5 acceptance criteria need to be re-baselined for
 realistic platform numbers — see follow-up note in
-`plans/archived/2026-05-08 friction-ff-motor-guard-integration.md`.
+`plans/archived/friction-ff-motor-guard-integration.md`.
 
 ## Withdrawn claims
 

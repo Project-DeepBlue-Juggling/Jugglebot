@@ -75,7 +75,7 @@ from tests.sim._zmq_test_harness import (
 )
 
 
-# NIGHTLY TIER — the MPC is operationally dormant (plans/active/refactor-2026-07.md
+# NIGHTLY TIER — the MPC is operationally dormant (plans/parked/refactor-2026-07.md
 # Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
 # leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
 # guard). The corruption surface here is MPC-only — `MpcTargetIPC` (:5558) has

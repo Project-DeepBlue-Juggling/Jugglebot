@@ -286,13 +286,13 @@ the cascade PASSes; this is a separate control-feasibility concern.
 
 ## Related
 
-- [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+- [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2; Phase 5 Outcome carries the hardware-test commitment
   this entry discharges.
 - [logbook/2026-05-11-tier2b-hardware-plant-telemetry-ff.md](2026-05-11-tier2b-hardware-plant-telemetry-ff.md)
   — Phase 5 unit tests for this exact watchdog (T-U-T2b-1..8);
   hardware behaviour here matches the unit-test contract.
-- [plans/active/hardware-bringup.md](../plans/active/hardware-bringup.md)
+- [plans/archived/hardware-bringup.md](../plans/archived/hardware-bringup.md)
   — the broader hardware-bringup plan the operator continues next.
 - `tests/hardware/{_th_test_common,th_t2b1_publisher_kill_test,th_t2a1_can_unplug_test,rescore_artifact}.py`
   — the harness + forensic re-score tool.

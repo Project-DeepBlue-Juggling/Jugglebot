@@ -221,8 +221,8 @@ disciplines the *timebase* (clock-sync precision); this entry owns *path
 latency* — clock sync can be perfect while command latency drifts 10→240 ms.
 
 Three queued arcs gate on this closure: the accel-FF premise re-derivation
-(`plans/active/accel-ff-inertia.md`), the retime-ON revisit, and the ILC
-repeatability premise (`plans/active/learned-ff-residuals.md`, gate G-A).
+(`plans/parked/accel-ff-inertia.md`), the retime-ON revisit, and the ILC
+repeatability premise (`plans/parked/learned-ff-residuals.md`, gate G-A).
 The offline measurement vehicle is that plan's Phase-0 residual extractor,
 whose Gate 0 is validation against this entry's seven-bag lag table.
 
@@ -401,8 +401,8 @@ plant.** All of these were calibrated against a degraded plant, so each is
 - the **2.2–2.7 rev/s chase ceiling** and the 529 mm/s catch-up cap guidance;
 - the **retime-model OFF decision** — on a healthy plant the model's honest
   durations may be comfortably trackable;
-- the **accel-FF sizing premise** (`plans/active/accel-ff-inertia.md`);
-- the **ILC repeatability premise** (`plans/active/learned-ff-residuals.md`, gate
+- the **accel-FF sizing premise** (`plans/parked/accel-ff-inertia.md`);
+- the **ILC repeatability premise** (`plans/parked/learned-ff-residuals.md`, gate
   **G-A**, which reads "the 2026-07-18 uptime-lag investigation is closed") —
   **G-A is now open.**
 
@@ -443,7 +443,7 @@ drops, and the arc's methodological Discussion:
   `logbook/2026-07-17-retime-model-tracking-envelope.md` — today's two
   fix-arcs; their command-side findings stand, their envelope conclusions
   were measured at 24–30 h uptime.
-- `plans/active/accel-ff-inertia.md` — premise partially contingent on the
+- `plans/parked/accel-ff-inertia.md` — premise partially contingent on the
   reboot result.
 - Memory: `project_canhub_tier2_validated` (v3 flash 2026-07-10 = the prior
   Teensy boot epoch; the 2026-07-16-morning latches occurred at ~6 d into

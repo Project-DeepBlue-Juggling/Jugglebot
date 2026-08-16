@@ -1,6 +1,6 @@
 # Hardware Session — Hand ball-present sensor commissioning (Phase 7 commissioning — plan steps 1–5, as six runbook steps)
 
-**Plan**: `plans/archived/2026-08-15 hand-ball-sensor.md` § Phase 7 (§ Architecture is **normative**
+**Plan**: `plans/archived/hand-ball-sensor.md` § Phase 7 (§ Architecture is **normative**
 for the signal semantics this session commissions)
 **Logbook**: `logbook/2026-07-29-hand-sensor-bridge-gpio-poller.md` (Phase 3, the poller),
 `logbook/2026-07-29-hand-sensor-uplink-message.md` (Phase 4, the wire frame),
@@ -982,7 +982,7 @@ restatements:
 
 - **Nothing consumes the tri-state yet, and `toss_require_ball_evidence` is NOT flipped by
   this session** — `logbook/2026-07-29-hand-sensor-ros-surface.md` open question 3, and
-  `plans/archived/2026-08-15 hand-ball-sensor.md` § Out of scope.
+  `plans/archived/hand-ball-sensor.md` § Out of scope.
 - **The 3.0 s Jetson RX-freshness window is derived, not measured** (3× the Phase 4
   keepalive; nothing binds the two constants) — same entry, open question 2. If this
   sitting changes the keepalive, that window is silently wrong.

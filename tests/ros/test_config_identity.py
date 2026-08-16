@@ -3,7 +3,7 @@
 Production is BUILD-FROZEN: `jugglebot.hardware_config` resolves to the
 colcon-installed copy, so editing `config/hardware_config.yaml` and relaunching
 changes nothing — silently. `hardware_config_identity()` is the observability
-half of the Phase 5 answer (plans/active/refactor-2026-07.md): the bridge states
+half of the Phase 5 answer (plans/parked/refactor-2026-07.md): the bridge states
 at boot exactly which file it got, its sha256 and its mtime, so an operator can
 reconcile a session's behaviour against a specific artifact afterwards.
 

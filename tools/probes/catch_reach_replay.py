@@ -167,7 +167,7 @@ express the physics that capture contains.
 
 THE ``peak_leg_*`` QUESTION
 --------------------------
-``plans/active/catch-reach-degenerate-overshoot.md`` flagged ``peak_leg_vel/acc/
+``plans/parked/catch-reach-degenerate-overshoot.md`` flagged ``peak_leg_vel/acc/
 jerk`` reading identically ``14.2 / 142.4 / 3950`` before AND after the install
 as evidence the field is "stale or cached rather than per-plan", which would
 have invalidated the single-install reading. **Refuted.** The field is written
@@ -248,7 +248,7 @@ silently keeping the old story. Guarded in CI by
 
 RELATED
 -------
-* Plan:    ``plans/active/catch-reach-degenerate-overshoot.md`` (Phase 0/1)
+* Plan:    ``plans/parked/catch-reach-degenerate-overshoot.md`` (Phase 0/1)
 * Sibling: ``tools/probes/levelling_tilt_bag_check.py`` (park-frame verdict; this
            probe reuses its FK reconstruction so both read the commanded pose the
            same way)

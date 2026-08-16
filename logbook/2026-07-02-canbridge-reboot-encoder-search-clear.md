@@ -151,4 +151,4 @@ recovery.
 - Reboot hook: [[2026-06-30-canbridge-phase6-reboot-latch]] (step 1, the watchdog latch)
   + [[2026-06-29-canbridge-phase2-coldstart-relay-state]] (step 2, the STATE_WRITE clear
   this bug is in).
-- Plan: [`canbridge-foundation-coldstart-parity.md`](../plans/active/canbridge-foundation-coldstart-parity.md).
+- Plan: [`canbridge-foundation-coldstart-parity.md`](../plans/archived/canbridge-foundation-coldstart-parity.md).

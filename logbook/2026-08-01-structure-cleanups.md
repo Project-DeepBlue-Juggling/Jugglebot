@@ -21,7 +21,7 @@ files_changed:
   - tools/motion_onset_cogging_study.py
   - tools/probes/
   - run_mpc.py
-  - plans/active/refactor-2026-07.md
+  - plans/parked/refactor-2026-07.md
 subsystem:
   - sim
   - ros

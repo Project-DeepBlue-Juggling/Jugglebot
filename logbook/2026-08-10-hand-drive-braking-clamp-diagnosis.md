@@ -455,4 +455,4 @@ Test gate for the documentation commit: `./run_tests.sh`, run 2026-08-10 —
    not touch any stroke measurement here, but it is a telemetry-integrity
    question for the hand's CAN read path.
 5. **Bridge-uptime dispatch lag** (+54–63 ms fresh → +118–133 ms at ~16 h) —
-   unchanged in status, owned by `plans/active/refactor-2026-07.md` Phase 7.
+   unchanged in status, owned by `plans/parked/refactor-2026-07.md` Phase 7.

@@ -888,7 +888,7 @@ _CATCH_TILT_OVERSHOOT_FRAC = 0.5
 # unrequested excursion `(16/81)·|v1|·T` may not exceed `40/81 ≈ 0.4938` of the
 # catch's physical tilt scale (`_catch_scale`). NOTE the 2026-07-26 measurement
 # above corrects a claim carried by
-# `plans/active/catch-reach-degenerate-overshoot.md` and
+# `plans/parked/catch-reach-degenerate-overshoot.md` and
 # `tools/probes/catch_reach_replay.py` that the sign reverses above `ψ(2/3) =
 # 0.790`: that is where the value AT s = 2/3 crosses zero, not where the reach
 # first leaves the park the wrong way. The true first crossing is 40/81.

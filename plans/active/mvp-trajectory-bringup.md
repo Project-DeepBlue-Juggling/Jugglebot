@@ -335,7 +335,7 @@ trajectory_op:
 
 > **⚡ Action-driven reframe, 2026-07-20 (no CATCH mode; 809.08 cup-plane aim)**: the
 > reload no longer relies on a persistent **CATCH** control mode the operator holds — that
-> mode was retired (`plans/archived/2026-08-01 reload-action-catch-latch.md`;
+> mode was retired (`plans/archived/reload-action-catch-latch.md`;
 > `logbook/2026-07-20-reload-action-catch-latch.md`). The `jugglebot/reload` action now
 > **owns the platform + hand for its duration**, running from **ACTIVE + streaming a hold
 > in TRAJECTORY** (armed). It raises a **catch-armed latch** on `trajectory_node`
@@ -541,7 +541,7 @@ changes; suite 2304 passed / 5 skipped / 1 xfailed, `pytest tests/ -q`, 2026-07-
 validated by replaying the recorded S3 stick stream (old code reproduces the incident;
 new code: 0 rejects, 0 boundary parking, p99 14.9 ms). **S3 re-flown 2026-07-10:
 PASS.** Full post-mortem + proposal dispositions:
-`plans/archived/2026-08-01 follower-cadence-and-divergence.md` § RESOLUTION. This supersedes Phase
+`plans/archived/follower-cadence-and-divergence.md` § RESOLUTION. This supersedes Phase
 3's original keep-last-plan rejection policy and the plan-section text describing it;
 Phase 4 (S4) is next on the bench.
 
@@ -1230,7 +1230,7 @@ phase is reached, informed by Phases 6–8 evidence.
   stopped; the single-binder interlock makes conflicts loud).
   `mpc_bridge_node.py` source retained.
 - **Full jerk-limited hand-generator overhaul**
-  (`Jugglebot-bb/plans/active/hand-trajectory-generator-overhaul.md`); only the
+  (`Jugglebot-bb/plans/parked/hand-trajectory-generator-overhaul.md`); only the
   slim `makeCatch()` parameterisation remains pre-scoped, and only on hardware
   evidence.
 - **motor_guard + motion_bridge_node launch retirement** — both are off the leg

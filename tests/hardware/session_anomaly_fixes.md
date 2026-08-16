@@ -125,9 +125,21 @@ row can just say "standing rules apply".
    > `REJECTED_NOT_LEVELLED`". If the boot auto-push wins the race,
    > `gravity_correction_loaded` reads `true`, the toss proceeds, and **both checks
    > fail on a healthy machine.** Before scoring either, read the flag. If it is
-   > `true`, the check's precondition was never established: the reliable way to
-   > force the un-levelled state is a **Platform Teensy** power-cycle (its cache is
-   > "since last bootup"), not the can-bridge power-cycle standing rule 1 mandates.
+   > `true`, the check's precondition was never established — but the two checks
+   > need **different** recipes, and conflating them is what left `LG-3` contested
+   > from 2026-07-28 to 2026-08-16 *(corrected 2026-08-16, from source)*:
+   >
+   > - **LG-1 wants BOTH flags false.** A **Platform Teensy** power-cycle gives you
+   >   that (its `RobotState` is a RAM global zero-initialised at boot), not the
+   >   can-bridge power-cycle standing rule 1 used to mandate. Note the price: the
+   >   Platform Teensy is on Jugglebot's 12 V/ODrive supply, so the same power
+   >   event clears `is_homed` and the ODrive references — budget a re-home.
+   > - **LG-3 wants `levelling_complete: true` with `gravity_correction_loaded:
+   >   false`, so a power-cycle is exactly the wrong tool** — every board's
+   >   power-cycle either leaves both true (can-bridge: it stores nothing) or drives
+   >   the Teensy flag false (Platform: LG-1's state). The deterministic recipe is
+   >   to restart **`trajectory_node` alone** after a `level`; see § CHECK LG-3.
+   >
    > Record which case you got — that observation settles the race question for
    > every future sitting, and is worth more than the checks themselves.
 3. **Judge every catch by eye as well as by `outcome`, everywhere in this file,
@@ -187,7 +199,7 @@ BLOCKED, so row C still depends on you running its check.**
 | | what changed | what you must do | **how you find out you skipped it** |
 |---|---|---|---|
 | **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT, **POSS** (commits `aea7b49`, `e58ed89`, the hand phases, and the C-POSSESS-1 commit). **§ SECTION POSS adds a NEW module** (`ball_possession.py`), which is the one shape that can land half-applied from a cached build | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py`. **Both packages** (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B) | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4 and **PF-7**, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
-| **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) and, **2026-08-02, `tilt_map_loaded` + `tilt_map_version`** (contract C-LEVEL-2, `plans/archived/2026-08-15 tilt-calibration-grid.md` Phase 2), `RobotState.msg` gained `platform_fw_version` / `platform_fw_version_read` (§ Section FW), and **2026-07-29 a whole NEW action, `TossContinuous.action`** (§ SECTION CONT) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically, now from two nodes.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s. **`teensy_bridge_node` behaves DIFFERENTLY — do not expect it to exit.** Its 100 Hz `_publish_robot_state` assigns the two new `RobotState` fields but *catches its own exceptions*, so a half-rebuild there gives you **one throttled `Robot state publish error:` per 5 s and a silently-dead `/robot_state`** — the node stays in `ros2 node list` looking healthy while the orchestrator stalls in BOOT and blames power/CAN. Since 2026-07-27 it also logs, once at construction, `INTERFACES_STALE: …` naming the missing fields and the exact rebuild command — **grep that first** (`grep INTERFACES_STALE "$LOG"`). Note this matters most when `jugglebot_interfaces` is only *partly* stale: if it already carries **every** `TrajectoryStatus` field `_publish_status` assigns, `trajectory_node` does NOT exit and the loud row-B signature above never appears. **That carve-out expired on 2026-08-02**: `tilt_map_loaded` / `tilt_map_version` were added, so an interfaces package built before that date is missing a field `_publish_status` assigns and the loud exit signature is BACK — carrying `gravity_correction_loaded` from an earlier sitting is no longer enough. **2026-08-14 moved the expiry again**: `leg_vel_limit_mmps` / `leg_acc_limit_mmps2` / `leg_jerk_limit_mmps3` were added (live session limits for the toss reach bound), so a pre-2026-08-14 interfaces build re-triggers the loud exit signature. **⚠ The NEW ACTION makes row B worse, and in a way none of the above describes.** `reload_coordinator_node` imports `TossContinuous` at module scope, so a stale `jugglebot_interfaces` raises `ImportError` before the node is constructed — and that node hosts **all three** ball-op actions. You lose `Reload` and `Toss` too, not just the session: `ros2 action list` shows none of `/jugglebot/reload`, `/jugglebot/toss`, `/jugglebot/toss_continuous`, and `ros2 node list` has no `reload_coordinator_node`. The launch log carries the `ImportError` naming `TossContinuous`. `tests/hardware/toss_trace_recorder.py record` fails the same way, with its own explicit rebuild message. Row CONT-0.3 is the 3-second check |
+| **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) and, **2026-08-02, `tilt_map_loaded` + `tilt_map_version`** (contract C-LEVEL-2, `plans/archived/tilt-calibration-grid.md` Phase 2), `RobotState.msg` gained `platform_fw_version` / `platform_fw_version_read` (§ Section FW), and **2026-07-29 a whole NEW action, `TossContinuous.action`** (§ SECTION CONT) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically, now from two nodes.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s. **`teensy_bridge_node` behaves DIFFERENTLY — do not expect it to exit.** Its 100 Hz `_publish_robot_state` assigns the two new `RobotState` fields but *catches its own exceptions*, so a half-rebuild there gives you **one throttled `Robot state publish error:` per 5 s and a silently-dead `/robot_state`** — the node stays in `ros2 node list` looking healthy while the orchestrator stalls in BOOT and blames power/CAN. Since 2026-07-27 it also logs, once at construction, `INTERFACES_STALE: …` naming the missing fields and the exact rebuild command — **grep that first** (`grep INTERFACES_STALE "$LOG"`). Note this matters most when `jugglebot_interfaces` is only *partly* stale: if it already carries **every** `TrajectoryStatus` field `_publish_status` assigns, `trajectory_node` does NOT exit and the loud row-B signature above never appears. **That carve-out expired on 2026-08-02**: `tilt_map_loaded` / `tilt_map_version` were added, so an interfaces package built before that date is missing a field `_publish_status` assigns and the loud exit signature is BACK — carrying `gravity_correction_loaded` from an earlier sitting is no longer enough. **2026-08-14 moved the expiry again**: `leg_vel_limit_mmps` / `leg_acc_limit_mmps2` / `leg_jerk_limit_mmps3` were added (live session limits for the toss reach bound), so a pre-2026-08-14 interfaces build re-triggers the loud exit signature. **⚠ The NEW ACTION makes row B worse, and in a way none of the above describes.** `reload_coordinator_node` imports `TossContinuous` at module scope, so a stale `jugglebot_interfaces` raises `ImportError` before the node is constructed — and that node hosts **all three** ball-op actions. You lose `Reload` and `Toss` too, not just the session: `ros2 action list` shows none of `/jugglebot/reload`, `/jugglebot/toss`, `/jugglebot/toss_continuous`, and `ros2 node list` has no `reload_coordinator_node`. The launch log carries the `ImportError` naming `TossContinuous`. `tests/hardware/toss_trace_recorder.py record` fails the same way, with its own explicit rebuild message. Row CONT-0.3 is the 3-second check |
 | **C** | `ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h` + the regenerated `Teensy_code_platform/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`; **and § CHECK HAND-7's post-release decel feedforward, 2026-07-28** — a NEW `TeensyTraj::THROW_DECEL_REFLECTED_INERTIA_KGM2` in that same header), and `Teensy_code_platform.ino`'s `FW_VERSION` identity block, now at **2** (§ Section FW) | **FLASH `Teensy_code_platform/Teensy_code_platform.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **Loudly, since 2026-07-27 — read the box below.** `link_status/platform_fw_version` reads `0 (PRE-VERSIONING)` on a never-flashed board, `1` on a board still carrying only the Phase-4 prelude, and **`2`** on one carrying the Phase-7 decel feedforward, and the launch log carries a `PLATFORM_FW_CHECK: FAIL` ERROR. Run-sheet row **FW-1** |
 | **D** | `config/hardware_config.yaml` — `trajectory_op.catch_seat_rate_radps` (§ SECTION SEAT-EXP, added 2026-07-28). Shipped value `0.0`; **only the seat-rate A/B ever moves it** | `python config/generate_config.py` (**venv**, standing rule 5) **then** `colcon build --packages-select jugglebot_interfaces jugglebot` + **relaunch** (both packages — matrix row B). The regenerate is the step that gets skipped, and skipping it changes *nothing at all* — every consumer imports the **generated** `hardware_config.py`, not the YAML | **Only if you check, and the failure is the quiet kind.** A skipped regenerate or a skipped `colcon` leaves the machine on the previous rate, so the experiment block silently repeats the control block and the A/B reads as "no difference" — a wrong *scientific* answer, not a crash. Rows `SEAT-EXP-1` and `SEAT-EXP-3` are the three-way check (installed constant, YAML, probe self-check); `SEAT-EXP-3.2` is deliberately inverted, a self-check **FAIL** naming that one constant is the positive confirmation |
 
@@ -999,7 +1011,7 @@ requires exactly two `loaded-flips` in one trace file, and CAP-RELAUNCH's second
 
 ## Section FK — `fk-convergence-tolerance` Phase 1 (FK convergence criterion)
 
-**Plan**: `plans/archived/2026-08-15 fk-convergence-tolerance.md` § Phase 1
+**Plan**: `plans/archived/fk-convergence-tolerance.md` § Phase 1
 **Logbook**: `logbook/2026-07-25-fk-convergence-tolerance.md`
 **What landed**: `leg_lengths_to_pose`'s bare absolute residual tolerance
 (`tol=1e-10` mm) was below the achievable double-precision round-off floor in
@@ -2051,7 +2063,7 @@ validates the velocity-continuous `makeSmoothMove` would confound the two.
 > **2** (the first `go_home` after a `level` is a real 2.77 mm move) are
 > **unaffected and still correct**.
 
-**Plan**: `plans/active/levelling-frame-contract.md` § Phases 1–2
+**Plan**: `plans/parked/levelling-frame-contract.md` § Phases 1–2
 **Contract**: `ros_ws/docs/levelling_frame.md` (**C-LEVEL-1**)
 **What landed**: `trajectory_node` applied the gravity-levelling correction on
 two of its six external pose-ingest surfaces and not the other four, so *"level"
@@ -2121,7 +2133,7 @@ changed). **No firmware flash. No interface change *in this section*** — but b
 >    improvement in a 2.9° swing — plus the thing that actually mattered, a park
 >    that is finally gravity-level and two ingest surfaces that finally agree.
 >
->    Removing the swing is `plans/active/catch-reach-degenerate-overshoot.md`.
+>    Removing the swing is `plans/parked/catch-reach-degenerate-overshoot.md`.
 >
 > ### ⚠ AND ONE THING THIS FIX DOES **NOT** CLOSE — the criteria below are revised
 >
@@ -2830,7 +2842,7 @@ seat — the regime where an incorrectly-scaled bound silently de-rates the seat
 - **ABORT**: the commanded tilt in the last 0.8 s is **flat** (< 0.1° of motion)
   where the pre-fix capture showed `≈0.9°` — that is the throttled-seat signature,
   and it means the bound's scale regressed to the residual travel. Route back to
-  `plans/active/catch-reach-degenerate-overshoot.md` Phase 2 /
+  `plans/parked/catch-reach-degenerate-overshoot.md` Phase 2 /
   `ros_ws/docs/catch_arrival_contract.md` § "Why the scale is a MAX".
 - Not an abort, but worth logging: `N == 0` means the open-loop republish path did
   not run (check `JB_OP_RELOAD_PLATFORM_OPEN_LOOP` and that the announcement was
@@ -2896,7 +2908,7 @@ In this order, cheapest first:
 
 ## Section LVLGATE — `levelling-frame-contract` Phase 3 (`REJECTED_NOT_LEVELLED`)
 
-**Plan**: `plans/active/levelling-frame-contract.md` § Phase 3
+**Plan**: `plans/parked/levelling-frame-contract.md` § Phase 3
 **Contract**: `ros_ws/docs/levelling_frame.md` (**C-LEVEL-1.O**, the
 observability half)
 **Supersedes two forward references in § Section LVL**: CHECK LVL-1 says
@@ -2968,18 +2980,22 @@ as `REJECTED_HAND_NOT_PARKED`.
 > ### ⚠ OPERATOR PRE-BRIEF
 >
 > 1. **You will now get a loud refusal instead of a wasted throw if you forget
->    to `level`.** `levelling_complete` is "since the last Teensy bootup" and the
+>    to `level`.** ~~`levelling_complete` is "since the last Teensy bootup" and the
 >    § Shared preconditions power-cycle the can-bridge Teensy every sitting, so
 >    it is `false` at every launch and the orchestrator's persisted auto-push
 >    never fires first. **In practice every session genuinely needs a manual
->    `level`** — that has always been true; it is now enforced.
->    *(Amended 2026-08-15, twice over. The § Shared preconditions power-cycle is
+>    `level`.**~~
+>    *(Amended 2026-08-15, **resolved 2026-08-16 from source**. Both halves of the
+>    struck reasoning are dead. The § Shared preconditions power-cycle is
 >    **retired** with standing rule 1, so it no longer happens every sitting; and
->    the reasoning contradicts item 2 and standing rule 2 below, which state that
->    `levelling_complete`/`pose_offset_rad` are persisted by the **Platform**
->    Teensy and are NOT cleared by a can-bridge power-cycle. That contradiction is
->    unreconciled — flagged, not silently resolved. Either way the conclusion to
->    act on is item 2: **read `gravity_correction_loaded`, never assume it.**)*
+>    it was the wrong board anyway — `levelling_complete`/`pose_offset_rad` live in
+>    a RAM global on the **Platform** Teensy, which is on Jugglebot's 12 V/ODrive
+>    supply, while the can-bridge is on the Jetson's 5 V rail and holds no copy, so
+>    a can-bridge power-cycle **cannot** clear them. Standing rule 2 and item 2
+>    below were right; this item was wrong. Full derivation:
+>    `ros_ws/docs/levelling_frame.md` § "Which board owns `levelling_complete`".
+>    The conclusion to act on is item 2: **read `gravity_correction_loaded`, never
+>    assume it** — a within-sitting relaunch normally comes back already levelled.)*
 > 2. **After a relaunch, CHECK `gravity_correction_loaded` before re-levelling.**
 >    *(Corrected 2026-07-27 — this item previously said to re-`level` after every
 >    relaunch.)* The correction does live in `trajectory_node`'s memory, but the
@@ -3076,11 +3092,15 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   auto-push fired at the first IDLE, and a correction is genuinely loaded — the
   gate is right to pass. Do not score this as a failure, and do not score it as a
   pass of the gate either. **To force the un-levelled precondition, power-cycle
-  the PLATFORM Teensy** (its cache is "since last bootup") and re-run LG-1.
-  *(Amended 2026-08-15: this step used to say "power-cycle the Teensy per
-  § Shared preconditions", i.e. the can-bridge board — but standing rule 2 states
-  a can-bridge power-cycle does not clear the Platform Teensy's cache, and the
-  can-bridge power-cycle precondition is itself now retired.)*
+  the PLATFORM Teensy** — its `RobotState` is a RAM global zero-initialised at
+  boot, so the cycle drives `levelling_complete` false — and re-run LG-1. **Budget
+  a re-home**: that board is on Jugglebot's 12 V/ODrive supply, so the same power
+  event clears `is_homed` and the ODrive references too.
+  *(Amended 2026-08-15, confirmed from source 2026-08-16: this step used to say
+  "power-cycle the Teensy per § Shared preconditions", i.e. the can-bridge board —
+  which stores no copy of the flag and cannot clear it. The can-bridge power-cycle
+  precondition is itself now retired. Derivation:
+  `ros_ws/docs/levelling_frame.md` § "Which board owns `levelling_complete`".)*
 - **ABORT**: the toss proceeds with `levelling_complete: false`. The gate is not
   live — almost certainly LG-0 (stale install). Stop; nothing else in this
   section is meaningful.
@@ -3134,11 +3154,62 @@ ros2 topic echo /trajectory/status --once | grep gravity_correction_loaded
 Validates: **the design decision this phase turns on.** This is the check that
 distinguishes the shipped gate from the one the plan originally specified.
 
-From the LG-2 state (levelled, toss accepted), **relaunch `jugglebot_launch.py`
-without re-levelling**. A relaunch blanks `control_mode`, so you must re-arm
+> ### Reachability — SETTLED 2026-08-16, from source
+>
+> `logbook/2026-07-28-anomaly-fixes-validation-sitting.md` § "`LG-3` — an
+> unresolved disagreement" recorded two analysts disagreeing about whether this
+> check's precondition (`levelling_complete: true` **and**
+> `gravity_correction_loaded: false`) is reachable at all. It is — but **by
+> neither route either of them proposed.**
+>
+> - **The Platform-Teensy power-cycle recipe is REFUTED.** That board's
+>   `RobotState` is a RAM global zero-initialised at boot
+>   (`Teensy_code_platform.ino:139-145`; no EEPROM in the sketch), so the cycle
+>   drives `levelling_complete` **false** — which is LG-1's state, not this one's.
+> - **"Unreachable by any power-cycle" is CORRECT**, for the same reason plus its
+>   mirror: a can-bridge cycle clears nothing (that board stores no copy), so it
+>   leaves the flag true *and* the orchestrator free to auto-push.
+> - **"So the honest closure is a unit test" is TOO STRONG.** The state is
+>   reachable on hardware, deterministically, with no power-cycle at all. The
+>   orchestrator's persisted push is **one-shot per orchestrator boot**
+>   (`orchestrator_node.py:130` `_startup_offset_sent = False`, set True at
+>   `:328-334` on the first IDLE entry and never reset), `/gravity_offset` is
+>   VOLATILE with no re-request path, and `trajectory_node` starts with
+>   `_gravity_correction_loaded = False` (`trajectory_node.py:362`). So: `level`,
+>   then restart **`trajectory_node` alone**, leaving the orchestrator up. The
+>   Platform Teensy still holds `levelling_complete = true`; the orchestrator will
+>   not re-push (its latch is spent); the new `trajectory_node` holds identity.
+>   No race.
+>
+> **Run it the alone-restart way** (below); it is the only route that establishes
+> the precondition by construction. **Bench-verify once before trusting it**: the
+> mechanics of restarting that one node under the launch are un-exercised —
+> `jugglebot_launch.py` sets no `respawn=`, so the killed node stays dead and
+> `ros2 run jugglebot trajectory_node` restarts it, but `trajectory_node` is the
+> **sole binder of :5557** and the replacement must be able to re-bind after the
+> old process exits. If the re-bind fails, fall back to the whole-graph relaunch
+> below and score it only if the flags come up right.
+
+**Route A (deterministic — preferred).** From the LG-2 state (levelled, toss
+accepted), **without running `level` again**:
+
+```bash
+pkill -f 'trajectory_node'                     # orchestrator stays up
+ros2 run jugglebot trajectory_node             # new process, empty correction
+```
+
+then re-arm if `control_mode` was disturbed and read both flags below.
+
+**Route B (opportunistic — the original).** **Relaunch `jugglebot_launch.py`
+without re-levelling.** A relaunch blanks `control_mode`, so you must re-arm
 before the goal means anything:
 
 **relaunch → `activate` → `trajectory` → read both flags → send the goal.**
+
+This route reaches the precondition **only if the boot auto-push loses the
+discovery race** — on 2026-07-27 the push won all 7 publishes, the boot-push
+subset 5/5 — so read the flags first and score nothing if
+`gravity_correction_loaded` is already `true`.
 
 Then, empty cup:
 
@@ -3552,7 +3623,7 @@ timing rather than by inspection of a trace alone):
 > **Appended 2026-07-28.** This section is an **operator decision**, not a bug fix,
 > and it lands after § Section ZSEAT. `jugglebot_operational.toss_tier` is now
 > **`"8b"`** (was `"8a"`). Validates
-> `plans/active/catch-reach-degenerate-overshoot.md` **Phase 4** and
+> `plans/parked/catch-reach-degenerate-overshoot.md` **Phase 4** and
 > `plans/active/single-ball-toss.md` **Phase 4**; a failure routes to whichever of
 > the two the failing row names.
 >
@@ -3940,7 +4011,7 @@ with both windows closed, the coordinator answers on the first confirmed tick).
 | POSS-1.5 | probe vs live agreement | the probe's `CAUGHT` count **==** the log's `possession CONFIRMED` count | any difference ⇒ the installed copy is stale (re-run the deployment grep above) |
 | POSS-1.6 | **reload arrival errors, watched not gated** — the probe's `arrival_mm` column for reload attempts | today: **204.9 – 752.9 mm** ("all refused" **meant the TRACKER refused**, and since 2026-08-10 that no longer suppresses the verdict — the same numbers now print as REPORT-only cross-check on a line that can still read `CAUGHT`). Just record the range | *(no ABORT)* — but if any reload arrival error lands in the **30 – 100 mm** band, **stop and read this**: that is the signature of the tracker mis-association *healing*, and the 70 mm bound is **knowingly under-sized** for a healthy reload path. The reload era's real-marker tracks measure **34.4 / 34.9 / 37.6 / 68.4 mm**, so a genuine reload catch sits **1.6 mm inside** the bound — a 1.02x margin, plus up to 80 mm of catch-reach displacement the reference point does not follow. Route to `ros_ws/docs/ball_possession_contract.md` § 4; the bound must be re-derived by the tracker phase, **not** nudged at the bench |
 | POSS-1.7 | **NEW AND UNGATED, 2026-08-10 — the reload's `CAUGHT` terminal executes for the first time in the machine's history.** A successful reload runs `ACTION_RECENTER`: lower the catch latch + `go_home`, deliberately **no** hand retract (the hand is holding the ball). Every reload ever run terminated `SAFE_ABORT` instead, because the tracker refused every reload catch by construction — so `POSS-1.3` flipping is what makes this path live | **REPORT — no PASS/ABORT is set here on purpose.** Record three things: (a) does the `go_home` after a caught reload behave like LVL-2 — same profiled move, no step rejection; (b) does the BALL stay in the cup through it (mocap ball marker within `GEOM_HAND_RADIUS_MM` = **35 mm** of the cup axis) — this is POSS-2.4's question on the reload path; (c) is the hand left inside the **±0.5 rev** park band the next goal's `hand_parked` precondition needs | a `MAX_DEVIATION` or guard E-STOP during that `go_home` is a **hard stop for the section**. Nothing else here aborts: the row deliberately sets no threshold, because the path has no measured baseline and gating it is an operator decision (`plans/active/catch-robustness.md` Phase 1 open items). If you want zero new risk on the first run, do the reload rungs with `go_home` issued manually and score (b) on the held pose first |
-| POSS-1.8 | **the blind-sensor paths, which are TEST-ONLY in this build** (203,922 real samples across three bags were 100 % `ball_held_valid`). Two operator-visible signatures, and they are NOT the same line: (a) `REJECTED_BALL_UNKNOWN` on a *toss goal* — the live `evidence()` read at CHECKING could not answer; (b) `SENSOR_BLIND` inside the `[reason]` bracket of a possession line — the verdict silently fell back to the tracker (a bare `possession UNKNOWN` line is effectively unreachable through today's caller: it only runs on a tracker CAUGHT, and the tracker always has an estimate to fall back to) | **zero of each** on a healthy sensor. To exercise it deliberately, **kill the SDO poller, not the link**: `hand_fresh` gates *before* `ball_seated`, so dropping the whole bridge gives `REJECTED_HAND_STALE`, not `REJECTED_BALL_UNKNOWN` | *(no ABORT on the deliberate test)* — but either signature during normal running is a **finding**: record the surrounding `ball_held_valid` stream and route to `plans/archived/2026-08-15 hand-ball-sensor.md`. A goal refused `REJECTED_BALL_UNKNOWN` is the gate working (fail-closed by design, deliberately NOT BallButler's fail-open boot default); `toss_require_ball_evidence: false` is the documented total bypass if you need to finish a sitting |
+| POSS-1.8 | **the blind-sensor paths, which are TEST-ONLY in this build** (203,922 real samples across three bags were 100 % `ball_held_valid`). Two operator-visible signatures, and they are NOT the same line: (a) `REJECTED_BALL_UNKNOWN` on a *toss goal* — the live `evidence()` read at CHECKING could not answer; (b) `SENSOR_BLIND` inside the `[reason]` bracket of a possession line — the verdict silently fell back to the tracker (a bare `possession UNKNOWN` line is effectively unreachable through today's caller: it only runs on a tracker CAUGHT, and the tracker always has an estimate to fall back to) | **zero of each** on a healthy sensor. To exercise it deliberately, **kill the SDO poller, not the link**: `hand_fresh` gates *before* `ball_seated`, so dropping the whole bridge gives `REJECTED_HAND_STALE`, not `REJECTED_BALL_UNKNOWN` | *(no ABORT on the deliberate test)* — but either signature during normal running is a **finding**: record the surrounding `ball_held_valid` stream and route to `plans/archived/hand-ball-sensor.md`. A goal refused `REJECTED_BALL_UNKNOWN` is the gate working (fail-closed by design, deliberately NOT BallButler's fail-open boot default); `toss_require_ball_evidence: false` is the documented total bypass if you need to finish a sitting |
 
 Record the raw counts either way. This is the row that retires "judge by eye"
 across the whole file, and it cannot be retired on one sitting.

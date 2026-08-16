@@ -158,7 +158,7 @@ class OrchestratorNode(Node):
         self.ctx.fatal_can_error = msg.has_fatal_can_error
         self.ctx.undervoltage = msg.has_undervoltage
 
-        # Levelling state from Teensy (persisted across reboots).
+        # Levelling state, held in the PLATFORM Teensy's RAM: it survives a relaunch AND a can-bridge reset (RobotState.msg).
         # Skip updates while LEVELLING — the state machine is computing
         # new values and we must not overwrite them with stale CAN data.
         if self.sm.state != RobotState.LEVELLING:

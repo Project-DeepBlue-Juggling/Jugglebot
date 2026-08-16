@@ -15,7 +15,7 @@ float64 iq_meas  # Measured current in the hand motor {A}
 # can-bridge over an SDO pair). TRI-STATE, not a bare bool: ball_held is
 # meaningless unless ball_held_valid is true — boot, staleness and an
 # un-anchored bridge clock are all UNKNOWN, never "no ball".
-# See plans/active/hand-ball-sensor.md § Architecture (normative).
+# See plans/archived/hand-ball-sensor.md § Architecture (normative).
 bool ball_held        # Debounced verdict (only meaningful while ball_held_valid)
 bool ball_held_raw    # Raw per-sample bit (carry-flicker diagnostics)
 bool ball_held_valid  # Fresh + endpoint-verified + link-fresh; false = UNKNOWN

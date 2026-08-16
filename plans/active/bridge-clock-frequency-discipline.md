@@ -38,7 +38,7 @@ related_code:
 > become an uptime-ratcheting delay line), fixed in **FW 14** and validated at
 > **5.8 h and 15.2 h** of continuous bridge uptime — `leak ≡ 0`, end-to-end lag
 > 10–20 ms, lead-clamp duty 0. See `logbook/2026-08-15-fw14-validated-arc-closed.md`
-> and `plans/archived/2026-08-15 bridge-temporal-trustworthiness.md` § Archival
+> and `plans/archived/bridge-temporal-trustworthiness.md` § Archival
 > note. Consequences for the work below, all concrete:
 >
 > - **Phases 3–5 (the servo, min-RTT gating, holdover) may now start.** The
@@ -66,7 +66,7 @@ related_code:
 >   load than it will run at.
 >
 > **2026-08-11 — sequencing:** both halves were driven by one arc,
-> `plans/archived/2026-08-15 bridge-temporal-trustworthiness.md` (archived
+> `plans/archived/bridge-temporal-trustworthiness.md` (archived
 > 2026-08-15). This plan stays the **authoritative design reference**; that plan
 > owned only the ordering.
 > Mapping: **Phase 1 → arc P1** (the per-anchor diagnostics ship as an additive

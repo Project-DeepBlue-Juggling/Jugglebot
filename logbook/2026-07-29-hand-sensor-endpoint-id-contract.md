@@ -336,7 +336,7 @@ which first matters when Phase 4 code reads the new constant.
 
 ## Related
 
-- `plans/active/hand-ball-sensor.md` — Phase 2, and the endpoint-trap
+- `plans/archived/hand-ball-sensor.md` — Phase 2, and the endpoint-trap
   paragraphs in § Notes for collaborators.
 - `logbook/2026-07-29-hand-sensor-fw-version-surfacing.md` — Phase 0, the
   fw-version evidence that makes "which firmware is this id pinned against"

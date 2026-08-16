@@ -14,7 +14,7 @@ files_changed:
   - tests/sim/test_mpc_time_pathologies.py
   - logbook/2026-05-12-tier3b-time-pathologies.md
   - logbook/INDEX.md
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 commits:
   - 89dda73
 subsystem:
@@ -560,7 +560,7 @@ refactor that violates it.
 
 ## Related
 
-* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 8 specification (and the plan's final phase).
 * [logbook/2026-05-12-tier3b-hook-bugfix.md](2026-05-12-tier3b-hook-bugfix.md)
   — the follow-up bugfix commit covering Bug E (on_target_override

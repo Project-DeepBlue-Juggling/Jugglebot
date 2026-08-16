@@ -218,7 +218,7 @@ gains a KeyValue *row*, not a field) and no firmware flash.
 
 ## Related
 
-- `plans/active/hand-ball-sensor.md` — Phase 0 and Approved-decisions row 6.
+- `plans/archived/hand-ball-sensor.md` — Phase 0 and Approved-decisions row 6.
 - `ros_ws/src/jugglebot/Teensy_code_canbridge/version_check.cpp` — the
   once-per-Teensy-boot sweep whose cached replies this decodes.
 - `logbook/2026-07-28-anomaly-fixes-validation-sitting.md` — the sitting that

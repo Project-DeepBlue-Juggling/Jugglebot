@@ -13,7 +13,7 @@ files_changed:
   - tools/systemd/README.md
   - pyproject.toml
   - CLAUDE.md
-  - plans/active/refactor-2026-07.md
+  - plans/parked/refactor-2026-07.md
   - controller/HOT_LOOP_CONTRACT.md
   - controller/DIAG_SCHEMA_CONTRACT.md
   - controller/REFERENCE_LAYER_CONTRACT.md
@@ -60,7 +60,7 @@ tags:
 
 ## What changed and why
 
-Phases 2 and 3 of `plans/active/refactor-2026-07.md`, landed together because
+Phases 2 and 3 of `plans/parked/refactor-2026-07.md`, landed together because
 the plan's hard rule is that **the runner and the first demotion ship in the
 same commit** — without a live runner, `nightly` is a delete button.
 

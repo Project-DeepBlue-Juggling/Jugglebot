@@ -810,7 +810,7 @@ def _synth(throw=100.0, flight=0.8, *, departure_dt=0.17, catch_dt=None,
 
     ``debounce_fall_s`` reproduces the measured behaviour — a fall on the raw bit
     reaches the debounced verdict ~240 ms later, a rise reaches it immediately
-    (``plans/archived/2026-08-15 hand-ball-sensor.md`` § Debounce asymmetry; measured
+    (``plans/archived/hand-ball-sensor.md`` § Debounce asymmetry; measured
     0/0/0 ms rise and 232/241/295 ms fall on 2026-08-10_16-30-44). A self-check
     driven by a SYMMETRIC synthetic stream would pass while the labeller read the
     wrong bit, which is the whole failure D12 exists to prevent.

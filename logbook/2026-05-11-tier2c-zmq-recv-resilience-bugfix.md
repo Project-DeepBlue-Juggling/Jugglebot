@@ -538,7 +538,7 @@ falling for the same hedge-trap.
 * [logbook/2026-05-11-tier2c-zmq-corruption.md](2026-05-11-tier2c-zmq-corruption.md)
   — Phase 6 main entry; the test surface this bugfix lifts the
   xfails on.
-* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 6 specification (test additions only by design;
   bugfixes routed via the *"Production-code changes triggered by
   tests"* subsection).

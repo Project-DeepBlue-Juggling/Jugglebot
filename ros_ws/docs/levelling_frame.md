@@ -73,7 +73,7 @@ belong to `planner.build_catch`, and both survive the fix:
   0.7788° → +3.0992° peak, post-fix 0° → +2.9198°. A 0.18° improvement in a 2.9°
   swing, plus a park that is finally gravity-level. Removing the swing means
   changing the arrival twist —
-  `plans/active/catch-reach-degenerate-overshoot.md`, not this contract.
+  `plans/parked/catch-reach-degenerate-overshoot.md`, not this contract.
 * **The 16 mm.** `build_catch` aims its tilt-through-seat residual along
   `catch_pose[3:5]`, which *with a correction loaded is the correction itself*, so
   a gravity-level catch settles `0.5 × 0.07 × 0.15 = 0.005250 rad = ` **0.3008°
@@ -146,7 +146,7 @@ exist to catch precisely this.
 ## The enumerated ingest sites
 
 `E` = external ⇒ corrected exactly once. `D` = derived ⇒ never corrected.
-Table A of `plans/active/levelling-frame-contract.md` § Phase 0 — Outcome carries
+Table A of `plans/parked/levelling-frame-contract.md` § Phase 0 — Outcome carries
 the full nine `D` rows and the four direct plan installs; the `E` rows are
 normative and are reproduced here.
 
@@ -277,8 +277,9 @@ because "what level means" is what this document is for.
 Therefore: if `trajectory_node` restarts after a `level` — a crash, or precisely
 the `colcon build` + relaunch that any change to this package requires — its
 correction reverts to identity, and `RobotState.levelling_complete` **still
-reads True**, because that is a Teensy-persisted per-boot flag that says nothing
-about any ROS process's memory. That is a *third* pair of meanings for "level",
+reads True**, because that flag is held in the **Platform** Teensy's RAM — a
+per-boot flag *of that board*, which the relaunch does not touch — and says
+nothing about any ROS process's memory. That is a *third* pair of meanings for "level",
 produced by the same class of reasoning this contract exists to close.
 
 ### C-LEVEL-1.O — the observability half
@@ -347,32 +348,74 @@ QoS on `/gravity_offset` was considered and **not** taken — see the plan's
 Phase 3 outcome for the three failure modes that decided it, the load-bearing one
 being that the latch lives in the *publisher*, so the whole-graph relaunch that
 motivates this hazard would not benefit at all. The operator runbook's standing
-requirement therefore stands unchanged: **level manually after every launch or
-relaunch.** What is new is that forgetting costs a loud refusal instead of a ball
-on the floor.
+requirement therefore stands: **after every launch or relaunch, read
+`trajectory/status.gravity_correction_loaded`, and `level` if it is false**
+(`tests/hardware/session_anomaly_fixes.md` standing rule 2 — corrected 2026-07-27
+from an unconditional "level every relaunch", which cost a needless levelling
+routine on every build gate). What is new is that forgetting costs a loud refusal
+instead of a ball on the floor.
 
-Two operational facts made this the common case rather than a corner:
-`levelling_complete` is "since last Teensy bootup", and the operator used to
-power-cycle the can-bridge Teensy before every sitting — so it was False at every
-launch and the persisted auto-push never fired first. **In practice every session
-genuinely needs a manual `level`.**
+Two operational facts were once cited as making this the common case rather than
+a corner: `levelling_complete` is "since last Teensy bootup" — *which* Teensy
+was never stated, and that omission is the whole defect — and the operator
+used to power-cycle the can-bridge Teensy before every sitting — so, the argument
+ran, it was False at every launch and the persisted auto-push never fired first.
 
-> **Amended 2026-08-15 — the second fact no longer supports the conclusion, for
-> two independent reasons.** (i) The power-cycle-before-every-sitting rule is
-> **retired**: its cause, the can-bridge uptime lag, was fixed in FW 14 and
-> validated at 5.8 h and 15.2 h (`logbook/2026-08-15-fw14-validated-arc-closed.md`),
-> so a bridge left powered across sittings is now the normal case. (ii) The
-> reasoning was already suspect: `levelling_complete` and `pose_offset_rad` are
-> persisted by the **Platform** Teensy, and a *can-bridge* power-cycle does not
-> clear that cache — `tests/hardware/session_anomaly_fixes.md` standing rule 2 and
-> operator pre-brief item 2 both say so explicitly, while pre-brief item 1 asserts
-> the opposite. That contradiction is unreconciled in the record and is flagged
-> here rather than silently resolved.
+> ### Which board owns `levelling_complete` — RESOLVED 2026-08-16, from source
 >
+> **The flag lives in a plain RAM global on the PLATFORM Teensy, which is on
+> Jugglebot's 12 V / ODrive supply; the can-bridge Teensy is on the Jetson's 5 V
+> rail and holds no copy, so a can-bridge power-cycle cannot clear it.**
+>
+> Evidence, all from source:
+> `Teensy_code_platform.ino:139-145` declares `RobotState state = { false, false,
+> 0.0f, 0.0f }` — a file-scope global, zero-initialised at every boot of *that*
+> board — and `grep -rn EEPROM ros_ws/src/jugglebot/Teensy_code_platform/` returns
+> nothing, so "persisted" means **RAM held under power**, never NVM. It is written
+> only by `decodeStateCANMessage` on a dlc-8 `0x6E0` frame (`:460-470`, dispatched
+> `:512-523`) and read out by `createStateCANMessage` (`:441-455`). The can-bridge
+> firmware stores nothing: `Teensy_code_canbridge/platform_relay.cpp:39-75` builds
+> the `0x6E0` trigger and write frames and `can_buses.h:132-135` forwards the reply
+> verbatim. The power domains are stated in code at
+> `teensy_bridge_node.py:3426-3428` and `:5171-5176` ("the Platform Teensy shares
+> the ODrive supply") and recorded in
+> `logbook/2026-06-29-canbridge-phase2-coldstart-relay-state.md:262-266` (the
+> can-bridge is on Jetson 5 V).
+>
+> **So exactly four things change the value the Jetson reports**, and only the
+> first three are storage events: (1) the Platform Teensy losing power or being
+> reset — the Jugglebot 12 V/ODrive supply dropping, or a flash — which clears
+> `is_homed`, `levelling_complete` *and* `pose_offset` together; (2) an explicit
+> `REBOOT_ODRIVES`, whose hook writes all three to zero
+> (`teensy_bridge_node.py:5304-5347`); (3) an explicit level/home write
+> (`_write_level_state` / `_write_is_homed`, `:5247-5302`). The fourth is a **read**
+> failure, not a storage loss: `teensy_bridge_node`'s synchronous boot read
+> (`_boot_read_cold_start_state` → `_read_cold_start_state_conservative`,
+> `:5154-5203`) retries three times and, on total failure, seeds its cache with the
+> conservative `is_homed=False, levelling_complete=False, pose=0` — and
+> `/robot_state.levelling_complete` is published straight from that cache
+> (`:3231-3233`). The same fallback runs on a CAN3-health WARN/BUS_OFF→OK edge
+> (`:3437-3455`). A can-bridge power-cycle immediately before launch can therefore
+> make the *report* read False by racing that boot read, while the Platform Teensy
+> still holds True — which is the most likely origin of the retired belief, along
+> with the plainer confound that a sitting which power-cycles Jugglebot itself
+> drops the Platform Teensy's supply anyway.
+
+The second fact therefore never supported the conclusion, and it no longer holds
+operationally either: the power-cycle-before-every-sitting rule is **retired**
+(its cause, the can-bridge uptime lag, was fixed in FW 14 and validated at 5.8 h
+and 15.2 h — `logbook/2026-08-15-fw14-validated-arc-closed.md`), so a bridge left
+powered across sittings is now the normal case. Within a sitting a relaunch comes
+back with `levelling_complete` still **True**, and the orchestrator's persisted
+auto-push is a live path that can win the discovery race (it won **7/7** on
+2026-07-27, `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`).
+
 > The requirement above is unchanged — **level manually after every launch or
-> relaunch** — but do not rely on the boot state to force it, and treat the
-> orchestrator's persisted auto-push as a live path that can win the discovery
-> race.
+> relaunch** *unless you have read `gravity_correction_loaded` and it is true* —
+> but do not rely on the boot state to force it. `levelling_complete` answers a
+> question about a Teensy's power history; only
+> `trajectory/status.gravity_correction_loaded` answers the question the throw
+> depends on.
 
 ## C-LEVEL-2 — the pose-dependent residual map
 
@@ -592,7 +635,7 @@ documented limitation of the whole rotation-only design, not of the keying.
 The rotation components never key the lookup. The map is captured at the level
 orientation and applied additively at **all** commanded orientations (8b
 tilt-aims to 5.75°, reload receive tilt 10.8°). Orientation-dependence of the
-residual is **unmeasured** — rung C0 of `plans/archived/2026-08-15 tilt-calibration-grid.md`
+residual is **unmeasured** — rung C0 of `plans/archived/tilt-calibration-grid.md`
 sizes it with one tilted-pose probe; a tilt axis would be a follow-on sweep, not
 a licence to key on rotation.
 
@@ -897,7 +940,7 @@ statement of it.
 
 | # | Surface | Obligation before it may ship |
 |---|---|---|
-| B1 | `mpc_bridge_node._on_platform_pose` | Dropped from the launch and dormant (`plans/active/refactor-2026-07.md` Phase 3). It holds a **second** copy of the C-LEVEL-1 application and today lacks even the offset validation `_on_gravity_offset` does. Reviving the MPC chain **must** give it the map and the same all-or-nothing validation, or the two pose paths will disagree about where level is — the original C-LEVEL-1 bug, re-created between nodes instead of within one. |
+| B1 | `mpc_bridge_node._on_platform_pose` | Dropped from the launch and dormant (`plans/parked/refactor-2026-07.md` Phase 3). It holds a **second** copy of the C-LEVEL-1 application and today lacks even the offset validation `_on_gravity_offset` does. Reviving the MPC chain **must** give it the map and the same all-or-nothing validation, or the two pose paths will disagree about where level is — the original C-LEVEL-1 bug, re-created between nodes instead of within one. |
 
 ## Enforcement
 

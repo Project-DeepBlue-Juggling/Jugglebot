@@ -106,7 +106,7 @@ arming a powered leg:
 **Couple the software, stage the hardware (U1..U5).** The hardware validation (arm
 one leg → six legs → decommission) is irreducibly serial behind a powered operator
 sitting; the software offload is one coupled desk unit. The remaining cutover was
-restructured accordingly (full table in `plans/active/teensy-can-offload.md`,
+restructured accordingly (full table in `plans/archived/teensy-can-offload.md`,
 "Software-offload vs hardware-cutover split"): **U1** present-axis firmware scoping,
 **U2** synthetic bench driver — both desk-side, landed here; **U3** the operator
 armed run that *measures* the float32 residual + the D9 motion-onset penalty; **U4**

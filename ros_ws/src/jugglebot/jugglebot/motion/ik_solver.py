@@ -377,8 +377,8 @@ def accel_to_leg_accels(accel: np.ndarray,
 # routes on.  Whenever a future change makes the acceptance threshold depend on
 # more of the input, validate that input the same way, at the same point.
 #
-# Why a relative term at all (measured 2026-07-25, plans/active/
-# fk-convergence-tolerance.md Phase 0).  The residual is
+# Why a relative term at all (measured 2026-07-25,
+# plans/archived/fk-convergence-tolerance.md Phase 0).  The residual is
 # ``|leg_vector| - init_leg_length`` — a difference of two ~650-870 mm
 # quantities — so it is a catastrophic-cancellation quantity whose achievable
 # floor scales with the ABSOLUTE leg length ``L`` and with the conditioning of

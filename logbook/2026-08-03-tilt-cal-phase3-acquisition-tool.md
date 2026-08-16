@@ -13,7 +13,7 @@ files_changed:
   - tests/sim/test_tilt_cal_analyse.py
   - ros_ws/docs/levelling_frame.md
   - tools/README.md
-  - plans/active/tilt-calibration-grid.md
+  - plans/archived/tilt-calibration-grid.md
   - logbook/INDEX.md
 subsystem:
   - testing

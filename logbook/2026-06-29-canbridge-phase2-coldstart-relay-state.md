@@ -355,7 +355,7 @@ the production library is the cheap, faithful choice.
 
 ## Related
 
-- Plan: [`plans/active/canbridge-foundation-coldstart-parity.md`](../plans/active/canbridge-foundation-coldstart-parity.md) — Phase 2 detail, the field-sourcing matrix, the REBOOT_ODRIVES shared hook, locked-decisions #2/#3.
+- Plan: [`plans/archived/canbridge-foundation-coldstart-parity.md`](../plans/archived/canbridge-foundation-coldstart-parity.md) — Phase 2 detail, the field-sourcing matrix, the REBOOT_ODRIVES shared hook, locked-decisions #2/#3.
 - [2026-06-29-canbridge-phase1-platform-relay-seam.md](2026-06-29-canbridge-phase1-platform-relay-seam.md) — the relay mechanism (`relay_read_robot_state` / `relay_write_robot_state` / `RelayRobotState` / `encode_state_write`) this phase wires in; the SRX_DIS + reply-latency bench validation.
 - [2026-06-27-can-node-teensy-parity-audit.md](2026-06-27-can-node-teensy-parity-audit.md) — the cold-start-broken headline this phase closes.
 - `project_canbridge_power_topology` (memory) — why persistence lives on the Platform Teensy, and the reconnect-trigger residual scenario.

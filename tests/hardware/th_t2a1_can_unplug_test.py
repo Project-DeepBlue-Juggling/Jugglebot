@@ -173,7 +173,7 @@ def main() -> int:
     safety_gate(
         "Pre-test checklist (T-H-T2a-1 specific):\n"
         "  6. T-H-T2b-1 PASSED in the past week (per the gating rule\n"
-        "     in plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md).\n"
+        "     in plans/archived/mpc-sadpath-coverage-tiers-1-3.md).\n"
         "  7. The CAN cable to unplug is identified, traced, and a\n"
         "     CLEAR PATH to plug it back in is visible.\n"
         "  8. Both operators (operator-1 on E-stop, operator-2 on\n"

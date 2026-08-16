@@ -277,7 +277,7 @@ independently, in either order**, because the message is additive: no
 
 ## Related
 
-- `plans/active/hand-ball-sensor.md` — Phase 4 (this phase), and § Architecture,
+- `plans/archived/hand-ball-sensor.md` — Phase 4 (this phase), and § Architecture,
   which stays **normative** for the signal semantics these flags report.
 - `logbook/2026-07-29-hand-sensor-bridge-gpio-poller.md` — Phase 3. Its
   `gpio_poll_snapshot()` is this phase's **only** data source; every field on

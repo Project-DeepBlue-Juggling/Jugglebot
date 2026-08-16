@@ -12,7 +12,7 @@ commits:
 files_changed:
   - logbook/INDEX.md
   - sim/JUGGLE_DEMO.md
-  - plans/active/bb-led-two-ball-juggle-demo.md
+  - plans/archived/bb-led-two-ball-juggle-demo.md
   - plans/active/single-ball-toss.md
 ---
 
@@ -25,7 +25,7 @@ Phase 0 of `plans/active/single-ball-toss.md` closes: the doc pointers the
 the phase gate. Four ladder logbook entries that were never indexed on the
 demo branch get their `logbook/INDEX.md` rows backfilled; `sim/JUGGLE_DEMO.md`
 gains a status banner distinguishing the paused offline demo from the merged
-online ladder work; `plans/active/bb-led-two-ball-juggle-demo.md` gains a
+online ladder work; `plans/archived/bb-led-two-ball-juggle-demo.md` gains a
 merged-location note; the toss plan's phase table marks Phase 0 COMPLETE.
 No code changes.
 
@@ -54,7 +54,7 @@ run (operator-authorized 2026-07-24) executing
   continues on the production stack under `plans/active/single-ball-toss.md`;
   two-ball authority remains `plans/active/bb-online-juggle-tilt-rearchitecture.md`;
   the demo branch referenced in §2 is merged and retired.
-- **`plans/active/bb-led-two-ball-juggle-demo.md`** — merged-location note
+- **`plans/archived/bb-led-two-ball-juggle-demo.md`** — merged-location note
   under the title: branch merged into `mvp-trajectory-bringup` (merge commit
   `20fcc9e`), branch + worktree retired, frontier pointers as above.
 - **`plans/active/single-ball-toss.md`** — phase table: Phase 0

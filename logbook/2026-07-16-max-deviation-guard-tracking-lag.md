@@ -27,7 +27,7 @@ files_changed:
   - tests/hardware/sysid_lib.py
   - plans/active/leg-gain-tuning-methodology.md
   - plans/active/mvp-trajectory-bringup.md
-  - plans/active/accel-ff-inertia.md
+  - plans/parked/accel-ff-inertia.md
   - docs/can_bridge/safety.md
 commits:
   - e2605c1
@@ -353,7 +353,7 @@ restored, should collapse at arrival.
 The operator flashed the guard build, rebuilt + relaunched, and ran an
 expanded `traj_ramp_battery` at raised limits — **validated**: bag
 `~/Desktop/rosbags/2026-07-16_17-38-15` (inventoried in
-`plans/active/accel-ff-inertia.md`) ramped limits vel 100 → 200 → 280 mm/s
+`plans/parked/accel-ff-inertia.md`) ramped limits vel 100 → 200 → 280 mm/s
 (acc 400 → 660, jerk 8000), 22 move segments, **zero fault transitions, zero
 latches**, peak realized leg vel 3.34 rev/s. The battery that latched three
 times at vel = 200 in the afternoon now runs clean to a vel = 280 setting.
@@ -380,7 +380,7 @@ opened the envelope further (all landed the same evening):
   the guard mid-move — that is the intended backstop, now with per-leg
   attribution.
 - The **accel-FF exploration ran and landed** the same evening:
-  `plans/active/accel-ff-inertia.md` — machinery map (the platform-inertia FF
+  `plans/parked/accel-ff-inertia.md` — machinery map (the platform-inertia FF
   is already fully wired, gated by `torque_ff_platform_inertia: false`, hard
   prerequisite = the firmware stale-hold torque decay), coordinated-inertia
   measurement (median J_eff 7.7e-4 = 2.8× rotor; **lateral/z = 1.68×**, the

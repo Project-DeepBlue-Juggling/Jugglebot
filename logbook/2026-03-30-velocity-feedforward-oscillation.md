@@ -104,7 +104,7 @@ After the fix, Phase 3.1 re-test passed cleanly:
 - No oscillation detected
 - Motor guard tracking clamp provides defense-in-depth against future velocity bugs
 
-Full root cause analysis preserved in `plans/archived/2026-03-30 mpc-oscillation-analysis.md`.
+Full root cause analysis preserved in `plans/archived/mpc-oscillation-analysis.md`.
 
 ## Open Questions
 

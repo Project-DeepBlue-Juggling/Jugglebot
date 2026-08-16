@@ -519,7 +519,7 @@ def test_shipped_retime_model_is_off_until_tracking_envelope_closed():
     the velocity loop's TRACKING envelope (x-traverse deviation 0.45 -> 0.73 rev,
     above the ~0.6 in-move ABORT line) — the legacy loop's overshoot was
     accidentally load-bearing there. Re-enable ONLY with accel FF landed (see
-    plans/active/accel-ff-inertia.md Verification) or a tracking-aware duration
+    plans/parked/accel-ff-inertia.md Verification) or a tracking-aware duration
     floor, and re-run the 19-32-03 A/B as the acceptance test — see
     logbook/2026-07-17-retime-model-tracking-envelope.md. Deliberately flipping
     the default means updating this test; that is the logged act."""

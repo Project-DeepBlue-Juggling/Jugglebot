@@ -318,7 +318,7 @@ def hardware_config_identity() -> str:
     Deliberately scoped to hardware_config only (the tuning surface).
     `friction_ff_params.py`'s env -> ament-share -> source-tree resolution
     order is a landed 2026-06-24 crash fix in motor_guard's import chain and is
-    NOT touched here — see plans/active/refactor-2026-07.md Phase 5 item 3.
+    NOT touched here — see plans/parked/refactor-2026-07.md Phase 5 item 3.
 
     Never raises: a diagnostic must not be able to stop the bridge booting.
     """

@@ -14,7 +14,7 @@ at the abort instant to a stow pose at zero twist and zero acceleration.
 The runtime player switches to it via ``TrajectoryPlayer.abort``.
 
 Pure NumPy — no ROS2, no CasADi, no hardware. The plan reference is
-``plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md`` §4 Phase 3.
+``plans/archived/bb-led-two-ball-juggle-demo.md`` §4 Phase 3.
 """
 from __future__ import annotations
 

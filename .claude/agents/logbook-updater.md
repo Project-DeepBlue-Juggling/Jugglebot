@@ -108,6 +108,7 @@ When creating or updating entries:
 - If `sessions:` is provided, update `sim/analysis/log_index.json` to add
   `"logbook_entry": "<filename>"` to each referenced session entry
 - If `related_plan:` is provided, it should be a **filename only** (e.g.,
-  `hardware-bringup.md`), not a path. Search both `plans/active/` and
-  `plans/archived/` to verify it exists. This convention prevents broken
+  `hardware-bringup.md`), not a path. Search `plans/active/`,
+  `plans/parked/` and `plans/archived/` to verify it exists. Plan filenames
+  never change, so the reference survives parking and archival. This convention prevents broken
   references when plans are archived (filename stays the same, directory changes)

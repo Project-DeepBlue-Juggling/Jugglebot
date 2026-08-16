@@ -194,7 +194,7 @@ YAML→codegen→build→relaunch cycle — there is no runtime leg-gain service
 
 - The SAME-DAY morning arc — S3 chase-clamp follower rework (commit 73dba2b: 0
   rejects/0 parking on the recorded S3 stream replay; S3 re-fly PASS) — is
-  documented in `plans/active/follower-cadence-and-divergence.md` § RESOLUTION
+  documented in `plans/archived/follower-cadence-and-divergence.md` § RESOLUTION
   (kept there because that document IS the proposal it resolves; this entry stays
   scoped to the evening arc).
 - `tests/hardware/session_gain_retune.md` (S4b), `tests/hardware/mvp_bench_runbook.md`

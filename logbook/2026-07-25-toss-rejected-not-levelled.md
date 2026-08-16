@@ -20,7 +20,7 @@ files_changed:
   - tests/hardware/session_anomaly_fixes.md
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/session_phase8_toss_trace.md
-  - plans/active/levelling-frame-contract.md
+  - plans/parked/levelling-frame-contract.md
 commits:
   - e36d60d
 subsystem:

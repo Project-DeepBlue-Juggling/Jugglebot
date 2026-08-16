@@ -14,7 +14,7 @@ import sys
 from datetime import datetime
 
 
-# ── Config freshness observability (plans/active/refactor-2026-07.md Phase 5) ──
+# ── Config freshness observability (plans/parked/refactor-2026-07.md Phase 5) ──
 #
 # Production is deliberately BUILD-FROZEN: every node imports the *installed*
 # generated modules, so a YAML edit changes nothing until generate_config +
@@ -227,7 +227,7 @@ def generate_launch_description():
         default_value='true',
     )
 
-    # DORMANT since 2026-08-01 (MPC dormancy, plans/active/refactor-2026-07.md
+    # DORMANT since 2026-08-01 (MPC dormancy, plans/parked/refactor-2026-07.md
     # Phase 3).  This was PR 3a's per-launch override for motor_guard's
     # --friction-ff CLI tri-state; motor_guard no longer launches, so nothing
     # consumes it.  Kept DECLARED rather than deleted — same treatment as
@@ -301,7 +301,7 @@ def generate_launch_description():
         }],
     )
 
-    # motion_bridge_node is DORMANT (2026-08-01, plans/active/refactor-2026-07.md
+    # motion_bridge_node is DORMANT (2026-08-01, plans/parked/refactor-2026-07.md
     # Phase 3 — "remove operationally, park the code"). It was the MPC leg path's
     # ROS side: motor_guard's :5556 interpolated stream -> leg_lengths_topic ->
     # can_node. can_node was deleted in the 2026-07-06 SocketCAN decommission and
@@ -408,7 +408,7 @@ def generate_launch_description():
     )
 
     # ── motor_guard: DORMANT (2026-08-01) ────────────────────────
-    # plans/active/refactor-2026-07.md Phase 3 — "remove operationally, park the
+    # plans/parked/refactor-2026-07.md Phase 3 — "remove operationally, park the
     # code". The 500 Hz interpolator + safety monitor sat between the MPC and the
     # motors on the OLD topology. In the MVP topology it drives nothing: the leg
     # path is trajectory_node -> :5557 -> teensy_bridge_node -> the can-bridge

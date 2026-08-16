@@ -98,7 +98,7 @@ operator lifting the ball out — and it is worth keeping visible precisely beca
 it shows the lag is not a fixed constant.)
 
 Both halves matter. The asymmetry is *documented firmware behaviour* —
-`plans/active/hand-ball-sensor.md` § "Debounce asymmetry": five consecutive EMPTY
+`plans/archived/hand-ball-sensor.md` § "Debounce asymmetry": five consecutive EMPTY
 good replies to drop, any single HELD restores — so this is a confirmation, not a
 discovery. What is new is the magnitude on the departure side and what it implies:
 **241 ms is larger than the +118–133 ms uptime dispatch shift the whole fresh-boot

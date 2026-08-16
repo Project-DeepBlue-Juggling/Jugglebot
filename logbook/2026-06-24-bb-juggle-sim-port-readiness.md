@@ -10,7 +10,7 @@ files_changed:
   - sim/hand/trajectory.py
   - sim/ball_butler/sim.py
   - tests/sim/test_ball_butler_sim.py
-  - plans/active/bb-led-two-ball-juggle-demo.md
+  - plans/archived/bb-led-two-ball-juggle-demo.md
 commits:
   - 7c922cb
 subsystem:
@@ -37,7 +37,7 @@ additive, and leave the MPC path untouched.
 
 The simulation already juggles two balls in one hand (BB primes one ball,
 Jugglebot sustains the oval pattern), but three tracked open items in
-`plans/active/bb-led-two-ball-juggle-demo.md` §6 blocked it from being a
+`plans/archived/bb-led-two-ball-juggle-demo.md` §6 blocked it from being a
 faithful predictor of hardware:
 
 - The BB world-frame placement was a nominal on-axis guess `(0,−1500,1500)`;

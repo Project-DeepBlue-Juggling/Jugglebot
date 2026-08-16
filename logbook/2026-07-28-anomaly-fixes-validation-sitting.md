@@ -11,9 +11,9 @@ sessions:
   - temp/logs/toss_trace_2026-07-27_15-39-50.jsonl
 files_changed:
   - logbook/INDEX.md
-  - plans/active/levelling-frame-contract.md
+  - plans/parked/levelling-frame-contract.md
   - plans/active/hand-command-continuity.md
-  - plans/active/catch-reach-degenerate-overshoot.md
+  - plans/parked/catch-reach-degenerate-overshoot.md
   - tests/hardware/session_anomaly_fixes.md
 commits:
   - 2655b8a
@@ -1093,10 +1093,10 @@ None is planned yet; they are recorded there rather than duplicated here.
 ## Related
 
 - Plans: `plans/active/PROMPT-anomaly-fixes-orchestration.md` (umbrella),
-  `plans/active/levelling-frame-contract.md` (Phase 4),
+  `plans/parked/levelling-frame-contract.md` (Phase 4),
   `plans/active/hand-command-continuity.md` (Phase 5),
-  `plans/active/catch-reach-degenerate-overshoot.md` (Phase 4),
-  `plans/active/fk-convergence-tolerance.md`,
+  `plans/parked/catch-reach-degenerate-overshoot.md` (Phase 4),
+  `plans/archived/fk-convergence-tolerance.md`,
   `plans/active/single-ball-toss.md` (Phase 5 T-rungs).
 - Runbooks: `tests/hardware/session_anomaly_fixes.md` (§ THE RUN SHEET — the executed
   document), `tests/hardware/session_phase8_toss_hardware.md` (the T-rung ladder run

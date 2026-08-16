@@ -249,7 +249,7 @@ def test_gravity_ff_magnitude_matches_the_documented_range():
     """0.013–0.041 Nm/leg at the active pose.
 
     Cross-checks two independent prior sources:
-      * ``plans/archived/2026-05-08 friction-ff-motor-guard-integration.md:37`` —
+      * ``plans/archived/friction-ff-motor-guard-integration.md:37`` —
         "0.013–0.041 Nm/leg, non-zero in 99.6 % of samples" (the MPC-path measurement).
       * ``docs/motion_planner/dynamics.md`` — "~0.018 Nm" per leg. That figure was
         computed at the OLD platform mass of 0.96 kg; at today's 1.2 kg it scales to

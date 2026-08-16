@@ -3,7 +3,7 @@
 Covers sim/juggle_planner/timeline.py and the abort extension in
 sim/juggle_planner/player.py. Validates the T-U8 (event ordering and
 content) and T-U9 (abort + exit transient) tests of
-plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md §5.
+plans/archived/bb-led-two-ball-juggle-demo.md §5.
 """
 import numpy as np
 import pytest

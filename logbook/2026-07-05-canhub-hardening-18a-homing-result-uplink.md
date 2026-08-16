@@ -161,7 +161,7 @@ force-emit's real value is the RUNNING-transition promptness above, not this edg
 
 ## Related
 
-- Plan: `plans/active/canhub-hardening.md` (Tier-2 [18A]).
+- Plan: `plans/archived/canhub-hardening.md` (Tier-2 [18A]).
 - Predecessor: `logbook/2026-07-02-canhub-hardening-tier2.md` ([18B] fixed the inverted
   timeout docstring; [18A] deferred here). Sibling: item 20
   (`logbook/2026-07-05-canhub-hardening-item20-firmware.md`) — the same Phase-2 flash.

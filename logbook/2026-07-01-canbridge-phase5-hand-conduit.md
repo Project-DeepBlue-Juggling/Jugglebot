@@ -335,7 +335,7 @@ Platform→hand commands are echoed; the `axis == HAND_AXIS` guard is belt-and-b
 
 ## Related
 
-- Plan: [`canbridge-foundation-coldstart-parity.md`](../plans/active/canbridge-foundation-coldstart-parity.md) — Phase 5.
+- Plan: [`canbridge-foundation-coldstart-parity.md`](../plans/archived/canbridge-foundation-coldstart-parity.md) — Phase 5.
 - Parity matrix: `ros_ws/docs/can-node-teensy-parity.md` (rows 29, 32, 36–40, 51, 58).
 - Prior phases: [[2026-06-30-canbridge-phase6-reboot-latch]] (hand in AXIS_ALL — the
   reboot latch's leg-guard is preserved here), [[2026-06-29-canbridge-phase1-platform-relay-seam]]

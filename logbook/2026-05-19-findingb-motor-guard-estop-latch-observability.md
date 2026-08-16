@@ -602,7 +602,7 @@ the COMMIT gate.
   t≈99 s, `telem_age=0.505 s` vs 0.5 s) stands and is unaffected; the
   CAN unplug it validated is the same event Finding B shows is
   *incidental* to the 68 s `motor_pos=None` symptom.
-- [plans/active/hardware-bringup.md](../plans/active/hardware-bringup.md)
+- [plans/archived/hardware-bringup.md](../plans/archived/hardware-bringup.md)
   — the shared A↔B root cause (relieve MPC solve-budget pressure at
   low z under full launch) is a bringup-plan item (Recommendation 2);
   the deferred >2 s-dropout test (Recommendation 4) belongs here too.

@@ -16,7 +16,7 @@ files_changed:
   - sim/plant/mujoco_plant.py
   - tests/sim/test_plant_interface_contract.py
   - tests/sim/_hardware_plant_stub.py
-  - plans/archived/2026-05-10 mpc-tier0-contracts.md
+  - plans/archived/mpc-tier0-contracts.md
   - logbook/2026-05-09-plant-interface-contract-phase-5-p1-p2-enforcement.md
   - logbook/INDEX.md
 commits:
@@ -34,7 +34,7 @@ tags:
 
 ## Summary
 
-Phase 5 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
+Phase 5 of the [mpc-tier0-contracts plan](../plans/archived/mpc-tier0-contracts.md):
 implemented the two design-time invariants P1 (PlantState aliasing) and
 P2 (`can_reset` capability flag) defined in
 [controller/PLANT_INTERFACE_CONTRACT.md](../controller/PLANT_INTERFACE_CONTRACT.md)
@@ -221,7 +221,7 @@ implementations.  Documented above.
 - "The contract document landed in **Phase 4**" paragraph updated to
   reflect Phase 5's status.
 
-### plans/archived/2026-05-10 mpc-tier0-contracts.md (modified)
+### plans/archived/mpc-tier0-contracts.md (modified)
 
 Phase 5 marked `COMPLETE (2026-05-09)` in both the summary table and
 the detailed Phase 5 heading.

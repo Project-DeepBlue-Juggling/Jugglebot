@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-27
 - **Deciders**: Harrison (user) + Claude (collaborative design session)
-- **Related**: [parent plan](../../plans/archived/2026-08-15%20teensy-can-offload.md); supersedes none
+- **Related**: [parent plan](../../plans/archived/teensy-can-offload.md); supersedes none
 
 ## Context
 

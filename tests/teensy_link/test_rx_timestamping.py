@@ -1,6 +1,6 @@
 """Kernel RX timestamping and the midpoint-stamped TOD response (P2).
 
-``plans/archived/2026-08-15 bridge-temporal-trustworthiness.md`` § P2 (arc
+``plans/archived/bridge-temporal-trustworthiness.md`` § P2 (arc
 closed 2026-08-15 — ``logbook/2026-08-15-fw14-validated-arc-closed.md``). The
 firmware anchors
 its wall clock to ``returned_stamp + rtt/2``, so with the query hitting the

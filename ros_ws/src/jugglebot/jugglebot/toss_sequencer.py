@@ -995,7 +995,7 @@ class TossSequencer:
             # reply, an un-anchored bridge clock, a dead poller) — and it REFUSES
             # rather than passing, because a fail-open sensor gate is the exact
             # BallButler defect this project declined to copy
-            # (plans/archived/2026-08-15 hand-ball-sensor.md § "Three BallButler properties
+            # (plans/archived/hand-ball-sensor.md § "Three BallButler properties
             # deliberately not copied", row 1). C-POSSESS-1 § 3.3.
             if obs.ball_evidence == EVIDENCE_UNKNOWN:
                 return self._reject('BALL_UNKNOWN')

@@ -6,7 +6,7 @@ height, oval width) and derives from them the throw/catch keyframe poses and
 the periodic timing the trajectory layer needs.
 
 The derived timing reproduces the Phase 1 feasibility study in
-``plans/archived/2026-08-15 bb-led-two-ball-juggle-demo.md`` — see that document for the
+``plans/archived/bb-led-two-ball-juggle-demo.md`` — see that document for the
 derivation of the hand stroke-duration coefficients below.
 
 Pure NumPy — no ROS2, no CasADi, no hardware.

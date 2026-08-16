@@ -6,7 +6,7 @@ status: in-progress
 phase: "Self-toss anomaly fixes — levelling-frame-contract Phase 0"
 related_plan: "levelling-frame-contract.md"
 files_changed:
-  - plans/active/levelling-frame-contract.md
+  - plans/parked/levelling-frame-contract.md
 commits:
   - d67c3cd
 subsystem:
@@ -23,7 +23,7 @@ tags:
 
 ## Summary
 
-`plans/active/levelling-frame-contract.md` Phase 0 is an **enumeration** phase:
+`plans/parked/levelling-frame-contract.md` Phase 0 is an **enumeration** phase:
 its whole deliverable is a written list, because the defect the plan closes *is*
 an incomplete enumeration — `trajectory_node` applies the gravity-levelling
 correction on some pose-ingest paths and not others, so *"level" means two
@@ -294,7 +294,7 @@ the enumerated ingest sites and at no other site", with that reason attached.
 
 ## Fix
 
-One file: `plans/active/levelling-frame-contract.md`.
+One file: `plans/parked/levelling-frame-contract.md`.
 
 - **New § Phase 0 — Outcome** (the deliverable): the grep audit with exclusions and
   dead-copy accounting; **Table A** (6 external / 9 derived / 4 direct installs,
@@ -375,7 +375,7 @@ was verified instead:
   `test_t3b_h4_on_post_solve_allocates_within_budget`) passed *inside* the full
   suite this run, so no isolated re-run was needed.
 - **The tested tree is the committed tree** for every file pytest can observe. This
-  phase touches only markdown (`plans/active/levelling-frame-contract.md`, this
+  phase touches only markdown (`plans/parked/levelling-frame-contract.md`, this
   entry, `logbook/INDEX.md`); no `*.py` and no `*.yaml` changed anywhere, so no
   regeneration step applies and the markdown edits made while the suite ran cannot
   have affected its result.
@@ -427,6 +427,6 @@ firmware.
   versus a `TrajectoryStatus` field. Deliberately left open here; see Discussion.
 - **Sibling-plan interaction.** After Phase 2 the commanded rotvec excursion on the
   toss catch reach goes to approximately zero, which *is* the near-degenerate case
-  `plans/active/catch-reach-degenerate-overshoot.md` studies. Its Phase 0 should
+  `plans/parked/catch-reach-degenerate-overshoot.md` studies. Its Phase 0 should
   re-verify its reproduction against a post-Phase-2 tree rather than assume the
   pre-fix `+2.32°` excursion still exists to measure.

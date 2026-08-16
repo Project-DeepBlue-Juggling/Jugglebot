@@ -19,7 +19,7 @@ files_changed:
   - tests/sim/test_mpc_adversarial_sequences.py
   - logbook/2026-05-11-tier2c-zmq-corruption.md
   - logbook/INDEX.md
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 commits:
   - 1247641
 subsystem:
@@ -768,7 +768,7 @@ transport-agnostic.
 
 ## Related
 
-* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 6 specification.
 * [logbook/2026-05-11-tier2c-zmq-recv-resilience-bugfix.md](2026-05-11-tier2c-zmq-recv-resilience-bugfix.md)
   — the follow-up bugfix commit covering Bug A + Bug B.

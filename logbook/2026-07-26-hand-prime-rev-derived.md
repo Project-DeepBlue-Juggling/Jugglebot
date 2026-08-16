@@ -378,7 +378,7 @@ operator.
   the sim-catch fidelity gap; wants its own scoped fix deriving the sim prime
   from `TEENSY_LINEAR_GAIN`. The prime move made it *less* wrong (+10.93 →
   +7.71 mm), not more.
-- `plans/active/reload-action-catch-latch.md:44` cites the old 9.858. Left
+- `plans/archived/reload-action-catch-latch.md:44` cites the old 9.858. Left
   untouched — a plan a parallel session may be editing.
 - `ros_ws/.../archived/catch_dropped_ball_node.py:24` and
   `archived/catch_from_ball_butler_node.py:42` hardcode 9.858 under their own

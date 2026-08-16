@@ -270,7 +270,7 @@ policy-only change with the same gating (`jugglebot_commands_allowed`) the legs 
 
 ## Related
 
-- Plan: [`plans/active/canbridge-foundation-coldstart-parity.md`](../plans/active/canbridge-foundation-coldstart-parity.md) — Phase 1 detail + the relay-seam shape + the bench-probe table.
+- Plan: [`plans/archived/canbridge-foundation-coldstart-parity.md`](../plans/archived/canbridge-foundation-coldstart-parity.md) — Phase 1 detail + the relay-seam shape + the bench-probe table.
 - [2026-06-29-canbridge-phase0-native-harness.md](2026-06-29-canbridge-phase0-native-harness.md) — the reserved wire ids + the growable HAL injection hook this phase builds on.
 - [2026-06-27-can-node-teensy-parity-audit.md](2026-06-27-can-node-teensy-parity-audit.md) — the hand/tilt/cold-start GAP rows this phase's conduit re-closes.
 - Harness usage + scope: [`tests/firmware/native/README.md`](../tests/firmware/native/README.md).

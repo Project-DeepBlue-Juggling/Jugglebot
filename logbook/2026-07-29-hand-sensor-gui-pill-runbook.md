@@ -540,7 +540,7 @@ sitting, by design: the operator runs robot-actuating commands from it.
 
 ## Related
 
-- `plans/active/hand-ball-sensor.md` — Phase 6 (this phase, the final software
+- `plans/archived/hand-ball-sensor.md` — Phase 6 (this phase, the final software
   phase); § Architecture remains **normative** for the tri-state this pill
   renders; Phase 7 is the sitting the runbook drives. This entry carries the
   plan's **end-of-plan full-suite gate**.

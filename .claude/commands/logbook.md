@@ -71,7 +71,7 @@ Generate a digest of recent logbook activity. N is the number of days to look ba
 Show a chronological view interleaving logbook entries and plan milestones.
 
 1. Read all entry files in `logbook/`, extract date + title + status + type
-2. Read all plans in `plans/active/` and `plans/archived/`, extract created + completed dates
+2. Read all plans in `plans/active/`, `plans/parked/` and `plans/archived/`, extract created + completed/archived dates
 3. Merge into a single chronological list, newest first:
 
 ```

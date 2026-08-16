@@ -291,5 +291,5 @@ none done this session):
 - [2026-06-25-phase11-u4-production-cutover.md](2026-06-25-phase11-u4-production-cutover.md),
   [2026-06-24-phase11-bench-cutover.md](2026-06-24-phase11-bench-cutover.md)
   — leg-path + fault-scenario hardware validation evidence cited in the matrix.
-- Plan: `plans/active/teensy-can-offload.md` ("Jetson-side code impact",
+- Plan: `plans/archived/teensy-can-offload.md` ("Jetson-side code impact",
   "U5b operator next-steps").
