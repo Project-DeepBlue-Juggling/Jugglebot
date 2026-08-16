@@ -215,7 +215,7 @@ exactly this reason.
 | 1 | Uplink: config, decoder, msgs, dispatch, topics, tests. Jetson-only, `colcon build` alone | COMPLETE | 2026-08-16 | Low | A plugged-in clapboard becomes observable in ROS2 with zero firmware work |
 | 2 | **Firmware, single FW 15**: ID-discriminated health + `CLAPBOARD_PRESENT` bit + 2 Hz `CLAP_LINK` emitter + `CLAP_SEND` RPC + paced `clap_tx` drain + `CLAP_DIAG` | COMPLETE | 2026-08-16 | Medium-High | Items 1, 2 and 4 — the whole firmware surface in one flash |
 | 3 | `SetSlate` action on the bridge node: chunking, CRC, `txn_id`, timeout. Jetson-only | COMPLETE | 2026-08-16 | Medium | Item 5; end-to-end slate push under test against a FakeTeensy |
-| 4 | Cross-repo contract tests: shared CRC vector, DLC-8 enforcement, layout goldens | NOT STARTED | | Low | The two repos cannot drift apart silently |
+| 4 | Cross-repo contract tests: shared CRC vector, DLC-8 enforcement, layout goldens | COMPLETE | 2026-08-16 | Low | The two repos cannot drift apart silently |
 | 5 | Bench bring-up + soak with real hardware — **operator sitting, not agent work** | NOT STARTED | | Medium | The whole chain on the degraded CAN3 path |
 | 6 | Doc sweep: five files still say cone = CAN2 (separate commit) | NOT STARTED | | Low | Removes a documented trap for future readers |
 
@@ -777,7 +777,47 @@ margin and a single-flight reject.
 
 ---
 
-### Phase 4: Cross-repo contract tests — NOT STARTED
+### Phase 4: Cross-repo contract tests — COMPLETE (2026-08-16)
+
+> **Landed 2026-08-16.** `logbook/2026-08-16-clapboard-phase4-cross-repo-contract.md`.
+> Everything this section specifies is in. No firmware, no flash, no codegen, and
+> **no `colcon build`** — the whole phase is `tests/` plus one `tools/probes/`
+> entry. `PROTOCOL_VERSION` verified still 5 and `test_protocol_version_frozen`
+> verified still asserting 5 (T-R3), unchanged and untouched.
+>
+> **The fixture's own recipe is committed, and that was a self-audit finding
+> against the first cut of this phase.** `tools/probes/README.md` states it
+> generally — *"a fixture nobody can re-baseline is only half a live reference"* —
+> and it bites unusually hard here: nobody hand-computes a CRC-16 over eight
+> 32-byte buffers or 41 frames of chunked text, so the only practical edit path
+> for a hand-maintained fixture would have been *"run `build_transaction` and
+> paste"*, which converts a cross-repo second opinion into a snapshot of our own
+> encoder agreeing with itself. `tools/probes/clapboard_wire_vectors_gen.py`
+> imports nothing from this repo, refuses to emit unless it first reproduces the
+> peer's own literal Unity goldens, and is compared against the committed JSON by
+> test.
+>
+> **Four things the fixture pins that no document states**, gathered from Phases
+> 0–3 and recorded in its `unstated_rules` block with `stated_in_protocol_md:
+> false` on each: strict DLC-8 on receive; `CLAP_FIRE_EVENT`'s field being the
+> LOW 48 bits of a 51-bit clock; all five chunks for every present field; and an
+> empty present-field set CRCing to the 0xFFFF init value.
+>
+> **Two scope calls made at implementation time.** (a) `0x7DD` is in the fixture
+> and in the DLC-8 lint although it is not a clapboard-block id — the bridge emits
+> it on this same segment, the peer's `decode_time_sync` requires DLC 8 for it
+> too, and losing it costs the clapboard its wall clock and therefore every fire
+> event. (b) A test that reads the PEER repo's live `can_frames.h` was
+> deliberately **not** added: it would make this repo's gate depend on a sibling
+> checkout's working tree, so an unrelated edit over there would redden a commit
+> over here, and that checkout is not present on every box the suite runs on. The
+> vendored-copy checksum is the sanctioned direction for that signal.
+>
+> **What the clapboard repo must now do** is written into the fixture itself (it
+> receives the JSON, not this plan): vendor a byte-identical copy, pin the
+> published SHA-256 in its own suite, assert its `can_frames.h` reproduces every
+> vector, and re-vendor whenever Jugglebot re-publishes. Nothing in that repo was
+> edited by this phase.
 
 **Scope**
 

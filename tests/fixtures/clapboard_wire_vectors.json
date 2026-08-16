@@ -1,0 +1,673 @@
+{
+  "_README": [
+    "SHARED CROSS-REPOSITORY WIRE FIXTURE - Electronic Clapboard over CAN3.",
+    "",
+    "OWNERSHIP: the Jugglebot repo OWNS this file, at",
+    "tests/fixtures/clapboard_wire_vectors.json. The Electronic-Clapboard repo",
+    "VENDORS a byte-identical copy and pins it with a checksum test. Jugglebot",
+    "has the stricter gate (run_tests.sh --full runs on every commit), so it",
+    "holds the artefact. Owner decision, 2026-08-16, recorded in",
+    "plans/active/clapboard-can3-integration.md section 6.",
+    "",
+    "WHAT THE CLAPBOARD REPO MUST DO:",
+    "  1. Copy this file verbatim into its own tree. Pick a path its build",
+    "     system is happy with - PlatformIO treats every directory under test/",
+    "     as a test suite, so a bare test/fixtures/ may not be the right home;",
+    "     that choice is the clapboard repo's, not Jugglebot's.",
+    "  2. Copy the published SHA-256 from clapboard_wire_vectors.json.sha256",
+    "     beside it and assert, in its own test suite, that the vendored copy",
+    "     still hashes to that value. That test is what makes a silent",
+    "     divergence impossible.",
+    "  3. Assert its can_frames.h encoders/decoders reproduce every vector",
+    "     here, exactly as tests/ros/test_clapboard_wire_vectors.py does on",
+    "     the Jugglebot side.",
+    "  4. Re-vendor (and re-pin the hash) whenever Jugglebot publishes a new",
+    "     one. NEITHER SIDE MAY CHANGE A VECTOR UNILATERALLY - a change here",
+    "     is a change to docs/protocol.md section 8, which is normative and",
+    "     jointly owned.",
+    "",
+    "WHY THE VECTORS EXIST: docs/protocol.md section 8 documents the byte",
+    "layouts but is silent on four rules that only code enforces. They are",
+    "listed under unstated_rules below, and each has a vector that fails if",
+    "either side forgets it.",
+    "",
+    "DERIVATION: every byte here was built from docs/protocol.md section 8 and",
+    "src/can_frames.h, NOT from the Jugglebot encoders - so the agreement test",
+    "is a second opinion rather than a snapshot. Vectors whose name begins",
+    "'peer/' are carried across from that repo's own test assertions verbatim,",
+    "so the two suites agree by construction. The recipe is committed at",
+    "tools/probes/clapboard_wire_vectors_gen.py; do not hand-edit this file."
+  ],
+  "schema_version": 1,
+  "owner_repo": "Jugglebot",
+  "owner_path": "tests/fixtures/clapboard_wire_vectors.json",
+  "checksum_file": "tests/fixtures/clapboard_wire_vectors.json.sha256",
+  "recipe": "tools/probes/clapboard_wire_vectors_gen.py",
+  "vendored_by": "Electronic-Clapboard",
+  "normative_spec": "Electronic-Clapboard docs/protocol.md section 8 (jointly owned; neither side may change it unilaterally)",
+  "peer_implementation": "Electronic-Clapboard src/can_frames.h",
+  "peer_tests": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp",
+  "constants": {
+    "MAX_FIELDS": 8,
+    "MAX_FIELD_BYTES": 32,
+    "CHUNK_PAYLOAD": 7,
+    "CHUNKS_PER_FIELD": 5,
+    "DLC": 8,
+    "MAX_TEMPLATE_ID": 15,
+    "MAX_FRAMES_PER_TRANSACTION": 41
+  },
+  "can_ids": {
+    "TIME_SYNC": "0x7DD",
+    "CLAP_FIELD": "0x7E8",
+    "CLAP_COMMIT": "0x7E9",
+    "CLAP_LINK": "0x7EA",
+    "CLAP_ACK": "0x7EB",
+    "CLAP_HEARTBEAT": "0x7EC",
+    "CLAP_FIRE_EVENT": "0x7ED",
+    "CLAP_BLOCK_FIRST": "0x7E8",
+    "CLAP_BLOCK_LAST": "0x7EF"
+  },
+  "unstated_rules": [
+    {
+      "id": "strict-dlc8",
+      "rule": "EVERY frame in this contract, both directions, is exactly DLC 8. A receiver drops any other length silently - no error on either side.",
+      "enforced_in": "Electronic-Clapboard src/can_frames.h:191-232 (every decoder tests len != 8)",
+      "stated_in_protocol_md": false,
+      "pinned_by": "tests/ros/test_clapboard_wire_vectors.py + tests/firmware/test_clap_wire_dlc_lint.py + tests/firmware/native/test_clap_link.cpp"
+    },
+    {
+      "id": "fire-timestamp-low48",
+      "rule": "CLAP_FIRE_EVENT bytes 0-5 are the LOW 48 BITS of a Unix-epoch microsecond clock that needs 51. The receiver must reconstruct the high bits from its own clock; taking the field at face value stamps every flash in 1978.",
+      "enforced_in": "Electronic-Clapboard src/can_frames.h:258-268 (encode_fire_event masks with 0x0000FFFFFFFFFFFF)",
+      "stated_in_protocol_md": false,
+      "protocol_md_says": "8.8's '~8.9 years' is the WRAP PERIOD, not the representable range, and no reconstruction rule is given.",
+      "pinned_by": "ros_ws/src/jugglebot/jugglebot/can/clapboard.py (reconstruct_fire_time_us) + tests/ros/test_clapboard.py"
+    },
+    {
+      "id": "all-five-chunks",
+      "rule": "All CHUNKS_PER_FIELD (5) chunks are sent for every PRESENT field, even a 1-byte value. Follows from combining 8.4's patch semantics (panel field buffers persist between transactions) with a CRC over the full 32-byte padded buffer: a prefix-only send leaves the previous value's tail in the receiver, rendering wrong text AND producing a spurious CRC_MISMATCH.",
+      "enforced_in": "ros_ws/src/jugglebot/jugglebot/clapboard_slate.py (build_transaction; sender-side, because the clapboard cannot detect the difference except as a CRC failure)",
+      "stated_in_protocol_md": false,
+      "pinned_by": "tests/ros/test_clapboard_wire_vectors.py (the single-field-patch transaction: 6 frames, not 2)"
+    },
+    {
+      "id": "empty-field-set-crc",
+      "rule": "A commit naming NO field (a repaint) CRCs to the init value 0xFFFF. Both sides must agree or every repaint-only commit is rejected.",
+      "enforced_in": "Electronic-Clapboard src/can_frames.h:170-184 (the loop body is skipped for every absent field)",
+      "stated_in_protocol_md": false,
+      "pinned_by": "tests/ros/test_clapboard_wire_vectors.py (the empty-present-set CRC vector + the repaint-only transaction)"
+    }
+  ],
+  "crc16_ccitt_false": {
+    "poly": "0x1021",
+    "init": "0xFFFF",
+    "reflect_in": false,
+    "reflect_out": false,
+    "xor_out": "0x0000",
+    "known_answers": [
+      {
+        "name": "canonical-check-value",
+        "input_hex": "313233343536373839",
+        "crc16": "0x29B1",
+        "note": "The canonical CCITT-FALSE check value. If this fails the two repos have DIFFERENT CRC variants and every commit is rejected on the wire.",
+        "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_crc_known_answer_vectors"
+      },
+      {
+        "name": "empty-input",
+        "input_hex": "",
+        "crc16": "0xFFFF",
+        "note": "Empty input returns the init value untouched - which is also why a repaint-only commit CRCs to 0xFFFF.",
+        "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_crc_known_answer_vectors"
+      }
+    ]
+  },
+  "crc16_over_fields": [
+    {
+      "name": "peer/order-independent-set",
+      "fields": {
+        "0": "2026-08-16",
+        "1": "Scene 4",
+        "2": "Take 12",
+        "3": "wide"
+      },
+      "crc16": "0x2FC8",
+      "note": "Fields 0-3 of the peer's order-independence case. The peer asserts only that two fill orders agree; the literal value is derived here so both repos pin the same number.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_crc_over_fields_is_order_independent"
+    },
+    {
+      "name": "peer/single-field-scene",
+      "fields": {
+        "0": "Scene 4"
+      },
+      "crc16": "0xEFDD",
+      "note": "A stale buffer in an ABSENT field must not change this value - patch semantics make stale buffers the normal case, not an edge case.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_crc_over_fields_ignores_absent_fields"
+    },
+    {
+      "name": "peer/stale-field-now-present",
+      "fields": {
+        "0": "Scene 4",
+        "3": "stale leftover"
+      },
+      "crc16": "0xA09B",
+      "note": "Same buffers as peer/single-field-scene with field 3 now IN the mask. Must differ from it, or the mask is not being honoured.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_crc_over_fields_ignores_absent_fields"
+    },
+    {
+      "name": "peer/bit-flip-good",
+      "fields": {
+        "1": "Take 12"
+      },
+      "crc16": "0x7DD4",
+      "note": "Pairs with peer/bit-flip-corrupted: one flipped bit inside the text must change the CRC.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_crc_detects_a_single_bit_flip"
+    },
+    {
+      "name": "peer/bit-flip-corrupted",
+      "fields": {
+        "1": "Takd 12"
+      },
+      "crc16": "0x8D32",
+      "note": "peer/bit-flip-good with byte 3 of the text XORed by 0x01.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_crc_detects_a_single_bit_flip"
+    },
+    {
+      "name": "empty-present-set",
+      "fields": {},
+      "crc16": "0xFFFF",
+      "note": "UNSTATED RULE: a repaint-only commit names no field, so the CRC is the untouched init value. protocol.md 8.4 does not say so; it follows from crc16_over_fields skipping every absent field.",
+      "source": "Electronic-Clapboard src/can_frames.h::crc16_over_fields with present_mask == 0"
+    }
+  ],
+  "frames": [
+    {
+      "name": "peer/field-chunk-f5-seq3-abcdefg",
+      "kind": "field_chunk",
+      "can_id": "0x7E8",
+      "direction": "host_to_clapboard",
+      "dlc": 8,
+      "data": "3561626364656667",
+      "field_id": 5,
+      "seq": 3,
+      "buffer32": "706565722d676f6c64656e2d63617272792d6f76656162636465666700000000",
+      "note": "The peer's own layout golden, carried across EXACTLY: field 5 / seq 3 -> d[0] == 0x35, d[1] == 'a', d[7] == 'g'. buffer32 is the 32-byte field buffer whose seq-3 chunk reproduces it.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_field_chunk_round_trip"
+    },
+    {
+      "name": "field-chunk-f0-seq0-empty-field",
+      "kind": "field_chunk",
+      "can_id": "0x7E8",
+      "direction": "host_to_clapboard",
+      "dlc": 8,
+      "data": "0000000000000000",
+      "field_id": 0,
+      "seq": 0,
+      "buffer32": "0000000000000000000000000000000000000000000000000000000000000000",
+      "note": "Clearing a field is a present field with an all-NUL buffer, not an absent one. Still five chunks, still DLC 8.",
+      "source": "Electronic-Clapboard docs/protocol.md 8.3"
+    },
+    {
+      "name": "field-chunk-f7-seq4-boundary",
+      "kind": "field_chunk",
+      "can_id": "0x7E8",
+      "direction": "host_to_clapboard",
+      "dlc": 8,
+      "data": "4773747576000000",
+      "field_id": 7,
+      "seq": 4,
+      "buffer32": "303132333435363738396162636465666768696a6b6c6d6e6f70717273747576",
+      "note": "Both nibbles at their limit (field 7, seq 4 -> d[0] == 0x47), and the last chunk of a MAXIMUM-length field: 4 text bytes then the 3 trailing NULs that let the receiver find the terminator.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_field_chunk_rejects_out_of_range_ids"
+    },
+    {
+      "name": "peer/commit-t3-mask0b1011-txn200-crcBEEF",
+      "kind": "commit",
+      "can_id": "0x7E9",
+      "direction": "host_to_clapboard",
+      "dlc": 8,
+      "data": "030b01c8efbe0000",
+      "template_id": 3,
+      "present_mask": "0x0B",
+      "flags": "0x01",
+      "txn_id": 200,
+      "crc16": "0xBEEF",
+      "note": "The peer's own layout golden, carried across EXACTLY: template 3 / mask 0b00001011 / flags 0x01 / txn 200 / crc 0xBEEF -> d[4] == 0xEF, d[5] == 0xBE (little-endian), d[6..7] == 0 (reserved, must be 0).",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_commit_round_trip_and_layout"
+    },
+    {
+      "name": "link-ros2-up",
+      "kind": "link",
+      "can_id": "0x7EA",
+      "direction": "bridge_to_clapboard",
+      "dlc": 8,
+      "data": "0100000000000000",
+      "ros2_up": true,
+      "emitted_by_this_repo": true,
+      "note": "THE named first-integration-bug guard. Byte 0 is the only meaningful byte, so a 1-byte frame is the natural implementation - and the clapboard drops any DLC != 8 silently, leaving the panel in screensaver forever with no error on either side.",
+      "source": "Electronic-Clapboard docs/protocol.md 8.5"
+    },
+    {
+      "name": "link-ros2-down",
+      "kind": "link",
+      "can_id": "0x7EA",
+      "direction": "bridge_to_clapboard",
+      "dlc": 8,
+      "data": "0000000000000000",
+      "ros2_up": false,
+      "emitted_by_this_repo": true,
+      "note": "Screensaver is the safe default, so every link state short of UP reports DOWN. DLC 8 in this direction too.",
+      "source": "Electronic-Clapboard docs/protocol.md 8.5"
+    },
+    {
+      "name": "peer/link-any-nonzero-is-up",
+      "kind": "link",
+      "can_id": "0x7EA",
+      "direction": "bridge_to_clapboard",
+      "dlc": 8,
+      "data": "8100000000000000",
+      "ros2_up": true,
+      "emitted_by_this_repo": false,
+      "note": "The bridge never emits this, but the clapboard MUST read it as UP: a strict ==1 would turn a future flag bit in byte 0 into a silent permanent 'ROS2 down', which fails in the direction that blanks the panel. Recorded so a future bridge-side flag bit is safe by construction.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_link_treats_any_nonzero_as_up"
+    },
+    {
+      "name": "peer/ack-txn42-crc-mismatch-2500ms",
+      "kind": "ack",
+      "can_id": "0x7EB",
+      "direction": "clapboard_to_host",
+      "dlc": 8,
+      "data": "2a0201c409000000",
+      "txn_id": 42,
+      "outcome": 2,
+      "state": 1,
+      "render_ms": 2500,
+      "note": "The peer's own layout golden, carried across EXACTLY: txn 42, outcome CRC_MISMATCH (0x02), state IDLE (0x01), render_ms 2500 = 0x09C4 little-endian at bytes 3-4, bytes 5-7 reserved and zeroed.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_ack_layout"
+    },
+    {
+      "name": "ack-txn1-ok-1800ms",
+      "kind": "ack",
+      "can_id": "0x7EB",
+      "direction": "clapboard_to_host",
+      "dlc": 8,
+      "data": "0100020807000000",
+      "txn_id": 1,
+      "outcome": 0,
+      "state": 2,
+      "render_ms": 1800,
+      "note": "The happy path a SetSlate goal ends on: OK, still RENDERING at ack time, render_ms inside the 1500-3500 ms full-refresh envelope.",
+      "source": "Electronic-Clapboard docs/protocol.md 8.6"
+    },
+    {
+      "name": "peer/heartbeat-screensaver-wifi-timesynced",
+      "kind": "heartbeat",
+      "can_id": "0x7EC",
+      "direction": "clapboard_to_host",
+      "dlc": 8,
+      "data": "0314020100000203",
+      "state": 3,
+      "flags": "0x14",
+      "fire_ready": false,
+      "template_loaded": false,
+      "wifi_up": true,
+      "rail_ok": false,
+      "time_synced": true,
+      "fires_since_boot": 258,
+      "rail_mv": 0,
+      "active_template_id": 2,
+      "last_error": 3,
+      "note": "The peer's own layout golden, carried across EXACTLY: state SCREENSAVER (3), flags bit2|bit4 == 0x14, fires 0x0102 little-endian at bytes 2-3, rail_mv 0 (no divider fitted), template 2, last_error 3.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_heartbeat_layout"
+    },
+    {
+      "name": "heartbeat-idle-all-flags",
+      "kind": "heartbeat",
+      "can_id": "0x7EC",
+      "direction": "clapboard_to_host",
+      "dlc": 8,
+      "data": "011f0000e30c0100",
+      "state": 1,
+      "flags": "0x1F",
+      "fire_ready": true,
+      "template_loaded": true,
+      "wifi_up": true,
+      "rail_ok": true,
+      "time_synced": true,
+      "fires_since_boot": 0,
+      "rail_mv": 3299,
+      "active_template_id": 1,
+      "last_error": 0,
+      "note": "Every flag set, a real rail reading (3299 mV), no errors yet. time_synced is the load-bearing one: while it is false the clapboard emits NO fire events at all, so a gap between fires_since_boot and published events is expected, not a defect.",
+      "source": "Electronic-Clapboard docs/protocol.md 8.7"
+    },
+    {
+      "name": "peer/fire-event-48bit",
+      "kind": "fire_event",
+      "can_id": "0x7ED",
+      "direction": "clapboard_to_host",
+      "dlc": 8,
+      "data": "6655443322110700",
+      "wall_us_low48": 18838586676582,
+      "fires_since_boot": 7,
+      "note": "The peer's own layout golden, carried across EXACTLY: 48-bit little-endian microseconds in bytes 0-5, fires_since_boot in 6-7.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_fire_event_48_bit_round_trip"
+    },
+    {
+      "name": "peer/fire-event-overflow-does-not-corrupt-seq",
+      "kind": "fire_event",
+      "can_id": "0x7ED",
+      "direction": "clapboard_to_host",
+      "dlc": 8,
+      "data": "ffffffffffff3412",
+      "wall_us_low48": 281474976710655,
+      "fires_since_boot": 4660,
+      "note": "The peer's own golden for the mask: a wall clock above 2^48 is truncated and must NOT bleed into bytes 6-7. This is the frame that makes the UNSTATED 48-bit rule visible - see unstated_rules.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_fire_event_truncates_above_48_bits_without_corrupting_seq"
+    },
+    {
+      "name": "peer/time-sync-1786000000s-999999us",
+      "kind": "time_sync",
+      "can_id": "0x7DD",
+      "direction": "bridge_to_clapboard",
+      "dlc": 8,
+      "data": "8032746a3f420f00",
+      "unix_s": 1786000000,
+      "usec": 999999,
+      "emitted_by_this_repo": true,
+      "note": "Not a clapboard-block id, but the bridge emits it on this same bus and the clapboard's decoder requires DLC 8 for it too - so it is in scope for the DLC-8 emission invariant. pack('<II', sec, usec), matching broadcast_0x7dd(). usec >= 1e6 is REJECTED by the peer rather than folded in: a wrong anchor is worse than no anchor.",
+      "source": "Electronic-Clapboard test/test_can_frames/test_can_frames.cpp::test_time_sync_decodes_little_endian_pair"
+    }
+  ],
+  "transactions": [
+    {
+      "name": "full-slate-8-fields",
+      "template_id": 3,
+      "fields": {
+        "0": "Scene 4",
+        "1": "Take 12",
+        "2": "wide",
+        "3": "",
+        "4": "X",
+        "5": "0123456789abcdefghijklmnopqrstuv",
+        "6": "unit-a",
+        "7": "cam L/R sync check"
+      },
+      "txn_id": 200,
+      "force_full_refresh": false,
+      "present_mask": "0xFF",
+      "crc16": "0x2A7A",
+      "frame_count": 41,
+      "note": "The worst case: 8 present fields x 5 chunks + 1 commit = 41 frames, the number CLAP_MAX_FRAMES (48) is sized from. Field 3 is present and EMPTY (a clear), field 5 is exactly 32 bytes. Commit is LAST.",
+      "frames": [
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "005363656e652034"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "1000000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "2000000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "3000000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4000000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "0154616b65203132"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "1100000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "2100000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "3100000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4100000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "0277696465000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "1200000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "2200000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "3200000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4200000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "0300000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "1300000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "2300000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "3300000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4300000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "0458000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "1400000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "2400000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "3400000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4400000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "0530313233343536"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "1537383961626364"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "2565666768696a6b"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "356c6d6e6f707172"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4573747576000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "06756e69742d6100"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "1600000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "2600000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "3600000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4600000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "0763616d204c2f52"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "172073796e632063"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "276865636b000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "3700000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4700000000000000"
+        },
+        {
+          "can_id": "0x7E9",
+          "dlc": 8,
+          "data": "03ff00c87a2a0000"
+        }
+      ]
+    },
+    {
+      "name": "single-field-patch",
+      "template_id": 3,
+      "fields": {
+        "2": "Take 12"
+      },
+      "txn_id": 200,
+      "force_full_refresh": false,
+      "present_mask": "0x04",
+      "crc16": "0x7DD4",
+      "frame_count": 6,
+      "note": "UNSTATED RULE: all five chunks go out even for a 7-byte value. Panel field buffers persist between transactions (8.4 patch semantics) and the CRC covers the full 32-byte buffer, so a prefix-only send leaves the previous value's tail in the receiver -> wrong text AND a spurious CRC_MISMATCH.",
+      "frames": [
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "0254616b65203132"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "1200000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "2200000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "3200000000000000"
+        },
+        {
+          "can_id": "0x7E8",
+          "dlc": 8,
+          "data": "4200000000000000"
+        },
+        {
+          "can_id": "0x7E9",
+          "dlc": 8,
+          "data": "030400c8d47d0000"
+        }
+      ]
+    },
+    {
+      "name": "repaint-only-no-fields",
+      "template_id": 2,
+      "fields": {},
+      "txn_id": 7,
+      "force_full_refresh": true,
+      "present_mask": "0x00",
+      "crc16": "0xFFFF",
+      "frame_count": 1,
+      "note": "A commit with an empty mask: repaint what is already there. One frame, CRC 0xFFFF, force-full-refresh flag set.",
+      "frames": [
+        {
+          "can_id": "0x7E9",
+          "dlc": 8,
+          "data": "02000107ffff0000"
+        }
+      ]
+    }
+  ]
+}
