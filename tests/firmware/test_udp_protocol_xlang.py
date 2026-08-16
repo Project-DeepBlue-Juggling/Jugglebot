@@ -81,6 +81,8 @@ def test_crc16_matches_generator(gen, proto):
     "ConeFrame",
     "PlatformFrame", "HandCmdEcho", "HandSensor",
     "CanErrors", "BridgeTxDiag", "BridgeIdentity",
+    # CLAP_DIAG is the clapboard downlink census (see the _EXPECTED note).
+    "ClapDiag",
     "RpcRequest", "RpcResponse",
 ])
 def test_message_pack_unpack_roundtrip(proto, gen, name):
@@ -121,6 +123,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
     ("PlatformFrame", "PLATFORM_FRAME"), ("HandCmdEcho", "HAND_CMD_ECHO"),
     ("HandSensor", "HAND_SENSOR"), ("CanErrors", "CAN_ERRORS"),
     ("BridgeTxDiag", "BRIDGE_TX_DIAG"), ("BridgeIdentity", "BRIDGE_IDENTITY"),
+    ("ClapDiag", "CLAP_DIAG"),
 ])
 def test_frame_encode_decode_roundtrip(proto, gen, name, msg_type_member):
     msg_spec = next(m for m in gen.MESSAGES if m.name == name)
@@ -295,6 +298,41 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
+    # Re-pinned for the ELECTRONIC CLAPBOARD downlink (2026-08-16, can-bridge
+    # FW 15, 'plans/active/clapboard-can3-integration.md' Phase 2b). THREE
+    # additions, all backward-compatible:
+    #   * RpcMethod CLAP_SEND = 0x0060 with a new RpcArg ArgClapSend — a
+    #     STRUCTURE-OF-ARRAYS layout (count u8, can_id u32[48], len u8[48],
+    #     data u8[384] = 625 B) carrying a WHOLE clapboard slate transaction in
+    #     one request. SoA rather than an array of frame structs because the
+    #     generator cannot express one: Field.count multiplies a SINGLE scalar
+    #     type, and VARIABLE_TAIL applies only to MESSAGES, never RPC_ARGS. The
+    #     ResultAxisVersions precedent. One request per transaction is an
+    #     ORDERING requirement, not convenience: chunks may arrive in any order
+    #     but CLAP_COMMIT must arrive after its chunks, and one burst drained
+    #     FIFO one-frame-per-tick guarantees that by construction.
+    #   * MsgType CLAP_DIAG = 0x93 with a 20 B payload
+    #     (queued/sent/gated/dropped/ring_hwm+pad), 1 Hz. It exists because a
+    #     CLAP_SEND RPC acks the DISPATCH — the drain runs long after the RPC
+    #     returned, so a mid-drain failure CANNOT be an RPC error (the BB_THROW
+    #     pattern; the terminal outcome is the clapboard's own CLAP_ACK). Without
+    #     this frame, "the bridge dropped them" and "the panel mis-reassembled
+    #     them" are indistinguishable from the Jetson.
+    #   * HeartbeatT2JFlags CLAPBOARD_PRESENT = 0x40 landed in the SAME FW 15
+    #     (commit 2a) and deliberately does NOT appear in this hash: the digest
+    #     folds in MsgType, MESSAGES and RPC_ARGS only, and a new flag bit in an
+    #     existing u32 moves no payload.
+    # ADDITIVE, so PROTOCOL_VERSION deliberately stays at 5 — the LegCmd /
+    # HandSensor / CanErrors / ClockDiag / CacheDiag / RingDiag precedent: an old
+    # Jetson ignores the unknown msg_type, a new one renders never-seen as
+    # unknown, an FW 14 board answers CLAP_SEND with ERR_UNKNOWN_METHOD (a clean
+    # failure, not a hang), and the two ends deploy in either order — which here
+    # they again explicitly DO, the host decode shipping while FW 15 is written
+    # and NOT flashed. The bump rule is a payload-size change to an EXISTING
+    # message, because receivers do an exact-size unpack; nothing existing moved.
+    # Previous pin: e7af7d13a5be329319b7dc0715a3c5bba1c6318ea111be703ad697453c7ed624
+    #   (additive RING_DIAG 0x92 103 B — 2026-08-14 can-bridge FW 13).
+    #
     # Re-pinned for the additive RING_DIAG message (2026-08-14, can-bridge FW 13,
     # the bridge-temporal arc): MsgType RING_DIAG 0x92 + a 103 B payload, plus a
     # new RingDiagFlags enum. It carries, per bus and per 1 s window, the CAN RX
@@ -381,7 +419,7 @@ def test_wire_layout_frozen(gen):
     # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
     #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
     #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
-    _EXPECTED = "e7af7d13a5be329319b7dc0715a3c5bba1c6318ea111be703ad697453c7ed624"
+    _EXPECTED = "a788f48a07bec95a1ec08a7239938266cf426f398cda361806696b3ee2216a05"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

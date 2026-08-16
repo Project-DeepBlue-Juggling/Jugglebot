@@ -103,6 +103,16 @@ class Message:
 # CONSTANTS
 # ───────────────────────────────────────────────────────────────────────────
 
+# Frame-burst capacity of one CLAP_SEND request, so a whole electronic-clapboard
+# slate transaction rides a SINGLE RPC. Sized from the worst case in
+# Electronic-Clapboard docs/protocol.md §8.3-8.4: 8 fields x 5 chunks + 1 commit
+# = 41 frames, plus headroom. The struct is FIXED-size at 1 + 13*48 = 625 B
+# against MAX_PAYLOAD 1024 (arg ceiling 1016), so the firmware's existing
+# fixed-size take() helper works unmodified and no variable-length arg path is
+# introduced. Bound as a Python name here so the wire constant, the three array
+# lengths below and the host encoder's validation are one number.
+CLAP_MAX_FRAMES = 48
+
 CONSTANTS = [
     ("PROTOCOL_VERSION", 5,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic)"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
@@ -136,6 +146,9 @@ CONSTANTS = [
     # firmware (which never sets these bits) self-describes as UNKNOWN.
     ("HEARTBEAT_CONE_HEALTH_SHIFT", 4, "u8",
      "Bit offset of CONE_HEALTH_MASK inside HeartbeatT2J.flags (bits 4-5)"),
+    # Frame slots in one ArgClapSend (see the note above CONSTANTS).
+    ("CLAP_MAX_FRAMES", CLAP_MAX_FRAMES, "u8",
+     "Frame slots in one CLAP_SEND request (worst-case slate transaction is 41)"),
 ]
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -194,6 +207,7 @@ ENUMS = {
         # MsgType value exists anywhere.
         ("CACHE_DIAG",     0x91, "1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)"),
         ("RING_DIAG",      0x92, "1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)"),
+        ("CLAP_DIAG",      0x93, "1 Hz electronic-clapboard downlink TX census (queued/sent/gated/dropped + ring high-water) (STREAM, T→J)"),
     ],
     "RpcMethod": [
         ("NOP",                0x0000, "No-op (link test)"),
@@ -225,6 +239,10 @@ ENUMS = {
         ("STATE_READ",         0x0052, "Relay: read Platform-Teensy RobotState (is_homed/level/pose)"),
         ("STATE_WRITE",        0x0053, "Relay: write Platform-Teensy RobotState (read-modify-write via cache)"),
         ("HAND_TRAJ_CMD",      0x0054, "Hand traj + smooth-move (byte-0 discriminator → 0x6D0)"),
+        # Next free block after HAND_TRAJ_CMD 0x0054. The bridge is a MECHANICAL
+        # relay here — bytes in, frames out, no reassembly, no CRC, no field-model
+        # awareness — so a clapboard protocol change never needs a Teensy reflash.
+        ("CLAP_SEND",          0x0060, "Electronic clapboard: enqueue N pre-built frames onto the cone bus (paced one per tick)"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1341,6 +1359,54 @@ MESSAGES = [
         ],
     ),
     Message(
+        "ClapDiag", "CLAP_DIAG", "T2J", "STREAM",
+        summary=(
+            "ELECTRONIC-CLAPBOARD DOWNLINK TX CENSUS, 1 Hz, cumulative since boot. "
+            "WHY IT EXISTS: a CLAP_SEND RPC acks the DISPATCH, not the outcome — one "
+            "request enqueues a whole slate transaction (up to CLAP_MAX_FRAMES frames) "
+            "which the bridge then drains onto the cone bus ONE FRAME PER TICK, long "
+            "after the RPC has returned. So a mid-drain failure CANNOT be surfaced as an "
+            "RPC error. That is by design and mirrors BB_THROW: the terminal outcome "
+            "arrives asynchronously as the clapboard's own CLAP_ACK (0x7EB). But a "
+            "CLAP_ACK saying CRC_MISMATCH or INCOMPLETE cannot say WHY frames went "
+            "missing, and this frame is the firmware's half of that answer — without it, "
+            "'the bridge dropped them' and 'the panel mis-reassembled them' are "
+            "indistinguishable from the Jetson. Unconditional at 1 Hz like its four "
+            "siblings (CanErrors / BridgeTxDiag / CacheDiag / RingDiag): the consumer "
+            "differences two captures, so a gap must never be ambiguous with health. "
+            "The four counters partition every frame the host handed over: "
+            "queued == sent + gated + (frames still in the ring), and dropped counts the "
+            "ones that never got in."),
+        fields=[
+            Field("queued",   "u32", 1,
+                  "Frames ACCEPTED into the clap_tx ring since boot. The denominator: every "
+                  "other counter here is a fate of a frame counted once in this one"),
+            Field("sent",     "u32", 1,
+                  "Frames handed to can_cone_send at drain time with the TX presence gate OPEN. "
+                  "A false return from that call with the gate open is a DEFERRAL, not a loss — "
+                  "the frame sits in the 64-slot software txBuffer and the TX-complete ISR sends "
+                  "it ~0.1-1 ms later — so it is counted here. Genuine TX-path pressure is "
+                  "already reported per-bus by BridgeTxDiag's tx_deferred/tx_q_hwm"),
+            Field("gated",    "u32", 1,
+                  "Frames DISCARDED at drain because the bus-partner TX presence gate was closed "
+                  "(no frame seen on the cone bus within BUS_PARTNER_STALENESS_US). Discarded "
+                  "rather than held: holding a half-drained transaction would dribble it out "
+                  "later interleaved with a newer one, and the clapboard's CRC would reject BOTH. "
+                  "Non-zero here explains a CRC_MISMATCH/INCOMPLETE ack that would otherwise look "
+                  "like a panel fault"),
+            Field("dropped",  "u32", 1,
+                  "Frames REFUSED at enqueue because the ring could not hold the whole burst. "
+                  "Enqueue is all-or-nothing, so this rises in whole transactions and means the "
+                  "host issued a second CLAP_SEND while the first was still draining — the RPC "
+                  "returned ERR_REJECTED and nothing was put on the wire"),
+            Field("ring_hwm", "u8",  1,
+                  "Peak clap_tx ring occupancy since boot (cap CLAP_TX_RING_CAP). A value at the "
+                  "cap means a burst exactly filled it; approaching the cap across a session means "
+                  "the drain divisor is too slow for the slate cadence in use"),
+            Field("pad",      "u8",  3, "Alignment pad (zero)"),
+        ],
+    ),
+    Message(
         "RpcRequest", "RPC_REQUEST", "J2T", "RPC",
         summary=(
             "Generic RPC envelope. `method` selects the operation; `args` is a "
@@ -1497,6 +1563,30 @@ RPC_ARGS = [
     # fires when its synced clock reaches the deadline).
     RpcArg("ArgHandTraj", "HAND_TRAJ_CMD", [
         Field("payload", "u8", 8, "Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator)"),
+    ]),
+    # CLAP_SEND carries a WHOLE electronic-clapboard slate transaction in one
+    # request, so the bridge can drain it FIFO one frame per tick and thereby
+    # guarantee by construction that CLAP_COMMIT lands after its chunks (an
+    # out-of-order commit is an INCOMPLETE rejection). Ordering is the reason for
+    # one-RPC-per-transaction, not convenience.
+    #
+    # LAYOUT IS STRUCTURE-OF-ARRAYS, not an array of frame structs, because the
+    # generator cannot express one: Field.count multiplies a SINGLE scalar type,
+    # and there is no variable-length RpcArg support at all (VARIABLE_TAIL applies
+    # only to MESSAGES). Same shape as the ResultAxisVersions precedent above — a
+    # leading count plus fixed-width parallel arrays. Being fixed-size is what
+    # lets rpc.cpp's existing take() helper consume it unmodified.
+    #
+    # The firmware does NO reassembly, NO CRC and NO field-model awareness: it
+    # bounds-checks the DLC (framing/memory safety) and relays bytes. Every
+    # semantic concern — chunking, the CRC over 32-byte NUL-padded field buffers,
+    # txn_id correlation, the strict DLC-8 rule the clapboard enforces in code —
+    # belongs to the host, so a clapboard protocol change never forces a reflash.
+    RpcArg("ArgClapSend", "CLAP_SEND", [
+        Field("count",  "u8",  1,                  "Valid frame slots, 1..CLAP_MAX_FRAMES (slots past this are ignored)"),
+        Field("can_id", "u32", CLAP_MAX_FRAMES,    "Per-slot CAN arbitration id (clapboard block 0x7E8-0x7EF)"),
+        Field("len",    "u8",  CLAP_MAX_FRAMES,    "Per-slot DLC, 0..8. The clapboard REQUIRES 8 on every frame and silently drops any other length; that rule is enforced host-side where the frames are built, not here"),
+        Field("data",   "u8",  8 * CLAP_MAX_FRAMES, "Per-slot payload, 8 B per slot, slot-major"),
     ]),
 ]
 

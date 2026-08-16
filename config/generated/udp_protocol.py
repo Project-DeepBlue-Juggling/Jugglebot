@@ -29,6 +29,7 @@ HEARTBEAT_HZ = 10  # Both-direction liveness rate
 LINK_LOST_MISSES = 5  # Missed heartbeats before declaring link lost
 HEARTBEAT_TORQUE_CLAMP_SHIFT = 8  # Bit offset of TORQUE_CLAMP_MASK inside HeartbeatT2J.flags (bits 8-13)
 HEARTBEAT_CONE_HEALTH_SHIFT = 4  # Bit offset of CONE_HEALTH_MASK inside HeartbeatT2J.flags (bits 4-5)
+CLAP_MAX_FRAMES = 48  # Frame slots in one CLAP_SEND request (worst-case slate transaction is 41)
 
 # ── Enums ──────────────────────────────────────────────────────────────
 class MsgType(IntEnum):
@@ -53,6 +54,7 @@ class MsgType(IntEnum):
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
     CACHE_DIAG = 145  # 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)
     RING_DIAG = 146  # 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)
+    CLAP_DIAG = 147  # 1 Hz electronic-clapboard downlink TX census (queued/sent/gated/dropped + ring high-water) (STREAM, T→J)
 
 class RpcMethod(IntEnum):
     NOP = 0  # No-op (link test)
@@ -80,6 +82,7 @@ class RpcMethod(IntEnum):
     STATE_READ = 82  # Relay: read Platform-Teensy RobotState (is_homed/level/pose)
     STATE_WRITE = 83  # Relay: write Platform-Teensy RobotState (read-modify-write via cache)
     HAND_TRAJ_CMD = 84  # Hand traj + smooth-move (byte-0 discriminator → 0x6D0)
+    CLAP_SEND = 96  # Electronic clapboard: enqueue N pre-built frames onto the cone bus (paced one per tick)
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -717,6 +720,30 @@ class RingDiag:
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
+# ClapDiag: ELECTRONIC-CLAPBOARD DOWNLINK TX CENSUS, 1 Hz, cumulative since boot. WHY IT EXISTS: a CLAP_SEND RPC acks the DISPATCH, not the outcome — one request enqueues a whole slate transaction (up to CLAP_MAX_FRAMES frames) which the bridge then drains onto the cone bus ONE FRAME PER TICK, long after the RPC has returned. So a mid-drain failure CANNOT be surfaced as an RPC error. That is by design and mirrors BB_THROW: the terminal outcome arrives asynchronously as the clapboard's own CLAP_ACK (0x7EB). But a CLAP_ACK saying CRC_MISMATCH or INCOMPLETE cannot say WHY frames went missing, and this frame is the firmware's half of that answer — without it, 'the bridge dropped them' and 'the panel mis-reassembled them' are indistinguishable from the Jetson. Unconditional at 1 Hz like its four siblings (CanErrors / BridgeTxDiag / CacheDiag / RingDiag): the consumer differences two captures, so a gap must never be ambiguous with health. The four counters partition every frame the host handed over: queued == sent + gated + (frames still in the ring), and dropped counts the ones that never got in.
+CLAP_DIAG_FMT = '<IIIIBBBB'
+CLAP_DIAG_SIZE = 20
+_CLAP_DIAG_STRUCT = struct.Struct(CLAP_DIAG_FMT)
+assert _CLAP_DIAG_STRUCT.size == 20
+
+@dataclass
+class ClapDiag:
+    queued: int = 0
+    sent: int = 0
+    gated: int = 0
+    dropped: int = 0
+    ring_hwm: int = 0
+    pad: tuple = field(default_factory=lambda: (0,) * 3)
+
+    def pack(self) -> bytes:
+        return _CLAP_DIAG_STRUCT.pack(self.queued, self.sent, self.gated, self.dropped, self.ring_hwm, *self.pad)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ClapDiag':
+        vals = _CLAP_DIAG_STRUCT.unpack(data[:20])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(3)))
+
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'
 RPC_REQUEST_SIZE = 8
@@ -1048,6 +1075,28 @@ class ArgHandTraj:
         vals = _ARG_HAND_TRAJ_STRUCT.unpack(data[:8])
         it = iter(vals)
         return cls(tuple(next(it) for _ in range(8)))
+
+# ArgClapSend (CLAP_SEND)
+ARG_CLAP_SEND_FMT = '<BIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
+ARG_CLAP_SEND_SIZE = 625
+_ARG_CLAP_SEND_STRUCT = struct.Struct(ARG_CLAP_SEND_FMT)
+assert _ARG_CLAP_SEND_STRUCT.size == 625
+
+@dataclass
+class ArgClapSend:
+    count: int = 0
+    can_id: tuple = field(default_factory=lambda: (0,) * 48)
+    len: tuple = field(default_factory=lambda: (0,) * 48)
+    data: tuple = field(default_factory=lambda: (0,) * 384)
+
+    def pack(self) -> bytes:
+        return _ARG_CLAP_SEND_STRUCT.pack(self.count, *self.can_id, *self.len, *self.data)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgClapSend':
+        vals = _ARG_CLAP_SEND_STRUCT.unpack(data[:625])
+        it = iter(vals)
+        return cls(next(it), tuple(next(it) for _ in range(48)), tuple(next(it) for _ in range(48)), tuple(next(it) for _ in range(384)))
 
 # ── Hand axis-6 allow-table ──────────────────────────────────────────────
 # RpcMethod ids the can-bridge forwards to the hand ODrive (axis 6); the

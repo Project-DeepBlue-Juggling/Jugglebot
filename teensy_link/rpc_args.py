@@ -33,6 +33,7 @@ from .protocol import (
     ArgBbThrow,
     ArgRobotState,
     ArgHandTraj,
+    ArgClapSend,
     ResultAxisVersions,
 )
 
@@ -44,6 +45,7 @@ __all__ = [
     "ArgAxisState", "ArgControllerMode", "ArgVelCurr", "ArgPosGain",
     "ArgVelGains", "ArgAbsPosition", "ArgAxisOnly", "ArgSdoRead", "ArgSdoWrite",
     "ResultTimeOfDay", "ArgBbThrow", "ArgRobotState", "ArgHandTraj",
+    "ArgClapSend",
     # encoders
     "encode_set_axis_state", "encode_set_controller_mode",
     "encode_set_vel_curr_limits", "encode_set_pos_gain", "encode_set_vel_gains",
@@ -52,7 +54,7 @@ __all__ = [
     "encode_sdo_read", "encode_sdo_write", "encode_state_write",
     "encode_hand_traj_cmd", "encode_smooth_move_hand", "decode_hand_cmd_echo",
     "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
-    "encode_bb_calibrate_loc",
+    "encode_bb_calibrate_loc", "encode_clap_send",
     "decode_time_of_day_result", "ResultAxisVersions",
     "encode_axis_versions_result", "decode_axis_versions_result",
     # method association
@@ -402,7 +404,27 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: uptime. Same bumped-while-the-board-is-behind situation until the operator
 #: flashes: ``/link_status`` will read `13 (SKEW — expected v14)`, which is the
 #: CORRECT report, and it is advisory everywhere, never enforced.
-EXPECTED_BRIDGE_FW_VERSION = 14
+#: 15 (2026-08-16) = the ELECTRONIC CLAPBOARD surface, landed as one version and
+#: one flash (``plans/active/clapboard-can3-integration.md`` Phase 2 — there is no
+#: FW 16). Three things: ``cone_health`` stops naming a catching cone when a
+#: clapboard is attached instead (``on_cone_rx`` now discriminates the
+#: arbitration id, and ``HeartbeatT2J.flags`` bit 6 ``CLAPBOARD_PRESENT`` says
+#: which peripheral is there, so "cone UNKNOWN" can still be told from "bus
+#: empty"); a 2 Hz ``CLAP_LINK`` (0x7EA) beacon, which is what moves the panel
+#: between scene slate and screensaver; and the ``CLAP_SEND`` (0x0060) downlink
+#: with its paced one-frame-per-tick drain plus the additive ``CLAP_DIAG`` (0x93)
+#: census of it.
+#: WIRE-COMPATIBLE IN BOTH DIRECTIONS, like 9→10 and 13→14 — every existing frame
+#: is byte-identical, ``CLAPBOARD_PRESENT`` is a free bit in an existing u32, and
+#: ``CLAP_DIAG``/``CLAP_SEND`` are additive ids, so ``PROTOCOL_VERSION`` stays 5.
+#: A board still on 14 therefore decodes everything identically and stays fully
+#: usable; what it does NOT have is any clapboard support, so ``CLAP_SEND`` comes
+#: back ``ERR_UNKNOWN_METHOD`` (a clean failure, not a hang), ``/clap_diag``
+#: records EMPTY, and ``bus3_health`` goes back to claiming a cone that is not
+#: attached. Same bumped-while-the-board-is-behind situation as 11-14 until the
+#: operator flashes: ``/link_status`` will read `14 (SKEW — expected v15)`, which
+#: is the CORRECT report, and it is advisory everywhere, never enforced.
+EXPECTED_BRIDGE_FW_VERSION = 15
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -435,6 +457,56 @@ def encode_bb_calibrate_loc() -> bytes:
     return b""
 
 
+# ── Electronic clapboard (cone bus) ──────────────────────────────────────────
+# CLAP_SEND carries a WHOLE slate transaction in one request. That is an ordering
+# requirement, not a convenience: chunks may arrive in any order, but CLAP_COMMIT
+# must arrive AFTER its chunks or the clapboard answers INCOMPLETE. One request
+# drained FIFO one-frame-per-tick guarantees that by construction — provided the
+# caller puts the commit LAST, which is this function's contract with its caller.
+#
+# The bridge is a mechanical relay: no reassembly, no CRC, no field-model
+# awareness. Chunking, the CRC over 32-byte NUL-padded field buffers, txn_id
+# correlation and the strict DLC-8 rule all live host-side (Phase 3's
+# clapboard_slate), which is why a clapboard protocol change never needs a
+# Teensy reflash.
+
+def encode_clap_send(frames) -> bytes:
+    """CLAP_SEND: enqueue ``frames`` onto the cone bus, in order.
+
+    ``frames`` is a sequence of ``(can_id, payload)``. The bridge drains them
+    FIFO one per tick, so the ORDER GIVEN IS THE ORDER SENT — put ``CLAP_COMMIT``
+    last.
+
+    Raises ``ValueError`` for an empty burst, more than ``CLAP_MAX_FRAMES``
+    frames, or a payload longer than 8 bytes. A payload SHORTER than 8 is
+    accepted and zero-padded, and its DLC is reported honestly as its own length
+    rather than silently promoted to 8: the clapboard requires exactly 8 and
+    silently drops anything else, so quietly "fixing" a short payload here would
+    hide the bug at the one layer that could still name it. Emitting DLC 8 is the
+    frame BUILDER's job, pinned by the cross-repo DLC test.
+    """
+    frames = list(frames)
+    n = len(frames)
+    if n == 0:
+        raise ValueError("CLAP_SEND needs at least one frame")
+    if n > p.CLAP_MAX_FRAMES:
+        raise ValueError(
+            f"CLAP_SEND carries at most {p.CLAP_MAX_FRAMES} frames, got {n}")
+    ids = [0] * p.CLAP_MAX_FRAMES
+    lens = [0] * p.CLAP_MAX_FRAMES
+    data = bytearray(8 * p.CLAP_MAX_FRAMES)
+    for i, (can_id, payload) in enumerate(frames):
+        payload = bytes(payload)
+        if len(payload) > 8:
+            raise ValueError(
+                f"CLAP_SEND frame {i} payload is {len(payload)} bytes (max 8)")
+        ids[i] = int(can_id)
+        lens[i] = len(payload)
+        data[i * 8:i * 8 + len(payload)] = payload
+    return ArgClapSend(count=n, can_id=tuple(ids), len=tuple(lens),
+                       data=tuple(data)).pack()
+
+
 # Method → arg-dataclass association (introspection / tests).
 METHOD = {
     RpcMethod.SET_AXIS_STATE: ArgAxisState,
@@ -454,6 +526,7 @@ METHOD = {
     RpcMethod.BB_THROW: ArgBbThrow,
     RpcMethod.STATE_WRITE: ArgRobotState,
     RpcMethod.HAND_TRAJ_CMD: ArgHandTraj,   # host builds the 8-byte 0x6D0 payload
+    RpcMethod.CLAP_SEND: ArgClapSend,       # host builds every clapboard frame
     # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
 }

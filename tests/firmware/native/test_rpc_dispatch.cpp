@@ -66,6 +66,17 @@ static uint16_t g_hand_traj_ret = JbUdp::RpcStatus::OK;
 static int      g_hand_traj_calls = 0;
 static uint16_t g_version_len = 8;            // version_fill_blob returned length
 static int      g_tilt_calls = 0, g_state_read_calls = 0, g_state_write_calls = 0;
+// Clapboard downlink (CLAP_SEND). can_cone_send is stubbed here because fake_hal
+// does NOT define it — clap_link is only its second caller ever — and rpc.cpp now
+// links against the cone-bus gate. clap_tx_enqueue_burst is stubbed for ROUTING
+// ISOLATION, exactly as HandOps/Relay are: the ring's own behaviour (all-or-
+// nothing, FIFO, one-frame-per-tick drain) is driven by test_clap_link against
+// the REAL clap_link.cpp.
+static bool     g_cone_partner = true;        // drives cone_partner_present()
+static int      g_cone_sent = 0;              // can_cone_send call count
+static int      g_clap_bursts = 0;            // clap_tx_enqueue_burst call count
+static uint8_t  g_clap_frames = 0;            // frames in the last accepted burst
+static bool     g_clap_enqueue_ok = true;     // drives clap_tx_enqueue_burst's return
 
 static void drv_reset() {
   g_bus_transmittable = true;
@@ -76,11 +87,23 @@ static void drv_reset() {
   g_hand_traj_ret = JbUdp::RpcStatus::OK; g_hand_traj_calls = 0;
   g_version_len = 8;
   g_tilt_calls = g_state_read_calls = g_state_write_calls = 0;
+  g_cone_partner = true; g_cone_sent = 0;
+  g_clap_bursts = 0; g_clap_frames = 0; g_clap_enqueue_ok = true;
 }
 
 // ── can_buses.h ──
 bool jugglebot_bus_transmittable() { return g_bus_transmittable; }
 bool can_bb_send(const ODrive::CanFrame& f) { g_bb_sent++; g_bb_last = f; return g_bb_send_ok; }
+bool can_cone_send(const ODrive::CanFrame&) { g_cone_sent++; return true; }
+bool cone_partner_present() { return g_cone_partner; }
+
+// ── clap_link.h ──
+bool clap_tx_enqueue_burst(const uint32_t*, const uint8_t*, const uint8_t*, uint8_t count) {
+  g_clap_bursts++;
+  if (!g_clap_enqueue_ok) return false;
+  g_clap_frames = count;
+  return true;
+}
 
 // ── fault_machine.h ──
 void fault_notify_clear_errors()  { g_clear_calls++; }
@@ -365,4 +388,107 @@ TEST_CASE("GET_AXIS_VERSIONS returns OK with a filled blob, ERR_BAD_ARGS on an e
   reset_all();
   g_version_len = 0;                  // nothing cached yet
   CHECK(call_noarg(RpcMethod::GET_AXIS_VERSIONS) == RpcStatus::ERR_BAD_ARGS);
+}
+
+// ── CLAP_SEND: the clapboard downlink relay ───────────────────────────────────
+// THE SAFETY-RELEVANT BEHAVIOUR is the first case: a closed TX presence gate must
+// return ERR_BUS_DOWN having enqueued ZERO frames.  An un-ACKed TX on a
+// partner-less bus retransmits forever, pinning TEC at the error-passive
+// threshold and escalating to bus-off across supply ramps — on a bus whose analog
+// drive path is already known-degraded.  The gate is checked once, up front,
+// because the drain runs long after this RPC has returned.
+
+TEST_CASE("CLAP_SEND with the TX gate closed → ERR_BUS_DOWN and ZERO frames enqueued") {
+  reset_all();
+  g_cone_partner = false;                     // no partner seen within the window
+  JbUdp::RpcArgs::ArgClapSend a{};
+  a.count = 3;
+  for (uint8_t i = 0; i < 3; ++i) { a.can_id[i] = 0x7E8u; a.len[i] = 8; }
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_BUS_DOWN);
+  CHECK(g_clap_bursts == 0);                  // nothing even offered to the ring
+  CHECK(g_cone_sent == 0);                    // and nothing on the wire
+}
+
+TEST_CASE("CLAP_SEND with the gate open enqueues the whole burst exactly once") {
+  reset_all();
+  JbUdp::RpcArgs::ArgClapSend a{};
+  a.count = 41;                               // the worst-case slate transaction
+  for (uint8_t i = 0; i < 41; ++i) { a.can_id[i] = 0x7E8u; a.len[i] = 8; }
+  a.can_id[40] = 0x7E9u;                      // ...with the commit last
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::OK);
+  CHECK(g_clap_bursts == 1);
+  CHECK(g_clap_frames == 41);
+  // Nothing is sent synchronously: the drain is paced one frame per tick and runs
+  // on task_time_sync, long after this RPC has returned.
+  CHECK(g_cone_sent == 0);
+}
+
+TEST_CASE("CLAP_SEND arg validation happens BEFORE the ring is touched") {
+  reset_all();
+  JbUdp::RpcArgs::ArgClapSend a{};
+
+  a.count = 0;                                // an empty burst is not a transaction
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_clap_bursts == 0);
+
+  reset_all();
+  a.count = (uint8_t)(JbUdp::CLAP_MAX_FRAMES + 1);   // more slots than the struct has
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_clap_bursts == 0);
+
+  reset_all();
+  // DLC bound: len is copied into CAN_message_t::len and > 8 is not a legal
+  // classic-CAN frame.  This is framing/memory safety — the clapboard's stricter
+  // "must be exactly 8" rule is deliberately NOT enforced in firmware, so DLC 8 is
+  // accepted here and so is a short frame; only an over-long one is refused.
+  a.count = 2; a.can_id[0] = 0x7E8u; a.len[0] = 8; a.can_id[1] = 0x7E8u; a.len[1] = 9;
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_clap_bursts == 0);
+}
+
+TEST_CASE("a malformed CLAP_SEND reports ERR_BAD_ARGS even with the bus down") {
+  // ORDER MATTERS, and only a closed gate can prove it: with the gate checked
+  // first, every case below would answer ERR_BUS_DOWN and send an operator
+  // hunting a wiring fault for a caller-side coding error.  Same ordering as
+  // BB_THROW (range-check, then the presence gate).
+  reset_all();
+  g_cone_partner = false;
+  JbUdp::RpcArgs::ArgClapSend a{};
+
+  a.count = 0;
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_BAD_ARGS);
+
+  a.count = (uint8_t)(JbUdp::CLAP_MAX_FRAMES + 1);
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_BAD_ARGS);
+
+  a.count = 1; a.can_id[0] = 0x7E8u; a.len[0] = 9;
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_BAD_ARGS);
+
+  // ...and a WELL-FORMED request on the same down bus still reports the bus.
+  a.len[0] = 8;
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_BUS_DOWN);
+  CHECK(g_clap_bursts == 0);
+}
+
+TEST_CASE("CLAP_SEND with a short arg blob → ERR_BAD_ARGS (take() bound)") {
+  reset_all();
+  uint8_t result[64]; uint16_t res_len = 0;
+  uint8_t truncated[16] = {0};
+  CHECK(Rpc::dispatch(RpcMethod::CLAP_SEND, truncated, sizeof(truncated), result, res_len)
+        == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_clap_bursts == 0);
+}
+
+TEST_CASE("a full ring surfaces as ERR_REJECTED, not ERR_BAD_ARGS") {
+  // The request was well-formed; the bridge is simply still draining an earlier
+  // transaction.  Enqueue is all-or-nothing, so nothing reached the wire — which
+  // is strictly better than a fragment the clapboard would answer CRC_MISMATCH to.
+  reset_all();
+  g_clap_enqueue_ok = false;
+  JbUdp::RpcArgs::ArgClapSend a{};
+  a.count = 5;
+  for (uint8_t i = 0; i < 5; ++i) { a.can_id[i] = 0x7E8u; a.len[i] = 8; }
+  CHECK(call(RpcMethod::CLAP_SEND, a) == RpcStatus::ERR_REJECTED);
+  CHECK(g_clap_bursts == 1);                  // offered...
+  CHECK(g_cone_sent == 0);                    // ...and refused whole
 }

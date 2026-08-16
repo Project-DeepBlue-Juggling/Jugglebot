@@ -66,6 +66,7 @@ using JbUdp::RpcArgs::ResultTimeOfDay;
 using JbUdp::RpcArgs::ArgBbThrow;
 using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay)
 using JbUdp::RpcArgs::ArgHandTraj;     // HAND_TRAJ_CMD (hand traj + smooth-move)
+using JbUdp::RpcArgs::ArgClapSend;     // CLAP_SEND (electronic clapboard frame burst)
 
 using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all axes (CLEAR_ERRORS/REBOOT)
 

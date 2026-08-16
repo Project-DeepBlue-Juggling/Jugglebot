@@ -45,14 +45,16 @@
 
 namespace CanBridge {
 
-// Emit the 2 Hz CLAP_LINK beacon. Call every tick from task_time_sync (100 Hz);
-// the cadence is enforced here, not by the caller. `link_state` is a
+// Emit the 2 Hz CLAP_LINK beacon AND drain one queued downlink frame (see the
+// clap_tx section below). Call every tick from task_time_sync (100 Hz); both
+// cadences are enforced here, not by the caller. `link_state` is a
 // JbUdp::LinkState value — pass `link_state()` straight through.
 //
-// The send is presence-gated inside can_cone_send() and its result is DISCARDED,
-// deliberately, exactly as broadcast_0x7dd() discards its three: one bus being
-// absent must never block anything else, and there is nothing useful to do with
-// the refusal here (the clapboard's own 3 s staleness rule is the recovery path).
+// The beacon send is presence-gated inside can_cone_send() and its result is
+// DISCARDED, deliberately, exactly as broadcast_0x7dd() discards its three: one
+// bus being absent must never block anything else, and there is nothing useful to
+// do with the refusal here (the clapboard's own 3 s staleness rule is the
+// recovery path).
 void clap_link_step(uint8_t link_state);
 
 // Byte 0 of the CLAP_LINK payload for a given LinkState: 1 = ROS2 UP, 0 = DOWN.
@@ -62,9 +64,64 @@ void clap_link_step(uint8_t link_state);
 // safe default, so an ambiguous state must never render as UP.
 uint8_t clap_link_state_byte(uint8_t link_state);
 
-// Zero the emitter cadence. The firmware never needs this — the file statics are
-// zero at boot — but the native driver calls it between TEST_CASEs so file-scope
-// state cannot leak across cases (the fake_reset discipline).
+// ── clap_tx: the downlink burst queue (RPC CLAP_SEND → cone bus) ─────────────
+//  One CLAP_SEND request carries a WHOLE slate transaction (up to
+//  CLAP_MAX_FRAMES frames). It is enqueued here and drained ONE FRAME PER TICK,
+//  never burst.
+//
+//  WHY PACED. The cone bus's analog drive path is known-degraded (load-dependent
+//  fault, logbook 2026-07-31) and every existing producer on every bus already
+//  sends one frame per tick by convention. 41 frames — the worst-case transaction
+//  — is 410 ms at 100 Hz, far inside the ~8 s action budget the panel's own
+//  1.5-3.5 s e-paper refresh dominates anyway. The divisor is a NAMED CONSTANT so
+//  the owner's pre-registered fallback (if the Phase 5 soak shows any rise in
+//  cone-bus bit0_cnt/bit1_cnt/ack_cnt during slate pushes over the idle baseline,
+//  halve the rate) is a one-line change rather than an investigation.
+//
+//  WHY FIFO, ONE QUEUE. Chunks may arrive in any order, but CLAP_COMMIT must
+//  arrive AFTER its chunks or the transaction is INCOMPLETE. One RPC carrying the
+//  whole burst, drained FIFO, guarantees that by construction provided the host
+//  puts the commit last — no ordering logic in the firmware at all.
+//
+//  WHY ALL-OR-NOTHING. A partially-enqueued transaction is worse than a refused
+//  one: the clapboard would reassemble a fragment and answer CRC_MISMATCH or
+//  INCOMPLETE, which reads as a panel fault. ERR_REJECTED with nothing on the
+//  wire is unambiguous.
+
+// Enqueue a whole burst or nothing. `ids`, `lens` and `data8` are parallel
+// arrays of `count` entries (data8 is count*8 bytes, slot-major) — the
+// structure-of-arrays layout of JbUdp::RpcArgs::ArgClapSend, passed as plain
+// pointers so this TU stays free of RPC concerns. Returns false (and enqueues
+// NOTHING) if count is 0, exceeds the ring, any len > 8, or the ring cannot hold
+// the whole burst. The caller checks the TX gate; this function does not.
+bool clap_tx_enqueue_burst(const uint32_t* ids, const uint8_t* lens,
+                           const uint8_t* data8, uint8_t count);
+
+// Cumulative-since-boot census of every frame the host handed over, uplinked as
+// CLAP_DIAG (0x93) at 1 Hz. queued == sent + gated + still-in-ring; dropped
+// counts frames that never got in. See the ClapDiag summary in
+// config/generate_udp_protocol.py for why a mid-drain failure cannot be an RPC
+// error and therefore needs its own frame.
+//
+// Each field has exactly ONE writer (queued/dropped/ring_hwm on the producer
+// task, sent/gated on the consumer task) and is a single word, so no value is
+// ever torn — but the five are read WITHOUT a mask, so that accounting identity
+// can be off by at most one frame if a drain lands mid-read. It is a 1 Hz
+// cumulative diagnostic read as a trend; masking five word loads against the
+// producer would buy a consistency nobody needs.
+struct ClapTxStats {
+  uint32_t queued;    // frames accepted into the ring
+  uint32_t sent;      // frames handed to can_cone_send with the gate open
+  uint32_t gated;     // frames discarded at drain because the gate was closed
+  uint32_t dropped;   // frames refused at enqueue (burst would not fit)
+  uint8_t  ring_hwm;  // peak ring occupancy
+};
+ClapTxStats clap_tx_stats();
+
+// Zero the emitter cadence, the clap_tx ring and its counters. The firmware never
+// needs this — the file statics are zero at boot — but the native driver calls it
+// between TEST_CASEs so file-scope state cannot leak across cases (the fake_reset
+// discipline).
 void clap_link_reset();
 
 }  // namespace CanBridge

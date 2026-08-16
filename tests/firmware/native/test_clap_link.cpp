@@ -193,3 +193,176 @@ TEST_CASE("a refused send does not stall or re-burst the cadence") {
   run_ticks(100, JbUdp::LinkState::UP);
   CHECK(g_cone_n == 4);             // no catch-up burst
 }
+
+// ── clap_tx: the paced downlink burst queue ──────────────────────────────────
+//  The REAL ring, unlike test_rpc_dispatch's routing stub.  What matters:
+//    * ALL-OR-NOTHING enqueue — a partially-queued transaction reaches the
+//      clapboard as a fragment and comes back CRC_MISMATCH/INCOMPLETE, which
+//      reads as a panel fault rather than as a bridge refusal;
+//    * FIFO order — chunks may arrive in any order but CLAP_COMMIT must arrive
+//      AFTER its chunks, and one FIFO-drained burst is what guarantees that with
+//      no ordering logic in the firmware;
+//    * ONE FRAME PER TICK, never a burst, on a bus whose analog drive path is
+//      known-degraded;
+//    * a closed gate DISCARDS rather than holds — holding would dribble a stale
+//      half-transaction out later, interleaved with a newer one, and the
+//      clapboard's CRC would then reject BOTH.
+
+// cone_partner_present() is the TX gate clap_tx_drain consults.  Stubbed here
+// (can_buses.cpp compiles in no native binary) so a test can close it mid-drain.
+namespace CanBridge { static bool g_cone_partner = true; }
+namespace CanBridge { bool cone_partner_present() { return g_cone_partner; } }
+
+// Build parallel SoA arrays for a burst of `n` frames, mirroring ArgClapSend's
+// layout: every frame is a CLAP_FIELD chunk except the LAST, which is the
+// CLAP_COMMIT — the shape of a real slate transaction, and the reason the drain
+// must be FIFO. The order witness is payload byte 0 (= the slot index), NOT the
+// arbitration id: ids must never stray into 0x7EA, which is the beacon's own id
+// and would make a payload frame indistinguishable from a CLAP_LINK on the wire.
+static void make_burst(int n, uint32_t* ids, uint8_t* lens, uint8_t* data8) {
+  for (int i = 0; i < n; ++i) {
+    ids[i] = (i == n - 1) ? ClapboardCanId::COMMIT : ClapboardCanId::FIELD;
+    lens[i] = 8;
+    for (int b = 0; b < 8; ++b) data8[i * 8 + b] = (uint8_t)(b == 0 ? i : 0);
+  }
+}
+
+static void reset_tx() {
+  reset_all();
+  CanBridge::g_cone_partner = true;
+}
+
+TEST_CASE("a burst drains FIFO, exactly one frame per 100 Hz tick") {
+  reset_tx();
+  uint32_t ids[8]; uint8_t lens[8], data8[64];
+  make_burst(8, ids, lens, data8);
+  REQUIRE(clap_tx_enqueue_burst(ids, lens, data8, 8));
+  CHECK(clap_tx_stats().queued == 8);
+
+  // The first step also emits the beacon, so count only the 0x7EA-excluded frames.
+  int drained = 0;
+  for (int tick = 0; tick < 8; ++tick) {
+    const int before = g_cone_n;
+    clap_link_step(JbUdp::LinkState::UP);
+    fake_advance(10000u);
+    for (int i = before; i < g_cone_n; ++i) {
+      if (g_cone[i].id == ClapboardCanId::LINK) continue;   // the beacon
+      // FIFO: the nth drained frame is the nth enqueued one. This is what
+      // guarantees CLAP_COMMIT lands AFTER its chunks with no ordering logic in
+      // the firmware — so the commit id must appear last and nowhere else.
+      CHECK(g_cone[i].buf[0] == (uint8_t)drained);
+      CHECK(g_cone[i].id == (drained == 7 ? ClapboardCanId::COMMIT
+                                          : ClapboardCanId::FIELD));
+      CHECK(g_cone[i].len == 8);
+      ++drained;
+    }
+    CHECK(drained == tick + 1);            // never more than one per tick
+  }
+  CHECK(clap_tx_stats().sent == 8);
+  CHECK(clap_tx_stats().gated == 0);
+}
+
+TEST_CASE("enqueue is all-or-nothing when the ring cannot hold the whole burst") {
+  reset_tx();
+  // Fill the ring to within 3 slots of full without draining.
+  uint32_t ids[48]; uint8_t lens[48], data8[384];
+  make_burst(48, ids, lens, data8);
+  REQUIRE(clap_tx_enqueue_burst(ids, lens, data8, 48));
+  REQUIRE(clap_tx_enqueue_burst(ids, lens, data8, 13));   // 61 of 64 used
+  CHECK(clap_tx_stats().queued == 61);
+  CHECK(clap_tx_stats().dropped == 0);
+
+  // A 4-frame burst does not fit: NOTHING is enqueued, and the refusal is counted
+  // as the whole transaction rather than as the one frame that overflowed.
+  CHECK_FALSE(clap_tx_enqueue_burst(ids, lens, data8, 4));
+  CHECK(clap_tx_stats().queued == 61);
+  CHECK(clap_tx_stats().dropped == 4);
+
+  // A 3-frame burst still fits exactly.
+  CHECK(clap_tx_enqueue_burst(ids, lens, data8, 3));
+  CHECK(clap_tx_stats().queued == 64);
+  CHECK(clap_tx_stats().ring_hwm == 64);
+}
+
+TEST_CASE("enqueue refuses a malformed burst without touching the ring") {
+  reset_tx();
+  uint32_t ids[8]; uint8_t lens[8], data8[64];
+  make_burst(8, ids, lens, data8);
+
+  CHECK_FALSE(clap_tx_enqueue_burst(ids, lens, data8, 0));           // empty
+  CHECK_FALSE(clap_tx_enqueue_burst(ids, lens, data8,
+                                    (uint8_t)(JbUdp::CLAP_MAX_FRAMES + 1)));
+  CHECK_FALSE(clap_tx_enqueue_burst(nullptr, lens, data8, 4));       // null array
+  lens[2] = 9;                                                       // illegal DLC
+  CHECK_FALSE(clap_tx_enqueue_burst(ids, lens, data8, 8));
+  CHECK(clap_tx_stats().queued == 0);
+
+  // A SHORT frame is accepted: DLC 8 is the clapboard's rule and is enforced
+  // host-side where frames are built, deliberately not here — protocol knowledge
+  // in the bridge would make a clapboard protocol change need a Teensy reflash.
+  lens[2] = 3;
+  CHECK(clap_tx_enqueue_burst(ids, lens, data8, 8));
+  CHECK(clap_tx_stats().queued == 8);
+}
+
+TEST_CASE("a closed gate DISCARDS queued frames rather than holding them") {
+  reset_tx();
+  uint32_t ids[6]; uint8_t lens[6], data8[48];
+  make_burst(6, ids, lens, data8);
+  REQUIRE(clap_tx_enqueue_burst(ids, lens, data8, 6));
+
+  // Drain two frames with the gate open...
+  for (int i = 0; i < 2; ++i) { clap_link_step(JbUdp::LinkState::UP); fake_advance(10000u); }
+  CHECK(clap_tx_stats().sent == 2);
+
+  // ...then the partner goes away mid-drain.  The RPC returned long ago, so this
+  // CANNOT be an RPC error; it shows up here and, on the panel, as the
+  // clapboard's own CRC_MISMATCH/INCOMPLETE ack.
+  CanBridge::g_cone_partner = false;
+  const int wire_before = g_cone_n;
+  for (int i = 0; i < 4; ++i) { clap_link_step(JbUdp::LinkState::UP); fake_advance(10000u); }
+  CHECK(clap_tx_stats().sent == 2);          // no further sends
+  CHECK(clap_tx_stats().gated == 4);         // the remainder discarded, not held
+
+  // The ring is now EMPTY: a stale half-transaction must never dribble out later
+  // interleaved with a newer one.
+  CanBridge::g_cone_partner = true;
+  for (int i = 0; i < 10; ++i) { clap_link_step(JbUdp::LinkState::UP); fake_advance(10000u); }
+  for (int i = wire_before; i < g_cone_n; ++i) {
+    CHECK(g_cone[i].id == ClapboardCanId::LINK);   // beacons only
+  }
+  CHECK(clap_tx_stats().sent == 2);
+}
+
+TEST_CASE("the census partitions every frame the host handed over") {
+  reset_tx();
+  uint32_t ids[10]; uint8_t lens[10], data8[80];
+  make_burst(10, ids, lens, data8);
+  REQUIRE(clap_tx_enqueue_burst(ids, lens, data8, 10));
+  for (int i = 0; i < 4; ++i) { clap_link_step(JbUdp::LinkState::UP); fake_advance(10000u); }
+
+  const ClapTxStats s = clap_tx_stats();
+  // queued == sent + gated + still-in-ring, which is what makes CLAP_DIAG
+  // readable as an account rather than as four unrelated numbers.
+  CHECK(s.queued == 10);
+  CHECK(s.sent == 4);
+  CHECK(s.gated == 0);
+  CHECK(s.dropped == 0);
+  CHECK(s.ring_hwm == 10);
+}
+
+TEST_CASE("the beacon keeps its 2 Hz cadence while a burst drains") {
+  // The two producers share one bus and one task; neither may starve the other.
+  reset_tx();
+  uint32_t ids[48]; uint8_t lens[48], data8[384];
+  make_burst(48, ids, lens, data8);
+  REQUIRE(clap_tx_enqueue_burst(ids, lens, data8, 48));
+
+  run_ticks(100, JbUdp::LinkState::UP);      // 1.00 s
+  int beacons = 0, payloads = 0;
+  for (int i = 0; i < g_cone_n; ++i) {
+    if (g_cone[i].id == ClapboardCanId::LINK) ++beacons; else ++payloads;
+  }
+  CHECK(beacons == 2);                       // unchanged by the downlink traffic
+  CHECK(payloads == 48);                     // 48 frames in 48 ticks, one each
+}

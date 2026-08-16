@@ -52,6 +52,7 @@ from udp_protocol import (  # noqa: E402, F401
     LINK_LOST_MISSES,
     HEARTBEAT_TORQUE_CLAMP_SHIFT,  # HeartbeatT2J.flags bit offset of TORQUE_CLAMP_MASK (bits 8-13)
     HEARTBEAT_CONE_HEALTH_SHIFT,  # HeartbeatT2J.flags bit offset of CONE_HEALTH_MASK (bits 4-5)
+    CLAP_MAX_FRAMES,  # frame slots in one CLAP_SEND request (ArgClapSend array length)
     # Enums
     MsgType,
     RpcMethod,
@@ -89,6 +90,7 @@ from udp_protocol import (  # noqa: E402, F401
     ClockDiag,
     CacheDiag,
     RingDiag,
+    ClapDiag,
     RpcRequest,
     RpcResponse,
     # Sizes
@@ -111,6 +113,7 @@ from udp_protocol import (  # noqa: E402, F401
     CLOCK_DIAG_SIZE,
     CACHE_DIAG_SIZE,
     RING_DIAG_SIZE,
+    CLAP_DIAG_SIZE,
     RPC_REQUEST_SIZE,
     RPC_RESPONSE_SIZE,
     # RPC method argument layouts (hoisted into the generator)
@@ -128,6 +131,7 @@ from udp_protocol import (  # noqa: E402, F401
     ArgBbThrow,
     ArgRobotState,
     ArgHandTraj,  # HAND_TRAJ_CMD — 8-byte 0x6D0 payload
+    ArgClapSend,  # CLAP_SEND — a whole clapboard slate transaction, structure-of-arrays
     ResultAxisVersions,  # GET_AXIS_VERSIONS result blob
     # Hand axis-6 allow-table
     HAND_AXIS6_PERMITTED,

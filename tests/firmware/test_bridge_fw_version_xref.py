@@ -133,6 +133,17 @@ def test_the_bump_history_records_what_this_version_carries():
     # edit drops this phrase, the operator loses the one written warning that
     # BRIDGE_FW_CHECK — not link health — is the check that matters here.
     assert 'NO WIRE CHANGE' in history, history
+    # FW 15 — the electronic-clapboard surface, landed as one version and one
+    # flash.  The substance an operator needs is which of the three capabilities
+    # a board has: honest cone_health (CLAPBOARD_PRESENT), the CLAP_LINK beacon
+    # that moves the panel out of screensaver, and the CLAP_SEND downlink with
+    # its CLAP_DIAG census.  A board on 14 has NONE of them and still claims a
+    # catching cone that is not attached — a wrong answer, not a missing one,
+    # which is exactly why this skew must be loud.
+    assert '14→15' in history or '14->15' in history, history
+    assert 'CLAP_LINK' in history, history
+    assert 'CLAP_SEND' in history, history
+    assert 'CLAPBOARD_PRESENT' in history, history
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

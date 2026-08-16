@@ -17,6 +17,7 @@
 #include "platform_relay.h"
 #include "version_check.h"
 #include "hand_ops.h"
+#include "clap_link.h"
 
 namespace CanBridge {
 namespace Rpc {
@@ -30,6 +31,21 @@ static constexpr uint16_t RESULT_BUF_CAP = 64;
 // silently truncate in version_fill_blob / dispatch instead of being caught here.
 static_assert(RESULT_BUF_CAP >= sizeof(JbUdp::RpcArgs::ResultAxisVersions),
               "RESULT_BUF_CAP too small for the largest RPC result blob");
+
+// on_request → dispatch() STACK BUDGET, pinned at compile time.
+// on_request holds `out[MAX_PAYLOAD]` (1024 B) and `result[RESULT_BUF_CAP]` (64 B)
+// while dispatch() copies the method's arg struct into a local via take(). That
+// local was ≤ 16 B for every method until ArgClapSend (625 B) — the whole point of
+// a fixed-size arg that one RPC can carry a whole slate transaction. The chain
+// runs on task_net, whose stack is STACK_UDP_RX = 4096 B, so ~1713 B of frames is
+// comfortable but no longer negligible; the RX buffer itself is a file static and
+// is NOT on this stack. 2048 B leaves a >2x margin against the task stack and
+// fails the BUILD — not the bench — if a future arg struct or a MAX_PAYLOAD raise
+// erodes it.
+static_assert(JbUdp::MAX_PAYLOAD + RESULT_BUF_CAP
+                  + sizeof(JbUdp::RpcArgs::ArgClapSend) <= 2048,
+              "on_request/dispatch stack budget exceeded — raise STACK_UDP_RX "
+              "deliberately, or stop copying the largest arg struct onto the stack");
 
 // ── Envelope ──────────────────────────────────────────────────────────────────
 uint16_t pack_request(uint16_t method, uint16_t req_id,
@@ -360,6 +376,47 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return send_bb_frame(BallButler::encode_reset());
     case RpcMethod::BB_CALIBRATE_LOC:
       return send_bb_frame(BallButler::encode_calibrate_loc());
+
+    // ── Electronic clapboard (cone bus) — mechanical frame relay ─────────
+    // One request carries a WHOLE slate transaction; the bridge enqueues it and
+    // drains it onto the cone bus ONE FRAME PER TICK (clap_link.cpp). No
+    // reassembly, no CRC, no field-model awareness — bytes in, frames out — so a
+    // clapboard protocol change never requires a Teensy reflash. FIFO drain of a
+    // single burst is also what guarantees CLAP_COMMIT lands after its chunks,
+    // by construction, with no ordering logic here.
+    //
+    // THE GATE IS CHECKED ONCE, AT ENQUEUE, AND NEVER BYPASSED. A closed gate
+    // returns ERR_BUS_DOWN having enqueued nothing. Root cause for both halves of
+    // that rule: an un-ACKed TX on a partner-less bus retransmits FOREVER, pinning
+    // TEC at the error-passive threshold and escalating to bus-off across supply
+    // ramps (can_buses.cpp, the 2026-07-05 marginal-CAN3 finding) — on a bus whose
+    // analog drive path is already known-degraded. So the firmware also never
+    // retries: a frame lost mid-drain comes back as the clapboard's own
+    // CRC_MISMATCH/INCOMPLETE ack, and CLAP_DIAG (0x93) says whether the bridge or
+    // the panel lost it.
+    //
+    // A MID-DRAIN gate closure cannot be surfaced here — this RPC has already
+    // returned. That is by design and mirrors BB_THROW: the RPC acks the DISPATCH;
+    // the terminal outcome arrives asynchronously as CLAP_ACK (0x7EB).
+    case RpcMethod::CLAP_SEND: {
+      ArgClapSend a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      // VALIDATE BEFORE GATING, the BB_THROW ordering. A malformed request is the
+      // caller's bug whatever the bus is doing, and answering ERR_BUS_DOWN to it
+      // would send an operator hunting a wiring fault for a coding error. The
+      // count bound must also come before the len loop, or that loop reads past
+      // a.len[]. clap_tx_enqueue_burst re-checks all three — those are the
+      // authoritative safety bound; these exist for error-code fidelity.
+      if (a.count == 0 || a.count > CLAP_MAX_FRAMES) return RpcStatus::ERR_BAD_ARGS;
+      for (uint8_t i = 0; i < a.count; ++i) {
+        if (a.len[i] > 8) return RpcStatus::ERR_BAD_ARGS;
+      }
+      if (!cone_partner_present()) return RpcStatus::ERR_BUS_DOWN;
+      // ERR_REJECTED (not ERR_BAD_ARGS) when the ring cannot hold the whole burst:
+      // the request was well-formed, the bridge is simply still draining an earlier
+      // transaction. Enqueue is all-or-nothing, so nothing reached the wire.
+      return clap_tx_enqueue_burst(a.can_id, a.len, a.data, a.count)
+                 ? RpcStatus::OK : RpcStatus::ERR_REJECTED;
+    }
 
     case RpcMethod::TIME_OF_DAY_QUERY:
       // The Teensy is the CLIENT for this method; it should never receive it as

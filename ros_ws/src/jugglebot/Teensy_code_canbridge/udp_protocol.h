@@ -29,6 +29,7 @@ constexpr uint8_t HEARTBEAT_HZ = 10u;  // Both-direction liveness rate
 constexpr uint8_t LINK_LOST_MISSES = 5u;  // Missed heartbeats before declaring link lost
 constexpr uint8_t HEARTBEAT_TORQUE_CLAMP_SHIFT = 8u;  // Bit offset of TORQUE_CLAMP_MASK inside HeartbeatT2J.flags (bits 8-13)
 constexpr uint8_t HEARTBEAT_CONE_HEALTH_SHIFT = 4u;  // Bit offset of CONE_HEALTH_MASK inside HeartbeatT2J.flags (bits 4-5)
+constexpr uint8_t CLAP_MAX_FRAMES = 48u;  // Frame slots in one CLAP_SEND request (worst-case slate transaction is 41)
 
 // ── Enums ──────────────────────────────────────────────────────────────
 namespace MsgType {
@@ -53,6 +54,7 @@ namespace MsgType {
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
   constexpr uint8_t CACHE_DIAG = 145u;  // 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)
   constexpr uint8_t RING_DIAG = 146u;  // 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)
+  constexpr uint8_t CLAP_DIAG = 147u;  // 1 Hz electronic-clapboard downlink TX census (queued/sent/gated/dropped + ring high-water) (STREAM, T→J)
 }
 namespace RpcMethod {
   constexpr uint16_t NOP = 0x0000u;  // No-op (link test)
@@ -80,6 +82,7 @@ namespace RpcMethod {
   constexpr uint16_t STATE_READ = 0x0052u;  // Relay: read Platform-Teensy RobotState (is_homed/level/pose)
   constexpr uint16_t STATE_WRITE = 0x0053u;  // Relay: write Platform-Teensy RobotState (read-modify-write via cache)
   constexpr uint16_t HAND_TRAJ_CMD = 0x0054u;  // Hand traj + smooth-move (byte-0 discriminator → 0x6D0)
+  constexpr uint16_t CLAP_SEND = 0x0060u;  // Electronic clapboard: enqueue N pre-built frames onto the cone bus (paced one per tick)
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -430,6 +433,17 @@ struct RingDiagPayload {
 };
 static_assert(sizeof(RingDiagPayload) == 103, "RingDiagPayload size drift");
 
+// ClapDiag: ELECTRONIC-CLAPBOARD DOWNLINK TX CENSUS, 1 Hz, cumulative since boot. WHY IT EXISTS: a CLAP_SEND RPC acks the DISPATCH, not the outcome — one request enqueues a whole slate transaction (up to CLAP_MAX_FRAMES frames) which the bridge then drains onto the cone bus ONE FRAME PER TICK, long after the RPC has returned. So a mid-drain failure CANNOT be surfaced as an RPC error. That is by design and mirrors BB_THROW: the terminal outcome arrives asynchronously as the clapboard's own CLAP_ACK (0x7EB). But a CLAP_ACK saying CRC_MISMATCH or INCOMPLETE cannot say WHY frames went missing, and this frame is the firmware's half of that answer — without it, 'the bridge dropped them' and 'the panel mis-reassembled them' are indistinguishable from the Jetson. Unconditional at 1 Hz like its four siblings (CanErrors / BridgeTxDiag / CacheDiag / RingDiag): the consumer differences two captures, so a gap must never be ambiguous with health. The four counters partition every frame the host handed over: queued == sent + gated + (frames still in the ring), and dropped counts the ones that never got in.
+struct ClapDiagPayload {
+  uint32_t queued;  // Frames ACCEPTED into the clap_tx ring since boot. The denominator: every other counter here is a fate of a frame counted once in this one
+  uint32_t sent;  // Frames handed to can_cone_send at drain time with the TX presence gate OPEN. A false return from that call with the gate open is a DEFERRAL, not a loss — the frame sits in the 64-slot software txBuffer and the TX-complete ISR sends it ~0.1-1 ms later — so it is counted here. Genuine TX-path pressure is already reported per-bus by BridgeTxDiag's tx_deferred/tx_q_hwm
+  uint32_t gated;  // Frames DISCARDED at drain because the bus-partner TX presence gate was closed (no frame seen on the cone bus within BUS_PARTNER_STALENESS_US). Discarded rather than held: holding a half-drained transaction would dribble it out later interleaved with a newer one, and the clapboard's CRC would reject BOTH. Non-zero here explains a CRC_MISMATCH/INCOMPLETE ack that would otherwise look like a panel fault
+  uint32_t dropped;  // Frames REFUSED at enqueue because the ring could not hold the whole burst. Enqueue is all-or-nothing, so this rises in whole transactions and means the host issued a second CLAP_SEND while the first was still draining — the RPC returned ERR_REJECTED and nothing was put on the wire
+  uint8_t ring_hwm;  // Peak clap_tx ring occupancy since boot (cap CLAP_TX_RING_CAP). A value at the cap means a burst exactly filled it; approaching the cap across a session means the drain divisor is too slow for the slate cadence in use
+  uint8_t pad[3];  // Alignment pad (zero)
+};
+static_assert(sizeof(ClapDiagPayload) == 20, "ClapDiagPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -472,6 +486,7 @@ constexpr uint16_t BRIDGE_IDENTITY_SIZE = 3u;
 constexpr uint16_t CLOCK_DIAG_SIZE = 49u;
 constexpr uint16_t CACHE_DIAG_SIZE = 129u;
 constexpr uint16_t RING_DIAG_SIZE = 103u;
+constexpr uint16_t CLAP_DIAG_SIZE = 20u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 
@@ -570,6 +585,14 @@ struct ArgHandTraj {
   uint8_t payload[8];  // Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator)
 };
 static_assert(sizeof(ArgHandTraj) == 8, "ArgHandTraj size drift");
+// ArgClapSend (CLAP_SEND)
+struct ArgClapSend {
+  uint8_t count;  // Valid frame slots, 1..CLAP_MAX_FRAMES (slots past this are ignored)
+  uint32_t can_id[48];  // Per-slot CAN arbitration id (clapboard block 0x7E8-0x7EF)
+  uint8_t len[48];  // Per-slot DLC, 0..8. The clapboard REQUIRES 8 on every frame and silently drops any other length; that rule is enforced host-side where the frames are built, not here
+  uint8_t data[384];  // Per-slot payload, 8 B per slot, slot-major
+};
+static_assert(sizeof(ArgClapSend) == 625, "ArgClapSend size drift");
 #pragma pack(pop)
 constexpr uint16_t ARG_AXIS_STATE_SIZE = 5u;
 constexpr uint16_t ARG_CONTROLLER_MODE_SIZE = 9u;
@@ -585,6 +608,7 @@ constexpr uint16_t RESULT_AXIS_VERSIONS_SIZE = 57u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 constexpr uint16_t ARG_HAND_TRAJ_SIZE = 8u;
+constexpr uint16_t ARG_CLAP_SEND_SIZE = 625u;
 }  // namespace RpcArgs
 
 // ── Hand axis-6 allow-table ──────────────────────────────────────────────

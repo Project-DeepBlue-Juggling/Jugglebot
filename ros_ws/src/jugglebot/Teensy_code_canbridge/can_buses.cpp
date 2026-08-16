@@ -1098,6 +1098,13 @@ bool can_cone_send(const ODrive::CanFrame& f) {
   return ok;
 }
 
+// Look-before-you-leap view of the cone TX gate (contract in can_buses.h). Reads
+// the SHARED, ID-agnostic stamp — the same one partner_recent() reads — so it
+// answers "is anyone here to ACK", never "is the device I expected here".
+bool cone_partner_present() {
+  return bus_partner_present(atomic_read_u64(&s_cone_last_rx_us), micros64());
+}
+
 bool can_jugglebot_send(const ODrive::CanFrame& f) {
   if (!partner_recent(&s_jugglebot_last_rx_us, s_jugglebot_rxh)) return false;
   const uint32_t pm = __get_PRIMASK(); __disable_irq();

@@ -14,6 +14,7 @@
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 #include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
 #include "hand_ops.h"     // hand_ops_counters() — per-stage HAND_TRAJ_CMD exits uplinked as BRIDGE_TX_DIAG
+#include "clap_link.h"    // clap_tx_stats() — the clapboard downlink census uplinked as CLAP_DIAG
 
 namespace CanBridge {
 
@@ -614,6 +615,30 @@ void bridge_identity_uplink_step() {
   p.fw_version       = FW_VERSION;
   p.protocol_version = JbUdp::PROTOCOL_VERSION;
   udp_send_stream(JbUdp::MsgType::BRIDGE_IDENTITY, (const uint8_t*)&p, sizeof(p));
+}
+
+// ── Clapboard downlink census uplink — contract in telemetry.h ───────────────
+static constexpr uint64_t CLAP_DIAG_PERIOD_US = 1000000u;   // 1 Hz
+static uint64_t s_clap_diag_sent_us = 0;
+
+void clap_diag_uplink_step() {
+  const uint64_t now = micros64();   // interval clock: emission pacing
+  if (s_clap_diag_sent_us != 0 &&
+      (now - s_clap_diag_sent_us) < CLAP_DIAG_PERIOD_US) return;
+  s_clap_diag_sent_us = now;
+
+  const ClapTxStats t = clap_tx_stats();
+  JbUdp::ClapDiagPayload p{};
+  p.queued   = t.queued;
+  p.sent     = t.sent;
+  p.gated    = t.gated;
+  p.dropped  = t.dropped;
+  p.ring_hwm = t.ring_hwm;
+  udp_send_stream(JbUdp::MsgType::CLAP_DIAG, (const uint8_t*)&p, sizeof(p));
+  // Send result deliberately ignored: the counters are CUMULATIVE, so a dropped
+  // frame costs one sample of resolution and never a lost event (the CacheDiag /
+  // RingDiag precedent — nothing here is a per-window difference computed on the
+  // Teensy).
 }
 
 void telemetry_step() {

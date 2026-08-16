@@ -59,6 +59,15 @@ NON_IDEMPOTENT_METHODS = frozenset({
     int(p.RpcMethod.REBOOT_ODRIVES),
     int(p.RpcMethod.BB_THROW),
     int(p.RpcMethod.HAND_TRAJ_CMD),
+    # CLAP_SEND enqueues a whole clapboard slate transaction into a ring the
+    # bridge then drains one frame per tick. Retrying after a lost RESPONSE would
+    # push a SECOND copy of every chunk into a transaction the clapboard is
+    # already reassembling — duplicate chunks under the same txn_id, answered as
+    # CRC_MISMATCH or a wrongly-painted slate. The RPC also cannot be retried
+    # "safely late": by the time a response is missed, the first burst may be
+    # half on the wire. Recovery is the clapboard's own CLAP_ACK (0x7EB), or a
+    # fresh transaction with a new txn_id — never an RPC re-dispatch.
+    int(p.RpcMethod.CLAP_SEND),
 })
 
 

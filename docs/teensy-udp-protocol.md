@@ -60,6 +60,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `LINK_LOST_MISSES` | 5 | Missed heartbeats before declaring link lost |
 | `HEARTBEAT_TORQUE_CLAMP_SHIFT` | 8 | Bit offset of TORQUE_CLAMP_MASK inside HeartbeatT2J.flags (bits 8-13) |
 | `HEARTBEAT_CONE_HEALTH_SHIFT` | 4 | Bit offset of CONE_HEALTH_MASK inside HeartbeatT2J.flags (bits 4-5) |
+| `CLAP_MAX_FRAMES` | 48 | Frame slots in one CLAP_SEND request (worst-case slate transaction is 41) |
 
 ## Enums
 
@@ -88,6 +89,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `RPC_RESPONSE` | 0x90 | RPC response (RPC port, T→J) |
 | `CACHE_DIAG` | 0x91 | 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J) |
 | `RING_DIAG` | 0x92 | 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J) |
+| `CLAP_DIAG` | 0x93 | 1 Hz electronic-clapboard downlink TX census (queued/sent/gated/dropped + ring high-water) (STREAM, T→J) |
 
 ### RpcMethod
 
@@ -118,6 +120,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `STATE_READ` | 0x0052 | Relay: read Platform-Teensy RobotState (is_homed/level/pose) |
 | `STATE_WRITE` | 0x0053 | Relay: write Platform-Teensy RobotState (read-modify-write via cache) |
 | `HAND_TRAJ_CMD` | 0x0054 | Hand traj + smooth-move (byte-0 discriminator → 0x6D0) |
+| `CLAP_SEND` | 0x0060 | Electronic clapboard: enqueue N pre-built frames onto the cone bus (paced one per tick) |
 
 ### RpcStatus
 
@@ -557,6 +560,21 @@ Payload **103 bytes**. Python struct fmt: `<QIIIIIIIiiIIIIIIIIHHHHHHHHHHHHHB`.
 | `sdo_rtt_count` | u16 | 1 | SDO round trips that COMPLETED during this window, nominally ~50 at the poller's 20 ms interval. READ THIS BEFORE THE THREE RTT FIELDS: 0 means no round trip closed — the poller is off, parked on the version gate, or every request timed out — and the three RTT fields are then 0 because there was nothing to measure, NOT because the path was instant. Also the denominator that makes sdo_rtt_min_us a floor rather than an anecdote. The poller's own health is deliberately NOT duplicated here: HAND_SENSOR (0x8B) already carries its validity and staleness at this same rate, and a second source of truth for one fact is how the two disagree |
 | `flags` | u8 | 1 | RingDiagFlags bitfield: LAG_SEEDED / LAG_RESEED_IN_WINDOW. Read this BEFORE lag_now_us and lag_hwm_us — both are 0 when unseeded, and a 0 lag must never be readable as a healthy measurement when it actually means no reference exists (the ClockDiag FREQ_VALID discipline) |
 
+### ClapDiag (`MsgType.CLAP_DIAG`, T2J, STREAM port)
+
+ELECTRONIC-CLAPBOARD DOWNLINK TX CENSUS, 1 Hz, cumulative since boot. WHY IT EXISTS: a CLAP_SEND RPC acks the DISPATCH, not the outcome — one request enqueues a whole slate transaction (up to CLAP_MAX_FRAMES frames) which the bridge then drains onto the cone bus ONE FRAME PER TICK, long after the RPC has returned. So a mid-drain failure CANNOT be surfaced as an RPC error. That is by design and mirrors BB_THROW: the terminal outcome arrives asynchronously as the clapboard's own CLAP_ACK (0x7EB). But a CLAP_ACK saying CRC_MISMATCH or INCOMPLETE cannot say WHY frames went missing, and this frame is the firmware's half of that answer — without it, 'the bridge dropped them' and 'the panel mis-reassembled them' are indistinguishable from the Jetson. Unconditional at 1 Hz like its four siblings (CanErrors / BridgeTxDiag / CacheDiag / RingDiag): the consumer differences two captures, so a gap must never be ambiguous with health. The four counters partition every frame the host handed over: queued == sent + gated + (frames still in the ring), and dropped counts the ones that never got in.
+
+Payload **20 bytes**. Python struct fmt: `<IIIIBBBB`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `queued` | u32 | 1 | Frames ACCEPTED into the clap_tx ring since boot. The denominator: every other counter here is a fate of a frame counted once in this one |
+| `sent` | u32 | 1 | Frames handed to can_cone_send at drain time with the TX presence gate OPEN. A false return from that call with the gate open is a DEFERRAL, not a loss — the frame sits in the 64-slot software txBuffer and the TX-complete ISR sends it ~0.1-1 ms later — so it is counted here. Genuine TX-path pressure is already reported per-bus by BridgeTxDiag's tx_deferred/tx_q_hwm |
+| `gated` | u32 | 1 | Frames DISCARDED at drain because the bus-partner TX presence gate was closed (no frame seen on the cone bus within BUS_PARTNER_STALENESS_US). Discarded rather than held: holding a half-drained transaction would dribble it out later interleaved with a newer one, and the clapboard's CRC would reject BOTH. Non-zero here explains a CRC_MISMATCH/INCOMPLETE ack that would otherwise look like a panel fault |
+| `dropped` | u32 | 1 | Frames REFUSED at enqueue because the ring could not hold the whole burst. Enqueue is all-or-nothing, so this rises in whole transactions and means the host issued a second CLAP_SEND while the first was still draining — the RPC returned ERR_REJECTED and nothing was put on the wire |
+| `ring_hwm` | u8 | 1 | Peak clap_tx ring occupancy since boot (cap CLAP_TX_RING_CAP). A value at the cap means a burst exactly filled it; approaching the cap across a session means the drain divisor is too slow for the slate cadence in use |
+| `pad` | u8 | 3 | Alignment pad (zero) |
+
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 
 Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
@@ -720,3 +738,14 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | Field | Type | Notes |
 |-------|------|-------|
 | `payload` | u8 | Exact 8-byte 0x6D0 PLATFORM_TRAJ_CMD payload (host-built; byte-0 discriminator) |
+
+### ArgClapSend (`CLAP_SEND`)
+
+**625 bytes**. Python struct fmt: `<BIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `count` | u8 | Valid frame slots, 1..CLAP_MAX_FRAMES (slots past this are ignored) |
+| `can_id` | u32 | Per-slot CAN arbitration id (clapboard block 0x7E8-0x7EF) |
+| `len` | u8 | Per-slot DLC, 0..8. The clapboard REQUIRES 8 on every frame and silently drops any other length; that rule is enforced host-side where the frames are built, not here |
+| `data` | u8 | Per-slot payload, 8 B per slot, slot-major |

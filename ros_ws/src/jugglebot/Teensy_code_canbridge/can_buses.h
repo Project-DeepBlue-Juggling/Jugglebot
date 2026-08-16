@@ -60,6 +60,17 @@ bool can_bb_send(const ODrive::CanFrame& f);         // CAN1 Ball Butler TX (tim
 bool can_cone_send(const ODrive::CanFrame& f);       // CAN2 cone TX (time-sync)
 bool can_jugglebot_send(const ODrive::CanFrame& f);  // CAN3 Jugglebot core TX (setpoints, RPC, fault cmds)
 
+// Is the cone bus's TX presence gate OPEN right now? Exactly the predicate
+// can_cone_send() applies internally (bus_partner_present on the SHARED,
+// ID-agnostic stamp), exposed so a caller dispatching MANY frames can refuse the
+// whole burst ONCE, up front, instead of discovering it frame by frame during a
+// paced drain — the CLAP_SEND enqueue path. Deliberately does NOT increment
+// tx_gated: that counter means "TX attempts the gate refused", and inflating it
+// from a look-before-you-leap check would corrupt the one witness that the gate
+// is doing its job. A pre-check can go stale before the drain reaches a frame;
+// can_cone_send re-checks at every send, so the gate is never bypassed.
+bool cone_partner_present();
+
 // "Never command a confirmed-dead bus." True iff CAN3 (the Jugglebot core bus
 // carrying the leg + hand ODrives AND the Platform-Teensy relay partner) is NOT
 // in a WARN/BUS_OFF state. Since 2026-07-29 those states come from

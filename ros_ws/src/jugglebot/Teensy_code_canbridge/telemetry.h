@@ -129,4 +129,23 @@ void ring_diag_uplink_step();
 // after it.
 void bridge_identity_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits clap_link's
+// downlink TX census as a CLAP_DIAG frame at a flat 1 Hz. Unconditional like its
+// four 1 Hz siblings.
+//
+// WHY IT EXISTS. A CLAP_SEND RPC acks the DISPATCH: one request enqueues a whole
+// slate transaction which the bridge then drains one frame per tick, long after
+// the RPC returned, so a mid-drain failure CANNOT be surfaced as an RPC error.
+// The terminal outcome arrives asynchronously as the clapboard's CLAP_ACK — but
+// an ack saying CRC_MISMATCH or INCOMPLETE cannot say WHY frames went missing.
+// This frame is the firmware's half of that answer; without it, "the bridge
+// dropped them" and "the panel mis-reassembled them" are indistinguishable from
+// the Jetson.
+//
+// CONCURRENCY: clap_tx_stats() reads five single words, each with exactly ONE
+// writer (queued/dropped/ring_hwm on task_net, sent/gated on task_time_sync).
+// No mask, no new critical section, and this step neither clears nor differences
+// anything — the counters are cumulative and the consumer differences them.
+void clap_diag_uplink_step();
+
 }  // namespace CanBridge

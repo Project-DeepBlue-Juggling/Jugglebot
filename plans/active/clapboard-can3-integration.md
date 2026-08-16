@@ -213,7 +213,7 @@ exactly this reason.
 |-------|-------|--------|------|------|-----------|
 | 0 | Test-surface prep: `ConeFrame` round-trip, header-inline ID predicates + native tests. No behaviour change, no flash | COMPLETE | 2026-08-16 | Low | The two coverage holes that Phases 1–3 would otherwise land into blind |
 | 1 | Uplink: config, decoder, msgs, dispatch, topics, tests. Jetson-only, `colcon build` alone | COMPLETE | 2026-08-16 | Low | A plugged-in clapboard becomes observable in ROS2 with zero firmware work |
-| 2 | **Firmware, single FW 15**: ID-discriminated health + `CLAPBOARD_PRESENT` bit + 2 Hz `CLAP_LINK` emitter + `CLAP_SEND` RPC + paced `clap_tx` drain + `CLAP_DIAG` | NOT STARTED | | Medium-High | Items 1, 2 and 4 — the whole firmware surface in one flash |
+| 2 | **Firmware, single FW 15**: ID-discriminated health + `CLAPBOARD_PRESENT` bit + 2 Hz `CLAP_LINK` emitter + `CLAP_SEND` RPC + paced `clap_tx` drain + `CLAP_DIAG` | COMPLETE | 2026-08-16 | Medium-High | Items 1, 2 and 4 — the whole firmware surface in one flash |
 | 3 | `SetSlate` action on the bridge node: chunking, CRC, `txn_id`, timeout. Jetson-only | NOT STARTED | | Medium | Item 5; end-to-end slate push under test against a FakeTeensy |
 | 4 | Cross-repo contract tests: shared CRC vector, DLC-8 enforcement, layout goldens | NOT STARTED | | Low | The two repos cannot drift apart silently |
 | 5 | Bench bring-up + soak with real hardware — **operator sitting, not agent work** | NOT STARTED | | Medium | The whole chain on the degraded CAN3 path |
@@ -424,12 +424,60 @@ arriving on the uplink are logged once and dropped, per the handoff doc.
 
 ---
 
-### Phase 2: Firmware — single FW 15 — NOT STARTED
+### Phase 2: Firmware — single FW 15 — COMPLETE (2026-08-16)
 
 > **Merged phase.** This phase carries what earlier drafts split across FW 15
 > and FW 16. Sub-sections 2a (health + `CLAP_LINK`) and 2b (`CLAP_SEND` +
 > drain + `CLAP_DIAG`) are kept as separate *commits* for reviewability, but
 > land as one `FW_VERSION = 15` and one flash.
+
+> **Landed 2026-08-16, BUILT BUT NOT FLASHED.**
+> `logbook/2026-08-16-clapboard-phase2-firmware-fw15.md`. Two commits, one
+> `FW_VERSION = 15`, one flash to come. `pio run -e teensy41` SUCCEEDS
+> (text 233792 / data 35520 / bss 108960); the operator must confirm the flash on
+> the `BRIDGE_IDENTITY` frame — `/link_status` `bridge_fw_version` reads **15** —
+> never by inference, and must pass `-e teensy41` explicitly.
+>
+> Everything this section specified landed as specified. `PROTOCOL_VERSION` stayed
+> at 5 and `test_protocol_version_frozen` never moved (T-R3). Six notes for the
+> next reader:
+>
+> 1. **The `s_cone_last_rx_us` regression got a structural pin, not a comment.**
+>    `tests/firmware/test_cone_rx_role_lint.py` strips comments and string
+>    literals, extracts `on_cone_rx`'s body and asserts the gate write sits at
+>    **brace depth 0** while both role stamps sit deeper — plus the two other
+>    halves of the contract (the gate reads the shared stamp; `cone_health` reads
+>    the discriminated one). A grep for the symbol would have passed through the
+>    exact edit that breaks it.
+> 2. **A new native binary, `test_clap_link`**, beyond what this section listed.
+>    It exists because `clap_link_step()` takes link state as a parameter, and it
+>    is where the DLC-8 rule and the 2 Hz cadence are actually executed rather
+>    than asserted in prose. The ring's all-or-nothing / FIFO / discard-on-gated
+>    behaviour is pinned there too, against the real `clap_link.cpp`.
+> 3. **Validation runs BEFORE the gate in the `CLAP_SEND` dispatch** — the
+>    `BB_THROW` ordering. The first draft had it reversed, which would have
+>    answered `ERR_BUS_DOWN` to a malformed request and sent an operator hunting a
+>    wiring fault for a coding error. Caught in this phase's self-audit; the
+>    native case now drives every malformed shape with the gate CLOSED, the only
+>    configuration in which the ordering is observable.
+> 4. **`ArgClapSend` is 625 B on the net task's stack**, on a chain already
+>    holding `out[1024]`; a `static_assert` on a 2048 B budget now fails the BUILD
+>    rather than the bench if a future arg struct erodes the margin.
+> 5. **The `protocol.py` re-export drift this section flagged got a guard**, not
+>    just a fix: `tests/teensy_link/test_protocol_reexports.py`, driven off the
+>    generator spec.
+> 6. **No `/clap_diag` ROS topic yet** — deliberately deferred to Phase 3, which
+>    is the phase with a consumer (`SetSlate` is what turns those counters into an
+>    operator-facing verdict). The frame is emitted and decodable today; an
+>    unsubscribed MsgType is counted and dropped by `TeensyLinkClient`.
+>
+> One **known residual, accepted and recorded at the site**: `classify_bus_health`
+> short-circuits to UNKNOWN when `last_rx_us == 0` *before* it looks at `flt_live`,
+> so while a clapboard is attached a live WARN/BUS_OFF on the cone controller does
+> not reach `bus3_health`. That is the pre-existing "device absent ⇒ UNKNOWN"
+> semantics (with no cone plugged in at all, that row has always read UNKNOWN
+> through a bus-off), and fixing it means editing the classifier all three buses
+> share — a far wider blast radius than this phase.
 
 #### Phase 2a: honest health + `CLAP_LINK`
 

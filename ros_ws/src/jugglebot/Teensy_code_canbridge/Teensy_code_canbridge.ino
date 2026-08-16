@@ -222,6 +222,9 @@ static void task_telem(void*) {
     ring_diag_uplink_step();       // TRUE RX-ring occupancy vs reported `_available`
                                    // (= the FlexCAN_T4 leak) + jb delivery lag + SDO RTT @ 1 Hz
     bridge_identity_uplink_step(); // FW_VERSION + PROTOCOL_VERSION echo @ 1 Hz
+    clap_diag_uplink_step();       // clapboard downlink TX census @ 1 Hz — the ONLY
+                                   // firmware-side account of a mid-drain loss, which
+                                   // the CLAP_SEND RPC has already returned before
     vTaskDelayUntil(&last, period);
   }
 }

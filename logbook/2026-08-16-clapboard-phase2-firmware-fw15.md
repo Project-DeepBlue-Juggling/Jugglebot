@@ -2,7 +2,7 @@
 title: Clapboard Phase 2 — honest cone_health, the CLAP_LINK beacon, and the CLAP_SEND downlink (one FW 15)
 type: feature
 date: 2026-08-16
-status: in-progress
+status: resolved
 phase: "clapboard-can3-integration Phase 2"
 related_plan: clapboard-can3-integration.md
 files_changed:
@@ -19,11 +19,24 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
   - teensy_link/protocol.py
   - tools/probes/teensy_link_profiling/jetson/udp_protocol.py
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/rpc.h
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/rpc.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/telemetry.h
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/telemetry.cpp
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h
+  - teensy_link/__init__.py
+  - teensy_link/rpc_args.py
+  - teensy_link/rpc.py
   - tests/firmware/test_cone_rx_role_lint.py
   - tests/firmware/native/test_clap_link.cpp
+  - tests/firmware/native/test_rpc_dispatch.cpp
   - tests/firmware/native/build.py
   - tests/firmware/test_native_firmware.py
+  - tests/firmware/test_udp_protocol_xlang.py
+  - tests/firmware/test_bridge_fw_version_xref.py
   - tests/ros/test_teensy_bridge_node_clapboard.py
+  - tests/teensy_link/test_clap_send.py
+  - tests/teensy_link/test_protocol_reexports.py
 subsystem:
   - can-bridge
   - firmware
@@ -173,6 +186,128 @@ added there and forgotten in the copy reads as uninitialised stack —
 miniature (it is built from a default-constructed local), which is why a note now
 says so at the struct and the lint asserts the assignment exists.
 
+## 2b — the `CLAP_SEND` downlink, its paced drain, `CLAP_DIAG`, and the FW bump
+
+**What/why.** `can_cone_send()` had exactly **one** caller in the whole firmware —
+`broadcast_0x7dd()` — so there was no path by which the Jetson could put an
+arbitrary frame on that bus at all. `RpcMethod::CLAP_SEND = 0x0060` opens one.
+
+`ArgClapSend` carries a **whole slate transaction** in one fixed-size request
+(`count` u8 + `can_id` u32[48] + `len` u8[48] + `data` u8[384] = 625 B against a
+1016 B arg ceiling). Structure-of-arrays rather than an array of frame structs
+because the generator cannot express one: `Field.count` multiplies a *single*
+scalar type, and `VARIABLE_TAIL` applies only to `MESSAGES`, never `RPC_ARGS`.
+The `ResultAxisVersions` precedent. Being fixed-size is what lets `rpc.cpp`'s
+existing `take()` helper consume it unmodified.
+
+The bridge enqueues the burst into a `clap_tx` ring and drains it **one frame per
+tick** from the same 100 Hz task as the beacon. `CLAP_DIAG` (MsgType `0x93`,
+additive, 1 Hz) reports `queued`/`sent`/`gated`/`dropped`/`ring_hwm`.
+
+`FW_VERSION` 14 → 15 lands **here and only here**, with one new cumulative
+history clause covering 2a and 2b together — `test_bridge_fw_version_xref` pins
+it equal to `EXPECTED_BRIDGE_FW_VERSION`, so bumping in both sub-commits would
+have reddened the suite. `PROTOCOL_VERSION` stays **5**: every existing frame is
+byte-identical and the additions are a free flag bit plus two new ids.
+
+## Discussion — 2b
+
+### The gate is checked once, never bypassed, and never retried
+
+Root cause, not convention: an un-ACKed TX on a partner-less bus retransmits
+**forever**, pinning TEC at the error-passive threshold and escalating to bus-off
+across supply ramps (`can_buses.cpp`, the 2026-07-05 marginal-CAN3 finding) — on
+a bus whose analog drive path is *already* known-degraded. So a closed gate
+returns `ERR_BUS_DOWN` having enqueued nothing, and the firmware never retries.
+
+That needed one new accessor: `cone_partner_present()`, the same predicate
+`can_cone_send()` applies internally, exposed so a caller dispatching 41 frames
+can refuse the whole burst once, up front, instead of discovering it frame by
+frame during a 410 ms drain. It deliberately does **not** increment `tx_gated` —
+that counter means "TX attempts the gate refused", and inflating it from a
+look-before-you-leap check would corrupt the one witness that the gate is working.
+`can_cone_send` re-checks at every send, so a stale pre-check cannot bypass it.
+
+**Validation runs before the gate** (an audit fix — the first draft had it the
+other way round). A malformed request is the caller's bug whatever the bus is
+doing; answering `ERR_BUS_DOWN` to it would send an operator hunting a wiring
+fault for a coding error. That is also the `BB_THROW` ordering. Pinned by a
+native case that drives every malformed shape **with the gate closed** — the only
+configuration in which the ordering is observable at all, which is why the
+original case (gate open) would have passed against either order.
+
+### Why a mid-drain failure gets its own uplink frame
+
+The RPC acks the **dispatch**. The drain runs long after it returned, so a
+mid-drain gate closure cannot be surfaced as an RPC error. That is by design and
+mirrors `BB_THROW`: the terminal outcome arrives asynchronously, there as
+`CMD_RESULT`, here as the clapboard's own `CLAP_ACK` (`0x7EB`). But an ack saying
+`CRC_MISMATCH` or `INCOMPLETE` cannot say *why* frames went missing, and without
+`CLAP_DIAG` "the bridge dropped them" and "the panel mis-reassembled them" are
+indistinguishable from the Jetson. The four counters partition every frame the
+host handed over — `queued == sent + gated + still-in-ring`, with `dropped` for
+the ones that never got in.
+
+### Discard, not hold, on a closed gate; all-or-nothing at enqueue
+
+Two tradeoffs in the same direction. A frame the drain cannot send is
+**discarded**, because holding it would dribble a stale half-transaction out
+later interleaved with a newer one and the clapboard's CRC would then reject
+*both*. Enqueue is **all-or-nothing** for the mirror-image reason: a partially
+queued transaction reaches the panel as a fragment and comes back as a
+`CRC_MISMATCH`/`INCOMPLETE` that reads like a panel fault, where `ERR_REJECTED`
+with nothing on the wire is unambiguous. Both losses stay visible in `CLAP_DIAG`.
+
+### The one firmware-side content check, and the one it refuses to make
+
+`clap_tx_enqueue_burst` rejects `len > 8`. That is **framing/memory safety** —
+the value is copied into `CAN_message_t::len` and above 8 is not a legal classic
+CAN frame. It deliberately does **not** enforce the clapboard's stricter
+"must be exactly 8", even though that rule is the named most-likely first
+integration bug and enforcing it here would make the failure loud. Reason: the
+handoff brief's non-negotiable constraint is that the bridge does no reassembly,
+no CRC and no field-model awareness, precisely so a clapboard protocol change
+never requires a Teensy reflash — and a strict DLC check is field-model
+knowledge. DLC 8 is enforced where the frames are *built* (Phase 3) and pinned
+cross-repo in Phase 4; `encode_clap_send` reports a short payload's DLC honestly
+rather than promoting it to 8, so the bug stays nameable at the layer that can
+still name it.
+
+### A 625 B arg struct on the net task's stack
+
+`take()` copies the arg struct into a `dispatch()` local. That local was ≤ 16 B
+for every method until now; `ArgClapSend` makes it 625 B on a chain already
+holding `out[1024]` and `result[64]`, on a task with a 4096 B stack. Still a >2x
+margin — and the RX buffer is a file static, not on this stack — but no longer
+negligible, so it is pinned by a `static_assert` on a 2048 B budget that fails the
+**build** rather than the bench if a future arg struct or a `MAX_PAYLOAD` raise
+erodes it.
+
+### The re-export drift got a guard, not just a fix
+
+`teensy_link/protocol.py`'s import list is hand-maintained and was already
+drifting: `HEARTBEAT_CONE_HEALTH_SHIFT` had been generated for weeks and was
+simply missing, with every test green — the failure surfaces as an
+`AttributeError` at runtime in whatever context first needs it, while the
+generator, the C++ header and the markdown spec all agree the symbol exists. 2a
+needed that constant and added it; 2b adds the guard
+(`tests/teensy_link/test_protocol_reexports.py`), driven off the generator spec
+so a new wire object lands on the facade when it is *specified* rather than when
+someone happens to need it. Deliberately not asserted: that the facade is a
+mirror — the `*_FMT` strings and per-arg `ARG_*_SIZE` constants are packing
+internals, and demanding them would turn a curated facade into a re-export of
+`dir()`.
+
+### Scope call: no `/clap_diag` ROS topic yet
+
+`CLAP_DIAG` is emitted and decodable (`teensy_link.ClapDiag`, round-trip pinned
+in both `test_udp_protocol_xlang` lists) but the bridge node does not yet
+subscribe or publish it. Phase 3 owns that: it is the phase with a consumer — the
+`SetSlate` action is what turns these counters into an operator-facing verdict,
+and shipping a topic now would mean writing a bag entry and tests that Phase 3
+immediately reworks. An unsubscribed MsgType is counted and dropped by
+`TeensyLinkClient`, so nothing logs or errors in the meantime.
+
 ## Verification
 
 **2a.** `./run_tests.sh --full` (run 2026-08-16): **PASS** — parallel phase
@@ -184,8 +319,20 @@ total 537 s. New coverage in that count: 7 tests in
 `tests/firmware/test_native_firmware.py`. `tests/ros/test_teensy_bridge_node_cone.py`
 passes **unmodified** (T-R1).
 
+**2b.** `./run_tests.sh --full` (run 2026-08-16): **PASS** — parallel phase
+**5775 passed, 3 xfailed in 487.59 s**; serial phase **9 passed in 40.80 s**;
+total 535 s. New coverage in that count over the 2a run: 11 tests in
+`tests/teensy_link/test_clap_send.py`, 5 in
+`tests/teensy_link/test_protocol_reexports.py`, the `ClapDiag` entries in both
+`test_udp_protocol_xlang` parametrize lists, the FW-15 history clauses in
+`test_bridge_fw_version_xref`, and 5 new `TEST_CASE`s in the compiled
+`test_rpc_dispatch` (23 cases, 92 assertions) plus 6 in `test_clap_link`
+(12 cases, 102 assertions). `test_protocol_version_frozen` still asserts 5
+(T-R3) and `test_rpc_dispatch_lint`'s five tests pass unchanged (T-R7).
+
 Firmware **compiled, NOT flashed** (`pio run -e teensy41`, run 2026-08-16:
-SUCCESS in 34.35 s; text 232768 / data 35520 / bss 107904). The operator must
+SUCCESS in 5.42 s; **text 233792 / data 35520 / bss 108960** — the FW 15 image;
+2a alone was 232768 / 35520 / 107904). The operator must
 confirm the flash on the `BRIDGE_IDENTITY` frame — `/link_status`
 `bridge_fw_version` must read **15** — never by inference: FW 9 through 14 were
 all wire-identical, so a healthy link proves nothing. The flash command must pass
@@ -194,8 +341,9 @@ all wire-identical, so a healthy link proves nothing. The flash command must pas
 assembled robot") lands last and wins, with zero wire-format change to give it
 away.
 
-Deploy: `python config/generate_udp_protocol.py` was run; `teensy_link/**` and
-`config/generated/udp_protocol.py` need no `colcon`, but `teensy_bridge_node.py`
-does — `colcon build --packages-select jugglebot` (run 2026-08-16, 2.50 s).
-
-<!-- 2b verification triple appended below when 2b lands -->
+Deploy: `python config/generate_udp_protocol.py` was run (both sub-commits).
+`teensy_link/**` and `config/generated/udp_protocol.py` need no `colcon`; 2a's
+`teensy_bridge_node.py` edit does — `colcon build --packages-select jugglebot`
+(run 2026-08-16, 2.50 s). 2b needs no further `colcon` and no interface rebuild:
+it touches only `teensy_link/**`, the generated protocol artifacts and the
+firmware tree.
