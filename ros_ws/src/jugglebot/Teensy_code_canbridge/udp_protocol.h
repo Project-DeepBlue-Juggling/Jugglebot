@@ -40,7 +40,7 @@ namespace MsgType {
   constexpr uint8_t DIAGNOSTIC = 130u;  // On-change per-axis diagnostics (STREAM, T→J)
   constexpr uint8_t HEARTBEAT_T2J = 131u;  // Teensy liveness + link/bus health (STREAM, T→J)
   constexpr uint8_t PROFILE = 132u;  // 1 Hz profiling/instrumentation (STREAM, T→J)
-  constexpr uint8_t CONE_FRAME = 133u;  // Catching-cone CAN2 frame relay (STREAM, T→J)
+  constexpr uint8_t CONE_FRAME = 133u;  // Cone-bus (cone-role) CAN frame relay (STREAM, T→J)
   constexpr uint8_t BB_AXIS_ESTIMATES = 134u;  // Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
   constexpr uint8_t CMD_RESULT = 135u;  // Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
   constexpr uint8_t LEG_CMD = 136u;  // Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check
@@ -141,7 +141,7 @@ namespace HeartbeatT2JFlags {
   constexpr uint32_t STOW_PENDING_ON_RECONNECT = 2u;  // bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)
   constexpr uint32_t ALL_AXIS_HEARTBEATS_OK = 4u;  // bit2: every present axis heartbeat is fresh
   constexpr uint32_t MPC_ACTIVE = 8u;  // bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
-  constexpr uint32_t CONE_HEALTH_MASK = 48u;  // bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
+  constexpr uint32_t CONE_HEALTH_MASK = 48u;  // bits 4-5: cone-role BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
   constexpr uint32_t CLAPBOARD_PRESENT = 64u;  // bit6: an electronic clapboard (CAN id block 0x7E8-0x7EF) was seen on the cone bus within CAN_HEARTBEAT_TIMEOUT_US; reads 0 from a pre-clapboard flash (no discriminator) and from a bus carrying a catching cone instead
   constexpr uint32_t TORQUE_CLAMP_MASK = 16128u;  // bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
 }
@@ -213,8 +213,8 @@ static_assert(sizeof(DiagnosticPayload) == 40, "DiagnosticPayload size drift");
 struct HeartbeatT2JPayload {
   uint64_t t_teensy_us;  // Teensy wall-clock (us)
   uint8_t link_state;  // LinkState enum
-  uint8_t bus1_health;  // wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum
-  uint8_t bus2_health;  // wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)
+  uint8_t bus1_health;  // wire slot 1 = jugglebot role (physical CAN2 since 2026-07-31; legs+hand) BusHealth enum
+  uint8_t bus2_health;  // wire slot 2 = Ball Butler (physical CAN1) BusHealth enum; the cone role rides flags bits 4-5, see CONE_HEALTH_MASK
   uint8_t fault_state;  // FaultState enum
   uint32_t flags;  // HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (catching-cone BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 CLAPBOARD_PRESENT (an electronic clapboard shares that bus by role); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)
   uint32_t uptime_ms;  // ms since boot
@@ -254,7 +254,7 @@ struct ProfilePayload {
 };
 static_assert(sizeof(ProfilePayload) == 76, "ProfilePayload size drift");
 
-// ConeFrame: Catching-cone CAN2 frame relay. The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
+// ConeFrame: Cone-bus frame relay (cone role, physical CAN3 since 2026-07-31). The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
 struct ConeFramePayload {
   uint64_t t_bridge_us;  // Bridge wall-clock at CAN2 RX (us)
   uint32_t can_id;  // CAN arbitration id (0x7E0 CATCH_EVENT / 0x7E1 CONE_HEARTBEAT)

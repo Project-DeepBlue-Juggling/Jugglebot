@@ -75,7 +75,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `DIAGNOSTIC` | 0x82 | On-change per-axis diagnostics (STREAM, T→J) |
 | `HEARTBEAT_T2J` | 0x83 | Teensy liveness + link/bus health (STREAM, T→J) |
 | `PROFILE` | 0x84 | 1 Hz profiling/instrumentation (STREAM, T→J) |
-| `CONE_FRAME` | 0x85 | Catching-cone CAN2 frame relay (STREAM, T→J) |
+| `CONE_FRAME` | 0x85 | Cone-bus (cone-role) CAN frame relay (STREAM, T→J) |
 | `BB_AXIS_ESTIMATES` | 0x86 | Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J) |
 | `CMD_RESULT` | 0x87 | Ball Butler command-outcome CAN1 frame relay (STREAM, T→J) |
 | `LEG_CMD` | 0x88 | Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check |
@@ -206,7 +206,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `STOW_PENDING_ON_RECONNECT` | 2 | bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect) |
 | `ALL_AXIS_HEARTBEATS_OK` | 4 | bit2: every present axis heartbeat is fresh |
 | `MPC_ACTIVE` | 8 | bit3: firmware-side mpc_active (lets a setpoint source verify its arm took) |
-| `CONE_HEALTH_MASK` | 48 | bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash |
+| `CONE_HEALTH_MASK` | 48 | bits 4-5: cone-role BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash |
 | `CLAPBOARD_PRESENT` | 64 | bit6: an electronic clapboard (CAN id block 0x7E8-0x7EF) was seen on the cone bus within CAN_HEARTBEAT_TIMEOUT_US; reads 0 from a pre-clapboard flash (no discriminator) and from a bus carrying a catching cone instead |
 | `TORQUE_CLAMP_MASK` | 16128 | bits 8-13: bit (8+i) set = leg i's \|torque_ff\| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint) |
 
@@ -286,8 +286,8 @@ Payload **73 bytes**. Python struct fmt: `<QBBBBIIBBBfffffffffBBfff`.
 |-------|------|------:|-------|
 | `t_teensy_us` | u64 | 1 | Teensy wall-clock (us) |
 | `link_state` | u8 | 1 | LinkState enum |
-| `bus1_health` | u8 | 1 | wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum |
-| `bus2_health` | u8 | 1 | wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink) |
+| `bus1_health` | u8 | 1 | wire slot 1 = jugglebot role (physical CAN2 since 2026-07-31; legs+hand) BusHealth enum |
+| `bus2_health` | u8 | 1 | wire slot 2 = Ball Butler (physical CAN1) BusHealth enum; the cone role rides flags bits 4-5, see CONE_HEALTH_MASK |
 | `fault_state` | u8 | 1 | FaultState enum |
 | `flags` | u32 | 1 | HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED\|STOW_PENDING_ON_RECONNECT\|ALL_AXIS_HEARTBEATS_OK\|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (catching-cone BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 CLAPBOARD_PRESENT (an electronic clapboard shares that bus by role); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT) |
 | `uptime_ms` | u32 | 1 | ms since boot |
@@ -331,7 +331,7 @@ Payload **76 bytes**. Python struct fmt: `<QHHHHHHHHHIIIIHHIIIIIIIH`.
 
 ### ConeFrame (`MsgType.CONE_FRAME`, T2J, STREAM port)
 
-Catching-cone CAN2 frame relay. The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
+Cone-bus frame relay (cone role, physical CAN3 since 2026-07-31). The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
 
 Payload **21 bytes**. Python struct fmt: `<QIBBBBBBBBB`.
 

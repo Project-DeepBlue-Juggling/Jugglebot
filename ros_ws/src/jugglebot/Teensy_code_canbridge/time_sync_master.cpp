@@ -27,11 +27,14 @@ static uint64_t s_next_query_us = 0;    // when to send the next TOD request
 static volatile uint32_t s_last_anchor_rtt_us = 0;
 
 // ── 0x7DD broadcast (matches bus.py broadcast_time: pack('<II', sec, usec)) ───
-// Fan out the SAME frame on all three subsystem buses (ADR-0013): BB on CAN1,
-// cone on CAN2, the platform Teensy + ODrives on CAN3. Frame ID, payload, and
-// cadence are identical to the Jetson-as-master era, so every slave's IIR filter
-// is unaffected. The three TXes are independent and partial-failure-tolerant: a
-// false return on one bus (e.g. the cone-absent gate withholding CAN2, or a
+// Fan out the SAME frame on all three subsystem buses (ADR-0013): BB on the bb
+// bus, the cone (or an electronic clapboard) on the cone bus, the platform Teensy
+// + ODrives on the jugglebot bus. Buses are named by ROLE — since 2026-07-31 the
+// jugglebot and cone roles sit on the CAN2 and CAN3 controllers respectively
+// (can_buses.cpp:18-44). Frame ID, payload, and cadence are identical to the
+// Jetson-as-master era, so every slave's IIR filter is unaffected. The three
+// TXes are independent and partial-failure-tolerant: a false return on one bus
+// (e.g. the cone-absent gate withholding the cone bus, or a
 // transient mailbox-full) must NOT block the other two, so the cone-disconnect
 // case can never starve BB or Jugglebot time-sync.
 static void broadcast_0x7dd() {

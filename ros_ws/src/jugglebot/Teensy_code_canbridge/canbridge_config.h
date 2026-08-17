@@ -59,22 +59,31 @@ constexpr uint8_t  NETMASK[4]   = { 255, 255, 255, 252 };   // /30
 //  library default that can_buses.cpp actually runs; these constants are
 //  documentation only (nothing reads them; the peripheral picks its own pads).
 //
-//    CAN1 = Ball Butler bus     (BB Teensy only)                  TX 22 / RX 23
-//    CAN2 = catching cone bus   (cone Teensy, often disconnected) TX  1 / RX  0
-//    CAN3 = Jugglebot core bus  (6 leg ODrives + Hand ODrive +    TX 31 / RX 30
+//  ROLE ↔ CONTROLLER SINCE 2026-07-31: the jugglebot and cone roles are SWAPPED
+//  relative to their controller numbers (can_buses.cpp:18-44 is the
+//  authoritative declaration). The pin columns below follow the CONTROLLER, so
+//  read the role column, not the peripheral name:
+//
+//    CAN1 = bb role         (BB Teensy only)                      TX 22 / RX 23
+//    CAN2 = jugglebot role  (6 leg ODrives + Hand ODrive +        TX  1 / RX  0
 //           platform Teensy 4.0 + can-bridge)
+//    CAN3 = cone role       (cone Teensy, often disconnected —    TX 31 / RX 30
+//           or an electronic clapboard sharing that segment)
 //
 //  CAN3 is the FD-capable peripheral, run classical 1 Mbps today to match the
 //  classical-only ODrive firmware; a future CAN-FD upgrade is a config change,
-//  not a rewire. All three buses carry the 100 Hz 0x7DD time-sync broadcast.
+//  not a rewire. NB the 2026-07-31 swap moved the ODrives OFF that peripheral,
+//  so ADR-0013's "the FD path sits under the heaviest bus" no longer holds — the
+//  FD-capable controller now carries the light cone bus. All three buses carry
+//  the 100 Hz 0x7DD time-sync broadcast.
 //  NB: ADR-0013 lists CAN2 and CAN3 TX/RX reversed — the
 //  FlexCAN_T4 silicon mux above is authoritative.
 constexpr uint32_t CAN_BITRATE  = CanBus::BAUD_RATE;   // 1 Mbps, all nodes agree
-constexpr uint8_t  CAN1_TX_PIN  = 22;   // Ball Butler
+constexpr uint8_t  CAN1_TX_PIN  = 22;   // bb role
 constexpr uint8_t  CAN1_RX_PIN  = 23;
-constexpr uint8_t  CAN2_TX_PIN  = 1;    // catching cone (FlexCAN_T4 DEF: TX=1, RX=0)
+constexpr uint8_t  CAN2_TX_PIN  = 1;    // jugglebot role since 2026-07-31 (FlexCAN_T4 DEF: TX=1, RX=0)
 constexpr uint8_t  CAN2_RX_PIN  = 0;
-constexpr uint8_t  CAN3_TX_PIN  = 31;   // Jugglebot core (FlexCAN_T4 DEF: TX=31, RX=30)
+constexpr uint8_t  CAN3_TX_PIN  = 31;   // cone role since 2026-07-31 (FlexCAN_T4 DEF: TX=31, RX=30)
 constexpr uint8_t  CAN3_RX_PIN  = 30;
 
 // ── Status LED ────────────────────────────────────────────────────────────────
@@ -235,7 +244,8 @@ constexpr uint32_t BB_HEARTBEAT_TIMEOUT_US = BallButler::HEARTBEAT_TIMEOUT_MS * 
 // into a dead/unpowered bus retransmits forever, pins TEC at the error-passive
 // threshold (128), and during supply transitions can push through to bus-off — the
 // sticky BUSOFF/tec=254 pollution diagnosed in the 2026-07-05 marginal-CAN3
-// investigation. Originally shipped for CAN2 only (cone-absent tolerance); the failure class is identical on
+// investigation. Originally shipped for the cone bus only (cone-absent
+// tolerance); the failure class is identical on
 // all three buses (CAN1 pinned tec=128/passive from a Ball-Butler-absent window, CAN3
 // reached BUSOFF across robot-supply cycles). A partner counts as "present" if any
 // frame arrived within this window; generous so a brief silence (e.g. the ~3.5 s

@@ -40,7 +40,7 @@ class MsgType(IntEnum):
     DIAGNOSTIC = 130  # On-change per-axis diagnostics (STREAM, T→J)
     HEARTBEAT_T2J = 131  # Teensy liveness + link/bus health (STREAM, T→J)
     PROFILE = 132  # 1 Hz profiling/instrumentation (STREAM, T→J)
-    CONE_FRAME = 133  # Catching-cone CAN2 frame relay (STREAM, T→J)
+    CONE_FRAME = 133  # Cone-bus (cone-role) CAN frame relay (STREAM, T→J)
     BB_AXIS_ESTIMATES = 134  # Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)
     CMD_RESULT = 135  # Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)
     LEG_CMD = 136  # Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check
@@ -141,7 +141,7 @@ class HeartbeatT2JFlags(IntEnum):
     STOW_PENDING_ON_RECONNECT = 2  # bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)
     ALL_AXIS_HEARTBEATS_OK = 4  # bit2: every present axis heartbeat is fresh
     MPC_ACTIVE = 8  # bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)
-    CONE_HEALTH_MASK = 48  # bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
+    CONE_HEALTH_MASK = 48  # bits 4-5: cone-role BusHealth (UNKNOWN=0/OK=1/WARN=2/BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = UNKNOWN from a pre-cone-uplink flash
     CLAPBOARD_PRESENT = 64  # bit6: an electronic clapboard (CAN id block 0x7E8-0x7EF) was seen on the cone bus within CAN_HEARTBEAT_TIMEOUT_US; reads 0 from a pre-clapboard flash (no discriminator) and from a bus carrying a catching cone instead
     TORQUE_CLAMP_MASK = 16128  # bits 8-13: bit (8+i) set = leg i's |torque_ff| was clamped to TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest on the last ACCEPTED setpoint frame (mirrors lead_clamp_mask; leg_interp.cpp interp_on_setpoint)
 
@@ -372,7 +372,7 @@ class Profile:
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(9)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
-# ConeFrame: Catching-cone CAN2 frame relay. The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
+# ConeFrame: Cone-bus frame relay (cone role, physical CAN3 since 2026-07-31). The can-bridge forwards every frame received on the cone bus verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today — so the Jetson reuses the tested jugglebot.can.catching_cone decoders unchanged and future cone frames flow without a wire change. The cone's microsecond impact timestamp travels INSIDE `data` (it is latched in the cone's piezo ISR); `t_bridge_us` only stamps bridge-side CAN RX for latency/diagnostic checks.
 CONE_FRAME_FMT = '<QIBBBBBBBBB'
 CONE_FRAME_SIZE = 21
 _CONE_FRAME_STRUCT = struct.Struct(CONE_FRAME_FMT)

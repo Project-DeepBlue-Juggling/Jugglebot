@@ -26,16 +26,19 @@ will assert/hang at startup.
 | PJRC Ethernet kit soldered to Teensy 4.1 Ethernet pads | **REQUIRED FOR FIRST BOOT** | Without this, the firmware's `Ethernet.begin()` will time out and the boot LED will fast-blink (fatal path). |
 | USB-Ethernet adapter on Jetson + cable to Teensy magjack | **REQUIRED** for ping verification | Per [ADR-0007](../../../../docs/adr/0007-point-to-point-static-link.md). Jetson side already configured (Step 1). |
 | CAN1 transceiver (TJA1051T/3) on pins 22 (TX) / 23 (RX) | Optional for bring-up; required for time-sync to Ball Butler | LED-blink + ping work without it. The Ball Butler bus; the Teensy broadcasts 0x7DD at 100 Hz on it. |
-| CAN2 transceiver (TJA1051T/3) on pins 1 (TX) / 0 (RX) | Optional; the catching cone bus | LED-blink + ping work without it. Often left disconnected (the cone is removable); the firmware tolerates cone-absent TX — no bus-off. |
-| CAN3 transceiver (TJA1051T/3) on pins 31 (TX) / 30 (RX) | Optional for bring-up; required for leg + hand ODrive commands | The Jugglebot core bus (6 leg ODrives + Hand ODrive + platform Teensy 4.0). LED-blink + ping work without it. |
+| CAN2 transceiver (TJA1051T/3) on pins 1 (TX) / 0 (RX) | Optional for bring-up; required for leg + hand ODrive commands | The **jugglebot** role since 2026-07-31 — the Jugglebot core bus (6 leg ODrives + Hand ODrive + platform Teensy 4.0). LED-blink + ping work without it. |
+| CAN3 transceiver (TJA1051T/3) on pins 31 (TX) / 30 (RX) | Optional; the **cone** role since 2026-07-31 | LED-blink + ping work without it. Often left disconnected (the cone is removable; an electronic clapboard may share the segment); the firmware tolerates cone-absent TX — no bus-off. |
 | 120 Ω termination on each CAN bus end | Required if any bus is wired | Standard CAN good practice (two ends per bus). |
 
 If the Ethernet kit isn't yet soldered, you can still validate Steps 1-3 (build
 to HEX), but skip the flash until the kit is in place.
 
 > **Bus labelling — do this before wiring.** Label each transceiver harness at
-> both ends with its subsystem: **CAN1 = Ball Butler** (pins 22/23), **CAN2 =
-> catching cone** (pins 1/0), **CAN3 = Jugglebot core** (pins 31/30). The three
+> both ends with its subsystem. **The roles were SWAPPED on 2026-07-31** (the
+> CAN3 drive path could not sustain the 8-node Jugglebot chain — see
+> `logbook/2026-07-31-can3-drive-path-fault-jugglebot-to-can2.md`), so the
+> current mapping is: **CAN1 = Ball Butler** (pins 22/23), **CAN2 = Jugglebot
+> core** (pins 1/0), **CAN3 = catching cone** (pins 31/30). The three
 > buses are subsystem-isolated (ADR-0013), so mis-wiring one harness to the wrong
 > subsystem is the most likely bench-cutover mistake. Pin directions follow the
 > FlexCAN_T4 silicon mux — ADR-0013 and the parent plan list CAN2/CAN3 TX/RX
@@ -277,7 +280,8 @@ machine replay, Jetson-side bridge, full cutover — are each documented in
 Work them in order; each phase has its own "Done when" criteria.
 
 The single most important next step after Phase 2 is **Phase 5 CAN bench
-validation**: wire one leg ODrive to CAN3 (the Jugglebot core bus), drive it
+validation**: wire one leg ODrive to the Jugglebot core bus (the CAN2
+controller since the 2026-07-31 role swap), drive it
 IDLE → CLOSED_LOOP → position commands → IDLE, and confirm telemetry decodes
 correctly. That single-axis test catches the largest class of ODrive-protocol
 port bugs.

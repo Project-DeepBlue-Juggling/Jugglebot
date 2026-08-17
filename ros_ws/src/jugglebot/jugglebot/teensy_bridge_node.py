@@ -795,7 +795,7 @@ _T2J_FLAG_ALL_AXIS_HB_OK = 0x4
 # the arm-took verification bit. Surfaced on /link_status as 'teensy_mpc_active'
 # (ARMING_CONTRACT A5) so a host-armed / firmware-not-armed split is visible.
 _T2J_FLAG_MPC_ACTIVE = 0x8
-# Bits 4-5 carry the cone (CAN2) BusHealth value (generated single source:
+# Bits 4-5 carry the cone-role BusHealth value (generated single source:
 # p.HeartbeatT2JFlags.CONE_HEALTH_MASK / p.HEARTBEAT_CONE_HEALTH_SHIFT).
 # BusHealth.UNKNOWN == 0, so a flash older than the cone-health uplink reads
 # as UNKNOWN — surfacing it is backward-compatible with an unflashed bridge.
@@ -1690,7 +1690,7 @@ class TeensyBridgeNode(Node):
 
         # ── Catching cone (cone uplink, production names) ────
         # Same naming rationale as bb/*: can_node's cone path is dead — the
-        # cone lives on the can-bridge's CAN2, which USB-CAN never sees — so
+        # cone lives on the can-bridge's cone bus, which USB-CAN never sees — so
         # the bridge inherits the production names and the existing consumers
         # (catch_correlation_node, analysis tooling) see no change. CONE_FRAME
         # relays carry the raw CAN payloads; decode reuses the same
@@ -1897,7 +1897,7 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.1, self._publish_link_status)      # 10 Hz (heartbeat rate)
         self.create_timer(0.1, self._publish_bb_heartbeat)     # 10 Hz BB (matches CAN1 rate)
         self.create_timer(0.01, self._drain_cone_catch_events) # 100 Hz cone events (cheap when idle)
-        self.create_timer(0.1, self._publish_cone_heartbeat)   # 10 Hz cone (matches CAN2 rate)
+        self.create_timer(0.1, self._publish_cone_heartbeat)   # 10 Hz cone (matches the cone's CAN heartbeat)
         # Clapboard: same two-timer shape as the cone, and for the same reason —
         # discrete events drained fast, state republished at the source's rate.
         self.create_timer(0.01, self._drain_clapboard_fire_events)  # 100 Hz (cheap when idle)
@@ -3373,9 +3373,10 @@ class TeensyBridgeNode(Node):
             # soft-reset machine on the Jetson (which fault_state already reports).
             fault_state = int(hb.fault_state) if hb is not None else 0
             # After the three-bus remap (ADR-0013) the on-wire
-            # bus1_health slot carries the Jugglebot CORE bus (CAN3: 6 legs + hand) --
-            # the bus whose BUS_OFF is fatal for the legs. (bus2_health is now Ball
-            # Butler; the cone bus health is not yet on the uplink -- TODO (cone-uplink work).)
+            # bus1_health slot carries the Jugglebot CORE bus (the jugglebot ROLE:
+            # 6 legs + hand) -- the bus whose BUS_OFF is fatal for the legs.
+            # (bus2_health is Ball Butler; cone-role health rides the heartbeat
+            # flags bits 4-5 and is published as bus3_health.)
             core_bus_health = int(hb.bus1_health) if hb is not None else 0
             legs = states[:_NUM_LEGS]  # the can-bridge owns legs 0-5 (hand = platform Teensy)
             any_leg_active_err = any(s.active_errors != 0 for s in legs)
@@ -3655,7 +3656,7 @@ class TeensyBridgeNode(Node):
             # powered, the UDP link never drops, so the UDP-reconnect re-read
             # never runs and the cache could hold a STALE is_homed=True against a
             # de-referenced robot (the hole that goes LIVE once firmware validation ungates the
-            # orchestrator's is_homed skip). bus1_health (CAN3, the Jugglebot core
+            # orchestrator's is_homed skip). bus1_health (the Jugglebot core
             # bus) recovering to OK from a DEGRADED state (WARN/BUS_OFF) signals the
             # Platform Teensy may have lost + regained power (it shares the ODrive
             # supply), so re-read CONSERVATIVELY (retry,
@@ -4926,7 +4927,7 @@ class TeensyBridgeNode(Node):
                              value=_enum_name(BusHealth, hb.bus1_health)),
                     KeyValue(key='bus2_health',
                              value=_enum_name(BusHealth, hb.bus2_health)),
-                    # Cone (CAN2) health rides HeartbeatT2J.flags bits 4-5; an
+                    # Cone-role health rides HeartbeatT2J.flags bits 4-5; an
                     # old flash leaves them 0 = UNKNOWN (BusHealth's zero value).
                     # Since can-bridge FW 15 this is the CATCHING CONE specifically
                     # — read it together with clapboard_present below, because the
@@ -7390,7 +7391,7 @@ class TeensyBridgeNode(Node):
         """
         try:
             hb = self._latest_heartbeat
-            core_bus = int(hb.bus1_health) if hb is not None else None   # CAN3
+            core_bus = int(hb.bus1_health) if hb is not None else None   # jugglebot role
             if hb is None or core_bus == int(BusHealth.BUS_OFF):
                 self.get_logger().warning(
                     "shutdown stow skipped — CAN3 core bus down/unseen; leaving the "

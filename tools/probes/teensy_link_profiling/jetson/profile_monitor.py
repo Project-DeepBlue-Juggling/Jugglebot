@@ -2,8 +2,9 @@
 """Jetson-side consumer for the can-bridge Teensy's diagnostic UDP stream.
 
 Binds the STREAM port, ingests PROFILE frames (per-task CPU%, wire-slot bus
-utilisation — slot 1 = Jugglebot core CAN3, slot 2 = Ball Butler CAN1 —
-UDP RTT/jitter, the 500 Hz interp deadline-miss counter, free heap)
+utilisation — the slots are ROLE-keyed: slot 1 = jugglebot role, slot 2 = Ball
+Butler, slot 3 = cone role — UDP RTT/jitter, the 500 Hz interp deadline-miss
+counter, free heap)
 plus a tally of the other uplink frame types, logs PROFILE rows to CSV, and on
 exit renders matplotlib plots. Single-script run.
 
@@ -85,9 +86,9 @@ def run(bind_ip, port, duration, out_dir, do_plot):
                         pr.udp_rtt_us, pr.udp_jitter_us, pr.interp_deadline_misses,
                         pr.interp_max_jitter_us, pr.free_heap_bytes])
                 rows.append(row)
-                # can1_* wire slot = Jugglebot core / CAN3 (the busy, safety-relevant
+                # can1_* wire slot = the jugglebot ROLE (the busy, safety-relevant
                 # bus) after the three-bus remap; show it live.
-                print(f"[profile] core_util(CAN3)={pr.can1_util_x100/100:.1f}%  "
+                print(f"[profile] core_util={pr.can1_util_x100/100:.1f}%  "
                       f"rtt={pr.udp_rtt_us}us  miss={pr.interp_deadline_misses}  "
                       f"heap={pr.free_heap_bytes}")
     except KeyboardInterrupt:
@@ -137,11 +138,13 @@ def _plot(csv_path, cols, rows):
     ax[0].set_ylabel("CPU %"); ax[0].set_title("Per-task CPU (interp runs in ISR — see deadline misses)")
     ax[0].legend(loc="upper right", ncol=3, fontsize=7)
     # CAN utilisation.
-    # Wire slots were remapped by the three-bus refactor:
-    # PROFILE can1_* now sources Jugglebot core (CAN3), can2_* sources Ball Butler
-    # (CAN1). Cone (CAN2) util is not yet on the uplink (TODO: cone health uplink).
-    ax[1].plot(t, arr[:, col["can1_util_pct"]], label="Jugglebot core / CAN3 (slot can1)")
-    ax[1].plot(t, arr[:, col["can2_util_pct"]], label="Ball Butler / CAN1 (slot can2)")
+    # PROFILE wire slots are ROLE-keyed (the three-bus refactor, then the
+    # 2026-07-31 role swap): can1_* = jugglebot role, can2_* = Ball Butler,
+    # can3_* = cone role (added 2026-07-31, PROTOCOL_VERSION 5). The slot NAMES
+    # are fixed by the wire and no longer match any controller number.
+    # can3_util_pct is collected into the CSV but not plotted on this axis.
+    ax[1].plot(t, arr[:, col["can1_util_pct"]], label="Jugglebot core (slot can1)")
+    ax[1].plot(t, arr[:, col["can2_util_pct"]], label="Ball Butler (slot can2)")
     ax[1].set_ylabel("bus util %"); ax[1].legend(loc="upper right"); ax[1].grid(True, alpha=0.3)
     # UDP RTT + jitter.
     ax[2].plot(t, arr[:, col["udp_rtt_us"]], label="RTT µs")

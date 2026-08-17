@@ -1,6 +1,6 @@
 """Catching-cone tests for teensy_bridge_node (cone uplink).
 
-The can-bridge relays every cone CAN2 frame to the Jetson as a CONE_FRAME
+The can-bridge relays every cone-bus frame to the Jetson as a CONE_FRAME
 (raw 8-byte CAN payload + arbitration id + bridge RX timestamp); the bridge
 node decodes with jugglebot.can.catching_cone and republishes the production
 cone/catch_event + cone/heartbeat topics formerly owned by can_node. These

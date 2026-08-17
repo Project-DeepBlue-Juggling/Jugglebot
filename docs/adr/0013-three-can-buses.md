@@ -1,9 +1,61 @@
 # ADR-0013: Three subsystem-isolated CAN buses on the can-bridge Teensy
 
-- **Status**: Accepted
+- **Status**: Accepted; **amended in part** — the subsystem→peripheral assignment changed 2026-07-31; this ADR was annotated 2026-08-16. See the amendment below
 - **Date**: 2026-06-03
 - **Deciders**: Harrison + Claude
 - **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0002](0002-dedicated-second-teensy.md), [ADR-0003](0003-teensy-4_1-over-4_0.md), [ADR-0004](0004-dual-can-buses.md) (superseded by this ADR), [ADR-0008](0008-time-sync-master-on-can-bridge.md), [parent plan](../../plans/archived/teensy-can-offload.md)
+
+> ## ⚠ Amendment — the cone and Jugglebot roles were swapped onto each other's peripheral
+>
+> *Change made 2026-07-31; recorded here 2026-08-16 (`plans/active/clapboard-can3-integration.md`
+> Phase 6). The gap is the point of the amendment: for sixteen days this ADR
+> read as the current mapping while the firmware ran the swapped one.*
+>
+> **What changed.** The *decision* below — three buses, partitioned by robot
+> subsystem — stands unchanged and is still what the firmware implements. What
+> changed is the **subsystem → peripheral assignment** in the Decision section:
+>
+> | Role | Peripheral in this ADR (2026-06-03) | Peripheral since 2026-07-31 |
+> |---|---|---|
+> | Ball Butler (`bb`) | CAN1, pins 22 TX / 23 RX | CAN1, pins 22 TX / 23 RX (unchanged) |
+> | Jugglebot core (`jugglebot`) | CAN3, pins 31 TX / 30 RX | **CAN2, pins 1 TX / 0 RX** |
+> | Catching cone (`cone`) | CAN2, pins 1 TX / 0 RX | **CAN3, pins 31 TX / 30 RX** |
+>
+> **Why.** The bridge's **CAN3 analog drive path developed a load-dependent
+> fault**. It drives the 1-node, short cone bus cleanly at a sustained 100 Hz,
+> but fails within seconds against the 8-node Jugglebot chain — bit1-dominant TX
+> corruption escalating to error-passive and BUS_OFF. Moving the heavy bus to a
+> healthy transceiver was the fix; the light cone bus tolerates the weak path.
+> The physical plugs were moved to match, and the ESR1 base addresses in
+> `service_bus()` were swapped with the instance declarations. Diagnosis and
+> decision: `logbook/2026-07-31-can3-drive-path-fault-jugglebot-to-can2.md`.
+>
+> **This is temporary in intent.** Revert both declarations and the ESR1
+> addresses when the CAN3 transceiver/stub is repaired and re-validated.
+>
+> **What did NOT change.** All bus configuration is per-instance (same
+> `CAN_BITRATE`, same init), so each role carries its full behaviour to its new
+> controller — nothing in this ADR's isolation, bandwidth or fault-tolerance
+> reasoning is affected. **Wire-slot names are ROLE-keyed and did not move**:
+> `bus1_health` still carries the Jugglebot core bus, the `can1_*`/`can3_*`
+> PROFILE slots still carry the jugglebot and cone roles, `can3_errors` is still
+> the jugglebot-bus wire-error row, and `HEARTBEAT_CONE_HEALTH_SHIFT` is still
+> the cone role. Renaming any of those would be a wire-visible change.
+>
+> **One consequence worth naming.** This ADR routed the *heaviest* bus through
+> the FD-capable peripheral so a future CAN-FD upgrade would be a configuration
+> change rather than a rewire. After the swap the FD-capable CAN3 carries the
+> *lightest* bus, so that future-proofing argument no longer holds under the
+> current wiring — it returns if and when the roles are swapped back.
+>
+> **Authoritative declaration.** The mapping is stated in code in TWO places that
+> must move together — the three `FlexCAN_T4` instance declarations and the ESR1
+> base addresses passed to `service_bus()`, both in
+> `ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp` (declarations and
+> comment block at `:18-44`; the `service_bus()` calls at `:906-910`). Reverting one
+> without the other silently mis-attributes every wire-error counter. Everything
+> below this amendment is the record as decided on 2026-06-03 and is deliberately
+> left as written.
 
 ## Context
 

@@ -3,20 +3,41 @@
 //  can_buses.h — three subsystem-isolated FlexCAN_T4 buses (ADR-0013)
 // =============================================================================
 //  One FlexCAN_T4 peripheral per robot subsystem (supersedes the old two-bus
-//  shared-aux / private-leg split):
-//    bb        = CAN1 (Ball Butler Teensy + BB pitch/hand ODrives). BB heartbeat/
-//                CMD_RESULT/ODrive telemetry decode into bb_state/bb_axes; we TX
-//                the 100 Hz 0x7DD time-sync broadcast + relayed BB commands.
-//    cone      = CAN2 (catching cone Teensy, often physically disconnected). RX
-//                is counted AND copied into a small SPSC ring for the cone
-//                uplink: task_telem drains the ring into CONE_FRAME
-//                UDP messages so the Jetson sees every cone frame verbatim
-//                (CATCH_EVENT 0x7E0 / CONE_HEARTBEAT 0x7E1). TX is the 0x7DD
-//                broadcast.
-//    jugglebot = CAN3 (Jugglebot core: 6 leg ODrives + Hand ODrive + platform
-//                Teensy 4.0 + can-bridge). ALL ODrive telemetry/heartbeat/error
-//                frames decode into the per-axis cache from here; leg setpoints,
-//                RPC-driven ODrive commands, and fault-machine commands TX here.
+//  shared-aux / private-leg split). ROLE ↔ CONTROLLER SINCE 2026-07-31 — the
+//  jugglebot and cone roles are SWAPPED relative to their names; see the block
+//  at can_buses.cpp:18-44 (the authoritative declaration) and the "role
+//  shorthand" note below:
+//    bb        = FlexCAN CAN1 (Ball Butler Teensy + BB pitch/hand ODrives). BB
+//                heartbeat/CMD_RESULT/ODrive telemetry decode into bb_state/
+//                bb_axes; we TX the 100 Hz 0x7DD time-sync broadcast + relayed
+//                BB commands.
+//    cone      = FlexCAN CAN3 (catching cone Teensy, often physically
+//                disconnected — or an electronic clapboard, which shares the
+//                segment by role). RX is counted AND copied into a small SPSC
+//                ring for the cone uplink: task_telem drains the ring into
+//                CONE_FRAME UDP messages so the Jetson sees every frame on that
+//                bus verbatim (CATCH_EVENT 0x7E0 / CONE_HEARTBEAT 0x7E1;
+//                clapboard 0x7E8-0x7EF). TX is the 0x7DD broadcast + clapboard
+//                downlink.
+//    jugglebot = FlexCAN CAN2 (Jugglebot core: 6 leg ODrives + Hand ODrive +
+//                platform Teensy 4.0 + can-bridge). ALL ODrive telemetry/
+//                heartbeat/error frames decode into the per-axis cache from
+//                here; leg setpoints, RPC-driven ODrive commands, and
+//                fault-machine commands TX here.
+//
+//  ROLE SHORTHAND, and why the rest of this tree was NOT rewritten. Before the
+//  2026-07-31 swap the role and the controller shared a number, so comments and
+//  docs throughout the firmware use "CAN3" as a nickname for the Jugglebot core
+//  bus and "CAN2" for the cone bus. Those uses are ROLE shorthand, and most are
+//  anchored to dated investigations (the 2026-07-05 marginal-CAN3 work, the
+//  2026-07-29 CAN3 flap) where the controller number was also literally correct.
+//  The mapping is declared in TWO places that must move together — the three
+//  FlexCAN_T4 instance declarations in can_buses.cpp AND the ESR1 base addresses
+//  passed to service_bus() there — and THIS block plus the pin table in
+//  canbridge_config.h are where a reader looks it up. Wire-slot names
+//  (bus1_health, the can1_*/can3_* PROFILE slots, the can3_errors row,
+//  HEARTBEAT_CONE_HEALTH_SHIFT) are ROLE-keyed and did NOT move; renaming them
+//  would be a wire-visible change.
 //
 //  TX presence gate (2026-07-05, generalised from the cone-absent tolerance
 //  ): EVERY can_*_send() is gated on bus_partner_present() — a frame
@@ -26,7 +47,8 @@
 //
 //  Peripheral identity (CAN1/CAN2/CAN3) appears ONLY as the FlexCAN_T4 template
 //  parameter in can_buses.cpp; everywhere else the bus is named by subsystem so
-//  a future re-pin only touches the wiring file (ADR-0013).
+//  a future re-pin only touches the wiring file (ADR-0013). That property is
+//  what made the 2026-07-31 role swap a three-line edit rather than a refactor.
 //
 //  RX is dispatched from canX.events() (pumped by the CAN RX task) via onReceive
 //  callbacks — the proven platform-Teensy idiom (Teensy_code_platform.ino canSniff) — and
@@ -56,9 +78,9 @@ void can_buses_service();   // pump bb/cone/jugglebot events(); call from CAN RX
 
 // All three sends are presence-gated (bus_partner_present(); false = refused, nothing
 // queued) — the bridge never transmits into a partner-less bus (2026-07-05).
-bool can_bb_send(const ODrive::CanFrame& f);         // CAN1 Ball Butler TX (time-sync + relayed BB cmds)
-bool can_cone_send(const ODrive::CanFrame& f);       // CAN2 cone TX (time-sync)
-bool can_jugglebot_send(const ODrive::CanFrame& f);  // CAN3 Jugglebot core TX (setpoints, RPC, fault cmds)
+bool can_bb_send(const ODrive::CanFrame& f);         // bb role, FlexCAN CAN1: Ball Butler TX (time-sync + relayed BB cmds)
+bool can_cone_send(const ODrive::CanFrame& f);       // cone role, FlexCAN CAN3: cone-bus TX (time-sync + clapboard downlink)
+bool can_jugglebot_send(const ODrive::CanFrame& f);  // jugglebot role, FlexCAN CAN2: core TX (setpoints, RPC, fault cmds)
 
 // Is the cone bus's TX presence gate OPEN right now? Exactly the predicate
 // can_cone_send() applies internally (bus_partner_present on the SHARED,
@@ -119,7 +141,7 @@ struct CanStats {
 };
 CanStats can_buses_stats();
 
-// ── Cone uplink ring (CAN2 → CONE_FRAME UDP relay) ─────────────────
+// ── Cone uplink ring (cone role / FlexCAN CAN3 → CONE_FRAME UDP relay) ───────
 //  Every frame received on the cone bus is copied into a small SPSC ring by the
 //  RX callback (producer: task_can_rx — briefly the FlexCAN ISR during the boot
 //  window, so the push is PRIMASK-guarded) and popped by the telemetry task
@@ -130,7 +152,7 @@ CanStats can_buses_stats();
 //  bus verbatim, which is what lets the electronic clapboard (0x7E8-0x7EF) share
 //  the segment by role with no wire change (see the role discriminators below).
 struct ConeFrameRec {
-  uint64_t t_bridge_us;   // bridge wall-clock at CAN2 RX (us)
+  uint64_t t_bridge_us;   // bridge wall-clock at cone-bus RX (us)
   uint32_t can_id;        // CAN arbitration id: cone 0x7E0/0x7E1, clapboard 0x7E8-0x7EF
   uint8_t  dlc;           // CAN payload length (0..8)
   uint8_t  buf[8];        // raw CAN payload (zero-padded past dlc)

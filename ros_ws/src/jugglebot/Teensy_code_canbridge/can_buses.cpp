@@ -15,8 +15,11 @@
 
 namespace CanBridge {
 
-// Peripheral identity is confined to these three lines (ADR-0013):
-//   bb = CAN1 (pins 22/23), cone = CAN2 (pins 1/0), jugglebot = CAN3 (pins 31/30).
+// Peripheral identity is confined to these three lines (ADR-0013). ROLE ↔
+// CONTROLLER SINCE 2026-07-31 — jugglebot and cone are SWAPPED relative to their
+// names; the OPERATING CONFIG note below this is the authoritative statement:
+//   bb = FlexCAN CAN1 (pins 22/23), jugglebot = FlexCAN CAN2 (pins 1/0),
+//   cone = FlexCAN CAN3 (pins 31/30).
 // TX_SIZE_64 (was 16): the software TX ring the TX-complete ISR drains. A 16-deep
 // ring silently dropped frames on dense bursts — a multi-leg config burst lost most
 // set_state(CLOSED_LOOP) frames so the legs never armed (2026-06-26). 64 absorbs any
@@ -419,7 +422,7 @@ static void on_bb_rx(const CAN_message_t& msg) {
   decode_bb_odrive(msg);   // BB pitch/hand ODrive telemetry (CAN1 nodes 7/8)
 }
 
-// ── Cone uplink ring (CAN2 → CONE_FRAME UDP relay) ─────────────────
+// ── Cone uplink ring (cone role / FlexCAN CAN3 → CONE_FRAME UDP relay) ───────
 // SPSC: producer is on_cone_rx (task_can_rx context — briefly the FlexCAN ISR
 // during the boot window, see the RX-health comment above), consumer is
 // cone_uplink_step() on task_telem. Both sides run their critical section with
@@ -427,16 +430,17 @@ static void on_bb_rx(const CAN_message_t& msg) {
 // memory-ordering subtlety for a few hundred ns per ~21-byte record. Capacity
 // covers a full 100 Hz consumer tick of worst-case legitimate cone traffic
 // (10 Hz heartbeat + catch events deferred ~30 ms by the cone's report delay)
-// many times over; sustained overflow means CAN2 babble, counted in
+// many times over; sustained overflow means cone-bus babble, counted in
 // s_cone_fwd_drops (drop-newest) and surfaced on the [canhealth] serial line.
 static constexpr uint8_t CONE_RING_CAP = 16;
 static ConeFrameRec s_cone_ring[CONE_RING_CAP];
 static volatile uint8_t s_cone_ring_head = 0, s_cone_ring_tail = 0;
 static volatile uint32_t s_cone_fwd_drops = 0;
 
-// CAN2 cone-ROLE bus: no ODrive here → count, then copy the frame into the
-// cone-uplink ring for the Jetson relay. The RX timestamp also drives the
-// bus-partner presence gate in can_cone_send() (cone-absent tolerance).
+// Cone-ROLE bus (FlexCAN CAN3 since 2026-07-31): no ODrive here → count, then
+// copy the frame into the cone-uplink ring for the Jetson relay. The RX
+// timestamp also drives the bus-partner presence gate in can_cone_send()
+// (cone-absent tolerance).
 //
 // The segment carries EXACTLY ONE peripheral, but which one is a physical choice:
 // the catching cone (0x7E0/0x7E1) or the electronic clapboard (0x7E8-0x7EF). Both
@@ -1038,7 +1042,8 @@ static bool send_on(FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_64>& bus,
 // hold TEC at 128/error-passive until the bus returns — bounded, recovers, and
 // never reaches bus-off on its own.
 // TODO(bench): validate cone-absent on real hardware — disconnect the cone and
-// confirm CAN2 never enters bus-off while CAN1/CAN3 keep broadcasting 0x7DD.
+// confirm the cone bus never enters bus-off while the bb and jugglebot buses
+// keep broadcasting 0x7DD.
 static inline bool partner_recent(const volatile uint64_t* last_rx_us,
                                   volatile BusRxHealth& h) {
   // interval: *_last_rx_us are monotonic; atomic read (torn-load guard)

@@ -8,8 +8,8 @@
 //  refreshes are
 //  staggered across axes so they never burst in a single tick.
 //
-//  Also home to the cone uplink: cone_uplink_step() drains the
-//  CAN2 SPSC ring (can_buses.h) into CONE_FRAME UDP messages. It lives here —
+//  Also home to the cone uplink: cone_uplink_step() drains the cone-bus SPSC
+//  ring (can_buses.h) into CONE_FRAME UDP messages. It lives here —
 //  not in can_buses.cpp — to keep the bus layer free of UDP dependencies; both
 //  steps run on task_telem.
 // =============================================================================
@@ -23,8 +23,9 @@ void telemetry_init();
 // due Diagnostic frames (changed axes immediately; unchanged axes once/second).
 void telemetry_step();
 
-// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Forwards queued cone
-// CAN2 frames (catch events + cone heartbeats) to the Jetson, bounded per tick.
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Forwards queued
+// cone-bus frames (catch events + cone heartbeats, or clapboard frames) to the
+// Jetson, bounded per tick.
 void cone_uplink_step();
 
 // Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Forwards queued BB

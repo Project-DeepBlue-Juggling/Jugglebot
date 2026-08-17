@@ -24,7 +24,8 @@ Both import the generated `jetson/udp_protocol.py` (delivered by
 
 ### `profile_monitor.py` — diagnostic consumer
 
-Ingests the 1 Hz PROFILE frame (per-task CPU%, CAN1/CAN2 bus utilisation, UDP
+Ingests the 1 Hz PROFILE frame (per-task CPU%, per-role bus utilisation on the
+three `can1_*`/`can2_*`/`can3_*` wire slots, UDP
 RTT/jitter, the 500 Hz interp deadline-miss counter, free heap), logs PROFILE rows
 to CSV, and renders matplotlib plots. Single-script.
 

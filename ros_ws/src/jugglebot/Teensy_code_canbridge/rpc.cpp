@@ -136,8 +136,8 @@ static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::Can
 
 // Ball Butler presence gate. CAN1 carries no other partner; with BB unpowered
 // or unplugged, an un-ACKed TX would climb the FlexCAN TEC and eventually drop
-// the bus to bus-off (same failure mode the cone-absent gate prevents on CAN2 —
-// but for CAN1). bb_present() requires a fresh
+// the bus to bus-off (same failure mode the cone-absent gate prevents on the
+// cone bus — but for CAN1). bb_present() requires a fresh
 // heartbeat; the bridge-level bb/calibrate handler translates ERR_BUS_DOWN to a
 // silent-success for the homing flow (matching can_node._svc_bb_calibrate).
 static bool bb_present() {
@@ -356,7 +356,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
 
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────
     // Each gated on BB presence to prevent the un-ACKed-TX bus-off failure
-    // mode (analogous to the CAN2 cone-absent gate). Bridge node
+    // mode (analogous to the cone-absent gate on the cone bus). Bridge node
     // bb/calibrate translates ERR_BUS_DOWN to silent-success to preserve
     // can_node's homing semantics.
     case RpcMethod::BB_THROW: {

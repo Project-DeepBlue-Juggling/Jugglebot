@@ -29,17 +29,31 @@ implementation status) · [Architecture Decisions](../adr/index.md)
                               ┌───────────────────────────┼───────────────────────────┐
                               │                            │                            │
                           CAN1 (1 Mbps)               CAN2 (1 Mbps)               CAN3 (1 Mbps, FD-capable)
-                          Ball Butler bus             Catching-cone bus           Jugglebot core bus
-                          (throw axis Teensy)         (often disconnected)        6 leg ODrives + Hand
-                                                                                   ODrive + platform Teensy 4.0
+                          bb role                     jugglebot role              cone role
+                          Ball Butler bus             Jugglebot core bus          Catching-cone bus
+                          (throw axis Teensy)         6 leg ODrives + Hand        (often disconnected;
+                                                      ODrive + platform           an electronic clapboard
+                                                      Teensy 4.0                  may share the segment)
 ```
+
+> **The jugglebot and cone ROLES are swapped relative to their controller
+> numbers, since 2026-07-31.** The bridge's CAN3 analog drive path developed a
+> load-dependent fault: it drives the 1-node cone bus cleanly at 100 Hz but fails
+> within seconds against the 8-node Jugglebot chain. The roles were swapped and
+> the physical plugs moved to match — see
+> `logbook/2026-07-31-can3-drive-path-fault-jugglebot-to-can2.md` and the
+> authoritative declaration at `can_buses.cpp:18-44`. Wire-slot names
+> (`bus1_health`, the `can1_*`/`can3_*` PROFILE slots, the `can3_errors` row) are
+> **role-keyed** and did not move; ADR-0013 records the original 2026-06-03
+> mapping and carries a marked amendment block recording this swap.
 
 All three buses carry a shared 100 Hz time-sync broadcast (`0x7DD`) from the
 can-bridge, which is the sole time-sync master for the system (it
 bootstraps and periodically re-syncs its own wall clock against the
 Jetson). The platform Teensy 4.0 is unchanged in scope — it still owns hand
 trajectory execution and inclinometer/robot-state persistence — but is now
-a time-sync slave on CAN3 rather than the old Jetson-hosted stack's peer.
+a time-sync slave on the Jugglebot core bus rather than the old Jetson-hosted
+stack's peer.
 
 Firmware source: [`ros_ws/src/jugglebot/Teensy_code_canbridge/`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/).
 

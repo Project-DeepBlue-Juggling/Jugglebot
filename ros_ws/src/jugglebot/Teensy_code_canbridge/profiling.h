@@ -2,8 +2,9 @@
 // =============================================================================
 //  profiling.h — firmware instrumentation → 1 Hz PROFILE UDP frame
 // =============================================================================
-//  Gathers per-task CPU%, CAN bus utilisation (the two PROFILE wire slots map to
-//  can1=Jugglebot core CAN3, can2=Ball Butler CAN1), UDP RTT/jitter,
+//  Gathers per-task CPU%, CAN bus utilisation (the three PROFILE wire slots are
+//  ROLE-keyed: can1_*=jugglebot role, can2_*=Ball Butler, can3_*=cone role — see
+//  profiling.cpp:24-27), UDP RTT/jitter,
 //  the 500 Hz interp deadline-miss counter, and free heap, and emits a
 //  JbUdp::PROFILE frame
 //  once per second. Consumed by tools/probes/teensy_link_profiling/jetson.

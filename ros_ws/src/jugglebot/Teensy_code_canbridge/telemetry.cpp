@@ -171,12 +171,13 @@ static void send_leg_cmd() {
   udp_send_stream(JbUdp::MsgType::LEG_CMD, (const uint8_t*)&c, sizeof(c));
 }
 
-// ── Cone uplink: drain CAN2 frames into CONE_FRAME UDP messages ──────────────
-// Per-tick budget caps the UDP cost if CAN2 ever babbles; legitimate cone
-// traffic is ~10-11 fps (10 Hz heartbeat + per-impact catch events) against the
-// 100 Hz tick, so the ring (CONE_RING_CAP=16) drains in one frame per tick in
-// steady state and a full ring clears in 4 ticks. Excess beyond ring+budget is
-// dropped at the ring (counted — can_cone_fwd_drops, [canhealth] serial line).
+// ── Cone uplink: drain cone-bus frames into CONE_FRAME UDP messages ──────────
+// Per-tick budget caps the UDP cost if the cone bus ever babbles; legitimate
+// cone traffic is ~10-11 fps (10 Hz heartbeat + per-impact catch events)
+// against the 100 Hz tick, so the ring (CONE_RING_CAP=16) drains in one frame
+// per tick in steady state and a full ring clears in 4 ticks. Excess beyond
+// ring+budget is dropped at the ring (counted — can_cone_fwd_drops,
+// [canhealth] serial line).
 static constexpr uint8_t CONE_FWD_BUDGET = 4;
 
 void cone_uplink_step() {
@@ -286,7 +287,7 @@ void hand_sensor_uplink_step() {
   s_hand_sensor_sent_us      = now;
 }
 
-// ── CAN3 wire-error uplink — contract in telemetry.h ─────────────────────────
+// ── Jugglebot-bus wire-error uplink (the can3_errors row) — contract in telemetry.h ──
 // Unconditional 1 Hz, NOT on-change: the whole point is a continuous baseline the
 // operator can difference across an A/B (poller on vs off), and "silence means
 // healthy" is exactly the ambiguity that cost the 2026-07-29 investigation a
@@ -300,7 +301,7 @@ void can_errors_uplink_step() {
   s_can_errors_sent_us = now;
 
   const CanRxHealth h = can_buses_rx_health();
-  const BusRxHealth& j = h.jugglebot;     // CAN3 only — see the message summary
+  const BusRxHealth& j = h.jugglebot;     // jugglebot bus only — see the summary
   JbUdp::CanErrorsPayload p{};
   p.ack_cnt       = j.ack_cnt;
   p.crc_cnt       = j.crc_cnt;

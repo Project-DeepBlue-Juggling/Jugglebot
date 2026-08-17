@@ -217,7 +217,7 @@ exactly this reason.
 | 3 | `SetSlate` action on the bridge node: chunking, CRC, `txn_id`, timeout. Jetson-only | COMPLETE | 2026-08-16 | Medium | Item 5; end-to-end slate push under test against a FakeTeensy |
 | 4 | Cross-repo contract tests: shared CRC vector, DLC-8 enforcement, layout goldens | COMPLETE | 2026-08-16 | Low | The two repos cannot drift apart silently |
 | 5 | Bench bring-up + soak with real hardware — **operator sitting, not agent work** | NOT STARTED | | Medium | The whole chain on the degraded CAN3 path |
-| 6 | Doc sweep: five files still say cone = CAN2 (separate commit) | NOT STARTED | | Low | Removes a documented trap for future readers |
+| 6 | Doc sweep: five files still say cone = CAN2 (separate commit) | COMPLETE | 2026-08-16 | Low | Removes a documented trap for future readers |
 
 **Firmware is one flash, one version (owner decision, 2026-08-16).** The two
 firmware batches are merged into a single FW 15. The cost accepted is rollback
@@ -852,7 +852,46 @@ drop. **This is an operator sitting — it is not agent-automatable work.**
 
 ---
 
-### Phase 6: Doc sweep — NOT STARTED
+### Phase 6: Doc sweep — COMPLETE (2026-08-16)
+
+> **Landed 2026-08-16.** `logbook/2026-08-16-clapboard-phase6-bus-role-doc-sweep.md`.
+> All six named sites plus `time_sync_master.cpp:29-31` (added by Phase 4's
+> handoff) are corrected, and the grep sweep found nine more the brief did not
+> name. `can_buses.h:109`'s `ConeFrameRec` comment needed no fix — Phase 2a had
+> already widened it to `cone 0x7E0/0x7E1, clapboard 0x7E8-0x7EF`.
+>
+> **The scope rule, stated because the alternative is a 100-site prose rewrite.**
+> "CAN3" is used ~100 times across the firmware as a *nickname* for the Jugglebot
+> core bus, and most of those are anchored to dated investigations (the 2026-07-05
+> marginal-CAN3 work, the 2026-07-29 flap) where the controller number was also
+> literally correct. This sweep therefore fixes the **declaration sites** — the
+> topology blocks, pin tables, send-function annotations and the ADR that a reader
+> consults to LEARN the mapping — and adds a normative "role shorthand" note to
+> `can_buses.h`'s header block explaining that the nickname survives elsewhere and
+> where the authoritative declaration lives. A contract, not 100 patches.
+>
+> **The ADR got an amendment, not a rewrite.** `docs/adr/0013` keeps its
+> 2026-06-03 decision text verbatim; a marked amendment block above the Context
+> records the swap, the load-dependent CAN3 drive-path fault that caused it, the
+> temporary intent, the role-keyed wire slots that did NOT move, and the one real
+> consequence (the FD-capable peripheral now carries the lightest bus, so this
+> ADR's future-proofing argument no longer holds under the current wiring).
+>
+> **One non-doc artefact moved**: `config/generate_udp_protocol.py`'s field
+> descriptions contradicted the *same file's* already-correct `can1_*`/`can3_*`
+> wording, and they are the single source for `docs/teensy-udp-protocol.md` and
+> both delivered headers. Both generators' outputs are description-only diffs:
+> `test_wire_layout_frozen`'s digest folds in field name/type/count and never
+> descriptions, so it did not move, and `PROTOCOL_VERSION` stayed at 5.
+>
+> **Deliberately NOT touched** (reported, not guessed): `logbook/**` and
+> `plans/archived/**` (immutable historical record); ADRs 0001/0002/0004/0008
+> (historical, and all reachable from ADR-0013's Related line, which now carries
+> the amendment); and `ros_ws/docs/can-node-teensy-parity.md:455`, whose stale
+> role mapping rides a second staleness — its "cone traffic is not on the
+> uplink" claim was closed by the `can3_*` PROFILE slot on 2026-07-31 — which is
+> a parity-matrix reconciliation with its own status-count convention, not a
+> role-name fix.
 
 Five files still document the cone as CAN2 after the 2026-07-31 role swap:
 `can_buses.h:5-19`, `can_buses.cpp:19` (three lines above the correct code),
@@ -984,27 +1023,28 @@ requirement follows; the bridge may start in any order.
 
 | File | Phase | Action |
 |---|---|---|
-| `tests/firmware/test_udp_protocol_xlang.py` | 0,3 | Modified |
-| `Teensy_code_canbridge/can_buses.{h,cpp}` | 0,2 | Modified |
+| `tests/firmware/test_udp_protocol_xlang.py` | 0,2 | Modified |
+| `Teensy_code_canbridge/can_buses.{h,cpp}` | 0,2,6 | Modified |
 | `tests/firmware/native/test_platform_relay.cpp` | 0 | Modified |
-| `tests/firmware/test_native_firmware.py` | 0 | Modified |
+| `tests/firmware/test_native_firmware.py` | 0,2 | Modified |
 | `config/protocol_config.yaml`, `config/generate_config.py` | 1 | Modified |
 | `jugglebot/can/clapboard.py` | 1 | Created |
 | `jugglebot_interfaces/msg/Clapboard*.msg` | 1 | Created |
-| `jugglebot_interfaces/action/SetSlate.action` | 4 | Created |
-| `jugglebot_interfaces/CMakeLists.txt` | 1,4 | Modified |
-| `teensy_bridge_node.py` | 1,2,4 | Modified |
-| `tests/ros/conftest.py` | 1,4 | Modified |
-| `jugglebot_launch.py` | 1,4 | Modified |
-| `Teensy_code_canbridge/clap_link.{h,cpp}` | 2,3 | Created |
-| `Teensy_code_canbridge/Teensy_code_canbridge.ino` | 2 | Modified |
-| `config/generate_udp_protocol.py` | 2,3 | Modified |
-| `canbridge_config.h`, `teensy_link/rpc_args.py` | 2,3 | Modified |
-| `Teensy_code_canbridge/rpc.cpp`, `telemetry.cpp` | 3 | Modified |
-| `tests/firmware/native/test_rpc_dispatch.cpp` | 3 | Modified |
-| `jugglebot/clapboard_slate.py` | 4 | Created |
-| `tests/ros/test_clapboard.py`, `test_teensy_bridge_node_clapboard.py` | 1,4 | Created |
-| Five cone=CAN2 docs + `docs/adr/0013` | 7 | Modified |
+| `jugglebot_interfaces/action/SetSlate.action` | 3 | Created |
+| `jugglebot_interfaces/CMakeLists.txt` | 1,3 | Modified |
+| `teensy_bridge_node.py` | 1,2,3,6 | Modified |
+| `tests/ros/conftest.py` | 1,3 | Modified |
+| `jugglebot_launch.py` | 1,3 | Modified |
+| `Teensy_code_canbridge/clap_link.{h,cpp}` | 2 | Created |
+| `Teensy_code_canbridge/Teensy_code_canbridge.ino` | 2,6 | Modified |
+| `config/generate_udp_protocol.py` | 2,6 | Modified |
+| `canbridge_config.h` | 2,6 | Modified |
+| `teensy_link/rpc_args.py` | 2 | Modified |
+| `Teensy_code_canbridge/rpc.cpp`, `telemetry.cpp` | 2,6 | Modified |
+| `tests/firmware/native/test_rpc_dispatch.cpp` | 2 | Modified |
+| `jugglebot/clapboard_slate.py` | 3 | Created |
+| `tests/ros/test_clapboard.py`, `test_teensy_bridge_node_clapboard.py` | 1,2 | Created |
+| Five cone=CAN2 docs + `docs/adr/0013` + the wider bus-role sweep | 6 | Modified |
 
 ### Codegen and build matrix
 

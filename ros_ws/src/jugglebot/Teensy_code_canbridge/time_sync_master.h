@@ -4,11 +4,13 @@
 // =============================================================================
 //  The can-bridge replaces the Jetson as the system time-sync MASTER. It:
 //    * broadcasts (wall_offset + monotonic) at 100 Hz on ALL THREE subsystem
-//      buses (CAN1/CAN2/CAN3), ID 0x7DD, using the EXACT payload format the
-//      Jetson emitted — struct.pack('<II', sec, usec) (see bus.py
-//      broadcast_time) — so the three existing slave Teensys (platform 4.0 on
-//      CAN3, Ball Butler on CAN1, catching cone on CAN2) consume it with ZERO
-//      change (per-bus fan-out is invisible to each slave — ADR-0013);
+//      buses (bb / cone / jugglebot — ROLE names; the jugglebot and cone roles
+//      sit on the CAN2 and CAN3 controllers since 2026-07-31), ID 0x7DD, using
+//      the EXACT payload format the Jetson emitted — struct.pack('<II', sec,
+//      usec) (see bus.py broadcast_time) — so the three existing slave Teensys
+//      (platform 4.0 on the jugglebot bus, Ball Butler on the bb bus, catching
+//      cone on the cone bus) consume it with ZERO change (per-bus fan-out is
+//      invisible to each slave — ADR-0013);
 //    * bootstraps + drift-corrects its wall clock by querying the Jetson over
 //      UDP (RpcMethod::TIME_OF_DAY_QUERY) at boot and every ~30 s.
 //

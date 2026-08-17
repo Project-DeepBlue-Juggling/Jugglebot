@@ -140,7 +140,8 @@ CONSTANTS = [
     # firmware (the clamp is dormant until the can-bridge is reflashed).
     ("HEARTBEAT_TORQUE_CLAMP_SHIFT", 8, "u8",
      "Bit offset of TORQUE_CLAMP_MASK inside HeartbeatT2J.flags (bits 8-13)"),
-    # HeartbeatT2J.flags bit offset of the cone (physical CAN2) BusHealth value
+    # HeartbeatT2J.flags bit offset of the cone-role (physical CAN3 since
+    # 2026-07-31) BusHealth value
     # (HeartbeatT2JFlags::CONE_HEALTH_MASK, bits 4-5). Same no-bump packing as the
     # torque-clamp mask above; BusHealth::UNKNOWN == 0, so a pre-cone-uplink
     # firmware (which never sets these bits) self-describes as UNKNOWN.
@@ -177,7 +178,7 @@ ENUMS = {
         ("DIAGNOSTIC",     0x82, "On-change per-axis diagnostics (STREAM, T→J)"),
         ("HEARTBEAT_T2J",  0x83, "Teensy liveness + link/bus health (STREAM, T→J)"),
         ("PROFILE",        0x84, "1 Hz profiling/instrumentation (STREAM, T→J)"),
-        ("CONE_FRAME",     0x85, "Catching-cone CAN2 frame relay (STREAM, T→J)"),
+        ("CONE_FRAME",     0x85, "Cone-bus (cone-role) CAN frame relay (STREAM, T→J)"),
         ("BB_AXIS_ESTIMATES", 0x86, "Ball Butler pitch/hand ODrive pos+vel estimates (STREAM, T→J)"),
         ("CMD_RESULT",     0x87, "Ball Butler command-outcome CAN1 frame relay (STREAM, T→J)"),
         ("LEG_CMD",        0x88, "Teensy commanded leg interp output @100Hz (STREAM, T→J) — float32 interp residual check"),
@@ -339,10 +340,11 @@ ENUMS = {
         ("STOW_PENDING_ON_RECONNECT", 0x2, "bit1: deferred-stow latch armed (awaiting confirmed CAN3 reconnect)"),
         ("ALL_AXIS_HEARTBEATS_OK",    0x4, "bit2: every present axis heartbeat is fresh"),
         ("MPC_ACTIVE",                0x8, "bit3: firmware-side mpc_active (lets a setpoint source verify its arm took)"),
-        # Cone (physical CAN2) bus health as a 2-bit BusHealth value in bits 4-5
+        # Cone-role (physical CAN3 since 2026-07-31) bus health as a 2-bit
+        # BusHealth value in bits 4-5
         # (see HEARTBEAT_CONE_HEALTH_SHIFT). Not a single-bit flag: BusHealth has
         # four states, and UNKNOWN == 0 makes a stale flash self-describing.
-        ("CONE_HEALTH_MASK",         0x30, "bits 4-5: cone (CAN2) BusHealth (UNKNOWN=0/OK=1/WARN=2/"
+        ("CONE_HEALTH_MASK",         0x30, "bits 4-5: cone-role BusHealth (UNKNOWN=0/OK=1/WARN=2/"
                                            "BUS_OFF=3) << HEARTBEAT_CONE_HEALTH_SHIFT; reads 0 = "
                                            "UNKNOWN from a pre-cone-uplink flash"),
         # bit6: the cone bus is shared by ROLE — the catching cone and the
@@ -441,8 +443,8 @@ MESSAGES = [
         fields=[
             Field("t_teensy_us", "u64", 1, "Teensy wall-clock (us)"),
             Field("link_state",  "u8",  1, "LinkState enum"),
-            Field("bus1_health", "u8",  1, "wire slot 1 = CAN3 (Jugglebot core: legs+hand) BusHealth enum"),
-            Field("bus2_health", "u8",  1, "wire slot 2 = CAN1 (Ball Butler) BusHealth enum (cone/CAN2 not yet on uplink)"),
+            Field("bus1_health", "u8",  1, "wire slot 1 = jugglebot role (physical CAN2 since 2026-07-31; legs+hand) BusHealth enum"),
+            Field("bus2_health", "u8",  1, "wire slot 2 = Ball Butler (physical CAN1) BusHealth enum; the cone role rides flags bits 4-5, see CONE_HEALTH_MASK"),
             Field("fault_state", "u8",  1, "FaultState enum"),
             Field("flags",       "u32", 1, "HeartbeatT2JFlags bitset: bits 0-3 TIME_SYNCED|STOW_PENDING_ON_RECONNECT|ALL_AXIS_HEARTBEATS_OK|MPC_ACTIVE; bits 4-5 CONE_HEALTH_MASK (catching-cone BusHealth, see HEARTBEAT_CONE_HEALTH_SHIFT); bit 6 CLAPBOARD_PRESENT (an electronic clapboard shares that bus by role); bits 8-13 TORQUE_CLAMP_MASK (per-leg torque_ff ingest clamp, see HEARTBEAT_TORQUE_CLAMP_SHIFT)"),
             Field("uptime_ms",   "u32", 1, "ms since boot"),
@@ -501,7 +503,7 @@ MESSAGES = [
     Message(
         "ConeFrame", "CONE_FRAME", "T2J", "STREAM",
         summary=(
-            "Catching-cone CAN2 frame relay. The "
+            "Cone-bus frame relay (cone role, physical CAN3 since 2026-07-31). The "
             "can-bridge forwards every frame received on the cone bus "
             "verbatim — CATCH_EVENT (0x7E0) and CONE_HEARTBEAT (0x7E1) today "
             "— so the Jetson reuses the tested jugglebot.can.catching_cone "
