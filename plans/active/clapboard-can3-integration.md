@@ -217,7 +217,7 @@ exactly this reason.
 | 3 | `SetSlate` action on the bridge node: chunking, CRC, `txn_id`, timeout. Jetson-only | COMPLETE | 2026-08-16 | Medium | Item 5; end-to-end slate push under test against a FakeTeensy |
 | 4 | Cross-repo contract tests: shared CRC vector, DLC-8 enforcement, layout goldens | COMPLETE | 2026-08-16 | Low | The two repos cannot drift apart silently |
 | 5 | Bench bring-up + soak with real hardware — **operator sitting, not agent work** | NOT STARTED | | Medium | The whole chain on the degraded CAN3 path |
-| 6 | Doc sweep: five files still say cone = CAN2 (separate commit) | COMPLETE | 2026-08-16 | Low | Removes a documented trap for future readers |
+| 6 | Doc sweep: five files still say cone = CAN2 (separate commit) | **WIP — COMMITTED BUT NEVER GATED** | 2026-08-18 | Low | Removes a documented trap for future readers. Comment-only, but never run against the suite and never audited; the ADR 0013 amendment needs review |
 
 **Firmware is one flash, one version (owner decision, 2026-08-16).** The two
 firmware batches are merged into a single FW 15. The cost accepted is rollback
@@ -852,9 +852,16 @@ drop. **This is an operator sitting — it is not agent-automatable work.**
 
 ---
 
-### Phase 6: Doc sweep — COMPLETE (2026-08-16)
+### Phase 6: Doc sweep — WIP, COMMITTED BUT NEVER GATED (2026-08-18)
 
-> **Landed 2026-08-16.** `logbook/2026-08-16-clapboard-phase6-bus-role-doc-sweep.md`.
+> **NOT FINISHED.** Committed 2026-08-18 as `e650448` to stop it being stranded
+> in the working tree, after the agent building it hit a usage limit mid-phase.
+> It was NEVER run against the test suite and NEVER audited, and the status
+> marker it wrote for itself claimed COMPLETE — corrected here. The changes are
+> comment-only (verified by diff inspection), so they are safe to carry, but the
+> `docs/adr/0013-three-can-buses.md` amendment in particular needs review: an ADR
+> is a historical record and must not be rewritten to read as though it always
+> said CAN3. See `logbook/2026-08-16-clapboard-phase6-bus-role-doc-sweep.md`.
 > All six named sites plus `time_sync_master.cpp:29-31` (added by Phase 4's
 > handoff) are corrected, and the grep sweep found nine more the brief did not
 > name. `can_buses.h:109`'s `ConeFrameRec` comment needed no fix — Phase 2a had
