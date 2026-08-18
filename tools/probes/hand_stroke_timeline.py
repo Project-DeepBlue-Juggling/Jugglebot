@@ -499,15 +499,15 @@ _CATCH_DESC_ABOVE_X5_REV = 0.33  # how far into the CATCH REGION the COMMANDED
                               # honoured brake seeded from a DOWNWARD velocity
                               # dives |v0|*T*16/81 = 0.00778*v0^2 rev below x3,
                               # crossing 0.5 rev at just 8.05 rev/s, and the
-                              # clamp honours it out to 3.213 rev (v0 = 20.32
+                              # clamp honours it out to 3.126 rev (v0 = 20.04
                               # rev/s, where Trajectory.h's duration cap takes
                               # over).  A brake read as the descent collapses the
                               # peak/pullback/dip window onto itself and makes the
-                              # end-stop `peak` row — the one guarding the 11.1
-                              # rev limit, bench row H4.5 — UNDER-report.
+                              # end-stop `peak` row — the one guarding the 10.8
+                              # rev hard stop, bench row H4.5 — UNDER-report.
                               #
                               # x5 + 0.33 rev = 6.457 rev = x3 - 3.502 rev, so it
-                              # sits 0.29 rev clear of the deepest brake the
+                              # sits 0.38 rev clear of the deepest brake the
                               # firmware can honour and 0.33 rev clear of x5,
                               # which every armed descent commands.  Biased deep
                               # on purpose: too shallow fails SILENTLY on the row
@@ -523,7 +523,7 @@ _CATCH_DESC_ABOVE_X5_REV = 0.33  # how far into the CATCH REGION the COMMANDED
                               # dip/peak window collapsed from ~600 ms to ~130 ms
                               # and the end-stop `peak` row read 10.1298 rev
                               # against a real 10.1588 — i.e. the one row guarding
-                              # the 11.1 rev limit under-reports the excursion.
+                              # the 10.8 rev hard stop under-reports the excursion.
 _DIP_BELOW_X3_BAND_REV = 0.10    # `dip_below_x3_rev` at or under this reads as "no
                               # dip": the hand settled onto the stroke end rather
                               # than being yanked below it.  Same 0.10 rev the
@@ -699,7 +699,7 @@ def analyse_throw(session: Session, ann: Announcement) -> ThrowTimeline:
     #    POST-FIX capture, the one shape this probe exists to score, where it
     #    would emit a spurious trunc/seed/dip/pullback and measure `peak` at
     #    the descent onset instead of the coasting peak (a false PASS on the
-    #    row that guards the 11.1 rev end stop).
+    #    row that guards the 10.8 rev end stop).
     #    Verified on temp/logs/toss_trace_2026-07-25_15-24-25.jsonl: the
     #    predicate is TRUE from the descent's second sample onward (pos_cmd
     #    9.7253 rev, vel_ff_cmd -17.31 rev/s); the pre-fix data hides it only
@@ -775,7 +775,7 @@ def analyse_throw(session: Session, ann: Announcement) -> ThrowTimeline:
     tl.peak, tl.peak_pos_rev = pk.t, pk.pos_meas
     tl.peak_pos_mm = rev_to_mm(pk.pos_meas)
     tl.peak_over_x3_rev = pk.pos_meas - model.x3_rev
-    tl.headroom_to_limit_rev = hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS - pk.pos_meas
+    tl.headroom_to_limit_rev = hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - pk.pos_meas
 
     after_pk = [s for s in dip_win if s.t >= pk.t]
     pb = min(after_pk, key=lambda s: s.vel_meas)
@@ -888,7 +888,7 @@ def print_session(session: Session, timelines, preview: bool = False) -> None:
     # algebraically), so one representative model prints them for the session.
     _m = StrokeModel(hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS)
     print('   stroke model: x2=%.4f rev  x3=%.4f rev  stroke limit=%.2f rev'
-          % (_m.x2_rev, _m.x3_rev, hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS))
+          % (_m.x2_rev, _m.x3_rev, hw.GEOM_HAND_MOTOR_HARD_STOP_REVS))
 
     for k, tl in enumerate(timelines, 1):
         print('   ' + '-' * 74)
@@ -1162,7 +1162,7 @@ def run_fixed_shape_gate() -> int:
       clean            command follows the ramp to x3, hand settles at x3.
       overshoot        same command, hand coasts to 10.60 rev (past the runbook's
                        10.5 rev HARD ABORT).  `peak` must report the real
-                       excursion — otherwise the one row guarding the 11.1 rev
+                       excursion — otherwise the one row guarding the 10.8 rev
                        end stop reads PASS with the hand 0.5 rev from it.
       short-flight     `FLIGHT_TIME_MIN_S = 0.55`.  Here the armed catch descent
                        begins INSIDE `_DIP_WINDOW_S`, so this is the only case in
@@ -1184,10 +1184,10 @@ def run_fixed_shape_gate() -> int:
     x3s = StrokeModel(2.6971).x3_rev            # velocity-independent, but be exact
     # The deepest DOWNWARD brake makeSmoothMove can honour: the duration cap
     # (smoothMoveMaxDuration) stops it at v0 = A*T_cap/H2, whose excursion is
-    # v0*T_cap*H_MAX = 3.21 rev.  This is the case the old 0.5-rev separator got
+    # v0*T_cap*H_MAX = 3.126 rev.  This is the case the old 0.5-rev separator got
     # wrong — see _CATCH_DESC_ABOVE_X5_REV.
     _v0_cap = (hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2
-               * math.sqrt(hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+               * math.sqrt(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
                            * hw.TEENSY_TRAJ_QUINTIC_S2_MAX
                            / hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2)
                / hw.TEENSY_TRAJ_QUINTIC_H2_MAX)
@@ -1215,10 +1215,10 @@ def run_fixed_shape_gate() -> int:
              tl.peak_pos_rev is not None
              and abs(tl.peak_pos_rev - want_peak) <= 0.010),
             ('headroom_to_limit_rev', tl.headroom_to_limit_rev,
-             hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS - want_peak,
+             hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - want_peak,
              tl.headroom_to_limit_rev is not None
              and abs(tl.headroom_to_limit_rev
-                     - (hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS - want_peak))
+                     - (hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - want_peak))
              <= 0.010),
             # the runbook's gated dip row: a healthy capture never goes under x3
             ('dip_below_x3_rev', tl.dip_below_x3_rev,
@@ -1244,7 +1244,7 @@ def run_fixed_shape_gate() -> int:
 
     # ── deep-brake: the SEPARATOR at the clamp's reach ────────────────────────
     # The four cases above are all CLEAN captures.  This one deliberately is not:
-    # it carries the deepest DOWNWARD brake makeSmoothMove can honour (3.21 rev
+    # it carries the deepest DOWNWARD brake makeSmoothMove can honour (3.126 rev
     # below x3, at the duration cap), which is the shape the old 0.5-rev
     # separator misread as the armed catch descent.  Only two properties are
     # asserted — the two the separator owns — and the rest are PRINTED, because a

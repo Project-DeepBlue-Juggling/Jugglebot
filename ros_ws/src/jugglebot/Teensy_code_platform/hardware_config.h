@@ -61,7 +61,7 @@ namespace Geometry {
   constexpr float LEG_STROKE_MM = 280.0f;
   constexpr float ARM_RADIUS_MM = 70.0f;
   constexpr float ARM_HEIGHT_FROM_PLATFORM_MM = 210.25f;
-  constexpr float HAND_STROKE_MM = 355.0f;
+  constexpr float HAND_STROKE_MM = 344.75f;
   constexpr float HAND_RADIUS_MM = 35.0f;
   constexpr float HAND_AXIS_BOTTOM_OFFSET_MM = -129.0f;
   constexpr float BALL_JOINT_OFFSET_MM = 0.0f;
@@ -84,7 +84,7 @@ namespace Geometry {
   constexpr float INIT_LEG_LENGTHS_MM[6] = {648.419f, 648.419f, 648.419f, 648.419f, 648.419f, 648.419f};
   constexpr float MM_TO_REV[6] = {0.01418332f, 0.01419076f, 0.01408956f, 0.01418684f, 0.01426801f, 0.01424951f};
   constexpr float LEG_MOTOR_MAX_POSITION_REVS = 4.2f;
-  constexpr float HAND_MOTOR_MAX_POSITION_REVS = 11.1f;
+  constexpr float HAND_MOTOR_HARD_STOP_REVS = 10.8f;
 }
 
 // ==========================================================================
@@ -235,7 +235,7 @@ namespace TeensyTraj {
   constexpr float QUINTIC_H_MAX = 0.19753086f;
   constexpr float QUINTIC_H2_MAX = 3.940234f;
   constexpr float SMOOTH_MOVE_V0_DEADBAND_RPS = 6.0f;
-  constexpr float SMOOTH_MOVE_EXCURSION_MARGIN_REV = 0.5f;
+  constexpr float SMOOTH_MOVE_EXCURSION_MARGIN_REV = 0.2f;
   constexpr float MIN_EVENT_VEL_MPS = 0.3f;
   constexpr float MAX_EVENT_VEL_MPS = 7.0f;
 }

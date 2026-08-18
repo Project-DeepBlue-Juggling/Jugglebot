@@ -271,7 +271,7 @@ def smooth_move_duration_s(delta_rev: float, v0_rps: float = 0.0) -> float:
     **Not the whole of what the firmware emits at non-zero ``v0``.**
     ``makeSmoothMove`` substitutes the rest-to-rest duration whenever the honoured
     profile's excursion would leave the stroke or its duration would exceed
-    ``smoothMoveMaxDuration() = 0.8005`` s, so this function over-reports on the
+    ``smoothMoveMaxDuration() = 0.78964`` s, so this function over-reports on the
     fallback branch (at 119.6 rev/s it returns 4.71 s where the firmware emits a
     0.05 s floored hold).  Harmless today — every caller in this repository passes
     ``v0 = 0``, where the two agree exactly — but a caller that starts feeding the
@@ -324,7 +324,7 @@ def smooth_move_overshoot_rev(v0_rps: float, duration_s: float) -> float:
     the target coincides with the start (the braking case), because ``h`` and
     ``s`` do not peak at the same ``tau``.  This is the quantity a
     velocity-continuous prelude has to be checked against the stroke end for:
-    ``GEOM_HAND_MOTOR_MAX_POSITION_REVS - smooth_move_excursion_margin_rev``
+    ``GEOM_HAND_MOTOR_HARD_STOP_REVS - smooth_move_excursion_margin_rev``
     above, the homing reference below.  ``Trajectory.h``'s
     ``smoothMoveExcursion`` computes the exact interval; this is the closed-form
     bound a host-side caller can size a window with.
@@ -339,7 +339,7 @@ def smooth_move_max_continuous_v0_rps(headroom_rev: float) -> float:
     ``delta = 0``, where ``T = |v0|*H2/a_max``).  **This is the width of the
     velocity band over which Phase 4's continuity is actually affordable**, and
     it is narrow: 9.1 rev/s against the 0.6406 rev the stroke top leaves below
-    the 10.6 rev ceiling, 20.9 rev/s against the 3.4 rev a mid-stroke freeze
+    the 10.6 rev ceiling, 19.96 rev/s against the 3.10 rev a mid-stroke freeze
     leaves.  Above it the profile falls back to rest-to-rest, because the
     acceleration needed to arrest sooner is not bounded by anything the firmware
     declares — ``MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100`` rev/s² is a COMFORT

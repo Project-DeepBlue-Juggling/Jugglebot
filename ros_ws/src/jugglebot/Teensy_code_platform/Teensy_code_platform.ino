@@ -88,7 +88,19 @@
  *  line above saying WHAT changed and WHEN (the can-bridge's comment style).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 2;
+constexpr uint16_t FW_VERSION = 3;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+                                     //      feedforward, C-HAND-2).
+                                     // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
+                                     //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
+                                     //      (operator-measured metal contact). Trajectory.h
+                                     //      consumes it: SMOOTH_MOVE_POS_CEIL_REV is UNCHANGED at
+                                     //      10.60 rev (the margin moved 0.5 → 0.2 to hold it), but
+                                     //      smoothMoveMaxDuration() 0.80054 → 0.78964 s, which
+                                     //      changes which branch makeSmoothMove takes for a
+                                     //      prelude whose honoured duration lands in
+                                     //      (0.78964, 0.80054] s, i.e. |v0| in (20.04, 20.32] rev/s.
+                                     //      Conservative: that band now takes the rest-to-rest
+                                     //      fallback. See logbook/2026-08-18-hand-end-stop-corrected.md
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */

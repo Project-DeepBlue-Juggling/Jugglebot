@@ -364,7 +364,10 @@ Score the reload and toss halves of CAP-WORK with **separate probe invocations**
 > **One safety action**: five **off-run-sheet** ~1.2 m tosses drove the hand's measured
 > peak to `10.86–11.06 rev` — **1.2 mm** from the declared 11.1 rev limit — as pure
 > position-loop coast. **No further tosses above 0.78 m** until the true stroke limit is
-> pinned (three sources disagree: 11.124 / 11.224 / 11.4 rev) and `FLIGHT_TIME_MAX_S`
+> pinned (**RESOLVED 2026-08-18: the hard stop is 10.8 rev** — metal contact,
+> operator-measured on the sensorised hand; the three candidates 11.124 / 11.224 /
+> 11.4 rev were ALL too high, and the shipped 11.1 rev guard sat 0.3 rev PAST
+> metal, so the peaks below were not "near the limit" but past it) and `FLIGHT_TIME_MAX_S`
 > is reconciled with it.
 >
 > > **⚠️ AMENDED 2026-07-28 — IT TOUCHED. The `1.2 mm` is not headroom.** The operator
@@ -374,7 +377,9 @@ Score the reload and toss halves of CAP-WORK with **separate probe invocations**
 > > was watching a *contact*, not a clearance that was nearly consumed. **Do not read
 > > the remaining margin as proportional headroom for a lower toss.** If the contact
 > > coincided with the `11.0506 / 11.0621 rev` peaks then the physical stop sits
-> > *below* the declared `hand_motor_max_position_revs = 11.1` guard and below all
+> > *below* the declared `hand_motor_max_position_revs = 11.1` guard (**and the
+> > 2026-08-18 measurement confirms it: the stop is 10.8 rev, so the guard was
+> > never protective**) and below all
 > > three candidate anchors — i.e. the guard may not be protective. Stated as an
 > > inference: it is unknown *which* of the five throws was heard (peaks ranged
 > > `10.860–11.062`) and whether what was contacted is a compliant bumper or the hard
@@ -396,7 +401,8 @@ Score the reload and toss halves of CAP-WORK with **separate probe invocations**
 > > fails or on any audible contact. **On a `v0` or `v1` board the ceiling stands
 > > exactly as written above.** One thing the fix did NOT do, and it matters here:
 > > it did not pin the stop position. The three anchors still disagree by ~9 mm and
-> > the contact still suggests the stop may sit below the 11.1 rev guard — which is
+> > the contact still suggests the stop may sit below the 11.1 rev guard —
+> > **CONFIRMED 2026-08-18 at 10.8 rev** — which is
 > > why every HAND-7 band is at or below **10.60 rev**, safe under all three
 > > candidates, rather than sized against a margin nobody has measured.
 
@@ -1249,7 +1255,7 @@ is looked at.
 |---|---|---|---|
 | 1 | `trunc` | `-` (the command followed the decel ramp to `x3`) | any instant printed ⇒ the queue was still cleared mid-stroke |
 | 2 | `seeds` | `0` (printed as `-`) | `>= 1` from-rest quintic seed inside the stroke |
-| 3 | `peak` | **TIER-DEPENDENT since 2026-07-28 — use the § CHECK HAND-7 ladder table, not one number.** `<= 10.060` rev (`x3` 9.9594 + 0.10) is the band for the 0.38 m and 0.6 m tiers only; at and above 0.78 m the band is `<= 10.39` rev (the C-HAND-2 pessimistic bracket). The old single `<= 10.060` ABORTED on **10 of the 17** tosses of the 2026-07-27 sitting for a reason that was never a Phase-4 regression — ballistic coast growing as v² — and scoring the post-flash sitting against it would abort a working fix on the tier it exists to fix | `> ` the tier's band. **The hard abort is `> 10.60` rev** — 10.60 rev is the excursion clamp's own ceiling (`11.1 − 0.5`), and `10.060 < peak <= 10.60` is a **section** abort with a specific suspect (H4.4), *not* an E-STOP. `> 10.60` rev is the HARD ABORT + E-STOP (H4.5). One number, one response |
+| 3 | `peak` | **TIER-DEPENDENT since 2026-07-28 — use the § CHECK HAND-7 ladder table, not one number.** `<= 10.060` rev (`x3` 9.9594 + 0.10) is the band for the 0.38 m and 0.6 m tiers only; at and above 0.78 m the band is `<= 10.39` rev (the C-HAND-2 pessimistic bracket). The old single `<= 10.060` ABORTED on **10 of the 17** tosses of the 2026-07-27 sitting for a reason that was never a Phase-4 regression — ballistic coast growing as v² — and scoring the post-flash sitting against it would abort a working fix on the tier it exists to fix | `> ` the tier's band. **The hard abort is `> 10.60` rev** — 10.60 rev is the excursion clamp's own ceiling (`10.8 − 0.2` since 2026-08-18; `11.1 − 0.5` before — same 10.60), and `10.060 < peak <= 10.60` is a **section** abort with a specific suspect (H4.4), *not* an E-STOP. `> 10.60` rev is the HARD ABORT + E-STOP (H4.5). One number, one response |
 | 4 | `dip_below_x3` | `<= 0.100` rev (`<= 3.2` mm) — the row prints `OK` | `> 0.100` rev — the row prints `OVER`. Pre-fix range was **0.339–1.748 rev = 10.7–55.3 mm**. **Qualified by row 7 after Phase 4** — see below |
 | 5 | `pullback` | `>= -5.0` rev/s, **given row 3 passed** | `< -5.0` rev/s. Pre-fix range was **−17.9 to −42.4 rev/s** |
 | 6 | `catch_desc` | present, within ~20 ms of `event − t_acc_catch` | absent ⇒ the catch never fired; check the Teensy serial for `Not enough time for smooth-move` |
@@ -1286,7 +1292,9 @@ at the 10.060 rev ceiling of row 3, −10.03 at 10.60 rev.
 **Row 3 governs; 10.60 rev is a CEILING, not an expectation.** The probe's
 `overshoot` synthetic and the `pullback` figures above run out to 10.60 rev
 because that is where Phase 4's excursion clamp caps a velocity-continuous
-prelude (`11.1 − smooth_move_excursion_margin_rev 0.5`). A clean post-fix capture
+prelude (`10.8 − smooth_move_excursion_margin_rev 0.2`; read `11.1 − 0.5` until
+the 2026-08-18 hard-stop correction, which held the ceiling at 10.60 exactly).
+A clean post-fix capture
 must not go near it: Phase 4 measured the hand's live `|vel|` in the +20…+70 ms
 window the gated arm lands in at **≤ 0.25 rev/s**, which is inside the 6.0 rev/s
 dead-band, so the prelude is rest-to-rest and the commanded excursion is
@@ -1577,8 +1585,8 @@ grep -i 'smooth_move_hand' $LOG | grep -iE 'reject|out of range'   # H3.4
 | H3.1 | `pos_meas` at rest after a prime, from the trace | `9.776 <= pos <= 10.145` rev | outside **[9.4594, 10.4594]** ⇒ the parked hand is outside `_hand_dispatch_confirmed`'s near-band, so a lied ack reads as "not at target" and the ladder re-dispatches into a live ascent — the 2026-07-23 stutter. **DEBRIEF (not abort)** if inside the near-band but outside `[9.776, 10.145]`: nothing misjudges, but the settle envelope moved and the reload ladder's probe basis wants re-measuring |
 | H3.2 | `grep 'Hand primed to' launch.log` | every line reads `9.959 rev` | any line reads `9.858 rev` ⇒ stale install, re-run HAND-3a |
 | H3.3 | `grep -c 'ABORTED_PRIME_FAILED' launch.log` over the sitting | `0` | `>= 1` ⇒ the prime ladder exhausted. Cross-check H3.1: if the hand was physically at top each time, the near-band is the suspect |
-| H3.4 | `grep -i 'smooth_move_hand' launch.log \| grep -iE 'reject\|out of range'` | `0` hits | `>= 1` ⇒ the target left the bridge's `[0, 11.1]` validation range. Structurally impossible at 9.9594 (headroom **1.1406 rev = 36.1 mm**); a hit means the YAML override was mis-typed |
-| H3.5 | peak `pos_meas` during/just after a prime ascent | `<= 10.25` rev (1.6x the measured +0.186 rev overshoot at the old prime) | `>= 10.60` rev — still 0.5 rev short of the 11.1 overextension guard, but the prime is now 0.1014 rev closer to it than it was, so this is the row that watches that. **DEBRIEF (not abort) in `10.25 < peak < 10.60`**: overshoot beyond 1.6x the measured baseline with the end stop 0.5-0.85 rev away — record the peak and route to Phase 3 before further tosses |
+| H3.4 | `grep -i 'smooth_move_hand' launch.log \| grep -iE 'reject\|out of range'` | `0` hits | `>= 1` ⇒ the target left the bridge's `[0, 10.8]` validation range (`[0, 11.1]` before 2026-08-18). Structurally impossible at 9.9594 (headroom **0.8406 rev = 26.6 mm** to the 10.8 rev hard stop; read 1.1406 rev / 36.1 mm before the 2026-08-18 correction); a hit means the YAML override was mis-typed |
+| H3.5 | peak `pos_meas` during/just after a prime ascent | `<= 10.25` rev (1.6x the measured +0.186 rev overshoot at the old prime) | `>= 10.60` rev — still 0.2 rev short of the 10.8 hard stop (read "0.5 rev short of 11.1" before 2026-08-18) — overextension guard, but the prime is now 0.1014 rev closer to it than it was, so this is the row that watches that. **DEBRIEF (not abort) in `10.25 < peak < 10.60`**: overshoot beyond 1.6x the measured baseline with the end stop **0.20–0.55 rev** away (read 0.5–0.85 before the 2026-08-18 hard-stop correction) — record the peak and route to Phase 3 before further tosses |
 | H3.6 | a SAFE_ABORT retract, **if one occurs naturally** | the hand reaches `\|pos\| <= 0.5` rev | it does not. The retract-descending qualifier moved up with the prime (`pos < 9.4594`, was `9.3580`) — *more* permissive, and the failure it guards (parked-top `\|vel\|` noise, 5.39 rev/s p99, faking a descent) still has **0.317 rev** of separation from the translated parked-top minimum. Do not provoke an abort deliberately |
 | H3.7 | peak `vel_meas` during a full-stroke prime ascent | `<= 30` rev/s — see the calibration note below; the COMMANDED quintic peak is **24.63 rev/s** | `>= 40.0` rev/s ⇒ a prime can fake release evidence (`_THROW_STROKE_VEL_RPS = 40.0`). **DEBRIEF (not abort) in `30 <= peak < 40`**: that is ≥21 % over the commanded 24.63 rev/s, and overspeed on a smooth move is the re-seeded/clobbered-profile signature — record and route to `hand-command-continuity` Phase 3 |
 
@@ -1725,12 +1733,12 @@ python tools/probes/hand_stroke_timeline.py \
 | H4.2 | `peak` per toss, against the pre-flash capture | within **±0.05 rev** of the pre-flash reading on the same commanded height | a systematic increase ⇒ a prelude is engaging where the dead-band should have suppressed it: the hand's parked `\|vel\|` is above 6.0 rev/s at your gains/battery state. **The relevant number is the TOP-park dither**, measured once at p99 = 5.39 rev/s (2026-07-24 reload sitting) with its maximum never published — the 2026-07-25 toss traces park at the BOTTOM (≤ 2.16 rev/s) and say nothing about this risk. Record `vel_meas` at the arm instant and route to Phase 4's dead-band. **Size of the effect if it fires:** the excursion is `0.00778 * v0²` rev, so 0.280 rev = 8.9 mm just above the dead-band and 0.641 rev = 20.3 mm at the 9.07 rev/s the stroke top can absorb |
 | H4.3 | `first_neg_cmd` vs `catch_desc` | equal (no annotation) on every toss | annotated `<-- NOT the catch descent (a brake?)`: **REPORT, do not abort.** It means a braking prelude fired, i.e. the hand was genuinely moving >6.0 rev/s when a command landed. Record the toss and the `vel_meas` at that instant — it is the first live evidence of the continuous branch and it belongs in the logbook |
 | H4.4 | `peak`, if it lands in `10.060 < peak <= 10.60` rev | does not occur | occurs ⇒ **ABORT the section.** 10.60 rev is the excursion clamp's ceiling, so a reading in this band means a velocity-continuous prelude ran with a `v0` large enough to use most of the headroom. It is *bounded* (the clamp held) but it is not the clean path. Record `peak`, `first_neg_cmd` and `vel_meas`; route to Phase 4's dead-band and excursion margin |
-| H4.5 | `peak > 10.60` rev | does not occur | **HARD ABORT, E-STOP.** The clamp is `11.1 − 0.5 = 10.60` rev *commanded*; exceeding it means the clamp did not run (flash suspect — re-check H4.0), or the position loop overshot the commanded profile by more than the 0.5 rev margin (2.7× the +0.186 rev tracking overshoot measured at the old prime), or the documented endpoint relaxation served a prelude from a live position *already* above 10.6 rev — which is the pre-fix measured state (10.165–10.325 rev), is legal by design, and never adds a bulge above that live reading. Check `first_neg_cmd` and the live `pos_meas` at the command instant to tell them apart. Either way the next 0.5 rev is the overextension guard and the 0.76 mm after that is the hard stop |
+| H4.5 | `peak > 10.60` rev | does not occur | **HARD ABORT, E-STOP.** The clamp is `10.8 − 0.2 = 10.60` rev *commanded* (the same 10.60; the base and margin were both corrected 2026-08-18 and the ceiling did not move); exceeding it means the clamp did not run (flash suspect — re-check H4.0), or the position loop overshot the commanded profile by more than the **0.2 rev** margin (1.08× the +0.186 rev tracking overshoot measured at the old prime; this read "0.5 rev / 2.7×" until the 2026-08-18 hard-stop correction), or the documented endpoint relaxation served a prelude from a live position *already* above 10.6 rev — which is the pre-fix measured state (10.165–10.325 rev), is legal by design, and never adds a bulge above that live reading. Check `first_neg_cmd` and the live `pos_meas` at the command instant to tell them apart. Either way the next **0.2 rev (6.3 mm)** is all that remains before metal — **there is no further guard band**. (This row read "the next 0.5 rev is the overextension guard and the 0.76 mm after that is the hard stop" until 2026-08-18; both quantities were derived from the wrong 11.1 rev anchor and over-stated the remaining margin by ~2.5×.) |
 | H4.6 | `seeds` on any toss, cross-read with H4.3 | `0` (printed `-`) | `>= 1`: same ABORT as HAND-1 row 2, but Phase 4 adds a second suspect. A from-rest seed now means **either** the arm gate failed (Phase 1) **or** `makeSmoothMove` took its documented cannot-fit fallback — because the excursion would have left the stroke, *or* because the arrest would have taken longer than 0.8005 s. Distinguish by the seed's position: a seed *inside* the decel ramp (below `x3`) with `trunc` printed is the Phase-1 failure; a seed at or above `x3` with `trunc = -` is the fallback. Record which, and the `vel_meas` at the seed — above ~9 rev/s at the stroke top it is the excursion clamp, above ~20 rev/s anywhere it is the duration cap |
 | H4.7 | `Not enough time for smooth-move` on the Teensy serial | absent | present ⇒ same hard abort as H1.6. Note Phase 4 can *lengthen* a prelude (a velocity-continuous move takes longer than a rest-to-rest one over the same Δ — up to 0.24 s at the dead-band edge, 0.32 s at 8 rev/s), so if this appears **only** after the flash and H4.3 shows a brake on the same toss, the arm-fit budget needs the continuous prelude added. Route to `hand_stroke.required_arm_lead_s` |
 | H4.8 | a SAFE_ABORT retract, **if one occurs naturally** | the retract still runs and the hand reaches `\|pos\| <= 0.5` rev | it does not. **Hard ABORT** — a kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the Teensy offers, and Phase 4 edits the exact condition (`makeSmoothMove` returning empty) that `Teensy_code_platform.ino:472-475` checks *before* `packedMsgs.clear()`. The change **narrows** that branch (empty now also requires the hand to be at rest), so this should be strictly safer than before the flash — but it is the one row where a regression would be catastrophic and silent. Do **not** provoke an abort deliberately this sitting |
 | H4.9 | minimum commanded/measured `pos` on any toss, and after any retract | `>= 0.0` rev — encoder zero is the excursion clamp's FLOOR and the host's own declared floor for this axis | `< 0.0` rev ⇒ **hard abort.** The bottom hard stop is at −0.1 rev (the axis homes downward into it) and the floor carries no margin for the position loop's +0.186 rev undershoot, so any commanded value below zero is planned travel onto the stop. Route to Phase 4's `SMOOTH_MOVE_POS_FLOOR_REV` |
-| H4.10 | duration of any commanded hand move (last sample − first, from the trace) | `<= 0.8005` s | `>` that ⇒ the firmware's duration cap did not run (flash suspect). The cap is what keeps `catch_coordinator._PRIME_INFLIGHT_S = 1.2` s covering every profile the Teensy can emit; above it a re-prime tick can land inside a live ascent, which is the 2026-07-23 stutter |
+| H4.10 | duration of any commanded hand move (last sample − first, from the trace) | `<= 0.78964` s (was `0.8005` s pre-2026-08-18; **a board still emitting up to `0.8005` s is an UNFLASHED board** — cross-read FW-1) | `>` that ⇒ the firmware's duration cap did not run (flash suspect). The cap is what keeps `catch_coordinator._PRIME_INFLIGHT_S = 1.2` s covering every profile the Teensy can emit; above it a re-prime tick can land inside a live ascent, which is the 2026-07-23 stutter |
 
 **What HAND-4 cannot see, stated plainly.** Every row above is scored on the
 *clean* path, which the fix deliberately leaves unchanged, plus two rows (H4.3,
@@ -1872,7 +1880,7 @@ C-HAND-2 — what the peak would be if the feedforward were the *only* braking a
 the closed loop contributed nothing, at the least favourable of the two
 reflected-inertia identifications. It is velocity-independent, which is why one
 number covers three rungs. `10.60` is unchanged: the excursion clamp's own
-ceiling (`11.1 − 0.5`), and the same hard-abort line § CHECK HAND-4 uses.
+ceiling (`10.8 − 0.2` since 2026-08-18; `11.1 − 0.5` before — same 10.60), and the same hard-abort line § CHECK HAND-4 uses.
 
 ### PASS / ABORT — the rows unique to this section
 
@@ -1881,7 +1889,7 @@ ceiling (`11.1 − 0.5`), and the same hard-abort line § CHECK HAND-4 uses.
 | **H7.0** | the board is on v2 | `grep PLATFORM_FW_CHECK "$LOG"` | `OK — … v2` | anything else — see FW-1. **A `v1` board scores this whole section as a re-run of the sitting that touched the stop** |
 | **H7.0a** | **desk, before the flash** — the firmware xref actually ran | `pytest tests/firmware/test_hand_throw_decel_xref.py -q` on a host **with `g++`** | `passed`, **ZERO skips** | any failure, **or `N skipped`**. A SKIP means `g++` was absent, and this file is the only thing in the repository that reads the C++ you are about to flash — everything else is a hand-maintained transcription. **A SKIP is not a PASS. Do not flash on a skip.** Same lesson as H4.0b, which is about the sibling xref |
 | **H7.0b** | **desk** — the verdict instrument itself is sound | `python tools/probes/hand_decel_authority.py --self-check` | `SELF-CHECK: PASS`, exit 0 — it scores a synthetic PRE-fix capture FLAG and a synthetic POST-fix capture ACCEPT | any `BAD` line. This probe produces H7.2 / H7.3 / H7.5; an instrument validated on only the broken shape scores a **working fix as a failure** and burns the sitting. Also INST-6 |
-| **H7.0c** | **before the flash, on the live drive** — the negative torque clamp | `odrivetool` on the hand axis: read `axis0.config.torque_soft_min` | anything `<= -0.20` N·m (comfortably below the 38.9 A = 0.215 N·m the ceiling rung commands) | **`-0.0551` N·m** (= exactly −10.00 A) ⇒ **STOP, do not flash.** That is what `config/ODrive config Files/odrive_pro_hand_config.json` declares, and it is asymmetric against a `torque_soft_max` of +0.5 N·m. If it is live it truncates the decel feedforward — **legacy and corrected alike** — above ~0.49 m, and the whole ladder would read pre-fix numbers that the failure table below would misattribute to physics. Record the value either way; it takes 30 s and it is currently an open question (C-HAND-2 § *The negative torque clamp*) |
+| **H7.0c** | **before the flash, on the live drive** — the negative torque clamp | `odrivetool` on the hand axis: read `axis0.config.torque_soft_min` | anything `<= -0.20` N·m (comfortably below the 38.9 A = 0.215 N·m the ceiling rung commands) | **`-0.0551` N·m** (= exactly −10.00 A) ⇒ **STOP, do not flash.** That is what `config/ODrive config Files/odrive_pro_hand_config.json` declares, and it is asymmetric against a `torque_soft_max` of +0.5 N·m. If it is live it truncates the decel feedforward — **legacy and corrected alike** — above ~0.49 m, and the whole ladder would read pre-fix numbers that the failure table below would misattribute to physics. **ANSWERED 2026-08-18: the clamp WAS live.** `torque_soft_min/max` are now a symmetric **±0.7 N·m** and `save_configuration()` has been run, so this row is a REGRESSION CHECK, not an open question — a reading of `−0.0551` now means the drive config drifted back. Original text: *record the value either way; it takes 30 s and it is currently an open question* (C-HAND-2 § *The negative torque clamp*) |
 | **H7.1** | no end-stop contact | **your ears and your hand**, every toss | silence at the top of the stroke | any click / thud / tap ⇒ **STOP the ladder**, record the rung, do not climb |
 | **H7.2** | `peak` per rung | `hand_decel_authority.py`, `peak` column | the rung's band above | the rung's band above |
 | **H7.3** | **flatness — the falsifiable prediction** | `hand_decel_authority.py` prints it directly: the `flatness (H7.3)` line, **spread of the per-TIER MEAN `over_x3`** (not per-toss) | spread across **R1–R4** — R0 is excluded, it is the over-brake rung and may read at or below zero — **`<= 0.35` rev** | `> 0.35` rev ⇒ the overshoot still grows with speed, so the feedforward did not become the dominant braking term and extrapolating to the ceiling is unjustified. **Do not run R5.** Pre-fix this spread was **0.9575 rev** (0.0629 → 1.0204). **Where 0.35 comes from** (it is a prediction with margin, not a round number): the pessimistic bracket is velocity-independent, but the *achieved* overshoot is `loop attenuation × open-loop bracket`, and the attenuation is strongly speed-dependent — measured 4.3 / 3.7 / 20.2 / 59.4 % of the 1.7185 rev pre-fix open-loop bracket at the four tiers. Applying those same ratios to the 0.4259 rev post-fix bracket predicts per-tier `over_x3` of 0.018 / 0.016 / 0.086 / 0.253, i.e. a **spread of 0.237 rev** for a fix behaving exactly as modelled. 0.35 leaves 1.5× headroom over that prediction while still failing the pre-fix shape by 2.7×. *(Raised 2026-07-29 from 0.25, which sat at 95 % of the model's own prediction — a coin flip that would have blocked R5 on a working fix.)* |
@@ -1945,12 +1953,23 @@ ceiling (`11.1 − 0.5`), and the same hard-abort line § CHECK HAND-4 uses.
   by `hand_decel_authority.py`.
 * **It does not touch the ascent, the catch, or `makeSmoothMove`.** Rows H7.7 and
   H4.* are the guards on that.
-* **It does not resolve where the physical stop actually is.** The three
-  candidate anchors (11.124 / 11.224 / 11.4 rev) still disagree by ~9 mm, and the
-  operator's contact at a measured 11.06 rev suggests the stop may sit *below*
-  the declared 11.1 rev guard. HAND-7's bands are all at or below 10.60 rev, so
-  the ladder is safe under every candidate — but the anchor question is still
-  open and still worth closing.
+* ~~**It does not resolve where the physical stop actually is.**~~ **RESOLVED
+  2026-08-18 — the hard stop is 10.8 rev, metal contact, operator-measured on the
+  sensorised hand** (the hand changed during ball-sensor integration and the limit
+  was never updated). All three candidate anchors (11.124 / 11.224 / 11.4 rev) were
+  too high, and the shipped **11.1 rev guard sat 0.3 rev PAST metal** — it was never
+  protective. The operator's contact at a measured 11.06 rev was therefore 0.26 rev
+  *past* the stop, not near it. HAND-7's bands are all at or below 10.60 rev, so the
+  ladder was, and remains, safe. See `logbook/2026-08-18-hand-end-stop-corrected.md`.
+
+> **⚠ THE R0–R5 LADDER WAS DECLINED BY THE OWNER, 2026-08-18.** catch-robustness
+> Phase 0 closed on the clamp fix alone: `torque_soft_min/max` are now ±0.7 N·m and
+> the post-throw dip is gone by eye, and the owner judged further bench time not
+> worth it. So this section's **quantitative gate was never measured on the restored
+> drive**, § CAP-DECEL is **not** the next capture, and C-HAND-2's
+> `J >= 1.0126e-5 kg·m²` — measured *through* the clamp — is a watch-item rather
+> than a scheduled re-derivation. The rungs stay here, unrun, for whoever wants
+> them: re-derive if end-stop `peak` or `dip_below_x3` ever regresses.
 
 
 ---

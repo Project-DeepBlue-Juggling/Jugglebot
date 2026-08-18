@@ -54,7 +54,7 @@ class StewartGeometry:
         # Motor position limits (revolutions)
         # ------------------------------------------------------------------
         self.leg_motor_max_rev = float(hw.GEOM_LEG_MOTOR_MAX_POSITION_REVS)
-        self.hand_motor_max_rev = float(hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS)
+        self.hand_motor_max_rev = float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)
 
     @property
     def num_legs(self) -> int:

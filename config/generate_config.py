@@ -858,7 +858,7 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         "",
         f"// Motor position limits",
         f"export const LEG_MOTOR_MAX_POS_REVS = {geom['leg_motor_max_position_revs']};",
-        f"export const HAND_MOTOR_MAX_POS_REVS = {geom['hand_motor_max_position_revs']};",
+        f"export const HAND_MOTOR_HARD_STOP_REVS = {geom['hand_motor_hard_stop_revs']};",
         "",
         "// Ball Butler position relative to base centre (mm).",
         "// Placeholder -- updated dynamically via bb/calibration_result topic.",

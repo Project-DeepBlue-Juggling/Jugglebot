@@ -133,7 +133,20 @@ def encode_deactivate(axis: int = AXIS_ALL) -> bytes:
 
 
 def encode_sdo_read(axis: int, endpoint: int) -> bytes:
-    """SDO_READ: arbitrary parameter read (response returns async on TxSdo)."""
+    """SDO_READ: arbitrary parameter read — FIRE-AND-FORGET. The value never
+    reaches the Jetson, so this CANNOT be used to read a register back.
+
+    The ODrive does answer on TxSdo, but nothing correlates that reply to the
+    caller: ``rpc.cpp``'s SDO_READ case returns an empty result blob, and
+    ``can_buses.cpp``'s TxSdo decode consumes a reply ONLY for the hand's
+    ``get_gpio_states`` (the ball sensor), discarding every other. No uplink frame
+    carries an arbitrary SDO value. The hand is refused outright — SDO_READ is
+    absent from ``hand_axis6_permitted``, so axis 6 gets ERR_REJECTED before
+    anything leaves the Teensy.
+
+    Reading a register back needs a firmware change, not a caller change; the
+    analysis is in ``odrive-config-drift-assertion.md``.
+    """
     return ArgSdoRead(axis=int(axis), endpoint=int(endpoint)).pack()
 
 
@@ -287,7 +300,7 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: (ros_ws/docs/hand_decel_feedforward.md). A board still on 1 is not unsafe — it
 #: simply coasts past the stroke end as it did before — but it invalidates every
 #: § CHECK HAND-7 bench row, which is why the check warns loudly.
-PLATFORM_FW_VERSION_EXPECTED = 2
+PLATFORM_FW_VERSION_EXPECTED = 3
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -402,7 +415,7 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: uptime. Same bumped-while-the-board-is-behind situation until the operator
 #: flashes: ``/link_status`` will read `13 (SKEW — expected v14)`, which is the
 #: CORRECT report, and it is advisory everywhere, never enforced.
-EXPECTED_BRIDGE_FW_VERSION = 14
+EXPECTED_BRIDGE_FW_VERSION = 15
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

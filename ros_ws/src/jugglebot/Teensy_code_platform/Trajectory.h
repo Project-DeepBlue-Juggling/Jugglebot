@@ -70,7 +70,7 @@ constexpr float SMOOTH_MOVE_MIN_DURATION_S = 0.05f;   // fmaxf guard, historical
    bound is relaxed to fminf(FLOOR, start, target) below, so every legal target
    stays servable at any floor value, and a profile whose bulge would go under
    simply takes the documented rest-to-rest fallback (today's behaviour).       */
-constexpr float SMOOTH_MOVE_POS_CEIL_REV   = Geometry::HAND_MOTOR_MAX_POSITION_REVS
+constexpr float SMOOTH_MOVE_POS_CEIL_REV   = Geometry::HAND_MOTOR_HARD_STOP_REVS
                                              - TeensyTraj::SMOOTH_MOVE_EXCURSION_MARGIN_REV;
 constexpr float SMOOTH_MOVE_POS_FLOOR_REV  = JBOp::HAND_RETRACT_REV;
 /* Slack on the two end-stop comparisons.  NOT a margin — it absorbs float32
@@ -376,8 +376,8 @@ inline float smoothMoveDuration(float delta_rev, float v0_rps)
    Arresting v0 costs time as well as travel: the duration grows linearly in |v0|
    without bound, so the excursion clamp alone does not stop a prelude from
    outlasting a move the firmware could previously command.  The cap is the
-   longest REST-TO-REST smooth move the stroke admits (full travel, 0 -> 11.1
-   rev = 0.8005 s), so an honoured prelude can never take longer than a profile
+   longest REST-TO-REST smooth move the stroke admits (full travel, 0 -> 10.8
+   rev = 0.78964 s), so an honoured prelude can never take longer than a profile
    this firmware already emitted before the change — which means every host-side
    window sized on a commanded hand move stays valid without moving.
 
@@ -394,7 +394,7 @@ inline float smoothMoveDuration(float delta_rev, float v0_rps)
    test_prime_inflight_window_covers_the_commanded_prime_ascent.                */
 inline float smoothMoveMaxDuration()
 {
-    return sqrtf(Geometry::HAND_MOTOR_MAX_POSITION_REVS * QUINTIC_S2_MAX
+    return sqrtf(Geometry::HAND_MOTOR_HARD_STOP_REVS * QUINTIC_S2_MAX
                  / MAX_SMOOTH_MOVE_HAND_ACCEL);
 }
 

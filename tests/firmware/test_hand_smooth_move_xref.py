@@ -146,13 +146,13 @@ _A_MAX = f32(_TT['MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2'])
 _S2 = f32(_TT['QUINTIC_S2_MAX'])
 _H2 = f32(_TT['QUINTIC_H2_MAX'])
 _DEADBAND = f32(_TT['SMOOTH_MOVE_V0_DEADBAND_RPS'])
-_CEIL = f32(f32(_GEO['HAND_MOTOR_MAX_POSITION_REVS'])
+_CEIL = f32(f32(_GEO['HAND_MOTOR_HARD_STOP_REVS'])
             - f32(_TT['SMOOTH_MOVE_EXCURSION_MARGIN_REV']))
 _FLOOR = f32(_JBOP['HAND_RETRACT_REV'])
 _EPS = f32(1e-4)
 _SAMPLE_RATE = int(_TT['SAMPLE_RATE_HZ'])
 _MIN_DUR = f32(0.05)
-_MAX_DUR = f32(math.sqrt(f32(f32(f32(_GEO['HAND_MOTOR_MAX_POSITION_REVS']) * _S2)
+_MAX_DUR = f32(math.sqrt(f32(f32(f32(_GEO['HAND_MOTOR_HARD_STOP_REVS']) * _S2)
                              / _A_MAX)))
 
 
@@ -277,7 +277,7 @@ def test_mirror_constants_match_the_shipped_firmware_header():
             ('MIN_EVENT_VEL_MPS', 'MIN_EVENT_VEL_MPS'),
             ('MAX_EVENT_VEL_MPS', 'MAX_EVENT_VEL_MPS')):
         assert _TT[hdr] == getattr(mirror, sim_name), hdr
-    assert _GEO['HAND_MOTOR_MAX_POSITION_REVS'] == mirror.HAND_MOTOR_MAX_POSITION_REVS
+    assert _GEO['HAND_MOTOR_HARD_STOP_REVS'] == mirror.HAND_MOTOR_HARD_STOP_REVS
     assert _HOM['HAND_ABS_POS_REV'] == mirror.HAND_HOME_ABS_POS_REV
     # The excursion FLOOR the clamp actually uses — encoder zero, not the stop.
     assert _JBOP['HAND_RETRACT_REV'] == mirror.HAND_RETRACT_REV
@@ -301,7 +301,7 @@ def test_trajectory_h_sources_every_smooth_move_constant_from_the_header():
             ('SMOOTH_MOVE_V0_DEADBAND', 'TeensyTraj::SMOOTH_MOVE_V0_DEADBAND_RPS')):
         assert re.search(r'constexpr\s+float\s+%s\s*=\s*%s\s*;'
                          % (re.escape(alias), re.escape(qualified)), src), alias
-    assert 'Geometry::HAND_MOTOR_MAX_POSITION_REVS' in src
+    assert 'Geometry::HAND_MOTOR_HARD_STOP_REVS' in src
     assert 'TeensyTraj::SMOOTH_MOVE_EXCURSION_MARGIN_REV' in src
     assert 'Homing::HAND_ABS_POS_REV' in src
     # and it actually READS the velocity — the bug was that it never did
@@ -319,9 +319,9 @@ def test_the_stroke_top_agrees(self=None):
 
 def test_the_end_stop_ceiling_agrees_with_the_firmware_expression():
     """11.1 - 0.5 = 10.6 rev, from the header, in both places."""
-    want = (_GEO['HAND_MOTOR_MAX_POSITION_REVS']
+    want = (_GEO['HAND_MOTOR_HARD_STOP_REVS']
             - _TT['SMOOTH_MOVE_EXCURSION_MARGIN_REV'])
-    got = (mirror.HAND_MOTOR_MAX_POSITION_REVS
+    got = (mirror.HAND_MOTOR_HARD_STOP_REVS
            - mirror.SMOOTH_MOVE_EXCURSION_MARGIN_REV)
     assert got == pytest.approx(want, abs=1e-12)
     assert want == pytest.approx(10.6, abs=1e-12)
@@ -727,7 +727,7 @@ def test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror(tmp_path):
         # itself evaluates — an assertion that re-uses the code's own predicate
         # passes for any value of the clamp constants, including a floor moved a
         # full rev below the bottom hard stop.
-        assert hi <= max(mirror.HAND_MOTOR_MAX_POSITION_REVS, start, target) + 1e-6
+        assert hi <= max(mirror.HAND_MOTOR_HARD_STOP_REVS, start, target) + 1e-6
         assert lo >= min(0.0, start, target) - 1e-3, (
             (start, target, v0), 'commanded below encoder zero')
 
@@ -777,7 +777,7 @@ def test_trajectory_h_structure_lint():
     # 3c. the duration is capped as well as the excursion — arresting v0 costs
     #     time, and an honoured prelude that outlasts every rest-to-rest move
     #     outgrows the host windows sized on them (_PRIME_INFLIGHT_S).
-    assert re.search(r'return\s+sqrtf\(Geometry::HAND_MOTOR_MAX_POSITION_REVS\s*'
+    assert re.search(r'return\s+sqrtf\(Geometry::HAND_MOTOR_HARD_STOP_REVS\s*'
                      r'\*\s*QUINTIC_S2_MAX', src)
     # ...and the fallback is a rest-to-rest profile, never an empty one
     fallback = src[src.index('start_rev + hi > ceil_rev'):]

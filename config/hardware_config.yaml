@@ -329,7 +329,22 @@ jugglebot_geometry:
   # Arm / catching structure (mounted on top of platform)
   arm_radius_mm: 70.0                # Radius of opening where the ball comes in {mm}. Approximate.
   arm_height_from_platform_mm: 210.25  # Height of ball entry opening above the platform leg nodes {mm}
-  hand_stroke_mm: 355.0              # Stroke of the jugglebot hand {mm}. Must be accurate — used to detect overextension.
+  # The hand's PHYSICAL travel between hard stops {mm} — a measured fact.
+  # 344.75 = hand_motor_hard_stop_revs 10.8 rev (metal contact, operator-measured
+  # 2026-08-18) + the 0.1 rev the firmware sets encoder zero above the BOTTOM stop,
+  # converted at 31.6284 mm/rev: (10.8 + 0.1) x 31.6284 = 344.7496 mm.
+  #
+  # It read 355.0 until 2026-08-18, self-consistent with the old (wrong) 11.1 rev
+  # anchor: (11.1 + 0.1) x 31.6284 = 354.24 mm ~ 355. Correcting the anchor without
+  # correcting this would have left the sim's modelled hand able to travel ~10 mm
+  # further than the real one.
+  #
+  # ⚠ DELIBERATELY NOT PROPAGATED TO `teensy_trajectory.hand_stroke_m` (0.355).
+  # Read that key's comment before touching either. The two are now DIFFERENT
+  # NUMBERS ON PURPOSE and the old "Matches geometry hand_stroke_mm" claim is
+  # retired. Consumers of THIS key are the GUI render and the MuJoCo model's hand
+  # joint range/ctrlrange (sim/model/generate_mjcf.py) — geometry, not control.
+  hand_stroke_mm: 344.75
   hand_radius_mm: 35.0               # Radius of hand {mm}. Approximate.
   hand_axis_bottom_offset_mm: -129.0  # Hand axis bottom position relative to platform centroid {mm} (CAD measurement)
 
@@ -380,8 +395,34 @@ jugglebot_geometry:
   # Motor position limits (in revolutions, pre-inversion).
   # leg value includes headroom above the stroke-derived limit (~4.0 rev).
   leg_motor_max_position_revs: 4.2
-  # hand true max ~11.4 rev. This value includes a safety margin.
-  hand_motor_max_position_revs: 11.1
+  # The hand's PHYSICAL hard stop -- metal contact, measured on the sensorised
+  # hand (operator, 2026-08-18). This is a measured FACT, not a policy: every
+  # guard that wants headroom subtracts its own margin from it, explicitly, at
+  # its own site -- with ONE deliberate exception, recorded here so the rule is
+  # not silently false: the command clamp (can/odrive.py HAND_MOTOR_MAX_POSITION,
+  # mirrored in canbridge_config.h) clamps AT this value with no margin, so a
+  # commanded 10.8 rev target is served onto metal. It is strictly tighter than
+  # the 11.1 it replaced, and no legitimate target goes near it (prime 9.959,
+  # retract 0.0), but giving it an explicit margin is an open owner decision.
+  #
+  # Deliberately NOT named `hand_motor_max_position_revs` any more, and
+  # deliberately shaped differently from `leg_motor_max_position_revs` above --
+  # the two keys mean OPPOSITE things (the leg value sits ABOVE its
+  # stroke-derived limit; this one is the limit), and sharing the
+  # `..._max_position_revs` spelling is what let a wrong hand value survive: it
+  # read as "the hard limit" to one reader and "the limit minus a margin" to the
+  # next, so neither could tell it was wrong.
+  #
+  # It read 11.1 until 2026-08-18, annotated "hand true max ~11.4 rev. This
+  # value includes a safety margin." Both numbers were wrong, and the error was
+  # one-sided: the declared guard sat 0.3 rev ABOVE the real stop, so
+  # `clip_position` (host `can/odrive.py` AND the can-bridge firmware) accepted
+  # commanded setpoints up to 9.5 mm past metal. It also mis-scored the
+  # 2026-07-27 sitting, whose five off-run-sheet ~1.2 m tosses peaked at
+  # 10.8601-11.0621 rev: against 11.1 those read as headroom; against 10.8 they
+  # are 0.06-0.26 rev PAST the stop, and they are the contact the operator felt.
+  # Logbook: 2026-08-18-hand-end-stop-corrected.md
+  hand_motor_hard_stop_revs: 10.8
 
 # ============================================================
 # 3. Jugglebot Homing
@@ -975,7 +1016,32 @@ teensy_trajectory:
   throw_vel_hold_pct: 0.05              # Fraction of throw profile at constant velocity
   catch_vel_ratio: 0.6                  # Catch velocity as fraction of throw velocity
   catch_vel_hold_pct: 0.10              # Fraction of catch profile at constant velocity
-  hand_stroke_m: 0.355                  # Total hand linear stroke {m}. Matches geometry hand_stroke_mm.
+  # ⚠ DELIBERATELY LEFT AT 0.355 — owner decision, 2026-08-18. DO NOT "fix" this to
+  # match jugglebot_geometry.hand_stroke_mm (344.75). They are different numbers on
+  # purpose, and the divergence is the point.
+  #
+  # WHY. This key is NOT a measurement of the hand's travel; it is the BASIS OF THE
+  # THROW PROFILE. It feeds `total_stroke = hand_stroke_m - 2*stroke_margin_m` in
+  # config/generate_config.py, which derives x2 (ball release), x3 (stroke top, and
+  # therefore the catch prime) and x5 (catch point). Every one of those has been
+  # validated on hardware at the values 0.355 produces, and the tilt map, the toss
+  # calibration in config/toss_calibration.yaml, the catch tuning and the runbook's
+  # `peak <= 10.060` band (which IS x3 + 0.10) are all keyed to them.
+  #
+  # WHAT "CORRECTING" IT WOULD COST. Setting 0.34475 moves, in rev:
+  #     x2  5.9159 -> 5.7234   (-0.193 rev, -6.1 mm)  ball release
+  #     x3  9.9629 -> 9.6387   (-0.324 rev, -10.3 mm) stroke top / prime
+  #     x5  6.1289 -> 5.9295   (-0.199 rev, -6.3 mm)  catch point
+  # i.e. it invalidates the whole calibration set and needs its own re-validation
+  # round. That is a scheduled piece of work, not a tidy-up.
+  #
+  # IS IT SAFE AS-IS? Yes. x3 = 9.9594 rev sits 0.84 rev (26.6 mm) BELOW the 10.8 rev
+  # hard stop, so the profile never commands into metal. What 0.355 no longer means
+  # is "the physical stroke"; the 20 mm `stroke_margin_m` insets it describes were
+  # already fictional in the firmware's frame (see sim/hand/trajectory.py's note —
+  # the sim CENTRES the stroke in the travel, the firmware starts it at encoder
+  # zero). Treat this as a TUNED PROFILE PARAMETER whose units happen to be metres.
+  hand_stroke_m: 0.355                  # Throw-profile basis {m} — NOT the physical stroke.
   stroke_margin_m: 0.02                 # Safety margin at ends of stroke {m}
   end_profile_hold_s: 0.10              # Hold time at end of motion profile {s}
   sample_rate_hz: 500                   # Trajectory sample rate {Hz}
@@ -1034,13 +1100,33 @@ teensy_trajectory:
                                         #     excursion against bench row H3.5's measured-position PASS
                                         #     band (see § CHECK HAND-4 rows H4.2/H4.4 for which row
                                         #     scores which).
-  smooth_move_excursion_margin_rev: 0.5   # Headroom kept below geometry hand_motor_max_position_revs
+  smooth_move_excursion_margin_rev: 0.2   # Headroom kept below geometry hand_motor_hard_stop_revs
                                         # when a velocity-continuous smooth move is allowed to
-                                        # overshoot {rev}. 11.1 - 0.5 = 10.6 rev ceiling. Sized at 2.7x
-                                        # the MEASURED position-loop tracking overshoot on this profile
-                                        # type (+0.186 rev at the old prime, bench row H3.5), because
-                                        # the 11.1 rev overextension guard sits only 0.76 mm below the
-                                        # top of the 355 mm stroke. One-sided on purpose, but NOT because
+                                        # overshoot {rev}. 10.8 - 0.2 = 10.6 rev ceiling.
+                                        # *** 0.5 -> 0.2 on 2026-08-18 KEEPS THE CEILING WHERE IT WAS. ***
+                                        # The base moved 11.1 -> 10.8 (the real hard stop), so the margin
+                                        # moved with it to hold 10.6 exactly -- owner's call, 2026-08-18.
+                                        # The commanded smooth-move ceiling is therefore BIT-IDENTICAL
+                                        # before and after (float32 0x41299a9a both ways). NOT the whole
+                                        # path, though: smoothMoveMaxDuration() moved 0.80054 -> 0.78964 s
+                                        # with the base, so a prelude whose honoured duration lands in
+                                        # (0.78964, 0.80054] s -- |v0| in (20.04, 20.32] rev/s -- now takes
+                                        # the rest-to-rest fallback. Conservative (that IS pre-Phase-4
+                                        # behaviour), but it is a behaviour change and is recorded as one.
+                                        # HONEST SIZING NOTE, because the old text claimed a ratio that no
+                                        # longer holds: 0.5 rev was 2.7x the MEASURED position-loop
+                                        # tracking overshoot on this profile type (+0.186 rev at the old
+                                        # prime, bench row H3.5). 0.2 rev is 1.08x it. That is not a
+                                        # regression -- the physical situation is unchanged, because the
+                                        # ceiling is unchanged; what changed is that we now know the stop
+                                        # is at 10.8, so ceiling + measured overshoot = 10.6 + 0.186 =
+                                        # ~10.786 lands ~0.014 rev (0.44 mm) under metal, where the old
+                                        # arithmetic believed it had 0.31 rev. That is the "occasional
+                                        # light tap" regime the owner accepted on 2026-08-18; restoring a
+                                        # 2.7x ratio would mean a 10.3 rev ceiling, which was declined
+                                        # because Phase 4's measured max commanded prelude is 10.2259 rev
+                                        # and 10.3 would leave it 0.074 rev.
+                                        # One-sided on purpose, but NOT because
                                         # a bottom margin would make the retract target infeasible —
                                         # that reasoning was wrong (the bound is relaxed to
                                         # min(FLOOR, start, target), so every legal target is servable

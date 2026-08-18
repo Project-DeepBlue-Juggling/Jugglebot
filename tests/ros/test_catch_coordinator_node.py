@@ -521,10 +521,10 @@ def test_prime_inflight_window_covers_the_commanded_prime_ascent():
     # stroke admits), so the window still covers every profile the Teensy can
     # emit; this asserts the two have not drifted apart.  Without the cap the
     # bound below is 1.206 s and this fails, which is the point.
-    cap = math.sqrt(float(hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS)
+    cap = math.sqrt(float(hw.GEOM_HAND_MOTOR_HARD_STOP_REVS)
                     * float(hw.TEENSY_TRAJ_QUINTIC_S2_MAX)
                     / float(hw.TEENSY_TRAJ_MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2))
-    assert cap == pytest.approx(0.80054, abs=1e-4)
+    assert cap == pytest.approx(0.78964, abs=1e-4)
     assert _PRIME_INFLIGHT_S >= cap, (
         'the in-flight window no longer covers the longest hand move the '
         'firmware can command')

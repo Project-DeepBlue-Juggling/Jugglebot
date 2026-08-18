@@ -129,8 +129,8 @@ class TestScalarConstants:
         assert js_val == pytest.approx(yaml_val, abs=0.01)
 
     def test_hand_motor_max_pos(self, yaml_config, js_source):
-        yaml_val = yaml_config['jugglebot_geometry']['hand_motor_max_position_revs']
-        js_val = _extract_js_number(js_source, 'HAND_MOTOR_MAX_POS_REVS')
+        yaml_val = yaml_config['jugglebot_geometry']['hand_motor_hard_stop_revs']
+        js_val = _extract_js_number(js_source, 'HAND_MOTOR_HARD_STOP_REVS')
         assert js_val == pytest.approx(yaml_val, abs=0.01)
 
 

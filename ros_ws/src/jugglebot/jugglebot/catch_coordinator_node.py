@@ -133,7 +133,7 @@ _PRIME_RETRY_QUIET_S = 1.5
 # so it is not suppressed — is now seeded with the hand's live descent velocity
 # and solves to 1.206 s at the retract's peak, past this window outright. The
 # firmware bounds an honoured prelude to the longest rest-to-rest move the stroke
-# admits (Trajectory.h::smoothMoveMaxDuration = 0.8005 s) so this window still
+# admits (Trajectory.h::smoothMoveMaxDuration = 0.78964 s) so this window still
 # covers every profile the Teensy can emit; the test asserts BOTH bounds.
 _PRIME_INFLIGHT_S = 1.2
 
