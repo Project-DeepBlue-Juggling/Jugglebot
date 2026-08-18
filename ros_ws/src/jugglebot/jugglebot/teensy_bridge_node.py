@@ -4947,6 +4947,9 @@ class TeensyBridgeNode(Node):
         return self._call_rpc(RpcMethod.HAND_TRAJ_CMD, args)
 
     def teensy_sdo_read(self, axis, endpoint):
+        """SDO_READ — FIRE-AND-FORGET. The returned blob is ALWAYS empty: no SDO
+        reply reaches the Jetson, and axis 6 is rejected outright. Not a way to
+        read a register back — see rpc_args.encode_sdo_read for why."""
         return self._call_rpc(RpcMethod.SDO_READ,
                               rpc_args.encode_sdo_read(axis, endpoint))
 
