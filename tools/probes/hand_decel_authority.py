@@ -136,16 +136,23 @@ HAND_KT_NM_PER_A = 0.00551333324983716
 #: stiction), so treat it as +-50 %.
 GRAVITY_HOLD_A = 1.50
 
-#: The hand ODrive's flashed NEGATIVE torque clamp — ``config/ODrive config
-#: Files/odrive_pro_hand_config.json`` ``axis0.config.torque_soft_min``.  It is
-#: **asymmetric**: -0.0551 N.m is exactly -10.00 A at this Kt, while
-#: ``torque_soft_max`` is +0.5 N.m (+90.7 A, so the 50 A current limit binds on
-#: the motoring side).  If that clamp is live on the flashed drive it truncates
-#: the decel feedforward — legacy AND corrected — at every tier above ~0.49 m,
-#: which would make this whole phase a no-op.  See C-HAND-2 § The negative
-#: torque clamp for the counter-evidence and the bench pre-flight that settles
-#: it.  Named here so the number is greppable from the instrument.
-HAND_TORQUE_SOFT_MIN_NM = -0.055133331567049026
+#: The hand ODrive's NEGATIVE torque clamp as it was flashed UNTIL 2026-08-18.
+#: It was **asymmetric**: -0.0551 N.m is exactly -10.00 A at this Kt, against a
+#: ``torque_soft_max`` of +0.5 N.m (+90.7 A, so the 50 A current limit bound the
+#: motoring side and only the braking side was clamped).  **CONFIRMED LIVE and
+#: REMOVED at the bench on 2026-08-18** — H7.0c's pre-registered hypothesis was
+#: right and this instrument's own "very probably NOT binding" counter-evidence
+#: (achieved decel grew 2.6x across the tiers) was WRONG.  Kept named because
+#: every capture taken before 2026-08-18 was measured THROUGH it: the braking
+#: iq in those bags is clamp-limited, not plant-limited, so no inertia or
+#: authority number derived from them transfers to the restored drive.
+HAND_TORQUE_SOFT_MIN_NM_PRE_2026_08_18 = -0.055133331567049026
+
+#: The clamp flashed from 2026-08-18 onward — symmetric +-0.7 N.m = +-127 A at
+#: this Kt, i.e. far outside ``current_soft_max`` 50.0 A, so the CURRENT limit
+#: is the fence on both sides and the torque clamp no longer truncates anything.
+HAND_TORQUE_SOFT_MIN_NM = -0.7
+HAND_TORQUE_SOFT_MAX_NM = 0.7
 
 
 def _parse_namespace(ns: str) -> dict:
@@ -381,17 +388,20 @@ def report(model: Model, rows, stale, curr_limit_a: float = 50.0):
               f'(per-toss spread {max(allover)-min(allover):.4f} rev)')
 
     print()
-    clamp_a = HAND_TORQUE_SOFT_MIN_NM / HAND_KT_NM_PER_A
-    print(f'!! hand ODrive axis0.config.torque_soft_min = '
-          f'{HAND_TORQUE_SOFT_MIN_NM:.6f} Nm = {clamp_a:.2f} A (asymmetric; '
-          f'torque_soft_max = +0.5 Nm)')
-    print('   If that clamp is LIVE on the flashed drive it truncates the decel')
-    print('   feedforward at every tier above ~0.49 m and this phase is a no-op.')
-    print('   Counter-evidence from this capture: a hard clamp would force one')
-    print('   SINGLE achieved decel at every tier, and the a_ach column above')
-    print('   grows 2.6x across the band — so it is very probably NOT binding.')
-    print('   Settle it at the bench: read torque_soft_min off the live axis')
-    print('   BEFORE the flash (§ CHECK HAND-7 row H7.0c).')
+    old_clamp_a = HAND_TORQUE_SOFT_MIN_NM_PRE_2026_08_18 / HAND_KT_NM_PER_A
+    now_clamp_a = HAND_TORQUE_SOFT_MIN_NM / HAND_KT_NM_PER_A
+    print(f'!! hand ODrive torque clamp: was '
+          f'{HAND_TORQUE_SOFT_MIN_NM_PRE_2026_08_18:.6f} Nm = {old_clamp_a:.2f} A '
+          f'(asymmetric, torque_soft_max +0.5 Nm) until 2026-08-18; now '
+          f'+-{HAND_TORQUE_SOFT_MAX_NM:.1f} Nm = +-{abs(now_clamp_a):.0f} A.')
+    print('   H7.0c CONFIRMED the old clamp was LIVE and it has been removed —')
+    print('   the 50 A current_soft_max is the fence on both sides now.')
+    print('   This instrument previously argued the clamp was "very probably NOT')
+    print('   binding" because a_ach grows 2.6x across the band. That argument')
+    print('   was WRONG; do not resurrect it.')
+    print('   ==> Any capture dated BEFORE 2026-08-18 has clamp-limited braking')
+    print('   iq. Inertia and authority numbers derived from those bags (incl.')
+    print("   C-HAND-2's J >= 1.0126e-5) must be re-derived on the restored drive.")
     print()
     print('authority — the reason a steeper commanded ramp was rejected:')
     for j in (1.0126e-5, 1.050e-5):
