@@ -217,6 +217,27 @@ TEENSY_TRAJ_MIN_EVENT_VEL_MPS = 0.3
 TEENSY_TRAJ_MAX_EVENT_VEL_MPS = 7.0
 
 # ============================================================================
+# Hand Throw Envelope
+# ============================================================================
+
+HAND_ENV_END_STOP_MARGIN_REV = 0.2
+HAND_ENV_MEASURED_COAST_REV = [
+    [3.142, 0.1342],
+    [3.714, 0.2119],
+    [4.436, 0.226],
+]
+HAND_ENV_COAST_EXTRAPOLATION_EXPONENT = 2.0
+HAND_ENV_DECEL_FF_CURRENT_HEADROOM_FRAC = 0.85
+HAND_ENV_MEASURED_REFLECTED_INERTIA_KGM2 = 1.05e-05
+HAND_ENV_ARM_WINDOW_MARGIN_S = 0.05
+HAND_ENV_DC_BUS_NOMINAL_V = 45.0
+HAND_ENV_REGEN_RAIL_CAPACITY_W = 300.0
+HAND_ENV_HAND_TORQUE_CONSTANT_NM_PER_A = 0.0055133
+HAND_ENV_HAND_TORQUE_SOFT_LIMIT_NM = 0.7
+HAND_ENV_GRAVITY_HOLD_CURRENT_A = 1.5
+HAND_ENV_REGEN_CURRENT_LIMIT_A = 8.0
+
+# ============================================================================
 # Teensy Operational
 # ============================================================================
 

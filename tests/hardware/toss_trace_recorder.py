@@ -227,7 +227,25 @@ REJECT_WIRE_MAP = {
                      'by reverting the default; a tier outside {8a, 8b} means the '
                      'YAML or the INSTALLED copy is wrong)',
     'REJECTED_CANT_MAKE_LEAD': 'goal: throw_delay_s below the 3.5 s floor',
-    'REJECTED_FLIGHT_TIME': 'goal: flight_time_s outside [0.55, 1.10] s',
+    'REJECTED_FLIGHT_TIME': 'goal: flight_time_s is not a positive finite '
+                            'number (a sign typo or a NaN — the FSM never '
+                            'coerces one to the default). The flyable BAND is '
+                            'no longer here: see REJECTED_THROW_ENVELOPE',
+    'REJECTED_THROW_ENVELOPE': 'goal: the throw is outside the DERIVED '
+                               'feasibility envelope (contract C-HAND-3, '
+                               'ros_ws/docs/hand_throw_envelope.md). The '
+                               'outcome names the binding bound in parentheses '
+                               'and quotes the computed envelope: END_STOP = '
+                               'the modelled post-release COAST would take the '
+                               'hand past hand_motor_hard_stop_revs less '
+                               'end_stop_margin_rev (throw lower); ARM_WINDOW = '
+                               'the flight is too SHORT to place the catch arm '
+                               'after the throw stroke clears (throw higher); '
+                               'DECEL_AUTHORITY / ACCEL_AUTHORITY / REGEN = the '
+                               'drive cannot make the commanded ramp; INPUT = a '
+                               'non-finite goal. Do NOT widen the envelope to '
+                               'clear this — the coast ladder is a conservative '
+                               'upper bound pending a fresh capture',
     'REJECTED_POSE_UNKNOWN': 'goal (Tier 8b only): no FRESH '
                              'trajectory/commanded_position, so the throw site A '
                              '(= the platform LIVE commanded xy since 2026-07-29) '

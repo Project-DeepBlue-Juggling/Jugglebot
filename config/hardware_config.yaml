@@ -603,8 +603,16 @@ jugglebot_operational:
                                          # single-ball-toss plan's Phase-5 T0 bench session measures the JB
                                          # value before any non-zero entry lands here.
   toss_flight_time_default_s: 0.8        # Default toss flight time {s} when a Toss goal's flight_time_s is
-                                         # 0/unset — mid-sweep of the plan's 0.55–1.10 s band, the worked
-                                         # example (launch ≈ 3.93 m/s). The coordinator resolves this and
+                                         # 0/unset — the worked example (launch ≈ 3.93 m/s, apex 0.784 m).
+                                         # It read "mid-sweep of the plan's 0.55–1.10 s band" until
+                                         # 2026-08-18; that band was two hand-picked literals and is now
+                                         # DERIVED (contract C-HAND-3, hand_throw_envelope below), so 0.8 s
+                                         # is no longer mid-band — the derived band is [0.4949, 0.8871] s
+                                         # and 0.8 sits at 78 % of it, 0.087 s under the ceiling.
+                                         # ⚠ THIS VALUE MUST STAY INSIDE THE DERIVED ENVELOPE or every
+                                         # zero-flight-time goal is refused; pinned by
+                                         # tests/motion/test_throw_envelope.py::test_the_default_toss_is_admitted.
+                                         # The coordinator resolves this and
                                          # passes the resolved value into the TossSequencer ctor;
                                          # toss_sequencer's local DEFAULT_TOSS_FLIGHT_TIME_S is the
                                          # no-config fallback only, pinned equal by the drift-guard test.
@@ -1137,6 +1145,290 @@ teensy_trajectory:
                                         # rev above the homing reference, which is the physical stop.
   min_event_vel_mps: 0.3                 # Minimum hand event velocity {m/s}
   max_event_vel_mps: 7.0                 # Maximum hand event velocity {m/s}
+
+# ============================================================
+# 8b. Hand Throw Envelope  (contract C-HAND-3)
+#     Source of truth: ros_ws/docs/hand_throw_envelope.md
+#     Consumer: jugglebot/motion/trajectory/throw_envelope.py — the ONE place
+#     that decides whether a throw may be dispatched.  HOST-SIDE ONLY: no
+#     firmware reads these (the generated HandEnv:: namespace is inert), so a
+#     change here needs `colcon build --packages-select jugglebot` + relaunch
+#     and NO flash.
+#
+#     WHY THIS SECTION EXISTS.  Until 2026-08-18 the flyable band was two
+#     hand-picked literals in toss_sequencer.py — `FLIGHT_TIME_MIN_S = 0.55`
+#     ("plan sweep floor") and `FLIGHT_TIME_MAX_S = 1.10` ("plan sweep
+#     ceiling").  Neither was sized against the hand's mechanical end stop,
+#     because the end stop's declared location was wrong (11.1 rev, i.e. 0.3
+#     rev PAST metal, until the 2026-08-18 correction to 10.8).  The ceiling was
+#     sized from DECEL AUTHORITY alone, and at 1.10 s the modelled post-release
+#     coast peaks at 12.17 rev — 1.37 rev (43 mm) past the real stop.  These
+#     keys replace both literals with a derived envelope.
+# ============================================================
+hand_throw_envelope:
+  end_stop_margin_rev: 0.2              # Headroom kept below jugglebot_geometry
+                                        # hand_motor_hard_stop_revs (10.8) for the
+                                        # BALLISTIC post-release coast peak {rev}.
+                                        # 10.8 - 0.2 = 10.60 rev, which today coincides
+                                        # with (a) the firmware's own
+                                        # teensy_trajectory.smooth_move_excursion_margin_rev
+                                        # (0.2) and (b) the runbook's hard-abort rows
+                                        # (§ CHECK HAND-4 / HAND-7 `peak > 10.60 +
+                                        # E-STOP`).  That coincidence is NOT a design:
+                                        # commit 3760daa moved the firmware key 0.5 ->
+                                        # 0.2 purely to hold 10.60 fixed when the stop
+                                        # moved 11.1 -> 10.8, so the firmware's 0.2 is a
+                                        # residual.  The two guard different things — the
+                                        # firmware constant bounds a COMPUTED smooth-move
+                                        # excursion the Teensy checks exactly, this one
+                                        # bounds a STOCHASTIC ballistic excursion nothing
+                                        # checks in flight — so what is PINNED is the
+                                        # RELATION host >= firmware, not equality
+                                        # (tests/motion/test_throw_envelope.py).  Equality
+                                        # would block the safe direction: raising the
+                                        # firmware key to match changes Trajectory.h's
+                                        # SMOOTH_MOVE_POS_CEIL_REV and needs a FLASH.
+                                        #
+                                        # ⚠ FROZEN AT 0.20 BY OWNER DECISION, 2026-08-20.
+                                        # Do NOT retune it to buy or give back headroom.
+                                        #
+                                        # WHAT IT ACTUALLY BUYS, now that the ladder is
+                                        # per-speed MAXIMA measured on the flashed plant
+                                        # (it was per-tier MEANS from the pre-fix sitting
+                                        # until 2026-08-20, when the within-tier upper
+                                        # deviation — 0.083 rev — also had to come out of
+                                        # this margin):
+                                        #   telemetry aliasing        0.029 rev (0.9 mm)
+                                        #     (0.5*a_top*(5 ms)^2 at a_top = 2302 rev/s^2;
+                                        #      hand telemetry is a ~100 Hz sample of a
+                                        #      500 Hz stream, so a measured apex
+                                        #      under-reports by up to half a sample)
+                                        #   => residual headroom      0.171 rev (5.4 mm)
+                                        # against 0.088 rev (2.8 mm) under the old
+                                        # mean-based ladder.  The margin is doing far less
+                                        # work than it was, and END_STOP no longer binds at
+                                        # all — the ceiling is set by REGEN.
+                                        # Caveat on n: the 3.142 and 3.714 rungs are the max
+                                        # of TWO throws each, which under-states a
+                                        # population max.  The rung that anchors the
+                                        # extrapolation, 4.436, has n = 14.
+  measured_coast_rev:                   # THE coast model: [release_speed_mps, coast_rev]
+                                        # where coast = measured peak hand position MINUS
+                                        # the commanded stroke top x3 (9.9594 rev).  Each
+                                        # rung is that speed's **MAXIMUM** observed coast,
+                                        # not its mean.
+                                        #
+                                        # The gate interpolates linearly between rungs,
+                                        # holds the lowest rung's value below the ladder,
+                                        # and above the TOP rung extrapolates
+                                        #   coast(v) = coast_top * (v/v_top)^p
+                                        # with p = coast_extrapolation_exponent below.
+                                        #
+                                        # ═══ PROVENANCE — MEASURED ON THE FLASHED PLANT ═══
+                                        # (Platform FW 3, can-bridge FW 15, hand ODrive
+                                        # torque_soft_min/max symmetric at +-0.7 N.m.)
+                                        # Re-derive any row with:
+                                        #   python tools/probes/hand_stroke_timeline.py \
+                                        #     --bag ~/Desktop/rosbags/<id> --json
+                                        #
+                                        # 3.142 / 3.714 m/s  (apex 0.5 / 0.7 m), n = 2 each
+                                        #   bag 2026-08-20_21-51-39, purpose-built session,
+                                        #   six throws, ALL CAUGHT.
+                                        # 4.436 m/s (apex 1.0 m), n = 14
+                                        #   two from 2026-08-20_21-51-39 + twelve from
+                                        #   2026-08-18_18-42-19.
+                                        #   min 0.1796  mean 0.2079  max 0.2260.
+                                        #
+                                        # ⚠ ONE THROW IS DELIBERATELY EXCLUDED, and it is
+                                        # the most informative datum in the set.  Bag
+                                        # 2026-08-18_18-42-19 contains a CLAMP CHANGE
+                                        # MID-SESSION: braking iq_meas never passes
+                                        # -8.87 A through t = 0-100 s (the -10.00 A
+                                        # torque_soft_min was LIVE), then reaches -13.71 /
+                                        # -16.58 / -17.39 A from t = 100 s on.  Its FIRST
+                                        # throw, at t = 84.9 s, coasted **+0.763 rev**
+                                        # (peak 10.7222); every other throw in the same bag
+                                        # at the IDENTICAL commanded 4.436 m/s coasts
+                                        # 0.18-0.23.  Same command, same firmware, 3.8x the
+                                        # coast — a within-session A/B showing the clamp
+                                        # WAS the coast mechanism.  That throw is PRE-FIX
+                                        # data and must never be readmitted to this ladder.
+                                        #
+                                        # ═══ SUPERSEDES the 2026-07-27 pre-fix ladder ═══
+                                        #   [2.742, 0.074] [3.440, 0.063]
+                                        #   [3.969, 0.347] [4.858, 1.020]  <- touched metal
+                                        # Those were group MEANS from
+                                        # temp/logs/toss_trace_2026-07-27_15-39-50.jsonl,
+                                        # captured with the legacy decel feedforward AND
+                                        # the -10.00 A clamp live.  They are retained here
+                                        # only so nobody reinstates them: on that ladder a
+                                        # 1.10 s toss modelled to 12.17 rev against a
+                                        # 10.8 rev stop, and the whole envelope was set by
+                                        # END_STOP.  Post-fix the tracking fraction eta is
+                                        # ~FLAT (0.968 / 0.954 / 0.951 vs the pre-fix
+                                        # collapse 0.982 -> 0.799), i.e. the axis went from
+                                        # AUTHORITY-limited to TRACKING-limited, and
+                                        # END_STOP stopped binding entirely.
+                                        # ⚠ DO NOT mix rungs from the two ladders.
+    - [3.142, 0.1342]                   # n=2 (0.1342, 0.1315); a_ach 1181 of a_cmd 1220
+    - [3.714, 0.2119]                   # n=2 (0.1803, 0.2119); a_ach 1625 of a_cmd 1704
+    - [4.436, 0.2260]                   # n=14, max; a_ach 2312 of a_cmd 2431 (eta 0.951)
+  coast_extrapolation_exponent: 2.0     # p in coast(v) = coast_top*(v/v_top)^p above the
+                                        # ladder's top rung {dimensionless}.
+                                        #
+                                        # ⚠ THIS IS AN EXTRAPOLATION.  The data spans
+                                        # 3.142-4.436 m/s (1.41x); the shipped ceiling is
+                                        # 5.478 m/s, i.e. **1.235x past the fastest speed
+                                        # ever measured on this plant**.
+                                        #
+                                        # 2.0 is the PESSIMISTIC end of the fitted family,
+                                        # chosen deliberately over the best fit.  Fitted
+                                        # exponents, all computed 2026-08-20: log-log OLS
+                                        # on per-speed maxima 1.50; on per-speed means
+                                        # 1.31; on all 18 individual points 1.12; minimax
+                                        # best 1.4 (maxima) / 1.2 (means) / 0.8 (all).  The
+                                        # exponent is WEAKLY IDENTIFIED — within-speed
+                                        # scatter (+-0.023 rev at 4.436) is a third of the
+                                        # whole slope across the measured span (0.134 ->
+                                        # 0.226) — which is the reason to take the
+                                        # pessimistic end rather than the fitted one.
+                                        # 2.0 is also the BALLISTIC exponent: it is what
+                                        # coast would do if the tracking shortfall were a
+                                        # fixed FRACTION of a v^2 commanded decel.
+                                        #
+                                        # ✅ AND IT COSTS NOTHING.  At p = 2.0 END_STOP
+                                        # first binds at 7.468 m/s (or 6.458 on a strict
+                                        # upper envelope through EVERY measured point) —
+                                        # both above DECEL_AUTHORITY 5.816 and above the
+                                        # REGEN fence 5.478 that actually binds.  **So the
+                                        # extrapolation does not set the ceiling; a
+                                        # configured torque/rail limit does.**  It is
+                                        # load-bearing only for the CLAIM that END_STOP
+                                        # does not bind, and that claim survives the whole
+                                        # fitted family (p 0.8 -> 2.5 all clear it).
+                                        # Raising p is the safe direction: p = 2.5 still
+                                        # binds at 6.73 m/s.
+  decel_ff_current_headroom_frac: 0.85  # Fraction of hand_curr_limit_a the POST-RELEASE
+                                        # decel FEEDFORWARD alone may ask for {0-1}.
+                                        # C-HAND-2's own requirement, previously enforced
+                                        # only as a test literal
+                                        # (tests/sim/test_hand_throw_decel_ff.py
+                                        # ::test_peak_decel_feedforward_current_stays_inside
+                                        # _the_shipped_limit): a feedforward that saturates
+                                        # the drive leaves the position/velocity loop NO
+                                        # authority to correct on top of it, and raising
+                                        # hand_curr_limit_a is an operator decision.
+                                        # It became a BINDING envelope bound on 2026-08-20:
+                                        # with the measured coast ladder the ceiling moved
+                                        # out to DECEL_AUTHORITY's 5.816 m/s, where the
+                                        # feedforward alone wants 45.2 A of 50 — 90 %, over
+                                        # this line.  Encoding it here stops the envelope
+                                        # admitting a throw C-HAND-2 forbids.  It binds at
+                                        # 5.636 m/s.
+  measured_reflected_inertia_kgm2: 1.050e-5
+                                        # TOTAL reflected inertia of the hand axis at the
+                                        # motor, as MEASURED {kg m^2} — the counterpart of
+                                        # teensy_trajectory.throw_decel_reflected_inertia_kgm2
+                                        # (9.5e-6), which is what the FIRMWARE declares and
+                                        # is deliberately 6-10 % BELOW this.  Two
+                                        # identifications exist (C-HAND-2 § The declared
+                                        # inertia): a decel-side torque-balance BOUND of
+                                        # >= 1.0126e-5 and a regression of achieved-vs-
+                                        # commanded decel giving 1.050e-5.  The LARGER is
+                                        # declared here because this key sizes a
+                                        # DECELERATION AUTHORITY ceiling (a_max = I*Kt /
+                                        # (J*2*pi)) and a larger J means LESS authority —
+                                        # the conservative direction.  Until 2026-08-18 this
+                                        # number lived only in prose and in a test literal.
+  arm_window_margin_s: 0.05             # Minimum slack the Phase-1 catch-arm window must
+                                        # still have at a candidate flight time {s}.
+                                        # The window is
+                                        #   T - max(0.3, required_arm_lead(v_armed))
+                                        #     - throw_decel(v_throw) - ARM_SUPPRESS_MARGIN
+                                        # and it CLOSES at T = 0.4542 s; below that the
+                                        # catch arm cannot be placed after the throw stroke
+                                        # and before the Teensy's :533 budget, so the ball
+                                        # flies uncatchable.  0.050 s is deliberately the
+                                        # SAME number the bench gates every withheld arm on
+                                        # (runbook row H1.5, `slack > 0.050 s`) — one
+                                        # number, two enforcement surfaces.  That is its
+                                        # ONLY job, and the consequence must be stated: the
+                                        # floor is DEFINED as the flight where the window
+                                        # equals this margin, so a goal admitted AT the
+                                        # floor sits exactly on H1.5's gate — a bench
+                                        # boundary, not a comfortable operating point.
+                                        # An earlier draft also claimed it "covers the
+                                        # ~23 ms announcement-to-release transit that
+                                        # required_arm_lead_s excludes".  IT CANNOT DO
+                                        # BOTH: subtract that transit and the real slack at
+                                        # the floor is ~27 ms, which fails H1.5.  The
+                                        # transit remains EXCLUDED.
+  dc_bus_nominal_v: 45.0                # DC bus voltage {V} — OWNER-STATED 2026-08-20.
+                                        # It read an INFERRED 48.0 until then (guessed from
+                                        # the drive's overvoltage trip 50.0 V); 45 V is the
+                                        # real nominal.
+  regen_rail_capacity_w: 300.0          # STEADY-STATE regen capacity of the HV rail {W} —
+                                        # OWNER-STATED 2026-08-20.
+                                        #
+                                        # ⚠ IT IS NOT THE INSTANTANEOUS FENCE, and must not
+                                        # be used as one.  Braking is a BURST: the decel
+                                        # ramp is 50-90 ms and MIN_TOSS_THROW_DELAY_S is
+                                        # 3.5 s, so the duty cycle is ~2 % and the
+                                        # steady-state average is a few W even at peak
+                                        # instantaneous regen.  The owner is explicitly
+                                        # comfortable with bursts to 360 W (2026-08-20), so
+                                        # dc_max_negative_current = -8.0 A at 45 V is a
+                                        # DESIGN POINT, not a misconfiguration.
+                                        # The envelope therefore fences on the DRIVE limit
+                                        # (regen_current_limit_a * dc_bus_nominal_v = 360 W)
+                                        # and treats this key as the documented
+                                        # steady-state check, which the duty cycle clears by
+                                        # ~60x.  Measured peak instantaneous regen at the
+                                        # 1.0 m working point: **79.3 W** (132.1 rev/s x
+                                        # -17.32 A x Kt, bag 2026-08-20_21-51-39).
+  hand_torque_constant_nm_per_a: 0.0055133
+                                        # axis0.config.motor.torque_constant on the HAND
+                                        # ODrive {N.m/A}, transcribed from
+                                        # `config/ODrive config Files/odrive_pro_hand_config.json`
+                                        # (0.00551333324983716, rounded at the 6th sig fig —
+                                        # the JSON value is a float32 round-trip).  It lived
+                                        # only in prose (C-HAND-2) and in test literals until
+                                        # 2026-08-18.  ⚠ NEVER re-flash this on the drive to
+                                        # "fix" a torque scale: on the LEG axes doing so
+                                        # stealth-detunes the velocity loop by -11.7 % (the
+                                        # loop's vel_gain is in N.m, so iq = torque/Kt), and
+                                        # the same coupling exists here.  This key is a
+                                        # TRANSCRIPTION of what is flashed, never a command.
+  hand_torque_soft_limit_nm: 0.7        # axis0.config.torque_soft_max / -torque_soft_min on the
+                                        # hand ODrive {N.m}, symmetric since 2026-08-18 (it was
+                                        # torque_soft_min = -0.055133 N.m = exactly -10.00 A, an
+                                        # asymmetry that truncated the braking feedforward; see
+                                        # the runbook row H7.0c).  At 0.7 N.m this fence is
+                                        # 2.5x the 0.2757 N.m the 50 A current limit allows, so
+                                        # the CURRENT limit is what binds — the key exists so
+                                        # the envelope can SAY that rather than assume it, and
+                                        # so a regression back to -0.0551 shows up as a
+                                        # 2.5x-tighter envelope instead of silently truncating
+                                        # the brake again.
+  gravity_hold_current_a: 1.50          # Measured steady-state current to hold the BALL-FREE
+                                        # hand against gravity {A} (2026-07-27 sitting;
+                                        # C-HAND-2 § The one-sided-safety clause quotes it as
+                                        # `1.50 A x Kt = 0.00827 N.m`).  Enters the envelope
+                                        # twice, with OPPOSITE signs: on the post-release
+                                        # DECELERATION (hand travelling up) gravity BRAKES, so
+                                        # it is conservatively IGNORED there; on the ASCENT it
+                                        # OPPOSES the commanded accel, so it is SUBTRACTED from
+                                        # the available motoring torque.
+  regen_current_limit_a: 8.0            # |config.dc_max_negative_current| on the hand
+                                        # ODrive {A}, transcribed from
+                                        # `config/ODrive config Files/odrive_pro_hand_config.json`.
+                                        # config.max_regen_current is 0.0 (no brake
+                                        # resistor), so regen goes to the rail.  With
+                                        # dc_bus_nominal_v this is the BURST fence the
+                                        # envelope uses: 8.0 A x 45 V = 360 W, which the
+                                        # owner has confirmed the rail tolerates as a burst.
+                                        # It binds at 6.574 m/s — above DECEL_AUTHORITY's
+                                        # 5.816, so REGEN is a checked, NON-binding bound.
 
 # ============================================================
 # 9. Teensy Operational

@@ -1122,12 +1122,24 @@ class SessionTrim:
         it is safe"; read it as the safety argument the wiring decision starts
         from.
 
-        Safe by construction WHEN wired: ``x3``
-        (``hand_stroke::STROKE_TOP_REV``) is algebraically velocity-independent,
+        ⚠ **The safety argument that used to stand here is FALSE — do not
+        reinstate it.** It read: *"``x3`` is algebraically velocity-independent,
         so a speed trim cannot move the hand toward the end stop, and
-        ``validate_event_vel`` still gates the result against
-        ``[TEENSY_TRAJ_MIN_EVENT_VEL_MPS, TEENSY_TRAJ_MAX_EVENT_VEL_MPS]`` =
-        [0.3, 7.0] m/s, which a ±10 % trim on 3.91 m/s clears by 1.6×.
+        ``validate_event_vel`` still gates the result against [0.3, 7.0] m/s."*
+        ``x3`` is velocity-independent; the **uncommanded coast past ``x3``** is
+        not — it runs 0.074 rev at 2.742 m/s to 1.020 rev at 4.858 m/s (measured
+        2026-07-27; contract **C-HAND-3**, ``ros_ws/docs/hand_throw_envelope.md``
+        § B1). A +10 % trim at the derived envelope ceiling takes 4.357 →
+        4.793 m/s and the modelled peak from 10.600 to ~11.05 rev, **0.25 rev
+        past the 10.8 rev mechanical stop** — while sailing through the [0.3,
+        7.0] wire band, which bounds nothing physical.
+
+        **What wiring this actually requires**: the trim is applied at DISPATCH,
+        after the FSM's CHECKING gate, so a wired ``speed_gain`` bypasses the
+        single enforcement point outright. Wiring it means re-running
+        ``throw_envelope.evaluate(flight_time_s, k_v * event_vel_mps)`` on the
+        TRIMMED speed, at the point of application — not relying on a gate that
+        already ran against the untrimmed value.
         """
         return float(self._kv)
 

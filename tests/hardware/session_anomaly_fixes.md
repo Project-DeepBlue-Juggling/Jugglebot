@@ -599,7 +599,7 @@ running:
 | FK-1 | no spurious FK refusals | `0` × `seed FK failed`, `0` × `guard descent FK failed` across every node log | `>= 1` of either. (`non-finite target extensions` ⇒ **REPORT**, route to the can-bridge, not here) | `fk-convergence-tolerance` P1, § FK-1 |
 | FK-2 | the offline FK verdict | `VERDICT: PASS`, exit 0 — `def_rai` **0** on both topics **and** `hist_rai > 0` on at least one | `def_rai > 0`. `VERDICT: VACUOUS` is **not a pass** — re-run on a richer session | `fk-convergence-tolerance` P1, § FK-2 |
 | FK-3 | the FK fix is invisible in the commanded stream | every seeded hold pose matches the pre-change print **to the last digit**; `x`, `y` within **±2.0 mm** of 0.0; `max_it <= 10` | any printed digit differs (`>= 0.1 mm`), or `max_it > 10` (worst measured is 5) | `fk-convergence-tolerance` P1, § FK-3 |
-| HAND-1 | the catch arm no longer lands inside the throw stroke | rows 1–5 of § PASS / ABORT per throw on **every** toss, plus H1.2–H1.7 | any row ABORTs — **EXCEPT row 4 (`dip_below_x3`) on a toss where row 7 (`first_neg_cmd`) is annotated**: a braking prelude fired, the two rows score the same event in opposite directions, and row 4 becomes **REPORT** (score it against the brake's own turning point — see HAND-4). `Not enough time for smooth-move` on the Teensy serial is a **hard section abort** | `hand-command-continuity` P1, § HAND-1 |
+| HAND-1 | the catch arm no longer lands inside the throw stroke | rows 1–5 of § PASS / ABORT per throw on **every** toss, plus H1.2–H1.7. Rows 8–9 (`stroke_end`, `post_stroke_cmd`) are REPORT — record them; row 1's ABORT cell cross-reads them | any row ABORTs — **EXCEPT row 4 (`dip_below_x3`) on a toss where row 7 (`first_neg_cmd`) is annotated**: a braking prelude fired, the two rows score the same event in opposite directions, and row 4 becomes **REPORT** (score it against the brake's own turning point — see HAND-4). `Not enough time for smooth-move` on the Teensy serial is a **hard section abort** | `hand-command-continuity` P1, § HAND-1 |
 | HAND-2 | a repack under a failed ack does not clobber a live stroke | `arms` is 1 or 2 (never ≥ 3); `seeds = 0` on every `arms == 2` toss | `seeds >= 1` on an `arms == 2` toss. If **no** toss reads `arms == 2`, say so — the criterion was never exercised | `hand-command-continuity` P2, § HAND-2 |
 | HAND-3 | the hand parks at the derived stroke top and nothing misjudges it | H3.1–H3.7 as tabulated; prime `pos_meas` inside **[9.4594, 10.4594]**, `Hand primed to 9.959 rev`, peak prime `vel_meas` **≤ 30 rev/s** against a commanded quintic peak of **24.63 rev/s** | outside the near-band; `9.858 rev` in the log (stale install); `>= 40.0 rev/s` | `hand-command-continuity` P3, § HAND-3 |
 | HAND-4 | the flash did not break the clean path | identical to HAND-1 (**that is the designed PASS**), `peak <= 10.060` rev (no pre-flash control on this run sheet — see above), no commanded `pos < 0.0` rev, no commanded move longer than **0.8005 s**. `first_neg_cmd` annotated `<-- NOT the catch descent (a brake?)` is **REPORT, not abort** — and on such a toss score `dip_below_x3` against the brake's own turning point, not against `x3` | H4.4 / H4.5 / H4.7 / H4.8 / H4.9 / H4.10 as tabulated. **`peak > 10.60` rev is a HARD ABORT + E-STOP** | `hand-command-continuity` P4, § HAND-4 |
@@ -1230,14 +1230,22 @@ python tools/probes/hand_stroke_timeline.py --gate
 ```
 
 - **PASS**: **exit 0**, and **two** `GATE PASS` lines — one for the Context-table
-  branch (`25/25 rows within tolerance` as of 2026-07-26) and one for
-  `fixed-shape branch` (**five** cases: `clean`, `overshoot`, `short-flight`,
-  `braking-prelude`, `deep-brake` — the fifth was added by this run's Phase 4 as
-  the separator at the excursion clamp's reach, so a probe printing only four is
-  a pre-`5369fc2` tree). Judge on the exit code and on both lines being `GATE
-  PASS`, **not** on the row count: the count grows whenever a row is added to
-  the reference table, and treating it as the criterion has already produced one
-  stale runbook.
+  branch and one for `fixed-shape branch` (`clean`, `overshoot`, `short-flight`,
+  `braking-prelude`, `deep-brake`, `arm-prelude+28ms`, `arm-prelude+62ms`,
+  `late-trunc`, `band-floor` — the last four were added 2026-08-18/20 with the
+  truncation-criterion work and are the two-sided pin on rows 1/2 below;
+  `band-floor` prints the C-HAND-3 admission speed it tested against). Judge on the exit code and on
+  both lines being `GATE PASS`, **not** on the row or case count: both grow
+  whenever a case is added, and treating a count as the criterion has already
+  produced one stale runbook.
+- The same self-check now also runs in the pytest suite
+  (`tests/motion/test_hand_stroke_timeline_probe.py`), so a `--gate` regression
+  is caught at commit time rather than at the bench. It was not, before
+  2026-08-18: the gate had been **RED on the shipped tree** since the hard-stop
+  correction (11.1 → 10.8 rev) left `_GATE_EXPECT`'s `headroom_to_limit_rev` row
+  on the old anchor, and nothing in the suite ran it. Running the command here is
+  still mandatory — it is what proves the tree you are about to score with is the
+  tree the suite passed on.
 - **ABORT the analysis** (not the sitting): a `GATE FAIL` line, a missing second
   branch, or a non-zero exit. Any of those means the probe or the reference
   changed and no HAND verdict below can be trusted. `GATE UNAVAILABLE` is
@@ -1253,13 +1261,74 @@ is looked at.
 
 | # | row | PASS | ABORT |
 |---|---|---|---|
-| 1 | `trunc` | `-` (the command followed the decel ramp to `x3`) | any instant printed ⇒ the queue was still cleared mid-stroke |
-| 2 | `seeds` | `0` (printed as `-`) | `>= 1` from-rest quintic seed inside the stroke |
+| 1 | `trunc` | `-` (the command followed the decel ramp to `x3`) | any instant printed ⇒ the queue was cleared **while the stroke was still short of `x3`**. Record the printed `trunc` POSITION: a real clobber freezes `pos_cmd` **2–4 rev short of `x3`** (pre-fix range 6.20–7.78 rev against `x3` 9.9594). Until 2026-08-20 a reading **~0.05 rev short** was the band-floor self-trigger rather than a clobber; the collapse floor is profile-relative now and that case cannot occur, so score on presence and use the position as corroboration. Cross-read row 8: on a real truncation `stroke_end` still prints an instant — the **replacement** move reaches `x3` 208–299 ms later, and the row is annotated `<-- this is the REPLACEMENT move, not the stroke` — so a printed `stroke_end` is **not** evidence against the ABORT |
+| 2 | `seeds` | `0` (printed as `-`) | `>= 1` from-rest quintic seed inside the stroke. `seeds` is reported only when `trunc` fired, so rows 1 and 2 abort together by construction |
 | 3 | `peak` | **TIER-DEPENDENT since 2026-07-28 — use the § CHECK HAND-7 ladder table, not one number.** `<= 10.060` rev (`x3` 9.9594 + 0.10) is the band for the 0.38 m and 0.6 m tiers only; at and above 0.78 m the band is `<= 10.39` rev (the C-HAND-2 pessimistic bracket). The old single `<= 10.060` ABORTED on **10 of the 17** tosses of the 2026-07-27 sitting for a reason that was never a Phase-4 regression — ballistic coast growing as v² — and scoring the post-flash sitting against it would abort a working fix on the tier it exists to fix | `> ` the tier's band. **The hard abort is `> 10.60` rev** — 10.60 rev is the excursion clamp's own ceiling (`10.8 − 0.2` since 2026-08-18; `11.1 − 0.5` before — same 10.60), and `10.060 < peak <= 10.60` is a **section** abort with a specific suspect (H4.4), *not* an E-STOP. `> 10.60` rev is the HARD ABORT + E-STOP (H4.5). One number, one response |
 | 4 | `dip_below_x3` | `<= 0.100` rev (`<= 3.2` mm) — the row prints `OK` | `> 0.100` rev — the row prints `OVER`. Pre-fix range was **0.339–1.748 rev = 10.7–55.3 mm**. **Qualified by row 7 after Phase 4** — see below |
 | 5 | `pullback` | `>= -5.0` rev/s, **given row 3 passed** | `< -5.0` rev/s. Pre-fix range was **−17.9 to −42.4 rev/s** |
 | 6 | `catch_desc` | present, within ~20 ms of `event − t_acc_catch` | absent ⇒ the catch never fired; check the Teensy serial for `Not enough time for smooth-move` |
 | 7 | `first_neg_cmd` | equal to `catch_desc` (no annotation printed) | annotated `<-- NOT the catch descent (a brake?)`: **REPORT, do not abort.** Expected after Phase 4 lands (step 3 charters a braking prelude); before Phase 4 it means an unexplained downward command. Phase 4's measured reality narrows this: a braking prelude only appears once the hand's live `\|vel\|` exceeds the 6.0 rev/s dead-band, and the settle tail after a completed stroke reads `<= 0.25` rev/s, so on a clean capture this row should still read `catch_desc`. See § CHECK HAND-4 |
+| 8 | `stroke_end` | an instant, followed by **either** a hold in ms (a command landed before the catch descent — see row 9) **or** `held it until the catch descent` (none did). Both are healthy: on `2026-07-27_15-39-38`, 9 of its 17 tosses print a hold (34.9–103.7 ms) and 8 print the phrase. **REPORT, never gated** — but it is the evidence behind rows 1 and 2, so record it | nothing here aborts on its own. `-` on a toss whose stroke started means the command never reached `x3` at all — row 1 will *normally* have aborted, and this row says how far it got. Not a guarantee: on a capture that reaches `x3` nowhere the scan falls back to the modelled-end + 50 ms bound, so a bare `-` here with row 1 also clean is a **hard REPORT** — re-read the window with `--preview` before scoring the toss. When `trunc` printed, the annotation warns that this instant belongs to the REPLACEMENT move, not to the stroke |
+| 9 | `post_stroke_cmd` | an instant `+30…+130` ms after `stroke_end`, or `-` (no command landed before the descent). **REPORT, never gated.** The `\|cmd−meas\|` figure says *which kind* of command it was, and it agrees with row 7 on 44 of 44 post-stroke commands in the 2026-07-27 evidence base: **`≈ 0.000x` rev (measured 0.000000–0.000452, 25 tosses) = a from-rest re-seed AT the live encoder — the gated catch arm's own prelude, i.e. Phase 1 working**; **`0.06–0.17` rev (19 tosses, every one with row 7 annotated) = a Phase-4 velocity-continuous BRAKE diving below `x3`**, expected on the faster tiers and scored under rows 4 and 7, not here | nothing here aborts on its own. Route two cases: a `≈ 0.000x` re-seed on a toss where row 7 is ALSO annotated is `makeSmoothMove`'s cannot-fit fallback at the stroke top — `H4.6`'s second suspect, record the `vel_meas`; and a `\|cmd−meas\|` in neither band (roughly 0.001–0.05 rev) is unexplained — record the sample |
+
+**Rows 1 and 2 key on the stroke END, not on a time margin — and that is a
+2026-08-18 correction to a criterion that used to cry wolf.** The probe scans for
+a truncation only while the commanded profile is still short of `x3`; the scan
+stops the moment `pos_cmd` reaches the stroke end. Before that, the scan ran for a
+fixed 50 ms past the *modelled* end — and Phase 1's arm gate withholds the catch
+arm until the stroke completes and then dispatches on the next balls tick, so the
+gate **working** lands a from-rest prelude just past `x3`, seeded at a live
+position that has sagged 0.06–0.17 rev under it. That is a command with near-zero
+commanded velocity, below `x3`: indistinguishable from a truncation to the old
+predicate. On the 2026-07-27 sitting those arms landed **36.7–127.9 ms past the
+modelled stroke end**, straddling the 50 ms wall: **6** tosses reported a truncation across
+that sitting's six bags and **3** across its three traces, and on `2026-07-27_15-39-3x/5x`,
+recorded *both* ways, the same physical tosses read **4** through the bag against
+**3** through the trace. Every one was adjudicated PASS by hand. Moving the wall only relocates it: the arm's arrival is
+a *scheduling* quantity with no lower bound — Phase 1's gate is designed to
+dispatch on the first balls tick after the stroke completes, so an arm at +5 ms is
+the gate working, and the dispatch shift alone moved +40 ms between sittings —
+while the *latest* instant a truncation is still detectable is **fixed** at
+~7–11 ms before the modelled end, where `pos_cmd` enters the 0.05 rev band around
+`x3`. One edge is pinned, the other is a coincidence of today's tick phase, so any
+wall between them buys a blind spot on late truncations the first time a tick
+lands early. Keying on stroke completion has no such trade,
+and an arm that lands **before** the command reached `x3` is a genuine Phase-1
+gate failure that still aborts row 1. Full reasoning:
+`logbook/2026-08-18-trunc-criterion-stroke-end.md`.
+
+**What this changes for the operator, concretely.** A toss that used to print
+`trunc` + `seeds=1` at the stroke top now prints `trunc = -`, `seeds = -`, and
+the same event under rows 8/9 as `post_stroke_cmd`. Nothing became invisible —
+what changed is which row owns it. **Do not** score `post_stroke_cmd` as row 1.
+
+**"Collapse" is profile-relative too, since 2026-08-20 — and it used to fire on
+slow throws.** The other half of row 1's predicate localises *where* the command
+froze, and it did that with an absolute **10 rev/s**. That is a fixed velocity
+judging a ramp whose velocity scales with the throw, so at the slow end of the
+band the ramp fell under it while still short of `x3` and the probe reported a
+truncation on a perfectly clean stroke. At the C-HAND-3 admission floor
+(**2.440 m/s**, 0.4949 s flight) the exposure was **1.94 ms — about 1 toss in 5**;
+measured end-to-end by sweeping the sampling phase, **20 of 100 phases fired**
+(13 at 2.550 m/s, 6 at 2.6971, 2 at 2.800, 0 at 2.845 and above). Note the
+envelope floor **moved down** with C-HAND-3, from 2.6971 to 2.440 m/s, so the
+exposure was three times worse than when it was first characterised.
+
+The threshold is now the modelled stroke's **own** commanded velocity at the
+stroke-end band edge (`x3 − 0.05` rev): 8.58 rev/s at the admission floor,
+13.82 at 3.93 m/s, 15.31 at the ceiling. Because the firmware's decel segment is
+constant deceleration, commanded velocity falls monotonically with commanded
+position, so an intact stroke short of `x3` is **never** below that floor — the
+self-trigger window is empty at every speed rather than narrow (0 of 100 phases
+at each speed above; 0 over 960 clean captures spanning 0.70–7.00 m/s).
+Detection is untouched: the two real 2026-07-25 truncations freeze at 0.010 rev/s
+against a 13.82 rev/s floor, a **1382×** margin.
+
+**What this means at the bench.** A `trunc` on a slow toss is no longer
+ambiguous — score row 1 on its presence, as written. Pinned by the `--gate`
+`band-floor` case and by `tests/motion/test_hand_stroke_timeline_probe.py`. The
+position cross-read in row 1 is still worth recording, but it is now
+corroboration rather than the discriminator.
 
 **Row 4 is qualified by row 7 once Phase 4 is flashed, and the qualifier is not
 optional.** Row 4 measures `pos_meas` below `x3` and aborts above 0.100 rev. A
@@ -1284,7 +1353,7 @@ overshoot plan Phase 4 step 2 makes the *expected* behaviour. Gating on it would
 a working fix as FAILED. What separates the defect from a healthy stroke is the
 *sign* of the excursion about the stroke end: pre-fix the position loop yanks the
 hand **below** `x3`; a healthy stroke settles **onto** `x3` from above and never
-goes under (the four synthetic post-fix shapes read 0.000–0.001 rev). Same reason
+goes under (the `--gate` synthetic post-fix shapes read 0.000–0.001 rev). Same reason
 `pullback` is bounded rather than required non-negative: a healthy settle from the
 coasting peak is genuinely negative — −0.31 rev/s at 0.02 rev of overshoot, −1.58
 at the 10.060 rev ceiling of row 3, −10.03 at 10.60 rev.
@@ -1316,18 +1385,23 @@ per toss over **>= 5** tosses at one commanded height, and the `shift` column.
 The `dip_below_x3` and `pullback` columns are the **gated** ones (rows 4 and 5
 above); `dip` is shown only because the plan's Context table quotes it.
 
-| session | ball | arms | `trunc` (rev) | `peak` (rev / mm) | headroom to 11.1 | `dip` (mm / % stroke) | **`dip_below_x3` (rev / mm)** | **`pullback` (rev/s)** | `shift` (ms, **bag clock**) |
+| session | ball | arms | `trunc` (rev) | `peak` (rev / mm) | headroom to 10.8 | `dip` (mm / % stroke) | **`dip_below_x3` (rev / mm)** | **`pullback` (rev/s)** | `shift` (ms, **bag clock**) |
 |---|---|---|---|---|---|---|---|---|---|
-| 15-04-35 | 34 | 2 | 7.1245 | 10.2611 / 324.5 | 0.839 rev | 20.3 / 6.4 | **0.339 / 10.7** | −17.9 | +12.8 |
-| 15-17-48 | 10 | 1 | 6.7562 | 10.2513 / 324.2 | 0.849 rev | **64.5 / 20.5** | **1.748 / 55.3** | −42.4 | +19.0 |
-| 15-17-48 | 11 | 2 | 6.1965 | 10.2684 / 324.8 | 0.832 rev | 52.4 / 16.6 | **1.347 / 42.6** | −36.6 | +20.7 |
-| 15-17-48 | 13 | 1 | 7.1897 | 10.2813 / 325.2 | 0.819 rev | 56.6 / 18.0 | **1.468 / 46.4** | −38.2 | +15.4 |
-| 15-17-48 | 17 | 2 | 6.8525 | **10.3248 / 326.6** | **0.775 rev** | 23.0 / 7.3 | **0.361 / 11.4** | −20.0 | +20.2 |
-| 15-22-50 | 2 | 1 | 7.7825 | 10.1653 / 321.5 | 0.935 rev | 40.2 / 12.8 | **1.065 / 33.7** | −29.7 | +17.2 |
-| 15-22-50 | 3 | 1 | 7.7004 | 10.1743 / 321.8 | 0.926 rev | 43.0 / 13.7 | **1.146 / 36.2** | −31.3 | +21.9 |
+| 15-04-35 | 34 | 2 | 7.1245 | 10.2611 / 324.5 | 0.539 rev | 20.3 / 6.4 | **0.339 / 10.7** | −17.9 | +12.8 |
+| 15-17-48 | 10 | 1 | 6.7562 | 10.2513 / 324.2 | 0.549 rev | **64.5 / 20.5** | **1.748 / 55.3** | −42.4 | +19.0 |
+| 15-17-48 | 11 | 2 | 6.1965 | 10.2684 / 324.8 | 0.532 rev | 52.4 / 16.6 | **1.347 / 42.6** | −36.6 | +20.7 |
+| 15-17-48 | 13 | 1 | 7.1897 | 10.2813 / 325.2 | 0.519 rev | 56.6 / 18.0 | **1.468 / 46.4** | −38.2 | +15.4 |
+| 15-17-48 | 17 | 2 | 6.8525 | **10.3248 / 326.6** | **0.475 rev** | 23.0 / 7.3 | **0.361 / 11.4** | −20.0 | +20.2 |
+| 15-22-50 | 2 | 1 | 7.7825 | 10.1653 / 321.5 | 0.635 rev | 40.2 / 12.8 | **1.065 / 33.7** | −29.7 | +17.2 |
+| 15-22-50 | 3 | 1 | 7.7004 | 10.1743 / 321.8 | 0.626 rev | 43.0 / 13.7 | **1.146 / 36.2** | −31.3 | +21.9 |
 
-Worst pre-fix case: **55.3 mm below the stroke end** (ball 10) and **0.775 rev =
-24.5 mm** of headroom to the 11.1 rev end-stop (ball 17), both at a mid-band
+(The headroom column was re-anchored on **2026-08-20**: it read "headroom to
+11.1" and 0.775–0.935 rev until then. The `peak` measurements are unchanged — only
+the anchor was wrong, and one-sidedly optimistic by 0.3 rev / 9.5 mm. See
+`logbook/2026-08-18-hand-end-stop-corrected.md`.)
+
+Worst pre-fix case: **55.3 mm below the stroke end** (ball 10) and **0.475 rev =
+15.0 mm** of headroom to the end stop (ball 17), both at a mid-band
 3.93 m/s throw. Every one of these seven rows must read `trunc=-`, `seeds=-` and
 `dip_below_x3 <= 0.100 rev` after the fix.
 
@@ -1417,7 +1491,7 @@ grep -oE "scale [0-9.]+\)" "$LOG" | sort -u
 
 | # | measurement | PASS | ABORT |
 |---|---|---|---|
-| H1.1 | `trunc`, `seeds`, `dip_below_x3`, `peak`, `pullback` per toss | rows 1-5 of § PASS / ABORT per throw, on **every** toss | any row ABORTs |
+| H1.1 | `trunc`, `seeds`, `stroke_end`, `post_stroke_cmd`, `dip_below_x3`, `peak`, `pullback` per toss | rows 1-5 of § PASS / ABORT per throw, on **every** toss; rows 8-9 are REPORT — record them, they are the evidence behind rows 1-2 and row 1's ABORT cell tells you to cross-read them | any of rows 1-5 ABORTs |
 | H1.2 | `window latched` count | **== number of jugglebot tosses** | `0` ⇒ the announcement never reached the gate (wrong `thrower_name`, or the announcement arrived before `catch/armed`); the dip may be absent for an unrelated reason and the PASS is luck |
 | H1.3 | `arm withheld` count | **>= 1 per toss** | `0` while H1.2 passed ⇒ the arm was already late on its own; record it, and treat any H1.1 PASS as unvalidated for the gate |
 | H1.4 | `stroke-busy window CLOSED` warnings | **0** | `>= 1`: the fit check refused to defer. Not a *new* hazard — the branch reproduces the pre-fix arithmetic exactly — but it does **not** mean the catch fired: the forced dispatch may itself be refused by the Teensy (see H1.6), because its fit check budgets the at-rest prelude while the hand is mid-stroke. Record `event_delay`, `event_vel` and `vel_scale` from the warning, then **check `catch/vel_scale` FIRST** (see the note below) before routing to `hand-command-continuity` Phase 1 step 3 |
@@ -1447,15 +1521,20 @@ is unmeasured; it is `plans/active/single-ball-toss.md` Phase 5 T0's measurand.
 #### Optional HAND-1b — the short-flight corner (do this last, if HAND-1 passed)
 
 The suppression window narrows with flight time: **395 ms** at 0.80 s but only
-**115 ms** at the band floor `FLIGHT_TIME_MIN_S = 0.55 s`. Two tosses at
+**115 ms** at the old band floor `FLIGHT_TIME_MIN_S = 0.55 s` (**superseded
+2026-08-20 by contract C-HAND-3**: the admission floor is now the derived
+`0.4949 s` = 0.300 m apex, so this corner is slightly tighter than the text
+below assumes). Two tosses at
 
 ```bash
 ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.38}" --feedback
 ```
 
-(0.38 m = T 0.557 s, just inside the band; `> 1.48 m` and `< 0.371 m` are
-`REJECTED_FLIGHT_TIME`). Same verdict rows. **This is the corner where H1.4 is
+(0.38 m = T 0.557 s, still inside the band; the rejection bounds are now
+**`> 1.617 m` and `< 0.300 m`** and the code is `REJECTED_THROW_ENVELOPE`,
+naming the binding bound — `> 1.48 m` / `< 0.371 m` / `REJECTED_FLIGHT_TIME`
+until C-HAND-3 landed 2026-08-20). Same verdict rows. **This is the corner where H1.4 is
 most likely to fire**, which is the point of running it — and § Height reference
 already flags `T < 0.7 s` as stroke-marginal for reasons unrelated to this plan,
 so a MISSED catch here is not by itself a Phase-1 failure. Score H1.1-H1.7 only.
@@ -1488,7 +1567,7 @@ live encoder position, which the probe counts as a from-rest quintic `seed`.
 | # | measurement | PASS | ABORT |
 |---|---|---|---|
 | H2.1 | probe `arms` column per toss | `1` or `2`, never `3` (`?` ⇒ the source has no `/rosout`; use the launch log) | `>= 3` ⇒ `_MAX_ARM_DISPATCHES` is not being honoured — a separate defect, route to `catch_coordinator_node` |
-| H2.2 | probe `seeds` on any toss with `arms == 2` | `0` (printed `-`) — **the Phase-2 criterion**: both dispatches landed clear of the stroke | `>= 1` ⇒ a repack still clobbered a live stroke. Pre-fix, every `arms=2` toss showed exactly 2 seeds, `0.0000 rev` from the live `pos_meas` |
+| H2.2 | probe `seeds` on any toss with `arms == 2` | `0` (printed `-`) — **the Phase-2 criterion**: both dispatches landed clear of the stroke, i.e. after `pos_cmd` had reached `x3`. Confirm on row 8/9: `stroke_end` prints an instant and `post_stroke_cmd` (if any) is after it | `>= 1` ⇒ a repack still clobbered a **live** stroke — the command was short of `x3` when the second dispatch landed. Pre-fix, every `arms=2` toss showed exactly 2 seeds, `0.0000 rev` from the live `pos_meas`. **A second dispatch landing after the stroke end is not this** — it is Phase 1's designed behaviour and reads as `post_stroke_cmd`; scoring it as an ABORT is the criterion defect corrected 2026-08-18 (see § PASS / ABORT's "Rows 1 and 2 key on the stroke END") |
 | H2.3 | `dip_below_x3` on `arms == 2` tosses vs `arms == 1` tosses | both `<= 0.100` rev | a systematic difference between the two groups ⇒ the guard is only partly effective |
 | H2.4 | a SAFE_ABORT during a toss, **if one occurs naturally** | the retract ladder still runs and the hand reaches `0.0` rev | the retract is refused or skipped. **Hard ABORT** — a kind-3 retract clobbering an armed kind-0 is the ONLY un-arm mechanism the Teensy offers. Do not provoke one deliberately this sitting |
 
@@ -1734,7 +1813,7 @@ python tools/probes/hand_stroke_timeline.py \
 | H4.3 | `first_neg_cmd` vs `catch_desc` | equal (no annotation) on every toss | annotated `<-- NOT the catch descent (a brake?)`: **REPORT, do not abort.** It means a braking prelude fired, i.e. the hand was genuinely moving >6.0 rev/s when a command landed. Record the toss and the `vel_meas` at that instant — it is the first live evidence of the continuous branch and it belongs in the logbook |
 | H4.4 | `peak`, if it lands in `10.060 < peak <= 10.60` rev | does not occur | occurs ⇒ **ABORT the section.** 10.60 rev is the excursion clamp's ceiling, so a reading in this band means a velocity-continuous prelude ran with a `v0` large enough to use most of the headroom. It is *bounded* (the clamp held) but it is not the clean path. Record `peak`, `first_neg_cmd` and `vel_meas`; route to Phase 4's dead-band and excursion margin |
 | H4.5 | `peak > 10.60` rev | does not occur | **HARD ABORT, E-STOP.** The clamp is `10.8 − 0.2 = 10.60` rev *commanded* (the same 10.60; the base and margin were both corrected 2026-08-18 and the ceiling did not move); exceeding it means the clamp did not run (flash suspect — re-check H4.0), or the position loop overshot the commanded profile by more than the **0.2 rev** margin (1.08× the +0.186 rev tracking overshoot measured at the old prime; this read "0.5 rev / 2.7×" until the 2026-08-18 hard-stop correction), or the documented endpoint relaxation served a prelude from a live position *already* above 10.6 rev — which is the pre-fix measured state (10.165–10.325 rev), is legal by design, and never adds a bulge above that live reading. Check `first_neg_cmd` and the live `pos_meas` at the command instant to tell them apart. Either way the next **0.2 rev (6.3 mm)** is all that remains before metal — **there is no further guard band**. (This row read "the next 0.5 rev is the overextension guard and the 0.76 mm after that is the hard stop" until 2026-08-18; both quantities were derived from the wrong 11.1 rev anchor and over-stated the remaining margin by ~2.5×.) |
-| H4.6 | `seeds` on any toss, cross-read with H4.3 | `0` (printed `-`) | `>= 1`: same ABORT as HAND-1 row 2, but Phase 4 adds a second suspect. A from-rest seed now means **either** the arm gate failed (Phase 1) **or** `makeSmoothMove` took its documented cannot-fit fallback — because the excursion would have left the stroke, *or* because the arrest would have taken longer than 0.8005 s. Distinguish by the seed's position: a seed *inside* the decel ramp (below `x3`) with `trunc` printed is the Phase-1 failure; a seed at or above `x3` with `trunc = -` is the fallback. Record which, and the `vel_meas` at the seed — above ~9 rev/s at the stroke top it is the excursion clamp, above ~20 rev/s anywhere it is the duration cap |
+| H4.6 | `seeds` on any toss, cross-read with H4.3 **and with rows 8/9** | `seeds` = `0` (printed `-`) | `>= 1`: same ABORT as HAND-1 row 2 — the arm gate failed and a command landed while `pos_cmd` was still short of `x3` (Phase 1). Phase 4's second suspect no longer appears here: `makeSmoothMove`'s cannot-fit fallback fires from the stroke TOP, i.e. after the stroke completed, so since 2026-08-18 it reads as **`post_stroke_cmd` (row 9) with `trunc = -`**, not as a seed. **REPORT that, do not abort on it** — and note the probe's `_REPACK_STEP_REV = 0.5` rev step rule cannot see it either (the measured re-seed step at the top is ~0.156 rev), so row 9 is the only place it shows. Record which case you have, and the `vel_meas` at the command instant — above ~9 rev/s at the stroke top it is the excursion clamp, above ~20 rev/s anywhere it is the duration cap |
 | H4.7 | `Not enough time for smooth-move` on the Teensy serial | absent | present ⇒ same hard abort as H1.6. Note Phase 4 can *lengthen* a prelude (a velocity-continuous move takes longer than a rest-to-rest one over the same Δ — up to 0.24 s at the dead-band edge, 0.32 s at 8 rev/s), so if this appears **only** after the flash and H4.3 shows a brake on the same toss, the arm-fit budget needs the continuous prelude added. Route to `hand_stroke.required_arm_lead_s` |
 | H4.8 | a SAFE_ABORT retract, **if one occurs naturally** | the retract still runs and the hand reaches `\|pos\| <= 0.5` rev | it does not. **Hard ABORT** — a kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the Teensy offers, and Phase 4 edits the exact condition (`makeSmoothMove` returning empty) that `Teensy_code_platform.ino:472-475` checks *before* `packedMsgs.clear()`. The change **narrows** that branch (empty now also requires the hand to be at rest), so this should be strictly safer than before the flash — but it is the one row where a regression would be catastrophic and silent. Do **not** provoke an abort deliberately this sitting |
 | H4.9 | minimum commanded/measured `pos` on any toss, and after any retract | `>= 0.0` rev — encoder zero is the excursion clamp's FLOOR and the host's own declared floor for this axis | `< 0.0` rev ⇒ **hard abort.** The bottom hard stop is at −0.1 rev (the axis homes downward into it) and the floor carries no margin for the position loop's +0.186 rev undershoot, so any commanded value below zero is planned travel onto the stop. Route to Phase 4's `SMOOTH_MOVE_POS_FLOOR_REV` |
@@ -1812,6 +1891,47 @@ same timing. What changes is only how firmly it stops at the top. A stroke that
 sounds harsher on the way UP means the correction reached the accel segment,
 which it must not: that is an ABORT, not a tuning observation.
 
+> ### ✅ UPDATE 2026-08-20 — the whole ladder is inside the envelope again
+>
+> On **2026-08-18** this box said R3/R4/R5 were REFUSED by contract **C-HAND-3**
+> (`ros_ws/docs/hand_throw_envelope.md`), because the envelope's coast model was
+> the 2026-07-27 pre-fix ladder. **That is superseded.** A purpose-built session
+> on 2026-08-20 (bag `2026-08-20_21-51-39`, six throws, all caught) measured
+> coast on the flashed plant, and it is 3–5× smaller than the pre-fix model
+> extrapolated:
+>
+> | rung | commanded | release | modelled peak | verdict |
+> |---|---|---|---|---|
+> | **R0** | 0.55 s | 2.709 m/s | 10.104 rev | admitted |
+> | **R1** | 0.60 m | 3.440 m/s | 10.119 rev | admitted |
+> | **R2** | 0.78 m | 3.920 m/s | 10.136 rev | admitted |
+> | **R3** | 1.00 m | 4.436 m/s | 10.185 rev | admitted (n = 14 measured here) |
+> | **R4** | ~1.20 m | 4.858 m/s | 10.230 rev | admitted |
+> | **R5** | 1.10 s | 5.399 m/s | 10.294 rev | admitted |
+>
+> The derived band is now **`[0.4949, 1.1485]` s** = apex **0.300–1.617 m**, and
+> the binding bound is **`DECEL_FF_HEADROOM`** (the decel feedforward may draw at
+> most 85 % of `hand_curr_limit_a` — this section's own H7.5 requirement, now a
+> config key), *not* the end stop. `END_STOP` does not bind until 7.468 m/s.
+>
+> **The clamp was the mechanism, and there is a within-session A/B for it.** Bag
+> `2026-08-18_18-42-19` changes the braking clamp mid-session: `iq_meas` never
+> passes −8.87 A through t = 0–100 s, then reaches −17.4 A after. Its first
+> throw (t = 84.9 s) coasted **+0.763 rev**; every other throw in the same bag at
+> the identical commanded 4.436 m/s coasts **0.18–0.23**. So H7.0c's clamp
+> question is now answered in the strongest possible way: the clamp was live, it
+> *was* binding the decel ramp, and removing it is what fixed the overshoot.
+>
+> **What this means for the ladder below.** The pre-fix `peak` bands in the rung
+> table are still the right PASS/ABORT gates — they were written against the
+> 10.60 rev abort line, which has not moved. But the ladder's purpose has
+> changed: it is no longer proving the feedforward correction works (the A/B
+> above did that), it is routine validation. Climb it if you are re-validating
+> after a firmware or drive change; otherwise the coast ladder in
+> `hand_throw_envelope.measured_coast_rev` is the live record, and extending it
+> above 4.436 m/s is the one thing that would shrink C-HAND-3's 1.27×
+> extrapolation.
+
 ### THE LADDER — climb it in order, and do not skip a rung
 
 Each rung is scored with the **same** verdict command as § CHECK HAND-1 (the
@@ -1834,7 +1954,7 @@ python tools/probes/hand_decel_authority.py --trace "$TR" --json
 
 | rung | commanded height | tosses | `peak` PASS | DEBRIEF | ABORT | pre-fix measured |
 |---|---|---|---|---|---|---|
-| **R0** | `flight_time_s = 0.55` (`FLIGHT_TIME_MIN_S`, h ≈ 0.37 m) | 3 | `<= 10.060` rev **and `dip_below_x3 <= 0.100`** | dip 0.100–0.20 | dip `> 0.20`, or `peak > 10.20` | *(not on the 2026-07-27 ladder; nearest tier 2.742 m/s → 10.0295–10.0371)* |
+| **R0** | `flight_time_s = 0.55` (h ≈ 0.37 m) | 3 | `<= 10.060` rev **and `dip_below_x3 <= 0.100`** | dip 0.100–0.20 | dip `> 0.20`, or `peak > 10.20` | *(not on the 2026-07-27 ladder; nearest tier 2.742 m/s → 10.0295–10.0371)* |
 | **R1** | 0.60 m | 5 | `<= 10.060` rev | 10.060–10.20 | `> 10.20` | 10.0056–10.0407 |
 | **R2** | 0.78 m | 5 | `<= 10.20` rev | 10.20–10.33 | `> 10.33` | 10.2851–10.3258 |
 | **R3** | 1.00 m | 3 | `<= 10.39` rev | 10.39–10.60 | `> 10.60` **+ E-STOP** | *(never flown)* |
@@ -1860,7 +1980,9 @@ honestly*.
 passed **and** row **H7.3** below (the flatness row) passed. R5 is the first time
 this machine has ever been asked for a legal in-band toss at its own configured
 ceiling, and the pre-fix extrapolation said such a toss would exceed the top of
-the 355 mm stroke.
+the 355 mm stroke. *(The 2026-08-18 draft of C-HAND-3 refused R5; the
+2026-08-20 measurement re-admitted it — see the box above. Its modelled peak is
+10.294 rev, 16 mm clear of metal, against the pre-fix model's 12.17.)*
 
 **At R5, read `v_pk` before you conclude anything from a DEBRIEF-band peak.** The
 overshoot goes as `v²`, so a release-speed overshoot moves the peak hard: the

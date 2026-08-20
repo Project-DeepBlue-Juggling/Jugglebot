@@ -178,10 +178,24 @@ bench characterisation measures the real scatter; the gate re-runs with the
 measured value before any hardware catch attempt.
 
 Sweep axes: catch (x, y) across the workspace (centre + 4 corners at ±60 mm to
-start), catch z (±30 mm about ACTIVE), flight time 0.55–1.10 s (throw speeds
-≈2.7–5.4 m/s, within the 7 m/s hand ceiling with margin). Gate criterion (from
-the MVP plan): **≥ 9/10 toss-and-catch cycles at 2–3 m/s** per swept point,
-zero feasibility violations, all knots pump-accepted.
+start), catch z (±30 mm about ACTIVE), flight time **the derived envelope**
+(**SUPERSEDED 2026-08-18**: was the hand-picked 0.55–1.10 s, throw speeds
+≈2.7–5.4 m/s, "within the 7 m/s hand ceiling with margin" — which was the only
+physical justification the ceiling ever had, and the hand ceiling is not what
+binds. Contract **C-HAND-3**, `ros_ws/docs/hand_throw_envelope.md`, derives the
+band from the end stop, torque/current, regen and timing limits and gets
+**0.4949–1.1485 s** = 2.44–5.64 m/s = apex 0.300–1.617 m (the 2026-08-18 draft
+read 0.4949–0.8871 s / 0.965 m; the 2026-08-20 coast measurement on the flashed
+plant moved the ceiling back out past where it started, and the binding bound is
+now `DECEL_FF_HEADROOM`, not the end stop). `sim/toss_gate.py`'s
+`_FLIGHTS_S` now reads its outer rungs from that envelope, so the sweep follows
+it automatically; `tests/sim/test_toss_gate.py::test_sweep_points_inside_fsm_bands`
+additionally drives the real gate on each point's production release speed.
+**The old ceiling's real cost was the hand ODrive's −10.00 A braking clamp,
+removed 2026-08-18: with it live a 1.10 s toss modelled to 12.17 rev against a
+10.8 rev hard stop; measured without it, 10.294 rev.**). Gate
+criterion (from the MVP plan): **≥ 9/10 toss-and-catch cycles at 2–3 m/s** per
+swept point, zero feasibility violations, all knots pump-accepted.
 
 ## Implementation Phase Summary
 

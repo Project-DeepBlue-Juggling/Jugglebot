@@ -470,6 +470,13 @@ HW_SECTIONS = [
     ("jugglebot_gui",            "GUI_",       "GUI",        "Jugglebot GUI"),
     # 7–8. Teensy (platform microcontroller)
     ("teensy_trajectory",        "TEENSY_TRAJ_", "TeensyTraj", "Teensy Trajectory"),
+    # 8b. Hand throw ADMISSION envelope (contract C-HAND-3). HOST-SIDE ONLY —
+    # jugglebot/motion/trajectory/throw_envelope.py is the sole consumer; no
+    # firmware reads HandEnv::, so the emitted C++ namespace is inert (kept only
+    # because every section is emitted uniformly). Without this row a regenerate
+    # silently emits no HAND_ENV_* constants and the toss gate fails closed at
+    # import — which is loud, but at node start rather than at review.
+    ("hand_throw_envelope",      "HAND_ENV_",  "HandEnv",    "Hand Throw Envelope"),
     ("teensy_operational",       "TEENSY_",    "TeensyOp",   "Teensy Operational"),
     # 9. Motion Capture
     ("mocap",                    "MOCAP_",     "Mocap",      "Motion Capture"),

@@ -32,7 +32,7 @@ import pytest
 pytest.importorskip('mujoco')
 
 from sim.toss_gate import (                                   # noqa: E402
-    TossGate, TossGateConfig, default_grid, _toss_catch_pose,
+    TossGate, TossGateConfig, default_grid, default_grid_8b, _toss_catch_pose,
 )
 
 
@@ -152,13 +152,20 @@ def test_pass_threshold_exact_integer_math():
 def test_sweep_points_inside_fsm_bands():
     """Drift guard between the gate sweep and the toss FSM's CHECKING rejects:
     every default-grid point satisfies the sequencer bands using the IMPORTED
-    constants. Pure — no plant."""
+    constants. Pure — no plant.
+
+    Since 2026-08-18 the flight band is DERIVED (contract C-HAND-3) and the
+    sweep's outer rungs are read from it, so the two now move together by
+    construction — but the guard stays, and gains teeth: it also drives the REAL
+    gate (``throw_envelope.evaluate``) on each point's production release speed,
+    which the band alone cannot see. A sweep that measured refused points would
+    be reporting a catch rate for throws the machine will not make."""
     from jugglebot.toss_sequencer import (
         TOSS_XY_LIMIT_MM, TOSS_ACTIVE_Z_MM, TOSS_Z_BAND_MM,
         FLIGHT_TIME_MIN_S, FLIGHT_TIME_MAX_S,
         TEENSY_MIN_EVENT_VEL_MPS, TEENSY_MAX_EVENT_VEL_MPS,
     )
-    from jugglebot.motion.trajectory import toss_release
+    from jugglebot.motion.trajectory import throw_envelope, toss_release
     pts = default_grid('factored')
     assert len(pts) == 29
     for (x, y, z, T) in pts:
@@ -167,6 +174,21 @@ def test_sweep_points_inside_fsm_bands():
         assert FLIGHT_TIME_MIN_S <= T <= FLIGHT_TIME_MAX_S
         ev = toss_release.compute_release_state((x, y, z), T).event_vel_mps
         assert TEENSY_MIN_EVENT_VEL_MPS <= ev <= TEENSY_MAX_EVENT_VEL_MPS
+        verdict = throw_envelope.evaluate(T, ev)
+        assert verdict.ok, f'sweep point {(x, y, z, T)}: {verdict.message}'
+
+    # The Tier-8b grid needs its own pass, and it is NOT covered by the band
+    # check above: an 8b goal is AIMED, so its commanded release is faster than
+    # the co-located inverse of its flight time. At the 8a ceiling a 50 mm
+    # displacement is already 0.6 mm/s over the END_STOP bound — the first
+    # attempt at this change put the advisory spots exactly there and they were
+    # refused. Only `evaluate` on the AIMED speed can see that.
+    from jugglebot.motion.trajectory.toss_release import compute_release_state_tilted
+    for (x, y, z, T) in default_grid_8b():
+        rel = compute_release_state_tilted((x, y, z), T,
+                                           throw_site_xy_mm=(0.0, 0.0))
+        verdict = throw_envelope.evaluate(T, rel.event_vel_mps)
+        assert verdict.ok, f'8b sweep point {(x, y, z, T)}: {verdict.message}'
 
 
 def test_write_json_report(tmp_path):

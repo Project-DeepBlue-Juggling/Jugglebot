@@ -1042,19 +1042,33 @@ class CatchCoordinatorNode(Node):
         nominal operating point.
 
         Measured fit at the shipped flight band (derived from the header
-        constants, not copied): at 0.80 s (v_throw 3.93, armed 3.13) the window
-        spans release + 105 ms to release + 500 ms, **395 ms** wide; at
-        ``FLIGHT_TIME_MIN_S`` = 0.55 s (v_throw 2.71, armed 2.15) release + 134 ms
-        to release + 250 ms, **115 ms** wide. It stays positive at the shortest
-        shipped flight and closes only if the tracker's landing-speed estimate
-        collapses below ~1.58 m/s there (armed 1.26 m/s), which is why the closure
-        branch is evaluated against the RUNTIME ``event_vel``, not a nominal.
+        constants, not copied): at 0.80 s (v_throw 3.93, armed 3.52) the window
+        spans release + 105 ms to release + 500 ms, **395 ms** wide; at the
+        ``FLIGHT_TIME_MIN_S`` floor — **0.4949 s since 2026-08-18, when the band
+        became DERIVED** (contract C-HAND-3, ``ros_ws/docs/hand_throw_envelope.md``)
+        — v_throw 2.440, armed 2.172, release + 145 ms to release + 195 ms,
+        **50 ms** wide. It stays positive at the shortest admitted flight and
+        closes only if the tracker's landing-speed estimate collapses below
+        ~1.77 m/s there (armed 1.591 m/s), which is why the closure branch is
+        evaluated against the RUNTIME ``event_vel``, not a nominal.
 
-        The tracker is not the only way to get there: ``event_vel`` carries the
-        operator's ``catch/vel_scale`` knob (floor ``_VEL_SCALE_MIN`` = 0.3), and
-        a scale of 0.45 or below closes the window at the 0.55-0.56 s flight on
-        its own with a healthy tracker. Read ``catch/vel_scale`` before routing a
-        CLOSED warning to a tracker fault — it is logged in the warning below.
+        ⚠ **That budget is 55 ms tighter than it was**, because the floor is now
+        the flight at which this very window reaches
+        ``hand_throw_envelope.arm_window_margin_s`` = 0.050 s. It used to read
+        115 ms at the hand-picked 0.55 s floor. So a goal admitted AT the floor
+        sits exactly on runbook row **H1.5**'s ``slack > 0.050 s`` gate — a bench
+        boundary, not a comfortable operating point.
+
+        The tracker is not the only way to close it: ``event_vel`` carries the
+        operator's ``catch/vel_scale`` knob (floor ``_VEL_SCALE_MIN`` = 0.3),
+        and **a scale of 0.659 or below now closes the window at the band floor**
+        on its own with a healthy tracker — against a shipped default of 0.9,
+        that is 1.36× of headroom where it used to be 1.78× (the old figure was
+        0.45). The knob is deliberately NOT an input to the C-HAND-3 envelope,
+        which sizes the floor against ``JB_OP_CATCH_VEL_SCALE_DEFAULT``, so the
+        FSM will admit a goal the knob then makes uncatchable. Read
+        ``catch/vel_scale`` before routing a CLOSED warning to a tracker fault —
+        it is logged in the warning below.
         """
         clear_at = self._throw_stroke_clear_ros
         if clear_at is None:

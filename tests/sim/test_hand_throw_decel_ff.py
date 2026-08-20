@@ -106,6 +106,13 @@ _HAND_KT_NM_PER_A = 0.00551333324983716
 #: Runbook § CHECK HAND-4/HAND-7 hard-abort line on measured hand position.
 _RUNBOOK_PEAK_ABORT_REV = 10.60
 
+#: The flight-time ceiling C-HAND-2's "why not steepen the ramp" argument was
+#: written at (2026-07-29).  A LITERAL on purpose: it is a historical operating
+#: point, not the shipped band.  Since 2026-08-18 the shipped ceiling is DERIVED
+#: (contract C-HAND-3) and sits at ~0.887 s, bound by the END STOP rather than by
+#: torque — see ``test_the_derived_ceiling_is_no_longer_torque_bound``.
+_HISTORICAL_FLIGHT_CEILING_S = 1.10
+
 _GRAVITY = 9.81
 
 
@@ -331,7 +338,10 @@ def test_the_commanded_decel_distance_is_velocity_independent():
     ``peak = x3 + 4.046*(1/eta - 1)``.
     """
     dists = []
-    for flight_s in (FLIGHT_TIME_MIN_S, 0.7, 0.9, FLIGHT_TIME_MAX_S):
+    # Deliberately spans WIDER than the C-HAND-3 admitted band (0.9 s is outside
+    # it since 2026-08-18): the identity is algebraic in v, so restricting it to
+    # the admitted set would weaken it for no reason.
+    for flight_s in (FLIGHT_TIME_MIN_S, 0.7, 0.9, _HISTORICAL_FLIGHT_CEILING_S):
         v = _v_for_flight(flight_s)
         thr = mirror.HandThrowTrajectory(v)
         dists.append(0.5 * v * thr._t_dec * mirror._LINEAR_GAIN)
@@ -355,7 +365,10 @@ def test_peak_decel_feedforward_current_stays_inside_the_shipped_limit(flight_s)
     """
     thr = mirror.HandThrowTrajectory(_v_for_flight(flight_s))
     amps = thr.peak_decel_current_a(_HAND_KT_NM_PER_A)
-    assert amps <= 0.85 * hw.ODRIVE_HAND_CURR_LIMIT_A, (
+    # The 0.85 line is now a CONFIG key and a C-HAND-3 envelope bound
+    # (hand_throw_envelope.decel_ff_current_headroom_frac), not a test literal:
+    # the band ceiling is derived FROM it, so this row sits exactly on the line.
+    assert amps <= (1.0 + 1e-9) * 0.85 * hw.ODRIVE_HAND_CURR_LIMIT_A, (
         f'decel feedforward wants {amps:.1f} A of a '
         f'{hw.ODRIVE_HAND_CURR_LIMIT_A:.0f} A limit at T={flight_s} s')
 
@@ -387,23 +400,27 @@ def test_the_feedforward_is_only_sized_over_the_flight_band():
     at_clamp = mirror.HandThrowTrajectory(
         _MAX_EVENT_VEL_MPS).peak_decel_current_a(_HAND_KT_NM_PER_A)
 
-    assert inside <= 0.85 * hw.ODRIVE_HAND_CURR_LIMIT_A
+    assert inside <= (1.0 + 1e-9) * 0.85 * hw.ODRIVE_HAND_CURR_LIMIT_A
     # Recorded as an executable fact, not a wish: the clamp is out of contract.
     assert at_clamp > hw.ODRIVE_HAND_CURR_LIMIT_A, (
         f'{at_clamp:.1f} A at the {_MAX_EVENT_VEL_MPS} m/s builder clamp')
 
 
-def test_the_band_ceiling_is_already_near_the_axis_torque_ceiling():
-    """Why the commanded ramp cannot simply be steepened.
+def test_the_2026_07_band_ceiling_was_already_near_the_axis_torque_ceiling():
+    """Why the commanded ramp could not simply be steepened.
 
-    At ``FLIGHT_TIME_MAX_S`` the profile's OWN commanded deceleration needs
-    75-90 % of everything the axis can produce at ``hand_curr_limit_a``.  The
-    steepest commandable ramp therefore buys ~15 % of decel distance, i.e. ~15 %
-    of the overshoot — 1.02 -> 0.88 rev on the tier that touched the stop.  This
-    test is the recorded reason the fork went to the feedforward instead, and it
-    fails if a future config change opens (or closes) that door.
+    At the 1.10 s ceiling the profile's OWN commanded deceleration needs 75-90 %
+    of everything the axis can produce at ``hand_curr_limit_a``.  The steepest
+    commandable ramp therefore buys ~15 % of decel distance, i.e. ~15 % of the
+    overshoot — 1.02 -> 0.88 rev on the tier that touched the stop.  This test is
+    the recorded reason the fork went to the feedforward instead.
+
+    **Pinned at 1.10 s rather than at ``FLIGHT_TIME_MAX_S``.**  The argument is a
+    statement about a SPEED, and 1.10 s is the speed it was made at; re-reading
+    it at a band edge that has since moved would silently restate it about a
+    different machine.
     """
-    v = _v_for_flight(FLIGHT_TIME_MAX_S)
+    v = _v_for_flight(_HISTORICAL_FLIGHT_CEILING_S)
     thr = mirror.HandThrowTrajectory(v)
     a_cmd_rev = abs(thr._throwD) * mirror._LINEAR_GAIN
     assert a_cmd_rev == pytest.approx(3597.0, rel=0.02)
@@ -413,6 +430,38 @@ def test_the_band_ceiling_is_already_near_the_axis_torque_ceiling():
         ceiling = (hw.ODRIVE_HAND_CURR_LIMIT_A * _HAND_KT_NM_PER_A
                    / (j_true * 2.0 * math.pi))
         assert 0.75 <= a_cmd_rev / ceiling <= 0.90
+
+
+def test_the_derived_ceiling_is_torque_bound_and_this_contract_sets_it():
+    """**What C-HAND-3 settled on 2026-08-20, stated as the executable fact.**
+
+    The 2026-08-18 draft of C-HAND-3 modelled coast from the PRE-fix 2026-07-27
+    ladder, and END_STOP bound the envelope at 0.887 s while torque had slack.
+    The measured post-fix ladder (bags ``2026-08-20_21-51-39`` /
+    ``2026-08-18_18-42-19``) removed that: coast at 4.436 m/s is 0.226 rev, not
+    the 0.700 the pre-fix model extrapolated, and END_STOP does not bind until
+    7.468 m/s.
+
+    So the ceiling is back to being TORQUE — and specifically to **this
+    document's own headroom requirement**: the decel feedforward may draw at
+    most 85 % of ``hand_curr_limit_a``, which caps the commanded decel at
+    3925 rev/s² and the release at 5.637 m/s, just ahead of the hard authority
+    limit at 5.816. C-HAND-3 encodes it as the ``DECEL_FF_HEADROOM`` bound so
+    the envelope cannot admit a throw this contract forbids.
+    """
+    v = _v_for_flight(FLIGHT_TIME_MAX_S)
+    a_cmd_rev = abs(mirror.HandThrowTrajectory(v)._throwD) * mirror._LINEAR_GAIN
+    ceiling = (hw.ODRIVE_HAND_CURR_LIMIT_A * _HAND_KT_NM_PER_A
+               / (_MEASURED_REFLECTED_INERTIA_MAX_KGM2 * 2.0 * math.pi))
+    assert 0.90 < a_cmd_rev / ceiling <= 1.0, (
+        f'the derived ceiling commands {a_cmd_rev:.0f} rev/s^2 of a '
+        f'{ceiling:.0f} rev/s^2 axis limit — if this drops well below 1, some '
+        f'bound other than torque has taken the front and C-HAND-3 § The bounds '
+        f'must be re-read')
+    # And the feedforward at that ceiling sits exactly on the 85 % line.
+    ff_a = mirror.HandThrowTrajectory(v).peak_decel_current_a(_HAND_KT_NM_PER_A)
+    assert ff_a == pytest.approx(
+        0.85 * hw.ODRIVE_HAND_CURR_LIMIT_A, rel=2e-3)
 
 
 # ══════════════════════════════════════════════════════════════════════════

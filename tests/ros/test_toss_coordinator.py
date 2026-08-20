@@ -276,7 +276,8 @@ def test_toss_deadline_never_lands_inside_the_flight_window():
     ('ball_unknown', 'REJECTED_BALL_UNKNOWN'),
     ('track_active', 'REJECTED_TRACK_ACTIVE'),
     ('delay_floor', 'REJECTED_CANT_MAKE_LEAD'),
-    ('flight_band', 'REJECTED_FLIGHT_TIME'),
+    ('flight_floor', 'REJECTED_THROW_ENVELOPE'),
+    ('flight_ceiling', 'REJECTED_THROW_ENVELOPE'),
     ('displacement', 'REJECTED_DISPLACEMENT'),
     ('workspace', 'REJECTED_WORKSPACE'),
 ])
@@ -375,8 +376,17 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
         node._balls = [_Ball(status=1, destination='jugglebot', id=9)]
     elif breakage == 'delay_floor':
         gh = _TossGoalHandle(delay=2.0)
-    elif breakage == 'flight_band':
-        gh = _TossGoalHandle(throw_height=0.2)   # →0.404 s, below the flight band
+    elif breakage == 'flight_floor':
+        # 0.2 m → 0.404 s. Below the DERIVED floor (C-HAND-3): the catch-arm
+        # window is −96 ms there, i.e. the arm cannot be placed after the throw
+        # stroke clears and still meet the Teensy's :533 budget.
+        gh = _TossGoalHandle(throw_height=0.2)
+    elif breakage == 'flight_ceiling':
+        # 1.8 m → 1.212 s → 5.947 m/s: past the DECEL_FF_HEADROOM ceiling
+        # (5.637) but still inside the 7.0 m/s bridge band, so it is the
+        # ENVELOPE that refuses and not the wire copy. (1.2 m was this row's
+        # driver until 2026-08-20; the measured post-fix coast ladder admits it.)
+        gh = _TossGoalHandle(throw_height=1.8)
     elif breakage == 'displacement':
         # 8b is the capability under test, not the shipped default (operator
         # flipped the shipped tier to '8a' on 2026-08-10) — the |B − A| cap is
@@ -393,7 +403,11 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
         gh = _TossGoalHandle(x=60.0, z=300.0)
     result = node._execute_toss(gh)
     assert result.success is False
-    assert result.outcome == expected
+    # REJECTED_THROW_ENVELOPE carries a parenthesised `BOUND:numbers` payload —
+    # the REJECTED_POSITION(NO_RESPONSE) shape — so the row pins the CODE and
+    # tests/motion/test_throw_envelope.py pins what the payload must contain.
+    assert (result.outcome == expected
+            or result.outcome.startswith(expected + '(')), result.outcome
     assert gh.terminal == 'abort'
     assert math.isnan(result.catch_error_mm)
     assert math.isnan(result.achieved_flight_s)

@@ -17,6 +17,14 @@ timeline around the throw stroke and emits, in one row per throw:
                     host-side stroke-busy window has to cover.**
     x2_cross        first sample whose pos_meas passes the modelled release
                     position x2, and the measured velocity there
+    stroke_end      instant ``pos_cmd`` first reaches the stroke end x3, and how
+                    long it held there before the next command landed.  **This
+                    instant is the truncation criterion's whole boundary** — see
+                    the section below
+    post_stroke_cmd the first command AFTER that which takes ``pos_cmd`` back
+                    below x3 (the gated catch arm's own prelude, on a healthy
+                    capture), with its distance from the live ``pos_meas``.
+                    Reported, never gated
     trunc           instant ``pos_cmd`` stops following the stroke and freezes
                     at the live encoder value (the queue was cleared and
                     re-preluded mid-stroke), with that value
@@ -42,26 +50,91 @@ A throw whose ``pos_cmd`` follows the planned decel ramp all the way to x3
 reports ``trunc=-``, ``seeds=0`` and ``dip_below_x3 = 0``: that is the fixed
 shape Phase 5 gates on.
 
-WHY THE GATED DIP ROW IS ``dip_below_x3`` AND NOT ``dip``
---------------------------------------------------------
-``dip`` is peak-minus-bottom, so it is NON-ZERO on every capture that overshoots
-and settles — including a perfectly fixed one (the ``--gate`` clean synthetic
-reads 0.6 mm) and including the legitimate overshoot plan Phase 4 step 2 says
-the velocity-continuous prelude will produce (the 10.60 rev synthetic reads
-20.2 mm, which is the size of the *smallest pre-fix defect*).  A runbook row
-reading "PASS: no dip printed" is therefore unachievable, and an operator
-following it aborts a working fix.  What actually separates the defect from a
-healthy stroke is the SIGN of the excursion relative to the stroke end: pre-fix
-the position loop yanks the hand **0.339-1.748 rev = 10.7-55.3 mm BELOW** x3,
-whereas a healthy stroke settles onto x3 from above and never goes under (the
-four ``--gate`` post-fix synthetics read 0.000-0.001 rev).
+WHAT COUNTS AS A TRUNCATION, AND WHY IT IS NOT A DEADLINE
+---------------------------------------------------------
+A truncation is a command that stops the throw stroke **before it reaches the
+stroke end x3**.  That is a property of the commanded profile, not of a clock,
+and the scan is bounded accordingly: it runs from the commanded-velocity peak up
+to the first sample whose ``pos_cmd`` is no longer short of x3, and no further.
 
-``pullback`` is likewise reported but only ABORTS below -5.0 rev/s, and only once
-``peak`` has passed: a healthy settle from the coasting peak is genuinely a
-negative measured velocity, and its magnitude is set by the peak (-0.31 rev/s at
-0.02 rev of overshoot, -1.58 at the runbook's 10.060 rev ceiling, -10.03 at
-10.60 rev), so it discriminates nothing on its own.  Pre-fix it read -17.9 to
--42.4 rev/s.
+It used to be bounded by a 50 ms wall-clock margin past the *modelled* stroke end
+(``_TRUNC_SCAN_MARGIN_S``), and that margin could not do the job.  Phase 1's arm
+gate withholds the catch arm until the stroke completes and then dispatches on
+the next balls tick, so **the gate working correctly puts a from-rest prelude
+just past the stroke end**, seeded at a live encoder position that has sagged
+0.06-0.17 rev under x3 — which satisfies both halves of the truncation predicate.
+On the 2026-07-27 validation sitting those arms landed 36.7-127.9 ms past the
+MODELLED stroke end, i.e. astride the 50 ms margin.  (The sitting's own hand
+measurement of the same margin reads 28.0-61.6 ms; it was taken from the sample
+where ``pos_cmd`` hit x3 EXACTLY, which is about one telemetry period after this
+probe's ``stroke_end_reached``, and over a smaller set of tosses.  The two are
+not interchangeable — cite the probe's ``stroke_end_hold_ms``, 30.6-128.3 ms over
+the sitting's 44 post-stroke commands, when the field is what is meant.)  Six of that sitting's tosses reported a
+truncation across its six bags and three across its three traces — and on
+2026-07-27_15-39-3x/5x, recorded BOTH ways, the same physical tosses read 4
+through the bag and 3 through the trace: the bag puts toss 22's arm 49.2 ms past
+the modelled stroke end and the trace puts the SAME physical arm at 54.7 ms —
+either side of the 50 ms wall.  The verdict depended on the recording path.
+(Counts here are per RECORDING; two sessions are in the evidence set twice, so
+those physical tosses are counted twice throughout.)  Every one of those was adjudicated PASS by hand at the bench — which is
+the failure the criterion exists to prevent, and the reason the rows were
+recorded as carrying a criterion defect (``plans/active/hand-command-continuity.md``
+Phase 5; ``logbook/2026-07-28-anomaly-fixes-validation-sitting.md`` § Instrument
+defects item 7; fixed 2026-08-18, ``logbook/2026-08-18-trunc-criterion-stroke-end.md``).
+
+Moving the wall was rejected rather than tuned.  Suppressing the arm means
+narrowing the margin below the arm's arrival, and the two edges a wall would have
+to sit between are of different kinds:
+
+  * the LATEST a truncation is still detectable is FIXED and known — a freeze is
+    only visible while ``pos_cmd`` is more than ``_X3_SHORT_REV`` short of x3, and
+    the ramp is inside that band for its last 7.2 ms at 3.93 m/s (8.3 ms at 3.44,
+    10.6 ms at 2.70), so the true-positive edge sits ~7-11 ms BEFORE the modelled
+    end;
+  * the EARLIEST the arm can arrive is a SCHEDULING quantity with no lower bound.
+    Phase 1's gate is designed to dispatch on the first balls tick after the
+    stroke completes, so an arm at +5 ms is the gate behaving correctly.  What was
+    measured is only what the tick phase happened to give: +36.7 ms minimum past
+    the modelled end over the sitting's 44 post-stroke commands — against a
+    dispatch shift that itself moved +40 ms between the two sittings.
+
+So a wall works only for as long as the tick keeps landing late.  Any wall buys a
+blind spot on late truncations the first time it does not.  The stroke-completion
+bound has no such trade, because an arm that lands *before* the command reached
+x3 is a genuine Phase-1 gate failure and still fires the row.
+
+Nothing is hidden by the narrowing: the command that used to be mis-scored as a
+truncation is now reported in its own ``post_stroke_cmd`` row, with the hold
+margin and the live-encoder fingerprint, so the operator sees the event and
+scores it under the rows that own it (``dip_below_x3``, ``first_neg_cmd``).
+
+AND "COLLAPSE" IS PROFILE-RELATIVE TOO (2026-08-20)
+---------------------------------------------------
+The same defect class had a second instance in the other half of the predicate.
+``trunc`` needs to localise the freeze, and it did so with an ABSOLUTE
+``_COLLAPSE_VEL_REV_S = 10`` rev/s — a fixed velocity judging a ramp whose
+velocity scales with the throw.  At the slow end of the admissible band the ramp
+itself fell under it while still short of x3, so the detector reported a
+truncation on a perfectly clean stroke; whether it did depended on where a
+~100 Hz sample landed inside a ~2 ms window, i.e. on the RECORDING.  Measured
+width of that window, walked over the closed form at 0.01 ms steps: **1.94 ms at
+2.440 m/s** (the C-HAND-3 admission floor — about 1 toss in 5 at a 10 ms
+telemetry period), 0.58 ms at 2.6971, 0.16 ms at 2.800, and zero at 2.845 m/s and
+above.  Measured end-to-end by sweeping the sampling phase on clean synthetics:
+**20 of 100 phases fired at 2.440 m/s**, 13 at 2.550, 6 at 2.6971, 2 at 2.800.
+
+The floor is now :func:`_collapse_floor_rps` — the modelled stroke's OWN
+commanded velocity at ``x3 - _X3_SHORT_REV``.  The firmware's decel segment is
+constant deceleration, so commanded velocity falls monotonically with commanded
+position, and every sample of an intact stroke still short of x3 is at or above
+that floor **by construction**.  The self-trigger window is empty at every speed
+rather than merely narrow: 0 of 100 phases fire at each of those speeds, 0 over
+960 clean captures spanning v in [0.70, 7.00] m/s.  Detection is unaffected —
+the two real 2026-07-25 truncations freeze at 0.010 rev/s against a 13.82 rev/s
+floor, a 1382x margin, and the whole evidence base still reads 2 truncated /
+69 clean.  No constant was added: the floor is ``sqrt(-2*throwD*delta)`` with
+``delta = _X3_SHORT_REV``, i.e. the instrument's already-declared position
+resolution read through the shipped stroke model.
 
 WHY THIS EXISTS
 ---------------
@@ -115,8 +188,10 @@ release estimates are independent of the dip:
     destroys - never enters the fit.
 
   * ``trunc`` is the first sample after the ascent's commanded-velocity peak
-    where ``vel_ff_cmd`` collapses below ``_COLLAPSE_VEL_REV_S`` while
-    ``pos_cmd`` is still short of x3.
+    where ``vel_ff_cmd`` falls below :func:`_collapse_floor_rps` - the modelled
+    stroke's own commanded velocity at the stroke-end band edge - while
+    ``pos_cmd`` is still short of x3.  Both halves are profile-relative; neither
+    is a fixed number.
 
   * ``seeds`` adds every LATER from-rest quintic: a sample whose ``pos_cmd``
     steps by more than ``_REPACK_STEP_REV`` while ``vel_ff_cmd`` is still
@@ -470,7 +545,7 @@ def load_bag(bag_dir: str) -> Session:
 
 _ASCENT_VEL_REV_S = 20.0     # commanded velocity that unambiguously means "stroking"
 _REST_VEL_REV_S = 1.0        # commanded velocity that means "at rest"
-_COLLAPSE_VEL_REV_S = 10.0   # commanded velocity below which the stroke is gone
+# "the stroke is gone" is NOT an absolute velocity — see _collapse_floor_rps
 _X3_SHORT_REV = 0.05         # how far short of x3 counts as "truncated mid-stroke"
 _SEED_VEL_REV_S = 2.0        # a from-rest quintic's opening commanded velocity
 _REPACK_STEP_REV = 0.5       # pos_cmd step that no legitimate near-rest quintic
@@ -530,7 +605,7 @@ _DIP_BELOW_X3_BAND_REV = 0.10    # `dip_below_x3_rev` at or under this reads as 
                               # plan's Phase 5 allows for overshoot ABOVE x3, so
                               # the criterion is symmetric about the stroke end
                               # rather than being a free parameter.
-                              # Measured separation: the four synthetic post-fix
+                              # Measured separation: the synthetic post-fix
                               # shapes read 0.000-0.001 rev (100x under the band),
                               # while the seven pre-fix tosses read 0.339-1.748
                               # rev = 10.7-55.3 mm.  So 3.4x margin on the
@@ -544,12 +619,100 @@ _TRUNC_SCAN_MARGIN_S = 0.050  # how far past the modelled stroke end the truncat
                               # late-REPORTED mid-stroke freeze is still caught,
                               # while the armed catch descent (>= 363 ms later even
                               # at FLIGHT_TIME_MIN_S, per the plan's window table)
-                              # is decisively out of range
+                              # is decisively out of range.
+                              #
+                              # NO LONGER THE SEPARATOR AGAINST THE CATCH ARM
+                              # (2026-08-18).  It used to be, and it could not do
+                              # the job: Phase 1's arm gate dispatches the arm's
+                              # from-rest prelude the moment the stroke completes,
+                              # so the gate WORKING lands a command 36.7-127.9 ms
+                              # (2026-07-27 sitting, 44 post-stroke commands) past
+                              # a MODELLED end this margin is 50 ms wide about —
+                              # scoring
+                              # physically identical events ABORT or PASS by which
+                              # side of the wall they fell.  The scan is now bounded
+                              # on the commanded profile REACHING x3 (`i_end` in
+                              # analyse_throw), which separates the two events by
+                              # kind rather than by delay.  This margin survives as
+                              # the fallback bound for the pathological capture
+                              # where the command never reaches x3 and no catch
+                              # descent is found — widening it would now buy nothing
+                              # and would re-open a blind spot on late truncations.
 _DIP_WINDOW_S = 0.60          # how long after the anchor the dip/peak search runs
 _FIXTURE_MARGIN_S = 0.40      # slack kept either side of the analysis window when
                               # cutting the committed gate fixture, so widening
                               # _PRE/_POST_WINDOW_S later does not silently
                               # truncate the fixture's evidence
+
+
+def _collapse_floor_rps(model: StrokeModel) -> float:
+    """The commanded velocity below which the throw stroke CANNOT still be intact.
+
+    THE definition of "collapse", and it is a property of the commanded profile
+    rather than a number.  It is the modelled stroke's OWN commanded velocity at
+    the last position that still counts as short of the stroke end, i.e. at
+    ``x3 - _X3_SHORT_REV``.
+
+    Why that is the right floor, and why it needs no constant of its own.  The
+    firmware's decel segment is CONSTANT deceleration (``Trajectory.h``; see
+    ``HandStrokeModel.pos_rev``'s third branch, ``x2 + v*tau + 0.5*throwD*tau^2``
+    with ``throwD`` constant), so the commanded velocity falls monotonically with
+    commanded position — verified over the whole wire band ``v in [0.3, 7.0]``
+    m/s.  Every sample of an INTACT stroke that is still short of ``x3``
+    therefore carries a commanded velocity at or above this floor, by
+    construction.  A sample below it cannot be the ramp; it is the frozen
+    setpoint a ``packedMsgs.clear()`` leaves behind, which reads ~0 rev/s.
+
+    Closed form.  With ``v = 0`` at ``x3``, ``v^2 = -2*throwD*(x3 - x)``, so at
+    ``x3 - _X3_SHORT_REV``::
+
+        v_floor = sqrt(-2 * throwD * (_X3_SHORT_REV / LINEAR_GAIN_REV_PER_M))
+
+``throwD`` scales as ``v**2`` (``throwA = v/t_acc`` with ``t_acc`` itself
+    proportional to ``1/v``), so the floor scales LINEARLY with the commanded
+    event velocity — and the ratio is the sharpest form of the safety argument::
+
+        floor / v_cmd = sqrt(delta_m * (ir + 1) / (accel_st * ir))  = 0.111171
+
+    which carries no ``v`` at all.  **The floor is always 11.1 % of the commanded
+    peak velocity**, at every speed, which is why it can never reach the
+    velocity-hold plateau that the scan range also contains.  8.58 rev/s at the
+    throw-envelope floor (2.440 m/s), 13.82 at 3.9308, 15.31 at its ceiling
+    (4.357 m/s).  Matches a numeric bisection on ``pos_rev`` to 1.8e-08 rev/s
+    across ``[0.3, 7.0]`` m/s.
+
+    ASSUMPTION, and the one way this could quietly stop being a proof: the
+    announcement's release speed IS the commanded ``event_vel``.  The model is
+    built from ``ann.v_mps`` (the magnitude of ``/throw_announcements``'
+    ``initial_velocity``), so if the modelled speed ever exceeded the commanded
+    one by a factor ``r``, the two predicates would stop being exact complements
+    and a self-trigger band of width ``delta*(r - 1)`` rev would open on the ramp
+    — at r = 1.05 that is 0.0026 rev, the same order as the defect below.
+    Verified exact on the 2026-07-27 evidence base: at the tightest in-scan sample
+    of all 69 clean throws the measured ``vel_ff_cmd`` is 12.5200 against a
+    modelled 12.518, i.e. 0.002 rev/s.  ``toss_trim.speed_gain()`` defines exactly
+    such a ``k_v`` multiplier on ``event_vel_mps``, applied at dispatch and
+    currently NOT WIRED; if it is ever wired, this probe must read the TRIMMED
+    speed rather than the announced one.
+
+    WHY THIS REPLACED AN ABSOLUTE 10 rev/s (2026-08-20).  ``_COLLAPSE_VEL_REV_S =
+    10.0`` was a fixed velocity judging a ramp whose velocity scales with the
+    throw, so at the slow end of the band the ramp itself fell under it while
+    still short of ``x3`` — the detector fired on a perfectly clean stroke.
+    Measured window of dual-predicate satisfaction: **1.94 ms at 2.440 m/s**
+    (the C-HAND-3 envelope floor, ~19 % of tosses at a 10 ms telemetry period),
+    0.58 ms at 2.6971, 0.16 ms at 2.800, and zero at 2.845 m/s and above.  That
+    is the same defect class as the 50 ms truncation wall this instrument shed
+    two days earlier: an absolute constant judging a profile-relative event, on a
+    detector whose whole job is to not cry wolf.  The floor above cannot have
+    that failure mode at any speed, because it IS the profile.
+    """
+    delta_m = _X3_SHORT_REV / LINEAR_GAIN_REV_PER_M
+    # throwD < 0 for every admissible throw (throwA > 0, INERTIA_RATIO > 0);
+    # guard anyway so a future model change fails loud rather than complex.
+    if model.throwD >= 0.0:                                  # pragma: no cover
+        raise ValueError('stroke model has non-negative decel: %r' % model.throwD)
+    return math.sqrt(-2.0 * model.throwD * delta_m) * LINEAR_GAIN_REV_PER_M
 
 
 @dataclass
@@ -575,6 +738,21 @@ class ThrowTimeline:
     x2_cross: Optional[float] = None
     x2_cross_vel_rev_s: Optional[float] = None
     x2_cross_vel_mps: Optional[float] = None
+    # THE boundary between "during the stroke" and "after it", and the only
+    # thing that separates a truncation from the gated catch arm's own prelude.
+    # `stroke_end_reached` is the first sample after the commanded-velocity peak
+    # whose `pos_cmd` is within `_X3_SHORT_REV` of x3; `post_stroke_cmd` is the
+    # first LATER command that takes `pos_cmd` back below that band (before the
+    # catch descent), and `stroke_end_hold_ms` is the gap between them, measured
+    # at 30.6-128.3 ms over the 2026-07-27 sitting's 44 post-stroke commands.
+    # (Not the same as that sitting's hand-adjudicated 28.0-61.6 ms, which was
+    # anchored on the sample where pos_cmd hit x3 exactly.)
+    # Reported, never gated: see the truncation block for why.
+    stroke_end_reached: Optional[float] = None
+    stroke_end_hold_ms: Optional[float] = None
+    post_stroke_cmd: Optional[float] = None
+    post_stroke_cmd_pos_rev: Optional[float] = None
+    post_stroke_cmd_vs_meas_rev: Optional[float] = None
     trunc: Optional[float] = None
     trunc_pos_rev: Optional[float] = None
     trunc_cmd_meas_gap_rev: Optional[float] = None
@@ -691,26 +869,112 @@ def analyse_throw(session: Session, ann: Announcement) -> ThrowTimeline:
     t_release_obs = tl.stroke_start + model.t_acc + model.t_vel
     _analyse_catch_descent(tl, win, model, from_t=t_release_obs)
 
+    # ── stroke completion: the ONE enforcement point that separates a
+    #    truncation from a command that merely lands afterwards ──────────────
+    # A truncation is, by definition, a command that stops the throw stroke
+    # BEFORE it reaches the stroke end x3.  So the boundary is not a clock
+    # reading, it is an event on the commanded profile: the first sample after
+    # the commanded-velocity peak whose `pos_cmd` is no longer short of x3.
+    # Everything after that instant is, by construction, not a truncation —
+    # the stroke it would have to truncate has already finished.
+    #
+    # The same `_X3_SHORT_REV` band the truncation predicate uses is what
+    # "reached" means here, so the two are exact complements and no new
+    # threshold enters the criterion: the scan runs over the maximal prefix of
+    # the window in which the command has never come within `_X3_SHORT_REV` of
+    # the stroke end.
+    #
+    # WHY THIS AND NOT A MOVED `_TRUNC_SCAN_MARGIN_S`.  Phase 1's arm gate
+    # withholds the catch arm until the stroke completes and then dispatches on
+    # the next balls tick — so the gate WORKING puts a from-rest prelude right
+    # after the stroke end, seeded at the live encoder position, which has
+    # sagged 0.06-0.17 rev under x3.  That prelude satisfies both halves of the
+    # truncation predicate (`vel_ff_cmd` ~ 0, `pos_cmd` short of x3), so until
+    # 2026-08-18 the only thing standing between it and a spurious ABORT was
+    # whether it happened to land inside a 50 ms window — and the 2026-07-27
+    # sitting straddled that window.  Measured on that sitting's own capture:
+    # 6 tosses fired `trunc` across its six bags and 3 across its three traces,
+    # and for the one session recorded BOTH ways the same physical tosses read
+    # 4 (bag) against 3 (trace): the bag puts toss 22's arm 49.2 ms past the
+    # modelled stroke end and the trace puts the SAME arm at 54.7 ms, either
+    # side of the wall.  The verdict depended on the recording path, which is
+    # the definition of an artefact.  The fix is NOT to move the wall.  Suppressing the arm means
+    # NARROWING the margin below the arm's arrival, and the arrival delay is set
+    # by the balls-tick phase and the dispatch shift, neither of which is bounded
+    # below (the gate is DESIGNED to dispatch on the first balls tick after the
+    # stroke completes, so an arm at +5 ms is correct behaviour) — and the shift
+    # alone grew from +12.8...+21.9 ms to +54...+63 ms between the two sittings,
+    # tracking can-bridge uptime.  What was measured is only what the tick phase
+    # happened to give: +36.7 ms minimum past the modelled end over 44 commands.
+    # Meanwhile the LATEST a truncation can still be detected is FIXED: a freeze
+    # is visible only while `pos_cmd` is more than `_X3_SHORT_REV` short of x3,
+    # and the ramp is inside that band for its last 7.2 ms at 3.93 m/s.  So one
+    # edge is pinned and the other is a scheduling coincidence, and any wall
+    # between them buys a blind spot on late truncations — the clobber class this
+    # row exists to catch — the first time a tick lands early.  Stroke completion has no such trade: an arm that
+    # lands BEFORE the command reached x3 is a genuine Phase-1 gate failure and
+    # still fires the row.  The two events differ in KIND, not in delay.
+    #
+    # Measured separation over every analysable throw in the evidence base
+    # (six 2026-07-27 bags + six toss traces, run 2026-08-18): relative to the
+    # instant the command reached x3, the arm-prelude case lands +30.6 to
+    # +128.3 ms — positive by construction, since the gate is what put it there
+    # — while the two real pre-fix truncations land -208.1 and -299.0 ms,
+    # because there the command only reaches x3 much later and as part of the
+    # REPLACEMENT quintic.  Sign, not size, is the discriminator.
+    i_end = next((i for i in range(i_peak, len(win))
+                  if win[i].pos_cmd >= model.x3_rev - _X3_SHORT_REV), None)
+    if i_end is not None:
+        tl.stroke_end_reached = win[i_end].t
+        # The first later command that pulls `pos_cmd` back below the band: the
+        # gated arm's own prelude on a healthy capture, or `makeSmoothMove`'s
+        # documented cannot-fit fallback at the stroke top.  Reported so the
+        # operator SEES the event that used to be mis-scored as a truncation —
+        # bounded by the catch descent, which is itself a commanded departure
+        # from x3 and would otherwise always claim this row.
+        hi = tl.catch_desc if tl.catch_desc is not None else float('inf')
+        j = next((i for i in range(i_end + 1, len(win))
+                  if win[i].t < hi
+                  and win[i].pos_cmd < model.x3_rev - _X3_SHORT_REV), None)
+        if j is not None:
+            back = win[max(0, j - _SEED_LOOKBACK):j + 1]
+            tl.post_stroke_cmd = win[j].t
+            tl.post_stroke_cmd_pos_rev = win[j].pos_cmd
+            tl.post_stroke_cmd_vs_meas_rev = min(
+                abs(win[j].pos_cmd - b.pos_meas) for b in back)
+            tl.stroke_end_hold_ms = (win[j].t - win[i_end].t) * 1000.0
+
     # ── truncation: commanded velocity collapses short of x3, WITHIN the
-    #    stroke.  The scan MUST be time-bounded.  The armed catch descent also
-    #    has `vel_ff_cmd` below the collapse threshold AND `pos_cmd` below x3,
-    #    so an unbounded scan reports the DESCENT as a truncation on any
-    #    capture where the stroke was never truncated — i.e. exactly on a
-    #    POST-FIX capture, the one shape this probe exists to score, where it
-    #    would emit a spurious trunc/seed/dip/pullback and measure `peak` at
-    #    the descent onset instead of the coasting peak (a false PASS on the
-    #    row that guards the 10.8 rev end stop).
+    #    stroke.  The scan MUST be bounded at both ends.  The armed catch
+    #    descent also has `vel_ff_cmd` below the collapse threshold AND
+    #    `pos_cmd` below x3, so an unbounded scan reports the DESCENT as a
+    #    truncation on any capture where the stroke was never truncated — i.e.
+    #    exactly on a POST-FIX capture, the one shape this probe exists to
+    #    score, where it would emit a spurious trunc/seed/dip/pullback and
+    #    measure `peak` at the descent onset instead of the coasting peak (a
+    #    false PASS on the row that guards the 10.8 rev end stop).
     #    Verified on temp/logs/toss_trace_2026-07-25_15-24-25.jsonl: the
     #    predicate is TRUE from the descent's second sample onward (pos_cmd
     #    9.7253 rev, vel_ff_cmd -17.31 rev/s); the pre-fix data hides it only
     #    because next() short-circuits on the genuine truncation 663 ms
     #    earlier.  `--gate`'s synthetic fixed-shape case pins this.
+    #    `i_end` is the primary bound (above); the time bounds remain for the
+    #    pathological capture where the command never reaches x3 at all and no
+    #    catch descent is found.
     scan_end = t_release_obs + model.t_dec + _TRUNC_SCAN_MARGIN_S
     if tl.catch_desc is not None:
         scan_end = min(scan_end, tl.catch_desc)
-    i_tr = next((i for i in range(i_peak, len(win))
+    i_stop = len(win) if i_end is None else i_end
+    # The collapse floor is the MODELLED STROKE'S OWN velocity at the stroke-end
+    # band edge, not a fixed rev/s — `_collapse_floor_rps` carries the derivation
+    # and the defect that motivated it.  The `pos_cmd` test is the range
+    # invariant restated (every index below `i_end` is short of x3 by
+    # definition); kept explicit so a future change to the range cannot silently
+    # drop it.
+    floor_rps = _collapse_floor_rps(model)
+    i_tr = next((i for i in range(i_peak, i_stop)
                  if win[i].t <= scan_end
-                 and win[i].vel_ff_cmd < _COLLAPSE_VEL_REV_S
+                 and win[i].vel_ff_cmd < floor_rps
                  and win[i].pos_cmd < model.x3_rev - _X3_SHORT_REV), None)
 
     if i_tr is None:
@@ -760,7 +1024,7 @@ def analyse_throw(session: Session, ann: Announcement) -> ThrowTimeline:
     # ascending from there to the truncation, so the max is the same sample.
     #
     # The window must END at the catch descent, not at a fixed 0.6 s: at
-    # FLIGHT_TIME_MIN_S = 0.55 the descent begins ~340 ms after the truncation,
+    # the shortest admitted flight the descent begins ~340 ms after the truncation,
     # so a fixed window would hand the descent's -60 rev/s to `pullback` and the
     # descent's low point to `dip_bottom`.
     anchor = tl.trunc if tl.trunc is not None else t_release_obs
@@ -908,6 +1172,23 @@ def print_session(session: Session, timelines, preview: bool = False) -> None:
             ('x2_cross       pos_meas passes %.3f rev' % tl.x2_rev, tl.x2_cross,
              'at %s rev/s = %s m/s' % (_f(tl.x2_cross_vel_rev_s, '%.1f'),
                                        _f(tl.x2_cross_vel_mps, '%.2f'))),
+            ('stroke_end     pos_cmd reaches %.3f rev' % tl.x3_rev,
+             tl.stroke_end_reached,
+             '%s%s'
+             % (('held %.1f ms before the next command'
+                 % tl.stroke_end_hold_ms) if tl.stroke_end_hold_ms is not None
+                else ('held it until the catch descent'
+                      if tl.catch_desc is not None
+                      else 'held it to the end of the window '
+                           '(no catch_desc found)'),
+                '' if tl.trunc is None
+                else '   <-- this is the REPLACEMENT move, not the stroke')),
+            ('post_stroke_cmd  after the stroke ended', tl.post_stroke_cmd,
+             'pos_cmd %s rev  (|cmd-meas| = %s rev)   REPORT, not gated%s'
+             % (_f(tl.post_stroke_cmd_pos_rev, '%.4f'),
+                _f(tl.post_stroke_cmd_vs_meas_rev, '%.4f'),
+                '' if (tl.catch_desc is not None or tl.post_stroke_cmd is None)
+                else '   <-- no catch_desc found; this MAY BE the descent')),
             ('trunc          pos_cmd freezes', tl.trunc,
              'at %s rev  (|cmd-meas| this sample = %s rev)'
              % (_f(tl.trunc_pos_rev, '%.4f'),
@@ -1027,7 +1308,18 @@ _GATE_EXPECT = [
     ('peak',                     20.992,   0.020, 's'),
     ('peak_pos_rev',             10.174,   0.010, 'rev'),
     ('peak_pos_mm',             321.8,     0.5,   'mm'),
-    ('headroom_to_limit_rev',     0.93,    0.010, 'rev'),
+    # DERIVED, not a literal.  This row read a literal 0.93 (= 11.1 - 10.174)
+    # and the 2026-08-18 hard-stop correction (11.1 -> 10.8 rev, metal contact)
+    # left it behind, so `--gate` — the operator runbook's MANDATORY instrument
+    # self-check, which ABORTs the whole HAND analysis on a GATE FAIL — was RED
+    # on the shipped tree with nothing in the pytest suite to say so.  Deriving
+    # it from the same generated constant `headroom_to_limit_rev` is computed
+    # against means the next correction to the hard stop cannot silently
+    # invalidate the self-check.  The 10.174 is the pinned `peak_pos_rev` row
+    # above; only the anchor was ever the drifting half.
+    ('headroom_to_limit_rev',
+     hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - 10.174,
+                                  0.010, 'rev'),
     ('pullback',                 21.025,   0.020, 's'),
     ('pullback_vel_rev_s',      -31.3,     0.5,   'rev/s'),
     ('dip_bottom',               21.077,   0.020, 's'),
@@ -1047,13 +1339,20 @@ _GATE_INSTANT_FIELDS = {'stroke_start', 'x2_cross', 'trunc', 'peak', 'pullback',
 
 
 _SYNTH_BRAKE_T_S = 0.14      # duration of the synthetic braking prelude
+_SYNTH_T_REL = 2.0           # the synthetic's release instant on its own clock,
+                             # exposed so a gate case can compute the instants it
+                             # asked for rather than reading them back off the probe
 
 
 def _synth_fixed_session(peak_rev: float, tof_s: float = 0.80,
                          v_mps: float = 3.9308, hz: float = 100.0,
                          lag_s: float = 0.008,
                          brake_at_rel: Optional[float] = None,
-                         brake_dive_rev: Optional[float] = None) -> tuple:
+                         brake_dive_rev: Optional[float] = None,
+                         arm_hold_s: Optional[float] = None,
+                         arm_sag_rev: float = 0.156,
+                         arm_over_rev: float = 0.046,
+                         phase_s: float = 0.0) -> tuple:
     """An in-memory capture of the POST-FIX shape, built from ``StrokeModel``.
 
     ``pos_cmd`` follows the modelled stroke all the way to x3, holds there, then
@@ -1069,24 +1368,59 @@ def _synth_fixed_session(peak_rev: float, tof_s: float = 0.80,
     the catch.  Nothing is truncated in this case either — the stroke reached x3
     first — so every gated row must still read clean.
 
+    ``arm_hold_s`` (seconds after the stroke END) instead injects **the gated
+    catch arm's own prelude**, which is what Phase 1 is built to produce and the
+    shape that used to be mis-scored as a truncation.  The command holds x3, the
+    hand sags ``arm_sag_rev`` under it, then a from-rest ``makeSmoothMove``
+    re-seeds ``pos_cmd`` AT the live encoder position and climbs back to x3,
+    after which the hand settles ``arm_over_rev`` above it.  Defaults sit inside
+    the 2026-07-27 measured spread over 25 re-seeds (sag 0.056-0.172 rev, settle
+    0.046-0.222 rev above x3, seed within 0.00045 rev of the live ``pos_meas``);
+    the defaults are the sitting's toss-19 sag and the smallest measured settle,
+    which is the tightest case for the peak/dip window.
+
+    NOTE what this branch deliberately does NOT model: ``pos_meas`` goes straight
+    from the stroke end into the sag, with no ballistic coast ABOVE x3 first.
+    That is the majority real shape — on 21 of the 25 measured re-seeds the hand
+    never rose above x3 before the arm landed (trace toss 19 peaks at 9.8824 rev,
+    below x3 = 9.9594, then sags to 9.8087) — and it is the tier the false
+    positive was measured on.  A capture that DOES coast past x3 before a command
+    lands is the brake case, covered by ``brake_at_rel`` (``braking-prelude``,
+    ``deep-brake``) and by ``peak_rev`` in the other cases.  The consequence is
+    that this case's ``dip_below_x3`` assertion exercises the sag, not the
+    coast-then-sag ordering ``dip_below_x3`` is blind to (2026-07-28 sitting,
+    instrument-defect item 10).  The ``pos_cmd`` side — the side the criterion
+    acts on — is faithful either way.
+
+    Nothing here is a truncation: the stroke reached x3 first, and every gated
+    row must read clean.
+
     Returns ``(session, t_catch_desc_true)`` so the gate can assert ``catch_desc``
     against the descent onset it built, rather than against whatever the probe
     happens to report.
 
-    Generated rather than recorded, deliberately: every one of the nine
-    analysable tosses in the evidence base truncates, so NO real capture
-    exercises the fixed branch — which is precisely how an unbounded truncation
-    scan survived Phase 0's first gate on the Context-table rows alone.  A
-    committed synthetic *file*
-    would instead go stale the moment the shipped ``TEENSY_TRAJ_*`` constants
-    moved; deriving the shape from the same ``StrokeModel`` the probe itself
-    uses keeps the assertion honest against whatever the header says today.
+    Generated rather than recorded, deliberately.  When this branch was written
+    every one of the nine analysable tosses then available truncated, so no real
+    capture exercised the fixed branch at all — which is precisely how an
+    unbounded truncation scan survived Phase 0's first gate on the Context-table
+    rows alone.  The 2026-07-27 sitting changed that (69 of 71 analysable throws
+    now read ``trunc = -``) but not the argument: those captures live under
+    gitignored ``temp/`` and on a bag drive, so a fresh clone cannot run them, and
+    none of them carries the ``deep-brake``, ``late-trunc`` or arm-hold variants
+    this gate pins.  A committed synthetic *file* would instead go stale the
+    moment the shipped ``TEENSY_TRAJ_*`` constants moved; deriving the shape from
+    the same ``StrokeModel`` the probe itself uses keeps the assertion honest
+    against whatever the header says today.
     """
     m = StrokeModel(v_mps)
-    t_rel = 2.0
+    t_rel = _SYNTH_T_REL
     t_desc = t_rel + tof_s - m.t_acc_catch
     x3 = m.x3_rev
     t_brake = None if brake_at_rel is None else t_rel + brake_at_rel
+    # the gated catch arm's own prelude: onset, and the firmware's own duration
+    # for a from-rest move over the sag
+    t_arm = None if arm_hold_s is None else t_rel + m.t_dec + arm_hold_s
+    arm_T = smooth_move_duration_s(arm_sag_rev)
     # A dive of D rev is the excursion of a v0 = sqrt(D / 0.00778) rev/s brake,
     # whose duration is the firmware's own |v0|*H2/A_max — so the synthetic
     # carries the real time cost of the depth rather than a made-up one.
@@ -1120,6 +1454,11 @@ def _synth_fixed_session(peak_rev: float, tof_s: float = 0.80,
             # out-and-back from the live position's stopping point down to x3
             top = coast(t_brake) + 0.05
             return x3 + (top - x3) * (1.0 - s) ** 2 * (1.0 + 2.0 * s)
+        if t_arm is not None and t_arm <= t < t_arm + arm_T:
+            # the arm's from-rest quintic, seeded AT the live (sagged) position
+            s = (t - t_arm) / arm_T
+            return (x3 - arm_sag_rev
+                    + arm_sag_rev * (s ** 3) * (10.0 - 15.0 * s + 6.0 * s * s))
         if t < t_desc:
             return x3
         tau = t - t_desc
@@ -1127,6 +1466,18 @@ def _synth_fixed_session(peak_rev: float, tof_s: float = 0.80,
                    (m.x3_m + 0.5 * m.catchA * tau * tau) * LINEAR_GAIN_REV_PER_M)
 
     def pos_meas_at(t):
+        if t_arm is not None and t < t_desc:
+            # the hand sags under a held x3, the prelude drives it back, and it
+            # settles just above x3 — the 2026-07-27 measured shape
+            t_end = t_rel + m.t_dec
+            if t <= t_end:
+                return pos_cmd_at(t - lag_s)
+            if t <= t_arm + lag_s:
+                u = min(1.0, (t - t_end) / max(1e-9, t_arm - t_end))
+                return x3 - arm_sag_rev * u
+            if t < t_arm + arm_T + lag_s:
+                return pos_cmd_at(t - lag_s)
+            return x3 + arm_over_rev
         base = pos_cmd_at(t - lag_s)
         # coasting excursion after the stroke ends, then settle back to x3
         u = (t - (t_rel + m.t_dec)) / 0.20
@@ -1134,13 +1485,37 @@ def _synth_fixed_session(peak_rev: float, tof_s: float = 0.80,
             base = coast(t)
         return base
 
+    def _dcmd(t):
+        """Commanded velocity, never differenced ACROSS the re-seed step.
+
+        The firmware publishes the profile's own ``vel_ff_cmd``, and a from-rest
+        quintic opens at v = 0 — the 2026-07-27 captures read 0.00 to +0.44
+        rev/s at the seed sample over 25 re-seeds, never negative.  A centred difference straddling
+        the step would instead invent a -150 rev/s spike and hand the synthetic a
+        downward command the real telemetry does not have.
+        """
+        a, b = t - 5e-4, t + 5e-4
+        if t_arm is not None:
+            if t < t_arm:
+                a, b = min(a, t_arm - 1e-9), min(b, t_arm - 1e-9)
+            else:
+                a, b = max(a, t_arm), max(b, t_arm)
+        return 0.0 if b <= a else (pos_cmd_at(b) - pos_cmd_at(a)) / (b - a)
+
     samples = []
     n = int((t_rel + tof_s + 0.7) * hz)
     dt = 1.0 / hz
+    # `phase_s` shifts the sampling grid without moving the profile.  The
+    # telemetry is a ~100 Hz snapshot of a 500 Hz frame stream, so which part of
+    # a fast transient a capture happens to SEE is a free parameter of the
+    # recording, not of the robot — and a detector whose verdict depends on it is
+    # exactly what this file's criterion work is about.  Used by
+    # tests/motion/test_hand_stroke_timeline_probe.py to place a sample inside a
+    # known-narrow window deterministically.
     for i in range(n + 1):
-        t = i * dt
+        t = i * dt + phase_s
         pc, pm = pos_cmd_at(t), pos_meas_at(t)
-        vc = (pos_cmd_at(t + 5e-4) - pos_cmd_at(t - 5e-4)) / 1e-3
+        vc = _dcmd(t)
         vm = (pos_meas_at(t + 5e-4) - pos_meas_at(t - 5e-4)) / 1e-3
         samples.append(HandSample(t, pm, vm, pc, vc))
     ann = Announcement(t=t_rel - 1.0, t_release=t_rel, tof_s=tof_s,
@@ -1164,7 +1539,10 @@ def run_fixed_shape_gate() -> int:
                        10.5 rev HARD ABORT).  `peak` must report the real
                        excursion — otherwise the one row guarding the 10.8 rev
                        end stop reads PASS with the hand 0.5 rev from it.
-      short-flight     `FLIGHT_TIME_MIN_S = 0.55`.  Here the armed catch descent
+      short-flight     a 0.55 s flight — the shortest the band admitted when this
+                       case was written; C-HAND-3 moved the floor to 0.4949 s on
+                       2026-08-18, and `band-floor` below tests the live one.
+                       Here the armed catch descent
                        begins INSIDE `_DIP_WINDOW_S`, so this is the only case in
                        which the `catch_desc` cap on the dip window is
                        load-bearing: without the cap the descent's own velocity
@@ -1274,6 +1652,144 @@ def run_fixed_shape_gate() -> int:
     print('  %-4s %-16s %-22s want %-14s got %s'
           % ('--', 'deep-brake', 'first_neg_cmd_vel', '< catch_desc',
              tl.first_neg_cmd_vel))
+
+    # ── arm-prelude: the GATED ARM WORKING must not read as a truncation ──────
+    # Phase 1 withholds the catch arm until the throw stroke completes and then
+    # dispatches on the next balls tick, so the gate working puts a from-rest
+    # prelude just past the stroke end, seeded at a live position that has sagged
+    # under x3.  That satisfies both halves of the truncation predicate, and
+    # until 2026-08-18 the only thing standing between it and a spurious ABORT on
+    # rows 1/2/H2.2/H4.6 was a 50 ms wall-clock margin — which the 2026-07-27
+    # sitting straddled (36.7-127.9 ms past the modelled end), so identical tosses
+    # scored
+    # ABORT or PASS by luck.  Two holds are asserted here, on either side of that
+    # dead margin, and BOTH must read clean: the criterion may not depend on the
+    # delay at all.
+    for hold_s in (0.028, 0.062):
+        s, t_desc_true = _synth_fixed_session(0.0, tof_s=0.80, v_mps=3.9308,
+                                              arm_hold_s=hold_s)
+        tl = analyse_throw(s, s.announcements[0])
+        m = StrokeModel(3.9308)
+        t_arm_true = _SYNTH_T_REL + m.t_dec + hold_s
+        label = 'arm-prelude%+.0fms' % (hold_s * 1000.0)
+        for name, got, want, ok in [
+            # the fix itself: an arm landing after the stroke end is not a truncation
+            ('status', tl.status, 'not-truncated', tl.status == 'not-truncated'),
+            ('trunc', tl.trunc, None, tl.trunc is None),
+            ('n_seeds', tl.n_seeds, 0, tl.n_seeds == 0),
+            # ...and the boundary it is decided on, which must be the stroke end
+            ('stroke_end_reached', tl.stroke_end_reached,
+             '<= %.3f' % t_arm_true,
+             tl.stroke_end_reached is not None
+             and tl.stroke_end_reached <= t_arm_true),
+            # the arm's prelude is REPORTED, not silently dropped: a criterion
+            # that hides the event it stopped scoring is a blind spot, not a fix
+            ('post_stroke_cmd', tl.post_stroke_cmd, '%.3f' % t_arm_true,
+             tl.post_stroke_cmd is not None
+             and abs(tl.post_stroke_cmd - t_arm_true) <= 0.020),
+            ('post_stroke_cmd_vs_meas_rev', tl.post_stroke_cmd_vs_meas_rev,
+             '<= 0.010 (live seed)',
+             tl.post_stroke_cmd_vs_meas_rev is not None
+             and tl.post_stroke_cmd_vs_meas_rev <= 0.010),
+            ('stroke_end_hold_ms', tl.stroke_end_hold_ms, '> 0',
+             tl.stroke_end_hold_ms is not None and tl.stroke_end_hold_ms > 0.0),
+            # the gated dip row still reads clean on this shape
+            ('dip_below_x3_rev', tl.dip_below_x3_rev,
+             '<= %.2f' % _DIP_BELOW_X3_BAND_REV,
+             tl.dip_below_x3_rev is not None
+             and tl.dip_below_x3_rev <= _DIP_BELOW_X3_BAND_REV),
+            # ...and the arm's prelude is NOT mistaken for the catch descent
+            ('catch_desc', tl.catch_desc, '%.3f' % t_desc_true,
+             tl.catch_desc is not None
+             and abs(tl.catch_desc - t_desc_true) <= 0.020),
+        ]:
+            bad += 0 if ok else 1
+            print('  %-4s %-16s %-22s want %-14s got %s'
+                  % ('OK' if ok else 'FAIL', label, name, want, got))
+
+    # ── late-truncation: the blind spot a wider margin would have bought ──────
+    # The alternative fix considered and rejected was widening
+    # `_TRUNC_SCAN_MARGIN_S` past the arm's arrival.  This case is why: a genuine
+    # clobber on the LAST millimetres of the decel ramp — the command freezes
+    # 0.30 rev short of x3, well inside any margin wide enough to clear the arm —
+    # must still read as a truncation.  It does, because the bound is the
+    # commanded profile reaching x3, which this capture never does.
+    s, _ = _synth_fixed_session(0.0, tof_s=0.80, v_mps=3.9308,
+                                arm_hold_s=0.028)
+    x3 = StrokeModel(3.9308).x3_rev
+    freeze = x3 - 0.30
+    t_freeze = None
+    for k, w in enumerate(s.samples):
+        if t_freeze is None:
+            if w.pos_cmd >= freeze and w.vel_ff_cmd > _collapse_floor_rps(
+                    StrokeModel(3.9308)):
+                t_freeze = w.t
+            continue
+        s.samples[k] = HandSample(w.t, w.pos_meas, w.vel_meas,
+                                  min(w.pos_cmd, freeze),
+                                  0.0 if w.pos_cmd >= freeze else w.vel_ff_cmd)
+    tl = analyse_throw(s, s.announcements[0])
+    for name, got, want, ok in [
+        ('status', tl.status, 'ok', tl.status == 'ok'),
+        ('trunc', tl.trunc, '%.3f' % t_freeze,
+         tl.trunc is not None and abs(tl.trunc - t_freeze) <= 0.020),
+        ('trunc_pos_rev', tl.trunc_pos_rev, '%.4f' % freeze,
+         tl.trunc_pos_rev is not None
+         and abs(tl.trunc_pos_rev - freeze) <= 0.010),
+        ('n_seeds', tl.n_seeds, '>= 1', tl.n_seeds >= 1),
+    ]:
+        bad += 0 if ok else 1
+        print('  %-4s %-16s %-22s want %-14s got %s'
+              % ('OK' if ok else 'FAIL', 'late-trunc', name, want, got))
+
+    # ── band-floor: the collapse floor must never fire on the ramp itself ────
+    # `_collapse_floor_rps` replaced an absolute 10 rev/s on 2026-08-20 because
+    # the ramp's own velocity scales with the throw, so at the slow end of the
+    # admissible band the ramp fell under the fixed threshold while still short
+    # of x3 and the detector reported a truncation on a perfectly clean stroke.
+    # Whether it fired depended on where a ~100 Hz sample happened to land inside
+    # a ~2 ms window — a property of the RECORDING, not the robot.  So this case
+    # sweeps the SAMPLING PHASE, which is the free parameter, at the slowest
+    # throws the instrument can analyse.  Nothing may fire.
+    #
+    # Speeds: the C-HAND-3 admission floor when that module is importable (so the
+    # gate follows the shipped band if it widens downward again), plus the
+    # slowest stroke this probe can see at all — `_ASCENT_VEL_REV_S` / gain =
+    # 0.633 m/s, below which `analyse_throw` reports `no-throw-stroke` — and the
+    # retired 2.6971 m/s figure the defect was first measured at.
+    floor_speeds = [round(_ASCENT_VEL_REV_S / LINEAR_GAIN_REV_PER_M, 4) + 0.10,
+                    2.4400, 2.6971, 2.8000]
+    try:                                            # optional, never required
+        from jugglebot.motion.trajectory import throw_envelope as _te
+        _v_env = round(_te.vertical_release_speed_mps(_te.min_flight_time_s()), 4)
+        floor_speeds.append(_v_env)
+        print('  --   band-floor       %-22s %s'
+              % ('C-HAND-3 admits from', '%.4f m/s (%.4f s flight)'
+                 % (_v_env, _te.min_flight_time_s())))
+    except Exception as exc:                        # pragma: no cover
+        print('  --   band-floor       %-22s %s'
+              % ('C-HAND-3 floor', 'not importable (%s) - using literals'
+                 % type(exc).__name__))
+    n_phase = 40
+    for v in sorted(set(floor_speeds)):
+        m = StrokeModel(v)
+        fired = []
+        for k in range(n_phase):
+            sess, _ = _synth_fixed_session(m.x3_rev + 0.02,
+                                           tof_s=max(0.50, 0.204 * v),
+                                           v_mps=v, phase_s=k * (0.010 / n_phase))
+            t = analyse_throw(sess, sess.announcements[0])
+            if t.trunc is not None:
+                fired.append((k, t.trunc_pos_rev))
+        ok = not fired
+        bad += 0 if ok else 1
+        print('  %-4s %-16s %-22s want %-14s got %s'
+              % ('OK' if ok else 'FAIL', 'band-floor',
+                 'v=%.4f floor %.2f rps' % (v, _collapse_floor_rps(m)),
+                 '0/%d fire' % n_phase,
+                 '%d/%d fire%s' % (len(fired), n_phase,
+                                   '' if ok else '  first at pos %.4f rev'
+                                   % fired[0][1])))
 
     print('  %s — fixed-shape branch' % ('GATE PASS' if bad == 0 else 'GATE FAIL'))
     return 0 if bad == 0 else 1

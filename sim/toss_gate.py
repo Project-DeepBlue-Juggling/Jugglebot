@@ -46,7 +46,7 @@ contact-carried per its contract. See the Phase-2 logbook Discussion.
     ``core_clean >= ceil(0.9 n)``, reported as ``passed_8b_ring``. In a
     tier-8b run DISPLACED points leave the T = 0.80 band (superseded by this
     one), so the ADVISORY rings ({70, 100, cap} since Phase E) and the
-    T = 0.95 spot checks stay ADVISORY; tier-8a runs are byte-identical (the
+    long-flight spot checks stay ADVISORY; tier-8a runs are byte-identical (the
     band is empty there and the old membership logic is untouched).
 
     **Why the cap ring is advisory and not binding (Phase E, 2026-07-29).** The
@@ -169,6 +169,7 @@ from jugglebot.motion.trajectory import (
 )
 from jugglebot.motion.trajectory import ballistics_bc as bal
 from jugglebot.motion.trajectory import planner
+from jugglebot.motion.trajectory import throw_envelope
 from jugglebot.motion.trajectory import toss_release
 from jugglebot.motion.trajectory.feasibility import TrajectoryInfeasible
 from jugglebot.motion.trajectory.shaping import cup_lateral_shift_mm
@@ -190,7 +191,25 @@ from sim.gate_common import (
 # ── Sweep grid (plan § Sim gate; factored per the Phase-2 spec) ────────────────
 _XY_POINTS_MM = ((0.0, 0.0), (60.0, 60.0), (60.0, -60.0),
                  (-60.0, 60.0), (-60.0, -60.0))
-_FLIGHTS_S = (0.55, 0.60, 0.80, 0.95, 1.10)
+# The five-rung flight ladder.  Since 2026-08-18 the two OUTER rungs are the
+# DERIVED envelope edges (contract C-HAND-3, ros_ws/docs/hand_throw_envelope.md)
+# rather than the hand-picked 0.55 / 1.10 the FSM used to carry, and the "high"
+# rung is the midpoint between the shipped default and the ceiling (it was the
+# literal 0.95).  Reason: a sweep point the shipped FSM would refuse
+# (REJECTED_THROW_ENVELOPE) measures nothing about a machine that can fly — and
+# the two rungs that went away, 0.95 and 1.10, are exactly the ones whose
+# modelled coast peaks at 11.09 and 12.17 rev against a 10.8 rev hard stop.
+# The interior 0.60 / 0.80 stay literal because they are historical comparison
+# points (the Rung-2a characterisation flight and the shipped default), not
+# limits.  Pinned to the FSM band by
+# tests/sim/test_toss_gate.py::test_sweep_points_inside_fsm_bands.
+_FLIGHT_MIN_S = throw_envelope.MIN_FLIGHT_TIME_S
+_FLIGHT_MAX_S = throw_envelope.MAX_FLIGHT_TIME_S
+#: The "high" rung — midpoint of the shipped default and the derived ceiling.
+#: It is also the long-flight rung the Tier-8b grid uses, because the ceiling
+#: itself is unflyable once a goal is AIMED (see `default_grid_8b`).
+_FLIGHT_HIGH_S = 0.5 * (0.80 + _FLIGHT_MAX_S)
+_FLIGHTS_S = (_FLIGHT_MIN_S, 0.60, 0.80, _FLIGHT_HIGH_S, _FLIGHT_MAX_S)
 _Z_SWEEP_MM = (140.0, 200.0)
 _Z_SWEEP_FLIGHTS_S = (0.60, 0.80)
 
@@ -283,7 +302,7 @@ def default_grid_8b(throw_site_xy=(0.0, 0.0), advisory_rings_mm=None):
     relative to the throw site A (``throw_site_xy``): the centre (A) + the
     BINDING 50 mm ring (8 directions) + the ADVISORY rings
     (``advisory_rings_mm``, default {70, 100, cap}) + two advisory
-    T = 0.95 column-displaced spot checks, all at z = 170 / T = 0.80 (the
+    long-flight (derived-ceiling) column-displaced spot checks, all at z = 170 / T = 0.80 (the
     hardware band; short flights are infeasible at these displacements, § 2.6).
 
     Every ring runs the FULL gating pipeline (production ``build_catch`` +
@@ -302,8 +321,21 @@ def default_grid_8b(throw_site_xy=(0.0, 0.0), advisory_rings_mm=None):
     for radius in rings:                                         # advisory rings
         for ux, uy in _RING_8DIR:
             pts.append((ax + radius * ux, ay + radius * uy, z, _TOSS_8B_FLIGHT_S))
-    pts.append((ax + _TOSS_8B_RING_MM, ay, z, 0.95))            # advisory T=0.95 spots
-    pts.append((ax, ay + _TOSS_8B_RING_MM, z, 0.95))
+    # Advisory LONG-flight spots.  0.95 s until 2026-08-18; now the sweep's
+    # interior "high" rung, because 0.95 s is outside the C-HAND-3 envelope
+    # (modelled coast peak 11.09 rev against a 10.8 rev hard stop) and the
+    # shipped FSM refuses it — an advisory point the machine cannot fly advises
+    # nothing.
+    #
+    # NOT `_FLIGHT_MAX_S`, which was the first attempt and is equally unflyable
+    # HERE: that edge is the Tier-8a CO-LOCATED projection, and an 8b goal is
+    # AIMED, so a 50 mm displacement lifts the commanded release from 4.35683 to
+    # 4.35742 m/s — 0.6 mm/s over the END_STOP bound, and refused. **Tier 8b's
+    # usable ceiling is therefore strictly below the reported 8a band**, by an
+    # amount that grows with displacement. The interior rung clears it with room
+    # (4.144 m/s at 50 mm, verified against `throw_envelope.evaluate`).
+    pts.append((ax + _TOSS_8B_RING_MM, ay, z, _FLIGHT_HIGH_S))
+    pts.append((ax, ay + _TOSS_8B_RING_MM, z, _FLIGHT_HIGH_S))
     return pts
 
 
@@ -1337,7 +1369,7 @@ class TossGate:
                 # Tier-8b binding displaced band: the centre (A) + the 50 mm ring
                 # at T=0.80 / z=170 (the Rung-2a reliable box). Purely geometric,
                 # same no-vacuous-pass rationale. The 70 mm ring (displacement
-                # ~70) and the T=0.95 spots stay ADVISORY (excluded here).
+                # ~70) and the long-flight spots stay ADVISORY (excluded here).
                 'binding_8b_ring': bool(
                     is_8b and abs(T - _TOSS_8B_FLIGHT_S) < 1e-9
                     and abs(z - Z_ACTIVE_MM) < 1e-9

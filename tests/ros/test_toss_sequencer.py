@@ -307,13 +307,59 @@ def test_negative_params_never_coerce_to_defaults():
     assert d.done and d.result.outcome == 'REJECTED_CANT_MAKE_LEAD'
 
 
-@pytest.mark.parametrize('flight_t', [0.4, 1.5])
-def test_flight_time_bounds_rejected(flight_t):
+@pytest.mark.parametrize('flight_t, bound', [
+    (0.40, 'ARM_WINDOW'),       # below the derived floor — the catch cannot be armed
+    (1.16, 'DECEL_FF_HEADROOM'),  # between the FF line and hard authority
+    (1.20, 'DECEL_AUTHORITY'),    # above the ceiling, inside the 7.0 m/s wire
+                                  #   band (5.89 m/s), so it is the ENVELOPE that
+                                  #   refuses and not the bridge copy — 1.50 s
+                                  #   would read EVENT_VEL and prove nothing
+])
+def test_flight_time_outside_the_derived_envelope_is_rejected(flight_t, bound):
+    """The derived envelope (C-HAND-3) refuses BY NAME, and the two ends refuse
+    for different physical reasons — which is exactly what the old
+    ``[0.55, 1.10]`` band could not say: too SHORT and the catch cannot be
+    armed; too LONG and the decel feedforward saturates the drive."""
     seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=flight_t,
                         throw_delay_s=5.0)
     seq.start(0.0)
     d = seq.step(0.0, _obs(0.0))
-    assert d.done and d.result.outcome == 'REJECTED_FLIGHT_TIME'
+    assert d.done
+    assert d.result.outcome.startswith('REJECTED_THROW_ENVELOPE(' + bound + ':')
+    # A refusal must carry the numbers, never a bare "too high": the offending
+    # quantity AND the limit it broke, so the operator can act on one line.
+    msg = d.result.outcome
+    assert any(ch.isdigit() for ch in msg), msg
+    assert any(u in msg for u in (' rev', ' A ', ' s ', ' m/s')), msg
+
+
+def test_the_shipped_working_point_is_admitted():
+    """The 1.0 m working point the machine actually flies must be admitted.
+
+    The 2026-08-18 draft REFUSED it: on the pre-fix coast ladder its peak
+    modelled to 10.660 rev, 4.4 mm from metal. Measured on the flashed plant
+    (n = 14 at exactly this speed) it peaks at 10.185 rev, 19.4 mm clear, and
+    the gate passes it."""
+    seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=0.9032,
+                        throw_delay_s=5.0)
+    assert seq.event_vel_mps == pytest.approx(4.4360, abs=1e-3)
+    seq.start(0.0)
+    d = seq.step(0.0, _obs(0.0))
+    assert not (d.done and str(d.result.outcome).startswith(
+        'REJECTED_THROW_ENVELOPE')), d.result.outcome
+
+
+def test_non_positive_flight_time_is_still_a_flight_time_reject():
+    """``REJECTED_FLIGHT_TIME`` survives, narrowed to VALIDITY: a flight time
+    that is not a positive finite number. Keeping the code (rather than folding
+    it into the envelope) is what lets ``__post_init__``'s never-coerce belt
+    still report a sign typo as a sign typo instead of as an end-stop fault."""
+    for bad in (-0.8, float('nan')):
+        seq = TossSequencer(catch_pose_stow_mm=CATCH_POSE, flight_time_s=bad,
+                            throw_delay_s=5.0)
+        seq.start(0.0)
+        d = seq.step(0.0, _obs(0.0))
+        assert d.done and d.result.outcome == 'REJECTED_FLIGHT_TIME', bad
 
 
 def test_event_vel_bound_rejected():

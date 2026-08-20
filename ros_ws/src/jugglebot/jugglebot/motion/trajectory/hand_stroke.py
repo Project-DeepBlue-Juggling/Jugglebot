@@ -462,10 +462,13 @@ def required_arm_lead_s(v_armed_mps: float,
     ``max(_MIN_EVENT_DELAY_S = 0.3, this)`` and the 0.3 floor binds at every
     nominal armed velocity (budget 0.284 s at the 0.55 s flight, 0.190 s at
     1.10 s; the budget only overtakes the floor below ``v_armed`` 1.98 m/s).  The
-    tightest case, the 0.55 s flight at the default knob, leaves 15.9 ms of floor
-    headroom against a ~23 ms transit bound — a 7 ms shortfall, against the
-    115 ms of slack the gate actually dispatches with, because it fires at the
-    FIRST tick after the window opens rather than at the last.  Runbook row H1.5
+    tightest case leaves 15.9 ms of floor
+    headroom against a ~23 ms transit bound — a 7 ms shortfall, against the slack
+    the gate actually dispatches with, because it fires at the FIRST tick after
+    the window opens rather than at the last. **That slack is 50 ms at the band
+    floor since 2026-08-18** (it read 115 ms at the hand-picked 0.55 s floor);
+    the floor is now DERIVED as the flight where the window reaches
+    ``hand_throw_envelope.arm_window_margin_s``, contract C-HAND-3.  Runbook row H1.5
     (``slack > 0.050 s`` on every withheld line) is the bench guard on that
     margin; H1.6 reads the serial console for the refusal itself.
     """

@@ -241,6 +241,29 @@ namespace TeensyTraj {
 }
 
 // ==========================================================================
+// Hand Throw Envelope
+// ==========================================================================
+
+namespace HandEnv {
+  constexpr float END_STOP_MARGIN_REV = 0.2f;
+  constexpr float MEASURED_COAST_REV[3][2] = {
+    {3.142f, 0.1342f},
+    {3.714f, 0.2119f},
+    {4.436f, 0.226f},
+  };
+  constexpr float COAST_EXTRAPOLATION_EXPONENT = 2.0f;
+  constexpr float DECEL_FF_CURRENT_HEADROOM_FRAC = 0.85f;
+  constexpr float MEASURED_REFLECTED_INERTIA_KGM2 = 1.05e-05f;
+  constexpr float ARM_WINDOW_MARGIN_S = 0.05f;
+  constexpr float DC_BUS_NOMINAL_V = 45.0f;
+  constexpr float REGEN_RAIL_CAPACITY_W = 300.0f;
+  constexpr float HAND_TORQUE_CONSTANT_NM_PER_A = 0.0055133f;
+  constexpr float HAND_TORQUE_SOFT_LIMIT_NM = 0.7f;
+  constexpr float GRAVITY_HOLD_CURRENT_A = 1.5f;
+  constexpr float REGEN_CURRENT_LIMIT_A = 8.0f;
+}
+
+// ==========================================================================
 // Teensy Operational
 // ==========================================================================
 
