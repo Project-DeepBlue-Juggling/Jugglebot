@@ -2,7 +2,7 @@
 title: Throw height is now derived from the machine's limits, not two hand-picked constants — and the derived ceiling is 0.887 s, not 1.10
 type: feature
 date: 2026-08-18
-status: in-progress
+status: resolved
 phase: "single-ball-toss / hand-command-continuity follow-on"
 related_plan: single-ball-toss.md
 files_changed:  # sources of truth + the docs that carried the old band; the
