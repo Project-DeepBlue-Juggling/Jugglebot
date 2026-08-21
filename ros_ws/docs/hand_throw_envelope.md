@@ -175,8 +175,33 @@ the extrapolation has n = 14.
 
 `coast(v) = coast_top · (v/v_top)^p` with **p = 2.0**.
 
-> ⚠ **The data spans 3.142–4.436 m/s (1.41×). The shipped ceiling is 5.637 m/s
-> — 1.27× past the fastest speed ever measured on this plant.**
+> ⚠ ~~**The data spans 3.142–4.436 m/s (1.41×). The shipped ceiling is 5.637 m/s
+> — 1.27× past the fastest speed ever measured on this plant.**~~
+>
+> ✅ **DISCHARGED BY MEASUREMENT 2026-08-21.** The operator flew the envelope to
+> its ceiling: `2026-08-21_10-11-42`, throws at 4.436 / 4.858 / 5.246 / 5.608 ×2
+> m/s — the last **0.029 m/s under the 5.637 bound**. Every throw was ACCEPTED by
+> the gate and none was truncated. Measured coast:
+>
+> | v_cmd | coast past x3 | headroom to the 10.8 rev stop |
+> |---|---|---|
+> | 4.436 | 0.200 rev | 0.641 rev |
+> | 4.858 | 0.212 | 0.629 |
+> | 5.246 | 0.213 | 0.628 |
+> | **5.608** | **0.215 / 0.250** | **0.590 rev = 18.7 mm** |
+>
+> **The model is conservative by ~40 % at the ceiling**: p = 2.0 predicts 0.361 rev
+> of coast at 5.608 m/s; measured is 0.215–0.250. Coast is close to FLAT across the
+> whole 3.142 → 5.608 m/s span (0.134 → 0.250, ratio 1.87 against a speed ratio of
+> 1.78, i.e. **p ≈ 1.0**), which is what a tracking-limited plant with 1.8× unused
+> braking authority should do.
+>
+> **p = 2.0 is deliberately RETAINED** — it is now measured-conservative rather than
+> assumed-conservative, and lowering it would buy ceiling the machine cannot use
+> (`DECEL_FF_HEADROOM` binds first regardless). Do not "correct" it to the fit.
+>
+> The only drops that session were the 1.6 m throws, whose balls struck the ROOM's
+> ceiling — a trajectory disturbance outside the machine, not an envelope failure.
 
 Fitted exponents (computed 2026-08-20): log-log OLS on per-speed **maxima 1.50**,
 on means 1.31, on all 18 individual points 1.12; minimax best 1.4 / 1.2 / 0.8.
