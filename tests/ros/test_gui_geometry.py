@@ -337,17 +337,21 @@ class TestChartUnitConstants:
         assert _extract_js_number(js_source, 'BB_PITCH_DEG_PER_REV') == pytest.approx(360.0)
         assert _extract_js_number(js_source, 'BB_PITCH_DEG_OFFSET') == pytest.approx(90.0)
 
-    def test_bb_pitch_maps_onto_the_configured_range(self, js_source):
-        """Sanity: the affine map has to land the barrel in ~12-90 deg.
+    def test_bb_pitch_maps_onto_the_configured_range(self, yaml_config, js_source):
+        """Sanity: the affine map has to land the barrel on the CONFIGURED range.
 
-        A sign flip or a swapped offset still produces a smooth-looking trace,
-        so pin the physical endpoints: rev 0 is the 90 deg (vertical) end and
-        the low end of the configured range sits near 12 deg.
+        Endpoints derive from ball_butler_pitch.deg_min/deg_max in the YAML —
+        not hardcoded literals, which would drift silently if the config moved.
+        rev 0 must be the deg_max (vertical) end, and the configured travel
+        must be under a quarter motor turn (12-90 deg = 0.2167 rev) — a wrong
+        per_rev (180, or a rad/deg slip) breaks the span check.
         """
         per_rev = _extract_js_number(js_source, 'BB_PITCH_DEG_PER_REV')
         offset = _extract_js_number(js_source, 'BB_PITCH_DEG_OFFSET')
-        assert offset + per_rev * 0.0 == pytest.approx(90.0, abs=0.1)
-        assert offset + per_rev * -0.2167 == pytest.approx(12.0, abs=0.1)
+        rng = yaml_config['ball_butler_pitch']
+        assert offset == pytest.approx(rng['deg_max'], abs=0.1)
+        span_rev = (rng['deg_max'] - rng['deg_min']) / per_rev
+        assert 0.0 < span_rev < 0.25
 
     def test_hand_gain_spans_the_physical_stroke(self, yaml_config, js_source):
         """Sanity: hard stop x mm/rev must land inside the physical stroke.

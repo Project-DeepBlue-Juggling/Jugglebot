@@ -530,7 +530,11 @@ function paint() {
         </tr>`;
     }
     html += '</tbody></table>';
+    // innerHTML replacement can reset scrollTop (engine-dependent), and this
+    // table scrolls in the narrow sidebar — repaint must not yank the view.
+    const keepScroll = rowsHost.scrollTop;
     rowsHost.innerHTML = html;
+    rowsHost.scrollTop = keepScroll;
 
     paintAggregates(newest, pair);
 }

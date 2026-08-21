@@ -819,9 +819,11 @@ export function nanGaps(u, sidx, i0, i1, nullGaps) {
 /**
  * Build the uPlot options for ONE chart.
  *
- * `chartIdx` is required (not defaulted): the y-axis label, tick decimals and
- * flat-data pad floor are all per-chart now, and a silently-defaulted index
- * would label a BB-pitch chart in millimetres.  Sole call site: buildAllCharts.
+ * `chartIdx` is required (not defaulted): the y-axis label and the flat-data
+ * pad floor are per-chart now, and a silently-defaulted index would label a
+ * BB-pitch chart in millimetres.  (Tick decimals stay on uPlot's auto
+ * formatter; per-chart decimals apply to callouts and Δ pills only.)
+ * Sole call site: buildAllCharts.
  */
 function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = null) {
     const signalList = getActiveSignalList();

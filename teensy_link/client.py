@@ -134,11 +134,12 @@ class LinkStats:
       lock anywhere on this path. Rebinding an EXISTING key is safe under the
       GIL; INSERTING one while ``dict()`` iterates raises ``RuntimeError:
       dictionary changed size during iteration``. Pre-seeding removes every
-      insertion for a known type, so the only remaining insert is a frame whose
-      msg_type this build's enum does not name (``decode_frame`` validates
-      magic/version/length/CRC but not the type) — a future-firmware case, and
-      the reason snapshot() is not claimed to be race-FREE, only race-free for
-      the inventory we know.
+      insertion for a known type, and every bump site is rebind-only
+      (``if key in dict``), so a frame whose msg_type this build's enum does
+      not name (``decode_frame`` validates magic/version/length/CRC but not
+      the type — the additive-firmware case) never inserts either: it is
+      counted only in the aggregates, and snapshot() cannot race an insert
+      from this class's own paths.
     * **Honest zeros.** A never-seen type renders as a real ``0`` row on
       ``/udp_diag`` instead of vanishing, so "this type is not flowing" is
       distinguishable from "this consumer forgot about this type".
@@ -400,13 +401,15 @@ class TeensyLinkClient:
 
         Called AFTER a successful ``sendto`` in all three send paths, so the
         count is frames that reached the kernel — a raising send counts
-        nothing, matching ``tx_frames`` beside it. Unknown types (a caller
-        passing an id outside :class:`MsgType`) insert rather than rebind; see
-        :class:`LinkStats` on why that is the one remaining snapshot race.
+        nothing, matching ``tx_frames`` beside it. Rebind-only (pre-seeded
+        keys), so a snapshot() copy never races an insert. Counts are
+        best-effort under concurrent sends: the read-modify-write is not
+        atomic across the sending threads, so a lost increment is possible
+        and bounded by the send rate — the same guarantee ``tx_frames`` has
+        always had.
         """
-        self.stats.tx_count_by_type[msg_type] = (
-            self.stats.tx_count_by_type.get(msg_type, 0) + 1
-        )
+        if msg_type in self.stats.tx_count_by_type:
+            self.stats.tx_count_by_type[msg_type] += 1
 
     def send_heartbeat(self, t_jetson_us: Optional[int] = None, flags: int = 0) -> None:
         """Send a J→T heartbeat. Convenience wrapper around send_stream."""
@@ -574,9 +577,12 @@ class TeensyLinkClient:
                 logger.debug("decode failure: %s (%d bytes from %s)", e, len(data), addr)
                 continue
             self._track_seq(msg_type, seq)
-            self.stats.rx_count_by_type[msg_type] = (
-                self.stats.rx_count_by_type.get(msg_type, 0) + 1
-            )
+            if msg_type in self.stats.rx_count_by_type:
+                # Rebind-only: an unknown msg_type (newer firmware, same
+                # PROTOCOL_VERSION — the additive convention) must not INSERT
+                # on the RX thread while snapshot() copies on the ROS timer.
+                # It stays counted in rx_frames, the documented superset.
+                self.stats.rx_count_by_type[msg_type] += 1
             if msg_type == int(p.MsgType.HEARTBEAT_T2J):
                 self.stats.last_t2j_heartbeat_us = self.stats.last_rx_us
             self._dispatch(msg_type, seq, payload, addr, rx_wall_us)
@@ -594,9 +600,9 @@ class TeensyLinkClient:
         expected = (prev + 1) & 0xFFFF
         if seq != expected:
             # Crude gap measure: count one gap event per out-of-order seq.
-            self.stats.seq_gaps_by_type[msg_type] = (
-                self.stats.seq_gaps_by_type.get(msg_type, 0) + 1
-            )
+            # Rebind-only, same snapshot-race reason as rx_count_by_type.
+            if msg_type in self.stats.seq_gaps_by_type:
+                self.stats.seq_gaps_by_type[msg_type] += 1
 
     def _confirm_rx_stamping(self) -> None:
         """PROBING → KERNEL on the first packet that actually carried a stamp.
