@@ -2,12 +2,15 @@
 title: Critical-point ILC becomes the primary toss learning architecture — the arc is unparked and folded onto the mainline
 type: refactor
 date: 2026-08-21
-status: in-progress
+status: resolved
 files_changed:
   - plans/active/critical-point-ilc.md
+  - plans/active/toss-selftuning.md
+  - plans/active/catch-robustness.md
   - plans/active/INDEX.md
   - logbook/INDEX.md
   - tools/probes/README.md
+  - tools/probes/ilc_speed_band.py
   - config/hardware_config.yaml
   - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
   - ros_ws/src/jugglebot/jugglebot/motion/toss_ilc.py
@@ -38,9 +41,13 @@ owner took the architecture decision the closures unblocked: **critical-point
 ILC is THE primary toss learning law**, not a second opinion beside the layer-2
 session trim.
 
-This entry records the fold-in. Phase A (this section) is the mechanical half:
-the arc branch catches up to the mainline, the plan moves onto the main
-schedulable board, and the arc's resume prompt is retired.
+This entry records the fold-in in three phases. **Phase A** is the mechanical
+half: the arc branch catches up to the mainline, the plan moves onto the main
+schedulable board, and the arc's resume prompt is retired. **Phase B** merges
+the refreshed arc onto `mvp-trajectory-bringup`. **Phase C** writes the
+decisions through the plan surface — the supersession map, the contradiction
+ledger, the re-frozen Phase-3 criteria and the cadence census — and carries the
+evidence the decisions rest on.
 
 ## The decision being recorded
 
@@ -74,10 +81,10 @@ written here because none of them is recoverable from the code alone:
    seams ILC rides are KEPT (`toss_cal.clamp_total_aim`, `aim_target_offset_mm`,
    the loader/dormancy patterns), as is any session/refusal machinery reusable
    for the ILC hardware runbook. Plans get supersession notes and board moves;
-   nothing is deleted. **Still owed** — Phase A did the board move and the index
-   rows only; the supersession notes inside `toss-selftuning.md`,
-   `catch-robustness.md` and `critical-point-ilc.md` § D4 have NOT been written
-   yet and belong to the build ladder.
+   nothing is deleted. *(Phase A did the board move and the index rows only; the
+   supersession notes inside `toss-selftuning.md`, `catch-robustness.md` and
+   this plan's Phase 3 were **written in Phase C below**, so this obligation is
+   discharged.)*
 5. **`k_v` lives in ILC** (`event_vel_trim`); the trim's `speed_gain` retires
    with the aim estimator. Release-latency `tau` stays trim-side, unwired, noted.
    `catch_timing_offset` lands as the first catch channel **only if** the seam
@@ -293,3 +300,237 @@ byte-identical to its committed blob; nothing was lost.)
   `pytest tests/sim/test_plans_index.py -q` — **69 passed in 0.16 s**;
   `pytest tests/motion/test_ilc_fit.py -q -k "event_vel_band or unreachable or
   speed_authority"` — **2 passed, 48 deselected in 0.24 s**.
+
+## Phase C — the decisions rippled through the plan surface
+
+Phases A and B moved the code and the board. This phase writes the decisions
+into the three plans they change, so that a future session reading the plan
+surface alone reaches the same conclusions without this entry.
+
+| Document | What landed |
+|---|---|
+| `plans/active/critical-point-ilc.md` | Status → **THE PRIMARY** learning architecture; a new **§ The 2026-08-21 fold-in** carrying the six decisions with the failure each one prevents, the **C1–C8 contradiction ledger** with each resolution and where it lands, C1's design spelled out in three parts, **two derived consequences** (below), and the five-step build ladder. Phase 3 **re-frozen** against a no-correction baseline with five pre-registered criteria (P-1…P-5). H2's retirement written where the E-1 caveat proposed it. Risk 3 sharpened — it was live, in both directions, and provenance keys were never going to catch it |
+| `plans/active/toss-selftuning.md` | A **SUPERSESSION NOTICE** at the top: what retires *as an update law* (the § 3.6 aim estimator → monitor-only, `speed_gain` → ILC, § 3.7's never-captured map, § 3.8's SC-0…SC-3, § 5's 2c per-node fit), what is **retained as substrate** (the record, the miner, G1–G11, the CUSUM/freeze machinery, auto-reload, Layer 1.5, the D7 clamp, § 3.2's doctrine), and what § 3.2 becomes under ILC. Plus a new **§ 11** — the whole cadence census, the hard-floor table, the R0→R5 ladder to R5-prime, and the most-dangerous-change warning |
+| `plans/active/catch-robustness.md` | A 2026-08-21 programme-status section: Phase 2's substrate untouched, its update laws retired, Phase 3 **re-scoped** (the re-baseline sitting is *also* ILC's no-correction A/B baseline, ≥2 flight-time cells, R0→R5 cadence), the catch-channel condition restated, and the `MIN_TOSS_THROW_DELAY_S` clause of § Constraints superseded — with the rest of that bullet (hand ladders, `_MAX_ARM_DISPATCHES`, kind-3 clobber rights) explicitly left standing |
+| `plans/active/INDEX.md` | All three rows rewritten; `catch-robustness` and `toss-selftuning` re-dated to 2026-08-21 |
+| `tools/probes/ilc_speed_band.py` (+ its README row) | **New committed probe**, promoted out of `/tmp` because build step 1 has to re-run it: it sweeps `event_vel_trim` against the real `throw_envelope` gate and reports the admitted band and the bound that closes each side. It is also what refuted this ripple's own first-draft mechanism — see the Discussion |
+
+**No board moves.** Every candidate was checked and none qualifies: the ILC plan
+was already unparked onto the active board in Phase A, and neither
+`toss-selftuning` nor `catch-robustness` is superseded *as a whole* — each still
+carries live schedulable work (the cadence ladder and its § 11.4 prerequisites;
+the unfixed reload-interlude-cancel HIGH; the Phase-3 re-baseline sitting).
+Archiving a document because part of it retired would take the live half off the
+schedulable board, which is the failure the three-way split exists to prevent.
+Recorded here so a reader does not mistake the absence of a move for an
+oversight.
+
+## The evidence the decisions rest on
+
+Two read-only digests were commissioned before the decisions were taken, and
+they are the specification this phase transcribed. Their headline findings:
+
+**ILC's own evidence is strong and was independently validated.** V1 — `F`'s aim
+block equals the production `aim_landing_jacobian` to 3.4e-11 relative, and the
+exact identity `dL/dθ = 4h + Δz` (Δz = 6.736 mm) is pinned. V2 — a synthetic
+closed loop recovers an injected 3-channel perturbation within 10 % (a
+sign-flipped `F` is pinned to FAIL at ×2 residual), and the real corpus, fitted
+on flight time **alone**, cancels **86.8 %** of the release-speed rms
+out-of-channel (459.0 → 60.8 mm/s). V3 — leave-one-out **84.9 % / 86.4 %** rms
+reduction against a pure-noise control pinned below 5 %. V4 — `R_rep`
+**0.9858 / 0.9790** against a derived `REPEATABILITY_MIN = 0.5` and a per-cell
+LOO null of −0.226: **no NULL-exit**. Conditioning: singular values
+`[2.921, 2.921, 2.608, 0]`, condition 1.12 over retained channels, with
+`release_timing_offset` refused because its column is structurally zero.
+
+**Eight genuine contradictions, and none of them was papered over.** C1 the
+common mode (owner-resolved inside ILC); C2 the speed authority (±0.15 is not
+admissible near either end of the derived band — and is **+0.000 on the negative
+side at exactly the cadence target**); C3 the two lateral channels disagreeing
+by **+18.0 mm in y in every cell** while agreeing in x to 0.85 mm
+(owner-resolved by decision 6); C4 the two-directional double-count
+(owner-resolved by demoting the trim's aim estimator, plus a monitor-arithmetic
+fix); C5 clamp starvation (dissolved — no map is being captured); C6 the corpus
+being historical (accepted: Phase 3 starts from a fresh capture); C7 tier 8b
+(resolved by keying the cell on the **aim site**, which is the release pose, plus
+a zero-displacement admission gate); C8 reproducibility (partially closed by this
+session's corpus-guard fix; a committed corpus fixture still does not exist).
+
+**The cadence census found that the operator's stated target was the wrong
+variable.** The hard floor is not `MIN_TOSS_THROW_DELAY_S` — it is hand-stroke
+geometry: the catch stroke's post-contact tail, made un-hideable by C-HAND-1's
+no-overlap rule, plus the throw's prelude, the Teensy build gap and the windup.
+Across the whole C-HAND-3 admitted band that floor runs **0.2508 s** (at the
+1.1485 s ceiling, apex 1.62 m, zero margin on everything else simultaneously) to
+**0.4901 s** at the 0.4949 s band floor. A 0.25 s dwell is therefore unreachable
+at **every** admitted flight time — it misses by 0.8 ms at the single most
+extreme point and by 2× at a juggling-realistic flight. But cycle *period* is
+nearly flat across the band and bottoms at **0.985 s ⇒ ~61 throws/min**, so the
+6× throughput gain the operator wanted is available — bought by shortening the
+*flight*, not the dwell. Hence R5-prime, and hence the standing advice to ask
+for "≥ 50 throws/min" rather than for a dwell number. `MIN_TOSS_THROW_DELAY_S`
+at 3.5 s is fencing a sequence that measurably costs 0.70 s.
+
+⚠ **The census's most dangerous change, transcribed verbatim into the plan
+because it is a safety finding, not a performance one**: the hazard is *not*
+lowering `MIN_TOSS_THROW_DELAY_S` — it is lowering the dwell **without** the
+possession-semantics work. That combination leaves the `ball_seated` gate
+**fail-OPEN** (the measured `held→empty` debounce is 232–295 ms, so cycle N+1
+reads a `_held` bit still true from the previous ball — a direct inversion of
+C-POSSESS-1's "a dead sensor refuses, it does not pass"), labels **every good
+cycle `BOUNCED`** (the retention window's justification is written against the
+3.5 s delay and dies with it), and routes good cycles into the **auto-reload
+interlude** — which asks BallButler to throw a second ball at a cup that already
+holds one.
+
+## Discussion
+
+### Why the H2 pushback is decisive, and why "by decision" is not a shortcut
+
+The arc had a clean plan for C3: a ~20-minute no-robot capture with the taped
+ball fixtured and carrying 3+ conventional point markers, giving `b(x, y, z)`
+absolutely. The owner refused it on a mechanism argument, and the argument holds:
+**markers on the ball corrupt the very trackable surface being measured.** QTM
+sees one blob because the ball is fully tape-covered; a marker cluster changes
+that blob, so the capture would measure the centroid of a different object than
+the one that flies. There is no version of H2 that measures the flying ball.
+
+What makes the decision safe rather than merely unavoidable is that the arc's own
+data already convicts the mechanism the owner named. The fitted bias is
+**large at z ≈ 880 — the catch-plane height — and vanishes by z ≈ 1880**, and it
+is **parity-EVEN** in time about the apex, which is the signature of a position
+bias and not of any aerodynamic force. Platform-frame occlusion near the bottom
+of the stroke predicts exactly that shape. So the channel that never carried the
+bias — `arrival_dir`, a whole-arc velocity — was already the trustworthy one, and
+the decision is to stop asking Q to arbitrate between it and a channel we now
+understand to be systematically offset.
+
+The cost is stated rather than hidden: with `land_err` masked out, **absolute**
+centering is no longer measured by mocap at all. It closes through catch
+outcomes instead, which is defensible because the penalty loop is the ground
+truth for "centered on the cup" and a ~10 mm registration bias against a 35 mm
+capture radius is tolerable and visible in the trend. The standing replacement
+validation is the per-toss channel-disagreement log: if the `arrival_dir`-driven
+loop converges while the plane residual holds the known `b(z)` profile shape,
+the model is confirmed; **if catch rate plateaus with converged aim, C3 re-opens.**
+
+### Two consequences the ripple derived, neither of which was in the digests
+
+**(a) `SIGMA_E`'s stale `arrival_dir` σ stops being a micro-decision.** While Q
+arbitrated two lateral channels, 0.00238 vs the measured 0.00302 rad was a
+bounded 27 % over-trust that moved the pooled aim requirement 0.00997 → 0.01044
+rad and nothing else — which is why the arc deliberately left it alone (Gate 1
+approved the weights; re-deriving an approved weight is an owner call). Under
+decision 6 `arrival_dir` is the **only** aim channel, so its σ no longer trades
+off against anything — it sets the aim block's weight against `R = diag(ρ/τ²)`
+directly, and understating it by 27 % takes correspondingly larger steps. It is
+now a prerequisite before the first artifact is written, together with re-running
+`conditioning()` / `screen_channels()` under the new mask: the aim columns
+cleared `SCREEN_SNR_MIN` at 2.92σ with *both* lateral channels feeding them, and
+a mask that drops two of five rows moves that number.
+
+**(b) Decisions 3 and 5 collide at exactly the cadence target — and the fix is
+one level up.** At T = 0.4949 s the admissible `k_v − 1` on the negative side is
+`+0.000`, bounded by `ARM_WINDOW`. The corpus's measured demand is `−0.1076` —
+a slow-down. So at R5-prime the ILC speed channel has **zero authority in the
+only direction the plant asks for**.
+
+The mechanism is worth writing down, because the obvious reading is wrong and I
+wrote the wrong one first. It is *not* that a slower throw shortens the achieved
+flight past `ARM_WINDOW_CLOSES_AT_S` — `throw_envelope.evaluate` takes `(T, v)`
+as independent arguments and never re-derives a flight time from `v`. The real
+chain, probed rather than argued (`tools/probes/ilc_speed_band.py`, run
+2026-08-21): `arm_window_s = latest − earliest`, `latest` depends on **T alone**,
+`earliest = throw_decel_s(v) + ARM_SUPPRESS_MARGIN_S`, and
+`throw_decel_s = INERTIA_RATIO · t_acc` **grows as release speed falls** —
+0.10488 s at v = 2.440 m/s against 0.11654 s at v = 2.196. A slow-down trim
+therefore pushes the *earliest* arm instant later and narrows the window; at the
+band floor the window is exactly `ARM_WINDOW_MARGIN_S` = 0.0500 s wide by
+construction, so any negative trim at all breaks it. The probe also re-measures
+the whole band and reproduces the digest's sweep to the grid resolution
+(`[+0.000, ≥+0.5]` at 0.4949, `[−0.409, ≥+0.5]` at 0.55, `+0.270` at 0.9032,
+`+0.148` at 1.00, `+0.043` at 1.10, `+0.000` at 1.1485).
+
+The resolution is not to widen the authority. That demand is not a per-cell
+learned residual at all: the hand throws ~11 % fast **consistently, at every
+cell** (−0.096 / −0.112 / −0.124 at n = 8/6/3), which is a plant *gain*. A
+cell-keyed artifact cannot express a T-independent gain, and — the part that
+matters — `throw_envelope.evaluate` is a **model-space** gate, so an 11 %
+uncalibrated gain means the gate's verdict is 11 % wrong about the real machine.
+The pre-registered recommendation written into the plan is therefore to fold the
+re-measured gain into the **model** (the nominal release-speed map), after which
+model and plant agree, the envelope gate becomes honest, and the ILC trim demand
+collapses toward zero everywhere — at which point the zero negative authority at
+the band floor stops mattering, because nothing is asking for it. **Prerequisite
+either way (C6): re-measure the gain on the restored drive first.** The +11 % was
+measured through the −10.00 A braking clamp, and probe 0c's own caveat says its
+verdict is re-checked after restoration.
+
+### Why C1's resolution persists an anchor term at all
+
+Decision 2 says the persisted per-cell artifact carries **only** the spatial
+residual, and that no persisted cell may absorb one session's `level()` draw.
+Taken alone, that would discard most of the correction: the measured per-cell
+|aim| is 9.1–10.5 mrad and is **consistent across all three goal cells**, i.e.
+the correction ILC found is dominated by common mode, worth ~36–42 mm at the
+corpus operating point against a 35 mm capture radius.
+
+The decision names its own way out — *transpose the § 3.2 doctrine* — and § 3.2
+has three parts, not one: home-referenced spatial cells, **plus** a persisted
+`anchor_aim_rad` acting as the **warm-start prior** for the session-local
+component (not as a hard correction), **plus** a session estimator that owns the
+common mode. Taking all three keeps the noise out *and* the correction in,
+because each session contributes one independent `level()` draw to a shrinkage
+mean, so a 1.2–1.7 mrad draw enters at `1/(n₀+S)` weight instead of being frozen
+at one sample. That is the reading written into the plan, and it is flagged as
+the one place this ripple interprets rather than transcribes — worth an
+explicit owner confirmation, because "per-cell carries only the spatial
+residual" and "a top-level anchor term is persisted" are consistent only under
+that reading.
+
+The honest limitation is stated in the plan rather than buried: the session
+component cannot update *within* a session, because there is no live-admissible
+observable — `land_err_mm` is mined and both live candidates are D5-forbidden,
+which is the same `no_mocap_fit` wall the trim hit. Today it is
+seeded-and-held: applied from the prior, updated between sessions by the fit.
+
+## Verification — Phase C
+
+- **Full gate on the docs ripple + the new probe**, run 2026-08-21:
+  `./run_tests.sh --full` — **5991 passed, 13 skipped, 3 xfailed in 505.98 s**
+  parallel, plus **9 passed, 6007 deselected in 41.48 s** serial; total 553 s,
+  **RESULT: PASS**. Bit-identical counts to the post-guard-fix run in the Phase-B
+  verification above, which is the expected answer: this phase changed markdown
+  and added a probe nothing imports.
+- **The probe itself**, run 2026-08-21: `python tools/probes/ilc_speed_band.py`
+  — band `[0.4949, 1.1485] s`, arm window closes at 0.4542 s, and the six-row
+  sweep quoted in the Discussion (`[+0.000, ≥+0.5]` at the floor with
+  `neg=ARM_WINDOW` … `[≤−0.5, +0.000]` at the ceiling with
+  `pos=DECEL_FF_HEADROOM`), plus the `throw_decel_s`-vs-`v` mechanism table.
+- **The doc-surface tests, traced rather than inferred** (`logbook/README.md`
+  § "What the logbook tests actually check" is explicit that a passing count is
+  not coverage): `pytest tests/sim/test_plans_index.py
+  tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_search.py -q`,
+  run 2026-08-21 — **103 passed in 0.65 s**. What they actually assert:
+  `test_plans_index` pins both directions of all three boards (every plan has a
+  row; **no index may name a plan that left its directory**; four filled cells
+  per active row; archived filenames bare), which is what makes the three
+  edited rows honest. `test_logbook_front_matter` parses every entry and pins
+  title/type/date/status present and the date ISO — it is what catches a
+  malformed front matter here. `test_logbook_search` parses the real directory
+  but **skips `INDEX.md` outright** and silently drops a title-less entry, so it
+  does **not** cover the `logbook/INDEX.md` row this phase rewrote — that row
+  was checked by hand, and by the table-cell scan below.
+- **Mechanical cross-document pass** over the whole changed set, run
+  2026-08-21: every markdown table's data rows re-counted against its header
+  (the three plans, both INDEXes and this entry are clean; the 15 flagged rows
+  are pre-existing `logbook/INDEX.md` rows with unescaped pipes inside code
+  spans, none of them this arc's); every relative link target and every
+  `plans/…`/`logbook/…` path resolved on disk. That pass found and fixed four
+  dangling references: a `§ 4.2` that only exists in the read-only digest, two
+  `§ C4`/`§ C7` shorthands that name no heading, a `reload_coordinator_node:2492`
+  line number that is the ILC worktree's numbering (`aim_site` is in
+  `_build_toss_cycle` on this tree), and — pre-existing, in a file this phase was
+  already rewriting — three relative links in `toss-selftuning.md` still pointing
+  at `tilt-calibration-grid.md`, `hand-ball-sensor.md` and `refactor-2026-07.md`
+  as siblings, months after those plans moved to `archived/` and `parked/`.

@@ -4,6 +4,7 @@ created: 2026-08-10
 status: active
 related_plan: catch-robustness.md
 related_logbook:
+  - 2026-08-21-ilc-primary-foldin.md
   - 2026-08-10-sensor-truth-possession.md
   - 2026-08-10-hand-drive-braking-clamp-diagnosis.md
   - 2026-08-10-tilt-cal-c0-blockers-level-noise-and-leg0-spinout.md
@@ -33,6 +34,71 @@ for its timing defaults. Code is cited as `module::symbol` rather than
 `file:line` — Phase 1 landed between the design draft and this plan and moved
 several hundred lines in `reload_coordinator_node.py`, which is exactly how line
 citations rot.
+
+---
+
+## SUPERSESSION NOTICE — 2026-08-21: ILC is the primary learning law
+
+Owner decision, 2026-08-21, recorded in
+`logbook/2026-08-21-ilc-primary-foldin.md`:
+**[critical-point-ilc.md](critical-point-ilc.md) is THE primary toss learning
+architecture.** This document is **not** archived and **not** obsolete — most of
+it is the substrate ILC rides — but three parts of it are superseded **as update
+laws**, and one operating assumption (cadence) is replaced outright.
+
+**Nothing below is deleted.** Superseded sections keep their text so the arc
+stays reconstructible; this notice is the index of what still binds.
+
+### Superseded — retired as designed, never captured, not to be built
+
+| Section | What retires | Why (root cause, not "the decision says so") |
+|---|---|---|
+| **§ 3.6** the trim law (aim) | The **aim** estimator keeps running with **ZERO AUTHORITY** — monitor-only. It observes, logs and reports divergence; it commands nothing. | Two estimators with authority over one quantity double-count in **both** directions (`critical-point-ilc.md` § The 2026-08-21 fold-in, C4): `reduce_to_aim` subtracts `map_aim_rad` only, so with both live the machine over-aims by the ILC contribution *while the trim reports CONVERGED* — and mirrored, a converged trim makes ILC's residual read `J·ILC_prev`, so the artifact unlearns itself to zero. One converging estimator per quantity. **Monitor-only is not "unchanged arithmetic"**: the monitor must subtract `map_aim_rad + ilc_aim_rad` or its divergence read-out is biased by exactly the quantity it exists to watch. |
+| **§ 3.6.1** speed gain `k_v` | **Retires into ILC** as `event_vel_trim` (= `k_v − 1`). | `SessionTrim.speed_gain` is documented NOT WIRED, and its seam is dispatch-time — its own docstring says that bypasses the FSM CHECKING enforcement. ILC's seam is the goal build, *upstream* of the gate, which is the only place a speed trim can be validated before it becomes a command. |
+| **§ 3.6.1** release latency `τ` | **Stays here, stays unwired, noted.** ILC refuses `release_timing_offset` by name (its Jacobian column is structurally zero), and the quantity a dispatch shift *does* move — `release_time_err_ms` — is a **scheduling** error, which is this document's to own. | The one knob where the two designs already agree who owns it. Its original urgency has also fallen: the +118–133 ms dispatch shift § 3.6.1 cites as 3× the `ARM_SUPPRESS_MARGIN_S` was the FlexCAN_T4 RX-ring leak, fixed in FW 14 and validated at 10–20 ms (`logbook/2026-08-15-fw14-validated-arc-closed.md`). |
+| **§ 3.7** `config/toss_calibration.yaml` as a **captured map** | The map is **never captured**. The loader, the versioning, the D3 dormancy pattern and `toss_cal.clamp_total_aim` are **KEPT** — ILC rides all four. | The file **has never existed in either tree**. Layer 1 was designed, plumbed and shipped applying-at-zero, and then no corpus was ever taken for it. |
+| **§ 3.8** `toss_cal_grid.py` rungs **SC-0…SC-3** | **RETIRED as designed.** The tool and its tests stay in the tree; its refusal/ledger discipline is the model for the ILC hardware runbook. | The campaign costs **~2 h 10 m** of supervised bench time (§ 6 Bench-time budget) to produce a 2-DOF special case of a per-goal correction vector that ILC already extracts from ordinary session bags. And three of its four gates, taken literally, refuse a healthy machine most of the time (§ 10, 2f) — the acquisition ladder was expensive *and* hard to pass. |
+| **§ 5** phase **2c**, `toss_fit_lib`'s per-node map fit | **RETIRED as an update law.** The module stays: its partition rule, its census, its admission filters and its write-refusing guards are reused. | Same measurand, same Jacobian, same corpus as `ilc_fit_lib.fit_corpus` (`b = A − J⁻¹·land_err` vs residual → damped LS → accumulate). Two offline estimators of one quantity over one corpus is not redundancy, it is a divergence waiting to be discovered on hardware. |
+| **§ 6 / § 9 decision 3** cadence 6.0 s | **REPLACED** by the R0→R5 ladder and the R5-prime operating target — § 11 below. | See § 11. |
+
+### Retained — this is the substrate, and ILC consumes it unchanged
+
+`§ 3.3` the `toss_record/1` schema, the `/toss/record` declaration and the latch ·
+`§ 3.4` the dataflow and the miner (which the ILC arc itself extended with the
+E-1 whole-arc estimators) · `§ 3.5`'s recording discipline · **`§ 3.6.2`'s G1–G11
+admission core** and **`§ 3.6.3`'s freeze / CUSUM / freeze-never-zero machinery**
+— ILC does **not** call them today, and porting them is the single largest
+capability gap in the fold-in (`critical-point-ilc.md` build step 3) · `§ 3.7`'s
+loader shape, provenance-dormancy and `clamp_total_aim` as the one D7
+enforcement point · `§ 3.9` `TossContinuous` auto-reload-on-drop · `§ 3.10`
+Layer 1.5 as a covariate · `§ 3.8`'s refusal/ledger discipline as the pattern for
+the ILC hardware runbook · **`§ 3.2`'s home/anchor-mean referencing doctrine**,
+which is transposed wholesale into ILC to resolve C1 (see below) · every finding
+in `§ 2` and every open item in `§ 10`.
+
+### What § 3.2 becomes under ILC (C1)
+
+§ 3.2's argument is *why ILC persists a spatial residual and not an absolute
+aim*: `level` is one int16 SCL3300 sample scattering **1.2–1.7 mrad/axis**
+session-to-session, and against ILC's measured per-cell |aim| of 9.1–10.5 mrad
+that is **11–19 % of every persisted cell** being one session's draw. So ILC
+gains a **session-local common-mode component** (RAM, discarded at goal end, its
+own evidence gate transposed from § 3.6's gates), its cells carry the
+anchor-referenced spatial residual only, and a top-level `anchor_aim_rad` is
+persisted as the component's **shrinkage prior** — § 3.2's second bullet in its
+original role. Full design, including the honest limitation that the component
+cannot update *within* a session (there is no live-admissible observable — the
+same `no_mocap_fit` wall this document's own trim hit):
+`critical-point-ilc.md` § C1's design, spelled out.
+
+### Also decided 2026-08-21
+
+**H2 is retired and C3 is resolved by decision** (`critical-point-ilc.md`
+§ Phase 1 E-1): `arrival_dir` is the primary and only aim residual;
+`land_err_x/y` — this document's § 3.6 measurand — demote to **monitor-only**.
+Read § 3.6's `ŷ_k = S⁻¹ · land_err_mm_k / (4·h)` with that in mind: it is still
+the correct arithmetic for the quantity it computes, and that quantity is now a
+monitor.
 
 ---
 
@@ -72,8 +138,11 @@ tilt-cal failures — is therefore **satisfied**, not outstanding.
 | P3 | Ground truth is the hand ball sensor (`HandTelemetryMessage.ball_held` / `_raw` / `_valid`, 100 % valid across 203,922 samples in the three 2026-08-10 bags, ~±20 ms at the 50 Hz poll). Mocap supplies landing offsets and achieved flight. **Sensor-primary possession verdicts LANDED with catch-robustness Phase 1** (`ball_possession::HandBallSensorSource`, `ball_possession::merge_possession`, commits `9caf6bc` / `2716e3b` / `6920e88` / `60f0a86`) — this plan **consumes** that merge and must not re-implement it. |
 | P4 | No RL. No catch-knob tuning until the hand-drive braking clamp is bench-restored (catch-robustness Phase 0); catch-knob work is then A/B ladders, never continuous learning. |
 
-**Hard constraints.** `toss_sequencer::MIN_TOSS_THROW_DELAY_S` = 3.5 s untouched
-⇒ dwell floor 5.60 s at the 5.0 s default delay ⇒ ~10 cycles/min ceiling. One
+**Hard constraints.** ~~`toss_sequencer::MIN_TOSS_THROW_DELAY_S` = 3.5 s untouched
+⇒ dwell floor 5.60 s at the 5.0 s default delay ⇒ ~10 cycles/min ceiling.~~
+**SUPERSEDED 2026-08-21 (§ 11): the 3.5 s floor retires as a floor** — it is a
+policy fence around a sequence that measurably costs 0.70 s, and it is *not*
+what pins the turnaround. The real floor is hand-stroke geometry. One
 ball-op at a time (`reload_coordinator_node._goal_claimed`, taken at goal
 ACCEPT). Hand-dispatch ladders and `_MAX_ARM_DISPATCHES` retained. Abort paths
 untouched. Trim authority bounded, clamped, and adapted **between tosses only**.
@@ -120,7 +189,7 @@ consequences:
 The lateral landing offset of a vertical toss tilted θ from vertical is
 `b = 4h·θ` **[derived]** — `v = √(2gh)`, `T = √(8h/g)`, `b = v·θ·T = 4h·θ`. This
 reproduces both repo anchors exactly: 41.9 mm/° at a 0.6 m toss
-([tilt-calibration-grid.md](tilt-calibration-grid.md)) and 43 mm at 0.78° for the
+([tilt-calibration-grid.md](../archived/tilt-calibration-grid.md)) and 43 mm at 0.78° for the
 0.78 m default (`Toss.action` `REJECTED_NOT_LEVELLED` comment: "v*sin(theta)*T =
 43 mm ... at 3.93 m/s").
 
@@ -251,7 +320,7 @@ double-count by construction (§ 3.10).
   is `R_corr(level + tiltmap) · R_aim(M + δ)`. At the 1.0° total-authority clamp
   the second-order cross term is **1.523e-4 rad** — the value C-LEVEL-2's own
   regime table states for the 1°×1° entry
-  ([tilt-calibration-grid.md](tilt-calibration-grid.md) § regime table) =
+  ([tilt-calibration-grid.md](../archived/tilt-calibration-grid.md) § regime table) =
   0.0087° = 0.48 mm of landing offset. Negligible, and inside a bound the
   contract already documents.
 - **D3 — provenance-gated dormancy.** `config/toss_calibration.yaml` records
@@ -271,7 +340,7 @@ double-count by construction (§ 3.10).
 ### 3.2 Why the map is home-referenced and the trim owns the common mode
 
 `level` is one int16-quantised SCL3300 sample with measured session-to-session
-scatter **1.2–1.7 mrad/axis** ([tilt-calibration-grid.md](tilt-calibration-grid.md)
+scatter **1.2–1.7 mrad/axis** ([tilt-calibration-grid.md](../archived/tilt-calibration-grid.md)
 § 2026-08-10 C0 entry). Every re-`level` therefore injects a fresh **common-mode**
 aim error of 0.069–0.097° = 3.8–5.3 mm at h = 0.78 — identical at every node,
 unknowable until a ball flies. Persisting an absolute aim map would bake one
@@ -537,7 +606,7 @@ suppression window then closes while the throw stroke is still decelerating and
 the catch arm lands mid-stroke: exactly the failure the margin exists to
 prevent. Fresh-boot discipline is not hygiene here, it is load-bearing, and a
 session-local `τ` is the cheapest structural backstop short of the uptime root
-cause (owned by [refactor-2026-07.md](refactor-2026-07.md) Phase 7).
+cause (owned by [refactor-2026-07.md](../parked/refactor-2026-07.md) Phase 7).
 
 #### 3.6.2 Admission filter — anti-noise and anti-degraded-plant
 
@@ -900,7 +969,7 @@ interlude invents no motion primitive.
 **The BB fail-open boot bug — consumer-side fence.** BallButler heartbeats
 `ball_in_hand = true` from boot **before its first GPIO read**, and the
 coordinator gates that bit only on heartbeat freshness
-([hand-ball-sensor.md](hand-ball-sensor.md) § the fail-open boot default). A
+([hand-ball-sensor.md](../archived/hand-ball-sensor.md) § the fail-open boot default). A
 freshly-rebooted BB therefore makes the reload FSM **skip
 `ACTION_CALL_RELOAD`**: it primes the hand, raises the latch, calls
 `bb/throw_at_target` on an empty BB and dies `ABORTED_NO_ANNOUNCEMENT` after
@@ -1062,9 +1131,14 @@ in the dwell.** Full write-up, including everything left unfixed:
 
 ## 6. Bench / session plan
 
-Operator runs every actuating command; the tools send goals and observe. Cadence
-stays at the 6.0 s dwell (operator decision 3, § 9) — the 4.10 s fork is not
-built.
+Operator runs every actuating command; the tools send goals and observe.
+~~Cadence stays at the 6.0 s dwell (operator decision 3, § 9) — the 4.10 s fork
+is not built.~~ **SUPERSEDED 2026-08-21: cadence is now the R0→R5 ladder toward
+R5-prime (§ 11), and the 4.10 s fork is R1 — a free rung needing no code at
+all.** The rest of this section describes the SC-0…SC-3 capture sitting, which
+is retired (see the supersession notice); its *structure* — preflight refusals,
+decision points, what the operator supervises, the three console streams,
+rollback — is the template for the ILC hardware runbook.
 
 ### P0 — Desk, no robot (~40 min)
 
@@ -1382,7 +1456,7 @@ open questions**. They are binding on the build.
 |---|---|---|
 | 1 | **Catch-robustness Phase 0 (drive restore) runs before the first capture, and the operator runs the capture.** Everything in this build (2a–2f) is **desk-side** — no hardware needed or touched. | The design's question of whether ~2 h of sitting was worth the ~5–10 catch-rate points before Phase 0 lands (F6). Answer: restore first, then capture, and separate the desk build from the sitting entirely. |
 | 2 | **Layer 1.5 APPROVED as a covariate**: ~1.2 s of dwell spent on N = 8 inclinometer reads at 0.15 s gap, recorded per toss. **Covariate ONLY — zero control authority.** Reads NEVER overlap PREPARE→THROW; if the dwell budget is tight, degrade the read count, never delay the throw. A follow-on is **REGISTERED, not built here**: restructure the Platform-Teensy SCL3300 read to timer-driven background sampling into a cache (the async-cache pattern the can-bridge hand-sensor poller uses), per the standing principle of RTOS-style determinism — no blocking I/O in control loops. | The design's question of whether dwell time is cheap enough to spend on a measurement that might return "no correlation" (D17). Answer: yes, as a pure covariate, with the blocking-read hazard fenced by schedule rules and the structural fix registered. § 3.10. |
-| 3 | **Cadence stays 6.0 s. The 4.10 s fork is NOT built.** | The throughput-vs-margin fork. The 3.5 s floor stays untouched and no cycle is pushed to the edge its own floor exists to protect. |
+| 3 | ~~**Cadence stays 6.0 s. The 4.10 s fork is NOT built.**~~ **SUPERSEDED by the operator's 2026-08-21 decision 3** — cadence becomes the R0→R5 ladder toward **R5-prime** (dwell 0.49 s at T = 0.4949 s, ~61 throws/min), and `MIN_TOSS_THROW_DELAY_S` retires as a floor. § 11 has the census this rests on; the original decision is kept here because its *reasoning* still binds every rung: no cycle may be pushed to the edge of a fence that exists to protect it. What changed is the evidence about which fence that is — the 3.5 s is policy, the hand-stroke geometry is physics. | The throughput-vs-margin fork. The 3.5 s floor stays untouched and no cycle is pushed to the edge its own floor exists to protect. |
 | 4 | **BB ball supply is operator-managed — build NO magazine fence.** `max_reloads = 3`. On budget exhaustion the SESSION fails closed (`STOPPED_RELOAD_BUDGET`, unchanged doctrine), and the 2f capture tool treats that terminal as "node exhausted": mark the node thin/stale, **SKIP to the next node, continue the capture**. The known BB-side defect where a reload throw ABORTs because BB is not positioned in time is **retryable within the budget**; the retry must be targeted at that identifiable code and must name it. | The design's question about real magazine capacity and machine observability. Answer: there is none, so no fiction is built; the budget is the only fence and a node's exhaustion costs a node, not a sitting. § 3.8, § 3.9, D19. |
 | 5 | **Build everything before any hardware test.** Catch-robustness **Phase 1 HAS LANDED** (`toss_require_ball_evidence: true` live; commits `9caf6bc` / `2716e3b` / `6920e88` / `60f0a86`), so 2d's prerequisite is satisfied — **consume the shipped sensor merge, do not re-implement it**. | The design's contingency about auto-reload refusing to arm if Phase 1 had not landed. Answer: moot as a build ordering question; the runtime refusal on a live `false` config value stays. § 3.9. |
 | 6 | **`ABORTED_NO_RELEASE` retry REOPENED.** Rationale, in the operator's words: *"we can trust the hand sensor, especially over 5 reads."* At that terminal, retry the cycle **ONCE iff the sensor reads valid-HELD** — the ball is demonstrably in the cup, so the D9 airborne-ball hazard is structurally absent. **UNKNOWN or EMPTY ⇒ no retry, stop as today. TWO consecutive `ABORTED_NO_RELEASE` ⇒ stop the session** (the epidemic gauge is preserved). | D9, which deferred the retry out of v1. § 3.9 abort ladder, guard G11, phase 2d. |
@@ -1662,7 +1736,241 @@ the measurements.
   distinct, identifiable code in the BB/reload path. If none exists, the retry is
   not shipped and the session stops as today, naming the ambiguity.
 - ~~**Bridge-uptime lag root cause**~~ — **CLOSED 2026-08-15.** It moved from
-  [refactor-2026-07.md](refactor-2026-07.md) Phase 7 to the bridge-temporal arc,
+  [refactor-2026-07.md](../parked/refactor-2026-07.md) Phase 7 to the bridge-temporal arc,
   which convicted the vendored FlexCAN_T4 `_available` RX-ring leak and fixed it in
   FW 14 (`logbook/2026-08-15-fw14-validated-arc-closed.md`). The fresh-boot
   discipline is retired; the session-local `τ` trim stays on its own merits.
+
+---
+
+## 11. Cadence — the census, the hard floor, and the R0→R5 ladder
+
+**Added 2026-08-21**, replacing this document's 6.0 s cadence assumption
+(§ 6, § 9 decision 3) and § 1's `MIN_TOSS_THROW_DELAY_S` framing. The census
+behind it was run read-only against `mvp-trajectory-bringup` @ `5de4a1c`;
+headline findings and the operator decision are in
+`logbook/2026-08-21-ilc-primary-foldin.md`.
+
+**Dwell definition** (`toss_session.TossSessionSequencer` module docstring):
+*previous SCHEDULED LANDING → next RELEASE*, with
+`cycle_start(N+1) = landing(N) + dwell − throw_delay` and an enforced floor
+`required_dwell_s = throw_delay_s + dwell_margin_s`.
+
+### 11.1 The hard floor is hand-stroke geometry, not a Python constant
+
+> `dwell ≥ (t_vel_catch + t_dec_catch)(T) + smooth_move_floor(0.050) +`
+> `SAFETY_GAP(0.020) + (t_acc + t_vel)_throw(T)`
+
+Every term is `hand_stroke.HandStrokeModel` / `Trajectory.h::calcCatch` /
+`calcThrow`. Evaluated over the whole C-HAND-3 admitted band:
+
+| flight `T` | apex | `v_release` | catch tail (contact→rest at 0 rev) | throw windup | **hand-floor dwell** | cycle period | throws/min |
+|---|---|---|---|---|---|---|---|
+| 0.4949 s (band floor) | 0.300 m | 2.440 | 0.2733 s | 0.1469 s | **0.4901 s** | 0.985 s | **60.9** |
+| 0.60 | 0.441 | 2.953 | 0.2250 | 0.1213 | **0.4163** | 1.016 | 59.1 |
+| 0.80 (nominal) | 0.784 | 3.931 | 0.1685 | 0.0912 | **0.3296** | 1.130 | 53.1 |
+| 1.00 | 1.226 | 4.910 | 0.1347 | 0.0730 | **0.2777** | 1.278 | 47.0 |
+| 1.1485 s (band ceiling) | 1.617 m | 5.637 | 0.1172 | 0.0636 | **0.2508** | 1.399 | 42.9 |
+
+Four consequences the operator needs stated plainly:
+
+1. **A 0.25 s dwell is unreachable at EVERY admitted flight time.** The minimum
+   over the band is **0.2508 s**, at the ceiling `T = 1.1485 s` — apex 1.62 m,
+   `v_release = 5.637 m/s`, the `DECEL_FF_HEADROOM` bound — with *zero* margin
+   on every other constraint simultaneously. It misses by 0.8 ms.
+2. **At a juggling-realistic flight it misses by 2×**: 0.486 s at `T = 0.50 s`.
+3. **The dwell is the wrong operator variable.** Cycle *period* (`T + dwell`)
+   is nearly flat across the band and bottoms at **0.985 s ⇒ ~61 throws/min** at
+   the band floor. Today's 6.0 s dwell gives ~10/min, so there is a genuine **6×
+   throughput gain** available — bought by making the *flight short*, not by
+   making the dwell 0.25 s. Ask for "≥ 50 throws/min", not "0.25 s dwell".
+4. **`MIN_TOSS_THROW_DELAY_S = 3.5 s` is a policy fork, and it is NOT what pins
+   the floor.** Its real content today is ~0.70 s of sequence plus `event_delay`
+   (§ 11.3). Opening it fully, plus the plumbing below, reaches ~0.5 s dwell.
+   Anything below that at short flights needs a **Platform Teensy flash** that
+   changes `calcCatch` geometry.
+
+**One item to verify in firmware before trusting this table**: whether the
+C-HAND-1 no-overlap gate is written against `t7` (hand at rest at 0 rev) or
+`t8 = t7 + END_PROFILE_HOLD` (`Trajectory.h:210`, YAML `end_profile_hold_s =
+0.10`). If the latter, add **+0.10 s to every number above** and the minimum
+achievable dwell becomes 0.351 s.
+
+### 11.2 What binds, by layer
+
+- **Layer A — operator-facing floors** (look like the answer, are not):
+  `MIN_TOSS_THROW_DELAY_S` 3.5 s; `MIN_THROW_EVENT_DELAY_S` 1.0 s — whose own
+  comment concedes the reachable case, `hand_parked` (`|pos| ≤ 0.5 rev`) caps
+  the prelude at **0.170 s** ⇒ a real floor of **0.281 s** at `T = 0.8`;
+  `DEFAULT_SESSION_DWELL_MARGIN_S` 0.6 s (the tracker CAUGHT verdict lands at
+  landing + 0.202–0.442 s, 17/17); `required_dwell_s` = the sum;
+  `DEFAULT_SESSION_DWELL_S` 6.0 s.
+- **Layer B — the per-cycle sequence budget**: a 0 mm positioning move costing
+  0.40 s + a service round trip on every 8a cycle (`min_move_duration_s` 0.20 +
+  `TOSS_POSITION_SETTLE_PAD_S` 0.20); the 4-tick PREPARE ladder (0.20 s — the
+  tick *count* is load-bearing cross-topic ordering and must not be collapsed,
+  but `_TICK_S` 0.05 → 0.02 is free); `_SERVICE_WAIT_S`; the release-window
+  guard (correct as written, needs A2 to be honest); and the per-cycle record +
+  trim update, which runs **synchronously inside `_run_toss_cycle` before it
+  returns** — a blocking `open(…, 'a')` squarely in the landing→next-cycle
+  handoff.
+- **Layer C — the hand / firmware (the physics)**: the catch-stroke tail
+  (0.117–0.273 s; the catch traverses the **full** stroke and ends at 0 rev,
+  which is the identity making the turnaround free); C-HAND-1's no-overlap rule,
+  which is *why* that tail is additive rather than hideable — any kind-0/1/2
+  command clears the whole packed queue and reseeds from the live encoder, and
+  the Phase-4 velocity-continuous prelude is affordable only to ~9.1 rev/s while
+  the catch descends at 41–96 rev/s; the 0.050 s smooth-move floor; the 0.020 s
+  Teensy build gap; the throw windup; C-HAND-3's admitted band; the arm window
+  (50 ms wide at the band floor, `ARM_WINDOW_CLOSES_AT_S = 0.4542 s`); the
+  catch-arm event floor `_MIN_EVENT_DELAY_S = 0.3 s` — ⚠ at the band floor the
+  tightest case leaves **18.0 ms against a ~23 ms bridge→Teensy transit
+  bound**, i.e. the margin does not obviously close and must be MEASURED
+  before R5-prime is flown (`required_arm_lead_s`'s docstring names the two
+  terms it excludes); and the arm re-dispatch cap +
+  hand ladders, which are **retained defence in depth and are not to be
+  touched**.
+- **Layer D — possession / sensor semantics**, where a short dwell *inverts the
+  meaning of the data*. See § 11.4 — this is the dangerous layer.
+- **Layer E — platform side**: the 0.50 s catch settle hold and the 0.30 s reach
+  freeze (cycle N+1's `go_to_pose` would be dispatched inside them — dissolved
+  for a co-located 8a chain by skipping the no-op move); `min_timed_lead_s`
+  0.25 s (not on the 8a path today, head-on for any displaced session);
+  `TOSS_MIN_ANNOUNCE_LEAD_S` 2.5 s WARN-only; and CCN's pre-tilt clamps, which
+  at a short dwell clamp the pre-tilt arrival to *after* the ball has landed —
+  benign for level 8a, a real hazard the moment an aimed session runs without
+  `catch/pretilt_hold` raised.
+- **Layer F — session ladders**: the 2.80 s miss-cleanup floor (every rung
+  dispatched on a service ACK, not on motion — replace ack-timing with
+  *completion* verification rather than shortening the constant); the ~36 s
+  reload interlude; `TOSS_CANCEL_CUTOFF_S = 0.25` (at a short dwell the
+  operator's stop button gains one full cycle of latency — say so in the
+  runbook); Layer 1.5's dwell tilt reads, which need `room ≥ 0.50 s` and
+  therefore go to **zero reads per cycle** — accept `n = 0` as a legal record
+  and take the covariate from a *dedicated slow session*, never by squeezing
+  reads into a fast dwell (§ 3.10's rule is normative and unchanged); and
+  session invariant S1, `_run_toss_cycle` being a **blocking** call, which is the
+  structural reason the verdict handoff is a floor and not just a number — any
+  dwell below ~0.5 s requires **pipelining** cycle N+1's CHECKING/PREPARE into
+  cycle N's flight.
+
+### 11.3 Where the 3.5 s goes, and what is left after opening it
+
+Tier 8a, `stay_at_pose_on_caught`, platform already at B:
+
+| stage | today | after the Layer-B plumbing |
+|---|---|---|
+| CHECKING (1 tick) | 0.050 | 0.020 |
+| POSITIONING (0.20 move + 0.20 pad + 1 tick) | 0.450 | **0** (skipped, zero displacement) |
+| PREPARING (4 ticks + `arm_catch` round trip) | 0.200+ | 0.080+ |
+| **sequence subtotal** | **0.70 s** | **0.10 s** |
+| `event_delay` floor | 1.000 (`MIN_THROW_EVENT_DELAY_S`) | 0.281 (0.170 prelude + 0.020 gap + 0.091 windup @ `T = 0.8`) |
+| **⇒ `throw_delay` floor** | **1.70 s** (against a shipped 3.5 gate ⇒ ~2× policy margin) | **0.38 s** |
+| + `dwell_margin` | 0.60 (tracker verdict) | ~0.15 (sensor arrival edge) |
+| **⇒ dwell floor (plumbing)** | **2.30 s** | **0.53 s** |
+| **hand floor @ `T = 0.8`** | 0.330 | 0.330 |
+| **binding** | plumbing | **hand physics, from ~0.53 s down** |
+
+### 11.4 ⚠ The single most dangerous change
+
+**It is not lowering `MIN_TOSS_THROW_DELAY_S`. It is lowering the dwell without
+first landing the possession-semantics work.** Three failures compound:
+
+- **Retention** (`retention_window_s = 1.50 s`) is justified in the YAML by
+  *"shorter than `MIN_TOSS_THROW_DELAY_S` (3.5 s) by 2.3×, so a legitimate throw
+  can never read as a bounce-out"*. **That premise dies outright** at a short
+  dwell: every legitimate throw departs sooner than the fastest seat-then-leave
+  the sensor has ever resolved (0.999 s), so `label_from_sensor` labels **every
+  successful cycle `BOUNCED`**. Fix: `min(1.5, dwell − guard)` **and** tell the
+  retention test the scheduled next release, so a departure inside the
+  *announced* throw window is excluded before the bounce test runs. This is a
+  C-POSSESS-1 contract edit (§ 3.2 / § 7), not a constant tweak.
+- **Debounce** is asymmetric and much worse than § 3.3 assumed: measured
+  **232 / 241 / 295 ms** on `held→empty` against **0 ms** on `empty→held`. At a
+  short dwell cycle N+1's CHECKING reads a `_held` bit still `True` from the
+  *previous* ball, so the `ball_seated` gate becomes **fail-OPEN** — it would
+  pass an empty cup. That is a direct inversion of C-POSSESS-1's posture ("a
+  dead sensor refuses, it does not pass"). Fix: feed `ball_held_raw` to the
+  *live* `evidence()` query and keep the debounced bit for the *verdict* —
+  § 3.3's own "raw for TIMES, debounced for the VERDICT" rule, extended to the
+  precondition.
+- **The ball-evidence gate** then fires `REJECTED_NO_BALL` on a **good** catch
+  (the physical seat edge lands +137…+798 ms after the announced landing), which
+  with `on_empty_cup: RELOAD` routes a good cycle into the **auto-reload
+  interlude** (§ 3.9) — i.e. asks BallButler to throw a second ball at a cup
+  that already holds one. Fix: accept cycle N's CAUGHT verdict as the evidence
+  when the gap is under the seat-edge band, and keep the sensor read as a veto
+  only once it has had time to answer.
+
+Land all three (plus the phantom-track fix: exclude the cycle's own latched
+announced-ball id from `track_active`, which the docstring already claims is the
+intent) **before R3, not after**.
+
+**Two things must be measured before R3, not argued:**
+
+1. **Re-measure the sensor arrival band post-FW 14.** The +137…+798 ms figure
+   (n = 35) was captured when the dispatch shift was +54–133 ms; FW 14 cut that
+   to 10–20 ms. If the band collapses, the dwell margin, the arrival window and
+   the evidence gate all shrink together and R4 gets much cheaper.
+2. **The ~71 ms measured sensor poll cadence against the configured 20 ms**
+   (§ 10 Open findings — still no diagnosis, still a can-bridge question). It is
+   a prerequisite, not a footnote.
+
+### 11.5 The ladder
+
+Each rung is a bench sitting, `num_throws = 5` first, `stop_on_miss = true`,
+`on_empty_cup = STOP` until the § 11.4 work lands.
+
+| rung | dwell | flight `T` | must have changed / been validated | measurable gate | watch for |
+|---|---|---|---|---|---|
+| **R0 — baseline** | 5.60 s | 0.80 | nothing (shipped defaults) | 5/5 CAUGHT; `peak ≤ 10.39 rev`, `dip_below_x3 ≤ 0.10 rev`, `trunc = −`, `seeds = 0` | reference plant health; record `uptime_ms`, `iq_brake_min_a` |
+| **R1 — free rung, no code** | 4.10 s | 0.80 | none — `throw_delay = 3.5` is already legal | 5/5 CAUGHT; per-cycle `dwell_s ∈ [4.10, 4.4]`; `dwell_tilt_n ≥ 1` | the first rung where the CAUGHT-verdict handoff is visibly binding |
+| **R2** | 3.0 s | 0.80 | `MIN_TOSS_THROW_DELAY_S` 3.5 → 2.4 with **all** its pins (module docstring, the YAML margin comment, `tests/ros/test_toss_session.py`, the anomaly-fixes runbook) | 5/5 CAUGHT; **zero** `ABORTED_CANT_MAKE_RELEASE` | the announce-lead WARN starts firing — confirm it is inert |
+| **R3** | 1.5 s | 0.80 | `MIN_TOSS_THROW_DELAY_S` → 0.9; `MIN_THROW_EVENT_DELAY_S` → derived `f(v_throw)` with the `hand_parked` prelude bound; **all of § 11.4** | 5/5 CAUGHT **and** 5/5 records labelled `CAUGHT` (not `BOUNCED`) by the miner; zero `REJECTED_TRACK_ACTIVE`; zero interludes | the first rung where a good cycle can be mislabelled — **score the miner, not the console** |
+| **R4** | 0.75 s | 0.60–0.80 | skip the no-op positioning move; `_TICK_S` → 0.02; record/trim off-thread; dwell margin re-based on the sensor arrival edge; raise `pretilt_hold` unconditionally | 5/5 CAUGHT; `dip_below_x3 ≤ 0.10` on **every** cycle; `sensor_held_at_dispatch` true on all 5 | any platform motion inside `arrival ± [0.30, 0.50]` is a stop |
+| **R5** | 0.40 s | ≥ 0.64 s | pipelining (or a demonstrated ≤ 0.10 s verdict path); miss-cleanup re-derived from *completion*, not acks; S5 re-argued **in writing** (the machine is never quiescent) | 20/20 CAUGHT across 4 sessions; measured `landing → next release` within 20 ms of the modelled hand floor | log the actual `dispatch → catch-stroke-end` gap per cycle. **A negative value aborts the sitting.** |
+| **R5-prime — THE TARGET** | **0.49 s** | **0.4949 s** (apex 0.30 m) | everything through R5 | **cycle period 0.985 s ⇒ 60.9 throws/min** | this is the maximum-throughput operating point of the machine as built |
+| ~~R6~~ | ~~0.25 s~~ | — | **DEFERRED FIRMWARE FORK — do not build.** Needs a Platform Teensy flash changing `calcCatch` geometry, and a re-derivation of C-HAND-3's arm-window bound, `hand_stroke.HandStrokeModel`, `sim/hand/trajectory.py` and every stroke landmark the tilt map and the catch tuning were validated at | n/a | n/a |
+
+### 11.5a ⚠ R5-prime sits on three simultaneous edges
+
+Stated plainly, because "the maximum-throughput operating point of the machine
+as built" is also the point where three independent margins reach their
+minimum at once:
+
+1. **The flight time is the band floor.** `T = 0.4949 s` is
+   `throw_envelope.MIN_FLIGHT_TIME_S` itself — there is no margin below it, and
+   the bound that sets it is `ARM_WINDOW`.
+2. **The arm window is exactly 50 ms**, i.e. exactly `ARM_WINDOW_MARGIN_S`, and
+   inside it the catch-arm lead leaves **18.0 ms against a ~23 ms transit
+   bound** (§ 11.2). That number has to be measured before this rung is flown.
+3. **The ILC speed trim has ZERO negative authority here.** Probed 2026-08-21
+   (`tools/probes/ilc_speed_band.py`): admissible `k_v − 1` at `T = 0.4949` is
+   `[+0.000, ≥+0.5]`, bounded below by `ARM_WINDOW` — because
+   `throw_decel_s = INERTIA_RATIO · t_acc` **grows as release speed falls**
+   (0.10488 s at v = 2.440 → 0.11654 s at v = 2.196), so a slow-down trim pushes
+   the earliest admissible arm instant later and narrows the window. The plant's
+   measured demand is a slow-down (`−0.1076`, the ~11 % fast throw). See
+   `critical-point-ilc.md` § The 2026-08-21 fold-in, "Two consequences" (b): the
+   recommended fix is to fold the re-measured gain into the **model**, not to
+   widen the authority.
+
+None of this makes R5-prime wrong — it is the honest maximum of the machine as
+built, and (1) is a *definition* rather than a risk. It does mean R5-prime is a
+**destination, not a rung to hurry to**: every earlier rung's margins should be
+measured on the way up, and (2) and (3) are prerequisites, not observations.
+
+### 11.6 What retires with the floor, and what replaces it
+
+`MIN_TOSS_THROW_DELAY_S` retires **as a floor**, by owner decision. What owns
+the protection instead: a **~0.1 s dispatch debounce** plus **derived,
+state-based interlocks** — the release-window guard (`ABORTED_CANT_MAKE_RELEASE`,
+which is the correct runtime enforcement and merely needs an honest
+`MIN_THROW_EVENT_DELAY_S` beneath it), the arrived-before-arming invariant, the
+C-HAND-1 no-overlap gate, and the arm window. The operator's framing: bring-up
+time fences relax as juggling work proceeds; a fence derived from state survives
+that, a hardcoded seconds constant does not.
+
+**Retained regardless, and not on the table**: the hand dispatch ladders and
+`_MAX_ARM_DISPATCHES` (defence in depth against the closed ERR_TIMEOUT
+epidemic), kind-3 abort clobber rights, and C-HAND-1 itself.
