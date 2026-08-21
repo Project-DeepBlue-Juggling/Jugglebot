@@ -605,6 +605,43 @@ def test_the_trim_module_imports_no_ros():
     assert banned == []
 
 
+def test_a_mined_mocap_flight_time_ACTIVATES_the_speed_gate():
+    """The dormant-gate pin. ``achieved_flight_s_mocap`` was NULL on every record
+    that ever existed, so two live code paths here had never run on real data:
+    :func:`toss_trim.admit_for_speed` needs the field to admit anything at all,
+    and :func:`toss_trim.achieved_flight_s` PREFERS it over the commanded
+    ``flight_time_s`` — which re-scales every reduction that consumes a flight
+    time (the aim Jacobian's gain is linear in T, and G3's apex sanity is
+    quadratic in it).
+
+    ``tools/probes/toss_record_miner.mine_arc`` now populates the field from the
+    mocap arc, so both paths go live the moment a mined corpus is fed in. This
+    test states what they then do, so a future change to either is a red test
+    rather than a silently re-scaled fit. ``toss_trim.py`` itself is deliberately
+    unchanged: the gate was designed to activate exactly this way.
+    """
+    rec = _corpus((0.0, 0.0), n=1, sigma_mm=1.0)[0]
+    # A mine_arc-shaped row: the mocap flight time is what the ARC measured, and
+    # it differs from the commanded one — that difference IS the speed signal.
+    commanded = rec['flight_time_s']
+    rec['achieved_flight_s_mocap'] = commanded * 0.95
+
+    admitted, reason = toss_trim.admit_for_speed(rec)
+    assert (admitted, reason) == (True, '')
+    # (b) the mocap number WINS over the commanded one, and it is not a tie:
+    # the reduction below it is linear in T, so preferring the wrong one
+    # mis-scales every residual it touches.
+    assert toss_trim.achieved_flight_s(rec) == pytest.approx(commanded * 0.95)
+    assert toss_trim.achieved_flight_s(rec) != pytest.approx(commanded)
+
+    # The REFUSE twin: with the field absent the row falls back to the commanded
+    # flight time and the speed gate refuses for want of a pair — which is what
+    # every record in the corpus did before the miner filled it in.
+    del rec['achieved_flight_s_mocap']
+    assert toss_trim.achieved_flight_s(rec) == pytest.approx(commanded)
+    assert toss_trim.admit_for_speed(rec) == (False, 'no_flight_pair')
+
+
 # ── the scalar sub-estimators ─────────────────────────────────────────────────
 
 def test_the_speed_gain_stays_at_unity_until_its_own_gate_passes():

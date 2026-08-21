@@ -619,6 +619,34 @@ jugglebot_operational:
                                          # 44 ms is a BB-hand calibration and does NOT transfer; the
                                          # single-ball-toss plan's Phase-5 T0 bench session measures the JB
                                          # value before any non-zero entry lands here.
+  toss_ilc_enabled: false                # Apply the learned critical-point ILC correction
+                                         # (config/toss_ilc.yaml, jugglebot/motion/toss_ilc.py) at the toss
+                                         # goal-build seam. Plan: plans/active/critical-point-ilc.md Phase 2.
+                                         # FALSE ships, and turning it true is a REVIEWED CONFIG COMMIT, not
+                                         # a runtime toggle — the same shape dynamics.torque_ff_enabled had
+                                         # before its 2026-07-16 arming session, and for the same root cause:
+                                         # this arms a *learned* correction, so which build applied it has to
+                                         # be answerable from git alone, months later, when a corpus fitted
+                                         # under it is being read back. A ros2 parameter would put that fact
+                                         # in a shell history nobody keeps. tests/motion/test_toss_ilc.py::
+                                         # test_shipped_config_has_the_feature_off is the tripwire.
+                                         # WHY NOT the toss_trim_enabled precedent: the session trim is
+                                         # RAM-only, dies with its goal and is armed per sitting, so a node
+                                         # parameter fits it exactly. This artifact is a PERSISTENT
+                                         # cross-session calibration layer, like the aim map — and the aim
+                                         # map's arming is a committed file, not a parameter.
+                                         # OFF is byte-identical: at false the goal build takes the same
+                                         # branch it took before this feature existed and does not perform
+                                         # one extra floating-point operation.
+                                         # PHASE-3 A/B WITHOUT A REBUILD: leave this true and point
+                                         # $JUGGLEBOT_TOSS_ILC at a path that does not exist for the baseline
+                                         # arm — the env override is authoritative and its absence is the
+                                         # silent zero-correction state (jugglebot/motion/toss_ilc.py::
+                                         # toss_ilc_candidates). Changing this key needs
+                                         # `python config/generate_config.py` AND
+                                         # `colcon build --packages-select jugglebot` to reach the install
+                                         # tree; the node reads it fail-closed via getattr(..., False), so a
+                                         # stale install degrades to OFF rather than to an unknown state.
   toss_flight_time_default_s: 0.8        # Default toss flight time {s} when a Toss goal's flight_time_s is
                                          # 0/unset — the worked example (launch ≈ 3.93 m/s, apex 0.784 m).
                                          # It read "mid-sweep of the plan's 0.55–1.10 s band" until

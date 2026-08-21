@@ -223,7 +223,7 @@ from jugglebot.catch_coordinator import CatchCoordinator
 from jugglebot import clock_offset, toss_record, toss_trim
 from jugglebot.toss_record import latch_announced_ball
 from jugglebot.motion.tilt_map import find_repo_root
-from jugglebot.motion import toss_cal
+from jugglebot.motion import toss_cal, toss_ilc
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
 from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.toss_release import (
@@ -234,6 +234,7 @@ from jugglebot.motion.trajectory.toss_release import (
     compute_release_state,
     compute_release_state_tilted,
     flight_time_from_height,
+    validate_event_vel,
 )
 
 # BallStatus enum (BallState.msg): 0 = TO_BE_THROWN, 1 = IN_FLIGHT, 2 = CAUGHT.
@@ -697,6 +698,26 @@ class ReloadCoordinatorNode(Node):
         self._toss_trim = None
         self._toss_trim_t0 = 0.0
         self._toss_trim_belt_warned = False
+        # ── Layer 3: the critical-point ILC correction (motion/toss_ilc.py) ──
+        # plans/active/critical-point-ilc.md Phase 2. Persistent, per-GOAL keyed,
+        # fitted offline between sessions — so it lives here beside the aim map
+        # for the same reason the aim map does (it rewrites a GOAL), and NOT
+        # beside the session trim, which is RAM-only and dies with its goal.
+        # Loaded once in __init__ and never reloaded live: unlike the aim map
+        # there is no acquisition tool rewriting it mid-session, and a
+        # relaunch-only artifact cannot change underneath a running fit.
+        self._toss_ilc = None
+        self._toss_ilc_loaded = False
+        self._toss_ilc_version = ''
+        self._toss_ilc_path = ''
+        # Dormancy / refusal WARNs are deduplicated by REASON, not emitted per
+        # goal: a dormant artifact at 10 goals/min would otherwise bury the
+        # console — the same 4091-ERRORs-in-41 s failure mode the aim map's
+        # dormancy log already guards against.
+        self._toss_ilc_dormant_reason = ''
+        self._toss_ilc_dormant_logged = ''
+        self._toss_ilc_refusal_logged = ''
+        self._toss_ilc_miss_logged = set()
         # The platform's live COMMANDED position (STOW mm) + its arrival stamp.
         # None/0.0 = never heard ⇒ fail closed (REJECTED_POSE_UNKNOWN for a
         # displaced toss, REJECTED_NOT_CENTERED for a reload). trajectory_node
@@ -1066,6 +1087,7 @@ class ReloadCoordinatorNode(Node):
         self.create_service(Trigger, 'toss/reload_calibration',
                             self._svc_reload_toss_calibration)
         self._load_toss_cal()
+        self._load_toss_ilc()
         # One node launch = one session id; also names the best-effort belt file.
         self._session_id = '{}-{}'.format(
             datetime.now().strftime('%Y%m%d-%H%M%S'), os.getpid())
@@ -2237,7 +2259,195 @@ class ReloadCoordinatorNode(Node):
                 str(cal.requires_tilt_map_version) if cal is not None else ''),
             'live_tilt_map_version': live_tilt,
             'estimator_version': toss_cal.ESTIMATOR_VERSION,
+            # Layer 3 rides the SAME latched topic under a nested key rather than
+            # claiming a second one: it is the same question ("what correction is
+            # this machine applying to a toss goal?") one layer up, an operator
+            # reading one and not the other would draw the wrong conclusion, and
+            # a nested key is additive for every existing reader.
+            'ilc': self._toss_ilc_status_snapshot(),
         }
+
+    def _toss_ilc_status_snapshot(self) -> dict:
+        """The observable layer-3 state — enabled / loaded / applied / version.
+
+        THREE separate booleans, not two, and each answers a question the other
+        two cannot: ``enabled`` is the shipped config flag (a build decision),
+        ``loaded`` is "a valid artifact is present", and ``applied`` is "and the
+        flag is on AND its provenance matches this machine". An operator
+        debugging "why did nothing change?" needs to be able to tell a disabled
+        build from a missing file from a dormant artifact, and collapsing any
+        pair of them is how the aim map's own loaded-vs-applied confusion had to
+        be fixed in four documents.
+
+        ``applied`` deliberately folds the flag in, so it means exactly what the
+        per-toss record means by a non-zero ``ilc_aim_rad``: *this machine is
+        commanding the learned correction*. A topic that said "applied" beside a
+        record of zeros would be the same confusion in a new place.
+
+        The provenance verdict is GUARDED for the reason
+        :meth:`_toss_aim_for_goal` gives — ``provenance_mismatch`` hashes six
+        generated ``hardware_config`` constants and an install-tree skew raises
+        there — and it must fail the SAME way in both places, or the topic would
+        report a correction the apply seam has already withheld. This one also
+        rides a Trigger service response (``toss/reload_calibration``), so an
+        unguarded raise costs an operator their read-back too.
+        """
+        with self._lock:
+            ilc = self._toss_ilc
+            live_tilt = self._tilt_map_version
+            version = self._toss_ilc_version
+            path = self._toss_ilc_path
+        enabled = self._toss_ilc_enabled()
+        reason = ''
+        if ilc is not None:
+            try:
+                reason = ilc.provenance_mismatch(
+                    tilt_map_version=live_tilt,
+                    toss_cal_version=self._applied_toss_cal_version()) or ''
+            except Exception as exc:                               # noqa: BLE001
+                reason = ('the provenance check itself FAILED ({}: {})'
+                          .format(type(exc).__name__, exc))
+        try:
+            identity = toss_ilc.model_config_identity()
+        except Exception as exc:                                   # noqa: BLE001
+            identity = 'UNAVAILABLE ({})'.format(type(exc).__name__)
+        return {
+            'ilc_enabled': enabled,
+            'ilc_loaded': bool(ilc is not None),
+            'ilc_applied': bool(enabled and ilc is not None and not reason),
+            'ilc_version': version,
+            'ilc_path': path,
+            'ilc_cells': int(ilc.n_cells) if ilc is not None else 0,
+            'dormant_reason': reason,
+            'estimator_version': toss_ilc.ESTIMATOR_VERSION,
+            'model_config_identity': identity,
+        }
+
+    @staticmethod
+    def _toss_ilc_enabled() -> bool:
+        """The shipped layer-3 gate, read **fail-closed**.
+
+        ``getattr(..., False)`` rather than a direct attribute read, deliberately:
+        the flag is generated into ``jugglebot/hardware_config.py`` from
+        ``config/hardware_config.yaml``, and an install tree that predates the
+        codegen simply does not have the name. Fail-closed there means "the
+        learned correction stays off until the build is complete", which is the
+        only safe reading — an ``AttributeError`` on a goal-build path would take
+        down the toss instead.
+        """
+        return bool(getattr(hw, 'JB_OP_TOSS_ILC_ENABLED', False))
+
+    def _applied_toss_cal_version(self) -> str:
+        """The aim-map version this machine is **APPLYING**, or ``''``.
+
+        NOT ``_toss_cal_version``, which is set for a loaded-but-DORMANT map too.
+        Layer 3's provenance gate has to compare against what is actually being
+        commanded: a dormant layer 1 aims vertically, which is the same state as
+        no map at all, and an ILC residual fitted on top of an applied aim map
+        double-counts it when that map stops applying.
+        """
+        with self._lock:
+            cal = self._toss_cal
+            version = self._toss_cal_version
+            live_tilt = self._tilt_map_version
+        if cal is None:
+            return ''
+        return '' if cal.provenance_mismatch(live_tilt) else str(version)
+
+    def _load_toss_ilc(self):
+        """Resolve and load ``config/toss_ilc.yaml``. Returns ``(ok, message)``.
+
+        Four outcomes, exactly the aim map's, and non-gating in all four:
+
+        * **Absent** — silent. ``None`` from the resolver means no correction
+          exists, which is the pre-Phase-2 machine. It is also the Phase-3 A/B's
+          baseline arm (``$JUGGLEBOT_TOSS_ILC`` pointed at a path that is not
+          there), so it must stay quiet and free.
+        * **Loaded** — every validation in ``toss_ilc.parse_toss_ilc`` passed.
+          Whether it is APPLIED is a separate, per-goal provenance question.
+        * **Invalid** — nothing is loaded and the failure is an ERROR. There is
+          no "keep the previous artifact" case to handle here (unlike the aim
+          map's reload service) because this loads exactly once, at construction.
+        * **Present but the feature is OFF** — still loaded and still reported.
+          Loading costs one file read at construction, never inside a control
+          loop, and an operator who has shipped an artifact needs to see that the
+          node can read it *before* the config commit that arms it.
+        """
+        candidates = toss_ilc.toss_ilc_candidates()
+        path = toss_ilc.resolve_toss_ilc_path()
+        enabled = self._toss_ilc_enabled()
+        if path is None:
+            with self._lock:
+                self._toss_ilc = None
+                self._toss_ilc_loaded = False
+                self._toss_ilc_version = ''
+                self._toss_ilc_path = ''
+                self._toss_ilc_dormant_reason = ''
+                self._toss_ilc_dormant_logged = ''
+            message = ('no ILC artifact found (searched: {})'
+                       .format(', '.join(candidates) or
+                               '<nothing — set $' + toss_ilc.ILC_ENV + '>'))
+            override = os.environ.get(toss_ilc.ILC_ENV)
+            if override:
+                # An explicitly NAMED artifact that is not there is worth one
+                # WARN per launch. It fires for the Phase-3 A/B's baseline arm
+                # too (flag on, override pointing at nothing) and that is the
+                # right behaviour, not noise: the operator running the baseline
+                # gets confirmation the override took effect, and the operator
+                # who typo'd a path gets told before a whole sitting is captured
+                # against a correction that was never applied. Silent absence is
+                # reserved for the case with no override at all.
+                self.get_logger().warning(
+                    '${} names {!r}, which does not exist — this toss session '
+                    'applies NO learned ILC correction'.format(
+                        toss_ilc.ILC_ENV, override))
+            return False, message
+
+        try:
+            loaded = toss_ilc.load_toss_ilc(path)
+        except toss_ilc.TossIlcError as exc:
+            with self._lock:
+                self._toss_ilc = None
+                self._toss_ilc_loaded = False
+                self._toss_ilc_version = ''
+                self._toss_ilc_path = ''
+            self.get_logger().error(
+                'ILC artifact REJECTED, nothing loaded: {} — this session '
+                'throws with layer 3 contributing exactly zero (the learned '
+                'correction is a refinement, never a gate)'.format(exc))
+            return False, str(exc)
+        except Exception as exc:                                   # noqa: BLE001
+            # load_toss_ilc's contract is that every failure is a TossIlcError;
+            # this branch exists so a contract violation degrades to "no
+            # correction" instead of killing the node's constructor.
+            with self._lock:
+                self._toss_ilc = None
+                self._toss_ilc_loaded = False
+                self._toss_ilc_version = ''
+                self._toss_ilc_path = ''
+            self.get_logger().error(
+                'ILC artifact {} raised an UNEXPECTED {} ({}) — nothing loaded'
+                .format(path, type(exc).__name__, exc))
+            return False, str(exc)
+
+        with self._lock:
+            self._toss_ilc = loaded
+            self._toss_ilc_version = str(loaded.version)
+            self._toss_ilc_path = str(path)
+            self._toss_ilc_dormant_reason = ''
+            self._toss_ilc_dormant_logged = ''
+            self._toss_ilc_loaded = True
+        message = ('ILC artifact [{}] loaded from {} ({} goal cells)'
+                   .format(loaded.version, path, loaded.n_cells))
+        if enabled:
+            self.get_logger().info(message)
+        else:
+            self.get_logger().info(
+                '{} — but jugglebot_operational.toss_ilc_enabled is FALSE, so '
+                'layer 3 contributes exactly zero this session. Arming it is a '
+                'reviewed config commit + codegen + colcon build.'
+                .format(message))
+        return True, message
 
     def _publish_toss_cal_status(self) -> None:
         """Publish the latched calibration status. Instrument only — every
@@ -2261,31 +2471,60 @@ class ReloadCoordinatorNode(Node):
         that structurally, in the shape of C-LEVEL-2's own manifest test.
 
         Returns the applied-calibration block for the whole goal, split into its
-        two contributions so the record can carry both:
+        three contributions so the record can carry all of them:
 
         * ``map_aim_rad`` / ``map_offset_mm`` — layer 1, the persistent
           home-referenced field (:mod:`jugglebot.motion.toss_cal`);
         * ``trim_aim_rad`` / ``trim_offset_mm`` — layer 2, this goal's RAM-only
           common-mode session trim (:mod:`jugglebot.toss_trim`), zero unless
           ``toss_trim_enabled`` is set AND the estimator has left WARMUP;
+        * ``ilc_aim_rad`` / ``ilc_offset_mm`` / ``ilc_vel_trim`` — layer 3, the
+          learned per-goal critical-point correction
+          (:mod:`jugglebot.motion.toss_ilc`), zero unless
+          ``jugglebot_operational.toss_ilc_enabled`` is set AND an artifact is
+          loaded AND its provenance matches AND this goal hits one of its cells.
+          A provenance verdict that cannot be COMPUTED counts as a mismatch, on
+          ``provenance_mismatch``'s own rule: *"I cannot verify what is
+          underneath me" is not "the right thing is underneath me"*;
         * ``aim_rad`` / ``offset_mm`` — the TOTAL, which is what the platform is
           actually commanded to and what the virtual target is built from.
 
-        **The TOTAL is re-clamped HERE, at apply** (D7), over ``map + trim`` — not
-        at either layer's own update. Each layer bounds itself (parse time for
-        the map, ``TRIM_MAX`` for the trim) but 1.0° + 0.15° is 1.15°, past the
-        authority every downstream argument is sized on, and the only place that
-        sum exists is this line.
+        **The TOTAL is re-clamped HERE, at apply** (D7), over
+        ``map + trim + ilc`` — not at any layer's own update. Each layer bounds
+        itself (parse time for the map and the ILC, ``TRIM_MAX`` for the trim)
+        but 1.0° + 0.15° + 1.0° is 2.15°, past the authority every downstream
+        argument is sized on, and the only place that sum exists is this line.
+        Layer 3 is composed BEFORE that single clamp, deliberately: it makes the
+        existing D7 clamp the final authority over the whole commanded aim rather
+        than adding a fourth bound after it.
+
+        **A clamp HIT REFUSES the ILC contribution; it never truncates it.** If
+        ``map + trim + ilc`` would bind the authority, layer 3 is dropped whole,
+        a WARN is emitted, and the aim is re-composed from ``map + trim`` exactly
+        as it would have been without this layer — so a saturated goal is
+        bit-identical to the pre-Phase-2 machine. Root cause, and it is the
+        plan's own risk 5: a partially truncated correction is not the correction
+        that was solved for, so applied-u and recorded-u desynchronise and the
+        next fit learns against a command the machine never flew. It is also
+        ``ilc_fit_lib.admit_command``'s convention — the fit refuses a step the
+        clamp would truncate and shrinks its trust region instead — and the two
+        halves of one loop must agree about what "refused" means. A clamp that
+        binds on ``map + trim`` ALONE still truncates, exactly as before: that is
+        layer 1/2's long-standing behaviour and nothing here changes it.
 
         ``aim_rad`` is exactly ``(0.0, 0.0)`` — and ``offset_mm`` exactly
-        ``(0.0, 0.0)`` — whenever no map is loaded (or it is dormant) and the
-        trim commands nothing, which is what makes the disabled path today's
-        machine bit for bit.
+        ``(0.0, 0.0)`` — whenever no map is loaded (or it is dormant), the trim
+        commands nothing and layer 3 contributes nothing, which is what makes the
+        disabled path today's machine bit for bit.
 
         **Layer 2 does not depend on layer 1's dormancy.** A DORMANT map is one
         fitted against a different layer 0; the trim was measured *this goal*
         against *this* layer 0, so it stays valid and stays applied. That is
         § 3.2's separation doing its job rather than an exception to it.
+        **Layer 3 DOES depend on it**, and that asymmetry is not an
+        inconsistency: layer 3's provenance explicitly records which aim map was
+        being APPLIED underneath it, so a layer 1 that stops applying is a
+        recorded premise of the fit going false.
         """
         with self._lock:
             cal = self._toss_cal
@@ -2293,6 +2532,9 @@ class ReloadCoordinatorNode(Node):
             version = self._toss_cal_version
             already_logged = self._toss_cal_dormant_logged
             trim = self._toss_trim
+            ilc = self._toss_ilc
+            ilc_version = self._toss_ilc_version
+            ilc_already_logged = self._toss_ilc_dormant_logged
         reason = cal.provenance_mismatch(live_tilt) if cal is not None else ''
         if reason:
             with self._lock:
@@ -2311,6 +2553,16 @@ class ReloadCoordinatorNode(Node):
             'map_offset_mm': (0.0, 0.0),
             'trim_aim_rad': (0.0, 0.0),
             'trim_offset_mm': (0.0, 0.0),
+            'ilc_aim_rad': (0.0, 0.0),
+            'ilc_offset_mm': (0.0, 0.0),
+            'ilc_vel_trim': 0.0,
+            'ilc_enabled': False,
+            'ilc_loaded': bool(ilc is not None),
+            'ilc_applied': False,
+            'ilc_version': ilc_version,
+            'ilc_key': None,
+            'ilc_hit': False,
+            'ilc_refused': '',
             'clamp_hits': [],
             'loaded': bool(cal is not None),
             'applied': bool(cal is not None and not reason),
@@ -2343,37 +2595,156 @@ class ReloadCoordinatorNode(Node):
         if enabled and trim is not None:
             trim_aim = trim.aim()
 
-        if map_aim == (0.0, 0.0) and trim_aim == (0.0, 0.0):
+        # ── layer 3 — THE single per-goal ILC lookup (critical-point-ilc.md) ──
+        ilc_aim = (0.0, 0.0)
+        ilc_dv = 0.0
+        ilc_enabled = self._toss_ilc_enabled()
+        block['ilc_enabled'] = ilc_enabled
+        if ilc_enabled and ilc is not None:
+            # `'' if (cal is None or reason)` IS `_applied_toss_cal_version()`,
+            # inlined because this scope already holds `cal`, `reason` and
+            # `version` under one lock acquisition and the helper would re-take
+            # the lock and re-run the provenance verdict on the goal-build path.
+            # The two must agree — a divergence would make the status topic and
+            # the applied correction disagree about which aim map is underneath.
+            #
+            # GUARDED, and it is not defensive noise. This runs on the GOAL-BUILD
+            # path, and `provenance_mismatch` is not a pure string compare: it
+            # calls `model_config_identity()`, which reads six generated
+            # `hardware_config` constants through `getattr` and floats them. An
+            # install tree that predates a codegen — the same skew
+            # `_toss_ilc_enabled`'s `getattr(..., False)` already fails closed on
+            # — raises `AttributeError` there, and an unguarded raise here does
+            # not cost the correction, it kills `_build_toss_cycle` and with it
+            # the toss. Layer 3 is a refinement, never a gate (the same rule the
+            # `toss_cal.lookup` and `toss_ilc.lookup` guards below implement), so
+            # the failure is fail-CLOSED: zero correction, dormant, loud.
+            try:
+                ilc_reason = ilc.provenance_mismatch(
+                    tilt_map_version=live_tilt,
+                    toss_cal_version=('' if (cal is None or reason)
+                                      else str(version))) or ''
+            except Exception as exc:                               # noqa: BLE001
+                ilc_reason = (
+                    'the provenance check itself FAILED ({}: {}) — "I cannot '
+                    'verify what is underneath me" is not "the right thing is '
+                    'underneath me"'.format(type(exc).__name__, exc))
+            block['ilc_applied'] = not ilc_reason
+            if ilc_reason:
+                with self._lock:
+                    self._toss_ilc_dormant_reason = ilc_reason
+                    self._toss_ilc_dormant_logged = ilc_reason
+                if ilc_reason != ilc_already_logged:
+                    self.get_logger().warning(
+                        f"ILC artifact [{ilc_version}] is LOADED but DORMANT — "
+                        f"{ilc_reason}. This goal gets ZERO learned correction. "
+                        f"Re-fit against the live layers, or restore the ones it "
+                        f"was fitted under (design constraint 5).")
+            else:
+                try:
+                    hit = toss_ilc.lookup(ilc, float(catch_pose[0]),
+                                          float(catch_pose[1]),
+                                          float(catch_pose[2]), float(flight))
+                except (toss_ilc.TossIlcError, ValueError) as exc:
+                    # Same degradation the aim map takes: a lookup fault costs
+                    # the refinement, never the goal.
+                    self.get_logger().error(
+                        f"ILC lookup FAILED for goal {tuple(catch_pose)} at "
+                        f"T={flight}: {exc} — this goal gets ZERO learned "
+                        f"correction (layer 3 is a refinement, never a gate)")
+                    block['ilc_applied'] = False
+                    hit = None
+                if hit is not None:
+                    block['ilc_key'] = tuple(hit.key)
+                    block['ilc_hit'] = bool(hit.hit)
+                    if hit.hit:
+                        ilc_aim = hit.correction.aim_rad
+                        ilc_dv = float(hit.correction.event_vel_trim)
+                    else:
+                        # A MISS is EXACTLY zero and is said out loud once per
+                        # cell: an operator who expected a correction needs to
+                        # learn that this goal quantised somewhere the fit never
+                        # visited, and silence would read as "applied, and it
+                        # made no difference".
+                        if hit.key not in self._toss_ilc_miss_logged:
+                            self._toss_ilc_miss_logged.add(hit.key)
+                            self.get_logger().info(
+                                'ILC artifact [{}] has no cell for goal {} '
+                                '(key {}) — ZERO learned correction for this '
+                                'goal. Cells: {}'.format(
+                                    ilc_version, tuple(catch_pose),
+                                    list(hit.key), sorted(ilc.cells)))
+
+        if (map_aim == (0.0, 0.0) and trim_aim == (0.0, 0.0)
+                and ilc_aim == (0.0, 0.0) and ilc_dv == 0.0):
             # Not one floating-point operation on the disabled path.
             return block
 
+        base_rx = map_aim[0] + trim_aim[0]
+        base_ry = map_aim[1] + trim_aim[1]
         try:
-            rx, ry, hits = toss_cal.clamp_total_aim(map_aim[0] + trim_aim[0],
-                                                    map_aim[1] + trim_aim[1])
+            rx, ry, hits = toss_cal.clamp_total_aim(base_rx + ilc_aim[0],
+                                                    base_ry + ilc_aim[1])
+            if hits and ilc_aim != (0.0, 0.0):
+                # REFUSE layer 3 whole, then re-compose exactly as layers 1+2
+                # would have on their own — see the method docstring (risk 5).
+                if self._toss_ilc_refusal_logged != 'total_aim':
+                    self._toss_ilc_refusal_logged = 'total_aim'
+                    self.get_logger().warning(
+                        'ILC aim contribution REFUSED at apply: map+trim+ilc = '
+                        '{:.6f} rad exceeds the {:.6f} rad D7 authority, and a '
+                        'TRUNCATED correction is not the correction that was '
+                        'solved for (risk 5). This goal flies the map+trim aim '
+                        'unchanged; the recorded ilc_aim_rad is (0, 0).'
+                        .format(math.hypot(base_rx + ilc_aim[0],
+                                           base_ry + ilc_aim[1]),
+                                toss_cal.TOTAL_MAX_RAD))
+                block['ilc_refused'] = 'total_aim'
+                ilc_aim = (0.0, 0.0)
+                rx, ry, hits = toss_cal.clamp_total_aim(base_rx, base_ry)
             offset = aim_target_offset_mm(rx, ry, float(flight),
                                           float(catch_pose[2]))
             map_offset = aim_target_offset_mm(map_aim[0], map_aim[1],
                                               float(flight),
                                               float(catch_pose[2]))
+            if ilc_aim == (0.0, 0.0):
+                # The pre-Phase-2 arithmetic, unchanged and unreached by layer 3.
+                base_offset = offset
+            else:
+                # Reachable only when the clamp did NOT bind (a hit refuses layer
+                # 3 above), so (rx, ry) IS base + ilc exactly and the split below
+                # is a difference of two commanded offsets rather than an
+                # approximation.
+                base_offset = aim_target_offset_mm(base_rx, base_ry,
+                                                   float(flight),
+                                                   float(catch_pose[2]))
         except (toss_cal.TossCalError, ValueError) as exc:
             self.get_logger().error(
                 f"toss aim composition FAILED for catch pose "
                 f"{tuple(catch_pose)}: {exc} — this goal is thrown UNAIMED "
                 f"(C-TOSS-CAL-1 is a refinement, never a gate)")
             block['applied'] = False
+            block['ilc_applied'] = False
             return block
         block['aim_rad'] = (float(rx), float(ry))
         block['offset_mm'] = (float(offset[0]), float(offset[1]))
         block['map_aim_rad'] = (float(map_aim[0]), float(map_aim[1]))
         block['map_offset_mm'] = (float(map_offset[0]), float(map_offset[1]))
         block['trim_aim_rad'] = (float(trim_aim[0]), float(trim_aim[1]))
-        # The trim's mm REPORT value is the DIFFERENCE of the two commanded
-        # offsets, not `aim_target_offset_mm(trim)` on its own: what the trim
-        # actually moved is the virtual target, and after the total clamp that
-        # displacement is exactly total − map. Computing it independently would
-        # report a trim the machine did not command whenever the clamp bound.
-        block['trim_offset_mm'] = (float(offset[0]) - float(map_offset[0]),
-                                   float(offset[1]) - float(map_offset[1]))
+        # The trim's mm REPORT value is the DIFFERENCE of the commanded offsets,
+        # not `aim_target_offset_mm(trim)` on its own: what the trim actually
+        # moved is the virtual target, and after the total clamp that displacement
+        # is exactly (map+trim) − map. Computing it independently would report a
+        # trim the machine did not command whenever the clamp bound. Layer 3 gets
+        # the same treatment one step further out — total − (map+trim) — and with
+        # layer 3 inactive `base_offset is offset`, so this is bit-for-bit the
+        # pre-Phase-2 expression.
+        block['trim_offset_mm'] = (float(base_offset[0]) - float(map_offset[0]),
+                                   float(base_offset[1]) - float(map_offset[1]))
+        block['ilc_aim_rad'] = (float(ilc_aim[0]), float(ilc_aim[1]))
+        block['ilc_offset_mm'] = (float(offset[0]) - float(base_offset[0]),
+                                  float(offset[1]) - float(base_offset[1]))
+        block['ilc_vel_trim'] = float(ilc_dv)
         block['clamp_hits'] = list(hits)
         return block
 
@@ -2504,15 +2875,45 @@ class ReloadCoordinatorNode(Node):
                 release = None
                 release_cmd = None
                 tilt_clamp_exceeded = True
+        # The COMMANDED launch speed: the aim tilts the launch, so |v| grows by
+        # 1/cos(aim) (0.015 % at 1°). The FSM still gates it through
+        # validate_event_vel, so an aim can no more push event_vel past the
+        # bridge's [0.3, 7.0] m/s than a displacement can.
+        event_vel = (float(release_cmd.event_vel_mps)
+                     if release_cmd is not None else 0.0)
+        # ── layer 3's SECOND channel: the learned event_vel trim ──
+        # `k_v - 1`, applied as the multiply `release_state_for_command` models
+        # (ilc_fit_lib) — the fit and the machine must scale the same magnitude
+        # in the same place or the sensitivity F describes a different command
+        # than the one that flies. Guarded on `!= 0.0` so an inactive layer 3
+        # costs not one floating-point operation and `event_vel` stays the exact
+        # float the pre-Phase-2 expression produced.
+        if event_vel and aim['ilc_vel_trim'] != 0.0:
+            trimmed = event_vel * (1.0 + float(aim['ilc_vel_trim']))
+            if validate_event_vel(trimmed):
+                event_vel = trimmed
+            else:
+                # REFUSE the trim, fly the nominal. The FSM would otherwise mint
+                # REJECTED_EVENT_VEL and the whole goal would die for a
+                # refinement — and layer 3, like C-TOSS-CAL-1, is a refinement
+                # and never a gate. The record then carries ilc_vel_trim = 0.0,
+                # which is the truth about what was commanded (risk 5).
+                self.get_logger().warning(
+                    'ILC event_vel trim {:+.4f} REFUSED at apply: it would '
+                    'command {:.4f} m/s, outside the bridge band [{:.2f}, '
+                    '{:.2f}] (REJECTED_EVENT_VEL). This goal throws at the '
+                    'untrimmed {:.4f} m/s.'.format(
+                        float(aim['ilc_vel_trim']), trimmed,
+                        hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
+                        hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS, event_vel))
+                aim['ilc_vel_trim'] = 0.0
+                aim['ilc_refused'] = (
+                    '{},event_vel'.format(aim['ilc_refused'])
+                    if aim['ilc_refused'] else 'event_vel')
         seq = TossSequencer(
             catch_pose_stow_mm=catch_pose, flight_time_s=flight,
             throw_delay_s=throw_delay, tier=tier,
-            # The COMMANDED launch speed: the aim tilts the launch, so |v| grows
-            # by 1/cos(aim) (0.015 % at 1°). The FSM still gates it through
-            # validate_event_vel, so an aim can no more push event_vel past the
-            # bridge's [0.3, 7.0] m/s than a displacement can.
-            event_vel_mps=(float(release_cmd.event_vel_mps)
-                           if release_cmd is not None else 0.0),
+            event_vel_mps=event_vel,
             throw_site_xy_mm=throw_site,
             throw_site_known=throw_site_known,
             max_displacement_mm=float(hw.JB_OP_TOSS_MAX_DISPLACEMENT_MM),
@@ -3473,7 +3874,15 @@ class ReloadCoordinatorNode(Node):
             # state: the release point, the launch vector, the dispatched
             # event_vel and the commanded tilt.
             rec.update({
-                'event_vel_mps': float(release_cmd.event_vel_mps),
+                # Read off the SEQUENCER, not off `release_cmd`: the sequencer is
+                # what `_dispatch_toss_throw` sends (`req.event_vel =
+                # seq.event_vel_mps`), and since layer 3's velocity trim is
+                # applied between the two they are no longer the same number
+                # whenever it acts. With layer 3 inactive the sequencer holds the
+                # exact float `release_cmd.event_vel_mps` produced, so this is
+                # bit-identical to the pre-Phase-2 record.
+                'event_vel_mps': float(seq.event_vel_mps) if seq is not None
+                else float(release_cmd.event_vel_mps),
                 'release_pos_global_mm': [float(v) for v in
                                           release_cmd.release_pos_global_mm],
                 'launch_vel_mms': [float(v) for v in release_cmd.launch_vel_mms],
@@ -3492,6 +3901,12 @@ class ReloadCoordinatorNode(Node):
             'total_aim_rad': [0.0, 0.0],
             'map_aim_mm_at_h': [0.0, 0.0],
             'trim_aim_mm_at_h': [0.0, 0.0],
+            # Layer 3, POST-GATE. Explicit zeros for the same reason the two
+            # above are explicit zeros, and one more: a REFUSED correction (total
+            # clamp or validate_event_vel) must be recorded as the zero it became,
+            # or the next fit learns against a command the machine never flew.
+            'ilc_aim_rad': [0.0, 0.0],
+            'ilc_vel_trim': 0.0,
             'clamp_hits': [],
             'toss_cal_loaded': bool(cal_present),
             'toss_cal_version': cal_version or None,
@@ -3509,6 +3924,8 @@ class ReloadCoordinatorNode(Node):
                 # so they need no re-derivation (and cannot drift from one).
                 'map_aim_mm_at_h': [float(v) for v in aim['map_offset_mm']],
                 'trim_aim_mm_at_h': [float(v) for v in aim['trim_offset_mm']],
+                'ilc_aim_rad': [float(v) for v in aim['ilc_aim_rad']],
+                'ilc_vel_trim': float(aim['ilc_vel_trim']),
                 'clamp_hits': list(aim['clamp_hits']),
                 'toss_cal_applied': bool(aim['applied']),
             })
