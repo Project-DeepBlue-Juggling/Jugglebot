@@ -224,6 +224,7 @@ from jugglebot import clock_offset, toss_record, toss_trim
 from jugglebot.toss_record import latch_announced_ball
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion import toss_cal, toss_ilc
+from jugglebot.motion.trajectory import throw_envelope
 from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
 from jugglebot.motion.ik_solver import rot_matrix_to_quat, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.toss_release import (
@@ -2749,6 +2750,55 @@ class ReloadCoordinatorNode(Node):
         return block
 
     @staticmethod
+    def _ilc_vel_trim_refusal(nominal_mps: float, trimmed_mps: float,
+                              flight_s: float) -> str:
+        """``''`` to APPLY the layer-3 speed trim, or the reason to drop it.
+
+        THE apply-seam gate for the ``event_vel_trim`` channel (contradiction
+        **C2** of the 2026-08-21 ILC fold-in). Three checks, and each one is a
+        different failure it closes:
+
+        1. ``validate_event_vel`` — the bridge's ``[0.3, 7.0]`` m/s acceptance
+           band. Kept, and it is NOT the important one: that band "bounds
+           nothing physical" (``toss_trim.SessionTrim.speed_gain``'s ⚠ block).
+        2. ``throw_envelope.evaluate(T, trimmed)`` — contract **C-HAND-3**, the
+           gate that does bound the hardware, run on the speed the trim would
+           actually command. Without it a trim that clears the wire band but
+           breaks the envelope makes ``TossSequencer`` CHECKING mint
+           ``REJECTED_THROW_ENVELOPE`` and **layer 3 becomes a gate** — the
+           precise thing C-TOSS-CAL-1's "a refinement, never a gate" rule
+           forbids, and the reason this seam exists at all. The admissible trim
+           is strongly T-dependent (at the derived band floor T = 0.4949 s the
+           negative side is exactly ``+0.000``, bounded by ``ARM_WINDOW``), so a
+           trim fitted at one flight time is not automatically flyable at
+           another. ``ilc_fit_lib.speed_authority_band`` is the offline half of
+           the same computation; this is the online verdict.
+        3. the NOMINAL must clear the envelope too. Root cause: if the untrimmed
+           goal is already inadmissible, applying a trim that happens to be
+           admissible would make layer 3 the difference between a rejected goal
+           and a flown one — so an absent or dormant artifact would flip the
+           machine's verdict on a goal, and "byte-identical with layer 3 off"
+           would stop being true of the outcome. A goal the machine cannot fly
+           untrimmed is refused for its own reason, with the trim dropped.
+
+        Static and pure so it can be tested without a node.
+        """
+        if not validate_event_vel(trimmed_mps):
+            return ('would be outside the bridge band [{:.2f}, {:.2f}] '
+                    '(REJECTED_EVENT_VEL)'.format(
+                        hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
+                        hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS))
+        verdict = throw_envelope.evaluate(flight_s, trimmed_mps)
+        if not verdict.ok:
+            return 'REJECTED_THROW_ENVELOPE({})'.format(verdict.message)
+        nominal = throw_envelope.evaluate(flight_s, nominal_mps)
+        if not nominal.ok:
+            return ('the UNTRIMMED goal is itself outside the throw envelope '
+                    '({}) — layer 3 never decides whether a goal is flyable'
+                    .format(nominal.message))
+        return ''
+
+    @staticmethod
     def _release_is_tilted(release) -> bool:
         """True iff this release state carries a NON-ZERO commanded tilt.
 
@@ -2890,22 +2940,21 @@ class ReloadCoordinatorNode(Node):
         # float the pre-Phase-2 expression produced.
         if event_vel and aim['ilc_vel_trim'] != 0.0:
             trimmed = event_vel * (1.0 + float(aim['ilc_vel_trim']))
-            if validate_event_vel(trimmed):
+            refusal = self._ilc_vel_trim_refusal(event_vel, trimmed, flight)
+            if not refusal:
                 event_vel = trimmed
             else:
                 # REFUSE the trim, fly the nominal. The FSM would otherwise mint
-                # REJECTED_EVENT_VEL and the whole goal would die for a
-                # refinement — and layer 3, like C-TOSS-CAL-1, is a refinement
-                # and never a gate. The record then carries ilc_vel_trim = 0.0,
-                # which is the truth about what was commanded (risk 5).
+                # REJECTED_EVENT_VEL / REJECTED_THROW_ENVELOPE and the whole goal
+                # would die for a refinement — and layer 3, like C-TOSS-CAL-1, is
+                # a refinement and never a gate. The record then carries
+                # ilc_vel_trim = 0.0, which is the truth about what was commanded
+                # (risk 5).
                 self.get_logger().warning(
                     'ILC event_vel trim {:+.4f} REFUSED at apply: it would '
-                    'command {:.4f} m/s, outside the bridge band [{:.2f}, '
-                    '{:.2f}] (REJECTED_EVENT_VEL). This goal throws at the '
+                    'command {:.4f} m/s and {}. This goal throws at the '
                     'untrimmed {:.4f} m/s.'.format(
-                        float(aim['ilc_vel_trim']), trimmed,
-                        hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
-                        hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS, event_vel))
+                        float(aim['ilc_vel_trim']), trimmed, refusal, event_vel))
                 aim['ilc_vel_trim'] = 0.0
                 aim['ilc_refused'] = (
                     '{},event_vel'.format(aim['ilc_refused'])

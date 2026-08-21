@@ -21,8 +21,9 @@ phase's acceptance gates:
    including when the provenance verdict cannot be COMPUTED at all, which is a
    mismatch and never an exception on the goal-build path.
 5. **A key MISS is exactly zero** and the machine says so.
-6. **``validate_event_vel`` still gates**, and a refusal costs the trim, never
-   the goal.
+6. **The apply-seam speed gates still gate** — ``validate_event_vel`` AND
+   ``throw_envelope.evaluate`` (contract C-HAND-3, added 2026-08-21 for
+   contradiction C2) — and a refusal costs the trim, never the goal.
 7. **The record carries what was APPLIED**, post-gate, in both channels.
 
 ROS 2 is mocked by ``tests/ros/conftest.py``; the map fixture and the monkeypatch
@@ -972,22 +973,86 @@ def test_a_key_MISS_is_exactly_zero_and_the_machine_says_so(monkeypatch,
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6. validate_event_vel still gates
+# 6. The apply-seam speed gates — validate_event_vel AND throw_envelope
 # ══════════════════════════════════════════════════════════════════════════════
+
+def test_a_trim_that_breaks_the_throw_envelope_REFUSES_the_trim_not_the_goal(
+        monkeypatch, tmp_path):
+    """**C2, at the seam that had no envelope gate at all.**
+
+    Before this, ``_build_toss_cycle`` checked only ``validate_event_vel`` — the
+    bridge's [0.3, 7.0] m/s wire band, which "bounds nothing physical". A trim
+    that cleared the wire band and broke contract C-HAND-3 sailed through here
+    and was then refused by ``TossSequencer`` CHECKING as
+    ``REJECTED_THROW_ENVELOPE`` — **the whole goal died for a refinement**, which
+    is exactly what layer 3's "a refinement, never a gate" rule forbids.
+
+    Driven by a REAL artifact rather than by injection, and that is the point: at
+    T = 1.10 s the admissible ``k_v − 1`` is ``+0.043``
+    (``tools/probes/ilc_speed_band.py``, 2026-08-21) while the artifact's
+    parse-time ceiling is still ±0.15, so a ``+0.10`` cell is a perfectly legal
+    artifact that this machine cannot fly at this flight time. That gap between
+    "legal to persist" and "flyable here" is why the gate has to be at the apply
+    seam and not only at parse.
+    """
+    flight = 1.10
+    node = _node(monkeypatch, tmp_path,
+                 ilc_doc=_ilc_doc(aim_rx=0.0, aim_ry=0.0, dv=+0.10,
+                                  key=[0.0, 150.0, 170.0, flight],
+                                  cal_version=''), enabled=True)
+    warnings = _warnings(node)
+    seq = _build(node, monkeypatch, flight=flight)
+    nominal = tr.compute_release_state(_POSE, flight)
+    # The wire band would have said yes — so the wire band is not what saved it.
+    assert tr.validate_event_vel(float(nominal.event_vel_mps) * 1.10)
+    assert seq.event_vel_mps == float(nominal.event_vel_mps)
+    with node._lock:
+        aim = dict(node._toss_aim)
+    assert aim['ilc_vel_trim'] == 0.0
+    assert 'event_vel' in aim['ilc_refused']
+    assert any('REJECTED_THROW_ENVELOPE' in w for w in warnings), warnings
+
+
+def test_an_untrimmable_goal_never_has_its_verdict_flipped_by_layer_3(
+        monkeypatch, tmp_path):
+    """A goal the machine cannot fly UNTRIMMED gets no trim, admissible or not.
+
+    Root cause: if layer 3 could apply a trim that rescued an out-of-envelope
+    goal, then whether a goal flies at all would depend on whether an artifact
+    happened to be loaded — and "byte-identical with layer 3 off" would stop
+    being true of the machine's *verdict*, only of its arithmetic. The goal is
+    then refused by the FSM for its own reason, with the record honestly carrying
+    ``ilc_vel_trim = 0.0``.
+    """
+    # T = 1.25 s is past MAX_FLIGHT_TIME_S = 1.1485 s, so the untrimmed 6.134 m/s
+    # is refused (DECEL_AUTHORITY). −0.12 brings it to 5.398 m/s, which the
+    # envelope ADMITS — so without the third check this trim would rescue a goal
+    # the machine had already refused.
+    flight = 1.25
+    node = _node(monkeypatch, tmp_path,
+                 ilc_doc=_ilc_doc(aim_rx=0.0, aim_ry=0.0, dv=-0.12,
+                                  key=[0.0, 150.0, 170.0, flight],
+                                  cal_version=''), enabled=True)
+    warnings = _warnings(node)
+    seq = _build(node, monkeypatch, flight=flight)
+    nominal = tr.compute_release_state(_POSE, flight)
+    assert seq.event_vel_mps == float(nominal.event_vel_mps)
+    with node._lock:
+        assert node._toss_aim['ilc_vel_trim'] == 0.0
+    assert any('UNTRIMMED goal is itself outside the throw envelope' in w
+               for w in warnings), warnings
+
 
 def test_an_out_of_band_event_vel_REFUSES_the_trim_not_the_goal(monkeypatch,
                                                                 tmp_path):
     """Layer 3 is a refinement, never a gate. Without this branch the FSM would
     mint ``REJECTED_EVENT_VEL`` and the whole goal would die for a refinement.
 
-    **Driven by injection, and that is the honest form here.** The real band is
-    *unreachable* through the command vector — that is the measurement the ±0.15
-    authority was granted on, and it is re-derived by rail sweep in
-    ``tests/motion/test_ilc_fit.py::
-    test_the_event_vel_band_is_unreachable_inside_the_speed_authority``. So the
-    only way to exercise this defence-in-depth path is to make the gate say no.
-    A test that reached it through a real artifact would be evidence the
-    authority argument had failed.
+    **Driven by injection, and that is the honest form for THIS gate.** The wire
+    band really is unreachable through the command vector — every trim big
+    enough to reach [0.3, 7.0] is refused by the envelope first (the test above
+    is the one that exercises a real refusal). So the only way to exercise this
+    particular defence-in-depth path is to make the wire gate say no.
     """
     node = _node(monkeypatch, tmp_path,
                  ilc_doc=_ilc_doc(aim_rx=0.0, aim_ry=0.0, dv=-0.10,

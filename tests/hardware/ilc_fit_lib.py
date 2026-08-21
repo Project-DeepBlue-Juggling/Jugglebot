@@ -182,6 +182,7 @@ without an explicit flag and the census is always reported.
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import os
@@ -202,6 +203,7 @@ import jugglebot.hardware_config as hw                              # noqa: E402
 from jugglebot import toss_trim                                     # noqa: E402
 from jugglebot.motion import toss_cal                               # noqa: E402
 from jugglebot.motion.trajectory import ballistics_bc               # noqa: E402
+from jugglebot.motion.trajectory import throw_envelope              # noqa: E402
 from jugglebot.motion.trajectory.toss_release import (              # noqa: E402
     ThrowTiltInfeasible,
     aim_target_offset_mm,
@@ -235,6 +237,7 @@ __all__ = [
     'U_CHANNELS', 'U_LABELS', 'N_U', 'CATCH_CHANNELS',
     'E_LABELS', 'N_E', 'E1_BLOCKED', 'E1_MASK', 'DEFAULT_MASK', 'SIGMA_E',
     'FD_STEPS', 'TAU0', 'AUTHORITY', 'ILC_SPEED_AUTHORITY', 'RHO_DAMPING',
+    'speed_authority_band', 'speed_authority_band_for_goal',
     'MAX_TRUST_SHRINKS', 'lateral_admissible', 'COVERAGE_ASYM_MAX_S',
     'REPEATABILITY_MIN', 'zero_command', 'catch_channel',
     'release_state_for_command', 'e_model', 'release_speed_err_model',
@@ -295,24 +298,116 @@ class UChannel(NamedTuple):
 #: would silently widen that one. This is a second, named bound, owned by this
 #: module, applied to this module's channel.
 #:
-#: The safety argument, root cause first rather than by appeal to the gate memo:
+#: ⚠ **DEMOTED 2026-08-21 to an OUTER CEILING. It is no longer the authority.**
+#: The authority is :func:`speed_authority_band`, derived per flight time from
+#: ``throw_envelope.evaluate`` — contradiction **C2** of the ILC-primary fold-in
+#: (``plans/active/critical-point-ilc.md`` § "The 2026-08-21 fold-in", build
+#: step 1). This constant survives as the ceiling the band is intersected with,
+#: so a future envelope that opened up cannot silently widen a learned trim past
+#: the number the owner actually approved.
 #:
-#: * a speed trim cannot walk the hand into its end stop — ``STROKE_TOP_REV`` is
-#:   algebraically velocity-independent, so the stroke's TRAVEL is unchanged by
-#:   any ``k_v``;
-#: * ``validate_event_vel`` still gates every command against the bridge's
-#:   [0.3, 7.0] m/s acceptance band, and :func:`admit_command` runs it;
-#: * **and the band is unreachable anywhere in the sequencer's flight-time
-#:   band**, which is the measurement that makes the first two more than
-#:   assertions. Measured by rail sweep over [FLIGHT_TIME_MIN_S,
-#:   FLIGHT_TIME_MAX_S] = [0.55, 1.10] s: at T = 0.55 s the −15 % rail gives
-#:   **2.30 m/s, 7.7× clear of the 0.3 m/s floor**; at T = 1.10 s the +15 % rail
-#:   gives **6.21 m/s, 1.13× inside the 7.0 m/s ceiling**. The ceiling at the
-#:   long-flight end is the BINDING side and it is the one to watch if the
-#:   sequencer's band ever widens — ``test_the_event_vel_band_is_unreachable_
-#:   inside_the_speed_authority`` re-derives both rails rather than restating
-#:   them.
+#: **The safety argument that used to stand here is FALSE — do not reinstate
+#: it.** It read, in its third bullet: *"the [0.3, 7.0] m/s wire band is
+#: unreachable anywhere in the sequencer's flight-time band, measured by rail
+#: sweep at T = 0.55 s (2.30 m/s, 7.7× clear of the floor) and T = 1.10 s
+#: (6.21 m/s, 1.13× inside the ceiling)"*. Both halves of its premise moved:
+#:
+#: * the flight-time band is no longer the hand-picked [0.55, 1.10] s — it is
+#:   **derived**, ``[0.4949, 1.1485] s`` (``throw_envelope.MIN/MAX_FLIGHT_TIME_S``,
+#:   contract C-HAND-3); and
+#: * the wire band **bounds nothing physical** (``toss_trim.SessionTrim.
+#:   speed_gain``'s own ⚠ block). The real gate is ``throw_envelope.evaluate``,
+#:   seven bounds, and it refuses long before [0.3, 7.0] does.
+#:
+#: Measured against it (``tools/probes/ilc_speed_band.py``, run 2026-08-21), the
+#: admissible ``k_v − 1`` is ``[+0.000, ≥+0.5]`` at T = 0.4949 s (negative side
+#: bounded by ``ARM_WINDOW``), ``[≤−0.5, +0.270]`` at 0.9032, ``+0.148`` at 1.00,
+#: ``+0.043`` at 1.10 and ``+0.000`` at 1.1485 (positive side bounded by
+#: ``DECEL_FF_HEADROOM``). So ±0.15 is inadmissible near BOTH ends, and Gate 1's
+#: "neither rail is reachable anywhere in the band" was false on this machine.
+#:
+#: What survives of the Gate-1 argument, and why the ceiling is still worth
+#: keeping: the measured corpus asks for ``event_vel_trim = −0.1076`` and per
+#: cell −0.096 / −0.112 / −0.124 (n = 8/6/3), so two of three cells exceed
+#: ``toss_trim``'s ±0.10 alone. **``toss_trim.SPEED_AUTHORITY`` IS NOT CHANGED
+#: and must not be** — that constant bounds the SESSION TRIM, a different loop
+#: with a different update law and a different measurand.
 ILC_SPEED_AUTHORITY = 0.15
+
+#: Bisection depth for :func:`speed_authority_band`. 60 halvings of a 0.15-wide
+#: bracket is ~1.3e-19 — far past double precision, i.e. exact — and the cost is
+#: paid once per (T, v) pair thanks to the cache below.
+_BAND_ITERS = 60
+
+
+@functools.lru_cache(maxsize=512)
+def speed_authority_band(flight_time_s: float, nominal_speed_mps: float,
+                         ceiling: float = ILC_SPEED_AUTHORITY
+                         ) -> Tuple[float, float]:
+    """``(lo, hi)`` — the ADMISSIBLE ``event_vel_trim`` interval at this goal.
+
+    **This is the ILC speed channel's authority** (C2). It is the connected
+    interval of ``k_v − 1`` around the nominal command for which the REAL gate,
+    ``throw_envelope.evaluate(T, v_nominal·(1+k))``, says yes — intersected with
+    the :data:`ILC_SPEED_AUTHORITY` outer ceiling. Both returned edges SATISFY
+    the gate (the bisection returns the admitted side, ``throw_envelope._bisect``'s
+    own doctrine and for the same reason: an edge a float epsilon on the refused
+    side is an edge every consumer that samples it then fails on).
+
+    Why an interval search rather than a formula: the admitted release-speed set
+    is an interval, but its two ends close for DIFFERENT reasons — ``END_STOP`` /
+    ``DECEL_FF_HEADROOM`` / ``ACCEL_AUTHORITY`` / ``REGEN`` above, and
+    ``ARM_WINDOW`` below — and ``ARM_WINDOW``'s dependence on speed is the
+    counter-intuitive one: ``earliest = throw_decel_s(v) + ARM_SUPPRESS_MARGIN_S``
+    and ``throw_decel_s`` GROWS as the release speed falls, so a *slow-down* trim
+    narrows the catch-arm window. At the derived band floor that window is
+    exactly ``ARM_WINDOW_MARGIN_S`` wide by construction, so the negative side is
+    ``+0.000`` there. That mechanism was probed, not argued
+    (``tools/probes/ilc_speed_band.py``); the first reading of it — "a slower
+    throw shortens the achieved flight" — was wrong, and ``evaluate`` never
+    re-derives a flight time from a speed.
+
+    **Fails closed**: a non-finite or non-positive input, or a nominal command
+    the envelope already refuses, returns ``(0.0, 0.0)`` — no trim authority at
+    all. A goal the machine cannot fly untrimmed is not one a learned trim gets
+    to reach into.
+    """
+    ceil = abs(float(ceiling))
+    T = float(flight_time_s)
+    v0 = float(nominal_speed_mps)
+    if not (math.isfinite(T) and T > 0.0 and math.isfinite(v0) and v0 > 0.0):
+        return (0.0, 0.0)
+    if not throw_envelope.evaluate(T, v0).ok:
+        return (0.0, 0.0)
+    return (-_band_edge(T, v0, -1.0, ceil), _band_edge(T, v0, +1.0, ceil))
+
+
+def _band_edge(T: float, v0: float, sign: float, ceil: float) -> float:
+    """Largest ``s`` in ``[0, ceil]`` with ``evaluate(T, v0·(1+sign·s))`` ok."""
+    if ceil <= 0.0:
+        return 0.0
+    if throw_envelope.evaluate(T, v0 * (1.0 + sign * ceil)).ok:
+        return ceil
+    lo, hi = 0.0, ceil
+    for _ in range(_BAND_ITERS):
+        mid = 0.5 * (lo + hi)
+        if throw_envelope.evaluate(T, v0 * (1.0 + sign * mid)).ok:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def speed_authority_band_for_goal(goal: 'TossGoal') -> Tuple[float, float]:
+    """:func:`speed_authority_band` at ``goal``'s OWN nominal commanded speed.
+
+    Not the Tier-8a vertical projection: an aimed or displaced goal releases
+    faster at the same flight time, and the band is a property of the speed the
+    machine will actually command. Zero aim and zero trim, so this is the
+    untrimmed command the trim is a multiple of.
+    """
+    _n, _c, _l, v_nom = release_state_for_command(zero_command(), goal)
+    return speed_authority_band(float(goal.flight_time_s), float(v_nom))
 
 #: THE throw-side command vector. Order is load-bearing: it indexes every ``u``
 #: array, every column of ``F`` and every screen verdict in this module.
@@ -1030,6 +1125,11 @@ def admit_command(u, goal: TossGoal) -> Tuple[bool, str]:
        module does NOT widen a safety bound to make its own answer fit; when the
        measured requirement exceeds a bound, the refusal says so and the decision
        goes to the operator (see the Gate-1 memo).
+    2b. **the speed channel's T-dependent band** —
+       :func:`speed_authority_band`, derived from ``throw_envelope.evaluate`` at
+       this goal's own nominal release speed and intersected with the
+       :data:`ILC_SPEED_AUTHORITY` ceiling. This is the ILC speed authority
+       (C2); the flat ceiling in step 2 is only its outer bound.
     3. ``toss_cal.clamp_total_aim`` — the D7 apply-time total-aim clamp. A clamp
        HIT is a refusal here, not a truncation: risk 5 in the plan is precisely
        that a partially truncated ``du`` desynchronises applied-u from
@@ -1041,6 +1141,10 @@ def admit_command(u, goal: TossGoal) -> Tuple[bool, str]:
        FSM maps to ``REJECTED_TILT_CLAMP``.
     6. ``validate_event_vel`` — the bridge's ``[0.3, 7.0]`` m/s acceptance band,
        which the FSM checks as ``REJECTED_EVENT_VEL``.
+    6b. ``throw_envelope.evaluate(T, event_vel)`` — contract **C-HAND-3**, the
+       gate the FSM checks as ``REJECTED_THROW_ENVELOPE``. Added 2026-08-21 (C2):
+       the wire band in step 6 "bounds nothing physical", and this is the one
+       that does — seven bounds, END_STOP first.
     7. the forward model must be computable at ``u`` (a ball that never reaches
        the plane is not a toss).
     """
@@ -1073,6 +1177,29 @@ def admit_command(u, goal: TossGoal) -> Tuple[bool, str]:
                            .format(U_LABELS[j], arr[j], U_CHANNELS[j].unit,
                                    AUTHORITY[j], U_CHANNELS[j].authority_src))
 
+    # 2b. The SPEED channel's real authority: the T-dependent envelope band (C2).
+    # AUTHORITY[2] above is now only the outer CEILING — it is flat in T, and the
+    # admissible set is not. Checked here, before the aim clamp, because it is a
+    # per-channel bound like the loop above and its refusal names a different
+    # owner (throw_envelope / C-HAND-3, not the Gate-1 memo).
+    try:
+        v_nom = float(release_state_for_command(zero_command(), goal)[3])
+    except (ThrowTiltInfeasible, ValueError) as exc:
+        return False, ('the UNTRIMMED command at this goal is already refused '
+                       'by the production release chain, so no band exists to '
+                       'admit a trim into: {}'.format(exc))
+    lo_dv, hi_dv = speed_authority_band(T, v_nom)
+    if not (lo_dv - 1e-12 <= arr[2] <= hi_dv + 1e-12):
+        beyond = throw_envelope.evaluate(T, v_nom * (1.0 + float(arr[2])))
+        return False, (
+            'event_vel_trim = {:+.6g} is outside the ADMISSIBLE band '
+            '[{:+.4f}, {:+.4f}] at T = {:.4f} s — the band is derived per flight '
+            'time from throw_envelope.evaluate (contract C-HAND-3), not from the '
+            'flat {:+.2f} ILC_SPEED_AUTHORITY ceiling, because the admitted set '
+            'is not flat in T. Bound just outside: {}'
+            .format(arr[2], lo_dv, hi_dv, T, ILC_SPEED_AUTHORITY,
+                    beyond.message or 'ILC_SPEED_AUTHORITY (the outer ceiling)'))
+
     rx, ry = float(arr[0]), float(arr[1])
     try:
         crx, cry, hits = toss_cal.clamp_total_aim(rx, ry)
@@ -1098,6 +1225,16 @@ def admit_command(u, goal: TossGoal) -> Tuple[bool, str]:
                        '[{:.2f}, {:.2f}] (REJECTED_EVENT_VEL)'
                        .format(event_vel, hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS,
                                hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS))
+    # 6b. THE hardware gate — contract C-HAND-3's single enforcement point, run
+    # on the COMMANDED speed exactly as `toss_sequencer` CHECKING runs it. The
+    # band check above is derived from this function at zero aim; this call is
+    # the same function on the actual command, so it also sees what the band
+    # cannot: the 1/cos(aim) growth an aim adds, and a Tier-8b displaced goal's
+    # faster release. Belt AND braces, deliberately — the band is the authority
+    # the trust region is sized against, this is the verdict the machine gives.
+    envelope = throw_envelope.evaluate(T, event_vel)
+    if not envelope.ok:
+        return False, 'REJECTED_THROW_ENVELOPE({})'.format(envelope.message)
     try:
         e_model(arr, goal)
     except IlcFitError as exc:

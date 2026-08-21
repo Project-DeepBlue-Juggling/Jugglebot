@@ -534,3 +534,79 @@ seeded-and-held: applied from the prior, updated between sessions by the fit.
   already rewriting — three relative links in `toss-selftuning.md` still pointing
   at `tilt-calibration-grid.md`, `hand-ball-sensor.md` and `refactor-2026-07.md`
   as siblings, months after those plans moved to `archived/` and `parked/`.
+
+## Phase D — build step 1: the speed channel's authority becomes T-dependent (C2)
+
+**What changed.** `ILC_SPEED_AUTHORITY = 0.15` is demoted from *the authority*
+to *an outer ceiling*, and the authority becomes
+`ilc_fit_lib.speed_authority_band(T, v_nominal)` — the connected interval of
+`k_v − 1` around the nominal command that `throw_envelope.evaluate` admits,
+intersected with that ceiling. It is bisected rather than scanned, so the two
+band edges are exact where `tools/probes/ilc_speed_band.py`'s 0.001 scan could
+only report `+0.000`; both edges are returned on the *admitted* side, which is
+`throw_envelope._bisect`'s own doctrine and for the same reason.
+
+Three enforcement points, not one:
+
+1. `ilc_fit_lib.admit_command` gains **step 2b** (the T-dependent band, replacing
+   the flat per-channel check for `event_vel_trim`) and **step 6b**
+   (`throw_envelope.evaluate` on the commanded speed, beside `validate_event_vel`).
+   6b is not redundant with 2b: the band is derived at zero aim, so only 6b sees
+   the `1/cos(aim)` growth an aim adds and a Tier-8b displaced goal's faster
+   release.
+2. `reload_coordinator_node._ilc_vel_trim_refusal` — the apply seam, which had
+   **no** envelope gate at all. This is the half of C2 that was a live defect
+   rather than a sizing error: a trim clearing the wire band and breaking
+   C-HAND-3 reached `TossSequencer` CHECKING, which minted
+   `REJECTED_THROW_ENVELOPE` and killed the goal — layer 3 acting as a gate,
+   which is the one thing its own contract forbids.
+
+**A third check the build ladder did not ask for.** The seam also refuses the
+trim when the **untrimmed** goal is outside the envelope. Root cause: at long
+flight times a *slow-down* trim is admissible where the nominal is not (at
+T = 1.25 s the nominal 6.134 m/s is refused on `DECEL_AUTHORITY` and −0.12 brings
+it to an admitted 5.398 m/s), so without this check whether a goal flies at all
+would depend on whether an artifact happened to be loaded. "Byte-identical with
+layer 3 off" has to hold for the machine's *verdict*, not only for its
+arithmetic.
+
+**The measured band** (`tools/probes/ilc_speed_band.py`, re-run 2026-08-21 on
+this tree, unchanged from the fold-in's first run): `[+0.000, ≥+0.5]` at
+T = 0.4949 s with the negative side bounded by `ARM_WINDOW`; `[≤−0.5, +0.270]` at
+0.9032; `+0.148` at 1.00; `+0.043` at 1.10; `+0.000` at 1.1485 with the positive
+side bounded by `DECEL_FF_HEADROOM`. Bisected against the exact derived edges the
+binding side is `−2.8e-16` and `+1.1e-16` — zero to double precision, which is
+what "by construction" means here: the band edge *is* the flight time at which
+that bound reaches equality.
+
+**The test that failed as written, and what replaced it.**
+`test_the_event_vel_band_is_unreachable_inside_the_speed_authority` pinned Gate
+1's safety argument — *"over the whole flight-time band and the whole ±0.15
+authority, `event_vel` stays inside [0.3, 7.0] m/s"*. That statement is still
+**true** and is now **irrelevant**: the rails do stay inside the wire band and
+are refused anyway, because the wire band bounds nothing physical. It is replaced
+by `test_the_scalar_speed_authority_is_inadmissible_near_both_band_ends` (both
+ends, each naming the bound that closes it, plus the corpus's own −0.1076 demand
+refused at exactly the R5-prime cadence target),
+`test_the_speed_authority_band_is_derived_per_flight_time` (the T-sweep, against
+the probe's published numbers, plus monotonicity and the fail-closed cases) and
+`test_the_throw_envelope_is_wired_into_admit_command`.
+
+At the node, the new gate is driven by a **real artifact** rather than by
+injection: at T = 1.10 s the admissible trim is `+0.043` while the artifact's
+parse-time ceiling is still ±0.15, so a `+0.10` cell is a perfectly legal
+artifact this machine cannot fly at that flight time. That gap between "legal to
+persist" and "flyable here" is the argument for gating at apply and not only at
+parse — and it is why the parse-time ceiling was deliberately **not** made
+T-dependent: a cell's key carries a *quantised* flight time (50 ms cells), so a
+parse-time band would refuse or admit against a T the goal may not have.
+
+### Verification — Phase D
+
+- `python tools/probes/ilc_speed_band.py`, run 2026-08-21: reproduces the six-row
+  band table above and the `throw_decel_s`-vs-speed mechanism block.
+- `pytest tests/motion/test_ilc_fit.py tests/motion/test_toss_ilc.py -q
+  -p no:randomly`, run 2026-08-21: **183 passed, 13 skipped in 2.21 s** (the 13
+  skips are the corpus-backed V2b/V3/V4 arms — `temp/probes/` is gitignored).
+- `pytest tests/ros/test_toss_ilc_node.py -q -p no:randomly`, run 2026-08-21:
+  **30 passed in 5.89 s**.

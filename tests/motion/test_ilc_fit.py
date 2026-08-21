@@ -64,6 +64,7 @@ import jugglebot.hardware_config as hw                             # noqa: E402
 from jugglebot import toss_trim                                    # noqa: E402
 from jugglebot.motion import toss_cal                              # noqa: E402
 from jugglebot.motion.trajectory import ballistics_bc              # noqa: E402
+from jugglebot.motion.trajectory import throw_envelope             # noqa: E402
 from jugglebot.motion.trajectory.toss_release import (             # noqa: E402
     HAND_THROW_OFFSET_MM,
     compute_release_state,
@@ -557,65 +558,146 @@ def test_iterate_reports_aim_saturation_on_the_magnitude_not_the_axis():
     assert 'event_vel_trim' not in steps[0]['saturated']
 
 
-def test_the_event_vel_band_is_unreachable_inside_the_speed_authority():
-    """``validate_event_vel``'s band is a REAL gate that ``event_vel_trim``
-    cannot reach — and both halves of that are asserted directly.
+def test_the_scalar_speed_authority_is_inadmissible_near_both_band_ends():
+    """**C2, and this test is the one that failed as written.**
 
-    This replaces a test that thought it was driving the band gate: it commanded
-    a trim past the 0.3 m/s floor, but such a trim is ~-93 %, so
-    :func:`ilc_fit_lib.admit_command` refused on the SPEED_AUTHORITY check three
-    steps earlier and ``validate_event_vel`` was never called. The assertion
-    (``'authority' in why or 'EVENT_VEL' in why``) passed on the wrong disjunct,
-    which is the failure mode a two-branch assertion invites.
+    Its predecessor —
+    ``test_the_event_vel_band_is_unreachable_inside_the_speed_authority`` — pinned
+    the Gate-1 safety argument: *"over the whole sequencer flight-time band and
+    the whole ±0.15 authority, ``event_vel`` stays inside the bridge's
+    [0.3, 7.0] m/s band, so the band gate can never be what binds an ILC step."*
+    Both halves of that premise have since moved and the conclusion went with
+    them:
 
-    What is true, and is worth pinning, is the *reachability* statement: over the
-    whole sequencer flight-time band and the whole speed authority, ``event_vel``
-    stays inside [0.3, 7.0] m/s, so the band gate is defence in depth against a
-    mis-specified goal, never a constraint the ILC's own step can bind. If that
-    ever stops being true (a wider authority, a wider flight-time band), this
-    test fails and the screen has to account for a second binding gate.
+    * the flight-time band is no longer the hand-picked ``[0.55, 1.10] s``; it is
+      DERIVED, ``[0.4949, 1.1485] s`` (contract C-HAND-3, ``throw_envelope``); and
+    * the wire band **bounds nothing physical**. The gate that does is
+      ``throw_envelope.evaluate``, and it refuses long before [0.3, 7.0] does.
 
-    **Re-derived at the WIDENED authority (owner decision 2026-08-13, Gate 1:
-    :data:`ilc_fit_lib.ILC_SPEED_AUTHORITY` = ±0.15, up from ``toss_trim``'s
-    ±0.10).** That decision was taken ON this sweep, so the sweep runs at the new
-    bound and the two rails that sized it are asserted by value: at T = 0.55 s
-    the −15 % rail is **2.30 m/s, 7.7x clear of the 0.3 m/s floor**; at
-    T = 1.10 s the +15 % rail is **6.21 m/s, 1.13x inside the 7.0 m/s ceiling**.
-    The ceiling at the long-flight end is the BINDING side, and the margin there
-    is what a future authority widening spends.
+    So the reachability statement is now *true and irrelevant* — the rails stay
+    inside the wire band and are refused anyway. What this test pins instead is
+    the fact that replaced it: at BOTH ends of the derived band a ±0.15 trim is
+    **inadmissible**, and :func:`ilc_fit_lib.admit_command` says so by name.
+    Measured 2026-08-21 with ``tools/probes/ilc_speed_band.py`` and re-derived
+    here rather than restated.
     """
-    corners = []
-    rails = {}
-    for T in (0.55, lib.CORPUS_FLIGHT_TIME_S, 1.10):
-        goal = lib.TossGoal(catch_pose_stow_mm=(0.0, 0.0, 170.0),
-                            flight_time_s=T)
-        for dv in (-lib.ILC_SPEED_AUTHORITY, +lib.ILC_SPEED_AUTHORITY):
-            u = np.array([0.0, 0.0, dv, 0.0])
-            _n, _c, _l, ev = lib.release_state_for_command(u, goal)
-            assert validate_event_vel(ev), (
-                'T={} dv={} gives event_vel {} m/s, outside the bridge band — '
-                'the band is now reachable inside the authority'.format(T, dv, ev))
-            ok, why = lib.admit_command(u, goal)
-            assert ok, why
-            corners.append(ev)
-            rails[(T, dv)] = ev
-    assert min(corners) > hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS
-    assert max(corners) < hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS
+    lo_T, hi_T = throw_envelope.MIN_FLIGHT_TIME_S, throw_envelope.MAX_FLIGHT_TIME_S
 
-    # The two rails the Gate-1 decision was taken on, by value.
-    slow = rails[(0.55, -lib.ILC_SPEED_AUTHORITY)]
-    fast = rails[(1.10, +lib.ILC_SPEED_AUTHORITY)]
-    assert slow == pytest.approx(2.30, abs=0.02)
-    assert fast == pytest.approx(6.21, abs=0.02)
-    assert slow / hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS > 7.0
-    # The BINDING side. A margin, not a comfort — 13 % is what is left.
-    assert 1.0 < hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS / fast < 1.2
+    # LONG-flight end: +0.15 is refused, and the bound that closes it is the
+    # decel feedforward's current headroom, not the wire band.
+    goal_hi = lib.TossGoal(catch_pose_stow_mm=(0.0, 0.0, 170.0),
+                           flight_time_s=1.10)
+    u_fast = np.array([0.0, 0.0, +lib.ILC_SPEED_AUTHORITY, 0.0])
+    _n, _c, _l, ev_fast = lib.release_state_for_command(u_fast, goal_hi)
+    assert validate_event_vel(ev_fast), (
+        'the rail is still inside the wire band — that is exactly why the wire '
+        'band is not the gate')
+    ok, why = lib.admit_command(u_fast, goal_hi)
+    assert not ok
+    assert 'ADMISSIBLE band' in why and 'DECEL' in why
 
-    # ... and the gate itself is real, driven directly rather than inferred from
-    # a refusal that some other check produced.
+    # SHORT-flight end: the NEGATIVE rail is refused, bounded by ARM_WINDOW —
+    # the counter-intuitive direction (a slow-down trim narrows the catch-arm
+    # window because throw_decel_s grows as the release speed falls).
+    goal_lo = lib.TossGoal(catch_pose_stow_mm=(0.0, 0.0, 170.0),
+                           flight_time_s=lo_T)
+    u_slow = np.array([0.0, 0.0, -lib.ILC_SPEED_AUTHORITY, 0.0])
+    _n, _c, _l, ev_slow = lib.release_state_for_command(u_slow, goal_lo)
+    assert validate_event_vel(ev_slow)
+    ok, why = lib.admit_command(u_slow, goal_lo)
+    assert not ok
+    assert 'ADMISSIBLE band' in why and 'ARM_WINDOW' in why
+
+    # And the corpus's own measured demand, -0.1076, is inadmissible at exactly
+    # the R5-prime cadence target. This is fold-in consequence (b): the channel
+    # has ZERO authority in the only direction the plant asks for, at the flight
+    # time the cadence ladder is aiming at.
+    ok, why = lib.admit_command(np.array([0.0, 0.0, -0.1076, 0.0]), goal_lo)
+    assert not ok and 'ARM_WINDOW' in why
+
+    # The gates themselves are real, driven directly rather than inferred.
     assert not validate_event_vel(hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS - 0.01)
     assert not validate_event_vel(hw.TEENSY_TRAJ_MAX_EVENT_VEL_MPS + 0.01)
-    assert validate_event_vel(hw.TEENSY_TRAJ_MIN_EVENT_VEL_MPS + 0.01)
+    assert not throw_envelope.evaluate(hi_T * 1.01,
+                                       ev_fast).ok
+
+
+def test_the_speed_authority_band_is_derived_per_flight_time():
+    """The T-sweep the fold-in's build step 1 asks for, pinned by value.
+
+    Ground truth is ``tools/probes/ilc_speed_band.py`` (run 2026-08-21, scan step
+    0.001); this function bisects instead of scanning, so the two agree to the
+    probe's own resolution and the exact edges land where the scan could only
+    say "+0.000".
+
+    The shape is what matters and it is not symmetric: the NEGATIVE side closes
+    at the SHORT-flight end (``ARM_WINDOW``) and the POSITIVE side at the
+    LONG-flight end (``DECEL_FF_HEADROOM``), so there is no single scalar that is
+    admissible everywhere — which is C2 in one sentence.
+    """
+    v = throw_envelope.vertical_release_speed_mps
+    lo_T, hi_T = throw_envelope.MIN_FLIGHT_TIME_S, throw_envelope.MAX_FLIGHT_TIME_S
+
+    # At the two derived edges the binding side is EXACTLY zero: the band edge is
+    # the flight time at which that bound reaches equality, so by construction no
+    # trim in that direction survives.
+    assert lib.speed_authority_band(lo_T, v(lo_T))[0] == pytest.approx(0.0, abs=1e-9)
+    assert lib.speed_authority_band(hi_T, v(hi_T))[1] == pytest.approx(0.0, abs=1e-9)
+
+    # Interior points, against the probe's published numbers.
+    for T, expect_hi in ((1.00, 0.148), (1.10, 0.043)):
+        assert lib.speed_authority_band(T, v(T))[1] == pytest.approx(
+            expect_hi, abs=0.001)
+    # ... and where the envelope is wide, the ILC ceiling is what binds — 0.15 is
+    # kept precisely so an envelope that opened up cannot silently widen a
+    # learned trim past the number the owner approved.
+    assert lib.speed_authority_band(lib.CORPUS_FLIGHT_TIME_S,
+                                    v(lib.CORPUS_FLIGHT_TIME_S)) == (
+        -lib.ILC_SPEED_AUTHORITY, +lib.ILC_SPEED_AUTHORITY)
+
+    # Monotone in the right direction, and BOTH edges move the same way: as the
+    # flight time grows the positive edge shrinks toward zero (the throw gets
+    # faster, so the decel headroom runs out) and the negative edge opens up away
+    # from zero (the catch-arm window widens, so a slow-down stops breaking it).
+    # Both sequences are therefore non-increasing.
+    bands = [lib.speed_authority_band(T, v(T))
+             for T in (lo_T, 0.55, 0.7, 0.9032, 1.0, 1.1, hi_T)]
+    assert [b[1] for b in bands] == sorted([b[1] for b in bands], reverse=True)
+    assert [b[0] for b in bands] == sorted([b[0] for b in bands], reverse=True)
+
+    # Fail-closed: a goal the envelope already refuses UNTRIMMED gets no band at
+    # all, rather than a band centred on an inadmissible command.
+    assert lib.speed_authority_band(hi_T * 1.05, v(hi_T * 1.05)) == (0.0, 0.0)
+    assert lib.speed_authority_band(float('nan'), 4.0) == (0.0, 0.0)
+
+
+def test_the_throw_envelope_is_wired_into_admit_command():
+    """``throw_envelope.evaluate`` is CALLED by
+    :func:`ilc_fit_lib.admit_command` — pinned by substitution, in the shape of
+    the ``validate_event_vel`` test below it.
+
+    Substitution rather than a real refusal because the band check in step 2b is
+    derived from the same function and therefore fires first for any trim big
+    enough to break the envelope; the only honest way to show step 6b is wired is
+    to make the envelope refuse a command the band admits, and watch the FSM's
+    own reject code come out.
+    """
+    goal = lib.TossGoal(catch_pose_stow_mm=(0.0, 0.0, 170.0), flight_time_s=0.9)
+    real = lib.throw_envelope.evaluate
+    try:
+        lib.throw_envelope.evaluate = lambda t, v: throw_envelope.ThrowEnvelopeVerdict(
+            False, 'END_STOP', 'substituted')
+        # The band is memoised, and a band computed through the substitute would
+        # outlive it — clear on the way IN and on the way OUT.
+        lib.speed_authority_band.cache_clear()
+        ok, why = lib.admit_command(lib.zero_command(), goal)
+    finally:
+        lib.throw_envelope.evaluate = real
+        lib.speed_authority_band.cache_clear()
+    assert not ok
+    assert 'REJECTED_THROW_ENVELOPE' in why and 'END_STOP' in why
+    assert lib.admit_command(lib.zero_command(), goal)[0], (
+        'the substitution leaked — the real gate must admit the nominal command')
 
 
 def test_the_event_vel_gate_is_wired_into_admit_command():
