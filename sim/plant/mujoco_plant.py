@@ -129,9 +129,10 @@ class MuJoCoPlant(PlantInterface):
         # ``jugglebot_geometry.hand_stroke_mm`` (344.75) is physical travel,
         # ``teensy_trajectory.hand_stroke_m`` (0.355) is the THROW-PROFILE basis
         # that feeds x2/x3/x5.  They are different numbers on purpose; do not
-        # re-merge them.  (``sim/model/jugglebot.xml`` still carries a 0.355 m
-        # joint range because it has not been regenerated since that split — the
-        # tighter clip here is the conservative side of that skew.)
+        # re-merge them.  (``sim/model/jugglebot.xml`` carried a stale 0.355 m
+        # joint range until 2026-08-21, when the MJCF generator was reconciled
+        # with the model and regenerated; the two now agree at 344.75 mm, and
+        # ``tests/sim/test_mjcf_drift.py`` keeps them agreeing.)
         #
         # ``_hand_prime_mm`` is the top of the sim's stroke = where
         # ``sim/hand/trajectory.py``'s catch trajectory takes its first sample,

@@ -37,12 +37,26 @@ class TestHandModel:
         assert hand_id >= 0, "hand body not found"
 
     def test_hand_slide_joint(self, plant):
+        """Joint range is 0 .. the CONFIGURED physical travel.
+
+        Read from ``jugglebot_geometry.hand_stroke_mm`` rather than written down
+        here.  This assertion hardcoded 0.355 and went stale on 2026-08-18 when
+        the operator measured the sensorised hand and the key moved to 344.75 —
+        making it the third place that correction failed to reach, after
+        ``mujoco_plant.py``'s clip bound and the MJCF itself.  Hardcoding it
+        again would just reset that clock.
+
+        NOT ``teensy_trajectory.hand_stroke_m`` (0.355) — that is the
+        throw-profile basis and is a different number on purpose.
+        """
         m = plant.model
         jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, 'hand_slide')
         assert jid >= 0, "hand_slide joint not found"
-        # Check range: 0 to 0.355 m
         assert m.jnt_range[jid][0] == pytest.approx(0.0, abs=1e-6)
-        assert m.jnt_range[jid][1] == pytest.approx(0.355, abs=1e-4)
+        assert m.jnt_range[jid][1] == pytest.approx(
+            hw.GEOM_HAND_STROKE_MM / 1000.0, abs=1e-6), (
+            "hand_slide range disagrees with jugglebot_geometry.hand_stroke_mm — "
+            "regenerate the model: python sim/model/generate_mjcf.py")
 
     def test_hand_actuator(self, plant):
         m = plant.model

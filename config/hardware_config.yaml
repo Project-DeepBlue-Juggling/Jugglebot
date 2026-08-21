@@ -29,6 +29,23 @@ physics:
                              # and Python (ball tracking/prediction). NOTE: Some legacy Python files use 9.81 — this
                              # value (9.806) matches the firmware and is the canonical value going forward.
 
+  # ---- Juggling ball ----
+  # Owner-stated 2026-08-21: 71 g, 70 mm diameter.  Canonical source for the
+  # MuJoCo ball geom, which `sim/model/generate_mjcf.py` reads directly from this
+  # file; before 2026-08-21 the number was hardcoded in TWO places that disagreed
+  # (jugglebot.xml 0.035/0.071, the generator 0.02/0.043).
+  #
+  # ⚠ NOT the same quantity as `throw_envelope.BALL_MASS_KG` (0.0952 kg), which is
+  # the ball mass IMPLIED by `INERTIA_RATIO = m_hand/(m_hand + m_ball)` = 0.747.
+  # Those two disagree by +34 %: 0.747 back-solves to a 95.2 g ball, the physical
+  # ball is 71 g (which would give INERTIA_RATIO 0.798).  The disagreement is
+  # UNRESOLVED and deliberately not reconciled here — INERTIA_RATIO is a tuned,
+  # hardware-validated throw-shaping constant baked into firmware, not a
+  # measurement of the ball.  The names are kept distinct on purpose so that
+  # `hw.JUGGLING_BALL_MASS_KG` can never be mistaken for the envelope's value.
+  juggling_ball_mass_kg: 0.071      # Physical mass of one juggling ball {kg}.
+  juggling_ball_radius_mm: 35.0     # Physical radius of one juggling ball {mm} (70 mm diameter / 2).
+
 # ============================================================
 # 1b. Platform Dynamics
 #     Mass and inertia properties of the Stewart platform assembly
