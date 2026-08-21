@@ -131,7 +131,7 @@ The `_execute_hand_cmd()` function processes the `hand_cmd` field from `TargetCo
 | `BallRelease(velocity_mms)` | Release ball from kinematic hold with specified velocity |
 | `HandCatchSequence` / `HandThrowSequence` | Install as active sequence (sampled each step) |
 | `float` / `int` | Direct position command (mm) |
-| `'prime'` | Move hand to prime position (~323 mm) |
+| `'prime'` | Move hand to prime position (**~335 mm**; ~323 mm until 2026-08-21) |
 | `'home'` | Move hand to bottom of travel (0 mm) |
 
 Active hand sequences (`HandCatchSequence`, `HandThrowSequence`) are sampled at the current simulation time each step. When the sequence returns `None` (complete), the active sequence is cleared.

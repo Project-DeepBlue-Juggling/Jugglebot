@@ -448,15 +448,18 @@ inline void smoothMoveExcursion(float delta_rev, float v0_rps, float duration,
    ---------------------
    This function is prepended to EVERY hand command — a kind-3 prime / retract /
    SAFE_ABORT, and the prelude ahead of every kind-0/1/2 stroke (Teensy_code_platform.ino
-   :470 and :522).  It used to seed the quintic v = a = 0 from
-   current_hand_position alone, while current_hand_velocity sat declared two
-   lines above and was never read.  So any command landing while the hand moved
-   commanded a VELOCITY STEP.  Measured 2026-07-25: a catch arm landing 8–18 ms
-   after ball release froze the setpoint at the live encoder value (6.20–7.78
-   rev) with the hand travelling through it at ~120 rev/s; the position loop then
-   coasted to 10.17–10.32 rev — as little as 0.775 rev from the 11.1 rev
-   overextension guard — and yanked the hand 0.34–1.75 rev = 10.7–55.3 mm BELOW
-   the stroke end.  That is the operator-visible post-throw dip.
+   :580 and :631).  It used to seed the quintic v = a = 0 from
+   current_hand_position alone, while current_hand_velocity sat declared right
+   beside it (:85-86) and was never read.  So any command landing while the hand
+   moved commanded a VELOCITY STEP.  Measured 2026-07-25: a catch arm landing
+   8–18 ms after ball release froze the setpoint at the live encoder value
+   (6.20–7.78 rev) with the hand travelling through it at ~120 rev/s; the position
+   loop then coasted to 10.17–10.32 rev — as little as 0.475 rev from the 10.8 rev
+   hard stop (this read "0.775 rev from the 11.1 rev overextension guard" until
+   2026-08-21; 11.1 was the DECLARED stop, corrected 2026-08-18 to the
+   operator-measured metal contact at 10.8 rev) — and yanked the hand
+   0.34–1.75 rev = 10.7–55.3 mm BELOW the stroke end.  That is the
+   operator-visible post-throw dip.
 
    THE SHAPE
    ---------
@@ -503,7 +506,7 @@ inline void smoothMoveExcursion(float delta_rev, float v0_rps, float duration,
    means not clobbering, and a kind-3 retract clobbering an armed kind-0 is the
    ONLY un-arm mechanism the Teensy offers (a pre-release SAFE_ABORT depends on
    it) — and refusing via an EMPTY trajectory is worse still, because
-   Teensy_code_platform.ino:472-475 returns before packedMsgs.clear().  Braking harder was
+   Teensy_code_platform.ino:581-583 returns before packedMsgs.clear() (:588).  Braking harder was
    also rejected: near a target the bulge has no room to be absorbed by the
    s-shape's own travel, and the acceleration needed to squeeze it in is bounded
    by nothing the firmware declares — a SAFE_ABORT retract dispatched with the
@@ -521,7 +524,7 @@ inline void smoothMoveExcursion(float delta_rev, float v0_rps, float duration,
    the host's windows are sized on the durations this firmware could already
    command.  See that helper for the failure it closes.
 
-   See plans/active/hand-command-continuity.md Phase 4, contract C-HAND-1, and
+   See plans/archived/hand-command-continuity.md Phase 4, contract C-HAND-1, and
    ros_ws/docs/hand_command_continuity.md.
    ===================================================================== */
 inline Trajectory makeSmoothMove(float target_rev)
@@ -545,8 +548,8 @@ inline Trajectory makeSmoothMove(float target_rev)
 
     /* Already there AND at rest → empty traj.  The `at_rest` conjunct NARROWS
      * this branch: at the target but MOVING now yields a braking profile rather
-     * than nothing.  Never widen it — Teensy_code_platform.ino:472-475 returns from the
-     * kind-3 handler BEFORE packedMsgs.clear() when the move is empty, so a
+     * than nothing.  Never widen it — Teensy_code_platform.ino:581-583 returns from the
+     * kind-3 handler BEFORE packedMsgs.clear() (:588) when the move is empty, so a
      * wider empty case is a wider hole in the only un-arm mechanism available.
      */
     if (fabsf(delta_rev) < 1e-6f && at_rest)

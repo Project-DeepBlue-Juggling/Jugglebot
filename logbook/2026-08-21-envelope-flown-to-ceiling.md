@@ -8,7 +8,7 @@ related_plan: single-ball-toss.md
 files_changed:
   - ros_ws/docs/hand_throw_envelope.md
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
 subsystem:
   - motion
 tags:

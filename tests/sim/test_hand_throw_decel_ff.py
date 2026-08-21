@@ -24,7 +24,7 @@ way of getting this wrong:
    ``a_cmd * J_ff/J_true``, so while ``J_ff <= J_true`` it can only reduce the
    overshoot and can never brake the hand to a stop SHORT of ``x3`` and then
    drag it back up — which would re-create the operator-visible dip that
-   Phases 1-4 of ``plans/active/hand-command-continuity.md`` removed.
+   Phases 1-4 of ``plans/archived/hand-command-continuity.md`` removed.
 2. **The correction is scoped to the decel segment.**  Correcting the ASCENT
    feedforward would raise the achieved release velocity and re-calibrate every
    throw height the machine has ever flown.

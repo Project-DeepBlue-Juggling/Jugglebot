@@ -11,7 +11,7 @@ files_changed:
   - tests/hardware/session_anomaly_fixes.md
   - tests/firmware/test_hand_throw_decel_xref.py
   - tools/probes/README.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
 subsystem:
   - tools
 tags:
@@ -61,7 +61,7 @@ survives too, demoted to a fallback bound that no admissible capture reaches.)
 
 ### Defect 1 (2026-08-18): the truncation scan's time wall
 
-`plans/active/hand-command-continuity.md` § Phase 5 recorded, from the 2026-07-27
+`plans/archived/hand-command-continuity.md` § Phase 5 recorded, from the 2026-07-27
 sitting:
 
 > Rows 1/2/`H2.2`/`H4.6` carry a **criterion defect** (they fire on the gated

@@ -1,7 +1,7 @@
 ---
 title: Hand trajectory generator overhaul — jerk-limited, time-budget parameterised
 created: 2026-05-22
-status: parked   # 2026-08-15 — untouched since creation, self-declared "a strict improvement, not a prerequisite". NOTE for resumption: the hand firmware changed twice underneath this plan (hand-command-continuity Phase 4 velocity-continuous makeSmoothMove seeding + Phase 7 throwDecelToTorque), so Phase 1's baseline characterisation must be re-taken against Platform FW 2, not FW 0.
+status: parked   # 2026-08-15 — untouched since creation, self-declared "a strict improvement, not a prerequisite". NOTE for resumption: the hand firmware changed THREE times underneath this plan (hand-command-continuity Phase 4 velocity-continuous makeSmoothMove seeding, Phase 7 throwDecelToTorque, and the 2026-08-18 hand end-stop correction), so Phase 1's baseline characterisation must be re-taken against Platform FW 3, not FW 0. (Read the live expected version off teensy_link/rpc_args.py::PLATFORM_FW_VERSION_EXPECTED rather than this line, which is a snapshot.) 2026-08-21: this plan also inherited three unowned findings from hand-command-continuity at that plan's archival — see § 6 Inherited findings.
 ---
 
 # Hand trajectory generator overhaul
@@ -241,12 +241,102 @@ Phase 1 baseline; confirm release-velocity accuracy and repeatability.
 - **CAN payload.** Whether the time budget and stroke start/end fit existing
   on-Teensy derivation or require new `0x6D0` fields — decided in Phase 2.
 
+### Inherited findings — re-homed here 2026-08-21 from `hand-command-continuity.md`
+
+Three findings from that plan's Phase 0 (§ Confirmation 2) survived its archival
+with **no owner anywhere**. They are re-homed here because this plan rewrites
+`sim/hand/trajectory.py` and `Trajectory.h`'s throw/catch builders wholesale, so
+it is the change that must decide them — and it must decide them *before* Phase 3,
+because "replaced in lockstep" is only meaningful once it is settled what the two
+sides are supposed to agree ON.
+
+All three are **sim-vs-firmware divergences in the CATCH path**, and all three are
+named candidate contributors to the known sim-catch fidelity gap
+(`project_hand_catch_hardware_smooth_sim_janky`). None is a hardware defect: the
+firmware is self-consistent and the host stack agrees with it. The sim is the
+outlier in every case.
+
+1. **Catch time-origin divergence — 0.498 rev = 15.75 mm, velocity-independent.**
+   The firmware's kind-1 `t = 0` is the **start** of the catch velocity hold:
+   `makeCatch` shifts by `-(t5 - t4) = -t_acc` (`Trajectory.h:153`), and
+   `t5 = t2 + airT - 0.5·t_vel` puts the *arrival* at the hold's centre, so `t5`
+   is its start. `sim/hand/trajectory.py:238` sets
+   `_t_offset = t_acc + 0.5·t_vel`, putting its `t = 0` at the hold **centre**.
+   Measured: Δt **−9.73 / −6.68 / −4.87 ms** at `v` = 2.697 / 3.931 / 5.393 m/s,
+   with a velocity-INDEPENDENT position offset of 0.498 rev = 15.75 mm (it is
+   `0.5·velH`).
+   *Note both firmware comments in that region are wrong about their own code —
+   `Trajectory.h:206` calls `t5` the "centre of vel hold" and `:153` says "t=0 at
+   mid velocity-hold". The code is what was measured.*
+   **The open question is which convention is right**, not merely which the sim
+   should copy: `calcCatch`'s own construction implies the hold should be centred
+   on the predicted arrival, and `makeFull`/kind-2 *does* honour that. Deciding it
+   is a change to where the hand meets the ball, so it was reserved for the
+   operator and still is. **Do not "repair" the sim by editing `_t_offset` in
+   isolation** — that silently moves the sim's hand position at ball arrival by
+   15.75 mm and pre-empts the decision.
+
+2. **20 mm absolute catch-height placement divergence.**
+   `sim/input/scripted.py:310` computes
+   `_HAND_CATCH_X5_PHYSICAL_MM = STROKE_MARGIN_M·1000 + x5·1000` = 213.78 mm,
+   while the host's `HAND_CATCH_OFFSET_MM` derivation (`generate_config.py`) uses
+   `x5·1000` = 193.78 mm from the same physical bottom. The sim therefore catches
+   **20 mm higher** than the host stack believes it does. *Displacements* agree
+   exactly; only the absolute placement differs.
+   Root cause: the sim *centres* the 315 mm stroke in the travel (throw start at
+   `STROKE_MARGIN_MM` = 20 mm, top at 335 mm), while the firmware homes DOWNWARD
+   into the bottom stop and measures `x` from there (`Homing::HAND_SPEED_RPS =
+   -3.0`, `Homing::HAND_ABS_POS_REV = -0.1`), so its stroke occupies 0…315 mm
+   with **~30 mm** of unused travel above (344.75 − 315; the archived plan says
+   40 mm because `hand_stroke_mm` still read 355 when it was written). The 20 mm
+   inset is a sim-side **placement**, not a frame offset the firmware shares.
+   Live consequence to keep in view: `sim/plant/mujoco_plant.py` derives
+   `_hand_prime_mm` as `STROKE_MARGIN_MM + HAND_STROKE_TOP_REV/LINEAR_GAIN` =
+   **335 mm**, i.e. it preserves the inset deliberately (2026-08-21) so the plant
+   parks where the sim's own catch trajectory starts. Resolving this finding is
+   what decides whether that should become 315 mm — and it moves the sim's catch
+   height, so it is not a drive-by fix.
+   **Whatever is decided, the rev↔mm conversion stays `rev = mm/1000 ×
+   LINEAR_GAIN` with NO margin term.** Carrying the 20 mm inset into a rev bound
+   moves it 0.63 rev up, and the physical point it then names sits **0.83 rev
+   (26.3 mm) past the 10.8 rev hard stop** — 0.63 less the 0.1 rev the firmware
+   sets encoder zero above the bottom, plus the 0.3 rev the stop itself moved on
+   2026-08-18. (The archived plan states this as 0.53 rev / 16.8 mm past the
+   then-declared 11.1 rev guard; same physical point, older reference.)
+
+3. **Catch `end_time` divergence — +90…+95 ms, benign, recorded so it is not
+   chased.** The sim's `_t_end` adds `END_PROFILE_HOLD_S`
+   (`sim/hand/trajectory.py:254-255`); `buildCatch`'s `buildSegment(t4, tA, …)`
+   has `tA[3] = t7` and emits nothing past `t7` (`Trajectory.h:262-273`).
+   `t8 = t7 + END_PROFILE_HOLD` exists only in `buildCommand`/kind-2, which does
+   honour it. Measured gap **+90.3 / +93.3 / +95.1 ms** at flights 0.55 / 0.80 /
+   1.10 s — exactly `END_PROFILE_HOLD_S − 0.5·t_vel_catch`. Both models hold the
+   same final position, so nothing physical differs. It is here only so a Phase-3
+   port/firmware agreement test does not assert catch `end_time` parity and lose a
+   debug cycle to a 90 ms mismatch that is not a defect.
+
+Evidence and derivations for all three:
+`plans/archived/hand-command-continuity.md` § Phase 0 — Outcome, Confirmation 2.
+That plan's Phase 4 deliberately scoped its xref test to the **prelude and the
+stroke geometry** and did NOT assert catch-timeline parity, for exactly this
+reason; Phase 3 here inherits that constraint until findings 1 and 2 are decided.
+
 ### Safety-critical invariants
 
-- The hand has a finite stroke (`hand_stroke_m: 0.355`, effective `0.315 m`
-  after margins). Any profile must stay within the stroke; over-extension is a
-  hardware fault. `hand_stroke_mm` is used elsewhere for over-extension
-  detection — keep it authoritative.
+- The hand has a finite stroke. ⚠ **Two keys, deliberately different since
+  2026-08-18 — do NOT re-merge them:**
+  * `teensy_trajectory.hand_stroke_m: 0.355` is the **throw-profile basis**. It
+    feeds `total_stroke` → `x2`/`x3`/`x5`, every one of which is
+    hardware-validated at those values. It is NOT a measurement of travel.
+  * `jugglebot_geometry.hand_stroke_mm: 344.75` is the **physical travel**, and
+    `jugglebot_geometry.hand_motor_hard_stop_revs: 10.8` is the operator-measured
+    metal contact on the sensorised hand.
+
+  This line read *"`hand_stroke_mm` is used elsewhere for over-extension
+  detection — keep it authoritative"* until 2026-08-21, i.e. it instructed a
+  resumer to do exactly the re-merge the split exists to prevent. Over-extension
+  detection is keyed to `hand_motor_hard_stop_revs`, not to `hand_stroke_mm`.
+  Any profile must stay within the stroke; over-extension is a hardware fault.
 - The Python port and the Teensy firmware must be updated together. A silent
   divergence corrupts the offline juggle trajectory optimisation, which models
   the hand via the port.

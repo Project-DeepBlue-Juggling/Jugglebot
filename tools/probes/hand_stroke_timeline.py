@@ -78,7 +78,7 @@ either side of the 50 ms wall.  The verdict depended on the recording path.
 (Counts here are per RECORDING; two sessions are in the evidence set twice, so
 those physical tosses are counted twice throughout.)  Every one of those was adjudicated PASS by hand at the bench — which is
 the failure the criterion exists to prevent, and the reason the rows were
-recorded as carrying a criterion defect (``plans/active/hand-command-continuity.md``
+recorded as carrying a criterion defect (``plans/archived/hand-command-continuity.md``
 Phase 5; ``logbook/2026-07-28-anomaly-fixes-validation-sitting.md`` § Instrument
 defects item 7; fixed 2026-08-18, ``logbook/2026-08-18-trunc-criterion-stroke-end.md``).
 
@@ -138,10 +138,10 @@ resolution read through the shipped stroke model.
 
 WHY THIS EXISTS
 ---------------
-``plans/active/hand-command-continuity.md``.  Any kind-0/1/2 HAND_TRAJ_CMD
-makes ``Teensy_code_platform.ino:539`` clear the whole packed queue and re-prelude from
+``plans/archived/hand-command-continuity.md``.  Any kind-0/1/2 HAND_TRAJ_CMD
+makes ``Teensy_code_platform.ino:648`` clear the whole packed queue and re-prelude from
 the LIVE encoder position with ``makeSmoothMove``, whose quintic is seeded
-``v = a = 0`` (``Trajectory.h:242-301``; ``current_hand_velocity`` is declared
+``v = a = 0`` (``Trajectory.h:527-620``; ``current_hand_velocity`` is declared
 ``extern`` at :47 and never read).  When the hand-catch arm lands inside the
 throw stroke's deceleration ramp the queue is replaced by a rest-to-rest ramp
 computed from a position the hand is travelling through at ~120 rev/s, so the
@@ -1269,7 +1269,7 @@ def _print_preview(session: Session, tl: ThrowTimeline) -> None:
 #  --gate : reproduce the plan's Context table
 # ══════════════════════════════════════════════════════════════════════════
 
-# plans/active/hand-command-continuity.md § "What actually happens", measured
+# plans/archived/hand-command-continuity.md § "What actually happens", measured
 # from toss_trace_2026-07-25_15-24-25.jsonl.  Instants are relative to the
 # session's own zero (first record, any topic).
 #
@@ -1797,7 +1797,7 @@ def run_fixed_shape_gate() -> int:
 
 def run_gate(path: str) -> int:
     print('=' * 78)
-    print('GATE — reproduce plans/active/hand-command-continuity.md Context table')
+    print('GATE — reproduce plans/archived/hand-command-continuity.md Context table')
     print('       from %s' % os.path.basename(path))
     if not os.path.exists(path):
         print('  GATE UNAVAILABLE: reference trace not found:')

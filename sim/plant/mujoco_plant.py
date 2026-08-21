@@ -20,6 +20,7 @@ import sys
 import numpy as np
 import mujoco
 
+from jugglebot import hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     pose_to_leg_lengths,
@@ -118,11 +119,45 @@ class MuJoCoPlant(PlantInterface):
         self._has_hand = hand_act_id >= 0
         self._hand_act_idx = hand_act_id if self._has_hand else None
 
-        # Hand stroke (mm) and prime position (mm)
+        # Hand stroke (mm) and prime position (mm) — both DERIVED, never literals.
+        #
+        # ``_hand_stroke_mm`` is PHYSICAL TRAVEL, and it is the clip bound in
+        # ``command_hand``.  It read a hardcoded 355.0 until 2026-08-21, which
+        # let the simulated hand be commanded 10.25 mm further than the real one
+        # can go — the geometry key moved to 344.75 mm on 2026-08-18 when the
+        # operator measured the sensorised hand and the deliberate split landed:
+        # ``jugglebot_geometry.hand_stroke_mm`` (344.75) is physical travel,
+        # ``teensy_trajectory.hand_stroke_m`` (0.355) is the THROW-PROFILE basis
+        # that feeds x2/x3/x5.  They are different numbers on purpose; do not
+        # re-merge them.  (``sim/model/jugglebot.xml`` still carries a 0.355 m
+        # joint range because it has not been regenerated since that split — the
+        # tighter clip here is the conservative side of that skew.)
+        #
+        # ``_hand_prime_mm`` is the top of the sim's stroke = where
+        # ``sim/hand/trajectory.py``'s catch trajectory takes its first sample,
+        # so parking here makes a catch-from-rest a true no-op.  It read
+        # ``9.858 * 2π * 5.21`` until 2026-08-21: the pre-Phase-3 prime, and with
+        # the wrong gain (no ``LINEAR_GAIN_FACTOR``).  Derived now from
+        # ``HAND_STROKE_TOP_REV`` — x3, the constant Phase 3 added exactly so
+        # this stops being hand-maintained.
+        #
+        # ⚠ The +``STROKE_MARGIN_MM`` inset is the SIM's own placement of the
+        # stroke inside the travel, not the firmware's frame (the firmware homes
+        # downward and measures x from the physical bottom, so its x3 is 315 mm,
+        # not 335).  That 20 mm absolute divergence is a live open question owned
+        # by plans/parked/hand-trajectory-generator-overhaul.md; it is preserved
+        # here rather than silently resolved, because resolving it moves the
+        # sim's catch height.
         if self._has_hand:
-            self._hand_stroke_mm = 355.0  # from hardware_config
-            # Catch prime: 9.858 rev × 2π × 5.21 mm/rev ≈ 322.7 mm
-            self._hand_prime_mm = 9.858 * 2.0 * np.pi * 5.21
+            linear_gain_rev_per_m = (
+                hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR
+                / (2.0 * np.pi * hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M)
+            )
+            self._hand_stroke_mm = float(hw.GEOM_HAND_STROKE_MM)
+            self._hand_prime_mm = float(
+                hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0
+                + hw.HAND_STROKE_TOP_REV / linear_gain_rev_per_m * 1000.0
+            )
 
         # Cache sensor addresses for fast reads
         self._sensor_adr: dict[str, tuple[int, int]] = {}
@@ -384,7 +419,7 @@ class MuJoCoPlant(PlantInterface):
         self.command_hand(0.0)
 
     def hand_to_prime(self) -> None:
-        """Command hand to catch prime position (~323 mm)."""
+        """Command hand to catch prime position (~335 mm — the sim stroke top)."""
         self.command_hand(self._hand_prime_mm)
 
     # ---- Ball management ---------------------------------------------------

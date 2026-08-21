@@ -300,6 +300,12 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: (ros_ws/docs/hand_decel_feedforward.md). A board still on 1 is not unsafe — it
 #: simply coasts past the stroke end as it did before — but it invalidates every
 #: § CHECK HAND-7 bench row, which is why the check warns loudly.
+#: 3 (2026-08-18) = the hand END-STOP correction, Geometry::HAND_MOTOR_HARD_STOP_REVS
+#: 11.1 -> 10.8 rev (operator-measured metal contact). The commanded profiles are
+#: unchanged — SMOOTH_MOVE_POS_CEIL_REV holds at 10.60 rev because the margin moved
+#: 0.5 -> 0.2 with the base — but smoothMoveMaxDuration() moves 0.80054 -> 0.78964 s,
+#: so a board on 2 still emits preludes up to 0.8005 s and bench row H4.10 scores it
+#: as unflashed.
 PLATFORM_FW_VERSION_EXPECTED = 3
 
 

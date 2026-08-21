@@ -19,7 +19,7 @@ The hand made **light physical contact with its mechanical end stop** on ~1.2 m
 throws during the 2026-07-27 validation sitting.  See
 ``logbook/2026-07-28-anomaly-fixes-validation-sitting.md`` (§ Discussion → *the
 hand's end-stop margin above 0.78 m*, and the 2026-07-28 amendment) and plan
-``plans/active/hand-command-continuity.md`` Phase 7.
+``plans/archived/hand-command-continuity.md`` Phase 7.
 
 WHAT IT UNDERPINS
 -----------------

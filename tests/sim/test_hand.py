@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import mujoco
 
+from jugglebot import hardware_config as hw
 from sim.plant.mujoco_plant import MuJoCoPlant
 
 
@@ -65,8 +66,23 @@ class TestHandCommand:
     """Hand responds to position commands correctly."""
 
     def test_command_to_prime(self, plant):
-        """Command hand to prime position, verify it settles within 1 mm / 500 ms."""
-        prime_mm = 9.858 * 2.0 * np.pi * 5.21  # ~322.7 mm
+        """Command hand to prime position, verify it settles within 1 mm / 500 ms.
+
+        The expectation is DERIVED, not a literal.  It read
+        ``9.858 * 2π * 5.21`` (~322.7 mm) until 2026-08-21 — the pre-Phase-3
+        prime, converted with the wrong gain (no ``LINEAR_GAIN_FACTOR``) — and
+        pinned ``MuJoCoPlant`` to the same stale pair, so the sim reproduced the
+        76.5 ms prelude Phase 3 removed on hardware.  Deriving it here means a
+        future codegen change to ``HAND_STROKE_TOP_REV`` moves the test with the
+        plant instead of failing it.
+        """
+        linear_gain_rev_per_m = (
+            hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR
+            / (2.0 * np.pi * hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M)
+        )
+        prime_mm = (hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0
+                    + hw.HAND_STROKE_TOP_REV / linear_gain_rev_per_m * 1000.0)
+        assert prime_mm == pytest.approx(335.0, abs=1e-6)
         plant.hand_to_prime()
         # Step for 500 ms at 20 ms intervals
         for _ in range(25):

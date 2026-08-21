@@ -1,11 +1,24 @@
 ---
 title: Hand-command continuity — stop clobbering a live stroke (post-throw dip + throw truncation)
 created: 2026-07-25
-status: active
+status: completed
+completed: 2026-08-21
+archived: 2026-08-21
 related_logbook:
   - 2026-07-24-phase7-fourth-sitting-openloop-telemetry-ladders.md
   - 2026-07-25-toss-phase3-trace-validated.md
   - 2026-07-25-toss-phase1-action-sequencer-coordinator.md
+  - 2026-07-26-hand-stroke-timeline-probe.md
+  - 2026-07-26-hand-command-continuity-arm-gating.md
+  - 2026-07-26-hand-prime-rev-derived.md
+  - 2026-07-27-velocity-continuous-prelude.md
+  - 2026-07-27-platform-teensy-fw-version.md
+  - 2026-07-28-anomaly-fixes-validation-sitting.md
+  - 2026-07-29-hand-post-release-decel.md
+  - 2026-08-18-hand-end-stop-corrected.md
+  - 2026-08-18-trunc-criterion-stroke-end.md
+  - 2026-08-21-envelope-flown-to-ceiling.md
+  - 2026-08-21-hand-continuity-remediation-and-archival.md
 related_code:
   - ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h::makeSmoothMove
   - ros_ws/src/jugglebot/Teensy_code_platform/Teensy_code_platform.ino
@@ -53,7 +66,7 @@ on it). The intended behaviour is: stroke up, stop at the top, wait, descend.
 
 ### What actually happens
 
-`Teensy_code_platform.ino:538-547`, for **any** kind-0/1/2 command:
+`Teensy_code_platform.ino:631` + `:648-656`, for **any** kind-0/1/2 command:
 
 ```cpp
 Trajectory smooth = makeSmoothMove(activeTraj.x.front());   // prelude from LIVE position
@@ -63,10 +76,10 @@ if (!smooth.t.empty()) packTrajectory(smooth, now_us);      // starts immediatel
 packTrajectory(activeTraj, event_wall_us);
 ```
 
-and `makeSmoothMove` (`Trajectory.h:242-301`) seeds a quintic from
+and `makeSmoothMove` (`Trajectory.h:527-620`) seeds a quintic from
 `current_hand_position` with **v = 0, a = 0** boundary conditions.
-`current_hand_velocity` is declared `extern` two lines above (`Trajectory.h:47`)
-and never read.
+`current_hand_velocity` is declared `extern` right beside `current_hand_position`
+(`Trajectory.h:85-86`) and never read.
 
 The catch arm arrives **8–18 ms after the scheduled release** (15:17:48 session:
 release ≈ 1784956866.88, `Arming hand catch` at 866.888 and 866.898) — inside the
@@ -81,7 +94,7 @@ Measured, `temp/logs/toss_trace_2026-07-25_15-24-25.jsonl` (hand telemetry ~100 
 | 20.836 | stroke starts, `pos_cmd` leaves 0 |
 | 20.927 | passes the release point (5.914 rev) at 119.6 rev/s = 3.78 m/s |
 | **20.942** | `pos_cmd` truncates to **7.700 rev** — the live encoder value — and a 0.36 s quintic to 10.05 rev begins |
-| 20.992 | hand coasts to **10.174 rev (321.8 mm)**, past the planned 315 mm end, 0.93 rev from the 11.1 rev limit |
+| 20.992 | hand coasts to **10.174 rev (321.8 mm)**, past the planned 315 mm end, **0.63 rev from the 10.8 rev hard stop** (this read "0.93 rev from the 11.1 rev limit" until 2026-08-21 — 11.1 was the DECLARED stop, corrected 2026-08-18 to the operator-measured metal contact) |
 | 21.025 | position loop pulls back at **−31.3 rev/s (−0.99 m/s)** |
 | 21.077 | **dip bottom 8.814 rev** — 1.36 rev = **43 mm**, 14 % of the stroke |
 | 21.294 | back at 10.05 rev, at rest |
@@ -158,7 +171,7 @@ eliminate.
 
 ### Latent failure this also removes
 
-`Teensy_code_platform.ino:533` refuses the whole command if
+`Teensy_code_platform.ino:642` refuses the whole command if
 `now + smoothDur + SAFETY_GAP > firstMainAbs`, printing
 `Not enough time for smooth-move; command ignored` **to serial only** — invisible
 to ROS, and the catch silently never fires. Today the margin is 0.37 s prelude
@@ -203,18 +216,20 @@ Phase 0 must confirm that mirror is faithful before it is trusted as the gate.
 **Phase 0 found it faithful only outside the catch timeline, and found the
 absolute frames unrelated by any cancelling convention.** Both constraints bind
 Phase 4 — see § Phase 0 — Outcome, Confirmation 2, before writing the xref test or
-converting the `[0, 11.1]` rev end-stop bound into sim mm.
+converting the `[0, GEOM_HAND_MOTOR_HARD_STOP_REVS]` rev end-stop bound into sim
+mm (that constant read 11.1 when this was written; it is **10.8** since
+2026-08-18).
 
 ## Implementation Phase Summary
 
 | Phase | Scope | Gate | Status |
 |---|---|---|---|
 | 0 | Reusable stroke-timeline probe; confirm the timing window and the sim mirror | probe reproduces the measured dip from the recorded trace | **DONE** (25/25 rows ≤0.4 ms, plus a four-case synthetic post-fix branch that pins the verdict half; see Phase 0 — Outcome) |
-| 1 | Gate the hand-catch arm until the throw stroke completes (item 3) | full pytest | **DONE** (shared `motion/trajectory/hand_stroke.py`; one enforcement point in `_arm_hand_catch`; window 395 ms at 0.80 s / 115 ms at 0.55 s; contract written down at `ros_ws/docs/hand_command_continuity.md` — see Phases 1-2 — Outcome) |
+| 1 | Gate the hand-catch arm until the throw stroke completes (item 3) | full pytest | **DONE** (shared `motion/trajectory/hand_stroke.py`; one enforcement point in `_arm_hand_catch`; window 395 ms at 0.80 s / **50 ms at the derived band floor 0.4949 s** (115 ms at the hand-picked 0.55 s floor this row was written against, retired 2026-08-18 by contract C-HAND-3); contract written down at `ros_ws/docs/hand_command_continuity.md` — see Phases 1-2 — Outcome) |
 | 2 | Repack safety guard while a stroke is in flight (item 5) | full pytest | **DONE** (same enforcement point — the retry defers rather than repacks; cap and keep-the-latch preserved) |
 | 3 | Prime rev derived from stroke geometry (item 6) | full pytest + codegen | **DONE** (prime 9.858 → the derived 9.9594 rev; `HAND_STROKE_TOP_REV` emitted by codegen; three-route drift guard; no threshold widened. Review also corrected the bang-bang-vs-quintic profile model three neighbours were sized against — see Phase 3 — Outcome) |
-| 4 | Velocity-continuous prelude — sim mirror then firmware (item 4) | sim tests + xref; flash | **FLASHED — status corrected 2026-08-18.** FW 1 was flashed and confirmed on all six launches of the 2026-07-27 sitting (`H4.0d`/`FW-1`: `PLATFORM_FW_CHECK: OK — v1`, `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`), and FW 2 superseded it 2026-07-31. This row read "NOT FLASHED" until 2026-08-18 — written before the sitting and never updated after it. DONE in source (`makeSmoothMove` seeds `(x0, v0, 0) → (target, 0, 0)`; exact `pos = x0 + δ·s + (v0·T)·h` decomposition; closed-form duration bound; TWO cannot-fit tests — excursion against the end stops and duration against the longest rest-to-rest move the stroke admits — both falling back to today's profile. Scope narrowed against the plan and recorded: continuity is affordable only to ~9.1 rev/s at the stroke top / ~20.3 rev/s mid-stroke, so the measured ~120 rev/s case still falls back and stays owned by Phase 1. Finalize moved the commanded-position floor off the bottom hard stop and added the duration cap — see Phase 4 — Outcome) |
-| 5 | Hardware validation (operator-run) | `trunc=-`, `seeds=0`, `peak <= 10.060` rev, `dip_below_x3 <= 0.10` rev; throw scatter recorded | **ANCHOR RESOLVED 2026-08-18; otherwise PARTIALLY VALIDATED 2026-07-27.** The phase's blocking open question — *where is the hand's physical end stop?* — is **ANSWERED: 10.8 rev, metal contact**, measured by the operator on the sensorised hand (the hand changed during sensor integration and the limit was never updated). All three candidates the record argued over (11.124 / 11.224 / 11.4) were too high, and the shipped `11.1` guard sat **0.3 rev PAST metal** — so it was never protective, and the sitting's five ~1.2 m tosses at `10.8601–11.0621 rev` were 0.06–0.26 rev **past the stop**, not "1.2 mm from the limit". Corrected in config, codegen, both firmware trees, the sim mirror and the tests; the smooth-move ceiling deliberately held at 10.60 rev (`smooth_move_excursion_margin_rev` 0.5 → 0.2), so commanded profiles are bit-identical. **Needs two flashes to be fully live** (Platform Teensy + can-bridge — `clip_position` reads it in both); the host-side clamp is live at the next `colcon build`. `logbook/2026-08-18-hand-end-stop-corrected.md`. **`H2.4`/`H3.6`/`H4.8` SCORED 2026-08-18 — all three PASS**, offline from the natural SAFE_ABORT in the 16:00:27 launch (`launch.log:159`, `~/Desktop/rosbags/2026-07-27_16-00-27`): the retract ran and the hand reached **min `pos_meas` −0.0611 rev**, settling at 0.0275 — motion began T+0.187 s, `|pos| ≤ 0.5` rev at T+0.697 s. **The `SAFE_ABORT: hand retract dispatch failed (attempt 1/4; telemetry stationary)` warning is a FALSE NEGATIVE**: the dispatch-fail check samples telemetry before the hand has begun moving, so it reports failure on a retract that then executes normally (the lying-ack class convicted during the ERR_TIMEOUT arc — `write() <= 0` is deferral, not drop). No attempts 2–4 appear anywhere in that launch. Incidental: peak `pos_meas` on that toss was **10.9459 rev**, 0.15 rev past the 10.8 hard stop. **`H1.6`/`H4.7` SCORED PASS BY MEASUREMENT 2026-08-21** — the operator ran a Platform Teensy serial capture across a full multi-height session (`2026-08-21_10-11-42`, 4.44 → 5.61 m/s, up to the C-HAND-3 ceiling, the corner most likely to provoke it) and it contains **ZERO** occurrences of `Not enough time for smooth-move`. The longest prelude in that capture is `dur=0.76 s` against the 0.78964 s cap, so the cap did not truncate either. **This retires the argument-based closure below**, which is kept because its reasoning is still the right first move if the string ever does appear: ~~CLOSED BY ARGUMENT 2026-08-18~~ — they check a *latency* guard (`Teensy_code_platform.ino:630`: `now + smoothDur + SAFETY_GAP > firstMainAbs`), not a mechanical one. A catch arm's prelude is ~0.076 s (the hand sits at prime and the catch trajectory starts beside it) against a measured ~0.87 s arm lead, so it needs a **~700 ms** dispatch delay to fire; the worst shift ever recorded here was 118–133 ms at 16 h uptime and FW 14 cut that to 10–20 ms — **~35× margin**. The 0.78964 s figure is the worst case over *full travel*, which an arm never approaches. Not scheduled for capture. Two caveats kept deliberately: the refusal is `Serial.println` ONLY (no counter, no uplink — grepped), so real coverage would need a firmware counter, not a USB cable; and it **looks exactly like a miss** (the throw stroke stays intact), so if an unexplained cluster of misses with clean throw strokes ever appears, attach the Platform Teensy serial at 115200 and rule this out first. **Still open, and all that now blocks archival**: the row-1/2/`H2.2`/`H4.6` criterion defect is **FIXED 2026-08-18** (see below), and the one item this session surfaced — **`FLIGHT_TIME_MAX_S` unreconciled with the 10.8 rev stop** — is **RESOLVED 2026-08-20/21 by contract C-HAND-3** (`ros_ws/docs/hand_throw_envelope.md`): the hand-picked flight band is replaced by a derived envelope whose bounds come from the machine's configured accel/velocity/torque/timing limits, and `END_STOP` is no longer the binding one (it binds at 7.468 m/s against a 5.637 m/s ceiling set by `DECEL_FF_HEADROOM`). The runbook's prose fence is superseded by a gate that refuses by name. Validated on hardware 2026-08-21 by flying the envelope to within 0.029 m/s of its ceiling: coast 0.215/0.250 rev, **18.7 mm headroom**, every throw accepted. **NOTHING NOW BLOCKS ARCHIVAL.** Original 2026-07-27 verdicts follow — sitting run from § THE RUN SHEET stages 6–7; verdicts in `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`. Flash confirmed on all six launches (`H4.0d`/`FW-1`: `PLATFORM_FW_CHECK: OK — v1`), so **the Phase-4 rows mean something**. **THE HEADLINE PASSES**: `dip_below_x3` reads **0.000–0.026 rev on 15 of 17 tosses** against a pre-fix **0.339–1.748 rev (10.7–55.3 mm)** — a **40–70× reduction** — and the mechanism is *verified, not inferred*: on **all 17** tosses `pos_cmd` reached x3 and held it before any new command landed — **9 of the 17** saw a post-stroke command at all (hold **34.9–103.7 ms** by the probe's `stroke_end_hold_ms`; 30.6–128.3 ms over the sitting's 44), the other 8 held until the catch descent — with commanded velocity never negative and commanded position never below x3 between release and the arm. (This row quoted "28.0–61.6 ms" until 2026-08-20: a hand measurement anchored on the sample where `pos_cmd` hit x3 *exactly*, over a smaller set of tosses, and not the same quantity as the probe's field. `logbook/2026-08-18-trunc-criterion-stroke-end.md`.) The two `[OVER]` rows (`0.1755 / 0.1734`) both carry the row-7 brake annotation — the REPORT case the row-4/row-7 qualifier exists for. **Phase 4's velocity-continuous branch fired on hardware for the first time** on 4 of 17 tosses (`v0 = −8.44 / −6.90 / −6.98 / −7.55 rev/s`, max commanded `10.2259 rev`, 0.374 rev under the clamp) — and the runbook's claim that "no row provokes it" is wrong: **a fast throw provokes it every time**. Also PASSED: `H1.2`–`H1.7` (17 latched = 17 tosses, 17 withheld, **0** CLOSED, min slack **0.124 s** = 2.5× the floor), `H2.1`–`H2.3`, `H3.1`–`H3.7` (prime settles `9.9571–9.9586 rev`, spread **0.05 mm**, **zero** overshoot; peak vel on model to 4 %), `H4.9`, `H4.10`, `H4.0b` (173 passed, no skips), and **stage 7 `HAND-1b`** (both 0.38 m throws clean, the 115 ms window did **not** close) plus the 0.1 m refusal (`REJECTED_FLIGHT_TIME` in 4.4 ms, `pos_cmd` identically 0.0000 rev). **ABORTS, neither a Phase-4 regression**: (a) `peak` exceeds 10.060 on the **0.78 m** tier (`10.2851–10.3258`, pre-fix `10.1653–10.3248` at the same height) and on five **off-run-sheet ~1.2 m** tosses (`10.8601–11.0621 rev` = **1.2–7.6 mm from the declared 11.1 rev limit**) — pure position-loop coast past a commanded profile that never left x3, growing steeply with speed (`+0.074/+0.063/+0.345/+1.020 rev` at 2.74/3.44/3.97/4.86 m/s), such that **a legal in-band toss at the shipped `FLIGHT_TIME_MAX_S = 1.10 s` would exceed the 355 mm stroke top**; (b) the **dispatch shift** has grown to `+54…+63 ms` (bag clock) from the pre-fix `+12.8…+21.9 ms`, **exceeding the 40 ms margin Phase 1's stroke-busy window budgets** — it tracks can-bridge Teensy uptime, so this is the 2026-07-18 lag finding reaching the arm gate, not a hand defect. **NOT SCORED**: `H4.2` (no pre-flash control, by design); `H2.4`/`H3.6`/`H4.8` — 0 SAFE_ABORT in stage 6, **but one occurred naturally in the 16:00:27 launch**, so these moved from *unexercised* to *scorable, not yet scored*; `H1.6`/`H4.7` scored **indirectly** (no Teensy serial capture). **ACTION: no further tosses above 0.78 m** until the true stroke limit is pinned (11.124 vs 11.224 vs 11.4 rev — the three sources disagree by ~9 mm of margin) and the flight band re-examined. Rows 1/2/`H2.2`/`H4.6` carried a **criterion defect** (they fired on the gated arm's own prelude landing within `_TRUNC_SCAN_MARGIN_S = 0.050` of the *modelled* stroke end) — adjudicated PASS at the bench. **FIXED 2026-08-18**: the truncation scan is now bounded on the commanded profile REACHING `x3` rather than on a wall-clock margin, so the gated arm's prelude and a real mid-stroke clobber differ in kind rather than in delay, and the prelude is reported in its own `post_stroke_cmd` row instead of being scored as a truncation. Validated against the whole evidence base (six 2026-07-27 bags + six toss traces, 71 analysable throws): all 69 post-fix throws now read `trunc = -` / `seeds = 0` and both real pre-fix truncations still fire. Mutation-verified in `--gate` and `tests/motion/test_hand_stroke_timeline_probe.py`. Incidental find: `--gate` had been RED on the shipped tree since the 2026-08-18 hard-stop correction (the `headroom_to_limit_rev` expectation was keyed to the retired 11.1 anchor) with no test running it — now derived from the generated constant and run by the suite. **A SECOND criterion defect was surfaced and then FIXED 2026-08-20 on the owner's decision**: the other half of the predicate localises the freeze and did so with an absolute `_COLLAPSE_VEL_REV_S = 10` rev/s — a fixed velocity judging a ramp whose velocity scales with the throw — so at the slow end of the band the ramp fell under it while still short of `x3` and the probe reported a truncation on a clean stroke. Worse than first characterised, because C-HAND-3 moved the admission floor DOWN from 2.6971 to 2.440 m/s: exposure 1.94 ms, **20 of 100 sampling phases firing**, against 6/100 at the old floor. Now `_collapse_floor_rps(model)` = the modelled stroke's own commanded velocity at `x3 − _X3_SHORT_REV`; constant deceleration makes commanded velocity monotone in commanded position, so an intact stroke short of `x3` is never under it — the self-trigger window is empty at every speed, 0/100 phases at each speed and 0 over 960 clean captures spanning 0.70–7.00 m/s, while the two real truncations still fire with a 1382× margin. Same root cause as the wall it replaced: an absolute constant judging a profile-relative event. No constant added; `xfail` lifted; pinned by the `--gate` `band-floor` case and five mutations. `logbook/2026-08-18-trunc-criterion-stroke-end.md`. Run it from `tests/hardware/session_anomaly_fixes.md` § THE RUN SHEET (stage 6 rows HAND-1…HAND-4, stage 7 HAND-1b), which is the authority for the order, the shared capture and the numbers. **Phase 4's half needs a PLATFORM TEENSY FLASH, not a colcon build** — see the runbook's § DEPLOYMENT MATRIX row C. Whether it took is now READABLE (row **FW-1** / **H4.0d**, Phase 6); it is still not *enforced*, so the row must actually be run. Row 4 (`dip_below_x3`) is qualified by row 7 (`first_neg_cmd`) once Phase 4 is flashed: on a toss where a braking prelude fires, the two score the same event in opposite directions and row 4 becomes REPORT |
+| 4 | Velocity-continuous prelude — sim mirror then firmware (item 4) | sim tests + xref; flash | **FLASHED — status corrected 2026-08-18.** FW 1 was flashed and confirmed on all six launches of the 2026-07-27 sitting (`H4.0d`/`FW-1`: `PLATFORM_FW_CHECK: OK — v1`, `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`), and FW 2 superseded it 2026-07-31. This row read "NOT FLASHED" until 2026-08-18 — written before the sitting and never updated after it. DONE in source (`makeSmoothMove` seeds `(x0, v0, 0) → (target, 0, 0)`; exact `pos = x0 + δ·s + (v0·T)·h` decomposition; closed-form duration bound; TWO cannot-fit tests — excursion against the end stops and duration against the longest rest-to-rest move the stroke admits — both falling back to today's profile. Scope narrowed against the plan and recorded: continuity is affordable only to ~9.1 rev/s at the stroke top / ~19.96 rev/s mid-stroke (read ~20.3 rev/s until the 2026-08-18 hard-stop correction shortened the stroke and flipped which bound binds — the excursion clamp now binds ahead of the 0.78964 s duration cap's ~20.04), so the measured ~120 rev/s case still falls back and stays owned by Phase 1. Finalize moved the commanded-position floor off the bottom hard stop and added the duration cap — see Phase 4 — Outcome) |
+| 5 | Hardware validation (operator-run) | `trunc=-`, `seeds=0`, `peak` inside the **TIERED** band (`tests/hardware/session_anomaly_fixes.md` § PASS/ABORT row 3 — `<= 10.060` rev for the 0.38/0.60 m tiers only, `<= 10.39` rev at and above 0.78 m, hard abort `> 10.60`; the single `<= 10.060` number this column carried until 2026-08-21 aborted 10 of the 17 tosses of the 2026-07-27 sitting for ballistic coast that was never a Phase-4 regression), `dip_below_x3 <= 0.10` rev; throw scatter recorded | **ANCHOR RESOLVED 2026-08-18; otherwise PARTIALLY VALIDATED 2026-07-27.** The phase's blocking open question — *where is the hand's physical end stop?* — is **ANSWERED: 10.8 rev, metal contact**, measured by the operator on the sensorised hand (the hand changed during sensor integration and the limit was never updated). All three candidates the record argued over (11.124 / 11.224 / 11.4) were too high, and the shipped `11.1` guard sat **0.3 rev PAST metal** — so it was never protective, and the sitting's five ~1.2 m tosses at `10.8601–11.0621 rev` were 0.06–0.26 rev **past the stop**, not "1.2 mm from the limit". Corrected in config, codegen, both firmware trees, the sim mirror and the tests; the smooth-move ceiling deliberately held at 10.60 rev (`smooth_move_excursion_margin_rev` 0.5 → 0.2), so commanded profiles are bit-identical. **BOTH FLASHES ARE ABOARD** — Platform Teensy **FW 3** (consuming it as `Trajectory.h`'s `SMOOTH_MOVE_POS_CEIL_REV` and `smoothMoveMaxDuration()`) and can-bridge **FW 15** (as `HAND_MOTOR_MAX_POSITION` → `odrive_protocol.h::clip_position`), and the host-side clamp live. (This row said `clip_position` reads it in BOTH trees; only the can-bridge has a `clip_position`.) (This read "Needs two flashes to be fully live" until 2026-08-21, written before either flash and never re-statused.) `logbook/2026-08-18-hand-end-stop-corrected.md`. **`H2.4`/`H3.6`/`H4.8` SCORED 2026-08-18 — all three PASS**, offline from the natural SAFE_ABORT in the 16:00:27 launch (`launch.log:159`, `~/Desktop/rosbags/2026-07-27_16-00-27`): the retract ran and the hand reached **min `pos_meas` −0.0611 rev**, settling at 0.0275 — motion began T+0.187 s, `|pos| ≤ 0.5` rev at T+0.697 s. **The `SAFE_ABORT: hand retract dispatch failed (attempt 1/4; telemetry stationary)` warning is a FALSE NEGATIVE**: the dispatch-fail check samples telemetry before the hand has begun moving, so it reports failure on a retract that then executes normally (the lying-ack class convicted during the ERR_TIMEOUT arc — `write() <= 0` is deferral, not drop). No attempts 2–4 appear anywhere in that launch. Incidental: peak `pos_meas` on that toss was **10.9459 rev**, 0.15 rev past the 10.8 hard stop. **`H1.6`/`H4.7` SCORED PASS BY MEASUREMENT 2026-08-21** — the operator ran a Platform Teensy serial capture across a full multi-height session (`2026-08-21_10-11-42`, 4.44 → 5.61 m/s, up to the C-HAND-3 ceiling, the corner most likely to provoke it) and it contains **ZERO** occurrences of `Not enough time for smooth-move`. The longest prelude in that capture is `dur=0.76 s` against the 0.78964 s cap, so the cap did not truncate either. **This retires the argument-based closure below**, which is kept because its reasoning is still the right first move if the string ever does appear: ~~CLOSED BY ARGUMENT 2026-08-18~~ — they check a *latency* guard (`Teensy_code_platform.ino:642`: `now + smoothDur + SAFETY_GAP > firstMainAbs`), not a mechanical one. A catch arm's prelude is ~0.076 s (the hand sits at prime and the catch trajectory starts beside it) against a measured ~0.87 s arm lead, so it needs a **~700 ms** dispatch delay to fire; the worst shift ever recorded here was 118–133 ms at 16 h uptime and FW 14 cut that to 10–20 ms — **~35× margin**. The 0.78964 s figure is the worst case over *full travel*, which an arm never approaches. Not scheduled for capture. Two caveats kept deliberately: the refusal is `Serial.println` ONLY (no counter, no uplink — grepped), so real coverage would need a firmware counter, not a USB cable; and it **looks exactly like a miss** (the throw stroke stays intact), so if an unexplained cluster of misses with clean throw strokes ever appears, attach the Platform Teensy serial at 115200 and rule this out first. **Still open, and all that now blocks archival**: the row-1/2/`H2.2`/`H4.6` criterion defect is **FIXED 2026-08-18** (see below), and the one item this session surfaced — **`FLIGHT_TIME_MAX_S` unreconciled with the 10.8 rev stop** — is **RESOLVED 2026-08-20/21 by contract C-HAND-3** (`ros_ws/docs/hand_throw_envelope.md`): the hand-picked flight band is replaced by a derived envelope whose bounds come from the machine's configured accel/velocity/torque/timing limits, and `END_STOP` is no longer the binding one (it binds at 7.468 m/s against a 5.637 m/s ceiling set by `DECEL_FF_HEADROOM`). The runbook's prose fence is superseded by a gate that refuses by name. Validated on hardware 2026-08-21 by flying the envelope to within 0.029 m/s of its ceiling: coast 0.215/0.250 rev, **18.7 mm headroom**, every throw accepted. **NOTHING NOW BLOCKS ARCHIVAL.** Original 2026-07-27 verdicts follow — sitting run from § THE RUN SHEET stages 6–7; verdicts in `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`. Flash confirmed on all six launches (`H4.0d`/`FW-1`: `PLATFORM_FW_CHECK: OK — v1`), so **the Phase-4 rows mean something**. **THE HEADLINE PASSES**: `dip_below_x3` reads **0.000–0.026 rev on 15 of 17 tosses** against a pre-fix **0.339–1.748 rev (10.7–55.3 mm)** — a **40–70× reduction** — and the mechanism is *verified, not inferred*: on **all 17** tosses `pos_cmd` reached x3 and held it before any new command landed — **9 of the 17** saw a post-stroke command at all (hold **34.9–103.7 ms** by the probe's `stroke_end_hold_ms`; 30.6–128.3 ms over the sitting's 44), the other 8 held until the catch descent — with commanded velocity never negative and commanded position never below x3 between release and the arm. (This row quoted "28.0–61.6 ms" until 2026-08-20: a hand measurement anchored on the sample where `pos_cmd` hit x3 *exactly*, over a smaller set of tosses, and not the same quantity as the probe's field. `logbook/2026-08-18-trunc-criterion-stroke-end.md`.) The two `[OVER]` rows (`0.1755 / 0.1734`) both carry the row-7 brake annotation — the REPORT case the row-4/row-7 qualifier exists for. **Phase 4's velocity-continuous branch fired on hardware for the first time** on 4 of 17 tosses (`v0 = −8.44 / −6.90 / −6.98 / −7.55 rev/s`, max commanded `10.2259 rev`, 0.374 rev under the clamp) — and the runbook's claim that "no row provokes it" is wrong: **a fast throw provokes it every time**. Also PASSED: `H1.2`–`H1.7` (17 latched = 17 tosses, 17 withheld, **0** CLOSED, min slack **0.124 s** = 2.5× the floor), `H2.1`–`H2.3`, `H3.1`–`H3.7` (prime settles `9.9571–9.9586 rev`, spread **0.05 mm**, **zero** overshoot; peak vel on model to 4 %), `H4.9`, `H4.10`, `H4.0b` (173 passed, no skips), and **stage 7 `HAND-1b`** (both 0.38 m throws clean, the 115 ms window did **not** close) plus the 0.1 m refusal (`REJECTED_FLIGHT_TIME` in 4.4 ms, `pos_cmd` identically 0.0000 rev). **ABORTS, neither a Phase-4 regression**: (a) `peak` exceeds 10.060 on the **0.78 m** tier (`10.2851–10.3258`, pre-fix `10.1653–10.3248` at the same height) and on five **off-run-sheet ~1.2 m** tosses (`10.8601–11.0621 rev` — recorded at the time as "1.2–7.6 mm from the declared 11.1 rev limit"; against the corrected **10.8 rev** metal contact those five are **0.06–0.26 rev PAST the stop**, which is what the operator heard) — pure position-loop coast past a commanded profile that never left x3, growing steeply with speed (`+0.074/+0.063/+0.345/+1.020 rev` at 2.74/3.44/3.97/4.86 m/s), such that **a legal in-band toss at the shipped `FLIGHT_TIME_MAX_S = 1.10 s` would exceed the 355 mm stroke top**; (b) the **dispatch shift** has grown to `+54…+63 ms` (bag clock) from the pre-fix `+12.8…+21.9 ms`, **exceeding the 40 ms margin Phase 1's stroke-busy window budgets** — it tracks can-bridge Teensy uptime, so this is the 2026-07-18 lag finding reaching the arm gate, not a hand defect. **NOT SCORED**: `H4.2` (no pre-flash control, by design); `H2.4`/`H3.6`/`H4.8` — 0 SAFE_ABORT in stage 6, **but one occurred naturally in the 16:00:27 launch**, so these moved from *unexercised* to *scorable, not yet scored*; `H1.6`/`H4.7` scored **indirectly** (no Teensy serial capture). **ACTION: no further tosses above 0.78 m** until the true stroke limit is pinned (11.124 vs 11.224 vs 11.4 rev — the three sources disagree by ~9 mm of margin) and the flight band re-examined. Rows 1/2/`H2.2`/`H4.6` carried a **criterion defect** (they fired on the gated arm's own prelude landing within `_TRUNC_SCAN_MARGIN_S = 0.050` of the *modelled* stroke end) — adjudicated PASS at the bench. **FIXED 2026-08-18**: the truncation scan is now bounded on the commanded profile REACHING `x3` rather than on a wall-clock margin, so the gated arm's prelude and a real mid-stroke clobber differ in kind rather than in delay, and the prelude is reported in its own `post_stroke_cmd` row instead of being scored as a truncation. Validated against the whole evidence base (six 2026-07-27 bags + six toss traces, 71 analysable throws): all 69 post-fix throws now read `trunc = -` / `seeds = 0` and both real pre-fix truncations still fire. Mutation-verified in `--gate` and `tests/motion/test_hand_stroke_timeline_probe.py`. Incidental find: `--gate` had been RED on the shipped tree since the 2026-08-18 hard-stop correction (the `headroom_to_limit_rev` expectation was keyed to the retired 11.1 anchor) with no test running it — now derived from the generated constant and run by the suite. **A SECOND criterion defect was surfaced and then FIXED 2026-08-20 on the owner's decision**: the other half of the predicate localises the freeze and did so with an absolute `_COLLAPSE_VEL_REV_S = 10` rev/s — a fixed velocity judging a ramp whose velocity scales with the throw — so at the slow end of the band the ramp fell under it while still short of `x3` and the probe reported a truncation on a clean stroke. Worse than first characterised, because C-HAND-3 moved the admission floor DOWN from 2.6971 to 2.440 m/s: exposure 1.94 ms, **20 of 100 sampling phases firing**, against 6/100 at the old floor. Now `_collapse_floor_rps(model)` = the modelled stroke's own commanded velocity at `x3 − _X3_SHORT_REV`; constant deceleration makes commanded velocity monotone in commanded position, so an intact stroke short of `x3` is never under it — the self-trigger window is empty at every speed, 0/100 phases at each speed and 0 over 960 clean captures spanning 0.70–7.00 m/s, while the two real truncations still fire with a 1382× margin. Same root cause as the wall it replaced: an absolute constant judging a profile-relative event. No constant added; `xfail` lifted; pinned by the `--gate` `band-floor` case and five mutations. `logbook/2026-08-18-trunc-criterion-stroke-end.md`. Run it from `tests/hardware/session_anomaly_fixes.md` § THE RUN SHEET (stage 6 rows HAND-1…HAND-4, stage 7 HAND-1b), which is the authority for the order, the shared capture and the numbers. **Phase 4's half needs a PLATFORM TEENSY FLASH, not a colcon build** — see the runbook's § DEPLOYMENT MATRIX row C. Whether it took is now READABLE (row **FW-1** / **H4.0d**, Phase 6); it is still not *enforced*, so the row must actually be run. Row 4 (`dip_below_x3`) is qualified by row 7 (`first_neg_cmd`) once Phase 4 is flashed: on a toss where a braking prelude fires, the two score the same event in opposite directions and row 4 becomes REPORT |
 | 6 | Platform Teensy `FW_VERSION` — make host/firmware skew detectable (operator-requested, added after the run closed) | scoped pytest + a whole-sketch compile | **FLASHED — status corrected 2026-08-18.** FW 1 was flashed and confirmed on all six launches of the 2026-07-27 sitting (`H4.0d`/`FW-1`: `PLATFORM_FW_CHECK: OK — v1`, `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`), and FW 2 superseded it 2026-07-31. This row read "NOT FLASHED" until 2026-08-18 — written before the sitting and never updated after it. DONE in source. `FW_VERSION = 1` in `Teensy_code_platform.ino`, reported in bytes 5-6 of the 0x6E0 RobotState reply (previously hard-zeroed reserved bytes, so a pre-versioning board ANSWERS with 0 rather than going silent); surfaced as `robot_state.platform_fw_version` / `link_status/platform_fw_version` / a `PLATFORM_FW_CHECK` log line. WARNS, never refuses. Contract `ros_ws/docs/platform_fw_version.md`. Also adds the first compile gate on this sketch (`Teensy_code_platform/platformio.ini`, build-only). **LANDED** `bb15d9b` (+ SHA backfill), full suite green (3966 passed, 3 xfailed, 2026-07-27), logbook `2026-07-27-platform-teensy-fw-version.md` — see § Phase 6 — Outcome |
 | 7 | **Post-release deceleration feedforward** — stop flirting with the end stop (operator decision (b), 2026-07-28) | scoped pytest + the `pio` compile gate; **flash** | **FLASHED — status corrected 2026-08-18.** FW 2 is aboard and commanding: the 2026-08-10 diagnosis measured `tor_ff_cmd` = −0.1500 N·m on 54/54 strokes, which is `throwDecelToTorque` at the declared `J_ff` = 9.5e-6; the FW-1 spool model would read −0.11 and the two are not confusable (`logbook/2026-08-10-hand-drive-braking-clamp-diagnosis.md` § 2). DONE in source (2026-07-29, `f920087`). Root cause: `accelToTorque` models the hand axis as a pure translating mass on a spool, implying a reflected inertia of `7.3695e-6` kg·m² against a measured `>= 1.0126e-5` — so the braking feedforward delivered **~70 %** of the torque the commanded decel needs, and the shortfall fell to a loop whose integrator unwind constant (0.100 s) is 1.1–2.1× the whole 47.4–93.3 ms ramp. Fixed at ONE enforcement point (`throwDecelToTorque`, one caller: `buildThrow`'s `torA[2]`) with the inertia declared in config at a **deliberate 6–10 % under-estimate** of a **decel-side** lower bound (1.0126e-5 kg·m², re-anchored during review — the accel-phase 1.015e-5 figure was ball-inclusive), which makes the feedforward one-sided-safe. Gravity brakes in the same direction on an upward decel, so the open-loop total does exceed `J_true` below `a_cmd ≈ 1900 rev/s²`; the enforcement is bench row H7.4 and the new band-floor rung **R0**, not the inequality. **Commanded position and velocity are bit-identical on every kind**, so C-HAND-1's window, `_PRIME_INFLIGHT_S` and the timeline probe's whole verdict model stay valid without moving. Contract `ros_ws/docs/hand_decel_feedforward.md` (**C-HAND-2**); `FW_VERSION` **1 → 2**; bench `tests/hardware/session_anomaly_fixes.md` § CHECK HAND-7 (stage 8), ladder **R0→R5** with three desk pre-flights (H7.0a xref zero-skips, H7.0b probe `--self-check`, **H7.0c read `torque_soft_min` off the live drive**) — see § Phase 7 — Outcome |
 
@@ -282,15 +297,21 @@ Rosbag input is supported as well — it was cheap (the same two topics,
 Seven distinct self-tosses across three sessions, plus two BallButler reloads
 and one `ABORTED_NO_RELEASE` toss the probe correctly reports as strokeless:
 
-| session | ball | arms | trunc (rev) | peak (rev / mm) | headroom to 11.1 rev | dip (rev / mm / % stroke) | shift (ms) |
+*(The headroom column was re-anchored 2026-08-21. It read "headroom to 11.1 rev"
+with values 0.775–0.935 until then; 11.1 rev was the DECLARED end stop and sat
+0.3 rev PAST metal, corrected 2026-08-18 to the operator-measured 10.8 rev. The
+`peak` measurements are unchanged — only the reference point moved, and every
+margin in this table is 0.3 rev smaller than it was recorded as.)*
+
+| session | ball | arms | trunc (rev) | peak (rev / mm) | headroom to 10.8 rev | dip (rev / mm / % stroke) | shift (ms) |
 |---|---|---|---|---|---|---|---|
-| 15-04-35 | 34 | 2 | 7.1245 | 10.2611 / 324.5 | 0.839 rev | 0.641 / 20.3 / 6.4 | +12.8 |
-| 15-17-48 | 10 | 1 | 6.7562 | 10.2513 / 324.2 | 0.849 rev | **2.040 / 64.5 / 20.5** | +19.0 |
-| 15-17-48 | 11 | 2 | 6.1965 | 10.2684 / 324.8 | 0.832 rev | 1.656 / 52.4 / 16.6 | +20.7 |
-| 15-17-48 | 13 | 1 | 7.1897 | 10.2813 / 325.2 | 0.819 rev | 1.790 / 56.6 / 18.0 | +15.4 |
-| 15-17-48 | 17 | 2 | 6.8525 | **10.3248 / 326.6** | **0.775 rev** | 0.726 / 23.0 / 7.3 | +20.2 |
-| 15-22-50 | 2 | 1 | 7.7825 | 10.1653 / 321.5 | 0.935 rev | 1.271 / 40.2 / 12.8 | +17.2 |
-| 15-22-50 | 3 | 1 | 7.7004 | 10.1743 / 321.8 | 0.926 rev | 1.361 / 43.0 / 13.7 | +21.9 |
+| 15-04-35 | 34 | 2 | 7.1245 | 10.2611 / 324.5 | 0.539 rev | 0.641 / 20.3 / 6.4 | +12.8 |
+| 15-17-48 | 10 | 1 | 6.7562 | 10.2513 / 324.2 | 0.549 rev | **2.040 / 64.5 / 20.5** | +19.0 |
+| 15-17-48 | 11 | 2 | 6.1965 | 10.2684 / 324.8 | 0.532 rev | 1.656 / 52.4 / 16.6 | +20.7 |
+| 15-17-48 | 13 | 1 | 7.1897 | 10.2813 / 325.2 | 0.519 rev | 1.790 / 56.6 / 18.0 | +15.4 |
+| 15-17-48 | 17 | 2 | 6.8525 | **10.3248 / 326.6** | **0.475 rev** | 0.726 / 23.0 / 7.3 | +20.2 |
+| 15-22-50 | 2 | 1 | 7.7825 | 10.1653 / 321.5 | 0.635 rev | 1.271 / 40.2 / 12.8 | +17.2 |
+| 15-22-50 | 3 | 1 | 7.7004 | 10.1743 / 321.8 | 0.626 rev | 1.361 / 43.0 / 13.7 | +21.9 |
 
 Three corrections to the Context section follow from that table:
 
@@ -300,10 +321,12 @@ Three corrections to the Context section follow from that table:
    (20.3 mm, 23.0 mm) are both double-dispatch tosses. Phase 1 (gate the arm)
    therefore owns the operator-visible defect outright; Phase 2 is the guard
    the plan already says it is, not a second half of the same fix.
-2. **0.93 rev of end-stop headroom is the best case, not the typical one.** The
-   worst measured is **0.775 rev = 24.5 mm** — and that is at 3.93 m/s, in the
+2. **0.63 rev of end-stop headroom is the best case, not the typical one.** The
+   worst measured is **0.475 rev = 15.0 mm** — and that is at 3.93 m/s, in the
    middle of the flight band. The plan's note that momentum is ~1.9× at the top
-   of the band starts from 24.5 mm of margin, not 29 mm.
+   of the band starts from 15.0 mm of margin, not 29 mm.
+   *(Re-anchored 2026-08-21: this read 0.93 / 0.775 rev = 24.5 mm against the
+   retired 11.1 rev declared stop.)*
 3. **The truncation position spans 6.1965–7.7825 rev (1.586 rev = 50 mm).** Peak
    overshoot tracks it inversely — the two latest freezes (7.70, 7.78 rev)
    produce the two lowest peaks (10.174, 10.165 rev) — which is the expected
@@ -349,9 +372,12 @@ the slack budget intact:
 > the shipped windows.** Phase 0 sized them with neither the smooth-move duration
 > FLOOR (`fmaxf(T, 0.05f)`, so the prelude is 50–76 ms and never zero) nor
 > `_MIN_EVENT_DELAY_S = 0.3`. The real windows are **395 ms at 0.80 s** (not 546)
-> and **115 ms at 0.55 s** (not 208) — carried in `catch_coordinator_node.py:1033`
-> and `motion/trajectory/hand_stroke.py:97`. Size the runbook's H1.5 slack row
-> against 395/115; see § Phases 1–2 — Outcome below. Kept as the correct account of
+> and **115 ms at 0.55 s** (not 208) — carried in
+> `catch_coordinator_node._throw_stroke_gate_ok`'s docstring and
+> `motion/trajectory/hand_stroke.ARM_SUPPRESS_MARGIN_S`. *(The 0.55 s figure was
+> itself superseded on 2026-08-18: `FLIGHT_TIME_MIN_S` is DERIVED at **0.4949 s**
+> by contract C-HAND-3, where the window is **50 ms**.)* Size the runbook's H1.5 slack row
+> against 395/50; see § Phases 1–2 — Outcome below. Kept as the correct account of
 > the model Phase 0 could see.
 
 | flight | `t_dec` | earliest safe arm | latest usable arm | window |
@@ -371,11 +397,12 @@ column.*
 *Both `latest usable arm` figures are optimistic and were revised during Phase 1.*
 `prelude empty` is unreachable — `makeSmoothMove`'s dead-band is 1e-6 rev =
 3.16e-5 mm and every non-empty duration is floored at 0.05 s
-(`Trajectory.h:260`), so the real prelude is 50–76 ms — and the caller drops the
+(`Trajectory.h:557`, floor constant at `:54`), so the real prelude is 50–76 ms — and the caller drops the
 arm outright below `_MIN_EVENT_DELAY_S = 0.3` s, which binds ahead of the Teensy
 budget at every nominal velocity. Carrying both: **release + 500 ms / 395 ms** at
 0.80 s and **release + 250 ms / 115 ms** at 0.55 s. Still positive at both ends;
-see § Phases 1-2 — Outcome.
+see § Phases 1-2 — Outcome. *(0.55 s stopped being the floor on 2026-08-18: the
+derived floor is **0.4949 s**, where the window is **release + 145 ms / 50 ms**.)*
 
 **Both rows are at the NOMINAL armed velocity** (`catch_coordinator_node.py:667`
 scales the event velocity by `JB_OP_CATCH_VEL_SCALE_DEFAULT = 0.8`, clamped to
@@ -385,7 +412,9 @@ tracker landing-speed estimate lengthens the lead and moves the right-hand edge
 earlier: at the 0.55 s flight the window closes once `v_armed < 1.02` m/s (a
 tracker landing speed under ~1.28 m/s for a 2.70 m/s throw) — *revised to 1.26 /
 ~1.58 m/s once the prelude FLOOR and the caller's `_MIN_EVENT_DELAY_S` drop are
-carried; see § Phases 1-2 — Outcome*. Phase 1 step 3
+carried; see § Phases 1-2 — Outcome. Revised again 2026-08-18 when C-HAND-3
+moved the floor to **0.4949 s**: there the window closes at* **`v_armed < 1.5907`
+m/s** *(tracker landing ~1.77 m/s).* Phase 1 step 3
 therefore has to check the fit against the runtime `event_vel`, not against this
 table.
 
@@ -497,17 +526,16 @@ not a mirror of the firmware.
 (read `= 11.1` / `[0, 351.08]` until the 2026-08-18 hard-stop correction)
 from the firmware's zero — *not* `[20, 371.08]` mm. Carrying the +20 mm across
 makes the ceiling **20 mm = 0.63 rev too permissive**: the physical point it then
-names sits 16.8 mm (**0.532 rev**) past the 11.1 rev overextension guard — which
-itself is only 0.76 mm below the top of the 355 mm stroke — and 16.1 mm above the
-top of the sim's own modelled travel. On a system that already reached 10.325 rev
-with 0.775 rev of headroom, that is the difference between a sweep test that
+names sits 26.3 mm (**0.832 rev**) past the **10.8 rev** hard stop. On a system
+that already reached 10.325 rev
+with 0.475 rev of headroom, that is the difference between a sweep test that
 bounds the excursion and one that waves it through before the profile is
 transcribed to `Trajectory.h` and flashed. Phase 4 must carry that conversion at
 **one** enforcement point, not inline per assertion.
 
 Recorded as a **second** candidate contributor to the known sim-catch fidelity gap
 (`project_hand_catch_hardware_smooth_sim_janky`), alongside the 15.75 mm timeline
-offset below: `sim/input/scripted.py:315` computes
+offset below: `sim/input/scripted.py:310` computes
 `_HAND_CATCH_X5_PHYSICAL_MM = STROKE_MARGIN_M·1000 + x5·1000` = 213.78 mm, while
 the host's `HAND_CATCH_OFFSET_MM` derivation uses `x5·1000` = 193.78 mm from the
 same physical bottom. The sim therefore catches **20 mm higher** than the host
@@ -516,13 +544,13 @@ placement that differs.
 
 **Two divergences, both in the catch timeline.** The first is the TIME ORIGIN.
 `makeCatch` shifts by
-`-(t5 - t4) = -t_acc` (`Trajectory.h:78`), and since `t6 = t5 + t_vel` the
+`-(t5 - t4) = -t_acc` (`Trajectory.h:153`), and since `t6 = t5 + t_vel` the
 velocity hold spans `[t5, t6]`; so the firmware's kind-1 `t = 0` is the
 **start** of the catch velocity hold, at position `x5`. `calcCatch`'s comment at
-`:131` calls `t5` the "centre of vel hold" and `makeCatch`'s at `:78` says "t=0
+`:206` calls `t5` the "centre of vel hold" and `makeCatch`'s at `:153` says "t=0
 at mid velocity-hold"; both are wrong about the code — `t5 = t2 + airT − 0.5·t_vel`
 means the *arrival* `t2 + airT` is the hold's centre, and `t5` is its start.
-`sim/hand/trajectory.py:127` sets `_t_offset = t_acc + 0.5·t_vel`, putting its
+`sim/hand/trajectory.py:238` sets `_t_offset = t_acc + 0.5·t_vel`, putting its
 `t = 0` at the hold **centre**. Measured divergence:
 
 | `v` | firmware `start_time` | sim `start_time` | Δt | Δpos at own t=0 |
@@ -534,9 +562,9 @@ means the *arrival* `t2 + airT` is the hold's centre, and `t5` is its start.
 (the position offset is `0.5·velH` and so is velocity-independent).
 
 The **second** divergence is the catch `end_time`, and it is benign: the sim's
-`_t_end` adds `END_PROFILE_HOLD_S` (`sim/hand/trajectory.py:143-144`) whereas
+`_t_end` adds `END_PROFILE_HOLD_S` (`sim/hand/trajectory.py:254-255`) whereas
 `buildCatch`'s `buildSegment(t4, tA, …)` has `tA[3] = t7` and so emits nothing
-past `t7` (`Trajectory.h:176-184`); `t8 = t7 + END_PROFILE_HOLD` exists only in
+past `t7` (`Trajectory.h:262-273`); `t8 = t7 + END_PROFILE_HOLD` exists only in
 `buildCommand`/kind-2, which *does* honour it. Measured gap **+90.3 / +93.3 /
 +95.1 ms** at flights 0.55 / 0.80 / 1.10 s — exactly
 `END_PROFILE_HOLD_S − 0.5·t_vel_catch`. Both models hold the same final position,
@@ -547,7 +575,8 @@ that is not a defect.
 **This does not make Phase 4's gate illusory, and the plan's gate assumption
 stands** — with one scope constraint. Phase 4 changes `makeSmoothMove` and its
 tests assert the prelude's peak-acceleration bound across a `v0` sweep, the
-bounded overshoot inside `[0, 11.1]` rev, and the at-target-but-moving braking
+bounded overshoot inside `[0, GEOM_HAND_MOTOR_HARD_STOP_REVS]` rev (11.1 when
+this was written, **10.8** since 2026-08-18), and the at-target-but-moving braking
 case. Every one of those rests on `HandSmoothMove`, `x3` (the throw end / catch
 start) and the stroke limit — all confirmed faithful above. The catch time
 origin enters none of them. So the constraint is on step 4: the xref test must
@@ -559,7 +588,7 @@ The host stack is self-consistent with the firmware's convention —
 `generate_config.py:581` derives `HAND_CATCH_POS_M = x5`, `:585` turns it into
 `HAND_CATCH_OFFSET_MM = hand_axis_bottom_offset + x5·1000 = 64.78 mm`, and that
 is what the reload and toss coordinators use as the ball's catch height
-(`sim/input/scripted.py:316` mirrors the same x5 in the sim's own frame) — so
+(`sim/input/scripted.py:310-311` mirrors the same x5 in the sim's own frame) — so
 the sim mirror's *timeline* is the outlier, not the firmware.
 (`motion/trajectory/toss_release.py:45` only *mentions* `HAND_CATCH_POS_M` in a
 comment; what it consumes is the throw sibling `HAND_THROW_POS_M` = `x2`.) **Whether the hold should be
@@ -569,6 +598,14 @@ out of scope for this plan.** It is worth recording against the known
 sim-fidelity gap on catches (`project_hand_catch_hardware_smooth_sim_janky`):
 a 15.75 mm / 5–10 ms sim-vs-firmware offset in where the hand is at ball
 arrival is a candidate contributor.
+
+> **RE-HOMED 2026-08-21, at this plan's archival.** This question, the 20 mm
+> absolute catch-height placement divergence above, and the benign catch
+> `end_time` gap below had **no owner in any plan**. All three now belong to
+> `hand-trajectory-generator-overhaul.md` § 6 *Inherited findings* — the plan
+> that rewrites this generator and its sim port wholesale, so the plan that has
+> to decide them. The derivations stay here as the evidence; the decision lives
+> there.
 
 One cosmetic divergence, recorded so it is not mistaken for a bug later:
 `makeSmoothMove`'s already-there dead-band is `|Δ| < 1e-6` rev = 3.16e-5 mm;
@@ -590,7 +627,7 @@ shipped chain is:
 `wall_time_ms`) → `rpc_args.encode_hand_traj_cmd` (8-byte payload) →
 `teensy_hand_traj_cmd` RPC → **can-bridge Teensy** (sends the CLOSED_LOOP +
 POSITION/PASSTHROUGH preamble, then forwards the payload verbatim on the
-firmware-owned **0x6D0** id) → **Platform Teensy** `Teensy_code_platform.ino:458`
+firmware-owned **0x6D0** id) → **Platform Teensy** `Teensy_code_platform.ino:567`
 (`CMD_TRAJ_ID`, len 8) → `HandTrajGenerator` / `makeSmoothMove` in
 `Trajectory.h`.
 
@@ -704,12 +741,18 @@ The re-run found three defects **in the instrument itself**, all now fixed:
    25/25 with `arms=1` and the same deltas as the full trace.)
 
 One line-reference note, recorded rather than edited into the operator-reviewed
-Context section: the code block quoted there as `Teensy_code_platform.ino:538-547` is
-really two places — the prelude is built at `:522`
-(`makeSmoothMove(activeTraj.x.front())`) and the queue clear plus both
-`packTrajectory` calls are at `:539-546`. The `:533` time-budget refusal, the
-`:467-479` kind-3 path, `Trajectory.h:47/78/101/131/242/257`, and
+Context section: the code block quoted there as one range is really two places —
+the prelude is built at `:631` (`makeSmoothMove(activeTraj.x.front())`) and the
+queue clear plus both `packTrajectory` calls are at `:648-656`. The `:642-644`
+time-budget refusal, the `:576-602` kind-3 path, `Trajectory.h`'s
+`current_hand_position` / `current_hand_velocity` externs (`:85-86`), `makeCatch`'s
+`shiftTime` (`:153`), `calcCatch`'s "centre of vel hold" (`:206`), `makeSmoothMove`
+(`:527-620`) and `smoothMoveDuration` (`:365`), and
 `catch_coordinator_node.py:144` are all exact.
+*(Every firmware line number in this plan was re-anchored 2026-08-21 against the
+shipped tree — the originals were correct when written, and both files have grown
+by ~100 lines since. Symbols are now cited alongside the numbers so the next drift
+is recoverable by grep rather than by bisecting the file.)*
 
 #### Third-pass hardening — the instrument's POST-fix half
 
@@ -827,7 +870,7 @@ the deviating file.
 #### Findings handed forward (not fixed here)
 
 - **`makeSmoothMove`'s early return can defeat a kind-3 clobber.**
-  `Teensy_code_platform.ino:472-475` returns *before* `packedMsgs.clear()` when the
+  `Teensy_code_platform.ino:581-583` returns *before* `packedMsgs.clear()` (`:588`) when the
   smooth move is empty, so a kind-3 retract whose target is within 1e-6 rev of
   the live position does **not** clear an armed stroke — and kind-3 is the only
   un-arm mechanism the Teensy offers. The window is 3.16e-5 mm wide against a
@@ -904,14 +947,17 @@ throw-truncation jitter, and it makes Phase 2's premise true again.
 3. Assert the window fits: the arm must still land before
    `event − t_acc_catch − prelude − SAFETY_GAP`. With the prelude empty this is
    ~600 ms of slack at an 0.8 s flight, but it **shrinks with flight time** — check
-   it at `FLIGHT_TIME_MIN_S = 0.55` and log loudly if the window would close.
+   it at `FLIGHT_TIME_MIN_S` (0.55 when this step was written; the DERIVED
+   **0.4949 s** since 2026-08-18, contract C-HAND-3) and log loudly if the window
+   would close.
    Phase 0 measured both ends: 546 ms of window at 0.80 s and 208 ms at 0.55 s,
    with a 40 ms margin sized from the measured dispatch latency —
    *superseded by Phase 1's implementation: those figures omit the smooth-move
    duration FLOOR (`fmaxf(T, 0.05f)`, so the prelude is 50–76 ms, never zero) and
    the caller's own `_MIN_EVENT_DELAY_S = 0.3` drop. The real windows are 395 ms
    and 115 ms, and the 0.55 s closure velocity is 1.26 m/s rather than 1.02. All
-   three still pass this step. See § Phases 1-2 — Outcome.* The margin is
+   three still pass this step. (At the derived 0.4949 s floor those become 395 ms
+   / **50 ms** and **1.5907 m/s**; still positive.) See § Phases 1-2 — Outcome.* The margin is
    **not** optional slack — the announcement's `throw_time` is up to **23.4 ms**
    earlier than the physical release, so `t_release + t_dec` alone expires
    mid-ramp. See § Phase 0 — Outcome.
@@ -921,11 +967,12 @@ throw-truncation jitter, and it makes Phase 2's premise true again.
    own `event_vel` comes from the tracker and `t_acc_catch = 0.404073 / v_armed`,
    so a low landing-speed estimate *lengthens* the required lead and moves the
    window's right-hand edge earlier. At the 0.55 s flight the window closes once
-   `v_armed < 1.02` m/s (*revised to 1.26 m/s — § Phases 1-2 — Outcome*). Log
+   `v_armed < 1.02` m/s (*revised to 1.26 m/s — § Phases 1-2 — Outcome; and to
+   **1.5907 m/s** at the derived 0.4949 s floor, 2026-08-18*). Log
    loudly and dispatch immediately when it would close —
    an arm that lands after `event − t_acc_catch − SAFETY_GAP` is refused wholesale
-   by `Teensy_code_platform.ino:533-535` with `Not enough time for smooth-move` printed to
-   **serial only** (`:534`), so the catch silently never fires with no ROS-visible
+   by `Teensy_code_platform.ino:642-644` with `Not enough time for smooth-move` printed to
+   **serial only** (`:643`), so the catch silently never fires with no ROS-visible
    signal.
    Surfacing that refusal over the wire is a worthwhile follow-up.
 4. Do not touch the reload path's timing: there is no throw stroke there, so the
@@ -936,7 +983,8 @@ throw-truncation jitter, and it makes Phase 2's premise true again.
 a new `tests/motion/` case for the helper.
 **Gate:** `pytest tests/ -q` green. Tests: the arm is withheld until the stroke-end
 instant; it is dispatched immediately after; the window is inert for a reload; the
-0.55 s-flight case still leaves positive slack.
+band-floor case still leaves positive slack (0.55 s when written; the derived
+0.4949 s since 2026-08-18).
 **Deployment:** `colcon build --packages-select jugglebot` + relaunch.
 
 ### Phase 2 — Repack safety guard
@@ -980,7 +1028,12 @@ passed**, exactly the 33 cases this phase adds (15 + 18); the xfail count is
 unchanged at 3.
 **Logbook:** `logbook/2026-07-26-hand-command-continuity-arm-gating.md`.
 
-**DEFERRED TO THE OPERATOR — this phase is NOT validated until it runs.** Both
+**DEFERRED TO THE OPERATOR — this phase is NOT validated until it runs.**
+*(It ran, on 2026-07-27, and it passed: `H1.2`–`H1.7` and `H2.1`–`H2.3` all PASS
+— 17 latched = 17 tosses, 17 withheld, 0 CLOSED, min slack 0.124 s. See the
+Phase 5 row and `logbook/2026-07-26-hand-command-continuity-arm-gating.md`
+§ Close-out. Left as written because it is the correct account of what was owed
+at the time.)* Both
 halves are host-side, so deployment is `colcon build --packages-select jugglebot`
 **+ relaunch** (the launch runs the *installed* copy — a relaunch alone keeps the
 old code). **No codegen run** (no YAML changed) and **no firmware flash**: the
@@ -1021,10 +1074,13 @@ new field and no new topic — a wire change would have been a stop, not a fork.
 
 The fixed-conservative-delay option was rejected on its failure modes, not on the
 plan's say-so: `t_dec` spans **94.5 ms at the 0.55 s flight to 47.4 ms at
-1.10 s**, a 2x range. A delay sized for the short end wastes half the window at
+1.10 s**, a 2x range. *(Across the DERIVED band since 2026-08-18: 104.9 ms at the
+0.4949 s floor to 45.4 ms at the 1.1485 s ceiling — a 2.3x range, so the argument
+strengthens.)* A delay sized for the short end wastes half the window at
 the long end; one sized for the long end lands the repack back inside the decel
 ramp at the short end — and at the top of the band the momentum is ~1.9x with the
-smallest measured end-stop headroom (0.775 rev), which is where a mis-sized
+smallest measured end-stop headroom (0.475 rev against the corrected 10.8 rev
+stop; recorded as 0.775 rev against the retired 11.1 anchor), which is where a mis-sized
 window costs the most.
 
 #### Fork — shared helper vs a pinned duplicate → shared, and the probe moved into it
@@ -1060,7 +1116,8 @@ caller's clock read and `teensy_bridge_node`'s re-stamp from its own clock
 (`JB_OP_TOSS_RELEASE_LATENCY_MS` ships 0.0). A window of
 `throw_time + t_dec` with zero margin expires mid-ramp and reproduces the defect
 exactly. **40 ms = 1.71x the worst measured shift**, and it costs 40 ms out of a
-window that is 395 ms wide at 0.80 s and still 115 ms wide at the band floor.
+window that is 395 ms wide at 0.80 s and **50 ms** wide at the band floor
+(115 ms at the hand-picked 0.55 s floor this was written against).
 
 #### Two Phase-0 statements that did not survive re-derivation
 
@@ -1068,7 +1125,7 @@ window that is 395 ms wide at 0.80 s and still 115 ms wide at the band floor.
    idealisation.** `makeSmoothMove`'s dead-band is `|Δ| < 1e-6` rev =
    **3.16e-5 mm**, unreachable against a live float encoder reading, and every
    non-empty duration is floored at **0.05 s** (`fmaxf(T, 0.05f)`,
-   `Trajectory.h:260`). So a catch armed with the hand "at rest at x3" still
+   `Trajectory.h:557`). So a catch armed with the hand "at rest at x3" still
    costs **50-76 ms** of prelude. That is harmless *motion* — 0.63 mm at 24 mm/s
    for a 0.02 rev residual — but it is not free *time*, and the fit check now
    budgets `smooth_move_duration_s(0.10 rev) = 76.0 ms` for it. The allowance is
@@ -1086,13 +1143,19 @@ window that is 395 ms wide at 0.80 s and still 115 ms wide at the band floor.
    window closes at 0.55 s once `v_armed < 1.26` m/s (not 1.02) — a tracker
    landing speed under ~1.58 m/s for a 2.71 m/s throw. All three still pass Phase
    1 step 3 comfortably; the numbers are simply honest now.
+   *(Superseded 2026-08-18 by contract C-HAND-3, which makes the band floor
+   DERIVED rather than hand-picked: at the resulting 0.4949 s floor the window is
+   **50 ms** and closes at `v_armed < 1.5907` m/s. Not a further correction of
+   this arithmetic — the same expressions evaluated at a shorter floor. The floor
+   IS the flight at which this window reaches `arm_window_margin_s = 0.050 s`, so
+   the 50 ms is an identity, not a measurement.)*
 
 #### What happens when the window would close
 
 Log **loudly** and dispatch immediately, accepting today's degraded behaviour.
-Root cause: `Teensy_code_platform.ino:533` refuses the WHOLE command when
+Root cause: `Teensy_code_platform.ino:642` refuses the WHOLE command when
 `now + smoothDur + SAFETY_GAP > firstMainAbs` and prints the refusal to serial
-only (`:534`). An arm deferred past that point does not arrive late — the catch
+only (`:643`). An arm deferred past that point does not arrive late — the catch
 silently never fires, with no ROS-visible signal and the ball on the floor. A dip
 is ugly and recoverable; a silently-refused catch is neither. The branch is
 evaluated against the RUNTIME `event_vel`, not a nominal, because
@@ -1149,9 +1212,9 @@ the fix that a bench session would otherwise have mis-scored:
 1. **The closed-window branch promises an attempt, not a catch** (converged, two
    lenses). Its fit check budgets the *at-rest* prelude, but on that branch the
    hand is mid-stroke, so the firmware's live-encoder prelude is 0.37-0.76 s and
-   `Teensy_code_platform.ino:533` may refuse the dispatch outright. Not a regression — it
+   `Teensy_code_platform.ino:642` may refuse the dispatch outright. Not a regression — it
    is the pre-fix arithmetic exactly — and settled by reading the firmware:
-   `:533`'s `return` sits **before** `packedMsgs.clear()` at `:539`, so a refusal
+   `:642`'s `return` sits **before** `packedMsgs.clear()` at `:648`, so a refusal
    leaves the live throw stroke **intact**. The cost is a lost catch, never a
    clobbered stroke. The suggested code fix (drop the arm when the worst-case
    prelude will not fit) was **rejected**: a drop guarantees no catch, whereas a
@@ -1163,10 +1226,13 @@ the fix that a bench session would otherwise have mis-scored:
    CAN3 hop, and that leg is pure budget loss, bounded by the ~23 ms measured
    shift. Sized rather than fixed: `max(_MIN_EVENT_DELAY_S, budget)` means the
    0.3 s floor binds at every nominal armed velocity (the budget only overtakes
-   it below `v_armed` 1.98 m/s), and the tightest case — the 0.55 s flight at the
-   default knob — leaves 15.9 ms of floor headroom against the ~23 ms bound. A
-   7 ms shortfall, against the **115 ms** of slack the gate actually dispatches
+   it below `v_armed` 1.98 m/s), and the tightest case — the band floor at the
+   default knob — leaves **18.0 ms** of floor headroom against the ~23 ms bound. A
+   5 ms shortfall, against the **50 ms** of slack the gate actually dispatches
    with, because it fires at the FIRST tick after the window opens, not the last.
+   *(15.9 ms against 115 ms when written, i.e. at the hand-picked 0.55 s floor and
+   a 0.8 `catch_vel_scale` default; re-derived 2026-08-21 at the derived 0.4949 s
+   floor and the 0.9 default.)*
    Runbook H1.5 is the bench guard.
 3. **`catch/vel_scale` can close the window on its own** — the docstrings blamed
    only a 40 % tracker under-read. Swept against the production velocities: at the
@@ -1174,7 +1240,12 @@ the fix that a bench session would otherwise have mis-scored:
    (+18 ms), inside the shipped `[0.3, 1.5]` range, with a healthy tracker. That
    is exactly the corner HAND-1b runs in, so H1.4 now tells the operator to read
    the knob before routing a CLOSED warning to a tracker fault, and HAND-1b is
-   pinned to the default scale.
+   pinned to the default scale. *(Those two figures still hold at that flight —
+   0.38 m did not move. What DID move: the shipped default is **0.9**, not 0.8,
+   since the toss-tier 8a tuning; and 0.55-0.56 s is no longer the short end of
+   the band. At the derived **0.4949 s** floor the knob is far tighter —
+   **0.659 closes it** — so the default carries 1.36x of headroom there against
+   1.78x at the retired floor.)*
 4. **The flight-time error is probably not this phase's to fix.** The pre-fix
    0.887/1.091 s against a commanded 0.800 s was attributed to the truncated
    decel ramp "setting the release conditions". But the ball separates at the
@@ -1359,7 +1430,7 @@ The class fix. Firmware, so it is last and gated hardest.
    velocity-independent 0.498 rev) and in the catch `end_time` (+90…+95 ms, the
    `END_PROFILE_HOLD_S` term), both benign and both out of scope for this plan, so
    such an assertion fails for a reason unrelated to Phase 4 — and the obvious
-   "repair" (changing `sim/hand/trajectory.py:127`'s `_t_offset`) silently moves
+   "repair" (changing `sim/hand/trajectory.py:238`'s `_t_offset`) silently moves
    the sim's hand position at ball arrival by 15.75 mm and pre-empts an open
    question this plan reserves for the operator. Sized against the second pass's
    bounds (≤4.4e-8 m / ≤3.2e-8 s / ≤6.3e-7 rev), not the first pass's. See
@@ -1399,7 +1470,7 @@ first velocity sample for `δ < 0`, which encodes to the same `int16` 0).
    unshippable in both branches.* Refusing means a kind-3 does not clobber, and a
    kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the
    Teensy offers; refusing via an empty trajectory is worse still, since
-   `Teensy_code_platform.ino:472-475` returns *before* `packedMsgs.clear()`. Braking to the
+   `Teensy_code_platform.ino:581-583` returns *before* `packedMsgs.clear()` (`:588`). Braking to the
    limit is unbounded by anything the firmware declares (~28 000 rev/s² for a
    near-target abort at the measured −60 rev/s, 280× the declared limit). Shipped
    instead: **fall back to the rest-to-rest profile** — today's exact behaviour,
@@ -1440,8 +1511,10 @@ the retract's own peak descent speed (start ≈ 5.04 rev, −24.6 rev/s) solved 
 anti-stutter window whose pinning test names "a Phase-4 duration change" as the
 thing it exists to catch, and which evaluated only the `v0 = 0` branch. An honoured
 prelude is now bounded by `smoothMoveMaxDuration()` = the longest **rest-to-rest**
-move the stroke admits (0.8005 s), so it can never outlast a profile this firmware
-could already emit and every host window sized on one stays valid without moving.
+move the stroke admits (**0.78964 s**; 0.80054 s until the 2026-08-18 hard-stop
+correction shortened the stroke, which is why bench row H4.10 now reads a board
+still emitting up to 0.8005 s as UNFLASHED), so it can never outlast a profile
+this firmware could already emit and every host window sized on one stays valid without moving.
 The pinning test now asserts both bounds.
 
 **Instrument correction, same finalize.** The Phase-0 probe's brake/descent
@@ -1452,7 +1525,8 @@ sample (0.206–0.365 rev, all settle-from-above). An honoured brake seeded from
 the clamp's reach: with the old separator the probe put `catch_desc` at the brake,
 under-reported `peak` by 0.019 rev, and reported `dip_below_x3` as **0.0 rev on a
 capture that dove 3.21 rev = 102 mm below the stroke end** — a false PASS on the
-row guarding the 11.1 rev end stop. The separator is now anchored on the catch
+row guarding the end stop (declared 11.1 rev at the time; **10.8** since the
+2026-08-18 correction). The separator is now anchored on the catch
 region (`x5 + 0.33` rev), and a `deep-brake` case at the clamp's reach is a
 permanent gate case.
 
@@ -1483,7 +1557,11 @@ the Phase-0 probe.
 `tests/hardware/session_anomaly_fixes.md` § Section HAND; this is the summary):
 - **No dip.** The gated measure is the probe's `dip_below_x3` row — how far under
   the 9.9594 rev stroke end the hand ended up — and it must be `<= 0.10` rev
-  (3.2 mm). Peak overshoot past 9.9594 rev also under 0.1 rev.
+  (3.2 mm). Peak overshoot past 9.9594 rev is scored on the **TIERED** band in
+  the runbook (§ PASS/ABORT row 3), not on one number — `<= 10.060` rev at the
+  0.38/0.60 m tiers, `<= 10.39` rev at and above 0.78 m, hard abort `> 10.60`.
+  (This line read "also under 0.1 rev" until 2026-08-21, which is the 0.38/0.60 m
+  tier's band applied to every tier.)
   **Not** "no negative velocity between release and the catch descent": a healthy
   stroke that overshoots and settles onto `x3` from above has a genuinely negative
   measured velocity on the way down (−0.3 rev/s at a 0.02 rev overshoot, ~−10 rev/s
@@ -1921,7 +1999,7 @@ No `jugglebot_interfaces` change.
 | unit | stroke-model helper: `t_acc`/`t_dec`/`t_acc_catch`/`x1..x5` against pinned values |
 | unit | prelude with `v0 ≠ 0`: peak-accel bound respected across a `v0` sweep; overshoot bounded inside the stroke |
 | unit | `makeSmoothMove` at-target-and-moving produces a braking profile, not empty |
-| integration (mocked ROS) | arm withheld until stroke end; dispatched right after; inert for reload; positive slack at 0.55 s flight |
+| integration (mocked ROS) | arm withheld until stroke end; dispatched right after; inert for reload; positive slack at the band floor (0.55 s when written; the derived 0.4949 s since 2026-08-18) |
 | integration (mocked ROS) | failed ack during the stroke defers instead of repacking; abort path still clobbers |
 | xref | sim mirror == firmware constants |
 | xref | `Teensy_code_platform.ino`'s `FW_VERSION` == `rpc_args.PLATFORM_FW_VERSION_EXPECTED`; the shipped 0x6E0 codec compiled and run, packing the version where the host reads it |
@@ -1943,10 +2021,10 @@ instrument that makes it readable.
 |---|---|
 | Delaying the arm eats the catch's own lead | Phase 1 step 3 checks the window at the shortest shipped flight and logs loudly if it closes |
 | The deferral needs a later balls tick that never arrives (track dropout, or a landing revision pushing `event_delay` under the 0.3 s floor) — both bypass the gate, so even the closure branch cannot fire and the arm is silently never dispatched | Argued-against by the node's n = 6105 probed note (announced-vs-tracked landing agreeing to 0.000 s at the arm moment in early life), so instrumented rather than fixed: runbook row **H1.7** counts withheld lines with no matching dispatch. A non-zero count ⇒ replace the tick-driven retry with a one-shot timer |
-| The forced (window-closed) dispatch is itself refused by `Teensy_code_platform.ino:533`, because the fit check budgets the at-rest prelude and the hand is mid-stroke | Bounded, not eliminated: it is the pre-fix arithmetic exactly, and `:533` returns *before* `packedMsgs.clear()` so the live stroke survives — the cost is a lost catch, never a clobbered stroke. Runbook H1.6 reads the serial refusal; H1.4 warns that a clean dip row is not evidence the catch fired |
-| `catch/vel_scale` closes the window on its own at the short-flight end (0.45 ⇒ −15 ms at T 0.557 s, inside the shipped `[0.3, 1.5]` range) | H1.4 tells the operator to read the knob before routing a CLOSED warning to a tracker fault; HAND-1b is pinned to the default 0.8 |
+| The forced (window-closed) dispatch is itself refused by `Teensy_code_platform.ino:642`, because the fit check budgets the at-rest prelude and the hand is mid-stroke | Bounded, not eliminated: it is the pre-fix arithmetic exactly, and `:642` returns *before* `packedMsgs.clear()` at `:648` so the live stroke survives — the cost is a lost catch, never a clobbered stroke. Runbook H1.6 reads the serial refusal; H1.4 warns that a clean dip row is not evidence the catch fired |
+| `catch/vel_scale` closes the window on its own at the short-flight end (0.45 ⇒ −15 ms at T 0.557 s, and **0.659 ⇒ 0 ms at the derived 0.4949 s band floor**, both inside the shipped `[0.3, 1.5]` range) | H1.4 tells the operator to read the knob before routing a CLOSED warning to a tracker fault; HAND-1b is pinned to the shipped default, which is **0.9** since the toss-tier 8a tuning (0.8 when this row was written) |
 | A kind-3 abort retract stops clobbering an armed stroke | explicit exemption + a test; called out in both Phase 2 and the contract |
-| Velocity-continuous prelude overshoots into the stroke end-stop | bound the excursion against 11.1 rev; decide the cannot-fit behaviour deliberately |
+| Velocity-continuous prelude overshoots into the stroke end-stop | bound the excursion against `GEOM_HAND_MOTOR_HARD_STOP_REVS` — **10.8 rev** since the 2026-08-18 correction, 11.1 when this row was written; decide the cannot-fit behaviour deliberately. **CLOSED by Phase 4**: the clamp ships at `10.8 − smooth_move_excursion_margin_rev 0.2` = 10.60 rev, and the ceiling is bit-identical to the pre-correction `11.1 − 0.5` because base and margin moved together |
 | Sim mirror is not faithful, so Phase 4's gate is illusory | Phase 0 verifies the mirror *before* it is trusted |
 | Moving the prime rev trips park-band / parked-top windows | **CLOSED, did not bind** (Phase 3, 2026-07-26): every consumer enumerated and every window measured at both primes — tightest is the near-band's `0.2156 rev = 6.8 mm` pessimistic margin, bridge headroom `1.1406 rev`, and `hand_parked` is keyed to the *bottom* band so the kind-0 hazard never involved the prime. Nothing widened; margins pinned by `test_prime_move_leaves_the_park_band_windows_open`. The window the constant-grep sweep DID miss was `_PRIME_INFLIGHT_S` — sized from the ascent duration without naming the constant — now pinned too |
 | Firmware/host version skew after Phase 4 | **CLOSED by Phase 6** (2026-07-27): `FW_VERSION = 1` declared in `Teensy_code_platform.ino` and reported in bytes 5-6 of the 0x6E0 RobotState reply, so a pre-versioning board (which zero-fills those bytes) is a POSITIVE verdict rather than silence. Surfaced on `robot_state`, `link_status` and a `PLATFORM_FW_CHECK` log line; runbook rows FW-1 / H4.0d. Deliberately WARNS and never refuses — the same path carries the kind-3 retract (`ros_ws/docs/platform_fw_version.md`) |
@@ -1973,3 +2051,127 @@ instrument that makes it readable.
   `link_status/platform_fw_version` **before** anything else: `0 (PRE-VERSIONING)`
   means the board was never flashed and every row in that section is meaningless.
   Nothing refuses on it, so the check has to be run, not relied on.
+
+## Archival note — 2026-08-21
+
+**Archived `completed`.** All eight phases shipped, are flashed, and are validated
+on hardware to the throw envelope's ceiling. Nothing here is schedulable.
+
+### What shipped
+
+| Phase | Deliverable | Where it lives now |
+|---|---|---|
+| 0 | The stroke-timeline probe — the instrument the whole plan is scored by | `tools/probes/hand_stroke_timeline.py`, `--gate` run by `tests/motion/test_hand_stroke_timeline_probe.py` |
+| 1–2 | **C-HAND-1 host half** — the catch arm is gated off a live throw stroke, one enforcement point, the retry defers rather than repacks | `catch_coordinator_node._throw_stroke_gate_ok`, model in `jugglebot/motion/trajectory/hand_stroke.py`, contract `ros_ws/docs/hand_command_continuity.md` |
+| 3 | The catch prime becomes the **derived** stroke top, 9.858 → 9.9594 rev | `HAND_STROKE_TOP_REV` from `config/generate_config.py`, three-route drift guard |
+| 4 | **C-HAND-1 firmware half** — `makeSmoothMove` seeds `(x0, v0, 0)`, with an excursion clamp and a duration cap, both falling back to the rest-to-rest profile | `Teensy_code_platform/Trajectory.h::makeSmoothMove`, mirrored at `sim/hand/trajectory.py` |
+| 5 | Hardware validation | `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`, plus the 2026-08-18 and 2026-08-21 closures below |
+| 6 | **C-PLATFW-1** — the Platform Teensy declares `FW_VERSION` and reports it in the 0x6E0 RobotState reply, so a skipped flash is READABLE | `ros_ws/docs/platform_fw_version.md`, runbook rows FW-1 / H4.0d |
+| 7 | **C-HAND-2** — the post-release deceleration feedforward, corrected at one enforcement point with a deliberately-low declared inertia | `ros_ws/docs/hand_decel_feedforward.md`, `throwDecelToTorque` |
+
+**Aboard the robot:** Platform Teensy **FW 3**, can-bridge **FW 15**.
+
+### Why it closed
+
+The plan's own blocking question — *where is the hand's physical end stop?* — was
+answered on 2026-08-18 (10.8 rev, operator-measured metal contact;
+`logbook/2026-08-18-hand-end-stop-corrected.md`). The last thing gating archival,
+`FLIGHT_TIME_MAX_S` unreconciled with that stop, was resolved on 2026-08-20/21 by
+contract **C-HAND-3** (`ros_ws/docs/hand_throw_envelope.md`), which replaces the
+hand-picked flight band with an envelope derived from the machine's own
+accel / velocity / torque / timing limits — and then flown to within **0.029 m/s**
+of its ceiling on hardware, with **18.7 mm** of end-stop headroom and every throw
+accepted (`logbook/2026-08-21-envelope-flown-to-ceiling.md`).
+
+Every row the sitting left unscored or scored only indirectly is now scored by
+measurement: `H2.4`/`H3.6`/`H4.8` on 2026-08-18, offline from the natural
+`SAFE_ABORT` in the 16:00:27 launch (unexercised in stage 6, so previously NOT
+SCORED), and `H1.6`/`H4.7` on 2026-08-21 from a full Platform Teensy serial
+capture containing **zero** `Not enough time for smooth-move` (previously scored
+only by argument).
+
+### Where the residue went
+
+* **The three unowned Phase-0 findings** — the catch time-origin divergence
+  (0.498 rev = 15.75 mm, velocity-independent), the 20 mm absolute catch-height
+  placement, and the benign catch `end_time` gap — are **re-homed to
+  `plans/parked/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings***.
+  That plan rewrites this generator and its sim port wholesale, so it is the
+  change that has to decide them. The derivations stay here (§ Phase 0 — Outcome,
+  Confirmation 2) as the evidence.
+* **The two operator questions from Phase 6** — whether a *toss start* should
+  refuse on a definite `version == 0`, and whether `UNKNOWN` should become
+  recoverable within a launch — stay in `ros_ws/docs/platform_fw_version.md`
+  § *Warn, never refuse*. Neither blocks anything.
+* **The kind-3 clobber question** (moving `packedMsgs.clear()` ahead of the
+  at-target-and-at-rest early return) stays an operator decision, recorded at
+  `Trajectory.h`'s `makeSmoothMove` header and in C-HAND-1. It is latent: the
+  window is 1e-6 rev wide.
+* **The two kind-2 defects** found in Phase 7 (`buildCommand`'s 31.6× torque unit
+  error; `buildSegment`'s residual terminal velocity feedforward) are pinned in
+  code and in C-HAND-2 rather than fixed, because no live host dispatches kind 2.
+* **The braking-clamp arc** the Phase-5 addendum opened is owned by
+  `plans/active/catch-robustness.md`. The clamp itself was real and is fixed
+  (`torque_soft_min` −0.0551 → symmetric ±0.7 N·m, saved), so bench row H7.0c is
+  now a regression check.
+* **The dispatch-shift finding** (`+54…+63 ms`, exceeding the 40 ms margin the arm
+  gate budgets) was the 2026-07-18 can-bridge-uptime lag reaching this gate. It is
+  **CLOSED** — `plans/archived/bridge-temporal-trustworthiness.md`, can-bridge
+  FW 14, end-to-end 10–20 ms at any uptime.
+
+### Remediation applied at archival — 2026-08-21
+
+The plan was reviewed NOT READY on bookkeeping, not on engineering, and the
+following was fixed in the same change. Two of these would have actively
+mis-scored a powered bench session:
+
+1. **The runbook expected the wrong firmware.** `session_anomaly_fixes.md` rows
+   **FW-1** and **H4.0d** gave PASS as `v2` and routed anything else to
+   *"flashed from a different tree; `git pull` + re-flash"* — on a board correctly
+   flashed to **v3**. It would have sent the operator to re-flash a correct board.
+2. **A stale-anchor defect in live sim code.** `sim/plant/mujoco_plant.py`'s
+   `_hand_stroke_mm` was a hardcoded `355.0` used as the `command_hand` clip
+   bound, so the simulated hand could be commanded **10.25 mm further than the
+   real one** — verbatim the failure the 2026-08-18 correction exists to prevent.
+   Now derived from `GEOM_HAND_STROKE_MM`. Its sibling `_hand_prime_mm` carried
+   the pre-Phase-3 `9.858` prime (with the wrong gain) and is now derived from
+   `HAND_STROKE_TOP_REV`; `tests/sim/test_hand.py` no longer pins the literal.
+3. ⚠ **A declared travel limit past metal in a live actuating script.**
+   `experimenting/platform_calibration/measuring_leg_mapping/can_interface.py`'s
+   `_HAND_MOTOR_MAX_POSITION = 11.1` survived the 2026-08-18 sweep purely because
+   the symbol name differed. Corrected to 10.8. The withdrawal of that sweep's
+   "verified down to zero" claim is recorded in
+   `logbook/2026-08-18-hand-end-stop-corrected.md` § *Withdrawn claims*.
+4. **C-HAND-1 obligation F** still read *"NOT LIVE until the Platform Teensy is
+   flashed"* four weeks after it was flashed and exercised on hardware.
+5. **Seven logbook entries** belonging to this plan were still `status:
+   in-progress`, each gated on "not flashed / deferred to the operator" and never
+   re-statused. Closed out `resolved`/`tuned` with dated close-out sections; three
+   also carried `related_plan: PROMPT-anomaly-fixes-orchestration.md`, deleted in
+   `07f2361`, and now point at files that exist.
+6. **Stale live numbers**, swept here and in the runbook, the contracts, the
+   probes and the tests: the retired **11.1 rev** end-stop anchor (→ 10.8, every
+   headroom figure 0.3 rev smaller than recorded), the band floor **0.55 → 0.4949 s**
+   (window 115 → **50 ms**, closure velocity 1.02/1.26 → **1.5907 m/s**, floor
+   headroom 15.9 → **18.0 ms**, `catch/vel_scale` closing at **0.659** rather than
+   0.45 and its default 0.8 → **0.9**), `smoothMoveMaxDuration()` **0.8005 →
+   0.78964 s**, the continuity band mid-stroke **20.3 → 19.96 rev/s** (with the
+   binding bound flipped from the duration cap to the excursion clamp), and
+   Phase 5's single `peak <= 10.060` gate replaced by the tiered criterion the
+   runbook actually uses.
+   **Deliberately NOT changed:** `hardware_config.yaml`'s
+   `arm_window_margin_s: 0.05` is the C-HAND-3 *admission* criterion, a different
+   quantity from `hand_stroke.ARM_SUPPRESS_MARGIN_S = 0.040`. The plan's "40 ms"
+   prose is correct.
+7. **Every firmware line reference** in this plan, in production code, in C-HAND-1
+   and in the tests was re-anchored against the shipped tree, and now cites the
+   *symbol* alongside the number so the next drift is recoverable by grep. The
+   files had grown ~100 lines since the plan was written: the smooth-move refusal
+   is `Teensy_code_platform.ino:642-644` (was cited `:533`/`:534`),
+   `packedMsgs.clear()` at `:648` with the prelude built at `:631` (was
+   `:538-547`), the kind-3 early return at `:581-583` with its clear at `:588`
+   (was `:472-475`), `current_hand_velocity` at `Trajectory.h:86` (was `:47`), and
+   `makeSmoothMove` at `Trajectory.h:527-620` (was `:242-301`).
+
+Remediation logbook entry:
+`logbook/2026-08-21-hand-continuity-remediation-and-archival.md`.

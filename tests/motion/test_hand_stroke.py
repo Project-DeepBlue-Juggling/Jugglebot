@@ -20,12 +20,13 @@ These tests are the drift guard for that arrangement. They assert, in order:
   the plan assumed;
 * the Phase-1 arm window is positive at BOTH ends of the DERIVED flight band
   (contract C-HAND-3; it was the hand-picked 0.55-1.10 s until 2026-08-18),
-  including ``toss_sequencer.FLIGHT_TIME_MIN_S = 0.55``.
+  including at ``toss_sequencer.FLIGHT_TIME_MIN_S``, which is now the derived
+  0.4949 s rather than the retired 0.55 literal.
 
 Ground truth for every pinned number: ``/tmp/probe_hand_stroke_window.py``
 (2026-07-26), which re-derives them from the shipped header independently of this
 module and cross-checks the module against that derivation to 1.1e-16 over
-``v in [0.3, 7.0]``. See ``plans/active/hand-command-continuity.md`` Phase 1.
+``v in [0.3, 7.0]``. See ``plans/archived/hand-command-continuity.md`` Phase 1.
 """
 
 from __future__ import annotations
@@ -262,11 +263,12 @@ def test_prime_at_the_stroke_top_costs_no_commanded_prelude_travel():
     the self-toss path the hand reaches x3 via the throw stroke itself, so the
     prime never entered that arithmetic and Phase 1's budget does not move. The
     26.5 ms is returned on the PRIMED path (BB catch / reload), where it accrues
-    to the firmware's own fit check at ``Teensy_code_platform.ino:533``. Stated precisely
+    to the firmware's own fit check at ``Teensy_code_platform.ino:642``. Stated precisely
     because a future session sizing ``ARM_SUPPRESS_MARGIN_S`` off the wrong
     sentence would shave a window that gained nothing here — and at
-    ``FLIGHT_TIME_MIN_S`` that window is 115 ms wide with ~16 ms of floor
-    headroom.
+    ``FLIGHT_TIME_MIN_S`` that window is 50 ms wide with ~18 ms of floor
+    headroom (115 ms / ~16 ms against the hand-picked 0.55 s floor, retired
+    2026-08-18 by contract C-HAND-3).
 
     **Asserted as a property, not as the 4-decimal rounding artefact.** The
     residual is pinned with inequalities so that writing a MORE precise YAML
@@ -338,7 +340,7 @@ def test_smooth_move_duration_floor():
     """Every non-empty prelude costs at least 0.05 s (``fmaxf(T, 0.05f)``).
 
     A fit check that assumed a free prelude would hand the Teensy a command it
-    refuses at ``Teensy_code_platform.ino:533`` — to serial only, so the catch silently
+    refuses at ``Teensy_code_platform.ino:642`` — to serial only, so the catch silently
     never fires.
     """
     for d in (1.1e-6, 0.001, 0.02, 0.04):
@@ -356,8 +358,16 @@ def test_smooth_move_duration_floor():
 
 def test_prelude_allowance_covers_the_bench_pass_band():
     """The allowance IS the runbook's post-fix settle band, not a free parameter:
-    any capture that PASSES ``dip_below_x3 <= 0.10`` rev / ``peak <= 10.060`` rev
-    settled inside the excursion this arithmetic assumed."""
+    any capture that PASSES ``dip_below_x3 <= 0.10`` rev settled inside the
+    excursion this arithmetic assumed.
+
+    The DOWNWARD band is the one this constant is, and it has not moved.  Its
+    upward counterpart was quoted here as ``peak <= 10.060`` rev until
+    2026-08-21; that row went TIER-DEPENDENT on 2026-07-28 (ballistic coast grows
+    with throw speed, and one number aborted 10 of 17 tosses for a reason that
+    was never a regression), so ``10.060`` is now the 0.38/0.60 m band only.
+    Read ``tests/hardware/session_anomaly_fixes.md`` § PASS/ABORT row 3.
+    """
     assert hand_stroke.HAND_SETTLE_BAND_REV == 0.10
     assert hand_stroke.rev_to_mm(hand_stroke.HAND_SETTLE_BAND_REV) == pytest.approx(
         3.163, abs=1e-3)
@@ -379,7 +389,8 @@ def test_every_rest_to_rest_host_number_is_unchanged_by_phase_4():
     ``PRELUDE_ALLOWANCE_S`` and ``required_arm_lead_s`` are consulted with the
     hand AT REST (that is what the arm gate exists to produce), so generalising
     ``smooth_move_duration_s`` for ``v0 != 0`` must leave them bit-identical or
-    Phase 1's 395 ms / 115 ms windows silently move.
+    Phase 1's arm windows (395 ms at 0.80 s, 50 ms at the derived band floor)
+    silently move.
     """
     for d in (0.0, 9e-7, 1.1e-6, 0.001, 0.02, 0.04, 0.10, 2.3539, 9.9594):
         got = hand_stroke.smooth_move_duration_s(d)
@@ -523,7 +534,7 @@ def test_margin_covers_the_measured_dispatch_latency():
 
 
 def test_required_arm_lead_is_the_teensy_budget():
-    """``Teensy_code_platform.ino:533`` refuses the command unless
+    """``Teensy_code_platform.ino:642`` refuses the command unless
     ``now + smoothDur + SAFETY_GAP <= firstMainAbs``, and ``firstMainAbs`` is
     ``event − t_acc_catch`` for a kind-1 (``makeCatch``'s
     ``shiftTime(-(t5-t4))``)."""

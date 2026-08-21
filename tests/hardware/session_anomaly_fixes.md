@@ -200,7 +200,7 @@ BLOCKED, so row C still depends on you running its check.**
 |---|---|---|---|
 | **A** | Python under `ros_ws/src/jugglebot/**` — §§ FK, HAND-1, HAND-2, HAND-3, LVL, CCATCH, ZSEAT, **POSS** (commits `aea7b49`, `e58ed89`, the hand phases, and the C-POSSESS-1 commit). **§ SECTION POSS adds a NEW module** (`ball_possession.py`), which is the one shape that can land half-applied from a cached build | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch** `jugglebot_launch.py`. **Both packages** (the two-package build is mandatory in EVERY section since 2026-07-29 — `reload_coordinator_node` imports `TossContinuous` at module scope, so a `jugglebot`-only build raises `ImportError` before that node is constructed and takes `Reload`, `Toss` and `TossContinuous` down together; matrix row B) | **Loudly, if you run the pre-flights.** Each affected section has a grep against the *installed* copy that prints `PF<n>_STALE` on the run sheet (PF-1…PF-4 and **PF-7**, stage 3) and `INSTALLED_STALE` in the per-section pre-flights — two token spellings for one check, so match on the `STALE` suffix, not the whole word. Skip the pre-flight and the section silently re-measures the pre-fix baseline and you score a working fix as broken |
 | **B** | `jugglebot_interfaces` — `TrajectoryStatus.msg` gained `gravity_correction_loaded` (§ Section LVLGATE, commit `e36d60d`) and, **2026-08-02, `tilt_map_loaded` + `tilt_map_version`** (contract C-LEVEL-2, `plans/archived/tilt-calibration-grid.md` Phase 2), `RobotState.msg` gained `platform_fw_version` / `platform_fw_version_read` (§ Section FW), and **2026-07-29 a whole NEW action, `TossContinuous.action`** (§ SECTION CONT) | `colcon build --packages-select jugglebot_interfaces jugglebot` + `source install/setup.bash` + **relaunch**. **Building only `jugglebot` is NOT enough** | **Loudly and catastrophically, now from two nodes.** `_publish_status` assigns a field the generated message's `__slots__` lack, raising inside the 0.2 s timer; rclpy re-raises timer exceptions out of `spin()` and `main` catches only `KeyboardInterrupt`, so **`trajectory_node` EXITS ~200 ms after launch**. You see: no `trajectory_node` in `ros2 node list`, no 40 Hz hold stream, `ros2 topic echo /trajectory/status` hangs, and **`activate` FAILS at the A2 arm ("no mpccmd frame")** — you never reach TRAJECTORY, so you never send a toss at all. LG-0 catches it in 3 s. **`teensy_bridge_node` behaves DIFFERENTLY — do not expect it to exit.** Its 100 Hz `_publish_robot_state` assigns the two new `RobotState` fields but *catches its own exceptions*, so a half-rebuild there gives you **one throttled `Robot state publish error:` per 5 s and a silently-dead `/robot_state`** — the node stays in `ros2 node list` looking healthy while the orchestrator stalls in BOOT and blames power/CAN. Since 2026-07-27 it also logs, once at construction, `INTERFACES_STALE: …` naming the missing fields and the exact rebuild command — **grep that first** (`grep INTERFACES_STALE "$LOG"`). Note this matters most when `jugglebot_interfaces` is only *partly* stale: if it already carries **every** `TrajectoryStatus` field `_publish_status` assigns, `trajectory_node` does NOT exit and the loud row-B signature above never appears. **That carve-out expired on 2026-08-02**: `tilt_map_loaded` / `tilt_map_version` were added, so an interfaces package built before that date is missing a field `_publish_status` assigns and the loud exit signature is BACK — carrying `gravity_correction_loaded` from an earlier sitting is no longer enough. **2026-08-14 moved the expiry again**: `leg_vel_limit_mmps` / `leg_acc_limit_mmps2` / `leg_jerk_limit_mmps3` were added (live session limits for the toss reach bound), so a pre-2026-08-14 interfaces build re-triggers the loud exit signature. **⚠ The NEW ACTION makes row B worse, and in a way none of the above describes.** `reload_coordinator_node` imports `TossContinuous` at module scope, so a stale `jugglebot_interfaces` raises `ImportError` before the node is constructed — and that node hosts **all three** ball-op actions. You lose `Reload` and `Toss` too, not just the session: `ros2 action list` shows none of `/jugglebot/reload`, `/jugglebot/toss`, `/jugglebot/toss_continuous`, and `ros2 node list` has no `reload_coordinator_node`. The launch log carries the `ImportError` naming `TossContinuous`. `tests/hardware/toss_trace_recorder.py record` fails the same way, with its own explicit rebuild message. Row CONT-0.3 is the 3-second check |
-| **C** | `ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h` + the regenerated `Teensy_code_platform/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`; **and § CHECK HAND-7's post-release decel feedforward, 2026-07-28** — a NEW `TeensyTraj::THROW_DECEL_REFLECTED_INERTIA_KGM2` in that same header), and `Teensy_code_platform.ino`'s `FW_VERSION` identity block, now at **2** (§ Section FW) | **FLASH `Teensy_code_platform/Teensy_code_platform.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **Loudly, since 2026-07-27 — read the box below.** `link_status/platform_fw_version` reads `0 (PRE-VERSIONING)` on a never-flashed board, `1` on a board still carrying only the Phase-4 prelude, and **`2`** on one carrying the Phase-7 decel feedforward, and the launch log carries a `PLATFORM_FW_CHECK: FAIL` ERROR. Run-sheet row **FW-1** |
+| **C** | `ros_ws/src/jugglebot/Teensy_code_platform/Trajectory.h` + the regenerated `Teensy_code_platform/hardware_config.h` (§ CHECK HAND-4, commit `5369fc2`; **and § CHECK HAND-7's post-release decel feedforward, 2026-07-28** — a NEW `TeensyTraj::THROW_DECEL_REFLECTED_INERTIA_KGM2` in that same header), and `Teensy_code_platform.ino`'s `FW_VERSION` identity block, now at **3** (§ Section FW) | **FLASH `Teensy_code_platform/Teensy_code_platform.ino` to the PLATFORM Teensy.** Not the can-bridge (`Teensy_code_canbridge/`), not the CatchingCone. `colcon build` does not touch it and the Jetson never executes it | **Loudly, since 2026-07-27 — read the box below.** `link_status/platform_fw_version` reads `0 (PRE-VERSIONING)` on a never-flashed board, `1` on a board still carrying only the Phase-4 prelude, `2` on one carrying the Phase-7 decel feedforward, and **`3`** on one carrying the 2026-08-18 hand end-stop correction (`HAND_MOTOR_HARD_STOP_REVS` 11.1 → 10.8 rev), and the launch log carries a `PLATFORM_FW_CHECK: FAIL` ERROR. Run-sheet row **FW-1** |
 | **D** | `config/hardware_config.yaml` — `trajectory_op.catch_seat_rate_radps` (§ SECTION SEAT-EXP, added 2026-07-28). Shipped value `0.0`; **only the seat-rate A/B ever moves it** | `python config/generate_config.py` (**venv**, standing rule 5) **then** `colcon build --packages-select jugglebot_interfaces jugglebot` + **relaunch** (both packages — matrix row B). The regenerate is the step that gets skipped, and skipping it changes *nothing at all* — every consumer imports the **generated** `hardware_config.py`, not the YAML | **Only if you check, and the failure is the quiet kind.** A skipped regenerate or a skipped `colcon` leaves the machine on the previous rate, so the experiment block silently repeats the control block and the A/B reads as "no difference" — a wrong *scientific* answer, not a crash. Rows `SEAT-EXP-1` and `SEAT-EXP-3` are the three-way check (installed constant, YAML, probe self-check); `SEAT-EXP-3.2` is deliberately inverted, a self-check **FAIL** naming that one constant is the positive confirmation |
 
 > ### ⚠ SUPERSEDED (2026-07-27): the un-flashed Platform Teensy is now DETECTABLE
@@ -212,8 +212,9 @@ BLOCKED, so row C still depends on you running its check.**
 > chain is superseded. Do not run it — run FW-1 instead.** It was inference about
 > your own actions; FW-1 is an observation of the board.
 >
-> The board now declares `FW_VERSION` (`Teensy_code_platform.ino`, currently **2** — bumped
-> from 1 on 2026-07-28 by § CHECK HAND-7's decel feedforward) and
+> The board now declares `FW_VERSION` (`Teensy_code_platform.ino`, currently **3** — 1→2
+> on 2026-07-28 with § CHECK HAND-7's decel feedforward, 2→3 on 2026-08-18 with
+> the hand end-stop correction, `HAND_MOTOR_HARD_STOP_REVS` 11.1 → 10.8 rev) and
 > reports it in bytes 5-6 of the 0x6E0 RobotState reply it already sends. See
 > `ros_ws/docs/platform_fw_version.md` for the contract; the operator-facing part
 > is two facts:
@@ -232,7 +233,8 @@ BLOCKED, so row C still depends on you running its check.**
 >
 > | log says / `link_status` reads | means | do |
 > |---|---|---|
-> | `PLATFORM_FW_CHECK: OK — … v2` / `2` | flashed, current | continue |
+> | `PLATFORM_FW_CHECK: OK — … v3` / `3` | flashed, current | continue |
+> | `FAIL — … v2` / `2` | flashed up to the decel feedforward, but **before the 2026-08-18 end-stop correction** — `smoothMoveMaxDuration()` is still `0.8005` s, so **H4.10 will read up to `0.8005` s and score as an unflashed board** | **ABORT stage 2** — `git pull`, re-flash. The commanded *profiles* are otherwise unchanged (`SMOOTH_MOVE_POS_CEIL_REV` held at 10.60 rev because the margin moved 0.5 → 0.2 with the base), so a v2 board is not a new hazard — it is a board that cannot be scored against this file |
 > | `FAIL — … v1` / `1` | flashed, but only up to Phase 4 — **no decel feedforward** | **ABORT stage 2** — `git pull`, re-flash. § CHECK HAND-7 is meaningless on a v1 board, and HAND-7 is the section about the end stop the hand touched |
 > | `FAIL — … PRE-VERSIONING …` / `0 (PRE-VERSIONING)` | the board answered and **has not been flashed** | **ABORT stage 2 — flash it, then relaunch** |
 > | `FAIL — … v<other>` / a different number | flashed, but not from this tree | **ABORT** — `git pull`, re-flash |
@@ -250,9 +252,11 @@ BLOCKED, so row C still depends on you running its check.**
 > decel feedforward changes the commanded torque on **every single throw**, so an
 > un-flashed board is not a subtle absence — the 0.78 m and ~1.2 m `peak` rows
 > simply read their pre-fix values (10.29-10.33 and 10.86-11.06 rev). If FW-1 says
-> `v2` and HAND-7's peaks look pre-fix, that is a **real finding about the
+> `v3` and HAND-7's peaks look pre-fix, that is a **real finding about the
 > physics**, not a deployment miss. If FW-1 says `v1`, stop and re-flash: you would
-> be re-running the sitting that put the hand into its end stop.
+> be re-running the sitting that put the hand into its end stop. `v2` carries the
+> feedforward but predates the end-stop correction — re-flash that too, or H4.10
+> mis-scores.
 >
 > Still true, and still the reason this matters: § CHECK HAND-4's fix is a *no-op
 > on the clean path by design* (`smoothMoveDuration`'s `v0 == 0` branch is
@@ -397,9 +401,10 @@ Score the reload and toss halves of CAP-WORK with **separate probe invocations**
 > > feedforward, which was delivering ~70 % of the torque the commanded decel
 > > physically needs. The `0.78 m` ceiling is lifted **only** by climbing § CHECK
 > > HAND-7's ladder in order (R1 0.60 → R2 0.78 → R3 1.00 → R4 1.20 → R5 the band
-> > ceiling), on a board that FW-1 reads as **`v2`**, stopping at the first rung that
-> > fails or on any audible contact. **On a `v0` or `v1` board the ceiling stands
-> > exactly as written above.** One thing the fix did NOT do, and it matters here:
+> > ceiling), on a board that FW-1 reads as **`v3`** (`v2` carries the feedforward
+> > but predates the 2026-08-18 end-stop correction), stopping at the first rung
+> > that fails or on any audible contact. **On a `v0` or `v1` board the ceiling
+> > stands exactly as written above.** One thing the fix did NOT do, and it matters here:
 > > it did not pin the stop position. The three anchors still disagree by ~9 mm and
 > > the contact still suggests the stop may sit below the 11.1 rev guard —
 > > **CONFIRMED 2026-08-18 at 10.8 rev** — which is
@@ -507,7 +512,7 @@ ros2 topic echo /link_status --once | grep -A1 platform_fw_version              
 
 | # | PASS | ABORT | routes to |
 |---|---|---|---|
-| FW-1 | `PLATFORM_FW_CHECK: OK — Platform Teensy reports v2`, and `link_status/platform_fw_version` = `2` | `FAIL … PRE-VERSIONING` or `0 (PRE-VERSIONING)` ⇒ **the Platform Teensy was NOT flashed** — go back to stage 2, flash, relaunch, re-run FW-1. `FAIL … v<other>` ⇒ flashed from a different tree; `git pull` + re-flash. `UNKNOWN` / `unknown` ⇒ no read landed; this is usually the **known benign boot-read transient**, so **relaunch once and re-read** before investigating CAN3 (co-signature: `cold-start boot read failed after N attempts`, `cold_start_authoritative` = `0`). **No line at all** ⇒ you skipped `colcon build`; rebuild both packages and relaunch — never score an absent `FAIL` as a pass | `hand-command-continuity` P6 (§ Section FW) |
+| FW-1 | `PLATFORM_FW_CHECK: OK — Platform Teensy reports v3`, and `link_status/platform_fw_version` = `3` | `FAIL … PRE-VERSIONING` or `0 (PRE-VERSIONING)` ⇒ **the Platform Teensy was NOT flashed** — go back to stage 2, flash, relaunch, re-run FW-1. `FAIL … v2` ⇒ flashed, but before the 2026-08-18 end-stop correction — `git pull` + re-flash (H4.10 mis-scores a v2 board). `FAIL … v<other>` ⇒ flashed from a different tree; `git pull` + re-flash. `UNKNOWN` / `unknown` ⇒ no read landed; this is usually the **known benign boot-read transient**, so **relaunch once and re-read** before investigating CAN3 (co-signature: `cold-start boot read failed after N attempts`, `cold_start_authoritative` = `0`). **No line at all** ⇒ you skipped `colcon build`; rebuild both packages and relaunch — never score an absent `FAIL` as a pass | `hand-command-continuity` P6 (§ Section FW) |
 | FW-2 | **no output** (grep exits 1) — the installed `jugglebot_interfaces` carries both new `RobotState` fields | any `INTERFACES_STALE:` line ⇒ **you built `jugglebot` without `jugglebot_interfaces`.** `/robot_state` is dead (one throttled error per 5 s, node still listed) and BOOT will time out blaming power/CAN. Rebuild BOTH packages, source, relaunch | `hand-command-continuity` P6 (§ DEPLOYMENT MATRIX row B) |
 
 **A `0 (PRE-VERSIONING)` here invalidates every § CHECK HAND-4 row** and nothing
@@ -570,12 +575,16 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
   "{catch_position: {x: 0.0, y: 0.0, z: 170.0}, throw_height_m: 0.6}" --feedback
 ```
 
-**Leave `catch/vel_scale` at its 0.8 default all sitting.** It multiplies the armed
+**Leave `catch/vel_scale` at its 0.9 default all sitting** (0.8 until the toss-tier
+8a tuning). It multiplies the armed
 event velocity and the arm window's right edge is `0.404 / v_armed`, so a *low*
 scale lengthens the required lead and closes the window on a perfectly healthy
 tracker. Swept against the production velocities: at a 0.55–0.56 s flight, **0.45
-closes it (−15 ms)** and 0.50 barely opens it (+18 ms), while 0.8 gives +116 ms; at
+closes it (−15 ms)** and 0.50 barely opens it (+18 ms), while 0.9 gives +116 ms; at
 0.80 s and above the window stays open across the whole shipped `[0.3, 1.5]` range.
+**At the DERIVED band floor (0.4949 s, contract C-HAND-3) the knob is far tighter:
+0.659 closes it**, so the 0.9 default carries only 1.36× of headroom there, against
+1.78× at the retired 0.55 s floor.
 Read `catch/vel_scale` **first** before routing any H1.4 `window CLOSED` warning to
 a tracker fault.
 
@@ -718,7 +727,7 @@ Do **not** mix the two conventions in one command.
 Two tosses at `throw_height_m: 0.38` (T ≈ 0.557 s, just inside the band). The
 suppression window narrows to **115 ms** there, against 395 ms at 0.80 s — this is
 the corner where H1.4 is most likely to fire, which is the point of running it.
-Score H1.1–H1.7 only. **Run it at the default `catch/vel_scale` (0.8)**: a reduced
+Score H1.1–H1.7 only. **Run it at the default `catch/vel_scale` (0.9)**: a reduced
 scale closes the window at this flight length by itself and you would be measuring
 the knob, not the gate. A MISSED catch here is not by itself a Phase-1 failure.
 
@@ -735,7 +744,7 @@ flash:**
 3. **H7.0c** — read `axis0.config.torque_soft_min` off the **live hand ODrive**.
    If it is `-0.0551` N·m the drive will truncate the corrected feedforward and
    the whole ladder is meaningless. 30 seconds; currently an open question.
-4. **A Platform Teensy on `FW_VERSION` 2** (§ DEPLOYMENT MATRIX row C). Confirm
+4. **A Platform Teensy on `FW_VERSION` 3** (§ DEPLOYMENT MATRIX row C). Confirm
    with **FW-1** / **H7.0** before the first toss — on a `v1` board this stage
    re-runs the sitting that put the hand into its end stop, and produces
    plausible-looking rows while doing it.
@@ -824,13 +833,14 @@ you interpret a surprise.
 5. **The kind-3 clobber gap is deliberately UNTOUCHED — operator's call.** Phase 4
    *narrowed* it (the empty-trajectory branch now requires the hand to be at rest
    **as well as** at the target, which strictly shrinks the condition
-   `Teensy_code_platform.ino:472-475` checks before `packedMsgs.clear()`), but the gap itself
+   `Teensy_code_platform.ino:581-583` checks before `packedMsgs.clear()` at `:588`), but the gap itself
    remains, and a pre-release SAFE_ABORT still depends on a kind-3 retract being
    able to clobber an armed stroke. H2.4 / H3.6 / H4.8 watch it; none of them
    provokes it.
 6. **A velocity-continuous prelude is LONGER than the rest-to-rest one** — 0.24 s at
    the 6.0 rev/s dead-band edge, 0.32 s at 8 rev/s, against the 76 ms
-   `PRELUDE_ALLOWANCE_S` budget. So at `FLIGHT_TIME_MIN_S` the firmware's own `:533`
+   `PRELUDE_ALLOWANCE_S` budget. So at `FLIGHT_TIME_MIN_S` the firmware's own
+   `Teensy_code_platform.ino:642`
    fit check could refuse the arm — a lost catch with the live stroke intact. It is
    reachable only if the hand is drifting 6–9 rev/s when a kind-1 arm lands, against
    a measured settle tail of ≤ 0.25 rev/s, so it has never been observed. Row
@@ -838,10 +848,12 @@ you interpret a surprise.
 7. **An operator decision this run deliberately did NOT take, with its numbers.**
    Phase 4 found the plan's premise physically unshippable: arresting `v0` costs
    `0.0077832·v0²` rev of travel, so velocity continuity is affordable only to
-   **~9.1 rev/s** at the stroke top and **~20.9 rev/s** mid-stroke (**~20.3 rev/s**
-   once the 0.8005 s duration cap binds), while the hand passes release at
-   **~120 rev/s** — needing **111 rev** of arrest travel against **11.1 rev** of
-   stroke. Both plan options were rejected with numbers: refusing the command breaks
+   **~9.1 rev/s** at the stroke top and **~19.96 rev/s** mid-stroke (the excursion
+   bound; the 0.78964 s duration cap sits just above it at ~20.04 rev/s), while
+   the hand passes release at **~120 rev/s** — needing **111 rev** of arrest
+   travel against **10.8 rev** of stroke. (This read 20.9 / 20.3 / 0.8005 / 11.1,
+   with the duration cap binding FIRST, until the 2026-08-18 hard-stop correction
+   shortened the stroke and flipped the ordering.) Both plan options were rejected with numbers: refusing the command breaks
    the kind-3 clobber (the only un-arm mechanism), and braking hard enough would
    need **28 000 rev/s²** on a mid-descent retract, **280×** the declared limit. It
    shipped a third: fall back to the rest-to-rest profile — *today's exact
@@ -1163,7 +1175,7 @@ the tick count and the pose continuity around it; do not abort.
 
 ## Section HAND — `hand-command-continuity` (post-throw dip + throw truncation)
 
-**Plan**: `plans/active/hand-command-continuity.md`
+**Plan**: `plans/archived/hand-command-continuity.md`
 
 Phases 1, 2 and 4 append their own `CHECK HAND-n` bodies under this header as
 they land. This first part is the **shared instrument and its pre-fix
@@ -1495,8 +1507,8 @@ grep -oE "scale [0-9.]+\)" "$LOG" | sort -u
 | H1.2 | `window latched` count | **== number of jugglebot tosses** | `0` ⇒ the announcement never reached the gate (wrong `thrower_name`, or the announcement arrived before `catch/armed`); the dip may be absent for an unrelated reason and the PASS is luck |
 | H1.3 | `arm withheld` count | **>= 1 per toss** | `0` while H1.2 passed ⇒ the arm was already late on its own; record it, and treat any H1.1 PASS as unvalidated for the gate |
 | H1.4 | `stroke-busy window CLOSED` warnings | **0** | `>= 1`: the fit check refused to defer. Not a *new* hazard — the branch reproduces the pre-fix arithmetic exactly — but it does **not** mean the catch fired: the forced dispatch may itself be refused by the Teensy (see H1.6), because its fit check budgets the at-rest prelude while the hand is mid-stroke. Record `event_delay`, `event_vel` and `vel_scale` from the warning, then **check `catch/vel_scale` FIRST** (see the note below) before routing to `hand-command-continuity` Phase 1 step 3 |
-| H1.5 | the withheld line's reported slack | **> 0.050 s** on every line | `<= 0.050 s` ⇒ the window is tighter in practice than the 115 ms modelled floor; capture and route to Phase 1 step 3 before running more tosses. This row is also the guard on the ~23 ms bridge→Teensy transit that `required_arm_lead_s` deliberately does not model |
-| H1.6 | `Not enough time for smooth-move` on the Teensy serial | absent — **✅ SCORED PASS 2026-08-21**: a full Platform Teensy serial capture over a multi-height session (4.44 → 5.61 m/s, i.e. up to the C-HAND-3 ceiling) contains **ZERO** occurrences. Longest prelude in that capture was `dur=0.76 s` against the 0.78964 s cap, so the cap did not truncate either. | present ⇒ the arm was refused wholesale and that toss's catch never fired. **Hard ABORT of the section.** Note the refusal leaves the throw stroke INTACT (`:533` returns before `packedMsgs.clear()`), so this can co-occur with a clean H1.1 dip row — a clean dip is NOT evidence the catch happened |
+| H1.5 | the withheld line's reported slack | **> 0.050 s** on every line. ⚠ **This is now a BOUNDARY, not a margin**: contract C-HAND-3 (2026-08-18) derives `FLIGHT_TIME_MIN_S` as the flight at which the window reaches exactly `arm_window_margin_s = 0.050 s`, so a goal admitted AT the floor sits exactly ON this gate. It used to sit 65 ms clear of it, at the hand-picked 0.55 s floor's 115 ms window | `<= 0.050 s` ⇒ the window is tighter in practice than the 50 ms modelled floor (115 ms before 2026-08-18); capture and route to Phase 1 step 3 before running more tosses. This row is also the guard on the ~23 ms bridge→Teensy transit that `required_arm_lead_s` deliberately does not model |
+| H1.6 | `Not enough time for smooth-move` on the Teensy serial | absent — **✅ SCORED PASS 2026-08-21**: a full Platform Teensy serial capture over a multi-height session (4.44 → 5.61 m/s, i.e. up to the C-HAND-3 ceiling) contains **ZERO** occurrences. Longest prelude in that capture was `dur=0.76 s` against the 0.78964 s cap, so the cap did not truncate either. | present ⇒ the arm was refused wholesale and that toss's catch never fired. **Hard ABORT of the section.** Note the refusal leaves the throw stroke INTACT (`Teensy_code_platform.ino:642` returns before `packedMsgs.clear()` at `:648`), so this can co-occur with a clean H1.1 dip row — a clean dip is NOT evidence the catch happened |
 | H1.7 | every toss that logged a `hand catch arm withheld` line also shows a later `Arming hand catch` (equivalently, probe `arms >= 1` on that toss) | **every withheld toss redeemed** | any withheld toss with no later dispatch ⇒ the deferral was never redeemed: the balls tick that should have dispatched it never arrived (track dropout, or a landing revision pushing `event_delay` under the 0.3 s floor — both bypass the gate, so no CLOSED warning appears either). Not a safety abort, but it is the one way withholding can turn into dropping — record it and route to `hand-command-continuity` Phase 1, which would then need a one-shot timer rather than a tick-driven retry |
 
 **Before routing any H1.4 CLOSED warning to a tracker fault, read
@@ -1504,9 +1516,10 @@ grep -oE "scale [0-9.]+\)" "$LOG" | sort -u
 window's right edge is `0.404 / v_armed`, so a LOW scale lengthens the required
 lead and closes the window on its own with a perfectly healthy tracker. Swept
 against the production velocities: at the 0.55-0.56 s flight, scale **0.45
-closes it (−15 ms)**, 0.50 barely opens it (+18 ms), the 0.8 default gives
+closes it (−15 ms)**, 0.50 barely opens it (+18 ms), the 0.9 default gives
 +116 ms; at 0.80 s and above the window stays open across the whole shipped
-`[0.3, 1.5]` range. That corner is exactly HAND-1b below, so a CLOSED warning
+`[0.3, 1.5]` range. **At the DERIVED band floor (0.4949 s) 0.659 closes it**, so
+the default carries 1.36× of headroom there rather than 1.78×. That corner is exactly HAND-1b below, so a CLOSED warning
 there with a reduced scale is the knob, not the fix.
 
 Also record, without gating: the achieved flight per toss, and the `shift`
@@ -1539,7 +1552,7 @@ most likely to fire**, which is the point of running it — and § Height refere
 already flags `T < 0.7 s` as stroke-marginal for reasons unrelated to this plan,
 so a MISSED catch here is not by itself a Phase-1 failure. Score H1.1-H1.7 only.
 
-**Run this at the default `catch/vel_scale` (0.8).** A reduced scale closes the
+**Run this at the default `catch/vel_scale` (0.9).** A reduced scale closes the
 window at this flight length by itself (H1.4's note), which would make the check
 measure the knob rather than the gate.
 
@@ -1644,7 +1657,7 @@ records (the trace recorder is mandatory and runs under **system `python3`** wit
 the ROS environment sourced, *not* the venv — `tools/probes/hand_stroke_timeline.py`
 is the opposite and needs the venv). H3.2 / H3.3 / H3.4 are plain greps of
 `~/.ros/log/<stamp>/launch.log`. Every row on this check routes to
-`plans/active/hand-command-continuity.md` **Phase 3** on failure.
+`plans/archived/hand-command-continuity.md` **Phase 3** on failure.
 
 ```bash
 # H3.1 / H3.5 / H3.7 — prime ascents and their rest positions, from the trace
@@ -1725,7 +1738,7 @@ prelude claim itself is pinned offline, in
 > `teensy_trajectory` keys), so the regenerated `hardware_config.h` must be in the
 > tree the sketch compiles against. `git pull` before opening the sketch.
 
-**Plan**: `plans/active/hand-command-continuity.md` § Phase 4
+**Plan**: `plans/archived/hand-command-continuity.md` § Phase 4
 **Contract**: `ros_ws/docs/hand_command_continuity.md` (**C-HAND-1**, firmware half)
 **What landed**: `makeSmoothMove` seeded every profile `v = a = 0` from
 `current_hand_position` while `current_hand_velocity` sat declared `extern
@@ -1785,7 +1798,7 @@ LOG=$(ls -td ~/.ros/log/*/ | head -1)launch.log; grep PLATFORM_FW_CHECK "$LOG"
 | H4.0a | `grep 'start_vel = current_hand_velocity'` | 1 hit | 0 hits ⇒ you are on a pre-Phase-4 tree; do not flash it, `git pull` first |
 | H4.0b | `pytest tests/firmware/test_hand_smooth_move_xref.py` | all pass, **with zero skips** (the headline test compiles and runs the real `Trajectory.h`) | any failure ⇒ do **not** flash; route to `hand-command-continuity` Phase 4. **A SKIP is not a PASS**: `test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror` skips when `g++` is absent, and it is the only thing in the repository that reads the C++ — everything else is a hand-maintained transcription. Run this on a host with `g++` (the Jetson has one) and check the summary says `passed`, not `passed, N skipped` |
 | H4.0c | the sketch was flashed to the **Platform** Teensy after H4.0a passed | you flashed it, this sitting, from this tree | if in any doubt, **re-flash** — it costs a minute and it is idempotent. H4.0d is what settles it |
-| **H4.0d** | `grep PLATFORM_FW_CHECK "$LOG"` — **the direct check; this is the one that decides** | `PLATFORM_FW_CHECK: OK — Platform Teensy reports v2`. Equivalently `ros2 topic echo /link_status --once` shows `platform_fw_version: 2` (**v1 = Phase-4 only, no decel feedforward — treat as a stale flash**) | `FAIL … PRE-VERSIONING` ⇒ **the board was not flashed; every row below is meaningless.** Flash and relaunch. `FAIL … v<other>` ⇒ flashed from a different tree. `UNKNOWN` ⇒ no read landed — **not** a stale flash, and usually the known benign boot-read transient: **relaunch once and re-read**, investigate CAN3 only if it repeats. **No line at all** ⇒ the `colcon build` was skipped; rebuild both packages and relaunch. This ROW SUPERSEDES the old four-link inference chain: H4.0a–c are about the tree you flash FROM, this is about the board you flashed TO. Contract: `ros_ws/docs/platform_fw_version.md`; phase: `hand-command-continuity` P6 |
+| **H4.0d** | `grep PLATFORM_FW_CHECK "$LOG"` — **the direct check; this is the one that decides** | `PLATFORM_FW_CHECK: OK — Platform Teensy reports v3`. Equivalently `ros2 topic echo /link_status --once` shows `platform_fw_version: 3` (**v1 = Phase-4 only, no decel feedforward; v2 = pre-2026-08-18 end-stop correction, so `smoothMoveMaxDuration()` is still 0.8005 s and H4.10 mis-scores — treat both as a stale flash**) | `FAIL … PRE-VERSIONING` ⇒ **the board was not flashed; every row below is meaningless.** Flash and relaunch. `FAIL … v<other>` ⇒ flashed from a different tree. `UNKNOWN` ⇒ no read landed — **not** a stale flash, and usually the known benign boot-read transient: **relaunch once and re-read**, investigate CAN3 only if it repeats. **No line at all** ⇒ the `colcon build` was skipped; rebuild both packages and relaunch. This ROW SUPERSEDES the old four-link inference chain: H4.0a–c are about the tree you flash FROM, this is about the board you flashed TO. Contract: `ros_ws/docs/platform_fw_version.md`; phase: `hand-command-continuity` P6 |
 
 #### Run
 
@@ -1815,7 +1828,7 @@ python tools/probes/hand_stroke_timeline.py \
 | H4.5 | `peak > 10.60` rev | does not occur | **HARD ABORT, E-STOP.** The clamp is `10.8 − 0.2 = 10.60` rev *commanded* (the same 10.60; the base and margin were both corrected 2026-08-18 and the ceiling did not move); exceeding it means the clamp did not run (flash suspect — re-check H4.0), or the position loop overshot the commanded profile by more than the **0.2 rev** margin (1.08× the +0.186 rev tracking overshoot measured at the old prime; this read "0.5 rev / 2.7×" until the 2026-08-18 hard-stop correction), or the documented endpoint relaxation served a prelude from a live position *already* above 10.6 rev — which is the pre-fix measured state (10.165–10.325 rev), is legal by design, and never adds a bulge above that live reading. Check `first_neg_cmd` and the live `pos_meas` at the command instant to tell them apart. Either way the next **0.2 rev (6.3 mm)** is all that remains before metal — **there is no further guard band**. (This row read "the next 0.5 rev is the overextension guard and the 0.76 mm after that is the hard stop" until 2026-08-18; both quantities were derived from the wrong 11.1 rev anchor and over-stated the remaining margin by ~2.5×.) |
 | H4.6 | `seeds` on any toss, cross-read with H4.3 **and with rows 8/9** | `seeds` = `0` (printed `-`) | `>= 1`: same ABORT as HAND-1 row 2 — the arm gate failed and a command landed while `pos_cmd` was still short of `x3` (Phase 1). Phase 4's second suspect no longer appears here: `makeSmoothMove`'s cannot-fit fallback fires from the stroke TOP, i.e. after the stroke completed, so since 2026-08-18 it reads as **`post_stroke_cmd` (row 9) with `trunc = -`**, not as a seed. **REPORT that, do not abort on it** — and note the probe's `_REPACK_STEP_REV = 0.5` rev step rule cannot see it either (the measured re-seed step at the top is ~0.156 rev), so row 9 is the only place it shows. Record which case you have, and the `vel_meas` at the command instant — above ~9 rev/s at the stroke top it is the excursion clamp, above ~20 rev/s anywhere it is the duration cap |
 | H4.7 | `Not enough time for smooth-move` on the Teensy serial | absent — **✅ SCORED PASS 2026-08-21**: a full Platform Teensy serial capture over a multi-height session (4.44 → 5.61 m/s, i.e. up to the C-HAND-3 ceiling) contains **ZERO** occurrences. Longest prelude in that capture was `dur=0.76 s` against the 0.78964 s cap, so the cap did not truncate either. | present ⇒ same hard abort as H1.6. Note Phase 4 can *lengthen* a prelude (a velocity-continuous move takes longer than a rest-to-rest one over the same Δ — up to 0.24 s at the dead-band edge, 0.32 s at 8 rev/s), so if this appears **only** after the flash and H4.3 shows a brake on the same toss, the arm-fit budget needs the continuous prelude added. Route to `hand_stroke.required_arm_lead_s` |
-| H4.8 | a SAFE_ABORT retract, **if one occurs naturally** | the retract still runs and the hand reaches `\|pos\| <= 0.5` rev | it does not. **Hard ABORT** — a kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the Teensy offers, and Phase 4 edits the exact condition (`makeSmoothMove` returning empty) that `Teensy_code_platform.ino:472-475` checks *before* `packedMsgs.clear()`. The change **narrows** that branch (empty now also requires the hand to be at rest), so this should be strictly safer than before the flash — but it is the one row where a regression would be catastrophic and silent. Do **not** provoke an abort deliberately this sitting |
+| H4.8 | a SAFE_ABORT retract, **if one occurs naturally** | the retract still runs and the hand reaches `\|pos\| <= 0.5` rev | it does not. **Hard ABORT** — a kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the Teensy offers, and Phase 4 edits the exact condition (`makeSmoothMove` returning empty) that `Teensy_code_platform.ino:581-583` checks *before* `packedMsgs.clear()` at `:588`. The change **narrows** that branch (empty now also requires the hand to be at rest), so this should be strictly safer than before the flash — but it is the one row where a regression would be catastrophic and silent. Do **not** provoke an abort deliberately this sitting |
 | H4.9 | minimum commanded/measured `pos` on any toss, and after any retract | `>= 0.0` rev — encoder zero is the excursion clamp's FLOOR and the host's own declared floor for this axis | `< 0.0` rev ⇒ **hard abort.** The bottom hard stop is at −0.1 rev (the axis homes downward into it) and the floor carries no margin for the position loop's +0.186 rev undershoot, so any commanded value below zero is planned travel onto the stop. Route to Phase 4's `SMOOTH_MOVE_POS_FLOOR_REV` |
 | H4.10 | duration of any commanded hand move (last sample − first, from the trace) | `<= 0.78964` s (was `0.8005` s pre-2026-08-18; **a board still emitting up to `0.8005` s is an UNFLASHED board** — cross-read FW-1) | `>` that ⇒ the firmware's duration cap did not run (flash suspect). The cap is what keeps `catch_coordinator._PRIME_INFLIGHT_S = 1.2` s covering every profile the Teensy can emit; above it a re-prime tick can land inside a live ascent, which is the 2026-07-23 stutter |
 
@@ -1858,11 +1871,12 @@ costs nothing.
 ## CHECK HAND-7 — the post-release deceleration (`hand-command-continuity` Phase 7)
 
 **Validates:** contract **C-HAND-2**, `ros_ws/docs/hand_decel_feedforward.md`.
-**Plan:** `plans/active/hand-command-continuity.md` § Phase 7.
+**Plan:** `plans/archived/hand-command-continuity.md` § Phase 7.
 **Deployment:** § DEPLOYMENT MATRIX **row C** — a **Platform Teensy flash**
-(`FW_VERSION` 1 → **2**) — *plus* row A's `colcon build` for the regenerated
-`hardware_config.py`. **Run FW-1 first. On a `v1` board every row below is
-meaningless**, and it is meaningless in the most dangerous direction: a v1 board
+(this section landed at `FW_VERSION` 1 → **2**; the board and the tree are on
+**3** since the 2026-08-18 end-stop correction) — *plus* row A's `colcon build`
+for the regenerated `hardware_config.py`. **Run FW-1 first. On a `v1` board every
+row below is meaningless**, and it is meaningless in the most dangerous direction: a v1 board
 is the board that touched the end stop.
 
 ### What this section is about, in one paragraph
@@ -2008,7 +2022,7 @@ ceiling (`10.8 − 0.2` since 2026-08-18; `11.1 − 0.5` before — same 10.60),
 
 | # | row | how | PASS | ABORT |
 |---|---|---|---|---|
-| **H7.0** | the board is on v2 | `grep PLATFORM_FW_CHECK "$LOG"` | `OK — … v2` | anything else — see FW-1. **A `v1` board scores this whole section as a re-run of the sitting that touched the stop** |
+| **H7.0** | the board is on v3 | `grep PLATFORM_FW_CHECK "$LOG"` | `OK — … v3` | anything else — see FW-1. **A `v1` board scores this whole section as a re-run of the sitting that touched the stop**; a `v2` board has the feedforward but predates the end-stop correction, so H4.10 mis-scores it |
 | **H7.0a** | **desk, before the flash** — the firmware xref actually ran | `pytest tests/firmware/test_hand_throw_decel_xref.py -q` on a host **with `g++`** | `passed`, **ZERO skips** | any failure, **or `N skipped`**. A SKIP means `g++` was absent, and this file is the only thing in the repository that reads the C++ you are about to flash — everything else is a hand-maintained transcription. **A SKIP is not a PASS. Do not flash on a skip.** Same lesson as H4.0b, which is about the sibling xref |
 | **H7.0b** | **desk** — the verdict instrument itself is sound | `python tools/probes/hand_decel_authority.py --self-check` | `SELF-CHECK: PASS`, exit 0 — it scores a synthetic PRE-fix capture FLAG and a synthetic POST-fix capture ACCEPT | any `BAD` line. This probe produces H7.2 / H7.3 / H7.5; an instrument validated on only the broken shape scores a **working fix as a failure** and burns the sitting. Also INST-6 |
 | **H7.0c** | **before the flash, on the live drive** — the negative torque clamp | `odrivetool` on the hand axis: read `axis0.config.torque_soft_min` | anything `<= -0.20` N·m (comfortably below the 38.9 A = 0.215 N·m the ceiling rung commands) | **`-0.0551` N·m** (= exactly −10.00 A) ⇒ **STOP, do not flash.** That is what `config/ODrive config Files/odrive_pro_hand_config.json` declares, and it is asymmetric against a `torque_soft_max` of +0.5 N·m. If it is live it truncates the decel feedforward — **legacy and corrected alike** — above ~0.49 m, and the whole ladder would read pre-fix numbers that the failure table below would misattribute to physics. **ANSWERED 2026-08-18: the clamp WAS live.** `torque_soft_min/max` are now a symmetric **±0.7 N·m** and `save_configuration()` has been run, so this row is a REGRESSION CHECK, not an open question — a reading of `−0.0551` now means the drive config drifted back. Original text: *record the value either way; it takes 30 s and it is currently an open question* (C-HAND-2 § *The negative torque clamp*) |
@@ -2058,7 +2072,7 @@ ceiling (`10.8 − 0.2` since 2026-08-18; `11.1 − 0.5` before — same 10.60),
 | symptom | most likely | do |
 |---|---|---|
 | `peak` no better than pre-fix at R2 | the flash did not take, or took from the wrong tree | re-run **H7.0**. **Do NOT use `iq_ramp` as the corroborating evidence** — it is aliased to 0–1 fresh samples per ramp and reads flat either way (see the box above). The evidence is the FW version and `over_x3`; do not re-tune |
-| every rung reads its pre-fix peak, H7.0 says v2, and the flatness row also fails | the **negative torque clamp is live** — `torque_soft_min = −0.0551` N·m truncates the feedforward above ~0.49 m, so the flash landed but the drive refuses the command | **STOP.** Run **H7.0c** (it should have run before the flash). This is a drive-config finding, not a physics one, and the row below would misattribute it |
+| every rung reads its pre-fix peak, H7.0 says the board is current, and the flatness row also fails | the **negative torque clamp is live** — `torque_soft_min = −0.0551` N·m truncates the feedforward above ~0.49 m, so the flash landed but the drive refuses the command | **STOP.** Run **H7.0c** (it should have run before the flash). This is a drive-config finding, not a physics one, and the row below would misattribute it |
 | `peak` improved but not to band; `over_x3` still grows with speed (H7.3 fails) | the declared inertia is still an under-estimate — the true reflected inertia is above 1.05e-5 kg·m² | **STOP.** Rule out the clamp row above first. Then this is a measurement to bring back, not a bench tweak: re-run `hand_decel_authority.py`, record the per-tier `eta`, and hand it to the plan. Raising `throw_decel_reflected_inertia_kgm2` past the measured value would break C-HAND-2's safety clause |
 | `dip_below_x3 > 0.100` at **R0 only**, peaks fine everywhere | the gravity term — expected direction, unmeasured magnitude | **STOP at R0, do not climb.** This is the one failure the R0 rung exists to catch: open-loop, feedforward + gravity exceeds the commanded decel below `a_cmd ≈ 1900 rev/s²`, and the loop was predicted to absorb it to 0.013–0.025 rev. Record the value and the tier. The fix direction is **lower** `throw_decel_reflected_inertia_kgm2` — but note no value both fixes this and clears 10.60 rev at the ceiling (8.69e-6 predicts a 10.80 rev peak), so it is a plan decision, not a bench tweak |
 | `dip_below_x3 > 0.100` (H7.4 fails) | the declared inertia is an **over**-estimate | **STOP.** Lower it. This is the contract's one-sided-safety clause failing, and it is the failure this section most wants to hear about |
@@ -2098,7 +2112,7 @@ ceiling (`10.8 − 0.2` since 2026-08-18; `11.1 − 0.5` before — same 10.60),
 
 ## Section FW — `hand-command-continuity` Phase 6 (Platform Teensy `FW_VERSION`)
 
-**Plan**: `plans/active/hand-command-continuity.md` § Phase 6
+**Plan**: `plans/archived/hand-command-continuity.md` § Phase 6
 **Contract**: `ros_ws/docs/platform_fw_version.md` (**C-PLATFW-1**)
 **Run-sheet rows**: **INST-4**, **INST-5** (at the desk), **FW-1** and **FW-2**
 (stage 3), **H4.0d** (§ CHECK HAND-4 pre-flight — the same check, cited where it
@@ -3967,7 +3981,7 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 | first `catch/dynamic_target` timestamp, relative to `t_release` | **`+0.000 s` to `+0.100 s`**, never negative (measured band 2026-07-27: `+0.013…+0.050 s` on 11/11) | **any value < 0** — the deferred reach fired *before* release. On a displaced throw that un-tilts the platform mid-launch and destroys the aim; here it is the same defect with the aim error masked by `\|B − A\| = 0` |
 | deferred reach travel, `catch/dynamic_target` first→last | **`≤ 2.0 mm`** (nominal 0 mm at `B == A`) | `> 2.0 mm` — a zero-displacement goal is commanding real platform travel in flight |
 | commanded pose span (FK of `/leg_setpoint_echo`) over `[release − 0.10 s, release]` — `levelling_tilt_bag_check.py --t0 <release−0.10> --t1 <release> --plateau-min-s 0.05 --plateau-tol 1.0`, read `span_deg` and the `commanded position span (x,y,z) mm` line | **`< 0.02°` and `< 0.2 mm`** (measured `0.0000° / 0.0000 mm` on 11/11 on 2026-07-27) | any commanded motion through release |
-| hand peak `pos_meas` | `< 10.5 rev` at 0.78 m | `≥ 10.5 rev` — see the end-stop amendment in § THE RUN SHEET's EXECUTED box. **No tosses above 0.78 m in THIS section.** Going above 0.78 m has exactly one route and it is not here: § CHECK HAND-7's ladder, on a `v2` board, in its own capture |
+| hand peak `pos_meas` | `< 10.5 rev` at 0.78 m | `≥ 10.5 rev` — see the end-stop amendment in § THE RUN SHEET's EXECUTED box. **No tosses above 0.78 m in THIS section.** Going above 0.78 m has exactly one route and it is not here: § CHECK HAND-7's ladder, on a board FW-1 reads as current (`v3`), in its own capture |
 | caught | by eye; not a gate on one attempt | — |
 
 Score the pre-release **half** window only: a reach that starts *at* release

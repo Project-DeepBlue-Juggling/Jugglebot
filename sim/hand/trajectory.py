@@ -62,7 +62,7 @@ SMOOTH_MOVE_EXCURSION_MARGIN_REV = 0.2
 MIN_EVENT_VEL_MPS = 0.3
 MAX_EVENT_VEL_MPS = 7.0
 SAFETY_GAP_S = 0.02  # 20 ms safety gap (from teensy_operational.safety_gap_us)
-SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:260
+SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:54/:557
 
 # Stroke end stops, in the FIRMWARE's frame: revs from the homed physical
 # bottom.  ``rev = mm/1000 * _LINEAR_GAIN`` with NO margin term — the 20 mm
@@ -71,7 +71,7 @@ SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:260
 # into the bottom stop and sets zero 0.1 rev above it, and
 # ``hand_motor_hard_stop_revs = 10.8`` is 341.59 mm above that zero).  Carrying
 # the inset across would put the ceiling 0.63 rev too high, PAST the hard stop.
-# See plans/active/hand-command-continuity.md § Phase 0 — Outcome, Confirmation 2.
+# See plans/archived/hand-command-continuity.md § Phase 0 — Outcome, Confirmation 2.
 #
 # CORRECTED 2026-08-18: this mirror read 11.1 (and the margin 0.5) until the
 # operator measured the sensorised hand's hard stop at 10.8 rev — metal contact.
@@ -86,11 +86,17 @@ SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:260
 # rest-to-rest fallback slightly sooner) and the host window that consumes it,
 # ``_PRIME_INFLIGHT_S``, was sized against the larger number.
 #
-# NOTE, deliberately not acted on here: ``hand_stroke_mm = 355.0`` implies a top
-# of 11.224 rev, which is 0.42 rev ABOVE this measured stop.  355 mm functions as
-# a THROW-PROFILE parameter (it feeds total_stroke -> x2/x3/x5, all empirically
-# validated on hardware), not as a measurement of physical travel.  Re-deriving
-# it would move the release and catch points and needs its own validation.
+# NOTE, deliberately not acted on here: this module's ``HAND_STROKE_M = 0.355``
+# implies a top of 11.224 rev, which is 0.42 rev ABOVE this measured stop.  That
+# is not a contradiction — 0.355 is ``teensy_trajectory.hand_stroke_m``, the
+# THROW-PROFILE basis (it feeds total_stroke -> x2/x3/x5, all empirically
+# validated on hardware), NOT a measurement of physical travel.  Physical travel
+# is ``jugglebot_geometry.hand_stroke_mm`` = **344.75 mm**, a separate key since
+# 2026-08-18.  Re-deriving the profile basis would move the release and catch
+# points and needs its own validation.
+# (This note said ``hand_stroke_mm = 355.0`` until 2026-08-21 — it named the
+# geometry key while meaning the trajectory one, i.e. exactly the conflation the
+# 2026-08-18 split exists to prevent.  See sim/plant/mujoco_plant.py.)
 HAND_MOTOR_HARD_STOP_REVS = 10.8     # geometry.hand_motor_hard_stop_revs
 HAND_HOME_ABS_POS_REV = -0.1            # Homing::HAND_ABS_POS_REV — the bottom stop
 # The smooth-move excursion FLOOR is encoder zero (JBOp::HAND_RETRACT_REV), NOT
@@ -339,15 +345,17 @@ class HandCatchTrajectory:
 # ------------------------------------------------
 # ``makeSmoothMove`` is prepended to EVERY hand command: a kind-3 prime/retract/
 # SAFE_ABORT, and the prelude ahead of every kind-0/1/2 stroke
-# (``Teensy_code_platform.ino:470`` and ``:522``).  It used to seed the quintic
+# (``Teensy_code_platform.ino:580`` and ``:631``).  It used to seed the quintic
 # ``v = a = 0`` from ``current_hand_position`` alone, while
-# ``current_hand_velocity`` sat declared ``extern volatile`` two lines above the
-# function and was never read.  So any command landing while the hand moved
-# commanded a VELOCITY STEP: measured 2026-07-25, a catch arm landing 8-18 ms
-# after ball release froze the setpoint at the live encoder value (6.20-7.78 rev)
-# with the hand travelling through it at ~120 rev/s, and the position loop then
-# coasted to 10.17-10.32 rev (0.775 rev from the 11.1 rev overextension guard)
-# and yanked the hand 0.34-1.75 rev = 10.7-55.3 mm BELOW the stroke end.  That is
+# ``current_hand_velocity`` sat declared ``extern volatile`` right beside
+# ``current_hand_position`` (``Trajectory.h:85-86``) and was never read.  So any
+# command landing while the hand moved commanded a VELOCITY STEP: measured
+# 2026-07-25, a catch arm landing 8-18 ms after ball release froze the setpoint at
+# the live encoder value (6.20-7.78 rev) with the hand travelling through it at
+# ~120 rev/s, and the position loop then coasted to 10.17-10.32 rev (0.475 rev
+# from the 10.8 rev hard stop; this read "0.775 rev from the 11.1 rev
+# overextension guard" until 2026-08-21 — 11.1 was the DECLARED stop, corrected
+# 2026-08-18 to the operator-measured metal contact) and yanked the hand 0.34-1.75 rev = 10.7-55.3 mm BELOW the stroke end.  That is
 # the operator-visible post-throw dip.
 #
 # THE SHAPE
@@ -639,7 +647,7 @@ def plan_smooth_move(start_rev: float, target_rev: float,
     load-bearing: ``hand_catch_prime_rev`` was moved to the derived stroke top
     (9.9594 rev) and the catch arm gated to after the throw stroke precisely so
     a catch from rest opens with the smallest possible prelude.  It is also the
-    ONLY branch that returns nothing, and ``Teensy_code_platform.ino:472-475`` returns
+    ONLY branch that returns nothing, and ``Teensy_code_platform.ino:581-583`` returns
     from the kind-3 handler BEFORE ``packedMsgs.clear()`` when the move is
     empty — so widening this branch would widen a hole in the only un-arm
     mechanism the Teensy offers (a pre-release SAFE_ABORT depends on a kind-3
@@ -664,7 +672,7 @@ def plan_smooth_move(start_rev: float, target_rev: float,
     * *Refuse the command.*  For a kind-3 that means not clobbering, and a
       kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the
       Teensy offers.  Refusing via an empty trajectory is worse still — the
-      early return at ``Teensy_code_platform.ino:472-475`` sits BEFORE the queue clear,
+      early return at ``Teensy_code_platform.ino:581-583`` sits BEFORE the queue clear (``:588``),
       so an armed stroke would survive a SAFE_ABORT.
     * *Brake to the limit* (shorten the duration until the bulge fits, whatever
       acceleration that costs).  Near a target the bulge has no room to be

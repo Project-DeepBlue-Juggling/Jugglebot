@@ -2,7 +2,7 @@
 title: Hand catch arm gated off a live throw stroke (C-HAND-1 host half) — and five review findings that reshaped what the bench will believe
 type: bugfix
 date: 2026-07-26
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — hand-command-continuity Phases 1-2"
 related_plan: "hand-command-continuity.md"
 files_changed:
@@ -14,7 +14,7 @@ files_changed:
   - tests/motion/test_hand_stroke.py
   - tests/ros/test_catch_coordinator_node.py
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
 commits:
   - 6179a88
 subsystem:
@@ -314,3 +314,36 @@ no queue was cleared.
   `sim/hand/trajectory.py` centres its own t = 0 on the hold — a 4.9-9.7 ms /
   0.498 rev (15.75 mm) divergence, and a candidate contributor to the known
   sim-catch fidelity gap.
+## Close-out — 2026-08-21
+
+**Status `in-progress` → `resolved`.** The entry was left `in-progress` because
+its own Outcome said "DEFERRED TO THE OPERATOR — this phase is NOT validated
+until it runs". It ran, on 2026-07-27, and it passed:
+
+* `H1.2`–`H1.7` PASS — **17 latched = 17 tosses, 17 withheld, 0 CLOSED**, min
+  slack **0.124 s** = 2.5× the floor;
+* `H2.1`–`H2.3` PASS;
+* the headline mechanism is *verified, not inferred*: on **all 17** tosses
+  `pos_cmd` reached `x3` and held it before any new command landed, with
+  commanded velocity never negative and commanded position never below `x3`
+  between release and the arm.
+
+Verdicts: `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`.
+
+**Two later corrections that touch this entry's numbers**, recorded rather than
+edited in:
+
+1. **The arm window at the band floor is 50 ms, not 115 ms.** Contract C-HAND-3
+   (2026-08-18, `ros_ws/docs/hand_throw_envelope.md`) replaced the hand-picked
+   `FLIGHT_TIME_MIN_S = 0.55` with a DERIVED **0.4949 s** floor, defined as the
+   flight at which this very window reaches `arm_window_margin_s = 0.050 s`. So
+   the floor window is now an identity, not incidental slack, and runbook row
+   **H1.5** (`slack > 0.050 s`) is a boundary rather than a margin. The window
+   closure velocity moves with it: `v_armed < 1.5907` m/s, not 1.26.
+2. **The end-stop anchor.** Every "0.775 rev of headroom" figure here is against
+   the *declared* 11.1 rev stop; against the measured 10.8 rev it is 0.475 rev
+   (`logbook/2026-08-18-hand-end-stop-corrected.md`).
+
+The `Teensy_code.ino:472-475` latent defect noted above is unchanged and still
+an operator decision; it lives at `Teensy_code_platform.ino:581-583` (clear at
+`:588`) in the current tree.

@@ -20,7 +20,7 @@ files_changed:  # sources of truth + the two firmware trees; the commit carries
   - sim/hand/trajectory.py
   - tools/probes/hand_stroke_timeline.py
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
 subsystem:
   - motion
 tags:
@@ -128,7 +128,7 @@ and test files patched, the generated artifacts regenerated via
 `python config/generate_config.py`, and the live-code reference count for the old
 symbol verified **down to zero**. The remaining textual hits are all intentional:
 the YAML comment explaining the rename, a historical runbook blockquote, the
-explicitly-superseded paragraph in `plans/active/hand-command-continuity.md`, and
+explicitly-superseded paragraph in `plans/archived/hand-command-continuity.md`, and
 the archived `plans/archived/simulation-development.md` table. Logbook entries and archived plans keep the old numbers — they were
 true when written.
 
@@ -168,6 +168,18 @@ drift someone forgot to reconcile. Re-deriving the profile is its own scheduled
 piece of work with a re-validation round behind it, not a tidy-up.
 
 ## Deployment
+
+> **✅ BOTH FLASHES ARE ABOARD — updated 2026-08-21.** Platform Teensy **FW 3**
+> and can-bridge **FW 15**, both carrying the 10.8 rev value; the host-side bound
+> has been live since the `colcon build` that followed. The section below is the
+> account of what was still owed on 2026-08-18 and is kept as written; its
+> *"Until both are flashed, the firmware still clamps at 11.1"* no longer
+> describes this robot. Confirm on the board rather than on this note:
+> `link_status/platform_fw_version` against
+> `teensy_link/rpc_args.py::PLATFORM_FW_VERSION_EXPECTED`, and
+> `link_status/bridge_fw_version` against `EXPECTED_BRIDGE_FW_VERSION` — both are
+> wire-identical to their predecessors, so a healthy link is NOT evidence either
+> build is aboard.
 
 **NOT fully live yet.** `Geometry::HAND_MOTOR_HARD_STOP_REVS` is compiled into two
 firmware images:
@@ -215,3 +227,42 @@ carries `pytestmark = [serial, nightly]` and FAILS if run alongside the rest of
 exactly what the marker exists to prevent. Isolated, 2026-08-18: **3 passed**. Use
 `./run_tests.sh`, which puts it in the serial phase; a bare `pytest tests/sim/`
 result on that file is not signal.
+
+## Withdrawn claims
+
+### 2026-08-21 — "the live-code reference count for the old symbol verified **down to zero**"
+
+**Retracted as a claim about the sweep's completeness.** It is true, precisely, of
+the *symbol* `hand_motor_max_position_revs`: no live code references that name.
+It was read — including by this entry's own Fix section, which lists "the
+remaining textual hits" as if they were the whole residue — as a claim that the
+**11.1 rev value** was gone from live code. It was not. Two survivors were found
+on 2026-08-21 while remediating `hand-command-continuity.md` for archival, and
+both are exactly the class a symbol-scoped grep cannot see:
+
+1. ⚠ **`experimenting/platform_calibration/measuring_leg_mapping/can_interface.py:90`
+   — `_HAND_MOTOR_MAX_POSITION = 11.1`**, used at `:458` as the clip bound for
+   the hand axis in a script that actuates the real motor. A **declared travel
+   limit 0.3 rev = 9.5 mm past metal**, surviving purely because the symbol name
+   differs. Corrected to 10.8 on 2026-08-21. (The file's own header says it must
+   not be used for normal Jugglebot operation, which bounds the exposure — it
+   does not make a limit past metal acceptable.)
+2. **`sim/plant/mujoco_plant.py:123` — `_hand_stroke_mm = 355.0`**, used at
+   `:379` as the `command_hand` clip bound. This entry's own § *`hand_stroke_mm`
+   corrected* section names the consequence exactly — *"Left uncorrected, the
+   simulated hand could travel ~10 mm further than the real one"* — but attributes
+   it only to the MJCF geometry path (`sim/model/generate_mjcf.py:92`) and misses
+   the second, independent hardcoded copy in the plant, which is the one in the
+   command path. Derived from `GEOM_HAND_STROKE_MM` on 2026-08-21. (`sim/model/
+   jugglebot.xml` still carries the pre-split 0.355 m joint range: it is a
+   committed generated artifact and has not been regenerated. The plant's tighter
+   clip is the conservative side of that skew.)
+
+**Correct finding:** a rename-driven sweep verifies the *name*. The **value**
+needs its own sweep, and the two do not have the same residue. Both survivors
+here were value-only.
+
+**Method note for the next sweep of this kind:** `grep -rn '11\.1'` over the
+tracked tree (with `git grep`, and excluding `logbook/`) surfaces both of these in
+one pass and takes seconds. `rg` is not installed on this box and returns a silent
+zero — see `DOCUMENTATION_GUIDE.md` § 2.6.

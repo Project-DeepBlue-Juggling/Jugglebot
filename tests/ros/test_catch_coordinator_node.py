@@ -487,7 +487,7 @@ def test_prime_inflight_window_covers_the_commanded_prime_ascent():
 
     Added 2026-07-26 with the prime move (9.858 → the derived stroke top
     9.9594 rev): the commanded full-stroke ascent lengthened 0.7544 → 0.7583 s
-    (``T = sqrt(Δ·QUINTIC_S2_MAX/A)``, ``Trajectory.h:257``). That is nowhere
+    (``T = sqrt(Δ·QUINTIC_S2_MAX/A)``, ``Trajectory.h::smoothMoveDuration``, :365). That is nowhere
     near 1.2 s, but nothing pinned the relationship, so a later prime raise or a
     Phase-4 duration-formula change could push the commanded ascent past the
     window silently.
@@ -999,12 +999,15 @@ def test_arm_failed_ack_logged_at_debug():
 #
 # The defect (2026-07-25, seven self-tosses across three sessions): the kind-1
 # catch arm landed 8-18 ms after release, INSIDE the throw's 65 ms deceleration
-# ramp. Teensy_code_platform.ino:539 clears the whole packed queue on any kind-0/1/2
-# command and Trajectory.h:242-301 seeds the replacement prelude from
+# ramp. Teensy_code_platform.ino:648 clears the whole packed queue on any kind-0/1/2
+# command and Trajectory.h:527-620 seeds the replacement prelude from
 # current_hand_position with v = 0, a = 0 (current_hand_velocity is declared
-# extern at :47 and never read) — so the queue was replaced by a rest-to-rest
-# quintic computed from a position the hand was travelling through at ~120 rev/s.
-# The hand overshot to 10.17-10.33 rev against an 11.1 rev guard, was yanked
+# extern at Trajectory.h:86 and never read) — so the queue was replaced by a
+# rest-to-rest quintic computed from a position the hand was travelling through
+# at ~120 rev/s.
+# The hand overshot to 10.17-10.33 rev against the 10.8 rev hard stop (this read
+# "an 11.1 rev guard" until 2026-08-21; 11.1 was the DECLARED stop and sat
+# 0.3 rev past metal, corrected 2026-08-18), was yanked
 # 0.34-1.75 rev (10.7-55.3 mm) BELOW the stroke end, and recovered over ~300 ms.
 # It also discarded the THROW's own decel ramp: 0.887 s and 1.091 s of achieved
 # flight against a commanded 0.800 s.
@@ -1273,7 +1276,7 @@ def test_window_closed_dispatches_immediately_and_loudly(monkeypatch):
     """When waiting would push the arm past the Teensy's build deadline, ARM
     ANYWAY and shout.
 
-    Teensy_code_platform.ino:533 refuses the WHOLE command when
+    Teensy_code_platform.ino:642 refuses the WHOLE command when
     now + smoothDur + SAFETY_GAP > firstMainAbs and prints the refusal to serial
     only (:534) — so an arm deferred past that point does not arrive late, the
     catch silently never fires and the ball hits the floor with no ROS-visible

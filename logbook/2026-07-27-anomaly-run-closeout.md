@@ -4,7 +4,7 @@ type: bugfix
 date: 2026-07-27
 status: resolved
 phase: "Self-toss anomaly fixes — run close-out"
-related_plan: "PROMPT-anomaly-fixes-orchestration.md"
+related_plan: "hand-command-continuity.md"
 files_changed:
   - tests/hardware/session_anomaly_fixes.md
   - tests/ros/test_trajectory_node.py
@@ -14,7 +14,7 @@ files_changed:
   - tools/probes/README.md
   - ros_ws/docs/catch_arrival_contract.md
   - plans/parked/levelling-frame-contract.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
   - plans/parked/catch-reach-degenerate-overshoot.md
   - plans/archived/fk-convergence-tolerance.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
@@ -319,8 +319,13 @@ to HEAD immediately before staging.
 
 ## Related
 
-- `plans/active/PROMPT-anomaly-fixes-orchestration.md` — the run's own record;
-  execution-order table now carries a Status column and § Run close-out — Outcome.
+- ~~`plans/active/PROMPT-anomaly-fixes-orchestration.md`~~ — the run's own record;
+  execution-order table carried a Status column and § Run close-out — Outcome.
+  **DELETED 2026-08-15** in `07f2361` (plans-board cleanup) — all 11 rows were
+  DONE, so the prompt had nothing left to schedule. See
+  `logbook/2026-08-15-plans-board-cleanup.md`. This entry's `related_plan:` was
+  re-pointed at `hand-command-continuity.md` on 2026-08-21, since the deleted
+  filename resolved nowhere.
 - `tests/hardware/session_anomaly_fixes.md` — the deliverable; § THE RUN SHEET is
   the authority for the operator sitting.
 - `logbook/2026-07-27-velocity-continuous-prelude.md`,

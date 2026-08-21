@@ -25,7 +25,7 @@ Subscribes to:
     the window stays INERT and the reload path's timing is bit-identical.
   - catch/vel_scale (Float64) — the operator's per-attempt catch-speed knob
     (reload goal field, or published manually); scales the armed event velocity;
-    reset to the config default (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.8) on disarm.
+    reset to the config default (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.9) on disarm.
   - catch/prime_hold (Bool) — the toss coordinator's prime-suppression gate
     (True at PREPARE entry, before catch/armed rises; False at terminal). While
     True, EVERY auto-prime dispatch path here (armed-edge prime, retry-tick
@@ -187,14 +187,15 @@ _MAX_ARM_DISPATCHES = 2
 #
 # The failure it closes, measured 2026-07-25 across seven self-tosses: the Teensy
 # rebuilds its ENTIRE single packed queue on any kind-0/1/2 command
-# (Teensy_code_platform.ino:539 packedMsgs.clear()) and seeds the replacement prelude from
-# current_hand_position with v = 0, a = 0 (Trajectory.h:242-301 —
-# current_hand_velocity is declared extern at :47 and never read). The catch arm
+# (Teensy_code_platform.ino:648 packedMsgs.clear()) and seeds the replacement prelude from
+# current_hand_position with v = 0, a = 0 (Trajectory.h:527-620 —
+# current_hand_velocity is declared extern at :86 and never read). The catch arm
 # was landing 8-18 ms after release, INSIDE the throw's 65 ms deceleration ramp,
 # so the queue was cleared while the hand was travelling through ~120 rev/s and
 # replaced by a rest-to-rest quintic computed from that instant's position. The
-# hand overshot to 10.17-10.33 rev (0.775 rev from the 11.1 rev overextension
-# guard), was yanked back 0.34-1.75 rev BELOW the stroke end — 10.7 to 55.3 mm,
+# hand overshot to 10.17-10.33 rev (0.475 rev from the 10.8 rev hard stop; this
+# read "0.775 rev from the 11.1 rev overextension guard" until 2026-08-21, an
+# anchor retired 2026-08-18 when the operator measured metal contact), was yanked back 0.34-1.75 rev BELOW the stroke end — 10.7 to 55.3 mm,
 # up to 20.5 % of the stroke — and recovered over ~300 ms. It also discarded the
 # THROW's own decel ramp, replacing it with the position loop's reaction to a
 # frozen setpoint.
@@ -271,7 +272,8 @@ class CatchCoordinatorNode(Node):
         # Operator catch-speed knob (catch/vel_scale, published by the reload action
         # from its goal — or manually for bench throws). Scales the event velocity
         # the hand catch is armed with; reset to the config default
-        # (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.8 locked in from the 2026-07-23 third
+        # (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.9 since the toss-tier 8a tuning;
+        # 0.8 was locked in from the 2026-07-23 third
         # sitting) on the disarm edge so one reload's tuning value never leaks
         # into the next.
         self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
@@ -1007,7 +1009,7 @@ class CatchCoordinatorNode(Node):
            travelling through, which is precisely what runbook row H1.1's
            ``dip_below_x3 <= 0.100 rev`` reads.
         3. **Busy.** Withhold — but only while waiting still leaves the Teensy
-           enough time to build the catch. ``Teensy_code_platform.ino:533`` refuses the
+           enough time to build the catch. ``Teensy_code_platform.ino:642`` refuses the
            WHOLE command when ``now + smoothDur + SAFETY_GAP > firstMainAbs`` and
            prints the refusal to serial only (``:534``), so an arm deferred past
            that point does not merely arrive late — the catch silently never
@@ -1019,14 +1021,14 @@ class CatchCoordinatorNode(Node):
            **What the forced branch does NOT promise.** The fit check that sent
            us here budgets the AT-REST prelude; on this branch the hand is by
            definition mid-stroke, so the prelude the firmware actually builds
-           from the live encoder is 0.37-0.76 s and ``:533`` may refuse this very
+           from the live encoder is 0.37-0.76 s and ``:642`` may refuse this very
            dispatch. So the honest claim is "attempting the catch beats
            abandoning it", not "this catch will fire". Two things make attempting
            it still correct. First, it is EXACTLY the pre-fix arithmetic — the
            same instant, the same ``event_delay``, the same live prelude — so the
            branch cannot be worse than the behaviour it degrades to. Second,
-           ``:533``'s ``return`` sits BEFORE ``packedMsgs.clear()`` (``:533`` vs
-           ``:539``), so a refusal leaves the live throw stroke intact: the
+           ``:642``'s ``return`` sits BEFORE ``packedMsgs.clear()`` (``:642`` vs
+           ``:648``), so a refusal leaves the live throw stroke intact: the
            downside is a lost catch, never a clobbered stroke. Dropping the arm
            here instead was rejected on that asymmetry — a drop guarantees no
            catch, whereas a dispatch is refused only if the Teensy's own clock

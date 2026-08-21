@@ -33,7 +33,7 @@ Two obligations follow, and they sit on opposite sides of the CAN bus:
 | # | Obligation | Owner | Status |
 |---|---|---|---|
 | **H** | A **scheduled** kind-0/1/2 stroke is not dispatched while another stroke is physically executing. | Host (`catch_coordinator_node`) | **Landed** 2026-07-26 |
-| **F** | The smooth-move prelude is continuous with the live hand **velocity**, not seeded at `v = 0`. | Firmware (`Trajectory.h`) | **Landed in source** 2026-07-27 — **NOT LIVE until the Platform Teensy is flashed.** Whether it is live is now READABLE: `link_status/platform_fw_version` must show **`>= 1`**, not `0 (PRE-VERSIONING)` — `ros_ws/docs/platform_fw_version.md` (contract C-PLATFW-1) carries the current expected value, which moved to **2** on 2026-07-28 with C-HAND-2. Read the version against *that* file, never against a number restated here |
+| **F** | The smooth-move prelude is continuous with the live hand **velocity**, not seeded at `v = 0`. | Firmware (`Trajectory.h`) | **LIVE.** Landed in source 2026-07-27, **flashed and confirmed on hardware** at the 2026-07-27 sitting (`FW-1`/`H4.0d` read `PLATFORM_FW_CHECK: OK — v1` on all six launches) and exercised on real throws: the velocity-continuous branch fired on 4 of 17 tosses (`v0` −6.90…−8.44 rev/s, max commanded 10.2259 rev, 0.374 rev under the clamp). This row read *"NOT LIVE until the Platform Teensy is flashed"* until 2026-08-21 — written before the sitting and never re-statused. Whether it is live on the board in front of you stays READABLE: `link_status/platform_fw_version` must equal `teensy_link/rpc_args.py::PLATFORM_FW_VERSION_EXPECTED`, not `0 (PRE-VERSIONING)` — `ros_ws/docs/platform_fw_version.md` (contract C-PLATFW-1). Read the version against *that* pair, never against a number restated here |
 
 Obligation H is a mitigation, not a closure. It removes the one dispatch path
 that was reliably violating the invariant. Obligation F is what closes
@@ -46,8 +46,13 @@ any of them.
 velocity-continuous profile must overshoot to come back, and the overshoot is
 `|v0| * T * 16/81` with `T` set by the acceleration limit — so it costs
 `0.00778 * v0^2` rev of travel. Against the stroke that buys continuity only up to
-**~9.1 rev/s** at the stroke top and **~20.9 rev/s** from a mid-stroke freeze —
-and mid-stroke the duration bound below binds first, at **~20.3 rev/s**.
+**~9.1 rev/s** at the stroke top and **~19.96 rev/s** from a mid-stroke freeze.
+(Both re-derived 2026-08-18 against the corrected 10.8 rev hard stop; they read
+20.9 and 20.3 against the retired 11.1 rev anchor. The stroke-top figure did not
+move because the ceiling held at 10.60 rev — the margin went 0.5 → 0.2 with the
+base. Mid-stroke the ordering FLIPPED: the excursion bound at 19.96 rev/s now
+binds ahead of the duration bound's 20.04, where the duration bound used to bind
+first.)
 Above that the profile falls back to the rest-to-rest quintic (today's exact
 behaviour), because arresting sooner needs an acceleration nothing in the firmware
 declares: a `SAFE_ABORT` retract dispatched with the hand essentially *at*
@@ -56,8 +61,9 @@ declares: a `SAFE_ABORT` retract dispatched with the hand essentially *at*
 the same descent is served fine — 5.0 → 0.0 rev at -7.5 rev/s is honoured — so the
 28 000 figure bounds the near-target corner, not every retract.) A second, weaker
 bound applies as well: an honoured prelude may not take longer than the longest
-rest-to-rest move the stroke admits (0.8005 s), so it never outlasts a profile the
-firmware could already emit. So the honest statement of F is:
+rest-to-rest move the stroke admits (`smoothMoveMaxDuration()` = **0.78964 s**;
+0.80054 s before the 2026-08-18 hard-stop correction shortened the stroke), so it
+never outlasts a profile the firmware could already emit. So the honest statement of F is:
 
 > **F is closed for every `|v0|` whose arrest fits inside the stroke at the
 > declared acceleration limit, and explicitly, observably declined above it.**
@@ -65,7 +71,9 @@ firmware could already emit. So the honest statement of F is:
 The residual is not an implementation gap — it is a consequence of
 `MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100` rev/s² being a *comfort* limit 19-36×
 below what the throw profile itself commands (**1902 rev/s²** at a 0.80 s flight,
-**3597 rev/s²** at the band top, `FLIGHT_TIME_MAX_S = 1.10 s`). Widening F means
+**3597 rev/s²** at what was then the band top, `FLIGHT_TIME_MAX_S = 1.10 s` — the
+band is DERIVED since 2026-08-18 and its ceiling is 1.1485 s, contract C-HAND-3,
+`ros_ws/docs/hand_throw_envelope.md`). Widening F means
 raising that limit, which changes what the machine can physically do at the bench
 — an operator envelope decision, recorded as an open question rather than taken
 here. **And it is now bounded from above by physics, not just by comfort:**
@@ -82,8 +90,8 @@ routinely commands a deceleration above its own physical ceiling. See
 
 **Also closed by F, and worth naming separately:** the empty-trajectory branch of
 `makeSmoothMove` now requires the hand to be **at rest** as well as at the target.
-`Teensy_code_platform.ino:472-475` returns from the kind-3 handler *before*
-`packedMsgs.clear()` when the move comes back empty, so the old
+`Teensy_code_platform.ino:581-583` returns from the kind-3 handler *before*
+`packedMsgs.clear()` (`:588`) when the move comes back empty, so the old
 position-only condition was a latent hole in the only un-arm mechanism the Teensy
 offers. The new condition is strictly narrower: at the target but moving now
 yields a braking profile, and the cannot-fit fallback emits a floored hold rather
@@ -92,11 +100,13 @@ than nothing.
 ## Why this exists — the failure it closes
 
 The Platform Teensy holds **one** packed trajectory queue. Any kind-0/1/2 command
-rebuilds it from scratch: `Teensy_code_platform.ino:539` calls `packedMsgs.clear()` and
-`makeSmoothMove` seeds the replacement prelude from `current_hand_position`.
+rebuilds it from scratch: `Teensy_code_platform.ino:648` calls `packedMsgs.clear()` and
+`makeSmoothMove` (built at `:631`) seeds the replacement prelude from
+`current_hand_position`.
 Until 2026-07-27 it seeded `v = 0, a = 0`: the live velocity was available —
-`current_hand_velocity` declared `extern volatile` two lines above the function —
-and **never read**. That unread `extern` *was* the defect.
+`current_hand_velocity` declared `extern volatile` right beside
+`current_hand_position` (`Trajectory.h:85-86`), and written from the same 0x009
+frame — and **never read**. That unread `extern` *was* the defect.
 
 That is harmless when the hand is at rest, which is why it survived a year of
 reload operation: a reload's catch arm lands with the hand parked at the top, so
@@ -109,8 +119,11 @@ the throw's 65 ms deceleration ramp. The queue was cleared while the hand was
 travelling through ~120 rev/s, and replaced by a rest-to-rest quintic computed
 from that instant's position. Consequences, all measured:
 
-* the hand **overshot to 10.17-10.33 rev**, leaving 0.775 rev of headroom against
-  the 11.1 rev overextension guard;
+* the hand **overshot to 10.17-10.33 rev**, leaving **0.475 rev** of headroom
+  against the **10.8 rev** hard stop (this read "0.775 rev … against the 11.1 rev
+  overextension guard" until 2026-08-21; 11.1 was the DECLARED stop, corrected
+  2026-08-18 to the operator-measured metal contact at 10.8 rev, so the true
+  margin was always ~2/3 of what was recorded here);
 * it was then **yanked 0.34-1.75 rev below the stroke end** (10.7 to 55.3 mm, up
   to 20.5 % of the usable stroke) and recovered over ~300 ms;
 * the throw's own deceleration ramp was discarded, replaced by the position
@@ -141,8 +154,11 @@ clear_at = announced throw_time + t_dec(|initial_velocity|) + ARM_SUPPRESS_MARGI
 ```
 
 Both inputs are already on the wire (`ThrowAnnouncement`). A fixed conservative
-delay was rejected because `t_dec` spans 94.5 ms at the 0.55 s flight to 47.4 ms
-at 1.10 s — sized for the short end it wastes half the window at the long end;
+delay was rejected because `t_dec` spans **104.9 ms at the 0.4949 s band floor to
+45.4 ms at the 1.1485 s ceiling** (94.5 ms / 47.4 ms against the hand-picked
+0.55–1.10 s band this was first written for, retired 2026-08-18 by C-HAND-3,
+`ros_ws/docs/hand_throw_envelope.md`) — sized for the short end it wastes half the
+window at the long end;
 sized for the long end it lands back inside the ramp at the short end, where the
 momentum is ~1.9x and the end-stop headroom is smallest.
 
@@ -168,8 +184,8 @@ would score the fix against a different model than the one that shipped.
   delay every reload's catch arm — which has no throw stroke to protect and needs
   its lead. A reload announcement leaves the window `None` and the whole gate
   inert.
-* **A closed window dispatches rather than defers.** `Teensy_code_platform.ino:533` refuses
-  the whole command when it will not fit and prints to serial **only** (`:534`),
+* **A closed window dispatches rather than defers.** `Teensy_code_platform.ino:642` refuses
+  the whole command when it will not fit and prints to serial **only** (`:643`),
   so an arm deferred past that point is not a late catch — it is a silently
   missing one with no ROS-visible signal. A dip is recoverable; a dropped ball is
   not.
@@ -180,9 +196,9 @@ Stated so a bench session scores it correctly:
 
 1. **The forced (window-closed) branch promises an attempt, not a catch.** Its fit
    check budgets the at-rest prelude; on that branch the hand is mid-stroke, so
-   the firmware's live-encoder prelude is 0.37-0.76 s and `:533` may refuse the
-   dispatch. This is exactly the pre-fix arithmetic, and `:533` returns **before**
-   `packedMsgs.clear()`, so a refusal leaves the live stroke intact — the cost is
+   the firmware's live-encoder prelude is 0.37-0.76 s and `:642` may refuse the
+   dispatch. This is exactly the pre-fix arithmetic, and `:642` returns **before**
+   `packedMsgs.clear()` (`:648`), so a refusal leaves the live stroke intact — the cost is
    a lost catch, never a clobbered stroke.
 2. **The deferral is tick-dependent.** The gate is reached only from `_on_balls`;
    nothing re-enters it on a timer. A track that drops out for the whole remaining
@@ -217,9 +233,10 @@ Stated so a bench session scores it correctly:
    * *If it did*: `t_acc_catch + 0.32 + 0.02` = 0.47 s at the nominal armed
      3.13 m/s, against the caller's `_MIN_EVENT_DELAY_S = 0.3` s floor. At an
      0.80 s flight the arm dispatches with ~0.55 s of `event_delay` and fits; at
-     `FLIGHT_TIME_MIN_S = 0.55` the window's right edge IS the 0.3 s floor, so
-     `Teensy_code_platform.ino:533` could refuse the command — a lost catch, with the live
-     stroke intact (`:533` returns before `packedMsgs.clear()`).
+     the derived band floor (`FLIGHT_TIME_MIN_S` = **0.4949 s** since 2026-08-18,
+     C-HAND-3; 0.55 s before) the window's right edge IS the 0.3 s floor, so
+     `Teensy_code_platform.ino:642` could refuse the command — a lost catch, with the live
+     stroke intact (`:642` returns before `packedMsgs.clear()` at `:648`).
    **Instrumented, not fixed.** Widening `PRELUDE_ALLOWANCE_S` to the continuous
    duration would make the gate defer far more and could close the arm window at
    the band floor outright — a change to arming timing on the strength of a trigger
@@ -227,9 +244,10 @@ Stated so a bench session scores it correctly:
    `Not enough time for smooth-move` that appears only after the flash, on a toss
    whose `first_neg_cmd` shows a brake, is this limit firing.
 2. **The affordable velocity band is narrow** — see the note under the obligation
-   table. Above ~9.1 rev/s at the stroke top / ~20.3 rev/s mid-stroke (where the
-   0.8005 s duration bound binds before the excursion clamp's ~20.9) the profile
-   falls back to rest-to-rest, i.e. F is declined rather than met. The fallback is
+   table. Above ~9.1 rev/s at the stroke top / ~19.96 rev/s mid-stroke (where the
+   excursion clamp now binds before the 0.78964 s duration bound's ~20.04; the
+   pair read 20.3 / 20.9 with the ordering reversed until the 2026-08-18
+   hard-stop correction) the profile falls back to rest-to-rest, i.e. F is declined rather than met. The fallback is
    observable as a `n_seeds` row and is today's exact behaviour, so it is a
    *bounded* residual, not a regression.
 3. **Continuity is C¹, not C².** The profile matches the live position and the
@@ -242,7 +260,7 @@ Stated so a bench session scores it correctly:
    does not continue the ramp the hand was on. Matching `a(0)` would need a live
    acceleration estimate, and the Teensy has none: `current_hand_position` and
    `current_hand_velocity` come from the ODrive's 0x009 `Pos_Estimate`/
-   `Vel_Estimate` frame (`Teensy_code_platform.ino:439-441`) and there is no third field.
+   `Vel_Estimate` frame (`Teensy_code_platform.ino:546-550`) and there is no third field.
    `a0 = 0` is what the plan specifies and it removes the first-order
    discontinuity, which is the one the measured defect was caused by.
 4. **~~There is no version handshake on the Platform Teensy.~~ CLOSED 2026-07-27
@@ -253,9 +271,11 @@ Stated so a bench session scores it correctly:
    row **H4.0**'s procedural chain was the only guard. It now declares
    `FW_VERSION` and reports it in bytes 5-6 of the 0x6E0 RobotState reply it
    already sends, surfaced as `robot_state.platform_fw_version` /
-   `link_status/platform_fw_version` / a `PLATFORM_FW_CHECK` log line. **Obligation
-   F's "NOT LIVE until flashed" row above is now directly observable** rather than
-   inferred from a four-link evidence chain. The skew WARNS and never refuses —
+   `link_status/platform_fw_version` / a `PLATFORM_FW_CHECK` log line. **Whether
+   obligation F is live on the board in front of you is now directly observable**
+   rather than inferred from a four-link evidence chain. (F's row read "NOT LIVE
+   until flashed" when this limit was written; it has been LIVE since the
+   2026-07-27 flash, and the row was re-statused 2026-08-21.) The skew WARNS and never refuses —
    this path carries the kind-3 retract, the only un-arm mechanism the Teensy
    offers; see that document's § Warn, never refuse.
 5. **The dead-band's anchor is a p99, not a maximum.** `smooth_move_v0_deadband_rps
@@ -282,7 +302,7 @@ Stated so a bench session scores it correctly:
 
 ## Related
 
-* `plans/active/hand-command-continuity.md` — the plan, its Phase 0 evidence, and
+* `plans/archived/hand-command-continuity.md` — the plan, its Phase 0 evidence, and
   the Phase 4 firmware work that closes obligation F.
 * `logbook/2026-07-26-hand-command-continuity-arm-gating.md` — the phase that
   landed obligation H.

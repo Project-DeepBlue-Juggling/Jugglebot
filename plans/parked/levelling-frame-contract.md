@@ -25,7 +25,7 @@ related_code:
 **Branch:** `mvp-trajectory-bringup`
 **Covers:** fix items 1 (universal correction) and 2 (`REJECTED_NOT_LEVELLED` gate)
 from the 2026-07-25 self-toss anomaly investigation.
-**Sibling plans:** `plans/active/hand-command-continuity.md` (items 3–6),
+**Sibling plans:** `plans/archived/hand-command-continuity.md` (items 3–6),
 `plans/archived/fk-convergence-tolerance.md` (item 7),
 `plans/parked/catch-reach-degenerate-overshoot.md` (item 8).
 
@@ -1342,7 +1342,7 @@ the CORRECTED note). The executable version, with commands, lives in
 expected none; any tilt exceeding 1°; E-STOP.
 
 Do **not** expect the hand dip to be gone — that is
-`plans/active/hand-command-continuity.md`. If both plans have landed, validate
+`plans/archived/hand-command-continuity.md`. If both plans have landed, validate
 them in one sitting but score them separately.
 
 ## Testing Plan

@@ -68,7 +68,7 @@
  *        from the live `current_hand_velocity` instead of v = 0, the empty-return
  *        branch is now conjunct on at_rest as well as |delta| < 1e-6, and the
  *        duration bound is the positive root of the corrected quadratic (capped by
- *        `smoothMoveMaxDuration()`).  Plan: plans/active/hand-command-continuity.md
+ *        `smoothMoveMaxDuration()`).  Plan: plans/archived/hand-command-continuity.md
  *        Phase 4.  Also carries this identity block itself.
  *    2 = 2026-07-28.  POST-RELEASE DECELERATION FEEDFORWARD.  `Trajectory.h`'s
  *        `buildThrow` now sizes the torque feedforward of the decel segment
@@ -80,7 +80,7 @@
  *        velocity-hold torques, all of kind 1, and `makeSmoothMove` are
  *        untouched.  Fixes the light end-stop contact measured at ~1.2 m throws
  *        on 2026-07-27.  Contract: ros_ws/docs/hand_decel_feedforward.md
- *        (C-HAND-2).  Plan: plans/active/hand-command-continuity.md Phase 7.
+ *        (C-HAND-2).  Plan: plans/archived/hand-command-continuity.md Phase 7.
  *        A v1 board is not unsafe, it simply still coasts — but every
  *        § CHECK HAND-7 row is meaningless on one, so read FW-1 first.
  *

@@ -11,7 +11,7 @@ related_code:
   - tools/probes/hand_stroke_timeline.py
   - plans/archived/hand-ball-sensor.md
   - plans/active/single-ball-toss.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
 ---
 
 # Plan — Catch robustness programme

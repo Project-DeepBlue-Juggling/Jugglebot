@@ -35,9 +35,11 @@ Positions are motor revs from the firmware's encoder zero (the homed physical
 bottom).  The sim's mm are converted with ``rev = mm/1000 * LINEAR_GAIN`` and NO
 stroke-margin term: the sim's 20 mm inset is a sim-side *placement* of the stroke
 inside the travel, not a frame offset the firmware shares.  Carrying it across
-would put the end-stop ceiling 0.63 rev too high — 0.53 rev past the 11.1 rev
-overextension guard, which itself sits 0.76 mm below the top of the 355 mm
-stroke.
+would put the end-stop ceiling 0.63 rev too high — 0.83 rev past the 10.8 rev
+hard stop.  (This read "0.53 rev past the 11.1 rev overextension guard, which
+itself sits 0.76 mm below the top of the 355 mm stroke" until 2026-08-21: 11.1
+was the DECLARED stop and sat 0.3 rev PAST metal, corrected 2026-08-18 to the
+operator-measured 10.8 rev.)
 
 TOLERANCES — AND ONE PLACE PHASE 0'S BOUND CANNOT BE MET
 -------------------------------------------------------
@@ -318,7 +320,12 @@ def test_the_stroke_top_agrees(self=None):
 
 
 def test_the_end_stop_ceiling_agrees_with_the_firmware_expression():
-    """11.1 - 0.5 = 10.6 rev, from the header, in both places."""
+    """10.8 - 0.2 = 10.6 rev, from the header, in both places.
+
+    The ceiling did not move at the 2026-08-18 hard-stop correction: the base
+    went 11.1 -> 10.8 and the margin 0.5 -> 0.2 in the same commit, so the
+    product is bit-identical.  This docstring read "11.1 - 0.5" until 2026-08-21.
+    """
     want = (_GEO['HAND_MOTOR_HARD_STOP_REVS']
             - _TT['SMOOTH_MOVE_EXCURSION_MARGIN_REV'])
     got = (mirror.HAND_MOTOR_HARD_STOP_REVS
@@ -701,7 +708,7 @@ def test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror(tmp_path):
         # The LAST SAMPLE's time, not the duration: `for (t = 0; t <= duration;
         # t += dT)` stops at the largest multiple of 2 ms at or below it, so the
         # emitted profile is up to one sample period short — pre-existing, and
-        # what Teensy_code_platform.ino:524 turns into `smoothDur_us`.  Pinned rather than
+        # what Teensy_code_platform.ino:633 turns into `smoothDur_us`.  Pinned rather than
         # tolerated, because the resulting end-position gap is what a caller
         # relying on "the prelude ends exactly at the main trajectory's first
         # sample" is actually given.
@@ -747,7 +754,7 @@ def test_trajectory_h_structure_lint():
     """
     src = open(_TRAJ_H).read()
     # 1. the empty branch requires BOTH conditions — widening it widens a hole in
-    #    the kind-3 clobber path (Teensy_code_platform.ino:472-475 returns before the clear)
+    #    the kind-3 clobber path (Teensy_code_platform.ino:581-583 returns before the clear at :588)
     assert re.search(r'if\s*\(\s*fabsf\(delta_rev\)\s*<\s*1e-6f\s*&&\s*at_rest\s*\)',
                      src), 'the empty branch must require at_rest'
     assert re.search(r'const\s+bool\s+at_rest\s*=\s*fabsf\(start_vel\)\s*<=\s*'

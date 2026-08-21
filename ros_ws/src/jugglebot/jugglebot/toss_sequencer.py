@@ -288,7 +288,7 @@ MIN_THROW_EVENT_DELAY_S = 1.0        # floor on event_delay at dispatch. DERIVED
                                      # measured (Phase-5 T0 hard-confirms): prelude
                                      # smooth-move ≤ full stroke 0.758 s — the QUINTIC
                                      # T = √(Δ·QUINTIC_S2_MAX/A) the firmware actually
-                                     # solves (Trajectory.h:257) over 9.9594 rev, the
+                                     # solves (Trajectory.h:365, smoothMoveDuration) over 9.9594 rev, the
                                      # derived stroke top since 2026-07-26 (was 9.858
                                      # ⇒ 0.754 s); matches the 0.68–1.05 s ascents
                                      # observed. NOT the 0.63 s a triangular profile

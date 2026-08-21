@@ -1,7 +1,7 @@
 # C-HAND-2 — the hand's post-release deceleration feedforward
 
 **Status:** normative. Landed 2026-07-29 (plan
-`plans/active/hand-command-continuity.md` Phase 7; follow-on item D of
+`plans/archived/hand-command-continuity.md` Phase 7; follow-on item D of
 the anomaly-fixes orchestration prompt — completed and deleted 2026-08-15 per the
 prompt-deletion convention; the item's narrative lives in
 `logbook/2026-07-29-hand-post-release-decel.md`).

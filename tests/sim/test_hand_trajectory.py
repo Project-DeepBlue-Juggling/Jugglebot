@@ -252,7 +252,7 @@ class TestSmoothMove:
 
 # ── HandSmoothMove: the velocity-continuous prelude (C-HAND-1, firmware half) ──
 #
-# plans/active/hand-command-continuity.md Phase 4.  The firmware seeded every
+# plans/archived/hand-command-continuity.md Phase 4.  The firmware seeded every
 # smooth move v = a = 0 from current_hand_position while current_hand_velocity
 # sat declared and unread, so any command landing while the hand moved commanded
 # a VELOCITY STEP.  These tests are the gate: they run in the sim mirror, and
@@ -460,8 +460,11 @@ class TestSmoothMoveExcursion:
         """The end-stop assertion, over the whole reachable (start, target, v0) grid.
 
         The un-fixed system already reached 10.174-10.325 rev with as little as
-        0.775 rev = 24.5 mm of headroom to the 11.1 rev overextension guard —
-        which itself sits only 0.76 mm below the top of the 355 mm stroke.  Both
+        0.475 rev = 15.0 mm of headroom to the 10.8 rev hard stop.  (This read
+        "0.775 rev = 24.5 mm ... to the 11.1 rev overextension guard, which
+        itself sits only 0.76 mm below the top of the 355 mm stroke" until
+        2026-08-21: 11.1 was the DECLARED stop and sat 0.3 rev PAST metal, and it
+        was corrected 2026-08-18 to the operator-measured contact.)  Both
         bounds admit the endpoints, because a legal target (retract to 0.0) and a
         live mid-coast position can each already sit outside the band.
 
@@ -547,7 +550,7 @@ class TestSmoothMoveBranches:
         """The distinction that is the whole point of the phase.
 
         And it NARROWS the empty branch rather than widening it:
-        ``Teensy_code_platform.ino:472-475`` returns from the kind-3 handler BEFORE
+        ``Teensy_code_platform.ino:581-583`` returns from the kind-3 handler BEFORE
         ``packedMsgs.clear()`` when the move is empty, so every case that used to
         return empty and is now moving produces a real trajectory instead — a
         strictly smaller hole in the only un-arm mechanism the Teensy offers.
@@ -573,7 +576,9 @@ class TestSmoothMoveBranches:
 
         The physics, not a design choice: an accel-limited brake needs
         ``QUINTIC_H_MAX*H2*v0^2/a_max`` = 0.00778*v0^2 rev = **111 rev** of room
-        at 119.6 rev/s, against 11.1 rev of total travel.  The fallback is
+        at 119.6 rev/s, against 10.8 rev of total travel (11.1 until the
+        2026-08-18 hard-stop correction — the conclusion is unchanged, it is a
+        10x shortfall either way).  The fallback is
         today's rest-to-rest profile — never empty, never a refusal, and never a
         commanded magnitude the firmware could not already produce.
         """

@@ -11,7 +11,7 @@ sessions:
   - 2026-08-10_16-30-44 (rosbag)
 files_changed:
   - plans/active/catch-robustness.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
   - plans/active/INDEX.md
   - logbook/INDEX.md
 subsystem:
@@ -53,7 +53,7 @@ Owner-run tier-8a retest, 2026-08-10, three bags at ~16 h can-bridge uptime
 - light **end-stop bumps** at the top of the 1.0 m stroke;
 - catch rate at 1.0 m around **60 %**, well short of the programme goal.
 
-The dip is the same *symptom* that `plans/active/hand-command-continuity.md`
+The dip is the same *symptom* that `plans/archived/hand-command-continuity.md`
 Phases 1–4 were built to remove, so the first question was whether that fix had
 regressed.
 
@@ -68,7 +68,7 @@ at 3.440 m/s.
 | at v_cmd 4.436 m/s, n = 54 | min | median | max |
 |---|---|---|---|
 | `dip_below_x3` (band 0.10 rev) | 0.268 | 0.899 | 1.672 rev |
-| `peak` (stroke limit 11.10 rev) | 10.468 | 10.700 | 10.766 rev |
+| `peak` (hard stop **10.8 rev**; this row read "stroke limit 11.10 rev" until 2026-08-21) | 10.468 | 10.700 | 10.766 rev |
 | coast past `x3` | 0.508 | 0.741 | 0.807 rev |
 | `pullback` | −12.9 | −16.75 | −19.3 rev/s |
 | `first_neg_cmd` | −7.4 | −11.65 | −15.6 rev/s |
@@ -84,8 +84,23 @@ the Phase-5 PASS shape for those two rows. The three strokes in the set that
 2026-07-27 sitting (§ Implementation Phase Summary row 5), not a real truncation.
 
 Peak headroom is the other half of the operator's report: the worst stroke
-reaches 10.766 rev against the 11.10 rev declared limit, **0.334 rev ≈ 10.6 mm**
+reaches 10.766 rev against the **10.8 rev** hard stop — **0.034 rev ≈ 1.1 mm**
 of margin, which is what the end-stop bumps are.
+
+> **CORRECTED 2026-08-21.** This paragraph read *"against the 11.10 rev declared
+> limit, **0.334 rev ≈ 10.6 mm** of margin"*, and the table above read "stroke
+> limit 11.10 rev". 11.1 was the DECLARED stop and sat **0.3 rev past metal**;
+> the operator measured metal contact at 10.8 rev on 2026-08-18
+> (`logbook/2026-08-18-hand-end-stop-corrected.md`). The `peak` measurements are
+> unchanged — only the reference moved — but the margin does not survive it:
+> min / median / max become **0.332 / 0.100 / 0.034 rev** = **10.5 / 3.2 /
+> 1.1 mm**, not 20.0 / 12.7 / 10.6 mm.
+>
+> **The conclusion strengthens rather than weakens.** 1.1 mm of remaining travel
+> explains an audible bump far better than 10.6 mm did, and the median stroke was
+> already sitting exactly ON the 0.10 rev band. This entry's diagnosis — that the
+> braking clamp, not a continuity regression, is what puts the hand there — is
+> unaffected; what changes is how little room it had left.
 
 So the dip is being produced *while the arm gate is doing its job*.
 
@@ -317,7 +332,7 @@ Documentation changes only:
 
 - `plans/active/catch-robustness.md` (new) — the programme plan, with Phase 0
   naming the config read and the restoration gate;
-- `plans/active/hand-command-continuity.md` — a dated addendum at Phase 5
+- `plans/archived/hand-command-continuity.md` — a dated addendum at Phase 5
   recording that the dip recurred and why it is not a Phase 1–4 regression;
 - `plans/active/INDEX.md` — the new plan's row (pinned by
   `tests/sim/test_plans_index.py`, which is why it lands in this commit);
