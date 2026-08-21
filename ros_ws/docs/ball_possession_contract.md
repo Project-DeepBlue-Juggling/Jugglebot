@@ -298,6 +298,154 @@ done". Both are now done, and this is where they are specified:
    clears `_ball_possession`; a valid `SEATED` sets it. The latch is no longer a
    belief that can outlive the ball.
 
+### 3.4 The windows are clamped by the machine's own cadence — added 2026-08-21
+
+Every window in § 3.2 was sized against a machine whose dwell floor was **4.10 s**
+(`toss_sequencer.MIN_TOSS_THROW_DELAY_S` 3.5 + `dwell_margin` 0.6). The
+tuning-phase operating target is now **dwell 0.49 s at flight 0.4949 s** (~61
+throws/min — the maximum-throughput point of the machine as built), and the delay
+floor is retired in favour of a dispatch debounce plus state-based interlocks. Two
+of the three windows **invert** at that cadence, and both inversions are
+label-semantics faults with a safety tail:
+
+| # | window | what breaks at a 0.49 s dwell | consequence |
+|---|---|---|---|
+| D1 | `retention_window_s` 1.50 s | Every legitimate throw departs the cup 0.49 s after the LANDING (the dwell is defined landing->release), i.e. within 0.353 s of seating at the band floor and BEFORE seating at its top — *inside* the window either way, and faster than the fastest seat-then-leave the sensor has ever resolved (0.999 s) | `RETENTION_REJECTED` on **every good cycle**; the record labels `BOUNCED`; with `on_empty_cup: RELOAD` that route asks BallButler to throw a **second ball at a full cup** |
+| D2 | `arrival_window_s` 1.50 s | The next cycle's landing arrives at +0.99 s, *inside* this cycle's arrival window. The "4x separation" the window was sized on (catch band +137…+798 ms vs next non-catch rise +3194 ms) is gone | two adjacent cycles' windows overlap and can claim the same edge |
+
+> **C-POSSESS-1.C.** A window may never outlast the machine's own next scheduled
+> event of the kind it is looking for. A tick-driven source is therefore told the
+> next scheduled **release** and the next scheduled **landing**, per query and
+> never latched, exactly as `landing_t` is. Retention closes at
+> `next_release_t − RELEASE_GUARD_S`, which is the same instant that OPENS the
+> next toss's departure search; arrival closes at `next_landing_t −
+> arrival_lead_s`, which is the same instant that OPENS the next cycle's arrival
+> window. Where a clamp leaves **no interval at all**, the part it governs is
+> `UNKNOWN` — never `CONFIRMED` (which would claim an observation never made) and
+> never `REJECTED` (which is the inversion above).
+
+Enforcement points: `ball_possession.HandBallSensorSource._window` /
+`._retention_horizon` for the live verdict, and `toss_record.label_from_sensor`
+for the offline corpus label. They are two implementations of one definition of
+"caught", so they clamp the same way **from the same constants** —
+`ball_possession.RELEASE_GUARD_S` is the single home, and
+`toss_record.DEPARTURE_LEAD_S` is an alias of it rather than a second copy.
+
+**Why the guard is an instant and not a tolerance.** Both clamps are written as
+"close where the next search opens", so the two windows *abut* — they can neither
+overlap (one edge claimed twice) nor leave a gap (a real bounce-out attributed to
+the throw). A tolerance would have to be re-tuned at every rung of the cadence
+ladder; an abutment is correct at every dwell by construction, which is what makes
+this a contract clause rather than a constant.
+
+**RETENTION GOES DARK AT THE TARGET CADENCE, and that must be said plainly.**
+The seat edge lands **+137…+798 ms** after the predicted landing (median +399) and
+the next release is **+490 ms** after it, so at the R5′ operating point the median
+cycle has *no* observable retention interval at all — the clamp is not what
+removes it, the physics is (the debounced fall lag alone is ~241 ms). At R5′,
+possession is therefore **ARRIVAL-only** again, and the bounce-out trap that § 7
+accepted and § 3.2 closed is **re-opened by cadence**. What still closes it:
+
+- the **next cycle's** live `evidence()` read, which is now raw-driven (§ 3.5) and
+  so answers EMPTY within one poll of the ball leaving — an empty cup refuses the
+  next throw rather than stroking over it;
+- the **catch-outcome penalty loop**, which is the ground truth for "the ball
+  stayed in the cup" and which the ILC fold-in makes the primary convergence
+  signal anyway.
+
+So the actuation consequence stays closed; the *reporting* residual grows with
+cadence. `label_from_sensor` marks it: a CAUGHT whose bounce test never ran
+carries `confidence 0.5` and a reason that says `retention NOT OBSERVABLE`, so a
+corpus reader can separate "held through retention" from "we did not look".
+Runbook row **POSS-1.2** — the by-eye watch on the cup between cycles — therefore
+stays, and becomes *more* load-bearing at high cadence rather than less.
+
+### 3.5 The live precondition reads the RAW bit — added 2026-08-21
+
+§ 3.3 made the cycle-start precondition a live `evidence(now)` query. It read the
+**debounced** bit, because that is what the node fed the source. At a 4.10 s dwell
+that was invisible; at a 0.49 s dwell it is a **fail-open possession gate**:
+
+> the debounce is asymmetric and far slower than its nominal 100 ms — measured
+> `held→empty` **232 / 241 / 295 ms**, `empty→held` **0 / 0 / 0 ms** (the poll
+> cadence itself measures ~71 ms against a configured 20 ms, and that 3.5x gap
+> still has no diagnosis).
+
+So for ~241 ms after a ball leaves the cup the debounced bit still reads HELD, and
+cycle N+1's CHECKING — which at a 0.49 s dwell runs inside that window — would
+pass an **empty cup**. That is the exact inversion of this contract's posture
+("a dead sensor refuses, it does not pass"), and it gets worse as the machine gets
+faster.
+
+> **C-POSSESS-1.D.** The live cup query answers from the **raw** bit; **edges**
+> (and therefore the ARRIVAL and RETENTION verdicts) are taken from the
+> **debounced** bit. This is `toss_record`'s D12 rule — *raw for TIMES, debounced
+> for the VERDICT* — extended to the precondition. Where a wrong live answer would
+> **command** something rather than refuse something, the caller must use the
+> settled query instead: `evidence_settled(now)` requires both bits to agree and
+> answers `UNKNOWN` when they do not.
+
+Enforcement point: `ball_possession.HandBallSensorSource.evidence` /
+`.evidence_settled`, fed by `ReloadCoordinatorNode._on_hand_telemetry` passing
+`ball_held_raw` alongside `ball_held`.
+
+The cost of raw is chatter: a carry-flicker can read EMPTY over a seated ball.
+That direction is a **refusal** and is therefore harmless — with exactly one
+exception, the auto-reload interlude, which answers an empty cup by asking
+BallButler to throw a ball at it. That is the caller `evidence_settled` exists
+for; its gate is specified in § 3.6.
+
+### 3.6 The auto-reload interlude — the one refusal that COMMANDS — added 2026-08-21
+
+Every other consumer of a possession answer *refuses* when it is wrong. The
+auto-reload interlude does not: it answers an empty cup by asking BallButler to
+throw a ball into it. Its precondition therefore carries a different burden from
+every other gate in this contract, and 2026-08-21 gave it three properties the
+rest do not have.
+
+**(a) It may not trust the terminal that summoned it.** The interlude is entered
+from `REJECTED_NO_BALL`, minted at CHECKING — which runs at
+`landing + (dwell − throw_delay)`. The physical seat edge lands **+137…+798 ms**
+after the announced landing. Those two numbers cross below roughly a 1.2 s dwell
+(`dwell − throw_delay < 0.798 s` at the census's 0.38 s post-plumbing delay
+floor): CHECKING reads the cup *before the ball has finished arriving in it*, so a **good
+catch** mints `REJECTED_NO_BALL` and routes a healthy cycle into an interlude that
+throws a second ball at a full cup. The interlude therefore takes **its own** cup
+read, after `JB_BD_ARRIVAL_WINDOW_S` past the previous cycle's scheduled landing —
+the constant that already means *"how long after the predicted landing a seat edge
+may still arrive"*. Nothing is armed and nothing is airborne while it waits.
+
+**(b) It reads the SETTLED query, not the live one.** § 3.5's raw-bit rule is
+right everywhere a wrong answer refuses and wrong here, where a carry-flicker over
+a seated ball would command the throw. `evidence_settled` requires both bits to
+agree; a disagreement is `UNKNOWN`, which this gate already refuses on without
+moving anything.
+
+**(c) A cancel with a ball in the air is DEFERRED.** The toss path has always
+refused to honour a cancel mid-flight, for a reason that was never toss-specific —
+*aborting a catch mid-flight drops a ball on the robot*, and the honoured path
+runs `_safe_abort`, i.e. it retracts the hand out from under the incoming ball.
+The interlude's ball is thrown by BallButler and is exactly as airborne, and until
+2026-08-21 a session cancel during an interlude was honoured on the very next
+tick, at any phase. The same discipline now applies:
+
+| interlude phase | cancel |
+|---|---|
+| CHECKING / PREPARING | **honoured now** — nothing has been commanded to BB, so nothing can be falling |
+| AIMING and later | **deferred** — `AIMING` is entered by dispatching `bb/throw_at_target`, and BB's countdown cannot be aborted, so from that dispatch onward a ball may leave the Butler at any moment |
+
+The boundary is the *dispatch* rather than a cutoff around a release instant,
+because the interlude — unlike the toss, which is its own announcer — has no
+release instant until BB's announcement lands. Both branches **name themselves in
+the log**: an operator whose stop button appears not to have worked must be able to
+read why, not infer it. Deferral is bounded by the FSM's own deadlines
+(`_announcement_deadline`, `_settle_deadline`) under `_sequence_deadline_s`, and
+the cancel resolves at the interlude terminal exactly as `_toss_cancel_deferred`
+resolves at the FSM's.
+
+Enforcement points: `ReloadCoordinatorNode._wait_out_seat_edge_band`,
+`._reload_interlude_gate` (rung 4) and `._reload_cancel_deferred`.
+
 ## 4. What this contract does NOT claim
 
 - **It does not fix the tracker.** The split-track corruption is an open

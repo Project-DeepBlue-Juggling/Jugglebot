@@ -960,7 +960,8 @@ interlude invents no motion primitive.
 3. **The reload FSM, verbatim** — same build/run shape, same abort ladder, same
    terminal.
 4. **Settle**, handing back at
-   `landing + toss_session::DEFAULT_SESSION_MISS_CLEANUP_S` (2.80 s =
+   `landing + toss_session::DEFAULT_SESSION_MISS_CLEANUP_S` (2.90 s since
+   2026-08-21, was 2.80 =
    `CATCH_CONFIRM_WINDOW_S 0.7 + GO_HOME_DURATION_S 2.0 + 2×NODE_TICK_S`) as a
    floor, exactly as the MISS path already does.
 5. **Post-reload discard** — the next cycle is flagged `RELOAD_SETTLE` and
@@ -1285,7 +1286,7 @@ decide where the *next* month of effort goes:
 ### Bench-time budget
 
 Cadence at defaults: dwell 6.0 s ⇒ 10 cycles/min. A drop costs ~25 s all-in
-(go_home 2.0 + verify, reload ladder 15–20, cleanup floor 2.80).
+(go_home 2.0 + verify, reload ladder 15–20, cleanup floor 2.90).
 
 | Phase | SC-0+SC-1+3×3 (129 tosses) | 5×5 × 8 (200) |
 |---|---|---|
@@ -1840,7 +1841,7 @@ achievable dwell becomes 0.351 s.
   at a short dwell clamp the pre-tilt arrival to *after* the ball has landed —
   benign for level 8a, a real hazard the moment an aimed session runs without
   `catch/pretilt_hold` raised.
-- **Layer F — session ladders**: the 2.80 s miss-cleanup floor (every rung
+- **Layer F — session ladders**: the 2.90 s miss-cleanup floor (every rung
   dispatched on a service ACK, not on motion — replace ack-timing with
   *completion* verification rather than shortening the constant); the ~36 s
   reload interlude; `TOSS_CANCEL_CUTOFF_S = 0.25` (at a short dwell the
@@ -1906,6 +1907,36 @@ Land all three (plus the phantom-track fix: exclude the cycle's own latched
 announced-ball id from `track_active`, which the docstring already claims is the
 intent) **before R3, not after**.
 
+> **✔ ALL FOUR LANDED 2026-08-21** — `logbook/2026-08-21-ilc-primary-foldin.md`
+> § "Phase H". They are a **contract change**, not four patches: C-POSSESS-1
+> gains § 3.4 (the cadence clamp — a window may never outlast the machine's own
+> next scheduled event of the kind it is looking for), § 3.5 (raw for the live
+> query, debounced for the verdict) and § 3.6 (the interlude is the one refusal
+> that COMMANDS, so it re-reads the cup after the seat-edge band, uses the
+> settled query, and defers a cancel once the throw is committed to BB).
+>
+> Two things this surfaced that are NOT in the census, and that R5-prime's
+> runbook has to carry:
+>
+> 1. **Retention goes DARK at the target cadence.** The seat edge lands
+>    +137…+798 ms after the landing and the next release is +490 ms after it, so
+>    at R5-prime the median cycle has no observable retention interval at all.
+>    The clamp does not remove it — the physics does (the debounced fall lag
+>    alone is ~241 ms). Possession is ARRIVAL-only again at that cadence, so
+>    § 7's bounce-out trap is **re-opened by cadence**; what still closes the
+>    ACTUATION half is the next cycle's live (now raw) evidence read plus the
+>    catch-outcome penalty loop. The reporting half is marked in the corpus:
+>    a CAUGHT whose bounce test never ran carries `confidence 0.5` and a reason
+>    reading `retention NOT OBSERVABLE`. Runbook POSS-1.2 (watch the cup by eye
+>    between cycles) becomes MORE load-bearing at high cadence, not less.
+> 2. **D7 moved a number in the wrong direction for cadence, deliberately.**
+>    `CATCH_CONFIRM_WINDOW_S` 0.70 → 0.80 (derived from the measured band
+>    ceiling), so the miss-cleanup floor is 2.90 s, not 2.80. A sensor-primary
+>    verdict needs a MISSED deadline that outlasts the band a real seat edge
+>    lands in, and 0.70 sat 98 ms under it. The census's own F1 rung buys the
+>    0.10 s back by re-deriving that floor from COMPLETION rather than from
+>    service acks.
+
 **Two things must be measured before R3, not argued:**
 
 1. **Re-measure the sensor arrival band post-FW 14.** The +137…+798 ms figure
@@ -1926,7 +1957,7 @@ Each rung is a bench sitting, `num_throws = 5` first, `stop_on_miss = true`,
 | **R0 — baseline** | 5.60 s | 0.80 | nothing (shipped defaults) | 5/5 CAUGHT; `peak ≤ 10.39 rev`, `dip_below_x3 ≤ 0.10 rev`, `trunc = −`, `seeds = 0` | reference plant health; record `uptime_ms`, `iq_brake_min_a` |
 | **R1 — free rung, no code** | 4.10 s | 0.80 | none — `throw_delay = 3.5` is already legal | 5/5 CAUGHT; per-cycle `dwell_s ∈ [4.10, 4.4]`; `dwell_tilt_n ≥ 1` | the first rung where the CAUGHT-verdict handoff is visibly binding |
 | **R2** | 3.0 s | 0.80 | `MIN_TOSS_THROW_DELAY_S` 3.5 → 2.4 with **all** its pins (module docstring, the YAML margin comment, `tests/ros/test_toss_session.py`, the anomaly-fixes runbook) | 5/5 CAUGHT; **zero** `ABORTED_CANT_MAKE_RELEASE` | the announce-lead WARN starts firing — confirm it is inert |
-| **R3** | 1.5 s | 0.80 | `MIN_TOSS_THROW_DELAY_S` → 0.9; `MIN_THROW_EVENT_DELAY_S` → derived `f(v_throw)` with the `hand_parked` prelude bound; **all of § 11.4** | 5/5 CAUGHT **and** 5/5 records labelled `CAUGHT` (not `BOUNCED`) by the miner; zero `REJECTED_TRACK_ACTIVE`; zero interludes | the first rung where a good cycle can be mislabelled — **score the miner, not the console** |
+| **R3** | 1.5 s | 0.80 | `MIN_TOSS_THROW_DELAY_S` → 0.9; `MIN_THROW_EVENT_DELAY_S` → derived `f(v_throw)` with the `hand_parked` prelude bound; **all of § 11.4** (LANDED 2026-08-21) | 5/5 CAUGHT **and** 5/5 records labelled `CAUGHT` (not `BOUNCED`) by the miner; zero `REJECTED_TRACK_ACTIVE`; zero interludes | the first rung where a good cycle can be mislabelled — **score the miner, not the console** |
 | **R4** | 0.75 s | 0.60–0.80 | skip the no-op positioning move; `_TICK_S` → 0.02; record/trim off-thread; dwell margin re-based on the sensor arrival edge; raise `pretilt_hold` unconditionally | 5/5 CAUGHT; `dip_below_x3 ≤ 0.10` on **every** cycle; `sensor_held_at_dispatch` true on all 5 | any platform motion inside `arrival ± [0.30, 0.50]` is a stop |
 | **R5** | 0.40 s | ≥ 0.64 s | pipelining (or a demonstrated ≤ 0.10 s verdict path); miss-cleanup re-derived from *completion*, not acks; S5 re-argued **in writing** (the machine is never quiescent) | 20/20 CAUGHT across 4 sessions; measured `landing → next release` within 20 ms of the modelled hand floor | log the actual `dispatch → catch-stroke-end` gap per cycle. **A negative value aborts the sitting.** |
 | **R5-prime — THE TARGET** | **0.49 s** | **0.4949 s** (apex 0.30 m) | everything through R5 | **cycle period 0.985 s ⇒ 60.9 throws/min** | this is the maximum-throughput operating point of the machine as built |

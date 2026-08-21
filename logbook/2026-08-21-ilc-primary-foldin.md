@@ -31,6 +31,13 @@ files_changed:
   - tests/sim/test_juggle_bb_catch.py
   - tests/sim/test_juggle_selfcatch.py
   - tests/sim/test_juggle_selfcatch_nightly.py
+  - ros_ws/docs/ball_possession_contract.md
+  - ros_ws/src/jugglebot/jugglebot/ball_possession.py
+  - ros_ws/src/jugglebot/jugglebot/reload_sequencer.py
+  - ros_ws/src/jugglebot/jugglebot/toss_session.py
+  - tools/probes/toss_record_miner.py
+  - tests/hardware/session_anomaly_fixes.md
+  - plans/active/single-ball-toss.md
 subsystem:
   - motion
   - ros
@@ -1399,3 +1406,243 @@ load_entries()` finds it by filename with all five subsystems and seven tags),
 which is checked by hand rather than inferred from the suite: `logbook_search`
 skips `INDEX.md` outright and silently `continue`s past an entry whose front
 matter it cannot parse, so a malformed entry would be DROPPED, not flagged.
+
+---
+
+## Phase H — the sensor/label semantics the cadence census orders BEFORE rung R3
+
+The § 11 cadence census closes with a warning that is unusually specific about
+*ordering*:
+
+> **It is not lowering `MIN_TOSS_THROW_DELAY_S`. It is lowering the dwell without
+> first landing the possession-semantics work.** […] Land all three (plus the
+> phantom-track fix: exclude the cycle's own latched announced-ball id from
+> `track_active`, which the docstring already claims is the intent) **before R3,
+> not after**.
+>
+> — `plans/active/toss-selftuning.md` § 11.4
+
+This phase is that block: census **D1, D2, D3, D4, D6, D7 + F3**, plus the one
+HIGH the Phase-2 audit left unfixed (the deferred-cancel discipline had never been
+transposed onto the reload interlude). It is deliberately **one contract change
+rather than seven patches** — every item is an instance of the same root cause.
+
+### The root cause, stated once
+
+Every sensor window in C-POSSESS-1 was sized against a machine whose dwell floor
+was **4.10 s**. Each was justified by a *separation* argument — the catch band
+sits 4x clear of the next non-catch rise; the retention window closes 2.3x before
+the earliest legitimate departure — and every one of those arguments is an
+inequality **between a window and the machine's own cadence**. Retire the cadence
+floor and the inequalities do not degrade gracefully: they **invert**. A window
+that was 2.3x clear of the next release becomes a window that *contains* it, and
+"the ball is still there" becomes "the ball bounced out" on every successful
+cycle.
+
+So the fix is not to re-tune three constants against the new cadence — that is
+the same defect one rung down, and it would need re-tuning again at every rung of
+the ladder. It is a contract clause:
+
+> **C-POSSESS-1.C.** A window may never outlast the machine's own next scheduled
+> event of the kind it is looking for.
+
+written as an **abutment** rather than a tolerance: retention closes at
+`next_release − RELEASE_GUARD_S`, which is *the same instant* that opens the next
+toss's departure search; arrival closes at `next_landing − arrival_lead_s`, which
+is *the same instant* that opens the next cycle's arrival window. Two adjacent
+windows therefore touch exactly — they can neither overlap (one edge claimed
+twice) nor leave a gap (a real bounce-out attributed to the throw) — and that is
+true at **every** dwell, including ones nobody has flown yet. `RELEASE_GUARD_S`
+is a single constant with `toss_record.DEPARTURE_LEAD_S` as its alias, precisely
+because two copies is how an abutment quietly stops abutting.
+
+### What landed, by census item
+
+| # | change | enforcement point |
+|---|---|---|
+| D1 | retention closes at `next_release − RELEASE_GUARD_S`; no interval ⇒ `RETENTION_UNKNOWN` | `HandBallSensorSource._retention_horizon`, `toss_record.label_from_sensor` gate 4 |
+| D2 | arrival closes at `next_landing − arrival_lead_s` | `HandBallSensorSource._window`, `label_from_sensor`'s `arr_hi` |
+| D3 | the live `evidence()` query reads the RAW bit; edges stay DEBOUNCED | `.evidence` / `.evidence_settled`, fed by `_on_hand_telemetry` |
+| D4 + F3 | the interlude re-reads the cup after the seat-edge band, from the SETTLED query | `_wait_out_seat_edge_band`, `_reload_interlude_gate` rung 4 |
+| D6 | the cycle's own latched announced-ball id is excluded from `track_active` | `_build_toss_observations` + the `_build_toss_cycle` roll-forward |
+| D7 | `CATCH_CONFIRM_WINDOW_S` derived from `ARRIVAL_BAND_MAX_S` | both sequencers |
+| HIGH | a cancel with a BB ball committed is DEFERRED to the interlude terminal | `_reload_cancel_deferred` |
+
+## Discussion — Phase H
+
+**Why the guard is `DEPARTURE_LEAD_S` and not something tighter.** The retention
+horizon could have been pushed much closer to the next release. A *debounced* fall
+edge for our own throw cannot appear before `next_release + 385 ms` (the measured
+debounced departure band), so a guard of literally zero would already exclude it,
+and a tighter guard would buy back ~0.30 s of observable retention on every cycle.
+It was rejected: that margin is manufactured by the debounce lag, the debounce lag
+is a firmware constant whose **measured value has no diagnosis** (the poll cadence
+reads ~71 ms against a configured 20 ms, a 3.5x gap § 10 still lists as open), and
+sizing a semantic boundary on an undiagnosed lag is this contract's own § 1 defect
+— a bound applied to an observable whose error model was never written down. The
+guard is instead the number that already answers the question *"how far before an
+announced release is a departure edge still ours"*, measured and written up when
+the departure search was built. Reusing it also buys the abutment property, which
+a tighter guard would break.
+
+**Why an unobservable retention is `UNKNOWN` and not `CONFIRMED`.** When the
+cadence leaves no interval between the seat edge and the next release, the tempting
+answer is `CONFIRMED` — the ball did arrive, nothing was seen to leave, and the
+catch is real. It is wrong for the reason § 2 exists: nothing was **observed**, and
+a source that reports CONFIRMED for a part it could not look at is the exact shape
+of the defect this contract was written to close. `UNKNOWN` does not veto
+(§ 2 consequence 3), so the catch still confirms and no behaviour is lost; what is
+gained is that the corpus can tell the two apart. `label_from_sensor` marks it
+explicitly: `confidence 0.5` and a reason reading `retention NOT OBSERVABLE`. A
+fitter that treats every `CAUGHT` alike would otherwise inherit an **unmarked
+change in what CAUGHT means**, at exactly the cadence the fit runs at.
+
+**The finding that is not in the census: retention goes dark at R5-prime.** The
+seat edge lands +137…+798 ms after the landing (median +399) and the next release
+is +490 ms after it. At the target cadence the *median* cycle therefore has no
+observable retention interval at all — and the clamp is not what removes it. The
+debounced fall lag alone is ~241 ms, so even an unclamped window could not resolve
+a bounce-out inside a 0.49 s dwell. **Possession is ARRIVAL-only again at R5-prime,
+and § 7's bounce-out trap is re-opened by cadence.** This is worth stating loudly
+because the sensor phase's headline was that it *closed* that trap. What still
+closes the ACTUATION half is (a) the next cycle's live evidence read, which is now
+raw-driven and answers EMPTY within one poll of the ball leaving, so an empty cup
+refuses the next throw rather than being stroked over, and (b) the catch-outcome
+penalty loop, which the ILC fold-in already made the ground truth for "the ball
+stayed in the cup". The REPORTING half stays open, marked, and watched by runbook
+POSS-1.2 — which becomes *more* load-bearing at high cadence, not less.
+
+**Why D3's raw bit needed a second query rather than a switch.** Feeding the raw
+bit to `evidence()` fixes a fail-OPEN gate and introduces a fail-CLOSED one: a
+carry-flicker reads EMPTY over a seated ball. Everywhere in the node that is
+harmless, because the consequence is a **refusal** — with one exception. The
+auto-reload interlude answers an empty cup by asking BallButler to *throw a ball
+into it*. It is the only consumer of a possession answer whose wrong direction
+COMMANDS rather than refuses, so it gets `evidence_settled`, which requires the raw
+and debounced bits to agree and answers `UNKNOWN` when they disagree. That is not a
+hedge: two readings of one observable that disagree is literally *"I could not look
+with confidence"*, which § 2 already spells `UNKNOWN`, and the interlude gate
+already refuses on `UNKNOWN` without moving anything. Note the settled query is
+**not** simply "the slower bit": during the fall lag the two disagree, so a
+departure reads UNKNOWN where the debounced bit alone would have said SEATED. Both
+of its answers are conservative.
+
+**D4's anchor rests on an early `return` — and that is now written down.**
+`_wait_out_seat_edge_band` anchors on `session.last_landing_perf`. On the
+`REJECTED_NO_BALL` branch `note_cycle_result` returns *before* updating
+`_last_landing`, so at the interlude that property still holds the **previous
+CAUGHT cycle's** landing — which is exactly the instant the missing seat edge
+belongs to. Anchoring on the rejected cycle's own scheduled landing would anchor on
+a landing that never happened (it is in the future; nothing flew), and the wait
+would be wrong in the over-waiting direction. The early return was not written for
+this, so `_session_after_a_catch` in the tests states the dependency and a comment
+in the helper names it.
+
+**Why the interlude's cancel boundary is the DISPATCH and not a cutoff.**
+`_toss_cancel_deferred` defers from `t_release − TOSS_CANCEL_CUTOFF_S`, because the
+toss is its own announcer and owns `t_release`. The interlude has no release
+instant until BallButler's announcement lands, and BB's countdown cannot be aborted
+once `bb/throw_at_target` is invoked (`_enter_preparing`'s own docstring says so).
+So the honest boundary is the invocation itself: `CHECKING`/`PREPARING` honour a
+cancel now, `AIMING` and later defer. Deferral is bounded by the FSM's own
+deadlines under `_sequence_deadline_s`, and a BB that never throws terminates on
+the announcement grace rather than on this. Both branches log which one fired —
+an operator whose stop button appears not to have worked must be able to read why
+rather than infer it. This closes the standing memory caveat in
+`project_reload_action_catch_latch.md`.
+
+**D7 moves a number in the wrong direction for cadence, on purpose.**
+`CATCH_CONFIRM_WINDOW_S` 0.70 → 0.80, so `DEFAULT_SESSION_MISS_CLEANUP_S` is 2.90 s
+rather than 2.80 s. Since 2026-08-10 the possession verdict is sensor-PRIMARY, so
+the deadline that mints MISSED has to outlast the band a real seat edge lands in
+(+137…+798 ms) — and 0.70 sat **98 ms under that ceiling**. It is latent today only
+because the tracker's own CAUGHT arrives earlier (+202…+442 ms) and the merge falls
+back to it, i.e. the bug is masked by the corroborator the sensor was made primary
+to replace. Correctness beats 0.10 s on the MISS path; the census's own F1 rung
+buys it back by re-deriving that floor from **completion** rather than from service
+acks, and the pending post-FW14 band re-measure is expected to reclaim more. The
+point of D7 was never the value: it is that the re-measure now lands in **one**
+place and both sequencers plus the cleanup floor follow it.
+
+**The reload sequencer's twin was derived too, which the census did not ask for.**
+D7 names only `toss_sequencer.CATCH_CONFIRM_WINDOW_S`. Leaving `reload_sequencer`'s
+identically-named 0.7 behind would have left two constants with one name, one
+meaning and two values — the drift trap the whole item exists to close. It is the
+same physical question asked of the same cup sensor, and lengthening it is
+conservative on that path specifically: the reload's MISSED terminal is
+`SAFE_ABORT`, i.e. a retract under a possibly-seated ball, so waiting longer before
+minting MISSED strictly reduces the chance of taking it.
+
+**What was NOT done.** The census's D5 (merge/verdict) needs nothing if D1 lands,
+and it did. D8 (release grace) is failure-path only. The Layer-A/B floors
+(`MIN_TOSS_THROW_DELAY_S`, `MIN_THROW_EVENT_DELAY_S`, the tick ladder, the no-op
+positioning move) are rungs R2–R4 and are **not** in this phase: they are the
+changes that make the machine faster, and the census's ordering is explicit that
+the semantics land first. Nothing here lowers a floor or shortens a wait on the
+running machine.
+
+## Verification — Phase H
+
+- The **defect reproduces before the fix in every case**, in the same test rather
+  than in prose. `test_a_legitimate_throw_is_not_a_bounce_out_at_a_short_dwell`,
+  `test_a_good_cycle_is_not_labelled_bounced_once_the_dwell_shrinks`,
+  `test_the_arrival_search_stops_where_the_next_cycles_begins`,
+  `test_adjacent_arrival_windows_abut_and_never_overlap`,
+  `test_our_own_previous_cycles_ball_is_not_a_phantom_track` and
+  `test_a_good_catch_mislabelled_no_ball_never_licenses_a_bb_throw` each assert the
+  unfixed behaviour first and the fixed behaviour second. A test that asserted only
+  the fixed behaviour would pass against an implementation that had merely widened
+  something.
+- Every instant in those tests is a **named rung of the cadence ladder** (R3 dwell
+  1.50 s / flight 0.80 s; R4 dwell 0.75 s with the census's post-B1/B2
+  `throw_delay` floor of 0.38 s; R5-prime dwell 0.49 s / flight 0.4949 s) with the
+  seat edge inside the measured +137…+798 ms band — never a round number chosen to
+  make an assertion pass. Two of them carry an explicit `premise:` assertion
+  (`the periods overlap at R5-prime`; `CHECKING lands after the cup emptied and
+  inside the fall lag`) so a future cadence change reds the premise rather than
+  silently voiding the test.
+- The offline labeller and the live verdict are pinned to clamp **the same way from
+  the same constants**: `test_departure_lead_is_the_possession_release_guard` and
+  `test_the_release_guard_is_one_constant_not_two` assert the alias identity, and
+  `tools/probes/toss_record_miner.py --self-check` (run 2026-08-22) reports
+  **61/61 cases pass**, including five new ones that drive the clamp end-to-end
+  through the miner's own synthetic stream with the real debounce asymmetry baked
+  in.
+- `./run_tests.sh --full` (every tier, `nightly` included) at code-complete, run
+  2026-08-22: **RESULT: PASS** — parallel **6094 passed, 3 skipped, 3 xfailed in
+  508.02 s**, serial **9 passed in 41.83 s**, total 556 s. Run at `--full` and not
+  the default gate because this is a plan-phase closure.
+- `./run_tests.sh` (the default gate), RE-RUN 2026-08-22 as the FINAL pre-commit
+  gate, after the cross-document reconciliation below: **RESULT: PASS** —
+  parallel **5671 passed, 3 skipped in 241.59 s**, serial phase empty, total
+  253 s. The only code touched between the two runs was a docstring in
+  `ball_possession.py` (the mis-anchored departure claim, item 1 below), so this
+  run is the one the commit is gated on and the `--full` run above is the tier
+  coverage it does not have.
+
+**The narrative reconciliation, and what it caught.** CLAUDE.md's audit gate fires
+on any commit touching a normative document, and this one edits C-POSSESS-1
+itself plus four other narrative files. `/audit`'s pipeline needs interactive
+approval gates an unattended runner cannot satisfy, so its read-only stage was run
+directly: every numeric claim in the new text was cross-checked against the source
+it was measured from. Three inconsistencies, all of the class the gate exists for:
+
+1. **"every legitimate throw departs the cup 0.49 s after seating"** — wrong
+   anchor, in three places (the contract's § 3.4 table, the source docstring
+   twice). The dwell is defined *previous SCHEDULED LANDING -> next RELEASE*, so
+   0.49 s is measured from the LANDING; from the seat edge it is 0.353 s at the
+   arrival band's floor and NEGATIVE at its top (the release precedes the seat
+   edge). The conclusion is unchanged and in fact stronger, but an anchor error in
+   a contract clause is exactly what a future reader would re-derive from.
+2. **"below roughly a 1.2 s dwell"** was a magic number. It is
+   `dwell − throw_delay < 0.798 s` at the census's 0.38 s post-plumbing delay
+   floor; the derivation is now written next to it.
+3. **A blockquote attributed to the cadence census was not the census's wording** —
+   it was the digest's paraphrase. Replaced with the verbatim § 11.4 text and
+   attributed. (Also: "four new self-check cases" was five.)
+
+None changed a threshold or an assertion.
+- `python config/generate_config.py` (run 2026-08-22) after the YAML comment
+  correction, then re-run to prove determinism: **no generated artifact changed**
+  in either invocation (the two dead justifications live in comments, and the
+  generator emits values).

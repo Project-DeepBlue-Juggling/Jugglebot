@@ -190,7 +190,7 @@ from typing import Optional
 # Pure-python sibling module (no ROS): the ball-evidence vocabulary lives with the
 # possession contract, so the FSM's reject codes and the node's live sensor read
 # can never drift into two spellings of the same state.
-from jugglebot.ball_possession import EVIDENCE_UNKNOWN
+from jugglebot.ball_possession import ARRIVAL_BAND_MAX_S, EVIDENCE_UNKNOWN
 
 # The derived throw-admission envelope (contract C-HAND-3,
 # ros_ws/docs/hand_throw_envelope.md).  This is the ONE import in this module
@@ -363,10 +363,26 @@ TOSS_POSITION_VERIFY_WINDOW_S = 1.0  # when the config-keyed mocap cross-check i
                                      # tick, so the timed arrival stands alone.
 TOSS_RELEASE_GRACE_S = 0.5           # release evidence must appear within t_release +
                                      # this (mirrors reload's ANNOUNCEMENT_GRACE_S).
-CATCH_CONFIRM_WINDOW_S = 0.7         # identical value+role to reload: CAUGHT within
-                                     # this PAST the scheduled landing; also the
-                                     # CATCHING phase-report threshold. Absorbs the
-                                     # +0.115 s announced-early bias (fourth sitting).
+CATCH_CONFIRM_WINDOW_S = ARRIVAL_BAND_MAX_S
+                                     # CAUGHT within this PAST the scheduled landing;
+                                     # also the CATCHING phase-report threshold, and
+                                     # (through toss_session) the MISS-cleanup floor.
+                                     # DERIVED, not chosen (census D7). It must clear
+                                     # the band in which a real seat edge can land,
+                                     # because since 2026-08-10 the possession verdict
+                                     # is sensor-PRIMARY: the deadline that mints
+                                     # MISSED has to outlast the latest arrival the
+                                     # sensor has ever observed. It was a hand-written
+                                     # 0.7 until 2026-08-21, i.e. 98 ms UNDER the
+                                     # measured +798 ms ceiling — latent today only
+                                     # because the tracker's own CAUGHT lands earlier
+                                     # (+202..+442 ms) and the merge falls back to it.
+                                     # Deriving it also puts the pending post-FW14
+                                     # band re-measure in ONE place: shrink
+                                     # ARRIVAL_BAND_MAX_S and this, the reload twin
+                                     # and DEFAULT_SESSION_MISS_CLEANUP_S all follow.
+                                     # (Still absorbs the +0.115 s announced-early
+                                     # bias of the fourth sitting, with more room.)
 TOSS_CANCEL_CUTOFF_S = 0.25          # node-level (§ cancellation): cancels honoured up
                                      # to t_release − this; later ⇒ deferred to the
                                      # FSM's own terminal.

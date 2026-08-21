@@ -112,6 +112,39 @@ EVIDENCE_SEATED = 'SEATED'
 EVIDENCE_EMPTY = 'EMPTY'
 EVIDENCE_UNKNOWN = 'UNKNOWN'
 
+# ── The measured sensor-band constants (C-POSSESS-1 § 3.4) ────────────────────
+# These live HERE, in the contract's enforcement module, because three separate
+# consumers size windows off them and a second copy is how two windows that must
+# ABUT start to overlap: `toss_record` (the offline label), `toss_sequencer` (the
+# FSM's MISSED deadline) and this module (the live verdict).
+#
+#: How far BEFORE an announced release a held->empty edge is still OUR throw.
+#: Measured on 2026-08-10_16-30-44: across 32 self-tosses the RAW held->empty
+#: edge lands at +148..+212 ms AFTER the announced throw_time (median +172), and
+#: the mocap backcast of the same tosses puts the physical release 4.6 ms EARLY.
+#: So 0.30 s is headroom for the sensor channel's own lag plus the one fault
+#: direction the edges cannot resolve (an early release).
+#:
+#: It is used at BOTH ends of the same instant, which is the point of naming it
+#: once: `release_t - RELEASE_GUARD_S` OPENS the next toss's departure search
+#: (`toss_record.DEPARTURE_LEAD_S`, which is this constant) and simultaneously
+#: CLOSES this toss's retention horizon (:meth:`HandBallSensorSource.observe`).
+#: The two windows therefore abut exactly and can neither overlap nor leave a
+#: gap, at ANY dwell — which is what stops a legitimate throw reading as a
+#: bounce-out once the dwell drops under the retention window (census D1).
+RELEASE_GUARD_S = 0.30
+#: The measured post-landing arrival band CEILING — the LATEST empty->held edge
+#: observed on a real catch. +798 ms over 35 announcements across the three
+#: 2026-08-10 retest bags (median +399, earliest +137, nothing before landing);
+#: rounded UP to 0.80 s so the constant is a bound rather than a datum.
+#:
+#: ⚠ PENDING RE-MEASURE post-FW 14. The band was captured when the can-bridge
+#: uptime-dependent dispatch shift was +54..+133 ms; FW 14 cut that to 10-20 ms
+#: (`logbook/2026-08-15-fw14-validated-arc-closed.md`), so the band is expected
+#: to COLLAPSE. Everything that must shrink with it derives from this name —
+#: that is the whole reason it exists (census D7).
+ARRIVAL_BAND_MAX_S = 0.80
+
 # ── Source identifiers (carried in every verdict, so a log line names its author)
 SOURCE_TRACKER_ARRIVAL = 'tracker_arrival'
 SOURCE_HAND_BALL_SENSOR = 'hand_ball_sensor'
@@ -319,14 +352,46 @@ class HandBallSensorSource:
     design work. This is that query.
 
     Feed it with :meth:`note_sample` from every ``/hand_telemetry`` message; then
-    ask :meth:`observe` (the two-part verdict, for a given predicted landing) or
+    ask :meth:`observe` (the two-part verdict, for a given predicted landing),
     :meth:`evidence` (the live "is a ball in the cup right now" precondition — a
-    DIFFERENT question, and the only one CHECKING needs).
+    DIFFERENT question, and the only one CHECKING needs) or
+    :meth:`evidence_settled` (the same question asked conservatively, for the one
+    caller whose wrong answer COMMANDS something).
 
     The predicted landing is passed **per query**, never latched. A latched window
     would outlive its goal, and a window that outlives its goal is a window that
     can veto the NEXT ball's tracker CAUGHT with a stale "nothing arrived" — the
     arm/disarm lifecycle bug class, deleted rather than guarded.
+
+    RAW FOR THE LIVE QUERY, DEBOUNCED FOR THE VERDICT (census D3)
+    ------------------------------------------------------------
+    ``/hand_telemetry`` carries both bits. The DEBOUNCED one (five missed polls
+    to drop, one hit to restore) is the VERDICT bit — it is what the arrival and
+    retention EDGES are taken from, because an edge is a claim about the ball and
+    a single dropped poll is not one. The RAW one is what :meth:`evidence`
+    answers from, and that split is a measured safety requirement rather than a
+    preference:
+
+      the debounce is **asymmetric and much slower than its nominal 100 ms** —
+      measured ``held->empty`` **232 / 241 / 295 ms**, ``empty->held``
+      **0 / 0 / 0 ms** (`plans/active/toss-selftuning.md` § Open findings; the
+      poll cadence itself measures ~71 ms, not the configured 20 ms, and that
+      gap has no diagnosis yet).
+
+    So for ~241 ms after a ball leaves the cup the debounced bit still reads
+    HELD. Once the dwell approaches that number — which is the whole point of the
+    cadence ladder — a CHECKING gate reading the debounced bit would pass an
+    EMPTY cup on the previous ball's stale HELD. That is a **fail-OPEN possession
+    gate**, the exact inversion of C-POSSESS-1's posture ("a dead sensor refuses,
+    it does not pass"), and it gets worse as the machine gets faster. The raw bit
+    falls with the ball, so :meth:`evidence` fails CLOSED at every dwell.
+
+    The cost of raw is chatter: a carry-flicker can read EMPTY over a seated
+    ball. That direction is a REFUSAL (``REJECTED_NO_BALL``) and therefore
+    harmless — except for the ONE caller where a refusal is not the end of it,
+    the auto-reload interlude, which answers an empty cup by asking BallButler to
+    throw a ball at it. That caller uses :meth:`evidence_settled`, which requires
+    the two bits to AGREE and answers ``UNKNOWN`` when they do not.
 
     THE THREE STATES, AND WHY UNKNOWN IS LOAD-BEARING
     -------------------------------------------------
@@ -373,10 +438,56 @@ class HandBallSensorSource:
         i.e. the operator hand-loading, NOT post-catch bounce-outs; they are
         ground truth for the sensor's ability to RESOLVE a sub-second
         seat-then-leave, which is the property the window rests on, and nothing
-        more). 1.50 s is 1.5x that. The upper constraint is the machine's own
-        cadence: ``toss_sequencer.MIN_TOSS_THROW_DELAY_S`` is **3.5 s**, so the
-        window closes 2.3x before the earliest legitimate departure a throw can
-        produce and a real throw can never be mis-read as a bounce-out.
+        more). 1.50 s is 1.5x that.
+
+        > **⚠ THE UPPER JUSTIFICATION IS DEAD — replaced 2026-08-21 (census D1).**
+        > It read: *"the upper constraint is the machine's own cadence:
+        > ``MIN_TOSS_THROW_DELAY_S`` is 3.5 s, so the window closes 2.3x before
+        > the earliest legitimate departure a throw can produce."* That premise
+        > was retired with the delay floor itself. At the tuning-phase operating
+        > point (dwell **0.49 s**) every legitimate throw departs 0.49 s after
+        > the LANDING — the dwell is defined landing->release — which is within
+        > 0.353 s of seating at the arrival band's floor and BEFORE seating at
+        > its top. Either way it is INSIDE a 1.50 s retention window, and faster
+        > than the fastest seat-then-leave the sensor has ever been shown to
+        > resolve, so a fixed
+        > window would return ``RETENTION_REJECTED`` and label **every successful
+        > cycle a bounce-out**. The window is therefore no longer fixed: it is
+        > clamped to the machine's own next scheduled release (§ 3.4 below), and
+        > 1.50 s survives only as the ceiling that applies when nothing is
+        > scheduled after this ball.
+
+    WINDOW HORIZONS — C-POSSESS-1 § 3.4, the cadence clamp
+    -----------------------------------------------------
+    Both windows are clamped by the machine's OWN schedule, passed per query
+    alongside the landing (and, like the landing, never latched):
+
+      * ``next_release_t`` closes RETENTION at ``next_release_t -
+        RELEASE_GUARD_S`` — the same instant that opens the next toss's departure
+        search, so a departure inside the announced throw window is OUR throw and
+        is excluded from the bounce test by construction rather than by a
+        tolerance;
+      * ``next_landing_t`` closes ARRIVAL at ``next_landing_t -
+        arrival_lead_s`` — the same instant that OPENS the next cycle's arrival
+        window, so two adjacent cycles' arrival windows can never overlap and
+        claim the same edge.
+
+    Both default to ``None`` (= nothing is scheduled after this ball), which is
+    the honest answer for a single ``Toss`` and for a session's last cycle, and
+    which reproduces the pre-2026-08-21 behaviour exactly.
+
+    **The residual, sized rather than argued away.** On a session's LAST cycle
+    the clamp still applies (the node cannot know at cycle N whether N+1 will
+    run), so a bounce-out after ``next_release_t - RELEASE_GUARD_S`` — i.e. later
+    than ``dwell - 0.30 s`` measured from the LANDING, which is less than that
+    measured from the seat edge — reads ``RETENTION_UNKNOWN`` instead of
+    ``REJECTED``. UNKNOWN does not veto
+    (§ 2 consequence 3), so that is a REPORTING residual on one cycle per
+    session, in the same class as — and strictly smaller than — the one
+    C-POSSESS-1 § 7 already accepts. It is the price of never mislabelling a
+    good cycle, and the trade is the right way round: the mislabel would fire on
+    EVERY cycle and, with ``on_empty_cup: RELOAD``, would route good cycles into
+    an interlude that throws a second ball at a full cup.
 
     WHAT RETENTION CANNOT DO, AND WHY THAT IS DELIBERATE
     ---------------------------------------------------
@@ -431,17 +542,29 @@ class HandBallSensorSource:
         self._blind_spans: Deque[Tuple[float, float]] = collections.deque(maxlen=32)
         self._blind_from: Optional[float] = None
         self._held: Optional[bool] = None      # None = never seen a good sample
+        # The RAW per-sample bit, kept alongside the debounced one. It carries NO
+        # edge log on purpose: edges are verdict-grade claims and the raw bit
+        # chatters, so it answers only the LIVE question (see the class docstring,
+        # "RAW FOR THE LIVE QUERY").
+        self._held_raw: Optional[bool] = None
         self._first_good: Optional[float] = None   # everything before it is blind
         self._last_t: Optional[float] = None
         self._sample_ok = False
 
     # ── feed ──────────────────────────────────────────────────────────────────
 
-    def note_sample(self, t: float, held: bool, valid: bool) -> None:
+    def note_sample(self, t: float, held: bool, valid: bool,
+                    raw: Optional[bool] = None) -> None:
         """One ``/hand_telemetry`` sample. ``t`` is the node's monotonic clock
         (``time.perf_counter``), NOT the bridge stamp: staleness here is about
         whether the Jetson is still hearing the sensor, and the bridge stamp is
         wall-epoch only once the bridge's clock anchor lands.
+
+        ``held`` is the DEBOUNCED bit (``ball_held``) and ``raw`` the undebounced
+        one (``ball_held_raw``). ``raw=None`` means the caller has no raw bit —
+        an older node, a bag cut before Phase 5, a test harness — and it degrades
+        to the debounced bit rather than to ``False``: a missing field must never
+        read as "no ball" (the same rule the node's ``getattr`` reads follow).
 
         A sample that is invalid, or that arrives after a gap longer than
         ``stale_s``, opens a blind span and updates NOTHING else — in particular
@@ -474,6 +597,7 @@ class HandBallSensorSource:
                 elif bool(held) != self._held:
                     self._held = bool(held)
                     self._edges.append((t, self._held))
+                self._held_raw = bool(held) if raw is None else bool(raw)
                 if self._first_good is None:
                     self._first_good = t
             self._last_t = t
@@ -481,39 +605,84 @@ class HandBallSensorSource:
 
     # ── queries ───────────────────────────────────────────────────────────────
 
+    def _live_ok(self, now: float) -> bool:
+        """Are we hearing the sensor RIGHT NOW? (``_mu`` already held.)"""
+        return bool(self._sample_ok
+                    and self._last_t is not None
+                    and (float(now) - self._last_t) <= self.stale_s)
+
     def evidence(self, now: float) -> str:
         """Live cup state -> ``EVIDENCE_SEATED`` / ``EVIDENCE_EMPTY`` /
         ``EVIDENCE_UNKNOWN``. The toss's ball-evidence precondition, and nothing
-        to do with ARRIVAL: it asks what is in the cup right now."""
+        to do with ARRIVAL: it asks what is in the cup right now.
+
+        Answers from the RAW bit (census D3). The debounced bit's measured
+        ``held->empty`` lag is ~241 ms, so once the dwell approaches that number
+        this query would return SEATED over a cup the previous ball has already
+        left — a fail-OPEN possession gate. See the class docstring."""
         with self._mu:
-            if self._held is None or not self._sample_ok:
+            if self._held_raw is None or not self._live_ok(now):
                 return EVIDENCE_UNKNOWN
-            if self._last_t is None or (float(now) - self._last_t) > self.stale_s:
+            return EVIDENCE_SEATED if self._held_raw else EVIDENCE_EMPTY
+
+    def evidence_settled(self, now: float) -> str:
+        """The same live question, asked CONSERVATIVELY: the raw and debounced
+        bits must AGREE, and a disagreement answers ``EVIDENCE_UNKNOWN``.
+
+        For the one consumer whose wrong answer COMMANDS something. The
+        auto-reload interlude answers an EMPTY cup by asking BallButler to throw
+        a ball at it, so a raw carry-flicker over a seated ball would put a
+        second ball into a full cup. Disagreement between two readings of one
+        observable is exactly "I could not look with confidence", which
+        C-POSSESS-1 § 2 spells ``UNKNOWN`` — and the interlude gate already
+        refuses on UNKNOWN without moving anything.
+
+        Note this is NOT simply "the slower bit": during the ~241 ms fall lag the
+        two disagree, so a departure reads UNKNOWN here where the debounced bit
+        alone would have said SEATED. Both of its answers are conservative."""
+        with self._mu:
+            if (self._held is None or self._held_raw is None
+                    or not self._live_ok(now)):
+                return EVIDENCE_UNKNOWN
+            if self._held != self._held_raw:
                 return EVIDENCE_UNKNOWN
             return EVIDENCE_SEATED if self._held else EVIDENCE_EMPTY
 
-    def arrival_time(self, landing_t: Optional[float]) -> float:
+    def arrival_time(self, landing_t: Optional[float],
+                     next_landing_t: Optional[float] = None) -> float:
         """The observed arrival edge's instant (monotonic), or NaN when no edge
         fell inside the window around ``landing_t``. This is the **catch-event
         time** — the first quantity this machine has ever had that says WHEN the
-        ball entered the cup, rather than when a tracker stopped seeing it."""
+        ball entered the cup, rather than when a tracker stopped seeing it.
+
+        ``next_landing_t`` clamps the search window exactly as it does in
+        :meth:`observe`; passing it here as well is what keeps the reported
+        catch-event time and the ARRIVAL verdict reading the same edge."""
         with self._mu:
-            rise = self._arrival_edge(landing_t)
+            rise = self._arrival_edge(landing_t, next_landing_t)
         return rise if rise is not None else float('nan')
 
-    def observe(self, now: float,
-                landing_t: Optional[float] = None) -> PossessionVerdict:
+    def observe(self, now: float, landing_t: Optional[float] = None, *,
+                next_release_t: Optional[float] = None,
+                next_landing_t: Optional[float] = None) -> PossessionVerdict:
         """The two-part verdict for a ball predicted to land at ``landing_t``
         (monotonic; ``None``/NaN = no goal is expecting one, so ARRIVAL is
         honestly ``UNKNOWN`` and the merge falls back to the tracker).
+
+        ``next_release_t`` / ``next_landing_t`` are the machine's OWN next
+        scheduled instants in the same clock — the cadence clamp of C-POSSESS-1
+        § 3.4, documented in the class docstring under "WINDOW HORIZONS". Both
+        default to ``None`` (nothing scheduled after this ball), which reproduces
+        the pre-2026-08-21 fixed windows exactly.
 
         ``arrival_err_mm`` / ``plane_drop_mm`` are NaN: this source measures the
         cup, not a position, and reporting a zero would claim an accuracy it never
         measured."""
         now = float(now)
         with self._mu:
-            arrival, reason = self._arrival_state(now, landing_t)
-            retention = self._retention_state(now, arrival, landing_t)
+            arrival, reason = self._arrival_state(now, landing_t, next_landing_t)
+            retention = self._retention_state(now, arrival, landing_t,
+                                              next_landing_t, next_release_t)
         return PossessionVerdict(
             source=self.name,
             arrival=arrival,
@@ -524,11 +693,38 @@ class HandBallSensorSource:
 
     # ── internals (ALL of these run with ``_mu`` already held) ────────────────
 
-    def _window(self, landing_t: Optional[float]) -> Optional[Tuple[float, float]]:
-        if landing_t is None or not math.isfinite(float(landing_t)):
+    @staticmethod
+    def _finite(value: Optional[float]) -> Optional[float]:
+        """``float(value)`` when it is a real number, else None. One helper, so
+        every schedule argument treats None and NaN identically — a NaN that
+        slipped through as "unknown" must never become a horizon of NaN, which
+        compares False against everything and would silently disable the clamp."""
+        if value is None:
             return None
-        land = float(landing_t)
-        return (land - self.arrival_lead_s, land + self.arrival_window_s)
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            return None
+        return out if math.isfinite(out) else None
+
+    def _window(self, landing_t: Optional[float],
+                next_landing_t: Optional[float] = None
+                ) -> Optional[Tuple[float, float]]:
+        land = self._finite(landing_t)
+        if land is None:
+            return None
+        w0 = land - self.arrival_lead_s
+        w1 = land + self.arrival_window_s
+        nxt = self._finite(next_landing_t)
+        if nxt is not None:
+            # C-POSSESS-1 § 3.4: close where the NEXT cycle's window opens, so
+            # two adjacent arrival windows abut and can never claim one edge.
+            w1 = min(w1, nxt - self.arrival_lead_s)
+        # A schedule tighter than the lead itself degenerates the window to a
+        # single instant rather than inverting it. An inverted window would make
+        # `w0 <= t <= w1` vacuously false AND `_blind_between` vacuously false,
+        # i.e. it would answer REJECTED — inventing a refusal out of arithmetic.
+        return (w0, max(w0, w1))
 
     def _blind_between(self, a: float, b: float) -> bool:
         """True if the sensor was unreadable at any point in ``[a, b]``."""
@@ -541,8 +737,10 @@ class HandBallSensorSource:
                 return True
         return self._blind_from is not None and self._blind_from <= b
 
-    def _arrival_edge(self, landing_t: Optional[float]) -> Optional[float]:
-        win = self._window(landing_t)
+    def _arrival_edge(self, landing_t: Optional[float],
+                      next_landing_t: Optional[float] = None
+                      ) -> Optional[float]:
+        win = self._window(landing_t, next_landing_t)
         if win is None:
             return None
         w0, w1 = win
@@ -551,13 +749,14 @@ class HandBallSensorSource:
                 return t
         return None
 
-    def _arrival_state(self, now: float,
-                       landing_t: Optional[float]) -> Tuple[str, str]:
-        win = self._window(landing_t)
+    def _arrival_state(self, now: float, landing_t: Optional[float],
+                       next_landing_t: Optional[float] = None
+                       ) -> Tuple[str, str]:
+        win = self._window(landing_t, next_landing_t)
         if win is None:
             return ARRIVAL_UNKNOWN, 'SENSOR_NO_LANDING'
         w0, w1 = win
-        rise = self._arrival_edge(landing_t)
+        rise = self._arrival_edge(landing_t, next_landing_t)
         if rise is not None:
             return ARRIVAL_CONFIRMED, 'SENSOR_ARRIVED'
         # No edge YET. Blindness beats both remaining answers: a window we could
@@ -568,14 +767,38 @@ class HandBallSensorSource:
             return ARRIVAL_UNKNOWN, 'SENSOR_WINDOW_OPEN'
         return ARRIVAL_REJECTED, 'SENSOR_NO_ARRIVAL'
 
+    def _retention_horizon(self, rise: float,
+                           next_release_t: Optional[float]) -> float:
+        """The instant retention stops looking for a departure (C-POSSESS-1
+        § 3.4). ``<= rise`` means there is no observable retention interval at
+        all, which the caller must read as UNKNOWN and never as CONFIRMED."""
+        r1 = rise + self.retention_window_s
+        rel = self._finite(next_release_t)
+        if rel is not None:
+            # The SAME instant that opens the next toss's departure search. A
+            # fall at or after it is OUR throw, not a bounce-out — excluded by
+            # construction rather than by a tolerance.
+            r1 = min(r1, rel - RELEASE_GUARD_S)
+        return r1
+
     def _retention_state(self, now: float, arrival: str,
-                         landing_t: Optional[float]) -> str:
+                         landing_t: Optional[float],
+                         next_landing_t: Optional[float] = None,
+                         next_release_t: Optional[float] = None) -> str:
         if arrival != ARRIVAL_CONFIRMED:
             return RETENTION_UNKNOWN
-        rise = self._arrival_edge(landing_t)
+        rise = self._arrival_edge(landing_t, next_landing_t)
         if rise is None:                       # unreachable; belt for a future edit
             return RETENTION_UNKNOWN
-        r1 = rise + self.retention_window_s
+        r1 = self._retention_horizon(rise, next_release_t)
+        if r1 <= rise:
+            # The dwell leaves no interval between the seat edge and the next
+            # release. Nothing about retention is OBSERVABLE, so the honest
+            # answer is UNKNOWN — which § 2 consequence 3 forbids from vetoing.
+            # Answering CONFIRMED here would claim an observation never made;
+            # answering REJECTED is the census-D1 inversion this clamp exists to
+            # kill (every good cycle read as a bounce-out).
+            return RETENTION_UNKNOWN
         for t, held in self._edges:
             if (not held) and rise < t <= r1:
                 return RETENTION_REJECTED      # it arrived and then left: bounce-out

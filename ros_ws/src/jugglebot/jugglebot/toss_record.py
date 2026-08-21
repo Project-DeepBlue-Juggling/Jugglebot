@@ -84,6 +84,13 @@ import json
 import math
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
 
+# The ONE import this otherwise self-contained module takes, and it is
+# deliberate: the departure guard below and the possession source's retention
+# horizon are the SAME instant, so they must be the same constant. See
+# DEPARTURE_LEAD_S. `ball_possession` is pure Python with no further jugglebot
+# imports, so this cannot cycle.
+from jugglebot.ball_possession import RELEASE_GUARD_S
+
 # ── Schema version ────────────────────────────────────────────────────────────
 #: Bumps on field REMOVAL or a semantic change; purely additive fields do not
 #: bump (plan § 3.7). ``tests/motion/test_toss_record.py`` pins both the version
@@ -134,7 +141,16 @@ PROV_DECLARED = 'declared-only'
 #: the sensor channel's own lag, and for the fault direction the edges cannot
 #: resolve — an early release is a real defect and must be visible as a number
 #: rather than invisible as a missing edge.
-DEPARTURE_LEAD_S = 0.30
+#:
+#: **It is an ALIAS as of 2026-08-21 (census D1), not an independent number.**
+#: ``ball_possession.RELEASE_GUARD_S`` is the same instant seen from the other
+#: side: ``release - guard`` opens this module's departure search AND closes the
+#: previous toss's retention horizon. Two copies of that number is how the two
+#: windows start to overlap (a legitimate throw read as a bounce-out) or leave a
+#: gap (a real bounce-out attributed to the throw), so there is one. Pinned equal
+#: by ``tests/motion/test_toss_record.py::
+#: test_departure_lead_is_the_possession_release_guard``.
+DEPARTURE_LEAD_S = RELEASE_GUARD_S
 #: How far after it. 4.7x the measured worst case (+212 ms), and the window is
 #: additionally clamped to end at ``landing - arrival_lead`` so it can never
 #: overlap the arrival search and mistake a bounce-out for a departure.
@@ -152,13 +168,20 @@ class SensorWindows(NamedTuple):
     instrument that scores a capture against windows the robot never ran agrees
     with the robot only by coincidence.
 
-    **Do NOT substitute ``toss_sequencer.CATCH_CONFIRM_WINDOW_S`` (0.70 s) for
+    **Do NOT substitute ``toss_sequencer.CATCH_CONFIRM_WINDOW_S`` for
     ``arrival_window_s``.** That constant is the FSM's terminal deadline, not a
     sensor search window; the plan's § 3.3 draft used it. Measured on the
-    reference bag (2026-08-10, 25 catches): at 0.70 s exactly ONE arrival
-    relabels MISSED — the +798 ms row, which is the population MAXIMUM and the
-    row ``JB_BD_ARRIVAL_WINDOW_S`` was sized on. The runner-up (+675 ms) sits
-    25 ms inside that boundary, so the margin is one session's variation wide.
+    reference bag (2026-08-10, 25 catches): at the 0.70 s it then carried,
+    exactly ONE arrival relabels MISSED — the +798 ms row, which is the
+    population MAXIMUM. The runner-up (+675 ms) sits 25 ms inside that boundary,
+    so the margin was one session's variation wide.
+
+    > **Updated 2026-08-21 (census D7).** ``CATCH_CONFIRM_WINDOW_S`` is now
+    > derived from ``ball_possession.ARRIVAL_BAND_MAX_S`` (0.80 s — the measured
+    > band ceiling, rounded up), so it no longer sits BELOW the band it has to
+    > outlast. The two constants remain different quantities and must not be
+    > substituted for one another: 0.80 s is the band *ceiling* a deadline must
+    > clear, 1.50 s is the search *window* sized with margin above it.
     """
     arrival_lead_s: float
     arrival_window_s: float
@@ -859,6 +882,22 @@ def _first_in(instants: Sequence[float], lo: float, hi: float) -> Optional[float
     return None
 
 
+def _finite_or_none(value: Any) -> Optional[float]:
+    """``float(value)`` when it is a real number, else None.
+
+    One helper so None and NaN are treated identically everywhere a SCHEDULE
+    instant is optional. A NaN that reached a horizon would compare False against
+    everything and silently disable the clamp it was meant to apply — the sibling
+    of ``ball_possession.HandBallSensorSource._finite``, and for the same reason."""
+    if value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
 class SensorBlock(NamedTuple):
     """The mined sensor block plus the label it implies."""
     fields: Dict[str, Any]
@@ -870,6 +909,8 @@ class SensorBlock(NamedTuple):
 def label_from_sensor(samples: Sequence[SensorSample], *,
                       throw_time: float, landing_time: float,
                       windows: SensorWindows,
+                      next_release_time: Optional[float] = None,
+                      next_landing_time: Optional[float] = None,
                       stamp_wall_anchored: Optional[bool] = None) -> SensorBlock:
     """THE definition of "caught" for the corpus. Pure; one implementation.
 
@@ -877,11 +918,20 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
     side are ignored. ``throw_time`` / ``landing_time`` are the announcement's
     own stamps in the SAME clock as ``samples[i].t``.
 
+    ``next_release_time`` / ``next_landing_time`` are the NEXT cycle's announced
+    instants in that same clock, or ``None`` when this is the last toss of a
+    chain. They are the cadence clamp of C-POSSESS-1 § 3.4 and they are what
+    keeps this label honest as the dwell shrinks — see "THE CADENCE CLAMP" below.
+    The live verdict takes the identical pair through
+    ``ball_possession.HandBallSensorSource.observe``; the two implementations of
+    "caught" must agree, so they clamp the same way from the same constants.
+
     **The decisive window** is ``[throw - departure_lead, landing +
-    arrival_window + retention_window]`` — release evidence at one end, the
-    latest instant at which CAUGHT can still turn into BOUNCED at the other.
-    ``sensor_valid_frac`` is computed over exactly that span, because a sensor
-    that was healthy an hour earlier says nothing about this toss.
+    arrival_window + retention_window]``, both ends subject to the clamp —
+    release evidence at one end, the latest instant at which CAUGHT can still
+    turn into BOUNCED at the other. ``sensor_valid_frac`` is computed over
+    exactly that span, because a sensor that was healthy an hour earlier says
+    nothing about this toss.
 
     **The label, in gate order** (plan § 3.3):
 
@@ -893,12 +943,30 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
        datum there is.
     2. no departure edge ⇒ **NO_RELEASE**;
     3. departure, no catch edge ⇒ **MISSED**;
-    4. departure, catch edge, dropout inside the retention window ⇒ **BOUNCED**;
+    4. departure, catch edge, dropout inside the retention horizon ⇒ **BOUNCED**;
     5. otherwise ⇒ **CAUGHT**.
 
     Edge TIMES come from the RAW bit and the VERDICT from the DEBOUNCED one
     (D12) — see the module docstring for the measured ~241 ms asymmetric fall lag
     that makes the distinction worth a field rather than a footnote.
+
+    **THE CADENCE CLAMP — why gate 4 is not a fixed 1.5 s (census D1).**
+    ``retention_window_s`` was sized 1.5x the longest seat-then-leave the sensor
+    has resolved (0.999 s) and justified at the top by a delay floor of 3.5 s
+    that no longer exists. At the tuning-phase dwell of **0.49 s** a legitimate
+    throw departs the cup 0.49 s after seating — comfortably inside a fixed
+    1.5 s window — so gate 4 would fire on EVERY successful cycle and the corpus
+    would read ``BOUNCED`` for a perfect session. Worse, that same route is what
+    ``on_empty_cup: RELOAD`` uses to decide a ball is on the floor.
+
+    So the horizon closes at ``next_release_time - departure_lead_s`` — the very
+    instant the NEXT toss's departure search opens. A fall at or after it is that
+    throw's departure by definition and cannot also be this toss's bounce-out.
+    Likewise ``arr_hi`` closes at ``next_landing_time - arrival_lead_s``, where
+    the next arrival search opens, so no edge is claimed twice (census D2). When
+    the horizon leaves no interval at all the bounce test is SKIPPED rather than
+    resolved either way: there is nothing to observe, and inventing a BOUNCED
+    from arithmetic is the failure this clamp exists to prevent.
     """
     dep_lo = throw_time - windows.departure_lead_s
     # Clamped so the departure search can NEVER reach into the arrival search and
@@ -909,8 +977,17 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
                  landing_time - windows.arrival_lead_s)
     arr_lo = landing_time - windows.arrival_lead_s
     arr_hi = landing_time + windows.arrival_window_s
+    next_land = _finite_or_none(next_landing_time)
+    if next_land is not None:
+        # Census D2 — close where the NEXT cycle's arrival search opens.
+        arr_hi = max(arr_lo, min(arr_hi, next_land - windows.arrival_lead_s))
+    next_rel = _finite_or_none(next_release_time)
     win_lo = dep_lo
     win_hi = arr_hi + windows.retention_window_s
+    if next_rel is not None:
+        # Census D1 — and never SHORTER than the arrival search itself, or the
+        # decisive-sample filter would starve the very gates it feeds.
+        win_hi = max(arr_hi, min(win_hi, next_rel - windows.departure_lead_s))
 
     decisive = [s for s in samples if win_lo <= s.t <= win_hi]
     n = len(decisive)
@@ -925,20 +1002,26 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
     t_catch_raw = _first_in(rises_raw, arr_lo, arr_hi)
     t_catch_deb = _first_in(rises_deb, arr_lo, arr_hi)
 
-    t_dropout = None
+    # The retention HORIZON (C-POSSESS-1 § 3.4), mirroring
+    # HandBallSensorSource._retention_horizon exactly.
+    ret_hi = None
     if t_catch_deb is not None:
-        t_dropout = _first_in(falls_deb, t_catch_deb,
-                              t_catch_deb + windows.retention_window_s)
+        ret_hi = t_catch_deb + windows.retention_window_s
+        if next_rel is not None:
+            ret_hi = min(ret_hi, next_rel - windows.departure_lead_s)
+
+    t_dropout = None
+    if t_catch_deb is not None and ret_hi > t_catch_deb:
+        t_dropout = _first_in(falls_deb, t_catch_deb, ret_hi)
 
     held_at_dispatch = None
     for s in decisive:
         if s.valid and s.t <= throw_time:
             held_at_dispatch = bool(s.held)
     held_at_retention = None
-    if t_catch_deb is not None:
-        target = t_catch_deb + windows.retention_window_s
+    if t_catch_deb is not None and ret_hi > t_catch_deb:
         for s in decisive:
-            if s.valid and s.t <= target:
+            if s.valid and s.t <= ret_hi:
                 held_at_retention = bool(s.held)
 
     edge_count = len(rises_deb) + len(falls_deb)
@@ -980,19 +1063,33 @@ def label_from_sensor(samples: Sequence[SensorSample], *,
                                 else t_dep_deb) - throw_time,
                                arr_lo - landing_time, arr_hi - landing_time),
                            1.0)
-    # Gate 4 — it arrived and then left again inside retention.
+    # Gate 4 — it arrived and then left again inside the retention HORIZON. A
+    # departure at or after `next_release - departure_lead` is the next toss's
+    # release and was excluded above, by construction rather than by tolerance.
     if t_dropout is not None:
         return SensorBlock(fields, LABEL_BOUNCED,
                            'arrival at {:+.3f} s, dropout {:+.3f} s later '
-                           '(retention {:.2f} s)'.format(
+                           '(retention horizon {:.2f} s)'.format(
                                t_catch_deb - landing_time,
                                t_dropout - t_catch_deb,
-                               windows.retention_window_s),
+                               ret_hi - t_catch_deb),
                            1.0)
     # Gate 5.
+    if ret_hi <= t_catch_deb:
+        # The cadence leaves NO interval between the seat edge and the next
+        # release, so retention was never observable. CAUGHT is still the right
+        # label — the ball demonstrably arrived — but the reason must say the
+        # bounce test never ran, and the confidence must not claim it did.
+        return SensorBlock(fields, LABEL_CAUGHT,
+                           'arrival at {:+.3f} s; retention NOT OBSERVABLE (the '
+                           'next release at {:+.3f} s leaves no horizon)'.format(
+                               t_catch_deb - landing_time,
+                               (next_rel or float('nan')) - landing_time),
+                           0.5)
     return SensorBlock(fields, LABEL_CAUGHT,
-                       'arrival at {:+.3f} s, held through retention'.format(
-                           t_catch_deb - landing_time),
+                       'arrival at {:+.3f} s, held through retention '
+                       '({:.2f} s horizon)'.format(
+                           t_catch_deb - landing_time, ret_hi - t_catch_deb),
                        1.0)
 
 

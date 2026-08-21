@@ -2380,3 +2380,148 @@ def test_8b_tilt_clamp_maps_to_rejected_tilt_clamp(monkeypatch):
     assert result.success is False
     assert result.outcome == 'REJECTED_TILT_CLAMP'
     assert gh.terminal == 'abort'
+
+
+# ══ The cadence fixes the census orders BEFORE rung R3 ═══════════════════════
+#
+# D3 (the raw bit reaches the live query), D6 (our own ball is not a phantom)
+# and the C-POSSESS-1 § 3.4 window clamp, at the NODE seam. The pure-module half
+# is in tests/ros/test_ball_possession.py.
+
+def test_the_node_feeds_both_sensor_bits_not_just_the_debounced_one():
+    """CENSUS D3 at the wire. ``/hand_telemetry`` has carried ``ball_held_raw``
+    since Phase 5 and the node ignored it, so the live ``evidence`` query — the
+    ball-evidence PRECONDITION — answered from a bit whose measured fall lag is
+    ~241 ms. At the cadence ladder's lower rungs that gate would pass an EMPTY
+    cup, which is the fail-OPEN inversion of C-POSSESS-1's whole posture.
+
+    The debounced bit still owns the EDGES: this test drives them apart and
+    asserts the live read follows the raw one."""
+    node = _toss_ready_node(time.perf_counter())
+
+    def telem(held, raw, valid=True):
+        return types.SimpleNamespace(pos_meas=0.0, vel_meas=0.0, ball_held=held,
+                                     ball_held_raw=raw, ball_held_valid=valid)
+
+    # The subscription stamps with the node module's own perf clock, so these run
+    # on real time — microseconds apart, i.e. well inside the staleness bound.
+    node._on_hand_telemetry(telem(True, True))
+    node._on_hand_telemetry(telem(True, True))
+    assert node._ball_sensor.evidence(time.perf_counter()) == 'SEATED'
+    # The ball leaves: raw falls at once, the debounced verdict lags ~241 ms.
+    node._on_hand_telemetry(telem(True, False))
+    assert node._ball_sensor.evidence(time.perf_counter()) == 'EMPTY'
+    assert node._ball_sensor.evidence_settled(time.perf_counter()) == 'UNKNOWN'
+
+
+def test_a_message_without_the_raw_bit_degrades_to_the_debounced_one():
+    """A bag cut before Phase 5, or an older interface build, has no
+    ``ball_held_raw``. The node passes None — never a defaulted False, which
+    would make a missing FIELD indistinguishable from an empty CUP."""
+    node = _toss_ready_node(time.perf_counter())
+    msg = types.SimpleNamespace(pos_meas=0.0, vel_meas=0.0, ball_held=True,
+                                ball_held_valid=True)      # no ball_held_raw
+    node._on_hand_telemetry(msg)
+    node._on_hand_telemetry(msg)
+    assert node._ball_sensor.evidence(time.perf_counter()) == 'SEATED'
+
+
+def test_our_own_previous_cycles_ball_is_not_a_phantom_track():
+    """CENSUS D6 — the real bug, and the docstring in
+    ``_build_toss_observations`` already claimed the fix ("NOT the seated ball's
+    own pruned/CAUGHT track").
+
+    ``track_active`` refuses a live destination='jugglebot' track at CHECKING,
+    because a phantom would correlate against OUR announcement. The ball this
+    session just caught is not a phantom: its track only leaves IN_FLIGHT when
+    the tracker mints CAUGHT, at landing +0.202..+0.442 s. At any dwell short
+    enough for CHECKING to run inside that window the gate hard-rejects a
+    healthy cycle — and it does so from an angle completely independent of the
+    handoff floor, so lowering the dwell alone cannot dodge it."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    ours = _Ball(status=1, destination='jugglebot', id=9)   # still IN_FLIGHT
+    with node._lock:
+        node._balls = [ours]
+        node._balls_mono = now
+        node._prev_announced_ball_id = None
+    assert node._build_toss_observations(now).track_active is True   # the defect
+    with node._lock:
+        node._prev_announced_ball_id = 9        # ... it is OUR previous cycle's
+    assert node._build_toss_observations(now).track_active is False
+    # A DIFFERENT live track is still a phantom and still refuses — the exclusion
+    # is one id, not a disabled gate.
+    with node._lock:
+        node._balls = [ours, _Ball(status=1, destination='jugglebot', id=11)]
+    assert node._build_toss_observations(now).track_active is True
+
+
+def test_the_own_ball_exclusion_spans_cycles_but_never_goals():
+    """The latch is rolled forward at cycle start and cleared at goal ACCEPT. A
+    stale id surviving into a later goal would silently un-guard one track for a
+    session that never threw it."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    with node._lock:
+        node._announced_ball_id = 9
+    node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    with node._lock:
+        assert node._prev_announced_ball_id == 9   # rolled forward for cycle N+1
+        assert node._announced_ball_id is None     # and this cycle starts clean
+        node._goal_claimed = False
+        node._active_seq = None
+    node._goal_callback(types.SimpleNamespace())
+    with node._lock:
+        assert node._prev_announced_ball_id is None
+
+
+def test_a_single_toss_leaves_the_sensor_windows_unclamped():
+    """C-POSSESS-1 § 3.4 defaults. A single ``Toss`` has no next scheduled
+    release, so the honest horizon is the shipped fixed window and the behaviour
+    is the pre-2026-08-21 behaviour, byte for byte."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    assert node._expected_next_cycle_perf() == (None, None)
+
+
+def test_a_session_cycle_clamps_the_windows_to_its_own_next_release():
+    """... and a SESSION cycle carries the clamp, derived from the session's own
+    dwell rather than from a constant. The last intended cycle is deliberately
+    left unclamped: there is no next release for a departure to belong to, and
+    clamping one cycle too FEW is the cheap error (§ 3.4's sized residual)."""
+    import jugglebot.toss_session as ts
+    now = 100.0
+    node = _toss_ready_node(now)
+    session = ts.TossSessionSequencer(num_throws=3, dwell_time_s=1.5,
+                                      throw_delay_s=5.0)
+    session.start(now)
+    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    node._set_toss_next_cycle_perf(seq, session)
+    landing = seq.t_release + seq.flight_time_s
+    rel, land = node._expected_next_cycle_perf()
+    assert rel == pytest.approx(landing + 1.5)
+    assert land == pytest.approx(landing + 1.5 + 0.8)
+    # Tearing the cycle down drops the schedule — a horizon must never outlive
+    # the cycle that owns it (the arm/disarm lifecycle bug class).
+    node._clear_toss_cycle_state()
+    assert node._expected_next_cycle_perf() == (None, None)
+
+
+def test_the_last_intended_cycle_is_not_clamped():
+    """`intends_another_cycle` is keyed on THROWS, like the session's own
+    completion test, so a REJECTED_NO_BALL cycle does not consume one."""
+    import jugglebot.toss_session as ts
+    session = ts.TossSessionSequencer(num_throws=1, dwell_time_s=1.5,
+                                      throw_delay_s=5.0)
+    session.start(100.0)
+    assert session.intends_another_cycle is False
+    more = ts.TossSessionSequencer(num_throws=2, dwell_time_s=1.5,
+                                   throw_delay_s=5.0)
+    more.start(100.0)
+    assert more.intends_another_cycle is True
+    now = 100.0
+    node = _toss_ready_node(now)
+    seq = node._build_toss_cycle((0.0, 0.0, 170.0), 0.8, 5.0, 0.0)
+    node._set_toss_next_cycle_perf(seq, session)
+    assert node._expected_next_cycle_perf() == (None, None)

@@ -177,6 +177,8 @@ from jugglebot.reload_sequencer import (
     ACTION_SAFE_ABORT,
     ACTION_SEND_THROW,
     BB_STATE_IDLE,
+    PHASE_CHECKING as RELOAD_PHASE_CHECKING,
+    PHASE_PREPARING as RELOAD_PHASE_PREPARING,
     ReloadObservations,
     ReloadResult,
     ReloadSequencer,
@@ -757,6 +759,19 @@ class ReloadCoordinatorNode(Node):
         # destination-tagged candidate displaces it (see _build_observations).
         self._announced_ball_id = None
         self._announced_id_untagged = False
+        # The id the PREVIOUS cycle of THIS session latched (census D6). Rolled
+        # forward at _build_toss_cycle, cleared at goal ACCEPT so it never spans
+        # two goals. It is excluded from `track_active`, which the CHECKING gate
+        # reads: at a short dwell the previous ball's track is still IN_FLIGHT
+        # when cycle N+1 checks (the tracker only leaves IN_FLIGHT when it mints
+        # CAUGHT, landing +0.202..+0.442 s), and refusing our own just-caught ball
+        # as a "phantom" is a hard REJECTED_TRACK_ACTIVE on a healthy cycle.
+        self._prev_announced_ball_id = None
+        # The LIVE cycle's next scheduled release/landing on the perf clock, or
+        # (None, None) — the cadence clamp of C-POSSESS-1 § 3.4. Set from the
+        # session's own schedule at cycle start, cleared with the cycle.
+        self._toss_next_release_perf = None
+        self._toss_next_landing_perf = None
         # Ball ids already IN_FLIGHT when THIS goal's throw was accepted — excluded
         # from the announced-ball latch. Attempt 5 of the 2026-07-23 re-test latched
         # a phantom untagged track that predated the throw and rode it to a wrong
@@ -1333,10 +1348,21 @@ class ReloadCoordinatorNode(Node):
             # passed through untouched and nothing here decides anything.
             # getattr, not a bare read: an older node running against a bag or a
             # pre-Phase-5 message must degrade to UNKNOWN, never to "no ball".
+            #
+            # BOTH bits are fed since 2026-08-21 (C-POSSESS-1 § 3.5, census D3).
+            # The debounced one is the VERDICT bit (arrival/retention edges); the
+            # raw one answers the LIVE `evidence` query, because the debounce is
+            # asymmetric and slow in the fall direction (~241 ms measured) and a
+            # ball-evidence gate reading it would pass an EMPTY cup once the dwell
+            # approached that number — a fail-OPEN possession gate. `raw=None`
+            # (the field absent) degrades to the debounced bit, NOT to False: a
+            # missing field must never be indistinguishable from an empty cup.
+            raw = getattr(msg, 'ball_held_raw', None)
             self._ball_sensor.note_sample(
                 now,
                 held=bool(getattr(msg, 'ball_held', False)),
-                valid=bool(getattr(msg, 'ball_held_valid', False)))
+                valid=bool(getattr(msg, 'ball_held_valid', False)),
+                raw=None if raw is None else bool(raw))
 
     def _on_announcement(self, msg):
         # Only OUR ball's announcement (thrown by BB, aimed at us) advances the FSM.
@@ -1524,6 +1550,42 @@ class ReloadCoordinatorNode(Node):
             return None
         return land if math.isfinite(land) else None
 
+    def _expected_next_cycle_perf(self):
+        """-> ``(next_release_t, next_landing_t)`` on the perf clock, or
+        ``(None, None)``. The cadence clamp of C-POSSESS-1 § 3.4.
+
+        These are the machine's OWN next scheduled instants, and they bound both
+        sensor windows: retention closes where the next toss's departure search
+        opens, arrival closes where the next cycle's arrival search opens. Sized
+        by the SESSION (it owns the dwell) and latched per cycle, cleared with the
+        cycle — the same lifecycle discipline `landing_perf` has, and for the same
+        reason: a schedule that outlives its cycle would clamp the NEXT ball's
+        windows against a stale instant.
+
+        ``(None, None)`` for a single ``Toss`` and for a session's last intended
+        cycle — nothing is scheduled after them, so the honest horizon is the
+        shipped fixed one and the behaviour is the pre-2026-08-21 behaviour."""
+        with self._lock:
+            return self._toss_next_release_perf, self._toss_next_landing_perf
+
+    def _set_toss_next_cycle_perf(self, seq, session) -> None:
+        """Latch the next cycle's schedule for the cycle `seq` is about to run.
+
+        Only when the session INTENDS another throw after this one. On the last
+        intended cycle the windows stay unclamped, which costs nothing (there is
+        no next release to be confused with a bounce-out) and buys back the one
+        cycle per session on which a late bounce-out would otherwise read
+        UNKNOWN — see § 3.4's sized residual."""
+        landing = float(seq.t_release) + float(seq.flight_time_s)
+        if session is None or not session.intends_another_cycle:
+            rel = land = None
+        else:
+            rel = landing + float(session.dwell_time_s)
+            land = rel + float(seq.flight_time_s)
+        with self._lock:
+            self._toss_next_release_perf = rel
+            self._toss_next_landing_perf = land
+
     def _possession_confirmed(self, ball, ref_point_mm=None) -> bool:
         """THE possession question, for every caller in this node: does this tracker
         ``CAUGHT`` confirm that WE have the ball?
@@ -1551,9 +1613,12 @@ class ReloadCoordinatorNode(Node):
             ball_xyz_mm=(float(ball.position.x), float(ball.position.y),
                          float(ball.position.z)),
             ref_point_mm=ref)
+        next_release_perf, next_landing_perf = self._expected_next_cycle_perf()
         verdict = merge_possession(
-            sensor=self._ball_sensor.observe(time.perf_counter(),
-                                             self._expected_landing_perf()),
+            sensor=self._ball_sensor.observe(
+                time.perf_counter(), self._expected_landing_perf(),
+                next_release_t=next_release_perf,
+                next_landing_t=next_landing_perf),
             tracker=tracker)
         ok = bool(verdict.confirmed)
         # Keyed on the ARRIVAL STATE, not on the boolean: UNKNOWN and REFUSED both
@@ -1710,7 +1775,9 @@ class ReloadCoordinatorNode(Node):
         # again, so the whole observation is built from ONE instant's cup state.
         ball_evidence = self._ball_sensor.evidence(now)
         landing_perf = self._expected_landing_perf()
-        catch_event_perf = self._ball_sensor.arrival_time(landing_perf)
+        next_release_perf, next_landing_perf = self._expected_next_cycle_perf()
+        catch_event_perf = self._ball_sensor.arrival_time(
+            landing_perf, next_landing_t=next_landing_perf)
         catch_event_dt_s = (catch_event_perf - landing_perf
                             if (landing_perf is not None
                                 and math.isfinite(catch_event_perf))
@@ -1720,10 +1787,24 @@ class ReloadCoordinatorNode(Node):
         catch_error_mm = float('nan')
         time_at_land_perf = float('nan')
         if balls_fresh:
+            with self._lock:
+                own_prev_id = self._prev_announced_ball_id
+            # Census D6 — THE bug, and the docstring below already claimed the
+            # fix. The gate exists to refuse a phantom destination='jugglebot'
+            # track that would correlate against OUR announcement. The ball this
+            # session just caught is not that: it is the one whose fate the
+            # PREVIOUS cycle already adjudicated, and its track only leaves
+            # IN_FLIGHT when the tracker mints CAUGHT (landing +0.202..+0.442 s).
+            # At any dwell short enough for CHECKING to run inside that window —
+            # every rung from R3 down — the unfixed gate hard-rejects
+            # REJECTED_TRACK_ACTIVE on a perfectly healthy cycle, and it pins the
+            # same floor the CAUGHT-verdict handoff does from a completely
+            # independent direction.
             track_active = any(
                 b.destination == self._robot_name
                 and int(b.status) in (_BALL_STATUS_TO_BE_THROWN,
                                       _BALL_STATUS_IN_FLIGHT)
+                and (own_prev_id is None or int(b.id) != int(own_prev_id))
                 for b in balls)
             announced_id = self._update_announced_ball_latch(balls)
             if announced_id is not None:
@@ -1854,6 +1935,10 @@ class ReloadCoordinatorNode(Node):
             busy = self._goal_claimed or self._active_seq is not None
             if not busy:
                 self._goal_claimed = True
+                # The D6 exclusion spans CYCLES, never GOALS: a new goal's
+                # CHECKING must judge every live track on its merits, and a
+                # stale id from an earlier session would silently un-guard one.
+                self._prev_announced_ball_id = None
         if busy:
             self.get_logger().warning(
                 'Ball-op goal REJECTED_BUSY — a reload/toss/session is already '
@@ -3127,8 +3212,18 @@ class ReloadCoordinatorNode(Node):
                 'only; never run powered sessions with this set.')
         with self._lock:
             self._active_seq = seq
+            # Roll the outgoing latch forward BEFORE clearing it (census D6):
+            # cycle N+1's CHECKING must be able to tell OUR just-caught ball —
+            # whose track is still IN_FLIGHT until the tracker mints CAUGHT —
+            # from a genuine phantom. Cleared at goal ACCEPT, so it spans cycles
+            # and never goals.
+            self._prev_announced_ball_id = self._announced_ball_id
             self._announced_ball_id = None
             self._announced_id_untagged = False
+            # A new cycle inherits no schedule: the session sets it immediately
+            # after this returns, and a single Toss never does.
+            self._toss_next_release_perf = None
+            self._toss_next_landing_perf = None
             # GOAL-START phantom snapshot: any id already IN_FLIGHT before OUR
             # throw is a phantom BY CONSTRUCTION (our ball cannot be airborne
             # before our announcement's throw_time). The PREPARE-tick snapshot
@@ -3193,6 +3288,12 @@ class ReloadCoordinatorNode(Node):
             self._toss_platform_target_mm = None
             self._toss_prepare_pending = False
             self._toss_throw_dispatched = False
+            # The cadence clamp is per-CYCLE (C-POSSESS-1 § 3.4): a schedule that
+            # outlived its cycle would clamp the next ball's windows against a
+            # stale instant, which is the arm/disarm lifecycle bug class the
+            # contract deletes rather than guards.
+            self._toss_next_release_perf = None
+            self._toss_next_landing_perf = None
 
     def _run_toss_cycle(self, seq, *, deadline_s, cancel_now_fn, feedback_fn):
         """Tick ONE toss cycle to a terminal. Returns ``(TossResult, exit_kind)``
@@ -4679,6 +4780,13 @@ class ReloadCoordinatorNode(Node):
                 if decision.action == SESSION_ACTION_START_CYCLE:
                     seq = self._build_toss_cycle(
                         catch_pose, flight, session.throw_delay_s, vel_scale)
+                    # The cadence clamp (C-POSSESS-1 § 3.4). Set HERE and not
+                    # inside _build_toss_cycle because the dwell is the SESSION's
+                    # number and a single Toss has none — passing the session in
+                    # would give the cycle builder a parameter that is None on
+                    # its other caller and mean "no clamp" by accident rather
+                    # than by statement.
+                    self._set_toss_next_cycle_perf(seq, session)
                     self._open_toss_record(
                         action='toss_continuous',
                         goal_id=_goal_id_hex(goal_handle),
@@ -4819,7 +4927,40 @@ class ReloadCoordinatorNode(Node):
 
     # ── The auto-reload interlude (§ 3.9) ─────────────────────────────────────
 
-    def _reload_interlude_gate(self, session):
+    def _wait_out_seat_edge_band(self, session, *, cancel_now_fn=None) -> bool:
+        """Hold until the previous cycle's seat-edge band has elapsed. Commands
+        nothing — it waits. Returns False iff a cancel was honoured.
+
+        CENSUS D4/F3, and the reason the interlude cannot trust the terminal that
+        summoned it. ``REJECTED_NO_BALL`` is minted at CHECKING, and CHECKING runs
+        at ``landing + (dwell - throw_delay)``. The physical seat edge lands
+        **+137…+798 ms** after the announced landing (n=35, three 2026-08-10
+        bags). Those two numbers cross: below roughly a 1.2 s dwell, CHECKING
+        reads the cup BEFORE the ball has finished arriving in it, so a **good
+        catch** mints ``REJECTED_NO_BALL`` — and with ``on_empty_cup: RELOAD``
+        that route asks BallButler to throw a **second ball at a full cup**.
+
+        So the interlude's own cup read is re-taken here, after
+        ``JB_BD_ARRIVAL_WINDOW_S`` past the previous cycle's SCHEDULED landing —
+        the constant that already means "how long after the predicted landing a
+        seat edge may still arrive". Deriving the wait from it rather than
+        choosing a number is what makes the pending post-FW14 band re-measure
+        shrink this wait too.
+
+        Nothing is armed and nothing is airborne while this runs: the interlude is
+        only ever entered from ``REJECTED_NO_BALL``, the one toss terminal whose
+        own terminal action was ``ACTION_NONE``."""
+        landing = float(getattr(session, 'last_landing_perf', float('nan')))
+        if not math.isfinite(landing):
+            return True                    # nothing has landed yet — nothing to wait for
+        deadline = landing + float(hw.JB_BD_ARRIVAL_WINDOW_S)
+        while rclpy.ok() and time.perf_counter() < deadline:
+            if cancel_now_fn is not None and cancel_now_fn():
+                return False
+            time.sleep(_TICK_S)
+        return True
+
+    def _reload_interlude_gate(self, session, *, cancel_now_fn=None):
         """The node's half of the interlude precondition gate — the rungs that
         are OBSERVATIONS rather than counters (the session owns budget + floor,
         and has already passed them before ``SESSION_ACTION_RELOAD`` is emitted).
@@ -4852,14 +4993,33 @@ class ReloadCoordinatorNode(Node):
             bb_verified = self._bb_ball_in_hand_observed_false
         if not bb_verified:
             return 'STOPPED_BB_UNVERIFIED'
-        # (4) The cup. UNKNOWN refuses — a dead sensor must not license an
+        # (4) The cup — a CONFIRMED-EMPTY read, taken after the seat-edge band
+        # and from the SETTLED query. Two changes on 2026-08-21, both because
+        # this is the one refusal in the node that answers by COMMANDING (an
+        # autonomous BB throw), not by refusing:
+        #
+        #   * the band (census D4/F3) — see _wait_out_seat_edge_band. Below a
+        #     ~1.2 s dwell, CHECKING's REJECTED_NO_BALL fires on GOOD catches
+        #     because it reads the cup before the ball has finished arriving, so
+        #     the terminal that summoned the interlude is not evidence of
+        #     anything and the interlude must look for itself, later;
+        #   * `evidence_settled`, not `evidence` (C-POSSESS-1 § 3.5) — the live
+        #     query now reads the RAW bit, which is right everywhere a wrong
+        #     answer REFUSES and wrong here, where a carry-flicker over a seated
+        #     ball would put a second ball into a full cup. The settled query
+        #     needs both bits to agree and answers UNKNOWN when they do not,
+        #     which this gate already refuses on without moving anything.
+        #
+        # UNKNOWN refuses — a dead (or disagreeing) sensor must not license an
         # autonomous BB throw at a cup nobody can see into. SEATED refuses too,
-        # and gets its own code: the interlude was entered because the cup read
-        # EMPTY one moment ago, so a SEATED read here is a CONTRADICTION, and
-        # reloading onto a loaded cup throws a ball at a hand that already holds
-        # one. (§ 3.9 names one sensor code; splitting it is the one deviation
-        # here, and it is in the fail-closed direction.)
-        evidence = self._ball_sensor.evidence(now)
+        # and gets its own code: after the band has elapsed a SEATED read means
+        # the cup is genuinely loaded, i.e. the cycle that reported NO_BALL was
+        # mislabelled. (§ 3.9 names one sensor code; splitting it is the one
+        # deviation here, and it is in the fail-closed direction.)
+        if not self._wait_out_seat_edge_band(session,
+                                             cancel_now_fn=cancel_now_fn):
+            return 'STOPPED_RELOAD_CANCELLED'
+        evidence = self._ball_sensor.evidence_settled(time.perf_counter())
         if evidence == EVIDENCE_SEATED:
             return 'STOPPED_CUP_NOT_EMPTY'
         if evidence != EVIDENCE_EMPTY:
@@ -4933,7 +5093,7 @@ class ReloadCoordinatorNode(Node):
 
         The whole loop deliberately does NOT own the goal handle: a session's
         interlude terminal is not the session's terminal."""
-        stop = self._reload_interlude_gate(session)
+        stop = self._reload_interlude_gate(session, cancel_now_fn=cancel_now_fn)
         if stop is not None:
             self.get_logger().warning(
                 'reload interlude REFUSED %s — nothing moved (reloads %d/%d, '
@@ -4988,6 +5148,42 @@ class ReloadCoordinatorNode(Node):
                     attempts)
         return False, OUTCOME_STOPPED_RELOAD_BUDGET, attempts
 
+    @staticmethod
+    def _reload_cancel_deferred(seq, now: float) -> bool:
+        """Per-phase cancellation for the auto-reload interlude. True ⇒ DEFER:
+        keep ticking the FSM to its own terminal and resolve the cancel there.
+
+        THE TRANSPOSE of :meth:`_toss_cancel_deferred`, and it closes the HIGH the
+        Phase-2 audit left open. The toss path already refuses to honour a cancel
+        while a ball is airborne, for a reason that is not toss-specific:
+
+            aborting a catch mid-flight drops a ball on the robot.
+
+        The interlude's ball is thrown by BallButler and is exactly as airborne.
+        Until 2026-08-21 a session cancel during an interlude was honoured on the
+        very next tick, at any phase — including with a BB ball in the air — and
+        the honoured path runs ``_safe_on_early_exit`` → ``_safe_abort``, i.e. it
+        RETRACTS THE HAND out from under the incoming ball. Same hazard, same
+        discipline:
+
+          - CHECKING / PREPARING — honour now. Nothing has been commanded to BB;
+            the early-exit safing retracts and lowers the latch iff anything
+            armed, and the cup is loaded or not but nothing is falling;
+          - AIMING and every later phase — DEFER. AIMING is entered by dispatching
+            ``bb/throw_at_target``, and BB's countdown cannot be aborted
+            (``_enter_preparing``'s own docstring says so), so from that dispatch
+            onward a ball may leave the Butler at any moment. There is no
+            release instant to compare against before the announcement lands —
+            unlike the toss, which owns its own ``t_release`` — so the boundary is
+            the dispatch itself rather than a cutoff around it.
+
+        Deferring is bounded: every later phase carries its own deadline
+        (``_announcement_deadline``, ``_settle_deadline``) and the whole attempt
+        sits under ``_sequence_deadline_s``. A BB that never throws
+        (``THROW_ABORTED_NOT_SETTLED``) terminates on the announcement grace, not
+        on this."""
+        return seq.phase not in (RELOAD_PHASE_CHECKING, RELOAD_PHASE_PREPARING)
+
     def _run_one_reload_attempt(self, *, cancel_now_fn=None):
         """Drive ONE reload sequence to its terminal. Returns the
         :class:`ReloadResult`, or None if a cancel was honoured.
@@ -5013,17 +5209,37 @@ class ReloadCoordinatorNode(Node):
             self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
         self._possession_logged = set()
         max_sequence_s = _sequence_deadline_s(seq)
-        cancelled = False
+        cancel_seen = False
+        deferred_logged = False
         try:
             t_start = time.perf_counter()
             while rclpy.ok():
-                if cancel_now_fn is not None and cancel_now_fn():
-                    cancelled = True
-                    self._safe_on_early_exit(seq)
-                    self._log_reload_outcome(
-                        ReloadResult(False, 'ABORTED_CANCELLED'))
-                    return None
                 now = time.perf_counter()
+                if cancel_now_fn is not None and cancel_now_fn():
+                    cancel_seen = True
+                    if not self._reload_cancel_deferred(seq, now):
+                        self.get_logger().warning(
+                            'reload interlude CANCEL honoured NOW in %s — '
+                            'nothing was commanded to BallButler yet, so no '
+                            'ball can be in the air (deferred-cancel discipline, '
+                            'C-POSSESS-1 § 3.6 / _reload_cancel_deferred).'
+                            % seq.phase)
+                        self._safe_on_early_exit(seq)
+                        self._log_reload_outcome(
+                            ReloadResult(False, 'ABORTED_CANCELLED'))
+                        return None
+                    if not deferred_logged:
+                        deferred_logged = True
+                        # ONE line per attempt, and it names the phase: an
+                        # operator whose stop button appears not to have worked
+                        # must be able to see WHY from the log, not infer it.
+                        self.get_logger().warning(
+                            'reload interlude CANCEL DEFERRED in %s — the throw '
+                            'is committed to BallButler and its countdown cannot '
+                            'be aborted, so a ball may be in the air. Honouring '
+                            'now would retract the hand from under it. The '
+                            'cancel resolves at this interlude terminal (same '
+                            'discipline as _toss_cancel_deferred).' % seq.phase)
                 decision = self._step_sequence(seq, now, None)
                 if decision.done:
                     self._log_reload_outcome(decision.result)
@@ -5048,9 +5264,14 @@ class ReloadCoordinatorNode(Node):
             # reason; reusing the constant is what keeps the two from drifting.
             # SKIPPED on a cancel: the floor exists to protect the NEXT cycle,
             # and a cancelled session has none — waiting it out would only make
-            # the operator's cancel look 2.8 s slower than it is. (The safing has
+            # the operator's cancel look 2.9 s slower than it is. (The safing has
             # already run above; this is a wait, not a teardown step.)
-            if not cancelled:
+            #
+            # `cancel_seen`, not "cancel honoured": a DEFERRED cancel ends the
+            # session at this same terminal, so it has no next cycle either, and
+            # holding the floor for it would add the deferral's cost to the
+            # operator's stop TWICE.
+            if not cancel_seen:
                 self._settle_after_reload()
 
     def _settle_after_reload(self) -> None:

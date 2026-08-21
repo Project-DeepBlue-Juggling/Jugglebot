@@ -276,7 +276,9 @@ SC3_COMMON_MODE_MM = 6.0         # pooled |c|, must fit one session-trim authori
 UPTIME_ABORT_MS = tcg.UPTIME_WARN_MS
 
 # Cadence arithmetic for the ETA (§ 6's budget table).
-SETTLE_S = 2.80                  # toss_session.DEFAULT_SESSION_MISS_CLEANUP_S
+SETTLE_S = 2.90                  # toss_session.DEFAULT_SESSION_MISS_CLEANUP_S
+                                 #   (2.80 -> 2.90 on 2026-08-21: CATCH_CONFIRM_WINDOW_S
+                                 #   became derived from the measured arrival band)
 GOAL_OVERHEAD_S = 4.0            # accept + go_home + verified arrival between goals
 RELOAD_COST_S = 25.0             # § 6: "a drop costs ~25 s all-in"
 

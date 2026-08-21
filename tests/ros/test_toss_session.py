@@ -559,7 +559,16 @@ def test_the_miss_cleanup_floor_is_derived_from_its_sources():
     or the settle window cannot leave this floor silently wrong."""
     assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(
         CATCH_CONFIRM_WINDOW_S + GO_HOME_DURATION_S + 2.0 * NODE_TICK_S)
-    assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(2.80)
+    # 2.90 s since 2026-08-21, was 2.80. CATCH_CONFIRM_WINDOW_S moved 0.70 -> 0.80
+    # when it became DERIVED from ball_possession.ARRIVAL_BAND_MAX_S (census D7):
+    # a sensor-primary possession verdict needs a MISSED deadline that outlasts
+    # the band a real seat edge lands in (+137..+798 ms measured), and 0.70 sat
+    # 98 ms under its ceiling. The 0.10 s this adds to the MISS-path floor is the
+    # wrong direction for cadence and is stated as such rather than hidden: the
+    # census's F1 rung buys it back by re-deriving the floor from COMPLETION
+    # rather than from service acks, and the pending post-FW14 band re-measure is
+    # expected to shrink ARRIVAL_BAND_MAX_S and this with it.
+    assert DEFAULT_SESSION_MISS_CLEANUP_S == pytest.approx(2.90)
     assert re.search(r"declare_parameter\(\s*'go_home_duration_s',\s*2\.0\s*\)",
                      TRAJECTORY_NODE.read_text()), (
         'trajectory_node go_home_duration_s default moved — GO_HOME_DURATION_S '

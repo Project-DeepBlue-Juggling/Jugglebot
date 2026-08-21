@@ -538,6 +538,34 @@ class TossSessionSequencer:
         return self._floor_balls
 
     @property
+    def intends_another_cycle(self) -> bool:
+        """Does this session INTEND to throw again after the cycle it is about to
+        start? Read by the node to decide whether the sensor's windows are
+        clamped by a next scheduled release (C-POSSESS-1 § 3.4).
+
+        "Intends", not "will": whether cycle N+1 actually runs also depends on
+        the outcome (``stop_on_miss``, a reject, a cancel), and none of that is
+        knowable at cycle N's start. The approximation is deliberately in the
+        UNCLAMPED direction on the boundary — a session that stops early leaves
+        one cycle whose retention window was clamped against a release that never
+        came, which costs a late bounce-out reading UNKNOWN instead of REJECTED
+        on that one cycle. Clamping one cycle too FEW is the cheap error;
+        clamping one too MANY on every cycle is the census-D1 inversion.
+
+        Keyed on THROWS for the same reason ``step``'s completion test is: a
+        REJECTED_NO_BALL cycle and the single ABORTED_NO_RELEASE retry cost a
+        cycle index without costing one of the ``num_throws`` data points."""
+        return int(self._throws) + 1 < int(self.num_throws)
+
+    @property
+    def last_landing_perf(self) -> float:
+        """The previous cycle's SCHEDULED landing on the perf clock, or NaN
+        before any cycle has reported. The auto-reload interlude needs it to know
+        when the seat-edge band has actually elapsed (C-POSSESS-1 § 3.6): a
+        cup read taken before it is a read of a catch still in progress."""
+        return float(self._last_landing)
+
+    @property
     def next_cycle_at(self) -> float:
         """The instant the next cycle is scheduled to start. Read by the node's
         Layer-1.5 dwell reads to size their own budget — the covariate must fit

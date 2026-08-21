@@ -705,7 +705,9 @@ cycle the session continues past hands over through a whole `SAFE_ABORT` ladder
 whose every rung returns on a SERVICE ACK — `_go_home()` returns when a 2.0 s
 recentre profile has been *installed*. At the shipped defaults the naive
 arithmetic already starts cycle N+1 **1.7 s before the recentre lands**. Landed
-fix: `DEFAULT_SESSION_MISS_CLEANUP_S = 2.80 s` as a FLOOR on landing -> next cycle
+fix: `DEFAULT_SESSION_MISS_CLEANUP_S` as a FLOOR on landing -> next cycle
+(2.80 s as landed; 2.90 s since 2026-08-21, when `CATCH_CONFIRM_WINDOW_S` became
+derived from the measured sensor arrival band)
 start after any non-success cycle — it can only lengthen a gap, never shorten one,
 so it makes the docstring's existing "lateness is absorbed" claim true by
 construction. Also landed: `REJECTED_THROW_DELAY`, without which the advertised

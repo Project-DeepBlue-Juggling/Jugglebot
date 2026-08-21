@@ -1790,11 +1790,27 @@ jugglebot_ball_detect:
                                        #   margin; the next non-catch rise is +3194 ms ⇒ 2.1x
                                        #   clearance. Must absorb the uptime-dependent dispatch
                                        #   shift (+54–63 ms fresh, +118–133 ms at ~16 h).
+                                       #   ⚠ 2026-08-21: this is now the CEILING, not the whole
+                                       #   answer. Once the cycle period drops under it the next
+                                       #   cycle's landing falls INSIDE this window and the 4x
+                                       #   separation above is gone, so the live window is
+                                       #   additionally clamped to `next_landing - arrival_lead`
+                                       #   (C-POSSESS-1 § 3.4, census D2). It also sizes the
+                                       #   auto-reload interlude's seat-edge wait (§ 3.6).
   retention_window_s: 1.50             # held must persist this long past arrival to read
                                        #   CONFIRMED. Longest measured seat-then-leave 0.999 s
-                                       #   ⇒ 1.5x; shorter than MIN_TOSS_THROW_DELAY_S (3.5 s)
-                                       #   by 2.3x, so a legitimate throw can never read as a
-                                       #   bounce-out.
+                                       #   ⇒ 1.5x.
+                                       #   ⚠ THE UPPER JUSTIFICATION IS DEAD (2026-08-21). It
+                                       #   read "shorter than MIN_TOSS_THROW_DELAY_S (3.5 s) by
+                                       #   2.3x, so a legitimate throw can never read as a
+                                       #   bounce-out" — and that floor is retired. At the
+                                       #   tuning-phase dwell (0.49 s) every legitimate throw
+                                       #   departs INSIDE this window, so a fixed one would
+                                       #   label every good cycle BOUNCED and route it into the
+                                       #   auto-reload interlude. The live window is clamped to
+                                       #   `next_release - RELEASE_GUARD_S` (C-POSSESS-1 § 3.4,
+                                       #   census D1); 1.50 survives as the ceiling that applies
+                                       #   when nothing is scheduled after this ball.
 
 # ============================================================
 # 24. Catching Cone

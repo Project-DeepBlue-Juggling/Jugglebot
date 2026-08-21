@@ -682,3 +682,141 @@ def test_the_departure_window_is_far_wider_than_the_measured_shift():
     clamped = FLIGHT_S - float(hw.JB_BD_ARRIVAL_LEAD_S)
     assert clamped >= 2.5 * 0.212
     assert math.isclose(tr.DEPARTURE_LEAD_S, 0.30)
+
+
+# ── 4. The cadence clamp (C-POSSESS-1 § 3.4; census D1/D2) ────────────────────
+#
+# The corpus label and the live verdict are two implementations of one definition
+# of "caught". They must clamp the same way from the same constants, or the
+# offline miner — which is the R3 rung's gate instrument ("score the miner, not
+# the console") — will disagree with the machine it is scoring.
+#
+# Rung instants, never round numbers:
+#   R3   dwell 1.50 s, flight 0.80 s   (the rung these fixes must land before)
+#   R5'  dwell 0.49 s, flight 0.4949 s (the tuning-phase operating target)
+
+R3_DWELL_S = 1.50
+R5P_DWELL_S, R5P_FLIGHT_S = 0.49, 0.4949
+SEAT_DT_S = 0.30                       # inside the measured +137…+798 ms band
+
+
+def test_departure_lead_is_the_possession_release_guard():
+    """The departure search opens at ``throw - DEPARTURE_LEAD_S``; the previous
+    toss's retention horizon closes at ``release - RELEASE_GUARD_S``. Same
+    instant, so the two windows ABUT — no fall edge belongs to both (a good throw
+    read as a bounce-out) and none falls between them (a real bounce-out
+    attributed to the throw). Two copies of that number is exactly how the
+    property dies quietly, so there is one and this pins the identity."""
+    from jugglebot.ball_possession import RELEASE_GUARD_S
+    assert tr.DEPARTURE_LEAD_S is RELEASE_GUARD_S
+
+
+def test_a_good_cycle_is_not_labelled_bounced_once_the_dwell_shrinks():
+    """CENSUS D1 — the inversion, and the fix, in one test.
+
+    ``retention_window_s`` is 1.50 s and its UPPER justification was written in
+    the YAML as *"shorter than MIN_TOSS_THROW_DELAY_S (3.5 s) by 2.3x, so a
+    legitimate throw can never read as a bounce-out"*. That floor is retired. At
+    the R3 dwell the ball leaves the cup 1.50 s after the landing for OUR OWN
+    next throw, which sits inside the unclamped window, so gate 4 mints BOUNCED
+    on a perfect cycle — and with ``on_empty_cup: RELOAD`` that same route asks
+    BallButler to throw a second ball at a full cup.
+
+    Both halves are asserted: without the clamp the defect reproduces, with it
+    the label is CAUGHT. Asserting only the fixed behaviour would also pass
+    against an implementation that had merely widened something."""
+    next_release = LANDING_T + R3_DWELL_S
+    samples = stream(catch_dt=SEAT_DT_S, drop_after=R3_DWELL_S - SEAT_DT_S)
+
+    def under(**kw):
+        return tr.label_from_sensor(samples, throw_time=THROW_T,
+                                    landing_time=LANDING_T, windows=WINDOWS,
+                                    **kw)
+
+    assert under().label == tr.LABEL_BOUNCED                    # the defect
+    got = under(next_release_time=next_release,
+                next_landing_time=next_release + FLIGHT_S)
+    assert got.label == tr.LABEL_CAUGHT
+    assert got.confidence == 1.0
+
+
+def test_a_real_bounce_out_survives_the_clamp():
+    """The clamp excludes the announced throw window, NOT everything after the
+    arrival. Trading the D1 mislabel for its mirror image — every bounce-out read
+    as a catch — would re-open the trap C-POSSESS-1 § 7 spent a whole section
+    accepting before the sensor closed it."""
+    next_release = LANDING_T + R3_DWELL_S
+    got = tr.label_from_sensor(
+        stream(catch_dt=SEAT_DT_S, drop_after=0.20), throw_time=THROW_T,
+        landing_time=LANDING_T, windows=WINDOWS,
+        next_release_time=next_release,
+        next_landing_time=next_release + FLIGHT_S)
+    assert got.label == tr.LABEL_BOUNCED
+
+
+def test_an_unobservable_retention_is_declared_not_assumed():
+    """C-POSSESS-1 § 3.4's third clause, and the honest half of the change.
+
+    At R5' the seat edge lands +0.30 s after the landing and the next release
+    only +0.49 s after it, so the horizon closes BEFORE the ball is even seated.
+    Retention was never observable — the physics removes it, not the clamp (the
+    debounced fall lag alone is ~241 ms). The label is still CAUGHT (the ball
+    demonstrably arrived), but the corpus must be able to tell "held through
+    retention" from "we did not look", so the confidence drops and the reason
+    says so. A fitter that treats every CAUGHT alike would otherwise inherit an
+    unmarked change in what CAUGHT means, at exactly the cadence the fit runs
+    at."""
+    next_release = LANDING_T + R5P_DWELL_S
+    assert LANDING_T + SEAT_DT_S > next_release - tr.DEPARTURE_LEAD_S, (
+        'premise: the seat edge lands PAST the horizon at this cadence')
+    samples = stream(catch_dt=SEAT_DT_S,
+                     drop_after=R5P_DWELL_S - SEAT_DT_S)
+    got = tr.label_from_sensor(samples, throw_time=THROW_T,
+                               landing_time=LANDING_T, windows=WINDOWS,
+                               next_release_time=next_release,
+                               next_landing_time=next_release + R5P_FLIGHT_S)
+    assert got.label == tr.LABEL_CAUGHT
+    assert got.confidence == 0.5
+    assert 'NOT OBSERVABLE' in got.reason
+
+
+def test_the_arrival_search_stops_where_the_next_cycles_begins():
+    """CENSUS D2. At R5' the cycle PERIOD is ``dwell + T = 0.985 s``, under the
+    1.50 s arrival window, so the NEXT cycle's seat edge falls inside this
+    cycle's unclamped search and both rows can claim it. Clamped, this window
+    closes exactly where the next one opens.
+
+    Only the PERIOD to the next landing matters here, so this cycle keeps the
+    harness's own throw/landing pair; the R5' numbers set where the next cycle
+    lands."""
+    period_s = R5P_DWELL_S + R5P_FLIGHT_S              # 0.985 s
+    next_release = LANDING_T + R5P_DWELL_S
+    next_land = LANDING_T + period_s
+    assert period_s < WINDOWS.arrival_window_s, 'premise: they overlap'
+    # This cycle MISSED; only the NEXT cycle's ball ever seats.
+    samples = stream(catch_dt=period_s + SEAT_DT_S)
+
+    def under(**kw):
+        return tr.label_from_sensor(samples, throw_time=THROW_T,
+                                    landing_time=LANDING_T, windows=WINDOWS,
+                                    **kw)
+
+    assert under().label == tr.LABEL_CAUGHT                     # the edge, stolen
+    assert under(next_release_time=next_release,
+                 next_landing_time=next_land).label == tr.LABEL_MISSED
+
+
+def test_the_clamp_is_absent_by_default_so_a_single_toss_is_unchanged():
+    """A single ``Toss``, and a session's LAST cycle, have nothing scheduled
+    after them — the honest horizon is the shipped fixed one. ``None`` and
+    ``NaN`` must behave identically: a NaN horizon compares False against
+    everything and would silently disable the clamp it was meant to apply."""
+    nan = float('nan')
+    base = label(catch_dt=0.4)
+    for kw in ({}, {'next_release_time': nan, 'next_landing_time': nan},
+               {'next_release_time': None, 'next_landing_time': None}):
+        got = tr.label_from_sensor(stream(catch_dt=0.4), throw_time=THROW_T,
+                                   landing_time=LANDING_T, windows=WINDOWS,
+                                   **kw)
+        assert (got.label, got.reason, got.confidence) == (
+            base.label, base.reason, base.confidence)

@@ -81,6 +81,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Optional
 
+from jugglebot.ball_possession import ARRIVAL_BAND_MAX_S
+
 # ── BB heartbeat state enum ────────────────────────────────────────────────────
 # MUST mirror protocol_config.BallButlerStates (the heartbeat's `state` field is the
 # firmware enum verbatim). The FSM's logic consults only IDLE and ERROR, but the
@@ -124,7 +126,18 @@ DEFAULT_THROW_DELAY_S = 3.0                 # >= BB's ~2.5 s lead floor
 MIN_THROW_LEAD_S = 2.5                      # BB CANT_MAKE_LEAD floor
 RELOAD_TIMEOUT_S = 10.0                     # RELOADING → IDLE + ball_in_hand
 ANNOUNCEMENT_GRACE_S = 0.5                  # announcement must land within delay + this
-CATCH_CONFIRM_WINDOW_S = 0.7                # CAUGHT within this of predicted landing
+CATCH_CONFIRM_WINDOW_S = ARRIVAL_BAND_MAX_S # CAUGHT within this of predicted landing.
+                                            # DERIVED from the measured sensor arrival
+                                            # band, exactly as the toss twin is (census
+                                            # D7): it is the SAME physical question
+                                            # asked of the SAME cup sensor, and two
+                                            # hand-written copies of one number is how
+                                            # a re-measure lands in only one of them.
+                                            # 0.7 -> 0.8 lengthens the wait before a
+                                            # reload mints MISSED, which is the
+                                            # conservative direction on this path: the
+                                            # MISSED terminal is SAFE_ABORT, i.e. a
+                                            # retract under a possibly-seated ball.
 
 
 @dataclass

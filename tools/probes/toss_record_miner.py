@@ -1216,9 +1216,20 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
     windows = windows or make_windows()
     rows = []
     anchored = _stamp_wall_anchored(data)
-    for ann in self_tosses(data.announcements, robot):
+    # Materialised, not streamed, because every row's LABEL needs the NEXT
+    # announcement's instants: the retention and arrival horizons close where the
+    # next cycle's departure and arrival searches open (C-POSSESS-1 § 3.4,
+    # census D1/D2). Without them the miner would score a fast session as
+    # BOUNCED on every good cycle — and the miner is the R3 rung's gate
+    # instrument ("score the miner, not the console"), so an offline label that
+    # disagrees with the live verdict is worse than no label.
+    anns = list(self_tosses(data.announcements, robot))
+    for i, ann in enumerate(anns):
         throw_ros = ann['throw_time']
         landing_ros = ann['landing_time']
+        nxt = anns[i + 1] if i + 1 < len(anns) else None
+        next_release_ros = nxt['throw_time'] if nxt else None
+        next_landing_ros = nxt['landing_time'] if nxt else None
         row = toss_record.blank_record()
         # cycle_index and action are left NULL on the mined side on purpose.
         # The schema's M source for cycle_index is the action feedback stream
@@ -1244,6 +1255,8 @@ def mine_bag(data: BagData, *, robot: str = 'jugglebot',
         })
         block = label_from_sensor(data.hand, throw_time=throw_ros,
                                  landing_time=landing_ros, windows=windows,
+                                 next_release_time=next_release_ros,
+                                 next_landing_time=next_landing_ros,
                                  stamp_wall_anchored=anchored)
         row.update(block.fields)
         row['label'] = block.label
@@ -1859,10 +1872,12 @@ def self_check() -> int:
         if got != want:
             fails.append('{}: got {!r}, want {!r}'.format(name, got, want))
 
-    def run(**kw):
+    def run(next_release_time=None, next_landing_time=None, **kw):
         samples, throw, landing = _synth(**kw)
         return label_from_sensor(samples, throw_time=throw,
-                                 landing_time=landing, windows=windows)
+                                 landing_time=landing, windows=windows,
+                                 next_release_time=next_release_time,
+                                 next_landing_time=next_landing_time)
 
     # ACCEPT — the measured catch band, both ends (min +137 ms, max +798 ms on
     # the reference bag). The +798 row is the one that SIZED arrival_window_s.
@@ -1882,6 +1897,35 @@ def self_check() -> int:
           run(departure_dt=0.212, catch_dt=0.4).label, 'CAUGHT')
     check('no departure edge => NO_RELEASE',
           run(departure_dt=None, catch_dt=None).label, 'NO_RELEASE')
+    # ── The cadence clamp (C-POSSESS-1 § 3.4; census D1/D2) ───────────────────
+    # Rung R3: dwell 1.5 s, flight 0.8 s. The ball seats +0.30 s after landing
+    # and departs 1.5 s after landing, for OUR next throw. UNCLAMPED, that
+    # departure lands inside the fixed 1.5 s retention window and gate 4 mints
+    # BOUNCED on a perfect cycle — the census-D1 inversion, reproduced here so
+    # the fix is scored against the defect rather than against an assertion.
+    _r3_land = 100.0 + 0.8
+    _r3_rel = _r3_land + 1.5
+    _r3 = dict(flight=0.8, catch_dt=0.30, drop_after=1.5 - 0.30)
+    check('R3 good cycle, UNCLAMPED (the defect)', run(**_r3).label, 'BOUNCED')
+    check('R3 good cycle, CLAMPED to the next release',
+          run(next_release_time=_r3_rel, next_landing_time=_r3_rel + 0.8,
+              **_r3).label, 'CAUGHT')
+    # A REAL bounce-out inside the same dwell must STILL read BOUNCED: the clamp
+    # excludes the announced throw window, not everything after the arrival.
+    check('a real bounce-out inside a clamped dwell still reads BOUNCED',
+          run(flight=0.8, catch_dt=0.30, drop_after=0.20,
+              next_release_time=_r3_rel,
+              next_landing_time=_r3_rel + 0.8).label, 'BOUNCED')
+    # R5-prime (dwell 0.49 s, flight 0.4949 s): the seat edge lands at the
+    # measured +300 ms and the next release only 490 ms after the landing, so
+    # there is NO interval left in which a bounce-out could be observed. The
+    # label must be CAUGHT with the bounce test declared un-run — never BOUNCED
+    # from arithmetic, and never a CONFIRMED-grade confidence.
+    _r5_rel = 100.0 + 0.4949 + 0.49
+    _r5 = run(flight=0.4949, catch_dt=0.30, drop_after=0.19,
+              next_release_time=_r5_rel, next_landing_time=_r5_rel + 0.4949)
+    check('R5-prime: retention is not observable', _r5.label, 'CAUGHT')
+    check('R5-prime: and the label says so', _r5.confidence, 0.5)
     check('a NO_RELEASE cup stays held at dispatch',
           run(departure_dt=None,
               catch_dt=None).fields['sensor_held_at_dispatch'], True)

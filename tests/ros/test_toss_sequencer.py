@@ -32,6 +32,7 @@ from jugglebot.toss_sequencer import (
     ACTION_ANNOUNCE,
     ACTION_DISPATCH_THROW,
     ACTION_NONE,
+    CATCH_CONFIRM_WINDOW_S,
     ACTION_POSITION_PLATFORM,
     ACTION_PREPARE_CATCH,
     ACTION_REACH_CATCH,
@@ -63,6 +64,18 @@ from jugglebot.toss_sequencer import (
 )
 
 CATCH_POSE = (0.0, 0.0, 170.0)
+
+#: The standard fixture's SCHEDULED landing: ``t_release`` 5.0 + flight 0.8.
+FIXTURE_LANDING_T = 5.8
+#: The first instant at or past the settle deadline (`now >= _settle_deadline`).
+#: DERIVED, not typed: the confirm window moved 0.70 -> 0.80 on 2026-08-21 when
+#: it became `ball_possession.ARRIVAL_BAND_MAX_S` (census D7), and twelve tests
+#: in this file went red on a hard-coded 6.5 for a reason that had nothing to do
+#: with what any of them assert. Deriving it means the pending post-FW14 band
+#: re-measure moves them too.
+PAST_SETTLE_T = FIXTURE_LANDING_T + CATCH_CONFIRM_WINDOW_S
+#: Just inside the CATCHING phase-report threshold (landing - confirm window).
+CATCHING_PHASE_T = FIXTURE_LANDING_T - CATCH_CONFIRM_WINDOW_S + 0.05
 
 
 def _obs(now, **kw):
@@ -127,8 +140,8 @@ def _to_throw_dispatched(seq):
 
 
 def _to_in_flight(seq):
-    """… ack ok + stroke evidence → BALL_IN_FLIGHT. Scheduled landing 5.8;
-    settle deadline 5.0 + 0.8 + 0.7 = 6.5."""
+    """… ack ok + stroke evidence → BALL_IN_FLIGHT. Scheduled landing
+    FIXTURE_LANDING_T (5.0 + 0.8); settle deadline PAST_SETTLE_T."""
     _to_throw_dispatched(seq)
     seq.note_throw_dispatch(THROW_DISPATCH_OK)
     d = seq.step(1.1, _obs(1.1, throw_stroke_seen=True))
@@ -630,7 +643,7 @@ def test_stroke_evidence_advances():
     seq.note_throw_dispatch(THROW_DISPATCH_OK)
     d = seq.step(1.1, _obs(1.1, throw_stroke_seen=True))
     assert d.phase == PHASE_BALL_IN_FLIGHT
-    assert seq._settle_deadline == pytest.approx(6.5)  # 5.0 + 0.8 + 0.7
+    assert seq._settle_deadline == pytest.approx(PAST_SETTLE_T)
 
 
 def test_tracker_evidence_advances():
@@ -675,14 +688,16 @@ def test_happy_path_caught_stays_at_pose():
 
 
 def test_settle_deadline_anchored_on_landing_not_release():
-    """The settle deadline includes the time-of-flight (t_release + T + 0.7),
-    so a catch confirmed after the scheduled landing still reads CAUGHT — not
-    MISSED because the deadline treated RELEASE as landing."""
+    """The settle deadline includes the time-of-flight (t_release + T +
+    CATCH_CONFIRM_WINDOW_S), so a catch confirmed after the scheduled landing
+    still reads CAUGHT — not MISSED because the deadline treated RELEASE as
+    landing."""
     seq = _fresh()
     _to_in_flight(seq)
     d = seq.step(5.85, _obs(5.85, ball_caught=False))  # past landing, in window
     assert not d.done
-    d = seq.step(6.4, _obs(6.4, ball_caught=True, catch_error_mm=8.0))
+    late = PAST_SETTLE_T - 0.1                     # inside the window, past landing
+    d = seq.step(late, _obs(late, ball_caught=True, catch_error_mm=8.0))
     assert d.done and d.result.outcome == 'CAUGHT'
     assert d.action == ACTION_STAY
 
@@ -690,7 +705,7 @@ def test_settle_deadline_anchored_on_landing_not_release():
 def test_missed_after_settle_window():
     seq = _fresh()
     _to_in_flight(seq)
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'
     assert d.action == ACTION_SAFE_ABORT               # armed → safe the robot
 
@@ -705,7 +720,7 @@ def test_infeasible_does_not_terminate_mid_flight():
     seq.note_catch_feasibility(False, 'WORKSPACE')
     d = seq.step(5.2, _obs(5.2))
     assert not d.done
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED_INFEASIBLE_WORKSPACE'
     assert d.action == ACTION_SAFE_ABORT
 
@@ -730,7 +745,7 @@ def test_accept_clears_standing_reject():
     _to_in_flight(seq)
     seq.note_catch_feasibility(False, 'WORKSPACE')
     seq.note_catch_feasibility(True)
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'
 
 
@@ -744,7 +759,7 @@ def test_accept_then_reject_stream_still_not_infeasible():
     seq.note_catch_feasibility(True)                   # pre-tilt accepted
     for _ in range(30):                                # corrupt-track reject stream
         seq.note_catch_feasibility(False, 'WORKSPACE')
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'     # honest: reachable, not seated
 
 
@@ -764,7 +779,7 @@ def test_feasibility_during_preparing_counts():
     seq.note_throw_dispatch(THROW_DISPATCH_OK)
     seq.step(1.1, _obs(1.1, throw_stroke_seen=True))   # BALL_IN_FLIGHT
     seq.note_catch_feasibility(False, 'WORKSPACE')     # in-flight garbage reject
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'     # not MISSED_INFEASIBLE
 
 
@@ -776,7 +791,7 @@ def test_feasibility_before_prepare_dispatch_ignored():
     seq = _fresh()
     seq.note_catch_feasibility(False, 'WORKSPACE')     # pre-prepare: ignored
     _to_in_flight(seq)
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'     # not MISSED_INFEASIBLE
 
     seq2 = _fresh()
@@ -791,18 +806,19 @@ def test_feasibility_before_prepare_dispatch_ignored():
     seq2.note_throw_dispatch(THROW_DISPATCH_OK)
     seq2.step(1.1, _obs(1.1, throw_stroke_seen=True))  # BALL_IN_FLIGHT
     seq2.note_catch_feasibility(False, 'WORKSPACE')    # real standing reject
-    d = seq2.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq2.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED_INFEASIBLE_WORKSPACE'
 
 
 def test_phase_reports_catching_near_landing():
     """The reported phase flips BALL_IN_FLIGHT → CATCHING at scheduled landing −
-    confirm window (5.8 − 0.7 = 5.1)."""
+    confirm window."""
     seq = _fresh()
     _to_in_flight(seq)
-    d = seq.step(5.0, _obs(5.0))
+    early = FIXTURE_LANDING_T - CATCH_CONFIRM_WINDOW_S - 0.05
+    d = seq.step(early, _obs(early))
     assert d.phase == PHASE_BALL_IN_FLIGHT
-    d = seq.step(5.15, _obs(5.15))
+    d = seq.step(CATCHING_PHASE_T, _obs(CATCHING_PHASE_T))
     assert d.phase == PHASE_CATCHING
 
 
@@ -906,7 +922,7 @@ def test_achieved_flight_nan_without_confirmation():
     crossing estimate is untrusted ⇒ NaN."""
     seq = _fresh()
     _to_in_flight(seq)                                 # stroke evidence only
-    d = seq.step(6.5, _obs(6.5, ball_caught=False))
+    d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     assert d.done and d.result.outcome == 'MISSED'
     assert math.isnan(d.result.achieved_flight_s)
 
@@ -927,7 +943,7 @@ def test_catch_error_nan_on_all_non_caught_terminals(stage):
         d = seq.step(5.5, _obs(5.5, catch_error_mm=55.0))
     else:                                              # missed
         _to_in_flight(seq)
-        d = seq.step(6.5, _obs(6.5, ball_caught=False, catch_error_mm=55.0))
+        d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False, catch_error_mm=55.0))
     assert d.done and d.result.success is False
     assert math.isnan(d.result.catch_error_mm)
 
@@ -1082,7 +1098,7 @@ def test_not_caught_terminals_always_safe_abort(stay, drive, outcome):
     seq = _fresh(stay_at_pose_on_caught=stay)
     if drive == 'missed':
         _to_in_flight(seq)
-        d = seq.step(6.5, _obs(6.5, ball_caught=False))
+        d = seq.step(PAST_SETTLE_T, _obs(PAST_SETTLE_T, ball_caught=False))
     else:
         _to_throw_dispatched(seq)
         seq.note_throw_dispatch(THROW_DISPATCH_OK)
