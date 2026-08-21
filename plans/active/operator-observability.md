@@ -384,6 +384,10 @@ from this plan's sections, adjudicates diffs, runs/verifies gates, commits.
   counting in another process; revisit after F2 proves the panel.
 - `odrive_errors` KeyValue on `/link_status` for the minimap.
 - `panels.js` unit consistency (motor grid hand → mm, velocities → physical).
+- `tests/hardware/supported_platform_test.py`'s vendored `error_names()` still
+  drops unknown bits (its table is now drift-pinned by F3, but the function
+  diverges from the `UNKNOWN(0x…)` contract) — align when next touching that
+  harness.
 - **Owner hardware checks, next powered session**: (1) induce/observe an ODrive
   error → confirm shell + event-log decode; (2) with QTM off, press Calibrate →
   confirm refusal code, then run HOMING → confirm WARN skip, no FAULT;

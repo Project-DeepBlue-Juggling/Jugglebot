@@ -856,6 +856,53 @@ _ERR_DC_BUS_UNDER_VOLTAGE = 512
 # ODrive CLOSED_LOOP axis state (matches odrive.AXIS_STATES['CLOSED_LOOP']).
 _AXIS_STATE_CLOSED_LOOP = 8
 
+# ── ODrive error decode (F3) ──────────────────────────────────────────────
+# The full 32-bit active_errors/disarm_reason masks reach this node on every
+# DIAGNOSTIC frame, but until F3 nothing on the Jetson turned them back into
+# names: robot_state collapsed them to booleans, the guard-latch hint printed
+# only '(leg 3)', and the decode table (odrive.ERROR_CODES / odrive.error_names)
+# had ZERO consumers in the launched node graph. These two helpers are the one
+# formatting point shared by the three restored consumers (_guard_fault_leg_hint,
+# _log_odrive_errors, _publish_robot_state) so the operator sees one shape in the
+# shell, the bag and the GUI.
+#
+# BOTH MASKS, ALWAYS. The 2026-08-10 leg-0 spinout had active_errors == 0 and
+# the truth (SPINOUT_DETECTED) only in disarm_reason: active_errors self-heals,
+# disarm_reason is sticky until CLEAR_ERRORS. A decoder that reads one mask is
+# blind to exactly the class of fault that already bit this robot.
+_AXIS_LABELS = {
+    _HAND_AXIS: 'hand',
+    _BB_PITCH_AXIS: 'bb_pitch',
+    _BB_HAND_AXIS: 'bb_hand',
+}
+
+
+def _axis_label(axis: int) -> str:
+    """Human label for an ODrive axis id: 'leg 0'..'leg 5', hand, bb_pitch, bb_hand.
+
+    Legs keep the SPACED 'leg N' form the pre-F3 guard hint and the frozen
+    MAX_DEVIATION fallback already printed — the operator (and the existing
+    tests) read that shape, and one hint string must not mix two leg spellings.
+    """
+    if 0 <= axis < _NUM_LEGS:
+        return f'leg {axis}'
+    return _AXIS_LABELS.get(axis, f'axis {axis}')
+
+
+def _decode_axis_errors(active: int, disarm: int) -> str:
+    """'active=[NAME,...] disarm=[NAME,...] 0x<active>/0x<disarm>'.
+
+    Names come from ``odrive.error_names`` (unknown bits survive as one
+    ``UNKNOWN(0x…)`` entry rather than being silently eaten). The raw hex pair
+    is kept alongside the names so a bag/log line stays decodable even if the
+    table later gains a bit this build did not know about.
+    """
+    act_names = odrive.error_names(int(active))
+    dis_names = odrive.error_names(int(disarm))
+    return (f'active=[{",".join(act_names)}] disarm=[{",".join(dis_names)}] '
+            f'0x{int(active):X}/0x{int(disarm):X}')
+
+
 # ── Safe-shutdown sequencing (Task 3.3: Ctrl-C must ALWAYS profiled-stow) ──
 # on_shutdown runs an ordered, bounded, best-effort sequence: DISARM (mpc_active→0)
 # → SETTLE → profiled DEACTIVATE. The settle exists because set_heartbeat_flags(0)
@@ -1436,6 +1483,17 @@ class TeensyBridgeNode(Node):
         # Get_Version's fourth byte (fw_unreleased) per axis, kept node-local —
         # the tracker stores only the (major, minor, rev) triple.
         self._fw_unreleased = {}
+
+        # ── F3/C2: per-(axis, error-code) log throttle for _log_odrive_errors ──
+        # A SECOND tracker, deliberately NOT self._versions. The tracker above is
+        # bound to the firmware-version handshake (record_version/validate_group);
+        # overloading it would put two unrelated lifetimes on one object and make
+        # a future reset of either one silently clobber the other. All this
+        # instance is used for is last_error_log_times() + error_log_throttle_sec
+        # — the throttle scaffolding can_node used, which survived the port
+        # unused. It is touched only from the 10 Hz _publish_link_status timer
+        # (node-default MutuallyExclusiveCallbackGroup), so it needs no lock.
+        self._error_log = MotorStateTracker()
 
         # ── Subscriptions to T→J streams (RX-thread callbacks) ──
         self._client.subscribe(int(MsgType.HEARTBEAT_T2J), self._on_heartbeat_t2j)
@@ -3215,6 +3273,29 @@ class TeensyBridgeNode(Node):
                 errors.append(
                     f"Fatal ODrive issue (Teensy fault_state="
                     f"{_enum_name(FaultState, fault_state)}).")
+                # F3/C3 — name the actual ODrive error(s) beside the coarse
+                # fault_state string, so a bag or the GUI's error[0]-and-friends
+                # readouts say WHICH axis and WHICH condition instead of leaving
+                # every consumer to re-decode the raw bitfields.
+                #
+                # STRICTLY INSIDE THE FATAL BRANCH — non-negotiable.
+                # orchestrator_node._tick force-FAULTs on ANY non-empty
+                # robot_state.error[], so a decoded line appended for a
+                # NON-fatal bit (a hand/BB axis error, a leg disarm with no leg
+                # in CLOSED_LOOP) would manufacture a brand-new FAULT path out
+                # of pure observability. The decode adds detail to a fault that
+                # has already been declared; it never declares one.
+                #
+                # APPENDED, never prepended: state-minimap.js reads error[0] as
+                # the headline, and that headline must stay the coarse cause.
+                for axis in sorted(diag):
+                    d = diag[axis]
+                    a_err, d_err = int(d.active_errors), int(d.disarm_reason)
+                    if a_err == 0 and d_err == 0:
+                        continue
+                    errors.append(
+                        f"ODrive {_axis_label(axis)}: "
+                        f"{_decode_axis_errors(a_err, d_err)}")
             if msg.has_fatal_can_error:
                 # Distinguish the UDP-link-loss cause (safety hardening) from a CAN3
                 # bus fault, so an operator sees WHY robot_state went fatal.
@@ -4247,13 +4328,23 @@ class TeensyBridgeNode(Node):
                 throttle_duration_sec=1.0)
 
     def _guard_fault_leg_hint(self) -> str:
-        """Best-effort ' (leg N)' / ' (legs N,M)' suffix naming the offending leg.
+        """Best-effort ' (leg 3: active=[…] disarm=[…] 0x…/0x…)' culprit suffix.
 
         HeartbeatT2J.fault_state carries the guard REASON but no axis, so the
-        edge log names the leg from the latest per-axis Diagnostic cache: a leg
-        (0..5) with a non-zero active error or disarm reason is the likely
+        edge log names the axis from the latest per-axis Diagnostic cache: an
+        axis with a non-zero active error or disarm reason is the likely
         culprit for an ODRIVE_FATAL/MAX_DEVIATION/OVERSPEED latch. That scan is
         the primary path and is correct for ODRIVE_FATAL.
+
+        F3 widened it twice. (a) It now DECODES both masks to names instead of
+        printing a bare '(leg 3)' — the axis alone told an operator nothing
+        about whether they were looking at an under-voltage, a spinout or a
+        thermistor, and the names were already sitting unused in
+        odrive.ERROR_CODES. (b) It scans EVERY axis present in _latest_diag,
+        not range(_NUM_LEGS): a hand (6) or Ball Butler (7/8) fault produced a
+        completely empty hint before, so the loudest line the bridge prints
+        stayed silent about the one axis that was broken. Multiple culprits are
+        joined with '; ' in axis order.
 
         Fallback: a MAX_DEVIATION latch trips on command↔encoder divergence, not
         an ODrive error, so active_errors/disarm_reason are frequently zero (all
@@ -4272,21 +4363,89 @@ class TeensyBridgeNode(Node):
             diag = dict(self._latest_diag)
             hb = self._latest_heartbeat
         culprits = []
-        for axis in range(_NUM_LEGS):
-            d = diag.get(axis)
-            if d is not None and (int(d.active_errors) != 0
-                                  or int(d.disarm_reason) != 0):
-                culprits.append(axis)
-        if len(culprits) == 1:
-            return f' (leg {culprits[0]})'
-        if len(culprits) > 1:
-            return f' (legs {",".join(str(a) for a in culprits)})'
+        for axis in sorted(diag):
+            d = diag[axis]
+            active, disarm = int(d.active_errors), int(d.disarm_reason)
+            if active != 0 or disarm != 0:
+                culprits.append(f'{_axis_label(axis)}: '
+                                f'{_decode_axis_errors(active, disarm)}')
+        if culprits:
+            return f' ({"; ".join(culprits)})'
         if (hb is not None
                 and int(hb.fault_state) == int(FaultState.MAX_DEVIATION)
                 and int(hb.max_dev_leg) != 0xFF):
             return (f' (leg {int(hb.max_dev_leg)}, '
                     f'dev={hb.max_dev_value:+.3f} rev at trip)')
         return ''
+
+    def _log_odrive_errors(self):
+        """F3/C2 — throttled per-axis ODrive error logging (can_node parity).
+
+        Ported from ``can_node._handle_error`` (``7c7f61b^:can_node.py:419-447``),
+        whose throttle scaffolding survived the cutover unused in
+        ``can/motor_state.py``. Without it an ODrive error was visible ONLY as a
+        boolean on /robot_state and a raw bitfield in the bag: an operator
+        watching the launch shell got no line at all unless the Teensy guard
+        also latched.
+
+        WHICH TIMER. Called from the 10 Hz ``_publish_link_status``. Not the
+        100 Hz ``_publish_robot_state`` (ten times the scan for no extra
+        information — the throttle floor is 10 s), and not the 1 Hz
+        ``_health_check`` (a fresh error would wait up to a second behind the
+        link watchdog's own work). 10 Hz makes the first line effectively
+        immediate while the scan itself is nine dict lookups.
+
+        ONE LINE PER AXIS, NOT PER CODE. can_node emitted a separate line per
+        set bit, which turns a bus-wide undervoltage into six near-identical
+        lines. The message here is axis-level (``active=[…] disarm=[…]``), so a
+        per-code line would just repeat itself. Throttling stays per
+        (axis, code) exactly as before: a line is emitted when ANY currently-set
+        code on that axis is outside its 10 s window, and every set code is then
+        stamped — so a NEW code appearing mid-window still logs immediately,
+        which is the property the per-code throttle exists for.
+
+        Stamps are deliberately NOT pruned when a code clears. active_errors
+        self-heals, so a flapping bit with pruning would log at the full 10 Hz;
+        keeping the stamp costs one stale float and bounds the worst case at one
+        line per 10 s per axis, which is what the throttle is for.
+        """
+        try:
+            with self._lock:
+                diag = dict(self._latest_diag)
+            now = time.time()
+            throttle = self._error_log.error_log_throttle_sec
+            for axis in sorted(diag):
+                d = diag[axis]
+                active, disarm = int(d.active_errors), int(d.disarm_reason)
+                if active == 0 and disarm == 0:
+                    continue
+                both = active | disarm
+                # Throttle keys: every KNOWN set bit, plus one aggregate key for
+                # the unknown residue (which can never collide with a known
+                # single-bit code, since the residue excludes known bits). The
+                # residue is keyed too so a future firmware error code is
+                # throttled like any other rather than logging every 100 ms.
+                known_mask = 0
+                codes = []
+                for code in odrive.ERROR_CODES:
+                    known_mask |= code
+                    if both & code:
+                        codes.append(code)
+                unknown = both & ~known_mask
+                if unknown:
+                    codes.append(unknown)
+                log_times = self._error_log.last_error_log_times(axis)
+                due = [c for c in codes if now - log_times.get(c, 0.0) > throttle]
+                if not due:
+                    continue
+                for c in codes:
+                    log_times[c] = now
+                self.get_logger().error(
+                    f'ODrive error on {_axis_label(axis)}: '
+                    f'{_decode_axis_errors(active, disarm)}')
+        except Exception as e:  # noqa: BLE001 — observability must never break the timer
+            self.get_logger().error(f'ODrive error logging failed: {e}',
+                                    throttle_duration_sec=10.0)
 
     # ═══════════════════════════════════════════════════════════
     # The alarmed command-latency monitor (2026-07-24 closure contract)
@@ -4442,6 +4601,11 @@ class TeensyBridgeNode(Node):
             # 10 Hz heartbeat this method already holds). Runs BEFORE the level
             # is decided and never touches it — advisory, by contract.
             latency_monitor = self._latency_monitor_step(hb, hb_gen)
+            # F3/C2 — throttled per-axis ODrive error decode onto the node log.
+            # Rides this 10 Hz timer (see _log_odrive_errors for why this one)
+            # and, like the latency monitor, is ADVISORY: it reads the diag
+            # cache and writes only to the logger, never to msg.level.
+            self._log_odrive_errors()
 
             msg = DiagnosticStatus()
             msg.name = 'teensy/link'

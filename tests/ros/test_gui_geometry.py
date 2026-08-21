@@ -575,3 +575,112 @@ class TestBallPillFieldNameContract:
         # above would pass on `msg.ball_held_raw` alone. Pin the bare read.
         assert re.search(r'\bmsg\.ball_held\b(?!_)', panels_js), \
             'panels.js no longer reads the bare msg.ball_held verdict'
+
+
+# ---- ODrive error-table drift pins (F3) ----
+
+
+ODRIVE_ERRORS_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'odrive-errors.js'
+ODRIVE_PY = (ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'jugglebot'
+             / 'can' / 'odrive.py')
+SUPPORTED_PLATFORM_PY = ROOT / 'tests' / 'hardware' / 'supported_platform_test.py'
+SINGLE_LEG_PY = ROOT / 'tests' / 'hardware' / 'single_leg_test.py'
+
+
+def _extract_py_dict(py_text, name, source_label):
+    """Extract a module-level dict literal by AST, without importing.
+
+    Parsing beats importing here: ``can/odrive.py`` pulls the generated config
+    (and, transitively on some boxes, python-can), while the two hardware
+    harnesses open CAN interfaces from ``__main__`` argument parsing. The pin
+    only needs the literal.
+    """
+    import ast
+    tree = ast.parse(py_text)
+    for node in tree.body:
+        targets = (node.targets if isinstance(node, ast.Assign)
+                   else [node.target] if isinstance(node, ast.AnnAssign) else [])
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == name:
+                return ast.literal_eval(node.value)
+    raise AssertionError(f'Could not find dict {name} in {source_label}')
+
+
+def _extract_js_int_string_map(js_text, name):
+    """Extract 'export const NAME = { 0x1: 'A', 2: 'B', };' as {int: str}."""
+    pattern = rf'export\s+const\s+{name}\s*=\s*\{{([\s\S]*?)\}}\s*;'
+    m = re.search(pattern, js_text)
+    assert m, f'Could not find map {name} in odrive-errors.js'
+    body = m.group(1)
+    pairs = re.findall(r'(0[xX][0-9a-fA-F]+|\d+)\s*:\s*[\'"]([A-Z0-9_]+)[\'"]', body)
+    assert pairs, f'{name} entry extraction went stale (0 pairs parsed)'
+    return {int(k, 0): v for k, v in pairs}
+
+
+@pytest.fixture(scope='module')
+def authoritative_error_codes():
+    """jugglebot.can.odrive.ERROR_CODES — the one true table."""
+    table = _extract_py_dict(ODRIVE_PY.read_text(), 'ERROR_CODES', 'can/odrive.py')
+    # Shape assertions so a refactor that breaks the AST walk fails loudly
+    # instead of pinning every copy against an empty dict.
+    assert len(table) >= 20, f'ERROR_CODES extraction went stale: {table}'
+    assert table[0x4000000] == 'SPINOUT_DETECTED'
+    assert table[512] == 'DC_BUS_UNDER_VOLTAGE'
+    return table
+
+
+class TestODriveErrorTablePins:
+    """Pin every hand-mirrored copy of ERROR_CODES against can/odrive.py.
+
+    WHY THIS EXISTS. There is no codegen for this table, so each consumer that
+    cannot import the ROS package carries a copy, and a copy drifts silently:
+    the decode does not fail, it returns the WRONG NAME (or none) for a fault
+    the operator is standing next to. That is not hypothetical — before this
+    pin, ``supported_platform_test.py`` mapped 0x1000000 to 'ESTOP_REQUESTED'
+    (it is WATCHDOG_TIMER_EXPIRED) and stopped at 0x10000, so SPINOUT_DETECTED
+    — the 2026-08-10 leg-0 fault — decoded to nothing at all on that bench.
+
+    ``tilt_cal_grid``'s copy is pinned separately, in
+    ``tests/motion/test_tilt_cal_grid.py``, next to its own decoder tests.
+    """
+
+    def test_gui_js_table_matches_python(self, authoritative_error_codes):
+        js_table = _extract_js_int_string_map(
+            ODRIVE_ERRORS_JS.read_text(), 'ODRIVE_ERROR_CODES')
+        assert js_table == authoritative_error_codes, \
+            'odrive-errors.js has drifted from jugglebot.can.odrive.ERROR_CODES'
+
+    def test_supported_platform_harness_table_matches_python(
+            self, authoritative_error_codes):
+        table = _extract_py_dict(SUPPORTED_PLATFORM_PY.read_text(),
+                                 'ERROR_CODES', 'supported_platform_test.py')
+        assert table == authoritative_error_codes
+
+    def test_single_leg_harness_table_matches_python(
+            self, authoritative_error_codes):
+        table = _extract_py_dict(SINGLE_LEG_PY.read_text(),
+                                 'ERROR_CODES', 'single_leg_test.py')
+        assert table == authoritative_error_codes
+
+    def test_js_unknown_bit_contract_is_stated(self):
+        """Regex tripwire (honesty note: it cannot execute the JS).
+
+        Python's ``error_names`` surfaces undecodable bits as one aggregate
+        ``UNKNOWN(0x…)`` entry rather than dropping them — a firmware code this
+        build has never seen must still reach the operator. Pin that the JS
+        mirror still implements the same escape hatch; losing it is a silent
+        divergence that only shows up on the day it matters.
+        """
+        js = ODRIVE_ERRORS_JS.read_text()
+        assert 'UNKNOWN(0x' in js, \
+            'odrive-errors.js dropped the UNKNOWN(0x…) fallback'
+        assert re.search(r'\bexport\s+function\s+errorNames\s*\(', js), \
+            'odrive-errors.js no longer exports errorNames()'
+
+    def test_main_js_consumes_the_decoder(self):
+        """The table is only useful if the event log actually decodes with it —
+        pin the import so a refactor cannot leave a dead module behind a
+        passing drift test."""
+        main_js = (ROOT / 'ros_ws' / 'gui' / 'js' / 'main.js').read_text()
+        assert re.search(r"from\s+'\./odrive-errors\.js'", main_js), \
+            'main.js no longer imports the ODrive error decoder'

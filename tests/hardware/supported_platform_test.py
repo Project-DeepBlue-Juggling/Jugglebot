@@ -189,6 +189,13 @@ def decode_iq(data: bytes):
     return setpoint, measured
 
 
+# Vendored from jugglebot.can.odrive.ERROR_CODES (this harness deliberately
+# imports no ROS workspace).  PINNED by tests/ros/test_gui_geometry.py::
+# TestODriveErrorTablePins — the copy must stay byte-equivalent to the
+# authoritative table.  Before that pin existed this copy had drifted: it
+# stopped at 0x10000 and mislabelled 0x1000000 (WATCHDOG_TIMER_EXPIRED) as
+# 'ESTOP_REQUESTED', so a bench watchdog expiry printed the wrong cause and
+# SPINOUT_DETECTED — the 2026-08-10 leg-0 fault — printed nothing at all.
 ERROR_CODES = {
     0x01: 'INITIALIZING',
     0x02: 'SYSTEM_LEVEL',
@@ -206,7 +213,12 @@ ERROR_CODES = {
     0x4000: 'INVERTER_OVER_TEMP',
     0x8000: 'VELOCITY_LIMIT_VIOLATION',
     0x10000: 'POSITION_LIMIT_VIOLATION',
-    0x1000000: 'ESTOP_REQUESTED',
+    0x1000000: 'WATCHDOG_TIMER_EXPIRED',
+    0x2000000: 'ESTOP_REQUESTED',
+    0x4000000: 'SPINOUT_DETECTED',
+    0x8000000: 'BRAKE_RESISTOR_DISARMED',
+    0x10000000: 'THERMISTOR_DISCONNECTED',
+    0x40000000: 'CALIBRATION_ERROR',
 }
 
 

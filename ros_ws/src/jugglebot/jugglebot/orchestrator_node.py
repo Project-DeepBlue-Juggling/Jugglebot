@@ -296,6 +296,34 @@ class OrchestratorNode(Node):
         # 3. Run state machine
         self.sm.tick(self.ctx)
 
+        # 3-pre-a. (F3/C4) Say WHY on entry to FAULT, once per visit.
+        # The machine already logs '[SM] Entering FAULT', which tells an operator
+        # nothing about the cause: ctx.errors — the robot_state.error[] strings
+        # that forced the transition at step 2, now carrying F3's decoded
+        # per-axis ODrive names — was visible only to whoever thought to echo a
+        # 100 Hz topic. Edge-gated off _last_sm_state (the state at the END of
+        # the previous tick), so a held FAULT logs once, not at 10 Hz; it fires
+        # for BOTH the forced transition above and a handler-returned one,
+        # because it reads the post-tick state rather than the force path.
+        # (On the forced path the '[SM] Entering FAULT' line lands in the SAME
+        # tick, just above this one; on a handler-returned transition the
+        # machine logs 'X -> FAULT' now and 'Entering FAULT' next tick, so this
+        # cause line sits between them — adjacent either way.)
+        # WARNING level, not error: FAULT itself is already logged, and a
+        # guard-only fault (no ODrive error at all) is a routing state, not a
+        # failure.
+        if (self.sm.state == RobotState.FAULT
+                and self._last_sm_state != RobotState.FAULT):
+            if self.ctx.errors:
+                self.get_logger().warning(
+                    'FAULT cause — robot_state.error[]: '
+                    + ' | '.join(str(e) for e in self.ctx.errors))
+            else:
+                self.get_logger().warning(
+                    'FAULT cause — no robot_state.error[] strings '
+                    f'(guard_latched={self.ctx.guard_latched}, '
+                    f'boot_timed_out={self.ctx.boot_timed_out})')
+
         # 3a. Log boot timeout (once per occurrence)
         if self.ctx.boot_timed_out and not self._boot_timeout_logged:
             self.get_logger().error(

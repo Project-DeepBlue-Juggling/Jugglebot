@@ -629,6 +629,284 @@ def test_guard_fault_clear_logs_info_and_resets_anchor(bridge):
     assert node._last_guard_latch_log_t is None
 
 
+# ── F3: ODrive error decode / propagation ──────────────────────
+#
+# Until F3 the 32-bit active_errors + disarm_reason masks reached the Jetson
+# intact and were then thrown away: robot_state collapsed them to booleans, the
+# guard hint printed '(leg 3)' with no cause, and odrive.ERROR_CODES had zero
+# consumers in the launched graph. These tests pin the three restored consumers.
+#
+# BOTH MASKS in every case — the 2026-08-10 leg-0 spinout had active_errors == 0
+# and SPINOUT_DETECTED only in disarm_reason.
+
+_SPINOUT = 0x4000000        # odrive.ERROR_CODES[67108864] = SPINOUT_DETECTED
+_UV = 512                   # DC_BUS_UNDER_VOLTAGE
+_MISSING_ESTIMATE = 8
+
+
+def _odrive_error_lines(logger_mock):
+    return [m for m in _messages(logger_mock.error) if 'ODrive error on' in m]
+
+
+def _latch_odrive_fatal(teensy, node):
+    """Drive the Teensy into an ODRIVE_FATAL latch and wait for it."""
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.ODRIVE_FATAL),
+                      flags=0, uptime_ms=1)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.ODRIVE_FATAL))
+
+
+# ── C1: guard-latch hint decodes both masks, all axes ──────────
+
+def test_guard_hint_decodes_error_names_not_just_the_axis(bridge):
+    """The guard-latch edge log must NAME the ODrive condition, not just the leg.
+
+    Pre-F3 this printed ' (leg 3)' — an operator could not tell an undervoltage
+    from a spinout from a thermistor without decoding the bag by hand."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    diag = Diagnostic(axis_id=3, active_errors=_SPINOUT, disarm_reason=0)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 3 in node._latest_diag)
+
+    node._logger = MagicMock()
+    _latch_odrive_fatal(teensy, node)
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert len(edge) == 1, _messages(node._logger.error)
+    assert 'leg 3' in edge[0]
+    assert 'active=[SPINOUT_DETECTED]' in edge[0]
+    assert 'disarm=[]' in edge[0]
+    # Raw hex kept beside the names so the line stays decodable against a
+    # future firmware whose bits this table does not know.
+    assert '0x4000000/0x0' in edge[0]
+
+
+def test_guard_hint_decodes_disarm_only_fault_2026_08_10_shape(bridge):
+    """The EXACT 2026-08-10 leg-0 spinout shape: active_errors == 0, the truth
+    sticky in disarm_reason. A decoder that reads only active_errors is blind
+    to it, so the hint must name it from disarm_reason alone."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    diag = Diagnostic(axis_id=0, active_errors=0, disarm_reason=_SPINOUT)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 0 in node._latest_diag)
+
+    node._logger = MagicMock()
+    _latch_odrive_fatal(teensy, node)
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert len(edge) == 1, _messages(node._logger.error)
+    assert 'leg 0' in edge[0]
+    assert 'active=[]' in edge[0]
+    assert 'disarm=[SPINOUT_DETECTED]' in edge[0]
+
+
+def test_guard_hint_covers_hand_and_bb_axes(bridge):
+    """A hand (6) or Ball Butler (7/8) fault produced a COMPLETELY EMPTY hint
+    before F3 — the scan was range(_NUM_LEGS). The loudest line the bridge
+    prints stayed silent about the only axis that was broken."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
+                          Diagnostic(axis_id=6, active_errors=0,
+                                     disarm_reason=_MISSING_ESTIMATE).pack())
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
+                          Diagnostic(axis_id=7, active_errors=_UV,
+                                     disarm_reason=0).pack())
+    assert _wait_until(lambda: 6 in node._latest_diag and 7 in node._latest_diag)
+
+    node._logger = MagicMock()
+    _latch_odrive_fatal(teensy, node)
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert len(edge) == 1, _messages(node._logger.error)
+    # Both non-leg axes named, in axis order, joined with '; '.
+    assert 'hand: active=[] disarm=[MISSING_ESTIMATE]' in edge[0]
+    assert 'bb_pitch: active=[DC_BUS_UNDER_VOLTAGE]' in edge[0]
+    assert edge[0].index('hand:') < edge[0].index('bb_pitch:')
+
+
+def test_guard_hint_unknown_bits_are_surfaced_not_eaten(bridge):
+    """An undecodable bit is exactly the datum a forensics line must not lose:
+    it survives as one aggregate UNKNOWN(0x…) entry (odrive.error_names'
+    contract), never as silence."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    diag = Diagnostic(axis_id=2, active_errors=(1 << 23) | _UV, disarm_reason=0)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 2 in node._latest_diag)
+
+    node._logger = MagicMock()
+    _latch_odrive_fatal(teensy, node)
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert len(edge) == 1
+    assert 'DC_BUS_UNDER_VOLTAGE' in edge[0]
+    assert 'UNKNOWN(0x800000)' in edge[0]
+
+
+# ── C2: throttled per-axis error logging (can_node parity) ─────
+
+def test_odrive_error_logged_once_per_throttle_window(bridge):
+    """The 10 Hz link-status timer logs a decoded ERROR line per faulted axis,
+    then goes quiet for the throttle window — can_node's per-(axis, code) 10 s
+    throttle, whose scaffolding survived the port unused in can/motor_state.py.
+
+    Without the throttle this would emit ten lines a second for a latched fault;
+    without the logging an ODrive error was invisible in the launch shell unless
+    the Teensy guard ALSO latched."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    diag = Diagnostic(axis_id=1, active_errors=_UV, disarm_reason=_UV)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 1 in node._latest_diag)
+
+    node._logger = MagicMock()
+    node._publish_link_status()
+    lines = _odrive_error_lines(node._logger)
+    assert len(lines) == 1, _messages(node._logger.error)
+    assert 'ODrive error on leg 1' in lines[0]
+    assert 'active=[DC_BUS_UNDER_VOLTAGE]' in lines[0]
+    assert 'disarm=[DC_BUS_UNDER_VOLTAGE]' in lines[0]
+
+    # Second tick inside the window: silent.
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert _odrive_error_lines(node._logger) == []
+
+    # Backdate the per-code stamps past the window → one more line.
+    stamps = node._error_log.last_error_log_times(1)
+    for code in list(stamps):
+        stamps[code] -= (node._error_log.error_log_throttle_sec + 1.0)
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert len(_odrive_error_lines(node._logger)) == 1
+
+
+def test_new_error_code_logs_immediately_inside_the_window(bridge):
+    """Throttling is per (axis, CODE), not per axis: a NEW condition appearing
+    mid-window must log at once. That is the whole point of the per-code key —
+    an axis already logging an undervoltage must not swallow the spinout that
+    follows it."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
+                          Diagnostic(axis_id=4, active_errors=_UV).pack())
+    assert _wait_until(lambda: 4 in node._latest_diag)
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert len(_odrive_error_lines(node._logger)) == 1
+
+    # Same axis, same window, an ADDITIONAL code.
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
+                          Diagnostic(axis_id=4,
+                                     active_errors=_UV | _SPINOUT).pack())
+    assert _wait_until(lambda: int(node._latest_diag[4].active_errors)
+                       == (_UV | _SPINOUT))
+    node._logger = MagicMock()
+    node._publish_link_status()
+    lines = _odrive_error_lines(node._logger)
+    assert len(lines) == 1, _messages(node._logger.error)
+    assert 'SPINOUT_DETECTED' in lines[0]
+
+
+def test_no_odrive_error_log_when_masks_are_clean(bridge):
+    """A healthy axis produces no line at all — the timer must not narrate
+    silence (a clean bench log is what makes a real line visible)."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC),
+                          Diagnostic(axis_id=0, axis_state=8,
+                                     active_errors=0, disarm_reason=0).pack())
+    assert _wait_until(lambda: 0 in node._latest_diag)
+    node._logger = MagicMock()
+    node._publish_link_status()
+    assert _odrive_error_lines(node._logger) == []
+
+
+# ── C3: decoded names in robot_state.error[], fatal-gated ──────
+
+def test_robot_state_error_carries_decoded_names_when_fatal(bridge):
+    """When has_fatal_odrive_error is already true, error[] gains one decoded
+    line per faulted axis — the raw-error detail can_node carried and the port
+    dropped. The coarse fault_state string stays FIRST (state-minimap.js renders
+    error[0] as the headline)."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    diag = Diagnostic(axis_id=5, axis_state=8,
+                      active_errors=_SPINOUT, disarm_reason=_SPINOUT)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 5 in node._latest_diag
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    msg = node.robot_state_pub.published[-1]
+    assert msg.has_fatal_odrive_error is True
+    assert msg.error[0].startswith('Fatal ODrive issue')
+    decoded = [e for e in msg.error if e.startswith('ODrive leg 5:')]
+    assert len(decoded) == 1, msg.error
+    assert 'active=[SPINOUT_DETECTED]' in decoded[0]
+    assert 'disarm=[SPINOUT_DETECTED]' in decoded[0]
+    assert '0x4000000/0x4000000' in decoded[0]
+
+
+def test_robot_state_decoded_names_never_create_a_new_fault_path(bridge):
+    """THE non-negotiable gate. orchestrator_node._tick force-FAULTs on ANY
+    non-empty robot_state.error[], so a decoded line appended for a NON-fatal
+    condition would manufacture a brand-new FAULT path out of pure
+    observability.
+
+    A hand-axis (6) error is exactly that case: has_fatal_odrive_error is
+    computed from the LEG slice only, so the hand's mask leaves it False — and
+    no 'ODrive …' line may appear."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    diag = Diagnostic(axis_id=6, axis_state=8,
+                      active_errors=_MISSING_ESTIMATE,
+                      disarm_reason=_MISSING_ESTIMATE)
+    teensy.send_to_jetson(int(MsgType.DIAGNOSTIC), diag.pack())
+    assert _wait_until(lambda: 6 in node._latest_diag
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    msg = node.robot_state_pub.published[-1]
+    assert msg.has_fatal_odrive_error is False, \
+        'precondition: a hand-axis error is not a fatal LEG condition'
+    assert [e for e in msg.error if e.startswith('ODrive ')] == [], msg.error
+    # The raw masks are still carried per-axis — the decode is a convenience
+    # layer over them, never the only copy.
+    assert msg.motor_states[6].active_errors == _MISSING_ESTIMATE
+
+
+def test_robot_state_decoded_names_cover_every_faulted_axis(bridge):
+    """Once fatal, EVERY axis with a non-zero mask is decoded (not just the
+    leg that tripped the flag) — a bus-wide undervoltage names all of them,
+    and the hand/BB axes are no longer invisible."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    for axis in (0, 2, 6):
+        teensy.send_to_jetson(
+            int(MsgType.DIAGNOSTIC),
+            Diagnostic(axis_id=axis, axis_state=8, active_errors=_UV).pack())
+    assert _wait_until(lambda: {0, 2, 6} <= set(node._latest_diag)
+                       and node._latest_telemetry is not None)
+    node._publish_robot_state()
+    msg = node.robot_state_pub.published[-1]
+    assert msg.has_fatal_odrive_error is True   # legs 0/2 carry active errors
+    decoded = [e for e in msg.error if e.startswith('ODrive ')]
+    assert len(decoded) == 3, msg.error
+    assert decoded[0].startswith('ODrive leg 0:')
+    assert decoded[1].startswith('ODrive leg 2:')
+    assert decoded[2].startswith('ODrive hand:')
+
+
 # ── profile ────────────────────────────────────────────────────
 
 def test_profile_published(bridge):

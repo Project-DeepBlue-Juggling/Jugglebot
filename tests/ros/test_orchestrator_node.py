@@ -928,3 +928,67 @@ class TestFireForgetDisarm:
         orch._dispatch_request('arm_setpoints')
         assert orch._pending_future is not None
         assert orch.ctx.operation_pending is True
+
+
+# ════════════════════════════════════════════════════════════════
+# F3/C4 — say WHY on entry to FAULT
+#
+# '[SM] Entering FAULT' told an operator nothing about the cause. The strings
+# that FORCED the transition live in ctx.errors (copied wholesale from
+# robot_state.error[] on every 100 Hz publish) and were visible only to whoever
+# thought to echo the topic — which, on this Foxy box, is unreliable for a
+# high-rate RELIABLE topic anyway. With F3 those strings now carry the decoded
+# per-axis ODrive names, so logging them once per FAULT visit puts the actual
+# cause in the launch shell beside the transition.
+# ════════════════════════════════════════════════════════════════
+
+
+class TestFaultEntryCauseLogging:
+    def _warnings(self, orch):
+        return [str(c[0][0]) for c in orch._logger.warning.call_args_list]
+
+    def test_fault_entry_logs_the_error_strings(self, orch):
+        orch._tick()  # BOOT
+        orch._on_robot_state(_make_robot_state_msg(
+            all_heartbeats=True,
+            errors=['Fatal ODrive issue (Teensy fault_state=ODRIVE_FATAL).',
+                    'ODrive leg 0: active=[] disarm=[SPINOUT_DETECTED] 0x0/0x4000000'],
+            has_fatal_odrive_error=True))
+        orch._logger.warning = MagicMock()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        causes = [m for m in self._warnings(orch) if 'FAULT cause' in m]
+        assert len(causes) == 1, self._warnings(orch)
+        # The decoded per-axis name — the whole point of F3 — reaches the shell.
+        assert 'SPINOUT_DETECTED' in causes[0]
+        assert 'ODRIVE_FATAL' in causes[0]
+
+    def test_fault_cause_logged_once_per_visit_not_every_tick(self, orch):
+        """FAULT is held, and _tick runs at 10 Hz — an unguarded log would spam
+        the shell until the operator cleared it, burying the one line that
+        matters."""
+        orch._tick()
+        orch._on_robot_state(_make_robot_state_msg(
+            all_heartbeats=True, errors=['boom'], has_fatal_odrive_error=True))
+        orch._logger.warning = MagicMock()
+        orch._tick()
+        orch._tick()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        assert len([m for m in self._warnings(orch) if 'FAULT cause' in m]) == 1
+
+    def test_guard_only_fault_logs_an_honest_no_strings_line(self, orch):
+        """A Teensy guard latch suppresses leg output WITHOUT disarming, so it
+        never reaches robot_state.error[]. The line must say so rather than
+        printing an empty list that reads as 'no cause found'."""
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch.ctx.active_mode = ActiveMode.TRAJECTORY
+        orch._tick()
+        orch._on_link_status(_link_status('MAX_DEVIATION'))
+        orch._logger.warning = MagicMock()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        causes = [m for m in self._warnings(orch) if 'FAULT cause' in m]
+        assert len(causes) == 1, self._warnings(orch)
+        assert 'no robot_state.error[] strings' in causes[0]
+        assert 'guard_latched=True' in causes[0]

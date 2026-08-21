@@ -71,7 +71,10 @@ AXIS_STATES = proto.ODRIVE_STATES
 CONTROL_MODES = proto.ODRIVE_CONTROL_MODES
 INPUT_MODES = proto.ODRIVE_INPUT_MODES
 
-# Error code bitmask -> name (subset relevant for testing)
+# Error code bitmask -> name.  Vendored from jugglebot.can.odrive.ERROR_CODES
+# (this harness deliberately imports no ROS workspace) and PINNED by
+# tests/ros/test_gui_geometry.py::TestODriveErrorTablePins, so drift is a test
+# failure rather than a wrong decode at the bench.
 ERROR_CODES = {
     1: "INITIALIZING", 2: "SYSTEM_LEVEL", 4: "TIMING_ERROR",
     8: "MISSING_ESTIMATE", 16: "BAD_CONFIG", 32: "DRV_FAULT",
