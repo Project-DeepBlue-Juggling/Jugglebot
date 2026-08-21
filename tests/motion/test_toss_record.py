@@ -121,7 +121,8 @@ EXPECTED_FIELDS = (
     'catch_point_global_mm', 'aim_tilt_rx_rad', 'aim_tilt_ry_rad',
     'throw_site_xy_mm',
     # calibration
-    'map_aim_rad', 'trim_aim_rad', 'total_aim_rad', 'map_aim_mm_at_h',
+    'map_aim_rad', 'trim_aim_rad', 'trim_monitor_aim_rad', 'trim_authority',
+    'total_aim_rad', 'map_aim_mm_at_h',
     'trim_aim_mm_at_h', 'ilc_aim_rad', 'ilc_vel_trim', 'speed_bias_applied',
     'timing_bias_applied_ms',
     'clamp_hits', 'trim_source_n', 'trim_state', 'trim_reset_reason',

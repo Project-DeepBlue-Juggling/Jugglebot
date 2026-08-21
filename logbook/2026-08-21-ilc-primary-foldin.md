@@ -14,6 +14,8 @@ files_changed:
   - config/hardware_config.yaml
   - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
   - ros_ws/src/jugglebot/jugglebot/motion/toss_ilc.py
+  - ros_ws/src/jugglebot/jugglebot/toss_trim.py
+  - ros_ws/src/jugglebot/jugglebot/toss_record.py
   - tests/hardware/ilc_fit_lib.py
 subsystem:
   - motion
@@ -610,3 +612,154 @@ parse-time band would refuse or admit against a T the goal may not have.
   skips are the corpus-backed V2b/V3/V4 arms — `temp/probes/` is gitignored).
 - `pytest tests/ros/test_toss_ilc_node.py -q -p no:randomly`, run 2026-08-21:
   **30 passed in 5.89 s**.
+
+## Phase E — build step 2a: the layer-2 aim estimator loses its authority (C4)
+
+**What changed.** `toss_trim.AIM_AUTHORITY = 'MONITOR'`. The layer-2 aim
+estimator keeps observing, keeps running G1–G11, keeps its CUSUM and its
+freeze-never-zero, keeps printing and keeps writing its end-of-goal proposal —
+and contributes exactly nothing to the commanded aim. The composition at
+`reload_coordinator_node._toss_aim_for_goal` is now
+`clamp_total_aim(map + ilc)`.
+
+Root cause rather than the decision by name: two converging estimators of one
+quantity double-count in both directions. Forward, the machine over-aims by the
+ILC's contribution *while the trim reports CONVERGED* — at the corpus operating
+point that is ~36–42 mm of landing shift against a 35 mm capture radius, i.e.
+the difference between catching and not. Mirrored, a converged trim makes the
+ILC's measured residual read `J·ILC_prev`, so the next fit returns
+`du ≈ −ILC_prev` and the persisted artifact unlearns itself to zero. ILC keeps
+the authority because its seam is the goal build, *upstream* of the FSM's
+CHECKING gate, which is the only place a correction can be validated before it
+becomes a command.
+
+**The monitor's arithmetic had to change too, and that is the half that is easy
+to miss.** `reduce_to_aim` reduces from `total_aim_rad`, which carries layer 3;
+subtracting `map_aim_rad` alone made the monitor report layer 3's own converged
+correction as demand that was still outstanding. `SessionTrim.observe` now
+subtracts `map_aim_rad + ilc_aim_rad`, via a new `toss_trim.ilc_aim_rad`
+accessor whose absent/null rule is deliberately **not** `map_aim_rad`'s:
+
+* **absent or null ⇒ exactly zero.** Layer 3 writes the field on every path it
+  runs — miss, dormant, disabled, clamp-refused — in the same `rec.update` that
+  writes `total_aim_rad`. A record with a total but no ILC field is from a build
+  where layer 3 did not exist, and there the contribution genuinely was zero.
+* **present but not a pair ⇒ unknown, and the row is refused by name**
+  (`ilc_aim_unknown`). That is a corrupt record, not an old one.
+* `map_aim_rad` keeps its stricter `None`-on-absent rule, and the asymmetry is
+  real: a mined-only row cannot say what MAP was applied, because the map is a
+  file on disk the miner never saw and a non-zero one is already inside
+  `land_err` — guessing zero there would re-learn a correction the machine is
+  already making. Layer 3 not being in the record means layer 3 was not in the
+  *build*.
+
+**The record gains a key rather than repurposing one.** `trim_aim_rad` still
+means "what layer 2 CONTRIBUTED to the commanded aim" and is now a structural
+zero; the estimate rides beside it as `trim_monitor_aim_rad`, with
+`trim_authority` recorded so a corpus can prove which build's rows carry a
+commanded trim. Folding the monitor value into `trim_aim_rad` would have been
+the C4 double-count wearing a different hat — `toss_trim.applied_aim_rad`'s
+map+trim fallback, the miner and `ilc_fit_lib` all read that key as *applied*.
+
+**Why the monitor is kept at all**, since a demotion implemented by never
+feeding the estimator would satisfy every no-double-count assertion: the trim
+reduces `land_err_mm` while layer 3's aim update is driven by `arrival_dir`
+(decision 6), so the two are independent read-outs of one physical quantity and
+their per-toss **disagreement is the standing validation** that C3's
+by-decision resolution was the right call. A test pins that the estimator is
+still fed and that the console says `MONITOR (NOT APPLIED)`.
+
+### One consequence the ladder did not anticipate
+
+**The D7 clamp's TRUNCATION branch is now unreachable without layer 3.**
+`parse_toss_cal` refuses any map node past `TOTAL_MAX_RAD` *on the magnitude* —
+the same quantity and the same number `clamp_total_aim` bounds — and the map's
+lookup interpolates within the convex hull of admitted nodes, so with layer 2 at
+zero authority every loadable map is already inside the clamp. The old test
+`test_a_clamp_that_binds_on_map_plus_trim_ALONE_still_truncates` drove its
+over-authority sum with a saturated map plus a saturated trim, and that sum no
+longer exists. Rather than delete the coverage, the test is rewritten to assert
+both halves of the new truth: a map saturated exactly AT the authority is
+commanded verbatim with no clamp hit, and a map past it is refused at PARSE. The
+truncation code stays — it is layer 1's semantics on paper — but the fact that
+nothing can reach it is now written down instead of waiting to be rediscovered.
+
+### Six tests changed, and why each one had to
+
+Every one of them pinned layer 2's authority, so each is rewritten to pin the
+demotion rather than deleted — and each keeps the root cause its predecessor was
+about:
+
+| Was | Is |
+|---|---|
+| `test_the_total_is_reclamped_at_apply_over_map_plus_trim` (node) | `test_the_layer_2_aim_has_ZERO_authority_over_the_commanded_aim` — a saturated trim does not even reach the clamp |
+| `test_the_virtual_target_is_built_from_the_TOTAL_aim` | `test_the_virtual_target_is_NOT_moved_by_the_monitor_only_trim` — the mirror, and the more important direction now: a build that left the estimate in `trim_aim_rad` while not composing it would be the same silent-wrong, inverted |
+| `test_pretilt_hold_is_raised_for_a_trim_only_aim` | `test_pretilt_hold_is_raised_for_a_map_only_aim` + `test_a_trim_only_aim_raises_NO_pretilt_hold` — D3's rule keyed on the commanded release state, so the coverage is re-pointed at a layer that commands, and the converse is asserted |
+| `test_the_record_carries_map_trim_and_total_separately` | `..._map_trim_monitor_and_total_separately` — the total is the map alone, 0.2° not 0.3° |
+| `test_a_clamp_that_binds_on_map_plus_trim_ALONE_still_truncates` | `test_the_D7_clamp_can_no_longer_BIND_without_layer_3` — see above |
+| `test_the_total_is_reclamped_at_apply_over_map_plus_trim` (pure) | `test_the_total_clamp_bounds_a_sum_no_single_layer_can_see` — same arithmetic property of `clamp_total_aim`, illustrated with `map + ilc`, because the old illustration would have gone on passing while describing a composition that no longer happens |
+
+Plus the `_pre_phase2_aim_block` **oracle**, which is a hand-transcribed copy of
+the pre-Phase-2 arithmetic. It carries the C4 demotion, and the reason is worth
+recording: the claim that oracle checks is *"with layer 3 inactive the numbers
+are the pre-Phase-2 numbers"*, so leaving layer 2's authority in it would make
+it fail for a reason that has nothing to do with layer 3. What it still holds
+independently — and is the whole point of keeping a second copy — is the
+pre-Phase-2 *shape*: `trim_offset_mm = offset − map_offset`, against the live
+code's `base_offset − map_offset`.
+
+### The four new tests (the digest's two failure narratives)
+
+* `tests/ros/test_toss_ilc_node.py::test_both_layers_live_the_machine_does_NOT_
+  over_aim_by_the_trim` — narrative 1, with the counterfactual computed rather
+  than assumed: the total that the old composition *would* have commanded is
+  formed and shown to differ by a real (> 1 mm) displacement, so a stub trim
+  reading zero cannot pass it.
+* `..._node.py::test_the_trim_keeps_OBSERVING_while_it_commands_nothing` — the
+  half a lazy demotion would break.
+* `tests/motion/test_toss_trim.py::test_a_converged_ILC_leaves_the_monitor_
+  demanding_NOTHING` — narrative 2, and it evaluates the OLD expression on the
+  same rows to show the bias removed (mean demand ≈ the ILC's own correction,
+  outside the deadband) rather than only showing the new number is zero.
+* `..._test_toss_trim.py::test_the_monitor_still_sees_a_residual_layer_3_has_
+  NOT_corrected` — the converse, so "subtract the ILC too" cannot be satisfied
+  by an estimator that was simply switched off. Its expectation carries the
+  shrinkage factor `n/(n₀+n)` explicitly: a tolerance wide enough to swallow the
+  prior's pull would also swallow a sign error on the ILC subtraction.
+
+### Verification — Phase E
+
+- `pytest tests/motion/test_toss_trim.py tests/ros/test_toss_trim_node.py
+  tests/ros/test_toss_ilc_node.py tests/motion/test_toss_ilc.py
+  tests/motion/test_ilc_fit.py -q -p no:randomly`, run 2026-08-21:
+  **318 passed, 13 skipped in 28.44 s**.
+
+#### Salvage note — Phase E was written by a session that closed before it committed
+
+Phase E's nine-file working set sat **uncommitted** in the main tree from
+2026-08-21 19:55 until it was picked up on 2026-08-22 by the session that wrote
+Phase F below. The authoring session had closed. It is credited here rather than
+silently absorbed: the design above, the six rewritten tests, the four new ones
+and this section's prose are its work.
+
+**Salvage-verified**, and the verification found the gap the house rule
+predicts — *never trust an unrun test assertion*. The scoped run cited
+immediately above covers five files; the two additive record fields
+(`trim_monitor_aim_rad`, `trim_authority`) are also pinned by
+`tests/motion/test_toss_record.py::test_fields_are_pinned`, the record's own
+name-order drift guard, which that scope never reached and which was
+**failing**:
+
+```
+At index 51 diff: 'trim_monitor_aim_rad' != 'total_aim_rad'
+```
+
+That is the drift guard working exactly as designed — it is the one test whose
+whole job is to notice a field list changing, and it is in a sixth file. Fixed
+by adding both names to `EXPECTED_FIELDS` in calibration-block order. Nothing
+else in the salvaged diff needed changing; every symbol it referenced
+(`_aimed_node`, `toss_trim.replay`, `_is_pair`'s string rejection, the `'s'`
+field kind) was checked against the tree before the run rather than assumed.
+
+- `./run_tests.sh`, run 2026-08-22: **5579 passed, 13 skipped in 254.85 s**
+  (parallel 258 s, serial phase empty, total 267 s, `RESULT: PASS`).

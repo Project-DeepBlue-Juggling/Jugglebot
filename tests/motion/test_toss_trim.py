@@ -4,9 +4,12 @@
 THE FIVE GATES THIS PHASE IS ACCEPTED ON
 ----------------------------------------
 1. the trim NEVER exceeds ``TRIM_MAX`` (:func:`test_the_trim_never_exceeds_its_clamp`);
-2. the TOTAL is re-clamped **at apply**, over ``map + trim``
-   (:func:`test_the_total_is_reclamped_at_apply_over_map_plus_trim`, and at the
-   node in ``tests/ros/test_toss_trim_node.py``);
+2. the TOTAL is re-clamped **at apply** — over ``map + ilc`` since the C4
+   demotion of 2026-08-21, at the node, in ``tests/ros/test_toss_trim_node.py``
+   and ``tests/ros/test_toss_ilc_node.py``. What this file still owns is the
+   estimator's own ``TRIM_MAX``, and (new) the MONITOR arithmetic: with layer 3
+   live the demand must subtract ``map + ilc``, or the monitor reads layer 3's
+   own correction as outstanding demand;
 3. every guard path FREEZES rather than zeroes
    (:func:`test_every_guard_path_freezes_and_never_zeroes`);
 4. a synthetic constant bias at σ = 20 mm converges inside the clamp and STOPS
@@ -154,22 +157,32 @@ def test_the_live_record_shape_is_refused_by_name_not_silently_ignored():
 
 # ── gate 2: the TOTAL clamp, at apply ─────────────────────────────────────────
 
-def test_the_total_is_reclamped_at_apply_over_map_plus_trim():
-    """GATE 2, pure half. Each layer bounds ITSELF — 1.0° for the map, 0.15° for
-    the trim — and 1.15° is past the authority every downstream argument (the
-    C-LEVEL-2 composition regime, the cup swing, the 55 mm landing shift) is
-    sized on. The only place that sum exists is the apply seam, so the clamp has
-    to be there and not at either update.
+def test_the_total_clamp_bounds_a_sum_no_single_layer_can_see():
+    """GATE 2, pure half. Each layer bounds ITSELF — 1.0° for the map, 1.0° for
+    the ILC, 0.15° for the trim's own observable — and any two of them summed is
+    past the authority every downstream argument (the C-LEVEL-2 composition
+    regime, the cup swing, the 55 mm landing shift) is sized on. The only place
+    that sum exists is the apply seam, so the clamp has to be there and not at
+    either update.
+
+    Kept as an arithmetic property of ``clamp_total_aim`` after the C4 demotion,
+    with the ``map + trim`` illustration replaced: layer 2 no longer contributes
+    to any sum, and the sum the node actually forms is ``map + ilc``. The old
+    illustration would have gone on passing while describing a composition that
+    no longer happens.
     """
     map_aim = (toss_cal.TOTAL_MAX_RAD, 0.0)          # a saturated map node
-    trim_aim = (toss_trim.TRIM_MAX_RAD, 0.0)         # a saturated session trim
-    rx, ry, hits = toss_cal.clamp_total_aim(map_aim[0] + trim_aim[0],
-                                            map_aim[1] + trim_aim[1])
+    ilc_aim = (toss_cal.TOTAL_MAX_RAD * 0.5, 0.0)    # a mid-authority ILC cell
+    rx, ry, hits = toss_cal.clamp_total_aim(map_aim[0] + ilc_aim[0],
+                                            map_aim[1] + ilc_aim[1])
     assert hits == ['total_aim']
     assert _mag((rx, ry)) == pytest.approx(toss_cal.TOTAL_MAX_RAD, rel=1e-12)
     # And the un-clamped sum really would have been past it — otherwise this
     # test would pass on a build where the clamp had been deleted.
-    assert map_aim[0] + trim_aim[0] > toss_cal.TOTAL_MAX_RAD
+    assert map_aim[0] + ilc_aim[0] > toss_cal.TOTAL_MAX_RAD
+    # The trim's own authority is still strictly inside the total, which is what
+    # keeps it a meaningful bound on the OBSERVABLE it now guards.
+    assert toss_trim.TRIM_MAX_RAD < toss_cal.TOTAL_MAX_RAD
 
 
 # ── gate 3: freeze, never zero ────────────────────────────────────────────────
@@ -784,3 +797,120 @@ def test_the_reference_gain_is_the_production_one_not_four_h():
     trim's whole mm-vs-rad reporting goes through it, so it is measured."""
     assert GAIN == pytest.approx(3126.64, abs=0.5)
     assert abs(GAIN - 4.0 * APEX_M * 1000.0) / GAIN < 0.005
+
+# ── C4: both layers live, and the monitor's arithmetic ────────────────────────
+#
+# Contradiction C4 of the 2026-08-21 ILC-primary fold-in. The digest names two
+# failure narratives; this file owns the ARITHMETIC one (the node owns the
+# composition one — ``tests/ros/test_toss_ilc_node.py`` § 8).
+
+
+def _split_applied_into_map_and_ilc(records, ilc_rad):
+    """Re-attribute a synthetic corpus's applied aim as ``map + ilc``.
+
+    ``toss_fit_lib.synthetic_corpus`` credits the whole applied aim to the map,
+    which is what every pre-layer-3 test wants. Here the split is the point: the
+    machine applied ``total``, of which ``ilc_rad`` came from layer 3, and the
+    monitor has to subtract BOTH or it reports layer 3's own correction as
+    outstanding demand.
+    """
+    for rec in records:
+        total = rec['total_aim_rad']
+        rec['ilc_aim_rad'] = [float(ilc_rad[0]), float(ilc_rad[1])]
+        rec['map_aim_rad'] = [float(total[0]) - float(ilc_rad[0]),
+                              float(total[1]) - float(ilc_rad[1])]
+    return records
+
+
+def test_a_converged_ILC_leaves_the_monitor_demanding_NOTHING():
+    """**C4, narrative 2 — the direction that made the artifact unlearn itself.**
+
+    A machine whose layer 3 has converged is applying exactly the correction the
+    plant needs, so it lands on target and there is nothing left to demand. The
+    monitor must read that as zero.
+
+    Before this fix it read ``+ILC``: ``reduce_to_aim`` reduces from
+    ``total_aim_rad`` (which includes layer 3) and the old arithmetic subtracted
+    ``map_aim_rad`` **alone**. The consequence was not confined to the monitor —
+    it is exactly the quantity the digest's second narrative says drives the
+    persisted artifact to zero, because a trim that then commanded ``+ILC`` would
+    make the next fit's measured residual read ``J·ILC_prev`` and the next step
+    return ``du ≈ −ILC_prev``.
+
+    The counterfactual is computed here, not asserted away: the old expression is
+    evaluated on the same rows so the test shows the bias it removed rather than
+    merely showing the new number is zero.
+    """
+    psi = (math.radians(0.30), math.radians(-0.20))     # the plant's own bias
+    ilc = _cancels(psi)                                 # layer 3, converged
+    records = _split_applied_into_map_and_ilc(
+        _corpus(psi, n=60, sigma_mm=2.0, applied=lambda x, y: ilc), ilc)
+
+    trim = toss_trim.replay(records)
+    assert trim.n >= toss_trim.N_MIN_APPLY, 'the corpus must be admitted at all'
+    # NOTHING outstanding: the estimate sits inside the deadband, so the monitor
+    # never even leaves WARMUP and its aim is exactly zero.
+    assert _mag(trim.aim()) == 0.0
+    assert _mag(trim.snapshot()['r_rad']) < toss_trim.DEADBAND_RAD
+
+    # ... and the counterfactual. The OLD arithmetic reads the ILC's own,
+    # correct, converged contribution as demand that is still outstanding.
+    old = np.array([np.array(toss_trim.reduce_to_aim(r))
+                    - np.array(toss_trim.map_aim_rad(r)) for r in records])
+    assert _mag(old.mean(axis=0)) == pytest.approx(_mag(ilc), rel=0.05)
+    assert _mag(old.mean(axis=0)) > toss_trim.DEADBAND_RAD
+
+
+def test_the_monitor_still_sees_a_residual_layer_3_has_NOT_corrected():
+    """The other half, and the reason the monitor is kept rather than deleted: a
+    partially-converged layer 3 leaves a real residual and the monitor reports
+    exactly that residual — not the whole plant bias, and not zero.
+
+    Without this, "subtract the ILC too" could be satisfied by an estimator that
+    had simply been switched off.
+    """
+    psi = (math.radians(0.30), 0.0)
+    ilc = (math.radians(-0.20), 0.0)          # only two thirds of the way there
+    records = _split_applied_into_map_and_ilc(
+        _corpus(psi, n=60, sigma_mm=2.0, applied=lambda x, y: ilc), ilc)
+
+    trim = toss_trim.replay(records)
+    snap = trim.snapshot()
+    outstanding = (-psi[0] - ilc[0], -psi[1] - ilc[1])
+    assert _mag(outstanding) == pytest.approx(math.radians(0.10), rel=1e-9)
+    assert snap['n'] >= toss_trim.N_MIN_APPLY
+    # The shrinkage mean pulls toward the (zero) prior at n₀/(n₀+n), so the
+    # expectation carries that factor explicitly rather than being loosened until
+    # it fits — a tolerance wide enough to swallow the prior's pull would also
+    # swallow a sign error on the ILC subtraction.
+    shrink = snap['n'] / float(snap['n0'] + snap['n'])
+    assert snap['r_rad'][0] == pytest.approx(outstanding[0] * shrink, abs=2e-4)
+    assert snap['r_rad'][0] < 0.0
+
+
+def test_a_record_whose_layer_3_contribution_is_MALFORMED_is_refused():
+    """"Unknown" is not zero — a present-but-corrupt ``ilc_aim_rad`` makes the
+    applied aim unreconstructable, and the row is refused BY NAME rather than
+    reduced against a guess. Absent or null is a different fact (a build with no
+    layer 3) and stays zero, which the two tests above rely on."""
+    records = _corpus((math.radians(0.2), 0.0), n=8, sigma_mm=2.0)
+    for rec in records:
+        rec['ilc_aim_rad'] = 'not a pair'
+    trim = toss_trim.replay(records)
+    assert trim.n == 0
+    assert trim.snapshot()['refusals'].get('ilc_aim_unknown') == len(records)
+    # ... and the same corpus with the field ABSENT is admitted in full.
+    clean = _corpus((math.radians(0.2), 0.0), n=8, sigma_mm=2.0)
+    for rec in clean:
+        rec.pop('ilc_aim_rad', None)
+    assert toss_trim.replay(clean).n == len(clean)
+
+
+def test_the_aim_estimator_declares_itself_MONITOR_ONLY():
+    """The demotion is a named constant, stamped into the proposal, so an
+    operator reading a session artefact cannot mistake a converged estimate for
+    a correction the machine made."""
+    assert toss_trim.AIM_AUTHORITY == 'MONITOR'
+    doc = toss_trim.SessionTrim(session_id='s', goal_id='g').proposal()
+    assert doc['authority'] == 'MONITOR'
+    assert 'ZERO authority' in doc['authority_note']

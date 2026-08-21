@@ -264,7 +264,22 @@ FIELDS: Tuple[Field, ...] = (
 
     # ── Applied calibration (all null/zero through phase 2a) ──────────────────
     Field('map_aim_rad', 'calibration', 'D', 'f2', 'phase 2b'),
-    Field('trim_aim_rad', 'calibration', 'D', 'f2', 'phase 2e'),
+    Field('trim_aim_rad', 'calibration', 'D', 'f2',
+          'layer 2 CONTRIBUTED to the commanded aim. A STRUCTURAL zero since '
+          '2026-08-21 — the layer-2 aim estimator is monitor-only (C4)'),
+    # ADDITIVE, so no schema bump (§ 3.7 item 1). Deliberately a SEPARATE key
+    # from trim_aim_rad rather than a repurposing of it: everything that
+    # reconstructs the applied aim from a record — toss_trim.applied_aim_rad's
+    # map+trim fallback, the miner, ilc_fit_lib — reads trim_aim_rad as "what was
+    # applied", and folding a monitor value into that key would re-apply it on
+    # paper, which is exactly the C4 double-count wearing a different hat.
+    Field('trim_monitor_aim_rad', 'calibration', 'D', 'f2',
+          'layer 2 ESTIMATED but did not command, rad. Its divergence from '
+          'ilc_aim_rad is the standing validation of the C3 by-decision '
+          'resolution (the two reduce different residual channels)'),
+    Field('trim_authority', 'calibration', 'D', 's',
+          "MONITOR since 2026-08-21 — toss_trim.AIM_AUTHORITY, recorded so a "
+          "corpus can prove which build's records carry a commanded trim"),
     Field('total_aim_rad', 'calibration', 'D', 'f2', 'what was actually commanded'),
     Field('map_aim_mm_at_h', 'calibration', 'D', 'f2',
           'REPORT field: mm at THIS toss apex, never the stored unit'),

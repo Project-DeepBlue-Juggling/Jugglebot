@@ -45,6 +45,7 @@ import pytest
 import yaml
 
 import jugglebot.hardware_config as hw
+from jugglebot import toss_trim
 from jugglebot.motion import toss_cal, toss_ilc
 from jugglebot.motion.trajectory import toss_release as tr
 from jugglebot.reload_coordinator_node import ReloadCoordinatorNode
@@ -167,12 +168,13 @@ def _record(node, outcome='CAUGHT'):
 
 
 class _StubTrim:
-    """A session trim that always commands the same non-zero aim.
+    """A session trim that always ESTIMATES the same non-zero aim.
 
-    Non-zero on purpose everywhere it is used below: a trim of zero would leave
-    ``base_offset`` and ``map_offset`` numerically equal and the Phase-2 split
-    (``trim_offset_mm = base_offset − map_offset``) would read correct for the
-    wrong reason.
+    Non-zero on purpose everywhere it is used below: since C4 (2026-08-21) it
+    commands nothing, so the value's job is to prove that the zero in
+    ``trim_aim_rad`` is structural rather than an artefact of an empty
+    estimator — a stub returning ``(0, 0)`` would make every C4 assertion below
+    pass on a build that had never been demoted.
     """
 
     def __init__(self, rx=math.radians(0.05), ry=math.radians(-0.03)):
@@ -385,7 +387,12 @@ def test_the_disabled_cycle_is_BIT_IDENTICAL_to_a_node_with_no_artifact(
     # The fixture must have reached the branch under test, or this test is the
     # vacuous one it replaces.
     assert fp_a['aim.offset_mm'] != (0.0, 0.0)
-    assert fp_a['aim.trim_offset_mm'] != (0.0, 0.0)
+    assert fp_a['aim.map_offset_mm'] != (0.0, 0.0)
+    # Layer 2 contributes nothing since C4, so `trim_offset_mm` is no longer the
+    # witness that the composition arm ran — the MAP's offset is. The trim is
+    # still loaded, and its monitor read-out is in the fingerprint, so the two
+    # arms are still compared with a live estimator underneath them.
+    assert fp_a['aim.trim_offset_mm'] == (0.0, 0.0)
     monkeypatch.undo()
 
     bare = tmp_path / 'bare'
@@ -432,6 +439,8 @@ def _pre_phase2_aim_block(node, catch_pose, flight):
         'map_offset_mm': (0.0, 0.0),
         'trim_aim_rad': (0.0, 0.0),
         'trim_offset_mm': (0.0, 0.0),
+        'trim_monitor_aim_rad': (0.0, 0.0),
+        'trim_authority': toss_trim.AIM_AUTHORITY,
         'clamp_hits': [],
         'loaded': bool(cal is not None),
         'applied': bool(cal is not None and not reason),
@@ -442,11 +451,20 @@ def _pre_phase2_aim_block(node, catch_pose, flight):
     if cal is not None and not reason:
         map_aim = toss_cal.lookup(cal, float(catch_pose[0]),
                                   float(catch_pose[1]))
+    # C4 (2026-08-21): layer 2's aim commands nothing. The oracle carries the
+    # demotion because the CLAIM it checks is about layer 3 — "with layer 3
+    # inactive the numbers are the pre-Phase-2 numbers" — and leaving layer 2's
+    # authority in would make it fail for a reason that has nothing to do with
+    # layer 3. What it still holds independently, and is the whole point, is the
+    # pre-Phase-2 SHAPE: `trim_offset_mm = offset − map_offset` rather than the
+    # `base_offset − map_offset` the live code computes.
     trim_aim = (0.0, 0.0)
     enabled = bool(node.get_parameter(_rcn._TOSS_TRIM_PARAM).value)
     block['trim_enabled'] = enabled
-    if enabled and trim is not None:
-        trim_aim = trim.aim()
+    block['trim_authority'] = toss_trim.AIM_AUTHORITY
+    if trim is not None:
+        monitor = trim.aim()
+        block['trim_monitor_aim_rad'] = (float(monitor[0]), float(monitor[1]))
     if map_aim == (0.0, 0.0) and trim_aim == (0.0, 0.0):
         return block
     rx, ry, hits = toss_cal.clamp_total_aim(map_aim[0] + trim_aim[0],
@@ -493,7 +511,7 @@ def test_the_disabled_cycle_is_BIT_IDENTICAL_to_the_PRE_PHASE_2_arithmetic(
     for key, want in sorted(expected.items()):
         assert live[key] == want, (key, live[key], want)
     assert live['offset_mm'] != (0.0, 0.0), 'the composition path must have run'
-    assert live['trim_offset_mm'] != (0.0, 0.0)
+    assert live['map_offset_mm'] != (0.0, 0.0)
     assert live['ilc_aim_rad'] == (0.0, 0.0)
     assert live['ilc_offset_mm'] == (0.0, 0.0)
     assert live['ilc_vel_trim'] == 0.0
@@ -805,29 +823,47 @@ def test_the_refusal_records_zero_so_the_next_fit_sees_the_truth(monkeypatch,
     assert row['total_aim_rad'][0] == pytest.approx(toss_cal.TOTAL_MAX_RAD)
 
 
-def test_a_clamp_that_binds_on_map_plus_trim_ALONE_still_truncates(monkeypatch,
-                                                                   tmp_path):
-    """The refusal rule is layer 3's, and it does not change layer 1/2's
-    long-standing behaviour: with no ILC contribution the total clamp truncates
-    exactly as it always did. Otherwise this phase would have silently changed
-    the aim map's own semantics."""
-    from jugglebot import toss_trim
+def test_the_D7_clamp_can_no_longer_BIND_without_layer_3(monkeypatch, tmp_path):
+    """**What C4 did to the clamp, stated honestly rather than left implied.**
 
-    class _StubTrim:
-        def aim(self):
-            return (toss_trim.TRIM_MAX_RAD, 0.0)
+    Its predecessor —
+    ``test_a_clamp_that_binds_on_map_plus_trim_ALONE_still_truncates`` — pinned
+    that layer 1/2 keep their long-standing TRUNCATION semantics when layer 3
+    contributes nothing, and it drove the over-authority sum with a saturated map
+    plus a saturated trim. With layer 2 at zero authority that sum no longer
+    exists, and it cannot be reconstructed from layer 1 alone: ``parse_toss_cal``
+    refuses any node past ``TOTAL_MAX_RAD`` **on the magnitude**, the same
+    quantity and the same number ``clamp_total_aim`` bounds, so every loadable
+    map is already inside the clamp.
 
+    So the truncation branch is now unreachable without layer 3, and the two
+    halves of that are what this asserts: a map saturated exactly AT the
+    authority is commanded verbatim with no clamp hit, and a map past it is
+    refused at PARSE — loudly, before a byte is applied — rather than silently
+    truncated at apply. The truncation code stays because layer 1 keeps its
+    semantics on paper; what changed is that nothing can reach it, which is a
+    fact a future reader should find written down rather than rediscover.
+    """
     cal = _cal_doc(toss_cal.TOTAL_MAX_RAD, 0.0)
     node = _node(monkeypatch, tmp_path, cal_doc=cal, ilc_doc=None, enabled=True)
     node._params['toss_trim_enabled'] = True
-    node._toss_trim = _StubTrim()
+    node._toss_trim = _StubTrim(toss_trim.TRIM_MAX_RAD, 0.0)
     _build(node, monkeypatch)
     with node._lock:
         aim = dict(node._toss_aim)
-    assert aim['clamp_hits'] == ['total_aim']
+    assert aim['clamp_hits'] == []
     assert math.hypot(*aim['aim_rad']) == pytest.approx(toss_cal.TOTAL_MAX_RAD,
                                                         rel=1e-12)
-    assert aim['trim_aim_rad'][0] == pytest.approx(toss_trim.TRIM_MAX_RAD)
+    # ... and the saturated MONITOR trim contributed nothing to the sum the clamp
+    # saw — this is the C4 demotion from the clamp's side.
+    assert aim['trim_aim_rad'] == (0.0, 0.0)
+    assert aim['trim_monitor_aim_rad'][0] == pytest.approx(
+        toss_trim.TRIM_MAX_RAD)
+
+    # The other half: past the authority the LOADER refuses, so there is nothing
+    # left for the apply-time clamp to truncate.
+    with pytest.raises(toss_cal.TossCalError):
+        toss_cal.parse_toss_cal(_cal_doc(toss_cal.TOTAL_MAX_RAD * 1.01, 0.0))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1129,3 +1165,105 @@ def test_the_dormancy_warning_is_emitted_once_not_once_per_goal(monkeypatch,
     for _ in range(5):
         _build(node, monkeypatch)
     assert len([w for w in warnings if 'DORMANT' in w]) == 1, warnings
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. C4 — BOTH layers enabled, and no double-count in either direction
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# The digest names two failure narratives. This section owns the COMPOSITION one
+# (the machine over-aims by the ILC's contribution while the trim reports
+# CONVERGED); ``tests/motion/test_toss_trim.py`` owns the ARITHMETIC one (a
+# converged ILC makes the monitor demand a second copy of its own correction, and
+# a trim that acted on that demand would drive the artifact to zero).
+#
+# Both are latent-only-because-both-flags-are-false in the shipped build, which
+# is exactly why they need a test: the whole point of the fold-in is that layer 3
+# now ships ON.
+
+
+def test_both_layers_live_the_machine_does_NOT_over_aim_by_the_trim(monkeypatch,
+                                                                     tmp_path):
+    """**C4, narrative 1.** Map, trim and ILC all live and all non-zero.
+
+    The commanded total is ``map + ilc``, to the last bit — the trim is not in
+    it. The failure this closes is not a rounding difference: at the corpus
+    operating point the ILC contribution is worth ~36–42 mm of landing shift
+    against a 35 mm capture radius, so a machine that added a converged trim on
+    top of a converged ILC would miss the cup while both estimators reported
+    success.
+
+    The counterfactual is asserted, not just the value: the total that WOULD have
+    been commanded under the old composition is computed here and shown to differ
+    — otherwise a stub trim that happened to read zero would pass this.
+    """
+    node = _aimed_node(monkeypatch, tmp_path,
+                       ilc_doc=_ilc_doc(aim_rx=math.radians(0.10),
+                                        aim_ry=math.radians(-0.05), dv=0.0),
+                       enabled=True)
+    _build(node, monkeypatch)
+    with node._lock:
+        aim = dict(node._toss_aim)
+        trim = node._toss_trim
+
+    monitor = trim.aim()
+    assert monitor != (0.0, 0.0), 'the fixture trim must be non-zero'
+    assert aim['ilc_applied'] is True
+    assert aim['ilc_aim_rad'] != (0.0, 0.0)
+
+    # What was commanded: map + ilc, exactly.
+    assert aim['aim_rad'][0] == pytest.approx(
+        aim['map_aim_rad'][0] + aim['ilc_aim_rad'][0], abs=1e-15)
+    assert aim['aim_rad'][1] == pytest.approx(
+        aim['map_aim_rad'][1] + aim['ilc_aim_rad'][1], abs=1e-15)
+    assert aim['trim_aim_rad'] == (0.0, 0.0)
+
+    # What the OLD composition would have commanded, and by how much it differs.
+    would_have = (aim['aim_rad'][0] + monitor[0], aim['aim_rad'][1] + monitor[1])
+    assert would_have != aim['aim_rad']
+    over_aim_mm = tr.aim_target_offset_mm(monitor[0], monitor[1], _FLIGHT,
+                                          _POSE[2])
+    assert math.hypot(float(over_aim_mm[0]), float(over_aim_mm[1])) > 1.0, (
+        'the counterfactual must be a real displacement, not a rounding error')
+
+    # ... and the trim's estimate is still on the record, under its own key.
+    assert aim['trim_monitor_aim_rad'] == pytest.approx(monitor)
+    assert aim['trim_authority'] == 'MONITOR'
+
+
+def test_the_trim_keeps_OBSERVING_while_it_commands_nothing(monkeypatch,
+                                                            tmp_path):
+    """Zero authority, full visibility — the half of decision 1 that is easy to
+    lose in a refactor.
+
+    A demotion implemented by never feeding the estimator would satisfy every
+    assertion above and destroy the thing the demotion was for: the trim reduces
+    ``land_err_mm`` while layer 3's aim update is driven by ``arrival_dir``
+    (decision 6), so their divergence per toss is the standing validation that
+    C3's by-decision resolution was right. If the monitor stops being fed, that
+    validation silently stops existing.
+    """
+    node = _aimed_node(monkeypatch, tmp_path, ilc_doc=_ilc_doc(), enabled=True)
+    observed = []
+
+    class _Recording(_StubTrim):
+        def observe(self, rec):
+            observed.append(rec)
+            return toss_trim.AimObservation('uid', False, 'no_mocap_fit',
+                                            None, None)
+
+        def console_lines(self, **kwargs):
+            self.applied_flag = kwargs.get('applied')
+            return ['TRIM stub']
+
+    node._toss_trim = _Recording()
+    node._open_toss_record(action='toss', goal_id='dead', cycle_index=1,
+                           catch_pose=_POSE, throw_delay=5.0, vel_scale=0.9,
+                           raw_goal={}, flight=_FLIGHT)
+    _build(node, monkeypatch)
+    node._toss_trim_observe({'toss_uid': 'u1'})
+    assert observed == [{'toss_uid': 'u1'}]
+    # ... and the console says MONITOR, never APPLIED: an operator who reads a
+    # converging trim as a converging CORRECTION goes looking for it in the
+    # commanded aim and finds nothing.
+    assert node._toss_trim.applied_flag is False

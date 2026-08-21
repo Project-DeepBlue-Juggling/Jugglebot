@@ -57,24 +57,30 @@ by ``toss_trim.release_latency_ms`` and by gate G-1.
 WHERE EACH BOUND IS ENFORCED, AND WHY THERE IS NO SECOND COPY OF THE D7 CLAMP
 -----------------------------------------------------------------------------
 * **aim** — bounded per cell at PARSE time (:data:`ILC_AIM_MAX_RAD`), and at
-  APPLY only through ``toss_cal.clamp_total_aim`` over ``map + trim + ilc``,
-  which is D7's single enforcement point. This module deliberately contains no
-  aim clamp of its own: a second clamp is a second bound to drift, and the sum
-  that actually needs bounding exists only at the node's apply seam.
+  APPLY only through ``toss_cal.clamp_total_aim`` over ``map + ilc``, which is
+  D7's single enforcement point. This module deliberately contains no aim clamp
+  of its own: a second clamp is a second bound to drift, and the sum that
+  actually needs bounding exists only at the node's apply seam. (Layer 2 is no
+  longer in that sum — its aim estimator is MONITOR-ONLY since 2026-08-21,
+  ``toss_trim.AIM_AUTHORITY``, contradiction C4.)
 * **A clamp HIT at apply is a REFUSAL of the ILC contribution, not a
   truncation** — the node drops the whole ILC aim, WARNs, and re-composes
-  ``map + trim`` exactly as it would have without this layer. That mirrors
+  ``map`` exactly as it would have without this layer. That mirrors
   ``ilc_fit_lib.admit_command``'s own convention (*"a truncated step is not the
   step that was solved for"*) and closes the plan's risk 5: a partially
   truncated correction desynchronises applied-u from recorded-u, and the learner
   would then be fitting against a command the machine never flew.
 * **event_vel trim** — bounded per cell at PARSE time by
   :data:`ILC_SPEED_AUTHORITY` (±0.15, the owner's Gate-1 decision of
-  2026-08-13), and at APPLY by the production ``toss_release.validate_event_vel``
-  against the bridge's [0.3, 7.0] m/s acceptance band. Nothing else adds to this
-  channel in production — ``toss_trim``'s ``speed_k_v`` is recorded but never
-  applied — so parse time is genuinely the single authority enforcement point
-  and there is nothing to re-clamp.
+  2026-08-13, DEMOTED 2026-08-21 to an outer ceiling), and at APPLY by
+  ``reload_coordinator_node._ilc_vel_trim_refusal`` — which runs
+  ``toss_release.validate_event_vel`` AND ``throw_envelope.evaluate`` (contract
+  C-HAND-3), because the wire band bounds nothing physical and the admissible
+  trim is strongly flight-time-dependent (contradiction **C2**). Parse time is
+  deliberately NOT made T-dependent: a cell's key carries a *quantised* flight
+  time, so the honest gate is the one at apply, holding the goal's real T.
+  Nothing else adds to this channel in production — ``toss_trim``'s
+  ``speed_k_v`` is recorded but never applied, and RETIRED as of decision 5.
 
   ``toss_trim.SPEED_AUTHORITY`` (±0.10) **is not this bound and must not be
   changed to match it**: that constant bounds the SESSION trim, a different loop

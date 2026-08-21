@@ -4,6 +4,17 @@ reduction/admission core the offline fit runs on.
 Normative design: ``plans/active/toss-selftuning.md`` §§ 3.2, 3.6, 3.6.1, 3.6.2,
 3.6.3 and decisions D5, D6, D7. Build phase **2e**.
 
+⚠ **THE AIM ESTIMATOR IS MONITOR-ONLY SINCE 2026-08-21.** See
+:data:`AIM_AUTHORITY` for the whole argument and
+``plans/active/critical-point-ilc.md`` § "The 2026-08-21 fold-in" for the owner
+decision. In one line: the critical-point ILC is the primary learning law, two
+converging estimators of one quantity double-count in both directions (C4), and
+this one keeps the observation and loses the authority. ``speed_gain`` retires
+with it (decision 5 — ``k_v`` lives in the ILC's ``event_vel_trim``);
+``release_latency_ms`` stays here, still unwired, still noted. Everything in
+part 1 below — the reduction, the guards, the freeze/CUSUM machinery — is
+UNAFFECTED and is now consumed by the ILC as well.
+
 WHAT THIS MODULE IS
 -------------------
 Two things, deliberately in one file:
@@ -116,8 +127,10 @@ test_nothing_else_imports_the_loader`` pins ``reload_coordinator_node`` as the
 map's *single owner* (operator decision 7), and a second importer inside the
 package is a second owner. The TOTAL authority clamp therefore stays in
 ``toss_cal.clamp_total_aim`` and is applied by the node at the one apply seam,
-over ``map + trim`` — which is what D7's *"re-clamped AT APPLY, not only at
-update"* asks for. This module owns only the trim's own ``TRIM_MAX``.
+over ``map + ilc`` — which is what D7's *"re-clamped AT APPLY, not only at
+update"* asks for. Layer 2 has not been in that sum since 2026-08-21
+(:data:`AIM_AUTHORITY`). This module owns only the trim's own ``TRIM_MAX``,
+which now bounds an OBSERVABLE.
 
 Pure Python — no ROS imports, no file I/O, consumed by
 ``reload_coordinator_node``, by ``tests/hardware/toss_fit_lib.py`` and by
@@ -138,7 +151,7 @@ from jugglebot.motion.trajectory import throw_envelope
 
 __all__ = [
     'TossTrimError',
-    'TRIM_SCHEMA',
+    'TRIM_SCHEMA', 'AIM_AUTHORITY', 'AIM_AUTHORITY_NOTE',
     'N0', 'N_MIN_APPLY', 'SE_GATE', 'SE_GATE_CONFIRM',
     'DEADBAND_RAD', 'STEP_MAX_RAD', 'TRIM_MAX_RAD',
     'SIGMA_PRIOR_MM', 'OUTLIER_SIGMA', 'OUTLIER_CONSECUTIVE_FREEZE',
@@ -156,7 +169,7 @@ __all__ = [
     'TIMING_POLL_DT_MS_MIN', 'TIMING_POLL_DT_MS_MAX', 'TAU_SE_MAX_MS',
     'SPEED_SE_MAX', 'SPEED_TIMING_N_MIN',
     'aim_landing_jacobian', 'achieved_flight_s', 'achieved_apex_m',
-    'applied_aim_rad', 'map_aim_rad', 'reduce_to_aim',
+    'applied_aim_rad', 'map_aim_rad', 'ilc_aim_rad', 'reduce_to_aim',
     'admit_for_aim', 'admit_for_timing', 'admit_for_speed',
     'AimObservation', 'AffineFit', 'SessionTrim',
     'fit_affine', 'clamp_trim', 'trim_offset_mm',
@@ -175,6 +188,38 @@ class TossTrimError(RuntimeError):
 
 #: Wire/artefact schema for the end-of-goal proposal document.
 TRIM_SCHEMA = 'toss_trim_proposal/1'
+
+#: **The layer-2 AIM estimator's authority over the commanded aim: none.**
+#: Owner decision 1 of the 2026-08-21 ILC-primary fold-in
+#: (``plans/active/critical-point-ilc.md`` § "The six decisions"), closing
+#: contradiction **C4**.
+#:
+#: Root cause, not the decision by name: two converging estimators of ONE
+#: quantity double-count in both directions. With both live,
+#: :func:`reduce_to_aim` reads ``total_aim_rad`` (which now includes layer 3) and
+#: the machine over-aims by exactly the ILC's contribution while this estimator
+#: reports CONVERGED; and mirror-image, a converged trim makes the ILC's measured
+#: residual read ``J·ILC_prev``, so the next fit returns ``du ≈ −ILC_prev`` and
+#: the persisted artifact unlearns itself to zero. One converging estimator per
+#: quantity is the fix, and ILC is the one that keeps the authority — its seam is
+#: the goal build, UPSTREAM of the FSM's CHECKING gate, where a correction can
+#: still be validated before it becomes a command.
+#:
+#: The estimator is NOT deleted and NOT disabled. It keeps observing, keeps
+#: running G1–G11, keeps printing and keeps writing its proposal — because it
+#: reduces ``land_err_mm`` while ILC's aim update is driven by ``arrival_dir``
+#: (decision 6), so the two are independent read-outs of the same physical
+#: quantity and their DISAGREEMENT is the standing validation that C3's
+#: "by decision" resolution was the right call. Zero authority, full visibility.
+AIM_AUTHORITY = 'MONITOR'
+
+AIM_AUTHORITY_NOTE = (
+    'MONITOR-ONLY since 2026-08-21 (ILC-primary fold-in, decision 1 / '
+    'contradiction C4): this estimator has ZERO authority over the commanded '
+    'aim. reload_coordinator_node._toss_aim_for_goal composes map + ILC only, '
+    'and records this value under trim_monitor_aim_rad so its divergence from '
+    'the ILC is visible per toss. The critical-point ILC '
+    '(motion/toss_ilc.py) is the primary learning law.')
 
 
 # ── § 3.6 constants table. ALL PROVISIONAL until the first corpus. ───────────
@@ -623,6 +668,40 @@ def map_aim_rad(rec: Dict[str, Any]) -> Optional[Tuple[float, float]]:
     whole spatial field into the trim.
     """
     value = rec.get('map_aim_rad')
+    if not _is_pair(value):
+        return None
+    return (float(value[0]), float(value[1]))
+
+
+def ilc_aim_rad(rec: Dict[str, Any]) -> Optional[Tuple[float, float]]:
+    """The LAYER-3 (critical-point ILC) contribution to this toss's aim, rad.
+
+    Added 2026-08-21 for contradiction **C4** of the ILC-primary fold-in. Before
+    it, :meth:`SessionTrim.observe` subtracted ``map_aim_rad`` alone from a
+    reduction taken against ``total_aim_rad`` — which by then included the ILC's
+    contribution. With both layers live that biases the trim's demand by exactly
+    the quantity the trim exists to watch, and the direction is the bad one: the
+    trim reads the ILC's own correction as *still-needed* demand.
+
+    **Absent or null is zero; malformed is unknown.** Layer 3 writes
+    ``ilc_aim_rad`` on every path it runs — a miss, a dormant artifact, a
+    disabled feature and a clamp refusal all record explicit zeros, in the same
+    ``rec.update`` that writes ``total_aim_rad`` — so a record whose total is
+    present while this field is absent or ``None`` is a record from a build where
+    layer 3 did not run, and the contribution genuinely was zero.
+
+    That is deliberately NOT ``map_aim_rad``'s rule, and the asymmetry is real
+    rather than an inconsistency. A mined-only row cannot say what MAP was
+    applied, because the map is a file on disk the miner never saw and a nonzero
+    one would already be inside ``land_err`` — guessing zero there would re-learn
+    a correction the machine is already making. Layer 3 not being in the record
+    means layer 3 was not in the *build*. A value that is PRESENT and not a pair
+    (a string, a 3-list) is a corrupt record, not an old one, and returns
+    ``None``.
+    """
+    value = rec.get('ilc_aim_rad')
+    if value is None:
+        return (0.0, 0.0)
     if not _is_pair(value):
         return None
     return (float(value[0]), float(value[1]))
@@ -1121,19 +1200,39 @@ class SessionTrim:
     # ── THE read ─────────────────────────────────────────────────────────────
 
     def aim(self) -> Tuple[float, float]:
-        """THE commanded session trim, rad — read ONCE per goal at
-        ``_build_toss_cycle`` and never anywhere else.
+        """The session aim estimate, rad. ⚠ **MONITOR-ONLY — see
+        :data:`AIM_AUTHORITY`.**
+
+        Read once per goal at ``_build_toss_cycle`` and nowhere else, and since
+        2026-08-21 what is done with it there is *record it*, not command it: the
+        commanded aim is ``clamp_total_aim(map + ilc_spatial + ilc_session)`` and
+        this value lands in the record as ``trim_monitor_aim_rad``. The one-read
+        discipline is unchanged and still matters — the value must be identical
+        across the whole goal for the record to mean anything.
 
         Always inside :data:`TRIM_MAX_RAD` by construction (the clamp is applied
         at update, and this is a pure read of the stored value). Exactly
-        ``(0.0, 0.0)`` while the estimator is in ``WARMUP``, which is what makes
-        the disabled/unfed path bit-identical to the pre-2e machine.
+        ``(0.0, 0.0)`` while the estimator is in ``WARMUP``.
         """
         return (float(self._delta[0]), float(self._delta[1]))
 
     def speed_gain(self) -> float:
         """``k_v`` — the multiplier § 3.6.1 defines on ``event_vel_mps``. 1.0
         until the estimate passes its own gate.
+
+        ⚠ **RETIRED 2026-08-21 — never wire this.** Owner decision 5 of the
+        ILC-primary fold-in: ``k_v`` lives in the ILC's ``event_vel_trim``
+        channel, which is the only implementation of it anywhere and rides the
+        goal-build seam UPSTREAM of the FSM's CHECKING gate. This one's seam is
+        dispatch-time, which the paragraph below says in its own words bypasses
+        that enforcement outright. Two unwired implementations of one knob is how
+        a knob gets wired twice. It stays here, still computed, still printed and
+        still in the proposal, for the same reason the aim estimator does: it is
+        an independent read-out whose disagreement with the ILC is informative.
+        The wiring requirement in the last paragraph is now MET — but by
+        ``ilc_fit_lib.speed_authority_band`` and
+        ``reload_coordinator_node._ilc_vel_trim_refusal``, on the ILC's channel,
+        not on this one.
 
         **NOT WIRED as of 2026-08-11 — this is an OBSERVABLE, not a command.**
         Nothing in ``reload_coordinator_node`` calls it: the node's only trim
@@ -1224,6 +1323,9 @@ class SessionTrim:
         # verify. Layer 0 is different: it moves the physical baseline the
         # residual is measured against, and a residual fitted under tilt map A
         # double-counts tilt map B's delta (D3).
+        # (the reduction's map-invariance argument below is unchanged by C4:
+        # subtracting `ilc_aim_rad` too keeps `y` invariant to what was applied,
+        # which is the same fixed-point property one layer wider.)
         prov = (rec.get('tilt_map_version'),)
         if self._provenance is None:
             self._provenance = prov
@@ -1239,13 +1341,23 @@ class SessionTrim:
         try:
             b = reduce_to_aim(rec)
             m = map_aim_rad(rec)
+            i = ilc_aim_rad(rec)
         except TossTrimError:
             self._count('reduction_failed')
             return AimObservation(uid, False, 'reduction_failed', None, None)
         if m is None:
             self._count('map_aim_unknown')
             return AimObservation(uid, False, 'map_aim_unknown', None, None)
-        y = np.array([b[0] - m[0], b[1] - m[1]], dtype=float)
+        if i is None:
+            self._count('ilc_aim_unknown')
+            return AimObservation(uid, False, 'ilc_aim_unknown', None, None)
+        # EVERY applied layer comes off, not just the map (C4). ``b`` is reduced
+        # from ``total_aim_rad``, which carries map + trim + ILC; what is left
+        # after subtracting the two PERSISTENT/LEARNED layers is the common-mode
+        # demand this estimator is about. Subtracting the map alone — the shape
+        # this had until 2026-08-21 — makes the monitor read the ILC's own
+        # correction as demand that is still outstanding.
+        y = np.array([b[0] - m[0] - i[0], b[1] - m[1] - i[1]], dtype=float)
 
         pose = rec.get('goal_catch_xyz_stow_mm') or []
         node = ((float(pose[0]), float(pose[1]))
@@ -1690,8 +1802,10 @@ class SessionTrim:
         is the loaded-vs-applied distinction the tilt-cal review had to go back
         and fix in four documents afterwards: a number that is never written to
         disk and a number that is must never look the same in a log. So must
-        ``NOT APPLIED``, when the estimator has a value the goal is not using
-        because ``toss_trim_enabled`` is false.
+        ``MONITOR (NOT APPLIED)``, which since 2026-08-21 is what the live caller
+        always passes — the aim estimator has zero authority
+        (:data:`AIM_AUTHORITY`, C4) and a converging trim printed as if it were a
+        correction would send an operator looking for it in the commanded aim.
 
         **Every line carries a clock**, because the plant changes underneath a
         long session: the tracking lag grows with can-bridge uptime (+118–133 ms
@@ -1727,7 +1841,8 @@ class SessionTrim:
         head = ('TRIM {}: aim ({:+.3f},{:+.3f})deg{}  [clamp +-{:.3f} deg] {} '
                 '{}'.format(where, math.degrees(rx), math.degrees(ry), mm,
                             math.degrees(TRIM_MAX_RAD),
-                            'APPLIED' if applied else 'NOT APPLIED', up))
+                            'APPLIED' if applied else 'MONITOR (NOT APPLIED)',
+                            up))
         mid = ('     n={}/{}  se ({:.3f},{:.3f})deg  state {}  SESSION-ONLY '
                '(discarded at goal end; a proposal is written, never a map) {}'
                .format(self.n, self._seen,
@@ -1770,6 +1885,8 @@ class SessionTrim:
             'promotion': ('PROPOSAL ONLY — premise P1. Promote through '
                           'tests/hardware/toss_cal_fit.py and its acceptance '
                           'gates; never copy this file into config/.'),
+            'authority': AIM_AUTHORITY,
+            'authority_note': AIM_AUTHORITY_NOTE,
             'session_id': self.session_id,
             'goal_id': self.goal_id,
             # The RECORD schema, not the arrival-offset estimator's version:

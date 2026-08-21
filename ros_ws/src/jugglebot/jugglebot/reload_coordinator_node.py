@@ -2476,9 +2476,13 @@ class ReloadCoordinatorNode(Node):
 
         * ``map_aim_rad`` / ``map_offset_mm`` — layer 1, the persistent
           home-referenced field (:mod:`jugglebot.motion.toss_cal`);
-        * ``trim_aim_rad`` / ``trim_offset_mm`` — layer 2, this goal's RAM-only
-          common-mode session trim (:mod:`jugglebot.toss_trim`), zero unless
-          ``toss_trim_enabled`` is set AND the estimator has left WARMUP;
+        * ``trim_aim_rad`` / ``trim_offset_mm`` — layer 2's contribution to the
+          COMMANDED aim. **Structurally zero since 2026-08-21**: the layer-2 aim
+          estimator is MONITOR-ONLY (``toss_trim.AIM_AUTHORITY``, owner decision
+          1, contradiction C4). Its estimate is carried beside them as
+          ``trim_monitor_aim_rad``, so a future reader can see what layer 2
+          would have asked for and how far it diverged from layer 3 — but
+          nothing composes it;
         * ``ilc_aim_rad`` / ``ilc_offset_mm`` / ``ilc_vel_trim`` — layer 3, the
           learned per-goal critical-point correction
           (:mod:`jugglebot.motion.toss_ilc`), zero unless
@@ -2490,38 +2494,43 @@ class ReloadCoordinatorNode(Node):
         * ``aim_rad`` / ``offset_mm`` — the TOTAL, which is what the platform is
           actually commanded to and what the virtual target is built from.
 
-        **The TOTAL is re-clamped HERE, at apply** (D7), over
-        ``map + trim + ilc`` — not at any layer's own update. Each layer bounds
-        itself (parse time for the map and the ILC, ``TRIM_MAX`` for the trim)
-        but 1.0° + 0.15° + 1.0° is 2.15°, past the authority every downstream
-        argument is sized on, and the only place that sum exists is this line.
+        **The TOTAL is re-clamped HERE, at apply** (D7), over ``map + ilc`` —
+        not at any layer's own update. Each layer bounds itself (parse time for
+        the map and the ILC) but 1.0° + 1.0° is 2.0°, past the authority every
+        downstream argument is sized on, and the only place that sum exists is
+        this line.
         Layer 3 is composed BEFORE that single clamp, deliberately: it makes the
         existing D7 clamp the final authority over the whole commanded aim rather
         than adding a fourth bound after it.
 
         **A clamp HIT REFUSES the ILC contribution; it never truncates it.** If
-        ``map + trim + ilc`` would bind the authority, layer 3 is dropped whole,
-        a WARN is emitted, and the aim is re-composed from ``map + trim`` exactly
-        as it would have been without this layer — so a saturated goal is
-        bit-identical to the pre-Phase-2 machine. Root cause, and it is the
-        plan's own risk 5: a partially truncated correction is not the correction
-        that was solved for, so applied-u and recorded-u desynchronise and the
-        next fit learns against a command the machine never flew. It is also
+        ``map + ilc`` would bind the authority, layer 3 is dropped whole, a WARN
+        is emitted, and the aim is re-composed from ``map`` exactly as it would
+        have been without this layer — so a saturated goal is bit-identical to
+        the pre-Phase-2 machine. Root cause, and it is the plan's own risk 5: a
+        partially truncated correction is not the correction that was solved for,
+        so applied-u and recorded-u desynchronise and the next fit learns against
+        a command the machine never flew. It is also
         ``ilc_fit_lib.admit_command``'s convention — the fit refuses a step the
         clamp would truncate and shrinks its trust region instead — and the two
-        halves of one loop must agree about what "refused" means. A clamp that
-        binds on ``map + trim`` ALONE still truncates, exactly as before: that is
-        layer 1/2's long-standing behaviour and nothing here changes it.
+        halves of one loop must agree about what "refused" means. The clamp's
+        TRUNCATION branch is layer 1's long-standing behaviour and is untouched,
+        but nothing can reach it any more: ``parse_toss_cal`` bounds a map node
+        by ``TOTAL_MAX_RAD`` on the same magnitude ``clamp_total_aim`` bounds, so
+        with layer 2 at zero authority every loadable map is already inside the
+        clamp (pinned by ``tests/ros/test_toss_ilc_node.py::
+        test_the_D7_clamp_can_no_longer_BIND_without_layer_3``).
 
         ``aim_rad`` is exactly ``(0.0, 0.0)`` — and ``offset_mm`` exactly
         ``(0.0, 0.0)`` — whenever no map is loaded (or it is dormant), the trim
         commands nothing and layer 3 contributes nothing, which is what makes the
         disabled path today's machine bit for bit.
 
-        **Layer 2 does not depend on layer 1's dormancy.** A DORMANT map is one
-        fitted against a different layer 0; the trim was measured *this goal*
-        against *this* layer 0, so it stays valid and stays applied. That is
-        § 3.2's separation doing its job rather than an exception to it.
+        **Layer 2 does not depend on layer 1's dormancy** — historically because
+        the trim was measured *this goal* against *this* layer 0 and so stayed
+        valid when a map fitted under another one did not. That argument is now
+        moot for the COMMAND (layer 2 commands nothing) and survives only as the
+        reason its monitor read-out is still trustworthy under a dormant map.
         **Layer 3 DOES depend on it**, and that asymmetry is not an
         inconsistency: layer 3's provenance explicitly records which aim map was
         being APPLIED underneath it, so a layer 1 that stops applying is a
@@ -2554,6 +2563,15 @@ class ReloadCoordinatorNode(Node):
             'map_offset_mm': (0.0, 0.0),
             'trim_aim_rad': (0.0, 0.0),
             'trim_offset_mm': (0.0, 0.0),
+            # Layer 2's estimate, and what it would have commanded if it still
+            # had authority. Separate keys from `trim_aim_rad` deliberately:
+            # `trim_aim_rad` means "what layer 2 CONTRIBUTED to the commanded
+            # aim", which is now structurally zero, and every consumer that
+            # reconstructs the applied aim from the record (`applied_aim_rad`'s
+            # map+trim fallback, the miner, the fit) must keep reading it that
+            # way or a monitor value would be re-applied on paper.
+            'trim_monitor_aim_rad': (0.0, 0.0),
+            'trim_authority': toss_trim.AIM_AUTHORITY,
             'ilc_aim_rad': (0.0, 0.0),
             'ilc_offset_mm': (0.0, 0.0),
             'ilc_vel_trim': 0.0,
@@ -2589,12 +2607,27 @@ class ReloadCoordinatorNode(Node):
                 block['applied'] = False
                 map_aim = (0.0, 0.0)
 
-        # ── layer 2 — THE single per-goal trim read (§ 3.6) ──
+        # ── layer 2 — THE single per-goal trim read (§ 3.6), MONITOR ONLY ──
+        #
+        # ZERO AUTHORITY since 2026-08-21 (``toss_trim.AIM_AUTHORITY``, owner
+        # decision 1 / contradiction C4). The estimator still runs, still guards,
+        # still writes its proposal — but its aim is RECORDED, not commanded, and
+        # `trim_aim` below is a hard zero rather than a value that happens to be
+        # zero. Root cause: two converging estimators of one quantity
+        # double-count in both directions (the machine over-aims by the ILC's
+        # contribution while the trim reports CONVERGED; and a converged trim
+        # makes the ILC unlearn itself to zero). The trim reduces `land_err_mm`
+        # while the ILC's aim update is driven by `arrival_dir`, so keeping both
+        # read-outs alive makes their disagreement visible per toss — which is
+        # the standing validation of C3's by-decision resolution.
         trim_aim = (0.0, 0.0)
         enabled = bool(self.get_parameter(_TOSS_TRIM_PARAM).value)
         block['trim_enabled'] = enabled
-        if enabled and trim is not None:
-            trim_aim = trim.aim()
+        block['trim_authority'] = toss_trim.AIM_AUTHORITY
+        if trim is not None:
+            monitor = trim.aim()
+            block['trim_monitor_aim_rad'] = (float(monitor[0]),
+                                             float(monitor[1]))
 
         # ── layer 3 — THE single per-goal ILC lookup (critical-point-ilc.md) ──
         ilc_aim = (0.0, 0.0)
@@ -2681,6 +2714,12 @@ class ReloadCoordinatorNode(Node):
             # Not one floating-point operation on the disabled path.
             return block
 
+        # `base` = every layer BELOW layer 3. `trim_aim` is a hard (0, 0) since
+        # C4 and is kept in the expression on purpose: it makes the composition
+        # read as the layered sum it is, it keeps the layer-3 mm split a
+        # difference of two commanded offsets rather than a special case, and if
+        # layer 2 were ever re-armed the sum would be right by construction
+        # instead of needing this line rediscovered.
         base_rx = map_aim[0] + trim_aim[0]
         base_ry = map_aim[1] + trim_aim[1]
         try:
@@ -2692,10 +2731,10 @@ class ReloadCoordinatorNode(Node):
                 if self._toss_ilc_refusal_logged != 'total_aim':
                     self._toss_ilc_refusal_logged = 'total_aim'
                     self.get_logger().warning(
-                        'ILC aim contribution REFUSED at apply: map+trim+ilc = '
+                        'ILC aim contribution REFUSED at apply: map+ilc = '
                         '{:.6f} rad exceeds the {:.6f} rad D7 authority, and a '
                         'TRUNCATED correction is not the correction that was '
-                        'solved for (risk 5). This goal flies the map+trim aim '
+                        'solved for (risk 5). This goal flies the map aim '
                         'unchanged; the recorded ilc_aim_rad is (0, 0).'
                         .format(math.hypot(base_rx + ilc_aim[0],
                                            base_ry + ilc_aim[1]),
@@ -2736,10 +2775,13 @@ class ReloadCoordinatorNode(Node):
         # not `aim_target_offset_mm(trim)` on its own: what the trim actually
         # moved is the virtual target, and after the total clamp that displacement
         # is exactly (map+trim) − map. Computing it independently would report a
-        # trim the machine did not command whenever the clamp bound. Layer 3 gets
-        # the same treatment one step further out — total − (map+trim) — and with
-        # layer 3 inactive `base_offset is offset`, so this is bit-for-bit the
-        # pre-Phase-2 expression.
+        # trim the machine did not command whenever the clamp bound — and since
+        # C4 that is not a "whenever" but an ALWAYS, because layer 2 commands
+        # nothing, so this expression is what keeps the field a structural zero
+        # rather than a number about the monitor. Layer 3 gets the same treatment
+        # one step further out — total − (map+trim) — and with layer 3 inactive
+        # `base_offset is offset`, so this is bit-for-bit the pre-Phase-2
+        # expression.
         block['trim_offset_mm'] = (float(base_offset[0]) - float(map_offset[0]),
                                    float(base_offset[1]) - float(map_offset[1]))
         block['ilc_aim_rad'] = (float(ilc_aim[0]), float(ilc_aim[1]))
@@ -3942,11 +3984,15 @@ class ReloadCoordinatorNode(Node):
         # Explicit ZEROS, never nulls: a null reads as "unknown", a zero reads as
         # "nothing was applied", and the corpus has to be able to prove which one
         # its baseline was. That holds for the REJECTED_BAD_GOAL path too — a
-        # goal that never built a cycle commanded exactly zero aim. The session
-        # trim is phase 2e, so trim_aim_rad is a standing zero here.
+        # goal that never built a cycle commanded exactly zero aim. `trim_aim_rad`
+        # is a STRUCTURAL zero since 2026-08-21 — layer 2's aim estimator is
+        # monitor-only (C4) — and its estimate rides beside it in
+        # `trim_monitor_aim_rad`.
         rec.update({
             'map_aim_rad': [0.0, 0.0],
             'trim_aim_rad': [0.0, 0.0],
+            'trim_monitor_aim_rad': [0.0, 0.0],
+            'trim_authority': toss_trim.AIM_AUTHORITY,
             'total_aim_rad': [0.0, 0.0],
             'map_aim_mm_at_h': [0.0, 0.0],
             'trim_aim_mm_at_h': [0.0, 0.0],
@@ -3967,6 +4013,9 @@ class ReloadCoordinatorNode(Node):
             rec.update({
                 'map_aim_rad': [float(v) for v in aim['map_aim_rad']],
                 'trim_aim_rad': [float(v) for v in aim['trim_aim_rad']],
+                'trim_monitor_aim_rad': [
+                    float(v) for v in aim['trim_monitor_aim_rad']],
+                'trim_authority': str(aim['trim_authority']),
                 'total_aim_rad': [float(v) for v in aim['aim_rad']],
                 # REPORT fields: mm at THIS toss's apex, never the stored unit.
                 # They are the exact virtual-target offsets that were commanded,
@@ -4193,7 +4242,11 @@ class ReloadCoordinatorNode(Node):
                 uptime_ms=None,
                 elapsed_s=(time.perf_counter() - t0
                            if t0 else None),
-                applied=bool(aim and aim.get('trim_enabled')),
+                # NEVER applied since 2026-08-21 — the aim estimator is
+                # monitor-only (toss_trim.AIM_AUTHORITY, C4). The console has to
+                # say so, or an operator reads a converging trim as a converging
+                # CORRECTION and goes looking for it in the commanded aim.
+                applied=False,
                 cycle_index=(record or {}).get('cycle_index'))
         except Exception as exc:                               # noqa: BLE001
             self.get_logger().warning(

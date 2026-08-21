@@ -8,10 +8,14 @@ ROS). Here we test the six things only the NODE can be asked:
    commanded release the SAME OBJECT as the announcement release — i.e. phase
    2b's bitwise-identity gate still holds with 2e landed, which is the "zero
    trim ⇒ bitwise today" acceptance criterion.
-2. **The TOTAL is re-clamped at apply**, over ``map + trim``, with the two
-   contributions still reported separately.
-3. **``catch/pretilt_hold`` is raised for a TRIM-only aim** — D3 says *any*
-   non-zero commanded aim, and the trim is one.
+2. **Layer 2's aim has ZERO authority** over the commanded aim
+   (``toss_trim.AIM_AUTHORITY``, owner decision 1 of the 2026-08-21 ILC-primary
+   fold-in, contradiction C4) — and its estimate is still reported, under its
+   own key. D7's *re-clamped at apply* rule is untouched and now arbitrates
+   ``map + ilc``; a BINDING clamp is exercised in ``test_toss_ilc_node.py``.
+3. **``catch/pretilt_hold`` is raised for any non-zero COMMANDED aim** — D3's
+   rule, keyed on the commanded release state, so a monitor-only trim raises
+   nothing and a map aim still does.
 4. **The trim is read exactly ONCE per goal**, in ``_build_toss_cycle``, and
    observed from exactly one place — the D4 manifest shape, applied to layer 2.
 5. **The record carries what was COMMANDED and what was KNOWN separately**, so a
@@ -150,14 +154,26 @@ def _enable_trim(node, value=True):
 
 # ── 2. the TOTAL clamp, at apply ──────────────────────────────────────────────
 
-def test_the_total_is_reclamped_at_apply_over_map_plus_trim(monkeypatch,
-                                                            tmp_path):
-    """GATE. A map saturated at its own 1.0° authority PLUS a trim saturated at
-    its own 0.15° is 1.15° — past the bound every downstream argument (the
-    C-LEVEL-2 composition regime, the 1.13 mm cup swing, the 55 mm landing
-    shift) is sized on. Neither layer's own clamp can see that sum; the apply
-    seam is the only place it exists, which is why D7 says *re-clamped AT APPLY,
-    not only at update*."""
+def test_the_layer_2_aim_has_ZERO_authority_over_the_commanded_aim(monkeypatch,
+                                                                   tmp_path):
+    """**C4 / owner decision 1, 2026-08-21: the trim's aim is MONITOR-ONLY.**
+
+    Its predecessor —
+    ``test_the_total_is_reclamped_at_apply_over_map_plus_trim`` — pinned the
+    opposite: a map saturated at 1.0° PLUS a trim saturated at 0.15° summed to
+    1.15° and the D7 apply-time clamp cut it back. That composition is gone,
+    because two converging estimators of one quantity double-count in both
+    directions (the machine over-aims by the ILC's contribution while the trim
+    reports CONVERGED; and a converged trim makes the ILC unlearn itself to
+    zero). D7's *re-clamped AT APPLY* rule is untouched and is still the single
+    enforcement point — it now arbitrates ``map + ilc``, and
+    ``tests/ros/test_toss_ilc_node.py`` is where a BINDING total clamp is
+    exercised.
+
+    So the strongest available statement is this one: a trim saturated at its own
+    authority moves the commanded aim by exactly nothing, and does not even reach
+    the clamp.
+    """
     node = _node_with_map(monkeypatch, tmp_path,
                           _cal_doc(toss_cal.TOTAL_MAX_RAD, 0.0))
     _enable_trim(node)
@@ -165,22 +181,35 @@ def test_the_total_is_reclamped_at_apply_over_map_plus_trim(monkeypatch,
     _build(node, monkeypatch)
     with node._lock:
         aim = dict(node._toss_aim)
-    total = math.hypot(*aim['aim_rad'])
-    assert total == pytest.approx(toss_cal.TOTAL_MAX_RAD, rel=1e-12)
-    assert 'total_aim' in aim['clamp_hits']
-    # The two contributions are still reported SEPARATELY — the clamp bounds
-    # what is commanded, it does not erase who asked for it.
-    assert aim['map_aim_rad'][0] == pytest.approx(toss_cal.TOTAL_MAX_RAD)
-    assert aim['trim_aim_rad'][0] == pytest.approx(toss_trim.TRIM_MAX_RAD)
+    # The commanded total is the MAP alone, to the last bit — a saturated trim
+    # did not push it into the clamp because it was never added.
+    assert aim['aim_rad'][0] == pytest.approx(toss_cal.TOTAL_MAX_RAD, rel=1e-12)
+    assert aim['clamp_hits'] == []
+    assert aim['trim_aim_rad'] == (0.0, 0.0)
+    # ... and the estimate is still REPORTED, under its own key. Zero authority,
+    # full visibility: this is the number whose divergence from the ILC's is the
+    # standing validation of the C3 by-decision resolution.
+    assert aim['trim_monitor_aim_rad'][0] == pytest.approx(
+        toss_trim.TRIM_MAX_RAD)
+    assert aim['trim_authority'] == toss_trim.AIM_AUTHORITY == 'MONITOR'
 
 
 def test_the_trims_mm_report_is_the_difference_of_the_commanded_offsets(
         monkeypatch, tmp_path):
     """``trim_aim_mm_at_h`` is ``offset(total) − offset(map)``, not
     ``offset(trim)`` computed on its own: what the trim MOVED is the virtual
-    target, and after a binding total clamp that displacement is exactly the
-    difference. Reporting the independent value would credit the trim with a
-    displacement the machine did not command."""
+    target, and reporting the independent value would credit it with a
+    displacement the machine did not command.
+
+    Under monitor-only (C4) that difference is **structurally** zero rather than
+    incidentally zero, which is the strongest form of the property this test was
+    always about — and it is worth keeping precisely because a future edit that
+    "helpfully" reported ``offset(trim_monitor_aim_rad)`` here would put a
+    never-commanded displacement into the corpus. The same difference-of-offsets
+    rule one layer further out (total − (map+trim)) is what layer 3's report
+    uses, and ``tests/ros/test_toss_ilc_node.py::
+    test_the_three_layers_sum_and_the_offsets_split_cleanly`` exercises it with a
+    non-zero value."""
     node = _node_with_map(monkeypatch, tmp_path,
                           _cal_doc(toss_cal.TOTAL_MAX_RAD, 0.0))
     _enable_trim(node)
@@ -204,10 +233,19 @@ def test_the_trims_mm_report_is_the_difference_of_the_commanded_offsets(
     assert aim2['trim_offset_mm'][0] == pytest.approx(float(want[0]), rel=1e-9)
 
 
-def test_the_virtual_target_is_built_from_the_TOTAL_aim(monkeypatch, tmp_path):
-    """The commanded release must reflect map AND trim, not the map alone —
-    otherwise the trim would be reported as applied and never actually flown,
-    which is the silent-wrong class D3 exists to close."""
+def test_the_virtual_target_is_NOT_moved_by_the_monitor_only_trim(monkeypatch,
+                                                                  tmp_path):
+    """The mirror of the old ``..._is_built_from_the_TOTAL_aim``, and the more
+    important direction now.
+
+    That test's root cause — *a layer reported as applied but never actually
+    flown is the silent-wrong class D3 exists to close* — is exactly why the
+    demotion had to change the RECORD as well as the composition. A build that
+    left ``trim_aim_rad`` carrying the estimate while quietly not composing it
+    would be that silent-wrong, inverted. So: a live trim with no map at all
+    leaves the commanded release the SAME OBJECT as the announcement release,
+    and the record says the trim commanded nothing.
+    """
     node = _node_with_map(monkeypatch, tmp_path, _cal_doc(0.0, 0.0))
     _enable_trim(node)
     trim_aim = (math.radians(0.12), math.radians(-0.05))
@@ -216,22 +254,29 @@ def test_the_virtual_target_is_built_from_the_TOTAL_aim(monkeypatch, tmp_path):
     with node._lock:
         cmd = node._toss_release_cmd
         base = node._toss_release_state
-    assert cmd is not base
-    assert float(cmd.tilt_rx) == pytest.approx(trim_aim[0], abs=1e-9)
-    assert float(cmd.tilt_ry) == pytest.approx(trim_aim[1], abs=1e-9)
+        aim = dict(node._toss_aim)
+    assert cmd is base                     # not one floating-point operation
+    assert aim['aim_rad'] == (0.0, 0.0)
+    assert aim['trim_aim_rad'] == (0.0, 0.0)
+    assert aim['trim_monitor_aim_rad'] == pytest.approx(trim_aim)
 
 
-# ── 3. pretilt_hold for a TRIM-only aim (D3) ──────────────────────────────────
+# ── 3. pretilt_hold for any NON-ZERO COMMANDED aim (D3) ───────────────────────
 
-def test_pretilt_hold_is_raised_for_a_trim_only_aim(monkeypatch, tmp_path):
-    """D3 is about ANY non-zero commanded aim, and a session trim is one. With
-    no map loaded at all, a trim alone must still raise the hold — otherwise the
-    stock announcement pre-tilt completes an un-tilt to level ≥ 1 s before
-    release and reverts the trim while every log line reports it as applied."""
+def test_pretilt_hold_is_raised_for_a_map_only_aim(monkeypatch, tmp_path):
+    """D3 is about ANY non-zero **commanded** aim: without the hold, the stock
+    announcement pre-tilt completes an un-tilt to level ≥ 1 s before release and
+    reverts the aim while every log line reports it as applied.
+
+    Keyed on the MAP since 2026-08-21. The predecessor
+    (``test_pretilt_hold_is_raised_for_a_trim_only_aim``) used the session trim
+    as its non-zero source, which no longer commands anything — so the test is
+    re-pointed at a layer that does rather than deleted, and the companion below
+    asserts the trim's own silence.
+    """
     from jugglebot.toss_sequencer import ACTION_PREPARE_CATCH, TossDecision
-    node = _node_with_map(monkeypatch, tmp_path, None)
-    _enable_trim(node)
-    node._toss_trim = _StubTrim((math.radians(0.12), 0.0))
+    node = _node_with_map(monkeypatch, tmp_path,
+                          _cal_doc(math.radians(0.12), 0.0))
     seq = _build(node, monkeypatch)
     assert node._release_is_tilted(node._toss_commanded_release()) is True
     decision = TossDecision(done=False, phase='PREPARING',
@@ -241,6 +286,26 @@ def test_pretilt_hold_is_raised_for_a_trim_only_aim(monkeypatch, tmp_path):
     node._step_toss_sequence(seq, 100.0)
     published = [m.data for m in node._publishers['catch/pretilt_hold'].published]
     assert published == [True]
+
+
+def test_a_trim_only_aim_raises_NO_pretilt_hold(monkeypatch, tmp_path):
+    """... and the converse, which is the C4 demotion seen from the FSM's side:
+    a saturated monitor-only trim leaves the goal on the byte-identical LEVEL
+    path, hold and all. ``_release_is_tilted`` keys on the commanded release
+    state rather than on any layer's value, so this follows from the composition
+    and is not a second rule that could drift from it."""
+    from jugglebot.toss_sequencer import ACTION_PREPARE_CATCH, TossDecision
+    node = _node_with_map(monkeypatch, tmp_path, None)
+    _enable_trim(node)
+    node._toss_trim = _StubTrim((toss_trim.TRIM_MAX_RAD, 0.0))
+    seq = _build(node, monkeypatch)
+    assert node._release_is_tilted(node._toss_commanded_release()) is False
+    decision = TossDecision(done=False, phase='PREPARING',
+                            action=ACTION_PREPARE_CATCH, result=None)
+    node._build_toss_observations = lambda _now: None
+    seq.step = lambda _now, _obs: decision
+    node._step_toss_sequence(seq, 100.0)
+    assert node._publishers['catch/pretilt_hold'].published == []
 
 
 # ── 4. read ONCE per goal, observed from ONE place (D4, layer 2) ──────────────
@@ -353,8 +418,11 @@ def test_the_record_separates_what_was_commanded_from_what_was_known(
     assert row['timing_bias_applied_ms'] == pytest.approx(25.0)
 
 
-def test_the_record_carries_map_trim_and_total_separately(monkeypatch,
-                                                          tmp_path):
+def test_the_record_carries_map_trim_monitor_and_total_separately(monkeypatch,
+                                                                   tmp_path):
+    """Four keys, and the corpus must be able to tell them apart: what the map
+    commanded, what layer 2 commanded (structurally nothing), what layer 2
+    ESTIMATED, and what was actually flown."""
     node = _node_with_map(monkeypatch, tmp_path,
                           _cal_doc(math.radians(0.2), 0.0))
     _enable_trim(node)
@@ -365,16 +433,22 @@ def test_the_record_carries_map_trim_and_total_separately(monkeypatch,
     _build(node, monkeypatch)
     row = _record(node)
     assert row['map_aim_rad'][0] == pytest.approx(math.radians(0.2))
-    assert row['trim_aim_rad'][0] == pytest.approx(math.radians(0.1))
-    assert row['total_aim_rad'][0] == pytest.approx(math.radians(0.3))
+    assert row['trim_aim_rad'] == [0.0, 0.0]                  # commanded
+    assert row['trim_monitor_aim_rad'][0] == pytest.approx(   # estimated
+        math.radians(0.1))
+    assert row['trim_authority'] == 'MONITOR'
+    # The TOTAL is the map alone — 0.2°, not 0.3°. This is the assertion the
+    # predecessor got wrong the moment layer 2 lost its authority, and it is the
+    # one that would catch a partial revert.
+    assert row['total_aim_rad'][0] == pytest.approx(math.radians(0.2))
     # The mm report lands on the **y** axis, not x: the aim→landing Jacobian is
     # a 90° ROTATION (a +rx tilt moves the ball in −y), not a scaled identity.
     # Asserting on [0] here would pass on a build that had quietly made it one.
     assert row['map_aim_mm_at_h'][0] == pytest.approx(0.0, abs=1e-9)
     assert row['map_aim_mm_at_h'][1] != 0.0
-    assert row['trim_aim_mm_at_h'][1] != 0.0
-    # The mm report fields sum to the commanded total offset, exactly.
-    total = tr.aim_target_offset_mm(math.radians(0.3), 0.0, _FLIGHT, _POSE[2])
+    assert row['trim_aim_mm_at_h'][1] == pytest.approx(0.0, abs=1e-12)
+    # The mm report fields still sum to the commanded total offset, exactly.
+    total = tr.aim_target_offset_mm(math.radians(0.2), 0.0, _FLIGHT, _POSE[2])
     assert (row['map_aim_mm_at_h'][1] + row['trim_aim_mm_at_h'][1]
             == pytest.approx(float(total[1]), rel=1e-9))
 
