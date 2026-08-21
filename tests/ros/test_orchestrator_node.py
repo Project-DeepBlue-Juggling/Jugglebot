@@ -516,6 +516,101 @@ class TestProcessRequests:
         orch.sm.tick(orch.ctx)
         assert orch.sm.state != RobotState.FAULT
 
+    # ── The QTM race between dispatch and the bridge's handler ────────
+    #
+    # _dispatch_request checks _qtm_ready() at DISPATCH; the bridge checks its
+    # own cache when the SERVICE HANDLER runs. Two instants. The cached status
+    # only has to age past MOCAP_STATUS_MAX_AGE_S in between — mocap_node dying
+    # in that window, or the executor being busy — for a call this node judged
+    # healthy to meet a bridge that judges it stale. The bridge then refuses
+    # with success=False, which flows through _check_pending_operations into
+    # ctx.operation_result and FAULTs HOMING: exactly the outcome the Q3 skip
+    # exists to prevent, reached by a different route.
+
+    def _refuse(self, orch, message):
+        """Resolve the in-flight bb/calibrate future with a bridge refusal."""
+        result = Trigger.Response()
+        result.success = False
+        result.message = message
+        orch._pending_future.set_result(result)
+        orch._check_pending_operations()
+
+    def _dispatch_calibrate(self, orch):
+        orch._bb_calibrate_client._ready = True
+        _feed_mocap_status(orch)             # healthy AT DISPATCH
+        orch.ctx.request = 'bb_calibrate'
+        orch._process_requests()
+        assert orch._pending_future is not None, 'precondition: the call went out'
+
+    def test_lost_qtm_race_skips_instead_of_faulting(self, orch):
+        """Orchestrator's view healthy, bridge refuses → SKIP, not failure."""
+        from jugglebot import mocap_status as mocap_st
+        self._dispatch_calibrate(orch)
+        self._refuse(orch, f'{mocap_st.CODE_QTM_STALE}: no mocap status for '
+                           '1.4 s (limit 1.0 s) — calibration refused')
+        assert orch.ctx.operation_result is True
+        assert orch.ctx.bb_calibration_skipped is True
+
+    def test_lost_qtm_race_on_the_marker_code_too(self, orch):
+        """BOTH refusal codes are races, not failures — markers can vanish
+        between dispatch and the sweep just as easily as the stream can."""
+        from jugglebot import mocap_status as mocap_st
+        self._dispatch_calibrate(orch)
+        self._refuse(orch, f'{mocap_st.CODE_BB_MARKERS_NOT_VISIBLE}: 1/5 '
+                           'visible (need >= 3 incl. Marker 3, seen=no) '
+                           '— calibration refused')
+        assert orch.ctx.operation_result is True
+        assert orch.ctx.bb_calibration_skipped is True
+
+    def test_lost_qtm_race_completes_homing_without_faulting(self, orch):
+        """Asserted against the STATE MACHINE, not the dispatcher — the same
+        shape as test_qtm_skip_never_faults_homing, but for the refusal that
+        arrives after the call has already gone out."""
+        from jugglebot import mocap_status as mocap_st
+        orch.sm.force_transition(RobotState.HOMING, orch.ctx)
+        self._dispatch_calibrate(orch)
+        self._refuse(orch, f'{mocap_st.CODE_QTM_STALE}: mocap_node reports no '
+                           'QTM packets arriving — calibration refused')
+        assert orch.ctx.operation_result is not False
+        orch.sm.tick(orch.ctx)
+        assert orch.sm.state != RobotState.FAULT
+
+    def test_a_genuine_calibrate_failure_still_faults(self, orch):
+        """The carve-out must stay narrow. An RPC that actually failed means the
+        CAN write did not land — a real machine problem, not an optional
+        subsystem being unavailable — and it must keep faulting."""
+        self._dispatch_calibrate(orch)
+        self._refuse(orch, 'Calibrate failed: RPC timeout')
+        assert orch.ctx.operation_result is False
+        assert orch.ctx.bb_calibration_skipped is False
+
+    def test_a_qtm_shaped_failure_on_another_operation_still_faults(self, orch):
+        """The kind tag is load-bearing, not decorative: only bb_calibrate gets
+        the skip. A refusal-shaped message from any other service is a failure."""
+        from jugglebot import mocap_status as mocap_st
+        orch.ctx.request = 'encoder_search'
+        orch._process_requests()
+        assert orch._pending_future is not None
+        assert orch._pending_kind is None, 'only bb_calibrate tags its future'
+        self._refuse(orch, f'{mocap_st.CODE_QTM_STALE}: … — calibration refused')
+        assert orch.ctx.operation_result is False
+        assert orch.ctx.bb_calibration_skipped is False
+
+    def test_the_refusal_prefix_matches_the_bridge_verbatim(self, orch):
+        """Cross-node pin: the predicate matches the string the BRIDGE actually
+        builds, not a hand-copied approximation of it. If the bridge reformats
+        its refusal, this fails here rather than silently faulting a real
+        HOMING run on the robot."""
+        from jugglebot import mocap_status as mocap_st
+        ready, code, detail = mocap_st.evaluate(None, 0.0)
+        assert ready is False
+        bridge_message = f'{code}: {detail} — calibration refused'
+        from jugglebot.orchestrator_node import OrchestratorNode
+        assert OrchestratorNode._is_qtm_refusal(bridge_message) is True
+        assert OrchestratorNode._is_qtm_refusal('Calibrate failed: nope') is False
+        assert OrchestratorNode._is_qtm_refusal('') is False
+        assert OrchestratorNode._is_qtm_refusal(None) is False
+
     def test_qtm_gate_uses_the_shared_predicate(self, orch):
         """Same predicate as the bridge's service gate (jugglebot.mocap_status),
         so the two views of 'ready' cannot drift into disagreeing about whether

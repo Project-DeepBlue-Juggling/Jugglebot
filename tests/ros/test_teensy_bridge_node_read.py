@@ -907,6 +907,166 @@ def test_robot_state_decoded_names_cover_every_faulted_axis(bridge):
     assert decoded[2].startswith('ODrive hand:')
 
 
+# ── C1 regression: the MAX_DEVIATION attribution is ADDITIVE ───
+#
+# F3 widened the diag scan from range(_NUM_LEGS) to every axis in _latest_diag,
+# which was right — a hand or Ball Butler fault used to produce an empty hint.
+# But the frozen-snapshot MAX_DEVIATION attribution sat in the ELSE branch of
+# "did the scan find anything", and axes 7/8 carry a STICKY disarm_reason that
+# is routinely non-zero for entirely benign historical reasons. So on any
+# machine where BB had ever disarmed, the widened scan always found "a culprit"
+# and the else-branch never ran — silently deleting the one line that names the
+# leg, which is the documented 2026-07-16 S4 attribution shape.
+
+def test_max_deviation_attribution_survives_a_sticky_bb_disarm_reason(bridge):
+    """THE regression. A MAX_DEVIATION latch with a benign sticky BB
+    disarm_reason in the cache must still print the leg + trip deviation."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    # A Ball Butler axis with a sticky disarm_reason and NO active error — the
+    # benign residue of some earlier, unrelated disarm.
+    teensy.send_to_jetson(
+        int(MsgType.DIAGNOSTIC),
+        Diagnostic(axis_id=7, axis_state=1,
+                   active_errors=0, disarm_reason=_MISSING_ESTIMATE).pack())
+    assert _wait_until(lambda: 7 in node._latest_diag)
+
+    node._logger = MagicMock()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.MAX_DEVIATION),
+                      flags=0, uptime_ms=1,
+                      max_dev_leg=1, max_dev_value=-0.552)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.MAX_DEVIATION))
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert len(edge) == 1, _messages(node._logger.error)
+    # BOTH sources present: the BB decode the widening added…
+    assert 'bb_pitch' in edge[0] or 'ODrive' in edge[0] or 'pitch' in edge[0], edge[0]
+    # …AND the frozen-snapshot leg attribution the else-branch was suppressing.
+    assert 'leg 1' in edge[0], edge[0]
+    assert 'dev=-0.552 rev at trip' in edge[0], edge[0]
+
+
+def test_max_deviation_attribution_is_joined_not_replaced(bridge):
+    """A LEG with a real ODrive error alongside a MAX_DEVIATION latch: the two
+    answer different questions ('which axis reports an error' vs 'which leg
+    crossed the limit first') and both must appear."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    teensy.send_to_jetson(
+        int(MsgType.DIAGNOSTIC),
+        Diagnostic(axis_id=4, axis_state=8, active_errors=_SPINOUT).pack())
+    assert _wait_until(lambda: 4 in node._latest_diag)
+
+    node._logger = MagicMock()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.MAX_DEVIATION),
+                      flags=0, uptime_ms=1,
+                      max_dev_leg=2, max_dev_value=+0.771)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.MAX_DEVIATION))
+    node._publish_link_status()
+
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert 'leg 4' in edge[0] and 'SPINOUT_DETECTED' in edge[0], edge[0]
+    assert 'leg 2 first to cross' in edge[0], edge[0]
+    assert 'dev=+0.771 rev at trip' in edge[0], edge[0]
+    assert ' | ' in edge[0], f'the two clauses must be joined: {edge[0]}'
+
+
+# ── C2/C3 honesty: a frozen diag cache stops being narrated ────
+#
+# _latest_diag is a last-value cache with NO eviction, so after a link loss it
+# freezes and C2/C3 kept decoding it forever: a live-sounding 'ODrive error on
+# leg 2: …' every 10 s, and a decoded string in every robot_state.error[],
+# describing a bitfield minutes old — printed alongside the bridge's own "link
+# lost" line, so the loudest thing on screen was the least current.
+#
+# C1 (_guard_fault_leg_hint) is deliberately NOT gated this way: at latch time
+# the sticky disarm_reason is often the only surviving record of the cause.
+
+def _age_diag(node, axis, seconds):
+    """Backdate one axis's diagnostic arrival stamp (no sleeping)."""
+    from jugglebot.teensy_bridge_node import _DIAG_NARRATE_FRESH_S
+    with node._lock:
+        node._latest_diag_mono[axis] -= seconds
+    return _DIAG_NARRATE_FRESH_S
+
+
+def test_c2_is_silent_about_a_stale_axis_but_not_a_fresh_one(bridge):
+    """One stale axis, one fresh: only the fresh one is narrated."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    for axis in (1, 3):
+        teensy.send_to_jetson(
+            int(MsgType.DIAGNOSTIC),
+            Diagnostic(axis_id=axis, axis_state=8, active_errors=_UV).pack())
+    assert _wait_until(lambda: {1, 3} <= set(node._latest_diag))
+
+    budget = _age_diag(node, 1, 10.0)
+    assert budget < 10.0, 'precondition: 10 s is beyond the narration budget'
+
+    node._logger = MagicMock()
+    node._publish_link_status()
+    lines = _odrive_error_lines(node._logger)
+    assert not any('leg 1' in m for m in lines), \
+        f'a frozen diagnostic was narrated as if current: {lines}'
+    assert any('leg 3' in m for m in lines), \
+        f'the fresh axis must still be decoded: {lines}'
+
+
+def test_c3_omits_a_stale_axis_from_robot_state_errors(bridge):
+    """Same rule on the published strings. The coarse fault headline stays —
+    only the per-axis detail that can no longer be corroborated drops out."""
+    teensy, node = bridge
+    teensy.send_telemetry()
+    for axis in (0, 2):
+        teensy.send_to_jetson(
+            int(MsgType.DIAGNOSTIC),
+            Diagnostic(axis_id=axis, axis_state=8, active_errors=_SPINOUT).pack())
+    assert _wait_until(lambda: {0, 2} <= set(node._latest_diag)
+                       and node._latest_telemetry is not None)
+    _age_diag(node, 0, 10.0)
+
+    node._publish_robot_state()
+    msg = node.robot_state_pub.published[-1]
+    assert msg.has_fatal_odrive_error is True
+    assert msg.error[0].startswith('Fatal ODrive issue'), msg.error
+    decoded = [e for e in msg.error if e.startswith('ODrive ')]
+    assert [e for e in decoded if e.startswith('ODrive leg 0:')] == [], \
+        f'stale axis narrated in robot_state.error[]: {msg.error}'
+    assert len([e for e in decoded if e.startswith('ODrive leg 2:')]) == 1, msg.error
+
+
+def test_c1_still_names_a_stale_axis_at_latch_time(bridge):
+    """The deliberate carve-out. A guard latch is a one-shot event and the
+    sticky disarm_reason is frequently the ONLY record of what caused it —
+    suppressing it on age would trade a stale-but-real attribution for none."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    teensy.send_to_jetson(
+        int(MsgType.DIAGNOSTIC),
+        Diagnostic(axis_id=3, axis_state=8, active_errors=_SPINOUT).pack())
+    assert _wait_until(lambda: 3 in node._latest_diag)
+    _age_diag(node, 3, 60.0)
+
+    node._logger = MagicMock()
+    _latch_odrive_fatal(teensy, node)
+    node._publish_link_status()
+    edge = [m for m in _messages(node._logger.error) if 'FAULT LATCHED' in m]
+    assert 'leg 3' in edge[0], \
+        f'C1 must NOT inherit the C2/C3 staleness gate: {edge[0]}'
+    assert 'SPINOUT_DETECTED' in edge[0], edge[0]
+
+
 # ── profile ────────────────────────────────────────────────────
 
 def test_profile_published(bridge):

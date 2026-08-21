@@ -732,6 +732,55 @@ class TestBBCalibrateMocapGate:
         assert re.search(r"title\s*=\s*'Mocap disconnected", body), \
             'the Calibrate gate must name mocap as the blocking reason in the tooltip'
 
+    def test_calibrate_gate_checks_bb_connection_first(self, panels_js):
+        """A live re-enable path, closed.
+
+        setBBDisconnected() correctly disables the button — but lastBBState is a
+        last-value cache it did not invalidate, so it still held 1 from the
+        final IDLE heartbeat. mocap_data keeps arriving after Ball Butler goes
+        away, and every frame calls setMocapConnected(true) ->
+        applyBBCalibrateGate(), which saw bbIdle && mocapConnected and RE-ENABLED
+        Calibrate on a Ball Butler that is not there. Not a corner case: it
+        happens within milliseconds of every BB disconnect.
+        """
+        m = re.search(r'function\s+applyBBCalibrateGate\b(.*?)\n\}',
+                      panels_js, re.S)
+        assert m, 'applyBBCalibrateGate() body not found'
+        body = m.group(1)
+        assert 'bbConnected' in body, \
+            'the Calibrate gate no longer considers whether BB is connected'
+        assert re.search(r"!bbConnected", body), \
+            'the gate must test !bbConnected explicitly'
+        # FIRST, before the IDLE and mocap branches: an absent BB is the most
+        # specific reason and must be the one the tooltip names.
+        assert body.index('!bbConnected') < body.index('!mocapConnected'), \
+            'the BB-connection branch must precede the mocap branch'
+
+    def test_panels_tracks_bb_connected_state(self, panels_js):
+        assert re.search(r'\blet\s+bbConnected\b', panels_js), \
+            'panels.js no longer keeps a bbConnected flag for the gate'
+
+    def test_bb_disconnect_invalidates_both_gate_inputs(self, panels_js):
+        """setBBDisconnected must clear BOTH pieces of state the gate reads.
+        Leaving lastBBState at its final IDLE value is what let the next mocap
+        frame re-enable the button."""
+        m = re.search(r'export\s+function\s+setBBDisconnected\b(.*?)\n\}\n',
+                      panels_js, re.S)
+        assert m, 'setBBDisconnected() body not found'
+        body = m.group(1)
+        assert re.search(r'bbConnected\s*=\s*false', body), \
+            'setBBDisconnected() must clear bbConnected'
+        assert re.search(r'lastBBState\s*=\s*-1', body), \
+            'setBBDisconnected() must invalidate the cached BB state'
+
+    def test_bb_heartbeat_sets_the_connection_flag(self, panels_js):
+        """…and the connect edge must set it again, or Calibrate never re-enables."""
+        m = re.search(r'export\s+function\s+updateBBPanel\b(.*?)\n\}\n',
+                      panels_js, re.S)
+        assert m, 'updateBBPanel() body not found'
+        assert re.search(r'bbConnected\s*=\s*true', m.group(1)), \
+            'updateBBPanel() must set bbConnected on the connection edge'
+
     def test_calibrate_gate_leaves_the_reset_button_alone(self, panels_js):
         """BB-ERROR reset has nothing to do with mocap and must stay pressable
         with QTM down."""

@@ -403,4 +403,7 @@ from this plan's sections, adjudicates diffs, runs/verifies gates, commits.
   error → confirm shell + event-log decode; (2) with QTM off, press Calibrate →
   confirm refusal code, then run HOMING → confirm WARN skip, no FAULT;
   (3) eyeball chart magnitudes (legs ~0–300 mm, BB pitch 12–90°);
-  (4) confirm/raise `MIN_ARC_DEG` from a real calibrate's logged yaw span.
+  (4) confirm/raise `MIN_ARC_DEG` from the **BB yaw span** a real calibrate
+  logs (`mocap_node`: "BB yaw span swept: N°") — that is the encoder-derived
+  primary gate; the per-marker `arc_span` lines beside it are noise-inflated
+  and are NOT the number to read.

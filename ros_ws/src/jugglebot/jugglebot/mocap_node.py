@@ -46,7 +46,7 @@ from jugglebot.protocol_config import (
 )
 import jugglebot.hardware_config as hw
 from jugglebot import mocap_status as mocap_st
-from .bb_calibration import run_calibration, CalibrationResult
+from .bb_calibration import run_calibration, CalibrationResult, MIN_ARC_DEG
 
 
 #: Cadence of the ``mocap/status`` publisher and of the calibration health
@@ -512,6 +512,13 @@ class MocapNode(Node):
             f'({result.yaw_offset_rad:.4f} rad)'
         )
         self.get_logger().info(f'Yaw uncertainty: ±{result.yaw_offset_std_deg:.2f}°')
+        # THE number the owner reads to confirm or raise MIN_ARC_DEG
+        # (plans/active/operator-observability.md § 8 item 4). It is BB's own
+        # reported yaw span — encoder-derived, so unlike the per-marker
+        # arc_span below it is not inflated by QTM marker noise.
+        self.get_logger().info(
+            f'BB yaw span swept: {result.yaw_span_deg:.1f}° '
+            f'(floor MIN_ARC_DEG={MIN_ARC_DEG:.1f}°)')
 
         for idx, m in result.marker_metrics.items():
             if m.status == 'ok':

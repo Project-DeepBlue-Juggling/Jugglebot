@@ -859,6 +859,25 @@ _DIAG_FLAG_HB_SEEN = 0x2    # ODrive has heartbeated at least once this firmware
 # per axis (send_bb_diag), so 3 s = three missed frames; BB estimates ride the
 # 100 Hz telemetry tick, so 0.5 s of silence means the stream (not the bus) died.
 _BB_DIAG_FRESH_S = 3.0
+# Freshness budget for NARRATING a cached diagnostic — F3/C2's shell logging and
+# F3/C3's robot_state.error[] decode. Same 3 s as the BB honesty gate above, and
+# for the same reason: DIAGNOSTIC frames arrive at a fixed 1 Hz per axis, so
+# three missed frames is silence, not jitter.
+#
+# WHY NARRATION NEEDS A BUDGET AT ALL. _latest_diag is a last-value cache with
+# no eviction: when the UDP link dies it FREEZES, and C2/C3 then keep decoding
+# that frozen snapshot forever. The operator reads a live-looking 'ODrive error
+# on leg 2: …' line, and robot_state.error[] keeps carrying a decoded string,
+# describing a bitfield that may be minutes old — at exactly the moment the
+# bridge is ALSO reporting the link as lost, so the loudest thing on screen is
+# the least current. Silence is the honest output for a cache that stopped
+# updating (the leg_setpoint_echo philosophy, applied to error narration).
+#
+# ⚠ DELIBERATELY NOT APPLIED TO _guard_fault_leg_hint (C1). At latch time the
+# sticky disarm_reason is frequently the ONLY surviving record of the cause, and
+# the guard-latch edge log is the one line an operator gets; suppressing it on
+# age would trade a stale-but-real attribution for no attribution at all.
+_DIAG_NARRATE_FRESH_S = _BB_DIAG_FRESH_S
 _BB_EST_FRESH_S = 0.5
 
 # "Already at STOW" band for the deactivate no-op guard: a leg is considered stowed
@@ -3208,8 +3227,12 @@ class TeensyBridgeNode(Node):
             # dark/stale (see _build_bb_motor_states); every leg/hand
             # computation below slices states[:_NUM_LEGS] or indexes 0..6,
             # so the trailing entries never feed the fatal-fault logic.
+            # One monotonic read for every freshness test in this publish (the
+            # BB honesty gate and C3's error-narration gate below), so the two
+            # cannot disagree about how old the same cached diagnostic is.
+            now_mono = time.monotonic()
             states += self._build_bb_motor_states(
-                diag, diag_mono, bb_est, bb_est_mono, time.monotonic())
+                diag, diag_mono, bb_est, bb_est_mono, now_mono)
 
             msg = RobotState()
             msg.timestamp = self.get_clock().now().to_msg()
@@ -3317,7 +3340,18 @@ class TeensyBridgeNode(Node):
                 #
                 # APPENDED, never prepended: state-minimap.js reads error[0] as
                 # the headline, and that headline must stay the coarse cause.
+                #
+                # STALE AXES ARE OMITTED (_DIAG_NARRATE_FRESH_S). _latest_diag
+                # is a never-evicting last-value cache, so on a link loss it
+                # freezes — and has_fatal_can_error is raised BY that same link
+                # loss, which means without this gate every published
+                # robot_state would carry a decoded per-axis line describing a
+                # bitfield frozen minutes ago, indistinguishable from a live
+                # one. The coarse fault_state headline above still publishes;
+                # only the detail that can no longer be corroborated drops out.
                 for axis in sorted(diag):
+                    if (now_mono - diag_mono.get(axis, 0.0)) > _DIAG_NARRATE_FRESH_S:
+                        continue
                     d = diag[axis]
                     a_err, d_err = int(d.active_errors), int(d.disarm_reason)
                     if a_err == 0 and d_err == 0:
@@ -4375,14 +4409,22 @@ class TeensyBridgeNode(Node):
         stayed silent about the one axis that was broken. Multiple culprits are
         joined with '; ' in axis order.
 
-        Fallback: a MAX_DEVIATION latch trips on command↔encoder divergence, not
-        an ODrive error, so active_errors/disarm_reason are frequently zero (all
-        three 2026-07-16 S4 latches had active_errors==0 → the diag scan found
-        nothing and the hint was silently empty). The firmware freezes the FIRST
-        leg to cross in HeartbeatT2J.max_dev_leg (0xFF = none since boot) with the
-        trip deviation in max_dev_value — that frozen snapshot is the ground-truth
-        attribution, so name the leg from it when the diag scan is empty and the
-        active fault is MAX_DEVIATION.
+        MAX_DEVIATION attribution is ADDITIVE, not a fallback. A MAX_DEVIATION
+        latch trips on command↔encoder divergence, not an ODrive error, so
+        active_errors/disarm_reason are frequently zero (all three 2026-07-16 S4
+        latches had active_errors==0 → the diag scan found nothing). The firmware
+        freezes the FIRST leg to cross in HeartbeatT2J.max_dev_leg (0xFF = none
+        since boot) with the trip deviation in max_dev_value — that frozen
+        snapshot is the ground-truth attribution and it is appended whenever the
+        active fault is MAX_DEVIATION, regardless of what the diag scan found.
+        ⚠ It CANNOT be an else-branch on the scan: widening (b) above made the
+        scan see axes 7/8 (hand/Ball Butler), whose disarm_reason is STICKY and
+        routinely non-zero for entirely benign historical reasons. Gating the
+        snapshot on "the scan found nothing" therefore deleted the S4 attribution
+        — the one line that names the leg — on any machine where BB had ever
+        disarmed. The two sources answer different questions ("which axis reports
+        an ODrive error" vs "which leg crossed the deviation limit first"), so
+        both are printed, joined with ' | '.
 
         Returns '' when no leg-specific cause is identifiable (e.g. a bus-level
         CAN_BUS_DOWN or an MPC-staleness fault) so the message stays honest rather
@@ -4391,6 +4433,7 @@ class TeensyBridgeNode(Node):
         with self._lock:
             diag = dict(self._latest_diag)
             hb = self._latest_heartbeat
+        parts = []
         culprits = []
         for axis in sorted(diag):
             d = diag[axis]
@@ -4399,13 +4442,15 @@ class TeensyBridgeNode(Node):
                 culprits.append(f'{_axis_label(axis)}: '
                                 f'{_decode_axis_errors(active, disarm)}')
         if culprits:
-            return f' ({"; ".join(culprits)})'
+            parts.append('; '.join(culprits))
         if (hb is not None
                 and int(hb.fault_state) == int(FaultState.MAX_DEVIATION)
                 and int(hb.max_dev_leg) != 0xFF):
-            return (f' (leg {int(hb.max_dev_leg)}, '
-                    f'dev={hb.max_dev_value:+.3f} rev at trip)')
-        return ''
+            parts.append(f'leg {int(hb.max_dev_leg)} first to cross, '
+                         f'dev={hb.max_dev_value:+.3f} rev at trip')
+        if not parts:
+            return ''
+        return f' ({" | ".join(parts)})'
 
     def _log_odrive_errors(self):
         """F3/C2 — throttled per-axis ODrive error logging (can_node parity).
@@ -4437,13 +4482,24 @@ class TeensyBridgeNode(Node):
         self-heals, so a flapping bit with pruning would log at the full 10 Hz;
         keeping the stamp costs one stale float and bounds the worst case at one
         line per 10 s per axis, which is what the throttle is for.
+
+        STALE AXES ARE SILENT (_DIAG_NARRATE_FRESH_S). _latest_diag never
+        evicts, so after a link loss this scan would otherwise keep printing
+        'ODrive error on leg 2: …' at one line per 10 s per axis forever, from a
+        snapshot frozen at the moment the link died — a live-sounding present
+        tense over minute-old data, printed alongside the bridge's own "link
+        lost" line. An axis whose diagnostic stopped arriving gets silence.
         """
         try:
             with self._lock:
                 diag = dict(self._latest_diag)
+                diag_mono = dict(self._latest_diag_mono)
             now = time.time()
+            now_mono = time.monotonic()   # separate clock: _latest_diag_mono is monotonic
             throttle = self._error_log.error_log_throttle_sec
             for axis in sorted(diag):
+                if (now_mono - diag_mono.get(axis, 0.0)) > _DIAG_NARRATE_FRESH_S:
+                    continue  # frozen cache — say nothing rather than narrate the past
                 d = diag[axis]
                 active, disarm = int(d.active_errors), int(d.disarm_reason)
                 if active == 0 and disarm == 0:
@@ -6858,6 +6914,13 @@ class TeensyBridgeNode(Node):
             # no usable marker stream moves the machine to produce nothing at
             # best, and a fittable fragment of garbage at worst.
             res.success = False
+            # CODE FIRST, and it is a mocap_status constant (via _qtm_ready →
+            # mocap_st.evaluate), never a literal spelled here. The orchestrator
+            # matches this message's PREFIX against those same constants to tell
+            # a lost-race refusal (skip) from a genuine RPC failure (fault) —
+            # see orchestrator_node._is_qtm_refusal. Prepending anything to this
+            # string, or spelling the code by hand, breaks that match silently
+            # and turns "the mocap PC went quiet" back into a faulted robot.
             res.message = f"{code}: {detail} — calibration refused"
             self.get_logger().warning(f"bb/calibrate refused — {res.message}")
             return res

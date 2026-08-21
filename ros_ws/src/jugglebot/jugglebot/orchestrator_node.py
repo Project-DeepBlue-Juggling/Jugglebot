@@ -67,6 +67,11 @@ class OrchestratorNode(Node):
 
         # ── Async operation tracking ──────────────────────────────
         self._pending_future = None          # For service calls
+        # Which request the in-flight _pending_future belongs to. Needed because
+        # a service RESULT has to be interpreted in the light of what was asked:
+        # a bb/calibrate refusal is a skip, an activate failure is a fault. See
+        # _check_pending_operations' QTM-race branch.
+        self._pending_kind = None
         self._pending_goal_future = None     # Phase 1: goal acceptance
         self._pending_result_future = None   # Phase 2: action result
         # Fire-and-forget futures (A2 disarm) — retained until their
@@ -411,6 +416,20 @@ class OrchestratorNode(Node):
     # Async operation management
     # ═══════════════════════════════════════════════════════════════
 
+    @staticmethod
+    def _is_qtm_refusal(message):
+        """Is this bb/calibrate failure message the bridge's QTM refusal?
+
+        The bridge formats it as ``f'{code}: {detail} — calibration refused'``
+        with ``code`` one of ``jugglebot.mocap_status``' two constants, so the
+        prefix test is against those imported constants and not a copied
+        literal — a renamed code becomes a NameError at import instead of a
+        predicate that silently stops matching and starts faulting HOMING.
+        """
+        text = str(message or '')
+        return text.startswith((mocap_st.CODE_QTM_STALE,
+                                mocap_st.CODE_BB_MARKERS_NOT_VISIBLE))
+
     def _check_pending_operations(self):
         """Poll pending async service/action calls for completion."""
         # ── Tilt service call (no success field) ──────────────────
@@ -436,15 +455,45 @@ class OrchestratorNode(Node):
         if self._pending_future is not None and self._pending_future.done():
             try:
                 result = self._pending_future.result()
-                self.ctx.operation_result = result.success
-                if not result.success:
-                    detail = getattr(result, 'message', 'unknown')
-                    self.get_logger().warning(f'Operation failed: {detail}')
+                detail = getattr(result, 'message', 'unknown')
+                if (not result.success
+                        and self._pending_kind == 'bb_calibrate'
+                        and self._is_qtm_refusal(detail)):
+                    # THE RACE. _dispatch_request checked _qtm_ready() at
+                    # dispatch; the bridge checks its OWN cache when the handler
+                    # runs. Those are two instants, and the cached status only
+                    # has to age past MOCAP_STATUS_MAX_AGE_S in between for a
+                    # dispatch this node judged healthy to meet a bridge that
+                    # judges it stale. The bridge then refuses with
+                    # success=False — and HomingHandler turns that straight into
+                    # FAULT, which is precisely the outcome the Q3 skip exists
+                    # to prevent. Losing a race is not a reason to fault a
+                    # robot, so a REFUSAL (not a failure) is treated exactly
+                    # like the dispatch-time skip: WARN, mark, carry on.
+                    #
+                    # Matched on the shared code constants, never on prose: the
+                    # bridge builds this message from the same
+                    # jugglebot.mocap_status codes, so the two cannot drift into
+                    # a silent non-match the way a copied string would.
+                    self.get_logger().warning(
+                        f'bb/calibrate refused by the bridge ({detail}) '
+                        '— skipping, not faulting. BB will be uncalibrated '
+                        'this session.')
+                    self.ctx.bb_calibration_skipped = True
+                    self.ctx.operation_result = True
+                else:
+                    self.ctx.operation_result = result.success
+                    if not result.success:
+                        # A genuine RPC failure still faults: the CAN write did
+                        # not land, which is a real machine problem, not an
+                        # optional subsystem being unavailable.
+                        self.get_logger().warning(f'Operation failed: {detail}')
             except Exception as e:
                 self.get_logger().error(f'Service call exception: {e}')
                 self.ctx.operation_result = False
             self.ctx.operation_pending = False
             self._pending_future = None
+            self._pending_kind = None
 
         # ── Action: waiting for goal acceptance ───────────────────
         if (self._pending_goal_future is not None
@@ -527,7 +576,8 @@ class OrchestratorNode(Node):
                 self.ctx.operation_result = True
             else:
                 self._start_service_call(
-                    self._bb_calibrate_client, Trigger.Request())
+                    self._bb_calibrate_client, Trigger.Request(),
+                    kind='bb_calibrate')
 
         elif req == 'activate':
             activate_req = ActivateOrDeactivate.Request()
@@ -617,6 +667,7 @@ class OrchestratorNode(Node):
         is correct for ACTIVE→IDLE but wrong for ACTIVE→FAULT).
         """
         self._pending_future = None
+        self._pending_kind = None
         self._pending_goal_future = None
         self._pending_result_future = None
         self._pending_tilt_future = None
@@ -625,8 +676,14 @@ class OrchestratorNode(Node):
         self.ctx.clear_requests()
         self.ctx.clear_commands()
 
-    def _start_service_call(self, client, request):
-        """Start a non-blocking service call."""
+    def _start_service_call(self, client, request, kind=None):
+        """Start a non-blocking service call.
+
+        ``kind`` records WHICH request this future belongs to, so
+        ``_check_pending_operations`` can interpret the result in context (only
+        bb_calibrate uses it today). Left None by callers that need no such
+        interpretation — a None kind matches nothing.
+        """
         if not client.service_is_ready():
             self.get_logger().warning(
                 f'Service {client.srv_name} not ready, failing request')
@@ -635,6 +692,7 @@ class OrchestratorNode(Node):
 
         self.ctx.operation_pending = True
         self.ctx.operation_result = None
+        self._pending_kind = kind
         self._pending_future = client.call_async(request)
 
     def _fire_forget_service_call(self, client, request, label):
