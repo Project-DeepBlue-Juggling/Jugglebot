@@ -171,6 +171,10 @@ __all__ = [
     'aim_landing_jacobian', 'achieved_flight_s', 'achieved_apex_m',
     'applied_aim_rad', 'map_aim_rad', 'ilc_aim_rad', 'reduce_to_aim',
     'admit_for_aim', 'admit_for_timing', 'admit_for_speed',
+    'aim_refusals', 'speed_refusals', 'timing_refusals',
+    'AIM_REFUSAL_REASONS', 'SPEED_REFUSAL_REASONS', 'TIMING_REFUSAL_REASONS',
+    'LABEL_REFUSAL_PREFIX',
+    'history_sd', 'cusum_step', 'cusum_alarmed',
     'AimObservation', 'AffineFit', 'SessionTrim',
     'fit_affine', 'clamp_trim', 'trim_offset_mm',
 ]
@@ -224,12 +228,35 @@ AIM_AUTHORITY_NOTE = (
 
 # ── § 3.6 constants table. ALL PROVISIONAL until the first corpus. ───────────
 #
-# The mm equivalents below are at the reference geometry (T = 0.7977 s ⇔
-# h = 0.78 m, catch z = 170 mm STOW), where the production aim→landing gain is
-# **3126.64 mm/rad = 54.570 mm/deg** — measured, not assumed, by
+# The mm equivalents below are at the reference geometry (T = 0.7977 s, catch
+# z = 170 mm STOW), where the production aim→landing gain is
+# **3126.639 mm/rad = 54.5701 mm/deg** — measured, not assumed, by
 # ``/tmp/probe_toss_trim.py`` (2026-08-11) differencing
 # :func:`aim_landing_jacobian`. The design's idealised ``4h`` = 3120 mm/rad is
 # 0.21 % lower.
+#
+# D3 (2026-08-21) — THE GAIN IS AN EXACT RULE, so quote the GEOMETRY with any
+# number. ``dL/dθ = 4h + Δz`` with ``Δz = HAND_CATCH_OFFSET_MM −
+# HAND_THROW_OFFSET_MM = 6.7360 mm``, verified constant to the last digit at
+# every h and INDEPENDENT of catch z (measured over z ∈ {0, 100, 170, 250} mm:
+# identical to 4 decimals). So the three numbers in this tree are three
+# geometries, not three roundings of one:
+#
+#   * **3126.736** mm/rad — h = **exactly 0.78 m** (T = 0.79771241 s).
+#     ``ilc_fit_lib``'s header quotes this one; it is the canonical statement.
+#   * **3126.639** mm/rad — T = **0.7977 s** (h = 0.779976 m), i.e. THIS
+#     module's reference geometry, which is a rounded T and not a rounded h.
+#     The "3126.64" this block used to carry is that value; it is correct here.
+#   * **3126.5 / 3126.53** — ``toss_fit_lib`` / ``toss_cal_grid``, quoted to 5
+#     significant figures at "h = 0.78" without a T. It reproduces no geometry
+#     exactly and is a 4-s.f. rounding; those headers now say so.
+#
+# And in mm/deg the same care applies to WHICH gain: 3126.639 mm/rad is
+# **54.5701 mm/deg**, the DERIVATIVE at zero aim. ``aim_target_offset_mm``'s
+# **54.5758 mm/deg** at the same geometry is the SECANT to a full 1° aim, larger
+# by ``tan(1°)/1°`` plus the tilted-release drop (ratio 1.0001044 against
+# ``tan(1°)/1° = 1.0001016``). Both are correct; they are not interchangeable,
+# and a Jacobian reports the derivative.
 
 #: Shrinkage prior strength (§ 3.6, D6). The prior is ``anchor.aim_rad`` from the
 #: persistent map — the absolute residual measured at the home anchor, which is
@@ -568,9 +595,14 @@ def aim_landing_jacobian(flight_time_s: float,
     exactly linear at the origin, so the difference quotient is the derivative to
     ~1e-10 relative.
 
-    Sanity: at h = 0.78 m (T = 0.7977 s), z = 170 mm this returns
-    ``[[0, 3126.64], [-3126.64, 0]]`` — magnitude 0.21 % above the design's
+    Sanity: at **T = 0.7977 s** (h = 0.779976 m), z = 170 mm this returns
+    ``[[0, 3126.639], [-3126.639, 0]]`` — magnitude 0.21 % above the design's
     idealised ``4h`` = 3120 mm/rad, and a 90° rotation, NOT a scaled identity.
+    At h = **exactly** 0.78 m (T = 0.79771241 s) it is 3126.736; the difference
+    is which of T and h was rounded, not a disagreement. The exact rule is
+    ``4h + Δz`` with ``Δz = 6.7360 mm``, and it does not depend on ``z`` at all
+    (measured over z ∈ {0, 100, 170, 250} mm, 2026-08-21) — ``z`` enters the
+    signature because the production seam takes it, not because the gain moves.
     """
     T = float(flight_time_s)
     if not math.isfinite(T) or T <= 0.0:
@@ -743,6 +775,133 @@ def reduce_to_aim(rec: Dict[str, Any]) -> Tuple[float, float]:
     return (float(aim[0]) - float(delta[0]), float(aim[1]) - float(delta[1]))
 
 
+#: Every reason :func:`aim_refusals` can emit, EXCEPT the ``label_<name>``
+#: family (see :data:`LABEL_REFUSAL_PREFIX`) whose tail is the record's own label
+#: and so cannot be enumerated here.
+#:
+#: **This set is a published vocabulary, not a convenience.** A consumer that
+#: routes on the reason — ``tests/hardware/ilc_fit_lib.GUARD_SCOPE`` classifies
+#: each one as refusing the ROW, refusing ONE CHANNEL, or being unenforceable on
+#: a mined-only corpus — must fail loudly when this module grows a guard it has
+#: never seen, rather than defaulting the new reason to "admitted". A new
+#: refusal string added to :func:`aim_refusals` without an entry here is caught
+#: by ``test_every_aim_refusal_reason_is_declared``; without a scope entry
+#: downstream it is caught by that module's own completeness test.
+AIM_REFUSAL_REASONS = frozenset({
+    'label_unknown', 'label_no_release',
+    'no_release_evidence',
+    'no_mocap_fit', 'mocap_fit_sparse', 'mocap_fit_rms_unknown',
+    'mocap_fit_quality', 'missed_with_thin_track',
+    'retry_cycle', 'reload_settle',
+    'applied_aim_unknown',
+    'apex_out_of_band',
+    'no_geometry',
+    'plant_dip_below_x3', 'plant_stroke_peak', 'plant_stroke_truncated',
+    'no_gravity_correction', 'no_tilt_map',
+})
+
+#: The prefix of the open ``label_<name>`` refusal family — a label that is
+#: neither unknown, nor NO_RELEASE, nor in :data:`AIM_LABELS`. The tail is
+#: ``str(label).lower()``, so the family is unbounded by construction and a
+#: consumer classifies it by prefix.
+LABEL_REFUSAL_PREFIX = 'label_'
+
+#: Every reason :func:`speed_refusals` can emit.
+SPEED_REFUSAL_REASONS = frozenset({
+    'label_unusable', 'no_flight_pair', 'interlude_cycle',
+})
+
+#: Every reason :func:`timing_refusals` can emit.
+TIMING_REFUSAL_REASONS = frozenset({
+    'no_departure_edge', 'no_announcement', 'bridge_stamp_not_wall_anchored',
+    'rimshot_candidate', 'poll_cadence_unmeasured',
+    'poll_cadence_below_configured_interval', 'poll_cadence_unreachable',
+})
+
+
+def aim_refusals(rec: Dict[str, Any]) -> Tuple[str, ...]:
+    """EVERY aim-admission refusal this record earns, in :func:`admit_for_aim`'s
+    own evaluation order. Empty tuple ⇒ admitted.
+
+    :func:`admit_for_aim` is the boolean face of this function and returns
+    ``reasons[0]``, so the two cannot disagree about *whether* a row is admitted
+    or about *which* reason an operator is shown. This one exists because a
+    consumer that wants to route on the reason — admit the row for one channel
+    while refusing another — is misled by a short circuit: a row whose FIRST
+    refusal is ``mocap_fit_quality`` (a statement about the landing-plane fit,
+    i.e. about ONE channel) may also be a ``retry_cycle`` (a statement about the
+    whole toss), and a classifier that only ever sees the first reason would
+    admit it.
+
+    Within a *group* the short circuit is kept, because the members of a group
+    answer one question: the three ``label_*`` reasons are one verdict on the
+    label, and the five ``mocap_*`` / ``missed_with_thin_track`` reasons are one
+    verdict on the landing-plane fit. Reporting two of either would be reporting
+    one fault twice.
+    """
+    reasons: List[str] = []
+
+    # ── G9 / D13, the label. ONE verdict. ──
+    label = rec.get('label')
+    if label is None or label == toss_record.LABEL_UNKNOWN:
+        reasons.append('label_unknown')
+    elif label == toss_record.LABEL_NO_RELEASE:
+        reasons.append('label_no_release')
+    elif label not in AIM_LABELS:
+        reasons.append(LABEL_REFUSAL_PREFIX + str(label).lower())
+
+    # ── G1, release evidence ──
+    if rec.get('t_departure_raw_ros') is None and not rec.get(
+            'ball_track_confirmed') and not rec.get('throw_stroke_seen'):
+        reasons.append('no_release_evidence')
+
+    # ── G2, the landing-plane fit. ONE verdict. ──
+    if not _is_pair(rec.get('land_err_mm')):
+        reasons.append('no_mocap_fit')
+    elif rec.get('fit_sparse'):
+        reasons.append('mocap_fit_sparse')
+    else:
+        rms = _num(rec.get('fit_rms_mm'))
+        if rms is None:
+            reasons.append('mocap_fit_rms_unknown')
+        elif rms > FIT_RMS_MAX_MM:
+            reasons.append('mocap_fit_quality')
+        elif (label == toss_record.LABEL_MISSED
+                and (_num(rec.get('n_fit')) or 0) < 5):
+            # MISSED is admitted ONLY on a non-sparse fit: it is the most
+            # informative aim record there is, and excluding it would bias the
+            # whole map toward the cup — but a thin track on a missed ball is
+            # exactly the case where the estimator extrapolates.
+            reasons.append('missed_with_thin_track')
+
+    # ── G11 retry cycle, G10 post-reload settle ──
+    if rec.get('retry_of'):
+        reasons.append('retry_cycle')
+    if rec.get('reload_settle'):
+        reasons.append('reload_settle')
+
+    # ── the reduction's own precondition: b = A − J⁻¹·land_err needs A ──
+    if applied_aim_rad(rec) is None:
+        reasons.append('applied_aim_unknown')
+
+    # ── G3, apex sanity ──
+    h_ach = achieved_apex_m(rec)
+    h_cmd = _num(rec.get('apex_height_m'))
+    if h_ach is not None and h_cmd is not None and h_cmd > 0.0:
+        if abs(h_ach - h_cmd) / h_cmd > APEX_SANITY_FRAC:
+            reasons.append('apex_out_of_band')
+    if _z_of(rec) is None or achieved_flight_s(rec) is None:
+        reasons.append('no_geometry')
+
+    ok, why = admit_g4_plant(rec)                              # G4
+    if not ok:
+        reasons.append(why)
+    ok, why = admit_g5_levelling(rec)                          # G5
+    if not ok:
+        reasons.append(why)
+    return tuple(reasons)
+
+
 def admit_for_aim(rec: Dict[str, Any]) -> Tuple[bool, str]:
     """``(admitted, reason)`` for the AIM estimate — guards G1–G5 and G9–G11, as
     far as ONE record can decide them.
@@ -768,58 +927,15 @@ def admit_for_aim(rec: Dict[str, Any]) -> Tuple[bool, str]:
     ``rimshot`` candidates are admitted for aim and excluded from timing, exactly
     as § 3.7 item 4 states — a rim transit moves the catch TIME, not the arrival
     POSITION.
+
+    **The gates themselves live in :func:`aim_refusals`** (2026-08-21), which
+    returns every reason instead of the first; this function is its boolean face
+    and returns reason zero, so the evaluation order, the admitted set and the
+    reason an operator is shown are all bit-identical to what they were before
+    the split. See that function for why a non-short-circuiting form was needed.
     """
-    label = rec.get('label')
-    if label is None or label == toss_record.LABEL_UNKNOWN:
-        return False, 'label_unknown'                          # G9 / D13
-    if label == toss_record.LABEL_NO_RELEASE:
-        return False, 'label_no_release'
-    if label not in AIM_LABELS:
-        return False, 'label_{}'.format(str(label).lower())
-
-    if rec.get('t_departure_raw_ros') is None and not rec.get(
-            'ball_track_confirmed') and not rec.get('throw_stroke_seen'):
-        return False, 'no_release_evidence'                    # G1
-
-    if not _is_pair(rec.get('land_err_mm')):
-        return False, 'no_mocap_fit'
-    if rec.get('fit_sparse'):
-        return False, 'mocap_fit_sparse'                       # G2
-    rms = _num(rec.get('fit_rms_mm'))
-    if rms is None:
-        return False, 'mocap_fit_rms_unknown'
-    if rms > FIT_RMS_MAX_MM:
-        return False, 'mocap_fit_quality'                      # G2
-    if label == toss_record.LABEL_MISSED and (_num(rec.get('n_fit')) or 0) < 5:
-        # MISSED is admitted ONLY on a non-sparse fit: it is the most
-        # informative aim record there is, and excluding it would bias the whole
-        # map toward the cup — but a thin track on a missed ball is exactly the
-        # case where the estimator extrapolates.
-        return False, 'missed_with_thin_track'
-
-    if rec.get('retry_of'):
-        return False, 'retry_cycle'                            # G11
-    if rec.get('reload_settle'):
-        return False, 'reload_settle'                          # G10
-
-    if applied_aim_rad(rec) is None:
-        return False, 'applied_aim_unknown'
-
-    h_ach = achieved_apex_m(rec)
-    h_cmd = _num(rec.get('apex_height_m'))
-    if h_ach is not None and h_cmd is not None and h_cmd > 0.0:
-        if abs(h_ach - h_cmd) / h_cmd > APEX_SANITY_FRAC:
-            return False, 'apex_out_of_band'                    # G3
-    if _z_of(rec) is None or achieved_flight_s(rec) is None:
-        return False, 'no_geometry'
-
-    ok, why = admit_g4_plant(rec)
-    if not ok:
-        return False, why
-    ok, why = admit_g5_levelling(rec)
-    if not ok:
-        return False, why
-    return True, ''
+    reasons = aim_refusals(rec)
+    return (not reasons), (reasons[0] if reasons else '')
 
 
 def admit_g4_plant(rec: Dict[str, Any]) -> Tuple[bool, str]:
@@ -881,23 +997,12 @@ def admit_for_timing(rec: Dict[str, Any]) -> Tuple[bool, str]:
     Note what is NOT required: agreement with ``JB_BD_CHECK_INTERVAL_MS``. The
     plant runs at ~3.5× the configured interval and has done for every bag we
     have; a gate on the configured number refuses 100 % of records.
+
+    Boolean face of :func:`timing_refusals` since 2026-08-21 — same order, same
+    first reason, same admitted set.
     """
-    if rec.get('t_departure_raw_ros') is None:
-        return False, 'no_departure_edge'
-    if rec.get('announce_throw_time_ros') is None:
-        return False, 'no_announcement'
-    if rec.get('ball_held_stamp_wall_anchored') is False:
-        return False, 'bridge_stamp_not_wall_anchored'
-    if rec.get('rimshot'):
-        return False, 'rimshot_candidate'
-    dt = _num(rec.get('sensor_poll_dt_ms_median'))
-    if dt is None:
-        return False, 'poll_cadence_unmeasured'
-    if dt < TIMING_POLL_DT_MS_MIN:
-        return False, 'poll_cadence_below_configured_interval'
-    if dt > TIMING_POLL_DT_MS_MAX:
-        return False, 'poll_cadence_unreachable'
-    return True, ''
+    reasons = timing_refusals(rec)
+    return (not reasons), (reasons[0] if reasons else '')
 
 
 def admit_for_speed(rec: Dict[str, Any]) -> Tuple[bool, str]:
@@ -913,17 +1018,55 @@ def admit_for_speed(rec: Dict[str, Any]) -> Tuple[bool, str]:
     catch-event-derived number, defined only for CAUGHT balls and referenced to
     the *seat* rather than the plane crossing; substituting it would make the
     online and offline speed estimates two different measurands wearing one name.
+
+    Boolean face of :func:`speed_refusals` since 2026-08-21 — same order, same
+    first reason, same admitted set.
     """
+    reasons = speed_refusals(rec)
+    return (not reasons), (reasons[0] if reasons else '')
+
+
+def speed_refusals(rec: Dict[str, Any]) -> Tuple[str, ...]:
+    """EVERY speed-admission refusal, in :func:`admit_for_speed`'s own order."""
+    reasons: List[str] = []
     label = rec.get('label')
     if label in (None, toss_record.LABEL_UNKNOWN, toss_record.LABEL_NO_RELEASE):
-        return False, 'label_unusable'
+        reasons.append('label_unusable')
     for name in ('achieved_flight_s_mocap', 'flight_time_s'):
         value = _num(rec.get(name))
         if value is None or value <= 0.0:
-            return False, 'no_flight_pair'
+            reasons.append('no_flight_pair')
+            break
     if rec.get('retry_of') or rec.get('reload_settle'):
-        return False, 'interlude_cycle'
-    return True, ''
+        reasons.append('interlude_cycle')
+    return tuple(reasons)
+
+
+def timing_refusals(rec: Dict[str, Any]) -> Tuple[str, ...]:
+    """EVERY timing-admission refusal, in :func:`admit_for_timing`'s own order.
+
+    Provided for symmetry with :func:`aim_refusals` and :func:`speed_refusals`,
+    so a consumer that classifies refusal reasons has ONE shape to work against.
+    ``release_timing_offset`` is a REFUSED ILC channel, so nothing routes on this
+    one today — it exists to keep the three guards from drifting into two shapes.
+    """
+    reasons: List[str] = []
+    if rec.get('t_departure_raw_ros') is None:
+        reasons.append('no_departure_edge')
+    if rec.get('announce_throw_time_ros') is None:
+        reasons.append('no_announcement')
+    if rec.get('ball_held_stamp_wall_anchored') is False:
+        reasons.append('bridge_stamp_not_wall_anchored')
+    if rec.get('rimshot'):
+        reasons.append('rimshot_candidate')
+    dt = _num(rec.get('sensor_poll_dt_ms_median'))
+    if dt is None:
+        reasons.append('poll_cadence_unmeasured')
+    elif dt < TIMING_POLL_DT_MS_MIN:
+        reasons.append('poll_cadence_below_configured_interval')
+    elif dt > TIMING_POLL_DT_MS_MAX:
+        reasons.append('poll_cadence_unreachable')
+    return tuple(reasons)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1015,6 +1158,41 @@ def _history_sd(values: np.ndarray) -> Optional[np.ndarray]:
     if values.shape[0] < SIGMA_N_MIN:
         return None
     return np.maximum(np.std(values, axis=0, ddof=1), 1e-12)
+
+
+#: Public name for :func:`_history_sd`. The underscore says "internal to the
+#: session trim"; since 2026-08-21 the ILC per-cell evidence gate
+#: (``tests/hardware/ilc_fit_lib.evidence_gate``) standardises by the same
+#: quantity, and the measurement in that docstring — why the design's MAD·1.4826
+#: could not drive G8's false-alarm rate below 14.8 % at ANY (k, h) — is the
+#: reason both estimators use a plain ``ddof=1`` sd over a G7-protected history.
+#: Two copies of that decision would be two things to re-derive.
+history_sd = _history_sd
+
+
+def cusum_step(s_plus, s_minus, z, k: float = CUSUM_K):
+    """One tabular-CUSUM update. ``(S+, S−)`` after absorbing residual ``z``.
+
+    **THE arithmetic of G8, in one place.** Both consumers drive it:
+    :meth:`SessionTrim._cusum` incrementally, one observation at a time over a
+    live goal, and ``ilc_fit_lib.evidence_gate`` in a batch scan over a cell's
+    admitted rows. They differ in how they *obtain* ``z`` — and that difference
+    is real, see :meth:`SessionTrim._cusum` for the one-step-ahead convention —
+    but the recursion itself must be one implementation, because ``k`` and
+    :data:`CUSUM_H` were chosen together against a measured false-alarm /
+    detection table and a second copy that drifts by a sign would carry that
+    table's authority while no longer being the thing it measured.
+
+    Array or scalar; ``np`` broadcasting does the per-axis / per-channel work.
+    """
+    return (np.maximum(0.0, s_plus + z - k),
+            np.minimum(0.0, s_minus + z + k))
+
+
+def cusum_alarmed(s_plus, s_minus, h: float = CUSUM_H) -> bool:
+    """Has either arm of the tabular CUSUM crossed the decision interval?"""
+    return bool(np.any(np.asarray(s_plus) > h)
+                or np.any(-np.asarray(s_minus) > h))
 
 
 def fit_affine(points_mm: Sequence[Sequence[float]],
@@ -1427,7 +1605,11 @@ class SessionTrim:
 
     def _sigma_prior_rad(self) -> np.ndarray:
         gain = (float(np.mean(self._gains)) if self._gains
-                else 3126.64)          # the reference-geometry gain, mm/rad
+                # The reference-geometry gain, mm/rad: T = 0.7977 s, z = 170 mm
+                # STOW. See the § 3.6 constants-table header for why this is
+                # 3126.639 and not 3126.736 (which is h = exactly 0.78 m) — the
+                # two name different geometries of one exact rule, 4h + 6.736.
+                else 3126.639)
         return np.full(2, self._sigma_prior_mm / max(gain, 1e-9))
 
     def _cusum(self, y: np.ndarray) -> None:
@@ -1454,9 +1636,8 @@ class SessionTrim:
         if len(self._ys) < CUSUM_N_MIN or not np.all(np.isfinite(self._sd)):
             return
         z = (y - self._mean) / self._sd
-        self._cusum_p = np.maximum(0.0, self._cusum_p + z - CUSUM_K)
-        self._cusum_m = np.minimum(0.0, self._cusum_m + z + CUSUM_K)
-        if np.any(self._cusum_p > CUSUM_H) or np.any(-self._cusum_m > CUSUM_H):
+        self._cusum_p, self._cusum_m = cusum_step(self._cusum_p, self._cusum_m, z)
+        if cusum_alarmed(self._cusum_p, self._cusum_m):
             self._freeze(
                 'CUSUM',
                 'two-sided CUSUM alarm (S+={:.2f}, S-={:.2f}, h={:.1f}) — the '

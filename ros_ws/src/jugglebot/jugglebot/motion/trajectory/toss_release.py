@@ -389,6 +389,19 @@ def aim_target_offset_mm(aim_rx: float, aim_ry: float, flight_time_s: float,
     difference carried by the ``Δz`` and drop terms this form keeps exactly.
     ``tests/motion/test_toss_release.py`` re-runs the round trip at a 1e-9 rad
     gate.
+
+    **D3 (2026-08-21) — that 54.578 is a SECANT, not the derivative.** It is the
+    landing offset at a FULL 1° aim divided by 1°, which is the right quantity
+    for "what does saturating the clamp buy" and is why ``toss_cal`` sizes
+    ``TOTAL_MAX_RAD`` against it. The derivative at zero aim, which is what a
+    Jacobian reports (``toss_trim.aim_landing_jacobian``,
+    ``ilc_fit_lib.sensitivity``), is **54.5718 mm/deg** at exactly h = 0.78 m —
+    smaller by a factor 1.0001044, i.e. ``tan(1°)/1°`` (1.0001016) plus the
+    tilted-release drop. Both are correct and they are NOT interchangeable: a
+    sizing argument about the clamp wants the secant, a linearised update law
+    wants the derivative, and the exact rule behind both is ``dL/dθ = 4h + Δz``
+    with ``Δz = 6.7360 mm`` (``ilc_fit_lib``'s header carries the canonical
+    statement).
     """
     axis = tilt_geometry.cup_axis(float(aim_rx), float(aim_ry))
     a_z = float(axis[2])

@@ -806,7 +806,8 @@ def sc0_measure(arms: Dict[str, Sequence[Sequence[float]]], probe_rad: float,
     Why the ratio and not the raw matrix: § 3.8's accept test is written as
     "diagonal within ±25 % of the predicted ``4h``, off-diagonal < 30 % of the
     diagonal", which presumes ``S`` is a scaled identity. The 2c build measured
-    it and it is **a 90° rotation** (``J = [[0, 3126.5], [−3126.5, 0]]``), so in
+    it and it is **a 90° rotation** (``J = [[0, 3126.5], [−3126.5, 0]]`` to 4
+    s.f. at h ≈ 0.78 m; the exact gain is ``4h + 6.7360`` mm/rad, D3), so in
     the raw ``(Lx,Ly)×(rx,ry)`` basis the design's "diagonal" is the zero entry
     and its "off-diagonal" is the gain — the literal test is inverted on this
     plant. Expressed in the predicted basis the test means exactly what it says
