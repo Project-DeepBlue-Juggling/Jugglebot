@@ -835,6 +835,132 @@
     opacity: 0.7;
 }
 
+/* ---- UDP message-rate view (second view of #panel-topics, udp-traffic.js) ---- */
+
+/* Right-hand cluster of the shared panel header: STALE badge, the ROS view's
+   window label, and the ROS/UDP switch.  Grouped so .panel-header's
+   space-between keeps "title | controls" instead of spreading four items. */
+.topic-header-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-xs);
+}
+
+/* Same filled-amber alarm chip as the CAN panel's (~9.8:1 in both themes). */
+.udp-stale-badge {
+    background: var(--accent-amber);
+    color: #000;
+}
+
+/* Two-state segmented control.  <button> elements deliberately: a button in a
+   .panel-header is inert to initCollapsiblePanels' interactive-element guard. */
+.topic-mode-switch {
+    display: inline-flex;
+    gap: 2px;
+}
+
+.topic-mode-btn {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 1px 6px;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.topic-mode-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+}
+
+.topic-mode-btn.active {
+    background: var(--accent-blue);
+    border-color: var(--accent-blue);
+    color: #fff;
+}
+
+#udp-window-btns {
+    display: flex;
+    justify-content: flex-end;
+    gap: 2px;
+    padding-bottom: var(--gap-xs);
+}
+
+/* The scrolling part of the UDP view (the presets above and the aggregate
+   footer below stay pinned — see the container rule in theme.css). */
+#udp-rows {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+#udp-rows::-webkit-scrollbar {
+    width: 4px;
+}
+
+#udp-rows::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#udp-rows::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 2px;
+}
+
+/* Types with no traffic in the window: present and honest (a 0 row is data),
+   but dimmed so the active ones read first. */
+.udp-table .udp-row-idle td {
+    opacity: 0.55;
+}
+
+.udp-table .udp-gaps {
+    color: var(--accent-amber);
+}
+
+/* Every rate untrustworthy (link down / stale / ROS2 down): dim the data so
+   the cumulative columns are never mistaken for live rates.  The banner is
+   deliberately NOT dimmed — it is the one thing that must read clearly. */
+.udp-stale .udp-table,
+.udp-stale .udp-aggregates {
+    opacity: 0.5;
+}
+
+.udp-aggregates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--gap-xs) var(--gap-sm);
+    padding-top: var(--gap-xs);
+    border-top: 1px solid var(--border-color);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+.udp-agg-errors.udp-err {
+    color: var(--accent-amber);
+}
+
+/* Outage headline above the table — names the outage (LINK DOWN / ROS2
+   DISCONNECTED / NO udp_diag) rather than leaving it to be inferred from a
+   column of '--'.  Sticky so it stays visible while the rows scroll. */
+.udp-banner {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--accent-red);
+    color: #fff;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    text-align: center;
+    padding: 3px 6px;
+    border-radius: var(--border-radius-sm);
+    margin-bottom: 2px;
+}
+
 /* ---- Event / command history panel ----
    Bottom of the right sidebar.  Collapsible by clicking the header.  The
    scrollable body caps at 220px so a burst of events doesn't push other

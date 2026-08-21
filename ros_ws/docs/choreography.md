@@ -361,6 +361,12 @@
 - **subscribers:** `catch_coordinator_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.msg.TargetFeedback`
 
+### `udp_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ## Services
 
 ### `activate`
@@ -635,6 +641,7 @@ broken wire cannot hide among them.
 - `trajectory/reload_tilt_map` — service with no clients
 - `trajectory/set_limits` — service with no clients
 - `trajectory/timed_target` — service with no clients
+- `udp_diag` — topic with no subscribers
 
 ## Unresolved names
 

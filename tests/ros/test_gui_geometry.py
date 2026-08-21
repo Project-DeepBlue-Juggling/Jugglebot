@@ -230,6 +230,7 @@ class TestGUIFileStructure:
         'js/panels.js',
         'js/commands.js',
         'js/can-traffic.js',
+        'js/udp-traffic.js',
         'js/state-minimap.js',
         'css/state-minimap.css',
         'lib/roslib.min.js',
@@ -414,6 +415,13 @@ class TestLegacyFilesRemoved:
 BRIDGE_NODE_PY = (ROOT / 'ros_ws' / 'src' / 'jugglebot' / 'jugglebot'
                   / 'teensy_bridge_node.py')
 CAN_TRAFFIC_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'can-traffic.js'
+UDP_TRAFFIC_JS = ROOT / 'ros_ws' / 'gui' / 'js' / 'udp-traffic.js'
+
+
+@pytest.fixture(scope='module')
+def udp_traffic_js():
+    """Read udp-traffic.js as text."""
+    return UDP_TRAFFIC_JS.read_text()
 
 
 @pytest.fixture(scope='module')
@@ -508,6 +516,122 @@ class TestCanTrafficKeyValueContract:
         assert consumed <= produced, \
             f'can-traffic.js consumes link_status keys the bridge never ' \
             f'publishes: {consumed - produced}'
+
+
+class TestUdpDiagKeyValueContract:
+    """Pin the KeyValue-name contract: ``_publish_udp_diag`` (producer) ↔
+    ``udp-traffic.js`` (consumer).
+
+    Same honesty note as ``TestCanTrafficKeyValueContract`` above: this is a
+    string-level tripwire, not a behavioural test.  It catches the failure mode
+    that leaves the UDP view permanently '--' with no error anywhere — a rename
+    on either side of a shared key.
+
+    The per-type keys are built from an f-string on BOTH sides (producer:
+    ``f'rx_{name}'`` over ``MsgType``; consumer: a regex over the arriving key
+    set), so the producer set is RECONSTRUCTED here from the same MsgType
+    inventory, with the f-string shapes shape-asserted so a producer switching
+    to ids — or to lower-case names, which would collide with the aggregate
+    row names — fails loudly instead of passing vacuously.
+    """
+
+    #: Direction/kind prefixes shared by the producer and the consumer regex.
+    PREFIXES = ('rx', 'tx', 'gap')
+
+    def _produced_keys(self, bridge_py):
+        from teensy_link import MsgType
+
+        src = _extract_method_source(bridge_py, '_publish_udp_diag')
+        for prefix in self.PREFIXES:
+            assert f"f'{prefix}_{{name}}'" in src or f"f'{prefix}_{{t.name}}'" in src, \
+                f'producer no longer builds {prefix}_<TYPE_NAME> keys by ' \
+                f'MsgType NAME (ids, or a renamed loop variable, would break ' \
+                f'the consumer regex and the rosbag contract)'
+        per_type = {f'{prefix}_{t.name}'
+                    for prefix in self.PREFIXES for t in MsgType}
+        literals = _keyvalue_keys(src)
+        assert {'rx_frames', 'tx_frames', 'crc_errors'} <= literals, \
+            f'aggregate extraction went stale: {literals}'
+        return per_type | literals
+
+    def _consumed_keys(self, js):
+        from teensy_link import MsgType
+
+        js = _strip_js_comments(js)
+        # Per-type keys: the consumer matches them by pattern.  Pin the pattern
+        # itself (prefix alternation + the UPPER-case name class that keeps
+        # per-type rows distinguishable from the lower-case aggregates).
+        m = re.search(r'PER_TYPE_KEY_RE = /\^\(([a-z|]+)\)_\(\[A-Z\]', js)
+        assert m, 'PER_TYPE_KEY_RE extraction went stale'
+        prefixes = tuple(m.group(1).split('|'))
+        assert prefixes == self.PREFIXES, \
+            f'consumer prefixes drifted from the producer: {prefixes}'
+        per_type = {f'{prefix}_{t.name}' for prefix in prefixes for t in MsgType}
+
+        # Aggregates: the explicit list plus every `newest.kv.<key>` /
+        # `kv.<key>` read, so a future direct read cannot escape the check.
+        agg = re.search(r'AGGREGATE_KEYS = \[(.*?)\]', js, re.S)
+        assert agg, 'AGGREGATE_KEYS extraction went stale'
+        listed = set(re.findall(r"'([a-z_]+)'", agg.group(1)))
+        assert {'rx_frames', 'crc_errors', 'drain_capped'} <= listed, \
+            f'AGGREGATE_KEYS extraction went stale: {listed}'
+        direct = set(re.findall(r'\bkv\.([a-z_]+)\b', js))
+        # bridge_link / heartbeat_age_ms come from link_status, not udp_diag —
+        # they are pinned by TestCanTrafficKeyValueContract's link_status test.
+        direct -= {'bridge_link', 'heartbeat_age_ms'}
+        return per_type | listed | direct
+
+    def test_udp_diag_consumer_subset_of_producer(self, bridge_py,
+                                                  udp_traffic_js):
+        produced = self._produced_keys(bridge_py)
+        consumed = self._consumed_keys(udp_traffic_js)
+        assert consumed <= produced, \
+            f'udp-traffic.js consumes udp_diag keys the bridge never ' \
+            f'publishes: {sorted(consumed - produced)}'
+
+    def test_rate_column_is_msgs_per_second_never_hz(self, udp_traffic_js):
+        """The unit must not read 'Hz'.
+
+        The ROS view's Hz is a BROWSER-RECEIVED rate, capped at 5 for spied
+        topics by ros-bridge.js's 200 ms throttle; this view is the true wire
+        rate.  Two different quantities in one panel must not share a unit
+        string, or an operator reads a saturated 5 as a wire rate.
+        """
+        js = _strip_js_comments(udp_traffic_js)
+        # Scoped to the RENDERED column headers (the text between <th> tags),
+        # not the whole file: the module legitimately says "1 Hz" about the
+        # publish CADENCE, and a blanket ban would forbid explaining exactly
+        # the distinction this test exists to protect.
+        headers = re.findall(r'>([^<>]*)</th>', js)
+        assert len(headers) >= 4, f'<th> extraction went stale: {headers}'
+        rate_headers = [h for h in headers if 'msg/s' in h]
+        assert len(rate_headers) == 2, \
+            f'expected an rx and a tx msg/s column, got {headers}'
+        for h in headers:
+            assert 'Hz' not in h, \
+                f"UDP column header {h!r} labels a rate 'Hz' — that unit " \
+                f"belongs to the ROS view's browser-received rate"
+
+    def test_window_presets_never_include_one_second(self, udp_traffic_js):
+        """/udp_diag publishes at 1 Hz, so a 1 s window holds ONE sample and
+        can produce no rate at all — the CAN panel's documented lesson."""
+        m = re.search(r'WINDOW_PRESETS = \[([\d,\s]+)\]', udp_traffic_js)
+        assert m, 'WINDOW_PRESETS extraction went stale'
+        presets = [int(x) for x in m.group(1).split(',') if x.strip()]
+        assert presets == [5, 10, 30, 60], f'preset drift: {presets}'
+
+    def test_main_routes_udp_diag_and_link_status(self, main_js):
+        """Both feeds must reach the module: the counters, and the
+        bridge_link gate that keeps a dead uplink from rendering as zeros."""
+        assert "ros.subscribe('udp_diag'" in main_js, \
+            'main.js no longer subscribes to udp_diag'
+        assert 'udpTrafficOnDiag(msg)' in main_js, \
+            'main.js no longer routes udp_diag to udp-traffic.js'
+        m = re.search(r'function onLinkStatus\(msg\)\s*\{(.*?)\n\}', main_js, re.S)
+        assert m, 'onLinkStatus not found in main.js'
+        assert 'udpTrafficOnLinkStatus(msg)' in m.group(1), \
+            'the UDP view lost its bridge_link gate — a dead uplink would ' \
+            'render as a plausible table of zeros'
 
 
 # ---- State-minimap tripwires ----

@@ -48,12 +48,33 @@
     <div id="app">
         <!-- Left: topic monitor sidebar -->
         <div id="left-sidebar">
+            <!-- Topics panel: TWO views in ONE panel (deliberately one panel —
+                 the #left-sidebar #panel-topics flex/scroll rules in theme.css
+                 make this the sidebar's stretchy element, and splitting it
+                 would need those rules duplicated and kept in sync).
+                 ROS = browser-received rates per ROS topic (panels.js);
+                 UDP = true wire rates per teensy_link MsgType (udp-traffic.js). -->
             <div class="panel" id="panel-topics">
                 <div class="panel-header">
-                    <span class="panel-title">ROS2 Topics</span>
-                    <span class="topic-window-label" id="topic-window-label">5s window</span>
+                    <span class="panel-title" id="topics-panel-title">ROS2 Topics</span>
+                    <span class="topic-header-controls">
+                        <span class="badge udp-stale-badge" id="udp-stale-badge"
+                              style="display:none"
+                              title="UDP data stale — ROS2 disconnected, no udp_diag/link_status from the bridge for >3 s, or the bridge reports the Teensy uplink lost (bridge_link != UP), which freezes the counters so every rate would read 0; tooltip shows the live cause while lit">STALE</span>
+                        <span class="topic-window-label" id="topic-window-label">5s window</span>
+                        <span class="topic-mode-switch" id="topic-mode-btns"
+                              role="group" aria-label="Topics panel source">
+                            <button type="button" class="topic-mode-btn" data-mode="ros"
+                                    aria-pressed="true"
+                                    title="ROS topics — messages received by THIS BROWSER (spy subscriptions are throttled to 200 ms, so the Hz column saturates at 5)">ROS</button>
+                            <button type="button" class="topic-mode-btn" data-mode="udp"
+                                    aria-pressed="false"
+                                    title="UDP link — TRUE per-message-type wire rates on the Jetson &#8596; can-bridge link, from teensy_bridge_node's cumulative counters">UDP</button>
+                        </span>
+                    </span>
                 </div>
                 <div id="topic-table-container"></div>
+                <div id="udp-table-container" style="display:none"></div>
             </div>
 
             <!-- CAN Traffic (snapped to bottom of left sidebar).

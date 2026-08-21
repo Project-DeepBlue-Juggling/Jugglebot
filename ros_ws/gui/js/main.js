@@ -30,6 +30,10 @@ import {
     initCanTrafficPanel, canTrafficOnProfile, canTrafficOnLinkStatus,
     setCanTrafficRosLink,
 } from './can-traffic.js';
+import {
+    initUdpTrafficPanel, udpTrafficOnDiag, udpTrafficOnLinkStatus,
+    setUdpTrafficRosLink,
+} from './udp-traffic.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
@@ -85,6 +89,12 @@ function init() {
     // 2a. Init CAN traffic panel (left sidebar — own module, chart-heavy,
     //     same precedent as telemetry-charts).
     initCanTrafficPanel();
+
+    // 2b. Init the UDP message-rate view of the topics panel (own module for
+    //     the same reason: it owns a second view of a shared panel, and
+    //     panels.js is already 1600 lines).  After initAllPanels() so the ROS
+    //     topic monitor exists before the mode switch decides which one shows.
+    initUdpTrafficPanel();
 
     // 3. Init commands.  The old mode command buttons (Standby/SpaceMouse/
     //    Shell/GUI) are gone — jog + speed-limit panel visibility is driven
@@ -196,6 +206,11 @@ function onConnectionStateChange(state) {
     // (not just the down edge) and placed above the DOM early-return below so
     // a missing status-dot element can't silently skip it.
     setCanTrafficRosLink(isUp);
+    // Same treatment for the UDP view: with the websocket down there is no
+    // source of truth for the link's counters, so its rates must blank rather
+    // than keep differencing a ring whose newest sample is however old the
+    // outage is.
+    setUdpTrafficRosLink(isUp);
 
     const dot = document.getElementById('conn-dot');
     const text = document.getElementById('conn-text');
@@ -278,6 +293,12 @@ function subscribeAll() {
 
     // can-hub link/bus health (10 Hz, cheap KeyValue parse) — CAN health dots
     ros.subscribe('link_status', 'diagnostic_msgs/msg/DiagnosticStatus', onLinkStatus, 0);
+
+    // Per-message-type UDP link census (1 Hz cumulative counters) — the topics
+    // panel's UDP view.  NOT throttled: throttling would drop counter samples
+    // and widen the effective differencing interval, and at 1 Hz × ~50 rows it
+    // is one of the cheapest subscriptions on the page.
+    ros.subscribe('udp_diag', 'diagnostic_msgs/msg/DiagnosticStatus', onUdpDiag, 0);
 
     // Hand telemetry (500Hz -> throttle to 10Hz = 100ms)
     ros.subscribe('hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', onHandTelemetry, 100);
@@ -536,6 +557,12 @@ function onLinkStatus(msg) {
     // Thin router: fan out to consumers.
     canTrafficOnLinkStatus(msg);
     minimapOnLinkStatus(msg);
+    udpTrafficOnLinkStatus(msg);
+}
+
+function onUdpDiag(msg) {
+    recordTopicMessage('udp_diag');
+    udpTrafficOnDiag(msg);
 }
 
 let latestHandTelemetry = null;
@@ -952,7 +979,8 @@ function applyFontSize(size) {
 /** Topics we subscribe to for data processing (not just monitoring) */
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
-    'profile', 'link_status', 'hand_telemetry', 'mocap_data', 'rigid_body_poses',
+    'profile', 'link_status', 'udp_diag', 'hand_telemetry', 'mocap_data',
+    'rigid_body_poses',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'cone/heartbeat', 'cone/timing_result',
 ]);

@@ -395,6 +395,11 @@ from this plan's sections, adjudicates diffs, runs/verifies gates, commits.
   counting in another process; revisit after F2 proves the panel.
 - `odrive_errors` KeyValue on `/link_status` for the minimap.
 - `panels.js` unit consistency (motor grid hand → mm, velocities → physical).
+- `config/generate_config.py` delivers rendered headers into the **sibling
+  `~/Desktop/BallButler` checkout** with no way to suppress it — both 2026-08-22
+  sessions (this one at F1, the catch-robustness one independently) tripped
+  over the surprise external write. Owner decision wanted: a `--no-external`
+  flag or an explicit delivery step.
 - `tests/hardware/supported_platform_test.py`'s vendored `error_names()` still
   drops unknown bits (its table is now drift-pinned by F3, but the function
   diverges from the `UNKNOWN(0x…)` contract) — align when next touching that
@@ -403,6 +408,12 @@ from this plan's sections, adjudicates diffs, runs/verifies gates, commits.
   error → confirm shell + event-log decode; (2) with QTM off, press Calibrate →
   confirm refusal code, then run HOMING → confirm WARN skip, no FAULT;
   (3) eyeball chart magnitudes (legs ~0–300 mm, BB pitch 12–90°);
+  (3b) toggle the topics panel to UDP mode — expect TELEMETRY ~100 msg/s,
+  HEARTBEAT 10 both directions, SETPOINT ~40 only while streaming; then check
+  the LINK DOWN banner renders (not a table of zeros) when the bridge drops.
+  The F2 GUI half was never exercised in a real browser (the DOM probe needs
+  an empty ROS graph this box didn't have) — the CSS sticky-banner/scroll
+  interaction is the part most worth the eyeball;
   (4) confirm/raise `MIN_ARC_DEG` from the **BB yaw span** a real calibrate
   logs (`mocap_node`: "BB yaw span swept: N°") — that is the encoder-derived
   primary gate; the per-marker `arc_span` lines beside it are noise-inflated

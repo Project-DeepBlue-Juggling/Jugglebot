@@ -1235,6 +1235,13 @@ class TeensyBridgeNode(Node):
         self._robot_state_pub_gen = -1
         self._robot_state_stale_skips = 0
         self._robot_state_consec_skips = 0
+        # /udp_diag level state: the CRC + decode error total at the previous
+        # tick. The level is derived from the DELTA, not the total, because the
+        # totals are cumulative-since-node-start — one corrupted frame at boot
+        # would otherwise latch WARN for the whole session and stop meaning
+        # anything. -1 seeds a value no total can equal; the first tick
+        # therefore establishes the baseline and never WARNs off it.
+        self._udp_diag_prev_errors = -1
         self._latest_heartbeat: HeartbeatT2J | None = None
         # Generation counter on the heartbeat, same idea as _telemetry_gen: the
         # latency monitor samples lead_clamp_mask off the LATEST heartbeat at
@@ -1565,6 +1572,14 @@ class TeensyBridgeNode(Node):
             DiagnosticStatus, 'link_status', 10)
         self.profile_pub = self.create_publisher(
             DiagnosticStatus, 'profile', 10)
+        # Per-MESSAGE-TYPE UDP link census (F2/R2). Distinct from 'profile',
+        # which carries the Teensy's own CAN-side instrumentation: this one is
+        # the HOST's view of the Jetson↔can-bridge UDP link, one row per
+        # MsgType per direction. Cumulative counters, never rates — a counter
+        # is the honest rosbag artefact (differenceable offline, immune to the
+        # publisher's own scheduling jitter), and the GUI differentiates.
+        self.udp_diag_pub = self.create_publisher(
+            DiagnosticStatus, 'udp_diag', 10)
         # GUI observability: the last ACCEPTED leg setpoint u0 (6 floats, motor
         # revs), source-agnostic — trajectory_node and run_mpc.py both feed the
         # :5557 funnel this echoes. No ROS topic otherwise carries commanded leg
@@ -1879,6 +1894,7 @@ class TeensyBridgeNode(Node):
         self.create_timer(1.0, self._publish_ring_diag)           # 1 Hz drain (RX-ring occupancy census)
         self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
+        self.create_timer(1.0, self._publish_udp_diag)         # 1 Hz per-type UDP census
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
         self.create_timer(1.0, self._version_check_poll)       # 1 Hz firmware-version handshake (no-op once resolved)
 
@@ -5066,6 +5082,80 @@ class TeensyBridgeNode(Node):
             self.profile_pub.publish(msg)
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Profile publish error: {e}",
+                                    throttle_duration_sec=5.0)
+
+    def _publish_udp_diag(self):
+        """Publish the per-message-type UDP link census as DiagnosticStatus.
+
+        One row per :class:`MsgType` per direction, by enum NAME:
+        ``rx_<TYPE_NAME>`` / ``tx_<TYPE_NAME>`` (every type, every tick — a
+        never-seen type is an honest ``0``, not an absent row), plus
+        ``gap_<TYPE_NAME>`` for the sequence-gap tally, emitted ONLY when
+        nonzero (21 permanently-zero gap rows would bury the one that matters).
+        Aggregates ride alongside in lower case —
+        ``rx_frames``/``tx_frames``/``crc_errors``/``decode_errors``/``drain_capped``
+        — and the case split is load-bearing: it is what lets a consumer tell a
+        per-type row from an aggregate with a pattern rather than a hardcoded
+        inventory (``udp-traffic.js``'s ``PER_TYPE_KEY_RE``).
+
+        **Counters, not rates.** A rate computed here would be a rate over
+        whatever interval this timer actually fired on, and the rosbag would
+        record the derived number with the divisor thrown away. Cumulative
+        counters are differenceable offline by anything, at any window; the GUI
+        does exactly that (Δcount/Δt over its own arrival timestamps).
+
+        ``sum(rx_<TYPE>) <= rx_frames``: the difference is the frames that
+        failed CRC or structural decode, plus any frame whose msg_type this
+        build's enum does not name. See :class:`teensy_link.LinkStats`.
+
+        The stats object is snapshotted ONCE per tick so every row in a message
+        comes from the same instant — a per-row read would let the RX thread
+        advance underneath the loop and publish an internally inconsistent
+        census (rx_frames from before a burst, per-type counts from after).
+        """
+        try:
+            stats = self._client.stats.snapshot()
+
+            values = []
+            for t in MsgType:
+                name = t.name
+                tid = int(t)
+                values.append(KeyValue(key=f'rx_{name}',
+                                       value=str(stats.rx_count_by_type.get(tid, 0))))
+                values.append(KeyValue(key=f'tx_{name}',
+                                       value=str(stats.tx_count_by_type.get(tid, 0))))
+            for t in MsgType:
+                gaps = stats.seq_gaps_by_type.get(int(t), 0)
+                if gaps:
+                    values.append(KeyValue(key=f'gap_{t.name}', value=str(gaps)))
+
+            values += [
+                KeyValue(key='rx_frames', value=str(stats.rx_frames)),
+                KeyValue(key='tx_frames', value=str(stats.tx_frames)),
+                KeyValue(key='crc_errors', value=str(stats.crc_errors)),
+                KeyValue(key='decode_errors', value=str(stats.decode_errors)),
+                KeyValue(key='drain_capped', value=str(stats.drain_capped)),
+            ]
+
+            # Level off the error DELTA (see _udp_diag_prev_errors). ADVISORY,
+            # like /profile's: nothing gates on this topic, and the link/fault
+            # channel an orchestrator reads is /link_status.
+            errors = int(stats.crc_errors) + int(stats.decode_errors)
+            new_errors = (0 if self._udp_diag_prev_errors < 0
+                          else errors - self._udp_diag_prev_errors)
+            self._udp_diag_prev_errors = errors
+
+            msg = DiagnosticStatus()
+            msg.name = 'teensy/udp'
+            msg.hardware_id = 'can_bridge_teensy'
+            msg.level = (DiagnosticStatus.WARN if new_errors > 0
+                         else DiagnosticStatus.OK)
+            msg.message = (f'rx={stats.rx_frames} tx={stats.tx_frames} '
+                           f'crc={stats.crc_errors} decode={stats.decode_errors}')
+            msg.values = values
+            self.udp_diag_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f"UDP diag publish error: {e}",
                                     throttle_duration_sec=5.0)
 
     # ═══════════════════════════════════════════════════════════
