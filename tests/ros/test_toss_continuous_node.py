@@ -1228,6 +1228,15 @@ def test_the_session_ceiling_makes_room_for_the_reload_budget():
     assert _toss_session_deadline_s(
         reload_, 30.0,
         reload_budget_s=rcn._reload_interlude_budget_s(reload_)) > base
+    # Every wait the interlude can legitimately spend must be IN the budget. The
+    # seat-edge band (C-POSSESS-1 § 3.6) is the newest one and it is the easiest
+    # to forget, because it is spent in the GATE — before the attempt loop the
+    # rest of this arithmetic walks. Charged per attempt, which over-counts on
+    # purpose: this ceiling ABORTS.
+    per_attempt = rcn._reload_interlude_budget_s(reload_) / 3.0
+    assert per_attempt > (rcn.GO_HOME_DURATION_S + rcn._RECENTRE_VERIFY_PAD_S
+                          + rcn.DEFAULT_SESSION_MISS_CLEANUP_S
+                          + float(rcn.hw.JB_BD_ARRIVAL_WINDOW_S))
 
 
 # ── The reopened ABORTED_NO_RELEASE retry, through the node ──────────────────

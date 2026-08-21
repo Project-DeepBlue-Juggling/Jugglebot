@@ -1573,6 +1573,18 @@ conservative on that path specifically: the reload's MISSED terminal is
 `SAFE_ABORT`, i.e. a retract under a possibly-seated ball, so waiting longer before
 minting MISSED strictly reduces the chance of taking it.
 
+**One gap the implementation surfaced, fixed in the same session.** The new
+seat-edge band wait is spent inside `_reload_interlude_gate`, i.e. BEFORE the
+attempt loop that `_reload_interlude_budget_s` walks — so the session ceiling did
+not account for it. Under-counting by 1.5 s against a per-attempt budget of ~35 s
+is small, but the direction is the one that matters: **that ceiling's exit path is
+an ABORT**, and its sibling's own docstring says a ceiling must never drift inside
+a legitimate window because the timeout path SAFE_ABORTs. Charged per attempt
+rather than per interlude, which over-counts — the same doctrine the function
+already states. Pinned by an addition to
+`test_the_session_ceiling_makes_room_for_the_reload_budget`, written so that the
+next wait added to the interlude reds it too.
+
 **What was NOT done.** The census's D5 (merge/verdict) needs nothing if D1 lands,
 and it did. D8 (release grace) is failure-path only. The Layer-A/B floors
 (`MIN_TOSS_THROW_DELAY_S`, `MIN_THROW_EVENT_DELAY_S`, the tick ladder, the no-op
@@ -1612,13 +1624,14 @@ running machine.
   2026-08-22: **RESULT: PASS** — parallel **6094 passed, 3 skipped, 3 xfailed in
   508.02 s**, serial **9 passed in 41.83 s**, total 556 s. Run at `--full` and not
   the default gate because this is a plan-phase closure.
-- `./run_tests.sh` (the default gate), RE-RUN 2026-08-22 as the FINAL pre-commit
-  gate, after the cross-document reconciliation below: **RESULT: PASS** —
-  parallel **5671 passed, 3 skipped in 241.59 s**, serial phase empty, total
-  253 s. The only code touched between the two runs was a docstring in
-  `ball_possession.py` (the mis-anchored departure claim, item 1 below), so this
-  run is the one the commit is gated on and the `--full` run above is the tier
-  coverage it does not have.
+- `./run_tests.sh` (the default gate), RE-RUN 2026-08-22 as the pre-commit gate
+  for the contract commit, after the cross-document reconciliation below:
+  **RESULT: PASS** — parallel **5671 passed, 3 skipped in 241.59 s**, serial phase
+  empty, total 253 s. The only code touched between it and the `--full` run was a
+  docstring in `ball_possession.py` (the mis-anchored departure claim, item 1
+  below).
+- `./run_tests.sh`, run 2026-08-22 as the pre-commit gate for the
+  interlude-budget follow-up: see that commit's own message for the triple.
 
 **The narrative reconciliation, and what it caught.** CLAUDE.md's audit gate fires
 on any commit touching a normative document, and this one edits C-POSSESS-1

@@ -585,13 +585,23 @@ def _toss_deadline_s(seq) -> float:
 def _reload_interlude_budget_s(session) -> float:
     """Wall time the whole auto-reload allowance can legitimately consume.
 
-    Per attempt: the recentre (profile + verification window) + a full reload
-    sequence ceiling + the post-reload settle floor. Multiplied by the session's
-    reload budget, because every attempt is charged to it. Zero when the session
-    cannot reload at all, so a STOP session's ceiling is bit-unchanged."""
+    Per attempt: the seat-edge band wait + the recentre (profile + verification
+    window) + a full reload sequence ceiling + the post-reload settle floor.
+    Multiplied by the session's reload budget, because every attempt is charged
+    to it. Zero when the session cannot reload at all, so a STOP session's
+    ceiling is bit-unchanged.
+
+    The band wait (:meth:`ReloadCoordinatorNode._wait_out_seat_edge_band`,
+    C-POSSESS-1 § 3.6) is charged PER ATTEMPT even though it is spent once per
+    INTERLUDE, in the gate, before the attempt loop. That over-counts by design —
+    the sibling ceiling's own docstring states the doctrine ("over-counting is the
+    safe direction here"), and the direction that matters is the other one: this
+    ceiling's exit path is an ABORT, and a ceiling that drifts INSIDE a legitimate
+    window SAFE_ABORTs a session for doing exactly what it was asked to do."""
     if str(getattr(session, 'on_empty_cup', '')) != ON_EMPTY_CUP_RELOAD:
         return 0.0
-    per_attempt = (GO_HOME_DURATION_S + _RECENTRE_VERIFY_PAD_S
+    per_attempt = (float(hw.JB_BD_ARRIVAL_WINDOW_S)
+                   + GO_HOME_DURATION_S + _RECENTRE_VERIFY_PAD_S
                    + _sequence_deadline_s(ReloadSequencer(catch_point_mm=(0.0,
                                                                          0.0,
                                                                          0.0)))
