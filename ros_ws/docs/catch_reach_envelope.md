@@ -154,12 +154,16 @@ envelope exists to bound.
    the CAUGHT `STAY` terminal now leaves behind. Measured: a catch at
    `B = (−150, 0, 170)`, `T = 0.80 s` parks the cup at exactly `(−150.00, 0)` and
    the centroid at `(−153.10, 0)`. The aim stays self-consistent (A is nominated,
-   and POSITIONING makes it true), so this is not an aim error — but the `±150 mm`
-   planning box and the `150 mm` displacement cap are both applied to the
-   centroid value, so **a chained toss at the cap is refused**. See
-   `single-ball-toss` Phase E's open question and the runbook's § SECTION DISP
-   KNOWN LIMITATION box; pinned by
-   `tests/ros/test_toss_sequencer.py::test_chaining_at_the_cap_is_refused_known_limitation`.
+   and POSITIONING makes it true), so this is not an aim error — the planning box
+   and the displacement cap are both applied to the centroid value.
+   **RESOLVED FOR CHAINING 2026-08-14**: the box is now config-keyed
+   (`toss_workspace_xy_mm`, default 160 = cap × 1.067 > the 2.07 % divergence),
+   so the parked centroid sits inside the box and chained tosses at the cap are
+   admitted; only a genuinely-requested `|B − A|` past the cap still refuses.
+   The underlying frame question (A read as centroid, consumed as cup xy)
+   remains open on `single-ball-toss` Phase E but no longer gates chaining.
+   Pinned by
+   `tests/ros/test_toss_sequencer.py::test_chaining_at_the_cap_box_dissolves_the_frame_divergence`.
 8. **A is SAMPLED once at goal accept, with a 1.0 s staleness window on a 5 Hz
    topic, and nothing refuses a goal issued while a move is in flight.**
    `_live_commanded_position` inherits `_TRAJ_STATUS_STALE_S` from

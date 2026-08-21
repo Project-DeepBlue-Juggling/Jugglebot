@@ -23,7 +23,7 @@ authoritative content in exactly one place — cross-reference from the others.
 | 3 | **Published technical docs** | [docs/](docs/) + [mkdocs.yml](mkdocs.yml) | Engineers reading the MkDocs site | Subsystem architecture, kinematics, algorithms, usage guides |
 | 4 | **Subsystem docs** | `<subsystem>/docs/`, `<subsystem>/README.md`, in-tree `*.md` | Engineers editing that subsystem | Normative specs & conventions local to one area |
 | 5 | **Engineering logbook** | [logbook/](logbook/) | Engineers (human + Claude) investigating past work | Per-change entries: *why* a commit looks the way it does |
-| 6 | **Plans** | [plans/active/](plans/active/), [plans/archived/](plans/archived/) | Implementers and reviewers | Forward-looking implementation reports & bringup plans |
+| 6 | **Plans** | [plans/active/](plans/active/), [plans/parked/](plans/parked/), [plans/archived/](plans/archived/) | Implementers and reviewers | Forward-looking implementation reports & bringup plans |
 | 7 | **Automation layer** | [.claude/commands/](.claude/commands/), [.claude/agents/](.claude/agents/) | Claude (and anyone editing the workflow) | Slash-command protocols and dedicated agent specs |
 | 8 | **Inline (source code)** | `*.py`, `*.h`, `*.yaml` | Engineers reading the code | Docstrings, module headers, non-obvious *why* comments |
 
@@ -124,8 +124,9 @@ Essentials you must know:
   Use `tuned` (not `in-progress`) when this entry's scope is shipped but a
   sibling investigation is deliberately parked elsewhere.
 - **`related_plan`:** filename only (e.g. `hardware-bringup.md`), never a path.
-  Search both `plans/active/` and `plans/archived/` to resolve. This keeps the
-  reference stable when a plan is archived.
+  Search `plans/active/`, `plans/parked/` and `plans/archived/` to resolve.
+  Since 2026-08-16 the filename never changes for the life of a plan, so the
+  reference stays valid when the plan is parked or archived (§ 2.6).
 - **`subsystem` taxonomy (controlled):** `mpc | controller | motion | can | tracking | ros | gui | sim | config | tools`.
   Auto-derivable from the file paths in `files_changed`.
 - **`tags` taxonomy (controlled):** `safety | performance | IPC | kinematics | dynamics | testing | docs`.
@@ -153,20 +154,57 @@ Essentials you must know:
   Entries do **not** carry a `commits:` list; SHA backfill was retired
   2026-08-01 (historical entries keep theirs)
 
-### 2.6 [plans/active/](plans/active/) + [plans/archived/](plans/archived/) — Plans
+### 2.6 [plans/active/](plans/active/) + [plans/parked/](plans/parked/) + [plans/archived/](plans/archived/) — Plans
 
 Plans are **forward-looking** implementation reports or bringup roadmaps. The
 logbook is retrospective; plans are prospective.
 
-Layout:
+**The three-way split.** A plan lives in exactly one of three directories, and
+which one is a statement about *schedulability*, not about quality:
+
+| Directory | Means | Test |
+|-----------|-------|------|
+| `plans/active/` | **Schedulable now.** Someone could pick this up today | Could work start this week without waiting on anything? |
+| `plans/parked/` | **Deliberately not now.** Real, unfinished work held behind a named gate or an unmade decision | Is there a concrete thing that would unpark it? Name it |
+| `plans/archived/` | **Done or superseded.** Nothing left to schedule | Did it ship, or did another plan take it over? |
+
+The split exists so that `plans/active/` answers "what should I tackle next?" by
+being read straight through. A parked plan left on the active board is noise
+that makes the board unreadable, which is how the board stops being read at all.
+Each directory carries its own `INDEX.md`, and **moving a plan between them
+updates the relevant index in the same commit** (pinned by
+`tests/sim/test_plans_index.py`, in both directions and for all three).
+
+`plans/parked/INDEX.md` carries one column the other two do not: **what would
+unpark it**. Every parked row names the concrete gate, prerequisite or decision,
+derived from the plan's own text — and where the plan states no gate (it is
+parked on priority, not on a blocker), the row says exactly that. A parked plan
+with no stated gate and no "no gate stated" is a plan nobody can pick up.
+
+Layout — **the filename never changes for the life of a plan**:
 
 ```
-plans/active/<name>.md                    # in progress
-plans/archived/YYYY-MM-DD <name>.md       # completion date prefixed at archival
+plans/active/<name>.md      # schedulable now
+plans/parked/<name>.md      # deliberately not now, gate named in the index
+plans/archived/<name>.md    # done or superseded -- SAME filename, no date prefix
 ```
 
-Filename is kebab-case. Archived files keep their original filename but
-gain a leading `YYYY-MM-DD ` date prefix (the completion/supersession date).
+Filename is kebab-case and is fixed at creation. Moving between directories is a
+`git mv` of the file unchanged.
+
+**Why the filename is immutable** — this is the load-bearing rule of the whole
+layer, and it was learned the expensive way. Archival used to prefix the
+completion date (`plans/archived/2026-08-15 bridge-temporal-trustworthiness.md`).
+That rename broke every inbound cross-reference at exactly the moment the plan
+stopped being editable: `related_plan:` is **filename-only** by contract and
+resolves by searching the plan directories, so a renamed file resolves nowhere.
+Twelve logbook entries named `bridge-temporal-trustworthiness.md` and resolved to
+nothing within a day of its archival, and the same breakage recurred at every
+archival before it. No code consumer validates the field, so nothing was ever
+loud about it — the damage was silent, cumulative, and only visible to a human or
+agent trying to follow a reference. The date is not lost by dropping the prefix:
+it lives in the `archived:` frontmatter field, in `plans/archived/INDEX.md`
+sorted by that field, and in git's rename record.
 
 **Frontmatter:**
 
@@ -174,8 +212,9 @@ gain a leading `YYYY-MM-DD ` date prefix (the completion/supersession date).
 ---
 title: <descriptive title>
 created: YYYY-MM-DD
-status: active            # active | completed | superseded
-completed: YYYY-MM-DD     # only when status != active
+status: active            # active | parked | completed | superseded
+completed: YYYY-MM-DD     # only when the work finished
+archived: YYYY-MM-DD      # set at archival -- replaces the old filename date prefix
 # Optional, for tuning/methodology plans:
 owner: <name>
 last_updated: YYYY-MM-DD
@@ -187,6 +226,21 @@ related_code:             # specific functions this plan governs
   - path::symbol
 ---
 ```
+
+**The parked note.** A parked plan says so *on the plan itself*, not only in the
+index — a reader who opens the file directly must learn it is parked without
+having to find the board. The convention is a dated inline comment on the status
+field, and it carries the *why*:
+
+```yaml
+status: parked   # 2026-08-15 — nothing schedulable: THE gate (firmware
+                 # stale-hold torque decay) is unwritten, and the motivating
+                 # deficit was measured on the degraded plant. Resume from Phase 0.
+```
+
+Pre-frontmatter plans (§ 6) may carry the equivalent in their `**Status:**`
+banner instead. `tests/sim/test_plans_index.py` pins that *some* parked note
+exists; the index row is what pins the unpark gate.
 
 **Body structure** for implementation reports is defined by the
 `/implementation-report` slash command — see
@@ -224,22 +278,43 @@ guidance was added (pre-2026-05-08) may carry residual first-person
 text; rewrite on next substantive edit, not pre-emptively.
 
 A worked example of a rewrite (pre-2026-05-08 → post): see the
-diff in [plans/archived/2026-05-08 motion-onset-deadtime-investigation.md](plans/archived/2026-05-08%20motion-onset-deadtime-investigation.md)
+diff in [plans/archived/motion-onset-deadtime-investigation.md](plans/archived/motion-onset-deadtime-investigation.md)
 where §2 intro, §6 (Open Questions), and the closing line were
 restyled at supersession.
 
 **Lifecycle:**
 1. Create with `/implementation-report <task description>` (or by hand for
-   simple bringup plans).
+   simple bringup plans). It lands in `plans/active/` with a row in that index.
 2. Live in `plans/active/`. Update status/dates on each phase as work
    progresses.
-3. Archive with `/archive-plan <name>` — the `plan-reviewer` agent critically
-   checks every phase against the actual codebase before allowing archival.
+3. **Park** when the work is real but not schedulable: `git mv` the file
+   unchanged to `plans/parked/`, add the dated `status: parked   # why` note,
+   move the row from the active index to `plans/parked/INDEX.md` **with the
+   unpark gate filled in**. Unparking is the same move in reverse.
+4. **Archive** with `/archive-plan <name>` when it is done or superseded — the
+   `plan-reviewer` agent critically checks every phase against the actual
+   codebase before allowing archival. Archival is a `git mv` of the file
+   **unchanged** (no rename), plus `status: completed | superseded`, an
+   `archived: YYYY-MM-DD` field, an Archival-note section, and a row in
+   `plans/archived/INDEX.md`.
 
-**Cross-reference hygiene** — when a plan references another plan, reference
-by filename-with-date-prefix once archived (e.g. `plans/archived/2026-03-30
-mpc-oscillation-analysis.md`). `/archive-plan` updates inbound references
-automatically; verify with a grep if you move a plan by hand.
+A plan may be archived straight from `plans/parked/` — parking is not a
+prerequisite for archival, and a plan whose gate turns out never to be worth
+clearing should be archived `superseded` rather than left parked forever.
+
+**Cross-reference hygiene** — reference a plan by its **bare filename**
+(`mpc-oscillation-analysis.md`), which is stable for the plan's whole life;
+resolve it by searching all three plan directories. `related_plan:` already
+mandates exactly this. A *path*-qualified reference (`plans/active/foo.md`) is
+correct only for as long as the plan stays in that directory, so it is the form
+that rots when a plan is parked or archived — prefer the bare name in prose, and
+if a path reads better in context, expect to re-point it at the next move.
+`/archive-plan` re-points inbound references; verify with `grep -rn` if you move
+a plan by hand. **`rg` is not installed on this box** — a ripgrep-based survey
+returns a silent zero. Grep for distinctive fragments as well as whole paths: a
+path can be split across two source lines by string concatenation (so neither
+the full path nor the bare filename matches), and always check whether a hit
+lives in a *generator* rather than only in its generated artifacts.
 
 ### 2.7 [.claude/commands/](.claude/commands/) + [.claude/agents/](.claude/agents/) — Automation layer
 
@@ -308,16 +383,18 @@ One-glance reference for what goes in the `---` YAML block of each artifact.
 |-------|----------|----------|-----------------------|
 | **logbook entry** | `title`, `type`, `date`, `status` | `phase`, `related_plan`, `related_issues`, `sessions`, `files_changed`, `commits`, `subsystem`, `tags` | `type`, `status`, `subsystem`, `tags` |
 | **plan (active)** | `title`, `created`, `status: active` | `owner`, `last_updated`, `related_logbook`, `related_config`, `related_code` | `status` |
-| **plan (archived)** | `title`, `created`, `status`, `completed` | same as active | `completed` / `superseded` |
+| **plan (parked)** | `title`, `created`, `status: parked   # YYYY-MM-DD — why` | same as active | `status` |
+| **plan (archived)** | `title`, `created`, `status`, `archived` | `completed`, else same as active | `completed` / `superseded` |
 | **slash command** | `description` | `disable-model-invocation` | — |
 | **agent** | `name`, `description` | — | — |
 
 **Naming rules:**
 
 - Logbook: `YYYY-MM-DD-<slug>.md` (3–6-word slug).
-- Plan (active): `<kebab-case-name>.md`.
-- Plan (archived): `YYYY-MM-DD <kebab-case-name>.md` (note the space after
-  the date — preserved for historical parity; `/archive-plan` handles this).
+- Plan: `<kebab-case-name>.md`, **fixed at creation and never changed** —
+  active, parked and archived plans all use the same bare name, so a
+  filename-only reference stays resolvable for the plan's whole life. The
+  archival date lives in `archived:`, not in the filename.
 - Slash command / agent: `<name>.md` matching the invocation name.
 
 ---
@@ -329,7 +406,7 @@ Who points to whom:
 ```
 CLAUDE.md ──► DOCUMENTATION_GUIDE.md (this file)
           ──► logbook/README.md
-          ──► plans/active/, plans/archived/
+          ──► plans/active/, plans/parked/, plans/archived/
 
 docs/<section>/<topic>.md ──► logbook/<entry>.md      (per-issue narrative)
                           ──► plans/archived/<plan>   (historical decisions)
@@ -369,7 +446,9 @@ Use this to pick the right layer *before* writing.
   The commit for the code change gets a `Logbook-Entry:` trailer.
 
 - **Is this a forward-looking plan of work yet to be done?**
-  → Plan in [plans/active/](plans/active/). Use `/implementation-report` for
+  → Plan in [plans/active/](plans/active/) if it is schedulable now, or
+  [plans/parked/](plans/parked/) if it is deliberately not now (and then its
+  index row must name what would unpark it). Use `/implementation-report` for
   non-trivial architectural changes; write by hand for simple bringup
   sequences.
 
@@ -406,13 +485,25 @@ Things that are **not** derivable from reading the layout and will trip you up
 if you don't know them:
 
 - **`related_plan` is filename-only, not a path.** A logbook entry that writes
-  `related_plan: plans/active/hardware-bringup.md` will break when the plan
-  is archived to `plans/archived/2026-XX-XX hardware-bringup.md`. Always use
-  the bare filename; consumers search both directories.
+  `related_plan: plans/active/hardware-bringup.md` breaks the moment that plan
+  is parked or archived — the *filename* is stable for the plan's life, the
+  *directory* is not. Always use the bare filename; consumers search all three
+  plan directories. The same reasoning applies to prose references, which is why
+  moving a plan between directories still needs a `grep -rn` sweep even though
+  nothing was renamed.
 
-- **Archived plans keep the original name with a date prefix and a space.**
-  Not a hyphen — a literal space (`2026-03-30 mpc-oscillation-analysis.md`).
-  Filename-matching code must account for this.
+- **A plan's filename never changes — including at archival.** Archived plans
+  used to carry a `YYYY-MM-DD ` prefix (a literal space, not a hyphen). That
+  convention was retired 2026-08-16 precisely because the rename broke every
+  inbound reference; `tests/sim/test_plans_index.py` now fails if a date-prefixed
+  filename reappears in `plans/archived/`. Historical *narrative* in old logbook
+  entries still describes the prefixed form — that is a record of what the
+  convention was, not a live path, and is deliberately left as written.
+
+- **The three plan directories are about schedulability, not quality.**
+  `parked/` is not a soft `archived/`: it holds real unfinished work with a
+  named gate, and a parked plan is expected to come back. If nothing would ever
+  unpark it, archive it `superseded` instead of parking it forever.
 
 - **`logbook/INDEX.md` is auto-maintained.** Every slash command that touches
   entries refreshes it via the `logbook-updater` agent. Hand-edits that don't
@@ -454,9 +545,13 @@ if you don't know them:
   frontmatter. New plans must use YAML frontmatter; older ones should be
   upgraded when touched.
 
-- **Plans use `status: active | completed | superseded`** — not the logbook's
-  four-step ladder. The vocabularies are deliberately different because the
-  semantics differ.
+- **Plans use `status: active | parked | completed | superseded`** — not the
+  logbook's four-step ladder. The vocabularies are deliberately different
+  because the semantics differ. `parked` should agree with the plan living in
+  `plans/parked/`; a few older archived plans still carry a stale `status:
+  active` (and one `archived`) from before the convention was pinned — see the
+  note at the top of `plans/archived/INDEX.md`, which lists them rather than
+  silently normalising them.
 
 - **The `controller/REFERENCE_LAYER_CONTRACT.md` pattern is reserved for
   normative specs.** Don't create new `ALLCAPS.md` files for general notes;

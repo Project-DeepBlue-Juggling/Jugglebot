@@ -16,7 +16,7 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/rpc.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/README.md
   - tests/firmware/native/test_platform_relay.cpp
-  - plans/active/teensy-can-offload.md
+  - plans/archived/teensy-can-offload.md
 commits:
   - b8b6faf   # fix(canbridge): presence-gate all CAN TX + permanent bus-error attribution instrumentation
   - 06c903e   # docs(canbridge): close marginal-CAN3 investigation as resolved — gate validated live
@@ -259,7 +259,7 @@ power-cycle experiment.
 - `README.md`: new **"Serial console reference"** section — field-by-field meaning of
   every `[diag]`/`[canhealth]`/`[canerrs]`/`[canesr1]`/`[cantiming]`/`[axes]`/
   `[guard]`/`[bb]` line, with the `err`-is-not-an-error-count warning inline.
-- `plans/active/teensy-can-offload.md`: two stale `CONE_PRESENT_STALENESS_US`
+- `plans/archived/teensy-can-offload.md`: two stale `CONE_PRESENT_STALENESS_US`
   references updated to the new name.
 
 **Accepted residual** (identical to the hardware-validated cone behaviour): frames
@@ -338,7 +338,7 @@ as covering the class. Status → **resolved**.
 
 - Opened by: `logbook/2026-07-02-canhub-hardening-tier2.md` → "Deferred / follow-up"
   (the marginal-CAN3 item and the `health_of()` staleness-only `TODO(bench)`).
-- Plan: `plans/active/canhub-hardening.md`.
+- Plan: `plans/archived/canhub-hardening.md`.
 - Power topology (why the bridge outlives CAN3's partners): memory
   `project_canbridge_power_topology`.
 - Captures: `temp/probes/2026-07-05-marginal-can3/` — `canhealth_baseline.txt`

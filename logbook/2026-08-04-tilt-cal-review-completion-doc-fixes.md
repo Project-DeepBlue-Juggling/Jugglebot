@@ -16,7 +16,7 @@ files_changed:
   - tests/hardware/session_tilt_calibration.md
   - tests/hardware/tilt_cal_grid.py
   - tools/tilt_cal_analyse.py
-  - plans/active/tilt-calibration-grid.md
+  - plans/archived/tilt-calibration-grid.md
 ---
 
 # Tilt-cal review completion: doc-drift fixes

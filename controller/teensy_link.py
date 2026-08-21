@@ -6,7 +6,7 @@
     from controller.teensy_link import TeensyLinkClient             # ❌ deprecated
 
 The package was relocated from ``controller/teensy_link/`` to the repo root on
-2026-08-01 (``plans/active/refactor-2026-07.md`` Phase 4): it is the repo's
+2026-08-01 (``plans/parked/refactor-2026-07.md`` Phase 4): it is the repo's
 hottest production code and it was living inside its most dormant subsystem —
 ``controller/`` is the parked MPC runtime, and importing through it dragged
 CasADi into the can-bridge process for no reason.

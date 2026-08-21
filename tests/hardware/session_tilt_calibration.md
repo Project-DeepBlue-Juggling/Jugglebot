@@ -1,6 +1,6 @@
 # Hardware Session — Tilt calibration grid (C-LEVEL-2), rungs C0–C3
 
-**Plan**: `plans/active/tilt-calibration-grid.md` § Phase 4
+**Plan**: `plans/archived/tilt-calibration-grid.md` § Phase 4
 **Contract**: `ros_ws/docs/levelling_frame.md` § **C-LEVEL-2** (composes with
 C-LEVEL-1, never replaces it)
 **Tools**: `tests/hardware/tilt_cal_grid.py` (capture, operator-run),
@@ -62,12 +62,21 @@ close.
 ## Preconditions
 
 - Jugglebot powered, ODrives up, CAN3 healthy (green `link_status`).
-- **POWER-CYCLE THE CAN-BRIDGE TEENSY before the sitting** (the uptime-lag
-  discipline). **Quote `uptime_ms` with every number you record** — tracking lag
-  grows with can-bridge uptime (10 ms fresh → ~240 ms at 30 h), and a capture on
-  a degraded plant is a capture of the degradation. The tool echoes it at
-  preflight and records first/last in `_meta.json` **and** the map's `captured`
-  block; it warns above 30 min and never refuses.
+- ~~**POWER-CYCLE THE CAN-BRIDGE TEENSY before the sitting**~~ — **RETIRED
+  2026-08-15.** The uptime-lag degradation was the FlexCAN_T4 `_available`
+  RX-ring leak, fixed in **FW 14** and validated at 5.8 h and 15.2 h of
+  continuous uptime (`logbook/2026-08-15-fw14-validated-arc-closed.md`); on
+  FW 14+ uptime is no longer a tracking-quality variable and a warm bridge is
+  not a degraded one. **Quote `uptime_ms` with every number you record** — that
+  half stands, and is now the fix's own regression detector — and watch the
+  `latency_monitor` row on `/link_status`. The tool echoes uptime at preflight
+  and records first/last in `_meta.json` **and** the map's `captured` block.
+  **The preflight now prints a HEALTH verdict, not an age one**
+  (`tilt_cal_grid.temporal_health_verdict`, 2026-08-15): on FW 14+ it reads
+  `latency_monitor`, and it falls back to the 30-minute ceiling
+  (`UPTIME_WARN_MS`) only for a pre-FW-14 board, an unreadable
+  `bridge_fw_version`, or a ROS build too old to publish the monitor row. It
+  still only WARNS — this tool never refused on it.
 - `run_mpc.py` is **NOT** running (sole-binder :5557 interlock).
 - **Build gate — BOTH packages. This is not optional:**
   ```bash
@@ -206,7 +215,8 @@ This is also the **first hardware exercise of mid-TRAJECTORY tilt reads** —
 `get_platform_tilt` has no state gating, and that it works while holding a pose
 is assumed, not demonstrated.
 
-Fresh can-bridge boot; fresh `level`.
+Healthy plant (`latency_monitor` OK — a fresh can-bridge boot is no longer
+required; see § Preconditions); fresh `level`.
 
 ```bash
 # 3x3 probe at two dwell settings — captures, writes CSV+meta, applies NOTHING
@@ -311,8 +321,9 @@ was not freshly booted; quote that with any lag-sensitive reading).
 
 ## Rung C1 — baseline capture + verify
 
-Fresh can-bridge boot; **fresh `level` immediately before**; flat floor, no
-shims; hand quiescent and empty.
+Healthy plant (`latency_monitor` OK — the fresh-boot rule was retired
+2026-08-15, § Preconditions); **fresh `level` immediately before**; flat floor,
+no shims; hand quiescent and empty.
 
 ```bash
 python3 tests/hardware/tilt_cal_grid.py --dwell-s 2.0 \
@@ -522,7 +533,8 @@ This is the rung that supplies the **quantitative symptom record** the
 motivating sittings never got: displaced vertical tosses clipping platform
 hardware before landing in the hand.
 
-Same session, fresh can-bridge boot, flat floor, C1 map restored. Run the
+Same session, healthy plant (`latency_monitor` OK — no fresh boot needed since
+2026-08-15, § Preconditions), flat floor, C1 map restored. Run the
 **exact symptom geometry** — vertical tosses at a displaced pose, not at
 (0, 0, 170) — with the map **off**, then **on**, back to back.
 

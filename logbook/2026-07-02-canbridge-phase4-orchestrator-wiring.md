@@ -19,7 +19,7 @@ files_changed:
   - tests/ros/test_teensy_bridge_node_conduit.py
   - tests/ros/test_orchestrator_conduit_integration.py
   - ros_ws/docs/can-node-teensy-parity.md
-  - plans/active/canbridge-foundation-coldstart-parity.md
+  - plans/archived/canbridge-foundation-coldstart-parity.md
   - logbook/INDEX.md
 commits:
   - 34c1730
@@ -306,6 +306,6 @@ levelling) — never `'ERROR'` — so no ESTOP was issued.
 
 ## Related
 
-- Plan: [`canbridge-foundation-coldstart-parity.md`](../plans/active/canbridge-foundation-coldstart-parity.md) — Phase 4 (final).
+- Plan: [`canbridge-foundation-coldstart-parity.md`](../plans/archived/canbridge-foundation-coldstart-parity.md) — Phase 4 (final).
 - Parity matrix: `ros_ws/docs/can-node-teensy-parity.md` (rows 6, 7, 24, 27, 28, 44, 45, 54, 60 + the headline).
 - Prior phases: [[2026-07-01-canbridge-phase5-hand-conduit]] (hand homing → `_do_home` homes legs + hand; the sitting that surfaced the Phase-4 gap), [[2026-06-29-canbridge-phase2-coldstart-relay-state]] (the `robot_state` fields + `_write_is_homed` this mirrors), [[2026-06-29-canbridge-phase3-version-validated]] (`firmware_validated` un-wedges BOOT), [[2026-06-27-can-node-teensy-parity-audit]] (the headline finding this closes).

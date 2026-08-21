@@ -10,7 +10,7 @@ normative language (MUST, MUST NOT, SHOULD, MAY).
 It exists so that future schedulers (juggling choreography, GUI input
 paths, multi-ball coordination, hardware-driven catch sequences) can be
 implemented without reintroducing the failure modes that Phase 1 of the
-[mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)
+[mpc-tier0-contracts plan](../plans/archived/mpc-tier0-contracts.md)
 identified.
 
 ## Background
@@ -333,7 +333,7 @@ All six invariants are enforced in the canonical implementation:
 The constructor accepts a ``τ_grace`` parameter (default ``1 × control_dt``,
 itself a constructor parameter that will be aligned with the P4 invariant
 in the forthcoming ``PLANT_INTERFACE_CONTRACT.md`` (Phase 4 of the
-[mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)).
+[mpc-tier0-contracts plan](../plans/archived/mpc-tier0-contracts.md)).
 
 ## Implementing a new event source
 
@@ -443,14 +443,14 @@ session log:
   and an ID-set membership check per ``submit_event`` (which is NOT on
   the hot loop) plus one float comparison per ``update`` (S6) which is.
 - ``PLANT_INTERFACE_CONTRACT.md`` (forthcoming, Phase 4 of the
-  [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)) —
+  [mpc-tier0-contracts plan](../plans/archived/mpc-tier0-contracts.md)) —
   P4 ``control_dt`` parameter; this contract's ``τ_grace`` default
   will derive from it.
 - [controller/scheduler.py](scheduler.py) — canonical implementation.
 - [tests/sim/test_scheduler_contract.py](../tests/sim/test_scheduler_contract.py)
   — enforcement tests (Phase 2/3 of the
-  [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)).
-- [plans/archived/2026-05-10 mpc-tier0-contracts.md](../plans/archived/2026-05-10%20mpc-tier0-contracts.md)
+  [mpc-tier0-contracts plan](../plans/archived/mpc-tier0-contracts.md)).
+- [plans/archived/mpc-tier0-contracts.md](../plans/archived/mpc-tier0-contracts.md)
   — phased implementation plan; this document is the Phase 1 deliverable.
 - [logbook/2026-05-09-scheduler-contract-phase-1-audit.md](../logbook/2026-05-09-scheduler-contract-phase-1-audit.md)
   — Phase 1 audit and contract draft.

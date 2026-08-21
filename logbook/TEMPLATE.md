@@ -16,7 +16,7 @@ status: open               # open | in-progress | tuned | resolved
 #
 # --- Context (use what's relevant) ---
 phase: ""                  # bringup phase, if applicable
-related_plan: ""           # filename only (e.g., hardware-bringup.md), searched in both plans/active/ and plans/archived/
+related_plan: ""           # filename only (e.g., hardware-bringup.md), searched in plans/active/, plans/parked/ and plans/archived/ -- the filename never changes for the life of a plan
 related_issues:            # known_issues.yaml IDs, if applicable
   - <KNOWN_ISSUE_ID>
 sessions:                  # MPC telemetry CSVs, if applicable

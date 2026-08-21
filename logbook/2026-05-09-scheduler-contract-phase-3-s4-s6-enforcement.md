@@ -14,7 +14,7 @@ files_changed:
   - controller/scheduler.py
   - controller/SCHEDULER_CONTRACT.md
   - tests/sim/test_scheduler_contract.py
-  - plans/archived/2026-05-10 mpc-tier0-contracts.md
+  - plans/archived/mpc-tier0-contracts.md
   - logbook/2026-05-09-scheduler-contract-phase-3-s4-s6-enforcement.md
   - logbook/INDEX.md
 commits:
@@ -32,7 +32,7 @@ tags:
 
 ## Summary
 
-Phase 3 of the [mpc-tier0-contracts plan](../plans/archived/2026-05-10%20mpc-tier0-contracts.md):
+Phase 3 of the [mpc-tier0-contracts plan](../plans/archived/mpc-tier0-contracts.md):
 implemented the three state-machine invariants S4 (internal quintic
 feasibility), S5 (phase-transition C2 continuity), and S6 (sim_time
 monotonicity) defined in
@@ -234,7 +234,7 @@ which doesn't reliably capture from this project's logger configuration
 the propagation chain ``caplog`` hooks).  The direct attach removes
 that ambiguity.
 
-### plans/archived/2026-05-10 mpc-tier0-contracts.md (modified)
+### plans/archived/mpc-tier0-contracts.md (modified)
 
 Phase 3 marked ``COMPLETE (2026-05-09)`` in both the summary table
 and the detailed Phase 3 heading.

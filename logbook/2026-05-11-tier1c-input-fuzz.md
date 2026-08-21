@@ -16,7 +16,7 @@ files_changed:
   - tests/sim/test_hot_loop_allocation_contract.py
   - logbook/2026-05-11-tier1c-input-fuzz.md
   - logbook/INDEX.md
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 commits:
   - 7582764
 subsystem:
@@ -591,7 +591,7 @@ archive.  This is a hard gate.
 
 ## Related
 
-- [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+- [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 3 specification.
 - [logbook/2026-05-11-tier1a-real-solver-failures.md](2026-05-11-tier1a-real-solver-failures.md)
   — Phase 1 (Tier 1a); Phase 3's matrix extension applies to that

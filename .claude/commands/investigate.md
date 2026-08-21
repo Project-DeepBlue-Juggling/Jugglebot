@@ -50,7 +50,7 @@ Run the `/diagnose` protocol on the target session(s):
 1. Run `python3 sim/analysis/diagnose.py <csv_path> [--rosbag <path>] --json`
 2. Cross-reference against `sim/analysis/known_issues.yaml`
 3. Read `plans/active/mvp-trajectory-bringup.md` for phase context (the older MPC
-   bringup plan is archived at `plans/archived/2026-08-01 hardware-bringup.md`)
+   bringup plan is archived at `plans/archived/hardware-bringup.md`)
 
 **Flush `sim/analysis/log_index.json` immediately** after each diagnose run, not
 just at the very end of `/investigate`. The user may drop out of the investigation

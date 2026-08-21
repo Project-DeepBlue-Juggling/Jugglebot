@@ -13,7 +13,7 @@ trajectory player, hand sequences, BallButlerSim). The IPOPT solve at
 the runner's startup is shared across tests via a module-scoped
 fixture; per-test re-solves are not needed.
 
-Plan reference: ``plans/active/bb-led-two-ball-juggle-demo.md`` §5
+Plan reference: ``plans/archived/bb-led-two-ball-juggle-demo.md`` §5
 integration tests.
 """
 import pytest
@@ -23,7 +23,7 @@ from sim.juggle_demo import (
 )
 
 
-# NIGHTLY TIER (2026-08-01, plans/active/refactor-2026-07.md Phase 2). These are
+# NIGHTLY TIER (2026-08-01, plans/parked/refactor-2026-07.md Phase 2). These are
 # the demo's END-TO-END sim runs — the file's own docstring calls them
 # "deliberately slow" — and the juggling demo is research/characterization with
 # no path to the hardware leg/hand command chain. They run every night via

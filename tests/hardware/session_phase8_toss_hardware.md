@@ -34,8 +34,8 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
 > **⚡ READ THIS FIRST — this session FIRES REAL THROWS.** Jugglebot throws a real
 > ball into the air and attempts to catch it. On any miss (expected early), the ball
 > **lands on the floor** — clear the area. The hand fires a full kind-0 stroke
-> (release up to ~5.4 m/s at the 1.48 m band ceiling); **stay clear of the hand's
-> stroke path and the landing zone**. E-STOP is always in reach.
+> (release up to **~5.64 m/s at the 1.617 m envelope ceiling**); **stay clear of
+> the hand's stroke path and the landing zone**. E-STOP is always in reach.
 >
 > **Load a ball before every toss — and since 2026-08-10 the machine checks.** The
 > ball-evidence CHECKING gate is ON by default (`toss_require_ball_evidence: true`)
@@ -64,8 +64,11 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
 
 - Jugglebot powered, ODrives up, CAN3 healthy; QTM up streaming **Base + Platform**
   rigid bodies; `/rigid_body_poses` flowing.
-- **POWER-CYCLE THE CAN-BRIDGE TEENSY** before the sitting (the uptime-lag
-  discipline). Log `uptime_ms` alongside every measurement.
+- ~~**POWER-CYCLE THE CAN-BRIDGE TEENSY** before the sitting~~ — **RETIRED
+  2026-08-15** (the uptime-lag root cause, the FlexCAN_T4 `_available` RX-ring
+  leak, was fixed in FW 14 and validated at 5.8 h and 15.2 h —
+  `logbook/2026-08-15-fw14-validated-arc-closed.md`). Log `uptime_ms` alongside
+  every measurement, and watch `/link_status`'s `latency_monitor` row.
 - `run_mpc.py` is **NOT** running (sole-binder :5557 interlock).
 - **Build gate — BOTH the interface AND config changed this cycle (throw-height goal
   field + `toss_require_ball_evidence`):**
@@ -86,9 +89,9 @@ throw (T0), then vertical toss-and-catch (T1), a height ladder (T2), toss-at-pos
   **Platform** Teensy (decoded `teensy_bridge_node.py:349-372`, published
   `:1747-1755`), the orchestrator stores them
   (`orchestrator_node.py:165-167`), and on the first IDLE entry after boot it pushes
-  the persisted offset to `/gravity_offset` (`:329-335`). The standing session
-  power-cycle is the **can-bridge** Teensy, which does **not** clear the Platform
-  Teensy's cache — so a mid-session relaunch, including this file's build gate,
+  the persisted offset to `/gravity_offset` (`:329-335`). The *former* standing
+  session power-cycle (retired 2026-08-15, § Preconditions) was the **can-bridge**
+  Teensy, which does **not** clear the Platform Teensy's cache — so a mid-session relaunch, including this file's build gate,
   should come back already levelled.
   **The one caveat, and it is why you check rather than assume:** `/gravity_offset`
   is VOLATILE, so a `trajectory_node` that finishes subscribing after the push
@@ -197,12 +200,20 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 | 0.60 | 0.70 | 3.43 |
 | 0.78 (default) | 0.80 | 3.91 |
 | 1.00 | 0.90 | 4.43 |
-| 1.48 (band ceiling) | 1.10 | 5.39 |
+| 1.48 | 1.10 | 5.40 |
+| **1.617 (envelope ceiling)** | **1.1485** | **5.64** |
 
-(`T = sqrt(8h/g)`, release `v = sqrt(2gh)`, `g = 9.806 m/s²`. Firmware band:
-`T ∈ [0.55, 1.10] s` inclusive — **`throw_height_m > 1.48` (T > 1.10 s) ⇒
-`REJECTED_FLIGHT_TIME`**, and `T < 0.7 s` (h < ~0.6 m) is stroke-marginal — start
-at 0.6 m / 0.7 s.)
+(`T = sqrt(8h/g)`, `g = 9.806 m/s²`. The release column is the FSM's own
+dz-corrected inverse `v = Δz/T + g·T/2`, not the idealised `sqrt(2gh)` — they
+differ by ~0.01 m/s. **The band is DERIVED** — contract **C-HAND-3**,
+`ros_ws/docs/hand_throw_envelope.md` — from the configured end stop, torque,
+regen and timing limits: `T ∈ [0.4949, 1.1485] s`, i.e. apex
+**0.300–1.617 m**. Outside it the goal is
+**`REJECTED_THROW_ENVELOPE(<BOUND>:<numbers>)`**, and the bound name says which
+way to correct: `DECEL_FF_HEADROOM` / `DECEL_AUTHORITY` ⇒ throw LOWER,
+`ARM_WINDOW` ⇒ throw HIGHER. `REJECTED_FLIGHT_TIME` now means only "not a
+positive finite number". `T < 0.7 s` (h < ~0.6 m) is still stroke-marginal —
+start at 0.6 m / 0.7 s.)
 
 ---
 
@@ -244,12 +255,24 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 
 ## T2 — height ladder (centre)
 
-Repeat T1 at rising heights: **0.6 → 1.0 → 1.48 m** (T ≈ 0.70 → 0.90 → 1.10 s —
-1.48 m is the band ceiling; `throw_height_m > 1.48` is `REJECTED_FLIGHT_TIME`).
+Repeat T1 at rising heights: **0.6 → 1.0 → 1.48 m** (T ≈ 0.70 → 0.90 → 1.10 s).
+The envelope ceiling is 1.617 m / 1.1485 s if you want a fourth rung.
+
+> **Note, 2026-08-20.** The 2026-08-18 draft of C-HAND-3 cut this ladder to
+> **0.6 → 0.78 → 0.965 m** because its coast model (the pre-fix 2026-07-27
+> ladder) put 1.0 m at 4.4 mm from metal. Measured on the flashed plant, 1.0 m
+> peaks at **10.185 rev — 19.4 mm clear** (n = 14), and 1.48 m at 10.294 rev.
+> The original ladder is restored. Do not widen
+> `hand_throw_envelope.measured_coast_rev` to clear a refusal; it is a record of
+> measurements, and the way to extend it is a traced session.
+
 - **PASS** per step: ≥ **3/5** caught. Expect degradation as height rises — the
-  Phase-2 sim gate flagged the long-flight tail (T ≥ 0.95 s, i.e. h ≥ ~1.1 m) as where
-  drift ∝ v·T grows against the catch envelope. T2 finds the real hardware ceiling;
-  record the highest height that still makes ≥ 3/5.
+  Phase-2 sim gate flagged the long-flight tail as where drift ∝ v·T grows against
+  the catch envelope. *(That tail was characterised at T ≥ 0.95 s, h ≥ ~1.1 m — a
+  regime the C-HAND-3 envelope no longer admits, so it is now a statement about
+  the trend inside the band, not about a reachable rung.)* T2 finds the real
+  hardware ceiling; record the highest height that still makes ≥ 3/5 — it can
+  only be at or below the 0.965 m envelope ceiling.
 
 ## T3 — toss-at-position (workspace corners)
 
@@ -319,5 +342,6 @@ ros2 action send_goal /jugglebot/toss jugglebot_interfaces/action/Toss \
 - **ERR_TIMEOUT epidemic**: more hand dispatches = more exposure; the telemetry-verified
   ladder is the mitigation; log dispatch-failure WARNs / any `ABORTED_NO_RELEASE` as
   epidemic gauge data (two consecutive `ABORTED_NO_RELEASE` ⇒ stop).
-- **Teensy-uptime lag**: all timing-sensitive numbers (achieved flight, catch error)
-  are only meaningful on a fresh can-bridge boot — `uptime_ms` logged with each.
+- **Teensy-uptime lag**: CLOSED 2026-08-15 (FW 14). Timing-sensitive numbers no
+  longer need a fresh can-bridge boot — but `uptime_ms` is still logged with each,
+  because that label is how a regression would be spotted.

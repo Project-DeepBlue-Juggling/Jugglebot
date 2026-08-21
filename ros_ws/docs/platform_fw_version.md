@@ -29,7 +29,7 @@ stack fails loudly when skipped**:
 | a **Platform Teensy flash** | *(before this contract)* **nothing at all** |
 
 Worse, the change the operator most recently had to flash — the velocity-continuous
-`makeSmoothMove`, `plans/active/hand-command-continuity.md` Phase 4 — is by
+`makeSmoothMove`, `plans/archived/hand-command-continuity.md` Phase 4 — is by
 construction a **no-op on the clean path**: its `v0 == 0` branch is bit-identical
 to the historical expression. So "the capture looked exactly like the pre-fix
 baseline" is simultaneously the designed PASS and the signature of a skipped
@@ -125,6 +125,13 @@ cosmetic one.
   `test_zero_is_reserved_for_the_unversioned_board`.
 - **`1` (2026-07-27)** is the first numbered release: the velocity-continuous
   `makeSmoothMove` (commit `5369fc2`) plus this identity block.
+- **Later releases are deliberately NOT restated here.** Obligation **D** puts the
+  bump history inline in `Teensy_code_platform.ino`'s `FW_VERSION` comment, and
+  the number this host tree expects is
+  `teensy_link/rpc_args.py::PLATFORM_FW_VERSION_EXPECTED`. Read the version
+  against those two, never against a number copied into prose — that copy is what
+  rots, and a runbook row expecting a superseded version sends the operator to
+  re-flash a correctly-flashed board.
 
 The host's expected value, `rpc_args.PLATFORM_FW_VERSION_EXPECTED`, is a **second,
 independently-authored constant**, not a shared generated one. The skew being
@@ -140,7 +147,7 @@ Read `platform_fw_version` together with `platform_fw_version_read`:
 
 | verdict | wire state | `link_status` | log |
 |---|---|---|---|
-| **OK** | read landed, version == expected | `1` | `PLATFORM_FW_CHECK: OK` (INFO, on change only) |
+| **OK** | read landed, version == expected | the expected number | `PLATFORM_FW_CHECK: OK` (INFO, on change only) |
 | **FAIL — pre-versioning** | read landed, version == 0 | `0 (PRE-VERSIONING)` | `PLATFORM_FW_CHECK: FAIL` (ERROR) |
 | **FAIL — other release** | read landed, version != expected | the number | `PLATFORM_FW_CHECK: FAIL` (ERROR) |
 | **UNKNOWN** | no authoritative read has landed | `unknown` | `PLATFORM_FW_CHECK: UNKNOWN` (ERROR) |

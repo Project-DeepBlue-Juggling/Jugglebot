@@ -27,7 +27,8 @@ tools/                       ← standalone utilities (tracking_analyzer, nightl
 run_tests.sh                 ← the gate (parallel phase + serial tail; --full adds the nightly tier)
 temp/reports/nightly/        ← 04:00 full-tier run: status, latest.md, per-day reports
 logbook/                     ← engineering logbook (investigation entries, INDEX.md)
-plans/active/                ← in-progress plans and implementation reports
+plans/active/                ← SCHEDULABLE NOW — plans and implementation reports
+plans/parked/                ← deliberately not now; each INDEX row names what would unpark it
 plans/archived/              ← completed or superseded plans
 ```
 
@@ -38,8 +39,9 @@ plans/archived/              ← completed or superseded plans
 - All code changes are logged in `logbook/` — see `logbook/README.md` for the full guide
 - **Short form is the default entry** (10–30 lines: what/why + the (date, command, result) verification triple). Escalate to the full investigation form only under the three Discussion triggers below.
 - `/investigate` — hardware diagnosis-to-fix pipeline; `/log` — log non-hardware changes; `/logbook` — browse/search entries
-- `/archive-plan` — move completed plans from `plans/active/` to `plans/archived/` (with critical review)
-- `plans/active/INDEX.md` lists every active plan with a status column; adding or archiving a plan updates it in the same commit (pinned by `tests/sim/test_plans_index.py`)
+- `/archive-plan` — move completed plans from `plans/active/` or `plans/parked/` to `plans/archived/` (with critical review). Parking has no slash command yet; the manual flow is documented in that same file
+- **The plans board is three-way, and each directory has its own `INDEX.md`:** `active/` = schedulable now, `parked/` = deliberately not now (every row names **what would unpark it**), `archived/` = done or superseded. **Adding, parking, unparking or archiving a plan updates the relevant INDEX(es) in the same commit** — pinned in both directions, for all three, by `tests/sim/test_plans_index.py`
+- **A plan's filename never changes for its life** — not at parking, not at archival. `related_plan:` is filename-only and resolves by searching all three directories, so the old date-prefix-at-archival convention silently broke every inbound reference (twelve entries pointed at nothing within a day of one archival). The date lives in the `archived:` frontmatter field and in `plans/archived/INDEX.md`. Moving a plan still needs a `grep -rn` sweep for *path*-qualified references — and `rg` is not installed on this box, so a ripgrep survey returns a silent zero
 - Commits carry a `Logbook-Entry: <slug>` trailer. **That trailer is the canonical bidirectional link** between code and logbook: `git blame` → commit → trailer → entry, and `git log --grep "Logbook-Entry: <slug>"` → every commit for an entry. Entries therefore do **not** carry commit SHAs — no `commits:` frontmatter on new entries and no SHA-backfill follow-up commit (convention retired 2026-08-01; historical entries keep theirs).
 
 **Key architectural boundaries:**
@@ -47,9 +49,9 @@ plans/archived/              ← completed or superseded plans
 - ROS2 nodes (`*_node.py`) are thin wrappers; business logic lives in pure-Python modules
 - `controller/plant.py` defines `PlantInterface` — implemented by `MuJoCoPlant` (sim) and `HardwarePlant` (real robot via ZMQ IPC)
 - IPC between processes uses ZeroMQ PUB/SUB on tcp://localhost:5556 (telemetry) and :5557 (commands), msgpack serialization
-- **`teensy_link/` is a top-level package at the repo root, deliberately NOT installed into the ROS package** (moved out of `controller/` 2026-08-01, `plans/active/refactor-2026-07.md` Phase 4). Both launch files inject the repo root on `PYTHONPATH` so `teensy_bridge_node` runs the LIVE tree: a wire-format edit is live at the next relaunch instead of sitting behind a `colcon build` whose omission is silent. Import it as `teensy_link…`; `controller/teensy_link.py` is a `sys.modules`-aliasing shim for the old path, to be **deleted after 2026-09**.
+- **`teensy_link/` is a top-level package at the repo root, deliberately NOT installed into the ROS package** (moved out of `controller/` 2026-08-01, `plans/parked/refactor-2026-07.md` Phase 4). Both launch files inject the repo root on `PYTHONPATH` so `teensy_bridge_node` runs the LIVE tree: a wire-format edit is live at the next relaunch instead of sitting behind a `colcon build` whose omission is silent. Import it as `teensy_link…`; `controller/teensy_link.py` is a `sys.modules`-aliasing shim for the old path, to be **deleted after 2026-09**.
 - **Leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard**, in can-bridge firmware. The MVP leg path is `trajectory_node` → :5557 → `teensy_bridge_node` → can-bridge Teensy (which does the 500 Hz interpolation). Nothing on the Jetson is in that safety loop.
-- **The MPC chain is parked DORMANT** (2026-08-01, `plans/active/refactor-2026-07.md` Phase 3): `jugglebot_launch.py` no longer starts `motor_guard` or `motion_bridge_node`, and `run_mpc.py` is not launched. `motor_guard.py` was a 500 Hz interpolator + monitor on the *pre-cutover* leg path; it is a parked fallback, not the safety layer — do not describe it as one. All the code, entry points and tests stay; revival = re-add the two launch entries + promote the `nightly`-marked MPC battery. `controller/` is NOT MPC-only, so it is not deleted: live sim paths import `controller.{ballistics,target,telemetry,scheduler,plant}`.
+- **The MPC chain is parked DORMANT** (2026-08-01, `plans/parked/refactor-2026-07.md` Phase 3): `jugglebot_launch.py` no longer starts `motor_guard` or `motion_bridge_node`, and `run_mpc.py` is not launched. `motor_guard.py` was a 500 Hz interpolator + monitor on the *pre-cutover* leg path; it is a parked fallback, not the safety layer — do not describe it as one. All the code, entry points and tests stay; revival = re-add the two launch entries + promote the `nightly`-marked MPC battery. `controller/` is NOT MPC-only, so it is not deleted: live sim paths import `controller.{ballistics,target,telemetry,scheduler,plant}`.
 
 ## Environment
 

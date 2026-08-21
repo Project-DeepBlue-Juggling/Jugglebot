@@ -13,7 +13,7 @@ files_changed:
   - controller/scheduler.py
   - controller/SCHEDULER_CONTRACT.md
   - tests/sim/test_scheduler_contract.py
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
   - logbook/2026-05-10-scheduler-cancel-next-during-transitioning.md
   - logbook/INDEX.md
 commits:
@@ -63,7 +63,7 @@ semantic gaps orthogonal to S4/S5/S6 — ``cancel_next`` mid-TRANSITIONING
 gated with ``@precondition``s and filed as Plan 2 follow-ups so the
 contract enforcement work could ship.
 
-[Plan 2](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md) Phase 0
+[Plan 2](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md) Phase 0
 closes those gates as the documented exception to its "test additions
 only" discipline — removing a ``@precondition`` requires fixing the
 underlying bug in the same commit, otherwise the random walk would
@@ -187,7 +187,7 @@ fix made the test pass deterministically.
 ci-fast (``pytest tests/ -q``): pass (1187/1188; one transient flake on
 ``test_motor_guard.py::test_decay_boundary_continuity`` — a pre-existing
 heap-state contamination flake noted in
-[Plan 2 Working Note #5](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md);
+[Plan 2 Working Note #5](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md);
 passes deterministically in module-level isolation).
 
 ci-deep on the contract test file (``pytest
@@ -288,5 +288,5 @@ stateable in one sentence each.
 - [controller/SCHEDULER_CONTRACT.md](../controller/SCHEDULER_CONTRACT.md)
   — S1–S6 normative spec.  This bug sits at the boundary of S3 and the
   state-machine semantics.
-- [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+- [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 0 specification.

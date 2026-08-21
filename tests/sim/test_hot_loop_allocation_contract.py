@@ -70,7 +70,7 @@ from controller.telemetry import TelemetryLogger
 # `serial` marker definition in pyproject.toml and ./run_tests.sh.
 #
 # `nightly` — the MPC HARDWARE chain is operationally dormant
-# (plans/active/refactor-2026-07.md Phase 3: jugglebot_launch.py no longer starts
+# (plans/parked/refactor-2026-07.md Phase 3: jugglebot_launch.py no longer starts
 # motor_guard/motion_bridge_node, and run_mpc.py is not launched; the leg path is
 # trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION guard).
 #

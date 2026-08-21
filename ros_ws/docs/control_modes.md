@@ -11,7 +11,7 @@ exclusion through control mode gating.
 > Not runnable as drawn since 2026-08-01. `can_node` was deleted 2026-07-06
 > (SocketCAN decommission), and `jugglebot_launch.py` stopped starting
 > `motor_guard` and `motion_bridge_node` on 2026-08-01 (MPC dormancy,
-> `plans/active/refactor-2026-07.md` Phase 3). The code is parked, not deleted:
+> `plans/parked/refactor-2026-07.md` Phase 3). The code is parked, not deleted:
 > revival is re-adding the two launch entries. Path 2 is the live leg path.
 
 ```

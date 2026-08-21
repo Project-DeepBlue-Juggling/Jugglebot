@@ -19,7 +19,7 @@ asserts two safety properties hold for every adversarial input:
    returned ``cmd`` is always finite.
 
 Test IDs from
-[plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+[plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
 Phase 3:
 
 | ID         | Surface                                                              | Driver                                                                   |
@@ -87,7 +87,7 @@ from controller.target import ReferenceEvent
 
 
 
-# NIGHTLY TIER — the MPC is operationally dormant (plans/active/refactor-2026-07.md
+# NIGHTLY TIER — the MPC is operationally dormant (plans/parked/refactor-2026-07.md
 # Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
 # leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
 # guard). The code is parked, not deleted, so this battery is parked with it: it

@@ -57,11 +57,31 @@ def _args(**overrides):
     return args
 
 
+def _link_kv(**overrides):
+    """A /link_status mapping from the plant an operator actually has today:
+    a healthy FW 14 bridge, reporting `latency_monitor=OK`."""
+    kv = {'mpc_active': '1', 'fault_state': 'NONE', 'bridge_link': 'UP',
+          'uptime_ms': '12345', 'bridge_fw_version': '14 (proto 5)',
+          'latency_monitor': 'OK'}
+    kv.update(overrides)
+    return kv
+
+
+def _legacy_link_kv(**overrides):
+    """A pre-FW-14 bridge: no firmware-identity row, no monitor row. The state
+    in which R7's uptime refusal is still the only protection available."""
+    kv = _link_kv()
+    kv.pop('bridge_fw_version')
+    kv.pop('latency_monitor')
+    kv.update(overrides)
+    return kv
+
+
 def _obs(**overrides):
     """A fully-passing preflight observation set."""
     obs = {
-        'link_kv': {'mpc_active': '1', 'fault_state': 'NONE',
-                    'bridge_link': 'UP', 'uptime_ms': '12345'},
+        'link_kv': _link_kv(),
+        'latency_monitor_worst': 'OK',
         'gravity_correction_loaded': True,
         'tilt_map_loaded': True,
         'tilt_map_version': '2026-08-10-deadbeef',
@@ -277,15 +297,71 @@ def test_r6_refuses_a_tier_the_map_is_not_defined_at():
     assert '8a' in row.message
 
 
-def test_r7_refuses_a_warm_bridge_and_an_unknown_one():
-    """Stricter than tilt_cal_grid on purpose: static inclinometer reads are
-    uptime-insensitive, a TIMING bias is not."""
-    warm = _refusal(_obs(uptime_ms=31 * 60 * 1000), 'R7')
+def test_r7_passes_a_warm_but_healthy_fw14_bridge():
+    """THE landmine this rework removes (2026-08-15).
+
+    R7 used to be `uptime_ms <= 30 min`, hard, because a captured aim map bakes
+    in a TIMING bias and the dispatch shift was +118-133 ms at ~16 h. That shift
+    was a symptom of the FlexCAN_T4 RX-ring leak, fixed in FW 14 and validated at
+    5.8 h and 15.2 h with the lag flat at 10-20 ms
+    (`logbook/2026-08-15-fw14-validated-arc-closed.md`). On FW 14+ a warm bridge
+    is not a drifting one, so refusing it costs a sitting and protects nothing.
+    """
+    row = _refusal(_obs(uptime_ms=15 * 3600 * 1000), 'R7')
+    assert row.ok is True
+    assert 'health' in row.message
+    assert 'latency_monitor=OK' in row.message
+
+
+@pytest.mark.parametrize('token', ['RING_LEAK', 'CACHE_AGE', 'CLAMP_DUTY'])
+def test_r7_refuses_an_alarming_plant_however_young_the_bridge(token):
+    """The protection R7 actually exists for, re-keyed onto the instrument that
+    measures it. A one-minute-old bridge that is already leaking would have
+    sailed through the uptime gate."""
+    row = _refusal(_obs(uptime_ms=60 * 1000,
+                        link_kv=_link_kv(latency_monitor=token),
+                        latency_monitor_worst=token), 'R7')
+    assert row.ok is False
+    assert token in row.message
+
+
+def test_r7_refuses_when_the_plant_alarmed_earlier_in_the_session():
+    """A snapshot at preflight bounds nothing about a 2-3 h capture, and the
+    uptime gate used to bound it for free (the drift was monotone in uptime, so
+    a young start capped the whole run). The WORST token seen replaces that
+    property: recovered-just-now is not the same as never-degraded."""
+    row = _refusal(_obs(uptime_ms=60 * 1000,
+                        latency_monitor_worst='RING_LEAK'), 'R7')
+    assert row.ok is False
+    assert 'RING_LEAK' in row.message and 'earlier' in row.message
+
+
+def test_r7_still_refuses_a_warm_pre_fw14_bridge_and_an_unknown_one():
+    """The real protection is PRESERVED where it is still real.
+
+    Below FW 14 the RX ring genuinely leaks ~40 ms/h, so the board IS
+    uptime-sensitive and the power-cycle IS the remedy. Stricter than
+    tilt_cal_grid on purpose, unchanged: static inclinometer reads are
+    uptime-insensitive, a TIMING bias is not.
+    """
+    warm = _refusal(_obs(uptime_ms=31 * 60 * 1000,
+                         link_kv=_legacy_link_kv(),
+                         latency_monitor_worst=None), 'R7')
     assert warm.ok is False
     assert 'Power-cycle' in warm.message
-    unknown = _refusal(_obs(uptime_ms=None), 'R7')
+    unknown = _refusal(_obs(uptime_ms=None, link_kv=_legacy_link_kv(),
+                            latency_monitor_worst=None), 'R7')
     assert unknown.ok is False, 'absence is not freshness'
-    assert _refusal(_obs(uptime_ms=29 * 60 * 1000), 'R7').ok is True
+    assert _refusal(_obs(uptime_ms=29 * 60 * 1000,
+                         link_kv=_legacy_link_kv(),
+                         latency_monitor_worst=None), 'R7').ok is True
+
+
+def test_r7_refuses_when_there_is_no_link_status_at_all():
+    row = _refusal(_obs(link_kv={}, uptime_ms=60 * 1000,
+                        latency_monitor_worst=None), 'R7')
+    assert row.ok is False
+    assert 'Absence is not health' in row.message
 
 
 def test_r8_refuses_an_unusable_write_target():
@@ -307,7 +383,9 @@ def test_every_refusal_is_evaluated_even_when_an_earlier_one_fails():
     """All nine are HOISTED and all nine are reported. An operator who walks
     back to the robot to fix R2 should already know R7 also refuses."""
     rows = tcgrid.preflight_refusals(
-        _obs(gravity_correction_loaded=False, uptime_ms=None))
+        _obs(gravity_correction_loaded=False,
+             link_kv=_link_kv(latency_monitor='RING_LEAK'),
+             latency_monitor_worst='RING_LEAK'))
     failed = [row.rid for row in rows if not row.ok]
     assert failed == ['R2', 'R7']
 

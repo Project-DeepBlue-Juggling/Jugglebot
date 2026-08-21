@@ -2,7 +2,7 @@
 title: Leg tracking lag grows monotonically with can-bridge Teensy uptime (10 ms fresh-boot → ~240 ms at 30 h) — the healthy baseline was the fresh-boot session, even the "silky" sessions sat mid-curve, and every envelope number except the fresh-boot validation was calibrated on a degraded plant
 type: investigation
 date: 2026-07-18
-status: open
+status: resolved
 phase: "MVP trajectory bringup — S4/S5 wobble regression root cause"
 related_plan: mvp-trajectory-bringup.md
 files_changed: []
@@ -221,8 +221,8 @@ disciplines the *timebase* (clock-sync precision); this entry owns *path
 latency* — clock sync can be perfect while command latency drifts 10→240 ms.
 
 Three queued arcs gate on this closure: the accel-FF premise re-derivation
-(`plans/active/accel-ff-inertia.md`), the retime-ON revisit, and the ILC
-repeatability premise (`plans/active/learned-ff-residuals.md`, gate G-A).
+(`plans/parked/accel-ff-inertia.md`), the retime-ON revisit, and the ILC
+repeatability premise (`plans/parked/learned-ff-residuals.md`, gate G-A).
 The offline measurement vehicle is that plan's Phase-0 residual extractor,
 whose Gate 0 is validation against this entry's seven-bag lag table.
 
@@ -257,8 +257,175 @@ counters):
 2026-07-24 closure contract still stands: the fix **and** the alarmed
 end-to-end latency monitor, now gated on the FW 12 soak.
 
+## Addendum (2026-08-14) — a prime suspect, named and assembly-verified: FlexCAN_T4's one-way `_available` leak
+
+S2's confirmation soak plus a targeted RX-path concurrency audit localized the
+drift to a **named defect in the vendored FlexCAN_T4 library**:
+`FlexCAN_T4::events()` pops the RX ring **before** its `NVIC_DISABLE_IRQ` guard,
+so the consumer's non-atomic `_available--`/`head` read-modify-writes race the
+CAN ISR's `_available++` **one-directionally** — increments are swallowed, never
+decrements. `_available` monotonically under-counts, the drain-to-empty loop
+exits with true occupancy `D > 0`, and every delivery is `D` frames late. `D`
+**ratchets** (~1 × 10⁻⁵ collisions/pop × ~1.6 × 10⁸ pushes/day ≈ 90 slots/h ≈
+**40 ms/h**, which matches this entry's own early curve: 10 ms → ~40 ms at
+1.15 h → ~160 ms at 4.38 h) and **caps at one ring lap, 256 slots ≈ 114–135 ms**.
+**The RX ring has become a delay line.** Verified in compiled assembly with the
+project toolchain, not argued from source.
+
+**Candidate 3's wording is superseded.** This entry ranked *"stale-encoder-cache
+→ spurious lead-clamp rate-limiting"*, and S1 confirmed its *shape*. The
+mechanism is now more precisely stated, and the difference matters for the fix:
+the cache is **written promptly and completely** — `enc_frames` reads a flat
+100.0 fps/axis at every uptime, and per-axis cache age is *fresher* at 28 h
+(11.05 ms p95) than at 1.1 h (18.05 ms). The cache **values** are stale because
+**delivery is delayed**, not because the cache stops being updated. Every
+instrument that looked healthy was blind by construction: `depth_hwm`/`cap_hits`
+derive from `_available` itself, cache age is stamped **at decode** (downstream
+of the delay), and `enc_frames` counts deliveries, which a pure delay conserves.
+Only the lead clamp and `MAX_DEVIATION` read the delayed content — and only they
+showed the fault.
+
+**One measurement from conviction:** FW 13's `RING_DIAG` (0x92) reports the ring's
+**true** occupancy independently of `_available`, so `true_depth −
+avail_reported` **is** the leak, read directly. It needs one ~3–4 h **motionless**
+soak — powered and idle, no battery, no arming.
+
+**This entry stays `open`.** The 2026-07-24 contract is unchanged and still
+two-deliverable: the **FW 14 fix** (correct the pop's bookkeeping) plus the
+**alarmed end-to-end latency monitor**, whose alarm input is now calibrated
+(clamp duty + a 100 ms/0.67 rev/s reporting threshold: 0.28/min healthy vs
+4.75/min aged, 17×) rather than guessed.
+
+Full record, including the four analysis rounds, the ~97 %-artifact correction to
+the S2 freeze statistics, the secondary audit finds and the honest residual (the
+measured 283–340 ms exceeds the delay line's 135 ms ceiling):
+`logbook/2026-08-14-ring-audit-available-leak-delay-line.md`.
+
+## Addendum (2026-08-14, S3) — the leak is MEASURED at 97 % of a lap; the root cause is established
+
+FW 13's `RING_DIAG` ran the conviction soak and the prediction held at the
+ceiling. On a bridge aged **4.01–4.04 h** (bag `2026-08-14_18-18-59`, **92
+samples**): `true_depth_jb` **247–248** stranded against `avail_reported_jb`
+**0** — `leak_jb` **247–248**, high-water **249**, **≈ 97 % of the 256-slot
+lap** — with `leak_bb` **1**, `leak_cone` **0** (the traffic scaling the
+collision-rate argument requires) and `fifo_overflows` **0** on every bus. No
+peripheral loss: **pure software-ring stranding**.
+
+Two independent cross-checks agree. **echo→exec aged − fresh = 115.4 ms**, inside
+the predicted **114–135 ms** one-lap band. And **256 ÷ ~90 slots/h ≈ 2.84 h to
+saturate**, which retro-explains this entry's own plateau: 3.8 h → 252 ms, ≈ 28 h
+→ 283 ms, ≈ 63 h → 290–340 ms is a lag that **saturated by hour three**, not one
+still climbing with uptime.
+
+**Root cause of this arc is now ESTABLISHED, not inferred: one missing IRQ guard
+around the vendored FlexCAN_T4 ring pop.**
+
+**This entry stays `open`.** The 2026-07-24 contract is unchanged: **FW 14** (the
+fix; the leak counter stays aboard, acceptance **`leak ≡ 0` and lag ≤ 20 ms on an
+AGED validation soak**) **and** the alarmed end-to-end latency monitor. Two
+second-order residuals ride into that validation pass — the delivery-lag
+integral's absolute value (151–183 ms against a naive 129 ms, creeping
+~0.35 ms/s) and the SDO RTT floor's mispairing under pipelining (46.9–47.9 ms).
+
+Full record, including the stale-`install/` near-miss that nearly cost the
+measurement and the install-skew self-check that closes that class:
+`logbook/2026-08-14-s3-conviction-ring-leak-measured.md`.
+
+## Addendum (2026-08-15) — CLOSED: FW 14 validated at 5.8 h and 15.2 h, and the monitor landed
+
+**Root cause:** the vendored FlexCAN_T4 **`_available` one-way leak** —
+`FlexCAN_T4::events()` popped the RX ring *before* its `NVIC_DISABLE_IRQ` guard,
+so the consumer's non-atomic `_available--` raced the CAN ISR's `_available++`
+in one direction only. The counter monotonically under-counted, the drain loop
+exited believing the ring was empty while `D` frames were stranded in it, and
+every delivery arrived `D` frames late. `D` ratcheted with traffic (~90 slots/h
+≈ 40 ms/h) and capped at one 256-slot ring lap (≈ 114–135 ms). **The RX ring had
+become an uptime-ratcheting delay line**, and the freshness-blind lead clamp
+amplified that delay into commanded stops, which is how ~130 ms of transport
+delay presented as 283–340 ms of end-to-end lag.
+
+**Fix:** **FW 14** moves the whole ring pop — payload `memmove`, head advance and
+`_available` decrement — inside the existing `NVIC_DISABLE_IRQ`/`NVIC_ENABLE_IRQ`
+window, with `dsb; isb` after the mask write and a compiler barrier before the
+re-enable. One guard closes both the leak and the ring-full frame tear. No wire
+change; `PROTOCOL_VERSION` stays 5.
+
+**Validation (2026-08-15), on two uptimes, with `RING_DIAG` retained aboard as
+the fix's own proof:**
+
+| | 5.73–5.84 h (bags `00-44-59` / `00-47-44`) | 15.17–15.19 h (bag `10-08-06`, two 11-move batteries, same un-rebooted boot) |
+|---|---|---|
+| `leak`, all three buses | **0** — 167/167 `/ring_diag` samples | **0** |
+| `true_depth_hwm_jb` | **1** (the drain empties the ring every tick) | — |
+| e2e echo→encoder lag | **10 ms** median (15.9 ms sub-sample refined) | **20 ms** |
+| lead-clamp duty | **0.0000** | **0 % on every move** |
+| SDO RTT | **872–931 µs** (S3: 46.9 ms) | — |
+| per-axis cache age | **1–10 ms** | — |
+| `fifo_overflows` / `fifo_warns` / `rx_cap_hits` | **0** | **0** |
+
+FW 14 fresh (15 s, bag `2026-08-14_18-58-24`) also reads **20 ms** — *fresh and
+15.2 h are the same number.* Against this entry's own curve (10 ms at 1.8 min →
+~160 ms at 4.38 h → ~230–250 ms at 24–30 h), and against FW 13's 252.2 ms at
+3.80 h, **the degradation that S3 showed saturated by hour three is simply not
+present at five times that uptime.** Uptime continuity for the 15.2 h bag was
+verified, not assumed: the counter advanced 34,265,600 ms against 9.516 h of wall
+clock since the 00:4x bags, so no reboot intervened.
+
+**BOTH deliverables of the 2026-07-24 closure contract are now satisfied:**
+
+1. **The fix** — FW 14, above.
+2. **The continuously-measured, alarmed end-to-end latency monitor, logged with
+   `uptime_ms`** — landing in the same change-set as this addendum. Evaluated at
+   the 10 Hz `/link_status` tick with three inputs in causal precedence — a
+   **`/ring_diag` leak alarm**, an **encoder-cache-age floor alarm**, and a
+   **sustained lead-clamp-duty alarm** (calibrated 0.00–0.06 healthy against
+   0.30–0.46 degraded) — each logged beside `uptime_ms` and summarised as a
+   `latency_monitor` KeyValue on `/link_status`, so the verdict is persistent in
+   the bag rather than a startup line. Advisory: it gates and actuates nothing.
+   The class this entry exposed was *"command-latency drift is invisible until a
+   session is already degraded"*; the monitor is what closes the class, and it is
+   why the fix alone was never enough.
+
+**Consequently the reboot-before-every-session workaround is RETIRED.** It
+existed only because of this defect. On FW 14 and later, **uptime is no longer a
+tracking-quality variable.** The discipline that replaces it: keep logging
+`uptime_ms` beside every timing number, and watch the `latency_monitor` row.
+
+**Which of this entry's conclusions are now safe to re-derive on a healthy
+plant.** All of these were calibrated against a degraded plant, so each is
+*conditional* rather than wrong — and each is now re-measurable:
+
+- the **0.5 → 1.0 rev `MAX_DEVIATION` guard raise** (2026-07-16) — this entry's
+  Discussion predicted the raise had accommodated a bug; that prediction is now
+  confirmed, and the honest margin is unknown until re-measured;
+- the **2.2–2.7 rev/s chase ceiling** and the 529 mm/s catch-up cap guidance;
+- the **retime-model OFF decision** — on a healthy plant the model's honest
+  durations may be comfortably trackable;
+- the **accel-FF sizing premise** (`plans/parked/accel-ff-inertia.md`);
+- the **ILC repeatability premise** (`plans/parked/learned-ff-residuals.md`, gate
+  **G-A**, which reads "the 2026-07-18 uptime-lag investigation is closed") —
+  **G-A is now open.**
+
+Two second-order residuals rode into this validation and both are reconciled: the
+delivery-lag integral's creep is a **FlexCAN capture-clock artefact** (230–670 ppm,
+load-dependent, per-frame — with the load term itself unexplained), normalised in
+the closure code and read as `lag_now_corrected_us`; and the SDO RTT floor is
+valid again **by condition** (0.87–0.93 ms against a 20 ms poll ⇒ at most one
+reply in flight), with its structural limitation recorded.
+
+Full record — the validation numbers, the residual reconciliations, the leg-0
+encoder re-seat, the Y-roughness verdict, the newly characterised leg-bus frame
+drops, and the arc's methodological Discussion:
+`logbook/2026-08-15-fw14-validated-arc-closed.md`.
+
+**This entry is CLOSED.**
+
 ## Verification
 
+- **CLOSED 2026-08-15.** Both gates named below are met: the reboot experiment
+  ran (S1, 2026-08-12, Arm C alone) and the fix **plus** the alarmed latency
+  monitor landed and were validated at 5.8 h and 15.2 h — see the 2026-08-15
+  addendum.
 - All forensics offline/read-only; scripts + per-commit JSON in the session
   scratchpad (`bisect/`, `bags/`, `cascade/`, extractors + pkl caches); the
   four agent reports are summarized above; no repo code changed by this
@@ -276,7 +443,7 @@ end-to-end latency monitor, now gated on the FW 12 soak.
   `logbook/2026-07-17-retime-model-tracking-envelope.md` — today's two
   fix-arcs; their command-side findings stand, their envelope conclusions
   were measured at 24–30 h uptime.
-- `plans/active/accel-ff-inertia.md` — premise partially contingent on the
+- `plans/parked/accel-ff-inertia.md` — premise partially contingent on the
   reboot result.
 - Memory: `project_canhub_tier2_validated` (v3 flash 2026-07-10 = the prior
   Teensy boot epoch; the 2026-07-16-morning latches occurred at ~6 d into

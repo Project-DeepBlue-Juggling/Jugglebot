@@ -151,7 +151,7 @@ seam, so full clearing aligns with its purpose).
 
 ## Related
 
-- Plan: `plans/active/canhub-hardening.md` (Tier-2 item 20).
+- Plan: `plans/archived/canhub-hardening.md` (Tier-2 item 20).
 - Predecessor: `logbook/2026-07-02-canhub-hardening-tier2.md` (the Tier-2 flash this
   extends); `logbook/2026-07-05-canhub-marginal-can3-diagnosis.md` (the concurrent
   CAN3 work this landed on top of).

@@ -13,7 +13,7 @@ files_changed:
   - tools/probes/fk_convergence_bag_check.py
   - tools/probes/README.md
   - docs/motion_planner/kinematics.md
-  - plans/active/fk-convergence-tolerance.md
+  - plans/archived/fk-convergence-tolerance.md
   - tests/hardware/session_anomaly_fixes.md
 commits:
   - 3415617
@@ -452,7 +452,7 @@ the failure is common *and* spatially clustered.
   observation itself stands — the exact encoder vector behind it is now a test
   fixture — only the session label and the log citation were wrong.
   **Superseded by**: the corrected Context table in
-  `plans/active/fk-convergence-tolerance.md`, which also adds the 2026-07-24
+  `plans/archived/fk-convergence-tolerance.md`, which also adds the 2026-07-24
   09:08:55 burst (`python3_198327_1784848076544.log`, 26 hits) as the strongest
   observation; it had been missing from the table entirely.
 - [2026-07-25] The plan's Notes warned that if Phase 0's sweep could not

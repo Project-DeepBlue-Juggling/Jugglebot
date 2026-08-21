@@ -35,9 +35,11 @@ Positions are motor revs from the firmware's encoder zero (the homed physical
 bottom).  The sim's mm are converted with ``rev = mm/1000 * LINEAR_GAIN`` and NO
 stroke-margin term: the sim's 20 mm inset is a sim-side *placement* of the stroke
 inside the travel, not a frame offset the firmware shares.  Carrying it across
-would put the end-stop ceiling 0.63 rev too high — 0.53 rev past the 11.1 rev
-overextension guard, which itself sits 0.76 mm below the top of the 355 mm
-stroke.
+would put the end-stop ceiling 0.63 rev too high — 0.83 rev past the 10.8 rev
+hard stop.  (This read "0.53 rev past the 11.1 rev overextension guard, which
+itself sits 0.76 mm below the top of the 355 mm stroke" until 2026-08-21: 11.1
+was the DECLARED stop and sat 0.3 rev PAST metal, corrected 2026-08-18 to the
+operator-measured 10.8 rev.)
 
 TOLERANCES — AND ONE PLACE PHASE 0'S BOUND CANNOT BE MET
 -------------------------------------------------------
@@ -146,13 +148,13 @@ _A_MAX = f32(_TT['MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2'])
 _S2 = f32(_TT['QUINTIC_S2_MAX'])
 _H2 = f32(_TT['QUINTIC_H2_MAX'])
 _DEADBAND = f32(_TT['SMOOTH_MOVE_V0_DEADBAND_RPS'])
-_CEIL = f32(f32(_GEO['HAND_MOTOR_MAX_POSITION_REVS'])
+_CEIL = f32(f32(_GEO['HAND_MOTOR_HARD_STOP_REVS'])
             - f32(_TT['SMOOTH_MOVE_EXCURSION_MARGIN_REV']))
 _FLOOR = f32(_JBOP['HAND_RETRACT_REV'])
 _EPS = f32(1e-4)
 _SAMPLE_RATE = int(_TT['SAMPLE_RATE_HZ'])
 _MIN_DUR = f32(0.05)
-_MAX_DUR = f32(math.sqrt(f32(f32(f32(_GEO['HAND_MOTOR_MAX_POSITION_REVS']) * _S2)
+_MAX_DUR = f32(math.sqrt(f32(f32(f32(_GEO['HAND_MOTOR_HARD_STOP_REVS']) * _S2)
                              / _A_MAX)))
 
 
@@ -277,7 +279,7 @@ def test_mirror_constants_match_the_shipped_firmware_header():
             ('MIN_EVENT_VEL_MPS', 'MIN_EVENT_VEL_MPS'),
             ('MAX_EVENT_VEL_MPS', 'MAX_EVENT_VEL_MPS')):
         assert _TT[hdr] == getattr(mirror, sim_name), hdr
-    assert _GEO['HAND_MOTOR_MAX_POSITION_REVS'] == mirror.HAND_MOTOR_MAX_POSITION_REVS
+    assert _GEO['HAND_MOTOR_HARD_STOP_REVS'] == mirror.HAND_MOTOR_HARD_STOP_REVS
     assert _HOM['HAND_ABS_POS_REV'] == mirror.HAND_HOME_ABS_POS_REV
     # The excursion FLOOR the clamp actually uses — encoder zero, not the stop.
     assert _JBOP['HAND_RETRACT_REV'] == mirror.HAND_RETRACT_REV
@@ -301,7 +303,7 @@ def test_trajectory_h_sources_every_smooth_move_constant_from_the_header():
             ('SMOOTH_MOVE_V0_DEADBAND', 'TeensyTraj::SMOOTH_MOVE_V0_DEADBAND_RPS')):
         assert re.search(r'constexpr\s+float\s+%s\s*=\s*%s\s*;'
                          % (re.escape(alias), re.escape(qualified)), src), alias
-    assert 'Geometry::HAND_MOTOR_MAX_POSITION_REVS' in src
+    assert 'Geometry::HAND_MOTOR_HARD_STOP_REVS' in src
     assert 'TeensyTraj::SMOOTH_MOVE_EXCURSION_MARGIN_REV' in src
     assert 'Homing::HAND_ABS_POS_REV' in src
     # and it actually READS the velocity — the bug was that it never did
@@ -318,10 +320,15 @@ def test_the_stroke_top_agrees(self=None):
 
 
 def test_the_end_stop_ceiling_agrees_with_the_firmware_expression():
-    """11.1 - 0.5 = 10.6 rev, from the header, in both places."""
-    want = (_GEO['HAND_MOTOR_MAX_POSITION_REVS']
+    """10.8 - 0.2 = 10.6 rev, from the header, in both places.
+
+    The ceiling did not move at the 2026-08-18 hard-stop correction: the base
+    went 11.1 -> 10.8 and the margin 0.5 -> 0.2 in the same commit, so the
+    product is bit-identical.  This docstring read "11.1 - 0.5" until 2026-08-21.
+    """
+    want = (_GEO['HAND_MOTOR_HARD_STOP_REVS']
             - _TT['SMOOTH_MOVE_EXCURSION_MARGIN_REV'])
-    got = (mirror.HAND_MOTOR_MAX_POSITION_REVS
+    got = (mirror.HAND_MOTOR_HARD_STOP_REVS
            - mirror.SMOOTH_MOVE_EXCURSION_MARGIN_REV)
     assert got == pytest.approx(want, abs=1e-12)
     assert want == pytest.approx(10.6, abs=1e-12)
@@ -701,7 +708,7 @@ def test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror(tmp_path):
         # The LAST SAMPLE's time, not the duration: `for (t = 0; t <= duration;
         # t += dT)` stops at the largest multiple of 2 ms at or below it, so the
         # emitted profile is up to one sample period short — pre-existing, and
-        # what Teensy_code_platform.ino:524 turns into `smoothDur_us`.  Pinned rather than
+        # what Teensy_code_platform.ino:633 turns into `smoothDur_us`.  Pinned rather than
         # tolerated, because the resulting end-position gap is what a caller
         # relying on "the prelude ends exactly at the main trajectory's first
         # sample" is actually given.
@@ -727,7 +734,7 @@ def test_the_shipped_trajectory_h_compiles_and_agrees_with_the_mirror(tmp_path):
         # itself evaluates — an assertion that re-uses the code's own predicate
         # passes for any value of the clamp constants, including a floor moved a
         # full rev below the bottom hard stop.
-        assert hi <= max(mirror.HAND_MOTOR_MAX_POSITION_REVS, start, target) + 1e-6
+        assert hi <= max(mirror.HAND_MOTOR_HARD_STOP_REVS, start, target) + 1e-6
         assert lo >= min(0.0, start, target) - 1e-3, (
             (start, target, v0), 'commanded below encoder zero')
 
@@ -747,7 +754,7 @@ def test_trajectory_h_structure_lint():
     """
     src = open(_TRAJ_H).read()
     # 1. the empty branch requires BOTH conditions — widening it widens a hole in
-    #    the kind-3 clobber path (Teensy_code_platform.ino:472-475 returns before the clear)
+    #    the kind-3 clobber path (Teensy_code_platform.ino:581-583 returns before the clear at :588)
     assert re.search(r'if\s*\(\s*fabsf\(delta_rev\)\s*<\s*1e-6f\s*&&\s*at_rest\s*\)',
                      src), 'the empty branch must require at_rest'
     assert re.search(r'const\s+bool\s+at_rest\s*=\s*fabsf\(start_vel\)\s*<=\s*'
@@ -777,7 +784,7 @@ def test_trajectory_h_structure_lint():
     # 3c. the duration is capped as well as the excursion — arresting v0 costs
     #     time, and an honoured prelude that outlasts every rest-to-rest move
     #     outgrows the host windows sized on them (_PRIME_INFLIGHT_S).
-    assert re.search(r'return\s+sqrtf\(Geometry::HAND_MOTOR_MAX_POSITION_REVS\s*'
+    assert re.search(r'return\s+sqrtf\(Geometry::HAND_MOTOR_HARD_STOP_REVS\s*'
                      r'\*\s*QUINTIC_S2_MAX', src)
     # ...and the fallback is a rest-to-rest profile, never an empty one
     fallback = src[src.index('start_rev + hi > ceil_rev'):]

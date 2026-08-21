@@ -286,7 +286,7 @@ wire id without a firmware case is told in pytest, not on the bench.
 
 ## Related
 
-- Plan: [`plans/active/canbridge-foundation-coldstart-parity.md`](../plans/active/canbridge-foundation-coldstart-parity.md) — Phase 0 detail + the codegen-allocation table.
+- Plan: [`plans/archived/canbridge-foundation-coldstart-parity.md`](../plans/archived/canbridge-foundation-coldstart-parity.md) — Phase 0 detail + the codegen-allocation table.
 - [2026-06-27-can-node-teensy-parity-audit.md](2026-06-27-can-node-teensy-parity-audit.md) — §5 (no compiled-firmware test) is the risk this closes; the headline cold-start regression is what Phases 1-6 fix.
 - [2026-05-19-can-loss-fault-response-safety-inversion.md](2026-05-19-can-loss-fault-response-safety-inversion.md) — the deferred-stow 5 invariants the harness now asserts as compiled tests.
 - Harness usage + scope: [`tests/firmware/native/README.md`](../tests/firmware/native/README.md).

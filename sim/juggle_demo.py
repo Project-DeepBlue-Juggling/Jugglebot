@@ -16,7 +16,7 @@ Wires every Phase 2/3 component together in one process at 40 Hz:
     :class:`sim.hand.trajectory.HandCatchSequence` — drive the hand for
     each throw / catch event.
 
-Plan reference: ``plans/active/bb-led-two-ball-juggle-demo.md`` §4 Phase 3.
+Plan reference: ``plans/archived/bb-led-two-ball-juggle-demo.md`` §4 Phase 3.
 Exit criterion: ≥ 30 consecutive catches detected by
 ``BallManager.check_capture``.
 
@@ -222,7 +222,8 @@ SCHEDULE_LEAD_S = 1.2                      # hand-event lookahead — exceeds th
                                             # catch this demo schedules. The
                                             # FIRST hand throw needs the most
                                             # lead: hand starts at catch-prime
-                                            # (~323 mm), throw start is at the
+                                            # (~335 mm; ~323 until 2026-08-21),
+                                            # throw start is at the
                                             # stroke bottom (~20 mm), so the
                                             # smooth-move prelude is ~0.75 s
                                             # plus ~0.07 s throw lead. Steady-
@@ -419,7 +420,7 @@ class _JuggleDemoRunner:
         # Hand starts LOW (at the throw-stroke start), not at catch-prime:
         # the pre-held ball is THROWN first, and a low hand keeps the cup
         # near the platform centroid (a short lever arm) so the oval carry
-        # doesn't fling the contact-held ball out — at the ~323 mm prime
+        # doesn't fling the contact-held ball out — at the ~335 mm prime
         # lever, platform tilt amplifies into cup acceleration that ejects
         # the ball. (Kinematic hold was immune; contact carry is not.)
         self.plant.command_hand(_PREHELD_CARRY_HAND_MM)

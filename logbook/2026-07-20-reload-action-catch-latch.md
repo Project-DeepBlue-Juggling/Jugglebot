@@ -20,7 +20,7 @@ files_changed:
   - tests/hardware/session_phase7_reload.md
   - tests/hardware/mvp_bench_runbook.md
   - plans/active/mvp-trajectory-bringup.md
-  - plans/active/reload-action-catch-latch.md
+  - plans/archived/reload-action-catch-latch.md
 commits:
   - bdbd186
   - 4572925

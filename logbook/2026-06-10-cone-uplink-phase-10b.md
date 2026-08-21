@@ -4,7 +4,7 @@ type: feature
 date: 2026-06-10
 status: in-progress   # firmware compiled + 724 tests pass; bench verification pending
 phase: teensy-can-offload phase-10b
-related_plan: "plans/active/teensy-can-offload.md"
+related_plan: "plans/archived/teensy-can-offload.md"
 files_changed:
   # Protocol codegen (single source) + regenerated artifacts
   - config/generate_udp_protocol.py

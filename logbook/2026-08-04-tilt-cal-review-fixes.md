@@ -17,7 +17,7 @@ files_changed:
   - tests/motion/test_tilt_map.py
   - tests/ros/test_trajectory_tilt_map.py
   - tests/sim/test_tilt_cal_analyse.py
-  - plans/active/tilt-calibration-grid.md
+  - plans/archived/tilt-calibration-grid.md
   - logbook/INDEX.md
 subsystem:
   - safety

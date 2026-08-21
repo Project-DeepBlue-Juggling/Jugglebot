@@ -436,7 +436,7 @@ Phase 4 adds the uplink message.
 
 ## Related
 
-- `plans/active/hand-ball-sensor.md` — Phase 3, and § Architecture, which is
+- `plans/archived/hand-ball-sensor.md` — Phase 3, and § Architecture, which is
   **normative** for the signal semantics implemented here.
 - `logbook/2026-07-29-hand-sensor-fw-version-surfacing.md` — Phase 0, the
   fw-version evidence this phase's gate compares against.

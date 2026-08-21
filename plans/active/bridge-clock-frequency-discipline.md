@@ -32,9 +32,43 @@ related_code:
 > Latency monitoring is owned by that investigation's closure (its 2026-07-24
 > Addendum); the two are complementary halves of temporal trustworthiness.
 
-> **2026-08-11 — sequencing:** both halves are now driven by one arc,
-> `plans/active/bridge-temporal-trustworthiness.md`. This plan stays the
-> **authoritative design reference**; that plan owns only the ordering.
+> **2026-08-15 — the ordering constraint is SATISFIED; this plan is unblocked and
+> independently schedulable.** The latency half closed on 2026-08-15: the root
+> cause was the vendored FlexCAN_T4 `_available` RX-ring leak (the RX ring had
+> become an uptime-ratcheting delay line), fixed in **FW 14** and validated at
+> **5.8 h and 15.2 h** of continuous bridge uptime — `leak ≡ 0`, end-to-end lag
+> 10–20 ms, lead-clamp duty 0. See `logbook/2026-08-15-fw14-validated-arc-closed.md`
+> and `plans/archived/bridge-temporal-trustworthiness.md` § Archival
+> note. Consequences for the work below, all concrete:
+>
+> - **Phases 3–5 (the servo, min-RTT gating, holdover) may now start.** The
+>   P4-after-P3 rule existed because a frequency estimator trained through a
+>   drifting, possibly asymmetric transport would bake the asymmetry into
+>   `freq_ppb` as an indistinguishable rate error. The transport is no longer
+>   drifting, so that hazard is retired.
+> - **Phase 1's instrument already exists on the wire** as the additive
+>   `CLOCK_DIAG` frame (`MsgType` 0x8F, FW 11 — per-anchor `rtt`, the pre-slew
+>   offset error, and the implied instantaneous ppm) and is bagged. Phase 1 is now
+>   a *capture-and-analyse* exercise, not a build.
+> - **Phase 2 was DELIVERED** as the arc's P2 — the midpoint-stamped TOD responder
+>   — with the correction described in the note below. Do not re-implement it.
+> - **New input for the servo work, and it is not a nuisance detail**: the FlexCAN
+>   *capture* clock was measured on 2026-08-15 running slow against `micros64()` at
+>   a **load-dependent rate — ≈230 ppm with no setpoint stream, ≈580–670 ppm while
+>   streaming** — reverting within a second of the stream stopping. (The frame-fold
+>   denominator is load-invariant at ~1950 RX frames/window, so this is a genuine
+>   rate change, not a counting artefact.) A constant ratio between two dividers off
+>   one crystal cannot explain a rate that *varies with bus load*, and **why load
+>   changes it is unexplained.** That is a load-correlated rate error inside the very
+>   box this plan is about to discipline: **Phase 1's baseline capture must record
+>   bus load alongside ppm** and check whether `micros64()` itself carries any part
+>   of it, and the Phase 3 servo must not be tuned on data taken at a different bus
+>   load than it will run at.
+>
+> **2026-08-11 — sequencing:** both halves were driven by one arc,
+> `plans/archived/bridge-temporal-trustworthiness.md` (archived
+> 2026-08-15). This plan stays the **authoritative design reference**; that plan
+> owned only the ordering.
 > Mapping: **Phase 1 → arc P1** (the per-anchor diagnostics ship as an additive
 > `CLOCK_DIAG` uplink in FW 11 — *superseded detail*: baseline capture moves to
 > **after** the latency fix, because crystal ppm measured through a drifting,

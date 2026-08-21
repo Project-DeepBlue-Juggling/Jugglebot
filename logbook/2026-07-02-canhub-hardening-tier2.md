@@ -324,7 +324,7 @@ termination) is a real, still-open pipeline item — see Deferred.
 
 ## Related
 
-- Plan: `plans/active/canhub-hardening.md` (Tier-2 rows 13-20).
+- Plan: `plans/archived/canhub-hardening.md` (Tier-2 rows 13-20).
 - Tier-1: `logbook/2026-07-02-canhub-hardening-tier1.md`.
 - Adversarial review run journal: `~/.claude/projects/-home-jetson-Desktop-Jugglebot/464186d7-ba4a-4f04-b124-0f6646ec869d/subagents/workflows/wf_1f5084aa-0d9`.
 - The deferred-stow inversion this preserves: `logbook/2026-05-19-can-loss-fault-response-safety-inversion.md`.

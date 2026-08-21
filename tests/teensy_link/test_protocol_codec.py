@@ -573,3 +573,188 @@ def test_cache_diag_full_frame_roundtrip_and_unknown_type_tolerance():
     assert mt == 145
     assert seq == 21
     assert p.CacheDiag.unpack(payload).seq == 5
+
+
+# ── RING_DIAG (0x92) — the CAN RX-ring true-occupancy census, FW 13 ──────────
+#
+# The conviction instrument for the FlexCAN_T4 `_available` leak, which is the
+# surviving candidate mechanism after S2 (2026-08-13) killed the encoder-cache
+# AGE hypothesis. FlexCAN_T4::events() pops the RX ring BEFORE its
+# NVIC_DISABLE_IRQ guard, so the CAN ISR's `_available++` races the unguarded
+# task-side `_available--` one-directionally (the ISR preempts the task, never
+# the reverse); increments are swallowed, `_available` monotonically
+# under-counts, and can_buses.cpp's drain loop exits believing the ring is empty
+# while a residue is stranded — after which every delivery is that many frames
+# old. Like CLOCK_DIAG and CACHE_DIAG before it, FW 13 is committed before any
+# board runs it, so these tests are the only thing standing between the frame and
+# a silent layout error.
+
+
+def test_ring_diag_msg_type_is_146_and_follows_cache_diag():
+    # 0x92 is the second id of the uplink block CACHE_DIAG opened above
+    # RPC_RESPONSE (0x81-0x8F being full). Pinned as a literal because a renumber
+    # would silently re-point every already-recorded frame at another message
+    # type — a bag spanning the change decodes as garbage rather than failing.
+    assert int(p.MsgType.RING_DIAG) == 146 == 0x92
+    assert int(p.MsgType.RING_DIAG) == int(p.MsgType.CACHE_DIAG) + 1
+    # Above RpcResponse, and safe BY CONSTRUCTION for the reason CACHE_DIAG's
+    # equivalent assertion records: the STREAM/RPC split is which socket a frame
+    # was sent on, and both ends dispatch through a msg_type table, never a range
+    # test. This assertion is the note that it was considered and rejected again.
+    assert int(p.MsgType.RING_DIAG) > int(p.MsgType.RPC_RESPONSE)
+    others = [int(v) for k, v in vars(p.MsgType).items()
+              if isinstance(v, p.MsgType) and k != 'RING_DIAG']
+    assert 146 not in others
+
+
+def test_ring_diag_is_additive_protocol_version_unchanged():
+    """FW 13 adds a message type and changes NO existing frame.
+
+    Same reasoning as CACHE_DIAG's equivalent: these decoders are exact-size
+    unpacks, so an appended field on an existing frame is a per-frame decode
+    error on an unaware Jetson and that frame goes DARK instead of degrading. A
+    new type is ignored cleanly. And that only holds if ``PROTOCOL_VERSION``
+    stays put — a bump makes ``decode_frame`` reject EVERY frame in both
+    directions (the 24608bb total-darkness failure), which would take the link
+    down over a diagnostic.
+
+    CACHE_DIAG is pinned explicitly here: it shipped one firmware revision
+    earlier, sits adjacent in the spec, and carries the ring fields RING_DIAG
+    exists to correct — so it is the frame most likely to be disturbed by an edit
+    in this region.
+    """
+    assert p.PROTOCOL_VERSION == 5
+    assert p.CACHE_DIAG_SIZE == 129
+    assert p.CLOCK_DIAG_SIZE == 49
+    assert p.PROFILE_SIZE == 76
+    assert p.HEARTBEAT_T2J_SIZE == 73
+    assert p.LEG_CMD_SIZE == 56
+    assert p.BRIDGE_TX_DIAG_SIZE == 42
+    assert p.BRIDGE_IDENTITY_SIZE == 3
+
+
+def test_ring_diag_roundtrip():
+    # Distinct values per field, and deliberately non-round: the three per-bus
+    # groups repeat the same five field NAMES with different suffixes, so a
+    # copy-paste slip in the emitter (jb's depth written into bb's slot) is the
+    # most likely real defect and a uniform payload would round-trip straight
+    # through it.
+    rd = p.RingDiag(
+        t_local_us=226_800_000_000,      # 63 h — the S1 aged-bridge point
+        true_depth_jb=131, true_depth_bb=2, true_depth_cone=1,
+        avail_reported_jb=0, avail_reported_bb=2, avail_reported_cone=1,
+        leak_hwm_jb=134, leak_hwm_bb=1, leak_hwm_cone=0,
+        true_depth_hwm_jb=137, true_depth_hwm_bb=5, true_depth_hwm_cone=3,
+        fifo_overflows_jb=0, fifo_overflows_bb=0, fifo_overflows_cone=0,
+        fifo_warns_jb=17, fifo_warns_bb=3, fifo_warns_cone=1,
+        probe_ticks=999,
+        lag_now_us=131_400, lag_hwm_us=142_900,
+        cap_span_us=999_868, lag_frames=2_241, lag_reseeds=0,
+        sdo_rtt_min_us=131_910, sdo_rtt_max_us=148_220,
+        sdo_rtt_last_us=132_705, sdo_rtt_count=50,
+        seq=3_600, window_us=1_000_013,
+        flags=int(p.RingDiagFlags.LAG_SEEDED),
+    )
+    blob = rd.pack()
+    assert len(blob) == p.RING_DIAG_SIZE == 103
+    d = p.RingDiag.unpack(blob)
+    assert d.t_local_us == 226_800_000_000
+    assert (d.true_depth_jb, d.true_depth_bb, d.true_depth_cone) == (131, 2, 1)
+    assert (d.avail_reported_jb, d.avail_reported_bb,
+            d.avail_reported_cone) == (0, 2, 1)
+    assert (d.leak_hwm_jb, d.leak_hwm_bb, d.leak_hwm_cone) == (134, 1, 0)
+    assert (d.true_depth_hwm_jb, d.true_depth_hwm_bb,
+            d.true_depth_hwm_cone) == (137, 5, 3)
+    assert (d.fifo_overflows_jb, d.fifo_overflows_bb,
+            d.fifo_overflows_cone) == (0, 0, 0)
+    assert (d.fifo_warns_jb, d.fifo_warns_bb, d.fifo_warns_cone) == (17, 3, 1)
+    assert d.probe_ticks == 999
+    assert d.lag_now_us == 131_400
+    assert d.lag_hwm_us == 142_900
+    assert d.cap_span_us == 999_868
+    assert d.lag_frames == 2_241
+    assert d.lag_reseeds == 0
+    assert d.sdo_rtt_min_us == 131_910
+    assert d.sdo_rtt_max_us == 148_220
+    assert d.sdo_rtt_last_us == 132_705
+    assert d.sdo_rtt_count == 50
+    assert d.seq == 3_600
+    assert d.window_us == 1_000_013
+    assert d.flags == int(p.RingDiagFlags.LAG_SEEDED)
+    # THE conviction arithmetic, exercised on the wire values themselves: the
+    # drain loop exits when `_available` reads 0, so a non-zero true depth at
+    # that instant IS the stranded backlog.
+    assert d.true_depth_jb - d.avail_reported_jb == 131
+
+
+def test_ring_diag_lag_is_signed_and_survives_negative_values():
+    """``lag_now_us`` / ``lag_hwm_us`` are i32, and that is load-bearing.
+
+    The lag is measured against the delivery lag at the seed instant, and the two
+    clocks involved — the FlexCAN free-running timer and ``micros64()`` — are
+    separate dividers off the same crystal. A small constant rate ratio drifts
+    the value NEGATIVE over hours. Unsigned fields would wrap that into an
+    enormous positive lag, i.e. would render a benign clock artefact as a
+    catastrophic delivery delay in the one instrument meant to settle the
+    question.
+    """
+    d = p.RingDiag.unpack(p.RingDiag(
+        lag_now_us=-12_345, lag_hwm_us=-1).pack())
+    assert d.lag_now_us == -12_345
+    assert d.lag_hwm_us == -1
+    # Full i32 range round-trips: the firmware clamps to these rails rather than
+    # letting a 64-bit intermediate wrap.
+    d = p.RingDiag.unpack(p.RingDiag(
+        lag_now_us=-2_147_483_648, lag_hwm_us=2_147_483_647).pack())
+    assert d.lag_now_us == -2_147_483_648
+    assert d.lag_hwm_us == 2_147_483_647
+
+
+def test_ring_diag_occupancy_fields_reach_the_full_ring_depth():
+    """The ring is 256 deep, and a fully-leaked ring must decode as such.
+
+    That is the saturation point of the whole hypothesis: at 256 slots the
+    stranded backlog is ~114-135 ms of delivery delay at jugglebot-bus rates,
+    which is the order of the freezes S2 measured. A field that could not
+    represent it would silently cap the very reading that confirms the mechanism.
+    """
+    d = p.RingDiag.unpack(p.RingDiag(
+        true_depth_jb=256, leak_hwm_jb=256, true_depth_hwm_jb=256,
+        avail_reported_jb=0).pack())
+    assert d.true_depth_jb == 256
+    assert d.leak_hwm_jb == 256
+    assert d.true_depth_hwm_jb == 256
+    assert d.true_depth_jb - d.avail_reported_jb == 256
+
+
+def test_ring_diag_flags_are_two_independent_bits():
+    # Both bits exist so a 0 lag can never be read as a healthy measurement when
+    # it means "no reference exists" (LAG_SEEDED clear) or "the reference just
+    # moved" (LAG_RESEED_IN_WINDOW set) — the ClockDiag FREQ_VALID discipline.
+    assert int(p.RingDiagFlags.LAG_SEEDED) == 0x01
+    assert int(p.RingDiagFlags.LAG_RESEED_IN_WINDOW) == 0x02
+    both = int(p.RingDiagFlags.LAG_SEEDED) | int(p.RingDiagFlags.LAG_RESEED_IN_WINDOW)
+    d = p.RingDiag.unpack(p.RingDiag(flags=both).pack())
+    assert d.flags & int(p.RingDiagFlags.LAG_SEEDED)
+    assert d.flags & int(p.RingDiagFlags.LAG_RESEED_IN_WINDOW)
+    # The all-zero frame is the legitimate pre-seed / pre-traffic shape (a bridge
+    # that booted with no ODrives on the bus). It must decode, not raise: a
+    # pre-arm frame is the FIRST one a session sees.
+    d0 = p.RingDiag.unpack(p.RingDiag().pack())
+    assert d0.flags == 0
+    assert d0.lag_now_us == 0
+    assert d0.sdo_rtt_count == 0
+
+
+def test_ring_diag_full_frame_roundtrip_and_unknown_type_tolerance():
+    # End-to-end through the framing layer, plus the property that makes an
+    # additive MsgType safe: a decoder that has never heard of 0x92 still decodes
+    # the FRAME (magic/version/CRC/length all check out) and hands the type back
+    # for the dispatcher to ignore. Nothing raises, so an FW 13 board talking to
+    # an FW-12-era Jetson is quiet, not broken.
+    rd = p.RingDiag(t_local_us=99, seq=5, true_depth_jb=7, avail_reported_jb=0)
+    frame = p.encode_frame(int(p.MsgType.RING_DIAG), 31, rd.pack())
+    mt, seq, payload = p.decode_frame(frame)
+    assert mt == 146
+    assert seq == 31
+    assert p.RingDiag.unpack(payload).true_depth_jb == 7

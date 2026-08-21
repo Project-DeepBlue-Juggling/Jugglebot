@@ -134,6 +134,7 @@ import numpy as np
 import jugglebot.hardware_config as hw
 from jugglebot import toss_record
 from jugglebot.motion.trajectory.toss_release import aim_target_offset_mm
+from jugglebot.motion.trajectory import throw_envelope
 
 __all__ = [
     'TossTrimError',
@@ -363,14 +364,37 @@ TAU_DEADBAND_MS = 10.0
 TAU_STEP_MAX_MS = 25.0
 TAU_AUTHORITY_MS = 150.0
 
-#: G4 plant health — the catch-robustness **Phase 0 gate row** verbatim
-#: (``plans/active/catch-robustness.md`` § phase table: *"dip_below_x3 ≤ 0.10
-#: rev; peak ≤ 10.060 rev; braking iq tracks commanded"*). Reused per toss so the
-#: trim never learns against the braking-clamp plant. See
-#: :func:`admit_for_aim`'s G4 block for what happens when the PLANT record block
-#: is null, which it is until it is wired (§ 10).
+#: G4 plant health — "did this toss's hand behave normally?", reused per toss so
+#: the trim never learns against a degraded plant. See :func:`admit_for_aim`'s G4
+#: block for what happens when the PLANT record block is null, which it is until
+#: it is wired (§ 10).
+#:
+#: ``G4_STROKE_PEAK_MAX_REV`` was ``10.060`` until 2026-08-21 — the
+#: catch-robustness Phase 0 gate row quoted verbatim. That number is the band for
+#: the **0.38 m and 0.6 m tiers ONLY**; the runbook itself made the criterion
+#: tier-dependent on 2026-07-28 (``session_anomaly_fixes.md`` row 3: at and above
+#: 0.78 m the band is ``<= 10.39`` rev, the C-HAND-2 pessimistic bracket). Left as
+#: a single tier-0.6 m value it would have **refused every toss above 0.60 m the
+#: moment the PLANT record block was wired** — i.e. refused to learn from almost
+#: the whole envelope, silently, as a "degraded plant" verdict. It was never
+#: exercised because the block is still null, so this is a latent defect fixed
+#: before its first use rather than an observed one.
+#:
+#: The replacement is **tier-independent and derived**: the firmware's own
+#: velocity-continuous excursion ceiling, ``hand_motor_hard_stop_revs`` minus
+#: ``smooth_move_excursion_margin_rev`` = 10.60 rev, which is what
+#: ``Trajectory.h::SMOOTH_MOVE_POS_CEIL_REV`` clamps commanded motion to. A peak
+#: above it means the plant left the band the firmware is holding it in, which is
+#: exactly the "not healthy, do not learn from this" condition G4 exists to catch —
+#: at any throw height. Post-clamp-fix measured peaks span **10.09–10.25 rev**
+#: across 3.142–5.608 m/s (`logbook/2026-08-21-envelope-flown-to-ceiling.md`), so
+#: healthy tosses clear it by ~0.35 rev at every tier.
+#:
+#: Deliberately NOT tightened to the measured 10.25: G4 gates *learning*, and an
+#: over-tight health gate discards good data, which is the failure just removed.
 G4_DIP_BELOW_X3_MAX_REV = 0.10
-G4_STROKE_PEAK_MAX_REV = 10.060
+G4_STROKE_PEAK_MAX_REV = (throw_envelope.HARD_STOP_REV
+                          - hw.TEENSY_TRAJ_SMOOTH_MOVE_EXCURSION_MARGIN_REV)
 
 #: G6 uptime — the τ estimate is refused when the session's own
 #: residual-vs-uptime trend explains more of the spread than the between-node
@@ -1122,12 +1146,24 @@ class SessionTrim:
         it is safe"; read it as the safety argument the wiring decision starts
         from.
 
-        Safe by construction WHEN wired: ``x3``
-        (``hand_stroke::STROKE_TOP_REV``) is algebraically velocity-independent,
+        ⚠ **The safety argument that used to stand here is FALSE — do not
+        reinstate it.** It read: *"``x3`` is algebraically velocity-independent,
         so a speed trim cannot move the hand toward the end stop, and
-        ``validate_event_vel`` still gates the result against
-        ``[TEENSY_TRAJ_MIN_EVENT_VEL_MPS, TEENSY_TRAJ_MAX_EVENT_VEL_MPS]`` =
-        [0.3, 7.0] m/s, which a ±10 % trim on 3.91 m/s clears by 1.6×.
+        ``validate_event_vel`` still gates the result against [0.3, 7.0] m/s."*
+        ``x3`` is velocity-independent; the **uncommanded coast past ``x3``** is
+        not — it runs 0.074 rev at 2.742 m/s to 1.020 rev at 4.858 m/s (measured
+        2026-07-27; contract **C-HAND-3**, ``ros_ws/docs/hand_throw_envelope.md``
+        § B1). A +10 % trim at the derived envelope ceiling takes 4.357 →
+        4.793 m/s and the modelled peak from 10.600 to ~11.05 rev, **0.25 rev
+        past the 10.8 rev mechanical stop** — while sailing through the [0.3,
+        7.0] wire band, which bounds nothing physical.
+
+        **What wiring this actually requires**: the trim is applied at DISPATCH,
+        after the FSM's CHECKING gate, so a wired ``speed_gain`` bypasses the
+        single enforcement point outright. Wiring it means re-running
+        ``throw_envelope.evaluate(flight_time_s, k_v * event_vel_mps)`` on the
+        TRIMMED speed, at the point of application — not relying on a gate that
+        already ran against the untrimmed value.
         """
         return float(self._kv)
 

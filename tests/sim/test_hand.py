@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import mujoco
 
+from jugglebot import hardware_config as hw
 from sim.plant.mujoco_plant import MuJoCoPlant
 
 
@@ -36,12 +37,26 @@ class TestHandModel:
         assert hand_id >= 0, "hand body not found"
 
     def test_hand_slide_joint(self, plant):
+        """Joint range is 0 .. the CONFIGURED physical travel.
+
+        Read from ``jugglebot_geometry.hand_stroke_mm`` rather than written down
+        here.  This assertion hardcoded 0.355 and went stale on 2026-08-18 when
+        the operator measured the sensorised hand and the key moved to 344.75 —
+        making it the third place that correction failed to reach, after
+        ``mujoco_plant.py``'s clip bound and the MJCF itself.  Hardcoding it
+        again would just reset that clock.
+
+        NOT ``teensy_trajectory.hand_stroke_m`` (0.355) — that is the
+        throw-profile basis and is a different number on purpose.
+        """
         m = plant.model
         jid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, 'hand_slide')
         assert jid >= 0, "hand_slide joint not found"
-        # Check range: 0 to 0.355 m
         assert m.jnt_range[jid][0] == pytest.approx(0.0, abs=1e-6)
-        assert m.jnt_range[jid][1] == pytest.approx(0.355, abs=1e-4)
+        assert m.jnt_range[jid][1] == pytest.approx(
+            hw.GEOM_HAND_STROKE_MM / 1000.0, abs=1e-6), (
+            "hand_slide range disagrees with jugglebot_geometry.hand_stroke_mm — "
+            "regenerate the model: python sim/model/generate_mjcf.py")
 
     def test_hand_actuator(self, plant):
         m = plant.model
@@ -65,8 +80,23 @@ class TestHandCommand:
     """Hand responds to position commands correctly."""
 
     def test_command_to_prime(self, plant):
-        """Command hand to prime position, verify it settles within 1 mm / 500 ms."""
-        prime_mm = 9.858 * 2.0 * np.pi * 5.21  # ~322.7 mm
+        """Command hand to prime position, verify it settles within 1 mm / 500 ms.
+
+        The expectation is DERIVED, not a literal.  It read
+        ``9.858 * 2π * 5.21`` (~322.7 mm) until 2026-08-21 — the pre-Phase-3
+        prime, converted with the wrong gain (no ``LINEAR_GAIN_FACTOR``) — and
+        pinned ``MuJoCoPlant`` to the same stale pair, so the sim reproduced the
+        76.5 ms prelude Phase 3 removed on hardware.  Deriving it here means a
+        future codegen change to ``HAND_STROKE_TOP_REV`` moves the test with the
+        plant instead of failing it.
+        """
+        linear_gain_rev_per_m = (
+            hw.TEENSY_TRAJ_LINEAR_GAIN_FACTOR
+            / (2.0 * np.pi * hw.TEENSY_TRAJ_HAND_SPOOL_RADIUS_M)
+        )
+        prime_mm = (hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0
+                    + hw.HAND_STROKE_TOP_REV / linear_gain_rev_per_m * 1000.0)
+        assert prime_mm == pytest.approx(335.0, abs=1e-6)
         plant.hand_to_prime()
         # Step for 500 ms at 20 ms intervals
         for _ in range(25):

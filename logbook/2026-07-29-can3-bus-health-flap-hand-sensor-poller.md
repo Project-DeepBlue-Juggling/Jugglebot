@@ -17,7 +17,7 @@ files_changed:
   - controller/teensy_link/protocol.py
   - docs/teensy-udp-protocol.md
   - logbook/INDEX.md
-  - plans/active/hand-ball-sensor.md
+  - plans/archived/hand-ball-sensor.md
   - ros_ws/src/jugglebot/Teensy_code_canbridge/README.md
   - ros_ws/src/jugglebot/Teensy_code_canbridge/Teensy_code_canbridge.ino
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp
@@ -298,7 +298,7 @@ is what would confirm it.
 | **H-D** | A `bench_sysid` build got flashed | **KILLED from the bag** (no serial banner needed) | (a) The poll grid measures **exactly 50 Hz** with **zero** intervals below 18.999 ms — a 250 Hz forced diagnostic poll would be unmissable; (b) `/hand_telemetry` and `/robot_state` run at **99.62 Hz** = `TELEM_RATE_HZ 100`, not the bench variant's 250 (`canbridge_config.h:94-98`); (c) **no topic anywhere in the bag** runs at 250 Hz (fastest is `/bb/axis_estimates` at 100.65 Hz). Plus `default_envs = teensy41` landed in `73d70c6`, before the flash. |
 | **H-E** | Duplicate-ID collision on `0x0C4` | **KILLED** | The Platform Teensy does host an RxSdo timing analyser, but `timingID = (node_id << 5) \| 0x04` with `node_id = 0` (`Teensy_code/Teensy_code.ino:125-129`) → id **`0x004`**, used **RX-only as a filter** (`:482`, `if (msg.id != timingID) return;`). Nothing else on CAN3 transmits `0x0C4`. |
 | **H-F** | "The poller is a victim of pre-existing marginal CAN3" | **KILLED** | 11 clean baselines, **including 6 idle** and 1 uptime-matched. |
-| **H-G** | "The poller isn't even flashed" | **KILLED — and worth recording** | `plans/active/hand-ball-sensor.md` still said Phases 3/4 were **"NOT flashed"**, which led one sub-investigation to the wrong conclusion before the bag corrected it. **Stale plan documents actively mislead.** Those cells are corrected in this commit. |
+| **H-G** | "The poller isn't even flashed" | **KILLED — and worth recording** | `plans/archived/hand-ball-sensor.md` still said Phases 3/4 were **"NOT flashed"**, which led one sub-investigation to the wrong conclusion before the bag corrected it. **Stale plan documents actively mislead.** Those cells are corrected in this commit. |
 
 ### Blast radius
 
@@ -883,7 +883,7 @@ exclusion ladder, conviction evidence, and the landed changes:
 
 - **[2026-07-29 23:xx] A sub-investigation concluded the poller could not be
   implicated because it "isn't flashed".**
-  **WITHDRAWN:** that came from `plans/active/hand-ball-sensor.md`, which still marked
+  **WITHDRAWN:** that came from `plans/archived/hand-ball-sensor.md`, which still marked
   Phases 3/4 as **"NOT flashed"** after the flash had happened. The bag corrected it:
   `/hand_telemetry` carries a 50 Hz poll grid and live ball-state transitions.
   **Superseded by:** Diagnosis § *"The only new CAN3 wire activity"* and H-G. Lesson
@@ -957,7 +957,7 @@ exclusion ladder, conviction evidence, and the landed changes:
   `logbook/2026-07-29-hand-sensor-ros-surface.md` — the `/hand_telemetry` path the
   poll-health statistics were measured from; FIX B follows the same additive-MsgType
   precedent.
-- `plans/active/hand-ball-sensor.md` — the plan whose Phase 3/4 "NOT flashed" cells
+- `plans/archived/hand-ball-sensor.md` — the plan whose Phase 3/4 "NOT flashed" cells
   misled a sub-investigation (being corrected in parallel).
 - Memory `project_canhub_tier2_validated` — can-bridge FW/PROTOCOL version discipline;
   FIX A bumps `FW_VERSION` 4 → 5 with **no** `PROTOCOL_VERSION` change.

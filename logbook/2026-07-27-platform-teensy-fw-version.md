@@ -2,7 +2,7 @@
 title: Platform Teensy FW_VERSION — the only deployment in the stack that failed silently
 type: feature
 date: 2026-07-27
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — hand-command-continuity Phase 6"
 related_plan: "hand-command-continuity.md"
 files_changed:
@@ -20,7 +20,7 @@ files_changed:
   - tests/ros/conftest.py
   - tests/hardware/session_anomaly_fixes.md
   - tests/hardware/session_phase8_toss_hardware.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
   - logbook/2026-07-27-velocity-continuous-prelude.md
   - .gitignore
@@ -390,7 +390,32 @@ desk, **FW-1** and **FW-2** at stage 3, **H4.0d** in the § CHECK HAND-4 pre-fli
 
 ## Related
 
-- Plan: `plans/active/hand-command-continuity.md` § Phase 6
+- Plan: `plans/archived/hand-command-continuity.md` § Phase 6
 - Contract: `ros_ws/docs/platform_fw_version.md` (C-PLATFW-1)
 - Phase 4 (the flash this confirms): `2026-07-27-velocity-continuous-prelude.md`
 - Bench: `tests/hardware/session_anomaly_fixes.md` § Section FW
+## Close-out — 2026-08-21
+
+**Status `in-progress` → `resolved`.** Gated on the operator's build + flash +
+relaunch, then `FW-1` / `FW-2` / `H4.0d`. All ran at the 2026-07-27 sitting:
+`FW-1` and `FW-2` PASSED on **all six launches**, with
+`PLATFORM_FW_CHECK: OK — Platform Teensy reports v1`. The check has since done
+the job it was built for twice more — the board is on **FW 3** and the runbook's
+FW rows are read against `teensy_link/rpc_args.py::PLATFORM_FW_VERSION_EXPECTED`
+rather than a number restated in prose.
+
+**Numbering since this entry**: `2` (2026-07-28, the C-HAND-2 decel feedforward)
+and `3` (2026-08-18, the hand end-stop correction). The history lives inline in
+`Teensy_code_platform.ino`'s `FW_VERSION` comment — obligation **D** — and is
+deliberately not duplicated here or in `ros_ws/docs/platform_fw_version.md`.
+
+**One thing this entry got right that cost a session to re-learn**: prose copies
+of the expected version rot, and a runbook expecting a superseded version sends
+the operator to re-flash a *correctly flashed* board. That is exactly what
+`session_anomaly_fixes.md` rows **FW-1** and **H4.0d** did between 2026-08-18 and
+2026-08-21, when they still expected `v2` on a `v3` board.
+
+**Both operator questions remain open, unchanged**: whether a *toss start* should
+refuse on a definite `version == 0`, and whether the `UNKNOWN` verdict should
+become recoverable within a launch. Both are recorded in
+`ros_ws/docs/platform_fw_version.md`; neither blocks anything.

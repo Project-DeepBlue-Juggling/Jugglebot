@@ -133,7 +133,20 @@ def encode_deactivate(axis: int = AXIS_ALL) -> bytes:
 
 
 def encode_sdo_read(axis: int, endpoint: int) -> bytes:
-    """SDO_READ: arbitrary parameter read (response returns async on TxSdo)."""
+    """SDO_READ: arbitrary parameter read — FIRE-AND-FORGET. The value never
+    reaches the Jetson, so this CANNOT be used to read a register back.
+
+    The ODrive does answer on TxSdo, but nothing correlates that reply to the
+    caller: ``rpc.cpp``'s SDO_READ case returns an empty result blob, and
+    ``can_buses.cpp``'s TxSdo decode consumes a reply ONLY for the hand's
+    ``get_gpio_states`` (the ball sensor), discarding every other. No uplink frame
+    carries an arbitrary SDO value. The hand is refused outright — SDO_READ is
+    absent from ``hand_axis6_permitted``, so axis 6 gets ERR_REJECTED before
+    anything leaves the Teensy.
+
+    Reading a register back needs a firmware change, not a caller change; the
+    analysis is in ``odrive-config-drift-assertion.md``.
+    """
     return ArgSdoRead(axis=int(axis), endpoint=int(endpoint)).pack()
 
 
@@ -287,7 +300,13 @@ PLATFORM_FW_VERSION_UNVERSIONED = 0
 #: (ros_ws/docs/hand_decel_feedforward.md). A board still on 1 is not unsafe — it
 #: simply coasts past the stroke end as it did before — but it invalidates every
 #: § CHECK HAND-7 bench row, which is why the check warns loudly.
-PLATFORM_FW_VERSION_EXPECTED = 2
+#: 3 (2026-08-18) = the hand END-STOP correction, Geometry::HAND_MOTOR_HARD_STOP_REVS
+#: 11.1 -> 10.8 rev (operator-measured metal contact). The commanded profiles are
+#: unchanged — SMOOTH_MOVE_POS_CEIL_REV holds at 10.60 rev because the margin moved
+#: 0.5 -> 0.2 with the base — but smoothMoveMaxDuration() moves 0.80054 -> 0.78964 s,
+#: so a board on 2 still emits preludes up to 0.8005 s and bench row H4.10 scores it
+#: as unflashed.
+PLATFORM_FW_VERSION_EXPECTED = 3
 
 
 def decode_platform_fw_version(data: bytes) -> int:
@@ -368,7 +387,41 @@ def decode_platform_fw_version(data: bytes) -> int:
 #: operator flashes: /link_status will read `11 (SKEW — expected v12)`, which is
 #: the CORRECT report — the tree has FW 12, the board does not — and it is
 #: advisory everywhere, never enforced.
-EXPECTED_BRIDGE_FW_VERSION = 12
+#: 13 (2026-08-14) = the RingDiag (0x92) CAN RX-ring true-occupancy census: the
+#: conviction instrument for the FlexCAN_T4 `_available` leak, which is the
+#: surviving candidate mechanism after S2 killed the cache-AGE hypothesis. The
+#: library's ``events()`` pops the RX ring before its ``NVIC_DISABLE_IRQ`` guard,
+#: so the ISR's ``_available++`` races the task-side ``_available--``
+#: one-directionally, the count under-reports, and the bridge's drain loop leaves
+#: a residue that makes every delivery N frames old. ``getRXQueueCount()`` returns
+#: that same corrupted count, so every counter the bridge already had is blind to
+#: it — hence a new frame rather than a new field. Additive again, so an FW 12
+#: board decodes every other frame identically and stays fully usable; it simply
+#: sends no 0x92, and ``/ring_diag`` records EMPTY rather than erroring. The same
+#: bumped-while-the-board-is-behind situation as 11 and 12 above applies until the
+#: operator flashes: ``/link_status`` will read `12 (SKEW — expected v13)`, which
+#: is the CORRECT report — the tree has FW 13, the board does not — and it is
+#: advisory everywhere, never enforced.
+#: 14 (2026-08-14) = THE FIX for that leak, now convicted on hardware rather than
+#: suspected: FW 13's ``/ring_diag`` on a 4.03 h board read ``leak_jb`` = 247–248
+#: (``true_depth`` 247–248 against ``avail_reported`` 0, hwm 249 ≈ 97 % of one
+#: 256-slot lap) on the 500 Hz-loaded jugglebot bus, against 1 on bb and 0 on
+#: cone — the arrival × pop ordering the mechanism predicts — with end-to-end leg
+#: lag 19.9 ms fresh vs 252.2 ms at 3.80 h. Two vendored-library patches in
+#: ``lib/FlexCAN_T4/FlexCAN_T4.tpp``'s ``events()``: the RX pop now runs inside the
+#: bus's ``NVIC_DISABLE_IRQ`` mask (with ``dsb; isb``), so the ISR's
+#: ``_available++`` can no longer be swallowed; and the dormant ``mb == -1``
+#: TX-deferral refill loop gets its missing ``break`` (unreachable at
+#: ``tx_deferred == 0``, so it cannot change live behaviour).
+#: WIRE-INVISIBLE, like 9→10 — no MsgType, no payload, PROTOCOL_VERSION still 5 —
+#: so a board on 13 decodes identically and keeps sending 0x92; what it does NOT
+#: have is the fix, so its RX ring keeps ratcheting and its leg lag keeps growing
+#: with uptime. RingDiag is retained UNCHANGED on purpose: it is the fix's own
+#: proof, and post-fix acceptance is ``leak`` ≡ 0 on all three buses at any
+#: uptime. Same bumped-while-the-board-is-behind situation until the operator
+#: flashes: ``/link_status`` will read `13 (SKEW — expected v14)`, which is the
+#: CORRECT report, and it is advisory everywhere, never enforced.
+EXPECTED_BRIDGE_FW_VERSION = 15
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

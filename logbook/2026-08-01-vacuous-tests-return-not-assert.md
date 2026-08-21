@@ -11,7 +11,7 @@ files_changed:
   - pyproject.toml
   - CLAUDE.md
   - run_tests.sh
-  - plans/active/refactor-2026-07.md
+  - plans/parked/refactor-2026-07.md
   - logbook/INDEX.md
   - logbook/2026-07-31-protocol-version-duplicate-pin.md
 subsystem:
@@ -73,7 +73,7 @@ Detection was incidental: the parallel-gate work surfaced 51
 - Straggler from the refactor programme, landed here because this commit owns the
   files: the three `serial` tests in the motor_guard files are demoted to
   `nightly`, which empties the default gate's serial phase. `run_tests.sh`'s header
-  and `plans/active/refactor-2026-07.md` are rippled to match.
+  and `plans/parked/refactor-2026-07.md` are rippled to match.
 - Also backfills the `INDEX.md` row for
   `2026-07-31-protocol-version-duplicate-pin` (that entry landed without one) and
   drops its now-retired `commits: PENDING` placeholder.

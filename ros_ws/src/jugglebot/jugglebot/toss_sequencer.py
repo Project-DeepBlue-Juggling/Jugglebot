@@ -23,7 +23,13 @@ where the reload receives from BB):
 
 1. **CHECKING** — loud precondition rejects, strictest first: the tier gate
    (config ``'8a'``/``'8b'`` — anything else ``REJECTED_TIER``), the static goal
-   parameters (delay floor, flight-time band, the Tier-8b displaced-throw gates —
+   parameters (delay floor, flight-time VALIDITY, the DERIVED throw envelope —
+   ``REJECTED_THROW_ENVELOPE`` when the commanded release speed leaves the
+   feasibility set that ``motion/trajectory/throw_envelope`` computes from the
+   configured end stop, torque/current, regen and timing limits; the refusal
+   names the binding bound and quotes the computed envelope, and since
+   2026-08-18 it — not a hand-picked ``[0.55, 1.10]`` band — is what bounds
+   throw height, the Tier-8b displaced-throw gates —
    ``REJECTED_POSE_UNKNOWN`` when the platform's live commanded pose (⇒ the throw
    site A) could not be read, ``REJECTED_DISPLACEMENT`` for |B−A| past the cap or
    past the closed-form quintic reach bound over the flight,
@@ -186,6 +192,18 @@ from typing import Optional
 # can never drift into two spellings of the same state.
 from jugglebot.ball_possession import EVIDENCE_UNKNOWN
 
+# The derived throw-admission envelope (contract C-HAND-3,
+# ros_ws/docs/hand_throw_envelope.md).  This is the ONE import in this module
+# that is NOT mirrored by a local literal + drift-guard pin, and that asymmetry
+# is deliberate: the local-copy pattern below exists so a nominal PLANNING value
+# stays readable standalone, but a SAFETY envelope's whole point is that exactly
+# one expression of it exists.  A pinned copy of `10.8 rev minus the coast` here
+# would be a second place for the end stop to be wrong — which is the failure
+# this contract was written after (the stop read 11.1 rev, 0.3 past metal, for
+# the life of the constant).  It is still ROS-free: throw_envelope imports only
+# math, the generated config, and motion.trajectory (numpy, no rclpy).
+from jugglebot.motion.trajectory import throw_envelope
+
 # ── Feedback phases (Toss.action feedback.phase — LOCKED strings) ──────────────
 PHASE_CHECKING = 'CHECKING'
 PHASE_POSITIONING = 'POSITIONING'
@@ -270,7 +288,7 @@ MIN_THROW_EVENT_DELAY_S = 1.0        # floor on event_delay at dispatch. DERIVED
                                      # measured (Phase-5 T0 hard-confirms): prelude
                                      # smooth-move ≤ full stroke 0.758 s — the QUINTIC
                                      # T = √(Δ·QUINTIC_S2_MAX/A) the firmware actually
-                                     # solves (Trajectory.h:257) over 9.9594 rev, the
+                                     # solves (Trajectory.h:365, smoothMoveDuration) over 9.9594 rev, the
                                      # derived stroke top since 2026-07-26 (was 9.858
                                      # ⇒ 0.754 s); matches the 0.68–1.05 s ascents
                                      # observed. NOT the 0.63 s a triangular profile
@@ -291,8 +309,23 @@ DEFAULT_TOSS_FLIGHT_TIME_S = 0.8     # 0 => this — the NO-CONFIG fallback only
                                      # and passes the resolved value into the ctor;
                                      # this literal serves standalone/test use. The
                                      # drift-guard test pins the two equal.
-FLIGHT_TIME_MIN_S = 0.55             # plan sweep floor (throw speed ≈ 2.7 m/s)
-FLIGHT_TIME_MAX_S = 1.10             # plan sweep ceiling (≈ 5.4 m/s < 7.0 Teensy ceiling)
+# ── The flyable flight band — DERIVED, not declared (contract C-HAND-3) ───────
+# Until 2026-08-18 these were two hand-picked literals: 0.55 "plan sweep floor"
+# and 1.10 "plan sweep ceiling (≈ 5.4 m/s < 7.0 Teensy ceiling)".  The ceiling
+# was sized from the hand's DECEL AUTHORITY alone and never against its end
+# stop — it could not have been, because the stop was declared at 11.1 rev,
+# 0.3 rev PAST metal, until the 2026-08-18 correction to 10.8.  Measured against
+# the corrected stop, a throw at the old 1.10 s ceiling coasts to a modelled
+# 12.17 rev — 1.37 rev (43 mm) past metal.
+#
+# These are now the REPORTED PROJECTION of the derived envelope onto Tier-8a
+# co-located flight times, kept as module names because the sim sweep, the bench
+# runbook and several tests read the band.  **They are not the gate**: the gate
+# is throw_envelope.evaluate(flight_time, RESOLVED release speed), because a
+# Tier-8b displaced throw is AIMED and releases faster than its flight time
+# alone implies, so a T-only band would silently under-bound it.
+FLIGHT_TIME_MIN_S = throw_envelope.MIN_FLIGHT_TIME_S
+FLIGHT_TIME_MAX_S = throw_envelope.MAX_FLIGHT_TIME_S
 
 TOSS_MIN_ANNOUNCE_LEAD_S = 2.5       # announce→landing lead below which the stock CCN
                                      # announcement pre-tilt degenerates toward
@@ -339,8 +372,16 @@ TOSS_CANCEL_CUTOFF_S = 0.25          # node-level (§ cancellation): cancels hon
                                      # FSM's own terminal.
 
 # Workspace pre-check (loud early reject; the feasibility gate remains the truth —
-# these are planning-envelope values, no repo constant enforces ±150):
-TOSS_XY_LIMIT_MM = 150.0             # |x|, |y| bound on the nominated catch pose
+# these are planning-envelope values, POLICY not physics):
+TOSS_XY_LIMIT_MM = 150.0             # |x|, |y| bound on the nominated catch pose —
+                                     # the NO-CONFIG fallback only since 2026-08-14:
+                                     # the node resolves hw.JB_OP_TOSS_WORKSPACE_XY_MM
+                                     # (YAML toss_workspace_xy_mm, operator-adjustable)
+                                     # and passes it into the ctor (workspace_xy_mm).
+                                     # The YAML default sits ABOVE the displacement
+                                     # cap so the centroid-vs-cup chain divergence
+                                     # (2.07 % of displacement) stops binding at the
+                                     # cap edge — see the YAML key's comment.
 TOSS_ACTIVE_Z_MM = 170.0             # ACTIVE plane (JB_OP_DEFAULT_ACTIVE_Z_MM; pinned
                                      # by the config drift-guard test)
 TOSS_Z_BAND_MM = 50.0                # |z − ACTIVE| bound (the sweep is ±30)
@@ -382,30 +423,40 @@ TOSS_MAX_DISPLACEMENT_MM = 150.0
 REACH_PEAK_VEL_FACTOR = 1.875
 REACH_PEAK_ACC_FACTOR = 5.7735
 REACH_PEAK_JERK_FACTOR = 60.0
-# Session limits the closed-form gate checks against — the generated config
-# working point (hw.JB_TRAJ_LEG_VEL/ACC/JERK_LIMIT, pinned by the drift-guard
-# test; local copies keep this module importable standalone). Stated caveat:
-# runtime set_limits drift is possible — trajectory_node's own gate remains the
-# truth; this is the loud+early copy so an infeasible A→B reach rejects BEFORE
-# the throw instead of WORKSPACE/TOO_FAST-ing mid-flight. At the OLD 70 mm cap
-# the bound never bound (d_max ≥ 83.2 mm at T = 0.55 s) and was a contract, not
-# a live constraint. **At the Phase-E 150 mm cap it is LIVE and binding**: it
-# refuses a 150 mm goal below T ≈ 0.669 s (60·d/T³ = jerk), which is the gate
-# doing exactly its job — the real planner is only 3/8 directions at 150 mm /
-# T = 0.55 s. It is also over-conservative at T = 0.60 (bound 108 mm, real
-# frontier 175 mm), so a legitimate 150 mm @ 0.60 s goal is refused; that is
-# accepted (loud, pre-throw, and the operator raises T rather than flies blind).
+# FALLBACK limits for the closed-form gate — the generated-config YAML working
+# point (hw.JB_TRAJ_LEG_VEL/ACC/JERK_LIMIT, pinned by the drift-guard test;
+# local copies keep this module importable standalone). Since 2026-08-14 the
+# gate PREFERS the LIVE session limits published on trajectory/status
+# (TossObservations.leg_*_limit_*): trajectory_node's set_limits ramp is the
+# operator's primary movement-acceptance authority, so the pre-throw bound must
+# judge against what the feasibility gate will ACTUALLY enforce at t_release —
+# a ramp-down otherwise passes a goal the planner refuses MID-FLIGHT, and a
+# ramp-up is refused pre-throw for no physical reason. These copies engage only
+# when the live values are absent (0.0: pre-field publisher, stale status, bag
+# replay, standalone use), degrading to exactly the pre-2026-08-14 behaviour.
+# History of the bound itself: at the OLD 70 mm cap it never bound (d_max ≥
+# 83.2 mm at T = 0.55 s); at the Phase-E 150 mm cap it is LIVE and binding at
+# the default limits — it refuses a 150 mm goal below T ≈ 0.669 s (60·d/T³ =
+# jerk), while over-conservative at T = 0.60 (bound 108 mm, real frontier
+# 175 mm); the operator raises T, the live limits, or both.
 REACH_VEL_LIMIT_MMPS = 1000.0
 REACH_ACC_LIMIT_MMPS2 = 5000.0
 REACH_JERK_LIMIT_MMPS3 = 30000.0
 
 
-def reach_displacement_limit_mm(flight_time_s: float) -> float:
+def reach_displacement_limit_mm(flight_time_s: float,
+                                vel_mmps: 'float | None' = None,
+                                acc_mmps2: 'float | None' = None,
+                                jerk_mmps3: 'float | None' = None) -> float:
     """Max A→B displacement (mm) the deferred catch reach can span in
-    ``flight_time_s`` under the module's session limits — the closed-form
-    inversion of the quintic peak factors (d_max = min(vel·T/1.875,
-    acc·T²/5.7735, jerk·T³/60)). Reads the module limits at call time (spot
-    values: T = 0.55 → 83.2 mm jerk-bound; T = 0.80 → 256 mm jerk-bound).
+    ``flight_time_s`` — the closed-form inversion of the quintic peak factors
+    (d_max = min(vel·T/1.875, acc·T²/5.7735, jerk·T³/60)).
+
+    Each limit argument is the LIVE session value from trajectory/status when
+    the caller has one; ``None`` (or 0.0 upstream, mapped to ``None`` by the
+    gate) falls back to the module's YAML-default copies, preserving the
+    pre-live-limits behaviour bit-for-bit (spot values at the defaults:
+    T = 0.55 → 83.2 mm jerk-bound; T = 0.80 → 256 mm jerk-bound).
 
     **It is an approximation of the real gate in BOTH directions, measured.**
     Against ``planner.build_catch`` over the 8-direction ring
@@ -418,9 +469,12 @@ def reach_displacement_limit_mm(flight_time_s: float) -> float:
     ``trajectory_node``'s own feasibility gate, and the SAFETY margin against
     the optimistic half is ``max_displacement_mm``, not this bound."""
     t = float(flight_time_s)
-    return min(REACH_VEL_LIMIT_MMPS * t / REACH_PEAK_VEL_FACTOR,
-               REACH_ACC_LIMIT_MMPS2 * t * t / REACH_PEAK_ACC_FACTOR,
-               REACH_JERK_LIMIT_MMPS3 * t ** 3 / REACH_PEAK_JERK_FACTOR)
+    vel = REACH_VEL_LIMIT_MMPS if vel_mmps is None else float(vel_mmps)
+    acc = REACH_ACC_LIMIT_MMPS2 if acc_mmps2 is None else float(acc_mmps2)
+    jerk = REACH_JERK_LIMIT_MMPS3 if jerk_mmps3 is None else float(jerk_mmps3)
+    return min(vel * t / REACH_PEAK_VEL_FACTOR,
+               acc * t * t / REACH_PEAK_ACC_FACTOR,
+               jerk * t ** 3 / REACH_PEAK_JERK_FACTOR)
 
 # ── Tier-8a vertical-toss ballistics (default event_vel) ───────────────────────
 # Kept as module constants (not a generated-config / motion import) so this module
@@ -531,6 +585,24 @@ class TossObservations:
                                       # live time_at_land of the latched ball (ROS→perf
                                       # crossed by the node), refreshed while in flight —
                                       # feeds achieved_flight_s
+    leg_vel_limit_mmps: float = 0.0   # LIVE session leg limits from a FRESH
+    leg_acc_limit_mmps2: float = 0.0  # trajectory/status — what the feasibility
+    leg_jerk_limit_mmps3: float = 0.0
+                                      # gate is enforcing RIGHT NOW (YAML working
+                                      # point as ramped by trajectory/set_limits,
+                                      # clamped to the YAML ceilings). Consumed by
+                                      # the CHECKING displacement gate's closed-form
+                                      # reach bound so the pre-throw verdict judges
+                                      # against the SAME limits the planner will
+                                      # enforce at t_release. 0.0 = unknown
+                                      # (pre-field publisher, STALE status, bag
+                                      # replay): the gate falls back to the module's
+                                      # YAML-default copies — the pre-2026-08-14
+                                      # behaviour, NOT a refusal, because the bound
+                                      # is a loud-early convenience and the planner
+                                      # remains the truth (an over-permissive
+                                      # fallback surfaces as the planner's own
+                                      # refusal at dispatch, never as motion).
 
 
 @dataclass
@@ -610,8 +682,21 @@ class TossSequencer:
     max_displacement_mm: float = TOSS_MAX_DISPLACEMENT_MM
                                                 # Tier 8b |B−A| cap; the node
                                                 # passes hw.JB_OP_TOSS_MAX_
-                                                # DISPLACEMENT_MM (drift-guard
-                                                # test pins the two equal)
+                                                # DISPLACEMENT_MM. The YAML key
+                                                # is OPERATOR-ADJUSTABLE (2026-08-14):
+                                                # the module literal is only the
+                                                # no-config fallback, and the test
+                                                # pins the MECHANISM (ctor value
+                                                # is what gates), not equality.
+    workspace_xy_mm: float = TOSS_XY_LIMIT_MM   # |x|,|y| planning-envelope bound
+                                                # on B (and, 8b, on A). The node
+                                                # passes hw.JB_OP_TOSS_WORKSPACE_
+                                                # XY_MM (YAML toss_workspace_xy_mm,
+                                                # operator-adjustable); the module
+                                                # literal is the no-config fallback.
+                                                # POLICY, not physics: the planner's
+                                                # feasibility gate + the firmware
+                                                # stroke clamp remain the truth.
     stay_at_pose_on_caught: bool = True         # CAUGHT terminal: True ⇒
                                                 # ACTION_STAY (hold the catch
                                                 # pose so the next toss can throw
@@ -670,6 +755,9 @@ class TossSequencer:
         # A NEGATIVE value is preserved so CHECKING rejects it loudly
         # (REJECTED_FLIGHT_TIME / REJECTED_CANT_MAKE_LEAD) — silently coercing a
         # sign error into the default would throw a physically different toss.
+        # (Since 2026-08-18 REJECTED_FLIGHT_TIME means exactly this: the flight
+        # time is not a positive finite number. An in-range-but-unflyable T is
+        # REJECTED_THROW_ENVELOPE, which names the bound it broke.)
         if self.flight_time_s == 0.0:
             self.flight_time_s = DEFAULT_TOSS_FLIGHT_TIME_S
         if self.throw_delay_s == 0.0:
@@ -792,7 +880,14 @@ class TossSequencer:
                 return self._reject('TIER')
             if self.throw_delay_s < self.min_throw_delay_s:
                 return self._reject('CANT_MAKE_LEAD')
-            if not (FLIGHT_TIME_MIN_S <= self.flight_time_s <= FLIGHT_TIME_MAX_S):
+            if not (math.isfinite(self.flight_time_s)
+                    and self.flight_time_s > 0.0):
+                # VALIDITY only since 2026-08-18 — the flyable BAND moved to the
+                # derived envelope below (C-HAND-3).  A negative flight time is
+                # the sign typo __post_init__ deliberately preserves, and a
+                # non-positive T makes every downstream ballistic inverse
+                # meaningless, so it dies here rather than as a confusing
+                # envelope refusal.
                 return self._reject('FLIGHT_TIME')
             x, y, z = self.catch_pose_stow_mm
             if self.tier == TIER_8B:
@@ -817,9 +912,20 @@ class TossSequencer:
                 # release, with the ball already airborne.
                 ax, ay = self.throw_site_xy_mm
                 displacement = math.hypot(x - float(ax), y - float(ay))
+                # The reach bound judges against the LIVE session limits when
+                # the node observed them on a FRESH trajectory/status (`or
+                # None` maps the 0.0 unknown-sentinel to the YAML-default
+                # fallback) — so a set_limits ramp moves THIS gate in lockstep
+                # with the feasibility gate it fronts for: soft limits refuse
+                # here, pre-throw, instead of at t_release with the ball
+                # airborne; raised limits stop refusing reaches the planner
+                # would happily fly.
                 if (displacement > self.max_displacement_mm
                         or displacement > reach_displacement_limit_mm(
-                            self.flight_time_s)):
+                            self.flight_time_s,
+                            vel_mmps=obs.leg_vel_limit_mmps or None,
+                            acc_mmps2=obs.leg_acc_limit_mmps2 or None,
+                            jerk_mmps3=obs.leg_jerk_limit_mmps3 or None)):
                     return self._reject('DISPLACEMENT')
             if self.tilt_clamp_exceeded:
                 # The motion-module clamp gate fired: the required aim exceeds
@@ -847,7 +953,27 @@ class TossSequencer:
             if not (TEENSY_MIN_EVENT_VEL_MPS <= self.event_vel_mps
                     <= TEENSY_MAX_EVENT_VEL_MPS):
                 return self._reject('EVENT_VEL')
-            if (abs(x) > TOSS_XY_LIMIT_MM or abs(y) > TOSS_XY_LIMIT_MM
+            # THE derived feasibility gate (contract C-HAND-3). It runs HERE,
+            # after EVENT_VEL, for the same reason the tilt-clamp gate runs
+            # before it: this is the first point at which `event_vel_mps` is
+            # TRUSTWORTHY. For 8a it is the vertical ballistic inverse of T; for
+            # 8b it is the aim solution, and an aim that hit the tilt ceiling
+            # leaves the meaningless 8a fallback behind — refusing THAT against
+            # an end-stop model would name the hand for an aiming fault.
+            # The wire band goes first so a value the BRIDGE would raise on
+            # still reports REJECTED_EVENT_VEL, which routes at the wire.
+            #
+            # The message carries the binding bound BY NAME plus the computed
+            # envelope — `REJECTED_THROW_ENVELOPE(END_STOP:modelled peak 10.660
+            # rev at 4.436 m/s exceeds 10.600 rev …)` — because "too high" sends
+            # an operator to the wrong knob. It is a DISTINCT code from
+            # FLIGHT_TIME for the same reason: an END_STOP refusal is about the
+            # hand's coast, not about the clock.
+            envelope = throw_envelope.evaluate(self.flight_time_s,
+                                               self.event_vel_mps)
+            if not envelope.ok:
+                return self._reject('THROW_ENVELOPE', envelope.message)
+            if (abs(x) > self.workspace_xy_mm or abs(y) > self.workspace_xy_mm
                     or abs(z - TOSS_ACTIVE_Z_MM) > TOSS_Z_BAND_MM):
                 return self._reject('WORKSPACE')
             if self.tier == TIER_8B:
@@ -859,7 +985,8 @@ class TossSequencer:
                 # leave behind, and one where the pre-tilt POSITIONING move
                 # would be planned from an unvalidated pose.
                 ax, ay = self.throw_site_xy_mm
-                if abs(float(ax)) > TOSS_XY_LIMIT_MM or abs(float(ay)) > TOSS_XY_LIMIT_MM:
+                if (abs(float(ax)) > self.workspace_xy_mm
+                        or abs(float(ay)) > self.workspace_xy_mm):
                     return self._reject('WORKSPACE')
         # TOSS runs within the active streaming mode; leaving it mid-sequence is
         # the documented abort. A mode-exit mid-flight still terminates immediately
@@ -931,7 +1058,7 @@ class TossSequencer:
             # reply, an un-anchored bridge clock, a dead poller) — and it REFUSES
             # rather than passing, because a fail-open sensor gate is the exact
             # BallButler defect this project declined to copy
-            # (plans/active/hand-ball-sensor.md § "Three BallButler properties
+            # (plans/archived/hand-ball-sensor.md § "Three BallButler properties
             # deliberately not copied", row 1). C-POSSESS-1 § 3.3.
             if obs.ball_evidence == EVIDENCE_UNKNOWN:
                 return self._reject('BALL_UNKNOWN')

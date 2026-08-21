@@ -52,7 +52,8 @@ production-in-the-loop sim harness, and stages hardware bring-up.
 **Ball sourcing precondition:** a toss needs a ball already seated in the cup —
 the `Reload` action is the loader. The operator sequence is Reload → Toss
 (→ Toss …), which also means every toss session inherits the Phase-7 session
-disciplines (can-bridge Teensy reboot before each sitting; `uptime_ms` logged
+disciplines (~~can-bridge Teensy reboot before each sitting~~ — retired
+2026-08-15, FW 14 fixed the uptime lag; `uptime_ms` logged
 with any timing measurement; tracker-corruption verdicts judged by eye — **on the
 reload path only** since C-POSSESS-1 landed 2026-07-28; self-toss verdicts are now
 expected to be right, so a self-toss `MISSED` is a finding).
@@ -177,10 +178,24 @@ bench characterisation measures the real scatter; the gate re-runs with the
 measured value before any hardware catch attempt.
 
 Sweep axes: catch (x, y) across the workspace (centre + 4 corners at ±60 mm to
-start), catch z (±30 mm about ACTIVE), flight time 0.55–1.10 s (throw speeds
-≈2.7–5.4 m/s, within the 7 m/s hand ceiling with margin). Gate criterion (from
-the MVP plan): **≥ 9/10 toss-and-catch cycles at 2–3 m/s** per swept point,
-zero feasibility violations, all knots pump-accepted.
+start), catch z (±30 mm about ACTIVE), flight time **the derived envelope**
+(**SUPERSEDED 2026-08-18**: was the hand-picked 0.55–1.10 s, throw speeds
+≈2.7–5.4 m/s, "within the 7 m/s hand ceiling with margin" — which was the only
+physical justification the ceiling ever had, and the hand ceiling is not what
+binds. Contract **C-HAND-3**, `ros_ws/docs/hand_throw_envelope.md`, derives the
+band from the end stop, torque/current, regen and timing limits and gets
+**0.4949–1.1485 s** = 2.44–5.64 m/s = apex 0.300–1.617 m (the 2026-08-18 draft
+read 0.4949–0.8871 s / 0.965 m; the 2026-08-20 coast measurement on the flashed
+plant moved the ceiling back out past where it started, and the binding bound is
+now `DECEL_FF_HEADROOM`, not the end stop). `sim/toss_gate.py`'s
+`_FLIGHTS_S` now reads its outer rungs from that envelope, so the sweep follows
+it automatically; `tests/sim/test_toss_gate.py::test_sweep_points_inside_fsm_bands`
+additionally drives the real gate on each point's production release speed.
+**The old ceiling's real cost was the hand ODrive's −10.00 A braking clamp,
+removed 2026-08-18: with it live a 1.10 s toss modelled to 12.17 rev against a
+10.8 rev hard stop; measured without it, 10.294 rev.**). Gate
+criterion (from the MVP plan): **≥ 9/10 toss-and-catch cycles at 2–3 m/s** per
+swept point, zero feasibility violations, all knots pump-accepted.
 
 ## Implementation Phase Summary
 
@@ -202,7 +217,7 @@ The 2026-07-24 merge of `demo/bb-led-two-ball-juggle` lands the ladder
 primitives, probes, tests, and logbook history in the working branch. Full
 suite green is the phase gate. Doc pointers: `sim/JUGGLE_DEMO.md` gains a
 banner distinguishing the (paused) offline demo from the online ladder;
-`plans/active/bb-led-two-ball-juggle-demo.md` § status gains a merged-location
+`plans/archived/bb-led-two-ball-juggle-demo.md` § status gains a merged-location
 note; the 4 ladder entries never indexed on the demo branch
 (`2026-06-26-contact-mechanics-integration`, `2026-07-03-catch-control-formulation-design-basis`,
 `2026-07-03-motion-quality-review`, `2026-07-03-p2-selfcatch-reunification-tension`)
@@ -490,11 +505,17 @@ gates — the `±150 mm` planning box on `A` and the `150 mm` cap on `|B − A|`
 applied to a value 3.10 mm outside nominal. The offset is
 `hand_catch_offset·sin(receive tilt)` = 2.07 % of displacement, so it crosses the
 box at `|B| ≈ 147 mm`. Every refusal is loud, pre-throw and moves nothing; the
-remedy is one `go_home`. Pinned by
-`tests/ros/test_toss_sequencer.py::test_chaining_at_the_cap_is_refused_known_limitation`,
-documented as C-REACH-1 residual 7, and carried by the runbook's § SECTION DISP
-KNOWN LIMITATION box so the operator is never mis-routed. **Not fixed in this
-phase** — see the open question below; the fix is a frame decision, not a number.
+remedy is one `go_home`.
+**UPDATE 2026-08-14 — chaining refusal DISSOLVED by the box/cap separation**:
+the planning box is now the config key `toss_workspace_xy_mm` (default 160 =
+cap + 10 > cap × 1.03, i.e. above the 2.07 % divergence at the cap edge), so the
+parked centroid sits inside the box and chained goals at the cap are ADMITTED;
+back-to-centre from a cap-edge park still refuses on the `|B − A|` cap, which is
+a genuinely requested displacement. Pinned by
+`tests/ros/test_toss_sequencer.py::test_chaining_at_the_cap_box_dissolves_the_frame_divergence`,
+documented as C-REACH-1 residual 7 (updated in place). The frame decision below
+is therefore no longer *forced* by DISP-5/DISP-6 — those rungs run as written at
+the shipped box — but the centroid-vs-cup question itself stays open.
 
 **Open question the operator owns — the throw-site frame (centroid vs cup).**
 `trajectory/commanded_position` publishes the commanded centroid;
@@ -756,9 +777,13 @@ toss it repeats) → CONT-STEP-1 (the no-ball dry trace, the one sanctioned use 
   **Reload** verdicts still read `MISSED` on a real catch — the split-track
   mis-association is still open — and PASS counts on that path are still judged by
   eye + tracker-id evidence, as in the fourth sitting.
-- **Teensy-uptime tracking lag (open)** — all timing-sensitive measurements
-  (achieved flight time, catch error) are only meaningful with a fresh
-  can-bridge boot; `uptime_ms` is logged alongside every session artefact.
+- **Teensy-uptime tracking lag (CLOSED 2026-08-15)** — root cause was the vendored
+  FlexCAN_T4 `_available` RX-ring leak; FW 14 fixed it and validation at 5.8 h and
+  15.2 h of continuous uptime holds the lag at 10–20 ms with zero lead-clamp duty
+  (`logbook/2026-08-15-fw14-validated-arc-closed.md`). Timing-sensitive
+  measurements no longer require a fresh can-bridge boot. `uptime_ms` is still
+  logged alongside every session artefact — it is now the regression detector, not
+  a caveat — and `/link_status` carries an alarmed `latency_monitor` row.
 - **Firmware kind-1 time-budget race at short flights (found in Phase 1's
   control analysis, 2026-07-25).** The tracker-driven catch arm arrives
   mid-throw-decel; the Teensy windup budget silently drops it (Serial-only,

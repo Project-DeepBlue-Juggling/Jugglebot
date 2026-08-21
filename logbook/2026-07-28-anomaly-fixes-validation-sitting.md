@@ -2,18 +2,18 @@
 title: The anomaly-fix run meets hardware — every levelling and hand row passes, and the one genuinely open question came back ABORT
 type: investigation
 date: 2026-07-28
-status: in-progress
+status: tuned
 phase: "Self-toss anomaly fixes — hardware validation sitting (2026-07-27)"
-related_plan: "PROMPT-anomaly-fixes-orchestration.md"
+related_plan: "hand-command-continuity.md"
 sessions:
   - temp/logs/toss_trace_2026-07-27_15-35-56.jsonl
   - temp/logs/toss_trace_2026-07-27_15-37-55.jsonl
   - temp/logs/toss_trace_2026-07-27_15-39-50.jsonl
 files_changed:
   - logbook/INDEX.md
-  - plans/active/levelling-frame-contract.md
-  - plans/active/hand-command-continuity.md
-  - plans/active/catch-reach-degenerate-overshoot.md
+  - plans/parked/levelling-frame-contract.md
+  - plans/archived/hand-command-continuity.md
+  - plans/parked/catch-reach-degenerate-overshoot.md
   - tests/hardware/session_anomaly_fixes.md
 commits:
   - 2655b8a
@@ -1092,11 +1092,13 @@ None is planned yet; they are recorded there rather than duplicated here.
 
 ## Related
 
-- Plans: `plans/active/PROMPT-anomaly-fixes-orchestration.md` (umbrella),
-  `plans/active/levelling-frame-contract.md` (Phase 4),
-  `plans/active/hand-command-continuity.md` (Phase 5),
-  `plans/active/catch-reach-degenerate-overshoot.md` (Phase 4),
-  `plans/active/fk-convergence-tolerance.md`,
+- Plans: ~~`plans/active/PROMPT-anomaly-fixes-orchestration.md`~~ (umbrella —
+  **DELETED 2026-08-15** in `07f2361`, all 11 rows DONE; this entry's
+  `related_plan:` was re-pointed at `hand-command-continuity.md` on 2026-08-21),
+  `plans/parked/levelling-frame-contract.md` (Phase 4),
+  `plans/archived/hand-command-continuity.md` (Phase 5),
+  `plans/parked/catch-reach-degenerate-overshoot.md` (Phase 4),
+  `plans/archived/fk-convergence-tolerance.md`,
   `plans/active/single-ball-toss.md` (Phase 5 T-rungs).
 - Runbooks: `tests/hardware/session_anomaly_fixes.md` (§ THE RUN SHEET — the executed
   document), `tests/hardware/session_phase8_toss_hardware.md` (the T-rung ladder run
@@ -1112,3 +1114,40 @@ None is planned yet; they are recorded there rather than duplicated here.
 - Open siblings: the ERR_TIMEOUT ack epidemic, the tracker split-track corruption
   (2026-07-23 finding), and the 2026-07-18 can-bridge-uptime lag finding — all three
   are visible in this sitting's data and none is owned by this entry.
+## Close-out — 2026-08-21
+
+**Status `in-progress` → `tuned`.** Everything this sitting left unscored has
+since been scored, or has an owner that is not this entry:
+
+* **`H2.4` / `H3.6` / `H4.8` — SCORED PASS 2026-08-18**, offline from the natural
+  `SAFE_ABORT` in the 16:00:27 launch: the retract ran, min `pos_meas`
+  **−0.0611 rev**, settling at 0.0275; motion began T+0.187 s, `|pos| ≤ 0.5` rev
+  at T+0.697 s. The `SAFE_ABORT: hand retract dispatch failed` warning in that
+  launch is a **FALSE NEGATIVE** — the check samples telemetry before the hand
+  has begun moving.
+* **`H1.6` / `H4.7` — SCORED PASS BY MEASUREMENT 2026-08-21**: a full Platform
+  Teensy serial capture across a multi-height session (4.44 → 5.61 m/s) contains
+  **ZERO** `Not enough time for smooth-move`.
+* **The `no further tosses above 0.78 m` ACTION is LIFTED.** Its blocking
+  question — where is the physical end stop — is **ANSWERED at 10.8 rev, metal
+  contact** (2026-08-18). All three candidates this sitting argued over
+  (11.124 / 11.224 / 11.4) were too high, and the shipped 11.1 rev guard sat
+  **0.3 rev PAST metal**, so it was never protective: this sitting's five
+  ~1.2 m tosses at 10.8601–11.0621 rev were **0.06–0.26 rev past the stop**, not
+  "1.2 mm from the limit". The flight band is now DERIVED (contract C-HAND-3) and
+  was flown to its ceiling on 2026-08-21.
+* **Rows 1/2/`H2.2`/`H4.6`'s criterion defect — FIXED 2026-08-18/20**
+  (`logbook/2026-08-18-trunc-criterion-stroke-end.md`). All 69 post-fix throws in
+  the evidence base now read `trunc = -` / `seeds = 0`, and both real pre-fix
+  truncations still fire.
+
+**`tuned`, not `resolved`**, because three verdicts this sitting produced are
+owned elsewhere and are deliberately still open: **`ZSEAT-2`** (ABORT on its
+bounce-out arm, attribution INCONCLUSIVE) → `plans/active/catch-robustness.md`;
+**`LVL-2` and `LG-3`** (never run / precondition never established) →
+`plans/parked/levelling-frame-contract.md`, whose index row names them as two of
+its unpark triggers; and the **dispatch-shift** finding (`+54…+63 ms`, exceeding
+the 40 ms margin the arm gate budgets) which was the 2026-07-18 can-bridge-uptime
+lag reaching this gate — **CLOSED 2026-08-15**, transport fixed at can-bridge
+FW 14, end-to-end 10–20 ms
+(`plans/archived/bridge-temporal-trustworthiness.md`).

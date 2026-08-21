@@ -4,7 +4,7 @@ type: bugfix
 date: 2026-07-28
 status: tuned
 phase: "Self-toss anomaly fixes — follow-on item B (caught-gate)"
-related_plan: "PROMPT-anomaly-fixes-orchestration.md"
+related_plan: "catch-robustness.md"
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/ball_possession.py
   - ros_ws/src/jugglebot/jugglebot/reload_coordinator_node.py
@@ -18,9 +18,9 @@ files_changed:
   - tests/hardware/session_phase7_reload.md
   - tests/hardware/session_phase8_toss_hardware.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
-  - plans/active/catch-reach-degenerate-overshoot.md
+  - plans/parked/catch-reach-degenerate-overshoot.md
   - plans/active/single-ball-toss.md
-  - plans/active/levelling-frame-contract.md
+  - plans/parked/levelling-frame-contract.md
 commits:
   - 463a031
 subsystem:

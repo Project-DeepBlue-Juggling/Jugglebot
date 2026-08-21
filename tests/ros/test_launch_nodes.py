@@ -109,6 +109,16 @@ RECORDED_TOPICS = [
     # FW 12, and a silent topic is exactly what this list's add-never-trim rule
     # is for.
     '/cache_diag',
+    # The CAN RX-ring TRUE-occupancy census (FW 13 RING_DIAG 0x92) — the
+    # conviction instrument for the FlexCAN_T4 `_available` leak that S2 left as
+    # the surviving candidate mechanism. /cache_diag's ring fields CANNOT stand
+    # in: they are computed from getRXQueueCount(), i.e. from the very counter
+    # the race corrupts, so they read healthy through a fully-leaked ring. The
+    # verdict is a ratchet across an hours-long soak, so a session that publishes
+    # this without recording it produces nothing. It records EMPTY until the
+    # bridge is flashed to FW 13, and a silent topic is exactly what this list's
+    # add-never-trim rule is for.
+    '/ring_diag',
 ]
 
 

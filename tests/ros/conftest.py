@@ -242,6 +242,13 @@ class TrajectoryStatus:
     # is a bug.
     tilt_map_loaded: bool = False
     tilt_map_version: str = ''
+    # LIVE session leg limits (2026-08-14): the values the feasibility gate is
+    # enforcing right now (YAML working point as ramped by set_limits). 0.0 =
+    # absent, mirroring the real message — consumers fall back to the
+    # YAML-default module copies.
+    leg_vel_limit_mmps: float = 0.0
+    leg_acc_limit_mmps2: float = 0.0
+    leg_jerk_limit_mmps3: float = 0.0
 
 
 # ── jugglebot_interfaces DynamicTargetCommand / TargetFeedback (Phase 5) ──

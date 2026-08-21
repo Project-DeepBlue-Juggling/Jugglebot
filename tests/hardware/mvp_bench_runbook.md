@@ -31,7 +31,7 @@ been on hardware yet** — that is this runbook.
   `73dba2b`): chase-clamp tracking (cap-and-chase, never rejects in steady state),
   publish-first emitter (a knot never waits on planning), boundary-margin clamp (the
   S3 deadlock fix), escalation latch + hold backstop. Resolution + analysis corrections:
-  `plans/archived/2026-08-01 follower-cadence-and-divergence.md` § RESOLUTION.
+  `plans/archived/follower-cadence-and-divergence.md` § RESOLUTION.
 - Full suite (`pytest tests/ -q`, 2026-07-10, post-rework) = **2304 passed, 5 skipped,
   1 xfailed in 582.32 s**. (Pre-rework 2026-07-08 baseline: 2274 passed, 1 xfailed;
   ci-deep 2026-07-08 green.)
@@ -127,7 +127,7 @@ The operator has confirmed two independent changes as a result:
 
 **⚡ 2026-07-16 evening update (after the raised-limit run validated: bag
 `2026-07-16_17-38-15` ramped vel 100→200→280 mm/s, 22 moves, zero latches —
-inventoried in `plans/active/accel-ff-inertia.md`):**
+inventoried in `plans/parked/accel-ff-inertia.md`):**
 the ODrive leg `vel_limit` is now **12.0 rev/s ≈ 846 mm/s** and the
 `set_limits` ceilings are OPENED to **5000 / 5000 / 200000** (vel mm/s /
 acc mm/s² / jerk mm/s³) — the ceilings are now *administrative*, deliberately
@@ -411,7 +411,7 @@ auto-tracks whatever threshold the firmware trips at):
   MAX_DEVIATION E-STOP and a permanent follower lockup (commanded state parked exactly
   on the stroke bound). Root-caused and fixed by the chase-clamp rework (`73dba2b`);
   full post-mortem + fix disposition in
-  `plans/archived/2026-08-01 follower-cadence-and-divergence.md` § RESOLUTION.
+  `plans/archived/follower-cadence-and-divergence.md` § RESOLUTION.
 - **Result (2026-07-10, post-rework)**: **PASS** — (a) and (b) smooth throughout
   ("worked perfectly"), no rejections, no E-STOP, both ascent and descent flown.
   Sub-test (c) **not performed**: the SpaceMouse connects over Bluetooth (the dongle
@@ -446,7 +446,7 @@ auto-tracks whatever threshold the firmware trips at):
   overrode the shipped lean — the default is now `-1.0` (defer to config).
   **Unshaped ±150 traverses at jerk 30000 are OUT of the trackable envelope,
   not marginal** — treat any unshaped hot-lateral latch as expected until the
-  accel-FF chapter lands (`plans/active/accel-ff-inertia.md`); see
+  accel-FF chapter lands (`plans/parked/accel-ff-inertia.md`); see
   `logbook/2026-07-17-wobble-latch-unshaped-traverse.md`. The lean A/B
   resolved KEEP (`lean_gain 0.6` default; jerk criterion met at 0.3–0.6).
   **Working point (1000, 5000, 30000) + lean 0.6 persisted to YAML

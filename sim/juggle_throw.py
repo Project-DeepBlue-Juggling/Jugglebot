@@ -54,6 +54,8 @@ if _repo_root not in sys.path:
 from sim._paths import bootstrap_paths  # noqa: E402
 bootstrap_paths()
 
+from jugglebot import hardware_config as _hw  # noqa: E402
+
 import mujoco
 
 from sim.juggle_planner.juggle_planner import (
@@ -74,7 +76,9 @@ from sim.juggle_online import (
 
 CONTROL_DT = 0.025
 CUP_Z_BASE_MM = 659.6
-SLIDER_STROKE_MM = 355.0
+# Slider travel [0, stroke] mm — DERIVED (see sim/juggle_tilt.py for why; it read
+# a hardcoded 355.0 until 2026-08-21, 10.25 mm above what the plant will execute).
+SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
 # A ball whose centre is more than this far from the cup opening at the end of
 # the recovery has cleanly separated (vs riding the cup out, "glued").
 SEPARATION_MM = 120.0

@@ -51,8 +51,12 @@ from sim.hand import trajectory as mirror           # noqa: E402
 _FW_DIR = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'Teensy_code_platform')
 _HEADER = os.path.join(_FW_DIR, 'hardware_config.h')
 
-#: Release speeds spanning the shipped flight band (FLIGHT_TIME_MIN_S 0.55 s ->
-#: FLIGHT_TIME_MAX_S 1.10 s is v = 2.698 -> 5.396 m/s), plus the 4.858 m/s tier
+#: Release speeds spanning the flight band THIS FILE WAS WRITTEN AGAINST
+#: (0.55 -> 1.10 s is v = 2.698 -> 5.396 m/s). Deliberately literal, and
+#: deliberately WIDER than the derived envelope that superseded it on 2026-08-18
+#: (contract C-HAND-3: 0.4949 -> 0.8871 s = 2.440 -> 4.357 m/s) — the
+#: feedforward being sized over more speeds than the gate admits is the safe
+#: direction. Plus the 4.858 m/s tier
 #: that made physical contact with the end stop on 2026-07-27.
 _VELS = (2.698, 3.440, 3.969, 4.858, 5.396)
 
@@ -369,12 +373,23 @@ def test_the_throw_ends_with_a_residual_velocity_feedforward(fw_run):
       3.440 / 3.969 / 4.858 m/s tiers respectively — note it does NOT rise with
       speed, so it is the sampled tail of the residual rather than the residual
       itself — and its MEDIAN through the same windows is **0.00-0.02 rev/s**.
-    * So the exposure is **bounded, not indefinite**: on the shipped toss path
-      the next hand command is the C-HAND-1-gated catch arm, measured **28.0-61.6
-      ms** after the commanded stroke end.  The steady-state bias the residual
-      would reach if it were held is ``2.02/35 = 0.058`` rev at the observed
-      maxima and ``7.19/35 = 0.205`` rev = 6.5 mm at the band ceiling; neither is
-      reached in that window.
+    * So the exposure is **bounded, not indefinite**, and the bound that carries
+      the argument is the MAGNITUDE rather than the window.  The steady-state
+      bias the residual would reach if it were held indefinitely is
+      ``2.02/35 = 0.058`` rev = 1.8 mm at the observed maxima, and
+      ``7.19/35 = 0.205`` rev = 6.5 mm at the band ceiling.  Small either way.
+
+      The window itself is longer than this docstring used to say.  It read
+      "measured 28.0-61.6 ms after the commanded stroke end" — the 2026-07-28
+      sitting's hand measurement, anchored on the sample where ``pos_cmd`` hit x3
+      EXACTLY and taken over one session's tosses.  ``hand_stroke_timeline.py``
+      now reports the same quantity as ``stroke_end_hold_ms`` and measures
+      **30.6-128.3 ms** over the sitting's 44 post-stroke commands — and on 25 of
+      69 clean throws NO command lands before the catch descent at all, so the
+      residual can be held for the whole inter-command interval.  That widening
+      does not change the conclusion, because the conclusion rests on the
+      1.8-6.5 mm ceiling above, not on the window being short.  Cross-reference:
+      ``logbook/2026-08-18-trunc-criterion-stroke-end.md``.
 
     A HYPOTHESIS THIS TEST WITHDREW
     -------------------------------
@@ -519,7 +534,12 @@ def test_wire_quantisation_cannot_produce_a_visible_undershoot(fw_run):
                                   d_dec * (1.0 - j_true_min / j_eff_max))
 
         # Claim 1 — nothing over-brakes at the top of the band, gravity included.
-        # _VELS[-1] = 5.396 m/s is FLIGHT_TIME_MAX_S, the band ceiling and R5.
+        # _VELS[-1] = 5.396 m/s is the 1.10 s flight this file was written
+        # against — the band ceiling AT THE TIME, and runbook rung R5. Since
+        # 2026-08-18 the band is DERIVED (C-HAND-3) and its ceiling is
+        # 4.357 m/s, so 5.396 is now OUT of contract in both directions: the
+        # feedforward is still sized there (deliberately wider than the
+        # admitted set) but no goal can reach it.
         if v == max(_VELS):
             assert j_eff_max <= j_true_min, (
                 f'open-loop over-brake at the band ceiling: j_eff {j_eff_max:.4e} '

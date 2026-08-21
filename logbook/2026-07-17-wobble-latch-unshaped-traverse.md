@@ -162,7 +162,7 @@ the `-1.0` defer convention its own help text already described — and (b)
 state the unshaped-traverse cliff plainly in the runbook and this entry so the
 next latch there is read as expected, not as a regression. The real margin
 restoration for unshaped aggressive moves remains the accel-FF chapter
-(`plans/active/accel-ff-inertia.md`) — feedforward, not feedback, closes a
+(`plans/parked/accel-ff-inertia.md`) — feedforward, not feedback, closes a
 velocity-deficit this size (same conclusion as the 2026-07-13 gain-hunt
 closure).
 
@@ -275,6 +275,6 @@ claims must name the code path they were measured on.
   point + lean persistence whose margin framing this entry corrects.
 - `logbook/2026-07-17-shaped-planning-efficiency-implemented.md` — the SPE
   work exonerated here.
-- `plans/active/accel-ff-inertia.md` — the actual fix for the velocity
+- `plans/parked/accel-ff-inertia.md` — the actual fix for the velocity
   deficit.
 - `tests/hardware/session_phase4_ramp.md` — S4 protocol.

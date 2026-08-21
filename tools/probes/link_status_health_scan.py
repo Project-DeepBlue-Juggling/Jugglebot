@@ -44,7 +44,7 @@ THE GENERALISATION
 
 REFERENCES
     Logbook: `logbook/2026-07-29-can3-bus-health-flap-hand-sensor-poller.md`
-    Plan:    `plans/active/hand-ball-sensor.md` (Phases 3-5, the flash)
+    Plan:    `plans/archived/hand-ball-sensor.md` (Phases 3-5, the flash)
     Runbook: `tests/hardware/session_hand_ball_sensor.md` § P5 (the on-board
              serial A/B this probe is the offline counterpart to)
 

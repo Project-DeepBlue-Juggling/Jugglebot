@@ -214,7 +214,7 @@ The module now carries ``pytestmark = [pytest.mark.serial, pytest.mark.nightly]`
 * Plain ``pytest`` (no ``-m``) still runs it, as does naming the file.
 
 Why demoted at all: the contract governs ``run_mpc_loop``, and the MPC chain is
-operationally dormant (``plans/active/refactor-2026-07.md`` Phase 3 —
+operationally dormant (``plans/parked/refactor-2026-07.md`` Phase 3 —
 ``jugglebot_launch.py`` no longer starts ``motor_guard`` or
 ``motion_bridge_node``, and ``run_mpc.py`` is not launched). Precisely: the loop
 is still *reachable* — ``sim/main.py --mpc --no-viewer`` calls ``run_mpc_loop``
@@ -580,7 +580,7 @@ with upstream ticket references.
   — enforcement test; top-10 diagnostic on failure.
 - [logbook/2026-04-23-hot-loop-zero-allocation-contract.md](../logbook/2026-04-23-hot-loop-zero-allocation-contract.md)
   — W1 audit inventory; running log of contract evolution.
-- [plans/archived/2026-04-23 hot-loop-zero-allocation-contract.md](../plans/archived/2026-04-23%20hot-loop-zero-allocation-contract.md)
+- [plans/archived/hot-loop-zero-allocation-contract.md](../plans/archived/hot-loop-zero-allocation-contract.md)
   — phased implementation plan (W2–W7), archived 2026-04-23.
 - [logbook/2026-04-18-mpc-overhead-spikes-fallback-bursts.md](../logbook/2026-04-18-mpc-overhead-spikes-fallback-bursts.md)
   — original GC-pause investigation; introduced the ``_GCTracker``

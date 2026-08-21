@@ -103,7 +103,7 @@ Two consequences, both of which the first version of this probe got wrong:
   is lead-independent.
 
 Removing the swing means changing ``build_catch``'s arrival twist — see
-``plans/active/catch-reach-degenerate-overshoot.md``, not this plan. **That is
+``plans/parked/catch-reach-degenerate-overshoot.md``, not this plan. **That is
 what C-CATCH-1 did on 2026-07-26**: on a post-fix capture ``peak_above_park`` for
 a level catch is the requested displacement (0 for a fully level goal), not
 ``0.789132 * lead``. The linear-in-the-lead model above still describes every
@@ -131,7 +131,7 @@ failure at the bench, which is worse than having no instrument. Guarded in CI by
 
 RELATED
 -------
-* Plan:     ``plans/active/levelling-frame-contract.md`` (Phases 1-2, 4)
+* Plan:     ``plans/parked/levelling-frame-contract.md`` (Phases 1-2, 4)
 * Contract: ``ros_ws/docs/levelling_frame.md``
 * Tests:    ``tests/ros/test_levelling_frame.py``, ``tests/motion/test_levelling.py``
 * Runbook:  ``tests/hardware/session_anomaly_fixes.md`` section LVL

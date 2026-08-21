@@ -600,7 +600,7 @@ correctly.
 - `ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py:351,1078,1128`
   — the fault / no-feedback publish paths that set
   `msg['motor_pos'] = None` while the publisher stays alive.
-- [plans/active/hardware-bringup.md](../plans/active/hardware-bringup.md)
+- [plans/archived/hardware-bringup.md](../plans/archived/hardware-bringup.md)
   — z=30 verdict for the bringup plan (Discussion §5): z=30 is a
   safe, solvable pose; expect ~20 ms move-phase solves at low z
   under full launch load.

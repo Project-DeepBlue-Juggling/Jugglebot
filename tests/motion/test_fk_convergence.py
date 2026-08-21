@@ -10,7 +10,7 @@ load-bearing and each has its own test here:
      would trade a loud spurious failure for a silent wrong answer, which is
      strictly worse.
 
-Plan: ``plans/active/fk-convergence-tolerance.md`` (Phases 0-1).
+Plan: ``plans/archived/fk-convergence-tolerance.md`` (Phases 0-1).
 
 Why the criterion needed changing — measured, not asserted
 ----------------------------------------------------------

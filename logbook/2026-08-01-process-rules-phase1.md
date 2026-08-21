@@ -20,20 +20,20 @@ files_changed:
   - .claude/agents/logbook-updater.md
   - .claude/workflows/bb-tilt-phases.js
   - plans/active/INDEX.md
-  - plans/active/refactor-2026-07.md
+  - plans/parked/refactor-2026-07.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
   - plans/active/bb-online-juggle-tilt-rearchitecture.md
   - tests/sim/test_plans_index.py
   - tests/hardware/mvp_bench_runbook.md
   - plans/active/mvp-trajectory-bringup.md
-  - plans/active/teensy-can-offload.md
+  - plans/archived/teensy-can-offload.md
   - plans/active/PROMPT-single-ball-toss-software-run.md
   - ros_ws/src/jugglebot_interfaces/action/Reload.action
-  - plans/archived/2026-08-01 follower-cadence-and-divergence.md
-  - plans/archived/2026-08-01 reload-action-catch-latch.md
-  - plans/archived/2026-08-01 hardware-bringup.md
-  - plans/archived/2026-08-01 dashboard-3d-mesh-and-sim-port.md
-  - plans/archived/2026-08-01 always-on-telemetry-daemon.md
+  - plans/archived/follower-cadence-and-divergence.md
+  - plans/archived/reload-action-catch-latch.md
+  - plans/archived/hardware-bringup.md
+  - plans/archived/dashboard-3d-mesh-and-sim-port.md
+  - plans/archived/always-on-telemetry-daemon.md
 subsystem:
   - docs
 tags:
@@ -46,7 +46,7 @@ tags:
 
 ## What changed and why
 
-All six owner-approved items of `plans/active/refactor-2026-07.md` § Phase 1.
+All six owner-approved items of `plans/parked/refactor-2026-07.md` § Phase 1.
 The programme's premise is that process ceremony, not architecture, is the drag.
 
 1. **SHA backfill retired.** The `Logbook-Entry: <slug>` trailer is now the

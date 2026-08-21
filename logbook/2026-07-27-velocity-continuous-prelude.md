@@ -2,7 +2,7 @@
 title: Velocity-continuous smooth-move prelude — the unread extern, and the two bounds that decide when it is affordable
 type: bugfix
 date: 2026-07-27
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — hand-command-continuity Phase 4"
 related_plan: "hand-command-continuity.md"
 files_changed:
@@ -24,7 +24,7 @@ files_changed:
   - tests/motion/test_hand_stroke.py
   - tests/ros/test_catch_coordinator_node.py
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
 commits:
   - 5369fc2
 subsystem:
@@ -388,7 +388,41 @@ Platform Teensy has not been flashed.
 
 ## Related
 
-- Plan: `plans/active/hand-command-continuity.md` § Phase 4 — Outcome
+- Plan: `plans/archived/hand-command-continuity.md` § Phase 4 — Outcome
 - Contract: `ros_ws/docs/hand_command_continuity.md` (obligation F, limits F.1–F.6)
 - Bench: `tests/hardware/session_anomaly_fixes.md` § CHECK HAND-4
 - Phases 0–3: `logbook/2026-07-26-hand-prime-rev-derived.md` and its predecessors
+## Close-out — 2026-08-21
+
+**Status `in-progress` → `resolved`, and the "Not verified on hardware" line
+above is superseded.** It was true when written. The Platform Teensy was flashed
+before the 2026-07-27 sitting and `FW-1`/`H4.0d` read
+`PLATFORM_FW_CHECK: OK — v1` on **all six launches** of it, so the Phase-4 bench
+rows mean something — and this phase's own branch fired:
+
+* **`dip_below_x3` 0.000–0.026 rev on 15 of 17 tosses**, against a pre-fix
+  0.339–1.748 rev (10.7–55.3 mm) — a 40–70× reduction;
+* **the velocity-continuous branch fired on hardware for the first time** on 4 of
+  17 tosses (`v0` = −8.44 / −6.90 / −6.98 / −7.55 rev/s), max commanded
+  **10.2259 rev**, 0.374 rev under the clamp. The runbook's claim that "no row
+  provokes it" was wrong: a fast throw provokes it every time;
+* `H4.9`, `H4.10` and `H4.0b` PASS.
+
+Verdicts: `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`.
+
+**Two of this entry's numbers moved on 2026-08-18** with the hand end-stop
+correction (`logbook/2026-08-18-hand-end-stop-corrected.md`), recorded rather
+than edited in:
+
+* `smoothMoveMaxDuration()` **0.80054 → 0.78964 s** (the stroke got shorter), so
+  a prelude whose honoured duration lands in (0.78964, 0.80054] s — `|v0|` in
+  (20.04, 20.32] rev/s — now takes the rest-to-rest fallback where it was
+  honoured before. Conservative, but a behaviour change, and it is why the board
+  went to **FW 3** and why bench row H4.10 reads a board still emitting up to
+  0.8005 s as UNFLASHED;
+* the affordable continuity band mid-stroke is **~19.96 rev/s**, not ~20.3, and
+  the binding bound FLIPPED — the excursion clamp now binds ahead of the duration
+  cap's ~20.04 rev/s. The stroke-top figure (~9.1 rev/s) is unchanged, because
+  the 10.60 rev ceiling held (the margin moved 0.5 → 0.2 with the base).
+
+The excursion clamp itself is bit-identical across that correction.

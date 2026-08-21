@@ -2,7 +2,7 @@
 title: The hand-catch prime becomes the derived stroke top — and the review found the profile model three of its neighbours were sized against was the wrong one
 type: bugfix
 date: 2026-07-26
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — hand-command-continuity Phase 3"
 related_plan: "hand-command-continuity.md"
 files_changed:
@@ -24,7 +24,7 @@ files_changed:
   - tests/ros/test_toss_coordinator.py
   - tests/hardware/session_anomaly_fixes.md
   - tests/hardware/session_phase7_reload.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
 commits:
   - 94fe817
 subsystem:
@@ -362,7 +362,7 @@ operator.
 
 ## Related
 
-- Plan: `plans/active/hand-command-continuity.md` — Phase 3
+- Plan: `plans/archived/hand-command-continuity.md` — Phase 3
 - Phases 1-2: `logbook/2026-07-26-hand-command-continuity-arm-gating.md`
 - Phase 0 probe: `logbook/2026-07-26-hand-stroke-timeline-probe.md`
 - Operator runbook: `tests/hardware/session_anomaly_fixes.md` § CHECK HAND-3
@@ -378,7 +378,7 @@ operator.
   the sim-catch fidelity gap; wants its own scoped fix deriving the sim prime
   from `TEENSY_LINEAR_GAIN`. The prime move made it *less* wrong (+10.93 →
   +7.71 mm), not more.
-- `plans/active/reload-action-catch-latch.md:44` cites the old 9.858. Left
+- `plans/archived/reload-action-catch-latch.md:44` cites the old 9.858. Left
   untouched — a plan a parallel session may be editing.
 - `ros_ws/.../archived/catch_dropped_ball_node.py:24` and
   `archived/catch_from_ball_butler_node.py:42` hardcode 9.858 under their own
@@ -387,3 +387,19 @@ operator.
   delivery target outside this repo and now shows modified in the BallButler
   repo. Cosmetic there too (BB firmware does not read the constant); the
   operator decides whether it needs its own commit.
+## Close-out — 2026-08-21
+
+**Status `in-progress` → `resolved`.** Gated on the operator's `colcon build` +
+relaunch and § CHECK HAND-3. Both happened at the 2026-07-27 sitting and all
+seven rows passed: prime settles **9.9571–9.9586 rev**, spread **0.05 mm**,
+**zero** overshoot, peak prime velocity on model to 4 %.
+Verdicts: `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`.
+
+**The sim-side follow-on named above is now owned.** The MuJoCo plant's
+`_hand_prime_mm` was still the pre-Phase-3 `9.858 * 2π * 5.21` (and with the
+wrong gain — no `LINEAR_GAIN_FACTOR`), with `tests/sim/test_hand.py` pinning the
+same literal. Both are **derived from `HAND_STROKE_TOP_REV` since 2026-08-21**.
+The remaining question — whether the sim should keep its 20 mm stroke inset at
+all, which is what makes the derived prime 335 mm rather than the firmware's
+315 mm — is re-homed to
+`plans/parked/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings*.

@@ -21,7 +21,7 @@ export const BALL_JOINT_OFFSET_MM = 0.0;
 // Arm / hand structure
 export const ARM_RADIUS_MM = 70.0;
 export const ARM_HEIGHT_FROM_PLATFORM_MM = 210.25;
-export const HAND_STROKE_MM = 355.0;
+export const HAND_STROKE_MM = 344.75;
 export const HAND_RADIUS_MM = 35.0;
 
 // Base node positions in the base frame (mm)
@@ -55,7 +55,7 @@ export const MM_TO_REV = [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.0142
 
 // Motor position limits
 export const LEG_MOTOR_MAX_POS_REVS = 4.2;
-export const HAND_MOTOR_MAX_POS_REVS = 11.1;
+export const HAND_MOTOR_HARD_STOP_REVS = 10.8;
 
 // Ball Butler position relative to base centre (mm).
 // Placeholder -- updated dynamically via bb/calibration_result topic.

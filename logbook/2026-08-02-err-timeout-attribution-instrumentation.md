@@ -11,7 +11,7 @@ files_changed:
   - config/generated/udp_protocol.py
   - docs/teensy-udp-protocol.md
   - plans/active/INDEX.md
-  - plans/active/refactor-2026-07.md
+  - plans/parked/refactor-2026-07.md
   - ros_ws/src/jugglebot/Teensy_code_canbridge/Teensy_code_canbridge.ino
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.h

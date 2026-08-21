@@ -229,7 +229,7 @@ _PLANNER_MANIFEST = (
 #              pose's rotation.
 #
 # `correction_for_pose` was added by Phase 2 of
-# `plans/active/tilt-calibration-grid.md`. Declaring it `store` would have been
+# `plans/archived/tilt-calibration-grid.md`. Declaring it `store` would have been
 # the one-word fix and would have silently retired the per-message vs per-pose
 # distinction this manifest exists to hold — a `build` hoisted to the offset
 # callback compiles, passes every behavioural test that uses ONE pose, and

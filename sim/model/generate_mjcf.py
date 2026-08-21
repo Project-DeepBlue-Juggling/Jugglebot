@@ -1,17 +1,39 @@
-"""Generate MuJoCo MJCF XML for Jugglebot Stewart platform.
+"""Generate the MuJoCo MJCF model for the Jugglebot Stewart platform.
 
-Reads geometry from hardware_config.yaml and produces jugglebot.xml.
+THIS FILE IS THE SOURCE OF TRUTH for ``sim/model/jugglebot.xml``.  The XML is a
+GENERATED artifact: change this script (or ``config/hardware_config.yaml``),
+re-run, and commit both.  Hand edits to the XML are reverted by the next
+regeneration -- and are caught before that by the drift gate below.
 
 Usage:
     python sim/model/generate_mjcf.py          # from repo root
     python model/generate_mjcf.py              # from sim/
+
+Why the drift gate exists
+-------------------------
+``jugglebot.xml`` stopped being a generated artifact on 2026-03-30 and nobody
+noticed for five months.  Four substantive hand-edit commits landed in the XML
+-- two-ball support, catch tuning, renderer perf -- while this generator stood
+still, so the next regeneration would have silently deleted a live capability.
+Nothing tested that the two agreed; the XML carried no generated-file header and
+does not live in a ``generated/`` directory.  ``tests/sim/test_mjcf_drift.py``
+closes that class: it renders into a temp dir and fails if the committed XML
+disagrees.  It is modelled on ``tests/firmware/test_config_drift.py``, which
+does the same job for ``config/generated/*``.  The 2026-08-21 reconciliation is
+written up in ``logbook/2026-08-21-mjcf-generator-reconciled.md``.
 """
 
+import itertools
 import numpy as np
 import yaml
 import os
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+
+#: The one artifact this script owns.  Named here (not built inline in main())
+#: so the drift gate can point at the same file without re-deriving the path.
+OUTPUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'jugglebot.xml')
 
 
 def load_hardware_config():
@@ -45,6 +67,16 @@ def rotation_from_z_to_dir(direction):
     angle = np.arccos(np.clip(dot, -1, 1))
     half = angle / 2
     return np.array([np.cos(half), *(np.sin(half) * axis)])
+
+
+def num(value):
+    """Shortest round-tripping decimal for a scalar ('0.035', not '0.035000').
+
+    Used for the values MuJoCo reads as plain magnitudes (ball radius, mass)
+    where a fixed-precision render would be noise.  ``repr`` rather than ``%g``
+    so a value with more than six significant digits is not silently truncated.
+    """
+    return repr(float(value))
 
 
 def fmt(arr, precision=6):
@@ -89,7 +121,9 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Extract geometry values (convert mm → m) ----
     initial_height_m = geom['initial_height_mm'] / 1000.0
     leg_stroke_m = geom['leg_stroke_mm'] / 1000.0
-    hand_stroke_m = geom['hand_stroke_mm'] / 1000.0   # 0.355 m
+    # PHYSICAL travel (0.34475 m since 2026-08-18), NOT
+    # teensy_trajectory.hand_stroke_m (0.355) -- different numbers on purpose.
+    hand_stroke_m = geom['hand_stroke_mm'] / 1000.0
     hand_radius_m = geom['hand_radius_mm'] / 1000.0   # ~0.035 m
 
     # Hand dynamics
@@ -128,6 +162,25 @@ def generate_mjcf(config, mesh_dir=None):
 
     gravity = config['physics']['gravity_mps2']
 
+    # ---- Juggling ball (canonical spec: config/hardware_config.yaml:physics) --
+    # Owner-stated 2026-08-21: 71 g, 70 mm diameter.  Hardcoded here as
+    # 0.02 m / 0.043 kg until then, disagreeing with the hand-edited XML's
+    # 0.035 / 0.071 -- which is exactly the drift this generator now exists to
+    # make impossible.  NOT the same quantity as throw_envelope.BALL_MASS_KG
+    # (0.0952 kg, implied by INERTIA_RATIO); see the YAML comment.
+    ball_radius_m = config['physics']['juggling_ball_radius_mm'] / 1000.0
+    ball_mass_kg = config['physics']['juggling_ball_mass_kg']
+
+    # Ball bodies present in the model.  ``sim/ball/manager.py`` discovers them
+    # by scanning the prefixes 'ball', 'ball2', 'ball3', ... upward until a body
+    # is absent, so appending an entry here is all a 3-ball model needs.  Park
+    # heights are staggered so the parked balls do not rest inside one another
+    # before a scenario spawns them.
+    ball_specs = [
+        ('ball',  5.0, 'ball_mat'),
+        ('ball2', 6.0, 'ball2_mat'),
+    ]
+
     # ---- Build XML ----
     mujoco = ET.Element('mujoco', model='jugglebot')
 
@@ -150,20 +203,35 @@ def generate_mjcf(config, mesh_dir=None):
     # Visual
     visual = ET.SubElement(mujoco, 'visual')
     ET.SubElement(visual, 'global', azimuth='135', elevation='-30')
-    ET.SubElement(visual, 'quality', shadowsize='2048')
+    # Emitted as an XML comment (not just a Python one) because the rendered
+    # model is what a reader opens in the MuJoCo viewer.  Lived as a HAND EDIT
+    # to the generated XML until 2026-08-21.
+    visual.append(ET.Comment(
+        " Renderer perf tweaks: shadowsize=0 disables shadow rendering\n"
+        "         in both the passive viewer and offscreen renders. offsamples=0\n"
+        "         disables MSAA for offscreen renders only \u2014 the passive viewer's\n"
+        "         MSAA is set by GLFW hints and is unaffected by this knob. The\n"
+        "         juggle demo needs smooth platform motion at full frame-rate on\n"
+        "         the Jetson, not photo-realism. "))
+    ET.SubElement(visual, 'quality', shadowsize='0', offsamples='0')
 
     # Assets
     asset = ET.SubElement(mujoco, 'asset')
     ET.SubElement(asset, 'texture', name='grid', type='2d', builtin='checker',
                   width='512', height='512', rgb1='0.9 0.9 0.9', rgb2='0.7 0.7 0.7')
+    asset.append(ET.Comment(
+        " reflectance=0: the floor is no longer mirror-like (the demo's\n"
+        "         juggling motion is the focus; floor reflections were extra GPU\n"
+        "         load with no informational value). "))
     ET.SubElement(asset, 'material', name='grid_mat', texture='grid',
-                  texrepeat='8 8', reflectance='0.1')
+                  texrepeat='8 8', reflectance='0')
     ET.SubElement(asset, 'material', name='platform_mat', rgba='0.3 0.3 0.8 0.9')
     ET.SubElement(asset, 'material', name='base_mat', rgba='0.4 0.4 0.4 0.8')
     ET.SubElement(asset, 'material', name='leg_mat', rgba='0.7 0.7 0.7 1.0')
     ET.SubElement(asset, 'material', name='joint_mat', rgba='0.9 0.2 0.2 1.0')
     ET.SubElement(asset, 'material', name='hand_mat', rgba='0.8 0.6 0.2 0.9')
     ET.SubElement(asset, 'material', name='ball_mat', rgba='1.0 0.5 0.0 1.0')
+    ET.SubElement(asset, 'material', name='ball2_mat', rgba='0.2 0.5 1.0 1.0')
     # STL meshes (included only when files are present in meshes/)
     # All STLs exported from Onshape in mm — scale to meters
     mesh_scale = '0.001 0.001 0.001'
@@ -248,8 +316,9 @@ def generate_mjcf(config, mesh_dir=None):
 
     # ---- Hand body (child of platform) ----
     # Hand is a 1-DOF prismatic actuator on the platform's local Z axis.
-    # Bottom of travel at Z = -135 mm in platform frame.
-    # Stroke: 355 mm, so top of travel at Z = +220 mm.
+    # Bottom of travel at Z = hand_axis_bottom_offset_mm in the platform frame,
+    # top of travel at that plus hand_stroke_mm -- both read from config above,
+    # so this comment does not need a number in it to go stale.
     hand_body = ET.SubElement(platform, 'body', name='hand',
                                pos=f'0 0 {hand_bottom_z_m:.6f}')
     ET.SubElement(hand_body, 'inertial',
@@ -425,19 +494,40 @@ def generate_mjcf(config, mesh_dir=None):
                       pos='0 0 0', size='0.010',
                       rgba='0.9 0.9 0.2 1')
 
-    # ---- Ball body (free-flying, for catch simulation) ----
-    ball_body = ET.SubElement(worldbody, 'body', name='ball', pos='0 0 5')
-    ET.SubElement(ball_body, 'freejoint', name='ball_joint')
-    # contype=3, conaffinity=3: collides with ground (bit 0) AND hand (bit 1).
-    # Soft solref (long time constant) so the ball sinks into the hand gently.
-    ET.SubElement(ball_body, 'geom', name='ball_geom', type='sphere',
-                  size='0.02', mass='0.043', material='ball_mat',
-                  contype='3', conaffinity='3',
-                  solref='0.05 2.0',
-                  solimp='0.99 0.99 0.001',
-                  friction='1.0 0.005 0.0001')
-    ET.SubElement(ball_body, 'site', name='ball_site', pos='0 0 0',
-                  size='0.005', rgba='1 1 1 0')
+    # ---- Ball bodies (free-flying, for catch simulation) ----
+    for prefix, park_z, material in ball_specs:
+        ball_body = ET.SubElement(worldbody, 'body', name=prefix,
+                                  pos=f'0 0 {park_z:g}')
+        ET.SubElement(ball_body, 'freejoint', name=f'{prefix}_joint')
+        # contype=3, conaffinity=3: collides with ground (bit 0) AND hand (bit 1).
+        # Soft solref (long time constant) so the ball sinks into the hand gently.
+        ET.SubElement(ball_body, 'geom', name=f'{prefix}_geom', type='sphere',
+                      size=num(ball_radius_m), mass=num(ball_mass_kg),
+                      material=material,
+                      contype='3', conaffinity='3',
+                      solref='0.05 2.0',
+                      solimp='0.99 0.99 0.001',
+                      friction='1.0 0.005 0.0001')
+        ET.SubElement(ball_body, 'site', name=f'{prefix}_site', pos='0 0 0',
+                      size='0.005', rgba='1 1 1 0')
+
+    # ---- Contact exclusions ----
+    # Between </worldbody> and <equality>, which is where MuJoCo expects it.
+    contact = ET.SubElement(mujoco, 'contact')
+    contact.append(ET.Comment(
+        " Disable ball-ball collisions: in a 2-in-one-hand juggle the two\n"
+        "         balls' flight arcs cross each other (both go from THROW to CATCH\n"
+        "         along similar parabolas), but physically they'd be in separate\n"
+        "         lanes \u2014 there is no real-world ball-ball collision. The sim's\n"
+        "         single-arc throw produces mid-air collisions that are not\n"
+        "         representative of the actual pattern, so exclude the pair. "))
+    # Every pair, not the hardcoded (ball, ball2): with two balls this emits the
+    # same single <exclude>, and it keeps the ball_specs comment above true --
+    # adding a third entry there would otherwise leave ball3 colliding with both
+    # of its siblings, which is the same class of half-applied edit this file's
+    # drift gate exists to catch.
+    for a, b in itertools.combinations([spec[0] for spec in ball_specs], 2):
+        ET.SubElement(contact, 'exclude', body1=a, body2=b)
 
     # ---- Equality constraints ----
     equality = ET.SubElement(mujoco, 'equality')
@@ -485,15 +575,19 @@ def generate_mjcf(config, mesh_dir=None):
     # qpos order: platform free joint (7: pos xyz + quat wxyz),
     #             hand_slide (1),
     #             then for each leg: hinge_x, hinge_y, slide (3 per leg),
-    #             ball free joint (7: pos xyz + quat wxyz)
+    #             then one free joint per ball (7 each: pos xyz + quat wxyz)
     # At home: platform at [0,0,height] with identity quat, hand at 0, all hinges=0, slides=0,
-    #          ball parked at (0,0,5) above scene
+    #          balls parked above the scene at their staggered heights.
+    # The qpos vector MUST be as long as the model's nq -- MuJoCo rejects a
+    # short keyframe -- so it is built from the same ball_specs the bodies are.
     platform_qpos = [0, 0, initial_height_m, 1, 0, 0, 0]  # pos + quat (wxyz)
     hand_qpos = [0]  # hand at bottom of travel
     leg_qpos = []
     for i in range(6):
         leg_qpos.extend([0, 0, 0])  # hinge_x, hinge_y, slide (0 = home)
-    ball_qpos = [0, 0, 5, 1, 0, 0, 0]  # parked high above scene
+    ball_qpos = []
+    for _prefix, park_z, _material in ball_specs:
+        ball_qpos.extend([0, 0, park_z, 1, 0, 0, 0])  # parked high above scene
 
     all_qpos = platform_qpos + hand_qpos + leg_qpos + ball_qpos
     ET.SubElement(keyframe, 'key', name='home',
@@ -515,9 +609,12 @@ def generate_mjcf(config, mesh_dir=None):
     # Hand sensors
     ET.SubElement(sensor, 'jointpos', name='hand_slide_pos', joint='hand_slide')
     ET.SubElement(sensor, 'jointvel', name='hand_slide_vel', joint='hand_slide')
-    # Ball sensors
-    ET.SubElement(sensor, 'framepos', name='ball_pos', objtype='site', objname='ball_site')
-    ET.SubElement(sensor, 'framelinvel', name='ball_vel', objtype='site', objname='ball_site')
+    # Ball sensors (one pos/vel pair per ball)
+    for prefix, _park_z, _material in ball_specs:
+        ET.SubElement(sensor, 'framepos', name=f'{prefix}_pos',
+                      objtype='site', objname=f'{prefix}_site')
+        ET.SubElement(sensor, 'framelinvel', name=f'{prefix}_vel',
+                      objtype='site', objname=f'{prefix}_site')
 
     return mujoco
 
@@ -532,18 +629,35 @@ def prettify(element):
                      if line.strip() and not line.startswith('<?xml'))
 
 
+GENERATED_HEADER = """<!-- GENERATED FILE \u2014 DO NOT EDIT BY HAND.
+     Source:     sim/model/generate_mjcf.py + config/hardware_config.yaml
+     Regenerate: python sim/model/generate_mjcf.py
+     A hand edit here is reverted by the next regeneration, and goes red in
+     ./run_tests.sh first: tests/sim/test_mjcf_drift.py compares this file
+     against a fresh render. -->"""
+
+
+def render_xml(config, mesh_dir=None):
+    """Full text of jugglebot.xml: declaration, generated-file header, model.
+
+    The single rendering entry point.  ``main()`` writes exactly this and the
+    drift gate compares exactly this, so the two can never disagree about
+    formatting -- a gate that rendered the model its own way would be testing
+    its own renderer, not the file on disk.
+    """
+    root = generate_mjcf(config, mesh_dir=mesh_dir)
+    return ('<?xml version="1.0" encoding="utf-8"?>\n'
+            + GENERATED_HEADER + '\n'
+            + prettify(root))
+
+
 def main():
     config = load_hardware_config()
-    root = generate_mjcf(config)
-    xml_str = prettify(root)
+    xml_str = render_xml(config)
 
-    # Add XML declaration at the top
-    xml_str = '<?xml version="1.0" encoding="utf-8"?>\n' + xml_str
-
-    out_path = os.path.join(os.path.dirname(__file__), 'jugglebot.xml')
-    with open(out_path, 'w') as f:
+    with open(OUTPUT_PATH, 'w') as f:
         f.write(xml_str)
-    print(f"Generated {out_path}")
+    print(f"Generated {OUTPUT_PATH}")
 
     # Print summary
     geom = config['jugglebot_geometry']

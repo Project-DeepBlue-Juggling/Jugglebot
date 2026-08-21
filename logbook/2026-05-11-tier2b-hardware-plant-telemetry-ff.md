@@ -17,7 +17,7 @@ files_changed:
   - tests/sim/_hardware_plant_stub.py
   - logbook/2026-05-11-tier2b-hardware-plant-telemetry-ff.md
   - logbook/INDEX.md
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 commits:
   - 3e71ce5
 subsystem:
@@ -718,7 +718,7 @@ touching the other.
 
 ## Related
 
-* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 5 specification.
 * [logbook/2026-05-11-tier2a-hardware-plant-fk-degradation.md](2026-05-11-tier2a-hardware-plant-fk-degradation.md)
   — Phase 4 (Tier 2a); injection-helper pattern, caplog workaround,

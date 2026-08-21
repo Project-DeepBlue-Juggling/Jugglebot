@@ -1,6 +1,6 @@
 """`trajectory_node`'s half of contract C-LEVEL-2 — `ros_ws/docs/levelling_frame.md`.
 
-Phase 2 of `plans/active/tilt-calibration-grid.md`: the loader, the
+Phase 2 of `plans/archived/tilt-calibration-grid.md`: the loader, the
 `trajectory/reload_tilt_map` service, the two observability fields, and the
 rewiring of the six C-LEVEL-1 ingest sites onto `levelling.correction_for_pose`.
 

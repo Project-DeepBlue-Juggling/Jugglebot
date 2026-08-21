@@ -215,7 +215,7 @@ precondition is a LIVE sensor read (§ 3.3). The gate the hand-ball-sensor plan
 carried — *"the flip is forbidden until Phase 7 validates"* — is **SUPERSEDED** by
 that authorisation; Phase 7 steps 4–5 remain open as bench work, not as blockers.
 Recorded at the plan's own statement of the gate
-(`plans/active/hand-ball-sensor.md` § Notes for collaborators → Out of scope) and
+(`plans/archived/hand-ball-sensor.md` § Notes for collaborators → Out of scope) and
 in `plans/active/catch-robustness.md`.
 
 ### 3.2 Merging two sources — the tick-driven kind, and the merge rules

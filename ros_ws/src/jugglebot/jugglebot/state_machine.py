@@ -125,7 +125,7 @@ class Context:
         self.boot_timed_out = False
 
         # ── Levelling state ──────────────────────────────────────
-        self.levelling_complete = False          # Persisted on Teensy
+        self.levelling_complete = False          # Persisted in the PLATFORM Teensy's RAM (RobotState.msg)
         self.pose_offset_rad = [0.0, 0.0]        # Accumulated [tiltX, tiltY] correction
         self.tilt_reading = [0.0, 0.0]           # Raw tilt from inclinometer (set by orchestrator)
         self.bb_calibration_skipped = False       # True if BB calibration was skipped (BB unavailable)

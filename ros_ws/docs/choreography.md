@@ -21,7 +21,7 @@
 > Two scanned modules are NOT started by that launch file and are tagged
 > `(not launched)` wherever they appear: `motion_bridge_node` (dormant) and
 > `mpc_bridge_node` (dropped from the MVP bring-up) - Phase 3 of
-> `plans/active/refactor-2026-07.md`. Their source and entry points are
+> `plans/parked/refactor-2026-07.md`. Their source and entry points are
 > retained for the MPC revival, so their wires are real in the source but
 > silent on a running robot: a wire whose publishers (or service servers)
 > are ALL tagged carries nothing today.
@@ -283,6 +283,12 @@
 - **publishers:** `mocap_node`
 - **subscribers:** `ball_butler_node`, `reload_coordinator_node`
 - **type:** `jugglebot_interfaces.msg.RigidBodyPoses`
+
+### `ring_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
 
 ### `robot_state`
 
@@ -612,6 +618,7 @@ broken wire cannot hide among them.
 - `qtm_clock_offset_sec` — topic with no subscribers
 - `reboot_odrives` — service with no clients
 - `recover` — service with no clients
+- `ring_diag` — topic with no subscribers
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
 - `toss/calibration_status` — topic with no subscribers

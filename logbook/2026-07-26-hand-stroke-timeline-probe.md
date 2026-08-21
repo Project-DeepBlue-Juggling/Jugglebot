@@ -2,7 +2,7 @@
 title: Hand-stroke timeline probe — the post-throw dip measured, and the instrument taught to score a FIXED capture
 type: investigation
 date: 2026-07-26
-status: in-progress
+status: tuned
 phase: "Self-toss anomaly fixes — hand-command-continuity Phase 0"
 related_plan: "hand-command-continuity.md"
 files_changed:
@@ -11,7 +11,7 @@ files_changed:
   - tools/probes/README.md
   - tools/README.md
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
 commits:
   - cabf3c6
 subsystem:
@@ -29,7 +29,7 @@ tags:
 
 ## Summary
 
-Phase 0 of `plans/active/hand-command-continuity.md` lands
+Phase 0 of `plans/archived/hand-command-continuity.md` lands
 `tools/probes/hand_stroke_timeline.py`: a reusable, offline, read-only harness
 that reconstructs the hand's commanded-vs-measured timeline around every throw in
 a recorded session, and turns the operator-visible post-throw dip into numbers.
@@ -303,7 +303,7 @@ committed gate fixture are the deliverable; the rest is documentation.
    both on the one mandatory capture step); the `/rosout` sentence given its true
    reason; the baseline table extended with the two gated columns and its `shift`
    column labelled as the bag-clock reading.
-7. `plans/active/hand-command-continuity.md`: Confirmation 2's frame claim
+7. `plans/archived/hand-command-continuity.md`: Confirmation 2's frame claim
    corrected and the constraint pushed into Phase 4 steps 2 and 4; the second
    catch divergence named; the normative mirror bounds identified (the second
    pass's, not the first's — they differ by up to 16×, and the looser set would
@@ -381,9 +381,42 @@ runbook markdown — with **zero** `.py` hits.
 
 ## Related
 
-- Plan: `plans/active/hand-command-continuity.md` (Phase 0 — Outcome)
+- Plan: `plans/archived/hand-command-continuity.md` (Phase 0 — Outcome)
 - Runbook: `tests/hardware/session_anomaly_fixes.md` § Section HAND
 - Probe: `tools/probes/hand_stroke_timeline.py`, README row in
   `tools/probes/README.md`
 - Sibling phases of the same run: `logbook/2026-07-25-fk-convergence-tolerance.md`,
   `logbook/2026-07-25-levelling-frame-enumeration.md`
+## Close-out — 2026-08-21
+
+**Status `in-progress` → `tuned`.** This entry sat `in-progress` for four weeks
+after its own work was done, because it was gated on "the instrument has not
+scored a real post-fix capture yet". It has, several times over:
+
+* the probe scored the 2026-07-27 validation sitting (17 tosses, six bags, six
+  traces) and its verdict is what `plans/archived/hand-command-continuity.md`
+  Phase 5 records;
+* `--gate` now runs inside the pytest suite
+  (`tests/motion/test_hand_stroke_timeline_probe.py`) after it was found RED on
+  the shipped tree — `headroom_to_limit_rev` was keyed to the retired 11.1 rev
+  anchor and nothing tested it;
+* both criterion defects the instrument carried have since been found and fixed
+  (`logbook/2026-08-18-trunc-criterion-stroke-end.md`): the truncation scan is
+  bounded on the commanded profile REACHING `x3` rather than on a wall clock,
+  and the collapse threshold is profile-relative rather than an absolute
+  10 rev/s.
+
+**`tuned`, not `resolved`, deliberately.** Two of this entry's Phase-0 findings —
+the catch time-origin divergence (0.498 rev = 15.75 mm) and the 20 mm absolute
+catch-height placement — are real, unresolved, and now owned by
+`plans/parked/hand-trajectory-generator-overhaul.md` § 6 *Inherited findings*.
+They were unowned by any plan until that re-home. The derivations stay in
+`plans/archived/hand-command-continuity.md` § Phase 0 — Outcome, Confirmation 2.
+
+**Numbers in this entry that were re-anchored later.** Every end-stop headroom
+figure here was measured against the *declared* 11.1 rev stop. The operator
+measured metal contact at **10.8 rev** on 2026-08-18
+(`logbook/2026-08-18-hand-end-stop-corrected.md`), so every headroom recorded
+here is **0.3 rev larger than the truth** — the worst case was 0.475 rev, not
+0.775. The `peak` measurements themselves are unchanged; only the reference
+moved. Left as written per the annotate-never-edit rule.

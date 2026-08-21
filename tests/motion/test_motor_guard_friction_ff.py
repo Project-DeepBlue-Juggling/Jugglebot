@@ -1,7 +1,7 @@
 """Motor-guard friction-feedforward unit tests.
 
 Covers the contract from
-``plans/archived/2026-05-08 friction-ff-motor-guard-integration.md`` §2 — single
+``plans/archived/friction-ff-motor-guard-integration.md`` §2 — single
 canonical enforcement point ``MotorGuard._compute_friction_ff_Nm`` plus
 the additive integration into ``_commanded_torque_ff_Nm``.  Test list
 mirrors §7.1, updated for PR 2.1's smooth-gate replacement of the

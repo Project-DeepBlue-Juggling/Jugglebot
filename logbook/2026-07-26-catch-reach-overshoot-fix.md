@@ -16,8 +16,8 @@ files_changed:
   - tests/motion/test_trajectory_planner_catch.py
   - tests/ros/test_levelling_frame.py
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/catch-reach-degenerate-overshoot.md
-  - plans/active/levelling-frame-contract.md
+  - plans/parked/catch-reach-degenerate-overshoot.md
+  - plans/parked/levelling-frame-contract.md
 commits:
   - 407154f
 subsystem:
@@ -126,7 +126,7 @@ increasing with infimum `5/2` at `s → 0⁺`. Measured over a 4M-point sweep:
 `0.126·|d|` at 4.00.
 
 **A published number in this repo turned out wrong, in the permissive direction.**
-`plans/active/catch-reach-degenerate-overshoot.md` and the replay probe both stated
+`plans/parked/catch-reach-degenerate-overshoot.md` and the replay probe both stated
 the sign reverses above `ψ(2/3) = 0.790`. That is where the value *at* `s = 2/3`
 crosses zero, not where the reach first leaves the park — `0.790` corresponds to
 `|v1|T/|d| = 4.0`, so it is **1.6× too permissive** and a gate sized off it would
@@ -310,7 +310,7 @@ pre-fix behaviour exactly. No firmware flash, no config regeneration.
 
 ## Related
 
-- `plans/active/catch-reach-degenerate-overshoot.md` — the plan; Phase 2 Outcome.
+- `plans/parked/catch-reach-degenerate-overshoot.md` — the plan; Phase 2 Outcome.
 - `logbook/2026-07-25-catch-reach-overshoot-repro.md` — Phases 0–1, the offline
   reproduction this fix is built on.
 - `ros_ws/docs/catch_arrival_contract.md` — C-CATCH-1, normative.

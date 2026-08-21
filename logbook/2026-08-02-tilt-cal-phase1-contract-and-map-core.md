@@ -12,7 +12,7 @@ files_changed:
   - tests/motion/test_tilt_map.py
   - tests/hardware/session_phase8_toss_hardware.md
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/tilt-calibration-grid.md
+  - plans/archived/tilt-calibration-grid.md
 subsystem:
   - motion
 ---

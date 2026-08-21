@@ -71,9 +71,9 @@ TOTAL_STROKE_REV = TOTAL_STROKE_M * LINEAR_GAIN_REV_PER_M
 #: nothing: the hand is already standing exactly where the catch profile starts.
 STROKE_TOP_REV = TOTAL_STROKE_REV
 
-#: ``Teensy_code_platform.ino:533`` compares ``now + smoothDur + SAFETY_GAP`` against the
+#: ``Teensy_code_platform.ino:642`` compares ``now + smoothDur + SAFETY_GAP`` against the
 #: main trajectory's first absolute sample and REFUSES the whole command if it
-#: does not fit — printing to serial only (``:534``), invisible to ROS.
+#: does not fit — printing to serial only (``:643``), invisible to ROS.
 SAFETY_GAP_S = hw.TEENSY_SAFETY_GAP_US / 1e6
 
 # ── Phase-1 timing policy ────────────────────────────────────────────────
@@ -95,15 +95,33 @@ SAFETY_GAP_S = hw.TEENSY_SAFETY_GAP_US / 1e6
 #:
 #: 40 ms = **1.7x the worst measured shift**, and it costs almost nothing: it
 #: consumes 40 ms of a window that is 395 ms wide at the nominal 0.80 s flight
-#: and still 115 ms wide at ``FLIGHT_TIME_MIN_S = 0.55``.
+#: and 50 ms wide at ``FLIGHT_TIME_MIN_S``, which is the DERIVED band floor
+#: **0.4949 s** since 2026-08-18 (contract C-HAND-3,
+#: ``ros_ws/docs/hand_throw_envelope.md``).  It read 115 ms against the
+#: hand-picked 0.55 s floor this line was written for.  Not a coincidence: the
+#: floor is defined as the flight at which this very window reaches
+#: ``hand_throw_envelope.arm_window_margin_s`` = 0.050 s.
+#:
+#: NOTE this is NOT ``hardware_config.yaml``'s ``arm_window_margin_s`` (0.05),
+#: which is the envelope's ADMISSION criterion.  Two different quantities that
+#: happen to be about the same window; do not collapse them.
 ARM_SUPPRESS_MARGIN_S = 0.040
 
 #: Assumed worst-case settle error of the hand against ``x3`` when a catch is
 #: armed at the top of a completed throw stroke.  Deliberately the SAME 0.10 rev
 #: (3.2 mm) band ``tests/hardware/session_anomaly_fixes.md`` § Section HAND gates
-#: the post-fix capture on (``peak <= 10.060`` rev, ``dip_below_x3 <= 0.10``
-#: rev), so any capture that PASSES the bench gate is inside the allowance this
-#: arithmetic assumed — one number, two enforcement surfaces, no free parameter.
+#: the post-fix capture's ``dip_below_x3`` on, so any capture that PASSES the
+#: bench gate is inside the allowance this arithmetic assumed — one number, two
+#: enforcement surfaces, no free parameter.
+#:
+#: Its *upward* counterpart is NOT one number and must not be quoted as one from
+#: here.  This comment paired ``dip_below_x3 <= 0.10`` with ``peak <= 10.060``
+#: (= x3 + 0.10) until 2026-08-21; the ``peak`` row went TIER-DEPENDENT on
+#: 2026-07-28 because ballistic coast grows with throw speed and a single
+#: ``10.060`` aborted 10 of the 17 tosses of the 2026-07-27 sitting for a reason
+#: that was never a regression.  ``10.060`` is now the 0.38/0.60 m band only;
+#: read the ladder in § PASS/ABORT row 3.  The settle band below is unaffected —
+#: it is the DOWNWARD allowance, and it did not move.
 HAND_SETTLE_BAND_REV = 0.10
 
 
@@ -225,7 +243,9 @@ def throw_decel_s(v_throw_mps: float) -> float:
     """Seconds from ball release to the throw stroke's last sample.
 
     ``t_dec = INERTIA_RATIO * t_acc`` — 65.1 ms at the nominal 0.80 s flight
-    (v 3.93 m/s), 94.5 ms at ``FLIGHT_TIME_MIN_S = 0.55`` (v 2.71 m/s).  The
+    (v 3.93 m/s), 104.9 ms at the DERIVED ``FLIGHT_TIME_MIN_S`` of 0.4949 s
+    (v 2.43 m/s; it read 94.5 ms at the hand-picked 0.55 s floor, retired
+    2026-08-18 by contract C-HAND-3).  The
     window this bounds is the one a kind-1 catch arm was landing inside: the
     2026-07-25 captures show the arm at release + 8-18 ms, mid-ramp, clearing
     the queue and re-preluding from a position the hand was travelling through
@@ -271,7 +291,7 @@ def smooth_move_duration_s(delta_rev: float, v0_rps: float = 0.0) -> float:
     **Not the whole of what the firmware emits at non-zero ``v0``.**
     ``makeSmoothMove`` substitutes the rest-to-rest duration whenever the honoured
     profile's excursion would leave the stroke or its duration would exceed
-    ``smoothMoveMaxDuration() = 0.8005`` s, so this function over-reports on the
+    ``smoothMoveMaxDuration() = 0.78964`` s, so this function over-reports on the
     fallback branch (at 119.6 rev/s it returns 4.71 s where the firmware emits a
     0.05 s floored hold).  Harmless today — every caller in this repository passes
     ``v0 = 0``, where the two agree exactly — but a caller that starts feeding the
@@ -293,7 +313,7 @@ def smooth_move_duration_s(delta_rev: float, v0_rps: float = 0.0) -> float:
     costs 50-76 ms of prelude, not zero.  That is harmless motion (0.63 mm at
     24 mm/s for a 0.02 rev residual) but it is NOT free time, and a fit check
     that assumed a zero prelude would hand the Teensy a command it refuses at
-    ``:533`` — printing to serial only, so the catch silently never fires.
+    ``:642`` — printing to serial only, so the catch silently never fires.
 
     **The ``v0 != 0`` form** (Phase 4).  ``a(tau)*T^2 = delta*s''(tau) +
     (v0*T)*h''(tau)``, bounded by ``|delta|*S2 + |v0|*T*H2``, so the duration is
@@ -324,7 +344,7 @@ def smooth_move_overshoot_rev(v0_rps: float, duration_s: float) -> float:
     the target coincides with the start (the braking case), because ``h`` and
     ``s`` do not peak at the same ``tau``.  This is the quantity a
     velocity-continuous prelude has to be checked against the stroke end for:
-    ``GEOM_HAND_MOTOR_MAX_POSITION_REVS - smooth_move_excursion_margin_rev``
+    ``GEOM_HAND_MOTOR_HARD_STOP_REVS - smooth_move_excursion_margin_rev``
     above, the homing reference below.  ``Trajectory.h``'s
     ``smoothMoveExcursion`` computes the exact interval; this is the closed-form
     bound a host-side caller can size a window with.
@@ -339,7 +359,7 @@ def smooth_move_max_continuous_v0_rps(headroom_rev: float) -> float:
     ``delta = 0``, where ``T = |v0|*H2/a_max``).  **This is the width of the
     velocity band over which Phase 4's continuity is actually affordable**, and
     it is narrow: 9.1 rev/s against the 0.6406 rev the stroke top leaves below
-    the 10.6 rev ceiling, 20.9 rev/s against the 3.4 rev a mid-stroke freeze
+    the 10.6 rev ceiling, 19.96 rev/s against the 3.10 rev a mid-stroke freeze
     leaves.  Above it the profile falls back to rest-to-rest, because the
     acceleration needed to arrest sooner is not bounded by anything the firmware
     declares — ``MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2 = 100`` rev/s² is a COMFORT
@@ -430,7 +450,7 @@ def required_arm_lead_s(v_armed_mps: float,
     """Lead a kind-1 catch arm needs before its event, or the Teensy refuses it.
 
     ``t_acc_catch(v) + prelude + SAFETY_GAP`` — the host-side restatement of
-    ``Teensy_code_platform.ino:533``'s budget check, so the refusal can be predicted
+    ``Teensy_code_platform.ino:642``'s budget check, so the refusal can be predicted
     instead of discovered on the serial console.
 
     **It is a lower bound, deliberately, and two terms are excluded.  Read them
@@ -440,18 +460,18 @@ def required_arm_lead_s(v_armed_mps: float,
        :data:`PRELUDE_ALLOWANCE_S`, which is ``smooth_move_duration_s`` of the
        post-fix settle band — the prelude that applies when the arm lands after
        the stroke, which is the case this gate exists to produce.  The firmware
-       computes the prelude from the LIVE encoder (``Trajectory.h:246-249``), so
+       computes the prelude from the LIVE encoder (``Trajectory.h:531-532``), so
        on the gate's *forced* branch (window closed, hand still mid-stroke) the
        real prelude is 0.37-0.76 s, an order of magnitude larger, and the Teensy
        may refuse that dispatch outright.  That is not a regression — it is
-       exactly the pre-fix arithmetic, and ``:533`` returns BEFORE
-       ``packedMsgs.clear()`` (``Teensy_code_platform.ino:533`` vs ``:539``), so a refused
+       exactly the pre-fix arithmetic, and ``:642`` returns BEFORE
+       ``packedMsgs.clear()`` (``Teensy_code_platform.ino:642`` vs ``:648``), so a refused
        command leaves the live throw stroke intact: the cost is a lost catch, not
        a clobbered stroke.  See ``catch_coordinator_node._throw_stroke_gate_ok``.
     2. *The DOWNSTREAM service transit.*  Only the UPSTREAM leg cancels.
        ``teensy_bridge_node._svc_set_hand_traj`` re-stamps the absolute event from
        its OWN clock (``int(time.time()*1000) + int(event_delay*1000)``), so the
-       caller→bridge transit shifts the event and drops out — but ``:533``'s
+       caller→bridge transit shifts the event and drops out — but ``:642``'s
        ``now_us`` is read at the PLATFORM TEENSY, after the bridge→can-bridge→CAN3
        hop, and that leg is pure budget loss.  It is bounded above by the ~23 ms
        measured announcement-to-release shift (which contains both legs).
@@ -460,12 +480,18 @@ def required_arm_lead_s(v_armed_mps: float,
     requirement, so the gate is marginally more willing to defer than it should
     be.  Sizing: at the shipped flight band the caller takes
     ``max(_MIN_EVENT_DELAY_S = 0.3, this)`` and the 0.3 floor binds at every
-    nominal armed velocity (budget 0.284 s at the 0.55 s flight, 0.190 s at
-    1.10 s; the budget only overtakes the floor below ``v_armed`` 1.98 m/s).  The
-    tightest case, the 0.55 s flight at the default knob, leaves 15.9 ms of floor
-    headroom against a ~23 ms transit bound — a 7 ms shortfall, against the
-    115 ms of slack the gate actually dispatches with, because it fires at the
-    FIRST tick after the window opens rather than at the last.  Runbook row H1.5
+    nominal armed velocity (budget **0.282 s at the 0.4949 s band floor, 0.176 s
+    at the 1.1485 s ceiling**; the budget only overtakes the floor below
+    ``v_armed`` 1.98 m/s).  The tightest case leaves **18.0 ms** of floor
+    headroom against a ~23 ms transit bound — a 5 ms shortfall, against the slack
+    the gate actually dispatches with, because it fires at the FIRST tick after
+    the window opens rather than at the last.  (Those three figures read
+    0.284 s / 0.190 s / 15.9 ms against the hand-picked 0.55-1.10 s band at a
+    0.8 ``catch_vel_scale`` default; the band became DERIVED on 2026-08-18 and
+    the default moved to 0.9.)  **That slack is 50 ms at the band
+    floor since 2026-08-18** (it read 115 ms at the hand-picked 0.55 s floor);
+    the floor is now DERIVED as the flight where the window reaches
+    ``hand_throw_envelope.arm_window_margin_s``, contract C-HAND-3.  Runbook row H1.5
     (``slack > 0.050 s`` on every withheld line) is the bench guard on that
     margin; H1.6 reads the serial console for the refusal itself.
     """

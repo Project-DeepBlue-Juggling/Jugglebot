@@ -2,7 +2,7 @@
 
 Tool: ``tools/tilt_cal_analyse.py``.
 Contract: ``ros_ws/docs/levelling_frame.md`` § **C-LEVEL-2**.
-Plan: ``plans/active/tilt-calibration-grid.md`` § Phase 3 (rung C2 consumes the
+Plan: ``plans/archived/tilt-calibration-grid.md`` § Phase 3 (rung C2 consumes the
 ``--diff`` mode).
 
 Lives in ``tests/sim/`` because that is where the existing test of a ``tools/``

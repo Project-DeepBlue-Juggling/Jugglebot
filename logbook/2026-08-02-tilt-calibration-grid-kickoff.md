@@ -8,7 +8,7 @@ related_plan: tilt-calibration-grid.md
 subsystem: [motion]
 tags: [docs, levelling, calibration]
 files_changed:
-  - plans/active/tilt-calibration-grid.md
+  - plans/archived/tilt-calibration-grid.md
   - plans/active/INDEX.md
 ---
 
@@ -20,7 +20,7 @@ Owner report: on every sitting where Jugglebot threw vertically to a
 non-(0, 0, 170) pose, many throws clipped platform hardware before landing in
 the hand — the ball leaves slightly "backwards" (+rx). A 9-agent architecture
 scan (2026-08-02) mapped the C-LEVEL-1 levelling chain end to end and verified
-the design seam. New plan `plans/active/tilt-calibration-grid.md`: a 2-D (x, y)
+the design seam. New plan `plans/archived/tilt-calibration-grid.md`: a 2-D (x, y)
 residual tilt map layered on the single-offset `level` routine — captured by
 driving a `go_to_pose` grid and reading the SCL3300 through the ungated
 `get_platform_tilt` service, persisted as committed machine-written

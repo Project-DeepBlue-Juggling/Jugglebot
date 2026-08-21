@@ -82,6 +82,38 @@ struct Published {
 };
 static Published s_pub;
 
+// ── SDO round-trip census (FW 13 RING_DIAG; contract in gpio_poll.h) ────────
+// s_rtt_req_us is written by gpio_poll_step (task_homing, PRIO 2) and read in
+// gpio_poll_record (the CAN RX decode, PRIO 5), which OUTRANKS it — so the u64
+// write must be masked or a preemption tears it, the same reason publish()
+// below masks. The window accumulators are written in that RX context and read
+// by task_telem (PRIO 3), which it also outranks, so the take masks too.
+static uint64_t s_rtt_req_us      = 0;
+static bool     s_rtt_req_armed   = false;   // a request is outstanding; false ⇒ any
+                                             // reply is unsolicited/stale, fold nothing
+static uint32_t s_rtt_min_us      = 0;
+static uint32_t s_rtt_max_us      = 0;
+static uint32_t s_rtt_last_us     = 0;
+static uint16_t s_rtt_count       = 0;
+
+// Stamp BEFORE the send (see gpio_poll.h): a preemption between here and the
+// wire inflates the sample, which a minimum is immune to.
+static inline void rtt_arm(uint64_t now) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_rtt_req_us    = now;
+  s_rtt_req_armed = true;
+  __set_PRIMASK(pm);
+}
+
+// The send never left: disarm so a LATER reply (a timed-out round trip's answer
+// arriving after we gave up) cannot be differenced against a request it does not
+// belong to and report a wildly inflated RTT.
+static inline void rtt_disarm() {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  s_rtt_req_armed = false;
+  __set_PRIMASK(pm);
+}
+
 static inline void publish(const Published& p) {
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   s_pub = p;
@@ -197,6 +229,11 @@ void gpio_poll_init() {
   s_reply_states      = 0;
   s_reply_wall_us     = 0;
   s_reply_mono_us     = 0;
+  s_rtt_min_us        = 0;
+  s_rtt_max_us        = 0;
+  s_rtt_last_us       = 0;
+  s_rtt_count         = 0;
+  rtt_disarm();
   reply_invalidate();
   publish(Published{});
 }
@@ -208,6 +245,36 @@ void gpio_poll_record(uint32_t raw_states, uint64_t wall_us, uint64_t mono_us) {
   s_reply_wall_us = wall_us;
   s_reply_mono_us = mono_us;
   s_reply_pending = true;
+  // FW 13 RING_DIAG: close the round trip HERE, at the arrival stamp, not in the
+  // step — the step consumes the mailbox up to a task tick later, and folding a
+  // tick of scheduling latency into an RTT whose whole purpose is to resolve a
+  // sub-tick ring delay would swamp the measurement. Folded inside the existing
+  // mask; the window accumulators cost four words and no extra IRQ-off time.
+  if (s_rtt_req_armed) {
+    s_rtt_req_armed = false;              // one reply closes one request
+    if (mono_us >= s_rtt_req_us) {
+      const uint64_t d = mono_us - s_rtt_req_us;
+      const uint32_t rtt = (d > 0xFFFFFFFFull) ? 0xFFFFFFFFu : (uint32_t)d;
+      s_rtt_last_us = rtt;
+      if (s_rtt_count == 0 || rtt < s_rtt_min_us) s_rtt_min_us = rtt;
+      if (s_rtt_count == 0 || rtt > s_rtt_max_us) s_rtt_max_us = rtt;
+      if (s_rtt_count != 0xFFFFu) ++s_rtt_count;   // saturate; the window stays honest
+    }
+  }
+  __set_PRIMASK(pm);
+}
+
+void gpio_poll_rtt_take(GpioPollRtt& out) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const bool have = (s_rtt_count != 0);
+  // Report zeros rather than a stale extremum when nothing closed: count is the
+  // "is this a measurement" flag, and carrying last window's min under a zero
+  // count would let a consumer that skipped the count read an old floor as new.
+  out.min_us  = have ? s_rtt_min_us  : 0u;
+  out.max_us  = have ? s_rtt_max_us  : 0u;
+  out.last_us = have ? s_rtt_last_us : 0u;
+  out.count   = s_rtt_count;
+  s_rtt_count = 0;   // re-arms the seeding above; min/max need no sentinel
   __set_PRIMASK(pm);
 }
 
@@ -219,6 +286,8 @@ void gpio_poll_step() {
     // re-enable and published with its (now arbitrarily old) arrival stamps.
     s_phase = PPhase::IDLE;
     reply_invalidate();
+    rtt_disarm();   // same reason: an in-flight request abandoned by the toggle
+                    // must not be closed by whatever reply arrives next
     return;
   }
 
@@ -255,9 +324,15 @@ void gpio_poll_step() {
   // arrives as the TxSdo reply (BallButler requestArbitraryParameter's frame,
   // byte-for-byte). encode_sdo_read would send OPCODE_READ, which does not
   // invoke it.
+  // FW 13 RING_DIAG: stamp BEFORE the send (gpio_poll.h explains why the other
+  // order would corrupt the floor this measures), and disarm if the send did not
+  // take — an un-sent request must never be differenced against a later reply.
+  rtt_arm(micros64());
   if (can_jugglebot_send(ODrive::encode_sdo_write(
           HAND_AXIS, EndpointId::odrive_pro_0_6_11::get_gpio_states, 0.0f)))
     s_phase = PPhase::AWAIT;
+  else
+    rtt_disarm();
 }
 
 void gpio_poll_snapshot(GpioPollSnapshot& out) {

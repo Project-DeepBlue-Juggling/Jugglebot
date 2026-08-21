@@ -9,7 +9,7 @@ note.
 > **Status as of 2026-06-02:** the build is green to `firmware.hex` on this
 > Jetson. Flashing requires installing `teensy-loader-cli` once (Step 2). The
 > firmware has NOT yet been validated on hardware — see
-> [`HANDOFF-teensy-can-offload-firmware-wip.md`](../../../../plans/active/HANDOFF-teensy-can-offload-firmware-wip.md)
+> [`HANDOFF-teensy-can-offload-firmware-wip.md`](../../../../plans/archived/HANDOFF-teensy-can-offload-firmware-wip.md)
 > §"Needs hardware validation" for what to verify on the bench after first flash.
 
 ---
@@ -261,7 +261,7 @@ That puts the firmware at the end of plan Phase 2 and ready for Phase 3
 For deeper issues, the firmware
 [`README.md`](README.md) lists the per-module hardware-validation
 expectations, and the
-[`HANDOFF-teensy-can-offload-firmware-wip.md`](../../../../plans/active/HANDOFF-teensy-can-offload-firmware-wip.md)
+[`HANDOFF-teensy-can-offload-firmware-wip.md`](../../../../plans/archived/HANDOFF-teensy-can-offload-firmware-wip.md)
 §"Needs hardware validation" enumerates every behaviour the bench should
 confirm before this firmware is trusted.
 
@@ -273,7 +273,7 @@ This walkthrough takes you through plan Phases 2 (FreeRTOS skeleton +
 Ethernet bring-up). The migration plan's subsequent phases — UDP echo,
 protocol contract validation, CAN bus bring-up, ODrive protocol, fault state
 machine replay, Jetson-side bridge, full cutover — are each documented in
-[`teensy-can-offload.md`](../../../../plans/active/teensy-can-offload.md).
+[`teensy-can-offload.md`](../../../../plans/archived/teensy-can-offload.md).
 Work them in order; each phase has its own "Done when" criteria.
 
 The single most important next step after Phase 2 is **Phase 5 CAN bench

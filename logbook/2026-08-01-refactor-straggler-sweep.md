@@ -6,7 +6,7 @@ status: resolved
 phase: "refactor-2026-07 — post-programme stragglers 2-3"
 files_changed:
   - ros_ws/docs/safety.md
-  - plans/active/bb-led-two-ball-juggle-demo.md
+  - plans/archived/bb-led-two-ball-juggle-demo.md
   - plans/active/bb-online-juggle-tilt-rearchitecture.md
   - plans/active/mvp-trajectory-bringup.md
   - plans/active/PROMPT-err-timeout-hand-path.md

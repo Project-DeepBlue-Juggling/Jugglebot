@@ -1,7 +1,7 @@
 # Teensy 4.1 can-bridge firmware
 
 The new dedicated CAN microcontroller from
-[`plans/active/teensy-can-offload.md`](../../../../plans/active/teensy-can-offload.md).
+[`plans/archived/teensy-can-offload.md`](../../../../plans/archived/teensy-can-offload.md).
 It owns all leg-ODrive CAN traffic (offloaded from the Jetson), is the system
 time-sync **master**, and talks to the Jetson over a point-to-point UDP link.
 
@@ -10,7 +10,7 @@ time-sync **master**, and talks to the Jetson over a point-to-point UDP link.
 > validation checks on 2026-07-04 — see
 > [`logbook/2026-07-02-canhub-hardening-tier2.md`](../../../../logbook/2026-07-02-canhub-hardening-tier2.md).
 > The fresh-eyes hardening pass is complete and archived
-> ([`plans/archived/2026-07-05 canhub-hardening.md`](<../../../../plans/archived/2026-07-05 canhub-hardening.md>)).
+> ([`plans/archived/canhub-hardening.md`](<../../../../plans/archived/canhub-hardening.md>)).
 > The original build-out (phase status, autonomous decisions, the initial
 > hardware-validation checklist) is archived under `plans/archived/` as
 > `2026-07-05 HANDOFF-teensy-can-offload-firmware-wip.md`.

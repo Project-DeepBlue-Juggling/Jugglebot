@@ -331,7 +331,7 @@ class HandBallSensorSource:
     THE THREE STATES, AND WHY UNKNOWN IS LOAD-BEARING
     -------------------------------------------------
     ``ball_held`` on ``/hand_telemetry`` is meaningless unless ``ball_held_valid``
-    (plans/active/hand-ball-sensor.md § Architecture, normative). Boot before the
+    (plans/archived/hand-ball-sensor.md § Architecture, normative). Boot before the
     first TxSdo reply, a stale reply, an un-anchored bridge clock and a
     ``Get_Version`` gate failure are ALL ``UNKNOWN``. BallButler's equivalent
     boots ``ball_in_hand_ = true`` — a fail-OPEN default that mis-reports

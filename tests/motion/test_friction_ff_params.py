@@ -1,7 +1,7 @@
 """Sanity tests for the friction-FF YAML loader.
 
 Covers the contract from
-``plans/archived/2026-05-08 friction-ff-motor-guard-integration.md`` §3.1: the loader
+``plans/archived/friction-ff-motor-guard-integration.md`` §3.1: the loader
 returns finite, length-6 per-leg arrays, the global flag, the smooth-gate
 scale, and Kt.  Defaults are pinned against the values committed in
 ``config/hardware_config.yaml`` so a YAML drift breaks this test loudly.

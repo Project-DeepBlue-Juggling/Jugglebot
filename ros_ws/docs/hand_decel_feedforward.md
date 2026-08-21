@@ -1,11 +1,40 @@
 # C-HAND-2 — the hand's post-release deceleration feedforward
 
 **Status:** normative. Landed 2026-07-29 (plan
-`plans/active/hand-command-continuity.md` Phase 7; follow-on item D of
-`plans/active/PROMPT-anomaly-fixes-orchestration.md`).
-**Sibling contract:** `ros_ws/docs/hand_command_continuity.md` (**C-HAND-1**),
-which governs *when* a hand command may be dispatched. This one governs *how
-hard the throw stroke brakes once it has been*.
+`plans/archived/hand-command-continuity.md` Phase 7; follow-on item D of
+the anomaly-fixes orchestration prompt — completed and deleted 2026-08-15 per the
+prompt-deletion convention; the item's narrative lives in
+`logbook/2026-07-29-hand-post-release-decel.md`).
+**Sibling contracts:** `ros_ws/docs/hand_command_continuity.md` (**C-HAND-1**),
+which governs *when* a hand command may be dispatched, and
+`ros_ws/docs/hand_throw_envelope.md` (**C-HAND-3**, 2026-08-18), which governs
+*which throws may be dispatched at all*. This one governs *how hard the throw
+stroke brakes once it has been*.
+
+> ### ⚠ Three numbers in this document moved after it was written
+>
+> 1. **`FLIGHT_TIME_MAX_S` is no longer 1.10 s.** Every "band ceiling" below was
+>    written at 1.10 s and is left at that value, because each is a statement
+>    about a *speed* and re-reading it at a moved band edge would silently
+>    restate it about a different machine. The shipped ceiling is now DERIVED
+>    (C-HAND-3) and is **0.887 s**.
+> 2. **The negative torque clamp is GONE.** § *The negative torque clamp —
+>    unresolved* below describes `torque_soft_min = −0.055133 N·m` (= −10.00 A)
+>    against a `torque_soft_max` of +0.5 as the live configuration. Since
+>    2026-08-18 they are a symmetric **±0.7 N·m**, saved to the drive — runbook
+>    row H7.0c is now a regression check, not an open question. What remains open
+>    is only whether the clamp was ever *binding* on the achieved deceleration;
+>    the kinematics in that section say no.
+> 3. **The end stop is 10.8 rev, not the ~11.06 this document infers.** It was
+>    declared 11.1 — 0.3 rev *past* metal — until the operator measured metal
+>    contact on 2026-08-18 (`logbook/2026-08-18-hand-end-stop-corrected.md`).
+>    Every margin quoted below against "the physical stop" is therefore **0.26
+>    rev (8 mm) more optimistic than the truth**; the margins quoted against the
+>    **10.60 rev** runbook line are unaffected, because that line did not move.
+>
+> Neither correction changes this contract's own claim — the feedforward sizing
+> is unaltered — but both change what may be concluded from it about how high
+> this machine may throw. That question moved to C-HAND-3.
 
 ## The contract
 
@@ -22,8 +51,9 @@ hard the throw stroke brakes once it has been*.
 consumed by exactly one caller — `buildThrow`'s `torA[2]`.
 **One declared value:** `config/hardware_config.yaml`
 `teensy_trajectory.throw_decel_reflected_inertia_kgm2`.
-**Tests that fail without it:** `tests/sim/test_hand_throw_decel_ff.py` (13 test
-functions, 21 parametrised cases across the flight band) and
+**Tests that fail without it:** `tests/sim/test_hand_throw_decel_ff.py` (**14
+test functions, 22 collected cases** — `pytest tests/sim/test_hand_throw_decel_ff.py
+--collect-only -q`, run 2026-08-18; the 14th arrived with C-HAND-3) and
 `tests/firmware/test_hand_throw_decel_xref.py` (7 cases against the shipped
 `Trajectory.h`, compiled and run with `g++ -Wall -Wextra -Werror`).
 Empirical probe behind every number here:
@@ -244,8 +274,13 @@ So the effect is bracketed:
   ≈ 10.15 rev at the band ceiling.
 
 Against the runbook's `10.60` hard-abort line that is **0.215 rev = 6.8 mm** of
-margin in the pessimistic bracket, and 0.67 rev = 21 mm to the ~11.06 rev
-physical stop the operator's contact implies. The velocity-independence of the
+margin in the pessimistic bracket. *(This paragraph originally continued "and
+0.67 rev = 21 mm to the ~11.06 rev physical stop the operator's contact
+implies". **That inference was wrong**: it assumed the declared 11.1 rev stop.
+The stop is 10.8 rev, measured 2026-08-18, so the pessimistic bracket's real
+clearance to metal is **0.41 rev = 13 mm**, and at the +1.9 % release-speed
+error measured on five throws it is **0.24 rev = 7.7 mm**. That thinness is a
+principal reason C-HAND-3's end-stop bound does not credit this bracket.)* The velocity-independence of the
 pessimistic bracket is the property that matters most: it is what removes the
 superlinear growth that made the band ceiling unflyable.
 
@@ -280,12 +315,14 @@ ceiling must not be flown until the lower tiers confirm the bracket.
 | kind-2 `makeFull` | untouched, and **carries two known defects** | no live host dispatches kind 2. Its `accelToTorque(acc * LINEAR_GAIN)` feeds a rev/s² quantity into an m/s² conversion (31.6× too large), and it does not carry the corrected decel feedforward. Recorded in `buildCommand`'s comment; fix together, with a bench validation, if kind 2 is ever revived |
 | ODrive gains and current limit | untouched | operator decision |
 | the **terminal latched torque** | **changes by 1.289×**, even though the streams do not | `buildSegment` stops one 500 Hz sample short of `t3`, so the last commanded frame carries the FULL decel feedforward and `Set_Input_Pos` latches it until the next hand command. That standing value goes 24.5 → 31.6 A at the 4.858 m/s tier and 30.2 → 38.9 A at the band ceiling. Steady-state position is unaffected (the velocity integrator absorbs a constant torque offset), and on the shipped toss path the C-HAND-1-gated catch arm overwrites it 28–62 ms later — but it is the one magnitude this phase moves at the latch, so `hand_decel_authority.py` reports `tor_hold_max` and bench row **H7.6** records it. **Not** analysed for an IDLE→CLOSED_LOOP transition that resets the integrator while the torque stays latched; see the open questions |
-| release speeds above `FLIGHT_TIME_MAX_S` | **out of contract** | the feedforward is sized only over `[FLIGHT_TIME_MIN_S, FLIGHT_TIME_MAX_S]` = 0.55–1.10 s. `MAX_EVENT_VEL_MPS = 7.0` is a *builder* clamp, not an operating point: at 7.0 m/s `a_dec` is 6054 rev/s² and the corrected feedforward alone wants **65.5 A of a 50 A limit** (the legacy one already wanted 50.8 A). The host's `toss_sequencer` flight-time check is what keeps callers inside the band; any caller reaching the 7.0 m/s clamp is out of contract. Pinned by `test_the_feedforward_is_only_sized_over_the_flight_band` |
+| release speeds above the flight band | **out of contract** | the feedforward is sized only over the flight band, which was `[0.55, 1.10]` s when this was written and is `[0.495, 0.887]` s since 2026-08-18 (**C-HAND-3**) — i.e. the sized range now *contains* the admitted range with room to spare, which is the safe direction. `MAX_EVENT_VEL_MPS = 7.0` is a *builder* clamp, not an operating point: at 7.0 m/s `a_dec` is 6054 rev/s² and the corrected feedforward alone wants **65.5 A of a 50 A limit** (the legacy one already wanted 50.8 A). What keeps callers inside is the host's admission gate — until 2026-08-18 a hand-picked flight-time band, now `throw_envelope.evaluate`; any caller reaching the 7.0 m/s clamp is out of contract. Pinned by `test_the_feedforward_is_only_sized_over_the_flight_band` |
 
 ## Deployment
 
-**A Platform Teensy flash.** `FW_VERSION` goes **1 → 2**; the host's
-`rpc_args.PLATFORM_FW_VERSION_EXPECTED` moves with it, so a board still on 1
+**A Platform Teensy flash.** `FW_VERSION` went **1 → 2** for this phase; it is
+**3** in the tree since the 2026-08-18 end-stop correction, and
+`rpc_args.PLATFORM_FW_VERSION_EXPECTED` is 3 to match. The host's
+`PLATFORM_FW_VERSION_EXPECTED` moves with it, so a board still on 1
 reads `PLATFORM_FW_CHECK: FAIL` on `link_status/platform_fw_version` (contract
 C-PLATFW-1, `ros_ws/docs/platform_fw_version.md`). It **warns and never
 refuses** — a v1 board is not unsafe, it simply still coasts — but every

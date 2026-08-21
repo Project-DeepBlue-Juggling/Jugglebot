@@ -16,7 +16,7 @@ from sim.juggle_planner.juggle_planner import (
 )
 
 
-# NIGHTLY TIER (2026-08-01, plans/active/refactor-2026-07.md Phase 2). The
+# NIGHTLY TIER (2026-08-01, plans/parked/refactor-2026-07.md Phase 2). The
 # juggling DEMO is research/characterization: this online cup planner drives the
 # sim demo only — it has no path to the hardware leg/hand command chain. It runs
 # every night via tools/nightly_suite.sh and on `./run_tests.sh --full`

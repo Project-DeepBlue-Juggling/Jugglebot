@@ -387,7 +387,7 @@ wrap-up conversation; the durable numbers are above.
 - `logbook/2026-07-16-max-deviation-guard-tracking-lag.md` — the 1.0 rev guard
   and vel_limit headroom this envelope runs inside (the safety framing in
   Diagnosis §3).
-- `plans/active/accel-ff-inertia.md` — the acceleration-feedforward chapter
+- `plans/parked/accel-ff-inertia.md` — the acceleration-feedforward chapter
   that will change realized leg current at these limits (relevant to the open
   "does lean help?" A/B question).
 - `tests/hardware/mvp_bench_runbook.md` — S4 lean A/B section, updated with the

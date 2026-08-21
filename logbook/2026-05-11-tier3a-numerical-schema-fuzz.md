@@ -16,7 +16,7 @@ files_changed:
   - tests/sim/test_diag_schema_fuzz.py
   - logbook/2026-05-11-tier3a-numerical-schema-fuzz.md
   - logbook/INDEX.md
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 commits:
   - 2105bb4
 subsystem:
@@ -568,7 +568,7 @@ Rollback discipline:
 
 ## Related
 
-* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 7 specification.
 * [logbook/2026-05-12-tier3a-fuzz-bugfix.md](2026-05-12-tier3a-fuzz-bugfix.md)
   — the follow-up bugfix commit covering Bug C (T<=0 guard) + Bug D

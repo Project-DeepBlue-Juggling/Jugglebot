@@ -351,9 +351,12 @@ def test_predicted_chain_site_matches_the_production_policy(bx, expect_x,
 
 
 def test_chain_frontier_is_between_146_and_147_mm(monkeypatch, tier_8b):
-    """The frontier is sharp and the binding gate is the +-150 mm planning box on
-    A, NOT the 150 mm displacement cap (the residual |B-A| never exceeds
-    3.1 mm)."""
+    """The predictor's frontier is sharp, and against a 150 box (the box == cap
+    configuration the 2026-07-29 frontier was MEASURED at) the binding gate is
+    the planning box on A, NOT the 150 mm displacement cap (the residual |B-A|
+    never exceeds 3.1 mm). The shipped box is now toss_workspace_xy_mm = 160
+    (> cap × 1.03), which moves the operative frontier out past the cap — the
+    predictor math pinned here is box-independent."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
     node = _ready_node(clock)
@@ -368,9 +371,15 @@ def test_chain_frontier_is_between_146_and_147_mm(monkeypatch, tier_8b):
 def test_chain_unreachable_refuses_before_a_ball_flies(monkeypatch, tier_8b):
     """Without this the session throws ONE ball, catches it, then refuses cycle 2
     REJECTED_WORKSPACE with the platform parked outside the planning box and the
-    ball in the cup — actuation for nothing. The refusal moves nothing."""
+    ball in the cup — actuation for nothing. The refusal moves nothing.
+
+    The box is pinned to 150 (box == cap) for this arm because the 146.5/147.0
+    frontier was measured there; at the SHIPPED 160 box the same B = 147 goal
+    chains — asserted as the second arm, because admitting exactly this class
+    of goal is what the box/cap separation (2026-08-14) exists to do."""
     clock = _Clock()
     monkeypatch.setattr(rcn, 'time', clock)
+    monkeypatch.setattr(hw, 'JB_OP_TOSS_WORKSPACE_XY_MM', 150.0)
     node = _ready_node(clock)
     monkeypatch.setattr(
         node, '_build_toss_cycle',
@@ -379,6 +388,27 @@ def test_chain_unreachable_refuses_before_a_ball_flies(monkeypatch, tier_8b):
     result = node._execute_toss_continuous(gh)
     assert result.outcome == 'REJECTED_CHAIN_UNREACHABLE'
     assert gh.terminal == 'abort'
+
+
+def test_chain_at_147_is_admitted_at_the_shipped_box(monkeypatch, tier_8b):
+    """The resolution arm of the former known limitation: with the shipped
+    toss_workspace_xy_mm (160 > cap × 1.03) the predicted chain site at
+    B = 147 (~150.1 mm, 2.07 % centroid divergence) sits INSIDE the box, so
+    the session proceeds past the chain gate instead of refusing — chaining at
+    the cap edge is the Phase-E working range the wider box exists to admit."""
+    clock = _Clock()
+    monkeypatch.setattr(rcn, 'time', clock)
+    node = _ready_node(clock)
+    # num_throws = 2 so the chain gate RUNS (it is skipped for a single cycle)
+    # — the point is that it consults the shipped box and finds the site inside.
+    _stub_cycles(node, monkeypatch, clock,
+                 [TossResult(True, 'CAUGHT', 2.0, .8),
+                  TossResult(True, 'CAUGHT', 2.0, .8)])
+    result = node._execute_toss_continuous(
+        _ContGoalHandle(x=147.0, num_throws=2))
+    assert result.outcome == 'COMPLETED'
+    site = node._predicted_chain_site_mm((147.0, 0.0, 170.0), FLIGHT)
+    assert abs(site[0]) <= float(hw.JB_OP_TOSS_WORKSPACE_XY_MM)
 
 
 def test_chain_gate_does_not_fire_for_a_single_cycle_session(monkeypatch):

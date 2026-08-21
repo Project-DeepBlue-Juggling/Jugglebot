@@ -16,7 +16,7 @@ files_changed:
   - tests/ros/test_levelling_frame.py
   - tests/ros/conftest.py
   - tests/motion/test_tilt_map.py
-  - plans/active/tilt-calibration-grid.md
+  - plans/archived/tilt-calibration-grid.md
   - tests/hardware/session_anomaly_fixes.md
 subsystem:
   - ros

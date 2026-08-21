@@ -20,7 +20,7 @@ Both catch and throw trajectories use the same 3-segment structure: **accelerate
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `HAND_STROKE_M` | 0.355 m | Physical hand stroke |
+| `HAND_STROKE_M` | 0.355 m | **Throw-profile basis** (`teensy_trajectory.hand_stroke_m`) — feeds `x2`/`x3`/`x5`. **NOT** physical travel: that is `jugglebot_geometry.hand_stroke_mm` = **344.75 mm**, a separate key since 2026-08-18. This row read "Physical hand stroke" until 2026-08-21 |
 | `STROKE_MARGIN_M` | 0.02 m | Safety margin at each end |
 | `CATCH_VEL_RATIO` | 0.9 | Hand velocity = 90% of ball speed |
 | `INERTIA_RATIO` | 0.747 | Decel/accel duration ratio (asymmetric profile) |
@@ -198,7 +198,7 @@ IDLE → PRIMING → APPROACHING → HOLDING → CAUGHT → RETURNING → IDLE
                               (timeout → RETURNING)
 ```
 
-1. **PRIMING** — hand moves to prime position (~323 mm, top of effective stroke minus margin).
+1. **PRIMING** — hand moves to prime position (**~335 mm** = `STROKE_MARGIN_MM` + the 315 mm effective stroke, i.e. the top of the sim's stroke, where the catch trajectory takes its first sample; ~323 mm until 2026-08-21).
 2. **APPROACHING** — MPC drives platform to catch pose. Hand catch sequence is queued and starts playing when the prelude time arrives.
 3. **HOLDING** — at catch pose, hand trajectory playing, waiting for ball. Times out after `hold_duration` if no capture.
 4. **CAUGHT** — ball captured. Hand retracts to bottom (`'home'`).

@@ -674,12 +674,15 @@ class MocapTimebaseProbe(BridgeSysID):
             # uptime_ms and flags are logged because a timing measurement whose
             # subject is a clock cannot afford to assume the instrument's clock is
             # stationary. logbook/2026-07-18-teensy-uptime-tracking-degradation.md
-            # (status OPEN) measured setpoint->encoder tracking lag growing
-            # MONOTONICALLY with can-bridge Teensy uptime: 10 ms at 1.8 min, 250 ms
-            # at 24 h, resetting on reboot, cause unknown. That particular lag is
-            # command-to-motion and so cannot corrupt a mocap-vs-ENCODER comparison
-            # — but an unexplained uptime-dependent effect in a timing-critical
-            # firmware path is exactly the thing to record rather than assume away.
+            # (status RESOLVED 2026-08-15) measured setpoint->encoder tracking lag
+            # growing MONOTONICALLY with can-bridge Teensy uptime: 10 ms at 1.8 min,
+            # 250 ms at 24 h, resetting on reboot. The cause is now KNOWN — the
+            # vendored FlexCAN_T4 `_available` RX-ring leak, which made delivery an
+            # uptime-ratcheting delay line — and FW 14 fixed it, validated at 5.8 h
+            # and 15.2 h with the lag flat at 10-20 ms
+            # (logbook/2026-08-15-fw14-validated-arc-closed.md). Keep logging
+            # uptime_ms anyway: it is the label that would expose a recurrence, and
+            # it is what makes any timing number here re-checkable later.
             # flags bit0 (TIME_SYNCED) says whether t_teensy_us is anchored at all.
             try:
                 uptime = int(hb.uptime_ms)
@@ -888,12 +891,14 @@ PREFLIGHT = """
       extension is downward this profile drives into the rig. WATCH the leg
       during the small verify nudge at the start and abort if it goes the wrong
       way.
-  [ ] REBOOT the can-bridge Teensy, and note uptime_ms from the first log rows.
-      Tracking lag grows monotonically with its uptime (10 ms at 1.8 min, 250 ms
-      at 24 h; logbook 2026-07-18, still OPEN, cause unknown). That lag is
-      command-to-motion so it cannot corrupt a mocap-vs-encoder comparison — but
-      it is an unexplained timing drift in timing-critical firmware, and this
-      measurement is about a clock.
+  [ ] Note uptime_ms from the first log rows. (The "REBOOT the can-bridge Teensy
+      first" step was RETIRED 2026-08-15: tracking lag used to grow monotonically
+      with its uptime — 10 ms at 1.8 min, 250 ms at 24 h — and the cause turned
+      out to be the vendored FlexCAN_T4 `_available` RX-ring leak, fixed in FW 14
+      and validated at 5.8 h and 15.2 h of continuous uptime; logbook
+      2026-07-18 is now RESOLVED, see 2026-08-15-fw14-validated-arc-closed.)
+      Keep recording uptime_ms anyway — it is the label that would expose a
+      regression, and this measurement is about a clock.
   [ ] The bench leg is the SOLE wire authority. No ROS2 teensy_bridge_node, no
       run_mpc.py, nothing else streaming heartbeats — mpc_active is a single
       firmware bool with no OR-ing of sources, so a second authority silently

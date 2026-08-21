@@ -1,7 +1,7 @@
 # Motor Command Safety
 
 !!! danger "DORMANT — this is not the current safety architecture (banner added 2026-08-01)"
-    Everything below describes the **MPC leg path**: `motor_guard.py` → `motion_bridge_node` → `leg_lengths_topic` → `can_node.py`. **None of it runs today.** `can_node.py` was deleted on 2026-07-06 (SocketCAN decommission), and `jugglebot_launch.py` stopped starting `motor_guard` and `motion_bridge_node` on 2026-08-01 (MPC dormancy — `plans/active/refactor-2026-07.md` Phase 3).
+    Everything below describes the **MPC leg path**: `motor_guard.py` → `motion_bridge_node` → `leg_lengths_topic` → `can_node.py`. **None of it runs today.** `can_node.py` was deleted on 2026-07-06 (SocketCAN decommission), and `jugglebot_launch.py` stopped starting `motor_guard` and `motion_bridge_node` on 2026-08-01 (MPC dormancy — `plans/parked/refactor-2026-07.md` Phase 3).
 
     The live leg path is `trajectory_node` → ZMQ :5557 → `teensy_bridge_node` → the can-bridge Teensy, which does the 500 Hz interpolation. **Leg-path safety authority is the Teensy-side `MAX_DEVIATION` guard**, plus the bridge's arming contract (`ros_ws/src/jugglebot/jugglebot/ARMING_CONTRACT.md`). Nothing on the Jetson sits in that safety loop.
 

@@ -6,7 +6,7 @@ status: in-progress
 phase: "bridge-temporal-trustworthiness — plan kickoff (pre-P0)"
 related_plan: bridge-temporal-trustworthiness.md
 files_changed:
-  - plans/active/bridge-temporal-trustworthiness.md
+  - plans/archived/bridge-temporal-trustworthiness.md
   - plans/active/bridge-clock-frequency-discipline.md
   - plans/active/INDEX.md
   - logbook/2026-08-11-bridge-temporal-trustworthiness-kickoff.md
@@ -22,7 +22,7 @@ tags:
 
 # Bridge temporal trustworthiness arc opened
 
-Planning change only, no code. `plans/active/bridge-temporal-trustworthiness.md`
+Planning change only, no code. `plans/archived/bridge-temporal-trustworthiness.md`
 is created and takes ownership of the can-bridge uptime command-latency drift —
 until now owned solely by the open
 `logbook/2026-07-18-teensy-uptime-tracking-degradation.md` — and sequences the

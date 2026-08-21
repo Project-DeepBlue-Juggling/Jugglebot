@@ -361,7 +361,7 @@ class TestClipPosition:
 
     def test_hand_above_max_clips(self):
         result = odrive.clip_position(6, 100.0)
-        assert result == hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+        assert result == hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
 
     def test_invalid_axis_raises(self):
         with pytest.raises(ValueError, match="Invalid Jugglebot axis"):

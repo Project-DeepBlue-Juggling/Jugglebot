@@ -300,7 +300,7 @@ const BALL_FLICKER_HOLD_MS = 1000;
  *   ~ suffix          ball_held_raw disagrees with ball_held on a VALID reading
  *
  * UNKNOWN is NEVER rendered as EMPTY: boot, staleness and an un-anchored bridge
- * clock all mean "we don't know", not "no ball" (plans/active/hand-ball-sensor.md
+ * clock all mean "we don't know", not "no ball" (plans/archived/hand-ball-sensor.md
  * § Architecture, normative).
  *
  * FLICKER SEMANTICS — the marker means "spotty contact", NOT "an edge happened".

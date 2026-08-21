@@ -7,7 +7,7 @@ raising), on_post_solve allocation in the hot loop, ZmqTargetSource.reset()
 mid-APPROACHING, and a concurrency-audit structural assertion.
 
 Test IDs from
-[plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+[plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
 Phase 8:
 
 | ID         | Surface                                                                      | Driver                                                                |
@@ -90,7 +90,7 @@ from sim.plant.mujoco_plant import MuJoCoPlant
 
 
 
-# NIGHTLY TIER — the MPC is operationally dormant (plans/active/refactor-2026-07.md
+# NIGHTLY TIER — the MPC is operationally dormant (plans/parked/refactor-2026-07.md
 # Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
 # leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
 # guard). The code is parked, not deleted, so this battery is parked with it: it

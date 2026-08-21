@@ -16,7 +16,7 @@ files_changed:
   - tests/ros/test_levelling_frame.py
   - tests/ros/test_trajectory_node.py
   - tests/hardware/session_anomaly_fixes.md
-  - plans/active/catch-reach-degenerate-overshoot.md
+  - plans/parked/catch-reach-degenerate-overshoot.md
 commits:
   - e58ed89
 subsystem:
@@ -193,7 +193,7 @@ C-CATCH-1 already in force to bound whatever value replaces it.
 
 ## Related
 
-- `plans/active/catch-reach-degenerate-overshoot.md` § Phase 3
+- `plans/parked/catch-reach-degenerate-overshoot.md` § Phase 3
 - `ros_ws/docs/catch_arrival_contract.md` — C-CATCH-1
 - `logbook/2026-07-26-catch-reach-overshoot-fix.md` — Phase 2, which landed C-CATCH-1
 - `tests/hardware/session_anomaly_fixes.md` § Section ZSEAT — the bench score

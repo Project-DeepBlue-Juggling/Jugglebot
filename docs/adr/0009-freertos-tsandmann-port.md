@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28 (FreeRTOS), 2026-06-02 (tsandmann fork)
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0002](0002-dedicated-second-teensy.md), [parent plan](../../plans/active/teensy-can-offload.md), [firmware handoff](../../plans/archived/2026-07-05%20HANDOFF-teensy-can-offload-firmware-wip.md) D10
+- **Related**: [ADR-0002](0002-dedicated-second-teensy.md), [parent plan](../../plans/archived/teensy-can-offload.md), [firmware handoff](../../plans/archived/HANDOFF-teensy-can-offload-firmware-wip.md) D10
 
 ## Context
 

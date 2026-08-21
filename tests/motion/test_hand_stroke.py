@@ -18,13 +18,15 @@ These tests are the drift guard for that arrangement. They assert, in order:
 * ``makeSmoothMove``'s dead-band and 0.05 s duration FLOOR, because the floor is
   why the post-fix prelude is 50-76 ms rather than the zero an earlier reading of
   the plan assumed;
-* the Phase-1 arm window is positive at BOTH ends of the shipped flight band,
-  including ``toss_sequencer.FLIGHT_TIME_MIN_S = 0.55``.
+* the Phase-1 arm window is positive at BOTH ends of the DERIVED flight band
+  (contract C-HAND-3; it was the hand-picked 0.55-1.10 s until 2026-08-18),
+  including at ``toss_sequencer.FLIGHT_TIME_MIN_S``, which is now the derived
+  0.4949 s rather than the retired 0.55 literal.
 
 Ground truth for every pinned number: ``/tmp/probe_hand_stroke_window.py``
 (2026-07-26), which re-derives them from the shipped header independently of this
 module and cross-checks the module against that derivation to 1.1e-16 over
-``v in [0.3, 7.0]``. See ``plans/active/hand-command-continuity.md`` Phase 1.
+``v in [0.3, 7.0]``. See ``plans/archived/hand-command-continuity.md`` Phase 1.
 """
 
 from __future__ import annotations
@@ -36,7 +38,8 @@ import re
 import pytest
 
 import jugglebot.hardware_config as hw
-from jugglebot.motion.trajectory import ballistics_bc, hand_stroke, toss_release
+from jugglebot.motion.trajectory import (ballistics_bc, hand_stroke,
+                                         throw_envelope, toss_release)
 from jugglebot.toss_sequencer import FLIGHT_TIME_MIN_S, FLIGHT_TIME_MAX_S
 
 _HEADER = os.path.join(
@@ -260,11 +263,12 @@ def test_prime_at_the_stroke_top_costs_no_commanded_prelude_travel():
     the self-toss path the hand reaches x3 via the throw stroke itself, so the
     prime never entered that arithmetic and Phase 1's budget does not move. The
     26.5 ms is returned on the PRIMED path (BB catch / reload), where it accrues
-    to the firmware's own fit check at ``Teensy_code_platform.ino:533``. Stated precisely
+    to the firmware's own fit check at ``Teensy_code_platform.ino:642``. Stated precisely
     because a future session sizing ``ARM_SUPPRESS_MARGIN_S`` off the wrong
     sentence would shave a window that gained nothing here — and at
-    ``FLIGHT_TIME_MIN_S`` that window is 115 ms wide with ~16 ms of floor
-    headroom.
+    ``FLIGHT_TIME_MIN_S`` that window is 50 ms wide with ~18 ms of floor
+    headroom (115 ms / ~16 ms against the hand-picked 0.55 s floor, retired
+    2026-08-18 by contract C-HAND-3).
 
     **Asserted as a property, not as the 4-decimal rounding artefact.** The
     residual is pinned with inequalities so that writing a MORE precise YAML
@@ -336,7 +340,7 @@ def test_smooth_move_duration_floor():
     """Every non-empty prelude costs at least 0.05 s (``fmaxf(T, 0.05f)``).
 
     A fit check that assumed a free prelude would hand the Teensy a command it
-    refuses at ``Teensy_code_platform.ino:533`` — to serial only, so the catch silently
+    refuses at ``Teensy_code_platform.ino:642`` — to serial only, so the catch silently
     never fires.
     """
     for d in (1.1e-6, 0.001, 0.02, 0.04):
@@ -354,8 +358,16 @@ def test_smooth_move_duration_floor():
 
 def test_prelude_allowance_covers_the_bench_pass_band():
     """The allowance IS the runbook's post-fix settle band, not a free parameter:
-    any capture that PASSES ``dip_below_x3 <= 0.10`` rev / ``peak <= 10.060`` rev
-    settled inside the excursion this arithmetic assumed."""
+    any capture that PASSES ``dip_below_x3 <= 0.10`` rev settled inside the
+    excursion this arithmetic assumed.
+
+    The DOWNWARD band is the one this constant is, and it has not moved.  Its
+    upward counterpart was quoted here as ``peak <= 10.060`` rev until
+    2026-08-21; that row went TIER-DEPENDENT on 2026-07-28 (ballistic coast grows
+    with throw speed, and one number aborted 10 of 17 tosses for a reason that
+    was never a regression), so ``10.060`` is now the 0.38/0.60 m band only.
+    Read ``tests/hardware/session_anomaly_fixes.md`` § PASS/ABORT row 3.
+    """
     assert hand_stroke.HAND_SETTLE_BAND_REV == 0.10
     assert hand_stroke.rev_to_mm(hand_stroke.HAND_SETTLE_BAND_REV) == pytest.approx(
         3.163, abs=1e-3)
@@ -377,7 +389,8 @@ def test_every_rest_to_rest_host_number_is_unchanged_by_phase_4():
     ``PRELUDE_ALLOWANCE_S`` and ``required_arm_lead_s`` are consulted with the
     hand AT REST (that is what the arm gate exists to produce), so generalising
     ``smooth_move_duration_s`` for ``v0 != 0`` must leave them bit-identical or
-    Phase 1's 395 ms / 115 ms windows silently move.
+    Phase 1's arm windows (395 ms at 0.80 s, 50 ms at the derived band floor)
+    silently move.
     """
     for d in (0.0, 9e-7, 1.1e-6, 0.001, 0.02, 0.04, 0.10, 2.3539, 9.9594):
         got = hand_stroke.smooth_move_duration_s(d)
@@ -435,11 +448,14 @@ def test_the_overshoot_and_the_affordable_velocity_band():
     ``smooth_move_overshoot_rev`` is the bulge a live velocity adds;
     ``smooth_move_max_continuous_v0_rps`` inverts it against the room available.
     Both are pinned because the headline finding of Phase 4 is that the band is
-    NARROW: ~9.1 rev/s at the stroke top, ~20.9 rev/s from a mid-stroke freeze,
-    against the ~120 rev/s a mid-throw command actually lands on.
+    NARROW: ~9.1 rev/s at the stroke top, ~20.0 rev/s from a mid-stroke freeze,
+    against the ~120 rev/s a mid-throw command actually lands on.  (The
+    mid-stroke figure was 20.9 until the 2026-08-18 hard-stop correction moved
+    the base 11.1 -> 10.8; the stroke-top figure is unchanged because the
+    ceiling stayed at 10.6.)
     """
-    # braking at the stroke top: 11.1 - 0.5 ceiling leaves 0.6406 rev
-    ceil_rev = (hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+    # braking at the stroke top: 10.8 - 0.2 ceiling leaves 0.6406 rev (unchanged)
+    ceil_rev = (hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
                 - hw.TEENSY_TRAJ_SMOOTH_MOVE_EXCURSION_MARGIN_REV)
     assert ceil_rev == pytest.approx(10.6, abs=1e-9)
     headroom_top = ceil_rev - hand_stroke.STROKE_TOP_REV
@@ -450,13 +466,13 @@ def test_the_overshoot_and_the_affordable_velocity_band():
     T = hand_stroke.smooth_move_duration_s(0.0, v_top)
     assert hand_stroke.smooth_move_overshoot_rev(v_top, T) == pytest.approx(
         headroom_top, rel=1e-6)
-    # from the measured mid-stroke freeze, against the hard 11.1 rev guard
+    # from the measured mid-stroke freeze, against the 10.8 rev hard stop
     v_mid = hand_stroke.smooth_move_max_continuous_v0_rps(
-        hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS - 7.7004)
-    assert v_mid == pytest.approx(20.90, abs=0.05)
+        hw.GEOM_HAND_MOTOR_HARD_STOP_REVS - 7.7004)
+    assert v_mid == pytest.approx(19.96, abs=0.05)
     # the measured release speed is 5.7x beyond even that, which is WHY the
     # cannot-fit branch is the high-v0 behaviour rather than an edge case
-    assert 119.6 / v_mid == pytest.approx(5.72, abs=0.05)
+    assert 119.6 / v_mid == pytest.approx(5.99, abs=0.05)
     assert hand_stroke.smooth_move_overshoot_rev(
         119.6, hand_stroke.smooth_move_duration_s(0.0, 119.6)) > 100.0
 
@@ -518,7 +534,7 @@ def test_margin_covers_the_measured_dispatch_latency():
 
 
 def test_required_arm_lead_is_the_teensy_budget():
-    """``Teensy_code_platform.ino:533`` refuses the command unless
+    """``Teensy_code_platform.ino:642`` refuses the command unless
     ``now + smoothDur + SAFETY_GAP <= firstMainAbs``, and ``firstMainAbs`` is
     ``event − t_acc_catch`` for a kind-1 (``makeCatch``'s
     ``shiftTime(-(t5-t4))``)."""
@@ -545,9 +561,9 @@ def _band_case(flight_s: float):
 
 
 @pytest.mark.parametrize('flight_s, expect_window_s', [
-    (FLIGHT_TIME_MIN_S, 0.115529),
+    (FLIGHT_TIME_MIN_S, throw_envelope.ARM_WINDOW_MARGIN_S),
     (0.80, 0.394896),
-    (FLIGHT_TIME_MAX_S, 0.712604),
+    (FLIGHT_TIME_MAX_S, 0.763068),
 ])
 def test_arm_window_positive_across_the_shipped_flight_band(flight_s,
                                                             expect_window_s):
@@ -556,8 +572,19 @@ def test_arm_window_positive_across_the_shipped_flight_band(flight_s,
 
     The slack SHRINKS with flight time (the throw is slower, so the decel ramp is
     longer, while the whole flight is shorter), so the binding case is
-    ``FLIGHT_TIME_MIN_S`` — and it is still **115 ms** wide there. Both ends are
-    measured against the production velocities, not a nominal.
+    ``FLIGHT_TIME_MIN_S``. Both ends are measured against the production
+    velocities, not a nominal.
+
+    **The floor row is now an IDENTITY, not a measurement.** Until 2026-08-18
+    ``FLIGHT_TIME_MIN_S`` was the hand-picked 0.55 and this row read 115 ms of
+    incidental slack. It is now the DERIVED band floor (contract C-HAND-3), and
+    the thing that derives it is precisely this window reaching
+    ``hand_throw_envelope.arm_window_margin_s`` — so the row asserts that the
+    envelope's floor is where it says it is, recomposed at a second call site.
+    Not two INDEPENDENT expressions (``throw_envelope.arm_window_s`` calls the
+    same ``hand_stroke`` primitives); what it catches is a drift in how they are
+    assembled — a changed margin, a dropped term, a different armed-velocity
+    path — not a change in the primitives themselves.
     """
     v_throw, v_armed = _band_case(flight_s)
     earliest = (hand_stroke.throw_decel_s(v_throw)
@@ -567,29 +594,41 @@ def test_arm_window_positive_across_the_shipped_flight_band(flight_s,
     assert latest > earliest, 'window closed at the nominal armed velocity'
     assert latest - earliest == pytest.approx(expect_window_s, abs=1e-4)
     # Windows narrow monotonically toward the short flight; assert the floor
-    # explicitly so a future constant change cannot quietly cross zero.
-    assert latest - earliest > 0.100
+    # explicitly so a future constant change cannot quietly cross zero. The
+    # floor IS the declared margin now (2026-08-18): the band's lower edge is
+    # defined as the flight where this window equals
+    # hand_throw_envelope.arm_window_margin_s, so anything admitted clears it.
+    assert latest - earliest >= throw_envelope.ARM_WINDOW_MARGIN_S - 1e-9
 
 
 def test_arm_window_closes_only_below_a_far_slower_armed_velocity():
     """``t_acc_catch = 0.404 / v_armed``, so a LOW tracker landing-speed estimate
     lengthens the lead and moves the window's right edge earlier. At
     ``FLIGHT_TIME_MIN_S`` the window closes only once ``v_armed`` falls below
-    ~1.26 m/s — a tracker landing speed under ~1.58 m/s for a 2.71 m/s throw,
-    i.e. the tracker under-reading by more than 40 %.
+    ~1.59 m/s — a tracker landing speed under ~1.77 m/s for a 2.44 m/s throw,
+    i.e. the tracker under-reading by more than 25 %.
+
+    That headroom SHRANK when the band floor became derived (2026-08-18,
+    C-HAND-3): the floor moved 0.55 → 0.4949 s, which is 55 ms taken straight
+    out of this budget, and the closing velocity rose 1.2645 → 1.5907 m/s. The
+    knob sweep below moved with it and is re-measured, not re-asserted.
 
     Pinned because the node evaluates the fit against the RUNTIME ``event_vel``,
     not this nominal.
 
     NOT, however, unreachable by the tracker alone: ``event_vel`` carries the
     operator's ``catch/vel_scale`` knob, whose shipped floor is
-    ``_VEL_SCALE_MIN = 0.3``. Swept against the production velocities, a scale of
-    **0.45 or below closes the window at the 0.55-0.56 s flight on its own** with
-    a perfectly healthy tracker (0.45 → −15 ms; 0.50 → +18 ms; the default 0.8 →
-    +116 ms), while at 0.80 s and above the window stays open across the whole
-    knob range. That corner is exactly the runbook's optional short-flight check,
-    so H1.4 tells the operator to read ``catch/vel_scale`` before routing a
-    CLOSED warning to a tracker fault.
+    ``_VEL_SCALE_MIN = 0.3``. The measured landing speed at the band floor is
+    ~2.41 m/s, so the knob closes the window on its own once it drops the armed
+    velocity under ``v_close`` — swept below. That corner is exactly the
+    runbook's optional short-flight check, so H1.4 tells the operator to read
+    ``catch/vel_scale`` before routing a CLOSED warning to a tracker fault.
+
+    **The knob is NOT an input to the C-HAND-3 envelope** (which sizes the floor
+    against the CONFIG default ``JB_OP_CATCH_VEL_SCALE_DEFAULT``), so a lowered
+    knob can still close the window at an admitted flight. Closing that would
+    mean plumbing the goal's ``catch_vel_scale`` into the FSM — deliberately out
+    of scope, and the reason H1.4 stays on the bench sheet.
     """
     v_throw, _ = _band_case(FLIGHT_TIME_MIN_S)
     earliest = (hand_stroke.throw_decel_s(v_throw)
@@ -597,7 +636,7 @@ def test_arm_window_closes_only_below_a_far_slower_armed_velocity():
     budget = (FLIGHT_TIME_MIN_S - earliest - hand_stroke.PRELUDE_ALLOWANCE_S
               - hand_stroke.SAFETY_GAP_S)
     v_close = hand_stroke.catch_lead_s(1.0) / budget      # coeff / budget
-    assert v_close == pytest.approx(1.2645, abs=1e-3)
+    assert v_close == pytest.approx(1.5907, abs=1e-3)
     # Just above it the window is (barely) open; just below it is closed.
     for v, want_open in ((v_close * 1.02, True), (v_close * 0.98, False)):
         latest = FLIGHT_TIME_MIN_S - max(_MIN_EVENT_DELAY_S,

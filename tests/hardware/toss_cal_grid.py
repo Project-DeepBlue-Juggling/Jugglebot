@@ -102,6 +102,33 @@ Ctrl-C: a ±0.5° probe map left installed aims every later throw 27 mm off whil
 every log line reports a calibration as applied, which is the silent-wrong class
 this whole plan is built to avoid.
 
+R7 IS A HEALTH GATE NOW, NOT AN UPTIME GATE (2026-08-15)
+--------------------------------------------------------
+R7 used to hard-refuse any bridge past 30 min of uptime, and told the operator to
+power-cycle the can-bridge Teensy.  The reasoning was sound and the datum was
+real — the announcement-to-release dispatch shift was **+118–133 ms at ~16 h**,
+and this tool writes a map that BAKES IN a timing bias — but the datum described
+a *defective* plant.  Its cause was the vendored FlexCAN_T4 RX-ring ``_available``
+leak, which turned the CAN receive path into an uptime-ratcheting delay line;
+**FW 14 fixed it**, and the fix was validated at 5.8 h *and* 15.2 h of continuous
+uptime with ``leak == 0``, end-to-end lag flat at **10–20 ms** and lead-clamp duty
+**0**, against 252 ms at 3.8 h before it
+(``logbook/2026-08-15-fw14-validated-arc-closed.md``).
+
+So the refusal survives with its threshold **re-keyed onto health rather than
+age**: on FW 14+ R7 asks ``latency_monitor`` on ``/link_status`` whether the plant
+is healthy right now, and on anything older — or anything it cannot read — it
+still asks whether the bridge is young, because a pre-FW-14 board genuinely IS
+uptime-sensitive.  Both branches live in
+``tilt_cal_grid.temporal_health_verdict``, shared with the tilt tool.  Two
+properties of the old gate are deliberately kept: it still REFUSES (a timing bias
+contaminates the artifact this tool writes, where the tilt tool only warns), and
+it still bounds the WHOLE capture rather than its first second — the worst
+``latency_monitor`` token seen in the session is folded into the refusal and
+written to ``_meta.json``, because the uptime ceiling used to bound the sitting
+for free (the drift was monotone, so a young start capped the run) and a health
+snapshot has no such property.
+
 NODE EXHAUSTION IS NOT A CAPTURE ABORT
 --------------------------------------
 A session that ends ``STOPPED_RELOAD_BUDGET`` has spent its ball supply at that
@@ -228,9 +255,25 @@ SC3_COMMON_MODE_MM = 6.0         # pooled |c|, must fit one session-trim authori
 # the thresholds here would be a second, unreachable copy of a gate that already
 # has an owner.
 
-# R7: stricter than tilt_cal_grid on purpose — static inclinometer reads are
-# uptime-insensitive, a TIMING bias is not (§ 3.8).
-UPTIME_ABORT_MS = 30 * 60 * 1000
+# R7 is a TEMPORAL-HEALTH refusal, not an uptime refusal. Until 2026-08-15 it
+# was `uptime_ms <= UPTIME_ABORT_MS`, hard, on the reasoning that a captured aim
+# map bakes in a TIMING bias (the dispatch shift was +118-133 ms at ~16 h) and
+# that static inclinometer reads are uptime-insensitive where a timing bias is
+# not (§ 3.8). The premise held only for the DEFECTIVE plant: the shift was a
+# symptom of the FlexCAN_T4 RX-ring `_available` leak, fixed in FW 14 and
+# validated at 5.8 h and 15.2 h of continuous uptime with the lag flat at
+# 10-20 ms (`logbook/2026-08-15-fw14-validated-arc-closed.md`).
+#
+# So the refusal survives with its threshold re-keyed: on FW 14+ the question is
+# "does the monitor say the plant is healthy", on anything older it is still "is
+# the bridge young", because an older board genuinely IS uptime-sensitive. The
+# branch logic and its whole argument live in `tilt_cal_grid.temporal_health_verdict`
+# — one implementation, shared with the tilt tool, unit-tested without a robot.
+#
+# The asymmetry with tilt_cal_grid is unchanged in KIND: this tool REFUSES where
+# the tilt tool warns, because a timing bias contaminates the artifact this tool
+# writes. What changed is that a healthy warm bridge is no longer a bias.
+UPTIME_ABORT_MS = tcg.UPTIME_WARN_MS
 
 # Cadence arithmetic for the ETA (§ 6's budget table).
 SETTLE_S = 2.80                  # toss_session.DEFAULT_SESSION_MISS_CLEANUP_S
@@ -600,26 +643,25 @@ def preflight_refusals(obs: Dict[str, Any]) -> List[Refusal]:
         'displacement). Set jugglebot_operational.toss_tier back to 8a and '
         'relaunch.'.format(tier)))
 
-    uptime = obs.get('uptime_ms')
-    if uptime is None:
-        out.append(Refusal(
-            'R7', False,
-            'R7 REFUSED: no uptime_ms on /link_status — the can-bridge '
-            'heartbeat has not arrived, so the ONE partition key that separates '
-            'a fresh plant from a degraded one is unknown. Absence is not '
-            'freshness.'))
-    else:
-        fresh = int(uptime) <= UPTIME_ABORT_MS
-        out.append(Refusal(
-            'R7', fresh,
-            'R7 ok: uptime_ms={} ({:.2f} h)'.format(uptime, uptime / 3600000.0)
-            if fresh else
-            'R7 REFUSED: can-bridge uptime_ms={} ({:.2f} h) is past the {:.0f} '
-            'min ceiling. The dispatch shift is +118-133 ms at ~16 h, and this '
-            'map bakes in a TIMING bias — a capture on a warm bridge is a '
-            'capture of the drift. Power-cycle the can-bridge Teensy and '
-            're-arm.'.format(uptime, uptime / 3600000.0,
-                             UPTIME_ABORT_MS / 60000.0)))
+    # R7 — the plant is temporally fit to bake a TIMING-bearing map from. The
+    # worst `latency_monitor` token seen so far is folded in (never just the
+    # latest), because a snapshot at preflight bounds nothing about a 2-3 h
+    # capture — see the constant block above and `tcg.temporal_health_verdict`.
+    health = tcg.temporal_health_verdict(
+        obs.get('link_kv'), obs.get('uptime_ms'), UPTIME_ABORT_MS)
+    worst = obs.get('latency_monitor_worst')
+    if health.ok and worst in tcg.LATENCY_MONITOR_ALARMS:
+        health = tcg.TemporalVerdict(
+            False, 'health',
+            'latency_monitor reads {!r} NOW but {} was seen earlier in this '
+            'session — the plant already degraded once, so a capture started '
+            'here would be a capture across the recovery. Restart the preflight '
+            'on a clean session.'.format(
+                (obs.get('link_kv') or {}).get('latency_monitor'), worst))
+    out.append(Refusal(
+        'R7', health.ok,
+        'R7 ok [{}]: {}'.format(health.basis, health.message) if health.ok else
+        'R7 REFUSED [{}]: {}'.format(health.basis, health.message)))
 
     target = obs.get('write_target')
     target_ok = bool(obs.get('write_target_ok'))
@@ -1867,6 +1909,17 @@ class _Runner:
         self.link_seq = 0
         self.uptime_first: Optional[int] = None
         self.uptime_last: Optional[int] = None
+        # Temporal health across the WHOLE capture, not just at preflight. The
+        # uptime gate R7 used to be bounded the whole sitting for free, because
+        # the drift it guarded was monotone in uptime: a young start capped the
+        # run. A health snapshot has no such property, so the worst token seen
+        # is carried forward (R7 folds it in) and both it and the sample counts
+        # go into `_meta.json` beside `uptime_ms_first/last`.
+        self.latency_monitor_first: Optional[str] = None
+        self.latency_monitor_last: Optional[str] = None
+        self.latency_monitor_worst: Optional[str] = None
+        self.latency_monitor_samples = 0
+        self.latency_monitor_bad = 0
         self.cal_status: Dict[str, Any] = {}
         self.commanded_xyz: Optional[Tuple[float, float, float]] = None
         self.commanded_stamp = 0.0
@@ -1915,6 +1968,17 @@ class _Runner:
         self.link_kv = kv
         self.link_stamp = time.time()
         self.link_seq += 1
+        token = kv.get('latency_monitor')
+        if token is not None:
+            token = str(token).strip()
+            self.latency_monitor_samples += 1
+            if self.latency_monitor_first is None:
+                self.latency_monitor_first = token
+            self.latency_monitor_last = token
+            self.latency_monitor_worst = tcg.worse_latency_monitor(
+                self.latency_monitor_worst, token)
+            if token != tcg.LATENCY_MONITOR_OK:
+                self.latency_monitor_bad += 1
         raw = kv.get('uptime_ms')
         if raw is not None:
             try:
@@ -2488,6 +2552,7 @@ def run(args) -> int:                                    # noqa: C901
             'sensor_edge_seen': runner.sensor_edge_seen,
             'toss_tier': str(hw.JB_OP_TOSS_TIER),
             'uptime_ms': runner.uptime_last,
+            'latency_monitor_worst': runner.latency_monitor_worst,
             'write_target': target_path,
             'write_target_ok': target_ok,
             'write_target_reason': target_reason,
@@ -2742,6 +2807,17 @@ def run(args) -> int:                                    # noqa: C901
                 'grid': {'x_mm': list(x_mm), 'y_mm': list(y_mm), 'z_mm': z_mm},
                 'uptime_ms_first': runner.uptime_first,
                 'uptime_ms_last': runner.uptime_last,
+                # The post-2026-08-15 replacement for the fresh-boot
+                # precondition: uptime is a LABEL now, this is the QUALITY
+                # claim. `_worst` over the whole run is what makes a capture
+                # auditable after the fact — a clean preflight followed by a
+                # RING_LEAK at node 5 is a contaminated map, and only this row
+                # would say so.
+                'latency_monitor_first': runner.latency_monitor_first,
+                'latency_monitor_last': runner.latency_monitor_last,
+                'latency_monitor_worst': runner.latency_monitor_worst,
+                'latency_monitor_samples': runner.latency_monitor_samples,
+                'latency_monitor_bad_samples': runner.latency_monitor_bad,
                 'toss_cal_status': dict(runner.cal_status),
                 'goals': goal_summaries,
                 'exhausted_nodes': exhausted_nodes,
@@ -2761,6 +2837,28 @@ def run(args) -> int:                                    # noqa: C901
             with open(meta_path, 'w') as handle:
                 json.dump(meta, handle, indent=2, default=str)
             csv_file.close()
+            # Said out loud, because the operator's decision "is this capture
+            # admissible?" used to be answerable from the fresh-boot ceremony
+            # alone and now is not.
+            if runner.latency_monitor_samples:
+                print('\nlatency_monitor: worst={} last={} ({}/{} samples '
+                      'non-OK) over uptime_ms {} -> {}'
+                      .format(runner.latency_monitor_worst,
+                              runner.latency_monitor_last,
+                              runner.latency_monitor_bad,
+                              runner.latency_monitor_samples,
+                              runner.uptime_first, runner.uptime_last))
+                if runner.latency_monitor_worst != tcg.LATENCY_MONITOR_OK:
+                    print('  ! The plant ALARMED during this capture. Treat the '
+                          'rows as suspect: this is what the retired fresh-boot '
+                          'rule used to be a proxy for, and unlike that rule it '
+                          'is a measurement. See '
+                          'logbook/2026-08-15-fw14-validated-arc-closed.md.')
+            else:
+                print('\nlatency_monitor: NO samples seen — the row was absent '
+                      'from every /link_status message, so this capture carries '
+                      'no plant-health evidence at all. Rebuild and relaunch '
+                      'before the next one.')
             print('\nCSV    -> {}'.format(csv_path))
             print('meta   -> {}'.format(meta_path))
             print('ledger -> {}'.format(ledger_path(out_dir)))

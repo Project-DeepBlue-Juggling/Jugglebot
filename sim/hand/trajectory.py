@@ -58,23 +58,46 @@ QUINTIC_S2_MAX = 5.7735027
 QUINTIC_H_MAX = 0.19753086
 QUINTIC_H2_MAX = 3.9402340
 SMOOTH_MOVE_V0_DEADBAND_RPS = 6.0
-SMOOTH_MOVE_EXCURSION_MARGIN_REV = 0.5
+SMOOTH_MOVE_EXCURSION_MARGIN_REV = 0.2
 MIN_EVENT_VEL_MPS = 0.3
 MAX_EVENT_VEL_MPS = 7.0
 SAFETY_GAP_S = 0.02  # 20 ms safety gap (from teensy_operational.safety_gap_us)
-SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:260
+SMOOTH_MOVE_MIN_DURATION_S = 0.05  # fmaxf(T, 0.05f) — Trajectory.h:54/:557
 
 # Stroke end stops, in the FIRMWARE's frame: revs from the homed physical
 # bottom.  ``rev = mm/1000 * _LINEAR_GAIN`` with NO margin term — the 20 mm
 # ``STROKE_MARGIN_MM`` inset below is a sim-side *placement* of the stroke inside
 # the travel, not a frame offset the firmware shares (the firmware homes DOWNWARD
 # into the bottom stop and sets zero 0.1 rev above it, and
-# ``hand_motor_max_position_revs = 11.1`` is 351.08 mm above that zero, i.e.
-# 0.76 mm below the top of the 355 mm stroke — a guard only coherent if zero is
-# the physical bottom).  Carrying the inset across would put the ceiling 0.63 rev
-# too high, 0.53 rev PAST the overextension guard.  See
-# plans/active/hand-command-continuity.md § Phase 0 — Outcome, Confirmation 2.
-HAND_MOTOR_MAX_POSITION_REVS = 11.1     # geometry.hand_motor_max_position_revs
+# ``hand_motor_hard_stop_revs = 10.8`` is 341.59 mm above that zero).  Carrying
+# the inset across would put the ceiling 0.63 rev too high, PAST the hard stop.
+# See plans/archived/hand-command-continuity.md § Phase 0 — Outcome, Confirmation 2.
+#
+# CORRECTED 2026-08-18: this mirror read 11.1 (and the margin 0.5) until the
+# operator measured the sensorised hand's hard stop at 10.8 rev — metal contact.
+# The CEILING is UNCHANGED at 10.6 rev because the margin moved with the base
+# (0.5 -> 0.2) -- bit-identical in float32 (0x41299a9a).  The ceiling only,
+# though: ``smooth_move_max_duration_s()`` moves 0.80054 -> 0.78964 s, so a
+# prelude whose honoured duration lands in (0.78964, 0.80054] s -- |v0| in
+# (20.04, 20.32] rev/s -- now takes the rest-to-rest fallback where it was
+# honoured before.  Conservative, but a behaviour change.  It moves because it is
+# defined as the longest REST-TO-REST move the stroke admits and the stroke got
+# shorter.  That is the conservative direction (a tighter cap fires the
+# rest-to-rest fallback slightly sooner) and the host window that consumes it,
+# ``_PRIME_INFLIGHT_S``, was sized against the larger number.
+#
+# NOTE, deliberately not acted on here: this module's ``HAND_STROKE_M = 0.355``
+# implies a top of 11.224 rev, which is 0.42 rev ABOVE this measured stop.  That
+# is not a contradiction — 0.355 is ``teensy_trajectory.hand_stroke_m``, the
+# THROW-PROFILE basis (it feeds total_stroke -> x2/x3/x5, all empirically
+# validated on hardware), NOT a measurement of physical travel.  Physical travel
+# is ``jugglebot_geometry.hand_stroke_mm`` = **344.75 mm**, a separate key since
+# 2026-08-18.  Re-deriving the profile basis would move the release and catch
+# points and needs its own validation.
+# (This note said ``hand_stroke_mm = 355.0`` until 2026-08-21 — it named the
+# geometry key while meaning the trajectory one, i.e. exactly the conflation the
+# 2026-08-18 split exists to prevent.  See sim/plant/mujoco_plant.py.)
+HAND_MOTOR_HARD_STOP_REVS = 10.8     # geometry.hand_motor_hard_stop_revs
 HAND_HOME_ABS_POS_REV = -0.1            # Homing::HAND_ABS_POS_REV — the bottom stop
 # The smooth-move excursion FLOOR is encoder zero (JBOp::HAND_RETRACT_REV), NOT
 # HAND_HOME_ABS_POS_REV.  -0.1 rev IS the bottom stop (the axis homes downward
@@ -322,15 +345,17 @@ class HandCatchTrajectory:
 # ------------------------------------------------
 # ``makeSmoothMove`` is prepended to EVERY hand command: a kind-3 prime/retract/
 # SAFE_ABORT, and the prelude ahead of every kind-0/1/2 stroke
-# (``Teensy_code_platform.ino:470`` and ``:522``).  It used to seed the quintic
+# (``Teensy_code_platform.ino:580`` and ``:631``).  It used to seed the quintic
 # ``v = a = 0`` from ``current_hand_position`` alone, while
-# ``current_hand_velocity`` sat declared ``extern volatile`` two lines above the
-# function and was never read.  So any command landing while the hand moved
-# commanded a VELOCITY STEP: measured 2026-07-25, a catch arm landing 8-18 ms
-# after ball release froze the setpoint at the live encoder value (6.20-7.78 rev)
-# with the hand travelling through it at ~120 rev/s, and the position loop then
-# coasted to 10.17-10.32 rev (0.775 rev from the 11.1 rev overextension guard)
-# and yanked the hand 0.34-1.75 rev = 10.7-55.3 mm BELOW the stroke end.  That is
+# ``current_hand_velocity`` sat declared ``extern volatile`` right beside
+# ``current_hand_position`` (``Trajectory.h:85-86``) and was never read.  So any
+# command landing while the hand moved commanded a VELOCITY STEP: measured
+# 2026-07-25, a catch arm landing 8-18 ms after ball release froze the setpoint at
+# the live encoder value (6.20-7.78 rev) with the hand travelling through it at
+# ~120 rev/s, and the position loop then coasted to 10.17-10.32 rev (0.475 rev
+# from the 10.8 rev hard stop; this read "0.775 rev from the 11.1 rev
+# overextension guard" until 2026-08-21 — 11.1 was the DECLARED stop, corrected
+# 2026-08-18 to the operator-measured metal contact) and yanked the hand 0.34-1.75 rev = 10.7-55.3 mm BELOW the stroke end.  That is
 # the operator-visible post-throw dip.
 #
 # THE SHAPE
@@ -452,16 +477,16 @@ def smooth_move_accel_limited_duration_s(delta_rev: float,
 
 
 def smooth_move_max_duration_s() -> float:
-    """Longest duration a velocity-continuous prelude may take (``0.8005`` s).
+    """Longest duration a velocity-continuous prelude may take (``0.78964`` s).
 
     The longest REST-TO-REST smooth move the stroke admits (full travel,
-    ``HAND_MOTOR_MAX_POSITION_REVS``), so an honoured prelude can never take
+    ``HAND_MOTOR_HARD_STOP_REVS``), so an honoured prelude can never take
     longer than a profile the firmware could already emit — which is what keeps
     every host-side window sized on a commanded hand move valid without moving
     it.  Mirrors ``Trajectory.h::smoothMoveMaxDuration``; see that comment for the
     ``_PRIME_INFLIGHT_S`` failure it closes.
     """
-    return math.sqrt(HAND_MOTOR_MAX_POSITION_REVS * QUINTIC_S2_MAX
+    return math.sqrt(HAND_MOTOR_HARD_STOP_REVS * QUINTIC_S2_MAX
                      / MAX_SMOOTH_MOVE_HAND_ACCEL_RPS2)
 
 
@@ -622,7 +647,7 @@ def plan_smooth_move(start_rev: float, target_rev: float,
     load-bearing: ``hand_catch_prime_rev`` was moved to the derived stroke top
     (9.9594 rev) and the catch arm gated to after the throw stroke precisely so
     a catch from rest opens with the smallest possible prelude.  It is also the
-    ONLY branch that returns nothing, and ``Teensy_code_platform.ino:472-475`` returns
+    ONLY branch that returns nothing, and ``Teensy_code_platform.ino:581-583`` returns
     from the kind-3 handler BEFORE ``packedMsgs.clear()`` when the move is
     empty — so widening this branch would widen a hole in the only un-arm
     mechanism the Teensy offers (a pre-release SAFE_ABORT depends on a kind-3
@@ -647,7 +672,7 @@ def plan_smooth_move(start_rev: float, target_rev: float,
     * *Refuse the command.*  For a kind-3 that means not clobbering, and a
       kind-3 retract clobbering an armed kind-0 is the only un-arm mechanism the
       Teensy offers.  Refusing via an empty trajectory is worse still — the
-      early return at ``Teensy_code_platform.ino:472-475`` sits BEFORE the queue clear,
+      early return at ``Teensy_code_platform.ino:581-583`` sits BEFORE the queue clear (``:588``),
       so an armed stroke would survive a SAFE_ABORT.
     * *Brake to the limit* (shorten the duration until the bulge fits, whatever
       acceleration that costs).  Near a target the bulge has no room to be
@@ -709,7 +734,7 @@ def plan_smooth_move(start_rev: float, target_rev: float,
         # continuous profile) and a legal target may sit below the lower bound,
         # and neither must make the move infeasible by definition.  EPS absorbs
         # rounding at those endpoints; it is not headroom.
-        hi_bound = max(HAND_MOTOR_MAX_POSITION_REVS
+        hi_bound = max(HAND_MOTOR_HARD_STOP_REVS
                        - SMOOTH_MOVE_EXCURSION_MARGIN_REV,
                        plan.start_rev, plan.target_rev)
         lo_bound = min(HAND_RETRACT_REV, plan.start_rev, plan.target_rev)

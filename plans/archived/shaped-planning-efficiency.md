@@ -1,3 +1,8 @@
+---
+title: Plan: Shaped-planning efficiency — batched dense gate + retiming-invariant duration search
+status: completed
+archived: 2026-07-17
+---
 # Plan: Shaped-planning efficiency — batched dense gate + retiming-invariant duration search
 
 > **✅ COMPLETE — ALL THREE PHASES LANDED 2026-07-17.** Phase 1a `4acaefe`,

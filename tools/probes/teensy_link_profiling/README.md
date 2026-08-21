@@ -2,7 +2,7 @@
 
 Offline validation + profiling tools for the can-bridge Teensy
 (`ros_ws/src/jugglebot/Teensy_code_canbridge/`). See
-[`plans/active/teensy-can-offload.md`](../../../plans/active/teensy-can-offload.md)
+[`plans/archived/teensy-can-offload.md`](../../../plans/archived/teensy-can-offload.md)
 and the firmware-WIP handoff.
 
 ## `hermite_xref/` — interpolator validation

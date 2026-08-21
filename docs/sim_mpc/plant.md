@@ -120,7 +120,7 @@ The hand is an independent linear actuator on the platform. It is not controlled
 |---|---|
 | `command_hand(pos_mm)` | Set hand to absolute position (clamped to stroke) |
 | `hand_to_home()` | Bottom of travel (0 mm) |
-| `hand_to_prime()` | Catch-ready position (~323 mm) |
+| `hand_to_prime()` | Catch-ready position (**~335 mm**, the top of the sim's stroke — derived from `HAND_STROKE_TOP_REV`; it was ~323 mm until 2026-08-21, a pre-2026-07-26 prime converted with the wrong gain) |
 
 Hand trajectories (`HandCatchSequence`, `HandThrowSequence`) are ported from the Teensy firmware's `Trajectory.h` and generate position commands sampled at the control rate.
 

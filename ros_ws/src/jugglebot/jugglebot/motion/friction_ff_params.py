@@ -7,7 +7,7 @@ The block is intentionally kept out of ``generate_config.py``'s
 ``HW_SECTIONS`` so it is not emitted into Python/C++/JS consumers that
 don't need it.  See the comment block above ``friction_ff:`` in
 ``config/hardware_config.yaml`` and §3.1 of
-``plans/archived/2026-05-08 friction-ff-motor-guard-integration.md``.
+``plans/archived/friction-ff-motor-guard-integration.md``.
 
 Path resolution (``_resolve_yaml_path``) covers both the source tree and
 the colcon install tree, because ``motor_guard`` runs from the install
@@ -164,7 +164,7 @@ def load_params(yaml_path: str | None = None) -> FrictionFFParams:
     if 'friction_ff' not in cfg:
         raise KeyError(
             f"{path} is missing the top-level 'friction_ff' block; "
-            f"see plans/archived/2026-05-08 friction-ff-motor-guard-integration.md §3.1")
+            f"see plans/archived/friction-ff-motor-guard-integration.md §3.1")
     ff = cfg['friction_ff']
 
     dyn = cfg.get('dynamics', {})

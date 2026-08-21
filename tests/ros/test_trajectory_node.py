@@ -519,7 +519,7 @@ def test_shipped_retime_model_is_off_until_tracking_envelope_closed():
     the velocity loop's TRACKING envelope (x-traverse deviation 0.45 -> 0.73 rev,
     above the ~0.6 in-move ABORT line) — the legacy loop's overshoot was
     accidentally load-bearing there. Re-enable ONLY with accel FF landed (see
-    plans/active/accel-ff-inertia.md Verification) or a tracking-aware duration
+    plans/parked/accel-ff-inertia.md Verification) or a tracking-aware duration
     floor, and re-run the 19-32-03 A/B as the acceptance test — see
     logbook/2026-07-17-retime-model-tracking-envelope.md. Deliberately flipping
     the default means updating this test; that is the logged act."""
@@ -694,6 +694,31 @@ def test_status_publishes_typed_trajectory_status():
     assert published.streaming is True
     assert published.mode == 'TRAJECTORY'
     assert published.plan_kind == 'hold'
+
+
+def test_status_carries_the_live_session_limits_and_follows_set_limits():
+    """trajectory/status publishes the LIVE session limits (2026-08-14), and a
+    set_limits ramp is visible on the very next publish — this is the wire the
+    toss sequencer's closed-form reach bound rides, so the pre-throw
+    displacement verdict moves in lockstep with the feasibility gate instead of
+    judging against a stale module copy of the YAML default (a ramp-DOWN
+    otherwise passes a goal the planner refuses at t_release, mid-flight)."""
+    node = _traj_mode_node()
+    node._publish_status()
+    first = node.status_pub.published[-1]
+    assert first.leg_vel_limit_mmps == pytest.approx(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
+    assert first.leg_acc_limit_mmps2 == pytest.approx(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
+    assert first.leg_jerk_limit_mmps3 == pytest.approx(
+        hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
+    req = SetTrajectoryLimits.Request()
+    req.leg_vel_limit_mmps = 0.0         # keep
+    req.leg_acc_limit_mmps2 = 0.0        # keep
+    req.leg_jerk_limit_mmps3 = 15000.0   # cautious-session ramp-down
+    node._svc_set_limits(req, SetTrajectoryLimits.Response())
+    node._publish_status()
+    ramped = node.status_pub.published[-1]
+    assert ramped.leg_jerk_limit_mmps3 == pytest.approx(15000.0)
+    assert ramped.leg_vel_limit_mmps == pytest.approx(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
 
 
 # ── C-LEVEL-1 observability: gravity_correction_loaded ────────

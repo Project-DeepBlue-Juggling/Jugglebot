@@ -162,7 +162,7 @@ It does **not** cover, and these remain on-hardware-replay gaps:
   / `max_jitter` counters read clean through the 2026-07-04 Tier-2 flood +
   deferred-stow checks (`logbook/2026-07-02-canhub-hardening-tier2.md`, checks 3 &
   5), and a dedicated automated PASS/ABORT soak gate over the PROFILE frame lives at
-  `tools/probes/canhub_500hz_deadline_gate.py` (item 19);
+  `tools/probes/archived/canhub_500hz_deadline_gate.py` (item 19; archived 2026-08-15, arc closed);
 * float32-vs-float64 numerical residue — host float is true IEEE-32 (closer to the
   Teensy FPU than the float64 Python mirror), and these tests assert **behaviour**
   (clamps fired, modes transitioned, descent converged), not bit-exact equality.

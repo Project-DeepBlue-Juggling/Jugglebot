@@ -494,6 +494,108 @@ void cache_diag_uplink_step() {
   s_age_seen_mask = 0;
 }
 
+// ── CAN RX-ring true-occupancy census — contract in telemetry.h ─────────────
+// The conviction instrument for the FlexCAN_T4 `_available` leak. Everything
+// this function emits was reduced where the data lives (can_buses.cpp's 1 kHz
+// service tick, the jugglebot RX decode, gpio_poll's request/reply pair); the
+// step below only takes the snapshots and turns cumulative counters into window
+// quantities.
+//
+// DIAGNOSTICS ONLY: nothing in the firmware reads any state below, and the leak
+// itself is deliberately NOT fixed in this build — the fix is sequenced after
+// the measurement so it can be judged against a number instead of a theory.
+static constexpr uint64_t RING_DIAG_PERIOD_US = 1000000u;   // 1 Hz emit
+static constexpr uint32_t RING_U32_SAT        = 0xFFFFFFFFu;
+
+// Window state. ALL of these are touched by task_telem and nothing else.
+static uint64_t s_ring_diag_sent_us   = 0;   // micros64() at the last emit (0 ⇒ none yet)
+static uint32_t s_ring_diag_seq       = 0;   // frames emitted since boot
+static uint32_t s_ring_ticks_prev     = 0;   // previous take's cumulative probe_ticks
+static uint64_t s_ring_arrival_prev   = 0;   // previous take's arrival clock
+static uint32_t s_ring_lag_frames_prev = 0;  // previous take's cumulative folded-frame count
+
+void ring_diag_uplink_step() {
+  const uint64_t now = micros64();   // interval clock: emission pacing.
+                                     // NEVER now_wall_us — an anchor step would
+                                     // corrupt the window length and, with it,
+                                     // the decode-vs-capture span comparison.
+  if (s_ring_diag_sent_us != 0 &&
+      (now - s_ring_diag_sent_us) < RING_DIAG_PERIOD_US) return;
+  const uint64_t win64 = (s_ring_diag_sent_us == 0) ? 0ULL : (now - s_ring_diag_sent_us);
+  s_ring_diag_sent_us = now;
+  ++s_ring_diag_seq;
+
+  const CanRingProbe rp  = can_buses_ring_probe();
+  const JbLagProbe   lag = can_buses_jb_lag_take();
+  GpioPollRtt rtt{};
+  gpio_poll_rtt_take(rtt);
+
+  JbUdp::RingDiagPayload p{};
+  p.t_local_us = now;
+  // Bus fields are addressed by ROLE (jugglebot / bb / cone), matching
+  // BridgeTxDiag and CacheDiag. The jugglebot and cone CONTROLLERS are currently
+  // swapped in hardware (can_buses.cpp), so a controller-numbered name would be
+  // wrong the moment that swap is undone.
+  p.true_depth_jb          = rp.jugglebot.depth;
+  p.true_depth_bb          = rp.bb.depth;
+  p.true_depth_cone        = rp.cone.depth;
+  p.avail_reported_jb      = rp.jugglebot.avail;
+  p.avail_reported_bb      = rp.bb.avail;
+  p.avail_reported_cone    = rp.cone.avail;
+  p.leak_hwm_jb            = rp.jugglebot.leak_hwm;
+  p.leak_hwm_bb            = rp.bb.leak_hwm;
+  p.leak_hwm_cone          = rp.cone.leak_hwm;
+  p.true_depth_hwm_jb      = rp.jugglebot.depth_hwm;
+  p.true_depth_hwm_bb      = rp.bb.depth_hwm;
+  p.true_depth_hwm_cone    = rp.cone.depth_hwm;
+  p.fifo_overflows_jb      = rp.jugglebot.fifo_overflows;
+  p.fifo_overflows_bb      = rp.bb.fifo_overflows;
+  p.fifo_overflows_cone    = rp.cone.fifo_overflows;
+  p.fifo_warns_jb          = rp.jugglebot.fifo_warns;
+  p.fifo_warns_bb          = rp.bb.fifo_warns;
+  p.fifo_warns_cone        = rp.cone.fifo_warns;
+
+  // ── Cumulative → per-window, differenced HERE ─────────────────────────────
+  // The opposite choice from CacheDiag's enc_frames (cumulative on the wire,
+  // differenced by the host) and the same one ClockDiag's occupancy fields make,
+  // for the same reason: these three are denominators for extrema that were
+  // ALREADY reduced on-chip over this exact window. A host-side difference
+  // would silently widen the denominator across a dropped uplink frame while the
+  // numerator stayed one window's worth, understating a duty. Unsigned
+  // differencing is wrap-correct.
+  p.probe_ticks = rp.probe_ticks - s_ring_ticks_prev;
+  s_ring_ticks_prev = rp.probe_ticks;
+  p.lag_frames = lag.frames - s_ring_lag_frames_prev;
+  s_ring_lag_frames_prev = lag.frames;
+  // The arrival clock RESTARTS at a reseed, so an unguarded difference would go
+  // hugely negative (and, unsigned, enormous) exactly when the series is least
+  // trustworthy. A reseeded window reports 0 span and says so in the flags.
+  const uint64_t cap64 = (lag.reseeded_since_read || lag.arrival_us < s_ring_arrival_prev)
+                             ? 0ULL : (lag.arrival_us - s_ring_arrival_prev);
+  s_ring_arrival_prev = lag.arrival_us;
+  p.cap_span_us = (cap64 > (uint64_t)RING_U32_SAT) ? RING_U32_SAT : (uint32_t)cap64;
+
+  p.lag_now_us  = lag.seeded ? lag.lag_now_us : 0;
+  p.lag_hwm_us  = lag.seeded ? lag.lag_hwm_us : 0;
+  p.lag_reseeds = lag.reseeds;
+  p.flags = (uint8_t)((lag.seeded ? JbUdp::RingDiagFlags::LAG_SEEDED : 0u) |
+                      (lag.reseeded_since_read
+                           ? JbUdp::RingDiagFlags::LAG_RESEED_IN_WINDOW : 0u));
+
+  p.sdo_rtt_min_us  = rtt.min_us;
+  p.sdo_rtt_max_us  = rtt.max_us;
+  p.sdo_rtt_last_us = rtt.last_us;
+  p.sdo_rtt_count   = rtt.count;
+
+  p.seq       = s_ring_diag_seq;
+  p.window_us = (win64 > (uint64_t)RING_U32_SAT) ? RING_U32_SAT : (uint32_t)win64;
+  udp_send_stream(JbUdp::MsgType::RING_DIAG, (const uint8_t*)&p, sizeof(p));
+  // The send result is deliberately ignored and the window baselines above were
+  // already advanced: holding them back on a dropped frame would merge two
+  // windows and inflate a duty, while a lost frame is already visible as a gap
+  // in `seq` (the CacheDiag precedent).
+}
+
 // ── Firmware identity uplink — contract in telemetry.h ───────────────────────
 // Both fields are compile-time constants, so this frame never changes within a
 // boot; it is sent at 1 Hz anyway because the bridge cannot observe a Jetson

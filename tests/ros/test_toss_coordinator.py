@@ -276,7 +276,8 @@ def test_toss_deadline_never_lands_inside_the_flight_window():
     ('ball_unknown', 'REJECTED_BALL_UNKNOWN'),
     ('track_active', 'REJECTED_TRACK_ACTIVE'),
     ('delay_floor', 'REJECTED_CANT_MAKE_LEAD'),
-    ('flight_band', 'REJECTED_FLIGHT_TIME'),
+    ('flight_floor', 'REJECTED_THROW_ENVELOPE'),
+    ('flight_ceiling', 'REJECTED_THROW_ENVELOPE'),
     ('displacement', 'REJECTED_DISPLACEMENT'),
     ('workspace', 'REJECTED_WORKSPACE'),
 ])
@@ -375,8 +376,17 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
         node._balls = [_Ball(status=1, destination='jugglebot', id=9)]
     elif breakage == 'delay_floor':
         gh = _TossGoalHandle(delay=2.0)
-    elif breakage == 'flight_band':
-        gh = _TossGoalHandle(throw_height=0.2)   # →0.404 s, below the flight band
+    elif breakage == 'flight_floor':
+        # 0.2 m → 0.404 s. Below the DERIVED floor (C-HAND-3): the catch-arm
+        # window is −96 ms there, i.e. the arm cannot be placed after the throw
+        # stroke clears and still meet the Teensy's :533 budget.
+        gh = _TossGoalHandle(throw_height=0.2)
+    elif breakage == 'flight_ceiling':
+        # 1.8 m → 1.212 s → 5.947 m/s: past the DECEL_FF_HEADROOM ceiling
+        # (5.637) but still inside the 7.0 m/s bridge band, so it is the
+        # ENVELOPE that refuses and not the wire copy. (1.2 m was this row's
+        # driver until 2026-08-20; the measured post-fix coast ladder admits it.)
+        gh = _TossGoalHandle(throw_height=1.8)
     elif breakage == 'displacement':
         # 8b is the capability under test, not the shipped default (operator
         # flipped the shipped tier to '8a' on 2026-08-10) — the |B − A| cap is
@@ -393,7 +403,11 @@ def test_toss_goal_rejections_via_execute(breakage, expected, monkeypatch):
         gh = _TossGoalHandle(x=60.0, z=300.0)
     result = node._execute_toss(gh)
     assert result.success is False
-    assert result.outcome == expected
+    # REJECTED_THROW_ENVELOPE carries a parenthesised `BOUND:numbers` payload —
+    # the REJECTED_POSITION(NO_RESPONSE) shape — so the row pins the CODE and
+    # tests/motion/test_throw_envelope.py pins what the payload must contain.
+    assert (result.outcome == expected
+            or result.outcome.startswith(expected + '(')), result.outcome
     assert gh.terminal == 'abort'
     assert math.isnan(result.catch_error_mm)
     assert math.isnan(result.achieved_flight_s)
@@ -891,6 +905,50 @@ def test_on_traj_status_caches_both_the_flag_and_its_arrival():
     node._on_traj_status(_traj_status(loaded=True))
     with node._lock:
         assert node._gravity_correction_loaded is True
+
+
+def test_live_limits_ride_traj_status_and_expire_with_it():
+    """The LIVE session limits (2026-08-14) are cached off trajectory/status and
+    fed to the toss FSM ONLY while that status is FRESH — the same window as
+    platform_levelled, and for the same reason: a stale cache could carry a
+    triple the node has since ramped away from, and the reach bound must judge
+    against what the feasibility gate enforces NOW. Stale or never-heard ⇒ 0.0
+    ⇒ the sequencer's YAML-default fallback (the pre-field behaviour), never a
+    refusal — the bound is a loud-early convenience, the planner stays the
+    truth. An old publisher (field-less message) degrades the same way via the
+    dataclass/getattr default rather than taking the coordinator down."""
+    now = 100.0
+    node = _toss_ready_node(now)
+    _install_toss_goal(node)
+    msg = _traj_status(loaded=True)
+    msg.leg_vel_limit_mmps = 1000.0
+    msg.leg_acc_limit_mmps2 = 5000.0
+    msg.leg_jerk_limit_mmps3 = 15000.0
+    node._on_traj_status(msg)
+    with node._lock:
+        assert node._leg_limits_live == (1000.0, 5000.0, 15000.0)
+        node._traj_status_mono = now          # fresh (the real stamp is perf)
+    obs = node._build_toss_observations(now)
+    assert obs.leg_vel_limit_mmps == pytest.approx(1000.0)
+    assert obs.leg_acc_limit_mmps2 == pytest.approx(5000.0)
+    assert obs.leg_jerk_limit_mmps3 == pytest.approx(15000.0)
+    with node._lock:
+        node._traj_status_mono = now - 2.0    # the applier went quiet
+    stale = node._build_toss_observations(now)
+    assert stale.leg_vel_limit_mmps == 0.0
+    assert stale.leg_acc_limit_mmps2 == 0.0
+    assert stale.leg_jerk_limit_mmps3 == 0.0
+    # Field-less status (pre-2026-08-14 publisher): a bespoke object WITHOUT
+    # the limit attributes, so the real getattr-absence path is exercised (the
+    # conftest TrajectoryStatus mock now always carries the fields, defaulted
+    # 0.0, and cannot test absence). The cache degrades to the absent sentinel
+    # rather than keeping the previous triple.
+    class _PreLiveLimitsStatus:
+        streaming = True
+        gravity_correction_loaded = True
+    node._on_traj_status(_PreLiveLimitsStatus())
+    with node._lock:
+        assert node._leg_limits_live == (0.0, 0.0, 0.0)
 
 
 def test_the_persisted_startup_push_alone_satisfies_the_gate():

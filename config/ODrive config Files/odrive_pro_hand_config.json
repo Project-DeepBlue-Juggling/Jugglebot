@@ -50,8 +50,8 @@
       "startup_motor_calibration": false,
       "step_dir_always_on": false,
       "step_gpio_pin": 8,
-      "torque_soft_max": 0.5,
-      "torque_soft_min": -0.055133331567049026,
+      "torque_soft_max": 0.7,
+      "torque_soft_min": -0.7,
       "watchdog_timeout": 0.0,
       "anticogging": {
         "calib_bidirectional": true,

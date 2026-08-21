@@ -129,7 +129,7 @@ arrival velocity departs by definition and the strict reading has nothing left t
 say.
 
 > **Correction to an earlier claim, kept because a future reader will meet it.**
-> `plans/active/catch-reach-degenerate-overshoot.md` and the replay probe both
+> `plans/parked/catch-reach-degenerate-overshoot.md` and the replay probe both
 > stated that the commanded tilt "leaves the park in the wrong direction once
 > the ratio exceeds `ψ(2/3) = 0.790`". That is where the value **at `s = 2/3`**
 > crosses zero, not where the reach first leaves the park — the first crossing
@@ -446,7 +446,7 @@ one the bench will actually see. Measured 2026-07-26 through the same harness
 Corrected 2026-07-27: it previously carried `139.7` for the acceleration, which is
 the **pre-fix** figure from the table above (and the one the bag published), while
 its jerk `3935` was already the post-fix-at-`0.07` value — so the row matched
-neither column and disagreed with `plans/active/catch-reach-degenerate-overshoot.md`
+neither column and disagreed with `plans/parked/catch-reach-degenerate-overshoot.md`
 and the operator runbook's § CHECK ZSEAT-3, both of which read `142.0 / 3935`.
 Re-measured through the production planner on the recorded reload geometry (seed at
 the park, target `rx +1.774062° / ry −10.636334°`, wire receive tilt `10.87°`, lead
@@ -485,7 +485,7 @@ reads PASS on a machine whose behaviour at contact has changed.
 
 - `ros_ws/docs/levelling_frame.md` — C-LEVEL-1, the sibling contract that made
   this premise false.
-- `plans/active/catch-reach-degenerate-overshoot.md` — the investigation.
+- `plans/parked/catch-reach-degenerate-overshoot.md` — the investigation.
 - `tools/probes/catch_reach_replay.py` — reproduces all seven catch reaches in
   `2026-07-25_15-17-48` and prints the pre/post counterfactual for each.
 - `tests/motion/test_trajectory_planner_catch.py` — the `test_ccatch1_*` block;

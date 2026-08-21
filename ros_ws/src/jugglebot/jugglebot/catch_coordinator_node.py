@@ -25,7 +25,7 @@ Subscribes to:
     the window stays INERT and the reload path's timing is bit-identical.
   - catch/vel_scale (Float64) — the operator's per-attempt catch-speed knob
     (reload goal field, or published manually); scales the armed event velocity;
-    reset to the config default (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.8) on disarm.
+    reset to the config default (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.9) on disarm.
   - catch/prime_hold (Bool) — the toss coordinator's prime-suppression gate
     (True at PREPARE entry, before catch/armed rises; False at terminal). While
     True, EVERY auto-prime dispatch path here (armed-edge prime, retry-tick
@@ -133,7 +133,7 @@ _PRIME_RETRY_QUIET_S = 1.5
 # so it is not suppressed — is now seeded with the hand's live descent velocity
 # and solves to 1.206 s at the retract's peak, past this window outright. The
 # firmware bounds an honoured prelude to the longest rest-to-rest move the stroke
-# admits (Trajectory.h::smoothMoveMaxDuration = 0.8005 s) so this window still
+# admits (Trajectory.h::smoothMoveMaxDuration = 0.78964 s) so this window still
 # covers every profile the Teensy can emit; the test asserts BOTH bounds.
 _PRIME_INFLIGHT_S = 1.2
 
@@ -187,14 +187,15 @@ _MAX_ARM_DISPATCHES = 2
 #
 # The failure it closes, measured 2026-07-25 across seven self-tosses: the Teensy
 # rebuilds its ENTIRE single packed queue on any kind-0/1/2 command
-# (Teensy_code_platform.ino:539 packedMsgs.clear()) and seeds the replacement prelude from
-# current_hand_position with v = 0, a = 0 (Trajectory.h:242-301 —
-# current_hand_velocity is declared extern at :47 and never read). The catch arm
+# (Teensy_code_platform.ino:648 packedMsgs.clear()) and seeds the replacement prelude from
+# current_hand_position with v = 0, a = 0 (Trajectory.h:527-620 —
+# current_hand_velocity is declared extern at :86 and never read). The catch arm
 # was landing 8-18 ms after release, INSIDE the throw's 65 ms deceleration ramp,
 # so the queue was cleared while the hand was travelling through ~120 rev/s and
 # replaced by a rest-to-rest quintic computed from that instant's position. The
-# hand overshot to 10.17-10.33 rev (0.775 rev from the 11.1 rev overextension
-# guard), was yanked back 0.34-1.75 rev BELOW the stroke end — 10.7 to 55.3 mm,
+# hand overshot to 10.17-10.33 rev (0.475 rev from the 10.8 rev hard stop; this
+# read "0.775 rev from the 11.1 rev overextension guard" until 2026-08-21, an
+# anchor retired 2026-08-18 when the operator measured metal contact), was yanked back 0.34-1.75 rev BELOW the stroke end — 10.7 to 55.3 mm,
 # up to 20.5 % of the stroke — and recovered over ~300 ms. It also discarded the
 # THROW's own decel ramp, replacing it with the position loop's reaction to a
 # frozen setpoint.
@@ -271,7 +272,8 @@ class CatchCoordinatorNode(Node):
         # Operator catch-speed knob (catch/vel_scale, published by the reload action
         # from its goal — or manually for bench throws). Scales the event velocity
         # the hand catch is armed with; reset to the config default
-        # (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.8 locked in from the 2026-07-23 third
+        # (JB_OP_CATCH_VEL_SCALE_DEFAULT, 0.9 since the toss-tier 8a tuning;
+        # 0.8 was locked in from the 2026-07-23 third
         # sitting) on the disarm edge so one reload's tuning value never leaks
         # into the next.
         self._catch_vel_scale = float(hw.JB_OP_CATCH_VEL_SCALE_DEFAULT)
@@ -1007,7 +1009,7 @@ class CatchCoordinatorNode(Node):
            travelling through, which is precisely what runbook row H1.1's
            ``dip_below_x3 <= 0.100 rev`` reads.
         3. **Busy.** Withhold — but only while waiting still leaves the Teensy
-           enough time to build the catch. ``Teensy_code_platform.ino:533`` refuses the
+           enough time to build the catch. ``Teensy_code_platform.ino:642`` refuses the
            WHOLE command when ``now + smoothDur + SAFETY_GAP > firstMainAbs`` and
            prints the refusal to serial only (``:534``), so an arm deferred past
            that point does not merely arrive late — the catch silently never
@@ -1019,14 +1021,14 @@ class CatchCoordinatorNode(Node):
            **What the forced branch does NOT promise.** The fit check that sent
            us here budgets the AT-REST prelude; on this branch the hand is by
            definition mid-stroke, so the prelude the firmware actually builds
-           from the live encoder is 0.37-0.76 s and ``:533`` may refuse this very
+           from the live encoder is 0.37-0.76 s and ``:642`` may refuse this very
            dispatch. So the honest claim is "attempting the catch beats
            abandoning it", not "this catch will fire". Two things make attempting
            it still correct. First, it is EXACTLY the pre-fix arithmetic — the
            same instant, the same ``event_delay``, the same live prelude — so the
            branch cannot be worse than the behaviour it degrades to. Second,
-           ``:533``'s ``return`` sits BEFORE ``packedMsgs.clear()`` (``:533`` vs
-           ``:539``), so a refusal leaves the live throw stroke intact: the
+           ``:642``'s ``return`` sits BEFORE ``packedMsgs.clear()`` (``:642`` vs
+           ``:648``), so a refusal leaves the live throw stroke intact: the
            downside is a lost catch, never a clobbered stroke. Dropping the arm
            here instead was rejected on that asymmetry — a drop guarantees no
            catch, whereas a dispatch is refused only if the Teensy's own clock
@@ -1042,19 +1044,33 @@ class CatchCoordinatorNode(Node):
         nominal operating point.
 
         Measured fit at the shipped flight band (derived from the header
-        constants, not copied): at 0.80 s (v_throw 3.93, armed 3.13) the window
-        spans release + 105 ms to release + 500 ms, **395 ms** wide; at
-        ``FLIGHT_TIME_MIN_S`` = 0.55 s (v_throw 2.71, armed 2.15) release + 134 ms
-        to release + 250 ms, **115 ms** wide. It stays positive at the shortest
-        shipped flight and closes only if the tracker's landing-speed estimate
-        collapses below ~1.58 m/s there (armed 1.26 m/s), which is why the closure
-        branch is evaluated against the RUNTIME ``event_vel``, not a nominal.
+        constants, not copied): at 0.80 s (v_throw 3.93, armed 3.52) the window
+        spans release + 105 ms to release + 500 ms, **395 ms** wide; at the
+        ``FLIGHT_TIME_MIN_S`` floor — **0.4949 s since 2026-08-18, when the band
+        became DERIVED** (contract C-HAND-3, ``ros_ws/docs/hand_throw_envelope.md``)
+        — v_throw 2.440, armed 2.172, release + 145 ms to release + 195 ms,
+        **50 ms** wide. It stays positive at the shortest admitted flight and
+        closes only if the tracker's landing-speed estimate collapses below
+        ~1.77 m/s there (armed 1.591 m/s), which is why the closure branch is
+        evaluated against the RUNTIME ``event_vel``, not a nominal.
 
-        The tracker is not the only way to get there: ``event_vel`` carries the
-        operator's ``catch/vel_scale`` knob (floor ``_VEL_SCALE_MIN`` = 0.3), and
-        a scale of 0.45 or below closes the window at the 0.55-0.56 s flight on
-        its own with a healthy tracker. Read ``catch/vel_scale`` before routing a
-        CLOSED warning to a tracker fault — it is logged in the warning below.
+        ⚠ **That budget is 55 ms tighter than it was**, because the floor is now
+        the flight at which this very window reaches
+        ``hand_throw_envelope.arm_window_margin_s`` = 0.050 s. It used to read
+        115 ms at the hand-picked 0.55 s floor. So a goal admitted AT the floor
+        sits exactly on runbook row **H1.5**'s ``slack > 0.050 s`` gate — a bench
+        boundary, not a comfortable operating point.
+
+        The tracker is not the only way to close it: ``event_vel`` carries the
+        operator's ``catch/vel_scale`` knob (floor ``_VEL_SCALE_MIN`` = 0.3),
+        and **a scale of 0.659 or below now closes the window at the band floor**
+        on its own with a healthy tracker — against a shipped default of 0.9,
+        that is 1.36× of headroom where it used to be 1.78× (the old figure was
+        0.45). The knob is deliberately NOT an input to the C-HAND-3 envelope,
+        which sizes the floor against ``JB_OP_CATCH_VEL_SCALE_DEFAULT``, so the
+        FSM will admit a goal the knob then makes uncatchable. Read
+        ``catch/vel_scale`` before routing a CLOSED warning to a tracker fault —
+        it is logged in the warning below.
         """
         clear_at = self._throw_stroke_clear_ros
         if clear_at is None:

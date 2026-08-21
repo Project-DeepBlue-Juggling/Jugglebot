@@ -109,9 +109,12 @@ def test_patch_node_id_sets_only_the_node_id(tool, leg_config, node_id):
 
 
 def test_patch_node_id_does_not_mutate_the_input(tool, leg_config):
-    original = leg_config['axis0']['config']['can']['node_id']
+    """Shape-agnostic on purpose: the snapshot's shape depends on which
+    odrivetool captured it (this one writes flat, older ones nested), and the
+    fixture is the real file."""
+    before = json.dumps(leg_config, sort_keys=True, allow_nan=True)
     tool.patch_node_id(leg_config, 5)
-    assert leg_config['axis0']['config']['can']['node_id'] == original
+    assert json.dumps(leg_config, sort_keys=True, allow_nan=True) == before
 
 
 def test_patch_node_id_handles_flat_shape(tool):
@@ -125,9 +128,22 @@ def test_patch_node_id_rejects_a_file_without_the_path(tool):
 
 
 def test_patch_node_id_coerces_to_int(tool, leg_config):
-    patched = tool.patch_node_id(leg_config, 3.0)
-    assert patched['axis0']['config']['can']['node_id'] == 3
-    assert isinstance(patched['axis0']['config']['can']['node_id'], int)
+    value = tool.flatten_config(tool.patch_node_id(leg_config, 3.0))[
+        'axis0.config.can.node_id']
+    assert value == 3
+    assert isinstance(value, int)
+
+
+def test_set_config_value_works_on_both_shapes(tool):
+    nested = tool.set_config_value({'a': {'b': 1}}, 'a.b', 7)
+    assert nested == {'a': {'b': 7}}
+    flat = tool.set_config_value({'a.b': 1}, 'a.b', 7)
+    assert flat == {'a.b': 7}
+
+
+def test_set_config_value_rejects_an_absent_path(tool):
+    with pytest.raises(KeyError):
+        tool.set_config_value({'a': {'b': 1}}, 'a.c', 7)
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +294,125 @@ def test_only_deduplicates(tool):
 
 
 # ---------------------------------------------------------------------------
+# Calibration motion envelope — the guard against commanding more travel
+# than the leg physically has
+# ---------------------------------------------------------------------------
+
+def test_travel_uses_the_repo_spool_geometry(tool):
+    import sys
+    sys.path.insert(0, os.path.join(_PROJECT_ROOT, 'config', 'generated'))
+    import hardware_config as hw
+
+    assert tool.LEG_STROKE_MM == hw.GEOM_LEG_STROKE_MM
+    for node_id, mm_to_rev in enumerate(hw.GEOM_MM_TO_REV):
+        assert tool.calibration_travel_mm(1.0, node_id) == pytest.approx(1.0 / mm_to_rev)
+
+
+def test_snapshot_scan_distance_exceeds_the_stroke(tool, leg_config):
+    """The live guard, against the real file: the snapshot's default 8 rev scan
+    is about twice the leg stroke, so a default run must NOT be allowed to
+    actuate without an explicit override."""
+    scan_rev = tool.flatten_config(leg_config)[tool.CALIB_SCAN_DISTANCE_PATH]
+    problems = tool.check_calibration_travel(scan_rev, tool.LEG_NODE_IDS)
+    assert len(problems) == len(tool.LEG_NODE_IDS)
+    assert tool.calibration_travel_mm(scan_rev, 0) > 2 * tool.LEG_STROKE_MM / 1.1
+
+
+def test_short_scan_passes_the_travel_check(tool):
+    assert tool.check_calibration_travel(3.0, tool.LEG_NODE_IDS) == []
+
+
+def test_travel_check_reports_every_offending_leg(tool):
+    problems = tool.check_calibration_travel(8.0, [1, 4])
+    assert len(problems) == 2
+    assert 'node 1' in problems[0] and 'node 4' in problems[1]
+
+
+def test_travel_check_is_boundary_exclusive(tool):
+    """Exactly-the-stroke is allowed; a hair over is not."""
+    stroke_rev = tool.LEG_STROKE_MM / tool.MM_PER_REV[0]
+    assert tool.check_calibration_travel(stroke_rev, [0]) == []
+    assert tool.check_calibration_travel(stroke_rev * 1.01, [0])
+
+
+def test_travel_rejects_an_unknown_node(tool):
+    with pytest.raises(IndexError):
+        tool.calibration_travel_mm(1.0, 99)
+
+
+def test_describe_calibration_motion_names_the_motion_and_the_numbers(tool):
+    lines = tool.describe_calibration_motion(8.0, 2.0, [0, 1])
+    blob = '\n'.join(lines)
+    assert 'MOVES THE MOTOR' in blob
+    assert 'node 0' in blob and 'node 1' in blob
+    assert '564' in blob  # 8 rev of leg-0 spool travel, mm
+
+
+# ---------------------------------------------------------------------------
+# Calibration state machine and outcome
+# ---------------------------------------------------------------------------
+
+def test_axis_state_constants_match_the_odrive_enums(tool):
+    """The state machine drives raw ints so the module imports without the
+    odrive package; those ints have to be the real ones."""
+    from odrive.enums import AxisState, ProcedureResult
+
+    assert tool.AXIS_STATE_IDLE == int(AxisState.IDLE)
+    assert tool.AXIS_STATE_FULL_CALIBRATION_SEQUENCE == int(
+        AxisState.FULL_CALIBRATION_SEQUENCE)
+    assert tool.PROCEDURE_RESULT_SUCCESS == int(ProcedureResult.SUCCESS)
+    assert tool.PROCEDURE_RESULT_BUSY == int(ProcedureResult.BUSY)
+
+
+def test_calibration_outcome_ok_only_on_clean_success(tool):
+    outcome = tool.CalibrationOutcome()
+    assert not outcome.ok  # never started
+
+    outcome.started = True
+    outcome.result = tool.PROCEDURE_RESULT_SUCCESS
+    assert outcome.ok
+
+    outcome.active_errors = 0x20  # DRV_FAULT
+    assert not outcome.ok, 'SUCCESS with a latched error is not a pass'
+
+    outcome.active_errors = 0
+    outcome.timed_out = True
+    assert not outcome.ok
+
+    outcome.timed_out = False
+    outcome.result = 15  # NOT_CONVERGING
+    assert not outcome.ok
+
+
+def test_calibration_owned_paths_cover_what_the_procedure_writes(tool):
+    """These are excluded from the post-calibration verify, so the set has to
+    contain the values calibration is expected to overwrite."""
+    for path in (
+        'axis0.config.motor.phase_resistance',
+        'axis0.config.motor.phase_inductance',
+        'axis0.commutation_mapper.config.index_offset',
+        'axis0.commutation_mapper.config.index_offset_valid',
+    ):
+        assert path in tool.CALIBRATION_OWNED_PATHS
+
+
+def test_drive_result_ok_requires_calibration_to_have_passed(tool):
+    res = tool.DriveResult(2, 'SERIAL')
+    res.status = 'done'
+    res.node_id_after = 2
+    assert res.ok, 'no calibration requested -> config-only success'
+
+    outcome = tool.CalibrationOutcome()
+    outcome.started = True
+    outcome.result = 15  # NOT_CONVERGING
+    res.calibration = outcome
+    assert not res.ok
+
+    outcome.result = tool.PROCEDURE_RESULT_SUCCESS
+    assert res.ok
+
+
+# ---------------------------------------------------------------------------
 # Conflicting-process preflight
 # ---------------------------------------------------------------------------
 
@@ -337,6 +472,19 @@ def test_defaults_point_at_the_leg_snapshot(tool):
     assert args.dry_run is False
     assert args.force is False
     assert args.ignore_restore_errors is False
+
+
+def test_calibration_is_on_by_default_but_gated(tool):
+    args = tool.parse_args([])
+    assert args.no_calibration is False, 'calibration is part of the requested flow'
+    assert args.yes is False, 'and it asks once before it actuates'
+    assert args.pause_between_legs is False
+    assert args.calib_timeout == tool.CALIB_TIMEOUT_S
+    assert args.calib_scan_distance is None
+
+
+def test_calib_scan_distance_override_is_parsed(tool):
+    assert tool.parse_args(['--calib-scan-distance', '2.5']).calib_scan_distance == 2.5
 
 
 def test_missing_target_config_exits_before_touching_hardware(tool, tmp_path):

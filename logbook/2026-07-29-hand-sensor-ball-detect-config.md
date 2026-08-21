@@ -230,7 +230,7 @@ That first matters at Phase 4.
 
 ## Related
 
-- `plans/active/hand-ball-sensor.md` — Phase 1 (and the Phase 3 bullet this
+- `plans/archived/hand-ball-sensor.md` — Phase 1 (and the Phase 3 bullet this
   entry adds a constraint to).
 - `logbook/2026-07-29-hand-sensor-fw-version-surfacing.md` — Phase 0 sibling,
   the fw-version instrumentation that `expected_fw` will be checked against.

@@ -87,7 +87,15 @@ class CANInterface:
 
     # Set absolute limit for how far the motors can turn. This is intended as a backup if prior error-checking fails
     _LEG_MOTOR_MAX_POSITION  = 4.2  # Revs
-    _HAND_MOTOR_MAX_POSITION = 11.1 # Revs
+    # 10.8 rev is the hand's MEASURED metal contact (operator, on the sensorised
+    # hand, 2026-08-18 — config/hardware_config.yaml jugglebot_geometry.
+    # hand_motor_hard_stop_revs). This read 11.1 until 2026-08-21, which put a
+    # DECLARED travel limit 0.3 rev = 9.5 mm PAST metal in a script that actuates
+    # the real motor. It survived the 2026-08-18 sweep only because the symbol
+    # name differs from the one that was renamed. Kept as a literal rather than
+    # imported: this file is deliberately standalone (see the header banner) and
+    # runs outside the repo's generated-config path setup.
+    _HAND_MOTOR_MAX_POSITION = 10.8 # Revs
 
     # Set the limits for trapezoidal trajectory control (used only for the legs)
     _DEFAULT_TRAP_TRAJ_LIMITS = {'vel_limit': 3.0, 'acc_limit': 10.0, 'dec_limit': 10.0} # rev/s, rev/s^2

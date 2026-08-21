@@ -68,7 +68,7 @@
  *        from the live `current_hand_velocity` instead of v = 0, the empty-return
  *        branch is now conjunct on at_rest as well as |delta| < 1e-6, and the
  *        duration bound is the positive root of the corrected quadratic (capped by
- *        `smoothMoveMaxDuration()`).  Plan: plans/active/hand-command-continuity.md
+ *        `smoothMoveMaxDuration()`).  Plan: plans/archived/hand-command-continuity.md
  *        Phase 4.  Also carries this identity block itself.
  *    2 = 2026-07-28.  POST-RELEASE DECELERATION FEEDFORWARD.  `Trajectory.h`'s
  *        `buildThrow` now sizes the torque feedforward of the decel segment
@@ -80,7 +80,7 @@
  *        velocity-hold torques, all of kind 1, and `makeSmoothMove` are
  *        untouched.  Fixes the light end-stop contact measured at ~1.2 m throws
  *        on 2026-07-27.  Contract: ros_ws/docs/hand_decel_feedforward.md
- *        (C-HAND-2).  Plan: plans/active/hand-command-continuity.md Phase 7.
+ *        (C-HAND-2).  Plan: plans/archived/hand-command-continuity.md Phase 7.
  *        A v1 board is not unsafe, it simply still coasts — but every
  *        § CHECK HAND-7 row is meaningless on one, so read FW-1 first.
  *
@@ -88,7 +88,19 @@
  *  line above saying WHAT changed and WHEN (the can-bridge's comment style).
  */
 constexpr char     FW_NAME[]  = "jugglebot-platform";
-constexpr uint16_t FW_VERSION = 2;
+constexpr uint16_t FW_VERSION = 3;   // 1→2: 2026-07-29 throwDecelToTorque (post-release decel
+                                     //      feedforward, C-HAND-2).
+                                     // 2→3: 2026-08-18 hand END-STOP correction — BEHAVIOURAL.
+                                     //      Geometry::HAND_MOTOR_HARD_STOP_REVS 11.1 → 10.8 rev
+                                     //      (operator-measured metal contact). Trajectory.h
+                                     //      consumes it: SMOOTH_MOVE_POS_CEIL_REV is UNCHANGED at
+                                     //      10.60 rev (the margin moved 0.5 → 0.2 to hold it), but
+                                     //      smoothMoveMaxDuration() 0.80054 → 0.78964 s, which
+                                     //      changes which branch makeSmoothMove takes for a
+                                     //      prelude whose honoured duration lands in
+                                     //      (0.78964, 0.80054] s, i.e. |v0| in (20.04, 20.32] rev/s.
+                                     //      Conservative: that band now takes the rest-to-rest
+                                     //      fallback. See logbook/2026-08-18-hand-end-stop-corrected.md
 
 /*----------------------------------------------------------------------------*/
 /*                                CAN BUS SET‑UP                              */

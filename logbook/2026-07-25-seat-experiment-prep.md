@@ -21,7 +21,7 @@ files_changed:
   - tools/probes/ball_arrival_offset.py
   - tools/probes/catch_reach_replay.py
   - tools/probes/README.md
-  - plans/active/catch-reach-degenerate-overshoot.md
+  - plans/parked/catch-reach-degenerate-overshoot.md
 commits:
   - 2bc3ba2
 subsystem:

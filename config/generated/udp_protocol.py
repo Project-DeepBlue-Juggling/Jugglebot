@@ -52,6 +52,7 @@ class MsgType(IntEnum):
     CLOCK_DIAG = 143  # Per-accepted-TOD-anchor wall-clock discipline sample + 500 Hz interp occupancy (STREAM, T→J)
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
     CACHE_DIAG = 145  # 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)
+    RING_DIAG = 146  # 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)
 
 class RpcMethod(IntEnum):
     NOP = 0  # No-op (link test)
@@ -127,6 +128,10 @@ class ClockDiagFlags(IntEnum):
     STEPPED = 1  # bit0: this anchor STEPPED the offset (|err_us| > TIME_STEP_THRESHOLD_US, or the first anchor) instead of slewing the IIR. A step means the measured offset moved further in one interval than any crystal can explain (>20 ms in 30 s = >666 ppm), i.e. boot, a re-acquisition after a link gap, or a Jetson clock step — so freq_ppb over that interval is NOT a crystal reading and FREQ_VALID is cleared with it
     FIRST_ANCHOR = 2  # bit1: the FIRST anchor since boot — there was no prior offset to difference against, so err_us is reported as 0 because it does not EXIST, not because it was zero
     FREQ_VALID = 4  # bit2: freq_ppb carries a real measurement. When CLEAR, freq_ppb is 0 and that 0 means NO SAMPLE — never 'zero frequency error'. The read site must branch on this bit, which is why it is a positive assertion rather than an invalid flag
+
+class RingDiagFlags(IntEnum):
+    LAG_SEEDED = 1  # bit0: the jugglebot arrival clock has been seeded (at least one frame has been folded since boot or since the last reseed), so lag_now_us / lag_hwm_us carry a real measurement. When CLEAR they are 0 because no reference exists — not because the lag is zero
+    LAG_RESEED_IN_WINDOW = 2  # bit1: the arrival clock was RESEEDED during this window (an inter-delivery gap exceeded the wrap-safety bound, so the 16-bit capture-stamp unwrap could not be trusted). A reseed sets the zero reference to NOW, so lag_now_us in this window is not comparable with the previous window's — the consumer must SEGMENT the series here rather than reading a step as a jump in delivery lag. lag_reseeds is the cumulative counterpart
 
 class HeartbeatT2JFlags(IntEnum):
     TIME_SYNCED = 1  # bit0: Teensy clock synced to the Jetson anchor
@@ -493,7 +498,7 @@ class HandCmdEcho:
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(8)))
 
-# HandSensor: Hand ball-present sensor state. A switch in the hand shorts the hand ODrive Pro's G02 to GND when a ball is seated; no released ODrive firmware pushes GPIO state on CANSimple, so the bridge POLLS get_gpio_states over an RxSdo/TxSdo pair (gpio_poll.cpp) and publishes the decoded cache here. Additive message — no existing frame changes, so NO PROTOCOL_VERSION bump (LegCmd precedent); an old Jetson ignores the unknown msg_type and a new Jetson treats never-seen as UNKNOWN. Emitted from task_telem: one frame per NEW good reply (so naturally rate-limited to the poll rate), plus a 1 Hz keepalive while no new reply lands, so staleness is itself observable on the wire. plans/active/hand-ball-sensor.md § Architecture is NORMATIVE for the signal semantics; these flags describe the bridge's cache and say nothing about the link, so the consumer applies its own RX-age gate.
+# HandSensor: Hand ball-present sensor state. A switch in the hand shorts the hand ODrive Pro's G02 to GND when a ball is seated; no released ODrive firmware pushes GPIO state on CANSimple, so the bridge POLLS get_gpio_states over an RxSdo/TxSdo pair (gpio_poll.cpp) and publishes the decoded cache here. Additive message — no existing frame changes, so NO PROTOCOL_VERSION bump (LegCmd precedent); an old Jetson ignores the unknown msg_type and a new Jetson treats never-seen as UNKNOWN. Emitted from task_telem: one frame per NEW good reply (so naturally rate-limited to the poll rate), plus a 1 Hz keepalive while no new reply lands, so staleness is itself observable on the wire. plans/archived/hand-ball-sensor.md § Architecture is NORMATIVE for the signal semantics; these flags describe the bridge's cache and say nothing about the link, so the consumer applies its own RX-age gate.
 HAND_SENSOR_FMT = '<QIBB'
 HAND_SENSOR_SIZE = 14
 _HAND_SENSOR_STRUCT = struct.Struct(HAND_SENSOR_FMT)
@@ -598,7 +603,7 @@ class BridgeIdentity:
         it = iter(vals)
         return cls(next(it), next(it))
 
-# ClockDiag: ONE SAMPLE PER ACCEPTED TIME-OF-DAY ANCHOR (~30 s steady state, 500 ms during the pre-first-anchor fast retry), carrying the wall-clock discipline state that time_base.cpp::set_wall_anchor has always computed and then DISCARDED, plus the 500 Hz interp ladder's fallback-mode occupancy over the window since the previous emit. Built for plans/active/bridge-temporal-trustworthiness.md P1; it is the raw material the clock plan's Phase 1 needs before the servo in plans/active/bridge-clock-frequency-discipline.md is touched — the ACTUAL crystal ppm, its thermal coefficient, and the RTT-jitter floor that sets the achievable Kp/Ki — and the occupancy half closes the two remaining telemetry gaps named in the Addendum to logbook/2026-07-18-teensy-uptime-tracking-degradation.md (recover-slew and extrapolation-mode occupancy were not uplinked at all). WHY THE TWO HALVES SHARE A FRAME: they are read together. The question is whether a session's growing command lag is the transport (rtt_us climbing), the clock (err_us / freq_ppb wandering) or the interp ladder falling back to extrapolation — and a single frame makes those three answers simultaneous by construction rather than by a join across two cadences. SELF-CONTAINED BY DESIGN: every derived quantity here can be re-derived by the consumer from the raw fields on the same sample (measured offset = jetson_wall_us - t_local_us; freq_ppb = 1e9 * delta(measured offset) / dt_local_us), so a firmware arithmetic bug is falsifiable from a bag instead of having to be trusted. THE X-AXIS IS t_local_us (micros64, the raw crystal), NOT a wall stamp: the wall clock is the quantity under measurement and it STEPS, so stamping these samples with now_wall_us() would fold the measurand into its own time base. That is also why the frame needs no header timestamp from the host. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW 10 board never sends this frame, so its consumer surface must read EMPTY, never error.
+# ClockDiag: ONE SAMPLE PER ACCEPTED TIME-OF-DAY ANCHOR (~30 s steady state, 500 ms during the pre-first-anchor fast retry), carrying the wall-clock discipline state that time_base.cpp::set_wall_anchor has always computed and then DISCARDED, plus the 500 Hz interp ladder's fallback-mode occupancy over the window since the previous emit. Built for 'plans/archived/bridge-temporal-trustworthiness.md' P1 (arc closed 2026-08-15, logbook/2026-08-15-fw14-validated-arc-closed.md); it is the raw material the clock plan's Phase 1 needs before the servo in plans/active/bridge-clock-frequency-discipline.md is touched — the ACTUAL crystal ppm, its thermal coefficient, and the RTT-jitter floor that sets the achievable Kp/Ki — and the occupancy half closes the two remaining telemetry gaps named in the Addendum to logbook/2026-07-18-teensy-uptime-tracking-degradation.md (recover-slew and extrapolation-mode occupancy were not uplinked at all). WHY THE TWO HALVES SHARE A FRAME: they are read together. The question is whether a session's growing command lag is the transport (rtt_us climbing), the clock (err_us / freq_ppb wandering) or the interp ladder falling back to extrapolation — and a single frame makes those three answers simultaneous by construction rather than by a join across two cadences. SELF-CONTAINED BY DESIGN: every derived quantity here can be re-derived by the consumer from the raw fields on the same sample (measured offset = jetson_wall_us - t_local_us; freq_ppb = 1e9 * delta(measured offset) / dt_local_us), so a firmware arithmetic bug is falsifiable from a bag instead of having to be trusted. THE X-AXIS IS t_local_us (micros64, the raw crystal), NOT a wall stamp: the wall clock is the quantity under measurement and it STEPS, so stamping these samples with now_wall_us() would fold the measurand into its own time base. That is also why the frame needs no header timestamp from the host. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW 10 board never sends this frame, so its consumer surface must read EMPTY, never error.
 CLOCK_DIAG_FMT = '<QQIIiiIIIIB'
 CLOCK_DIAG_SIZE = 49
 _CLOCK_DIAG_STRUCT = struct.Struct(CLOCK_DIAG_FMT)
@@ -660,6 +665,56 @@ class CacheDiag:
         vals = _CACHE_DIAG_STRUCT.unpack(data[:129])
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), tuple(next(it) for _ in range(7)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+
+# RingDiag: CAN RX-RING TRUE-OCCUPANCY CENSUS, 1 Hz. The CONVICTION INSTRUMENT for the FlexCAN_T4 `_available` leak — the surviving candidate mechanism of the bridge-temporal arc after S2 (2026-08-13) killed the cache-AGE hypothesis. THE DEFECT (assembly-verified 2026-08-14, recorded in Teensy_code_canbridge/lib/FlexCAN_T4/PROVENANCE.md): FlexCAN_T4::events() pops the RX ring BEFORE its NVIC_DISABLE_IRQ guard, and Circular_Buffer's `_available` is read-modify-written non-atomically by BOTH the CAN ISR (increment, on push) and that unguarded task-side pop (decrement). The race is ONE-DIRECTIONAL — the ISR preempts the task, never the reverse — so ISR increments get swallowed and `_available` monotonically UNDER-counts. The bridge's drain loop (can_buses.cpp service_bus: do { events(); } while (++n < 32 && rx_remaining)) exits when `_available` reads 0 while the TRUE occupancy is still D > 0; from then on every frame it delivers is D frames old. D ratchets with uptime and caps at one ring depth, 256 slots ~= 114-135 ms at jugglebot-bus rates — which is the right order of magnitude for the 290-340 ms end-to-end lag S1 measured at 63 h, and for the ~100-150 ms per-axis telemetry freezes S2 measured directly. WHY THIS FRAME HAS TO EXIST AT ALL: `getRXQueueCount()` returns `_available`, so the depth_hwm and cap_hits counters the bridge already keeps are computed from the very number the race corrupts. They are blind to this failure BY CONSTRUCTION and would read perfectly healthy through a fully-leaked ring. THE SINGLE NUMBER THAT CONVICTS is `true_depth_jb - avail_reported_jb`, sampled at the same instant, immediately AFTER the drain loop has run to completion: at that moment `_available` is 0 by definition (that is why the loop exited), so the residual true depth IS the leak. Nominal is 0 forever, at any uptime. Anything else, growing with uptime, is the mechanism. leak_hwm_* is the same quantity maximised over EVERY 1 kHz service tick since boot, so the verdict does not depend on the 1 Hz sample landing luckily. THE TWO CROSS-CHECKS, both on the jugglebot bus, both causal rather than correlational: (1) lag_now_us measures the delivery lag DIRECTLY from the FlexCAN hardware capture timestamp, which is stamped at frame reception and is therefore immune to whatever happens in the ring afterwards — immune to the RING, note, but NOT to that capture clock's own rate error against micros64(), measured 2026-08-15 at a load-dependent 230 ppm idle to 580-670 ppm streaming, which is why the row to trend is lag_now_corrected_us and not this one, and why even that row is a growth channel rather than an absolute lag (see lag_now_us below); (2) sdo_rtt_min_us measures a real round trip over the same bus (the hand ball-sensor poll), whose floor must grow by exactly the ring delay. A ring leak of D predicts all three moving together by the same amount; a bus-level or ODrive-level fault does not. INSTRUMENTATION ONLY, AND THE LEAK IS DELIBERATELY NOT FIXED IN THIS FIRMWARE. Nothing in the bridge reads any field or accumulator introduced for this frame, so a wrong value here cannot move a leg; and the fix waits on the occupancy number so it can be judged against a measurement instead of a theory. Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag / ClockDiag / CacheDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW <= 12 board never sends this frame, so its consumer surface must read EMPTY, never error.
+RING_DIAG_FMT = '<QIIIIIIIiiIIIIIIIIHHHHHHHHHHHHHB'
+RING_DIAG_SIZE = 103
+_RING_DIAG_STRUCT = struct.Struct(RING_DIAG_FMT)
+assert _RING_DIAG_STRUCT.size == 103
+
+@dataclass
+class RingDiag:
+    t_local_us: int = 0
+    fifo_overflows_jb: int = 0
+    fifo_overflows_bb: int = 0
+    fifo_overflows_cone: int = 0
+    fifo_warns_jb: int = 0
+    fifo_warns_bb: int = 0
+    fifo_warns_cone: int = 0
+    probe_ticks: int = 0
+    lag_now_us: int = 0
+    lag_hwm_us: int = 0
+    cap_span_us: int = 0
+    lag_frames: int = 0
+    lag_reseeds: int = 0
+    sdo_rtt_min_us: int = 0
+    sdo_rtt_max_us: int = 0
+    sdo_rtt_last_us: int = 0
+    seq: int = 0
+    window_us: int = 0
+    true_depth_jb: int = 0
+    true_depth_bb: int = 0
+    true_depth_cone: int = 0
+    avail_reported_jb: int = 0
+    avail_reported_bb: int = 0
+    avail_reported_cone: int = 0
+    leak_hwm_jb: int = 0
+    leak_hwm_bb: int = 0
+    leak_hwm_cone: int = 0
+    true_depth_hwm_jb: int = 0
+    true_depth_hwm_bb: int = 0
+    true_depth_hwm_cone: int = 0
+    sdo_rtt_count: int = 0
+    flags: int = 0
+
+    def pack(self) -> bytes:
+        return _RING_DIAG_STRUCT.pack(self.t_local_us, self.fifo_overflows_jb, self.fifo_overflows_bb, self.fifo_overflows_cone, self.fifo_warns_jb, self.fifo_warns_bb, self.fifo_warns_cone, self.probe_ticks, self.lag_now_us, self.lag_hwm_us, self.cap_span_us, self.lag_frames, self.lag_reseeds, self.sdo_rtt_min_us, self.sdo_rtt_max_us, self.sdo_rtt_last_us, self.seq, self.window_us, self.true_depth_jb, self.true_depth_bb, self.true_depth_cone, self.avail_reported_jb, self.avail_reported_bb, self.avail_reported_cone, self.leak_hwm_jb, self.leak_hwm_bb, self.leak_hwm_cone, self.true_depth_hwm_jb, self.true_depth_hwm_bb, self.true_depth_hwm_cone, self.sdo_rtt_count, self.flags)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'RingDiag':
+        vals = _RING_DIAG_STRUCT.unpack(data[:103])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'

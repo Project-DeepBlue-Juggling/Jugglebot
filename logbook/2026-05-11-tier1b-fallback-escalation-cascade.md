@@ -15,7 +15,7 @@ files_changed:
   - tests/sim/test_solver_failures.py
   - logbook/2026-05-11-tier1b-fallback-escalation-cascade.md
   - logbook/INDEX.md
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 commits:
   - da57869
 subsystem:
@@ -604,7 +604,7 @@ public/internal-state surfaces that don't change with that refactor.
 
 ## Related
 
-- [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+- [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 2 specification.
 - [logbook/2026-05-11-tier1a-real-solver-failures.md](2026-05-11-tier1a-real-solver-failures.md)
   — Phase 1 (Tier 1a); helper patterns Phase 2 reuses.

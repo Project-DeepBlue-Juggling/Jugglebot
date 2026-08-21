@@ -286,6 +286,30 @@ def test_wire_layout_frozen(gen):
     for member, value, *_ in gen.ENUMS["MsgType"]:
         h.update(f"MT {member}={value};".encode())
     digest = h.hexdigest()
+    # Re-pinned for the additive RING_DIAG message (2026-08-14, can-bridge FW 13,
+    # the bridge-temporal arc): MsgType RING_DIAG 0x92 + a 103 B payload, plus a
+    # new RingDiagFlags enum. It carries, per bus and per 1 s window, the CAN RX
+    # ring's TRUE occupancy (derived from the ring's head/tail indices, probed the
+    # instant after the drain loop finishes) beside the `_available` count the
+    # rest of the firmware believes, the leak's high-water mark over every 1 kHz
+    # service tick, and the hardware FIFO overflow/warning counts that upstream
+    # FlexCAN_T4 clears without counting; plus two jugglebot-bus cross-checks —
+    # delivery lag off the FlexCAN hardware capture timestamp, and the hand-sensor
+    # SDO round-trip floor.
+    # WHY IT COULD NOT BE A FIELD ON CACHE_DIAG 0x91. That frame already carries
+    # rx_depth_hwm and rx_cap_hits, but both are computed from getRXQueueCount(),
+    # which returns `_available` — the very counter the defect corrupts. They are
+    # blind to this failure by construction. A new frame also avoids resizing a
+    # payload whose decode is an exact-size unpack.
+    # Backward-compatible ADDITION — no existing message, arg or framing constant
+    # moved — so PROTOCOL_VERSION deliberately stays at 5 (the LegCmd /
+    # HandSensor / CanErrors / ClockDiag / CacheDiag precedent: an old Jetson
+    # ignores the unknown msg_type, a new one renders never-seen as unknown, and
+    # the two ends deploy in either order — which here they again explicitly DO,
+    # the host decode shipping while FW 13 is written and NOT flashed).
+    # Previous pin: 6829255fff74613beb5de7524f623bf03d299eab2e4e1985cfb39f117bec2618
+    #   (additive CACHE_DIAG 0x91 129 B — 2026-08-12 can-bridge FW 12).
+    #
     # Re-pinned AGAIN within FW 12 (2026-08-12) for CACHE_DIAG's third per-axis
     # array, enc_frames[7] — the per-axis get_encoder_estimate frame counter,
     # 101 B -> 129 B. Driven by the S1 bag forensics: the per-axis cache VALUE
@@ -306,7 +330,8 @@ def test_wire_layout_frozen(gen):
     #   (CACHE_DIAG 0x91 at 101 B, before enc_frames — same commit, never flashed).
     #
     # Re-pinned for the additive CACHE_DIAG message (2026-08-12, can-bridge
-    # FW 12, plans/active/bridge-temporal-trustworthiness.md): MsgType
+    # FW 12, 'plans/archived/bridge-temporal-trustworthiness.md'):
+    # MsgType
     # CACHE_DIAG 0x91 + a 129 B payload carrying, once a second, the per-axis
     # ENCODER-CACHE AGE floor and peak over the window (reduced on-chip from a
     # sample per 100 Hz telemetry tick), the seen-mask that says which axes have
@@ -329,7 +354,8 @@ def test_wire_layout_frozen(gen):
     #   (additive CLOCK_DIAG 0x8F 49 B — 2026-08-11 can-bridge FW 11).
     #
     # Re-pinned for the additive CLOCK_DIAG message (2026-08-11, can-bridge
-    # FW 11, plans/active/bridge-temporal-trustworthiness.md P1): MsgType
+    # FW 11, 'plans/archived/bridge-temporal-trustworthiness.md'
+    # P1): MsgType
     # CLOCK_DIAG 0x8F + a 49 B payload carrying one sample per accepted
     # time-of-day anchor — the pre-slew offset error that set_wall_anchor has
     # always computed and discarded, the exchange RTT, the implied crystal
@@ -346,7 +372,7 @@ def test_wire_layout_frozen(gen):
     # Previous pin: 8e1bd0a3dcd370859a781925487a9accee4109554494a40023dd1cf4549794df
     #   (additive BRIDGE_TX_DIAG 0x8D 42 B + BRIDGE_IDENTITY 0x8E 3 B —
     #    2026-08-02 ERR_TIMEOUT attribution instrumentation).
-    _EXPECTED = "6829255fff74613beb5de7524f623bf03d299eab2e4e1985cfb39f117bec2618"
+    _EXPECTED = "e7af7d13a5be329319b7dc0715a3c5bba1c6318ea111be703ad697453c7ed624"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

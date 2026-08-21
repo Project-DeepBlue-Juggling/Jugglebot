@@ -2,7 +2,7 @@
 
 Tool: ``tests/hardware/tilt_cal_grid.py`` (operator-run rclpy CLI).
 Contract: ``ros_ws/docs/levelling_frame.md`` § **C-LEVEL-2**.
-Plan: ``plans/active/tilt-calibration-grid.md`` § Phase 3.
+Plan: ``plans/archived/tilt-calibration-grid.md`` § Phase 3.
 
 The tool splits into a **pure core** — grid-spec generation, the residual
 reduction, map-document assembly, CSV rows — and a thin rclpy runtime. Only the
@@ -1302,6 +1302,153 @@ def test_wire_verdict_refuses_an_empty_or_partial_cache():
         ok, message = tcg.wire_armed_verdict(partial)
         assert ok is False, '{} must be required'.format(key)
         assert key in message
+
+
+# ── temporal health: the post-FW-14 replacement for the fresh-boot rule ──
+#
+# The rule these tests pin: on FW 14+ the question is "is the plant HEALTHY"
+# (`latency_monitor`), on anything older — or anything unreadable — it is still
+# "is the bridge young" (`uptime_ms`), because a pre-FW-14 board genuinely IS
+# uptime-sensitive. `logbook/2026-08-15-fw14-validated-arc-closed.md`.
+
+
+def _kv14(**overrides):
+    """A /link_status mapping from a healthy FW 14 bridge."""
+    kv = dict(bridge_fw_version='14 (proto 5)', latency_monitor='OK')
+    kv.update(overrides)
+    return _kv(**kv)
+
+
+def test_bridge_fw_version_parses_every_shape_the_bridge_renders():
+    """Three renderings, and only two of them carry a number.
+
+    `_bridge_fw_version_str` emits `'14 (proto 5)'`, a SKEW form that still
+    leads with the version, and `'unknown (never seen)'` when no BRIDGE_IDENTITY
+    frame has arrived. The last one, and an absent key, must both come back as
+    None — "I cannot tell" must never read as "current", because every caller
+    turns None into "keep the old uptime protection".
+    """
+    assert tcg.bridge_fw_version_value({'bridge_fw_version': '14 (proto 5)'}) == 14
+    assert tcg.bridge_fw_version_value(
+        {'bridge_fw_version': '13 (SKEW — expected v14, proto 5)'}) == 13
+    assert tcg.bridge_fw_version_value(
+        {'bridge_fw_version': 'unknown (never seen)'}) is None
+    assert tcg.bridge_fw_version_value({}) is None
+    assert tcg.bridge_fw_version_value(None) is None
+
+
+def test_temporal_health_passes_a_warm_fw14_bridge_on_the_monitor():
+    """THE landmine this rework removes.
+
+    A 15.2 h FW 14 bridge measured 20 ms of end-to-end lag — the same number a
+    fresh one measures — so refusing it costs a sitting and protects nothing.
+    """
+    warm = 15 * 3600 * 1000
+    verdict = tcg.temporal_health_verdict(_kv14(), warm)
+    assert verdict.ok is True
+    assert verdict.basis == 'health'
+    assert 'latency_monitor=OK' in verdict.message
+
+
+@pytest.mark.parametrize('token', ['RING_LEAK', 'CACHE_AGE', 'CLAMP_DUTY'])
+def test_temporal_health_refuses_every_alarm_even_on_a_freshly_booted_bridge(token):
+    """An alarm outranks youth. A 1-minute-old bridge that is ALREADY leaking is
+    a broken plant, and the old gate would have waved it straight through."""
+    verdict = tcg.temporal_health_verdict(
+        _kv14(latency_monitor=token), 60 * 1000)
+    assert verdict.ok is False
+    assert verdict.basis == 'health'
+    assert token in verdict.message
+
+
+def test_temporal_health_keeps_the_uptime_refusal_for_pre_fw14_boards():
+    """The real protection is PRESERVED where it is still real.
+
+    Below FW 14 the RX ring still leaks ~40 ms/h, so the board is genuinely
+    uptime-sensitive and the power-cycle is genuinely the remedy.
+    """
+    kv = _kv(bridge_fw_version='13 (SKEW — expected v14, proto 5)',
+             latency_monitor='OK')
+    warm = tcg.temporal_health_verdict(kv, 31 * 60 * 1000)
+    assert warm.ok is False
+    assert warm.basis == 'uptime'
+    assert 'Power-cycle' in warm.message
+    assert tcg.temporal_health_verdict(kv, 29 * 60 * 1000).ok is True
+
+
+def test_temporal_health_falls_back_to_uptime_when_the_firmware_is_unknowable():
+    """`'unknown (never seen)'` and an absent row are pre-FW-14 for our purposes.
+
+    A bridge that sends no BRIDGE_IDENTITY frame is older than FW 9 or absent
+    entirely; either way the tool cannot certify FW 14, so it must not act as
+    though it had.
+    """
+    for kv in (_kv(bridge_fw_version='unknown (never seen)'), _kv()):
+        verdict = tcg.temporal_health_verdict(kv, 31 * 60 * 1000)
+        assert verdict.ok is False
+        assert verdict.basis == 'uptime'
+
+
+def test_temporal_health_falls_back_when_a_stale_ros_build_omits_the_monitor():
+    """Current bridge, old NODE. The health read is unavailable through no fault
+    of the firmware, so the old ceiling governs and the message says to rebuild
+    — silently passing a plant you cannot see is the failure this whole arc was."""
+    kv = _kv(bridge_fw_version='14 (proto 5)')
+    verdict = tcg.temporal_health_verdict(kv, 31 * 60 * 1000)
+    assert verdict.ok is False
+    assert verdict.basis == 'uptime'
+    assert 'Rebuild and relaunch' in verdict.message
+    # ...and it still PASSES a young bridge, so a stale build is not a hard stop.
+    assert tcg.temporal_health_verdict(kv, 60 * 1000).ok is True
+
+
+def test_temporal_health_refuses_when_there_is_no_link_status_at_all():
+    """Absence is not health — the same argument `wire_armed_verdict` makes."""
+    for kv in ({}, None):
+        verdict = tcg.temporal_health_verdict(kv, 60 * 1000)
+        assert verdict.ok is False
+        assert verdict.basis == 'no_link'
+
+
+def test_temporal_health_refuses_a_pre_fw14_board_with_no_uptime_either():
+    assert tcg.temporal_health_verdict(_kv(uptime_ms=None), None).ok is False
+
+
+def test_worse_latency_monitor_follows_causal_precedence():
+    """RING_LEAK > CACHE_AGE > CLAMP_DUTY > OK, and an unknown token beats them
+    all — an unrecognised value must never be reduced away as 'fine'."""
+    assert tcg.worse_latency_monitor('OK', 'CLAMP_DUTY') == 'CLAMP_DUTY'
+    assert tcg.worse_latency_monitor('CLAMP_DUTY', 'CACHE_AGE') == 'CACHE_AGE'
+    assert tcg.worse_latency_monitor('CACHE_AGE', 'RING_LEAK') == 'RING_LEAK'
+    assert tcg.worse_latency_monitor('RING_LEAK', 'OK') == 'RING_LEAK'
+    assert tcg.worse_latency_monitor('OK', 'WAT') == 'WAT'
+    assert tcg.worse_latency_monitor(None, 'OK') == 'OK'
+    assert tcg.worse_latency_monitor('OK', None) == 'OK'
+    assert tcg.worse_latency_monitor(None, None) is None
+
+
+def test_latency_monitor_tokens_match_the_producer():
+    """XREF against `teensy_bridge_node`, which OWNS these strings.
+
+    They are restated here rather than imported because these harnesses must
+    import without `rclpy`. That is the drift risk this test closes: a rename in
+    the producer silently turns every token comparison in the harnesses into a
+    permanent "unknown token", which fails CLOSED but for the wrong reason.
+    Source text, not an import, for the same no-rclpy reason.
+    """
+    node = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))),
+        'ros_ws', 'src', 'jugglebot', 'jugglebot', 'teensy_bridge_node.py')
+    source = open(node).read()
+    assert "LATENCY_MONITOR_OK = '{}'".format(tcg.LATENCY_MONITOR_OK) in source
+    for token in tcg.LATENCY_MONITOR_ALARMS:
+        assert "LATENCY_MONITOR_{} = '{}'".format(token, token) in source, \
+            '{} is no longer the producer\'s token'.format(token)
+    # The rank order the worst-seen fold depends on, as the producer declares it.
+    assert 'LATENCY_MONITOR_CLAMP_DUTY: 1' in source
+    assert 'LATENCY_MONITOR_CACHE_AGE: 2' in source
+    assert 'LATENCY_MONITOR_RING_LEAK: 3' in source
 
 
 def _stats(res_tx, res_ty, n_ok=8, n_total=8, sd=1e-6):

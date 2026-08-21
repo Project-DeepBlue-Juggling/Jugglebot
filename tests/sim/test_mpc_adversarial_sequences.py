@@ -36,7 +36,7 @@ from controller.telemetry import TelemetryLogger
 from controller.runner import run_mpc_loop
 
 
-# NIGHTLY TIER — the MPC is operationally dormant (plans/active/refactor-2026-07.md
+# NIGHTLY TIER — the MPC is operationally dormant (plans/parked/refactor-2026-07.md
 # Phase 3: jugglebot_launch.py no longer starts motor_guard/motion_bridge_node; the
 # leg path is trajectory_node -> teensy_bridge_node -> the Teensy MAX_DEVIATION
 # guard). The code is parked, not deleted, so this battery is parked with it: it

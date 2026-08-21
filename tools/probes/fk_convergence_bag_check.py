@@ -57,7 +57,7 @@ samples fail — recovery needs the encoder to drift OUT of the pocket.
 
 RELATED
 -------
-* Plan:  ``plans/active/fk-convergence-tolerance.md`` (Phases 0-1)
+* Plan:  ``plans/archived/fk-convergence-tolerance.md`` (Phases 0-1)
 * Test:  ``tests/motion/test_fk_convergence.py`` — its two hardware fixtures
   were extracted with this probe's decode path (bags
   ``2026-07-25_15-22-50`` ``/robot_state`` @1784957069.071425 and

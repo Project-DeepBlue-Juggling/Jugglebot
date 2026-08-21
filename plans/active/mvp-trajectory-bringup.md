@@ -335,7 +335,7 @@ trajectory_op:
 
 > **⚡ Action-driven reframe, 2026-07-20 (no CATCH mode; 809.08 cup-plane aim)**: the
 > reload no longer relies on a persistent **CATCH** control mode the operator holds — that
-> mode was retired (`plans/archived/2026-08-01 reload-action-catch-latch.md`;
+> mode was retired (`plans/archived/reload-action-catch-latch.md`;
 > `logbook/2026-07-20-reload-action-catch-latch.md`). The `jugglebot/reload` action now
 > **owns the platform + hand for its duration**, running from **ACTIVE + streaming a hold
 > in TRAJECTORY** (armed). It raises a **catch-armed latch** on `trajectory_node`
@@ -505,10 +505,10 @@ passes; results recorded in the logbook with seeds and configs):
 | 1 | Streaming foundation (hold via new path) | — | arm + 120 s hold | **HARDWARE PASS (S1, 2026-07-09)** |
 | 2 | Waypoint moves at low limits | — | move battery + loud rejection | **HARDWARE PASS (S2, 2026-07-09)** |
 | 3 | SpaceMouse streaming | — | manual flight | **HARDWARE PASS (S3, 2026-07-10 — after the chase-clamp rework; first attempt 2026-07-09 failed, see below)** |
-| 4 | Limit ramp-up + lean A/B | — | multiple short sessions | CODE COMPLETE (hardware deferred) |
+| 4 | Limit ramp-up + lean A/B | — | multiple short sessions | **HARDWARE CLOSED 2026-07-17** — working point (1000, 5000, 30000) + `lean_gain 0.6` persisted (see this phase's Outcome block) |
 | 5 | Timed target states | — | timed moves ±25 ms | CODE COMPLETE (hardware deferred) |
 | 6 | Sim port + catch trajectory + hand-model fidelity | Reload gate | none | SIM GATE CORE PASS (vel-match criterion deferred — see Phase 6/7) |
-| 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | CODE COMPLETE (hardware deferred) |
+| 7 | Reload on hardware (action) | — | 7a aim-only / 7b static catch / 7c full | **HARDWARE RUN — four sittings through 2026-07-24** (15/19 caught, open-loop-platform pivot landed; arc continued in `single-ball-toss.md` § Context and the logbook) |
 | 8 | *(stretch)* Single-ball self-toss | Self-toss gate | staged | PLANNED — expanded in `plans/active/single-ball-toss.md` (2026-07-24) |
 | 9 | *(extra stretch)* Two-ball juggling | Two-ball gate | staged | NOT STARTED (stretch) |
 
@@ -541,7 +541,7 @@ changes; suite 2304 passed / 5 skipped / 1 xfailed, `pytest tests/ -q`, 2026-07-
 validated by replaying the recorded S3 stick stream (old code reproduces the incident;
 new code: 0 rejects, 0 boundary parking, p99 14.9 ms). **S3 re-flown 2026-07-10:
 PASS.** Full post-mortem + proposal dispositions:
-`plans/archived/2026-08-01 follower-cadence-and-divergence.md` § RESOLUTION. This supersedes Phase
+`plans/archived/follower-cadence-and-divergence.md` § RESOLUTION. This supersedes Phase
 3's original keep-last-plan rejection policy and the plan-section text describing it;
 Phase 4 (S4) is next on the bench.
 
@@ -1230,7 +1230,7 @@ phase is reached, informed by Phases 6–8 evidence.
   stopped; the single-binder interlock makes conflicts loud).
   `mpc_bridge_node.py` source retained.
 - **Full jerk-limited hand-generator overhaul**
-  (`Jugglebot-bb/plans/active/hand-trajectory-generator-overhaul.md`); only the
+  (`Jugglebot-bb/plans/parked/hand-trajectory-generator-overhaul.md`); only the
   slim `makeCatch()` parameterisation remains pre-scoped, and only on hardware
   evidence.
 - **motor_guard + motion_bridge_node launch retirement** — both are off the leg

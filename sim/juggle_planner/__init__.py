@@ -1,7 +1,7 @@
 """Open-loop juggling-demo trajectory tooling.
 
 Pure-Python (no ROS2) modules for the Ball-Butler-initiated two-ball oval
-juggling demo — see ``plans/active/bb-led-two-ball-juggle-demo.md``.
+juggling demo — see ``plans/archived/bb-led-two-ball-juggle-demo.md``.
 
 **Formerly ``controller/demo/``** (moved 2026-08-01, refactor-2026-07 Phase 6;
 older logbook entries and plan documents still name the old path).  Every

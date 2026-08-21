@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-28
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0005](0005-ethernet-over-usb-serial.md), [ADR-0006](0006-udp-not-tcp.md), [ADR-0011](0011-mac-pinned-nmcli.md), [parent plan](../../plans/active/teensy-can-offload.md)
+- **Related**: [ADR-0005](0005-ethernet-over-usb-serial.md), [ADR-0006](0006-udp-not-tcp.md), [ADR-0011](0011-mac-pinned-nmcli.md), [parent plan](../../plans/archived/teensy-can-offload.md)
 
 ## Context
 

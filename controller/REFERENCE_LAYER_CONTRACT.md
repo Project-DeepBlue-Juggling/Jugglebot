@@ -282,6 +282,32 @@ If an MPC session saturates again with the
 4. Inspect `_handle_failure`'s `cascade_too_long` check — did the 500 ms
    staleness escalate to `cold_hold(q_cur)` when it should have?
 
+## Known carve-out: the legacy no-bounds path (recorded 2026-08-21)
+
+`flat_target_to_events()` has a **legacy branch that skips K1-K6 enforcement
+entirely**. `controller/target.py:218`: when `v_max_mmps` or `tau_s` is `None`
+it returns the raw two-event proposal and **never calls `make_feasible_events`**,
+so no peak-velocity (K2) or acceleration (K3) bound is applied. It emits a
+one-shot `DeprecationWarning` and nothing else.
+
+Two live call sites reach it:
+
+* `sim/main.py:309` omits both arguments outright.
+* `controller/zmq_target.py:363` passes `v_max_mmps=self._v_max_mmps`, which can
+  be `None` at runtime — the warning fires from this line during the test suite,
+  which is how it was noticed.
+
+This is a carve-out in a landed contract, which the Engineering Philosophy says
+to resist: *"just relax this one invariant for this one case" is how contracts
+die*. It is recorded here rather than fixed because it was found during unrelated
+work and nobody has traced what the sim path actually needs. **Whoever next
+touches the reference layer should close it** — either by making the bounds
+mandatory (and fixing the two call sites) or by stating, here, why an unbounded
+reference is legitimate on those paths.
+
+Scope note: MPC is operationally dormant, so this is not currently on a hardware
+command path. That is a reason it has not bitten, not a reason it is safe.
+
 ## Related
 
 - [MPC_OVERSHOOT_SATURATION](../sim/analysis/known_issues.yaml) — primary
@@ -297,7 +323,7 @@ If an MPC session saturates again with the
 - [tests/sim/test_mpc_adversarial_sequences.py](../tests/sim/test_mpc_adversarial_sequences.py)
   — end-to-end MuJoCo regression fixture, one test per failure-mode scenario.
   `nightly`-marked since 2026-08-01 (MPC dormancy,
-  `plans/active/refactor-2026-07.md` Phase 3): run by `./run_tests.sh --full`
+  `plans/parked/refactor-2026-07.md` Phase 3): run by `./run_tests.sh --full`
   (mandatory pre-commit for `controller/` changes) and by the 04:00 nightly, not
   by the default gate. The K1–K6 property tests in `test_make_feasible_events.py`
   above are NOT demoted — the contract's primary enforcement stays per-commit.

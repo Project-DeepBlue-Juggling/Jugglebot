@@ -17,7 +17,7 @@ files_changed:
   - tests/sim/_hardware_plant_stub.py
   - logbook/2026-05-11-tier2a-hardware-plant-fk-degradation.md
   - logbook/INDEX.md
-  - plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md
+  - plans/archived/mpc-sadpath-coverage-tiers-1-3.md
 commits:
   - 80d7978
 subsystem:
@@ -629,7 +629,7 @@ Phase 3's T-U-T1c-7-bug was fixed in the same session, so no Phase
 
 ## Related
 
-* [plans/archived/2026-05-18 mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/2026-05-18%20mpc-sadpath-coverage-tiers-1-3.md)
+* [plans/archived/mpc-sadpath-coverage-tiers-1-3.md](../plans/archived/mpc-sadpath-coverage-tiers-1-3.md)
   — Plan 2 Phase 4 specification.
 * [logbook/2026-05-11-tier1c-input-fuzz.md](2026-05-11-tier1c-input-fuzz.md)
   — Phase 3 (Tier 1c); singleton + ``FlakyStrategyDefinition``

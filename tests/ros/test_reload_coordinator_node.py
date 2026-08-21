@@ -358,15 +358,17 @@ def test_hand_targets_are_within_bridge_service_range():
     The abort retract used to target HOMING_HAND_ABS_POS_REV = -0.1 rev — BELOW the
     range — so the bridge rejected it and every abort left the hand parked at top,
     silently (the return value was ignored too). Pin both dispatch targets."""
-    assert 0.0 <= hw.JB_OP_HAND_RETRACT_REV <= hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
-    assert 0.0 <= hw.JB_OP_HAND_CATCH_PRIME_REV <= hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
+    assert 0.0 <= hw.JB_OP_HAND_RETRACT_REV <= hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
+    assert 0.0 <= hw.JB_OP_HAND_CATCH_PRIME_REV <= hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
     # The homing reference is intentionally NOT a valid smooth-move target.
     assert hw.HOMING_HAND_ABS_POS_REV < 0.0
     # Headroom, not just membership: the prime moved 3.2 mm UP on 2026-07-26 when
     # it became the derived stroke top, and the overextension guard is the wall it
-    # moved toward. 1.1406 rev = 36.1 mm of clearance (was 39.3 mm).
-    assert (hw.GEOM_HAND_MOTOR_MAX_POSITION_REVS
-            - hw.JB_OP_HAND_CATCH_PRIME_REV) == pytest.approx(1.1406, abs=1e-3)
+    # moved toward. 0.8406 rev = 26.6 mm of clearance to the 10.8 rev hard stop
+    # (this read 1.1406 rev / 36.1 mm until 2026-08-18, when the stop itself was
+    # corrected 11.1 -> 10.8 — the clearance never was 36.1 mm).
+    assert (hw.GEOM_HAND_MOTOR_HARD_STOP_REVS
+            - hw.JB_OP_HAND_CATCH_PRIME_REV) == pytest.approx(0.8406, abs=1e-3)
 
 
 def test_prime_move_leaves_the_park_band_windows_open():

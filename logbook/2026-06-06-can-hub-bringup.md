@@ -4,7 +4,7 @@ type: feature
 date: 2026-06-06
 status: in-progress
 phase: teensy-can-offload
-related_plan: plans/active/HANDOFF-firmware-three-bus-WIP.md
+related_plan: plans/archived/HANDOFF-firmware-three-bus-WIP.md
 files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/platformio.ini
   - ros_ws/src/jugglebot/Teensy_code_canbridge/Teensy_code_canbridge.ino

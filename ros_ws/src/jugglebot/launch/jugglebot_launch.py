@@ -14,7 +14,7 @@ import sys
 from datetime import datetime
 
 
-# ── Config freshness observability (plans/active/refactor-2026-07.md Phase 5) ──
+# ── Config freshness observability (plans/parked/refactor-2026-07.md Phase 5) ──
 #
 # Production is deliberately BUILD-FROZEN: every node imports the *installed*
 # generated modules, so a YAML edit changes nothing until generate_config +
@@ -227,7 +227,7 @@ def generate_launch_description():
         default_value='true',
     )
 
-    # DORMANT since 2026-08-01 (MPC dormancy, plans/active/refactor-2026-07.md
+    # DORMANT since 2026-08-01 (MPC dormancy, plans/parked/refactor-2026-07.md
     # Phase 3).  This was PR 3a's per-launch override for motor_guard's
     # --friction-ff CLI tri-state; motor_guard no longer launches, so nothing
     # consumes it.  Kept DECLARED rather than deleted — same treatment as
@@ -301,7 +301,7 @@ def generate_launch_description():
         }],
     )
 
-    # motion_bridge_node is DORMANT (2026-08-01, plans/active/refactor-2026-07.md
+    # motion_bridge_node is DORMANT (2026-08-01, plans/parked/refactor-2026-07.md
     # Phase 3 — "remove operationally, park the code"). It was the MPC leg path's
     # ROS side: motor_guard's :5556 interpolated stream -> leg_lengths_topic ->
     # can_node. can_node was deleted in the 2026-07-06 SocketCAN decommission and
@@ -408,7 +408,7 @@ def generate_launch_description():
     )
 
     # ── motor_guard: DORMANT (2026-08-01) ────────────────────────
-    # plans/active/refactor-2026-07.md Phase 3 — "remove operationally, park the
+    # plans/parked/refactor-2026-07.md Phase 3 — "remove operationally, park the
     # code". The 500 Hz interpolator + safety monitor sat between the MPC and the
     # motors on the OLD topology. In the MVP topology it drives nothing: the leg
     # path is trajectory_node -> :5557 -> teensy_bridge_node -> the can-bridge
@@ -561,6 +561,21 @@ def generate_launch_description():
             # session that publishes it without recording it produces nothing.
             # 1 msg/s. Records EMPTY until the bridge is flashed to FW 12.
             '/cache_diag',
+            # The CONVICTION INSTRUMENT for what S2 (2026-08-13) left as the
+            # surviving candidate, carried by FW 13's additive RING_DIAG (0x92):
+            # the CAN RX ring's TRUE occupancy (from head/tail, probed the
+            # instant after the drain loop) beside the `_available` count the
+            # rest of the firmware believes. Their difference is the FlexCAN_T4
+            # leak — events() pops the ring before its NVIC_DISABLE_IRQ guard,
+            # the ISR's increment races the task's decrement one-directionally,
+            # and the drain stops early leaving frames stranded and every later
+            # delivery that many frames old. /cache_diag's ring fields CANNOT
+            # substitute: they come from getRXQueueCount(), i.e. from the very
+            # count the race corrupts, so they read healthy through a leaked
+            # ring. The verdict is a trend over an hours-long soak, so a session
+            # that publishes this without recording it produces nothing.
+            # 1 msg/s. Records EMPTY until the bridge is flashed to FW 13.
+            '/ring_diag',
             # ── THE ONE LIST (toss-selftuning D18, 2026-08-10) ──────────────
             # Until now two divergent record lists existed — this one and the
             # operator runbook's — and NEITHER was sufficient: the runbook's had

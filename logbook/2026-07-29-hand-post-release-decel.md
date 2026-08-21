@@ -2,7 +2,7 @@
 title: The hand's post-release deceleration feedforward — stop flirting with the end stop
 type: bugfix
 date: 2026-07-29
-status: in-progress
+status: tuned
 phase: "Self-toss anomaly fixes — Phase 7 (post-release decel)"
 related_plan: "hand-command-continuity.md"
 files_changed:
@@ -25,7 +25,7 @@ files_changed:
   - tools/probes/README.md
   - tests/hardware/session_anomaly_fixes.md
   - tests/hardware/session_phase8_toss_hardware.md
-  - plans/active/hand-command-continuity.md
+  - plans/archived/hand-command-continuity.md
   - plans/active/PROMPT-anomaly-fixes-orchestration.md
 commits:
   - f920087
@@ -435,8 +435,40 @@ gated **R0 → R5** ladder.
 * Contract: `ros_ws/docs/hand_decel_feedforward.md` (**C-HAND-2**); sibling
   `ros_ws/docs/hand_command_continuity.md` (**C-HAND-1**),
   `ros_ws/docs/platform_fw_version.md` (**C-PLATFW-1**)
-* Plan: `plans/active/hand-command-continuity.md` § Phase 7
+* Plan: `plans/archived/hand-command-continuity.md` § Phase 7
 * Sitting that produced the symptom:
   `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`
 * Probe: `tools/probes/hand_decel_authority.py`
 * Bench: `tests/hardware/session_anomaly_fixes.md` § CHECK HAND-7, stage 8
+## Close-out — 2026-08-21
+
+**Status `in-progress` → `tuned`.** The deployment this entry was waiting on
+happened, and the feedforward is confirmed *commanding*: the 2026-08-10
+diagnosis measured `tor_ff_cmd` = **−0.1500 N·m on 54/54 strokes**, which is
+`throwDecelToTorque` at the declared `J_ff` = 9.5e-6 — the FW-1 spool model would
+read −0.11 and the two are not confusable. Platform FW 2 is aboard (FW 3 since
+the 2026-08-18 end-stop correction, which does not touch this path).
+
+The phase's own physical claim was then validated at the top of the envelope on
+**2026-08-21**: the machine flew to within **0.029 m/s** of the C-HAND-3 ceiling
+with coast **0.215 / 0.250 rev** and **18.7 mm of headroom** to the 10.8 rev
+stop, and coast measured **flat** in speed (p ≈ 1.0) rather than quadratic —
+which is the velocity-independence this feedforward exists to produce.
+`logbook/2026-08-21-envelope-flown-to-ceiling.md`.
+
+**`tuned`, not `resolved`, and the reason is finding 4 of this entry's own
+review.** The unexamined drive clamp was real: `torque_soft_min` **was** live at
+−0.0551 N·m = exactly −10.00 A, so braking `iq_meas` floored at ≈ −11.8 A against
+the −27.2 A the feedforward asks for. Diagnosed 2026-08-10
+(`logbook/2026-08-10-hand-drive-braking-clamp-diagnosis.md`), and the clamp is
+now a symmetric ±0.7 N·m with `save_configuration()` run — so bench row **H7.0c**
+is a regression check rather than an open question. The *sibling* investigation
+that opened (catch-seat harshness, and how much of the pre-fix behaviour was the
+clamp rather than the feedforward) is owned by `plans/active/catch-robustness.md`,
+not by this entry.
+
+**Also open, unchanged**: the settled `pos_meas − pos_cmd` offset whose first
+explanation this entry withdrew, and the two kind-2 defects
+(`buildCommand`'s 31.6× torque unit error, `buildSegment`'s residual velocity
+feedforward) which are pinned rather than fixed because no live host dispatches
+kind 2.

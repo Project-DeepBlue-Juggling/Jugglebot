@@ -46,6 +46,8 @@ if _repo_root not in sys.path:
 from sim._paths import bootstrap_paths  # noqa: E402
 bootstrap_paths()
 
+from jugglebot import hardware_config as _hw  # noqa: E402
+
 from jugglebot.motion.ik_solver import rotvec_to_rot_matrix
 # Single source of truth (single-ball-toss Phase 4): the throw mirror now lives
 # in the production trajectory package; re-exported here so every sim
@@ -55,7 +57,14 @@ from jugglebot.motion.trajectory.tilt_geometry import tilt_to_throw  # noqa: F40
 # ---- Realisation constants (mirror sim.juggle_online; see module docstring) --
 Z_ACTIVE_MM = 170.0          # platform centroid height for the juggle pattern
 CUP_Z_BASE_MM = 659.6        # cup_z_world = CUP_Z_BASE_MM + slider_mm at level
-SLIDER_STROKE_MM = 355.0     # slider travel [0, stroke] mm
+# Slider travel [0, stroke] mm — DERIVED, never a literal.  It read a hardcoded
+# 355.0 until 2026-08-21; `jugglebot_geometry.hand_stroke_mm` moved to 344.75 on
+# 2026-08-18 (operator-measured travel between hard stops) and
+# `MuJoCoPlant.command_hand` clips to that value, so a planner sized on 355 asks
+# for 10.25 mm the plant will silently refuse to execute.  Do NOT substitute
+# `teensy_trajectory.hand_stroke_m` (0.355) here — that is the THROW-PROFILE
+# basis feeding x2/x3/x5, deliberately a different number since 2026-08-18.
+SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
 
 # ---- Tilt geometry (from Rung 0 characterisation) ---------------------------
 # Usable tilt ceiling — leg headroom is fine to >24 deg, but tilt tracking and

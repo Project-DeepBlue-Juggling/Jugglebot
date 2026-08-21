@@ -64,9 +64,11 @@ valid, just costlier.
 
 - Jugglebot powered, ODrives up, CAN3 healthy. **BB is NOT commanded this
   session** (idle heartbeat is fine).
-- **POWER-CYCLE THE CAN-BRIDGE TEENSY** before the sitting (the uptime-lag
-  discipline). The recorder's meta captures `uptime_ms` first/last — quote
-  both in the debrief.
+- ~~**POWER-CYCLE THE CAN-BRIDGE TEENSY** before the sitting~~ — **RETIRED
+  2026-08-15** (the uptime-lag root cause, the FlexCAN_T4 `_available` RX-ring
+  leak, was fixed in FW 14 and validated at 5.8 h and 15.2 h —
+  `logbook/2026-08-15-fw14-validated-arc-closed.md`). The recorder's meta still
+  captures `uptime_ms` first/last — quote both in the debrief.
 - `run_mpc.py` is **NOT** running (sole-binder :5557 interlock).
 - QTM up, streaming the Base body at minimum; `/rigid_body_poses` flowing.
 - Branch `mvp-trajectory-bringup` at ≥ `5447f03`.

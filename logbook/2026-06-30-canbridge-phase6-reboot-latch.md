@@ -346,7 +346,7 @@ The watchdog-detection `:178` and the AXIS_ALL `i < NUM_LEGS` citations were cor
 
 ## Related
 
-- [canbridge-foundation-coldstart-parity.md](../plans/active/canbridge-foundation-coldstart-parity.md)
+- [canbridge-foundation-coldstart-parity.md](../plans/archived/canbridge-foundation-coldstart-parity.md)
   — the plan; Phase 6 is the final phase (4 still needs 5; 6 does not gate 4/5).
 - [2026-06-27-can-node-teensy-parity-audit.md](2026-06-27-can-node-teensy-parity-audit.md)
   — the two HIGHs this phase closes (§§2–3).

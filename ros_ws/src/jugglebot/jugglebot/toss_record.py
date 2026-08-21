@@ -57,7 +57,7 @@ RAW EDGES FOR TIMES, DEBOUNCED FOR THE VERDICT (D12), **measured**
 ------------------------------------------------------------------
 The can-bridge debounce is documented as **asymmetric** — five consecutive EMPTY
 good replies to drop, any single HELD restores
-(``plans/active/hand-ball-sensor.md`` § Debounce asymmetry). Measured on
+(``plans/archived/hand-ball-sensor.md`` § Debounce asymmetry). Measured on
 ``~/Desktop/rosbags/2026-08-10_16-30-44`` (2026-08-10, 70,666 ``/hand_telemetry``
 samples, ``ball_held_valid`` 100 %):
 

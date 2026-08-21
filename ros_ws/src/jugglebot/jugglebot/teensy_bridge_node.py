@@ -50,7 +50,7 @@ import os
 import struct
 import threading
 import time
-from collections import namedtuple
+from collections import deque, namedtuple
 
 import quaternion  # numpy-quaternion; same library can_node uses for tilt→quat
 
@@ -113,6 +113,7 @@ from teensy_link import (
     BridgeIdentity,
     ClockDiag,
     CacheDiag,
+    RingDiag,
 )
 from teensy_link import protocol as p
 from teensy_link import rpc_args
@@ -164,6 +165,140 @@ CACHE_AGE_FLOOR_WARN_US = 20_000
 #: ``seen_mask`` before treating the rail as staleness.
 CACHE_AGE_SATURATED_US = 0xFFFF_FFFF
 
+#: /ring_diag WARN threshold on the CAN RX-ring LEAK — the number of frames the
+#: ring is holding that its own ``_available`` counter does not know about
+#: (``true_depth - avail_reported``, sampled immediately after the drain loop, so
+#: ``_available`` is 0 by definition at that instant and the residue IS the leak).
+#:
+#: 2 rather than 0, and the choice is the whole calibration. The probe is taken
+#: from task context while the CAN ISR can push concurrently, and the accessor's
+#: read ordering makes that skew UNDER-reporting: a concurrent push advances
+#: tail and ``_available`` together, so reading head/tail first and
+#: ``_available`` last can only make the reported leak SMALLER than the truth,
+#: never larger (see ``Circular_Buffer::probe``; the node's negative-leak clamp
+#: is the same property from the other side). So a reported leak of 1 is already
+#: a real stranded frame. The one over-reporting path is the full-ring overwrite
+#: edge (the ISR's head advance straddling the h/t reads) — reachable only with
+#: the ring at 256/256, i.e. long after any threshold fired. 2 keeps one frame
+#: of margin against that edge while conceding nothing that matters: an analyst
+#: must still treat 1 as real. The predicted signature is not marginal: a ratcheting leak
+#: saturates the 256-slot ring, i.e. two orders of magnitude above this line.
+#:
+#: ADVISORY ONLY: this sets a DiagnosticStatus level on an instrumentation topic.
+#: Nothing gates, refuses or actuates on it.
+RING_LEAK_WARN_FRAMES = 2
+
+
+# ── The alarmed command-latency monitor (2026-07-24 closure contract) ──
+#
+# WHAT IS BEING CLOSED. `logbook/2026-07-18-teensy-uptime-tracking-degradation.md`
+# § Addendum (2026-07-24) makes closure conditional on TWO deliverables, not
+# one: the fix, AND "a continuously-measured, alarmed end-to-end command-latency
+# monitor (logged with uptime_ms)". The class is not "the ring leaked" — it is
+# **latency drift is invisible until a session is already degraded**. Every
+# measurement layer that class needs now exists (RING_DIAG's leak, CACHE_DIAG's
+# age floor, the lead-clamp mask, all bagged beside uptime_ms) and all of them
+# are still SILENT: a WARN level on a 1 Hz diagnostics topic is invisible unless
+# somebody is watching that topic, and nobody watches a topic during a sitting.
+# What follows is the LOUD half — the operator-facing alarm — and nothing else.
+#
+# ADVISORY, NEVER A GATE. Identical policy to BRIDGE_FW_CHECK and the
+# install-skew check: this logs and it publishes a row, and it refuses,
+# suppresses and faults exactly nothing. A latency monitor wired into the leg
+# command path would convert a REPORTING gap into an outage, which is a strictly
+# worse failure than the one being reported.
+
+#: Cadence of the throttled latency-monitor WARNING while any condition holds.
+#: Rate-EXACT off a monotonic timestamp rather than rclpy
+#: ``throttle_duration_sec`` — same reason as _GUARD_LATCH_REPEAT_S (its
+#: first-call bookkeeping can silently drop the initial repeat), plus this way
+#: the throttle is observable from a test instead of living inside rcutils.
+#: 30 s against a session measured in minutes-to-hours keeps the line
+#: unmissable in a scrollback without drowning the leg/hand traffic.
+_LATENCY_MONITOR_LOG_PERIOD_S = 30.0
+
+#: How long a RING_DIAG / CACHE_DIAG verdict stays valid for the monitor. Both
+#: frames arrive at 1 Hz, so 5 s is five missed windows. Past that the input is
+#: STALE and stops being evaluated — a 1 Hz input that stopped arriving must not
+#: keep asserting its last value, in either direction.
+_LATENCY_MONITOR_INPUT_STALE_S = 5.0
+
+#: Lead-clamp DUTY that raises the alarm: the fraction of sampled heartbeats
+#: whose ``lead_clamp_mask`` was nonzero while setpoints were streaming.
+#:
+#: Calibrated on the SAME statistic this code computes (mask-any, streaming-
+#: gated, trailing 10 s window with the sample floor below), re-measured across
+#: the 2026-08-15 bags: a LEAKING FW 13 bridge at 4.04 h reads duty 0.4441 with
+#: a worst window of 0.68 (fires), while FW 14 at 5.80 / 5.84 / 15.19 h reads
+#: 0.0183 / 0.0198 / 0.0039 with worst windows 0.0667 / 0.0333 / 0.0200 (quiet).
+#: 0.15 sits above every healthy worst-window and well below the degraded mean.
+#: The margin is sample-count dependent and worth stating honestly: against a
+#: 0.06 plant it is ~2.1 binomial SD at the 30-sample floor and ~3.8 SD at 100
+#: samples — which is why the floor below is not left at 30.
+#:
+#: (Earlier drafts of this comment quoted a "healthy 0.00-0.06" band. That mixed
+#: a whole-bag mask-any figure with a per-leg in-moves figure — two different
+#: statistics — and only the mask-any numbers above back this threshold.)
+#:
+#: WHY DUTY AND NOT A LAG THRESHOLD. S1 method correction (c): the lead clamp
+#: pins the commanded position to feedback, so a lag-only monitor reads
+#: HEALTHIEST exactly when the clamp is doing the most damage. Duty is the
+#: behavioural symptom that made every degradation visible late, and it is the
+#: only one of the three inputs that works on ANY firmware — the other two need
+#: FW >= 12 / >= 13 frames.
+_CLAMP_DUTY_WARN = 0.15
+
+#: Trailing window the duty is measured over. Long enough that a single clamped
+#: move onset (which is normal, and is what a healthy sub-0.02 duty is largely
+#: made of) cannot fire it; short enough that the alarm lands DURING the session
+#: rather than after it, which is the entire point of the contract.
+_CLAMP_DUTY_WINDOW_S = 10.0
+
+#: Minimum samples in that window before the duty is evaluated at all — 5 s of
+#: streaming at the 10 Hz heartbeat.
+#:
+#: 50 rather than 30, for two reasons that point the same way. Statistically, 30
+#: samples put a 0.06 plant only ~2.1 binomial SD below the threshold, and 50
+#: takes that to ~2.7. Physically, clamping CONCENTRATES at move onset (S1: 94 %
+#: of clamping moves clamp within 100 ms of onset), so the first seconds of a
+#: stream are exactly where the transient lives — evaluating from 3 s makes the
+#: first verdict a move-onset detector. 5 s spans several onsets and amortises
+#: them. The cost is a 2 s later first verdict against a 10 s window, which is
+#: nothing on the timescale the contract cares about, and the healthy record
+#: (worst window 0.0667) has margin at either setting.
+_CLAMP_DUTY_MIN_SAMPLES = 50
+
+#: The summary token published on /link_status, highest active condition first.
+#: The order is CAUSAL, not severity: the ring leak is the earliest precursor
+#: (it is the mechanism the S3 soak convicted), the cache-age floor is the
+#: stale-feedback symptom downstream of it, and the clamp duty is the last and
+#: most visible link in the same chain. Naming the most UPSTREAM active
+#: condition points the operator at the one whose fix subsumes the others.
+LATENCY_MONITOR_OK = 'OK'
+LATENCY_MONITOR_RING_LEAK = 'RING_LEAK'
+LATENCY_MONITOR_CACHE_AGE = 'CACHE_AGE'
+LATENCY_MONITOR_CLAMP_DUTY = 'CLAMP_DUTY'
+
+#: The same precedence as an ordinal, so the log throttle can tell an ESCALATION
+#: (a newly-active, more upstream cause — the operator's next action changes)
+#: from a de-escalation or a flap (it does not). An escalation bypasses the
+#: throttle; nothing else does, which bounds the bypasses at one per step up the
+#: chain rather than one per threshold crossing.
+_LATENCY_MONITOR_RANK = {
+    LATENCY_MONITOR_OK: 0,
+    LATENCY_MONITOR_CLAMP_DUTY: 1,
+    LATENCY_MONITOR_CACHE_AGE: 2,
+    LATENCY_MONITOR_RING_LEAK: 3,
+}
+
+
+#: Bound on consecutive /robot_state freshness-gate skips (~0.5 s at the 100 Hz
+#: timer). Rationale at the gate in _publish_robot_state: telemetry and
+#: heartbeats come from separate firmware tasks, so "link up" does not prove
+#: telemetry flows — an unbounded gate could silence the orchestrator's
+#: fault-content channel in that double-failure.
+_ROBOT_STATE_MAX_CONSEC_SKIPS = 50
+
 
 # ── Config identity ────────────────────────────────────────────
 def hardware_config_identity() -> str:
@@ -183,7 +318,7 @@ def hardware_config_identity() -> str:
     Deliberately scoped to hardware_config only (the tuning surface).
     `friction_ff_params.py`'s env -> ament-share -> source-tree resolution
     order is a landed 2026-06-24 crash fix in motor_guard's import chain and is
-    NOT touched here — see plans/active/refactor-2026-07.md Phase 5 item 3.
+    NOT touched here — see plans/parked/refactor-2026-07.md Phase 5 item 3.
 
     Never raises: a diagnostic must not be able to stop the bridge booting.
     """
@@ -204,6 +339,413 @@ def hardware_config_identity() -> str:
     except Exception as exc:  # noqa: BLE001 — identity is best-effort
         return ('hardware_config: identity unavailable (%s: %s)'
                 % (type(exc).__name__, exc))
+
+
+# ── Install-skew self-check ────────────────────────────────────
+#
+# THE INCIDENT THIS CLOSES (2026-08-14, S3 of bridge-temporal-trustworthiness).
+# The operator flashed can-bridge FW 13, relaunched, and the conviction bag
+# recorded no /ring_diag at all: `colcon build` had not taken effect, so this
+# node ran from a two-day-old `install/` tree that predates the RING_DIAG
+# subscribe. BRIDGE_FW_CHECK reported OK throughout — and it was RIGHT to,
+# which is the whole problem: it compares the board's FW_VERSION against
+# `rpc_args.EXPECTED_BRIDGE_FW_VERSION` read from the LIVE repo-root
+# `teensy_link/` tree (injected on PYTHONPATH by the launch, deliberately NOT
+# colcon-installed), so it is structurally blind to the currency of the NODE's
+# own build. Firmware currency and host currency are two independent halves and
+# only one of them had a detector.
+#
+# jugglebot_launch.py already carries the sibling check for the GENERATED CONFIG
+# modules (`_install_drift`, link B) — but its scope is exactly
+# `hardware_config.py` + `protocol_config.py`, so a stale node source with
+# unchanged config passes it green. This check covers the node's own source.
+#
+# ADVISORY ONLY, same policy as BRIDGE_FW_CHECK and the launch banner: a stale
+# install is a CONFUSION failure, not a danger one (build-frozen is the safe
+# direction), and putting a hash comparison in front of the leg/hand command
+# path would convert a reporting gap into an outage.
+_SOURCE_TREE_REL = ('ros_ws', 'src', 'jugglebot', 'jugglebot',
+                    'teensy_bridge_node.py')
+
+#: The three verdicts, never collapsed. 'unknown' is NOT a synonym for clean —
+#: a check that could not run must read differently from one that ran and
+#: agreed, or the row manufactures reassurance (the launch banner's
+#: PARTIAL-vs-OK rule, same reasoning).
+INSTALL_SKEW_CLEAN = '0'
+INSTALL_SKEW_STALE = '1'
+INSTALL_SKEW_UNKNOWN = 'unknown'
+
+
+def _repo_source_copy(running_path: str) -> str | None:
+    """Locate the repo-source copy of this module, or None.
+
+    Resolution: ``JUGGLEBOT_REPO`` override (EXCLUSIVE when set — a missing
+    file under it yields None/unknown, never a fall-through to a different
+    tree), else walk up from the RUNNING file.
+
+    The walk is what makes this work under colcon: the running file is
+    ``<repo>/ros_ws/install/jugglebot/lib/python3.N/site-packages/jugglebot/
+    teensy_bridge_node.py``, so the first ancestor that carries
+    ``ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py`` is the repo that
+    produced this install. Anchoring on the compared file itself (rather than on
+    `config/generate_config.py`, the launch's anchor) means a resolved root can
+    never lack the file the verdict is about. Running live from the source tree
+    resolves to the file itself, which is a true clean verdict, not a special
+    case.
+
+    The env override mirrors ``jugglebot_launch._repo_root`` so a worktree
+    session can pin its own tree. Unlike the launch this does NOT fall back to
+    the canonical ``/home/jetson/Desktop/Jugglebot``: for a deploy whose source
+    tree is genuinely absent, comparing against whatever unrelated checkout sits
+    at a hard-coded path would manufacture a skew verdict about a tree this
+    process never came from. An honest ``unknown`` is the weaker claim and the
+    correct one.
+    """
+    override = os.environ.get('JUGGLEBOT_REPO')
+    if override:
+        # The override is AUTHORITATIVE, never a hint: an operator who pinned a
+        # worktree must get a verdict about THAT tree or no verdict at all. A
+        # silent fall-through to the walk-up would verdict against a different
+        # repo and log CLEAN — the same manufactured-reassurance class this
+        # check exists to close (a typo'd override yields `unknown` naming the
+        # override path, not a plausible-looking answer about the wrong tree).
+        cand = os.path.join(override, *_SOURCE_TREE_REL)
+        return cand if os.path.isfile(cand) else None
+    roots = []
+    here = os.path.dirname(os.path.abspath(running_path))
+    while True:
+        roots.append(here)
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    for root in roots:
+        cand = os.path.join(root, *_SOURCE_TREE_REL)
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def install_skew_verdict(running_path: str | None = None) -> tuple[str, str]:
+    """Compare the RUNNING module's source against the repo-source copy.
+
+    Returns ``(verdict, detail)`` where verdict is one of the three
+    ``INSTALL_SKEW_*`` tokens and detail is the operator-facing explanation
+    (both paths and their mtimes on a skew; the reason on ``unknown``).
+
+    Content hash, not mtime: colcon copies the ``.py`` verbatim, so equal bytes
+    is exactly "this process is running the code the repo says it is", while
+    mtimes differ on every build and would false-positive constantly. The mtimes
+    are REPORTED (never compared) because they are what tells the operator which
+    side is behind, which is the difference between "run colcon build" and
+    "your checkout is stale".
+
+    Never raises: a diagnostic must not be able to stop the bridge booting.
+    """
+    try:
+        running = os.path.abspath(running_path if running_path is not None
+                                  else __file__)
+        source = _repo_source_copy(running)
+        if source is None:
+            override = os.environ.get('JUGGLEBOT_REPO')
+            if override:
+                return (INSTALL_SKEW_UNKNOWN,
+                        'JUGGLEBOT_REPO=%s carries no %s — the override is '
+                        'authoritative, so no other tree was consulted — '
+                        'install currency NOT checked' %
+                        (override, os.path.join(*_SOURCE_TREE_REL)))
+            return (INSTALL_SKEW_UNKNOWN,
+                    'no repo source tree found from %s (deploy without a '
+                    'checkout, or an unexpected install layout) — install '
+                    'currency NOT checked' % running)
+        with open(running, 'rb') as f_run:
+            run_digest = hashlib.sha256(f_run.read()).hexdigest()
+        with open(source, 'rb') as f_src:
+            src_digest = hashlib.sha256(f_src.read()).hexdigest()
+        if run_digest == src_digest:
+            return (INSTALL_SKEW_CLEAN,
+                    'running %s matches repo source %s (sha256=%s)'
+                    % (running, source, run_digest[:16]))
+        return (INSTALL_SKEW_STALE,
+                'running %s (mtime %s) DIFFERS from repo source %s (mtime %s)'
+                % (running, _mtime_stamp(running), source,
+                   _mtime_stamp(source)))
+    except Exception as exc:  # noqa: BLE001 — the check is best-effort
+        return (INSTALL_SKEW_UNKNOWN,
+                'install check errored (%s: %s) — install currency NOT checked'
+                % (type(exc).__name__, exc))
+
+
+def _mtime_stamp(path: str) -> str:
+    """Local mtime with a UTC offset (see hardware_config_identity on why %z)."""
+    try:
+        return time.strftime('%Y-%m-%dT%H:%M:%S%z',
+                             time.localtime(os.path.getmtime(path)))
+    except OSError:
+        return 'unknown'
+
+
+# ── RING_DIAG delivery-lag normaliser (S3 residual (a)) ────────
+#
+# THE RESIDUAL THIS CLOSES. FW 13's RING_DIAG delivery-lag integral
+# (``lag_now_us``) read 151-183 ms on the S3 conviction bag and CREPT ~0.35 ms/s
+# across it, against a naive expectation of 129 ms — an absolute value the entry
+# recorded as "the trend is the instrument, the absolute is not", with the creep
+# explicitly unexplained (logbook/2026-08-14-s3-conviction-ring-leak-measured.md
+# § "Why the residuals are recorded rather than resolved", residual (a)).
+#
+# THE MECHANISM, measured 2026-08-15 across four bags to <1 %: the FlexCAN
+# hardware capture clock runs SLOW against ``micros64()``. Per window the ratio
+# ``cap_span_us / window_us`` measures that rate directly, and it is strongly
+# LOAD-DEPENDENT: ~237 ppm with no setpoint stream (bag 10-06-14) against
+# ~582 ppm while streaming (bag 10-08-06), and the same step appears WITHIN one
+# bag (00-44-59: windows 0-27 at ~0.117 us/frame, windows 28-38 at
+# 0.34-0.46). So the integral's absolute value is (time since the last reseed) x
+# (whatever the rate was doing over that time) and is NOT delivery latency: it
+# exceeded the 135 ms one-lap physical cap on a plant whose leak was
+# identically 0.
+#
+# WHY THE OBVIOUS CORRECTION IS A TAUTOLOGY, and is deliberately NOT what this
+# implements. ``lag_now_us`` is, in the firmware, exactly
+# ``(micros64 since seed) - (arrival clock since seed)``, and ``window_us`` /
+# ``cap_span_us`` are the per-window advances of those SAME two clocks
+# (can_buses.cpp::jb_lag_fold, telemetry.cpp::ring_diag_uplink_step). Therefore
+#
+#     lag_now - lag_prev  ==  window_us - cap_span_us     (identity, +/- one
+#                                                          inter-frame gap of
+#                                                          sampling offset)
+#
+# and subtracting the MEASURED per-window divergence from the measured
+# per-window lag change yields ~0 for every input — a number that would read
+# "healthy" through a fully-leaked ring. The two S3 numbers are the same number
+# seen twice: the creep of 0.35 ms/s and the ratio of 230-665 ppm agree because
+# they are algebraically one quantity, not because two instruments concurred.
+# A real delay line is not exempt: stranding N frames means N frames' worth of
+# capture time is NOT folded in that window, so a genuine lag step lands in
+# ``window_us - cap_span_us`` identically to the clock artefact. Nothing in this
+# pair of fields can separate them.
+#
+# WHAT SEPARATES THEM is a MODEL plus an independent channel. The artefact is
+# proportional to folded frames and is present always; a delivery lag is
+# proportional to stranded frames, is bounded by one 256-slot ring lap, and is
+# visible in the OCCUPANCY channel (``true_depth`` vs ``avail_reported``), which
+# is derived from the ring indices and not from any clock. So:
+#
+#   1. CALIBRATE the artefact rate ONLY on windows the instrument itself calls
+#      clean (the jugglebot spot leak within RING_LEAK_WARN_FRAMES and NO fresh
+#      advance of its leak high-water this window). On those windows no
+#      stranding is accumulating, so the whole divergence is artefact, by the
+#      same reasoning the 2026-08-15 forensics used when it read the rate off a
+#      leak-free plant.
+#   2. SUBTRACT ``rate x frames folded`` from the raw integral, PER WINDOW and
+#      accumulated. A leaking window is EXCLUDED from (1) but still accumulated
+#      in (2), which is precisely why a real lag step survives the correction
+#      while the clock drift does not.
+#
+# THE RATE IS TRAILING, NOT POOLED — the correction's single most important
+# property, and the one an earlier draft of this class got wrong. The artefact
+# is load-dependent (~237 ppm quiet / ~582 ppm streaming, measured) while the
+# FOLD RATE IS NOT: ``jb_lag_fold`` folds jugglebot-bus RX frames (ODrive
+# broadcasts, ~1950 per window in EVERY bag, streaming or not) and the 500 Hz
+# setpoint stream is TX, which is never folded. Both the ppm figure and the
+# per-frame figure therefore step by the SAME factor across a load change
+# (x2.46 and x2.47 in the two bags above) — per-frame and per-second are one
+# normaliser up to the constant ~1950, and choosing between them buys nothing.
+# What DOES matter is that a rate pooled since node start applies a quiet-plant
+# 0.1215 us/frame to a streaming plant whose true rate is 0.3000: an
+# under-correction of ~348 ppm which, over a segment running to the firmware's
+# |lag| > 200 ms forced reseed (~344 s at 582 ppm), leaves ~120 ms of
+# uncorrected artefact — i.e. it MANUFACTURES a one-lap ring delay (114-135 ms)
+# in the row labelled "the row to trend", on a plant with leak identically 0.
+# A trailing estimator over _LAG_CAL_TRAIL_WINDOWS bounds that residual by the
+# estimator's own lag instead: ~348 ppm x half the trailing span ≈ 10 ms.
+#
+# Per-frame is kept as the INTERNAL unit because the divergence and the fold
+# count arrive in the same frame and it degrades gracefully if the fold rate
+# ever does move; it is NOT a load-independence claim. ``lag_corr_rate_ppm`` is
+# published in the forensics' units as a REPORT.
+#
+# The raw ``lag_now_us`` row is published UNCHANGED beside the corrected one.
+# The correction rests on a calibration this class performs live; a reader must
+# always be able to see the number the firmware actually sent.
+
+#: Trailing span of the rate estimator, in eligible windows. Long enough that
+#: the ~11 us/window leak ratchet stays buried in the per-window noise (see
+#: _LAG_CAL_MIN_WINDOWS) and cannot be tracked out as if it were clock rate;
+#: short enough that a load change is followed within a minute, which bounds the
+#: post-transition residual at ~10 ms rather than the ~120 ms a pooled estimator
+#: accrues. Do NOT shorten below ~30.
+_LAG_CAL_TRAIL_WINDOWS = 60
+
+#: Eligible windows required before a rate is published at all.
+#:
+#: A NOISE argument, and the noise is real: ``window_us`` is emit-to-emit but
+#: ``cap_span_us`` is FOLD-to-fold (telemetry.cpp differences ``lag.arrival_us``,
+#: whose value is stamped at the last folded frame), so every window's
+#: divergence carries +/- one inter-frame gap. Measured on the quiet bag
+#: 10-06-14: sigma ~12 us on a ~229 us divergence (per-window rate spread
+#: -0.2393 to +0.4756 us/frame around a 0.1215 mean). Averaging improves as
+#: 1/sqrt(N), so 30 windows put the rate's own error near 2 us/window — an order
+#: below the artefact it estimates. Below this bar the corrected row renders
+#: 'n/a'; an uncalibrated correction must not render as a measured zero.
+_LAG_CAL_MIN_WINDOWS = 30
+
+#: Sanity bound on a single window's |window_us - cap_span_us|, as a fraction of
+#: the window. The artefact is 230-670 ppm and a one-lap delay step is ~135 ms;
+#: 1 % (10 ms in a 1 s window) is far above the former and is only reached by a
+#: corrupt or saturated sample, which must not be allowed to set the rate.
+_LAG_CAL_MAX_DIVERGENCE_FRAC = 0.01
+
+
+class LagClockNormalizer:
+    """Turn RING_DIAG's raw lag integral into a clock-artefact-free number.
+
+    One instance per node, driven from the 1 Hz ``/ring_diag`` drain. Pure
+    Python, no ROS — the whole point is that it is exercisable from a test
+    without a bridge (see tests/ros/test_teensy_bridge_node_lag_normalizer.py).
+
+    Contract, in three parts:
+
+    * **Calibration** holds the last ``_LAG_CAL_TRAIL_WINDOWS`` windows the
+      caller flagged clean and reports ``rate_us_per_frame`` once
+      ``_LAG_CAL_MIN_WINDOWS`` have EVER been seen. TRAILING, not pooled: the
+      artefact tracks load and a pooled rate would silently under-correct a
+      streaming session by ~348 ppm (the header carries the arithmetic). It is
+      never reset by a reseed — a reseed moves the LAG series' zero, not the
+      crystal's rate — and it FREEZES rather than expiring when clean windows
+      stop arriving, so the correction keeps running at the last rate the plant
+      actually justified.
+    * **Segmentation** restarts the corrected series at 0 whenever the raw
+      series' reference moves (a reseed) or the node's view of it breaks (a
+      ``seq`` gap = a dropped uplink frame, an unseeded arrival clock). Imputing
+      across a hole would silently widen the frame count and under-correct.
+    * **Correction** is accumulated PER WINDOW:
+      ``corrected += (lag_now - lag_prev) - rate_now x lag_frames``. Per window
+      and not as one subtraction over the whole segment, because the rate is
+      time-varying: applying today's rate to an hour of history would
+      re-introduce exactly the error the trailing estimator exists to avoid.
+      Accumulation starts at the window where the rate first exists, so the
+      value is growth since the later of (segment start, calibration).
+    """
+
+    def __init__(self):
+        # Trailing calibration window: (divergence_us, frames, window_us) per
+        # eligible sample, oldest evicted automatically.
+        self._cal = deque(maxlen=_LAG_CAL_TRAIL_WINDOWS)
+        # Cumulative count, for the warm-up gate ONLY — the estimate itself
+        # never sees more than the trailing span.
+        self._cal_seen = 0
+        # Segment state.
+        self._seq_prev: int | None = None
+        self._prev_lag_us: int | None = None
+        self._base_t_local_us = 0
+        self._segment_frames = 0
+        self._segment_t_local_us = 0
+        self._corrected_us = 0.0
+
+    @property
+    def cal_windows(self) -> int:
+        """Eligible windows currently BACKING the rate (saturates at the span)."""
+        return len(self._cal)
+
+    @property
+    def rate_us_per_frame(self) -> float | None:
+        """Calibrated artefact, microseconds of drift per folded frame."""
+        if self._cal_seen < _LAG_CAL_MIN_WINDOWS or not self._cal:
+            return None
+        frames = sum(c[1] for c in self._cal)
+        if frames <= 0:
+            return None
+        return sum(c[0] for c in self._cal) / float(frames)
+
+    @property
+    def rate_ppm(self) -> float | None:
+        """The same calibration expressed as the forensics' ppm. Report only."""
+        if self._cal_seen < _LAG_CAL_MIN_WINDOWS or not self._cal:
+            return None
+        span = sum(c[2] for c in self._cal)
+        if span <= 0:
+            return None
+        return 1e6 * sum(c[0] for c in self._cal) / float(span)
+
+    def update(self, *, seeded: bool, reseed_in_window: bool, seq: int,
+               t_local_us: int, window_us: int, cap_span_us: int,
+               lag_now_us: int, lag_frames: int, ring_clean: bool) -> dict:
+        """Fold one RING_DIAG window in; return the rows to render.
+
+        ``ring_clean`` is the caller's verdict that no stranding was
+        accumulating in this window (the jugglebot SPOT leak within
+        ``RING_LEAK_WARN_FRAMES`` and no fresh advance of its leak high-water).
+        It gates CALIBRATION only — a dirty window is still accumulated into the
+        correction, which is what lets a real delivery-lag step survive it.
+
+        Returns a dict with ``corrected_us`` (float or None), ``state``,
+        ``segment_us``, ``segment_frames``, and the rate reports.
+        """
+        # ── 1. Calibration ────────────────────────────────────────────────
+        # Self-contained in this window: window_us and cap_span_us both describe
+        # THIS window, so eligibility needs no continuity with the previous
+        # sample and a dropped uplink frame costs one window, not the estimate.
+        if (seeded and not reseed_in_window and ring_clean
+                and window_us > 0 and cap_span_us > 0 and lag_frames > 0):
+            div = int(window_us) - int(cap_span_us)
+            if abs(div) <= _LAG_CAL_MAX_DIVERGENCE_FRAC * window_us:
+                self._cal.append((div, int(lag_frames), int(window_us)))
+                self._cal_seen += 1
+
+        # ── 2. Segmentation ───────────────────────────────────────────────
+        # Wrap-safe: seq is a u32 emitted-frame counter. Contiguity is the only
+        # proof that this window's lag_frames covers ALL the frames folded since
+        # the previous sample.
+        contiguous = (self._seq_prev is not None
+                      and self._prev_lag_us is not None
+                      and ((int(seq) - self._seq_prev) & 0xFFFFFFFF) == 1)
+        self._seq_prev = int(seq)
+
+        if not seeded:
+            # No reference exists on the wire, so none exists here either. The
+            # previous lag is dropped so the first seeded window starts fresh.
+            self._prev_lag_us = None
+            self._segment_frames = 0
+            self._corrected_us = 0.0
+            return self._result(None, 'unseeded', 0, 0)
+
+        rate = self.rate_us_per_frame
+        if reseed_in_window or not contiguous:
+            self._base_t_local_us = int(t_local_us)
+            self._segment_frames = 0
+            self._segment_t_local_us = 0
+            self._corrected_us = 0.0
+            state = 'segment_start'
+        else:
+            self._segment_frames += int(lag_frames)
+            self._segment_t_local_us = int(t_local_us) - self._base_t_local_us
+            # ── 3. Correction, accumulated at THIS window's rate ──────────
+            # Nothing accumulates before the rate exists: a correction applied
+            # with a rate that does not yet exist is not a smaller correction,
+            # it is a raw drift wearing the corrected row's name.
+            if rate is not None:
+                self._corrected_us += ((int(lag_now_us) - self._prev_lag_us)
+                                       - rate * int(lag_frames))
+            state = 'ok'
+        self._prev_lag_us = int(lag_now_us)
+
+        if rate is None:
+            return self._result(None, 'uncalibrated',
+                                self._segment_t_local_us, self._segment_frames)
+        return self._result(self._corrected_us, state,
+                            self._segment_t_local_us, self._segment_frames)
+
+    def _result(self, corrected, state, segment_us, segment_frames) -> dict:
+        return {
+            'corrected_us': corrected,
+            'state': state,
+            'segment_us': segment_us,
+            'segment_frames': segment_frames,
+            'rate_us_per_frame': self.rate_us_per_frame,
+            'rate_ppm': self.rate_ppm,
+            'cal_windows': self.cal_windows,
+        }
 
 
 # ── Constants ──────────────────────────────────────────────────
@@ -509,6 +1051,34 @@ class TeensyBridgeNode(Node):
         # never completes the descent) pass False via _build_paired_node.
         self._stow_on_shutdown = bool(stow_on_shutdown)
 
+        # ── Install-skew self-check ────────────────────────────
+        # Runs FIRST, before the RX thread exists: _record_bridge_fw_version
+        # renders this verdict from the RX thread, and the check must not be a
+        # value that thread can observe half-written. Two file reads, once.
+        # One log call per verdict, each at a FIXED severity on its own source
+        # line — Foxy's rcutils logger caches severity per line and RAISES on a
+        # flip (971d12c), so a single call site with a computed level would be a
+        # crash waiting for the first stale install.
+        self._install_skew, self._install_skew_detail = install_skew_verdict()
+        if self._install_skew == INSTALL_SKEW_STALE:
+            self.get_logger().error(
+                'INSTALL_SKEW: FAIL — this node is NOT running the repo source. '
+                + self._install_skew_detail + '. BRIDGE_FW_CHECK cannot see '
+                'this: it compares the flashed firmware against the LIVE '
+                'teensy_link tree, so it reads OK while this node runs a stale '
+                'build (2026-08-14: an S3 conviction bag recorded no /ring_diag '
+                'for exactly this reason). FIX: cd ros_ws && colcon build '
+                '--packages-select jugglebot, then RELAUNCH. Nothing is '
+                'refused — advisory only.')
+        elif self._install_skew == INSTALL_SKEW_UNKNOWN:
+            self.get_logger().warning(
+                'INSTALL_SKEW: INCONCLUSIVE — ' + self._install_skew_detail
+                + '. Treat this node build as UNVERIFIED; it is not evidence '
+                'that the install is fresh.')
+        else:
+            self.get_logger().info(
+                'INSTALL_SKEW: OK — ' + self._install_skew_detail)
+
         # ── Parameters ─────────────────────────────────────────
         self.declare_parameter('teensy_ip', p.TEENSY_IP)
         # SAFETY-CRITICAL: setpoint output is OFF by default. Wired in Commit 3.
@@ -573,7 +1143,22 @@ class TeensyBridgeNode(Node):
         # ── Latest-frame state (written on RX thread, read on ROS thread) ──
         self._lock = threading.Lock()
         self._latest_telemetry: Telemetry | None = None
+        # Freshness bookkeeping for the /robot_state honesty gate (see
+        # _publish_robot_state). _telemetry_gen advances on every accepted
+        # TELEMETRY frame; _robot_state_pub_gen records which generation was last
+        # published, so equality means "nothing new arrived since". -1 seeds a
+        # value no generation can equal, so the first real publish always goes.
+        self._telemetry_gen = 0
+        self._robot_state_pub_gen = -1
+        self._robot_state_stale_skips = 0
+        self._robot_state_consec_skips = 0
         self._latest_heartbeat: HeartbeatT2J | None = None
+        # Generation counter on the heartbeat, same idea as _telemetry_gen: the
+        # latency monitor samples lead_clamp_mask off the LATEST heartbeat at
+        # 10 Hz, and without this it could not tell a fresh heartbeat from the
+        # same one read twice. Counting a stale repeat would let a link that
+        # died mid-clamp hold the duty at 1.0 forever.
+        self._heartbeat_gen = 0
         # Latest HAND_SENSOR frame (hand ball-present switch) + the JETSON
         # MONOTONIC arrival time. None until the first frame: that is the
         # tri-state UNKNOWN, and it is also what an unflashed bridge (no Phase
@@ -705,6 +1290,44 @@ class TeensyBridgeNode(Node):
         # rule. An FW <= 11 board never sends 0x91, so on a pre-flash bridge this
         # queue stays empty forever and /cache_diag records as a silent topic.
         self._cache_diag_queue = []  # list of CacheDiag, drained by timer
+        # And once more for the CAN RX-ring true-occupancy census (RING_DIAG,
+        # 1 Hz), drained by _publish_ring_diag. Same declare-before-subscribe
+        # rule. An FW <= 12 board never sends 0x92, so on a pre-flash bridge this
+        # queue stays empty forever and /ring_diag records as a silent topic.
+        self._ring_diag_queue = []  # list of RingDiag, drained by timer
+        # Node-side normaliser for RING_DIAG's delivery-lag integral (S3
+        # residual (a)). Lives on the node rather than inside the drain because
+        # its calibration and its segment base must survive across windows;
+        # touched ONLY from _publish_ring_diag (executor thread), never the RX
+        # thread, so it needs no lock.
+        self._lag_norm = LagClockNormalizer()
+        # Previous window's per-bus leak high-water, so a SINCE-BOOT maximum can
+        # be turned into a THIS-WINDOW event (see _publish_ring_diag). None
+        # until the first window: no baseline, so no advance is claimed.
+        self._ring_leak_hwm_prev = None
+
+        # ── Alarmed command-latency monitor (2026-07-24 closure contract) ──
+        # Three inputs, all already measured and bagged, none of them previously
+        # LOUD. The two diagnostics inputs are written by their own 1 Hz drains
+        # and read by the 10 Hz link_status timer; all three are timer callbacks
+        # in the node's default (mutually-exclusive) group, so they serialise and
+        # need no lock. Each carries its own arrival stamp — a 1 Hz input that
+        # stopped arriving must stop asserting its last value.
+        self._lm_ring_leak = 0            # worst jugglebot/bb/cone leak, last window
+        self._lm_ring_t = 0.0             # monotonic arrival of that verdict
+        self._lm_cache_floor_us = 0       # worst per-axis cache age FLOOR, last window
+        self._lm_cache_t = 0.0
+        # (monotonic, clamped?) samples of lead_clamp_mask, trimmed to
+        # _CLAMP_DUTY_WINDOW_S. Sampled ONLY while setpoints are streaming and
+        # only once per heartbeat — see _latency_monitor_sample_clamp.
+        self._lm_clamp_samples = deque()
+        self._lm_last_hb_gen = None
+        self._lm_last_sp_frames = None
+        self._lm_last_log_t = None        # monotonic; None ⇒ the next onset logs at once
+        # The condition the last log line NAMED (not the current one): an
+        # escalation past it bypasses the throttle. Never reset to OK on
+        # recovery — that would let a threshold flap re-log at 10 Hz.
+        self._lm_logged_state = LATENCY_MONITOR_OK
 
         # ── BB loud command-outcome channel (CMD_RESULT relay) ──
         # One outstanding throw at a time (firmware is serialized → no correlation
@@ -831,6 +1454,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.LEG_CMD), self._on_leg_cmd)          # post-clamp executed leg cmd
         self._client.subscribe(int(MsgType.CLOCK_DIAG), self._on_clock_diag)    # per-anchor clock + interp occupancy
         self._client.subscribe(int(MsgType.CACHE_DIAG), self._on_cache_diag)    # encoder-cache age + CAN RX ring
+        self._client.subscribe(int(MsgType.RING_DIAG), self._on_ring_diag)      # TRUE RX-ring occupancy + delivery lag
 
         # ── Publishers (production names — leg-side cutover) ──
         # Promoted from the /teensy/* namespace to the production topic names
@@ -873,8 +1497,9 @@ class TeensyBridgeNode(Node):
         # transport vs the interp ladder vs the ODrives, and the entry's Addendum
         # names "LEG_CMD not published" as the first of its telemetry gaps. It is
         # also the input to the alarmed end-to-end command-latency monitor that
-        # closure Addendum requires (plans/active/bridge-temporal-trustworthiness.md
-        # P0 → P3).
+        # closure Addendum requires (delivered and validated 2026-08-15 —
+        # logbook/2026-08-15-fw14-validated-arc-closed.md; the plan that carried
+        # it, bridge-temporal-trustworthiness P0 → P3, is archived).
         self.leg_cmd_executed_pub = self.create_publisher(
             JointState, 'leg_cmd_executed', 50)
         # (_leg_cmd_queue is initialized above, before the subscribe block, to
@@ -932,6 +1557,36 @@ class TeensyBridgeNode(Node):
         # UPTIME, the independent variable of the whole investigation.
         self.cache_diag_pub = self.create_publisher(
             DiagnosticStatus, 'cache_diag', 20)
+
+        # The can-bridge's CAN RX-ring TRUE-occupancy census (RING_DIAG 0x92,
+        # FW 13), one message per 1 s window. Same queue-then-drain series shape
+        # as /cache_diag and /clock_diag above, and for the same reason: each
+        # window is an independent measurement reduced from ~1000 on-chip probes,
+        # and the conclusion is a trend across an hours-long soak, so a
+        # latest-wins row would delete most of the evidence.
+        #
+        # WHAT IT ANSWERS. S2 (2026-08-13) killed the encoder-cache AGE
+        # hypothesis — the cache was FRESHER at 28 h than at 1.3 h — and left the
+        # mechanism as ~100-150 ms bit-identical per-axis telemetry freezes that
+        # the freshness-blind lead clamp amplifies. The surviving candidate is a
+        # defect in the vendored FlexCAN_T4: events() pops the RX ring BEFORE its
+        # NVIC_DISABLE_IRQ guard, so the CAN ISR's `_available++` races the
+        # task-side `_available--` one-directionally, increments are swallowed,
+        # and the bridge's drain loop exits believing the ring is empty while a
+        # residue is stranded — making every later delivery that many frames old,
+        # ratcheting with uptime, capped at the 256-slot ring (~114-135 ms).
+        # NOTHING ALREADY ON THE WIRE CAN SEE THIS: getRXQueueCount() returns
+        # `_available`, so /cache_diag's rx_depth_hwm and rx_cap_hits are computed
+        # from the corrupted number itself and read healthy through a fully-leaked
+        # ring. This topic carries the ring's TRUE occupancy, taken from head/tail
+        # at the instant after the drain, beside the `_available` that the rest of
+        # the firmware believes.
+        #
+        # No header stamp, again deliberately: the sample carries its own x-axis
+        # in t_local_us, the bridge's raw micros64 — i.e. its power-on UPTIME,
+        # which is the independent variable the leak is theorised to ratchet with.
+        self.ring_diag_pub = self.create_publisher(
+            DiagnosticStatus, 'ring_diag', 20)
 
         # ── Ball Butler (cutover, production names) ────
         # Intentional naming deviation from the earlier "all under /teensy/*"
@@ -1114,6 +1769,8 @@ class TeensyBridgeNode(Node):
         # Matches the frame's own 1 Hz emit cadence: at most one sample is ever
         # waiting, so the queue exists for thread hand-off, not for buffering.
         self.create_timer(1.0, self._publish_cache_diag)          # 1 Hz drain (encoder-cache census)
+        # Matches the frame's own 1 Hz emit cadence, as with /cache_diag above.
+        self.create_timer(1.0, self._publish_ring_diag)           # 1 Hz drain (RX-ring occupancy census)
         self.create_timer(0.5, self._publish_bb_odrive)        # 2 Hz BB ODrive diag (CAN1 ~1 Hz src)
         self.create_timer(1.0, self._publish_profile)          # 1 Hz (profile rate)
         self.create_timer(1.0, self._health_check)             # 1 Hz link watchdog
@@ -1294,6 +1951,7 @@ class TeensyBridgeNode(Node):
             return
         with self._lock:
             self._latest_heartbeat = hb
+            self._heartbeat_gen += 1
 
     def _on_telemetry(self, msg_type, seq, payload, addr):
         try:
@@ -1302,6 +1960,12 @@ class TeensyBridgeNode(Node):
             return
         with self._lock:
             self._latest_telemetry = tm
+            # Generation, not a timestamp: _publish_robot_state needs to know
+            # whether the latch it is about to serialise is the SAME one it
+            # already published, and a monotonic counter answers that exactly,
+            # with no clock read and no threshold to tune. See the honesty gate
+            # there. Unbounded in Python, so no wrap case exists.
+            self._telemetry_gen += 1
 
     def _on_diagnostic(self, msg_type, seq, payload, addr):
         try:
@@ -1477,7 +2141,7 @@ class TeensyBridgeNode(Node):
         if version == expected:
             self.get_logger().info(
                 f'BRIDGE_FW_CHECK: OK — can-bridge Teensy reports v{version} '
-                f'(expected v{expected})')
+                f'(expected v{expected}){self._install_skew_note()}')
             return
         # Skew. ERROR level with one greppable token, and the older/newer
         # direction named because they fail differently: an older board is
@@ -1490,7 +2154,28 @@ class TeensyBridgeNode(Node):
             f'NOT refused (the skew is reported, never enforced — the same '
             f'warn-never-refuse policy as ros_ws/docs/platform_fw_version.md), '
             f'but any bench conclusion that reads the bridge_tx_diag counters is '
-            f'untrustworthy until the can-bridge is re-flashed.')
+            f'untrustworthy until the can-bridge is re-flashed.'
+            f'{self._install_skew_note()}')
+
+    def _install_skew_note(self) -> str:
+        """The host half of the currency verdict, appended to BRIDGE_FW_CHECK.
+
+        The two halves are reported in ONE line because they are one question —
+        "is what is running what the repo says?" — and the 2026-08-14 S3 miss is
+        precisely what happens when an operator reads the firmware half as an
+        answer to both. Rendered on the OK line too: a green firmware verdict
+        beside a silent host verdict is the shape of the original trap.
+        """
+        if self._install_skew == INSTALL_SKEW_STALE:
+            # Phrased to read correctly after BOTH call sites' punctuation —
+            # '(expected v13)' and 'until the can-bridge is re-flashed.'
+            return (' BUT NOTE — install_skew=1: this NODE is running a stale '
+                    'colcon install, so nothing it reports about the bridge is '
+                    'trustworthy. ' + self._install_skew_detail)
+        if self._install_skew == INSTALL_SKEW_UNKNOWN:
+            return (' [install_skew=unknown — the node build could not be '
+                    'checked against a repo source tree]')
+        return ' [install_skew=0 — node build matches the repo source]'
 
     def _on_bb_estimates(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. The drain timer
@@ -1571,6 +2256,33 @@ class TeensyBridgeNode(Node):
         with self._lock:
             q = self._cache_diag_queue
             q.append(cd)
+            # ~1 h at the 1 Hz emit cadence. Bounds a stalled drain (the drain is
+            # also 1 Hz, so in health this queue holds 0 or 1 entries) without
+            # truncating anything a real session would produce. Drop-oldest,
+            # matching the other queues.
+            if len(q) > 3600:
+                del q[:len(q) - 3600]
+
+    def _on_ring_diag(self, msg_type, seq, payload, addr):
+        # RX-thread callback: decode + queue every RX-ring census window.
+        # Identical contract to _on_cache_diag / _on_clock_diag — queue here,
+        # publish on the executor thread in the drain timer, never on this socket
+        # thread, which also carries the 100 Hz telemetry and every RPC reply.
+        # Malformed frames dropped, with the same broad except: a short payload
+        # raises struct.error, which is NOT a ValueError, and an exception
+        # escaping an RX callback poisons the shared thread.
+        #
+        # EVERY window is queued, never latest-wins. Each frame reduces ~1000
+        # service-tick probes that exist nowhere else, and the verdict is a trend
+        # across hours — dropping one to keep the newest deletes a second of the
+        # only evidence there is.
+        try:
+            rd = RingDiag.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            q = self._ring_diag_queue
+            q.append(rd)
             # ~1 h at the 1 Hz emit cadence. Bounds a stalled drain (the drain is
             # also 1 Hz, so in health this queue holds 0 or 1 entries) without
             # truncating anything a real session would produce. Drop-oldest,
@@ -1787,6 +2499,14 @@ class TeensyBridgeNode(Node):
             # is absent, not stale.
             seen_idx = [i for i in range(len(ages_min)) if seen & (1 << i)]
             worst_floor = max((ages_min[i] for i in seen_idx), default=0)
+            # Feed the alarmed latency monitor (the LOUD half of the 2026-07-24
+            # contract). Deliberately the seen_mask-qualified floor, not the raw
+            # one: an axis that has never been cached rides the u32 saturation
+            # rail, and alarming on a dark hand ODrive at a single-leg bench rig
+            # is how an alarm teaches the operator to ignore it. Last window in
+            # the batch wins — this is a live state, not a tally.
+            self._lm_cache_floor_us = worst_floor
+            self._lm_cache_t = time.monotonic()
             msg = DiagnosticStatus()
             msg.name = 'teensy/cache_diag'
             msg.hardware_id = 'can_bridge_teensy'
@@ -1854,6 +2574,285 @@ class TeensyBridgeNode(Node):
             ])
             msg.values = values
             self.cache_diag_pub.publish(msg)
+
+    def _publish_ring_diag(self):
+        """Drain queued RING_DIAG windows → /ring_diag (DiagnosticStatus).
+
+        One message per 1 s window, each carrying the can-bridge's CAN RX-ring
+        TRUE occupancy beside the ``_available`` count the rest of the firmware
+        believes, the hardware FIFO overflow/warning counts, and two independent
+        jugglebot-bus cross-checks (delivery lag off the FlexCAN hardware capture
+        timestamp, and the hand-sensor SDO round-trip floor).
+
+        WHAT IT DECIDES. S2 (2026-08-13) killed the encoder-cache AGE hypothesis
+        — the cache read FRESHER at 28 h than at 1.3 h — leaving the observed
+        mechanism as ~100-150 ms bit-identical per-axis telemetry freezes that the
+        freshness-blind lead clamp amplifies into commanded stops. The surviving
+        candidate cause is a concurrency defect in the vendored FlexCAN_T4:
+        ``events()`` pops the RX ring BEFORE its ``NVIC_DISABLE_IRQ`` guard, so
+        the CAN ISR's ``_available++`` races the unguarded task-side
+        ``_available--`` one-directionally (the ISR preempts the task, never the
+        reverse). Increments get swallowed, ``_available`` monotonically
+        under-counts, and the bridge's drain loop stops with a residue still in
+        the ring — after which every frame it delivers is that many frames old,
+        ratcheting with uptime and capping at the 256-slot ring depth
+        (~114-135 ms at jugglebot-bus rates).
+
+        WHY A NEW TOPIC RATHER THAN A FIELD ON /cache_diag. ``getRXQueueCount()``
+        returns ``_available``, so ``rx_depth_hwm`` and ``rx_cap_hits`` — the
+        ring fields /cache_diag already publishes — are computed from the very
+        number the race corrupts. They are blind to this failure by construction
+        and would read perfectly healthy through a fully-leaked ring.
+
+        THE HEADLINE ROW is ``leak_jb`` = ``true_depth_jb - avail_reported_jb``,
+        rendered first. It is sampled immediately after the drain loop, where
+        ``_available`` is 0 by definition (that is why the loop exited), so the
+        residual true depth IS the leak rather than an inference from it.
+        ``leak_hwm_jb`` is the same quantity maximised over every 1 kHz service
+        tick since boot, so the verdict does not rest on the 1 Hz sample landing
+        luckily.
+
+        LEVEL. WARN when the leak exceeds ``RING_LEAK_WARN_FRAMES`` on any bus, or
+        when any hardware FIFO overflow has been recorded. The overflow term is
+        not redundant with the leak: a leaked frame is merely LATE, an overflowed
+        one is GONE, and the second is both worse and — until FW 13's vendored
+        patch counted it — completely invisible.
+
+        ``flags`` is read BEFORE the lag fields, and the lag is rendered ``n/a``
+        while unseeded: an unseeded 0 means no reference exists, not zero lag.
+        Likewise ``sdo_rtt_count == 0`` blanks the three RTT rows rather than
+        publishing a 0 µs round trip that never happened.
+
+        THE LAG INTEGRAL IS NORMALISED HERE (S3 residual (a), closed
+        2026-08-15). ``lag_now_us`` is published RAW and unchanged, but the row
+        to read is ``lag_now_corrected_us``: the raw integral also accumulates
+        the FlexCAN capture clock's drift against ``micros64()``, measured at
+        **~237 ppm quiet and ~582 ppm streaming** — LOAD-dependent, while the
+        fold rate that scales it is not — which is why it exceeded the 135 ms
+        one-lap physical cap on a plant whose leak was identically 0. The caveat
+        this replaces — "the trend is the measurement, the absolute is not" —
+        now reads: **the trend AFTER the clock-ratio correction is the
+        measurement; the RAW integral drifts at the measured 230-670 ppm and its
+        absolute value is not a delivery lag.** ``LagClockNormalizer`` carries
+        the derivation, including why subtracting the measured per-window
+        divergence would be a tautology, why the rate is calibrated on leak-free
+        windows, and why that calibration has to be TRAILING rather than pooled.
+
+        An FW <= 12 board never sends 0x92, so on the pre-flash bridge this drains
+        nothing and the topic records EMPTY — the visible absence the record
+        list's add-never-trim rule is built around, not an error.
+        """
+        with self._lock:
+            batch = self._ring_diag_queue
+            self._ring_diag_queue = []
+        for rd in batch:
+            # Signed, and clamped at 0 for display only where a negative reading
+            # is meaningless: the leak cannot be negative in the mechanism, and a
+            # -1 here is the documented +/-1 probe race (see Circular_Buffer::probe)
+            # rather than a measurement. Clamping keeps a race artefact from
+            # rendering as a number an operator would try to explain.
+            leaks = {}
+            for bus in ('jb', 'bb', 'cone'):
+                depth = int(getattr(rd, f'true_depth_{bus}'))
+                avail = int(getattr(rd, f'avail_reported_{bus}'))
+                leaks[bus] = max(0, depth - avail)
+            leak_hwms = {bus: int(getattr(rd, f'leak_hwm_{bus}'))
+                         for bus in ('jb', 'bb', 'cone')}
+            overflows = {bus: int(getattr(rd, f'fifo_overflows_{bus}'))
+                         for bus in ('jb', 'bb', 'cone')}
+            flags = int(rd.flags)
+            lag_seeded = bool(flags & int(p.RingDiagFlags.LAG_SEEDED))
+            reseeded = bool(flags & int(p.RingDiagFlags.LAG_RESEED_IN_WINDOW))
+            rtt_n = int(rd.sdo_rtt_count)
+
+            worst_leak = max(max(leaks.values()), max(leak_hwms.values()))
+            any_overflow = any(v > 0 for v in overflows.values())
+
+            # ── SINCE-BOOT vs THIS WINDOW ────────────────────────────────
+            # leak_hwm_* is a maximum since BOOT — can_buses_ring_probe never
+            # resets it. That is right for a diagnostics LEVEL (a verdict may be
+            # cumulative) and wrong for everything below, both of which have to
+            # be live: an alarm keyed on a since-boot maximum latches for the
+            # rest of the session, and a calibration gate keyed on one goes dark
+            # for the rest of the session. So the high-water is used only where
+            # it ADVANCES this window, which is an event, and the spot leak
+            # carries the level test.
+            hwm_prev = self._ring_leak_hwm_prev
+            hwm_fresh = {bus: (hwm_prev is not None
+                               and leak_hwms[bus] > hwm_prev[bus])
+                         for bus in ('jb', 'bb', 'cone')}
+            # No baseline on the first window after node start: an advance
+            # cannot be observed, so none is claimed. A plant that is STILL
+            # leaking shows it in the spot leak within a window or two (S3 read
+            # 247 on the spot pair), and a plant that leaked before this node
+            # existed is history, not a live alarm.
+            self._ring_leak_hwm_prev = dict(leak_hwms)
+
+            # Feed the alarmed latency monitor. LIVE, not cumulative: the spot
+            # leak, plus the high-water only in the window it advances in (the
+            # spot pair is one sample out of ~1000 service-tick probes, so a
+            # short excursion can hide between two 1 Hz reads — but only in the
+            # window it actually happened in). The LEAK only — the summary token
+            # set has no name for a FIFO overflow, and inventing one here would
+            # report a lost frame under a label that means a late one;
+            # /ring_diag's own level still WARNs on the overflow.
+            spot_leak = max(leaks.values())
+            self._lm_ring_leak = (max(spot_leak, max(leak_hwms.values()))
+                                  if any(hwm_fresh.values()) else spot_leak)
+            self._lm_ring_t = time.monotonic()
+
+            # Normalise the delivery-lag integral (S3 residual (a)). The
+            # calibration gate is the JUGGLEBOT bus only — that is the bus the
+            # arrival clock folds — and it reuses RING_LEAK_WARN_FRAMES so
+            # "clean enough to calibrate on" and "clean enough not to WARN" are
+            # one definition rather than two that can drift apart. The
+            # high-water term is the FRESH-ADVANCE form for the reason above: a
+            # single historical excursion must not bar calibration for the rest
+            # of the boot, or the instrument goes dark exactly at the uptime it
+            # is wanted at. A fresh advance within the threshold still bars the
+            # window — a 2-frame stranding that persists is ~1 ms in a 1 s
+            # window, four times the artefact being estimated — and costing an
+            # occasional window is the cheap side of that trade. A jugglebot
+            # FIFO overflow is deliberately NOT part of the gate: a frame lost
+            # inside the peripheral is never folded, so the unwrap simply spans
+            # it and the capture-vs-decode divergence is unbiased; a loss long
+            # enough to threaten the 16-bit wrap forces a reseed, which the
+            # normaliser already segments at.
+            ring_clean = (leaks['jb'] <= RING_LEAK_WARN_FRAMES
+                          and not hwm_fresh['jb'])
+            lagc = self._lag_norm.update(
+                seeded=lag_seeded, reseed_in_window=reseeded,
+                seq=int(rd.seq), t_local_us=int(rd.t_local_us),
+                window_us=int(rd.window_us), cap_span_us=int(rd.cap_span_us),
+                lag_now_us=int(rd.lag_now_us), lag_frames=int(rd.lag_frames),
+                ring_clean=ring_clean)
+            lag_corr = ('n/a' if lagc['corrected_us'] is None
+                        else str(int(round(lagc['corrected_us']))))
+
+            msg = DiagnosticStatus()
+            msg.name = 'teensy/ring_diag'
+            msg.hardware_id = 'can_bridge_teensy'
+            msg.level = (DiagnosticStatus.WARN
+                         if (worst_leak > RING_LEAK_WARN_FRAMES or any_overflow)
+                         else DiagnosticStatus.OK)
+            msg.message = (
+                f'seq={int(rd.seq)} uptime={int(rd.t_local_us) // 1000}ms '
+                f'leak_jb={leaks["jb"]} leak_hwm_jb={leak_hwms["jb"]} '
+                f'lag_now={int(rd.lag_now_us) if lag_seeded else "n/a"}us '
+                f'lag_corr={lag_corr}us '
+                f'probes={int(rd.probe_ticks)}/{int(rd.window_us)}us')
+            values = [
+                # THE CONVICTION ROW, first: everything else is corroboration.
+                KeyValue(key='leak_jb', value=str(leaks['jb'])),
+                KeyValue(key='leak_hwm_jb', value=str(leak_hwms['jb'])),
+                KeyValue(key='true_depth_jb', value=str(int(rd.true_depth_jb))),
+                KeyValue(key='avail_reported_jb',
+                         value=str(int(rd.avail_reported_jb))),
+                KeyValue(key='true_depth_hwm_jb',
+                         value=str(int(rd.true_depth_hwm_jb))),
+                KeyValue(key='seq', value=str(int(rd.seq))),
+                KeyValue(key='t_local_us', value=str(int(rd.t_local_us))),
+                KeyValue(key='window_us', value=str(int(rd.window_us))),
+                KeyValue(key='probe_ticks', value=str(int(rd.probe_ticks))),
+                KeyValue(key='flags', value=str(flags)),
+            ]
+            for bus in ('bb', 'cone'):
+                values.extend([
+                    KeyValue(key=f'leak_{bus}', value=str(leaks[bus])),
+                    KeyValue(key=f'leak_hwm_{bus}', value=str(leak_hwms[bus])),
+                    KeyValue(key=f'true_depth_{bus}',
+                             value=str(int(getattr(rd, f'true_depth_{bus}')))),
+                    KeyValue(key=f'avail_reported_{bus}',
+                             value=str(int(getattr(rd, f'avail_reported_{bus}')))),
+                    KeyValue(key=f'true_depth_hwm_{bus}',
+                             value=str(int(getattr(rd, f'true_depth_hwm_{bus}')))),
+                ])
+            # Hardware-FIFO counters: cumulative since boot, rendered RAW and
+            # differenced by the consumer (the can3_errors / bridge_tx_diag
+            # idiom). These are ISR-counted and therefore exact, unlike every
+            # `_available`-derived number this frame exists to distrust.
+            for bus in ('jb', 'bb', 'cone'):
+                values.extend([
+                    KeyValue(key=f'fifo_overflows_{bus}',
+                             value=str(overflows[bus])),
+                    KeyValue(key=f'fifo_warns_{bus}',
+                             value=str(int(getattr(rd, f'fifo_warns_{bus}')))),
+                ])
+            # Delivery lag, jugglebot bus. 'n/a' while unseeded: the wire carries
+            # 0 there, and a bare 0 reads as a healthy measured lag rather than as
+            # the absence of a reference to measure against.
+            values.extend([
+                KeyValue(key='lag_seeded', value=str(int(lag_seeded))),
+                KeyValue(key='lag_now_us',
+                         value=str(int(rd.lag_now_us)) if lag_seeded else 'n/a'),
+                KeyValue(key='lag_hwm_us',
+                         value=str(int(rd.lag_hwm_us)) if lag_seeded else 'n/a'),
+                KeyValue(key='lag_frames', value=str(int(rd.lag_frames))),
+                KeyValue(key='cap_span_us', value=str(int(rd.cap_span_us))),
+                KeyValue(key='lag_reseeds', value=str(int(rd.lag_reseeds))),
+                # ── The normalised lag (S3 residual (a)) ──
+                # THIS is the row to trend, not lag_now_us above. 'n/a' whenever
+                # the correction cannot be made honestly: unseeded (no
+                # reference on the wire) or uncalibrated (fewer than
+                # _LAG_CAL_MIN_WINDOWS leak-free windows seen), never a 0 that
+                # would read as a measured zero lag — the same discipline the
+                # unseeded lag rows above follow.
+                #
+                # IT IS THE GROWTH CHANNEL, not an absolute lag: the value is
+                # accumulated since the segment base, and the firmware reseeds
+                # routinely mid-session, so a delay line that SATURATED before
+                # this segment began reads ~0 here. `leak_jb` is the
+                # absolute-occupancy channel; read them together.
+                KeyValue(key='lag_now_corrected_us', value=lag_corr),
+                # Which of those cases produced the value: 'ok' (accumulating),
+                # 'segment_start' (this window restarted the series — a reseed
+                # or a dropped uplink frame, so the 0 is a definition not a
+                # measurement), 'uncalibrated', 'unseeded'.
+                KeyValue(key='lag_corr_state', value=lagc['state']),
+                # The calibration itself, published so the correction is
+                # auditable from the bag alone rather than only reproducible
+                # from the code — and because the rate is TRAILING, its value
+                # over time is the record of the load state the plant was in.
+                # us/frame is the internal unit; ppm is the same estimate in the
+                # forensics' units. Both move together across a load change (the
+                # fold rate is load-invariant), so neither is "the
+                # load-independent one" — see LagClockNormalizer.
+                KeyValue(key='lag_corr_rate_us_per_frame',
+                         value=('n/a' if lagc['rate_us_per_frame'] is None
+                                else f"{lagc['rate_us_per_frame']:.4f}")),
+                KeyValue(key='lag_corr_rate_ppm',
+                         value=('n/a' if lagc['rate_ppm'] is None
+                                else f"{lagc['rate_ppm']:.1f}")),
+                # Windows currently BACKING the rate. It saturates at
+                # _LAG_CAL_TRAIL_WINDOWS by design (the estimator is trailing,
+                # not pooled), so a value below that on a long-running session
+                # means clean windows are scarce — itself diagnostic.
+                KeyValue(key='lag_corr_windows',
+                         value=str(int(lagc['cal_windows']))),
+                # The correction's two denominators: frames folded and decode
+                # time elapsed since the segment base. They are how a reader
+                # tells a long clean segment from a freshly restarted one. (The
+                # correction is accumulated per window at each window's own
+                # rate, so these reproduce it only when the rate held steady.)
+                KeyValue(key='lag_corr_frames',
+                         value=str(int(lagc['segment_frames']))),
+                KeyValue(key='lag_corr_segment_us',
+                         value=str(int(lagc['segment_us']))),
+                # A reseed moves the lag series' zero, so this window is not
+                # comparable with the previous one. Surfaced per-window because
+                # the cumulative counter alone cannot say WHICH sample to segment.
+                KeyValue(key='lag_reseed_in_window', value=str(int(reseeded))),
+            ])
+            # SDO round trip. Count first, and it blanks the rest: 0 means no
+            # round trip closed (poller off, parked, or every request timed out),
+            # and a 0 us round trip is not a thing that can happen.
+            values.append(KeyValue(key='sdo_rtt_count', value=str(rtt_n)))
+            for key in ('sdo_rtt_min_us', 'sdo_rtt_max_us', 'sdo_rtt_last_us'):
+                values.append(KeyValue(
+                    key=key,
+                    value=str(int(getattr(rd, key))) if rtt_n else 'n/a'))
+            msg.values = values
+            self.ring_diag_pub.publish(msg)
 
     # ═══════════════════════════════════════════════════════════
     # Read-side publishers (mirror can_node field-by-field)
@@ -2047,6 +3046,7 @@ class TeensyBridgeNode(Node):
             self._publish_leg_setpoint_echo()
             with self._lock:
                 telem = self._latest_telemetry
+                telem_gen = self._telemetry_gen
                 hb = self._latest_heartbeat
                 diag = dict(self._latest_diag)
                 diag_mono = dict(self._latest_diag_mono)
@@ -2059,6 +3059,60 @@ class TeensyBridgeNode(Node):
                 fw_mismatch = self._firmware_mismatch_error
             if telem is None:
                 return  # No real data yet — don't publish a phantom snapshot.
+
+            # ── Honesty gate: never republish a latch that has not moved ──────
+            # This 100 Hz timer and the ~100 Hz TELEMETRY arrival are
+            # independent, so they beat: some periods carry two telemetry frames
+            # and some carry none, and on the "none" periods the pre-gate code
+            # re-serialised the SAME latch under a fresh header stamp. That
+            # manufactured a duplicate sample which is indistinguishable, in a
+            # bag, from the robot genuinely holding still — and it is why
+            # measured "97 % identical consecutive samples" was an artefact of
+            # this publisher rather than a property of the plant. Skipping the
+            # duplicate makes the published series follow the TELEMETRY rate
+            # instead of the timer, so the mean stays ~100 Hz while the
+            # fabricated rows disappear.
+            #
+            # THE LINK-LOST CARVE-OUT IS NOT OPTIONAL. When the UDP link dies,
+            # telemetry stops, so the generation freezes — and a gate on
+            # freshness alone would then suppress /robot_state entirely, exactly
+            # when has_fatal_can_error below is being raised BECAUSE the link
+            # died. The orchestrator has no arrival-based watchdog on this topic
+            # (its liveness input is the message CONTENT), so that would turn the
+            # loudest failure the bridge can report into total silence — strictly
+            # worse than the duplicate this gate exists to remove. While the link
+            # is lost we therefore keep publishing at the full timer rate, which
+            # is the pre-existing behaviour on precisely the path that needs it.
+            #
+            # Placed AFTER _publish_leg_setpoint_echo() above, deliberately: that
+            # echo has its own freshness gate, feeds the GUI's quiescence
+            # detector (which counts samples in a fixed window), and must keep
+            # publishing even while robot_state is suppressed pre-telemetry.
+            #
+            # Non-telemetry inputs (diagnostics, heartbeat, BB, cold-start) can
+            # change without a new telemetry frame; they are delayed by at most
+            # one telemetry period (~10 ms) because telemetry arrives at 100 Hz
+            # whenever the link is up — and when it is NOT up, the carve-out
+            # above publishes them anyway.
+            #
+            # THE SUPPRESSION IS BOUNDED (50 consecutive skips ≈ 0.5 s): the
+            # 10 ms claim above assumes telemetry flows whenever heartbeats do,
+            # but the firmware emits them from SEPARATE tasks (task_telem vs
+            # task_heartbeat). If task_telem wedges while heartbeats keep the
+            # link "up", an unbounded gate would silence /robot_state — and the
+            # orchestrator's fatal-fault inputs ride this topic's CONTENT, so
+            # heartbeat-carried fault transitions would never arrive. Publishing
+            # a (stale-telemetry) frame every 0.5 s keeps the dedup property for
+            # the artifact this gate exists to remove while capping the fault
+            # latency of the double-failure case.
+            link_lost = bool(self._link_latch.link_lost)
+            if (telem_gen == self._robot_state_pub_gen and not link_lost
+                    and self._robot_state_consec_skips < _ROBOT_STATE_MAX_CONSEC_SKIPS):
+                self._robot_state_stale_skips += 1
+                self._robot_state_consec_skips += 1
+                return
+            self._robot_state_consec_skips = 0
+            self._robot_state_pub_gen = telem_gen
 
             states = self._build_motor_states(telem, diag)
             # Append the BB axes ([7]=pitch, [8]=hand) when live — the GUI's
@@ -2127,7 +3181,9 @@ class TeensyBridgeNode(Node):
             # and was dropped in the port). The LinkLossLatch never arms before the
             # first heartbeat, so this OR is boot-safe. Read outside self._lock (the
             # latch is a separate object, updated by the 1 Hz _health_check).
-            link_lost = bool(self._link_latch.link_lost)
+            # link_lost was read at the honesty gate above — reused rather than
+            # re-sampled, so the flag published here cannot disagree with the
+            # flag that decided this message would be published at all.
             msg.has_fatal_can_error = (
                 fault_state == int(FaultState.CAN_BUS_DOWN)
                 or core_bus_health == int(BusHealth.BUS_OFF)
@@ -3232,6 +4288,143 @@ class TeensyBridgeNode(Node):
                     f'dev={hb.max_dev_value:+.3f} rev at trip)')
         return ''
 
+    # ═══════════════════════════════════════════════════════════
+    # The alarmed command-latency monitor (2026-07-24 closure contract)
+    # ═══════════════════════════════════════════════════════════
+
+    def _latency_monitor_sample_clamp(self, hb, hb_gen):
+        """Fold one ``lead_clamp_mask`` observation into the duty window.
+
+        TWO GATES, both load-bearing:
+
+        * **One sample per HEARTBEAT.** ``_latest_heartbeat`` is a latest-value
+          latch, so a 10 Hz timer reading it after the link dies would resample
+          the same frame forever — pinning the duty at whatever the last frame
+          said. The generation counter makes "new frame" a fact rather than an
+          assumption.
+        * **Only while setpoints are STREAMING**, detected as the pump's frame
+          counter advancing since the previous tick. The lead clamp acts on the
+          leg interpolator's setpoint stream; with no stream there is nothing to
+          clamp, and counting those samples as "not clamped" would dilute the
+          duty of a short move to nothing. Measured off ``frames_built`` rather
+          than ``mpc_active`` deliberately: the question is whether frames are
+          actually going out, not whether an arm flag is set.
+
+        Sampled at the heartbeat rate — the rate at which the firmware reports
+        the mask at all, and the rate at which ``/link_status`` has always
+        published it, which is the series the mask-any duty figures backing
+        ``_CLAMP_DUTY_WARN`` were re-measured on.
+        """
+        now = time.monotonic()
+        samples = self._lm_clamp_samples
+        while samples and (now - samples[0][0]) > _CLAMP_DUTY_WINDOW_S:
+            samples.popleft()
+        sp_frames = self._sp_pump.frames_built
+        streaming = (self._lm_last_sp_frames is not None
+                     and sp_frames > self._lm_last_sp_frames)
+        self._lm_last_sp_frames = sp_frames
+        fresh_hb = (hb is not None and hb_gen != self._lm_last_hb_gen)
+        if fresh_hb:
+            self._lm_last_hb_gen = hb_gen
+        if streaming and fresh_hb:
+            samples.append((now, int(hb.lead_clamp_mask) != 0))
+
+    def _clamp_duty(self):
+        """Clamped fraction over the trailing window, or None if too few samples."""
+        samples = self._lm_clamp_samples
+        if len(samples) < _CLAMP_DUTY_MIN_SAMPLES:
+            return None
+        clamped = sum(1 for _t, c in samples if c)
+        return clamped / float(len(samples))
+
+    def _latency_monitor_step(self, hb, hb_gen) -> str:
+        """Sample, evaluate, and LOG the command-latency monitor. Returns the token.
+
+        The 2026-07-24 Addendum's second deliverable, and the only part of it
+        that was missing: every input here was already measured, already
+        levelled on a diagnostics topic and already bagged beside ``uptime_ms``
+        — and therefore still invisible during a sitting, which is the exact
+        failure class ("latency drift is invisible until a session is already
+        degraded") the contract exists to close.
+
+        Precedence is CAUSAL (see the LATENCY_MONITOR_* tokens): ring leak, then
+        cache-age floor, then clamp duty. A stale input (its 1 Hz frame stopped
+        arriving, or the board is too old to send it) is SKIPPED rather than
+        held or zeroed — it cannot raise the alarm and it cannot silence a
+        different condition either.
+
+        EVERY INPUT IS LIVE, which precedence makes load-bearing: because the
+        ring is ranked first, a ring term keyed on a since-boot maximum would
+        not merely latch its own alarm, it would mask CACHE_AGE and CLAMP_DUTY
+        for the rest of the session. ``_publish_ring_diag`` therefore feeds the
+        SPOT leak plus a high-water only in the window it advances in, and
+        "continuously-measured" in the contract is read as "recovery is
+        observable", not just "sampled often". The blind spot that leaves is deliberate and
+        bounded: a pre-FW-13 board sends no RING_DIAG at all, and on such a
+        board the clamp-duty input — which needs no firmware support beyond the
+        heartbeat — is the one that still fires.
+
+        ADVISORY. This sets no DiagnosticStatus level, gates nothing and
+        actuates nothing; it logs, and it returns a token for one KeyValue.
+        """
+        self._latency_monitor_sample_clamp(hb, hb_gen)
+        now = time.monotonic()
+        ring_fresh = (self._lm_ring_t > 0.0
+                      and (now - self._lm_ring_t) <= _LATENCY_MONITOR_INPUT_STALE_S)
+        cache_fresh = (self._lm_cache_t > 0.0
+                       and (now - self._lm_cache_t) <= _LATENCY_MONITOR_INPUT_STALE_S)
+        duty = self._clamp_duty()
+        uptime = ('n/a' if hb is None else f'{int(hb.uptime_ms)}')
+
+        if ring_fresh and self._lm_ring_leak > RING_LEAK_WARN_FRAMES:
+            state = LATENCY_MONITOR_RING_LEAK
+            detail = (f'CAN RX-ring leak {self._lm_ring_leak} frames '
+                      f'(warns above {RING_LEAK_WARN_FRAMES}) — frames are '
+                      f'being DELIVERED LATE; every consumer of bridge '
+                      f'telemetry is that far behind')
+        elif cache_fresh and self._lm_cache_floor_us >= CACHE_AGE_FLOOR_WARN_US:
+            state = LATENCY_MONITOR_CACHE_AGE
+            detail = (f'encoder-cache age floor '
+                      f'{self._lm_cache_floor_us / 1000.0:.0f} ms '
+                      f'(warns at {CACHE_AGE_FLOOR_WARN_US / 1000.0:.0f} ms) — '
+                      f'the feedback the lead clamp measures against is stale')
+        elif duty is not None and duty > _CLAMP_DUTY_WARN:
+            state = LATENCY_MONITOR_CLAMP_DUTY
+            detail = (f'lead-clamp duty {duty:.2f} over the last '
+                      f'{_CLAMP_DUTY_WINDOW_S:.0f} s of streaming '
+                      f'(warns above {_CLAMP_DUTY_WARN:.2f}; a healthy bridge '
+                      f'measures 0.004-0.02, a leaking one 0.44) — commanded '
+                      f'motion is being pinned to stale feedback')
+        else:
+            state = LATENCY_MONITOR_OK
+            detail = ''
+
+        # Rate-EXACT throttle off a monotonic stamp. ONE call site, fixed
+        # severity (Foxy's rcutils logger caches severity per source line and
+        # raises if a line changes it). The stamp is NOT reset when the
+        # condition clears: a duty hovering at the threshold would otherwise
+        # re-log on every 10 Hz tick that crossed it.
+        #
+        # An ESCALATION speaks immediately. Without that, CLAMP_DUTY followed by
+        # RING_LEAK — the symptom, then the cause that explains it and changes
+        # what the operator should do — could sit silent for 30 s behind a
+        # throttle keyed on "some condition is active". Keyed on RANK rather
+        # than on inequality so a flap between two conditions cannot use the
+        # same door repeatedly.
+        if state != LATENCY_MONITOR_OK:
+            escalated = (_LATENCY_MONITOR_RANK[state]
+                         > _LATENCY_MONITOR_RANK[self._lm_logged_state])
+            if (self._lm_last_log_t is None or escalated
+                    or (now - self._lm_last_log_t) >= _LATENCY_MONITOR_LOG_PERIOD_S):
+                self._lm_last_log_t = now
+                self._lm_logged_state = state
+                self.get_logger().warning(
+                    f'LATENCY MONITOR {state} (uptime_ms={uptime}): {detail}. '
+                    f'ADVISORY — nothing is gated or suppressed; see '
+                    f'/ring_diag, /cache_diag and /link_status lead_clamp_mask '
+                    f'for the underlying numbers.')
+        return state
+
     def _publish_link_status(self):
         """Publish link_status as a DiagnosticStatus.
 
@@ -3243,7 +4436,12 @@ class TeensyBridgeNode(Node):
         try:
             with self._lock:
                 hb = self._latest_heartbeat
+                hb_gen = self._heartbeat_gen
             age_us = self._link_age_us()
+            # The alarmed latency monitor's one evaluation point (it needs the
+            # 10 Hz heartbeat this method already holds). Runs BEFORE the level
+            # is decided and never touches it — advisory, by contract.
+            latency_monitor = self._latency_monitor_step(hb, hb_gen)
 
             msg = DiagnosticStatus()
             msg.name = 'teensy/link'
@@ -3353,6 +4551,17 @@ class TeensyBridgeNode(Node):
                          value=str(int(self._cold_start_state.is_homed))),
                 KeyValue(key='cold_start_authoritative',
                          value=str(int(self._cold_start_authoritative))),
+                # /robot_state publishes that were SKIPPED because the
+                # telemetry latch had not moved since the previous one (see the
+                # honesty gate in _publish_robot_state). Cumulative since node
+                # start; the consumer differences two samples. Nominal is a
+                # steady trickle — the 100 Hz publish timer and the ~100 Hz
+                # TELEMETRY arrival beat against each other, so a few skips per
+                # second is the two rates staying honest, not a fault. A count
+                # that climbs toward the full 100/s means telemetry has slowed or
+                # stopped, which /link_status's own staleness rows explain.
+                KeyValue(key='robot_state_stale_skips',
+                         value=str(int(self._robot_state_stale_skips))),
                 # Platform-Teensy firmware identity. On THIS box `ros2 topic echo`
                 # gives false negatives on high-rate RELIABLE topics
                 # (reference_ros2_topic_echo_flaky_foxy), and robot_state runs at
@@ -3400,6 +4609,46 @@ class TeensyBridgeNode(Node):
                 # is never enforced.
                 KeyValue(key='bridge_fw_version',
                          value=self._bridge_fw_version_str()),
+                # The HOST half of the same currency question, deliberately
+                # adjacent to the firmware half: '0' clean, '1' this node is
+                # running a stale colcon install, 'unknown' the check could not
+                # run. A bare token so a bag consumer can compare it exactly.
+                #
+                # WHY A PERSISTENT ROW AND NOT ONLY THE STARTUP LOG. The verdict
+                # is logged once, at construction; /rosout recording races node
+                # startup, and an operator (or an analysis script) joining a
+                # bag mid-session would otherwise have no way to tell a fresh
+                # node from the stale one that produced the 2026-08-14 S3 bag.
+                # Same argument as bridge_fw_version's above.
+                KeyValue(key='install_skew', value=self._install_skew),
+                # The token alone cannot distinguish "source absent" from
+                # "check errored", and on a '1' it cannot say WHICH side is
+                # behind — which is the difference between rebuilding and
+                # updating the checkout. The detail is static per process, so
+                # it costs one string per publish and makes the bag
+                # self-explanatory without the log.
+                KeyValue(key='install_skew_detail',
+                         value=self._install_skew_detail),
+                # THE LATENCY MONITOR'S SUMMARY (2026-07-24 contract): the
+                # highest active condition, 'OK' when clean. One token, in the
+                # same message as uptime_ms below, so a bag or a GUI has a
+                # single field to trend against bridge uptime instead of having
+                # to join three diagnostics topics to notice a degrading
+                # session. Published UNCONDITIONALLY (unlike uptime_ms, which
+                # needs a heartbeat) — the monitor's clamp-duty input is exactly
+                # the one that matters when heartbeats are patchy, and a row
+                # that vanishes reads as no data, not as OK.
+                #
+                # The individual numbers behind the token are deliberately NOT
+                # repeated here: leak, cache floor and lead_clamp_mask are all
+                # already bagged (on /ring_diag, /cache_diag and this very
+                # message), so the duty is reconstructible offline from the
+                # sampling rule in _latency_monitor_sample_clamp.
+                #
+                # ADVISORY: it never touches msg.level. /link_status's level is
+                # the link/fault channel the orchestrator reads, and a latency
+                # advisory must not be able to colour it.
+                KeyValue(key='latency_monitor', value=latency_monitor),
                 # How the wall-clock ANCHOR the Teensy time-syncs to was stamped
                 # (bridge-temporal-trustworthiness P2). 'kernel-midpoint' =
                 # (kernel RX t2 + pre-send userspace t3)/2, which cancels this
@@ -3698,6 +4947,9 @@ class TeensyBridgeNode(Node):
         return self._call_rpc(RpcMethod.HAND_TRAJ_CMD, args)
 
     def teensy_sdo_read(self, axis, endpoint):
+        """SDO_READ — FIRE-AND-FORGET. The returned blob is ALWAYS empty: no SDO
+        reply reaches the Jetson, and axis 6 is rejected outright. Not a way to
+        read a register back — see rpc_args.encode_sdo_read for why."""
         return self._call_rpc(RpcMethod.SDO_READ,
                               rpc_args.encode_sdo_read(axis, endpoint))
 

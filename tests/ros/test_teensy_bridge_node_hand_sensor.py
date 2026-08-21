@@ -11,7 +11,7 @@ observables:
   + the RAW ``get_gpio_states`` word in hex — the Phase 7 step 2 gate's
   observable).
 
-The signal is TRI-STATE by contract (plans/active/hand-ball-sensor.md
+The signal is TRI-STATE by contract (plans/archived/hand-ball-sensor.md
 § Architecture): ``ball_held`` means nothing unless ``ball_held_valid``, and
 UNKNOWN must NEVER render as "empty". Three distinct ways to be not-valid are
 covered here and all three must yield ``ball_held_valid is False``:

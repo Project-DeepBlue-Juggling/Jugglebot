@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-27
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0013](0013-three-can-buses.md), [parent plan](../../plans/active/teensy-can-offload.md)
+- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0013](0013-three-can-buses.md), [parent plan](../../plans/archived/teensy-can-offload.md)
 
 ## Context
 

@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- GENERATED FILE — DO NOT EDIT BY HAND.
+     Source:     sim/model/generate_mjcf.py + config/hardware_config.yaml
+     Regenerate: python sim/model/generate_mjcf.py
+     A hand edit here is reverted by the next regeneration, and goes red in
+     ./run_tests.sh first: tests/sim/test_mjcf_drift.py compares this file
+     against a fresh render. -->
 <mujoco model="jugglebot">
   <compiler angle="radian" coordinate="local"/>
   <option timestep="0.001" gravity="0 0 -9.806" solver="Newton" iterations="100" tolerance="1e-10" impratio="1"/>
@@ -70,7 +76,7 @@
       <site name="plat_site_5" pos="-0.180975 0.123458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
       <body name="hand" pos="0 0 -0.129000">
         <inertial pos="0 0 0.055" mass="0.281" diaginertia="0.000200 0.000200 0.000050"/>
-        <joint name="hand_slide" type="slide" axis="0 0 1" limited="true" range="0 0.355000" damping="50" armature="0.001"/>
+        <joint name="hand_slide" type="slide" axis="0 0 1" limited="true" range="0 0.344750" damping="50" armature="0.001"/>
         <geom name="hand_visual" type="mesh" mesh="hand_mesh" pos="0 -0.065 0" quat="0 0 0.707107 0.707107" material="hand_mat" contype="0" conaffinity="0" mass="0"/>
         <geom name="hand_collision_0" type="mesh" mesh="hand_part_0" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="2" conaffinity="2" solref="0.05 2.0" solimp="0.99 0.99 0.001" friction="1.0 0.005 0.0001"/>
         <geom name="hand_collision_1" type="mesh" mesh="hand_part_1" pos="0 0 0.010" quat="0.707107 0.707107 0 0" rgba="0 0 0 0" mass="0" contype="2" conaffinity="2" solref="0.05 2.0" solimp="0.99 0.99 0.001" friction="1.0 0.005 0.0001"/>
@@ -190,7 +196,7 @@
     <position name="act_3" joint="leg_3_slide" kp="200000" kv="600" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
     <position name="act_4" joint="leg_4_slide" kp="200000" kv="600" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
     <position name="act_5" joint="leg_5_slide" kp="200000" kv="600" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
-    <position name="act_hand" joint="hand_slide" kp="100000" kv="350" ctrlrange="0 0.355000" ctrllimited="true"/>
+    <position name="act_hand" joint="hand_slide" kp="100000" kv="350" ctrlrange="0 0.344750" ctrllimited="true"/>
   </actuator>
   <keyframe>
     <key name="home" qpos="0.000000 0.000000 0.574300 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 5.000000 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 6.000000 1.000000 0.000000 0.000000 0.000000"/>

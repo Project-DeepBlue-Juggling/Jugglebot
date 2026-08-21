@@ -99,7 +99,12 @@ within 0.10 rev of the live encoder (0.15 → 0.10 on 2026-07-10), and a stroke 
 measured physical hard-stop range. A non-finite (NaN/Inf) command is
 dropped at ingest rather than clamped. The final wire encode additionally
 clips position to the ODrive's own absolute range (4.2 rev for legs,
-11.1 rev for the hand) as a last-line backstop.
+**10.8 rev** for the hand — the operator-measured metal contact; this read
+11.1 rev, 0.3 rev *past* metal, until the 2026-08-18 correction, and the tightened
+clamp is live on a bridge flashed from `mvp-trajectory-bringup` at **FW 15** or
+later. An FW 14 board still passes setpoints up to 0.3 rev past metal, and the two
+are wire-identical, so read `link_status/bridge_fw_version` rather than inferring
+from a healthy link) as a last-line backstop.
 
 !!! note "Known gap: one-shot RPC paths bypass these checks"
     `SET_ABSOLUTE_POSITION` and `SDO_WRITE` are dispatched straight to the
